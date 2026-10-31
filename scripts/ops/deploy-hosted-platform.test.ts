@@ -590,8 +590,15 @@ describe("deploy-hosted-platform.sh", () => {
       clean(ok);
     });
   }
+  it("the scheduler also refuses until the provisioner exists", () => {
+    const noProv = setup({
+      exists: ["oa-p-auth-broker", "oa-p-directory-broker"],
+    }).run("scheduler");
+    expect(noProv.code).toBe(1);
+    expect(noProv.err).toContain("oa-p-provisioner does not exist");
+    expect(noProv.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+  });
   describe("the scheduler's alert wiring (#915's placeholders, or none before it)", () => {
-    type Env = "staging" | "prod";
     // #915's config, and the repo's own once it carries the placeholders.
     const PINNED = [
       ["#915's config", F915],
@@ -624,7 +631,7 @@ describe("deploy-hosted-platform.sh", () => {
       );
     const go = (
       config: string,
-      env: Env,
+      env: "staging" | "prod",
       next: string,
       vars: Record<string, string> = {},
     ) => {
@@ -649,25 +656,27 @@ describe("deploy-hosted-platform.sh", () => {
       const log = s.sb.log();
       return { ...r, log };
     };
-    it("before #915 (no placeholders): refuses before any deploy, verify only too (4.8: an alert needs a destination)", () => {
-      // #915's config with its alert lines cut, and the repo's own until #915.
-      const strip = (c: string) =>
-        c
-          .replace(
-            /\n\s*"(ALERT_TO|ALERT_FROM|SIGNUP_DAILY_CAP|SIGNUPS_ENABLED)": "\{\{[A-Z_]+\}\}",/g,
-            "",
-          )
-          .replace(
-            /\{ "name": "ALERT_EMAIL", "destination_address": "\{\{ALERT_TO_[A-Z]+\}\}" \}/g,
-            '{ "name": "ALERT_EMAIL" }',
-          );
-      for (const BARE of [
-        strip(F915),
-        ...(pinned(REAL_SCHED) ? [] : [REAL_SCHED]),
-      ]) {
-        expect(BARE).not.toContain("{{ALERT_");
-        for (const env of ["prod", "staging"] as const)
-          for (const VERIFY_ONLY of ["", "1"]) {
+    // Before #915 (no placeholders): #915's config with its alert lines cut,
+    // and the repo's own until #915.
+    const strip = (c: string) =>
+      c
+        .replace(
+          /\n\s*"(ALERT_TO|ALERT_FROM|SIGNUP_DAILY_CAP|SIGNUPS_ENABLED)": "\{\{[A-Z_]+\}\}",/g,
+          "",
+        )
+        .replace(
+          /\{ "name": "ALERT_EMAIL", "destination_address": "\{\{ALERT_TO_[A-Z]+\}\}" \}/g,
+          '{ "name": "ALERT_EMAIL" }',
+        );
+    const BARES = [
+      ["#915's config, cut", strip(F915)],
+      ...(pinned(REAL_SCHED) ? [] : [["apps/scheduler", REAL_SCHED] as const]),
+    ] as const;
+    for (const [label, BARE] of BARES)
+      for (const env of ["prod", "staging"] as const)
+        for (const VERIFY_ONLY of ["", "1"])
+          it(`before #915 (${label}), ${env}${VERIFY_ONLY ? ", verify only" : ""}: refuses before any deploy (4.8: an alert needs a destination)`, () => {
+            expect(BARE).not.toContain("{{ALERT_");
             const p = env[0] as "s" | "p";
             const r = go(
               BARE,
@@ -677,91 +686,104 @@ describe("deploy-hosted-platform.sh", () => {
                 VERIFY_ONLY,
               },
             );
-            expect(r.code, `${env} ${VERIFY_ONLY}`).toBe(1);
+            expect(r.code).toBe(1);
             expect(r.err).toContain(
               `the tag's scheduler config doesn't pin the ${env} alerts`,
             );
             expect(noDeploy(r.log)).toEqual([]);
             expect(r.out).not.toContain("verified");
-          }
-      }
-    });
+          });
     for (const [label, config] of PINNED) {
-      for (const env of ["prod", "staging"] as const)
+      for (const env of ["prod", "staging"] as const) {
+        const p = env[0] as "s" | "p";
         it(`${label}, ${env}: reads back every alert var and ALERT_EMAIL's destination`, () => {
-          {
-            const p = env[0] as "s" | "p";
-            const ok = go(config, env, wired(p));
-            expect(ok.err, env).toBe("");
-            expect(ok.code, env).toBe(0);
-            expect(ok.out).toContain(`${env} scheduler: deployed and verified`);
-            for (const [what, next, msg] of [
-              [
-                "destination",
-                wired(p, {}, "x@example.com"),
-                "ALERT_EMAIL destination",
-              ],
-              ["unpinned", wired(p, {}, null), "ALERT_EMAIL destination"],
-              ["alert to", wired(p, { ALERT_TO: "x@example.com" }), "ALERT_TO"],
-              ["no alert to", wired(p, { ALERT_TO: null }), "ALERT_TO"],
-              [
-                "alert from",
-                wired(p, { ALERT_FROM: "x@open-artifacts.app" }),
-                "ALERT_FROM",
-              ],
-              ["cap", wired(p, { SIGNUP_DAILY_CAP: "51" }), "SIGNUP_DAILY_CAP"],
-            ] as const) {
-              const r = go(config, env, next);
-              expect(r.code, `${env} ${what}`).toBe(1);
-              expect(r.err, `${env} ${what}`).toContain(`${msg}: got`);
-            }
-            // A deployed gate other than the env's (true allowed here, so the
-            // signups rule isn't what refuses it).
-            const gate = go(
-              config,
-              env,
-              wired(p, { SIGNUPS_ENABLED: "true" }),
-              {
-                ALLOW_SIGNUPS: "1",
-              },
-            );
-            expect(gate.code, `${env} gate`).toBe(1);
-            expect(gate.err).toContain(
-              "SIGNUPS_ENABLED: got 'true', want 'false'",
-            );
-            for (const k of Object.keys(ALERTS)) {
-              const r = go(config, env, wired(p), { [k]: "" });
-              expect(r.code, `${env} ${k}`).toBe(2);
-              expect(r.err).toContain(`${k} is required for scheduler`);
-              expect(
-                r.log.some((l) => l.startsWith("wrapper")),
-                k,
-              ).toBe(false);
-            }
-          }
+          const ok = go(config, env, wired(p));
+          expect(ok.err).toBe("");
+          expect(ok.code).toBe(0);
+          expect(ok.out).toContain(`${env} scheduler: deployed and verified`);
         });
-      it(`${label}: a half-pinned config refuses before any deploy`, () => {
-        for (const cut of [
+        for (const [what, over, dest, msg] of [
+          [
+            "a wrong destination",
+            {},
+            "x@example.com",
+            "ALERT_EMAIL destination",
+          ],
+          ["no destination", {}, null, "ALERT_EMAIL destination"],
+          [
+            "a wrong ALERT_TO",
+            { ALERT_TO: "x@example.com" },
+            ALERTS.ALERT_TO,
+            "ALERT_TO",
+          ],
+          ["no ALERT_TO", { ALERT_TO: null }, ALERTS.ALERT_TO, "ALERT_TO"],
+          [
+            "a wrong ALERT_FROM",
+            { ALERT_FROM: "x@open-artifacts.app" },
+            ALERTS.ALERT_TO,
+            "ALERT_FROM",
+          ],
+          [
+            "a wrong cap",
+            { SIGNUP_DAILY_CAP: "51" },
+            ALERTS.ALERT_TO,
+            "SIGNUP_DAILY_CAP",
+          ],
+        ] as const)
+          it(`${label}, ${env}: refuses ${what} read back`, () => {
+            const r = go(config, env, wired(p, over, dest));
+            expect(r.code).toBe(1);
+            expect(r.err).toContain(`${msg}: got`);
+          });
+        // A deployed gate other than the env's (true allowed here, so the
+        // signups rule isn't what refuses it).
+        it(`${label}, ${env}: refuses a deployed SIGNUPS_ENABLED other than the env's`, () => {
+          const gate = go(config, env, wired(p, { SIGNUPS_ENABLED: "true" }), {
+            ALLOW_SIGNUPS: "1",
+          });
+          expect(gate.code).toBe(1);
+          expect(gate.err).toContain(
+            "SIGNUPS_ENABLED: got 'true', want 'false'",
+          );
+        });
+        for (const k of Object.keys(ALERTS))
+          it(`${label}, ${env}: ${k} is required before any deploy`, () => {
+            const r = go(config, env, wired(p), { [k]: "" });
+            expect(r.code).toBe(2);
+            expect(r.err).toContain(`${k} is required for scheduler`);
+            expect(r.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+          });
+      }
+      for (const [what, cut] of [
+        [
+          "no ALERT_FROM",
           (c: string) => c.replace('"ALERT_FROM": "{{ALERT_FROM_PROD}}",', ""),
+        ],
+        [
+          "a fixed destination",
           (c: string) =>
             c.replace(
               '"destination_address": "{{ALERT_TO_PROD}}"',
               '"destination_address": "ops@example.com"',
             ),
+        ],
+        [
+          "a fixed SIGNUPS_ENABLED",
           (c: string) =>
             c.replace(
               '"SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_PROD}}"',
               '"SIGNUPS_ENABLED": "false"',
             ),
-        ]) {
+        ],
+      ] as const)
+        it(`${label}: a half-pinned config (${what}) refuses before any deploy`, () => {
           const half = cut(config);
           expect(half).not.toBe(config);
           const r = go(half, "prod", wired("p"));
           expect(r.code).toBe(1);
           expect(r.err).toContain("half pins the prod alerts; refusing");
           expect(r.log.some((l) => l.startsWith("wrapper"))).toBe(false);
-        }
-      });
+        });
     }
   });
   it("the scheduler refuses before any deploy until the provisioner exists", () => {

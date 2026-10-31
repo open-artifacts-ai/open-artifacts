@@ -276,7 +276,7 @@ esac`;
     expect(resolve(d, { runsRaw: "{}" }).code).toBe(1);
     // Staging, or both envs, need no record.
     expect(resolve({ ...d, DEPLOY_ENV: "staging" }).code).toBe(0);
-    expect(resolve({ ...d, DEPLOY_ENV: "" }).code).toBe(0);
+    expect(resolve({ ...d, DEPLOY_ENV: "both" }).code).toBe(0);
   });
   it("dispatch with a floor run: its env only, which it needs", () => {
     const d = { EVENT: "workflow_dispatch" };
@@ -291,6 +291,7 @@ esac`;
     });
     for (const env of [
       { FLOOR_RUN_ID: "123" },
+      { FLOOR_RUN_ID: "123", DEPLOY_ENV: "both" },
       { FLOOR_RUN_ID: "12a", DEPLOY_ENV: "prod" },
       { TAG: "v0.80.0", FLOOR_RUN_ID: "123", DEPLOY_ENV: "prod" },
       { TAG: "0.80.0" },

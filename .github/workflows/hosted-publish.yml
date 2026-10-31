@@ -25,11 +25,11 @@ on:
         default: ""
         type: string
       env:
-        description: "Only this env (required with floor_run_id); empty: staging, then prod"
+        description: "staging or prod alone (one is required with floor_run_id); both: staging, then prod"
         required: false
-        default: ""
+        default: both
         type: choice
-        options: ["", staging, prod]
+        options: [both, staging, prod]
       floor_run_id:
         description: "A hosted-floor.yml run id whose signed floor to publish"
         required: false
