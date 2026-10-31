@@ -102,11 +102,6 @@ export async function renderOptions(
      * step report (5.4 fail). Run-local: jobs.args stays the request (8.3).
      */
     onClaim?: (lease: string | null) => void;
-    /**
-     * upgrade, rollback: the health report, sent only once verify_clean
-     * passed on what serves. Run-local, like onClaim.
-     */
-    onVerified?: () => void;
   },
 ): Promise<WfpProvisioner> {
   const e = deployEnv(ctx.env.OA_ENV);
@@ -129,7 +124,6 @@ export async function renderOptions(
         o.onClaim((await installRow(ctx, o.installId))?.lease ?? null);
       }
       await markStep(ctx, o.jobId, s);
-      if (s === "health") o.onVerified?.();
     },
     brokerEnabled: googleNewlyEnabled({}, o.vars),
     ...(turnstile ? { turnstile } : {}),

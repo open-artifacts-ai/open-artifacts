@@ -85,11 +85,17 @@ export type StepLog = {
  *
  * Engine replay: `results` holds each step's durable result, by name; a run
  * given another run's `results` returns those without running the body, as
- * the Workflows engine replays a new isolate. `evictAfter` ends the run
+ * the Workflows engine replays a new isolate; a step that failed for good
+ * replays its error. `evictAfter` ends the run
  * when that step's body has returned, before its result is stored, and
  * `evictBefore` as that step starts: the isolate died. The run's promise
  * then never settles; `evicted` resolves.
  */
+/** A step's stored failure (the engine replays its error). */
+class Failed {
+  constructor(readonly error: { name: string; message: string }) {}
+}
+
 export function stepRunner(
   clock: { t: number },
   o: {
@@ -110,6 +116,12 @@ export function stepRunner(
     async do(name: string, a: unknown, b?: unknown) {
       if (o.results?.has(name)) {
         const out = o.results.get(name);
+        if (out instanceof Failed) {
+          log.push({ name, error: out.error, replayed: true });
+          const e = new Error(out.error.message);
+          e.name = out.error.name;
+          throw e;
+        }
         log.push({ name, output: out, replayed: true });
         return out === undefined ? undefined : structuredClone(out);
       }
@@ -137,8 +149,12 @@ export function stepRunner(
           return out === undefined ? undefined : structuredClone(out);
         } catch (e) {
           const err = e as Error;
-          log.push({ name, error: { name: err.name, message: err.message } });
-          if (err instanceof NonRetryableError || attempt >= limit) throw err;
+          const error = { name: err.name, message: err.message };
+          log.push({ name, error });
+          if (err instanceof NonRetryableError || attempt >= limit) {
+            o.results?.set(name, new Failed(error));
+            throw err;
+          }
           clock.t += delay * 2 ** attempt;
         }
       }

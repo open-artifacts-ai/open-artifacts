@@ -1105,8 +1105,21 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
     expect(JSON.parse(w.job(id)?.args as string)).toEqual({ from: V1, to: V2 });
   });
 
-  it("a replay after the upload's result was lost: `to` serves, unverified in this run, so it is paused, never done", async () => {
-    const s = await active({ slug: "dirtydied", version: V1 });
+  /** An upgrade whose isolate dies after upload's body, before its result is stored, then replayed. */
+  async function lostUpload(slug: string, dirty?: "to" | "both") {
+    const s = await active({ slug, version: V1 });
+    if (dirty === "to")
+      // No rollback (the DO tag moved): the dirty `to` keeps serving.
+      w.db
+        .prepare(
+          "UPDATE install_versions SET do_migration_tag = 'v-older' WHERE install_id = ? AND version = ?",
+        )
+        .run(s.installId, V1);
+    if (dirty)
+      w.fake.settingsEdit = (_x, b) => [
+        ...b,
+        { name: "EXTRA", type: "service" },
+      ];
     const id = seedJob(w, {
       kind: "upgrade",
       installId: s.installId,
@@ -1116,10 +1129,8 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
     const first = stepRunner(w.clock, { results, evictAfter: "upload" });
     void runManage(w.ctx, event(id), first.step);
     await first.evicted;
-    expect(w.install(s.installId)).toMatchObject({
-      version: V2,
-      state: "active",
-    });
+    w.fake.settingsEdit = undefined;
+    const writes = w.fake.writes().length;
     const again = stepRunner(w.clock, { results });
     await runManage(w.ctx, event(id), again.step).catch(() => {});
     expect(again.log.filter((l) => l.replayed).map((l) => l.name)).toEqual([
@@ -1127,13 +1138,55 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
       "recheck",
       "release_gate",
     ]);
+    // Never rendered again: no script upload or settings write on the replay.
+    expect(audits(s.installId, "upgrade.start")).toHaveLength(1);
+    expect(
+      w.fake
+        .writes()
+        .slice(writes)
+        .filter((x) => x.includes("/scripts/")),
+    ).toEqual([]);
+    expect(JSON.parse(w.job(id)?.args as string)).toEqual({ from: V1, to: V2 });
+    return { s, id, again };
+  }
+
+  it("a clean upgrade whose upload result was lost: the replay reads the job's audit trail, done, never paused", async () => {
+    const { s, id, again } = await lostUpload("cleandied");
+    expect(w.install(s.installId)).toMatchObject({
+      version: V2,
+      state: "active",
+    });
+    expect(w.job(id)?.status).toBe("done");
+    expect(again.log.map((l) => l.name)).not.toContain("pause_dirty");
+    expect(w.lifecycle(s.installId)?.serving_mode).not.toBe("paused");
+  });
+
+  it("a dirty `to` whose upload result was lost: the replay pauses it, prod_dirty", async () => {
+    const { s, id, again } = await lostUpload("dirtydied", "to");
+    expect(w.install(s.installId)).toMatchObject({
+      version: V2,
+      state: "active",
+    });
     expect(w.job(id)).toMatchObject({
       status: "failed",
       error_code: "prod_dirty",
     });
     expect(again.log.map((l) => l.name)).toContain("pause_dirty");
     expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
-    expect(JSON.parse(w.job(id)?.args as string)).toEqual({ from: V1, to: V2 });
+  });
+
+  it("a dirty rollback whose upload result was lost: back on from, paused, prod_dirty, never a second upload", async () => {
+    const { s, id, again } = await lostUpload("dirtyback", "both");
+    expect(w.install(s.installId)).toMatchObject({
+      version: V1,
+      state: "active",
+    });
+    expect(w.job(id)).toMatchObject({
+      status: "failed",
+      error_code: "prod_dirty",
+    });
+    expect(again.log.map((l) => l.name)).toContain("pause_dirty");
+    expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
   });
 
   it("a clean upgrade: done, never paused, args clean; a replay of the whole run changes nothing", async () => {
@@ -1207,6 +1260,46 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
       state: "active",
       lease: null,
     });
+  });
+
+  it("fail_release in a new isolate goes by the lease the fail step stored, never a newer one", async () => {
+    const s = await active({ slug: "sleptco", version: V1 });
+    const id = seedJob(w, {
+      kind: "upgrade",
+      installId: s.installId,
+      args: { from: V1, to: V2 },
+    });
+    let until = 0;
+    const results = new Map<string, unknown>();
+    const first = stepRunner(w.clock, {
+      results,
+      evictBefore: "fail_release",
+      onStep: (n) => {
+        if (n !== "upload") return;
+        until = w.clock.t + 30 * 60_000;
+        w.db
+          .prepare(
+            "UPDATE installs SET state = 'upgrading', lease = 'early', lease_until = ? WHERE id = ?",
+          )
+          .run(until, s.installId);
+        throw new Error("isolate evicted");
+      },
+    });
+    void runManage(w.ctx, event(id), first.step);
+    await first.evicted;
+    expect(results.get("fail")).toMatchObject({ lease: "early" });
+    // During the sleep, another holder claims the row (after the job started).
+    w.db
+      .prepare(
+        "UPDATE installs SET state = 'upgrading', lease = 'other', lease_until = ? WHERE id = ?",
+      )
+      .run(until + 60 * 60_000, s.installId);
+    const again = stepRunner(w.clock, { results });
+    await runManage(w.ctx, event(id), again.step).catch(() => {});
+    expect(again.log.find((l) => l.name === "fail_release")).toMatchObject({
+      output: { released: false },
+    });
+    expect(w.install(s.installId)).toMatchObject({ lease: "other" });
   });
 
   it("cleanup of a canceled create holding its lease: sleeps it out, releases it, settles the signup", async () => {

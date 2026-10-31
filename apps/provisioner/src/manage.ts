@@ -144,16 +144,14 @@ export class ManageInstall extends WorkflowEntrypoint<
 
 /**
  * What one run of a job knows beyond its step results: the lease its
- * upgrade or rollback claimed, the version that passed verify_clean, and
- * whether what serves is dirty. Never in jobs.args, which stays the request
- * {version, from, to, reason} (8.3). `dirty` comes back on a replay from
- * upload's step result; the other two are lost with the isolate, and the
- * fallbacks are safe: ownLease's started_at rule, and an unverified `to`
- * paused as dirty.
+ * upgrade or rollback claimed, and whether what serves is dirty. Never in
+ * jobs.args, which stays the request {version, from, to, reason} (8.3).
+ * Neither has to survive the isolate: a replayed render reads the job's
+ * own hosted_audit rows (renderOutcome), and fail stores the lease it
+ * judged this job's in its step result, which fail_release compares.
  */
 export type RunState = {
   claimedLease?: string | null;
-  verified?: string;
   dirty: boolean;
 };
 
@@ -184,7 +182,7 @@ export async function runManage(
         await step.sleepUntil("lease_expiry", new Date(f.leaseUntil + 1));
       await step.do("fail_release", async () => {
         try {
-          return await releaseExpired(ctx, jobId, run);
+          return await releaseExpired(ctx, jobId, f.lease);
         } catch (x) {
           throw new Error(codeOf(x));
         }
@@ -397,11 +395,12 @@ async function record(
  * upgrade or rollback with the CLI's derived options (5.4) and the outcome
  * mapping: ok is done; a dirty serving script is returned (the step result
  * carries it to pause_dirty, and on a replay too); a forward fix is
- * `upgrade_incomplete`; a rollback is `upgrade_rolled_back`. recheck found
- * the install off `to` (else upload never runs), and jobs_one_active keeps
- * other jobs off it, so `to` serving here is this job's render: an earlier
- * attempt's. It is done only if this run saw it pass verify_clean; else
- * (the isolate died after the render) it is paused as dirty.
+ * `upgrade_incomplete`; a rollback is `upgrade_rolled_back`. An earlier
+ * render of this job (an attempt whose result was lost with its isolate)
+ * is read back from its hosted_audit rows (renderOutcome) and mapped the
+ * same way, never rendered again. recheck found the install off `to`, and
+ * jobs_one_active keeps other jobs off it, so `to` serving with no
+ * finished render on record is paused as dirty.
  */
 async function render(
   ctx: CreateCtx,
@@ -414,10 +413,17 @@ async function render(
   if (run.dirty) return { version: to, dirty: true };
   const row = await installRow(ctx, job.installId);
   if (!row) throw refused("no installs row");
-  if (row.version === to && row.state === "active")
-    return run.verified === to ? { version: to } : { version: to, dirty: true };
+  const onTo = row.version === to && row.state === "active";
+  const done = await renderOutcome(ctx, job, kind);
+  if (done === "dirty") {
+    run.dirty = true;
+    return { version: to, dirty: true };
+  }
+  if (done === "clean" && onTo) return { version: to };
+  if (done === "rolled_back") throw rolledBack(to, job.args.from as string);
+  if (done === "incomplete") throw incomplete(kind, to);
+  if (onTo) return { version: to, dirty: true };
   if (row.version !== job.args.from) throw refused("the version moved");
-  run.verified = undefined;
   const w = await renderOptions(ctx, {
     jobId: job.jobId,
     label: labelOf(job),
@@ -428,9 +434,6 @@ async function render(
     registryDisabled: job.registryDisabled,
     onClaim: (lease) => {
       run.claimedLease = lease;
-    },
-    onVerified: () => {
-      run.verified = to;
     },
   });
   const r: UpgradeResult =
@@ -443,14 +446,69 @@ async function render(
     return { version: to, dirty: true };
   }
   if (kind === "upgrade" && r.rolledBack && !r.forwardFix)
-    throw new ProvisionRefused(
-      `upgrade to ${to} failed and rolled back to ${r.from}`,
-      "upgrade_rolled_back",
-    );
-  throw new ProvisionRefused(
+    throw rolledBack(to, r.from);
+  throw incomplete(kind, to);
+}
+
+const rolledBack = (to: string, from: string) =>
+  new ProvisionRefused(
+    `upgrade to ${to} failed and rolled back to ${from}`,
+    "upgrade_rolled_back",
+  );
+const incomplete = (kind: string, to: string) =>
+  new ProvisionRefused(
     `${kind} to ${to} did not finish; a forward fix is needed`,
     "upgrade_incomplete",
   );
+
+/** The rows that start an upload, and those that end one. */
+const RENDER_ROWS = [
+  "upgrade.start",
+  "rollback.start",
+  "verify_clean.refused",
+  "upgrade.done",
+  "rollback.done",
+  "upgrade.forward_fix",
+  "upgrade.incomplete",
+  "rollback.incomplete",
+  "rollback.unhealthy",
+] as const;
+
+/**
+ * How this job's last finished render ended, from WfpProvisioner's own
+ * hosted_audit rows (written as job:<jobId>, 4.9, each before the operation
+ * returns): durable where the run's memory is not. The last upload is the
+ * last upgrade.start or rollback.start (an upgrade's auto-rollback comes
+ * after its upgrade.start). A verify_clean.refused after it is dirty
+ * (what serves failed the check); else a .done is clean, and the other end
+ * rows are incomplete. An upgrade whose last upload is its auto-rollback is
+ * rolled_back unless dirty. null: no render finished (none ran, or one
+ * aborted before its end row, which a retry renders again).
+ */
+async function renderOutcome(
+  ctx: CreateCtx,
+  job: ManageJob,
+  kind: "upgrade" | "rollback",
+): Promise<"clean" | "dirty" | "rolled_back" | "incomplete" | null> {
+  const r = await transient(
+    ctx.env.PLATFORM_DB.prepare(
+      `SELECT action FROM hosted_audit WHERE install_id = ?1 AND actor = ?2 AND action IN (${RENDER_ROWS.map((a) => `'${a}'`).join(", ")}) ORDER BY id`,
+    )
+      .bind(job.installId, `job:${job.jobId}`)
+      .all<{ action: string }>(),
+  );
+  const rows = r.results.map((x) => x.action);
+  const i = Math.max(
+    rows.lastIndexOf("upgrade.start"),
+    rows.lastIndexOf("rollback.start"),
+  );
+  if (i < 0) return null;
+  const after = rows.slice(i + 1);
+  if (after.includes("verify_clean.refused")) return "dirty";
+  const ended = after.some((a) => !a.endsWith(".start"));
+  if (!ended) return null;
+  if (kind === "upgrade" && rows[i] === "rollback.start") return "rolled_back";
+  return after.some((a) => a.endsWith(".done")) ? "clean" : "incomplete";
 }
 
 /**
@@ -831,17 +889,23 @@ async function releaseWhenExpired(
 
 /**
  * settleFailed with the stored code and the live serving mode. Returns the
- * lease end when an upgrade or rollback left the row upgrading under this
- * job's lease (released by fail_release once it expires); a lease another
+ * lease and its end when an upgrade or rollback left the row upgrading
+ * under this job's lease (released by fail_release once it expires, by
+ * this stored value: the sleep resumes in a new isolate); a lease another
  * job left is not this one's to release.
  */
 async function fail(
   ctx: CreateCtx,
   jobId: string,
   run: RunState,
-): Promise<{ failed: boolean; leaseUntil: number | null }> {
+): Promise<{
+  failed: boolean;
+  leaseUntil: number | null;
+  lease: string | null;
+}> {
   const job = await readJob(ctx, jobId);
-  if (!job || job.status === "done") return { failed: false, leaseUntil: null };
+  if (!job || job.status === "done")
+    return { failed: false, leaseUntil: null, lease: null };
   // A dirty script stays prod_dirty even when its pause failed.
   const code = run.dirty
     ? "prod_dirty"
@@ -854,13 +918,16 @@ async function fail(
       ...(await reconcile(ctx, job.install_id)),
     ]),
   );
-  let leaseUntil: number | null = null;
   if (job.kind === "upgrade" || job.kind === "rollback") {
     const row = await installRow(ctx, job.install_id);
     if (row && ownLease(job, row, run.claimedLease))
-      leaseUntil = row.lease_until ?? 0;
+      return {
+        failed: true,
+        leaseUntil: row.lease_until ?? 0,
+        lease: row.lease,
+      };
   }
-  return { failed: true, leaseUntil };
+  return { failed: true, leaseUntil: null, lease: null };
 }
 
 /** WfpProvisioner's lease length (wfp.ts LEASE_MS; not exported). */
@@ -888,16 +955,25 @@ function ownLease(
   );
 }
 
-/** The expired lease of a row still upgrading, released without force. */
+/**
+ * The expired lease of a row still upgrading, released without force: only
+ * the lease the fail step stored, never one claimed during the sleep.
+ */
 async function releaseExpired(
   ctx: CreateCtx,
   jobId: string,
-  run: RunState,
+  lease: string | null,
 ): Promise<{ released: boolean }> {
   const job = await readJob(ctx, jobId);
   if (!job) return { released: false };
   const row = await installRow(ctx, job.install_id);
-  if (!row || !ownLease(job, row, run.claimedLease)) return { released: false };
+  if (
+    !row ||
+    lease === null ||
+    row.state !== "upgrading" ||
+    row.lease !== lease
+  )
+    return { released: false };
   const w = await provisionerWith(ctx, `ss-${job.signup_id ?? jobId}`, jobId);
   await w.releaseLease(job.install_id, job.install_id);
   return { released: true };
