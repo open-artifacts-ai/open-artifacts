@@ -168,6 +168,40 @@ const NEXT: Record<string, string> = {
       { type: "plain_text", name: "OA_ENV", text: "prod" },
       { type: "plain_text", name: "EMAIL_QUOTA_ZONES", text: ZONE },
       { type: "plain_text", name: "EMAIL_DAILY_LIMIT", text: "1000" },
+      { type: "plain_text", name: "ALERT_TO", text: "ops@example.com" },
+      {
+        type: "plain_text",
+        name: "ALERT_FROM",
+        text: "alerts@open-artifacts.app",
+      },
+      { type: "plain_text", name: "SIGNUP_DAILY_CAP", text: "20" },
+      { type: "plain_text", name: "SIGNUPS_ENABLED", text: "false" },
+      {
+        type: "send_email",
+        name: "ALERT_EMAIL",
+        destination_address: "ops@example.com",
+      },
+      {
+        type: "service",
+        name: "PROVISIONER",
+        service: "oa-p-provisioner",
+        entrypoint: "ProvisionerRpc",
+      },
+      { type: "queue", name: "SIGNUPS", queue_name: "oa-p-signups" },
+      {
+        type: "workflow",
+        name: "PROVISION_INSTALL",
+        workflow_name: "oa-p-provision-install",
+        class_name: "ProvisionInstall",
+        script_name: "oa-p-provisioner",
+      },
+      {
+        type: "workflow",
+        name: "MANAGE_INSTALL",
+        workflow_name: "oa-p-manage-install",
+        class_name: "ManageInstall",
+        script_name: "oa-p-provisioner",
+      },
     ],
     true,
   ),
@@ -284,7 +318,9 @@ const ENV = {
   PLATFORM_DB_ID: DB,
   EMAIL_ZONE_TAGS: ZONE,
   EMAIL_DAILY_LIMIT: "1000",
-  INVENTORY_KEY: "k".repeat(64),
+  ALERT_TO: "ops@example.com",
+  ALERT_FROM: "alerts@open-artifacts.app",
+  GITHUB_REPOSITORY: "o/r",
   SECRETS_STORE_ID: STORE,
   SIGNUP_DAILY_CAP: FILLS.SIGNUP_DAILY_CAP,
   SIGNUPS_ENABLED: FILLS.SIGNUPS_ENABLED,
@@ -452,22 +488,98 @@ describe("deploy-hosted-platform.sh", () => {
     ]);
     clean(r);
   });
-  it("dispatch and the scheduler refuse until both brokers exist, then deploy and verify", () => {
+  it("dispatch and the scheduler refuse until both brokers exist (the scheduler also the provisioner), then deploy and verify", () => {
+    const brokers = ["oa-p-auth-broker", "oa-p-directory-broker"];
     for (const t of ["dispatch", "scheduler"]) {
       const none = setup().run(t);
       expect(none.code, t).toBe(1);
       expect(none.err).toContain("oa-p-auth-broker does not exist");
       expect(none.log.some((l) => l.startsWith("wrapper"))).toBe(false);
       const ok = setup({
-        exists: ["oa-p-auth-broker", "oa-p-directory-broker"],
+        exists: [...brokers, "oa-p-provisioner"],
       }).run(t);
       expect(ok.err, t).toBe("");
       expect(ok.code, t).toBe(0);
       clean(ok);
     }
+    const noProv = setup({ exists: brokers }).run("scheduler");
+    expect(noProv.code).toBe(1);
+    expect(noProv.err).toContain("oa-p-provisioner does not exist");
+    expect(noProv.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+  });
+  it("the scheduler reads back its alert vars, the pinned ALERT_EMAIL destination and the provisioner's bindings", () => {
+    const exists = [
+      "oa-p-auth-broker",
+      "oa-p-directory-broker",
+      "oa-p-provisioner",
+    ];
+    const base = NEXT["oa-p-scheduler"] as string;
+    const swap = (from: string, to: string) => base.replace(from, to);
+    for (const [label, next, msg] of [
+      [
+        "destination",
+        swap(
+          '"destination_address":"ops@example.com"',
+          '"destination_address":"x@example.com"',
+        ),
+        "ALERT_EMAIL",
+      ],
+      [
+        "unpinned",
+        swap(',"destination_address":"ops@example.com"', ""),
+        "ALERT_EMAIL",
+      ],
+      ["alert to", swap('"text":"ops@example.com"', '"text":""'), "ALERT_TO"],
+      [
+        "alert from",
+        swap('"alerts@open-artifacts.app"', '"x@open-artifacts.app"'),
+        "ALERT_FROM",
+      ],
+      [
+        "cap",
+        swap(
+          '"name":"SIGNUP_DAILY_CAP","text":"20"',
+          '"name":"SIGNUP_DAILY_CAP","text":"21"',
+        ),
+        "SIGNUP_DAILY_CAP",
+      ],
+      [
+        "workflow",
+        swap(
+          '"script_name":"oa-p-provisioner"',
+          '"script_name":"oa-s-provisioner"',
+        ),
+        "PROVISION_INSTALL",
+      ],
+      [
+        "rpc",
+        swap('"entrypoint":"ProvisionerRpc"', '"entrypoint":"Other"'),
+        "PROVISIONER",
+      ],
+    ] as const) {
+      const r = setup({ exists, next: { "oa-p-scheduler": next } }).run(
+        "scheduler",
+      );
+      expect(r.code, label).toBe(1);
+      expect(r.err, label).toContain(`${msg}: got`);
+    }
+    for (const k of ["ALERT_TO", "ALERT_FROM", "SIGNUP_DAILY_CAP"]) {
+      const r = setup({ exists }).run("scheduler", { [k]: "" });
+      expect(r.code, k).toBe(2);
+      expect(
+        r.log.some((l) => l.startsWith("wrapper")),
+        k,
+      ).toBe(false);
+    }
+    const ok = setup({ exists }).run("scheduler");
+    const w = ok.log.find((l) => l.startsWith("wrapper scheduler prod "));
+    expect(w).toBeDefined();
+    expect(ok.code, ok.err).toBe(0);
   });
   it("the scheduler checks its two schedules exactly", () => {
-    const s = setup({ exists: ["oa-p-auth-broker", "oa-p-directory-broker"] });
+    const s = setup({
+      exists: ["oa-p-auth-broker", "oa-p-directory-broker", "oa-p-provisioner"],
+    });
     writeFileSync(
       join(s.state, "oa-p-scheduler.schedules.json"),
       JSON.stringify({
@@ -479,21 +591,6 @@ describe("deploy-hosted-platform.sh", () => {
     expect(r.code).toBe(1);
     expect(r.err).toContain("schedules are '17 3 * * *'");
   });
-  it("inventory-key: sets the key on the existing Worker over stdin; refuses a short key or a missing Worker", () => {
-    const ok = setup({ exists: ["oa-p-inventory"] }).run("inventory-key");
-    expect(ok.code).toBe(0);
-    expect(ok.log).toContain(
-      "pnpm exec wrangler secret put INVENTORY_KEY --env prod",
-    );
-    expect(puts(ok.log)).toEqual(["INVENTORY_KEY"]);
-    clean(ok);
-    expect(
-      setup({ exists: ["oa-p-inventory"] }).run("inventory-key", {
-        INVENTORY_KEY: "short",
-      }).code,
-    ).toBe(2);
-    expect(setup().run("inventory-key").code).toBe(1);
-  });
   it("missing inputs, a bad account id or an unknown target refuse before any call", () => {
     for (const [t, env] of [
       ["auth-broker", { GOOGLE_CLIENT_ID: "" }],
@@ -503,6 +600,11 @@ describe("deploy-hosted-platform.sh", () => {
       ["provisioner", { WELCOME_FROM: "" }],
       ["provisioning", { GITHUB_REPOSITORY_ID: "" }],
       ["inventory", { GITHUB_REPOSITORY_ID: "" }],
+      ["inventory", { GITHUB_REPOSITORY: "" }],
+      ["inventory", { GITHUB_REPOSITORY: "o/r/x" }],
+      ["inventory", { GITHUB_REPOSITORY_ID: "01" }],
+      ["inventory-key", {}],
+      ["scheduler", { ALERT_TO: "" }],
       ["dispatch", { HOSTS_KV_ID: "" }],
       ["bogus", {}],
     ] as const) {
@@ -797,7 +899,7 @@ describe("deploy-hosted-platform.sh", () => {
       const r = setup({ exists: brokers }).run("provisioning");
       expect(r.err).toBe("");
       expect(r.code).toBe(0);
-      const build = r.log.indexOf("pnpm --filter @oa/admin build");
+      const build = r.log.indexOf("pnpm --filter @oa/provisioning... build");
       const wrap = r.log.findIndex((l) =>
         l.startsWith("wrapper provisioning prod "),
       );
@@ -1148,7 +1250,7 @@ describe("deploy-hosted-platform.sh", () => {
     expect(lost.log.some((l) => l.startsWith("wrapper"))).toBe(false);
   });
 
-  describe("inventory read-back (W8's OIDC vars)", () => {
+  describe("inventory read-back (6.3, W8's OIDC vars)", () => {
     const INV = readFileSync(
       join(root, "apps/inventory/wrangler.jsonc"),
       "utf8",
@@ -1240,23 +1342,96 @@ describe("deploy-hosted-platform.sh", () => {
         const r = go(next);
         expect(r.code, label).toBe(1);
         expect(r.err, label).toMatch(
-          /inventory vars: got|has secret bindings|bindings: got/,
+          /inventory vars: got|has secret bindings|bindings: got|OIDC_[A-Z_]+: got/,
         );
       }
     });
-    it("inventory-key then inventory, run after run: INVENTORY_KEY is the one secret allowed until W9b", () => {
-      const next = deployed(VARS, [
-        { type: "secret_text", name: "INVENTORY_KEY" },
-      ]);
-      const s = setup({
-        exists: ["oa-p-inventory"],
-        next: { "oa-p-inventory": next },
+    it("refuses an OIDC value that isn't 6.3's: audience, repository, environment, refs", () => {
+      for (const [label, vars, msg] of [
+        [
+          "audience",
+          { OIDC_AUDIENCE: "https://oa-s-inventory" },
+          "OIDC_AUDIENCE",
+        ],
+        ["repository", { OIDC_REPOSITORY: "o/x" }, "OIDC_REPOSITORY"],
+        [
+          "environment",
+          { OIDC_ENVIRONMENT: "hosted-prod-deploy" },
+          "OIDC_ENVIRONMENT",
+        ],
+        [
+          "short ref",
+          { OIDC_JOB_WORKFLOW_REFS: "prodclean-monitor.yml" },
+          "OIDC_JOB_WORKFLOW_REFS",
+        ],
+        [
+          "branch",
+          {
+            OIDC_JOB_WORKFLOW_REFS:
+              "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/dev",
+          },
+          "OIDC_JOB_WORKFLOW_REFS",
+        ],
+        [
+          "prod with red-line",
+          {
+            OIDC_JOB_WORKFLOW_REFS:
+              "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main,o/r/.github/workflows/redline-staging.yml@refs/heads/main",
+          },
+          "OIDC_JOB_WORKFLOW_REFS",
+        ],
+      ] as const) {
+        const r = go(deployed({ ...VARS, ...vars }));
+        expect(r.code, label).toBe(1);
+        expect(r.err, label).toContain(`${msg}: got`);
+      }
+    });
+    it("staging: the monitor's and red-line's full refs, in any order", () => {
+      const ST = W8.replace(
+        '"name": "oa-s-inventory",',
+        `"name": "oa-s-inventory", "vars": { "OIDC_AUDIENCE": "https://oa-s-inventory", "OIDC_REPOSITORY": "o/r", "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_STAGING}}", "OIDC_JOB_WORKFLOW_REFS": "o/r/.github/workflows/redline-staging.yml@refs/heads/main,o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main", "OIDC_ENVIRONMENT": "redline-staging" },`,
+      );
+      const vars = {
+        ...VARS,
+        OIDC_AUDIENCE: "https://oa-s-inventory",
+        OIDC_JOB_WORKFLOW_REFS:
+          "o/r/.github/workflows/redline-staging.yml@refs/heads/main,o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main",
+      };
+      const run = (v: Record<string, string>) => {
+        const s = setup({ next: { "oa-s-inventory": deployed(v) } });
+        return s.sb.run(["bash", tree(ST), "staging", "inventory"], {
+          env: {
+            ...ENV,
+            STATE: s.state,
+            DEPLOY_WRAPPER: wrapperStub(s.sb.dir),
+            BROKER_PIN_FILE: "/dev/null",
+          },
+        });
+      };
+      const ok = run(vars);
+      expect(ok.err).toBe("");
+      expect(ok.code).toBe(0);
+      const monitorOnly = run({
+        ...vars,
+        OIDC_JOB_WORKFLOW_REFS:
+          "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main",
       });
-      for (let i = 0; i < 2; i++)
-        for (const t of ["inventory-key", "inventory"]) {
-          const r = go(next, t, s);
-          expect(r.code, `${t} ${i}: ${r.err}`).toBe(0);
-        }
+      expect(monitorOnly.code).toBe(1);
+      expect(monitorOnly.err).toContain("OIDC_JOB_WORKFLOW_REFS: got");
+    });
+    it("refuses INVENTORY_KEY like any other secret, as a binding or a listed secret", () => {
+      const asBinding = go(
+        deployed(VARS, [{ type: "secret_text", name: "INVENTORY_KEY" }]),
+      );
+      expect(asBinding.code).toBe(1);
+      expect(asBinding.err).toContain("has secret bindings (INVENTORY_KEY)");
+      const s = setup({
+        next: { "oa-p-inventory": deployed(VARS) },
+        secrets: { "oa-p-inventory": ["INVENTORY_KEY"] },
+      });
+      const listed = go(deployed(VARS), "inventory", s);
+      expect(listed.code).toBe(1);
+      expect(listed.err).toContain("has secrets 'INVENTORY_KEY '");
     });
   });
 });

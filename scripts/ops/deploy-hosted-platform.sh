@@ -22,17 +22,18 @@
 #   provision-token  SECRETS_STORE_ID (reads only: the user pastes the secret)
 #   provisioner      PLATFORM_DB_ID SECRETS_STORE_ID SIGNUP_DAILY_CAP SIGNUPS_ENABLED WELCOME_FROM
 #   dispatch         HOSTS_KV_ID (both brokers must exist)
-#   scheduler        PLATFORM_DB_ID EMAIL_ZONE_TAGS EMAIL_DAILY_LIMIT (both brokers must exist)
-#   inventory        PLATFORM_DB_ID HOSTS_KV_ID GITHUB_REPOSITORY_ID
-#   inventory-key    INVENTORY_KEY (sets oa-<p>-inventory's key: CI puts the key a
-#                    human seeded and never mints one; the Worker must exist)
+#   scheduler        PLATFORM_DB_ID EMAIL_ZONE_TAGS EMAIL_DAILY_LIMIT ALERT_TO ALERT_FROM
+#                    SIGNUP_DAILY_CAP SIGNUPS_ENABLED (both brokers and the
+#                    provisioner must exist)
+#   inventory        PLATFORM_DB_ID HOSTS_KV_ID GITHUB_REPOSITORY_ID GITHUB_REPOSITORY
+#                    (owner/repo: the OIDC principal, design v7 6.3)
 #   provisioning     PLATFORM_DB_ID BROKER_REGISTRY_ID DIRECTORY_REGISTRY_ID
 #                    GITHUB_REPOSITORY_ID (the provisioner and auth broker must exist)
 # Always: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
-  echo "usage: $0 staging|prod platform-db|auth-broker|directory-broker|provision-token|provisioner|dispatch|scheduler|inventory|inventory-key|provisioning" >&2
+  echo "usage: $0 staging|prod platform-db|auth-broker|directory-broker|provision-token|provisioner|dispatch|scheduler|inventory|provisioning" >&2
   exit 2
 fi
 env="$1"
@@ -264,8 +265,10 @@ case "$target" in
       [ "$(jq -r '.SIGNUPS_ENABLED // ""' <<< "$pre")" != test-users ] ||
         { echo "prod provisioning commits SIGNUPS_ENABLED=test-users (staging only); refusing" >&2; exit 1; }
     fi
-    # The admin SPA into apps/provisioning/dist-assets (ASSETS), before the deploy.
-    if [ -z "$VERIFY_ONLY" ]; then (cd "$root" && pnpm --filter @oa/admin build); fi
+    # The Worker and what it depends on, the admin SPA among them: its vite
+    # build writes apps/provisioning/dist-assets (ASSETS) itself, nothing is
+    # copied, and the wrapper refuses a deploy without its index.html.
+    if [ -z "$VERIFY_ONLY" ]; then (cd "$root" && pnpm --filter "@oa/provisioning..." build); fi
     # The OAuth KV namespace: check first, create only when absent.
     ns="oa-$P-provisioning-oauth"
     kvs="$(list_all "/storage/kv/namespaces?" "list KV namespaces")"
@@ -416,8 +419,12 @@ case "$target" in
     ;;
   scheduler)
     need PLATFORM_DB_ID; need EMAIL_ZONE_TAGS; need EMAIL_DAILY_LIMIT
-    need_workers oa-$P-auth-broker oa-$P-directory-broker
+    # An empty ALERT_TO fails the run (4.8): no alert is ever "sent" nowhere.
+    need ALERT_TO; need ALERT_FROM; need SIGNUP_DAILY_CAP; need SIGNUPS_ENABLED
+    # It binds the provisioner's RPC and Workflows (10.2's order).
+    need_workers oa-$P-auth-broker oa-$P-directory-broker oa-$P-provisioner
     PLATFORM_DB_ID="$PLATFORM_DB_ID" EMAIL_ZONE_TAGS="$EMAIL_ZONE_TAGS" EMAIL_DAILY_LIMIT="$EMAIL_DAILY_LIMIT" \
+      ALERT_TO="$ALERT_TO" ALERT_FROM="$ALERT_FROM" SIGNUP_DAILY_CAP="$SIGNUP_DAILY_CAP" SIGNUPS_ENABLED="$SIGNUPS_ENABLED" \
       deploy scheduler
     S="$(settings oa-$P-scheduler)"
     expect "$S" '.result.bindings[] | select(.name == "PLATFORM_DB") | .id' "$PLATFORM_DB_ID" "PLATFORM_DB"
@@ -425,36 +432,51 @@ case "$target" in
     expect "$S" '.result.bindings[] | select(.name == "OA_ENV") | .text' "$env" "OA_ENV"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_QUOTA_ZONES") | .text' "$EMAIL_ZONE_TAGS" "EMAIL_QUOTA_ZONES"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_DAILY_LIMIT") | .text' "$EMAIL_DAILY_LIMIT" "EMAIL_DAILY_LIMIT"
+    expect "$S" '.result.bindings[] | select(.name == "ALERT_TO") | .text' "$ALERT_TO" "ALERT_TO"
+    expect "$S" '.result.bindings[] | select(.name == "ALERT_FROM") | .text' "$ALERT_FROM" "ALERT_FROM"
+    expect "$S" '.result.bindings[] | select(.name == "SIGNUP_DAILY_CAP") | .text' "$SIGNUP_DAILY_CAP" "SIGNUP_DAILY_CAP"
+    expect "$S" '.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text' "$SIGNUPS_ENABLED" "SIGNUPS_ENABLED"
+    # The alert mail goes to ALERT_TO and nowhere else.
+    expect "$S" '[.result.bindings[] | select(.name == "ALERT_EMAIL") | "\(.type) \(.destination_address)"] | join(",")' \
+      "send_email $ALERT_TO" "ALERT_EMAIL"
+    expect "$S" '.result.bindings[] | select(.name == "PROVISIONER") | "\(.service) \(.entrypoint)"' "oa-$P-provisioner ProvisionerRpc" "PROVISIONER"
+    expect "$S" '.result.bindings[] | select(.name == "SIGNUPS") | .queue_name' "oa-$P-signups" "SIGNUPS"
+    for wf in "PROVISION_INSTALL oa-$P-provision-install ProvisionInstall" "MANAGE_INSTALL oa-$P-manage-install ManageInstall"; do
+      read -r b n c <<< "$wf"
+      expect "$S" ".result.bindings[] | select(.name == \"$b\") | \"\\(.workflow_name) \\(.class_name) \\(.script_name)\"" "$n $c oa-$P-provisioner" "$b"
+    done
     crons="$(cf_get /workers/scripts/oa-$P-scheduler/schedules | must "read oa-$P-scheduler schedules" | jq -r '[.result.schedules[].cron] | sort | join(",")')"
     [ "$crons" = "*/2 * * * *,17 3 * * *" ] || { echo "oa-$P-scheduler schedules are '$crons'" >&2; exit 1; }
     ;;
   inventory)
-    need PLATFORM_DB_ID; need HOSTS_KV_ID; need GITHUB_REPOSITORY_ID
+    need PLATFORM_DB_ID; need HOSTS_KV_ID; need GITHUB_REPOSITORY_ID; need GITHUB_REPOSITORY
+    [[ "$GITHUB_REPOSITORY_ID" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "GITHUB_REPOSITORY_ID must be digits" >&2; exit 2; }
+    [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "GITHUB_REPOSITORY must be owner/repo" >&2; exit 2; }
     PLATFORM_DB_ID="$PLATFORM_DB_ID" HOSTS_KV_ID="$HOSTS_KV_ID" GITHUB_REPOSITORY_ID="$GITHUB_REPOSITORY_ID" deploy inventory
     S="$(settings oa-$P-inventory)"
     expect "$S" '.result.bindings[] | select(.name == "PLATFORM_DB") | .id' "$PLATFORM_DB_ID" "PLATFORM_DB"
     expect "$S" '.result.bindings[] | select(.name == "HOSTS") | .namespace_id' "$HOSTS_KV_ID" "HOSTS"
-    # 6.3's exact list (the OIDC vars whatever the tag commits), each OIDC
-    # value equal to the committed one.
+    # 6.3: exactly these non-secret bindings, each OIDC value pinned, no secret.
     got="$(jq -r '[.result.bindings[] | select(.type != "secret_text") | .name] | sort | join(",")' <<< "$S")"
     want="HOSTS,OIDC_AUDIENCE,OIDC_ENVIRONMENT,OIDC_JOB_WORKFLOW_REFS,OIDC_REPOSITORY,OIDC_REPOSITORY_ID,PLATFORM_DB"
     [ "$got" = "$want" ] || { echo "bindings: got '$got', want '$want'" >&2; exit 1; }
+    oidc() { jq -r --arg n "$1" '[.result.bindings[] | select(.name == $n and .type == "plain_text") | .text] | join(",")' <<< "$S"; }
+    [ "$(oidc OIDC_AUDIENCE)" = "https://oa-$P-inventory" ] || { echo "OIDC_AUDIENCE: got '$(oidc OIDC_AUDIENCE)', want 'https://oa-$P-inventory'" >&2; exit 1; }
+    [ "$(oidc OIDC_REPOSITORY)" = "$GITHUB_REPOSITORY" ] || { echo "OIDC_REPOSITORY: got '$(oidc OIDC_REPOSITORY)', want '$GITHUB_REPOSITORY'" >&2; exit 1; }
+    [ "$(oidc OIDC_REPOSITORY_ID)" = "$GITHUB_REPOSITORY_ID" ] || { echo "OIDC_REPOSITORY_ID: got '$(oidc OIDC_REPOSITORY_ID)', want '$GITHUB_REPOSITORY_ID'" >&2; exit 1; }
+    [ "$(oidc OIDC_ENVIRONMENT)" = redline-staging ] || { echo "OIDC_ENVIRONMENT: got '$(oidc OIDC_ENVIRONMENT)', want 'redline-staging'" >&2; exit 1; }
+    # Full refs on main: prod's monitor; staging adds red-line.
+    files="prodclean-monitor.yml"
+    [ "$env" = staging ] && files="$files redline-staging.yml"
+    want=""
+    for f in $files; do want="$want,$GITHUB_REPOSITORY/.github/workflows/$f@refs/heads/main"; done
+    want="$(tr , '\n' <<< "${want#,}" | sort | paste -sd , -)"
+    got="$(oidc OIDC_JOB_WORKFLOW_REFS | tr , '\n' | sort | paste -sd , -)"
+    [ "$got" = "$want" ] || { echo "OIDC_JOB_WORKFLOW_REFS: got '$got', want '$want'" >&2; exit 1; }
     vars_are "$S" inventory
-    # No secret but INVENTORY_KEY, which the inventory-key target still puts
-    # until W9b retires both (10.1).
-    sec="$(jq -r '[.result.bindings[] | select(.type == "secret_text") | .name | select(. != "INVENTORY_KEY")] | join(",")' <<< "$S")"
-    [ -z "$sec" ] || { echo "oa-$P-inventory has secret bindings ($sec); want none but INVENTORY_KEY" >&2; exit 1; }
-    ;;
-  inventory-key)
-    need_workers oa-$P-inventory
-    if [ -z "$VERIFY_ONLY" ]; then
-      need INVENTORY_KEY
-      [ "${#INVENTORY_KEY}" -ge 32 ] || { echo "INVENTORY_KEY must be at least 32 characters" >&2; exit 2; }
-    fi
-    printf '%s' "${INVENTORY_KEY:-}" | put_secret "oa-$P-inventory" inventory INVENTORY_KEY
-    have="$(secret_names oa-$P-inventory)"
-    grep -qx INVENTORY_KEY <<< "$have" || { echo "oa-$P-inventory has no INVENTORY_KEY" >&2; exit 1; }
-    echo "oa-$P-inventory: INVENTORY_KEY present"
+    no_secret_bindings "$S" oa-$P-inventory
+    names="$(secret_names oa-$P-inventory | tr '\n' ' ')"
+    [ -z "$names" ] || { echo "oa-$P-inventory has secrets '$names'; want none" >&2; exit 1; }
     ;;
   *)
     echo "unknown target: $target" >&2

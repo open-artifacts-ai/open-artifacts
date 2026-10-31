@@ -115,6 +115,28 @@ describe("deploy-platform-worker.sh", () => {
       PLATFORM_DB_ID: UUID,
       EMAIL_ZONE_TAGS: `${REG},${REG}`,
       EMAIL_DAILY_LIMIT: "1000",
+      ALERT_TO: "ops@example.com",
+      ALERT_FROM: "alerts@open-artifacts.app",
+      SIGNUP_DAILY_CAP: "20",
+      SIGNUPS_ENABLED: "false",
+    };
+    // W7's provapi vars and the pinned ALERT_EMAIL destination, as
+    // placeholders the deploy fills (design v7 2.4, 4.8).
+    const W7 = readFileSync(
+      join(root, "apps/scheduler/wrangler.jsonc"),
+      "utf8",
+    ).replace(/"OA_ENV": "(staging|prod)",/g, (m, e: string) => {
+      const up = e.toUpperCase();
+      return `${m} "ALERT_TO": "{{ALERT_TO_${up}}}", "ALERT_FROM": "{{ALERT_FROM_${up}}}", "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_${up}}}", "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_${up}}}", "__dest": "{{ALERT_TO_${up}}}",`;
+    });
+    const schedTree = (config: string) => {
+      const t = mkdtempSync(join(tmpdir(), "oa-deploy-tree-"));
+      write(
+        join(t, "scripts/ops/deploy-platform-worker.sh"),
+        readFileSync(SCRIPT, "utf8"),
+      );
+      write(join(t, "apps/scheduler/wrangler.jsonc"), config);
+      return join(t, "scripts/ops/deploy-platform-worker.sh");
     };
 
     it("dispatch: deploys from apps/dispatch with its HOSTS id, for either env", () => {
@@ -148,6 +170,24 @@ describe("deploy-platform-worker.sh", () => {
       ).toBe(false);
     });
 
+    it("scheduler: fills ALERT_TO (the vars and the destination), ALERT_FROM and the signup vars, per env", () => {
+      for (const env of ["staging", "prod"]) {
+        const r = run(["scheduler", env], SCHED, schedTree(W7));
+        expect(r.err, env).toBe("");
+        expect(r.code, env).toBe(0);
+        const snap = readFileSync(r.snap, "utf8");
+        expect(snap).toContain('"ALERT_TO": "ops@example.com"');
+        expect(snap).toContain('"__dest": "ops@example.com"');
+        expect(snap).toContain('"ALERT_FROM": "alerts@open-artifacts.app"');
+        expect(snap).toContain('"SIGNUP_DAILY_CAP": "20"');
+        expect(snap).toContain('"SIGNUPS_ENABLED": "false"');
+        expect(snap).not.toMatch(
+          new RegExp(`\\{\\{[A-Z0-9_]*_${env.toUpperCase()}\\}\\}`),
+        );
+        expect(r.out + r.err).not.toContain("ops@example.com");
+      }
+    });
+
     it("refuses malformed or missing values without deploying", () => {
       for (const [app, env] of [
         ["dispatch", { HOSTS_KV_ID: "" }],
@@ -161,6 +201,13 @@ describe("deploy-platform-worker.sh", () => {
         ["scheduler", { ...SCHED, EMAIL_DAILY_LIMIT: "0" }],
         ["scheduler", { ...SCHED, EMAIL_DAILY_LIMIT: "1e9" }],
         ["scheduler", { ...SCHED, EMAIL_DAILY_LIMIT: "1234567890" }],
+        ["scheduler", { ...SCHED, ALERT_TO: "" }],
+        ["scheduler", { ...SCHED, ALERT_TO: "A <a@b.com>" }],
+        ["scheduler", { ...SCHED, ALERT_TO: "a@b.com,c@d.com" }],
+        ["scheduler", { ...SCHED, ALERT_FROM: "" }],
+        ["scheduler", { ...SCHED, SIGNUP_DAILY_CAP: "0" }],
+        ["scheduler", { ...SCHED, SIGNUPS_ENABLED: "test-users" }],
+        ["scheduler", { ...SCHED, SIGNUPS_ENABLED: "" }],
       ] as const) {
         const r = run([app, "prod"], env);
         expect(r.code, `${app} ${JSON.stringify(env)}`).toBe(1);
@@ -400,6 +447,10 @@ describe("deploy-platform-worker.sh", () => {
         PLATFORM_DB_ID: DB,
         EMAIL_ZONE_TAGS: REG,
         EMAIL_DAILY_LIMIT: "3000",
+        ALERT_TO: "ops@example.com",
+        ALERT_FROM: "alerts@open-artifacts-staging.app",
+        SIGNUP_DAILY_CAP: "20",
+        SIGNUPS_ENABLED: "test-users",
       };
       const r = run(["scheduler", "staging"], env, script);
       expect(r.code).toBe(1);
@@ -421,25 +472,34 @@ describe("deploy-platform-worker.sh", () => {
       PROVISIONING_OAUTH_KV_ID: KV,
       GITHUB_REPOSITORY_ID: "1012345678",
     };
-    const tree = (config: string) => {
+    /** A tree with this config and, unless `assets` is false, the admin build's index.html. */
+    const tree = (config: string, assets = true) => {
       const t = mkdtempSync(join(tmpdir(), "oa-deploy-tree-"));
       write(
         join(t, "scripts/ops/deploy-platform-worker.sh"),
         readFileSync(SCRIPT, "utf8"),
       );
       write(join(t, "apps/provisioning/wrangler.jsonc"), config);
+      if (assets)
+        write(
+          join(t, "apps/provisioning/dist-assets/index.html"),
+          "<!doctype html>",
+        );
       return join(t, "scripts/ops/deploy-platform-worker.sh");
     };
     const CONFIG = readFileSync(join(DIR, "wrangler.jsonc"), "utf8");
+    const dirOf = (script: string) =>
+      join(script, "../../../apps/provisioning");
 
     for (const env of ["staging", "prod"] as const)
-      it(`${env}: fills the D1 id, the OAuth KV id and (staging) the repository id; none left`, () => {
-        const r = run(["provisioning", env], OK);
+      it(`${env}: fills the D1 id, the OAuth KV id and the repository id; none left`, () => {
+        const script = tree(CONFIG);
+        const r = run(["provisioning", env], OK, script);
         expect(r.err).toBe("");
         expect(r.code).toBe(0);
         expect(r.log).toEqual([
           `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env ${env}`,
-          DIR,
+          dirOf(script),
           "copy-present",
         ]);
         const snap = readFileSync(r.snap, "utf8");
@@ -459,16 +519,26 @@ describe("deploy-platform-worker.sh", () => {
         PROVISIONING_OAUTH_KV_ID: ["", DB, KV.toUpperCase()],
         GITHUB_REPOSITORY_ID: ["", "0123", "12a", "1/2"],
       };
-      for (const [key, values] of Object.entries(bad))
-        for (const v of values) {
-          const r = run(["provisioning", "staging"], { ...OK, [key]: v });
-          expect(r.code, `${key}=${v}`).toBe(1);
-          expect(r.log).toEqual([]);
-        }
-      // Prod needs no repository id.
-      expect(
-        run(["provisioning", "prod"], { ...OK, GITHUB_REPOSITORY_ID: "" }).code,
-      ).toBe(0);
+      for (const env of ["staging", "prod"])
+        for (const [key, values] of Object.entries(bad))
+          for (const v of values) {
+            const r = run(
+              ["provisioning", env],
+              { ...OK, [key]: v },
+              tree(CONFIG),
+            );
+            expect(r.code, `${env} ${key}=${v}`).toBe(1);
+            expect(r.log).toEqual([]);
+          }
+    });
+
+    it("refuses to deploy without the admin build's dist-assets/index.html", () => {
+      for (const env of ["staging", "prod"]) {
+        const r = run(["provisioning", env], OK, tree(CONFIG, false));
+        expect(r.code, env).toBe(1);
+        expect(r.err).toContain("dist-assets/index.html");
+        expect(r.log).toEqual([]);
+      }
     });
 
     it("fails closed on any placeholder left for the env", () => {
@@ -484,6 +554,20 @@ describe("deploy-platform-worker.sh", () => {
         expect(r.code, env).toBe(1);
         expect(r.log).toEqual([]);
         expect(r.err).toContain(`{{EXTRA_${up}}}`);
+        // An unsuffixed one too; the other env's are left for its own deploy.
+        const bare = run(
+          ["provisioning", env],
+          OK,
+          tree(
+            CONFIG.replace(
+              `"OA_ENV": "${env}",`,
+              `"OA_ENV": "${env}", "EXTRA": "{{EXTRA}}",`,
+            ),
+          ),
+        );
+        expect(bare.code, env).toBe(1);
+        expect(bare.err).toContain("{{EXTRA}}");
+        expect(bare.log).toEqual([]);
       }
     });
 
@@ -524,8 +608,15 @@ describe("deploy-platform-worker.sh", () => {
         `${m} "vars": { "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_${p === "s" ? "STAGING" : "PROD"}}}" },`,
     );
 
-    it("fills the repository id when the config has its placeholder, and only then needs it", () => {
-      expect(run(["inventory", "prod"], OK, tree(CONFIG)).code).toBe(0);
+    it("always needs the repository id, and fills it into W8's OIDC vars", () => {
+      expect(run(["inventory", "prod"], OK, tree(CONFIG)).code).toBe(1);
+      expect(
+        run(
+          ["inventory", "prod"],
+          { ...OK, GITHUB_REPOSITORY_ID: "0" },
+          tree(CONFIG),
+        ).code,
+      ).toBe(1);
       for (const env of ["staging", "prod"]) {
         const r = run(
           ["inventory", env],

@@ -154,11 +154,10 @@ describe("deploy-hosted-platform.yml", () => {
       "inventory",
       "provisioning",
       "auth-broker,directory-broker,dispatch,scheduler",
-      "inventory,inventory-key,zones",
+      "inventory,zones",
     ])
       expect(runsFor(t), t).toBe(true);
-    for (const t of ["inventory-key", "zones", "inventory-key,zones"])
-      expect(runsFor(t), t).toBe(false);
+    for (const t of ["zones"]) expect(runsFor(t), t).toBe(false);
     // Everything the user used to copy into the Environment comes from these.
     expect(text).not.toContain("vars.");
     for (const k of [
@@ -202,8 +201,10 @@ describe("deploy-hosted-platform.yml", () => {
       "CLOUDFLARE_API_TOKEN",
       "GOOGLE_CLIENT_SECRET",
       "GOOGLE_DIRECTORY_CLIENT_SECRET",
-      "INVENTORY_KEY",
     ]);
+    // The inventory key is gone (design v7 6.3): OIDC replaces it.
+    expect(text).not.toContain("INVENTORY_KEY");
+    expect(text).not.toContain("inventory-key");
     // The same names in each env's Environment: no env-specific secret names.
     expect(JSON.stringify(env)).not.toMatch(/PROD_|STAGING_/);
     expect(env.CLOUDFLARE_API_TOKEN).toBe(
@@ -277,13 +278,13 @@ describe("deploy-hosted-platform.yml", () => {
     expect(
       go("v0.74.1", "auth-broker,directory-broker,dispatch,scheduler"),
     ).toBe(0);
-    expect(go("v0.74.1", "inventory-key")).toBe(0);
-    expect(go("v0.74.1", "inventory,inventory-key,zones")).toBe(0);
+    expect(go("v0.74.1", "inventory,zones")).toBe(0);
+    expect(go("v0.74.1", "inventory-key")).toBe(1);
     expect(go("v0.74.1", "zones,dispatch")).toBe(1);
     expect(
       go(
         "v0.74.1",
-        "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,inventory-key,provisioning,zones",
+        "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones",
       ),
     ).toBe(0);
     expect(go("v0.74.1", "provisioning,provisioner")).toBe(1);
@@ -315,7 +316,6 @@ describe("deploy-hosted-platform.yml", () => {
       "dispatch",
       "scheduler",
       "inventory",
-      "inventory-key",
       "provisioning",
       "zones",
     ]);

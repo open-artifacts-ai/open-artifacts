@@ -1,5 +1,6 @@
 {
   "account_id": "26ac346086d4405f7a976d48747a2a75",
+  "alert_from": "alerts@open-artifacts-staging.app",
   "email_zone": "open-artifacts-staging.app",
   "email_daily_limit": 500,
   "google_client_id": "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",

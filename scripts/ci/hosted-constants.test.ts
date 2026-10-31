@@ -8,6 +8,7 @@ import { root, sandbox, script } from "./stubs.ts";
 
 const KEYS = [
   "account_id",
+  "alert_from",
   "email_daily_limit",
   "email_zone",
   "google_client_id",
@@ -16,6 +17,9 @@ const KEYS = [
   "signups_enabled",
   "welcome_from",
 ];
+// The scheduler's alert destination: committed by a person (design v7 4.8);
+// until then the key is absent and the scheduler target refuses (ALERT_TO).
+const OPTIONAL = ["alert_to"];
 const read = (env: string): Record<string, unknown> =>
   JSON.parse(readFileSync(join(root, `.github/hosted/${env}.json`), "utf8"));
 
@@ -41,8 +45,15 @@ const brokerPin = (env: string): string => {
 
 describe(".github/hosted/<env>.json", () => {
   it("prod and staging hold exactly the same keys", () => {
-    expect(Object.keys(read("prod")).sort()).toEqual(KEYS);
-    expect(Object.keys(read("staging")).sort()).toEqual(KEYS);
+    const req = (env: string) =>
+      Object.keys(read(env))
+        .filter((k) => !OPTIONAL.includes(k))
+        .sort();
+    expect(req("prod")).toEqual(KEYS);
+    expect(req("staging")).toEqual(KEYS);
+    expect(Object.keys(read("prod")).sort()).toEqual(
+      Object.keys(read("staging")).sort(),
+    );
   });
 
   it("google_client_id is provision's broker pin, per env", () => {
@@ -108,6 +119,7 @@ describe(".github/hosted/<env>.json", () => {
         env === "staging" ? "test-users" : "false",
       );
       expect(String(c.welcome_from).split("@")[1], env).toBe(c.email_zone);
+      expect(String(c.alert_from).split("@")[1], env).toBe(c.email_zone);
     }
   });
 });
@@ -139,6 +151,7 @@ describe("hosted-constants.sh", () => {
     expect(r.ghEnv).toBe(
       [
         "CLOUDFLARE_ACCOUNT_ID=26ac346086d4405f7a976d48747a2a75",
+        "ALERT_FROM=alerts@open-artifacts.app",
         "EMAIL_ZONE=open-artifacts.app",
         "EMAIL_DAILY_LIMIT=5000",
         "GOOGLE_CLIENT_ID=206295999771-ntbp6nlf5ospa45ovc73aur4f05fpp5s.apps.googleusercontent.com",
@@ -166,7 +179,10 @@ describe("hosted-constants.sh", () => {
         { env: { GITHUB_ENV: ghEnv } },
       );
       expect(r.code, r.err).toBe(0);
-      expect(readFileSync(ghEnv, "utf8").split("\n")).toHaveLength(9);
+      const lines = readFileSync(ghEnv, "utf8").split("\n");
+      expect(lines).toHaveLength(
+        10 + OPTIONAL.filter((k) => k in read(env)).length,
+      );
     }
   });
 
@@ -218,6 +234,23 @@ describe("hosted-constants.sh", () => {
       expect(r.code, `${k}=${v}`).toBe(1);
       expect(r.err).toContain(`${k} is not a valid value`);
       expect(r.ghEnv, `${k}=${v}`).toBe("");
+    }
+  });
+
+  it("alert_to loads when committed, is skipped when absent, and is checked like any other", () => {
+    const to = load({ ...PROD(), alert_to: "ops@example.com" });
+    expect(to.code, to.err).toBe(0);
+    expect(to.ghEnv).toContain("ALERT_TO=ops@example.com\n");
+    const none = PROD();
+    delete none.alert_to;
+    const r = load(none);
+    expect(r.code, r.err).toBe(0);
+    expect(r.ghEnv).not.toContain("ALERT_TO");
+    for (const v of [null, "", "ops", "A <a@b.com>", ["a@b.com"]]) {
+      const bad = load({ ...PROD(), alert_to: v });
+      expect(bad.code, JSON.stringify(v)).toBe(1);
+      expect(bad.err).toContain("alert_to");
+      expect(bad.ghEnv).toBe("");
     }
   });
 

@@ -1,7 +1,7 @@
 # Deploys one env's hosted platform Workers (docs/ops/hosted.md) from a stable
 # release tag, by hand only: the platform D1 migrations, the auth and directory
 # brokers, the provision token's read-back, the provisioner, dispatch, the
-# scheduler, the inventory Worker and its key, the Provisioning API and the
+# scheduler, the inventory Worker, the Provisioning API and the
 # zone wiring (DNS, routes, settings: planned, then applied in the same run).
 # No one approves a run: the release gate (scripts/ci/tag-passed-checks.sh)
 # refuses a tag unless every earlier check on it passed, and prod's
@@ -30,7 +30,7 @@ on:
         required: true
         type: string
       targets:
-        description: "Comma-separated, in order: platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,inventory-key,provisioning,zones"
+        description: "Comma-separated, in order: platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones"
         required: true
         default: "auth-broker,directory-broker,dispatch,scheduler"
         type: string
@@ -67,7 +67,7 @@ jobs:
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag must be a stable vX.Y.Z"; exit 1; }
           # Known targets only, each once, in dependency order: every bound
           # target before its binder (design v7 10.2).
-          order="platform-db auth-broker directory-broker provision-token provisioner dispatch scheduler inventory inventory-key provisioning zones"
+          order="platform-db auth-broker directory-broker provision-token provisioner dispatch scheduler inventory provisioning zones"
           last=-1
           seen=""
           IFS=, read -ra list <<< "$TARGETS"
@@ -182,9 +182,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_DIRECTORY_CLIENT_SECRET: ${{ secrets.GOOGLE_DIRECTORY_CLIENT_SECRET }}
-          INVENTORY_KEY: ${{ secrets.INVENTORY_KEY }}
           BROKER_PIN_FILE: ${{ runner.temp }}/main-wfp.ts
-          # The OIDC principal's repository (inventory, staging's provisioning).
+          # The OIDC principal's repository (inventory, staging's provisioning);
+          # GITHUB_REPOSITORY (owner/repo) is the runner's own.
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
