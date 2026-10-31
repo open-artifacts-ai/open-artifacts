@@ -109,6 +109,26 @@ const INIT = {
     clientInfo: { name: "raw", version: "1" },
   },
 };
+const call = (id: number, name: string, args: Record<string, unknown>) => ({
+  jsonrpc: "2.0",
+  id,
+  method: "tools/call",
+  params: { name, arguments: args },
+});
+type RpcOut = { id?: unknown; result?: unknown; error?: { code: number } };
+/** The JSON-RPC responses of a raw POST, JSON or one SSE stream. */
+async function rpcOut(res: Response): Promise<RpcOut[]> {
+  const body = await res.text();
+  const msgs = (res.headers.get("content-type") ?? "").includes(
+    "text/event-stream",
+  )
+    ? body
+        .split("\n")
+        .filter((l) => l.startsWith("data: "))
+        .map((l) => JSON.parse(l.slice(6)) as RpcOut | RpcOut[])
+    : [JSON.parse(body) as RpcOut | RpcOut[]];
+  return msgs.flat();
+}
 const fetchWorker = (r: Request, env: Env, ctx: ExecutionContext) =>
   worker.fetch(r as Parameters<typeof worker.fetch>[0], env, ctx);
 
@@ -264,14 +284,60 @@ describe("transport (9A.2, 9A.6)", () => {
     expect(res.status).toBe(401);
   });
 
-  it("a foreign Origin is 403 even with a valid bearer", async () => {
+  it("a foreign Origin is 403 with any bearer, before authn and the body cap", async () => {
     const c = await caller();
-    const res = await fetchWorker(
-      mcpReq(c.bearer, INIT, { origin: "https://evil.example" }),
+    const keys = c.limits.RL_PV_READ.keys;
+    const before = keys.length;
+    const big = JSON.stringify({ ...INIT, pad: "x".repeat(33 * 1024) });
+    for (const [bearer, body] of [
+      [c.bearer, INIT],
+      [null, INIT],
+      ["oat_bad", INIT],
+      [null, big],
+    ] as const) {
+      const res = await fetchWorker(
+        mcpReq(bearer, body, { origin: "https://evil.example" }),
+        c.env,
+        c.ctx,
+      );
+      expect(res.status).toBe(403);
+    }
+    expect(keys.length).toBe(before);
+    const own = await fetchWorker(
+      mcpReq(c.bearer, INIT, { origin: "https://api.hosted.test" }),
       c.env,
       c.ctx,
     );
-    expect(res.status).toBe(403);
+    expect(own.status).toBe(200);
+  });
+
+  it("a refused bearer is counted in audit_refusals, bucket auth (4.9)", async () => {
+    const c = await caller();
+    for (const bearer of [null, `oat_${"x".repeat(43)}`, "opaque"]) {
+      const res = await fetchWorker(mcpReq(bearer, INIT), c.env, c.ctx);
+      expect(res.status).toBe(401);
+    }
+    const row = await db
+      .prepare(
+        "SELECT SUM(count) AS n FROM audit_refusals WHERE bucket = 'auth' AND code = 'unauthenticated'",
+      )
+      .first<{ n: number }>();
+    expect(row?.n).toBe(3);
+  });
+
+  it("a failed refusal count never changes the 401", async () => {
+    const c = await caller();
+    const env = {
+      ...c.env,
+      PLATFORM_DB: {
+        prepare: () => {
+          throw new Error("d1 down");
+        },
+      },
+    } as unknown as Env;
+    const res = await handleMcp(mcpReq("opaque", INIT), env, c.ctx);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toContain("invalid_token");
   });
 
   it("over 32 KiB: 413, JSON-RPC -32000, before authn", async () => {
@@ -444,7 +510,7 @@ describe("parity with /v1 (12.1): reads", () => {
     expect((await parity(c, client, "query_audit", {})).status).toBe(403);
   });
 
-  it("input failing the derived schema is the SDK's refusal; the route never runs", async () => {
+  it("input failing the derived schema is the SDK's refusal; the route never runs, the adapter charges it", async () => {
     const c = await caller();
     const client = await connect(c, c.bearer);
     const keys = c.limits.RL_PV_READ.keys;
@@ -452,8 +518,23 @@ describe("parity with /v1 (12.1): reads", () => {
     const r = await callTool(client, "get_install", { id: "nope", extra: 1 });
     expect(r.isError).toBe(true);
     expect(textOf(r)).toMatch(/^Input validation error: /);
-    // Only the transport's own charge would show; tools/call has none.
-    expect(keys.length).toBe(before);
+    // One tools/call is one charge (9A.7), here the adapter's.
+    expect(keys.length - before).toBe(1);
+    expect(keys.at(-1)).toBe(c.principal.rateKey);
+  });
+
+  it("an unknown tool is JSON-RPC -32602 and one RL_PV_READ charge", async () => {
+    const c = await caller();
+    const keys = c.limits.RL_PV_READ.keys;
+    const before = keys.length;
+    const res = await fetchWorker(
+      mcpReq(c.bearer, call(7, "no_such_tool", {})),
+      c.env,
+      c.ctx,
+    );
+    const [m] = await rpcOut(res);
+    expect(m).toMatchObject({ id: 7, error: { code: -32602 } });
+    expect(keys.length - before).toBe(1);
   });
 });
 
@@ -653,6 +734,48 @@ describe("errors (9A.6) and limits (9A.7)", () => {
     await callTool(client, "whoami", {});
     expect(keys.length - before).toBe(4);
     expect(new Set(keys)).toEqual(new Set([c.principal.rateKey]));
+  });
+
+  it("connect costs initialize plus its notification: 2 charges", async () => {
+    const c = await caller();
+    const keys = c.limits.RL_PV_READ.keys;
+    const before = keys.length;
+    await connect(c, c.bearer);
+    // A notification-only POST is charged too, so no authenticated POST is free.
+    expect(keys.length - before).toBe(2);
+  });
+
+  it("a batch of calls the SDK refuses spends one charge each; a 429 stops it", async () => {
+    const c = await caller();
+    const keys = c.limits.RL_PV_READ.keys;
+    const before = keys.length;
+    const batch = [
+      call(1, "no_such_tool", {}),
+      call(2, "get_install", { id: "nope" }),
+      call(3, "whoami", { extra: 1 }),
+      // A tools/call notification is never handled: charged too.
+      { jsonrpc: "2.0", method: "tools/call", params: { name: "whoami" } },
+    ];
+    const res = await fetchWorker(mcpReq(c.bearer, batch), c.env, c.ctx);
+    expect(res.status).toBeLessThan(300);
+    expect(keys.length - before).toBe(4);
+    c.limits.RL_PV_READ.allow = false;
+    const r429 = await fetchWorker(mcpReq(c.bearer, batch), c.env, c.ctx);
+    expect(r429.status).toBe(429);
+  });
+
+  it("valid tools/calls are charged once each, inside invokeRoute", async () => {
+    const c = await caller();
+    const keys = c.limits.RL_PV_READ.keys;
+    const before = keys.length;
+    const res = await fetchWorker(
+      mcpReq(c.bearer, [call(1, "whoami", {}), call(2, "get_world", {})]),
+      c.env,
+      c.ctx,
+    );
+    const out = await rpcOut(res);
+    expect(out.map((m) => m.error)).toEqual([undefined, undefined]);
+    expect(keys.length - before).toBe(2);
   });
 
   it("a throw that is not a refusal is internal: Internal error", () => {

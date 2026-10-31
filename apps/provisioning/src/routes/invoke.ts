@@ -1,3 +1,4 @@
+import { ipKey } from "@oa/auth-core";
 import {
   type AdminToolName,
   type ApiErrorCode,
@@ -17,7 +18,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 import { limit } from "../limits.js";
 import type { Principal } from "../principal.js";
-import { countRateLimited } from "../refuse.js";
+import { countRateLimited, countRefusal } from "../refuse.js";
 import { recordTokenUse } from "../services/tokens.js";
 import { HANDLERS } from "./handlers.js";
 
@@ -186,6 +187,22 @@ export async function chargeTransport(
   if (!r) return;
   if (r.code === "rate_limited") await countRateLimited(env, principal.rateKey);
   throw new ApiError(r.code);
+}
+
+/**
+ * The MCP adapter's unauthenticated refusal, counted in audit_refusals
+ * (bucket auth, 4.9) as /v1's refuse() counts it. The adapter answers its
+ * own 401 (the challenge header); a failed count never changes it.
+ */
+export async function countUnauthenticated(
+  env: Env,
+  req: Request,
+): Promise<void> {
+  try {
+    await countRefusal(env, "auth", "unauthenticated", ipKey(req));
+  } catch {
+    // The refusal stands without its count (D1 down or unbound).
+  }
 }
 
 /** A refusal invokeRoute threw, as the 3.1 envelope's fields; null for any other error. */
