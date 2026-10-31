@@ -16,11 +16,13 @@ import { limit } from "../limits.js";
 import type { Principal } from "../principal.js";
 import { countRateLimited } from "../refuse.js";
 import { HANDLERS } from "./handlers.js";
+import { onAuthenticated } from "./hooks.js";
 
 // The one entry point both surfaces call (design v7 9A.4). It runs the
 // post-authn part of the 4.2 check order: rate limit -> authz (authz.ts) ->
 // schema -> policy -> business -> handler -> audit, and throws ApiError on
-// any refusal.
+// any refusal. W4 writes authz.refused and job.refused here; other streams
+// plug in through onAuthenticated (hooks.ts), never by editing this body.
 // The browser routes (R22-R24: cookies, Set-Cookie, redirects) never come
 // here: W5a builds them beside it in src/auth/, and the adapter short-circuits
 // them, so the type leaves them out: `route` is ApiRouteId (shared), the
@@ -111,6 +113,10 @@ export async function invokeRoute(
     });
     throw new ApiError(d.code);
   }
+  // The one hook (hooks.ts): W5b's token.used. It never fails the call.
+  try {
+    onAuthenticated({ env, ctx, principal, route, surface });
+  } catch {}
   let input2: RouteInput = input;
   try {
     // The HTTP body step (415, 413, JSON) runs here, as part of schema.

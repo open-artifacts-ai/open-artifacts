@@ -29,7 +29,7 @@ const post = (path: string, body: string, type = "application/json") =>
   new Request(`${API}/v1${path}`, {
     method: "POST",
     body,
-    headers: { "content-type": type },
+    headers: { "content-type": type, "cf-connecting-ip": "192.0.2.1" },
   }) as unknown as Parameters<typeof worker.fetch>[0];
 
 const create = (rid: string) =>
@@ -100,9 +100,9 @@ describe("POST /v1/installs over HTTP", () => {
   it("GET routes read no body", async () => {
     const e = fakeEnv();
     const res = await worker.fetch(
-      new Request(`${API}/v1/installs`) as unknown as Parameters<
-        typeof worker.fetch
-      >[0],
+      new Request(`${API}/v1/installs`, {
+        headers: { "cf-connecting-ip": "192.0.2.1" },
+      }) as unknown as Parameters<typeof worker.fetch>[0],
       e.env,
       ctx(),
     );

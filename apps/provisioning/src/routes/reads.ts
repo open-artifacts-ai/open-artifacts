@@ -96,7 +96,9 @@ export async function listInstalls(a: HandlerArgs): Promise<RouteResult> {
     binds.push(query.source);
   }
   if (query.q) {
-    where.push("instr(st.slug, ?) > 0");
+    // A slug substring, case-insensitive; no LIKE wildcards. Hosts derive
+    // from the slug, so q never matches them separately.
+    where.push("instr(lower(st.slug), ?) > 0");
     binds.push(String(query.q).toLowerCase());
   }
   const tag = queryTag("R2", {

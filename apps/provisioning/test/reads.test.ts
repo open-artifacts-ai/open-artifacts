@@ -130,6 +130,17 @@ describe("R2 list and R3 detail", () => {
     expect(failed.body.items[0].appHost).toBe("lsfail.hosted.test");
     const q = await call(e, ADMIN_P, "R2", { query: { q: "ls3" } });
     expect(q.body.items).toHaveLength(1);
+    const slugsFor = async (v: string) =>
+      (await call(e, ADMIN_P, "R2", { query: { q: v } })).body.items.map(
+        (i: { slug: string }) => i.slug,
+      );
+    // A slug substring, case-insensitive; never a host, never a wildcard.
+    expect(await slugsFor("S3")).toEqual(["ls3"]);
+    expect(await slugsFor("fai")).toEqual(["lsfail"]);
+    expect(await slugsFor("hosted")).toEqual([]);
+    expect(await slugsFor("ls3.hosted.test")).toEqual([]);
+    expect(await slugsFor("%")).toEqual([]);
+    expect(await slugsFor("l_3")).toEqual([]);
     expect(
       (await call(e, ADMIN_P, "R2", { query: { source: "self-serve" } })).body
         .items,

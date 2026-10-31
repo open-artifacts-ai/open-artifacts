@@ -1,3 +1,4 @@
+import { ownerEmailOf } from "@oa/provision/names";
 import {
   type Auth,
   AuthProviderSchema,
@@ -182,19 +183,29 @@ export async function restorable(env: Env, row: StatusRow): Promise<boolean> {
   return purge === null;
 }
 
-/** The owner email: the installs row's, else the pending signup's secret. */
-export async function ownerEmailOf(
+/**
+ * The owner email: the installs row's (through ownerEmailOf, so a purged ''
+ * is null), else the pending signup's secret (deleted once the create is
+ * done, never purged to '').
+ */
+export async function ownerEmailFor(
   env: Env,
   row: StatusRow,
 ): Promise<string | null> {
-  const r = await env.PLATFORM_DB.prepare(
-    `SELECT (SELECT owner_email FROM installs WHERE id = ?1) AS a,
-  (SELECT owner_email FROM signup_secret WHERE signup_id = ?2) AS b`,
-  )
-    .bind(row.install_id, row.signup_id)
-    .first<{ a: string | null; b: string | null }>();
-  // An empty installs.owner_email is a purged one (names.ts PURGED_EMAIL).
-  return r?.a || r?.b || null;
+  const [inst, secret] = await env.PLATFORM_DB.batch<Record<string, unknown>>([
+    env.PLATFORM_DB.prepare("SELECT * FROM installs WHERE id = ?1").bind(
+      row.install_id,
+    ),
+    env.PLATFORM_DB.prepare(
+      "SELECT owner_email FROM signup_secret WHERE signup_id = ?1",
+    ).bind(row.signup_id),
+  ]);
+  const i = inst?.results[0];
+  const s = secret?.results[0]?.owner_email;
+  return (
+    (i ? ownerEmailOf(i) : null) ||
+    (typeof s === "string" && s !== "" ? s : null)
+  );
 }
 
 export async function detailOf(
@@ -205,7 +216,7 @@ export async function detailOf(
   const now = Date.now();
   return {
     ...summaryOf(env, row),
-    ownerEmail: showEmail ? await ownerEmailOf(env, row) : null,
+    ownerEmail: showEmail ? await ownerEmailFor(env, row) : null,
     auth: authOf(row),
     previousVersion: version(row.previous_version),
     suspendedAt: row.suspended_at,
