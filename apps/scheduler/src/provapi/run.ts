@@ -7,16 +7,14 @@ import {
   ProvisionRefused,
   provisionErrorCode,
 } from "@oa/provision/jobs";
+import { SCHEDULER_TICK_KEY } from "@oa/shared/provisioning/state";
 import { type DutyCategory, DutyFailure, Stall, within } from "./env.js";
 import { raiseState } from "./state.js";
 
 /**
- * The monitor's dead-man key (0006). TODO(contract): C2 exports no constant
- * for it, nor for the 10-minute stale threshold the monitor and R27 use.
+ * Writes SCHEDULER_TICK_KEY = now (monotonic: a late tick never lowers it);
+ * the monitor's dead-man reads it against SCHEDULER_STALE_MS.
  */
-export const SCHEDULER_TICK_KEY = "scheduler_tick_at";
-
-/** Writes scheduler_tick_at = now (monotonic: a late tick never lowers it). */
 export async function writeTick(db: D1Database, now: number): Promise<void> {
   await raiseState(db, SCHEDULER_TICK_KEY, now);
 }

@@ -1,6 +1,6 @@
 // The Provisioning API's scheduler duties (design v7 5.8), run on the */2
 // tick after the revoke tick and the directory sync.
-import { ALERT_KEYS } from "@oa/shared/provisioning";
+import { ALERT_KEYS } from "@oa/shared/provisioning/enums";
 import { alertFor, factsOf, prodcleanReport, stepAlert } from "./alerts.js";
 import { alertConditions, signupDailyCap } from "./conditions.js";
 import type { ProvapiEnv } from "./env.js";
@@ -11,8 +11,9 @@ import { type Duty, type DutyOutcome, runDuties } from "./run.js";
 import { signupsDue } from "./signups.js";
 import { type SweepDeps, sweep } from "./sweep.js";
 
+export { SCHEDULER_TICK_KEY } from "@oa/shared/provisioning/state";
 export type { ProvapiEnv } from "./env.js";
-export { SCHEDULER_TICK_KEY, writeTick } from "./run.js";
+export { writeTick } from "./run.js";
 
 /** Each duty's budget; together well inside the 2 minutes. */
 export const DUTY_TIMEOUT_MS = {

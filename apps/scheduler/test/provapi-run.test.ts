@@ -1,4 +1,5 @@
 import { CfError, ProvisionRefused } from "@oa/provision/jobs";
+import { SCHEDULER_TICK_KEY } from "@oa/shared/provisioning/state";
 import {
   afterEach,
   beforeAll,
@@ -14,7 +15,6 @@ import {
   type Duty,
   dutyCategory,
   runDuties,
-  SCHEDULER_TICK_KEY,
   writeTick,
 } from "../src/provapi/run.js";
 import { getState } from "../src/provapi/state.js";

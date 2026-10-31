@@ -5,19 +5,18 @@
 // starting probes and gives the gate back, so the next */2 tick checks the
 // rows this round has not (health_at before the round's start).
 import { isInstallId } from "@oa/provision/names";
-import type { Health } from "@oa/shared/provisioning";
+import type { Health } from "@oa/shared/provisioning/enums";
+import {
+  HEALTH_GATE_KEY,
+  HEALTH_INTERVAL_MS,
+  HEALTH_ROUND_KEY,
+} from "@oa/shared/provisioning/state";
 import { DutyFailure, d1, lanes, type ProvapiEnv, within } from "./env.js";
 import { claimState, getState, raiseState, unclaimState } from "./state.js";
 
-/** TODO(contract): no exported health interval. */
-export const HEALTH_INTERVAL_MS = 60 * 60_000;
-/** TODO(contract): no gate key in 0006's key list. */
-export const HEALTH_GATE_KEY = "health_checked_at";
-/**
- * While a round is cut short: its start, so the next tick checks only the
- * rows not yet checked in it. TODO(contract): not in 0006's key list.
- */
-export const HEALTH_ROUND_KEY = "health_round_at";
+// HEALTH_GATE_KEY: the hourly gate (HEALTH_INTERVAL_MS). HEALTH_ROUND_KEY:
+// while a round is cut short, its start, so the next tick checks only the
+// rows not yet checked in it.
 export const HEALTH_CONCURRENCY = 3;
 export const HEALTH_TIMEOUT_MS = 10_000;
 /** The default round budget (index.ts passes the duty's own). */

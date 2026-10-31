@@ -1,5 +1,6 @@
 import type { Env as OaEnv } from "@oa/provision/names";
-import type { ProvisionerRpc, WorkflowLike } from "@oa/shared/provisioning";
+import type { ProvisionerRpc } from "@oa/shared/provisioning";
+import type { WorkflowLike } from "@oa/shared/provisioning/workflow";
 
 /**
  * The Provisioning API duties' bindings (design v7 5.8). Optional: an

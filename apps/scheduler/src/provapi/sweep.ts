@@ -5,13 +5,20 @@
 import {
   type ProvisionErrorCode,
   settleFailed as realSettleFailed,
-  type SettleDb,
   type SettleFailed,
 } from "@oa/provision/jobs";
+import {
+  JOB_START_GRACE_MS,
+  JOB_TERMINATED_GRACE_MS,
+  SWEEP_CURSOR_KEY,
+  SWEEP_TERMINATED_PREFIX,
+  sweepTerminatedKey,
+} from "@oa/shared/provisioning/state";
+import { cleanupRequestId } from "@oa/shared/provisioning/system";
 import type {
   WorkflowInstanceStatus,
   WorkflowLike,
-} from "@oa/shared/provisioning";
+} from "@oa/shared/provisioning/workflow";
 import {
   bound,
   DutyFailure,
@@ -21,7 +28,6 @@ import {
   Stall,
 } from "./env.js";
 import {
-  insertSystemJob,
   isWorkflowNotFound,
   type JobGuard,
   type SystemJob,
@@ -36,45 +42,24 @@ import { getState, setState } from "./state.js";
 export const SWEEP_LIMIT = 50;
 /** Workflow calls in flight per tick. */
 export const SWEEP_CONCURRENCY = 3;
-/**
- * A queued job with no instance this old is started by the sweep, so it
- * never races the API's own Workflow.create. TODO(contract): no exported
- * start-grace constant and no `started` marker on jobs.
- */
-export const START_GRACE_MS = 2 * 60_000;
-/**
- * The code a dead run settles with. TODO(contract): PROVISION_ERROR_CODES
- * has none for a dead Workflow run (errored, terminated, or complete with
- * the job still open).
- */
-export const DEAD_RUN_CODE: ProvisionErrorCode = "internal";
+/** The code a dead run settles with (errored, terminated, or complete with the job still open). */
+export const RUN_DEAD: ProvisionErrorCode = "run_dead";
 
-/**
- * platform_state: the last jobs rowid the open-jobs list reached; the next
- * tick resumes after it, and 0 starts over. TODO(contract): not in 0006's
- * key list.
- */
-export const SWEEP_CURSOR_KEY = "sweep_open_cursor";
-
-/**
- * A terminated instance is settled only this long after the sweep first saw
- * it terminated: R25 cancel terminates the instance and then settles the job
- * itself (code canceled, its own cleanup), so a sweep landing in between
- * must not settle it first with DEAD_RUN_CODE. TODO(contract): no exported
- * cancel grace, and cancel writes nothing on the job before it terminates.
- */
-export const TERMINATED_GRACE_MS = START_GRACE_MS;
-/**
- * platform_state `<prefix><jobId>`: when the sweep first saw that job's
- * instance terminated. Removed once the job is no longer open.
- * TODO(contract): not in 0006's key list.
- */
-export const TERMINATED_SEEN_PREFIX = "sweep_terminated:";
+// Grace and keys (C5, @oa/shared/provisioning/state):
+// - JOB_START_GRACE_MS: a queued job with no instance this old is started
+//   by the sweep, so it never races the API's own Workflow.create.
+// - JOB_TERMINATED_GRACE_MS: an errored or terminated instance is settled
+//   only this long after the sweep first saw it so (sweepTerminatedKey):
+//   R25 cancel terminates the instance and then settles the job itself
+//   (code canceled, its own cleanup), so a sweep landing in between must not
+//   settle it first. The marker is removed once the job is no longer open.
+// - SWEEP_CURSOR_KEY: the last jobs rowid the open-jobs list reached; the
+//   next tick resumes after it, and 0 starts over.
 // First sight only: a later tick never moves it.
 const SEEN =
   "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2) ON CONFLICT (key) DO NOTHING";
 // Markers of jobs no longer open (settled by the sweep, a cancel or the run).
-const SEEN_GC = `DELETE FROM platform_state WHERE substr(key, 1, ${TERMINATED_SEEN_PREFIX.length}) = '${TERMINATED_SEEN_PREFIX}' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = substr(platform_state.key, ${TERMINATED_SEEN_PREFIX.length + 1}) AND j.status IN ('queued', 'running'))`;
+const SEEN_GC = `DELETE FROM platform_state WHERE substr(key, 1, ${SWEEP_TERMINATED_PREFIX.length}) = '${SWEEP_TERMINATED_PREFIX}' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = substr(platform_state.key, ${SWEEP_TERMINATED_PREFIX.length + 1}) AND j.status IN ('queued', 'running'))`;
 
 const COLS =
   "rowid AS rid, id, kind, workflow, install_id, signup_id, status, created_at FROM jobs";
@@ -106,7 +91,8 @@ export interface SweepDeps {
   settleFailed?: SettleFailed;
 }
 
-const DEAD = new Set<WorkflowInstanceStatus["status"]>([
+/** Dead only once JOB_TERMINATED_GRACE_MS has passed since first sight. */
+const DEAD_AFTER_GRACE = new Set<WorkflowInstanceStatus["status"]>([
   "errored",
   "terminated",
 ]);
@@ -121,35 +107,6 @@ const PARENT_FAILED: JobGuard = {
   sql: "EXISTS (SELECT 1 FROM jobs WHERE id = ?5 AND status = 'failed')",
   params: [],
 };
-
-/**
- * The platform D1 for settleFailed, with `extra` appended to its batch: the
- * settle and the cleanup insert are one D1 batch (design v7 3.6), so a
- * failure, an evicted tick or another job opening in between never leaves
- * a failed job without its cleanup. `inserted()` is the cleanup's id when
- * that batch inserted it; `batched()` says whether settleFailed batched.
- */
-function withCleanup(db: D1Database, extra: D1PreparedStatement | null) {
-  let batched = false;
-  let inserted: string | null = null;
-  const wrapped: SettleDb = {
-    prepare: (sql) => db.prepare(sql),
-    batch: async (st) => {
-      if (batched || extra === null)
-        return db.batch(st as D1PreparedStatement[]);
-      batched = true;
-      const res = await db.batch([...(st as D1PreparedStatement[]), extra]);
-      const id = (res.at(-1)?.results[0] as { id?: unknown } | undefined)?.id;
-      inserted = typeof id === "string" ? id : null;
-      return res;
-    },
-  };
-  return {
-    db: wrapped,
-    batched: () => batched,
-    inserted: () => inserted,
-  };
-}
 
 /** What one open job needs: start it, settle it, or nothing. */
 async function look(
@@ -166,18 +123,17 @@ async function look(
     if (!isWorkflowNotFound(e))
       throw new DutyFailure(e instanceof Stall ? "timeout" : "rpc_error");
     if (j.status === "running") return "dead";
-    return j.created_at <= now - START_GRACE_MS ? "start" : "alive";
+    return j.created_at <= now - JOB_START_GRACE_MS ? "start" : "alive";
   }
-  if (status === "terminated") {
-    const key = `${TERMINATED_SEEN_PREFIX}${j.id}`;
+  if (DEAD_AFTER_GRACE.has(status)) {
+    const key = sweepTerminatedKey(j.id);
     await d1(db.prepare(SEEN).bind(key, now).run());
     const seen = await d1(getState(db, key));
-    return seen !== null && seen <= now - TERMINATED_GRACE_MS
+    return seen !== null && seen <= now - JOB_TERMINATED_GRACE_MS
       ? "dead"
       : "alive";
   }
-  if (DEAD.has(status) || status === "complete") return "dead";
-  return "alive";
+  return status === "complete" ? "dead" : "alive";
 }
 
 export async function sweep(
@@ -194,8 +150,8 @@ export async function sweep(
   const cursor = (await d1(getState(db, SWEEP_CURSOR_KEY))) ?? 0;
   const [unstarted, open] = await d1(
     db.batch<OpenJob>([
-      db.prepare(UNSTARTED).bind(now - START_GRACE_MS, SWEEP_LIMIT),
-      db.prepare(OPEN_JOBS).bind(now - START_GRACE_MS, SWEEP_LIMIT, cursor),
+      db.prepare(UNSTARTED).bind(now - JOB_START_GRACE_MS, SWEEP_LIMIT),
+      db.prepare(OPEN_JOBS).bind(now - JOB_START_GRACE_MS, SWEEP_LIMIT, cursor),
     ]),
   );
   // A full page resumes after its last row; a short one starts over.
@@ -241,28 +197,32 @@ export async function sweep(
               installId: j.install_id,
               signupId: j.signup_id,
               parentJobId: j.id,
-              requestId: `cleanup-${j.id}`,
+              requestId: cleanupRequestId(j.id),
+              args: { parentJobId: j.id },
             };
-      const w = withCleanup(
-        db,
-        cleanup && (await systemJobStatement(db, cleanup, now, PARENT_FAILED)),
-      );
-      // TODO(contract): settleFailed does not say whether it settled.
-      await settleFailed(w.db, j.id, DEAD_RUN_CODE);
-      if (await stillOpen(db, j.id)) return;
-      console.warn("provapi sweep settled", j.id, DEAD_RUN_CODE);
-      await db
-        .prepare("DELETE FROM platform_state WHERE key = ?1")
-        .bind(`${TERMINATED_SEEN_PREFIX}${j.id}`)
-        .run()
-        .catch(() => {});
+      // The cleanup insert rides in the settle's own D1 batch (opts.extra,
+      // design v7 3.6), so a failure, an evicted tick or another job opening
+      // in between never leaves a failed job without its cleanup.
+      const extra = cleanup
+        ? [await systemJobStatement(db, cleanup, now, PARENT_FAILED)]
+        : [];
+      const r = await settleFailed(db, j.id, RUN_DEAD, { extra });
+      if (r.settled) {
+        console.warn("provapi sweep settled", j.id, RUN_DEAD);
+        await db
+          .prepare("DELETE FROM platform_state WHERE key = ?1")
+          .bind(sweepTerminatedKey(j.id))
+          .run()
+          .catch(() => {});
+      }
       if (cleanup === null) return;
       step = "cleanup";
-      // A settleFailed that never batched: insert it on its own.
-      const id = w.batched()
-        ? w.inserted()
-        : await insertSystemJob(db, cleanup, now, PARENT_FAILED);
-      // null: an overlapping tick (or another open job) got there first.
+      const row = (r.extra[0] as D1Result<{ id?: unknown }> | undefined)
+        ?.results?.[0];
+      // No id: an overlapping tick got there first, or another job is open
+      // on the install (a cancel's own cleanup). One that went in without
+      // this call settling (its parent failed meanwhile) is started too.
+      const id = typeof row?.id === "string" ? row.id : null;
       if (id === null) return;
       console.log("provapi sweep cleanup", id, j.id);
       // A failed start leaves it queued; the next sweep starts it.

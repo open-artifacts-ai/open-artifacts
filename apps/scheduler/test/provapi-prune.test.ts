@@ -1,4 +1,9 @@
-import { AUDIT_REFUSAL_WINDOW_MS } from "@oa/shared/provisioning";
+import { AUDIT_REFUSAL_WINDOW_MS } from "@oa/shared/provisioning/alerts";
+import {
+  AUDIT_REFUSAL_RETENTION_MS,
+  DCR_COUNTER_RETENTION_MS,
+  RATE_COUNTER_RETENTION_MS,
+} from "@oa/shared/provisioning/state";
 import {
   afterEach,
   beforeAll,
@@ -10,12 +15,11 @@ import {
 } from "vitest";
 import type { ProvapiEnv } from "../src/provapi/env.js";
 import {
-  AUDIT_REFUSAL_RETENTION_MS,
+  DCR_COUNTER_KEY_PREFIX,
   FAILED_SECRET_RETENTION_MS,
   OAUTH_CLIENT_UNCLAIMED_MS,
   PRUNE_BATCH,
   prune,
-  RATE_COUNTER_RETENTION_MS,
 } from "../src/provapi/prune.js";
 import {
   captureLogs,
@@ -188,9 +192,27 @@ describe("prune", () => {
     ]);
   });
 
-  it("90 days of audit_refusals; counters past the longest window (a day)", () => {
+  it("rate counters go after RATE_COUNTER_RETENTION_MS (2 h), the DCR day counters only after DCR_COUNTER_RETENTION_MS (48 h)", async () => {
+    expect(RATE_COUNTER_RETENTION_MS).toBe(2 * 60 * 60_000);
+    expect(DCR_COUNTER_RETENTION_MS).toBe(48 * 60 * 60_000);
+    const rc = (key: string, w: number) =>
+      insert("rate_counters", { key, window_start: w, count: 1 });
+    const dcr = (k: string) => `${DCR_COUNTER_KEY_PREFIX}${k}`;
+    await rc("ip:a", NOW - RATE_COUNTER_RETENTION_MS); // pruned
+    await rc("ip:b", NOW - RATE_COUNTER_RETENTION_MS + 1);
+    await rc(dcr("a"), NOW - RATE_COUNTER_RETENTION_MS); // a DCR day: kept
+    await rc(dcr("b"), NOW - DCR_COUNTER_RETENTION_MS + 1);
+    await rc(dcr("c"), NOW - DCR_COUNTER_RETENTION_MS); // pruned
+    const lines = captureLogs(vi.spyOn);
+    await prune(env, NOW);
+    expect(lines[0]).toContain(" rate_counters=2 ");
+    expect(await ids("SELECT key FROM rate_counters ORDER BY key")).toEqual(
+      [dcr("a"), dcr("b"), "ip:b"].sort(),
+    );
+  });
+
+  it("90 days of audit_refusals", () => {
     expect(AUDIT_REFUSAL_RETENTION_MS).toBe(90 * 24 * 60 * 60_000);
-    expect(RATE_COUNTER_RETENTION_MS).toBe(24 * 60 * 60_000);
   });
 
   it(`bounded: at most ${PRUNE_BATCH} rows per table per tick`, async () => {

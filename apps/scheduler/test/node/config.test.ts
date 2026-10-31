@@ -43,8 +43,8 @@ describe("wrangler.jsonc", () => {
         AUTH_BROKER_ORIGIN: `https://auth.${HOSTED_DOMAINS[env].app}`,
         DIRECTORY_BROKER_ORIGIN: `https://directory.${HOSTED_DOMAINS[env].app}`,
       });
-      // TODO(contract): platformNames has no provisioner name yet.
-      const provisioner = `${ENV_PREFIX[env]}provisioner`;
+      const names = platformNames(env);
+      const provisioner = names.provisioner;
       // BrokerGate's bindings: this env's two brokers, never the other env's;
       // and the provisioner's ProvisionerRpc entrypoint (tokenStatus).
       expect(e.services).toEqual([
@@ -62,13 +62,13 @@ describe("wrangler.jsonc", () => {
       // The provisioner's two Workflows, on its script, this env's only.
       expect(e.workflows).toEqual([
         {
-          name: `${ENV_PREFIX[env]}provision-install`,
+          name: names.provisionInstall,
           binding: "PROVISION_INSTALL",
           class_name: "ProvisionInstall",
           script_name: provisioner,
         },
         {
-          name: `${ENV_PREFIX[env]}manage-install`,
+          name: names.manageInstall,
           binding: "MANAGE_INSTALL",
           class_name: "ManageInstall",
           script_name: provisioner,

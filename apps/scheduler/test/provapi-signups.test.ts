@@ -1,3 +1,4 @@
+import { SELF_SERVE_STALE_MS } from "@oa/shared/provisioning/state";
 import {
   afterEach,
   beforeAll,
@@ -9,7 +10,6 @@ import {
 } from "vitest";
 import { DutyFailure, type ProvapiEnv } from "../src/provapi/env.js";
 import {
-  SIGNUP_STALE_MS,
   SIGNUPS_LIMIT,
   SIGNUPS_ON,
   signupsDue,
@@ -80,12 +80,15 @@ describe("signups duty", () => {
     expect(f.sent()).toEqual([]);
   });
 
-  it("re-sends a self-serve pending row untouched for SIGNUP_STALE_MS (its message was lost)", async () => {
+  it("re-sends a self-serve pending row untouched for SELF_SERVE_STALE_MS (its message was lost)", async () => {
     const old = await selfServe({
       status: "pending",
-      updated_at: NOW - SIGNUP_STALE_MS - 1,
+      updated_at: NOW - SELF_SERVE_STALE_MS - 1,
     });
-    await selfServe({ status: "pending", updated_at: NOW - SIGNUP_STALE_MS });
+    await selfServe({
+      status: "pending",
+      updated_at: NOW - SELF_SERVE_STALE_MS,
+    });
     await signup({ status: "pending", updated_at: 1 });
     await selfServe({ status: "queued", updated_at: 1 });
     const f = fakes();

@@ -2,17 +2,17 @@
 // D1, never a copy, plus token_expiring and token_invalid from
 // PROVISIONER.tokenStatus(). Rows mean open, no rows clear, and a failed
 // read is null (left as it is).
+import type { ProvisionerRpc } from "@oa/shared/provisioning";
 import {
   ALERT_CONDITIONS,
-  type AlertKey,
   type AlertRow,
   alertParams,
-  type ProvisionerRpc,
   type RPC_ALERT_KEYS,
   SQL_ALERT_KEYS,
   type SqlAlertKey,
-  TokenStatusSchema,
-} from "@oa/shared/provisioning";
+} from "@oa/shared/provisioning/alerts";
+import type { AlertKey } from "@oa/shared/provisioning/enums";
+import { TokenStatusSchema } from "./contract.js";
 import { within } from "./env.js";
 
 type RpcAlertKey = (typeof RPC_ALERT_KEYS)[number];

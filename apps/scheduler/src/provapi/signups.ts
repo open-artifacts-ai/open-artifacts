@@ -3,7 +3,7 @@
 // sweepStale, on the */2 tick:
 // - requeue: re-sends self-serve waiting_cap rows, oldest first, up to the
 //   UTC day's remaining SIGNUP_DAILY_CAP, so they are admitted after 00:00.
-// - stale: re-sends a self-serve pending row untouched for SIGNUP_STALE_MS
+// - stale: re-sends a self-serve pending row untouched for SELF_SERVE_STALE_MS
 //   (its message was lost).
 // The job sweep never starts a job whose signup is pending or waiting_cap
 // (the consumer admits it), so without this such a signup stays
@@ -13,12 +13,10 @@
 //
 // Messages are { signupId } only. Nothing here writes a signups row; the
 // provisioner's consumer does every admission. Logs carry counts only.
-import { ULID_RE } from "@oa/shared/provisioning";
+import { SELF_SERVE_STALE_MS } from "@oa/shared/provisioning/state";
 import { signupDailyCap } from "./conditions.js";
+import { ULID_RE } from "./contract.js";
 import { bound, DutyFailure, d1, type ProvapiEnv } from "./env.js";
-
-/** A pending row untouched this long has lost its queue message. */
-export const SIGNUP_STALE_MS = 15 * 60_000;
 /** Rows re-sent per list per tick. */
 export const SIGNUPS_LIMIT = 50;
 /**
@@ -66,7 +64,7 @@ export async function signupsDue(env: ProvapiEnv, now: number): Promise<void> {
   const cap = signupDailyCap(env.SIGNUP_DAILY_CAP);
   const [stale, waiting] = await d1(
     db.batch<{ signup_id: unknown }>([
-      db.prepare(STALE).bind(now - SIGNUP_STALE_MS, SIGNUPS_LIMIT),
+      db.prepare(STALE).bind(now - SELF_SERVE_STALE_MS, SIGNUPS_LIMIT),
       db
         .prepare(WAITING)
         .bind(cap, Math.floor(now / DAY_MS) * DAY_MS, SIGNUPS_LIMIT),

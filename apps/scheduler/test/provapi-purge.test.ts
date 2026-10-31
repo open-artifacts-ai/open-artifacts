@@ -5,6 +5,11 @@ import {
 } from "@oa/shared/provisioning";
 import { FakeWorkflow } from "@oa/shared/provisioning/fakes";
 import {
+  PURGE_MAX_TRIES,
+  purgeRequestId,
+  SYSTEM_ACTOR,
+} from "@oa/shared/provisioning/system";
+import {
   afterEach,
   beforeAll,
   beforeEach,
@@ -15,8 +20,7 @@ import {
 } from "vitest";
 import { sqlConditions } from "../src/provapi/conditions.js";
 import type { ProvapiEnv } from "../src/provapi/env.js";
-import { SYSTEM_ACTOR } from "../src/provapi/jobs.js";
-import { PURGE_LIMIT, purgeDue, purgeRequestId } from "../src/provapi/purge.js";
+import { PURGE_LIMIT, purgeDue } from "../src/provapi/purge.js";
 import {
   captureLogs,
   db,
@@ -81,7 +85,7 @@ describe("purge after grace", () => {
     expect(canTransition("deleting", "purge", "S")).toBe(true);
   });
 
-  it("purge_at passed: one purge job, started, with the try-1 request id", async () => {
+  it("purge_at passed: one purge job, started, with the try-0 request id and args { purgeAt, n }", async () => {
     const f = fakes();
     const id = await deleting();
     const lines = captureLogs(vi.spyOn);
@@ -93,12 +97,13 @@ describe("purge after grace", () => {
       workflow: "manage_install",
       actor_kind: SYSTEM_ACTOR.kind,
       actor_key: SYSTEM_ACTOR.key,
-      request_id: `purge-${id}-${PURGE_AT}-1`,
+      request_id: `purge-${id}-${PURGE_AT}-0`,
       status: "queued",
     });
+    expect(JSON.parse(String(p?.args))).toEqual({ purgeAt: PURGE_AT, n: 0 });
     expect(p?.request_id).toMatch(REQUEST_ID_RE);
     expect(f.manage.created).toEqual([{ id: p?.id, params: { jobId: p?.id } }]);
-    expect(lines).toEqual([`provapi purge queued ${id} ${p?.id} try=1`]);
+    expect(lines).toEqual([`provapi purge queued ${id} ${p?.id} try=0`]);
   });
 
   it("not before purge_at", async () => {
@@ -136,16 +141,21 @@ describe("purge after grace", () => {
     expect(await purges(id)).toEqual([]);
   });
 
-  it(`tries 1 to ${PURGE_STUCK_FAILURES}, then no more, and purge_stuck opens`, async () => {
+  it(`tries 0 to ${PURGE_MAX_TRIES - 1}, then no more, and purge_stuck opens`, async () => {
+    expect(PURGE_MAX_TRIES).toBe(PURGE_STUCK_FAILURES);
     const f = fakes();
     const id = await deleting();
-    for (let n = 1; n <= PURGE_STUCK_FAILURES + 2; n++) {
+    for (let n = 0; n < PURGE_MAX_TRIES + 2; n++) {
       await purgeDue(f.env, NOW + n);
       const all = await purges(id);
-      expect(all).toHaveLength(Math.min(n, PURGE_STUCK_FAILURES));
+      expect(all).toHaveLength(Math.min(n + 1, PURGE_MAX_TRIES));
       const last = all.at(-1);
-      if (n <= PURGE_STUCK_FAILURES) {
+      if (n < PURGE_MAX_TRIES) {
         expect(last?.request_id).toBe(purgeRequestId(id, PURGE_AT, n));
+        expect(JSON.parse(String(last?.args))).toEqual({
+          purgeAt: PURGE_AT,
+          n,
+        });
         expect(last?.request_id).toMatch(REQUEST_ID_RE);
         await fail(last?.id);
       }
@@ -183,7 +193,7 @@ describe("purge after grace", () => {
   it("a later grace end (restore, delete again) after a stuck purge: no new try, and purge_stuck stays open", async () => {
     const f = fakes();
     const id = await deleting();
-    for (let n = 1; n <= PURGE_STUCK_FAILURES; n++) {
+    for (let n = 0; n < PURGE_MAX_TRIES; n++) {
       await purgeDue(f.env, NOW);
       await fail((await purges(id)).at(-1)?.id);
     }
@@ -202,7 +212,7 @@ describe("purge after grace", () => {
     }
   });
 
-  it("a later grace end with one earlier failure: its tries are numbered from 1", async () => {
+  it("a later grace end with one earlier failure: its tries are numbered from 0", async () => {
     const f = fakes();
     const id = await deleting();
     await purgeDue(f.env, NOW);
@@ -216,7 +226,7 @@ describe("purge after grace", () => {
       .run();
     await purgeDue(f.env, later);
     expect((await purges(id)).at(-1)?.request_id).toBe(
-      purgeRequestId(id, later, 1),
+      purgeRequestId(id, later, 0),
     );
   });
 

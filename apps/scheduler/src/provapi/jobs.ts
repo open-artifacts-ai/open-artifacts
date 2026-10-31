@@ -1,59 +1,23 @@
 // Jobs the scheduler inserts (purge after grace, the sweep's cleanup) and
 // the Workflow calls it makes. Params are exactly { jobId } (design v7 3.6).
+import type { WorkflowParams } from "@oa/shared/provisioning";
 import {
-  canonicalJson,
-  type JobKind,
+  newJobId,
+  SYSTEM_ACTOR,
+  type SystemJobArgs,
+  type SystemJobKind,
+  systemJobBodyHash,
+} from "@oa/shared/provisioning/system";
+import {
+  isWorkflowNotFound,
   type WorkflowLike,
-  WorkflowParamsSchema,
-} from "@oa/shared/provisioning";
+} from "@oa/shared/provisioning/workflow";
 import { DutyFailure, Stall, within } from "./env.js";
 
-/**
- * The scheduler's principal on the jobs it inserts (design v7 2.3: system
- * actors are `system:<name>`). TODO(contract): C2 exports no system actor
- * key or label.
- */
-export const SYSTEM_ACTOR = {
-  kind: "system",
-  key: "system:scheduler",
-  label: "scheduler",
-} as const;
+export { isWorkflowNotFound };
 
 /** One Workflow call (create, get, status) past this counts as an rpc_error. */
 export const WORKFLOW_CALL_TIMEOUT_MS = 5_000;
-
-const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-/**
- * A ULID job id: 48-bit time, 80 random bits. TODO(contract): no shared job
- * id generator is exported.
- */
-export function newJobId(now: number): string {
-  let time = "";
-  for (let t = now, i = 0; i < 10; i++, t = Math.floor(t / 32))
-    time = CROCKFORD[t % 32] + time;
-  const rnd = crypto.getRandomValues(new Uint8Array(16));
-  let rest = "";
-  for (const b of rnd) rest += CROCKFORD[b & 31];
-  return time + rest;
-}
-
-/**
- * body_hash for a job no route accepted. TODO(contract): bodyHash() needs a
- * RouteId and scheduler jobs have none; this hashes the canonical
- * { kind, installId, args } the same way.
- */
-export async function systemBodyHash(
-  kind: JobKind,
-  installId: string,
-  args: Record<string, unknown>,
-): Promise<string> {
-  const data = new TextEncoder().encode(
-    canonicalJson({ kind, installId, args }),
-  );
-  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
-  return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 // ON CONFLICT DO NOTHING with no target covers every unique index: the
 // (actor_key, request_id) idempotency key and jobs_one_active. The guard is
@@ -62,21 +26,26 @@ export async function systemBodyHash(
 // with ON CONFLICT.)
 const insertJob = (guard: string) =>
   `INSERT INTO jobs (id, kind, workflow, install_id, signup_id, parent_job_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
-SELECT ?1, ?2, 'manage_install', ?3, ?4, ?5, '${SYSTEM_ACTOR.kind}', '${SYSTEM_ACTOR.key}', '${SYSTEM_ACTOR.label}', ?6, ?7, '{}', 'queued', ?8, ?8
+SELECT ?1, ?2, 'manage_install', ?3, ?4, ?5, '${SYSTEM_ACTOR.kind}', '${SYSTEM_ACTOR.key}', '${SYSTEM_ACTOR.label}', ?6, ?7, ?10, 'queued', ?8, ?8
 WHERE ${guard}
 ON CONFLICT DO NOTHING RETURNING id`;
 
-export interface SystemJob {
-  kind: Extract<JobKind, "purge" | "cleanup">;
-  installId: string;
-  signupId: string | null;
-  parentJobId: string | null;
-  requestId: string;
-}
+export type SystemJob = {
+  [K in SystemJobKind]: {
+    kind: K;
+    installId: string;
+    signupId: string | null;
+    parentJobId: string | null;
+    requestId: string;
+    /** `jobs.args`, also hashed into `jobs.body_hash` (systemJobBodyHash). */
+    args: SystemJobArgs[K];
+  };
+}[SystemJobKind];
 
 /**
  * A condition the insert also needs: SQL over the insert's own params (?3
  * install id, ?5 parent job id, ?8 now) plus `params` bound from ?9 on.
+ * ?10 is the args JSON, so a guard binds at most one param (?9).
  */
 export interface JobGuard {
   sql: string;
@@ -92,10 +61,9 @@ export async function systemJobStatement(
   now: number,
   guard: JobGuard = NO_GUARD,
 ): Promise<D1PreparedStatement> {
-  const hash = await systemBodyHash(j.kind, j.installId, {
-    parentJobId: j.parentJobId,
-    requestId: j.requestId,
-  });
+  if (guard.params.length > 1)
+    throw new Error("systemJobStatement: a guard binds at most ?9");
+  const hash = await systemJobBodyHash(j.kind, j.installId, j.args as never);
   return db
     .prepare(insertJob(guard.sql))
     .bind(
@@ -107,7 +75,8 @@ export async function systemJobStatement(
       j.requestId,
       hash,
       now,
-      ...guard.params,
+      guard.params[0] ?? null,
+      JSON.stringify(j.args),
     );
 }
 
@@ -143,27 +112,15 @@ export function wfCall<T>(
 const message = (e: unknown) =>
   e instanceof Error ? e.message : typeof e === "string" ? e : "";
 
-// A missing instance only: the real binding's "instance.not_found" or the
-// fake's "instance <id> not found". A binding-level error (the Workflow or
-// its script not deployed yet: "workflow.not_found") is not one, so a live
-// run is never settled on it.
-const INSTANCE_NOT_FOUND =
-  /\binstance(?:[._ ]not[_ ]?found|\s+\S+\s+not\s+found)\b/i;
+// isWorkflowNotFound (C5) matches only WorkflowNotFoundError, never a
+// message, so anything else fails closed (rpc_error, the job left alone).
+// UNVERIFIED for the real Cloudflare binding: what its get() throws for an
+// unknown id is not checked, and nothing here translates it yet, so until a
+// wrapper does, a real missing instance is an rpc_error (never settled or
+// started by the sweep).
 
-/**
- * TODO(contract): WorkflowLike.get has no typed not-found error; this
- * matches the instance-specific message only, so anything else fails
- * closed (rpc_error, the job left alone).
- */
-export function isWorkflowNotFound(e: unknown): boolean {
-  const m = message(e);
-  return (
-    !(e instanceof Stall) &&
-    !/\bworkflow[._ ]not[_ ]?found/i.test(m) &&
-    INSTANCE_NOT_FOUND.test(m)
-  );
-}
-
+// TODO(contract): no typed "already exists" error for WorkflowLike.create;
+// this matches the fake's and the binding's message.
 const isAlreadyExists = (e: unknown) =>
   !(e instanceof Stall) && /already exists/i.test(message(e));
 
@@ -172,7 +129,7 @@ const isAlreadyExists = (e: unknown) =>
  * already exists counts as started. Other failures are rpc_error.
  */
 export async function startJob(wf: WorkflowLike, jobId: string): Promise<void> {
-  const params = WorkflowParamsSchema.parse({ jobId });
+  const params: WorkflowParams = { jobId };
   try {
     await wfCall(() => wf.create({ id: jobId, params }));
   } catch (e) {

@@ -14,8 +14,9 @@
  * - `<key>_sending_at`: an open or reminder email in flight. notified_at
  *   moves only once the send succeeded, so a tick that ends mid-send (the
  *   duty's budget, an eviction) never marks an email it did not send; a
- *   marker older than the send timeout is taken over. TODO(contract): not
- *   in 0006's key list.
+ *   marker older than the send timeout is taken over (C5's
+ *   ALERT_STATE_SUFFIXES; not in 0006's key list).
+ * Keys are alertStateKey(key, suffix).
  * Every claim is one conditional write, so overlapping ticks send once. A
  * failed send gives its claim back, so the next tick retries it.
  *
@@ -25,23 +26,25 @@
  * v7 6): never AlertRow.message, an email address or a URL. Logs carry the key and
  * fixed categories only. stepAlert never throws.
  */
+import { isInstallId } from "@oa/provision/names";
 import {
-  ALERT_KEYS,
   ALERT_LOOKBACK_MS,
-  type AlertKey,
   type AlertRow,
-  INSTALL_ID_RE,
   JOB_RETRYING_ATTEMPT,
   JOB_STUCK_MS,
-  JobKindSchema,
   OAUTH_REGISTER_FLOOD,
   PURGE_STUCK_FAILURES,
   SIGNIN_BURST_MIN,
   SIGNIN_BURST_WINDOW_MS,
-  TOKEN_EXPIRING_DAYS,
-  ULID_RE,
   WELCOME_CLAIM_MS,
-} from "@oa/shared/provisioning";
+} from "@oa/shared/provisioning/alerts";
+import {
+  ALERT_KEYS,
+  type AlertKey,
+  JOB_KINDS,
+} from "@oa/shared/provisioning/enums";
+import { alertStateKey } from "@oa/shared/provisioning/state";
+import { TOKEN_EXPIRING_DAYS, ULID_RE } from "./contract.js";
 import type { ProvapiEnv } from "./env.js";
 import { claimState, getState, raiseState, unclaimState } from "./state.js";
 
@@ -178,10 +181,10 @@ export async function stepAlert(
   { timeoutMs = ALERT_SEND_TIMEOUT_MS }: StepOptions = {},
 ): Promise<void> {
   const policy = ALERT_POLICY[alert.key];
-  const opened = `${alert.key}_opened_at`;
-  const notified = `${alert.key}_notified_at`;
-  const cleared = `${alert.key}_cleared_at`;
-  const sending = `${alert.key}_sending_at`;
+  const opened = alertStateKey(alert.key, "opened_at");
+  const notified = alertStateKey(alert.key, "notified_at");
+  const cleared = alertStateKey(alert.key, "cleared_at");
+  const sending = alertStateKey(alert.key, "sending_at");
   const db = env.PLATFORM_DB;
   try {
     if (condition === true) {
@@ -293,7 +296,7 @@ export async function prodcleanReport(
     if (!r) return undefined;
     return {
       installId:
-        typeof r.install_id === "string" && INSTALL_ID_RE.test(r.install_id)
+        typeof r.install_id === "string" && isInstallId(r.install_id)
           ? r.install_id
           : null,
       detail: cleanDetail(r.detail),
@@ -317,14 +320,14 @@ export function factsOf(rows: readonly AlertRow[]): AlertFacts {
   const codes = new Set<string>();
   const jobs: AlertFacts["jobs"] = [];
   for (const r of rows) {
-    if (typeof r.install_id === "string" && INSTALL_ID_RE.test(r.install_id))
+    if (typeof r.install_id === "string" && isInstallId(r.install_id))
       installIds.add(r.install_id);
     const c = code(r.code);
     if (c) codes.add(c);
     if (typeof r.job_id === "string" && ULID_RE.test(r.job_id))
       jobs.push({
         id: r.job_id,
-        kind: JobKindSchema.safeParse(r.job_kind).success
+        kind: (JOB_KINDS as readonly unknown[]).includes(r.job_kind)
           ? (r.job_kind as string)
           : null,
         code: c,

@@ -5,6 +5,10 @@ import {
   fakeProvisionerRpc,
 } from "@oa/shared/provisioning/fakes";
 import {
+  JOB_START_GRACE_MS,
+  SCHEDULER_TICK_KEY,
+} from "@oa/shared/provisioning/state";
+import {
   afterEach,
   beforeAll,
   beforeEach,
@@ -20,13 +24,8 @@ import scheduler, {
   REVOKE_JOB,
   SYNC_JOB,
 } from "../src/index.js";
-import {
-  DUTY_TIMEOUT_MS,
-  provapiTick,
-  SCHEDULER_TICK_KEY,
-} from "../src/provapi/index.js";
+import { DUTY_TIMEOUT_MS, provapiTick } from "../src/provapi/index.js";
 import { getState } from "../src/provapi/state.js";
-import { START_GRACE_MS } from "../src/provapi/sweep.js";
 import {
   captureLogs,
   db,
@@ -125,7 +124,7 @@ async function seedRevokeAndSync() {
 describe("scheduled() and the provapi duties", () => {
   it("*/2: the tick is written with value = scheduledTime even when every duty fails", async () => {
     const f = fakes({ broken: true });
-    await job(installId(), { created_at: NOW - START_GRACE_MS });
+    await job(installId(), { created_at: NOW - JOB_START_GRACE_MS });
     const lines = captureLogs(vi.spyOn);
     await scheduler.scheduled(
       controller(REVOKE_CRON),
@@ -175,8 +174,8 @@ describe("scheduled() and the provapi duties", () => {
   it("*/2: the duties run: a dead job is started, an alert opens and emails", async () => {
     const f = fakes();
     const id = await job(installId(), {
-      created_at: NOW - START_GRACE_MS,
-      updated_at: NOW - START_GRACE_MS,
+      created_at: NOW - JOB_START_GRACE_MS,
+      updated_at: NOW - JOB_START_GRACE_MS,
     });
     const lines = captureLogs(vi.spyOn);
     await scheduler.scheduled(
@@ -195,7 +194,7 @@ describe("scheduled() and the provapi duties", () => {
 
   it("the nightly cron writes no tick and runs no duty", async () => {
     const f = fakes();
-    await job(installId(), { created_at: NOW - START_GRACE_MS });
+    await job(installId(), { created_at: NOW - JOB_START_GRACE_MS });
     const lines = captureLogs(vi.spyOn);
     await scheduler.scheduled(
       controller(CRON),

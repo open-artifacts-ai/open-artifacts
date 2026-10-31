@@ -1,11 +1,17 @@
 import type { SettleFailed } from "@oa/provision/jobs";
+import { REQUEST_ID_RE, ULID_RE } from "@oa/shared/provisioning";
+import { FakeWorkflow } from "@oa/shared/provisioning/fakes";
 import {
-  REQUEST_ID_RE,
-  ULID_RE,
+  JOB_START_GRACE_MS,
+  JOB_TERMINATED_GRACE_MS,
+  sweepTerminatedKey,
+} from "@oa/shared/provisioning/state";
+import { cleanupRequestId, SYSTEM_ACTOR } from "@oa/shared/provisioning/system";
+import {
   type WorkflowInstanceStatus,
   type WorkflowLike,
-} from "@oa/shared/provisioning";
-import { FakeWorkflow } from "@oa/shared/provisioning/fakes";
+  WorkflowNotFoundError,
+} from "@oa/shared/provisioning/workflow";
 import {
   afterEach,
   beforeAll,
@@ -16,15 +22,7 @@ import {
   vi,
 } from "vitest";
 import { DutyFailure, type ProvapiEnv } from "../src/provapi/env.js";
-import { SYSTEM_ACTOR } from "../src/provapi/jobs.js";
-import {
-  DEAD_RUN_CODE,
-  START_GRACE_MS,
-  SWEEP_LIMIT,
-  sweep,
-  TERMINATED_GRACE_MS,
-  TERMINATED_SEEN_PREFIX,
-} from "../src/provapi/sweep.js";
+import { SWEEP_LIMIT, sweep } from "../src/provapi/sweep.js";
 import {
   captureLogs,
   db,
@@ -42,22 +40,28 @@ afterEach(() => vi.restoreAllMocks());
 
 const NOW = Date.UTC(2026, 9, 31, 12, 0);
 const TICK = 2 * 60_000;
-const OLD = NOW - START_GRACE_MS;
+const OLD = NOW - JOB_START_GRACE_MS;
+/** The code a dead run settles with (Manager C5). */
+const RUN_DEAD = "run_dead";
 
 /**
- * W3's settleFailed, as far as the sweep relies on it: the job to failed,
- * in one D1 batch on the db it is given (its contract).
+ * W3's settleFailed, as far as the sweep relies on it (C5's contract): the
+ * job to failed, then `opts.extra`, in one D1 batch on the db it is given;
+ * `settled` from the jobs UPDATE's changes, `extra` the extra results.
  */
 const settled: { jobId: string; code: string }[] = [];
-const fakeSettle: SettleFailed = async (d, jobId, code) => {
-  settled.push({ jobId, code });
-  await d.batch([
+const fakeSettle: SettleFailed = async (d, jobId, code, opts) => {
+  const res = (await d.batch([
     d
       .prepare(
         "UPDATE jobs SET status = 'failed', error_code = COALESCE(error_code, ?2), finished_at = ?3, updated_at = ?3 WHERE id = ?1 AND status IN ('queued', 'running')",
       )
       .bind(jobId, code, NOW),
-  ]);
+    ...((opts?.extra ?? []) as D1PreparedStatement[]),
+  ])) as D1Result[];
+  const ok = (res[0]?.meta.changes ?? 0) > 0;
+  if (ok) settled.push({ jobId, code });
+  return { settled: ok, extra: res.slice(1) };
 };
 
 const BAD = Symbol("bad");
@@ -152,7 +156,7 @@ describe("sweep: unstarted jobs", () => {
     const id = await job(installId(), { created_at: OLD });
     const racy: WorkflowLike = {
       get: async (i) => {
-        throw new Error(`instance ${i} not found`);
+        throw new WorkflowNotFoundError(i);
       },
       create: async (o) => {
         throw new Error(`instance ${o.id} already exists`);
@@ -202,12 +206,13 @@ describe("sweep: dead runs", () => {
   }
 
   for (const status of ["errored", "terminated", "complete"] as const)
-    it(`${status}: settled, then one cleanup job, started`, async () => {
+    it(`${status}: settled with run_dead, then one cleanup job, started`, async () => {
       const f = fakes();
       const { id, inst } = await started(f, status);
-      // A terminated run waits TERMINATED_GRACE_MS from first sight (cancel).
-      const at = status === "terminated" ? NOW + TERMINATED_GRACE_MS : NOW;
-      if (status === "terminated") {
+      // errored and terminated wait JOB_TERMINATED_GRACE_MS from first sight.
+      const waits = status !== "complete";
+      const at = waits ? NOW + JOB_TERMINATED_GRACE_MS : NOW;
+      if (waits) {
         captureLogs(vi.spyOn);
         await run(f.env);
         expect(settled).toEqual([]);
@@ -215,7 +220,7 @@ describe("sweep: dead runs", () => {
       }
       const lines = captureLogs(vi.spyOn);
       await run(f.env, at);
-      expect(settled).toEqual([{ jobId: id, code: DEAD_RUN_CODE }]);
+      expect(settled).toEqual([{ jobId: id, code: RUN_DEAD }]);
       const [c, ...rest] = await cleanups();
       expect(rest).toEqual([]);
       expect(c).toMatchObject({
@@ -226,17 +231,18 @@ describe("sweep: dead runs", () => {
         parent_job_id: id,
         actor_kind: SYSTEM_ACTOR.kind,
         actor_key: SYSTEM_ACTOR.key,
-        request_id: `cleanup-${id}`,
+        request_id: cleanupRequestId(id),
         status: "queued",
         created_at: at,
       });
+      expect(JSON.parse(String(c?.args))).toEqual({ parentJobId: id });
       expect(c?.id).toMatch(ULID_RE);
       expect(c?.request_id).toMatch(REQUEST_ID_RE);
       expect(f.manage.created).toEqual([
         { id: c?.id, params: { jobId: c?.id } },
       ]);
       expect(lines).toEqual([
-        `provapi sweep settled ${id} ${DEAD_RUN_CODE}`,
+        `provapi sweep settled ${id} ${RUN_DEAD}`,
         `provapi sweep cleanup ${c?.id} ${id}`,
       ]);
     });
@@ -264,7 +270,7 @@ describe("sweep: dead runs", () => {
       created_at: NOW + 1,
       updated_at: NOW + 1,
     });
-    await run(f.env, NOW + TERMINATED_GRACE_MS);
+    await run(f.env, NOW + JOB_TERMINATED_GRACE_MS);
     expect(settled.map((x) => x.jobId)).not.toContain(id);
     expect((await jobRow(id))?.error_code).toBe("canceled");
     expect((await cleanups()).map((c) => c.id)).toEqual([own]);
@@ -272,27 +278,78 @@ describe("sweep: dead runs", () => {
     expect(
       await rows(
         "SELECT key FROM platform_state WHERE key = ?1",
-        `${TERMINATED_SEEN_PREFIX}${id}`,
+        sweepTerminatedKey(id),
       ),
     ).toEqual([]);
   });
 
-  it("a terminated run nobody settles is settled once TERMINATED_GRACE_MS has passed since first sight", async () => {
+  for (const status of ["errored", "terminated"] as const)
+    it(`${status}: a run nobody settles is settled once JOB_TERMINATED_GRACE_MS has passed since first sight`, async () => {
+      const f = fakes();
+      const { id } = await started(f, status);
+      captureLogs(vi.spyOn);
+      await run(f.env);
+      await run(f.env, NOW + JOB_TERMINATED_GRACE_MS - 1);
+      expect(settled).toEqual([]);
+      await run(f.env, NOW + JOB_TERMINATED_GRACE_MS);
+      expect(settled).toEqual([{ jobId: id, code: RUN_DEAD }]);
+      expect(await cleanups()).toHaveLength(1);
+      expect(
+        await rows(
+          "SELECT key FROM platform_state WHERE key = ?1",
+          sweepTerminatedKey(id),
+        ),
+      ).toEqual([]);
+    });
+
+  it("the two graces are separate: a queued job with no instance starts at JOB_START_GRACE_MS, an errored run settles only at JOB_TERMINATED_GRACE_MS", async () => {
+    expect(JOB_START_GRACE_MS).toBeLessThan(JOB_TERMINATED_GRACE_MS);
     const f = fakes();
-    const { id } = await started(f, "terminated");
+    const queued = await job(installId(), { created_at: NOW });
+    const { id: dead } = await started(f, "errored");
     captureLogs(vi.spyOn);
-    await run(f.env);
-    await run(f.env, NOW + TERMINATED_GRACE_MS - 1);
+    await run(f.env, NOW + JOB_START_GRACE_MS - 1);
+    expect(f.provision.created.map((c) => c.id)).toEqual([dead]);
+    await run(f.env, NOW + JOB_START_GRACE_MS);
+    expect(f.provision.created.map((c) => c.id)).toEqual([dead, queued]);
     expect(settled).toEqual([]);
-    await run(f.env, NOW + TERMINATED_GRACE_MS);
-    expect(settled).toEqual([{ jobId: id, code: DEAD_RUN_CODE }]);
-    expect(await cleanups()).toHaveLength(1);
-    expect(
-      await rows(
-        "SELECT key FROM platform_state WHERE key = ?1",
-        `${TERMINATED_SEEN_PREFIX}${id}`,
-      ),
-    ).toEqual([]);
+    // First sight of the errored run was at NOW + JOB_START_GRACE_MS - 1.
+    await run(
+      f.env,
+      NOW + JOB_START_GRACE_MS - 1 + JOB_TERMINATED_GRACE_MS - 1,
+    );
+    expect(settled).toEqual([]);
+    await run(f.env, NOW + JOB_START_GRACE_MS - 1 + JOB_TERMINATED_GRACE_MS);
+    expect(settled).toEqual([{ jobId: dead, code: RUN_DEAD }]);
+  });
+
+  it("settleFailed saying it did not settle (another settle got there first): no settled line, no cleanup", async () => {
+    const f = fakes();
+    const { id, inst } = await started(f, "complete");
+    const lost: SettleFailed = async (d, jobId, code, opts) => {
+      // A cancel settles the job and inserts its own cleanup in between.
+      await db
+        .prepare(
+          "UPDATE jobs SET status = 'failed', error_code = 'canceled' WHERE id = ?1",
+        )
+        .bind(jobId)
+        .run();
+      await job(inst, {
+        kind: "cleanup",
+        workflow: "manage_install",
+        parent_job_id: jobId,
+        request_id: `cancel-${jobId}`,
+      });
+      return fakeSettle(d, jobId, code, opts);
+    };
+    const lines = captureLogs(vi.spyOn);
+    await sweep(f.env, NOW, { settleFailed: lost });
+    expect(settled).toEqual([]);
+    expect(lines).toEqual([]);
+    expect((await cleanups()).map((c) => c.request_id)).toEqual([
+      `cancel-${id}`,
+    ]);
+    expect(f.manage.created).toEqual([]);
   });
 
   it("a running job whose instance is missing is dead", async () => {
@@ -322,7 +379,7 @@ describe("sweep: dead runs", () => {
 
   it("two overlapping ticks make one cleanup", async () => {
     const f = fakes();
-    const { id } = await started(f, "errored");
+    const { id } = await started(f, "complete");
     await Promise.all([run(f.env), run(f.env)]);
     expect(await cleanups()).toHaveLength(1);
     expect(f.manage.created).toHaveLength(1);
@@ -352,7 +409,7 @@ describe("sweep: dead runs", () => {
 
   it("settle and cleanup are one batch: a failed cleanup insert leaves the job open, and the next sweep settles it with its cleanup", async () => {
     const f = fakes();
-    const { id } = await started(f, "errored");
+    const { id } = await started(f, "complete");
     const flaky = {
       ...f.env,
       PLATFORM_DB: failFirstJobInsert(db),
@@ -370,7 +427,7 @@ describe("sweep: dead runs", () => {
 
   it("a dead cleanup job is settled only, never given another cleanup", async () => {
     const f = fakes();
-    const { id } = await started(f, "errored", {
+    const { id } = await started(f, "complete", {
       kind: "cleanup",
       workflow: "manage_install",
     });
@@ -382,7 +439,7 @@ describe("sweep: dead runs", () => {
 
   it("a failed cleanup start leaves it queued; a later sweep starts it", async () => {
     const f = fakes();
-    await started(f, "errored");
+    await started(f, "complete");
     f.manage.failNextCreate(new Error("boom"));
     const lines = captureLogs(vi.spyOn);
     await run(f.env);
@@ -391,7 +448,7 @@ describe("sweep: dead runs", () => {
       `provapi sweep cleanup_failed rpc_error ${f.provision.created[0]?.id}`,
     );
     expect(f.manage.created).toEqual([]);
-    await run(f.env, NOW + START_GRACE_MS);
+    await run(f.env, NOW + JOB_START_GRACE_MS);
     expect(f.manage.created.map((x) => x.id)).toEqual([c?.id]);
   });
 });
@@ -462,7 +519,7 @@ describe("sweep: failures", () => {
       updated_at: NOW,
     });
     await f.provision.create({ id: dead, params: { jobId: dead } });
-    f.provision.setStatus(dead, "errored");
+    f.provision.setStatus(dead, "complete");
     captureLogs(vi.spyOn);
     for (let t = 0; t < 3 && !settled.length; t++)
       await run(f.env, NOW + t * TICK);
@@ -488,19 +545,21 @@ describe("sweep: failures", () => {
     expect((await jobRow(id))?.status).toBe("running");
   });
 
-  it("the real binding's instance.not_found is a missing instance", async () => {
+  it("only a WorkflowNotFoundError is a missing instance: a not-found message alone fails closed", async () => {
     const f = fakes();
-    const id = await job(installId(), { created_at: OLD });
-    const missing: WorkflowLike = {
-      get: async () => {
-        throw new Error("instance.not_found");
+    const id = await job(installId(), { status: "running", created_at: OLD });
+    const untyped: WorkflowLike = {
+      get: async (i) => {
+        throw new Error(`instance.not_found instance ${i} not found`);
       },
       create: (o) => f.provision.create(o),
     };
-    const env = { ...f.env, PROVISION_INSTALL: missing } as ProvapiEnv;
-    captureLogs(vi.spyOn);
+    const env = { ...f.env, PROVISION_INSTALL: untyped } as ProvapiEnv;
+    const lines = captureLogs(vi.spyOn);
     await run(env);
-    expect(f.provision.created.map((c) => c.id)).toEqual([id]);
+    expect(lines).toEqual([`provapi sweep status_failed rpc_error ${id}`]);
+    expect(settled).toEqual([]);
+    expect(f.provision.created).toEqual([]);
   });
 
   for (const status of ["pending", "waiting_cap"] as const)

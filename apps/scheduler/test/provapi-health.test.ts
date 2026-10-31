@@ -1,3 +1,4 @@
+import { HEALTH_INTERVAL_MS } from "@oa/shared/provisioning/state";
 import {
   afterEach,
   beforeAll,
@@ -11,7 +12,6 @@ import { sqlConditions } from "../src/provapi/conditions.js";
 import type { ProvapiEnv } from "../src/provapi/env.js";
 import {
   HEALTH_CONCURRENCY,
-  HEALTH_INTERVAL_MS,
   HEALTH_TIMEOUT_MS,
   type HealthProbe,
   healthDue,

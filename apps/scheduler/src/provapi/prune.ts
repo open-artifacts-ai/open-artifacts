@@ -1,20 +1,26 @@
 // Prune (design v7 5.8): expired sessions and agent tokens (a revoked one
 // stays until it expires, so its revoked state is never lost while a grant
 // or a session check could still read it), unclaimed OAuth clients (0008), D1
-// rate counters past their longest window, audit_refusals over 90 days, and
+// rate counters (2 h; the DCR UTC-day counters 48 h), audit_refusals over 90 days, and
 // a failed signup's owner email 30 days on. Bounded deletes, so a backlog drains over ticks. Never admin_audit
 // (append-only; its triggers refuse a delete).
+import {
+  AUDIT_REFUSAL_RETENTION_MS,
+  DCR_COUNTER_RETENTION_MS,
+  RATE_COUNTER_RETENTION_MS,
+} from "@oa/shared/provisioning/state";
 import { d1, type ProvapiEnv } from "./env.js";
 
 /** Rows deleted per table per tick. */
 export const PRUNE_BATCH = 500;
-/** TODO(contract): C2 exports no audit_refusals retention constant (4.9). */
-export const AUDIT_REFUSAL_RETENTION_MS = 90 * 24 * 60 * 60_000;
 /**
- * The longest D1 counter window (MCP registrations, a UTC day). A counter
- * that started this long ago has ended. TODO(contract): not exported.
+ * The `rate_counters.key` prefix of the DCR UTC-day counters, which keep
+ * DCR_COUNTER_RETENTION_MS; every other counter keeps
+ * RATE_COUNTER_RETENTION_MS. TODO(contract): C5 exports the 48 h retention
+ * but no key (or prefix) for the DCR day counters; this one is W7's.
  */
-export const RATE_COUNTER_RETENTION_MS = 24 * 60 * 60_000;
+export const DCR_COUNTER_KEY_PREFIX = "dcr:";
+const IS_DCR = `substr(key, 1, ${DCR_COUNTER_KEY_PREFIX.length}) = '${DCR_COUNTER_KEY_PREFIX}'`;
 /**
  * A failed signup's owner email (signup_secret) outlives the redrive window
  * by no more (#859's purgeFailedSecrets). TODO(contract): not exported.
@@ -36,7 +42,7 @@ export const PRUNES = {
   agent_tokens: bounded("agent_tokens", "expires_at <= ?1"),
   rate_counters: bounded(
     "rate_counters",
-    `window_start <= ?1 - ${RATE_COUNTER_RETENTION_MS}`,
+    `(NOT ${IS_DCR} AND window_start <= ?1 - ${RATE_COUNTER_RETENTION_MS}) OR (${IS_DCR} AND window_start <= ?1 - ${DCR_COUNTER_RETENTION_MS})`,
   ),
   audit_refusals: bounded(
     "audit_refusals",
