@@ -47,7 +47,7 @@ describe("redline-staging.yml", () => {
     expect(Object.keys(w.on)).toEqual(["workflow_dispatch"]);
     expect(w.on.workflow_dispatch.inputs.tag.required).toBe(true);
     expect(w.permissions).toEqual({ contents: "read" });
-    expect(Object.keys(w.jobs)).toEqual(["redline"]);
+    expect(Object.keys(w.jobs)).toEqual(["platform-tags", "redline"]);
     expect(job.environment).toBe("redline-staging");
     expect(job.permissions).toEqual({ contents: "read", "id-token": "write" });
     expect(job["timeout-minutes"]).toBe(150);
@@ -55,6 +55,51 @@ describe("redline-staging.yml", () => {
       group: "redline",
       "cancel-in-progress": false,
     });
+  });
+
+  it("refuses to start on a stale Worker: platform-tags (main's script, the staging deploy token) runs first (#1040)", () => {
+    const pt = w.jobs["platform-tags"];
+    expect(job.needs).toBe("platform-tags");
+    expect(pt["runs-on"]).toBe("ubuntu-latest");
+    expect(pt.environment).toBe("hosted-staging-deploy");
+    expect(pt.permissions).toEqual({ contents: "read" });
+    expect(pt.needs).toBeUndefined();
+    expect(pt["timeout-minutes"]).toBeLessThanOrEqual(10);
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const all: Record<string, any>[] = pt.steps;
+    // First: refuse anything but main, before any checkout.
+    expect(all[0]).toMatchObject({
+      name: "On main",
+      env: { REF: "${{ github.ref }}" },
+    });
+    expect(all[0]?.run).toContain('[ "$REF" = refs/heads/main ]');
+    const ps = all.slice(1);
+    expect(ps[0]?.uses).toMatch(SHA_PIN);
+    expect(ps[0]?.with).toEqual({
+      ref: "${{ github.sha }}",
+      "sparse-checkout": "scripts/ci\n.github/hosted\n",
+      "persist-credentials": false,
+    });
+    expect(ps.map((s) => s.name ?? s.uses)).toEqual([
+      ps[0]?.uses,
+      "Load the hosted constants",
+      "Every staging platform Worker runs the tag",
+    ]);
+    expect(ps[1]?.run).toBe(
+      "bash scripts/ci/hosted-constants.sh staging .github/hosted > /dev/null",
+    );
+    expect(ps[2]).toMatchObject({
+      env: {
+        TAG: "${{ inputs.tag }}",
+        CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+      },
+      run: 'bash scripts/ci/platform-tags.sh staging "$TAG"',
+    });
+    // Only that step sees the token.
+    expect(
+      ps.filter((s) => JSON.stringify(s).includes("secrets.")),
+    ).toHaveLength(1);
+    expect(JSON.stringify(job)).not.toContain("CLOUDFLARE_API_TOKEN");
   });
 
   it("names each run after its tag, the shape staging-first-gate.sh matches", () => {
