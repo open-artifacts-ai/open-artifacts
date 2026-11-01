@@ -2071,3 +2071,34 @@ describe("deploy-hosted-platform.sh", () => {
     });
   });
 });
+
+// The wrapper runs `pnpm exec wrangler` in apps/<app>, so every app the
+// script deploys must have wrangler as its own dependency: run 41262364898
+// stopped at inventory on "Command "wrangler" not found".
+describe("every deployed app has its own wrangler", () => {
+  const script = readFileSync(
+    join(root, "scripts/ops/deploy-hosted-platform.sh"),
+    "utf8",
+  );
+  const apps = [
+    ...new Set([...script.matchAll(/\bdeploy ([a-z-]+)$/gm)].map((m) => m[1])),
+  ];
+  it("finds the deployed apps", () => {
+    expect(apps).toEqual(
+      expect.arrayContaining(["inventory", "provisioner", "scheduler"]),
+    );
+  });
+  for (const app of apps) {
+    it(`apps/${app} depends on wrangler`, () => {
+      const pkg = JSON.parse(
+        readFileSync(join(root, "apps", app as string, "package.json"), "utf8"),
+      ) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      expect(
+        pkg.devDependencies?.wrangler ?? pkg.dependencies?.wrangler,
+      ).toBeTruthy();
+    });
+  }
+});
