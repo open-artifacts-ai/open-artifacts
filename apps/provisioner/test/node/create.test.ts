@@ -1,10 +1,19 @@
 // ProvisionInstall (design v7 5.2, 5.3, 2.5, 3.6) on fake-cf: the create
 // and retry steps against the real platform schema, the rechecks, the
 // release gate, the 5.3 inputs, the step bookkeeping, the fail step.
-import { HOSTED_DOMAINS, NAMESPACES, ProvisionRefused } from "@oa/provision";
+import {
+  FLOOR_KEY,
+  HOSTED_DOMAINS,
+  NAMESPACES,
+  ProvisionRefused,
+} from "@oa/provision";
 import { JOB_STEPS } from "@oa/shared/provisioning";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
+import {
+  floorOf,
+  signFloor,
+  TEST_PUBKEY,
+} from "../../../../packages/provision/test/fixtures/release.js";
 import { JOB_ERROR_TEXT, LOG_DETAIL_MAX } from "../../src/errors.js";
 import { jobStep } from "../../src/steps.js";
 import { REACHABLE_MS, runCreate } from "../../src/workflow.js";
@@ -324,6 +333,29 @@ describe("ProvisionInstall: rechecks (2.5)", () => {
 });
 
 describe("ProvisionInstall: release gate and failures", () => {
+  it("below the floor or revoked: release_unverified, terminal, nothing created (3.5, #1029)", async () => {
+    for (const [slug, floor] of [
+      ["belowfl", floorOf({ minVersion: V2 })],
+      ["revoked", floorOf({ revoked: [V1] })],
+    ] as const) {
+      await w.r2.put(FLOOR_KEY, JSON.stringify(signFloor(floor)));
+      const s = seedCreate(w, {
+        slug,
+        source: "self-serve",
+        tier: "trial",
+        version: V1,
+      });
+      const before = w.fake.writes().length;
+      const r = await run(w, s.jobId);
+      expect(r.error).not.toBeNull();
+      expect(w.job(s.jobId)).toMatchObject({
+        status: "failed",
+        error_code: "release_unverified",
+      });
+      expect(w.fake.writes().length).toBe(before);
+    }
+  });
+
   it("an unpublished version: release_not_published, terminal, nothing created; the claim is freed", async () => {
     const s = seedCreate(w, {
       slug: "nover",
