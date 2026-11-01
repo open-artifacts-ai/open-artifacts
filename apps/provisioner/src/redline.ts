@@ -69,6 +69,50 @@ async function refusalOf(res: Response): Promise<TestHookRefusal | null> {
 }
 
 /**
+ * The waits between key-live probes after a rotate (#1002): 2 s, doubling,
+ * 60 s in all; six probes stay far under the install's RL_ANON (30 a minute).
+ */
+export const KEY_LIVE_WAITS_MS = [2_000, 4_000, 8_000, 16_000, 30_000];
+
+/**
+ * Waits until the install takes `key`: a secret PUT is not live at once, and
+ * a stale key is the uniform 404 with no reason. The probe's body is `{}`, so
+ * a verified key answers bad_input and writes nothing else. Never rotates.
+ */
+async function keyLive(
+  ctx: CreateCtx,
+  f: typeof fetch,
+  app: string,
+  key: string,
+): Promise<void> {
+  for (let i = 0; ; i++) {
+    const res = await failingAt("hook_key_live", () =>
+      f(`${app}/__test/session`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+        },
+        body: "{}",
+        redirect: "manual",
+      }),
+    );
+    const reason = res.status === 404 ? await refusalOf(res) : null;
+    if (res.status !== 404) await res.body?.cancel();
+    if (reason === "bad_input") return;
+    const wait = KEY_LIVE_WAITS_MS[i];
+    if (res.status !== 404 || reason !== null || wait === undefined)
+      throw tagFail(
+        new Error(`hook_key_live: HTTP ${res.status}`),
+        "hook_key_live",
+        res.status,
+        reason,
+      );
+    await ctx.io.sleep(wait);
+  }
+}
+
+/**
  * Only the status (and, for test_session, the refusal reason): a body can
  * carry the install's own error text. A failure is tagged at `at` (#995).
  */
@@ -179,7 +223,7 @@ async function openSession(
     ).verifyToken("refuse"),
   );
 
-  // rotate_hook_key: a fresh key, live on the script before it is used.
+  // rotate_hook_key: a fresh key, proven live on the script before it is used.
   const hookKey = newSecret();
   await failingAt("hook_key_put", async () =>
     (await cfFor(ctx)).secretPut(
@@ -189,6 +233,7 @@ async function openSession(
       hookKey,
     ),
   );
+  await keyLive(ctx, f, app, hookKey);
 
   const s = await call(
     f,
