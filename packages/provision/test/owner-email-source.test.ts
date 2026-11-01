@@ -66,6 +66,13 @@ const ALLOWED: Record<string, RegExp[]> = {
     // `s` is that signup_secret column (installs' goes through ownerEmailOf).
     /^\s*const s = secret\?\.results\[0\]\?\.owner_email;$/,
   ],
+  // R2's q matches the owner email in SQL for a pii caller, never reading
+  // it out: a purged '' never contains a non-empty q, and signup_secret's
+  // is never purged.
+  "apps/provisioning/src/routes/reads.ts": [
+    /^\s*"i\.owner_email",$/,
+    /^\s*"\(SELECT ss\.owner_email FROM signup_secret ss WHERE ss\.signup_id = st\.signup_id\)",$/,
+  ],
   "apps/provisioning/src/routes/create.ts": [
     // The create's write of the signup's email.
     /^\s*"INSERT INTO signup_secret \(signup_id, owner_email\) VALUES \(\?1, \?2\)",$/,

@@ -8,6 +8,7 @@ import {
 } from "@oa/shared/provisioning";
 import { FAKE_RELEASES } from "@oa/shared/provisioning/fakes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Principal } from "../src/principal.js";
 import { call } from "./call.js";
 import {
   ADMIN_P,
@@ -134,17 +135,189 @@ describe("R2 list and R3 detail", () => {
       (await call(e, ADMIN_P, "R2", { query: { q: v } })).body.items.map(
         (i: { slug: string }) => i.slug,
       );
-    // A slug substring, case-insensitive; never a host, never a wildcard.
+    // A substring, case-insensitive, of the slug or a stored host (a failed
+    // create has none); never a wildcard.
     expect(await slugsFor("S3")).toEqual(["ls3"]);
     expect(await slugsFor("fai")).toEqual(["lsfail"]);
-    expect(await slugsFor("hosted")).toEqual([]);
-    expect(await slugsFor("ls3.hosted.test")).toEqual([]);
+    expect(await slugsFor("hosted")).toEqual([
+      "ls4",
+      "ls3",
+      "ls2",
+      "ls1",
+      "ls0",
+    ]);
+    expect(await slugsFor("ls3.hosted.test")).toEqual(["ls3"]);
     expect(await slugsFor("%")).toEqual([]);
     expect(await slugsFor("l_3")).toEqual([]);
     expect(
       (await call(e, ADMIN_P, "R2", { query: { source: "self-serve" } })).body
         .items,
     ).toEqual([]);
+  });
+
+  it("q matches the id and the stored hosts in any case; %, _ and quotes are literal", async () => {
+    const e = fakeEnv();
+    const a = await seedInstall({ id: "iqq7777wxyzk", slug: "alpha" });
+    const b = await seedInstall({ slug: "beta", createdAt: 2 });
+    // Stored hosts that do not derive from the slug.
+    await db
+      .prepare(
+        "UPDATE installs SET app_host = ?, content_host = ? WHERE id = ?",
+      )
+      .bind("Wiki.Example.test", "files_x%y'z.cdn.test", b.id)
+      .run();
+    const idsFor = async (v: string) =>
+      (await call(e, ADMIN_P, "R2", { query: { q: v } })).body.items.map(
+        (i: { id: string }) => i.id,
+      );
+    expect(await idsFor("q7777w")).toEqual([a.id]);
+    expect(await idsFor("Q7777W")).toEqual([a.id]);
+    expect(await idsFor(a.id)).toEqual([a.id]);
+    expect(await idsFor("wiki.example")).toEqual([b.id]);
+    expect(await idsFor("WIKI.EXAMPLE.TEST")).toEqual([b.id]);
+    expect(await idsFor("cdn.test")).toEqual([b.id]);
+    expect(await idsFor("alpha.content")).toEqual([a.id]);
+    // The derived host is not stored for b, so it never matches.
+    expect(await idsFor("beta.hosted.test")).toEqual([]);
+    expect(await idsFor("_x%y'z")).toEqual([b.id]);
+    expect(await idsFor("x%y")).toEqual([b.id]);
+    expect(await idsFor("%")).toEqual([b.id]);
+    expect(await idsFor("s_x")).toEqual([b.id]);
+    expect(await idsFor("s%x")).toEqual([]);
+    expect(await idsFor("a_x")).toEqual([]);
+    expect(await idsFor("'")).toEqual([b.id]);
+    expect(await idsFor("' OR 1=1 --")).toEqual([]);
+    expect(await idsFor('"')).toEqual([]);
+  });
+
+  it("q matches the owner email for admin and installs:pii only; anyone else gets the no-match answer", async () => {
+    const e = fakeEnv();
+    const boss = await seedInstall({
+      ownerEmail: "Boss@Corp.test",
+      source: "self-serve",
+      ownerSub: "u1",
+      createdAt: 3,
+    });
+    const other = await seedInstall({
+      ownerEmail: "other@elsewhere.test",
+      source: "self-serve",
+      ownerSub: "u2",
+      createdAt: 2,
+    });
+    const rl = await seedInstall({
+      slug: "rl-q",
+      testHooks: true,
+      ownerEmail: "rl@corp.test",
+      createdAt: 1,
+    });
+    const ids = (r: { body: { items: { id: string }[] } }) =>
+      r.body.items.map((i) => i.id);
+    for (const p of [ADMIN_P, PII]) {
+      expect(
+        ids(await call(e, p, "R2", { query: { q: "boss@CORP" } })),
+      ).toEqual([boss.id]);
+      expect(
+        ids(await call(e, p, "R2", { query: { q: "corp.test" } })),
+      ).toEqual([boss.id, rl.id]);
+      expect(
+        ids(await call(e, p, "R2", { query: { q: "elsewhere" } })),
+      ).toEqual([other.id]);
+    }
+    // No pii right: an email-only q is exactly a q that matches nothing, even
+    // for the caller's own install or an install in reach.
+    const cases: [Principal, string][] = [
+      [READ, "boss@corp"],
+      [READ, "elsewhere"],
+      [userP("u1"), "boss@corp"],
+      [userP("u1"), "elsewhere"],
+      [OIDC_P, "rl@corp"],
+    ];
+    for (const [p, v] of cases) {
+      const none = await call(e, p, "R2", { query: { q: "zz-no-such-thing" } });
+      expect(none.body).toEqual({ items: [], nextCursor: null });
+      const prepare = vi.spyOn(db, "prepare");
+      const r = await call(e, p, "R2", { query: { q: v } });
+      const sql = prepare.mock.calls.map((c) => c[0]).join("\n");
+      prepare.mockRestore();
+      expect(r).toEqual(none);
+      // The SQL never names the email, so nothing (timing, error) differs.
+      expect(sql).toContain("instr(lower(st.slug), ?) > 0");
+      expect(sql).not.toContain("owner_email");
+    }
+    // A user still finds their own install by its slug or host, not another's.
+    expect(
+      ids(await call(e, userP("u1"), "R2", { query: { q: boss.slug } })),
+    ).toEqual([boss.id]);
+    expect(
+      ids(await call(e, userP("u1"), "R2", { query: { q: other.slug } })),
+    ).toEqual([]);
+    // With the pii right the SQL names it.
+    const prepare = vi.spyOn(db, "prepare");
+    await call(e, PII, "R2", { query: { q: "x" } });
+    expect(prepare.mock.calls.map((c) => c[0]).join("\n")).toContain(
+      "owner_email",
+    );
+  });
+
+  it("q matches a pending signup's email for a pii caller; a purged email never matches", async () => {
+    const e = fakeEnv();
+    const pending = await seedFailedCreate({ slug: "pend", ownerSub: "u9" });
+    const sid = (
+      await db
+        .prepare("SELECT signup_id FROM signups WHERE slug = ?")
+        .bind("pend")
+        .first<{ signup_id: string }>()
+    )?.signup_id;
+    await insert("signup_secret", {
+      signup_id: sid,
+      owner_email: "Waiting@Pending.test",
+    });
+    const purged = await seedInstall({ ownerEmail: "" });
+    const ids = async (p: Principal, v: string) =>
+      (await call(e, p, "R2", { query: { q: v } })).body.items.map(
+        (i: { id: string }) => i.id,
+      );
+    expect(await ids(PII, "waiting@pending")).toEqual([pending.id]);
+    expect(await ids(READ, "waiting@pending")).toEqual([]);
+    expect(await ids(userP("u9"), "waiting@pending")).toEqual([]);
+    expect(await ids(ADMIN_P, purged.slug)).toEqual([purged.id]);
+    expect(await ids(ADMIN_P, "@")).toEqual([pending.id]);
+  });
+
+  it("cursor paging keeps q; a cursor from another q is invalid_input", async () => {
+    const e = fakeEnv();
+    const want: string[] = [];
+    for (let i = 0; i < 5; i++)
+      want.unshift(
+        (
+          await seedInstall({
+            slug: `pg${i}`,
+            ownerEmail: `team${i}@paging.test`,
+            createdAt: 100 + i,
+          })
+        ).id,
+      );
+    await seedInstall({ slug: "zz", ownerEmail: "x@y.test", createdAt: 200 });
+    const got: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const r = await call(e, PII, "R2", {
+        query: { q: "@PAGING", limit: "2", ...(cursor ? { cursor } : {}) },
+      });
+      got.push(...r.body.items.map((i: { id: string }) => i.id));
+      cursor = r.body.nextCursor ?? undefined;
+    } while (cursor);
+    expect(got).toEqual(want);
+    const first = await call(e, PII, "R2", {
+      query: { q: "@paging", limit: "2" },
+    });
+    expect(
+      (
+        await call(e, PII, "R2", {
+          query: { q: "pg", limit: "2", cursor: first.body.nextCursor },
+        })
+      ).code,
+    ).toBe("invalid_input");
   });
 
   it("a cursor from elsewhere is 400 invalid_input", async () => {

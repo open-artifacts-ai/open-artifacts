@@ -80,6 +80,23 @@ export async function me(a: HandlerArgs): Promise<RouteResult> {
   return ok(body);
 }
 
+/** May read owner email at the principal level: admin, or a token with installs:pii (3.3). */
+const piiPrincipal = (p: Principal) =>
+  p.kind === "admin" ||
+  (p.kind === "token" && p.scopes.includes("installs:pii"));
+
+/** R2's q on a column, a parameterized substring (instr, never LIKE). */
+const qMatch = (col: string) => `instr(lower(${col}), ?) > 0`;
+
+/**
+ * The owner email R2's q may match: the installs row's (a purged '' never
+ * matches a non-empty q), or a pending signup's secret, as ownerEmailFor.
+ */
+const OWNER_EMAIL_COLS = [
+  "i.owner_email",
+  "(SELECT ss.owner_email FROM signup_secret ss WHERE ss.signup_id = st.signup_id)",
+];
+
 /** R2: install_status newest first, by (created_at desc, install_id desc). */
 export async function listInstalls(a: HandlerArgs): Promise<RouteResult> {
   const query = q(a);
@@ -97,10 +114,19 @@ export async function listInstalls(a: HandlerArgs): Promise<RouteResult> {
     binds.push(query.source);
   }
   if (query.q) {
-    // A slug substring, case-insensitive; no LIKE wildcards. Hosts derive
-    // from the slug, so q never matches them separately.
-    where.push("instr(lower(st.slug), ?) > 0");
-    binds.push(String(query.q).toLowerCase());
+    // A substring, case-insensitive, of the slug, the id or a stored host;
+    // no LIKE wildcards. The owner email too, but only for a caller who may
+    // read it (piiPrincipal): for any other the SQL never names the column,
+    // so an email-only match is exactly a no-match.
+    const cols = [
+      "st.slug",
+      "st.install_id",
+      "st.app_host",
+      "st.content_host",
+      ...(piiPrincipal(a.principal) ? OWNER_EMAIL_COLS : []),
+    ];
+    where.push(`(${cols.map(qMatch).join(" OR ")})`);
+    binds.push(...cols.map(() => String(query.q).toLowerCase()));
   }
   const tag = queryTag("R2", {
     state: query.state,
@@ -136,8 +162,7 @@ export async function listInstalls(a: HandlerArgs): Promise<RouteResult> {
 
 /** Owner email: admin session, the owner, or a token with installs:pii (3.3). */
 const seesEmail = (p: Principal, row: StatusRow) =>
-  p.kind === "admin" ||
-  (p.kind === "token" && p.scopes.includes("installs:pii")) ||
+  piiPrincipal(p) ||
   (p.kind === "user" && row.owner_sub !== null && row.owner_sub === p.sub);
 
 export async function getInstall(a: HandlerArgs): Promise<RouteResult> {
