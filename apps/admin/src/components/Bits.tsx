@@ -1,34 +1,36 @@
 import type { InstallState, JobStatus } from "@oa/shared/provisioning";
-import { Badge } from "@oa/ui/shadcn";
 import { Link } from "@tanstack/react-router";
 import { ApiError } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
 import { STATE_LABEL } from "./labels";
 
-const STATE_VARIANT = {
-  provisioning: "secondary",
-  active: "default",
-  suspended: "outline",
-  deleting: "destructive",
-  deleted: "ghost",
-  failed: "destructive",
-} as const satisfies Record<InstallState, string>;
+type Tone = "success" | "accent" | "warning" | "danger" | "muted";
+
+const STATE_TONE = {
+  provisioning: "accent",
+  active: "success",
+  suspended: "warning",
+  deleting: "muted",
+  deleted: "muted",
+  failed: "danger",
+} as const satisfies Record<InstallState, Tone>;
+/** A colored dot and the state's label (the mock's .st). */
 export const StateBadge = ({ state }: { state: InstallState }) => (
-  <Badge variant={STATE_VARIANT[state]} data-testid="state">
+  <span className="oa-st" data-tone={STATE_TONE[state]} data-testid="state">
     {STATE_LABEL[state]}
-  </Badge>
+  </span>
 );
 
-const STATUS_VARIANT = {
-  queued: "secondary",
-  running: "default",
-  done: "outline",
-  failed: "destructive",
-} as const satisfies Record<JobStatus, string>;
+const STATUS_TONE = {
+  queued: "muted",
+  running: "accent",
+  done: "success",
+  failed: "danger",
+} as const satisfies Record<JobStatus, Tone>;
 export const StatusBadge = ({ status }: { status: JobStatus }) => (
-  <Badge variant={STATUS_VARIANT[status]} data-testid="status">
+  <span className="oa-st" data-tone={STATUS_TONE[status]} data-testid="status">
     {status}
-  </Badge>
+  </span>
 );
 
 /** A failed call in plain words; job_in_progress links the running job. */

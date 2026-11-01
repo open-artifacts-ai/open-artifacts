@@ -27,7 +27,10 @@ export function Shell() {
   return (
     <div className="oa-app">
       <aside className="oa-sb">
-        <strong className="oa-brand">Platform admin</strong>
+        <strong className="oa-brand">
+          <span className="oa-mark" aria-hidden />
+          Platform admin
+        </strong>
         <span
           className={`oa-env ${me.data?.env === "prod" ? "oa-env-prod" : ""}`}
           data-testid="env-slot"
@@ -36,13 +39,13 @@ export function Shell() {
         </span>
         <nav className="oa-nav" aria-label="Main">
           <Link to="/installs">
-            <Server size={15} aria-hidden /> Installs
+            <Server size={14} aria-hidden /> Installs
           </Link>
           <Link to="/audit">
-            <ScrollText size={15} aria-hidden /> Audit log
+            <ScrollText size={14} aria-hidden /> Audit log
           </Link>
           <Link to="/tokens">
-            <KeyRound size={15} aria-hidden /> Agent tokens
+            <KeyRound size={14} aria-hidden /> Agent tokens
           </Link>
         </nav>
         <div className="oa-sbfoot">
