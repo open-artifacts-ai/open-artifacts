@@ -119,6 +119,138 @@ describe("platform-db.ts", () => {
     expect(execs[0]).toContain("CREATE TABLE IF NOT EXISTS platform_migrat");
   });
 
+  // Prod's oa-p-platform before its first platform-db run: 0001-0005 applied
+  // by hand (docs/ops/hosted.md), no tracker, plus D1's _cf_KV and wrangler's
+  // d1_migrations (with sqlite_sequence). Table set as read: _cf_KV,
+  // d1_migrations, hosted_audit, hosts, install_versions, installs,
+  // release_floor, sqlite_sequence. detect() compares object names (tables,
+  // triggers, indexes) and column names only; _cf_*, sqlite_* and
+  // d1_migrations are skipped, so d1_migrations' rows never matter.
+  describe("prod's legacy pre-tracker schema", () => {
+    const legacy = (n: number, d1Rows: string[] = names.slice(0, n)) => {
+      const f = applied(n);
+      f.sqlite.exec(
+        "CREATE TABLE _cf_KV (key TEXT PRIMARY KEY, value BLOB) WITHOUT ROWID",
+      );
+      f.sqlite.exec(
+        "CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL)",
+      );
+      for (const r of d1Rows)
+        f.sqlite.prepare("INSERT INTO d1_migrations (name) VALUES (?)").run(r);
+      return f;
+    };
+    const tables = (f: ReturnType<typeof fakeDb>) =>
+      f.sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+        )
+        .all()
+        .map((r) => r.name);
+    const PROD_TABLES = [
+      "_cf_KV",
+      "d1_migrations",
+      "hosted_audit",
+      "hosts",
+      "install_versions",
+      "installs",
+      "release_floor",
+      "sqlite_sequence",
+    ];
+    const adopted = (n: number) => [
+      ...names.slice(0, n).map((x) => `${x}: present, recorded`),
+      ...names.slice(n).map((x) => `${x}: applied`),
+      `${names.length} migrations tracked, shapes match`,
+    ];
+
+    it("0001-0005 (any d1_migrations rows): records 0001-0005, applies 0006 onward", async () => {
+      for (const rows of [names.slice(0, 5), [], ["0001_installs.sql"]]) {
+        const f = legacy(5, rows);
+        expect(tables(f)).toEqual(PROD_TABLES);
+        const r = await go(f);
+        expect(r.err).toBe("");
+        expect(r.log).toEqual(adopted(5));
+        // d1_migrations is left as it was.
+        expect(
+          f.sqlite.prepare("SELECT name FROM d1_migrations").all(),
+        ).toHaveLength(rows.length);
+      }
+    });
+
+    it("prod's exact DDL as read on 2026-11-01: 0001-0005 recorded, 0006 onward applied, a second run changes nothing", async () => {
+      const f = fakeDb();
+      f.sqlite.exec(
+        readFileSync(
+          join(
+            import.meta.dirname,
+            "testdata/prod-oa-p-platform-2026-11-01.sql",
+          ),
+          "utf8",
+        ),
+      );
+      expect(tables(f)).toEqual(PROD_TABLES);
+      const r = await go(f);
+      expect(r.err).toBe("");
+      expect(r.log).toEqual(adopted(5));
+      // The tables the inventory reads exist now (#1041).
+      for (const t of [
+        "platform_migrations",
+        "install_lifecycle",
+        "platform_state",
+      ])
+        expect(tables(f), t).toContain(t);
+      const again = await go(f);
+      expect(again.err).toBe("");
+      expect(again.log.at(-1)).toBe(
+        `${names.length} migrations tracked, shapes match`,
+      );
+      expect(again.log.some((l) => l.endsWith(": applied"))).toBe(false);
+    });
+
+    it("0001-0003 or 0001-0004 (same table set): records the prefix, applies the rest", async () => {
+      for (const n of [3, 4]) {
+        const f = legacy(n);
+        expect(tables(f)).toEqual(PROD_TABLES);
+        const r = await go(f);
+        expect(r.err).toBe("");
+        expect(r.log).toEqual(adopted(n));
+      }
+    });
+
+    it("an extra legacy column on installs is not compared: adopted", async () => {
+      const f = legacy(5);
+      f.sqlite.exec("ALTER TABLE installs ADD COLUMN legacy_note TEXT");
+      const r = await go(f);
+      expect(r.err).toBe("");
+      expect(r.log).toEqual(adopted(5));
+    });
+
+    it("refuses, before any write: 0005 without 0004, a missing trigger, 0005's index missing", async () => {
+      const no0004 = legacy(3);
+      no0004.sqlite.exec((migrations[4] as M).sql);
+      const a = await go(no0004);
+      expect(a.err).toBe(
+        "0005_directory_revoke.sql is applied but 0004_audit_actor.sql is not; refusing",
+      );
+      expect(writes(no0004)).toEqual([]);
+
+      const noTrigger = legacy(5);
+      noTrigger.sqlite.exec("DROP TRIGGER hosted_audit_no_delete");
+      const b = await go(noTrigger);
+      expect(b.err).toBe(
+        "0001_installs.sql is only partly applied (4 of 5 of its objects); fix it by hand, then rerun",
+      );
+      expect(writes(noTrigger)).toEqual([]);
+
+      const noIndex = legacy(5);
+      noIndex.sqlite.exec("DROP INDEX installs_revoke_pending");
+      const c = await go(noIndex);
+      expect(c.err).toBe(
+        "0005_directory_revoke.sql is only partly applied (4 of 5 of its objects); fix it by hand, then rerun",
+      );
+      expect(writes(noIndex)).toEqual([]);
+    });
+  });
+
   it("refuses #859's hand-applied signups shape before recording anything", async () => {
     const f = applied(6);
     f.sqlite.exec(SIGNUPS_859);
