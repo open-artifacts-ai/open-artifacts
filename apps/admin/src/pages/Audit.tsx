@@ -266,7 +266,8 @@ export function Audit({
                       {e.outcome !== "ok" && (
                         <span className="oa-chip oa-chip-danger">
                           {e.outcome}
-                          {e.code ? `: ${e.code}` : ""}
+                          {e.code ? ": " : ""}
+                          {e.code && <span className="oa-code">{e.code}</span>}
                         </span>
                       )}
                       {e.count > 1 && (
@@ -279,7 +280,7 @@ export function Audit({
                           {slugs.get(e.installId) ?? e.installId}
                         </Link>
                       ) : (
-                        ""
+                        <span className="oa-note">–</span>
                       )}
                     </TableCell>
                     <TableCell className="oa-audit-detail">
@@ -288,7 +289,8 @@ export function Audit({
                         <>
                           {detailLine(e.detail) ? " · " : ""}
                           <Link to="/jobs/$id" params={{ id: e.jobId }}>
-                            job {shortId(e.jobId)}
+                            job{" "}
+                            <span className="oa-code">{shortId(e.jobId)}</span>
                           </Link>
                         </>
                       )}

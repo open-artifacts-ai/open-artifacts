@@ -860,12 +860,6 @@ fieldset.oa-seg-field {
   gap: 8px;
   margin-bottom: 16px;
 }
-/* The mock's one row of six at desktop width. */
-@media (min-width: 1024px) {
-  .oa-tiles {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-  }
-}
 .oa-tile {
   background: var(--oa-surface);
   border-radius: 9px;
@@ -928,29 +922,39 @@ fieldset.oa-seg-field {
     var(--oa-shadow-1),
     inset 0 0 0 1px var(--oa-accent);
 }
-/* Paused · Deleting: one tile, two halves that each filter. */
+/* Paused and Deleted, restorable: one tile, two halves that each filter. */
 .oa-tile-split {
   display: flex;
   align-items: stretch;
+  gap: 4px;
   padding: 3px;
 }
 .oa-tile-seg {
-  flex: 1;
+  flex: 1 1 auto;
   background: transparent;
   border-radius: 7px;
   padding: 6px 8px;
 }
-/* A label that wraps ("Deleted, restorable") keeps both counts on one baseline. */
-.oa-tile-split .oa-tile-seg {
-  display: flex;
-  flex-direction: column;
+/* Labels stay on one line (ellipsis if squeezed), so the counts share the
+   other tiles' baseline: 3px tile + 6px segment padding = the tiles' 9px. */
+.oa-tile-split .oa-tile-seg .k {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.oa-tile-split .oa-tile-seg .v {
-  margin-top: auto;
+/* One row of six at desktop width; the split tile is wider, so
+   "Deleted, restorable" fits without wrapping. */
+@media (min-width: 1024px) {
+  .oa-tiles {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) minmax(0, 1.7fr)
+      repeat(3, minmax(0, 1fr));
+  }
 }
-.oa-tile-split .oa-tile-dot {
-  align-self: flex-end;
-  padding-bottom: 8px;
+@media (max-width: 1023px) {
+  .oa-tile-split {
+    grid-column: span 2;
+  }
 }
 .oa-tile-seg:hover {
   background: var(--oa-surface-2);
@@ -959,14 +963,6 @@ fieldset.oa-seg-field {
 .oa-tile-seg[aria-pressed="true"] {
   background: var(--oa-accent-soft);
   box-shadow: inset 0 0 0 1px var(--oa-accent);
-}
-/* Sits on the values' line, like the mock's "1 · 1". */
-.oa-tile-dot {
-  align-self: flex-end;
-  padding: 0 2px 6px;
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--oa-text-muted);
 }
 /* ---------- Toolbar, tables, pager (mock .tool, .card + table.it) ---------- */
 .oa-tools {
@@ -1418,6 +1414,17 @@ fieldset.oa-seg-field {
 .oa-title-row .oa-chip {
   margin: 0;
 }
+/* Codes (error codes, step codes, job ids) in mono at the text's size. */
+.oa-code,
+.oa-error code {
+  font-family: var(--oa-font-mono);
+  font-size: 0.92em;
+}
+code.oa-code,
+.oa-error code {
+  background: none;
+  padding: 0;
+}
 .oa-page p.oa-host,
 .oa-host {
   font: 13px var(--oa-font-mono);
@@ -1494,11 +1501,12 @@ fieldset.oa-seg-field {
   padding: 4px 12px;
   margin: 0;
 }
+/* The chosen segment: accent fill, accent text and an inset accent ring. */
 .oa-form .oa-seg label:has(input:checked) {
-  color: var(--oa-text);
-}
-.oa-form .oa-seg label:has(input:checked) {
-  font-weight: 500;
+  background: var(--oa-accent-soft);
+  color: var(--oa-accent-fg);
+  box-shadow: inset 0 0 0 1px var(--oa-accent);
+  font-weight: 600;
 }
 .oa-seg label input {
   position: absolute;

@@ -504,7 +504,9 @@ export function InstallDetail({ id }: { id: string }) {
             <h1>{i.slug}</h1>
             <StateBadge state={i.state} chip />
             {i.state === "failed" && failedCode && (
-              <span className="oa-chip oa-chip-danger">{failedCode}</span>
+              <span className="oa-chip oa-chip-danger oa-code">
+                {failedCode}
+              </span>
             )}
           </div>
           <p className="oa-sub oa-host">{i.appHost}</p>

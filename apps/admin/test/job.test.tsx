@@ -113,7 +113,7 @@ it("breadcrumb ends at the install, with no trailing slash", async () => {
   expect(crumbs.textContent?.trim()).not.toMatch(/\/$/);
 });
 
-it("hides If you cancel once the job has ended; the failed step shows its code", async () => {
+it("a failed job: named by its kind with a Failed chip, no If you cancel or If it fails; the step shows its code", async () => {
   serve(jobsByStatus.running);
   const a = renderApp(`/jobs/${JOB}`);
   expect(
@@ -134,12 +134,23 @@ it("hides If you cancel once the job has ended; the failed step shows its code",
   renderApp(`/jobs/${JOB}`);
   await screen.findByTestId("job-error");
   expect(screen.queryByRole("heading", { name: "If you cancel" })).toBeNull();
-  expect(screen.getByRole("heading", { name: "If it fails" })).toBeVisible();
+  expect(screen.queryByRole("heading", { name: "If it fails" })).toBeNull();
+  const title = await screen.findByRole("heading", {
+    level: 1,
+    name: "Create broken",
+  });
+  expect(title.parentElement).toHaveTextContent(/Failed$/);
   const failed = within(screen.getByRole("list", { name: "Steps" }))
     .getAllByRole("listitem")
     .find((li) => li.getAttribute("data-step") === "failed");
   expect(failed).toHaveTextContent("Verify clean");
   expect(failed?.querySelector("small")).toHaveTextContent(/^prod_dirty$/);
+  // Codes render in mono.
+  expect(failed?.querySelector("small code")).toHaveTextContent("prod_dirty");
+  expect(
+    within(screen.getByTestId("job-error")).getByText("verify_clean refused")
+      .tagName,
+  ).toBe("CODE");
 });
 
 it("a failed create names the step and says nothing was routed; Retry is offered on a failed install", async () => {

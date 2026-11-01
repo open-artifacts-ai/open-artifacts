@@ -45,7 +45,12 @@ function AttemptLine({ job, now }: { job: Job; now: number }) {
         Attempt {job.attempt}
       </span>,
     );
-  if (code) parts.push(code);
+  if (code)
+    parts.push(
+      <code key="c" className="oa-code">
+        {code}
+      </code>,
+    );
   if (retry)
     parts.push(
       <span key="r" data-testid="retry-at">
@@ -56,7 +61,8 @@ function AttemptLine({ job, now }: { job: Job; now: number }) {
   return (
     <small data-testid="attempt-line">
       {parts.map((p, i) => (
-        <Fragment key={typeof p === "string" ? p : i}>
+        // biome-ignore lint/suspicious/noArrayIndexKey: fixed order, at most three parts
+        <Fragment key={i}>
           {i > 0 && " · "}
           {p}
         </Fragment>
@@ -142,12 +148,18 @@ export function JobPage({ id }: { id: string }) {
       </p>
       <div className="oa-head oa-head-loose">
         <div style={{ flex: 1 }}>
-          <h1>
-            {verb.ing} {slug ?? ""}
-          </h1>
+          {/* Running: "Creating broken". Ended: the job's name, "Create broken". */}
+          <div className="oa-title-row">
+            <h1>
+              {live ? verb.ing : verb.noun} {slug ?? ""}
+            </h1>
+            {job.status === "failed" && (
+              <span className="oa-chip oa-chip-danger">Failed</span>
+            )}
+          </div>
           <p className="oa-sub">
-            Job {shortId(job.id)} · started {fmtClock(job.createdAt)} by{" "}
-            {job.actor.label} · step {n} of {of}
+            Job <span className="oa-code">{shortId(job.id)}</span> · started{" "}
+            {fmtClock(job.createdAt)} by {job.actor.label} · step {n} of {of}
             <span className="sr-only" data-testid="status">
               {" "}
               · {job.status}
@@ -190,7 +202,8 @@ export function JobPage({ id }: { id: string }) {
                 <strong>
                   {verb.noun} stopped
                   {stoppedAt ? ` at "${stoppedAt.label}"` : ""}
-                  {code ? `: ${code}` : ""}.
+                  {code ? ": " : ""}
+                  {code && <code>{code}</code>}.
                 </strong>
                 {job.kind === "create" &&
                 routeAt >= 0 &&
@@ -199,7 +212,11 @@ export function JobPage({ id }: { id: string }) {
                   : ""}
               </p>
               {codeCopy(code) && <p>{codeCopy(code)}</p>}
-              {job.error && <p>{job.error.message}</p>}
+              {job.error && (
+                <p>
+                  <code>{job.error.message}</code>
+                </p>
+              )}
               {job.kind === "create" && install.data?.state === "failed" && (
                 <>
                   <Button
@@ -218,25 +235,36 @@ export function JobPage({ id }: { id: string }) {
           {live && job.lastErrorCode && (
             <div className="oa-error" data-testid="job-error">
               <strong>Last error</strong>
-              <p>{codeCopy(job.lastErrorCode) ?? job.lastErrorCode}</p>
-              {job.error && <p>{job.error.message}</p>}
+              <p>
+                {codeCopy(job.lastErrorCode) ?? (
+                  <code>{job.lastErrorCode}</code>
+                )}
+              </p>
+              {job.error && (
+                <p>
+                  <code>{job.error.message}</code>
+                </p>
+              )}
             </div>
           )}
         </div>
-        <aside className="oa-side oa-job-side">
-          {live && (
-            <>
-              <h2>If you cancel</h2>
-              <p>
-                The job stops now and a cleanup job undoes what it did. Type the
-                slug to confirm.
-              </p>
-            </>
-          )}
-          <h2>If it fails</h2>
-          <p>Nothing is routed. Retry from the install.</p>
-          {live && <p className="oa-note">Updating every 2 seconds.</p>}
-        </aside>
+        {/* Once the job has failed there is nothing left to say here. */}
+        {job.status !== "failed" && (
+          <aside className="oa-side oa-job-side">
+            {live && (
+              <>
+                <h2>If you cancel</h2>
+                <p>
+                  The job stops now and a cleanup job undoes what it did. Type
+                  the slug to confirm.
+                </p>
+              </>
+            )}
+            <h2>If it fails</h2>
+            <p>Nothing is routed. Retry from the install.</p>
+            {live && <p className="oa-note">Updating every 2 seconds.</p>}
+          </aside>
+        )}
       </div>
       {confirming && install.data && (
         <ActionDialog

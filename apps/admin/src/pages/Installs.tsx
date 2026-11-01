@@ -112,7 +112,7 @@ function Tiles({
         n: by.provisioning,
         id: "tile-creating",
       })}
-      {/* The mock's "Paused · Deleting" tile: each half filters on its own. */}
+      {/* Paused and Deleted, restorable: one tile, each half filters on its own. */}
       <div className="oa-tile oa-tile-split">
         <TileButton
           t={{
@@ -125,9 +125,6 @@ function Tiles({
           onPick={onPick}
           className="oa-tile-seg"
         />
-        <span className="oa-tile-dot" aria-hidden="true">
-          ·
-        </span>
         <TileButton
           t={{
             f: "deleting",
@@ -216,7 +213,9 @@ function StateCell({
         </span>
       )}
       {i.state === "failed" && failedHere?.code && (
-        <span className="oa-chip oa-chip-danger">{failedHere.code}</span>
+        <span className="oa-chip oa-chip-danger oa-code">
+          {failedHere.code}
+        </span>
       )}
     </>
   );
@@ -443,10 +442,16 @@ export function Installs() {
                         </Link>
                         <span className="oa-mut">{i.appHost}</span>
                       </TableCell>
-                      <TableCell className="oa-mono">
-                        {i.version ?? "–"}
+                      <TableCell className={i.version ? "oa-mono" : undefined}>
+                        {i.version ?? <span className="oa-note">–</span>}
                       </TableCell>
-                      <TableCell>{i.tier ? TIER_LABEL[i.tier] : "–"}</TableCell>
+                      <TableCell>
+                        {i.tier ? (
+                          TIER_LABEL[i.tier]
+                        ) : (
+                          <span className="oa-note">–</span>
+                        )}
+                      </TableCell>
                       <TableCell>
                         {i.auth.providers.map(providerLabel).join(" · ")}
                         {i.auth.domainCount > 0 &&
