@@ -9,6 +9,7 @@ import {
   run,
   SCHEDULER_STALE_MS,
 } from "../scripts/prodclean-monitor.ts";
+import { notFound } from "../src/http.ts";
 
 const NOW = Date.parse("2026-10-31T12:00:00Z");
 const ACCT = "0123456789abcdef0123456789abcdef";
@@ -96,7 +97,8 @@ function fake(w: World) {
       return typeof w.mint === "number" ? res(w.mint) : res(200, w.mint);
     }
     if (u.origin === INV) {
-      if (auth !== `Bearer ${JWT}`) return res(401);
+      // Inventory refuses a bad bearer with its unknown-route 404 (#1016).
+      if (auth !== `Bearer ${JWT}`) return notFound();
       if (u.pathname === "/health")
         return typeof w.health === "number"
           ? res(w.health)
@@ -284,6 +286,17 @@ describe("prodclean-monitor", () => {
     );
   });
 
+  it("inventory refusing the bearer (its plain 404) -> inventory_bad", async () => {
+    const r = await monitor({
+      ...world(),
+      mint: { value: "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ5In0.b3RoZXI" },
+    });
+    expect(r).toMatchObject({
+      code: 1,
+      line: "prod-clean: fail (inventory_bad)",
+    });
+  });
+
   it("red-line token expiry: the window comes from REDLINE_TOKEN_WARN_MS", async () => {
     const exp = (t: number) => {
       const w = world();
@@ -349,7 +362,7 @@ describe("prodclean-monitor", () => {
   });
 
   it("a report inventory refuses fails even after a pass", async () => {
-    for (const status of [401, 500, 200]) {
+    for (const status of [404, 500, 200]) {
       const r = await monitor({ ...world(), report: status });
       expect(r).toMatchObject({
         code: 1,
