@@ -229,6 +229,25 @@ export async function expected(migrations: Migration[]): Promise<Expected> {
   return { markers, shapes, sqls };
 }
 
+/**
+ * What the live database may hold before a run, once the first `k` files are
+ * applied: each object as those `k` files leave it, and an object only a later
+ * file makes as that file leaves it (a hand-applied file). The final shape
+ * would refuse every pending ALTER TABLE file (0009 on v0.89.0).
+ */
+async function priorShapes(
+  migrations: Migration[],
+  k: number,
+): Promise<Expected> {
+  const out = await expected(migrations.slice(0, k));
+  for (let j = k + 1; j <= migrations.length; j++) {
+    const at = await expected(migrations.slice(0, j));
+    for (const [t, s] of Object.entries(at.shapes)) out.shapes[t] ??= s;
+    for (const [n, s] of Object.entries(at.sqls)) out.sqls[n] ??= s;
+  }
+  return out;
+}
+
 /** The live database's shape problems against `want` (missing objects only when strict). */
 async function shapeProblems(
   all: All,
@@ -360,7 +379,11 @@ export async function run({
     want,
   );
 
-  const before = await shapeProblems(all, want, false);
+  const before = await shapeProblems(
+    all,
+    await priorShapes(migrations, recorded.size + bootstrap.length),
+    false,
+  );
   if (before.length)
     throw new Refused(
       `the live schema differs from the migrations (add a new numbered migration): ${before.join("; ")}`,

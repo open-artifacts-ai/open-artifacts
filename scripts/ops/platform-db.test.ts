@@ -42,13 +42,13 @@ const applied = (n: number) => {
 };
 const go = async (
   f: ReturnType<typeof fakeDb>,
-  opts: { verifyOnly?: boolean } = {},
+  opts: { verifyOnly?: boolean; upTo?: number } = {},
 ) => {
   const log: string[] = [];
   try {
     await run({
       db: f.db,
-      migrations,
+      migrations: migrations.slice(0, opts.upTo ?? migrations.length),
       verifyOnly: Boolean(opts.verifyOnly),
       now: () => 1_700_000_000_000,
       log: (s: string) => log.push(s),
@@ -275,6 +275,46 @@ describe("platform-db.ts", () => {
     const r = await go(f);
     expect(r.err).toBe("");
     expect(r.log).toEqual([`${names.length} migrations tracked, shapes match`]);
+    expect(writes(f)).toEqual([]);
+  });
+
+  // v0.89.0: 0009 (ALTER TABLE jobs) was refused before it ran, as the check
+  // compared the live jobs table with its shape after 0009.
+  const tracked = migrations.findIndex((m) =>
+    m.sql.includes("platform_migrations"),
+  );
+  it.each(names.slice(tracked, -1).map((n, i) => [n, tracked + i + 1]))(
+    "a database tracked up to %s applies every later file, ALTER TABLE ones too",
+    async (_n, k) => {
+      const f = fakeDb();
+      expect((await go(f, { upTo: k })).err).toBe("");
+      const r = await go(f);
+      expect(r.err).toBe("");
+      expect(r.log).toEqual([
+        ...names.slice(k).map((n) => `${n}: applied`),
+        `${names.length} migrations tracked, shapes match`,
+      ]);
+    },
+  );
+
+  it("refuses a pending ALTER TABLE file already applied by hand, before any write", async () => {
+    const f = fakeDb();
+    expect((await go(f, { upTo: 8 })).err).toBe("");
+    f.sqlite.exec(migrations[8]?.sql ?? "");
+    f.calls.length = 0;
+    const r = await go(f);
+    expect(r.err).toContain("the live schema differs from the migrations");
+    expect(r.err).toContain("jobs has columns");
+    expect(writes(f)).toEqual([]);
+  });
+
+  it("refuses an extra live column on a tracked table while a file is pending", async () => {
+    const f = fakeDb();
+    expect((await go(f, { upTo: 8 })).err).toBe("");
+    f.sqlite.exec("ALTER TABLE jobs ADD COLUMN extra TEXT");
+    f.calls.length = 0;
+    const r = await go(f);
+    expect(r.err).toContain("jobs has columns");
     expect(writes(f)).toEqual([]);
   });
 
