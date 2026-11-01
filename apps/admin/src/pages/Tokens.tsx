@@ -3,6 +3,7 @@ import { type Token, TokenScopeSchema } from "@oa/shared/provisioning";
 import { LIVE_TOKENS_PER_ADMIN } from "@oa/shared/provisioning/constants";
 import {
   Button,
+  Checkbox,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -19,11 +20,12 @@ import {
   TableRow,
 } from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { tokensQuery } from "../api/queries";
 import { ActionDialog } from "../components/ActionDialog";
 import { ErrorLine } from "../components/Bits";
+import { CopyButton } from "../components/CopyButton";
 import { fmtAgo, fmtIn, fmtLeft } from "../components/labels";
 import { useAction } from "../hooks/useAction";
 import { LoadError } from "../layout/LoadError";
@@ -45,33 +47,6 @@ const SCOPE_LABEL = [
 const LIFETIMES = [15, 30, 60] as const;
 
 const isLive = (t: Token, now: number) => !t.revokedAt && t.expiresAt > now;
-
-async function copy(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
-  return (
-    <Button
-      type="button"
-      variant="outline"
-      size="sm"
-      onClick={async () => setState((await copy(text)) ? "copied" : "failed")}
-    >
-      {state === "copied"
-        ? "Copied"
-        : state === "failed"
-          ? "Copy failed"
-          : label}
-    </Button>
-  );
-}
 
 /** https://api.<app>/mcp: the admin host's sibling, else the per-environment default. */
 export function mcpUrlFor(env: "prod" | "staging", host: string): string {
@@ -99,32 +74,36 @@ function ConnectCard({ env }: { env: "prod" | "staging" }) {
       : "oauth";
   const snip = snippets.find((s) => s.agent === agent && s.variant === shown);
   return (
-    <section className="oa-card" aria-label="Connect any AI agent">
-      <h2>Connect any AI agent</h2>
-      <p>
-        It signs in through you and gets only the access you approve. Server{" "}
-        <code>{url}</code>
-      </p>
-      <fieldset className="oa-seg">
-        <legend className="sr-only">How it signs in</legend>
-        {(
-          [
-            ["oauth", "Sign in with browser"],
-            ["token", "Use a token"],
-          ] as const
-        ).map(([v, label]) => (
-          <button
-            key={v}
-            type="button"
-            aria-pressed={shown === v}
-            disabled={!has(v)}
-            onClick={() => setVariant(v)}
-          >
-            {label}
-          </button>
-        ))}
-      </fieldset>
-      <div className="oa-seg">
+    <section className="oa-card oa-connect" aria-label="Connect any AI agent">
+      <div className="oa-connect-head">
+        <div>
+          <h2>Connect any AI agent</h2>
+          <p className="oa-sub">
+            It signs in through you and gets only the access you approve. Server{" "}
+            <code>{url}</code>
+          </p>
+        </div>
+        <fieldset className="oa-seg">
+          <legend className="sr-only">How it signs in</legend>
+          {(
+            [
+              ["oauth", "Sign in with browser"],
+              ["token", "Use a token"],
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              aria-pressed={shown === v}
+              disabled={!has(v)}
+              onClick={() => setVariant(v)}
+            >
+              {label}
+            </button>
+          ))}
+        </fieldset>
+      </div>
+      <div className="oa-tabs">
         {agents.map((a) => (
           <button
             key={a}
@@ -139,22 +118,24 @@ function ConnectCard({ env }: { env: "prod" | "staging" }) {
       {snip && (
         <div data-testid="snippet">
           {snip.file && (
-            <p>
+            <p className="oa-sub">
               Put this in <code>{snip.file}</code>
             </p>
           )}
-          <pre>
-            <code>{snip.code}</code>
-          </pre>
-          {snip.language !== "text" && (
-            <CopyButton text={snip.code} label="Copy" />
-          )}
-          {snip.hint && <p>{snip.hint}</p>}
-          {snip.verify && <p>{snip.verify}</p>}
-          {snip.reload && <p>{snip.reload}</p>}
+          <div className="oa-snip">
+            <pre>
+              <code>{snip.code}</code>
+            </pre>
+            {snip.language !== "text" && (
+              <CopyButton text={snip.code} label="Copy" />
+            )}
+          </div>
+          {snip.hint && <p className="oa-sub">{ticks(snip.hint)}</p>}
+          {snip.verify && <p className="oa-sub">{ticks(snip.verify)}</p>}
+          {snip.reload && <p className="oa-sub">{ticks(snip.reload)}</p>}
         </div>
       )}
-      <p className="oa-hint">
+      <p className="oa-sub">
         Claude.ai: Settings, Connectors, Add custom connector, same server
         address.
       </p>
@@ -194,10 +175,17 @@ function MintDialog({
     },
     { invalidate: [["tokens"]], key: [label, scopes, ttl] },
   );
-  const ok =
-    LABEL_RE.test(label) &&
-    scopes.length > 0 &&
-    LIFETIMES.some((m) => m === ttl);
+  /** Why Mint token is off, shown beside it. */
+  const blocker = !label
+    ? "Add a label."
+    : !LABEL_RE.test(label)
+      ? "Use letters, numbers, spaces, dots, dashes or underscores in the label."
+      : scopes.length === 0
+        ? "Pick at least one scope."
+        : !LIFETIMES.some((m) => m === ttl)
+          ? "Pick a lifetime."
+          : undefined;
+  const ok = !blocker;
   return (
     <ActionDialog
       open
@@ -205,6 +193,7 @@ function MintDialog({
       title="Mint a token"
       submitLabel="Mint token"
       canSubmit={ok}
+      blocker={blocker}
       pending={mint.isPending}
       error={mint.error}
       onSubmit={() => mint.mutate(undefined)}
@@ -222,16 +211,18 @@ function MintDialog({
       <fieldset>
         <legend>Scopes</legend>
         {SCOPE_LABEL.map(([s, name]) => (
-          <label key={s} className="oa-check">
-            <input
-              type="checkbox"
+          <label key={s} className="oa-check" htmlFor={`scope-${s}`}>
+            <Checkbox
+              id={`scope-${s}`}
               checked={scopes.includes(s)}
-              onChange={(e) =>
+              onCheckedChange={(on) =>
                 setScopes((cur) =>
-                  e.target.checked ? [...cur, s] : cur.filter((x) => x !== s),
+                  on === true
+                    ? [...cur.filter((x) => x !== s), s]
+                    : cur.filter((x) => x !== s),
                 )
               }
-            />{" "}
+            />
             {name} <code>{s}</code>
           </label>
         ))}
@@ -273,19 +264,19 @@ function MintedDialog({ m, onDone }: { m: Minted; onDone: () => void }) {
             Copy it now. It won't be shown again.
           </DialogDescription>
         </DialogHeader>
-        <code className="oa-secret-code">{m.secret}</code>
-        <div>
+        <div className="oa-snip">
+          <code className="oa-secret-code">{m.secret}</code>
           <CopyButton text={m.secret} label="Copy" />
         </div>
-        <dl className="oa-fields">
+        <dl className="oa-fields oa-minted-fields">
           <dt>Label</dt>
           <dd>{m.label}</dd>
           <dt>Scopes</dt>
-          <dd>{m.scopes.join(" ")}</dd>
+          <dd className="oa-mono">{m.scopes.join(" ")}</dd>
           <dt>Ends</dt>
           <dd>in {m.ttl} min, or when you sign out</dd>
         </dl>
-        <DialogFooter>
+        <DialogFooter className="oa-foot-rule">
           <Button onClick={onDone}>Done</Button>
         </DialogFooter>
       </DialogContent>
@@ -301,6 +292,19 @@ function useNow(ms: number) {
     return () => clearInterval(t);
   }, [ms]);
   return now;
+}
+
+/** Snippet notes mark commands with backticks: set those as inline code. */
+function ticks(text: string) {
+  const out: ReactNode[] = [];
+  let at = 0;
+  for (const m of text.matchAll(/`([^`]+)`/g)) {
+    out.push(text.slice(at, m.index));
+    out.push(<code key={m.index}>{m[1]}</code>);
+    at = m.index + m[0].length;
+  }
+  out.push(text.slice(at));
+  return out;
 }
 
 /** "Signed in (OAuth)" for a consent grant, "Token (oat_)" for a minted bearer. */
@@ -331,7 +335,7 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
   return (
     <>
       <div className="oa-head">
-        <div style={{ flex: 1 }}>
+        <div>
           <h1>Agent tokens</h1>
           {q.data && (
             <p className="oa-sub">
@@ -340,19 +344,34 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
             </p>
           )}
         </div>
-        <Button
-          variant="destructive"
-          onClick={() => setRevokingAll(true)}
-          disabled={live.length === 0}
-        >
-          Revoke all
-        </Button>
-        <Button onClick={() => setMinting(true)} disabled={full}>
-          Mint token
-        </Button>
+        <div className="oa-actions">
+          <Button
+            variant="outline"
+            onClick={() => setRevokingAll(true)}
+            disabled={live.length === 0}
+          >
+            Revoke all
+          </Button>
+          <Button onClick={() => setMinting(true)} disabled={full}>
+            <svg
+              viewBox="0 0 16 16"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M8 3v10M3 8h10" />
+            </svg>
+            Mint token
+          </Button>
+        </div>
       </div>
       {full && (
-        <p className="oa-note" data-testid="token-limit">
+        <p className="oa-banner oa-banner-warn" data-testid="token-limit">
           You have {LIVE_TOKENS_PER_ADMIN} live tokens and agents. Revoke one to
           add another.
         </p>
@@ -366,14 +385,14 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
           onRetry={() => void q.refetch()}
         />
       ) : q.data && live.length === 0 ? (
-        <div className="oa-placeholder">
+        <div className="oa-card oa-empty">
           <p>
             <strong>No agents yet</strong>
           </p>
           <p>Connect any AI agent above, or mint a token for a script.</p>
         </div>
       ) : q.data ? (
-        <div className="oa-tablewrap">
+        <div className="oa-tablewrap oa-tokens">
           <Table>
             <TableHeader>
               <TableRow>
@@ -390,12 +409,18 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
             <TableBody>
               {live.map((t) => (
                 <TableRow key={t.id} data-kind={t.kind}>
-                  <TableCell>{t.clientName ?? t.label}</TableCell>
+                  <TableCell className="oa-strong">
+                    {t.clientName ?? t.label}
+                  </TableCell>
                   <TableCell>{kindLabel(t)}</TableCell>
-                  <TableCell>{t.scopes.join(" ")}</TableCell>
+                  <TableCell className="oa-mono oa-wrap">
+                    {t.scopes.join(" ")}
+                  </TableCell>
                   <TableCell>{endsLabel(t, now)}</TableCell>
-                  <TableCell>{fmtAgo(t.lastUsedAt, now)}</TableCell>
-                  <TableCell>
+                  <TableCell className="oa-note">
+                    {fmtAgo(t.lastUsedAt, now)}
+                  </TableCell>
+                  <TableCell className="oa-end">
                     <Button
                       variant="outline"
                       size="sm"

@@ -14,7 +14,7 @@ import { Shell } from "./layout/Shell";
 import { Audit } from "./pages/Audit";
 import { CreateInstall } from "./pages/CreateInstall";
 import { InstallDetail } from "./pages/InstallDetail";
-import { Installs } from "./pages/Installs";
+import { Installs, parseStateFilter, type StateFilter } from "./pages/Installs";
 import { JobPage } from "./pages/JobPage";
 import { NoAccess } from "./pages/NoAccess";
 import { SignIn } from "./pages/SignIn";
@@ -81,7 +81,15 @@ const routeTree = root.addChildren([
   signIn,
   noAccess,
   shell.addChildren([
-    inShell("/installs", Installs),
+    createRoute({
+      getParentRoute: () => shell,
+      path: "/installs",
+      validateSearch: (s: Record<string, unknown>): { state?: StateFilter } => {
+        const state = parseStateFilter(s.state);
+        return state ? { state } : {};
+      },
+      component: Installs,
+    }),
     inShell("/installs/new", CreateInstall),
     inShell("/installs/$id", () => <InstallDetail id={useId()} />),
     inShell("/jobs/$id", () => <JobPage id={useId()} />),

@@ -2,8 +2,25 @@ import {
   canTransition,
   type InstallDetail as Install,
   type JobKind,
+  type JobListItem,
 } from "@oa/shared/provisioning";
-import { Button, Label, Textarea } from "@oa/ui/shadcn";
+import {
+  Button,
+  Checkbox,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@oa/ui/shadcn";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
@@ -21,13 +38,16 @@ import { ActionDialog } from "../components/ActionDialog";
 import { ErrorLine, StateBadge, StatusBadge } from "../components/Bits";
 import { fmtTime } from "../components/format";
 import {
+  fmtClock,
   fmtDay,
   HEALTH_LABEL,
+  HEALTH_TONE,
   JOB_VERB,
   jobTarget,
+  providerLabel,
   SERVING_LABEL,
-  STATE_LABEL,
   stepCount,
+  TIER_LABEL,
   visibleSteps,
 } from "../components/labels";
 import { useAction } from "../hooks/useAction";
@@ -43,6 +63,8 @@ type Dialog =
   | null;
 
 const GRACE_DAYS = 7;
+/** The upgrade's "latest release" value (Radix Select has no empty value). */
+const LATEST = "latest";
 const REAUTH_MS = 10 * 60_000;
 const can = (i: Install, kind: JobKind) => canTransition(i.state, kind, "A");
 
@@ -174,7 +196,11 @@ function Actions({ install }: { install: Install }) {
   return (
     <section className="oa-actions" aria-label="Actions">
       {can(install, "upgrade") && (
-        <Button disabled={busy} onClick={() => setDialog("upgrade")}>
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => setDialog("upgrade")}
+        >
           Upgrade
         </Button>
       )}
@@ -203,7 +229,7 @@ function Actions({ install }: { install: Install }) {
       )}
       {can(install, "delete") && (
         <Button
-          variant="destructive"
+          variant="outline"
           disabled={busy}
           onClick={() => setDialog("delete")}
         >
@@ -212,7 +238,7 @@ function Actions({ install }: { install: Install }) {
       )}
       {can(install, "purge") && (
         <Button
-          variant="destructive"
+          variant="outline"
           disabled={busy}
           onClick={() => setDialog("purge")}
         >
@@ -241,19 +267,29 @@ function Actions({ install }: { install: Install }) {
           error={upgrade.error}
           onSubmit={() => upgrade.mutate()}
         >
-          <Label htmlFor="up-version">Version</Label>
-          <select
-            id="up-version"
-            value={version}
-            onChange={(e) => setVersion(e.target.value)}
-          >
-            <option value="">Latest release</option>
-            {versions.map((r) => (
-              <option key={r.version} value={r.version}>
-                {r.version}
-              </option>
-            ))}
-          </select>
+          <div>
+            <Label htmlFor="up-version">Version</Label>
+            <Select
+              value={version || LATEST}
+              onValueChange={(v) => setVersion(v === LATEST ? "" : v)}
+            >
+              <SelectTrigger id="up-version" className="oa-select-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper" align="start">
+                <SelectItem value={LATEST}>Latest release</SelectItem>
+                {versions.map((r) => (
+                  <SelectItem
+                    key={r.version}
+                    value={r.version}
+                    className="oa-mono-item"
+                  >
+                    {r.version}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </ActionDialog>
       )}
       {dialog === "suspend" && (
@@ -264,20 +300,25 @@ function Actions({ install }: { install: Install }) {
           description="Visitors see the paused page. Nothing is deleted, and you can resume it at any time."
           submitLabel={`Pause ${install.slug}`}
           canSubmit={reason.trim().length >= 1 && reason.trim().length <= 200}
+          blocker="Add a reason."
           pending={suspend.isPending}
           error={suspend.error}
           onSubmit={() => suspend.mutate()}
         >
-          <Label htmlFor="reason">Reason</Label>
-          <Textarea
-            id="reason"
-            value={reason}
-            maxLength={200}
-            onChange={(e) => setReason(e.target.value)}
-          />
-          <small className="oa-hint">
-            Only admins and their agents see this.
-          </small>
+          <div>
+            <Label htmlFor="reason">Reason</Label>
+            <Input
+              id="reason"
+              className="oa-reason"
+              autoComplete="off"
+              value={reason}
+              maxLength={200}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <small className="oa-hint">
+              Only admins and their agents see this.
+            </small>
+          </div>
         </ActionDialog>
       )}
       {dialog === "delete" && (
@@ -299,9 +340,22 @@ function Actions({ install }: { install: Install }) {
           open
           onClose={close}
           title={`Delete ${install.slug} for good?`}
-          description={`This can't be undone. Its artifacts, data and files are erased, and its people lose access.${fresh ? "" : " Sign in again to continue."}`}
+          description={
+            <>
+              This can't be undone. Its artifacts, data and files are erased,
+              and its people lose access.
+              {!fresh && (
+                <span className="oa-banner oa-banner-warn oa-dialog-banner">
+                  {" "}
+                  Sign in again to continue.
+                </span>
+              )}
+            </>
+          }
           expected={fresh ? install.slug : undefined}
-          submitLabel={fresh ? "Purge" : "Sign in again"}
+          submitLabel={
+            fresh ? `Delete ${install.slug} for good` : "Sign in again"
+          }
           destructive={fresh}
           pending={purge.isPending}
           error={purge.error}
@@ -330,14 +384,16 @@ function Actions({ install }: { install: Install }) {
           onSubmit={() => lease.mutate()}
         >
           {live && (
-            <label className="oa-check">
-              <input
-                type="checkbox"
+            <div className="oa-check">
+              <Checkbox
+                id="lease-force"
                 checked={force}
-                onChange={(e) => setForce(e.target.checked)}
-              />{" "}
-              Force (the lease is held until {fmtTime(install.lease.until)})
-            </label>
+                onCheckedChange={(c) => setForce(c === true)}
+              />
+              <label htmlFor="lease-force" className="oa-check">
+                Force (the lease is held until {fmtTime(install.lease.until)})
+              </label>
+            </div>
           )}
         </ActionDialog>
       )}
@@ -359,6 +415,14 @@ function Actions({ install }: { install: Install }) {
   );
 }
 
+/** The Step cell: where the job is ("Health check · 5/5"), or all steps once done. */
+function jobStep(j: JobListItem) {
+  const { n, of } = stepCount(j);
+  if (j.status === "done") return `${of}/${of}`;
+  const at = visibleSteps(j.steps).find((s) => s.index === j.stepIndex);
+  return at ? `${at.label} · ${n}/${of}` : `${n}/${of}`;
+}
+
 /** "Upgrading to 0.77.1, step 3 of 11, Reserve slug and hosts. Open job" */
 function ActiveJob({ jobId, installId }: { jobId: string; installId: string }) {
   const q = useQuery(jobQuery(jobId));
@@ -377,7 +441,7 @@ function ActiveJob({ jobId, installId }: { jobId: string; installId: string }) {
     ? visibleSteps(job.steps).find((s) => s.index === job.stepIndex)
     : undefined;
   return (
-    <p className="oa-note" data-testid="active-job">
+    <p className="oa-banner oa-banner-info" data-testid="active-job">
       {job ? (
         <>
           {JOB_VERB[job.kind].ing}
@@ -417,17 +481,37 @@ export function InstallDetail({ id }: { id: string }) {
   const last = jobs.data?.items[0];
   const rolledBack =
     last?.kind === "upgrade" && last.lastErrorCode === "upgrade_rolled_back";
+  // A failed install: the job that stopped, the step it stopped at and why.
+  const failed =
+    i.state === "failed"
+      ? (jobs.data?.items.find((j) => j.status === "failed") ?? last)
+      : undefined;
+  const failedStep = failed
+    ? visibleSteps(failed.steps).find((s) => s.index === failed.stepIndex)
+        ?.label
+    : undefined;
+  const failedCode = failed
+    ? (failed.error?.code ?? failed.lastErrorCode ?? null)
+    : null;
   return (
     <>
       <p className="oa-crumbs">
-        <Link to="/installs">Installs</Link> /
+        <Link to="/installs">Installs</Link>
       </p>
       <div className="oa-head">
-        <div style={{ flex: 1 }}>
-          <h1>{i.slug}</h1>
-          <p className="oa-sub">{i.appHost}</p>
+        <div>
+          <div className="oa-title-row">
+            <h1>{i.slug}</h1>
+            <StateBadge state={i.state} chip />
+            {i.state === "failed" && failedCode && (
+              <span className="oa-chip oa-chip-danger oa-code">
+                {failedCode}
+              </span>
+            )}
+          </div>
+          <p className="oa-sub oa-host">{i.appHost}</p>
         </div>
-        <StateBadge state={i.state} />
+        <Actions install={i} />
       </div>
       {i.activeJobId && <ActiveJob jobId={i.activeJobId} installId={i.id} />}
       {i.mismatch && (
@@ -441,7 +525,7 @@ export function InstallDetail({ id }: { id: string }) {
       )}
       {rolledBack && last && (
         <p
-          className="oa-banner oa-banner-warn"
+          className="oa-banner oa-banner-info"
           role="alert"
           data-testid="rolled-back"
         >
@@ -456,18 +540,28 @@ export function InstallDetail({ id }: { id: string }) {
         </p>
       )}
       {i.state === "failed" && (
-        <p className="oa-error" role="alert">
+        <p className="oa-banner oa-banner-danger" role="alert">
+          {failed && (
+            <>
+              <strong>
+                {JOB_VERB[failed.kind].noun} stopped
+                {failedStep ? ` at "${failedStep}"` : ""}
+                {failedCode ? ": " : ""}
+                {failedCode && <code>{failedCode}</code>}.
+              </strong>{" "}
+            </>
+          )}
           The last job failed. Retry it or purge the install.
         </p>
       )}
       {i.state === "suspended" && (
-        <p className="oa-note">
+        <p className="oa-banner oa-banner-warn">
           Paused {fmtDay(i.suspendedAt ?? i.createdAt)}. Reason:{" "}
           {i.suspendReason}
         </p>
       )}
       {i.state === "deleting" && (
-        <p className="oa-note">
+        <p className="oa-banner">
           Deleted {fmtDay(i.deletedAt ?? i.createdAt)}.{" "}
           {i.restorable
             ? `You can restore it until ${fmtDay(i.purgeAt ?? 0)}.`
@@ -475,55 +569,116 @@ export function InstallDetail({ id }: { id: string }) {
         </p>
       )}
       {i.lease.held && (
-        <p className="oa-note" data-testid="lease">
+        <p className="oa-banner" data-testid="lease">
           A job holds the lease until {fmtTime(i.lease.until)}.
         </p>
       )}
-      <dl className="oa-fields">
-        <dt>State</dt>
-        <dd>{STATE_LABEL[i.state]}</dd>
-        <dt>Health</dt>
-        <dd>{HEALTH_LABEL[i.health]}</dd>
-        <dt>Serving</dt>
-        <dd>
-          {i.version ?? "nothing"}
-          {i.previousVersion && ` (previous ${i.previousVersion})`}
-        </dd>
-        <dt>Routing</dt>
-        <dd>{SERVING_LABEL[i.servingMode]}</dd>
-        <dt>Tier · Sign-in</dt>
-        <dd>
-          {i.tier ? i.tier[0].toUpperCase() + i.tier.slice(1) : "None"} ·{" "}
-          {i.auth.providers
-            .map((p) => (p === "google" ? "Google" : "Email"))
-            .join(", ")}
-          {i.auth.domains.length > 0 &&
-            ` · ${i.auth.domains.length} ${i.auth.domains.length === 1 ? "domain" : "domains"}`}
-        </dd>
-        <dt>Owner</dt>
-        <dd>{i.ownerEmail ?? "hidden"}</dd>
-        <dt>Created</dt>
-        <dd>{fmtDay(i.createdAt)}</dd>
-        <dt>Domains</dt>
-        <dd>{i.auth.domains.join(", ") || "none"}</dd>
-        <dt>Install id</dt>
-        <dd>{i.id}</dd>
-      </dl>
-      <Actions install={i} />
-      <h2>Recent jobs</h2>
-      {jobs.data && jobs.data.items.length === 0 && (
-        <p className="oa-placeholder">No jobs yet.</p>
-      )}
-      <ul className="oa-jobs">
-        {jobs.data?.items.map((j) => (
-          <li key={j.id}>
-            <Link to="/jobs/$id" params={{ id: j.id }}>
-              {j.kind}
-            </Link>{" "}
-            <StatusBadge status={j.status} /> {fmtTime(j.createdAt)}
-          </li>
-        ))}
-      </ul>
+      <div className="oa-detail">
+        <section className="oa-card" aria-label="Facts">
+          <dl className="oa-fields">
+            <div>
+              <dt>Health</dt>
+              <dd>
+                <span className="oa-st" data-tone={HEALTH_TONE[i.health]}>
+                  {HEALTH_LABEL[i.health]}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>Serving</dt>
+              <dd>
+                {i.version ? (
+                  <span className="oa-mono">{i.version}</span>
+                ) : (
+                  "nothing"
+                )}
+                {i.previousVersion && (
+                  <>
+                    {" "}
+                    (previous{" "}
+                    <span className="oa-mono">{i.previousVersion}</span>)
+                  </>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Routing</dt>
+              <dd>{SERVING_LABEL[i.servingMode]}</dd>
+            </div>
+            <div>
+              <dt>Tier · Sign-in</dt>
+              <dd>
+                {i.tier ? TIER_LABEL[i.tier] : "None"} ·{" "}
+                {i.auth.providers.map(providerLabel).join(", ")}
+                {i.auth.domains.length > 0 &&
+                  ` · ${i.auth.domains.length} ${i.auth.domains.length === 1 ? "domain" : "domains"}`}
+              </dd>
+            </div>
+            <div>
+              <dt>Owner</dt>
+              <dd>{i.ownerEmail ?? "hidden"}</dd>
+            </div>
+            <div>
+              <dt>Created</dt>
+              <dd>{fmtDay(i.createdAt)}</dd>
+            </div>
+            <div>
+              <dt>Domains</dt>
+              <dd>{i.auth.domains.join(", ") || "none"}</dd>
+            </div>
+            <div>
+              <dt>Install id</dt>
+              <dd className="oa-mono">{i.id}</dd>
+            </div>
+          </dl>
+        </section>
+        <h2>Recent jobs</h2>
+        {jobs.data && jobs.data.items.length === 0 ? (
+          <div className="oa-card oa-empty">
+            <p>No jobs yet.</p>
+          </div>
+        ) : jobs.data ? (
+          <div className="oa-tablewrap oa-recent-jobs">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Job</TableHead>
+                  <TableHead>Step</TableHead>
+                  <TableHead>State</TableHead>
+                  <TableHead>Started</TableHead>
+                  <TableHead>By</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {jobs.data.items.map((j) => (
+                  <TableRow key={j.id}>
+                    <TableCell>
+                      <Link to="/jobs/$id" params={{ id: j.id }}>
+                        {JOB_VERB[j.kind].noun}
+                      </Link>
+                      {jobTarget(j.args) && (
+                        <span className="oa-mut">{jobTarget(j.args)}</span>
+                      )}
+                    </TableCell>
+                    <TableCell>{jobStep(j)}</TableCell>
+                    <TableCell>
+                      <StatusBadge status={j.status} />
+                    </TableCell>
+                    <TableCell
+                      className="oa-mono"
+                      title={fmtTime(j.startedAt ?? j.createdAt)}
+                    >
+                      {fmtDay(j.startedAt ?? j.createdAt)}{" "}
+                      {fmtClock(j.startedAt ?? j.createdAt)}
+                    </TableCell>
+                    <TableCell className="oa-note">{j.actor.label}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ) : null}
+      </div>
     </>
   );
 }
