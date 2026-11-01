@@ -91,7 +91,7 @@ export const DUMMY_TURNSTILE = "XXXX.DUMMY.TOKEN.XXXX";
 export const EVIL = "https://evil.example";
 /** P29's unproven reason after a done create and delete (fixed: no run-specific text). */
 export const P29_UNPROVEN =
-  "create done and deleted; the purge that frees signup_accounts is not runnable by any principal in a run (design gap)";
+  "self-serve purge doesn't free signup_accounts (#1046); signups off on prod";
 
 // --- HTTP ----------------------------------------------------------------
 

@@ -183,15 +183,17 @@ describe("gate", () => {
   });
 
   // The unproven-live cases a non-live in-repo test covers, frozen by exact
-  // name and reason (P29 is not among them: nothing covers its purge).
+  // name and reason (P29 for M1 only, until #1046).
   describe("accepted unproven-live", () => {
     const NAMES = [
+      "provisioning > P29: SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete leaves it deleting",
       "provisioning > P30: dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens",
       "provisioning > P35: reachable path: a Worker without a route fetches rl-a /healthz",
       "sign-in: ID tokens > an ID token with hd of A at B's callback: no session",
       "sign-in: ID tokens > A's code and broker state at B: no session",
     ];
     const REASONS = [
+      "self-serve purge doesn't free signup_accounts (#1046); signups off on prod",
       "5 forged callbacks refused; the alert is not readable by O (R27 and other actors' R17 rows are 403)",
       "needs a Worker with no route (spike S7); the runner cannot stand in for it",
       NEEDS_CAPTURE,
@@ -201,8 +203,8 @@ describe("gate", () => {
       ACCEPTED_UNPROVEN.map((e) => c(e.name, "unproven-live", e.reason));
     const ok = c("a", "pass");
 
-    it("is exactly the four, frozen, each citing a test file", () => {
-      expect(ACCEPTED_UNPROVEN).toHaveLength(4);
+    it("is exactly the five, frozen, each citing a test file", () => {
+      expect(ACCEPTED_UNPROVEN).toHaveLength(5);
       expect(ACCEPTED_UNPROVEN.map((e) => e.name)).toEqual(NAMES);
       expect(ACCEPTED_UNPROVEN.map((e) => e.reason)).toEqual(REASONS);
       expect(Object.isFrozen(ACCEPTED_UNPROVEN)).toBe(true);
@@ -213,7 +215,7 @@ describe("gate", () => {
     });
 
     it("the ID-token entries are the capture cases with the needs-capture reason", () => {
-      expect(NAMES.slice(2)).toEqual(
+      expect(NAMES.slice(3)).toEqual(
         Object.values(ID_TOKEN_CASES).map((n) => `${ID_TOKEN_DESCRIBE} > ${n}`),
       );
     });
@@ -222,7 +224,7 @@ describe("gate", () => {
       const r = buildReport([ok, ...listed()]);
       expect(r.gate).toEqual({
         passed: true,
-        reason: "every case passed but 4 accepted unproven-live",
+        reason: "every case passed but 5 accepted unproven-live",
       });
       expect(exitCode(r, true)).toBe(0);
     });
@@ -240,6 +242,7 @@ describe("gate", () => {
       expect(ACCEPTED_UNPROVEN.map((e) => e.file)).toEqual([
         "provisioning.test.ts",
         "provisioning.test.ts",
+        "provisioning.test.ts",
         "signin.test.ts",
         "signin.test.ts",
       ]);
@@ -247,11 +250,7 @@ describe("gate", () => {
 
     it("any other unproven-live fails the gate", () => {
       for (const bad of [
-        c(
-          "provisioning > P29: SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete leaves it deleting",
-          "unproven-live",
-          "create done and deleted; the purge that frees signup_accounts is not runnable by any principal in a run (design gap)",
-        ),
+        c(NAMES[0] as string, "unproven-live", "an older P29 reason"),
         c(NAMES[0] as string, "unproven-live", "something else"),
         c(`${NAMES[1]} `, "unproven-live", REASONS[1]),
         c(NAMES[2] as string, "unproven-live"),
@@ -259,7 +258,7 @@ describe("gate", () => {
         const r = buildReport([ok, ...listed(), bad]);
         expect(r.gate.passed, JSON.stringify(bad)).toBe(false);
         expect(r.gate.reason).toBe(
-          '1 of 6 cases are not "pass"; 4 accepted unproven-live',
+          '1 of 7 cases are not "pass"; 5 accepted unproven-live',
         );
       }
     });
@@ -290,7 +289,7 @@ describe("gate", () => {
         );
       }
       expect(t).toContain(
-        'Gate: FAIL (1 of 6 cases are not "pass"; 4 accepted unproven-live)',
+        'Gate: FAIL (1 of 7 cases are not "pass"; 5 accepted unproven-live)',
       );
     });
   });

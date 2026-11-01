@@ -174,7 +174,7 @@ describe("the probes on a conforming staging fake", () => {
     const out = await runAll(fakeApi());
     const name = (id: ProbeId) =>
       `provisioning > ${id}: ${PROBES.find((p) => p.id === id)?.title}`;
-    for (const id of ["P30", "P35"] as const)
+    for (const id of ["P29", "P30", "P35"] as const)
       expect(
         acceptedUnproven({
           name: name(id),
@@ -187,9 +187,11 @@ describe("the probes on a conforming staging fake", () => {
       level: "unproven-live",
       reason: P29_UNPROVEN,
     });
+    // P29 is on the list for M1 only (#1046 takes it off).
     expect(
-      ACCEPTED_UNPROVEN.some((e) => e.name.startsWith("provisioning > P29: ")),
-    ).toBe(false);
+      ACCEPTED_UNPROVEN.find((e) => e.name.startsWith("provisioning > P29: "))
+        ?.evidence,
+    ).toContain("#1046");
   });
 
   it("prod probes run once prod admin answers 401", async () => {

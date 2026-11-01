@@ -394,8 +394,8 @@ export function preProdNa(c: CaseResult): boolean {
  * name and exact reason, with the in-repo non-live test that covers what the
  * live run cannot. Any other unproven-live fails the gate, and so does a
  * listed case that fails. The report prints them in their own section.
- * P29 is not listed: no in-repo test covers the purge that frees
- * signup_accounts.
+ * P29 is listed for M1 only: #1046 (Post-M1) builds the purge that frees
+ * signup_accounts, blocks opening self-serve, and takes it off.
  */
 export interface AcceptedUnproven {
   name: string;
@@ -406,6 +406,14 @@ export interface AcceptedUnproven {
 }
 export const ACCEPTED_UNPROVEN: readonly AcceptedUnproven[] = Object.freeze(
   [
+    {
+      name: "provisioning > P29: SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete leaves it deleting",
+      reason:
+        "self-serve purge doesn't free signup_accounts (#1046); signups off on prod",
+      file: "provisioning.test.ts",
+      evidence:
+        'scripts/ci/hosted-constants.test.ts "prod signups stay closed, staging admits test users only; the caps and alert addresses are the Manager\'s" (#1022 pins prod SIGNUPS_ENABLED=false); the free-on-purge path and its test: #1046',
+    },
     {
       name: "provisioning > P30: dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens",
       reason:
@@ -427,14 +435,14 @@ export const ACCEPTED_UNPROVEN: readonly AcceptedUnproven[] = Object.freeze(
       reason: "unproven: needs capture",
       file: "signin.test.ts",
       evidence:
-        'apps/server/test/xt-google.local.test.ts "sign-in ID-token cases across installs (fake Google) > an ID token with hd of A at B\'s callback: no session"; apps/server/test/google-broker.test.ts "Google through the broker > tenant B\'s token is refused at A even when the broker returns it"; the laptop capture run: docs/ops/redline-signin.md, tests/redline/test/rehearsal.test.ts',
+        'apps/server/test/xt-google.local.test.ts "sign-in ID-token cases across installs (fake Google) > an ID token with hd of A at B\'s callback: no session"; apps/server/test/google-broker.test.ts "Google through the broker > tenant B\'s token is refused at A even when the broker returns it"; the laptop capture run: docs/ops/redline-signin.md, tests/redline/test/rehearsal.test.ts; the capture duty: #1047',
     },
     {
       name: "sign-in: ID tokens > A's code and broker state at B: no session",
       reason: "unproven: needs capture",
       file: "signin.test.ts",
       evidence:
-        'apps/server/test/xt-google.local.test.ts "sign-in ID-token cases across installs (fake Google) > an ID token minted for A\'s client (aud) replayed at B: no session"; apps/server/test/google-broker.test.ts "Google through the broker > a token minted through install A with B\'s client nonce is refused at B (accepted at A)"; the laptop capture run: docs/ops/redline-signin.md, tests/redline/test/rehearsal.test.ts',
+        'apps/server/test/xt-google.local.test.ts "sign-in ID-token cases across installs (fake Google) > an ID token minted for A\'s client (aud) replayed at B: no session"; apps/server/test/google-broker.test.ts "Google through the broker > a token minted through install A with B\'s client nonce is refused at B (accepted at A)"; the laptop capture run: docs/ops/redline-signin.md, tests/redline/test/rehearsal.test.ts; the capture duty: #1047',
     },
   ].map((e) => Object.freeze(e)),
 );
