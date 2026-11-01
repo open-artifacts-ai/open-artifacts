@@ -95,12 +95,12 @@ it("Use another account while signed in: logout with CSRF first, then start", as
 });
 
 it("the route shows the full all-digit account id from the URL, never a rounded number", async () => {
-  const { searchCodec } = await import("../src/router");
-  const search = searchCodec.parseSearch(
+  const { rawSearch } = await import("../src/router");
+  const search = rawSearch.parseSearch(
     "?error=unknown_sub&sub=112233445566778899001",
   );
   expect(search.sub).toBe("112233445566778899001");
-  expect(searchCodec.stringifySearch(search)).toBe(
+  expect(rawSearch.stringifySearch(search)).toBe(
     "?error=unknown_sub&sub=112233445566778899001",
   );
 });

@@ -32,7 +32,9 @@ it("lists installs with state, release, sign-in and health, and six tiles from t
   expect(screen.getByTestId("tile-active")).toHaveTextContent("2");
   expect(screen.getByTestId("tile-creating")).toHaveTextContent("0");
   expect(screen.getByTestId("tile-paused")).toHaveTextContent("Paused");
-  expect(screen.getByTestId("tile-deleting")).toHaveTextContent("Deleting");
+  expect(screen.getByTestId("tile-deleting")).toHaveTextContent(
+    "Deleted, restorable",
+  );
   expect(screen.getByTestId("tile-attention")).toHaveTextContent("2");
   expect(screen.getByTestId("tile-token")).toHaveTextContent("340 days left");
   const at = fixtureWorld().prodClean?.at ?? 0;
@@ -374,7 +376,12 @@ it("tiles are focusable native buttons named by their label", async () => {
     expect(router.state.location.search).toEqual({ state: "suspended" }),
   );
   expect(tile).toHaveAttribute("aria-pressed", "true");
-  for (const name of [/^Active/, /^Creating/, /^Deleting/, /^Needs attention/])
+  for (const name of [
+    /^Active/,
+    /^Creating/,
+    /^Deleted, restorable/,
+    /^Needs attention/,
+  ])
     expect(screen.getByRole("button", { name })).toHaveAttribute(
       "aria-pressed",
       "false",

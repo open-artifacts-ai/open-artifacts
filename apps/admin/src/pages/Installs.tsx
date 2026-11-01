@@ -73,14 +73,12 @@ function TileButton({
   className?: string;
 }) {
   const on = filter === t.f;
-  const name = t.f === ATTENTION ? t.label : STATE_LABEL[t.f];
   return (
     <button
       type="button"
       className={`${className} ${t.f === ATTENTION && t.n > 0 ? "warn" : ""}`}
       data-testid={t.id}
       aria-pressed={on}
-      title={on ? "Show all states" : `Show only ${name.toLowerCase()}`}
       onClick={() => onPick(on ? undefined : t.f)}
     >
       <span className="k">{t.label}</span>
@@ -133,7 +131,7 @@ function Tiles({
         <TileButton
           t={{
             f: "deleting",
-            label: "Deleting",
+            label: STATE_LABEL.deleting,
             n: by.deleting,
             id: "tile-deleting",
           }}
