@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.89.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.1...v0.89.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **provisioner:** wait until the rotated test hook key is live before using it ([#1002](https://github.com/open-artifacts-ai/open-artifacts/issues/1002)) ([#1005](https://github.com/open-artifacts-ai/open-artifacts/issues/1005)) ([97678c8](https://github.com/open-artifacts-ai/open-artifacts/commit/97678c8061ead9e81e20b5e6307022ec90a926ec))
+
 ## [0.89.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.0...v0.89.1) (2026-11-01)
 
 
