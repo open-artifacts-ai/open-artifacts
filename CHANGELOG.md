@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.89.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.3...v0.89.0) (2026-11-01)
+
+
+### Features
+
+* **provisioner:** record a failed job's fail point, HTTP status and hook refusal ([#995](https://github.com/open-artifacts-ai/open-artifacts/issues/995)) ([#996](https://github.com/open-artifacts-ai/open-artifacts/issues/996)) ([704560d](https://github.com/open-artifacts-ai/open-artifacts/commit/704560d0c6d38f1d65b6afef6cf7cac2488cb169))
+
 ## [0.88.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.2...v0.88.3) (2026-11-01)
 
 
