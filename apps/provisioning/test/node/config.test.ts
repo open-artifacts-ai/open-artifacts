@@ -146,8 +146,10 @@ describe("wrangler.jsonc", () => {
         expect(["false", "true", "test-users"]).toContain(
           e.vars.SIGNUPS_ENABLED,
         );
-        if (env === "prod")
-          expect(e.vars.SIGNUPS_ENABLED).not.toBe("test-users");
+        // Design 155 and M4 (#1012, P29): prod closed, staging test users only.
+        expect(e.vars.SIGNUPS_ENABLED).toBe(
+          env === "prod" ? "false" : "test-users",
+        );
         expect(e.vars.SELF_SERVE_TIER).toBe("trial");
         // The provisioner's placeholder, one deploy value for both (9A.5).
         expect(e.vars.SIGNUP_DAILY_CAP).toBe(
