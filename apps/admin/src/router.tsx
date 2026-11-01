@@ -5,6 +5,7 @@ import {
   createRouter,
   Outlet,
   redirect,
+  stringifySearchWith,
   useParams,
   useSearch,
 } from "@tanstack/react-router";
@@ -105,7 +106,18 @@ const routeTree = root.addChildren([
   ]),
 ]);
 
-export const router = createRouter({ routeTree });
+/**
+ * Search values stay the strings in the URL. TanStack's default turns
+ * "123", "true" and "null" into numbers, booleans and null (and rounds a
+ * Google `sub` past 2^53), which validateSearch then drops (#1026).
+ */
+export const rawSearch = {
+  parseSearch: (search: string) =>
+    Object.fromEntries(new URLSearchParams(search)),
+  stringifySearch: stringifySearchWith(JSON.stringify),
+};
+
+export const router = createRouter({ routeTree, ...rawSearch });
 
 declare module "@tanstack/react-router" {
   interface Register {
