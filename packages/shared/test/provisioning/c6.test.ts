@@ -284,6 +284,8 @@ describe("Workflow wrapper (zod-free)", () => {
     for (const m of [
       "instance.not_found",
       "(instance.not_found) Workflow instance not found",
+      // The real binding on staging (spike S3, run 41253612244).
+      "(instance.not_found) Instance not found",
     ]) {
       const b = binding(
         async () => {
@@ -299,22 +301,26 @@ describe("Workflow wrapper (zod-free)", () => {
   });
 
   it("create: instance.already_exists becomes WorkflowExistsError", async () => {
-    const b = binding(
-      async () => inst,
-      async () => {
-        throw remoteErr(
-          '(instance.already_exists) Workflow instance with id "abc" already exists',
-        );
-      },
-    );
-    const e = await createWorkflowInstance(b, {
-      id: "abc",
-      params: { jobId: "01JD7Z9W5Q8X3N4M2K1H0G9F8E" },
-    }).catch((x) => x);
-    expect(e).toBeInstanceOf(WorkflowExistsError);
-    expect(isWorkflowExists(e)).toBe(true);
-    expect(isWorkflowNotFound(e)).toBe(false);
-    expect((e as WorkflowExistsError).instanceId).toBe("abc");
+    for (const m of [
+      '(instance.already_exists) Workflow instance with id "abc" already exists',
+      // The real binding on staging (spike S3, run 41253612244).
+      "(instance.already_exists) Instance already exists",
+    ]) {
+      const b = binding(
+        async () => inst,
+        async () => {
+          throw remoteErr(m);
+        },
+      );
+      const e = await createWorkflowInstance(b, {
+        id: "abc",
+        params: { jobId: "01JD7Z9W5Q8X3N4M2K1H0G9F8E" },
+      }).catch((x) => x);
+      expect(e).toBeInstanceOf(WorkflowExistsError);
+      expect(isWorkflowExists(e)).toBe(true);
+      expect(isWorkflowNotFound(e)).toBe(false);
+      expect((e as WorkflowExistsError).instanceId).toBe("abc");
+    }
   });
 
   it("passes success through", async () => {
