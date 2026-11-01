@@ -54,8 +54,14 @@ describe("guard", () => {
     // prodClean reads the OIDC inventory JWT from the secrets dir
     // (REDLINE_PROD_INVENTORY_OIDC, minted by the redline job in W12); without
     // it the case fails inventory_unconfigured.
-    if ((await guardProdClean(T)) === "not-applicable")
+    // Before the prod deploy (#1014) the inventory answers 503
+    // schema_missing; that is pre-prod n/a only while the prod admin host
+    // does not resolve (report.ts PRE_PROD_GUARD), else the case fails.
+    const r = await guardProdClean(T);
+    if (r === "not-applicable")
       return proof(ctx, "not-applicable", "local mode");
+    if (r.level === "not-applicable")
+      return proof(ctx, "not-applicable", r.reason);
   });
 });
 
