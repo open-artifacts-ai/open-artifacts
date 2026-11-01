@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.90.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.2...v0.90.3) (2026-11-01)
+
+
+### Bug Fixes
+
+* **admin:** search params stay strings, so /no-access shows the account id ([#1027](https://github.com/open-artifacts-ai/open-artifacts/issues/1027)) ([2d4a2b3](https://github.com/open-artifacts-ai/open-artifacts/commit/2d4a2b310d62302e38dd0fd8f83d32fb572afcbe))
+* **provisioner:** one-version release check for create and upgrade; list reads 8 at once ([#1029](https://github.com/open-artifacts-ai/open-artifacts/issues/1029)) ([#1031](https://github.com/open-artifacts-ai/open-artifacts/issues/1031)) ([8fd2b65](https://github.com/open-artifacts-ai/open-artifacts/commit/8fd2b65697da7068a75b9dac9ae92627adb7503d))
+
 ## [0.90.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.1...v0.90.2) (2026-11-01)
 
 
