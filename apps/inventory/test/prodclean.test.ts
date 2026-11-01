@@ -1,5 +1,5 @@
 import { ALERT_CONDITIONS } from "@oa/shared/provisioning";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { platformDb } from "../../../packages/provision/test/platform-db.ts";
 import { MAX_REPORT_BYTES } from "../src/prodclean.ts";
 import {
@@ -43,6 +43,29 @@ const FAIL = JSON.stringify({
   detail: "prodClean iabcdefghijk: script lists TEST_HOOK_KEY",
 });
 
+type Wire = {
+  status: number;
+  statusText: string;
+  headers: [string, string][];
+  body: string;
+};
+const wire = async (res: Response): Promise<Wire> => ({
+  status: res.status,
+  statusText: res.statusText,
+  headers: [...res.headers],
+  body: await res.text(),
+});
+
+/** What an authenticated caller gets for an unknown route. */
+let unknownRoute: Wire;
+beforeAll(async () => {
+  unknownRoute = await wire(
+    await worker().w.fetch(req("/nope", {}, BEARER), makeEnv()),
+  );
+  expect(unknownRoute.status).toBe(404);
+  expect(unknownRoute.body).toBe("Not found");
+});
+
 describe("POST /prodclean", () => {
   it("a valid report writes exactly one row at the pinned clock -> 204", async () => {
     const { res, runs } = await send(FAIL);
@@ -67,19 +90,18 @@ describe("POST /prodclean", () => {
     expect(pass.runs[0]?.values).toEqual([NOW, 1, "pass", null, null]);
   });
 
-  it("red-line's ref (pinned, not the monitor's) -> 403, nothing written", async () => {
+  it("red-line's ref (pinned, not the monitor's) -> the unknown-route 404, nothing written", async () => {
     const { res, runs } = await send(FAIL, { ref: REDLINE });
-    expect(res.status).toBe(403);
-    expect(await res.text()).toBe('{"error":"forbidden"}');
+    expect(await wire(res)).toEqual(unknownRoute);
     expect(runs).toEqual([]);
   });
 
-  it("the monitor's ref, when the pins don't list it -> 403", async () => {
+  it("the monitor's ref, when the pins don't list it -> the unknown-route 404", async () => {
     // verify is injected, so it can hand back a ref the pins omit.
     const { res, runs } = await send(FAIL, {
       env: { OIDC_JOB_WORKFLOW_REFS: REDLINE },
     });
-    expect(res.status).toBe(403);
+    expect(await wire(res)).toEqual(unknownRoute);
     expect(runs).toEqual([]);
   });
 
@@ -92,14 +114,14 @@ describe("POST /prodclean", () => {
     expect(runs).toHaveLength(1);
   });
 
-  it("an unlisted monitor ref (another repository) -> 403", async () => {
+  it("an unlisted monitor ref (another repository) -> the unknown-route 404", async () => {
     const ref = `evil/repo/.github/workflows/prodclean-monitor.yml@refs/heads/main`;
     const { res, runs } = await send(FAIL, { ref });
-    expect(res.status).toBe(403);
+    expect(await wire(res)).toEqual(unknownRoute);
     expect(runs).toEqual([]);
   });
 
-  it("a listed ref whose workflow path after owner/repo is not the monitor's on main -> 403", async () => {
+  it("a listed ref whose workflow path after owner/repo is not the monitor's on main -> the unknown-route 404", async () => {
     for (const ref of [
       MONITOR.replace("refs/heads/main", "refs/heads/dev"),
       `${REPO}/.github/workflows/prodclean-monitor.yml@refs/heads/main2`,
@@ -116,7 +138,7 @@ describe("POST /prodclean", () => {
           OIDC_JOB_WORKFLOW_REFS: `${VARS.OIDC_JOB_WORKFLOW_REFS},${ref}`,
         },
       });
-      expect(res.status, ref).toBe(403);
+      expect(await wire(res), ref).toEqual(unknownRoute);
       expect(runs).toEqual([]);
     }
   });
