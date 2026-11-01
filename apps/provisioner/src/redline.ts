@@ -23,7 +23,7 @@ import {
   names,
   newSecret,
   ProvisionRefused,
-  STAGING_TEST_DOMAIN,
+  REDLINE_TEST_DOMAINS,
 } from "@oa/provision";
 import {
   type JobKind,
@@ -128,7 +128,10 @@ async function openSession(
       "invalid_state",
     );
   const testDomain = storedVars(row.vars).TEST_DOMAIN;
-  if (testDomain !== STAGING_TEST_DOMAIN)
+  if (
+    typeof testDomain !== "string" ||
+    !REDLINE_TEST_DOMAINS.includes(testDomain)
+  )
     throw new ProvisionRefused(
       "the install has no TEST_DOMAIN",
       "invalid_state",

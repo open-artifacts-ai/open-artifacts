@@ -1088,6 +1088,96 @@ describe("redline_creds (10.1, R26)", () => {
     expect(other.tokens).toEqual(otherBefore);
   });
 
+  // Red-line run 41272181391: rl-a and rl-b keep their hosted-ops TEST_DOMAINs.
+  const withTestDomain = (installId: string, d: string) =>
+    w.db.prepare("UPDATE installs SET vars = ? WHERE id = ?").run(
+      JSON.stringify({
+        AUTH_PROVIDERS: "google",
+        AUTH_DOMAINS: "finqore.test",
+        TIER: "business",
+        TEST_DOMAIN: d,
+      }),
+      installId,
+    );
+
+  for (const d of [
+    "oa-redline-a.fyi",
+    "guests.oa-redline-a.fyi",
+    "guests.oa-redline-c.fyi",
+  ])
+    it(`a stored TEST_DOMAIN of ${d} passes: the revoke rotates the hook key`, async () => {
+      const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
+      withTestDomain(s.installId, d);
+      const { script, seen } = stubInstall(s.installId);
+      const oldKey = script?.secrets.get("TEST_HOOK_KEY");
+      const r = await manage("redline_creds", s.installId, {
+        actor: "oidc",
+        args: { revoke: true },
+      });
+      expect(r.error).toBeNull();
+      expect(r.job).toMatchObject({ status: "done", error_code: null });
+      expect(script?.secrets.get("TEST_HOOK_KEY")).not.toBe(oldKey);
+      expect(seen).toContain("POST /__test/session");
+    });
+
+  // Exact match only: no suffix, prefix or parent domain.
+  for (const d of [
+    "guests.oa-redline-a.fyi.evil",
+    "oa-redline-c.fyi",
+    "x.guests.oa-redline-a.fyi",
+    "evil-oa-redline-a.fyi",
+    "GUESTS.OA-REDLINE-A.FYI",
+    "",
+  ])
+    it(`a stored TEST_DOMAIN of "${d}" is refused before any write`, async () => {
+      const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
+      withTestDomain(s.installId, d);
+      const { script, seen, deleted } = stubInstall(s.installId);
+      const oldKey = script?.secrets.get("TEST_HOOK_KEY");
+      const r = await manage("redline_creds", s.installId, {
+        actor: "oidc",
+        args: { revoke: true },
+      });
+      expect(r.job).toMatchObject({
+        status: "failed",
+        error_code: "invalid_state",
+      });
+      expect(script?.secrets.get("TEST_HOOK_KEY")).toBe(oldKey);
+      expect(seen).toEqual([]);
+      expect(deleted).toEqual([]);
+    });
+
+  it("a prod config refuses a row with a listed TEST_DOMAIN", async () => {
+    const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
+    withTestDomain(s.installId, "guests.oa-redline-c.fyi");
+    const { script, seen } = stubInstall(s.installId);
+    const oldKey = script?.secrets.get("TEST_HOOK_KEY");
+    (w.env as { OA_ENV: string }).OA_ENV = "prod";
+    const r = await manage("redline_creds", s.installId, {
+      actor: "oidc",
+      args: { revoke: true },
+    });
+    w.env.OA_ENV = ENV;
+    expect(r.job?.error_code).toBe("invalid_state");
+    expect(script?.secrets.get("TEST_HOOK_KEY")).toBe(oldKey);
+    expect(seen).toEqual([]);
+  });
+
+  it("a listed TEST_DOMAIN on a row that is not active is still refused", async () => {
+    const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
+    withTestDomain(s.installId, "guests.oa-redline-a.fyi");
+    w.db
+      .prepare("UPDATE installs SET state = 'upgrading' WHERE id = ?")
+      .run(s.installId);
+    const { seen } = stubInstall(s.installId);
+    const r = await manage("redline_creds", s.installId, {
+      actor: "oidc",
+      args: { revoke: true },
+    });
+    expect(r.job?.error_code).toBe("invalid_state");
+    expect(seen).toEqual([]);
+  });
+
   it("is refused for a non-test install, and for any actor but OIDC", async () => {
     const s = await active({ slug: "plainco" });
     const r = await manage("redline_creds", s.installId, {
