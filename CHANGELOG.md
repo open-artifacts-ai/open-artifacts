@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.90.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.1...v0.90.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **provisioning:** identity refusals go to /no-access, which shows the verified account id ([#1024](https://github.com/open-artifacts-ai/open-artifacts/issues/1024)) ([#1025](https://github.com/open-artifacts-ai/open-artifacts/issues/1025)) ([b5178bd](https://github.com/open-artifacts-ai/open-artifacts/commit/b5178bde290ae2cb1221e22cd41574147cf922d6))
+* **redline:** probes match the product and the amended design; pre-prod gate rule ([#1012](https://github.com/open-artifacts-ai/open-artifacts/issues/1012)) ([#1021](https://github.com/open-artifacts-ai/open-artifacts/issues/1021)) ([322571e](https://github.com/open-artifacts-ai/open-artifacts/commit/322571e7bb9fa09b42eabbe9cf230a818d5a4525))
+* **staging:** SIGNUPS_ENABLED=test-users on staging, as designed; prod stays false ([#1012](https://github.com/open-artifacts-ai/open-artifacts/issues/1012)) ([#1022](https://github.com/open-artifacts-ai/open-artifacts/issues/1022)) ([0e6134f](https://github.com/open-artifacts-ai/open-artifacts/commit/0e6134fb78bb8e26ce38d50a91ce20833efcd02f))
+
 ## [0.90.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.0...v0.90.1) (2026-11-01)
 
 
