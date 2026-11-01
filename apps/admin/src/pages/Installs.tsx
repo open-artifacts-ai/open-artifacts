@@ -7,6 +7,11 @@ import {
   type World,
 } from "@oa/shared/provisioning";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Table,
   TableBody,
   TableCell,
@@ -34,6 +39,8 @@ import { LoadError } from "../layout/LoadError";
 
 const TIER = { trial: "Trial", team: "Team", business: "Business" } as const;
 export const SEARCH_DELAY_MS = 300;
+/** The state filter's "any state" value (Radix Select has no empty value). */
+const ALL = "all";
 const ALERT_LABEL: Record<string, string> = {
   job_failed: "Job failed",
   install_failed: "Create failed",
@@ -257,36 +264,33 @@ export function Installs() {
             >
               <path d="M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM10.3 10.3l3 3" />
             </svg>
-            <span id="search-hint" className="sr-only">
-              Matches part of a slug, ignoring case.
-            </span>
             <input
               type="search"
-              aria-label="Search slug"
-              aria-describedby="search-hint"
-              placeholder="Search slug"
+              aria-label="Search slug or host"
+              placeholder="Search slug or host"
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
             />
           </span>
-          <label className="oa-state-filter">
-            <span className="sr-only">State</span>
-            <select
-              aria-label="State"
-              value={state}
-              onChange={(e) => {
-                setState(e.target.value as InstallState | "");
-                paging.reset();
-              }}
-            >
-              <option value="">All states</option>
+          <Select
+            value={state || ALL}
+            onValueChange={(v) => {
+              setState(v === ALL ? "" : (v as InstallState));
+              paging.reset();
+            }}
+          >
+            <SelectTrigger aria-label="State" className="oa-select">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent position="popper" align="start">
+              <SelectItem value={ALL}>All states</SelectItem>
               {InstallStateSchema.options.map((s) => (
-                <option key={s} value={s}>
+                <SelectItem key={s} value={s}>
                   {STATE_LABEL[s]}
-                </option>
+                </SelectItem>
               ))}
-            </select>
-          </label>
+            </SelectContent>
+          </Select>
           <span className="oa-spacer" />
           <Link to="/installs/new" className="oa-cta">
             <svg

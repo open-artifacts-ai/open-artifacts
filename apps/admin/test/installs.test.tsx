@@ -118,9 +118,12 @@ it("says there are no installs yet when there are none", async () => {
 it("searches on the server and says so when nothing matches", async () => {
   renderApp("/installs");
   await screen.findAllByRole("link", { name: "leo" });
-  fireEvent.change(screen.getByLabelText("Search slug"), {
-    target: { value: "zzz" },
-  });
+  fireEvent.change(
+    screen.getByRole("searchbox", { name: "Search slug or host" }),
+    {
+      target: { value: "zzz" },
+    },
+  );
   expect(await screen.findByText("No installs match.")).toBeInTheDocument();
   expect(seen.some((s) => s.path.includes("q=zzz"))).toBe(true);
 });
@@ -128,9 +131,8 @@ it("searches on the server and says so when nothing matches", async () => {
 it("filters by state and says so when nothing matches", async () => {
   renderApp("/installs");
   await screen.findByRole("link", { name: "leo" });
-  fireEvent.change(screen.getByLabelText("State"), {
-    target: { value: "suspended" },
-  });
+  fireEvent.click(screen.getByRole("combobox", { name: "State" }));
+  fireEvent.click(await screen.findByRole("option", { name: "Paused" }));
   expect(await screen.findByText("No installs match.")).toBeInTheDocument();
   expect(seen.some((s) => s.path.includes("state=suspended"))).toBe(true);
 });
@@ -166,6 +168,12 @@ it("pages with the cursor from the API", async () => {
   twoPages();
   renderApp("/installs");
   await screen.findByRole("link", { name: "first" });
+  // Previous/Next are small outline buttons.
+  for (const name of ["Previous", "Next"]) {
+    const b = screen.getByRole("button", { name });
+    expect(b).toHaveAttribute("data-variant", "outline");
+    expect(b).toHaveAttribute("data-size", "sm");
+  }
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
   await screen.findByRole("link", { name: "second" });
   expect(seen.some((s) => s.path.includes("cursor=c2"))).toBe(true);
@@ -208,9 +216,12 @@ it("going back to page 1 after typing a search resets the cursor", async () => {
   await screen.findByRole("link", { name: "first" });
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
   await screen.findByRole("link", { name: "second" });
-  fireEvent.change(screen.getByLabelText("Search slug"), {
-    target: { value: "f" },
-  });
+  fireEvent.change(
+    screen.getByRole("searchbox", { name: "Search slug or host" }),
+    {
+      target: { value: "f" },
+    },
+  );
   await screen.findByRole("link", { name: "first" });
   expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
 });
@@ -235,4 +246,17 @@ it("shows a load error with retry", async () => {
   await waitFor(() =>
     expect(screen.queryByText("Couldn't load installs")).toBeNull(),
   );
+});
+
+it("the toolbar searches slug or host with no extra hint line, and one page has no pager", async () => {
+  renderApp("/installs");
+  await screen.findAllByRole("link", { name: "leo" });
+  const box = screen.getByRole("searchbox", { name: "Search slug or host" });
+  expect(box).toHaveAttribute("placeholder", "Search slug or host");
+  expect(screen.queryByText(/Matches part of a slug/)).toBeNull();
+  expect(screen.getByRole("combobox", { name: "State" })).toHaveTextContent(
+    "All states",
+  );
+  expect(screen.queryByRole("button", { name: "Next" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Previous" })).toBeNull();
 });

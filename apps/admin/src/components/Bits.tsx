@@ -1,4 +1,5 @@
 import type { InstallState, JobStatus } from "@oa/shared/provisioning";
+import { Button } from "@oa/ui/shadcn";
 import { Link } from "@tanstack/react-router";
 import { ApiError } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
@@ -14,9 +15,19 @@ const STATE_TONE = {
   deleted: "muted",
   failed: "danger",
 } as const satisfies Record<InstallState, Tone>;
-/** A colored dot and the state's label (the mock's .st). */
-export const StateBadge = ({ state }: { state: InstallState }) => (
-  <span className="oa-st" data-tone={STATE_TONE[state]} data-testid="state">
+/** A colored dot and the state's label (the mock's .st); `chip` sets it on a pill. */
+export const StateBadge = ({
+  state,
+  chip,
+}: {
+  state: InstallState;
+  chip?: boolean;
+}) => (
+  <span
+    className={chip ? "oa-st oa-st-chip" : "oa-st"}
+    data-tone={STATE_TONE[state]}
+    data-testid="state"
+  >
     {STATE_LABEL[state]}
   </span>
 );
@@ -60,7 +71,7 @@ export function ErrorLine({ error }: { error: unknown }) {
   );
 }
 
-/** Prev and next over cursor pages. */
+/** Prev and next over cursor pages: small outline buttons, hidden on one page. */
 export function Pager({
   canPrev,
   next,
@@ -76,22 +87,24 @@ export function Pager({
   if (!canPrev && !next) return null;
   return (
     <div className="oa-pager">
-      <button
+      <Button
         type="button"
-        className="oa-link"
+        variant="outline"
+        size="sm"
         disabled={!canPrev}
         onClick={onPrev}
       >
         Previous
-      </button>
-      <button
+      </Button>
+      <Button
         type="button"
-        className="oa-link"
+        variant="outline"
+        size="sm"
         disabled={!next}
         onClick={() => next && onNext(next)}
       >
         Next
-      </button>
+      </Button>
     </div>
   );
 }

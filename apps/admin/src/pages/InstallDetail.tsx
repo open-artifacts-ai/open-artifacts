@@ -2,8 +2,25 @@ import {
   canTransition,
   type InstallDetail as Install,
   type JobKind,
+  type JobListItem,
 } from "@oa/shared/provisioning";
-import { Button, Label, Textarea } from "@oa/ui/shadcn";
+import {
+  Button,
+  Checkbox,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Textarea,
+} from "@oa/ui/shadcn";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
@@ -43,6 +60,8 @@ type Dialog =
   | null;
 
 const GRACE_DAYS = 7;
+/** The upgrade's "latest release" value (Radix Select has no empty value). */
+const LATEST = "latest";
 const HEALTH_TONE = {
   ok: "success",
   failing: "danger",
@@ -179,7 +198,11 @@ function Actions({ install }: { install: Install }) {
   return (
     <section className="oa-actions" aria-label="Actions">
       {can(install, "upgrade") && (
-        <Button disabled={busy} onClick={() => setDialog("upgrade")}>
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => setDialog("upgrade")}
+        >
           Upgrade
         </Button>
       )}
@@ -208,7 +231,7 @@ function Actions({ install }: { install: Install }) {
       )}
       {can(install, "delete") && (
         <Button
-          variant="destructive"
+          variant="outline"
           disabled={busy}
           onClick={() => setDialog("delete")}
         >
@@ -217,7 +240,7 @@ function Actions({ install }: { install: Install }) {
       )}
       {can(install, "purge") && (
         <Button
-          variant="destructive"
+          variant="outline"
           disabled={busy}
           onClick={() => setDialog("purge")}
         >
@@ -248,18 +271,26 @@ function Actions({ install }: { install: Install }) {
         >
           <div>
             <Label htmlFor="up-version">Version</Label>
-            <select
-              id="up-version"
-              value={version}
-              onChange={(e) => setVersion(e.target.value)}
+            <Select
+              value={version || LATEST}
+              onValueChange={(v) => setVersion(v === LATEST ? "" : v)}
             >
-              <option value="">Latest release</option>
-              {versions.map((r) => (
-                <option key={r.version} value={r.version}>
-                  {r.version}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger id="up-version" className="oa-select-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper" align="start">
+                <SelectItem value={LATEST}>Latest release</SelectItem>
+                {versions.map((r) => (
+                  <SelectItem
+                    key={r.version}
+                    value={r.version}
+                    className="oa-mono-item"
+                  >
+                    {r.version}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </ActionDialog>
       )}
@@ -352,14 +383,16 @@ function Actions({ install }: { install: Install }) {
           onSubmit={() => lease.mutate()}
         >
           {live && (
-            <label className="oa-check">
-              <input
-                type="checkbox"
+            <div className="oa-check">
+              <Checkbox
+                id="lease-force"
                 checked={force}
-                onChange={(e) => setForce(e.target.checked)}
-              />{" "}
-              Force (the lease is held until {fmtTime(install.lease.until)})
-            </label>
+                onCheckedChange={(c) => setForce(c === true)}
+              />
+              <label htmlFor="lease-force" className="oa-check">
+                Force (the lease is held until {fmtTime(install.lease.until)})
+              </label>
+            </div>
           )}
         </ActionDialog>
       )}
@@ -379,6 +412,14 @@ function Actions({ install }: { install: Install }) {
       )}
     </section>
   );
+}
+
+/** The Step cell: where the job is ("Health check · 5/5"), or all steps once done. */
+function jobStep(j: JobListItem) {
+  const { n, of } = stepCount(j);
+  if (j.status === "done") return `${of}/${of}`;
+  const at = visibleSteps(j.steps).find((s) => s.index === j.stepIndex);
+  return at ? `${at.label} · ${n}/${of}` : `${n}/${of}`;
 }
 
 /** "Upgrading to 0.77.1, step 3 of 11, Reserve slug and hosts. Open job" */
@@ -454,12 +495,18 @@ export function InstallDetail({ id }: { id: string }) {
   return (
     <>
       <p className="oa-crumbs">
-        <Link to="/installs">Installs</Link> /
+        <Link to="/installs">Installs</Link>
       </p>
       <div className="oa-head">
         <div>
-          <h1>{i.slug}</h1>
-          <p className="oa-sub">{i.appHost}</p>
+          <div className="oa-title-row">
+            <h1>{i.slug}</h1>
+            <StateBadge state={i.state} chip />
+            {i.state === "failed" && failedCode && (
+              <span className="oa-chip oa-chip-danger">{failedCode}</span>
+            )}
+          </div>
+          <p className="oa-sub oa-host">{i.appHost}</p>
         </div>
         <Actions install={i} />
       </div>
@@ -523,18 +570,9 @@ export function InstallDetail({ id }: { id: string }) {
           A job holds the lease until {fmtTime(i.lease.until)}.
         </p>
       )}
-      <div className="oa-split oa-detail">
-        <section className="oa-card">
+      <div className="oa-detail">
+        <section className="oa-card" aria-label="Facts">
           <dl className="oa-fields">
-            <div>
-              <dt>State</dt>
-              <dd>
-                <StateBadge state={i.state} />
-                {i.state === "failed" && failedCode && (
-                  <span className="oa-chip oa-chip-danger">{failedCode}</span>
-                )}
-              </dd>
-            </div>
             <div>
               <dt>Health</dt>
               <dd>
@@ -546,8 +584,18 @@ export function InstallDetail({ id }: { id: string }) {
             <div>
               <dt>Serving</dt>
               <dd>
-                {i.version ?? "nothing"}
-                {i.previousVersion && ` (previous ${i.previousVersion})`}
+                {i.version ? (
+                  <span className="oa-mono">{i.version}</span>
+                ) : (
+                  "nothing"
+                )}
+                {i.previousVersion && (
+                  <>
+                    {" "}
+                    (previous{" "}
+                    <span className="oa-mono">{i.previousVersion}</span>)
+                  </>
+                )}
               </dd>
             </div>
             <div>
@@ -583,25 +631,52 @@ export function InstallDetail({ id }: { id: string }) {
             </div>
           </dl>
         </section>
-        <aside className="oa-side">
-          <h2>Recent jobs</h2>
-          {jobs.data && jobs.data.items.length === 0 && (
-            <p className="oa-placeholder">No jobs yet.</p>
-          )}
-          <ul className="oa-jobs">
-            {jobs.data?.items.map((j) => (
-              <li key={j.id}>
-                <Link to="/jobs/$id" params={{ id: j.id }}>
-                  {JOB_VERB[j.kind].noun}
-                </Link>
-                <StatusBadge status={j.status} />
-                <span className="oa-note" title={fmtTime(j.createdAt)}>
-                  {fmtDay(j.createdAt)} {fmtClock(j.createdAt)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </aside>
+        <h2>Recent jobs</h2>
+        {jobs.data && jobs.data.items.length === 0 ? (
+          <div className="oa-card oa-empty">
+            <p>No jobs yet.</p>
+          </div>
+        ) : jobs.data ? (
+          <div className="oa-tablewrap oa-recent-jobs">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Job</TableHead>
+                  <TableHead>Step</TableHead>
+                  <TableHead>State</TableHead>
+                  <TableHead>Started</TableHead>
+                  <TableHead>By</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {jobs.data.items.map((j) => (
+                  <TableRow key={j.id}>
+                    <TableCell>
+                      <Link to="/jobs/$id" params={{ id: j.id }}>
+                        {JOB_VERB[j.kind].noun}
+                      </Link>
+                      {jobTarget(j.args) && (
+                        <span className="oa-mut">{jobTarget(j.args)}</span>
+                      )}
+                    </TableCell>
+                    <TableCell>{jobStep(j)}</TableCell>
+                    <TableCell>
+                      <StatusBadge status={j.status} />
+                    </TableCell>
+                    <TableCell
+                      className="oa-mono"
+                      title={fmtTime(j.startedAt ?? j.createdAt)}
+                    >
+                      {fmtDay(j.startedAt ?? j.createdAt)}{" "}
+                      {fmtClock(j.startedAt ?? j.createdAt)}
+                    </TableCell>
+                    <TableCell className="oa-note">{j.actor.label}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ) : null}
       </div>
     </>
   );

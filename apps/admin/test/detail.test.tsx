@@ -221,12 +221,13 @@ it("upgrade offers other installable releases and sends the choice", async () =>
   await open(i);
   fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
   const dialog = await screen.findByRole("dialog");
+  const version = within(dialog).getByRole("combobox", { name: "Version" });
+  expect(version).toHaveTextContent("Latest release");
   // 1.42.0 is installed, so only 1.41.2 is offered besides "latest".
-  await within(dialog).findByRole("option", { name: "1.41.2" });
-  expect(within(dialog).queryByRole("option", { name: "1.42.0" })).toBeNull();
-  fireEvent.change(within(dialog).getByLabelText("Version"), {
-    target: { value: "1.41.2" },
-  });
+  fireEvent.click(version);
+  await screen.findByRole("option", { name: "1.41.2" });
+  expect(screen.queryByRole("option", { name: "1.42.0" })).toBeNull();
+  fireEvent.click(screen.getByRole("option", { name: "1.41.2" }));
   fireEvent.click(within(dialog).getByRole("button", { name: "Upgrade" }));
   await waitFor(() => expect(writes()).toHaveLength(1));
   expect(writes()[0].path).toBe(`/api/v1/installs/${i.id}/upgrade`);
@@ -383,4 +384,77 @@ it("retry sends one click with a request id", async () => {
 it("says a missing install is not found", async () => {
   renderApp("/installs/inothere0001");
   expect(await screen.findByText("Install not found")).toBeInTheDocument();
+});
+
+it("the head: breadcrumb ends at Installs, the state chip sits by the title, the host under it", async () => {
+  const i = installsByState.active;
+  await open(i);
+  const crumbs = document.querySelector(".oa-crumbs") as HTMLElement;
+  expect(
+    within(crumbs).getByRole("link", { name: "Installs" }),
+  ).toHaveAttribute("href", "/installs");
+  // Ends at the parent: no trailing "/".
+  expect(crumbs.textContent).toBe("Installs");
+  const head = screen.getByRole("heading", { name: i.slug }).parentElement;
+  expect(within(head as HTMLElement).getByTestId("state")).toHaveTextContent(
+    "Active",
+  );
+  expect(screen.getByText(i.appHost)).toBeInTheDocument();
+});
+
+it("every action is an outline button; only the confirm in the dialog is red", async () => {
+  await open(installsByState.active);
+  const region = screen.getByRole("region", { name: "Actions" });
+  for (const b of within(region).getAllByRole("button"))
+    expect(b).toHaveAttribute("data-variant", "outline");
+  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(
+    within(dialog).getByRole("button", { name: "Delete leo" }),
+  ).toHaveAttribute("data-variant", "destructive");
+});
+
+it("a failed install keeps its banner, with Retry and Purge as outline buttons", async () => {
+  await open(installsByState.failed);
+  expect(
+    await screen.findByText(
+      /The last job failed. Retry it or purge the install./,
+    ),
+  ).toBeInTheDocument();
+  for (const name of ["Retry", "Purge"])
+    expect(screen.getByRole("button", { name })).toHaveAttribute(
+      "data-variant",
+      "outline",
+    );
+});
+
+it("recent jobs: a section title over a table of job, step, state, start and actor", async () => {
+  await open(installsByState.active);
+  expect(
+    screen.getByRole("heading", { name: "Recent jobs", level: 2 }),
+  ).toBeInTheDocument();
+  const table = await screen.findByRole("table");
+  expect(
+    within(table)
+      .getAllByRole("columnheader")
+      .map((h) => h.textContent),
+  ).toEqual(["Job", "Step", "State", "Started", "By"]);
+  const row = within(table).getAllByRole("row")[1];
+  expect(within(row).getByRole("link")).toHaveAttribute(
+    "href",
+    expect.stringMatching(/^\/jobs\//),
+  );
+  expect(within(row).getByTestId("status")).toBeInTheDocument();
+});
+
+it("recent jobs: says No jobs yet. when there are none", async () => {
+  const i = installsByState.active;
+  use(
+    http.get(`*/api/v1/installs/${i.id}/jobs`, () =>
+      json({ items: [], nextCursor: null }),
+    ),
+  );
+  await open(i);
+  expect(await screen.findByText("No jobs yet.")).toBeInTheDocument();
+  expect(screen.queryByRole("table")).toBeNull();
 });
