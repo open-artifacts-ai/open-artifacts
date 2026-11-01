@@ -1881,7 +1881,7 @@ describe("deploy-hosted-platform.sh", () => {
           const base = "open-artifacts-ai/open-artifacts/.github/workflows";
           expect(VARS.OIDC_JOB_WORKFLOW_REFS).toBe(
             env === "prod"
-              ? `${base}/redline-staging.yml@refs/heads/main,${base}/prodclean-monitor.yml@refs/heads/main`
+              ? `${base}/redline-staging.yml@refs/heads/main,${base}/prodclean-monitor.yml@refs/heads/main,${base}/hosted-ops.yml@refs/heads/main`
               : `${base}/redline-staging.yml@refs/heads/main`,
           );
           expect(VARS.OIDC_AUDIENCE).toBe(`https://oa-${env[0]}-inventory`);

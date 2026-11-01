@@ -8,6 +8,7 @@ export const REPO = "open-artifacts-ai/open-artifacts";
 export const WF = `${REPO}/.github/workflows`;
 export const MONITOR = `${WF}/prodclean-monitor.yml@refs/heads/main`;
 export const REDLINE = `${WF}/redline-staging.yml@refs/heads/main`;
+export const HOSTED_OPS = `${WF}/hosted-ops.yml@refs/heads/main`;
 export const NOW = Date.parse("2026-10-31T12:00:00Z");
 
 export const VARS = {

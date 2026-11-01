@@ -518,11 +518,13 @@ case "$target" in
     [[ "$GITHUB_REPOSITORY_ID" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "GITHUB_REPOSITORY_ID must be digits" >&2; exit 2; }
     [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "GITHUB_REPOSITORY must be owner/repo" >&2; exit 2; }
     # The refs (design v7 6.3, amended): full refs on main, exactly W8's
-    # committed list. Prod's adds the monitor's (POST /prodclean). The tag's
-    # committed list must equal it before deploying; the deployed one after.
+    # committed list. Prod's adds the monitor's (POST /prodclean) and
+    # hosted-ops' (the prod create/upgrade precheck, GET routes only: #986).
+    # The tag's committed list must equal it before deploying; the deployed
+    # one after.
     base="open-artifacts-ai/open-artifacts/.github/workflows"
     refs_want="$base/redline-staging.yml@refs/heads/main"
-    [ "$env" = staging ] || refs_want="$refs_want,$base/prodclean-monitor.yml@refs/heads/main"
+    [ "$env" = staging ] || refs_want="$refs_want,$base/prodclean-monitor.yml@refs/heads/main,$base/hosted-ops.yml@refs/heads/main"
     refs_committed="$(ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" committed inventory vars | jq -r '.OIDC_JOB_WORKFLOW_REFS // empty')" || refs_committed=""
     [ -n "$refs_committed" ] || { echo "the tag commits no OIDC_JOB_WORKFLOW_REFS for $env inventory" >&2; exit 1; }
     [ "$refs_committed" = "$refs_want" ] ||

@@ -39,13 +39,14 @@
       "main": "src/index.ts",
       "workers_dev": true,
       "preview_urls": false,
-      // The monitor and red-line's prodClean both run in redline-staging,
-      // where the REDLINE_PROD_* tokens live.
+      // The monitor, red-line's prodClean and hosted-ops' prod create/upgrade
+      // precheck (#986: the GET routes only; POST /prodclean is the monitor's)
+      // all run in redline-staging, where the REDLINE_PROD_* tokens live.
       "vars": {
         "OIDC_AUDIENCE": "https://oa-p-inventory",
         "OIDC_REPOSITORY": "open-artifacts-ai/open-artifacts",
         "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_PROD}}",
-        "OIDC_JOB_WORKFLOW_REFS": "open-artifacts-ai/open-artifacts/.github/workflows/redline-staging.yml@refs/heads/main,open-artifacts-ai/open-artifacts/.github/workflows/prodclean-monitor.yml@refs/heads/main",
+        "OIDC_JOB_WORKFLOW_REFS": "open-artifacts-ai/open-artifacts/.github/workflows/redline-staging.yml@refs/heads/main,open-artifacts-ai/open-artifacts/.github/workflows/prodclean-monitor.yml@refs/heads/main,open-artifacts-ai/open-artifacts/.github/workflows/hosted-ops.yml@refs/heads/main",
         "OIDC_ENVIRONMENT": "redline-staging"
       },
       "d1_databases": [

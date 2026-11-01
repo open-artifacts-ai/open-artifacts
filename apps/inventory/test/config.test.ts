@@ -78,7 +78,11 @@ describe("wrangler.jsonc", () => {
       expect(pins?.environment).toBe("redline-staging");
       const refs =
         env === "prod"
-          ? [ref("redline-staging.yml"), ref("prodclean-monitor.yml")]
+          ? [
+              ref("redline-staging.yml"),
+              ref("prodclean-monitor.yml"),
+              ref("hosted-ops.yml"),
+            ]
           : [ref("redline-staging.yml")];
       expect(pins?.jobWorkflowRefs).toEqual(refs);
     });
