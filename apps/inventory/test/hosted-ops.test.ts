@@ -27,7 +27,7 @@ const b64u = (b: ArrayBuffer | string) => {
 };
 
 let priv: CryptoKey;
-let jwk: JsonWebKey;
+let jwk: JsonWebKey & { kid: string };
 beforeAll(async () => {
   const k = (await crypto.subtle.generateKey(
     {
