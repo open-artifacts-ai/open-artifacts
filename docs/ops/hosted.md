@@ -485,6 +485,12 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 5. Sign the env's first floor with the `hosted-floor` workflow (dispatch on `main`: `env`, `seq` >= `FLOOR_MIN_SEQ[env]`, `min_version`, `revoked`), download its `floor-<env>-<seq>` artifact, and `publishFloor` it.
 6. `publishRelease` the signed tar and `.sig.json` from the GitHub release for each variant the env takes.
 
+### Forcing a release when only non-releasable commits landed
+
+release-please opens a release PR only for releasable commits (`feat`, `fix`, `perf`, `deps`, or a breaking change). A `test:`, `ci:`, `docs:` or `chore:` merge alone never ships, so a fix that red-line needs can sit on main unreleased. To ship it, merge a PR whose squash commit ends with a `Release-As: X.Y.Z` footer.
+
+The squash message is the PR body (repo setting). GitHub appends a `---------` line and a separate `Co-authored-by:` block when the branch's commits carry co-author trailers. That block becomes the footer, and release-please then ignores a `Release-As:` line above it (checked with release-please 16's own parser). So put `Release-As: X.Y.Z` in the PR body's last block, together with any `Co-authored-by:` line, and leave the co-author trailer out of the branch's commits.
+
 ### Release checklist: revoking a version or raising the floor
 
 1. For each env, dispatch the `hosted-floor` workflow on `main` (next `seq`, `min_version`, `revoked` keeping every earlier entry), download the `floor-<env>-<seq>` artifact and run `publishFloor` with it.
