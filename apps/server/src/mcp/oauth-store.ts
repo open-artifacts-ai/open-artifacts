@@ -69,6 +69,15 @@ export class OAuthStoreConfigError extends Error {
   override name = "OAuthStoreConfigError";
 }
 
+/**
+ * The markers' refusal (checkMarkers): leaving d1 without the override, or
+ * d1 before a recorded copy. An OAuthStoreConfigError (the same 503), told
+ * apart by class where a caller reports why (the copy route).
+ */
+export class OAuthStoreMarkersError extends OAuthStoreConfigError {
+  override name = "OAuthStoreMarkersError";
+}
+
 /** The 503 for an OAuthStoreConfigError, wherever it surfaces. */
 export function storeMisconfigured(e: OAuthStoreConfigError): Response {
   logError("oauth_store_misconfigured", e);
@@ -302,6 +311,17 @@ export function mapStoreError(e: unknown): unknown {
 }
 
 abstract class StoreBase {}
+
+/** The KV binding under a store that wraps one (dual, kv). */
+const bindings = new WeakMap<StoreBase, KVNamespace>();
+
+/**
+ * The raw OAUTH_KV binding: env.OAUTH_KV itself, or the binding under this
+ * install's store (oauthEnv: what the app sees past the provider). The copy
+ * reads KV directly, never through the dual merge.
+ */
+const rawKv = (kv: unknown): KVNamespace | undefined =>
+  kv instanceof StoreBase ? bindings.get(kv) : (kv as KVNamespace | undefined);
 
 // ---------------------------------------------------------------- d1
 
@@ -668,6 +688,7 @@ export class DualKvStore extends StoreBase {
     private readonly env?: Env,
   ) {
     super();
+    bindings.set(this, kv);
   }
 
   async get(key: string, opt?: GetOpt): Promise<unknown> {
@@ -774,6 +795,7 @@ class KvModeStore extends StoreBase {
     private readonly env: Env,
   ) {
     super();
+    bindings.set(this, kv);
     this.d1 = new D1KvStore(env.DB);
   }
   async get(key: string, opt?: GetOpt) {
@@ -864,11 +886,11 @@ async function syncMarkers(
   const db = env.DB;
   const m = await readMarkers(db);
   if (mode !== "d1" && m.off !== null && !rollback)
-    throw new OAuthStoreConfigError(
+    throw new OAuthStoreMarkersError(
       `OAUTH_STORE=${mode} is refused: this install has served in d1 mode since ${new Date(m.off).toISOString()}, so KV is stale. Set OAUTH_STORE back to d1, or roll back with OAUTH_STORE_ROLLBACK=1 after emptying the OAuth keys from KV (every agent reconnects).`,
     );
   if (mode === "d1" && env.OAUTH_KV && !m.backfilled && m.off === null)
-    throw new OAuthStoreConfigError(
+    throw new OAuthStoreMarkersError(
       "OAUTH_STORE=d1 is refused: no complete KV -> D1 copy is recorded. Serve with OAUTH_STORE=dual, run the copy to completion, then switch to d1.",
     );
   const writes: D1PreparedStatement[] = [];
@@ -1071,8 +1093,10 @@ function parseCopyCursor(c: string): { gen: string; kv: string } | null {
  * current: a kv run retires it, and the pass then restarts from the top
  * (`restarted`) rather than completing over keys D1 missed.
  * Refused in kv mode (D1 misses KV's writes there), in d1 mode (KV is
- * stale: a copy could revive what d1 deleted), and in dual after d1 without
- * the override (checkMarkers). Never logs or returns keys or values.
+ * stale: a copy could revive what d1 deleted), both OAuthStoreConfigError,
+ * and in dual after d1 without the override (checkMarkers:
+ * OAuthStoreMarkersError). `env` may carry this install's store (oauthEnv):
+ * the copy reads the KV binding under it. Never logs or returns keys or values.
  * Runbook: start at least 60 s after dual is fully rolled out (KV's edge
  * caches and every kv isolate gone), so no kv write lands behind the copy.
  */
@@ -1082,7 +1106,7 @@ export async function copyKvToD1(
 ): Promise<CopyCounts> {
   const now = opt.now ?? Date.now();
   const mode = oauthStoreMode(env);
-  const kv = env.OAUTH_KV;
+  const kv = rawKv(env.OAUTH_KV);
   if (mode !== "dual" || !kv)
     throw new OAuthStoreConfigError(
       "the KV -> D1 copy runs only with OAUTH_STORE=dual and OAUTH_KV bound",

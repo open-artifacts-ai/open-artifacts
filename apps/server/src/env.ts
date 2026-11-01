@@ -201,6 +201,11 @@ export interface Env {
   TURNSTILE_SECRET?: string;
   /** Bearer key for /__test/* (32+ chars). */
   TEST_HOOK_KEY?: string;
+  /**
+   * Bearer key for POST /__oa/oauth-store/copy (the OAuth KV -> D1 copy,
+   * mcp/oauth-copy.ts); 32+ chars, and only with HOSTED=1. Unset: no route.
+   */
+  OAUTH_COPY_KEY?: string;
   SESSION_SECRET: string;
   CONTENT_SIGNING_KEY: string;
   ANALYTICS_TOKEN?: string;

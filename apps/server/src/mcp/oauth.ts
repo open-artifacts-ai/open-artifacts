@@ -53,6 +53,7 @@ import {
   type ProviderOptions,
   providerOptions,
 } from "./oauth-api.js";
+import { isOAuthCopyRequest } from "./oauth-copy.js";
 import {
   type OAuthEnv,
   OAuthStoreConfigError,
@@ -360,7 +361,11 @@ export async function serveAppHost(
   // inside the provider: that refusal is the same 503.
   let res: Response;
   try {
-    if (new URL(req.url).pathname !== "/healthz") await syncStoreMarkers(env);
+    // The copy route checks them itself (mcp/oauth-copy.ts), so it can say
+    // "markers" once its key verifies.
+    const path = new URL(req.url).pathname;
+    if (path !== "/healthz" && !isOAuthCopyRequest(env, path))
+      await syncStoreMarkers(env);
     const store: OAuthEnv = oauthEnv(env);
     res = await oauthProvider(env, app).fetch(req, store, ctx);
   } catch (e) {

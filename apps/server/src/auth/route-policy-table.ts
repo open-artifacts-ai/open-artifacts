@@ -75,6 +75,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /auth/dev-login": { public: "dev only; refused outside dev" },
   // P2 test hooks: 404 unless TEST_HOOKS is on (test-hooks/index.ts decides).
   "ALL /__test/*": { public: "test hooks; 404 unless TEST_HOOKS is on" },
+  // #1008 the OAuth KV -> D1 copy: 404 unless HOSTED=1 and OAUTH_COPY_KEY
+  // (mcp/oauth-copy.ts decides; its bearer key is the gate).
+  "POST /__oa/oauth-store/copy": {
+    public: "OAuth store copy; 404 unless HOSTED=1 and OAUTH_COPY_KEY",
+  },
   "GET /api/v1/me": { user: "the caller" },
   "PATCH /api/v1/me": { user: "the caller" },
   "GET /api/v1/members": { org: "members.manage" },

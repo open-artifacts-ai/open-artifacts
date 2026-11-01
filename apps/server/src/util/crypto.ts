@@ -60,3 +60,19 @@ export async function sha256Hex(s: string): Promise<string> {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
+
+/**
+ * Bearer key compare: SHA-256 both sides, then a constant-time loop over the
+ * fixed-length digests, so neither the length nor a prefix leaks.
+ */
+export async function sameKey(a: string, b: string): Promise<boolean> {
+  const [x, y] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  const u = new Uint8Array(x);
+  const v = new Uint8Array(y);
+  let d = 0;
+  for (let i = 0; i < u.length; i++) d |= (u[i] as number) ^ (v[i] as number);
+  return d === 0;
+}
