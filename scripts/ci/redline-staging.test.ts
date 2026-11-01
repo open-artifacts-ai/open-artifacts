@@ -274,7 +274,10 @@ describe("redline-staging.yml", () => {
     expect(t19.if).toBe(
       "${{ !cancelled() && steps.bringup.outcome == 'success' }}",
     );
-    expect(t19.run).toContain('T19_EXPECT_VERSION="$REDLINE_RELEASE"');
+    // #1039: no version pin until #955 keeps leo current; the spec still
+    // requires a version and no testHooks.
+    expect(t19.run).not.toContain("T19_EXPECT_VERSION");
+    expect(t19.env).not.toHaveProperty("T19_EXPECT_VERSION");
   });
 
   it("uploads redline-staged-version (version.txt) after bring-up, only once rl-a and rl-b /healthz report the tag", () => {
@@ -339,7 +342,7 @@ describe("redline-staging.yml", () => {
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: "",
     });
     const run = String(t19.run);
-    const pre = run.slice(0, run.indexOf("export T19_EXPECT_VERSION"));
+    const pre = run.slice(0, run.indexOf("pnpm --filter @oa/dashboard"));
     expect(pre).toContain(
       "unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN",
     );

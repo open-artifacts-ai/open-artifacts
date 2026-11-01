@@ -50,6 +50,7 @@ import {
   ProvisionRetry,
   provisionErrorCode,
   TURNSTILE_TEST_KEYS,
+  VERIFY_CLEAN_REASON_MAX,
   type VerifyCleanInput,
   verifyCleanRefusal,
   WFP_STEPS,
@@ -4996,6 +4997,69 @@ describe("W2 create order (5.2)", () => {
       expect(provisionErrorCode(e)).toBe("prod_dirty");
       expect(e.message).toMatch(why);
       expect(s.fake.kvValues(s.hostsId).size).toBe(0);
+    });
+
+    // #1060: the audit row says why, with binding and secret names only.
+    const refusedDetail = (s: ReturnType<typeof setup>) => {
+      const rows = s
+        .db()
+        .prepare(
+          "SELECT detail FROM hosted_audit WHERE action = 'verify_clean.refused'",
+        )
+        .all() as { detail: string }[];
+      expect(rows).toHaveLength(1);
+      return rows[0]?.detail as string;
+    };
+
+    it("verify_clean.refused audits the reason, never a binding value", async () => {
+      const s = setup();
+      const value = "plain-value-must-not-leak-7f3a";
+      s.fake.settingsEdit = ((
+        _s: unknown,
+        bs: { name: string; type: string; text?: string }[],
+      ) =>
+        bs.map((b) =>
+          b.name === "PLAN" ? { ...b, text: value } : b,
+        )) as never;
+      const e = await fails(s.p.create(input()));
+      expect(provisionErrorCode(e)).toBe("prod_dirty");
+      const d = refusedDetail(s);
+      expect(JSON.parse(d)).toEqual({
+        reason: "binding PLAN (plain_text) has another value than the render",
+      });
+      expect(d).not.toContain(value);
+    });
+
+    it("verify_clean.refused audits the reason, never a secret value", async () => {
+      const s = setup();
+      const value = "secret-value-must-not-leak-9c1e";
+      const p = s.mk({
+        onStep: (st) => {
+          if (st !== "verify_clean") return;
+          [...s.fake.scripts.values()][0]?.secrets.set("EXTRA_KEY", value);
+        },
+      });
+      const e = await fails(p.create(input()));
+      expect(provisionErrorCode(e)).toBe("prod_dirty");
+      const d = refusedDetail(s);
+      expect(JSON.parse(d)).toEqual({
+        reason: "secret EXTRA_KEY is not expected",
+      });
+      expect(d).not.toContain(value);
+    });
+
+    it("verify_clean.refused caps the audited reason", async () => {
+      const s = setup();
+      const long = `B${"X".repeat(VERIFY_CLEAN_REASON_MAX)}`;
+      s.fake.settingsEdit = add({
+        name: long,
+        type: "plain_text",
+        text: "x",
+      }) as never;
+      await fails(s.p.create(input()));
+      const r = JSON.parse(refusedDetail(s)) as { reason: string };
+      expect(r.reason).toHaveLength(VERIFY_CLEAN_REASON_MAX);
+      expect(r.reason.startsWith(`binding ${long.slice(0, 20)}`)).toBe(true);
     });
 
     it("a resumed attempt compares with the stored render of the version", async () => {

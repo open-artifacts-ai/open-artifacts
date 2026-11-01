@@ -1126,7 +1126,7 @@
     },
     {
       "file": "live/provisioning.test.ts",
-      "name": "provisioning > P34: 400 unsigned broker authorize for i000000admin: 404s; /auth/start still reaches Google"
+      "name": "provisioning > P34: 400 unsigned broker authorize for i000000admin: 404s (429 past the IP limit); /auth/start still reaches Google"
     },
     {
       "file": "live/provisioning.test.ts",
