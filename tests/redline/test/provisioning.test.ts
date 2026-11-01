@@ -320,6 +320,76 @@ describe("bring-up and revoke (R5, R26)", () => {
     );
   });
 
+  /** The fake's io with one JSON response rewritten (R3 or /healthz). */
+  const rewrite = (
+    f: FakeApi,
+    match: (u: URL) => boolean,
+    edit: (b: Record<string, unknown>) => void,
+  ) => ({
+    ...f.io,
+    fetch: (async (u: string | URL | Request, init?: RequestInit) => {
+      const r = await f.io.fetch(u, init);
+      const url = new URL(u instanceof Request ? u.url : String(u));
+      if (!match(url) || r.status !== 200) return r;
+      const b = (await r.json()) as Record<string, unknown>;
+      edit(b);
+      return Response.json(b, { status: 200 });
+    }) as typeof fetch,
+  });
+
+  it("the staged version reads /healthz on R3's appHost and refuses a mismatched variable host", async () => {
+    const f = fakeApi();
+    await bringUpgrade(new Run(CONFIG, f.io), CONFIG.rlA.id, "rl-a");
+    // Happy path: both hosts match R3 and name their install ids.
+    expect(await stagedVersion(new Run(CONFIG, f.io))).toBe("0.82.0");
+    // rl-b's variable pointing at rl-a's host is refused before any /healthz.
+    const swapped = new Run(
+      { ...CONFIG, rlB: { ...CONFIG.rlB, app: CONFIG.rlA.app } },
+      f.io,
+    );
+    const before = f.log.length;
+    await expect(stagedVersion(swapped)).rejects.toThrow(
+      /rl-b: REDLINE_TARGETS host rl-a\.open-artifacts-staging\.app is not R3's appHost rl-b\.open-artifacts-staging\.app for irlbbbbbbbbb/,
+    );
+    expect(
+      f.log
+        .slice(before)
+        .filter((l) => l.includes("rl-b.") && l.endsWith("/healthz")),
+    ).toEqual([]);
+  });
+
+  it("the staged version refuses a /healthz from another installId", async () => {
+    const f = fakeApi();
+    await bringUpgrade(new Run(CONFIG, f.io), CONFIG.rlA.id, "rl-a");
+    const io = rewrite(
+      f,
+      (u) =>
+        u.hostname === "rl-b.open-artifacts-staging.app" &&
+        u.pathname === "/healthz",
+      (b) => {
+        b.installId = CONFIG.rlA.id;
+      },
+    );
+    await expect(stagedVersion(new Run(CONFIG, io))).rejects.toThrow(
+      /rl-b \/healthz: want installId irlbbbbbbbbb, got irlaaaaaaaaa/,
+    );
+  });
+
+  it("the staged version refuses an install R3 gives no appHost", async () => {
+    const f = fakeApi();
+    await bringUpgrade(new Run(CONFIG, f.io), CONFIG.rlA.id, "rl-a");
+    const io = rewrite(
+      f,
+      (u) => u.pathname.endsWith(`/v1/installs/${CONFIG.rlA.id}`),
+      (b) => {
+        delete b.appHost;
+      },
+    );
+    await expect(stagedVersion(new Run(CONFIG, io))).rejects.toThrow(
+      /R3 rl-a: no appHost for irlaaaaaaaaa/,
+    );
+  });
+
   it("R26 mint opens the sealed creds; revoke makes the PAT 401", async () => {
     const f = fakeApi();
     const run = new Run(CONFIG, f.io);

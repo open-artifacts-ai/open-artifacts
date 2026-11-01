@@ -1746,17 +1746,37 @@ export async function bringUpgrade(
  * The staging-first record (W9a's scripts/ci/staging-first-gate.sh): after
  * bring-up, rl-a's and rl-b's public /healthz must both report the release
  * under test; returns it (X.Y.Z) for version.txt. Any other answer fails.
+ * The host checked is the one R3 returns for the install id, never the
+ * REDLINE_TARGETS variable alone: the variable's host must equal R3's
+ * appHost, and /healthz there must name the same installId, so a wrong
+ * variable cannot make the record vouch for another host.
  */
 export async function stagedVersion(run: Run): Promise<string> {
-  for (const [slug, app] of [
-    ["rl-a", run.c.rlA.app],
-    ["rl-b", run.c.rlB.app],
+  for (const [slug, t] of [
+    ["rl-a", run.c.rlA],
+    ["rl-b", run.c.rlB],
   ] as const) {
-    const r = await run.raw(`${app}/healthz`, { auth: "none" });
-    const v = (r.json as { version?: unknown } | undefined)?.version;
+    const d = await detail(run, t.id);
+    expect(d, 200, `R3 ${slug}`);
+    const appHost = (d.json as { appHost?: unknown } | undefined)?.appHost;
+    if (typeof appHost !== "string" || !appHost)
+      throw new ProbeFail(`R3 ${slug}: no appHost for ${t.id}`);
+    const want = bare(appHost).toLowerCase();
+    const got = bare(t.app).toLowerCase();
+    if (got !== want)
+      throw new ProbeFail(
+        `${slug}: REDLINE_TARGETS host ${got.slice(0, 80)} is not R3's appHost ${want.slice(0, 80)} for ${t.id}`,
+      );
+    const r = await run.page(want);
+    const b = r.json as { version?: unknown; installId?: unknown } | undefined;
+    const v = b?.version;
     if (r.status !== 200 || v !== run.c.version)
       throw new ProbeFail(
         `${slug} /healthz: want 200 version ${run.c.version}, got ${r.status === 200 ? `version ${typeof v === "string" ? v.slice(0, 20) : "none"}` : desc(r)}`,
+      );
+    if (b?.installId !== t.id)
+      throw new ProbeFail(
+        `${slug} /healthz: want installId ${t.id}, got ${typeof b?.installId === "string" ? b.installId.slice(0, 40) : "none"}`,
       );
   }
   return run.c.version;
