@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.88.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.1...v0.88.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **ops:** the staging inventory deploy deletes the retired INVENTORY_KEY ([#987](https://github.com/open-artifacts-ai/open-artifacts/issues/987)) ([11d2262](https://github.com/open-artifacts-ai/open-artifacts/commit/11d22622c2c772f161b3b9bea4490b4e771f98b8))
+
 ## [0.88.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.0...v0.88.1) (2026-11-01)
 
 
