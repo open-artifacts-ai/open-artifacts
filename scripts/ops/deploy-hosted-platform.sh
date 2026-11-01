@@ -29,7 +29,9 @@
 #   inventory        PLATFORM_DB_ID HOSTS_KV_ID GITHUB_REPOSITORY_ID GITHUB_REPOSITORY
 #                    (owner/repo: the OIDC principal, design v7 6.3)
 #   provisioning     PLATFORM_DB_ID BROKER_REGISTRY_ID DIRECTORY_REGISTRY_ID
-#                    GITHUB_REPOSITORY_ID SIGNUP_DAILY_CAP (the provisioner and auth broker must exist)
+#                    GITHUB_REPOSITORY_ID SIGNUP_DAILY_CAP ADMIN_IDENTITIES (the
+#                    Environment secret `email:sub,...`, #1007; the provisioner
+#                    and auth broker must exist)
 # Always: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
 set -euo pipefail
 
@@ -297,6 +299,25 @@ case "$target" in
     ;;
   provisioning)
     need PLATFORM_DB_ID; need BROKER_REGISTRY_ID; need DIRECTORY_REGISTRY_ID; need GITHUB_REPOSITORY_ID; need SIGNUP_DAILY_CAP
+    # ADMIN_IDENTITIES (#1007): the `email:sub` list is the Environment's
+    # secret, never committed. Fail closed: no list, no deploy; each entry is
+    # checked here and the value is never printed.
+    need ADMIN_IDENTITIES
+    # One line only: `read` stops at a newline, so a second line would go
+    # unchecked yet be put.
+    [[ "$ADMIN_IDENTITIES" != *[$'\n\r']* ]] || { echo "ADMIN_IDENTITIES has a line break; refusing" >&2; exit 2; }
+    IFS=, read -ra ids <<< "$ADMIN_IDENTITIES"
+    [ "${#ids[@]}" -gt 0 ] || { echo "ADMIN_IDENTITIES has no entries; refusing" >&2; exit 2; }
+    for id in "${ids[@]}"; do
+      [[ "$id" =~ ^[^:,[:space:]@]+@[^:,[:space:]@]+:[^:,[:space:]]+$ ]] ||
+        { echo "ADMIN_IDENTITIES: an entry is not email:sub; refusing" >&2; exit 2; }
+    done
+    ids=()
+    # A tag from before #1007 commits ADMIN_IDENTITIES as a var, which would go
+    # live and then clash with the secret: deploy a tag with #1007.
+    committed_ids="$(ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" committed provisioning vars | jq -r 'has("ADMIN_IDENTITIES")')" ||
+      { echo "can't read provisioning's committed vars" >&2; exit 1; }
+    [ "$committed_ids" = false ] || { echo "this tag commits ADMIN_IDENTITIES as a var; it is a secret since #1007: deploy a later tag" >&2; exit 1; }
     need_workers oa-$P-provisioner oa-$P-auth-broker
     # Prod, before anything is deployed: the tag's committed vars carry no OIDC
     # principal and no test-users gate (4.4); the read-back checks them again.
@@ -357,6 +378,8 @@ case "$target" in
       fi
       key=""
     fi
+    # Every deploy: the list can change, and the deployed value can't be read.
+    printf '%s' "$ADMIN_IDENTITIES" | put_secret "$W" provisioning ADMIN_IDENTITIES
     S="$(settings "$W")"
     expect "$S" '.result.bindings[] | select(.name == "PLATFORM_DB") | .id' "$PLATFORM_DB_ID" "PLATFORM_DB"
     expect "$S" '.result.bindings[] | select(.name == "OAUTH_KV") | .namespace_id' "$OAUTH_KV_ID" "OAUTH_KV"
@@ -379,11 +402,11 @@ case "$target" in
       expect "$S" '.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text | . == "test-users"' false "SIGNUPS_ENABLED (test-users is staging only)"
     fi
     signups_deployed "$S" "$W"
-    # ADMIN_IDENTITIES and MCP_REDIRECT_URIS among them.
+    # MCP_REDIRECT_URIS among them; ADMIN_IDENTITIES is a secret, by name only.
     vars_are "$S" provisioning
     expect "$S" '.result.observability.enabled // false' false "observability"
     names="$(secret_names "$W" | sort | tr '\n' ' ')"
-    [ "$names" = "ADMIN_BROKER_KEY ADMIN_SESSION_KEY " ] || { echo "$W secrets are '$names'" >&2; exit 1; }
+    [ "$names" = "ADMIN_BROKER_KEY ADMIN_IDENTITIES ADMIN_SESSION_KEY " ] || { echo "$W secrets are '$names'" >&2; exit 1; }
     rc=0
     entry="$(kv_get "$BROKER_REGISTRY_ID" "$KEY")" || rc=$?
     [ "$rc" -eq 0 ] || { [ "$rc" -eq 3 ] && echo "$KEY is not in oa-$P-broker-registry" >&2; exit 1; }
