@@ -11,7 +11,7 @@ import { fmtClock } from "../src/components/labels";
 import { SEARCH_DELAY_MS } from "../src/pages/Installs";
 import { http, json, renderApp, seen, use } from "./harness";
 
-it("lists installs with state, release, sign-in and health, and six tiles from the world", async () => {
+it("lists installs with state, release, sign-in and health, and seven tiles from the world", async () => {
   renderApp("/installs");
   const row = (await screen.findAllByRole("link", { name: "leo" }))[0].closest(
     "tr",
@@ -31,9 +31,8 @@ it("lists installs with state, release, sign-in and health, and six tiles from t
   await screen.findByTestId("tile-active");
   expect(screen.getByTestId("tile-active")).toHaveTextContent("2");
   expect(screen.getByTestId("tile-creating")).toHaveTextContent("0");
-  expect(screen.getByTestId("tile-paused")).toHaveTextContent(
-    "Paused · Deleting",
-  );
+  expect(screen.getByTestId("tile-paused")).toHaveTextContent("Paused");
+  expect(screen.getByTestId("tile-deleting")).toHaveTextContent("Deleting");
   expect(screen.getByTestId("tile-attention")).toHaveTextContent("2");
   expect(screen.getByTestId("tile-token")).toHaveTextContent("340 days left");
   const at = fixtureWorld().prodClean?.at ?? 0;
@@ -259,4 +258,162 @@ it("the toolbar searches slug or host with no extra hint line, and one page has 
   );
   expect(screen.queryByRole("button", { name: "Next" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Previous" })).toBeNull();
+});
+
+// #1033: the status tiles set the same filter as the State select, in the URL.
+const TILE_FILTERS = [
+  ["tile-active", "active", "Active"],
+  ["tile-creating", "provisioning", "Creating"],
+  ["tile-paused", "suspended", "Paused"],
+  ["tile-deleting", "deleting", "Deleted, restorable"],
+] as const;
+const installsCalls = () =>
+  seen.filter((s) => s.path.startsWith("/api/v1/installs"));
+const lastList = () => installsCalls().at(-1)?.path ?? "";
+
+it.each(TILE_FILTERS)(
+  "%s filters by state=%s in the URL and the request, and a second click clears it",
+  async (testId, state, selectLabel) => {
+    const { router } = renderApp("/installs");
+    const tile = await screen.findByTestId(testId);
+    expect(tile.tagName).toBe("BUTTON");
+    expect(tile).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(tile);
+    await waitFor(() =>
+      expect(router.state.location.search).toEqual({ state }),
+    );
+    await waitFor(() => expect(lastList()).toContain(`state=${state}`));
+    expect(screen.getByTestId(testId)).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("combobox", { name: "State" })).toHaveTextContent(
+      selectLabel,
+    );
+    for (const [other] of TILE_FILTERS.filter(([t]) => t !== testId)) {
+      expect(screen.getByTestId(other)).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      );
+    }
+    fireEvent.click(screen.getByTestId(testId));
+    await waitFor(() => expect(router.state.location.search).toEqual({}));
+    await waitFor(() => expect(lastList()).not.toContain("state="));
+    expect(screen.getByTestId(testId)).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("combobox", { name: "State" })).toHaveTextContent(
+      "All states",
+    );
+  },
+);
+
+it("loads with ?state= from the URL: the tile shows selected and the request filters", async () => {
+  renderApp("/installs?state=suspended");
+  const tile = await screen.findByTestId("tile-paused");
+  expect(tile).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByTestId("tile-active")).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await waitFor(() => expect(lastList()).toContain("state=suspended"));
+  expect(installsCalls().every((c) => c.path.includes("state=suspended"))).toBe(
+    true,
+  );
+});
+
+it("ignores an unknown ?state= value", async () => {
+  renderApp("/installs?state=bogus");
+  await screen.findByRole("link", { name: "leo" });
+  expect(lastList()).not.toContain("state=");
+  expect(screen.getByRole("combobox", { name: "State" })).toHaveTextContent(
+    "All states",
+  );
+  for (const [t] of TILE_FILTERS)
+    expect(screen.getByTestId(t)).toHaveAttribute("aria-pressed", "false");
+});
+
+it("choosing All states clears a tile's filter", async () => {
+  const { router } = renderApp("/installs?state=active");
+  expect(await screen.findByTestId("tile-active")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  fireEvent.click(screen.getByRole("combobox", { name: "State" }));
+  fireEvent.click(await screen.findByRole("option", { name: "All states" }));
+  await waitFor(() => expect(router.state.location.search).toEqual({}));
+  expect(screen.getByTestId("tile-active")).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await waitFor(() => expect(lastList()).not.toContain("state="));
+});
+
+it("the State select sets the URL and the matching tile", async () => {
+  const { router } = renderApp("/installs");
+  await screen.findByRole("link", { name: "leo" });
+  fireEvent.click(screen.getByRole("combobox", { name: "State" }));
+  fireEvent.click(await screen.findByRole("option", { name: "Creating" }));
+  await waitFor(() =>
+    expect(router.state.location.search).toEqual({ state: "provisioning" }),
+  );
+  expect(screen.getByTestId("tile-creating")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+});
+
+// jsdom does not turn Enter/Space into a click, and the admin app has no
+// user-event: assert the native button contract browsers activate by key.
+it("tiles are focusable native buttons named by their label", async () => {
+  const { router } = renderApp("/installs");
+  const tile = await screen.findByRole("button", { name: /^Paused/ });
+  expect(tile).toBe(screen.getByTestId("tile-paused"));
+  expect(tile.tagName).toBe("BUTTON");
+  expect(tile).toHaveAttribute("type", "button");
+  expect(tile).not.toBeDisabled();
+  tile.focus();
+  expect(tile).toHaveFocus();
+  fireEvent.click(document.activeElement as HTMLElement);
+  await waitFor(() =>
+    expect(router.state.location.search).toEqual({ state: "suspended" }),
+  );
+  expect(tile).toHaveAttribute("aria-pressed", "true");
+  for (const name of [/^Active/, /^Creating/, /^Deleting/, /^Needs attention/])
+    expect(screen.getByRole("button", { name })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+});
+
+it("Needs attention lists the page's installs in the attention list, with no server param", async () => {
+  const { router } = renderApp("/installs");
+  await screen.findByRole("link", { name: "leo" });
+  fireEvent.click(screen.getByTestId("tile-attention"));
+  await waitFor(() =>
+    expect(router.state.location.search).toEqual({ state: "attention" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("link", { name: "leo" })).toBeNull(),
+  );
+  expect(screen.getByRole("link", { name: "acme" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "broken" })).toBeInTheDocument();
+  expect(screen.getByTestId("tile-attention")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(screen.getByRole("combobox", { name: "State" })).toHaveTextContent(
+    "Needs attention",
+  );
+  expect(installsCalls().some((c) => c.path.includes("state="))).toBe(false);
+  expect(
+    screen.getByText("Showing the installs on this page that need attention."),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByTestId("tile-attention"));
+  expect(await screen.findByRole("link", { name: "leo" })).toBeInTheDocument();
+  expect(router.state.location.search).toEqual({});
+});
+
+it("Needs attention on a page with none says so and keeps the pager", async () => {
+  twoPages();
+  renderApp("/installs?state=attention");
+  expect(
+    await screen.findByText("No installs on this page need attention."),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
 });

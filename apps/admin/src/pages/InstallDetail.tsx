@@ -45,6 +45,7 @@ import {
   jobTarget,
   SERVING_LABEL,
   stepCount,
+  TIER_LABEL,
   visibleSteps,
 } from "../components/labels";
 import { useAction } from "../hooks/useAction";
@@ -608,7 +609,7 @@ export function InstallDetail({ id }: { id: string }) {
             <div>
               <dt>Tier · Sign-in</dt>
               <dd>
-                {i.tier ? i.tier[0].toUpperCase() + i.tier.slice(1) : "None"} ·{" "}
+                {i.tier ? TIER_LABEL[i.tier] : "None"} ·{" "}
                 {i.auth.providers
                   .map((p) => (p === "google" ? "Google" : "Email"))
                   .join(", ")}

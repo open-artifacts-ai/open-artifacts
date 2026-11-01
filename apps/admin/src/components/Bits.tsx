@@ -3,18 +3,8 @@ import { Button } from "@oa/ui/shadcn";
 import { Link } from "@tanstack/react-router";
 import { ApiError } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
-import { JOB_STATUS_LABEL, STATE_LABEL } from "./labels";
+import { JOB_STATUS_LABEL, STATE_LABEL, STATE_TONE, type Tone } from "./labels";
 
-type Tone = "success" | "accent" | "warning" | "danger" | "muted";
-
-const STATE_TONE = {
-  provisioning: "accent",
-  active: "success",
-  suspended: "warning",
-  deleting: "muted",
-  deleted: "muted",
-  failed: "danger",
-} as const satisfies Record<InstallState, Tone>;
 /** A colored dot and the state's label (the mock's .st); `chip` sets it on a pill. */
 export const StateBadge = ({
   state,

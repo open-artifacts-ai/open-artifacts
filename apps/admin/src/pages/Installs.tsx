@@ -21,65 +21,91 @@ import {
   TableRow,
 } from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { installsQuery, worldQuery } from "../api/queries";
 import { Pager } from "../components/Bits";
 import {
+  alertLabel,
   fmtClock,
   fmtDay,
   HEALTH_LABEL,
   JOB_VERB,
   jobTarget,
   STATE_LABEL,
+  STATE_TONE,
   stepCount,
+  TIER_LABEL,
 } from "../components/labels";
 import { useEnv } from "../hooks/useEnv";
 import { usePaging } from "../hooks/usePaging";
 import { LoadError } from "../layout/LoadError";
 
-const TIER = { trial: "Trial", team: "Team", business: "Business" } as const;
 export const SEARCH_DELAY_MS = 300;
 /** The state filter's "any state" value (Radix Select has no empty value). */
 const ALL = "all";
-const ALERT_LABEL: Record<string, string> = {
-  job_failed: "Job failed",
-  install_failed: "Create failed",
-  health_failing: "Health failing",
-  mismatch: "Routing mismatch",
-};
-const sentence = (kind: string) => {
-  const t = kind.replaceAll("_", " ");
-  return t[0].toUpperCase() + t.slice(1);
-};
+/**
+ * The list filter in the URL (`?state=`): an install state, sent as R2
+ * `state`, or "attention", which R2 has no param for. That one lists the
+ * loaded page's installs that appear in the world's attention list.
+ */
+export const ATTENTION = "attention";
+export type StateFilter = InstallState | typeof ATTENTION;
+export const parseStateFilter = (v: unknown): StateFilter | undefined =>
+  v === ATTENTION || InstallStateSchema.safeParse(v).success
+    ? (v as StateFilter)
+    : undefined;
 
-function Tiles({ world }: { world: World }) {
+function Tiles({
+  world,
+  filter,
+  onPick,
+}: {
+  world: World;
+  filter: StateFilter | undefined;
+  onPick: (f: StateFilter | undefined) => void;
+}) {
   const by = world.installs.byState;
   const attention = world.attention.length;
   const tok = world.provisioningToken;
+  const tiles: { f: StateFilter; label: string; n: number; id: string }[] = [
+    { f: "active", label: "Active", n: by.active, id: "tile-active" },
+    {
+      f: "provisioning",
+      label: "Creating",
+      n: by.provisioning,
+      id: "tile-creating",
+    },
+    { f: "suspended", label: "Paused", n: by.suspended, id: "tile-paused" },
+    { f: "deleting", label: "Deleting", n: by.deleting, id: "tile-deleting" },
+    {
+      f: ATTENTION,
+      label: "Needs attention",
+      n: attention,
+      id: "tile-attention",
+    },
+  ];
   return (
     <section className="oa-tiles" aria-label="Overview">
-      <div className="oa-tile" data-testid="tile-active">
-        <div className="k">Active</div>
-        <div className="v">{by.active}</div>
-      </div>
-      <div className="oa-tile" data-testid="tile-creating">
-        <div className="k">Creating</div>
-        <div className="v">{by.provisioning}</div>
-      </div>
-      <div className="oa-tile" data-testid="tile-paused">
-        <div className="k">Paused · Deleting</div>
-        <div className="v">
-          {by.suspended} <small>·</small> {by.deleting}
-        </div>
-      </div>
-      <div
-        className={`oa-tile ${attention > 0 ? "warn" : ""}`}
-        data-testid="tile-attention"
-      >
-        <div className="k">Needs attention</div>
-        <div className="v">{attention}</div>
-      </div>
+      {tiles.map((t) => {
+        const on = filter === t.f;
+        return (
+          <button
+            key={t.f}
+            type="button"
+            className={`oa-tile oa-tile-btn ${t.f === ATTENTION && t.n > 0 ? "warn" : ""}`}
+            data-testid={t.id}
+            aria-pressed={on}
+            title={
+              on ? "Show all states" : `Show only ${t.label.toLowerCase()}`
+            }
+            onClick={() => onPick(on ? undefined : t.f)}
+          >
+            <span className="k">{t.label}</span>
+            <span className="v">{t.n}</span>
+          </button>
+        );
+      })}
       <div
         className={`oa-tile ${tok.status === "active" ? "" : "warn"}`}
         data-testid="tile-token"
@@ -156,14 +182,6 @@ function StateCell({
   );
 }
 
-const STATE_TONE = {
-  provisioning: "accent",
-  active: "success",
-  suspended: "warning",
-  deleting: "muted",
-  deleted: "muted",
-  failed: "danger",
-} as const satisfies Record<InstallState, string>;
 const HEALTH_TONE = {
   ok: "success",
   failing: "danger",
@@ -180,11 +198,25 @@ const SORTS: { key: SortKey; label: string }[] = [
 export function Installs() {
   const world = useQuery(worldQuery());
   const env = useEnv();
-  const [state, setState] = useState<InstallState | "">("");
+  const navigate = useNavigate();
+  const filter = parseStateFilter(
+    (useSearch({ strict: false }) as { state?: unknown }).state,
+  );
+  const state = filter === ATTENTION ? undefined : filter;
   const [typed, setTyped] = useState("");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
   const paging = usePaging();
+  const setFilter = (f: StateFilter | undefined) => {
+    void navigate({ to: "/installs", search: f ? { state: f } : {} });
+  };
+  // A new filter starts at page 1, whether picked here or by Back/Forward.
+  const lastFilter = useRef(filter);
+  useEffect(() => {
+    if (lastFilter.current === filter) return;
+    lastFilter.current = filter;
+    paging.reset();
+  }, [filter, paging.reset]);
   // The search runs on the server (R2 `q`) once typing pauses.
   useEffect(() => {
     const next = typed.trim();
@@ -200,7 +232,7 @@ export function Installs() {
   const list = useQuery(
     installsQuery({
       cursor: paging.cursor,
-      state: state || undefined,
+      state,
       q: q || undefined,
     }),
   );
@@ -209,16 +241,22 @@ export function Installs() {
       new Map((world.data?.jobs.recent ?? []).map((j) => [j.id, j] as const)),
     [world.data],
   );
+  const alerted = useMemo(
+    () => new Set((world.data?.attention ?? []).map((a) => a.installId)),
+    [world.data],
+  );
   const rows = useMemo(() => {
-    const items = [...(list.data?.items ?? [])];
+    const items = (list.data?.items ?? []).filter(
+      (i) => filter !== ATTENTION || alerted.has(i.id),
+    );
     if (!sort) return items;
     return items.sort((a, b) => {
       const av = a[sort.key] ?? "";
       const bv = b[sort.key] ?? "";
       return (av < bv ? -1 : av > bv ? 1 : 0) * sort.dir;
     });
-  }, [list.data, sort]);
-  const filtering = !!state || !!q || paging.canPrev;
+  }, [list.data, sort, filter, alerted]);
+  const filtering = !!filter || !!q || paging.canPrev;
   // Nothing to search or filter yet: the empty card carries the next step.
   const none =
     !filtering && list.data?.items.length === 0 && !list.data.nextCursor;
@@ -238,7 +276,7 @@ export function Installs() {
       </div>
       {world.data && (
         <>
-          <Tiles world={world.data} />
+          <Tiles world={world.data} filter={filter} onPick={setFilter} />
           {world.data.truncated && (
             <p className="oa-note">The overview shows the newest 50 items.</p>
           )}
@@ -274,11 +312,8 @@ export function Installs() {
             />
           </span>
           <Select
-            value={state || ALL}
-            onValueChange={(v) => {
-              setState(v === ALL ? "" : (v as InstallState));
-              paging.reset();
-            }}
+            value={filter ?? ALL}
+            onValueChange={(v) => setFilter(parseStateFilter(v))}
           >
             <SelectTrigger aria-label="State" className="oa-select">
               <SelectValue />
@@ -290,6 +325,7 @@ export function Installs() {
                   {STATE_LABEL[s]}
                 </SelectItem>
               ))}
+              <SelectItem value={ATTENTION}>Needs attention</SelectItem>
             </SelectContent>
           </Select>
           <span className="oa-spacer" />
@@ -334,8 +370,26 @@ export function Installs() {
             </Link>
           </div>
         )
+      ) : list.data && rows.length === 0 ? (
+        // Needs attention filters the loaded page: the next page may have some.
+        <>
+          <div className="oa-card oa-empty">
+            <p>No installs on this page need attention.</p>
+          </div>
+          <Pager
+            canPrev={paging.canPrev}
+            next={list.data.nextCursor}
+            onPrev={paging.prev}
+            onNext={paging.next}
+          />
+        </>
       ) : list.data ? (
         <>
+          {filter === ATTENTION && (
+            <p className="oa-note">
+              Showing the installs on this page that need attention.
+            </p>
+          )}
           <div className="oa-tablewrap oa-installs">
             <Table>
               <TableHeader>
@@ -365,7 +419,7 @@ export function Installs() {
                       <TableCell className="oa-mono">
                         {i.version ?? "–"}
                       </TableCell>
-                      <TableCell>{i.tier ? TIER[i.tier] : "–"}</TableCell>
+                      <TableCell>{i.tier ? TIER_LABEL[i.tier] : "–"}</TableCell>
                       <TableCell>
                         {i.auth.providers
                           .map((p) => (p === "google" ? "Google" : "Email"))
@@ -396,7 +450,7 @@ export function Installs() {
                               className={`oa-chip ${a.kind === "job_failed" || a.kind === "health_failing" ? "oa-chip-danger" : ""}`}
                               title={a.message ?? undefined}
                             >
-                              {ALERT_LABEL[a.kind] ?? sentence(a.kind)}
+                              {alertLabel(a.kind)}
                             </span>
                           ))}
                       </TableCell>

@@ -884,6 +884,35 @@ fieldset.oa-seg-field {
 .oa-tile.warn .v {
   color: var(--oa-warning);
 }
+/* Status tiles that filter the list (#1033): pressed = the active filter. */
+.oa-tile-btn {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition:
+    background-color 120ms,
+    border-color 120ms;
+}
+.oa-tile-btn .k,
+.oa-tile-btn .v {
+  display: block;
+}
+.oa-tile-btn:hover {
+  border-color: var(--oa-border);
+}
+.oa-tile-btn[aria-pressed="true"] {
+  background: var(--oa-accent-soft);
+  border-color: var(--oa-accent);
+}
+.oa-tile-btn[aria-pressed="true"] .k {
+  color: var(--oa-text);
+  font-weight: 500;
+}
 
 /* ---------- Toolbar, tables, pager (mock .tool, .card + table.it) ---------- */
 .oa-tools {
