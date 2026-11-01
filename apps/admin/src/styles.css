@@ -1397,10 +1397,6 @@ fieldset.oa-seg-field {
 [data-slot="dialog-content"] label:not(.oa-check):has(> b) {
   display: block;
 }
-[data-slot="dialog-content"] textarea.oa-reason {
-  min-height: 30px;
-  resize: vertical;
-}
 
 /* ---------- Create install (mock Acreate) ---------- */
 /* Segmented radios: the label is the segment, the radio stays focusable. */

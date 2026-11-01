@@ -1,6 +1,6 @@
 import { InstallIdSchema } from "@oa/shared/provisioning";
 import {
-  Button,
+  Input,
   Select,
   SelectContent,
   SelectItem,
@@ -16,9 +16,10 @@ import {
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { auditQuery, installQuery } from "../api/queries";
+import { auditQuery, installQuery, tokensQuery } from "../api/queries";
 import { Pager } from "../components/Bits";
 import { fmtDayClock, shortId } from "../components/labels";
+import { useMe } from "../hooks/useEnv";
 import { usePaging } from "../hooks/usePaging";
 import { LoadError } from "../layout/LoadError";
 
@@ -38,8 +39,10 @@ const VERB: Record<string, string> = {
 export const actionPhrase = (action: string) =>
   Object.hasOwn(VERB, action) ? VERB[action] : action;
 
-/** The action filter's "any action" value (Radix Select has no empty value). */
+/** The filters' "any" value (Radix Select has no empty value). */
 const ANY = "__any";
+/** System actors the audit records by label (shared/provisioning/system.ts). */
+const SYSTEM_ACTORS: [string, string][] = [["scheduler", "Scheduler"]];
 const PROVIDER: Record<string, string> = { google: "Google", email: "Email" };
 const text = (v: unknown) =>
   typeof v === "string" && v.trim() !== "" ? v.trim() : undefined;
@@ -91,7 +94,8 @@ export function Audit({
   const navigate = useNavigate();
   const paging = usePaging();
   const [draft, setDraft] = useState(installId ?? "");
-  const [actorDraft, setActorDraft] = useState(actor ?? "");
+  const me = useMe();
+  const tokens = useQuery({ ...tokensQuery(), retry: false });
   const valid = !installId || InstallIdSchema.safeParse(installId).success;
   const [bad, setBad] = useState(false);
   const q = useQuery({
@@ -107,6 +111,21 @@ export function Audit({
     combine: (rs) =>
       new Map(ids.map((id, i) => [id, rs[i]?.data?.slug] as const)),
   });
+  // Actor choices (R17 matches the label exactly, or `token:<id>`): you, the
+  // people seen on this page, the Scheduler and every agent token.
+  const actors = new Map<string, string>();
+  if (me.data?.email) actors.set(me.data.email, me.data.email);
+  for (const e of q.data?.items ?? [])
+    if (e.actor.kind !== "token" && e.actor.kind !== "system")
+      actors.set(e.actor.label, e.actor.label);
+  for (const [v, l] of SYSTEM_ACTORS) actors.set(v, l);
+  for (const t of tokens.data?.items ?? [])
+    actors.set(`token:${t.id}`, `token: ${t.label}`);
+  if (actor && !actors.has(actor)) actors.set(actor, actor);
+  const go = (s: { installId?: string; actor?: string; action?: string }) => {
+    paging.reset();
+    void navigate({ to: "/audit", search: s });
+  };
   return (
     <>
       <h1>Audit log</h1>
@@ -116,44 +135,38 @@ export function Audit({
       <form
         className="oa-tools oa-audit-tools"
         onSubmit={(e) => {
+          // Enter in the Install search applies it.
           e.preventDefault();
           const id = draft.trim();
           const invalid = id !== "" && !InstallIdSchema.safeParse(id).success;
           setBad(invalid);
           if (invalid) return;
-          paging.reset();
-          void navigate({
-            to: "/audit",
-            search: {
-              installId: id || undefined,
-              actor: actorDraft.trim() || undefined,
-              action: action || undefined,
-            },
-          });
+          go({ installId: id || undefined, actor, action });
         }}
       >
-        <label>
-          <span className="sr-only">Actor</span>
-          <input
-            maxLength={200}
-            placeholder="Any actor"
-            value={actorDraft}
-            onChange={(e) => setActorDraft(e.target.value)}
-          />
-        </label>
+        <Select
+          value={actor || ANY}
+          onValueChange={(v) =>
+            go({ installId, actor: v === ANY ? undefined : v, action })
+          }
+        >
+          <SelectTrigger aria-label="Actor" className="oa-select">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent position="popper" align="start">
+            <SelectItem value={ANY}>Any actor</SelectItem>
+            {[...actors].map(([v, l]) => (
+              <SelectItem key={v} value={v}>
+                {l}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Select
           value={action || ANY}
-          onValueChange={(v) => {
-            paging.reset();
-            void navigate({
-              to: "/audit",
-              search: {
-                installId,
-                actor,
-                action: v === ANY ? undefined : v,
-              },
-            });
-          }}
+          onValueChange={(v) =>
+            go({ installId, actor, action: v === ANY ? undefined : v })
+          }
         >
           <SelectTrigger aria-label="Action" className="oa-select">
             <SelectValue />
@@ -170,7 +183,7 @@ export function Audit({
             ))}
           </SelectContent>
         </Select>
-        <label className="oa-search">
+        <span className="oa-search">
           <svg
             viewBox="0 0 16 16"
             fill="none"
@@ -182,16 +195,14 @@ export function Audit({
           >
             <path d="M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM10.3 10.3l3 3" />
           </svg>
-          <span className="sr-only">Install</span>
-          <input
+          <Input
+            type="search"
+            aria-label="Install"
             placeholder="Install"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
           />
-        </label>
-        <Button type="submit" variant="outline">
-          Filter
-        </Button>
+        </span>
         {(installId || actor || action) && (
           <Link
             className="oa-link"
@@ -204,7 +215,6 @@ export function Audit({
             onClick={() => {
               paging.reset();
               setDraft("");
-              setActorDraft("");
               setBad(false);
             }}
           >

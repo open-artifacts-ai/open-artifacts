@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it } from "vitest";
-import { auditEntries, FIXTURE_IDS } from "../src/mocks/fixtures";
+import { auditEntries, FIXTURE_IDS, tokens } from "../src/mocks/fixtures";
 import { detailLine } from "../src/pages/Audit";
 import { http, json, renderApp, seen, use } from "./harness";
 
@@ -36,15 +36,18 @@ it("filters by install id from the query string", async () => {
 it("applies a typed filter and clears it", async () => {
   const { router } = renderApp("/audit");
   await screen.findAllByRole("row");
-  fireEvent.change(screen.getByLabelText("Install"), {
-    target: { value: FIXTURE_IDS.acme },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+  // Three controls, no Filter button: Enter in the Install search applies it.
+  expect(screen.queryByRole("button", { name: "Filter" })).toBeNull();
+  const install = screen.getByRole("searchbox", { name: "Install" });
+  fireEvent.change(install, { target: { value: FIXTURE_IDS.acme } });
+  fireEvent.submit(install);
   await screen.findByRole("link", { name: "Clear filter" });
   expect(router.state.location.search).toEqual({ installId: FIXTURE_IDS.acme });
   fireEvent.click(screen.getByRole("link", { name: "Clear filter" }));
-  await screen.findByRole("button", { name: "Filter" });
-  expect(screen.queryByRole("link", { name: "Clear filter" })).toBeNull();
+  await waitFor(() =>
+    expect(screen.queryByRole("link", { name: "Clear filter" })).toBeNull(),
+  );
+  expect(install).toHaveValue("");
 });
 
 it("pages with the cursor", async () => {
@@ -71,46 +74,67 @@ it("says when there are no entries", async () => {
 });
 
 it("filters by actor and action, and keeps both in the URL", async () => {
+  use(http.get("*/api/v1/tokens", () => json({ items: tokens })));
   const { router } = renderApp("/audit");
   await screen.findAllByRole("row");
-  fireEvent.change(screen.getByLabelText("Actor"), {
-    target: { value: "Leo" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+  const actor = screen.getByRole("combobox", { name: "Actor" });
+  expect(actor).toHaveTextContent("Any actor");
+  fireEvent.click(actor);
+  // You, the Scheduler and each agent token (by id) are offered.
+  expect(
+    await screen.findByRole("option", { name: "Scheduler" }),
+  ).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("option", { name: "token: ci" }));
+  const tokenActor = `token:${FIXTURE_IDS.token}`;
   await waitFor(() =>
-    expect(seen.some((s) => s.path.includes("actor=Leo"))).toBe(true),
+    expect(
+      seen.some((s) =>
+        s.path.includes(`actor=${encodeURIComponent(tokenActor)}`),
+      ),
+    ).toBe(true),
   );
   fireEvent.click(screen.getByRole("combobox", { name: "Action" }));
   fireEvent.click(
     await screen.findByRole("option", { name: "started an upgrade of" }),
   );
   await waitFor(() =>
+    expect(router.state.location.search).toEqual({
+      actor: tokenActor,
+      action: "install.upgrade",
+    }),
+  );
+  await waitFor(() =>
     expect(
       seen.some(
         (s) =>
-          s.path.includes("actor=Leo") &&
+          s.path.includes(`actor=${encodeURIComponent(tokenActor)}`) &&
           s.path.includes("action=install.upgrade"),
       ),
     ).toBe(true),
   );
-  expect(router.state.location.search).toEqual({
-    actor: "Leo",
-    action: "install.upgrade",
-  });
   fireEvent.click(screen.getByRole("link", { name: "Clear filter" }));
-  await waitFor(() => expect(screen.getByLabelText("Actor")).toHaveValue(""));
+  await waitFor(() =>
+    expect(screen.getByRole("combobox", { name: "Actor" })).toHaveTextContent(
+      "Any actor",
+    ),
+  );
   expect(screen.getByRole("combobox", { name: "Action" })).toHaveTextContent(
     "Any action",
   );
 });
 
-it("shows an action from the URL that is not in the list, and limits the actor to 200 characters", async () => {
-  renderApp("/audit?action=token.mint");
+it("shows an actor and an action from the URL that are not in the lists", async () => {
+  renderApp("/audit?action=token.mint&actor=someone%40example.com");
   await screen.findAllByRole("row");
   expect(screen.getByRole("combobox", { name: "Action" })).toHaveTextContent(
     "token.mint",
   );
-  expect(screen.getByLabelText("Actor")).toHaveAttribute("maxlength", "200");
+  expect(screen.getByRole("combobox", { name: "Actor" })).toHaveTextContent(
+    "someone@example.com",
+  );
+  expect(seen.some((s) => s.path.includes("actor=someone%40example.com"))).toBe(
+    true,
+  );
 });
 
 it("Target shows the install's slug in a link, and Detail is a plain line, never JSON", async () => {

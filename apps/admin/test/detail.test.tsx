@@ -179,6 +179,10 @@ it("delete is type-to-confirm on the slug", async () => {
   const dialog = await screen.findByRole("dialog");
   const go = within(dialog).getByRole("button", { name: "Delete leo" });
   expect(go).toBeDisabled();
+  // A disabled confirm says why, and the button points at that line.
+  const why = within(dialog).getByTestId("dialog-blocker");
+  expect(why).toHaveTextContent("Type leo to confirm.");
+  expect(go).toHaveAttribute("aria-describedby", why.id);
   fireEvent.change(within(dialog).getByRole("textbox"), {
     target: { value: "wrong" },
   });
@@ -187,6 +191,8 @@ it("delete is type-to-confirm on the slug", async () => {
     target: { value: i.slug },
   });
   expect(go).toBeEnabled();
+  expect(within(dialog).queryByTestId("dialog-blocker")).toBeNull();
+  expect(go).not.toHaveAttribute("aria-describedby");
   fireEvent.click(go);
   await waitFor(() =>
     expect(router.state.location.pathname).toMatch(/^\/jobs\//),
@@ -204,13 +210,17 @@ it("suspend needs a reason of 1 to 200 characters", async () => {
   const dialog = await screen.findByRole("dialog");
   const go = within(dialog).getByRole("button", { name: "Pause leo" });
   expect(go).toBeDisabled();
-  fireEvent.change(within(dialog).getByRole("textbox"), {
-    target: { value: "   " },
-  });
+  expect(within(dialog).getByTestId("dialog-blocker")).toHaveTextContent(
+    "Add a reason.",
+  );
+  const reason = within(dialog).getByRole("textbox", { name: "Reason" });
+  // One line, capped at 200 characters.
+  expect(reason.tagName).toBe("INPUT");
+  expect(reason).toHaveAttribute("maxlength", "200");
+  fireEvent.change(reason, { target: { value: "   " } });
   expect(go).toBeDisabled();
-  fireEvent.change(within(dialog).getByRole("textbox"), {
-    target: { value: "Unpaid invoice" },
-  });
+  fireEvent.change(reason, { target: { value: "Unpaid invoice" } });
+  expect(within(dialog).queryByTestId("dialog-blocker")).toBeNull();
   fireEvent.click(go);
   await waitFor(() => expect(writes()).toHaveLength(1));
   expect(writes()[0].body).toMatchObject({ reason: "Unpaid invoice" });
@@ -297,7 +307,9 @@ it("a failed create's purge goes straight to type-to-confirm, even when the sign
   fireEvent.click(screen.getByRole("button", { name: "Purge" }));
   const dialog = await screen.findByRole("dialog");
   expect(dialog).not.toHaveTextContent("Sign in again");
-  const go = within(dialog).getByRole("button", { name: "Purge" });
+  const go = within(dialog).getByRole("button", {
+    name: `Delete ${i.slug} for good`,
+  });
   expect(go).toBeDisabled();
   fireEvent.change(within(dialog).getByRole("textbox"), {
     target: { value: i.slug },
@@ -326,8 +338,17 @@ it("purge with a fresh sign-in is type-to-confirm", async () => {
   await open(i);
   fireEvent.click(screen.getByRole("button", { name: "Purge" }));
   const dialog = await screen.findByRole("dialog");
-  const go = within(dialog).getByRole("button", { name: "Purge" });
+  // The title and the confirm use the same verb.
+  expect(
+    within(dialog).getByRole("heading", { name: `Delete ${i.slug} for good?` }),
+  ).toBeInTheDocument();
+  const go = within(dialog).getByRole("button", {
+    name: `Delete ${i.slug} for good`,
+  });
   expect(go).toBeDisabled();
+  expect(within(dialog).getByTestId("dialog-blocker")).toHaveTextContent(
+    `Type ${i.slug} to confirm.`,
+  );
   fireEvent.change(within(dialog).getByRole("textbox"), {
     target: { value: i.slug },
   });
@@ -369,7 +390,9 @@ it("still sends the user to sign in again when the API says reauth_required", as
   fireEvent.change(within(dialog).getByRole("textbox"), {
     target: { value: i.slug },
   });
-  fireEvent.click(within(dialog).getByRole("button", { name: "Purge" }));
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: `Delete ${i.slug} for good` }),
+  );
   await waitFor(() => expect(assign).toHaveBeenCalled());
 });
 
@@ -444,7 +467,10 @@ it("recent jobs: a section title over a table of job, step, state, start and act
     "href",
     expect.stringMatching(/^\/jobs\//),
   );
-  expect(within(row).getByTestId("status")).toBeInTheDocument();
+  // The job state is Design's label, never the raw enum.
+  expect(within(row).getByTestId("status").textContent).toMatch(
+    /^(Queued|Running|Done|Failed)$/,
+  );
 });
 
 it("recent jobs: says No jobs yet. when there are none", async () => {

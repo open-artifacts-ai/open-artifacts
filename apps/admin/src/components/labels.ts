@@ -4,6 +4,7 @@ import type {
   InstallState,
   Job,
   JobKind,
+  JobStatus,
 } from "@oa/shared/provisioning";
 
 export const STATE_LABEL: Record<InstallState, string> = {
@@ -13,6 +14,12 @@ export const STATE_LABEL: Record<InstallState, string> = {
   deleting: "Deleted, restorable",
   deleted: "Deleted",
   failed: "Create failed",
+};
+export const JOB_STATUS_LABEL: Record<JobStatus, string> = {
+  queued: "Queued",
+  running: "Running",
+  done: "Done",
+  failed: "Failed",
 };
 export const HEALTH_LABEL: Record<Health, string> = {
   ok: "OK",

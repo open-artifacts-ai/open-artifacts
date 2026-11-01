@@ -7,6 +7,7 @@ import {
 import {
   Button,
   Checkbox,
+  Input,
   Label,
   Select,
   SelectContent,
@@ -19,7 +20,6 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  Textarea,
 } from "@oa/ui/shadcn";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -302,16 +302,17 @@ function Actions({ install }: { install: Install }) {
           description="Visitors see the paused page. Nothing is deleted, and you can resume it at any time."
           submitLabel={`Pause ${install.slug}`}
           canSubmit={reason.trim().length >= 1 && reason.trim().length <= 200}
+          blocker="Add a reason."
           pending={suspend.isPending}
           error={suspend.error}
           onSubmit={() => suspend.mutate()}
         >
           <div>
             <Label htmlFor="reason">Reason</Label>
-            <Textarea
+            <Input
               id="reason"
               className="oa-reason"
-              rows={1}
+              autoComplete="off"
               value={reason}
               maxLength={200}
               onChange={(e) => setReason(e.target.value)}
@@ -354,7 +355,9 @@ function Actions({ install }: { install: Install }) {
             </>
           }
           expected={fresh ? install.slug : undefined}
-          submitLabel={fresh ? "Purge" : "Sign in again"}
+          submitLabel={
+            fresh ? `Delete ${install.slug} for good` : "Sign in again"
+          }
           destructive={fresh}
           pending={purge.isPending}
           error={purge.error}

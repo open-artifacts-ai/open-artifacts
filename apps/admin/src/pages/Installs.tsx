@@ -7,6 +7,7 @@ import {
   type World,
 } from "@oa/shared/provisioning";
 import {
+  Input,
   Select,
   SelectContent,
   SelectItem,
@@ -264,7 +265,7 @@ export function Installs() {
             >
               <path d="M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM10.3 10.3l3 3" />
             </svg>
-            <input
+            <Input
               type="search"
               aria-label="Search slug or host"
               placeholder="Search slug or host"

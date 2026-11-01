@@ -3,7 +3,7 @@ import { Button } from "@oa/ui/shadcn";
 import { Link } from "@tanstack/react-router";
 import { ApiError } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
-import { STATE_LABEL } from "./labels";
+import { JOB_STATUS_LABEL, STATE_LABEL } from "./labels";
 
 type Tone = "success" | "accent" | "warning" | "danger" | "muted";
 
@@ -40,7 +40,7 @@ const STATUS_TONE = {
 } as const satisfies Record<JobStatus, Tone>;
 export const StatusBadge = ({ status }: { status: JobStatus }) => (
   <span className="oa-st" data-tone={STATUS_TONE[status]} data-testid="status">
-    {status}
+    {JOB_STATUS_LABEL[status]}
   </span>
 );
 
