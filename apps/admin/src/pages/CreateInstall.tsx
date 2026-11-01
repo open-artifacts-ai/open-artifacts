@@ -23,6 +23,8 @@ const SLUG_COPY = {
   reserved: "That name is reserved.",
   taken: "That name is taken.",
 } as const;
+/** Slug answers shown as an error (red help, red border). */
+const BAD_SLUG = new Set(["invalid", "reserved", "taken"]);
 const APP_DOMAIN = {
   prod: "open-artifacts.app",
   staging: "open-artifacts-staging.app",
@@ -90,6 +92,23 @@ export function CreateInstall() {
       .filter(Boolean),
   });
   const emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(ownerEmail);
+  const slugTone =
+    check.status === "ok"
+      ? "ok"
+      : check.status && BAD_SLUG.has(check.status)
+        ? "bad"
+        : null;
+  /** Why Create install is off, shown next to it. */
+  const blocker =
+    check.status !== "ok"
+      ? "Enter an available slug."
+      : !emailOk
+        ? "Enter the owner's email."
+        : !auth.success
+          ? "Pick a sign-in method and allowed domains."
+          : !version
+            ? "Pick a release."
+            : null;
   const create = useAction(
     (_: void, requestId) =>
       api.call("R4", {
@@ -128,7 +147,7 @@ export function CreateInstall() {
             create.mutate();
           }}
         >
-          <div>
+          <div className={slugTone ? `oa-field-${slugTone}` : undefined}>
             <Label htmlFor="slug">Slug</Label>
             <Input
               id="slug"
@@ -141,6 +160,7 @@ export function CreateInstall() {
               id="slug-status"
               data-testid="slug-status"
               data-status={check.status ?? ""}
+              className={slugTone ? `oa-help-${slugTone}` : undefined}
               role="status"
             >
               {check.text}
@@ -159,17 +179,19 @@ export function CreateInstall() {
           </div>
           <fieldset>
             <legend>Tier</legend>
-            {TierSchema.options.map((t) => (
-              <label key={t} className="oa-check">
-                <input
-                  type="radio"
-                  name="tier"
-                  checked={tier === t}
-                  onChange={() => setTier(t)}
-                />{" "}
-                {t[0].toUpperCase() + t.slice(1)}
-              </label>
-            ))}
+            <div className="oa-seg">
+              {TierSchema.options.map((t) => (
+                <label key={t}>
+                  <input
+                    type="radio"
+                    name="tier"
+                    checked={tier === t}
+                    onChange={() => setTier(t)}
+                  />
+                  {t[0].toUpperCase() + t.slice(1)}
+                </label>
+              ))}
+            </div>
           </fieldset>
           <fieldset>
             <legend>Sign-in</legend>
@@ -229,9 +251,10 @@ export function CreateInstall() {
             Send the owner a welcome email
           </label>
           <ErrorLine error={create.error} />
-          <div className="oa-tools">
+          <div className="oa-actions oa-form-acts">
             <Button
               type="submit"
+              aria-describedby={blocker ? "create-blocker" : undefined}
               disabled={
                 check.status !== "ok" ||
                 !version ||
@@ -242,8 +265,15 @@ export function CreateInstall() {
             >
               Create install
             </Button>
-            <Link to="/installs">Cancel</Link>
+            <Link to="/installs" className="oa-btn">
+              Cancel
+            </Link>
           </div>
+          {blocker && !create.isPending && (
+            <small id="create-blocker" data-testid="create-blocker">
+              {blocker}
+            </small>
+          )}
         </form>
         <aside className="oa-side" aria-label="What happens">
           <h2>What happens</h2>

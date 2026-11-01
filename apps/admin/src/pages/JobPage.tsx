@@ -103,7 +103,7 @@ export function JobPage({ id }: { id: string }) {
         </Link>{" "}
         /
       </p>
-      <div className="oa-head">
+      <div className="oa-head oa-head-loose">
         <div style={{ flex: 1 }}>
           <h1>
             {verb.ing} {slug ?? ""}
@@ -126,32 +126,35 @@ export function JobPage({ id }: { id: string }) {
       </div>
       <div className="oa-split">
         <div>
-          <ol className="oa-steps" aria-label="Steps">
-            {shown.map((s) => {
-              const st = stepState(job, s.index);
-              return (
-                <li key={s.id} data-step={st}>
-                  {s.label}
-                  {(st === "current" || (live && s.index === job.stepIndex)) &&
-                    job.lastErrorCode && (
-                      <small data-testid="attempt-line">
-                        {attemptLine(job)}
-                      </small>
-                    )}
-                </li>
-              );
-            })}
-          </ol>
-          <dl className="oa-fields">
-            <dt>Attempt</dt>
-            <dd data-testid="attempt">{job.attempt}</dd>
-            {job.retryAt && live && (
-              <>
-                <dt>Next retry</dt>
-                <dd data-testid="retry-at">at {fmtClock(job.retryAt)} UTC</dd>
-              </>
-            )}
-          </dl>
+          <div className="oa-card oa-steps-card">
+            <ol className="oa-steps" aria-label="Steps">
+              {shown.map((s) => {
+                const st = stepState(job, s.index);
+                return (
+                  <li key={s.id} data-step={st}>
+                    {s.label}
+                    {(st === "current" ||
+                      (live && s.index === job.stepIndex)) &&
+                      job.lastErrorCode && (
+                        <small data-testid="attempt-line">
+                          {attemptLine(job)}
+                        </small>
+                      )}
+                  </li>
+                );
+              })}
+            </ol>
+            <dl className="oa-fields">
+              <dt>Attempt</dt>
+              <dd data-testid="attempt">{job.attempt}</dd>
+              {job.retryAt && live && (
+                <>
+                  <dt>Next retry</dt>
+                  <dd data-testid="retry-at">at {fmtClock(job.retryAt)} UTC</dd>
+                </>
+              )}
+            </dl>
+          </div>
           {job.status === "failed" && (
             <div className="oa-error" role="alert" data-testid="job-error">
               <p>

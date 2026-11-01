@@ -1203,3 +1203,81 @@ fieldset.oa-seg-field {
   min-height: 30px;
   resize: vertical;
 }
+
+/* ---------- Create install (mock Acreate) ---------- */
+/* Segmented radios: the label is the segment, the radio stays focusable. */
+.oa-form .oa-seg {
+  margin-bottom: 0;
+}
+.oa-form .oa-seg label {
+  display: block;
+  position: relative;
+  font: 400 12.5px / 1.45 var(--oa-font-sans);
+  color: var(--oa-text-2);
+  padding: 4px 12px;
+  margin: 0;
+}
+.oa-form .oa-seg label:has(input:checked) {
+  color: var(--oa-text);
+}
+.oa-form .oa-seg label:has(input:checked) {
+  font-weight: 500;
+}
+.oa-seg label input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.oa-seg label:has(input:focus-visible) {
+  outline: 2px solid var(--oa-focus);
+  outline-offset: -2px;
+}
+/* Slug answer: green when available, red when not (mock .inp.ok, .help.ok/.bad). */
+.oa-app .oa-form .oa-field-ok input {
+  border-color: var(--oa-success);
+}
+.oa-app .oa-form .oa-field-bad input {
+  border-color: var(--oa-danger);
+}
+.oa-form small.oa-help-ok {
+  color: var(--oa-success);
+}
+.oa-form small.oa-help-bad {
+  color: var(--oa-danger);
+}
+.oa-form-acts {
+  margin-top: 6px;
+}
+/* Why Create install is off, right under the buttons. */
+.oa-form > small {
+  margin-top: -7px;
+}
+/* "What happens": numbered steps (mock .aside ol). */
+.oa-side ol {
+  list-style: decimal;
+}
+.oa-side ol li::marker {
+  color: var(--oa-text-2);
+}
+
+/* ---------- Job page (mock Ajob) ---------- */
+.oa-head-loose {
+  margin-bottom: 26px;
+}
+/* The card holds the steps; the list itself drops its own card look. */
+.oa-steps-card .oa-steps {
+  margin: 0;
+  padding: 0;
+  background: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+.oa-steps-card .oa-fields {
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--oa-border);
+}

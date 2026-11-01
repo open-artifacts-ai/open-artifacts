@@ -181,3 +181,22 @@ it("a network failure, then an edit: the resubmit has a new request id", async (
   await waitFor(() => expect(writes()).toHaveLength(3));
   expect(ids()[2]).not.toBe(ids()[1]);
 });
+
+it("says why Create install is off until the form is complete", async () => {
+  renderApp("/installs/new");
+  await screen.findByLabelText("Slug");
+  expect(screen.getByTestId("create-blocker")).toHaveTextContent(
+    "Enter an available slug.",
+  );
+  expect(submit()).toHaveAccessibleDescription("Enter an available slug.");
+  type("fresh-four");
+  await screen.findByText(/ is available\./);
+  expect(screen.getByTestId("create-blocker")).toHaveTextContent(
+    "Enter the owner's email.",
+  );
+  owner();
+  await waitFor(() =>
+    expect(screen.queryByTestId("create-blocker")).not.toBeInTheDocument(),
+  );
+  expect(submit()).toBeEnabled();
+});
