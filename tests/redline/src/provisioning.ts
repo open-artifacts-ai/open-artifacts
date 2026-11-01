@@ -7,7 +7,9 @@ import {
   type Release,
   TOKEN_SCOPES,
 } from "@oa/shared/provisioning";
+import { notResolved } from "./fetch-timeout.ts";
 import { note } from "./notes.ts";
+import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { PRE_PROD_REASON } from "./report.ts";
 
 // The red-line provisioning probes (design v7 12.2, P1-P47) against the
@@ -481,11 +483,8 @@ const setCookies = (r: Pick<Res, "headers">): string[] =>
   r.headers.getSetCookie?.() ??
   [r.headers.get("set-cookie") ?? ""].filter(Boolean);
 
-/** A fetch that failed because the host name has no DNS record. */
-export function notResolved(e: unknown): boolean {
-  const cause = (e as { cause?: { code?: unknown } } | null)?.cause;
-  return cause?.code === "ENOTFOUND";
-}
+// The not-resolved test lives in fetch-timeout.ts (the red-line guard shares it).
+export { notResolved };
 
 function rlp(run: Run): RlP {
   if (!run.s.rlp) throw new ProbeFail("no rl-p install (P13 failed)");
@@ -1999,7 +1998,7 @@ export function provConfig(
     admin: o("REDLINE_PROV_ADMIN", "https://admin.open-artifacts-staging.app"),
     broker: o("REDLINE_BROKER", "https://auth.open-artifacts-staging.app"),
     prodApi: o("REDLINE_PROD_PROV_API", "https://api.open-artifacts.app"),
-    prodAdmin: o("REDLINE_PROD_PROV_ADMIN", "https://admin.open-artifacts.app"),
+    prodAdmin: o("REDLINE_PROD_PROV_ADMIN", PROD_ADMIN_ORIGIN),
     runId,
     version,
     dispatch: env.REDLINE_DISPATCH === "1",

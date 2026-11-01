@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse } from "msw";
 import { expect, it } from "vitest";
 import { apiErr, http, renderApp, seen, use, writes } from "./harness";
@@ -53,24 +53,26 @@ it("debounces the live check to the last slug typed", async () => {
   expect(checks.map((c) => c.path)).toEqual(["/api/v1/slugs/abc"]);
 });
 
+const release = () => screen.getByRole("combobox", { name: "Release" });
+
 it("offers installable releases with the current one marked", async () => {
   renderApp("/installs/new");
-  const select = await screen.findByLabelText("Release");
-  await waitFor(() => expect(select).toHaveValue("1.42.0"));
+  await screen.findByLabelText("Slug");
+  await waitFor(() => expect(release()).toHaveTextContent("1.42.0 (latest)"));
+  fireEvent.click(release());
   expect(
-    screen.getByRole("option", { name: "1.42.0 (latest)" }),
+    await screen.findByRole("option", { name: "1.42.0 (latest)" }),
   ).toBeInTheDocument();
   expect(screen.getByRole("option", { name: "1.41.2" })).toBeInTheDocument();
 });
 
 it("creates the install with CSRF, a request id and the chosen version, then opens the job", async () => {
   const { router } = renderApp("/installs/new");
-  await waitFor(() =>
-    expect(screen.getByLabelText("Release")).toHaveValue("1.42.0"),
-  );
-  fireEvent.change(screen.getByLabelText("Release"), {
-    target: { value: "1.41.2" },
-  });
+  await screen.findByLabelText("Slug");
+  await waitFor(() => expect(release()).toHaveTextContent("1.42.0"));
+  fireEvent.click(release());
+  fireEvent.click(await screen.findByRole("option", { name: "1.41.2" }));
+  await waitFor(() => expect(release()).toHaveTextContent("1.41.2"));
   type("fresh-one");
   owner();
   await screen.findByText(/ is available\./);
@@ -95,20 +97,94 @@ it("creates the install with CSRF, a request id and the chosen version, then ope
   );
 });
 
-it("needs a sign-in domain when Google is on", async () => {
+const domains = (value: string) =>
+  fireEvent.change(screen.getByLabelText("Allowed domains"), {
+    target: { value },
+  });
+
+it("needs at least one allowed domain that includes the owner's, for any sign-in method", async () => {
   renderApp("/installs/new");
   await screen.findByLabelText("Slug");
+  expect(screen.getByTestId("domains-help")).toHaveTextContent(
+    "People with an email at these domains can join. Starts with the owner's domain. Separate with commas.",
+  );
   type("fresh-three");
   owner();
   await screen.findByText(/ is available\./);
-  fireEvent.change(screen.getByLabelText("Allowed domains"), {
-    target: { value: "" },
-  });
+  expect(screen.getByLabelText("Allowed domains")).toHaveValue("example.com");
+  domains("");
+  expect(screen.getByTestId("domains-help")).toHaveTextContent(
+    "Add at least one domain.",
+  );
+  expect(screen.getByLabelText("Allowed domains")).toHaveAttribute(
+    "aria-invalid",
+    "true",
+  );
   expect(submit()).toBeDisabled();
-  fireEvent.change(screen.getByLabelText("Allowed domains"), {
-    target: { value: "a.com, b.org" },
+  expect(submit()).toHaveAccessibleDescription("Fix the allowed domains.");
+  domains("a.com, b.org");
+  expect(screen.getByTestId("domains-help")).toHaveTextContent(
+    "Include the owner's domain, example.com.",
+  );
+  expect(submit()).toBeDisabled();
+  // Email only: the rule still holds.
+  fireEvent.click(screen.getByRole("checkbox", { name: "Email" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Google" }));
+  expect(screen.getByTestId("domains-help")).toHaveTextContent(
+    "Include the owner's domain, example.com.",
+  );
+  expect(submit()).toBeDisabled();
+  domains("a.com, Example.com");
+  expect(screen.getByTestId("domains-help")).toHaveTextContent(
+    /^People with an email/,
+  );
+  await waitFor(() => expect(submit()).toBeEnabled());
+});
+
+it("says to pick at least one sign-in method", async () => {
+  renderApp("/installs/new");
+  await screen.findByLabelText("Slug");
+  type("fresh-five");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  expect(screen.queryByTestId("signin-error")).toBeNull();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Google" }));
+  expect(screen.getByTestId("signin-error")).toHaveTextContent(
+    "Pick at least one.",
+  );
+  expect(submit()).toBeDisabled();
+  expect(screen.getByTestId("create-blocker")).toHaveTextContent(
+    "Pick a sign-in method.",
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: "Email" }));
+  expect(screen.queryByTestId("signin-error")).toBeNull();
+  await waitFor(() => expect(submit()).toBeEnabled());
+});
+
+it("sends the providers and domains in the same body shape", async () => {
+  const { router } = renderApp("/installs/new");
+  await screen.findByLabelText("Slug");
+  type("fresh-six");
+  owner();
+  await screen.findByText(/ is available\./);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Email" }));
+  fireEvent.click(
+    screen.getByRole("checkbox", { name: "Send the owner a welcome email" }),
+  );
+  domains("example.com, nw-labs.test");
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() =>
+    expect(router.state.location.pathname).toMatch(/^\/jobs\//),
+  );
+  expect(writes()[0].body).toMatchObject({
+    auth: {
+      providers: ["google", "email"],
+      domains: ["example.com", "nw-labs.test"],
+    },
+    sendWelcome: true,
   });
-  expect(submit()).toBeEnabled();
 });
 
 it("shows the API's slug_taken answer in plain words", async () => {
@@ -180,4 +256,60 @@ it("a network failure, then an edit: the resubmit has a new request id", async (
   fireEvent.click(submit());
   await waitFor(() => expect(writes()).toHaveLength(3));
   expect(ids()[2]).not.toBe(ids()[1]);
+});
+
+it("before typing, the slug help names the host it becomes", async () => {
+  renderApp("/installs/new");
+  expect(await screen.findByTestId("slug-status")).toHaveTextContent(
+    "Becomes <slug>.open-artifacts-staging.app",
+  );
+});
+
+it("names step 1 Queue the job in What happens", async () => {
+  renderApp("/installs/new");
+  const aside = await screen.findByRole("complementary", {
+    name: "What happens",
+  });
+  expect(within(aside).getAllByRole("listitem")[0]).toHaveTextContent(
+    "Queue the job",
+  );
+  expect(aside).not.toHaveTextContent("Admit");
+});
+
+it("breadcrumb ends at Installs, a link, with no trailing slash", async () => {
+  renderApp("/installs/new");
+  await screen.findByLabelText("Slug");
+  const crumbs = document.querySelector<HTMLElement>(".oa-crumbs");
+  if (!crumbs) throw new Error("no breadcrumb");
+  expect(
+    within(crumbs).getByRole("link", { name: "Installs" }),
+  ).toHaveAttribute("href", "/installs");
+  expect(crumbs.textContent?.trim()).toBe("Installs");
+});
+
+it("says why Create install is off until the form is complete", async () => {
+  renderApp("/installs/new");
+  await screen.findByLabelText("Slug");
+  expect(screen.getByTestId("create-blocker")).toHaveTextContent("Add a slug.");
+  expect(submit()).toBeDisabled();
+  expect(submit()).toHaveAccessibleDescription("Add a slug.");
+  type("leo");
+  expect(await screen.findByText("That name is taken.")).toBeInTheDocument();
+  expect(screen.getByTestId("create-blocker")).toHaveTextContent(
+    "Pick an available slug.",
+  );
+  type("fresh-four");
+  await screen.findByText(/ is available\./);
+  expect(screen.getByTestId("create-blocker")).toHaveTextContent(
+    "Add an owner email.",
+  );
+  owner("not-an-email");
+  expect(screen.getByTestId("create-blocker")).toHaveTextContent(
+    "Enter a valid owner email.",
+  );
+  owner();
+  await waitFor(() =>
+    expect(screen.queryByTestId("create-blocker")).not.toBeInTheDocument(),
+  );
+  expect(submit()).toBeEnabled();
 });

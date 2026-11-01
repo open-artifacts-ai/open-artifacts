@@ -132,3 +132,9 @@ export function isNetworkError(e: unknown): boolean {
     (typeof cause === "string" && NET_CODES.has(cause))
   );
 }
+
+/** A fetch that failed because the host name has no DNS record (ENOTFOUND only). */
+export function notResolved(e: unknown): boolean {
+  const cause = (e as { cause?: { code?: unknown } } | null)?.cause;
+  return cause?.code === "ENOTFOUND";
+}

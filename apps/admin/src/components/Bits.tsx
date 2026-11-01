@@ -1,34 +1,37 @@
 import type { InstallState, JobStatus } from "@oa/shared/provisioning";
-import { Badge } from "@oa/ui/shadcn";
+import { Button } from "@oa/ui/shadcn";
 import { Link } from "@tanstack/react-router";
 import { ApiError } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
-import { STATE_LABEL } from "./labels";
+import { JOB_STATUS_LABEL, STATE_LABEL, STATE_TONE, type Tone } from "./labels";
 
-const STATE_VARIANT = {
-  provisioning: "secondary",
-  active: "default",
-  suspended: "outline",
-  deleting: "destructive",
-  deleted: "ghost",
-  failed: "destructive",
-} as const satisfies Record<InstallState, string>;
-export const StateBadge = ({ state }: { state: InstallState }) => (
-  <Badge variant={STATE_VARIANT[state]} data-testid="state">
+/** A colored dot and the state's label (the mock's .st); `chip` sets it on a pill. */
+export const StateBadge = ({
+  state,
+  chip,
+}: {
+  state: InstallState;
+  chip?: boolean;
+}) => (
+  <span
+    className={chip ? "oa-st oa-st-chip" : "oa-st"}
+    data-tone={STATE_TONE[state]}
+    data-testid="state"
+  >
     {STATE_LABEL[state]}
-  </Badge>
+  </span>
 );
 
-const STATUS_VARIANT = {
-  queued: "secondary",
-  running: "default",
-  done: "outline",
-  failed: "destructive",
-} as const satisfies Record<JobStatus, string>;
+const STATUS_TONE = {
+  queued: "muted",
+  running: "accent",
+  done: "success",
+  failed: "danger",
+} as const satisfies Record<JobStatus, Tone>;
 export const StatusBadge = ({ status }: { status: JobStatus }) => (
-  <Badge variant={STATUS_VARIANT[status]} data-testid="status">
-    {status}
-  </Badge>
+  <span className="oa-st" data-tone={STATUS_TONE[status]} data-testid="status">
+    {JOB_STATUS_LABEL[status]}
+  </span>
 );
 
 /** A failed call in plain words; job_in_progress links the running job. */
@@ -58,7 +61,7 @@ export function ErrorLine({ error }: { error: unknown }) {
   );
 }
 
-/** Prev and next over cursor pages. */
+/** Prev and next over cursor pages: small outline buttons, hidden on one page. */
 export function Pager({
   canPrev,
   next,
@@ -70,24 +73,28 @@ export function Pager({
   onPrev: () => void;
   onNext: (cursor: string) => void;
 }) {
+  // One page: nothing to page through, so no stray disabled links.
+  if (!canPrev && !next) return null;
   return (
     <div className="oa-pager">
-      <button
+      <Button
         type="button"
-        className="oa-link"
+        variant="outline"
+        size="sm"
         disabled={!canPrev}
         onClick={onPrev}
       >
         Previous
-      </button>
-      <button
+      </Button>
+      <Button
         type="button"
-        className="oa-link"
+        variant="outline"
+        size="sm"
         disabled={!next}
         onClick={() => next && onNext(next)}
       >
         Next
-      </button>
+      </Button>
     </div>
   );
 }

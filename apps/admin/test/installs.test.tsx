@@ -31,8 +31,9 @@ it("lists installs with state, release, sign-in and health, and six tiles from t
   await screen.findByTestId("tile-active");
   expect(screen.getByTestId("tile-active")).toHaveTextContent("2");
   expect(screen.getByTestId("tile-creating")).toHaveTextContent("0");
-  expect(screen.getByTestId("tile-paused")).toHaveTextContent(
-    "Paused · Deleting",
+  expect(screen.getByTestId("tile-paused")).toHaveTextContent("Paused");
+  expect(screen.getByTestId("tile-deleting")).toHaveTextContent(
+    "Deleted, restorable",
   );
   expect(screen.getByTestId("tile-attention")).toHaveTextContent("2");
   expect(screen.getByTestId("tile-token")).toHaveTextContent("340 days left");
@@ -118,9 +119,12 @@ it("says there are no installs yet when there are none", async () => {
 it("searches on the server and says so when nothing matches", async () => {
   renderApp("/installs");
   await screen.findAllByRole("link", { name: "leo" });
-  fireEvent.change(screen.getByLabelText("Search slug"), {
-    target: { value: "zzz" },
-  });
+  fireEvent.change(
+    screen.getByRole("searchbox", { name: "Search slug or host" }),
+    {
+      target: { value: "zzz" },
+    },
+  );
   expect(await screen.findByText("No installs match.")).toBeInTheDocument();
   expect(seen.some((s) => s.path.includes("q=zzz"))).toBe(true);
 });
@@ -128,9 +132,8 @@ it("searches on the server and says so when nothing matches", async () => {
 it("filters by state and says so when nothing matches", async () => {
   renderApp("/installs");
   await screen.findByRole("link", { name: "leo" });
-  fireEvent.change(screen.getByLabelText("State"), {
-    target: { value: "suspended" },
-  });
+  fireEvent.click(screen.getByRole("combobox", { name: "State" }));
+  fireEvent.click(await screen.findByRole("option", { name: "Paused" }));
   expect(await screen.findByText("No installs match.")).toBeInTheDocument();
   expect(seen.some((s) => s.path.includes("state=suspended"))).toBe(true);
 });
@@ -166,6 +169,12 @@ it("pages with the cursor from the API", async () => {
   twoPages();
   renderApp("/installs");
   await screen.findByRole("link", { name: "first" });
+  // Previous/Next are small outline buttons.
+  for (const name of ["Previous", "Next"]) {
+    const b = screen.getByRole("button", { name });
+    expect(b).toHaveAttribute("data-variant", "outline");
+    expect(b).toHaveAttribute("data-size", "sm");
+  }
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
   await screen.findByRole("link", { name: "second" });
   expect(seen.some((s) => s.path.includes("cursor=c2"))).toBe(true);
@@ -208,9 +217,12 @@ it("going back to page 1 after typing a search resets the cursor", async () => {
   await screen.findByRole("link", { name: "first" });
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
   await screen.findByRole("link", { name: "second" });
-  fireEvent.change(screen.getByLabelText("Search slug"), {
-    target: { value: "f" },
-  });
+  fireEvent.change(
+    screen.getByRole("searchbox", { name: "Search slug or host" }),
+    {
+      target: { value: "f" },
+    },
+  );
   await screen.findByRole("link", { name: "first" });
   expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
 });
@@ -234,5 +246,272 @@ it("shows a load error with retry", async () => {
   expect(await screen.findByText("No installs yet")).toBeInTheDocument();
   await waitFor(() =>
     expect(screen.queryByText("Couldn't load installs")).toBeNull(),
+  );
+});
+
+it("the toolbar searches slug or host with no extra hint line, and one page has no pager", async () => {
+  renderApp("/installs");
+  await screen.findAllByRole("link", { name: "leo" });
+  const box = screen.getByRole("searchbox", { name: "Search slug or host" });
+  expect(box).toHaveAttribute("placeholder", "Search slug or host");
+  expect(screen.queryByText(/Matches part of a slug/)).toBeNull();
+  expect(screen.getByRole("combobox", { name: "State" })).toHaveTextContent(
+    "All states",
+  );
+  expect(screen.queryByRole("button", { name: "Next" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Previous" })).toBeNull();
+});
+
+// #1033: the status tiles set the same filter as the State select, in the URL.
+const TILE_FILTERS = [
+  ["tile-active", "active", "Active"],
+  ["tile-creating", "provisioning", "Creating"],
+  ["tile-paused", "suspended", "Paused"],
+  ["tile-deleting", "deleting", "Deleted, restorable"],
+] as const;
+const installsCalls = () =>
+  seen.filter((s) => s.path.startsWith("/api/v1/installs"));
+const lastList = () => installsCalls().at(-1)?.path ?? "";
+
+it.each(TILE_FILTERS)(
+  "%s filters by state=%s in the URL and the request, and a second click clears it",
+  async (testId, state, selectLabel) => {
+    const { router } = renderApp("/installs");
+    const tile = await screen.findByTestId(testId);
+    expect(tile.tagName).toBe("BUTTON");
+    expect(tile).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(tile);
+    await waitFor(() =>
+      expect(router.state.location.search).toEqual({ state }),
+    );
+    await waitFor(() => expect(lastList()).toContain(`state=${state}`));
+    expect(screen.getByTestId(testId)).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("combobox", { name: "State" })).toHaveTextContent(
+      selectLabel,
+    );
+    for (const [other] of TILE_FILTERS.filter(([t]) => t !== testId)) {
+      expect(screen.getByTestId(other)).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      );
+    }
+    fireEvent.click(screen.getByTestId(testId));
+    await waitFor(() => expect(router.state.location.search).toEqual({}));
+    await waitFor(() => expect(lastList()).not.toContain("state="));
+    expect(screen.getByTestId(testId)).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("combobox", { name: "State" })).toHaveTextContent(
+      "All states",
+    );
+  },
+);
+
+it("loads with ?state= from the URL: the tile shows selected and the request filters", async () => {
+  renderApp("/installs?state=suspended");
+  const tile = await screen.findByTestId("tile-paused");
+  expect(tile).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByTestId("tile-active")).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await waitFor(() => expect(lastList()).toContain("state=suspended"));
+  expect(installsCalls().every((c) => c.path.includes("state=suspended"))).toBe(
+    true,
+  );
+});
+
+it("ignores an unknown ?state= value", async () => {
+  renderApp("/installs?state=bogus");
+  await screen.findByRole("link", { name: "leo" });
+  expect(lastList()).not.toContain("state=");
+  expect(screen.getByRole("combobox", { name: "State" })).toHaveTextContent(
+    "All states",
+  );
+  for (const [t] of TILE_FILTERS)
+    expect(screen.getByTestId(t)).toHaveAttribute("aria-pressed", "false");
+});
+
+it("choosing All states clears a tile's filter", async () => {
+  const { router } = renderApp("/installs?state=active");
+  expect(await screen.findByTestId("tile-active")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  fireEvent.click(screen.getByRole("combobox", { name: "State" }));
+  fireEvent.click(await screen.findByRole("option", { name: "All states" }));
+  await waitFor(() => expect(router.state.location.search).toEqual({}));
+  expect(screen.getByTestId("tile-active")).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await waitFor(() => expect(lastList()).not.toContain("state="));
+});
+
+it("the State select sets the URL and the matching tile", async () => {
+  const { router } = renderApp("/installs");
+  await screen.findByRole("link", { name: "leo" });
+  fireEvent.click(screen.getByRole("combobox", { name: "State" }));
+  fireEvent.click(await screen.findByRole("option", { name: "Creating" }));
+  await waitFor(() =>
+    expect(router.state.location.search).toEqual({ state: "provisioning" }),
+  );
+  expect(screen.getByTestId("tile-creating")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+});
+
+// jsdom does not turn Enter/Space into a click, and the admin app has no
+// user-event: assert the native button contract browsers activate by key.
+it("tiles are focusable native buttons named by their label", async () => {
+  const { router } = renderApp("/installs");
+  const tile = await screen.findByRole("button", { name: /^Paused/ });
+  expect(tile).toBe(screen.getByTestId("tile-paused"));
+  expect(tile.tagName).toBe("BUTTON");
+  expect(tile).toHaveAttribute("type", "button");
+  expect(tile).not.toBeDisabled();
+  tile.focus();
+  expect(tile).toHaveFocus();
+  fireEvent.click(document.activeElement as HTMLElement);
+  await waitFor(() =>
+    expect(router.state.location.search).toEqual({ state: "suspended" }),
+  );
+  expect(tile).toHaveAttribute("aria-pressed", "true");
+  for (const name of [
+    /^Active/,
+    /^Creating/,
+    /^Deleted, restorable/,
+    /^Needs attention/,
+  ])
+    expect(screen.getByRole("button", { name })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+});
+
+it("Needs attention lists the page's installs in the attention list, with no server param", async () => {
+  const { router } = renderApp("/installs");
+  await screen.findByRole("link", { name: "leo" });
+  fireEvent.click(screen.getByTestId("tile-attention"));
+  await waitFor(() =>
+    expect(router.state.location.search).toEqual({ state: "attention" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("link", { name: "leo" })).toBeNull(),
+  );
+  expect(screen.getByRole("link", { name: "acme" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "broken" })).toBeInTheDocument();
+  expect(screen.getByTestId("tile-attention")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(screen.getByRole("combobox", { name: "State" })).toHaveTextContent(
+    "Needs attention",
+  );
+  expect(installsCalls().some((c) => c.path.includes("state="))).toBe(false);
+  expect(
+    screen.getByText("Showing the installs on this page that need attention."),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByTestId("tile-attention"));
+  expect(await screen.findByRole("link", { name: "leo" })).toBeInTheDocument();
+  expect(router.state.location.search).toEqual({});
+});
+
+it("Needs attention on a page with none says so and keeps the pager", async () => {
+  twoPages();
+  renderApp("/installs?state=attention");
+  expect(
+    await screen.findByText("No installs on this page need attention."),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+});
+
+// Paging is keyed on the filter: a cursor from one filter is never sent with
+// another, even for the one render before page 1 is requested.
+it("a tile click after Next starts at page 1 and never sends the old cursor with the new state", async () => {
+  twoPages();
+  renderApp("/installs");
+  await screen.findByRole("link", { name: "first" });
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  await screen.findByRole("link", { name: "second" });
+  fireEvent.click(screen.getByTestId("tile-paused"));
+  await waitFor(() => expect(lastList()).toContain("state=suspended"));
+  await screen.findByRole("link", { name: "first" });
+  expect(lastList()).not.toContain("cursor=");
+  expect(
+    installsCalls().filter(
+      (s) => s.path.includes("cursor=") && s.path.includes("state="),
+    ),
+  ).toEqual([]);
+  expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+});
+
+it("Back and Forward restore the filter and start each at page 1", async () => {
+  twoPages();
+  const { router } = renderApp("/installs");
+  fireEvent.click(await screen.findByTestId("tile-active"));
+  await waitFor(() => expect(lastList()).toContain("state=active"));
+  fireEvent.click(screen.getByTestId("tile-paused"));
+  await waitFor(() => expect(lastList()).toContain("state=suspended"));
+  // Page 2 of the paused list, then Back to the active filter.
+  fireEvent.click(await screen.findByRole("button", { name: "Next" }));
+  await screen.findByRole("link", { name: "second" });
+  expect(lastList()).toContain("state=suspended");
+  act(() => router.history.back());
+  await waitFor(() =>
+    expect(router.state.location.search).toEqual({ state: "active" }),
+  );
+  expect(screen.getByTestId("tile-active")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(screen.getByTestId("tile-paused")).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await screen.findByRole("link", { name: "first" });
+  expect(lastList()).toContain("state=active");
+  expect(lastList()).not.toContain("cursor=");
+  // The only cursor ever sent went with the filter it came from.
+  for (const s of installsCalls().filter((c) => c.path.includes("cursor="))) {
+    expect(s.path).toContain("state=suspended");
+  }
+  act(() => router.history.forward());
+  await waitFor(() =>
+    expect(screen.getByTestId("tile-paused")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    ),
+  );
+  await waitFor(() => expect(lastList()).toContain("state=suspended"));
+  expect(lastList()).not.toContain("cursor=");
+});
+
+it("a search and a tile filter are sent together", async () => {
+  renderApp("/installs");
+  await screen.findAllByRole("link", { name: "leo" });
+  fireEvent.change(
+    screen.getByRole("searchbox", { name: "Search slug or host" }),
+    { target: { value: "le" } },
+  );
+  await waitFor(() => expect(lastList()).toContain("q=le"));
+  fireEvent.click(screen.getByTestId("tile-active"));
+  await waitFor(() => expect(lastList()).toContain("state=active"));
+  expect(lastList()).toContain("q=le");
+});
+
+it("Needs attention counts installs, not alerts", async () => {
+  const w = fixtureWorld();
+  const a = w.attention[0];
+  use(
+    http.get("*/api/v1/world", () =>
+      json({
+        ...w,
+        attention: [...w.attention, { ...a, kind: "health_failing" }],
+      }),
+    ),
+  );
+  renderApp("/installs");
+  expect(await screen.findByTestId("tile-attention")).toHaveTextContent(
+    String(new Set(w.attention.map((x) => x.installId)).size),
   );
 });

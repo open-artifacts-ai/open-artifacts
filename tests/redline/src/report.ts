@@ -390,6 +390,29 @@ export function preProdNa(c: CaseResult): boolean {
 }
 
 /**
+ * The red-line guard's prod-clean case, frozen the same way: not-applicable
+ * with PRE_PROD_GUARD_REASON only when the prod inventory answers 503
+ * schema_missing and the prod admin host does not resolve (guardProdClean).
+ * Exact file, exact name, exact reason; after #1014 it must pass.
+ */
+export const PRE_PROD_GUARD = Object.freeze({
+  file: "live/guard.test.ts",
+  name: "guard > prod is clean (no test hooks on any prod install)",
+});
+export const PRE_PROD_GUARD_REASON =
+  "pre-prod: prod admin host does not resolve yet and the prod inventory schema is missing";
+
+/** The guard's pre-prod not-applicable the gate accepts. */
+export function preProdGuardNa(c: CaseResult): boolean {
+  return (
+    c.level === "not-applicable" &&
+    c.reason === PRE_PROD_GUARD_REASON &&
+    c.file === PRE_PROD_GUARD.file &&
+    c.name === PRE_PROD_GUARD.name
+  );
+}
+
+/**
  * The unproven-live cases the gate accepts, frozen: each by its exact full
  * name and exact reason, with the in-repo non-live test that covers what the
  * live run cannot. Any other unproven-live fails the gate, and so does a
@@ -460,7 +483,7 @@ export function acceptedUnproven(c: CaseResult): AcceptedUnproven | undefined {
 
 /** A non-pass the gate accepts: a pre-prod not-applicable or a listed unproven-live. */
 const accepted = (c: CaseResult) =>
-  preProdNa(c) || acceptedUnproven(c) !== undefined;
+  preProdNa(c) || preProdGuardNa(c) || acceptedUnproven(c) !== undefined;
 
 export function gatePasses(cases: readonly CaseResult[]): boolean {
   return (
@@ -481,7 +504,9 @@ export function buildReport(
   const passed = gatePasses(cases);
   const failing = nonPass.filter((c) => !accepted(c)).length;
   const nAccepted = cases.filter((c) => acceptedUnproven(c)).length;
-  const nPreProd = cases.filter(preProdNa).length;
+  const nPreProd = cases.filter(
+    (c) => preProdNa(c) || preProdGuardNa(c),
+  ).length;
   const acceptedText = [
     nAccepted ? `${nAccepted} accepted unproven-live` : "",
     nPreProd ? `${nPreProd} pre-prod not-applicable` : "",

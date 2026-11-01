@@ -21,6 +21,8 @@ import {
   label,
   labelOf,
   levelOf,
+  PRE_PROD_GUARD,
+  PRE_PROD_GUARD_REASON,
   PRE_PROD_NA,
   PRE_PROD_REASON,
   proof,
@@ -292,6 +294,51 @@ describe("gate", () => {
         'Gate: FAIL (1 of 7 cases are not "pass"; 5 accepted unproven-live)',
       );
     });
+  });
+
+  // The guard's prod-clean case: exact file, exact name, exact reason.
+  it("accepts the guard's pre-prod not-applicable only as frozen", () => {
+    expect(PRE_PROD_GUARD).toEqual({
+      file: "live/guard.test.ts",
+      name: "guard > prod is clean (no test hooks on any prod install)",
+    });
+    expect(Object.isFrozen(PRE_PROD_GUARD)).toBe(true);
+    const g: CaseResult = {
+      ...PRE_PROD_GUARD,
+      level: "not-applicable",
+      reason: PRE_PROD_GUARD_REASON,
+    };
+    const ok = c("a", "pass");
+    expect(gatePasses([ok, g])).toBe(true);
+    const r = buildReport([ok, g]);
+    expect(r.nonPass).toEqual([g]);
+    expect(formatReport(r)).toContain(
+      `[not-applicable] ${PRE_PROD_GUARD.name} (${PRE_PROD_GUARD_REASON})`,
+    );
+    const { file: _f, ...noFile } = g;
+    for (const bad of [
+      { ...g, file: "live/provisioning.test.ts" },
+      { ...g, file: "live/live.test.ts" },
+      { ...g, file: "x/live/guard.test.ts" },
+      noFile,
+      { ...g, name: `${g.name} ` },
+      {
+        ...g,
+        name: "guard > both targets report ok, testHooks: true and their own installId",
+      },
+      { ...g, reason: PRE_PROD_REASON },
+      { ...g, reason: "local mode" },
+      { ...g, level: "unproven-live" as const },
+      { ...g, level: "fail" as const },
+      // The guard reason never widens the P7/P46 rule either.
+      {
+        name: "provisioning > P7: x",
+        file: "live/provisioning.test.ts",
+        level: "not-applicable" as const,
+        reason: PRE_PROD_GUARD_REASON,
+      },
+    ])
+      expect(gatePasses([ok, bad]), JSON.stringify(bad)).toBe(false);
   });
 
   it("an empty run never passes", () => {

@@ -16,7 +16,9 @@ import { InventoryInstallsSchema } from "@oa/shared/provisioning";
 // The node-readable copy of RELEASE_PUBKEY (provision keeps its own in
 // src/internal/gates.ts, not exported; a test there pins the two equal).
 import { RELEASE_PUBKEY } from "../../../scripts/ci/release-pubkeys.mjs";
+import { notResolved } from "./fetch-timeout.ts";
 import { describeRes, readBody } from "./http.ts";
+import { PRE_PROD_GUARD_REASON } from "./report.ts";
 import {
   type ProdProbe,
   prodInventoryBearer,
@@ -70,6 +72,37 @@ export class ProdDirty extends Error {
     super(message.slice(0, 200));
     this.code = code;
     if (installId !== undefined) this.installId = installId;
+  }
+}
+
+/**
+ * The prod inventory's one fixed answer to a verified caller while the
+ * platform schema is absent (before the prod platform deploy): HTTP 503,
+ * body exactly {"error":"schema_missing"}. prodClean still fails it
+ * (inventory_bad); only the red-line guard, and only while the prod admin
+ * host does not resolve, reads it as pre-prod.
+ */
+export class InventorySchemaMissing extends ProdDirty {
+  override name = "InventorySchemaMissing";
+  constructor() {
+    super("inventory_bad", "prodClean inventory: 503 schema_missing");
+  }
+}
+
+/** True only for 503 with a JSON body that is exactly {"error":"schema_missing"}. */
+export function isSchemaMissing(status: number, text: string): boolean {
+  if (status !== 503) return false;
+  try {
+    const v = JSON.parse(text);
+    return (
+      v !== null &&
+      typeof v === "object" &&
+      !Array.isArray(v) &&
+      Object.keys(v).length === 1 &&
+      v.error === "schema_missing"
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -200,6 +233,8 @@ async function getJson(
     ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
   });
   const text = await readBody(res);
+  if (fail.code === "inventory_bad" && isSchemaMissing(res.status, text))
+    throw new InventorySchemaMissing();
   if (res.status !== 200)
     throw new ProdDirty(
       fail.code,
@@ -388,16 +423,61 @@ export async function prodClean(
   return { level: "pass", releases: releases.size, installs: rows.length };
 }
 
+/** The prod admin origin, as the provisioning probes read it (REDLINE_PROD_PROV_ADMIN). */
+export const PROD_ADMIN_ORIGIN = "https://admin.open-artifacts.app";
+
+export function prodAdminOrigin(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const u = new URL(env.REDLINE_PROD_PROV_ADMIN || PROD_ADMIN_ORIGIN);
+  if (u.protocol !== "https:" || u.pathname !== "/" || u.search)
+    throw new Error("REDLINE_PROD_PROV_ADMIN must be a bare https origin");
+  return u.origin;
+}
+
+/** The guard's frozen pre-prod answer (see report.ts PRE_PROD_GUARD). */
+export type PreProdNa = {
+  level: "not-applicable";
+  reason: typeof PRE_PROD_GUARD_REASON;
+};
+
+export interface GuardOpts {
+  /** The DNS probe's fetch (tests). */
+  fetch?: typeof fetch;
+  /** The prod admin origin (default prodAdminOrigin()). */
+  adminOrigin?: string;
+}
+
 /**
  * The red-line guard's case: local mode has no prod (not-applicable); staging
  * always runs prodClean, so a missing prod probe fails (not_configured) and
  * a probe with no OIDC inventory bearer (no REDLINE_PROD_INVENTORY_OIDC in the
  * secrets dir) fails (inventory_unconfigured).
+ *
+ * Pre-prod (before #1014): the prod inventory answers 503 schema_missing.
+ * That is not-applicable only while the prod admin host does not resolve
+ * (ENOTFOUND, the signal prodLive uses for P7/P46). A resolving host, any
+ * other DNS or network error, or any other inventory answer keeps the fail.
  */
 export async function guardProdClean(
   t: { mode: "local" | "staging"; prod?: ProdProbe },
   check: (p: ProdProbe | undefined) => Promise<ProdResult> = prodClean,
-): Promise<"not-applicable" | ProdResult> {
+  o: GuardOpts = {},
+): Promise<"not-applicable" | PreProdNa | ProdResult> {
   if (t.mode !== "staging") return "not-applicable";
-  return check(t.prod);
+  try {
+    return await check(t.prod);
+  } catch (e) {
+    if (!(e instanceof InventorySchemaMissing)) throw e;
+    const f = o.fetch ?? fetch;
+    const admin = o.adminOrigin ?? prodAdminOrigin();
+    try {
+      const r = await f(`${admin}/api/v1/me`, { redirect: "manual" });
+      await r.body?.cancel();
+    } catch (d) {
+      if (notResolved(d))
+        return { level: "not-applicable", reason: PRE_PROD_GUARD_REASON };
+    }
+    throw e;
+  }
 }
