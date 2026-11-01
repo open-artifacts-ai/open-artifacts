@@ -5293,6 +5293,103 @@ describe("verifyCleanRefusal (5.2 e, pure)", () => {
     ).toBeNull();
   });
 
+  it("no refusal ever carries a var or secret value, only names (every branch; #1060 audits it)", async () => {
+    const { CREATE_SECRETS } = await import("../src/wfp.js");
+    const V = "value-must-not-leak";
+    const sentB = [
+      { name: "PLAN", type: "plain_text", text: `${V}-plan` },
+      { name: "CFG", type: "json", json: { k: `${V}-json` } },
+      { name: "DB", type: "d1" },
+    ];
+    const liveB = [
+      { name: "PLAN", type: "plain_text", text: `${V}-plan` },
+      { name: "CFG", type: "json", json: { k: `${V}-json` } },
+      { name: "DB", type: "d1", id: `${V}-id` },
+    ];
+    const ok = { bindings: liveB, secrets: [...CREATE_SECRETS] };
+    const b = base({ sent: { bindings: sentB } });
+    const cases: [
+      string,
+      Parameters<typeof verifyCleanRefusal>[0],
+      VerifyCleanInput,
+    ][] = [
+      [
+        "refused type",
+        {
+          ...ok,
+          bindings: [
+            ...liveB,
+            { name: "S", type: "service", service: `${V}-svc` },
+          ],
+        },
+        b,
+      ],
+      [
+        "hook on non-test",
+        {
+          ...ok,
+          bindings: [
+            ...liveB,
+            { name: "TEST_DOMAIN", type: "plain_text", text: `${V}-dom` },
+          ],
+        },
+        b,
+      ],
+      [
+        "not in render",
+        {
+          ...ok,
+          bindings: [
+            ...liveB,
+            { name: "EXTRA", type: "plain_text", text: `${V}-extra` },
+          ],
+        },
+        b,
+      ],
+      [
+        "missing",
+        { ...ok, bindings: liveB.filter((x) => x.name !== "PLAN") },
+        b,
+      ],
+      [
+        "plain_text value",
+        {
+          ...ok,
+          bindings: liveB.map((x) =>
+            x.name === "PLAN" ? { ...x, text: `${V}-other` } : x,
+          ),
+        },
+        b,
+      ],
+      [
+        "json value",
+        {
+          ...ok,
+          bindings: liveB.map((x) =>
+            x.name === "CFG" ? { ...x, json: { k: `${V}-other` } } : x,
+          ),
+        },
+        b,
+      ],
+      [
+        "secret not expected",
+        { ...ok, secrets: [...CREATE_SECRETS, "LEAKY"] },
+        b,
+      ],
+      ["secret missing", { ...ok, secrets: CREATE_SECRETS.slice(1) }, b],
+      [
+        "secret twice",
+        { ...ok, secrets: [...CREATE_SECRETS, CREATE_SECRETS[0] as string] },
+        b,
+      ],
+    ];
+    for (const [what, live, input] of cases) {
+      const why = verifyCleanRefusal(live, input);
+      expect(why, what).not.toBeNull();
+      expect(why, what).not.toContain(V);
+    }
+  });
+
   it("refuses another variant or a tag that is not the template's last (rule 6)", async () => {
     const { CREATE_SECRETS } = await import("../src/wfp.js");
     const l = { ...live(clean), secrets: [...CREATE_SECRETS] };
