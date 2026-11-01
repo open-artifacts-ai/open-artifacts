@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.91.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.3...v0.91.0) (2026-11-01)
+
+
+### Features
+
+* **admin:** admin panel matches the approved layout A; status tiles filter the list ([#1042](https://github.com/open-artifacts-ai/open-artifacts/issues/1042)) ([269a39e](https://github.com/open-artifacts-ai/open-artifacts/commit/269a39e9e9af222029595e88a041afc4534e4593))
+* **ci:** one version: all platform targets by default, tagged deploys, red-line refuses stale Workers ([#1040](https://github.com/open-artifacts-ai/open-artifacts/issues/1040) part A) ([#1050](https://github.com/open-artifacts-ai/open-artifacts/issues/1050)) ([887bc21](https://github.com/open-artifacts-ai/open-artifacts/commit/887bc21a12f44f5f73dc17bde0fdf63cd3ca9698))
+* **ci:** prod-inspect, a read-only workflow for prod's platform D1 schema ([#1055](https://github.com/open-artifacts-ai/open-artifacts/issues/1055)) ([3a1d53c](https://github.com/open-artifacts-ai/open-artifacts/commit/3a1d53cc839aa02c6d20ac9a798451ccbc2c5da2))
+
+
+### Bug Fixes
+
+* **inventory:** a verified caller gets 503 schema_missing while the platform schema is absent ([#1041](https://github.com/open-artifacts-ai/open-artifacts/issues/1041)) ([#1043](https://github.com/open-artifacts-ai/open-artifacts/issues/1043)) ([61a2c7f](https://github.com/open-artifacts-ai/open-artifacts/commit/61a2c7f2274a99d7195c3bc8c36ad81a292090ab))
+* **redline:** prod-clean guard is pre-prod n/a only on NXDOMAIN admin plus 503 schema_missing ([#1049](https://github.com/open-artifacts-ai/open-artifacts/issues/1049)) ([cde98e6](https://github.com/open-artifacts-ai/open-artifacts/commit/cde98e646f93c7394b8e3019bd874a6391327e17))
+
 ## [0.90.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.2...v0.90.3) (2026-11-01)
 
 
