@@ -9,9 +9,11 @@ import {
 import { FAKE_RELEASES } from "@oa/shared/provisioning/fakes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Principal } from "../src/principal.js";
-import { call } from "./call.js";
+import { listInstalls } from "../src/routes/reads.js";
+import { call, HTTP } from "./call.js";
 import {
   ADMIN_P,
+  ctx,
   db,
   fakeEnv,
   insert,
@@ -257,6 +259,43 @@ describe("R2 list and R3 detail", () => {
     expect(prepare.mock.calls.map((c) => c[0]).join("\n")).toContain(
       "owner_email",
     );
+  });
+
+  it("q's email match stays inside the caller's reach for a pii caller", async () => {
+    // Every token and admin has reach "all" on R2, so no pii caller reaches
+    // "own" through the routes; call the handler with one to pin that the
+    // reach clause is ANDed with the parenthesized q group.
+    const e = fakeEnv();
+    const mine = await seedInstall({
+      ownerEmail: "me@corp.test",
+      source: "self-serve",
+      ownerSub: "u1",
+      createdAt: 2,
+    });
+    await seedInstall({
+      ownerEmail: "you@corp.test",
+      source: "self-serve",
+      ownerSub: "u2",
+      createdAt: 1,
+    });
+    const prepare = vi.spyOn(db, "prepare");
+    const r = await listInstalls({
+      env: e.env,
+      ctx: ctx(),
+      principal: { ...PII, sub: "u1" },
+      route: "R2",
+      input: { query: { q: "corp.test" } },
+      surface: HTTP,
+      reach: "own",
+    });
+    const sql = prepare.mock.calls.map((c) => c[0]).join("\n");
+    expect(sql).toContain(
+      "st.owner_sub IS NOT NULL AND st.owner_sub = ? AND (instr(lower(st.slug), ?) > 0 OR ",
+    );
+    expect(sql).toContain("instr(lower(i.owner_email), ?) > 0");
+    expect(
+      (r.body as { items: { id: string }[] }).items.map((i) => i.id),
+    ).toEqual([mine.id]);
   });
 
   it("q matches a pending signup's email for a pii caller; a purged email never matches", async () => {
