@@ -93,6 +93,13 @@ case "$path" in
     else echo '{"success":false,"errors":[{"code":10009}]}'; [ -z "$wcode" ] || printf '\\n404'; fi
     exit 0 ;;
   secrets_store/stores/*/secrets\\?*) [ -f "$STATE/fail-store" ] && { bad; exit 0; }; ok "$(cat "$STATE/store-secrets.json" 2>/dev/null || echo '[]')"; exit 0 ;;
+  workers/scripts/*/secrets/*) w="\${path#workers/scripts/}"; w="\${w%%/*}"; n="\${path##*/}"
+    if [ "$m" = DELETE ] && [ ! -f "$STATE/fail-delete" ] && [ -f "$STATE/$w.secrets" ] && grep -qx "$n" "$STATE/$w.secrets"; then
+      grep -vx "$n" "$STATE/$w.secrets" > "$STATE/s.new" || true; mv "$STATE/s.new" "$STATE/$w.secrets"
+      [ ! -f "$STATE/$w.settings.json" ] || { jq --arg n "$n" '.result.bindings |= map(select(.name != $n))' "$STATE/$w.settings.json" > "$STATE/b.new"; mv "$STATE/b.new" "$STATE/$w.settings.json"; }
+      ok 'null'
+    else echo '{"success":false,"errors":[{"code":10056}]}'; fi
+    exit 0 ;;
   workers/scripts/*/content/v2) w="\${path#workers/scripts/}"; w="\${w%%/*}"
     if [ -f "$STATE/fail-content" ]; then echo '{"success":false,"errors":[{"code":10000}]}'; [ -z "$wcode" ] || printf '\\n403'
     else cat "$STATE/$w.content" 2>/dev/null || echo 'export default {};'; [ -z "$wcode" ] || printf '\\n200'; fi
@@ -1846,13 +1853,27 @@ describe("deploy-hosted-platform.sh", () => {
       config: string,
       env: Env,
       next: string,
-      opts: { secrets?: Record<string, string[]> } = {},
+      opts: {
+        secrets?: Record<string, string[]>;
+        verifyOnly?: boolean;
+        failDelete?: boolean;
+      } = {},
     ) => {
       const w = `oa-${env[0]}-inventory`;
-      const s = setup({ next: { [w]: next }, secrets: opts.secrets });
+      const s = setup({
+        next: { [w]: next },
+        secrets: opts.secrets,
+        // Verify only reads the live Worker: it already holds `next`.
+        exists: opts.verifyOnly ? [w] : [],
+        files: {
+          ...(opts.verifyOnly ? { [`${w}.settings.json`]: next } : {}),
+          ...(opts.failDelete ? { "fail-delete": "" } : {}),
+        },
+      });
       const r = s.sb.run(["bash", tree(config), env, "inventory"], {
         env: {
           ...ENV,
+          VERIFY_ONLY: opts.verifyOnly ? "1" : "",
           GITHUB_REPOSITORY: varsFor(config, env).OIDC_REPOSITORY ?? "o/r",
           STATE: s.state,
           DEPLOY_WRAPPER: wrapperStub(s.sb.dir),
@@ -1862,6 +1883,7 @@ describe("deploy-hosted-platform.sh", () => {
       return {
         ...r,
         deployedIt: s.sb.log().some((l) => l.startsWith("wrapper inventory")),
+        writes: s.sb.log().filter((l) => l.startsWith("WRITE ")),
       };
     };
 
@@ -2054,20 +2076,73 @@ describe("deploy-hosted-platform.sh", () => {
       }
     });
 
-    it("refuses INVENTORY_KEY like any other secret, as a binding or a listed secret", () => {
+    it("verify only refuses INVENTORY_KEY like any other secret, as a binding or a listed secret", () => {
       const VARS = varsFor(W8, "prod");
       const asBinding = go(
         W8,
         "prod",
         deployed(VARS, [{ type: "secret_text", name: "INVENTORY_KEY" }]),
+        { verifyOnly: true },
       );
       expect(asBinding.code).toBe(1);
       expect(asBinding.err).toContain("has secret bindings (INVENTORY_KEY)");
       const listed = go(W8, "prod", deployed(VARS), {
         secrets: { "oa-p-inventory": ["INVENTORY_KEY"] },
+        verifyOnly: true,
       });
       expect(listed.code).toBe(1);
       expect(listed.err).toContain("has secrets 'INVENTORY_KEY '");
+      expect(listed.writes).toEqual([]);
+    });
+
+    // Run 41267716910: staging's inventory still had the retired key.
+    it("staging: a deploy deletes the retired INVENTORY_KEY, then verifies", () => {
+      const r = go(
+        W8,
+        "staging",
+        deployed(varsFor(W8, "staging"), [
+          { type: "secret_text", name: "INVENTORY_KEY" },
+        ]),
+        { secrets: { "oa-s-inventory": ["INVENTORY_KEY"] } },
+      );
+      expect(r.err).toBe("");
+      expect(r.code).toBe(0);
+      expect(r.writes).toEqual([
+        "WRITE DELETE /workers/scripts/oa-s-inventory/secrets/INVENTORY_KEY ",
+      ]);
+      expect(r.out).toContain("oa-s-inventory: retired INVENTORY_KEY deleted");
+      expect(r.out).toContain("staging inventory: deployed and verified");
+    });
+
+    it("prod: a deploy never deletes a secret; INVENTORY_KEY still stops it (#968)", () => {
+      const r = go(W8, "prod", deployed(varsFor(W8, "prod")), {
+        secrets: { "oa-p-inventory": ["INVENTORY_KEY"] },
+      });
+      expect(r.code).toBe(1);
+      expect(r.writes).toEqual([]);
+      expect(r.err).toContain("has secrets 'INVENTORY_KEY '");
+    });
+
+    it("staging deletes only INVENTORY_KEY: any other secret still stops it", () => {
+      const r = go(W8, "staging", deployed(varsFor(W8, "staging")), {
+        secrets: { "oa-s-inventory": ["INVENTORY_KEY", "LEAK"] },
+      });
+      expect(r.code).toBe(1);
+      expect(r.writes).toEqual([
+        "WRITE DELETE /workers/scripts/oa-s-inventory/secrets/INVENTORY_KEY ",
+      ]);
+      expect(r.err).toContain("has secrets 'LEAK '");
+    });
+
+    it("a failed delete stops the deploy", () => {
+      // The listing names it but the delete is refused: no "deleted" line.
+      const r = go(W8, "staging", deployed(varsFor(W8, "staging")), {
+        secrets: { "oa-s-inventory": ["INVENTORY_KEY"] },
+        failDelete: true,
+      });
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("delete oa-s-inventory INVENTORY_KEY failed");
+      expect(r.out).not.toContain("retired INVENTORY_KEY deleted");
     });
   });
 });

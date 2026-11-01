@@ -528,6 +528,17 @@ case "$target" in
     [ "$refs_committed" = "$refs_want" ] ||
       { echo "committed OIDC_JOB_WORKFLOW_REFS is '$refs_committed', want '$refs_want'" >&2; exit 1; }
     PLATFORM_DB_ID="$PLATFORM_DB_ID" HOSTS_KV_ID="$HOSTS_KV_ID" GITHUB_REPOSITORY_ID="$GITHUB_REPOSITORY_ID" deploy inventory
+    # W8 retired INVENTORY_KEY (OIDC replaced it), but a deploy keeps a Worker's
+    # secrets: a staging deploy deletes it, once. Prod's is the user's to delete
+    # (#968); prod and verify only still refuse it below.
+    if [ -z "$VERIFY_ONLY" ] && [ "$env" = staging ]; then
+      names="$(secret_names oa-$P-inventory)" || exit 1
+      if grep -qx INVENTORY_KEY <<< "$names"; then
+        cf_send DELETE "/workers/scripts/oa-$P-inventory/secrets/INVENTORY_KEY" "" |
+          must "delete oa-$P-inventory INVENTORY_KEY" > /dev/null || exit 1
+        echo "oa-$P-inventory: retired INVENTORY_KEY deleted"
+      fi
+    fi
     S="$(settings oa-$P-inventory)"
     expect "$S" '.result.bindings[] | select(.name == "PLATFORM_DB") | .id' "$PLATFORM_DB_ID" "PLATFORM_DB"
     expect "$S" '.result.bindings[] | select(.name == "HOSTS") | .namespace_id' "$HOSTS_KV_ID" "HOSTS"
