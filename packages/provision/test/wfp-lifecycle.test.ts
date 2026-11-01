@@ -50,6 +50,7 @@ import {
   ProvisionRetry,
   provisionErrorCode,
   TURNSTILE_TEST_KEYS,
+  VERIFY_CLEAN_REASON_MAX,
   type VerifyCleanInput,
   verifyCleanRefusal,
   WFP_STEPS,
@@ -4998,6 +4999,69 @@ describe("W2 create order (5.2)", () => {
       expect(s.fake.kvValues(s.hostsId).size).toBe(0);
     });
 
+    // #1060: the audit row says why, with binding and secret names only.
+    const refusedDetail = (s: ReturnType<typeof setup>) => {
+      const rows = s
+        .db()
+        .prepare(
+          "SELECT detail FROM hosted_audit WHERE action = 'verify_clean.refused'",
+        )
+        .all() as { detail: string }[];
+      expect(rows).toHaveLength(1);
+      return rows[0]?.detail as string;
+    };
+
+    it("verify_clean.refused audits the reason, never a binding value", async () => {
+      const s = setup();
+      const value = "plain-value-must-not-leak-7f3a";
+      s.fake.settingsEdit = ((
+        _s: unknown,
+        bs: { name: string; type: string; text?: string }[],
+      ) =>
+        bs.map((b) =>
+          b.name === "PLAN" ? { ...b, text: value } : b,
+        )) as never;
+      const e = await fails(s.p.create(input()));
+      expect(provisionErrorCode(e)).toBe("prod_dirty");
+      const d = refusedDetail(s);
+      expect(JSON.parse(d)).toEqual({
+        reason: "binding PLAN (plain_text) has another value than the render",
+      });
+      expect(d).not.toContain(value);
+    });
+
+    it("verify_clean.refused audits the reason, never a secret value", async () => {
+      const s = setup();
+      const value = "secret-value-must-not-leak-9c1e";
+      const p = s.mk({
+        onStep: (st) => {
+          if (st !== "verify_clean") return;
+          [...s.fake.scripts.values()][0]?.secrets.set("EXTRA_KEY", value);
+        },
+      });
+      const e = await fails(p.create(input()));
+      expect(provisionErrorCode(e)).toBe("prod_dirty");
+      const d = refusedDetail(s);
+      expect(JSON.parse(d)).toEqual({
+        reason: "secret EXTRA_KEY is not expected",
+      });
+      expect(d).not.toContain(value);
+    });
+
+    it("verify_clean.refused caps the audited reason", async () => {
+      const s = setup();
+      const long = `B${"X".repeat(VERIFY_CLEAN_REASON_MAX)}`;
+      s.fake.settingsEdit = add({
+        name: long,
+        type: "plain_text",
+        text: "x",
+      }) as never;
+      await fails(s.p.create(input()));
+      const r = JSON.parse(refusedDetail(s)) as { reason: string };
+      expect(r.reason).toHaveLength(VERIFY_CLEAN_REASON_MAX);
+      expect(r.reason.startsWith(`binding ${long.slice(0, 20)}`)).toBe(true);
+    });
+
     it("a resumed attempt compares with the stored render of the version", async () => {
       const s = setup();
       // Unhealthy once (CLI order: verify, route, health): the rerun skips the upload.
@@ -5227,6 +5291,103 @@ describe("verifyCleanRefusal (5.2 e, pure)", () => {
         base(),
       ),
     ).toBeNull();
+  });
+
+  it("no refusal ever carries a var or secret value, only names (every branch; #1060 audits it)", async () => {
+    const { CREATE_SECRETS } = await import("../src/wfp.js");
+    const V = "value-must-not-leak";
+    const sentB = [
+      { name: "PLAN", type: "plain_text", text: `${V}-plan` },
+      { name: "CFG", type: "json", json: { k: `${V}-json` } },
+      { name: "DB", type: "d1" },
+    ];
+    const liveB = [
+      { name: "PLAN", type: "plain_text", text: `${V}-plan` },
+      { name: "CFG", type: "json", json: { k: `${V}-json` } },
+      { name: "DB", type: "d1", id: `${V}-id` },
+    ];
+    const ok = { bindings: liveB, secrets: [...CREATE_SECRETS] };
+    const b = base({ sent: { bindings: sentB } });
+    const cases: [
+      string,
+      Parameters<typeof verifyCleanRefusal>[0],
+      VerifyCleanInput,
+    ][] = [
+      [
+        "refused type",
+        {
+          ...ok,
+          bindings: [
+            ...liveB,
+            { name: "S", type: "service", service: `${V}-svc` },
+          ],
+        },
+        b,
+      ],
+      [
+        "hook on non-test",
+        {
+          ...ok,
+          bindings: [
+            ...liveB,
+            { name: "TEST_DOMAIN", type: "plain_text", text: `${V}-dom` },
+          ],
+        },
+        b,
+      ],
+      [
+        "not in render",
+        {
+          ...ok,
+          bindings: [
+            ...liveB,
+            { name: "EXTRA", type: "plain_text", text: `${V}-extra` },
+          ],
+        },
+        b,
+      ],
+      [
+        "missing",
+        { ...ok, bindings: liveB.filter((x) => x.name !== "PLAN") },
+        b,
+      ],
+      [
+        "plain_text value",
+        {
+          ...ok,
+          bindings: liveB.map((x) =>
+            x.name === "PLAN" ? { ...x, text: `${V}-other` } : x,
+          ),
+        },
+        b,
+      ],
+      [
+        "json value",
+        {
+          ...ok,
+          bindings: liveB.map((x) =>
+            x.name === "CFG" ? { ...x, json: { k: `${V}-other` } } : x,
+          ),
+        },
+        b,
+      ],
+      [
+        "secret not expected",
+        { ...ok, secrets: [...CREATE_SECRETS, "LEAKY"] },
+        b,
+      ],
+      ["secret missing", { ...ok, secrets: CREATE_SECRETS.slice(1) }, b],
+      [
+        "secret twice",
+        { ...ok, secrets: [...CREATE_SECRETS, CREATE_SECRETS[0] as string] },
+        b,
+      ],
+    ];
+    for (const [what, live, input] of cases) {
+      const why = verifyCleanRefusal(live, input);
+      expect(why, what).not.toBeNull();
+      expect(why, what).not.toContain(V);
+    }
   });
 
   it("refuses another variant or a tag that is not the template's last (rule 6)", async () => {

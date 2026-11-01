@@ -86,6 +86,10 @@ export const JOB_WITHIN_MS = 20 * 60_000;
 /** A case's vitest timeout: its slowest wait plus margin. */
 export const PROBE_TIMEOUT_MS = JOB_WITHIN_MS + 5 * 60_000;
 export const P34_REQUESTS = 400;
+/** RL_BROKER_IP's period (apps/auth-broker/wrangler.jsonc: limit 60 per 60 s). */
+export const BROKER_IP_PERIOD_MS = 60_000;
+/** P34's bound to see the broker IP window reopen: two periods (counts sync late). */
+export const BROKER_IP_WAIT_MS = 2 * BROKER_IP_PERIOD_MS;
 /** RL_PV_SIGNIN_IP's limit per IP per 60 s (apps/provisioning/wrangler.jsonc). */
 export const SIGNIN_IP_LIMIT = 10;
 /**
@@ -477,6 +481,34 @@ export function statusCounts(
 
 /** The admin sign-in flow cookie /auth/start sets (apps/provisioning/src/auth/flow.ts). */
 export const ADMIN_FLOW_COOKIE = "__Host-oa-admin-flow";
+
+/**
+ * Whether one Set-Cookie sets a live admin flow cookie: the flow name, a
+ * non-empty value, and neither Max-Age<=0 nor an Expires before `now`. The
+ * limited 303 sends clearFlowCookie() (apps/provisioning/src/auth/flow.ts),
+ * "__Host-oa-admin-flow=; Max-Age=0; ...", which clears and does not count.
+ */
+export function setsLiveFlowCookie(c: string, now: number): boolean {
+  const [pair = "", ...attrs] = c.split(";").map((x) => x.trim());
+  const eq = pair.indexOf("=");
+  if (eq < 0 || pair.slice(0, eq) !== ADMIN_FLOW_COOKIE) return false;
+  if (pair.slice(eq + 1) === "") return false;
+  // RFC 6265 5.3: a valid Max-Age decides alone; Expires only without one.
+  let maxAge: number | undefined;
+  let expires: number | undefined;
+  for (const a of attrs) {
+    const i = a.indexOf("=");
+    const k = (i < 0 ? a : a.slice(0, i)).trim().toLowerCase();
+    const v = i < 0 ? "" : a.slice(i + 1).trim();
+    if (k === "max-age" && /^-?\d+$/.test(v)) maxAge = Number(v);
+    if (k === "expires") {
+      const t = Date.parse(v);
+      if (!Number.isNaN(t)) expires = t;
+    }
+  }
+  if (maxAge !== undefined) return maxAge > 0;
+  return expires === undefined || expires > now;
+}
 
 /** Every Set-Cookie on an answer. */
 const setCookies = (r: Pick<Res, "headers">): string[] =>
@@ -1272,10 +1304,13 @@ export const PROBES: readonly Probe[] = [
       // Design gap: no principal can purge a test user's install within a
       // run (U's R11 is 403, O cannot reach a self-serve install, the
       // scheduler purges at purge_at), so an earlier run's claim holds.
-      if (c.status === 409 && errCode(c) === "signup_limit")
-        return unproven(
-          "test user b still holds signup_accounts from an earlier run: no principal can purge a self-serve install within a run",
+      if (c.status === 409 && errCode(c) === "signup_limit") {
+        // The explanation goes to a note: the reason stays one fixed string.
+        note(
+          "P29: test user b still holds signup_accounts from an earlier run: no principal can purge a self-serve install within a run",
         );
+        return unproven(P29_UNPROVEN);
+      }
       const a = run.accepted(c, "P29 create", { asTestUser: true });
       const j = await run.done(a.job.id, "P29 create", "b");
       const d = await detail(run, a.install.id, "b");
@@ -1381,7 +1416,14 @@ export const PROBES: readonly Probe[] = [
       if (p.job.kind !== "discard")
         throw new ProbeFail(`P32: R11 ran ${p.job.kind}, want discard`);
       await run.done(p.job.id, "P32 discard");
-      expect(await detail(run, a.install.id), 404, "P32 R3");
+      // Design 3.4 row 1: R3 still reads a discarded row, as deleted.
+      const gone = await detail(run, a.install.id);
+      expect(gone, 200, "P32 R3");
+      const gi = gone.json as InstallDetail;
+      if (gi.state !== "deleted" || gi.deletedAt == null)
+        throw new ProbeFail(
+          `P32 R3: state ${gi.state}, deletedAt ${gi.deletedAt == null ? "null" : "set"}; want deleted with deletedAt`,
+        );
       const s = await run.v1(`/slugs/${slug}`);
       if ((s.json as { status?: string })?.status !== "ok")
         throw new ProbeFail(`P32: slug ${desc(s)}`);
@@ -1424,26 +1466,53 @@ export const PROBES: readonly Probe[] = [
   {
     id: "P34",
     title:
-      "400 unsigned broker authorize for i000000admin: 404s; /auth/start still reaches Google",
+      "400 unsigned broker authorize for i000000admin: 404s (429 past the IP limit); /auth/start still reaches Google",
     run: async (run) => {
+      const authorize = () =>
+        run.raw(
+          `${run.c.broker}/google/authorize?install=i000000admin&state=${randomBytes(12).toString("base64url")}&nonce=${randomBytes(12).toString("base64url")}&code_challenge=${randomBytes(32).toString("base64url")}`,
+          { auth: "none" },
+        );
+      // Design 4.3: RL_BROKER_IP runs before the ticket check, so past its
+      // limit an unsigned authorize is 429 rate_limited; any other answer
+      // (a redirect toward Google above all) or any cookie fails.
+      const allowed = (r: Res) =>
+        (r.status === 404 || r.status === 429) && setCookies(r).length === 0;
       let bad = 0;
+      let notFound = 0;
       const seen: Res[] = [];
       for (let i = 0; i < P34_REQUESTS; i += 10) {
         const batch = await Promise.all(
-          Array.from({ length: Math.min(10, P34_REQUESTS - i) }, () =>
-            run.raw(
-              `${run.c.broker}/google/authorize?install=i000000admin&state=${randomBytes(12).toString("base64url")}&nonce=${randomBytes(12).toString("base64url")}&code_challenge=${randomBytes(32).toString("base64url")}`,
-              { auth: "none" },
-            ),
-          ),
+          Array.from({ length: Math.min(10, P34_REQUESTS - i) }, authorize),
         );
-        bad += batch.filter((r) => r.status !== 404).length;
+        bad += batch.filter((r) => !allowed(r)).length;
+        notFound += batch.filter((r) => r.status === 404).length;
         seen.push(...batch);
       }
       if (bad)
         throw new ProbeFail(
-          `P34: ${bad} of ${P34_REQUESTS} unsigned authorize requests were not 404 (${statusCounts(seen)})`,
+          `P34: ${bad} of ${P34_REQUESTS} unsigned authorize requests were not 404 or 429 without a cookie (${statusCounts(seen)})`,
         );
+      if (!notFound)
+        throw new ProbeFail(
+          `P34: none of ${P34_REQUESTS} unsigned authorize requests was 404 (${statusCounts(seen)})`,
+        );
+      // The /auth/start hop below shares this IP's broker bucket: wait out
+      // the window until an unsigned authorize is 404 again.
+      const end = run.io.now() + BROKER_IP_WAIT_MS;
+      for (;;) {
+        const r = await authorize();
+        if (!allowed(r))
+          throw new ProbeFail(
+            `P34: an unsigned authorize while waiting out the IP window was ${desc(r)}`,
+          );
+        if (r.status === 404) break;
+        if (run.io.now() >= end)
+          throw new ProbeFail(
+            `P34: unsigned authorize still 429 after ${BROKER_IP_WAIT_MS / 1000} s; the broker IP window (RL_BROKER_IP, ${BROKER_IP_PERIOD_MS / 1000} s) did not reopen`,
+          );
+        await run.io.wait(POLL_MS);
+      }
       const start = await run.raw(`${run.c.admin}/auth/start`, {
         auth: "none",
       });
@@ -1767,8 +1836,9 @@ export const PROBES: readonly Probe[] = [
           u.searchParams.get("error") === "rate_limited"
         );
       };
+      // Only a cookie that sets a live flow counts: the limited 303 clears it.
       const flowCookie = (r: Res) =>
-        setCookies(r).some((c) => c.startsWith(`${ADMIN_FLOW_COOKIE}=`));
+        setCookies(r).some((c) => setsLiveFlowCookie(c, run.io.now()));
       const out: Res[] = [];
       let last: Res | undefined;
       while (out.length < P25_MAX_REQUESTS && !(last && limited(last))) {
