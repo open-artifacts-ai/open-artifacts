@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.91.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.91.0...v0.91.1) (2026-11-01)
+
+
+### Documentation
+
+* **ops:** how to force a release when only non-releasable commits landed ([#1057](https://github.com/open-artifacts-ai/open-artifacts/issues/1057)) ([2ed0900](https://github.com/open-artifacts-ai/open-artifacts/commit/2ed090084ceae25ccc9e871be78153b0de778406))
+
 ## [0.91.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.3...v0.91.0) (2026-11-01)
 
 
