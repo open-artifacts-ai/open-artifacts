@@ -183,7 +183,8 @@ export const fmtDayClock = (ms: number) => `${fmtDay(ms)} ${fmtClock(ms)}`;
 /** "1 min", "45 s", "now". */
 export const fmtIn = (ms: number) => {
   if (ms <= 0) return "now";
-  if (ms < 59_500) return `${Math.ceil(ms / 1000)} s`;
+  // Seconds round up, so "59 s" is the most it shows; past that, minutes.
+  if (ms <= 59_000) return `${Math.ceil(ms / 1000)} s`;
   return `${Math.round(ms / 60_000)} min`;
 };
 /** "6 h", "40 min". */
