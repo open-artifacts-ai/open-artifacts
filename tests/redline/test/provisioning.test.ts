@@ -23,6 +23,7 @@ import {
   failText,
   mintCreds,
   type Outcome,
+  P25_MAX_REQUESTS,
   PROBES,
   ProbeFail,
   type ProbeId,
@@ -228,6 +229,42 @@ describe("each probe fails on the behaviour it guards", () => {
       const out = await runAll(f);
       expect(out.get(id)).toMatch(re);
     });
+
+  describe("P25 sends /auth/start one at a time", () => {
+    const p25 = async (limit: number, fault?: Fault) => {
+      const f = fakeApi();
+      f.signin.limit = limit;
+      if (fault) f.faults.add(fault);
+      const out = await PROBES.find((p) => p.id === "P25")
+        ?.run(new Run(CONFIG, f.io))
+        .catch((e: unknown) => e);
+      const starts = f.log.filter(
+        (l) => l === `GET ${CONFIG.admin}/auth/start`,
+      );
+      return { out, starts: starts.length };
+    };
+
+    it("passes when the limit trips within 30 and stops sending", async () => {
+      for (const limit of [0, 10, 29]) {
+        const { out, starts } = await p25(limit);
+        expect(out).toEqual({
+          level: "pass",
+          note: `limited on request ${limit + 1} of up to ${P25_MAX_REQUESTS}`,
+        });
+        // Stops at the tripping request: no follow-up (per-isolate counts).
+        expect(starts).toBe(limit + 1);
+      }
+    });
+
+    it("fails naming the counts when the limit never trips", async () => {
+      const { out, starts } = await p25(P25_MAX_REQUESTS);
+      expect(out).toBeInstanceOf(ProbeFail);
+      expect((out as Error).message).toBe(
+        "P25: no 303 to /sign-in?error=rate_limited in 30 sequential requests (302 x30)",
+      );
+      expect(starts).toBe(P25_MAX_REQUESTS);
+    });
+  });
 
   it("P44 is unproven when this IP's daily DCR cap was partly spent earlier", async () => {
     const f = fakeApi();

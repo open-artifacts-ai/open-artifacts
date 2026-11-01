@@ -108,6 +108,8 @@ export interface FakeApi {
   audit: { actor: string; action: string; jobId: string }[];
   /** Every request URL, in order. */
   log: string[];
+  /** /auth/start answers past `limit` starts in a minute are limited. */
+  signin: { limit: number };
 }
 
 const ACTOR = {
@@ -135,6 +137,7 @@ export function fakeApi(): FakeApi {
   const signupAccounts = new Set<string>();
   const purged = new Map<string, FInstall>();
   const authStarts = new Map<number, number>();
+  const signin = { limit: 10 };
   let registrations = 0;
   let n = 0;
   const releases = [
@@ -732,7 +735,7 @@ export function fakeApi(): FakeApi {
           return new Response(null, { status: 429 });
         const flow = "__Host-oa-admin-flow=f; Path=/; Secure; HttpOnly";
         // As signin.ts: a limited start goes to the sign-in error screen.
-        if (c > 10)
+        if (c > signin.limit) {
           return new Response(null, {
             status: 303,
             headers: {
@@ -744,6 +747,7 @@ export function fakeApi(): FakeApi {
                 : {}),
             },
           });
+        }
         return new Response(null, {
           status: 302,
           headers: {
@@ -868,6 +872,7 @@ export function fakeApi(): FakeApi {
     clock,
     audit,
     log,
+    signin,
   };
 }
 
