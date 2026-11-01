@@ -1,0 +1,42 @@
+{
+  "name": "@oa/admin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@tailwindcss/vite": "4.3.3",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "jsdom": "^30.1.3",
+    "msw": "^2.15.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4",
+    "vitest": "^4.1.12"
+  },
+  "dependencies": {
+    "@oa/shared": "workspace:*",
+    "@oa/ui": "workspace:*",
+    "@tanstack/react-query": "^5.104.4",
+    "@tanstack/react-router": "^1.170.45",
+    "lucide-react": "1.59.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "zod": "^4.6.7"
+  }
+}

@@ -39,15 +39,15 @@ export interface CaseResult {
 
 /**
  * Why an inventory case is unproven. In a laptop capture run
- * (REDLINE_CAPTURE_RUN=1, scripts/signin-capture.ts) the inventory key is a
- * GitHub secret only, so the case is CI-only; never a pass either way.
+ * (REDLINE_CAPTURE_RUN=1, scripts/signin-capture.ts) the inventory bearer is
+ * a GitHub OIDC JWT the redline job mints, so the case is CI-only; never a pass either way.
  */
 export function noInventoryReason(
   env: Record<string, string | undefined> = process.env,
 ): string {
   return env.REDLINE_CAPTURE_RUN === "1"
-    ? "CI-only (not-local): the inventory key is a GitHub secret, so a laptop capture run can't prove this case"
-    : "no inventory configured (REDLINE_STG_INVENTORY_URL and key)";
+    ? "CI-only (not-local): the inventory bearer is a GitHub OIDC JWT only the redline job mints, so a laptop capture run can't prove this case"
+    : "no inventory configured (REDLINE_STG_INVENTORY_URL and its OIDC JWT)";
 }
 
 /** Longest reason kept in the report (redacted first, then cut). */

@@ -209,7 +209,14 @@ describe("ci.yml", () => {
       "authz-matrix",
     ];
     // `e2e` is an aggregate (below); its shards do the heavy work.
-    const HEAVY = ["typecheck", "test", "build", "e2e-shard", "authz-matrix"];
+    const HEAVY = [
+      "typecheck",
+      "test",
+      "build",
+      "e2e-shard",
+      "e2e-admin",
+      "authz-matrix",
+    ];
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     type Step = any;
     const raw = read(".github/workflows/ci.yml");
@@ -227,14 +234,16 @@ describe("ci.yml", () => {
       }
       expect(w.jobs["e2e-shard"].if).toBeUndefined();
       expect(w.jobs["e2e-shard"].needs).toBeUndefined();
+      expect(w.jobs["e2e-admin"].if).toBeUndefined();
+      expect(w.jobs["e2e-admin"].needs).toBeUndefined();
       expect(w.jobs.changes).toBeUndefined();
     });
     // The one exception, and why it can't pass by being skipped: `e2e` always
     // runs (never skipped), and its first, ungated step fails unless every
     // shard succeeded, so a skipped, cancelled or failed shard fails it.
-    it("e2e is the shards' aggregate: always runs, passes only when every shard passed", () => {
+    it("e2e is the aggregate of the shards and the admin job: always runs, passes only when all passed", () => {
       const job = w.jobs.e2e;
-      expect(job.needs).toBe("e2e-shard");
+      expect(job.needs).toEqual(["e2e-shard", "e2e-admin"]);
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(job.if).toBe("${{ always() }}");
       const [gate] = steps("e2e");
@@ -242,7 +251,11 @@ describe("ci.yml", () => {
       expect(gate["continue-on-error"]).toBeUndefined();
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(gate.env.SHARDS).toBe("${{ needs.e2e-shard.result }}");
-      expect(gate.run).toMatch(/^\[ "\$SHARDS" = success \]$/m);
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.ADMIN).toBe("${{ needs.e2e-admin.result }}");
+      expect(gate.run).toMatch(
+        /^\[ "\$SHARDS" = success \] && \[ "\$ADMIN" = success \]$/m,
+      );
       expect(JSON.stringify(job)).not.toContain("secrets.");
     });
     it("each heavy job checks out full history, then runs the release-only step first", () => {
@@ -436,7 +449,8 @@ describe("deploy-staging.yml", () => {
     expect(step).toContain(
       'wrangler secret delete "$name" -c wrangler.staging.jsonc --env staging',
     );
-    expect(step).toContain("echo y |");
+    expect(step).toContain("--env staging <<< y");
+    expect(step).not.toContain("echo y |");
   });
   it("ensures dashboard dist exists before wrangler deploy", () => {
     const e = idx("deploy", "ensure-dashboard-dist.sh");
@@ -1564,4 +1578,32 @@ describe("demo instance workflows", () => {
         for (const m of modesIn(f)) expect(prod.has(m), `${f} ${m}`).toBe(true);
     });
   });
+});
+
+// GitHub evaluates workflow- and job-level env before a runner exists: the
+// runner and steps contexts are not available there, and a dispatch fails
+// with "Unrecognized named-value". actionlint (ci.yml lint job) also catches
+// this; this keeps it in the test suite.
+describe("workflow and job env use only contexts available there", () => {
+  const dir = join(root, ".github/workflows");
+  for (const file of readdirSync(dir).filter((f) => /\.ya?ml$/.test(f))) {
+    it(file, () => {
+      const w = wf(file);
+      const bad: string[] = [];
+      const check = (where: string, env: unknown) => {
+        for (const [k, v] of Object.entries(
+          (env ?? {}) as Record<string, unknown>,
+        ))
+          if (/\$\{\{[^}]*\b(runner|steps)\./.test(String(v)))
+            bad.push(`${where}.env.${k}`);
+      };
+      check("workflow", w.env);
+      for (const [job, def] of Object.entries(
+        // biome-ignore lint/suspicious/noExplicitAny: workflow YAML is untyped
+        (w.jobs ?? {}) as Record<string, any>,
+      ))
+        check(`jobs.${job}`, def.env);
+      expect(bad).toEqual([]);
+    });
+  }
 });

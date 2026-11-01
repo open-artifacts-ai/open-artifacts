@@ -1,3 +1,4 @@
+import { RESERVED_SLUGS as SHARED_RESERVED } from "@oa/shared/provisioning/slugs";
 import { describe, expect, it } from "vitest";
 import {
   assertOwnResource,
@@ -5,11 +6,19 @@ import {
   ForeignResource,
   hosts,
   hostsKvTitle,
+  hostsValue,
   isInstallId,
+  isPlatformPrincipalId,
   names,
   newInstallId,
+  PLATFORM_PRINCIPAL_IDS,
+  parseHostsValue,
   platformNames,
+  REDLINE_TEST_DOMAINS,
+  RESERVED_SLUGS,
+  STAGING_TEST_DOMAIN,
 } from "../src/index.js";
+import * as namesEntry from "../src/names.js";
 
 const D = { app: "app.test", content: "content.test" };
 
@@ -46,7 +55,23 @@ describe("provision names", () => {
       dispatch: "oa-s-dispatch",
       hosts: "oa-s-hosts",
       turnstile: "oa-s-turnstile",
+      provisionToken: "oa-s-provision-token",
+      provisioner: "oa-s-provisioner",
+      provisionInstall: "oa-s-provision-install",
+      manageInstall: "oa-s-manage-install",
+      signups: "oa-s-signups",
+      signupsDlq: "oa-s-signups-dlq",
     });
+    // #859 apps/provisioner/wrangler.jsonc; design v7 2.4, 10.2.
+    expect(platformNames("prod").signups).toBe("oa-p-signups");
+    expect(platformNames("prod").signupsDlq).toBe("oa-p-signups-dlq");
+    // design v7 2.4: the provisioner script and its two Workflows.
+    expect(platformNames("prod").provisioner).toBe("oa-p-provisioner");
+    expect(platformNames("prod").provisionInstall).toBe(
+      "oa-p-provision-install",
+    );
+    expect(platformNames("prod").manageInstall).toBe("oa-p-manage-install");
+    expect(platformNames("prod").provisionToken).toBe("oa-p-provision-token");
     expect(platformNames("prod").turnstile).toBe("oa-p-turnstile");
     expect(platformNames("prod").db).toBe("oa-p-platform");
     expect(platformNames("prod").hosts).toBe("oa-p-hosts");
@@ -119,6 +144,11 @@ describe("provision names", () => {
       contentHost: "finqore.content.test",
     });
   });
+  it("re-exports the shared slug rule (design v7 section 3), new reserved names included", () => {
+    expect(RESERVED_SLUGS).toBe(SHARED_RESERVED);
+    for (const s of ["signup", "billing", "provisioning", "provisioner"])
+      expect(() => hosts(s, D), s).toThrow(/slug/);
+  });
   it("refuses punycode and IDNA-reserved slugs (H-T4b L4)", () => {
     for (const s of ["xn--80ak6aa92e", "xn--a", "ab--c", "a1--", "zz--zz"])
       expect(() => hosts(s, D)).toThrow(/slug/);
@@ -135,5 +165,95 @@ describe("provision names", () => {
     expect(() => hosts("a", { app: "c.x.test", content: "x.test" })).toThrow(
       /domain/,
     );
+  });
+});
+
+describe("HOSTS values (5.5)", () => {
+  const ID = "iabc123def45";
+  it("parses <id>, paused:<id> and closed:<id>", () => {
+    expect(parseHostsValue(ID)).toEqual({ installId: ID, mode: "serving" });
+    expect(parseHostsValue(`paused:${ID}`)).toEqual({
+      installId: ID,
+      mode: "paused",
+    });
+    expect(parseHostsValue(`closed:${ID}`)).toEqual({
+      installId: ID,
+      mode: "closed",
+    });
+  });
+  it.each([
+    "",
+    "serving:iabc123def45",
+    "PAUSED:iabc123def45",
+    "paused:",
+    "paused:iabc123def4",
+    "paused:iabc123def45 ",
+    " iabc123def45",
+    "paused:closed:iabc123def45",
+    "iABC123def45",
+    "unmapped:iabc123def45",
+    "i000000admin",
+    "paused:i000000admin",
+    "i00000signup",
+    "closed:i00000signup",
+  ])("anything else is null: %j", (v) => {
+    expect(parseHostsValue(v)).toBeNull();
+  });
+  it("non-strings are null", () => {
+    for (const v of [null, undefined, 1, {}, ["iabc123def45"]])
+      expect(parseHostsValue(v)).toBeNull();
+  });
+  it("hostsValue writes what parseHostsValue reads", () => {
+    for (const mode of ["serving", "paused", "closed"] as const)
+      expect(parseHostsValue(hostsValue(ID, mode))).toEqual({
+        installId: ID,
+        mode,
+      });
+    expect(hostsValue(ID, "serving")).toBe(ID);
+    expect(() => hostsValue("nope" as never, "paused")).toThrow(/install id/);
+    expect(() => hostsValue("i000000admin", "serving")).toThrow(
+      /platform principal/,
+    );
+  });
+  it("is on the workerd-safe @oa/provision/names entry", () => {
+    expect(namesEntry.parseHostsValue).toBe(parseHostsValue);
+  });
+});
+
+describe("platform principals (4.1)", () => {
+  it("are exactly the admin and signup ids, valid install ids newInstallId never mints", () => {
+    expect([...PLATFORM_PRINCIPAL_IDS]).toEqual([
+      "i000000admin",
+      "i00000signup",
+    ]);
+    for (const id of PLATFORM_PRINCIPAL_IDS) {
+      expect(isInstallId(id)).toBe(true);
+      expect(isPlatformPrincipalId(id)).toBe(true);
+      // newInstallId's alphabet has no 0, 1, 8 or 9.
+      expect(id).toMatch(/[0189]/);
+    }
+    expect(isPlatformPrincipalId("iabc123def45")).toBe(false);
+    expect(isPlatformPrincipalId(newInstallId())).toBe(false);
+    expect(Object.isFrozen(PLATFORM_PRINCIPAL_IDS)).toBe(true);
+  });
+});
+
+describe("STAGING_TEST_DOMAIN (3.3)", () => {
+  it("is a lowercase hostname on namesEntry too", () => {
+    expect(STAGING_TEST_DOMAIN).toMatch(
+      /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/,
+    );
+    expect(namesEntry.STAGING_TEST_DOMAIN).toBe(STAGING_TEST_DOMAIN);
+  });
+
+  it("REDLINE_TEST_DOMAINS: frozen, exactly the API's plus rl-a's and rl-b's", () => {
+    expect(REDLINE_TEST_DOMAINS).toEqual([
+      "oa-redline-a.fyi",
+      "guests.oa-redline-a.fyi",
+      "guests.oa-redline-c.fyi",
+    ]);
+    expect(REDLINE_TEST_DOMAINS[0]).toBe(STAGING_TEST_DOMAIN);
+    expect(Object.isFrozen(REDLINE_TEST_DOMAINS)).toBe(true);
+    expect(namesEntry.REDLINE_TEST_DOMAINS).toBe(REDLINE_TEST_DOMAINS);
   });
 });

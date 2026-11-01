@@ -379,6 +379,11 @@ jobs:
       - name: Landing real-browser checks (no horizontal overflow)
         if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh landing
+      # Design v7 9A.3.2 step 3: the Strict admin cookie survives a cross-site
+      # arrival at /oauth/authorize (its own Miniflare, about a minute).
+      - name: Provisioning consent checks (cross-site, Strict cookie)
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        run: bash scripts/ci/e2e.sh provisioning
       - if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' }}
         uses: actions/upload-artifact@v4
         with:
@@ -393,10 +398,71 @@ jobs:
           path: apps/dashboard/test-results
           if-no-files-found: ignore
           retention-days: 14
+  # @oa/admin's Playwright tests (MSW mocks, no server, no secrets). One runner.
+  # Counted by the `e2e` check below. The image tag must match @oa/admin's
+  # @playwright/test; the digest pins the exact image (same as e2e-shard).
+  e2e-admin:
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
+      options: --ipc=host
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      # Fast path for release-only PRs, as in e2e-shard (decided inside the job:
+      # a skipped job would count as failing the `e2e` aggregate).
+      - id: ro
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          rel=false
+          if [ -n "${BASE_SHA:-}" ] && [ -n "${HEAD_SHA:-}" ] \
+            && git show "$BASE_SHA:scripts/ci/release-only.ts" > "$RUNNER_TEMP/release-only.ts" 2> /dev/null \
+            && out=$(node --experimental-strip-types --no-warnings "$RUNNER_TEMP/release-only.ts" "$BASE_SHA" "$HEAD_SHA" 2> /dev/null) \
+            && [ "$out" = "release-only" ]; then
+            rel=true
+          fi
+          echo "release_only=$rel" >> "$GITHUB_OUTPUT"
+      - name: release-only change
+        if: ${{ steps.ro.outputs.release_only == 'true' }}
+        run: |
+          echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
+      - uses: pnpm/action-setup@v4
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+      - uses: actions/setup-node@v4
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter @oa/admin...
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+      - name: Playwright matches the image
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        run: |
+          v="$(node -p "require('./apps/admin/node_modules/@playwright/test/package.json').version")"
+          if [ "$v" != "1.64.1" ]; then
+            echo "@playwright/test is $v but the CI image is 1.64.1; bump the e2e-admin image in ci.yml" >&2
+            exit 1
+          fi
+      - run: pnpm --filter @oa/admin test:e2e
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-test-results
+          path: apps/admin/test-results
+          if-no-files-found: ignore
+          retention-days: 14
   # The required check (its name is branch protection's). Always runs, and passes
-  # only when every shard passed: a skipped, cancelled or failed shard fails it.
+  # only when every shard and the admin job passed: a skipped, cancelled or failed shard fails it.
   e2e:
-    needs: e2e-shard
+    needs: [e2e-shard, e2e-admin]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -404,9 +470,11 @@ jobs:
       - name: Every shard passed
         env:
           SHARDS: ${{ needs.e2e-shard.result }}
+          ADMIN: ${{ needs.e2e-admin.result }}
         run: |
           echo "e2e-shard: $SHARDS"
-          [ "$SHARDS" = success ]
+          echo "e2e-admin: $ADMIN"
+          [ "$SHARDS" = success ] && [ "$ADMIN" = success ]
       # The merged html report, also when a shard failed (that's when it's read).
       - uses: actions/checkout@v4
         if: ${{ !cancelled() }}

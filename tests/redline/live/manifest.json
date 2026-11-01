@@ -999,6 +999,194 @@
     {
       "file": "live/edge.test.ts",
       "name": "cross-site isolation > state-changing app requests without X-OA-Request are refused, and accepted with it"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P1: GET /api/v1/me on the admin host, no cookie: 401"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P2: a forged __Host-oa-admin: 401"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P3: the api host with only a Cookie: 401"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P4: the admin host with an OIDC bearer: 401"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P5: POST /api/v1/installs with Origin https://evil.example: 403 csrf_failed"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P6: OIDC with a wrong aud, tampered, alg none: 401 each"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P7: staging OIDC against prod /v1/me: 401"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P8: test user a: list shows its own only; GET rl-a is 404"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P9: test user a: create with ownerEmail or tier: 403"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P10: OIDC: GET and upgrade of an install without rl-: 404"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P11: test user a: upgrade rl-a: 403"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P12: OIDC: R13, R19, R25: 403 each"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P13: create rl-p-<run> twice with one requestId: one job, one install, done (redline variant)"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P14: a second create of that slug with a new requestId: 409 slug_taken"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P15: during the create: inventory mode null and public /healthz 404 until route"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P16: upgrade while its create runs: 409 job_in_progress"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P17: create with version 0.0.1: 422 release_not_published"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P18: upgrade to its current version: 409 downgrade_refused"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P19: delete with a wrong confirmSlug: 400; unchanged"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P45: OIDC on /mcp: tools/list, get_world, get_install, delete_install refusal, upgrade_install"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P31: rollback of the rl-p install after an upgrade: the previous version"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P20: suspend: 503 paused page on both hosts within 120 s; inventory paused"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P21: resume: 200 within 120 s"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P22: delete, then restore: closed page, then serving"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P23: delete, then purge: 404; inventory deleted; no HOSTS key"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P24: rl-a and rl-b run the release under test (upgraded by the workflow, R5)"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P26: GET /auth/test-signin: 404 (staging; prod when applicable)"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P27: inventory: no token, wrong audience, staging token on prod: 404 each; correct 200"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P28: GET /releases: the release under test is installable"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P29: SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete leaves it deleting"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P30: dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P32: create rl-q-<run> below the floor: failed release_unverified, retry the same, R11 discards; slug free"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P33: R17 for this run's actor: this run's job.accepted rows"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P34: 400 unsigned broker authorize for i000000admin: 404s; /auth/start still reaches Google"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P35: reachable path: a Worker without a route fetches rl-a /healthz"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P36: R26 for rl-a: the sealed PAT works on /api/v1/me (revoked at the run's end)"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P37: POST /mcp, no Authorization: 401 with invalid_token and resource_metadata"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P38: both metadata documents: resource, authorization_endpoint, five scopes, S256"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P39: /mcp with a forged oat_, a forged opaque bearer, only a Cookie: 401 each"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P40: POST admin /mcp; GET api /oauth/authorize: 404 each"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P41: /mcp with Origin https://evil.example and a valid OIDC bearer: 403"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P42: /mcp with a 40 KiB body: 413"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P44: /oauth/register: foreign redirect URIs 400 invalid_redirect_uri; the 11th registration refused"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P43: GET /oauth/authorize, no cookie, cross-site: 200 bounce page; with b=1: 302 to /auth/start"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P46: staging OIDC on prod /mcp: 401"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P47: /v1/me with an OAuth-shaped bearer: 401 unauthenticated"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P25: 15 rapid GET /auth/start: at least one 429"
     }
   ],
   "notes": [

@@ -6,7 +6,8 @@
 # database, upgrade, verify; on failure (if the run allows it) roll the Worker
 # back, restore D1 to the bookmark and compare against the capture.
 #   prod-migration-guard.sh detect   -> hold=, guarded= ($TAG vs the previous stable tag)
-#   prod-migration-guard.sh record   -> worker_version=, bookmark=; capture to $GUARD_DIR/before.json
+#     (detect also holds when $TAG modifies, deletes or renames an existing server migration)
+#   prod-migration-guard.sh record  -> worker_version=, bookmark=; capture to $GUARD_DIR/before.json
 #   prod-migration-guard.sh verify   -> the migration's own verifier against the capture
 #   prod-migration-guard.sh restore  -> rollback + restore + recapture and compare
 # Env: TAG, EVENT (github.event_name), PROD_NAME (Worker and D1 name),
@@ -59,6 +60,14 @@ case "${1:-}" in
       hold "no release tag $TAG"
     added="$(git -C "$root" diff --name-only --diff-filter=A "$prev" "$TAG" -- 'apps/server/migrations/*.sql')" ||
       hold "could not list the migrations $TAG adds"
+    # An already-shipped server migration must never change: installs record
+    # applied migrations by name, so an edit never reaches a deployed database.
+    changed="$(git -C "$root" diff --name-only --diff-filter=MDR "$prev" "$TAG" -- 'apps/server/migrations/*.sql')" ||
+      hold "could not list the migrations $TAG changes"
+    if [ -n "$changed" ]; then
+      names="$(printf '%s' "$changed" | tr '\n' ' ')"
+      hold "$TAG modifies, deletes or renames an already-deployed server migration (${names% }); add a new migration instead"
+    fi
     marked=()
     while IFS= read -r f; do
       [ -n "$f" ] || continue

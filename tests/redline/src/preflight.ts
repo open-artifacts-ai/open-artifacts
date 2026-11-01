@@ -11,6 +11,7 @@ import {
 import { CAPTURE_FLOWS, googleUrlOf, startGoogle } from "./signin.ts";
 import {
   loadTargets,
+  STG_INVENTORY_OIDC_FILE,
   secretFileName,
   secretsOf,
   type Target,
@@ -160,19 +161,22 @@ export function fileChecks(env: Record<string, string | undefined>): Check[] {
               "strayHost is not set in REDLINE_TARGETS (the kit's targets.json)",
           },
     );
-    const inv = raw.inventory as { url?: unknown; keyFile?: unknown } | null;
+    const inv = raw.inventory as { url?: unknown; oidcFile?: unknown } | null;
     const url =
       (inv && typeof inv.url === "string" && inv.url) ||
       env.REDLINE_STG_INVENTORY_URL;
-    const keyFile =
-      inv && typeof inv.keyFile === "string"
-        ? inv.keyFile
+    const oidcFile =
+      inv && typeof inv.oidcFile === "string"
+        ? inv.oidcFile
         : dir
-          ? join(dir, "REDLINE_STG_INVENTORY_KEY")
+          ? join(dir, STG_INVENTORY_OIDC_FILE)
           : undefined;
-    const kg = url ? fileGap(keyFile, "inventory key") : "no inventory URL";
-    // The key is a GitHub secret only: a laptop run can't prove the
-    // inventory cases. Not a refusal; those cases report unproven.
+    const kg = url
+      ? fileGap(oidcFile, "inventory OIDC JWT")
+      : "no inventory URL";
+    // The JWT is minted by the redline job only (GitHub OIDC, design v7
+    // 6.3): a laptop run can't prove the inventory cases. Not a refusal;
+    // those cases report unproven.
     out.push(
       kg
         ? {
@@ -180,7 +184,7 @@ export function fileChecks(env: Record<string, string | undefined>): Check[] {
             status: "ci-only",
             detail: `CI-only (not-local): ${kg}; the inventory cases report unproven in this run and never count as a pass`,
           }
-        : { name: "inventory", status: "ok", detail: "URL and 0600 key" },
+        : { name: "inventory", status: "ok", detail: "URL and 0600 OIDC JWT" },
     );
   }
   return out;

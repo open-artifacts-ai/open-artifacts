@@ -523,7 +523,7 @@ jobs:
     needs: [hosted-guard, hosted-build, hosted-check]
     if: ${{ !cancelled() && needs.hosted-guard.result == 'success' && needs.hosted-build.result == 'success' && needs.hosted-check.result == 'success' }}
     runs-on: ubuntu-latest
-    # The prod key lives only in this GitHub Environment (main only, no admin bypass, no approval step for now; a reviewer comes back before FinQore go-live).
+    # The prod key lives only in this GitHub Environment (main only, no admin bypass, no approval step: the checks before it are the gate).
     environment: hosted-prod
     permissions:
       contents: read

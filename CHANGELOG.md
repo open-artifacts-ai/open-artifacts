@@ -1,5 +1,180 @@
 # Changelog
 
+## [0.89.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.0...v0.89.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **platform-db:** check the live schema against the applied files before a run ([#998](https://github.com/open-artifacts-ai/open-artifacts/issues/998)) ([#999](https://github.com/open-artifacts-ai/open-artifacts/issues/999)) ([a14bbbe](https://github.com/open-artifacts-ai/open-artifacts/commit/a14bbbe13c7d2bc05ee417276dc69d16560c3d54))
+
+## [0.89.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.3...v0.89.0) (2026-11-01)
+
+
+### Features
+
+* **provisioner:** record a failed job's fail point, HTTP status and hook refusal ([#995](https://github.com/open-artifacts-ai/open-artifacts/issues/995)) ([#996](https://github.com/open-artifacts-ai/open-artifacts/issues/996)) ([704560d](https://github.com/open-artifacts-ai/open-artifacts/commit/704560d0c6d38f1d65b6afef6cf7cac2488cb169))
+
+## [0.88.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.2...v0.88.3) (2026-11-01)
+
+
+### Bug Fixes
+
+* **provisioner:** redline_creds accepts rl-a's and rl-b's stored TEST_DOMAIN ([#991](https://github.com/open-artifacts-ai/open-artifacts/issues/991)) ([18833dc](https://github.com/open-artifacts-ai/open-artifacts/commit/18833dc96e431f438d74f23801e3adf30aaf40fc))
+
+## [0.88.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.1...v0.88.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **ops:** the staging inventory deploy deletes the retired INVENTORY_KEY ([#987](https://github.com/open-artifacts-ai/open-artifacts/issues/987)) ([11d2262](https://github.com/open-artifacts-ai/open-artifacts/commit/11d22622c2c772f161b3b9bea4490b4e771f98b8))
+
+## [0.88.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.0...v0.88.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **inventory:** depend on wrangler so the CI inventory target can deploy ([#984](https://github.com/open-artifacts-ai/open-artifacts/issues/984)) ([4ff0821](https://github.com/open-artifacts-ai/open-artifacts/commit/4ff0821715720f096f972625924ab21e9d0f9f39))
+
+## [0.88.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.87.0...v0.88.0) (2026-11-01)
+
+
+### Features
+
+* **redline:** W12 provisioning probes and OIDC for the Provisioning API ([#919](https://github.com/open-artifacts-ai/open-artifacts/issues/919)) ([52dc717](https://github.com/open-artifacts-ai/open-artifacts/commit/52dc71733eae209c5aa7f065e4dae0191d8786fd))
+
+
+### Bug Fixes
+
+* **redline:** staged version checks R3's appHost; seal key not extractable ([#981](https://github.com/open-artifacts-ai/open-artifacts/issues/981)) ([c2ef102](https://github.com/open-artifacts-ai/open-artifacts/commit/c2ef1029791d1ecdb60e93f4ff545a4e92f4608a))
+
+## [0.87.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.86.0...v0.87.0) (2026-11-01)
+
+
+### Features
+
+* **ci:** W9a CI targets for the Provisioning API ([#902](https://github.com/open-artifacts-ai/open-artifacts/issues/902)) ([da1d6e9](https://github.com/open-artifacts-ai/open-artifacts/commit/da1d6e9e487b438ac7c054870905016e777a76c9))
+* **inventory:** W8 GitHub OIDC inventory, hourly prod-clean monitor, prod-clean probe fix (on pl/provapi-base) ([#900](https://github.com/open-artifacts-ai/open-artifacts/issues/900)) ([a39e7cf](https://github.com/open-artifacts-ai/open-artifacts/commit/a39e7cf6f123aac3d3e30ce78abf32cabb451509))
+
+## [0.86.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.85.0...v0.86.0) (2026-10-31)
+
+
+### Features
+
+* **provisioning:** W13b admin MCP: OAuth for the Provisioning API ([#901](https://github.com/open-artifacts-ai/open-artifacts/issues/901)) ([123af04](https://github.com/open-artifacts-ai/open-artifacts/commit/123af04c90be893370fc1a56dda9297b374aeb5e))
+
+## [0.85.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.84.0...v0.85.0) (2026-10-31)
+
+
+### Features
+
+* **provisioner:** W3 Workflows for the Provisioning API ([#897](https://github.com/open-artifacts-ai/open-artifacts/issues/897)) ([b1b4869](https://github.com/open-artifacts-ai/open-artifacts/commit/b1b4869f565865336347ee084596a5e08d620795))
+* **provisioning:** W13a admin MCP: tools for the Provisioning API ([#899](https://github.com/open-artifacts-ai/open-artifacts/issues/899)) ([d97cdfa](https://github.com/open-artifacts-ai/open-artifacts/commit/d97cdfa7a1cf8849c47fba2c63c5815b0dec7fcd))
+
+## [0.84.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.83.0...v0.84.0) (2026-10-31)
+
+
+### Features
+
+* **provisioning:** W5b API tokens, OIDC, limits for the Provisioning API ([#890](https://github.com/open-artifacts-ai/open-artifacts/issues/890)) ([f091c4f](https://github.com/open-artifacts-ai/open-artifacts/commit/f091c4f115993ea3606a41c28eb338e9007a70bf))
+
+
+### Bug Fixes
+
+* **hosted:** oa:hosted in hosted-ops CI accepts the one-year deploy token (maxTokenDays 400); laptops stay at 30 ([#922](https://github.com/open-artifacts-ai/open-artifacts/issues/922)) ([654ffab](https://github.com/open-artifacts-ai/open-artifacts/commit/654ffabb3fbf73faca6f34fa68d75051ef14fc2d))
+
+## [0.83.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.82.0...v0.83.0) (2026-10-31)
+
+
+### Features
+
+* **provisioning:** W5a API sign-in for the Provisioning API ([#891](https://github.com/open-artifacts-ai/open-artifacts/issues/891)) ([ba0f90a](https://github.com/open-artifacts-ai/open-artifacts/commit/ba0f90a380c75ab9c7357fabda730671fd3ca9d5))
+
+## [0.82.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.81.0...v0.82.0) (2026-10-31)
+
+
+### Features
+
+* **provisioner:** W1 provisioner port for the Provisioning API ([#888](https://github.com/open-artifacts-ai/open-artifacts/issues/888)) ([58bd2a3](https://github.com/open-artifacts-ai/open-artifacts/commit/58bd2a334a2afad8946af418b4b073964fed357d))
+* **provisioning:** W4 API core for the Provisioning API ([#893](https://github.com/open-artifacts-ai/open-artifacts/issues/893)) ([2cb9311](https://github.com/open-artifacts-ai/open-artifacts/commit/2cb93116f342f9cd91526236cd40d333e8a23554))
+* **provision:** W2 provision create order and lifecycle for the Provisioning API ([#892](https://github.com/open-artifacts-ai/open-artifacts/issues/892)) ([8d9435d](https://github.com/open-artifacts-ai/open-artifacts/commit/8d9435dd67542c3af4daa63563a756b693c0dbd5))
+* **shared:** C7 redline mint args carry recipientKey; Workflow rollingBack status ([#916](https://github.com/open-artifacts-ai/open-artifacts/issues/916)) ([b707f7b](https://github.com/open-artifacts-ai/open-artifacts/commit/b707f7b854693b1dacc6dd3ca79cad6dd165fdbd))
+
+## [0.81.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.80.0...v0.81.0) (2026-10-31)
+
+
+### Features
+
+* **admin:** Agent tokens page and minted dialog in Design's layout A ([#908](https://github.com/open-artifacts-ai/open-artifacts/issues/908)) ([d6172f2](https://github.com/open-artifacts-ai/open-artifacts/commit/d6172f211b66c5db8f8f3aa76bf2ea21277658a3))
+* **dispatch:** 503 pages match Design's W11 layout A ([#905](https://github.com/open-artifacts-ai/open-artifacts/issues/905)) ([670e11b](https://github.com/open-artifacts-ai/open-artifacts/commit/670e11be7688f713badab0b663af14c32b735424))
+* **scheduler:** W7 provisioning duties: sweep, purge, alerts, dead-man, health, prune ([#894](https://github.com/open-artifacts-ai/open-artifacts/issues/894)) ([2a7c6f1](https://github.com/open-artifacts-ai/open-artifacts/commit/2a7c6f198b717698c8750ea70ce6c47c7267b735))
+* **shared,provision:** C6 contract follow-ups (redline revoke, Workflow wrapper) ([#906](https://github.com/open-artifacts-ai/open-artifacts/issues/906)) ([fd4c1d8](https://github.com/open-artifacts-ai/open-artifacts/commit/fd4c1d8d360cbe0b492fc4a1f9aa3885a4099a61))
+
+## [0.80.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.79.0...v0.80.0) (2026-10-31)
+
+
+### Features
+
+* **admin:** platform admin panel on the Provisioning API (W10, W11 option A) ([#887](https://github.com/open-artifacts-ai/open-artifacts/issues/887)) ([7b77554](https://github.com/open-artifacts-ai/open-artifacts/commit/7b77554c486768cfbec24504fc8d591fcd2d859c))
+* **shared,provision:** C5 contract follow-ups for the scheduler ([#896](https://github.com/open-artifacts-ai/open-artifacts/issues/896)) ([23042ec](https://github.com/open-artifacts-ai/open-artifacts/commit/23042eccba79ee8c3e278d24f2950becdc10e86b))
+
+## [0.79.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.78.0...v0.79.0) (2026-10-31)
+
+
+### Features
+
+* **dispatch:** W6 HOSTS modes, paused and closed 503 pages ([#885](https://github.com/open-artifacts-ai/open-artifacts/issues/885)) ([2520cf5](https://github.com/open-artifacts-ai/open-artifacts/commit/2520cf597736c65d4a412afb17a0aa7bcef78311))
+* **platform-db:** provisioning migrations 0006-0008 and ALERT_KEYS (migration, Manager arms) ([#883](https://github.com/open-artifacts-ai/open-artifacts/issues/883)) ([52a7ff3](https://github.com/open-artifacts-ai/open-artifacts/commit/52a7ff397e7b8afc7cdfca54f54ef337ed938d4c))
+* **provision:** C3 provision base for the Provisioning API ([#882](https://github.com/open-artifacts-ai/open-artifacts/issues/882)) ([c1175e4](https://github.com/open-artifacts-ai/open-artifacts/commit/c1175e4c39abd311c174e0d3133c377d26f8efb7))
+* **provisioning:** C4 API skeleton for the Provisioning API ([#886](https://github.com/open-artifacts-ai/open-artifacts/issues/886)) ([987bae1](https://github.com/open-artifacts-ai/open-artifacts/commit/987bae1494666288bee0dfc343faa089f8d0962e))
+
+
+### Bug Fixes
+
+* **dashboard:** an expiring "Updated to vN" note never clears a newer one ([#898](https://github.com/open-artifacts-ai/open-artifacts/issues/898)) ([c600109](https://github.com/open-artifacts-ai/open-artifacts/commit/c6001092ea68a091751f45c1700c7916e10dbedb))
+
+## [0.78.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.77.1...v0.78.0) (2026-10-31)
+
+
+### Features
+
+* **shared:** Provisioning API contract, @oa/shared/provisioning (C1) ([#884](https://github.com/open-artifacts-ai/open-artifacts/issues/884)) ([00c1924](https://github.com/open-artifacts-ai/open-artifacts/commit/00c1924f9fcd5c326a31c6ed078008b536c9ee6a))
+
+## [0.77.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.77.0...v0.77.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **ci:** no SIGPIPE flake in staging-clear-conflicts ([#880](https://github.com/open-artifacts-ai/open-artifacts/issues/880)) ([d43f182](https://github.com/open-artifacts-ai/open-artifacts/commit/d43f1827f4ae25f068be418cdd7c101dd923a1f1))
+
+## [0.77.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.76.0...v0.77.0) (2026-10-30)
+
+
+### Features
+
+* **hosted:** run oa:hosted in CI (hosted-ops.yml), prod gated, ephemeral owner tokens ([#848](https://github.com/open-artifacts-ai/open-artifacts/issues/848)) ([c93781e](https://github.com/open-artifacts-ai/open-artifacts/commit/c93781e982ffedeab91ffa84228830b6f07f4b44))
+
+## [0.76.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.75.0...v0.76.0) (2026-10-30)
+
+
+### Features
+
+* **provision:** pin prod's broker Google sign-in client ([#875](https://github.com/open-artifacts-ai/open-artifacts/issues/875)) ([d44996e](https://github.com/open-artifacts-ai/open-artifacts/commit/d44996ee0e742096cb372dd7d1f1e0f62e5507dc))
+
+## [0.75.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.74.1...v0.75.0) (2026-10-30)
+
+
+### Features
+
+* **ci:** migration locks: platform-db lock, guard holds edited server migrations ([#868](https://github.com/open-artifacts-ai/open-artifacts/issues/868)) ([d098c61](https://github.com/open-artifacts-ai/open-artifacts/commit/d098c6188861e3f7e80f703256a49f620dbdffe5))
+* **provision:** unlock prod (PROD_UNLOCKED = true) ([#832](https://github.com/open-artifacts-ai/open-artifacts/issues/832)) ([866fe47](https://github.com/open-artifacts-ai/open-artifacts/commit/866fe470ce42bc7bd957d44077237c383c048c41))
+
+## [0.74.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.74.0...v0.74.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **members:** uncertain invite title when emailed; T19 [#764](https://github.com/open-artifacts-ai/open-artifacts/issues/764) finds its person ([#834](https://github.com/open-artifacts-ai/open-artifacts/issues/834)) ([c44c1c0](https://github.com/open-artifacts-ai/open-artifacts/commit/c44c1c0608cff498c1036e01cd6fbe3b8fe93035))
+
 ## [0.74.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.73.0...v0.74.0) (2026-10-28)
 
 

@@ -1,25 +1,61 @@
+// The inventory Worker (design v7 6.3): `GET /installs`, `GET /hosts`,
+// `GET /health` and the monitor's `POST /prodclean`, every route behind a
+// GitHub Actions OIDC bearer pinned by the five OIDC_* vars.
+// Deploy with --env staging or --env prod only, through
+// scripts/ops/deploy-platform-worker.sh (docs/ops/hosted.md): the top level has
+// no name and no main, so a deploy without --env is refused. Each env's
+// PLATFORM_DB, HOSTS and repository ids have their own placeholder, filled at
+// deploy (the ids of oa-<p>-platform and oa-<p>-hosts). HOSTS is read-only in
+// code; PLATFORM_DB's one write is the prodclean_reports insert. No secrets.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Deploys use --name <platformNames(env).inventory> (oa-s-inventory / oa-p-inventory).
-  "name": "oa-inventory",
-  "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
-  "workers_dev": true,
+  "workers_dev": false,
   "preview_urls": false,
-  // INVENTORY_KEY is a secret (wrangler secret put INVENTORY_KEY), so it is not listed here.
-  // Two bindings, both read-only in code: PLATFORM_DB and HOSTS. database_id and the
-  // HOSTS id are filled at deploy (oa-<p>-platform, oa-<p>-hosts).
-  "d1_databases": [
-    {
-      "binding": "PLATFORM_DB",
-      "database_name": "oa-platform",
-      "database_id": "00000000-0000-0000-0000-000000000000"
+  "env": {
+    "staging": {
+      "name": "oa-s-inventory",
+      "main": "src/index.ts",
+      "workers_dev": true,
+      "preview_urls": false,
+      "vars": {
+        "OIDC_AUDIENCE": "https://oa-s-inventory",
+        "OIDC_REPOSITORY": "open-artifacts-ai/open-artifacts",
+        "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_STAGING}}",
+        "OIDC_JOB_WORKFLOW_REFS": "open-artifacts-ai/open-artifacts/.github/workflows/redline-staging.yml@refs/heads/main",
+        "OIDC_ENVIRONMENT": "redline-staging"
+      },
+      "d1_databases": [
+        {
+          "binding": "PLATFORM_DB",
+          "database_name": "oa-s-platform",
+          "database_id": "{{PLATFORM_DB_ID_STAGING}}"
+        }
+      ],
+      "kv_namespaces": [{ "binding": "HOSTS", "id": "{{HOSTS_KV_ID_STAGING}}" }]
+    },
+    "prod": {
+      "name": "oa-p-inventory",
+      "main": "src/index.ts",
+      "workers_dev": true,
+      "preview_urls": false,
+      // The monitor and red-line's prodClean both run in redline-staging,
+      // where the REDLINE_PROD_* tokens live.
+      "vars": {
+        "OIDC_AUDIENCE": "https://oa-p-inventory",
+        "OIDC_REPOSITORY": "open-artifacts-ai/open-artifacts",
+        "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_PROD}}",
+        "OIDC_JOB_WORKFLOW_REFS": "open-artifacts-ai/open-artifacts/.github/workflows/redline-staging.yml@refs/heads/main,open-artifacts-ai/open-artifacts/.github/workflows/prodclean-monitor.yml@refs/heads/main",
+        "OIDC_ENVIRONMENT": "redline-staging"
+      },
+      "d1_databases": [
+        {
+          "binding": "PLATFORM_DB",
+          "database_name": "oa-p-platform",
+          "database_id": "{{PLATFORM_DB_ID_PROD}}"
+        }
+      ],
+      "kv_namespaces": [{ "binding": "HOSTS", "id": "{{HOSTS_KV_ID_PROD}}" }]
     }
-  ],
-  "kv_namespaces": [
-    {
-      "binding": "HOSTS",
-      "id": "00000000000000000000000000000000"
-    }
-  ]
+  }
 }
