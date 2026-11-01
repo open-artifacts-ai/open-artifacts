@@ -327,6 +327,32 @@ fail_worker_spikes() {
   for t in ${SPIKES_W//,/ }; do record "$t" "run" false "$1"; done
 }
 
+# The results table, exactly as the spike Worker creates it (a test pins the
+# two to the same text). deploy creates it before the cron can fire, so a
+# failed read in collect is a real query error, and an empty table means the
+# Worker never ran.
+RESULTS_TABLE_SQL='CREATE TABLE IF NOT EXISTS results (spike TEXT PRIMARY KEY, json TEXT NOT NULL)'
+
+# d1_err: D1's errors[] from BODY, as "<message> (code <n>)" joined by "; ",
+# or "HTTP <status>" when the body has none. Messages and codes only.
+d1_err() {
+  local e
+  e="$(jq -r '[(.errors // [])[]?, (.result // [] | if type == "array" then .[]? | (.errors // [])[]? else empty end)]
+    | map("\(.message // "no message") (code \(.code // "none"))") | unique | join("; ")' <<< "$BODY" 2> /dev/null || true)"
+  if [ -n "$e" ]; then echo "$e"; else echo "HTTP $HTTP, no error message"; fi
+}
+
+# d1_query <sql>: one statement on this run's D1 (D1_ID, known), through
+# cf_write's allowlist. Sets HTTP, BODY, and D1_ERR ("" on success).
+d1_query() {
+  cf_write POST "$ACCT/d1/database/$D1_ID/query" "${PREFIX}$RUN_ID" "$D1_ID" < <(jq -nc --arg q "$1" '{sql: $q}')
+  if ok && [ "$(jq -r '[.result[]? | .success != false] | all' <<< "$BODY")" = true ]; then
+    D1_ERR=""
+  else
+    D1_ERR="$(d1_err)"
+  fi
+}
+
 spike_deploy() {
   SPIKES_W="$(worker_spikes)"
   [ -n "$SPIKES_W" ] || { echo "no worker spikes requested"; return 0; }
@@ -339,6 +365,12 @@ spike_deploy() {
   fi
   know_id "$D1_ID" "D1 $name"
   printf '%s' "$D1_ID" > "$STATE_DIR/d1_id"
+  # Before the Worker exists, so before its cron can fire.
+  d1_query "$RESULTS_TABLE_SQL"
+  if [ -n "$D1_ERR" ]; then
+    fail_worker_spikes "results table create failed: D1 error: $D1_ERR"
+    return 1
+  fi
   SPIKES="$SPIKES_W"
   render "$dir/wrangler.workflow.jsonc" "$dir/wrangler.workflow.rendered.jsonc"
   render "$dir/wrangler.jsonc" "$dir/wrangler.rendered.jsonc"
@@ -346,40 +378,69 @@ spike_deploy() {
     fail_worker_spikes "deploy of ${name}-wf failed"
     return 1
   fi
+  # wrangler deploy PUTs triggers.crons to .../scripts/<name>/schedules
+  # itself and fails the deploy when that call fails, so no call of our own.
   if ! wrangler_run deploy -c "$dir/wrangler.rendered.jsonc"; then
     fail_worker_spikes "deploy of $name failed"
     return 1
   fi
-  echo "deployed $name and ${name}-wf (D1 $D1_ID); spikes $SPIKES_W run on the first cron tick"
+  date +%s > "$STATE_DIR/deployed_at"
+  # Read back (GET) what Cloudflare holds, for the log only.
+  cf_get "$ACCT/workers/scripts/$name/schedules"
+  local crons
+  crons="$(jq -r '[.result.schedules[]?.cron] | join(", ")' <<< "$BODY")"
+  echo "deployed $name and ${name}-wf (D1 $D1_ID, results table created); schedules read back: HTTP $HTTP, crons=[${crons:-none}]; spikes $SPIKES_W run on the first cron tick (a new cron can take up to 15 min to propagate)"
 }
 
-# collect: polls the throwaway D1 for each spike's row (deadline 8 min).
+# collect: polls the throwaway D1 for each spike's row (deadline 18 min:
+# a new Cron Trigger can take up to 15 min to propagate, per
+# https://developers.cloudflare.com/workers/configuration/cron-triggers/).
+# Every tick of the Worker writes a "started" row first, so when it gives up
+# each missing spike says one of: "D1 error: <message>", "cron never fired",
+# or "fired, no row for sN".
 spike_collect() {
   SPIKES_W="$(worker_spikes)"
   [ -n "$SPIKES_W" ] || return 0
-  local name="${PREFIX}$RUN_ID" want n rows=null deadline t
+  local name="${PREFIX}$RUN_ID" rows=null deadline t start waited started tickerr why
   [ -s "$STATE_DIR/d1_id" ] || { fail_worker_spikes "no D1 database (deploy failed)"; return 1; }
   D1_ID="$(cat "$STATE_DIR/d1_id")"
   know_id "$D1_ID" "D1 $name"
-  want="$(tr ',' '\n' <<< "$SPIKES_W" | grep -c .)"
-  deadline=$(($(date +%s) + ${COLLECT_DEADLINE_S:-480}))
+  local since="after deploy"
+  start="$(cat "$STATE_DIR/deployed_at" 2> /dev/null || true)"
+  [[ "$start" =~ ^[0-9]+$ ]] || { start="$(date +%s)"; since="of polling"; }
+  deadline=$(($(date +%s) + ${COLLECT_DEADLINE_S:-1080}))
+  local wanted
+  wanted="$(jq -Rc 'split(",") | map(select(. != ""))' <<< "$SPIKES_W")"
   while :; do
-    cf_write POST "$ACCT/d1/database/$D1_ID/query" "$name" "$D1_ID" < <(jq -nc '{sql: "SELECT spike, json FROM results"}')
-    if ok; then
+    d1_query "SELECT spike, json FROM results"
+    if [ -z "$D1_ERR" ]; then
       rows="$(jq -c '[.result[0].results[]?]' <<< "$BODY")"
-      n="$(jq 'length' <<< "$rows")"
-      [ "$n" -ge "$want" ] && break
+      jq -e --argjson w "$wanted" '[.[].spike] as $have | all($w[]; . as $s | $have | index($s) != null)' <<< "$rows" > /dev/null && break
     fi
     [ "$(date +%s)" -lt "$deadline" ] || break
     sleep "${COLLECT_POLL_S:-15}"
   done
+  waited=$(($(date +%s) - start))
+  started="$(jq -r '[.[]? | select(.spike == "started") | .json | fromjson | .at // "?"] | first // ""' <<< "$rows")"
+  tickerr="$(jq -r '[.[]? | select(.spike == "tick_error") | .json | fromjson | .error // "?"] | first // ""' <<< "$rows")"
+  if [ -n "$D1_ERR" ]; then
+    why="D1 error: $D1_ERR"
+  elif [ -z "$started" ]; then
+    why="cron never fired (no started row ${waited}s $since)"
+  fi
   for t in ${SPIKES_W//,/ }; do
     local r
     r="$(jq -c --arg t "$t" '[.[]? | select(.spike == $t) | .json | fromjson] | first // null' <<< "$rows")"
-    if [ "$r" = null ]; then
-      record "$t" run false "no result before the deadline (last HTTP $HTTP)"
+    if [ "$r" != null ]; then
+      if [ "$(jq -r '.ok == false and (.error | type) == "string"' <<< "$r")" = true ]; then
+        record "$t" run false "$(jq -r '.observed // ("threw " + .error)' <<< "$r")"
+      else
+        record "$t" run "$(jq '.pass == true' <<< "$r")" "$(jq -r '.observed' <<< "$r")" "$(jq -c '.detail // null' <<< "$r")"
+      fi
+    elif [ -n "${why:-}" ]; then
+      record "$t" run false "no result: $why"
     else
-      record "$t" run "$(jq '.pass == true' <<< "$r")" "$(jq -r '.observed' <<< "$r")" "$(jq -c '.detail // null' <<< "$r")"
+      record "$t" run false "no result: fired, no row for $t (last tick $started${tickerr:+; tick error: $tickerr})"
     fi
   done
 }
