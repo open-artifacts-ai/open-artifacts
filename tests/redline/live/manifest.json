@@ -1166,7 +1166,7 @@
     },
     {
       "file": "live/provisioning.test.ts",
-      "name": "provisioning > P43: GET /oauth/authorize, no cookie, cross-site: 200 bounce page; with b=1: 302 to /auth/start"
+      "name": "provisioning > P43: GET /oauth/authorize, no cookie, cross-site: 200 bounce page; with b=1: 200 sign-in page linking /auth/start back to this request, no auto-redirect"
     },
     {
       "file": "live/provisioning.test.ts",
@@ -1178,7 +1178,7 @@
     },
     {
       "file": "live/provisioning.test.ts",
-      "name": "provisioning > P25: 15 rapid GET /auth/start: at least one 429"
+      "name": "provisioning > P25: 15 rapid GET /auth/start: at least one 303 to /sign-in?error=rate_limited, never to Google nor with a flow cookie"
     }
   ],
   "notes": [
