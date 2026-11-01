@@ -6,6 +6,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it } from "vitest";
 import { calls, installHarness, mountHosted } from "./harness";
+import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
 
@@ -50,18 +51,29 @@ const serveOrg = http.get("*/api/v1/directory/org-mappings", () =>
   HttpResponse.json({ items: [EXEC_EVERY], nextCursor: null }),
 );
 
-const groups = () => screen.findByRole("table", { name: "Groups" });
-const row = async (re: RegExp) =>
-  within(await groups()).findByRole("row", { name: re });
+/** The first wait after a mount gets the page-load deadline. */
+const firstLoad = { timeout: FIRST_LOAD_MS };
+const groups = () => screen.findByRole("table", { name: "Groups" }, firstLoad);
+/** A Groups row, under one page-load deadline for the table and its rows. */
+const row = (re: RegExp) =>
+  waitFor(
+    () =>
+      within(screen.getByRole("table", { name: "Groups" })).getByRole("row", {
+        name: re,
+      }),
+    firstLoad,
+  );
 const chooseOption = async (label: string, option: string) => {
-  fireEvent.click(await screen.findByRole("combobox", { name: label }));
+  fireEvent.click(
+    await screen.findByRole("combobox", { name: label }, firstLoad),
+  );
   fireEvent.click(await screen.findByRole("option", { name: option }));
 };
 
 it("All members comes first, then Engineering's group mapping", async () => {
   mountHosted(ENG);
-  const t = await groups();
-  await within(t).findByRole("row", { name: /eng@example.com/ });
+  await row(/eng@example.com/);
+  const t = screen.getByRole("table", { name: "Groups" });
   const rows = within(t).getAllByRole("row");
   expect(rows[0]).toHaveTextContent("All members");
   expect(rows[0]).toHaveTextContent("Everyone at Acme Artifacts · built in");
@@ -360,7 +372,11 @@ it("a 403 space_forbidden for a mapping (a race) says the group changed and relo
 it("the Every space card adds a group for every shared space", async () => {
   const seen = calls("PUT");
   mountHosted("/settings/spaces");
-  const card = await screen.findByRole("region", { name: "Every space" });
+  const card = await screen.findByRole(
+    "region",
+    { name: "Every space" },
+    firstLoad,
+  );
   expect(card).toHaveTextContent(
     "Groups here get their role in every shared space, including ones created later. Never in anyone's Personal space.",
   );
@@ -388,7 +404,11 @@ it("an Every space row changes role and removes", async () => {
   const put = calls("PUT");
   const del = calls("DELETE");
   mountHosted("/settings/spaces", true, undefined, [serveOrg]);
-  const card = await screen.findByRole("region", { name: "Every space" });
+  const card = await screen.findByRole(
+    "region",
+    { name: "Every space" },
+    firstLoad,
+  );
   const r = await within(card).findByRole("row", { name: /exec@example.com/ });
   fireEvent.click(
     within(r).getByRole("combobox", { name: "Role for exec@example.com" }),
@@ -428,7 +448,11 @@ it("frozen: the Every space card is read-only", async () => {
   mountHosted("/settings/spaces", { directory: "frozen" }, undefined, [
     serveOrg,
   ]);
-  const card = await screen.findByRole("region", { name: "Every space" });
+  const card = await screen.findByRole(
+    "region",
+    { name: "Every space" },
+    firstLoad,
+  );
   const r = await within(card).findByRole("row", { name: /exec@example.com/ });
   expect(within(r).queryByRole("combobox")).toBeNull();
   expect(within(card).queryByRole("combobox")).toBeNull();

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
+import { TEST_TIMEOUT_MS } from "./test/timeouts";
 
 const target = "http://app.localhost:8787";
 
@@ -64,7 +65,7 @@ export default defineConfig({
           include: ["test/**/*.test.tsx"],
           setupFiles: ["test/setup.ts"],
           // Above test/setup.ts's 5 s asyncUtilTimeout, so a stuck wait reports its own failure.
-          testTimeout: 15_000,
+          testTimeout: TEST_TIMEOUT_MS,
         },
       },
     ],
