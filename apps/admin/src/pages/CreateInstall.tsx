@@ -211,9 +211,9 @@ export function CreateInstall() {
                 {p === "google" ? "Google" : "Email"}
               </label>
             ))}
-          </fieldset>
-          <div>
-            <Label htmlFor="domains">Allowed domains</Label>
+            <label className="oa-sublabel" htmlFor="domains">
+              Allowed domains
+            </label>
             <Input
               id="domains"
               value={domainsValue}
@@ -225,7 +225,7 @@ export function CreateInstall() {
                 Pick a sign-in method; Google needs at least one valid domain.
               </small>
             )}
-          </div>
+          </fieldset>
           <div>
             <Label htmlFor="version">Release</Label>
             <select
@@ -282,7 +282,7 @@ export function CreateInstall() {
               <li key={s.id}>{s.label}</li>
             ))}
           </ol>
-          <p className="oa-hint">
+          <p className="oa-side-note">
             Nothing is reachable until "Route hosts". If a check fails, nothing
             is routed and the job says why.
           </p>

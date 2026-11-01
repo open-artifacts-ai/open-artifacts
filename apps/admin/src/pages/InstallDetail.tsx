@@ -21,6 +21,7 @@ import { ActionDialog } from "../components/ActionDialog";
 import { ErrorLine, StateBadge, StatusBadge } from "../components/Bits";
 import { fmtTime } from "../components/format";
 import {
+  fmtClock,
   fmtDay,
   HEALTH_LABEL,
   JOB_VERB,
@@ -438,6 +439,18 @@ export function InstallDetail({ id }: { id: string }) {
   const last = jobs.data?.items[0];
   const rolledBack =
     last?.kind === "upgrade" && last.lastErrorCode === "upgrade_rolled_back";
+  // A failed install: the job that stopped, the step it stopped at and why.
+  const failed =
+    i.state === "failed"
+      ? (jobs.data?.items.find((j) => j.status === "failed") ?? last)
+      : undefined;
+  const failedStep = failed
+    ? visibleSteps(failed.steps).find((s) => s.index === failed.stepIndex)
+        ?.label
+    : undefined;
+  const failedCode = failed
+    ? (failed.error?.code ?? failed.lastErrorCode ?? null)
+    : null;
   return (
     <>
       <p className="oa-crumbs">
@@ -477,7 +490,17 @@ export function InstallDetail({ id }: { id: string }) {
         </p>
       )}
       {i.state === "failed" && (
-        <p className="oa-error" role="alert">
+        <p className="oa-banner oa-banner-danger" role="alert">
+          {failed && (
+            <>
+              <strong>
+                {JOB_VERB[failed.kind].noun} stopped
+                {failedStep ? ` at "${failedStep}"` : ""}
+                {failedCode ? ": " : ""}
+                {failedCode && <code>{failedCode}</code>}.
+              </strong>{" "}
+            </>
+          )}
           The last job failed. Retry it or purge the install.
         </p>
       )}
@@ -503,40 +526,61 @@ export function InstallDetail({ id }: { id: string }) {
       <div className="oa-split oa-detail">
         <section className="oa-card">
           <dl className="oa-fields">
-            <dt>State</dt>
-            <dd>
-              <StateBadge state={i.state} />
-            </dd>
-            <dt>Health</dt>
-            <dd>
-              <span className="oa-st" data-tone={HEALTH_TONE[i.health]}>
-                {HEALTH_LABEL[i.health]}
-              </span>
-            </dd>
-            <dt>Serving</dt>
-            <dd>
-              {i.version ?? "nothing"}
-              {i.previousVersion && ` (previous ${i.previousVersion})`}
-            </dd>
-            <dt>Routing</dt>
-            <dd>{SERVING_LABEL[i.servingMode]}</dd>
-            <dt>Tier · Sign-in</dt>
-            <dd>
-              {i.tier ? i.tier[0].toUpperCase() + i.tier.slice(1) : "None"} ·{" "}
-              {i.auth.providers
-                .map((p) => (p === "google" ? "Google" : "Email"))
-                .join(", ")}
-              {i.auth.domains.length > 0 &&
-                ` · ${i.auth.domains.length} ${i.auth.domains.length === 1 ? "domain" : "domains"}`}
-            </dd>
-            <dt>Owner</dt>
-            <dd>{i.ownerEmail ?? "hidden"}</dd>
-            <dt>Created</dt>
-            <dd>{fmtDay(i.createdAt)}</dd>
-            <dt>Domains</dt>
-            <dd>{i.auth.domains.join(", ") || "none"}</dd>
-            <dt>Install id</dt>
-            <dd className="oa-mono">{i.id}</dd>
+            <div>
+              <dt>State</dt>
+              <dd>
+                <StateBadge state={i.state} />
+                {i.state === "failed" && failedCode && (
+                  <span className="oa-chip oa-chip-danger">{failedCode}</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Health</dt>
+              <dd>
+                <span className="oa-st" data-tone={HEALTH_TONE[i.health]}>
+                  {HEALTH_LABEL[i.health]}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>Serving</dt>
+              <dd>
+                {i.version ?? "nothing"}
+                {i.previousVersion && ` (previous ${i.previousVersion})`}
+              </dd>
+            </div>
+            <div>
+              <dt>Routing</dt>
+              <dd>{SERVING_LABEL[i.servingMode]}</dd>
+            </div>
+            <div>
+              <dt>Tier · Sign-in</dt>
+              <dd>
+                {i.tier ? i.tier[0].toUpperCase() + i.tier.slice(1) : "None"} ·{" "}
+                {i.auth.providers
+                  .map((p) => (p === "google" ? "Google" : "Email"))
+                  .join(", ")}
+                {i.auth.domains.length > 0 &&
+                  ` · ${i.auth.domains.length} ${i.auth.domains.length === 1 ? "domain" : "domains"}`}
+              </dd>
+            </div>
+            <div>
+              <dt>Owner</dt>
+              <dd>{i.ownerEmail ?? "hidden"}</dd>
+            </div>
+            <div>
+              <dt>Created</dt>
+              <dd>{fmtDay(i.createdAt)}</dd>
+            </div>
+            <div>
+              <dt>Domains</dt>
+              <dd>{i.auth.domains.join(", ") || "none"}</dd>
+            </div>
+            <div>
+              <dt>Install id</dt>
+              <dd className="oa-mono">{i.id}</dd>
+            </div>
           </dl>
         </section>
         <aside className="oa-side">
@@ -548,10 +592,12 @@ export function InstallDetail({ id }: { id: string }) {
             {jobs.data?.items.map((j) => (
               <li key={j.id}>
                 <Link to="/jobs/$id" params={{ id: j.id }}>
-                  {j.kind}
-                </Link>{" "}
-                <StatusBadge status={j.status} />{" "}
-                <span className="oa-note">{fmtTime(j.createdAt)}</span>
+                  {JOB_VERB[j.kind].noun}
+                </Link>
+                <StatusBadge status={j.status} />
+                <span className="oa-note" title={fmtTime(j.createdAt)}>
+                  {fmtDay(j.createdAt)} {fmtClock(j.createdAt)}
+                </span>
               </li>
             ))}
           </ul>

@@ -176,8 +176,35 @@ code {
   align-items: flex-start;
   overflow-wrap: anywhere;
 }
-.oa-sbfoot [data-slot="button"] {
-  margin-top: 8px;
+.oa-sbfoot {
+  gap: 2px;
+}
+.oa-sbfoot > span {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Sign out: a quiet text link under the two muted lines (mock .sbfoot). */
+.oa-signout {
+  border: 0;
+  background: none;
+  padding: 0;
+  margin-top: 4px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--oa-text-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.oa-signout:hover {
+  color: var(--oa-text);
+}
+.oa-nav a svg {
+  width: 14px;
+  height: 14px;
 }
 .oa-main {
   flex: 1;
@@ -225,7 +252,7 @@ code {
     align-items: center;
     gap: 2px 12px;
   }
-  .oa-sbfoot [data-slot="button"] {
+  .oa-signout {
     margin: 0 0 0 auto;
   }
   .oa-page {
@@ -356,6 +383,9 @@ code {
   background: var(--oa-text);
   opacity: 0.9;
 }
+/* Mock .btn.dan sets #fff text. We use --oa-accent-text instead (white in
+   light, #131518 in dark): on dark's #ff7f6b, white text fails contrast. A
+   deliberate deviation. */
 [data-slot="button"][data-variant="destructive"],
 .oa-btn-dan {
   background: var(--oa-danger);
@@ -461,18 +491,24 @@ code {
 [data-slot="dialog-content"] select {
   appearance: none;
   -webkit-appearance: none;
-  padding-right: 26px;
+  padding-right: 22px;
   cursor: pointer;
-  background-image:
-    linear-gradient(45deg, transparent 50%, var(--oa-text-muted) 50%),
-    linear-gradient(135deg, var(--oa-text-muted) 50%, transparent 50%);
-  background-position:
-    right 13px top 55%,
-    right 9px top 55%;
-  background-size:
-    4px 4px,
-    4px 4px;
+  background-image: var(--oa-caret);
+  background-position: right 9px center;
+  background-size: 8px 5px;
   background-repeat: no-repeat;
+}
+/* The mock's small text caret ("All states ▾"), in --oa-text-muted. */
+:root {
+  --oa-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%235f6670'/%3E%3C/svg%3E");
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --oa-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%239097a1'/%3E%3C/svg%3E");
+  }
+}
+:root[data-theme="dark"] {
+  --oa-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%239097a1'/%3E%3C/svg%3E");
 }
 .oa-app select option {
   background: var(--oa-surface);
@@ -487,6 +523,39 @@ code {
   margin: 0;
   flex: none;
   accent-color: var(--oa-text);
+}
+/* The mock's .cb i: an empty 14px box that fills with --oa-text when ticked. */
+.oa-app input[type="checkbox"],
+[data-slot="dialog-content"] input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  display: inline-grid;
+  place-items: center;
+  border: 1.5px solid var(--oa-border-strong);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+.oa-app input[type="checkbox"]:checked,
+[data-slot="dialog-content"] input[type="checkbox"]:checked {
+  background: var(--oa-text);
+  border-color: var(--oa-text);
+}
+.oa-app input[type="checkbox"]:checked::after,
+[data-slot="dialog-content"] input[type="checkbox"]:checked::after {
+  content: "";
+  width: 8px;
+  height: 5px;
+  margin-top: -2px;
+  border: solid var(--oa-bg);
+  border-width: 0 0 1.5px 1.5px;
+  transform: rotate(-45deg);
+}
+.oa-app input[type="checkbox"]:focus-visible,
+[data-slot="dialog-content"] input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--oa-focus);
+  outline-offset: 2px;
 }
 .oa-check {
   display: flex;
@@ -667,7 +736,7 @@ fieldset.oa-seg-field {
   font-size: 12.5px;
   line-height: 1.55;
   font-weight: 600;
-  color: var(--oa-text);
+  color: inherit;
   margin: 0;
   letter-spacing: 0;
 }
@@ -679,7 +748,12 @@ fieldset.oa-seg-field {
   margin: 6px 0 0;
 }
 .oa-page .oa-side h2 + p {
-  margin-top: 2px;
+  margin-top: 6px;
+}
+.oa-page .oa-side p.oa-side-note {
+  margin-top: 8px;
+  color: inherit;
+  font-size: inherit;
 }
 .oa-side ol,
 .oa-side ul {
@@ -943,9 +1017,11 @@ fieldset.oa-seg-field {
   margin-top: 2px;
 }
 .oa-steps li[data-step="current"] small,
-.oa-steps li[data-step="failed"] small,
 .oa-steps .oa-step-note-w {
   color: var(--oa-warning);
+}
+.oa-steps li[data-step="failed"] small {
+  color: var(--oa-danger);
 }
 
 /* ---------- Errors (mock .bn.d) ---------- */
@@ -982,6 +1058,11 @@ fieldset.oa-seg-field {
   color: var(--oa-text);
   box-shadow: var(--oa-shadow-2);
   font-size: 13px;
+  /* Short open fade, so the panel is opaque almost at once (mock .dlg). */
+  animation-duration: 120ms;
+}
+[data-slot="dialog-overlay"] {
+  animation-duration: 120ms;
 }
 [data-slot="dialog-header"] {
   gap: 6px;
@@ -1024,13 +1105,28 @@ fieldset.oa-seg-field {
 /* ---------- Edge pages: sign-in, no access (mock .ccard .ch .cp) ---------- */
 .oa-edge {
   min-height: 100vh;
+  box-sizing: border-box;
+  display: block;
+  padding: 0 20px 36px;
+  background: var(--oa-bg);
+  font-size: 13.5px;
+}
+/* Mock .chead: brand bar with the host in mono on the right. */
+.oa-chead {
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 24px 16px;
-  background: var(--oa-bg);
+  gap: 4px;
+  height: 52px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.oa-chead .oa-host {
+  margin-left: auto;
+  font-weight: 400;
 }
 .oa-panel {
+  box-sizing: border-box;
+  margin: 12px auto 0;
   width: 100%;
   max-width: 440px;
   background: var(--oa-surface);
@@ -1052,6 +1148,12 @@ fieldset.oa-seg-field {
   color: var(--oa-text-2);
 }
 @media (max-width: 520px) {
+  .oa-edge {
+    padding: 0 12px 24px;
+  }
+  .oa-chead .oa-host {
+    display: none;
+  }
   .oa-panel {
     padding: 18px;
   }
@@ -1083,6 +1185,9 @@ fieldset.oa-seg-field {
 .oa-state-filter select {
   width: auto;
   field-sizing: content;
+}
+.oa-empty .oa-empty-cta {
+  margin-top: 12px;
 }
 .oa-spacer {
   flex: 1;
@@ -1144,9 +1249,33 @@ fieldset.oa-seg-field {
 .oa-head > .oa-actions .oa-error {
   margin: 4px 0 0;
 }
+.oa-detail > .oa-card {
+  container-type: inline-size;
+}
 .oa-detail .oa-fields {
   margin: 0;
   grid-template-columns: 120px minmax(0, 1fr);
+}
+/* Narrow: label and value side by side, one pair per row. */
+.oa-detail .oa-fields > div {
+  display: contents;
+}
+/* Wide: the mock's .facts, four columns with a small label over each value. */
+@container (min-width: 560px) {
+  .oa-detail .oa-fields {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px 18px;
+  }
+  .oa-detail .oa-fields > div {
+    display: block;
+    min-width: 0;
+  }
+  .oa-detail .oa-fields dt {
+    font-size: 11.5px;
+  }
+  .oa-detail .oa-fields dd {
+    margin-top: 2px;
+  }
 }
 .oa-detail .oa-fields dd {
   overflow-wrap: anywhere;
@@ -1181,6 +1310,7 @@ fieldset.oa-seg-field {
 }
 .oa-jobs .oa-note {
   font-size: 12px;
+  margin-left: auto;
 }
 .oa-dialog-banner {
   display: block;
@@ -1252,6 +1382,21 @@ fieldset.oa-seg-field {
 .oa-form-acts {
   margin-top: 6px;
 }
+/* Create: the mock's .sub (14px) plus the field's top spacing. */
+.oa-page p.oa-sub:has(+ .oa-split > .oa-form) {
+  margin-bottom: 18px;
+}
+/* A sub-label inside a group, like Allowed domains under Sign-in (mock .help). */
+.oa-form label.oa-sublabel {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--oa-text-muted);
+  margin: 6px 0 4px;
+}
+.oa-form fieldset > input {
+  width: 100%;
+}
 /* Why Create install is off, right under the buttons. */
 .oa-form > small {
   margin-top: -7px;
@@ -1291,16 +1436,20 @@ fieldset.oa-seg-field {
   width: auto;
   field-sizing: content;
 }
+/* Compact chips (mock .tool .inp): natural width, no stretched fields. */
 .oa-audit-tools .oa-search {
-  flex: 0 1 200px;
+  flex: 0 0 auto;
+  max-width: none;
+}
+.oa-app .oa-audit-tools input {
+  width: auto;
+  field-sizing: content;
+  min-width: 9ch;
+  max-width: 100%;
 }
 .oa-app .oa-audit-tools .oa-search input {
-  flex: 1;
-  width: 100%;
   padding-left: 28px;
-}
-.oa-audit-tools > label:first-child input {
-  width: 150px;
+  min-width: 12ch;
 }
 .oa-audit-tools .oa-link {
   font-size: 12.5px;
@@ -1321,12 +1470,9 @@ fieldset.oa-seg-field {
   color: var(--oa-text-muted);
 }
 @media (max-width: 700px) {
-  .oa-audit-tools > label:first-child,
   .oa-audit-tools .oa-search {
-    flex: 1 1 140px;
-  }
-  .oa-audit-tools > label:first-child input {
-    width: 100%;
+    flex: 0 1 auto;
+    flex-basis: auto;
   }
 }
 
@@ -1364,9 +1510,10 @@ fieldset.oa-seg-field {
   margin: 0;
 }
 .oa-connect .oa-sub code {
+  font: 12px var(--oa-font-mono);
   background: none;
   padding: 0;
-  color: var(--oa-text-muted);
+  color: var(--oa-text-2);
 }
 .oa-tabs {
   display: flex;
@@ -1444,8 +1591,14 @@ fieldset.oa-seg-field {
   color: var(--oa-text-muted);
 }
 .oa-minted-fields {
+  display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
+  gap: 6px 12px;
+  font-size: 12.5px;
   margin: 0;
+}
+.oa-minted-fields dt {
+  color: var(--oa-text-muted);
 }
 [data-slot="dialog-footer"].oa-foot-rule {
   padding-top: 12px;
@@ -1466,9 +1619,153 @@ fieldset.oa-seg-field {
   text-align: center;
 }
 .oa-cfoot a {
-  color: var(--oa-text-2);
+  color: var(--oa-text-muted);
   text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .oa-panel code {
   overflow-wrap: anywhere;
+}
+
+/* ---------- Tokens page header (mock .hrow 12px + .sub 14px over the card) ---------- */
+.oa-head:has(+ .oa-connect),
+.oa-head:has(+ [data-testid="token-limit"]) {
+  margin-bottom: 22px;
+}
+
+/* ---------- Phones: stacked tables (mock .tbl.stack, <=640px) ---------- */
+@media (max-width: 640px) {
+  .oa-installs thead,
+  .oa-audit thead,
+  .oa-tokens thead {
+    display: none;
+  }
+  .oa-tablewrap.oa-installs,
+  .oa-tablewrap.oa-audit,
+  .oa-tablewrap.oa-tokens {
+    overflow-x: visible;
+  }
+  .oa-installs table,
+  .oa-installs tbody,
+  .oa-audit table,
+  .oa-audit tbody,
+  .oa-tokens table,
+  .oa-tokens tbody {
+    display: block;
+  }
+  .oa-tablewrap.oa-installs > div,
+  .oa-tablewrap.oa-audit > div,
+  .oa-tablewrap.oa-tokens > div {
+    overflow: visible;
+  }
+  .oa-installs tbody tr,
+  .oa-audit tbody tr,
+  .oa-tokens tbody tr {
+    border-top: 1px solid var(--oa-divider);
+  }
+  .oa-installs tbody tr:first-child,
+  .oa-audit tbody tr:first-child,
+  .oa-tokens tbody tr:first-child {
+    border-top: 0;
+  }
+  .oa-installs td,
+  .oa-audit td,
+  .oa-tokens td,
+  .oa-tablewrap.oa-installs td,
+  .oa-tablewrap.oa-audit td,
+  .oa-tablewrap.oa-tokens td {
+    border: 0;
+    padding: 0;
+    white-space: normal;
+  }
+  /* Installs: slug and host, then state and health, then the rest muted. */
+  .oa-installs tbody tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+    padding: 10px 12px;
+  }
+  .oa-installs td:nth-child(1) {
+    order: 1;
+    flex-basis: 100%;
+  }
+  .oa-installs td:nth-child(5) {
+    order: 2;
+  }
+  .oa-installs td:nth-child(6) {
+    order: 3;
+    flex: 1 0 auto;
+    text-align: right;
+  }
+  .oa-installs td:nth-child(2),
+  .oa-installs td:nth-child(3),
+  .oa-installs td:nth-child(4),
+  .oa-installs td:nth-child(7) {
+    order: 4;
+    font-size: 12px;
+    color: var(--oa-text-muted);
+  }
+  .oa-installs td:nth-child(5) > .oa-st {
+    display: inline-flex;
+  }
+  .oa-installs td:nth-child(5) > .oa-chip {
+    margin: 0 0 0 6px;
+  }
+  /* Audit: time line, the actor-action-target sentence, then the detail. */
+  .oa-audit tbody tr {
+    display: block;
+    padding: 9px 12px;
+  }
+  .oa-audit td {
+    display: inline;
+  }
+  .oa-audit td + td::before {
+    content: " ";
+  }
+  .oa-audit td.oa-mono {
+    display: block;
+    font-size: 12px;
+    color: var(--oa-text-muted);
+  }
+  .oa-audit td.oa-audit-detail {
+    display: block;
+    font-size: 12px;
+    color: var(--oa-text-muted);
+  }
+  .oa-audit td.oa-audit-detail:empty {
+    display: none;
+  }
+  /* Tokens: label, kind, scopes and times on the left; Revoke on the right. */
+  .oa-tokens tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 12px;
+    padding: 10px 12px;
+  }
+  .oa-tokens td {
+    grid-column: 1;
+  }
+  .oa-tokens td.oa-wrap {
+    min-width: 0;
+  }
+  .oa-tokens td.oa-end {
+    grid-column: 2;
+    grid-row: 1 / span 5;
+    align-self: center;
+  }
+  .oa-tokens td:not(.oa-strong):not(.oa-end) {
+    font-size: 12px;
+    color: var(--oa-text-muted);
+  }
+  /* A long snippet line fades out where it scrolls, instead of a hard cut. */
+  .oa-snip pre {
+    mask-image: linear-gradient(90deg, #000 85%, transparent);
+  }
+}
+
+/* A code inside a banner reads inline, without its own chip. */
+.oa-banner code {
+  background: none;
+  padding: 0;
 }

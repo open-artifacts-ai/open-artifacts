@@ -28,6 +28,7 @@ import {
   STATE_LABEL,
   stepCount,
 } from "../components/labels";
+import { useEnv } from "../hooks/useEnv";
 import { usePaging } from "../hooks/usePaging";
 import { LoadError } from "../layout/LoadError";
 
@@ -170,6 +171,7 @@ const SORTS: { key: SortKey; label: string }[] = [
 
 export function Installs() {
   const world = useQuery(worldQuery());
+  const env = useEnv();
   const [state, setState] = useState<InstallState | "">("");
   const [typed, setTyped] = useState("");
   const [q, setQ] = useState("");
@@ -209,6 +211,9 @@ export function Installs() {
     });
   }, [list.data, sort]);
   const filtering = !!state || !!q || paging.canPrev;
+  // Nothing to search or filter yet: the empty card carries the next step.
+  const none =
+    !filtering && list.data?.items.length === 0 && !list.data.nextCursor;
   return (
     <>
       <div className="oa-head">
@@ -218,7 +223,7 @@ export function Installs() {
             <p className="oa-sub">
               {world.data.installs.total}{" "}
               {world.data.installs.total === 1 ? "install" : "installs"} on{" "}
-              {world.data.env === "prod" ? "production" : "staging"}.
+              {(env ?? world.data.env) === "prod" ? "production" : "staging"}.
             </p>
           )}
         </div>
@@ -238,64 +243,66 @@ export function Installs() {
           onRetry={() => void world.refetch()}
         />
       )}
-      <div className="oa-tools oa-list-tools">
-        <span className="oa-search">
-          <svg
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM10.3 10.3l3 3" />
-          </svg>
-          <input
-            type="search"
-            aria-label="Search slug"
-            placeholder="Search slug"
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
-          />
-        </span>
-        <label className="oa-state-filter">
-          <span className="sr-only">State</span>
-          <select
-            aria-label="State"
-            value={state}
-            onChange={(e) => {
-              setState(e.target.value as InstallState | "");
-              paging.reset();
-            }}
-          >
-            <option value="">All states</option>
-            {InstallStateSchema.options.map((s) => (
-              <option key={s} value={s}>
-                {STATE_LABEL[s]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <span className="oa-spacer" />
-        <Link to="/installs/new" className="oa-cta">
-          <svg
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M8 3v10M3 8h10" />
-          </svg>
-          Create install
-        </Link>
-      </div>
-      <p className="oa-hint">Matches part of a slug, ignoring case.</p>
-      {sort && list.data && list.data.items.length > 0 && (
-        <p className="oa-hint">Sorted within this page only.</p>
+      {!none && (
+        <div className="oa-tools oa-list-tools">
+          <span className="oa-search">
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM10.3 10.3l3 3" />
+            </svg>
+            <span id="search-hint" className="sr-only">
+              Matches part of a slug, ignoring case.
+            </span>
+            <input
+              type="search"
+              aria-label="Search slug"
+              aria-describedby="search-hint"
+              placeholder="Search slug"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+            />
+          </span>
+          <label className="oa-state-filter">
+            <span className="sr-only">State</span>
+            <select
+              aria-label="State"
+              value={state}
+              onChange={(e) => {
+                setState(e.target.value as InstallState | "");
+                paging.reset();
+              }}
+            >
+              <option value="">All states</option>
+              {InstallStateSchema.options.map((s) => (
+                <option key={s} value={s}>
+                  {STATE_LABEL[s]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className="oa-spacer" />
+          <Link to="/installs/new" className="oa-cta">
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M8 3v10M3 8h10" />
+            </svg>
+            Create install
+          </Link>
+        </div>
       )}
       {list.isError ? (
         <LoadError
@@ -317,6 +324,9 @@ export function Installs() {
               Create the first one. It runs as a job, and nothing is reachable
               until every check passes.
             </p>
+            <Link to="/installs/new" className="oa-cta oa-empty-cta">
+              Create install
+            </Link>
           </div>
         )
       ) : list.data ? (
@@ -438,6 +448,7 @@ function SortHead({
       <button
         type="button"
         className="oa-th"
+        title={on ? "Sorted within this page only." : undefined}
         onClick={() => set({ key: s.key, dir: on && sort.dir === 1 ? -1 : 1 })}
       >
         {s.label}

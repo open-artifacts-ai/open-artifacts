@@ -1,3 +1,4 @@
+import { Button } from "@oa/ui/shadcn";
 import { api } from "../api/client";
 import { DEFAULT_RETURN } from "../auth/safeReturn";
 import { signOut } from "../auth/signOut";
@@ -37,13 +38,7 @@ export function NoAccess({ error, sub }: { error?: string; sub?: string }) {
         </p>
       )}
       <div className="oa-acts">
-        <button
-          type="button"
-          className="oa-btn oa-btn-pri"
-          onClick={useAnother}
-        >
-          Use another account
-        </button>
+        <Button onClick={useAnother}>Use another account</Button>
       </div>
     </EdgePanel>
   );

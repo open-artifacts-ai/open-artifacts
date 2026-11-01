@@ -19,7 +19,7 @@ import {
   TableRow,
 } from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { tokensQuery } from "../api/queries";
 import { ActionDialog } from "../components/ActionDialog";
@@ -155,9 +155,9 @@ function ConnectCard({ env }: { env: "prod" | "staging" }) {
               <CopyButton text={snip.code} label="Copy" />
             )}
           </div>
-          {snip.hint && <p className="oa-sub">{snip.hint}</p>}
-          {snip.verify && <p className="oa-sub">{snip.verify}</p>}
-          {snip.reload && <p className="oa-sub">{snip.reload}</p>}
+          {snip.hint && <p className="oa-sub">{ticks(snip.hint)}</p>}
+          {snip.verify && <p className="oa-sub">{ticks(snip.verify)}</p>}
+          {snip.reload && <p className="oa-sub">{ticks(snip.reload)}</p>}
         </div>
       )}
       <p className="oa-sub">
@@ -307,6 +307,19 @@ function useNow(ms: number) {
     return () => clearInterval(t);
   }, [ms]);
   return now;
+}
+
+/** Snippet notes mark commands with backticks: set those as inline code. */
+function ticks(text: string) {
+  const out: ReactNode[] = [];
+  let at = 0;
+  for (const m of text.matchAll(/`([^`]+)`/g)) {
+    out.push(text.slice(at, m.index));
+    out.push(<code key={m.index}>{m[1]}</code>);
+    at = m.index + m[0].length;
+  }
+  out.push(text.slice(at));
+  return out;
 }
 
 /** "Signed in (OAuth)" for a consent grant, "Token (oat_)" for a minted bearer. */

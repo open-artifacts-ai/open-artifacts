@@ -72,6 +72,8 @@ export function Pager({
   onPrev: () => void;
   onNext: (cursor: string) => void;
 }) {
+  // One page: nothing to page through, so no stray disabled links.
+  if (!canPrev && !next) return null;
   return (
     <div className="oa-pager">
       <button

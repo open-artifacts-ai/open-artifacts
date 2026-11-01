@@ -30,13 +30,22 @@ const stepState = (job: Job, index: number) =>
           ? "current"
           : "waiting";
 
-/** "Attempt 2 · cf_error · next try at 11:42" */
-function attemptLine(job: Job) {
-  const parts = [`Attempt ${job.attempt}`];
-  if (job.lastErrorCode) parts.push(job.lastErrorCode);
-  if (job.retryAt && job.status !== "failed")
-    parts.push(`next try at ${fmtClock(job.retryAt)} UTC`);
-  return parts.join(" · ");
+/** "Attempt 2 · cf_error · next try at 11:42 UTC", under the step it is on. */
+function AttemptLine({ job }: { job: Job }) {
+  const code = job.lastErrorCode ?? job.error?.code ?? null;
+  const retry = job.retryAt && job.status !== "failed" ? job.retryAt : null;
+  return (
+    <small data-testid="attempt-line">
+      <span data-testid="attempt">Attempt {job.attempt}</span>
+      {code && ` · ${code}`}
+      {retry && (
+        <>
+          {" · "}
+          <span data-testid="retry-at">next try at {fmtClock(retry)} UTC</span>
+        </>
+      )}
+    </small>
+  );
 }
 
 export function JobPage({ id }: { id: string }) {
@@ -134,26 +143,15 @@ export function JobPage({ id }: { id: string }) {
                   <li key={s.id} data-step={st}>
                     {s.label}
                     {(st === "current" ||
+                      st === "failed" ||
                       (live && s.index === job.stepIndex)) &&
-                      job.lastErrorCode && (
-                        <small data-testid="attempt-line">
-                          {attemptLine(job)}
-                        </small>
+                      (job.lastErrorCode || job.error) && (
+                        <AttemptLine job={job} />
                       )}
                   </li>
                 );
               })}
             </ol>
-            <dl className="oa-fields">
-              <dt>Attempt</dt>
-              <dd data-testid="attempt">{job.attempt}</dd>
-              {job.retryAt && live && (
-                <>
-                  <dt>Next retry</dt>
-                  <dd data-testid="retry-at">at {fmtClock(job.retryAt)} UTC</dd>
-                </>
-              )}
-            </dl>
           </div>
           {job.status === "failed" && (
             <div className="oa-error" role="alert" data-testid="job-error">
