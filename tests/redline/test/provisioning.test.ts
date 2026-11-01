@@ -19,6 +19,7 @@ import {
 } from "../src/oidc.ts";
 import {
   bringUpgrade,
+  failText,
   mintCreds,
   type Outcome,
   PROBES,
@@ -403,6 +404,45 @@ describe("bring-up and revoke (R5, R26)", () => {
     expect([...f.pats.keys()]).toEqual([c.pat]);
     await revokeCreds(run, CONFIG.rlA.id, "rl-a", CONFIG.rlA.app, c.pat);
     expect(f.pats.get(c.pat)?.revoked).toBe(true);
+  });
+
+  it("R26 prints the job's fail point (#995): fixed values only", async () => {
+    const f = fakeApi();
+    const io = {
+      ...f.io,
+      fetch: (async (u: string | URL | Request, init?: RequestInit) => {
+        const r = await f.io.fetch(u, init);
+        if (!String(u).includes("/v1/jobs/")) return r;
+        const j = (await r.json()) as Record<string, unknown>;
+        return Response.json({
+          ...j,
+          status: "failed",
+          lastErrorCode: "internal",
+          failure: { at: "test_session", status: 404, reason: "user_refused" },
+        });
+      }) as typeof fetch,
+    };
+    const run = new Run(CONFIG, io);
+    const r = await newRecipient();
+    await expect(
+      mintCreds(run, CONFIG.rlA.id, "rl-a", {
+        publicKey: r.publicKey,
+        open: async (s) => parseCreds(await openSealed(r, s)),
+      }),
+    ).rejects.toThrow(
+      "R26 rl-a: job failed (internal) at test_session (HTTP 404, user_refused)",
+    );
+  });
+
+  it("failText: point, then status and reason when present; nothing without a point", () => {
+    expect(failText({ failure: null })).toBe("");
+    expect(failText({})).toBe("");
+    expect(
+      failText({ failure: { at: "seal", status: null, reason: null } }),
+    ).toBe(" at seal");
+    expect(
+      failText({ failure: { at: "mint_token", status: 503, reason: null } }),
+    ).toBe(" at mint_token (HTTP 503)");
   });
 
   it("R26 mint keeps the sealed creds from a read while the job still runs", async () => {

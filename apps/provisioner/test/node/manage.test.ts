@@ -737,7 +737,11 @@ function stubInstall(
     { id: "t1", label: "redline-old" },
     { id: "t2", label: "ci-1" },
   ],
-  o: { failDelete?: (id: string, n: number) => boolean } = {},
+  o: {
+    failDelete?: (id: string, n: number) => boolean;
+    /** A forced answer for `METHOD /path`, before the stub's own (#995). */
+    respond?: (call: string) => Response | undefined;
+  } = {},
 ) {
   const scriptName = `oa-s-${installId}`;
   const script = w.fake.script(NAMESPACES[ENV], scriptName);
@@ -752,6 +756,8 @@ function stubInstall(
         if (name !== scriptName) return real.get(name).fetch(req);
         const u = new URL(req.url);
         seen.push(`${req.method} ${u.pathname}`);
+        const forced = o.respond?.(`${req.method} ${u.pathname}`);
+        if (forced) return forced;
         const key = script?.secrets.get("TEST_HOOK_KEY");
         if (u.pathname === "/__test/session")
           return req.headers.get("authorization") === `Bearer ${key}`
@@ -793,6 +799,204 @@ function stubInstall(
   } as unknown as DispatchNamespace;
   return { script, deleted, seen, tokens };
 }
+
+describe("job fail point (#995)", () => {
+  const recipientKey = async () => {
+    const pair = (await crypto.subtle.generateKey({ name: "X25519" }, true, [
+      "deriveBits",
+    ])) as CryptoKeyPair;
+    return Buffer.from(
+      new Uint8Array(
+        (await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer,
+      ),
+    ).toString("base64url");
+  };
+  const refusal = (reason: unknown) =>
+    Response.json(
+      {
+        error: { code: "not_found", message: "Not found", details: { reason } },
+      },
+      { status: 404 },
+    );
+  const failCols = (id: string) =>
+    w.all(
+      "SELECT fail_at, fail_status, fail_reason FROM jobs WHERE id = ?",
+      id,
+    )[0];
+  const SECRET_TEXT = "leaky detail redline-admin@guests.oa-redline-a.fyi";
+
+  type Case = {
+    name: string;
+    revoke?: boolean;
+    setup: (installId: string) => void;
+    want: {
+      fail_at: string;
+      fail_status: number | null;
+      fail_reason: string | null;
+    };
+  };
+  const at = (call: string, res: () => Response) => (installId: string) =>
+    stubInstall(installId, undefined, {
+      respond: (c) => (c === call ? res() : undefined),
+    });
+  const CASES: Case[] = [
+    {
+      name: "the token check (a Cloudflare 500)",
+      setup: (id) => {
+        stubInstall(id);
+        w.fake.inject((_m, p) => p.endsWith("/user/tokens/verify"), {
+          status: 500,
+          times: 99,
+        });
+      },
+      want: { fail_at: "token_check", fail_status: 500, fail_reason: null },
+    },
+    {
+      name: "the TEST_HOOK_KEY put (a Cloudflare 500)",
+      setup: (id) => {
+        stubInstall(id);
+        w.fake.inject((m, p) => m === "PUT" && p.endsWith("/secrets"), {
+          status: 500,
+          times: 99,
+        });
+      },
+      want: { fail_at: "hook_key_put", fail_status: 500, fail_reason: null },
+    },
+    {
+      name: "a test session 404 before the key (no reason)",
+      setup: at(
+        "POST /__test/session",
+        () => new Response(null, { status: 404 }),
+      ),
+      want: { fail_at: "test_session", fail_status: 404, fail_reason: null },
+    },
+    {
+      name: "a test session refusal (its fixed reason)",
+      setup: at("POST /__test/session", () => refusal("user_refused")),
+      want: {
+        fail_at: "test_session",
+        fail_status: 404,
+        fail_reason: "user_refused",
+      },
+    },
+    {
+      name: "a test session 404 whose reason is not a known refusal (null)",
+      setup: at("POST /__test/session", () => refusal(SECRET_TEXT)),
+      want: { fail_at: "test_session", fail_status: 404, fail_reason: null },
+    },
+    {
+      name: "a test session 200 without a cookie (no status)",
+      setup: at("POST /__test/session", () =>
+        Response.json({ note: SECRET_TEXT }),
+      ),
+      want: { fail_at: "test_session", fail_status: null, fail_reason: null },
+    },
+    {
+      name: "the token list",
+      setup: at(
+        "GET /api/v1/tokens",
+        () => new Response(SECRET_TEXT, { status: 500 }),
+      ),
+      want: { fail_at: "list_tokens", fail_status: 500, fail_reason: null },
+    },
+    {
+      name: "the mint",
+      setup: at(
+        "POST /api/v1/tokens",
+        () => new Response(SECRET_TEXT, { status: 503 }),
+      ),
+      want: { fail_at: "mint_token", fail_status: 503, fail_reason: null },
+    },
+    {
+      name: "the new token check",
+      setup: at("GET /api/v1/me", () => new Response(null, { status: 401 })),
+      want: { fail_at: "new_token_check", fail_status: 401, fail_reason: null },
+    },
+    {
+      name: "a redline token revoke",
+      setup: (id) => stubInstall(id, undefined, { failDelete: () => true }),
+      want: { fail_at: "revoke_token", fail_status: 500, fail_reason: null },
+    },
+    {
+      name: "the seal (its D1 write throws)",
+      setup: (id) => {
+        stubInstall(id);
+        const db = w.env.PLATFORM_DB;
+        const prepare = db.prepare.bind(db);
+        db.prepare = ((sql: string) => {
+          if (sql.startsWith("UPDATE jobs SET sealed"))
+            throw new Error(SECRET_TEXT);
+          return prepare(sql);
+        }) as typeof db.prepare;
+      },
+      want: { fail_at: "seal", fail_status: null, fail_reason: null },
+    },
+    {
+      name: "revoke: a test session 404",
+      revoke: true,
+      setup: at(
+        "POST /__test/session",
+        () => new Response(null, { status: 404 }),
+      ),
+      want: { fail_at: "test_session", fail_status: 404, fail_reason: null },
+    },
+    {
+      name: "revoke: a redline token revoke",
+      revoke: true,
+      setup: (id) =>
+        stubInstall(id, [{ id: "r1", label: "redline-1" }], {
+          failDelete: () => true,
+        }),
+      want: { fail_at: "revoke_token", fail_status: 500, fail_reason: null },
+    },
+  ];
+
+  it.each(CASES)(
+    "records $want.fail_at for $name, with no free text",
+    async (c) => {
+      const s = await active({ slug: "rl-a", actor: "oidc", testHooks: true });
+      c.setup(s.installId);
+      const r = await manage("redline_creds", s.installId, {
+        actor: "oidc",
+        args: c.revoke
+          ? { revoke: true }
+          : { recipientKey: await recipientKey() },
+      });
+      expect(r.job?.status).toBe("failed");
+      expect(failCols(r.id)).toEqual(c.want);
+      // Only fixed values on the row: the code's own text, no body or detail.
+      const row = JSON.stringify(r.job);
+      expect(row).not.toContain("leaky detail");
+      expect(row).not.toContain("redline-admin@");
+      expect(row).not.toMatch(/HTTP \d{3}/);
+    },
+  );
+
+  it("each failed attempt rewrites the point: the last attempt's stays", async () => {
+    const s = await active({ slug: "rl-a", actor: "oidc", testHooks: true });
+    let sessions = 0;
+    stubInstall(s.installId, undefined, {
+      respond: (c) => {
+        if (c === "POST /__test/session" && sessions++ === 0)
+          return refusal("user_refused");
+        if (c === "POST /api/v1/tokens")
+          return new Response(null, { status: 503 });
+        return undefined;
+      },
+    });
+    const r = await manage("redline_creds", s.installId, {
+      actor: "oidc",
+      args: { recipientKey: await recipientKey() },
+    });
+    expect(sessions).toBeGreaterThan(1);
+    expect(r.job?.status).toBe("failed");
+    expect(failCols(r.id)).toEqual({
+      fail_at: "mint_token",
+      fail_status: 503,
+      fail_reason: null,
+    });
+  });
+});
 
 describe("redline_creds (10.1, R26)", () => {
   it("rotates TEST_HOOK_KEY, mints one redline- PAT after revoking older ones, seals {pat, hookKey}", async () => {

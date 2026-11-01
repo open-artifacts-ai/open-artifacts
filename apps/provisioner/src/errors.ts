@@ -5,11 +5,14 @@
 // Cloudflare or D1 message can quote input.
 import { NonRetryableError } from "cloudflare:workflows";
 import {
+  CfError,
   PROVISION_ERROR_CODES,
   type ProvisionErrorCode,
   ProvisionRetry,
   provisionErrorCode,
 } from "@oa/provision";
+import { TEST_HOOK_REFUSALS, type TestHookRefusal } from "@oa/shared";
+import { JOB_FAIL_POINTS, type JobFailPoint } from "@oa/shared/provisioning";
 
 /** jobs.error_message is at most 300 characters (0008). */
 export const ERROR_MESSAGE_MAX = 300;
@@ -129,4 +132,69 @@ export function codeOf(e: unknown): ProvisionErrorCode {
   return (PROVISION_ERROR_CODES as readonly string[]).includes(head as string)
     ? (head as ProvisionErrorCode)
     : "internal";
+}
+
+/**
+ * #995: where an attempt failed, on the error itself (a symbol, never its
+ * message): a fixed JOB_FAIL_POINTS point, the failing call's HTTP status
+ * and a test hook's TEST_HOOK_REFUSALS reason. noteFailure writes it to
+ * jobs.fail_at, fail_status and fail_reason; anything outside those sets is
+ * null.
+ */
+export type FailAt = {
+  at: JobFailPoint;
+  status: number | null;
+  reason: TestHookRefusal | null;
+};
+const FAIL_AT = Symbol.for("oa.provisioner.failAt");
+
+/** `e` tagged with its fail point (the first tag wins); `e` itself. */
+export function tagFail<E>(
+  e: E,
+  at: JobFailPoint,
+  status: number | null = null,
+  reason: TestHookRefusal | null = null,
+): E {
+  if (e !== null && typeof e === "object" && !(FAIL_AT in e)) {
+    const s = status ?? (e instanceof CfError ? e.status : null);
+    Object.defineProperty(e, FAIL_AT, {
+      value: Object.freeze({ at, status: s, reason }),
+    });
+  }
+  return e;
+}
+
+/** The fail point an error carries, each part checked against its set. */
+export function failOf(e: unknown): FailAt | null {
+  if (e === null || typeof e !== "object") return null;
+  const f = (e as Record<symbol, unknown>)[FAIL_AT] as
+    | Partial<FailAt>
+    | undefined;
+  if (!f || !(JOB_FAIL_POINTS as readonly string[]).includes(f.at as string))
+    return null;
+  const s = f.status;
+  return {
+    at: f.at as JobFailPoint,
+    status:
+      typeof s === "number" && Number.isInteger(s) && s >= 100 && s <= 599
+        ? s
+        : null,
+    reason: (TEST_HOOK_REFUSALS as readonly string[]).includes(
+      f.reason as string,
+    )
+      ? (f.reason as TestHookRefusal)
+      : null,
+  };
+}
+
+/** `fn`, with any error it throws tagged at `at`. */
+export async function failingAt<T>(
+  at: JobFailPoint,
+  fn: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    throw tagFail(e, at);
+  }
 }

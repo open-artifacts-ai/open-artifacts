@@ -1,4 +1,5 @@
 import { ownerEmailOf } from "@oa/provision/names";
+import { TEST_HOOK_REFUSALS, type TestHookRefusal } from "@oa/shared";
 import {
   type Auth,
   AuthProviderSchema,
@@ -10,6 +11,7 @@ import {
   JOB_STEPS,
   type Job,
   JobErrorCodeSchema,
+  JobFailPointSchema,
   type JobKind,
   type ServingMode,
   type Tier,
@@ -252,6 +254,9 @@ export type JobRow = {
   step: string | null;
   attempt: number;
   last_error_code: string | null;
+  fail_at?: string | null;
+  fail_status?: number | null;
+  fail_reason?: string | null;
   retry_at: number | null;
   error_code: string | null;
   error_message: string | null;
@@ -266,6 +271,27 @@ const jobCode = (c: string | null) => {
   const r = JobErrorCodeSchema.safeParse(c);
   return r.success ? r.data : null;
 };
+
+/**
+ * #995: the row's fail point, status and refusal reason, each read back
+ * through its fixed set (anything else is null; no point is no failure).
+ */
+function failureOf(r: JobRow): Job["failure"] {
+  const at = JobFailPointSchema.safeParse(r.fail_at);
+  if (!at.success) return null;
+  const s = r.fail_status;
+  const reason = r.fail_reason;
+  return {
+    at: at.data,
+    status:
+      typeof s === "number" && Number.isInteger(s) && s >= 100 && s <= 599
+        ? s
+        : null,
+    reason: (TEST_HOOK_REFUSALS as readonly string[]).includes(reason ?? "")
+      ? (reason as TestHookRefusal)
+      : null,
+  };
+}
 
 /** A Job without `sealed` (R14, R27); jobOf adds it for R15. */
 export function jobItemOf(r: JobRow): Omit<Job, "sealed"> {
@@ -289,6 +315,7 @@ export function jobItemOf(r: JobRow): Omit<Job, "sealed"> {
       at >= 0 ? at : r.status === "done" ? Math.max(steps.length - 1, 0) : 0,
     attempt: r.attempt,
     lastErrorCode: jobCode(r.last_error_code),
+    failure: failureOf(r),
     retryAt: r.retry_at,
     actor: { kind: r.actor_kind, label: r.actor_label, tokenId: r.token_id },
     args,

@@ -114,7 +114,8 @@ describe("platform-db.ts", () => {
     ]);
     // 0001-0005 never run again (0004 and 0005 are not re-runnable).
     const execs = f.calls.filter((c) => c.startsWith("exec"));
-    expect(execs).toHaveLength(4); // the tracker, then 0006, 0007, 0008
+    // The tracker, then 0006 onward.
+    expect(execs).toHaveLength(1 + names.slice(5).length);
     expect(execs[0]).toContain("CREATE TABLE IF NOT EXISTS platform_migrat");
   });
 
@@ -201,7 +202,9 @@ describe("platform-db.ts", () => {
       `${names.length} migrations tracked, shapes match`,
     ]);
     // 0003-0005 (ADD COLUMN) never run again.
-    expect(f.calls.filter((c) => c.startsWith("exec"))).toHaveLength(3);
+    expect(f.calls.filter((c) => c.startsWith("exec"))).toHaveLength(
+      names.slice(5).length,
+    );
     expect(tracker(f)).toHaveLength(names.length);
     // The tracker lists 0001-0003 and 0004 is absent: 0004 onward applied.
     const g = fakeDb();
