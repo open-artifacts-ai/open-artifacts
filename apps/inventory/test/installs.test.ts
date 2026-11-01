@@ -9,6 +9,7 @@ import {
   signup,
 } from "../../../packages/provision/test/platform-db.ts";
 import { INSTALLS_SQL, UNTRACKED_SQL } from "../src/installs.ts";
+import { SCHEMA_SQL } from "../src/schema.ts";
 import {
   BEARER,
   getJson,
@@ -45,7 +46,7 @@ describe("GET /installs", () => {
   it("reads install_status, only the five columns it maps", async () => {
     const { db, sqls } = makeDb([]);
     await getJson(makeEnv({ PLATFORM_DB: db }), "/installs");
-    expect(sqls).toEqual([UNTRACKED_SQL, INSTALLS_SQL]);
+    expect(sqls).toEqual([SCHEMA_SQL, UNTRACKED_SQL, INSTALLS_SQL]);
     expect(INSTALLS_SQL).toBe(
       "SELECT install_id, app_host, content_host, state, test_hooks FROM install_status ORDER BY install_id",
     );

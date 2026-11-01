@@ -84,7 +84,13 @@ export const JOB_WITHIN_MS = 20 * 60_000;
 /** A case's vitest timeout: its slowest wait plus margin. */
 export const PROBE_TIMEOUT_MS = JOB_WITHIN_MS + 5 * 60_000;
 export const P34_REQUESTS = 400;
-export const P25_REQUESTS = 15;
+/** RL_PV_SIGNIN_IP's limit per IP per 60 s (apps/provisioning/wrangler.jsonc). */
+export const SIGNIN_IP_LIMIT = 10;
+/**
+ * P25's cap: 3x the limit, sent one at a time. The binding counts per isolate
+ * and syncs in the background, so a parallel burst slips through.
+ */
+export const P25_MAX_REQUESTS = 3 * SIGNIN_IP_LIMIT;
 export const P44_REGISTRATIONS = 11;
 export const P42_BYTES = 40 * 1024;
 export const DUMMY_TURNSTILE = "XXXX.DUMMY.TOKEN.XXXX";
@@ -1744,18 +1750,15 @@ export const PROBES: readonly Probe[] = [
   {
     id: "P25",
     title:
-      "15 rapid GET /auth/start: at least one 303 to /sign-in?error=rate_limited, never to Google nor with a flow cookie",
+      "GET /auth/start one at a time (up to 30): a 303 to /sign-in?error=rate_limited, with no flow cookie",
     // Last: it spends RL_PV_SIGNIN_IP (10 per 60 s), which P30's callbacks
     // and P34's /auth/start share; nothing after it signs in.
     run: async (run) => {
-      const out = await Promise.all(
-        Array.from({ length: P25_REQUESTS }, () =>
-          run.raw(`${run.c.admin}/auth/start`, { auth: "none" }),
-        ),
-      );
+      const start = () =>
+        run.raw(`${run.c.admin}/auth/start`, { auth: "none" });
       // Design 5.8 (#1012): a limited start lands on the sign-in screen's
       // rate_limited error; it must not start a flow (no Google, no cookie).
-      const limited = out.filter((r) => {
+      const limited = (r: Res) => {
         const loc = r.headers.get("location");
         if (r.status !== 303 || !loc) return false;
         const u = new URL(loc, run.c.admin);
@@ -1764,15 +1767,25 @@ export const PROBES: readonly Probe[] = [
           u.pathname === "/sign-in" &&
           u.searchParams.get("error") === "rate_limited"
         );
-      });
-      if (!limited.length)
+      };
+      const flowCookie = (r: Res) =>
+        setCookies(r).some((c) => c.startsWith(`${ADMIN_FLOW_COOKIE}=`));
+      const out: Res[] = [];
+      let last: Res | undefined;
+      while (out.length < P25_MAX_REQUESTS && !(last && limited(last))) {
+        last = await start();
+        out.push(last);
+      }
+      const k = out.length;
+      if (!last || !limited(last))
         throw new ProbeFail(
-          `P25: no 303 to /sign-in?error=rate_limited in ${P25_REQUESTS} requests (${statusCounts(out)})`,
+          `P25: no 303 to /sign-in?error=rate_limited in ${k} sequential requests (${statusCounts(out)})`,
         );
-      for (const r of limited)
-        if (setCookies(r).some((c) => c.startsWith(`${ADMIN_FLOW_COOKIE}=`)))
-          throw new ProbeFail("P25: a limited /auth/start set the flow cookie");
-      return pass(`${limited.length} of ${P25_REQUESTS} limited`);
+      if (flowCookie(last))
+        throw new ProbeFail("P25: a limited /auth/start set the flow cookie");
+      // No follow-up request: the binding counts per isolate, so the next start
+      // may land on one that has not synced yet and rightly answer 302.
+      return pass(`limited on request ${k} of up to ${P25_MAX_REQUESTS}`);
     },
   },
 ];

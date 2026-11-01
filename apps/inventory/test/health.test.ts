@@ -5,6 +5,7 @@ import {
   platformDb,
 } from "../../../packages/provision/test/platform-db.ts";
 import { HEALTH_SQL, SCHEDULER_TICK_KEY } from "../src/health.ts";
+import { REQUIRED_TABLES, SCHEMA_SQL } from "../src/schema.ts";
 import { getJson, makeDb, makeEnv, NOW, sqliteD1 } from "./support.ts";
 
 describe("GET /health", () => {
@@ -40,7 +41,7 @@ describe("GET /health", () => {
   it("binds the key; reads nothing else", async () => {
     const { db, sqls, binds } = makeDb([]);
     await getJson(makeEnv({ PLATFORM_DB: db }), "/health");
-    expect(sqls).toEqual([HEALTH_SQL]);
-    expect(binds).toEqual([["scheduler_tick_at"]]);
+    expect(sqls).toEqual([SCHEMA_SQL, HEALTH_SQL]);
+    expect(binds).toEqual([[...REQUIRED_TABLES], ["scheduler_tick_at"]]);
   });
 });

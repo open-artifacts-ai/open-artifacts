@@ -1178,7 +1178,7 @@
     },
     {
       "file": "live/provisioning.test.ts",
-      "name": "provisioning > P25: 15 rapid GET /auth/start: at least one 303 to /sign-in?error=rate_limited, never to Google nor with a flow cookie"
+      "name": "provisioning > P25: GET /auth/start one at a time (up to 30): a 303 to /sign-in?error=rate_limited, with no flow cookie"
     }
   ],
   "notes": [
