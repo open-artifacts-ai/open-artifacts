@@ -940,6 +940,18 @@ fieldset.oa-seg-field {
   border-radius: 7px;
   padding: 6px 8px;
 }
+/* A label that wraps ("Deleted, restorable") keeps both counts on one baseline. */
+.oa-tile-split .oa-tile-seg {
+  display: flex;
+  flex-direction: column;
+}
+.oa-tile-split .oa-tile-seg .v {
+  margin-top: auto;
+}
+.oa-tile-split .oa-tile-dot {
+  align-self: flex-end;
+  padding-bottom: 8px;
+}
 .oa-tile-seg:hover {
   background: var(--oa-surface-2);
   box-shadow: inset 0 0 0 1px var(--oa-border-strong);
