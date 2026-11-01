@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.88.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.2...v0.88.3) (2026-11-01)
+
+
+### Bug Fixes
+
+* **provisioner:** redline_creds accepts rl-a's and rl-b's stored TEST_DOMAIN ([#991](https://github.com/open-artifacts-ai/open-artifacts/issues/991)) ([18833dc](https://github.com/open-artifacts-ai/open-artifacts/commit/18833dc96e431f438d74f23801e3adf30aaf40fc))
+
 ## [0.88.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.1...v0.88.2) (2026-11-01)
 
 
