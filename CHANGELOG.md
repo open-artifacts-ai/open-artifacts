@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.90.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.2...v0.90.0) (2026-11-01)
+
+
+### Features
+
+* **provisioning:** the admin allowlist is a deploy Environment secret, put by CI ([#1007](https://github.com/open-artifacts-ai/open-artifacts/issues/1007)) ([#1010](https://github.com/open-artifacts-ai/open-artifacts/issues/1010)) ([36fd655](https://github.com/open-artifacts-ai/open-artifacts/commit/36fd655906d121b412b71bc4d358595aabdd0b39))
+
 ## [0.89.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.1...v0.89.2) (2026-11-01)
 
 
