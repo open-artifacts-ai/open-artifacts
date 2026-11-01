@@ -1,15 +1,24 @@
 import {
   type ApiRouteId,
+  type BrowserRouteId,
   isApiRoute,
   PROTOCOL_ROUTES,
+  ROUTES,
 } from "@oa/shared/provisioning";
 import { authenticate } from "./auth/authenticate.js";
 import { checkCsrf, checkOrigin } from "./auth/csrf.js";
-import { handleOAuth, isOAuthPath } from "./auth/oauth/index.js";
+import {
+  handleOAuth,
+  isOAuthPath,
+  oauthPrincipal,
+} from "./auth/oauth/index.js";
+import { browserRoute, type SigninDeps } from "./auth/signin.js";
+import { LazyBody, readJsonBody } from "./body.js";
 import type { Env } from "./env.js";
 import {
   ApiError,
   errorResponse,
+  methodNotAllowed,
   NotImplemented,
   notImplemented,
 } from "./errors.js";
@@ -19,15 +28,17 @@ import { limit } from "./limits.js";
 import { handleMcp } from "./mcp/index.js";
 import { isRefusal } from "./principal.js";
 import { refuse } from "./refuse.js";
-import { invokeRoute } from "./routes/invoke.js";
+import { bodyKeys, invokeRoute } from "./routes/invoke.js";
 import { matchRoute } from "./routes/table.js";
+import { ipKeyOf } from "./services/counters.js";
 
 // The HTTP adapter (design v7 4.2 check order): host policy -> pre-authn IP
 // limit -> Origin (browser writes) -> authn -> CSRF -> invokeRoute.
 
-// W5b replaces this with the shared ipKey (IPv6 by /64, 4.7).
-const clientIp = (req: Request) =>
-  req.headers.get("cf-connecting-ip") ?? "unknown";
+// The raw address (Cloudflare sets it on every edge request); rate keys use
+// ipKeyOf (IPv6 by /64, 4.7). A request without a parseable one is refused,
+// so no two callers ever share an "unknown" bucket.
+const clientIp = (req: Request) => req.headers.get("cf-connecting-ip") ?? "";
 
 const notFound = () => errorResponse("not_found");
 
@@ -43,18 +54,20 @@ async function guard(f: () => Promise<Response>): Promise<Response> {
   }
 }
 
+/** `signin`: the sign-in routes' clock and seams (tests only). */
 export async function handle(
   req: Request,
   env: Env,
   ctx: ExecutionContext,
+  signin: Partial<SigninDeps> = {},
 ): Promise<Response> {
   const url = new URL(req.url);
   const host = hostKind(url.hostname, env);
   if (!host) return notFound();
-  if (host === "api") return route(req, env, ctx, "api", url);
+  if (host === "api") return route(req, env, ctx, "api", url, signin);
   // Every admin-host response, SPA and errors alike, carries the 4.5
   // browser-host headers; the consent page keeps its own CSP (9A.3.2).
-  return browserHeaders(await route(req, env, ctx, "admin", url), {
+  return browserHeaders(await route(req, env, ctx, "admin", url, signin), {
     ownCsp: url.pathname === "/oauth/authorize",
   });
 }
@@ -65,14 +78,17 @@ async function route(
   ctx: ExecutionContext,
   host: HostKind,
   url: URL,
+  signin: Partial<SigninDeps>,
 ): Promise<Response> {
   // Host policy first: browser hosts refuse Authorization; api.<app> ignores
   // Cookie (4.5).
   if (host === "admin" && req.headers.has("authorization"))
     return refuse(env, "auth", "unauthenticated", req);
 
-  const pre = await limit(env, "pre_ip", clientIp(req));
-  if (pre) return refuse(env, "pre_ip", pre.code, req);
+  const ipKey = ipKeyOf(clientIp(req));
+  if (ipKey === "unknown") return refuse(env, "pre", "forbidden", req);
+  const pre = await limit(env, "pre_ip", ipKey);
+  if (pre) return refuse(env, "pre", pre.code, req);
 
   // Protocol routes: method, path and host from PROTOCOL_ROUTES (9A.3.1).
   // Their own checks (the consent POST's Sec-Fetch-Site, 4.5) replace Origin.
@@ -82,12 +98,11 @@ async function route(
     const here = proto.filter((r) => r.host === host);
     if (here.length === 0) return notFound();
     if (!here.some((r) => r.method === req.method))
-      return new Response(null, {
-        status: 405,
-        headers: { allow: here.map((r) => r.method).join(", ") },
-      });
+      return methodNotAllowed(here.map((r) => r.method).join(", "));
     return guard(() =>
-      path === "/mcp" ? handleMcp(req, env, ctx) : handleOAuth(req, env, ctx),
+      path === "/mcp"
+        ? handleMcp(req, env, ctx, { oauthPrincipal })
+        : handleOAuth(req, env, ctx),
     );
   }
   if (isOAuthPath(path)) return notFound();
@@ -102,7 +117,7 @@ async function route(
   if (m)
     return isApiRoute(m.route)
       ? apiRoute(req, env, ctx, host, m.route, m.params, url)
-      : notImplemented();
+      : guard(() => browserRoute(req, env, m.route as BrowserRouteId, signin));
   if (
     host === "admin" &&
     !path.startsWith("/api/") &&
@@ -129,13 +144,19 @@ async function apiRoute(
     if (c) return refuse(env, "csrf", c.code, req);
   }
   return guard(async () => {
-    // W4: content-type, the 16 KiB body cap and JSON parse (3.1).
+    // Writes with a body: application/json, 16 KiB, then JSON (3.1), read
+    // by invokeRoute after the rate limit and authz (4.2).
+    const def = ROUTES[route];
+    const body =
+      def.method !== "GET" && bodyKeys(def).size > 0
+        ? new LazyBody(() => readJsonBody(req))
+        : undefined;
     const r = await invokeRoute(
       env,
       ctx,
       p,
       route,
-      { params, query: Object.fromEntries(url.searchParams) },
+      { params, query: Object.fromEntries(url.searchParams), body },
       { kind: "http", client: { ip: clientIp(req), host: url.hostname } },
     );
     return new Response(r.body === null ? null : JSON.stringify(r.body), {

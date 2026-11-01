@@ -28,6 +28,8 @@ const RL = [
   ["RL_PV_READ", 300],
   ["RL_PV_SLUG_IP", 30],
   ["RL_PV_OAUTH_IP", 20],
+  ["RL_PV_ADMIN_ESCAPE", 60],
+  ["RL_PV_TOKEN_WRITE", 10],
 ] as const;
 const NS0 = { staging: 1141, prod: 1151 } as const;
 const OIDC = [
@@ -113,7 +115,7 @@ describe("wrangler.jsonc", () => {
         });
       });
 
-      it("binds the six rate limits with their namespace ids", () => {
+      it("binds the eight rate limits with their namespace ids", () => {
         expect(e.ratelimits).toEqual(
           RL.map(([name, limit], i) => ({
             name,
@@ -121,6 +123,10 @@ describe("wrangler.jsonc", () => {
             simple: { limit, period: 60 },
           })),
         );
+      });
+
+      it("runs the MCP client sweep hourly (one cron)", () => {
+        expect(cfg.env[env].triggers).toEqual({ crons: ["41 * * * *"] });
       });
 
       it("binds OAUTH_KV, the library's store", () => {
@@ -142,6 +148,10 @@ describe("wrangler.jsonc", () => {
         if (env === "prod")
           expect(e.vars.SIGNUPS_ENABLED).not.toBe("test-users");
         expect(e.vars.SELF_SERVE_TIER).toBe("trial");
+        // The provisioner's placeholder, one deploy value for both (9A.5).
+        expect(e.vars.SIGNUP_DAILY_CAP).toBe(
+          `{{SIGNUP_DAILY_CAP_${env.toUpperCase()}}}`,
+        );
         expect(e.vars.MCP_REDIRECT_URIS.length).toBeGreaterThan(0);
         for (const k of OIDC)
           if (env === "staging") expect(e.vars[k]).toBeTruthy();
@@ -172,6 +182,7 @@ describe("wrangler.jsonc", () => {
             "queues",
             "ratelimits",
             "services",
+            "triggers",
             "vars",
             "workers_dev",
             "workflows",

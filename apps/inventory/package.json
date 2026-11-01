@@ -7,11 +7,20 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "test": "pnpm --filter @oa/provision build && vitest run",
+    "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@oa/gh-oidc": "workspace:*",
+    "@oa/redline": "workspace:*",
+    "@oa/provision": "workspace:*",
+    "@oa/shared": "workspace:*",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.12"
+    "vitest": "^4.1.12",
+    "yaml": "^2.9.1"
   }
 }

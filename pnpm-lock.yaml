@@ -283,13 +283,35 @@ importers:
         version: 4.151.1(@cloudflare/workers-types@5.20261018.1)(@types/node@20.19.43)
 
   apps/inventory:
+    dependencies:
+      '@oa/gh-oidc':
+        specifier: workspace:*
+        version: link:../../packages/gh-oidc
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
+      '@oa/redline':
+        specifier: workspace:*
+        version: link:../../tests/redline
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
     devDependencies:
+      '@types/node':
+        specifier: ^22.20.5
+        version: 22.20.5
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
       vitest:
         specifier: ^4.1.12
         version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
 
   apps/landing:
     dependencies:
@@ -322,14 +344,60 @@ importers:
         specifier: ^4.151.1
         version: 4.151.1(@cloudflare/workers-types@5.20261018.1)(@types/node@22.20.5)
 
-  apps/provisioning:
+  apps/provisioner:
     dependencies:
-      '@oa/gh-oidc':
+      '@oa/provision':
         specifier: workspace:*
-        version: link:../../packages/gh-oidc
+        version: link:../../packages/provision
       '@oa/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+    devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: ^1.4.4
+        version: 1.4.4(@cloudflare/workers-types@5.20261018.1)(@types/node@22.20.5)(vitest@4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
+      '@cloudflare/workers-types':
+        specifier: ^5.20261018.1
+        version: 5.20261018.1
+      '@types/node':
+        specifier: ^22.20.5
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      wrangler:
+        specifier: ^4.151.1
+        version: 4.151.1(@cloudflare/workers-types@5.20261018.1)(@types/node@22.20.5)
+
+  apps/provisioning:
+    dependencies:
+      '@cloudflare/workers-oauth-provider':
+        specifier: 1.2.3
+        version: 1.2.3
+      '@modelcontextprotocol/server':
+        specifier: 2.3.1
+        version: 2.3.1
+      '@oa/auth-core':
+        specifier: workspace:*
+        version: link:../../packages/auth-core
+      '@oa/gh-oidc':
+        specifier: workspace:*
+        version: link:../../packages/gh-oidc
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      agents:
+        specifier: 0.28.1
+        version: 0.28.1(@babel/core@7.29.7)(@babel/runtime@7.29.10)(@modelcontextprotocol/client@2.3.1)(@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7))(@modelcontextprotocol/server@2.3.1)(react@19.3.1)(rolldown@1.2.14)(vite@8.3.4(@types/node@20.19.43)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))(zod@4.6.7)
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: ^1.4.4
@@ -337,15 +405,27 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20261018.1
         version: 5.20261018.1
+      '@modelcontextprotocol/client':
+        specifier: 2.3.1
+        version: 2.3.1
       '@oa/admin':
         specifier: workspace:*
         version: link:../admin
-      '@oa/provision':
-        specifier: workspace:*
-        version: link:../../packages/provision
+      '@playwright/test':
+        specifier: 1.64.1
+        version: 1.64.1
       '@types/node':
         specifier: ^20.19.43
         version: 20.19.43
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      jose:
+        specifier: ^6.2.12
+        version: 6.2.12
+      miniflare:
+        specifier: 5.20261012.1-beta
+        version: 5.20261012.1-beta(@types/node@20.19.43)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3

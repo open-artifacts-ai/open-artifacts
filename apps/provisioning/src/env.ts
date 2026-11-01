@@ -26,6 +26,9 @@ export interface Env {
   RL_PV_READ?: RateLimit;
   RL_PV_SLUG_IP?: RateLimit;
   RL_PV_OAUTH_IP?: RateLimit;
+  /** Admin R21/R24 escape and per-token write sub-bucket (limits.ts). */
+  RL_PV_ADMIN_ESCAPE?: RateLimit;
+  RL_PV_TOKEN_WRITE?: RateLimit;
   /** MCP OAuth clients, grants and tokens; the library's store (9A.3.1). */
   OAUTH_KV: KVNamespace;
   /** Secrets (4.6). */
@@ -37,6 +40,11 @@ export interface Env {
   APP_DOMAIN: string;
   SIGNUPS_ENABLED: "false" | "true" | "test-users";
   SELF_SERVE_TIER: Tier;
+  /**
+   * The scheduler's and consumer's daily self-serve cap, so R27 runs the
+   * `signup_cap` condition with the same value (9A.5); unset is 0 (off).
+   */
+  SIGNUP_DAILY_CAP?: string;
   /** Exact redirect URIs besides loopback (9A.3.1), comma list. */
   MCP_REDIRECT_URIS: string;
   /** Staging only (4.4). */
