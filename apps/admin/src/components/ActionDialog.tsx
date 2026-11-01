@@ -26,6 +26,7 @@ export function ActionDialog({
   submitLabel,
   destructive,
   canSubmit = true,
+  blocker,
   pending,
   error,
   onSubmit,
@@ -40,6 +41,8 @@ export function ActionDialog({
   submitLabel: string;
   destructive?: boolean;
   canSubmit?: boolean;
+  /** Why the submit button is off, shown beside it (with canSubmit false). */
+  blocker?: string;
   pending: boolean;
   error: unknown;
   onSubmit: () => void;
@@ -86,12 +89,24 @@ export function ActionDialog({
           )}
           <ErrorLine error={error} />
           <DialogFooter>
+            {blocker && !canSubmit && !pending && (
+              <small
+                id={`${id}-blocker`}
+                data-testid="dialog-blocker"
+                className="oa-blocker"
+              >
+                {blocker}
+              </small>
+            )}
             <Button type="button" variant="outline" onClick={onClose}>
               Cancel
             </Button>
             <Button
               type="submit"
               variant={destructive ? "destructive" : "default"}
+              aria-describedby={
+                blocker && !canSubmit && !pending ? `${id}-blocker` : undefined
+              }
               disabled={!ok || pending}
             >
               {submitLabel}

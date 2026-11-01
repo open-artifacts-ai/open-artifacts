@@ -1,5 +1,11 @@
 import { InstallIdSchema } from "@oa/shared/provisioning";
 import {
+  Button,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Table,
   TableBody,
   TableCell,
@@ -7,10 +13,10 @@ import {
   TableHeader,
   TableRow,
 } from "@oa/ui/shadcn";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { auditQuery } from "../api/queries";
+import { auditQuery, installQuery } from "../api/queries";
 import { Pager } from "../components/Bits";
 import { fmtDayClock, shortId } from "../components/labels";
 import { usePaging } from "../hooks/usePaging";
@@ -32,6 +38,47 @@ const VERB: Record<string, string> = {
 export const actionPhrase = (action: string) =>
   Object.hasOwn(VERB, action) ? VERB[action] : action;
 
+/** The action filter's "any action" value (Radix Select has no empty value). */
+const ANY = "__any";
+const PROVIDER: Record<string, string> = { google: "Google", email: "Email" };
+const text = (v: unknown) =>
+  typeof v === "string" && v.trim() !== "" ? v.trim() : undefined;
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/**
+ * The plain detail line from the mock ("to 0.77.1", "Team, Google",
+ * "via MCP · Claude Code"), built from the fields people read; never raw JSON.
+ */
+export function detailLine(detail: Record<string, unknown> | null): string {
+  if (!detail) return "";
+  const parts: string[] = [];
+  const args = isObj(detail.args) ? detail.args : {};
+  if (detail.kind === "create") {
+    const auth = isObj(args.auth) ? args.auth : {};
+    const providers = Array.isArray(auth.providers)
+      ? auth.providers.map((p) => PROVIDER[String(p)] ?? String(p))
+      : [];
+    const tier = text(args.tier);
+    const bits = [tier && cap(tier), ...providers].filter(Boolean);
+    if (bits.length) parts.push(bits.join(", "));
+  } else {
+    const version = text(args.version) ?? text(detail.version);
+    if (version) parts.push(`to ${version}`);
+  }
+  for (const v of [args.reason, detail.reason, detail.stage, detail.note]) {
+    const t = text(v);
+    if (t) parts.push(t);
+  }
+  if (detail.surface === "mcp") {
+    parts.push("via MCP");
+    const client = text(detail.client);
+    if (client) parts.push(client);
+  }
+  return parts.join(" · ");
+}
+
 export function Audit({
   installId,
   actor,
@@ -50,6 +97,15 @@ export function Audit({
   const q = useQuery({
     ...auditQuery({ cursor: paging.cursor, installId, actor, action }),
     enabled: valid,
+  });
+  // Target shows the install's slug; the entry carries only its id.
+  const ids = [
+    ...new Set((q.data?.items ?? []).flatMap((e) => e.installId ?? [])),
+  ];
+  const slugs = useQueries({
+    queries: ids.map((id) => ({ ...installQuery(id), staleTime: 60_000 })),
+    combine: (rs) =>
+      new Map(ids.map((id, i) => [id, rs[i]?.data?.slug] as const)),
   });
   return (
     <>
@@ -80,38 +136,40 @@ export function Audit({
           <span className="sr-only">Actor</span>
           <input
             maxLength={200}
-            placeholder="Actor"
+            placeholder="Any actor"
             value={actorDraft}
             onChange={(e) => setActorDraft(e.target.value)}
           />
         </label>
-        <label className="oa-audit-action">
-          <span className="sr-only">Action</span>
-          <select
-            value={action ?? ""}
-            onChange={(e) => {
-              paging.reset();
-              void navigate({
-                to: "/audit",
-                search: {
-                  installId,
-                  actor,
-                  action: e.target.value || undefined,
-                },
-              });
-            }}
-          >
-            <option value="">Any action</option>
+        <Select
+          value={action || ANY}
+          onValueChange={(v) => {
+            paging.reset();
+            void navigate({
+              to: "/audit",
+              search: {
+                installId,
+                actor,
+                action: v === ANY ? undefined : v,
+              },
+            });
+          }}
+        >
+          <SelectTrigger aria-label="Action" className="oa-select">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent position="popper" align="start">
+            <SelectItem value={ANY}>Any action</SelectItem>
             {action && !Object.hasOwn(VERB, action) && (
-              <option value={action}>{action}</option>
+              <SelectItem value={action}>{action}</SelectItem>
             )}
             {Object.keys(VERB).map((a) => (
-              <option key={a} value={a}>
+              <SelectItem key={a} value={a}>
                 {actionPhrase(a)}
-              </option>
+              </SelectItem>
             ))}
-          </select>
-        </label>
+          </SelectContent>
+        </Select>
         <label className="oa-search">
           <svg
             viewBox="0 0 16 16"
@@ -131,9 +189,9 @@ export function Audit({
             onChange={(e) => setDraft(e.target.value)}
           />
         </label>
-        <button type="submit" className="oa-btn">
+        <Button type="submit" variant="outline">
           Filter
-        </button>
+        </Button>
         {(installId || actor || action) && (
           <Link
             className="oa-link"
@@ -208,21 +266,22 @@ export function Audit({
                     <TableCell>
                       {e.installId ? (
                         <Link to="/installs/$id" params={{ id: e.installId }}>
-                          {e.installId}
+                          {slugs.get(e.installId) ?? e.installId}
                         </Link>
                       ) : (
                         ""
                       )}
                     </TableCell>
                     <TableCell className="oa-audit-detail">
+                      {detailLine(e.detail)}
                       {e.jobId && (
                         <>
+                          {detailLine(e.detail) ? " · " : ""}
                           <Link to="/jobs/$id" params={{ id: e.jobId }}>
                             job {shortId(e.jobId)}
-                          </Link>{" "}
+                          </Link>
                         </>
                       )}
-                      {e.detail && <code>{JSON.stringify(e.detail)}</code>}
                     </TableCell>
                   </TableRow>
                 ))}

@@ -3,6 +3,7 @@ import { type Token, TokenScopeSchema } from "@oa/shared/provisioning";
 import { LIVE_TOKENS_PER_ADMIN } from "@oa/shared/provisioning/constants";
 import {
   Button,
+  Checkbox,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -24,6 +25,7 @@ import { api } from "../api/client";
 import { tokensQuery } from "../api/queries";
 import { ActionDialog } from "../components/ActionDialog";
 import { ErrorLine } from "../components/Bits";
+import { CopyButton } from "../components/CopyButton";
 import { fmtAgo, fmtIn, fmtLeft } from "../components/labels";
 import { useAction } from "../hooks/useAction";
 import { LoadError } from "../layout/LoadError";
@@ -45,33 +47,6 @@ const SCOPE_LABEL = [
 const LIFETIMES = [15, 30, 60] as const;
 
 const isLive = (t: Token, now: number) => !t.revokedAt && t.expiresAt > now;
-
-async function copy(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
-  return (
-    <Button
-      type="button"
-      variant="outline"
-      size="sm"
-      onClick={async () => setState((await copy(text)) ? "copied" : "failed")}
-    >
-      {state === "copied"
-        ? "Copied"
-        : state === "failed"
-          ? "Copy failed"
-          : label}
-    </Button>
-  );
-}
 
 /** https://api.<app>/mcp: the admin host's sibling, else the per-environment default. */
 export function mcpUrlFor(env: "prod" | "staging", host: string): string {
@@ -200,10 +175,17 @@ function MintDialog({
     },
     { invalidate: [["tokens"]], key: [label, scopes, ttl] },
   );
-  const ok =
-    LABEL_RE.test(label) &&
-    scopes.length > 0 &&
-    LIFETIMES.some((m) => m === ttl);
+  /** Why Mint token is off, shown beside it. */
+  const blocker = !label
+    ? "Add a label."
+    : !LABEL_RE.test(label)
+      ? "Use letters, numbers, spaces, dots, dashes or underscores in the label."
+      : scopes.length === 0
+        ? "Pick at least one scope."
+        : !LIFETIMES.some((m) => m === ttl)
+          ? "Pick a lifetime."
+          : undefined;
+  const ok = !blocker;
   return (
     <ActionDialog
       open
@@ -211,6 +193,7 @@ function MintDialog({
       title="Mint a token"
       submitLabel="Mint token"
       canSubmit={ok}
+      blocker={blocker}
       pending={mint.isPending}
       error={mint.error}
       onSubmit={() => mint.mutate(undefined)}
@@ -228,16 +211,18 @@ function MintDialog({
       <fieldset>
         <legend>Scopes</legend>
         {SCOPE_LABEL.map(([s, name]) => (
-          <label key={s} className="oa-check">
-            <input
-              type="checkbox"
+          <label key={s} className="oa-check" htmlFor={`scope-${s}`}>
+            <Checkbox
+              id={`scope-${s}`}
               checked={scopes.includes(s)}
-              onChange={(e) =>
+              onCheckedChange={(on) =>
                 setScopes((cur) =>
-                  e.target.checked ? [...cur, s] : cur.filter((x) => x !== s),
+                  on === true
+                    ? [...cur.filter((x) => x !== s), s]
+                    : cur.filter((x) => x !== s),
                 )
               }
-            />{" "}
+            />
             {name} <code>{s}</code>
           </label>
         ))}

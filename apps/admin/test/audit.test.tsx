@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { auditEntries, FIXTURE_IDS } from "../src/mocks/fixtures";
+import { detailLine } from "../src/pages/Audit";
 import { http, json, renderApp, seen, use } from "./harness";
 
 it("lists entries of each outcome; aggregated refusals show a count", async () => {
@@ -79,9 +80,10 @@ it("filters by actor and action, and keeps both in the URL", async () => {
   await waitFor(() =>
     expect(seen.some((s) => s.path.includes("actor=Leo"))).toBe(true),
   );
-  fireEvent.change(screen.getByLabelText("Action"), {
-    target: { value: "install.upgrade" },
-  });
+  fireEvent.click(screen.getByRole("combobox", { name: "Action" }));
+  fireEvent.click(
+    await screen.findByRole("option", { name: "started an upgrade of" }),
+  );
   await waitFor(() =>
     expect(
       seen.some(
@@ -97,12 +99,85 @@ it("filters by actor and action, and keeps both in the URL", async () => {
   });
   fireEvent.click(screen.getByRole("link", { name: "Clear filter" }));
   await waitFor(() => expect(screen.getByLabelText("Actor")).toHaveValue(""));
-  expect(screen.getByLabelText("Action")).toHaveValue("");
+  expect(screen.getByRole("combobox", { name: "Action" })).toHaveTextContent(
+    "Any action",
+  );
 });
 
 it("shows an action from the URL that is not in the list, and limits the actor to 200 characters", async () => {
   renderApp("/audit?action=token.mint");
   await screen.findAllByRole("row");
-  expect(screen.getByLabelText("Action")).toHaveValue("token.mint");
+  expect(screen.getByRole("combobox", { name: "Action" })).toHaveTextContent(
+    "token.mint",
+  );
   expect(screen.getByLabelText("Actor")).toHaveAttribute("maxlength", "200");
+});
+
+it("Target shows the install's slug in a link, and Detail is a plain line, never JSON", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          {
+            ...auditEntries[0],
+            detail: {
+              kind: "upgrade",
+              args: { version: "0.77.1" },
+              route: "R6",
+              admin: "me@example.com",
+            },
+          },
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  const table = await screen.findByRole("table");
+  const target = await within(table).findByRole("link", { name: "leo" });
+  expect(target).toHaveAttribute("href", `/installs/${FIXTURE_IDS.leo}`);
+  const row = within(table).getAllByRole("row")[1];
+  expect(row).toHaveTextContent(/to 0\.77\.1 · job 01JD7Z…/);
+  expect(row.textContent).not.toMatch(/[{}"]/);
+  expect(row.textContent).not.toContain("me@example.com");
+});
+
+it("Target falls back to the install id when the install can't be read", async () => {
+  use(
+    http.get("*/api/v1/installs/:id", () =>
+      json({ error: { code: "not_found", message: "No." } }, 404),
+    ),
+  );
+  renderApp("/audit");
+  const table = await screen.findByRole("table");
+  expect(
+    await within(table).findByRole("link", { name: FIXTURE_IDS.leo }),
+  ).toBeInTheDocument();
+});
+
+it("detailLine reads the fields people read and drops the rest", () => {
+  expect(detailLine(null)).toBe("");
+  expect(
+    detailLine({
+      kind: "create",
+      args: { tier: "team", auth: { providers: ["google"], domains: [] } },
+    }),
+  ).toBe("Team, Google");
+  expect(detailLine({ kind: "upgrade", args: { version: "0.77.1" } })).toBe(
+    "to 0.77.1",
+  );
+  expect(
+    detailLine({
+      kind: "suspend",
+      args: { reason: "Billing hold" },
+      route: "R8",
+    }),
+  ).toBe("Billing hold");
+  expect(
+    detailLine({ surface: "mcp", tool: "check_slug", client: "Claude Code" }),
+  ).toBe("via MCP · Claude Code");
+  expect(detailLine({ stage: "auth_time" })).toBe("auth_time");
+  expect(detailLine({ tokenId: "x", admin: "a@b.c", nested: { a: 1 } })).toBe(
+    "",
+  );
 });

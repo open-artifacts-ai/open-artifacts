@@ -36,12 +36,12 @@ export function SignIn({
       <h1>Open Artifacts Admin</h1>
       <p>Sign in with the Google account an admin added for you.</p>
       {known && (
-        <p className="oa-error" role="alert">
+        <p className="oa-banner oa-banner-warn" role="alert">
           {ERRORS[known]}
         </p>
       )}
       <div className="oa-acts">
-        <Button asChild>
+        <Button asChild size="lg">
           <a href={href}>Sign in with Google</a>
         </Button>
       </div>

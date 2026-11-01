@@ -3,6 +3,8 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  defaultParseSearch,
+  defaultStringifySearch,
   Outlet,
   redirect,
   useParams,
@@ -105,7 +107,26 @@ const routeTree = root.addChildren([
   ]),
 ]);
 
-export const router = createRouter({ routeTree });
+/**
+ * The default search codec, except `sub` stays the raw string: parsed as JSON,
+ * an all-digit Google account id becomes a rounded number and drops (#1026).
+ */
+export const searchCodec = {
+  parseSearch: (str: string) => {
+    const out: Record<string, unknown> = defaultParseSearch(str);
+    const raw = new URLSearchParams(str).get("sub");
+    if (raw !== null) out.sub = raw;
+    return out;
+  },
+  stringifySearch: (search: Record<string, unknown>) => {
+    const { sub, ...rest } = search;
+    const str = defaultStringifySearch(rest);
+    if (typeof sub !== "string") return str;
+    return `${str}${str ? "&" : "?"}sub=${encodeURIComponent(sub)}`;
+  },
+};
+
+export const router = createRouter({ routeTree, ...searchCodec });
 
 declare module "@tanstack/react-router" {
   interface Register {

@@ -1565,7 +1565,8 @@ fieldset.oa-seg-field {
   min-width: min(100%, 240px);
 }
 .oa-page .oa-connect h2 {
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 600;
   line-height: 1.4;
   margin: 0;
 }
@@ -1909,4 +1910,65 @@ fieldset.oa-seg-field {
     order: 4;
     font-size: 12px;
   }
+}
+
+/* ---------- Conformance: audit, tokens, sign-in, no access ---------- */
+/* Audit filters: one row of outline controls (Any actor, Any action, Install). */
+.oa-audit-tools [data-slot="select-trigger"] {
+  width: auto;
+}
+/* Dialogs: 16px from the title to the first label (content gap is 12px). */
+[data-slot="dialog-header"] + .oa-form {
+  margin-top: 4px;
+}
+/* A disabled submit names what is missing, at the footer's left. */
+[data-slot="dialog-footer"] small.oa-blocker {
+  margin: 0 auto 0 0;
+  align-self: center;
+}
+/* Edge pages: the consent handoff's panel type. */
+.oa-panel h1 {
+  font-size: 20px;
+  letter-spacing: -0.01em;
+}
+.oa-panel p {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--oa-text-muted);
+}
+.oa-panel p.oa-banner {
+  margin: 0 0 14px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  font-size: 13px;
+  color: var(--oa-text);
+}
+.oa-panel [data-slot="button"][data-size="lg"] {
+  height: 36px;
+  padding: 0 16px;
+  font-size: 14px;
+}
+/* No access: the account id row (label muted, id mono, Copy). */
+.oa-idrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0 0 16px;
+  padding: 8px 10px 8px 12px;
+  border-radius: 8px;
+  background: var(--oa-sunken);
+  font-size: 13px;
+}
+.oa-idrow-k {
+  color: var(--oa-text-muted);
+}
+.oa-idrow code {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  padding: 0;
+  font-size: 13px;
+  color: var(--oa-text);
+  overflow-wrap: anywhere;
 }
