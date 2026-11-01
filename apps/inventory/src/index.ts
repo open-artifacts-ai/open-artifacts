@@ -11,6 +11,7 @@ import {
 } from "./http.ts";
 import { listInstalls } from "./installs.ts";
 import { postProdclean } from "./prodclean.ts";
+import { schemaCheck, schemaMissing } from "./schema.ts";
 
 // The inventory Worker (design v7 6.3): GET /installs, /hosts, /health and the
 // monitor's POST /prodclean, every route behind a GitHub Actions OIDC bearer.
@@ -31,6 +32,8 @@ const ROUTES: Record<string, string> = {
 };
 
 export function makeWorker(deps: { verify: Verify; now: () => number }) {
+  // One per isolate: the platform schema, read until it is present (#1041).
+  const schemaReady = schemaCheck();
   return {
     async fetch(request: Request, env: Env): Promise<Response> {
       // Auth first: an unauthenticated caller learns nothing, not even routes.
@@ -43,6 +46,10 @@ export function makeWorker(deps: { verify: Verify; now: () => number }) {
       if (!method) return notFound();
       if (request.method !== method) return methodNotAllowed(method);
       try {
+        // The D1 routes, once verified: no platform schema yet is a fixed
+        // 503, not the generic 500 (/hosts reads only HOSTS).
+        if (url.pathname !== "/hosts" && !(await schemaReady(env.PLATFORM_DB)))
+          return schemaMissing();
         switch (url.pathname) {
           case "/hosts": {
             const host = url.searchParams.get("host");
