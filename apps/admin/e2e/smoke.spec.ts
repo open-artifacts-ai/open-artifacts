@@ -80,14 +80,22 @@ test.describe("lifecycle", () => {
   const LEO = "ileoabcdefg2";
   const ACME = "iacmeabcdef3";
   const BROKEN_JOB = "01JD7Z9W5Q8X3N4M2K1H0G9F8F";
-  const jobDone = (page: import("@playwright/test").Page) =>
-    expect(page.getByTestId("status")).toHaveText("done", { timeout: 15_000 });
+  // On a job page the only status is the header's screen-reader text, " · done".
+  const jobDone = async (page: import("@playwright/test").Page) => {
+    await expect(page).toHaveURL(/\/jobs\/[0-9A-Z]{26}$/);
+    await expect(page.getByTestId("status")).toHaveText(/^\s*· done$/, {
+      timeout: 15_000,
+    });
+  };
 
   test("upgrade to another release", async ({ page }) => {
     await page.goto(`/installs/${LEO}`);
     await page.getByRole("button", { name: "Upgrade" }).click();
     const dialog = page.getByRole("dialog");
-    await dialog.getByLabel("Version").selectOption("1.41.2");
+    const version = dialog.getByRole("combobox", { name: "Version" });
+    await version.click();
+    await page.getByRole("option", { name: "1.41.2", exact: true }).click();
+    await expect(version).toHaveText("1.41.2");
     await dialog.getByRole("button", { name: "Upgrade" }).click();
     await expect(
       page.getByRole("heading", { name: "Upgrading leo" }),
@@ -171,9 +179,12 @@ test.describe("lifecycle", () => {
     await page.getByRole("button", { name: "Purge" }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).not.toContainText("Sign in again");
-    const go = dialog.getByRole("button", { name: "Purge" });
+    const go = dialog.getByRole("button", { name: "Delete leo for good" });
+    await expect(go).toBeDisabled();
+    await dialog.getByRole("textbox").fill("lea");
     await expect(go).toBeDisabled();
     await dialog.getByRole("textbox").fill("leo");
+    await expect(go).toBeEnabled();
     await go.click();
     await expect(page).toHaveURL(/\/jobs\/[0-9A-Z]{26}$/);
     await expect(

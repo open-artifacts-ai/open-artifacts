@@ -33,7 +33,8 @@ it("shows steps, attempt, the last error in plain words and the next retry", asy
 });
 
 it("shows Design's step labels, step count and the attempt line", async () => {
-  const retryAt = Date.now() + 60_000;
+  // 75 s out reads "1 min" for anything from 30 s to 90 s, so render time can't move it.
+  const retryAt = Date.now() + 75_000;
   serve({
     ...jobsByStatus.running,
     kind: "create",
