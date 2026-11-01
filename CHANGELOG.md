@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.89.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.0...v0.89.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **platform-db:** check the live schema against the applied files before a run ([#998](https://github.com/open-artifacts-ai/open-artifacts/issues/998)) ([#999](https://github.com/open-artifacts-ai/open-artifacts/issues/999)) ([a14bbbe](https://github.com/open-artifacts-ai/open-artifacts/commit/a14bbbe13c7d2bc05ee417276dc69d16560c3d54))
+
 ## [0.89.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.3...v0.89.0) (2026-11-01)
 
 
