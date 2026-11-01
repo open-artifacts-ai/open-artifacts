@@ -49,7 +49,8 @@ export const transient = async <T>(p: Promise<T>): Promise<T> => {
 /**
  * The options every job's WfpProvisioner runs with: the env's namespace and
  * domains, the release from the RELEASES binding, an owner token labelled
- * `label` (`ss-<signupId>`), /healthz required to report the install id.
+ * `label` (`ss-<signupId>`), /healthz required to report the install id,
+ * and provision's audit rows written as `job:<jobId>` (4.9).
  * Turnstile, `onStep`, `brokerEnabled` and `directFetch` are the
  * Workflows' (W2, W3).
  */
@@ -57,6 +58,7 @@ export async function provisionerOptions(
   env: ProvisionerEnv,
   label: string,
   io: ProvisionerIo,
+  jobId: string,
 ): Promise<WfpOptions> {
   const e = deployEnv(env.OA_ENV);
   const token = await transient(env.PROVISION_TOKEN.get());
@@ -77,6 +79,8 @@ export async function provisionerOptions(
     fetch: io.fetch,
     now: io.now,
     sleep: io.sleep,
+    // 4.9: provision's own hosted_audit rows, as the job (auditAs).
+    auditActor: `job:${jobId}`,
   };
 }
 
@@ -84,6 +88,7 @@ export async function provisionerFor(
   env: ProvisionerEnv,
   label: string,
   io: ProvisionerIo,
+  jobId: string,
 ): Promise<WfpProvisioner> {
-  return new WfpProvisioner(await provisionerOptions(env, label, io));
+  return new WfpProvisioner(await provisionerOptions(env, label, io, jobId));
 }

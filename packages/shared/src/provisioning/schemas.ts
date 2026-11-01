@@ -202,10 +202,18 @@ export const RedlineCredsSchema = z.union([
   z.object({ requestId, revoke: z.literal(true) }).strict(),
 ]);
 export type RedlineCreds = z.infer<typeof RedlineCredsSchema>;
-/** `jobs.args` of an R26 job: which variant ran (audit), never the key. */
-export const redlineCredsJobArgs = (b: RedlineCreds): { revoke: boolean } => ({
-  revoke: b.revoke === true,
-});
+/**
+ * `jobs.args` of an R26 job. A mint carries the recipientKey (a public key,
+ * which the Workflow seals the PAT to); a revoke carries only the variant.
+ * With the row's request_id as requestId, the args parse back to the body.
+ */
+export type RedlineCredsJobArgs =
+  | { revoke: false; recipientKey: string }
+  | { revoke: true };
+export const redlineCredsJobArgs = (b: RedlineCreds): RedlineCredsJobArgs =>
+  b.revoke === true
+    ? { revoke: true }
+    : { revoke: false, recipientKey: b.recipientKey };
 
 export const JobSchema = z.object({
   id: JobIdSchema,

@@ -1,12 +1,18 @@
 import {
   type ApiRouteId,
+  type BrowserRouteId,
   isApiRoute,
   PROTOCOL_ROUTES,
   ROUTES,
 } from "@oa/shared/provisioning";
 import { authenticate } from "./auth/authenticate.js";
 import { checkCsrf, checkOrigin } from "./auth/csrf.js";
-import { handleOAuth, isOAuthPath } from "./auth/oauth/index.js";
+import {
+  handleOAuth,
+  isOAuthPath,
+  oauthPrincipal,
+} from "./auth/oauth/index.js";
+import { browserRoute, type SigninDeps } from "./auth/signin.js";
 import { LazyBody, readJsonBody } from "./body.js";
 import type { Env } from "./env.js";
 import {
@@ -48,18 +54,20 @@ async function guard(f: () => Promise<Response>): Promise<Response> {
   }
 }
 
+/** `signin`: the sign-in routes' clock and seams (tests only). */
 export async function handle(
   req: Request,
   env: Env,
   ctx: ExecutionContext,
+  signin: Partial<SigninDeps> = {},
 ): Promise<Response> {
   const url = new URL(req.url);
   const host = hostKind(url.hostname, env);
   if (!host) return notFound();
-  if (host === "api") return route(req, env, ctx, "api", url);
+  if (host === "api") return route(req, env, ctx, "api", url, signin);
   // Every admin-host response, SPA and errors alike, carries the 4.5
   // browser-host headers; the consent page keeps its own CSP (9A.3.2).
-  return browserHeaders(await route(req, env, ctx, "admin", url), {
+  return browserHeaders(await route(req, env, ctx, "admin", url, signin), {
     ownCsp: url.pathname === "/oauth/authorize",
   });
 }
@@ -70,6 +78,7 @@ async function route(
   ctx: ExecutionContext,
   host: HostKind,
   url: URL,
+  signin: Partial<SigninDeps>,
 ): Promise<Response> {
   // Host policy first: browser hosts refuse Authorization; api.<app> ignores
   // Cookie (4.5).
@@ -77,9 +86,9 @@ async function route(
     return refuse(env, "auth", "unauthenticated", req);
 
   const ipKey = ipKeyOf(clientIp(req));
-  if (ipKey === "unknown") return refuse(env, "pre_ip", "forbidden", req);
+  if (ipKey === "unknown") return refuse(env, "pre", "forbidden", req);
   const pre = await limit(env, "pre_ip", ipKey);
-  if (pre) return refuse(env, "pre_ip", pre.code, req);
+  if (pre) return refuse(env, "pre", pre.code, req);
 
   // Protocol routes: method, path and host from PROTOCOL_ROUTES (9A.3.1).
   // Their own checks (the consent POST's Sec-Fetch-Site, 4.5) replace Origin.
@@ -91,7 +100,9 @@ async function route(
     if (!here.some((r) => r.method === req.method))
       return methodNotAllowed(here.map((r) => r.method).join(", "));
     return guard(() =>
-      path === "/mcp" ? handleMcp(req, env, ctx) : handleOAuth(req, env, ctx),
+      path === "/mcp"
+        ? handleMcp(req, env, ctx, { oauthPrincipal })
+        : handleOAuth(req, env, ctx),
     );
   }
   if (isOAuthPath(path)) return notFound();
@@ -106,7 +117,7 @@ async function route(
   if (m)
     return isApiRoute(m.route)
       ? apiRoute(req, env, ctx, host, m.route, m.params, url)
-      : notImplemented();
+      : guard(() => browserRoute(req, env, m.route as BrowserRouteId, signin));
   if (
     host === "admin" &&
     !path.startsWith("/api/") &&

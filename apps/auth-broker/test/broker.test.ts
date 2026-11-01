@@ -497,6 +497,21 @@ describe("rate limits", () => {
     expect(ipLimit.keys).toEqual(["ip:203.0.113.9"]);
   });
 
+  it("IPv6 callers are keyed by their /64 (ipKey, design v7 4.7)", async () => {
+    for (const ip of ["2001:db8:1:2::1", "2001:db8:1:2:ffff::9"])
+      await call(AUTHZ, { headers: { "cf-connecting-ip": ip } });
+    expect(ipLimit.keys).toEqual([
+      "ip:2001:db8:1:2::/64",
+      "ip:2001:db8:1:2::/64",
+    ]);
+  });
+
+  it("an unparseable cf-connecting-ip keeps its own bucket, not the shared unknown", async () => {
+    for (const ip of ["not-an-ip", "also-bad"])
+      await call(AUTHZ, { headers: { "cf-connecting-ip": ip } });
+    expect(ipLimit.keys).toEqual(["ip:not-an-ip", "ip:also-bad"]);
+  });
+
   it("no cf-connecting-ip and no valid gate header is the shared unknown bucket", async () => {
     await call(AUTHZ, {});
     await call(AUTHZ, { headers: { "x-oa-gate-install": "../evil" } });

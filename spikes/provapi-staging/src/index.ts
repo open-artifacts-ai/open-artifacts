@@ -5,9 +5,10 @@
 // - oa-s-spike-<run> (wrangler.jsonc) binds it cross-script, plus the
 //   staging dispatch namespace and a throwaway D1 database.
 // Neither has a route, workers.dev or preview URL. The caller runs once, on
-// its first cron tick (every minute, the shortest cron), and writes each
-// spike's result to its own D1 database, then a done row; every later tick
-// returns at that row;
+// its first cron tick (every minute, the shortest cron): every tick writes a
+// "started" row, the first then writes each spike's result (a throw is an
+// {ok: false, error} row) to its own D1 database, then a done row; every
+// later tick returns at that row;
 // CI reads them back over the D1 REST API. Reads only against rl-a and rl-b:
 // every fetch below is a plain GET with no body.
 import { WorkflowEntrypoint } from "cloudflare:workers";
@@ -194,8 +195,24 @@ const SPIKES: Record<string, (env: Env) => Promise<Result>> = {
   s7,
 };
 
+/** The results table; deploy creates the same one (a test pins the text). */
+const RESULTS_DDL =
+  "CREATE TABLE IF NOT EXISTS results (spike TEXT PRIMARY KEY, json TEXT NOT NULL)";
+
+const put = (env: Env, spike: string, row: unknown) =>
+  env.DB.prepare("INSERT OR REPLACE INTO results (spike, json) VALUES (?, ?)")
+    .bind(spike, JSON.stringify(row))
+    .run();
+
+/** "Name: message" of a throw, the shape every error row carries. */
+const errText = (e: unknown) => `${errOf(e).name}: ${errOf(e).message}`;
+
 /** Runs each requested spike once; a throw is that spike's failure only. */
-export async function runOnce(env: Env): Promise<void> {
+export async function runOnce(env: Env, cron = ""): Promise<void> {
+  // Every tick first marks that it fired, so CI can tell "the cron never
+  // fired" from "it fired and a spike wrote no row".
+  await env.DB.prepare(RESULTS_DDL).run();
+  await put(env, "started", { at: new Date().toISOString(), cron });
   // After the first run, every later cron tick returns here (one read), so a
   // failed cleanup leaves a Worker that does nothing until it is deleted.
   try {
@@ -203,9 +220,6 @@ export async function runOnce(env: Env): Promise<void> {
   } catch {
     // No done table yet: the first run.
   }
-  await env.DB.prepare(
-    "CREATE TABLE IF NOT EXISTS results (spike TEXT PRIMARY KEY, json TEXT NOT NULL)",
-  ).run();
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS claim (id INTEGER PRIMARY KEY)",
   ).run();
@@ -215,21 +229,30 @@ export async function runOnce(env: Env): Promise<void> {
   if (claim.meta.changes !== 1) return;
   const wanted = env.SPIKES.split(",").filter((s) => s in SPIKES);
   for (const name of wanted) {
-    let r: Result;
+    let r: Result | (Result & { ok: false; error: string });
     try {
       r = await (SPIKES[name] as (env: Env) => Promise<Result>)(env);
     } catch (e) {
       r = {
         spike: name,
+        ok: false,
         pass: false,
-        observed: `threw ${errOf(e).name}: ${errOf(e).message}`,
+        error: errText(e),
+        observed: `threw ${errText(e)}`,
       };
     }
-    await env.DB.prepare(
-      "INSERT OR REPLACE INTO results (spike, json) VALUES (?, ?)",
-    )
-      .bind(name, JSON.stringify(r))
-      .run();
+    try {
+      await put(env, name, r);
+    } catch (e) {
+      // The row itself would not write (too big, say): say so instead.
+      await put(env, name, {
+        spike: name,
+        ok: false,
+        pass: false,
+        error: `result row not written: ${errText(e)}`,
+        observed: `result row not written: ${errText(e)}`,
+      });
+    }
   }
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS done (id INTEGER PRIMARY KEY)",
@@ -238,8 +261,16 @@ export async function runOnce(env: Env): Promise<void> {
 }
 
 export default {
-  async scheduled(_c: unknown, env: Env) {
+  async scheduled(c: { cron?: string }, env: Env) {
     if (env.ROLE !== "caller") return;
-    await runOnce(env);
+    try {
+      await runOnce(env, c?.cron ?? "");
+    } catch (e) {
+      // Outside any one spike (the claim, a table): CI names it.
+      await put(env, "tick_error", { ok: false, error: errText(e) }).catch(
+        () => {},
+      );
+      throw e;
+    }
   },
 };

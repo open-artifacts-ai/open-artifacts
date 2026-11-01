@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.86.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.85.0...v0.86.0) (2026-10-31)
+
+
+### Features
+
+* **provisioning:** W13b admin MCP: OAuth for the Provisioning API ([#901](https://github.com/open-artifacts-ai/open-artifacts/issues/901)) ([123af04](https://github.com/open-artifacts-ai/open-artifacts/commit/123af04c90be893370fc1a56dda9297b374aeb5e))
+
+## [0.85.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.84.0...v0.85.0) (2026-10-31)
+
+
+### Features
+
+* **provisioner:** W3 Workflows for the Provisioning API ([#897](https://github.com/open-artifacts-ai/open-artifacts/issues/897)) ([b1b4869](https://github.com/open-artifacts-ai/open-artifacts/commit/b1b4869f565865336347ee084596a5e08d620795))
+* **provisioning:** W13a admin MCP: tools for the Provisioning API ([#899](https://github.com/open-artifacts-ai/open-artifacts/issues/899)) ([d97cdfa](https://github.com/open-artifacts-ai/open-artifacts/commit/d97cdfa7a1cf8849c47fba2c63c5815b0dec7fcd))
+
+## [0.84.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.83.0...v0.84.0) (2026-10-31)
+
+
+### Features
+
+* **provisioning:** W5b API tokens, OIDC, limits for the Provisioning API ([#890](https://github.com/open-artifacts-ai/open-artifacts/issues/890)) ([f091c4f](https://github.com/open-artifacts-ai/open-artifacts/commit/f091c4f115993ea3606a41c28eb338e9007a70bf))
+
+
+### Bug Fixes
+
+* **hosted:** oa:hosted in hosted-ops CI accepts the one-year deploy token (maxTokenDays 400); laptops stay at 30 ([#922](https://github.com/open-artifacts-ai/open-artifacts/issues/922)) ([654ffab](https://github.com/open-artifacts-ai/open-artifacts/commit/654ffabb3fbf73faca6f34fa68d75051ef14fc2d))
+
+## [0.83.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.82.0...v0.83.0) (2026-10-31)
+
+
+### Features
+
+* **provisioning:** W5a API sign-in for the Provisioning API ([#891](https://github.com/open-artifacts-ai/open-artifacts/issues/891)) ([ba0f90a](https://github.com/open-artifacts-ai/open-artifacts/commit/ba0f90a380c75ab9c7357fabda730671fd3ca9d5))
+
+## [0.82.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.81.0...v0.82.0) (2026-10-31)
+
+
+### Features
+
+* **provisioner:** W1 provisioner port for the Provisioning API ([#888](https://github.com/open-artifacts-ai/open-artifacts/issues/888)) ([58bd2a3](https://github.com/open-artifacts-ai/open-artifacts/commit/58bd2a334a2afad8946af418b4b073964fed357d))
+* **provisioning:** W4 API core for the Provisioning API ([#893](https://github.com/open-artifacts-ai/open-artifacts/issues/893)) ([2cb9311](https://github.com/open-artifacts-ai/open-artifacts/commit/2cb93116f342f9cd91526236cd40d333e8a23554))
+* **provision:** W2 provision create order and lifecycle for the Provisioning API ([#892](https://github.com/open-artifacts-ai/open-artifacts/issues/892)) ([8d9435d](https://github.com/open-artifacts-ai/open-artifacts/commit/8d9435dd67542c3af4daa63563a756b693c0dbd5))
+* **shared:** C7 redline mint args carry recipientKey; Workflow rollingBack status ([#916](https://github.com/open-artifacts-ai/open-artifacts/issues/916)) ([b707f7b](https://github.com/open-artifacts-ai/open-artifacts/commit/b707f7b854693b1dacc6dd3ca79cad6dd165fdbd))
+
 ## [0.81.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.80.0...v0.81.0) (2026-10-31)
 
 
