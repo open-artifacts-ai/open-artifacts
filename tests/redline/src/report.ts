@@ -388,9 +388,33 @@ export function preProdNa(c: CaseResult): boolean {
   );
 }
 
+/**
+ * The red-line guard's prod-clean case, frozen the same way: not-applicable
+ * with PRE_PROD_GUARD_REASON only when the prod inventory answers 503
+ * schema_missing and the prod admin host does not resolve (guardProdClean).
+ * Exact file, exact name, exact reason; after #1014 it must pass.
+ */
+export const PRE_PROD_GUARD = Object.freeze({
+  file: "live/guard.test.ts",
+  name: "guard > prod is clean (no test hooks on any prod install)",
+});
+export const PRE_PROD_GUARD_REASON =
+  "pre-prod: prod admin host does not resolve yet and the prod inventory schema is missing";
+
+/** The guard's pre-prod not-applicable the gate accepts. */
+export function preProdGuardNa(c: CaseResult): boolean {
+  return (
+    c.level === "not-applicable" &&
+    c.reason === PRE_PROD_GUARD_REASON &&
+    c.file === PRE_PROD_GUARD.file &&
+    c.name === PRE_PROD_GUARD.name
+  );
+}
+
 export function gatePasses(cases: readonly CaseResult[]): boolean {
   return (
-    cases.length > 0 && cases.every((c) => c.level === "pass" || preProdNa(c))
+    cases.length > 0 &&
+    cases.every((c) => c.level === "pass" || preProdNa(c) || preProdGuardNa(c))
   );
 }
 
