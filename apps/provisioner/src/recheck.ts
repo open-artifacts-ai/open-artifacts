@@ -4,7 +4,7 @@
 // from the shared install_status view, checks the kind against TRANSITIONS,
 // and for a create parses signups.vars with a strict schema. Any mismatch is
 // `invalid_state`, terminal.
-import { NonRetryableError } from "cloudflare:workflows";
+import type { NonRetryableError } from "cloudflare:workflows";
 import { type Env as DeployEnv, STAGING_TEST_DOMAIN } from "@oa/provision";
 import {
   canTransition,
@@ -15,12 +15,16 @@ import {
   type TransitionActor,
   type TransitionFrom,
 } from "@oa/shared/provisioning";
+import { StepRefusal } from "./errors.js";
 import { transient } from "./provisioner.js";
 import type { JobRow, StepCtx } from "./steps.js";
 
-/** A failed recheck: terminal, with a fixed message (never row content). */
+/**
+ * A failed recheck: terminal, its message exactly invalid_state's fixed
+ * text; `why` reaches only the redacted log line.
+ */
 export const refused = (why: string): NonRetryableError =>
-  new NonRetryableError(`invalid_state: ${why}`);
+  new StepRefusal("invalid_state", why);
 
 /** The install_status view row a recheck reads (0008). */
 export type StatusRow = {

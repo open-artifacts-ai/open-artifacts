@@ -16,7 +16,14 @@ import type { SigninDeps } from "../src/auth/signin.js";
 import { isRefusal, type Principal } from "../src/principal.js";
 import { platformDb } from "./db.js";
 import { ADMIN, API, ctx, fakeEnv } from "./fakes.js";
-import { otherHash, PROP_CASES, PROP_SEED, rng, secret43 } from "./prop.js";
+import {
+  otherHash,
+  PROP_CASES,
+  PROP_SEED,
+  PROP_TIMEOUT_MS,
+  rng,
+  secret43,
+} from "./prop.js";
 
 // Every edge request carries cf-connecting-ip (the adapter 403s without
 // one, 4.7); a test that sets its own keeps it.
@@ -152,55 +159,59 @@ describe("session lookup: sha256(sid) compared in constant time (4.1)", () => {
   // Seeded property (seed PROP_SEED, PROP_CASES cases): whatever row the
   // lookup hands back, the session is accepted only when its id_hash equals
   // sha256(sid).
-  it(`property: a differing id_hash is refused, the exact one accepted (seed ${PROP_SEED.toString(16)}, ${PROP_CASES} cases)`, async () => {
-    const e = fakeEnv();
-    const s = await session(e);
-    const real = (await db
-      .prepare("SELECT * FROM sessions WHERE id_hash = ?1")
-      .bind(await sessionHash(s.sid))
-      .first()) as Record<string, unknown>;
-    let stored = "";
-    const lying = {
-      ...e.env,
-      PLATFORM_DB: new Proxy(db, {
-        get: (t, k) =>
-          k === "prepare"
-            ? (sql: string) =>
-                sql.includes("FROM sessions WHERE id_hash = ? AND kind")
-                  ? {
-                      bind: () => ({
-                        first: async () => ({ ...real, id_hash: stored }),
-                      }),
-                    }
-                  : t.prepare(sql)
-            : Reflect.get(t, k),
-      }),
-    } as typeof e.env;
-    const at = (sid: string, env = lying) =>
-      authenticate(withCookie(`${ADMIN}/api/v1/me`, sid), env, "admin", NOW);
-    const un = { refusal: true, code: "unauthenticated" };
-    const r = rng(PROP_SEED + 2);
-    const h0 = real.id_hash as string;
-    for (let i = 0; i < PROP_CASES; i++) {
-      // A random sid against the real row.
-      const sid = secret43(r);
-      const h = await sessionHash(sid);
-      expect(h, `case ${i}`).not.toBe(h0);
-      stored = h0;
-      expect(await at(sid), `case ${i}`).toEqual(un);
-      expect(await at(sid, e.env), `case ${i}`).toEqual(un);
-      // A row whose stored hash differs from the real sid's.
-      stored = otherHash(r, h0);
-      expect(stored, `case ${i}`).not.toBe(h0);
-      expect(await at(s.sid), `case ${i}`).toEqual(un);
-      // The exact pair.
-      stored = h;
-      expect(await at(sid), `case ${i}`).toMatchObject({
-        kind: "admin",
-        session: { hash: h },
-      });
-    }
-  });
+  it(
+    `property: a differing id_hash is refused, the exact one accepted (seed ${PROP_SEED.toString(16)}, ${PROP_CASES} cases)`,
+    async () => {
+      const e = fakeEnv();
+      const s = await session(e);
+      const real = (await db
+        .prepare("SELECT * FROM sessions WHERE id_hash = ?1")
+        .bind(await sessionHash(s.sid))
+        .first()) as Record<string, unknown>;
+      let stored = "";
+      const lying = {
+        ...e.env,
+        PLATFORM_DB: new Proxy(db, {
+          get: (t, k) =>
+            k === "prepare"
+              ? (sql: string) =>
+                  sql.includes("FROM sessions WHERE id_hash = ? AND kind")
+                    ? {
+                        bind: () => ({
+                          first: async () => ({ ...real, id_hash: stored }),
+                        }),
+                      }
+                    : t.prepare(sql)
+              : Reflect.get(t, k),
+        }),
+      } as typeof e.env;
+      const at = (sid: string, env = lying) =>
+        authenticate(withCookie(`${ADMIN}/api/v1/me`, sid), env, "admin", NOW);
+      const un = { refusal: true, code: "unauthenticated" };
+      const r = rng(PROP_SEED + 2);
+      const h0 = real.id_hash as string;
+      for (let i = 0; i < PROP_CASES; i++) {
+        // A random sid against the real row.
+        const sid = secret43(r);
+        const h = await sessionHash(sid);
+        expect(h, `case ${i}`).not.toBe(h0);
+        stored = h0;
+        expect(await at(sid), `case ${i}`).toEqual(un);
+        expect(await at(sid, e.env), `case ${i}`).toEqual(un);
+        // A row whose stored hash differs from the real sid's.
+        stored = otherHash(r, h0);
+        expect(stored, `case ${i}`).not.toBe(h0);
+        expect(await at(s.sid), `case ${i}`).toEqual(un);
+        // The exact pair.
+        stored = h;
+        expect(await at(sid), `case ${i}`).toMatchObject({
+          kind: "admin",
+          session: { hash: h },
+        });
+      }
+    },
+    PROP_TIMEOUT_MS,
+  );
 });
 
 describe("Origin and Sec-Fetch-Site (before authn)", () => {

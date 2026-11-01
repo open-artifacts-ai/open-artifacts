@@ -13,9 +13,13 @@
 #   preview URL (spikes/provapi-staging): oa-s-spike-<run>-wf hosts Workflow
 #   oa-s-spike-<run> (class SpikeWorkflow); oa-s-spike-<run> binds it
 #   cross-script, the staging dispatch namespace and the throwaway D1
-#   database oa-s-spike-<run>. The caller runs the spikes on its first cron
-#   tick and writes the results to that D1 database; the job reads them back
-#   over the D1 REST API (no fetch handler, so nothing is reachable).
+#   database oa-s-spike-<run>. deploy creates that database's results table
+#   first; the caller writes a "started" row on every cron tick, runs the
+#   spikes on its first and writes each result (a throw is an error row);
+#   the job reads them back over the D1 REST API for up to 18 min, since a
+#   new Cron Trigger can take up to 15 min to propagate (no fetch handler,
+#   so nothing is reachable). A spike with no row names why: "D1 error:
+#   <message>", "cron never fired", or "fired, no row for sN".
 # Cleanup (always) deletes this run's Workers, Workflow, D1 database and
 # secret, and any oa-s-spike-* left over from an earlier run (over 1 h old);
 # it refuses any name without that prefix.
@@ -24,11 +28,25 @@
 # last step fails the run if any spike failed. One results file,
 # spike-results.json (names, types, statuses and times; never a secret
 # value), is uploaded, and the job summary has one line per spike.
+#
+# env=prod runs only the prod-verify job: the read-only token verify of
+# scripts/ci/provapi-token-verify.sh (GETs only, no write helper), in
+# hosted-prod-deploy, with prod.json's constants and oa-p-provision-token's
+# metadata. The spikes list must be exactly "verify". The prod token never
+# shares a job with provapi-spikes.sh, wrangler or any write.
 name: provapi-staging-spikes
 
 on:
   workflow_dispatch:
     inputs:
+      env:
+        description: "staging runs the spikes; prod runs only the read-only verify"
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - prod
       spikes:
         description: "Comma list of verify,s1,s2,s3,s4,s5,s6,s7,s8"
         required: true
@@ -39,15 +57,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: provapi-spikes-staging
+  group: provapi-spikes-${{ inputs.env }}
   cancel-in-progress: false
 
 jobs:
   spikes:
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' && inputs.env == 'staging' }}
     runs-on: ubuntu-latest
     environment: hosted-staging-deploy
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       SPIKES: ${{ inputs.spikes }}
       RUN_ID: ${{ github.run_id }}
@@ -142,6 +160,71 @@ jobs:
           path: ${{ runner.temp }}/spike-results.json
           if-no-files-found: error
       - name: Every spike passed
+        if: ${{ always() }}
+        env:
+          RESULTS_OUTCOME: ${{ steps.results.outcome }}
+        run: test "$RESULTS_OUTCOME" = success
+
+  # Prod: the read-only verify only, from its own GET-only script. No
+  # install, no build, no provapi-spikes.sh, no cleanup.
+  prod-verify:
+    if: ${{ github.ref == 'refs/heads/main' && inputs.env == 'prod' }}
+    runs-on: ubuntu-latest
+    environment: hosted-prod-deploy
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    env:
+      SPIKES: ${{ inputs.spikes }}
+      RUN_ID: ${{ github.run_id }}
+      HOSTED_DIR: ${{ github.workspace }}/.github/hosted
+    steps:
+      # Before the token is written: anything but "verify" is refused.
+      - name: Check the inputs
+        run: |
+          set -euo pipefail
+          [ "$SPIKES" = verify ] || { echo "refused: env=prod runs only verify (got: $SPIKES)"; exit 1; }
+      - name: Set the paths
+        run: |
+          set -euo pipefail
+          {
+            echo "TOKEN_FILE=$RUNNER_TEMP/cf-token"
+            echo "RESULTS_DIR=$RUNNER_TEMP/verify-results"
+            echo "RESULTS_OUT=$RUNNER_TEMP/verify-results.json"
+          } >> "$GITHUB_ENV"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      # The one secret: to a 0600 file, masked, never printed.
+      - name: Write the Cloudflare token file
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "the token secret is not set"; exit 1; }
+          printf '::add-mask::%s\n' "$CLOUDFLARE_API_TOKEN"
+          umask 077
+          printf '%s' "$CLOUDFLARE_API_TOKEN" > "$TOKEN_FILE"
+          chmod 600 "$TOKEN_FILE"
+          test "$(stat -c %a "$TOKEN_FILE")" = 600
+      - name: verify (read-only)
+        continue-on-error: true
+        run: bash scripts/ci/provapi-token-verify.sh prod verify
+      - name: Results
+        id: results
+        if: ${{ always() }}
+        continue-on-error: true
+        run: bash scripts/ci/provapi-token-verify.sh prod summary
+      - name: Remove the token file
+        if: ${{ always() }}
+        run: rm -f "$TOKEN_FILE"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ always() }}
+        with:
+          name: prod-verify-results
+          path: ${{ runner.temp }}/verify-results.json
+          if-no-files-found: error
+      - name: Every check passed
         if: ${{ always() }}
         env:
           RESULTS_OUTCOME: ${{ steps.results.outcome }}

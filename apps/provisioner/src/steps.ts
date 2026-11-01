@@ -3,13 +3,23 @@
 // `attempt`, `last_error_code`, `retry_at` and the redacted message, all
 // conditional on the job still being open, so a canceled or settled job is
 // never written back to running. Fixed categories only: a step's error is a
-// job code (and a terminal refusal's own message), never an error's text.
+// job code, and jobs.error_message that code's JOB_ERROR_TEXT, never an
+// error's text.
 import type { WorkflowStep, WorkflowStepConfig } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { PROVISION_ERROR_CODES, type ProvisionErrorCode } from "@oa/provision";
 import type { JobKind } from "@oa/shared/provisioning";
-import { codeOf, ERROR_MESSAGE_MAX, stepError } from "./errors.js";
+import {
+  codeOf,
+  detailOf,
+  JOB_ERROR_TEXT,
+  redactDetail,
+  StepRefusal,
+  stepError,
+} from "./errors.js";
 import { type ProvisionerIo, Transient, transient } from "./provisioner.js";
+// A cycle (workflow imports steps): called only at run time, never at load.
+import { ownerEmail } from "./workflow.js";
 
 /** The jobs row a step reads (0008); never an email. */
 export type JobRow = {
@@ -52,7 +62,7 @@ export function argsOf(job: JobRow): Record<string, unknown> {
     if (a && typeof a === "object" && !Array.isArray(a))
       return a as Record<string, unknown>;
   } catch {}
-  throw new NonRetryableError("invalid_state: the job args are not an object");
+  throw new StepRefusal("invalid_state", "the job args are not an object");
 }
 
 /** A job code, or `internal` for anything else (a stored value is a request). */
@@ -116,9 +126,8 @@ async function noteFailure(
 ): Promise<void> {
   const terminal = err instanceof NonRetryableError;
   const code = codeOf(err);
-  const message = terminal
-    ? err.message.slice(0, ERROR_MESSAGE_MAX)
-    : (code as string);
+  // The code's fixed text: a refusal's message can echo request values.
+  const message = JOB_ERROR_TEXT[code];
   const r = { ...DEFAULT_RETRIES, ...(config?.retries ?? {}) };
   const base = typeof r.delay === "function" ? 0 : delayMs(r.delay);
   // retry_at for the next attempt: delay, then doubled (exponential),
@@ -148,6 +157,89 @@ WHERE id = ?1 AND status = 'running'`,
     .catch(() => {});
 }
 
+/** Every key and scalar value under `v` (a parsed JSON request field). */
+function scalars(v: unknown, out: string[]): void {
+  if (v === null || v === undefined) return;
+  if (typeof v === "string" || typeof v === "number") out.push(String(v));
+  else if (Array.isArray(v)) for (const x of v) scalars(x, out);
+  else if (typeof v === "object")
+    for (const [k, x] of Object.entries(v)) {
+      out.push(k);
+      scalars(x, out);
+    }
+}
+
+const parsed = (raw: unknown): unknown => {
+  if (typeof raw !== "string") return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+};
+
+/**
+ * The request-provided values of a job (best effort): its args, the
+ * signup's slug, vars and owner, the owner's email, the install's slug and
+ * vars. They are redacted from the failure log line.
+ */
+async function requestValues(ctx: StepCtx, jobId: string): Promise<string[]> {
+  const out: string[] = [];
+  const db = ctx.env.PLATFORM_DB;
+  const one = <T>(sql: string, ...p: unknown[]) =>
+    db
+      .prepare(sql)
+      .bind(...p)
+      .first<T>()
+      .catch(() => null);
+  const job = await one<{
+    args: string;
+    signup_id: string | null;
+    install_id: string;
+  }>("SELECT args, signup_id, install_id FROM jobs WHERE id = ?", jobId);
+  if (!job) return out;
+  scalars(parsed(job.args), out);
+  if (job.signup_id) {
+    const su = await one<Record<string, unknown>>(
+      "SELECT slug, vars, owner_sub FROM signups WHERE signup_id = ?",
+      job.signup_id,
+    );
+    if (su) scalars([su.slug, parsed(su.vars), su.owner_sub], out);
+    const email = await ownerEmail(ctx, job.signup_id).catch(() => null);
+    if (email) out.push(email);
+  }
+  const ins = await one<Record<string, unknown>>(
+    "SELECT slug, vars FROM installs WHERE id = ?",
+    job.install_id,
+  );
+  if (ins) scalars([ins.slug, parsed(ins.vars)], out);
+  return out;
+}
+
+/**
+ * One console line per step failure: code, step, job id and the error's
+ * detail with every request value, email, URL and IP redacted, capped.
+ * The Worker's own log only: never D1, the API or the audit log.
+ */
+async function logFailure(
+  ctx: StepCtx,
+  jobId: string,
+  step: string,
+  code: string,
+  e: unknown,
+): Promise<void> {
+  const values = await requestValues(ctx, jobId).catch(() => []);
+  console.warn(
+    JSON.stringify({
+      evt: "job_step_failed",
+      code,
+      step,
+      jobId,
+      detail: redactDetail(detailOf(e), values),
+    }),
+  );
+}
+
 /** 3.5: a Cloudflare token not active is retried every 15 min, up to 2 h. */
 export const TOKEN_WAIT = "15 minutes";
 export const TOKEN_WAITS = 8;
@@ -158,8 +250,8 @@ const TOKEN_WAITING =
 
 /**
  * One job step: `step.do(name, config?, fn)` with the 3.6 bookkeeping. An
- * error leaves as stepError's (a job code; a terminal refusal keeps its
- * message, `email` scrubbed); a NonRetryableError stays as it is. `mark` is
+ * error leaves as stepError's (a job code and its fixed text); a
+ * NonRetryableError stays as it is. `mark` is
  * the JOB_STEPS value written to jobs.step (the step's name by default).
  * token_invalid skips the step's own retries: the step is run again as
  * `<name>_token<n>` after a TOKEN_WAIT sleep, TOKEN_WAITS times, and the
@@ -172,13 +264,12 @@ export async function jobStep<T>(
   name: string,
   config: WorkflowStepConfig | undefined,
   fn: () => Promise<T>,
-  email: () => string | null = () => null,
   mark: string = name,
 ): Promise<T> {
   for (let round = 0; ; round++) {
     const n = round === 0 ? name : `${name}_token${round}`;
     try {
-      return await stepOnce(ctx, step, jobId, n, config, fn, email, mark, {
+      return await stepOnce(ctx, step, jobId, n, config, fn, mark, {
         wait: round < TOKEN_WAITS,
       });
     } catch (e) {
@@ -195,7 +286,6 @@ function stepOnce<T>(
   name: string,
   config: WorkflowStepConfig | undefined,
   fn: () => Promise<T>,
-  email: () => string | null,
   mark: string,
   o: { wait: boolean },
 ): Promise<T> {
@@ -210,12 +300,13 @@ function stepOnce<T>(
           ? e
           : e instanceof Transient
             ? new Error("internal")
-            : stepError(e, email());
+            : stepError(e);
       const waits =
         o.wait &&
         !(e instanceof NonRetryableError) &&
         codeOf(err) === "token_invalid";
       if (waits) err = new NonRetryableError(TOKEN_WAITING);
+      await logFailure(ctx, jobId, name, codeOf(err), e);
       await noteFailure(
         ctx,
         jobId,

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.87.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.86.0...v0.87.0) (2026-11-01)
+
+
+### Features
+
+* **ci:** W9a CI targets for the Provisioning API ([#902](https://github.com/open-artifacts-ai/open-artifacts/issues/902)) ([da1d6e9](https://github.com/open-artifacts-ai/open-artifacts/commit/da1d6e9e487b438ac7c054870905016e777a76c9))
+* **inventory:** W8 GitHub OIDC inventory, hourly prod-clean monitor, prod-clean probe fix (on pl/provapi-base) ([#900](https://github.com/open-artifacts-ai/open-artifacts/issues/900)) ([a39e7cf](https://github.com/open-artifacts-ai/open-artifacts/commit/a39e7cf6f123aac3d3e30ce78abf32cabb451509))
+
+## [0.86.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.85.0...v0.86.0) (2026-10-31)
+
+
+### Features
+
+* **provisioning:** W13b admin MCP: OAuth for the Provisioning API ([#901](https://github.com/open-artifacts-ai/open-artifacts/issues/901)) ([123af04](https://github.com/open-artifacts-ai/open-artifacts/commit/123af04c90be893370fc1a56dda9297b374aeb5e))
+
+## [0.85.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.84.0...v0.85.0) (2026-10-31)
+
+
+### Features
+
+* **provisioner:** W3 Workflows for the Provisioning API ([#897](https://github.com/open-artifacts-ai/open-artifacts/issues/897)) ([b1b4869](https://github.com/open-artifacts-ai/open-artifacts/commit/b1b4869f565865336347ee084596a5e08d620795))
+* **provisioning:** W13a admin MCP: tools for the Provisioning API ([#899](https://github.com/open-artifacts-ai/open-artifacts/issues/899)) ([d97cdfa](https://github.com/open-artifacts-ai/open-artifacts/commit/d97cdfa7a1cf8849c47fba2c63c5815b0dec7fcd))
+
 ## [0.84.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.83.0...v0.84.0) (2026-10-31)
 
 

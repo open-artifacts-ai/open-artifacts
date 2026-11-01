@@ -2,23 +2,29 @@
 // spikes S1-S8 and the read-only token verify. The workflow's shape (one
 // secret, a 0600 token file, staging only), the script's guards (prod, leo,
 // the oa-s-spike- prefix, the 1 h leftover filter), and that S8, S6, S2 and
-// S7 only read rl-a and rl-b. curl is a stub; the token reaches it in a
-// config file on a pipe, never argv.
+// S7 only read rl-a and rl-b. env=prod runs only the prod-verify job, with
+// provapi-token-verify.sh (GETs only). curl is a stub; the token reaches it
+// in a config file on a pipe, never argv.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { root, sandbox, script } from "./stubs.ts";
 
 const WF = ".github/workflows/provapi-staging-spikes.yml";
 const SH = "provapi-spikes.sh";
+const VSH = "provapi-token-verify.sh";
 const wfText = readFileSync(join(root, WF), "utf8");
 // biome-ignore lint/suspicious/noExplicitAny: workflow YAML is untyped
 const wf: any = parse(wfText);
 // biome-ignore lint/suspicious/noExplicitAny: workflow YAML is untyped
 const steps: any[] = wf.jobs.spikes.steps;
+// biome-ignore lint/suspicious/noExplicitAny: workflow YAML is untyped
+const psteps: any[] = wf.jobs["prod-verify"].steps;
 const sh = readFileSync(script(SH), "utf8");
+const vsh = readFileSync(script(VSH), "utf8");
 const worker = readFileSync(
   join(root, "spikes/provapi-staging/src/index.ts"),
   "utf8",
@@ -33,12 +39,12 @@ const STORE = "c".repeat(32);
 const TID = "7".repeat(32);
 const NS = `/accounts/${ACCT}/workers/dispatch/namespaces/oa-staging/scripts`;
 
-/** The body of a shell function in provapi-spikes.sh. */
-const fn = (name: string): string => {
+/** The body of a shell function in provapi-spikes.sh (or `text`). */
+const fn = (name: string, text = sh): string => {
   const m = new RegExp(`^${name}\\(\\) \\{\\n([\\s\\S]*?)\\n\\}$`, "m").exec(
-    sh,
+    text,
   );
-  if (!m) throw new Error(`no ${name} in ${SH}`);
+  if (!m) throw new Error(`no ${name}`);
   return m[1] as string;
 };
 /** The body of an exported async function in the spike Worker. */
@@ -54,21 +60,31 @@ const wfn = (name: string): string => {
 describe("provapi-staging-spikes.yml", () => {
   it("is dispatch only, with the spikes list input", () => {
     expect(Object.keys(wf.on)).toEqual(["workflow_dispatch"]);
+    expect(wf.on.workflow_dispatch.inputs.env).toMatchObject({
+      type: "choice",
+      options: ["staging", "prod"],
+      default: "staging",
+    });
     expect(wf.on.workflow_dispatch.inputs.spikes.default).toBe(
       "verify,s8,s6,s1,s2,s3,s4,s5,s7",
     );
   });
 
-  it("runs in hosted-staging-deploy, from main only", () => {
+  it("runs in hosted-staging-deploy, from main only, for env=staging only", () => {
+    expect(Object.keys(wf.jobs)).toEqual(["spikes", "prod-verify"]);
     expect(wf.jobs.spikes.environment).toBe("hosted-staging-deploy");
-    expect(wf.jobs.spikes.if).toContain("github.ref == 'refs/heads/main'");
-    expect(wfText).not.toMatch(/hosted-prod|prod-deploy/);
+    expect(wf.jobs.spikes.if).toBe(
+      "${{ github.ref == 'refs/heads/main' && inputs.env == 'staging' }}",
+    );
+    expect(JSON.stringify(wf.jobs.spikes)).not.toMatch(
+      /hosted-prod|prod-deploy|prod\.json|token-verify/,
+    );
   });
 
-  it("has contents: read only, and its own concurrency group", () => {
+  it("has contents: read only, and a concurrency group per env", () => {
     expect(wf.permissions).toEqual({ contents: "read" });
     expect(wf.jobs.spikes.permissions).toBeUndefined();
-    expect(wf.concurrency.group).toBe("provapi-spikes-staging");
+    expect(wf.concurrency.group).toBe("provapi-spikes-${{ inputs.env }}");
     expect(wf.concurrency["cancel-in-progress"]).toBe(false);
   });
 
@@ -76,13 +92,15 @@ describe("provapi-staging-spikes.yml", () => {
     const secrets = [...wfText.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map(
       (m) => m[1],
     );
-    expect(secrets).toEqual(["CLOUDFLARE_API_TOKEN"]);
-    const users = steps.filter((s) =>
-      JSON.stringify(s).includes("secrets.CLOUDFLARE_API_TOKEN"),
-    );
-    expect(users.map((s) => s.name)).toEqual([
-      "Write the Cloudflare token file",
-    ]);
+    expect(secrets).toEqual(["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_TOKEN"]);
+    for (const st of [steps, psteps]) {
+      const users = st.filter((s) =>
+        JSON.stringify(s).includes("secrets.CLOUDFLARE_API_TOKEN"),
+      );
+      expect(users.map((s) => s.name)).toEqual([
+        "Write the Cloudflare token file",
+      ]);
+    }
   });
 
   it("writes the token to a 0600 file under RUNNER_TEMP, masked, never echoed", () => {
@@ -101,7 +119,9 @@ describe("provapi-staging-spikes.yml", () => {
     );
     expect(w.run).toContain('chmod 600 "$TOKEN_FILE"');
     expect(w.run).toContain('test "$(stat -c %a "$TOKEN_FILE")" = 600');
-    for (const text of [wfText, sh]) {
+    const pw = psteps.find((s) => s.name === "Write the Cloudflare token file");
+    expect(pw.run).toBe(w.run);
+    for (const text of [wfText, sh, vsh]) {
       expect(text).not.toMatch(/echo[^\n]*CLOUDFLARE_API_TOKEN/);
       expect(text).not.toMatch(/echo[^\n]*TOKEN_FILE\)/);
       expect(text).not.toMatch(/cat "\$TOKEN_FILE"\s*$/m);
@@ -175,17 +195,23 @@ describe("provapi-spikes.sh guards (static)", () => {
   });
 
   it("the provisioning token secret is read from the list (metadata) endpoint only", () => {
-    const st = fn("store_id");
-    const uses = [fn("spike_verify"), st]
-      .join("\n")
-      .split("\n")
-      .filter((l) => l.includes("PROVISION_TOKEN_SECRET") && l.includes("cf_"));
-    expect(uses).toEqual([
-      '    cf_get "$ACCT/secrets_store/stores/$sid/secrets?search=$PROVISION_TOKEN_SECRET&per_page=100"',
-    ]);
-    expect(fn("spike_verify")).not.toMatch(/cf_write/);
-    expect(st).not.toMatch(/cf_write/);
-    expect(st).toContain("{name, scopes, modified}");
+    for (const st of [fn("store_id"), fn("provision_secret", vsh)]) {
+      const uses = st
+        .split("\n")
+        .filter(
+          (l) => l.includes("PROVISION_TOKEN_SECRET") && l.includes("cf_"),
+        );
+      expect(uses).toEqual([
+        '    cf_get "$ACCT/secrets_store/stores/$sid/secrets?search=$PROVISION_TOKEN_SECRET&per_page=100"',
+      ]);
+      expect(st).not.toMatch(/cf_write/);
+      expect(st).toContain("{name, scopes, modified}");
+    }
+    expect(fn("spike_verify", vsh)).not.toMatch(/cf_write/);
+    // Staging's verify is the GET-only script, after this script's checks.
+    expect(sh).toContain(
+      'spike_verify() { bash "$root/scripts/ci/provapi-token-verify.sh" staging verify; }',
+    );
   });
 
   it("the staging store is the one holding oa-s-provision-token, never the first", () => {
@@ -237,13 +263,17 @@ describe("the spike Worker", () => {
     );
   });
 
-  it("after its first run, every cron tick returns at the done row", () => {
+  it("every tick writes a started row; after the first run it returns at the done row", () => {
     const b = wfn("runOnce");
+    const ddl = b.indexOf("await env.DB.prepare(RESULTS_DDL).run();");
+    const started = b.indexOf('await put(env, "started", {');
     const first = b.indexOf(
       'SELECT 1 AS d FROM done LIMIT 1").first()) return;',
     );
-    expect(first).toBeGreaterThan(-1);
-    expect(first).toBeLessThan(b.indexOf("CREATE TABLE IF NOT EXISTS results"));
+    expect(ddl).toBeGreaterThan(-1);
+    expect(started).toBeGreaterThan(ddl);
+    expect(first).toBeGreaterThan(started);
+    expect(first).toBeLessThan(b.indexOf("INSERT OR IGNORE INTO claim"));
     expect(
       b
         .trimEnd()
@@ -254,6 +284,26 @@ describe("the spike Worker", () => {
       "utf8",
     );
     expect(cfg).toContain('"crons": ["* * * * *"]');
+  });
+
+  it("creates the same results table as deploy does", () => {
+    const shDdl = /^RESULTS_TABLE_SQL='([^']+)'$/m.exec(sh)?.[1];
+    expect(shDdl).toMatch(/^CREATE TABLE IF NOT EXISTS results \(/);
+    expect(worker).toContain(`const RESULTS_DDL =\n  "${shDdl}";`);
+  });
+
+  it("a thrown spike, or a row that will not write, is an {ok: false, error} row", () => {
+    const b = wfn("runOnce");
+    expect(b).toContain("error: errText(e),");
+    expect(b).toContain("error: `result row not written: ${errText(e)}`,");
+    expect(b.match(/ok: false,/g)).toHaveLength(2);
+    expect(worker).toContain(
+      "const errText = (e: unknown) => `${errOf(e).name}: ${errOf(e).message}`;",
+    );
+    // A throw outside any spike still reports, as tick_error.
+    expect(worker).toContain(
+      'await put(env, "tick_error", { ok: false, error: errText(e) })',
+    );
   });
 
   it("S3 records what a missing get and a duplicate create throw", () => {
@@ -304,6 +354,7 @@ printf '%s\\n%s' "$body" "$st"`;
 const setup = (
   fx: Record<string, string>,
   hosted?: Record<string, unknown>,
+  envName: "staging" | "prod" = "staging",
 ) => {
   const sb = sandbox({ curl });
   mkdirSync(join(sb.dir, "fx"));
@@ -312,10 +363,10 @@ const setup = (
   const hostedDir = join(sb.dir, "hosted");
   mkdirSync(hostedDir);
   const real = JSON.parse(
-    readFileSync(join(root, ".github/hosted/staging.json"), "utf8"),
+    readFileSync(join(root, `.github/hosted/${envName}.json`), "utf8"),
   );
   writeFileSync(
-    join(hostedDir, "staging.json"),
+    join(hostedDir, `${envName}.json`),
     JSON.stringify({ ...real, deploy_token_id: TID, ...hosted }),
   );
   const tokenFile = join(sb.dir, "cf-token");
@@ -333,6 +384,11 @@ const setup = (
   };
   const run = (cmd: string, extra: Record<string, string> = {}) =>
     sb.run(["bash", script(SH), cmd], { env: { ...env, ...extra } });
+  /** provapi-token-verify.sh <envName> <cmd>. */
+  const verify = (cmd = "verify", extra: Record<string, string> = {}) =>
+    sb.run(["bash", script(VSH), envName, cmd], {
+      env: { ...env, ...extra },
+    });
   const results = (spike: string) => {
     const f = join(env.RESULTS_DIR, `${spike}.jsonl`);
     return existsSync(f)
@@ -347,7 +403,7 @@ const setup = (
       .log()
       .filter((l) => l.startsWith("REQ "))
       .map((l) => l.slice(4));
-  return { sb, env, run, results, reqs };
+  return { sb, env, run, verify, results, reqs };
 };
 
 const iso = (msAgo: number) =>
@@ -370,23 +426,27 @@ const storeFx = (): Record<string, string> => ({
   ]),
 });
 
-const verifyFx = (days: number): Record<string, string> => {
+const verifyFx = (
+  days: number,
+  envName: "staging" | "prod" = "staging",
+): Record<string, string> => {
   const A = `/accounts/${ACCT}`;
+  const sfx = envName === "prod" ? "" : "-staging";
+  const sec = `oa-${envName[0]}-provision-token`;
   const fx: Record<string, string> = {
     [key("GET", "/user/tokens/verify")]: ok({
       id: TID,
       status: "active",
       expires_on: iso(-days * 86400_000 - 3600_000),
     }),
-    [key("GET", `/zones?name=open-artifacts-staging.app&account.id=${ACCT}`)]:
-      ok([
-        { id: ZAPP, name: "open-artifacts-staging.app", account: { id: ACCT } },
-      ]),
-    [key("GET", `/zones?name=open-artifacts-staging.page&account.id=${ACCT}`)]:
+    [key("GET", `/zones?name=open-artifacts${sfx}.app&account.id=${ACCT}`)]: ok(
+      [{ id: ZAPP, name: `open-artifacts${sfx}.app`, account: { id: ACCT } }],
+    ),
+    [key("GET", `/zones?name=open-artifacts${sfx}.page&account.id=${ACCT}`)]:
       ok([
         {
           id: ZPAGE,
-          name: "open-artifacts-staging.page",
+          name: `open-artifacts${sfx}.page`,
           account: { id: ACCT },
         },
       ]),
@@ -394,11 +454,11 @@ const verifyFx = (days: number): Record<string, string> => {
     [key("GET", `${A}/secrets_store/stores`)]: ok([{ id: STORE }]),
     [key(
       "GET",
-      `${A}/secrets_store/stores/${STORE}/secrets?search=oa-s-provision-token&per_page=100`,
+      `${A}/secrets_store/stores/${STORE}/secrets?search=${sec}&per_page=100`,
     )]: ok([
       {
         id: "d".repeat(32),
-        name: "oa-s-provision-token",
+        name: sec,
         scopes: ["workers"],
         modified: "2026-10-30T00:00:00Z",
         created: "2026-10-30T00:00:00Z",
@@ -559,6 +619,206 @@ describe("provapi-spikes.sh verify", () => {
     const bad = setup(fx);
     expect(bad.run("verify").code).toBe(1);
     expect(bad.reqs().some((q) => q.includes("../"))).toBe(false);
+  });
+});
+
+describe("provapi-staging-spikes.yml prod-verify job", () => {
+  const job = wf.jobs["prod-verify"];
+
+  it("runs in hosted-prod-deploy, from main only, for env=prod only, contents: read", () => {
+    expect(job.environment).toBe("hosted-prod-deploy");
+    expect(job.if).toBe(
+      "${{ github.ref == 'refs/heads/main' && inputs.env == 'prod' }}",
+    );
+    expect(job.permissions).toEqual({ contents: "read" });
+  });
+
+  it("its steps reference only the verify script: no spikes script, install, wrangler or cleanup", () => {
+    const text = JSON.stringify(job);
+    expect(text).not.toMatch(
+      /provapi-spikes|wrangler|pnpm|setup-node|cleanup|cf_write|d1\/database|secrets_store/i,
+    );
+    const scripts = psteps
+      .filter((s) => typeof s.run === "string" && s.run.includes("scripts/"))
+      .map((s) => s.run);
+    expect(scripts).toEqual([
+      "bash scripts/ci/provapi-token-verify.sh prod verify",
+      "bash scripts/ci/provapi-token-verify.sh prod summary",
+    ]);
+    expect(
+      psteps.filter((s) => s.uses).map((s) => String(s.uses).split("@")[0]),
+    ).toEqual(["actions/checkout", "actions/upload-artifact"]);
+    const co = psteps.find((s) =>
+      String(s.uses).startsWith("actions/checkout"),
+    );
+    expect(co.with["persist-credentials"]).toBe(false);
+    const names = psteps.map((s) => s.name);
+    expect(names[0]).toBe("Check the inputs");
+    expect(names.indexOf("Remove the token file")).toBeGreaterThan(
+      names.indexOf("Results"),
+    );
+    expect(psteps.find((s) => s.name === "Remove the token file").if).toContain(
+      "always()",
+    );
+    expect(psteps.at(-1).name).toBe("Every check passed");
+  });
+
+  it("refuses any spike but verify before the token is written or any call", () => {
+    const check = psteps[0].run as string;
+    for (const [spikes, code] of [
+      ["verify", 0],
+      ["verify,s8", 1],
+      ["s4", 1],
+      ["verify,s1,s2,s3,s4,s5,s6,s7,s8", 1],
+      ["", 1],
+      ["verify ", 1],
+    ] as const) {
+      const sb = sandbox({ curl: "exit 0" });
+      const r = sb.run(["bash", "-c", check], { env: { SPIKES: spikes } });
+      expect(r.code, spikes).toBe(code);
+      if (code) expect(r.out, spikes).toContain("refused");
+      expect(sb.log(), spikes).toEqual([]);
+    }
+  });
+});
+
+describe("provapi-token-verify.sh (static)", () => {
+  it("has no write method, write helper or wrangler, and one curl: cf_get's", () => {
+    expect(vsh).not.toMatch(/\b(POST|PUT|PATCH|DELETE)\b/);
+    expect(vsh).not.toMatch(/cf_write|wrangler|--data|-X |provapi-spikes/);
+    const curls = vsh
+      .split("\n")
+      .filter((l) => /\bcurl\b/.test(l) && !/^\s*#/.test(l));
+    expect(curls).toEqual([
+      '  if out="$(curl -sS -K <(_auth) -w $\'\\n%{http_code}\' "$CF$1")"; then',
+    ]);
+    expect(vsh).toContain("LEO=i2ab26lvciok");
+  });
+
+  it("the provisioning token secret is provision's platformNames(env).provisionToken", async () => {
+    const m = await import(
+      pathToFileURL(join(root, "packages/provision/dist/names.js")).href
+    );
+    expect(vsh).toContain(
+      'PROVISION_TOKEN_SECRET="oa-${ENV:0:1}-provision-token"',
+    );
+    expect(m.platformNames("staging").provisionToken).toBe(
+      "oa-s-provision-token",
+    );
+    expect(m.platformNames("prod").provisionToken).toBe("oa-p-provision-token");
+  });
+});
+
+describe("provapi-token-verify.sh prod", () => {
+  it("passes against the prod zones and account with GETs only, and reads oa-p-provision-token's metadata", () => {
+    const t = setup(verifyFx(365, "prod"), {}, "prod");
+    const r = t.verify();
+    expect(r.code, r.err + r.out).toBe(0);
+    const res = t.results("verify");
+    expect(
+      res.every((x) => x.pass),
+      JSON.stringify(res),
+    ).toBe(true);
+    const checks = res.map((x) => x.check);
+    for (const g of [
+      "token",
+      "token id",
+      "zone open-artifacts.app",
+      "zone open-artifacts.page",
+      "account",
+      "Workers Scripts",
+      "Secrets Store",
+      "Email Sending (open-artifacts.app)",
+      "Zone Read (open-artifacts.page)",
+      "Workers Routes Read (open-artifacts.app)",
+      "secret oa-p-provision-token",
+    ])
+      expect(checks).toContain(g);
+    expect(
+      res.find((x) => x.check === "secret oa-p-provision-token").detail,
+    ).toEqual({
+      name: "oa-p-provision-token",
+      scopes: ["workers"],
+      modified: "2026-10-30T00:00:00Z",
+    });
+    const reqs = t.reqs();
+    expect(reqs.every((q) => q.startsWith("GET "))).toBe(true);
+    expect(reqs).toContain(
+      `GET /zones?name=open-artifacts.app&account.id=${ACCT}`,
+    );
+    expect(reqs).toContain(
+      `GET /zones?name=open-artifacts.page&account.id=${ACCT}`,
+    );
+    expect(reqs).toContain(`GET /accounts/${ACCT}`);
+    expect(reqs.some((q) => /staging|oa-s-/.test(q))).toBe(false);
+    const log = t.sb.log().join("\n");
+    expect(log).not.toContain(TOK);
+    expect(log).not.toContain("NOAUTH");
+  });
+
+  it("fails closed when deploy_token_id is still the placeholder, and prints the id", () => {
+    const t = setup(
+      verifyFx(365, "prod"),
+      { deploy_token_id: "UNSET-printed-by-the-first-spikes-run" },
+      "prod",
+    );
+    const r = t.verify();
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(`this token's id is ${TID}`);
+    expect(t.results("verify").find((x) => x.check === "token id").pass).toBe(
+      false,
+    );
+  });
+
+  it("fails a token 30 days or 500 days out", () => {
+    for (const d of [30, 500]) {
+      const t = setup(verifyFx(d, "prod"), {}, "prod");
+      expect(t.verify().code, String(d)).toBe(1);
+      expect(t.results("verify").find((x) => x.check === "token").pass).toBe(
+        false,
+      );
+    }
+  });
+
+  for (const [what, hosted] of [
+    ["a staging app zone", { app_zone: "open-artifacts-staging.app" }],
+    ["a staging content zone", { content_zone: "open-artifacts-staging.page" }],
+    ["a non-hex account", { account_id: "../x" }],
+  ] as const)
+    it(`refuses ${what} before any call`, () => {
+      const t = setup(verifyFx(365, "prod"), hosted, "prod");
+      const r = t.verify();
+      expect(r.code).toBe(3);
+      expect(r.err).toMatch(/refused/);
+      expect(t.reqs()).toEqual([]);
+    });
+
+  it("refuses an unknown env or command before any call", () => {
+    const t = setup(verifyFx(365, "prod"), {}, "prod");
+    for (const args of [["leo"], ["prod", "cleanup"], ["prod", "deploy"]]) {
+      const r = t.sb.run(["bash", script(VSH), ...args], { env: t.env });
+      expect(r.code, args.join(" ")).toBe(2);
+    }
+    expect(t.reqs()).toEqual([]);
+  });
+
+  it("summary writes the results file and table, and withholds a leaked token", () => {
+    const t = setup(verifyFx(365, "prod"), {}, "prod");
+    expect(t.verify().code).toBe(0);
+    const r = t.verify("summary");
+    expect(r.code, r.err).toBe(0);
+    const out = JSON.parse(readFileSync(t.env.RESULTS_OUT, "utf8"));
+    expect(out.env).toBe("prod");
+    expect(out.spikes[0]).toMatchObject({ spike: "verify", pass: true });
+    const md = readFileSync(t.env.GITHUB_STEP_SUMMARY, "utf8");
+    expect(md).toContain("token verify: prod");
+    expect(md).toContain("| secret oa-p-provision-token | pass |");
+    writeFileSync(
+      join(t.env.RESULTS_DIR, "verify.jsonl"),
+      `${JSON.stringify({ spike: "verify", check: "x", pass: true, observed: TOK })}\n`,
+    );
+    expect(t.verify("summary").code).toBe(3);
+    expect(readFileSync(t.env.RESULTS_OUT, "utf8")).not.toContain(TOK);
   });
 });
 
@@ -1024,6 +1284,13 @@ describe("provapi-spikes.sh deploy render", () => {
     const d1 = "11111111-2222-4333-8444-555555555555";
     const t = setup({
       [key("POST", `/accounts/${ACCT}/d1/database`)]: ok({ uuid: d1 }),
+      [key("POST", `/accounts/${ACCT}/d1/database/${d1}/query`)]: ok([
+        { results: [], success: true },
+      ]),
+      [key(
+        "GET",
+        `/accounts/${ACCT}/workers/scripts/oa-s-spike-${runId}/schedules`,
+      )]: ok({ schedules: [{ cron: "* * * * *" }] }),
     });
     // wrangler (through pnpm) keeps a copy of each config it is given.
     const pnpm = `while [ $# -gt 0 ]; do [ "$1" = -c ] && cp "$2" "$STATE/deployed-$(basename "$2")"; shift; done`;
@@ -1054,6 +1321,19 @@ describe("provapi-spikes.sh deploy render", () => {
       expect(caller).toContain(`"database_id": "${d1}"`);
       expect(caller).toContain('"SPIKES": "s1,s2,s3,s5,s7"');
       expect(caller).toContain('"namespace": "oa-staging"');
+      // The results table first (through cf_write's allowlist), then the
+      // Workers; the schedules are only read back.
+      expect(t.reqs()).toEqual([
+        `POST /accounts/${ACCT}/d1/database`,
+        `POST /accounts/${ACCT}/d1/database/${d1}/query`,
+        `GET /accounts/${ACCT}/workers/scripts/oa-s-spike-${runId}/schedules`,
+      ]);
+      const ddl = /^RESULTS_TABLE_SQL='([^']+)'$/m.exec(sh)?.[1];
+      expect(readFileSync(join(t.sb.dir, "bodies"), "utf8")).toContain(
+        JSON.stringify({ sql: ddl }),
+      );
+      expect(r.out).toContain("crons=[* * * * *]");
+      expect(existsSync(join(t.env.STATE_DIR, "deployed_at"))).toBe(true);
     } finally {
       spawnSync("/bin/rm", [
         "-f",
@@ -1097,6 +1377,7 @@ describe("provapi-spikes.sh collect", () => {
           results: [
             row("s1", true, "verify=true"),
             row("s3", true, "get(missing) -> Error: instance.not_found"),
+            { spike: "started", json: '{"at":"2026-10-31T12:00:00.000Z"}' },
           ],
         },
       ]),
@@ -1119,10 +1400,194 @@ describe("provapi-spikes.sh collect", () => {
     expect(t.results("s3")[0].observed).toContain("instance.not_found");
     expect(t.results("s7")[0]).toMatchObject({ pass: false });
     expect(t.results("s7")[0].observed).toMatch(
-      /^no result before the deadline/,
+      /^no result: fired, no row for s7 \(last tick 2026-10-31T12:00:00.000Z\)$/,
     );
     expect(t.reqs()).toEqual([
       `POST ${A}/d1/database/99999999-8888-4777-8666-555555555555/query`,
     ]);
+  });
+
+  const D1 = "99999999-8888-4777-8666-555555555555";
+  const Q = key("POST", `/accounts/${ACCT}/d1/database/${D1}/query`);
+  const row = (spike: string, json: unknown) => ({
+    spike,
+    json: JSON.stringify(json),
+  });
+  const collect = (fx: string, spikes = "s1,s3") => {
+    const t = setup({ [Q]: fx });
+    mkdirSync(t.env.STATE_DIR, { recursive: true });
+    writeFileSync(join(t.env.STATE_DIR, "d1_id"), D1);
+    // Deployed two minutes ago.
+    writeFileSync(
+      join(t.env.STATE_DIR, "deployed_at"),
+      String(Math.floor(Date.now() / 1000) - 120),
+    );
+    const r = t.run("collect", {
+      SPIKES: spikes,
+      COLLECT_DEADLINE_S: "0",
+      COLLECT_POLL_S: "0",
+    });
+    return { t, r };
+  };
+
+  it("names D1's error message and code on a 400, and still withholds the token", () => {
+    const { t, r } = collect(
+      `400\n${JSON.stringify({
+        success: false,
+        errors: [
+          { code: 7500, message: "no such table: results: SQLITE_ERROR" },
+        ],
+        result: [],
+      })}`,
+    );
+    expect(r.code, r.err + r.out).toBe(1);
+    for (const s of ["s1", "s3"])
+      expect(t.results(s)[0]).toMatchObject({
+        pass: false,
+        observed:
+          "no result: D1 error: no such table: results: SQLITE_ERROR (code 7500)",
+      });
+    // The summary's existing guard still refuses a leaked token.
+    const s = t.run("summary", { SPIKES: "s1,s3" });
+    expect(s.code).toBe(1);
+    expect(readFileSync(t.env.GITHUB_STEP_SUMMARY, "utf8")).toContain(
+      "D1 error: no such table: results",
+    );
+    expect(readFileSync(t.env.RESULTS_OUT, "utf8")).not.toContain(TOK);
+  });
+
+  it("names the HTTP status when D1's error has no message", () => {
+    const { t } = collect('502\n{"success":false,"errors":[]}');
+    expect(t.results("s1")[0].observed).toBe(
+      "no result: D1 error: HTTP 502, no error message",
+    );
+  });
+
+  it("says the cron never fired when the table has no started row", () => {
+    const { t } = collect(ok([{ results: [], success: true }]));
+    for (const s of ["s1", "s3"])
+      expect(t.results(s)[0].observed).toMatch(
+        /^no result: cron never fired \(no started row 1[2-9]\ds after deploy\)$/,
+      );
+  });
+
+  it("says it fired with no row for sN when only the started row is there", () => {
+    const at = "2026-10-31T12:00:00.000Z";
+    const { t } = collect(
+      ok([
+        {
+          results: [
+            row("started", { at, cron: "* * * * *" }),
+            row("s1", { spike: "s1", ok: true, pass: true, observed: "ok" }),
+            row("tick_error", { ok: false, error: "Error: D1_ERROR" }),
+          ],
+          success: true,
+        },
+      ]),
+    );
+    expect(t.results("s1")[0]).toMatchObject({ pass: true, observed: "ok" });
+    expect(t.results("s3")[0]).toMatchObject({
+      pass: false,
+      observed: `no result: fired, no row for s3 (last tick ${at}; tick error: Error: D1_ERROR)`,
+    });
+  });
+
+  it("reports a spike that threw from its error row, name and message", () => {
+    const { t, r } = collect(
+      ok([
+        {
+          results: [
+            row("started", { at: "2026-10-31T12:00:00.000Z" }),
+            row("s1", {
+              spike: "s1",
+              ok: false,
+              pass: false,
+              error: "TypeError: Ed25519 is not supported",
+            }),
+            row("s3", {
+              spike: "s3",
+              pass: true,
+              observed:
+                "status=queued; get(missing) -> WorkflowError: instance.not_found",
+              detail: {
+                get_missing: {
+                  name: "WorkflowError",
+                  message: "instance.not_found",
+                },
+              },
+            }),
+          ],
+          success: true,
+        },
+      ]),
+    );
+    expect(r.code, r.err + r.out).toBe(1);
+    expect(t.results("s1")[0]).toMatchObject({
+      pass: false,
+      observed: "threw TypeError: Ed25519 is not supported",
+    });
+    expect(t.results("s3")[0]).toMatchObject({
+      pass: true,
+      detail: {
+        get_missing: { name: "WorkflowError", message: "instance.not_found" },
+      },
+    });
+    // All rows were there: one read, no polling.
+    expect(t.reqs()).toHaveLength(1);
+  });
+});
+
+describe("provapi-spikes.sh deploy results table", () => {
+  it("fails every worker spike with D1's message when the table create fails, before any Worker", () => {
+    const d1 = "11111111-2222-4333-8444-555555555555";
+    const t = setup({
+      [key("POST", `/accounts/${ACCT}/d1/database`)]: ok({ uuid: d1 }),
+      [key("POST", `/accounts/${ACCT}/d1/database/${d1}/query`)]:
+        `400\n${JSON.stringify({
+          success: false,
+          errors: [{ code: 7400, message: "not authorized" }],
+        })}`,
+    });
+    writeFileSync(
+      join(t.sb.dir, "bin", "pnpm"),
+      '#!/usr/bin/env bash\necho pnpm >> "$STUB_LOG"\n',
+      {
+        mode: 0o755,
+      },
+    );
+    const r = t.run("deploy", { SPIKES: "s1,s7" });
+    expect(r.code).toBe(1);
+    for (const s of ["s1", "s7"])
+      expect(t.results(s)[0]).toMatchObject({
+        pass: false,
+        observed:
+          "results table create failed: D1 error: not authorized (code 7400)",
+      });
+    expect(t.sb.log()).not.toContain("pnpm");
+  });
+
+  it("creates the table only through cf_write, which refuses an unknown D1 id", () => {
+    expect(fn("d1_query")).toContain(
+      'cf_write POST "$ACCT/d1/database/$D1_ID/query" "${PREFIX}$RUN_ID" "$D1_ID"',
+    );
+    const b = fn("spike_deploy");
+    expect(b.indexOf('d1_query "$RESULTS_TABLE_SQL"')).toBeGreaterThan(
+      b.indexOf('know_id "$D1_ID"'),
+    );
+    expect(b.indexOf('d1_query "$RESULTS_TABLE_SQL"')).toBeLessThan(
+      b.indexOf("wrangler_run deploy"),
+    );
+    const t = setup({});
+    const r = t.sb.run(
+      [
+        "bash",
+        "-c",
+        `set -euo pipefail; . "${script(SH)}"; load_constants; D1_ID=${"e".repeat(8)}-0000-4000-8000-${"e".repeat(12)}; d1_query "$RESULTS_TABLE_SQL"`,
+      ],
+      { env: { ...t.env } },
+    );
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("not a create or query");
+    expect(t.reqs()).toEqual([]);
   });
 });

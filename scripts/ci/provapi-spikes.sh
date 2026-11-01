@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The Provisioning API's staging spikes (design v7 13.1 "Spikes", 14.4) and a
 # read-only check of the CI token, run by provapi-staging-spikes.yml:
-#   verify  token status and end date, both zones, the account, one read per
-#           permission group, the provisioning token secret's metadata
+#   verify  provapi-token-verify.sh staging (token status, end date and id,
+#           both zones, the account, one read per permission group, the
+#           provisioning token secret's metadata)
 #   s8      rl-a and rl-b secret and binding names and types (never values)
 #   s6      rl-b's script versions
 #   s4      Secrets Store: write a throwaway secret on stdin, read its
@@ -62,9 +63,10 @@ load_constants() {
   [ -f "$f" ] || refuse "$f is missing"
   ACCOUNT="$(jq -r '.account_id // ""' "$f")"
   APP_ZONE="$(jq -r '.app_zone // ""' "$f")"
+  # shellcheck disable=SC2034 # checked below through ${!v}
   CONTENT_ZONE="$(jq -r '.content_zone // ""' "$f")"
+  # shellcheck disable=SC2034 # checked below through ${!v}
   EMAIL_ZONE="$(jq -r '.email_zone // ""' "$f")"
-  DEPLOY_TOKEN_ID="$(jq -r '.deploy_token_id // ""' "$f")"
   NAMESPACE="$(jq -r '.dispatch_namespace // ""' "$f")"
   [[ "$ACCOUNT" =~ ^[0-9a-f]{32}$ ]] || refuse "account_id is not 32 hex"
   for v in APP_ZONE CONTENT_ZONE EMAIL_ZONE; do
@@ -193,13 +195,12 @@ tf() { if "$@"; then echo true; else echo false; fi; }
 # The staging Secrets Store store: the one store holding
 # oa-s-provision-token (the account is shared with prod, so never just the
 # first store). STORE is "" and STORE_WHY says why when there is not
-# exactly one. PROV_META is that secret's metadata (name, scopes, modified).
+# exactly one.
 store_id() {
   STORE=""
-  PROV_META=null
   cf_get "$ACCT/secrets_store/stores"
   ok || { STORE_WHY="stores list HTTP $HTTP"; return 1; }
-  local ids sid m hits=0 found="" meta=null
+  local ids sid m hits=0 found=""
   ids="$(jq -r '.result[]?.id // ""' <<< "$BODY")"
   [ -n "$ids" ] || { STORE_WHY="no store"; return 1; }
   while IFS= read -r sid; do
@@ -210,104 +211,18 @@ store_id() {
     if [ "$m" != null ]; then
       hits=$((hits + 1))
       found="$sid"
-      meta="$m"
     fi
   done <<< "$ids"
   [ "$hits" = 1 ] || { STORE_WHY="$PROVISION_TOKEN_SECRET is in $hits stores, want exactly 1"; return 1; }
   know_id "$found" "store"
   STORE="$found"
-  PROV_META="$meta"
 }
 
 # ---- verify (read-only) ----
 
-has_workers_scope() { jq -e '. != null and ((.scopes // []) | index("workers") != null)' <<< "$1" > /dev/null; }
-
-spike_verify() {
-  local s=verify
-  cf_get /user/tokens/verify
-  local st exp days
-  st="$(jq -r '.result.status // ""' <<< "$BODY")"
-  exp="$(jq -r '.result.expires_on // ""' <<< "$BODY")"
-  days="$(jq -r --argjson now "$(date +%s)" '.result.expires_on // "" | sub("\\.[0-9]+"; "") | try ((fromdateiso8601 - $now) / 86400 | floor) catch ""' <<< "$BODY")"
-  record $s token "$(tf test "$st" = active -a -n "$days" -a "${days:-0}" -ge 300 -a "${days:-0}" -le 400)" \
-    "HTTP $HTTP; status=${st:-none}; expires_on=${exp:-none}; days out=${days:-none} (want 300-400)"
-  # The environment's token, not a repo-level fallback: its id (not a
-  # secret) must be the one pinned in staging.json.
-  local tid
-  tid="$(jq -r '.result.id // ""' <<< "$BODY")"
-  if [[ ! "$DEPLOY_TOKEN_ID" =~ ^[0-9a-f]{32}$ ]]; then
-    record $s "token id" false "deploy_token_id is not pinned yet ($DEPLOY_TOKEN_ID); this token's id is ${tid:-none}"
-  else
-    record $s "token id" "$(tf test "$tid" = "$DEPLOY_TOKEN_ID")" "id=${tid:-none}; pinned=$DEPLOY_TOKEN_ID"
-  fi
-
-  local z n id
-  ZONE_APP=""
-  ZONE_CONTENT=""
-  for n in APP_ZONE CONTENT_ZONE; do
-    z="${!n}"
-    cf_get "/zones?name=$z&account.id=$ACCOUNT"
-    id="$(jq -r --arg z "$z" --arg a "$ACCOUNT" '[.result[]? | select(.name == $z and .account.id == $a) | .id] | if length == 1 then .[0] else "" end' <<< "$BODY")"
-    [ -z "$id" ] || [[ "$id" =~ ^[0-9a-f]{32}$ ]] || refuse "zone $z: not an id ($id)"
-    record $s "zone $z" "$(tf test -n "$id")" "HTTP $HTTP; $([ -n "$id" ] && echo "found $id" || echo "not found")"
-    [ "$n" = APP_ZONE ] && ZONE_APP="$id" || ZONE_CONTENT="$id"
-  done
-
-  cf_get "$ACCT"
-  record $s "account" "$(tf ok)" "HTTP $HTTP"
-
-  # One read per permission group: reach, not edit rights.
-  local g p
-  while IFS='|' read -r g p; do
-    cf_get "$p"
-    record $s "$g" "$(tf ok)" "HTTP $HTTP"
-  done << EOF
-Workers Scripts|$ACCT/workers/scripts
-Workers KV Storage|$ACCT/storage/kv/namespaces?per_page=1
-D1|$ACCT/d1/database?per_page=1
-Workers R2 Storage|$ACCT/r2/buckets?per_page=1
-Queues|$ACCT/queues
-Turnstile|$ACCT/challenges/widgets?per_page=5
-Secrets Store|$ACCT/secrets_store/stores
-EOF
-  local ez=""
-  [ "$EMAIL_ZONE" = "$APP_ZONE" ] && ez="$ZONE_APP"
-  [ "$EMAIL_ZONE" = "$CONTENT_ZONE" ] && ez="$ZONE_CONTENT"
-  if [ -n "$ez" ]; then
-    cf_get "/zones/$ez/email/sending/subdomains"
-    record $s "Email Sending ($EMAIL_ZONE)" "$(tf ok)" "HTTP $HTTP; $(jq -r '[.result[]?] | length' <<< "$BODY") sending subdomains"
-  else
-    record $s "Email Sending ($EMAIL_ZONE)" false "email zone not resolved"
-  fi
-  for n in APP_ZONE CONTENT_ZONE; do
-    z="${!n}"
-    [ "$n" = APP_ZONE ] && id="$ZONE_APP" || id="$ZONE_CONTENT"
-    if [ -z "$id" ]; then
-      record $s "zone groups $z" false "zone not resolved"
-      continue
-    fi
-    while IFS='|' read -r g p; do
-      cf_get "$p"
-      record $s "$g ($z)" "$(tf ok)" "HTTP $HTTP"
-    done << EOF
-Zone Read|/zones/$id
-Zone Settings Read|/zones/$id/settings
-DNS Read|/zones/$id/dns_records?per_page=1
-Workers Routes Read|/zones/$id/workers/routes
-EOF
-  done
-
-  # The provisioning token secret: metadata only, from the list endpoint in
-  # store_id (Secrets Store has no endpoint that returns a value).
-  if store_id; then
-    record $s "secret $PROVISION_TOKEN_SECRET" \
-      "$(tf has_workers_scope "$PROV_META")" \
-      "store $STORE; $(jq -r '"scopes=\((.scopes // []) | join(",")) modified=\(.modified)"' <<< "$PROV_META")" "$PROV_META"
-  else
-    record $s "secret $PROVISION_TOKEN_SECRET" false "$STORE_WHY"
-  fi
-}
+# The GET-only verify script (the prod-verify job runs it alone), after this
+# script's own staging checks in main.
+spike_verify() { bash "$root/scripts/ci/provapi-token-verify.sh" staging verify; }
 
 # ---- s8 (read-only): rl-a, rl-b secret and binding names and types ----
 
@@ -412,6 +327,32 @@ fail_worker_spikes() {
   for t in ${SPIKES_W//,/ }; do record "$t" "run" false "$1"; done
 }
 
+# The results table, exactly as the spike Worker creates it (a test pins the
+# two to the same text). deploy creates it before the cron can fire, so a
+# failed read in collect is a real query error, and an empty table means the
+# Worker never ran.
+RESULTS_TABLE_SQL='CREATE TABLE IF NOT EXISTS results (spike TEXT PRIMARY KEY, json TEXT NOT NULL)'
+
+# d1_err: D1's errors[] from BODY, as "<message> (code <n>)" joined by "; ",
+# or "HTTP <status>" when the body has none. Messages and codes only.
+d1_err() {
+  local e
+  e="$(jq -r '[(.errors // [])[]?, (.result // [] | if type == "array" then .[]? | (.errors // [])[]? else empty end)]
+    | map("\(.message // "no message") (code \(.code // "none"))") | unique | join("; ")' <<< "$BODY" 2> /dev/null || true)"
+  if [ -n "$e" ]; then echo "$e"; else echo "HTTP $HTTP, no error message"; fi
+}
+
+# d1_query <sql>: one statement on this run's D1 (D1_ID, known), through
+# cf_write's allowlist. Sets HTTP, BODY, and D1_ERR ("" on success).
+d1_query() {
+  cf_write POST "$ACCT/d1/database/$D1_ID/query" "${PREFIX}$RUN_ID" "$D1_ID" < <(jq -nc --arg q "$1" '{sql: $q}')
+  if ok && [ "$(jq -r '[.result[]? | .success != false] | all' <<< "$BODY")" = true ]; then
+    D1_ERR=""
+  else
+    D1_ERR="$(d1_err)"
+  fi
+}
+
 spike_deploy() {
   SPIKES_W="$(worker_spikes)"
   [ -n "$SPIKES_W" ] || { echo "no worker spikes requested"; return 0; }
@@ -424,6 +365,12 @@ spike_deploy() {
   fi
   know_id "$D1_ID" "D1 $name"
   printf '%s' "$D1_ID" > "$STATE_DIR/d1_id"
+  # Before the Worker exists, so before its cron can fire.
+  d1_query "$RESULTS_TABLE_SQL"
+  if [ -n "$D1_ERR" ]; then
+    fail_worker_spikes "results table create failed: D1 error: $D1_ERR"
+    return 1
+  fi
   SPIKES="$SPIKES_W"
   render "$dir/wrangler.workflow.jsonc" "$dir/wrangler.workflow.rendered.jsonc"
   render "$dir/wrangler.jsonc" "$dir/wrangler.rendered.jsonc"
@@ -431,40 +378,69 @@ spike_deploy() {
     fail_worker_spikes "deploy of ${name}-wf failed"
     return 1
   fi
+  # wrangler deploy PUTs triggers.crons to .../scripts/<name>/schedules
+  # itself and fails the deploy when that call fails, so no call of our own.
   if ! wrangler_run deploy -c "$dir/wrangler.rendered.jsonc"; then
     fail_worker_spikes "deploy of $name failed"
     return 1
   fi
-  echo "deployed $name and ${name}-wf (D1 $D1_ID); spikes $SPIKES_W run on the first cron tick"
+  date +%s > "$STATE_DIR/deployed_at"
+  # Read back (GET) what Cloudflare holds, for the log only.
+  cf_get "$ACCT/workers/scripts/$name/schedules"
+  local crons
+  crons="$(jq -r '[.result.schedules[]?.cron] | join(", ")' <<< "$BODY")"
+  echo "deployed $name and ${name}-wf (D1 $D1_ID, results table created); schedules read back: HTTP $HTTP, crons=[${crons:-none}]; spikes $SPIKES_W run on the first cron tick (a new cron can take up to 15 min to propagate)"
 }
 
-# collect: polls the throwaway D1 for each spike's row (deadline 8 min).
+# collect: polls the throwaway D1 for each spike's row (deadline 18 min:
+# a new Cron Trigger can take up to 15 min to propagate, per
+# https://developers.cloudflare.com/workers/configuration/cron-triggers/).
+# Every tick of the Worker writes a "started" row first, so when it gives up
+# each missing spike says one of: "D1 error: <message>", "cron never fired",
+# or "fired, no row for sN".
 spike_collect() {
   SPIKES_W="$(worker_spikes)"
   [ -n "$SPIKES_W" ] || return 0
-  local name="${PREFIX}$RUN_ID" want n rows=null deadline t
+  local name="${PREFIX}$RUN_ID" rows=null deadline t start waited started tickerr why
   [ -s "$STATE_DIR/d1_id" ] || { fail_worker_spikes "no D1 database (deploy failed)"; return 1; }
   D1_ID="$(cat "$STATE_DIR/d1_id")"
   know_id "$D1_ID" "D1 $name"
-  want="$(tr ',' '\n' <<< "$SPIKES_W" | grep -c .)"
-  deadline=$(($(date +%s) + ${COLLECT_DEADLINE_S:-480}))
+  local since="after deploy"
+  start="$(cat "$STATE_DIR/deployed_at" 2> /dev/null || true)"
+  [[ "$start" =~ ^[0-9]+$ ]] || { start="$(date +%s)"; since="of polling"; }
+  deadline=$(($(date +%s) + ${COLLECT_DEADLINE_S:-1080}))
+  local wanted
+  wanted="$(jq -Rc 'split(",") | map(select(. != ""))' <<< "$SPIKES_W")"
   while :; do
-    cf_write POST "$ACCT/d1/database/$D1_ID/query" "$name" "$D1_ID" < <(jq -nc '{sql: "SELECT spike, json FROM results"}')
-    if ok; then
+    d1_query "SELECT spike, json FROM results"
+    if [ -z "$D1_ERR" ]; then
       rows="$(jq -c '[.result[0].results[]?]' <<< "$BODY")"
-      n="$(jq 'length' <<< "$rows")"
-      [ "$n" -ge "$want" ] && break
+      jq -e --argjson w "$wanted" '[.[].spike] as $have | all($w[]; . as $s | $have | index($s) != null)' <<< "$rows" > /dev/null && break
     fi
     [ "$(date +%s)" -lt "$deadline" ] || break
     sleep "${COLLECT_POLL_S:-15}"
   done
+  waited=$(($(date +%s) - start))
+  started="$(jq -r '[.[]? | select(.spike == "started") | .json | fromjson | .at // "?"] | first // ""' <<< "$rows")"
+  tickerr="$(jq -r '[.[]? | select(.spike == "tick_error") | .json | fromjson | .error // "?"] | first // ""' <<< "$rows")"
+  if [ -n "$D1_ERR" ]; then
+    why="D1 error: $D1_ERR"
+  elif [ -z "$started" ]; then
+    why="cron never fired (no started row ${waited}s $since)"
+  fi
   for t in ${SPIKES_W//,/ }; do
     local r
     r="$(jq -c --arg t "$t" '[.[]? | select(.spike == $t) | .json | fromjson] | first // null' <<< "$rows")"
-    if [ "$r" = null ]; then
-      record "$t" run false "no result before the deadline (last HTTP $HTTP)"
+    if [ "$r" != null ]; then
+      if [ "$(jq -r '.ok == false and (.error | type) == "string"' <<< "$r")" = true ]; then
+        record "$t" run false "$(jq -r '.observed // ("threw " + .error)' <<< "$r")"
+      else
+        record "$t" run "$(jq '.pass == true' <<< "$r")" "$(jq -r '.observed' <<< "$r")" "$(jq -c '.detail // null' <<< "$r")"
+      fi
+    elif [ -n "${why:-}" ]; then
+      record "$t" run false "no result: $why"
     else
-      record "$t" run "$(jq '.pass == true' <<< "$r")" "$(jq -r '.observed' <<< "$r")" "$(jq -c '.detail // null' <<< "$r")"
+      record "$t" run false "no result: fired, no row for $t (last tick $started${tickerr:+; tick error: $tickerr})"
     fi
   done
 }

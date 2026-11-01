@@ -13,6 +13,7 @@
 #                      playwright-report/<suite>
 #   e2e.sh ui       -> @oa/ui real-browser checks (axe contrast, focus outlines)
 #   e2e.sh landing  -> landing real-browser checks (no horizontal overflow)
+#   e2e.sh provisioning -> provisioning admin consent checks (Strict cookie, cross-site)
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 hosts_file="${HOSTS_FILE:-/etc/hosts}"
@@ -84,8 +85,11 @@ case "${1:-}" in
   landing)
     pnpm --filter @oa/landing test:browser
     ;;
+  provisioning)
+    pnpm --filter @oa/provisioning test:e2e
+    ;;
   *)
-    echo "usage: e2e.sh version|install|hosts|mock|real|spaces|merge|ui|landing" >&2
+    echo "usage: e2e.sh version|install|hosts|mock|real|spaces|merge|ui|landing|provisioning" >&2
     exit 2
     ;;
 esac

@@ -102,6 +102,8 @@ export type MintOpts =
       clientId: string;
       /** DCR `client_name` is optional (TokenSchema.clientName nullable). */
       clientName: string | null;
+      /** The consent's redirect host, for `oauth.grant` (9A.8). */
+      redirectHost?: string | null;
     };
 
 /**
@@ -128,11 +130,49 @@ export type Minted = {
   superseded?: RevokedGrant[];
 };
 
-/** An `oauth` row's label (9A.3.3): the DCR client_name if it fits, else `unnamed`. */
-export const oauthLabel = (clientName: string | null) =>
-  clientName !== null && OAUTH_LABEL_RE.test(clientName)
-    ? clientName
-    : "unnamed";
+// C0, DEL and C1 controls, bidi embeddings, overrides, isolates and marks
+// (U+202A-202E, U+2066-2069, U+200E/F, U+061C), and zero-width characters.
+export const strippedFromClientName = (cp: number) =>
+  cp <= 0x1f ||
+  (cp >= 0x7f && cp <= 0x9f) ||
+  cp === 0x61c ||
+  (cp >= 0x200b && cp <= 0x200f) ||
+  (cp >= 0x202a && cp <= 0x202e) ||
+  (cp >= 0x2060 && cp <= 0x2069) ||
+  cp === 0xfeff;
+/** Longest DCR client_name shown, in code points, the ellipsis included. */
+export const CLIENT_NAME_MAX = 64;
+
+/** A DCR client_name with controls and bidi stripped and whitespace collapsed. */
+const cleanClientName = (name: string | null) =>
+  (name ?? "")
+    .replace(/\s+/gu, " ")
+    .replace(/./gsu, (c) =>
+      strippedFromClientName(c.codePointAt(0) as number) ? "" : c,
+    )
+    .replace(/\s+/gu, " ")
+    .trim();
+
+/**
+ * The DCR client_name as shown on consent (L1): cleaned, at most
+ * CLIENT_NAME_MAX code points with an ellipsis, else "Unnamed client".
+ */
+export function clientDisplayName(name: string | null): string {
+  const cps = Array.from(cleanClientName(name));
+  if (cps.length === 0) return "Unnamed client";
+  return cps.length > CLIENT_NAME_MAX
+    ? `${cps.slice(0, CLIENT_NAME_MAX - 1).join("")}\u2026`
+    : cps.join("");
+}
+
+/**
+ * An `oauth` row's label (9A.3.3), also the audit label: the cleaned DCR
+ * client_name if it fits, else `unnamed`.
+ */
+export const oauthLabel = (clientName: string | null) => {
+  const name = cleanClientName(clientName);
+  return OAUTH_LABEL_RE.test(name) ? name : "unnamed";
+};
 
 const b64u = (b: Uint8Array) =>
   btoa(String.fromCharCode(...b))
@@ -257,8 +297,8 @@ export async function mintAgentToken(
     };
   } else {
     // Stable per admin, so the library can list one admin's grants; never
-    // the email itself.
-    oauthUser = `adm_${await hmac16(env.ADMIN_SESSION_KEY, `oauth_user\n${email.toLowerCase()}`)}`;
+    // the email itself (9A.3.1: the "oauth-user\n" domain).
+    oauthUser = `adm_${await hmac16(env.ADMIN_SESSION_KEY, `oauth-user\n${email.toLowerCase()}`)}`;
     const label = oauthLabel(opts.clientName);
     row = {
       id,
@@ -276,8 +316,7 @@ export async function mintAgentToken(
       expires_at: Math.min(s.expires_at, now + OAUTH_GRANT_MAX_MS),
     };
   }
-  // oat: `token.mint` (4.9). oauth: `oauth.grant` with the 9A.8 fields; the
-  // redirect host is not in the 9A.4 opts, so it is null until C4 adds it.
+  // oat: `token.mint` (4.9). oauth: `oauth.grant` with the 9A.8 fields.
   const action = opts.kind === "oauth" ? "oauth.grant" : "token.mint";
   const detail = JSON.stringify(
     opts.kind === "oauth"
@@ -286,7 +325,7 @@ export async function mintAgentToken(
           clientId: opts.clientId,
           clientName: row.client_name,
           scopes: JSON.parse(scopes),
-          redirectHost: null,
+          redirectHost: opts.redirectHost ?? null,
           grantEnd: row.expires_at,
         }
       : {
@@ -595,6 +634,62 @@ export async function revokeToken(
   ]);
   if ((res[0]?.results.length ?? 0) === 0) return null;
   return (res[1]?.results ?? []) as RevokedGrant[];
+}
+
+/**
+ * A client's RFC 7009 revocation ended this grant in the library's store
+ * (9A.3.1): revokes its live row, so it stops counting toward the 5-live
+ * limit and /tokens shows it revoked; one `token.revoke` row, the token as
+ * actor. Only the grant's own client's row. True when a row was revoked.
+ */
+export async function revokeGrantRow(
+  env: Env,
+  grant: RevokedGrant & { clientId: string },
+): Promise<boolean> {
+  const now = Date.now();
+  const db = env.PLATFORM_DB;
+  const where =
+    "WHERE grant_id = ?1 AND oauth_user = ?2 AND client_id = ?4 AND kind = 'oauth' AND revoked_at IS NULL";
+  const res = await db.batch([
+    db
+      .prepare(
+        `${AUDIT_INSERT} SELECT ?3, 'token', label, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'kind', kind, 'label', label, 'scopes', json(scopes), 'admin', admin_email, 'via', 'oauth_revocation') FROM agent_tokens ${where}`,
+      )
+      .bind(grant.grantId, grant.oauthUser, now, grant.clientId),
+    db
+      .prepare(`UPDATE agent_tokens SET revoked_at = ?3 ${where}`)
+      .bind(grant.grantId, grant.oauthUser, now, grant.clientId),
+  ]);
+  return (res[1]?.meta.changes ?? 0) > 0;
+}
+
+/**
+ * The client sweep (8.3): revokes every live oauth row of a client, each
+ * with its token.revoke row (via `client_expired`). Returns the grants to
+ * end in KV.
+ */
+export async function revokeClientGrants(
+  env: Env,
+  clientId: string,
+  now: number = Date.now(),
+): Promise<RevokedGrant[]> {
+  const db = env.PLATFORM_DB;
+  const where =
+    "WHERE client_id = ?1 AND kind = 'oauth' AND revoked_at IS NULL";
+  const res = await db.batch([
+    db
+      .prepare(`${GRANTS_SELECT} ${where} AND grant_id IS NOT NULL`)
+      .bind(clientId),
+    db
+      .prepare(
+        `${AUDIT_INSERT} SELECT ?2, 'token', label, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'kind', kind, 'label', label, 'scopes', json(scopes), 'admin', admin_email, 'via', 'client_expired') FROM agent_tokens ${where}`,
+      )
+      .bind(clientId, now),
+    db
+      .prepare(`UPDATE agent_tokens SET revoked_at = ?2 ${where}`)
+      .bind(clientId, now),
+  ]);
+  return (res[0]?.results ?? []) as RevokedGrant[];
 }
 
 /**

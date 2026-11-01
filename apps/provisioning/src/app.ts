@@ -7,7 +7,11 @@ import {
 } from "@oa/shared/provisioning";
 import { authenticate } from "./auth/authenticate.js";
 import { checkCsrf, checkOrigin } from "./auth/csrf.js";
-import { handleOAuth, isOAuthPath } from "./auth/oauth/index.js";
+import {
+  handleOAuth,
+  isOAuthPath,
+  oauthPrincipal,
+} from "./auth/oauth/index.js";
 import { browserRoute, type SigninDeps } from "./auth/signin.js";
 import { LazyBody, readJsonBody } from "./body.js";
 import type { Env } from "./env.js";
@@ -96,7 +100,9 @@ async function route(
     if (!here.some((r) => r.method === req.method))
       return methodNotAllowed(here.map((r) => r.method).join(", "));
     return guard(() =>
-      path === "/mcp" ? handleMcp(req, env, ctx) : handleOAuth(req, env, ctx),
+      path === "/mcp"
+        ? handleMcp(req, env, ctx, { oauthPrincipal })
+        : handleOAuth(req, env, ctx),
     );
   }
   if (isOAuthPath(path)) return notFound();
