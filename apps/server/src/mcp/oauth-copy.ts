@@ -14,9 +14,10 @@ import {
 
 // POST /__oa/oauth-store/copy (#1008): Platform's job drives the OAuth
 // KV -> D1 copy (copyKvToD1) one page per call, on the app host only. On
-// only with HOSTED=1 AND a 32+ char OAUTH_COPY_KEY; off, it is any unknown
-// route. Order per request, as the test hooks: rate limit (RL_ANON; unbound
-// is a refusal), then the bearer key (constant time), then the input. Before
+// only with a 32+ char OAUTH_COPY_KEY (a secret only the copy job puts, per
+// job; not HOSTED, which may only tighten); off, it is any unknown route.
+// Order per request, as the test hooks: rate limit (RL_ANON; unbound is a
+// refusal), then the bearer key (constant time), then the input. Before
 // the key verifies every refusal looks like an unknown route (no reason);
 // after it, the 404 body's error.details.reason says why (OAuthCopyRefusal,
 // a fixed enum). Nothing logged or returned carries a key, a value or the
@@ -29,11 +30,10 @@ export type OAuthCopyRefusal = "bad_input" | "not_dual" | "markers";
 
 const MIN_KEY = 32;
 
-type CopyEnv = Pick<Env, "HOSTED" | "OAUTH_COPY_KEY">;
+type CopyEnv = Pick<Env, "OAUTH_COPY_KEY">;
 
 export function oauthCopyOn(env: CopyEnv): boolean {
   return (
-    env.HOSTED === "1" &&
     typeof env.OAUTH_COPY_KEY === "string" &&
     env.OAUTH_COPY_KEY.length >= MIN_KEY
   );

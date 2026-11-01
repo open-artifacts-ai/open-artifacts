@@ -15,8 +15,8 @@ import {
 import { APP, callWorker, E, limiter } from "./mcp-helpers.js";
 
 // #1008: POST /__oa/oauth-store/copy, Platform's driver for the OAuth
-// KV -> D1 copy. Off unless HOSTED=1 and a 32+ char OAUTH_COPY_KEY; rate
-// limit, then the key, then the input; uniform 404 before the key, a
+// KV -> D1 copy. Off unless a 32+ char OAUTH_COPY_KEY (HOSTED plays no
+// part); rate limit, then the key, then the input; uniform 404 before the key, a
 // fixed-enum reason after it.
 
 const KEY = "c".repeat(32);
@@ -60,7 +60,7 @@ function memKv(keys: number) {
 }
 
 const passRl = limiter(1_000_000);
-const ON = { HOSTED: "1", OAUTH_COPY_KEY: KEY, RL_ANON: passRl.RL_ANON };
+const ON = { OAUTH_COPY_KEY: KEY, RL_ANON: passRl.RL_ANON };
 const inMode = (mode: OAuthStoreMode, over: Record<string, unknown> = {}) =>
   E({ ...ON, OAUTH_STORE: mode, ...over });
 
@@ -159,11 +159,9 @@ beforeEach(async () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("off: any unknown route", () => {
-  it("without HOSTED=1, or with a key under 32 chars, even with that key", async () => {
+  it("without a key, or with a key under 32 chars, even with that key", async () => {
     const kv = memKv(3);
     const offs = [
-      inMode("dual", { OAUTH_KV: kv, HOSTED: undefined }),
-      inMode("dual", { OAUTH_KV: kv, HOSTED: "0" }),
       inMode("dual", { OAUTH_KV: kv, OAUTH_COPY_KEY: undefined }),
       inMode("dual", { OAUTH_KV: kv, OAUTH_COPY_KEY: "c".repeat(31) }),
     ];

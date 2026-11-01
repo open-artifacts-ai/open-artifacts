@@ -203,7 +203,7 @@ export interface Env {
   TEST_HOOK_KEY?: string;
   /**
    * Bearer key for POST /__oa/oauth-store/copy (the OAuth KV -> D1 copy,
-   * mcp/oauth-copy.ts); 32+ chars, and only with HOSTED=1. Unset: no route.
+   * mcp/oauth-copy.ts); 32+ chars. Unset: no route.
    */
   OAUTH_COPY_KEY?: string;
   SESSION_SECRET: string;

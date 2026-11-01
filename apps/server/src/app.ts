@@ -142,7 +142,7 @@ export function createApp(
   // /__test/* (P5 hooks): before any session read; 404 unless enabled.
   if (hooks) hooks.mountTestHooks(app);
   // POST /__oa/oauth-store/copy (#1008): before any session read; 404
-  // unless HOSTED=1 and OAUTH_COPY_KEY (mcp/oauth-copy.ts decides).
+  // unless OAUTH_COPY_KEY is set (mcp/oauth-copy.ts decides).
   mountOAuthCopy(app);
   app.get(SKILL_PATH, serveSkill);
   app.get(UPGRADE_PATH, serveUpgrade);
