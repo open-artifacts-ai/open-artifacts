@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.88.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.0...v0.88.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **inventory:** depend on wrangler so the CI inventory target can deploy ([#984](https://github.com/open-artifacts-ai/open-artifacts/issues/984)) ([4ff0821](https://github.com/open-artifacts-ai/open-artifacts/commit/4ff0821715720f096f972625924ab21e9d0f9f39))
+
 ## [0.88.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.87.0...v0.88.0) (2026-11-01)
 
 
