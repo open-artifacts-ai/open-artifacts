@@ -11,7 +11,7 @@ import { fmtClock } from "../src/components/labels";
 import { SEARCH_DELAY_MS } from "../src/pages/Installs";
 import { http, json, renderApp, seen, use } from "./harness";
 
-it("lists installs with state, release, sign-in and health, and seven tiles from the world", async () => {
+it("lists installs with state, release, sign-in and health, and six tiles from the world", async () => {
   renderApp("/installs");
   const row = (await screen.findAllByRole("link", { name: "leo" }))[0].closest(
     "tr",
@@ -416,4 +416,95 @@ it("Needs attention on a page with none says so and keeps the pager", async () =
     await screen.findByText("No installs on this page need attention."),
   ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+});
+
+// Paging is keyed on the filter: a cursor from one filter is never sent with
+// another, even for the one render before page 1 is requested.
+it("a tile click after Next starts at page 1 and never sends the old cursor with the new state", async () => {
+  twoPages();
+  renderApp("/installs");
+  await screen.findByRole("link", { name: "first" });
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  await screen.findByRole("link", { name: "second" });
+  fireEvent.click(screen.getByTestId("tile-paused"));
+  await waitFor(() => expect(lastList()).toContain("state=suspended"));
+  await screen.findByRole("link", { name: "first" });
+  expect(lastList()).not.toContain("cursor=");
+  expect(
+    installsCalls().filter(
+      (s) => s.path.includes("cursor=") && s.path.includes("state="),
+    ),
+  ).toEqual([]);
+  expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+});
+
+it("Back and Forward restore the filter and start each at page 1", async () => {
+  twoPages();
+  const { router } = renderApp("/installs");
+  fireEvent.click(await screen.findByTestId("tile-active"));
+  await waitFor(() => expect(lastList()).toContain("state=active"));
+  fireEvent.click(screen.getByTestId("tile-paused"));
+  await waitFor(() => expect(lastList()).toContain("state=suspended"));
+  // Page 2 of the paused list, then Back to the active filter.
+  fireEvent.click(await screen.findByRole("button", { name: "Next" }));
+  await screen.findByRole("link", { name: "second" });
+  expect(lastList()).toContain("state=suspended");
+  act(() => router.history.back());
+  await waitFor(() =>
+    expect(router.state.location.search).toEqual({ state: "active" }),
+  );
+  expect(screen.getByTestId("tile-active")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(screen.getByTestId("tile-paused")).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await screen.findByRole("link", { name: "first" });
+  expect(lastList()).toContain("state=active");
+  expect(lastList()).not.toContain("cursor=");
+  // The only cursor ever sent went with the filter it came from.
+  for (const s of installsCalls().filter((c) => c.path.includes("cursor="))) {
+    expect(s.path).toContain("state=suspended");
+  }
+  act(() => router.history.forward());
+  await waitFor(() =>
+    expect(screen.getByTestId("tile-paused")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    ),
+  );
+  await waitFor(() => expect(lastList()).toContain("state=suspended"));
+  expect(lastList()).not.toContain("cursor=");
+});
+
+it("a search and a tile filter are sent together", async () => {
+  renderApp("/installs");
+  await screen.findAllByRole("link", { name: "leo" });
+  fireEvent.change(
+    screen.getByRole("searchbox", { name: "Search slug or host" }),
+    { target: { value: "le" } },
+  );
+  await waitFor(() => expect(lastList()).toContain("q=le"));
+  fireEvent.click(screen.getByTestId("tile-active"));
+  await waitFor(() => expect(lastList()).toContain("state=active"));
+  expect(lastList()).toContain("q=le");
+});
+
+it("Needs attention counts installs, not alerts", async () => {
+  const w = fixtureWorld();
+  const a = w.attention[0];
+  use(
+    http.get("*/api/v1/world", () =>
+      json({
+        ...w,
+        attention: [...w.attention, { ...a, kind: "health_failing" }],
+      }),
+    ),
+  );
+  renderApp("/installs");
+  expect(await screen.findByTestId("tile-attention")).toHaveTextContent(
+    String(new Set(w.attention.map((x) => x.installId)).size),
+  );
 });

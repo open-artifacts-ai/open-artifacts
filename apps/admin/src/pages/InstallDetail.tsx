@@ -41,8 +41,10 @@ import {
   fmtClock,
   fmtDay,
   HEALTH_LABEL,
+  HEALTH_TONE,
   JOB_VERB,
   jobTarget,
+  providerLabel,
   SERVING_LABEL,
   stepCount,
   TIER_LABEL,
@@ -63,11 +65,6 @@ type Dialog =
 const GRACE_DAYS = 7;
 /** The upgrade's "latest release" value (Radix Select has no empty value). */
 const LATEST = "latest";
-const HEALTH_TONE = {
-  ok: "success",
-  failing: "danger",
-  unknown: "muted",
-} as const satisfies Record<Install["health"], string>;
 const REAUTH_MS = 10 * 60_000;
 const can = (i: Install, kind: JobKind) => canTransition(i.state, kind, "A");
 
@@ -610,9 +607,7 @@ export function InstallDetail({ id }: { id: string }) {
               <dt>Tier · Sign-in</dt>
               <dd>
                 {i.tier ? TIER_LABEL[i.tier] : "None"} ·{" "}
-                {i.auth.providers
-                  .map((p) => (p === "google" ? "Google" : "Email"))
-                  .join(", ")}
+                {i.auth.providers.map(providerLabel).join(", ")}
                 {i.auth.domains.length > 0 &&
                   ` · ${i.auth.domains.length} ${i.auth.domains.length === 1 ? "domain" : "domains"}`}
               </dd>

@@ -860,11 +860,18 @@ fieldset.oa-seg-field {
   gap: 8px;
   margin-bottom: 16px;
 }
+/* The mock's one row of six at desktop width. */
+@media (min-width: 1024px) {
+  .oa-tiles {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
 .oa-tile {
   background: var(--oa-surface);
   border-radius: 9px;
   box-shadow: var(--oa-shadow-1);
   padding: 9px 11px;
+  min-width: 0;
 }
 .oa-tile .k {
   font-size: 11.5px;
@@ -884,36 +891,71 @@ fieldset.oa-seg-field {
 .oa-tile.warn .v {
   color: var(--oa-warning);
 }
-/* Status tiles that filter the list (#1033): pressed = the active filter. */
-.oa-tile-btn {
+/*
+ * Status tiles that filter the list (#1033): pressed = the active filter.
+ * Rings are inset box-shadows, not borders, so button tiles line up with the
+ * div tiles next to them.
+ */
+.oa-tile-btn,
+.oa-tile-seg {
   display: block;
   width: 100%;
   min-width: 0;
   text-align: left;
   font: inherit;
   color: inherit;
-  border: 1px solid transparent;
+  border: 0;
   cursor: pointer;
   transition:
     background-color 120ms,
-    border-color 120ms;
+    box-shadow 120ms;
 }
 .oa-tile-btn .k,
-.oa-tile-btn .v {
+.oa-tile-btn .v,
+.oa-tile-seg .k,
+.oa-tile-seg .v {
   display: block;
 }
 .oa-tile-btn:hover {
-  border-color: var(--oa-border);
+  background: var(--oa-surface-2);
+  box-shadow:
+    var(--oa-shadow-1),
+    inset 0 0 0 1px var(--oa-border-strong);
 }
 .oa-tile-btn[aria-pressed="true"] {
   background: var(--oa-accent-soft);
-  border-color: var(--oa-accent);
+  box-shadow:
+    var(--oa-shadow-1),
+    inset 0 0 0 1px var(--oa-accent);
 }
-.oa-tile-btn[aria-pressed="true"] .k {
-  color: var(--oa-text);
-  font-weight: 500;
+/* Paused · Deleting: one tile, two halves that each filter. */
+.oa-tile-split {
+  display: flex;
+  align-items: stretch;
+  padding: 3px;
 }
-
+.oa-tile-seg {
+  flex: 1;
+  background: transparent;
+  border-radius: 7px;
+  padding: 6px 8px;
+}
+.oa-tile-seg:hover {
+  background: var(--oa-surface-2);
+  box-shadow: inset 0 0 0 1px var(--oa-border-strong);
+}
+.oa-tile-seg[aria-pressed="true"] {
+  background: var(--oa-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--oa-accent);
+}
+/* Sits on the values' line, like the mock's "1 · 1". */
+.oa-tile-dot {
+  align-self: flex-end;
+  padding: 0 2px 6px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--oa-text-muted);
+}
 /* ---------- Toolbar, tables, pager (mock .tool, .card + table.it) ---------- */
 .oa-tools {
   display: flex;

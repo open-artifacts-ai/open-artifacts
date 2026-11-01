@@ -22,7 +22,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { installsQuery, worldQuery } from "../api/queries";
 import { Pager } from "../components/Bits";
 import {
@@ -30,8 +30,10 @@ import {
   fmtClock,
   fmtDay,
   HEALTH_LABEL,
+  HEALTH_TONE,
   JOB_VERB,
   jobTarget,
+  providerLabel,
   STATE_LABEL,
   STATE_TONE,
   stepCount,
@@ -56,6 +58,37 @@ export const parseStateFilter = (v: unknown): StateFilter | undefined =>
     ? (v as StateFilter)
     : undefined;
 
+type TileDef = { f: StateFilter; label: string; n: number; id: string };
+
+/** One status tile that filters the list; pressed while it is the filter. */
+function TileButton({
+  t,
+  filter,
+  onPick,
+  className = "oa-tile oa-tile-btn",
+}: {
+  t: TileDef;
+  filter: StateFilter | undefined;
+  onPick: (f: StateFilter | undefined) => void;
+  className?: string;
+}) {
+  const on = filter === t.f;
+  const name = t.f === ATTENTION ? t.label : STATE_LABEL[t.f];
+  return (
+    <button
+      type="button"
+      className={`${className} ${t.f === ATTENTION && t.n > 0 ? "warn" : ""}`}
+      data-testid={t.id}
+      aria-pressed={on}
+      title={on ? "Show all states" : `Show only ${name.toLowerCase()}`}
+      onClick={() => onPick(on ? undefined : t.f)}
+    >
+      <span className="k">{t.label}</span>
+      <span className="v">{t.n}</span>
+    </button>
+  );
+}
+
 function Tiles({
   world,
   filter,
@@ -66,45 +99,54 @@ function Tiles({
   onPick: (f: StateFilter | undefined) => void;
 }) {
   const by = world.installs.byState;
-  const attention = world.attention.length;
+  // Installs, not alerts: one install with two alerts counts once.
+  const attention = new Set(world.attention.map((a) => a.installId)).size;
   const tok = world.provisioningToken;
-  const tiles: { f: StateFilter; label: string; n: number; id: string }[] = [
-    { f: "active", label: "Active", n: by.active, id: "tile-active" },
-    {
-      f: "provisioning",
-      label: "Creating",
-      n: by.provisioning,
-      id: "tile-creating",
-    },
-    { f: "suspended", label: "Paused", n: by.suspended, id: "tile-paused" },
-    { f: "deleting", label: "Deleting", n: by.deleting, id: "tile-deleting" },
-    {
-      f: ATTENTION,
-      label: "Needs attention",
-      n: attention,
-      id: "tile-attention",
-    },
-  ];
+  const tile = (t: TileDef) => (
+    <TileButton key={t.f} t={t} filter={filter} onPick={onPick} />
+  );
   return (
     <section className="oa-tiles" aria-label="Overview">
-      {tiles.map((t) => {
-        const on = filter === t.f;
-        return (
-          <button
-            key={t.f}
-            type="button"
-            className={`oa-tile oa-tile-btn ${t.f === ATTENTION && t.n > 0 ? "warn" : ""}`}
-            data-testid={t.id}
-            aria-pressed={on}
-            title={
-              on ? "Show all states" : `Show only ${t.label.toLowerCase()}`
-            }
-            onClick={() => onPick(on ? undefined : t.f)}
-          >
-            <span className="k">{t.label}</span>
-            <span className="v">{t.n}</span>
-          </button>
-        );
+      {tile({ f: "active", label: "Active", n: by.active, id: "tile-active" })}
+      {tile({
+        f: "provisioning",
+        label: "Creating",
+        n: by.provisioning,
+        id: "tile-creating",
+      })}
+      {/* The mock's "Paused · Deleting" tile: each half filters on its own. */}
+      <div className="oa-tile oa-tile-split">
+        <TileButton
+          t={{
+            f: "suspended",
+            label: "Paused",
+            n: by.suspended,
+            id: "tile-paused",
+          }}
+          filter={filter}
+          onPick={onPick}
+          className="oa-tile-seg"
+        />
+        <span className="oa-tile-dot" aria-hidden="true">
+          ·
+        </span>
+        <TileButton
+          t={{
+            f: "deleting",
+            label: "Deleting",
+            n: by.deleting,
+            id: "tile-deleting",
+          }}
+          filter={filter}
+          onPick={onPick}
+          className="oa-tile-seg"
+        />
+      </div>
+      {tile({
+        f: ATTENTION,
+        label: "Needs attention",
+        n: attention,
+        id: "tile-attention",
       })}
       <div
         className={`oa-tile ${tok.status === "active" ? "" : "warn"}`}
@@ -182,12 +224,6 @@ function StateCell({
   );
 }
 
-const HEALTH_TONE = {
-  ok: "success",
-  failing: "danger",
-  unknown: "muted",
-} as const satisfies Record<keyof typeof HEALTH_LABEL, string>;
-
 type SortKey = "slug" | "version" | "createdAt";
 const SORTS: { key: SortKey; label: string }[] = [
   { key: "slug", label: "Install" },
@@ -206,29 +242,22 @@ export function Installs() {
   const [typed, setTyped] = useState("");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
-  const paging = usePaging();
+  // Keyed on the filter and search: a new one starts at page 1 in the same
+  // render, whether picked here or by Back/Forward, so no cursor from the old
+  // filter is ever sent with the new one.
+  const paging = usePaging(`${filter ?? ""}\u0000${q}`);
   const setFilter = (f: StateFilter | undefined) => {
     void navigate({ to: "/installs", search: f ? { state: f } : {} });
   };
-  // A new filter starts at page 1, whether picked here or by Back/Forward.
-  const lastFilter = useRef(filter);
-  useEffect(() => {
-    if (lastFilter.current === filter) return;
-    lastFilter.current = filter;
-    paging.reset();
-  }, [filter, paging.reset]);
   // The search runs on the server (R2 `q`) once typing pauses.
   useEffect(() => {
     const next = typed.trim();
     // Nothing typed yet (or back to the applied search): leave the page alone.
     // Resetting here would undo a Next click made before the first tick.
     if (next === q) return;
-    const t = setTimeout(() => {
-      setQ(next);
-      paging.reset();
-    }, SEARCH_DELAY_MS);
+    const t = setTimeout(() => setQ(next), SEARCH_DELAY_MS);
     return () => clearTimeout(t);
-  }, [typed, q, paging.reset]);
+  }, [typed, q]);
   const list = useQuery(
     installsQuery({
       cursor: paging.cursor,
@@ -421,9 +450,7 @@ export function Installs() {
                       </TableCell>
                       <TableCell>{i.tier ? TIER_LABEL[i.tier] : "–"}</TableCell>
                       <TableCell>
-                        {i.auth.providers
-                          .map((p) => (p === "google" ? "Google" : "Email"))
-                          .join(" · ")}
+                        {i.auth.providers.map(providerLabel).join(" · ")}
                         {i.auth.domainCount > 0 &&
                           ` · ${i.auth.domainCount} ${i.auth.domainCount === 1 ? "domain" : "domains"}`}
                       </TableCell>

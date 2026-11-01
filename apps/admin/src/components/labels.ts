@@ -39,6 +39,17 @@ export const STATE_TONE = {
   failed: "danger",
 } as const satisfies Record<InstallState, Tone>;
 
+/** The health dot color (the mock's .st --c). */
+export const HEALTH_TONE = {
+  ok: "success",
+  failing: "danger",
+  unknown: "muted",
+} as const satisfies Record<Health, Tone>;
+
+/** A sign-in provider in words. */
+export const providerLabel = (p: string): string =>
+  p === "google" ? "Google" : "Email";
+
 export const TIER_LABEL: Record<Tier, string> = {
   trial: "Trial",
   team: "Team",

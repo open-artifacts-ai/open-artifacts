@@ -23,7 +23,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { releasesQuery, slugQuery } from "../api/queries";
 import { ErrorLine } from "../components/Bits";
-import { visibleSteps } from "../components/labels";
+import { providerLabel, TIER_LABEL, visibleSteps } from "../components/labels";
 import { useAction } from "../hooks/useAction";
 
 const DEBOUNCE_MS = 300;
@@ -218,7 +218,7 @@ export function CreateInstall() {
                     checked={tier === t}
                     onChange={() => setTier(t)}
                   />
-                  {t[0].toUpperCase() + t.slice(1)}
+                  {TIER_LABEL[t]}
                 </label>
               ))}
             </div>
@@ -238,7 +238,7 @@ export function CreateInstall() {
                     )
                   }
                 />
-                {p === "google" ? "Google" : "Email"}
+                {providerLabel(p)}
               </label>
             ))}
             {noProvider && (
