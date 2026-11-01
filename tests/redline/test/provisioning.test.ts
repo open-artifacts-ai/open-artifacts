@@ -18,6 +18,7 @@ import {
   REFRESH_MARGIN_S,
 } from "../src/oidc.ts";
 import {
+  ADMIN_FLOW_COOKIE,
   bringUpgrade,
   failText,
   mintCreds,
@@ -30,8 +31,10 @@ import {
   Run,
   revokeCreds,
   stagedVersion,
+  statusCounts,
 } from "../src/provisioning.ts";
 import { credFile, rawTargets } from "../src/provisioning-live.ts";
+import { PRE_PROD_NA, PRE_PROD_REASON } from "../src/report.ts";
 import { newRecipient, openSealed, parseCreds } from "../src/seal.ts";
 import {
   parseProd,
@@ -118,6 +121,19 @@ describe("the probes on a conforming staging fake", () => {
       P35: "unproven-live",
     });
     expect(levels).toEqual(expected);
+    // #1012: the gate's frozen list is exactly the probes that give the
+    // pre-prod reason.
+    const preProd = [...out]
+      .filter(
+        ([, v]) =>
+          typeof v === "object" &&
+          "reason" in v &&
+          v.reason === PRE_PROD_REASON,
+      )
+      .map(([k]) => k);
+    expect(preProd.filter((k) => level(out.get(k)) !== "pass")).toEqual([
+      ...PRE_PROD_NA,
+    ]);
   });
 
   it("prod probes run once prod admin answers 401", async () => {
@@ -160,6 +176,21 @@ describe("each probe fails on the behaviour it guards", () => {
     ["p15_mode_early", "P15", /inventory mode serving before route/],
     ["p27_no_token_ok", "P27", /P27 no token: want 404/],
     ["p34_admin_429", "P34", /P34 \/auth\/start: status 429/],
+    [
+      "p25_limited_cookie",
+      "P25",
+      /a limited \/auth\/start set the flow cookie/,
+    ],
+    ["p25_limited_google", "P25", /no 303 to \/sign-in\?error=rate_limited/],
+    ["p43_redirect", "P43", /P43 b=1: status 302/],
+    ["p43_refresh", "P43", /refreshes itself/],
+    ["p43_script", "P43", /carries a script/],
+    [
+      "p43_foreign_return",
+      "P43",
+      /no button to \/auth\/start for this request/,
+    ],
+    ["prod_resolves_404", "P7", /resolves but is status 404/],
     ["p37_no_header", "P37", /WWW-Authenticate lacks/],
     [
       "p38_prm_no_scopes",
@@ -761,7 +792,7 @@ describe("config", () => {
     ).toThrow(/a\.name/);
   });
   // #1012: before the prod platform deploy its admin host has no DNS record.
-  it("prodLive: an unresolved prod host is not live; a 401 is; other errors throw", async () => {
+  it("prodLive: only an unresolved prod host is not live; a 401 is live; anything else fails", async () => {
     const thrown = (code: string) => async () => {
       throw Object.assign(new TypeError("fetch failed"), { cause: { code } });
     };
@@ -780,13 +811,32 @@ describe("config", () => {
         ),
       ),
     ).toBe(true);
-    expect(
-      await prodLive(
-        at(
-          (async () => new Response("{}", { status: 404 })) as typeof io.fetch,
+    for (const status of [404, 500, 503])
+      await expect(
+        prodLive(
+          at((async () => new Response("{}", { status })) as typeof io.fetch),
         ),
-      ),
-    ).toBe(false);
+      ).rejects.toThrow(`resolves but is status ${status}`);
+  });
+  it("statusCounts: statuses and fixed codes only, most first", () => {
+    const r = (status: number, json?: unknown) => ({ status, json });
+    expect(
+      statusCounts([
+        r(429, { error: { code: "rate_limited" } }),
+        r(404),
+        r(429, { error: { code: "rate_limited" } }),
+        r(500, { error: { code: "Has Spaces <b>" } }),
+      ]),
+    ).toBe("429 rate_limited x2, 404 x1, 500 x1");
+  });
+  it("the flow cookie name is the app's own", () => {
+    const flow = readFileSync(
+      join(import.meta.dirname, "../../../apps/provisioning/src/auth/flow.ts"),
+      "utf8",
+    );
+    expect(flow).toContain(
+      `export const FLOW_COOKIE = "${ADMIN_FLOW_COOKIE}";`,
+    );
   });
   it("slugs and request ids fit the API's rules", () => {
     const run = new Run({ ...CONFIG, runId: "123456789012-3" }, fakeApi().io);
