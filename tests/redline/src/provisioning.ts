@@ -217,7 +217,7 @@ export class Run {
     const j = await this.waitJob(jobId, { testUser });
     if (j.status !== "done")
       throw new ProbeFail(
-        `${what}: job ${j.status} (${j.lastErrorCode ?? j.error?.code ?? "no code"})`,
+        `${what}: job ${j.status} (${j.lastErrorCode ?? j.error?.code ?? "no code"})${failText(j)}`,
       );
     return j;
   }
@@ -1812,10 +1812,24 @@ export async function mintCreds(
     await run.done(a.job.id, `R26 ${slug}`);
   else if (first.status !== "done")
     throw new ProbeFail(
-      `R26 ${slug}: job failed (${first.lastErrorCode ?? first.error?.code ?? "no code"})`,
+      `R26 ${slug}: job failed (${first.lastErrorCode ?? first.error?.code ?? "no code"})${failText(first)}`,
     );
   if (!sealed) throw new ProbeFail(`R26 ${slug}: no sealed creds on the job`);
   return recipient.open(sealed);
+}
+
+/**
+ * #995: the job's fail point, as " at <point> (HTTP <status>, <reason>)":
+ * fixed values only, so the public run log can carry it. "" without one.
+ */
+export function failText(j: Pick<Job, "failure">): string {
+  const f = j.failure;
+  if (!f) return "";
+  const parts = [
+    ...(f.status === null ? [] : [`HTTP ${f.status}`]),
+    ...(f.reason === null ? [] : [f.reason]),
+  ];
+  return ` at ${f.at}${parts.length ? ` (${parts.join(", ")})` : ""}`;
 }
 
 /** R26 revoke for one install; then, when the run's PAT is known, it must be 401. */

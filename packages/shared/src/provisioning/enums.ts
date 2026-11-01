@@ -3,6 +3,7 @@ import {
   AUTH_PROVIDERS,
   HEALTH_VALUES,
   INSTALL_STATES,
+  JOB_FAIL_POINTS,
   JOB_KINDS,
   JOB_STATUSES,
   PRINCIPAL_KINDS,
@@ -22,6 +23,7 @@ export const HealthSchema = z.enum(HEALTH_VALUES);
 export const AuthProviderSchema = z.enum(AUTH_PROVIDERS);
 export const JobKindSchema = z.enum(JOB_KINDS);
 export const JobStatusSchema = z.enum(JOB_STATUSES);
+export const JobFailPointSchema = z.enum(JOB_FAIL_POINTS);
 export const TokenScopeSchema = z.enum(TOKEN_SCOPES);
 export const PrincipalKindSchema = z.enum(PRINCIPAL_KINDS);
 export const TokenKindSchema = z.enum(TOKEN_KINDS);

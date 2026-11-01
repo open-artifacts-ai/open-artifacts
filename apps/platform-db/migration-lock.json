@@ -9,6 +9,7 @@
     "0005_directory_revoke.sql": "6409b882966d9368a7068d5c328c383513c03505b4d3da05d72319080beb2118",
     "0006_platform_state.sql": "78db79502054d73c44c296d2399f070d784b157f01326a7b7880dbbd9b974b10",
     "0007_signups.sql": "efd57e2b0db08832060377c27d5edcf9e0e87fe9e6615e37d0ff5611baa763f8",
-    "0008_provisioning.sql": "32f0441ccec7a9c47240eae1afbca1563f8bda56c1955e496e2ecd504aa3d7a8"
+    "0008_provisioning.sql": "32f0441ccec7a9c47240eae1afbca1563f8bda56c1955e496e2ecd504aa3d7a8",
+    "0009_job_fail_point.sql": "2508bfcf3aa80acbd788e9cc4e42f3394db652952ab3eb5ea3e636a7e05815c3"
   }
 }

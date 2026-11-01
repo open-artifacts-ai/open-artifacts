@@ -344,6 +344,48 @@ describe("R14 and R15 jobs", () => {
     });
   });
 
+  it("R15 carries the fail point (#995), each part read back through its fixed set", async () => {
+    const e = fakeEnv();
+    const { id } = await seedInstall();
+    const failure = async (cols: Record<string, unknown>) =>
+      (
+        await call(e, READ, "R15", {
+          params: {
+            jobId: await seedJob(id, {
+              kind: "redline_creds",
+              workflow: "manage_install",
+              status: "failed",
+              ...cols,
+            }),
+          },
+        })
+      ).body.failure;
+    expect(
+      await failure({
+        fail_at: "test_session",
+        fail_status: 404,
+        fail_reason: "user_refused",
+      }),
+    ).toEqual({ at: "test_session", status: 404, reason: "user_refused" });
+    expect(await failure({ fail_at: "seal" })).toEqual({
+      at: "seal",
+      status: null,
+      reason: null,
+    });
+    // A value outside the sets is null; no point is no failure.
+    expect(
+      await failure({
+        fail_at: "mint_token",
+        fail_status: 404,
+        fail_reason: "leaky text",
+      }),
+    ).toEqual({ at: "mint_token", status: 404, reason: null });
+    expect(
+      await failure({ fail_at: "elsewhere", fail_status: 500 }),
+    ).toBeNull();
+    expect(await failure({})).toBeNull();
+  });
+
   it("R15 on another user's install is 404", async () => {
     const e = fakeEnv();
     const { id } = await seedInstall({ source: "self-serve", ownerSub: "u2" });

@@ -12,6 +12,8 @@ import type { JobKind } from "@oa/shared/provisioning";
 import {
   codeOf,
   detailOf,
+  type FailAt,
+  failOf,
   JOB_ERROR_TEXT,
   redactDetail,
   StepRefusal,
@@ -123,6 +125,7 @@ async function noteFailure(
   err: Error,
   config: WorkflowStepConfig | undefined,
   retryIn: number | null = null,
+  fail: FailAt | null = null,
 ): Promise<void> {
   const terminal = err instanceof NonRetryableError;
   const code = codeOf(err);
@@ -153,6 +156,14 @@ WHERE id = ?1 AND status = 'running'`,
       r.limit,
       retryIn,
     )
+    .run()
+    .catch(() => {});
+  // #995: its own statement, so a database before 0009 still records the
+  // code above.
+  await ctx.env.PLATFORM_DB.prepare(
+    "UPDATE jobs SET fail_at = ?2, fail_status = ?3, fail_reason = ?4 WHERE id = ?1 AND status = 'running'",
+  )
+    .bind(jobId, fail?.at ?? null, fail?.status ?? null, fail?.reason ?? null)
     .run()
     .catch(() => {});
 }
@@ -313,6 +324,7 @@ function stepOnce<T>(
         err,
         config,
         waits ? delayMs(TOKEN_WAIT) : null,
+        failOf(e),
       );
       throw err;
     }
