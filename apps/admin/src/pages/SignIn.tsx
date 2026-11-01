@@ -33,7 +33,7 @@ export function SignIn({
   const href = startHref(returnTo);
   return (
     <EdgePanel>
-      <h1>Open Artifacts Admin</h1>
+      <h1>Sign in</h1>
       <p>Sign in with the Google account an admin added for you.</p>
       {known && (
         <p className="oa-banner oa-banner-warn" role="alert">
