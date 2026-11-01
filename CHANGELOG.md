@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.90.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.0...v0.90.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **inventory:** every auth failure is the unknown-route 404, never a 401 ([#1016](https://github.com/open-artifacts-ai/open-artifacts/issues/1016)) ([#1019](https://github.com/open-artifacts-ai/open-artifacts/issues/1019)) ([17974e8](https://github.com/open-artifacts-ai/open-artifacts/commit/17974e834fdf92d8ec6aecf5357f6788f14d10c0))
+* **redline:** R26 creds go where the suite reads them; an unresolved prod host is not live ([#1012](https://github.com/open-artifacts-ai/open-artifacts/issues/1012)) ([#1018](https://github.com/open-artifacts-ai/open-artifacts/issues/1018)) ([35c5c93](https://github.com/open-artifacts-ai/open-artifacts/commit/35c5c93b93c34c45e056c1e3ce172b3fd826a99c))
+
 ## [0.90.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.2...v0.90.0) (2026-11-01)
 
 
