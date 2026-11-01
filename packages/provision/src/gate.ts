@@ -147,11 +147,11 @@ async function mapLimit<T, R>(
 }
 
 /**
- * The catalog of `versions`, newest first. With a floor, only versions at
- * or above its minVersion are read (below it none is installable); at most
- * CATALOG_CONCURRENCY versions are read at once (#1029). `only` reads that
- * one version and no other (the presence check of create and upgrade): an
- * unknown or below-floor `only` gives []; its `latest` is false.
+ * The catalog of `versions`, newest first, at most CATALOG_CONCURRENCY
+ * versions read at once (#1029). `only` reads that one version and no
+ * other (the presence check of create and upgrade, 3.5): [] when it has no
+ * verified record; below the floor or revoked it is listed, not
+ * installable (release_gate refuses it); its `latest` is false.
  */
 export async function releaseCatalog(o: {
   release: ReleaseReader;
@@ -162,11 +162,8 @@ export async function releaseCatalog(o: {
   only?: string;
 }): Promise<CatalogRelease[]> {
   const floor = await floorOf(o.release, o.env);
-  const wanted = o.versions.filter(
-    (v) =>
-      (o.only === undefined || v === o.only) &&
-      (floor === null || compareVersions(v, floor.minVersion) >= 0),
-  );
+  const wanted =
+    o.only === undefined ? o.versions : o.versions.filter((v) => v === o.only);
   const read = await mapLimit(
     [...wanted].sort(compareVersions).reverse(),
     CATALOG_CONCURRENCY,

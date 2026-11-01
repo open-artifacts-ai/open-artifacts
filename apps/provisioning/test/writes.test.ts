@@ -764,8 +764,34 @@ describe("lifecycle writes (R5-R13)", () => {
     ]);
   });
 
+  it("R5 and R4 accept a below-floor or revoked version alike; release_gate refuses it (3.5, P32)", async () => {
+    // releases({ version }) lists it, not installable.
+    const PROVISIONER = fakeProvisionerRpc();
+    PROVISIONER.releases = async () => [
+      {
+        version: "1.42.0",
+        publishedAt: 0,
+        variants: ["release"],
+        installable: false,
+        latest: false,
+      },
+    ];
+    const e = fakeEnv({ PROVISIONER });
+    const a = await seedInstall({ version: "1.41.2" });
+    const up = await call(e, ADMIN_P, "R5", {
+      params: { id: a.id },
+      body: { requestId: requestId(), version: "1.42.0" },
+    });
+    const cr = await call(e, ADMIN_P, "R4", {
+      body: leo({ version: "1.42.0" }),
+    });
+    expect([up.status, cr.status]).toEqual([202, 202]);
+    expect(up.body.job.args).toEqual({ from: "1.41.2", to: "1.42.0" });
+    expect(cr.body.job.args).toEqual({ version: "1.42.0" });
+  });
+
   it("R5 and R4 refuse a version the provisioner does not return alike", async () => {
-    // The provisioner returns [] for an unknown or below-floor version.
+    // The provisioner returns [] for a version with no verified record.
     const PROVISIONER = fakeProvisionerRpc();
     PROVISIONER.releases = async () => [];
     const e = fakeEnv({ PROVISIONER });

@@ -47,8 +47,8 @@ export async function releases(env: Env): Promise<Release[]> {
 }
 
 /**
- * One version's catalog entry, or null when it is unknown or below the
- * floor: reads that version's records only, so create and upgrade stay
+ * One version's catalog entry, or null when it has no verified record:
+ * reads that version's records only, so create and upgrade stay
  * cheap however many releases the bucket holds (#1029). Not cached.
  */
 export async function releaseOf(

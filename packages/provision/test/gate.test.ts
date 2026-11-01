@@ -345,9 +345,14 @@ describe("releaseCatalog (2.6 releases())", () => {
         installable: true,
         latest: true,
       },
+      {
+        version: "0.0.9",
+        publishedAt: 10,
+        variants: ["release"],
+        installable: false,
+        latest: false,
+      },
     ]);
-    // 0.0.9 is below the floor's 0.1.0: not listed, and never read.
-    expect(b.reads.some((k) => k.includes("0.0.9"))).toBe(false);
   });
 
   it("reads per call: the floor, then 2 record gets and 2 lists a version (#1029)", async () => {
@@ -387,7 +392,7 @@ describe("releaseCatalog (2.6 releases())", () => {
     ]);
   });
 
-  it("only: that version alone, read alone; unknown or below the floor is []", async () => {
+  it("only: that version alone, read alone; below the floor or revoked is listed, not installable; unknown is []", async () => {
     const { b, release } = await bucket(
       [
         ["0.0.9", "release"],
@@ -395,7 +400,7 @@ describe("releaseCatalog (2.6 releases())", () => {
         ["0.23.0", "redline"],
         ["0.24.0", "release"],
       ],
-      { floor: signFloor(floorOf()) },
+      { floor: signFloor(floorOf({ revoked: ["0.24.0"] })) },
     );
     const versions = await bucketVersions(b);
     const one = (only: string) =>
@@ -420,12 +425,20 @@ describe("releaseCatalog (2.6 releases())", () => {
       b.reads.every((k) => k.includes("0.23.0") || k.includes("floor")),
     ).toBe(true);
     expect(b.reads.filter((k) => k.startsWith("get ")).length).toBe(1 + 2);
+    for (const v of ["0.0.9", "0.24.0"])
+      expect(await one(v)).toEqual([
+        {
+          version: v,
+          publishedAt: 0,
+          variants: ["release"],
+          installable: false,
+          latest: false,
+        },
+      ]);
     b.reads.length = 0;
-    expect(await one("0.0.9")).toEqual([]);
     expect(await one("0.30.0")).toEqual([]);
-    expect(
-      b.reads.some((k) => k.includes("0.0.9") || k.includes("0.30.0")),
-    ).toBe(false);
+    // Not in the bucket's versions: nothing but the floor is read.
+    expect(b.reads.filter((k) => !k.includes("floor"))).toEqual([]);
   });
 
   it("no floor: nothing is installable", async () => {

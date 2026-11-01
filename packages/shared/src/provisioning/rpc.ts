@@ -41,7 +41,7 @@ export const TokenStatusSchema = z
 export type TokenStatus = z.infer<typeof TokenStatusSchema>;
 
 export interface ProvisionerRpc {
-  /** With `version`: that release alone, or [] when unknown or below the floor. */
+  /** With `version`: that release alone (installable or not), or [] when unpublished. */
   releases(o?: { version?: string }): Promise<Release[]>;
   verifyTurnstile(i: VerifyTurnstileInput): Promise<{ ok: boolean }>;
   tokenStatus(): Promise<TokenStatus>;

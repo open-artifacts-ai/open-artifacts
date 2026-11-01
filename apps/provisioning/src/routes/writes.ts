@@ -65,8 +65,8 @@ export function compareVersions(a: string, b: string): number {
 /**
  * The release a job installs: the given version, else the newest
  * installable one of the variant. A given version is checked for presence
- * at or above the floor, reading that version only (3.5, #1029); revocation
- * and variant are release_gate's (release_unverified, P32).
+ * only, reading that version alone (3.5, #1029); floor, revocation and
+ * variant are release_gate's (release_unverified, P32).
  */
 export async function resolveRelease(
   env: Env,
