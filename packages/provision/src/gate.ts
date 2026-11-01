@@ -123,30 +123,70 @@ async function verifies(
 const admits = (f: FloorRecord | null, env: Env, version: string) =>
   f !== null && floorRefusal(f, version, FLOOR_MIN_SEQ[env]) === null;
 
-/** The catalog of `versions`, newest first. */
+/** The most catalog versions read at once (#1029). */
+export const CATALOG_CONCURRENCY = 8;
+
+/** `f` over `items` with at most `limit` in flight, results in order. */
+async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  f: (t: T) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const lane = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await f(items[i] as T);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, lane),
+  );
+  return out;
+}
+
+/**
+ * The catalog of `versions`, newest first. With a floor, only versions at
+ * or above its minVersion are read (below it none is installable); at most
+ * CATALOG_CONCURRENCY versions are read at once (#1029). `only` reads that
+ * one version and no other (the presence check of create and upgrade): an
+ * unknown or below-floor `only` gives []; its `latest` is false.
+ */
 export async function releaseCatalog(o: {
   release: ReleaseReader;
   env: Env;
   versions: string[];
   /** A version's publish time (its release record's upload), or null. */
   publishedAt?: (version: string) => Promise<number | null>;
+  only?: string;
 }): Promise<CatalogRelease[]> {
   const floor = await floorOf(o.release, o.env);
-  const out: CatalogRelease[] = [];
-  for (const version of [...o.versions].sort(compareVersions).reverse()) {
-    const variants: BundleVariant[] = [];
-    for (const v of VARIANTS)
-      if ((await verifies(o.release, o.env, version, v, true)) === "verified")
-        variants.push(v);
-    if (variants.length === 0) continue;
-    out.push({
-      version,
-      publishedAt: (await o.publishedAt?.(version)) ?? null,
-      variants,
-      installable: admits(floor, o.env, version),
-      latest: false,
-    });
-  }
+  const wanted = o.versions.filter(
+    (v) =>
+      (o.only === undefined || v === o.only) &&
+      (floor === null || compareVersions(v, floor.minVersion) >= 0),
+  );
+  const read = await mapLimit(
+    [...wanted].sort(compareVersions).reverse(),
+    CATALOG_CONCURRENCY,
+    async (version): Promise<CatalogRelease | null> => {
+      const variants: BundleVariant[] = [];
+      for (const v of VARIANTS)
+        if ((await verifies(o.release, o.env, version, v, true)) === "verified")
+          variants.push(v);
+      if (variants.length === 0) return null;
+      return {
+        version,
+        publishedAt: (await o.publishedAt?.(version)) ?? null,
+        variants,
+        installable: admits(floor, o.env, version),
+        latest: false,
+      };
+    },
+  );
+  const out = read.filter((r): r is CatalogRelease => r !== null);
+  if (o.only !== undefined) return out;
   const latest = out.find(
     (r) => r.installable && r.variants.includes("release"),
   );

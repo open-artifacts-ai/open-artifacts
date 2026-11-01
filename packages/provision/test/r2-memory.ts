@@ -15,6 +15,21 @@ export class MemoryR2 implements R2CatalogBucket {
   readonly objects = new Map<string, { bytes: Uint8Array; uploaded: Date }>();
   /** The upload time a put records. */
   clock = () => 0;
+  /** Every get and list, as "get <key>" or "list <prefix>". */
+  readonly reads: string[] = [];
+  /** A read's latency, so concurrent reads overlap (0: none). */
+  delayMs = 0;
+  /** The most reads in flight at once. */
+  maxInFlight = 0;
+  #inFlight = 0;
+
+  async #read(what: string): Promise<void> {
+    this.reads.push(what);
+    if (this.delayMs === 0) return;
+    this.maxInFlight = Math.max(this.maxInFlight, ++this.#inFlight);
+    await new Promise((r) => setTimeout(r, this.delayMs));
+    this.#inFlight--;
+  }
 
   async put(key: string, bytes: Uint8Array | string): Promise<void> {
     const b =
@@ -26,6 +41,7 @@ export class MemoryR2 implements R2CatalogBucket {
   }
 
   async get(key: string) {
+    await this.#read(`get ${key}`);
     const o = this.objects.get(key);
     if (!o) return null;
     const bytes = o.bytes.slice();
@@ -43,6 +59,7 @@ export class MemoryR2 implements R2CatalogBucket {
     limit?: number;
     delimiter?: string;
   }) {
+    await this.#read(`list ${o.prefix}`);
     const keys = [...this.objects.keys()]
       .filter((k) => k.startsWith(o.prefix))
       .sort();

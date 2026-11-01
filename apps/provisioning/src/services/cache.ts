@@ -47,6 +47,23 @@ export async function releases(env: Env): Promise<Release[]> {
 }
 
 /**
+ * One version's catalog entry, or null when it is unknown or below the
+ * floor: reads that version's records only, so create and upgrade stay
+ * cheap however many releases the bucket holds (#1029). Not cached.
+ */
+export async function releaseOf(
+  env: Env,
+  version: string,
+): Promise<Release | null> {
+  try {
+    const [r] = await env.PROVISIONER.releases({ version });
+    return r?.version === version ? r : null;
+  } catch {
+    throw new ApiError("unavailable", "releases are unavailable");
+  }
+}
+
+/**
  * The provisioning token's status, or null when the call failed and no
  * earlier answer exists: a transient RPC error is not an invalid token.
  * A failed refresh serves the last good status.

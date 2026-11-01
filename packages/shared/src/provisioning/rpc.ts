@@ -4,7 +4,8 @@ import { ProvisioningTokenStatusSchema, type Release } from "./schemas.js";
 
 // ProvisionerRpc (design v7 2.6): the provisioner's WorkerEntrypoint has
 // exactly these three methods, and none returns a token field. The API
-// caches releases() for 60 s and tokenStatus() for 5 min per isolate.
+// caches releases() for 60 s and tokenStatus() for 5 min per isolate;
+// releases({ version }) reads that one version only and is not cached.
 
 export const PROVISIONER_RPC_METHODS = [
   "releases",
@@ -40,7 +41,8 @@ export const TokenStatusSchema = z
 export type TokenStatus = z.infer<typeof TokenStatusSchema>;
 
 export interface ProvisionerRpc {
-  releases(): Promise<Release[]>;
+  /** With `version`: that release alone, or [] when unknown or below the floor. */
+  releases(o?: { version?: string }): Promise<Release[]>;
   verifyTurnstile(i: VerifyTurnstileInput): Promise<{ ok: boolean }>;
   tokenStatus(): Promise<TokenStatus>;
 }
