@@ -422,10 +422,25 @@ export interface Probe {
   run: (r: Run) => Promise<Outcome>;
 }
 
-/** Prod probes wait until the prod admin host answers 401 (12.2). */
-async function prodLive(run: Run): Promise<boolean> {
-  const r = await run.v1("/me", { host: "prodAdmin", auth: "none" });
-  return r.status === 401;
+/**
+ * Prod probes wait until the prod admin host answers 401 (12.2). Before the
+ * prod platform deploy its name does not resolve: that is "not live", not a
+ * failure. Any other network error still throws.
+ */
+export async function prodLive(run: Run): Promise<boolean> {
+  try {
+    const r = await run.v1("/me", { host: "prodAdmin", auth: "none" });
+    return r.status === 401;
+  } catch (e) {
+    if (notResolved(e)) return false;
+    throw e;
+  }
+}
+
+/** A fetch that failed because the host name has no DNS record. */
+export function notResolved(e: unknown): boolean {
+  const cause = (e as { cause?: { code?: unknown } } | null)?.cause;
+  return cause?.code === "ENOTFOUND";
 }
 
 function rlp(run: Run): RlP {

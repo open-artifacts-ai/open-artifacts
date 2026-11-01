@@ -25,14 +25,19 @@ import {
   PROBES,
   ProbeFail,
   type ProbeId,
+  prodLive,
   provConfig,
   Run,
   revokeCreds,
   stagedVersion,
 } from "../src/provisioning.ts";
-import { rawTargets } from "../src/provisioning-live.ts";
+import { credFile, rawTargets } from "../src/provisioning-live.ts";
 import { newRecipient, openSealed, parseCreds } from "../src/seal.ts";
-import { parseProd, prodInventoryBearer } from "../src/targets.ts";
+import {
+  parseProd,
+  parseTargets,
+  prodInventoryBearer,
+} from "../src/targets.ts";
 import { sealTo } from "./provisioner-seal.ts";
 import {
   API_JWT,
@@ -669,8 +674,8 @@ describe("config", () => {
   const t = rawTargets(
     JSON.stringify({
       secretsDir: "/x",
-      a: { installId: CONFIG.rlA.id, app: CONFIG.rlA.app },
-      b: { installId: CONFIG.rlB.id, app: CONFIG.rlB.app },
+      a: { name: "rl-a", installId: CONFIG.rlA.id, app: CONFIG.rlA.app },
+      b: { name: "rl-b", installId: CONFIG.rlB.id, app: CONFIG.rlB.app },
     }),
   );
   it("takes the tag as the version and defaults the staging hosts", () => {
@@ -710,6 +715,78 @@ describe("config", () => {
       ),
     ).toThrow(/bare https origin/);
     expect(() => rawTargets("{}")).toThrow(/secretsDir/);
+  });
+  // #1012: bring-up wrote REDLINE_A_*; the suite reads REDLINE_RL_A_*.
+  it("R26 creds go exactly where the suite reads them", () => {
+    const side = (n: string, id: string, app: string) => ({
+      name: n,
+      installId: id,
+      app,
+      content: app.replace(".app", ".page"),
+      testDomain: `guests.${n}.fyi`,
+    });
+    const dir = mkdtempSync(join(tmpdir(), "oa-rl-creds-"));
+    const json = JSON.stringify({
+      secretsDir: dir,
+      a: side("rl-a", CONFIG.rlA.id, CONFIG.rlA.app),
+      b: side("rl-b", CONFIG.rlB.id, CONFIG.rlB.app),
+    });
+    const raw = rawTargets(json);
+    // Written where bring-up writes them, then read by the suite's loader.
+    for (const k of ["a", "b"] as const)
+      for (const kind of ["PAT", "HOOK_KEY"] as const)
+        writeFileSync(
+          credFile(raw, k, kind),
+          `v-${k}-${kind}-`.padEnd(40, "x"),
+          {
+            mode: 0o600,
+          },
+        );
+    const suite = parseTargets({ REDLINE_TARGETS: json });
+    for (const k of ["a", "b"] as const) {
+      expect(credFile(raw, k, "HOOK_KEY")).toBe(suite[k].hookKeyFile);
+      expect(credFile(raw, k, "PAT")).toBe(suite[k].patFile);
+    }
+    expect(credFile(raw, "a", "HOOK_KEY")).toBe(
+      join(dir, "REDLINE_RL_A_HOOK_KEY"),
+    );
+    expect(() =>
+      rawTargets(
+        JSON.stringify({
+          secretsDir: "/x",
+          a: { installId: CONFIG.rlA.id, app: CONFIG.rlA.app },
+          b: side("rl-b", CONFIG.rlB.id, CONFIG.rlB.app),
+        }),
+      ),
+    ).toThrow(/a\.name/);
+  });
+  // #1012: before the prod platform deploy its admin host has no DNS record.
+  it("prodLive: an unresolved prod host is not live; a 401 is; other errors throw", async () => {
+    const thrown = (code: string) => async () => {
+      throw Object.assign(new TypeError("fetch failed"), { cause: { code } });
+    };
+    const io = fakeApi().io;
+    const at = (fetch: typeof io.fetch) => new Run(CONFIG, { ...io, fetch });
+    expect(await prodLive(at(thrown("ENOTFOUND") as typeof io.fetch))).toBe(
+      false,
+    );
+    await expect(
+      prodLive(at(thrown("ECONNRESET") as typeof io.fetch)),
+    ).rejects.toThrow("fetch failed");
+    expect(
+      await prodLive(
+        at(
+          (async () => new Response("{}", { status: 401 })) as typeof io.fetch,
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      await prodLive(
+        at(
+          (async () => new Response("{}", { status: 404 })) as typeof io.fetch,
+        ),
+      ),
+    ).toBe(false);
   });
   it("slugs and request ids fit the API's rules", () => {
     const run = new Run({ ...CONFIG, runId: "123456789012-3" }, fakeApi().io);
