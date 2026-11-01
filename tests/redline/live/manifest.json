@@ -1086,7 +1086,7 @@
     },
     {
       "file": "live/provisioning.test.ts",
-      "name": "provisioning > P22: delete, then restore: closed page, then serving"
+      "name": "provisioning > P22: delete, then restore: 503 closed page on both hosts, then serving"
     },
     {
       "file": "live/provisioning.test.ts",

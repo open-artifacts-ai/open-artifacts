@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  ID_TOKEN_CASES,
+  ID_TOKEN_DESCRIBE,
+  NEEDS_CAPTURE,
+} from "../src/capture.ts";
+import {
+  ACCEPTED_UNPROVEN,
   buildReport,
   type CaseResult,
   exitCode,
@@ -174,6 +180,119 @@ describe("gate", () => {
       { ...na("provisioning > P7: x"), level: "unproven-live" as const },
     ])
       expect(gatePasses([ok, bad]), JSON.stringify(bad)).toBe(false);
+  });
+
+  // The unproven-live cases a non-live in-repo test covers, frozen by exact
+  // name and reason (P29 is not among them: nothing covers its purge).
+  describe("accepted unproven-live", () => {
+    const NAMES = [
+      "provisioning > P30: dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens",
+      "provisioning > P35: reachable path: a Worker without a route fetches rl-a /healthz",
+      "sign-in: ID tokens > an ID token with hd of A at B's callback: no session",
+      "sign-in: ID tokens > A's code and broker state at B: no session",
+    ];
+    const REASONS = [
+      "5 forged callbacks refused; the alert is not readable by O (R27 and other actors' R17 rows are 403)",
+      "needs a Worker with no route (spike S7); the runner cannot stand in for it",
+      NEEDS_CAPTURE,
+      NEEDS_CAPTURE,
+    ];
+    const listed = () =>
+      ACCEPTED_UNPROVEN.map((e) => c(e.name, "unproven-live", e.reason));
+    const ok = c("a", "pass");
+
+    it("is exactly the four, frozen, each citing a test file", () => {
+      expect(ACCEPTED_UNPROVEN).toHaveLength(4);
+      expect(ACCEPTED_UNPROVEN.map((e) => e.name)).toEqual(NAMES);
+      expect(ACCEPTED_UNPROVEN.map((e) => e.reason)).toEqual(REASONS);
+      expect(Object.isFrozen(ACCEPTED_UNPROVEN)).toBe(true);
+      for (const e of ACCEPTED_UNPROVEN) {
+        expect(Object.isFrozen(e)).toBe(true);
+        expect(e.evidence).toMatch(/test\.ts "[^"]+"/);
+      }
+    });
+
+    it("the ID-token entries are the capture cases with the needs-capture reason", () => {
+      expect(NAMES.slice(2)).toEqual(
+        Object.values(ID_TOKEN_CASES).map((n) => `${ID_TOKEN_DESCRIBE} > ${n}`),
+      );
+    });
+
+    it("the gate passes with exactly these unproven, and says so", () => {
+      const r = buildReport([ok, ...listed()]);
+      expect(r.gate).toEqual({
+        passed: true,
+        reason: "every case passed but 4 accepted unproven-live",
+      });
+      expect(exitCode(r, true)).toBe(0);
+    });
+
+    it("a listed name and reason in another live file is not accepted", () => {
+      for (const e of ACCEPTED_UNPROVEN) {
+        const here = {
+          ...c(e.name, "unproven-live", e.reason),
+          file: `live/${e.file}`,
+        };
+        const elsewhere = { ...here, file: "live/copied.test.ts" };
+        expect(gatePasses([ok, here])).toBe(true);
+        expect(gatePasses([ok, elsewhere])).toBe(false);
+      }
+      expect(ACCEPTED_UNPROVEN.map((e) => e.file)).toEqual([
+        "provisioning.test.ts",
+        "provisioning.test.ts",
+        "signin.test.ts",
+        "signin.test.ts",
+      ]);
+    });
+
+    it("any other unproven-live fails the gate", () => {
+      for (const bad of [
+        c(
+          "provisioning > P29: SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete leaves it deleting",
+          "unproven-live",
+          "create done and deleted; the purge that frees signup_accounts is not runnable by any principal in a run (design gap)",
+        ),
+        c(NAMES[0] as string, "unproven-live", "something else"),
+        c(`${NAMES[1]} `, "unproven-live", REASONS[1]),
+        c(NAMES[2] as string, "unproven-live"),
+      ]) {
+        const r = buildReport([ok, ...listed(), bad]);
+        expect(r.gate.passed, JSON.stringify(bad)).toBe(false);
+        expect(r.gate.reason).toBe(
+          '1 of 6 cases are not "pass"; 4 accepted unproven-live',
+        );
+      }
+    });
+
+    it("a listed case at another level fails the gate", () => {
+      for (const level of ["fail", "not-applicable", "staging-only"] as const)
+        expect(
+          gatePasses([ok, c(NAMES[1] as string, level, REASONS[1])]),
+          level,
+        ).toBe(false);
+      const r = buildReport([ok, c(NAMES[1] as string, "fail", REASONS[1])]);
+      expect(formatReport(r)).toContain(`Not pass:\n  [fail] ${NAMES[1]}`);
+    });
+
+    it("the text lists them under their own section with the evidence, not under Not pass", () => {
+      const r = buildReport([
+        ok,
+        ...listed(),
+        c("prodClean", "fail", "status 404"),
+      ]);
+      const t = formatReport(r);
+      const [notPass, rest] = t.split("Accepted unproven-live:\n");
+      expect(notPass).toContain("Not pass:\n  [fail] prodClean (status 404)\n");
+      for (const e of ACCEPTED_UNPROVEN) {
+        expect(notPass).not.toContain(e.name);
+        expect(rest).toContain(
+          `  ${e.name} (${e.reason})\n      evidence: ${e.evidence}\n`,
+        );
+      }
+      expect(t).toContain(
+        'Gate: FAIL (1 of 6 cases are not "pass"; 4 accepted unproven-live)',
+      );
+    });
   });
 
   it("an empty run never passes", () => {
