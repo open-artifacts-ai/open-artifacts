@@ -115,27 +115,51 @@ function StateCell({
   alerts: Attention[];
 }) {
   const failedHere = alerts.find((a) => a.kind === "job_failed" && a.code);
+  const step = job ? stepCount(job) : null;
+  const bar = step && (
+    <span className="oa-mini" aria-hidden="true">
+      <b style={{ width: `${step.of ? (100 * step.n) / step.of : 0}%` }} />
+    </span>
+  );
   return (
     <>
-      {STATE_LABEL[i.state]}
-      {job && i.state === "active" && job.status !== "done" && (
-        <span className="oa-mut">
+      <span className="oa-st" data-tone={STATE_TONE[i.state]}>
+        {STATE_LABEL[i.state]}
+      </span>
+      {job && step && i.state === "active" && job.status !== "done" && (
+        <span className="oa-chip oa-chip-accent">
           {JOB_VERB[job.kind].ing}
-          {jobTarget(job.args) ? ` to ${jobTarget(job.args)}` : ""} ·{" "}
-          {stepCount(job).n}/{stepCount(job).of}
+          {jobTarget(job.args) ? ` to ${jobTarget(job.args)}` : ""} · {step.n}/
+          {step.of}
+          {bar}
         </span>
       )}
-      {job && i.state === "provisioning" && (
-        <span className="oa-mut">
-          Creating · {stepCount(job).n}/{stepCount(job).of}
+      {step && i.state === "provisioning" && (
+        <span className="oa-chip oa-chip-accent">
+          Creating · {step.n}/{step.of}
+          {bar}
         </span>
       )}
       {i.state === "failed" && failedHere?.code && (
-        <span className="oa-mut">{failedHere.code}</span>
+        <span className="oa-chip oa-chip-danger">{failedHere.code}</span>
       )}
     </>
   );
 }
+
+const STATE_TONE = {
+  provisioning: "accent",
+  active: "success",
+  suspended: "warning",
+  deleting: "muted",
+  deleted: "muted",
+  failed: "danger",
+} as const satisfies Record<InstallState, string>;
+const HEALTH_TONE = {
+  ok: "success",
+  failing: "danger",
+  unknown: "muted",
+} as const satisfies Record<keyof typeof HEALTH_LABEL, string>;
 
 type SortKey = "slug" | "version" | "createdAt";
 const SORTS: { key: SortKey; label: string }[] = [
@@ -188,7 +212,7 @@ export function Installs() {
   return (
     <>
       <div className="oa-head">
-        <div style={{ flex: 1 }}>
+        <div>
           <h1>Installs</h1>
           {world.data && (
             <p className="oa-sub">
@@ -198,9 +222,6 @@ export function Installs() {
             </p>
           )}
         </div>
-        <Link to="/installs/new" className="oa-cta">
-          Create install
-        </Link>
       </div>
       {world.data && (
         <>
@@ -217,15 +238,28 @@ export function Installs() {
           onRetry={() => void world.refetch()}
         />
       )}
-      <div className="oa-tools">
-        <input
-          type="search"
-          aria-label="Search slug"
-          placeholder="Search slug"
-          value={typed}
-          onChange={(e) => setTyped(e.target.value)}
-        />
-        <label>
+      <div className="oa-tools oa-list-tools">
+        <span className="oa-search">
+          <svg
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM10.3 10.3l3 3" />
+          </svg>
+          <input
+            type="search"
+            aria-label="Search slug"
+            placeholder="Search slug"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+          />
+        </span>
+        <label className="oa-state-filter">
           <span className="sr-only">State</span>
           <select
             aria-label="State"
@@ -243,6 +277,21 @@ export function Installs() {
             ))}
           </select>
         </label>
+        <span className="oa-spacer" />
+        <Link to="/installs/new" className="oa-cta">
+          <svg
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M8 3v10M3 8h10" />
+          </svg>
+          Create install
+        </Link>
       </div>
       <p className="oa-hint">Matches part of a slug, ignoring case.</p>
       {sort && list.data && list.data.items.length > 0 && (
@@ -256,9 +305,11 @@ export function Installs() {
         />
       ) : list.data && list.data.items.length === 0 ? (
         filtering ? (
-          <p className="oa-placeholder">No installs match.</p>
+          <div className="oa-card oa-empty">
+            <p>No installs match.</p>
+          </div>
         ) : (
-          <div className="oa-placeholder">
+          <div className="oa-card oa-empty">
             <p>
               <strong>No installs yet</strong>
             </p>
@@ -270,7 +321,7 @@ export function Installs() {
         )
       ) : list.data ? (
         <>
-          <div className="oa-tablewrap">
+          <div className="oa-tablewrap oa-installs">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -296,7 +347,9 @@ export function Installs() {
                         </Link>
                         <span className="oa-mut">{i.appHost}</span>
                       </TableCell>
-                      <TableCell>{i.version ?? "–"}</TableCell>
+                      <TableCell className="oa-mono">
+                        {i.version ?? "–"}
+                      </TableCell>
                       <TableCell>{i.tier ? TIER[i.tier] : "–"}</TableCell>
                       <TableCell>
                         {i.auth.providers
@@ -336,11 +389,20 @@ export function Installs() {
                         {i.state === "provisioning" ||
                         i.state === "failed" ||
                         i.state === "deleting" ||
-                        i.state === "deleted"
-                          ? "–"
-                          : HEALTH_LABEL[i.health]}
+                        i.state === "deleted" ? (
+                          <span className="oa-note">–</span>
+                        ) : (
+                          <span
+                            className="oa-st"
+                            data-tone={HEALTH_TONE[i.health]}
+                          >
+                            {HEALTH_LABEL[i.health]}
+                          </span>
+                        )}
                       </TableCell>
-                      <TableCell>{fmtDay(i.createdAt)}</TableCell>
+                      <TableCell className="oa-note">
+                        {fmtDay(i.createdAt)}
+                      </TableCell>
                     </TableRow>
                   );
                 })}

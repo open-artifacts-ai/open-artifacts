@@ -74,7 +74,7 @@ export function ActionDialog({
           {expected !== undefined && (
             <div>
               <Label htmlFor={id}>
-                {expectedLabel ?? "Type"} <code>{expected}</code> to confirm
+                {expectedLabel ?? "Type"} <b>{expected}</b> to confirm
               </Label>
               <Input
                 id={id}

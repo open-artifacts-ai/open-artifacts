@@ -1056,3 +1056,150 @@ fieldset.oa-seg-field {
     padding: 18px;
   }
 }
+
+/* ---------- Installs list (mock Alist: .tool, .inp.wide, .chip .mini) ---------- */
+.oa-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  max-width: 280px;
+  min-width: 0;
+}
+.oa-search svg {
+  position: absolute;
+  left: 9px;
+  width: 14px;
+  height: 14px;
+  color: var(--oa-text-muted);
+  pointer-events: none;
+}
+.oa-tools .oa-search input[type="search"] {
+  flex: 1;
+  max-width: none;
+  width: 100%;
+  padding-left: 28px;
+}
+.oa-state-filter select {
+  width: auto;
+  field-sizing: content;
+}
+.oa-spacer {
+  flex: 1;
+}
+@media (max-width: 700px) {
+  .oa-search {
+    max-width: none;
+    flex-basis: 100%;
+  }
+  .oa-spacer {
+    display: none;
+  }
+  .oa-list-tools .oa-cta {
+    margin-left: auto;
+  }
+}
+.oa-installs td > .oa-st {
+  display: flex;
+  width: fit-content;
+}
+.oa-installs td > .oa-chip {
+  margin: 3px 6px 0 0;
+}
+.oa-installs td.oa-note {
+  color: var(--oa-text-muted);
+}
+.oa-mini {
+  display: inline-block;
+  width: 56px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--oa-sunken);
+  vertical-align: middle;
+  margin-left: 6px;
+  overflow: hidden;
+}
+.oa-mini b {
+  display: block;
+  height: 100%;
+  background: var(--oa-accent);
+}
+.oa-empty {
+  text-align: center;
+  padding: 28px 16px;
+  color: var(--oa-text-2);
+}
+.oa-page .oa-empty p {
+  margin: 0;
+}
+.oa-page .oa-empty p + p {
+  margin-top: 4px;
+  color: var(--oa-text-muted);
+}
+
+/* ---------- Install detail (layout A: head with actions, facts card, side) ---------- */
+.oa-head > .oa-actions {
+  justify-content: flex-end;
+}
+.oa-head > .oa-actions .oa-error {
+  margin: 4px 0 0;
+}
+.oa-detail .oa-fields {
+  margin: 0;
+  grid-template-columns: 120px minmax(0, 1fr);
+}
+.oa-detail .oa-fields dd {
+  overflow-wrap: anywhere;
+}
+.oa-detail .oa-fields .oa-mono {
+  color: var(--oa-text);
+}
+.oa-jobs {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+.oa-side .oa-jobs li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  margin: 0;
+  padding: 6px 0;
+  border-top: 1px solid var(--oa-divider);
+}
+.oa-side .oa-jobs li:first-child {
+  border-top: 0;
+}
+.oa-jobs a {
+  color: var(--oa-text);
+  font-weight: 600;
+  text-decoration: none;
+}
+.oa-jobs a:hover {
+  text-decoration: underline;
+}
+.oa-jobs .oa-note {
+  font-size: 12px;
+}
+.oa-dialog-banner {
+  display: block;
+  margin: 12px 0 0;
+  color: var(--oa-text);
+}
+[data-slot="dialog-content"] label b {
+  font-weight: 600;
+}
+.oa-side .oa-jobs {
+  padding: 0;
+}
+.oa-detail > .oa-card {
+  margin: 0;
+}
+[data-slot="dialog-content"] label:not(.oa-check):has(> b) {
+  display: block;
+}
+[data-slot="dialog-content"] textarea.oa-reason {
+  min-height: 30px;
+  resize: vertical;
+}
