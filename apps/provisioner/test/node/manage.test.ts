@@ -2,10 +2,14 @@
 // rechecks and purge preconditions, replays, upgrade outcome mapping, the
 // fail and cleanup compensation, redline_creds sealing. Each install is made
 // by ProvisionInstall first, as in production.
-import { HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
+import { FLOOR_KEY, HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
 import { REDLINE_SCOPE_FIXTURE } from "@oa/shared/provisioning/fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
+import {
+  floorOf,
+  signFloor,
+  TEST_PUBKEY,
+} from "../../../../packages/provision/test/fixtures/release.js";
 import { JOB_ERROR_TEXT } from "../../src/errors.js";
 import { GRACE_MS, NEVER_ROUTED, runManage } from "../../src/manage.js";
 import { KEY_LIVE_WAITS_MS, REDLINE_STEP } from "../../src/redline.js";
@@ -206,6 +210,25 @@ describe("upgrade and rollback (5.4)", () => {
       error_code: "downgrade_refused",
     });
     expect(w.install(s.installId)?.version).toBe(V2);
+  });
+
+  it("an upgrade to a below-floor or revoked version: release_unverified, still on from (3.5, #1029)", async () => {
+    for (const [slug, floor] of [
+      ["belowco", floorOf({ minVersion: "0.25.0" })],
+      ["revokco", floorOf({ revoked: [V2] })],
+    ] as const) {
+      await w.r2.put(FLOOR_KEY, JSON.stringify(signFloor(floorOf())));
+      const s = await active({ slug, version: V1 });
+      await w.r2.put(FLOOR_KEY, JSON.stringify(signFloor(floor)));
+      const r = await manage("upgrade", s.installId, {
+        args: { from: V1, to: V2 },
+      });
+      expect(r.job).toMatchObject({
+        status: "failed",
+        error_code: "release_unverified",
+      });
+      expect(w.install(s.installId)?.version).toBe(V1);
+    }
   });
 
   it("an upgrade whose health fails rolls back: upgrade_rolled_back, still on from", async () => {

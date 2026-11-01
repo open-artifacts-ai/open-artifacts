@@ -19,7 +19,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 import { loadInReach, loadJob, type StatusRow } from "../model.js";
 import type { Principal } from "../principal.js";
-import { releases } from "../services/cache.js";
+import { releaseOf, releases } from "../services/cache.js";
 import {
   accept,
   activeJobId,
@@ -65,21 +65,20 @@ export function compareVersions(a: string, b: string): number {
 /**
  * The release a job installs: the given version, else the newest
  * installable one of the variant. A given version is checked for presence
- * in GET /releases only (3.5); floor and variant are release_gate's
- * (release_unverified, P32).
+ * only, reading that version alone (3.5, #1029); floor, revocation and
+ * variant are release_gate's (release_unverified, P32).
  */
 export async function resolveRelease(
   env: Env,
   version: string | undefined,
   variant: "release" | "redline",
 ): Promise<string> {
-  const all = await releases(env);
   if (version !== undefined) {
-    if (!all.some((r) => r.version === version))
+    if (!(await releaseOf(env, version)))
       throw new ApiError("release_not_published");
     return version;
   }
-  const newest = all
+  const newest = (await releases(env))
     .filter((r) => r.installable && r.variants.includes(variant))
     .map((r) => r.version)
     .sort(compareVersions)
