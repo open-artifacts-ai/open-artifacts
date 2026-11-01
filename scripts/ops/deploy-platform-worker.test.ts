@@ -82,6 +82,52 @@ describe("deploy-platform-worker.sh", () => {
     expect(snap).not.toMatch(/\{\{[A-Z0-9_]*_PROD\}\}/);
   });
 
+  it("tags the version with DEPLOY_TAG (the workers/tag annotation, #1040)", () => {
+    const r = run(["auth-broker", "staging"], {
+      BROKER_REGISTRY_ID: REG,
+      DEPLOY_TAG: "v0.90.3",
+    });
+    expect(r.code, r.err).toBe(0);
+    expect(r.log[0]).toBe(
+      "pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env staging --tag v0.90.3",
+    );
+    const ci = run(["auth-broker", "prod"], {
+      BROKER_REGISTRY_ID: REG,
+      GOOGLE_CLIENT_ID_PROD: CLIENT,
+      GITHUB_ACTIONS: "true",
+      DEPLOY_TAG: "v1.2.3",
+    });
+    expect(ci.code, ci.err).toBe(0);
+    expect(ci.log[0]).toBe(
+      "pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env prod --tag v1.2.3",
+    );
+  });
+
+  it("in CI, refuses without a stable DEPLOY_TAG, before deploying; outside CI a bad one is refused too", () => {
+    for (const DEPLOY_TAG of [
+      "",
+      "0.90.3",
+      "v0.90.3-rc.1",
+      "main",
+      "v0.90.3 --name x",
+    ]) {
+      const r = run(["auth-broker", "staging"], {
+        BROKER_REGISTRY_ID: REG,
+        GITHUB_ACTIONS: "true",
+        DEPLOY_TAG,
+      });
+      expect(r.code, DEPLOY_TAG).toBe(2);
+      expect(r.err).toContain("DEPLOY_TAG must be a stable vX.Y.Z");
+      expect(r.log).toEqual([]);
+    }
+    const bad = run(["auth-broker", "staging"], {
+      BROKER_REGISTRY_ID: REG,
+      DEPLOY_TAG: "latest",
+    });
+    expect(bad.code).toBe(2);
+    expect(bad.log).toEqual([]);
+  });
+
   it("refuses a bad env, no env and extra args without deploying", () => {
     for (const args of [
       ["auth-broker", "dev"],

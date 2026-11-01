@@ -128,7 +128,7 @@ const wrapperStub = (dir: string) => {
   writeFileSync(
     p,
     `#!/usr/bin/env bash
-echo "wrapper $* reg=\${BROKER_REGISTRY_ID:-}\${DIRECTORY_REGISTRY_ID:-} client=\${GOOGLE_CLIENT_ID_PROD:-}\${GOOGLE_DIRECTORY_CLIENT_ID_PROD:-} hosts=\${HOSTS_KV_ID:-} db=\${PLATFORM_DB_ID:-}" >> "$STUB_LOG"
+echo "wrapper $* reg=\${BROKER_REGISTRY_ID:-}\${DIRECTORY_REGISTRY_ID:-} client=\${GOOGLE_CLIENT_ID_PROD:-}\${GOOGLE_DIRECTORY_CLIENT_ID_PROD:-} hosts=\${HOSTS_KV_ID:-} db=\${PLATFORM_DB_ID:-} tag=\${DEPLOY_TAG:-}" >> "$STUB_LOG"
 w="oa-$([ "$2" = staging ] && echo s || echo p)-$1"
 touch "$STATE/$w.exists"
 [ -f "$STATE/$w.next.json" ] && cp "$STATE/$w.next.json" "$STATE/$w.settings.json"
@@ -1080,9 +1080,34 @@ describe("deploy-hosted-platform.sh", () => {
         DEPLOY_ENVIRONMENT: "hosted-staging-deploy",
       }).code,
     ).toBe(2);
+    const ok = setup().run("auth-broker", {
+      ...ci,
+      GITHUB_REF: "refs/heads/main",
+      DEPLOY_TAG: "v0.90.3",
+    });
+    expect(ok.code, ok.err).toBe(0);
     expect(
-      setup().run("auth-broker", { ...ci, GITHUB_REF: "refs/heads/main" }).code,
-    ).toBe(0);
+      ok.log.find((l) => l.startsWith("wrapper auth-broker prod ")),
+    ).toContain("tag=v0.90.3");
+  });
+  it("in CI, a deploy needs a stable DEPLOY_TAG, refused before any change; verify only does not", () => {
+    const ci = {
+      GITHUB_ACTIONS: "true",
+      GITHUB_REF: "refs/heads/main",
+      DEPLOY_ENVIRONMENT: "hosted-prod-deploy",
+    };
+    for (const DEPLOY_TAG of ["", "0.90.3", "v0.90.3-rc.1"]) {
+      const r = setup().run("auth-broker", { ...ci, DEPLOY_TAG });
+      expect(r.code, DEPLOY_TAG).toBe(2);
+      expect(r.err).toContain("DEPLOY_TAG must be a stable vX.Y.Z");
+      expect(noDeploy(r.log)).toEqual([]);
+      expect(puts(r.log)).toEqual([]);
+    }
+    const local = setup().run("auth-broker");
+    expect(local.code, local.err).toBe(0);
+    expect(
+      local.log.find((l) => l.startsWith("wrapper auth-broker prod ")),
+    ).toMatch(/ tag=$/);
   });
   it("refuses an env other than staging or prod", () => {
     expect(setup().run("auth-broker", {}, "dev").code).toBe(2);
@@ -1930,6 +1955,58 @@ describe("deploy-hosted-platform.sh", () => {
       exists: ["oa-p-auth-broker"],
       secrets: { "oa-p-auth-broker": ["BROKER_STATE_KEY"] },
     }).run("auth-broker", { GOOGLE_CLIENT_SECRET: "" });
+    expect(lost.code).toBe(1);
+    expect(lost.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+  });
+
+  it("a Worker that takes secrets deploys again after them, so the serving version is tagged (#1040)", () => {
+    for (const [t, exists] of [
+      ["auth-broker", []],
+      ["directory-broker", []],
+      ["provisioning", ["oa-p-provisioner", "oa-p-auth-broker"]],
+    ] as const) {
+      const r = setup({ exists: [...exists] }).run(t);
+      expect(r.err, t).toBe("");
+      expect(r.code, t).toBe(0);
+      const wrappers = r.log.flatMap((l, i) =>
+        l.startsWith("wrapper") ? [i] : [],
+      );
+      const lastPut = r.log.reduce(
+        (m, l, i) => (l.startsWith("stdin-len") ? i : m),
+        -1,
+      );
+      expect(wrappers.length, t).toBe(2);
+      expect(lastPut, t).toBeGreaterThan(wrappers[0] as number);
+      expect(wrappers[1], t).toBeGreaterThan(lastPut);
+    }
+  });
+
+  it("directory-broker: the Google secret only when given or absent", () => {
+    const keep = setup({
+      exists: ["oa-p-directory-broker"],
+      secrets: {
+        "oa-p-directory-broker": [
+          "DIRECTORY_STATE_KEY",
+          "GOOGLE_DIRECTORY_CLIENT_SECRET",
+        ],
+      },
+    }).run("directory-broker", { GOOGLE_DIRECTORY_CLIENT_SECRET: "" });
+    expect(keep.err).toBe("");
+    expect(keep.code).toBe(0);
+    expect(puts(keep.log)).toEqual([]);
+    const absent = setup().run("directory-broker", {
+      GOOGLE_DIRECTORY_CLIENT_SECRET: "",
+    });
+    expect(absent.code).toBe(1);
+    expect(absent.err).toContain(
+      "oa-p-directory-broker has no GOOGLE_DIRECTORY_CLIENT_SECRET",
+    );
+    expect(puts(absent.log)).toEqual([]);
+    expect(absent.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+    const lost = setup({
+      exists: ["oa-p-directory-broker"],
+      secrets: { "oa-p-directory-broker": ["DIRECTORY_STATE_KEY"] },
+    }).run("directory-broker", { GOOGLE_DIRECTORY_CLIENT_SECRET: "" });
     expect(lost.code).toBe(1);
     expect(lost.log.some((l) => l.startsWith("wrapper"))).toBe(false);
   });
