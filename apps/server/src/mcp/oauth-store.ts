@@ -143,6 +143,9 @@ export function oauthEnv(env: Env): OAuthEnv {
       : mode === "d1"
         ? new D1KvStore(env.DB)
         : new DualKvStore(new D1KvStore(env.DB), kv as KVNamespace, env);
+  // d1 never reads KV, but the marker check past the provider asks whether
+  // it is bound (rawKv): record the binding when there is one.
+  if (mode === "d1" && kv) bindings.set(store, kv as KVNamespace);
   return { ...env, OAUTH_KV: store as unknown as KVNamespace };
 }
 
@@ -312,7 +315,7 @@ export function mapStoreError(e: unknown): unknown {
 
 abstract class StoreBase {}
 
-/** The KV binding under a store that wraps one (dual, kv). */
+/** The KV binding under a store: dual, kv, and d1 when OAUTH_KV is bound. */
 const bindings = new WeakMap<StoreBase, KVNamespace>();
 
 /**
@@ -889,7 +892,9 @@ async function syncMarkers(
     throw new OAuthStoreMarkersError(
       `OAUTH_STORE=${mode} is refused: this install has served in d1 mode since ${new Date(m.off).toISOString()}, so KV is stale. Set OAUTH_STORE back to d1, or roll back with OAUTH_STORE_ROLLBACK=1 after emptying the OAuth keys from KV (every agent reconnects).`,
     );
-  if (mode === "d1" && env.OAUTH_KV && !m.backfilled && m.off === null)
+  // The raw binding: past the provider (oauthEnv) OAUTH_KV is d1's store,
+  // always set, so only the binding under it says KV is bound.
+  if (mode === "d1" && rawKv(env.OAUTH_KV) && !m.backfilled && m.off === null)
     throw new OAuthStoreMarkersError(
       "OAUTH_STORE=d1 is refused: no complete KV -> D1 copy is recorded. Serve with OAUTH_STORE=dual, run the copy to completion, then switch to d1.",
     );

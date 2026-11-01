@@ -181,7 +181,15 @@ describe("off: any unknown route", () => {
       key: KEY,
       body: "{}",
     });
+    const ref = await post(e, {
+      host: "content.localhost",
+      path: "/__oa/no-such-route",
+      body: "{}",
+    });
     expect(r.status).toBe(404);
+    expect(ref.status).toBe(404);
+    expect(r.headers.get("content-type")).toBe(ref.headers.get("content-type"));
+    expect(await r.text()).toBe(await ref.text());
     await notRun(4, null);
   });
 
@@ -222,6 +230,36 @@ describe("before the key: the uniform 404", () => {
     const unbound = inMode("dual", { OAUTH_KV: memKv(7), RL_ANON: undefined });
     await same404(await copy(unbound), unbound);
     await notRun(7, null);
+  });
+
+  it("d1 with OAUTH_KV unbound and no markers: a wrong key is the uniform 404, the key not_dual", async () => {
+    // A fresh install provisioned straight into d1: no copy, no stamp, no KV.
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(BACKFILLED_KEY)
+      .run();
+    const e = inMode("d1", { OAUTH_KV: undefined });
+    // The route answers first, in a cold isolate: its marker check sees the
+    // raw binding (unbound), not d1's store past the provider.
+    await same404(await post(e, { key: "x".repeat(32), body: "{}" }), e);
+    resetOAuthStoreMarkers();
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(KV_WRITES_OFF_KEY)
+      .run();
+    await refused404(await copy(e), e, "not_dual");
+    expect(await genOf()).toBeNull();
+  });
+
+  it("d1 with OAUTH_KV bound and no copy recorded: the same 503 any route answers, before the key", async () => {
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(BACKFILLED_KEY)
+      .run();
+    const e = inMode("d1", { OAUTH_KV: memKv(12) });
+    const ref = await callWorker(new Request(`${APP}/robots.txt`), e);
+    expect(ref.status).toBe(503);
+    const r = await post(e, { key: "x".repeat(32), body: "{}" });
+    expect(r.status).toBe(503);
+    expect(await r.text()).toBe(await ref.text());
+    await notRun(12, null);
   });
 
   it("dual after d1 (refused): the same 503 any route answers, before the key", async () => {
