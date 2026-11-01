@@ -1,3 +1,4 @@
+import { webcrypto } from "node:crypto";
 import {
   mkdtempSync,
   readFileSync,
@@ -408,6 +409,22 @@ describe("sealed delivery (oa-seal-v1)", () => {
     const other = await newRecipient();
     await expect(openSealed(other, s)).rejects.toThrow();
     await expect(openSealed(r, `x${s}`)).rejects.toThrow(/not an oa-seal-v1/);
+  });
+
+  it("the recipient's private key cannot be exported; seal/unseal still round-trips", async () => {
+    const r = await newRecipient();
+    expect(r.pair.privateKey.extractable).toBe(false);
+    await expect(
+      webcrypto.subtle.exportKey("pkcs8", r.pair.privateKey),
+    ).rejects.toThrow();
+    await expect(
+      webcrypto.subtle.exportKey("jwk", r.pair.privateKey),
+    ).rejects.toThrow();
+    const s = await sealTo(
+      r.publicKey,
+      '{"pat":"oa_pat_y","hookKey":"' + "k".repeat(43) + '"}',
+    );
+    expect(parseCreds(await openSealed(r, s)).pat).toBe("oa_pat_y");
   });
 
   it("parseCreds refuses a non-PAT or a short hook key", () => {
