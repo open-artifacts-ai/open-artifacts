@@ -374,6 +374,7 @@ Each env has its own GitHub Environment, `hosted-staging-deploy` or `hosted-prod
 | `CLOUDFLARE_API_TOKEN` | The env's one Cloudflare token. It is user-owned (My Profile > API Tokens), rolled in the dashboard and pasted here, with exactly these scopes: Account (the hosted account): Workers Scripts Edit, Workers KV Storage Edit, D1 Edit, Workers R2 Storage Edit, Turnstile Edit, Queues Edit, Workflows Edit, Secrets Store Edit. Zone (Include > Specific zone, the env's two zones only: `open-artifacts.app` and `open-artifacts.page` for prod): Zone Read, Zone Settings Edit, DNS Edit, Workers Routes Edit. Every Cloudflare call in `deploy-hosted-platform` and `hosted-ops` uses it: the deploys, the zones, the resource id and Turnstile lookups, and R2 (its S3 key is derived from it in the run) |
 | `GOOGLE_CLIENT_SECRET` | The env's sign-in client secret |
 | `GOOGLE_DIRECTORY_CLIENT_SECRET` | The env's Directory client secret |
+| `ADMIN_IDENTITIES` | The admin allowlist, `email:sub` pairs joined by commas on one line (#1007). The provisioning deploy refuses without it, puts it on `oa-<p>-provisioning` on every run (stdin only, never printed) and checks the secret by name. Never committed. |
 
 Everything else CI derives, and fails closed:
 
@@ -382,7 +383,7 @@ Everything else CI derives, and fails closed:
 
 The broker state keys (`BROKER_STATE_KEY`, `DIRECTORY_STATE_KEY`) are never stored anywhere: the first run generates each one inside the runner, and later runs keep it (a failed secrets listing stops the run instead of reading as "absent"). The Google secrets are set on every run, so rotating one is: update the Environment secret, then re-run that target.
 
-The only secret a person sets for prod today is the token, in two dashboards (no laptop). The inventory has no key: GitHub OIDC replaced it (the `inventory` target refuses any secret on it), and `CREATE_OWNER_EMAIL` retires with the `hosted-ops` create (see there).
+The secrets a person sets for prod are the token, in two dashboards (no laptop), and `ADMIN_IDENTITIES` in `hosted-prod-deploy`. The inventory has no key: GitHub OIDC replaced it (the `inventory` target refuses any secret on it), and `CREATE_OWNER_EMAIL` retires with the `hosted-ops` create (see there).
 
 1. **Scopes.** At https://dash.cloudflare.com/profile/api-tokens, open the prod token (user-owned) > ⋯ > Edit and check it has:
    - Account (the hosted account): Workers Scripts Edit, Workers KV Storage Edit, D1 Edit, Workers R2 Storage Edit, Turnstile Edit, Queues Edit, Workflows Edit, Secrets Store Edit. (Read-only check 2026-10-30: prod lacked only Secrets Store.)

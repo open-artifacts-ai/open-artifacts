@@ -141,7 +141,8 @@ describe("wrangler.jsonc", () => {
       it("sets the 2.4 vars; OIDC_* on staging only", () => {
         expect(e.vars.OA_ENV).toBe(env);
         expect(e.vars.APP_DOMAIN).toBe(APP[env]);
-        expect(typeof e.vars.ADMIN_IDENTITIES).toBe("string");
+        // #1007: the admin allowlist is a CI-put secret; a var would conflict.
+        expect(e.vars).not.toHaveProperty("ADMIN_IDENTITIES");
         expect(["false", "true", "test-users"]).toContain(
           e.vars.SIGNUPS_ENABLED,
         );
