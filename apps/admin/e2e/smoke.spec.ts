@@ -32,14 +32,16 @@ test("create an install, land on its job, open the install", async ({
   await expect(
     page.getByText("e2e-fresh.open-artifacts-staging.app is available."),
   ).toBeVisible();
-  await expect(page.getByLabel("Release")).toHaveValue("1.42.0");
+  await expect(page.getByRole("combobox", { name: "Release" })).toHaveText(
+    "1.42.0 (latest)",
+  );
   await page.getByRole("button", { name: "Create install" }).click();
   await expect(page).toHaveURL(/\/jobs\/[0-9A-Z]{26}$/);
   await expect(
     page.getByRole("heading", { name: "Creating e2e-fresh" }),
   ).toBeVisible();
   // The dev mock moves the job on by itself: queued, running, then done.
-  await expect(page.getByTestId("status")).toHaveText("done", {
+  await expect(page.getByTestId("status")).toContainText("done", {
     timeout: 15_000,
   });
   await page.getByRole("link", { name: "e2e-fresh" }).click();

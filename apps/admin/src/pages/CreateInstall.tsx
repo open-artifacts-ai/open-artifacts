@@ -6,7 +6,17 @@ import {
   type Tier,
   TierSchema,
 } from "@oa/shared/provisioning";
-import { Button, Input, Label } from "@oa/ui/shadcn";
+import {
+  Button,
+  Checkbox,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
@@ -47,7 +57,7 @@ function useSlugStatus(slug: string, domain: string) {
     ...slugQuery(settled),
     enabled: local === "ok" && settled === slug,
   });
-  if (!slug) return { status: null, text: null };
+  if (!slug) return { status: null, text: `Becomes <slug>.${domain}` };
   if (local !== "ok")
     return { status: local, text: SLUG_COPY[local as "invalid" | "reserved"] };
   if (settled !== slug || remote.isFetching)
@@ -80,35 +90,55 @@ export function CreateInstall() {
   const [ownerEmail, setOwnerEmail] = useState("");
   const [tier, setTier] = useState<Tier>("team");
   const [providers, setProviders] = useState<string[]>(["google"]);
-  // Untouched, the sign-in domain is the owner's email domain.
+  // Untouched, the allowed domains are the owner's email domain.
   const [domainsText, setDomainsText] = useState<string | null>(null);
   const [sendWelcome, setSendWelcome] = useState(false);
+  const emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(ownerEmail);
+  const ownerDomain = emailOk
+    ? (ownerEmail.split("@")[1] ?? "").toLowerCase()
+    : "";
   const domainsValue = domainsText ?? ownerEmail.split("@")[1] ?? "";
+  const domains = domainsValue
+    .split(/[\s,]+/)
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean);
   const auth = AuthSchema.safeParse({
     providers: AuthProviderSchema.options.filter((p) => providers.includes(p)),
-    domains: domainsValue
-      .split(/[\s,]+/)
-      .map((d) => d.trim().toLowerCase())
-      .filter(Boolean),
+    domains,
   });
-  const emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(ownerEmail);
+  const noProvider = providers.length === 0;
+  /** Design's Allowed domains rules (option A): any method, owner's domain included. */
+  const domainsError =
+    domains.length === 0
+      ? domainsText !== null || emailOk
+        ? "Add at least one domain."
+        : null
+      : ownerDomain && !domains.includes(ownerDomain)
+        ? `Include the owner's domain, ${ownerDomain}.`
+        : null;
+  const domainsOk = domains.length > 0 && !domainsError && auth.success;
   const slugTone =
     check.status === "ok"
       ? "ok"
       : check.status && BAD_SLUG.has(check.status)
         ? "bad"
         : null;
-  /** Why Create install is off, shown next to it. */
-  const blocker =
-    check.status !== "ok"
-      ? "Enter an available slug."
-      : !emailOk
-        ? "Enter the owner's email."
-        : !auth.success
-          ? "Pick a sign-in method and allowed domains."
-          : !version
-            ? "Pick a release."
-            : null;
+  /** Why Create install is off, shown beside it. */
+  const blocker = !slug
+    ? "Add a slug."
+    : check.status !== "ok"
+      ? "Pick an available slug."
+      : !ownerEmail
+        ? "Add an owner email."
+        : !emailOk
+          ? "Enter a valid owner email."
+          : noProvider
+            ? "Pick a sign-in method."
+            : !domainsOk
+              ? "Fix the allowed domains."
+              : !version
+                ? "Pick a release."
+                : null;
   const create = useAction(
     (_: void, requestId) =>
       api.call("R4", {
@@ -133,13 +163,13 @@ export function CreateInstall() {
   return (
     <>
       <p className="oa-crumbs">
-        <Link to="/installs">Installs</Link> /
+        <Link to="/installs">Installs</Link>
       </p>
       <h1>Create install</h1>
       <p className="oa-sub">
         Runs as a job. You can leave this page; it keeps going.
       </p>
-      <div className="oa-split">
+      <div className="oa-split oa-create">
         <form
           className="oa-form"
           onSubmit={(e) => {
@@ -193,61 +223,82 @@ export function CreateInstall() {
               ))}
             </div>
           </fieldset>
-          <fieldset>
+          <fieldset aria-describedby={noProvider ? "signin-error" : undefined}>
             <legend>Sign-in</legend>
             {AuthProviderSchema.options.map((p) => (
-              <label key={p} className="oa-check">
-                <input
-                  type="checkbox"
+              <label key={p} className="oa-check" htmlFor={`signin-${p}`}>
+                <Checkbox
+                  id={`signin-${p}`}
                   checked={providers.includes(p)}
-                  onChange={(e) =>
+                  onCheckedChange={(on) =>
                     setProviders((cur) =>
-                      e.target.checked
-                        ? [...cur, p]
+                      on === true
+                        ? [...cur.filter((x) => x !== p), p]
                         : cur.filter((x) => x !== p),
                     )
                   }
-                />{" "}
+                />
                 {p === "google" ? "Google" : "Email"}
               </label>
             ))}
-            <label className="oa-sublabel" htmlFor="domains">
-              Allowed domains
-            </label>
+            {noProvider && (
+              <small
+                id="signin-error"
+                className="oa-help-bad"
+                data-testid="signin-error"
+              >
+                Pick at least one.
+              </small>
+            )}
+          </fieldset>
+          <div className={domainsError ? "oa-field-bad" : undefined}>
+            <Label htmlFor="domains">Allowed domains</Label>
             <Input
               id="domains"
               value={domainsValue}
               placeholder="example.com"
+              autoComplete="off"
+              aria-invalid={domainsError ? true : undefined}
+              aria-describedby="domains-help"
               onChange={(e) => setDomainsText(e.target.value)}
             />
-            {!auth.success && (
-              <small>
-                Pick a sign-in method; Google needs at least one valid domain.
-              </small>
-            )}
-          </fieldset>
+            <small
+              id="domains-help"
+              data-testid="domains-help"
+              className={domainsError ? "oa-help-bad" : undefined}
+            >
+              {domainsError ??
+                "People with an email at these domains can join. Starts with the owner's domain. Separate with commas."}
+            </small>
+          </div>
           <div>
             <Label htmlFor="version">Release</Label>
-            <select
-              id="version"
-              value={version}
-              onChange={(e) => setPicked(e.target.value)}
-            >
-              {installable.map((r) => (
-                <option key={r.version} value={r.version}>
-                  {r.version}
-                  {r.latest ? " (latest)" : ""}
-                </option>
-              ))}
-            </select>
+            <Select value={version} onValueChange={setPicked}>
+              <SelectTrigger id="version" className="oa-release">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper" align="start">
+                {installable.map((r) => (
+                  <SelectItem key={r.version} value={r.version}>
+                    <span className="oa-mono">{r.version}</span>
+                    {r.latest && (
+                      <>
+                        {" "}
+                        <span className="oa-latest">(latest)</span>
+                      </>
+                    )}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <small>Only signed, published releases are listed.</small>
           </div>
-          <label className="oa-check">
-            <input
-              type="checkbox"
+          <label className="oa-check" htmlFor="welcome">
+            <Checkbox
+              id="welcome"
               checked={sendWelcome}
-              onChange={(e) => setSendWelcome(e.target.checked)}
-            />{" "}
+              onCheckedChange={(on) => setSendWelcome(on === true)}
+            />
             Send the owner a welcome email
           </label>
           <ErrorLine error={create.error} />
@@ -255,25 +306,23 @@ export function CreateInstall() {
             <Button
               type="submit"
               aria-describedby={blocker ? "create-blocker" : undefined}
-              disabled={
-                check.status !== "ok" ||
-                !version ||
-                !emailOk ||
-                !auth.success ||
-                create.isPending
-              }
+              disabled={!!blocker || create.isPending}
             >
               Create install
             </Button>
             <Link to="/installs" className="oa-btn">
               Cancel
             </Link>
+            {blocker && !create.isPending && (
+              <small
+                id="create-blocker"
+                data-testid="create-blocker"
+                className="oa-blocker"
+              >
+                {blocker}
+              </small>
+            )}
           </div>
-          {blocker && !create.isPending && (
-            <small id="create-blocker" data-testid="create-blocker">
-              {blocker}
-            </small>
-          )}
         </form>
         <aside className="oa-side" aria-label="What happens">
           <h2>What happens</h2>

@@ -644,7 +644,7 @@ code {
 .oa-form {
   display: flex;
   flex-direction: column;
-  gap: 13px;
+  gap: 16px;
   max-width: 520px;
   min-width: 0;
 }
@@ -683,7 +683,7 @@ code {
   line-height: 1.4;
   font-weight: 500;
   color: var(--oa-text);
-  margin: 0 0 4px;
+  margin: 0 0 6px;
   padding: 0;
 }
 .oa-form label.oa-check,
@@ -697,7 +697,7 @@ code {
   display: block;
   font-size: 12px;
   color: var(--oa-text-muted);
-  margin: 4px 0 0;
+  margin: 6px 0 0;
 }
 .oa-page p.oa-hint {
   margin: 4px 0 10px;
@@ -809,7 +809,7 @@ fieldset.oa-seg-field {
 .oa-side h3,
 .oa-side b,
 .oa-side strong {
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.55;
   font-weight: 600;
   color: inherit;
@@ -818,7 +818,7 @@ fieldset.oa-seg-field {
 }
 .oa-side h2:not(:first-child),
 .oa-side h3:not(:first-child) {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 .oa-page .oa-side p {
   margin: 6px 0 0;
@@ -1454,20 +1454,25 @@ fieldset.oa-seg-field {
 .oa-page p.oa-sub:has(+ .oa-split > .oa-form) {
   margin-bottom: 18px;
 }
-/* A sub-label inside a group, like Allowed domains under Sign-in (mock .help). */
-.oa-form label.oa-sublabel {
-  display: block;
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--oa-text-muted);
-  margin: 6px 0 4px;
-}
-.oa-form fieldset > input {
+/* Release: a full-width shadcn Select; the version in mono, "(latest)" muted. */
+.oa-form [data-slot="select-trigger"].oa-release {
   width: 100%;
 }
-/* Why Create install is off, right under the buttons. */
-.oa-form > small {
-  margin-top: -7px;
+.oa-latest {
+  color: var(--oa-text-muted);
+}
+[data-slot="select-trigger"].oa-release .oa-mono,
+[data-slot="select-content"] .oa-mono {
+  font-size: 12.5px;
+  color: var(--oa-text);
+}
+/* Option labels with the design-system Checkbox. */
+.oa-form fieldset > label.oa-check + label.oa-check {
+  margin-top: 6px;
+}
+/* Why Create install is off, beside the buttons. */
+.oa-form .oa-actions small.oa-blocker {
+  margin: 0 0 0 4px;
 }
 /* "What happens": numbered steps (mock .aside ol). */
 .oa-side ol {

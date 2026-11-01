@@ -25,7 +25,7 @@ export const HEALTH_LABEL: Record<Health, string> = {
  * panel does not show ("active" folds into "Turn on sign-in"; "done" ends it).
  */
 const STEP_LABEL: Record<string, string | null> = {
-  admit: "Admit",
+  admit: "Queue the job",
   recheck: "Check the request",
   reserve: "Reserve slug and hosts",
   release_gate: "Check the release",
