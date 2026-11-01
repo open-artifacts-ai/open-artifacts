@@ -1,7 +1,13 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { OidcError } from "@oa/gh-oidc";
-import { describe, expect, it } from "vitest";
+import {
+  GITHUB_OIDC_ISSUER,
+  GITHUB_OIDC_JWKS_URL,
+  verify as ghVerify,
+  JwksCache,
+  OidcError,
+} from "@oa/gh-oidc";
+import { beforeAll, describe, expect, it } from "vitest";
 import { pinsFromEnv } from "../src/auth.ts";
 import defaultWorker, { makeWorker } from "../src/index.ts";
 import {
@@ -9,6 +15,7 @@ import {
   JWT,
   MONITOR,
   makeEnv,
+  NOW,
   REDLINE,
   REPO,
   req,
@@ -24,16 +31,43 @@ async function expectFixed(res: Response, status: number, error: string) {
   expect(await res.text()).toBe(JSON.stringify({ error }));
 }
 
+type Wire = {
+  status: number;
+  statusText: string;
+  headers: [string, string][];
+  body: string;
+};
+const wire = async (res: Response): Promise<Wire> => ({
+  status: res.status,
+  statusText: res.statusText,
+  headers: [...res.headers],
+  body: await res.text(),
+});
+
+/** What an authenticated caller gets for an unknown route. */
+let unknownRoute: Wire;
+beforeAll(async () => {
+  unknownRoute = await wire(
+    await worker().w.fetch(req("/nope", {}, BEARER), makeEnv()),
+  );
+  expect(unknownRoute.status).toBe(404);
+  expect(unknownRoute.body).toBe("Not found");
+});
+
+/** An auth failure is the unknown-route 404: status, headers and body. */
+async function expectPlain404(res: Response, what?: string) {
+  expect(await wire(res), what).toEqual(unknownRoute);
+}
+
 describe("production wiring", () => {
-  it("the default export uses @oa/gh-oidc's verify, which fails closed: any bearer is 401", async () => {
+  it("the default export uses @oa/gh-oidc's verify, which fails closed: any bearer is the plain 404", async () => {
     for (const p of [...PATHS, "/prodclean", "/nope"])
-      await expectFixed(
+      await expectPlain404(
         await defaultWorker.fetch(
           req(p, { method: p === "/prodclean" ? "POST" : "GET" }, BEARER),
           makeEnv(),
         ),
-        401,
-        "unauthorized",
+        p,
       );
   });
 });
@@ -44,50 +78,46 @@ describe("bearer", () => {
     ["a wrong scheme", `Basic ${JWT}`],
     ["a bare token", JWT],
     ["an empty bearer", "Bearer "],
+    ["an empty header", ""],
     ["a bearer with a space", `Bearer ${JWT} x`],
     ["a wrong token", "Bearer x.y.z"],
     ["an oversized bearer", `Bearer ${"a".repeat(8193)}`],
   ];
   for (const [what, auth] of cases)
-    it(`${what} -> fixed 401 on every path`, async () => {
-      const { w } = worker();
+    it(`${what} -> the plain 404 on every path`, async () => {
+      const { w, calls } = worker();
       for (const p of [...PATHS, "/nope"])
-        await expectFixed(
-          await w.fetch(req(p, {}, auth), makeEnv()),
-          401,
-          "unauthorized",
-        );
-      await expectFixed(
+        await expectPlain404(await w.fetch(req(p, {}, auth), makeEnv()), p);
+      await expectPlain404(
         await w.fetch(req("/prodclean", { method: "POST" }, auth), makeEnv()),
-        401,
-        "unauthorized",
       );
+      // A wrong method is 405 only after auth: it never leaks a route.
+      await expectPlain404(
+        await w.fetch(req("/installs", { method: "POST" }, auth), makeEnv()),
+      );
+      if (what !== "a wrong token") expect(calls).toEqual([]);
     });
 
-  it("an OidcError's code never reaches the body", async () => {
+  it("an OidcError's code never reaches the response", async () => {
     const w = makeWorker({
       verify: async () => {
         throw new OidcError("bad_sig");
       },
       now: () => 0,
     });
-    const res = await w.fetch(req("/installs", {}, BEARER), makeEnv());
-    expect(res.status).toBe(401);
-    const text = await res.text();
-    expect(text).toBe('{"error":"unauthorized"}');
-    expect(text).not.toContain("bad_sig");
-    expect(text).not.toContain("oidc");
+    await expectPlain404(
+      await w.fetch(req("/installs", {}, BEARER), makeEnv()),
+    );
   });
 
-  it("a non-Oidc throw (a JWKS fetch failing) is the same 401", async () => {
+  it("a non-Oidc throw (a JWKS fetch failing) is the same 404", async () => {
     const w = makeWorker({
       verify: async () => {
         throw new TypeError("fetch failed: jwks.example");
       },
       now: () => 0,
     });
-    const res = await w.fetch(req("/health", {}, BEARER), makeEnv());
-    await expectFixed(res, 401, "unauthorized");
+    await expectPlain404(await w.fetch(req("/health", {}, BEARER), makeEnv()));
   });
 
   it("verify gets the bearer and exactly the parsed pins", async () => {
@@ -105,6 +135,151 @@ describe("bearer", () => {
         },
       },
     ]);
+  });
+});
+
+// Every claim failure through the real @oa/gh-oidc verify: a local RS256 key,
+// a stubbed JWKS fetch and the pinned clock, so nothing reaches the network.
+describe("real verifier: every failure class is the plain 404", () => {
+  const b64u = (b: ArrayBuffer | string) => {
+    const bytes =
+      typeof b === "string" ? new TextEncoder().encode(b) : new Uint8Array(b);
+    let s = "";
+    for (const x of bytes) s += String.fromCharCode(x);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+
+  let priv: CryptoKey;
+  let jwks: string;
+  beforeAll(async () => {
+    const k = (await crypto.subtle.generateKey(
+      {
+        name: "RSASSA-PKCS1-v1_5",
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: "SHA-256",
+      },
+      true,
+      ["sign", "verify"],
+    )) as CryptoKeyPair;
+    priv = k.privateKey;
+    const jwk = await crypto.subtle.exportKey("jwk", k.publicKey);
+    jwks = JSON.stringify({
+      keys: [{ kty: jwk.kty, n: jwk.n, e: jwk.e, kid: "k1", alg: "RS256" }],
+    });
+  });
+
+  const S = NOW / 1000;
+  const good = (): Record<string, unknown> => ({
+    iss: GITHUB_OIDC_ISSUER,
+    aud: VARS.OIDC_AUDIENCE,
+    sub: `repo:${REPO}:environment:redline-staging`,
+    iat: S - 10,
+    nbf: S - 10,
+    exp: S + 290,
+    repository: REPO,
+    repository_id: VARS.OIDC_REPOSITORY_ID,
+    ref: "refs/heads/main",
+    job_workflow_ref: MONITOR,
+    environment: "redline-staging",
+    event_name: "schedule",
+    runner_environment: "github-hosted",
+  });
+
+  const sign = async (claims: Record<string, unknown>) => {
+    const h = b64u(JSON.stringify({ alg: "RS256", kid: "k1", typ: "JWT" }));
+    const p = b64u(JSON.stringify(claims));
+    const sig = await crypto.subtle.sign(
+      "RSASSA-PKCS1-v1_5",
+      priv,
+      new TextEncoder().encode(`${h}.${p}`),
+    );
+    return `${h}.${p}.${b64u(sig)}`;
+  };
+
+  /** The real verify; `jwksRes` null makes the JWKS fetch throw. */
+  const real = (jwksRes: () => Response | null = () => new Response(jwks)) =>
+    makeWorker({
+      verify: (jwt, pins) =>
+        ghVerify(jwt, pins, {
+          fetch: (async (u: string | URL | Request) => {
+            if (String(u) !== GITHUB_OIDC_JWKS_URL)
+              throw new Error(`unexpected fetch ${String(u)}`);
+            const r = jwksRes();
+            if (!r) throw new TypeError("fetch failed");
+            return r;
+          }) as typeof fetch,
+          now: () => NOW,
+          jwks: new JwksCache(),
+          cache: null,
+        }),
+      now: () => NOW,
+    });
+
+  const all = async (
+    w: ReturnType<typeof real>,
+    auth: string,
+    env = makeEnv(),
+  ) => {
+    for (const p of [...PATHS, "/nope"])
+      await expectPlain404(await w.fetch(req(p, {}, auth), env), p);
+    await expectPlain404(
+      await w.fetch(req("/prodclean", { method: "POST" }, auth), env),
+      "/prodclean",
+    );
+  };
+
+  it("control: the good token reads /installs (200)", async () => {
+    const res = await real().fetch(
+      req("/installs", {}, `Bearer ${await sign(good())}`),
+      makeEnv(),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  const claimCases: [string, Record<string, unknown>][] = [
+    ["an expired token", { iat: S - 600, nbf: S - 600, exp: S - 61 }],
+    ["a wrong audience", { aud: "https://oa-x-inventory" }],
+    ["a wrong repository", { repository: "someone/else" }],
+    ["a wrong repository id", { repository_id: "999" }],
+    ["a wrong ref", { ref: "refs/heads/feature" }],
+    [
+      "a wrong workflow ref",
+      { job_workflow_ref: `${REPO}/.github/workflows/ci.yml@refs/heads/main` },
+    ],
+    ["a wrong environment", { environment: "production" }],
+    ["a wrong event", { event_name: "pull_request" }],
+    ["a wrong runner", { runner_environment: "self-hosted" }],
+  ];
+  for (const [what, over] of claimCases)
+    it(`${what} -> the plain 404 on every path`, async () => {
+      await all(real(), `Bearer ${await sign({ ...good(), ...over })}`);
+    });
+
+  it("a malformed token -> the plain 404 on every path", async () => {
+    for (const t of ["a.b", "a..c", "not-base64.%%%.x", `${JWT}`])
+      await all(real(), `Bearer ${t}`);
+  });
+
+  it("a staging token on prod -> the plain 404 on every path", async () => {
+    const staging = await sign({ ...good(), aud: "https://oa-s-inventory" });
+    await all(
+      real(),
+      `Bearer ${staging}`,
+      makeEnv({ OIDC_AUDIENCE: "https://oa-p-inventory" }),
+    );
+  });
+
+  it("a JWKS fetch failure (throw or non-200) -> the plain 404 on every path", async () => {
+    const t = `Bearer ${await sign(good())}`;
+    await all(
+      real(() => null),
+      t,
+    );
+    await all(
+      real(() => new Response("down", { status: 503 })),
+      t,
+    );
   });
 });
 
