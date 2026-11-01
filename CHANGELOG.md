@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.88.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.87.0...v0.88.0) (2026-11-01)
+
+
+### Features
+
+* **redline:** W12 provisioning probes and OIDC for the Provisioning API ([#919](https://github.com/open-artifacts-ai/open-artifacts/issues/919)) ([52dc717](https://github.com/open-artifacts-ai/open-artifacts/commit/52dc71733eae209c5aa7f065e4dae0191d8786fd))
+
+
+### Bug Fixes
+
+* **redline:** staged version checks R3's appHost; seal key not extractable ([#981](https://github.com/open-artifacts-ai/open-artifacts/issues/981)) ([c2ef102](https://github.com/open-artifacts-ai/open-artifacts/commit/c2ef1029791d1ecdb60e93f4ff545a4e92f4608a))
+
 ## [0.87.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.86.0...v0.87.0) (2026-11-01)
 
 
