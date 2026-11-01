@@ -7,6 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "bundle:monitor": "esbuild scripts/prodclean-monitor.ts --bundle --platform=node --format=esm --target=node$(cat ../../.nvmrc) --log-level=warning --outfile=dist/prodclean-monitor.mjs",
     "test": "pnpm --filter @oa/provision build && vitest run",
     "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit -p tsconfig.json"
   },
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "esbuild": "0.28.2",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12",
     "yaml": "^2.9.1"

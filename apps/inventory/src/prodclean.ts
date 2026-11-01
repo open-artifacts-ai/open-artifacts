@@ -86,6 +86,8 @@ export async function postProdclean(
   const r = ProdcleanReportSchema.safeParse(raw);
   if (!r.success) return badRequest();
   const { ok, code, installId, detail } = r.data;
+  // ok and code agree: a pass is ok:true with code "pass", and only that.
+  if (ok !== (code === "pass")) return badRequest();
   await db
     .prepare(PRODCLEAN_SQL)
     .bind(now(), ok ? 1 : 0, code, installId ?? null, detail ?? null)
