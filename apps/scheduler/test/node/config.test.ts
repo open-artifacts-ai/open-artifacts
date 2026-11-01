@@ -37,6 +37,12 @@ describe("wrangler.jsonc", () => {
         EMAIL_DAILY_LIMIT: `{{EMAIL_DAILY_LIMIT_${env.toUpperCase()}}}`,
         AUTH_BROKER_ORIGIN: `https://auth.${HOSTED_DOMAINS[env].app}`,
         DIRECTORY_BROKER_ORIGIN: `https://directory.${HOSTED_DOMAINS[env].app}`,
+        // Platform's deploy wiring (W9a fills these, failing closed on any
+        // leftover).
+        ALERT_TO: `{{ALERT_TO_${env.toUpperCase()}}}`,
+        ALERT_FROM: `{{ALERT_FROM_${env.toUpperCase()}}}`,
+        SIGNUP_DAILY_CAP: `{{SIGNUP_DAILY_CAP_${env.toUpperCase()}}}`,
+        SIGNUPS_ENABLED: `{{SIGNUPS_ENABLED_${env.toUpperCase()}}}`,
       });
       const names = platformNames(env);
       const provisioner = names.provisioner;
@@ -74,10 +80,14 @@ describe("wrangler.jsonc", () => {
       expect(e.queues).toEqual({
         producers: [{ binding: "SIGNUPS", queue: names.signups }],
       });
-      // The operator alerts' one sending binding (src/provapi/alerts.ts).
-      // ALERT_TO, ALERT_FROM and SIGNUP_DAILY_CAP are Platform's deploy
-      // wiring, not vars here yet.
-      expect(e.send_email).toEqual([{ name: "ALERT_EMAIL" }]);
+      // The operator alerts' one sending binding (src/provapi/alerts.ts),
+      // restricted to the env's ALERT_TO (the same placeholder as the var).
+      expect(e.send_email).toEqual([
+        {
+          name: "ALERT_EMAIL",
+          destination_address: `{{ALERT_TO_${env.toUpperCase()}}}`,
+        },
+      ]);
       expect(e.vars).not.toHaveProperty("EMAIL_QUOTA_TOKEN");
       // The nightly run, and H-DV's directory revoke tick every 2 minutes.
       expect(e.triggers).toEqual({ crons: ["17 3 * * *", "*/2 * * * *"] });

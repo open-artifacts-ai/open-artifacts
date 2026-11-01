@@ -65,9 +65,11 @@ export const isWorkflowExists = (e: unknown): e is WorkflowExistsError =>
 // What the binding throws, pinned for the LOCAL binding (miniflare) by
 // test-workerd/workflow.test.ts: a plain Error (name "Error") whose message
 // is `instance.not_found` (get) or `(instance.already_exists) Workflow
-// instance with id "<id>" already exists` (create). The code is matched
-// bare or as a "(code) " prefix, nothing looser. The REAL Cloudflare
-// binding's errors are UNVERIFIED until spike S3 on staging.
+// instance with id "<id>" already exists` (create). The real Cloudflare
+// binding (spike S3 on staging, run 41253612244) throws a plain Error with
+// `(instance.not_found) Instance not found` and `(instance.already_exists)
+// Instance already exists`. The code is matched bare or as a "(code) "
+// prefix, nothing looser; c6.test.ts pins both bindings' messages.
 const hasCode = (e: unknown, code: string): boolean => {
   if (!(e instanceof Error)) return false;
   const m = e.message;
@@ -114,14 +116,9 @@ export interface WorkflowLike<P = WorkflowParams> {
   /**
    * The instance with this id. Throws WorkflowNotFoundError when there is
    * none (the C1 fakes do); around a real binding use getWorkflowInstance,
-   * which translates the binding's error (pinned for the local binding;
-   * the rest of this note still holds for the real one, spike S3).
-   * UNVERIFIED for the real Cloudflare binding:
-   * what `get` does for an unknown id (throw, and with what name or
-   * message, or return an instance whose status() fails) is not checked; a
-   * wrapper around the real binding must translate it to
-   * WorkflowNotFoundError, and must not translate a binding-level error
-   * (the Workflow or its script missing). isWorkflowNotFound is an
+   * which translates the binding's error (pinned for the local and the real
+   * binding: both throw on an unknown id, spike S3). It must not translate a
+   * binding-level error (the Workflow or its script missing). isWorkflowNotFound is an
    * instanceof check, which does not survive an RPC or service-binding
    * boundary (the error arrives as a plain Error), so that wrapper must run
    * in the caller's own isolate, around the binding it calls.

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.87.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.86.0...v0.87.0) (2026-11-01)
+
+
+### Features
+
+* **ci:** W9a CI targets for the Provisioning API ([#902](https://github.com/open-artifacts-ai/open-artifacts/issues/902)) ([da1d6e9](https://github.com/open-artifacts-ai/open-artifacts/commit/da1d6e9e487b438ac7c054870905016e777a76c9))
+* **inventory:** W8 GitHub OIDC inventory, hourly prod-clean monitor, prod-clean probe fix (on pl/provapi-base) ([#900](https://github.com/open-artifacts-ai/open-artifacts/issues/900)) ([a39e7cf](https://github.com/open-artifacts-ai/open-artifacts/commit/a39e7cf6f123aac3d3e30ce78abf32cabb451509))
+
 ## [0.86.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.85.0...v0.86.0) (2026-10-31)
 
 
