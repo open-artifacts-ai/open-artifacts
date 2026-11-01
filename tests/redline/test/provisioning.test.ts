@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { takeFileNotes } from "../src/notes.ts";
 import {
   AUDIENCES,
   jwtClaims,
@@ -24,6 +25,7 @@ import {
   mintCreds,
   type Outcome,
   P25_MAX_REQUESTS,
+  P29_UNPROVEN,
   PROBES,
   ProbeFail,
   type ProbeId,
@@ -35,7 +37,14 @@ import {
   statusCounts,
 } from "../src/provisioning.ts";
 import { credFile, rawTargets } from "../src/provisioning-live.ts";
-import { PRE_PROD_NA, PRE_PROD_REASON } from "../src/report.ts";
+import {
+  ACCEPTED_UNPROVEN,
+  acceptedUnproven,
+  caseKey,
+  PRE_PROD_NA,
+  PRE_PROD_REASON,
+  parseManifest,
+} from "../src/report.ts";
 import { newRecipient, openSealed, parseCreds } from "../src/seal.ts";
 import {
   parseProd,
@@ -137,6 +146,55 @@ describe("the probes on a conforming staging fake", () => {
     ]);
   });
 
+  // A renamed probe title is a required case that did not run plus a case not
+  // in the manifest (run 41322062244's P22): catch it before the live run.
+  it("live/manifest.json lists every probe by the name the reporter gives it, and nothing else", () => {
+    const file = "live/provisioning.test.ts";
+    const m = parseManifest(
+      readFileSync(
+        join(import.meta.dirname, "..", "live", "manifest.json"),
+        "utf8",
+      ),
+    );
+    const listed = new Set(
+      m.cases
+        .filter((x) => x.file === file)
+        .map((x) => caseKey(x.file, x.name)),
+    );
+    const named = new Set(
+      PROBES.map((p) => caseKey(file, `provisioning > ${p.id}: ${p.title}`)),
+    );
+    const show = (k: string) => k.split("\u0000")[1];
+    expect([...listed].filter((k) => !named.has(k)).map(show)).toEqual([]);
+    expect([...named].filter((k) => !listed.has(k)).map(show)).toEqual([]);
+    expect(listed.size).toBe(PROBES.length);
+  });
+
+  // The gate matches these by exact name and reason: no run-specific text.
+  it("the unproven probes give the fixed reasons the gate's accepted list names", async () => {
+    const out = await runAll(fakeApi());
+    const name = (id: ProbeId) =>
+      `provisioning > ${id}: ${PROBES.find((p) => p.id === id)?.title}`;
+    for (const id of ["P29", "P30", "P35"] as const)
+      expect(
+        acceptedUnproven({
+          name: name(id),
+          file: "live/provisioning.test.ts",
+          ...(out.get(id) as Outcome & { level: "unproven-live" }),
+        }),
+        id,
+      ).toBeDefined();
+    expect(out.get("P29")).toEqual({
+      level: "unproven-live",
+      reason: P29_UNPROVEN,
+    });
+    // P29 is on the list for M1 only (#1046 takes it off).
+    expect(
+      ACCEPTED_UNPROVEN.find((e) => e.name.startsWith("provisioning > P29: "))
+        ?.evidence,
+    ).toContain("#1046");
+  });
+
   it("prod probes run once prod admin answers 401", async () => {
     const f = fakeApi();
     f.faults.add("prod_live");
@@ -229,6 +287,22 @@ describe("each probe fails on the behaviour it guards", () => {
       const out = await runAll(f);
       expect(out.get(id)).toMatch(re);
     });
+
+  it("P13 waits out the 60 s HOSTS cache for the redline /healthz", async () => {
+    const f = fakeApi();
+    f.faults.add("p13_hosts_cache");
+    const out = await runAll(f);
+    expect(level(out.get("P13"))).toBe("pass");
+  });
+
+  it("P13 fails after 120 s on a /healthz that never turns redline, naming the last answer", async () => {
+    const f = fakeApi();
+    f.faults.add("p13_healthz_404");
+    const out = await runAll(f);
+    expect(out.get("P13")).toMatch(
+      /^P13: \/healthz is not the redline variant within 120 s \(status 404, body sha256:[0-9a-f]{16} \(2 bytes\)\)$/,
+    );
+  });
 
   describe("P25 sends /auth/start one at a time", () => {
     const p25 = async (limit: number, fault?: Fault) => {
@@ -327,11 +401,13 @@ describe("each probe fails on the behaviour it guards", () => {
   it("P29 deletes to deleting, U's purge is 403, and a later run's create meets signup_limit", async () => {
     const f = fakeApi();
     const p29 = PROBES.find((p) => p.id === "P29");
+    takeFileNotes();
     const first = await p29?.run(new Run(CONFIG, f.io));
-    expect(first).toMatchObject({
-      level: "unproven-live",
-      reason: expect.stringMatching(/^create job \S+ done and deleted/),
-    });
+    expect(first).toEqual({ level: "unproven-live", reason: P29_UNPROVEN });
+    // The job id is a note, outside the reason the gate would match.
+    expect(takeFileNotes()).toEqual([
+      expect.stringMatching(/^P29: create job \S+ done and deleted$/),
+    ]);
     const mine = [...f.installs.values()].filter(
       (i) => i.owner === "user:rl-test-b",
     );

@@ -8,6 +8,7 @@ import {
   TOKEN_SCOPES,
 } from "@oa/shared/provisioning";
 import { notResolved } from "./fetch-timeout.ts";
+import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { PRE_PROD_REASON } from "./report.ts";
 
@@ -96,6 +97,9 @@ export const P44_REGISTRATIONS = 11;
 export const P42_BYTES = 40 * 1024;
 export const DUMMY_TURNSTILE = "XXXX.DUMMY.TOKEN.XXXX";
 export const EVIL = "https://evil.example";
+/** P29's unproven reason after a done create and delete (fixed: no run-specific text). */
+export const P29_UNPROVEN =
+  "self-serve purge doesn't free signup_accounts (#1046); signups off on prod";
 
 // --- HTTP ----------------------------------------------------------------
 
@@ -838,12 +842,20 @@ export const PROBES: readonly Probe[] = [
         );
       run.s.rlp.appHost = dj.appHost;
       run.s.rlp.contentHost = dj.contentHost;
-      const h = await run.page(dj.appHost);
-      const hz = h.json as { testHooks?: unknown } | undefined;
-      if (h.status !== 200 || hz?.testHooks !== true)
+      // Dispatch's HOSTS cache (60 s) can still miss the new host: poll.
+      let h: Res | undefined;
+      try {
+        await run.within(PAGE_WITHIN_MS, "P13 redline /healthz", async () => {
+          h = await run.page(dj.appHost);
+          const hz = h.json as { testHooks?: unknown } | undefined;
+          return h.status === 200 && hz?.testHooks === true;
+        });
+      } catch (e) {
+        if (!(e instanceof ProbeFail) || !h) throw e;
         throw new ProbeFail(
-          `P13: /healthz is not the redline variant (${desc(h)})`,
+          `P13: /healthz is not the redline variant within ${PAGE_WITHIN_MS / 1000} s (${desc(h)})`,
         );
+      }
       return pass(`job ${final.id} at ${version}`);
     },
   },
@@ -1293,9 +1305,9 @@ export const PROBES: readonly Probe[] = [
         403,
         "P29 R11 as the user",
       );
-      return unproven(
-        `create job ${j.id} done and deleted; the purge that frees signup_accounts is not runnable by any principal in a run (design gap)`,
-      );
+      // The job id goes to a note: the reason stays one fixed string.
+      note(`P29: create job ${j.id} done and deleted`);
+      return unproven(P29_UNPROVEN);
     },
   },
   {

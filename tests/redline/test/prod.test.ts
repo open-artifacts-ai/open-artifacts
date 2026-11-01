@@ -315,6 +315,34 @@ describe("prodClean (spec 2026-10-26)", () => {
     expect(await failCode(check(w))).toBe("inventory_bad");
   });
 
+  it("a bearer function is called after the release scan, right before /installs", async () => {
+    const w = cleanWorld();
+    const { fetch } = await serve(w);
+    const seen: string[] = [];
+    const counted: typeof fetch = (i, init) => {
+      seen.push(new URL(String(i instanceof Request ? i.url : i)).host);
+      return fetch(i, init);
+    };
+    let mintedAfter = -1;
+    await prodClean(probe(), {
+      fetch: counted,
+      pubkey: PUB,
+      inventoryBearer: async () => {
+        mintedAfter = seen.length;
+        return JWT;
+      },
+    });
+    expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+    // Every Cloudflare (release scan) call came before the mint.
+    expect(mintedAfter).toBeGreaterThan(0);
+    expect(
+      seen.slice(0, mintedAfter).every((h) => h === "api.cloudflare.com"),
+    ).toBe(true);
+    expect(
+      seen.slice(mintedAfter).some((h) => h !== "api.cloudflare.com"),
+    ).toBe(true);
+  });
+
   it("the inventory bearer is only opts.inventoryBearer (OIDC), never the stored key", async () => {
     const w = cleanWorld();
     const { fetch } = await serve(w);

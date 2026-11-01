@@ -124,9 +124,11 @@ export interface ProdCleanOpts {
   /**
    * The inventory's GitHub OIDC bearer (a JWT the caller minted for the prod
    * inventory's audience). The only inventory credential (inventory accepts
-   * no stored key); without it the probe is inventory_unconfigured.
+   * no stored key); without it the probe is inventory_unconfigured. A
+   * function is called right before /installs, after the release scan, so a
+   * short-lived JWT is fresh when used.
    */
-  inventoryBearer?: string;
+  inventoryBearer?: string | (() => Promise<string>);
 }
 
 async function listKeys(cf: Cf, bucket: string): Promise<string[]> {
@@ -295,9 +297,15 @@ export async function prodClean(
   // Only a GitHub OIDC JWT for the prod inventory's audience (the caller's,
   // else the one the red-line job wrote to the secrets dir); never the
   // stored inventory key, which inventory rejects.
-  const bearer =
-    o.inventoryBearer ?? (await prodInventoryBearer(p)) ?? s.inventoryBearer;
-  if (!p.inventoryUrl || !bearer)
+  const bearer = async () =>
+    typeof o.inventoryBearer === "function"
+      ? await o.inventoryBearer()
+      : (o.inventoryBearer ??
+        (await prodInventoryBearer(p)) ??
+        s.inventoryBearer);
+  const configured =
+    typeof o.inventoryBearer === "function" || (await bearer()) !== undefined;
+  if (!p.inventoryUrl || !configured)
     throw new ProdDirty(
       "inventory_unconfigured",
       "prod probe: inventory not configured",
@@ -318,11 +326,28 @@ export async function prodClean(
   for (const version of releases.keys())
     await checkRelease(r2, version, pubkey);
 
-  // 2. Installs: no hooks reachable, no hook secret or var.
+  // 2. Installs: no hooks reachable, no hook secret or var. The bearer is
+  // read now, not before the scan: the JWT lives 5 minutes (re-minted near
+  // expiry by the red-line job).
+  const bearerNow = async () => {
+    const b = await bearer();
+    if (!b)
+      throw new ProdDirty(
+        "inventory_unconfigured",
+        "prod probe: inventory not configured",
+      );
+    return b;
+  };
   const inv = InventoryInstallsSchema.safeParse(
-    await getJson(f, `${p.inventoryUrl}/installs`, bearer, "inventory", {
-      code: "inventory_bad",
-    }),
+    await getJson(
+      f,
+      `${p.inventoryUrl}/installs`,
+      await bearerNow(),
+      "inventory",
+      {
+        code: "inventory_bad",
+      },
+    ),
   );
   if (!inv.success)
     throw new ProdDirty(

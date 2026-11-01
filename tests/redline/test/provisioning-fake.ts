@@ -71,6 +71,8 @@ export type Fault =
   | "p1_200"
   | "p6_alg_none_ok"
   | "p13_replay_new_job"
+  | "p13_hosts_cache"
+  | "p13_healthz_404"
   | "p15_mode_early"
   | "p16_late"
   | "p22_closed_404"
@@ -137,6 +139,8 @@ export function fakeApi(): FakeApi {
   const signupAccounts = new Set<string>();
   const purged = new Map<string, FInstall>();
   const authStarts = new Map<number, number>();
+  /** Dispatch's 60 s HOSTS cache: a new host's /healthz 404s until then. */
+  const hostsCachedUntil = new Map<string, number>();
   const signin = { limit: 10 };
   let registrations = 0;
   let n = 0;
@@ -426,6 +430,8 @@ export function fakeApi(): FakeApi {
         onDone: () => {
           i.state = "active";
           i.version = version;
+          if (faults.has("p13_hosts_cache"))
+            hostsCachedUntil.set(i.id, clock.t + 60_000);
         },
       });
       // The create finishes before the probe's next request.
@@ -648,6 +654,12 @@ export function fakeApi(): FakeApi {
     if (host === "rl-a.open-artifacts-staging.app" && path === "/api/v1/me")
       return new Response(null, { status: 401 });
     if (!i || i.mode === null) return new Response("nf", { status: 404 });
+    if (
+      path === "/healthz" &&
+      ((hostsCachedUntil.get(i.id) ?? 0) > clock.t ||
+        (faults.has("p13_healthz_404") && i.slug.startsWith("rl-p-")))
+    )
+      return new Response("nf", { status: 404 });
     if (i.mode === "paused") return new Response("paused", { status: 503 });
     // Dispatch serves the closed page as 503 too (apps/dispatch/src/unavailable.ts).
     if (i.mode === "closed")
