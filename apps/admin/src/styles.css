@@ -1281,3 +1281,194 @@ fieldset.oa-seg-field {
   padding-top: 10px;
   border-top: 1px solid var(--oa-border);
 }
+
+/* ---------- Audit log (mock Aaudit: .tool, .card > table.it) ---------- */
+.oa-audit-tools label {
+  display: flex;
+  margin: 0;
+}
+.oa-audit-tools select {
+  width: auto;
+  field-sizing: content;
+}
+.oa-audit-tools .oa-search {
+  flex: 0 1 200px;
+}
+.oa-app .oa-audit-tools .oa-search input {
+  flex: 1;
+  width: 100%;
+  padding-left: 28px;
+}
+.oa-audit-tools > label:first-child input {
+  width: 150px;
+}
+.oa-audit-tools .oa-link {
+  font-size: 12.5px;
+}
+.oa-tablewrap td.oa-mono {
+  color: var(--oa-text-muted);
+}
+.oa-audit td.oa-audit-detail {
+  color: var(--oa-text-muted);
+}
+.oa-audit td.oa-audit-detail a {
+  color: inherit;
+  font-weight: 400;
+}
+.oa-audit td.oa-audit-detail code {
+  background: none;
+  padding: 0;
+  color: var(--oa-text-muted);
+}
+@media (max-width: 700px) {
+  .oa-audit-tools > label:first-child,
+  .oa-audit-tools .oa-search {
+    flex: 1 1 140px;
+  }
+  .oa-audit-tools > label:first-child input {
+    width: 100%;
+  }
+}
+
+/* ---------- Agent tokens (mock tokens: connect card, .tabs, .snip) ---------- */
+.oa-connect {
+  margin-bottom: 16px;
+}
+.oa-connect-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 12px;
+  margin-bottom: 6px;
+}
+.oa-connect-head > div {
+  flex: 1;
+  min-width: min(100%, 240px);
+}
+.oa-page .oa-connect h2 {
+  font-size: 14px;
+  line-height: 1.4;
+  margin: 0;
+}
+.oa-page .oa-connect p.oa-sub {
+  margin: 2px 0 0;
+}
+.oa-connect [data-testid="snippet"] p.oa-sub,
+.oa-page .oa-connect > p.oa-sub {
+  margin: 8px 0 0;
+}
+.oa-connect [data-testid="snippet"] p.oa-sub:first-child {
+  margin: 0 0 8px;
+}
+.oa-connect-head .oa-seg {
+  margin: 0;
+}
+.oa-connect .oa-sub code {
+  background: none;
+  padding: 0;
+  color: var(--oa-text-muted);
+}
+.oa-tabs {
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+  gap: 2px;
+  border-bottom: 1px solid var(--oa-divider);
+  margin: 0 0 12px;
+}
+.oa-tabs button {
+  font: 400 13px / 1.55 var(--oa-font-sans);
+  padding: 6px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: none;
+  color: var(--oa-text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.oa-tabs button[aria-pressed="true"] {
+  color: var(--oa-text);
+  border-color: var(--oa-text);
+  font-weight: 500;
+}
+.oa-snip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--oa-sunken);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.oa-snip pre,
+.oa-card .oa-snip pre,
+.oa-snip .oa-secret-code {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+  background: none;
+  border-radius: 0;
+}
+.oa-snip code {
+  display: block;
+  background: none;
+  padding: 0;
+  color: var(--oa-text);
+  white-space: pre;
+}
+.oa-snip > [data-slot="button"] {
+  flex: none;
+}
+.oa-tokens td.oa-strong {
+  font-weight: 600;
+}
+.oa-tokens td.oa-wrap {
+  white-space: normal;
+  overflow-wrap: normal;
+  min-width: 150px;
+}
+.oa-tokens td.oa-note {
+  color: var(--oa-text-muted);
+}
+.oa-tokens td.oa-end {
+  text-align: right;
+}
+
+/* ---------- Mint and minted dialogs (mock .dlg, .snip, .rv) ---------- */
+[data-slot="dialog-content"] label.oa-check code {
+  font-size: 11px;
+  background: none;
+  padding: 0;
+  color: var(--oa-text-muted);
+}
+.oa-minted-fields {
+  grid-template-columns: 120px minmax(0, 1fr);
+  margin: 0;
+}
+[data-slot="dialog-footer"].oa-foot-rule {
+  padding-top: 12px;
+  border-top: 1px solid var(--oa-divider);
+}
+
+/* ---------- Edge pages: actions and foot line (mock .acts, .cfoot) ---------- */
+.oa-acts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.oa-panel p.oa-cfoot {
+  margin: 14px 0 0;
+  font-size: 12px;
+  color: var(--oa-text-muted);
+  text-align: center;
+}
+.oa-cfoot a {
+  color: var(--oa-text-2);
+  text-decoration: underline;
+}
+.oa-panel code {
+  overflow-wrap: anywhere;
+}

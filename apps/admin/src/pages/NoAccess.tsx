@@ -36,9 +36,15 @@ export function NoAccess({ error, sub }: { error?: string; sub?: string }) {
           Account id: <code>{sub}</code>
         </p>
       )}
-      <button type="button" className="oa-link" onClick={useAnother}>
-        Use another account
-      </button>
+      <div className="oa-acts">
+        <button
+          type="button"
+          className="oa-btn oa-btn-pri"
+          onClick={useAnother}
+        >
+          Use another account
+        </button>
+      </div>
     </EdgePanel>
   );
 }

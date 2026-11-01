@@ -40,14 +40,14 @@ export function SignIn({
           {ERRORS[known]}
         </p>
       )}
-      <Button asChild>
-        <a href={href}>Sign in with Google</a>
-      </Button>
+      <div className="oa-acts">
+        <Button asChild>
+          <a href={href}>Sign in with Google</a>
+        </Button>
+      </div>
       {known && (
-        <p style={{ marginTop: 16 }}>
-          <a className="oa-link" href={href}>
-            Use another account?
-          </a>
+        <p className="oa-cfoot">
+          <a href={href}>Use another account?</a>
         </p>
       )}
     </EdgePanel>

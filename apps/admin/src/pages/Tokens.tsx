@@ -99,32 +99,36 @@ function ConnectCard({ env }: { env: "prod" | "staging" }) {
       : "oauth";
   const snip = snippets.find((s) => s.agent === agent && s.variant === shown);
   return (
-    <section className="oa-card" aria-label="Connect any AI agent">
-      <h2>Connect any AI agent</h2>
-      <p>
-        It signs in through you and gets only the access you approve. Server{" "}
-        <code>{url}</code>
-      </p>
-      <fieldset className="oa-seg">
-        <legend className="sr-only">How it signs in</legend>
-        {(
-          [
-            ["oauth", "Sign in with browser"],
-            ["token", "Use a token"],
-          ] as const
-        ).map(([v, label]) => (
-          <button
-            key={v}
-            type="button"
-            aria-pressed={shown === v}
-            disabled={!has(v)}
-            onClick={() => setVariant(v)}
-          >
-            {label}
-          </button>
-        ))}
-      </fieldset>
-      <div className="oa-seg">
+    <section className="oa-card oa-connect" aria-label="Connect any AI agent">
+      <div className="oa-connect-head">
+        <div>
+          <h2>Connect any AI agent</h2>
+          <p className="oa-sub">
+            It signs in through you and gets only the access you approve. Server{" "}
+            <code>{url}</code>
+          </p>
+        </div>
+        <fieldset className="oa-seg">
+          <legend className="sr-only">How it signs in</legend>
+          {(
+            [
+              ["oauth", "Sign in with browser"],
+              ["token", "Use a token"],
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              aria-pressed={shown === v}
+              disabled={!has(v)}
+              onClick={() => setVariant(v)}
+            >
+              {label}
+            </button>
+          ))}
+        </fieldset>
+      </div>
+      <div className="oa-tabs">
         {agents.map((a) => (
           <button
             key={a}
@@ -139,22 +143,24 @@ function ConnectCard({ env }: { env: "prod" | "staging" }) {
       {snip && (
         <div data-testid="snippet">
           {snip.file && (
-            <p>
+            <p className="oa-sub">
               Put this in <code>{snip.file}</code>
             </p>
           )}
-          <pre>
-            <code>{snip.code}</code>
-          </pre>
-          {snip.language !== "text" && (
-            <CopyButton text={snip.code} label="Copy" />
-          )}
-          {snip.hint && <p>{snip.hint}</p>}
-          {snip.verify && <p>{snip.verify}</p>}
-          {snip.reload && <p>{snip.reload}</p>}
+          <div className="oa-snip">
+            <pre>
+              <code>{snip.code}</code>
+            </pre>
+            {snip.language !== "text" && (
+              <CopyButton text={snip.code} label="Copy" />
+            )}
+          </div>
+          {snip.hint && <p className="oa-sub">{snip.hint}</p>}
+          {snip.verify && <p className="oa-sub">{snip.verify}</p>}
+          {snip.reload && <p className="oa-sub">{snip.reload}</p>}
         </div>
       )}
-      <p className="oa-hint">
+      <p className="oa-sub">
         Claude.ai: Settings, Connectors, Add custom connector, same server
         address.
       </p>
@@ -273,19 +279,19 @@ function MintedDialog({ m, onDone }: { m: Minted; onDone: () => void }) {
             Copy it now. It won't be shown again.
           </DialogDescription>
         </DialogHeader>
-        <code className="oa-secret-code">{m.secret}</code>
-        <div>
+        <div className="oa-snip">
+          <code className="oa-secret-code">{m.secret}</code>
           <CopyButton text={m.secret} label="Copy" />
         </div>
-        <dl className="oa-fields">
+        <dl className="oa-fields oa-minted-fields">
           <dt>Label</dt>
           <dd>{m.label}</dd>
           <dt>Scopes</dt>
-          <dd>{m.scopes.join(" ")}</dd>
+          <dd className="oa-mono">{m.scopes.join(" ")}</dd>
           <dt>Ends</dt>
           <dd>in {m.ttl} min, or when you sign out</dd>
         </dl>
-        <DialogFooter>
+        <DialogFooter className="oa-foot-rule">
           <Button onClick={onDone}>Done</Button>
         </DialogFooter>
       </DialogContent>
@@ -331,7 +337,7 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
   return (
     <>
       <div className="oa-head">
-        <div style={{ flex: 1 }}>
+        <div>
           <h1>Agent tokens</h1>
           {q.data && (
             <p className="oa-sub">
@@ -340,19 +346,34 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
             </p>
           )}
         </div>
-        <Button
-          variant="destructive"
-          onClick={() => setRevokingAll(true)}
-          disabled={live.length === 0}
-        >
-          Revoke all
-        </Button>
-        <Button onClick={() => setMinting(true)} disabled={full}>
-          Mint token
-        </Button>
+        <div className="oa-actions">
+          <Button
+            variant="outline"
+            onClick={() => setRevokingAll(true)}
+            disabled={live.length === 0}
+          >
+            Revoke all
+          </Button>
+          <Button onClick={() => setMinting(true)} disabled={full}>
+            <svg
+              viewBox="0 0 16 16"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M8 3v10M3 8h10" />
+            </svg>
+            Mint token
+          </Button>
+        </div>
       </div>
       {full && (
-        <p className="oa-note" data-testid="token-limit">
+        <p className="oa-banner oa-banner-warn" data-testid="token-limit">
           You have {LIVE_TOKENS_PER_ADMIN} live tokens and agents. Revoke one to
           add another.
         </p>
@@ -366,14 +387,14 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
           onRetry={() => void q.refetch()}
         />
       ) : q.data && live.length === 0 ? (
-        <div className="oa-placeholder">
+        <div className="oa-card oa-empty">
           <p>
             <strong>No agents yet</strong>
           </p>
           <p>Connect any AI agent above, or mint a token for a script.</p>
         </div>
       ) : q.data ? (
-        <div className="oa-tablewrap">
+        <div className="oa-tablewrap oa-tokens">
           <Table>
             <TableHeader>
               <TableRow>
@@ -390,12 +411,18 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
             <TableBody>
               {live.map((t) => (
                 <TableRow key={t.id} data-kind={t.kind}>
-                  <TableCell>{t.clientName ?? t.label}</TableCell>
+                  <TableCell className="oa-strong">
+                    {t.clientName ?? t.label}
+                  </TableCell>
                   <TableCell>{kindLabel(t)}</TableCell>
-                  <TableCell>{t.scopes.join(" ")}</TableCell>
+                  <TableCell className="oa-mono oa-wrap">
+                    {t.scopes.join(" ")}
+                  </TableCell>
                   <TableCell>{endsLabel(t, now)}</TableCell>
-                  <TableCell>{fmtAgo(t.lastUsedAt, now)}</TableCell>
-                  <TableCell>
+                  <TableCell className="oa-note">
+                    {fmtAgo(t.lastUsedAt, now)}
+                  </TableCell>
+                  <TableCell className="oa-end">
                     <Button
                       variant="outline"
                       size="sm"

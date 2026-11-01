@@ -58,7 +58,7 @@ export function Audit({
         Every admin action, agent token call and sign-in. Newest first.
       </p>
       <form
-        className="oa-filter"
+        className="oa-tools oa-audit-tools"
         onSubmit={(e) => {
           e.preventDefault();
           const id = draft.trim();
@@ -77,22 +77,16 @@ export function Audit({
         }}
       >
         <label>
-          Install{" "}
-          <input value={draft} onChange={(e) => setDraft(e.target.value)} />
-        </label>{" "}
-        <button type="submit" className="oa-link">
-          Filter
-        </button>
-        <label>
-          Actor{" "}
+          <span className="sr-only">Actor</span>
           <input
             maxLength={200}
+            placeholder="Actor"
             value={actorDraft}
             onChange={(e) => setActorDraft(e.target.value)}
           />
-        </label>{" "}
-        <label>
-          Action{" "}
+        </label>
+        <label className="oa-audit-action">
+          <span className="sr-only">Action</span>
           <select
             value={action ?? ""}
             onChange={(e) => {
@@ -117,27 +111,47 @@ export function Audit({
               </option>
             ))}
           </select>
-        </label>{" "}
+        </label>
+        <label className="oa-search">
+          <svg
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM10.3 10.3l3 3" />
+          </svg>
+          <span className="sr-only">Install</span>
+          <input
+            placeholder="Install"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+        </label>
+        <button type="submit" className="oa-btn">
+          Filter
+        </button>
         {(installId || actor || action) && (
-          <>
-            {" "}
-            <Link
-              to="/audit"
-              search={{
-                installId: undefined,
-                actor: undefined,
-                action: undefined,
-              }}
-              onClick={() => {
-                paging.reset();
-                setDraft("");
-                setActorDraft("");
-                setBad(false);
-              }}
-            >
-              Clear filter
-            </Link>
-          </>
+          <Link
+            className="oa-link"
+            to="/audit"
+            search={{
+              installId: undefined,
+              actor: undefined,
+              action: undefined,
+            }}
+            onClick={() => {
+              paging.reset();
+              setDraft("");
+              setActorDraft("");
+              setBad(false);
+            }}
+          >
+            Clear filter
+          </Link>
         )}
       </form>
       {(bad || !valid) && (
@@ -152,10 +166,12 @@ export function Audit({
           onRetry={() => void q.refetch()}
         />
       ) : q.data && q.data.items.length === 0 ? (
-        <p className="oa-placeholder">No audit entries.</p>
+        <div className="oa-card oa-empty">
+          <p>No audit entries.</p>
+        </div>
       ) : q.data ? (
         <>
-          <div className="oa-tablewrap">
+          <div className="oa-tablewrap oa-audit">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -169,7 +185,9 @@ export function Audit({
               <TableBody>
                 {q.data.items.map((e) => (
                   <TableRow key={e.id} data-outcome={e.outcome}>
-                    <TableCell>{fmtDayClock(e.at)}</TableCell>
+                    <TableCell className="oa-mono">
+                      {fmtDayClock(e.at)}
+                    </TableCell>
                     <TableCell>
                       {e.actor.kind === "token"
                         ? `token: ${e.actor.label}`
@@ -196,7 +214,7 @@ export function Audit({
                         ""
                       )}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="oa-audit-detail">
                       {e.jobId && (
                         <>
                           <Link to="/jobs/$id" params={{ id: e.jobId }}>
