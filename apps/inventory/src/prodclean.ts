@@ -1,6 +1,6 @@
 import { ProdcleanReportSchema } from "@oa/shared/provisioning";
 import type { Authed } from "./auth.ts";
-import { badRequest, type D1Like, forbidden } from "./http.ts";
+import { badRequest, type D1Like, notFound } from "./http.ts";
 
 // POST /prodclean: the hourly monitor's result (design v7 6), stored for the
 // scheduler's prodclean_failed alert (@oa/shared alerts.ts). The only D1
@@ -64,12 +64,13 @@ export async function postProdclean(
 ): Promise<Response> {
   const ref = auth.claims.job_workflow_ref;
   // Only the monitor job: a listed ref (exact match) whose path is the monitor's.
+  // Any other workflow ref is an auth failure, so the unknown-route 404 (#1016).
   if (
     typeof ref !== "string" ||
     !auth.pins.jobWorkflowRefs.includes(ref) ||
     !isMonitorRef(ref)
   )
-    return forbidden();
+    return notFound();
   const type = (request.headers.get("content-type") ?? "")
     .split(";")[0]
     ?.trim()

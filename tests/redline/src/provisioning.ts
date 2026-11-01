@@ -7,6 +7,7 @@ import {
   type Release,
   TOKEN_SCOPES,
 } from "@oa/shared/provisioning";
+import { PRE_PROD_REASON } from "./report.ts";
 
 // The red-line provisioning probes (design v7 12.2, P1-P47) against the
 // staging Provisioning API, as the GitHub OIDC principal "O" (4.4): `rl-`
@@ -217,7 +218,7 @@ export class Run {
     const j = await this.waitJob(jobId, { testUser });
     if (j.status !== "done")
       throw new ProbeFail(
-        `${what}: job ${j.status} (${j.lastErrorCode ?? j.error?.code ?? "no code"})`,
+        `${what}: job ${j.status} (${j.lastErrorCode ?? j.error?.code ?? "no code"})${failText(j)}`,
       );
     return j;
   }
@@ -422,10 +423,58 @@ export interface Probe {
   run: (r: Run) => Promise<Outcome>;
 }
 
-/** Prod probes wait until the prod admin host answers 401 (12.2). */
-async function prodLive(run: Run): Promise<boolean> {
-  const r = await run.v1("/me", { host: "prodAdmin", auth: "none" });
-  return r.status === 401;
+/**
+ * Prod probes wait until the prod admin host answers 401 (12.2). Not live
+ * means only one thing (#1012): the name does not resolve, as before the
+ * prod platform deploy. A host that resolves must answer 401; anything else
+ * (another status, TLS, a timeout) fails the probe.
+ */
+export async function prodLive(run: Run): Promise<boolean> {
+  let r: Res;
+  try {
+    r = await run.v1("/me", { host: "prodAdmin", auth: "none" });
+  } catch (e) {
+    if (notResolved(e)) return false;
+    throw e;
+  }
+  if (r.status !== 401)
+    throw new ProbeFail(
+      `prod admin /api/v1/me resolves but is ${desc(r)}, want 401`,
+    );
+  return true;
+}
+
+/**
+ * #1012: what a batch of answers was, as "429 rate_limited x340, 404 x60":
+ * statuses and fixed error codes only (the run log is public), most first.
+ */
+export function statusCounts(
+  rs: readonly Pick<Res, "status" | "json">[],
+): string {
+  const n = new Map<string, number>();
+  for (const r of rs) {
+    const c = errCode(r as Res);
+    const k = `${r.status}${typeof c === "string" && /^[a-z_]{1,40}$/.test(c) ? ` ${c}` : ""}`;
+    n.set(k, (n.get(k) ?? 0) + 1);
+  }
+  return [...n]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([k, v]) => `${k} x${v}`)
+    .join(", ");
+}
+
+/** The admin sign-in flow cookie /auth/start sets (apps/provisioning/src/auth/flow.ts). */
+export const ADMIN_FLOW_COOKIE = "__Host-oa-admin-flow";
+
+/** Every Set-Cookie on an answer. */
+const setCookies = (r: Pick<Res, "headers">): string[] =>
+  r.headers.getSetCookie?.() ??
+  [r.headers.get("set-cookie") ?? ""].filter(Boolean);
+
+/** A fetch that failed because the host name has no DNS record. */
+export function notResolved(e: unknown): boolean {
+  const cause = (e as { cause?: { code?: unknown } } | null)?.cause;
+  return cause?.code === "ENOTFOUND";
 }
 
 function rlp(run: Run): RlP {
@@ -592,8 +641,7 @@ export const PROBES: readonly Probe[] = [
     id: "P7",
     title: "staging OIDC against prod /v1/me: 401",
     run: async (run) => {
-      if (!(await prodLive(run)))
-        return na("prod admin /api/v1/me does not answer 401 yet");
+      if (!(await prodLive(run))) return na(PRE_PROD_REASON);
       expect(await run.v1("/me", { host: "prodApi" }), 401, "P7");
       return pass();
     },
@@ -774,9 +822,18 @@ export const PROBES: readonly Probe[] = [
         throw new ProbeFail(`P13: installs +${n1 - n0}, want +1`);
       const d = await detail(run, a.install.id);
       expect(d, 200, "P13 R3");
-      if ((d.json as InstallDetail).testHooks !== true)
+      const dj = d.json as InstallDetail;
+      if (dj.testHooks !== true)
         throw new ProbeFail("P13: testHooks is not true");
-      const h = await run.page(a.install.appHost);
+      // #1012: the 202's contentHost is "" until reserve writes the row, so
+      // later probes take both hosts from the finished install.
+      if (!dj.appHost || !dj.contentHost)
+        throw new ProbeFail(
+          "P13: the finished install has no app or content host",
+        );
+      run.s.rlp.appHost = dj.appHost;
+      run.s.rlp.contentHost = dj.contentHost;
+      const h = await run.page(dj.appHost);
       const hz = h.json as { testHooks?: unknown } | undefined;
       if (h.status !== 200 || hz?.testHooks !== true)
         throw new ProbeFail(
@@ -1125,7 +1182,7 @@ export const PROBES: readonly Probe[] = [
         "P26 staging",
       );
       if (!(await prodLive(run)))
-        return pass("prod half gated: prod admin is not live");
+        return pass(`prod half gated: ${PRE_PROD_REASON}`);
       expect(
         await run.raw(`${run.c.prodAdmin}/auth/test-signin`, { auth: "none" }),
         404,
@@ -1353,6 +1410,7 @@ export const PROBES: readonly Probe[] = [
       "400 unsigned broker authorize for i000000admin: 404s; /auth/start still reaches Google",
     run: async (run) => {
       let bad = 0;
+      const seen: Res[] = [];
       for (let i = 0; i < P34_REQUESTS; i += 10) {
         const batch = await Promise.all(
           Array.from({ length: Math.min(10, P34_REQUESTS - i) }, () =>
@@ -1363,10 +1421,11 @@ export const PROBES: readonly Probe[] = [
           ),
         );
         bad += batch.filter((r) => r.status !== 404).length;
+        seen.push(...batch);
       }
       if (bad)
         throw new ProbeFail(
-          `P34: ${bad} of ${P34_REQUESTS} unsigned authorize requests were not 404`,
+          `P34: ${bad} of ${P34_REQUESTS} unsigned authorize requests were not 404 (${statusCounts(seen)})`,
         );
       const start = await run.raw(`${run.c.admin}/auth/start`, {
         auth: "none",
@@ -1605,7 +1664,7 @@ export const PROBES: readonly Probe[] = [
   {
     id: "P43",
     title:
-      "GET /oauth/authorize, no cookie, cross-site: 200 bounce page; with b=1: 302 to /auth/start",
+      "GET /oauth/authorize, no cookie, cross-site: 200 bounce page; with b=1: 200 sign-in page linking /auth/start back to this request, no auto-redirect",
     run: async (run) => {
       const q = new URLSearchParams({
         response_type: "code",
@@ -1617,7 +1676,8 @@ export const PROBES: readonly Probe[] = [
         scope: "installs:read",
         resource: `${run.c.api}/mcp`,
       });
-      const u = `${run.c.admin}/oauth/authorize?${q}`;
+      const original = `/oauth/authorize?${q}`;
+      const u = `${run.c.admin}${original}`;
       const h = { "sec-fetch-site": "cross-site" };
       expect(await run.raw(u, { auth: "none", headers: h }), 200, "P43 bounce");
       q.set("b", "1");
@@ -1625,13 +1685,23 @@ export const PROBES: readonly Probe[] = [
         auth: "none",
         headers: h,
       });
-      const loc = r.headers.get("location");
-      if (
-        r.status !== 302 ||
-        !loc ||
-        new URL(loc, run.c.admin).pathname !== "/auth/start"
-      )
+      // Design 5.8 (#1012): a page, not a redirect. Its only way on is the
+      // button, to this host's /auth/start, returning to this very request.
+      if (r.status !== 200 || r.headers.get("location"))
         throw new ProbeFail(`P43 b=1: ${desc(r)}`);
+      if (/<meta[^>]*http-equiv\s*=\s*["']?refresh/i.test(r.text))
+        throw new ProbeFail("P43 b=1: the sign-in page refreshes itself");
+      if (/<script/i.test(r.text))
+        throw new ProbeFail("P43 b=1: the sign-in page carries a script");
+      const hrefs = [...r.text.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);
+      const want = `/auth/start?return=${encodeURIComponent(original)}`;
+      if (!hrefs.includes(want))
+        throw new ProbeFail(
+          "P43 b=1: no button to /auth/start for this request",
+        );
+      for (const x of hrefs.filter((x) => x?.includes("/auth/start")))
+        if (x !== want)
+          throw new ProbeFail("P43 b=1: a sign-in link returns somewhere else");
       return pass(run.s.clientId ? undefined : "no client from P44");
     },
   },
@@ -1639,8 +1709,7 @@ export const PROBES: readonly Probe[] = [
     id: "P46",
     title: "staging OIDC on prod /mcp: 401",
     run: async (run) => {
-      if (!(await prodLive(run)))
-        return na("prod admin /api/v1/me does not answer 401 yet");
+      if (!(await prodLive(run))) return na(PRE_PROD_REASON);
       const r = await mcp(run, "tools/list", {}, { host: "prodApi" });
       if (r.status !== 401) throw new ProbeFail(`P46: ${desc(r)}`);
       return pass();
@@ -1662,7 +1731,8 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P25",
-    title: "15 rapid GET /auth/start: at least one 429",
+    title:
+      "15 rapid GET /auth/start: at least one 303 to /sign-in?error=rate_limited, never to Google nor with a flow cookie",
     // Last: it spends RL_PV_SIGNIN_IP (10 per 60 s), which P30's callbacks
     // and P34's /auth/start share; nothing after it signs in.
     run: async (run) => {
@@ -1671,9 +1741,26 @@ export const PROBES: readonly Probe[] = [
           run.raw(`${run.c.admin}/auth/start`, { auth: "none" }),
         ),
       );
-      if (!out.some((r) => r.status === 429))
-        throw new ProbeFail("P25: no 429 in 15 requests");
-      return pass();
+      // Design 5.8 (#1012): a limited start lands on the sign-in screen's
+      // rate_limited error; it must not start a flow (no Google, no cookie).
+      const limited = out.filter((r) => {
+        const loc = r.headers.get("location");
+        if (r.status !== 303 || !loc) return false;
+        const u = new URL(loc, run.c.admin);
+        return (
+          u.origin === new URL(run.c.admin).origin &&
+          u.pathname === "/sign-in" &&
+          u.searchParams.get("error") === "rate_limited"
+        );
+      });
+      if (!limited.length)
+        throw new ProbeFail(
+          `P25: no 303 to /sign-in?error=rate_limited in ${P25_REQUESTS} requests (${statusCounts(out)})`,
+        );
+      for (const r of limited)
+        if (setCookies(r).some((c) => c.startsWith(`${ADMIN_FLOW_COOKIE}=`)))
+          throw new ProbeFail("P25: a limited /auth/start set the flow cookie");
+      return pass(`${limited.length} of ${P25_REQUESTS} limited`);
     },
   },
 ];
@@ -1746,17 +1833,37 @@ export async function bringUpgrade(
  * The staging-first record (W9a's scripts/ci/staging-first-gate.sh): after
  * bring-up, rl-a's and rl-b's public /healthz must both report the release
  * under test; returns it (X.Y.Z) for version.txt. Any other answer fails.
+ * The host checked is the one R3 returns for the install id, never the
+ * REDLINE_TARGETS variable alone: the variable's host must equal R3's
+ * appHost, and /healthz there must name the same installId, so a wrong
+ * variable cannot make the record vouch for another host.
  */
 export async function stagedVersion(run: Run): Promise<string> {
-  for (const [slug, app] of [
-    ["rl-a", run.c.rlA.app],
-    ["rl-b", run.c.rlB.app],
+  for (const [slug, t] of [
+    ["rl-a", run.c.rlA],
+    ["rl-b", run.c.rlB],
   ] as const) {
-    const r = await run.raw(`${app}/healthz`, { auth: "none" });
-    const v = (r.json as { version?: unknown } | undefined)?.version;
+    const d = await detail(run, t.id);
+    expect(d, 200, `R3 ${slug}`);
+    const appHost = (d.json as { appHost?: unknown } | undefined)?.appHost;
+    if (typeof appHost !== "string" || !appHost)
+      throw new ProbeFail(`R3 ${slug}: no appHost for ${t.id}`);
+    const want = bare(appHost).toLowerCase();
+    const got = bare(t.app).toLowerCase();
+    if (got !== want)
+      throw new ProbeFail(
+        `${slug}: REDLINE_TARGETS host ${got.slice(0, 80)} is not R3's appHost ${want.slice(0, 80)} for ${t.id}`,
+      );
+    const r = await run.page(want);
+    const b = r.json as { version?: unknown; installId?: unknown } | undefined;
+    const v = b?.version;
     if (r.status !== 200 || v !== run.c.version)
       throw new ProbeFail(
         `${slug} /healthz: want 200 version ${run.c.version}, got ${r.status === 200 ? `version ${typeof v === "string" ? v.slice(0, 20) : "none"}` : desc(r)}`,
+      );
+    if (b?.installId !== t.id)
+      throw new ProbeFail(
+        `${slug} /healthz: want installId ${t.id}, got ${typeof b?.installId === "string" ? b.installId.slice(0, 40) : "none"}`,
       );
   }
   return run.c.version;
@@ -1792,10 +1899,24 @@ export async function mintCreds(
     await run.done(a.job.id, `R26 ${slug}`);
   else if (first.status !== "done")
     throw new ProbeFail(
-      `R26 ${slug}: job failed (${first.lastErrorCode ?? first.error?.code ?? "no code"})`,
+      `R26 ${slug}: job failed (${first.lastErrorCode ?? first.error?.code ?? "no code"})${failText(first)}`,
     );
   if (!sealed) throw new ProbeFail(`R26 ${slug}: no sealed creds on the job`);
   return recipient.open(sealed);
+}
+
+/**
+ * #995: the job's fail point, as " at <point> (HTTP <status>, <reason>)":
+ * fixed values only, so the public run log can carry it. "" without one.
+ */
+export function failText(j: Pick<Job, "failure">): string {
+  const f = j.failure;
+  if (!f) return "";
+  const parts = [
+    ...(f.status === null ? [] : [`HTTP ${f.status}`]),
+    ...(f.reason === null ? [] : [f.reason]),
+  ];
+  return ` at ${f.at}${parts.length ? ` (${parts.join(", ")})` : ""}`;
 }
 
 /** R26 revoke for one install; then, when the run's PAT is known, it must be 401. */

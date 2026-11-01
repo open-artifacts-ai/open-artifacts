@@ -79,6 +79,13 @@ export type Fault =
   | "p24_old"
   | "p27_no_token_ok"
   | "p34_admin_429"
+  | "p25_limited_cookie"
+  | "p25_limited_google"
+  | "p43_redirect"
+  | "p43_refresh"
+  | "p43_script"
+  | "p43_foreign_return"
+  | "prod_resolves_404"
   | "p37_no_header"
   | "p38_prm_no_scopes"
   | "p44_no_limit"
@@ -421,7 +428,11 @@ export function fakeApi(): FakeApi {
       // The create finishes before the probe's next request.
       if (faults.has("p16_late") && !user)
         while (j.status === "running") advance(j);
-      return ok({ job: jobView(j, false), install: summary(i) }, 202);
+      // As the API: no content host before reserve writes the row (#1012).
+      return ok(
+        { job: jobView(j, false), install: { ...summary(i), contentHost: "" } },
+        202,
+      );
     }
     m = path.match(/^\/installs\/([^/]+)(?:\/([a-z-]+))?$/);
     if (!m) return err(404, "not_found");
@@ -717,12 +728,27 @@ export function fakeApi(): FakeApi {
         const w = Math.floor(clock.t / 60_000);
         const c = (authStarts.get(w) ?? 0) + 1;
         authStarts.set(w, c);
-        if (c > 10 || faults.has("p34_admin_429"))
+        if (faults.has("p34_admin_429"))
           return new Response(null, { status: 429 });
+        const flow = "__Host-oa-admin-flow=f; Path=/; Secure; HttpOnly";
+        // As signin.ts: a limited start goes to the sign-in error screen.
+        if (c > 10)
+          return new Response(null, {
+            status: 303,
+            headers: {
+              location: faults.has("p25_limited_google")
+                ? "https://accounts.google.com/o/oauth2/v2/auth"
+                : "/sign-in?error=rate_limited",
+              ...(faults.has("p25_limited_cookie")
+                ? { "set-cookie": flow }
+                : {}),
+            },
+          });
         return new Response(null, {
           status: 302,
           headers: {
             location: `${CONFIG.broker}/google/authorize?install=i000000admin&ticket=t`,
+            "set-cookie": flow,
           },
         });
       }
@@ -734,22 +760,48 @@ export function fakeApi(): FakeApi {
           headers: { location: "/?error=signin" },
         });
       if (url.pathname === "/oauth/authorize") {
-        if (url.searchParams.get("b") === "1")
+        if (url.searchParams.get("b") !== "1")
+          return new Response("<html>bounce</html>", { status: 200 });
+        if (faults.has("p43_redirect"))
           return new Response(null, {
             status: 302,
             headers: { location: "/auth/start?return=x" },
           });
-        return new Response("<html>bounce</html>", { status: 200 });
+        // As pages.ts signinPage: the request back, its b pairs dropped.
+        const back = url.search
+          .slice(1)
+          .split("&")
+          .filter((kv) => kv !== "" && !/^b(=|$)/.test(kv))
+          .join("&");
+        const ret = faults.has("p43_foreign_return")
+          ? "https://evil.example/cb"
+          : `${url.pathname}?${back}`;
+        const head = [
+          faults.has("p43_refresh")
+            ? '<meta http-equiv="refresh" content="0;url=/auth/start">'
+            : "",
+          faults.has("p43_script") ? "<script>location='/x'</script>" : "",
+        ].join("");
+        return new Response(
+          `<html><head>${head}<link href="/assets/a.css"></head><body><h1>Sign in to continue</h1><a class="button primary" href="/auth/start?return=${encodeURIComponent(ret)}">Sign in with Google</a></body></html>`,
+          { status: 200 },
+        );
       }
       return err(404, "not_found");
     }
     if (
       host === "admin.open-artifacts.app" ||
       host === "api.open-artifacts.app"
-    )
+    ) {
+      // Before the prod deploy the names do not resolve (#1012).
+      if (!faults.has("prod_live") && !faults.has("prod_resolves_404"))
+        throw Object.assign(new TypeError("fetch failed"), {
+          cause: { code: "ENOTFOUND" },
+        });
       return faults.has("prod_live") && /^\/(api\/)?v1\/me$/.test(url.pathname)
         ? err(401, "unauthenticated")
         : new Response(null, { status: 404 });
+    }
     if (host === "auth.open-artifacts-staging.app") {
       if (url.searchParams.get("ticket"))
         return new Response(null, {

@@ -30,9 +30,19 @@ import { readSecretFile, secretFileName } from "./targets.ts";
 
 export interface RawTargets {
   secretsDir: string;
-  a: { installId: string; app: string };
-  b: { installId: string; app: string };
+  a: { name: string; installId: string; app: string };
+  b: { name: string; installId: string; app: string };
 }
+
+/**
+ * Where a side's R26 cred lives: the suite's own path (targets.ts reads
+ * <secretsDir>/REDLINE_<NAME>_<KIND> for the target's name, rl-a not a).
+ */
+export const credFile = (
+  t: RawTargets,
+  k: "a" | "b",
+  kind: "PAT" | "HOOK_KEY",
+): string => join(t.secretsDir, secretFileName(t[k].name, kind));
 
 /** The ids and origins of rl-a and rl-b, and secretsDir, from REDLINE_TARGETS. */
 export function rawTargets(json: string | undefined): RawTargets {
@@ -44,12 +54,19 @@ export function rawTargets(json: string | undefined): RawTargets {
     throw new Error("REDLINE_TARGETS is not JSON");
   }
   const side = (k: "a" | "b") => {
-    const v = raw[k] as { installId?: unknown; app?: unknown } | undefined;
-    if (typeof v?.installId !== "string" || typeof v.app !== "string")
+    const v = raw[k] as
+      | { name?: unknown; installId?: unknown; app?: unknown }
+      | undefined;
+    if (
+      typeof v?.name !== "string" ||
+      v.name === "" ||
+      typeof v.installId !== "string" ||
+      typeof v.app !== "string"
+    )
       throw new Error(
-        `REDLINE_TARGETS: ${k}.installId and ${k}.app are required`,
+        `REDLINE_TARGETS: ${k}.name, ${k}.installId and ${k}.app are required`,
       );
-    return { installId: v.installId, app: new URL(v.app).origin };
+    return { name: v.name, installId: v.installId, app: new URL(v.app).origin };
   };
   if (typeof raw.secretsDir !== "string" || !raw.secretsDir)
     throw new Error("REDLINE_TARGETS: secretsDir is required");
@@ -70,7 +87,7 @@ export function liveRun(
       env,
       onMint: m,
     });
-  const patFile = join(t.secretsDir, secretFileName("a", "PAT"));
+  const patFile = credFile(t, "a", "PAT");
   const io: ProvIo = {
     fetch: boundFetch(globalThis.fetch),
     now: Date.now,
@@ -78,7 +95,7 @@ export function liveRun(
     jwt: src("provisioning"),
     stgInventoryJwt: src("stagingInventory"),
     rlAPat: existsSync(patFile)
-      ? () => readSecretFile(patFile, "REDLINE_RL_A_PAT")
+      ? () => readSecretFile(patFile, secretFileName(t.a.name, "PAT"))
       : undefined,
   };
   return new Run(provConfig(env, t), io);
@@ -123,11 +140,8 @@ export async function bringUp(
       publicKey: r.publicKey,
       open,
     });
-    writeSecretFile(join(t.secretsDir, secretFileName(name, "PAT")), c.pat);
-    writeSecretFile(
-      join(t.secretsDir, secretFileName(name, "HOOK_KEY")),
-      c.hookKey,
-    );
+    writeSecretFile(credFile(t, name, "PAT"), c.pat);
+    writeSecretFile(credFile(t, name, "HOOK_KEY"), c.hookKey);
     out(`${slug}: R26 creds written\n`);
   }
 }
@@ -143,9 +157,9 @@ export async function revokeAll(
     ["a", t.a],
     ["b", t.b],
   ] as const) {
-    const f = join(t.secretsDir, secretFileName(name, "PAT"));
+    const f = credFile(t, name, "PAT");
     const pat = existsSync(f)
-      ? readSecretFile(f, secretFileName(name, "PAT"))
+      ? readSecretFile(f, secretFileName(side.name, "PAT"))
       : undefined;
     try {
       await revokeCreds(run, side.installId, `rl-${name}`, side.app, pat);

@@ -215,6 +215,7 @@ describe("deploy-hosted-platform.yml", () => {
       .map(([k]) => k)
       .sort();
     expect(secrets).toEqual([
+      "ADMIN_IDENTITIES",
       "CLOUDFLARE_API_TOKEN",
       "GOOGLE_CLIENT_SECRET",
       "GOOGLE_DIRECTORY_CLIENT_SECRET",
@@ -228,6 +229,8 @@ describe("deploy-hosted-platform.yml", () => {
       "${{ secrets.CLOUDFLARE_API_TOKEN }}",
     );
     expect(env.VERIFY_ONLY).toBe("${{ inputs.verify_only && '1' || '' }}");
+    // #1007: the admin allowlist is the Environment's secret, never committed.
+    expect(env.ADMIN_IDENTITIES).toBe("${{ secrets.ADMIN_IDENTITIES }}");
     expect(named("Deploy and verify").run).not.toContain("secrets.");
     expect(named("Deploy and verify").run).toContain(
       'bash scripts/ops/deploy-hosted-platform.sh "$DEPLOY_ENV" "$t"',

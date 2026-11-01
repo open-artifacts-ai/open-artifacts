@@ -29,6 +29,9 @@ const DCLIENT =
   "206295999771-6cr3mbfc7g2ejnvdoqhlf2v8v6sdm023.apps.googleusercontent.com";
 const SECRET = "google-secret-SHOULD-NEVER-APPEAR";
 const DSECRET = "directory-secret-SHOULD-NEVER-APPEAR";
+// The admin allowlist (#1007): two entries, marked so a leak shows.
+const IDS =
+  "never-appear-a@example.com:111111,never-appear-b@example.com:222222";
 
 // pnpm: `exec wrangler deploy` marks the app's Worker deployed (its next
 // settings become live); `exec wrangler secret put NAME` records NAME and only
@@ -93,6 +96,13 @@ case "$path" in
     else echo '{"success":false,"errors":[{"code":10009}]}'; [ -z "$wcode" ] || printf '\\n404'; fi
     exit 0 ;;
   secrets_store/stores/*/secrets\\?*) [ -f "$STATE/fail-store" ] && { bad; exit 0; }; ok "$(cat "$STATE/store-secrets.json" 2>/dev/null || echo '[]')"; exit 0 ;;
+  workers/scripts/*/secrets/*) w="\${path#workers/scripts/}"; w="\${w%%/*}"; n="\${path##*/}"
+    if [ "$m" = DELETE ] && [ ! -f "$STATE/fail-delete" ] && [ -f "$STATE/$w.secrets" ] && grep -qx "$n" "$STATE/$w.secrets"; then
+      grep -vx "$n" "$STATE/$w.secrets" > "$STATE/s.new" || true; mv "$STATE/s.new" "$STATE/$w.secrets"
+      [ ! -f "$STATE/$w.settings.json" ] || { jq --arg n "$n" '.result.bindings |= map(select(.name != $n))' "$STATE/$w.settings.json" > "$STATE/b.new"; mv "$STATE/b.new" "$STATE/$w.settings.json"; }
+      ok 'null'
+    else echo '{"success":false,"errors":[{"code":10056}]}'; fi
+    exit 0 ;;
   workers/scripts/*/content/v2) w="\${path#workers/scripts/}"; w="\${w%%/*}"
     if [ -f "$STATE/fail-content" ]; then echo '{"success":false,"errors":[{"code":10000}]}'; [ -z "$wcode" ] || printf '\\n403'
     else cat "$STATE/$w.content" 2>/dev/null || echo 'export default {};'; [ -z "$wcode" ] || printf '\\n200'; fi
@@ -327,6 +337,7 @@ const provisioningBindings = (p = "p", env: "staging" | "prod" = "prod") => [
   ...varsOf("provisioning", env),
   { type: "secret_text", name: "ADMIN_SESSION_KEY" },
   { type: "secret_text", name: "ADMIN_BROKER_KEY" },
+  { type: "secret_text", name: "ADMIN_IDENTITIES" },
 ];
 NEXT["oa-p-provisioner"] = provisionerSettings();
 NEXT["oa-p-provisioning"] = settings(provisioningBindings());
@@ -345,6 +356,7 @@ const ENV = {
   DIRECTORY_REGISTRY_ID: DIRREG,
   GOOGLE_DIRECTORY_CLIENT_ID: DCLIENT,
   GOOGLE_DIRECTORY_CLIENT_SECRET: DSECRET,
+  ADMIN_IDENTITIES: IDS,
   HOSTS_KV_ID: HOSTS,
   PLATFORM_DB_ID: DB,
   MAIN_MIGRATION_LOCK: join(root, "apps/platform-db/migration-lock.json"),
@@ -1396,7 +1408,11 @@ describe("deploy-hosted-platform.sh", () => {
       [`kv-${REG}-${KEY}`]: entry(),
     };
     const liveSecrets = {
-      "oa-p-provisioning": ["ADMIN_BROKER_KEY", "ADMIN_SESSION_KEY"],
+      "oa-p-provisioning": [
+        "ADMIN_BROKER_KEY",
+        "ADMIN_IDENTITIES",
+        "ADMIN_SESSION_KEY",
+      ],
     };
     it("first run: builds the SPA, creates the OAuth KV, deploys, makes both keys and the admin entry, reads back", () => {
       const r = setup({ exists: brokers }).run("provisioning");
@@ -1445,7 +1461,11 @@ describe("deploy-hosted-platform.sh", () => {
       });
       expect(Object.keys(body.keys[0])).toEqual(["kid", "x"]);
       expect(r.writes).toHaveLength(2);
-      expect(puts(r.log)).toEqual(["ADMIN_SESSION_KEY", "ADMIN_BROKER_KEY"]);
+      expect(puts(r.log)).toEqual([
+        "ADMIN_SESSION_KEY",
+        "ADMIN_BROKER_KEY",
+        "ADMIN_IDENTITIES",
+      ]);
       expect(
         r.log.indexOf(put) <
           r.log.findIndex(
@@ -1461,7 +1481,7 @@ describe("deploy-hosted-platform.sh", () => {
       expect(r.out).toContain("prod provisioning: deployed and verified");
       clean(r);
     });
-    it("a rerun writes nothing; a missing entry gets a new key, entry first", () => {
+    it("a rerun writes nothing but the admin list; a missing entry gets a new key, entry first", () => {
       const again = setup({
         exists: brokers,
         files: live,
@@ -1470,7 +1490,7 @@ describe("deploy-hosted-platform.sh", () => {
       expect(again.err).toBe("");
       expect(again.code).toBe(0);
       expect(again.writes).toEqual([]);
-      expect(puts(again.log)).toEqual([]);
+      expect(puts(again.log)).toEqual(["ADMIN_IDENTITIES"]);
       const { [`kv-${REG}-${KEY}`]: _, ...noEntry } = live;
       const r = setup({
         exists: brokers,
@@ -1481,7 +1501,7 @@ describe("deploy-hosted-platform.sh", () => {
       expect(r.writes.map((w) => w.split(" ").slice(0, 3).join(" "))).toEqual([
         `WRITE PUT /storage/kv/namespaces/${REG}/values/${KEY}`,
       ]);
-      expect(puts(r.log)).toEqual(["ADMIN_BROKER_KEY"]);
+      expect(puts(r.log)).toEqual(["ADMIN_BROKER_KEY", "ADMIN_IDENTITIES"]);
     });
     it("a failed ADMIN_BROKER_KEY put deletes the new entry, so the next run makes both again", () => {
       const { [`kv-${REG}-${KEY}`]: _, ...noEntry } = live;
@@ -1500,7 +1520,10 @@ describe("deploy-hosted-platform.sh", () => {
       rmSync(join(s.state, "fail-put-ADMIN_BROKER_KEY"));
       const again = s.run("provisioning");
       expect(again.code, again.err).toBe(0);
-      expect(puts(again.log).slice(-1)).toEqual(["ADMIN_BROKER_KEY"]);
+      expect(puts(again.log).slice(-2)).toEqual([
+        "ADMIN_BROKER_KEY",
+        "ADMIN_IDENTITIES",
+      ]);
     });
     it("refuses until the provisioner and the auth broker exist", () => {
       const r = setup({ exists: ["oa-p-auth-broker"] }).run("provisioning");
@@ -1591,8 +1614,13 @@ describe("deploy-hosted-platform.sh", () => {
           "provisioning vars: got",
         ],
         [
-          "identities",
-          { next: swap("ADMIN_IDENTITIES", { text: "a@b.c:1" }) },
+          "identities as a var (#1007: a secret only)",
+          {
+            next: settings([
+              ...b,
+              { type: "plain_text", name: "ADMIN_IDENTITIES", text: "a@b.c:1" },
+            ]),
+          },
           "provisioning vars: got",
         ],
         [
@@ -1674,8 +1702,10 @@ describe("deploy-hosted-platform.sh", () => {
         join(root, "apps/provisioning/wrangler.jsonc"),
         "utf8",
       );
+      // Prod's (staging's is test-users since #1012).
       const at = PV.lastIndexOf('"SIGNUPS_ENABLED": "false",');
-      expect(at).toBeGreaterThan(PV.indexOf('"SIGNUPS_ENABLED": "false",'));
+      expect(at).toBeGreaterThan(PV.indexOf('"prod": {'));
+      expect(PV.indexOf('"prod": {')).toBeGreaterThan(0);
       const prodVar = (v: string) =>
         PV.slice(0, at) +
         v +
@@ -1724,6 +1754,115 @@ describe("deploy-hosted-platform.sh", () => {
         ).toEqual([]);
       }
     });
+    // #1007: the admin allowlist is the deploy Environment's secret.
+    describe("ADMIN_IDENTITIES", () => {
+      const leaks = (r: { out: string; err: string; log: string[] }) =>
+        [r.out, r.err, ...r.log].join("\n");
+      it.each(["staging", "prod"])(
+        "%s: refuses without it, before any build, write or deploy",
+        (envName) => {
+          for (const v of ["", " "]) {
+            const r = setup({ exists: brokers }).run(
+              "provisioning",
+              { ADMIN_IDENTITIES: v },
+              envName,
+            );
+            expect(r.code, JSON.stringify(v)).toBe(2);
+            expect(r.err).toMatch(
+              /ADMIN_IDENTITIES( is required for provisioning|: an entry is not email:sub)/,
+            );
+            expect(r.writes).toEqual([]);
+            expect(puts(r.log)).toEqual([]);
+            expect(r.log.filter((l) => /^(pnpm|wrapper) /.test(l))).toEqual([]);
+          }
+        },
+      );
+      it.each([
+        ["no sub", "never-appear-a@example.com"],
+        ["no email", ":111111"],
+        [
+          "a space",
+          "never-appear-a@example.com:1, never-appear-b@example.com:2",
+        ],
+        ["an empty entry", "never-appear-a@example.com:1,,"],
+        ["two colons", "never-appear-a@example.com:1:2"],
+        ["no at", "never-appear-a.example.com:1"],
+        ["a second line", "never-appear-a@example.com:1\nnever-appear-b@x.y:2"],
+        [
+          "a line after a comma",
+          "never-appear-a@example.com:1,\nnever-appear-b@x.y:2",
+        ],
+        ["a carriage return", "never-appear-a@example.com:1\r"],
+      ])("refuses a list with %s, never printing it", (_l, v) => {
+        const r = setup({ exists: brokers }).run("provisioning", {
+          ADMIN_IDENTITIES: v,
+        });
+        expect(r.code).toBe(2);
+        expect(r.err).toContain("ADMIN_IDENTITIES");
+        expect(leaks(r)).not.toContain("never-appear");
+        expect(r.writes).toEqual([]);
+        expect(puts(r.log)).toEqual([]);
+      });
+      it("is put on stdin on every deploy: never in argv, output or logs", () => {
+        const r = setup({
+          exists: brokers,
+          files: live,
+          secrets: liveSecrets,
+        }).run("provisioning");
+        expect(r.code, r.err).toBe(0);
+        expect(r.log).toContain(`stdin-len ADMIN_IDENTITIES ${IDS.length}`);
+        expect(leaks(r)).not.toContain("never-appear");
+        expect(leaks(r)).not.toContain("111111");
+      });
+      it("refuses a tag that still commits ADMIN_IDENTITIES as a var, before any deploy", () => {
+        const PV = readFileSync(
+          join(root, "apps/provisioning/wrangler.jsonc"),
+          "utf8",
+        );
+        const old = PV.replaceAll(
+          '"OA_ENV": "',
+          '"ADMIN_IDENTITIES": "", "OA_ENV": "',
+        );
+        expect(old).not.toBe(PV);
+        for (const envName of ["staging", "prod"]) {
+          const r = setup({
+            exists: brokers,
+            configs: { provisioning: old },
+          }).run("provisioning", {}, envName);
+          expect(r.code, envName).toBe(1);
+          expect(r.err).toContain("this tag commits ADMIN_IDENTITIES as a var");
+          expect(r.writes).toEqual([]);
+          expect(r.log.filter((l) => /^(pnpm|wrapper) /.test(l))).toEqual([]);
+        }
+      });
+      it("the read-back checks the secret by name only, and refuses when it is missing", () => {
+        const script = readFileSync(SCRIPT, "utf8");
+        // No call reads a secret's value; the list is only ever written.
+        expect(script).not.toMatch(/secrets\/ADMIN_IDENTITIES/);
+        expect(script.match(/\$ADMIN_IDENTITIES/g)).toHaveLength(3);
+        const failed = setup({
+          exists: brokers,
+          files: { ...live, "fail-put-ADMIN_IDENTITIES": "" },
+          secrets: {
+            "oa-p-provisioning": ["ADMIN_BROKER_KEY", "ADMIN_SESSION_KEY"],
+          },
+        }).run("provisioning");
+        expect(failed.code).toBe(1);
+        expect(failed.err).toContain("putting ADMIN_IDENTITIES failed");
+        const unset = setup({
+          exists: [...brokers, "oa-p-provisioning"],
+          files: live,
+          secrets: {
+            "oa-p-provisioning": ["ADMIN_BROKER_KEY", "ADMIN_SESSION_KEY"],
+          },
+        }).run("provisioning", { VERIFY_ONLY: "1" });
+        expect(unset.code).toBe(1);
+        expect(unset.err).toContain(
+          "secrets are 'ADMIN_BROKER_KEY ADMIN_SESSION_KEY '",
+        );
+        expect(leaks(unset)).not.toContain("never-appear");
+      });
+    });
     it("refuses a secret it doesn't make", () => {
       const extra = setup({
         exists: brokers,
@@ -1734,7 +1873,7 @@ describe("deploy-hosted-platform.sh", () => {
       }).run("provisioning");
       expect(extra.code).toBe(1);
       expect(extra.err).toContain(
-        "secrets are 'ADMIN_BROKER_KEY ADMIN_SESSION_KEY X '",
+        "secrets are 'ADMIN_BROKER_KEY ADMIN_IDENTITIES ADMIN_SESSION_KEY X '",
       );
     });
     it("the read-back expects every committed rate limit, W5b's included", () => {
@@ -1846,13 +1985,27 @@ describe("deploy-hosted-platform.sh", () => {
       config: string,
       env: Env,
       next: string,
-      opts: { secrets?: Record<string, string[]> } = {},
+      opts: {
+        secrets?: Record<string, string[]>;
+        verifyOnly?: boolean;
+        failDelete?: boolean;
+      } = {},
     ) => {
       const w = `oa-${env[0]}-inventory`;
-      const s = setup({ next: { [w]: next }, secrets: opts.secrets });
+      const s = setup({
+        next: { [w]: next },
+        secrets: opts.secrets,
+        // Verify only reads the live Worker: it already holds `next`.
+        exists: opts.verifyOnly ? [w] : [],
+        files: {
+          ...(opts.verifyOnly ? { [`${w}.settings.json`]: next } : {}),
+          ...(opts.failDelete ? { "fail-delete": "" } : {}),
+        },
+      });
       const r = s.sb.run(["bash", tree(config), env, "inventory"], {
         env: {
           ...ENV,
+          VERIFY_ONLY: opts.verifyOnly ? "1" : "",
           GITHUB_REPOSITORY: varsFor(config, env).OIDC_REPOSITORY ?? "o/r",
           STATE: s.state,
           DEPLOY_WRAPPER: wrapperStub(s.sb.dir),
@@ -1862,6 +2015,7 @@ describe("deploy-hosted-platform.sh", () => {
       return {
         ...r,
         deployedIt: s.sb.log().some((l) => l.startsWith("wrapper inventory")),
+        writes: s.sb.log().filter((l) => l.startsWith("WRITE ")),
       };
     };
 
@@ -2054,20 +2208,104 @@ describe("deploy-hosted-platform.sh", () => {
       }
     });
 
-    it("refuses INVENTORY_KEY like any other secret, as a binding or a listed secret", () => {
+    it("verify only refuses INVENTORY_KEY like any other secret, as a binding or a listed secret", () => {
       const VARS = varsFor(W8, "prod");
       const asBinding = go(
         W8,
         "prod",
         deployed(VARS, [{ type: "secret_text", name: "INVENTORY_KEY" }]),
+        { verifyOnly: true },
       );
       expect(asBinding.code).toBe(1);
       expect(asBinding.err).toContain("has secret bindings (INVENTORY_KEY)");
       const listed = go(W8, "prod", deployed(VARS), {
         secrets: { "oa-p-inventory": ["INVENTORY_KEY"] },
+        verifyOnly: true,
       });
       expect(listed.code).toBe(1);
       expect(listed.err).toContain("has secrets 'INVENTORY_KEY '");
+      expect(listed.writes).toEqual([]);
+    });
+
+    // Run 41267716910: staging's inventory still had the retired key.
+    it("staging: a deploy deletes the retired INVENTORY_KEY, then verifies", () => {
+      const r = go(
+        W8,
+        "staging",
+        deployed(varsFor(W8, "staging"), [
+          { type: "secret_text", name: "INVENTORY_KEY" },
+        ]),
+        { secrets: { "oa-s-inventory": ["INVENTORY_KEY"] } },
+      );
+      expect(r.err).toBe("");
+      expect(r.code).toBe(0);
+      expect(r.writes).toEqual([
+        "WRITE DELETE /workers/scripts/oa-s-inventory/secrets/INVENTORY_KEY ",
+      ]);
+      expect(r.out).toContain("oa-s-inventory: retired INVENTORY_KEY deleted");
+      expect(r.out).toContain("staging inventory: deployed and verified");
+    });
+
+    it("prod: a deploy never deletes a secret; INVENTORY_KEY still stops it (#968)", () => {
+      const r = go(W8, "prod", deployed(varsFor(W8, "prod")), {
+        secrets: { "oa-p-inventory": ["INVENTORY_KEY"] },
+      });
+      expect(r.code).toBe(1);
+      expect(r.writes).toEqual([]);
+      expect(r.err).toContain("has secrets 'INVENTORY_KEY '");
+    });
+
+    it("staging deletes only INVENTORY_KEY: any other secret still stops it", () => {
+      const r = go(W8, "staging", deployed(varsFor(W8, "staging")), {
+        secrets: { "oa-s-inventory": ["INVENTORY_KEY", "LEAK"] },
+      });
+      expect(r.code).toBe(1);
+      expect(r.writes).toEqual([
+        "WRITE DELETE /workers/scripts/oa-s-inventory/secrets/INVENTORY_KEY ",
+      ]);
+      expect(r.err).toContain("has secrets 'LEAK '");
+    });
+
+    it("a failed delete stops the deploy", () => {
+      // The listing names it but the delete is refused: no "deleted" line.
+      const r = go(W8, "staging", deployed(varsFor(W8, "staging")), {
+        secrets: { "oa-s-inventory": ["INVENTORY_KEY"] },
+        failDelete: true,
+      });
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("delete oa-s-inventory INVENTORY_KEY failed");
+      expect(r.out).not.toContain("retired INVENTORY_KEY deleted");
     });
   });
+});
+
+// The wrapper runs `pnpm exec wrangler` in apps/<app>, so every app the
+// script deploys must have wrangler as its own dependency: run 41262364898
+// stopped at inventory on "Command "wrangler" not found".
+describe("every deployed app has its own wrangler", () => {
+  const script = readFileSync(
+    join(root, "scripts/ops/deploy-hosted-platform.sh"),
+    "utf8",
+  );
+  const apps = [
+    ...new Set([...script.matchAll(/\bdeploy ([a-z-]+)$/gm)].map((m) => m[1])),
+  ];
+  it("finds the deployed apps", () => {
+    expect(apps).toEqual(
+      expect.arrayContaining(["inventory", "provisioner", "scheduler"]),
+    );
+  });
+  for (const app of apps) {
+    it(`apps/${app} depends on wrangler`, () => {
+      const pkg = JSON.parse(
+        readFileSync(join(root, "apps", app as string, "package.json"), "utf8"),
+      ) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      expect(
+        pkg.devDependencies?.wrangler ?? pkg.dependencies?.wrangler,
+      ).toBeTruthy();
+    });
+  }
 });

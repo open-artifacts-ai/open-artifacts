@@ -129,6 +129,24 @@ export function jobStepsFor(
 }
 
 /**
+ * Where a job's last failed attempt stopped (#995, jobs.fail_at): a fixed
+ * point, with the HTTP status of the failing call in jobs.fail_status. Never
+ * error text. redline_creds names each of its calls.
+ */
+export const JOB_FAIL_POINTS = [
+  "token_check",
+  "hook_key_put",
+  "hook_key_live",
+  "test_session",
+  "list_tokens",
+  "mint_token",
+  "new_token_check",
+  "revoke_token",
+  "seal",
+] as const;
+export type JobFailPoint = (typeof JOB_FAIL_POINTS)[number];
+
+/**
  * The scheduler's alert keys (5.8). C2 ships the condition SQL per key; the
  * scheduler and R27 run the same queries.
  */

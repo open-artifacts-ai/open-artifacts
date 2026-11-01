@@ -1,10 +1,12 @@
 import { z } from "zod";
+import { TEST_HOOK_REFUSALS } from "../hosted/test-hooks.js";
 import {
   ALERT_KEYS,
   AuthProviderSchema,
   EnvSchema,
   HealthSchema,
   InstallStateSchema,
+  JobFailPointSchema,
   JobKindSchema,
   JobStatusSchema,
   PrincipalKindSchema,
@@ -225,6 +227,19 @@ export const JobSchema = z.object({
   stepIndex: z.number(),
   attempt: z.number(),
   lastErrorCode: JobErrorCodeSchema.nullable(),
+  /**
+   * #995: where the last failed attempt stopped, the failing call's HTTP
+   * status and a test hook's refusal reason (each null without one); null
+   * when no point was recorded. Never text.
+   */
+  failure: z
+    .object({
+      at: JobFailPointSchema,
+      status: z.number().int().min(100).max(599).nullable(),
+      reason: z.enum(TEST_HOOK_REFUSALS).nullable(),
+    })
+    .nullable()
+    .optional(),
   retryAt: z.number().nullable(),
   actor: z.object({
     kind: PrincipalKindSchema,

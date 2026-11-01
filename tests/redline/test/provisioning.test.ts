@@ -1,3 +1,4 @@
+import { webcrypto } from "node:crypto";
 import {
   mkdtempSync,
   readFileSync,
@@ -17,20 +18,29 @@ import {
   REFRESH_MARGIN_S,
 } from "../src/oidc.ts";
 import {
+  ADMIN_FLOW_COOKIE,
   bringUpgrade,
+  failText,
   mintCreds,
   type Outcome,
   PROBES,
   ProbeFail,
   type ProbeId,
+  prodLive,
   provConfig,
   Run,
   revokeCreds,
   stagedVersion,
+  statusCounts,
 } from "../src/provisioning.ts";
-import { rawTargets } from "../src/provisioning-live.ts";
+import { credFile, rawTargets } from "../src/provisioning-live.ts";
+import { PRE_PROD_NA, PRE_PROD_REASON } from "../src/report.ts";
 import { newRecipient, openSealed, parseCreds } from "../src/seal.ts";
-import { parseProd, prodInventoryBearer } from "../src/targets.ts";
+import {
+  parseProd,
+  parseTargets,
+  prodInventoryBearer,
+} from "../src/targets.ts";
 import { sealTo } from "./provisioner-seal.ts";
 import {
   API_JWT,
@@ -111,6 +121,19 @@ describe("the probes on a conforming staging fake", () => {
       P35: "unproven-live",
     });
     expect(levels).toEqual(expected);
+    // #1012: the gate's frozen list is exactly the probes that give the
+    // pre-prod reason.
+    const preProd = [...out]
+      .filter(
+        ([, v]) =>
+          typeof v === "object" &&
+          "reason" in v &&
+          v.reason === PRE_PROD_REASON,
+      )
+      .map(([k]) => k);
+    expect(preProd.filter((k) => level(out.get(k)) !== "pass")).toEqual([
+      ...PRE_PROD_NA,
+    ]);
   });
 
   it("prod probes run once prod admin answers 401", async () => {
@@ -153,6 +176,21 @@ describe("each probe fails on the behaviour it guards", () => {
     ["p15_mode_early", "P15", /inventory mode serving before route/],
     ["p27_no_token_ok", "P27", /P27 no token: want 404/],
     ["p34_admin_429", "P34", /P34 \/auth\/start: status 429/],
+    [
+      "p25_limited_cookie",
+      "P25",
+      /a limited \/auth\/start set the flow cookie/,
+    ],
+    ["p25_limited_google", "P25", /no 303 to \/sign-in\?error=rate_limited/],
+    ["p43_redirect", "P43", /P43 b=1: status 302/],
+    ["p43_refresh", "P43", /refreshes itself/],
+    ["p43_script", "P43", /carries a script/],
+    [
+      "p43_foreign_return",
+      "P43",
+      /no button to \/auth\/start for this request/,
+    ],
+    ["prod_resolves_404", "P7", /resolves but is status 404/],
     ["p37_no_header", "P37", /WWW-Authenticate lacks/],
     [
       "p38_prm_no_scopes",
@@ -319,6 +357,76 @@ describe("bring-up and revoke (R5, R26)", () => {
     );
   });
 
+  /** The fake's io with one JSON response rewritten (R3 or /healthz). */
+  const rewrite = (
+    f: FakeApi,
+    match: (u: URL) => boolean,
+    edit: (b: Record<string, unknown>) => void,
+  ) => ({
+    ...f.io,
+    fetch: (async (u: string | URL | Request, init?: RequestInit) => {
+      const r = await f.io.fetch(u, init);
+      const url = new URL(u instanceof Request ? u.url : String(u));
+      if (!match(url) || r.status !== 200) return r;
+      const b = (await r.json()) as Record<string, unknown>;
+      edit(b);
+      return Response.json(b, { status: 200 });
+    }) as typeof fetch,
+  });
+
+  it("the staged version reads /healthz on R3's appHost and refuses a mismatched variable host", async () => {
+    const f = fakeApi();
+    await bringUpgrade(new Run(CONFIG, f.io), CONFIG.rlA.id, "rl-a");
+    // Happy path: both hosts match R3 and name their install ids.
+    expect(await stagedVersion(new Run(CONFIG, f.io))).toBe("0.82.0");
+    // rl-b's variable pointing at rl-a's host is refused before any /healthz.
+    const swapped = new Run(
+      { ...CONFIG, rlB: { ...CONFIG.rlB, app: CONFIG.rlA.app } },
+      f.io,
+    );
+    const before = f.log.length;
+    await expect(stagedVersion(swapped)).rejects.toThrow(
+      /rl-b: REDLINE_TARGETS host rl-a\.open-artifacts-staging\.app is not R3's appHost rl-b\.open-artifacts-staging\.app for irlbbbbbbbbb/,
+    );
+    expect(
+      f.log
+        .slice(before)
+        .filter((l) => l.includes("rl-b.") && l.endsWith("/healthz")),
+    ).toEqual([]);
+  });
+
+  it("the staged version refuses a /healthz from another installId", async () => {
+    const f = fakeApi();
+    await bringUpgrade(new Run(CONFIG, f.io), CONFIG.rlA.id, "rl-a");
+    const io = rewrite(
+      f,
+      (u) =>
+        u.hostname === "rl-b.open-artifacts-staging.app" &&
+        u.pathname === "/healthz",
+      (b) => {
+        b.installId = CONFIG.rlA.id;
+      },
+    );
+    await expect(stagedVersion(new Run(CONFIG, io))).rejects.toThrow(
+      /rl-b \/healthz: want installId irlbbbbbbbbb, got irlaaaaaaaaa/,
+    );
+  });
+
+  it("the staged version refuses an install R3 gives no appHost", async () => {
+    const f = fakeApi();
+    await bringUpgrade(new Run(CONFIG, f.io), CONFIG.rlA.id, "rl-a");
+    const io = rewrite(
+      f,
+      (u) => u.pathname.endsWith(`/v1/installs/${CONFIG.rlA.id}`),
+      (b) => {
+        delete b.appHost;
+      },
+    );
+    await expect(stagedVersion(new Run(CONFIG, io))).rejects.toThrow(
+      /R3 rl-a: no appHost for irlaaaaaaaaa/,
+    );
+  });
+
   it("R26 mint opens the sealed creds; revoke makes the PAT 401", async () => {
     const f = fakeApi();
     const run = new Run(CONFIG, f.io);
@@ -332,6 +440,45 @@ describe("bring-up and revoke (R5, R26)", () => {
     expect([...f.pats.keys()]).toEqual([c.pat]);
     await revokeCreds(run, CONFIG.rlA.id, "rl-a", CONFIG.rlA.app, c.pat);
     expect(f.pats.get(c.pat)?.revoked).toBe(true);
+  });
+
+  it("R26 prints the job's fail point (#995): fixed values only", async () => {
+    const f = fakeApi();
+    const io = {
+      ...f.io,
+      fetch: (async (u: string | URL | Request, init?: RequestInit) => {
+        const r = await f.io.fetch(u, init);
+        if (!String(u).includes("/v1/jobs/")) return r;
+        const j = (await r.json()) as Record<string, unknown>;
+        return Response.json({
+          ...j,
+          status: "failed",
+          lastErrorCode: "internal",
+          failure: { at: "test_session", status: 404, reason: "user_refused" },
+        });
+      }) as typeof fetch,
+    };
+    const run = new Run(CONFIG, io);
+    const r = await newRecipient();
+    await expect(
+      mintCreds(run, CONFIG.rlA.id, "rl-a", {
+        publicKey: r.publicKey,
+        open: async (s) => parseCreds(await openSealed(r, s)),
+      }),
+    ).rejects.toThrow(
+      "R26 rl-a: job failed (internal) at test_session (HTTP 404, user_refused)",
+    );
+  });
+
+  it("failText: point, then status and reason when present; nothing without a point", () => {
+    expect(failText({ failure: null })).toBe("");
+    expect(failText({})).toBe("");
+    expect(
+      failText({ failure: { at: "seal", status: null, reason: null } }),
+    ).toBe(" at seal");
+    expect(
+      failText({ failure: { at: "mint_token", status: 503, reason: null } }),
+    ).toBe(" at mint_token (HTTP 503)");
   });
 
   it("R26 mint keeps the sealed creds from a read while the job still runs", async () => {
@@ -408,6 +555,22 @@ describe("sealed delivery (oa-seal-v1)", () => {
     const other = await newRecipient();
     await expect(openSealed(other, s)).rejects.toThrow();
     await expect(openSealed(r, `x${s}`)).rejects.toThrow(/not an oa-seal-v1/);
+  });
+
+  it("the recipient's private key cannot be exported; seal/unseal still round-trips", async () => {
+    const r = await newRecipient();
+    expect(r.pair.privateKey.extractable).toBe(false);
+    await expect(
+      webcrypto.subtle.exportKey("pkcs8", r.pair.privateKey),
+    ).rejects.toThrow();
+    await expect(
+      webcrypto.subtle.exportKey("jwk", r.pair.privateKey),
+    ).rejects.toThrow();
+    const s = await sealTo(
+      r.publicKey,
+      '{"pat":"oa_pat_y","hookKey":"' + "k".repeat(43) + '"}',
+    );
+    expect(parseCreds(await openSealed(r, s)).pat).toBe("oa_pat_y");
   });
 
   it("parseCreds refuses a non-PAT or a short hook key", () => {
@@ -542,8 +705,8 @@ describe("config", () => {
   const t = rawTargets(
     JSON.stringify({
       secretsDir: "/x",
-      a: { installId: CONFIG.rlA.id, app: CONFIG.rlA.app },
-      b: { installId: CONFIG.rlB.id, app: CONFIG.rlB.app },
+      a: { name: "rl-a", installId: CONFIG.rlA.id, app: CONFIG.rlA.app },
+      b: { name: "rl-b", installId: CONFIG.rlB.id, app: CONFIG.rlB.app },
     }),
   );
   it("takes the tag as the version and defaults the staging hosts", () => {
@@ -583,6 +746,97 @@ describe("config", () => {
       ),
     ).toThrow(/bare https origin/);
     expect(() => rawTargets("{}")).toThrow(/secretsDir/);
+  });
+  // #1012: bring-up wrote REDLINE_A_*; the suite reads REDLINE_RL_A_*.
+  it("R26 creds go exactly where the suite reads them", () => {
+    const side = (n: string, id: string, app: string) => ({
+      name: n,
+      installId: id,
+      app,
+      content: app.replace(".app", ".page"),
+      testDomain: `guests.${n}.fyi`,
+    });
+    const dir = mkdtempSync(join(tmpdir(), "oa-rl-creds-"));
+    const json = JSON.stringify({
+      secretsDir: dir,
+      a: side("rl-a", CONFIG.rlA.id, CONFIG.rlA.app),
+      b: side("rl-b", CONFIG.rlB.id, CONFIG.rlB.app),
+    });
+    const raw = rawTargets(json);
+    // Written where bring-up writes them, then read by the suite's loader.
+    for (const k of ["a", "b"] as const)
+      for (const kind of ["PAT", "HOOK_KEY"] as const)
+        writeFileSync(
+          credFile(raw, k, kind),
+          `v-${k}-${kind}-`.padEnd(40, "x"),
+          {
+            mode: 0o600,
+          },
+        );
+    const suite = parseTargets({ REDLINE_TARGETS: json });
+    for (const k of ["a", "b"] as const) {
+      expect(credFile(raw, k, "HOOK_KEY")).toBe(suite[k].hookKeyFile);
+      expect(credFile(raw, k, "PAT")).toBe(suite[k].patFile);
+    }
+    expect(credFile(raw, "a", "HOOK_KEY")).toBe(
+      join(dir, "REDLINE_RL_A_HOOK_KEY"),
+    );
+    expect(() =>
+      rawTargets(
+        JSON.stringify({
+          secretsDir: "/x",
+          a: { installId: CONFIG.rlA.id, app: CONFIG.rlA.app },
+          b: side("rl-b", CONFIG.rlB.id, CONFIG.rlB.app),
+        }),
+      ),
+    ).toThrow(/a\.name/);
+  });
+  // #1012: before the prod platform deploy its admin host has no DNS record.
+  it("prodLive: only an unresolved prod host is not live; a 401 is live; anything else fails", async () => {
+    const thrown = (code: string) => async () => {
+      throw Object.assign(new TypeError("fetch failed"), { cause: { code } });
+    };
+    const io = fakeApi().io;
+    const at = (fetch: typeof io.fetch) => new Run(CONFIG, { ...io, fetch });
+    expect(await prodLive(at(thrown("ENOTFOUND") as typeof io.fetch))).toBe(
+      false,
+    );
+    await expect(
+      prodLive(at(thrown("ECONNRESET") as typeof io.fetch)),
+    ).rejects.toThrow("fetch failed");
+    expect(
+      await prodLive(
+        at(
+          (async () => new Response("{}", { status: 401 })) as typeof io.fetch,
+        ),
+      ),
+    ).toBe(true);
+    for (const status of [404, 500, 503])
+      await expect(
+        prodLive(
+          at((async () => new Response("{}", { status })) as typeof io.fetch),
+        ),
+      ).rejects.toThrow(`resolves but is status ${status}`);
+  });
+  it("statusCounts: statuses and fixed codes only, most first", () => {
+    const r = (status: number, json?: unknown) => ({ status, json });
+    expect(
+      statusCounts([
+        r(429, { error: { code: "rate_limited" } }),
+        r(404),
+        r(429, { error: { code: "rate_limited" } }),
+        r(500, { error: { code: "Has Spaces <b>" } }),
+      ]),
+    ).toBe("429 rate_limited x2, 404 x1, 500 x1");
+  });
+  it("the flow cookie name is the app's own", () => {
+    const flow = readFileSync(
+      join(import.meta.dirname, "../../../apps/provisioning/src/auth/flow.ts"),
+      "utf8",
+    );
+    expect(flow).toContain(
+      `export const FLOW_COOKIE = "${ADMIN_FLOW_COOKIE}";`,
+    );
   });
   it("slugs and request ids fit the API's rules", () => {
     const run = new Run({ ...CONFIG, runId: "123456789012-3" }, fakeApi().io);

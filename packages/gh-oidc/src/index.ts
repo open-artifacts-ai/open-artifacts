@@ -89,7 +89,7 @@ export type Claims = {
   runner_environment: "github-hosted";
 };
 
-/** Any failure; callers answer 401 and never echo `code` to the client. */
+/** Any failure; callers answer one fixed refusal (inventory: its plain 404) and never echo `code`. */
 export class OidcError extends Error {
   constructor(readonly code: string) {
     super(`oidc: ${code}`);

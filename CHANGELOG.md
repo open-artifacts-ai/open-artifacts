@@ -1,5 +1,83 @@
 # Changelog
 
+## [0.90.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.1...v0.90.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **provisioning:** identity refusals go to /no-access, which shows the verified account id ([#1024](https://github.com/open-artifacts-ai/open-artifacts/issues/1024)) ([#1025](https://github.com/open-artifacts-ai/open-artifacts/issues/1025)) ([b5178bd](https://github.com/open-artifacts-ai/open-artifacts/commit/b5178bde290ae2cb1221e22cd41574147cf922d6))
+* **redline:** probes match the product and the amended design; pre-prod gate rule ([#1012](https://github.com/open-artifacts-ai/open-artifacts/issues/1012)) ([#1021](https://github.com/open-artifacts-ai/open-artifacts/issues/1021)) ([322571e](https://github.com/open-artifacts-ai/open-artifacts/commit/322571e7bb9fa09b42eabbe9cf230a818d5a4525))
+* **staging:** SIGNUPS_ENABLED=test-users on staging, as designed; prod stays false ([#1012](https://github.com/open-artifacts-ai/open-artifacts/issues/1012)) ([#1022](https://github.com/open-artifacts-ai/open-artifacts/issues/1022)) ([0e6134f](https://github.com/open-artifacts-ai/open-artifacts/commit/0e6134fb78bb8e26ce38d50a91ce20833efcd02f))
+
+## [0.90.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.0...v0.90.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **inventory:** every auth failure is the unknown-route 404, never a 401 ([#1016](https://github.com/open-artifacts-ai/open-artifacts/issues/1016)) ([#1019](https://github.com/open-artifacts-ai/open-artifacts/issues/1019)) ([17974e8](https://github.com/open-artifacts-ai/open-artifacts/commit/17974e834fdf92d8ec6aecf5357f6788f14d10c0))
+* **redline:** R26 creds go where the suite reads them; an unresolved prod host is not live ([#1012](https://github.com/open-artifacts-ai/open-artifacts/issues/1012)) ([#1018](https://github.com/open-artifacts-ai/open-artifacts/issues/1018)) ([35c5c93](https://github.com/open-artifacts-ai/open-artifacts/commit/35c5c93b93c34c45e056c1e3ce172b3fd826a99c))
+
+## [0.90.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.2...v0.90.0) (2026-11-01)
+
+
+### Features
+
+* **provisioning:** the admin allowlist is a deploy Environment secret, put by CI ([#1007](https://github.com/open-artifacts-ai/open-artifacts/issues/1007)) ([#1010](https://github.com/open-artifacts-ai/open-artifacts/issues/1010)) ([36fd655](https://github.com/open-artifacts-ai/open-artifacts/commit/36fd655906d121b412b71bc4d358595aabdd0b39))
+
+## [0.89.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.1...v0.89.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **provisioner:** wait until the rotated test hook key is live before using it ([#1002](https://github.com/open-artifacts-ai/open-artifacts/issues/1002)) ([#1005](https://github.com/open-artifacts-ai/open-artifacts/issues/1005)) ([97678c8](https://github.com/open-artifacts-ai/open-artifacts/commit/97678c8061ead9e81e20b5e6307022ec90a926ec))
+
+## [0.89.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.0...v0.89.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **platform-db:** check the live schema against the applied files before a run ([#998](https://github.com/open-artifacts-ai/open-artifacts/issues/998)) ([#999](https://github.com/open-artifacts-ai/open-artifacts/issues/999)) ([a14bbbe](https://github.com/open-artifacts-ai/open-artifacts/commit/a14bbbe13c7d2bc05ee417276dc69d16560c3d54))
+
+## [0.89.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.3...v0.89.0) (2026-11-01)
+
+
+### Features
+
+* **provisioner:** record a failed job's fail point, HTTP status and hook refusal ([#995](https://github.com/open-artifacts-ai/open-artifacts/issues/995)) ([#996](https://github.com/open-artifacts-ai/open-artifacts/issues/996)) ([704560d](https://github.com/open-artifacts-ai/open-artifacts/commit/704560d0c6d38f1d65b6afef6cf7cac2488cb169))
+
+## [0.88.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.2...v0.88.3) (2026-11-01)
+
+
+### Bug Fixes
+
+* **provisioner:** redline_creds accepts rl-a's and rl-b's stored TEST_DOMAIN ([#991](https://github.com/open-artifacts-ai/open-artifacts/issues/991)) ([18833dc](https://github.com/open-artifacts-ai/open-artifacts/commit/18833dc96e431f438d74f23801e3adf30aaf40fc))
+
+## [0.88.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.1...v0.88.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **ops:** the staging inventory deploy deletes the retired INVENTORY_KEY ([#987](https://github.com/open-artifacts-ai/open-artifacts/issues/987)) ([11d2262](https://github.com/open-artifacts-ai/open-artifacts/commit/11d22622c2c772f161b3b9bea4490b4e771f98b8))
+
+## [0.88.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.88.0...v0.88.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **inventory:** depend on wrangler so the CI inventory target can deploy ([#984](https://github.com/open-artifacts-ai/open-artifacts/issues/984)) ([4ff0821](https://github.com/open-artifacts-ai/open-artifacts/commit/4ff0821715720f096f972625924ab21e9d0f9f39))
+
+## [0.88.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.87.0...v0.88.0) (2026-11-01)
+
+
+### Features
+
+* **redline:** W12 provisioning probes and OIDC for the Provisioning API ([#919](https://github.com/open-artifacts-ai/open-artifacts/issues/919)) ([52dc717](https://github.com/open-artifacts-ai/open-artifacts/commit/52dc71733eae209c5aa7f065e4dae0191d8786fd))
+
+
+### Bug Fixes
+
+* **redline:** staged version checks R3's appHost; seal key not extractable ([#981](https://github.com/open-artifacts-ai/open-artifacts/issues/981)) ([c2ef102](https://github.com/open-artifacts-ai/open-artifacts/commit/c2ef1029791d1ecdb60e93f4ff545a4e92f4608a))
+
 ## [0.87.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.86.0...v0.87.0) (2026-11-01)
 
 

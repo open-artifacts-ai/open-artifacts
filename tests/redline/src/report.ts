@@ -369,8 +369,29 @@ export function applyManifest(
   return out;
 }
 
+/**
+ * #1012 (design 5.8): the prod-host provisioning probes, frozen. Before the
+ * prod platform deploy they are not-applicable with PRE_PROD_REASON, which
+ * prodLive gives only when the prod admin host does not resolve; the gate
+ * counts exactly that as a pass. After the deploy they must pass (#1014).
+ */
+export const PRE_PROD_NA: readonly string[] = Object.freeze(["P7", "P46"]);
+export const PRE_PROD_REASON = "prod admin host does not resolve yet";
+
+/** A pre-prod not-applicable the gate accepts: listed probe, exact reason. */
+export function preProdNa(c: CaseResult): boolean {
+  return (
+    c.level === "not-applicable" &&
+    c.reason === PRE_PROD_REASON &&
+    (c.file === undefined || c.file.endsWith("provisioning.test.ts")) &&
+    PRE_PROD_NA.some((id) => c.name.startsWith(`provisioning > ${id}: `))
+  );
+}
+
 export function gatePasses(cases: readonly CaseResult[]): boolean {
-  return cases.length > 0 && cases.every((c) => c.level === "pass");
+  return (
+    cases.length > 0 && cases.every((c) => c.level === "pass" || preProdNa(c))
+  );
 }
 
 export function buildReport(

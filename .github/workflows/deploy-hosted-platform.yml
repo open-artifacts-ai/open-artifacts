@@ -186,6 +186,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_DIRECTORY_CLIENT_SECRET: ${{ secrets.GOOGLE_DIRECTORY_CLIENT_SECRET }}
+          # The admin allowlist, `email:sub,...` (#1007): only the provisioning
+          # target reads it, and refuses without it.
+          ADMIN_IDENTITIES: ${{ secrets.ADMIN_IDENTITIES }}
           BROKER_PIN_FILE: ${{ runner.temp }}/main-wfp.ts
           MAIN_MIGRATION_LOCK: ${{ runner.temp }}/main-ci/migration-lock.json
           # The OIDC principal's repository (inventory, staging's provisioning);

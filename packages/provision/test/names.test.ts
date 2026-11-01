@@ -14,6 +14,7 @@ import {
   PLATFORM_PRINCIPAL_IDS,
   parseHostsValue,
   platformNames,
+  REDLINE_TEST_DOMAINS,
   RESERVED_SLUGS,
   STAGING_TEST_DOMAIN,
 } from "../src/index.js";
@@ -243,5 +244,16 @@ describe("STAGING_TEST_DOMAIN (3.3)", () => {
       /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/,
     );
     expect(namesEntry.STAGING_TEST_DOMAIN).toBe(STAGING_TEST_DOMAIN);
+  });
+
+  it("REDLINE_TEST_DOMAINS: frozen, exactly the API's plus rl-a's and rl-b's", () => {
+    expect(REDLINE_TEST_DOMAINS).toEqual([
+      "oa-redline-a.fyi",
+      "guests.oa-redline-a.fyi",
+      "guests.oa-redline-c.fyi",
+    ]);
+    expect(REDLINE_TEST_DOMAINS[0]).toBe(STAGING_TEST_DOMAIN);
+    expect(Object.isFrozen(REDLINE_TEST_DOMAINS)).toBe(true);
+    expect(namesEntry.REDLINE_TEST_DOMAINS).toBe(REDLINE_TEST_DOMAINS);
   });
 });

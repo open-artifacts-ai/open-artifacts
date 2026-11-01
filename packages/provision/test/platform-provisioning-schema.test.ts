@@ -44,7 +44,7 @@ const status = (db: DatabaseSync, id: string) =>
 
 describe("0006-0008 rules (8.1)", () => {
   it("follow 0005, in order", () => {
-    expect(migrationFiles.slice(5)).toEqual(NEW);
+    expect(migrationFiles.slice(5, 8)).toEqual(NEW);
   });
 
   it("are additive: no DROP, RENAME or ALTER, and every CREATE is IF NOT EXISTS", () => {
@@ -203,6 +203,41 @@ describe("0008_provisioning: jobs", () => {
       { status: "canceled" },
     ] as Record<string, string>[])
       expect(() => job(db, "i9", bad)).toThrow(/CHECK/);
+  });
+});
+
+describe("0009_job_fail_point (#995)", () => {
+  it("follows 0008 and only adds columns", () => {
+    expect(migrationFiles.slice(8)).toEqual(["0009_job_fail_point.sql"]);
+    const sql = migrationSql("0009_job_fail_point.sql").replace(
+      /--[^\n]*/g,
+      "",
+    );
+    expect(sql).not.toMatch(/\b(?:DROP|RENAME|UPDATE|DELETE)\b/i);
+    const stmts = sql
+      .split(";")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    expect(stmts).toHaveLength(3);
+    for (const x of stmts) expect(x).toMatch(/^ALTER TABLE jobs ADD COLUMN /);
+  });
+
+  it("adds fail_at, fail_status (an HTTP status or NULL) and fail_reason", () => {
+    const db = platformDb();
+    expect(cols(db, "jobs")).toEqual(
+      expect.arrayContaining([
+        "fail_at TEXT",
+        "fail_status INTEGER",
+        "fail_reason TEXT",
+      ]),
+    );
+    const id = job(db, "i1");
+    const set = (v: unknown) =>
+      db
+        .prepare("UPDATE jobs SET fail_status = ? WHERE id = ?")
+        .run(v as never, id);
+    for (const ok of [null, 100, 404, 599]) set(ok);
+    for (const bad of [99, 600, 0]) expect(() => set(bad)).toThrow(/CHECK/);
   });
 });
 

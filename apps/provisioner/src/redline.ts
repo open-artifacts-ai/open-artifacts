@@ -23,9 +23,11 @@ import {
   names,
   newSecret,
   ProvisionRefused,
-  STAGING_TEST_DOMAIN,
+  REDLINE_TEST_DOMAINS,
 } from "@oa/provision";
+import { TEST_HOOK_REFUSALS, type TestHookRefusal } from "@oa/shared";
 import {
+  type JobFailPoint,
   type JobKind,
   jobStepsFor,
   REDLINE_PAT_PREFIX,
@@ -34,6 +36,7 @@ import {
   type RedlinePat,
   redlinePatsToRevoke,
 } from "@oa/shared/provisioning";
+import { failingAt, tagFail } from "./errors.js";
 import type { ManageJob } from "./manage.js";
 import { cfFor, installRow, provisionerWith, storedVars } from "./ops.js";
 import { deployEnv, transient } from "./provisioner.js";
@@ -50,18 +53,91 @@ export const REDLINE_STEP = {
   timeout: "5 minutes",
 } as const;
 
-/** Only the status: a body can carry the install's own error text. */
+/**
+ * A test hook's 404 refusal reason (error.details.reason), only when it is
+ * one of TEST_HOOK_REFUSALS; a 404 before the key (hooks off, the rate
+ * limit, a key not live) has none.
+ */
+async function refusalOf(res: Response): Promise<TestHookRefusal | null> {
+  const b = (await res.json().catch(() => null)) as {
+    error?: { details?: { reason?: unknown } };
+  } | null;
+  const r = b?.error?.details?.reason;
+  return (TEST_HOOK_REFUSALS as readonly string[]).includes(r as string)
+    ? (r as TestHookRefusal)
+    : null;
+}
+
+/**
+ * The waits between key-live probes after a rotate (#1002): 2 s, doubling,
+ * 60 s in all; six probes stay far under the install's RL_ANON (30 a minute).
+ */
+export const KEY_LIVE_WAITS_MS = [2_000, 4_000, 8_000, 16_000, 30_000];
+
+/**
+ * Waits until the install takes `key`: a secret PUT is not live at once, and
+ * a stale key is the uniform 404 with no reason. The probe's body is `{}`, so
+ * a verified key answers bad_input and writes nothing else. Never rotates.
+ */
+async function keyLive(
+  ctx: CreateCtx,
+  f: typeof fetch,
+  app: string,
+  key: string,
+): Promise<void> {
+  for (let i = 0; ; i++) {
+    const res = await failingAt("hook_key_live", () =>
+      f(`${app}/__test/session`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+        },
+        body: "{}",
+        redirect: "manual",
+      }),
+    );
+    const reason = res.status === 404 ? await refusalOf(res) : null;
+    if (res.status !== 404) await res.body?.cancel();
+    if (reason === "bad_input") return;
+    const wait = KEY_LIVE_WAITS_MS[i];
+    if (res.status !== 404 || reason !== null || wait === undefined)
+      throw tagFail(
+        new Error(`hook_key_live: HTTP ${res.status}`),
+        "hook_key_live",
+        res.status,
+        reason,
+      );
+    await ctx.io.sleep(wait);
+  }
+}
+
+/**
+ * Only the status (and, for test_session, the refusal reason): a body can
+ * carry the install's own error text. A failure is tagged at `at` (#995).
+ */
 async function call(
   f: typeof fetch,
   url: string,
   init: RequestInit,
-  what: string,
+  at: JobFailPoint,
   want: number[],
 ): Promise<Response> {
-  const res = await f(url, { ...init, redirect: "manual" });
+  const res = await failingAt(at, () =>
+    f(url, { ...init, redirect: "manual" }),
+  );
   if (!want.includes(res.status)) {
-    await res.body?.cancel();
-    throw new Error(`${what}: HTTP ${res.status}`);
+    // refusalOf reads the body; every other failure only cancels it.
+    let reason: TestHookRefusal | null = null;
+    if (at === "test_session" && res.status === 404)
+      reason = await refusalOf(res);
+    else await res.body?.cancel();
+    throw tagFail(
+      new Error(`${at}: HTTP ${res.status}`),
+      at,
+      res.status,
+      reason,
+    );
   }
   return res;
 }
@@ -128,7 +204,10 @@ async function openSession(
       "invalid_state",
     );
   const testDomain = storedVars(row.vars).TEST_DOMAIN;
-  if (testDomain !== STAGING_TEST_DOMAIN)
+  if (
+    typeof testDomain !== "string" ||
+    !REDLINE_TEST_DOMAINS.includes(testDomain)
+  )
     throw new ProvisionRefused(
       "the install has no TEST_DOMAIN",
       "invalid_state",
@@ -138,19 +217,23 @@ async function openSession(
   const f = directFetch(ctx.env.DISPATCHER, { appHost: row.app_host, script });
 
   // 5.7: redline_creds refuses a near-expiry token, before any write.
-  await (
-    await provisionerWith(ctx, `ss-${job.signupId ?? jobId}`, jobId)
-  ).verifyToken("refuse");
-
-  // rotate_hook_key: a fresh key, live on the script before it is used.
-  const hookKey = newSecret();
-  const cf = await cfFor(ctx);
-  await cf.secretPut(
-    { kind: "namespace", ns: NAMESPACES[e] },
-    script,
-    "TEST_HOOK_KEY",
-    hookKey,
+  await failingAt("token_check", async () =>
+    (
+      await provisionerWith(ctx, `ss-${job.signupId ?? jobId}`, jobId)
+    ).verifyToken("refuse"),
   );
+
+  // rotate_hook_key: a fresh key, proven live on the script before it is used.
+  const hookKey = newSecret();
+  await failingAt("hook_key_put", async () =>
+    (await cfFor(ctx)).secretPut(
+      { kind: "namespace", ns: NAMESPACES[e] },
+      script,
+      "TEST_HOOK_KEY",
+      hookKey,
+    ),
+  );
+  await keyLive(ctx, f, app, hookKey);
 
   const s = await call(
     f,
@@ -166,13 +249,13 @@ async function openSession(
         role: "admin",
       }),
     },
-    "test session",
+    "test_session",
     [200],
   );
   const cookie = ((await s.json().catch(() => null)) as { cookie?: unknown })
     ?.cookie;
   if (typeof cookie !== "string" || cookie === "")
-    throw new Error("test session: no cookie");
+    throw tagFail(new Error("test session: no cookie"), "test_session");
   const asAdmin = (init: RequestInit = {}): RequestInit => ({
     ...init,
     headers: {
@@ -190,11 +273,12 @@ async function listPats(s: Session): Promise<RedlinePat[]> {
     s.f,
     `${s.app}/api/v1/tokens`,
     s.asAdmin(),
-    "list tokens",
+    "list_tokens",
     [200],
   );
   const listed = (await l.json().catch(() => null)) as unknown;
-  if (!Array.isArray(listed)) throw new Error("list tokens: not a list");
+  if (!Array.isArray(listed))
+    throw tagFail(new Error("list tokens: not a list"), "list_tokens");
   return listed
     .filter(
       (t): t is { id: string; label: string; revokedAt?: unknown } =>
@@ -220,7 +304,7 @@ async function revokeRedline(s: Session, keep?: string): Promise<number> {
       s.f,
       `${s.app}/api/v1/tokens/${encodeURIComponent(id)}`,
       s.asAdmin({ method: "DELETE" }),
-      "revoke a redline token",
+      "revoke_token",
       [204, 404],
     );
   return ids.length;
@@ -263,7 +347,7 @@ async function rotateMintSeal(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ label: `${REDLINE_PAT_PREFIX}${jobId}` }),
     }),
-    "mint token",
+    "mint_token",
     [201],
   );
   const minted = (await m.json().catch(() => null)) as {
@@ -272,31 +356,33 @@ async function rotateMintSeal(
   } | null;
   const pat = minted?.token;
   if (typeof pat !== "string" || !pat.startsWith("oa_pat_"))
-    throw new Error("mint token: no token");
+    throw tagFail(new Error("mint token: no token"), "mint_token");
   if (typeof minted?.id !== "string" || minted.id === "")
-    throw new Error("mint token: no id");
+    throw tagFail(new Error("mint token: no id"), "mint_token");
   await call(
     s.f,
     `${s.app}/api/v1/me`,
     { headers: { authorization: `Bearer ${pat}` } },
-    "new token check",
+    "new_token_check",
     [200],
   );
   await revokeRedline(s, minted.id);
 
   // seal: only the ciphertext reaches D1, and only while the job is open.
   await markStep(ctx, jobId, "seal");
-  const sealed = await sealTo(
-    recipientKey,
-    JSON.stringify({ pat, hookKey: s.hookKey }),
-  );
-  const r = await transient(
-    ctx.env.PLATFORM_DB.prepare(
-      "UPDATE jobs SET sealed = ?2, updated_at = ?3 WHERE id = ?1 AND status = 'running'",
-    )
-      .bind(jobId, sealed, ctx.io.now())
-      .run(),
-  );
+  const r = await failingAt("seal", async () => {
+    const sealed = await sealTo(
+      recipientKey,
+      JSON.stringify({ pat, hookKey: s.hookKey }),
+    );
+    return transient(
+      ctx.env.PLATFORM_DB.prepare(
+        "UPDATE jobs SET sealed = ?2, updated_at = ?3 WHERE id = ?1 AND status = 'running'",
+      )
+        .bind(jobId, sealed, ctx.io.now())
+        .run(),
+    );
+  });
   if ((r.meta.changes ?? 0) > 0) return { sealed: true };
   // The job closed under us (an R25 cancel, the sweep): no one can read the
   // PAT, so it is revoked here, before the step ends, never left live.
@@ -304,7 +390,7 @@ async function rotateMintSeal(
     s.f,
     `${s.app}/api/v1/tokens/${encodeURIComponent(minted.id)}`,
     s.asAdmin({ method: "DELETE" }),
-    "revoke the unsealed token",
+    "revoke_token",
     [204, 404],
   );
   return { sealed: false };

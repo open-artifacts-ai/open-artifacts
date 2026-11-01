@@ -45,6 +45,8 @@ interface World {
   bindings: string[];
   /** The authorization header of each /installs read. */
   inventoryAuth?: (string | undefined)[];
+  /** Inventory refuses the bearer: its unknown-route plain 404 (#1016). */
+  inventoryRefuses?: boolean;
   /** /healthz status (a paused or closed host answers 503). */
   healthzStatus?: number;
   /** The dispatch script is gone (purged): its routes answer 404. */
@@ -159,6 +161,10 @@ async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
     }
     if (u.pathname === "/installs") {
       w.inventoryAuth = [...(w.inventoryAuth ?? []), req.headers.authorization];
+      if (w.inventoryRefuses)
+        return res
+          .writeHead(404, { "cache-control": "no-store" })
+          .end("Not found");
       return json(res, 200, { installs: w.installs });
     }
     if (u.pathname === "/healthz")
@@ -282,6 +288,14 @@ describe("prodClean (spec 2026-10-26)", () => {
   it("an inventory that is not the installs schema fails inventory_bad", async () => {
     const w = cleanWorld();
     w.installs = [{ id: ID, appHost: "a", testHooks: false }];
+    expect(await failCode(check(w))).toBe("inventory_bad");
+  });
+
+  it("an inventory refusing the bearer (its plain 404) fails inventory_bad, never a pass", async () => {
+    const w = cleanWorld();
+    w.inventoryRefuses = true;
+    expect(await failCode(check(w))).toBe("inventory_bad");
+    w.installs = [];
     expect(await failCode(check(w))).toBe("inventory_bad");
   });
 

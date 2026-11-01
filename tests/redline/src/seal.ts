@@ -30,9 +30,12 @@ export interface Recipient {
   publicKey: string;
 }
 
-/** A fresh X25519 key pair; the private key never leaves this process. */
+/**
+ * A fresh X25519 key pair; the private key is not extractable, so it never
+ * leaves this process. Only the public key is exported.
+ */
 export async function newRecipient(): Promise<Recipient> {
-  const pair = (await subtle.generateKey(X25519, true, [
+  const pair = (await subtle.generateKey(X25519, false, [
     "deriveBits",
   ])) as CryptoKeyPair;
   const raw = await subtle.exportKey("raw", pair.publicKey);

@@ -1,10 +1,11 @@
 import type { Claims, Pins } from "@oa/gh-oidc";
-import { unauthorized, unavailable } from "./http.ts";
+import { notFound, unavailable } from "./http.ts";
 
 // Every route takes a GitHub Actions OIDC bearer (design v7 6.3, 4.4),
 // verified by @oa/gh-oidc against the five OIDC_* vars. A missing or empty
-// var fails closed before the header is read; any verifier failure is the
-// same fixed 401, never its code.
+// var fails closed before the header is read (503); every auth failure is the
+// unknown-route 404, byte for byte, so a caller without a valid token can't
+// tell the Worker or its routes exist (hosted.md, Inventory).
 
 export type Verify = (jwt: string, pins: Pins) => Promise<Claims>;
 
@@ -48,7 +49,7 @@ export function pinsFromEnv(env: OidcVars): Pins | null {
 
 export type Authed = { claims: Claims; pins: Pins };
 
-/** The verified claims and pins, or the fixed 503 / 401 to answer. */
+/** The verified claims and pins, or the fixed 503 / plain 404 to answer. */
 export async function authenticate(
   request: Request,
   env: OidcVars,
@@ -57,11 +58,11 @@ export async function authenticate(
   const pins = pinsFromEnv(env);
   if (!pins) return unavailable();
   const m = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "");
-  if (!m?.[1] || m[1].length > MAX_BEARER) return unauthorized();
+  if (!m?.[1] || m[1].length > MAX_BEARER) return notFound();
   try {
     return { claims: await verify(m[1], pins), pins };
   } catch {
-    // OidcError or not: the same body, never its code or message.
-    return unauthorized();
+    // OidcError or not: the same 404, never its code or message.
+    return notFound();
   }
 }

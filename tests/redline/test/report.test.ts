@@ -15,6 +15,8 @@ import {
   label,
   labelOf,
   levelOf,
+  PRE_PROD_NA,
+  PRE_PROD_REASON,
   proof,
   type Report,
   redactReason,
@@ -134,6 +136,44 @@ describe("gate", () => {
     expect(gatePasses([c("a", "pass"), c("b", "pass")])).toBe(true);
     for (const l of LEVELS.filter((x) => x !== "pass"))
       expect(gatePasses([c("a", "pass"), c("b", l)]), l).toBe(false);
+  });
+
+  // #1012 (design 5.8): only the frozen prod-host probes, only with the
+  // not-resolved reason, count as a pass before the prod deploy.
+  it("accepts a pre-prod not-applicable only for the frozen prod-host probes", () => {
+    expect(PRE_PROD_NA).toEqual(["P7", "P46"]);
+    expect(Object.isFrozen(PRE_PROD_NA)).toBe(true);
+    const na = (
+      name: string,
+      reason = PRE_PROD_REASON,
+      file = "live/provisioning.test.ts",
+    ): CaseResult => ({
+      name,
+      file,
+      level: "not-applicable",
+      reason,
+    });
+    const ok = c("a", "pass");
+    expect(
+      gatePasses([
+        ok,
+        na("provisioning > P7: staging OIDC against prod /v1/me: 401"),
+      ]),
+    ).toBe(true);
+    expect(
+      gatePasses([
+        ok,
+        na("provisioning > P46: staging OIDC on prod /mcp: 401"),
+      ]),
+    ).toBe(true);
+    for (const bad of [
+      na("provisioning > P29: self-serve"),
+      na("provisioning > P70: lookalike"),
+      na("provisioning > P7: x", "dispatch runs only"),
+      na("provisioning > P7: x", PRE_PROD_REASON, "live/live.test.ts"),
+      { ...na("provisioning > P7: x"), level: "unproven-live" as const },
+    ])
+      expect(gatePasses([ok, bad]), JSON.stringify(bad)).toBe(false);
   });
 
   it("an empty run never passes", () => {
