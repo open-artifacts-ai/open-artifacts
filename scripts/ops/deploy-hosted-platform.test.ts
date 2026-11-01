@@ -1702,8 +1702,10 @@ describe("deploy-hosted-platform.sh", () => {
         join(root, "apps/provisioning/wrangler.jsonc"),
         "utf8",
       );
+      // Prod's (staging's is test-users since #1012).
       const at = PV.lastIndexOf('"SIGNUPS_ENABLED": "false",');
-      expect(at).toBeGreaterThan(PV.indexOf('"SIGNUPS_ENABLED": "false",'));
+      expect(at).toBeGreaterThan(PV.indexOf('"prod": {'));
+      expect(PV.indexOf('"prod": {')).toBeGreaterThan(0);
       const prodVar = (v: string) =>
         PV.slice(0, at) +
         v +
