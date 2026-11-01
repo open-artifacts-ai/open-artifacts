@@ -47,6 +47,18 @@ export const isPlatformPrincipalId = (id: unknown): boolean =>
  */
 export const STAGING_TEST_DOMAIN = "oa-redline-a.fyi";
 
+/**
+ * Every TEST_DOMAIN redline_creds accepts on a stored staging row, matched
+ * exactly (never a suffix): the API's, plus rl-a's and rl-b's from their
+ * hosted-ops creates (red-line run 41272181391). Creates still set only
+ * STAGING_TEST_DOMAIN.
+ */
+export const REDLINE_TEST_DOMAINS: readonly string[] = Object.freeze([
+  STAGING_TEST_DOMAIN,
+  "guests.oa-redline-a.fyi",
+  "guests.oa-redline-c.fyi",
+]);
+
 /** What a HOSTS value says dispatch does with its host (design v7 5.5). */
 export type HostsMode = "serving" | "paused" | "closed";
 
