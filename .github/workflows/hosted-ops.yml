@@ -70,11 +70,17 @@ jobs:
   # Prod create and upgrade only: prodClean (tests/redline/src/prod-clean-cli.ts)
   # in redline-staging, where the read-only REDLINE_PROD_* secrets live. Any
   # result but a pass (or, for a create, an inventory listing no install)
-  # fails it, and op does not run.
+  # fails it, and op does not run. Prod inventory takes only a GitHub OIDC
+  # bearer for this workflow on main in redline-staging (#986): the CLI mints
+  # it, GET routes only.
   precheck:
     if: ${{ inputs.env == 'prod' && (inputs.op == 'create' || inputs.op == 'upgrade') }}
     runs-on: ubuntu-latest
     environment: redline-staging
+    # The OIDC principal: this job only, never the workflow.
+    permissions:
+      contents: read
+      id-token: write
     timeout-minutes: 15
     steps:
       - name: Prod runs only from main
@@ -89,14 +95,14 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-      - run: pnpm install --frozen-lockfile
+      # No lifecycle scripts: every step can reach the OIDC request token.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm --filter @oa/provision build
-      # Only this step sees the secrets: all three, none empty.
+      # Only this step sees the secrets: both, neither empty.
       - name: Write the prod probe's token files
         env:
           PROD_R2_TOKEN: ${{ secrets.REDLINE_PROD_R2_TOKEN }}
           PROD_SCRIPTS_TOKEN: ${{ secrets.REDLINE_PROD_SCRIPTS_TOKEN }}
-          PROD_INVENTORY_KEY: ${{ secrets.REDLINE_PROD_INVENTORY_KEY }}
         run: |
           set +x
           set -euo pipefail
@@ -105,7 +111,6 @@ jobs:
           mkdir -m 700 "$d"
           printf '%s' "$PROD_R2_TOKEN" > "$d/REDLINE_PROD_R2_TOKEN"
           printf '%s' "$PROD_SCRIPTS_TOKEN" > "$d/REDLINE_PROD_SCRIPTS_TOKEN"
-          printf '%s' "$PROD_INVENTORY_KEY" > "$d/REDLINE_PROD_INVENTORY_KEY"
           for f in "$d"/*; do test -s "$f" || { echo "empty secret file: ${f##*/}"; exit 1; }; done
       - name: Prod is clean
         env:

@@ -755,6 +755,64 @@ describe("prod-clean-cli: the hosted-ops precheck", () => {
     ]);
   });
 
+  // #986: hosted-ops' precheck job mints its own prod inventory JWT.
+  it("run: in the job, mints the prod inventory JWT once and sends it; a failed mint is inventory_unconfigured", async () => {
+    const b64u = (v: unknown) =>
+      Buffer.from(JSON.stringify(v)).toString("base64url");
+    const mintEnv = {
+      ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.actions.example/x",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "REQ-TOKEN",
+    };
+    const auds: (string | null)[] = [];
+    const minter = (status: number) =>
+      (async (u: URL) => {
+        const aud = new URL(u).searchParams.get("audience");
+        auds.push(aud);
+        const v = `${b64u({ alg: "RS256" })}.${b64u({ aud, exp: 4_000_000_000 })}.sig`;
+        return Response.json({ value: v }, { status });
+      }) as unknown as typeof fetch;
+    const lines: string[] = [];
+    const io = {
+      out: (l: string) => lines.push(l),
+      err: (l: string) => lines.push(l),
+    };
+    const at = (d: string) => ({
+      ...mintEnv,
+      OPS_OP: "upgrade",
+      REDLINE_PROD_SECRETS_DIR: d,
+      REDLINE_PROD_ACCOUNT_ID: ACCT,
+      REDLINE_PROD_INVENTORY_URL: "https://inventory.example",
+    });
+    const files = {
+      REDLINE_PROD_R2_TOKEN: "r2-token",
+      REDLINE_PROD_SCRIPTS_TOKEN: "scripts-token",
+    };
+    const s = secretDir(files);
+    dispose.push(s.cleanup);
+    const w = released();
+    const { fetch } = await serve(w);
+    expect(
+      await run(at(s.dir), io, { fetch, pubkey: PUB }, { fetch: minter(200) }),
+    ).toBe(0);
+    expect(auds).toEqual(["https://oa-p-inventory"]);
+    const minted = readFileSync(
+      join(s.dir, "REDLINE_PROD_INVENTORY_OIDC"),
+      "utf8",
+    );
+    expect(w.inventoryAuth?.length).toBeGreaterThan(0);
+    for (const a of w.inventoryAuth ?? []) expect(a).toBe(`Bearer ${minted}`);
+    const s2 = secretDir(files);
+    dispose.push(s2.cleanup);
+    expect(
+      await run(at(s2.dir), io, { fetch, pubkey: PUB }, { fetch: minter(403) }),
+    ).toBe(1);
+    expect(lines).toEqual([
+      "prod-clean: pass",
+      "prod-clean: fail (inventory_unconfigured)",
+    ]);
+    expect(lines.join("\n")).not.toContain("REQ-TOKEN");
+  });
+
   it("runs under plain node: no probe is exit 1", () => {
     const r = spawnSync(
       process.execPath,

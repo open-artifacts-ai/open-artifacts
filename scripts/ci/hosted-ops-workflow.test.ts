@@ -635,7 +635,7 @@ describe("the precheck job: prod is clean before a prod create or upgrade", () =
   it("runs only for prod create and upgrade, in redline-staging, from main", () => {
     expect(pre.if).toBe(`\${{ ${GATED} }}`);
     expect(pre.environment).toBe("redline-staging");
-    expect(pre.permissions).toBeUndefined();
+    expect(pre.permissions).toEqual({ contents: "read", "id-token": "write" });
     expect(pre["timeout-minutes"]).toBeLessThanOrEqual(15);
     const main = pnamed("Prod runs only from main");
     expect(psteps.indexOf(main)).toBe(0);
@@ -661,7 +661,6 @@ describe("the precheck job: prod is clean before a prod create or upgrade", () =
     expect(pnamed("Write the prod probe's token files").env).toEqual({
       PROD_R2_TOKEN: "${{ secrets.REDLINE_PROD_R2_TOKEN }}",
       PROD_SCRIPTS_TOKEN: "${{ secrets.REDLINE_PROD_SCRIPTS_TOKEN }}",
-      PROD_INVENTORY_KEY: "${{ secrets.REDLINE_PROD_INVENTORY_KEY }}",
     });
     const check = pnamed("Prod is clean");
     expect(check.env).toEqual({
@@ -713,18 +712,13 @@ describe("the precheck job: prod is clean before a prod create or upgrade", () =
       RUNNER_TEMP: temp,
       PROD_R2_TOKEN: "r2-SECRET",
       PROD_SCRIPTS_TOKEN: "scripts-SECRET",
-      PROD_INVENTORY_KEY: "inv-SECRET",
     };
     const r = sb.run(["bash", "-c", run], { cwd: root, env });
     expect(r.code).toBe(0);
     expect(r.out + r.err).toBe("");
     const d = join(temp, "prod-clean-secrets");
     expect(statSync(d).mode & 0o777).toBe(0o700);
-    for (const f of [
-      "REDLINE_PROD_R2_TOKEN",
-      "REDLINE_PROD_SCRIPTS_TOKEN",
-      "REDLINE_PROD_INVENTORY_KEY",
-    ])
+    for (const f of ["REDLINE_PROD_R2_TOKEN", "REDLINE_PROD_SCRIPTS_TOKEN"])
       expect(statSync(join(d, f)).mode & 0o777).toBe(0o600);
     expect(readFileSync(join(d, "REDLINE_PROD_R2_TOKEN"), "utf8")).toBe(
       "r2-SECRET",
@@ -734,9 +728,26 @@ describe("the precheck job: prod is clean before a prod create or upgrade", () =
     mkdirSync(t2);
     const r2 = sb2.run(["bash", "-c", run], {
       cwd: root,
-      env: { ...env, RUNNER_TEMP: t2, PROD_INVENTORY_KEY: "" },
+      env: { ...env, RUNNER_TEMP: t2, PROD_SCRIPTS_TOKEN: "" },
     });
     expect(r2.code).toBe(1);
-    expect(r2.out).toContain("empty secret file: REDLINE_PROD_INVENTORY_KEY");
+    expect(r2.out).toContain("empty secret file: REDLINE_PROD_SCRIPTS_TOKEN");
+  });
+
+  // #986: prod inventory is OIDC-only; the retired key never comes back.
+  it("only precheck may mint: id-token: write on it alone, no lifecycle scripts, no inventory key", () => {
+    expect(pre.permissions).toEqual({ contents: "read", "id-token": "write" });
+    expect(pre.environment).toBe("redline-staging");
+    expect(JSON.stringify(w.permissions ?? {})).not.toContain("id-token");
+    expect(JSON.stringify(job.permissions ?? {})).not.toContain("id-token");
+    const installs = psteps.filter((s) =>
+      String(s.run ?? "").includes("pnpm install"),
+    );
+    expect(installs.map((s) => s.run)).toEqual([
+      "pnpm install --frozen-lockfile --ignore-scripts",
+    ]);
+    expect(
+      readFileSync(join(root, ".github/workflows/hosted-ops.yml"), "utf8"),
+    ).not.toContain("INVENTORY_KEY");
   });
 });

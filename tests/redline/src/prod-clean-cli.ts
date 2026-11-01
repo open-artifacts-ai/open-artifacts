@@ -1,11 +1,18 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { AUDIENCES, canMint, jwtSource, mask } from "./oidc.ts";
 import {
   type ProdCleanOpts,
   ProdDirty,
   prodClean,
   prodCleanLine,
 } from "./prod.ts";
-import { type ProdProbe, parseProd } from "./targets.ts";
+import {
+  PROD_INVENTORY_OIDC_FILE,
+  type ProdProbe,
+  parseProd,
+} from "./targets.ts";
 
 // The "prod is clean" precheck hosted-ops.yml runs before a prod create or
 // upgrade: prodClean, exit 0 only on a pass. A configured prod with no
@@ -13,9 +20,10 @@ import { type ProdProbe, parseProd } from "./targets.ts";
 // The repo is public, so the one line is `prod-clean: pass` or
 // `prod-clean: fail (<code>)`, never a detail. Env: OPS_OP,
 // REDLINE_PROD_SECRETS_DIR (the 0600 token files), REDLINE_PROD_ACCOUNT_ID,
-// REDLINE_PROD_INVENTORY_URL. Inventory takes only a GitHub OIDC bearer
-// (opts.inventoryBearer); the hosted-ops job mints none, so until W9b retires
-// it this gate fails inventory_unconfigured (fail closed).
+// REDLINE_PROD_INVENTORY_URL. Inventory takes only a GitHub OIDC bearer: in
+// the hosted-ops job (id-token: write, redline-staging, main; #986) this mints
+// the prod inventory JWT into the secrets dir first. A failed mint, or no way
+// to mint, fails inventory_unconfigured (fail closed).
 
 export const GATED_OPS = ["create", "upgrade"] as const;
 
@@ -46,7 +54,24 @@ export async function run(
   env: Record<string, string | undefined>,
   io: { out: (s: string) => void; err: (s: string) => void },
   o: ProdCleanOpts = {},
+  mint: { fetch?: typeof fetch } = {},
 ): Promise<0 | 1> {
+  const dir = env.REDLINE_PROD_SECRETS_DIR;
+  if (dir && canMint(env)) {
+    // Once, before parseProd reads it; parseProd re-mints near expiry.
+    const file = join(dir, PROD_INVENTORY_OIDC_FILE);
+    if (!existsSync(file))
+      try {
+        await jwtSource(file, AUDIENCES.prodInventory, {
+          env,
+          fetch: mint.fetch,
+          onMint: mask(env),
+        })();
+      } catch {
+        io.err(prodCleanLine("inventory_unconfigured"));
+        return 1;
+      }
+  }
   let p: ProdProbe | undefined;
   try {
     const url = env.REDLINE_PROD_INVENTORY_URL;
