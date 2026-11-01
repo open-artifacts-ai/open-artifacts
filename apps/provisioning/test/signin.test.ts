@@ -145,6 +145,8 @@ async function signIn(
     d?: Partial<SigninDeps>;
     /** A session cookie already in the browser. */
     sid?: string;
+    /** More callback query, e.g. a forged `sub`. */
+    cb?: string;
   } = {},
 ) {
   const s = await start(e, o.q ?? "", o.d ?? deps());
@@ -156,7 +158,7 @@ async function signIn(
   const state = s.loc.searchParams.get("state") ?? "";
   const res = await call(
     e,
-    `${ADMIN}/auth/callback/google?code=C&state=${state}&bstate=BS`,
+    `${ADMIN}/auth/callback/google?code=C&state=${state}&bstate=BS${o.cb ?? ""}`,
     {
       headers: {
         cookie: [
@@ -625,12 +627,12 @@ describe("rate_limited by route kind (3.5)", () => {
 });
 
 describe("identity pinning (4.3 step 5)", () => {
-  it("email listed, sub differs: 303 /sign-in?error=no_access with the sub, audit unknown_sub", async () => {
+  it("email listed, sub differs: 303 /no-access?error=unknown_sub with the verified sub, audit unknown_sub", async () => {
     const { res } = await signIn(env(), { claims: { sub: "999" } });
     expect(res.status).toBe(303);
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(res.headers.get("location")).toBe(
-      `${ADMIN}/sign-in?error=no_access&sub=999`,
+      `${ADMIN}/no-access?error=unknown_sub&sub=999`,
     );
     expect(cookieOf(res, SESSION_COOKIE)).toBeNull();
     expect(cookieOf(res, FLOW_COOKIE)).toContain("Max-Age=0");
@@ -645,12 +647,12 @@ describe("identity pinning (4.3 step 5)", () => {
     ]);
   });
 
-  it("email not listed: 303 error=no_access (no sub), audit not_listed with the email HMAC only (no actor email)", async () => {
+  it("email not listed: 303 /no-access?error=not_listed (no sub), audit not_listed with the email HMAC only (no actor email)", async () => {
     const { res } = await signIn(env(), {
       claims: { email: "x@gmail.com", sub: "5" },
     });
     expect(res.headers.get("location")).toBe(
-      `${ADMIN}/sign-in?error=no_access`,
+      `${ADMIN}/no-access?error=not_listed`,
     );
     const a = audits[0] as AuditEntry;
     expect(a).toMatchObject({
@@ -662,19 +664,44 @@ describe("identity pinning (4.3 step 5)", () => {
     expect(JSON.stringify(a.detail ?? {})).not.toContain("x@gmail.com");
   });
 
+  // #1024: the No access page's account id is the ID token's verified sub,
+  // never a value from the request, and the page is this admin host's.
+  it("the account id is the verified sub only: a sub in the start or callback query is never echoed", async () => {
+    const forged = "&sub=666&return=https%3A%2F%2Fevil.example";
+    const a = await signIn(env(), {
+      q: "?sub=666&error=x",
+      cb: forged,
+      claims: { sub: "999" },
+    });
+    const la = new URL(a.res.headers.get("location") ?? "");
+    expect(la.origin + la.pathname).toBe(`${ADMIN}/no-access`);
+    expect([...la.searchParams]).toEqual([
+      ["error", "unknown_sub"],
+      ["sub", "999"],
+    ]);
+    const b = await signIn(env(), {
+      q: "?sub=666",
+      cb: forged,
+      claims: { email: "x@gmail.com", sub: "5" },
+    });
+    const lb = new URL(b.res.headers.get("location") ?? "");
+    expect(lb.origin + lb.pathname).toBe(`${ADMIN}/no-access`);
+    expect([...lb.searchParams]).toEqual([["error", "not_listed"]]);
+  });
+
   it("the match is the exact (email, sub) pair: another entry's sub is unknown_sub, a listed sub under an unlisted email is not_listed", async () => {
     const two = "me@example.com:123,you@example.com:456";
     const a = await signIn(env({ ADMIN_IDENTITIES: two }), {
       claims: { email: EMAIL, sub: "456" },
     });
     expect(a.res.headers.get("location")).toBe(
-      `${ADMIN}/sign-in?error=no_access&sub=456`,
+      `${ADMIN}/no-access?error=unknown_sub&sub=456`,
     );
     const b = await signIn(env({ ADMIN_IDENTITIES: two }), {
       claims: { email: "them@example.com", sub: "123" },
     });
     expect(b.res.headers.get("location")).toBe(
-      `${ADMIN}/sign-in?error=no_access`,
+      `${ADMIN}/no-access?error=not_listed`,
     );
     expect(audits.map((x) => x.code)).toEqual(["unknown_sub", "not_listed"]);
     // Each listed pair still signs in as itself.
@@ -721,20 +748,20 @@ describe("identity pinning (4.3 step 5)", () => {
       claims: { email: "you@example.com", hd: "example.com" },
     });
     expect(res.headers.get("location")).toBe(
-      `${ADMIN}/sign-in?error=no_access`,
+      `${ADMIN}/no-access?error=not_listed`,
     );
   });
 
   it("empty ADMIN_IDENTITIES admits no one", async () => {
     const { res } = await signIn(env({ ADMIN_IDENTITIES: "" }));
     expect(res.headers.get("location")).toBe(
-      `${ADMIN}/sign-in?error=no_access`,
+      `${ADMIN}/no-access?error=not_listed`,
     );
   });
 
   it("refused sign-ins per email HMAC: the 21st within the hour is 303 error=rate_limited, with no audit row", async () => {
     const e = env();
-    const noAccess = `${ADMIN}/sign-in?error=no_access&sub=999`;
+    const noAccess = `${ADMIN}/no-access?error=unknown_sub&sub=999`;
     for (let i = 0; i < 20; i++) {
       const { res } = await signIn(e, { claims: { sub: "999" } });
       expect(res.headers.get("location")).toBe(noAccess);
@@ -776,7 +803,7 @@ describe("identity pinning (4.3 step 5)", () => {
       );
       if (i < 30)
         expect(res.headers.get("location")).toBe(
-          `${ADMIN}/sign-in?error=no_access`,
+          `${ADMIN}/no-access?error=not_listed`,
         );
       else {
         expect(res.headers.get("location")).toBe(

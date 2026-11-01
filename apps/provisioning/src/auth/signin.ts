@@ -86,7 +86,7 @@ const DEFAULTS: SigninDeps = {
 const brokerOrigin = (env: Env) => `https://auth.${env.APP_DOMAIN}`;
 
 /** The Sign-in screen's states (3.5, 9.2). */
-type SignInError = "expired" | "denied" | "no_access" | "rate_limited";
+type SignInError = "expired" | "denied" | "rate_limited";
 
 function redirect(
   location: string,
@@ -98,14 +98,29 @@ function redirect(
   return new Response(null, { status, headers: h });
 }
 
-/** `extra`: more query, e.g. the `sub` the No access screen shows. */
-const signInError = (
+const signInError = (env: Env, why: SignInError) =>
+  redirect(
+    `${adminOrigin(env)}/sign-in?${new URLSearchParams({ error: why })}`,
+    303,
+    [clearFlowCookie()],
+  );
+
+/**
+ * The No access screen (9.2, /no-access): an identity refusal, by its audit
+ * code. Only unknown_sub carries the account id, and only the one the
+ * verified ID token gave, for the first pin (4.3 step 5, #1024).
+ */
+const noAccess = (
   env: Env,
-  why: SignInError,
-  extra: Record<string, string> = {},
+  match: "unknown_sub" | "not_listed",
+  verifiedSub: string,
 ) =>
   redirect(
-    `${adminOrigin(env)}/sign-in?${new URLSearchParams({ error: why, ...extra })}`,
+    `${adminOrigin(env)}/no-access?${new URLSearchParams(
+      match === "unknown_sub"
+        ? { error: match, sub: verifiedSub }
+        : { error: match },
+    )}`,
     303,
     [clearFlowCookie()],
   );
@@ -301,13 +316,7 @@ async function callback(
     );
     if (ne > byEmail.limit || ni > byIp.limit)
       return signInError(env, "rate_limited");
-    // The No access screen (9.2); for unknown_sub it shows the account id,
-    // which the admin sends for the first pin (4.3 step 5).
-    return signInError(
-      env,
-      "no_access",
-      match === "unknown_sub" ? { sub: id.sub } : {},
-    );
+    return noAccess(env, match, id.sub);
   }
 
   // A fresh sign-in (R11 purge): Google must have authenticated just now.
