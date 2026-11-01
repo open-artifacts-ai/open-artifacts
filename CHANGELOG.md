@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.91.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.91.1...v0.91.2) (2026-11-01)
+
+
+### Tests
+
+* **redline:** P25 live-cookie check, P29 fixed reasons, P32 R3 deleted, P34 IP window, T19 unpinned; verify_clean reason audited ([#1060](https://github.com/open-artifacts-ai/open-artifacts/issues/1060)) ([#1062](https://github.com/open-artifacts-ai/open-artifacts/issues/1062)) ([d8ecba6](https://github.com/open-artifacts-ai/open-artifacts/commit/d8ecba68ea15399b3142dbfc4176835dcd49da09))
+
 ## [0.91.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.91.0...v0.91.1) (2026-11-01)
 
 
