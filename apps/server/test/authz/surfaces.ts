@@ -1583,6 +1583,34 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: code("conflict"),
     },
   },
+  // Refuse: a body the schema refuses, so it never reaches the sync object
+  // (409 directory_sync_off comes first without a directory). Real: no held
+  // sweep (one needs a Google read), 409 conflict past the owner check.
+  "POST /api/v1/directory/held/:groupId/snooze": {
+    refuse: {
+      req: async () => ({
+        path: `${DIR}/held/probe-group/snooze`,
+        body: { probe: 1 },
+      }),
+      allow: either(badRequest, syncOff),
+    },
+    real: {
+      req: () => ({ path: `${DIR}/held/probe-group/snooze` }),
+      allow: code("conflict"),
+    },
+  },
+  // No snooze on the group: nothing to cancel, no audit row (200), in both
+  // modes.
+  "DELETE /api/v1/directory/held/:groupId/snooze": {
+    refuse: {
+      req: async () => ({ path: `${DIR}/held/probe-group/snooze` }),
+      allow: ok(200),
+    },
+    real: {
+      req: () => ({ path: `${DIR}/held/probe-group/snooze` }),
+      allow: ok(200),
+    },
+  },
   "POST /api/v1/directory/disconnect": {
     real: { req: () => ({ path: "" }), allow: ok(200) },
     instance: true,

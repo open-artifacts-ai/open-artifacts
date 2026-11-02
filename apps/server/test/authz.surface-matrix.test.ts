@@ -21,6 +21,7 @@ import {
 import { contentApp } from "../src/content/app.js";
 import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
 import { type AppEnv, readOnlyCap } from "../src/http/middleware.js";
+import worker from "../src/index.js";
 import manifest from "../src/mcp/tool-manifest.json";
 import { getUser } from "../src/services/users.js";
 import {
@@ -39,6 +40,7 @@ import {
   BASE,
   buildWorld,
   cookieOf,
+  E,
   googleCookie,
   io,
   mismatchHealth,
@@ -61,6 +63,7 @@ import {
   uncovered,
   unlisted,
 } from "./authz/surfaces.ts";
+import { fetchAndWait } from "./helpers.js";
 
 let w: World;
 let target: OrgTarget;
@@ -761,6 +764,40 @@ describe("CSRF: a cookie write without X-OA-Request", () => {
       status: 403,
       code: "csrf",
     });
+  });
+});
+
+/**
+ * The OAuth store copy (#1008) is a public write with no session: only its
+ * bearer key opens it, so there is no CSRF case or refusal mode. No caller's
+ * cookie or token is that key: each answers 404, the header on or off, with
+ * the route on. oauth-copy-route.test.ts covers the key itself.
+ */
+describe("POST /__oa/oauth-store/copy: no caller's credential opens it", () => {
+  it("every caller's cookie and token: 404", async () => {
+    const on = { ...E, OAUTH_COPY_KEY: "k".repeat(32) };
+    const got: Record<string, number> = {};
+    for (const who of CALLERS) {
+      const { cookie, token } = w.creds[who];
+      for (const [how, h] of [
+        ["cookie", cookie ? { cookie } : {}],
+        ["cookie+header", cookie ? { cookie, "x-oa-request": "1" } : {}],
+        ["token", token ? { authorization: `Bearer ${token}` } : {}],
+      ] as const) {
+        const r = await fetchAndWait(
+          worker as never,
+          new Request(`${BASE}/__oa/oauth-store/copy`, {
+            method: "POST",
+            headers: { ...h, "content-type": "application/json" },
+            body: "{}",
+          }),
+          on,
+        );
+        await r.body?.cancel();
+        if (r.status !== 404) got[`${who} ${how}`] = r.status;
+      }
+    }
+    expect(got).toEqual({});
   });
 });
 
