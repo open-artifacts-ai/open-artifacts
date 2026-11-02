@@ -4,7 +4,7 @@ exports[`JSON shapes (byte snapshots) > data count: equal to its schema's parse 
 
 exports[`JSON shapes (byte snapshots) > data reset: result, equal to its schema's parse > data reset 1`] = `"{"collections":2,"docs":2,"updatedAt":"<TS>"}"`;
 
-exports[`JSON shapes (byte snapshots) > healthz: public, version last > healthz 1`] = `"{"ok":true,"plan":"free","version":"<VERSION>"}"`;
+exports[`JSON shapes (byte snapshots) > healthz: public, then oauthStore > healthz 1`] = `"{"ok":true,"plan":"free","version":"<VERSION>","oauthStore":{"mode":"kv","backfilled":false,"kvWritesOffSince":null}}"`;
 
 exports[`JSON shapes (byte snapshots) > list: pages, includeDeleted, cookie and PAT > page 1 1`] = `"{"items":[{"id":"<ID5>","title":"Mine <TAG>","description":null,"format":"markdown","visibility":"private","owner":{"id":"<ID1>","email":"snap-b-<TAG>@x.com","name":"snap-b-<TAG>@x.com"},"currentVersion":1,"createdAt":"<TS>","updatedAt":"<TS>","deletedAt":null,"lastAgent":{"name":"snap-<TAG>","version":"1.2.3"},"thumbnailUrl":null,"thumbnailVersion":null,"access":"owner","capabilities":{"db":false,"viewer":false,"storage":false},"dataWriters":"viewers","allowAnonymousWrites":true},{"id":"<ID4>","title":"Edit <TAG>","description":null,"format":"code","visibility":"private","owner":{"id":"<ID0>","email":"snap-a-<TAG>@x.com","name":"snap-a-<TAG>@x.com"},"currentVersion":1,"createdAt":"<TS>","updatedAt":"<TS>","deletedAt":null,"lastAgent":{"name":"snap-<TAG>","version":null},"thumbnailUrl":null,"thumbnailVersion":null,"access":"editor","capabilities":{"db":false,"viewer":false,"storage":false},"dataWriters":"viewers","allowAnonymousWrites":true}],"nextCursor":"<CURSOR>"}"`;
 

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "19c08bbe-3771-41a7-9147-19a49fd8b5ee",
+  "id": "350b73b6-f5b2-4c28-b2f3-395835d5d8d9",
   "prevId": "c2f3ac70-231d-4c5b-9754-c33fe36b7f51",
   "tables": {
     "agent_grants": {
@@ -432,54 +432,6 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "creator_months": {
-      "name": "creator_months",
-      "columns": {
-        "month": {
-          "name": "month",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "source": {
-          "name": "source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "first_at": {
-          "name": "first_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "creator_months_month_user_id_pk": {
-          "columns": ["month", "user_id"],
-          "name": "creator_months_month_user_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "creator_months_source_check": {
-          "name": "creator_months_source_check",
-          "value": "\"creator_months\".\"source\" in ('version', 'data')"
-        }
-      }
-    },
     "directory_groups": {
       "name": "directory_groups",
       "columns": {
@@ -871,6 +823,51 @@
           "name": "login_codes_email_key_request_id_pk"
         }
       },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "oauth_kv": {
+      "name": "oauth_kv",
+      "columns": {
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "value": {
+          "name": "value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "oauth_kv_exp": {
+          "name": "oauth_kv_exp",
+          "columns": ["expires_at"],
+          "isUnique": false,
+          "where": "\"oauth_kv\".\"expires_at\" is not null"
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
     },

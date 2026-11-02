@@ -19,7 +19,7 @@ const all = () => {
 
 describe("0005_directory_revoke", () => {
   it("is the fifth migration, after 0004's audit actor", () => {
-    expect(files).toEqual([
+    expect(files.slice(0, 5)).toEqual([
       "0001_installs.sql",
       "0002_release_floor.sql",
       "0003_lifecycle.sql",

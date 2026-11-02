@@ -54,11 +54,15 @@ import {
   type SpaceRole,
   type Tier,
 } from "../hosted/core.js";
-import type {
-  AuditAction,
-  AuditEvent,
-  DirectoryGroup,
-  SyncStatus,
+import {
+  type AuditAction,
+  type AuditEvent,
+  type DirectoryGroup,
+  HELD_SNOOZE_MS,
+  HELD_SNOOZE_REASON_MAX,
+  HeldSnoozeInputSchema,
+  type HeldSweep,
+  type SyncStatus,
 } from "../hosted/directory.js";
 import {
   type GroupMapping,
@@ -144,6 +148,11 @@ export type HostedMockOptions = {
   billing?: PlanView;
   /** POST R.billingCheckout / R.billingPortal / R.billingUsage answer 503 billing_unavailable. */
   billingDown?: boolean;
+  /**
+   * Also hold an unreadable group (Contractors): a held entry that removes
+   * nobody (wouldRemove 0), which can't be confirmed or snoozed.
+   */
+  heldUnreadable?: boolean;
   /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on when google or email is enabled). */
   features?: FeatureFlag[];
 };
@@ -206,6 +215,25 @@ const mask = (email: string) => {
 };
 
 export type HostedMock = ReturnType<typeof createHostedMock>;
+
+/** A snooze body's cap (server routes/directory.ts SNOOZE_BODY_MAX). */
+const SNOOZE_BODY_MAX = 4096;
+
+// server email/templates.ts UNSAFE
+const UNSAFE =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+  /[\u0000-\u001F\u007F-\u009F\u2028\u2029\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]+/g;
+
+/**
+ * One plain line, at most `max` code points (server email/templates.ts
+ * oneLine): unsafe characters become a space, runs of spaces collapse, then
+ * trim, then a longer line is cut to max - 1 code points plus "…".
+ */
+function oneLine(s: string, max: number): string {
+  const t = s.replace(UNSAFE, " ").replace(/ {2,}/g, " ").trim();
+  const cps = Array.from(t);
+  return cps.length <= max ? t : `${cps.slice(0, max - 1).join("")}…`;
+}
 
 export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   const { me, members, artifacts, shares, err } = c;
@@ -428,7 +456,21 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
               wouldRemove: 4,
               members: 4,
               since: T0,
+              snoozedUntil: null,
+              snoozeReason: null,
             },
+            ...(o.heldUnreadable
+              ? [
+                  {
+                    ...G.contractors,
+                    wouldRemove: 0,
+                    members: 3,
+                    since: T0,
+                    snoozedUntil: null,
+                    snoozeReason: null,
+                  },
+                ]
+              : []),
           ]
         : [],
   };
@@ -490,6 +532,19 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     HttpResponse.json({
       url: `https://checkout.stripe.com/c/pay/cs_test_mock_${kind}`,
     });
+  /** Snoozed now (#412): until is still ahead (server health.ts snoozedAt). */
+  const snoozedNow = (h: HeldSweep) =>
+    !!h.snoozedUntil && Date.parse(h.snoozedUntil) > Date.now();
+  /**
+   * SyncStatus as readers see it (server health.ts heldAt): a snooze whose
+   * until passed shows as none, even before the server's alarm ends it.
+   */
+  const syncView = (): SyncStatus => ({
+    ...sync,
+    held: sync.held.map((h) =>
+      snoozedNow(h) ? h : { ...h, snoozedUntil: null, snoozeReason: null },
+    ),
+  });
   /**
    * R.directoryDisconnect / DELETE R.directory: the binding and health go,
    * memberships stay (frozen). Nothing connected: no change, no audit row.
@@ -794,7 +849,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       tokensUnverified: unhealthy && isAdmin(),
       state: isAdmin() ? sync.state : null,
       staleAt: isAdmin() ? sync.staleAt : null,
-      heldSweeps: isAdmin() ? sync.held.length : 0,
+      heldSweeps: isAdmin()
+        ? sync.held.filter((h) => !snoozedNow(h)).length
+        : 0,
     };
     for (const m of members) m.restriction = restrictionOf(m.id);
     const myCap = cap();
@@ -1997,7 +2054,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         if (directoryMode !== "google")
           return err("directory_sync_off", "Directory sync is off or frozen");
         sync.nextRunAt = iso();
-        return HttpResponse.json(sync, { status: 202 });
+        return HttpResponse.json(syncView(), { status: 202 });
       }),
     ),
     http.post(
@@ -2013,7 +2070,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           pendingCustomerChange: null,
         });
         log("directory.connect", { type: "directory", id: "google" });
-        return HttpResponse.json(sync);
+        return HttpResponse.json(syncView());
       }),
     ),
     http.post(
@@ -2033,30 +2090,176 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         return noContent();
       }),
     ),
+    // Server: routes/directory.ts (held/:groupId/confirm), sync.ts confirmHeld.
     http.post(
       "*/api/v1/directory/held/:groupId/confirm",
       authed(({ params }) => {
         if (me.user.role !== "owner") return notFound();
-        const i = sync.held.findIndex((h) => h.groupId === params.groupId);
-        if (i < 0) return notFound();
-        sync.held.splice(i, 1);
+        const off = syncOff();
+        if (off) return off;
+        // Only a 'sweep' hold (an unreadable one removes nobody) confirms.
+        const i = sync.held.findIndex(
+          (h) => h.groupId === params.groupId && h.wouldRemove > 0,
+        );
+        if (i < 0)
+          return err(
+            "conflict",
+            "This group has no held sweep to confirm; it can't be read from Google",
+          );
+        // The server applies it on the confirm's sweep; the mock at once.
+        const [h] = sync.held.splice(i, 1);
+        // The snooze row stays until the alarm ends it, expired or not.
+        if (h?.snoozedUntil)
+          log(
+            "directory.sweep.unsnoozed",
+            { type: "group", id: params.groupId as string },
+            null,
+            { why: "applied" },
+          );
         log("directory.sweep.confirmed", {
           type: "group",
           id: params.groupId as string,
         });
-        return HttpResponse.json(sync, { status: 202 });
+        return HttpResponse.json(syncView(), { status: 202 });
+      }),
+    ),
+    // Server: routes/directory.ts (held/:groupId/snooze), sync.ts snoozeHeld.
+    http.post(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(async ({ params, request }) => {
+        if (me.user.role !== "owner") return notFound();
+        const off = syncOff();
+        if (off) return off;
+        // The body is optional: none means no reason.
+        const raw = await request.clone().text();
+        if (new TextEncoder().encode(raw).byteLength > SNOOZE_BODY_MAX)
+          return err(
+            "too_large",
+            `Request body exceeds ${SNOOZE_BODY_MAX} bytes`,
+          );
+        let body: unknown = {};
+        if (raw) {
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            return err("bad_request", "Invalid JSON body");
+          }
+        }
+        const input = HeldSnoozeInputSchema.safeParse(body);
+        if (!input.success)
+          return err("bad_request", "Invalid request body", input.error.issues);
+        const reason =
+          oneLine(input.data.reason ?? "", HELD_SNOOZE_REASON_MAX) || null;
+        // Only a 'sweep' hold (an unreadable one removes nobody) snoozes.
+        const h = sync.held.find(
+          (x) => x.groupId === params.groupId && x.wouldRemove > 0,
+        );
+        if (!h)
+          return err(
+            "conflict",
+            "This group has no held sweep to snooze, or it is being re-checked; try again after the next sync",
+          );
+        // A snooze row (expired or not) is renewed.
+        const renewed = h.snoozedUntil !== null;
+        h.snoozedUntil = new Date(Date.now() + HELD_SNOOZE_MS).toISOString();
+        h.snoozeReason = reason;
+        log(
+          "directory.sweep.snoozed",
+          { type: "group", id: params.groupId as string },
+          null,
+          { until: h.snoozedUntil, renewed },
+        );
+        return HttpResponse.json(syncView());
+      }),
+    ),
+    // Server: sync.ts unsnoozeHeld. Any mode; no snooze row: no change.
+    http.delete(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(({ params }) => {
+        if (me.user.role !== "owner") return notFound();
+        const h = sync.held.find((x) => x.groupId === params.groupId);
+        if (h?.snoozedUntil) {
+          h.snoozedUntil = null;
+          h.snoozeReason = null;
+          log(
+            "directory.sweep.unsnoozed",
+            { type: "group", id: params.groupId as string },
+            null,
+            { why: "owner_cancel" },
+          );
+        }
+        return HttpResponse.json(syncView());
+      }),
+    ),
+    http.post(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(async ({ params, request }) => {
+        if (me.user.role !== "owner") return notFound();
+        const h = sync.held.find((x) => x.groupId === params.groupId);
+        if (!h || h.wouldRemove === 0)
+          return err("conflict", "This group has no held sweep to snooze");
+        // The body is optional: none means no reason.
+        const empty = !(await request.clone().text());
+        let reason: string | null = null;
+        if (!empty) {
+          const r = await c.body(request, HeldSnoozeInputSchema);
+          if (r.error) return r.error;
+          reason = r.data.reason?.trim().slice(0, 200) || null;
+        }
+        h.snoozedUntil = new Date(Date.now() + HELD_SNOOZE_MS).toISOString();
+        h.snoozeReason = reason;
+        log(
+          "directory.sweep.snoozed",
+          { type: "group", id: params.groupId as string },
+          null,
+          { until: h.snoozedUntil },
+        );
+        return HttpResponse.json(sync);
+      }),
+    ),
+    http.delete(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(({ params }) => {
+        if (me.user.role !== "owner") return notFound();
+        const h = sync.held.find((x) => x.groupId === params.groupId);
+        if (h?.snoozedUntil) {
+          h.snoozedUntil = null;
+          h.snoozeReason = null;
+          log(
+            "directory.sweep.unsnoozed",
+            { type: "group", id: params.groupId as string },
+            null,
+            { why: "owner_cancel" },
+          );
+        }
+        return HttpResponse.json(sync);
       }),
     ),
     http.get(
       "*/api/v1/directory",
-      authed(() => (isAdmin() ? HttpResponse.json(sync) : notFound())),
+      authed(() =>
+        !isAdmin()
+          ? notFound()
+          : // A snooze's note is the owner's (#412).
+            HttpResponse.json(
+              me.user.role === "owner"
+                ? syncView()
+                : {
+                    ...syncView(),
+                    held: syncView().held.map((h) => ({
+                      ...h,
+                      snoozeReason: null,
+                    })),
+                  },
+            ),
+      ),
     ),
     http.post(
       "*/api/v1/directory/disconnect",
       authed(() => {
         if (me.user.role !== "owner") return notFound();
         disconnect();
-        return HttpResponse.json(sync);
+        return HttpResponse.json(syncView());
       }),
     ),
     http.delete(

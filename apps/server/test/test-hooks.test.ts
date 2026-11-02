@@ -15,6 +15,7 @@ import { sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import worker from "../src/index.js";
 import { revokeAllGrants } from "../src/mcp/oauth-api.js";
+import { BACKFILLED_KEY, KV_WRITES_OFF_KEY } from "../src/mcp/oauth-store.js";
 import { direct, mailer, seedUser, uniq } from "./auth-helpers.js";
 
 // P2 Task 14: test hooks for P5's cross-tenant suite.
@@ -632,6 +633,49 @@ describe("hooks", () => {
     )?.id;
     await revokeAllGrants(e, uid as string);
     expect((await mcp(accessToken)).status).toBe(401);
+  });
+
+  it("oauth-client with OAUTH_STORE=d1 and no OAUTH_KV binding: the grant lives in D1", async () => {
+    const raw = on({ OAUTH_STORE: "d1" }) as unknown as Record<string, unknown>;
+    delete raw.OAUTH_KV;
+    const e = raw as unknown as Env;
+    // d1 serves only after a completed KV -> D1 copy.
+    await env.DB.prepare(
+      "insert into settings (key, value) values (?, '1') on conflict(key) do nothing",
+    )
+      .bind(BACKFILLED_KEY)
+      .run();
+    const r = await hook(e, TEST_HOOKS.oauthClient);
+    expect(r.status).toBe(200);
+    const { accessToken } = OAuthClientHookResultSchema.parse(await r.json());
+    const mcp = (t: string) =>
+      call(e, "/mcp", {
+        scheme: "https",
+        body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+        headers: {
+          authorization: `Bearer ${t}`,
+          accept: "application/json, text/event-stream",
+        },
+      });
+    expect((await mcp(accessToken)).status).toBe(200);
+    const uid = (
+      await env.DB.prepare("select id from users where email = ?")
+        .bind(`p5-oauth@${TD}`)
+        .first<{ id: string }>()
+    )?.id as string;
+    const live = await env.DB.prepare(
+      "select count(*) n from oauth_kv where key like ? and (expires_at is null or expires_at > ?)",
+    )
+      .bind(`grant:${uid}:%`, Math.floor(Date.now() / 1000))
+      .first<{ n: number }>();
+    expect(live?.n).toBeGreaterThan(0);
+    await revokeAllGrants(e, uid);
+    expect((await mcp(accessToken)).status).toBe(401);
+    // Serving in d1 stamped KV_WRITES_OFF; the later tests serve in kv,
+    // which is refused while it is set (leaving d1).
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(KV_WRITES_OFF_KEY)
+      .run();
   });
 
   it("code-caps/reset: before the key, the uniform 404 and nothing deleted", async () => {
