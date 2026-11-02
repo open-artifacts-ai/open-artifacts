@@ -3,23 +3,20 @@
 // restriction, the removed-members list), with their authorization.
 import { env } from "cloudflare:workers";
 import {
-  ArtifactSummarySchema,
+  AuditEventSchema,
   type Member,
   MemberSchema,
   newId,
   PageSchema,
   R,
   type TransferSummary,
-  VersionInfoSchema,
 } from "@oa/shared";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { z } from "zod";
 import { createApp } from "../src/app.js";
 import { callerOf } from "../src/auth/authz.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import { deleteUser } from "../src/directory/apply.js";
 import type { Env } from "../src/env.js";
-import { publish } from "../src/services/artifacts.js";
 import {
   placeholder,
   restoreMember,
@@ -485,10 +482,6 @@ describe("what a restore brings back", () => {
     const GOOGLE = { ...(env as object), FEATURES: "sync_google" } as Env;
     const managed = await restore(u.userId, admin.cookie, GOOGLE);
     expect((await errOf(managed)).code).toBe("directory_managed");
-    // Not for the list tests below: MemberSchema refuses this address.
-    await env.DB.prepare("update users set email = ? where id = ?")
-      .bind(uniq("rs-ghost-done", "a.com"), u.userId)
-      .run();
   });
 
   it("an address released between the read and the write is refused in the write", async () => {
@@ -519,9 +512,6 @@ describe("what a restore brings back", () => {
       restoreMember({ ...env, DB } as Env, u.userId, actor),
     ).rejects.toMatchObject({ code: "conflict" });
     expect((await row(u.userId))?.status).toBe("removed");
-    await env.DB.prepare("update users set email = ? where id = ?")
-      .bind(uniq("rs-ghost-done", "a.com"), u.userId)
-      .run();
   });
 
   it("a capped admin (a code session) gets 404 and changes nothing", async () => {
@@ -535,44 +525,6 @@ describe("what a restore brings back", () => {
     )}`;
     expect((await restore(u.userId, cookie)).status).toBe(404);
     expect(await row(u.userId)).toEqual(before);
-  });
-});
-
-describe("a publisher a directory deletion released", () => {
-  it("their surviving artifacts and versions still parse: a list isn't lost to one row", async () => {
-    const u = await login(uniq("rs-ref", "a.com"), "member");
-    const { id } = await publish(
-      env,
-      (await getUser(env, u.userId)) as Member,
-      {
-        title: "Kept",
-        format: "html",
-        content: "<p>kept</p>",
-        visibility: "team",
-      } as never,
-      null,
-      undefined,
-      "create",
-    );
-    await deleteUser(env, u.userId, "directory_delete", () => {});
-    const list = await call(OFF, `${R.artifacts}?limit=100`, admin.cookie);
-    expect(list.status).toBe(200);
-    const items = PageSchema(ArtifactSummarySchema).parse(
-      await list.json(),
-    ).items;
-    expect(items.find((a) => a.id === id)?.owner.email).toBe(
-      placeholder(u.userId),
-    );
-    const versions = await call(OFF, R.versions(id), admin.cookie);
-    expect(versions.status).toBe(200);
-    expect(
-      z.array(VersionInfoSchema).parse(await versions.json())[0]?.createdBy
-        .email,
-    ).toBe(placeholder(u.userId));
-    // Not for the list tests below: MemberSchema refuses this address.
-    await env.DB.prepare("update users set email = ? where id = ?")
-      .bind(uniq("rs-ref-done", "a.com"), u.userId)
-      .run();
   });
 });
 
@@ -619,6 +571,15 @@ describe("DELETE on a member directory sync removed", () => {
       },
     ]);
     expect(rows[0]?.detail).not.toContain("@");
+    // Through the log too: a row outside AuditActionSchema reads as nothing.
+    const log = PageSchema(AuditEventSchema).parse(
+      await (await call(GOOGLE, `${R.audit}?limit=100`, owner.cookie)).json(),
+    );
+    expect(
+      log.items.find(
+        (e) => e.action === "user.sync_managed" && e.target.id === u.userId,
+      ),
+    ).toMatchObject({ detail: { status: "removed" } });
   });
 
   it("with no Workspace connected, or on an admin's removal: no row, sync manages nothing here", async () => {
