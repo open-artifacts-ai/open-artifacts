@@ -550,6 +550,30 @@ describe("auto-rollback", () => {
     );
   });
 
+  it("review 7: an unhealthy fleet upgrade with no version to go back to halts the target", async () => {
+    const canary = await on(TARGET);
+    const id = await on(TARGET);
+    await job(id, {
+      kind: "upgrade",
+      workflow: "manage_install",
+      actor_kind: SYSTEM_ACTOR.kind,
+      actor_key: SYSTEM_ACTOR.key,
+      request_id: fleetRequestId(id, TARGET),
+      args: JSON.stringify({ to: TARGET }),
+      status: "done",
+      finished_at: NOW - MIN,
+    });
+    const f = fakes({ canary, answers: new Map([[id, "down"]]) });
+    await fleetDue(f.env, NOW, f.opts);
+    const lines = captureLogs(vi.spyOn);
+    await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+    expect(await rollbacks(id)).toEqual([]);
+    expect(lines).toContain(`provapi fleet rollback_no_prev ${id}`);
+    expect(
+      (await fleetConditions(f.env, NOW + 2 * MIN)).fleet_halted,
+    ).toMatchObject({ open: true, rows: [{ install_id: id }] });
+  });
+
   it("review 8: a new release mid-window keeps watching the last one's upgrades", async () => {
     // Upgraded to 0.93.0; the platform is now on 0.93.1.
     const { canary, id } = await upgraded(NOW - MIN, TARGET);
