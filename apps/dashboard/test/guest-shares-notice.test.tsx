@@ -36,7 +36,7 @@ it("the notices' copy", async () => {
     "Guests can only view",
     "Guests have view-only access to these artifacts of yours, even if you chose Editor. To let someone edit, ask an admin to make them a member.",
     "Guests can only view, everywhere on this instance",
-    "2 guest shares set to edit access, on 1 person's artifacts, work as view-only. That person sees their own list.",
+    "2 guest shares set to edit access, on 1 person's artifacts, work as view-only. People who can manage those artifacts see their own list.",
     "These guests own artifacts they can't edit. You can move them to a member.",
   ])
     expect(screen.getByText(text)).toBeVisible();
@@ -46,17 +46,17 @@ it.each([
   [
     1,
     1,
-    "1 guest share set to edit access, on 1 person's artifacts, works as view-only. That person sees their own list.",
+    "1 guest share set to edit access, on 1 person's artifacts, works as view-only. People who can manage those artifacts see their own list.",
   ],
   [
     2,
     1,
-    "2 guest shares set to edit access, on 1 person's artifacts, work as view-only. That person sees their own list.",
+    "2 guest shares set to edit access, on 1 person's artifacts, work as view-only. People who can manage those artifacts see their own list.",
   ],
   [
     3,
     2,
-    "3 guest shares set to edit access, on 2 people's artifacts, work as view-only. Each of those people sees their own list.",
+    "3 guest shares set to edit access, on 2 people's artifacts, work as view-only. People who can manage those artifacts see their own list.",
   ],
 ])(
   "the summary's counts agree on their own: %i shares, %i people",
@@ -121,7 +121,7 @@ it("the owner's summary: counts, and Transfer for a guest who owns artifacts", a
   mountHosted("/", { selfHosted: true, guestShares: 2, guestOwners: 1 });
   expect(
     await screen.findByText(
-      "2 guest shares set to edit access, on 1 person's artifacts, work as view-only. That person sees their own list.",
+      "2 guest shares set to edit access, on 1 person's artifacts, work as view-only. People who can manage those artifacts see their own list.",
     ),
   ).toBeVisible();
   const owners = await screen.findByRole("list", { name: OWNERS });

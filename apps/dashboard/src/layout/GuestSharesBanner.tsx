@@ -109,10 +109,8 @@ function SummaryNotice({
         <p>
           {n(summary.shares, "guest share", "guest shares")} set to edit access,
           on {n(summary.owners, "person's", "people's")} artifacts,{" "}
-          {summary.shares === 1 ? "works" : "work"} as view-only.{" "}
-          {summary.owners === 1
-            ? "That person sees their own list."
-            : "Each of those people sees their own list."}
+          {summary.shares === 1 ? "works" : "work"} as view-only. People who can
+          manage those artifacts see their own list.
         </p>
       )}
       {summary.guestOwners.length > 0 && (
