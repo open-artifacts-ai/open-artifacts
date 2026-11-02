@@ -290,7 +290,7 @@ describe("staging-access", () => {
       id: "pol-1",
       name: LEGACY_POLICY_NAME,
       decision: "allow",
-      include: [{ email: { email: "me@leourbina.com" } }],
+      include: [{ email: { email: "me@test.invalid" } }],
       exclude: [],
       require: [],
     };
@@ -324,7 +324,7 @@ describe("staging-access", () => {
       id: "pol-1",
       name: LEGACY_POLICY_NAME,
       decision: "allow",
-      include: [{ email: { email: "me@leourbina.com" } }],
+      include: [{ email: { email: "me@test.invalid" } }],
       session_duration: "24h",
       approval_required: true,
       approval_groups: [{ email_addresses: ["a@b.c"] }],

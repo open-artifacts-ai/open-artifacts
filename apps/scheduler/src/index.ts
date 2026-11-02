@@ -14,6 +14,7 @@ import {
   isReleaseVersion,
   REVOKE_MIN_VERSION,
 } from "@oa/provision/versions";
+import { type ProvapiEnv, provapiTick, writeTick } from "./provapi/index.js";
 import { emailQuota, type QuotaEnv } from "./quota.js";
 
 // Installs reach the brokers only through these stubs (see @oa/broker-core/gate).
@@ -28,7 +29,7 @@ export interface GateExports {
 const withGates = (gates: GateExports | undefined, id: string) =>
   gates ? { props: brokerProps(gates, id) } : undefined;
 
-export interface Env extends QuotaEnv, BrokerGateEnv {
+export interface Env extends QuotaEnv, BrokerGateEnv, ProvapiEnv {
   DISPATCHER: DispatchNamespace;
   /** Platform D1 (installs metadata only; no customer data). */
   PLATFORM_DB: D1Database;
@@ -723,12 +724,26 @@ export default {
   async scheduled(event, env, ctx) {
     const gates = ctx.exports as unknown as GateExports;
     if (event.cron === REVOKE_CRON) {
+      // The monitor's dead-man (design v7 5.8), first and in its own try:
+      // nothing after it can stop the write.
+      try {
+        await writeTick(env.PLATFORM_DB, event.scheduledTime);
+      } catch {
+        console.error("provapi tick failed db_error");
+      }
       await revokeTick(env, event.scheduledTime, { gates });
       // Own try: a sync run that aborts (D1, env) never fails the revoke tick.
       try {
         await directorySync(env, event.scheduledTime, gates);
       } catch {
         // directorySync's nightly() already logged a fixed line.
+      }
+      // The Provisioning API duties, after both, in their own try:
+      // provapiTick isolates each duty and never throws (defense only).
+      try {
+        await provapiTick(env, event.scheduledTime);
+      } catch {
+        console.error("provapi duties failed exception");
       }
       return;
     }

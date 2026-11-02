@@ -29,26 +29,26 @@ describe("effective name", () => {
   const u = (displayName: string | null, name: string) => ({
     displayName,
     name,
-    email: "me@leourbina.com",
+    email: "me@test.invalid",
   });
   it("display name, else a real IdP name, else the full email; never the local part", () => {
     expect(effectiveName(u("Leo", "me"))).toBe("Leo");
     expect(effectiveName(u(null, "Leo Urbina"))).toBe("Leo Urbina");
-    expect(effectiveName(u(null, "me"))).toBe("me@leourbina.com");
-    expect(effectiveName(u(null, "ME"))).toBe("me@leourbina.com");
-    expect(effectiveName(u(null, "  "))).toBe("me@leourbina.com");
-    expect(idpName("me", "me@leourbina.com")).toBeNull();
-    expect(idpName("Leo", "me@leourbina.com")).toBe("Leo");
+    expect(effectiveName(u(null, "me"))).toBe("me@test.invalid");
+    expect(effectiveName(u(null, "ME"))).toBe("me@test.invalid");
+    expect(effectiveName(u(null, "  "))).toBe("me@test.invalid");
+    expect(idpName("me", "me@test.invalid")).toBeNull();
+    expect(idpName("Leo", "me@test.invalid")).toBe("Leo");
   });
 
   it("emails' senderName never uses the bare local part", () => {
-    expect(senderName({ name: "me", email: "me@leourbina.com" })).toBe(
-      "me@leourbina.com",
+    expect(senderName({ name: "me", email: "me@test.invalid" })).toBe(
+      "me@test.invalid",
     );
-    expect(senderName({ name: "Me", email: "me@leourbina.com" })).toBe(
-      "me@leourbina.com",
+    expect(senderName({ name: "Me", email: "me@test.invalid" })).toBe(
+      "me@test.invalid",
     );
-    expect(senderName({ name: "Leo", email: "me@leourbina.com" })).toBe("Leo");
+    expect(senderName({ name: "Leo", email: "me@test.invalid" })).toBe("Leo");
   });
 });
 

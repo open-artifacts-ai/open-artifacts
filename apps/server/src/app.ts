@@ -21,6 +21,9 @@ import {
   session,
 } from "./http/middleware.js";
 import { cancelUnreadOnRefusal } from "./http/unread-body.js";
+import { LLMS_PATH, serveLlms } from "./mcp/llms.js";
+import { mountOAuthCopy } from "./mcp/oauth-copy.js";
+import { oauthStoreHealth } from "./mcp/oauth-store.js";
 import { SKILL_PATH, serveSkill } from "./mcp/skill.js";
 import { serveUpgrade, UPGRADE_PATH } from "./mcp/upgrade.js";
 import { type AppType, mountRoutes } from "./routes/index.js";
@@ -34,7 +37,12 @@ import { VERSION } from "./version.gen.js";
 const hooks = typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
   __OA_TEST_HOOKS_ALLOWED__ === true && { mountTestHooks, testHooksOn };
 
+/** The content host: nothing there is for crawlers. */
 export const ROBOTS = "User-agent: *\nDisallow: /";
+
+// The app host also opens the guides any AI agent is sent to read.
+// Allow comes first for parsers that take the first match.
+const APP_ROBOTS = `User-agent: *\nAllow: ${LLMS_PATH}\nAllow: ${SKILL_PATH}\nAllow: ${UPGRADE_PATH}\nDisallow: /`;
 
 export const methodNotAllowed = () =>
   errorJson(405, "bad_request", "Method not allowed", undefined, {
@@ -44,9 +52,22 @@ export const methodNotAllowed = () =>
 // Paths owned by the Worker; never served by the SPA fallback.
 // (/a/*, /no-access and /search are SPA routes and fall through to ASSETS.)
 // /_oa/* (render bundles) is content-host only: a JSON 404 here. /__oa/* is
-// reserved for platform internals (no route today): a JSON 404, never the SPA.
+// reserved for platform internals: a JSON 404, never the SPA, except POST
+// /__oa/oauth-store/copy where it is on (mcp/oauth-copy.ts).
 const WORKER_PREFIX =
   /^\/(api|auth|oauth|\.well-known|mcp|_oa|__oa|__test)(\/|$)/;
+
+// Text and Markdown files the Worker doesn't serve (/robots.txt, /skill.md,
+// /upgrade.md and /llms.txt are routes, matched before the fallback): a plain
+// 404, never the SPA shell, so an agent that guesses a wrong file sees "not
+// found". The built bundle under /assets/ still goes to ASSETS; a missing one
+// is the same plain 404.
+const TEXT_FILE = /\.(txt|md)$/i;
+const textNotFound = () =>
+  new Response("Not found\n", {
+    status: 404,
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
 
 // Decode, collapse slashes and resolve dot segments; null if malformed.
 function normalizedPath(url: string): string | null {
@@ -116,25 +137,34 @@ export function createApp(
   // INSTALL_ID (the same value authConfig uses for keys), and absent (not
   // null) when unset or empty after trimming, so self-host output is
   // unchanged. It proves routing, never authenticity: the control plane must
-  // not treat it as an authorization signal.
-  app.get("/healthz", (c) => {
+  // not treat it as an authorization signal. oauthStore (the OAuth store
+  // move): the mode, whether a full KV -> D1 copy completed, and since when
+  // KV writes are off; one D1 read, no writes (no counts, no keys), and null
+  // when D1 can't be read.
+  app.get("/healthz", async (c) => {
     const installId = c.env.INSTALL_ID?.trim();
+    const oauthStore = await oauthStoreHealth(c.env);
     return c.json({
       ok: true,
       plan: planOf(c.env.PLAN),
       version: VERSION,
+      oauthStore,
       // Only where hooks are on (the redline bundle); absent means off, so
       // production's /healthz bytes are unchanged.
       ...(hooks && hooks.testHooksOn(c.env) ? { testHooks: true } : {}),
       ...(installId ? { installId } : {}),
     });
   });
-  app.get("/robots.txt", (c) => c.text(ROBOTS));
+  app.get("/robots.txt", (c) => c.text(APP_ROBOTS));
   // Public, outside SESSION_PATHS: no session read, no D1.
   // /__test/* (P5 hooks): before any session read; 404 unless enabled.
   if (hooks) hooks.mountTestHooks(app);
+  // POST /__oa/oauth-store/copy (#1008): before any session read; 404
+  // unless OAUTH_COPY_KEY is set (mcp/oauth-copy.ts decides).
+  mountOAuthCopy(app);
   app.get(SKILL_PATH, serveSkill);
   app.get(UPGRADE_PATH, serveUpgrade);
+  app.get(LLMS_PATH, serveLlms);
   // Public sign-in offering (#359 AuthProviders): config only, before the
   // /auth/* session middleware, so it never touches D1.
   app.get(AUTH.providers, (c) => {
@@ -147,6 +177,7 @@ export function createApp(
   app.all("/robots.txt", methodNotAllowed);
   app.all(SKILL_PATH, methodNotAllowed);
   app.all(UPGRADE_PATH, methodNotAllowed);
+  app.all(LLMS_PATH, methodNotAllowed);
 
   // c.var.user (Bearer PAT wins over the cookie) for Worker routes only, so
   // SPA/asset requests never touch D1 (beyond the shell's instance-name read). Elsewhere caller() sees anonymous.
@@ -166,6 +197,9 @@ export function createApp(
     if (path === null || WORKER_PREFIX.test(path) || !c.env.ASSETS) {
       return toErrorResponse(new ApiError("not_found", "Not found"));
     }
+    const bundle = path.startsWith("/assets/");
+    const text = TEXT_FILE.test(path);
+    if (text && !bundle) return textNotFound();
     // PUBLIC_HOME: a signed-out visitor at exactly "/" goes to a public
     // artifact. Signed in = a valid session cookie (HMAC only, no D1).
     if (
@@ -181,7 +215,17 @@ export function createApp(
         });
     }
     const res = await c.env.ASSETS.fetch(c.req.raw);
-    return path.startsWith("/assets/") ? res : withInstanceMeta(c.env, res);
+    // A missing bundle .txt/.md gets ASSETS' SPA fallback (200 text/html):
+    // answer the plain 404 instead. A 304 revalidation passes through.
+    if (
+      text &&
+      (res.status >= 400 ||
+        /^text\/html/i.test(res.headers.get("content-type") ?? ""))
+    ) {
+      await res.body?.cancel();
+      return textNotFound();
+    }
+    return bundle ? res : withInstanceMeta(c.env, res);
   });
   return app;
 }
