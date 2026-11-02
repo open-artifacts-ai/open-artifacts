@@ -158,9 +158,12 @@ export function Library({ scope }: { scope: Scope }) {
   const showRevoked = gone || revoked !== null;
   const items = uniqueItems(q.data?.pages);
   // Remember agents seen so far so others stay selectable while one is filtered.
+  // A masked agent (another member's token, shown as "<owner>'s agent") gets
+  // no chip: no filter matches it.
   const seenAgents = useRef(new Set<string>());
   for (const a of items)
-    if (a.lastAgent) seenAgents.current.add(a.lastAgent.name);
+    if (a.lastAgent && !a.lastAgent.masked)
+      seenAgents.current.add(a.lastAgent.name);
   const agents = [...seenAgents.current].sort();
   const guest = me.status === "authed" && me.me.user.role === "guest";
   const meId = me.status === "authed" ? me.me.user.id : undefined;
