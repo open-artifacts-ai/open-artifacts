@@ -1135,9 +1135,9 @@ describe("testHold's held-list confirm (#1078)", () => {
 
   it("on: every CAS try lost, or every round overwritten, throws (never held:true with nothing in D1)", async () => {
     const lost = io({ writes: [false, false, false] });
-    await expect(
-      testHold(lost.x, gid, `${gid}@t`, true, NOW),
-    ).rejects.toThrow("held list write lost");
+    await expect(testHold(lost.x, gid, `${gid}@t`, true, NOW)).rejects.toThrow(
+      "held list write lost",
+    );
     expect(lost.list()).toEqual([]);
     const clobbered = io({ clobber: [true, true, true] });
     await expect(
@@ -1149,9 +1149,9 @@ describe("testHold's held-list confirm (#1078)", () => {
   it("off: a release whose entry stays in D1 throws (never held:false with the hold still counted)", async () => {
     const f = io({ writes: [true, false, false, false] });
     await testHold(f.x, gid, `${gid}@t`, true, NOW);
-    await expect(
-      testHold(f.x, gid, `${gid}@t`, false, NOW),
-    ).rejects.toThrow("held list write lost");
+    await expect(testHold(f.x, gid, `${gid}@t`, false, NOW)).rejects.toThrow(
+      "held list write lost",
+    );
     expect(f.list()).toEqual([gid]);
     const g = io({ writes: [true, false] });
     await testHold(g.x, gid, `${gid}@t`, true, NOW);
