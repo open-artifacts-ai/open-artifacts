@@ -1578,8 +1578,20 @@ describe("#1110 last round", () => {
     const [j] = await fleetJobs();
     await finish(j?.id, "failed", NOW + MIN, "upgrade_rolled_back");
     const g = fakes({ canary, tag: "v0.93.2" });
+    const lines = captureLogs(vi.spyOn);
     await fleetDue(g.env, NOW + 2 * MIN, g.opts);
     expect(await fleetJobs()).toHaveLength(1);
+    expect(lines).toContain("provapi fleet canary_blocked unhealthy");
+  });
+
+  it("F3: an install reverted to an older version, having halted one, gets its try too", async () => {
+    const canary = await on("0.93.1", { created: 0 });
+    await soaked(canary, "0.93.1");
+    const reverted = await on("0.92.0", { created: 5, health: "failing" });
+    await seedHalt(TARGET, reverted);
+    const f = fakes({ canary, tag: "v0.93.1" });
+    await fleetDue(f.env, NOW, f.opts);
+    expect(await queued()).toEqual([reverted]);
   });
 
   describe("F2: no silent stall after the canary soaks", () => {
