@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.92.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.91.2...v0.92.0) (2026-11-02)
+
+
+### Features
+
+* **oauth:** D1-backed, KV-shaped OAuth store, per-install OAUTH_STORE (kv | dual | d1) ([#826](https://github.com/open-artifacts-ai/open-artifacts/issues/826)) ([cc06054](https://github.com/open-artifacts-ai/open-artifacts/commit/cc06054fc64ad9b166114cfd9086bde9de0b4ca3))
+* **provisioning:** R2 q matches the install id, stored hosts and, for pii callers, the owner email ([#1033](https://github.com/open-artifacts-ai/open-artifacts/issues/1033)) ([#1034](https://github.com/open-artifacts-ai/open-artifacts/issues/1034)) ([288dea7](https://github.com/open-artifacts-ai/open-artifacts/commit/288dea7648fe8dbb969c48b8a6398cb05dbe95b4))
+
 ## [0.91.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.91.1...v0.91.2) (2026-11-01)
 
 
