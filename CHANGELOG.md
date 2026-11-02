@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.93.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.92.0...v0.93.0) (2026-11-02)
+
+
+### Features
+
+* **admin:** search says it matches slug, id, host or email; the mock matches as R2 does ([#1033](https://github.com/open-artifacts-ai/open-artifacts/issues/1033)) ([#1068](https://github.com/open-artifacts-ai/open-artifacts/issues/1068)) ([74f3558](https://github.com/open-artifacts-ai/open-artifacts/commit/74f35583a260404f9d4d830606cd6f652f05970f))
+* **server:** POST /__oa/oauth-store/copy for the OAuth KV -&gt; D1 copy job ([#1008](https://github.com/open-artifacts-ai/open-artifacts/issues/1008)) ([#1013](https://github.com/open-artifacts-ai/open-artifacts/issues/1013)) ([4d932e4](https://github.com/open-artifacts-ai/open-artifacts/commit/4d932e4d322786c2d3f99385946eb7415ca07c3f))
+
 ## [0.92.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.91.2...v0.92.0) (2026-11-02)
 
 
