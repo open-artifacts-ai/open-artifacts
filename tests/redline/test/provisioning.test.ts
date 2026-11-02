@@ -1070,12 +1070,36 @@ describe("OIDC JWT files", () => {
     await expect(
       mintJwt(AUDIENCES.provisioning, env, minter("https://other").f),
     ).rejects.toThrow(/another audience/);
+    const down = minter(undefined, 500);
     const e = await mintJwt(
       AUDIENCES.provisioning,
       env,
-      minter(undefined, 500).f,
+      down.f,
+      async () => {},
     ).catch((x: Error) => x.message);
     expect(e).toBe("OIDC: the token endpoint answered 500");
+    expect(down.calls).toHaveLength(3);
+    const refused = minter(undefined, 403);
+    await expect(
+      mintJwt(AUDIENCES.provisioning, env, refused.f, async () => {}),
+    ).rejects.toThrow("answered 403");
+    expect(refused.calls).toHaveLength(1);
+    const ok = minter(AUDIENCES.provisioning);
+    let first = true;
+    const waits: number[] = [];
+    const flaky = (async (...a: Parameters<typeof fetch>) => {
+      if (first) {
+        first = false;
+        return new Response("", { status: 503 });
+      }
+      return ok.f(...a);
+    }) as typeof fetch;
+    await expect(
+      mintJwt(AUDIENCES.provisioning, env, flaky, async (ms) => {
+        waits.push(ms);
+      }),
+    ).resolves.toMatch(/\./);
+    expect(waits).toEqual([1_000]);
     await expect(mintJwt(AUDIENCES.provisioning, {}, m.f)).rejects.toThrow(
       /id-token: write/,
     );
