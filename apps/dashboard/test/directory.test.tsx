@@ -886,10 +886,13 @@ it("Snooze posts the reason and refetches the status", async () => {
     within(await held()).getByRole("button", { name: "Snooze Sales" }),
   );
   const d = screen.getByRole("alertdialog");
-  expect(d).toHaveTextContent("Snooze Sales?");
+  expect(d).toHaveTextContent("Snooze changes to Sales?");
   expect(d).toHaveTextContent(
-    "Snooze until the group changes. Nobody loses access while it's snoozed. It comes back if Google's membership for this group changes, or after 30 days.",
+    "Nobody loses access while it's snoozed. It comes back when Google's list for this group changes, or in 30 days.",
   );
+  expect(
+    within(d).getByLabelText("Reason (optional)"),
+  ).toHaveAccessibleDescription("Admins see this on the row.");
   const before = statusReads;
   fireEvent.change(within(d).getByLabelText("Reason (optional)"), {
     target: { value: "Admin is fixing the group" },
@@ -937,7 +940,9 @@ it("a snoozed row shows when it ends and why; Unsnooze sends DELETE; Apply still
   const h = await held();
   expect(h).toHaveTextContent(/Snoozed until /);
   expect(h).toHaveTextContent("“Admin is fixing the group”");
-  expect(h).toHaveTextContent("Snoozed holds don't light the Settings dot.");
+  expect(h).toHaveTextContent(
+    "Everything here is snoozed, so Settings shows no dot.",
+  );
   expect(
     within(h).queryByRole("button", { name: "Snooze Engineering" }),
   ).toBeNull();
@@ -963,6 +968,7 @@ it("an admin sees a snoozed row without buttons", async () => {
   mountHosted("/settings/directory", true, asAdmin, snoozedStatus());
   const h = await held();
   expect(h).toHaveTextContent("Snoozed until ");
+  expect(h).toHaveTextContent(/Snoozed until .+ or the group changes/);
   expect(within(h).queryByRole("button")).toBeNull();
 });
 
@@ -1083,7 +1089,9 @@ it("a 409 conflict on Snooze says the change is gone and reloads the status", as
   ]);
   await snoozeSales();
   expect(
-    await findVisibleToast("This change is no longer waiting."),
+    await findVisibleToast(
+      "Someone already handled this. The list is up to date.",
+    ),
   ).toBeVisible();
   await waitFor(() => expect(reads).toBeGreaterThan(1));
 });

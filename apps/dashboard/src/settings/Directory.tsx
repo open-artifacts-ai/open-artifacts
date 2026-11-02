@@ -718,7 +718,7 @@ function HeldRow({
           {h.snoozedUntil && (
             <>
               {" "}
-              · Snoozed until <At iso={h.snoozedUntil} />
+              · Snoozed until <At iso={h.snoozedUntil} /> or the group changes
             </>
           )}
         </small>
@@ -771,22 +771,25 @@ function HeldRow({
           setSnoozing(false);
           setReason("");
         }}
-        title={`Snooze ${h.name}?`}
+        title={`Snooze changes to ${h.name}?`}
         body={
           <>
             <p>
-              Snooze until the group changes. Nobody loses access while it's
-              snoozed. It comes back if Google's membership for this group
-              changes, or after 30 days.
+              Nobody loses access while it's snoozed. It comes back when
+              Google's list for this group changes, or in 30 days.
             </p>
             <Input
               aria-label="Reason (optional)"
+              aria-describedby={`oa-held-reason-help-${h.groupId}`}
               placeholder="Reason (optional)"
               autoComplete="off"
               maxLength={HELD_SNOOZE_REASON_MAX}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
             />
+            <p id={`oa-held-reason-help-${h.groupId}`} className={muted}>
+              Admins see this on the row.
+            </p>
           </>
         }
         confirm="Snooze"
@@ -839,7 +842,9 @@ function HeldSweeps({
         held them. Nobody loses access until you apply one.
       </p>
       {held.every((h) => h.snoozedUntil) && (
-        <p className={muted}>Snoozed holds don't light the Settings dot.</p>
+        <p className={muted}>
+          Everything here is snoozed, so Settings shows no dot.
+        </p>
       )}
       <ul>
         {held.map((h) => (

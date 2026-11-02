@@ -825,8 +825,8 @@ const useHeldSnooze = <V>(fn: (v: V) => Promise<unknown>, failure: string) => {
         void qc.invalidateQueries({ queryKey: qk.directory });
         if (e.code === "conflict")
           return toast({
-            title: "This change is no longer waiting.",
-            tone: "danger",
+            title: "Someone already handled this. The list is up to date.",
+            tone: "info",
           });
       }
       failureToast(qc, failure, e);
