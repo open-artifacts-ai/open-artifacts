@@ -481,7 +481,9 @@ export async function patchMember(
  * spaces. PATs and OAuth grants are revoked and sessions end. The removed
  * row refuses every sign-in, so the shares addressed to their email are
  * kept with it and never re-admit them. Removing a lapsed guest clears
- * guest_lapsed, so a later share no longer revives them.
+ * guest_lapsed, so a later share no longer revives them. A member directory
+ * sync removed stays as they are, still 204, while sync manages the install:
+ * Workspace decides, and user.sync_managed records that the admin tried.
  *
  * `actor` is the member acting (routes; audited as them) or SYSTEM_ACTOR. An
  * admin may not remove an owner or admin, 403 owner_only, enforced in the
@@ -503,6 +505,22 @@ export async function removeMember(
     .from(shares)
     .where(eq(shares.email, row.email))
     .limit(MAX_CLOSE);
+  if (statusOf(row.status) === "removed" && row.removedBySync) {
+    if (await syncManages(env))
+      await audit(
+        env,
+        "user.sync_managed",
+        { type: "user", id },
+        auditActor(actor),
+        {
+          detail: { status: "removed" },
+          when: {
+            sql: "exists (select 1 from users where id = ? and status = 'removed' and removed_by_sync = 1)",
+            args: [id],
+          },
+        },
+      ).run();
+  }
   await setUserStatus(env, id, "removed", "admin_remove", actor, ctx);
   await closeRuntimeSockets(
     env,
