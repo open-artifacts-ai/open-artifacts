@@ -46,7 +46,7 @@ function SharesNotice({
   return (
     <Notice
       tone="info"
-      title="Guests can now only view"
+      title="Guests can only view"
       action={
         <Button
           size="sm"
@@ -59,8 +59,8 @@ function SharesNotice({
       }
     >
       <p>
-        Guests had edit access to these artifacts of yours. It now works as
-        view-only. To let someone edit, ask an admin to make them a member.
+        Guests have view-only access to these artifacts of yours, even if you
+        chose Editor. To let someone edit, ask an admin to make them a member.
       </p>
       <ul aria-label="Your shares that became view-only" className={LIST}>
         {shares.items.map((i) => (
@@ -93,7 +93,7 @@ function SummaryNotice({
   return (
     <Notice
       tone="info"
-      title="Guests can now only view, everywhere on this instance"
+      title="Guests can only view, everywhere on this instance"
       action={
         <Button
           size="sm"
@@ -107,16 +107,16 @@ function SummaryNotice({
     >
       {summary.shares > 0 && (
         <p>
-          {n(summary.shares, "guest share", "guest shares")} with edit access,
-          on {n(summary.owners, "person's", "people's")} artifacts, now work as
+          {n(summary.shares, "guest share", "guest shares")} set to edit access,
+          on {n(summary.owners, "person's", "people's")} artifacts, work as
           view-only. Each of those people sees their own list.
         </p>
       )}
       {summary.guestOwners.length > 0 && (
         <>
           <p>
-            These guests own artifacts they can no longer edit. You can move
-            them to a member.
+            These guests own artifacts they can't edit. You can move them to a
+            member.
           </p>
           <ul
             aria-label="Guests who own artifacts"

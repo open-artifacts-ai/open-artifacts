@@ -160,7 +160,11 @@ it("to a space: the helper says who can open them, and it posts the space", asyn
   const seen = calls("POST");
   mountHosted("/settings/members");
   const d = await openFromCard();
-  fireEvent.click(within(d).getByRole("radio", { name: /To a space/ }));
+  fireEvent.click(
+    within(d).getByRole("radio", {
+      name: "To a space · people with access to it can see them",
+    }),
+  );
   await chooseOption("Space", "Engineering");
   expect(d).toHaveTextContent(
     "Everyone with access to Engineering can open them, by their role.",
@@ -401,6 +405,24 @@ describe("the dialog on what the install can do", () => {
         "You won't see titles or contents. Bob Builder gets them in their Personal, owner1@outside.example loses access, and people they shared with keep theirs.",
       ),
     ).toBeVisible();
+  });
+
+  it("to a space, for an active guest: the note says they lose access", async () => {
+    mountHosted("/", { ...notices, spaces: true });
+    const d = await open();
+    fireEvent.click(
+      await within(d).findByRole("radio", {
+        name: "To a space · people with access to it can see them",
+      }),
+    );
+    fireEvent.click(within(d).getByRole("combobox", { name: "Space" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Engineering" }));
+    expect(
+      await within(d).findByText(
+        "You won't see titles or contents. owner1@outside.example loses access. Anyone with access to the space can see them.",
+      ),
+    ).toBeVisible();
+    expect(within(d).queryByText(/Everyone with access/)).toBeNull();
   });
 
   it("counts that fail to load say so, with Retry, never 0 artifacts", async () => {

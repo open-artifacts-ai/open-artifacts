@@ -29,12 +29,25 @@ it("a member sees each changed share on their artifacts, linked", async () => {
   expect(screen.queryByText(/Plus others not listed/)).toBeNull();
 });
 
+it("the notices' copy", async () => {
+  mountHosted("/", { selfHosted: true, guestShares: 2, guestOwners: 1 });
+  await shares();
+  for (const text of [
+    "Guests can only view",
+    "Guests have view-only access to these artifacts of yours, even if you chose Editor. To let someone edit, ask an admin to make them a member.",
+    "Guests can only view, everywhere on this instance",
+    "2 guest shares set to edit access, on 1 person's artifacts, work as view-only. Each of those people sees their own list.",
+    "These guests own artifacts they can't edit. You can move them to a member.",
+  ])
+    expect(screen.getByText(text)).toBeVisible();
+});
+
 it("Got it dismisses guest_shares only", async () => {
   const seen = calls("POST");
   mountHosted("/", { selfHosted: true, guestShares: 1 });
   await shares();
   const summary = await screen.findByText(
-    "Guests can now only view, everywhere on this instance",
+    "Guests can only view, everywhere on this instance",
   );
   const own = (await shares()).closest("[data-slot=alert]") as HTMLElement;
   fireEvent.click(within(own).getByRole("button", { name: "Got it" }));
@@ -78,7 +91,7 @@ it("the owner's summary: counts, and Transfer for a guest who owns artifacts", a
   mountHosted("/", { selfHosted: true, guestShares: 2, guestOwners: 1 });
   expect(
     await screen.findByText(
-      "2 guest shares with edit access, on 1 person's artifacts, now work as view-only. Each of those people sees their own list.",
+      "2 guest shares set to edit access, on 1 person's artifacts, work as view-only. Each of those people sees their own list.",
     ),
   ).toBeVisible();
   const owners = await screen.findByRole("list", { name: OWNERS });

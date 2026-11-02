@@ -1,6 +1,6 @@
 // Transfer a departed person's personal artifacts (hosted P4 Task 13, Design
 // D7, 2026-10-22): to a person (they become the owner, shares kept) or to a
-// shared space (the company owns them). Counts only, never titles. The run
+// shared space (its people can see them). Counts only, never titles. The run
 // repeats R.memberTransfer until nextCursor is null; a failure part-way shows
 // inline, and Retry moves only what's left.
 import type { Member, TransferInput, TransferResult } from "@oa/shared";
@@ -218,7 +218,9 @@ export function TransferDialog({
                 />
                 <span>
                   To a space{" "}
-                  <span className={muted}>· the company owns them</span>
+                  <span className={muted}>
+                    · people with access to it can see them
+                  </span>
                 </span>
               </label>
             </fieldset>
@@ -281,8 +283,9 @@ export function TransferDialog({
               )}
               {space && (
                 <p className={muted}>
-                  Everyone with access to {space.name} can open them, by their
-                  role.
+                  {activeGuest
+                    ? `You won't see titles or contents. ${name} loses access. Anyone with access to the space can see them.`
+                    : `Everyone with access to ${space.name} can open them, by their role.`}
                 </p>
               )}
             </div>
