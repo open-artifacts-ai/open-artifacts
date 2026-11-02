@@ -169,5 +169,7 @@ export const ALERT_KEYS = [
   "oauth_register_flood",
   "token_expiring",
   "token_invalid",
+  "fleet_halted",
+  "version_skew",
 ] as const;
 export type AlertKey = (typeof ALERT_KEYS)[number];

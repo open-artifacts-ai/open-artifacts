@@ -27,6 +27,10 @@ export interface ProvapiEnv {
   SIGNUPS?: Queue<{ signupId: string }>;
   /** The provisioner's self-serve gate; see signups.ts signupsOn. */
   SIGNUPS_ENABLED?: string;
+  /** This Worker's version; its tag is the fleet target (fleet.ts). */
+  CF_VERSION_METADATA?: WorkerVersionMetadata;
+  /** The install the fleet rollout upgrades first; unset means no rollout. */
+  FLEET_CANARY?: string;
 }
 
 /** A duty failure with a fixed log category (never the error text). */

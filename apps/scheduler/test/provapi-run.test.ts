@@ -95,6 +95,7 @@ describe("runDuties", () => {
       "signups",
       "purge",
       "health",
+      "fleet",
       "alerts",
       "prune",
     ]);

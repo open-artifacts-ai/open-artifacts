@@ -538,6 +538,9 @@ describe("deploy-hosted-platform.yml", () => {
     expect(runsFor("prod", "platform-db")).toBe(true);
     expect(runsFor("prod", "platform-db,auth-broker")).toBe(true);
     expect(runsFor("staging", "platform-db")).toBe(false);
+    // The scheduler's tag is the fleet target (#955): break-glass included.
+    expect(runsFor("prod", "scheduler")).toBe(true);
+    expect(runsFor("staging", "scheduler")).toBe(false);
     expect(runsFor("prod", "provision-token,dispatch")).toBe(false);
     expect(runsFor("staging", "provisioner,provisioning")).toBe(false);
     const i = (n: string) => steps.indexOf(named(n));

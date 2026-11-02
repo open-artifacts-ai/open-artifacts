@@ -109,7 +109,7 @@ describe("wrangler.staging.jsonc env.staging", () => {
     );
     expect(tpl.vars.SERVER_THUMBNAILS).toBe("on");
   });
-  it("logs every staging request to Workers Logs; the template logs too", () => {
+  it("logs every staging request to Workers Logs; the template logs only the app's lines", () => {
     expect(env.observability).toEqual({
       enabled: true,
       head_sampling_rate: 1,
@@ -117,8 +117,12 @@ describe("wrangler.staging.jsonc env.staging", () => {
     const tpl = JSON.parse(
       readFileSync(join(root, "apps/server/wrangler.template.jsonc"), "utf8"),
     );
-    expect(tpl.observability.enabled).toBe(true);
-    expect(tpl.observability.head_sampling_rate ?? 1).toBe(1);
+    // Self-hosts keep the app's own lines but no per-request invocation logs
+    // (which would record every URL), as hosted installs do.
+    expect(tpl.observability).toEqual({
+      enabled: true,
+      logs: { enabled: true, invocation_logs: false },
+    });
   });
   it("runs staging with PLAN=paid (the account is on Workers Paid)", () => {
     expect(env.vars.PLAN).toBe("paid");
