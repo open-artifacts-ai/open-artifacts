@@ -476,3 +476,28 @@ describe("prodclean_failed", () => {
     expect(text).not.toContain("customer");
   });
 });
+
+describe("fleet_halted copy (#1083 re-review N5)", () => {
+  it("names the codes and explains each cause, not only a failed upgrade", () => {
+    const row = (code: string): AlertRow => ({
+      install_id: null,
+      job_id: null,
+      job_kind: null,
+      code,
+      message: null,
+      since: 1,
+    });
+    const a = alertFor(
+      "fleet_halted",
+      "staging",
+      factsOf([row("no_target"), row("fleet_halt")]),
+    );
+    const text = a.text("open", 1);
+    expect(text).toContain("no_target");
+    expect(text).toContain("fleet_halt");
+    expect(text).toMatch(/no release tag/);
+    expect(text).toMatch(/two health probes on separate ticks/);
+    expect(text).toMatch(/Nothing rolled it back/);
+    expect(text).toMatch(/canary_blocked/);
+  });
+});
