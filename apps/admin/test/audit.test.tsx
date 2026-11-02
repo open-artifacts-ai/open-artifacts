@@ -1,3 +1,4 @@
+import { fixtureAudit } from "@oa/shared/provisioning/fixtures";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { auditEntries, FIXTURE_IDS, tokens } from "../src/mocks/fixtures";
@@ -22,6 +23,48 @@ it("lists entries of each outcome; aggregated refusals show a count", async () =
   expect(
     within(screen.getByRole("table")).getByText(/deleted for good/),
   ).toBeInTheDocument();
+});
+
+it("a refused call: the verb says so, its code is the detail, and no raw action or chip", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          fixtureAudit({
+            id: "adm:9",
+            action: "authz.refused",
+            outcome: "refused",
+            code: "forbidden",
+            installId: null,
+            jobId: null,
+            detail: { route: "R20", surface: "http" },
+          }),
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const row = screen.getAllByRole("row")[1] as HTMLElement;
+  const cells = within(row).getAllByRole("cell");
+  expect(cells[2]).toHaveTextContent(/^was refused$/);
+  expect(cells[4]).toHaveTextContent(/^forbidden$/);
+  expect(row).not.toHaveTextContent("authz.refused");
+  expect(row).toHaveAttribute("data-outcome", "refused");
+});
+
+it("another refused action keeps its chip and code", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({ items: [auditEntries[1]], nextCursor: null }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const row = screen.getAllByRole("row")[1] as HTMLElement;
+  expect(within(row).getByText("forbidden")).toHaveClass("oa-code");
+  expect(row).toHaveTextContent("refused: forbidden");
 });
 
 it("filters by install id from the query string", async () => {

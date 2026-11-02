@@ -108,6 +108,31 @@ it("test admin: no Agent tokens nav, no overview call, the no-email search, Crea
   ).toBeVisible();
 });
 
+it("test admin Audit: no tokens call, the page still works, and the line says whose rows", async () => {
+  signIn("test-admin");
+  renderApp("/audit");
+  expect(
+    await screen.findByText("Test admin: only this session's rows."),
+  ).toBeVisible();
+  expect(screen.queryByText(/^Every admin action/)).toBeNull();
+  await screen.findAllByRole("row");
+  expect(screen.getByRole("combobox", { name: "Actor" })).toBeVisible();
+  await waitFor(() =>
+    expect(seen.some((s) => s.path.startsWith("/api/v1/audit"))).toBe(true),
+  );
+  expect(seen.some((s) => s.path.startsWith("/api/v1/tokens"))).toBe(false);
+});
+
+it("real admin Audit: asks for tokens, with the usual line", async () => {
+  signIn("admin");
+  renderApp("/audit");
+  expect(await screen.findByText(/^Every admin action/)).toBeVisible();
+  expect(screen.queryByText(/^Test admin:/)).toBeNull();
+  await waitFor(() =>
+    expect(seen.some((s) => s.path.startsWith("/api/v1/tokens"))).toBe(true),
+  );
+});
+
 it("real admin: no test admin note", async () => {
   signIn("admin");
   renderApp("/installs");

@@ -1,4 +1,4 @@
-import { InstallIdSchema } from "@oa/shared/provisioning";
+import { type AuditEntry, InstallIdSchema } from "@oa/shared/provisioning";
 import {
   Input,
   Select,
@@ -19,7 +19,7 @@ import { useState } from "react";
 import { auditQuery, installQuery, tokensQuery } from "../api/queries";
 import { Pager } from "../components/Bits";
 import { fmtDayClock, shortId } from "../components/labels";
-import { useMe } from "../hooks/useEnv";
+import { useCan, useMe } from "../hooks/useEnv";
 import { usePaging } from "../hooks/usePaging";
 import { LoadError } from "../layout/LoadError";
 
@@ -34,6 +34,7 @@ const VERB: Record<string, string> = {
   "install.purge": "deleted for good",
   "install.retry": "retried the create of",
   "install.release_lease": "released the lease on",
+  "authz.refused": "was refused",
 };
 /** Design's sentence verb for a known action; the raw action name otherwise. */
 export const actionPhrase = (action: string) =>
@@ -82,6 +83,13 @@ export function detailLine(detail: Record<string, unknown> | null): string {
   return parts.join(" · ");
 }
 
+/** A refusal's verb says the outcome, so its code is the row's detail. */
+const isRefusal = (e: AuditEntry) => e.action === "authz.refused";
+const detailOf = (e: AuditEntry) =>
+  [isRefusal(e) ? e.code : null, detailLine(e.detail)]
+    .filter(Boolean)
+    .join(" · ");
+
 export function Audit({
   installId,
   actor,
@@ -95,7 +103,12 @@ export function Audit({
   const paging = usePaging();
   const [draft, setDraft] = useState(installId ?? "");
   const me = useMe();
-  const tokens = useQuery({ ...tokensQuery(), retry: false });
+  // A refused call writes an audit row, so don't ask without the capability.
+  const tokens = useQuery({
+    ...tokensQuery(),
+    retry: false,
+    enabled: useCan("R20"),
+  });
   const valid = !installId || InstallIdSchema.safeParse(installId).success;
   const [bad, setBad] = useState(false);
   const q = useQuery({
@@ -129,9 +142,13 @@ export function Audit({
   return (
     <>
       <h1>Audit log</h1>
-      <p className="oa-sub">
-        Every admin action, agent token call and sign-in. Newest first.
-      </p>
+      {me.data && (
+        <p className="oa-sub">
+          {me.data.principal === "test-admin"
+            ? "Test admin: only this session's rows."
+            : "Every admin action, agent token call and sign-in. Newest first."}
+        </p>
+      )}
       <form
         className="oa-tools oa-audit-tools"
         onSubmit={(e) => {
@@ -263,7 +280,7 @@ export function Audit({
                     </TableCell>
                     <TableCell>
                       {actionPhrase(e.action)}
-                      {e.outcome !== "ok" && (
+                      {e.outcome !== "ok" && !isRefusal(e) && (
                         <span className="oa-chip oa-chip-danger">
                           {e.outcome}
                           {e.code ? ": " : ""}
@@ -284,10 +301,10 @@ export function Audit({
                       )}
                     </TableCell>
                     <TableCell className="oa-audit-detail">
-                      {detailLine(e.detail)}
+                      {detailOf(e)}
                       {e.jobId && (
                         <>
-                          {detailLine(e.detail) ? " · " : ""}
+                          {detailOf(e) ? " · " : ""}
                           <Link to="/jobs/$id" params={{ id: e.jobId }}>
                             job{" "}
                             <span className="oa-code">{shortId(e.jobId)}</span>
