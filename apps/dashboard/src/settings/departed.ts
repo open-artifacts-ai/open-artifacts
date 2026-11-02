@@ -1,6 +1,7 @@
 import type { Me, Member, TransferSummary } from "@oa/shared";
 import { R } from "@oa/shared";
 import { useQueries } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { ApiClientError, api } from "../api/client";
 import { TransferSummarySchema } from "../api/contract";
 import { qk, useMembers } from "../api/queries";
@@ -30,7 +31,9 @@ const loadFailed = (q: { isLoadingError: boolean; error: unknown }) =>
  * Suspended or removed members who still have personal artifacts, with their
  * counts (never titles: only R.memberTransfer, never their artifacts).
  * People with nothing left are left out. `failed`: the list or someone's
- * summary never loaded, so `people` may be short; `retry` asks again.
+ * summary never loaded, so `people` may be short; `retry` asks again, and
+ * `retrying` holds that state until it settles, so the card and its error
+ * stay put.
  */
 export const useDeparted = (me: Me | null | undefined) => {
   const on = seesDeparted(me);
@@ -50,11 +53,20 @@ export const useDeparted = (me: Me | null | undefined) => {
       : [];
   });
   const stuck = [list, ...summaries].filter(loadFailed);
+  // Set by retry: the error it answers. Covers the summaries a retried list adds.
+  const [retried, setRetried] = useState<{ error: unknown } | null>(null);
+  const loading =
+    list.isFetching || summaries.some((q) => q.isFetching || q.isPending);
+  useEffect(() => {
+    if (retried && !loading) setRetried(null);
+  }, [retried, loading]);
   return {
     people,
-    failed: stuck.length > 0,
-    error: stuck[0]?.error,
+    failed: stuck.length > 0 || retried !== null,
+    error: stuck[0]?.error ?? retried?.error,
+    retrying: retried !== null,
     retry: () => {
+      setRetried({ error: stuck[0]?.error });
       for (const q of stuck) void q.refetch();
     },
   };

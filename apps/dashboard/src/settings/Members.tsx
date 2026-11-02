@@ -652,6 +652,7 @@ export function Members() {
           failed={departed.failed}
           error={departed.error}
           onRetry={departed.retry}
+          retrying={departed.retrying}
           meId={me?.id ?? null}
           spaces={spaces}
           capped={state.status === "authed" && state.me.auth?.cap != null}
@@ -795,6 +796,7 @@ function DepartedCard({
   failed,
   error,
   onRetry,
+  retrying,
   meId,
   spaces,
   capped,
@@ -805,6 +807,7 @@ function DepartedCard({
   failed: boolean;
   error: unknown;
   onRetry: () => void;
+  retrying: boolean;
   /** Who "Transfer all to me" moves them to. */
   meId: string | null;
   spaces: boolean;
@@ -837,14 +840,23 @@ function DepartedCard({
       )}
       {failed && (
         <LoadError
-          title="Couldn't load departed people."
+          title={
+            people.length > 0
+              ? "Some departed people didn't load."
+              : "Couldn't load departed people."
+          }
           error={error}
           onRetry={onRetry}
+          busy={retrying}
         />
       )}
     </SettingsCard>
   );
 }
+
+/** Who, count, actions; at <= 600px (as Members): who, the count full width, then the actions. */
+const DEPARTED_ROW =
+  "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-[10px] gap-y-[2px] border-0 border-t border-border py-[var(--oa-space-2)] first:border-t-0 max-[600px]:gap-y-[var(--oa-space-1)]";
 
 function DepartedRow({
   d: { member: m, summary },
@@ -891,81 +903,91 @@ function DepartedRow({
     }
   };
   return (
-    <li className="flex flex-wrap items-center gap-[10px] border-0 border-t border-border py-[var(--oa-space-2)] first:border-t-0">
-      <UserAvatar name={m.name} email={m.email} />
-      <div className="min-w-0 flex-1">
-        <b className="flex min-w-0 flex-wrap items-center gap-x-[6px] gap-y-[2px] font-medium">
-          <span className="min-w-0 break-words">{label}</span>
-          <Badge variant="outline" className="flex-none">
-            {STATUS[m.status]}
-          </Badge>
-        </b>
-        <small className={`block ${muted}`}>
-          {n} personal {n === 1 ? "artifact" : "artifacts"}
-          {summary.deleted > 0 && ` (plus ${summary.deleted} in trash)`}
-          {spaces && " · their space artifacts stay put"}
-        </small>
+    <li className={DEPARTED_ROW}>
+      <div className="col-start-1 row-span-2 row-start-1 max-[600px]:row-span-1">
+        <UserAvatar name={m.name} email={m.email} />
       </div>
-      {blocked ? (
-        <small className={muted}>{TRANSFER_OWNER_ONLY}</small>
-      ) : toMe ? (
-        <Button
-          size="sm"
-          variant="outline"
-          className="text-[length:var(--oa-text-sm)]"
-          disabled={moving}
-          onClick={() => void transferAllToMe()}
-        >
-          {moving ? "Moving…" : "Transfer all to me"}
-        </Button>
-      ) : (
-        <Button
-          size="sm"
-          variant="outline"
-          className="text-[length:var(--oa-text-sm)]"
-          aria-label={`Transfer ${label}'s artifacts`}
-          onClick={() => setOpen(true)}
-        >
-          Transfer
-        </Button>
-      )}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" aria-label={`More for ${label}`}>
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 16 16"
-              width="16"
-              height="16"
-              fill="currentColor"
-            >
-              <circle cx="3" cy="8" r="1.5" />
-              <circle cx="8" cy="8" r="1.5" />
-              <circle cx="13" cy="8" r="1.5" />
-            </svg>
+      <b className="col-start-2 row-start-1 flex min-w-0 flex-wrap items-center gap-x-[6px] gap-y-[2px] self-end font-medium max-[600px]:self-center">
+        <span className="min-w-0 break-words">{label}</span>
+        <Badge variant="outline" className="flex-none">
+          {STATUS[m.status]}
+        </Badge>
+      </b>
+      <small
+        className={`col-start-2 row-start-2 block self-start ${muted} max-[600px]:col-span-full max-[600px]:col-start-1`}
+      >
+        {n} personal {n === 1 ? "artifact" : "artifacts"}
+        {summary.deleted > 0 && ` (plus ${summary.deleted} in trash)`}
+        {spaces && " · their space artifacts stay put"}
+      </small>
+      <div
+        data-testid="departed-actions"
+        className="col-start-3 row-span-2 row-start-1 flex items-center justify-end gap-[10px] max-[600px]:col-span-full max-[600px]:col-start-1 max-[600px]:row-span-1 max-[600px]:row-start-3 max-[600px]:justify-between"
+      >
+        {blocked ? (
+          <small className={muted}>{TRANSFER_OWNER_ONLY}</small>
+        ) : toMe ? (
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-[length:var(--oa-text-sm)]"
+            disabled={moving}
+            onClick={() => void transferAllToMe()}
+          >
+            {moving ? "Moving…" : "Transfer all to me"}
           </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="end"
-          className="text-[length:var(--oa-text-sm)]"
-        >
-          {!blocked && (
-            <DropdownMenuItem disabled={moving} onSelect={() => setOpen(true)}>
-              Transfer to someone else…
-            </DropdownMenuItem>
-          )}
-          {m.status === "removed" && (
-            <DropdownMenuItem
-              disabled={moving}
-              onSelect={() => setRestoring(true)}
-            >
-              Restore…
-            </DropdownMenuItem>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-[length:var(--oa-text-sm)]"
+            aria-label={`Transfer ${label}'s artifacts`}
+            onClick={() => setOpen(true)}
+          >
+            Transfer
+          </Button>
+        )}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" aria-label={`More for ${label}`}>
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 16 16"
+                width="16"
+                height="16"
+                fill="currentColor"
+              >
+                <circle cx="3" cy="8" r="1.5" />
+                <circle cx="8" cy="8" r="1.5" />
+                <circle cx="13" cy="8" r="1.5" />
+              </svg>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            className="text-[length:var(--oa-text-sm)]"
+          >
+            {!blocked && (
+              <DropdownMenuItem
+                disabled={moving}
+                onSelect={() => setOpen(true)}
+              >
+                Transfer to someone else…
+              </DropdownMenuItem>
+            )}
+            {m.status === "removed" && (
+              <DropdownMenuItem
+                disabled={moving}
+                onSelect={() => setRestoring(true)}
+              >
+                Restore…
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
       {problem && (
-        <p role="alert" className={`m-0 basis-full ${errorText}`}>
+        <p role="alert" className={`col-span-full m-0 ${errorText}`}>
           {problem}
         </p>
       )}

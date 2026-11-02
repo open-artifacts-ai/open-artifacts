@@ -288,6 +288,78 @@ it("a list that won't load (5xx, after its retries) shows the error, and Retry l
   expect(screen.queryByText(LOAD_ERROR)).toBeNull();
 }, 15000);
 
+it("while Retry runs the card and error stay, and focus stays on the button", async () => {
+  let fail = true;
+  let release = () => {};
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => (fail ? refused(403) : HttpResponse.json([carol]))),
+    // The list answers first: the card must also hold for the new summary.
+    http.get(`*${R.memberTransfer(CAROL)}`, async () => {
+      await held;
+      return HttpResponse.json({ live: 2, deleted: 0 });
+    }),
+  ]);
+  const card = await departed();
+  const retry = await within(card).findByRole("button", { name: "Retry" });
+  retry.focus();
+  fail = false;
+  fireEvent.click(retry);
+  await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+  expect(retry).toHaveAttribute("aria-disabled", "true");
+  expect(retry).not.toBeDisabled();
+  // Past the list's answer, into the summary's wait.
+  await waitFor(() =>
+    expect(
+      lastClient.getQueryState(qk.memberTransfer(CAROL))?.fetchStatus,
+    ).toBe("fetching"),
+  );
+  expect(retry).toBeInTheDocument();
+  expect(retry).toHaveFocus();
+  expect(within(card).getByText(LOAD_ERROR)).toBeVisible();
+  // The detail stays too, so nothing jumps; a second press changes nothing.
+  expect(within(card).getByText("Refused")).toBeVisible();
+  fireEvent.click(retry);
+  await new Promise((r) => setTimeout(r, 20));
+  expect(within(card).getByText("Refused")).toBeVisible();
+  release();
+  await screen.findByText("Carol Departed");
+  await waitFor(() => expect(screen.queryByText(LOAD_ERROR)).toBeNull());
+});
+
+it("a Retry that fails again ends busy, with the error and the button", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => refused(403)),
+  ]);
+  const card = await departed();
+  const retry = await within(card).findByRole("button", { name: "Retry" });
+  fireEvent.click(retry);
+  await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+  await waitFor(() => expect(retry).not.toHaveAttribute("aria-busy"));
+  expect(retry).not.toHaveAttribute("aria-disabled");
+  expect(within(card).getByText(LOAD_ERROR)).toBeVisible();
+});
+
+it("the row's actions share a line of their own, apart from the count", async () => {
+  mountHosted("/settings/members");
+  const row = await carolRow();
+  const actions = within(row).getByTestId("departed-actions");
+  expect(
+    within(actions).getByRole("button", { name: "Transfer all to me" }),
+  ).toBeVisible();
+  expect(
+    within(actions).getByRole("button", { name: "More for Carol Departed" }),
+  ).toBeVisible();
+  expect(actions).toHaveClass("max-[600px]:col-span-full");
+  const count = within(row).getByText(/personal artifacts/);
+  expect(count).toHaveClass("max-[600px]:col-span-full");
+  expect(actions).not.toContainElement(count);
+  expect(count.closest("b")).toBeNull();
+  expect(count.parentElement).toBe(row);
+});
+
 it("a summary that won't load keeps the other rows and shows the error", async () => {
   const dan = { ...carol, id: "Dn7tNpQrSt8uVwXy", name: "Dan Gone" };
   mountHosted("/settings/members", true, undefined, [
@@ -297,7 +369,10 @@ it("a summary that won't load keeps the other rows and shows the error", async (
   ]);
   await carolRow();
   const card = await departed();
-  expect(await within(card).findByText(LOAD_ERROR)).toBeVisible();
+  expect(
+    await within(card).findByText("Some departed people didn't load."),
+  ).toBeVisible();
+  expect(within(card).queryByText(LOAD_ERROR)).toBeNull();
   expect(card).toHaveTextContent("1 person left");
   expect(card).not.toHaveTextContent("Dan Gone");
 });
