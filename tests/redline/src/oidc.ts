@@ -71,14 +71,20 @@ export interface MintEnv {
 export const canMint = (env: MintEnv): boolean =>
   !!env.ACTIONS_ID_TOKEN_REQUEST_URL && !!env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
 
+const MINT_ATTEMPTS = 3;
+const MINT_RETRY_MS = 1_000;
+
 /**
  * One JWT for `audience` from the runner's token endpoint. The answer's aud
- * must be exactly `audience`. Errors never carry the token or the JWT.
+ * must be exactly `audience`. A 5xx is tried again, twice. Errors never carry
+ * the token or the JWT.
  */
 export async function mintJwt(
   audience: string,
   env: MintEnv,
   f: typeof fetch = fetch,
+  wait: (ms: number) => Promise<void> = (ms) =>
+    new Promise((r) => setTimeout(r, ms)),
 ): Promise<string> {
   if (!canMint(env))
     throw new Error(
@@ -86,13 +92,20 @@ export async function mintJwt(
     );
   const u = new URL(env.ACTIONS_ID_TOKEN_REQUEST_URL as string);
   u.searchParams.set("audience", audience);
-  const res = await f(u, {
-    headers: {
-      authorization: `bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}`,
-      accept: "application/json",
-    },
-    redirect: "manual",
-  });
+  let res!: Response;
+  // GitHub's endpoint, not ours: a 5xx here says nothing about the product.
+  for (let attempt = 1; attempt <= MINT_ATTEMPTS; attempt++) {
+    res = await f(u, {
+      headers: {
+        authorization: `bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}`,
+        accept: "application/json",
+      },
+      redirect: "manual",
+    });
+    if (res.status < 500 || attempt === MINT_ATTEMPTS) break;
+    await res.body?.cancel();
+    await wait(MINT_RETRY_MS * attempt);
+  }
   if (res.status !== 200) {
     await res.body?.cancel();
     throw new Error(`OIDC: the token endpoint answered ${res.status}`);
