@@ -148,8 +148,10 @@ describe("share panel", () => {
       mount(panel(OWNED));
       const email = await screen.findByTitle(guest);
       const label = screen.getByText(caption);
+      // Two lines: the email alone, then the caption with the controls.
       expect(email).not.toHaveClass("truncate");
-      expect(email.nextElementSibling).toBe(label);
+      expect(email.nextElementSibling).toBeNull();
+      expect(label).toHaveClass("whitespace-nowrap");
       const select = screen.getByRole("combobox", {
         name: `Role for ${guest}`,
       });
@@ -159,6 +161,9 @@ describe("share panel", () => {
         a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
       expect(follows(label, select)).toBeTruthy();
       expect(follows(select, remove)).toBeTruthy();
+      expect(label.parentElement).not.toBe(email.parentElement);
+      expect(label.parentElement).toContainElement(select);
+      expect(label.parentElement).toContainElement(remove);
     },
   );
 
