@@ -619,8 +619,12 @@ export function InstallDetail({ id }: { id: string }) {
             <div>
               <dt>Tier · Sign-in</dt>
               <dd>
-                {i.tier ? TIER_LABEL[i.tier] : "None"} ·{" "}
-                {i.auth.providers.map(providerLabel).join(", ")}
+                {i.tier ? (
+                  TIER_LABEL[i.tier]
+                ) : (
+                  <span className="oa-note">–</span>
+                )}{" "}
+                · {i.auth.providers.map(providerLabel).join(", ")}
                 {i.auth.domains.length > 0 &&
                   ` · ${i.auth.domains.length} ${i.auth.domains.length === 1 ? "domain" : "domains"}`}
               </dd>
