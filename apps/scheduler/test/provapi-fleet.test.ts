@@ -331,6 +331,7 @@ describe("the rollout", () => {
 
   it("review 12: the cap is the insert's own guard: overlapping ticks never open more", async () => {
     const canary = await on(TARGET);
+    await soaked(canary);
     for (let i = 0; i < FLEET_CONCURRENCY; i++) {
       const id = await on(TARGET, { created: 2 + i });
       await fleetJob(id, { status: "running", finished_at: null });
@@ -345,6 +346,7 @@ describe("the rollout", () => {
 
   it("re-review N4: at the cap, no insert is even tried", async () => {
     const canary = await on(TARGET);
+    await soaked(canary);
     for (let i = 0; i < FLEET_CONCURRENCY; i++) {
       const id = await on(TARGET, { created: 2 + i });
       await fleetJob(id, { status: "running", finished_at: null });
@@ -371,6 +373,7 @@ describe("the rollout", () => {
 
   it("review 12: a stale cap read can't open more: the insert's guard holds the cap", async () => {
     const canary = await on(TARGET);
+    await soaked(canary);
     for (let i = 0; i < FLEET_CONCURRENCY; i++) {
       const id = await on(TARGET, { created: 2 + i });
       await fleetJob(id, { status: "running", finished_at: null });
@@ -395,6 +398,7 @@ describe("the rollout", () => {
 
   it("an install that moves between the read and the insert is not upgraded (the insert's own guard)", async () => {
     const canary = await on(TARGET);
+    await soaked(canary);
     const moved = await on("0.92.0");
     const f = fakes({ canary });
     // After the read of the installs behind, before the insert: an operator
@@ -427,6 +431,7 @@ describe("the rollout", () => {
 
   it("leaves out red-line, suspended, paused (review 4), busy, above-target and on-target installs", async () => {
     const canary = await on(TARGET);
+    await soaked(canary);
     await on("0.92.0", { test_hooks: 1 });
     await on("0.92.0", { suspended: true });
     // prod_dirty: active, but paused over the quarantined script.
@@ -436,9 +441,11 @@ describe("the rollout", () => {
     await job(busy, { kind: "suspend", workflow: "manage_install" });
     await on("0.94.0");
     await on(TARGET);
+    // The control: it does move, so the rest are out for their own reasons.
+    const fine = await on("0.92.0", { created: 90 });
     const f = fakes({ canary });
     await fleetDue(f.env, NOW, f.opts);
-    expect(await fleetJobs()).toEqual([]);
+    expect(await queued()).toEqual([fine]);
   });
 
   it("a red-line, suspended, paused or missing canary stops the rollout", async () => {
