@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.96.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.95.0...v0.96.0) (2026-11-02)
+
+
+### Features
+
+* **dashboard:** "Set up with an agent" card on Agents and the first-run screen ([#871](https://github.com/open-artifacts-ai/open-artifacts/issues/871)) ([4b70a3a](https://github.com/open-artifacts-ai/open-artifacts/commit/4b70a3ae6eb5c8f2fe0350079fcb7b91528a06da))
+* **server:** per-instance /llms.txt setup guide for any AI agent ([4768eb2](https://github.com/open-artifacts-ai/open-artifacts/commit/4768eb243bac8541eed50feeebeaf1e9ab7e2186))
+
+
+### Bug Fixes
+
+* an agent's token label is the owner's private note; others see "&lt;owner&gt;'s agent" ([#851](https://github.com/open-artifacts-ai/open-artifacts/issues/851)) ([8900591](https://github.com/open-artifacts-ai/open-artifacts/commit/8900591a8bdb1588e14d907e9afee96e842b0e65))
+
 ## [0.95.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.94.0...v0.95.0) (2026-11-02)
 
 
