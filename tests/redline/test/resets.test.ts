@@ -58,6 +58,18 @@ describe("reset evidence", () => {
     expect(takeFileNotes()).toEqual([]);
   });
 
+  it("our own abort isn't a reset", async () => {
+    const stalled = createServer(() => {});
+    await new Promise<void>((r) => stalled.listen(0, "127.0.0.1", () => r()));
+    const { port } = stalled.address() as AddressInfo;
+    await expect(
+      fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(50) }),
+    ).rejects.toThrow();
+    stalled.closeAllConnections();
+    stalled.close();
+    expect(takeFileNotes()).toEqual([]);
+  });
+
   it("totals carry the denominator", () => {
     expect(watch.totals()).toMatch(
       /^connections: \d+ requests, \d+ on new sockets$/,

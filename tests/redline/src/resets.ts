@@ -6,7 +6,7 @@
 // no request is changed. Logs are public: no full path, query or host name.
 import { createHash } from "node:crypto";
 import { subscribe } from "node:diagnostics_channel";
-import { isNetworkError, networkCode } from "./fetch-timeout.ts";
+import { networkCode } from "./fetch-timeout.ts";
 import { note } from "./notes.ts";
 
 const RESET_PREFIX = "reset: ";
@@ -56,7 +56,7 @@ export function watchResets(now: () => number = Date.now): {
   });
   subscribe("undici:request:error", (m) => {
     const { request, error } = m as { request: Req; error: unknown };
-    if (!isNetworkError(error)) return;
+    // Our own bound (src/fetch-timeout.ts) or a caller's abort: not a reset.
     const name = (error as Error).name;
     if (name === "AbortError" || name === "TimeoutError") return;
     const s = sent.get(request);
