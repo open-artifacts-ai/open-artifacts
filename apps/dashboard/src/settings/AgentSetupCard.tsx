@@ -11,11 +11,14 @@ export const setupPrompt = () =>
   `Set up Open Artifacts for me: follow ${location.origin}/llms.txt
 Sign in through the browser. Never ask me to paste a token into this chat.`;
 
-/** Same rule as the MCP server card on Settings > Agents: whoever has an
-    MCP URL to connect with. */
+/** Whoever the server lets connect an agent (its canConnect): not a guest,
+    not capped. The role covers Access-only installs, whose /me has no auth.
+    Consent answers 403 for anyone else, so the prompt would only fail them. */
 export function useCanSetUpAgent() {
   const state = useMe();
-  return state.status === "authed" && Boolean(state.me.instance.mcpUrl);
+  if (state.status !== "authed") return false;
+  const { user, auth, instance } = state.me;
+  return Boolean(instance.mcpUrl) && user.role !== "guest" && auth?.cap == null;
 }
 
 /** The card's body: one line, the prompt in a read-only field (wrapped,
