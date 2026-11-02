@@ -496,6 +496,28 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
+// The OAuth provider's key-value records (grants, tokens, clients, consent
+// transactions, OIDC replay markers) when OAUTH_STORE is dual or d1
+// (mcp/oauth-store.ts): KV's shape in the install's own D1. `key` uses the
+// BINARY collation, so listing by prefix walks KV's byte order. WITHOUT ROWID
+// (hand-edited into 0020): one b-tree, one row written per put. expires_at is
+// unix seconds (null: never); a read treats a row past it as missing, and the
+// nightly cron deletes such rows. metadata is the KV key metadata (JSON).
+export const oauthKv = sqliteTable(
+  "oauth_kv",
+  {
+    key: text("key").primaryKey(),
+    value: text("value").notNull(),
+    expiresAt: integer("expires_at"),
+    metadata: text("metadata"),
+  },
+  (t) => [
+    index("oauth_kv_exp")
+      .on(t.expiresAt)
+      .where(sql`${t.expiresAt} is not null`),
+  ],
+);
+
 // Small D1 counters and markers (e.g. daily OAuth client registrations), kept
 // out of KV because KV writes are the scarcer Free-plan quota.
 export const counters = sqliteTable("counters", {

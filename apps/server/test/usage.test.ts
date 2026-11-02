@@ -292,6 +292,24 @@ describe("usage", () => {
     expect(String(init.body)).not.toContain("kvOperationsAdaptiveGroups");
   });
 
+  it("OAUTH_STORE=d1 with no OAUTH_KV binding: works, and the namespace id is never queried", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => gql());
+    const e: Record<string, unknown> = {
+      ...withToken("tok"),
+      OAUTH_STORE: "d1",
+      CF_ACCOUNT_ID: "acct-kv-d1",
+    };
+    delete e.OAUTH_KV;
+    const u = await usageFor(e);
+    expect(u.available).toBe(true);
+    expect(u.metrics.map((m) => m.key)).not.toContain("kv_writes");
+    const init = graphqlCalls(spy)[0]?.[1] as RequestInit;
+    expect(String(init.body)).not.toContain("kvOperationsAdaptiveGroups");
+    expect(String(init.body)).not.toContain("kv-test");
+  });
+
   it("no WORKER_NAME -> no CPU aliases queried, CPU metrics omitted", async () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
