@@ -1349,6 +1349,28 @@ describe("Run.raw: an allow-side GET survives a dropped connection", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("P10's refusal has one try: a reset on its GET fails the case", async () => {
+    const f = fakeApi();
+    let gets = 0;
+    const io = {
+      ...f.io,
+      wait: async () => {},
+      fetch: (async (u: string, init: RequestInit) => {
+        if (/\/v1\/installs\/[^/?]+$/.test(new URL(u).pathname)) {
+          gets++;
+          throw reset();
+        }
+        return f.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    };
+    const p10 = PROBES.find((p) => p.id === "P10");
+    const out = await p10?.run(new Run(CONFIG, io)).catch((e: Error) => e);
+    if ((out as { level?: string }).level === "not-applicable")
+      throw new Error("the fake must hold a panel-made install for P10");
+    expect((out as Error).message).toBe("fetch failed");
+    expect(gets).toBe(1);
+  });
+
   it("a write has one try, even with `read`", async () => {
     const { run, calls } = flaky(1);
     await expect(run.v1("/installs", { body: {}, read: true })).rejects.toThrow(
