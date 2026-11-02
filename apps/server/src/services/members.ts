@@ -1,7 +1,6 @@
 import { normalizeEmail } from "@oa/auth-core";
 import {
   type AuditReason,
-  directoryModeOf,
   INVITE_UNREACHABLE_MESSAGE,
   type InviteUnreachableDetails,
   type Member,
@@ -25,7 +24,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { managesAdmins } from "../auth/authz.js";
-import { authConfig, type SignInProvider } from "../auth/config.js";
+import type { SignInProvider } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { shares, tokens, users } from "../db/schema.js";
@@ -51,6 +50,7 @@ import {
   RESTRICTED_SYNC_FOR_USER,
   restrictionOf,
 } from "./restriction.js";
+import { directoryMode } from "./spaces.js";
 import { insertUser, toMember } from "./users.js";
 
 const STATUSES: readonly MemberStatus[] = ["active", "suspended", "removed"];
@@ -148,10 +148,7 @@ async function existingConflict(env: Env, email: string): Promise<never> {
   if (r && statusOf(r.status) === "removed") {
     if (r.guestLapsed !== 0) throw guestLapsed();
     // Restore would refuse it too: Google Workspace brings them back.
-    if (
-      r.removedBySync &&
-      directoryModeOf(authConfig(env).features) === "google"
-    )
+    if (r.removedBySync && directoryMode(env) === "google")
       throw directoryManaged();
     const details: MemberRemovedDetails = { userId: r.id };
     throw new ApiError(
@@ -549,7 +546,7 @@ export async function restoreMember(
   if (statusOf(row.status) !== "removed" || row.role === "owner")
     throw new ApiError("member_active", "This member isn't removed");
   if (row.guestLapsed) throw guestLapsed();
-  const synced = directoryModeOf(authConfig(env).features) === "google" ? 1 : 0;
+  const synced = directoryMode(env) === "google" ? 1 : 0;
   if (synced && row.removedBySync) throw directoryManaged();
   const out = await env.DB.batch([
     stmt(env.DB, RESTORE).bind(id, Date.now(), admins, synced),
