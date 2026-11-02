@@ -16,6 +16,7 @@ import {
   Button,
   DialogFooter,
   Input,
+  Label,
 } from "@oa/ui/shadcn";
 import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -704,7 +705,11 @@ function HeldRow({
   const unsnooze = useUnsnoozeHeld();
   const empty = h.wouldRemove >= h.members;
   return (
-    <li className="flex flex-wrap items-center justify-between gap-[var(--oa-space-3)] border-0 border-t border-border py-[var(--oa-space-3)] first:border-t-0">
+    // Layout per the directory spec's held row: text left, actions right; one
+    // column under 520px. A held row is tinted until it's snoozed.
+    <li
+      className={`grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-0 border-t border-border px-3 py-2.5 first:border-t-0 max-[520px]:grid-cols-1 ${h.snoozedUntil ? "" : "bg-[var(--oa-warning-soft)]"}`}
+    >
       <div className="min-w-0">
         <b className="block font-medium">
           {h.name} ({h.email})
@@ -731,7 +736,7 @@ function HeldRow({
         )}
       </div>
       {owner && (
-        <div className="flex gap-[var(--oa-space-2)]">
+        <div className="flex flex-wrap items-center justify-end gap-1.5 max-[520px]:justify-start">
           {h.snoozedUntil ? (
             <Button
               size="sm"
@@ -756,7 +761,6 @@ function HeldRow({
           )}
           <Button
             size="sm"
-            variant="outline"
             className="text-[length:var(--oa-text-sm)]"
             aria-label={`Apply ${h.name}`}
             onClick={() => setAsking(true)}
@@ -778,18 +782,22 @@ function HeldRow({
               Nobody loses access while it's snoozed. It comes back when
               Google's list for this group changes, or in 30 days.
             </p>
-            <Input
-              aria-label="Reason (optional)"
-              aria-describedby={`oa-held-reason-help-${h.groupId}`}
-              placeholder="Reason (optional)"
-              autoComplete="off"
-              maxLength={HELD_SNOOZE_REASON_MAX}
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-            />
-            <p id={`oa-held-reason-help-${h.groupId}`} className={muted}>
-              Admins see this on the row.
-            </p>
+            <div className="grid gap-1.5">
+              <Label htmlFor={`oa-held-reason-${h.groupId}`}>
+                Reason (optional)
+              </Label>
+              <Input
+                id={`oa-held-reason-${h.groupId}`}
+                aria-describedby={`oa-held-reason-help-${h.groupId}`}
+                autoComplete="off"
+                maxLength={HELD_SNOOZE_REASON_MAX}
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
+              <p id={`oa-held-reason-help-${h.groupId}`} className={muted}>
+                Admins see this on the row.
+              </p>
+            </div>
           </>
         }
         confirm="Snooze"
@@ -846,7 +854,7 @@ function HeldSweeps({
           Everything here is snoozed, so Settings shows no dot.
         </p>
       )}
-      <ul>
+      <ul className="overflow-hidden rounded-lg border border-border">
         {held.map((h) => (
           <HeldRow
             key={h.groupId}

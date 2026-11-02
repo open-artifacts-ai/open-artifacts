@@ -735,7 +735,9 @@ it("Lift asks first, then DELETEs", async () => {
   );
 });
 
-it("Lift is a real button styled like Apply", async () => {
+// Per the directory spec: Apply on a held row is the primary action; Lift
+// and Snooze are plain (outline) buttons.
+it("Lift is a real outline button; Apply on a held row is primary", async () => {
   mountHosted("/settings/directory");
   const row = await screen.findByRole("row", {
     name: /contractors@example.com/,
@@ -746,7 +748,11 @@ it("Lift is a real button styled like Apply", async () => {
   const apply = within(await held()).getByRole("button", {
     name: "Apply Sales",
   });
-  expect(lift.className).toBe(apply.className);
+  expect(lift).toHaveClass("border-input");
+  expect(apply).toHaveClass("bg-primary");
+  expect(
+    within(await held()).getByRole("button", { name: "Snooze Sales" }),
+  ).toHaveClass("border-input");
 });
 
 it("admins manage restricted groups too", async () => {
