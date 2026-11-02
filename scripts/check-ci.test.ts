@@ -209,7 +209,14 @@ describe("ci.yml", () => {
       "authz-matrix",
     ];
     // `e2e` is an aggregate (below); its shards do the heavy work.
-    const HEAVY = ["typecheck", "test", "build", "e2e-shard", "authz-matrix"];
+    const HEAVY = [
+      "typecheck",
+      "test",
+      "build",
+      "e2e-shard",
+      "e2e-admin",
+      "authz-matrix",
+    ];
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     type Step = any;
     const raw = read(".github/workflows/ci.yml");
@@ -227,14 +234,16 @@ describe("ci.yml", () => {
       }
       expect(w.jobs["e2e-shard"].if).toBeUndefined();
       expect(w.jobs["e2e-shard"].needs).toBeUndefined();
+      expect(w.jobs["e2e-admin"].if).toBeUndefined();
+      expect(w.jobs["e2e-admin"].needs).toBeUndefined();
       expect(w.jobs.changes).toBeUndefined();
     });
     // The one exception, and why it can't pass by being skipped: `e2e` always
     // runs (never skipped), and its first, ungated step fails unless every
     // shard succeeded, so a skipped, cancelled or failed shard fails it.
-    it("e2e is the shards' aggregate: always runs, passes only when every shard passed", () => {
+    it("e2e is the aggregate of the shards and the admin job: always runs, passes only when all passed", () => {
       const job = w.jobs.e2e;
-      expect(job.needs).toBe("e2e-shard");
+      expect(job.needs).toEqual(["e2e-shard", "e2e-admin"]);
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(job.if).toBe("${{ always() }}");
       const [gate] = steps("e2e");
@@ -242,7 +251,11 @@ describe("ci.yml", () => {
       expect(gate["continue-on-error"]).toBeUndefined();
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(gate.env.SHARDS).toBe("${{ needs.e2e-shard.result }}");
-      expect(gate.run).toMatch(/^\[ "\$SHARDS" = success \]$/m);
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.ADMIN).toBe("${{ needs.e2e-admin.result }}");
+      expect(gate.run).toMatch(
+        /^\[ "\$SHARDS" = success \] && \[ "\$ADMIN" = success \]$/m,
+      );
       expect(JSON.stringify(job)).not.toContain("secrets.");
     });
     it("each heavy job checks out full history, then runs the release-only step first", () => {
@@ -436,7 +449,8 @@ describe("deploy-staging.yml", () => {
     expect(step).toContain(
       'wrangler secret delete "$name" -c wrangler.staging.jsonc --env staging',
     );
-    expect(step).toContain("echo y |");
+    expect(step).toContain("--env staging <<< y");
+    expect(step).not.toContain("echo y |");
   });
   it("ensures dashboard dist exists before wrangler deploy", () => {
     const e = idx("deploy", "ensure-dashboard-dist.sh");
@@ -858,8 +872,39 @@ describe("prod and staging tokens never cross", () => {
           }
         }
       }
-      if (isProd && r.has("CLOUDFLARE_API_TOKEN"))
-        bad.push(`${f}: prod workflow uses CLOUDFLARE_API_TOKEN`);
+      // Exception: hosted prod's Environment, hosted-prod-deploy, names its
+      // one token CLOUDFLARE_API_TOKEN; a job there may use it, never the
+      // PROD secret too.
+      if (isProd && r.has("CLOUDFLARE_API_TOKEN")) {
+        const doc = parse(readFileSync(join(base, f), "utf8")) as Record<
+          string,
+          unknown
+        >;
+        const { jobs: rawJobs, ...outside } = doc;
+        // Any secret outside a job (top-level env, defaults): the old blanket rule.
+        if (
+          /secrets\.(PROD_)?CLOUDFLARE_API_TOKEN/.test(JSON.stringify(outside))
+        )
+          bad.push(
+            `${f}: prod workflow uses CLOUDFLARE_API_TOKEN outside a job`,
+          );
+        const jobs = (rawJobs ?? {}) as Record<
+          string,
+          { environment?: unknown }
+        >;
+        for (const [name, job] of Object.entries(jobs)) {
+          const s = JSON.stringify(job);
+          if (!/secrets\.CLOUDFLARE_API_TOKEN/.test(s)) continue;
+          const env =
+            typeof job.environment === "object" && job.environment !== null
+              ? (job.environment as { name?: unknown }).name
+              : job.environment;
+          if (env !== "hosted-prod-deploy")
+            bad.push(`${f}: prod workflow uses CLOUDFLARE_API_TOKEN`);
+          else if (s.includes("secrets.PROD_CLOUDFLARE_API_TOKEN"))
+            bad.push(`${f}: job ${name} mixes PROD and hosted tokens`);
+        }
+      }
     }
     return bad;
   };
@@ -1133,6 +1178,44 @@ describe("prod and staging tokens never cross", () => {
       "on: push\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: x\n        env:\n          A: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}\n",
     );
     expect(violations(tmp)).toHaveLength(2);
+  });
+  it("lets a prod workflow use CLOUDFLARE_API_TOKEN only in hosted-prod-deploy, alone", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "wf-"));
+    const job = (envName: string, extra = "") =>
+      `on: push\njobs:\n  j:\n    runs-on: x\n${envName ? `    environment: ${envName}\n` : ""}    steps:\n      - run: x\n        env:\n          A: \${{ secrets.CLOUDFLARE_API_TOKEN }}\n${extra}`;
+    writeFileSync(join(tmp, "prod-ok.yml"), job("hosted-prod-deploy"));
+    expect(violations(tmp)).toEqual([]);
+    writeFileSync(join(tmp, "prod-staging.yml"), job("hosted-staging-deploy"));
+    writeFileSync(
+      join(tmp, "prod-mixed.yml"),
+      job(
+        "hosted-prod-deploy",
+        "          B: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}\n",
+      ),
+    );
+    expect(violations(tmp).sort()).toEqual([
+      "prod-mixed.yml: job j mixes PROD and hosted tokens",
+      "prod-staging.yml: prod workflow uses CLOUDFLARE_API_TOKEN",
+    ]);
+  });
+  it("a prod workflow's token outside a job still fails; the object environment form is allowed", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "wf-"));
+    writeFileSync(
+      join(tmp, "prod-top.yml"),
+      "on: push\nenv:\n  X: ${{ secrets.CLOUDFLARE_API_TOKEN }}\njobs:\n  j:\n    runs-on: x\n    environment: hosted-prod-deploy\n    steps:\n      - run: x\n",
+    );
+    writeFileSync(
+      join(tmp, "prod-topmix.yml"),
+      "on: push\nenv:\n  P: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}\njobs:\n  j:\n    runs-on: x\n    environment: hosted-prod-deploy\n    steps:\n      - run: x\n        env:\n          A: ${{ secrets.CLOUDFLARE_API_TOKEN }}\n",
+    );
+    writeFileSync(
+      join(tmp, "prod-obj.yml"),
+      "on: push\njobs:\n  j:\n    runs-on: x\n    environment:\n      name: hosted-prod-deploy\n    steps:\n      - run: x\n        env:\n          A: ${{ secrets.CLOUDFLARE_API_TOKEN }}\n",
+    );
+    expect(violations(tmp).sort()).toEqual([
+      "prod-top.yml: prod workflow uses CLOUDFLARE_API_TOKEN outside a job",
+      "prod-topmix.yml: prod workflow uses CLOUDFLARE_API_TOKEN outside a job",
+    ]);
   });
 });
 
@@ -1563,5 +1646,99 @@ describe("demo instance workflows", () => {
       for (const f of readdirSync(dir).filter((n) => /^ops-prod-/.test(n)))
         for (const m of modesIn(f)) expect(prod.has(m), `${f} ${m}`).toBe(true);
     });
+  });
+});
+
+// GitHub evaluates workflow- and job-level env before a runner exists: the
+// runner and steps contexts are not available there, and a dispatch fails
+// with "Unrecognized named-value". actionlint (ci.yml lint job) also catches
+// this; this keeps it in the test suite.
+describe("workflow and job env use only contexts available there", () => {
+  const dir = join(root, ".github/workflows");
+  for (const file of readdirSync(dir).filter((f) => /\.ya?ml$/.test(f))) {
+    it(file, () => {
+      const w = wf(file);
+      const bad: string[] = [];
+      const check = (where: string, env: unknown) => {
+        for (const [k, v] of Object.entries(
+          (env ?? {}) as Record<string, unknown>,
+        ))
+          if (/\$\{\{[^}]*\b(runner|steps)\./.test(String(v)))
+            bad.push(`${where}.env.${k}`);
+      };
+      check("workflow", w.env);
+      for (const [job, def] of Object.entries(
+        // biome-ignore lint/suspicious/noExplicitAny: workflow YAML is untyped
+        (w.jobs ?? {}) as Record<string, any>,
+      ))
+        check(`jobs.${job}`, def.env);
+      expect(bad).toEqual([]);
+    });
+  }
+});
+
+// W9b (design 10.1): install writes are the Provisioning API's. The
+// hosted-ops workflow, the CLI's write commands and the laptop red-line
+// scripts stay gone, and no workflow names their secrets again.
+describe("W9b: the retired hosted writes stay retired", () => {
+  const RETIRED_FILES = [
+    ".github/workflows/hosted-ops.yml",
+    "scripts/ci/hosted-ops-workflow.test.ts",
+    "scripts/ci/hosted-turnstile-keys.sh",
+    "scripts/hosted/src/ci-args.ts",
+    "scripts/hosted/src/redline-creds.ts",
+    "scripts/ops/redline-deploy.sh",
+    "tests/redline/src/prod-clean-cli.ts",
+  ];
+  const RETIRED_COMMANDS = [
+    "create",
+    "upgrade",
+    "rollback",
+    "update-vars",
+    "delete",
+    "release-lease",
+    "owner-token",
+    "turnstile-init",
+    "ci-token-sweep",
+    "signup-redrive",
+    "redline-creds",
+  ];
+  const workflows = readdirSync(join(root, ".github/workflows")).filter((f) =>
+    /\.ya?ml$/.test(f),
+  );
+
+  it("the retired files do not exist", () => {
+    for (const f of RETIRED_FILES)
+      expect(existsSync(join(root, f)), f).toBe(false);
+  });
+
+  it("no workflow names a retired file, target or secret", () => {
+    const banned =
+      /hosted-ops|ci-args|redline-creds|redline-deploy|hosted-turnstile-keys|prod-clean-cli|inventory-key|INVENTORY_KEY|secrets\.REDLINE_RL_|CREATE_OWNER_EMAIL|TURNSTILE_KEYS/;
+    for (const f of workflows)
+      expect(read(`.github/workflows/${f}`), f).not.toMatch(banned);
+  });
+
+  it("the CLI has only status and the two publishes, and refuses each retired command", () => {
+    const src = read("scripts/hosted/src/cli.ts");
+    const m = src.match(/export const COMMANDS = \[([^\]]*)\]/);
+    const cmds = [...(m?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map((x) => x[1]);
+    expect(cmds).toEqual(["status", "publish-release", "publish-floor"]);
+    const r = src.match(/export const RETIRED_COMMANDS = \[([^\]]*)\]/);
+    const retired = [...(r?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map(
+      (x) => x[1],
+    );
+    expect(retired).toEqual(RETIRED_COMMANDS);
+  });
+
+  it("every oa:hosted call in a workflow is a kept command", () => {
+    for (const f of workflows)
+      for (const [, cmd] of read(`.github/workflows/${f}`).matchAll(
+        /oa:hosted\s+(?:"\$\{[^}]*\}"|([a-z-]+))/g,
+      ))
+        expect(
+          ["status", "publish-release", "publish-floor"],
+          `${f}: ${cmd}`,
+        ).toContain(cmd ?? "(argv)");
   });
 });

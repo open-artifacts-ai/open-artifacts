@@ -1,0 +1,17 @@
+// The workerd test Worker: the provisioner's own entrypoint under
+// nodejs_compat (provision runs there). Tests build fake bindings per case;
+// the consumer suite uses this platform D1, migrated from the real schema.
+{
+  "name": "oa-provisioner-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    // The consumer suite's platform D1 (signups).
+    {
+      "binding": "SIGNUPS_DB",
+      "database_name": "oa-signups-test",
+      "database_id": "00000000-0000-0000-0000-000000000002"
+    }
+  ]
+}

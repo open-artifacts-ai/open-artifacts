@@ -3,14 +3,19 @@ import {
   type BrokerGateProps,
   brokerProps,
 } from "@oa/broker-core/gate";
-import { isInstallId, names, type Env as OaEnv } from "@oa/provision/names";
+import { names, type Env as OaEnv, parseHostsValue } from "@oa/provision/names";
+import { unavailable } from "./unavailable.js";
 
 // The install's only path to the brokers (see @oa/broker-core/gate).
 export { BrokerGate } from "@oa/broker-core/gate";
+export { CLOSED_COPY, PAUSED_COPY } from "./unavailable.js";
 
 export interface Env extends BrokerGateEnv {
   DISPATCHER: DispatchNamespace;
-  /** host -> install id, written by provisioning (create and delete). */
+  /**
+   * host -> HOSTS value (`<id>`, `paused:<id>` or `closed:<id>`), written by
+   * provisioning; read only through parseHostsValue.
+   */
   HOSTS: KVNamespace;
   OA_ENV: OaEnv;
 }
@@ -58,14 +63,19 @@ export default {
   async fetch(req, env, ctx) {
     const host = hostOf(req);
     if (!host) return notFound();
-    let id: string | null;
+    let value: string | null;
     try {
-      id = await env.HOSTS.get(host, { cacheTtl: 60 });
+      value = await env.HOSTS.get(host, { cacheTtl: 60 });
     } catch {
       console.error("dispatch failed", "kv", host);
       return notFound();
     }
-    if (typeof id !== "string" || !isInstallId(id)) return notFound();
+    // The one parser; null (a bad value or a platform principal) is the 404.
+    const parsed = parseHostsValue(value);
+    if (!parsed) return notFound();
+    // Suspended or deleting: answered here, the install is never called.
+    if (parsed.mode !== "serving") return unavailable(req, parsed.mode);
+    const id = parsed.installId;
     try {
       // The original Request, unread and unchanged (body, Upgrade, Cookie),
       // with this install's broker gates in ctx.props for this request only.
