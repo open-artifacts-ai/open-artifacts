@@ -32,6 +32,10 @@ export const ownerOnlySource = (source: Member, callerIsOwner: boolean) =>
 export const artifacts = (n: number) =>
   `${n} ${n === 1 ? "artifact" : "artifacts"}`;
 
+/** "2 artifacts (and 1 in trash)"; no bracket with nothing in trash. */
+export const artifactsAndTrash = (live: number, trash: number) =>
+  `${artifacts(live)}${trash > 0 ? ` (and ${trash} in trash)` : ""}`;
+
 /** Runs every page; resolves with the number moved. `onProgress(moved, remaining)`. */
 export async function runAll(
   run: (i: TransferInput) => Promise<TransferResult>,
@@ -150,7 +154,7 @@ export function TransferDialog({
         },
       );
       toast({
-        title: `Moved ${artifacts(t.live)}${t.of > t.live ? ` (and ${t.of - t.live} in trash)` : ""} to ${target.label}.`,
+        title: `Moved ${artifactsAndTrash(t.live, t.of - t.live)} to ${target.label}.`,
         tone: "success",
       });
       onClose();

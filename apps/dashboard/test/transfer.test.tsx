@@ -7,11 +7,13 @@ import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
+import { qk } from "../src/api/queries";
 import { runAll } from "../src/settings/Transfer";
 import {
   calls,
   findVisibleToast,
   installHarness,
+  lastClient,
   mount,
   mountHosted,
   server,
@@ -226,13 +228,111 @@ it("Transfer all to me moves every page to the caller in one click", async () =>
       name: "Transfer all to me",
     }),
   );
-  await findVisibleToast("Moved 3 artifacts from Carol Departed to you.");
+  await findVisibleToast(
+    "Moved 2 artifacts (and 1 in trash) from Carol Departed to you.",
+  );
   expect(
     seen.filter((c) => c.path === R.memberTransfer(CAROL)).map((c) => c.body),
   ).toEqual([
     { to: { kind: "user", userId: ADA } },
     { to: { kind: "user", userId: ADA }, cursor: "c1" },
   ]);
+});
+
+it("Transfer all to me's toast has no bracket with nothing in trash", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    ...removedCarol,
+    http.post(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ moved: 2, remaining: 0, nextCursor: null }),
+    ),
+  ]);
+  fireEvent.click(
+    await within(await carolRow()).findByRole("button", {
+      name: "Transfer all to me",
+    }),
+  );
+  await findVisibleToast("Moved 2 artifacts from Carol Departed to you.");
+});
+
+const LOAD_ERROR = "Couldn't load departed people.";
+const refused = (status: number) =>
+  HttpResponse.json(
+    { error: { code: "internal", message: "Refused" } },
+    { status },
+  );
+/** GET R.members: the active list, and `gone` for ?status=. */
+const membersWith = (gone: () => Response) =>
+  http.get(`*${R.members}`, ({ request }) =>
+    new URL(request.url).searchParams.get("status")
+      ? gone()
+      : HttpResponse.json(fixtures.members),
+  );
+
+it("a list that won't load (5xx, after its retries) shows the error, and Retry loads it", async () => {
+  let fail = true;
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => (fail ? refused(500) : HttpResponse.json([carol]))),
+    removedCarol[1],
+  ]);
+  const card = await screen.findByRole(
+    "region",
+    { name: "Departed" },
+    { timeout: 8000 },
+  );
+  expect(within(card).getByText(LOAD_ERROR)).toBeVisible();
+  expect(card).not.toHaveTextContent(/left with personal artifacts/);
+  fail = false;
+  fireEvent.click(within(card).getByRole("button", { name: "Retry" }));
+  // The old card goes while Retry runs: look again from the page.
+  await screen.findByText("Carol Departed");
+  expect(screen.queryByText(LOAD_ERROR)).toBeNull();
+}, 15000);
+
+it("a summary that won't load keeps the other rows and shows the error", async () => {
+  const dan = { ...carol, id: "Dn7tNpQrSt8uVwXy", name: "Dan Gone" };
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => HttpResponse.json([carol, dan])),
+    removedCarol[1],
+    http.get(`*${R.memberTransfer(dan.id)}`, () => refused(403)),
+  ]);
+  await carolRow();
+  const card = await departed();
+  expect(await within(card).findByText(LOAD_ERROR)).toBeVisible();
+  expect(card).toHaveTextContent("1 person left");
+  expect(card).not.toHaveTextContent("Dan Gone");
+});
+
+it("a failed refetch keeps the cached rows, with no error", async () => {
+  let fail = false;
+  mountHosted("/settings/members", true, undefined, [
+    removedCarol[0],
+    http.get(`*${R.memberTransfer(CAROL)}`, () =>
+      fail ? refused(403) : HttpResponse.json({ live: 2, deleted: 0 }),
+    ),
+  ]);
+  await carolRow();
+  fail = true;
+  await lastClient.refetchQueries({ queryKey: qk.memberTransfer(CAROL) });
+  await waitFor(() =>
+    expect(lastClient.getQueryState(qk.memberTransfer(CAROL))?.status).toBe(
+      "error",
+    ),
+  );
+  expect(screen.queryByText(LOAD_ERROR)).toBeNull();
+  expect(await carolRow()).toHaveTextContent("2 personal artifacts");
+});
+
+it("a 404 is the role gate, not a load failure: no card", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => refused(404)),
+  ]);
+  await screen.findByText("Bob Builder");
+  await waitFor(() =>
+    expect(
+      lastClient.getQueryState(qk.memberList("suspended,removed"))?.status,
+    ).toBe("error"),
+  );
+  expect(screen.queryByRole("region", { name: "Departed" })).toBeNull();
 });
 
 it("a capped (restricted) owner gets Transfer, not Transfer all to me", async () => {

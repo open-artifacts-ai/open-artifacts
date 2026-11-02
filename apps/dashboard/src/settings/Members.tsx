@@ -43,6 +43,7 @@ import {
 } from "../auth/reach";
 import { useMe } from "../auth/useMe";
 import { CopyLink } from "../layout/CopyLink";
+import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
 import { toast } from "../layout/toast";
@@ -54,7 +55,7 @@ import { clearDenied, denyMember, useDenied } from "./denied";
 import { type Departed, seesDeparted, useDeparted } from "./departed";
 import { restrictionReason } from "./restriction";
 import {
-  artifacts,
+  artifactsAndTrash,
   ownerOnlySource,
   runAll,
   TRANSFER_OWNER_ONLY,
@@ -645,9 +646,12 @@ export function Members() {
   const [showRemoved, setShowRemoved] = useState(false);
   return (
     <div className={STACK}>
-      {departed.length > 0 && (
+      {(departed.people.length > 0 || departed.failed) && (
         <DepartedCard
-          people={departed}
+          people={departed.people}
+          failed={departed.failed}
+          error={departed.error}
+          onRetry={departed.retry}
           meId={me?.id ?? null}
           spaces={spaces}
           capped={state.status === "authed" && state.me.auth?.cap != null}
@@ -788,12 +792,19 @@ const restoreRefusal = (e: unknown, first: string) => {
 /** Departed people who still have personal artifacts (counts only, never titles). */
 function DepartedCard({
   people,
+  failed,
+  error,
+  onRetry,
   meId,
   spaces,
   capped,
   owner,
 }: {
   people: Departed[];
+  /** The list or someone's counts never loaded: `people` may be short. */
+  failed: boolean;
+  error: unknown;
+  onRetry: () => void;
   /** Who "Transfer all to me" moves them to. */
   meId: string | null;
   spaces: boolean;
@@ -804,22 +815,33 @@ function DepartedCard({
 }) {
   return (
     <SettingsCard id="oa-departed-h" title="Departed">
-      <p className={muted}>
-        {people.length === 1
-          ? "1 person left with personal artifacts to transfer."
-          : `${people.length} people left with personal artifacts to transfer.`}
-      </p>
-      <ul className="grid p-0">
-        {people.map((d) => (
-          <DepartedRow
-            key={d.member.id}
-            d={d}
-            toMe={capped ? null : meId}
-            spaces={spaces}
-            blocked={ownerOnlySource(d.member, owner)}
-          />
-        ))}
-      </ul>
+      {people.length > 0 && (
+        <>
+          <p className={muted}>
+            {people.length === 1
+              ? "1 person left with personal artifacts to transfer."
+              : `${people.length} people left with personal artifacts to transfer.`}
+          </p>
+          <ul className="grid p-0">
+            {people.map((d) => (
+              <DepartedRow
+                key={d.member.id}
+                d={d}
+                toMe={capped ? null : meId}
+                spaces={spaces}
+                blocked={ownerOnlySource(d.member, owner)}
+              />
+            ))}
+          </ul>
+        </>
+      )}
+      {failed && (
+        <LoadError
+          title="Couldn't load departed people."
+          error={error}
+          onRetry={onRetry}
+        />
+      )}
     </SettingsCard>
   );
 }
@@ -854,8 +876,10 @@ function DepartedRow({
         { kind: "user", userId: toMe },
         () => {},
       );
+      // The run counts trash too: the dialog's form splits it back out.
+      const trash = Math.min(summary.deleted, moved);
       toast({
-        title: `Moved ${artifacts(moved)} from ${label} to you.`,
+        title: `Moved ${artifactsAndTrash(moved - trash, trash)} from ${label} to you.`,
         tone: "success",
       });
     } catch (e) {
