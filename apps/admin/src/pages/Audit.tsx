@@ -35,7 +35,15 @@ const VERB: Record<string, string> = {
   "install.retry": "retried the create of",
   "install.release_lease": "released the lease on",
   "authz.refused": "was refused",
+  "job.accepted": "started a job on",
+  "job.refused": "had a job refused on",
 };
+/**
+ * The actions `own` reach can filter on. Its rows are its API calls: a job
+ * accepted or refused, or a refused route. A create and an upgrade are both
+ * job.accepted (detail.kind tells them apart), and R17 matches one exact action.
+ */
+const OWN_ACTIONS = ["job.accepted", "job.refused", "authz.refused"];
 /** Design's sentence verb for a known action; the raw action name otherwise. */
 export const actionPhrase = (action: string) =>
   Object.hasOwn(VERB, action) ? VERB[action] : action;
@@ -92,7 +100,7 @@ const detailOf = (e: AuditEntry) =>
 
 export function Audit({
   installId,
-  actor,
+  actor: actorParam,
   action,
 }: {
   installId?: string;
@@ -103,6 +111,10 @@ export function Audit({
   const paging = usePaging();
   const [draft, setDraft] = useState(installId ?? "");
   const me = useMe();
+  // Every row is this principal's, so an actor filter could only hide them.
+  const ownReach = me.data?.principal === "test-admin";
+  const actor = ownReach ? undefined : actorParam;
+  const actions = ownReach ? OWN_ACTIONS : Object.keys(VERB);
   // A refused call writes an audit row, so don't ask without the capability.
   const tokens = useQuery({
     ...tokensQuery(),
@@ -145,7 +157,7 @@ export function Audit({
       {me.data && (
         <p className="oa-sub">
           {me.data.principal === "test-admin"
-            ? "Test admin: only this session's rows."
+            ? "Test admin: only your own rows."
             : "Every admin action, agent token call and sign-in. Newest first."}
         </p>
       )}
@@ -161,24 +173,26 @@ export function Audit({
           go({ installId: id || undefined, actor, action });
         }}
       >
-        <Select
-          value={actor || ANY}
-          onValueChange={(v) =>
-            go({ installId, actor: v === ANY ? undefined : v, action })
-          }
-        >
-          <SelectTrigger aria-label="Actor" className="oa-select">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent position="popper" align="start">
-            <SelectItem value={ANY}>Any actor</SelectItem>
-            {[...actors].map(([v, l]) => (
-              <SelectItem key={v} value={v}>
-                {l}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {!ownReach && (
+          <Select
+            value={actor || ANY}
+            onValueChange={(v) =>
+              go({ installId, actor: v === ANY ? undefined : v, action })
+            }
+          >
+            <SelectTrigger aria-label="Actor" className="oa-select">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent position="popper" align="start">
+              <SelectItem value={ANY}>Any actor</SelectItem>
+              {[...actors].map(([v, l]) => (
+                <SelectItem key={v} value={v}>
+                  {l}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <Select
           value={action || ANY}
           onValueChange={(v) =>
@@ -190,10 +204,10 @@ export function Audit({
           </SelectTrigger>
           <SelectContent position="popper" align="start">
             <SelectItem value={ANY}>Any action</SelectItem>
-            {action && !Object.hasOwn(VERB, action) && (
-              <SelectItem value={action}>{action}</SelectItem>
+            {action && !actions.includes(action) && (
+              <SelectItem value={action}>{actionPhrase(action)}</SelectItem>
             )}
-            {Object.keys(VERB).map((a) => (
+            {actions.map((a) => (
               <SelectItem key={a} value={a}>
                 {actionPhrase(a)}
               </SelectItem>
@@ -288,10 +302,12 @@ export function Audit({
                         </span>
                       )}
                       {e.count > 1 && (
-                        <span data-testid="count"> x{e.count}</span>
+                        <span data-testid="count"> {e.count} times</span>
                       )}
                     </TableCell>
-                    <TableCell>
+                    <TableCell
+                      className={e.installId ? undefined : "oa-audit-none"}
+                    >
                       {e.installId ? (
                         <Link to="/installs/$id" params={{ id: e.installId }}>
                           {slugs.get(e.installId) ?? e.installId}

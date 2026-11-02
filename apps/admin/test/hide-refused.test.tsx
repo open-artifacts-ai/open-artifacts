@@ -1,6 +1,6 @@
 import type { InstallDetail, RouteId } from "@oa/shared/provisioning";
 import { fixtureMe } from "@oa/shared/provisioning/fixtures";
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { canCall, canSeePii } from "../src/hooks/useEnv";
 import { installsByState } from "../src/mocks/fixtures";
@@ -112,15 +112,56 @@ it("test admin Audit: no tokens call, the page still works, and the line says wh
   signIn("test-admin");
   renderApp("/audit");
   expect(
-    await screen.findByText("Test admin: only this session's rows."),
+    await screen.findByText("Test admin: only your own rows."),
   ).toBeVisible();
   expect(screen.queryByText(/^Every admin action/)).toBeNull();
   await screen.findAllByRole("row");
-  expect(screen.getByRole("combobox", { name: "Actor" })).toBeVisible();
   await waitFor(() =>
     expect(seen.some((s) => s.path.startsWith("/api/v1/audit"))).toBe(true),
   );
   expect(seen.some((s) => s.path.startsWith("/api/v1/tokens"))).toBe(false);
+});
+
+const options = async (name: string) => {
+  fireEvent.click(await screen.findByRole("combobox", { name }));
+  return (await screen.findAllByRole("option")).map((o) => o.textContent);
+};
+
+it("test admin Audit: no Actor filter, and only the actions its rows can have", async () => {
+  signIn("test-admin");
+  renderApp("/audit");
+  await screen.findByText("Test admin: only your own rows.");
+  expect(screen.queryByRole("combobox", { name: "Actor" })).toBeNull();
+  expect(await options("Action")).toEqual([
+    "Any action",
+    "started a job on",
+    "had a job refused on",
+    "was refused",
+  ]);
+});
+
+it("test admin Audit: an actor left in the URL doesn't narrow, and an old action stays shown", async () => {
+  signIn("test-admin");
+  renderApp("/audit?actor=scheduler&action=install.purge");
+  await screen.findByText("Test admin: only your own rows.");
+  await waitFor(() => {
+    const last = seen.filter((s) => s.path.startsWith("/api/v1/audit")).at(-1);
+    expect(last?.path).toContain("action=install.purge");
+    expect(last?.path).not.toContain("actor=");
+  });
+  expect(await options("Action")).toContain("deleted for good");
+});
+
+it("real admin Audit: keeps Actor and every action", async () => {
+  signIn("admin");
+  renderApp("/audit");
+  await screen.findByText(/^Every admin action/);
+  expect(await options("Actor")).toContain("Any actor");
+  fireEvent.keyDown(await screen.findByRole("listbox"), { key: "Escape" });
+  const all = await options("Action");
+  expect(all).toHaveLength(14);
+  expect(all).toContain("was refused");
+  expect(all).toContain("deleted for good");
 });
 
 it("real admin Audit: asks for tokens, with the usual line", async () => {

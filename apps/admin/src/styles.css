@@ -1854,6 +1854,10 @@ code.oa-code,
   .oa-audit td + td::before {
     content: " ";
   }
+  /* Rows read as a sentence here: no target, no dash. */
+  .oa-audit td.oa-audit-none {
+    display: none;
+  }
   .oa-audit td.oa-mono {
     display: block;
     font-size: 12px;

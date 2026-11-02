@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { fixtureAudit } from "@oa/shared/provisioning/fixtures";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it } from "vitest";
@@ -19,7 +21,7 @@ it("lists entries of each outcome; aggregated refusals show a count", async () =
     "refused",
     "error",
   ]);
-  expect(screen.getByTestId("count")).toHaveTextContent("x12");
+  expect(screen.getByTestId("count")).toHaveTextContent(/^12 times$/);
   expect(
     within(screen.getByRole("table")).getByText(/deleted for good/),
   ).toBeInTheDocument();
@@ -52,6 +54,59 @@ it("a refused call: the verb says so, its code is the detail, and no raw action 
   expect(cells[4]).toHaveTextContent(/^forbidden$/);
   expect(row).not.toHaveTextContent("authz.refused");
   expect(row).toHaveAttribute("data-outcome", "refused");
+});
+
+it("a row with no target marks the cell, so phones drop its dash", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          fixtureAudit({ installId: null }),
+          fixtureAudit({ id: "api:2" }),
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const [none, some] = screen.getAllByRole("row").slice(1) as HTMLElement[];
+  expect(within(none as HTMLElement).getAllByRole("cell")[3]).toHaveClass(
+    "oa-audit-none",
+  );
+  expect(within(some as HTMLElement).getAllByRole("cell")[3]).not.toHaveClass(
+    "oa-audit-none",
+  );
+  const css = readFileSync(resolve(__dirname, "../src/styles.css"), "utf8");
+  expect(css).toMatch(/\.oa-audit td\.oa-audit-none \{\s*display: none;/);
+});
+
+it("the job rows read as sentences, and a refused job keeps its code", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          fixtureAudit({ action: "job.accepted", detail: { kind: "create" } }),
+          fixtureAudit({
+            id: "api:2",
+            action: "job.refused",
+            outcome: "refused",
+            code: "slug_taken",
+            jobId: null,
+            detail: null,
+          }),
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const [ok, refused] = screen.getAllByRole("row").slice(1) as HTMLElement[];
+  expect(ok).toHaveTextContent("started a job on");
+  expect(refused).toHaveTextContent("had a job refused on");
+  expect(refused).toHaveTextContent("refused: slug_taken");
+  expect(screen.getByRole("table")).not.toHaveTextContent("job.");
 });
 
 it("another refused action keeps its chip and code", async () => {

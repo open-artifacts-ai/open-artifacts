@@ -332,6 +332,34 @@ describe("reads and writes: rl- reach, no pii", () => {
     expect(text).not.toContain("me@example.com");
   });
 
+  it("R17: a refused create is its own job.refused row, and a refused route authz.refused", async () => {
+    const e = fakeEnv();
+    const body = {
+      requestId: requestId(),
+      slug: "customer4",
+      ownerEmail: "a@oa-redline-a.fyi",
+      tier: "team",
+      auth: { providers: ["email"], domains: [] },
+      testHooks: true,
+    };
+    expect((await call(e, TA, "R4", { body })).code).toBe("forbidden");
+    expect((await call(e, TA, "R20")).code).toBe("forbidden");
+    const rows = async (action: string) =>
+      (await call(e, TA, "R17", { query: { action } })).body.items;
+    const refused = await rows("job.refused");
+    expect(refused[0]).toMatchObject({
+      outcome: "refused",
+      code: "forbidden",
+      actor: { kind: "test-admin", label: "test admin" },
+    });
+    expect((await rows("authz.refused"))[0]).toMatchObject({
+      outcome: "refused",
+      code: "forbidden",
+    });
+    // No route writes the install.* names the Action filter offered.
+    expect(await rows("install.create")).toEqual([]);
+  });
+
   it("R2's q never matches by owner email", async () => {
     const e = fakeEnv();
     await seedInstall({
