@@ -76,7 +76,9 @@
         }
       ],
       "vars": {
-        // No prod Directory client yet: the placeholder keeps every route 404.
+        // The prod Directory client (project open-artifacts-prod, setup C,
+        // 2026-10-24) is filled in at deploy from .github/hosted/prod.json;
+        // deploy-platform-worker.sh refuses the placeholder left unfilled.
         "GOOGLE_DIRECTORY_CLIENT_ID": "{{GOOGLE_DIRECTORY_CLIENT_ID_PROD}}",
         "DIRECTORY_ORIGIN": "https://directory.open-artifacts.app"
       }

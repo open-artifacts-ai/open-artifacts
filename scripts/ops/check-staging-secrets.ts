@@ -1,6 +1,6 @@
 // Deploy preflight: fail if a Worker secret the code requires is not set.
 // Required = non-optional `string` fields of `Env` (apps/server/src/env.ts)
-// that are not vars in wrangler.staging.jsonc. Reads the JSON from
+// that are not vars in wrangler.staging.jsonc nor DEPLOY_VARS. Reads the JSON from
 // `wrangler secret list --format json` on stdin; prints names only.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -80,12 +80,22 @@ function members(body: string): string[] {
   return out;
 }
 
+/**
+ * Vars deploy-staging.yml passes with `wrangler deploy --var` instead of
+ * committing them: OWNER_EMAIL is the owner's address, from the
+ * OA_OWNER_EMAIL secret (#1084).
+ */
+export const DEPLOY_VARS: readonly string[] = ["OWNER_EMAIL"];
+
 export function requiredSecrets(
   envTs: string,
   wranglerJsonc: string,
 ): string[] {
   const cfg = JSON.parse(stripJsonc(wranglerJsonc));
-  const vars = new Set(Object.keys(cfg.env?.staging?.vars ?? {}));
+  const vars = new Set([
+    ...Object.keys(cfg.env?.staging?.vars ?? {}),
+    ...DEPLOY_VARS,
+  ]);
   const names: string[] = [];
   for (const member of members(
     stripComments(interfaceBody(stripComments(envTs))),

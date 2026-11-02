@@ -21,8 +21,8 @@ export type { KickReason, SyncJob } from "./sync.js";
  *
  * Every entry point runs withoutCred (#803): an RPC from a request never lends
  * this DO that request's credential. A row written here for a user's action
- * gets it explicitly on the actor (confirmHeld's `by`, via withRequestCred);
- * alarm work records `system`.
+ * gets it explicitly on the actor (confirmHeld's and the snoozes' `by`, via
+ * withRequestCred); alarm work records `system`.
  */
 export class DirectorySync extends DurableObject<Env> {
   private engine: SyncEngine;
@@ -57,6 +57,19 @@ export class DirectorySync extends DurableObject<Env> {
   /** Null: nothing confirmable (no hold, or an unreadable group). */
   confirmHeld(groupId: string, by?: AuditActor): Promise<SyncStatus | null> {
     return withoutCred(() => this.engine.confirmHeld(groupId, by));
+  }
+
+  /** Null: nothing snoozable (no sweep hold, or not yet re-read since #412). */
+  snoozeHeld(
+    groupId: string,
+    by: AuditActor,
+    reason: string | null,
+  ): Promise<SyncStatus | null> {
+    return withoutCred(() => this.engine.snoozeHeld(groupId, by, reason));
+  }
+
+  unsnoozeHeld(groupId: string, by: AuditActor): Promise<SyncStatus> {
+    return withoutCred(() => this.engine.unsnoozeHeld(groupId, by));
   }
 
   reset(): Promise<void> {

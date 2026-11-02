@@ -28,12 +28,13 @@ Put the new ids into `wrangler.staging.jsonc`, then deploy once.
 
 ## GitHub secrets
 
-`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` (required); `STAGING_OWNER_PAT` (optional, smoke tests).
+`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `OA_OWNER_EMAIL` (required; the owner's address, trimmed and lowercase, or the deploy refuses); `STAGING_OWNER_PAT` (optional, smoke tests).
 
 ## Deploy
 
 `deploy-staging.yml` on push to `main`: build, migrate, deploy, smoke. Manual:
-`pnpm --filter @oa/server exec wrangler deploy -c wrangler.staging.jsonc --env staging`.
+`pnpm --filter @oa/server exec wrangler deploy -c wrangler.staging.jsonc --env staging --var "OWNER_EMAIL:$OA_OWNER_EMAIL"`.
+The address isn't committed, so without `--var` the deploy removes `OWNER_EMAIL`.
 
 ## Repo settings
 
