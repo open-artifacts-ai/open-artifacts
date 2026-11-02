@@ -211,7 +211,7 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       return ok(
         `${
           s.guest
-            ? `Shared with ${s.email}. They're a guest, so they can only view${s.role === "editor" ? " for now" : ""}. ${viewUrl(env, input.id)}.`
+            ? `Shared ${input.id} with ${s.email}. They're a guest, so they can only view${s.role === "editor" ? " for now" : ""}. ${viewUrl(env, input.id)}.`
             : `Shared ${input.id} with ${s.email} as ${s.role}: ${viewUrl(env, input.id)}.`
         } ${s.emailed ? `Emailed ${s.email} a link.` : "No email sent."}${
           s.recipient

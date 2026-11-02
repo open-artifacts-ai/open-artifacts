@@ -319,10 +319,10 @@ describe("share email", () => {
       email,
       role: "editor",
     });
-    expect(textOf(r)).toContain(
-      `Shared with ${email}. They're a guest, so they can only view for now. `,
+    const url = `http://app.localhost/a/${id}`;
+    expect(textOf(r)).toBe(
+      `Shared ${id} with ${email}. They're a guest, so they can only view for now. ${url}. No email sent.`,
     );
-    expect(textOf(r)).not.toContain("as editor");
     expect(r.structuredContent).toMatchObject({ role: "editor", guest: true });
     const viewer = fresh();
     expect(
@@ -333,8 +333,8 @@ describe("share email", () => {
           role: "viewer",
         }),
       ),
-    ).toContain(
-      `Shared with ${viewer}. They're a guest, so they can only view. `,
+    ).toBe(
+      `Shared ${id} with ${viewer}. They're a guest, so they can only view. ${url}. No email sent.`,
     );
     const m = await login(fresh(), "member");
     const memberEmail = (await getUser(env, m.userId))?.email;
