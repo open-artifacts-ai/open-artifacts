@@ -8,6 +8,7 @@ import {
 import { MCP_PATH } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
+import { oauthEnv } from "./oauth-store.js";
 import { mcpResource } from "./server.js";
 
 // The provider's configuration and its helpers, without the MCP handler, so
@@ -76,9 +77,13 @@ export function providerOptions(
 
 const NO_HANDLER = { fetch: () => new Response(null, { status: 404 }) };
 
-/** OAuth helpers (parse/consent/complete, grants) outside the provider's fetch. */
+/**
+ * OAuth helpers (parse/consent/complete, grants) outside the provider's
+ * fetch, on this install's store (oauthEnv). Calls on one helpers object
+ * share the store's per-request cache.
+ */
 export const oauthApi = (env: Env): OAuthHelpers =>
-  getOAuthApi(providerOptions(env, NO_HANDLER, NO_HANDLER), env);
+  getOAuthApi(providerOptions(env, NO_HANDLER, NO_HANDLER), oauthEnv(env));
 
 /** Upper bound on grant pages walked per revocation (100 grants per page). */
 const MAX_GRANT_PAGES = 10;
@@ -115,7 +120,7 @@ export async function lookupUserGrant(
   userId: string,
   grantId: string,
 ): Promise<GrantSummary | null> {
-  const g = await env.OAUTH_KV.get<GrantSummary>(
+  const g = await oauthEnv(env).OAUTH_KV.get<GrantSummary>(
     `grant:${userId}:${grantId}`,
     "json",
   );
@@ -127,6 +132,8 @@ export async function lookupUserGrant(
  * start each round, since revoked grants drop out of the listing.
  */
 export async function revokeAllGrants(env: Env, userId: string): Promise<void> {
+  // One store for every page: its cache and batched deletes keep a large
+  // revocation within D1's per-invocation query limit.
   const oauth = oauthApi(env);
   for (let page = 0; page < MAX_GRANT_PAGES; page++) {
     const { items } = await oauth.listUserGrants(userId, { limit: 100 });

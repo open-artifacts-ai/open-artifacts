@@ -56,10 +56,12 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /robots.txt": { public: "robots" },
   "GET /skill.md": { public: "agent skill" },
   "GET /upgrade.md": { public: "upgrade guide" },
+  "GET /llms.txt": { public: "AI agent setup guide" },
   "ALL /healthz": { public: "405" },
   "ALL /robots.txt": { public: "405" },
   "ALL /skill.md": { public: "405" },
   "ALL /upgrade.md": { public: "405" },
+  "ALL /llms.txt": { public: "405" },
   "GET /auth/providers": {
     public: "sign-in offering; config only, never D1",
   },
@@ -75,6 +77,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /auth/dev-login": { public: "dev only; refused outside dev" },
   // P2 test hooks: 404 unless TEST_HOOKS is on (test-hooks/index.ts decides).
   "ALL /__test/*": { public: "test hooks; 404 unless TEST_HOOKS is on" },
+  // #1008 the OAuth KV -> D1 copy: 404 unless OAUTH_COPY_KEY is set
+  // (mcp/oauth-copy.ts decides; its bearer key is the gate).
+  "POST /__oa/oauth-store/copy": {
+    public: "OAuth store copy; 404 unless OAUTH_COPY_KEY is set",
+  },
   "GET /api/v1/me": { user: "the caller" },
   "PATCH /api/v1/me": { user: "the caller" },
   "GET /api/v1/members": { org: "members.manage" },
@@ -143,6 +150,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/directory/groups": { org: "org.mappings" },
   "POST /api/v1/directory/sync": { org: "directory.manage" },
   "POST /api/v1/directory/held/:groupId/confirm": { org: "directory.manage" },
+  // #412: snooze a held sweep, and cancel the snooze (org owner).
+  "POST /api/v1/directory/held/:groupId/snooze": { org: "directory.manage" },
+  "DELETE /api/v1/directory/held/:groupId/snooze": { org: "directory.manage" },
   // Disconnect: the org owner; the handler also refuses bearer auth (an
   // interactive cookie session only). DELETE R.directory is the same,
   // answering 204. The platform's install delete never uses these: it runs

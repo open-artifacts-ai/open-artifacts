@@ -16,6 +16,9 @@ const list = (...names: string[]) =>
 const ALL = ["ACCESS_CLIENT_SECRET", "SESSION_SECRET", "CONTENT_SIGNING_KEY"];
 
 describe("requiredSecrets", () => {
+  it("OWNER_EMAIL is a deploy var (#1084): never committed, never a required secret", () => {
+    expect(requiredSecrets(envTs, wrangler)).not.toContain("OWNER_EMAIL");
+  });
   it("derives non-optional, non-var string fields of Env", () => {
     // Superset: new required secrets may be added to Env over time.
     expect(requiredSecrets(envTs, wrangler)).toEqual(
