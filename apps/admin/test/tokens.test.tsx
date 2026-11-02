@@ -390,6 +390,30 @@ it("Claude Code's commands wrap on screen and copy exactly as written", async ()
   expect(box().querySelector(".oa-snip-word")).toBeNull();
 });
 
+it("Copied resets when the variant or the agent changes", async () => {
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    configurable: true,
+  });
+  renderApp("/tokens");
+  const card = await screen.findByRole("region", {
+    name: "Connect any AI agent",
+  });
+  const box = () => within(screen.getByTestId("snippet"));
+  const copy = async () => {
+    fireEvent.click(box().getByRole("button", { name: "Copy" }));
+    await box().findByRole("button", { name: "Copied" });
+  };
+
+  await copy();
+  fireEvent.click(within(card).getByRole("button", { name: "Use a token" }));
+  expect(box().getByRole("button", { name: "Copy" })).toBeVisible();
+
+  await copy();
+  fireEvent.click(within(card).getByRole("button", { name: "Codex CLI" }));
+  expect(box().getByRole("button", { name: "Copy" })).toBeVisible();
+});
+
 it("Copy puts the snippet on the clipboard", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", {

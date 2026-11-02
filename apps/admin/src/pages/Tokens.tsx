@@ -150,7 +150,7 @@ function ConnectCard({ env }: { env: "prod" | "staging" }) {
               </code>
             </pre>
             {snip.language !== "text" && (
-              <CopyButton text={snip.code} label="Copy" />
+              <CopyButton key={snip.code} text={snip.code} label="Copy" />
             )}
           </div>
           {snip.hint && <p className="oa-sub">{ticks(snip.hint)}</p>}
