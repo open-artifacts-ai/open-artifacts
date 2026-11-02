@@ -262,6 +262,12 @@ export async function snoozeOwnerPath(
     };
     if (off.held !== false)
       throw new Error(`${t.name} held hook: the hold was not taken off`);
+    // The hook's answer alone can't show a held-list entry left behind.
+    const after = await heldSweeps(t, owner, "owner Me after the release");
+    if (after !== base)
+      throw new Error(
+        `${t.name}: heldSweeps is ${after} after the release, want ${base} (the hold still counts)`,
+      );
   } catch (e) {
     failed ??= e;
   }

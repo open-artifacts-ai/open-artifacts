@@ -29,6 +29,8 @@ type Opts = {
   snoozeStillCounts?: boolean;
   /** The fake's cancel writes no audit row. */
   noCancelAudit?: boolean;
+  /** The fake's release answers held:false but the hold still counts. */
+  releaseLeaks?: boolean;
 };
 
 const dirs: string[] = [];
@@ -120,9 +122,10 @@ async function install(o: Opts = {}) {
     if (url === HELD_HOOK) {
       const b = JSON.parse(body) as { held: boolean; groupId: string };
       expect(b.groupId).toBe(gid());
-      st.held = b.held;
+      const leak = !b.held && o.releaseLeaks && st.held;
+      st.held = b.held || Boolean(leak);
       if (!b.held) st.snoozed = false;
-      return json(r, 200, { held: st.held });
+      return json(r, 200, { held: b.held });
     }
     const snooze = `/api/v1/directory/held/${gid()}/snooze`;
     if (url === snooze) {
@@ -194,6 +197,8 @@ describe("snoozeOwnerPath (#1078)", () => {
       "GET /api/v1/audit?limit=100",
       `POST ${HELD_HOOK}`,
     ]);
+    // The release is checked on the owner's count, not only the hook's answer.
+    expect(x.log.at(-1)).toBe("GET /api/v1/me");
   });
 
   it("without ownerCred, the owner signs in by code (request, otp/latest, verify) and that session snoozes", async () => {
@@ -248,6 +253,19 @@ describe("snoozeOwnerPath (#1078)", () => {
     expect(err?.message).not.toContain(x.origin);
     expect(x.st.held).toBe(false);
     expect(x.log.at(-1)).toBe(`POST ${HELD_HOOK}`);
+  });
+
+  it("a release that answers held:false but still counts fails the case, with no address or host", async () => {
+    const x = await install({ releaseLeaks: true });
+    const err = await snoozeOwnerPath(x.t, PAT, { ownerCred: asOwner }).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(err?.message).toBe(
+      "rl-a: heldSweeps is 1 after the release, want 0 (the hold still counts)",
+    );
+    expect(err?.message).not.toContain("@");
+    expect(err?.message).not.toContain(x.origin);
   });
 
   it("no owner_cancel audit row fails the case", async () => {

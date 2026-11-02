@@ -930,20 +930,25 @@ export class SyncEngine {
    * An RPC's health write: `f` over the stored health, with the snoozes,
    * compare-and-set as snoozeHealth describes. `create`: a missing row is
    * inserted (only if still missing); else no row means nothing to write.
+   * False: every try lost its race (nothing written).
    */
-  private async casHealth(f: (h: Health) => Health, create: boolean) {
+  private async casHealth(
+    f: (h: Health) => Health,
+    create: boolean,
+  ): Promise<boolean> {
     for (let i = 0; i < SNOOZE_CAS_TRIES; i++) {
       const { h, raw } = await readHealthRaw(this.env);
       // No row (never synced, or cleared): nothing is held.
-      if (raw === null && !create) return;
+      if (raw === null && !create) return true;
       const next = JSON.stringify(this.withSnoozes(f(h)));
-      if (raw !== null && next === JSON.stringify(h)) return;
+      if (raw !== null && next === JSON.stringify(h)) return true;
       const r = await (raw === null
         ? stmt(this.env.DB, HEALTH_INSERT).bind(HK.health, next)
         : stmt(this.env.DB, HEALTH_CAS).bind(next, HK.health, raw)
       ).run();
-      if (r.meta.changes) return;
+      if (r.meta.changes) return true;
     }
+    return false;
   }
 
   /**
@@ -965,6 +970,8 @@ export class SyncEngine {
         hash: () => memberListHash([], "over_half"),
         endSnooze: (g, at) => this.endSnooze(g, at, "released", SYSTEM, false),
         health: (f) => this.casHealth(f, true),
+        heldIds: async () =>
+          (await readHealth(this.env)).held.map((x) => x.groupId),
       },
       groupId,
       email,

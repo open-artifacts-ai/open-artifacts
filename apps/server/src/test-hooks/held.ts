@@ -16,8 +16,38 @@ export interface TestHoldIo {
   hash(): Promise<string>;
   /** Ends the group's snooze written at `at` (audited "released"). */
   endSnooze(groupId: string, at: number): Promise<void>;
-  /** An RPC's health write (compare-and-set), creating the row if absent. */
-  health(f: (h: Health) => Health): Promise<void>;
+  /**
+   * An RPC's health write (compare-and-set), creating the row if absent.
+   * False: every try lost a race and nothing was written.
+   */
+  health(f: (h: Health) => Health): Promise<boolean>;
+  /** The group ids in the stored D1 held list, read fresh. */
+  heldIds(): Promise<string[]>;
+}
+
+/**
+ * Write-and-confirm rounds before the hook gives up. A round is lost when
+ * the compare-and-set loses every try, or an alarm's blind health write
+ * lands over it before the re-read; no later alarm puts a test hold back.
+ */
+const CONFIRM_ROUNDS = 3;
+
+/**
+ * Writes the held list with `f` until a fresh read shows `groupId` in it
+ * (`want`) or not. Throws when it never does, so the hook answers an error
+ * rather than a hold the owner can't see (or one left counted).
+ */
+async function confirmHealth(
+  io: TestHoldIo,
+  groupId: string,
+  want: boolean,
+  f: (h: Health) => Health,
+): Promise<void> {
+  for (let i = 0; i < CONFIRM_ROUNDS; i++) {
+    if (!(await io.health(f))) continue;
+    if ((await io.heldIds()).includes(groupId) === want) return;
+  }
+  throw new Error("held list write lost");
 }
 
 // `test-` ids only, here in SQL too (no LIKE wildcards), so a slip in the
@@ -35,7 +65,8 @@ const SNOOZE_AT =
 /**
  * `on`: `groupId` held (one removal waiting, two members), shown in the held
  * list as `email`. Off: the hold and any snooze of it gone. Returns whether
- * the group is held now. Throws on an unprefixed id.
+ * the group is held now. Throws on an unprefixed id, and when the D1 held
+ * list never shows the change (confirmHealth).
  */
 export async function testHold(
   io: TestHoldIo,
@@ -62,7 +93,7 @@ export async function testHold(
       snoozedUntil: null,
       snoozeReason: null,
     };
-    await io.health((h) => ({
+    await confirmHealth(io, groupId, true, (h) => ({
       ...h,
       held: [...h.held.filter((x) => x.groupId !== groupId), entry],
     }));
@@ -71,7 +102,7 @@ export async function testHold(
   const z = io.sql.exec(SNOOZE_AT, groupId).toArray()[0];
   if (z) await io.endSnooze(groupId, Number(z.at));
   io.transactionSync(() => io.sql.exec(RELEASE, groupId));
-  await io.health((h) => ({
+  await confirmHealth(io, groupId, false, (h) => ({
     ...h,
     held: h.held.filter((x) => x.groupId !== groupId),
   }));

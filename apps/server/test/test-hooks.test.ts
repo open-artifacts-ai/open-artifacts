@@ -22,6 +22,7 @@ import { revokeAllGrants } from "../src/mcp/oauth-api.js";
 import { BACKFILLED_KEY, KV_WRITES_OFF_KEY } from "../src/mcp/oauth-store.js";
 import { userActor } from "../src/services/audit.js";
 import { SYNC_DO_NAME } from "../src/services/directory.js";
+import { type TestHoldIo, testHold } from "../src/test-hooks/held.js";
 import { direct, mailer, seedUser, uniq } from "./auth-helpers.js";
 
 // P2 Task 14: test hooks for P5's cross-tenant suite.
@@ -1080,5 +1081,81 @@ describe("hooks", () => {
         await (await call(on(), "/healthz", { method: "GET" })).json(),
       ).testHooks,
     ).toBe(true);
+  });
+});
+
+describe("testHold's held-list confirm (#1078)", () => {
+  const gid = "test-confirm";
+  const NOW = Date.UTC(2026, 10, 2, 12);
+  /**
+   * A DO side with no prior hold or snooze and a D1 held list in `d1`.
+   * `writes` answers each health write (false: every CAS try lost);
+   * `clobber` wipes the list after a write (an alarm's blind write landing).
+   */
+  function io(o: { writes?: boolean[]; clobber?: boolean[] } = {}) {
+    let d1: HealthLike = { held: [] };
+    const st = { writes: 0, reads: 0 };
+    const sql = {
+      exec: () => ({ toArray: () => [] }),
+    } as unknown as SqlStorage;
+    const x: TestHoldIo = {
+      sql,
+      transactionSync: (f) => f(),
+      hash: async () => "h",
+      endSnooze: async () => {},
+      health: async (f) => {
+        const i = st.writes++;
+        if (o.writes?.[i] === false) return false;
+        d1 = f(d1 as never) as HealthLike;
+        if (o.clobber?.[i]) d1 = { held: [] };
+        return true;
+      },
+      heldIds: async () => {
+        st.reads++;
+        return d1.held.map((h) => h.groupId);
+      },
+    };
+    return { x, st, list: () => d1.held.map((h) => h.groupId) };
+  }
+  type HealthLike = { held: { groupId: string }[] };
+
+  it("on: a write the re-read shows answers held", async () => {
+    const f = io();
+    expect(await testHold(f.x, gid, `${gid}@t`, true, NOW)).toBe(true);
+    expect(f.list()).toEqual([gid]);
+    expect(f.st).toEqual({ writes: 1, reads: 1 });
+  });
+
+  it("on: an alarm write over the first round is redone, then confirmed", async () => {
+    const f = io({ clobber: [true] });
+    expect(await testHold(f.x, gid, `${gid}@t`, true, NOW)).toBe(true);
+    expect(f.list()).toEqual([gid]);
+    expect(f.st).toEqual({ writes: 2, reads: 2 });
+  });
+
+  it("on: every CAS try lost, or every round overwritten, throws (never held:true with nothing in D1)", async () => {
+    const lost = io({ writes: [false, false, false] });
+    await expect(
+      testHold(lost.x, gid, `${gid}@t`, true, NOW),
+    ).rejects.toThrow("held list write lost");
+    expect(lost.list()).toEqual([]);
+    const clobbered = io({ clobber: [true, true, true] });
+    await expect(
+      testHold(clobbered.x, gid, `${gid}@t`, true, NOW),
+    ).rejects.toThrow("held list write lost");
+    expect(clobbered.st.writes).toBe(3);
+  });
+
+  it("off: a release whose entry stays in D1 throws (never held:false with the hold still counted)", async () => {
+    const f = io({ writes: [true, false, false, false] });
+    await testHold(f.x, gid, `${gid}@t`, true, NOW);
+    await expect(
+      testHold(f.x, gid, `${gid}@t`, false, NOW),
+    ).rejects.toThrow("held list write lost");
+    expect(f.list()).toEqual([gid]);
+    const g = io({ writes: [true, false] });
+    await testHold(g.x, gid, `${gid}@t`, true, NOW);
+    expect(await testHold(g.x, gid, `${gid}@t`, false, NOW)).toBe(false);
+    expect(g.list()).toEqual([]);
   });
 });

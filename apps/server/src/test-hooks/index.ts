@@ -701,9 +701,12 @@ export function mountTestHooks(app: AppType): void {
         await audit(env, hook, ip, "refused", email ? { email } : {});
         return refused("bad_input");
       }
+      // A throw is a write the D1 held list never showed (testHold's
+      // confirm): an error, never a held/released answer.
       const held = await ns
         .get(ns.idFromName(SYNC_DO_NAME))
-        .testHold(input.data.groupId, email, input.data.held);
+        .testHold(input.data.groupId, email, input.data.held)
+        .catch(() => null);
       if (held === null) {
         await audit(env, hook, ip, "error", { email });
         throw new ApiError("internal", "directory-held unavailable");
