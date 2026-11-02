@@ -7,7 +7,7 @@ import {
   type Release,
   TOKEN_SCOPES,
 } from "@oa/shared/provisioning";
-import { notResolved } from "./fetch-timeout.ts";
+import { InfraError, notResolved } from "./fetch-timeout.ts";
 import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { PRE_PROD_REASON } from "./report.ts";
@@ -1105,6 +1105,8 @@ export const PROBES: readonly Probe[] = [
         try {
           res = await snoozeOwnerPath(t, { kind: "pat", token: c.pat });
         } catch (e) {
+          // A setup hook's refusal stays infra (report.ts SETUP_HOOK_RE).
+          if (e instanceof InfraError) throw e;
           throw new ProbeFail(`P50 snooze: ${(e as Error).message}`);
         }
         // The creds go with the install: the purge below removes both.

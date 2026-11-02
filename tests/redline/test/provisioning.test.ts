@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STAGING_TEST_DOMAIN } from "@oa/provision/names";
 import { afterEach, describe, expect, it } from "vitest";
+import { InfraError } from "../src/fetch-timeout.ts";
 import { takeFileNotes } from "../src/notes.ts";
 import {
   AUDIENCES,
@@ -47,6 +48,7 @@ import {
   PRE_PROD_NA,
   PRE_PROD_REASON,
   parseManifest,
+  setupHookName,
 } from "../src/report.ts";
 import { newRecipient, openSealed, parseCreds } from "../src/seal.ts";
 import { NO_OWNER } from "../src/snooze.ts";
@@ -297,6 +299,22 @@ describe("P50: the snooze owner path on an install the run creates (#1078)", () 
     const { out, snz } = await p50("p50_ineligible");
     expect(out).toEqual({ level: "unproven-live", reason: NO_OWNER });
     expect(snz?.state).toBe("deleted");
+  });
+
+  it("a setup hook's refusal on rl-snz stays infra, not a P50 fail; the install is still removed", async () => {
+    const { out, snz, f } = await p50("p50_groups_refused");
+    expect(out).toBeInstanceOf(InfraError);
+    expect(out).not.toBeInstanceOf(ProbeFail);
+    const msg = (out as Error).message;
+    expect(msg.startsWith("infra: setup ")).toBe(true);
+    expect(setupHookName(msg)).toBe(
+      "infra: setup /__test/directory-groups no_reason",
+    );
+    expect(msg).not.toContain("@");
+    expect(msg).not.toContain(snz?.id);
+    expect(msg).not.toContain(snz?.appHost);
+    expect(snz?.state).toBe("deleted");
+    expect(f.tenants.size).toBe(0);
   });
 
   it("a create that lands on another tier fails P50 before any hook; the install is still removed", async () => {

@@ -112,6 +112,7 @@ export type Fault =
   | "revoke_noop"
   | "p50_snooze_counts"
   | "p50_ineligible"
+  | "p50_groups_refused"
   | "p50_team_tier"
   | "prod_live";
 
@@ -493,6 +494,7 @@ export function fakeApi(): FakeApi {
             ? { snoozeStillCounts: true }
             : {}),
           ...(faults.has("p50_ineligible") ? { otpOutcome: "ineligible" } : {}),
+          ...(faults.has("p50_groups_refused") ? { groupsRefused: true } : {}),
           ...(tier === "business" ? {} : { mode: "frozen" }),
         };
         const install = snoozeInstall(() => STAGING_TEST_DOMAIN, i.id, o);

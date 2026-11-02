@@ -27,6 +27,8 @@ export type SnoozeOpts = {
   noCancelAudit?: boolean;
   /** The fake's release answers held:false but the hold still counts. */
   releaseLeaks?: boolean;
+  /** The groups setup hook answers 503 (a setup refusal: infra). */
+  groupsRefused?: boolean;
 };
 
 export interface SnoozeInstall {
@@ -91,7 +93,10 @@ export function snoozeInstall(
           role: "owner",
         },
       ]);
-    if (url === GROUPS_HOOK) return json(r, 200, { seeded: 1 });
+    if (url === GROUPS_HOOK)
+      return o.groupsRefused
+        ? json(r, 503, { error: { code: "unavailable", message: "x" } })
+        : json(r, 200, { seeded: 1 });
     // The owner's code sign-in.
     if (url === "/auth/code/request")
       return json(r, 202, {}, { "set-cookie": ["oa_code=p; Path=/"] });
