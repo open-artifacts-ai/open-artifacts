@@ -37,7 +37,12 @@ import { VERSION } from "./version.gen.js";
 const hooks = typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
   __OA_TEST_HOOKS_ALLOWED__ === true && { mountTestHooks, testHooksOn };
 
+/** The content host: nothing there is for crawlers. */
 export const ROBOTS = "User-agent: *\nDisallow: /";
+
+// The app host also opens the two paths any AI agent is sent to read.
+// Allow comes first for parsers that take the first match.
+const APP_ROBOTS = `User-agent: *\nAllow: ${LLMS_PATH}\nAllow: ${SKILL_PATH}\nDisallow: /`;
 
 export const methodNotAllowed = () =>
   errorJson(405, "bad_request", "Method not allowed", undefined, {
@@ -150,7 +155,7 @@ export function createApp(
       ...(installId ? { installId } : {}),
     });
   });
-  app.get("/robots.txt", (c) => c.text(ROBOTS));
+  app.get("/robots.txt", (c) => c.text(APP_ROBOTS));
   // Public, outside SESSION_PATHS: no session read, no D1.
   // /__test/* (P5 hooks): before any session read; 404 unless enabled.
   if (hooks) hooks.mountTestHooks(app);
