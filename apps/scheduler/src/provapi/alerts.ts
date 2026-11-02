@@ -475,13 +475,13 @@ const COPY: Record<AlertKey, Copy> = {
   fleet_halted: {
     title: "fleet rollout halted",
     open: (f) =>
-      `The fleet rollout stopped (${plural(f.count, "problem")}; codes: ${f.codes.join(", ") || "none"}). fleet_halt: an upgraded install stayed unhealthy while a control answered, so it was halted and rolled back. A job code: a fleet upgrade failed, or was rolled back. no_target: the scheduler has no release tag, so nothing can move. No install is upgraded to a halted version. Fix the cause and ship the next release, which starts a new rollout.`,
+      `The fleet rollout stopped (${plural(f.count, "problem")}; codes: ${f.codes.join(", ") || "none"}). fleet_halt: an upgraded install stayed unhealthy for 10 minutes, so its version was halted. It was rolled back only if that was within 30 minutes of the upgrade and a healthy install on an older version answered; otherwise someone has to decide. holding: an upgraded install has been failing for 30 minutes without a verdict, which holds the rollout. A job code: a fleet upgrade failed, or was rolled back. no_target: the scheduler has no release tag, so nothing can move. No install is upgraded to a halted version. Fix the cause and ship the next release, which starts a new rollout.`,
     clear: "No fleet rollout is halted.",
   },
   version_skew: {
     title: "installs off the platform version",
     open: (f) =>
-      `${plural(f.count, "install")} ${f.count === 1 ? "is" : "are"} still not on the platform's release ${hours(FLEET_SKEW_MS)} hours after it deployed. Check the canary (FLEET_CANARY), fleet_halted and each install's jobs.`,
+      `${plural(f.count, "install")} ${f.count === 1 ? "is" : "are"} still not on the platform's release, ${hours(FLEET_SKEW_MS)} hours after the fleet duty first saw ${f.count === 1 ? "it" : "them"} off it. Check the canary (FLEET_CANARY), fleet_halted and each install's jobs.`,
     clear: "Every install is on the platform's release.",
   },
 };
