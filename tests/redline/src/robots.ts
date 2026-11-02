@@ -1,6 +1,6 @@
-// What each host's /robots.txt says. The server's test/skeleton.test.ts checks
-// these against what the Worker emits, so the live case compares a staging
-// install to the code's real output, not to a hand copy.
+// What each host's /robots.txt says, for the live case. The server's
+// test/skeleton.test.ts pins the Worker's output to the same text, and
+// test/robots.test.ts fails if the two ever differ.
 
 /** The content host: nothing there is for crawlers. */
 export const CONTENT_ROBOTS = "User-agent: *\nDisallow: /";

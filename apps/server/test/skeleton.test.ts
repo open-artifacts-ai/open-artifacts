@@ -1,9 +1,5 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import {
-  APP_ROBOTS,
-  CONTENT_ROBOTS,
-} from "../../../tests/redline/src/robots.ts";
 import worker from "../src/index.js";
 import { VERSION } from "../src/version.gen.js";
 
@@ -31,13 +27,15 @@ describe("skeleton", () => {
   it("robots.txt on the app host: only the agent guides are open", async () => {
     const res = await call(`${APP}/robots.txt`);
     expect(res.status).toBe(200);
-    expect(await res.text()).toBe(APP_ROBOTS);
+    expect(await res.text()).toBe(
+      "User-agent: *\nAllow: /llms.txt\nAllow: /skill.md\nAllow: /upgrade.md\nDisallow: /",
+    );
   });
 
   it("robots.txt on the content host: everything is disallowed", async () => {
     const res = await call(`${CONTENT}/robots.txt`);
     expect(res.status).toBe(200);
-    expect(await res.text()).toBe(CONTENT_ROBOTS);
+    expect(await res.text()).toBe("User-agent: *\nDisallow: /");
   });
 
   for (const url of [
