@@ -10,6 +10,7 @@ import {
   groupMembers,
   type LocalPair,
   localModeOf,
+  localOAuthStoreOf,
   startLocalPair,
 } from "../src/local-pair.ts";
 
@@ -94,6 +95,8 @@ try {
   booting = startLocalPair({
     // REDLINE_LOCAL_MODE=google: the sync_frozen / sync_google tiers.
     mode: localModeOf(),
+    // REDLINE_OAUTH_STORE=dual|d1: both installs on the D1 OAuth store.
+    oauthStore: localOAuthStoreOf(),
     signal: abort.signal,
     onSpawn: (p) => {
       spawnedPids.push(p);

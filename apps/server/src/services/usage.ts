@@ -6,6 +6,7 @@ import {
   usageLimit,
 } from "@oa/shared";
 import type { Env } from "../env.js";
+import { parseOAuthStoreMode } from "../mcp/oauth-store.js";
 
 const GRAPHQL = "https://api.cloudflare.com/client/v4/graphql";
 const TTL_SECONDS = 300;
@@ -118,7 +119,10 @@ async function query(
 ): Promise<Usage> {
   const none: Usage = { available: false, plan, date, metrics: [] };
   const withCpu = !!env.WORKER_NAME;
-  const withKv = !!env.OAUTH_KV_ID;
+  // KV writes only while the OAuth store still writes KV: in d1 mode the
+  // namespace (and its id) may be gone.
+  const withKv =
+    !!env.OAUTH_KV_ID && parseOAuthStoreMode(env.OAUTH_STORE) !== "d1";
   try {
     const res = await fetch(GRAPHQL, {
       method: "POST",

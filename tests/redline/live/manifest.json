@@ -102,6 +102,14 @@
     },
     {
       "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > An OAuth refresh straight after the redeem: a new token, on A and on B (#769)"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > A revoked OAuth refresh token is refused at once, on A and on B"
+    },
+    {
+      "file": "live/credentials.test.ts",
       "name": "credentials > A's signed content URL at B's content host"
     },
     {

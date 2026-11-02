@@ -7,12 +7,14 @@ import {
   codeForm,
   lastRedeemAt,
   mcpResource,
+  oauthStoreMode,
   pkce,
   redeem,
   refreshForm,
   registerClient,
   slot,
   slotValue,
+  tokenIssued,
   tokenRefused,
   tokenRequest,
   untilKvSettled,
@@ -35,7 +37,7 @@ import {
   prepareSide,
   type Side,
 } from "../src/refused.ts";
-import { proof } from "../src/report.ts";
+import { label, proof } from "../src/report.ts";
 import { loadTargets, type Target, type Targets } from "../src/targets.ts";
 
 // P5 Task 4: A's real credentials don't work at B. Every case goes through
@@ -328,6 +330,58 @@ describe("credentials", () => {
         await redeem(T.a, c.aAtB, cAatB.code, cAatB.verifier, res(T.a));
       });
     }
+
+    // The OAuth store move: with OAUTH_STORE dual or d1 the grant is read
+    // from the install's D1, so neither case waits. An install still on KV
+    // waits out the edge cache (#769) and the case says so (label).
+    const KV_WAIT_LABEL =
+      "KV OAuth store: waited out the edge cache (no wait needs dual or d1)";
+
+    it("An OAuth refresh straight after the redeem: a new token, on A and on B (#769)", async (ctx) => {
+      for (const t of [T.a, T.b]) {
+        const kv = (await oauthStoreMode(t)) === "kv";
+        if (kv) label(ctx, KV_WAIT_LABEL);
+        const clientId = await registerClient(t);
+        const rt = await refresh(t, clientId);
+        if (kv) await untilKvSettled(lastRedeemAt());
+        const r = await fetch(
+          tokenRequest(t, refreshForm(clientId, rt, res(t))),
+        );
+        const ok = await tokenIssued(r);
+        await r.body?.cancel();
+        expect(ok, `${t.name}: refresh right after the redeem`).toBe(true);
+      }
+    });
+
+    it("A revoked OAuth refresh token is refused at once, on A and on B", async (ctx) => {
+      for (const t of [T.a, T.b]) {
+        const kv = (await oauthStoreMode(t)) === "kv";
+        if (kv) label(ctx, KV_WAIT_LABEL);
+        const clientId = await registerClient(t);
+        const rt = await refresh(t, clientId);
+        if (kv) await untilKvSettled(lastRedeemAt());
+        // RFC 7009 at the token endpoint: the refresh token's grant goes.
+        const rv = await fetch(
+          new Request(`${t.app}/oauth/token`, {
+            method: "POST",
+            redirect: "manual",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              token: rt,
+              token_type_hint: "refresh_token",
+              client_id: clientId,
+            }),
+          }),
+        );
+        await rv.body?.cancel();
+        expect(rv.status, `${t.name}: revoke`).toBe(200);
+        if (kv) await untilKvSettled(Date.now());
+        await tokenRefused(["invalid_grant"])(
+          await fetch(tokenRequest(t, refreshForm(clientId, rt, res(t)))),
+          t,
+        );
+      }
+    });
   });
 
   // ------------------------------------------------------------ signed URLs

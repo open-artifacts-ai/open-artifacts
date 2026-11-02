@@ -5,6 +5,7 @@ import { expirePending } from "./directory/store.js";
 import { sweepEmailCounters } from "./email/send.js";
 import type { Env } from "./env.js";
 import { logError, logInfo, logWarn } from "./log.js";
+import { sweepOAuthStore } from "./mcp/oauth-store.js";
 import { sweepUngrantedClients } from "./mcp/registrations.js";
 import {
   purgeDeleted,
@@ -110,6 +111,8 @@ async function run(
       purgeDeleted(env, now),
       sweepUploads(env, now),
       sweepUngrantedClients(env, now),
+      // Expired OAuth store rows (reads already skip them) and old tombstones.
+      sweepOAuthStore(env, now),
       reindexStale(env, now),
       sweepEmailCounters(env, now),
       sweepLoginCodes(env, now),
