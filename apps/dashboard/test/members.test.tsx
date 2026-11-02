@@ -287,6 +287,53 @@ describe("members: failures and edge cases", () => {
     );
   });
 
+  it("the invite's Restore offer, refused by Workspace, says why", async () => {
+    server.use(
+      http.post(`*${R.members}`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "member_removed",
+              message: "This person was removed. Restore them instead.",
+              details: { userId: "gone1" },
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+      http.post(`*${R.memberRestore("gone1")}`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "directory_managed",
+              message:
+                "Directory sync removed this member; restore them in Google Workspace",
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    mount("/settings/members");
+    fireEvent.click(await screen.findByRole("button", { name: "Add member" }));
+    fireEvent.change(await screen.findByLabelText("Email"), {
+      target: { value: "gone@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    const offer = await screen.findByRole("alert");
+    fireEvent.click(
+      within(offer).getByRole("button", { name: "Restore gone@example.com" }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Removed by your Google Workspace. They come back if their Workspace account is restored.",
+      ),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Restore gone@example.com" }),
+    ).toBeNull();
+  });
+
   it("inviting a removed address offers Restore instead of a toast (parity 1)", async () => {
     const posts = bodies("POST");
     server.use(

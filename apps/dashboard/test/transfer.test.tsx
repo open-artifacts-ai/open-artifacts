@@ -608,6 +608,53 @@ it("409 directory_managed shows why inline", async () => {
   );
 });
 
+const WORKSPACE =
+  "Removed by your Google Workspace. They come back if their Workspace account is restored.";
+/** What a self-host with Workspace connected answers (the server's words). */
+const managedRestore = http.post(`*${R.memberRestore(CAROL)}`, () =>
+  HttpResponse.json(
+    {
+      error: {
+        code: "directory_managed",
+        message:
+          "Directory sync removed this member; restore them in Google Workspace",
+      },
+    },
+    { status: 409 },
+  ),
+);
+
+it("self-hosted: a Departed row's Restore refused by Workspace says why", async () => {
+  server.use(managedRestore, ...removedCarol);
+  mount("/settings/members");
+  await openMenu(await carolRow());
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Restore…" }));
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Restore",
+    }),
+  );
+  const alert = await within(await carolRow()).findByRole("alert");
+  expect(alert).toHaveTextContent(WORKSPACE);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+});
+
+it("self-hosted: the Removed filter's Restore refused by Workspace says why", async () => {
+  server.use(managedRestore, ...removedCarol);
+  mount("/settings/members");
+  fireEvent.click(await screen.findByRole("button", { name: "Removed (1)" }));
+  const list = await screen.findByRole("list", { name: "Removed people" });
+  fireEvent.click(
+    within(list).getByRole("button", { name: "Restore Carol Departed" }),
+  );
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Restore",
+    }),
+  );
+  expect(await within(list).findByRole("alert")).toHaveTextContent(WORKSPACE);
+});
+
 it("runAll loops until nextCursor is null and reports progress", async () => {
   const run = vi
     .fn()
