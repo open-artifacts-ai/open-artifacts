@@ -1,4 +1,4 @@
-import { FormatSchema, type Role } from "@oa/shared";
+import { AgentViaSchema, FormatSchema, type Role } from "@oa/shared";
 import {
   createRootRoute,
   createRoute,
@@ -64,9 +64,11 @@ const library = (path: string, scope: Scope) =>
     validateSearch: (s: Record<string, unknown>) => {
       const format = FormatSchema.safeParse(s.format);
       const view = s.view === "grid" || s.view === "list" ? s.view : undefined;
+      const via = AgentViaSchema.safeParse(s.agentVia);
       return {
         ...(format.success && { format: format.data }),
         ...(str(s.agent) && { agent: str(s.agent) }),
+        ...(via.success && { agentVia: via.data }),
         ...(str(s.space) && { space: str(s.space) }),
         ...(view && { view }),
       };
