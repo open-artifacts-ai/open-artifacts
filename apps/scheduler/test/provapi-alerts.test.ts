@@ -496,6 +496,8 @@ describe("fleet_halted copy (#1083 re-review N5)", () => {
     expect(text).toContain("no_target");
     expect(text).toContain("fleet_halt");
     expect(text).toMatch(/no release tag/);
-    expect(text).toMatch(/control answered/);
+    expect(text).toMatch(/its version was halted/);
+    expect(text).toMatch(/rolled back only if/);
+    expect(text).toMatch(/holding/);
   });
 });
