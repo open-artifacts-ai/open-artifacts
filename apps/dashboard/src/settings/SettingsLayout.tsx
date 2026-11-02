@@ -19,7 +19,7 @@ const TABS: {
   to: string;
   label: string;
   roles: Role[];
-  /** Only where the instance reports a directory (hosted). */
+  /** Only where the instance reports a directory (hosted, or self-host with Workspace connected). */
   directory?: true;
   /** Hosted spaces admin: org admins, and members who manage a space. */
   spaces?: true;

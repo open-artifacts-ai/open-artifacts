@@ -82,6 +82,8 @@ export class ProbeFail extends Error {
 /** Poll cadence and bounds (12.2: paused and resumed pages within 120 s). */
 export const POLL_MS = 3_000;
 export const PAGE_WITHIN_MS = 120_000;
+/** HOSTS is KV: a write takes up to 60 s to show everywhere. Two periods. */
+export const HOSTS_SETTLE_MS = 120_000;
 export const JOB_WITHIN_MS = 20 * 60_000;
 /** A case's vitest timeout: its slowest wait plus margin. */
 export const PROBE_TIMEOUT_MS = JOB_WITHIN_MS + 5 * 60_000;
@@ -214,7 +216,19 @@ export class Run {
   ): Promise<Job> {
     const end = this.io.now() + (o.within ?? JOB_WITHIN_MS);
     for (;;) {
-      const r = await this.v1(`/jobs/${jobId}`, { testUser: o.testUser });
+      let r: Res;
+      try {
+        r = await this.v1(`/jobs/${jobId}`, { testUser: o.testUser });
+      } catch {
+        // A dropped connection says nothing about the job: keep polling. Only
+        // the network throws here: an answer, however bad, fails below.
+        if (this.io.now() >= end)
+          throw new ProbeFail(
+            `R15 ${jobId}: no answer for ${Math.round((o.within ?? JOB_WITHIN_MS) / 1000)} s`,
+          );
+        await this.io.wait(POLL_MS);
+        continue;
+      }
       if (r.status !== 200) throw new ProbeFail(`R15 ${jobId}: ${desc(r)}`);
       const j = r.json as Job;
       if (o.until ? o.until(j) : j.status === "done" || j.status === "failed")
@@ -301,6 +315,28 @@ export class Run {
       `/hosts?host=${encodeURIComponent(host)}`,
     )) as { installId?: string | null; mode?: string | null };
     return { installId: v?.installId ?? null, mode: v?.mode ?? null };
+  }
+
+  /**
+   * Polls the inventory until the host's mode is `want` (null: unmapped). The
+   * inventory reads HOSTS from another colo than dispatch, so one read after
+   * a page changed can be stale. A value that never settles fails, naming it.
+   */
+  async settledMode(
+    what: string,
+    host: string,
+    want: string | null,
+  ): Promise<void> {
+    const end = this.io.now() + HOSTS_SETTLE_MS;
+    for (;;) {
+      const { mode } = await this.hostMode(host);
+      if (mode === want) return;
+      if (this.io.now() >= end)
+        throw new ProbeFail(
+          `${what}: inventory mode is ${mode}, want ${want}, after ${HOSTS_SETTLE_MS / 1000} s`,
+        );
+      await this.io.wait(POLL_MS);
+    }
   }
 
   /** A public GET on a tenant host (no credential). */
@@ -1156,9 +1192,7 @@ export const PROBES: readonly Probe[] = [
           (await run.page(p.appHost, "/")).status === 503 &&
           (await run.page(p.contentHost, "/")).status === 503,
       );
-      const m = await run.hostMode(p.appHost);
-      if (m.mode !== "paused")
-        throw new ProbeFail(`P20: inventory mode ${m.mode}`);
+      await run.settledMode("P20", p.appHost, "paused");
       return pass();
     },
   },
@@ -1201,8 +1235,7 @@ export const PROBES: readonly Probe[] = [
           (await run.page(p.appHost, "/")).status === 503 &&
           (await run.page(p.contentHost, "/")).status === 503,
       );
-      if ((await run.hostMode(p.appHost)).mode !== "closed")
-        throw new ProbeFail("P22: inventory mode is not closed");
+      await run.settledMode("P22", p.appHost, "closed");
       const r = run.accepted(
         await run.v1(`/installs/${p.id}/restore`, {
           body: { requestId: run.rid("p22-res") },
@@ -1215,8 +1248,7 @@ export const PROBES: readonly Probe[] = [
         "P22 serving",
         async () => (await run.page(p.appHost)).status === 200,
       );
-      if ((await run.hostMode(p.appHost)).mode !== "serving")
-        throw new ProbeFail("P22: inventory mode is not serving");
+      await run.settledMode("P22", p.appHost, "serving");
       return pass();
     },
   },
@@ -1251,8 +1283,8 @@ export const PROBES: readonly Probe[] = [
       if (!row) throw new ProbeFail("P23: inventory has no row for it");
       if (row.state !== "deleted")
         throw new ProbeFail(`P23: inventory state ${row.state}`);
-      const m = await run.hostMode(p.appHost);
-      if (m.installId !== null || m.mode !== null)
+      await run.settledMode("P23", p.appHost, null);
+      if ((await run.hostMode(p.appHost)).installId !== null)
         throw new ProbeFail("P23: HOSTS still maps the app host");
       return pass();
     },
@@ -2117,12 +2149,20 @@ export async function revokeCreds(
   app: string,
   pat?: string,
 ): Promise<void> {
-  const a = run.accepted(
-    await run.v1(`/installs/${id}/redline-creds`, {
+  // The run's last step, and it runs always: a job a failed bring-up left on
+  // the install is still going. Its refusal stores nothing, so the same
+  // request id is safe.
+  const end = run.io.now() + JOB_WITHIN_MS;
+  const ask = () =>
+    run.v1(`/installs/${id}/redline-creds`, {
       body: { requestId: run.rid(`revoke-${slug}`), revoke: true },
-    }),
-    `R26 revoke ${slug}`,
-  );
+    });
+  let r = await ask();
+  while (errCode(r) === "job_in_progress" && run.io.now() < end) {
+    await run.io.wait(POLL_MS);
+    r = await ask();
+  }
+  const a = run.accepted(r, `R26 revoke ${slug}`);
   await run.done(a.job.id, `R26 revoke ${slug}`);
   if (pat) {
     const r = await run.raw(`${app}/api/v1/me`, { auth: { bearer: pat } });

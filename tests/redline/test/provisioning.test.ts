@@ -506,6 +506,157 @@ describe("each probe fails on the behaviour it guards", () => {
     });
   });
 
+  describe("the inventory's mode settles: HOSTS is eventually consistent", () => {
+    /** The inventory answers `stale` for reads of a mode, `times` times. */
+    const staleFor = (
+      f: ReturnType<typeof fakeApi>,
+      fresh: string | null,
+      stale: string,
+      times: number,
+    ) => {
+      const real = f.io.fetch;
+      let left = times;
+      f.io.fetch = (async (u: string, i?: RequestInit) => {
+        const r = await real(u, i);
+        if (!String(u).includes("/hosts?host=")) return r;
+        const j = (await r.clone().json()) as { mode?: string | null };
+        if ((j.mode ?? null) !== fresh || left <= 0) return r;
+        left--;
+        return Response.json({ ...j, mode: stale });
+      }) as typeof fetch;
+    };
+
+    for (const [id, fresh, stale] of [
+      ["P20", "paused", "serving"],
+      ["P22", "closed", "serving"],
+      ["P22", "serving", "closed"],
+    ] as const)
+      it(`${id}: a stale ${stale} read that clears to ${fresh} passes`, async () => {
+        const f = fakeApi();
+        staleFor(f, fresh, stale, 2);
+        expect(level((await runAll(f)).get(id))).toBe("pass");
+      });
+
+    it("P23: a host still mapped for a moment passes", async () => {
+      const f = fakeApi();
+      staleFor(f, null, "closed", 2);
+      expect(level((await runAll(f)).get("P23"))).toBe("pass");
+    });
+
+    for (const [id, fresh, stale, msg] of [
+      ["P20", "paused", "serving", "serving, want paused"],
+      ["P22", "closed", "serving", "serving, want closed"],
+      ["P22", "serving", "closed", "closed, want serving"],
+      ["P23", null, "closed", "closed, want null"],
+    ] as const)
+      it(`${id}: a mode that never reaches ${fresh} fails, naming the last one`, async () => {
+        const f = fakeApi();
+        staleFor(f, fresh, stale, Number.POSITIVE_INFINITY);
+        expect(level((await runAll(f)).get(id))).toBe(
+          `fail: ${id}: inventory mode is ${msg}, after 120 s`,
+        );
+      });
+  });
+
+  describe("bring-up survives a dropped connection and a busy install", () => {
+    const POLL = 3_000;
+    /** A Run whose fetch `answer` handles first; undefined falls through. */
+    const runWith = (
+      answer: (url: string) => Response | undefined,
+      f = fakeApi(),
+    ) => {
+      const seen: string[] = [];
+      const run = new Run(CONFIG, {
+        ...f.io,
+        fetch: (async (u: string, i?: RequestInit) => {
+          seen.push(`${i?.method ?? "GET"} ${u}`);
+          return answer(String(u)) ?? f.io.fetch(u, i);
+        }) as typeof fetch,
+      });
+      return { run, f, seen };
+    };
+    const job = (status: string) =>
+      Response.json({ id: "j1", status, step: "x" });
+    const dropped = () => {
+      throw new TypeError("fetch failed");
+    };
+
+    it("waitJob retries a dropped connection, then carries on", async () => {
+      let n = 0;
+      const { run, f } = runWith((u) =>
+        u.includes("/jobs/j1")
+          ? ++n <= 2
+            ? dropped()
+            : job("done")
+          : undefined,
+      );
+      const t0 = f.clock.t;
+      expect((await run.waitJob("j1")).status).toBe("done");
+      expect(f.clock.t - t0).toBe(2 * POLL);
+    });
+
+    it("waitJob gives up at its bound, naming the job and no detail", async () => {
+      const { run, f } = runWith((u) =>
+        u.includes("/jobs/j1") ? dropped() : undefined,
+      );
+      const t0 = f.clock.t;
+      await expect(run.waitJob("j1", { within: 30_000 })).rejects.toThrow(
+        "R15 j1: no answer for 30 s",
+      );
+      expect(f.clock.t - t0).toBeLessThanOrEqual(30_000);
+    });
+
+    it("waitJob still fails at once on a real API error", async () => {
+      const { run, f } = runWith((u) =>
+        u.includes("/jobs/j1")
+          ? Response.json({ error: { code: "x" } }, { status: 500 })
+          : undefined,
+      );
+      const t0 = f.clock.t;
+      await expect(run.waitJob("j1")).rejects.toThrow("R15 j1: status 500");
+      expect(f.clock.t - t0).toBe(0);
+    });
+
+    const busy = () =>
+      Response.json(
+        { error: { code: "job_in_progress", message: "x" } },
+        { status: 409 },
+      );
+    const revoke = (run: Run) =>
+      revokeCreds(run, CONFIG.rlA.id, "rl-a", CONFIG.rlA.app);
+
+    it("revoke waits out a job already running on the install", async () => {
+      let n = 0;
+      const { run, f, seen } = runWith((u) =>
+        u.includes("/redline-creds") && ++n <= 2 ? busy() : undefined,
+      );
+      const t0 = f.clock.t;
+      await revoke(run);
+      expect(f.clock.t - t0).toBeGreaterThanOrEqual(2 * POLL);
+      expect(seen.filter((l) => l.includes("/redline-creds"))).toHaveLength(3);
+    });
+
+    it("revoke gives up at the job bound", async () => {
+      const { run } = runWith((u) =>
+        u.includes("/redline-creds") ? busy() : undefined,
+      );
+      await expect(revoke(run)).rejects.toThrow(
+        /R26 revoke rl-a: .*job_in_progress/,
+      );
+    });
+
+    it("revoke fails at once on any other refusal", async () => {
+      const { run, f } = runWith((u) =>
+        u.includes("/redline-creds")
+          ? Response.json({ error: { code: "forbidden" } }, { status: 403 })
+          : undefined,
+      );
+      const t0 = f.clock.t;
+      await expect(revoke(run)).rejects.toThrow(/forbidden/);
+      expect(f.clock.t - t0).toBe(0);
+    });
+  });
+
   it("P32 reads the discarded install on R3 as deleted", async () => {
     const f = fakeApi();
     const out = await runAll(f);

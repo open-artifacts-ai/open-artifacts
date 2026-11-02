@@ -44,6 +44,8 @@
         "ALERT_FROM": "{{ALERT_FROM_STAGING}}",
         "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_STAGING}}",
         "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_STAGING}}",
+        // The fleet rollout's canary install id (#955); empty: no rollout.
+        "FLEET_CANARY": "i33m6mbc3zuz",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app"
       },
@@ -80,6 +82,8 @@
       "send_email": [
         { "name": "ALERT_EMAIL", "destination_address": "{{ALERT_TO_STAGING}}" }
       ],
+      // The fleet target: this version's tag (#955, provapi/fleet.ts).
+      "version_metadata": { "binding": "CF_VERSION_METADATA" },
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
       "dispatch_namespaces": [
@@ -106,6 +110,8 @@
         "ALERT_FROM": "{{ALERT_FROM_PROD}}",
         "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}",
         "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_PROD}}",
+        // The fleet rollout's canary install id (#955); empty: no rollout.
+        "FLEET_CANARY": "",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app"
       },
@@ -142,6 +148,8 @@
       "send_email": [
         { "name": "ALERT_EMAIL", "destination_address": "{{ALERT_TO_PROD}}" }
       ],
+      // The fleet target: this version's tag (#955, provapi/fleet.ts).
+      "version_metadata": { "binding": "CF_VERSION_METADATA" },
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
       "dispatch_namespaces": [

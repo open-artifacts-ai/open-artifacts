@@ -1,11 +1,14 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, test, vi } from "vitest";
-import { authConfig } from "../src/auth/config.js";
+import { authConfig, NO_BOT_CHECK } from "../src/auth/config.js";
 import type { Env } from "../src/env.js";
 import { CID, direct, TEST_BROKER_KEY, trial } from "./auth-helpers.js";
 
 const base = (over: Partial<Env>) =>
   ({ ...env, AUTH_PROVIDERS: undefined, ...over }) as Env;
+/** direct() with both Turnstile keys: no bot-check problem. */
+const keyed = (over: Partial<Env> = {}) =>
+  direct({ TURNSTILE_SITE_KEY: "k", TURNSTILE_SECRET: "s", ...over });
 
 describe("authConfig", () => {
   test("unset is access only; guests uncapped; invite only", () => {
@@ -26,7 +29,9 @@ describe("authConfig", () => {
       transport: { kind: "direct", secret: "s" },
     });
     expect(c.domainJoin).toBe("member");
-    expect(c.problems).toEqual([]);
+    // Codes without Turnstile: the one problem (A4).
+    expect(c.problems).toEqual([NO_BOT_CHECK]);
+    expect(authConfig(keyed()).problems).toEqual([]);
   });
 
   test("unknown providers are dropped with a problem; none left means none", () => {
@@ -208,13 +213,54 @@ describe("authConfig", () => {
     );
     // Guests stay read-only and the mode stays direct: fail closed.
     expect(off.guestsReadOnly).toBe(true);
-    const on = authConfig(direct());
+    const on = authConfig(keyed());
     expect(on.emailCodes).toBe(true);
     expect(on.problems).toEqual([]);
     expect(authConfig(direct({ EMAIL_FROM: undefined })).emailCodes).toBe(
       false,
     );
   });
+  // A4: Turnstile stays optional on self-host; codes without it warn owners.
+  test("codes with no Turnstile keys: the bot-check problem, verbatim; codes still offered", () => {
+    expect(NO_BOT_CHECK).toBe(
+      "Sign-in codes are on without a bot check. Add a Turnstile key so bots can't use your email quota.",
+    );
+    const c = authConfig(direct());
+    expect(c.emailCodes).toBe(true);
+    expect(c.turnstile).toBeNull();
+    expect(c.problems).toEqual([NO_BOT_CHECK]);
+    // Code-only installs too.
+    expect(authConfig(direct({ AUTH_PROVIDERS: "email" })).problems).toContain(
+      NO_BOT_CHECK,
+    );
+    // Both keys: no warning.
+    expect(authConfig(keyed()).problems).not.toContain(NO_BOT_CHECK);
+    // One key: the existing half-set problem only.
+    const half = authConfig(direct({ TURNSTILE_SITE_KEY: "k" })).problems;
+    expect(half).not.toContain(NO_BOT_CHECK);
+    expect(half).toEqual([
+      "Only one of TURNSTILE_SITE_KEY and TURNSTILE_SECRET is set, so the bot check is off. Set both, or neither.",
+    ]);
+    // No codes (email off, or email can't send): no warning.
+    expect(
+      authConfig(direct({ AUTH_PROVIDERS: "google" })).problems,
+    ).not.toContain(NO_BOT_CHECK);
+    expect(authConfig(direct({ EMAIL: undefined })).problems).not.toContain(
+      NO_BOT_CHECK,
+    );
+  });
+
+  test("hosted is unchanged: no bot-check problem (codes there require Turnstile)", () => {
+    const hosted = direct({
+      HOSTED: "1",
+      AUTH_BROKER_URL: "https://auth.h.test",
+      BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+      GOOGLE_CLIENT_SECRET: undefined,
+    });
+    expect(authConfig(hosted).turnstile).toBeNull();
+    expect(authConfig(hosted).problems).not.toContain(NO_BOT_CHECK);
+  });
+
   test("every problem is a full sentence: ends with a period, no em dash", () => {
     const c = authConfig(
       direct({
@@ -244,7 +290,7 @@ describe("authConfig", () => {
       authConfig(e).problems,
     );
     spy.mockClear();
-    authConfig(direct());
+    authConfig(keyed());
     expect(
       spy.mock.calls.some((a) => String(a[0]).includes("auth_config_problems")),
     ).toBe(false);

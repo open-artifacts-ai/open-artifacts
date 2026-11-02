@@ -123,13 +123,18 @@ export function networkCode(e: unknown): string {
 }
 
 /**
- * True when `e` means the request got no response at all: undici's
- * TypeError "fetch failed" (any cause), a socket code (ECONNRESET, ...), or
- * an abort/timeout. Never an HTTP status or an assertion.
+ * True when `e` means the request got no usable response: undici's TypeError
+ * "fetch failed" (any cause) or "terminated" (the connection died mid-body),
+ * a socket code (ECONNRESET, ...), or an abort/timeout. Never an HTTP status
+ * or an assertion.
  */
 export function isNetworkError(e: unknown): boolean {
   if (!(e instanceof Error)) return false;
-  if (e instanceof TypeError && e.message === "fetch failed") return true;
+  if (
+    e instanceof TypeError &&
+    (e.message === "fetch failed" || e.message === "terminated")
+  )
+    return true;
   if (e.name === "AbortError" || e.name === "TimeoutError") return true;
   const code = (e as { code?: unknown }).code;
   const cause = (e as { cause?: { code?: unknown } }).cause?.code;

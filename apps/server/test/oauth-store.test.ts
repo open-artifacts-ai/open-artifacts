@@ -311,8 +311,11 @@ beforeEach(async () => {
 /** Any app-host request: a serve, which checks and writes the markers. */
 const robots = (e: unknown) => callWorker(new Request(`${APP}/robots.txt`), e);
 
-/** Every D1 query of one nightly cron run here (d1 mode, OAuth backlog). */
-const NIGHTLY_QUERIES = 18;
+/**
+ * Every D1 query of one nightly cron run here (d1 mode, OAuth backlog),
+ * cron.ts's day mark included (O1).
+ */
+const NIGHTLY_QUERIES = 19;
 
 /** Another isolate: its own marker check (keyed by the DB binding). */
 const isolate = (mode: OAuthStoreMode, over: Record<string, unknown> = {}) =>
