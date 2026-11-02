@@ -4,9 +4,9 @@
 # - that Environment allows deployments from main only (a custom branch
 #   policy that is exactly the branch `main`): the real control against a
 #   dispatch from another ref;
-# - admins cannot bypass it (can_admins_bypass is false). No required
-#   reviewer is checked: user rulings 2026-10-24, neither env has an approval
-#   step for now; a prod reviewer comes back before FinQore go-live;
+# - admins cannot bypass it (can_admins_bypass is false). No approval step:
+#   no one approves a release (user policy); the checks that run before
+#   signing and deploying are the gate, so nothing here looks for a reviewer;
 # - two active rulesets target refs/tags/v* (nothing excluded): A restricts
 #   creation with the release App (RELEASE_APP_ID, its numeric App id) as the
 #   only bypass actor; B restricts update and deletion with no bypass at all,

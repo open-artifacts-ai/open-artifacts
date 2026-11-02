@@ -4,12 +4,15 @@ import {
   authorizeRefused,
   KV_CACHE_TTL_MS,
   KV_SETTLE_SLACK_MS,
+  kvCaseTimeout,
+  oauthStoreMode,
   once,
   slot,
   slotValue,
   tokenRefused,
   untilKvSettled,
 } from "../src/creds.ts";
+import { LIVE_TEST_TIMEOUT_MS } from "../src/fetch-timeout.ts";
 import { NotRefused, registerMarker } from "../src/refused.ts";
 import type { Target } from "../src/targets.ts";
 
@@ -113,6 +116,24 @@ describe("slots", () => {
   });
 });
 
+describe("kvCaseTimeout", () => {
+  it("is the live budget plus every settle wait, so KV waits never time a case out", () => {
+    const wait = KV_CACHE_TTL_MS + KV_SETTLE_SLACK_MS;
+    expect(kvCaseTimeout(0)).toBe(LIVE_TEST_TIMEOUT_MS);
+    expect(kvCaseTimeout(4)).toBe(LIVE_TEST_TIMEOUT_MS + 4 * wait);
+    // The revoke case's four waits alone exceed the default budget (#826).
+    expect(4 * wait).toBeGreaterThan(LIVE_TEST_TIMEOUT_MS);
+  });
+
+  it("is what the live config uses as its default", async () => {
+    const cfg = (await import("../vitest.live.config.ts")).default as {
+      test: { testTimeout: number; hookTimeout: number };
+    };
+    expect(cfg.test.testTimeout).toBe(LIVE_TEST_TIMEOUT_MS);
+    expect(cfg.test.hookTimeout).toBe(LIVE_TEST_TIMEOUT_MS);
+  });
+});
+
 describe("untilKvSettled (#769)", () => {
   it("the window is derived from KV's 60 s cache TTL plus slack", () => {
     expect(KV_CACHE_TTL_MS).toBe(60_000);
@@ -208,6 +229,38 @@ describe("authorizeCode", () => {
         authorizeCode(B, cookie as never, "client", pkce as never, "res"),
       ).rejects.not.toThrow(/^infra/);
       expect(f).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("oauthStoreMode", () => {
+  const healthz = (body: unknown, status = 200) =>
+    vi.fn(async () => json(status, body));
+  it("reads /healthz oauthStore.mode; absent or unknown is kv", async () => {
+    for (const [body, want] of [
+      [{ ok: true, oauthStore: { mode: "d1" } }, "d1"],
+      [{ ok: true, oauthStore: { mode: "dual" } }, "dual"],
+      [{ ok: true, oauthStore: { mode: "kv" } }, "kv"],
+      [{ ok: true }, "kv"],
+      [{ ok: true, oauthStore: { mode: "D1" } }, "kv"],
+    ] as const) {
+      vi.stubGlobal("fetch", healthz(body));
+      try {
+        await expect(oauthStoreMode(B)).resolves.toBe(want);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  });
+  it("a non-200 /healthz throws", async () => {
+    vi.stubGlobal(
+      "fetch",
+      healthz({ error: "oauth_store_misconfigured" }, 503),
+    );
+    try {
+      await expect(oauthStoreMode(B)).rejects.toThrow(/healthz/);
     } finally {
       vi.unstubAllGlobals();
     }

@@ -22,7 +22,9 @@ import { ApiError } from "../http/errors.js";
 import {
   decorate,
   decorates,
+  lastPublisherSql,
   redact,
+  shownLastAgent,
   spaceCols,
   toSummary,
 } from "./artifacts.js";
@@ -524,6 +526,7 @@ export function searchQuery(
     .select({
       a: artifacts,
       ownerEmail: users.email,
+      lastPub: lastPublisherSql,
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller),
@@ -599,6 +602,7 @@ export async function search(
         ),
         level,
       );
+      out.lastAgent = shownLastAgent(r.lastPub, caller);
       return [
         {
           ...decorate(env, caller, out, level, r.a.spaceId, r.space),
