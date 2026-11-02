@@ -1,6 +1,7 @@
 import { rmSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { HookError, HttpError } from "../src/http.ts";
+import { takeFileNotes } from "../src/notes.ts";
 import { crossCheck, NotRefused } from "../src/refused.ts";
 import {
   COOKIE_CASE_OTP_MS,
@@ -12,6 +13,9 @@ import {
   otpOutcome,
   ownCodeRequestReq,
   pendingCode,
+  RESEND_WAIT_MS,
+  type requestCode,
+  requestOtp,
   signInRefused,
   stateAccepted,
   TURNSTILE_DUMMY_TOKEN,
@@ -375,6 +379,67 @@ describe("pendingCode (the __Host- cookie case's code)", () => {
       ++n < 2 ? json(r, 404, NO_CODE) : json(r, 200, { code: "123456" }),
     );
     expect(await pendingCode(t, "g@rl-a.test", ok)).toEqual({ code: "123456" });
+  });
+
+  describe("requestOtp", () => {
+    const t = { name: "rl-a" } as Target;
+    const pending = { name: "__Host-oa_code", value: "v" };
+    const asked = () => {
+      const calls = { n: 0 };
+      const request = (async () => {
+        calls.n++;
+        return { status: 202, shape: "", pending };
+      }) as typeof requestCode;
+      return { calls, request };
+    };
+    const outcomes = (...o: Awaited<ReturnType<typeof otpOutcome>>[]) =>
+      (async () => o.shift() ?? { outcome: "error" }) as typeof otpOutcome;
+
+    it("send_failed: waits out the resend window, requests once more, notes it", async () => {
+      const { calls, request } = asked();
+      const waited: number[] = [];
+      const r = await requestOtp(t, "g@x", {
+        request,
+        outcome: outcomes({ outcome: "send_failed" }, { code: "123456" }),
+        wait: async (ms) => waited.push(ms),
+      });
+      expect(r).toMatchObject({ pending, code: "123456" });
+      expect(calls.n).toBe(2);
+      expect(waited).toEqual([RESEND_WAIT_MS]);
+      expect(takeFileNotes()).toEqual([
+        "rl-a: code send failed, requested once more (send_failed)",
+      ]);
+    });
+
+    it("send_failed twice: fails, after one resend", async () => {
+      const { calls, request } = asked();
+      await expect(
+        requestOtp(t, "g@x", {
+          request,
+          outcome: outcomes(
+            { outcome: "send_failed" },
+            { outcome: "send_failed" },
+          ),
+          wait: async () => {},
+        }),
+      ).rejects.toThrow("rl-a: no code (send_failed)");
+      expect(calls.n).toBe(2);
+      takeFileNotes();
+    });
+
+    it.each([
+      "ineligible",
+      "capped",
+      "resend_wait",
+      "pool_full",
+      "email_off",
+    ] as const)("%s: fails at once, no resend", async (outcome) => {
+      const { calls, request } = asked();
+      await expect(
+        requestOtp(t, "g@x", { request, outcome: outcomes({ outcome }) }),
+      ).rejects.toThrow(`rl-a: no code (${outcome})`);
+      expect(calls.n).toBe(1);
+    });
   });
 
   it("otpOutcome returns a final outcome instead of throwing (the stranger case)", async () => {

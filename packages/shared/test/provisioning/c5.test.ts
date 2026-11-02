@@ -229,8 +229,14 @@ describe("system jobs (3.1, 4.1, 5.8)", () => {
       parentJobId: "01JBQ4ZKXW5V9R3M2N8P6T7Y0A",
     });
     expect(c).not.toBe(h);
+    // The fleet rollout's (#955): R5's and R6's args, never their route key.
+    expect(systemRouteKey("upgrade")).toBe("system:upgrade");
+    const up = { from: "0.92.0", to: "0.93.0" };
+    const u = await systemJobBodyHash("upgrade", "iabc123def45", up);
+    expect(u).toBe(await bodyHash("system:upgrade", "iabc123def45", up));
+    expect(u).not.toBe(await bodyHash("R5", "iabc123def45", up));
     await expect(
-      systemJobBodyHash("upgrade" as never, "iabc123def45", {} as never),
+      systemJobBodyHash("suspend" as never, "iabc123def45", {} as never),
     ).rejects.toThrow(/system job kind/);
   });
 });

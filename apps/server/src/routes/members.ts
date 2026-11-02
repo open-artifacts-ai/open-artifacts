@@ -34,8 +34,7 @@ export function requireManager(c: Context<AppEnv>): Member {
 
 /**
  * An uncapped org owner or admin (P3 T10), else 404. On every install: a
- * removal leaves the person's personal artifacts in place, with or without
- * spaces, so the Departed transfer must be reachable (parity 1).
+ * guest's personal artifacts need a home with or without spaces (parity 2).
  */
 function requireDeparted(c: Context<AppEnv>): Member {
   const user = requireUser(c);
@@ -89,11 +88,12 @@ export function mountMembers(app: AppType): void {
     );
   });
 
-  // A departed member's personal artifacts (P3 T10). Literal so Hono infers
+  // A departed member's or a guest's personal artifacts (P3 T10, parity 2).
+  // Literal so Hono infers
   // :id; must equal R.memberTransfer(id).
   app.get("/api/v1/members/:id/transfer", async (c) => {
-    requireDeparted(c);
-    return c.json(await transferSummary(c.env, c.req.param("id")));
+    const actor = requireDeparted(c);
+    return c.json(await transferSummary(c.env, actor, c.req.param("id")));
   });
 
   app.post("/api/v1/members/:id/transfer", async (c) => {

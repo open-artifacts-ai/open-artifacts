@@ -35,10 +35,10 @@ import {
   expectTurnstileRequired,
   type GoogleStart,
   labelTurnstileTestKey,
-  latestOtp,
   otpOutcome,
   relayedTo,
   requestCode,
+  requestOtp,
   startGoogle,
   stateAccepted,
   tamperInstall,
@@ -211,16 +211,6 @@ async function guestOn(t: Target, local: string): Promise<string> {
   return email;
 }
 
-/** Requests a code at `t` for `email`; returns its pending cookie and the code (hook). */
-async function codeFor(t: Target, email: string) {
-  const r = await requestCode(t, email);
-  if (r.status !== 202 || !r.pending)
-    throw new Error(`${t.name} code request: status ${r.status}`);
-  const code = await latestOtp(t, email);
-  if (!code) throw new Error(`${t.name}: no code was sent to its own guest`);
-  return { pending: r.pending, code };
-}
-
 type CodeCred = {
   code: string;
   pending: Partial<Record<"a" | "b", CookiePair>>;
@@ -254,8 +244,8 @@ describe("sign-in: one-time codes", () => {
     // its own: a code store shared by address would let A's code through.
     await share(B, ea);
     const eb = await guestOn(T.b, "rl-otp");
-    const ca = await codeFor(T.a, ea);
-    const cb = await codeFor(T.b, eb);
+    const ca = await requestOtp(T.a, ea);
+    const cb = await requestOtp(T.b, eb);
     // B's own pending cookie for A's address.
     const atB = await requestCode(T.b, ea);
     if (!atB.pending) throw new Error("B gave no pending cookie");
@@ -272,8 +262,8 @@ describe("sign-in: one-time codes", () => {
   it("a code issued by A, entered at B with A's pending cookie: refused", async () => {
     const ea = await guestOn(T.a, "rl-otp");
     const eb = await guestOn(T.b, "rl-otp");
-    const ca = await codeFor(T.a, ea);
-    const cb = await codeFor(T.b, eb);
+    const ca = await requestOtp(T.a, ea);
+    const cb = await requestOtp(T.b, eb);
     await crossCheck<CodeCred>(verifyAt, {
       a: T.a,
       b: T.b,
@@ -287,11 +277,7 @@ describe("sign-in: one-time codes", () => {
   it("a code requested at B for an address not invited to B: no code sent, generic response", async () => {
     // Control: an invited address (B's guest) gets a code, and the hook shows it.
     const invited = await guestOn(T.b, "rl-invited");
-    const ri = await requestCode(T.b, invited);
-    if (ri.status !== 202 || !ri.pending)
-      throw new Error(`invited request: status ${ri.status}`);
-    if (!(await latestOtp(T.b, invited)))
-      throw new Error("the invited address got no code (control failed)");
+    const { requested: ri } = await requestOtp(T.b, invited);
     // The same domain, never invited: same answer, and no code.
     const stranger = `rl-uninvited-${rand()}@${T.b.testDomain}`;
     const rs = await requestCode(T.b, stranger);

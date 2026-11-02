@@ -113,6 +113,8 @@ export const fixtures: {
   shares: Record<string, Share[]>;
   tokens: Token[];
   oauthClients: OAuthClient[];
+  /** The connections (`g:<grantId>`, `t:<tokenId>`) that published each artifact; all the caller's. */
+  agentVias: Record<string, string[]>;
   data: { artifactId: string; collection: string; doc: DataDoc }[];
   storage: { artifactId: string; entry: StorageEntry }[];
 } = {
@@ -194,7 +196,7 @@ export const fixtures: {
       label: "laptop",
       createdAt: "2026-01-02T10:00:00.000Z",
       lastUsedAt: null,
-      versionsPublished: 0,
+      versionsPublished: 1,
     },
   ],
   oauthClients: [
@@ -209,6 +211,12 @@ export const fixtures: {
       versionsPublished: 3,
     },
   ],
+  agentVias: {
+    [ID.landing]: ["g:Km3nPqRsTu4vWxYz"],
+    [ID.notes]: ["g:Km3nPqRsTu4vWxYz"],
+    [ID.report]: ["g:Km3nPqRsTu4vWxYz"],
+    [ID.script]: ["t:Jk2mNpQrSt3uVwXy"],
+  },
   data: [
     {
       artifactId: ID.poll,

@@ -24,6 +24,7 @@ export const DUTY_NAMES = [
   "signups",
   "purge",
   "health",
+  "fleet",
   "alerts",
   "prune",
 ] as const;

@@ -59,7 +59,7 @@ export const TOOL_DEFS = [
     inputSchema: ListQuerySchema,
     example: { scope: "mine", format: "html", limit: 10 },
     description:
-      "List artifacts you can see, newest first. Filter by scope, format, visibility, owner, agent or updatedSince; page with cursor.",
+      "List artifacts you can see, newest first. Filter by scope, format, visibility, owner, agent, agentVia (one of your own connections, g:<grantId> or t:<tokenId>) or updatedSince; page with cursor.",
   },
   {
     name: "search_artifacts",
