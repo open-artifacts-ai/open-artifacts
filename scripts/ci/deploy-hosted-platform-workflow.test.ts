@@ -535,8 +535,11 @@ describe("deploy-hosted-platform.yml", () => {
 
   it("reads every Worker's tag back with main's script after a full-list run (#1064)", () => {
     const t = named("Every platform Worker runs the tag");
+    // The condition follows the input's default, read from the YAML: a target
+    // added to the default without the condition fails here, never silently
+    // skips the read-back.
     expect(t.if).toBe(
-      "${{ inputs.targets == 'platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones' }}",
+      `\${{ inputs.targets == '${w.on.workflow_dispatch.inputs.targets.default}' }}`,
     );
     expect(t.run).toBe(
       'bash "$RUNNER_TEMP/main-ci/platform-tags.sh" "$DEPLOY_ENV" "$TAG"',
