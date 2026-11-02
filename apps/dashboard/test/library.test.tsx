@@ -249,6 +249,57 @@ describe("Library", () => {
       await waitFor(() => expect(router.state.location.search).toEqual({}));
     });
 
+    it("agents actually named like the select's sentinels stay themselves", async () => {
+      server.use(
+        http.get("*/api/v1/artifacts", () =>
+          page(
+            [
+              { ...arts[0], lastAgent: { name: "__via", version: null } },
+              {
+                ...arts[1],
+                lastAgent: { name: "__all", version: null },
+              },
+            ],
+            null,
+          ),
+        ),
+      );
+      const router = mount(`/?agentVia=g:${GRANT.grantId}`);
+      await waitFor(async () =>
+        expect(await agentBox()).toHaveTextContent(GRANT.clientName),
+      );
+      fireEvent.click(await agentBox());
+      fireEvent.click(await screen.findByRole("option", { name: "__via" }));
+      await waitFor(() =>
+        expect(router.state.location.search).toEqual({ agent: "__via" }),
+      );
+      expect(await agentBox()).toHaveTextContent("__via");
+      fireEvent.click(await agentBox());
+      fireEvent.click(await screen.findByRole("option", { name: "__all" }));
+      await waitFor(() =>
+        expect(router.state.location.search).toEqual({ agent: "__all" }),
+      );
+    });
+
+    it("an agent param under the connection never narrows; Clear filters removes both", async () => {
+      const router = mount(`/?agent=Alpha&agentVia=g:${GRANT.grantId}`);
+      await waitFor(async () =>
+        expect(await agentBox()).toHaveTextContent(GRANT.clientName),
+      );
+      expect(sent("agentVia")).toContain(`g:${GRANT.grantId}`);
+      expect(sent("agent").filter(Boolean)).toEqual([]);
+      fireEvent.click(await agentBox());
+      expect(
+        await screen.findByRole("option", { name: "All agents" }),
+      ).toBeVisible();
+      expect(screen.queryByRole("option", { name: "Alpha" })).toBeNull();
+      fireEvent.keyDown(await screen.findByRole("listbox"), { key: "Escape" });
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Clear filters" }),
+      );
+      await waitFor(() => expect(router.state.location.search).toEqual({}));
+    });
+
     it("another agent replaces agentVia, and All agents then clears it", async () => {
       server.use(
         http.get("*/api/v1/artifacts", () =>
@@ -272,6 +323,19 @@ describe("Library", () => {
         await screen.findByRole("option", { name: "All agents" }),
       );
       await waitFor(() => expect(router.state.location.search).toEqual({}));
+    });
+
+    it("All agents drops a hidden agent with agentVia, so it can't come back", async () => {
+      const router = mount(`/?agent=Alpha&agentVia=g:${GRANT.grantId}`);
+      await waitFor(async () =>
+        expect(await agentBox()).toHaveTextContent(GRANT.clientName),
+      );
+      fireEvent.click(await agentBox());
+      fireEvent.click(
+        await screen.findByRole("option", { name: "All agents" }),
+      );
+      await waitFor(() => expect(router.state.location.search).toEqual({}));
+      expect(await agentBox()).toHaveTextContent("All agents");
     });
 
     it("All agents clears agentVia", async () => {

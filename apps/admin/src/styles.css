@@ -1729,6 +1729,19 @@ code.oa-code,
 .oa-snip > [data-slot="button"] {
   flex: none;
 }
+/* Shell commands wrap instead of scrolling, so nothing sits out of view. */
+.oa-connect .oa-snip-wrap pre {
+  overflow-x: visible;
+  mask-image: none;
+}
+.oa-connect .oa-snip-wrap code {
+  white-space: pre-wrap;
+}
+.oa-snip-word {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
 .oa-tokens td.oa-strong {
   font-weight: 600;
 }
@@ -1879,6 +1892,16 @@ code.oa-code,
   /* A long snippet line fades out where it scrolls, instead of a hard cut. */
   .oa-snip pre {
     mask-image: linear-gradient(90deg, #000 85%, transparent);
+  }
+  /* The whole width for the command: a URL stays on one line. */
+  .oa-snip-wrap {
+    flex-wrap: wrap;
+  }
+  .oa-connect .oa-snip-wrap pre {
+    flex-basis: 100%;
+  }
+  .oa-snip-wrap > [data-slot="button"] {
+    margin-left: auto;
   }
 }
 

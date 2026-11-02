@@ -16,6 +16,7 @@ import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import { SCRUBBED_VIA } from "../src/services/agent-display.js";
 import type { AgentAttr } from "../src/services/agent-usage.js";
+import { dropGrantUsage } from "../src/services/agent-usage.js";
 import { listQuery, publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
 import { api, login, runIndex } from "./helpers.js";
@@ -104,7 +105,8 @@ beforeAll(async () => {
   b = await mk("via-b");
   ({ id: tokenId, token: pat } = await createPat(env, a.userId, "via token"));
   ids.g1 = [
-    await pub(a, claude(grant1), "g1 one"),
+    // Public, so b can see it and only the ownership check keeps it out.
+    await pub(a, claude(grant1), "g1 one", { visibility: "public" }),
     await pub(a, claude(grant1), "g1 two", { format: "markdown" }),
   ];
   ids.g2 = [await pub(a, claude(grant2), "g2 one")];
@@ -119,6 +121,7 @@ beforeAll(async () => {
       title: "tok one",
       format: "html",
       content: `<p>${WORD} tok</p>`,
+      visibility: "public",
     },
   });
   expect(r.status).toBe(201);
@@ -153,13 +156,16 @@ describe("contract", () => {
     }
   });
 
-  it("a malformed agentVia is 400 on list and search", async () => {
-    expect(
-      (await api(app, `${R.artifacts}?agentVia=nope`, a.cookie)).status,
-    ).toBe(400);
-    expect(
-      (await api(app, `${R.search}?q=x&agentVia=nope`, a.cookie)).status,
-    ).toBe(400);
+  it("a malformed agentVia, or a scrubbed row's marker, is 400 on list and search", async () => {
+    for (const bad of ["nope", SCRUBBED_VIA, `${SCRUBBED_VIA}x`]) {
+      const q = encodeURIComponent(bad);
+      expect(
+        (await api(app, `${R.artifacts}?agentVia=${q}`, a.cookie)).status,
+      ).toBe(400);
+      expect(
+        (await api(app, `${R.search}?q=x&agentVia=${q}`, a.cookie)).status,
+      ).toBe(400);
+    }
   });
 });
 
@@ -185,8 +191,6 @@ describe("list", () => {
   it("another user's via is an empty page, even on an artifact the caller can see", async () => {
     expect(await items("scope=all", a.cookie)).toContain(ids.b?.[0]);
     expect(await items(via(`g:${grantB}`), a.cookie)).toEqual([]);
-    expect(await items(via(`g:${grant1}`), b.cookie)).toEqual([]);
-    expect(await items(via(`t:${tokenId}`), b.cookie)).toEqual([]);
     // An unknown id reads the same as someone else's.
     expect(await items(via(`g:${newId()}`), a.cookie)).toEqual([]);
     expect(await items(via(`t:${newId()}`), a.cookie)).toEqual([]);
@@ -195,6 +199,16 @@ describe("list", () => {
     expect(await items(via(`g:${tokenId}`), a.cookie)).toEqual([]);
     // The owner still gets their own.
     expect(await items(via(`g:${grantB}`), b.cookie)).toEqual(ids.b);
+  });
+
+  it("another user's grant is empty even on a public artifact they can list", async () => {
+    expect(await items("scope=all", b.cookie)).toContain(ids.g1?.[0]);
+    expect(await items(via(`g:${grant1}`), b.cookie)).toEqual([]);
+  });
+
+  it("another user's token is empty even on a public artifact they can list", async () => {
+    expect(await items("scope=all", b.cookie)).toContain(ids.tok?.[0]);
+    expect(await items(via(`t:${tokenId}`), b.cookie)).toEqual([]);
   });
 
   it("combines with the other filters", async () => {
@@ -251,8 +265,46 @@ describe("search", () => {
     );
     expect(await hits(via(`t:${tokenId}`), a.cookie)).toEqual(ids.tok);
     expect(await hits(via(`g:${grantB}`), a.cookie)).toEqual([]);
-    expect(await hits(via(`g:${grant1}`), b.cookie)).toEqual([]);
     expect(Object.keys(SearchQuerySchema.shape).at(-1)).toBe("agentVia");
+  });
+
+  it("another user's grant is empty even on a public artifact they can find", async () => {
+    expect(await hits("", b.cookie)).toContain(ids.g1?.[0]);
+    expect(await hits(via(`g:${grant1}`), b.cookie)).toEqual([]);
+  });
+});
+
+describe("revocation", () => {
+  it("a revoked grant filters to nothing; its artifacts stay", async () => {
+    const g = newId();
+    const id = await pub(a, claude(g), "revoked grant");
+    await runIndex(id);
+    expect(await items(via(`g:${g}`), a.cookie)).toEqual([id]);
+    expect(await hits(via(`g:${g}`), a.cookie)).toEqual([id]);
+    await dropGrantUsage(env, g, a.userId);
+    expect(await items(via(`g:${g}`), a.cookie)).toEqual([]);
+    expect(await hits(via(`g:${g}`), a.cookie)).toEqual([]);
+    expect(await items("scope=mine", a.cookie)).toContain(id);
+  });
+
+  it("a revoked token keeps its row and still filters for its owner, and stops working", async () => {
+    const { id: t, token } = await createPat(env, a.userId, "via revoked");
+    const r = await api(app, R.artifacts, token, {
+      method: "POST",
+      body: {
+        title: "revoked token",
+        format: "html",
+        content: `<p>${WORD} revoked</p>`,
+      },
+    });
+    expect(r.status).toBe(201);
+    const { id } = (await r.json()) as { id: string };
+    await runIndex(id);
+    const gone = await api(app, R.token(t), a.cookie, { method: "DELETE" });
+    expect(gone.ok).toBe(true);
+    expect(await items(via(`t:${t}`), a.cookie)).toEqual([id]);
+    expect(await hits(via(`t:${t}`), a.cookie)).toEqual([id]);
+    expect((await api(app, R.artifacts, token)).status).toBe(401);
   });
 });
 

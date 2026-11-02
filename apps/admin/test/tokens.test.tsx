@@ -1,3 +1,4 @@
+import { agentClients } from "@oa/shared";
 import { type Token, TokenScopeSchema } from "@oa/shared/provisioning";
 import { LIVE_TOKENS_PER_ADMIN } from "@oa/shared/provisioning/constants";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -305,12 +306,25 @@ it("the Connect any AI agent card: variant toggle and agent tabs drive the snipp
   expect(tab("Claude Code")).toHaveAttribute("aria-pressed", "true");
   expect(pressed("Sign in with browser")).toBe("true");
   expect(snip()).toHaveTextContent(
-    `claude mcp add --transport http oa-admin ${url}`,
+    `claude mcp add --transport http -s user oa-admin ${url}`,
   );
   expect(snip()).toHaveTextContent(
     "pick oa-admin and sign in with your browser",
   );
   expect(snip()).toHaveTextContent("Start a new Claude Code session");
+
+  // Its token variant is user-scoped too, and its copy still fits.
+  fireEvent.click(within(card).getByRole("button", { name: "Use a token" }));
+  expect(snip()).toHaveTextContent(
+    `claude mcp add --transport http -s user oa-admin ${url} --header`,
+  );
+  expect(snip()).toHaveTextContent("Paste your token when prompted.");
+  expect(snip()).toHaveTextContent(
+    "Run claude mcp list. It shows oa-admin as connected.",
+  );
+  fireEvent.click(
+    within(card).getByRole("button", { name: "Sign in with browser" }),
+  );
 
   // Another agent tab.
   fireEvent.click(tab("Codex CLI"));
@@ -331,6 +345,73 @@ it("the Connect any AI agent card: variant toggle and agent tabs drive the snipp
     "list the oa-admin tools. You should see get_world.",
   );
   expect(card).not.toHaveTextContent(String.fromCharCode(0x2014));
+});
+
+it("Claude Code's commands wrap on screen and copy exactly as written", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText },
+    configurable: true,
+  });
+  renderApp("/tokens");
+  const card = await screen.findByRole("region", {
+    name: "Connect any AI agent",
+  });
+  const url = "https://api.open-artifacts-staging.app/mcp";
+  const all = agentClients(url, { name: "oa-admin", verifyTool: "get_world" });
+  const box = () => screen.getByTestId("snippet");
+  const shown = () => box().querySelector("code");
+
+  for (const [variant, button, lines] of [
+    ["oauth", "Sign in with browser", 1],
+    ["token", "Use a token", 3],
+  ] as const) {
+    const code = all.find(
+      (s) => s.agent === "Claude Code" && s.variant === variant,
+    )?.code as string;
+    fireEvent.click(within(card).getByRole("button", { name: button }));
+    expect(box().querySelector(".oa-snip")).toHaveClass("oa-snip-wrap");
+    expect(shown()?.textContent).toBe(code);
+    // The URL and the flag are whole words, so a line never splits them.
+    const words = [...box().querySelectorAll(".oa-snip-word")].map(
+      (w) => w.textContent,
+    );
+    expect(words).toEqual(expect.arrayContaining([url, "-s", "user"]));
+    fireEvent.click(
+      within(box()).getByRole("button", { name: /^Cop(y|ied)$/ }),
+    );
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(code));
+    expect(writeText.mock.lastCall?.[0].split("\n")).toHaveLength(lines);
+  }
+
+  // Config keeps its own lines and its scrolling box.
+  fireEvent.click(within(card).getByRole("button", { name: "Codex CLI" }));
+  expect(box().querySelector(".oa-snip")).not.toHaveClass("oa-snip-wrap");
+  expect(box().querySelector(".oa-snip-word")).toBeNull();
+});
+
+it("Copied resets when the variant or the agent changes", async () => {
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    configurable: true,
+  });
+  renderApp("/tokens");
+  const card = await screen.findByRole("region", {
+    name: "Connect any AI agent",
+  });
+  const box = () => within(screen.getByTestId("snippet"));
+  const copy = async () => {
+    fireEvent.click(box().getByRole("button", { name: "Copy" }));
+    await box().findByRole("button", { name: "Copied" });
+  };
+
+  await copy();
+  fireEvent.click(within(card).getByRole("button", { name: "Use a token" }));
+  expect(box().getByRole("button", { name: "Copy" })).toBeVisible();
+
+  await copy();
+  fireEvent.click(within(card).getByRole("button", { name: "Codex CLI" }));
+  expect(box().getByRole("button", { name: "Copy" })).toBeVisible();
 });
 
 it("Copy puts the snippet on the clipboard", async () => {
