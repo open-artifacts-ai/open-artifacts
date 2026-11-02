@@ -334,16 +334,28 @@ describe("credentials", () => {
 
     // The OAuth store move: with OAUTH_STORE dual or d1 the grant is read
     // from the install's D1, so neither case waits. An install still on KV
-    // waits out the edge cache (#769) and the case says so (label).
-    const KV_WAIT_LABEL =
-      "KV OAuth store: waited out the edge cache (no wait needs dual or d1)";
+    // waits out the edge cache (#769). Each case labels the mode it ran in,
+    // so a green run shows which store it exercised (#1075).
+    const storeMode = async (
+      ctx: Parameters<typeof label>[0],
+      t: Target,
+      modes: string[],
+    ): Promise<boolean> => {
+      const mode = await oauthStoreMode(t);
+      modes.push(`${t.name} ${mode}`);
+      label(
+        ctx,
+        `OAuth store: ${modes.join(", ")}${modes.some((m) => m.endsWith(" kv")) ? " (KV: waited out the edge cache)" : ""}`,
+      );
+      return mode === "kv";
+    };
 
     it(
       "An OAuth refresh straight after the redeem: a new token, on A and on B (#769)",
       async (ctx) => {
+        const modes: string[] = [];
         for (const t of [T.a, T.b]) {
-          const kv = (await oauthStoreMode(t)) === "kv";
-          if (kv) label(ctx, KV_WAIT_LABEL);
+          const kv = await storeMode(ctx, t, modes);
           const clientId = await registerClient(t);
           const rt = await refresh(t, clientId);
           if (kv) await untilKvSettled(lastRedeemAt());
@@ -362,9 +374,9 @@ describe("credentials", () => {
     it(
       "A revoked OAuth refresh token is refused at once, on A and on B",
       async (ctx) => {
+        const modes: string[] = [];
         for (const t of [T.a, T.b]) {
-          const kv = (await oauthStoreMode(t)) === "kv";
-          if (kv) label(ctx, KV_WAIT_LABEL);
+          const kv = await storeMode(ctx, t, modes);
           const clientId = await registerClient(t);
           const rt = await refresh(t, clientId);
           if (kv) await untilKvSettled(lastRedeemAt());
