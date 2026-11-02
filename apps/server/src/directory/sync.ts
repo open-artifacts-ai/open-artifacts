@@ -20,6 +20,7 @@ import { type AuditActor, audit } from "../services/audit.js";
 import { setUserStatus } from "../services/members.js";
 import { RESTRICTED_SYNC_CASE } from "../services/restriction.js";
 import { directoryMode } from "../services/spaces.js";
+import { testHold as testHoldImpl } from "../test-hooks/held.js";
 import { alertOwners } from "./alert.js";
 import { applyGroupDiff, applyUsers } from "./apply.js";
 import { bindPage, retireTenant } from "./binding.js";
@@ -55,6 +56,12 @@ import {
 } from "./store.js";
 import { type PendingRevokes, thawFrozenEdits } from "./thaw.js";
 import { type DirectoryClient, TransportError } from "./transport.js";
+
+// `false` in release builds (build-flags.d.ts): no reference to test-hooks/.
+const testHoldFn =
+  typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
+  __OA_TEST_HOOKS_ALLOWED__ === true &&
+  testHoldImpl;
 
 // The DirectorySync engine (P3 T13). One DO per install runs it on its alarm;
 // everything here takes the env and the DO's SQLite explicitly, so tests can
@@ -145,6 +152,9 @@ const NOFEED_KEY = "nofeed.since";
 const SNOOZE_SYNC_KEY = "snooze.sync";
 /** An RPC's compare-and-set tries on health before leaving it to the alarm. */
 const SNOOZE_CAS_TRIES = 4;
+/** A health row written only while there is none (casHealth's create). */
+const HEALTH_INSERT =
+  "insert into directory_state (key, value) values (?1, ?2) on conflict (key) do nothing";
 
 /**
  * The directory access token, in memory only: never written to DO storage,
@@ -912,18 +922,55 @@ export class SyncEngine {
    * clear. A lost race re-reads; past SNOOZE_CAS_TRIES the next alarm writes
    * it (SNOOZE_SYNC_KEY, set by every RPC change).
    */
-  private async snoozeHealth() {
+  private snoozeHealth() {
+    return this.casHealth((h) => h, false);
+  }
+
+  /**
+   * An RPC's health write: `f` over the stored health, with the snoozes,
+   * compare-and-set as snoozeHealth describes. `create`: a missing row is
+   * inserted (only if still missing); else no row means nothing to write.
+   */
+  private async casHealth(f: (h: Health) => Health, create: boolean) {
     for (let i = 0; i < SNOOZE_CAS_TRIES; i++) {
       const { h, raw } = await readHealthRaw(this.env);
       // No row (never synced, or cleared): nothing is held.
-      if (raw === null) return;
-      const next = JSON.stringify(this.withSnoozes(h));
-      if (next === JSON.stringify(h)) return;
-      const r = await stmt(this.env.DB, HEALTH_CAS)
-        .bind(next, HK.health, raw)
-        .run();
+      if (raw === null && !create) return;
+      const next = JSON.stringify(this.withSnoozes(f(h)));
+      if (raw !== null && next === JSON.stringify(h)) return;
+      const r = await (raw === null
+        ? stmt(this.env.DB, HEALTH_INSERT).bind(HK.health, next)
+        : stmt(this.env.DB, HEALTH_CAS).bind(next, HK.health, raw)
+      ).run();
       if (r.meta.changes) return;
     }
+  }
+
+  /**
+   * Test builds only (the directory-held hook, #1078): a held sweep on a
+   * `test-` group, or none, where real sync keeps it (test-hooks/held.ts).
+   * Null in release builds, which carry no reference to test-hooks/.
+   */
+  async testHold(
+    groupId: string,
+    email: string,
+    on: boolean,
+    now = Date.now(),
+  ): Promise<boolean | null> {
+    if (!testHoldFn) return null;
+    return await testHoldFn(
+      {
+        sql: this.sql,
+        transactionSync: (f) => this.storage.transactionSync(f),
+        hash: () => memberListHash([], "over_half"),
+        endSnooze: (g, at) => this.endSnooze(g, at, "released", SYSTEM, false),
+        health: (f) => this.casHealth(f, true),
+      },
+      groupId,
+      email,
+      on,
+      now,
+    );
   }
 
   /**
