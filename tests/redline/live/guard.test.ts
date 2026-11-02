@@ -101,7 +101,8 @@ describe("agent guides", () => {
         throw new Error("app /llms.txt: not text/plain");
       if (!body.includes(new URL(t.app).hostname))
         throw new Error("app /llms.txt: does not name this install's app host");
-      if (body.includes("Bearer ") || body.includes("oa_pat_"))
+      // "Bearer %s" and "Bearer {file:...}" are header templates, not tokens.
+      if (/Bearer oa_|oa_pat_/.test(body))
         throw new Error("app /llms.txt: carries a credential");
 
       const c = await fetch(`${t.content}/llms.txt`, { redirect: "manual" });
