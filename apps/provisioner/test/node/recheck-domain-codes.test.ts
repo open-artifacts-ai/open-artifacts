@@ -45,11 +45,12 @@ describe("strictVars: EMAIL_CODE_DOMAIN", () => {
     );
   });
   it("refuses it with no email, with google, or with no domain", () => {
-    for (const o of [
+    const cases: Record<string, string>[] = [
       { AUTH_PROVIDERS: "google" },
       { AUTH_PROVIDERS: "google,email" },
       { AUTH_DOMAINS: "" },
-    ])
+    ];
+    for (const o of cases)
       expect(why(vars(o)), JSON.stringify(o)).toMatch(/EMAIL_CODE_DOMAIN/);
   });
   it("refuses it on self-serve", () => {
