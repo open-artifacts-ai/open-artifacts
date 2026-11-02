@@ -30,6 +30,7 @@ import {
   proof,
   type Report,
   redactReason,
+  runKindOf,
 } from "../src/report.ts";
 import { bindingOf } from "../src/reporter.ts";
 
@@ -708,22 +709,57 @@ describe("bindingOf: the suite's commit (#1137)", () => {
   });
 });
 
-describe("nightlyNa: P30 is skipped only in a scheduled run (#1137)", () => {
+describe("nightly-only: P30 is accepted on a scheduled run and never on a candidate (#1137)", () => {
   const P30 =
     "provisioning > P30: dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens";
-  const c = (over: Partial<CaseResult>): CaseResult => ({
+  const c = (over: Partial<CaseResult> = {}): CaseResult => ({
     name: P30,
     level: "not-applicable",
     reason: NIGHTLY_NA_REASON,
     file: "provisioning.test.ts",
     ...over,
   });
+  const OK: CaseResult = { name: "x", level: "pass" };
+  const SCHEDULED = { scheduled: true };
 
-  it("the gate accepts exactly that", () => {
-    expect(gatePasses([c({})])).toBe(true);
+  it("a scheduled run accepts exactly that", () => {
+    expect(gatePasses([OK, c()], SCHEDULED)).toBe(true);
   });
 
-  it("any other reason, level, case or file still fails", () => {
+  it("fails closed: a dispatched run with P30 not-applicable fails the gate", () => {
+    const dispatched = runKindOf({
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      REDLINE_DISPATCH: "1",
+    });
+    expect(gatePasses([OK, c()], dispatched)).toBe(false);
+    const r = buildReport([OK, c()], "staging", dispatched);
+    expect(r.gate.passed).toBe(false);
+    expect(r.nightlyOnly).toBeUndefined();
+    expect(formatReport(r)).toContain("[not-applicable] " + P30);
+  });
+
+  it("fails closed: a dispatch with REDLINE_DISPATCH lost, and no run named", () => {
+    const lost = runKindOf({ GITHUB_EVENT_NAME: "workflow_dispatch" });
+    expect(gatePasses([OK, c()], lost)).toBe(false);
+    expect(gatePasses([OK, c()])).toBe(false);
+    expect(gatePasses([OK, c()], {})).toBe(false);
+    expect(buildReport([OK, c()], "staging").gate.passed).toBe(false);
+  });
+
+  it("is scheduled only on GitHub's schedule event, without the dispatch mark", () => {
+    expect(runKindOf({ GITHUB_EVENT_NAME: "schedule" }).scheduled).toBe(true);
+    for (const env of [
+      {},
+      { GITHUB_EVENT_NAME: "" },
+      { GITHUB_EVENT_NAME: "workflow_dispatch" },
+      { GITHUB_EVENT_NAME: "workflow_call" },
+      { GITHUB_EVENT_NAME: "SCHEDULE" },
+      { GITHUB_EVENT_NAME: "schedule", REDLINE_DISPATCH: "1" },
+    ])
+      expect(runKindOf(env).scheduled).toBe(false);
+  });
+
+  it("any other reason, level, case or file fails, scheduled or not", () => {
     for (const bad of [
       c({ reason: "skipped" }),
       c({ level: "fail" }),
@@ -731,6 +767,25 @@ describe("nightlyNa: P30 is skipped only in a scheduled run (#1137)", () => {
       c({ name: "provisioning > P31: x" }),
       c({ file: "surfaces.test.ts" }),
     ])
-      expect(gatePasses([bad])).toBe(false);
+      expect(gatePasses([bad], SCHEDULED)).toBe(false);
+  });
+
+  it("the report shows it by name, as nightly-only", () => {
+    const r = buildReport([OK, c()], "staging", SCHEDULED);
+    expect(r.gate.passed).toBe(true);
+    expect(r.nightlyOnly).toEqual([P30]);
+    expect(r.gate.reason).toContain("1 nightly-only not-applicable");
+    const text = formatReport(r);
+    expect(text).toContain("never on a candidate");
+    expect(text).toContain(P30);
+    expect(text).not.toContain("Not pass:");
+  });
+
+  it("the live reporter passes the run's own kind", () => {
+    const src = readFileSync(
+      join(import.meta.dirname, "../src/reporter.ts"),
+      "utf8",
+    );
+    expect(src).toContain("runKindOf(process.env)");
   });
 });

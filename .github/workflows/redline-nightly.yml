@@ -3,6 +3,7 @@
 # and until staging runs the release. A run's result is the workflow's own
 # record: no session watches it. Red keeps one `blocker` issue open, and green
 # closes it; it sends no email, so P30, which opens an alert, doesn't run here.
+# The gate accepts that on a scheduled run only (report.ts, runKindOf).
 # Not a prod gate: staging-first-gate.sh reads runs of redline-staging.yml, and
 # a run called from here isn't one.
 name: redline-nightly

@@ -107,8 +107,8 @@ describe("redline-staging.yml", () => {
     expect(JSON.stringify(job)).not.toContain("CLOUDFLARE_API_TOKEN");
   });
 
-  // The gate accepts P30 as not-applicable, for the nightly. A candidate must
-  // still run it, so a dispatch always sets this.
+  // P30 runs only with this set, and without it a dispatched run fails the
+  // gate: only a scheduled run may leave it out (report.test.ts).
   it("sets REDLINE_DISPATCH on a dispatch, and only then (#1137)", () => {
     expect(named("Run the suite").env.REDLINE_DISPATCH).toBe(
       "${{ github.event_name == 'workflow_dispatch' && '1' || '' }}",
