@@ -26,7 +26,15 @@ import {
   uncovered,
   unlisted,
 } from "../../../apps/server/test/authz/surfaces.ts";
-import { authorizeCode, mcpResource, pkce, registerClient } from "./creds.ts";
+import {
+  authorizeCode,
+  KV_CACHE_TTL_MS,
+  KV_SETTLE_SLACK_MS,
+  kvCaseTimeout,
+  mcpResource,
+  pkce,
+  registerClient,
+} from "./creds.ts";
 import { InfraError, setupFetch } from "./fetch-timeout.ts";
 import {
   adminEmail,
@@ -92,6 +100,13 @@ export interface ProbeCase {
   /** ROUTE_POLICY keys, `tool:<name>`, `content:<key>` this case reaches. */
   routes: readonly string[];
   variant: Variant;
+  /**
+   * Only A's credential at B runs (crossDenied), on `run`: a refusal across
+   * installs with no success leg. The route stays a recorded drop.
+   */
+  denyOnly?: true;
+  /** This case's own timeout, when its waits exceed the suite's budget. */
+  timeout?: number;
   /** Read-only: runs on the seeded world. */
   run?: (
     cred: ProbeCred,
@@ -169,7 +184,7 @@ const NO_DIRECTORY = {
 /** Why a surface can't run cross-install: no success leg is possible. */
 const WHY: Record<DropWhy, string> = {
   "real-only":
-    "real-only (#839): past the access rules the route either writes or answers a 404 that looks like a refusal, and its throwaway (a Google identity link, a directory group or a mapping) needs a connected Google directory, so crossCheck has no success leg",
+    "real-only (#839): past the access rules the route either writes or answers a 404 that looks like a refusal, and the row it needs can't be made on the red-line installs, so crossCheck has no success leg. Live, a deny-only case still proves A's session is a 401 at B; that an admin is allowed is covered by the matrix only",
   "owner-only":
     "owner-only: hooks never mint the owner and no owner credential is stored in CI, so crossCheck has no success leg",
   nobody:
@@ -238,14 +253,15 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
   "GET /api/v1/artifacts/:id/anon-id":
     "anonymous callers only (signed-in callers get 401), so no tenant credential crosses",
   "GET /api/v1/usage": "off on every hosted install (usage_off)",
-  // #839 real-only: the throwaway each needs takes a connected Google
-  // directory (an identity link, a mapping, a directory group).
+  // #839 real-only: no success leg, because the row each needs can't be made
+  // here. A deny-only case still runs A's session at B, but that alone doesn't
+  // cover the route (see `reached` in coverageGaps).
   "DELETE /api/v1/members/:id/identities/google":
-    "real-only: a reset needs a Google-linked member",
+    "real-only: a reset needs a member with a Google sign-in; A at B is deny-only",
   "DELETE /api/v1/spaces/:id/mappings/:groupId":
-    "real-only: a mapping row needs a connected Google directory",
+    "real-only: PUT refuses a mapping row while directory sync is off (409); A at B is deny-only",
   "DELETE /api/v1/directory/restricted-groups/:groupId":
-    "real-only: a restricted group needs a directory group (Google)",
+    "real-only: PUT refuses a restricted_groups row while directory sync is off (409), and the hook-seeded directory group is not that row; A at B is deny-only",
 };
 
 /**
@@ -497,6 +513,15 @@ export function derive(): Derived {
     const fresh = ORG_FRESH[s.route];
     if (s.realOnly === true && !fresh) {
       drop(name, [s.route], "real-only");
+      // No success leg, but the tenant boundary is still checked: A's session
+      // at B, which needs no throwaway and never runs as an allowed caller.
+      cases.push({
+        name: `${name} [session]`,
+        routes: [s.route],
+        variant: "session",
+        denyOnly: true,
+        run: (cred, t, w, fetch) => s.probe(t.app, cred, w.org, { fetch }),
+      });
       continue;
     }
     if (fresh) {
@@ -504,6 +529,7 @@ export function derive(): Derived {
         name: `${name} [session]`,
         routes: [s.route],
         variant: "session",
+        ...(fresh === "grant" ? { timeout: GRANT_CASE_TIMEOUT_MS } : {}),
         write: {
           fresh,
           run: (cred, t, x, fetch) =>
@@ -609,8 +635,11 @@ export const probeCases = (): ProbeCase[] => derive().cases;
 export function coverageGaps(d: Derived = derive()): string[] {
   const { cases, dropped, unsupported = [] } = d;
   const recorded = dropped.filter((x) => DROPPED[x.name]?.why === x.why);
-  // Only a case covers a route; a drop never does.
-  const reached = new Set(cases.flatMap((c) => c.routes));
+  // Only a full case covers a route: a drop never does, and a deny-only case
+  // has no success leg, so its route stays a recorded drop.
+  const reached = new Set(
+    cases.filter((c) => !c.denyOnly).flatMap((c) => c.routes),
+  );
   const droppedRoutes = new Set(recorded.flatMap((x) => x.routes));
   const derivedNames = new Set(dropped.map((x) => x.name));
   const scoped = Object.keys(ROUTE_POLICY).filter(
@@ -1116,8 +1145,53 @@ export function snapshot(side: Side, x: Throwaway): Promise<string> {
   }
   // Only the throwaway's own entry: the reading PAT's lastUsedAt moves.
   if (x.tokenId) return entry(side, "/api/v1/tokens", x.tokenId);
-  if (x.grantId) return entry(side, "/api/v1/oauth-clients", x.grantId);
+  if (x.grantId) return grantSnapshot(side, x.grantId);
   throw new Error(`${side.t.name}: an empty throwaway has no snapshot`);
+}
+
+/**
+ * The longest this suite waits for GET R.oauthClients to list a new grant:
+ * on a kv-mode install it is a KV list, eventually consistent. Bounded as
+ * the KV-mode OAuth cases are (untilKvSettled).
+ */
+export const GRANT_LIST_MS = KV_CACHE_TTL_MS + KV_SETTLE_SLACK_MS;
+/** settle, then the snapshots before and after: three bounded list waits. */
+export const GRANT_CASE_TIMEOUT_MS = kvCaseTimeout(3);
+
+/**
+ * Whether the grant exists, by a direct read (no listing, so no list lag):
+ * PATCH with a body the schema refuses. ownGrant reads the grant's own KV key
+ * first, so 400 is "there" and 404 "gone", and nothing is written. There is
+ * no GET of one grant.
+ */
+async function grantExists(side: Side, id: string): Promise<boolean> {
+  const path = `/api/v1/oauth-clients/${id}`;
+  const r = await fetch(
+    `${side.t.app}${path}`,
+    withCred(side.pat, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ probe: 1 }),
+    }),
+  );
+  const body = await readBody(r);
+  if (r.status !== 400 && r.status !== 404)
+    throw new HttpError(
+      `${side.t.name} snapshot PATCH ${redact(path)}`,
+      r,
+      body,
+    );
+  return r.status === 400;
+}
+
+/**
+ * A grant as its owner sees it. Revoked: the direct read says so at once,
+ * whatever the list still shows. Else its list entry: the label is only
+ * there (a D1 row, joined to the KV list).
+ */
+async function grantSnapshot(side: Side, id: string): Promise<string> {
+  if (!(await grantExists(side, id))) return "gone";
+  return entry(side, "/api/v1/oauth-clients", id, { ms: GRANT_LIST_MS });
 }
 
 /** The admin's grant ids (GET R.oauthClients). */
@@ -1128,23 +1202,41 @@ async function grantIds(side: Side): Promise<string[]> {
   return (Array.isArray(v) ? v : (v.items ?? [])).map((g) => g.grantId);
 }
 
-/** The list entry with `id` (the "grantId" or "id" field), as text; it must be there. */
-async function entry(side: Side, path: string, id: string): Promise<string> {
-  const r = await fetch(`${side.t.app}${path}`, withCred(side.pat));
-  const body = await readBody(r);
-  if (r.status !== 200)
-    throw new HttpError(`${side.t.name} snapshot GET ${path}`, r, body);
-  const v = parseJson(r, body, path) as unknown;
-  const list = (
-    Array.isArray(v) ? v : ((v as { items?: unknown[] }).items ?? [])
-  ) as {
-    id?: string;
-    grantId?: string;
-  }[];
-  const e = list.find((x) => x.id === id || x.grantId === id);
-  if (!e)
-    throw new Error(`${side.t.name} snapshot: ${path} lacks the throwaway`);
-  return JSON.stringify(e);
+/**
+ * The list entry with `id` (the "grantId" or "id" field), as text. It must be
+ * there: with `ms`, polled for that long (a list that lags; a timeout is
+ * infra); without, on the first read.
+ */
+async function entry(
+  side: Side,
+  path: string,
+  id: string,
+  o: { ms?: number; pollMs?: number } = {},
+): Promise<string> {
+  const pollMs = o.pollMs ?? SETTLE_POLL_MS;
+  const end = Date.now() + (o.ms ?? 0);
+  for (;;) {
+    const r = await fetch(`${side.t.app}${path}`, withCred(side.pat));
+    const body = await readBody(r);
+    if (r.status !== 200)
+      throw new HttpError(`${side.t.name} snapshot GET ${path}`, r, body);
+    const v = parseJson(r, body, path) as unknown;
+    const list = (
+      Array.isArray(v) ? v : ((v as { items?: unknown[] }).items ?? [])
+    ) as {
+      id?: string;
+      grantId?: string;
+    }[];
+    const e = list.find((x) => x.id === id || x.grantId === id);
+    if (e) return JSON.stringify(e);
+    if (o.ms === undefined)
+      throw new Error(`${side.t.name} snapshot: ${path} lacks the throwaway`);
+    if (Date.now() + pollMs > end)
+      throw new InfraError(
+        `${side.t.name}: ${path} did not list the throwaway within ${Math.round(o.ms / 1000)}s`,
+      );
+    await new Promise((res) => setTimeout(res, pollMs));
+  }
 }
 
 /** How long `settle` waits for indexing, and how often it looks. */
@@ -1164,13 +1256,28 @@ export const SETTLE_POLL_MS = 500;
  * - versions[].textIndexed: the index alarm flips it to true about
  *   LIMITS.indexDebounceMs after a publish. Waits until every entry is true,
  *   polling every `pollMs`, at most `ms`; a timeout is an InfraError.
- * Spaces have neither, so a space throwaway settles at once.
+ * - a grant: GET R.oauthClients is a KV list that lags the consent (kv mode),
+ *   so this waits for it to list the grant, at most GRANT_LIST_MS, and checks
+ *   the direct read finds it. A timeout is an InfraError. Without this the
+ *   snapshot could not tell a lagging list from a missing grant.
+ * Spaces and tokens have none of these, so they settle at once.
  */
 export async function settle(
   side: Side,
   x: Throwaway,
   o: { ms?: number; pollMs?: number } = {},
 ): Promise<void> {
+  if (x.grantId) {
+    await entry(side, "/api/v1/oauth-clients", x.grantId, {
+      ms: o.ms ?? GRANT_LIST_MS,
+      ...(o.pollMs === undefined ? {} : { pollMs: o.pollMs }),
+    });
+    if (!(await grantExists(side, x.grantId)))
+      throw new InfraError(
+        `${side.t.name}: the list shows the throwaway grant, the direct read doesn't`,
+      );
+    return;
+  }
   if (!x.artifactId) return;
   const { t, pat } = side;
   const A = `/api/v1/artifacts/${x.artifactId}`;

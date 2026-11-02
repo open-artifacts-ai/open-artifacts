@@ -106,6 +106,32 @@ describe("authz-probe", () => {
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/MISMATCH rest get otherMember personalTeam/);
   });
+  it("skips PUT space member without org.spaceMemberId (no refusal to send)", async () => {
+    const PUT_MEMBER = "PUT /api/v1/spaces/:id/members/:userId";
+    const cells = async (org: Record<string, string>) => {
+      const lines: string[] = [];
+      const code = await main(
+        ["--base", u, "--creds", "f"],
+        {},
+        {
+          log: (l) => lines.push(l),
+          fetch: nothing,
+          only: (n) => n === PUT_MEMBER,
+          readFile: async () => JSON.stringify({ ...FILE, org }),
+        },
+      );
+      return { code, last: lines.at(-1) };
+    };
+    const org = { spaceId: "S", memberId: "M", departedId: "D" };
+    expect(await cells(org)).toEqual({
+      code: 0,
+      last: "0 cells, 0 mismatches",
+    });
+    expect(await cells({ ...org, spaceMemberId: "E" })).toEqual({
+      code: 0,
+      last: "2 cells, 0 mismatches",
+    });
+  });
   it("never runs a probe that writes", async () => {
     const methods = new Set<string>();
     await main(

@@ -21,7 +21,8 @@
 //   {
 //     "callers":   { "<caller>": { "cookie"?, "token"?, "email"? }, ... },
 //     "artifacts": { "<artifact>": "<id>", ... },
-//     "org"?:      { "spaceId", "memberId", "departedId" },
+//     "org"?:      { "spaceId", "memberId", "departedId",
+//                    "spaceMemberId"?, "groupId"? },
 //     "space"?:    { "spaceId", "personalSpaceId", "memberId", "editorId",
 //                    "managerId", "groups": { "viewer", "manager", "free" } },
 //     "contentBase"?: "https://content.example"
@@ -29,7 +30,10 @@
 // Callers and artifacts are the names in expect.ts, built as its WORLD
 // describes (artifact titles carry their id; doc "d" in collection "c";
 // db, storage and viewer declared; a thumbnail stored). Missing callers or
-// artifacts are skipped; /p/ needs contentBase.
+// artifacts are skipped; /p/ needs contentBase. org.spaceMemberId is a member
+// of org.spaceId only through an Every space mapping (a connected directory):
+// without it PUT /spaces/:id/members/:userId is skipped. org.groupId is a
+// group mapped to org.spaceId as viewer.
 import {
   ARTIFACTS,
   type ArtifactName,
@@ -184,6 +188,7 @@ export async function main(
     for (const s of ORG_SURFACES) {
       // realOnly: no refusal mode that holds here (only the matrix shows it).
       if (s.mutates || s.realOnly || !only(s.route)) continue;
+      if (s.refuseNeeds && file.org[s.refuseNeeds] === undefined) continue;
       await Promise.all(
         callers.map((who) =>
           check(`${s.route} ${who}`, orgExpected(who, s.rule, s.route), () =>

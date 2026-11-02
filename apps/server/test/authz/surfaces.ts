@@ -1158,9 +1158,11 @@ export type OrgTarget = {
   memberId: string;
   departedId: string;
   /**
-   * A member of `spaceId` the space write probes may name without changing
-   * anything (the matrix: one only an Every space mapping puts there).
-   * Absent: `memberId`.
+   * A member of `spaceId` only through an Every space mapping: the one member
+   * PUT .../members/:userId can name past the manager rule and change nothing
+   * (the matrix's everySpaceMember). It takes a connected directory. Absent:
+   * that route has no refusal, so its probe won't send and
+   * scripts/authz-probe.ts skips it (OrgSurface.refuseNeeds).
    */
   spaceMemberId?: string;
   /** A group mapped to `spaceId` (viewer). Absent: an unknown group. */
@@ -1230,6 +1232,8 @@ export type OrgSurface = {
   instance?: true;
   /** The per-cell throwaways its real write needs. */
   needs?: readonly (keyof OrgReal)[];
+  /** The OrgTarget field its refusal needs; without it, skip the route. */
+  refuseNeeds?: "spaceMemberId";
   probe(base: string, cred: Cred, t: OrgTarget, io?: ProbeIO): Promise<Verdict>;
 };
 
@@ -1269,6 +1273,8 @@ type OrgWrite = {
     allow: (r: Answer) => boolean;
     /** Only an install without a directory answers past the rules. */
     noDirectory?: true;
+    /** The OrgTarget field the request needs (it won't send without it). */
+    needs?: "spaceMemberId";
   };
   real: {
     needs?: readonly (keyof OrgReal)[];
@@ -1459,6 +1465,7 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
         };
       },
       allow: code("managed_by_org_mapping"),
+      needs: "spaceMemberId",
     },
     real: {
       needs: ["spaceId", "memberId"],
@@ -1829,6 +1836,7 @@ export const ORG_SURFACES: readonly OrgSurface[] = ORG.map(
           : {}),
       ...(w?.instance ? { instance: true as const } : {}),
       ...(w?.real.needs ? { needs: w.real.needs } : {}),
+      ...(w?.refuse?.needs ? { refuseNeeds: w.refuse.needs } : {}),
       probe: orgProbe(route, okStatus, w),
     };
   },
