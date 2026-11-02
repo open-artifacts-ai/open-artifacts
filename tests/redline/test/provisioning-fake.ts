@@ -48,6 +48,7 @@ interface FInstall {
   testHooks: boolean;
   source: "admin" | "self-serve";
   owner: string;
+  ownerEmail?: string;
   mode: Mode;
   activeJobId: string | null;
   /** Set when a discard or purge is done: R3 still reads the row as deleted. */
@@ -98,6 +99,7 @@ export type Fault =
   | "p44_wrong_code"
   | "p45_extra_tool"
   | "p47_wrong_code"
+  | "r2_q_owner_email"
   | "signups_closed"
   | "revoke_noop"
   | "prod_live";
@@ -401,10 +403,23 @@ export function fakeApi(): FakeApi {
       return ok(jobView(j, withSealed));
     }
     if (path === "/installs" && method === "GET") {
-      const q = url.searchParams.get("q");
+      // R2's q: a case-insensitive substring of the slug, the id or a stored
+      // host (no principal here may match the owner email; the fault
+      // r2_q_owner_email leaks it, for P49).
+      const q = url.searchParams.get("q")?.toLowerCase();
+      const hit = (i: FInstall) =>
+        [
+          i.slug,
+          i.id,
+          i.appHost,
+          i.contentHost,
+          ...(faults.has("r2_q_owner_email") && i.ownerEmail
+            ? [i.ownerEmail]
+            : []),
+        ].some((c) => c.toLowerCase().includes(q ?? ""));
       return ok({
         items: [...installs.values()]
-          .filter((i) => sees(p, i) && (!q || i.slug.includes(q)))
+          .filter((i) => sees(p, i) && (!q || hit(i)))
           .map(summary),
         nextCursor: null,
       });
@@ -435,6 +450,9 @@ export function fakeApi(): FakeApi {
         testHooks: !user,
         source: user ? "self-serve" : "admin",
         owner: p,
+        ...(typeof body.ownerEmail === "string"
+          ? { ownerEmail: body.ownerEmail }
+          : {}),
       });
       if (user) signupAccounts.add(p);
       const j = startJob(i, "create", p, {
