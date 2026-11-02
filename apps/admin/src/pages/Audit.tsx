@@ -23,27 +23,46 @@ import { useCan, useMe } from "../hooks/useEnv";
 import { usePaging } from "../hooks/usePaging";
 import { LoadError } from "../layout/LoadError";
 
-const VERB: Record<string, string> = {
-  "install.create": "created",
-  "install.upgrade": "started an upgrade of",
-  "install.rollback": "started a rollback of",
-  "install.suspend": "paused",
-  "install.resume": "resumed",
-  "install.delete": "deleted",
-  "install.restore": "restored",
-  "install.purge": "deleted for good",
-  "install.retry": "retried the create of",
-  "install.release_lease": "released the lease on",
-  "authz.refused": "was refused",
-  "job.accepted": "started a job on",
-  "job.refused": "had a job refused on",
-};
 /**
- * The actions `own` reach can filter on. Its rows are its API calls: a job
- * accepted or refused, or a refused route. A create and an upgrade are both
- * job.accepted (detail.kind tells them apart), and R17 matches one exact action.
+ * Each action a filter can offer, as written by the API and the provisioner.
+ * audit-actions.test.ts checks this against the code that writes them, so an
+ * option can't return nothing. Step rows such as upgrade.start aren't offered:
+ * job.done and job.failed summarize them.
  */
-const OWN_ACTIONS = ["job.accepted", "job.refused", "authz.refused"];
+const VERB: Record<string, string> = {
+  "job.accepted": "started a job",
+  "job.replayed": "replayed a job",
+  "job.refused": "had a job refused",
+  "job.canceled": "canceled a job",
+  "job.done": "finished a job",
+  "job.failed": "failed a job",
+  "authz.refused": "was refused",
+  "signin.ok": "signed in",
+  "signin.refused": "couldn't sign in",
+  "session.logout": "signed out",
+  "token.mint": "minted a token",
+  "token.used": "used a token",
+  "token.revoke": "revoked a token",
+  "token.revoke_all": "revoked every token",
+  "oauth.grant": "approved an agent",
+  "oauth.denied": "denied an agent",
+  "oauth.refresh_refused": "had a token refresh refused",
+  "oauth.client_expired": "had an agent's client expire",
+  "test_admin.session": "started a test admin session",
+};
+export const AUDIT_ACTIONS = Object.keys(VERB);
+/**
+ * The actions `own` reach writes: its rows are its API calls. A create and an
+ * upgrade are both job.accepted (detail.kind tells them apart), and R17
+ * matches one exact action.
+ */
+const OWN_ACTIONS = [
+  "job.accepted",
+  "job.replayed",
+  "job.refused",
+  "authz.refused",
+  "session.logout",
+];
 /** Design's sentence verb for a known action; the raw action name otherwise. */
 export const actionPhrase = (action: string) =>
   Object.hasOwn(VERB, action) ? VERB[action] : action;
@@ -90,6 +109,10 @@ export function detailLine(detail: Record<string, unknown> | null): string {
   }
   return parts.join(" · ");
 }
+
+/** A row's verb: a job names its install when it has one. */
+const rowPhrase = (e: AuditEntry) =>
+  `${actionPhrase(e.action)}${e.installId && e.action.startsWith("job.") ? " on" : ""}`;
 
 /** A refusal's verb says the outcome, so its code is the row's detail. */
 const isRefusal = (e: AuditEntry) => e.action === "authz.refused";
@@ -293,7 +316,7 @@ export function Audit({
                         : e.actor.label}
                     </TableCell>
                     <TableCell>
-                      {actionPhrase(e.action)}
+                      {rowPhrase(e)}
                       {e.outcome !== "ok" && !isRefusal(e) && (
                         <span className="oa-chip oa-chip-danger">
                           {e.outcome}

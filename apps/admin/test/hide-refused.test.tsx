@@ -134,9 +134,11 @@ it("test admin Audit: no Actor filter, and only the actions its rows can have", 
   expect(screen.queryByRole("combobox", { name: "Actor" })).toBeNull();
   expect(await options("Action")).toEqual([
     "Any action",
-    "started a job on",
-    "had a job refused on",
+    "started a job",
+    "replayed a job",
+    "had a job refused",
     "was refused",
+    "signed out",
   ]);
 });
 
@@ -149,7 +151,7 @@ it("test admin Audit: an actor left in the URL doesn't narrow, and an old action
     expect(last?.path).toContain("action=install.purge");
     expect(last?.path).not.toContain("actor=");
   });
-  expect(await options("Action")).toContain("deleted for good");
+  expect(await options("Action")).toContain("install.purge");
 });
 
 it("real admin Audit: keeps Actor and every action", async () => {
@@ -159,9 +161,10 @@ it("real admin Audit: keeps Actor and every action", async () => {
   expect(await options("Actor")).toContain("Any actor");
   fireEvent.keyDown(await screen.findByRole("listbox"), { key: "Escape" });
   const all = await options("Action");
-  expect(all).toHaveLength(14);
+  expect(all).toHaveLength(20);
   expect(all).toContain("was refused");
-  expect(all).toContain("deleted for good");
+  expect(all).toContain("signed out");
+  expect(all).not.toContain("deleted for good");
 });
 
 it("real admin Audit: asks for tokens, with the usual line", async () => {

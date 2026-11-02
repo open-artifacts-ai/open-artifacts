@@ -23,7 +23,7 @@ it("lists entries of each outcome; aggregated refusals show a count", async () =
   ]);
   expect(screen.getByTestId("count")).toHaveTextContent(/^12 times$/);
   expect(
-    within(screen.getByRole("table")).getByText(/deleted for good/),
+    within(screen.getByRole("table")).getByText(/couldn't sign in/),
   ).toBeInTheDocument();
 });
 
@@ -109,6 +109,35 @@ it("the job rows read as sentences, and a refused job keeps its code", async () 
   expect(screen.getByRole("table")).not.toHaveTextContent("job.");
 });
 
+it("a job says on only when it has a target; other verbs never do", async () => {
+  const none = { installId: null, jobId: null, detail: null };
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          fixtureAudit({ ...none, action: "job.refused", id: "api:1" }),
+          fixtureAudit({ ...none, action: "job.replayed", id: "api:2" }),
+          fixtureAudit({ action: "job.replayed", id: "api:3", detail: null }),
+          fixtureAudit({ action: "session.logout", id: "api:4", detail: null }),
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const verbs = screen
+    .getAllByRole("row")
+    .slice(1)
+    .map((r) => within(r).getAllByRole("cell")[2]?.textContent);
+  expect(verbs).toEqual([
+    "had a job refused",
+    "replayed a job",
+    "replayed a job on",
+    "signed out",
+  ]);
+});
+
 it("another refused action keeps its chip and code", async () => {
   use(
     http.get("*/api/v1/audit", () =>
@@ -157,11 +186,9 @@ it("pages with the cursor", async () => {
     ),
   );
   renderApp("/audit");
-  await within(await screen.findByRole("table")).findByText(
-    "started an upgrade of",
-  );
+  await within(await screen.findByRole("table")).findByText("started a job on");
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
-  await within(screen.getByRole("table")).findByText(/deleted for good/);
+  await within(screen.getByRole("table")).findByText(/couldn't sign in/);
   expect(seen.some((s) => s.path.includes("cursor=c2"))).toBe(true);
 });
 
@@ -192,13 +219,11 @@ it("filters by actor and action, and keeps both in the URL", async () => {
     ).toBe(true),
   );
   fireEvent.click(screen.getByRole("combobox", { name: "Action" }));
-  fireEvent.click(
-    await screen.findByRole("option", { name: "started an upgrade of" }),
-  );
+  fireEvent.click(await screen.findByRole("option", { name: "started a job" }));
   await waitFor(() =>
     expect(router.state.location.search).toEqual({
       actor: tokenActor,
-      action: "install.upgrade",
+      action: "job.accepted",
     }),
   );
   await waitFor(() =>
@@ -206,7 +231,7 @@ it("filters by actor and action, and keeps both in the URL", async () => {
       seen.some(
         (s) =>
           s.path.includes(`actor=${encodeURIComponent(tokenActor)}`) &&
-          s.path.includes("action=install.upgrade"),
+          s.path.includes("action=job.accepted"),
       ),
     ).toBe(true),
   );
@@ -222,10 +247,10 @@ it("filters by actor and action, and keeps both in the URL", async () => {
 });
 
 it("shows an actor and an action from the URL that are not in the lists", async () => {
-  renderApp("/audit?action=token.mint&actor=someone%40example.com");
+  renderApp("/audit?action=upgrade.start&actor=someone%40example.com");
   await screen.findAllByRole("row");
   expect(screen.getByRole("combobox", { name: "Action" })).toHaveTextContent(
-    "token.mint",
+    "upgrade.start",
   );
   expect(screen.getByRole("combobox", { name: "Actor" })).toHaveTextContent(
     "someone@example.com",
