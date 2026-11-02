@@ -25,6 +25,7 @@ import { ApiClientError } from "../api/client";
 import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
 import { errorCopy } from "../api/errorCopy";
 import {
+  ALREADY_HANDLED,
   useInviteMember,
   useMembers,
   usePatchMember,
@@ -54,13 +55,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { clearDenied, denyMember, useDenied } from "./denied";
 import { type Departed, seesDeparted, useDeparted } from "./departed";
 import { restrictionReason } from "./restriction";
-import {
-  artifactsAndTrash,
-  ownerOnlySource,
-  runAll,
-  TRANSFER_OWNER_ONLY,
-  TransferDialog,
-} from "./Transfer";
+import { artifactsAndTrash, runAll, TransferDialog } from "./Transfer";
 import { errorText, muted, SettingsCard, STACK } from "./ui";
 
 type Assignable = "admin" | "member";
@@ -670,7 +665,6 @@ export function Members() {
           meId={me?.id ?? null}
           spaces={spaces}
           capped={state.status === "authed" && state.me.auth?.cap != null}
-          owner={owner}
         />
       )}
       <SettingsCard
@@ -815,7 +809,6 @@ function DepartedCard({
   meId,
   spaces,
   capped,
-  owner,
 }: {
   people: Departed[];
   /** The list or someone's counts never loaded: `people` may be short. */
@@ -828,8 +821,6 @@ function DepartedCard({
   spaces: boolean;
   /** A restricted (capped) caller can't receive artifacts: no "to me". */
   capped: boolean;
-  /** The uncapped owner: only they transfer an admin's artifacts. */
-  owner: boolean;
 }) {
   return (
     <SettingsCard id="oa-departed-h" title="Departed" focusable>
@@ -847,7 +838,6 @@ function DepartedCard({
                 d={d}
                 toMe={capped ? null : meId}
                 spaces={spaces}
-                blocked={ownerOnlySource(d.member, owner)}
               />
             ))}
           </ul>
@@ -877,13 +867,10 @@ function DepartedRow({
   d: { member: m, summary },
   toMe,
   spaces,
-  blocked,
 }: {
   d: Departed;
   toMe: string | null;
   spaces: boolean;
-  /** An admin's artifacts, seen by an admin: no transfer (owner only). */
-  blocked: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -905,10 +892,15 @@ function DepartedRow({
       );
       // The run counts trash too: the dialog's form splits it back out.
       const trash = Math.min(summary.deleted, moved);
-      toast({
-        title: `Moved ${artifactsAndTrash(moved - trash, trash)} from ${label} to you.`,
-        tone: "success",
-      });
+      // 200 with nothing moved: another admin got there first, not a success.
+      toast(
+        moved === 0
+          ? { title: ALREADY_HANDLED, tone: "info" }
+          : {
+              title: `Moved ${artifactsAndTrash(moved - trash, trash)} from ${label} to you.`,
+              tone: "success",
+            },
+      );
     } catch (e) {
       setProblem(
         errorCopy(e, `Couldn't move ${first}'s artifacts. Try again.`),
@@ -940,9 +932,7 @@ function DepartedRow({
         data-testid="departed-actions"
         className="col-start-3 row-span-2 row-start-1 flex items-center justify-end gap-[10px] max-[600px]:col-span-full max-[600px]:col-start-1 max-[600px]:row-span-1 max-[600px]:row-start-3 max-[600px]:justify-between"
       >
-        {blocked ? (
-          <small className={muted}>{TRANSFER_OWNER_ONLY}</small>
-        ) : toMe ? (
+        {toMe ? (
           <Button
             size="sm"
             variant="outline"
@@ -983,14 +973,9 @@ function DepartedRow({
             align="end"
             className="text-[length:var(--oa-text-sm)]"
           >
-            {!blocked && (
-              <DropdownMenuItem
-                disabled={moving}
-                onSelect={() => setOpen(true)}
-              >
-                Transfer to someone else…
-              </DropdownMenuItem>
-            )}
+            <DropdownMenuItem disabled={moving} onSelect={() => setOpen(true)}>
+              Transfer to someone else…
+            </DropdownMenuItem>
             {m.status === "removed" && (
               <DropdownMenuItem
                 disabled={moving}

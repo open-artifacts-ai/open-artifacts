@@ -814,6 +814,9 @@ export const useConfirmHeld = () =>
     "Couldn't apply the change.",
     directoryInline,
   );
+/** Someone else got there first. */
+export const ALREADY_HANDLED =
+  "Someone already handled this. The list is up to date.";
 /**
  * Snooze / unsnooze a held sweep (#412). A 404 means the caller lost the owner
  * role: refetch /me (the page then shows the owner-only line) and skip the toast.
@@ -834,7 +837,7 @@ const useHeldSnooze = <V>(fn: (v: V) => Promise<unknown>, failure: string) => {
         void qc.invalidateQueries({ queryKey: qk.directory });
         if (e.code === "conflict")
           return toast({
-            title: "Someone already handled this. The list is up to date.",
+            title: ALREADY_HANDLED,
             tone: "info",
           });
       }

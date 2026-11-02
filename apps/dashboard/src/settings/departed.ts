@@ -17,28 +17,40 @@ const isGone = (m: Member): m is Gone =>
 export const seesDeparted = (me: Me | null | undefined) =>
   !!me && (me.user.role === "owner" || me.user.role === "admin");
 
+/** Only the uncapped owner reads an owner's or admin's counts (403 owner_only). */
+const ownerOnlySource = (source: Member, callerIsOwner: boolean) =>
+  (source.role === "admin" || source.role === "owner") && !callerIsOwner;
+
 /**
  * A first load that failed. A failed refetch keeps its cached data, so it
  * isn't one; nor is a 404, the role gate (a capped or demoted caller, and
- * /me refreshes) or a person who no longer exists. #831's 403 owner_only
- * lands here until that merge drops those people (Design's rule).
+ * /me refreshes) or a person who no longer exists; nor is a 403 owner_only,
+ * a refusal, which only a stale role can reach now those sources are skipped.
  */
 const loadFailed = (q: { isLoadingError: boolean; error: unknown }) =>
   q.isLoadingError &&
-  !(q.error instanceof ApiClientError && q.error.status === 404);
+  !(
+    q.error instanceof ApiClientError &&
+    (q.error.status === 404 || q.error.code === "owner_only")
+  );
 
 /**
  * Suspended or removed members who still have personal artifacts, with their
  * counts (never titles: only R.memberTransfer, never their artifacts).
- * People with nothing left are left out. `failed`: the list or someone's
- * summary never loaded, so `people` may be short; `retry` asks again, and
+ * People with nothing left are left out, and so are those whose artifacts
+ * only the owner may transfer: no row, no count, no dot. `failed`: the list
+ * or someone's summary never loaded, so `people` may be short; `retry` asks
+ * again, and
  * `retrying` holds that state until it settles, so the card and its error
  * stay put.
  */
 export const useDeparted = (me: Me | null | undefined) => {
   const on = seesDeparted(me);
   const list = useMembers("suspended,removed", on);
-  const gone = on ? (list.data ?? []).filter(isGone) : [];
+  const owner = me?.user.role === "owner" && me.auth?.cap == null;
+  const gone = on
+    ? (list.data ?? []).filter(isGone).filter((m) => !ownerOnlySource(m, owner))
+    : [];
   const summaries = useQueries({
     queries: gone.map((m) => ({
       queryKey: qk.memberTransfer(m.id),

@@ -854,6 +854,16 @@ it("no removed people: no Removed filter", async () => {
 });
 
 /** Carol was an admin, removed, with 2 artifacts left. */
+const refused403 = () =>
+  HttpResponse.json(
+    {
+      error: {
+        code: "owner_only",
+        message: "Only the owner can manage an owner or admin",
+      },
+    },
+    { status: 403 },
+  );
 const removedAdminCarol = [
   http.get(`*${R.members}`, ({ request }) =>
     HttpResponse.json(
@@ -867,25 +877,102 @@ const removedAdminCarol = [
   ),
 ];
 
-it("an admin can't transfer a departed admin's artifacts: the owner-only line, no buttons", async () => {
-  mountHosted(
-    "/settings/members",
-    { actAs: "admin" },
-    undefined,
-    removedAdminCarol,
+it("an admin with only a departed admin left: no call, no card, no dot, no error", async () => {
+  const seen = calls("GET");
+  mountHosted("/settings/members", { actAs: "admin" }, undefined, [
+    ...removedAdminCarol.slice(0, 1),
+    http.get(`*${R.memberTransfer(CAROL)}`, () => refused403()),
+  ]);
+  await screen.findByText("Bob Builder");
+  await waitFor(() =>
+    expect(
+      lastClient.getQueryState(qk.memberList("suspended,removed"))?.status,
+    ).toBe("success"),
   );
-  const row = await carolRow();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(seen.some((c) => c.path === R.memberTransfer(CAROL))).toBe(false);
+  expect(screen.queryByRole("region", { name: "Departed" })).toBeNull();
+  expect(screen.queryByText(/load departed people|didn't load/)).toBeNull();
   expect(
-    await within(row).findByText(
-      "Only the owner can transfer an admin's artifacts.",
+    within(
+      screen.getByRole("navigation", { name: "Settings sections" }),
+    ).getByRole("link", { name: /^Members/ }),
+  ).toHaveAccessibleName("Members");
+});
+
+it("an admin's card counts only the rows they see", async () => {
+  const eve = {
+    ...carol,
+    id: "Ev7tNpQrSt8uVwXy",
+    name: "Eve Owner",
+    role: "owner" as const,
+  };
+  mountHosted("/settings/members", { actAs: "admin" }, undefined, [
+    http.get(`*${R.members}`, ({ request }) =>
+      HttpResponse.json(
+        new URL(request.url).searchParams.get("status")
+          ? [carol, eve]
+          : fixtures.members,
+      ),
     ),
-  ).toBeVisible();
-  expect(within(row).queryByRole("button", { name: /^Transfer/ })).toBeNull();
-  await openMenu(row);
-  await screen.findByRole("menuitem", { name: "Restore…" });
-  expect(
-    screen.queryByRole("menuitem", { name: "Transfer to someone else…" }),
-  ).toBeNull();
+    ...removedCarol.slice(1),
+  ]);
+  const row = await carolRow();
+  await within(row).findByRole("button", { name: "Transfer all to me" });
+  const card = await departed();
+  expect(card).toHaveTextContent(
+    "1 person left with personal artifacts to transfer.",
+  );
+  expect(card).not.toHaveTextContent("Eve Owner");
+  expect(card).not.toHaveTextContent(/didn't load|Couldn't load/);
+});
+
+it("a refused summary (a stale role) is no error: no row, no LoadError", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    http.get(`*${R.memberTransfer(CAROL)}`, () => refused403()),
+    ...removedAdminCarol,
+  ]);
+  await screen.findByText("Bob Builder");
+  await waitFor(() =>
+    expect(lastClient.getQueryState(qk.memberTransfer(CAROL))?.status).toBe(
+      "error",
+    ),
+  );
+  expect(screen.queryByRole("region", { name: "Departed" })).toBeNull();
+});
+
+it("Transfer all to me that moves nothing says someone got there first", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    ...removedCarol,
+    http.post(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ moved: 0, remaining: 0, nextCursor: null }),
+    ),
+  ]);
+  fireEvent.click(
+    await within(await carolRow()).findByRole("button", {
+      name: "Transfer all to me",
+    }),
+  );
+  await findVisibleToast(
+    "Someone already handled this. The list is up to date.",
+  );
+  expect(screen.queryByText(/^Moved /)).toBeNull();
+});
+
+it("the dialog's run that moves nothing says someone got there first", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    ...removedCarol,
+    http.post(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ moved: 0, remaining: 0, nextCursor: null }),
+    ),
+  ]);
+  const d = await openFromCard();
+  await chooseOption("Give them to", "Bob Builder");
+  fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
+  await findVisibleToast(
+    "Someone already handled this. The list is up to date.",
+  );
+  expect(screen.queryByText(/^Moved /)).toBeNull();
 });
 
 it("the owner can still transfer a departed admin's artifacts", async () => {
@@ -894,9 +981,4 @@ it("the owner can still transfer a departed admin's artifacts", async () => {
   expect(
     await within(row).findByRole("button", { name: "Transfer all to me" }),
   ).toBeVisible();
-  expect(
-    within(row).queryByText(
-      "Only the owner can transfer an admin's artifacts.",
-    ),
-  ).toBeNull();
 });
