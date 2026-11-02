@@ -167,6 +167,14 @@ it("test admin: only releases with the redline bundle, defaulting to the newest"
   renderApp("/installs/new");
   await screen.findByText(NOTE);
   await waitFor(() => expect(release()).toHaveTextContent("1.9.0"));
+  expect(
+    screen.getByText(
+      "Only redline releases are listed, because test hooks need them.",
+    ),
+  ).toBeVisible();
+  expect(
+    screen.queryByText("Only signed, published releases are listed."),
+  ).toBeNull();
   fireEvent.click(release());
   expect(
     (await screen.findAllByRole("option")).map((o) => o.textContent),
@@ -179,6 +187,9 @@ it("a real admin gets no note and no rule, keeps the welcome email, and never se
   await screen.findByLabelText("Slug");
   await screen.findByRole("checkbox", { name: /welcome email/ });
   expect(screen.queryByText(NOTE)).toBeNull();
+  expect(
+    screen.getByText("Only signed, published releases are listed."),
+  ).toBeVisible();
   type("fresh-one");
   owner();
   await screen.findByText(/ is available\./);

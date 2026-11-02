@@ -326,7 +326,11 @@ export function CreateInstall() {
                 ))}
               </SelectContent>
             </Select>
-            <small>Only signed, published releases are listed.</small>
+            <small>
+              {testAdmin
+                ? "Only redline releases are listed, because test hooks need them."
+                : "Only signed, published releases are listed."}
+            </small>
           </div>
           {/* R4 refuses sendWelcome from the test admin. */}
           {!testAdmin && (
