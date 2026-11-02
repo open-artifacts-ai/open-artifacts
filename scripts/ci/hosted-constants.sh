@@ -4,11 +4,14 @@
 # sending zone's name; hosted-resource-ids.sh resolves its tag),
 # EMAIL_DAILY_LIMIT, GOOGLE_CLIENT_ID, GOOGLE_DIRECTORY_CLIENT_ID, and the
 # provisioner's and scheduler's SIGNUP_DAILY_CAP and SIGNUPS_ENABLED, the
-# provisioner's WELCOME_FROM, and the scheduler's ALERT_TO and ALERT_FROM. None
-# is a secret. Every value is checked against its consumer's rule
+# provisioner's WELCOME_FROM, and the scheduler's ALERT_FROM. None is a
+# secret. Every value is checked against its consumer's rule
 # (deploy-platform-worker.sh) before anything is written: a missing, null,
 # empty, multi-line or malformed value (a placeholder included) exits 1 and
-# writes nothing.
+# writes nothing. The scheduler's ALERT_TO is the owner's address: never
+# committed (#1084), it comes from OA_OWNER_EMAIL (the Actions secret) when
+# set, goes to $GITHUB_ENV only and is never printed. Unset, no ALERT_TO is
+# written, and a scheduler deploy refuses (deploy-hosted-platform.sh).
 # Usage: scripts/ci/hosted-constants.sh staging|prod <dir>
 set -euo pipefail
 
@@ -40,7 +43,6 @@ while read -r k name rule; do
 done << EOF
 account_id CLOUDFLARE_ACCOUNT_ID $hex32
 alert_from ALERT_FROM $email
-alert_to ALERT_TO $email
 email_zone EMAIL_ZONE $zone
 email_daily_limit EMAIL_DAILY_LIMIT $limit
 google_client_id GOOGLE_CLIENT_ID $google_id
@@ -49,5 +51,10 @@ signup_daily_cap SIGNUP_DAILY_CAP $cap
 signups_enabled SIGNUPS_ENABLED $onoff
 welcome_from WELCOME_FROM $email
 EOF
-printf '%s' "$lines" >> "$GITHUB_ENV"
+owner=""
+if [ -n "${OA_OWNER_EMAIL:-}" ]; then
+  [[ "$OA_OWNER_EMAIL" != *$'\n'* && "$OA_OWNER_EMAIL" =~ $email ]] || { echo "OA_OWNER_EMAIL is not a valid address" >&2; exit 1; }
+  owner="ALERT_TO=$OA_OWNER_EMAIL"$'\n'
+fi
+printf '%s%s' "$lines" "$owner" >> "$GITHUB_ENV"
 printf '%s' "$lines"

@@ -35,7 +35,7 @@ afterEach(() => vi.restoreAllMocks());
 const leo = (o: Record<string, unknown> = {}) => ({
   requestId: requestId(),
   slug: "leo",
-  ownerEmail: "me@leourbina.com",
+  ownerEmail: "me@test.invalid",
   tier: "business",
   auth: { providers: ["google"], domains: ["leourbina.com"] },
   sendWelcome: false,
@@ -109,7 +109,7 @@ describe("R4 create by an admin session", () => {
         "SELECT owner_email FROM signup_secret WHERE signup_id = ?",
         job.id,
       ),
-    ).toEqual({ owner_email: "me@leourbina.com" });
+    ).toEqual({ owner_email: "me@test.invalid" });
     const j = await row<Record<string, string>>(
       "SELECT * FROM jobs WHERE id = ?",
       job.id,

@@ -617,7 +617,7 @@ describe("deploy-hosted-platform.sh", () => {
       ...(pinned(REAL_SCHED) ? [["apps/scheduler", REAL_SCHED] as const] : []),
     ] as const;
     const ALERTS = {
-      ALERT_TO: "me@leourbina.com",
+      ALERT_TO: "me@test.invalid",
       ALERT_FROM: "alerts@open-artifacts.app",
       SIGNUP_DAILY_CAP: "50",
       SIGNUPS_ENABLED: "false",

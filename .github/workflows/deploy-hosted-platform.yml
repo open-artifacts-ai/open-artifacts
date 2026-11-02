@@ -200,10 +200,13 @@ jobs:
           set -euo pipefail
           pnpm --filter @oa/provision build
           pnpm --filter @oa/auth-broker --filter @oa/directory-broker --filter @oa/dispatch --filter @oa/scheduler --filter @oa/inventory --filter @oa/provisioner --filter @oa/provisioning --filter @oa/admin test
-      # main's committed constants (account id, email, Google client ids).
+      # main's committed constants (account id, email, Google client ids),
+      # and the alert address from the OA_OWNER_EMAIL secret (#1084: never
+      # committed, masked in the log).
       - name: Load the hosted constants
         env:
           DEPLOY_ENV: ${{ inputs.env }}
+          OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
         run: bash "$RUNNER_TEMP/main-ci/hosted-constants.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"
       # The D1 and KV ids, the sending zone's tag and the Secrets Store id, by
       # exact name on the account (exactly one each); only for the targets

@@ -9,7 +9,6 @@ import { root, sandbox, script } from "./stubs.ts";
 const KEYS = [
   "account_id",
   "alert_from",
-  "alert_to",
   "app_zone",
   "content_zone",
   "deploy_token_id",
@@ -146,8 +145,10 @@ describe(".github/hosted/<env>.json", () => {
     expect(read("staging").signup_daily_cap).toBe(20);
     expect(read("prod").signups_enabled).toBe("false");
     expect(read("staging").signups_enabled).toBe("test-users");
+    // #1084: the alert address is the owner's: never committed, it comes
+    // from the OA_OWNER_EMAIL secret (hosted-constants.sh).
     for (const env of ["prod", "staging"])
-      expect(read(env).alert_to, env).toBe("me@leourbina.com");
+      expect(read(env), env).not.toHaveProperty("alert_to");
   });
   // Email Sending only sends from an onboarded domain: mail.<app_zone> (#967),
   // never the apex.
@@ -174,6 +175,7 @@ describe("hosted-constants.sh", () => {
     files: Record<string, unknown> | null,
     env = "prod",
     raw?: string,
+    extra: Record<string, string> = {},
   ) => {
     const sb = sandbox({});
     const dir = join(sb.dir, "hosted");
@@ -184,20 +186,21 @@ describe("hosted-constants.sh", () => {
     const ghEnv = join(sb.dir, "github-env");
     writeFileSync(ghEnv, "");
     const r = sb.run(["bash", script("hosted-constants.sh"), env, dir], {
-      env: { GITHUB_ENV: ghEnv },
+      env: { GITHUB_ENV: ghEnv, ...extra },
     });
     return { ...r, ghEnv: readFileSync(ghEnv, "utf8") };
   };
   const PROD = () => read("prod");
 
   it("loads every constant into GITHUB_ENV", () => {
-    const r = load(PROD());
+    const r = load(PROD(), "prod", undefined, {
+      OA_OWNER_EMAIL: "me@test.invalid",
+    });
     expect(r.code, r.err).toBe(0);
     expect(r.ghEnv).toBe(
       [
         "CLOUDFLARE_ACCOUNT_ID=26ac346086d4405f7a976d48747a2a75",
         "ALERT_FROM=alerts@mail.open-artifacts.app",
-        "ALERT_TO=me@leourbina.com",
         "EMAIL_ZONE=open-artifacts.app",
         "EMAIL_DAILY_LIMIT=5000",
         "GOOGLE_CLIENT_ID=206295999771-ntbp6nlf5ospa45ovc73aur4f05fpp5s.apps.googleusercontent.com",
@@ -205,9 +208,12 @@ describe("hosted-constants.sh", () => {
         "SIGNUP_DAILY_CAP=50",
         "SIGNUPS_ENABLED=false",
         "WELCOME_FROM=welcome@mail.open-artifacts.app",
+        "ALERT_TO=me@test.invalid",
         "",
       ].join("\n"),
     );
+    // The owner's address goes to GITHUB_ENV only, never the (public) log.
+    expect(r.out).not.toContain("me@test.invalid");
   });
 
   it("the committed files both load", () => {
@@ -282,11 +288,21 @@ describe("hosted-constants.sh", () => {
     }
   });
 
-  it("alert_to is required and checked like any other address", () => {
-    for (const v of ["ops", "A <a@b.com>", "a@b.com,c@d.com", "a@b.com/x"]) {
-      const bad = load({ ...PROD(), alert_to: v });
+  it("OA_OWNER_EMAIL: optional (no ALERT_TO without it, and the scheduler deploy refuses), checked like any other address", () => {
+    const none = load(PROD());
+    expect(none.code, none.err).toBe(0);
+    expect(none.ghEnv).not.toContain("ALERT_TO=");
+    for (const v of [
+      "ops",
+      "A <a@b.com>",
+      "a@b.com,c@d.com",
+      "a@b.com/x",
+      "a@b.com\nX=y",
+    ]) {
+      const bad = load(PROD(), "prod", undefined, { OA_OWNER_EMAIL: v });
       expect(bad.code, JSON.stringify(v)).toBe(1);
-      expect(bad.err).toContain("alert_to is not a valid value");
+      expect(bad.err).toContain("OA_OWNER_EMAIL is not a valid address");
+      expect(bad.err).not.toContain(v);
       expect(bad.ghEnv).toBe("");
     }
   });

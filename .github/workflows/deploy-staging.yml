@@ -32,7 +32,14 @@ jobs:
         working-directory: apps/server
         run: bash ../../scripts/ci/staging-clear-conflicts.sh
       - run: pnpm --filter @oa/server exec wrangler d1 migrations apply open-artifacts-staging --remote -c wrangler.staging.jsonc --env staging
-      - run: pnpm --filter @oa/server exec wrangler deploy -c wrangler.staging.jsonc --env staging
+      # OWNER_EMAIL is the owner's address: never committed (#1084), from the
+      # OA_OWNER_EMAIL secret (masked in the log).
+      - name: deploy
+        env:
+          OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
+        run: |
+          [ -n "$OA_OWNER_EMAIL" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
+          pnpm --filter @oa/server exec wrangler deploy -c wrangler.staging.jsonc --env staging --var "OWNER_EMAIL:$OA_OWNER_EMAIL"
       - name: set ANALYTICS_TOKEN (dedicated read-only token; skipped when unset)
         id: analytics
         working-directory: apps/server
