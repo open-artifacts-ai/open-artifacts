@@ -284,8 +284,8 @@ export function TransferDialog({
               {space && (
                 <p className={muted}>
                   {activeGuest
-                    ? `You won't see titles or contents. ${name} loses access. Anyone with access to the space can see them.`
-                    : `Everyone with access to ${space.name} can open them, by their role.`}
+                    ? `You won't see titles or contents. ${name} loses access. Anyone with access to the space can see them. They can't be moved back to anyone's Personal afterwards.`
+                    : `Everyone with access to ${space.name} can open them, by their role. They can't be moved back to anyone's Personal afterwards.`}
                 </p>
               )}
             </div>
