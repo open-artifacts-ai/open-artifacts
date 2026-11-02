@@ -236,11 +236,7 @@ describe("redline-staging.yml", () => {
     ).toBe(true);
     // What the workflow hands the suite, by name.
     const read = ["REDLINE_RELEASE", "REDLINE_TARGETS", "REDLINE_REPORT"];
-    const src = [
-      "src/provisioning.ts",
-      "src/targets.ts",
-      "src/reporter.ts",
-    ]
+    const src = ["src/provisioning.ts", "src/targets.ts", "src/reporter.ts"]
       .map((f) => readFileSync(join(root, "tests/redline", f), "utf8"))
       .join("\n");
     for (const v of read) {

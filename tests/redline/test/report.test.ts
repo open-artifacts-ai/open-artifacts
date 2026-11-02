@@ -3,12 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { suiteSha } from "../src/capture.ts";
-import { bindingOf } from "../src/reporter.ts";
 import {
   ID_TOKEN_CASES,
   ID_TOKEN_DESCRIBE,
   NEEDS_CAPTURE,
+  suiteSha,
 } from "../src/capture.ts";
 import {
   ACCEPTED_UNPROVEN,
@@ -31,6 +30,7 @@ import {
   type Report,
   redactReason,
 } from "../src/report.ts";
+import { bindingOf } from "../src/reporter.ts";
 
 const c = (name: string, level: Level, reason?: string): CaseResult => ({
   name,
