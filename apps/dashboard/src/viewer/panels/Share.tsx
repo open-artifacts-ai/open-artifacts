@@ -488,16 +488,26 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             <li key={s.email} className="flex flex-col gap-[var(--oa-space-2)]">
               <div className={PERSON}>
                 <UserAvatar name={null} email={s.email} />
-                <span className={NAME} title={s.email}>
-                  {s.email}
-                </span>
+                {s.guest ? (
+                  <div className="min-w-0 flex-1">
+                    <span
+                      className="block [overflow-wrap:anywhere]"
+                      title={s.email}
+                    >
+                      {s.email}
+                    </span>
+                    <span className={`block ${MUTED}`}>
+                      Guest · can only view
+                    </span>
+                  </div>
+                ) : (
+                  <span className={NAME} title={s.email}>
+                    {s.email}
+                  </span>
+                )}
                 {people ? (
                   <>
-                    {s.guest ? (
-                      <span className="flex-none whitespace-nowrap text-muted-foreground">
-                        Guest · can only view
-                      </span>
-                    ) : (
+                    {!s.guest && (
                       <RoleSelect
                         label={`Role for ${s.email}`}
                         value={s.role}

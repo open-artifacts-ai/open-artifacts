@@ -144,7 +144,14 @@ describe("share panel", () => {
     );
     mount(panel(OWNED));
     await screen.findByTitle(guest);
-    expect(screen.getByText("Guest · can only view")).toBeInTheDocument();
+    const label = screen.getByText("Guest · can only view");
+    // Email above the label, in full; Remove to their right.
+    const email = screen.getByTitle(guest);
+    expect(email).not.toHaveClass("truncate");
+    expect(email.nextElementSibling).toBe(label);
+    expect(email.parentElement?.nextElementSibling).toBe(
+      screen.getByRole("button", { name: `Remove ${guest}` }),
+    );
     expect(
       screen.queryByRole("combobox", { name: `Role for ${guest}` }),
     ).toBeNull();
