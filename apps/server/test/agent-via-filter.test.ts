@@ -14,6 +14,7 @@ import {
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
+import { SCRUBBED_VIA } from "../src/services/agent-display.js";
 import type { AgentAttr } from "../src/services/agent-usage.js";
 import { listQuery, publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
@@ -141,6 +142,15 @@ describe("contract", () => {
     expect(
       ListQuerySchema.safeParse({ agentVia: `g:${"a".repeat(65)}` }).success,
     ).toBe(false);
+  });
+
+  it("a scrubbed row's marker is no connection, so it can't be filtered on", () => {
+    for (const agentVia of [SCRUBBED_VIA, `${SCRUBBED_VIA}x`]) {
+      expect(ListQuerySchema.safeParse({ agentVia }).success).toBe(false);
+      expect(SearchQuerySchema.safeParse({ q: "x", agentVia }).success).toBe(
+        false,
+      );
+    }
   });
 
   it("a malformed agentVia is 400 on list and search", async () => {

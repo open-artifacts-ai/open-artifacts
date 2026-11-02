@@ -214,7 +214,7 @@ describe("the menu and the empty state", () => {
     const menu = await openMenu(await rowOf("Example MCP client 1.2.0"));
     // #589: this connection only (agentVia), not every "Example MCP client".
     const view = within(menu).getByRole("menuitem", {
-      name: "View versions from Example MCP client",
+      name: "View published versions",
     });
     expect(view).toHaveAttribute(
       "href",

@@ -268,7 +268,7 @@ export function AgentRow({
                 <AppLink
                   href={`/?agentVia=${encodeURIComponent(`g:${c.grantId}`)}`}
                 >
-                  View versions from {c.clientName}
+                  View published versions
                 </AppLink>
               </DropdownMenuItem>
             )}

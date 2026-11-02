@@ -115,9 +115,15 @@ export function Filters(p: FilterProps) {
         <SelectTrigger
           aria-label="Agent"
           size="sm"
-          className={`min-w-[140px] ${TEXT}`}
+          className={`max-w-full min-w-[140px] ${TEXT}`}
         >
-          <SelectValue />
+          {/* A connection's label can run long. The value is a flex box, where
+              text-overflow does nothing, so the text truncates in its own span. */}
+          <SelectValue>
+            <span className="block min-w-0 truncate">
+              {p.via?.label ?? p.agent ?? "All agents"}
+            </span>
+          </SelectValue>
         </SelectTrigger>
         <SelectContent position="popper">
           <SelectItem value={ALL} className={TEXT}>
