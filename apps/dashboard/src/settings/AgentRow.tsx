@@ -21,6 +21,9 @@ import { errorText, muted } from "./ui";
 
 export const LABEL_MAX = 60;
 
+const ROW =
+  "flex min-w-0 items-start gap-[var(--oa-space-3)] border-0 border-t border-border py-[var(--oa-space-3)] first:border-t-0";
+
 const BROWSER: Record<string, string> = {
   chrome: "Chrome",
   safari: "Safari",
@@ -98,18 +101,23 @@ export function AgentRow({
     );
   };
 
-  return (
-    <li className="flex min-w-0 items-start gap-[var(--oa-space-3)] border-0 border-t border-border py-[var(--oa-space-3)] first:border-t-0">
-      <Face c={c} />
-      <div className="grid min-w-0 flex-1 gap-[2px] text-[length:var(--oa-text-sm)]">
-        {editing ? (
-          <div className="grid gap-[var(--oa-space-1)]">
-            <label
-              htmlFor={`${c.grantId}-label`}
-              className="text-[length:var(--oa-text-sm)] font-medium"
-            >
-              Your label
-            </label>
+  // Only the field and its hint (Design ecAopo8RUyk2Xomu, section 3): the row's
+  // details and menu come back when editing ends.
+  if (editing)
+    return (
+      <li className={ROW}>
+        <Face c={c} />
+        <div className="grid min-w-0 flex-1 gap-[var(--oa-space-1)] text-[length:var(--oa-text-sm)]">
+          <label
+            htmlFor={`${c.grantId}-label`}
+            className="text-[length:var(--oa-text-sm)] font-medium"
+          >
+            Your label
+          </label>
+          <div
+            data-testid="label-edit"
+            className="flex flex-wrap items-center gap-[var(--oa-space-2)]"
+          >
             <Input
               id={`${c.grantId}-label`}
               autoFocus
@@ -129,65 +137,62 @@ export function AgentRow({
                   setEditing(false);
                 }
               }}
-              className="h-8 text-[length:var(--oa-text-sm)]"
+              className="h-8 min-w-[160px] flex-1 text-[length:var(--oa-text-sm)] max-[600px]:basis-full"
             />
-            <small id={`${c.grantId}-label-help`} className={muted}>
-              Only you see it. Up to 60 characters.
-            </small>
-            {error && (
-              <p role="alert" className={`m-0 ${errorText}`}>
-                {error}
-              </p>
-            )}
             {/* Enter and Esc stay as shortcuts. */}
-            <div className="flex gap-[var(--oa-space-2)]">
-              <Button
-                size="sm"
-                disabled={label.isPending}
-                aria-busy={label.isPending || undefined}
-                onClick={save}
+            <Button
+              size="sm"
+              disabled={label.isPending}
+              aria-busy={label.isPending || undefined}
+              onClick={save}
+            >
+              Save
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={label.isPending}
+              onClick={() => setEditing(false)}
+            >
+              Cancel
+            </Button>
+          </div>
+          <small id={`${c.grantId}-label-help`} className={muted}>
+            Only you see it. Up to 60 characters.
+          </small>
+          {error && (
+            <p role="alert" className={`m-0 ${errorText}`}>
+              {error}
+            </p>
+          )}
+        </div>
+      </li>
+    );
+
+  return (
+    <li className={ROW}>
+      <Face c={c} />
+      <div className="grid min-w-0 flex-1 gap-[2px] text-[length:var(--oa-text-sm)]">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-[var(--oa-space-2)] gap-y-[2px]">
+          {c.label ? (
+            <>
+              <b
+                className="min-w-0 truncate font-semibold max-[600px]:line-clamp-2 max-[600px]:whitespace-normal"
+                title={c.label}
               >
-                Save
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={label.isPending}
-                onClick={() => setEditing(false)}
-              >
-                Cancel
-              </Button>
-            </div>
-            {/* What the label is for stays in view while you type. */}
-            <div className="flex min-w-0 flex-wrap items-baseline gap-x-[var(--oa-space-2)] gap-y-[2px]">
+                {c.label}
+              </b>
               <span className={`min-w-0 truncate ${muted}`} title={reported}>
                 {reported}
               </span>
-              <Reported />
-            </div>
-          </div>
-        ) : (
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-[var(--oa-space-2)] gap-y-[2px]">
-            {c.label ? (
-              <>
-                <b
-                  className="min-w-0 truncate font-semibold max-[600px]:line-clamp-2 max-[600px]:whitespace-normal"
-                  title={c.label}
-                >
-                  {c.label}
-                </b>
-                <span className={`min-w-0 truncate ${muted}`} title={reported}>
-                  {reported}
-                </span>
-              </>
-            ) : (
-              <b className="min-w-0 truncate font-semibold" title={reported}>
-                {reported}
-              </b>
-            )}
-            <Reported />
-          </div>
-        )}
+            </>
+          ) : (
+            <b className="min-w-0 truncate font-semibold" title={reported}>
+              {reported}
+            </b>
+          )}
+          <Reported />
+        </div>
         {old ? (
           <span className={`${muted} italic`}>
             Connected {day.format(new Date(c.createdAt))}, before these details
@@ -225,11 +230,11 @@ export function AgentRow({
         </span>
       </div>
       <div className="flex flex-none items-center gap-[var(--oa-space-1)]">
-        {canLabel && !c.label && !editing && (
+        {canLabel && !c.label && (
           <Button
             variant="link"
             size="sm"
-            className="h-auto px-0 text-[length:var(--oa-text-sm)]"
+            className="h-auto px-0 text-[length:var(--oa-text-sm)] underline underline-offset-3"
             onClick={edit}
           >
             Add label

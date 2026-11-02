@@ -210,9 +210,9 @@ function envClients(
       language: "bash",
       code: t
         ? `read -rs OA_TOKEN
-claude mcp add --transport http ${name} ${sh(mcpUrl)} --header "Authorization: Bearer $OA_TOKEN"
+claude mcp add --transport http -s user ${name} ${sh(mcpUrl)} --header "Authorization: Bearer $OA_TOKEN"
 unset OA_TOKEN`
-        : `claude mcp add --transport http ${name} ${sh(mcpUrl)}`,
+        : `claude mcp add --transport http -s user ${name} ${sh(mcpUrl)}`,
       hint: "Paste your token when prompted. It stays hidden as you type, and Claude Code saves it in its own config.",
       verify: t
         ? `Run \`claude mcp list\`. It shows ${name} as connected.`

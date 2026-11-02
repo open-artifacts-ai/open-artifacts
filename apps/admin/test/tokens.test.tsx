@@ -305,12 +305,25 @@ it("the Connect any AI agent card: variant toggle and agent tabs drive the snipp
   expect(tab("Claude Code")).toHaveAttribute("aria-pressed", "true");
   expect(pressed("Sign in with browser")).toBe("true");
   expect(snip()).toHaveTextContent(
-    `claude mcp add --transport http oa-admin ${url}`,
+    `claude mcp add --transport http -s user oa-admin ${url}`,
   );
   expect(snip()).toHaveTextContent(
     "pick oa-admin and sign in with your browser",
   );
   expect(snip()).toHaveTextContent("Start a new Claude Code session");
+
+  // Its token variant is user-scoped too, and its copy still fits.
+  fireEvent.click(within(card).getByRole("button", { name: "Use a token" }));
+  expect(snip()).toHaveTextContent(
+    `claude mcp add --transport http -s user oa-admin ${url} --header`,
+  );
+  expect(snip()).toHaveTextContent("Paste your token when prompted.");
+  expect(snip()).toHaveTextContent(
+    "Run claude mcp list. It shows oa-admin as connected.",
+  );
+  fireEvent.click(
+    within(card).getByRole("button", { name: "Sign in with browser" }),
+  );
 
   // Another agent tab.
   fireEvent.click(tab("Codex CLI"));
