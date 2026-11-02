@@ -130,15 +130,48 @@ const WIDENS: Readonly<Record<string, string>> = {
 const SKIP_FILES = new Set(["runtime/revoke.ts", "mcp/oauth-api.ts"]);
 
 /**
+ * Module-level SQL constants, by "file:NAME", that match a marker but don't
+ * count toward the units of their own file, each with why. Per statement,
+ * never per file: a new oauth_kv write in mcp/oauth-store.ts fails until it
+ * is listed here. Another file using one of them (an import) still counts.
+ * A stale entry fails the test below.
+ */
+const STATEMENTS: Readonly<Record<string, string>> = {
+  // The OAuth provider's store (KV-shaped, over oauth_kv): every write
+  // below is the provider's own put or delete, or keeps D1 agreeing with
+  // KV. The revocations that reach it (revokeAllGrants) are markers in
+  // their callers.
+  "mcp/oauth-store.ts:PUT":
+    "the provider's put (KV's put); never over a tombstone",
+  "mcp/oauth-store.ts:TOMBSTONE_KEYS":
+    "the provider's delete (every mode): a tombstone",
+  "mcp/oauth-store.ts:DELETE_KEYS":
+    "kv mode's put: drops D1's row, KV holds the value",
+  "mcp/oauth-store.ts:SWEEP":
+    "nightly: expired rows and old tombstones, which every read treats as missing",
+  "mcp/oauth-store.ts:SWEEP_EXPIRED":
+    "nightly: expired rows, which every read treats as missing",
+  "mcp/oauth-store.ts:COPY":
+    "the backfill: insert-or-ignore, never over a row D1 holds",
+};
+
+/**
  * #681: a dataWriters write ("editors" cuts every viewer's data writes),
  * SQL or a [column, value] pair.
  */
 const DATA_WRITERS_WRITE =
   /\bdata_writers\s*=\s*\?|"data_writers",|\.set\(\{[^}]*\bdataWriters\b/;
 
+/** A write to the OAuth store's table (SQL). */
+const OAUTH_KV_WRITE = /\b(delete\s+from|insert\s+into|update)\s+oauth_kv\b/i;
+
 /** Access-shrinking markers in a unit's code. */
 const SHRINK: readonly RegExp[] = [
   /\brevokeAllGrants\(/,
+  // The OAuth store's rows (grants, tokens): any write, inline or in a
+  // constant not listed in STATEMENTS, may revoke behind the provider's
+  // back.
+  OAUTH_KV_WRITE,
   /\bcloseRuntimeSockets\(/,
   /session_epoch \+ 1|sessionEpoch\} \+ 1/,
   /\.delete\((shares|identities)\)/,
@@ -321,10 +354,10 @@ function scan(sources: ReadonlyMap<string, string>): Map<string, string> {
   const out = new Map<string, string>();
   for (const [rel, src] of parsed) {
     if (SKIP_FILES.has(rel)) continue;
-    const known = new Map([
-      ...importedConsts(rel, src, consts),
-      ...(consts.get(rel) ?? []),
-    ]);
+    const own = [...(consts.get(rel) ?? [])].filter(
+      ([k]) => !(`${rel}:${k}` in STATEMENTS),
+    );
+    const known = new Map([...importedConsts(rel, src, consts), ...own]);
     const withConsts = (code: string) => {
       const used = [...known].filter(([k]) =>
         new RegExp(`\\b${k}\\b`).test(code),
@@ -390,6 +423,56 @@ describe("revocation lint (P3 T7)", () => {
 
   it("every registered function calls its guard", () => {
     expect(check(fns, REGISTRY).unguarded).toEqual([]);
+  });
+
+  it("every STATEMENTS entry names a module constant that matches a marker", () => {
+    const stale = Object.keys(STATEMENTS).filter((id) => {
+      const [rel, name] = id.split(":") as [string, string];
+      const text = readFileSync(join(SRC, rel), "utf8");
+      const src = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true);
+      const sql = moduleConsts(src).get(name);
+      return sql === undefined || !SHRINK.some((re) => re.test(sql));
+    });
+    expect(stale).toEqual([]);
+  });
+
+  it("mcp/oauth-store.ts is scanned: every oauth_kv write is a listed statement", () => {
+    expect(SKIP_FILES.has("mcp/oauth-store.ts")).toBe(false);
+    const text = readFileSync(join(SRC, "mcp/oauth-store.ts"), "utf8");
+    const src = ts.createSourceFile("s.ts", text, ts.ScriptTarget.Latest, true);
+    const writes = [...moduleConsts(src)]
+      .filter(([, sql]) => OAUTH_KV_WRITE.test(sql))
+      .map(([k]) => `mcp/oauth-store.ts:${k}`)
+      .sort();
+    expect(writes).toEqual(Object.keys(STATEMENTS).sort());
+    expect(
+      [...fns.keys()].some((k) => k.startsWith("mcp/oauth-store.ts:")),
+    ).toBe(true);
+  });
+
+  it("an unlisted oauth_kv write in the store, inline or a new constant, counts; an imported listed one counts elsewhere", () => {
+    const store = `
+      const TOMBSTONE_KEYS = "insert into oauth_kv (key) select value from json_each(?)";
+      const WIPE = "delete from oauth_kv";
+      export async function listed(db: D1Database) { await db.prepare(TOMBSTONE_KEYS).run(); }
+      export async function newConst(db: D1Database) { await db.prepare(WIPE).run(); }
+      export async function inline(db: D1Database) {
+        await db.prepare("update oauth_kv set expires_at = -1").run();
+      }`;
+    const other = `
+      import { TOMBSTONE_KEYS } from "../mcp/oauth-store.js";
+      export async function behindTheBack(db: D1Database) { await db.prepare(TOMBSTONE_KEYS).run(); }`;
+    const fns = scan(
+      new Map([
+        ["mcp/oauth-store.ts", store],
+        ["services/other.ts", other],
+      ]),
+    );
+    expect(check(fns, {}).missing).toEqual([
+      "mcp/oauth-store.ts:newConst",
+      "mcp/oauth-store.ts:inline",
+      "services/other.ts:behindTheBack",
+    ]);
   });
 
   it("every widening exemption still names a unit that matches a marker", () => {

@@ -1,0 +1,260 @@
+// settleFailed's expectCode (C6, W7 review): a compare-and-set on the code
+// the caller read. With it, the settle UPDATE also requires
+// `error_code IS ?` (null matches null); a changed code writes nothing and
+// settled is false. The extras still run in the batch and are deduplicated
+// by their own guards (settledWith plus NOT EXISTS cleanup plus INSERT OR
+// IGNORE). Run on the real 0008 schema with the stand-in UPDATE (W3 builds
+// the real one).
+import type { DatabaseSync } from "node:sqlite";
+import { describe, expect, it } from "vitest";
+import { type SettleOptions, settledWith, settleFailed } from "../src/jobs.js";
+import { nodeD1 } from "./d1-node.js";
+import { job, platformDb } from "./platform-db.js";
+
+const SETTLE =
+  "UPDATE jobs SET status = 'failed', error_code = COALESCE(error_code, ?2), updated_at = ?3 WHERE id = ?1 AND status IN ('queued', 'running')";
+const SETTLE_CAS = `${SETTLE} AND error_code IS ?4`;
+const cleanupInsert = (guard: string) =>
+  `INSERT OR IGNORE INTO jobs (id, kind, workflow, install_id, parent_job_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
+SELECT ?2, 'cleanup', 'manage_install', ?3, ?1, 'system', 'system:scheduler', 'scheduler', 'cleanup-' || ?1, 'h', '{}', 'queued', 9, 9
+WHERE ${guard}`;
+
+function batch(db: DatabaseSync, run: () => void) {
+  db.exec("BEGIN");
+  try {
+    run();
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** A settle with run_dead and opts.expectCode, then a cleanup under `guard` (a code, or SQL). */
+function settle(
+  db: DatabaseSync,
+  parent: string,
+  opts: Pick<SettleOptions, "expectCode">,
+  guard: "run_dead" | "canceled" | string,
+) {
+  let settled = 0;
+  let inserted = 0;
+  batch(db, () => {
+    settled = Number(
+      (opts.expectCode === undefined
+        ? db.prepare(SETTLE).run(parent, "run_dead", 9)
+        : db.prepare(SETTLE_CAS).run(parent, "run_dead", 9, opts.expectCode)
+      ).changes,
+    );
+    inserted = Number(
+      db
+        .prepare(
+          cleanupInsert(
+            guard === "run_dead" || guard === "canceled"
+              ? settledWith("?1", guard)
+              : guard,
+          ),
+        )
+        .run(parent, `c-${parent}`, "i1").changes,
+    );
+  });
+  const row = db
+    .prepare("SELECT status, error_code FROM jobs WHERE id = ?")
+    .get(parent);
+  return { settled: settled === 1, inserted, row };
+}
+
+describe("SettleOptions.expectCode: compare-and-set on error_code", () => {
+  it("expected null, still null: settles (and the run_dead guard adds one cleanup)", () => {
+    const db = platformDb();
+    const parent = job(db, "i1", { status: "running" });
+    expect(settle(db, parent, { expectCode: null }, "run_dead")).toEqual({
+      settled: true,
+      inserted: 1,
+      row: { status: "failed", error_code: "run_dead" },
+    });
+  });
+
+  it("expected null, now 'canceled': no settle, settled=false, no cleanup", () => {
+    const db = platformDb();
+    const parent = job(db, "i1", { status: "running", error_code: "canceled" });
+    expect(settle(db, parent, { expectCode: null }, "run_dead")).toEqual({
+      settled: false,
+      inserted: 0,
+      row: { status: "running", error_code: "canceled" },
+    });
+  });
+
+  // Exactly one cleanup in total, whoever queues it: the extra also
+  // guards on no cleanup for this parent yet, plus INSERT OR IGNORE.
+  const ONE_CLEANUP = `${settledWith("?1", "canceled")} AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = ?1 AND c.kind = 'cleanup')`;
+  const cleanupCount = (db: DatabaseSync, parent: string) =>
+    db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'cleanup' AND parent_job_id = ?",
+      )
+      .get(parent);
+
+  it("expected 'canceled', is 'canceled', no cleanup yet: settles and adds exactly one", () => {
+    const db = platformDb();
+    const parent = job(db, "i1", { status: "running", error_code: "canceled" });
+    // COALESCE keeps the stored code: this call ends up writing 'canceled'.
+    expect(settle(db, parent, { expectCode: "canceled" }, ONE_CLEANUP)).toEqual(
+      {
+        settled: true,
+        inserted: 1,
+        row: { status: "failed", error_code: "canceled" },
+      },
+    );
+    expect(cleanupCount(db, parent)).toEqual({ n: 1 });
+  });
+
+  it("expected 'canceled', is 'canceled', the cancel's cleanup present: settles and adds none", () => {
+    const db = platformDb();
+    const parent = job(db, "i1", { status: "running", error_code: "canceled" });
+    // The cancel path's own cleanup (done, so jobs_one_active admits the
+    // still-open parent in this fixture).
+    job(db, "i1", {
+      kind: "cleanup",
+      workflow: "manage_install",
+      parent_job_id: parent,
+      status: "done",
+      request_id: "admin-cancel-req-0001",
+    });
+    expect(settle(db, parent, { expectCode: "canceled" }, ONE_CLEANUP)).toEqual(
+      {
+        settled: true,
+        inserted: 0,
+        row: { status: "failed", error_code: "canceled" },
+      },
+    );
+    expect(cleanupCount(db, parent)).toEqual({ n: 1 });
+  });
+
+  it("expected null, a concurrent writer already set run_dead: settled=false, exactly one cleanup", () => {
+    const db = platformDb();
+    const parent = job(db, "i1", { status: "running" });
+    // The concurrent writer (another tick): settles run_dead, queues its cleanup.
+    batch(db, () => {
+      db.prepare(SETTLE).run(parent, "run_dead", 7);
+      db.prepare(
+        cleanupInsert(
+          `${settledWith("?1", "run_dead")} AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = ?1 AND c.kind = 'cleanup')`,
+        ),
+      ).run(parent, "c-first", "i1");
+    });
+    // This call read null; the settle writes nothing, and the extra (which
+    // still runs in the batch) is deduplicated by its own guards.
+    const guard = `${settledWith("?1", "run_dead")} AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = ?1 AND c.kind = 'cleanup')`;
+    expect(settle(db, parent, { expectCode: null }, guard)).toEqual({
+      settled: false,
+      inserted: 0,
+      row: { status: "failed", error_code: "run_dead" },
+    });
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'cleanup' AND parent_job_id = ?",
+        )
+        .get(parent),
+    ).toEqual({ n: 1 });
+  });
+
+  it("absent: unchanged (settles over any stored code, never overwriting it)", () => {
+    const db = platformDb();
+    const parent = job(db, "i1", { status: "running", error_code: "canceled" });
+    expect(settle(db, parent, {}, "canceled")).toEqual({
+      settled: true,
+      inserted: 1,
+      row: { status: "failed", error_code: "canceled" },
+    });
+  });
+});
+
+// The same cases against W3's real settleFailed body (the stand-in above
+// pins the SQL shape; this pins the shipped UPDATE).
+describe("settleFailed with expectCode (real body)", () => {
+  const ONE = (code: "run_dead" | "canceled") =>
+    `${settledWith("?1", code)} AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = ?1 AND c.kind = 'cleanup')`;
+  async function run(
+    db: DatabaseSync,
+    parent: string,
+    opts: Pick<SettleOptions, "expectCode">,
+    guard: string,
+    cid = `c-${parent}`,
+  ) {
+    const d1 = nodeD1(db);
+    const r = await settleFailed(d1, parent, "run_dead", {
+      ...opts,
+      extra: [d1.prepare(cleanupInsert(guard)).bind(parent, cid, "i1")],
+    });
+    const row = db
+      .prepare("SELECT status, error_code FROM jobs WHERE id = ?")
+      .get(parent);
+    const n = db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'cleanup' AND parent_job_id = ?",
+      )
+      .get(parent) as { n: number };
+    return { settled: r.settled, row, cleanups: n.n };
+  }
+
+  it("expected null, still null: settles and adds one cleanup", async () => {
+    const db = platformDb();
+    const parent = job(db, "i1", { status: "running" });
+    expect(
+      await run(db, parent, { expectCode: null }, ONE("run_dead")),
+    ).toEqual({
+      settled: true,
+      row: { status: "failed", error_code: "run_dead" },
+      cleanups: 1,
+    });
+  });
+
+  it("expected null, now 'canceled': writes nothing, settled=false", async () => {
+    const db = platformDb();
+    const parent = job(db, "i1", { status: "running", error_code: "canceled" });
+    expect(
+      await run(db, parent, { expectCode: null }, ONE("run_dead")),
+    ).toEqual({
+      settled: false,
+      row: { status: "running", error_code: "canceled" },
+      cleanups: 0,
+    });
+  });
+
+  it("expected 'canceled', is 'canceled': settles, exactly one cleanup", async () => {
+    const db = platformDb();
+    const parent = job(db, "i1", { status: "running", error_code: "canceled" });
+    expect(
+      await run(db, parent, { expectCode: "canceled" }, ONE("canceled")),
+    ).toEqual({
+      settled: true,
+      row: { status: "failed", error_code: "canceled" },
+      cleanups: 1,
+    });
+  });
+
+  it("expected null, a concurrent writer already settled run_dead: settled=false, still one cleanup", async () => {
+    const db = platformDb();
+    const parent = job(db, "i1", { status: "running" });
+    await run(db, parent, {}, ONE("run_dead"), "c-first");
+    expect(
+      await run(db, parent, { expectCode: null }, ONE("run_dead"), "c-second"),
+    ).toEqual({
+      settled: false,
+      row: { status: "failed", error_code: "run_dead" },
+      cleanups: 1,
+    });
+  });
+
+  it("absent: unchanged (settles, keeps the stored code)", async () => {
+    const db = platformDb();
+    const parent = job(db, "i1", { status: "running", error_code: "canceled" });
+    expect(await run(db, parent, {}, ONE("canceled"))).toEqual({
+      settled: true,
+      row: { status: "failed", error_code: "canceled" },
+      cleanups: 1,
+    });
+  });
+});

@@ -478,7 +478,12 @@ describe("/healthz", () => {
         e,
       );
       expect(r.status).toBe(200);
-      expect(await r.json()).toEqual({ ok: true, plan, version: VERSION });
+      expect(await r.json()).toEqual({
+        ok: true,
+        plan,
+        version: VERSION,
+        oauthStore: { mode: "kv", backfilled: false, kvWritesOffSince: null },
+      });
     }
   });
 });

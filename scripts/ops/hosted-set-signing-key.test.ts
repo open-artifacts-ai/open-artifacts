@@ -6,9 +6,9 @@ import { root, sandbox } from "../ci/stubs.ts";
 
 // T3b R-N2 and fix round 5: the key ceremony uploads an env's signing key
 // only when its GitHub Environment allows deployments from main only (the
-// real control against a dispatch from another ref), has a required
-// reviewer and no admin bypass, and a ruleset limits v* tags to the release
-// App (no update, no delete).
+// real control against a dispatch from another ref) with no admin bypass,
+// and a ruleset limits v* tags to the release App (no update, no delete).
+// A required reviewer is neither needed nor checked.
 const SCRIPT = join(root, "scripts/ops/hosted-set-signing-key.sh");
 const KEY =
   "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIfake0000000000000000000000000000000000\n-----END PRIVATE KEY-----\n";
@@ -162,9 +162,8 @@ describe("hosted-set-signing-key.sh", () => {
     expect(r.out + r.err).not.toContain("PRIVATE KEY");
   });
 
-  // User rulings 2026-10-24: neither env needs an approval step for now
-  // (still main only, no admin bypass). A prod reviewer comes back before
-  // FinQore go-live (docs/ops/hosted.md, first-create checklist).
+  // No approval step on either env (still main only, no admin bypass): the
+  // checks before signing and deploying are the gate.
   it.each(["staging", "prod"] as const)(
     "%s needs no required reviewer",
     (e) => {

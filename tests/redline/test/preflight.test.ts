@@ -46,7 +46,7 @@ describe("preflight file checks (existence and mode only)", () => {
     expect(by["rl-b PAT file"]).toMatchObject({
       status: "gap",
       detail: expect.stringMatching(
-        /must be mode 0600.*pnpm oa:hosted redline-creds --install ib --confirm ib/,
+        /must be mode 0600.*POST \/v1\/installs\/ib\/redline-creds/,
       ),
     });
     expect(by["rl-a Turnstile token"]?.status).toBe("ok");
@@ -74,21 +74,21 @@ describe("preflight file checks (existence and mode only)", () => {
     expect(out).not.toContain(SECRET);
   });
 
-  it("a missing PAT names the command; a configured inventory with a 0600 key is ok", () => {
-    const s = secretDir({ key: SECRET, REDLINE_RL_A_PAT: SECRET });
+  it("a missing PAT names the command; a configured inventory with a 0600 OIDC JWT is ok", () => {
+    const s = secretDir({ jwt: SECRET, REDLINE_RL_A_PAT: SECRET });
     dirs.push(s.dir);
     const c = fileChecks({
       REDLINE_TARGETS: JSON.stringify({
         secretsDir: s.dir,
         strayHost: "stray.example.test",
-        inventory: { url: "https://inv.test", keyFile: join(s.dir, "key") },
+        inventory: { url: "https://inv.test", oidcFile: join(s.dir, "jwt") },
         a: { name: "rl-a", installId: "ia" },
         b: { name: "rl-b", installId: "ib" },
       }),
     });
     const by = Object.fromEntries(c.map((x) => [x.name, x]));
     expect(by["rl-b PAT file"]?.detail).toMatch(
-      /is missing; run `pnpm oa:hosted redline-creds/,
+      /is missing; mint it with `POST \/v1\/installs\/ib\/redline-creds/,
     );
     expect(by.inventory?.status).toBe("ok");
     expect(by.strayHost?.status).toBe("ok");

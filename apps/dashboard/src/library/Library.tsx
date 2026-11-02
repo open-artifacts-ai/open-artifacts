@@ -1,4 +1,4 @@
-import type { Format } from "@oa/shared";
+import { AgentViaSchema, type Format } from "@oa/shared";
 import {
   Button,
   Skeleton,
@@ -11,10 +11,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
-import { qk } from "../api/queries";
+import { qk, useOAuthClients, useTokens } from "../api/queries";
 import { useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { AgentSetupBody, useCanSetUpAgent } from "../settings/AgentSetupCard";
 import { copyText } from "../settings/ui";
 import { sharedSpaceName } from "../spaces/label";
 import { useUploadSpace } from "../spaces/SpacePicker";
@@ -89,6 +90,31 @@ const EMPTY: Record<Scope, [string, React.ReactNode]> = {
   ],
 };
 
+/**
+ * The name of the caller's own connection behind `agentVia` (#589), from the
+ * Settings › Agents queries: a grant's label, else its client name; a
+ * token's label. Only the owner loads these, so the label stays theirs.
+ * "" while the list loads; "This connection" once loaded and not found.
+ */
+function useConnectionName(via: string | undefined): string | undefined {
+  const grant = via?.startsWith("g:") ? via.slice(2) : undefined;
+  const token = via?.startsWith("t:") ? via.slice(2) : undefined;
+  const clients = useOAuthClients(grant !== undefined);
+  const tokens = useTokens(token !== undefined);
+  if (via === undefined) return undefined;
+  // No label while the list loads, so the chip never flashes the fallback.
+  const q = grant !== undefined ? clients : tokens;
+  if (q.isPending) return "";
+  const name =
+    grant !== undefined
+      ? (() => {
+          const c = clients.data?.find((x) => x.grantId === grant);
+          return c ? (c.label ?? c.clientName) : undefined;
+        })()
+      : tokens.data?.find((x) => x.id === token)?.label;
+  return name ?? "This connection";
+}
+
 export function Library({ scope }: { scope: Scope }) {
   const me = useMe();
   const { space } = useCurrentSpace();
@@ -112,9 +138,15 @@ export function Library({ scope }: { scope: Scope }) {
   const s = useSearch({ strict: false }) as {
     format?: Format;
     agent?: string;
+    agentVia?: string;
     space?: string;
     view?: View;
   };
+  // The root route passes unvalidated params through: only a well-formed via.
+  const agentVia = AgentViaSchema.safeParse(s.agentVia).success
+    ? s.agentVia
+    : undefined;
+  const viaName = useConnectionName(agentVia);
   const view: View = s.view ?? storedView() ?? "grid";
   const go = (to: string, search: object) =>
     void navigate({ to, search } as never);
@@ -124,6 +156,7 @@ export function Library({ scope }: { scope: Scope }) {
     scope,
     format: s.format,
     agent: s.agent,
+    agentVia,
     space: space?.id,
   });
   // A space-scoped 404: the caller's role in it is gone (or the space is), and
@@ -158,9 +191,12 @@ export function Library({ scope }: { scope: Scope }) {
   const showRevoked = gone || revoked !== null;
   const items = uniqueItems(q.data?.pages);
   // Remember agents seen so far so others stay selectable while one is filtered.
+  // A masked agent (another member's token, shown as "<owner>'s agent") gets
+  // no chip: no filter matches it.
   const seenAgents = useRef(new Set<string>());
   for (const a of items)
-    if (a.lastAgent) seenAgents.current.add(a.lastAgent.name);
+    if (a.lastAgent && !a.lastAgent.masked)
+      seenAgents.current.add(a.lastAgent.name);
   const agents = [...seenAgents.current].sort();
   const guest = me.status === "authed" && me.me.user.role === "guest";
   const meId = me.status === "authed" ? me.me.user.id : undefined;
@@ -168,9 +204,10 @@ export function Library({ scope }: { scope: Scope }) {
   const canCreate =
     me.status === "authed" && !guest && (me.me.auth?.cap ?? null) === null;
 
+  const canSetUpAgent = useCanSetUpAgent();
   const sentinel = useSentinel(q);
 
-  const filtered = Boolean(s.format || s.agent);
+  const filtered = Boolean(s.format || s.agent || agentVia);
   const canPublishHere =
     personal || myRole === "editor" || myRole === "manager";
   const uploadSpace = useUploadSpace(space?.id);
@@ -192,7 +229,13 @@ export function Library({ scope }: { scope: Scope }) {
             ]
       : EMPTY[scope];
   const emptyAction =
-    space && scope === "all" && !personal && canPublishHere ? (
+    scope === "mine" && !space ? (
+      canSetUpAgent ? (
+        <div className="w-full max-w-[420px]">
+          <AgentSetupBody />
+        </div>
+      ) : undefined
+    ) : space && scope === "all" && !personal && canPublishHere ? (
       <Button
         size="sm"
         variant="outline"
@@ -211,10 +254,13 @@ export function Library({ scope }: { scope: Scope }) {
         format={s.format}
         agent={s.agent}
         agents={agents}
+        via={agentVia === undefined ? undefined : { label: viaName ?? "" }}
         view={view}
         onFormat={(format) => set({ format })}
-        onAgent={(agent) => set({ agent })}
-        onClear={() => set({ format: undefined, agent: undefined })}
+        onAgent={(agent) => set({ agent, agentVia: undefined })}
+        onClear={() =>
+          set({ format: undefined, agent: undefined, agentVia: undefined })
+        }
         onView={(v) => {
           storeView(v);
           set({ view: v });

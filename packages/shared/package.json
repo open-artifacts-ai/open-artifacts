@@ -17,6 +17,66 @@
     "./mocks": {
       "types": "./dist/mocks/index.d.ts",
       "import": "./dist/mocks/index.js"
+    },
+    "./provisioning": {
+      "types": "./dist/provisioning/index.d.ts",
+      "import": "./dist/provisioning/index.js",
+      "default": "./dist/provisioning/index.js"
+    },
+    "./provisioning/slugs": {
+      "types": "./dist/provisioning/slugs.d.ts",
+      "import": "./dist/provisioning/slugs.js",
+      "default": "./dist/provisioning/slugs.js"
+    },
+    "./provisioning/alerts": {
+      "types": "./dist/provisioning/alerts.d.ts",
+      "import": "./dist/provisioning/alerts.js",
+      "default": "./dist/provisioning/alerts.js"
+    },
+    "./provisioning/constants": {
+      "types": "./dist/provisioning/constants.d.ts",
+      "import": "./dist/provisioning/constants.js",
+      "default": "./dist/provisioning/constants.js"
+    },
+    "./provisioning/enum-values": {
+      "types": "./dist/provisioning/enum-values.d.ts",
+      "import": "./dist/provisioning/enum-values.js",
+      "default": "./dist/provisioning/enum-values.js"
+    },
+    "./provisioning/error-codes": {
+      "types": "./dist/provisioning/error-codes.d.ts",
+      "import": "./dist/provisioning/error-codes.js",
+      "default": "./dist/provisioning/error-codes.js"
+    },
+    "./provisioning/state": {
+      "types": "./dist/provisioning/state.d.ts",
+      "import": "./dist/provisioning/state.js",
+      "default": "./dist/provisioning/state.js"
+    },
+    "./provisioning/system": {
+      "types": "./dist/provisioning/system.d.ts",
+      "import": "./dist/provisioning/system.js",
+      "default": "./dist/provisioning/system.js"
+    },
+    "./provisioning/workflow": {
+      "types": "./dist/provisioning/workflow.d.ts",
+      "import": "./dist/provisioning/workflow.js",
+      "default": "./dist/provisioning/workflow.js"
+    },
+    "./provisioning/fakes": {
+      "types": "./dist/provisioning/fakes.d.ts",
+      "import": "./dist/provisioning/fakes.js",
+      "default": "./dist/provisioning/fakes.js"
+    },
+    "./provisioning/fixtures": {
+      "types": "./dist/provisioning/fixtures.d.ts",
+      "import": "./dist/provisioning/fixtures.js",
+      "default": "./dist/provisioning/fixtures.js"
+    },
+    "./provisioning/mocks": {
+      "types": "./dist/mocks/provisioning.d.ts",
+      "import": "./dist/mocks/provisioning.js",
+      "default": "./dist/mocks/provisioning.js"
     }
   },
   "files": [
@@ -24,14 +84,17 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json"
+    "test": "vitest run && vitest run -c vitest.workerd.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json && tsc --noEmit -p tsconfig.workerd.json"
   },
   "dependencies": {
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "msw": "^2.15.0"
+    "@cloudflare/vitest-plugin": "^1.4.4",
+    "@cloudflare/workers-types": "^5.20261018.1",
+    "msw": "^2.15.0",
+    "wrangler": "^4.151.1"
   },
   "peerDependencies": {
     "msw": "^2.15.0"

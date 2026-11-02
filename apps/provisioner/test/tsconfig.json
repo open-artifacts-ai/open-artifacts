@@ -1,0 +1,15 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    // DOM, tests only: provision's src and fake-cf use DOM types
+    // workers-types lacks (BlobPart, FormDataEntryValue).
+    "lib": ["ES2022", "DOM"],
+    "types": [
+      "@cloudflare/workers-types",
+      "node",
+      "@cloudflare/vitest-plugin/types"
+    ]
+  },
+  "include": [".", "../src", "../vitest.config.ts", "../vitest.node.config.ts"]
+}

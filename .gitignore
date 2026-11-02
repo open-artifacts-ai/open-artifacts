@@ -26,3 +26,6 @@ test-results/
 playwright-report/
 blob-report/
 .dist-node-*/
+
+# Provisioning API staging spikes: configs rendered in CI
+spikes/provapi-staging/*.rendered.jsonc
