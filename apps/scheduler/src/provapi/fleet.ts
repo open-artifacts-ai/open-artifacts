@@ -105,16 +105,15 @@ const HALT_JOBS = `SELECT j.install_id AS install_id, j.id AS job_id, j.kind AS 
   CASE WHEN j.kind = 'upgrade' THEN json_extract(j.args, '$.to') ELSE json_extract(j.args, '$.from') END AS version
 FROM jobs j WHERE (${FLEET_UP} AND j.status = 'failed') OR (${FLEET_RB})`;
 const STATE = `SELECT key, value FROM platform_state WHERE key GLOB 'fleet_*'`;
-// The watch: each serving, active, idle install whose latest fleet upgrade
-// is done and still live (no fleet rollback off it), finished since ?1 or
-// with a failure still open. Halted ones are dropped in code.
+// The watch: each serving, active, idle install still on its latest fleet
+// upgrade, done, finished since ?1 or with a failure still open. Halted ones
+// are dropped in code, a rolled-back one with them: its mark comes first.
 const WATCH = `SELECT j.install_id AS install_id, json_extract(j.args, '$.from') AS prev, json_extract(j.args, '$.to') AS version, j.finished_at AS done_at, st.app_host AS app_host
 FROM jobs j JOIN install_status st ON st.install_id = j.install_id
 WHERE ${FLEET_UP} AND j.status = 'done' AND st.version = json_extract(j.args, '$.to')
   AND st.state = 'active' AND st.install_state = 'active' AND st.serving_mode = 'serving' AND st.active_job_id IS NULL
   AND j.id = (SELECT k.id FROM jobs k WHERE k.install_id = j.install_id AND k.actor_key = ${SYS} AND k.kind = 'upgrade' AND k.request_id LIKE 'fleet-%' ORDER BY k.created_at DESC, k.id DESC LIMIT 1)
   AND (j.finished_at >= ?1 OR EXISTS (SELECT 1 FROM platform_state p WHERE p.key = '${FLEET_FAILING_PREFIX}' || j.install_id))
-  AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.install_id = j.install_id AND r.actor_key = ${SYS} AND r.kind = 'rollback' AND r.request_id LIKE 'fleetrb-%' AND json_extract(r.args, '$.from') = json_extract(j.args, '$.to'))
 ORDER BY j.finished_at, j.install_id`;
 // Control candidates: eligible, health ok, oldest first.
 const CONTROLS = `SELECT s.install_id AS install_id, s.version AS version, s.app_host AS app_host FROM install_status s JOIN install_lifecycle l ON l.install_id = s.install_id
@@ -536,21 +535,19 @@ async function watchRecent(
 }
 
 /**
- * The control: the oldest eligible install outside the watch, health ok,
- * on a version below every probed one.
+ * The control: the oldest eligible install, health ok, on a version below
+ * every probed one (so never a probed install).
  */
 async function pickControl(
   db: D1Database,
   probed: readonly Watched[],
 ): Promise<{ install_id: string; version: string; app_host: string } | null> {
-  const ids = new Set(probed.map((r) => r.install_id));
   const { results } = await d1(
     db
       .prepare(CONTROLS)
       .all<{ install_id: string; version: string; app_host: string }>(),
   );
   for (const c of results) {
-    if (ids.has(c.install_id)) continue;
     try {
       if (probed.every((r) => compareVersions(c.version, r.version) < 0))
         return c;
@@ -612,9 +609,8 @@ async function trackBehind(
 }
 
 /**
- * Drops fleet state nothing reads any more: strikes of installs that left
- * the watch a day ago, and halt marks of other versions past
- * FLEET_HALT_KEEP_MS.
+ * Drops halt marks of other versions past FLEET_HALT_KEEP_MS. Strikes need
+ * no pruning: watchRecent clears those of installs that left the watch.
  */
 async function prune(
   env: ProvapiEnv,
@@ -623,9 +619,6 @@ async function prune(
   target: string | null,
 ): Promise<void> {
   const db = env.PLATFORM_DB;
-  for (const [id, at] of st.strikes)
-    if (at < now - 24 * 60 * 60_000)
-      await d1(db.prepare(CLEAR).bind(strikeKey(id)).run());
   for (const h of st.halts)
     if (h.version !== target && h.since < now - FLEET_HALT_KEEP_MS)
       await d1(

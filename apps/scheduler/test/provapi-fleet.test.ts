@@ -677,6 +677,22 @@ describe("the watch", () => {
     expect(queued.map((j) => j.install_id)).toEqual([canary]);
   });
 
+  it("third review: the tick that halts an older version starts the next release", async () => {
+    const { canary, id } = await upgraded(NOW - 25 * MIN);
+    const f = fakes({
+      canary,
+      tag: "v0.93.1",
+      answers: new Map([[id, "down"]]),
+    });
+    await ticks(f, NOW, NOW + FLEET_BLIP_MS - 2 * MIN);
+    expect((await fleetJobs()).filter((j) => j.status === "queued")).toEqual(
+      [],
+    );
+    await fleetDue(f.env, NOW + FLEET_BLIP_MS, f.opts);
+    const queued = (await fleetJobs()).filter((j) => j.status === "queued");
+    expect(queued.map((j) => j.install_id)).toEqual([canary]);
+  });
+
   it("third review: the tick that halts queues nothing onto the halted version", async () => {
     // Past the deadline, so no rollback job: only the mark says it halted.
     const { canary, id } = await upgraded(NOW - 25 * MIN);
