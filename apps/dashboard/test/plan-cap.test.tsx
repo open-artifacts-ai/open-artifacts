@@ -18,6 +18,7 @@ import { canPublishTo } from "../src/auth/permissions";
 import {
   arts,
   calls,
+  findVisibleToast,
   installHarness,
   mount,
   mountHosted,
@@ -281,6 +282,51 @@ it("the locked owner isn't read-only: controls stay enabled and refusals use the
     ),
   ).toBeVisible();
 });
+
+const asOwner = (m: Me): Me => ({ ...m, user: { ...m.user, role: "owner" } });
+const SNOOZE_PATH = R.directoryHeldSnooze("gSales03");
+const heldRegion = () =>
+  screen.findByRole("region", { name: "Waiting for your confirmation" });
+
+it.each([
+  [
+    "plan_read_only",
+    OPTS,
+    "Your trial ended, so this instance is read-only until you pick a plan.",
+  ],
+  [
+    "plan_required",
+    {
+      billing: {
+        tier: "free" as const,
+        status: null,
+        trialEndsAt: null,
+        graceUntil: null,
+        readOnly: false,
+      },
+    },
+    "This needs a paid plan. Choose a plan to continue.",
+  ],
+])(
+  "a Snooze refused with %s toasts the plan copy; the row stays held",
+  async (_code, opts, copy) => {
+    const posts = calls("POST");
+    mountHosted("/settings/directory", opts, asOwner);
+    const row = await heldRegion();
+    fireEvent.click(within(row).getByRole("button", { name: "Snooze Sales" }));
+    fireEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Snooze",
+      }),
+    );
+    await waitFor(() =>
+      expect(posts.some((c) => c.path === SNOOZE_PATH)).toBe(true),
+    );
+    expect(await findVisibleToast(copy)).toBeVisible();
+    expect(await findVisibleToast("Couldn't snooze the change.")).toBeVisible();
+    expect(row).not.toHaveTextContent("Snoozed until");
+  },
+);
 
 it("on free, a promotion refused with plan_limit shows by the member row, not as a toast", async () => {
   const patches = calls("PATCH");
