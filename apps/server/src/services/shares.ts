@@ -193,8 +193,10 @@ export async function putShare(
   // Review item 37: whether they can sign in at all (an in-domain
   // non-member on an invite-only install can't); the share stands either way.
   const reach = await shareReach(env, email);
+  const guest = await guestRecipients(env)(email, reach.role);
   return {
     ...toShare(row),
+    ...(guest ? { guest: true } : {}),
     emailed:
       created && (await emailShare(env, user, artifact, email, s.role, reach)),
     ...(reach.recipient ? { recipient: reach.recipient } : {}),

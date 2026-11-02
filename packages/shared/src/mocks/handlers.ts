@@ -897,6 +897,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         const recipient = h?.shareRecipient(email);
         return HttpResponse.json({
           ...share,
+          ...(h?.shareGuest(email) ? { guest: true } : {}),
           emailed: false,
           ...(recipient ? { recipient } : {}),
           ...(h ? { signInMethods: h.signInMethods(email, "share") } : {}),

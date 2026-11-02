@@ -209,9 +209,11 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
     guard(async () => {
       const s = await putShare(env, user, input.id, input, t.exec);
       return ok(
-        `Shared ${input.id} with ${s.email} as ${s.role}: ${viewUrl(env, input.id)}. ${
-          s.emailed ? `Emailed ${s.email} a link.` : "No email sent."
-        }${
+        `${
+          s.guest
+            ? `Shared with ${s.email}. They're a guest, so they can only view. ${viewUrl(env, input.id)}.`
+            : `Shared ${input.id} with ${s.email} as ${s.role}: ${viewUrl(env, input.id)}.`
+        } ${s.emailed ? `Emailed ${s.email} a link.` : "No email sent."}${
           s.recipient
             ? s.recipient.reason === "needs_invite"
               ? ` ${s.email} can't sign in until an admin invites them as a member.`

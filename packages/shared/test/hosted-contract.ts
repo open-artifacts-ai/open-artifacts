@@ -28,6 +28,7 @@ import {
   RestrictedGroupSchema,
   SearchHitSchema,
   SettingsSchema,
+  ShareResultSchema,
   ShareSchema,
   SPACE_NAME_RESERVED_MESSAGE,
   SpaceCandidateSchema,
@@ -930,35 +931,37 @@ export function hostedContract(d: ContractDriver): ContractCases {
   });
 
   describe("hosted contract: guests on share rows", () => {
-    t(
-      "GET R.shares marks who can only view; role stays as stored",
-      async () => {
-        await d.fresh({ hosted: true });
-        const id = fixtures.artifacts.find((a) => a.title === "Landing page")
-          ?.id as string;
-        for (const email of [
-          "outside@elsewhere.test",
-          "newhire@example.com",
-          "bob@example.com",
-        ])
-          expect(
-            (await d.call("PUT", R.shares(id), { email, role: "editor" }))
-              .status,
-          ).toBe(200);
-        const rows = ShareSchema.strict()
-          .array()
-          .parse(await json(await d.call("GET", R.shares(id))));
-        const of = (e: string) => rows.find((r) => r.email === e);
-        expect(of("outside@elsewhere.test")).toMatchObject({
+    t("R.shares marks who can only view; role stays as stored", async () => {
+      await d.fresh({ hosted: true });
+      const id = fixtures.artifacts.find((a) => a.title === "Landing page")
+        ?.id as string;
+      for (const [email, guest] of [
+        ["outside@elsewhere.test", true],
+        ["newhire@example.com", false],
+        ["bob@example.com", false],
+      ] as const) {
+        const r = await d.call("PUT", R.shares(id), {
+          email,
           role: "editor",
-          guest: true,
         });
-        for (const e of ["newhire@example.com", "bob@example.com"]) {
-          expect(of(e)?.role).toBe("editor");
-          expect(of(e)).not.toHaveProperty("guest");
-        }
-      },
-    );
+        expect(r.status).toBe(200);
+        expect(ShareResultSchema.parse(await r.json()).guest === true).toBe(
+          guest,
+        );
+      }
+      const rows = ShareSchema.strict()
+        .array()
+        .parse(await json(await d.call("GET", R.shares(id))));
+      const of = (e: string) => rows.find((r) => r.email === e);
+      expect(of("outside@elsewhere.test")).toMatchObject({
+        role: "editor",
+        guest: true,
+      });
+      for (const e of ["newhire@example.com", "bob@example.com"]) {
+        expect(of(e)?.role).toBe("editor");
+        expect(of(e)).not.toHaveProperty("guest");
+      }
+    });
   });
 
   describe("hosted mocks: data writers", () => {

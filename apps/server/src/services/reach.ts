@@ -125,12 +125,18 @@ export const inviteReach = (
 export async function shareReach(
   env: Env,
   email: string,
-): Promise<{ methods: SignInProvider[]; recipient?: ShareRecipient }> {
+): Promise<{
+  methods: SignInProvider[];
+  recipient?: ShareRecipient;
+  /** The address's org role, null with no user row (guestRecipients takes it). */
+  role: string | null;
+}> {
   const row = await stmt(env.DB, ELIGIBILITY).bind(email).first<CodeRow>();
+  const role = row?.role ?? null;
   const r = await reachOf(env, email, row, async () => true);
-  if (r.methods.length > 0) return { methods: r.methods };
-  if (r.googleUncertain) return { methods: ["google"] };
-  if (row && row.status !== "active") return { methods: [] };
+  if (r.methods.length > 0) return { methods: r.methods, role };
+  if (r.googleUncertain) return { methods: ["google"], role };
+  if (row && row.status !== "active") return { methods: [], role };
   // In a verified domain: an invite as a member would let them in, unless
   // no offered method admits a member there either.
   const reason: ShareRecipient["reason"] = !r.inDomain
@@ -138,5 +144,5 @@ export async function shareReach(
     : (await inviteReach(env, email, "member")).methods.length > 0
       ? "needs_invite"
       : "no_sign_in_method";
-  return { methods: [], recipient: { canSignIn: false, reason } };
+  return { methods: [], recipient: { canSignIn: false, reason }, role };
 }
