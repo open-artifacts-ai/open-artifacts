@@ -94,6 +94,8 @@ export interface AlertRow {
   code: string | null;
   message: string | null;
   since: number;
+  /** fleet_halted: the version the row is about. */
+  version?: string;
 }
 
 export interface AlertInput {

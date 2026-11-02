@@ -245,6 +245,8 @@ export interface AlertFacts {
   installIds: string[];
   jobs: { id: string; kind: string | null; code: string | null }[];
   codes: string[];
+  /** fleet_halted: the versions its rows are about. */
+  versions?: string[];
   /** token_expiring: whole days left. */
   daysLeft?: number;
   /** prodclean_failed: the latest report's install id and detail, sanitized. */
@@ -322,10 +324,13 @@ const code = (c: unknown) =>
 export function factsOf(rows: readonly AlertRow[]): AlertFacts {
   const installIds = new Set<string>();
   const codes = new Set<string>();
+  const versions = new Set<string>();
   const jobs: AlertFacts["jobs"] = [];
   for (const r of rows) {
     if (typeof r.install_id === "string" && isInstallId(r.install_id))
       installIds.add(r.install_id);
+    if (typeof r.version === "string" && /^\d+\.\d+\.\d+$/.test(r.version))
+      versions.add(r.version);
     const c = code(r.code);
     if (c) codes.add(c);
     if (typeof r.job_id === "string" && ULID_RE.test(r.job_id))
@@ -342,6 +347,7 @@ export function factsOf(rows: readonly AlertRow[]): AlertFacts {
     installIds: [...installIds],
     jobs,
     codes: [...codes],
+    ...(versions.size > 0 ? { versions: [...versions] } : {}),
   };
 }
 
@@ -357,6 +363,7 @@ function more(total: number, shown: number): string {
 
 function idLines(f: AlertFacts): string {
   const out: string[] = [];
+  if (f.versions?.length) out.push(`\nVersions: ${f.versions.join(", ")}\n`);
   if (f.jobs.length) {
     const shown = f.jobs.slice(0, IDS_SHOWN);
     out.push(
@@ -475,7 +482,7 @@ const COPY: Record<AlertKey, Copy> = {
   fleet_halted: {
     title: "fleet rollout halted",
     open: (f) =>
-      `The fleet rollout stopped (${plural(f.count, "problem")}; codes: ${f.codes.join(", ") || "none"}). fleet_halt: an upgraded install failed two health probes on separate ticks, so its version was halted. Nothing rolled it back: someone has to decide. A job code: a fleet upgrade failed, and ManageInstall may already have reverted that install. canary_blocked: the canary (FLEET_CANARY) could not take the release for ${FLEET_BLOCKED_MS / 60_000} minutes, so nothing moved. no_target: the scheduler has no release tag, so nothing can move. No install is upgraded to a halted version. Fix the cause and ship the next release, which starts a new rollout.`,
+      `The fleet rollout stopped (${plural(f.count, "problem")}; codes: ${f.codes.join(", ") || "none"}). fleet_halt: upgraded installs failed two health probes of this version on separate ticks, so it was halted. Nothing rolled them back: someone has to decide. A job code: a fleet upgrade failed, and ManageInstall may already have reverted that install. canary_blocked: the canary (FLEET_CANARY) has not soaked on the release after ${FLEET_BLOCKED_MS / 60_000} minutes, for any reason, so nothing else moved. no_target: the scheduler has no release tag, so nothing can move. No install is upgraded to a halted version. Fix the cause and ship the next release, which starts a new rollout.`,
     clear: "No fleet rollout is halted.",
   },
   version_skew: {
