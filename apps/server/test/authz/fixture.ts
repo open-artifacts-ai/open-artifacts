@@ -507,6 +507,11 @@ export async function buildWorld(): Promise<World> {
     [K in keyof OrgReal]: (who: CallerName) => Promise<OrgReal[K]>;
   } = {
     memberId: () => seedUser(uniq("mx-real"), "member"),
+    removedId: async () => {
+      const id = await seedUser(uniq("mx-removed"), "member");
+      await run("update users set status = 'removed' where id = ?", id);
+      return id;
+    },
     linkedId: (_who) =>
       seedUser(uniq("mx-linked"), "member", {
         googleSub: `g-mx-l-${newId().slice(0, 8)}`,
