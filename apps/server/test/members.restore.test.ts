@@ -3,18 +3,23 @@
 // restriction, the removed-members list), with their authorization.
 import { env } from "cloudflare:workers";
 import {
+  ArtifactSummarySchema,
   type Member,
   MemberSchema,
   newId,
+  PageSchema,
   R,
   type TransferSummary,
+  VersionInfoSchema,
 } from "@oa/shared";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { createApp } from "../src/app.js";
 import { callerOf } from "../src/auth/authz.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import { deleteUser } from "../src/directory/apply.js";
 import type { Env } from "../src/env.js";
+import { publish } from "../src/services/artifacts.js";
 import {
   placeholder,
   restoreMember,
@@ -530,6 +535,44 @@ describe("what a restore brings back", () => {
     )}`;
     expect((await restore(u.userId, cookie)).status).toBe(404);
     expect(await row(u.userId)).toEqual(before);
+  });
+});
+
+describe("a publisher a directory deletion released", () => {
+  it("their surviving artifacts and versions still parse: a list isn't lost to one row", async () => {
+    const u = await login(uniq("rs-ref", "a.com"), "member");
+    const { id } = await publish(
+      env,
+      (await getUser(env, u.userId)) as Member,
+      {
+        title: "Kept",
+        format: "html",
+        content: "<p>kept</p>",
+        visibility: "team",
+      } as never,
+      null,
+      undefined,
+      "create",
+    );
+    await deleteUser(env, u.userId, "directory_delete", () => {});
+    const list = await call(OFF, `${R.artifacts}?limit=100`, admin.cookie);
+    expect(list.status).toBe(200);
+    const items = PageSchema(ArtifactSummarySchema).parse(
+      await list.json(),
+    ).items;
+    expect(items.find((a) => a.id === id)?.owner.email).toBe(
+      placeholder(u.userId),
+    );
+    const versions = await call(OFF, R.versions(id), admin.cookie);
+    expect(versions.status).toBe(200);
+    expect(
+      z.array(VersionInfoSchema).parse(await versions.json())[0]?.createdBy
+        .email,
+    ).toBe(placeholder(u.userId));
+    // Not for the list tests below: MemberSchema refuses this address.
+    await env.DB.prepare("update users set email = ? where id = ?")
+      .bind(uniq("rs-ref-done", "a.com"), u.userId)
+      .run();
   });
 });
 
