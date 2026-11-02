@@ -1,4 +1,4 @@
-import { InstallIdSchema } from "@oa/shared/provisioning";
+import { type AuditEntry, InstallIdSchema } from "@oa/shared/provisioning";
 import {
   Input,
   Select,
@@ -19,22 +19,50 @@ import { useState } from "react";
 import { auditQuery, installQuery, tokensQuery } from "../api/queries";
 import { Pager } from "../components/Bits";
 import { fmtDayClock, shortId } from "../components/labels";
-import { useMe } from "../hooks/useEnv";
+import { useCan, useMe } from "../hooks/useEnv";
 import { usePaging } from "../hooks/usePaging";
 import { LoadError } from "../layout/LoadError";
 
+/**
+ * Each action a filter can offer, as written by the API and the provisioner.
+ * audit-actions.test.ts checks this against the code that writes them, so an
+ * option can't return nothing. Step rows such as upgrade.start aren't offered:
+ * job.done and job.failed summarize them.
+ */
 const VERB: Record<string, string> = {
-  "install.create": "created",
-  "install.upgrade": "started an upgrade of",
-  "install.rollback": "started a rollback of",
-  "install.suspend": "paused",
-  "install.resume": "resumed",
-  "install.delete": "deleted",
-  "install.restore": "restored",
-  "install.purge": "deleted for good",
-  "install.retry": "retried the create of",
-  "install.release_lease": "released the lease on",
+  "job.accepted": "started a job",
+  "job.replayed": "replayed a job",
+  "job.refused": "had a job refused",
+  "job.canceled": "canceled a job",
+  "job.done": "finished a job",
+  "job.failed": "had a job fail",
+  "authz.refused": "was refused",
+  "signin.ok": "signed in",
+  "signin.refused": "couldn't sign in",
+  "session.logout": "signed out",
+  "token.mint": "minted a token",
+  "token.used": "used a token",
+  "token.revoke": "revoked a token",
+  "token.revoke_all": "revoked every token",
+  "oauth.grant": "approved an agent",
+  "oauth.denied": "denied an agent",
+  "oauth.refresh_refused": "had a token refresh refused",
+  "oauth.client_expired": "had an agent client expire",
+  "test_admin.session": "started a test admin session",
 };
+export const AUDIT_ACTIONS = Object.keys(VERB);
+/**
+ * The actions `own` reach writes: its rows are its API calls. A create and an
+ * upgrade are both job.accepted (detail.kind tells them apart), and R17
+ * matches one exact action.
+ */
+const OWN_ACTIONS = [
+  "job.accepted",
+  "job.replayed",
+  "job.refused",
+  "authz.refused",
+  "session.logout",
+];
 /** Design's sentence verb for a known action; the raw action name otherwise. */
 export const actionPhrase = (action: string) =>
   Object.hasOwn(VERB, action) ? VERB[action] : action;
@@ -82,9 +110,21 @@ export function detailLine(detail: Record<string, unknown> | null): string {
   return parts.join(" · ");
 }
 
+/** A row's verb: a job names its install when it has one. */
+const rowPhrase = (e: AuditEntry) =>
+  `${actionPhrase(e.action)}${e.installId && e.action.startsWith("job.") ? " on" : ""}`;
+
+/** A refusal's verb says the outcome, so its code is the row's detail. */
+const isRefusal = (e: AuditEntry) => e.action === "authz.refused";
+const hasChip = (e: AuditEntry) => e.outcome !== "ok" && !isRefusal(e);
+const detailOf = (e: AuditEntry) =>
+  [isRefusal(e) ? e.code : null, detailLine(e.detail)]
+    .filter(Boolean)
+    .join(" · ");
+
 export function Audit({
   installId,
-  actor,
+  actor: actorParam,
   action,
 }: {
   installId?: string;
@@ -95,7 +135,16 @@ export function Audit({
   const paging = usePaging();
   const [draft, setDraft] = useState(installId ?? "");
   const me = useMe();
-  const tokens = useQuery({ ...tokensQuery(), retry: false });
+  // Every row is this principal's, so an actor filter could only hide them.
+  const ownReach = me.data?.principal === "test-admin";
+  const actor = ownReach ? undefined : actorParam;
+  const actions = ownReach ? OWN_ACTIONS : Object.keys(VERB);
+  // A refused call writes an audit row, so don't ask without the capability.
+  const tokens = useQuery({
+    ...tokensQuery(),
+    retry: false,
+    enabled: useCan("R20"),
+  });
   const valid = !installId || InstallIdSchema.safeParse(installId).success;
   const [bad, setBad] = useState(false);
   const q = useQuery({
@@ -129,9 +178,13 @@ export function Audit({
   return (
     <>
       <h1>Audit log</h1>
-      <p className="oa-sub">
-        Every admin action, agent token call and sign-in. Newest first.
-      </p>
+      {me.data && (
+        <p className="oa-sub">
+          {me.data.principal === "test-admin"
+            ? "Test admin: only your own rows."
+            : "Every admin action, agent token call and sign-in. Newest first."}
+        </p>
+      )}
       <form
         className="oa-tools oa-audit-tools"
         onSubmit={(e) => {
@@ -144,24 +197,26 @@ export function Audit({
           go({ installId: id || undefined, actor, action });
         }}
       >
-        <Select
-          value={actor || ANY}
-          onValueChange={(v) =>
-            go({ installId, actor: v === ANY ? undefined : v, action })
-          }
-        >
-          <SelectTrigger aria-label="Actor" className="oa-select">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent position="popper" align="start">
-            <SelectItem value={ANY}>Any actor</SelectItem>
-            {[...actors].map(([v, l]) => (
-              <SelectItem key={v} value={v}>
-                {l}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {!ownReach && (
+          <Select
+            value={actor || ANY}
+            onValueChange={(v) =>
+              go({ installId, actor: v === ANY ? undefined : v, action })
+            }
+          >
+            <SelectTrigger aria-label="Actor" className="oa-select">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent position="popper" align="start">
+              <SelectItem value={ANY}>Any actor</SelectItem>
+              {[...actors].map(([v, l]) => (
+                <SelectItem key={v} value={v}>
+                  {l}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <Select
           value={action || ANY}
           onValueChange={(v) =>
@@ -173,10 +228,10 @@ export function Audit({
           </SelectTrigger>
           <SelectContent position="popper" align="start">
             <SelectItem value={ANY}>Any action</SelectItem>
-            {action && !Object.hasOwn(VERB, action) && (
-              <SelectItem value={action}>{action}</SelectItem>
+            {action && !actions.includes(action) && (
+              <SelectItem value={action}>{actionPhrase(action)}</SelectItem>
             )}
-            {Object.keys(VERB).map((a) => (
+            {actions.map((a) => (
               <SelectItem key={a} value={a}>
                 {actionPhrase(a)}
               </SelectItem>
@@ -262,19 +317,14 @@ export function Audit({
                         : e.actor.label}
                     </TableCell>
                     <TableCell>
-                      {actionPhrase(e.action)}
-                      {e.outcome !== "ok" && (
-                        <span className="oa-chip oa-chip-danger">
-                          {e.outcome}
-                          {e.code ? ": " : ""}
-                          {e.code && <span className="oa-code">{e.code}</span>}
-                        </span>
-                      )}
+                      {rowPhrase(e)}
                       {e.count > 1 && (
-                        <span data-testid="count"> x{e.count}</span>
+                        <span data-testid="count"> {e.count} times</span>
                       )}
                     </TableCell>
-                    <TableCell>
+                    <TableCell
+                      className={e.installId ? undefined : "oa-audit-none"}
+                    >
                       {e.installId ? (
                         <Link to="/installs/$id" params={{ id: e.installId }}>
                           {slugs.get(e.installId) ?? e.installId}
@@ -284,10 +334,18 @@ export function Audit({
                       )}
                     </TableCell>
                     <TableCell className="oa-audit-detail">
-                      {detailLine(e.detail)}
+                      {hasChip(e) && (
+                        <span className="oa-chip oa-chip-danger">
+                          {e.outcome}
+                          {e.code ? ": " : ""}
+                          {e.code && <span className="oa-code">{e.code}</span>}
+                        </span>
+                      )}
+                      {hasChip(e) && (detailOf(e) || e.jobId) ? " " : ""}
+                      {detailOf(e)}
                       {e.jobId && (
                         <>
-                          {detailLine(e.detail) ? " · " : ""}
+                          {detailOf(e) ? " · " : ""}
                           <Link to="/jobs/$id" params={{ id: e.jobId }}>
                             job{" "}
                             <span className="oa-code">{shortId(e.jobId)}</span>

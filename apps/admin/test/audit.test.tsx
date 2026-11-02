@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fixtureAudit } from "@oa/shared/provisioning/fixtures";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { auditEntries, FIXTURE_IDS, tokens } from "../src/mocks/fixtures";
-import { detailLine } from "../src/pages/Audit";
+import { actionPhrase, detailLine } from "../src/pages/Audit";
 import { http, json, renderApp, seen, use } from "./harness";
 
 it("lists entries of each outcome; aggregated refusals show a count", async () => {
@@ -18,10 +21,178 @@ it("lists entries of each outcome; aggregated refusals show a count", async () =
     "refused",
     "error",
   ]);
-  expect(screen.getByTestId("count")).toHaveTextContent("x12");
+  expect(screen.getByTestId("count")).toHaveTextContent(/^12 times$/);
   expect(
-    within(screen.getByRole("table")).getByText(/deleted for good/),
+    within(screen.getByRole("table")).getByText(/couldn't sign in/),
   ).toBeInTheDocument();
+});
+
+it("a refused call: the verb says so, its code is the detail, and no raw action or chip", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          fixtureAudit({
+            id: "adm:9",
+            action: "authz.refused",
+            outcome: "refused",
+            code: "forbidden",
+            installId: null,
+            jobId: null,
+            detail: { route: "R20", surface: "http" },
+          }),
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const row = screen.getAllByRole("row")[1] as HTMLElement;
+  const cells = within(row).getAllByRole("cell");
+  expect(cells[2]).toHaveTextContent(/^was refused$/);
+  expect(cells[4]).toHaveTextContent(/^forbidden$/);
+  expect(row).not.toHaveTextContent("authz.refused");
+  expect(row).toHaveAttribute("data-outcome", "refused");
+});
+
+it("the two relabelled actions read as Design's copy", () => {
+  expect(actionPhrase("job.failed")).toBe("had a job fail");
+  expect(actionPhrase("oauth.client_expired")).toBe(
+    "had an agent client expire",
+  );
+});
+
+it("a row with no target marks the cell, so phones drop its dash", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          fixtureAudit({ installId: null }),
+          fixtureAudit({ id: "api:2" }),
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const [none, some] = screen.getAllByRole("row").slice(1) as HTMLElement[];
+  expect(within(none as HTMLElement).getAllByRole("cell")[3]).toHaveClass(
+    "oa-audit-none",
+  );
+  expect(within(some as HTMLElement).getAllByRole("cell")[3]).not.toHaveClass(
+    "oa-audit-none",
+  );
+  const css = readFileSync(resolve(__dirname, "../src/styles.css"), "utf8");
+  expect(css).toMatch(/\.oa-audit td\.oa-audit-none \{\s*display: none;/);
+});
+
+it("the job rows read as sentences, and a refused job keeps its code", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          fixtureAudit({ action: "job.accepted", detail: { kind: "create" } }),
+          fixtureAudit({
+            id: "api:2",
+            action: "job.refused",
+            outcome: "refused",
+            code: "slug_taken",
+            jobId: null,
+            detail: null,
+          }),
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const [ok, refused] = screen.getAllByRole("row").slice(1) as HTMLElement[];
+  expect(ok).toHaveTextContent("started a job on");
+  expect(refused).toHaveTextContent("had a job refused on");
+  expect(refused).toHaveTextContent("refused: slug_taken");
+  expect(screen.getByRole("table")).not.toHaveTextContent("job.");
+});
+
+it("a job says on only when it has a target; other verbs never do", async () => {
+  const none = { installId: null, jobId: null, detail: null };
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          fixtureAudit({ ...none, action: "job.refused", id: "api:1" }),
+          fixtureAudit({ ...none, action: "job.replayed", id: "api:2" }),
+          fixtureAudit({ action: "job.replayed", id: "api:3", detail: null }),
+          fixtureAudit({ action: "session.logout", id: "api:4", detail: null }),
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const verbs = screen
+    .getAllByRole("row")
+    .slice(1)
+    .map((r) => within(r).getAllByRole("cell")[2]?.textContent);
+  expect(verbs).toEqual([
+    "had a job refused",
+    "replayed a job",
+    "replayed a job on",
+    "signed out",
+  ]);
+});
+
+it("the chip sits in Detail, first, so the Action cell reads whole", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          fixtureAudit({
+            action: "job.refused",
+            outcome: "refused",
+            code: "job_in_progress",
+            detail: { note: "try later" },
+            jobId: null,
+          }),
+          fixtureAudit({
+            id: "api:2",
+            action: "job.failed",
+            outcome: "error",
+            code: "cf_error",
+            detail: null,
+            jobId: null,
+          }),
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const [one, two] = screen
+    .getAllByRole("row")
+    .slice(1)
+    .map((r) => within(r).getAllByRole("cell"));
+  expect(one?.[2]).toHaveTextContent(/^had a job refused on$/);
+  expect(one?.[4]).toHaveTextContent(/^refused: job_in_progress try later$/);
+  expect(two?.[2]).toHaveTextContent(/^had a job fail on$/);
+  expect(two?.[4]).toHaveTextContent(/^error: cf_error$/);
+});
+
+it("another refused action keeps its chip and code", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({ items: [auditEntries[1]], nextCursor: null }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const row = screen.getAllByRole("row")[1] as HTMLElement;
+  expect(within(row).getByText("forbidden")).toHaveClass("oa-code");
+  expect(row).toHaveTextContent("refused: forbidden");
 });
 
 it("filters by install id from the query string", async () => {
@@ -59,11 +230,9 @@ it("pages with the cursor", async () => {
     ),
   );
   renderApp("/audit");
-  await within(await screen.findByRole("table")).findByText(
-    "started an upgrade of",
-  );
+  await within(await screen.findByRole("table")).findByText("started a job on");
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
-  await within(screen.getByRole("table")).findByText(/deleted for good/);
+  await within(screen.getByRole("table")).findByText(/couldn't sign in/);
   expect(seen.some((s) => s.path.includes("cursor=c2"))).toBe(true);
 });
 
@@ -94,13 +263,11 @@ it("filters by actor and action, and keeps both in the URL", async () => {
     ).toBe(true),
   );
   fireEvent.click(screen.getByRole("combobox", { name: "Action" }));
-  fireEvent.click(
-    await screen.findByRole("option", { name: "started an upgrade of" }),
-  );
+  fireEvent.click(await screen.findByRole("option", { name: "started a job" }));
   await waitFor(() =>
     expect(router.state.location.search).toEqual({
       actor: tokenActor,
-      action: "install.upgrade",
+      action: "job.accepted",
     }),
   );
   await waitFor(() =>
@@ -108,7 +275,7 @@ it("filters by actor and action, and keeps both in the URL", async () => {
       seen.some(
         (s) =>
           s.path.includes(`actor=${encodeURIComponent(tokenActor)}`) &&
-          s.path.includes("action=install.upgrade"),
+          s.path.includes("action=job.accepted"),
       ),
     ).toBe(true),
   );
@@ -124,10 +291,10 @@ it("filters by actor and action, and keeps both in the URL", async () => {
 });
 
 it("shows an actor and an action from the URL that are not in the lists", async () => {
-  renderApp("/audit?action=token.mint&actor=someone%40example.com");
+  renderApp("/audit?action=upgrade.start&actor=someone%40example.com");
   await screen.findAllByRole("row");
   expect(screen.getByRole("combobox", { name: "Action" })).toHaveTextContent(
-    "token.mint",
+    "upgrade.start",
   );
   expect(screen.getByRole("combobox", { name: "Actor" })).toHaveTextContent(
     "someone@example.com",
