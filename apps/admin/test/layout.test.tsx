@@ -23,13 +23,14 @@ it("has the side nav, who is signed in and when the session ends", async () => {
     ),
   );
   renderApp("/installs");
-  const nav = await screen.findByRole("navigation", { name: "Main" });
+  // The nav's links follow /me (#1074): wait for it.
+  expect(await screen.findByText("leo@example.com")).toBeInTheDocument();
+  const nav = screen.getByRole("navigation", { name: "Main" });
   expect(
     within(nav)
       .getAllByRole("link")
       .map((a) => a.textContent?.trim()),
   ).toEqual(["Installs", "Audit log", "Agent tokens"]);
-  expect(await screen.findByText("leo@example.com")).toBeInTheDocument();
   expect(screen.getByText(/Signed in as/)).toBeInTheDocument();
   expect(screen.getByTestId("session-hint")).toHaveTextContent(
     "Session ends in 6 h",

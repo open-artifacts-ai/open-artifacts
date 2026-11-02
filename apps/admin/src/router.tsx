@@ -1,15 +1,15 @@
-import { useQuery } from "@tanstack/react-query";
 import {
   createRootRoute,
   createRoute,
   createRouter,
+  Navigate,
   Outlet,
   redirect,
   stringifySearchWith,
   useParams,
   useSearch,
 } from "@tanstack/react-router";
-import { api } from "./api/client";
+import { canCall, useMe } from "./hooks/useEnv";
 import { Shell } from "./layout/Shell";
 import { Audit } from "./pages/Audit";
 import { CreateInstall } from "./pages/CreateInstall";
@@ -72,7 +72,10 @@ const noAccess = createRoute({
 
 const useId = () => (useParams({ strict: false }) as { id: string }).id;
 function TokensRoute() {
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const me = useMe();
+  // A session the authz table refuses tokens (R20) never sees the page (#1074).
+  if (me.data && !canCall("R20", me.data))
+    return <Navigate to="/installs" replace />;
   return <Tokens env={me.data?.env ?? "prod"} />;
 }
 
