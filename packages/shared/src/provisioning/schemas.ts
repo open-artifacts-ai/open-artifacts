@@ -56,7 +56,12 @@ export const AuthSchema = z
     providers: z.array(AuthProviderSchema).min(1).max(2),
     domains: z.array(DomainSchema).max(50),
     /** Code sign-in for these domains: EMAIL_CODE_DOMAIN=on (#1088). */
-    domainCodes: z.boolean().optional(),
+    domainCodes: z
+      .boolean()
+      .optional()
+      .describe(
+        "Code sign-in for anyone at auth.domains: sets EMAIL_CODE_DOMAIN=on. Needs email in auth.providers, no google, at least one domain, and ownerEmail's domain in auth.domains. Turnstile is checked; that the env can send email is not checked.",
+      ),
   })
   // checkGoogleBroker, until #865.
   .refine(

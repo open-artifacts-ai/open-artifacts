@@ -1,6 +1,7 @@
 // #1088: the provisioner re-checks signups.vars itself (2.5 item 3), so
 // EMAIL_CODE_DOMAIN must pass there, and only under the rules the server needs.
 import { describe, expect, it } from "vitest";
+import { codeOf } from "../../src/errors.js";
 import { strictVars } from "../../src/recheck.js";
 
 const opts = {
@@ -15,6 +16,15 @@ const why = (raw: string, o: Parameters<typeof strictVars>[1] = opts) => {
     strictVars(raw, o);
   } catch (e) {
     return (e as { detail?: string }).detail;
+  }
+  return "no refusal";
+};
+/** The job code the refusal carries. */
+const code = (raw: string, o: Parameters<typeof strictVars>[1] = opts) => {
+  try {
+    strictVars(raw, o);
+  } catch (e) {
+    return codeOf(e);
   }
   return "no refusal";
 };
@@ -52,6 +62,20 @@ describe("strictVars: EMAIL_CODE_DOMAIN", () => {
     ];
     for (const o of cases)
       expect(why(vars(o)), JSON.stringify(o)).toMatch(/EMAIL_CODE_DOMAIN/);
+  });
+  it("those refusals carry domain_codes_refused", () => {
+    for (const o of [
+      { AUTH_PROVIDERS: "google" },
+      { AUTH_PROVIDERS: "google,email" },
+      { AUTH_DOMAINS: "" },
+    ] as Record<string, string>[])
+      expect(code(vars(o)), JSON.stringify(o)).toBe("domain_codes_refused");
+  });
+  it("a value but on, or a self-serve row, stays invalid_state: not a rule a caller can meet", () => {
+    expect(code(vars({ EMAIL_CODE_DOMAIN: "off" }))).toBe("invalid_state");
+    expect(
+      code(vars({ TIER: "free" }), { ...opts, source: "self-serve" }),
+    ).toBe("invalid_state");
   });
   it("refuses it on self-serve", () => {
     expect(

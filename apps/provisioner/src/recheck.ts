@@ -170,15 +170,18 @@ export function strictVars(
   if (providers.includes("google") && domains.length === 0)
     throw refused("google needs at least one domain");
   const codes = vars.EMAIL_CODE_DOMAIN;
+  if (codes !== undefined && (codes !== "on" || o.source !== "admin"))
+    throw refused("EMAIL_CODE_DOMAIN is not allowed here");
   if (
     codes !== undefined &&
-    (codes !== "on" ||
-      o.source !== "admin" ||
-      !providers.includes("email") ||
+    (!providers.includes("email") ||
       providers.includes("google") ||
       domains.length === 0)
   )
-    throw refused("EMAIL_CODE_DOMAIN is not allowed here");
+    throw new StepRefusal(
+      "domain_codes_refused",
+      "EMAIL_CODE_DOMAIN=on needs email, no google and a domain",
+    );
   const tier = TierSchema.safeParse(vars.TIER);
   if (!tier.success) throw refused("TIER is not a tier");
   if (o.testHooks) {

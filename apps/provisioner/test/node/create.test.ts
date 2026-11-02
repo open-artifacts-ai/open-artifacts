@@ -6,6 +6,7 @@ import {
   HOSTED_DOMAINS,
   NAMESPACES,
   ProvisionRefused,
+  STAGING_TEST_DOMAIN,
 } from "@oa/provision";
 import { JOB_STEPS } from "@oa/shared/provisioning";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -204,6 +205,79 @@ describe("ProvisionInstall: create", () => {
     expect((await run(w, s.jobId)).error).toBeNull();
     expect(plain(w, s.installId, "TURNSTILE_SITE_KEY")?.text).toBe(TS.sitekey);
     expect(plain(w, s.installId, "AUTH_BROKER_URL")).toBeUndefined();
+  });
+});
+
+describe("ProvisionInstall: code sign-in refusals (#1088)", () => {
+  const CODES = {
+    AUTH_PROVIDERS: "email",
+    AUTH_DOMAINS: "finqore.test",
+    EMAIL_CODE_DOMAIN: "on",
+    TIER: "team",
+  };
+  const failsWith = async (jobId: string, code: string) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const r = await run(w, jobId);
+    expect(r.error).not.toBeNull();
+    expect(w.job(jobId)).toMatchObject({
+      status: "failed",
+      error_code: code,
+      error_message: JOB_ERROR_TEXT[code as keyof typeof JOB_ERROR_TEXT],
+    });
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    warn.mockRestore();
+    return lines.join("\n");
+  };
+
+  it("a rule the provisioner re-checks: a named code and a readable log line", async () => {
+    const s = seedCreate(w, {
+      slug: "codesa",
+      vars: { ...CODES, AUTH_PROVIDERS: "google" },
+    });
+    const before = w.fake.writes().length;
+    const log = await failsWith(s.jobId, "domain_codes_refused");
+    expect(log).toContain("EMAIL_CODE_DOMAIN=on needs");
+    expect(log).not.toContain("finqore.test");
+    expect(w.fake.writes().length).toBe(before);
+  });
+
+  it("no Turnstile widget on the env: turnstile_missing, terminal, nothing written", async () => {
+    w.fake.turnstile.clear();
+    const s = seedCreate(w, { slug: "codesb", vars: CODES });
+    const before = w.fake.writes().length;
+    await failsWith(s.jobId, "turnstile_missing");
+    expect(w.fake.writes().length).toBe(before);
+  });
+
+  it("two widgets of the env's name, or one with no secret: turnstile_missing", async () => {
+    const [sitekey, one] = [...w.fake.turnstile.entries()][0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    w.fake.turnstile.set("0x4AAAAAAAtwin", { ...one, sitekey: "0x4AAAAAAAtwin" });
+    const a = seedCreate(w, { slug: "codesc", vars: CODES });
+    await failsWith(a.jobId, "turnstile_missing");
+    w.fake.turnstile.delete("0x4AAAAAAAtwin");
+    w.fake.turnstile.set(sitekey, { ...one, secret: "" });
+    const b = seedCreate(w, { slug: "codesd", vars: CODES });
+    await failsWith(b.jobId, "turnstile_missing");
+  });
+
+  it("a test-hooks create (P50's shape) needs no widget: it takes the test pair", async () => {
+    w.fake.turnstile.clear();
+    const s = seedCreate(w, {
+      slug: "rl-codes",
+      actor: "oidc",
+      testHooks: true,
+      email: `redline-owner@${STAGING_TEST_DOMAIN}`,
+      vars: {
+        ...CODES,
+        AUTH_DOMAINS: STAGING_TEST_DOMAIN,
+        TEST_DOMAIN: STAGING_TEST_DOMAIN,
+      },
+    });
+    expect((await run(w, s.jobId)).error).toBeNull();
+    expect(plain(w, s.installId, "EMAIL_CODE_DOMAIN")?.text).toBe("on");
   });
 });
 

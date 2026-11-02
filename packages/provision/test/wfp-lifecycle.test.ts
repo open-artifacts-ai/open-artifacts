@@ -1033,6 +1033,53 @@ describe("rollback", () => {
   });
 });
 
+describe("EMAIL_CODE_DOMAIN across versions (#1088)", () => {
+  const DOMAIN_CODES = {
+    EMAIL_CODE_DOMAIN: "on",
+    AUTH_PROVIDERS: "email",
+    AUTH_DOMAINS: "finqore.test",
+  };
+  const onIn = (fake: Fake, from: number) => {
+    const b = metaOf(uploads(fake, from)[0]?.body as string).bindings as {
+      name: string;
+      text?: string;
+    }[];
+    return b.find((x) => x.name === "EMAIL_CODE_DOMAIN")?.text;
+  };
+
+  it("an upgrade renders it, and a rollback's upload still has it", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(input("finqore", { vars: DOMAIN_CODES })),
+    );
+    expect(onIn(s.fake, 0)).toBe("on");
+    let from = s.fake.log.length;
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    expect(onIn(s.fake, from)).toBe("on");
+    expect(JSON.parse(s.row(inst.id).vars as string)).toMatchObject({
+      EMAIL_CODE_DOMAIN: "on",
+    });
+    from = s.fake.log.length;
+    expect(keep(await s.p.rollback(inst.id))).toMatchObject({
+      rolledBack: true,
+      to: "0.23.0",
+    });
+    expect(onIn(s.fake, from)).toBe("on");
+    expect(JSON.parse(s.row(inst.id).vars as string)).toMatchObject({
+      EMAIL_CODE_DOMAIN: "on",
+    });
+  });
+
+  it("a refusal on upgrade carries the codes' own job code", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(input("finqore", { vars: DOMAIN_CODES })),
+    );
+    const e = await fails(s.mk({ turnstile: undefined }).upgrade(inst.id, "0.24.0"));
+    expect((e as ProvisionRefused).code).toBe("turnstile_missing");
+  });
+});
+
 describe("fix round 1: rollback keeps the current vars", () => {
   it("a var change after an upgrade survives a rollback, with no epoch bump", async () => {
     const s = setup();

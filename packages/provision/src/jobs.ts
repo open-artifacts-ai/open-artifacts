@@ -40,6 +40,11 @@ export const PROVISION_ERROR_CODES = Object.freeze([
   // open): set only by the scheduler sweep through settleFailed. Terminal;
   // job_failed alerts and the sweep's cleanup job still runs.
   "run_dead",
+  // Domain sign-in codes asked for without what they need (#1088). Terminal.
+  "domain_codes_refused",
+  // Code sign-in on with no usable Turnstile widget in the env (#1088).
+  // Terminal: a person fixes the widget, then retries the job.
+  "turnstile_missing",
   "cf_error",
   "internal",
 ] as const);
