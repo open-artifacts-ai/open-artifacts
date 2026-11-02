@@ -677,6 +677,25 @@ describe("the watch", () => {
     expect(queued.map((j) => j.install_id)).toEqual([canary]);
   });
 
+  it("third review: a halt inside the rollback window with no control doesn't hold the next release", async () => {
+    const { canary, id } = await upgraded(NOW - MIN, TARGET, {
+      control: false,
+    });
+    const f = fakes({ canary, answers: new Map([[id, "down"]]) });
+    await ticks(f, NOW, NOW + FLEET_BLIP_MS);
+    expect((await marks()).length).toBe(1);
+    expect(await rollbacks(id)).toEqual([]);
+    // Still within 30 minutes of its upgrade, and still failing.
+    const g = fakes({
+      canary,
+      tag: "v0.93.1",
+      answers: new Map([[id, "down"]]),
+    });
+    await fleetDue(g.env, NOW + FLEET_BLIP_MS + 2 * MIN, g.opts);
+    const queued = (await fleetJobs()).filter((j) => j.status === "queued");
+    expect(queued.map((j) => j.install_id)).toEqual([canary]);
+  });
+
   it("third review: the tick that halts an older version starts the next release", async () => {
     const { canary, id } = await upgraded(NOW - 25 * MIN);
     const f = fakes({
