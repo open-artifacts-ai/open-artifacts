@@ -380,6 +380,42 @@ it("space People names a released member, with no address line", async () => {
   noAddressAnywhere();
 });
 
+it("a kept removal names a former member once, then says them", async () => {
+  const hosted = createHandlers({ hosted: { directory: "frozen" } });
+  mountHosted(
+    "/settings/spaces?space=SpEngNpQrSt2uVwX",
+    { directory: "frozen" },
+    undefined,
+    [
+      http.get(/\/api\/v1\/spaces\/[^/]+\/members/, async ({ request }) => {
+        const res = await getResponse(hosted, request);
+        if (!res?.ok) return res;
+        return HttpResponse.json(
+          swap(
+            await res.json(),
+            ["user"],
+            (u) => u.email === "bob@example.com",
+          ) as never,
+        );
+      }),
+    ],
+  );
+  const people = await screen.findByRole("region", { name: "People" });
+  await within(people).findByText("Former member");
+  fireEvent.pointerDown(
+    within(people).getByRole("button", { name: "More for Former member" }),
+    { button: 0, pointerType: "mouse" },
+  );
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Remove from Engineering…" }),
+  );
+  const d = await screen.findByRole("alertdialog");
+  expect(d).toHaveTextContent(
+    "A former member loses access to Engineering within a minute. If sync comes back and eng@ still includes them, they get Editor again.",
+  );
+  expect(d.textContent?.match(/a former member/gi)).toHaveLength(1);
+});
+
 it("a sentence's start capitalises: A former member", () => {
   expect(personFirstAtStart({ email: GONE_EMAIL, name: null })).toBe(
     "A former member",

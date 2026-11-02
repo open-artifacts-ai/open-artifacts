@@ -268,7 +268,7 @@ function PersonRow({
           ? {
               item: `Remove from ${space.name}…`,
               title: `Remove ${name} from ${space.name}?`,
-              body: `${First(m)} loses access to ${space.name} within a minute. If sync comes back and ${syncShort(m)} still includes ${first(m)}, ${first(m)} gets ${ROLE_LABEL[m.syncRole as SpaceRole]} again.`,
+              body: `${First(m)} loses access to ${space.name} within a minute. If sync comes back and ${syncShort(m)} still includes them, they get ${ROLE_LABEL[m.syncRole as SpaceRole]} again.`,
               button: "Remove",
             }
           : m.manualRole &&
@@ -287,7 +287,7 @@ function PersonRow({
                   item: "Remove manually added role…",
                   hint: `Also synced from ${syncShort(m)}. ${First(m)} keeps ${ROLE_LABEL[m.syncRole]} through it.`,
                   title: `Remove ${first(m)}'s manually added role?`,
-                  body: `${First(m)} goes from ${ROLE_LABEL[m.manualRole]} to ${ROLE_LABEL[m.syncRole]}, the role ${syncShort(m)} gives. To take ${first(m)} out of the space, change ${syncShort(m)} in Google or under Who gets access.`,
+                  body: `${First(m)} goes from ${ROLE_LABEL[m.manualRole]} to ${ROLE_LABEL[m.syncRole]}, the role ${syncShort(m)} gives. To take them out of the space, change ${syncShort(m)} in Google or under Who gets access.`,
                   button: "Remove role",
                 }
               : m.manualRole
@@ -295,8 +295,8 @@ function PersonRow({
                     item: `Remove from ${space.name}…`,
                     title: `Remove ${name} from ${space.name}?`,
                     body: m.allMembers
-                      ? `${First(m)} keeps ${ROLE_LABEL[m.allMembers]} through All members. Artifacts ${first(m)} made here stay in the space.`
-                      : `${First(m)} loses access to ${space.name} within a minute. Artifacts ${first(m)} made here stay in the space.`,
+                      ? `${First(m)} keeps ${ROLE_LABEL[m.allMembers]} through All members. Artifacts they made here stay in the space.`
+                      : `${First(m)} loses access to ${space.name} within a minute. Artifacts they made here stay in the space.`,
                     button: "Remove",
                   }
                 : null;
