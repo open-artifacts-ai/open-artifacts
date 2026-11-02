@@ -401,10 +401,16 @@ export function fakeApi(): FakeApi {
       return ok(jobView(j, withSealed));
     }
     if (path === "/installs" && method === "GET") {
-      const q = url.searchParams.get("q");
+      // R2's q: a case-insensitive substring of the slug, the id or a stored
+      // host (no principal here may match the owner email).
+      const q = url.searchParams.get("q")?.toLowerCase();
+      const hit = (i: FInstall) =>
+        [i.slug, i.id, i.appHost, i.contentHost].some((c) =>
+          c.toLowerCase().includes(q ?? ""),
+        );
       return ok({
         items: [...installs.values()]
-          .filter((i) => sees(p, i) && (!q || i.slug.includes(q)))
+          .filter((i) => sees(p, i) && (!q || hit(i)))
           .map(summary),
         nextCursor: null,
       });
