@@ -10,6 +10,14 @@
     },
     {
       "file": "live/guard.test.ts",
+      "name": "agent guides > a: /llms.txt is on the app host only; robots.txt opens only the guides"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "agent guides > b: /llms.txt is on the app host only; robots.txt opens only the guides"
+    },
+    {
+      "file": "live/guard.test.ts",
       "name": "hooks > a: a wrong hook key gets the 404"
     },
     {
