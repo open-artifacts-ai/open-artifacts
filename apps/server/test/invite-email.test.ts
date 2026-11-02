@@ -320,10 +320,22 @@ describe("share email", () => {
       role: "editor",
     });
     expect(textOf(r)).toContain(
-      `Shared with ${email}. They're a guest, so they can only view.`,
+      `Shared with ${email}. They're a guest, so they can only view for now. `,
     );
     expect(textOf(r)).not.toContain("as editor");
     expect(r.structuredContent).toMatchObject({ role: "editor", guest: true });
+    const viewer = fresh();
+    expect(
+      textOf(
+        await tool(client, "share_artifact", {
+          id,
+          email: viewer,
+          role: "viewer",
+        }),
+      ),
+    ).toContain(
+      `Shared with ${viewer}. They're a guest, so they can only view. `,
+    );
     const m = await login(fresh(), "member");
     const memberEmail = (await getUser(env, m.userId))?.email;
     const r2 = await tool(client, "share_artifact", {
