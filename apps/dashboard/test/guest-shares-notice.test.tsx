@@ -97,7 +97,7 @@ it("the owner's summary: counts, and Transfer for a guest who owns artifacts", a
   fireEvent.click(await screen.findByRole("option", { name: "Bob Builder" }));
   expect(
     await within(d).findByText(
-      "You won't see titles or contents. Bob Builder becomes the owner, with owner1@outside.example's shares kept.",
+      "You won't see titles or contents. Bob Builder becomes the owner, owner1@outside.example loses access, and people they shared with keep theirs.",
     ),
   ).toBeVisible();
   fireEvent.click(within(d).getByRole("button", { name: "Transfer 1" }));

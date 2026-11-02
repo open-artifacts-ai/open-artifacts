@@ -398,7 +398,7 @@ describe("the dialog on what the install can do", () => {
     fireEvent.click(await screen.findByRole("option", { name: "Bob Builder" }));
     expect(
       await within(d).findByText(
-        "You won't see titles or contents. Bob Builder gets them in their Personal, with owner1@outside.example's shares kept.",
+        "You won't see titles or contents. Bob Builder gets them in their Personal, owner1@outside.example loses access, and people they shared with keep theirs.",
       ),
     ).toBeVisible();
   });
@@ -435,4 +435,22 @@ describe("the dialog on what the install can do", () => {
     ).toBeTruthy();
     expect(within(d).getByRole("button", { name: "Transfer 1" })).toBeTruthy();
   });
+});
+
+it("a departed person's note stays as approved", async () => {
+  mountHosted("/settings/members");
+  fireEvent.click(
+    await screen.findByRole("button", { name: /^Transfer Carol.*artifacts$/ }),
+  );
+  const d = await screen.findByRole("dialog");
+  fireEvent.click(
+    await within(d).findByRole("combobox", { name: "Give them to" }),
+  );
+  fireEvent.click(await screen.findByRole("option", { name: "Bob Builder" }));
+  expect(
+    await within(d).findByText(
+      /Bob Builder gets them in their Personal, with Carol.*'s shares kept\./,
+    ),
+  ).toBeVisible();
+  expect(within(d).queryByText(/loses access/)).toBeNull();
 });

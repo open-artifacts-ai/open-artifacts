@@ -87,6 +87,9 @@ export function TransferDialog({
   /** The first run's totals: a Retry continues them. */
   const first = useRef<{ live: number; of: number; done: number } | null>(null);
 
+  /** They stay on as a guest but get no share of what moves. */
+  const activeGuest =
+    member.role === "guest" && (member.status ?? "active") === "active";
   /** The counts never loaded: no "0 artifacts", and nothing to run. */
   const unknown = summary.isError && !summary.data;
   // Fixed once a run starts: the summary refetches as pages move.
@@ -248,7 +251,9 @@ export function TransferDialog({
                   {spacesOn
                     ? "gets them in their Personal"
                     : "becomes the owner"}
-                  , with {name}'s shares kept.
+                  {activeGuest
+                    ? `, ${name} loses access, and people they shared with keep theirs.`
+                    : `, with ${name}'s shares kept.`}
                 </p>
               )}
             </div>
