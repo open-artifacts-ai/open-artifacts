@@ -300,6 +300,7 @@ function Row({
   const denyAdmin = (id: string) => denyMember(id, ADMIN_ONLY);
   const patch = usePatchMember(denyAdmin);
   const [confirm, setConfirm] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [restricting, setRestricting] = useState(false);
   const [lifting, setLifting] = useState(false);
   const remove = useRemoveMember(denyAdmin);
@@ -307,7 +308,6 @@ function Row({
   const setRestricted = useSetRestricted();
   const resetGoogle = useResetIdentity();
   const [resetting, setResetting] = useState(false);
-  const [moving, setMoving] = useState(false);
   const canResetGoogle = hosted && mayResetGoogle(m, you, owner);
   const label = displayName(m);
   // Another admin's (or the owner's) row, seen by anyone but the owner: read-only.
