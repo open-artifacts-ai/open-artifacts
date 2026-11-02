@@ -355,8 +355,11 @@ export type SearchHit = z.infer<typeof SearchHitSchema>;
 
 export const ShareSchema = z.object({
   email: z.string().email(),
+  /** As stored: a guest's row keeps it, but they can only view (see `guest`). */
   role: ShareRoleSchema,
   createdAt: z.string(),
+  /** GET R.shares: a guest, or an address that becomes one at first sign-in. Absent otherwise, and from older servers. */
+  guest: z.boolean().optional(),
 });
 export type Share = z.infer<typeof ShareSchema>;
 

@@ -118,6 +118,36 @@ describe("share panel", () => {
     );
   });
 
+  it("a guest's row shows they can only view, with no role to pick, and can be removed", async () => {
+    const guest = "gus@elsewhere.test";
+    const row = (email: string, extra = {}) => ({
+      email,
+      role: "editor",
+      createdAt: "2026-10-01T00:00:00.000Z",
+      ...extra,
+    });
+    server.use(
+      http.get("*/api/v1/artifacts/:id/shares", () =>
+        HttpResponse.json([
+          row("bob@example.com"),
+          row(guest, { guest: true }),
+        ]),
+      ),
+    );
+    mount(panel(OWNED));
+    await screen.findByTitle(guest);
+    expect(screen.getByText("Guest · can only view")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("combobox", { name: `Role for ${guest}` }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("combobox", { name: "Role for bob@example.com" }),
+    ).toHaveTextContent("Editor");
+    expect(
+      screen.getByRole("button", { name: `Remove ${guest}` }),
+    ).toBeInTheDocument();
+  });
+
   it("changes a share role and removes it", async () => {
     mount(panel(OWNED));
     const trigger = await screen.findByRole("combobox", {

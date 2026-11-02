@@ -490,16 +490,22 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                 </span>
                 {people ? (
                   <>
-                    <RoleSelect
-                      label={`Role for ${s.email}`}
-                      value={s.role}
-                      onChange={(r) =>
-                        put.mutate(
-                          { email: s.email, role: r },
-                          { onError: (x) => fail(x, "Couldn't change role") },
-                        )
-                      }
-                    />
+                    {s.guest ? (
+                      <span className="flex-none whitespace-nowrap text-muted-foreground">
+                        Guest · can only view
+                      </span>
+                    ) : (
+                      <RoleSelect
+                        label={`Role for ${s.email}`}
+                        value={s.role}
+                        onChange={(r) =>
+                          put.mutate(
+                            { email: s.email, role: r },
+                            { onError: (x) => fail(x, "Couldn't change role") },
+                          )
+                        }
+                      />
+                    )}
                     <Button
                       size="sm"
                       variant="ghost"

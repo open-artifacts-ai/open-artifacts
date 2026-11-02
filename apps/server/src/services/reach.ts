@@ -38,7 +38,8 @@ export type Reach = {
   inDomain: boolean;
 };
 
-const domainOf = (email: string) => email.slice(email.lastIndexOf("@") + 1);
+export const domainOf = (email: string) =>
+  email.slice(email.lastIndexOf("@") + 1);
 
 /**
  * Which offered sign-in methods would admit `email` (normalized) given its

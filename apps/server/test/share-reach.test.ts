@@ -37,7 +37,7 @@ async function setup(make: (o: Partial<Env>) => Env, over: Partial<Env>) {
     undefined,
     "create",
   );
-  const share = async (email: string) => {
+  const share = async (email: string, role = "viewer") => {
     const r = await fetchAndWait(
       app,
       new Request(`http://app.localhost${R.shares(id)}`, {
@@ -47,7 +47,7 @@ async function setup(make: (o: Partial<Env>) => Env, over: Partial<Env>) {
           "x-oa-request": "1",
           "content-type": "application/json",
         },
-        body: JSON.stringify({ email, role: "viewer" }),
+        body: JSON.stringify({ email, role }),
       }),
       e,
     );
@@ -172,6 +172,35 @@ function namesExactly(text: string | undefined, methods: readonly string[]) {
     (t: string) => t.includes("can't sign in") === (methods.length === 0),
   );
 }
+
+describe("the share email names the level the recipient will have", () => {
+  it("outside the domains, an Editor share reads Viewer: they'll be a guest", async () => {
+    const { share, sent } = await setup(direct, HOSTED);
+    const email = uniq("g", "out.com");
+    await share(email, "editor");
+    const m = sent.find((x) => x.to === email);
+    expect(m?.text).toContain("Your role: Viewer");
+    expect(m?.html).not.toContain("Editor");
+  });
+
+  it("Access-only: an Editor share reads Viewer", async () => {
+    const { share, sent } = await setup((o) => ({ ...env, ...o }) as Env, {});
+    const email = uniq("acc", "a.com");
+    await share(email, "editor");
+    expect(sent.find((x) => x.to === email)?.text).toContain(
+      "Your role: Viewer",
+    );
+  });
+
+  it("in a verified domain, an Editor share stays Editor: they'll be a member", async () => {
+    const { share, sent } = await setup(direct, HOSTED);
+    const email = uniq("in", "a.com");
+    await share(email, "editor");
+    expect(sent.find((x) => x.to === email)?.text).toContain(
+      "Your role: Editor",
+    );
+  });
+});
 
 describe("ShareResult.signInMethods (#799)", () => {
   it.each([
