@@ -59,7 +59,8 @@ export async function dismissNotice(
 /**
  * A share the cap now reads as viewer: above viewer, on a live artifact, to
  * an active guest or to an address with no users row yet (it becomes a guest
- * at its first Access sign-in, upsertOnLogin).
+ * at its first Access sign-in, upsertOnLogin). myGuestShares repeats these
+ * conditions as a drizzle query: change both.
  */
 const GUEST_SHARE = `from shares s
   join artifacts a on a.id = s.artifact_id
@@ -74,6 +75,7 @@ const GUEST_SHARE = `from shares s
  * is decide() in the same statement. Newest share first; one past the limit
  * says more.
  */
+// The conditions must stay GUEST_SHARE's, or the summary and this list differ.
 function myGuestShares(env: Env, user: Member, limit: number) {
   const guest = alias(shares, "guest_share");
   const email = normalizeEmail(user.email);
