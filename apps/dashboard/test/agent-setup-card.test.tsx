@@ -188,6 +188,8 @@ describe("AgentSetupCard", () => {
     expect(
       screen.queryByRole("heading", { name: "Set up with an agent" }),
     ).toBeNull();
+    expect(screen.queryByRole("heading", { name: "MCP server" })).toBeNull();
+    expect(screen.queryByLabelText("MCP server URL")).toBeNull();
   });
 
   it("a guest never reaches Settings > Agents", async () => {
@@ -208,6 +210,7 @@ describe("AgentSetupCard", () => {
       cleanup();
       mountHosted("/settings/agents", true, asRole(role));
       expect(await screen.findByLabelText("Setup prompt")).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "MCP server" })).toBeTruthy();
     },
   );
 
