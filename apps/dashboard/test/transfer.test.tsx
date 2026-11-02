@@ -975,6 +975,131 @@ it("the dialog's run that moves nothing says someone got there first", async () 
   expect(screen.queryByText(/^Moved /)).toBeNull();
 });
 
+it("a dialog run that moves 1 of 2 says 1, not 2", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    ...removedCarol,
+    http.post(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ moved: 1, remaining: 0, nextCursor: null }),
+    ),
+  ]);
+  const d = await openFromCard();
+  await chooseOption("Give them to", "Bob Builder");
+  fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
+  await findVisibleToast("Moved 1 artifact to Bob Builder.");
+});
+
+it("a dialog Retry that finds the rest gone says what really moved", async () => {
+  let posts = 0;
+  mountHosted("/settings/members", true, undefined, [
+    ...removedCarol,
+    http.post(`*${R.memberTransfer(CAROL)}`, () => {
+      posts += 1;
+      if (posts === 1)
+        return HttpResponse.json({ moved: 1, remaining: 1, nextCursor: "c1" });
+      if (posts === 2) return refused403();
+      return HttpResponse.json({ moved: 0, remaining: 0, nextCursor: null });
+    }),
+  ]);
+  const d = await openFromCard();
+  await chooseOption("Give them to", "Bob Builder");
+  fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
+  fireEvent.click(await within(d).findByRole("button", { name: "Retry" }));
+  await findVisibleToast("Moved 1 artifact to Bob Builder.");
+});
+
+it("the dialog's split keeps trash, as the row's does", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    http.get(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ live: 2, deleted: 2 }),
+    ),
+    ...removedCarol,
+    http.post(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ moved: 3, remaining: 0, nextCursor: null }),
+    ),
+  ]);
+  const d = await openFromCard();
+  await chooseOption("Give them to", "Bob Builder");
+  fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
+  await findVisibleToast("Moved 1 artifact (and 2 in trash) to Bob Builder.");
+});
+
+it("the split never counts more trash than moved", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    http.get(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ live: 2, deleted: 2 }),
+    ),
+    ...removedCarol,
+    http.post(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ moved: 1, remaining: 0, nextCursor: null }),
+    ),
+  ]);
+  const d = await openFromCard();
+  await chooseOption("Give them to", "Bob Builder");
+  fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
+  await findVisibleToast("Moved 0 artifacts (and 1 in trash) to Bob Builder.");
+});
+
+const openRemoved = async () => {
+  fireEvent.click(await screen.findByRole("button", { name: "Removed (1)" }));
+  return screen.findByRole("list", { name: "Removed people" });
+};
+const RESTORE_ONLY = "Only the owner can restore an admin.";
+
+it("an admin sees a removed admin's row, the owner-only line, and no Restore", async () => {
+  mountHosted(
+    "/settings/members",
+    { actAs: "admin" },
+    undefined,
+    removedAdminCarol,
+  );
+  const list = await openRemoved();
+  expect(within(list).getByText("Carol Departed")).toBeVisible();
+  const line = within(list).getByText(RESTORE_ONLY);
+  expect(line).toBeVisible();
+  expect(line).not.toHaveAttribute("role", "alert");
+  expect(within(list).queryByRole("button", { name: /^Restore/ })).toBeNull();
+});
+
+it("a capped owner counts as an admin for a removed admin's row", async () => {
+  const cappedOwner = (m: Me): Me => ({
+    ...m,
+    auth: { ...m.auth, cap: "restricted" } as Me["auth"],
+  });
+  mountHosted("/settings/members", true, cappedOwner, removedAdminCarol);
+  const list = await openRemoved();
+  expect(within(list).getByText(RESTORE_ONLY)).toBeVisible();
+  expect(within(list).queryByRole("button", { name: /^Restore/ })).toBeNull();
+});
+
+it("an admin keeps Restore on a removed member, with no owner-only line", async () => {
+  mountHosted("/settings/members", { actAs: "admin" }, undefined, removedCarol);
+  const list = await openRemoved();
+  expect(
+    within(list).getByRole("button", { name: "Restore Carol Departed" }),
+  ).toBeVisible();
+  expect(within(list).queryByText(RESTORE_ONLY)).toBeNull();
+});
+
+it("the owner restores a removed admin; a stale role's refusal shows inline", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    http.post(`*${R.memberRestore(CAROL)}`, () => refused403()),
+    ...removedAdminCarol,
+  ]);
+  const list = await openRemoved();
+  expect(within(list).queryByText(RESTORE_ONLY)).toBeNull();
+  fireEvent.click(
+    within(list).getByRole("button", { name: "Restore Carol Departed" }),
+  );
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Restore",
+    }),
+  );
+  expect(await within(list).findByRole("alert")).toHaveTextContent(
+    RESTORE_ONLY,
+  );
+});
+
 it("the owner can still transfer a departed admin's artifacts", async () => {
   mountHosted("/settings/members", true, undefined, removedAdminCarol);
   const row = await carolRow();

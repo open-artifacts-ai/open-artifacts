@@ -18,7 +18,7 @@ export const seesDeparted = (me: Me | null | undefined) =>
   !!me && (me.user.role === "owner" || me.user.role === "admin");
 
 /** Only the uncapped owner reads an owner's or admin's counts (403 owner_only). */
-const ownerOnlySource = (source: Member, callerIsOwner: boolean) =>
+export const ownerOnlySource = (source: Member, callerIsOwner: boolean) =>
   (source.role === "admin" || source.role === "owner") && !callerIsOwner;
 
 /**

@@ -53,7 +53,12 @@ import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { clearDenied, denyMember, useDenied } from "./denied";
-import { type Departed, seesDeparted, useDeparted } from "./departed";
+import {
+  type Departed,
+  ownerOnlySource,
+  seesDeparted,
+  useDeparted,
+} from "./departed";
 import { restrictionReason } from "./restriction";
 import { artifactsAndTrash, runAll, TransferDialog } from "./Transfer";
 import { errorText, muted, SettingsCard, STACK } from "./ui";
@@ -704,7 +709,7 @@ export function Members() {
           ) : (
             <ul className="grid p-0" aria-label="Removed people">
               {removed.map((m) => (
-                <RemovedRow key={m.id} m={m} />
+                <RemovedRow key={m.id} m={m} owner={owner} />
               ))}
             </ul>
           )
@@ -743,8 +748,18 @@ export function Members() {
 
 const STATUS = { suspended: "Suspended", removed: "Removed" } as const;
 
+const RESTORE_ONLY = "Only the owner can restore an admin.";
+
 /** One removed person under the Removed filter: Restore, refusals inline. */
-function RemovedRow({ m }: { m: Member }) {
+function RemovedRow({
+  m,
+  owner,
+}: {
+  m: Member;
+  /** The viewer is the owner, uncapped: only they restore an admin. */
+  owner: boolean;
+}) {
+  const ownerOnly = ownerOnlySource(m, owner);
   const [restoring, setRestoring] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const label = displayName(m);
@@ -760,29 +775,34 @@ function RemovedRow({ m }: { m: Member }) {
         </b>
         {m.name && <small className={`block ${muted}`}>{m.email}</small>}
       </div>
-      <Button
-        size="sm"
-        variant="outline"
-        className="text-[length:var(--oa-text-sm)]"
-        aria-label={`Restore ${label}`}
-        onClick={() => {
-          setProblem(null);
-          setRestoring(true);
-        }}
-      >
-        Restore…
-      </Button>
+      {!ownerOnly && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="text-[length:var(--oa-text-sm)]"
+          aria-label={`Restore ${label}`}
+          onClick={() => {
+            setProblem(null);
+            setRestoring(true);
+          }}
+        >
+          Restore…
+        </Button>
+      )}
+      {ownerOnly && <p className={`m-0 basis-full ${muted}`}>{RESTORE_ONLY}</p>}
       {problem && (
         <p role="alert" className={`m-0 basis-full ${errorText}`}>
           {problem}
         </p>
       )}
-      <RestoreDialog
-        member={m}
-        open={restoring}
-        onClose={() => setRestoring(false)}
-        onRefused={setProblem}
-      />
+      {!ownerOnly && (
+        <RestoreDialog
+          member={m}
+          open={restoring}
+          onClose={() => setRestoring(false)}
+          onRefused={setProblem}
+        />
+      )}
     </li>
   );
 }
@@ -795,7 +815,7 @@ const restoreRefusal = (e: unknown, first: string) => {
   if (code === "guest_lapsed")
     return `${first} was a guest whose shares ended. Share something with them to bring them back.`;
   if (code === "member_active") return `${first} is already active.`;
-  if (code === "owner_only") return "Only the owner can restore an admin.";
+  if (code === "owner_only") return RESTORE_ONLY;
   return errorCopy(e, `Couldn't restore ${first}. Try again.`);
 };
 

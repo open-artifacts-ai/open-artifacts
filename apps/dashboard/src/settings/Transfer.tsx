@@ -132,7 +132,7 @@ export function TransferDialog({
     setProgress({ done: before, of: t.of });
     let done = before;
     try {
-      const moved = await runAll(
+      await runAll(
         (i) =>
           run.mutateAsync(i).catch((e: unknown) => {
             throw new PartialError(done, e);
@@ -143,12 +143,14 @@ export function TransferDialog({
           setProgress({ done, of: t.of });
         },
       );
-      // 200 with nothing moved: another admin got there first, not a success.
+      // What really moved: another admin may have taken some. The run counts
+      // trash too, and nothing at all means they got there first.
+      const inTrash = Math.min(t.of - t.live, done);
       toast(
-        before + moved === 0
+        done === 0
           ? { title: ALREADY_HANDLED, tone: "info" }
           : {
-              title: `Moved ${artifactsAndTrash(t.live, t.of - t.live)} to ${target.label}.`,
+              title: `Moved ${artifactsAndTrash(done - inTrash, inTrash)} to ${target.label}.`,
               tone: "success",
             },
       );
