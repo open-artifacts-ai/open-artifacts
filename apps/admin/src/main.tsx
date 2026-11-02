@@ -24,6 +24,8 @@ async function startMocks() {
   // ?mock=fresh: the admin signed in just now (a purge needs a fresh sign-in).
   // ?mock=empty: no installs yet.
   // ?mock=running: every job is mid-run, retrying after a Cloudflare error.
+  // ?mock=test-admin: staging's test admin session (#1053), refused all but
+  // the AUTHZ "test-admin" routes (#1074 hides the rest).
   const flag = new URLSearchParams(location.search).get("mock");
   const { fixtureMe, fixtureWorld } = await import(
     "@oa/shared/provisioning/fixtures"
@@ -35,26 +37,20 @@ async function startMocks() {
             HttpResponse.json({ error: "unauthenticated" }, { status: 401 }),
           ),
         ]
-      : flag === "fresh"
+      : flag === "test-admin"
         ? [
             http.get("*/api/v1/me", () =>
               HttpResponse.json(
                 fixtureMe({
-                  principal: "admin",
-                  email: "admin@example.com",
+                  principal: "test-admin",
+                  email: "rl-test-admin@test.invalid",
                   role: "admin",
-                  scopes: [
-                    "installs:read",
-                    "installs:write",
-                    "installs:delete",
-                    "installs:pii",
-                    "audit:read",
-                  ],
+                  scopes: [],
                   env: "staging",
                   csrf: "mock-csrf",
-                  sessionExpiresAt: Date.now() + 8 * 3_600_000,
+                  sessionExpiresAt: Date.now() + 3_600_000,
                   authAt: Date.now(),
-                  provisioningToken: "active",
+                  provisioningToken: null,
                   tokenId: null,
                   tokenKind: null,
                   tokenExpiresAt: null,
@@ -62,49 +58,79 @@ async function startMocks() {
               ),
             ),
           ]
-        : flag === "empty"
+        : flag === "fresh"
           ? [
-              http.get("*/api/v1/installs", () =>
-                HttpResponse.json({ items: [], nextCursor: null }),
+              http.get("*/api/v1/me", () =>
+                HttpResponse.json(
+                  fixtureMe({
+                    principal: "admin",
+                    email: "admin@example.com",
+                    role: "admin",
+                    scopes: [
+                      "installs:read",
+                      "installs:write",
+                      "installs:delete",
+                      "installs:pii",
+                      "audit:read",
+                    ],
+                    env: "staging",
+                    csrf: "mock-csrf",
+                    sessionExpiresAt: Date.now() + 8 * 3_600_000,
+                    authAt: Date.now(),
+                    provisioningToken: "active",
+                    tokenId: null,
+                    tokenKind: null,
+                    tokenExpiresAt: null,
+                  }),
+                ),
               ),
-              http.get("*/api/v1/world", () => {
-                const w = fixtureWorld();
-                return HttpResponse.json({
-                  ...w,
-                  installs: {
-                    total: 0,
-                    byState: Object.fromEntries(
-                      Object.keys(w.installs.byState).map((k) => [k, 0]),
-                    ),
-                    byServingMode: Object.fromEntries(
-                      Object.keys(w.installs.byServingMode).map((k) => [k, 0]),
-                    ),
-                    byHealth: Object.fromEntries(
-                      Object.keys(w.installs.byHealth).map((k) => [k, 0]),
-                    ),
-                    items: [],
-                  },
-                  jobs: { active: 0, failed24h: 0, recent: [] },
-                  attention: [],
-                });
-              }),
             ]
-          : flag === "running"
+          : flag === "empty"
             ? [
-                http.get("*/api/v1/jobs/:jobId", async ({ params }) => {
-                  const { jobsByStatus } = await import("./mocks/fixtures");
+                http.get("*/api/v1/installs", () =>
+                  HttpResponse.json({ items: [], nextCursor: null }),
+                ),
+                http.get("*/api/v1/world", () => {
+                  const w = fixtureWorld();
                   return HttpResponse.json({
-                    ...jobsByStatus.running,
-                    id: params.jobId,
-                    attempt: 2,
-                    lastErrorCode: "cf_error",
-                    createdAt: Date.now() - 90_000,
-                    startedAt: Date.now() - 85_000,
-                    retryAt: Date.now() + 4 * 60_000,
+                    ...w,
+                    installs: {
+                      total: 0,
+                      byState: Object.fromEntries(
+                        Object.keys(w.installs.byState).map((k) => [k, 0]),
+                      ),
+                      byServingMode: Object.fromEntries(
+                        Object.keys(w.installs.byServingMode).map((k) => [
+                          k,
+                          0,
+                        ]),
+                      ),
+                      byHealth: Object.fromEntries(
+                        Object.keys(w.installs.byHealth).map((k) => [k, 0]),
+                      ),
+                      items: [],
+                    },
+                    jobs: { active: 0, failed24h: 0, recent: [] },
+                    attention: [],
                   });
                 }),
               ]
-            : [];
+            : flag === "running"
+              ? [
+                  http.get("*/api/v1/jobs/:jobId", async ({ params }) => {
+                    const { jobsByStatus } = await import("./mocks/fixtures");
+                    return HttpResponse.json({
+                      ...jobsByStatus.running,
+                      id: params.jobId,
+                      attempt: 2,
+                      lastErrorCode: "cf_error",
+                      createdAt: Date.now() - 90_000,
+                      startedAt: Date.now() - 85_000,
+                      retryAt: Date.now() + 4 * 60_000,
+                    });
+                  }),
+                ]
+              : [];
   // The browser clock, so a token minted here is live; one OAuth grant is seeded
   // so the page shows both kinds. Unit tests keep the mock's fixed clock.
   const at = Date.now();
