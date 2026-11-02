@@ -82,6 +82,8 @@ export class ProbeFail extends Error {
 /** Poll cadence and bounds (12.2: paused and resumed pages within 120 s). */
 export const POLL_MS = 3_000;
 export const PAGE_WITHIN_MS = 120_000;
+/** HOSTS is KV: a write takes up to 60 s to show everywhere. Two periods. */
+export const HOSTS_SETTLE_MS = 120_000;
 export const JOB_WITHIN_MS = 20 * 60_000;
 /** A case's vitest timeout: its slowest wait plus margin. */
 export const PROBE_TIMEOUT_MS = JOB_WITHIN_MS + 5 * 60_000;
@@ -313,6 +315,28 @@ export class Run {
       `/hosts?host=${encodeURIComponent(host)}`,
     )) as { installId?: string | null; mode?: string | null };
     return { installId: v?.installId ?? null, mode: v?.mode ?? null };
+  }
+
+  /**
+   * Polls the inventory until the host's mode is `want` (null: unmapped). The
+   * inventory reads HOSTS from another colo than dispatch, so one read after
+   * a page changed can be stale. A value that never settles fails, naming it.
+   */
+  async settledMode(
+    what: string,
+    host: string,
+    want: string | null,
+  ): Promise<void> {
+    const end = this.io.now() + HOSTS_SETTLE_MS;
+    for (;;) {
+      const { mode } = await this.hostMode(host);
+      if (mode === want) return;
+      if (this.io.now() >= end)
+        throw new ProbeFail(
+          `${what}: inventory mode is ${mode}, want ${want}, after ${HOSTS_SETTLE_MS / 1000} s`,
+        );
+      await this.io.wait(POLL_MS);
+    }
   }
 
   /** A public GET on a tenant host (no credential). */
@@ -1168,9 +1192,7 @@ export const PROBES: readonly Probe[] = [
           (await run.page(p.appHost, "/")).status === 503 &&
           (await run.page(p.contentHost, "/")).status === 503,
       );
-      const m = await run.hostMode(p.appHost);
-      if (m.mode !== "paused")
-        throw new ProbeFail(`P20: inventory mode ${m.mode}`);
+      await run.settledMode("P20", p.appHost, "paused");
       return pass();
     },
   },
@@ -1213,8 +1235,7 @@ export const PROBES: readonly Probe[] = [
           (await run.page(p.appHost, "/")).status === 503 &&
           (await run.page(p.contentHost, "/")).status === 503,
       );
-      if ((await run.hostMode(p.appHost)).mode !== "closed")
-        throw new ProbeFail("P22: inventory mode is not closed");
+      await run.settledMode("P22", p.appHost, "closed");
       const r = run.accepted(
         await run.v1(`/installs/${p.id}/restore`, {
           body: { requestId: run.rid("p22-res") },
@@ -1227,8 +1248,7 @@ export const PROBES: readonly Probe[] = [
         "P22 serving",
         async () => (await run.page(p.appHost)).status === 200,
       );
-      if ((await run.hostMode(p.appHost)).mode !== "serving")
-        throw new ProbeFail("P22: inventory mode is not serving");
+      await run.settledMode("P22", p.appHost, "serving");
       return pass();
     },
   },
@@ -1263,8 +1283,8 @@ export const PROBES: readonly Probe[] = [
       if (!row) throw new ProbeFail("P23: inventory has no row for it");
       if (row.state !== "deleted")
         throw new ProbeFail(`P23: inventory state ${row.state}`);
-      const m = await run.hostMode(p.appHost);
-      if (m.installId !== null || m.mode !== null)
+      await run.settledMode("P23", p.appHost, null);
+      if ((await run.hostMode(p.appHost)).installId !== null)
         throw new ProbeFail("P23: HOSTS still maps the app host");
       return pass();
     },

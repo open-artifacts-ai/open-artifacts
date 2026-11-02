@@ -506,6 +506,58 @@ describe("each probe fails on the behaviour it guards", () => {
     });
   });
 
+  describe("the inventory's mode settles: HOSTS is eventually consistent", () => {
+    /** The inventory answers `stale` for reads of a mode, `times` times. */
+    const staleFor = (
+      f: ReturnType<typeof fakeApi>,
+      fresh: string | null,
+      stale: string,
+      times: number,
+    ) => {
+      const real = f.io.fetch;
+      let left = times;
+      f.io.fetch = (async (u: string, i?: RequestInit) => {
+        const r = await real(u, i);
+        if (!String(u).includes("/hosts?host=")) return r;
+        const j = (await r.clone().json()) as { mode?: string | null };
+        if ((j.mode ?? null) !== fresh || left <= 0) return r;
+        left--;
+        return Response.json({ ...j, mode: stale });
+      }) as typeof fetch;
+    };
+
+    for (const [id, fresh, stale] of [
+      ["P20", "paused", "serving"],
+      ["P22", "closed", "serving"],
+      ["P22", "serving", "closed"],
+    ] as const)
+      it(`${id}: a stale ${stale} read that clears to ${fresh} passes`, async () => {
+        const f = fakeApi();
+        staleFor(f, fresh, stale, 2);
+        expect(level((await runAll(f)).get(id))).toBe("pass");
+      });
+
+    it("P23: a host still mapped for a moment passes", async () => {
+      const f = fakeApi();
+      staleFor(f, null, "closed", 2);
+      expect(level((await runAll(f)).get("P23"))).toBe("pass");
+    });
+
+    for (const [id, fresh, stale, msg] of [
+      ["P20", "paused", "serving", "serving, want paused"],
+      ["P22", "closed", "serving", "serving, want closed"],
+      ["P22", "serving", "closed", "closed, want serving"],
+      ["P23", null, "closed", "closed, want null"],
+    ] as const)
+      it(`${id}: a mode that never reaches ${fresh} fails, naming the last one`, async () => {
+        const f = fakeApi();
+        staleFor(f, fresh, stale, Number.POSITIVE_INFINITY);
+        expect(level((await runAll(f)).get(id))).toBe(
+          `fail: ${id}: inventory mode is ${msg}, after 120 s`,
+        );
+      });
+  });
+
   describe("bring-up survives a dropped connection and a busy install", () => {
     const POLL = 3_000;
     /** A Run whose fetch `answer` handles first; undefined falls through. */

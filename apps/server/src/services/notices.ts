@@ -1,10 +1,13 @@
 // Parity 2: one-time notices of guest shares the guest cap now reads as
 // viewer (Me.notices), on Access-only installs only: direct sign-in and
 // hosted installs always capped guests, so no share changed there.
-// - guestShares: each member, for artifacts they own; dismissed per user.
+// - guestShares: each member, for artifacts they own and can still read the
+//   share list of; dismissed per user.
 // - guestSummary: the org owner, counts only plus guests who own artifacts;
 //   dismissed install-wide.
 // Each is computed live and stays hidden for good once dismissed.
+
+import { normalizeEmail } from "@oa/auth-core";
 import {
   type CapReason,
   GUEST_OWNERS_NOTICE_LIMIT,
@@ -15,9 +18,14 @@ import {
   type MeNotices,
   type NoticeId,
 } from "@oa/shared";
+import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
+import { levelSql } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { orgCan } from "../auth/policy.js";
+import { can, orgCan } from "../auth/policy.js";
 import { signInMode } from "../auth/sign-in.js";
+import { getDb } from "../db/client.js";
+import { artifacts, settings, shares, spaces, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 
@@ -59,12 +67,54 @@ const GUEST_SHARE = `from shares s
   where s.role <> 'viewer' and a.deleted_at is null
     and (u.id is null or (u.role = 'guest' and u.status = 'active'))`;
 
-/** The caller's own artifacts only. Newest share first; one past the limit says more. */
-const MY_GUEST_SHARES = `select s.artifact_id as artifactId, a.title as title,
-    s.email as guestEmail, s.role as role
-  ${GUEST_SHARE} and a.owner_id = ?1
-  order by s.created_at desc, s.artifact_id, s.email
-  limit ?2`;
+/** The levels that may read an artifact's share list (GET R.shares). */
+const SHARE_LEVELS = (["owner", "manager", "editor", "viewer"] as const).filter(
+  (l) => can(l, "share", { cap: null, personal: true }),
+);
+
+/**
+ * The caller's own artifacts, where they can still read the share list: a
+ * row names a guest, so it follows GET R.shares, not owner_id alone (someone
+ * removed from or demoted in a shared space keeps owner_id). levelSql is
+ * decide() in the same statement. Uncapped: a cap reads every level as viewer,
+ * and a restricted member still owns what the notice lists. Newest share
+ * first; one past the limit says more.
+ */
+function myGuestShares(env: Env, user: Member, limit: number) {
+  const guest = alias(shares, "guest_share");
+  const email = normalizeEmail(user.email);
+  return getDb(env)
+    .select({
+      artifactId: guest.artifactId,
+      title: artifacts.title,
+      guestEmail: guest.email,
+    })
+    .from(guest)
+    .innerJoin(artifacts, eq(artifacts.id, guest.artifactId))
+    .innerJoin(spaces, eq(spaces.id, artifacts.spaceId))
+    .leftJoin(
+      shares,
+      and(
+        eq(shares.artifactId, artifacts.id),
+        email ? eq(shares.email, email) : sql`0`,
+      ),
+    )
+    .leftJoin(users, eq(users.email, guest.email))
+    .where(
+      and(
+        eq(artifacts.ownerId, user.id),
+        isNull(artifacts.deletedAt),
+        ne(guest.role, "viewer"),
+        or(
+          isNull(users.id),
+          and(eq(users.role, "guest"), eq(users.status, "active")),
+        ),
+        inArray(levelSql({ kind: "user", user }), SHARE_LEVELS),
+      ),
+    )
+    .orderBy(desc(guest.createdAt), guest.artifactId, guest.email)
+    .limit(limit);
+}
 
 const SUMMARY_COUNTS = `select count(*) as shares, count(distinct a.owner_id) as owners
   ${GUEST_SHARE}`;
@@ -77,14 +127,7 @@ const GUEST_OWNERS = `select u.id as userId, u.email as email, count(*) as artif
   order by artifacts desc, u.email
   limit ?1`;
 
-const DISMISSED = "select 1 as d from settings where key = ?1";
-
-type ShareRow = {
-  artifactId: string;
-  title: string;
-  guestEmail: string;
-  role: "editor";
-};
+type ShareRow = { artifactId: string; title: string; guestEmail: string };
 type OwnerRow = { userId: string; email: string; artifacts: number };
 
 /**
@@ -107,16 +150,15 @@ export async function meNotices(
   if (!own && !summary) return null;
   const out: MeNotices = {};
   if (own) {
-    const [d, s] = await env.DB.batch([
-      stmt(env.DB, DISMISSED).bind(userNoticeKey(user.id, "guest_shares")),
-      stmt(env.DB, MY_GUEST_SHARES).bind(
-        user.id,
-        GUEST_SHARES_NOTICE_LIMIT + 1,
-      ),
+    const db = getDb(env);
+    const [d, rows] = await db.batch([
+      db
+        .select({ key: settings.key })
+        .from(settings)
+        .where(eq(settings.key, userNoticeKey(user.id, "guest_shares"))),
+      myGuestShares(env, user, GUEST_SHARES_NOTICE_LIMIT + 1),
     ]);
-    // shares_role_check allows only viewer and editor, so above viewer is editor.
-    const rows = (s?.results ?? []) as ShareRow[];
-    if (!d?.results.length && rows.length > 0) out.guestShares = toShares(rows);
+    if (!d.length && rows.length > 0) out.guestShares = toShares(rows);
   }
   if (summary) {
     const n = await guestSummary(env);
@@ -131,7 +173,8 @@ function toShares(rows: ShareRow[]): GuestSharesNotice {
       artifactId: r.artifactId,
       title: r.title,
       guestEmail: r.guestEmail,
-      role: r.role,
+      // shares_role_check allows only viewer and editor, so above viewer is editor.
+      role: "editor" as const,
     })),
     more: rows.length > GUEST_SHARES_NOTICE_LIMIT,
   };

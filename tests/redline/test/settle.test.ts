@@ -12,7 +12,7 @@ import {
   type Side,
   snapshotDiff,
 } from "../src/refused.ts";
-import { settle, type Throwaway } from "../src/surfaces.ts";
+import { settle, snapshot, type Throwaway } from "../src/surfaces.ts";
 import type { Target } from "../src/targets.ts";
 
 // Settling a throwaway before its snapshot, the snapshot-diff message, and
@@ -94,6 +94,65 @@ describe("settle", () => {
     vi.stubGlobal("fetch", f);
     await settle(side, { fresh: "space" }, { ms: 50, pollMs: 5 });
     expect(f).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * GET R.oauthClients from `listed()`, and the direct read: PATCH with a bad
+ * body is 400 while `there()`, else 404.
+ */
+function grantFetch(listed: () => string[], there: () => boolean = () => true) {
+  const seen: string[] = [];
+  const f = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const req = new Request(input, init);
+    seen.push(req.method);
+    if (req.method === "PATCH")
+      return new Response("{}", { status: there() ? 400 : 404 });
+    return Response.json(listed().map((grantId) => ({ grantId })));
+  });
+  return { f, seen };
+}
+
+describe("a grant throwaway (GET R.oauthClients is a KV list that lags)", () => {
+  const grant: Throwaway = { fresh: "grant", grantId: "g".repeat(20) };
+  const id = grant.grantId as string;
+
+  it("settle waits for the list, then the direct read", async () => {
+    let n = 0;
+    const { f, seen } = grantFetch(() => (++n < 3 ? [] : [id]));
+    vi.stubGlobal("fetch", f);
+    await settle(side, grant, { ms: 1_000, pollMs: 1 });
+    expect(seen).toEqual(["GET", "GET", "GET", "PATCH"]);
+  });
+
+  it("a list that never shows it is an infra error, bounded by ms", async () => {
+    vi.stubGlobal("fetch", grantFetch(() => []).f);
+    await expect(settle(side, grant, { ms: 5, pollMs: 2 })).rejects.toThrow(
+      InfraError,
+    );
+  });
+
+  it("a snapshot waits out the lag too, and reads the same both times", async () => {
+    let n = 0;
+    vi.stubGlobal("fetch", grantFetch(() => (++n === 1 ? [] : [id])).f);
+    expect(await snapshot(side, grant)).toBe(JSON.stringify({ grantId: id }));
+    expect(await snapshot(side, grant)).toBe(JSON.stringify({ grantId: id }));
+  });
+
+  it("a revoked grant still in the list reads as gone: the snapshot differs", async () => {
+    let there = true;
+    vi.stubGlobal(
+      "fetch",
+      grantFetch(
+        () => [id],
+        () => there,
+      ).f,
+    );
+    const before = await snapshot(side, grant);
+    there = false;
+    const after = await snapshot(side, grant);
+    expect(after).toBe("gone");
+    expect(after).not.toBe(before);
   });
 });
 
