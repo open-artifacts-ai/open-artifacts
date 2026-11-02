@@ -51,10 +51,14 @@ const cmp = (a: string, b: string) => {
 // Tags this checkout contains: worktrees share .git, so a plain list would
 // hold a branch behind a release that was tagged after it forked.
 const latestTag = (): string | undefined => {
-  const tags = execFileSync("git", ["tag", "--merged", "HEAD", "--list", "v*"], {
-    cwd: root,
-    encoding: "utf8",
-  })
+  const tags = execFileSync(
+    "git",
+    ["tag", "--merged", "HEAD", "--list", "v*"],
+    {
+      cwd: root,
+      encoding: "utf8",
+    },
+  )
     .split("\n")
     .filter((t) => /^v\d+\.\d+\.\d+$/.test(t))
     .map((t) => t.slice(1))
