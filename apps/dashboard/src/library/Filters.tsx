@@ -20,6 +20,8 @@ const LABEL: Record<Format, string> = {
 };
 // Radix items can't hold "", so "All" travels as a sentinel.
 const ALL = "__all";
+// The one-connection filter (agentVia) as the Agent select's value.
+const VIA = "__via";
 const FORMATS = [
   { value: ALL, label: "All formats" },
   ...FormatSchema.options.map((value) => ({ value, label: LABEL[value] })),
@@ -31,8 +33,11 @@ export type FilterProps = {
   format: Format | undefined;
   agent: string | undefined;
   agents: string[];
+  /** The agentVia filter (#589) and its connection's name, shown in the Agent select. */
+  via?: { label: string };
   view: "grid" | "list";
   onFormat: (f: Format | undefined) => void;
+  /** An agent name, or undefined for All agents; either replaces `via`. */
   onAgent: (a: string | undefined) => void;
   onClear: () => void;
   onView: (v: "grid" | "list") => void;
@@ -104,20 +109,31 @@ export function Filters(p: FilterProps) {
         </SelectContent>
       </Select>
       <Select
-        value={p.agent ?? ALL}
-        onValueChange={(v) => p.onAgent(v === ALL ? undefined : v)}
+        value={p.via ? VIA : (p.agent ?? ALL)}
+        onValueChange={(v) => v !== VIA && p.onAgent(v === ALL ? undefined : v)}
       >
         <SelectTrigger
           aria-label="Agent"
           size="sm"
-          className={`min-w-[140px] ${TEXT}`}
+          className={`max-w-full min-w-[140px] ${TEXT}`}
         >
-          <SelectValue />
+          {/* A connection's label can run long. The value is a flex box, where
+              text-overflow does nothing, so the text truncates in its own span. */}
+          <SelectValue>
+            <span className="block min-w-0 truncate">
+              {p.via?.label ?? p.agent ?? "All agents"}
+            </span>
+          </SelectValue>
         </SelectTrigger>
         <SelectContent position="popper">
           <SelectItem value={ALL} className={TEXT}>
             All agents
           </SelectItem>
+          {p.via && (
+            <SelectItem value={VIA} className={TEXT}>
+              {p.via.label}
+            </SelectItem>
+          )}
           {agents.map((a) => (
             <SelectItem key={a} value={a} className={TEXT}>
               {a}
@@ -125,7 +141,7 @@ export function Filters(p: FilterProps) {
           ))}
         </SelectContent>
       </Select>
-      {(p.format || p.agent) && (
+      {(p.format || p.agent || p.via) && (
         <Button variant="ghost" size="sm" className={TEXT} onClick={p.onClear}>
           Clear filters
         </Button>
