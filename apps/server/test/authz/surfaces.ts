@@ -1048,6 +1048,7 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "POST /auth/logout",
   "GET /auth/dev-login",
   "ALL /__test/*",
+  "POST /__oa/oauth-store/copy",
   "PUT /api/v1/uploads/:uploadId",
   "GET /oauth/authorize",
   "POST /oauth/authorize",

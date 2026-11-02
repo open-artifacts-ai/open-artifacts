@@ -12,7 +12,7 @@ import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { PRE_PROD_REASON } from "./report.ts";
 
-// The red-line provisioning probes (design v7 12.2, P1-P47) against the
+// The red-line provisioning probes (design v7 12.2, P1-P49) against the
 // staging Provisioning API, as the GitHub OIDC principal "O" (4.4): `rl-`
 // slugs and testHooks only, plus the `x-oa-test-user` self-serve test users
 // (P8, P9, P11, P29). Every request goes through ProvIo, so test/
@@ -99,6 +99,8 @@ export const SIGNIN_IP_LIMIT = 10;
 export const P25_MAX_REQUESTS = 3 * SIGNIN_IP_LIMIT;
 export const P44_REGISTRATIONS = 11;
 export const P42_BYTES = 40 * 1024;
+/** P48's bound on R2 pages per q (O reaches only rl- installs). */
+export const P48_MAX_PAGES = 10;
 export const DUMMY_TURNSTILE = "XXXX.DUMMY.TOKEN.XXXX";
 export const EVIL = "https://evil.example";
 /** P29's unproven reason after a done create and delete (fixed: no run-specific text). */
@@ -579,6 +581,9 @@ async function panelInstall(run: Run): Promise<string | null> {
   return run.s.panelInstall;
 }
 
+/** The owner of every install O creates (rl-p, rl-q, ...); P49 searches it. */
+const OIDC_OWNER_EMAIL = `redline-owner@${STAGING_TEST_DOMAIN}`;
+
 const oidcCreate = (
   run: Run,
   slug: string,
@@ -587,7 +592,7 @@ const oidcCreate = (
 ) => ({
   requestId,
   slug,
-  ownerEmail: `redline-owner@${STAGING_TEST_DOMAIN}`,
+  ownerEmail: OIDC_OWNER_EMAIL,
   tier: "team",
   auth: { providers: ["email"], domains: [] },
   testHooks: true,
@@ -889,6 +894,54 @@ export const PROBES: readonly Probe[] = [
         );
       }
       return pass(`job ${final.id} at ${version}`);
+    },
+  },
+  {
+    id: "P49",
+    title:
+      "R2 q as O never matches by owner email: rl-p's email and its local part find nothing; its slug still finds rl-p (#1033)",
+    // The privacy half of #1033. O is not a pii principal, so an owner-email
+    // q must match nothing, even with rl-p (owned by oidcCreate's email) live.
+    // Failures name the q kind only, never its value (the run log is public).
+    run: async (run) => {
+      const p = rlp(run);
+      const email = OIDC_OWNER_EMAIL;
+      const local = email.slice(0, email.indexOf("@"));
+      type Row = {
+        id: string;
+        slug: string;
+        appHost: string;
+        contentHost: string;
+      };
+      // A row whose own slug, id or host holds q is a fair match, not a leak.
+      const fair = (r: Row, q: string) =>
+        [r.slug, r.id, r.appHost, r.contentHost].some((c) =>
+          String(c ?? "")
+            .toLowerCase()
+            .includes(q.toLowerCase()),
+        );
+      if (fair(p, local))
+        throw new ProbeFail(
+          "P49 setup: the owner email's local part is in rl-p's slug, id or a host",
+        );
+      const rows = async (q: string, what: string) => {
+        const l = await run.v1(`/installs?${new URLSearchParams({ q })}`);
+        expect(l, 200, `P49 R2 q=${what}`);
+        return (l.json as { items: Row[] }).items;
+      };
+      if (!(await rows(p.slug, "rl-p slug")).some((x) => x.id === p.id))
+        throw new ProbeFail("P49 R2 q=rl-p slug: rl-p is not in the results");
+      for (const [q, what] of [
+        [email, "owner email"],
+        [local, "owner email local part"],
+      ] as const) {
+        const n = (await rows(q, what)).filter((r) => !fair(r, q)).length;
+        if (n !== 0)
+          throw new ProbeFail(
+            `P49 R2 q=${what}: ${n} items match by owner email only, want 0`,
+          );
+      }
+      return pass();
     },
   },
   {
@@ -1812,6 +1865,48 @@ export const PROBES: readonly Probe[] = [
         "P47",
         "unauthenticated",
       );
+      return pass();
+    },
+  },
+  {
+    id: "P48",
+    title:
+      "R2 q finds rl-a by its slug, install id, app host and content host (#1033)",
+    // Read-only. Each q comes from rl-a's own R3 record; a failure names the
+    // field only, never its value (the run log is public). The owner-email
+    // leg is not here: O is not a pii principal, so R3 hides the email and an
+    // email-only q is a no-match for it (apps/provisioning/test/reads.test.ts).
+    run: async (run) => {
+      const d = await detail(run, run.c.rlA.id);
+      expect(d, 200, "P48 R3 rl-a");
+      const i = d.json as InstallDetail;
+      const fields: [string, unknown][] = [
+        ["slug", i.slug],
+        ["install id", i.id],
+        ["app host", i.appHost],
+        ["content host", i.contentHost],
+      ];
+      for (const [field, v] of fields) {
+        if (typeof v !== "string" || v === "")
+          throw new ProbeFail(`P48: rl-a's R3 record has no ${field}`);
+        let found = false;
+        let cursor: string | null = null;
+        for (let page = 0; !found && page < P48_MAX_PAGES; page++) {
+          const qs = new URLSearchParams({ q: v });
+          if (cursor) qs.set("cursor", cursor);
+          const l = await run.v1(`/installs?${qs}`);
+          expect(l, 200, `P48 R2 q=${field}`);
+          const b = l.json as {
+            items: { id: string }[];
+            nextCursor: string | null;
+          };
+          found = b.items.some((x) => x.id === run.c.rlA.id);
+          cursor = b.nextCursor;
+          if (!cursor) break;
+        }
+        if (!found)
+          throw new ProbeFail(`P48 R2 q=${field}: rl-a is not in the results`);
+      }
       return pass();
     },
   },

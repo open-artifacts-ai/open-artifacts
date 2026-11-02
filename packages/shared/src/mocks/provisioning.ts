@@ -434,11 +434,18 @@ export function createProvisioningMock(
         }),
       ),
     R2: ({ url }) => {
+      // As the server's R2 q: a case-insensitive substring of the slug, the
+      // id, a stored host or (this mock is an admin, so pii) the owner email.
+      const matchesQ = (d: InstallDetail, needle: string) =>
+        !needle ||
+        [d.slug, d.id, d.appHost, d.contentHost, d.ownerEmail].some((v) =>
+          v?.toLowerCase().includes(needle),
+        );
       const q = url.searchParams;
       const items = [...installs.values()]
         .filter((d) => !q.get("state") || d.state === q.get("state"))
         .filter((d) => !q.get("source") || d.source === q.get("source"))
-        .filter((d) => !q.get("q") || d.slug.includes(q.get("q") ?? ""))
+        .filter((d) => matchesQ(d, (q.get("q") ?? "").toLowerCase()))
         .sort((a, b) => b.createdAt - a.createdAt)
         .map(summaryOf);
       return page(items, url);

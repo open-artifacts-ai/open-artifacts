@@ -35,7 +35,7 @@ import { mcpResource } from "../mcp/server.js";
 import type { AppType } from "../routes/index.js";
 import { revokeUserLive } from "../runtime/revoke.js";
 import { getUserWithEpoch, insertUser, toMember } from "../services/users.js";
-import { b64urlEncode } from "../util/crypto.js";
+import { b64urlEncode, sameKey } from "../util/crypto.js";
 
 // /__test/* (P2 T14): hooks P5's cross-tenant suite uses against stg-a and
 // stg-b. Release builds drop this module (`hooks` in app.ts folds to
@@ -189,19 +189,6 @@ async function readTestOtp(
   }
   const known = TEST_OTP_OUTCOMES.find((o) => o === row.outcome);
   return { outcome: known && known !== "sent" ? known : "none" };
-}
-
-async function sameKey(a: string, b: string): Promise<boolean> {
-  const enc = new TextEncoder();
-  const [x, y] = await Promise.all([
-    crypto.subtle.digest("SHA-256", enc.encode(a)),
-    crypto.subtle.digest("SHA-256", enc.encode(b)),
-  ]);
-  const u = new Uint8Array(x);
-  const v = new Uint8Array(y);
-  let d = 0;
-  for (let i = 0; i < u.length; i++) d |= (u[i] as number) ^ (v[i] as number);
-  return d === 0;
 }
 
 const notFound = () => toErrorResponse(new ApiError("not_found", "Not found"));
