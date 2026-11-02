@@ -39,7 +39,7 @@ import {
   stepCount,
   TIER_LABEL,
 } from "../components/labels";
-import { useEnv } from "../hooks/useEnv";
+import { canSeePii, useCan, useEnv, useMe } from "../hooks/useEnv";
 import { usePaging } from "../hooks/usePaging";
 import { LoadError } from "../layout/LoadError";
 
@@ -229,8 +229,14 @@ const SORTS: { key: SortKey; label: string }[] = [
 ];
 
 export function Installs() {
-  const world = useQuery(worldQuery());
+  // The overview is R27; a session it refuses (the test admin) skips it.
+  const world = useQuery({ ...worldQuery(), enabled: useCan("R27") });
   const env = useEnv();
+  const mayCreate = useCan("R4");
+  // R2's q matches owner email only for a pii caller (#1074).
+  const searchLabel = canSeePii(useMe().data)
+    ? "Search slug, id, host or email"
+    : "Search slug, id or host";
   const navigate = useNavigate();
   const filter = parseStateFilter(
     (useSearch({ strict: false }) as { state?: unknown }).state,
@@ -331,8 +337,8 @@ export function Installs() {
             </svg>
             <Input
               type="search"
-              aria-label="Search slug, id, host or email"
-              placeholder="Search slug, id, host or email"
+              aria-label={searchLabel}
+              placeholder={searchLabel}
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
             />
@@ -355,20 +361,22 @@ export function Installs() {
             </SelectContent>
           </Select>
           <span className="oa-spacer" />
-          <Link to="/installs/new" className="oa-cta">
-            <svg
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M8 3v10M3 8h10" />
-            </svg>
-            Create install
-          </Link>
+          {mayCreate && (
+            <Link to="/installs/new" className="oa-cta">
+              <svg
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M8 3v10M3 8h10" />
+              </svg>
+              Create install
+            </Link>
+          )}
         </div>
       )}
       {list.isError ? (
@@ -391,9 +399,11 @@ export function Installs() {
               Create the first one. It runs as a job, and nothing is reachable
               until every check passes.
             </p>
-            <Link to="/installs/new" className="oa-cta oa-empty-cta">
-              Create install
-            </Link>
+            {mayCreate && (
+              <Link to="/installs/new" className="oa-cta oa-empty-cta">
+                Create install
+              </Link>
+            )}
           </div>
         )
       ) : list.data && rows.length === 0 ? (

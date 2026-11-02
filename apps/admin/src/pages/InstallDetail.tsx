@@ -3,6 +3,7 @@ import {
   type InstallDetail as Install,
   type JobKind,
   type JobListItem,
+  type RouteId,
 } from "@oa/shared/provisioning";
 import {
   Button,
@@ -51,6 +52,7 @@ import {
   visibleSteps,
 } from "../components/labels";
 import { useAction } from "../hooks/useAction";
+import { canCall } from "../hooks/useEnv";
 import { LoadError } from "../layout/LoadError";
 
 type Dialog =
@@ -86,6 +88,8 @@ function Actions({ install }: { install: Install }) {
     install.state !== "deleting" ||
     (!!me.data?.authAt && Date.now() - me.data.authAt < REAUTH_MS);
   const busy = install.activeJobId !== null;
+  // Each button's route, from the shared authz table (#1074).
+  const may = (route: RouteId) => canCall(route, me.data);
   const done = {
     invalidate: [
       ["install", id],
@@ -173,16 +177,23 @@ function Actions({ install }: { install: Install }) {
   const quick = [
     {
       label: "Roll back",
-      show: can(install, "rollback") && install.previousVersion !== null,
+      show:
+        may("R6") &&
+        can(install, "rollback") &&
+        install.previousVersion !== null,
       run: rollback,
     },
-    { label: "Resume", show: can(install, "resume"), run: resume },
+    {
+      label: "Resume",
+      show: may("R8") && can(install, "resume"),
+      run: resume,
+    },
     {
       label: "Restore",
-      show: can(install, "restore") && install.restorable,
+      show: may("R10") && can(install, "restore") && install.restorable,
       run: restore,
     },
-    { label: "Retry", show: can(install, "retry"), run: retry },
+    { label: "Retry", show: may("R12") && can(install, "retry"), run: retry },
   ];
   const live = !!install.lease.until && install.lease.until > Date.now();
   const close = () => {
@@ -195,7 +206,7 @@ function Actions({ install }: { install: Install }) {
   );
   return (
     <section className="oa-actions" aria-label="Actions">
-      {can(install, "upgrade") && (
+      {may("R5") && can(install, "upgrade") && (
         <Button
           variant="outline"
           disabled={busy}
@@ -218,7 +229,7 @@ function Actions({ install }: { install: Install }) {
             <ErrorLine error={q.run.error} />
           </span>
         ))}
-      {can(install, "suspend") && (
+      {may("R7") && can(install, "suspend") && (
         <Button
           variant="outline"
           disabled={busy}
@@ -227,7 +238,7 @@ function Actions({ install }: { install: Install }) {
           Pause
         </Button>
       )}
-      {can(install, "delete") && (
+      {may("R9") && can(install, "delete") && (
         <Button
           variant="outline"
           disabled={busy}
@@ -236,7 +247,7 @@ function Actions({ install }: { install: Install }) {
           Delete
         </Button>
       )}
-      {can(install, "purge") && (
+      {may("R11") && can(install, "purge") && (
         <Button
           variant="outline"
           disabled={busy}
@@ -245,12 +256,12 @@ function Actions({ install }: { install: Install }) {
           Purge
         </Button>
       )}
-      {install.lease.held && install.state !== "deleted" && (
+      {may("R13") && install.lease.held && install.state !== "deleted" && (
         <Button variant="outline" onClick={() => setDialog("release-lease")}>
           Release lease
         </Button>
       )}
-      {busy && (
+      {may("R25") && busy && (
         <Button variant="outline" onClick={() => setDialog("cancel")}>
           Cancel job
         </Button>
