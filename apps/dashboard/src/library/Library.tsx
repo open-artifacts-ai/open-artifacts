@@ -15,6 +15,7 @@ import { qk } from "../api/queries";
 import { useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { AgentSetupBody, useCanSetUpAgent } from "../settings/AgentSetupCard";
 import { copyText } from "../settings/ui";
 import { sharedSpaceName } from "../spaces/label";
 import { useUploadSpace } from "../spaces/SpacePicker";
@@ -171,6 +172,7 @@ export function Library({ scope }: { scope: Scope }) {
   const canCreate =
     me.status === "authed" && !guest && (me.me.auth?.cap ?? null) === null;
 
+  const canSetUpAgent = useCanSetUpAgent();
   const sentinel = useSentinel(q);
 
   const filtered = Boolean(s.format || s.agent);
@@ -195,7 +197,13 @@ export function Library({ scope }: { scope: Scope }) {
             ]
       : EMPTY[scope];
   const emptyAction =
-    space && scope === "all" && !personal && canPublishHere ? (
+    scope === "mine" && !space ? (
+      canSetUpAgent ? (
+        <div className="w-full max-w-[420px]">
+          <AgentSetupBody />
+        </div>
+      ) : undefined
+    ) : space && scope === "all" && !personal && canPublishHere ? (
       <Button
         size="sm"
         variant="outline"
