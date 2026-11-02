@@ -617,7 +617,7 @@ describe("deploy-hosted-platform.sh", () => {
       ...(pinned(REAL_SCHED) ? [["apps/scheduler", REAL_SCHED] as const] : []),
     ] as const;
     const ALERTS = {
-      ALERT_TO: "me@leourbina.com",
+      ALERT_TO: "me@test.invalid",
       ALERT_FROM: "alerts@open-artifacts.app",
       SIGNUP_DAILY_CAP: "50",
       SIGNUPS_ENABLED: "false",
@@ -745,7 +745,13 @@ describe("deploy-hosted-platform.sh", () => {
           it(`${label}, ${env}: refuses ${what} read back`, () => {
             const r = go(config, env, wired(p, over, dest));
             expect(r.code).toBe(1);
-            expect(r.err).toContain(`${msg}: got`);
+            // #1084: the owner's address is never printed, old or new.
+            if (msg === "ALERT_FROM" || msg === "SIGNUP_DAILY_CAP") {
+              expect(r.err).toContain(`${msg}: got`);
+            } else {
+              expect(r.err).toContain(`${msg}: not the expected value`);
+              expect(r.err).not.toContain("@");
+            }
           });
         // A deployed gate other than the env's (true allowed here, so the
         // signups rule isn't what refuses it).

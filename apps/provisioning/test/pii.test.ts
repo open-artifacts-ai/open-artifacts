@@ -33,7 +33,7 @@ describe("R17 email rule (4.9): tokens without installs:pii see no email detail"
   });
 
   it("recognizes email values, not other strings", () => {
-    for (const v of ["me@leourbina.com", "A.B+c@x.co", " me@x.io "])
+    for (const v of ["me@test.invalid", "A.B+c@x.co", " me@x.io "])
       expect(isEmailValue(v), v).toBe(true);
     for (const v of ["@me", "me@", "user:abc", "a@b", "x", 1, null, "a b@c.d"])
       expect(isEmailValue(v), String(v)).toBe(false);
@@ -41,7 +41,7 @@ describe("R17 email rule (4.9): tokens without installs:pii see no email detail"
 
   it("nulls every email-valued field, nested and in arrays, by value not by key", () => {
     const d = {
-      admin: "me@leourbina.com",
+      admin: "me@test.invalid",
       ownerEmail: "owner@acme.test",
       // Post-M1 rows may carry emails under any key (14.4).
       args: { to: "new@acme.test", version: "1.2.3" },
@@ -81,22 +81,22 @@ describe("R17 email rule (4.9): tokens without installs:pii see no email detail"
   it("keeps detail.admin on the caller's own admin's rows (9A.8)", () => {
     const me = {
       ...P("token", ["audit:read"]),
-      email: "Me@LeoUrbina.com",
+      email: "Me@Test.Invalid",
     } as Principal;
-    const d = { admin: "me@leourbina.com", ownerEmail: "owner@acme.test" };
+    const d = { admin: "me@test.invalid", ownerEmail: "owner@acme.test" };
     expect(redactAuditEntry(entry(d), me).detail).toEqual({
-      admin: "me@leourbina.com",
+      admin: "me@test.invalid",
       ownerEmail: null,
     });
     expect(
-      redactAuditEntry(entry({ admin: "other@leourbina.com" }), me).detail,
+      redactAuditEntry(entry({ admin: "other@test.invalid" }), me).detail,
     ).toEqual({ admin: null });
   });
 
   it("an email actor label is hidden, unless it is the caller's own admin", () => {
     const me = {
       ...P("token", ["audit:read"]),
-      email: "me@leourbina.com",
+      email: "me@test.invalid",
     } as Principal;
     const other = {
       ...entry(null),
@@ -108,14 +108,14 @@ describe("R17 email rule (4.9): tokens without installs:pii see no email detail"
     });
     const own = {
       ...entry(null),
-      actor: { kind: "admin", label: "me@leourbina.com" },
+      actor: { kind: "admin", label: "me@test.invalid" },
     } as AuditEntry;
     expect(redactAuditEntry(own, me)).toEqual(own);
     expect(redactAuditEntry(other, P("admin"))).toBe(other);
   });
 
   it("leaves everything as is for a principal that may read PII", () => {
-    const e = entry({ admin: "me@leourbina.com" });
+    const e = entry({ admin: "me@test.invalid" });
     expect(redactAuditEntry(e, P("admin"))).toBe(e);
     expect(
       redactAuditEntry(e, P("token", ["audit:read", "installs:pii"])),

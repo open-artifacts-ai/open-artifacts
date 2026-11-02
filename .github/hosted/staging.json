@@ -1,7 +1,6 @@
 {
   "account_id": "26ac346086d4405f7a976d48747a2a75",
   "alert_from": "alerts@mail.open-artifacts-staging.app",
-  "alert_to": "me@leourbina.com",
   "app_zone": "open-artifacts-staging.app",
   "content_zone": "open-artifacts-staging.page",
   "dispatch_namespace": "oa-staging",

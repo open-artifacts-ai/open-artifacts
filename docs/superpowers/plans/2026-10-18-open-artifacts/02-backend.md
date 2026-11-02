@@ -205,7 +205,7 @@ export async function getUser(env: Env, id: string): Promise<Member | null>;
 **B4 staging step (owner: OpenArtifacts Platform; Backend asks for it before merging B4):**
 - Create the staging Access for SaaS OIDC app. It uses the same API calls as B16's `access` step, run from `docs/ops/staging.md`, with the redirect `https://staging.open-artifacts.com/auth/callback`.
 - Set the staging secrets with `wrangler secret put --env staging`: `ACCESS_CLIENT_SECRET`, `SESSION_SECRET`, and `CONTENT_SIGNING_KEY`.
-- Set the staging vars: `ACCESS_TEAM_DOMAIN`, `ACCESS_CLIENT_ID`, and `OWNER_EMAIL=me@leourbina.com`.
+- Set the staging vars: `ACCESS_TEAM_DOMAIN`, `ACCESS_CLIENT_ID`, and `OWNER_EMAIL=<the owner's address>`.
 - Record the ids (never the secrets) in `docs/ops/staging.md`.
 
 ---
