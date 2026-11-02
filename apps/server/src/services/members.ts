@@ -29,6 +29,7 @@ import { isOrgAdmin } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { shares, tokens, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
+import { readBinding } from "../directory/store.js";
 import { emailEnabled, sendEmail } from "../email/send.js";
 import { inviteEmail, senderName } from "../email/templates.js";
 import type { Env } from "../env.js";
@@ -119,10 +120,28 @@ export function hostedFields(
 const EXISTING =
   "select id, status, guest_lapsed as guestLapsed, removed_by_sync as removedBySync from users where email = ?1 limit 1";
 
+/**
+ * Directory sync decides this install's removals: Google sync is on and a
+ * Workspace is connected (the live binding and token, what sync itself needs).
+ * Without them nothing syncs, so a directory removal is an admin's to undo.
+ */
+async function syncManages(env: Env): Promise<boolean> {
+  if (directoryMode(env) !== "google") return false;
+  const { binding, sealed } = await readBinding(env);
+  return !!binding && !!sealed;
+}
+
 const directoryManaged = () =>
   new ApiError(
     "directory_managed",
     "Directory sync removed this member; restore them in Google Workspace",
+  );
+/** users.email once the directory's deletion treatment released the address. */
+export const placeholder = (id: string) => `removed+${id}@invalid`;
+const addressReleased = () =>
+  new ApiError(
+    "conflict",
+    "This person's Google Workspace account was deleted, so they can't be restored. Invite them instead.",
   );
 const guestLapsed = () =>
   new ApiError(
@@ -133,8 +152,9 @@ const guestLapsed = () =>
 /**
  * The 409 for an address that already has a row: guest_lapsed for a lapsed
  * guest (a new share brings them back; restore would refuse),
- * directory_managed for a directory removal while Google sync is on (sync
- * revives them when their Workspace account is restored), member_removed
+ * directory_managed for a directory removal while sync manages this install
+ * (syncManages; sync revives them when their Workspace account is restored),
+ * member_removed
  * (details { userId }, so the caller can offer R.memberRestore) when that
  * row is otherwise removed, else conflict "Already a member".
  */
@@ -148,8 +168,7 @@ async function existingConflict(env: Env, email: string): Promise<never> {
   if (r && statusOf(r.status) === "removed") {
     if (r.guestLapsed !== 0) throw guestLapsed();
     // Restore would refuse it too: Google Workspace brings them back.
-    if (r.removedBySync && directoryMode(env) === "google")
-      throw directoryManaged();
+    if (r.removedBySync && (await syncManages(env))) throw directoryManaged();
     const details: MemberRemovedDetails = { userId: r.id };
     throw new ApiError(
       "member_removed",
@@ -495,7 +514,8 @@ export async function removeMember(
 
 // removed -> active, the restore rules (an admin's restore and directory
 // sync's revive): a member or admin comes back as a member (never an
-// admin), a guest as a guest (restricted_manual and restricted_sync kept).
+// admin), a guest as a guest (restricted_manual kept; RESTRICTED_SYNC_FOR_USER
+// follows in the batch: an admin in a restricted group was never flagged).
 // Never the owner, an admin only when ?3 = 1 (#475), never a lapsed guest (a
 // share revives those). Ends every session minted before (session_epoch) and
 // moves status_changed_at, so OAuth grants issued before the removal stay
@@ -506,10 +526,10 @@ const RESTORE_SET = `update users set status = 'active',
   status_changed_at = ?2, session_epoch = session_epoch + 1`;
 const RESTORE_TARGET = `id = ?1 and status = 'removed' and guest_lapsed = 0
   and role <> 'owner' and (role <> 'admin' or ?3 = 1)`;
-// An admin's restore: never a directory removal while Google sync is on
-// (?4 = 1).
+// An admin's restore: never a directory removal while sync manages the
+// install (?4 = 1), never a row whose address was released (?5, placeholder).
 const RESTORE = `${RESTORE_SET}
-  where ${RESTORE_TARGET} and (removed_by_sync = 0 or ?4 = 0)`;
+  where ${RESTORE_TARGET} and (removed_by_sync = 0 or ?4 = 0) and email <> ?5`;
 // Directory sync's revive: only a directory removal (removed_by_sync = 1),
 // only while the row still holds Google subject ?5 (the same person, never a
 // new account at a reused address), taking back its address ?4 only while no
@@ -526,13 +546,17 @@ const RESTORED = `select id, email, name, display_name as displayName, role,
 /**
  * POST R.memberRestore(id): a removed member or admin comes back active as a
  * member (never an admin), a removed guest as a guest, keeping a manual
- * restriction. Audited user.status (admin_restore)
+ * restriction and their space roles (a removal leaves space_members alone);
+ * the group restriction is recomputed for the role they come back with.
+ * Audited user.status (admin_restore)
  * in the same batch, only when the row changed. 404 unknown; 403 owner_only
  * for an admin target unless the actor is the owner (#475); 409
  * member_active when not removed; 409 guest_lapsed for a lapsed guest; 409
  * directory_managed when directory sync removed them (users.removed_by_sync)
- * and Google sync is on (the next sync would remove them again). Their old credentials stay dead:
- * they sign in again (a kept Google identity relinks the same subject).
+ * and sync manages the install (syncManages: the next sync would remove them
+ * again); 409 conflict when the deletion treatment released their address.
+ * Their old credentials stay dead: they sign in again (a kept Google identity
+ * relinks the same subject).
  */
 export async function restoreMember(
   env: Env,
@@ -546,18 +570,20 @@ export async function restoreMember(
   if (statusOf(row.status) !== "removed" || row.role === "owner")
     throw new ApiError("member_active", "This member isn't removed");
   if (row.guestLapsed) throw guestLapsed();
-  const synced = directoryMode(env) === "google" ? 1 : 0;
+  const synced = (await syncManages(env)) ? 1 : 0;
   if (synced && row.removedBySync) throw directoryManaged();
+  if (row.email === placeholder(id)) throw addressReleased();
   const out = await env.DB.batch([
-    stmt(env.DB, RESTORE).bind(id, Date.now(), admins, synced),
+    stmt(env.DB, RESTORE).bind(id, Date.now(), admins, synced, placeholder(id)),
     audit(env, "user.status", { type: "user", id }, userActor(actor.id), {
       reason: "admin_restore",
       detail: { status: "active" },
       when: { sql: "changes() > 0", args: [] },
     }),
+    stmt(env.DB, RESTRICTED_SYNC_FOR_USER).bind(id),
     stmt(env.DB, RESTORED).bind(id),
   ]);
-  const r = out[2]?.results[0] as
+  const r = out[3]?.results[0] as
     | (Parameters<typeof toMember>[0] & { status: string } & MemberExtrasRow)
     | undefined;
   if (!out[0]?.meta.changes) {
@@ -567,6 +593,7 @@ export async function restoreMember(
     const now = await getRow(env, id);
     if (synced && statusOf(now.status) === "removed" && now.removedBySync)
       throw directoryManaged();
+    if (now.email === placeholder(id)) throw addressReleased();
     throw new ApiError("member_active", "This member isn't removed");
   }
   if (!r) throw new ApiError("not_found", "Not found");
@@ -579,8 +606,9 @@ export async function restoreMember(
  * Directory sync revives a row it removed (users.removed_by_sync): Google
  * lists the same directory user (subject `sub`) active again. The restore
  * rules (SYNC_REVIVE, the same target and SET as RESTORE): never admin,
- * restricted_manual kept, sessions minted before end, old PATs and grants
- * stay refused, and the row takes back its address. Audited user.status
+ * restricted_manual kept, the group restriction recomputed for the role they
+ * come back with, sessions minted before end, old PATs and grants stay
+ * refused, and the row takes back its address. Audited user.status
  * (sync_revive, actor sync) in the same batch, only when the row changed.
  * Resolves to whether it did.
  */
@@ -598,6 +626,7 @@ export async function reviveFromSync(
       detail: { status: "active" },
       when: { sql: "changes() > 0", args: [] },
     }),
+    stmt(env.DB, RESTRICTED_SYNC_FOR_USER).bind(id),
   ]);
   if (!out[0]?.meta.changes) return false;
   // Belt and braces: nothing they held before survives the epoch bump.

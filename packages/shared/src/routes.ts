@@ -243,8 +243,10 @@ export const R = {
    * target needs the owner (403 owner_only). Their old PATs and agent
    * connections stay revoked; they sign in again. Audited user.status
    * (reason admin_restore). 404 unknown; 409 member_active (not removed),
-   * directory_managed (removed by directory sync while Google sync is on),
-   * guest_lapsed (a lapsed guest: a new share brings them back). Directory
+   * directory_managed (removed by directory sync while Google sync is on and
+   * a Workspace is connected), conflict (their Workspace account was deleted,
+   * so their address is gone), guest_lapsed (a lapsed guest: a new share
+   * brings them back). Their space roles come back with them. Directory
    * sync revives a member it removed by itself (reason sync_revive) when
    * Google lists the same directory user active again.
    */
