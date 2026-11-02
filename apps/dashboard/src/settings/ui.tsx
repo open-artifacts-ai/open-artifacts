@@ -31,11 +31,14 @@ export function SettingsCard({
   id,
   title,
   action,
+  focusable = false,
   children,
 }: {
   id: string;
   title: string;
   action?: ReactNode;
+  /** The heading can take focus from code (not a tab stop). */
+  focusable?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -47,7 +50,8 @@ export function SettingsCard({
           <CardTitle>
             <h2
               id={id}
-              className="text-[length:var(--oa-text-md)] font-semibold"
+              tabIndex={focusable ? -1 : undefined}
+              className="text-[length:var(--oa-text-md)] font-semibold outline-none"
             >
               {title}
             </h2>

@@ -327,9 +327,31 @@ it("while Retry runs the card and error stay, and focus stays on the button", as
   release();
   await screen.findByText("Carol Departed");
   await waitFor(() => expect(screen.queryByText(LOAD_ERROR)).toBeNull());
+  // The button went with the error: focus moves on, with no new tab stop.
+  const heading = screen.getByRole("heading", { name: "Departed" });
+  await waitFor(() => expect(heading).toHaveFocus());
+  expect(heading).toHaveAttribute("tabindex", "-1");
 });
 
-it("a Retry that fails again ends busy, with the error and the button", async () => {
+it("a Retry that finds nobody left moves focus to the Members heading", async () => {
+  let fail = true;
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => (fail ? refused(403) : HttpResponse.json([]))),
+  ]);
+  const card = await departed();
+  const retry = await within(card).findByRole("button", { name: "Retry" });
+  retry.focus();
+  fail = false;
+  fireEvent.click(retry);
+  await waitFor(() =>
+    expect(screen.queryByRole("region", { name: "Departed" })).toBeNull(),
+  );
+  await waitFor(() =>
+    expect(screen.getByRole("heading", { name: "Members" })).toHaveFocus(),
+  );
+});
+
+it("a failed Retry never moves focus to a heading, even from no focus (a browser that doesn't focus on click)", async () => {
   mountHosted("/settings/members", true, undefined, [
     membersWith(() => refused(403)),
   ]);
@@ -338,6 +360,39 @@ it("a Retry that fails again ends busy, with the error and the button", async ()
   fireEvent.click(retry);
   await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
   await waitFor(() => expect(retry).not.toHaveAttribute("aria-busy"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(document.activeElement).toBe(document.body);
+});
+
+it("a Retry that worked leaves focus alone if it has moved elsewhere", async () => {
+  let fail = true;
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => (fail ? refused(403) : HttpResponse.json([carol]))),
+    removedCarol[1],
+  ]);
+  const card = await departed();
+  const retry = await within(card).findByRole("button", { name: "Retry" });
+  const add = screen.getByRole("button", { name: "Add member" });
+  fail = false;
+  fireEvent.click(retry);
+  add.focus();
+  await screen.findByText("Carol Departed");
+  await waitFor(() => expect(screen.queryByText(LOAD_ERROR)).toBeNull());
+  await new Promise((r) => setTimeout(r, 20));
+  expect(add).toHaveFocus();
+});
+
+it("a Retry that fails again ends busy, with the error and the button", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => refused(403)),
+  ]);
+  const card = await departed();
+  const retry = await within(card).findByRole("button", { name: "Retry" });
+  retry.focus();
+  fireEvent.click(retry);
+  await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+  await waitFor(() => expect(retry).not.toHaveAttribute("aria-busy"));
+  expect(retry).toHaveFocus();
   expect(retry).not.toHaveAttribute("aria-disabled");
   expect(within(card).getByText(LOAD_ERROR)).toBeVisible();
 });

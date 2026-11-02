@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@oa/ui/shadcn";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
 import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
 import { errorCopy } from "../api/errorCopy";
@@ -644,6 +644,19 @@ export function Members() {
   const removedQ = useMembers("removed", admin);
   const removed = (removedQ.data ?? []).filter((m) => m.status === "removed");
   const [showRemoved, setShowRemoved] = useState(false);
+  // A Retry that worked took its button away: on to the card, or Members if
+  // nobody's left. Failed, focus stays on Retry; moved elsewhere, it stays there.
+  const retrying = useRef(false);
+  const nobodyLeft = departed.people.length === 0;
+  useEffect(() => {
+    const done = retrying.current && !departed.retrying;
+    retrying.current = departed.retrying;
+    if (!done || departed.failed || document.activeElement !== document.body)
+      return;
+    document
+      .getElementById(nobodyLeft ? "oa-members-h" : "oa-departed-h")
+      ?.focus();
+  }, [departed.retrying, departed.failed, nobodyLeft]);
   return (
     <div className={STACK}>
       {(departed.people.length > 0 || departed.failed) && (
@@ -662,6 +675,7 @@ export function Members() {
       <SettingsCard
         id="oa-members-h"
         title="Members"
+        focusable
         action={
           <div className="flex flex-wrap items-center gap-[var(--oa-space-2)]">
             {admin && (showRemoved || removed.length > 0) && (
@@ -817,7 +831,7 @@ function DepartedCard({
   owner: boolean;
 }) {
   return (
-    <SettingsCard id="oa-departed-h" title="Departed">
+    <SettingsCard id="oa-departed-h" title="Departed" focusable>
       {people.length > 0 && (
         <>
           <p className={muted}>
