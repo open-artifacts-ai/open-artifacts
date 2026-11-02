@@ -155,10 +155,10 @@ describe("share panel", () => {
       });
       expect(select).toHaveTextContent(shown);
       const remove = screen.getByRole("button", { name: `Remove ${guest}` });
-      const after = (a: Element, b: Element) =>
+      const follows = (a: Element, b: Element) =>
         a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
-      expect(after(label, select)).toBeTruthy();
-      expect(after(select, remove)).toBeTruthy();
+      expect(follows(label, select)).toBeTruthy();
+      expect(follows(select, remove)).toBeTruthy();
     },
   );
 
