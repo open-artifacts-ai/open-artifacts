@@ -27,9 +27,15 @@ import { errorText, muted } from "./ui";
 export const artifacts = (n: number) =>
   `${n} ${n === 1 ? "artifact" : "artifacts"}`;
 
-/** "2 artifacts (and 1 in trash)"; no bracket with nothing in trash. */
-export const artifactsAndTrash = (live: number, trash: number) =>
-  `${artifacts(live)}${trash > 0 ? ` (and ${trash} in trash)` : ""}`;
+/**
+ * "2 artifacts (and 1 in trash)", no bracket with nothing in trash. The run
+ * counts trash too, so unless all that was planned moved the split would be
+ * a guess: then the total alone.
+ */
+export const movedCount = (moved: number, live: number, trash: number) =>
+  moved === live + trash && trash > 0
+    ? `${artifacts(live)} (and ${trash} in trash)`
+    : artifacts(moved);
 
 /** Runs every page; resolves with the number moved. `onProgress(moved, remaining)`. */
 export async function runAll(
@@ -143,14 +149,13 @@ export function TransferDialog({
           setProgress({ done, of: t.of });
         },
       );
-      // What really moved: another admin may have taken some. The run counts
-      // trash too, and nothing at all means they got there first.
-      const inTrash = Math.min(t.of - t.live, done);
+      // What really moved: another admin may have taken some, and nothing at
+      // all means they got there first.
       toast(
         done === 0
           ? { title: ALREADY_HANDLED, tone: "info" }
           : {
-              title: `Moved ${artifactsAndTrash(done - inTrash, inTrash)} to ${target.label}.`,
+              title: `Moved ${movedCount(done, t.live, t.of - t.live)} to ${target.label}.`,
               tone: "success",
             },
       );

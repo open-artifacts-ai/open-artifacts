@@ -60,7 +60,7 @@ import {
   useDeparted,
 } from "./departed";
 import { restrictionReason } from "./restriction";
-import { artifactsAndTrash, runAll, TransferDialog } from "./Transfer";
+import { movedCount, runAll, TransferDialog } from "./Transfer";
 import { errorText, muted, SettingsCard, STACK } from "./ui";
 
 type Assignable = "admin" | "member";
@@ -910,14 +910,12 @@ function DepartedRow({
         { kind: "user", userId: toMe },
         () => {},
       );
-      // The run counts trash too: the dialog's form splits it back out.
-      const trash = Math.min(summary.deleted, moved);
       // 200 with nothing moved: another admin got there first, not a success.
       toast(
         moved === 0
           ? { title: ALREADY_HANDLED, tone: "info" }
           : {
-              title: `Moved ${artifactsAndTrash(moved - trash, trash)} from ${label} to you.`,
+              title: `Moved ${movedCount(moved, summary.live, summary.deleted)} from ${label} to you.`,
               tone: "success",
             },
       );

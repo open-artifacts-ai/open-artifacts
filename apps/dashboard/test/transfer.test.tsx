@@ -1007,36 +1007,61 @@ it("a dialog Retry that finds the rest gone says what really moved", async () =>
   await findVisibleToast("Moved 1 artifact to Bob Builder.");
 });
 
-it("the dialog's split keeps trash, as the row's does", async () => {
-  mountHosted("/settings/members", true, undefined, [
-    http.get(`*${R.memberTransfer(CAROL)}`, () =>
-      HttpResponse.json({ live: 2, deleted: 2 }),
-    ),
-    ...removedCarol,
-    http.post(`*${R.memberTransfer(CAROL)}`, () =>
-      HttpResponse.json({ moved: 3, remaining: 0, nextCursor: null }),
-    ),
-  ]);
+/** Carol has 2 and 2 in trash; a run moves `moved` of them. */
+const movesOfFour = (moved: number) => [
+  http.get(`*${R.memberTransfer(CAROL)}`, () =>
+    HttpResponse.json({ live: 2, deleted: 2 }),
+  ),
+  ...removedCarol,
+  http.post(`*${R.memberTransfer(CAROL)}`, () =>
+    HttpResponse.json({ moved, remaining: 0, nextCursor: null }),
+  ),
+];
+const runDialog = async (moved: number) => {
+  mountHosted("/settings/members", true, undefined, movesOfFour(moved));
   const d = await openFromCard();
   await chooseOption("Give them to", "Bob Builder");
   fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
-  await findVisibleToast("Moved 1 artifact (and 2 in trash) to Bob Builder.");
+};
+const runRow = async (moved: number) => {
+  mountHosted("/settings/members", true, undefined, movesOfFour(moved));
+  fireEvent.click(
+    await within(await carolRow()).findByRole("button", {
+      name: "Transfer all to me",
+    }),
+  );
+};
+
+it("the dialog splits out trash when everything planned moved", async () => {
+  await runDialog(4);
+  await findVisibleToast("Moved 2 artifacts (and 2 in trash) to Bob Builder.");
 });
 
-it("the split never counts more trash than moved", async () => {
-  mountHosted("/settings/members", true, undefined, [
-    http.get(`*${R.memberTransfer(CAROL)}`, () =>
-      HttpResponse.json({ live: 2, deleted: 2 }),
-    ),
-    ...removedCarol,
-    http.post(`*${R.memberTransfer(CAROL)}`, () =>
-      HttpResponse.json({ moved: 1, remaining: 0, nextCursor: null }),
-    ),
-  ]);
-  const d = await openFromCard();
-  await chooseOption("Give them to", "Bob Builder");
-  fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
-  await findVisibleToast("Moved 0 artifacts (and 1 in trash) to Bob Builder.");
+it("the dialog says the total alone when less than planned moved", async () => {
+  await runDialog(1);
+  await findVisibleToast("Moved 1 artifact to Bob Builder.");
+});
+
+it("the dialog says the total alone when more than planned moved", async () => {
+  await runDialog(5);
+  await findVisibleToast("Moved 5 artifacts to Bob Builder.");
+});
+
+it("the row splits out trash when everything planned moved", async () => {
+  await runRow(4);
+  await findVisibleToast(
+    "Moved 2 artifacts (and 2 in trash) from Carol Departed to you.",
+  );
+});
+
+it("the row says the total alone when less than planned moved", async () => {
+  await runRow(1);
+  await findVisibleToast("Moved 1 artifact from Carol Departed to you.");
+});
+
+it("the row says the total alone when more than planned moved", async () => {
+  await runRow(5);
+  await findVisibleToast("Moved 5 artifacts from Carol Departed to you.");
 });
 
 const openRemoved = async () => {
