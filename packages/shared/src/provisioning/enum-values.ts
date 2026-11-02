@@ -136,6 +136,7 @@ export function jobStepsFor(
 export const JOB_FAIL_POINTS = [
   "token_check",
   "hook_key_put",
+  "hook_key_live",
   "test_session",
   "list_tokens",
   "mint_token",

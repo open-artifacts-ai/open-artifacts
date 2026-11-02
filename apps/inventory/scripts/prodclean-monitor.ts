@@ -255,9 +255,11 @@ export async function run(
   }
   p.inventoryUrl = url;
 
-  let jwt: string;
+  // A JWT lives 5 minutes: mint one per inventory call, right before it, not
+  // one for the whole run (prodClean's release scan can take longer).
+  const jwt = () => mintJwt(env, audience, d.fetch);
   try {
-    jwt = await mintJwt(env, audience, d.fetch);
+    await jwt();
   } catch (e) {
     io.out(prodCleanLine(asFail(e).code));
     return 1;
@@ -274,7 +276,7 @@ export async function run(
   const results = await Promise.all(
     [
       () => prodClean(probe, opts),
-      () => checkScheduler(url, jwt, d),
+      async () => checkScheduler(url, await jwt(), d),
       () =>
         checkTokens(probe, d, () => {
           noEnd = true;
@@ -295,7 +297,10 @@ export async function run(
         detail: fail.message,
       }
     : { ok: true, code: "pass" };
-  const sent = await report(url, jwt, body, d.fetch);
+  const sent = await jwt().then(
+    (t) => report(url, t, body, d.fetch),
+    () => false,
+  );
   const code = fail ? fail.code : sent ? undefined : "report_failed";
   if (noEnd) io.out(NO_END_DATE_WARNING);
   io.out(prodCleanLine(code));

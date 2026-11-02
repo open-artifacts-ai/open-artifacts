@@ -324,7 +324,8 @@ export function parseManifest(text: string): Manifest {
   return { cases: cases as Manifest["cases"] };
 }
 
-const caseKey = (file: string, name: string) => `${file}\u0000${name}`;
+/** A case's identity in the manifest and the report: its file and full name. */
+export const caseKey = (file: string, name: string) => `${file}\u0000${name}`;
 
 /**
  * A required case that didn't run (a missing or renamed file or test) is a
@@ -369,8 +370,125 @@ export function applyManifest(
   return out;
 }
 
+/**
+ * #1012 (design 5.8): the prod-host provisioning probes, frozen. Before the
+ * prod platform deploy they are not-applicable with PRE_PROD_REASON, which
+ * prodLive gives only when the prod admin host does not resolve; the gate
+ * counts exactly that as a pass. After the deploy they must pass (#1014).
+ */
+export const PRE_PROD_NA: readonly string[] = Object.freeze(["P7", "P46"]);
+export const PRE_PROD_REASON = "prod admin host does not resolve yet";
+
+/** A pre-prod not-applicable the gate accepts: listed probe, exact reason. */
+export function preProdNa(c: CaseResult): boolean {
+  return (
+    c.level === "not-applicable" &&
+    c.reason === PRE_PROD_REASON &&
+    (c.file === undefined || c.file.endsWith("provisioning.test.ts")) &&
+    PRE_PROD_NA.some((id) => c.name.startsWith(`provisioning > ${id}: `))
+  );
+}
+
+/**
+ * The red-line guard's prod-clean case, frozen the same way: not-applicable
+ * with PRE_PROD_GUARD_REASON only when the prod inventory answers 503
+ * schema_missing and the prod admin host does not resolve (guardProdClean).
+ * Exact file, exact name, exact reason; after #1014 it must pass.
+ */
+export const PRE_PROD_GUARD = Object.freeze({
+  file: "live/guard.test.ts",
+  name: "guard > prod is clean (no test hooks on any prod install)",
+});
+export const PRE_PROD_GUARD_REASON =
+  "pre-prod: prod admin host does not resolve yet and the prod inventory schema is missing";
+
+/** The guard's pre-prod not-applicable the gate accepts. */
+export function preProdGuardNa(c: CaseResult): boolean {
+  return (
+    c.level === "not-applicable" &&
+    c.reason === PRE_PROD_GUARD_REASON &&
+    c.file === PRE_PROD_GUARD.file &&
+    c.name === PRE_PROD_GUARD.name
+  );
+}
+
+/**
+ * The unproven-live cases the gate accepts, frozen: each by its exact full
+ * name and exact reason, with the in-repo non-live test that covers what the
+ * live run cannot. Any other unproven-live fails the gate, and so does a
+ * listed case that fails. The report prints them in their own section.
+ * P29 is listed for M1 only: #1046 (Post-M1) builds the purge that frees
+ * signup_accounts, blocks opening self-serve, and takes it off.
+ */
+export interface AcceptedUnproven {
+  name: string;
+  reason: string;
+  /** The live file the case runs in (a case of that name elsewhere is not it). */
+  file: string;
+  evidence: string;
+}
+export const ACCEPTED_UNPROVEN: readonly AcceptedUnproven[] = Object.freeze(
+  [
+    {
+      name: "provisioning > P29: SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete leaves it deleting",
+      reason:
+        "self-serve purge doesn't free signup_accounts (#1046); signups off on prod",
+      file: "provisioning.test.ts",
+      evidence:
+        'scripts/ci/hosted-constants.test.ts "prod signups stay closed, staging admits test users only; the caps and alert addresses are the Manager\'s" (#1022 pins prod SIGNUPS_ENABLED=false); the free-on-purge path and its test: #1046',
+    },
+    {
+      name: "provisioning > P30: dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens",
+      reason:
+        "5 forged callbacks refused; the alert is not readable by O (R27 and other actors' R17 rows are 403)",
+      file: "provisioning.test.ts",
+      evidence:
+        'apps/scheduler/test/provapi-conditions.test.ts "alert conditions > signin_refused_burst: its fixture opens it, a change clears it"; apps/scheduler/test/provapi-alerts.test.ts "signin_refused_burst: at most one email per hour, count and window only"',
+    },
+    {
+      name: "provisioning > P35: reachable path: a Worker without a route fetches rl-a /healthz",
+      reason:
+        "needs a Worker with no route (spike S7); the runner cannot stand in for it",
+      file: "provisioning.test.ts",
+      evidence:
+        'spike S7 (spikes/provapi-staging/src/index.ts s7, a routeless Worker GETs rl-a /healthz): scripts/ci/provapi-spikes.test.ts "the spike Worker > S2 and S7 fetch rl-b and rl-a with GETs and no body"; apps/dispatch/test/dispatch.test.ts "dispatch > routes on the URL host only, never a Host or X-Forwarded-Host header"',
+    },
+    {
+      name: "sign-in: ID tokens > an ID token with hd of A at B's callback: no session",
+      reason: "unproven: needs capture",
+      file: "signin.test.ts",
+      evidence:
+        'apps/server/test/xt-google.local.test.ts "sign-in ID-token cases across installs (fake Google) > an ID token with hd of A at B\'s callback: no session"; apps/server/test/google-broker.test.ts "Google through the broker > tenant B\'s token is refused at A even when the broker returns it"; the laptop capture run: docs/ops/redline-signin.md, tests/redline/test/rehearsal.test.ts; the capture duty: #1047',
+    },
+    {
+      name: "sign-in: ID tokens > A's code and broker state at B: no session",
+      reason: "unproven: needs capture",
+      file: "signin.test.ts",
+      evidence:
+        'apps/server/test/xt-google.local.test.ts "sign-in ID-token cases across installs (fake Google) > an ID token minted for A\'s client (aud) replayed at B: no session"; apps/server/test/google-broker.test.ts "Google through the broker > a token minted through install A with B\'s client nonce is refused at B (accepted at A)"; the laptop capture run: docs/ops/redline-signin.md, tests/redline/test/rehearsal.test.ts; the capture duty: #1047',
+    },
+  ].map((e) => Object.freeze(e)),
+);
+
+/** The ACCEPTED_UNPROVEN entry an unproven-live case matches exactly, if any. */
+export function acceptedUnproven(c: CaseResult): AcceptedUnproven | undefined {
+  if (c.level !== "unproven-live") return undefined;
+  return ACCEPTED_UNPROVEN.find(
+    (e) =>
+      e.name === c.name &&
+      e.reason === c.reason &&
+      (c.file === undefined || c.file.endsWith(e.file)),
+  );
+}
+
+/** A non-pass the gate accepts: a pre-prod not-applicable or a listed unproven-live. */
+const accepted = (c: CaseResult) =>
+  preProdNa(c) || preProdGuardNa(c) || acceptedUnproven(c) !== undefined;
+
 export function gatePasses(cases: readonly CaseResult[]): boolean {
-  return cases.length > 0 && cases.every((c) => c.level === "pass");
+  return (
+    cases.length > 0 && cases.every((c) => c.level === "pass" || accepted(c))
+  );
 }
 
 export function buildReport(
@@ -384,6 +502,17 @@ export function buildReport(
   for (const c of cases) counts[c.level]++;
   const nonPass = cases.filter((c) => c.level !== "pass");
   const passed = gatePasses(cases);
+  const failing = nonPass.filter((c) => !accepted(c)).length;
+  const nAccepted = cases.filter((c) => acceptedUnproven(c)).length;
+  const nPreProd = cases.filter(
+    (c) => preProdNa(c) || preProdGuardNa(c),
+  ).length;
+  const acceptedText = [
+    nAccepted ? `${nAccepted} accepted unproven-live` : "",
+    nPreProd ? `${nPreProd} pre-prod not-applicable` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
   return {
     mode,
     finishedAt: new Date().toISOString(),
@@ -394,10 +523,12 @@ export function buildReport(
     gate: {
       passed,
       reason: passed
-        ? "every case passed"
+        ? acceptedText
+          ? `every case passed but ${acceptedText}`
+          : "every case passed"
         : cases.length === 0
           ? "no cases ran"
-          : `${nonPass.length} of ${cases.length} cases are not "pass"${counts.infra ? ` (${counts.infra} infra)` : ""}`,
+          : `${failing} of ${cases.length} cases are not "pass"${counts.infra ? ` (${counts.infra} infra)` : ""}${acceptedText ? `; ${acceptedText}` : ""}`,
     },
   };
 }
@@ -407,15 +538,25 @@ export function formatReport(r: Report): string {
     `Red-line report (${r.mode}): ${r.total} cases`,
     `  ${LEVELS.map((l) => `${l} ${r.counts[l]}`).join(", ")}`,
   ];
-  if (r.nonPass.length) {
+  const notPass = r.nonPass.filter((c) => !acceptedUnproven(c));
+  if (notPass.length) {
     lines.push("Not pass:");
-    for (const c of r.nonPass) {
+    for (const c of notPass) {
       lines.push(`  [${c.level}] ${c.name}${c.reason ? ` (${c.reason})` : ""}`);
       if (c.leg || c.host || c.expected)
         lines.push(
           `      leg: ${c.leg ?? "?"} at ${c.host ?? "?"}; expected ${c.expected ?? "?"}${c.actual ? `; got ${c.actual}` : ""}`,
         );
     }
+  }
+  const acc = r.cases.flatMap((c) => {
+    const e = acceptedUnproven(c);
+    return e ? [e] : [];
+  });
+  if (acc.length) {
+    lines.push("Accepted unproven-live:");
+    for (const e of acc)
+      lines.push(`  ${e.name} (${e.reason})`, `      evidence: ${e.evidence}`);
   }
   const labeled = r.cases.filter((c) => c.label);
   if (labeled.length) {

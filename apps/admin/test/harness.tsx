@@ -9,7 +9,7 @@ import { type HttpHandler, HttpResponse, http, type JsonBodyType } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
 import { createMock } from "../src/mocks/handlers";
-import { router as appRouter } from "../src/router";
+import { router as appRouter, rawSearch } from "../src/router";
 
 const ORIGIN = "http://localhost";
 export const server = setupServer();
@@ -79,6 +79,7 @@ export { http };
 export function renderApp(path: string) {
   const router = createRouter({
     routeTree: appRouter.routeTree,
+    ...rawSearch,
     history: createMemoryHistory({ initialEntries: [path] }),
   });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

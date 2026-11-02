@@ -156,7 +156,7 @@ it("the mint dialog follows Design: copy, consent labels with C1's scope codes, 
   ).toBeInTheDocument();
   const boxes = within(dialog).getAllByRole("checkbox");
   const rows = boxes.map((b) => ({
-    on: (b as HTMLInputElement).checked,
+    on: b.getAttribute("aria-checked") === "true",
     text: b.closest("label")?.textContent?.replace(/\s+/g, " ").trim(),
   }));
   expect(rows).toEqual([
@@ -198,15 +198,23 @@ it("validates the label and needs a scope in the mint dialog", async () => {
   renderApp("/tokens");
   const dialog = await openMint();
   const go = within(dialog).getByRole("button", { name: "Mint token" });
+  const reason = () => within(dialog).queryByTestId("dialog-blocker");
   expect(go).toBeDisabled();
+  // Never disabled without a reason beside it.
+  expect(reason()).toHaveTextContent("Add a label.");
+  expect(go).toHaveAccessibleDescription("Add a label.");
   fireEvent.change(within(dialog).getByLabelText("Label"), {
     target: { value: "bad/label" },
   });
   expect(go).toBeDisabled();
+  expect(reason()).toHaveTextContent(
+    "Use letters, numbers, spaces, dots, dashes or underscores in the label.",
+  );
   fireEvent.change(within(dialog).getByLabelText("Label"), {
     target: { value: "ok label" },
   });
   expect(go).toBeEnabled();
+  expect(reason()).toBeNull();
   fireEvent.click(
     within(dialog).getByRole("checkbox", { name: /Read installs/ }),
   );
@@ -214,6 +222,7 @@ it("validates the label and needs a scope in the mint dialog", async () => {
     within(dialog).getByRole("checkbox", { name: /Read the audit log/ }),
   );
   expect(go).toBeDisabled();
+  expect(reason()).toHaveTextContent("Pick at least one scope.");
 });
 
 it("revokes a live token", async () => {

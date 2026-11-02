@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.91.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.91.1...v0.91.2) (2026-11-01)
+
+
+### Tests
+
+* **redline:** P25 live-cookie check, P29 fixed reasons, P32 R3 deleted, P34 IP window, T19 unpinned; verify_clean reason audited ([#1060](https://github.com/open-artifacts-ai/open-artifacts/issues/1060)) ([#1062](https://github.com/open-artifacts-ai/open-artifacts/issues/1062)) ([d8ecba6](https://github.com/open-artifacts-ai/open-artifacts/commit/d8ecba68ea15399b3142dbfc4176835dcd49da09))
+
+## [0.91.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.91.0...v0.91.1) (2026-11-01)
+
+
+### Documentation
+
+* **ops:** how to force a release when only non-releasable commits landed ([#1057](https://github.com/open-artifacts-ai/open-artifacts/issues/1057)) ([2ed0900](https://github.com/open-artifacts-ai/open-artifacts/commit/2ed090084ceae25ccc9e871be78153b0de778406))
+
+## [0.91.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.3...v0.91.0) (2026-11-01)
+
+
+### Features
+
+* **admin:** admin panel matches the approved layout A; status tiles filter the list ([#1042](https://github.com/open-artifacts-ai/open-artifacts/issues/1042)) ([269a39e](https://github.com/open-artifacts-ai/open-artifacts/commit/269a39e9e9af222029595e88a041afc4534e4593))
+* **ci:** one version: all platform targets by default, tagged deploys, red-line refuses stale Workers ([#1040](https://github.com/open-artifacts-ai/open-artifacts/issues/1040) part A) ([#1050](https://github.com/open-artifacts-ai/open-artifacts/issues/1050)) ([887bc21](https://github.com/open-artifacts-ai/open-artifacts/commit/887bc21a12f44f5f73dc17bde0fdf63cd3ca9698))
+* **ci:** prod-inspect, a read-only workflow for prod's platform D1 schema ([#1055](https://github.com/open-artifacts-ai/open-artifacts/issues/1055)) ([3a1d53c](https://github.com/open-artifacts-ai/open-artifacts/commit/3a1d53cc839aa02c6d20ac9a798451ccbc2c5da2))
+
+
+### Bug Fixes
+
+* **inventory:** a verified caller gets 503 schema_missing while the platform schema is absent ([#1041](https://github.com/open-artifacts-ai/open-artifacts/issues/1041)) ([#1043](https://github.com/open-artifacts-ai/open-artifacts/issues/1043)) ([61a2c7f](https://github.com/open-artifacts-ai/open-artifacts/commit/61a2c7f2274a99d7195c3bc8c36ad81a292090ab))
+* **redline:** prod-clean guard is pre-prod n/a only on NXDOMAIN admin plus 503 schema_missing ([#1049](https://github.com/open-artifacts-ai/open-artifacts/issues/1049)) ([cde98e6](https://github.com/open-artifacts-ai/open-artifacts/commit/cde98e646f93c7394b8e3019bd874a6391327e17))
+
+## [0.90.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.2...v0.90.3) (2026-11-01)
+
+
+### Bug Fixes
+
+* **admin:** search params stay strings, so /no-access shows the account id ([#1027](https://github.com/open-artifacts-ai/open-artifacts/issues/1027)) ([2d4a2b3](https://github.com/open-artifacts-ai/open-artifacts/commit/2d4a2b310d62302e38dd0fd8f83d32fb572afcbe))
+* **provisioner:** one-version release check for create and upgrade; list reads 8 at once ([#1029](https://github.com/open-artifacts-ai/open-artifacts/issues/1029)) ([#1031](https://github.com/open-artifacts-ai/open-artifacts/issues/1031)) ([8fd2b65](https://github.com/open-artifacts-ai/open-artifacts/commit/8fd2b65697da7068a75b9dac9ae92627adb7503d))
+
+## [0.90.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.1...v0.90.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **provisioning:** identity refusals go to /no-access, which shows the verified account id ([#1024](https://github.com/open-artifacts-ai/open-artifacts/issues/1024)) ([#1025](https://github.com/open-artifacts-ai/open-artifacts/issues/1025)) ([b5178bd](https://github.com/open-artifacts-ai/open-artifacts/commit/b5178bde290ae2cb1221e22cd41574147cf922d6))
+* **redline:** probes match the product and the amended design; pre-prod gate rule ([#1012](https://github.com/open-artifacts-ai/open-artifacts/issues/1012)) ([#1021](https://github.com/open-artifacts-ai/open-artifacts/issues/1021)) ([322571e](https://github.com/open-artifacts-ai/open-artifacts/commit/322571e7bb9fa09b42eabbe9cf230a818d5a4525))
+* **staging:** SIGNUPS_ENABLED=test-users on staging, as designed; prod stays false ([#1012](https://github.com/open-artifacts-ai/open-artifacts/issues/1012)) ([#1022](https://github.com/open-artifacts-ai/open-artifacts/issues/1022)) ([0e6134f](https://github.com/open-artifacts-ai/open-artifacts/commit/0e6134fb78bb8e26ce38d50a91ce20833efcd02f))
+
+## [0.90.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.90.0...v0.90.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **inventory:** every auth failure is the unknown-route 404, never a 401 ([#1016](https://github.com/open-artifacts-ai/open-artifacts/issues/1016)) ([#1019](https://github.com/open-artifacts-ai/open-artifacts/issues/1019)) ([17974e8](https://github.com/open-artifacts-ai/open-artifacts/commit/17974e834fdf92d8ec6aecf5357f6788f14d10c0))
+* **redline:** R26 creds go where the suite reads them; an unresolved prod host is not live ([#1012](https://github.com/open-artifacts-ai/open-artifacts/issues/1012)) ([#1018](https://github.com/open-artifacts-ai/open-artifacts/issues/1018)) ([35c5c93](https://github.com/open-artifacts-ai/open-artifacts/commit/35c5c93b93c34c45e056c1e3ce172b3fd826a99c))
+
+## [0.90.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.2...v0.90.0) (2026-11-01)
+
+
+### Features
+
+* **provisioning:** the admin allowlist is a deploy Environment secret, put by CI ([#1007](https://github.com/open-artifacts-ai/open-artifacts/issues/1007)) ([#1010](https://github.com/open-artifacts-ai/open-artifacts/issues/1010)) ([36fd655](https://github.com/open-artifacts-ai/open-artifacts/commit/36fd655906d121b412b71bc4d358595aabdd0b39))
+
+## [0.89.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.1...v0.89.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **provisioner:** wait until the rotated test hook key is live before using it ([#1002](https://github.com/open-artifacts-ai/open-artifacts/issues/1002)) ([#1005](https://github.com/open-artifacts-ai/open-artifacts/issues/1005)) ([97678c8](https://github.com/open-artifacts-ai/open-artifacts/commit/97678c8061ead9e81e20b5e6307022ec90a926ec))
+
 ## [0.89.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.89.0...v0.89.1) (2026-11-01)
 
 

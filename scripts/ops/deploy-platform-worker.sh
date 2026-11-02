@@ -4,8 +4,10 @@
 # from environment variables into the gitignored wrangler.deploy.jsonc, refuses
 # if any placeholder but the other env's is left, then runs `wrangler deploy --env <env>` with
 # that copy: never a positional entry, never --name. The copy is removed on
-# exit. Values are never echoed.
-# Usage: <PLACEHOLDER VARS> scripts/ops/deploy-platform-worker.sh <app> staging|prod
+# exit. Values are never echoed. DEPLOY_TAG (the release, vX.Y.Z) goes to
+# wrangler as --tag, which Cloudflare keeps as the version's "workers/tag"
+# annotation (scripts/ci/platform-tags.sh reads it back); in CI it is required.
+# Usage: [DEPLOY_TAG=vX.Y.Z] <PLACEHOLDER VARS> scripts/ops/deploy-platform-worker.sh <app> staging|prod
 #   auth-broker: BROKER_REGISTRY_ID=<32 hex> [GOOGLE_CLIENT_ID_PROD=<client id>, prod]
 #   directory-broker: DIRECTORY_REGISTRY_ID=<32 hex> [GOOGLE_DIRECTORY_CLIENT_ID_PROD=<client id>, prod]
 #   dispatch: HOSTS_KV_ID=<32 hex>
@@ -40,6 +42,15 @@ case "$env" in
     exit 2
     ;;
 esac
+
+# The release tag each deployed version carries. In CI it is required (fail
+# closed); outside CI it is optional, and checked when given.
+tag_args=()
+if [ "${GITHUB_ACTIONS:-}" = true ] || [ -n "${DEPLOY_TAG:-}" ]; then
+  [[ "${DEPLOY_TAG:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    { echo "DEPLOY_TAG must be a stable vX.Y.Z release tag" >&2; exit 2; }
+  tag_args=(--tag "$DEPLOY_TAG")
+fi
 
 hex32='^[0-9a-f]{32}$'
 google_id='^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
@@ -202,4 +213,5 @@ if [ "$app" = provisioning ] && [ ! -f dist-assets/index.html ]; then
   exit 1
 fi
 
-pnpm exec wrangler deploy -c "$copy" --env "$env"
+# bash 3.2 (macOS) treats an empty "${a[@]}" as unset under set -u.
+pnpm exec wrangler deploy -c "$copy" --env "$env" ${tag_args[@]+"${tag_args[@]}"}

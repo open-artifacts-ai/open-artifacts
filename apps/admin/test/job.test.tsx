@@ -8,7 +8,6 @@ import {
   jobIsTerminal,
   jobQuery,
 } from "../src/api/queries";
-import { fmtClock } from "../src/components/labels";
 import { FIXTURE_IDS, jobsByStatus } from "../src/mocks/fixtures";
 import { http, json, mock, renderApp, seen, use, writes } from "./harness";
 
@@ -24,15 +23,18 @@ it("shows steps, attempt, the last error in plain words and the next retry", asy
   renderApp(`/jobs/${JOB}`);
   expect(await screen.findByTestId("status")).toHaveTextContent("running");
   expect(steps()).toEqual(["done", "done", "done", "done", "current"]);
-  expect(screen.getByTestId("attempt")).toHaveTextContent("1");
-  expect(screen.getByTestId("retry-at")).toBeInTheDocument();
+  // Attempt 1 is not shown; the code and the retry are.
+  expect(screen.queryByTestId("attempt")).toBeNull();
+  expect(screen.getByTestId("attempt-line")).toHaveTextContent(/^cf_error · /);
+  expect(screen.getByTestId("retry-at")).toHaveTextContent(/^retrying /);
   expect(screen.getByTestId("job-error")).toHaveTextContent(
     /Cloudflare returned an error/,
   );
 });
 
 it("shows Design's step labels, step count and the attempt line", async () => {
-  const retryAt = Date.now() + 60_000;
+  // 75 s out reads "1 min" for anything from 30 s to 90 s, so render time can't move it.
+  const retryAt = Date.now() + 75_000;
   serve({
     ...jobsByStatus.running,
     kind: "create",
@@ -51,7 +53,7 @@ it("shows Design's step labels, step count and the attempt line", async () => {
   expect(
     list.getAllByRole("listitem").map((li) => li.firstChild?.textContent),
   ).toEqual([
-    "Admit",
+    "Queue the job",
     "Check the request",
     "Reserve slug and hosts",
     "Check the release",
@@ -65,8 +67,90 @@ it("shows Design's step labels, step count and the attempt line", async () => {
   ]);
   expect(screen.getByText(/· step 6 of 11/)).toBeInTheDocument();
   expect(screen.getByTestId("attempt-line")).toHaveTextContent(
-    `Attempt 2 · cf_error · next try at ${fmtClock(retryAt)} UTC`,
+    "Attempt 2 · cf_error · retrying in 1 min",
   );
+});
+
+it("shows the attempt only from the second one, and never Attempt 0", async () => {
+  serve({
+    ...jobsByStatus.running,
+    attempt: 1,
+    lastErrorCode: "cf_error",
+    retryAt: Date.now() + 30_000,
+  });
+  const a = renderApp(`/jobs/${JOB}`);
+  expect(await screen.findByTestId("attempt-line")).toHaveTextContent(
+    /^cf_error · retrying in \d+ s$/,
+  );
+  expect(screen.queryByTestId("attempt")).toBeNull();
+  a.unmount();
+
+  serve({
+    ...jobsByStatus.running,
+    attempt: 0,
+    lastErrorCode: null,
+    error: null,
+    retryAt: null,
+  });
+  renderApp(`/jobs/${JOB}`);
+  await screen.findByRole("list", { name: "Steps" });
+  expect(screen.queryByText(/Attempt/)).toBeNull();
+  expect(screen.queryByTestId("attempt-line")).toBeNull();
+});
+
+it("breadcrumb ends at the install, with no trailing slash", async () => {
+  serve(jobsByStatus.running);
+  renderApp(`/jobs/${JOB}`);
+  await screen.findByRole("list", { name: "Steps" });
+  const crumbs = document.querySelector<HTMLElement>(".oa-crumbs");
+  if (!crumbs) throw new Error("no breadcrumb");
+  await waitFor(() =>
+    expect(within(crumbs).getAllByRole("link").at(-1)).toHaveAttribute(
+      "href",
+      `/installs/${jobsByStatus.running.installId}`,
+    ),
+  );
+  expect(crumbs.textContent?.trim()).not.toMatch(/\/$/);
+});
+
+it("a failed job: named by its kind with a Failed chip, no If you cancel or If it fails; the step shows its code", async () => {
+  serve(jobsByStatus.running);
+  const a = renderApp(`/jobs/${JOB}`);
+  expect(
+    await screen.findByRole("heading", { name: "If you cancel" }),
+  ).toBeInTheDocument();
+  a.unmount();
+
+  serve({
+    ...jobsByStatus.failed,
+    kind: "create",
+    installId: FIXTURE_IDS.broken,
+    steps: [...JOB_STEPS.create],
+    stepIndex: 5,
+    attempt: 1,
+    lastErrorCode: "prod_dirty",
+    error: { code: "prod_dirty", message: "verify_clean refused" },
+  });
+  renderApp(`/jobs/${JOB}`);
+  await screen.findByTestId("job-error");
+  expect(screen.queryByRole("heading", { name: "If you cancel" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "If it fails" })).toBeNull();
+  const title = await screen.findByRole("heading", {
+    level: 1,
+    name: "Create broken",
+  });
+  expect(title.parentElement).toHaveTextContent(/Failed$/);
+  const failed = within(screen.getByRole("list", { name: "Steps" }))
+    .getAllByRole("listitem")
+    .find((li) => li.getAttribute("data-step") === "failed");
+  expect(failed).toHaveTextContent("Verify clean");
+  expect(failed?.querySelector("small")).toHaveTextContent(/^prod_dirty$/);
+  // Codes render in mono.
+  expect(failed?.querySelector("small code")).toHaveTextContent("prod_dirty");
+  expect(
+    within(screen.getByTestId("job-error")).getByText("verify_clean refused")
+      .tagName,
+  ).toBe("CODE");
 });
 
 it("a failed create names the step and says nothing was routed; Retry is offered on a failed install", async () => {
@@ -98,7 +182,7 @@ it("shows the attempt line on a queued job waiting for a retry", async () => {
   });
   renderApp(`/jobs/${JOB}`);
   expect(await screen.findByTestId("attempt-line")).toHaveTextContent(
-    /^Attempt 2 · cf_error · next try at \d\d:\d\d UTC$/,
+    /^Attempt 2 · cf_error · retrying in [12] min$/,
   );
 });
 

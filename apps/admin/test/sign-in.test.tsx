@@ -6,6 +6,8 @@ describe("SignIn", () => {
   it("shows the Google button without an error", () => {
     render(<SignIn />);
     const link = screen.getByRole("link", { name: "Sign in with Google" });
+    // The full-size button, not the small one.
+    expect(link).toHaveAttribute("data-size", "lg");
     expect(link).toHaveAttribute("href", "/auth/start?return=%2Finstalls");
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -18,6 +20,8 @@ describe("SignIn", () => {
   ])("shows copy for %s with a way to switch accounts", (error, copy) => {
     render(<SignIn error={error} />);
     expect(screen.getByRole("alert")).toHaveTextContent(copy);
+    // The handoff's warning note, not the red error box.
+    expect(screen.getByRole("alert")).toHaveClass("oa-banner-warn");
     expect(
       screen.getByRole("link", { name: "Use another account?" }),
     ).toBeInTheDocument();

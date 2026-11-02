@@ -2,14 +2,15 @@ import type { Job } from "@oa/shared/provisioning";
 import { Button } from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { Fragment, type ReactNode, useEffect, useState } from "react";
 import { ApiError, api } from "../api/client";
 import { codeCopy, errorCopy } from "../api/errorCopy";
 import { installQuery, jobIsTerminal, jobQuery } from "../api/queries";
 import { ActionDialog } from "../components/ActionDialog";
-import { ErrorLine, StatusBadge } from "../components/Bits";
+import { ErrorLine } from "../components/Bits";
 import {
   fmtClock,
+  fmtIn,
   JOB_VERB,
   shortId,
   stepCount,
@@ -30,13 +31,56 @@ const stepState = (job: Job, index: number) =>
           ? "current"
           : "waiting";
 
-/** "Attempt 2 · cf_error · next try at 11:42" */
-function attemptLine(job: Job) {
-  const parts = [`Attempt ${job.attempt}`];
-  if (job.lastErrorCode) parts.push(job.lastErrorCode);
-  if (job.retryAt && job.status !== "failed")
-    parts.push(`next try at ${fmtClock(job.retryAt)} UTC`);
-  return parts.join(" · ");
+/**
+ * Under the step the job is on: "Attempt 2 · cf_error · retrying in 1 min".
+ * The attempt shows only from the second one; a failed step shows its code.
+ */
+function AttemptLine({ job, now }: { job: Job; now: number }) {
+  const code = job.lastErrorCode ?? job.error?.code ?? null;
+  const retry = job.retryAt && job.status !== "failed" ? job.retryAt : null;
+  const parts: ReactNode[] = [];
+  if (job.attempt > 1)
+    parts.push(
+      <span key="a" data-testid="attempt">
+        Attempt {job.attempt}
+      </span>,
+    );
+  if (code)
+    parts.push(
+      <code key="c" className="oa-code">
+        {code}
+      </code>,
+    );
+  if (retry)
+    parts.push(
+      <span key="r" data-testid="retry-at">
+        {retry > now ? `retrying in ${fmtIn(retry - now)}` : "retrying now"}
+      </span>,
+    );
+  if (!parts.length) return null;
+  return (
+    <small data-testid="attempt-line">
+      {parts.map((p, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: fixed order, at most three parts
+        <Fragment key={i}>
+          {i > 0 && " · "}
+          {p}
+        </Fragment>
+      ))}
+    </small>
+  );
+}
+
+/** Ticks while a retry is pending, so "retrying in 1 min" stays true between polls. */
+function useNow(active: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 5_000);
+    return () => clearInterval(t);
+  }, [active]);
+  return now;
 }
 
 export function JobPage({ id }: { id: string }) {
@@ -49,6 +93,7 @@ export function JobPage({ id }: { id: string }) {
   });
   const slug = install.data?.slug;
   const [confirming, setConfirming] = useState(false);
+  const now = useNow(!!job?.retryAt && !jobIsTerminal(job.status));
   const cancel = useAction(
     (_: void, requestId) =>
       api.call("R25", {
@@ -93,27 +138,34 @@ export function JobPage({ id }: { id: string }) {
   const routeAt = job.steps.indexOf("route");
   const code = job.lastErrorCode ?? job.error?.code ?? null;
   const verb = JOB_VERB[job.kind];
-  const now = Date.now();
   return (
     <>
       <p className="oa-crumbs">
         <Link to="/installs">Installs</Link> /{" "}
         <Link to="/installs/$id" params={{ id: job.installId }}>
           {slug ?? job.installId}
-        </Link>{" "}
-        /
+        </Link>
       </p>
-      <div className="oa-head">
+      <div className="oa-head oa-head-loose">
         <div style={{ flex: 1 }}>
-          <h1>
-            {verb.ing} {slug ?? ""}
-          </h1>
+          {/* Running: "Creating broken". Ended: the job's name, "Create broken". */}
+          <div className="oa-title-row">
+            <h1>
+              {live ? verb.ing : verb.noun} {slug ?? ""}
+            </h1>
+            {job.status === "failed" && (
+              <span className="oa-chip oa-chip-danger">Failed</span>
+            )}
+          </div>
           <p className="oa-sub">
-            Job {shortId(job.id)} · started {fmtClock(job.createdAt)} by{" "}
-            {job.actor.label} · step {n} of {of}
+            Job <span className="oa-code">{shortId(job.id)}</span> · started{" "}
+            {fmtClock(job.createdAt)} by {job.actor.label} · step {n} of {of}
+            <span className="sr-only" data-testid="status">
+              {" "}
+              · {job.status}
+            </span>
           </p>
         </div>
-        <StatusBadge status={job.status} />
         {live && (
           <Button
             variant="outline"
@@ -126,39 +178,32 @@ export function JobPage({ id }: { id: string }) {
       </div>
       <div className="oa-split">
         <div>
-          <ol className="oa-steps" aria-label="Steps">
-            {shown.map((s) => {
-              const st = stepState(job, s.index);
-              return (
-                <li key={s.id} data-step={st}>
-                  {s.label}
-                  {(st === "current" || (live && s.index === job.stepIndex)) &&
-                    job.lastErrorCode && (
-                      <small data-testid="attempt-line">
-                        {attemptLine(job)}
-                      </small>
-                    )}
-                </li>
-              );
-            })}
-          </ol>
-          <dl className="oa-fields">
-            <dt>Attempt</dt>
-            <dd data-testid="attempt">{job.attempt}</dd>
-            {job.retryAt && live && (
-              <>
-                <dt>Next retry</dt>
-                <dd data-testid="retry-at">at {fmtClock(job.retryAt)} UTC</dd>
-              </>
-            )}
-          </dl>
+          <div className="oa-card oa-steps-card">
+            <ol className="oa-steps" aria-label="Steps">
+              {shown.map((s) => {
+                const st = stepState(job, s.index);
+                return (
+                  <li key={s.id} data-step={st}>
+                    {s.label}
+                    {(st === "current" ||
+                      st === "failed" ||
+                      (live && s.index === job.stepIndex)) &&
+                      (job.lastErrorCode || job.error) && (
+                        <AttemptLine job={job} now={now} />
+                      )}
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
           {job.status === "failed" && (
             <div className="oa-error" role="alert" data-testid="job-error">
               <p>
                 <strong>
                   {verb.noun} stopped
                   {stoppedAt ? ` at "${stoppedAt.label}"` : ""}
-                  {code ? `: ${code}` : ""}.
+                  {code ? ": " : ""}
+                  {code && <code>{code}</code>}.
                 </strong>
                 {job.kind === "create" &&
                 routeAt >= 0 &&
@@ -167,7 +212,11 @@ export function JobPage({ id }: { id: string }) {
                   : ""}
               </p>
               {codeCopy(code) && <p>{codeCopy(code)}</p>}
-              {job.error && <p>{job.error.message}</p>}
+              {job.error && (
+                <p>
+                  <code>{job.error.message}</code>
+                </p>
+              )}
               {job.kind === "create" && install.data?.state === "failed" && (
                 <>
                   <Button
@@ -186,21 +235,36 @@ export function JobPage({ id }: { id: string }) {
           {live && job.lastErrorCode && (
             <div className="oa-error" data-testid="job-error">
               <strong>Last error</strong>
-              <p>{codeCopy(job.lastErrorCode) ?? job.lastErrorCode}</p>
-              {job.error && <p>{job.error.message}</p>}
+              <p>
+                {codeCopy(job.lastErrorCode) ?? (
+                  <code>{job.lastErrorCode}</code>
+                )}
+              </p>
+              {job.error && (
+                <p>
+                  <code>{job.error.message}</code>
+                </p>
+              )}
             </div>
           )}
         </div>
-        <aside className="oa-side">
-          <h2>If you cancel</h2>
-          <p>
-            The job stops now and a cleanup job undoes what it did. Type the
-            slug to confirm.
-          </p>
-          <h2>If it fails</h2>
-          <p>Nothing is routed. Retry from the install.</p>
-          {live && <p className="oa-note">Updating every 2 seconds.</p>}
-        </aside>
+        {/* Once the job has failed there is nothing left to say here. */}
+        {job.status !== "failed" && (
+          <aside className="oa-side oa-job-side">
+            {live && (
+              <>
+                <h2>If you cancel</h2>
+                <p>
+                  The job stops now and a cleanup job undoes what it did. Type
+                  the slug to confirm.
+                </p>
+              </>
+            )}
+            <h2>If it fails</h2>
+            <p>Nothing is routed. Retry from the install.</p>
+            {live && <p className="oa-note">Updating every 2 seconds.</p>}
+          </aside>
+        )}
       </div>
       {confirming && install.data && (
         <ActionDialog

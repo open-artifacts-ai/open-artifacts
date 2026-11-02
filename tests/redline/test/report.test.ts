@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  ID_TOKEN_CASES,
+  ID_TOKEN_DESCRIBE,
+  NEEDS_CAPTURE,
+} from "../src/capture.ts";
+import {
+  ACCEPTED_UNPROVEN,
   buildReport,
   type CaseResult,
   exitCode,
@@ -15,6 +21,10 @@ import {
   label,
   labelOf,
   levelOf,
+  PRE_PROD_GUARD,
+  PRE_PROD_GUARD_REASON,
+  PRE_PROD_NA,
+  PRE_PROD_REASON,
   proof,
   type Report,
   redactReason,
@@ -134,6 +144,201 @@ describe("gate", () => {
     expect(gatePasses([c("a", "pass"), c("b", "pass")])).toBe(true);
     for (const l of LEVELS.filter((x) => x !== "pass"))
       expect(gatePasses([c("a", "pass"), c("b", l)]), l).toBe(false);
+  });
+
+  // #1012 (design 5.8): only the frozen prod-host probes, only with the
+  // not-resolved reason, count as a pass before the prod deploy.
+  it("accepts a pre-prod not-applicable only for the frozen prod-host probes", () => {
+    expect(PRE_PROD_NA).toEqual(["P7", "P46"]);
+    expect(Object.isFrozen(PRE_PROD_NA)).toBe(true);
+    const na = (
+      name: string,
+      reason = PRE_PROD_REASON,
+      file = "live/provisioning.test.ts",
+    ): CaseResult => ({
+      name,
+      file,
+      level: "not-applicable",
+      reason,
+    });
+    const ok = c("a", "pass");
+    expect(
+      gatePasses([
+        ok,
+        na("provisioning > P7: staging OIDC against prod /v1/me: 401"),
+      ]),
+    ).toBe(true);
+    expect(
+      gatePasses([
+        ok,
+        na("provisioning > P46: staging OIDC on prod /mcp: 401"),
+      ]),
+    ).toBe(true);
+    for (const bad of [
+      na("provisioning > P29: self-serve"),
+      na("provisioning > P70: lookalike"),
+      na("provisioning > P7: x", "dispatch runs only"),
+      na("provisioning > P7: x", PRE_PROD_REASON, "live/live.test.ts"),
+      { ...na("provisioning > P7: x"), level: "unproven-live" as const },
+    ])
+      expect(gatePasses([ok, bad]), JSON.stringify(bad)).toBe(false);
+  });
+
+  // The unproven-live cases a non-live in-repo test covers, frozen by exact
+  // name and reason (P29 for M1 only, until #1046).
+  describe("accepted unproven-live", () => {
+    const NAMES = [
+      "provisioning > P29: SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete leaves it deleting",
+      "provisioning > P30: dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens",
+      "provisioning > P35: reachable path: a Worker without a route fetches rl-a /healthz",
+      "sign-in: ID tokens > an ID token with hd of A at B's callback: no session",
+      "sign-in: ID tokens > A's code and broker state at B: no session",
+    ];
+    const REASONS = [
+      "self-serve purge doesn't free signup_accounts (#1046); signups off on prod",
+      "5 forged callbacks refused; the alert is not readable by O (R27 and other actors' R17 rows are 403)",
+      "needs a Worker with no route (spike S7); the runner cannot stand in for it",
+      NEEDS_CAPTURE,
+      NEEDS_CAPTURE,
+    ];
+    const listed = () =>
+      ACCEPTED_UNPROVEN.map((e) => c(e.name, "unproven-live", e.reason));
+    const ok = c("a", "pass");
+
+    it("is exactly the five, frozen, each citing a test file", () => {
+      expect(ACCEPTED_UNPROVEN).toHaveLength(5);
+      expect(ACCEPTED_UNPROVEN.map((e) => e.name)).toEqual(NAMES);
+      expect(ACCEPTED_UNPROVEN.map((e) => e.reason)).toEqual(REASONS);
+      expect(Object.isFrozen(ACCEPTED_UNPROVEN)).toBe(true);
+      for (const e of ACCEPTED_UNPROVEN) {
+        expect(Object.isFrozen(e)).toBe(true);
+        expect(e.evidence).toMatch(/test\.ts "[^"]+"/);
+      }
+    });
+
+    it("the ID-token entries are the capture cases with the needs-capture reason", () => {
+      expect(NAMES.slice(3)).toEqual(
+        Object.values(ID_TOKEN_CASES).map((n) => `${ID_TOKEN_DESCRIBE} > ${n}`),
+      );
+    });
+
+    it("the gate passes with exactly these unproven, and says so", () => {
+      const r = buildReport([ok, ...listed()]);
+      expect(r.gate).toEqual({
+        passed: true,
+        reason: "every case passed but 5 accepted unproven-live",
+      });
+      expect(exitCode(r, true)).toBe(0);
+    });
+
+    it("a listed name and reason in another live file is not accepted", () => {
+      for (const e of ACCEPTED_UNPROVEN) {
+        const here = {
+          ...c(e.name, "unproven-live", e.reason),
+          file: `live/${e.file}`,
+        };
+        const elsewhere = { ...here, file: "live/copied.test.ts" };
+        expect(gatePasses([ok, here])).toBe(true);
+        expect(gatePasses([ok, elsewhere])).toBe(false);
+      }
+      expect(ACCEPTED_UNPROVEN.map((e) => e.file)).toEqual([
+        "provisioning.test.ts",
+        "provisioning.test.ts",
+        "provisioning.test.ts",
+        "signin.test.ts",
+        "signin.test.ts",
+      ]);
+    });
+
+    it("any other unproven-live fails the gate", () => {
+      for (const bad of [
+        c(NAMES[0] as string, "unproven-live", "an older P29 reason"),
+        c(NAMES[0] as string, "unproven-live", "something else"),
+        c(`${NAMES[1]} `, "unproven-live", REASONS[1]),
+        c(NAMES[2] as string, "unproven-live"),
+      ]) {
+        const r = buildReport([ok, ...listed(), bad]);
+        expect(r.gate.passed, JSON.stringify(bad)).toBe(false);
+        expect(r.gate.reason).toBe(
+          '1 of 7 cases are not "pass"; 5 accepted unproven-live',
+        );
+      }
+    });
+
+    it("a listed case at another level fails the gate", () => {
+      for (const level of ["fail", "not-applicable", "staging-only"] as const)
+        expect(
+          gatePasses([ok, c(NAMES[1] as string, level, REASONS[1])]),
+          level,
+        ).toBe(false);
+      const r = buildReport([ok, c(NAMES[1] as string, "fail", REASONS[1])]);
+      expect(formatReport(r)).toContain(`Not pass:\n  [fail] ${NAMES[1]}`);
+    });
+
+    it("the text lists them under their own section with the evidence, not under Not pass", () => {
+      const r = buildReport([
+        ok,
+        ...listed(),
+        c("prodClean", "fail", "status 404"),
+      ]);
+      const t = formatReport(r);
+      const [notPass, rest] = t.split("Accepted unproven-live:\n");
+      expect(notPass).toContain("Not pass:\n  [fail] prodClean (status 404)\n");
+      for (const e of ACCEPTED_UNPROVEN) {
+        expect(notPass).not.toContain(e.name);
+        expect(rest).toContain(
+          `  ${e.name} (${e.reason})\n      evidence: ${e.evidence}\n`,
+        );
+      }
+      expect(t).toContain(
+        'Gate: FAIL (1 of 7 cases are not "pass"; 5 accepted unproven-live)',
+      );
+    });
+  });
+
+  // The guard's prod-clean case: exact file, exact name, exact reason.
+  it("accepts the guard's pre-prod not-applicable only as frozen", () => {
+    expect(PRE_PROD_GUARD).toEqual({
+      file: "live/guard.test.ts",
+      name: "guard > prod is clean (no test hooks on any prod install)",
+    });
+    expect(Object.isFrozen(PRE_PROD_GUARD)).toBe(true);
+    const g: CaseResult = {
+      ...PRE_PROD_GUARD,
+      level: "not-applicable",
+      reason: PRE_PROD_GUARD_REASON,
+    };
+    const ok = c("a", "pass");
+    expect(gatePasses([ok, g])).toBe(true);
+    const r = buildReport([ok, g]);
+    expect(r.nonPass).toEqual([g]);
+    expect(formatReport(r)).toContain(
+      `[not-applicable] ${PRE_PROD_GUARD.name} (${PRE_PROD_GUARD_REASON})`,
+    );
+    const { file: _f, ...noFile } = g;
+    for (const bad of [
+      { ...g, file: "live/provisioning.test.ts" },
+      { ...g, file: "live/live.test.ts" },
+      { ...g, file: "x/live/guard.test.ts" },
+      noFile,
+      { ...g, name: `${g.name} ` },
+      {
+        ...g,
+        name: "guard > both targets report ok, testHooks: true and their own installId",
+      },
+      { ...g, reason: PRE_PROD_REASON },
+      { ...g, reason: "local mode" },
+      { ...g, level: "unproven-live" as const },
+      { ...g, level: "fail" as const },
+      // The guard reason never widens the P7/P46 rule either.
+      {
+        name: "provisioning > P7: x",
+        file: "live/provisioning.test.ts",
+        level: "not-applicable" as const,
+        reason: PRE_PROD_GUARD_REASON,
+      },
+    ])
+      expect(gatePasses([ok, bad]), JSON.stringify(bad)).toBe(false);
   });
 
   it("an empty run never passes", () => {

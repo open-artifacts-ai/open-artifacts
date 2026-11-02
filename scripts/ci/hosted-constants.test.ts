@@ -139,14 +139,15 @@ describe(".github/hosted/<env>.json", () => {
   });
   // The Manager's values (2026-10-31), filled into the provisioner's and the
   // scheduler's placeholders.
-  it("signups stay closed, the caps and alert addresses are the Manager's", () => {
+  // Design 155 and M4: prod stays closed; staging opens self-serve to the
+  // OIDC test users only (#1012, P29).
+  it("prod signups stay closed, staging admits test users only; the caps and alert addresses are the Manager's", () => {
     expect(read("prod").signup_daily_cap).toBe(50);
     expect(read("staging").signup_daily_cap).toBe(20);
-    for (const env of ["prod", "staging"]) {
-      const c = read(env);
-      expect(c.signups_enabled, env).toBe("false");
-      expect(c.alert_to, env).toBe("me@leourbina.com");
-    }
+    expect(read("prod").signups_enabled).toBe("false");
+    expect(read("staging").signups_enabled).toBe("test-users");
+    for (const env of ["prod", "staging"])
+      expect(read(env).alert_to, env).toBe("me@leourbina.com");
   });
   // Email Sending only sends from an onboarded domain: mail.<app_zone> (#967),
   // never the apex.

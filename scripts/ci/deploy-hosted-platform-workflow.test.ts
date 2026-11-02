@@ -5,6 +5,7 @@
 // tag's code.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -22,16 +23,112 @@ const steps: Record<string, any>[] = job.steps;
 const named = (n: string) =>
   steps.find((s) => s.name === n) as Record<string, any>;
 
+const FULL =
+  "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones";
+
 describe("deploy-hosted-platform.yml", () => {
-  it("defaults to scheduler only once both envs commit alert_to (it refuses without one)", () => {
-    const def: string[] =
-      w.on.workflow_dispatch.inputs.targets.default.split(",");
-    const alertTo = ["staging", "prod"].every(
-      (e) =>
+  it("one version (#1040): the default is every target, in order; required", () => {
+    const t = w.on.workflow_dispatch.inputs.targets;
+    expect(t.default).toBe(FULL);
+    expect(t.required).toBe(true);
+    // The order the input check enforces.
+    const check = named("Check the inputs").run as string;
+    expect(/order="([^"]+)"/.exec(check)?.[1]?.split(" ").join(",")).toBe(FULL);
+    // The scheduler refuses without alert_to, so both envs commit one.
+    for (const e of ["staging", "prod"])
+      expect(
         JSON.parse(readFileSync(join(root, `.github/hosted/${e}.json`), "utf8"))
-          .alert_to !== undefined,
+          .alert_to,
+        e,
+      ).toBeDefined();
+  });
+  it("names each run after its env and tag", () => {
+    expect(w["run-name"]).toBe(
+      "deploy-hosted-platform ${{ inputs.env }} ${{ inputs.tag }}",
     );
-    expect(def.includes("scheduler")).toBe(alertTo);
+  });
+  it("break-glass: fewer targets need a reason, checked before any checkout; verify_only is exempt", () => {
+    expect(w.on.workflow_dispatch.inputs.reason).toMatchObject({
+      type: "string",
+      default: "",
+    });
+    const c = named("Check the inputs");
+    expect(steps.indexOf(c)).toBe(0);
+    expect(c.env).toEqual({
+      TAG: "${{ inputs.tag }}",
+      TARGETS: "${{ inputs.targets }}",
+      REASON: "${{ inputs.reason }}",
+      VERIFY_ONLY: "${{ inputs.verify_only }}",
+    });
+    const go = (TARGETS: string, REASON: string, VERIFY_ONLY = "false") =>
+      spawnSync("bash", ["-c", c.run], {
+        env: {
+          PATH: process.env.PATH,
+          TAG: "v0.90.3",
+          TARGETS,
+          REASON,
+          VERIFY_ONLY,
+        },
+        encoding: "utf8",
+      });
+    expect(go(FULL, "").status).toBe(0);
+    const no = go("dispatch", "");
+    expect(no.status).toBe(1);
+    expect(no.stdout).toContain("need a reason");
+    expect(go("dispatch", "   ").status).toBe(1);
+    expect(go("dispatch", "hotfix #1040: dispatch 5xx").status).toBe(0);
+    // verify_only deploys nothing: no reason needed.
+    expect(go("dispatch", "", "true").status).toBe(0);
+    expect(go("dispatch", "x".repeat(501)).status).toBe(1);
+    expect(go("dispatch", "two\nlines").status).toBe(1);
+  });
+  it("break-glass opens an issue with the reason, the run and the actor; not for verify_only or the full list", () => {
+    const r = named("Record the break-glass deploy");
+    expect(r.if).toBe(
+      `\${{ !inputs.verify_only && inputs.targets != '${FULL}' }}`,
+    );
+    const i = (n: string) => steps.indexOf(named(n));
+    // After the release gate and the main check, before anything deploys.
+    expect(i("Record the break-glass deploy")).toBeGreaterThan(
+      i("Prod runs only from main"),
+    );
+    expect(i("Record the break-glass deploy")).toBeLessThan(
+      i("Deploy and verify"),
+    );
+    expect(r.env).toEqual({
+      DEPLOY_ENV: "${{ inputs.env }}",
+      TAG: "${{ inputs.tag }}",
+      TARGETS: "${{ inputs.targets }}",
+      REASON: "${{ inputs.reason }}",
+      ACTOR: "${{ github.actor }}",
+      RUN_URL:
+        "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+      GH_TOKEN: "${{ github.token }}",
+    });
+    expect(JSON.stringify(r)).not.toMatch(/secrets\.|email/i);
+    const run = r.run as string;
+    expect(run).toContain(
+      'gh issue create --repo "$GITHUB_REPOSITORY" --title "Break-glass platform deploy: $DEPLOY_ENV $TAG $TARGETS" --body-file "$body"',
+    );
+    // The body, as the step writes it (gh stubbed out).
+    const body = spawnSync(
+      "bash",
+      ["-c", `${run.replace(/^gh issue create.*$/m, 'cat "$body"')}`],
+      {
+        env: {
+          PATH: process.env.PATH,
+          RUNNER_TEMP: tmpdir(),
+          REASON: "dispatch 5xx %s",
+          RUN_URL: "https://github.com/o/r/actions/runs/1",
+          ACTOR: "someone",
+        },
+        encoding: "utf8",
+      },
+    );
+    expect(body.status).toBe(0);
+    expect(body.stdout).toBe(
+      "Reason: dispatch 5xx %s\n\nRun: https://github.com/o/r/actions/runs/1\n\nActor: someone\n",
+    );
   });
   it("runs only on dispatch, read-only, one at a time, in the env's Environment", () => {
     expect(Object.keys(w.on)).toEqual(["workflow_dispatch"]);
@@ -53,6 +150,7 @@ describe("deploy-hosted-platform.yml", () => {
     });
     expect(Object.keys(inputs).sort()).toEqual([
       "env",
+      "reason",
       "tag",
       "targets",
       "verify_only",
@@ -109,7 +207,7 @@ describe("deploy-hosted-platform.yml", () => {
     );
     // The constants and the id lookup are main's too, never the tag's.
     expect(use).toContain(
-      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh; do",
+      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh platform-tags.sh; do",
     );
     expect(use).toContain(
       'cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"',
@@ -191,7 +289,7 @@ describe("deploy-hosted-platform.yml", () => {
       expect(named("Deploy and verify").env[k], k).toBeUndefined();
   });
 
-  it("only the id lookup, deploy and zones steps see secrets, through env, exactly these", () => {
+  it("only the id lookup, deploy, zones, tag read-back and expiry steps see secrets, through env, exactly these", () => {
     const withSecrets = steps.filter((s) =>
       JSON.stringify(s).includes("secrets."),
     );
@@ -199,6 +297,7 @@ describe("deploy-hosted-platform.yml", () => {
       "Resolve the resource ids",
       "Deploy and verify",
       "Zones",
+      "Every platform Worker runs the tag",
       "The deploy token's expiry",
     ]);
     // One Cloudflare token for everything; the old names are gone.
@@ -215,6 +314,7 @@ describe("deploy-hosted-platform.yml", () => {
       .map(([k]) => k)
       .sort();
     expect(secrets).toEqual([
+      "ADMIN_IDENTITIES",
       "CLOUDFLARE_API_TOKEN",
       "GOOGLE_CLIENT_SECRET",
       "GOOGLE_DIRECTORY_CLIENT_SECRET",
@@ -228,6 +328,11 @@ describe("deploy-hosted-platform.yml", () => {
       "${{ secrets.CLOUDFLARE_API_TOKEN }}",
     );
     expect(env.VERIFY_ONLY).toBe("${{ inputs.verify_only && '1' || '' }}");
+    // Every Worker version is tagged with the release (#1040): the wrapper
+    // passes DEPLOY_TAG to wrangler deploy --tag.
+    expect(env.DEPLOY_TAG).toBe("${{ inputs.tag }}");
+    // #1007: the admin allowlist is the Environment's secret, never committed.
+    expect(env.ADMIN_IDENTITIES).toBe("${{ secrets.ADMIN_IDENTITIES }}");
     expect(named("Deploy and verify").run).not.toContain("secrets.");
     expect(named("Deploy and verify").run).toContain(
       'bash scripts/ops/deploy-hosted-platform.sh "$DEPLOY_ENV" "$t"',
@@ -289,7 +394,7 @@ describe("deploy-hosted-platform.yml", () => {
     const check = named("Check the inputs").run as string;
     const go = (TAG: string, TARGETS: string) =>
       spawnSync("bash", ["-c", check], {
-        env: { PATH: process.env.PATH, TAG, TARGETS },
+        env: { PATH: process.env.PATH, TAG, TARGETS, REASON: "test" },
         encoding: "utf8",
       }).status;
     expect(
@@ -426,6 +531,28 @@ describe("deploy-hosted-platform.yml", () => {
       .run as string;
     for (const p of ["@oa/provisioner", "@oa/provisioning", "@oa/admin"])
       expect(run).toContain(`--filter ${p}`);
+  });
+
+  it("reads every Worker's tag back with main's script after a full-list run (#1064)", () => {
+    const t = named("Every platform Worker runs the tag");
+    // The condition follows the input's default, read from the YAML: a target
+    // added to the default without the condition fails here, never silently
+    // skips the read-back.
+    expect(t.if).toBe(
+      `\${{ inputs.targets == '${w.on.workflow_dispatch.inputs.targets.default}' }}`,
+    );
+    expect(t.run).toBe(
+      'bash "$RUNNER_TEMP/main-ci/platform-tags.sh" "$DEPLOY_ENV" "$TAG"',
+    );
+    expect(t.env).toEqual({
+      DEPLOY_ENV: "${{ inputs.env }}",
+      TAG: "${{ inputs.tag }}",
+      CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+    });
+    expect(steps.indexOf(named("Zones"))).toBeLessThan(steps.indexOf(t));
+    expect(steps.indexOf(t)).toBeLessThan(
+      steps.indexOf(named("The deploy token's expiry")),
+    );
   });
 
   it("passes the repository id for the OIDC principals, and reads back the token's expiry last", () => {

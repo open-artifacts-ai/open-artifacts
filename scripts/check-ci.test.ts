@@ -872,8 +872,39 @@ describe("prod and staging tokens never cross", () => {
           }
         }
       }
-      if (isProd && r.has("CLOUDFLARE_API_TOKEN"))
-        bad.push(`${f}: prod workflow uses CLOUDFLARE_API_TOKEN`);
+      // Exception: hosted prod's Environment, hosted-prod-deploy, names its
+      // one token CLOUDFLARE_API_TOKEN; a job there may use it, never the
+      // PROD secret too.
+      if (isProd && r.has("CLOUDFLARE_API_TOKEN")) {
+        const doc = parse(readFileSync(join(base, f), "utf8")) as Record<
+          string,
+          unknown
+        >;
+        const { jobs: rawJobs, ...outside } = doc;
+        // Any secret outside a job (top-level env, defaults): the old blanket rule.
+        if (
+          /secrets\.(PROD_)?CLOUDFLARE_API_TOKEN/.test(JSON.stringify(outside))
+        )
+          bad.push(
+            `${f}: prod workflow uses CLOUDFLARE_API_TOKEN outside a job`,
+          );
+        const jobs = (rawJobs ?? {}) as Record<
+          string,
+          { environment?: unknown }
+        >;
+        for (const [name, job] of Object.entries(jobs)) {
+          const s = JSON.stringify(job);
+          if (!/secrets\.CLOUDFLARE_API_TOKEN/.test(s)) continue;
+          const env =
+            typeof job.environment === "object" && job.environment !== null
+              ? (job.environment as { name?: unknown }).name
+              : job.environment;
+          if (env !== "hosted-prod-deploy")
+            bad.push(`${f}: prod workflow uses CLOUDFLARE_API_TOKEN`);
+          else if (s.includes("secrets.PROD_CLOUDFLARE_API_TOKEN"))
+            bad.push(`${f}: job ${name} mixes PROD and hosted tokens`);
+        }
+      }
     }
     return bad;
   };
@@ -1147,6 +1178,44 @@ describe("prod and staging tokens never cross", () => {
       "on: push\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: x\n        env:\n          A: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}\n",
     );
     expect(violations(tmp)).toHaveLength(2);
+  });
+  it("lets a prod workflow use CLOUDFLARE_API_TOKEN only in hosted-prod-deploy, alone", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "wf-"));
+    const job = (envName: string, extra = "") =>
+      `on: push\njobs:\n  j:\n    runs-on: x\n${envName ? `    environment: ${envName}\n` : ""}    steps:\n      - run: x\n        env:\n          A: \${{ secrets.CLOUDFLARE_API_TOKEN }}\n${extra}`;
+    writeFileSync(join(tmp, "prod-ok.yml"), job("hosted-prod-deploy"));
+    expect(violations(tmp)).toEqual([]);
+    writeFileSync(join(tmp, "prod-staging.yml"), job("hosted-staging-deploy"));
+    writeFileSync(
+      join(tmp, "prod-mixed.yml"),
+      job(
+        "hosted-prod-deploy",
+        "          B: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}\n",
+      ),
+    );
+    expect(violations(tmp).sort()).toEqual([
+      "prod-mixed.yml: job j mixes PROD and hosted tokens",
+      "prod-staging.yml: prod workflow uses CLOUDFLARE_API_TOKEN",
+    ]);
+  });
+  it("a prod workflow's token outside a job still fails; the object environment form is allowed", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "wf-"));
+    writeFileSync(
+      join(tmp, "prod-top.yml"),
+      "on: push\nenv:\n  X: ${{ secrets.CLOUDFLARE_API_TOKEN }}\njobs:\n  j:\n    runs-on: x\n    environment: hosted-prod-deploy\n    steps:\n      - run: x\n",
+    );
+    writeFileSync(
+      join(tmp, "prod-topmix.yml"),
+      "on: push\nenv:\n  P: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}\njobs:\n  j:\n    runs-on: x\n    environment: hosted-prod-deploy\n    steps:\n      - run: x\n        env:\n          A: ${{ secrets.CLOUDFLARE_API_TOKEN }}\n",
+    );
+    writeFileSync(
+      join(tmp, "prod-obj.yml"),
+      "on: push\njobs:\n  j:\n    runs-on: x\n    environment:\n      name: hosted-prod-deploy\n    steps:\n      - run: x\n        env:\n          A: ${{ secrets.CLOUDFLARE_API_TOKEN }}\n",
+    );
+    expect(violations(tmp).sort()).toEqual([
+      "prod-top.yml: prod workflow uses CLOUDFLARE_API_TOKEN outside a job",
+      "prod-topmix.yml: prod workflow uses CLOUDFLARE_API_TOKEN outside a job",
+    ]);
   });
 });
 

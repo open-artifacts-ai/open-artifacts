@@ -22,8 +22,12 @@ async function startMocks() {
   ]);
   // ?mock=unauth: GET /api/v1/me answers 401.
   // ?mock=fresh: the admin signed in just now (a purge needs a fresh sign-in).
+  // ?mock=empty: no installs yet.
+  // ?mock=running: every job is mid-run, retrying after a Cloudflare error.
   const flag = new URLSearchParams(location.search).get("mock");
-  const { fixtureMe } = await import("@oa/shared/provisioning/fixtures");
+  const { fixtureMe, fixtureWorld } = await import(
+    "@oa/shared/provisioning/fixtures"
+  );
   const extra =
     flag === "unauth"
       ? [
@@ -58,7 +62,49 @@ async function startMocks() {
               ),
             ),
           ]
-        : [];
+        : flag === "empty"
+          ? [
+              http.get("*/api/v1/installs", () =>
+                HttpResponse.json({ items: [], nextCursor: null }),
+              ),
+              http.get("*/api/v1/world", () => {
+                const w = fixtureWorld();
+                return HttpResponse.json({
+                  ...w,
+                  installs: {
+                    total: 0,
+                    byState: Object.fromEntries(
+                      Object.keys(w.installs.byState).map((k) => [k, 0]),
+                    ),
+                    byServingMode: Object.fromEntries(
+                      Object.keys(w.installs.byServingMode).map((k) => [k, 0]),
+                    ),
+                    byHealth: Object.fromEntries(
+                      Object.keys(w.installs.byHealth).map((k) => [k, 0]),
+                    ),
+                    items: [],
+                  },
+                  jobs: { active: 0, failed24h: 0, recent: [] },
+                  attention: [],
+                });
+              }),
+            ]
+          : flag === "running"
+            ? [
+                http.get("*/api/v1/jobs/:jobId", async ({ params }) => {
+                  const { jobsByStatus } = await import("./mocks/fixtures");
+                  return HttpResponse.json({
+                    ...jobsByStatus.running,
+                    id: params.jobId,
+                    attempt: 2,
+                    lastErrorCode: "cf_error",
+                    createdAt: Date.now() - 90_000,
+                    startedAt: Date.now() - 85_000,
+                    retryAt: Date.now() + 4 * 60_000,
+                  });
+                }),
+              ]
+            : [];
   // The browser clock, so a token minted here is live; one OAuth grant is seeded
   // so the page shows both kinds. Unit tests keep the mock's fixed clock.
   const at = Date.now();

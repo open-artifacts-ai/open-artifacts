@@ -46,9 +46,14 @@ export function fakeProvisionerRpc(
   const calls: FakeProvisionerRpc["calls"] = [];
   return {
     calls,
-    async releases() {
-      calls.push({ method: "releases" });
-      return structuredClone(o.releases ?? FAKE_RELEASES);
+    async releases(q) {
+      calls.push({ method: "releases", arg: q });
+      const all = structuredClone(o.releases ?? FAKE_RELEASES);
+      return q?.version === undefined
+        ? all
+        : all
+            .filter((r) => r.version === q.version)
+            .map((r) => ({ ...r, latest: false }));
     },
     async verifyTurnstile(i) {
       calls.push({ method: "verifyTurnstile", arg: i });

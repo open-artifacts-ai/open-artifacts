@@ -33,7 +33,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # One version everywhere (#1040): the red-line suite refuses to start unless
+  # every staging platform Worker runs the tag (its "workers/tag" annotation,
+  # scripts/ci/platform-tags.sh). Read-only, with main's script and constants
+  # and the staging deploy Environment's token; no other job sees it.
+  platform-tags:
+    runs-on: ubuntu-latest
+    environment: hosted-staging-deploy
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      # main's scripts and constants only (the Environment also allows main only).
+      - name: On main
+        env:
+          REF: ${{ github.ref }}
+        run: '[ "$REF" = refs/heads/main ] || { echo "dispatch redline-staging on main"; exit 1; }'
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            scripts/ci
+            .github/hosted
+          persist-credentials: false
+      - name: Load the hosted constants
+        run: bash scripts/ci/hosted-constants.sh staging .github/hosted > /dev/null
+      - name: Every staging platform Worker runs the tag
+        env:
+          TAG: ${{ inputs.tag }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash scripts/ci/platform-tags.sh staging "$TAG"
   redline:
+    needs: platform-tags
     runs-on: ubuntu-latest
     environment: redline-staging
     # The OIDC principal (4.4): this job only, never the workflow.
@@ -184,7 +215,7 @@ jobs:
           set -euo pipefail
           unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL+x}${ACTIONS_ID_TOKEN_REQUEST_TOKEN+x}" ]; then echo "T19 can reach the OIDC request variables"; exit 1; fi
-          export T19_EXPECT_VERSION="$REDLINE_RELEASE"
+          # No version pin: leo lags the tag (#1039); the pin returns once #955 keeps leo current.
           pnpm --filter @oa/dashboard exec playwright test -c playwright.staging.config.ts
       # Artifacts are not masked: a secret echoed into a report stops the upload.
       - id: scan

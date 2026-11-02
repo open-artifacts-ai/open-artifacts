@@ -1,0 +1,42 @@
+# Reads prod's platform D1 schema, read-only, by hand only
+# (docs/ops/hosted.md): the DDL in sqlite_master and the applied
+# d1_migrations, through scripts/ci/prod-inspect.sh, which runs only its two
+# fixed statements. Job logs are public: it prints DDL and migration names,
+# never rows or counts. Only main may run it, in the prod Environment.
+name: prod-inspect
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prod-inspect
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: hosted-prod-deploy
+    timeout-minutes: 5
+    steps:
+      - name: On main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          [ "$REF" = refs/heads/main ] || { echo "dispatch prod-inspect on main"; exit 1; }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            scripts/ci
+            .github/hosted
+          persist-credentials: false
+      # main's committed constants; only CLOUDFLARE_ACCOUNT_ID is used.
+      - name: Load the hosted constants
+        run: bash scripts/ci/hosted-constants.sh prod .github/hosted > /dev/null
+      - name: Read the schema
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash scripts/ci/prod-inspect.sh

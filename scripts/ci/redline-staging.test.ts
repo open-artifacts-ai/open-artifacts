@@ -47,7 +47,7 @@ describe("redline-staging.yml", () => {
     expect(Object.keys(w.on)).toEqual(["workflow_dispatch"]);
     expect(w.on.workflow_dispatch.inputs.tag.required).toBe(true);
     expect(w.permissions).toEqual({ contents: "read" });
-    expect(Object.keys(w.jobs)).toEqual(["redline"]);
+    expect(Object.keys(w.jobs)).toEqual(["platform-tags", "redline"]);
     expect(job.environment).toBe("redline-staging");
     expect(job.permissions).toEqual({ contents: "read", "id-token": "write" });
     expect(job["timeout-minutes"]).toBe(150);
@@ -55,6 +55,51 @@ describe("redline-staging.yml", () => {
       group: "redline",
       "cancel-in-progress": false,
     });
+  });
+
+  it("refuses to start on a stale Worker: platform-tags (main's script, the staging deploy token) runs first (#1040)", () => {
+    const pt = w.jobs["platform-tags"];
+    expect(job.needs).toBe("platform-tags");
+    expect(pt["runs-on"]).toBe("ubuntu-latest");
+    expect(pt.environment).toBe("hosted-staging-deploy");
+    expect(pt.permissions).toEqual({ contents: "read" });
+    expect(pt.needs).toBeUndefined();
+    expect(pt["timeout-minutes"]).toBeLessThanOrEqual(10);
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const all: Record<string, any>[] = pt.steps;
+    // First: refuse anything but main, before any checkout.
+    expect(all[0]).toMatchObject({
+      name: "On main",
+      env: { REF: "${{ github.ref }}" },
+    });
+    expect(all[0]?.run).toContain('[ "$REF" = refs/heads/main ]');
+    const ps = all.slice(1);
+    expect(ps[0]?.uses).toMatch(SHA_PIN);
+    expect(ps[0]?.with).toEqual({
+      ref: "${{ github.sha }}",
+      "sparse-checkout": "scripts/ci\n.github/hosted\n",
+      "persist-credentials": false,
+    });
+    expect(ps.map((s) => s.name ?? s.uses)).toEqual([
+      ps[0]?.uses,
+      "Load the hosted constants",
+      "Every staging platform Worker runs the tag",
+    ]);
+    expect(ps[1]?.run).toBe(
+      "bash scripts/ci/hosted-constants.sh staging .github/hosted > /dev/null",
+    );
+    expect(ps[2]).toMatchObject({
+      env: {
+        TAG: "${{ inputs.tag }}",
+        CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+      },
+      run: 'bash scripts/ci/platform-tags.sh staging "$TAG"',
+    });
+    // Only that step sees the token.
+    expect(
+      ps.filter((s) => JSON.stringify(s).includes("secrets.")),
+    ).toHaveLength(1);
+    expect(JSON.stringify(job)).not.toContain("CLOUDFLARE_API_TOKEN");
   });
 
   it("names each run after its tag, the shape staging-first-gate.sh matches", () => {
@@ -229,7 +274,10 @@ describe("redline-staging.yml", () => {
     expect(t19.if).toBe(
       "${{ !cancelled() && steps.bringup.outcome == 'success' }}",
     );
-    expect(t19.run).toContain('T19_EXPECT_VERSION="$REDLINE_RELEASE"');
+    // #1039: no version pin until #955 keeps leo current; the spec still
+    // requires a version and no testHooks.
+    expect(t19.run).not.toContain("T19_EXPECT_VERSION");
+    expect(t19.env).not.toHaveProperty("T19_EXPECT_VERSION");
   });
 
   it("uploads redline-staged-version (version.txt) after bring-up, only once rl-a and rl-b /healthz report the tag", () => {
@@ -294,7 +342,7 @@ describe("redline-staging.yml", () => {
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: "",
     });
     const run = String(t19.run);
-    const pre = run.slice(0, run.indexOf("export T19_EXPECT_VERSION"));
+    const pre = run.slice(0, run.indexOf("pnpm --filter @oa/dashboard"));
     expect(pre).toContain(
       "unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN",
     );

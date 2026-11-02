@@ -15,7 +15,13 @@
 # live Workers back and runs every check, and the zones stay plan only. Every
 # run also reads back the token's own end date and opens an issue 30 days
 # ahead (scripts/ci/deploy-token-expiry.sh).
+# One version everywhere (#1040): the default is every target, in order. Any
+# other list is break-glass: it needs a reason and opens an issue naming the
+# run (verify_only is a check, so it needs neither). Every Worker version is
+# tagged with the release (the "workers/tag" annotation), which
+# redline-staging.yml checks before it starts (scripts/ci/platform-tags.sh).
 name: deploy-hosted-platform
+run-name: deploy-hosted-platform ${{ inputs.env }} ${{ inputs.tag }}
 
 on:
   workflow_dispatch:
@@ -32,7 +38,12 @@ on:
       targets:
         description: "Comma-separated, in order: platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones"
         required: true
-        default: "auth-broker,directory-broker,dispatch,scheduler"
+        default: "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones"
+        type: string
+      reason:
+        description: "Break-glass only: why not every target (required unless targets is the full list or verify_only)"
+        required: false
+        default: ""
         type: string
       verify_only:
         description: "Read back and check only; deploy and set nothing"
@@ -42,7 +53,7 @@ on:
 
 # actions: read lets the release gate read release-please.yml's run and jobs
 # (and the staging-first gate redline-staging.yml's runs); issues: write lets
-# the token read-back open its expiry issue.
+# the token read-back open its expiry issue and a break-glass run its record.
 permissions:
   contents: read
   actions: read
@@ -62,6 +73,8 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           TARGETS: ${{ inputs.targets }}
+          REASON: ${{ inputs.reason }}
+          VERIFY_ONLY: ${{ inputs.verify_only }}
         run: |
           set -euo pipefail
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag must be a stable vX.Y.Z"; exit 1; }
@@ -80,6 +93,14 @@ jobs:
             [ "$pos" -gt "$last" ] || { echo "targets out of order: $TARGETS"; exit 1; }
             last=$pos; seen="$seen $t"
           done
+          # One version everywhere (#1040): fewer targets is break-glass and
+          # needs a reason (the issue step records it); verify_only is a check.
+          REASON="${REASON:-}"
+          if [ "$TARGETS" != "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones" ] && [ "${VERIFY_ONLY:-}" != true ]; then
+            [ -n "${REASON//[[:space:]]/}" ] || { echo "targets other than the full list need a reason (break-glass)"; exit 1; }
+          fi
+          [ "${#REASON}" -le 500 ] || { echo "reason: 500 characters at most"; exit 1; }
+          [[ "$REASON" != *$'\n'* && "$REASON" != *$'\r'* ]] || { echo "reason: one line"; exit 1; }
       # The gate is main's, like the deploy scripts; it runs before the tag's
       # code is checked out.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -102,6 +123,23 @@ jobs:
         env:
           REF: ${{ github.ref }}
         run: test "$REF" = refs/heads/main
+      # A break-glass deploy (fewer than every target) leaves a record: an
+      # issue with the reason, the run and the actor; no secret, no email.
+      - name: Record the break-glass deploy
+        if: ${{ !inputs.verify_only && inputs.targets != 'platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones' }}
+        env:
+          DEPLOY_ENV: ${{ inputs.env }}
+          TAG: ${{ inputs.tag }}
+          TARGETS: ${{ inputs.targets }}
+          REASON: ${{ inputs.reason }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/break-glass.md"
+          printf 'Reason: %s\n\nRun: %s\n\nActor: %s\n' "$REASON" "$RUN_URL" "$ACTOR" > "$body"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "Break-glass platform deploy: $DEPLOY_ENV $TAG $TARGETS" --body-file "$body"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: refs/tags/${{ inputs.tag }}
@@ -136,7 +174,7 @@ jobs:
           done
           cp .deploy-logic/packages/provision/src/wfp.ts "$RUNNER_TEMP/main-wfp.ts"
           mkdir "$RUNNER_TEMP/main-ci"
-          for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh; do
+          for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh platform-tags.sh; do
             cp ".deploy-logic/scripts/ci/$f" "$RUNNER_TEMP/main-ci/$f"
           done
           cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"
@@ -183,9 +221,14 @@ jobs:
           DEPLOY_ENVIRONMENT: ${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}
           TARGETS: ${{ inputs.targets }}
           VERIFY_ONLY: ${{ inputs.verify_only && '1' || '' }}
+          # Every Worker version is tagged with the release (workers/tag).
+          DEPLOY_TAG: ${{ inputs.tag }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_DIRECTORY_CLIENT_SECRET: ${{ secrets.GOOGLE_DIRECTORY_CLIENT_SECRET }}
+          # The admin allowlist, `email:sub,...` (#1007): only the provisioning
+          # target reads it, and refuses without it.
+          ADMIN_IDENTITIES: ${{ secrets.ADMIN_IDENTITIES }}
           BROKER_PIN_FILE: ${{ runner.temp }}/main-wfp.ts
           MAIN_MIGRATION_LOCK: ${{ runner.temp }}/main-ci/migration-lock.json
           # The OIDC principal's repository (inventory, staging's provisioning);
@@ -213,6 +256,17 @@ jobs:
           set -euo pipefail
           bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" plan
           [ -n "$VERIFY_ONLY" ] || bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" apply
+      # One version everywhere (#1040, #1064): read every Worker's
+      # "workers/tag" back after a full-list run, on prod as on staging. A
+      # break-glass run (fewer targets) leaves the others on their own tag,
+      # so it is not checked here.
+      - name: Every platform Worker runs the tag
+        if: ${{ inputs.targets == 'platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones' }}
+        env:
+          DEPLOY_ENV: ${{ inputs.env }}
+          TAG: ${{ inputs.tag }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash "$RUNNER_TEMP/main-ci/platform-tags.sh" "$DEPLOY_ENV" "$TAG"
       # The token's own end date (provision's checkToken never sees it): an
       # issue naming only the secret, 30 days ahead.
       - name: The deploy token's expiry

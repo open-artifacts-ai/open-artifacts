@@ -16,7 +16,9 @@ import { InventoryInstallsSchema } from "@oa/shared/provisioning";
 // The node-readable copy of RELEASE_PUBKEY (provision keeps its own in
 // src/internal/gates.ts, not exported; a test there pins the two equal).
 import { RELEASE_PUBKEY } from "../../../scripts/ci/release-pubkeys.mjs";
+import { notResolved } from "./fetch-timeout.ts";
 import { describeRes, readBody } from "./http.ts";
+import { PRE_PROD_GUARD_REASON } from "./report.ts";
 import {
   type ProdProbe,
   prodInventoryBearer,
@@ -73,6 +75,37 @@ export class ProdDirty extends Error {
   }
 }
 
+/**
+ * The prod inventory's one fixed answer to a verified caller while the
+ * platform schema is absent (before the prod platform deploy): HTTP 503,
+ * body exactly {"error":"schema_missing"}. prodClean still fails it
+ * (inventory_bad); only the red-line guard, and only while the prod admin
+ * host does not resolve, reads it as pre-prod.
+ */
+export class InventorySchemaMissing extends ProdDirty {
+  override name = "InventorySchemaMissing";
+  constructor() {
+    super("inventory_bad", "prodClean inventory: 503 schema_missing");
+  }
+}
+
+/** True only for 503 with a JSON body that is exactly {"error":"schema_missing"}. */
+export function isSchemaMissing(status: number, text: string): boolean {
+  if (status !== 503) return false;
+  try {
+    const v = JSON.parse(text);
+    return (
+      v !== null &&
+      typeof v === "object" &&
+      !Array.isArray(v) &&
+      Object.keys(v).length === 1 &&
+      v.error === "schema_missing"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** The one line a public log shows: `prod-clean: pass` or `prod-clean: fail (<code>)`. */
 export const prodCleanLine = (failCode?: string) =>
   failCode === undefined
@@ -91,9 +124,11 @@ export interface ProdCleanOpts {
   /**
    * The inventory's GitHub OIDC bearer (a JWT the caller minted for the prod
    * inventory's audience). The only inventory credential (inventory accepts
-   * no stored key); without it the probe is inventory_unconfigured.
+   * no stored key); without it the probe is inventory_unconfigured. A
+   * function is called right before /installs, after the release scan, so a
+   * short-lived JWT is fresh when used.
    */
-  inventoryBearer?: string;
+  inventoryBearer?: string | (() => Promise<string>);
 }
 
 async function listKeys(cf: Cf, bucket: string): Promise<string[]> {
@@ -198,6 +233,8 @@ async function getJson(
     ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
   });
   const text = await readBody(res);
+  if (fail.code === "inventory_bad" && isSchemaMissing(res.status, text))
+    throw new InventorySchemaMissing();
   if (res.status !== 200)
     throw new ProdDirty(
       fail.code,
@@ -260,9 +297,15 @@ export async function prodClean(
   // Only a GitHub OIDC JWT for the prod inventory's audience (the caller's,
   // else the one the red-line job wrote to the secrets dir); never the
   // stored inventory key, which inventory rejects.
-  const bearer =
-    o.inventoryBearer ?? (await prodInventoryBearer(p)) ?? s.inventoryBearer;
-  if (!p.inventoryUrl || !bearer)
+  const bearer = async () =>
+    typeof o.inventoryBearer === "function"
+      ? await o.inventoryBearer()
+      : (o.inventoryBearer ??
+        (await prodInventoryBearer(p)) ??
+        s.inventoryBearer);
+  const configured =
+    typeof o.inventoryBearer === "function" || (await bearer()) !== undefined;
+  if (!p.inventoryUrl || !configured)
     throw new ProdDirty(
       "inventory_unconfigured",
       "prod probe: inventory not configured",
@@ -283,11 +326,28 @@ export async function prodClean(
   for (const version of releases.keys())
     await checkRelease(r2, version, pubkey);
 
-  // 2. Installs: no hooks reachable, no hook secret or var.
+  // 2. Installs: no hooks reachable, no hook secret or var. The bearer is
+  // read now, not before the scan: the JWT lives 5 minutes (re-minted near
+  // expiry by the red-line job).
+  const bearerNow = async () => {
+    const b = await bearer();
+    if (!b)
+      throw new ProdDirty(
+        "inventory_unconfigured",
+        "prod probe: inventory not configured",
+      );
+    return b;
+  };
   const inv = InventoryInstallsSchema.safeParse(
-    await getJson(f, `${p.inventoryUrl}/installs`, bearer, "inventory", {
-      code: "inventory_bad",
-    }),
+    await getJson(
+      f,
+      `${p.inventoryUrl}/installs`,
+      await bearerNow(),
+      "inventory",
+      {
+        code: "inventory_bad",
+      },
+    ),
   );
   if (!inv.success)
     throw new ProdDirty(
@@ -363,16 +423,61 @@ export async function prodClean(
   return { level: "pass", releases: releases.size, installs: rows.length };
 }
 
+/** The prod admin origin, as the provisioning probes read it (REDLINE_PROD_PROV_ADMIN). */
+export const PROD_ADMIN_ORIGIN = "https://admin.open-artifacts.app";
+
+export function prodAdminOrigin(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const u = new URL(env.REDLINE_PROD_PROV_ADMIN || PROD_ADMIN_ORIGIN);
+  if (u.protocol !== "https:" || u.pathname !== "/" || u.search)
+    throw new Error("REDLINE_PROD_PROV_ADMIN must be a bare https origin");
+  return u.origin;
+}
+
+/** The guard's frozen pre-prod answer (see report.ts PRE_PROD_GUARD). */
+export type PreProdNa = {
+  level: "not-applicable";
+  reason: typeof PRE_PROD_GUARD_REASON;
+};
+
+export interface GuardOpts {
+  /** The DNS probe's fetch (tests). */
+  fetch?: typeof fetch;
+  /** The prod admin origin (default prodAdminOrigin()). */
+  adminOrigin?: string;
+}
+
 /**
  * The red-line guard's case: local mode has no prod (not-applicable); staging
  * always runs prodClean, so a missing prod probe fails (not_configured) and
  * a probe with no OIDC inventory bearer (no REDLINE_PROD_INVENTORY_OIDC in the
  * secrets dir) fails (inventory_unconfigured).
+ *
+ * Pre-prod (before #1014): the prod inventory answers 503 schema_missing.
+ * That is not-applicable only while the prod admin host does not resolve
+ * (ENOTFOUND, the signal prodLive uses for P7/P46). A resolving host, any
+ * other DNS or network error, or any other inventory answer keeps the fail.
  */
 export async function guardProdClean(
   t: { mode: "local" | "staging"; prod?: ProdProbe },
   check: (p: ProdProbe | undefined) => Promise<ProdResult> = prodClean,
-): Promise<"not-applicable" | ProdResult> {
+  o: GuardOpts = {},
+): Promise<"not-applicable" | PreProdNa | ProdResult> {
   if (t.mode !== "staging") return "not-applicable";
-  return check(t.prod);
+  try {
+    return await check(t.prod);
+  } catch (e) {
+    if (!(e instanceof InventorySchemaMissing)) throw e;
+    const f = o.fetch ?? fetch;
+    const admin = o.adminOrigin ?? prodAdminOrigin();
+    try {
+      const r = await f(`${admin}/api/v1/me`, { redirect: "manual" });
+      await r.body?.cancel();
+    } catch (d) {
+      if (notResolved(d))
+        return { level: "not-applicable", reason: PRE_PROD_GUARD_REASON };
+    }
+    throw e;
+  }
 }

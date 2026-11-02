@@ -29,8 +29,11 @@
 #   inventory        PLATFORM_DB_ID HOSTS_KV_ID GITHUB_REPOSITORY_ID GITHUB_REPOSITORY
 #                    (owner/repo: the OIDC principal, design v7 6.3)
 #   provisioning     PLATFORM_DB_ID BROKER_REGISTRY_ID DIRECTORY_REGISTRY_ID
-#                    GITHUB_REPOSITORY_ID SIGNUP_DAILY_CAP (the provisioner and auth broker must exist)
-# Always: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
+#                    GITHUB_REPOSITORY_ID SIGNUP_DAILY_CAP ADMIN_IDENTITIES (the
+#                    Environment secret `email:sub,...`, #1007; the provisioner
+#                    and auth broker must exist)
+# Always: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID. DEPLOY_TAG (vX.Y.Z) goes to the
+# wrapper, which tags each version with it; CI deploys require it.
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -51,6 +54,12 @@ if [ "${GITHUB_ACTIONS:-}" = true ] && [ "$env" = prod ]; then
   [ "${DEPLOY_ENVIRONMENT:-}" = hosted-prod-deploy ] || { echo "prod deploys run only in hosted-prod-deploy" >&2; exit 2; }
 fi
 VERIFY_ONLY="${VERIFY_ONLY:-}"
+# The release tag every deployed Worker version carries (the wrapper passes it
+# to wrangler as --tag, #1040). In CI a deploy needs it, checked before
+# anything changes; verify_only deploys nothing.
+if [ "${GITHUB_ACTIONS:-}" = true ] && [ -z "$VERIFY_ONLY" ]; then
+  [[ "${DEPLOY_TAG:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "DEPLOY_TAG must be a stable vX.Y.Z release tag in CI" >&2; exit 2; }
+fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # The allowlisted deploy wrapper (tests swap in a stub).
 wrapper="${DEPLOY_WRAPPER:-$root/scripts/ops/deploy-platform-worker.sh}"
@@ -111,10 +120,13 @@ put_secret() {
     { echo "$1: putting $3 failed" >&2; return 1; }
   echo "$1: $3 set"
 }
+# A secret put deploys a new, untagged Worker version, and the release tag
+# (#1040) must be on the version that serves. A Worker that takes secrets
+# deploys again once they are set (deploys keep secrets).
 # deploy <app>: through the wrapper, unless VERIFY_ONLY.
 deploy() {
   if [ -n "$VERIFY_ONLY" ]; then echo "$target: verify only, not deploying"; return; fi
-  bash "$wrapper" "$1" "$env"
+  DEPLOY_TAG="${DEPLOY_TAG:-}" bash "$wrapper" "$1" "$env"
 }
 settings() { cf_get "/workers/scripts/$1/settings" | must "read $1 settings"; }
 # list_all <path ending in ? or &> <what>: every page's .result as one array; a
@@ -297,6 +309,25 @@ case "$target" in
     ;;
   provisioning)
     need PLATFORM_DB_ID; need BROKER_REGISTRY_ID; need DIRECTORY_REGISTRY_ID; need GITHUB_REPOSITORY_ID; need SIGNUP_DAILY_CAP
+    # ADMIN_IDENTITIES (#1007): the `email:sub` list is the Environment's
+    # secret, never committed. Fail closed: no list, no deploy; each entry is
+    # checked here and the value is never printed.
+    need ADMIN_IDENTITIES
+    # One line only: `read` stops at a newline, so a second line would go
+    # unchecked yet be put.
+    [[ "$ADMIN_IDENTITIES" != *[$'\n\r']* ]] || { echo "ADMIN_IDENTITIES has a line break; refusing" >&2; exit 2; }
+    IFS=, read -ra ids <<< "$ADMIN_IDENTITIES"
+    [ "${#ids[@]}" -gt 0 ] || { echo "ADMIN_IDENTITIES has no entries; refusing" >&2; exit 2; }
+    for id in "${ids[@]}"; do
+      [[ "$id" =~ ^[^:,[:space:]@]+@[^:,[:space:]@]+:[^:,[:space:]]+$ ]] ||
+        { echo "ADMIN_IDENTITIES: an entry is not email:sub; refusing" >&2; exit 2; }
+    done
+    ids=()
+    # A tag from before #1007 commits ADMIN_IDENTITIES as a var, which would go
+    # live and then clash with the secret: deploy a tag with #1007.
+    committed_ids="$(ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" committed provisioning vars | jq -r 'has("ADMIN_IDENTITIES")')" ||
+      { echo "can't read provisioning's committed vars" >&2; exit 1; }
+    [ "$committed_ids" = false ] || { echo "this tag commits ADMIN_IDENTITIES as a var; it is a secret since #1007: deploy a later tag" >&2; exit 1; }
     need_workers oa-$P-provisioner oa-$P-auth-broker
     # Prod, before anything is deployed: the tag's committed vars carry no OIDC
     # principal and no test-users gate (4.4); the read-back checks them again.
@@ -357,6 +388,11 @@ case "$target" in
       fi
       key=""
     fi
+    # Every deploy: the list can change, and the deployed value can't be read.
+    printf '%s' "$ADMIN_IDENTITIES" | put_secret "$W" provisioning ADMIN_IDENTITIES
+    # Again after the secrets: the serving version carries the tag.
+    PLATFORM_DB_ID="$PLATFORM_DB_ID" PROVISIONING_OAUTH_KV_ID="$OAUTH_KV_ID" GITHUB_REPOSITORY_ID="$GITHUB_REPOSITORY_ID" \
+      SIGNUP_DAILY_CAP="$SIGNUP_DAILY_CAP" deploy provisioning
     S="$(settings "$W")"
     expect "$S" '.result.bindings[] | select(.name == "PLATFORM_DB") | .id' "$PLATFORM_DB_ID" "PLATFORM_DB"
     expect "$S" '.result.bindings[] | select(.name == "OAUTH_KV") | .namespace_id' "$OAUTH_KV_ID" "OAUTH_KV"
@@ -379,11 +415,11 @@ case "$target" in
       expect "$S" '.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text | . == "test-users"' false "SIGNUPS_ENABLED (test-users is staging only)"
     fi
     signups_deployed "$S" "$W"
-    # ADMIN_IDENTITIES and MCP_REDIRECT_URIS among them.
+    # MCP_REDIRECT_URIS among them; ADMIN_IDENTITIES is a secret, by name only.
     vars_are "$S" provisioning
     expect "$S" '.result.observability.enabled // false' false "observability"
     names="$(secret_names "$W" | sort | tr '\n' ' ')"
-    [ "$names" = "ADMIN_BROKER_KEY ADMIN_SESSION_KEY " ] || { echo "$W secrets are '$names'" >&2; exit 1; }
+    [ "$names" = "ADMIN_BROKER_KEY ADMIN_IDENTITIES ADMIN_SESSION_KEY " ] || { echo "$W secrets are '$names'" >&2; exit 1; }
     rc=0
     entry="$(kv_get "$BROKER_REGISTRY_ID" "$KEY")" || rc=$?
     [ "$rc" -eq 0 ] || { [ "$rc" -eq 3 ] && echo "$KEY is not in oa-$P-broker-registry" >&2; exit 1; }
@@ -425,6 +461,9 @@ case "$target" in
     if ! grep -qx BROKER_STATE_KEY <<< "$have"; then
       openssl rand -base64 32 | put_secret oa-$P-auth-broker auth-broker BROKER_STATE_KEY
     fi
+    # Again after the secrets: the serving version carries the tag.
+    BROKER_REGISTRY_ID="$BROKER_REGISTRY_ID" GOOGLE_CLIENT_ID_PROD="$GOOGLE_CLIENT_ID" \
+      deploy auth-broker
     S="$(settings oa-$P-auth-broker)"
     expect "$S" '.result.bindings[] | select(.name == "BROKER_REGISTRY") | .namespace_id' "$BROKER_REGISTRY_ID" "BROKER_REGISTRY"
     expect "$S" '.result.bindings[] | select(.name == "GOOGLE_CLIENT_ID") | .text' "$GOOGLE_CLIENT_ID" "GOOGLE_CLIENT_ID"
@@ -434,16 +473,32 @@ case "$target" in
     [ "$names" = "BROKER_STATE_KEY GOOGLE_CLIENT_SECRET " ] || { echo "oa-$P-auth-broker secrets are '$names'" >&2; exit 1; }
     ;;
   directory-broker)
-    need DIRECTORY_REGISTRY_ID; need GOOGLE_DIRECTORY_CLIENT_ID; [ -n "$VERIFY_ONLY" ] || need GOOGLE_DIRECTORY_CLIENT_SECRET
+    need DIRECTORY_REGISTRY_ID; need GOOGLE_DIRECTORY_CLIENT_ID
+    # As auth-broker: no secret given and none there (a new Worker has none):
+    # refuse before deploying, so no broker runs without its client secret.
+    if [ -z "${GOOGLE_DIRECTORY_CLIENT_SECRET:-}" ] && [ -z "$VERIFY_ONLY" ]; then
+      if ! { worker_exists oa-$P-directory-broker && grep -qx GOOGLE_DIRECTORY_CLIENT_SECRET <<< "$(secret_names oa-$P-directory-broker)"; }; then
+        echo "oa-$P-directory-broker has no GOOGLE_DIRECTORY_CLIENT_SECRET: set it in the Environment and rerun" >&2; exit 1
+      fi
+    fi
     DIRECTORY_REGISTRY_ID="$DIRECTORY_REGISTRY_ID" GOOGLE_DIRECTORY_CLIENT_ID_PROD="$GOOGLE_DIRECTORY_CLIENT_ID" \
       deploy directory-broker
-    printf '%s' "${GOOGLE_DIRECTORY_CLIENT_SECRET:-}" | put_secret oa-$P-directory-broker directory-broker GOOGLE_DIRECTORY_CLIENT_SECRET
     # Read first: a failed listing stops here, never reads as "absent" (which
-    # would replace a live key).
+    # would replace a live key). Secrets survive `wrangler deploy`, so the
+    # Google secret is put only when given (rotation) or absent.
     have="$(secret_names oa-$P-directory-broker)"
+    if [ -n "${GOOGLE_DIRECTORY_CLIENT_SECRET:-}" ]; then
+      printf '%s' "$GOOGLE_DIRECTORY_CLIENT_SECRET" | put_secret oa-$P-directory-broker directory-broker GOOGLE_DIRECTORY_CLIENT_SECRET
+    elif ! grep -qx GOOGLE_DIRECTORY_CLIENT_SECRET <<< "$have" && [ -z "$VERIFY_ONLY" ]; then
+      echo "oa-$P-directory-broker has no GOOGLE_DIRECTORY_CLIENT_SECRET: set it in the Environment and rerun" >&2
+      exit 1
+    fi
     if ! grep -qx DIRECTORY_STATE_KEY <<< "$have"; then
       openssl rand -base64 32 | put_secret oa-$P-directory-broker directory-broker DIRECTORY_STATE_KEY
     fi
+    # Again after the secrets: the serving version carries the tag.
+    DIRECTORY_REGISTRY_ID="$DIRECTORY_REGISTRY_ID" GOOGLE_DIRECTORY_CLIENT_ID_PROD="$GOOGLE_DIRECTORY_CLIENT_ID" \
+      deploy directory-broker
     S="$(settings oa-$P-directory-broker)"
     expect "$S" '.result.bindings[] | select(.name == "DIRECTORY_REGISTRY") | .namespace_id' "$DIRECTORY_REGISTRY_ID" "DIRECTORY_REGISTRY"
     expect "$S" '.result.bindings[] | select(.name == "GOOGLE_DIRECTORY_CLIENT_ID") | .text' "$GOOGLE_DIRECTORY_CLIENT_ID" "GOOGLE_DIRECTORY_CLIENT_ID"

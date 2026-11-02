@@ -29,6 +29,9 @@ const DCLIENT =
   "206295999771-6cr3mbfc7g2ejnvdoqhlf2v8v6sdm023.apps.googleusercontent.com";
 const SECRET = "google-secret-SHOULD-NEVER-APPEAR";
 const DSECRET = "directory-secret-SHOULD-NEVER-APPEAR";
+// The admin allowlist (#1007): two entries, marked so a leak shows.
+const IDS =
+  "never-appear-a@example.com:111111,never-appear-b@example.com:222222";
 
 // pnpm: `exec wrangler deploy` marks the app's Worker deployed (its next
 // settings become live); `exec wrangler secret put NAME` records NAME and only
@@ -125,7 +128,7 @@ const wrapperStub = (dir: string) => {
   writeFileSync(
     p,
     `#!/usr/bin/env bash
-echo "wrapper $* reg=\${BROKER_REGISTRY_ID:-}\${DIRECTORY_REGISTRY_ID:-} client=\${GOOGLE_CLIENT_ID_PROD:-}\${GOOGLE_DIRECTORY_CLIENT_ID_PROD:-} hosts=\${HOSTS_KV_ID:-} db=\${PLATFORM_DB_ID:-}" >> "$STUB_LOG"
+echo "wrapper $* reg=\${BROKER_REGISTRY_ID:-}\${DIRECTORY_REGISTRY_ID:-} client=\${GOOGLE_CLIENT_ID_PROD:-}\${GOOGLE_DIRECTORY_CLIENT_ID_PROD:-} hosts=\${HOSTS_KV_ID:-} db=\${PLATFORM_DB_ID:-} tag=\${DEPLOY_TAG:-}" >> "$STUB_LOG"
 w="oa-$([ "$2" = staging ] && echo s || echo p)-$1"
 touch "$STATE/$w.exists"
 [ -f "$STATE/$w.next.json" ] && cp "$STATE/$w.next.json" "$STATE/$w.settings.json"
@@ -334,6 +337,7 @@ const provisioningBindings = (p = "p", env: "staging" | "prod" = "prod") => [
   ...varsOf("provisioning", env),
   { type: "secret_text", name: "ADMIN_SESSION_KEY" },
   { type: "secret_text", name: "ADMIN_BROKER_KEY" },
+  { type: "secret_text", name: "ADMIN_IDENTITIES" },
 ];
 NEXT["oa-p-provisioner"] = provisionerSettings();
 NEXT["oa-p-provisioning"] = settings(provisioningBindings());
@@ -352,6 +356,7 @@ const ENV = {
   DIRECTORY_REGISTRY_ID: DIRREG,
   GOOGLE_DIRECTORY_CLIENT_ID: DCLIENT,
   GOOGLE_DIRECTORY_CLIENT_SECRET: DSECRET,
+  ADMIN_IDENTITIES: IDS,
   HOSTS_KV_ID: HOSTS,
   PLATFORM_DB_ID: DB,
   MAIN_MIGRATION_LOCK: join(root, "apps/platform-db/migration-lock.json"),
@@ -1075,9 +1080,34 @@ describe("deploy-hosted-platform.sh", () => {
         DEPLOY_ENVIRONMENT: "hosted-staging-deploy",
       }).code,
     ).toBe(2);
+    const ok = setup().run("auth-broker", {
+      ...ci,
+      GITHUB_REF: "refs/heads/main",
+      DEPLOY_TAG: "v0.90.3",
+    });
+    expect(ok.code, ok.err).toBe(0);
     expect(
-      setup().run("auth-broker", { ...ci, GITHUB_REF: "refs/heads/main" }).code,
-    ).toBe(0);
+      ok.log.find((l) => l.startsWith("wrapper auth-broker prod ")),
+    ).toContain("tag=v0.90.3");
+  });
+  it("in CI, a deploy needs a stable DEPLOY_TAG, refused before any change; verify only does not", () => {
+    const ci = {
+      GITHUB_ACTIONS: "true",
+      GITHUB_REF: "refs/heads/main",
+      DEPLOY_ENVIRONMENT: "hosted-prod-deploy",
+    };
+    for (const DEPLOY_TAG of ["", "0.90.3", "v0.90.3-rc.1"]) {
+      const r = setup().run("auth-broker", { ...ci, DEPLOY_TAG });
+      expect(r.code, DEPLOY_TAG).toBe(2);
+      expect(r.err).toContain("DEPLOY_TAG must be a stable vX.Y.Z");
+      expect(noDeploy(r.log)).toEqual([]);
+      expect(puts(r.log)).toEqual([]);
+    }
+    const local = setup().run("auth-broker");
+    expect(local.code, local.err).toBe(0);
+    expect(
+      local.log.find((l) => l.startsWith("wrapper auth-broker prod ")),
+    ).toMatch(/ tag=$/);
   });
   it("refuses an env other than staging or prod", () => {
     expect(setup().run("auth-broker", {}, "dev").code).toBe(2);
@@ -1403,7 +1433,11 @@ describe("deploy-hosted-platform.sh", () => {
       [`kv-${REG}-${KEY}`]: entry(),
     };
     const liveSecrets = {
-      "oa-p-provisioning": ["ADMIN_BROKER_KEY", "ADMIN_SESSION_KEY"],
+      "oa-p-provisioning": [
+        "ADMIN_BROKER_KEY",
+        "ADMIN_IDENTITIES",
+        "ADMIN_SESSION_KEY",
+      ],
     };
     it("first run: builds the SPA, creates the OAuth KV, deploys, makes both keys and the admin entry, reads back", () => {
       const r = setup({ exists: brokers }).run("provisioning");
@@ -1452,7 +1486,11 @@ describe("deploy-hosted-platform.sh", () => {
       });
       expect(Object.keys(body.keys[0])).toEqual(["kid", "x"]);
       expect(r.writes).toHaveLength(2);
-      expect(puts(r.log)).toEqual(["ADMIN_SESSION_KEY", "ADMIN_BROKER_KEY"]);
+      expect(puts(r.log)).toEqual([
+        "ADMIN_SESSION_KEY",
+        "ADMIN_BROKER_KEY",
+        "ADMIN_IDENTITIES",
+      ]);
       expect(
         r.log.indexOf(put) <
           r.log.findIndex(
@@ -1468,7 +1506,7 @@ describe("deploy-hosted-platform.sh", () => {
       expect(r.out).toContain("prod provisioning: deployed and verified");
       clean(r);
     });
-    it("a rerun writes nothing; a missing entry gets a new key, entry first", () => {
+    it("a rerun writes nothing but the admin list; a missing entry gets a new key, entry first", () => {
       const again = setup({
         exists: brokers,
         files: live,
@@ -1477,7 +1515,7 @@ describe("deploy-hosted-platform.sh", () => {
       expect(again.err).toBe("");
       expect(again.code).toBe(0);
       expect(again.writes).toEqual([]);
-      expect(puts(again.log)).toEqual([]);
+      expect(puts(again.log)).toEqual(["ADMIN_IDENTITIES"]);
       const { [`kv-${REG}-${KEY}`]: _, ...noEntry } = live;
       const r = setup({
         exists: brokers,
@@ -1488,7 +1526,7 @@ describe("deploy-hosted-platform.sh", () => {
       expect(r.writes.map((w) => w.split(" ").slice(0, 3).join(" "))).toEqual([
         `WRITE PUT /storage/kv/namespaces/${REG}/values/${KEY}`,
       ]);
-      expect(puts(r.log)).toEqual(["ADMIN_BROKER_KEY"]);
+      expect(puts(r.log)).toEqual(["ADMIN_BROKER_KEY", "ADMIN_IDENTITIES"]);
     });
     it("a failed ADMIN_BROKER_KEY put deletes the new entry, so the next run makes both again", () => {
       const { [`kv-${REG}-${KEY}`]: _, ...noEntry } = live;
@@ -1507,7 +1545,10 @@ describe("deploy-hosted-platform.sh", () => {
       rmSync(join(s.state, "fail-put-ADMIN_BROKER_KEY"));
       const again = s.run("provisioning");
       expect(again.code, again.err).toBe(0);
-      expect(puts(again.log).slice(-1)).toEqual(["ADMIN_BROKER_KEY"]);
+      expect(puts(again.log).slice(-2)).toEqual([
+        "ADMIN_BROKER_KEY",
+        "ADMIN_IDENTITIES",
+      ]);
     });
     it("refuses until the provisioner and the auth broker exist", () => {
       const r = setup({ exists: ["oa-p-auth-broker"] }).run("provisioning");
@@ -1598,8 +1639,13 @@ describe("deploy-hosted-platform.sh", () => {
           "provisioning vars: got",
         ],
         [
-          "identities",
-          { next: swap("ADMIN_IDENTITIES", { text: "a@b.c:1" }) },
+          "identities as a var (#1007: a secret only)",
+          {
+            next: settings([
+              ...b,
+              { type: "plain_text", name: "ADMIN_IDENTITIES", text: "a@b.c:1" },
+            ]),
+          },
           "provisioning vars: got",
         ],
         [
@@ -1681,8 +1727,10 @@ describe("deploy-hosted-platform.sh", () => {
         join(root, "apps/provisioning/wrangler.jsonc"),
         "utf8",
       );
+      // Prod's (staging's is test-users since #1012).
       const at = PV.lastIndexOf('"SIGNUPS_ENABLED": "false",');
-      expect(at).toBeGreaterThan(PV.indexOf('"SIGNUPS_ENABLED": "false",'));
+      expect(at).toBeGreaterThan(PV.indexOf('"prod": {'));
+      expect(PV.indexOf('"prod": {')).toBeGreaterThan(0);
       const prodVar = (v: string) =>
         PV.slice(0, at) +
         v +
@@ -1731,6 +1779,115 @@ describe("deploy-hosted-platform.sh", () => {
         ).toEqual([]);
       }
     });
+    // #1007: the admin allowlist is the deploy Environment's secret.
+    describe("ADMIN_IDENTITIES", () => {
+      const leaks = (r: { out: string; err: string; log: string[] }) =>
+        [r.out, r.err, ...r.log].join("\n");
+      it.each(["staging", "prod"])(
+        "%s: refuses without it, before any build, write or deploy",
+        (envName) => {
+          for (const v of ["", " "]) {
+            const r = setup({ exists: brokers }).run(
+              "provisioning",
+              { ADMIN_IDENTITIES: v },
+              envName,
+            );
+            expect(r.code, JSON.stringify(v)).toBe(2);
+            expect(r.err).toMatch(
+              /ADMIN_IDENTITIES( is required for provisioning|: an entry is not email:sub)/,
+            );
+            expect(r.writes).toEqual([]);
+            expect(puts(r.log)).toEqual([]);
+            expect(r.log.filter((l) => /^(pnpm|wrapper) /.test(l))).toEqual([]);
+          }
+        },
+      );
+      it.each([
+        ["no sub", "never-appear-a@example.com"],
+        ["no email", ":111111"],
+        [
+          "a space",
+          "never-appear-a@example.com:1, never-appear-b@example.com:2",
+        ],
+        ["an empty entry", "never-appear-a@example.com:1,,"],
+        ["two colons", "never-appear-a@example.com:1:2"],
+        ["no at", "never-appear-a.example.com:1"],
+        ["a second line", "never-appear-a@example.com:1\nnever-appear-b@x.y:2"],
+        [
+          "a line after a comma",
+          "never-appear-a@example.com:1,\nnever-appear-b@x.y:2",
+        ],
+        ["a carriage return", "never-appear-a@example.com:1\r"],
+      ])("refuses a list with %s, never printing it", (_l, v) => {
+        const r = setup({ exists: brokers }).run("provisioning", {
+          ADMIN_IDENTITIES: v,
+        });
+        expect(r.code).toBe(2);
+        expect(r.err).toContain("ADMIN_IDENTITIES");
+        expect(leaks(r)).not.toContain("never-appear");
+        expect(r.writes).toEqual([]);
+        expect(puts(r.log)).toEqual([]);
+      });
+      it("is put on stdin on every deploy: never in argv, output or logs", () => {
+        const r = setup({
+          exists: brokers,
+          files: live,
+          secrets: liveSecrets,
+        }).run("provisioning");
+        expect(r.code, r.err).toBe(0);
+        expect(r.log).toContain(`stdin-len ADMIN_IDENTITIES ${IDS.length}`);
+        expect(leaks(r)).not.toContain("never-appear");
+        expect(leaks(r)).not.toContain("111111");
+      });
+      it("refuses a tag that still commits ADMIN_IDENTITIES as a var, before any deploy", () => {
+        const PV = readFileSync(
+          join(root, "apps/provisioning/wrangler.jsonc"),
+          "utf8",
+        );
+        const old = PV.replaceAll(
+          '"OA_ENV": "',
+          '"ADMIN_IDENTITIES": "", "OA_ENV": "',
+        );
+        expect(old).not.toBe(PV);
+        for (const envName of ["staging", "prod"]) {
+          const r = setup({
+            exists: brokers,
+            configs: { provisioning: old },
+          }).run("provisioning", {}, envName);
+          expect(r.code, envName).toBe(1);
+          expect(r.err).toContain("this tag commits ADMIN_IDENTITIES as a var");
+          expect(r.writes).toEqual([]);
+          expect(r.log.filter((l) => /^(pnpm|wrapper) /.test(l))).toEqual([]);
+        }
+      });
+      it("the read-back checks the secret by name only, and refuses when it is missing", () => {
+        const script = readFileSync(SCRIPT, "utf8");
+        // No call reads a secret's value; the list is only ever written.
+        expect(script).not.toMatch(/secrets\/ADMIN_IDENTITIES/);
+        expect(script.match(/\$ADMIN_IDENTITIES/g)).toHaveLength(3);
+        const failed = setup({
+          exists: brokers,
+          files: { ...live, "fail-put-ADMIN_IDENTITIES": "" },
+          secrets: {
+            "oa-p-provisioning": ["ADMIN_BROKER_KEY", "ADMIN_SESSION_KEY"],
+          },
+        }).run("provisioning");
+        expect(failed.code).toBe(1);
+        expect(failed.err).toContain("putting ADMIN_IDENTITIES failed");
+        const unset = setup({
+          exists: [...brokers, "oa-p-provisioning"],
+          files: live,
+          secrets: {
+            "oa-p-provisioning": ["ADMIN_BROKER_KEY", "ADMIN_SESSION_KEY"],
+          },
+        }).run("provisioning", { VERIFY_ONLY: "1" });
+        expect(unset.code).toBe(1);
+        expect(unset.err).toContain(
+          "secrets are 'ADMIN_BROKER_KEY ADMIN_SESSION_KEY '",
+        );
+        expect(leaks(unset)).not.toContain("never-appear");
+      });
+    });
     it("refuses a secret it doesn't make", () => {
       const extra = setup({
         exists: brokers,
@@ -1741,7 +1898,7 @@ describe("deploy-hosted-platform.sh", () => {
       }).run("provisioning");
       expect(extra.code).toBe(1);
       expect(extra.err).toContain(
-        "secrets are 'ADMIN_BROKER_KEY ADMIN_SESSION_KEY X '",
+        "secrets are 'ADMIN_BROKER_KEY ADMIN_IDENTITIES ADMIN_SESSION_KEY X '",
       );
     });
     it("the read-back expects every committed rate limit, W5b's included", () => {
@@ -1798,6 +1955,58 @@ describe("deploy-hosted-platform.sh", () => {
       exists: ["oa-p-auth-broker"],
       secrets: { "oa-p-auth-broker": ["BROKER_STATE_KEY"] },
     }).run("auth-broker", { GOOGLE_CLIENT_SECRET: "" });
+    expect(lost.code).toBe(1);
+    expect(lost.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+  });
+
+  it("a Worker that takes secrets deploys again after them, so the serving version is tagged (#1040)", () => {
+    for (const [t, exists] of [
+      ["auth-broker", []],
+      ["directory-broker", []],
+      ["provisioning", ["oa-p-provisioner", "oa-p-auth-broker"]],
+    ] as const) {
+      const r = setup({ exists: [...exists] }).run(t);
+      expect(r.err, t).toBe("");
+      expect(r.code, t).toBe(0);
+      const wrappers = r.log.flatMap((l, i) =>
+        l.startsWith("wrapper") ? [i] : [],
+      );
+      const lastPut = r.log.reduce(
+        (m, l, i) => (l.startsWith("stdin-len") ? i : m),
+        -1,
+      );
+      expect(wrappers.length, t).toBe(2);
+      expect(lastPut, t).toBeGreaterThan(wrappers[0] as number);
+      expect(wrappers[1], t).toBeGreaterThan(lastPut);
+    }
+  });
+
+  it("directory-broker: the Google secret only when given or absent", () => {
+    const keep = setup({
+      exists: ["oa-p-directory-broker"],
+      secrets: {
+        "oa-p-directory-broker": [
+          "DIRECTORY_STATE_KEY",
+          "GOOGLE_DIRECTORY_CLIENT_SECRET",
+        ],
+      },
+    }).run("directory-broker", { GOOGLE_DIRECTORY_CLIENT_SECRET: "" });
+    expect(keep.err).toBe("");
+    expect(keep.code).toBe(0);
+    expect(puts(keep.log)).toEqual([]);
+    const absent = setup().run("directory-broker", {
+      GOOGLE_DIRECTORY_CLIENT_SECRET: "",
+    });
+    expect(absent.code).toBe(1);
+    expect(absent.err).toContain(
+      "oa-p-directory-broker has no GOOGLE_DIRECTORY_CLIENT_SECRET",
+    );
+    expect(puts(absent.log)).toEqual([]);
+    expect(absent.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+    const lost = setup({
+      exists: ["oa-p-directory-broker"],
+      secrets: { "oa-p-directory-broker": ["DIRECTORY_STATE_KEY"] },
+    }).run("directory-broker", { GOOGLE_DIRECTORY_CLIENT_SECRET: "" });
     expect(lost.code).toBe(1);
     expect(lost.log.some((l) => l.startsWith("wrapper"))).toBe(false);
   });

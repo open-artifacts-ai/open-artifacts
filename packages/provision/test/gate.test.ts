@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   bucketPublishedAt,
   bucketVersions,
+  CATALOG_CONCURRENCY,
   releaseCatalog,
   releaseGate,
 } from "../src/gate.js";
@@ -352,6 +353,92 @@ describe("releaseCatalog (2.6 releases())", () => {
         latest: false,
       },
     ]);
+  });
+
+  it("reads per call: the floor, then 2 record gets and 2 lists a version (#1029)", async () => {
+    const { b, release } = await bucket([
+      ["0.23.0", "release"],
+      ["0.24.0", "release"],
+      ["0.25.0", "release"],
+    ]);
+    const versions = await bucketVersions(b);
+    b.reads.length = 0;
+    await releaseCatalog({
+      release,
+      env: "staging",
+      versions,
+      publishedAt: bucketPublishedAt(b),
+    });
+    expect(b.reads.filter((k) => k.startsWith("get ")).length).toBe(1 + 3 * 2);
+    expect(b.reads.filter((k) => k.startsWith("list ")).length).toBe(3 * 2);
+  });
+
+  it(`at most ${CATALOG_CONCURRENCY} versions are read at once, newest first`, async () => {
+    const seed = Array.from(
+      { length: 12 },
+      (_, i) => [`0.${30 + i}.0`, "release"] as [string, "release"],
+    );
+    const { b, release } = await bucket(seed);
+    b.delayMs = 2;
+    const cat = await releaseCatalog({
+      release,
+      env: "staging",
+      versions: await bucketVersions(b),
+    });
+    expect(b.maxInFlight).toBe(CATALOG_CONCURRENCY);
+    expect(cat.map((r) => r.version)).toEqual(seed.map(([v]) => v).reverse());
+    expect(cat.filter((r) => r.latest).map((r) => r.version)).toEqual([
+      "0.41.0",
+    ]);
+  });
+
+  it("only: that version alone, read alone; below the floor or revoked is listed, not installable; unknown is []", async () => {
+    const { b, release } = await bucket(
+      [
+        ["0.0.9", "release"],
+        ["0.23.0", "release"],
+        ["0.23.0", "redline"],
+        ["0.24.0", "release"],
+      ],
+      { floor: signFloor(floorOf({ revoked: ["0.24.0"] })) },
+    );
+    const versions = await bucketVersions(b);
+    const one = (only: string) =>
+      releaseCatalog({
+        release,
+        env: "staging",
+        versions,
+        publishedAt: bucketPublishedAt(b),
+        only,
+      });
+    b.reads.length = 0;
+    expect(await one("0.23.0")).toEqual([
+      {
+        version: "0.23.0",
+        publishedAt: 0,
+        variants: ["release", "redline"],
+        installable: true,
+        latest: false,
+      },
+    ]);
+    expect(
+      b.reads.every((k) => k.includes("0.23.0") || k.includes("floor")),
+    ).toBe(true);
+    expect(b.reads.filter((k) => k.startsWith("get ")).length).toBe(1 + 2);
+    for (const v of ["0.0.9", "0.24.0"])
+      expect(await one(v)).toEqual([
+        {
+          version: v,
+          publishedAt: 0,
+          variants: ["release"],
+          installable: false,
+          latest: false,
+        },
+      ]);
+    b.reads.length = 0;
+    expect(await one("0.30.0")).toEqual([]);
+    // Not in the bucket's versions: nothing but the floor is read.
+    expect(b.reads.filter((k) => !k.includes("floor"))).toEqual([]);
   });
 
   it("no floor: nothing is installable", async () => {

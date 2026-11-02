@@ -26,6 +26,7 @@ export function ActionDialog({
   submitLabel,
   destructive,
   canSubmit = true,
+  blocker,
   pending,
   error,
   onSubmit,
@@ -40,6 +41,8 @@ export function ActionDialog({
   submitLabel: string;
   destructive?: boolean;
   canSubmit?: boolean;
+  /** Why the submit button is off, shown beside it (with canSubmit false); a type-to-confirm dialog derives its own. */
+  blocker?: string;
   pending: boolean;
   error: unknown;
   onSubmit: () => void;
@@ -47,7 +50,15 @@ export function ActionDialog({
 }) {
   const [typed, setTyped] = useState("");
   const id = useId();
-  const ok = (expected === undefined || typed === expected) && canSubmit;
+  const matches = expected === undefined || typed === expected;
+  const ok = matches && canSubmit;
+  // A disabled submit always says why: the caller's reason, else the phrase to type.
+  const why = !canSubmit
+    ? blocker
+    : !matches
+      ? `Type ${expected} to confirm.`
+      : undefined;
+  const showWhy = !!why && !pending;
   return (
     <Dialog
       open={open}
@@ -74,7 +85,7 @@ export function ActionDialog({
           {expected !== undefined && (
             <div>
               <Label htmlFor={id}>
-                {expectedLabel ?? "Type"} <code>{expected}</code> to confirm
+                {expectedLabel ?? "Type"} <b>{expected}</b> to confirm
               </Label>
               <Input
                 id={id}
@@ -86,12 +97,22 @@ export function ActionDialog({
           )}
           <ErrorLine error={error} />
           <DialogFooter>
+            {showWhy && (
+              <small
+                id={`${id}-blocker`}
+                data-testid="dialog-blocker"
+                className="oa-blocker"
+              >
+                {why}
+              </small>
+            )}
             <Button type="button" variant="outline" onClick={onClose}>
               Cancel
             </Button>
             <Button
               type="submit"
               variant={destructive ? "destructive" : "default"}
+              aria-describedby={showWhy ? `${id}-blocker` : undefined}
               disabled={!ok || pending}
             >
               {submitLabel}

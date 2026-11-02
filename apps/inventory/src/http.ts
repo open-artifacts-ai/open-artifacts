@@ -29,11 +29,10 @@ export const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: HEADERS });
 
 /** Fixed bodies: nothing from the request or a verifier ever reaches them. */
-export const unauthorized = () => json({ error: "unauthorized" }, 401);
 export const unavailable = () => json({ error: "unavailable" }, 503);
-export const forbidden = () => json({ error: "forbidden" }, 403);
 export const badRequest = () => json({ error: "bad_request" }, 400);
 export const internal = () => json({ error: "internal" }, 500);
+/** Unknown routes and every auth failure alike (auth.ts). */
 export const notFound = () =>
   new Response("Not found", {
     status: 404,

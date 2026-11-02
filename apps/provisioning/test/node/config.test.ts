@@ -141,12 +141,15 @@ describe("wrangler.jsonc", () => {
       it("sets the 2.4 vars; OIDC_* on staging only", () => {
         expect(e.vars.OA_ENV).toBe(env);
         expect(e.vars.APP_DOMAIN).toBe(APP[env]);
-        expect(typeof e.vars.ADMIN_IDENTITIES).toBe("string");
+        // #1007: the admin allowlist is a CI-put secret; a var would conflict.
+        expect(e.vars).not.toHaveProperty("ADMIN_IDENTITIES");
         expect(["false", "true", "test-users"]).toContain(
           e.vars.SIGNUPS_ENABLED,
         );
-        if (env === "prod")
-          expect(e.vars.SIGNUPS_ENABLED).not.toBe("test-users");
+        // Design 155 and M4 (#1012, P29): prod closed, staging test users only.
+        expect(e.vars.SIGNUPS_ENABLED).toBe(
+          env === "prod" ? "false" : "test-users",
+        );
         expect(e.vars.SELF_SERVE_TIER).toBe("trial");
         // The provisioner's placeholder, one deploy value for both (9A.5).
         expect(e.vars.SIGNUP_DAILY_CAP).toBe(

@@ -2,12 +2,17 @@
 // rechecks and purge preconditions, replays, upgrade outcome mapping, the
 // fail and cleanup compensation, redline_creds sealing. Each install is made
 // by ProvisionInstall first, as in production.
-import { HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
+import { FLOOR_KEY, HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
 import { REDLINE_SCOPE_FIXTURE } from "@oa/shared/provisioning/fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
+import {
+  floorOf,
+  signFloor,
+  TEST_PUBKEY,
+} from "../../../../packages/provision/test/fixtures/release.js";
 import { JOB_ERROR_TEXT } from "../../src/errors.js";
 import { GRACE_MS, NEVER_ROUTED, runManage } from "../../src/manage.js";
+import { KEY_LIVE_WAITS_MS, REDLINE_STEP } from "../../src/redline.js";
 import { openSealed } from "../../src/seal.js";
 import { runCreate } from "../../src/workflow.js";
 import {
@@ -205,6 +210,25 @@ describe("upgrade and rollback (5.4)", () => {
       error_code: "downgrade_refused",
     });
     expect(w.install(s.installId)?.version).toBe(V2);
+  });
+
+  it("an upgrade to a below-floor or revoked version: release_unverified, still on from (3.5, #1029)", async () => {
+    for (const [slug, floor] of [
+      ["belowco", floorOf({ minVersion: "0.25.0" })],
+      ["revokco", floorOf({ revoked: [V2] })],
+    ] as const) {
+      await w.r2.put(FLOOR_KEY, JSON.stringify(signFloor(floorOf())));
+      const s = await active({ slug, version: V1 });
+      await w.r2.put(FLOOR_KEY, JSON.stringify(signFloor(floor)));
+      const r = await manage("upgrade", s.installId, {
+        args: { from: V1, to: V2 },
+      });
+      expect(r.job).toMatchObject({
+        status: "failed",
+        error_code: "release_unverified",
+      });
+      expect(w.install(s.installId)?.version).toBe(V1);
+    }
   });
 
   it("an upgrade whose health fails rolls back: upgrade_rolled_back, still on from", async () => {
@@ -741,12 +765,15 @@ function stubInstall(
     failDelete?: (id: string, n: number) => boolean;
     /** A forced answer for `METHOD /path`, before the stub's own (#995). */
     respond?: (call: string) => Response | undefined;
+    /** Key-live probes that see the old key before the new one (#1002). */
+    staleProbes?: number;
   } = {},
 ) {
   const scriptName = `oa-s-${installId}`;
   const script = w.fake.script(NAMESPACES[ENV], scriptName);
   const deleted: string[] = [];
   const seen: string[] = [];
+  const probes: string[] = [];
   let mints = 0;
   let deletes = 0;
   const real = w.env.DISPATCHER;
@@ -755,6 +782,28 @@ function stubInstall(
       fetch: async (req: Request) => {
         if (name !== scriptName) return real.get(name).fetch(req);
         const u = new URL(req.url);
+        // The key-live probe: a session POST whose body is `{}` (#1002).
+        if (
+          u.pathname === "/__test/session" &&
+          (await req.clone().text()) === "{}"
+        ) {
+          probes.push(req.headers.get("authorization") ?? "");
+          const key = script?.secrets.get("TEST_HOOK_KEY");
+          const live =
+            probes.length > (o.staleProbes ?? 0) &&
+            req.headers.get("authorization") === `Bearer ${key}`;
+          return live
+            ? Response.json(
+                {
+                  error: {
+                    code: "not_found",
+                    details: { reason: "bad_input" },
+                  },
+                },
+                { status: 404 },
+              )
+            : new Response(null, { status: 404 });
+        }
         seen.push(`${req.method} ${u.pathname}`);
         const forced = o.respond?.(`${req.method} ${u.pathname}`);
         if (forced) return forced;
@@ -797,7 +846,7 @@ function stubInstall(
       },
     }),
   } as unknown as DispatchNamespace;
-  return { script, deleted, seen, tokens };
+  return { script, deleted, seen, tokens, probes };
 }
 
 describe("job fail point (#995)", () => {
@@ -995,6 +1044,91 @@ describe("job fail point (#995)", () => {
       fail_status: 503,
       fail_reason: null,
     });
+  });
+});
+
+describe("the rotated hook key is live before use (#1002)", () => {
+  const recipientKey = async () => {
+    const pair = (await crypto.subtle.generateKey({ name: "X25519" }, true, [
+      "deriveBits",
+    ])) as CryptoKeyPair;
+    return Buffer.from(
+      new Uint8Array(
+        (await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer,
+      ),
+    ).toString("base64url");
+  };
+  const keyPuts = () =>
+    w.fake.log.filter(
+      (l) =>
+        l.method === "PUT" && l.path.endsWith("/secrets") && l.status === 200,
+    ).length;
+  const sleeps = () => {
+    const got: number[] = [];
+    const sleep = w.ctx.io.sleep;
+    w.ctx.io.sleep = async (ms: number) => {
+      got.push(ms);
+      return sleep(ms);
+    };
+    return got;
+  };
+
+  it("waits out a stale key with spaced probes, rotating once, then opens the session", async () => {
+    const s = await active({ slug: "rl-a", actor: "oidc", testHooks: true });
+    const { probes, seen } = stubInstall(s.installId, undefined, {
+      staleProbes: 3,
+    });
+    const waits = sleeps();
+    const puts = keyPuts();
+    const r = await manage("redline_creds", s.installId, {
+      actor: "oidc",
+      args: { recipientKey: await recipientKey() },
+    });
+    expect(r.job?.status).toBe("done");
+    expect(keyPuts() - puts).toBe(1);
+    expect(probes).toHaveLength(4);
+    expect(new Set(probes).size).toBe(1);
+    expect(waits).toEqual(KEY_LIVE_WAITS_MS.slice(0, 3));
+    expect(seen.filter((c) => c === "POST /__test/session")).toHaveLength(1);
+  });
+
+  it("never rotates inside the wait: a key that never goes live fails at hook_key_live after 60 s, one PUT per attempt", async () => {
+    const s = await active({ slug: "rl-a", actor: "oidc", testHooks: true });
+    const { probes, seen } = stubInstall(s.installId, undefined, {
+      staleProbes: 999,
+    });
+    const waits = sleeps();
+    const puts = keyPuts();
+    const r = await manage("redline_creds", s.installId, {
+      actor: "oidc",
+      args: { recipientKey: await recipientKey() },
+    });
+    expect(r.job?.status).toBe("failed");
+    expect(
+      w.all(
+        "SELECT fail_at, fail_status, fail_reason FROM jobs WHERE id = ?",
+        r.id,
+      )[0],
+    ).toEqual({
+      fail_at: "hook_key_live",
+      fail_status: 404,
+      fail_reason: null,
+    });
+    const attempts = REDLINE_STEP.retries.limit + 1;
+    expect(keyPuts() - puts).toBe(attempts);
+    const perAttempt = KEY_LIVE_WAITS_MS.length + 1;
+    expect(probes).toHaveLength(attempts * perAttempt);
+    // Each attempt probes one key only: rotating happens between attempts.
+    for (let a = 0; a < attempts; a++)
+      expect(
+        new Set(probes.slice(a * perAttempt, (a + 1) * perAttempt)).size,
+      ).toBe(1);
+    expect(new Set(probes).size).toBe(attempts);
+    expect(KEY_LIVE_WAITS_MS.reduce((x, y) => x + y)).toBe(60_000);
+    expect(waits.filter((ms) => KEY_LIVE_WAITS_MS.includes(ms))).toHaveLength(
+      attempts * KEY_LIVE_WAITS_MS.length,
+    );
+    expect(seen).not.toContain("POST /__test/session");
   });
 });
 

@@ -5,6 +5,7 @@ import {
   createRouter,
   Outlet,
   redirect,
+  stringifySearchWith,
   useParams,
   useSearch,
 } from "@tanstack/react-router";
@@ -13,7 +14,7 @@ import { Shell } from "./layout/Shell";
 import { Audit } from "./pages/Audit";
 import { CreateInstall } from "./pages/CreateInstall";
 import { InstallDetail } from "./pages/InstallDetail";
-import { Installs } from "./pages/Installs";
+import { Installs, parseStateFilter, type StateFilter } from "./pages/Installs";
 import { JobPage } from "./pages/JobPage";
 import { NoAccess } from "./pages/NoAccess";
 import { SignIn } from "./pages/SignIn";
@@ -80,7 +81,15 @@ const routeTree = root.addChildren([
   signIn,
   noAccess,
   shell.addChildren([
-    inShell("/installs", Installs),
+    createRoute({
+      getParentRoute: () => shell,
+      path: "/installs",
+      validateSearch: (s: Record<string, unknown>): { state?: StateFilter } => {
+        const state = parseStateFilter(s.state);
+        return state ? { state } : {};
+      },
+      component: Installs,
+    }),
     inShell("/installs/new", CreateInstall),
     inShell("/installs/$id", () => <InstallDetail id={useId()} />),
     inShell("/jobs/$id", () => <JobPage id={useId()} />),
@@ -105,7 +114,18 @@ const routeTree = root.addChildren([
   ]),
 ]);
 
-export const router = createRouter({ routeTree });
+/**
+ * Search values stay the strings in the URL. TanStack's default turns
+ * "123", "true" and "null" into numbers, booleans and null (and rounds a
+ * Google `sub` past 2^53), which validateSearch then drops (#1026).
+ */
+export const rawSearch = {
+  parseSearch: (search: string) =>
+    Object.fromEntries(new URLSearchParams(search)),
+  stringifySearch: stringifySearchWith(JSON.stringify),
+};
+
+export const router = createRouter({ routeTree, ...rawSearch });
 
 declare module "@tanstack/react-router" {
   interface Register {
