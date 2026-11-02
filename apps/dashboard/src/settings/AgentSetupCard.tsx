@@ -14,7 +14,7 @@ export const setupPrompt = () =>
 Sign in through the browser. Never ask me to paste a token into this chat.`;
 
 /** Whoever the server lets connect an agent (its canConnect): not a guest,
-    not capped. The role covers Access-only installs, whose /me has no auth.
+    not capped. The role covers an older server, whose /me has no auth.
     Consent answers 403 for anyone else, so agent prompts would only fail them. */
 export const canConnectAgents = (me: Me) =>
   me.user.role !== "guest" && me.auth?.cap == null;

@@ -5,7 +5,7 @@ import { type Me, R } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runAll } from "../src/settings/Transfer";
 import {
   calls,
@@ -350,4 +350,67 @@ it("no trash: plain progress and toast", async () => {
   expect(await within(d).findByText("Transferring… 0 of 2")).toBeVisible();
   release();
   await findVisibleToast("Moved 2 artifacts to Bob Builder.");
+});
+
+describe("the dialog on what the install can do", () => {
+  const open = async () => {
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Transfer owner1@outside.example's artifacts",
+      }),
+    );
+    return screen.findByRole("dialog");
+  };
+  const notices = { selfHosted: true, guestOwners: 1 };
+
+  it("spaces off: no space option, and no spaces request", async () => {
+    const seen = calls("GET");
+    mountHosted("/", notices);
+    const d = await open();
+    await within(d).findByRole("combobox", { name: "Give them to" });
+    expect(within(d).queryByRole("radio")).toBeNull();
+    expect(seen.some((c) => c.path === R.spaces)).toBe(false);
+  });
+
+  it("spaces on: the choice stays", async () => {
+    mountHosted("/", { ...notices, spaces: true });
+    const d = await open();
+    expect(
+      await within(d).findByRole("radio", { name: /To a space/ }),
+    ).toBeTruthy();
+    expect(within(d).getByRole("radio", { name: /To a person/ })).toBeChecked();
+  });
+
+  it("counts that fail to load say so, with Retry, never 0 artifacts", async () => {
+    let fail = true;
+    mountHosted("/", notices, undefined, [
+      http.get("*/api/v1/members/:id/transfer", () =>
+        fail
+          ? HttpResponse.json(
+              { error: { code: "not_found", message: "Not found" } },
+              { status: 404 },
+            )
+          : undefined,
+      ),
+    ]);
+    const d = await open();
+    expect(
+      await within(d).findByText("Couldn't load their artifacts."),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("dialog", {
+        name: "Transfer owner1@outside.example's artifacts",
+      }),
+    ).toBeTruthy();
+    expect(within(d).queryByText(/0 personal artifacts/)).toBeNull();
+    expect(within(d).queryByRole("button", { name: /^Transfer/ })).toBeNull();
+    fail = false;
+    fireEvent.click(within(d).getByRole("button", { name: "Retry" }));
+    expect(
+      await screen.findByRole("dialog", {
+        name: "Transfer owner1@outside.example's 1 personal artifact",
+      }),
+    ).toBeTruthy();
+    expect(within(d).getByRole("button", { name: "Transfer 1" })).toBeTruthy();
+  });
 });

@@ -185,7 +185,7 @@ describe("AgentSetupCard", () => {
     ["owner", asRole("owner"), true],
     ["admin", asRole("admin"), true],
     ["member", asRole("member"), true],
-    ["guest with no Me.auth (Access-only)", asRole("guest"), false],
+    ["guest with no Me.auth (an older server)", asRole("guest"), false],
     ["guest", withAuth(capped("guest", "guest")), false],
     ["restricted member", withAuth(capped("member", "restricted")), false],
     [

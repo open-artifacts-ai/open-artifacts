@@ -107,6 +107,16 @@ async function startMocks() {
       ),
     );
   }
+  // ?mock=transfer-error (with ?hosted=1): a transfer's counts fail to load.
+  if (params.get("mock") === "transfer-error")
+    extra.push(
+      http.get("*/api/v1/members/:id/transfer", () =>
+        HttpResponse.json(
+          { error: { code: "internal", message: "Something went wrong." } },
+          { status: 503 },
+        ),
+      ),
+    );
   // ?mock=group-race (with ?hosted=1): changing a group's role on a space is refused as a race
   // (403 space_forbidden { target: "mapping" }).
   if (params.get("mock") === "group-race")
