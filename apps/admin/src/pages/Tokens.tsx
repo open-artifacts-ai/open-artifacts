@@ -55,6 +55,19 @@ export function mcpUrlFor(env: "prod" | "staging", host: string): string {
   return MCP_URL[env];
 }
 
+/** Shell lines wrap at spaces; a word breaks only if it outruns the box alone. */
+const Words = ({ code }: { code: string }) =>
+  code.split(/(\s+)/).map((part, i) =>
+    /^\s*$/.test(part) ? (
+      part
+    ) : (
+      // biome-ignore lint/suspicious/noArrayIndexKey: fixed order
+      <span key={i} className="oa-snip-word">
+        {part}
+      </span>
+    ),
+  );
+
 function ConnectCard({ env }: { env: "prod" | "staging" }) {
   const url = mcpUrlFor(env, globalThis.location?.hostname ?? "");
   const snippets = agentClients(url, {
@@ -122,9 +135,19 @@ function ConnectCard({ env }: { env: "prod" | "staging" }) {
               Put this in <code>{snip.file}</code>
             </p>
           )}
-          <div className="oa-snip">
+          <div
+            className={
+              snip.language === "bash" ? "oa-snip oa-snip-wrap" : "oa-snip"
+            }
+          >
             <pre>
-              <code>{snip.code}</code>
+              <code>
+                {snip.language === "bash" ? (
+                  <Words code={snip.code} />
+                ) : (
+                  snip.code
+                )}
+              </code>
             </pre>
             {snip.language !== "text" && (
               <CopyButton text={snip.code} label="Copy" />
