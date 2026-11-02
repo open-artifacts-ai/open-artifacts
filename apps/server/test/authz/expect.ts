@@ -308,18 +308,42 @@ const ADMIN_ACTIONS = new Set([
   "audit.read",
 ]);
 
-/** Whether `who` passes an instance route's guard (`{ org }` or `{ user }`). */
+/**
+ * The writes readOnlyCap leaves open to a capped caller (CAPPED_ALLOWED in
+ * src/http/middleware.ts), as ROUTE_POLICY keys. The matrix derives the
+ * list from the middleware itself ("readOnlyCap's open writes") and fails
+ * when they differ.
+ */
+export const CAPPED_WRITES: readonly string[] = [
+  "PATCH /api/v1/me",
+  "POST /api/v1/artifacts/:id/data/:col/query",
+  "DELETE /api/v1/tokens/:id",
+  "DELETE /api/v1/oauth-clients/:grantId",
+];
+
+/**
+ * Whether `who` passes an instance route's guard (`{ org }` or `{ user }`)
+ * and every rule after it (#839: probes now run past the CSRF check): a
+ * capped caller's write is refused (readOnlyCap) unless CAPPED_WRITES
+ * lists it, and `space` is the space service's rule.
+ */
 export function orgExpected(
   who: CallerName,
-  rule: { org: string } | { user: true; space?: "member" | "manager" },
+  rule:
+    | { org: string }
+    | { user: true; space?: "member" | "manager" | "admin" },
+  route: string,
 ): "allow" | "deny" {
   const t = TRAITS[who];
   const yes = (b: boolean) => (b ? "allow" : "deny");
   if (!t.session) return "deny";
+  const write = !route.startsWith("GET ");
+  if (write && t.capped && !CAPPED_WRITES.includes(route)) return "deny";
   const admin = (t.role === "owner" || t.role === "admin") && !t.capped;
   if ("user" in rule) {
     if (rule.space === "member") return yes(admin || t.sRole !== undefined);
     if (rule.space === "manager") return yes(admin || t.sRole === "manager");
+    if (rule.space === "admin") return yes(admin);
     return "allow";
   }
   if (ADMIN_ACTIONS.has(rule.org)) return yes(admin);
