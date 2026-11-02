@@ -2,7 +2,8 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { setCurrentTest, takeFileNotes } from "../src/notes.ts";
-import { resetSummary, watchResets } from "../src/resets.ts";
+import { resetSummary } from "../src/report.ts";
+import { watchResets } from "../src/resets.ts";
 
 describe("reset evidence", () => {
   let origin = "";

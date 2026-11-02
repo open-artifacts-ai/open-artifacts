@@ -9,8 +9,8 @@ import { subscribe } from "node:diagnostics_channel";
 import { isNetworkError, networkCode } from "./fetch-timeout.ts";
 import { note } from "./notes.ts";
 
-export const RESET_PREFIX = "reset: ";
-export const CONNECTIONS_PREFIX = "connections: ";
+const RESET_PREFIX = "reset: ";
+const CONNECTIONS_PREFIX = "connections: ";
 
 type Req = { method?: string; origin?: unknown; path?: string };
 type Sent = { reused: boolean; idleMs: number; nth: number };
@@ -71,21 +71,4 @@ export function watchResets(now: () => number = Date.now): {
     totals: () =>
       `${CONNECTIONS_PREFIX}${requests} requests, ${fresh} on new sockets`,
   };
-}
-
-/** The run summary's line, from every note the run kept. */
-export function resetSummary(notes: readonly string[]): string | undefined {
-  const resets = notes.filter((n) => n.startsWith(RESET_PREFIX));
-  let requests = 0;
-  let fresh = 0;
-  for (const n of notes) {
-    const m = /^connections: (\d+) requests, (\d+) on new sockets$/.exec(n);
-    if (m) {
-      requests += Number(m[1]);
-      fresh += Number(m[2]);
-    }
-  }
-  if (!resets.length && !requests) return undefined;
-  const reused = resets.filter((n) => n.includes("reused socket")).length;
-  return `Resets: ${resets.length} (${reused} on reused sockets), of ${requests} requests (${fresh} on new sockets)`;
 }
