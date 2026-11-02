@@ -19,6 +19,13 @@ export const STAGING_API_HOST = "api.open-artifacts-staging.app";
 export const TEST_USER_HEADER = "x-oa-test-user";
 const TEST_USERS = new Set(["a", "b", "c"]);
 export const TEST_USER_DOMAIN = "test.invalid";
+/**
+ * The one workflow whose JWT mints the staging test admin's session (R28,
+ * #1053). It must also be in OIDC_JOB_WORKFLOW_REFS; its caller may call R28
+ * and nothing else, and no other caller may call R28 (authorize).
+ */
+export const TEST_ADMIN_WORKFLOW_REF =
+  "open-artifacts-ai/open-artifacts/.github/workflows/staging-test-admin.yml@refs/heads/main";
 
 /** The caller's pins, or null unless staging and every OIDC_* var is set. */
 export function oidcPins(env: Env): Pins | null {
@@ -41,8 +48,11 @@ export async function oidcPrincipal(
   } catch {
     return refusal("unauthenticated");
   }
+  const testAdmin = claims.job_workflow_ref === TEST_ADMIN_WORKFLOW_REF;
   const testUser = req.headers.get(TEST_USER_HEADER);
   if (testUser !== null) {
+    // The test admin's workflow is never a test user.
+    if (testAdmin) return refusal("unauthenticated");
     if (!TEST_USERS.has(testUser)) return refusal("unauthenticated");
     const sub = `rl-test-${testUser}`;
     const email = `${sub}@${TEST_USER_DOMAIN}`;
@@ -67,5 +77,6 @@ export async function oidcPrincipal(
     scopes: [],
     sub: claims.sub,
     authAt: null,
+    oidcWorkflow: testAdmin ? "test-admin" : "redline",
   };
 }

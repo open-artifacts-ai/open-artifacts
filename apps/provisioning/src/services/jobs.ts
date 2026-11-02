@@ -142,6 +142,17 @@ export const jobActorLabel = (p: Principal): string =>
     ? p.kind
     : p.label;
 
+/**
+ * jobs.actor_kind: the principal's kind, except the staging test admin
+ * (#1053), stored as "oidc" so the provisioner's re-check holds it to O's
+ * scope (checkOidcScope: staging, `rl-` with test hooks). Its actor_key and
+ * label stay its own. The column's CHECK has no "test-admin".
+ */
+export const jobActorKind = (
+  p: Principal,
+): Exclude<Principal["kind"], "test-admin"> =>
+  p.kind === "test-admin" ? "oidc" : p.kind;
+
 export function jobInsert(
   w: Write,
   id: string,
@@ -158,7 +169,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'queued', ?14, ?
     j.installId,
     j.signupId === "self" ? id : (j.signupId ?? null),
     j.parentJobId ?? null,
-    w.principal.kind,
+    jobActorKind(w.principal),
     w.principal.actorKey,
     jobActorLabel(w.principal),
     w.principal.tokenId ?? null,

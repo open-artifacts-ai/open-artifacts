@@ -81,10 +81,11 @@ describe("authz table", () => {
     expect(scope("R17")).toBe("audit:read");
   });
 
-  it("admin session reaches every API route but R26", () => {
+  it("admin session reaches every API route but R26 and R28 (O's own)", () => {
     for (const id of ROUTE_IDS) {
       const d = authorize(id, { kind: "admin" }, "prod");
-      if (id === "R26") expect(d, id).toEqual({ ok: false, code: "forbidden" });
+      if (id === "R26" || id === "R28")
+        expect(d, id).toEqual({ ok: false, code: "forbidden" });
       else expect(d.ok, id).toBe(true);
     }
   });

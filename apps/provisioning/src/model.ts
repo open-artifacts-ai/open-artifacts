@@ -63,13 +63,17 @@ FROM install_status st
 LEFT JOIN installs i ON i.id = st.install_id
 LEFT JOIN signups s ON s.signup_id = st.signup_id`;
 
-/** Reach "own" (authz.ts): O its `rl-` test installs, U the installs it owns. */
+/**
+ * Reach "own" (authz.ts): O and the staging test admin (#1053) their `rl-`
+ * test installs, U the installs it owns.
+ */
+const rlReach = (p: Principal) => p.kind === "oidc" || p.kind === "test-admin";
 export function reachSql(
   p: Principal,
   reach: "all" | "own",
 ): { sql: string; binds: unknown[] } {
   if (reach === "all") return { sql: "1 = 1", binds: [] };
-  if (p.kind === "oidc")
+  if (rlReach(p))
     return { sql: "st.slug LIKE 'rl-%' AND st.test_hooks = 1", binds: [] };
   // U, and any other "own" reach: the owner's sub, never null-equal.
   return {
@@ -84,8 +88,7 @@ export function inReach(
   reach: "all" | "own",
 ): boolean {
   if (reach === "all") return true;
-  if (p.kind === "oidc")
-    return row.slug.startsWith("rl-") && row.test_hooks === 1;
+  if (rlReach(p)) return row.slug.startsWith("rl-") && row.test_hooks === 1;
   return row.owner_sub !== null && row.owner_sub === p.sub;
 }
 

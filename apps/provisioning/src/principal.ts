@@ -46,6 +46,8 @@ export type Principal = {
   tokenId?: string;
   authAt?: number | null;
   session?: PrincipalSession;
+  /** OIDC only: the pinned workflow behind the JWT (authorize, #1053). */
+  oidcWorkflow?: "redline" | "test-admin";
 };
 
 /** A browser session behind a principal (see Principal.session). */

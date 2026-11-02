@@ -19,8 +19,11 @@ export const isEmailValue = (v: unknown): boolean =>
 export const hasEmail = (v: unknown): boolean =>
   typeof v === "string" && HAS_EMAIL_RE.test(v);
 
+/** The test admin (#1053) is never a pii principal. */
 export const mayReadPii = (p: Principal) =>
-  p.kind !== "token" || p.scopes.includes("installs:pii");
+  p.kind === "token"
+    ? p.scopes.includes("installs:pii")
+    : p.kind !== "test-admin";
 
 /** What a hidden email actor label reads as (the label column is NOT NULL). */
 export const REDACTED_LABEL = "hidden";

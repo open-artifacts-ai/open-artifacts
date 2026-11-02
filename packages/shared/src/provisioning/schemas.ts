@@ -204,6 +204,16 @@ export const RedlineCredsSchema = z.union([
   z.object({ requestId, revoke: z.literal(true) }).strict(),
 ]);
 export type RedlineCreds = z.infer<typeof RedlineCredsSchema>;
+/** A raw X25519 public key, base64url without padding (R26, R28). */
+const X25519_PUBLIC_KEY = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
+/** R28 (#1053): the caller's key; the session sid is sealed to it. */
+export const TestAdminSessionSchema = z
+  .object({ recipientKey: z.string().regex(X25519_PUBLIC_KEY) })
+  .strict();
+/** R28's answer: the sealed sid (oa-seal-v1) and the session's end. */
+export const TestAdminSessionResultSchema = z
+  .object({ sealed: z.string().min(1), expiresAt: z.number().int() })
+  .strict();
 /**
  * `jobs.args` of an R26 job. A mint carries the recipientKey (a public key,
  * which the Workflow seals the PAT to); a revoke carries only the variant.

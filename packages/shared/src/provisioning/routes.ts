@@ -26,6 +26,8 @@ import {
   RollbackSchema,
   SlugCheckSchema,
   SuspendSchema,
+  TestAdminSessionResultSchema,
+  TestAdminSessionSchema,
   TokensSchema,
   UpgradeSchema,
   WorldSchema,
@@ -63,6 +65,7 @@ export const ROUTE_IDS = [
   "R25",
   "R26",
   "R27",
+  "R28",
 ] as const;
 export type RouteId = (typeof ROUTE_IDS)[number];
 export const RouteIdSchema = z.enum(ROUTE_IDS);
@@ -263,6 +266,20 @@ export const ROUTES: Readonly<Record<RouteId, RouteDef>> = {
     RedlineCredsSchema,
   ),
   R27: read("R27", "/world", WorldSchema),
+  // Staging's test admin session (#1053): the pinned workflow's OIDC caller
+  // only; the sid comes back sealed to recipientKey.
+  R28: {
+    id: "R28",
+    method: "POST",
+    path: "/test-admin/session",
+    base: "api",
+    params: none,
+    query: none,
+    body: TestAdminSessionSchema,
+    response: TestAdminSessionResultSchema,
+    status: 201,
+    write: true,
+  },
 };
 
 /** The object schemas of a route body: itself, or each union option. */

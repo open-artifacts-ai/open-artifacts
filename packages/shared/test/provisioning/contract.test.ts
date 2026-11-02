@@ -417,18 +417,20 @@ describe("shapes", () => {
 });
 
 describe("routes", () => {
-  it("R1..R27, each once", () => {
+  it("R1..R28, each once", () => {
     expect(ROUTE_IDS).toEqual(
-      Array.from({ length: 27 }, (_, i) => `R${i + 1}`),
+      Array.from({ length: 28 }, (_, i) => `R${i + 1}`),
     );
     for (const id of ROUTE_IDS) expect(ROUTES[id].id).toBe(id);
   });
 
-  it("writes are POST/DELETE with a requestId body (except tokens' DELETE and auth routes)", () => {
+  it("writes are POST/DELETE with a requestId body (except tokens' DELETE, auth routes and R28)", () => {
     for (const id of ROUTE_IDS) {
       const r = ROUTES[id];
       if (r.method === "GET") expect(r.write, id).toBe(false);
-      if (r.write && r.method === "POST" && r.base === "api")
+      // R28 (#1053) is never replayed: each call is a new session and
+      // revokes the last, so it takes no requestId.
+      if (r.write && r.method === "POST" && r.base === "api" && id !== "R28")
         for (const b of bodyVariants(r))
           expect(Object.keys(b.shape), id).toContain("requestId");
     }

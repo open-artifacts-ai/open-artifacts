@@ -4,6 +4,7 @@ import {
   canTransition,
   checkPurgeFields,
   type DeleteSchema,
+  fieldRulesOf,
   type JobKind,
   type PurgeSchema,
   type RedlineCredsSchema,
@@ -294,8 +295,8 @@ function purgePolicy(a: HandlerArgs, row: StatusRow) {
     });
 }
 
-const createPrincipal = (p: Principal) =>
-  p.kind === "system" ? "admin" : p.kind;
+// A system caller takes the admin's purge rules.
+const createPrincipal = (p: Principal) => fieldRulesOf(p.kind) ?? "admin";
 
 /** R5-R13 and R26: one handler, the route's planner. */
 export async function lifecycleWrite(a: HandlerArgs): Promise<RouteResult> {

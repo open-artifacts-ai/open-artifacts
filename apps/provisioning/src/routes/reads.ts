@@ -318,7 +318,8 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const HIDDEN_LABEL = "hidden";
 
 const hidesPii = (p: Principal) =>
-  p.kind === "token" && !p.scopes.includes("installs:pii");
+  p.kind === "test-admin" ||
+  (p.kind === "token" && !p.scopes.includes("installs:pii"));
 
 /** 4.9: an admin's or user's email label is hidden like a detail field. */
 function labelFor(p: Principal, label: string): string {
