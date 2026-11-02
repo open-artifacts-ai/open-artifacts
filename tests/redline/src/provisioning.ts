@@ -7,7 +7,8 @@ import {
   type Release,
   TOKEN_SCOPES,
 } from "@oa/shared/provisioning";
-import { notResolved } from "./fetch-timeout.ts";
+import { isNetworkError, networkCode, notResolved } from "./fetch-timeout.ts";
+import { RETRY_BACKOFF_MS } from "./http.ts";
 import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { PRE_PROD_REASON } from "./report.ts";
@@ -128,6 +129,11 @@ export interface CallOpts {
   auth?: Auth;
   testUser?: "a" | "b" | "c";
   headers?: Record<string, string>;
+  /**
+   * An allow-side GET: no response is tried again, twice, with a note. Never
+   * set it on a request whose expected answer is a refusal.
+   */
+  read?: boolean;
 }
 
 export class Run {
@@ -170,12 +176,26 @@ export class Run {
       if (!headers.has("content-type"))
         headers.set("content-type", "application/json");
     }
-    const res = await this.io.fetch(url, {
-      method: o.method ?? (o.body === undefined ? "GET" : "POST"),
-      headers,
-      body,
-      redirect: "manual",
-    });
+    const method = o.method ?? (o.body === undefined ? "GET" : "POST");
+    const backoff = o.read && method === "GET" ? RETRY_BACKOFF_MS : [];
+    let res: Response;
+    for (let i = 0; ; i++) {
+      try {
+        res = await this.io.fetch(url, {
+          method,
+          headers,
+          body,
+          redirect: "manual",
+        });
+        break;
+      } catch (e) {
+        const wait = backoff[i];
+        if (wait === undefined || !isNetworkError(e)) throw e;
+        const at = new URL(url).pathname.split("/").slice(0, 3).join("/");
+        note(`GET ${at} retried (no response: ${networkCode(e)})`);
+        await this.io.wait(wait);
+      }
+    }
     let text = "";
     try {
       text = await res.text();
@@ -302,6 +322,7 @@ export class Run {
       throw new ProbeFail("no staging inventory configured");
     const r = await this.raw(`${this.c.inventory}${path}`, {
       auth: { bearer: await this.io.stgInventoryJwt() },
+      read: true,
     });
     if (r.status !== 200)
       throw new ProbeFail(`inventory ${path.split("?")[0]}: ${desc(r)}`);
@@ -340,8 +361,8 @@ export class Run {
   }
 
   /** A public GET on a tenant host (no credential). */
-  async page(host: string, path = "/healthz"): Promise<Res> {
-    return this.raw(`https://${bare(host)}${path}`, { auth: "none" });
+  async page(host: string, path = "/healthz", read = false): Promise<Res> {
+    return this.raw(`https://${bare(host)}${path}`, { auth: "none", read });
   }
 }
 
@@ -563,7 +584,7 @@ function rlp(run: Run): RlP {
 
 async function releases(run: Run): Promise<Release[]> {
   if (run.s.releases) return run.s.releases;
-  const r = await run.v1("/releases");
+  const r = await run.v1("/releases", { read: true });
   expect(r, 200, "R16");
   run.s.releases = (r.json as { items: Release[] }).items;
   return run.s.releases;
@@ -596,7 +617,8 @@ async function detail(
   id: string,
   testUser?: "a" | "b" | "c",
 ): Promise<Res> {
-  return run.v1(`/installs/${id}`, { testUser });
+  // Another user's read can be the refusal under test: only the run's own.
+  return run.v1(`/installs/${id}`, { testUser, read: !testUser });
 }
 
 async function panelInstall(run: Run): Promise<string | null> {
@@ -826,7 +848,9 @@ export const PROBES: readonly Probe[] = [
         403,
         "P12 R19",
       );
-      const jobs = await run.v1(`/installs/${run.c.rlA.id}/jobs?limit=1`);
+      const jobs = await run.v1(`/installs/${run.c.rlA.id}/jobs?limit=1`, {
+        read: true,
+      });
       const jobId =
         (jobs.json as { items?: { id: string }[] } | undefined)?.items?.[0]
           ?.id ?? ulidish();
@@ -846,7 +870,7 @@ export const PROBES: readonly Probe[] = [
       "create rl-p-<run> twice with one requestId: one job, one install, done (redline variant)",
     run: async (run) => {
       const slug = run.slug("p");
-      const before = await run.v1(`/installs?q=${slug}`);
+      const before = await run.v1(`/installs?q=${slug}`, { read: true });
       expect(before, 200, "P13 list before");
       const n0 = (before.json as { items: { slug: string }[] }).items.filter(
         (i) => i.slug === slug,
@@ -896,7 +920,7 @@ export const PROBES: readonly Probe[] = [
         await run.done(lateJob, "P16 late upgrade");
         run.s.rlp.version = run.c.version;
       }
-      const after = await run.v1(`/installs?q=${slug}`);
+      const after = await run.v1(`/installs?q=${slug}`, { read: true });
       const n1 = (after.json as { items: { slug: string }[] }).items.filter(
         (i) => i.slug === slug,
       ).length;
@@ -1089,7 +1113,7 @@ export const PROBES: readonly Probe[] = [
         throw new ProbeFail("P45: tools/list names differ from ADMIN_TOOLS");
       // get_world equals REST R27 for this principal (O is 403 on R27: 4.2).
       const world = await tool(run, "get_world", {});
-      const rest = await run.v1("/world");
+      const rest = await run.v1("/world", { read: true });
       if (rest.status === 200) {
         if (world.isError)
           throw new ProbeFail(`P45 get_world: ${toolCode(world)}`);
@@ -1530,7 +1554,7 @@ export const PROBES: readonly Probe[] = [
           limit: "100",
         });
         if (cursor) q.set("cursor", cursor);
-        const r = await run.v1(`/audit?${q}`);
+        const r = await run.v1(`/audit?${q}`, { read: true });
         expect(r, 200, "P33 R17");
         const b = r.json as {
           items: { jobId: string | null }[];
@@ -1927,7 +1951,7 @@ export const PROBES: readonly Probe[] = [
         for (let page = 0; !found && page < P48_MAX_PAGES; page++) {
           const qs = new URLSearchParams({ q: v });
           if (cursor) qs.set("cursor", cursor);
-          const l = await run.v1(`/installs?${qs}`);
+          const l = await run.v1(`/installs?${qs}`, { read: true });
           expect(l, 200, `P48 R2 q=${field}`);
           const b = l.json as {
             items: { id: string }[];
@@ -2001,8 +2025,8 @@ export async function p15Check(
   const rec = run.s.p15;
   if (!p || !rec) return "after";
   const mode = run.c.inventory ? (await run.hostMode(p.appHost)).mode : null;
-  const hz = (await run.page(p.appHost)).status;
-  const j = await run.v1(`/jobs/${jobId}`);
+  const hz = (await run.page(p.appHost, "/healthz", true)).status;
+  const j = await run.v1(`/jobs/${jobId}`, { read: true });
   const job = j.json as Job | undefined;
   if (
     !job ||
