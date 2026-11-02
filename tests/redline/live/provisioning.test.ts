@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, it } from "vitest";
 import {
+  CLEANUP_TIMEOUT_MS,
   cleanupInstalls,
   PROBE_TIMEOUT_MS,
   PROBES,
@@ -29,7 +30,7 @@ beforeAll(() => {
 // Whatever a probe created and could not remove (P50's rl-snz) goes here.
 afterAll(async () => {
   if (run) await cleanupInstalls(run);
-}, PROBE_TIMEOUT_MS);
+}, CLEANUP_TIMEOUT_MS);
 
 describe("provisioning", () => {
   for (const p of PROBES)

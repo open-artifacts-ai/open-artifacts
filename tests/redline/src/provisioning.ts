@@ -95,6 +95,8 @@ export const PAGE_WITHIN_MS = 120_000;
 export const JOB_WITHIN_MS = 20 * 60_000;
 /** A case's vitest timeout: its slowest wait plus margin. */
 export const PROBE_TIMEOUT_MS = JOB_WITHIN_MS + 5 * 60_000;
+/** The run's cleanup: removeInstall can wait on two jobs (delete, then purge). */
+export const CLEANUP_TIMEOUT_MS = 2 * JOB_WITHIN_MS + 5 * 60_000;
 export const P34_REQUESTS = 400;
 /** RL_BROKER_IP's period (apps/auth-broker/wrangler.jsonc: limit 60 per 60 s). */
 export const BROKER_IP_PERIOD_MS = 60_000;
@@ -652,7 +654,8 @@ export async function removeInstall(
   expect(d, 200, `${what} R3`);
   i = d.json as InstallDetail;
   if (i.state === "deleted") return;
-  // A failed create is discarded by R11 straight away (P32).
+  // A failed install has nothing to delete: it is purged directly (purge
+  // from failed is allowed, P32).
   if (i.state !== "failed" && i.state !== "deleting") {
     const del = run.accepted(
       await run.v1(`/installs/${row.id}/delete`, {
@@ -1038,6 +1041,9 @@ export const PROBES: readonly Probe[] = [
     // makes: rl-a and rl-b are team tier with outside owners. The owner is
     // OIDC_OWNER_EMAIL, under the test domain, so it signs in by code.
     // Messages name the probe and step only (the run log is public).
+    // Up to four job waits (create, R26, delete, purge) can outlast this; a
+    // timeout fails the probe, and the afterAll cleanup replays the same
+    // requestIds (run.rid(`${slug}-del` / `-purge`)), so it is idempotent.
     timeoutMs: 2 * JOB_WITHIN_MS + 10 * 60_000,
     run: async (run) => {
       const slug = run.slug("snz");
