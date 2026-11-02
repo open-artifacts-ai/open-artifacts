@@ -1132,6 +1132,18 @@ describe("#1110 review: the batch gate", () => {
     }
   });
 
+  it("a paused member isn't probed: it can't answer, and that's no failure", async () => {
+    const { member, f } = await batch();
+    await db
+      .prepare(
+        "UPDATE install_lifecycle SET serving_mode = 'paused' WHERE install_id = ?1",
+      )
+      .bind(member)
+      .run();
+    await fleetDue(f.env, NOW, f.opts);
+    expect(f.probed).not.toContain(member);
+  });
+
   it("only soaking takes a member out", async () => {
     const { member, rest, f } = await batch();
     await soaked(member);
@@ -1189,6 +1201,18 @@ describe("#1110 review: the batch gate", () => {
     expect(await queued()).toEqual([]);
   });
 
+  it("the gate counts a landed, canceled job on its own, with the member out of the watch", async () => {
+    const canary = await on(TARGET, { created: 0 });
+    await soaked(canary);
+    const member = await on(TARGET, { created: 5 });
+    await fleetJob(member, { status: "failed", error_code: "canceled" });
+    await lifecycleSuspend(member);
+    await on("0.92.0", { created: 9 });
+    const f = fakes({ canary });
+    await fleetDue(f.env, NOW, f.opts);
+    expect(await queued()).toEqual([]);
+  });
+
   it("R25 before the job landed holds nothing", async () => {
     const canary = await on(TARGET, { created: 0 });
     await soaked(canary);
@@ -1227,8 +1251,12 @@ describe("#1110 review: a halt never blocks V+1", () => {
     it(`a canary ${what} for another reason doesn't`, async () => {
       const canary = await on("0.92.0", over);
       const f = fakes({ canary, tag: NEXT });
+      const lines = captureLogs(vi.spyOn);
       await fleetDue(f.env, NOW, f.opts);
       expect(await fleetJobs()).toEqual([]);
+      expect(lines).toContain(
+        `provapi fleet canary_blocked ${"health" in over ? "unhealthy" : "unavailable"}`,
+      );
     });
 
     it(`any install the release broke, now ${what}, takes it in its batch`, async () => {

@@ -130,7 +130,6 @@ WHERE ${FLEET_UP} AND json_extract(j.args, '$.to') = ${to}
   AND (j.status = 'done' OR (j.status = 'failed' AND j.error_code = 'canceled' AND s.version = ${to}))
   AND s.state NOT IN ('deleting', 'deleted')
   AND NOT EXISTS (SELECT 1 FROM platform_state p WHERE p.key = '${FLEET_SOAKED_PREFIX}' || ${to} || ':' || j.install_id)`;
-const PENDING = `SELECT COUNT(*) AS n FROM (${BATCH("?1")})`;
 // Every failed fleet upgrade, with the version it halts.
 const HALT_JOBS = `SELECT j.install_id AS install_id, j.id AS job_id, j.kind AS job_kind, j.error_code AS code, substr(j.error_message, 1, 200) AS message, COALESCE(j.finished_at, j.updated_at) AS since, json_extract(j.args, '$.to') AS version
 FROM jobs j WHERE ${FLEET_UP} AND ${FAILED}`;
@@ -387,13 +386,6 @@ export async function fleetDue(
     return;
   }
   if (hold) {
-    console.log("provapi fleet holding");
-    return;
-  }
-  const pending = await d1(
-    db.prepare(PENDING).bind(target).first<{ n: number }>(),
-  );
-  if ((pending?.n ?? 0) > 0) {
     console.log("provapi fleet holding");
     return;
   }
