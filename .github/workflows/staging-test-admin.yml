@@ -48,7 +48,7 @@ jobs:
           [[ "$RECIPIENT_KEY" =~ ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$ ]] || { echo "recipient_key is not a base64url X25519 public key"; exit 1; }
           jwt="$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -r .value)"
-          [ -n "$jwt" ] && [ "$jwt" != null ] || { echo "no OIDC token"; exit 1; }
+          if [ -z "$jwt" ] || [ "$jwt" = null ]; then echo "no OIDC token"; exit 1; fi
           body="$(jq -nc --arg k "$RECIPIENT_KEY" '{recipientKey: $k}')"
           out="$(printf 'header = "Authorization: Bearer %s"\n' "$jwt" |
             curl -fsS -K - -X POST -H "content-type: application/json" \
