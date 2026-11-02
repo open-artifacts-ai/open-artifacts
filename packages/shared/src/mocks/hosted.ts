@@ -2112,6 +2112,50 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         return HttpResponse.json(syncView());
       }),
     ),
+    http.post(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(async ({ params, request }) => {
+        if (me.user.role !== "owner") return notFound();
+        const h = sync.held.find((x) => x.groupId === params.groupId);
+        if (!h || h.wouldRemove === 0)
+          return err("conflict", "This group has no held sweep to snooze");
+        // The body is optional: none means no reason.
+        const empty = !(await request.clone().text());
+        let reason: string | null = null;
+        if (!empty) {
+          const r = await c.body(request, HeldSnoozeInputSchema);
+          if (r.error) return r.error;
+          reason = r.data.reason?.trim().slice(0, 200) || null;
+        }
+        h.snoozedUntil = new Date(Date.now() + HELD_SNOOZE_MS).toISOString();
+        h.snoozeReason = reason;
+        log(
+          "directory.sweep.snoozed",
+          { type: "group", id: params.groupId as string },
+          null,
+          { until: h.snoozedUntil },
+        );
+        return HttpResponse.json(sync);
+      }),
+    ),
+    http.delete(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(({ params }) => {
+        if (me.user.role !== "owner") return notFound();
+        const h = sync.held.find((x) => x.groupId === params.groupId);
+        if (h?.snoozedUntil) {
+          h.snoozedUntil = null;
+          h.snoozeReason = null;
+          log(
+            "directory.sweep.unsnoozed",
+            { type: "group", id: params.groupId as string },
+            null,
+            { why: "owner_cancel" },
+          );
+        }
+        return HttpResponse.json(sync);
+      }),
+    ),
     http.get(
       "*/api/v1/directory",
       authed(() =>
