@@ -4,6 +4,7 @@ import {
   authorizeRefused,
   KV_CACHE_TTL_MS,
   KV_SETTLE_SLACK_MS,
+  kvCaseTimeout,
   oauthStoreMode,
   once,
   slot,
@@ -11,6 +12,7 @@ import {
   tokenRefused,
   untilKvSettled,
 } from "../src/creds.ts";
+import { LIVE_TEST_TIMEOUT_MS } from "../src/fetch-timeout.ts";
 import { NotRefused, registerMarker } from "../src/refused.ts";
 import type { Target } from "../src/targets.ts";
 
@@ -111,6 +113,24 @@ describe("slots", () => {
     const next = once(1, 2);
     expect([next(), next()]).toEqual([1, 2]);
     expect(next).toThrow(/already used/);
+  });
+});
+
+describe("kvCaseTimeout", () => {
+  it("is the live budget plus every settle wait, so KV waits never time a case out", () => {
+    const wait = KV_CACHE_TTL_MS + KV_SETTLE_SLACK_MS;
+    expect(kvCaseTimeout(0)).toBe(LIVE_TEST_TIMEOUT_MS);
+    expect(kvCaseTimeout(4)).toBe(LIVE_TEST_TIMEOUT_MS + 4 * wait);
+    // The revoke case's four waits alone exceed the default budget (#826).
+    expect(4 * wait).toBeGreaterThan(LIVE_TEST_TIMEOUT_MS);
+  });
+
+  it("is what the live config uses as its default", async () => {
+    const cfg = (await import("../vitest.live.config.ts")).default as {
+      test: { testTimeout: number; hookTimeout: number };
+    };
+    expect(cfg.test.testTimeout).toBe(LIVE_TEST_TIMEOUT_MS);
+    expect(cfg.test.hookTimeout).toBe(LIVE_TEST_TIMEOUT_MS);
   });
 });
 

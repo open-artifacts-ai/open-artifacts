@@ -3,6 +3,12 @@
 // fetch itself keeps running after the case fails. Bounded, a stalled request
 // rejects with an abort error: a FAIL naming the case, never a refusal.
 
+/**
+ * The live suite's per-case and per-hook timeout (vitest.live.config.ts): a
+ * paced hook() (src/http.ts) can wait up to a minute inside a case.
+ */
+export const LIVE_TEST_TIMEOUT_MS = 180_000;
+
 /** Default per-request bound; edge.test.ts keeps its own, shorter one. */
 export const FETCH_TIMEOUT_MS = 30_000;
 
