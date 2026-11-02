@@ -885,7 +885,10 @@ describe("halts", () => {
       then: () => Promise<unknown>,
     ) => {
       f.env.PROVISIONER = {
-        releases: async () => (await then(), [release(TARGET)]),
+        releases: async () => {
+          await then();
+          return [release(TARGET)];
+        },
       } as unknown as ProvapiEnv["PROVISIONER"];
     };
 
