@@ -1488,16 +1488,9 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
-  // Refuse: the mapping S already has, at its role (no change, 200); 409
-  // directory_sync_off without a directory.
+  // No refusal after the manager rule: with sync on, an unknown group is a
+  // plain 404, the same as a refusal, and there's no row to act on live.
   "PUT /api/v1/spaces/:id/mappings/:groupId": {
-    refuse: {
-      req: async (c) => ({
-        path: `${SPACES}/${c.t.spaceId}/mappings/${c.t.groupId ?? "probe-group"}`,
-        body: { role: "viewer" },
-      }),
-      allow: either(ok(200), syncOff),
-    },
     real: {
       needs: ["spaceId", "groupId"],
       req: (r) => ({
@@ -1528,26 +1521,16 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
-  // Refuse: 409 directory_sync_off, only without a directory (the matrix's
-  // world has one: its probe-script check skips it).
+  // No refusal after the owner rule: as PUT above, a plain 404 with sync on.
   "DELETE /api/v1/directory/org-mappings/:groupId": {
-    refuse: {
-      req: async () => ({ path: `${DIR}/org-mappings/probe-group` }),
-      allow: syncOff,
-      noDirectory: true,
-    },
     real: {
       needs: ["orgMappingGroupId"],
       req: (r) => ({ path: `${DIR}/org-mappings/${r.orgMappingGroupId}` }),
       allow: ok(204),
     },
   },
+  // No refusal after the owner rule: an unknown group is a plain 404 with sync on.
   "PUT /api/v1/directory/restricted-groups/:groupId": {
-    refuse: {
-      req: async () => ({ path: `${DIR}/restricted-groups/probe-group` }),
-      allow: syncOff,
-      noDirectory: true,
-    },
     real: {
       needs: ["groupId"],
       req: (r) => ({ path: `${DIR}/restricted-groups/${r.groupId}` }),
