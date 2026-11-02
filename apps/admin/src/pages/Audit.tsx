@@ -35,7 +35,7 @@ const VERB: Record<string, string> = {
   "job.refused": "had a job refused",
   "job.canceled": "canceled a job",
   "job.done": "finished a job",
-  "job.failed": "failed a job",
+  "job.failed": "had a job fail",
   "authz.refused": "was refused",
   "signin.ok": "signed in",
   "signin.refused": "couldn't sign in",
@@ -47,7 +47,7 @@ const VERB: Record<string, string> = {
   "oauth.grant": "approved an agent",
   "oauth.denied": "denied an agent",
   "oauth.refresh_refused": "had a token refresh refused",
-  "oauth.client_expired": "had an agent's client expire",
+  "oauth.client_expired": "had an agent client expire",
   "test_admin.session": "started a test admin session",
 };
 export const AUDIT_ACTIONS = Object.keys(VERB);
@@ -116,6 +116,7 @@ const rowPhrase = (e: AuditEntry) =>
 
 /** A refusal's verb says the outcome, so its code is the row's detail. */
 const isRefusal = (e: AuditEntry) => e.action === "authz.refused";
+const hasChip = (e: AuditEntry) => e.outcome !== "ok" && !isRefusal(e);
 const detailOf = (e: AuditEntry) =>
   [isRefusal(e) ? e.code : null, detailLine(e.detail)]
     .filter(Boolean)
@@ -317,13 +318,6 @@ export function Audit({
                     </TableCell>
                     <TableCell>
                       {rowPhrase(e)}
-                      {e.outcome !== "ok" && !isRefusal(e) && (
-                        <span className="oa-chip oa-chip-danger">
-                          {e.outcome}
-                          {e.code ? ": " : ""}
-                          {e.code && <span className="oa-code">{e.code}</span>}
-                        </span>
-                      )}
                       {e.count > 1 && (
                         <span data-testid="count"> {e.count} times</span>
                       )}
@@ -340,6 +334,14 @@ export function Audit({
                       )}
                     </TableCell>
                     <TableCell className="oa-audit-detail">
+                      {hasChip(e) && (
+                        <span className="oa-chip oa-chip-danger">
+                          {e.outcome}
+                          {e.code ? ": " : ""}
+                          {e.code && <span className="oa-code">{e.code}</span>}
+                        </span>
+                      )}
+                      {hasChip(e) && (detailOf(e) || e.jobId) ? " " : ""}
                       {detailOf(e)}
                       {e.jobId && (
                         <>

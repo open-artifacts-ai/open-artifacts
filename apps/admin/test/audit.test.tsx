@@ -4,7 +4,7 @@ import { fixtureAudit } from "@oa/shared/provisioning/fixtures";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { auditEntries, FIXTURE_IDS, tokens } from "../src/mocks/fixtures";
-import { detailLine } from "../src/pages/Audit";
+import { actionPhrase, detailLine } from "../src/pages/Audit";
 import { http, json, renderApp, seen, use } from "./harness";
 
 it("lists entries of each outcome; aggregated refusals show a count", async () => {
@@ -54,6 +54,13 @@ it("a refused call: the verb says so, its code is the detail, and no raw action 
   expect(cells[4]).toHaveTextContent(/^forbidden$/);
   expect(row).not.toHaveTextContent("authz.refused");
   expect(row).toHaveAttribute("data-outcome", "refused");
+});
+
+it("the two relabelled actions read as Design's copy", () => {
+  expect(actionPhrase("job.failed")).toBe("had a job fail");
+  expect(actionPhrase("oauth.client_expired")).toBe(
+    "had an agent client expire",
+  );
 });
 
 it("a row with no target marks the cell, so phones drop its dash", async () => {
@@ -136,6 +143,43 @@ it("a job says on only when it has a target; other verbs never do", async () => 
     "replayed a job on",
     "signed out",
   ]);
+});
+
+it("the chip sits in Detail, first, so the Action cell reads whole", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          fixtureAudit({
+            action: "job.refused",
+            outcome: "refused",
+            code: "job_in_progress",
+            detail: { note: "try later" },
+            jobId: null,
+          }),
+          fixtureAudit({
+            id: "api:2",
+            action: "job.failed",
+            outcome: "error",
+            code: "cf_error",
+            detail: null,
+            jobId: null,
+          }),
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const [one, two] = screen
+    .getAllByRole("row")
+    .slice(1)
+    .map((r) => within(r).getAllByRole("cell"));
+  expect(one?.[2]).toHaveTextContent(/^had a job refused on$/);
+  expect(one?.[4]).toHaveTextContent(/^refused: job_in_progress try later$/);
+  expect(two?.[2]).toHaveTextContent(/^had a job fail on$/);
+  expect(two?.[4]).toHaveTextContent(/^error: cf_error$/);
 });
 
 it("another refused action keeps its chip and code", async () => {
