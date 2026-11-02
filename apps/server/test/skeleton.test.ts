@@ -28,7 +28,7 @@ describe("skeleton", () => {
     const res = await call(`${APP}/robots.txt`);
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(
-      "User-agent: *\nAllow: /llms.txt\nAllow: /skill.md\nDisallow: /",
+      "User-agent: *\nAllow: /llms.txt\nAllow: /skill.md\nAllow: /upgrade.md\nDisallow: /",
     );
   });
 

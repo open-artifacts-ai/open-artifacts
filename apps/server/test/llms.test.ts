@@ -113,6 +113,22 @@ describe("GET /llms.txt", () => {
     expect(await guide(E({ OAUTH_STORE: "dual" }))).toBe(await guide());
   });
 
+  it("OAUTH_STORE=dual after this install served in d1: the store's 503", async () => {
+    resetOAuthStoreMarkers();
+    await env.DB.prepare("insert into settings (key, value) values (?, ?)")
+      .bind(KV_WRITES_OFF_KEY, String(Date.now()))
+      .run();
+    try {
+      const r = await get(`${APP}${LLMS_PATH}`, {}, E({ OAUTH_STORE: "dual" }));
+      expect(r.status).toBe(503);
+    } finally {
+      await env.DB.prepare("delete from settings where key = ?")
+        .bind(KV_WRITES_OFF_KEY)
+        .run();
+      resetOAuthStoreMarkers();
+    }
+  });
+
   it("OAUTH_STORE=d1: same guide once a copy completed; before that, the store's 503", async () => {
     const kv = await guide();
     const d1 = E({ OAUTH_STORE: "d1" });

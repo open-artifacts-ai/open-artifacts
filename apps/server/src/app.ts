@@ -40,9 +40,9 @@ const hooks = typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
 /** The content host: nothing there is for crawlers. */
 export const ROBOTS = "User-agent: *\nDisallow: /";
 
-// The app host also opens the two paths any AI agent is sent to read.
+// The app host also opens the guides any AI agent is sent to read.
 // Allow comes first for parsers that take the first match.
-const APP_ROBOTS = `User-agent: *\nAllow: ${LLMS_PATH}\nAllow: ${SKILL_PATH}\nDisallow: /`;
+const APP_ROBOTS = `User-agent: *\nAllow: ${LLMS_PATH}\nAllow: ${SKILL_PATH}\nAllow: ${UPGRADE_PATH}\nDisallow: /`;
 
 export const methodNotAllowed = () =>
   errorJson(405, "bad_request", "Method not allowed", undefined, {
