@@ -49,6 +49,7 @@ import {
 } from "@oa/shared/provisioning/enum-values";
 import { alertStateKey } from "@oa/shared/provisioning/state";
 import type { ProvapiEnv } from "./env.js";
+import { FLEET_SKEW_MS } from "./fleet.js";
 import { claimState, getState, raiseState, unclaimState } from "./state.js";
 
 export type AlertState = "open" | "remind" | "clear";
@@ -470,6 +471,18 @@ const COPY: Record<AlertKey, Copy> = {
     open: () =>
       "The provisioner's Cloudflare token is invalid. Jobs that need it retry and then fail until it is replaced.",
     clear: "The provisioner's Cloudflare token is valid again.",
+  },
+  fleet_halted: {
+    title: "fleet rollout halted",
+    open: (f) =>
+      `The rollout of this release stopped: ${plural(f.count, "fleet upgrade")} failed or ${f.count === 1 ? "was" : "were"} rolled back. No other install is upgraded to it. Fix the cause and ship the next release, which starts a new rollout.`,
+    clear: "No fleet rollout is halted.",
+  },
+  version_skew: {
+    title: "installs off the platform version",
+    open: (f) =>
+      `${plural(f.count, "install")} ${f.count === 1 ? "is" : "are"} still not on the platform's release ${hours(FLEET_SKEW_MS)} hours after it deployed. Check the canary (FLEET_CANARY), fleet_halted and each install's jobs.`,
+    clear: "Every install is on the platform's release.",
   },
 };
 

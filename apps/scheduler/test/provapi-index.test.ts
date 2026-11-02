@@ -249,6 +249,7 @@ describe("scheduled() and the provapi duties", () => {
       signups: "ok",
       purge: "ok",
       health: "ok",
+      fleet: "ok",
       alerts: "timeout",
       prune: "ok",
     });

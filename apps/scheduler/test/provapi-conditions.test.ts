@@ -8,6 +8,7 @@ import {
   OAUTH_REGISTER_FLOOD,
   PURGE_STUCK_FAILURES,
   RPC_ALERT_KEYS,
+  SCHEDULER_ALERT_KEYS,
   SIGNIN_BURST_MIN,
   SIGNIN_BURST_WINDOW_MS,
   SIGNIN_REFUSAL_BUCKET,
@@ -17,6 +18,7 @@ import {
   WELCOME_CLAIM_MS,
 } from "@oa/shared/provisioning";
 import { fakeProvisionerRpc } from "@oa/shared/provisioning/fakes";
+import { SYSTEM_ACTOR } from "@oa/shared/provisioning/system";
 import {
   afterEach,
   beforeAll,
@@ -32,6 +34,7 @@ import {
   sqlConditions,
   tokenConditions,
 } from "../src/provapi/conditions.js";
+import { FLEET_SKEW_MS, fleetRequestId } from "../src/provapi/fleet.js";
 import {
   captureLogs,
   db,
@@ -50,7 +53,11 @@ import {
 // exported; windows come from C2's constants and the clock is pinned.
 
 beforeAll(migrate);
-beforeEach(reset);
+beforeEach(async () => {
+  await reset();
+  tag = "v1.2.0";
+  deployedAgo = FLEET_SKEW_MS;
+});
 afterEach(() => vi.restoreAllMocks());
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -87,6 +94,23 @@ const doneJob = (c: Ctx, kind: string) =>
     updated_at: c.now,
     finished_at: c.now,
   });
+// The fleet target (#955): the scheduler's version tag, deployed past the
+// skew window unless a fixture moves it.
+let tag = "v1.2.0";
+let deployedAgo = FLEET_SKEW_MS;
+const meta = (now: number): WorkerVersionMetadata => ({
+  id: "v",
+  tag,
+  timestamp: new Date(now - deployedAgo).toISOString(),
+});
+const onVersion = async (c: Ctx, version: string) => {
+  await set(
+    "UPDATE installs SET version = ?2 WHERE id = ?1",
+    c.install,
+    version,
+  );
+  await lifecycle(c.install);
+};
 const set = (sql: string, ...b: unknown[]) =>
   db
     .prepare(sql)
@@ -284,6 +308,35 @@ const FIXTURES: Record<AlertKey, Fixture> = {
       daysLeft: TOKEN_EXPIRING_DAYS + 1,
     }),
   },
+  fleet_halted: {
+    async open(c) {
+      await failedJob(c, {
+        kind: "upgrade",
+        workflow: "manage_install",
+        actor_kind: SYSTEM_ACTOR.kind,
+        actor_key: SYSTEM_ACTOR.key,
+        request_id: fleetRequestId(c.install, "1.2.0"),
+        args: JSON.stringify({ from: "1.1.0", to: "1.2.0" }),
+        error_code: "upgrade_rolled_back",
+      });
+      return undefined;
+    },
+    // The next release starts a new rollout.
+    async clear() {
+      tag = "v1.2.1";
+      return undefined;
+    },
+  },
+  version_skew: {
+    async open(c) {
+      await onVersion(c, "1.1.0");
+      return undefined;
+    },
+    async clear() {
+      await set("UPDATE installs SET version = '1.2.0'");
+      return undefined;
+    },
+  },
   token_invalid: {
     open: async () => ({ status: "invalid", expiresAt: null, daysLeft: null }),
     clear: async (c) => ({
@@ -301,18 +354,20 @@ const ACTIVE: TokenStatus = {
 };
 
 async function evaluate(now: number, token: TokenStatus = ACTIVE) {
-  return alertConditions(db, fakeProvisionerRpc({ tokenStatus: token }), {
-    now,
-    signupDailyCap: CAP,
-  });
+  return alertConditions(
+    db,
+    fakeProvisionerRpc({ tokenStatus: token }),
+    { now, signupDailyCap: CAP },
+    { versionMetadata: meta(now) },
+  );
 }
 
 describe("alert conditions", () => {
-  it("every key has a fixture, and SQL plus RPC keys are every key", () => {
+  it("every key has a fixture, and SQL, RPC and scheduler keys are every key", () => {
     expect(Object.keys(FIXTURES).sort()).toEqual([...ALERT_KEYS].sort());
-    expect([...SQL_ALERT_KEYS, ...RPC_ALERT_KEYS].sort()).toEqual(
-      [...ALERT_KEYS].sort(),
-    );
+    expect(
+      [...SQL_ALERT_KEYS, ...RPC_ALERT_KEYS, ...SCHEDULER_ALERT_KEYS].sort(),
+    ).toEqual([...ALERT_KEYS].sort());
   });
 
   it("an empty database and an active token: every key is clear", async () => {

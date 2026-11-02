@@ -1,6 +1,6 @@
 // The alert conditions (design v7 5.8): C2's exported queries on platform
 // D1, never a copy, plus token_expiring and token_invalid from
-// PROVISIONER.tokenStatus(). Rows mean open, no rows clear, and a failed
+// PROVISIONER.tokenStatus() and the fleet keys from fleet.ts (#955). Rows mean open, no rows clear, and a failed
 // read is null (left as it is).
 import type { ProvisionerRpc } from "@oa/shared/provisioning";
 import {
@@ -14,6 +14,7 @@ import {
 import { isTokenStatus } from "@oa/shared/provisioning/constants";
 import type { AlertKey } from "@oa/shared/provisioning/enum-values";
 import { within } from "./env.js";
+import { fleetConditions } from "./fleet.js";
 
 type RpcAlertKey = (typeof RPC_ALERT_KEYS)[number];
 
@@ -101,10 +102,18 @@ export async function alertConditions(
   db: D1Database,
   rpc: ProvisionerRpc | undefined,
   input: { now: number; signupDailyCap: number },
-  o: { tokenTimeoutMs?: number } = {},
+  o: {
+    tokenTimeoutMs?: number;
+    /** The fleet target's source; without it the fleet keys are unknown. */
+    versionMetadata?: WorkerVersionMetadata;
+  } = {},
 ): Promise<Record<AlertKey, Condition>> {
   return {
     ...(await sqlConditions(db, input)),
     ...(await tokenConditions(rpc, o.tokenTimeoutMs)),
+    ...(await fleetConditions(
+      { PLATFORM_DB: db, CF_VERSION_METADATA: o.versionMetadata },
+      input.now,
+    )),
   };
 }

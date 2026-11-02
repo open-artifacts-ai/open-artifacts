@@ -4,6 +4,7 @@ import {
   AUDIT_REFUSAL_BUCKETS,
   alertParams,
   RPC_ALERT_KEYS,
+  SCHEDULER_ALERT_KEYS,
   SIGNIN_REFUSAL_BUCKET,
   SQL_ALERT_KEYS,
 } from "../src/provisioning/alerts.js";
@@ -27,6 +28,8 @@ describe("ALERT_KEYS", () => {
       "oauth_register_flood",
       "token_expiring",
       "token_invalid",
+      "fleet_halted",
+      "version_skew",
     ]);
     expect(new Set(ALERT_KEYS).size).toBe(ALERT_KEYS.length);
   });
@@ -35,11 +38,12 @@ describe("ALERT_KEYS", () => {
     for (const k of ALERT_KEYS) expect(k).toMatch(/^[a-z][a-z0-9_]*$/);
   });
 
-  it("splits into D1 conditions and PROVISIONER.tokenStatus() keys", () => {
+  it("splits into D1 conditions, PROVISIONER.tokenStatus() keys and the scheduler's fleet keys", () => {
     expect([...RPC_ALERT_KEYS]).toEqual(["token_expiring", "token_invalid"]);
-    expect([...SQL_ALERT_KEYS, ...RPC_ALERT_KEYS].sort()).toEqual(
-      [...ALERT_KEYS].sort(),
-    );
+    expect([...SCHEDULER_ALERT_KEYS]).toEqual(["fleet_halted", "version_skew"]);
+    expect(
+      [...SQL_ALERT_KEYS, ...RPC_ALERT_KEYS, ...SCHEDULER_ALERT_KEYS].sort(),
+    ).toEqual([...ALERT_KEYS].sort());
     expect(Object.keys(ALERT_CONDITIONS).sort()).toEqual(
       [...SQL_ALERT_KEYS].sort(),
     );

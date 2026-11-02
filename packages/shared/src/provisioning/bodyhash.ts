@@ -1,10 +1,12 @@
 import type { RouteId } from "./routes.js";
 
 /**
- * The route of a job no API route accepted (the scheduler's purge and
- * cleanup): `system:<kind>`. Never a RouteId, so it never hashes like one.
+ * The route of a job no API route accepted (the scheduler's purge,
+ * cleanup and fleet upgrade and rollback): `system:<kind>`. Never a
+ * RouteId, so it never hashes like one.
  */
-export type SystemRouteKey = `system:${"purge" | "cleanup"}`;
+export type SystemRouteKey =
+  `system:${"purge" | "cleanup" | "upgrade" | "rollback"}`;
 
 /** JSON with keys sorted at every depth (3.1 body_hash). */
 export function canonicalJson(v: unknown): string {

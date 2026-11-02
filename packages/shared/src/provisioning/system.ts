@@ -1,5 +1,6 @@
 // Jobs the scheduler inserts itself (design v7 3.1, 4.1, 5.8): purge after
-// grace and the sweep's cleanup. No zod: `@oa/shared/provisioning/system`.
+// grace, the sweep's cleanup, and the fleet rollout's upgrade and rollback
+// (#955). No zod: `@oa/shared/provisioning/system`.
 
 import { PURGE_STUCK_FAILURES } from "./alerts.js";
 import { bodyHash, type SystemRouteKey } from "./bodyhash.js";
@@ -17,6 +18,8 @@ export const SYSTEM_ACTOR = Object.freeze({
 export const SYSTEM_JOB_KINDS = [
   "purge",
   "cleanup",
+  "upgrade",
+  "rollback",
 ] as const satisfies readonly JobKind[];
 export type SystemJobKind = (typeof SYSTEM_JOB_KINDS)[number];
 
@@ -33,9 +36,16 @@ export interface PurgeJobArgs {
 export interface CleanupJobArgs {
   parentJobId: string;
 }
+/** `jobs.args` of a fleet upgrade or rollback: R5's and R6's shape. */
+export interface VersionJobArgs {
+  from: string;
+  to: string;
+}
 export type SystemJobArgs = {
   purge: PurgeJobArgs;
   cleanup: CleanupJobArgs;
+  upgrade: VersionJobArgs;
+  rollback: VersionJobArgs;
 };
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
