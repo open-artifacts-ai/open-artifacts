@@ -55,6 +55,7 @@ import {
   agentFor,
   isPrivateAgent,
   ownersAgent,
+  SCRUBBED_VIA,
   shownName,
 } from "./agent-display.js";
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
@@ -699,36 +700,37 @@ const publisherOf = (id: string, u: NameCols) => ({
 
 /**
  * The current version's publisher for `lastAgent`, as one JSON array
- * [agent_via, created_by, email, name, display_name], or null
- * with no row. The artifacts row keeps no via, so this reads the version row
- * the same batch wrote (allocateVersion): a correlated PK lookup per output
- * row, inside the list, search and trash SELECTs (no extra D1 call).
+ * [agent_via, created_by, email, name, display_name, agent_name,
+ * agent_version], or null with no row. The artifacts row keeps no via, so this
+ * reads the version row the same batch wrote (allocateVersion): a correlated
+ * PK lookup per output row, inside the list, search and trash SELECTs (no
+ * extra D1 call). The name comes from this row too: a via applied to another
+ * row's name would leak that row's label to a concurrent reader.
  * Qualified by hand: drizzle drops the table name in a one-table select,
  * and a bare "id" would bind to lu.id.
  */
 export const lastPublisherSql = sql<string | null>`(select json_array(
-    lv.agent_via, lv.created_by, lu.email, lu.name, lu.display_name)
+    lv.agent_via, lv.created_by, lu.email, lu.name, lu.display_name,
+    lv.agent_name, lv.agent_version)
   from versions lv join users lu on lu.id = lv.created_by
   where lv.artifact_id = "artifacts"."id"
     and lv.version = "artifacts"."current_version")`;
 
 /**
- * `lastAgent` as `caller` sees it (agentFor), from lastPublisherSql's value.
- * A missing version row hides the name.
+ * `lastAgent` as `caller` sees it (agentFor), from lastPublisherSql's value
+ * alone. A missing version row hides the name.
  */
 export function shownLastAgent(
-  lastAgent: AgentRef | null,
   pub: string | null | undefined,
   caller: Caller,
 ): AgentRef | null {
-  if (!lastAgent || !pub) return null;
-  const [via, by, email, name, displayName] = JSON.parse(pub) as (
-    | string
-    | null
-  )[];
+  if (!pub) return null;
+  const [via, by, email, name, displayName, agentName, agentVersion] =
+    JSON.parse(pub) as (string | null)[];
+  if (agentName == null) return null;
   return agentFor(
-    lastAgent,
-    isPrivateAgent(via ?? null),
+    { name: agentName, version: agentVersion ?? null },
+    via ?? null,
     publisherOf(by ?? "", {
       email: email ?? "",
       name: name ?? null,
@@ -741,12 +743,13 @@ export function shownLastAgent(
 /**
  * The `agent` list filter: a private token label (isPrivateAgent on the
  * current version) matches only for its publisher, so the filter is no
- * oracle for another member's label.
+ * oracle for another member's label. A scrubbed row matches for nobody.
  */
 const agentShownSql = (caller: Caller) =>
   sql`exists (select 1 from versions v where v.artifact_id = "artifacts"."id"
     and v.version = "artifacts"."current_version"
-    and (v.agent_via like 'g:%' or v.created_by = ${caller.kind === "user" ? caller.user.id : null}))`;
+    and (v.agent_via like 'g:%' or (v.created_by = ${caller.kind === "user" ? caller.user.id : null}
+      and (v.agent_via is null or v.agent_via <> ${SCRUBBED_VIA}))))`;
 
 /** Anonymous callers never see member emails (not even as a name fallback). */
 export function redact(
@@ -791,7 +794,7 @@ export async function getSummary(
           .then((rows) => rows[0]?.p ?? null),
   ]);
   const out = toSummary(env, r.artifact, owner, r.level);
-  out.lastAgent = shownLastAgent(out.lastAgent, pub, caller);
+  out.lastAgent = shownLastAgent(pub, caller);
   if (!decorates(env, caller)) return out;
   // One PK read for the space (lists and search read it from their join).
   const [sp] = await getDb(env)
@@ -1012,7 +1015,7 @@ export async function list(
       ),
       level,
     );
-    out.lastAgent = shownLastAgent(out.lastAgent, r.lastPub, caller);
+    out.lastAgent = shownLastAgent(r.lastPub, caller);
     items.push(dec ? withSpace(caller, out, level, r.a.spaceId, r.space) : out);
   }
   return {
@@ -1096,7 +1099,7 @@ export async function listVersions(
         ? null
         : agentFor(
             { name: v.agent_name, version: v.agent_version },
-            isPrivateAgent(v.agent_via),
+            v.agent_via,
             publisherOf(v.created_by, v),
             viewerId,
           ),

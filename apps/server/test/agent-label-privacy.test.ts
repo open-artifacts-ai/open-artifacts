@@ -182,7 +182,7 @@ describe("a PAT publish: REST", () => {
     expect(theirs.items.map((i) => i.id)).not.toContain(pubId);
   });
 
-  it('an owner with no real name: "Member\'s agent", and no email in it', async () => {
+  it('an owner with no real name: "A member\'s agent", and no email in it', async () => {
     const r = (await restReads(namelessId, other.cookie)) as {
       artifact: { lastAgent: { name: string } };
       versions: { agent: { name: string } }[];

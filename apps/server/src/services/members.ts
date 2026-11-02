@@ -50,6 +50,7 @@ import {
   MAX_CLOSE,
   revokeUserLive,
 } from "../runtime/revoke.js";
+import { MEMBERS_AGENT, SCRUBBED_VIA } from "./agent-display.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
 import { inviteReach } from "./reach.js";
 import {
@@ -520,6 +521,36 @@ async function deleteMember(
     return env.DB.prepare(text).bind(...params);
   };
   const writes = [
+    // A private label names a publisher who is going away, and created_by is
+    // about to name the instance owner, who would then read the label as
+    // their own. Overwrite it with the stand-in first, while created_by still
+    // finds the row. #829 removes these two statements with deleteMember; the
+    // read path (SCRUBBED_VIA) stays.
+    db
+      .update(artifacts)
+      .set({ lastAgentName: MEMBERS_AGENT })
+      .where(
+        and(
+          sql`exists (select 1 from versions v
+            where v.artifact_id = "artifacts"."id"
+              and v.version = "artifacts"."current_version"
+              and v.created_by = ${id}
+              and v.agent_name is not null
+              and (v.agent_via is null or v.agent_via not like 'g:%'))`,
+          target,
+        ),
+      ),
+    db
+      .update(versions)
+      .set({ agentName: MEMBERS_AGENT, agentVia: SCRUBBED_VIA })
+      .where(
+        and(
+          eq(versions.createdBy, id),
+          isNotNull(versions.agentName),
+          sql`(${versions.agentVia} is null or ${versions.agentVia} not like 'g:%')`,
+          target,
+        ),
+      ),
     // Split live/deleted: owner_id is only indexed by the two partial indexes (#248).
     db
       .update(artifacts)

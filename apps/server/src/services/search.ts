@@ -603,7 +603,7 @@ export async function search(
         ),
         level,
       );
-      out.lastAgent = shownLastAgent(out.lastAgent, r.lastPub, caller);
+      out.lastAgent = shownLastAgent(r.lastPub, caller);
       return [
         {
           ...(dec ? withSpace(caller, out, level, r.a.spaceId, r.space) : out),

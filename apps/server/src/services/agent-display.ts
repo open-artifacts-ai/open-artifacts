@@ -9,25 +9,32 @@ import { type AgentRef, stripNameControls } from "@oa/shared";
 /** Longest name shown, in code points. */
 const NAME_MAX = 80;
 
-/** Strip controls, trim, collapse whitespace, cut to NAME_MAX code points; empty is null. */
+/** Strip controls, collapse whitespace, trim. */
+const tidyName = (s: string): string =>
+  stripNameControls(s).replace(/\s+/g, " ").trim();
+
+/** tidyName, cut to NAME_MAX code points; empty is null. */
 export const cleanName = (s: string | null): string | null => {
   if (s === null) return null;
-  const t = stripNameControls(s).replace(/\s+/g, " ").trim();
-  const cut = [...t].slice(0, NAME_MAX).join("").trim();
+  const cut = [...tidyName(s)].slice(0, NAME_MAX).join("").trim();
   return cut === "" ? null : cut;
 };
 
 /**
- * A member's name for other viewers: cleaned, then null when it is the email
- * (any case). Member.name falls back to the email when the user has no real
- * name (effectiveName), and an email never goes out as a name.
+ * A member's name for other viewers: cleaned, or null when it is an email.
+ * Member.name falls back to the email when the user has no real name
+ * (effectiveName), and an email never goes out as a name. Checked before the
+ * cut, or an email past NAME_MAX would no longer equal itself.
  */
 export const publicName = (u: {
   name: string | null;
   email: string;
 }): string | null => {
-  const n = cleanName(u.name);
-  return n !== null && n.toLowerCase() === u.email.toLowerCase() ? null : n;
+  if (u.name === null) return null;
+  const whole = tidyName(u.name);
+  if (whole.includes("@") || whole.toLowerCase() === u.email.toLowerCase())
+    return null;
+  return cleanName(whole);
 };
 
 /** publicName, or "Member" when there is none. */
@@ -43,26 +50,40 @@ export const shownName = (u: { name: string | null; email: string }): string =>
 export const isPrivateAgent = (via: string | null): boolean =>
   !via?.startsWith("g:");
 
-/** The stand-in for a private label: "<publisher>'s agent", or "A member's agent". */
+/** The stand-in when the publisher has no public name. */
+export const MEMBERS_AGENT = "A member's agent";
+
+/**
+ * `versions.agent_via` of a row whose private label was overwritten with
+ * MEMBERS_AGENT because its publisher's user row was deleted (deleteMember).
+ * created_by then names the instance owner, not the publisher, so nothing may
+ * be derived from it. #829 removes that scrub, never this read path: rows
+ * already scrubbed keep the marker.
+ */
+export const SCRUBBED_VIA = "r:";
+
+/** The stand-in for a private label: "<publisher>'s agent", or MEMBERS_AGENT. */
 export const ownersAgent = (publisher: {
   name: string | null;
   email: string;
 }): string => {
   const name = publicName(publisher);
-  return name === null ? "A member's agent" : `${name}'s agent`;
+  return name === null ? MEMBERS_AGENT : `${name}'s agent`;
 };
 
 /**
- * The agent as `viewerId` sees it (null: anonymous). The publisher (the
- * version's createdBy, who owns the token) sees the label; everyone else
- * sees ownersAgent for a private name.
+ * The agent as `viewerId` sees it (null: anonymous), from the version's
+ * `agent_via`. The publisher (the version's createdBy, who owns the token)
+ * sees the label; everyone else sees ownersAgent for a private name. A
+ * scrubbed row reads the same for everyone, and createdBy isn't its publisher.
  */
 export function agentFor(
   agent: AgentRef,
-  isPrivate: boolean,
+  via: string | null,
   publisher: { id: string; name: string | null; email: string },
   viewerId: string | null,
 ): AgentRef {
-  if (!isPrivate || viewerId === publisher.id) return agent;
+  if (via === SCRUBBED_VIA) return { ...agent, masked: true };
+  if (!isPrivateAgent(via) || viewerId === publisher.id) return agent;
   return { name: ownersAgent(publisher), version: agent.version, masked: true };
 }

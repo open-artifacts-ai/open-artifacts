@@ -225,7 +225,7 @@ describe("events socket", () => {
     s.ws.close();
   });
 
-  it('a PAT publish by an owner with no real name: "Member\'s agent"', async () => {
+  it('a PAT publish by an owner with no real name: "A member\'s agent"', async () => {
     const n = await mk("ev-nameless2", "member");
     const pat = (await createPat(env, n.userId, "label-9q2x private")).token;
     const r = await api(app, R.artifacts, pat, {

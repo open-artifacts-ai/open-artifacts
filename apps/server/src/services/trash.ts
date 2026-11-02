@@ -152,7 +152,7 @@ export async function listTrash(
       ),
       level,
     );
-    s.lastAgent = shownLastAgent(s.lastAgent, r.lastPub, c);
+    s.lastAgent = shownLastAgent(r.lastPub, c);
     return {
       ...s,
       deletedAt: iso(deletedAt),
