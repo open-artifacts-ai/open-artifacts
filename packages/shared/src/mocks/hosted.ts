@@ -49,11 +49,13 @@ import {
   type SpaceRole,
   type Tier,
 } from "../hosted/core.js";
-import type {
-  AuditAction,
-  AuditEvent,
-  DirectoryGroup,
-  SyncStatus,
+import {
+  type AuditAction,
+  type AuditEvent,
+  type DirectoryGroup,
+  HELD_SNOOZE_MS,
+  HeldSnoozeInputSchema,
+  type SyncStatus,
 } from "../hosted/directory.js";
 import {
   type GroupMapping,
@@ -413,6 +415,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
               wouldRemove: 4,
               members: 4,
               since: T0,
+              snoozedUntil: null,
+              snoozeReason: null,
             },
           ]
         : [],
@@ -744,7 +748,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       tokensUnverified: unhealthy && isAdmin(),
       state: isAdmin() ? sync.state : null,
       staleAt: isAdmin() ? sync.staleAt : null,
-      heldSweeps: isAdmin() ? sync.held.length : 0,
+      heldSweeps: isAdmin()
+        ? sync.held.filter(
+            (h) => !h.snoozedUntil || Date.parse(h.snoozedUntil) <= Date.now(),
+          ).length
+        : 0,
     };
     for (const m of members) m.restriction = restrictionOf(m.id);
     const myCap = cap();
@@ -1960,7 +1968,14 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         if (me.user.role !== "owner") return notFound();
         const i = sync.held.findIndex((h) => h.groupId === params.groupId);
         if (i < 0) return notFound();
-        sync.held.splice(i, 1);
+        const [h] = sync.held.splice(i, 1);
+        if (h?.snoozedUntil)
+          log(
+            "directory.sweep.unsnoozed",
+            { type: "group", id: params.groupId as string },
+            null,
+            { why: "applied" },
+          );
         log("directory.sweep.confirmed", {
           type: "group",
           id: params.groupId as string,
@@ -1968,9 +1983,65 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         return HttpResponse.json(sync, { status: 202 });
       }),
     ),
+    http.post(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(async ({ params, request }) => {
+        if (me.user.role !== "owner") return notFound();
+        const h = sync.held.find((x) => x.groupId === params.groupId);
+        if (!h || h.wouldRemove === 0)
+          return err("conflict", "This group has no held sweep to snooze");
+        // The body is optional: none means no reason.
+        const empty = !(await request.clone().text());
+        let reason: string | null = null;
+        if (!empty) {
+          const r = await c.body(request, HeldSnoozeInputSchema);
+          if (r.error) return r.error;
+          reason = r.data.reason?.trim().slice(0, 200) || null;
+        }
+        h.snoozedUntil = new Date(Date.now() + HELD_SNOOZE_MS).toISOString();
+        h.snoozeReason = reason;
+        log(
+          "directory.sweep.snoozed",
+          { type: "group", id: params.groupId as string },
+          null,
+          { until: h.snoozedUntil },
+        );
+        return HttpResponse.json(sync);
+      }),
+    ),
+    http.delete(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(({ params }) => {
+        if (me.user.role !== "owner") return notFound();
+        const h = sync.held.find((x) => x.groupId === params.groupId);
+        if (h?.snoozedUntil) {
+          h.snoozedUntil = null;
+          h.snoozeReason = null;
+          log(
+            "directory.sweep.unsnoozed",
+            { type: "group", id: params.groupId as string },
+            null,
+            { why: "owner_cancel" },
+          );
+        }
+        return HttpResponse.json(sync);
+      }),
+    ),
     http.get(
       "*/api/v1/directory",
-      authed(() => (isAdmin() ? HttpResponse.json(sync) : notFound())),
+      authed(() =>
+        !isAdmin()
+          ? notFound()
+          : // A snooze's note is the owner's (#412).
+            HttpResponse.json(
+              me.user.role === "owner"
+                ? sync
+                : {
+                    ...sync,
+                    held: sync.held.map((h) => ({ ...h, snoozeReason: null })),
+                  },
+            ),
+      ),
     ),
     http.post(
       "*/api/v1/directory/disconnect",
