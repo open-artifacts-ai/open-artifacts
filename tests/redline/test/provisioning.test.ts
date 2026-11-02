@@ -116,9 +116,9 @@ const level = (o: Outcome | string | undefined) =>
   typeof o === "string" ? `fail: ${o}` : o?.level;
 
 describe("the probes on a conforming staging fake", () => {
-  it("covers P1-P47 exactly once", () => {
+  it("covers P1-P49 exactly once", () => {
     const ids = PROBES.map((p) => Number(p.id.slice(1))).sort((a, b) => a - b);
-    expect(ids).toEqual(Array.from({ length: 47 }, (_, i) => i + 1));
+    expect(ids).toEqual(Array.from({ length: 49 }, (_, i) => i + 1));
   });
 
   it("every probe passes but the gated and unprovable ones", async () => {
@@ -280,6 +280,11 @@ describe("each probe fails on the behaviour it guards", () => {
       "p47_wrong_code",
       "P47",
       /P47: want 401 unauthenticated, got status 401.*code internal/,
+    ],
+    [
+      "r2_q_owner_email",
+      "P49",
+      /P49 R2 q=owner email: 1 items match by owner email only, want 0/,
     ],
   ];
   for (const [fault, id, re] of cases)
