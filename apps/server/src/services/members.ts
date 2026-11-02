@@ -437,7 +437,7 @@ export async function patchMember(
  * name a user and it grants nothing in a shared space. Every other row that
  * references them is reassigned to the instance owner; their tokens are
  * deleted (tokens.user_id has no cascade, so revoked rows would block the
- * delete).
+ * delete). Their private agent labels are overwritten first (SCRUBBED_VIA).
  *
  * Without spaces the shares addressed to their email are dropped in the
  * same batch (audited as a count, sharesDropped): with the row gone, a

@@ -106,11 +106,11 @@ beforeAll(async () => {
 
 describe("helpers", () => {
   it("publicName: cleaned, then null when it is the email (any case)", () => {
-    expect(publicName({ name: " Ann ​", email: "a@x.com" })).toBe("Ann");
-    expect(publicName({ name: "A@X.com ", email: "a@x.com" })).toBeNull();
-    expect(publicName({ name: "a@x.com​", email: "a@x.com" })).toBeNull();
-    expect(publicName({ name: "  ", email: "a@x.com" })).toBeNull();
-    expect(publicName({ name: null, email: "a@x.com" })).toBeNull();
+    expect(publicName({ name: " Ann ​" })).toBe("Ann");
+    expect(publicName({ name: "A@X.com " })).toBeNull();
+    expect(publicName({ name: "a@x.com​" })).toBeNull();
+    expect(publicName({ name: "  " })).toBeNull();
+    expect(publicName({ name: null })).toBeNull();
   });
 
   it("isPrivateAgent: tokens and rows with no via (before 0012) yes, grants no", () => {

@@ -26,15 +26,10 @@ export const cleanName = (s: string | null): string | null => {
  * (effectiveName), and an email never goes out as a name. Checked before the
  * cut, or an email past NAME_MAX would no longer equal itself.
  */
-export const publicName = (u: {
-  name: string | null;
-  email: string;
-}): string | null => {
+export const publicName = (u: { name: string | null }): string | null => {
   if (u.name === null) return null;
   const whole = tidyName(u.name);
-  if (whole.includes("@") || whole.toLowerCase() === u.email.toLowerCase())
-    return null;
-  return cleanName(whole);
+  return whole.includes("@") ? null : cleanName(whole);
 };
 
 /** publicName, or "Member" when there is none. */
