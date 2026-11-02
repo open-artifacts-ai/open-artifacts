@@ -782,7 +782,7 @@ function HeldRow({
               Nobody loses access while it's snoozed. It comes back when
               Google's list for this group changes, or in 30 days.
             </p>
-            <div className="grid gap-1.5">
+            <div className="grid gap-1.5 text-left">
               <Label htmlFor={`oa-held-reason-${h.groupId}`}>
                 Reason (optional)
               </Label>
