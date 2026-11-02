@@ -370,6 +370,13 @@ describe("the dialog on what the install can do", () => {
     await within(d).findByRole("combobox", { name: "Give them to" });
     expect(within(d).queryByRole("radio")).toBeNull();
     expect(seen.some((c) => c.path === R.spaces)).toBe(false);
+    expect(within(d).queryByText(/stay where they are/)).toBeNull();
+    expect(within(d).queryByText(/personal/)).toBeNull();
+    expect(
+      screen.getByRole("dialog", {
+        name: "Transfer owner1@outside.example's 1 artifact",
+      }),
+    ).toBeTruthy();
   });
 
   it("spaces on: the choice stays", async () => {
@@ -379,6 +386,21 @@ describe("the dialog on what the install can do", () => {
       await within(d).findByRole("radio", { name: /To a space/ }),
     ).toBeTruthy();
     expect(within(d).getByRole("radio", { name: /To a person/ })).toBeChecked();
+    expect(
+      screen.getByRole("dialog", {
+        name: "Transfer owner1@outside.example's 1 personal artifact",
+      }),
+    ).toBeTruthy();
+    expect(
+      within(d).getByText("Their space artifacts stay where they are."),
+    ).toBeTruthy();
+    fireEvent.click(within(d).getByRole("combobox", { name: "Give them to" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Bob Builder" }));
+    expect(
+      await within(d).findByText(
+        "You won't see titles or contents. Bob Builder gets them in their Personal, with owner1@outside.example's shares kept.",
+      ),
+    ).toBeVisible();
   });
 
   it("counts that fail to load say so, with Retry, never 0 artifacts", async () => {
@@ -408,7 +430,7 @@ describe("the dialog on what the install can do", () => {
     fireEvent.click(within(d).getByRole("button", { name: "Retry" }));
     expect(
       await screen.findByRole("dialog", {
-        name: "Transfer owner1@outside.example's 1 personal artifact",
+        name: "Transfer owner1@outside.example's 1 artifact",
       }),
     ).toBeTruthy();
     expect(within(d).getByRole("button", { name: "Transfer 1" })).toBeTruthy();

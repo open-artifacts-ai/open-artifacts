@@ -89,12 +89,17 @@ it("the owner's summary: counts, and Transfer for a guest who owns artifacts", a
     }),
   );
   const d = await screen.findByRole("dialog", {
-    name: "Transfer owner1@outside.example's 1 personal artifact",
+    name: "Transfer owner1@outside.example's 1 artifact",
   });
   // An Access-only install's default: spaces off, so only a person.
   expect(within(d).queryByRole("radio", { name: /To a space/ })).toBeNull();
   fireEvent.click(within(d).getByRole("combobox", { name: "Give them to" }));
   fireEvent.click(await screen.findByRole("option", { name: "Bob Builder" }));
+  expect(
+    await within(d).findByText(
+      "You won't see titles or contents. Bob Builder becomes the owner, with owner1@outside.example's shares kept.",
+    ),
+  ).toBeVisible();
   fireEvent.click(within(d).getByRole("button", { name: "Transfer 1" }));
   await waitFor(() =>
     expect(

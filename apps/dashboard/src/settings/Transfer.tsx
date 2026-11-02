@@ -157,14 +157,16 @@ export function TransferDialog({
       title={
         unknown
           ? `Transfer ${name}'s artifacts`
-          : `Transfer ${name}'s ${live} personal ${live === 1 ? "artifact" : "artifacts"}`
+          : `Transfer ${name}'s ${live} ${spacesOn ? "personal " : ""}${live === 1 ? "artifact" : "artifacts"}`
       }
       description={
         unknown
           ? undefined
           : trash > 0
             ? `Plus ${trash} in trash: ${trash === 1 ? "it moves" : "they move"} too and ${trash === 1 ? "keeps its" : "keep their"} trash timer.`
-            : "Their space artifacts stay where they are."
+            : spacesOn
+              ? "Their space artifacts stay where they are."
+              : undefined
       }
       footer={
         <>
@@ -242,8 +244,11 @@ export function TransferDialog({
               )}
               {person && (
                 <p className={muted}>
-                  You won't see titles or contents. {displayName(person)} gets
-                  them in their Personal, with {name}'s shares kept.
+                  You won't see titles or contents. {displayName(person)}{" "}
+                  {spacesOn
+                    ? "gets them in their Personal"
+                    : "becomes the owner"}
+                  , with {name}'s shares kept.
                 </p>
               )}
             </div>

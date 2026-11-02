@@ -112,7 +112,7 @@ async function startMocks() {
     extra.push(
       http.get("*/api/v1/members/:id/transfer", () =>
         HttpResponse.json(
-          { error: { code: "internal", message: "Something went wrong." } },
+          { error: { code: "internal", message: "Something went wrong" } },
           { status: 503 },
         ),
       ),
