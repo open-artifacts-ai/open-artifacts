@@ -22,6 +22,8 @@ import {
 } from "./http/middleware.js";
 import { cancelUnreadOnRefusal } from "./http/unread-body.js";
 import { LLMS_PATH, serveLlms } from "./mcp/llms.js";
+import { mountOAuthCopy } from "./mcp/oauth-copy.js";
+import { oauthStoreHealth } from "./mcp/oauth-store.js";
 import { SKILL_PATH, serveSkill } from "./mcp/skill.js";
 import { serveUpgrade, UPGRADE_PATH } from "./mcp/upgrade.js";
 import { type AppType, mountRoutes } from "./routes/index.js";
@@ -45,7 +47,8 @@ export const methodNotAllowed = () =>
 // Paths owned by the Worker; never served by the SPA fallback.
 // (/a/*, /no-access and /search are SPA routes and fall through to ASSETS.)
 // /_oa/* (render bundles) is content-host only: a JSON 404 here. /__oa/* is
-// reserved for platform internals (no route today): a JSON 404, never the SPA.
+// reserved for platform internals: a JSON 404, never the SPA, except POST
+// /__oa/oauth-store/copy where it is on (mcp/oauth-copy.ts).
 const WORKER_PREFIX =
   /^\/(api|auth|oauth|\.well-known|mcp|_oa|__oa|__test)(\/|$)/;
 
@@ -129,13 +132,18 @@ export function createApp(
   // INSTALL_ID (the same value authConfig uses for keys), and absent (not
   // null) when unset or empty after trimming, so self-host output is
   // unchanged. It proves routing, never authenticity: the control plane must
-  // not treat it as an authorization signal.
-  app.get("/healthz", (c) => {
+  // not treat it as an authorization signal. oauthStore (the OAuth store
+  // move): the mode, whether a full KV -> D1 copy completed, and since when
+  // KV writes are off; one D1 read, no writes (no counts, no keys), and null
+  // when D1 can't be read.
+  app.get("/healthz", async (c) => {
     const installId = c.env.INSTALL_ID?.trim();
+    const oauthStore = await oauthStoreHealth(c.env);
     return c.json({
       ok: true,
       plan: planOf(c.env.PLAN),
       version: VERSION,
+      oauthStore,
       // Only where hooks are on (the redline bundle); absent means off, so
       // production's /healthz bytes are unchanged.
       ...(hooks && hooks.testHooksOn(c.env) ? { testHooks: true } : {}),
@@ -146,6 +154,9 @@ export function createApp(
   // Public, outside SESSION_PATHS: no session read, no D1.
   // /__test/* (P5 hooks): before any session read; 404 unless enabled.
   if (hooks) hooks.mountTestHooks(app);
+  // POST /__oa/oauth-store/copy (#1008): before any session read; 404
+  // unless OAUTH_COPY_KEY is set (mcp/oauth-copy.ts decides).
+  mountOAuthCopy(app);
   app.get(SKILL_PATH, serveSkill);
   app.get(UPGRADE_PATH, serveUpgrade);
   app.get(LLMS_PATH, serveLlms);
