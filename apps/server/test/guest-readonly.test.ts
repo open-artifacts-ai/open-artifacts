@@ -316,6 +316,11 @@ describe("guest read cap (Access-only install, parity 2)", () => {
       ["PUT", R.thumbnail(id), undefined],
       ["DELETE", R.share(id, "z@x.com"), undefined],
       ["POST", R.restoreDeleted(id), undefined],
+      ["PUT", R.versionText(id, 1), { text: "y" }],
+      ["POST", R.moveArtifact(id), { spaceId: "s" }],
+      ["POST", R.transferArtifact(id), { userId: "u" }],
+      ["PATCH", R.token("t"), { label: "x" }],
+      ["PATCH", R.oauthClient("g"), { label: "x" }],
     ] as const;
 
   it("an Access guest with an editor share reads, and every write path is refused", async () => {
@@ -410,6 +415,157 @@ describe("guest read cap (Access-only install, parity 2)", () => {
     const who = callerOf(user as NonNullable<typeof user>);
     expect(capOfCaller(who)).toBe("guest");
     expect((await accessLevel(ACCESS_ONLY, who, id))?.level).toBe("viewer");
+  });
+
+  it("a guest can't rename their own token", async () => {
+    const { userId } = await login(uniq("g", "x.com"), "guest");
+    const g = `${SESSION}=${await signSession(env, userId, Date.now(), { provider: "access", epoch: 0 })}`;
+    const own = await createPat(env, userId, "mine");
+    expect(
+      (
+        await call(ACCESS_ONLY, R.token(own.id), g, {
+          method: "PATCH",
+          body: { label: "renamed" },
+        })
+      ).status,
+    ).toBe(404);
+    const row = await env.DB.prepare("select label from tokens where id = ?")
+      .bind(own.id)
+      .first<{ label: string }>();
+    expect(row?.label).toBe("mine");
+  });
+
+  it("a guest with a manager role on a space writes nothing there; a member manager does", async () => {
+    const e = { ...ACCESS_ONLY, FEATURES: "spaces" } as Env;
+    const sid = `s-${uniq("sp")}`;
+    const name = "Guest cap";
+    await env.DB.prepare(
+      "insert into spaces (id, kind, name, public_links, created_at) values (?, 'shared', ?, 1, ?)",
+    )
+      .bind(sid, name, Date.now())
+      .run();
+    const manage = (userId: string) =>
+      env.DB.prepare(
+        "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'manager', 'manual', ?)",
+      )
+        .bind(sid, userId, Date.now())
+        .run();
+    const guest = await login(uniq("g", "x.com"), "guest");
+    const manager = await login(uniq("m"));
+    const other = await login(uniq("o"));
+    await manage(guest.userId);
+    await manage(manager.userId);
+    const cookie = (userId: string) =>
+      signSession(env, userId, Date.now(), { provider: "access", epoch: 0 });
+    const g = `${SESSION}=${await cookie(guest.userId)}`;
+    const m = `${SESSION}=${await cookie(manager.userId)}`;
+    const made = await call(e, R.artifacts, m, {
+      method: "POST",
+      body: { title: "t", format: "html", content: "<p>x</p>", spaceId: sid },
+    });
+    expect(made.status).toBe(201);
+    const { id } = (await made.json()) as { id: string };
+
+    expect((await call(e, R.space(sid), g)).status).toBe(200);
+    expect((await call(e, R.artifact(id), g)).status).toBe(200);
+    const writes = [
+      ["PATCH", R.space(sid), { name: "x" }],
+      ["DELETE", R.space(sid), undefined],
+      ["POST", R.spaceMemberSelf(sid), { role: "manager" }],
+      ["PUT", R.spaceMember(sid, other.userId), { role: "viewer" }],
+      ["DELETE", R.spaceMember(sid, manager.userId), undefined],
+      ["PUT", R.spaceMapping(sid, "g1"), { email: "a@x.com", role: "viewer" }],
+      ["DELETE", R.spaceMapping(sid, "g1"), undefined],
+      ["PATCH", R.artifact(id), { title: "x" }],
+      ["DELETE", R.artifact(id), undefined],
+      ["POST", R.moveArtifact(id), { spaceId: guest.userId }],
+      ["POST", R.transferArtifact(id), { userId: other.userId }],
+    ] as const;
+    for (const [method, path, body] of writes) {
+      const r = await call(e, path, g, { method, body });
+      expect(r.status, `${method} ${path}`).toBe(404);
+    }
+    const create = await call(e, R.artifacts, g, {
+      method: "POST",
+      body: { title: "n", format: "markdown", content: "x", spaceId: sid },
+    });
+    expect(create.status).toBe(403);
+
+    const space = await env.DB.prepare("select name from spaces where id = ?")
+      .bind(sid)
+      .first<{ name: string }>();
+    expect(space?.name).toBe(name);
+    const { results } = await env.DB.prepare(
+      "select user_id from space_members where space_id = ?",
+    )
+      .bind(sid)
+      .all();
+    expect(results).toHaveLength(2);
+    const art = await env.DB.prepare(
+      "select title, space_id, owner_id, deleted_at from artifacts where id = ?",
+    )
+      .bind(id)
+      .first();
+    expect(art).toEqual({
+      title: "t",
+      space_id: sid,
+      owner_id: manager.userId,
+      deleted_at: null,
+    });
+
+    // Control: the same writes reach a member manager.
+    expect(
+      (
+        await call(e, R.space(sid), m, {
+          method: "PATCH",
+          body: { name: "Renamed" },
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("a signed-in guest is refused on a public viewers artifact; anonymous passes", async () => {
+    const o = await login(uniq("own"));
+    const owner = await getUser(env, o.userId);
+    const { id } = await publish(
+      env,
+      owner as never,
+      {
+        title: "t",
+        format: "html",
+        content: "<p>x</p>",
+        visibility: "public",
+        capabilities: { db: true, storage: false, viewer: false },
+      } as never,
+      null,
+      undefined,
+      "create",
+    );
+    expect(
+      (
+        await env.DB.prepare(
+          "select data_writers dw from artifacts where id = ?",
+        )
+          .bind(id)
+          .first<{ dw: string }>()
+      )?.dw,
+    ).toBe("viewers");
+    const g = await sessionFor(uniq("g", "x.com"), "guest");
+    expect((await call(ACCESS_ONLY, R.artifact(id), g)).status).toBe(200);
+    const denied = await call(ACCESS_ONLY, R.dataDoc(id, "c", "g"), g, {
+      method: "PUT",
+      body: { v: 1 },
+    });
+    expect(denied.status).toBe(404);
+    const anon = await call(ACCESS_ONLY, R.dataDoc(id, "c", "a"), "", {
+      method: "PUT",
+      body: { v: 1 },
+      headers: { "cf-connecting-ip": "203.0.113.31" },
+    });
+    expect(anon.status).toBe(200);
+    expect((await call(ACCESS_ONLY, R.dataDoc(id, "c", "g"), g)).status).toBe(
+      404,
+    );
   });
 
   it("a member holding the same editor share still writes (control)", async () => {

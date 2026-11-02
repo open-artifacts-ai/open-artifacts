@@ -71,19 +71,9 @@ async function toMe(
   // Parity 2: one-time notices of guest shares, Access-only installs only.
   const notices = await meNotices(c.env, user, cap, kv);
   if (notices) me.notices = notices;
-  // Hosted M1 (#359): optional, appended last, only on hosted or
-  // direct-sign-in installs, so Access-only installs keep today's shape.
-  if (!showsSignInFields(c.env)) return me;
   const exp = c.var.sessionExp;
-  me.instance.hosted = c.env.HOSTED === "1";
-  // Reported only (behaviour follows FEATURES, which provisioning derives
-  // from TIER); null off hosted.
-  me.instance.tier = me.instance.hosted ? hostedTier(c.env.TIER) : null;
-  // Owners also see why configured sign-in is off (AuthConfig.problems).
-  me.instance.signIn = instanceSignIn(
-    c.env,
-    orgCan(user, "signin.problems", { cap }),
-  );
+  // Every install (parity 2): guests_read_only and the caller's cap reach an
+  // Access-only dashboard too, or a guest sees no view-only state.
   me.instance.features = instanceFeatures(c.env);
   // P3 T13: only while a directory mode is on; health for owners and admins.
   const mode = directoryMode(c.env);
@@ -104,6 +94,17 @@ async function toMe(
     me.personalSpaceId = user.id;
     me.spaces = await mySharedSpaces(c.env, caller(c));
   }
+  // Hosted M1 (#359): only on hosted or direct-sign-in installs.
+  if (!showsSignInFields(c.env)) return me;
+  me.instance.hosted = c.env.HOSTED === "1";
+  // Reported only (behaviour follows FEATURES, which provisioning derives
+  // from TIER); null off hosted.
+  me.instance.tier = me.instance.hosted ? hostedTier(c.env.TIER) : null;
+  // Owners also see why configured sign-in is off (AuthConfig.problems).
+  me.instance.signIn = instanceSignIn(
+    c.env,
+    orgCan(user, "signin.problems", { cap }),
+  );
   return me;
 }
 

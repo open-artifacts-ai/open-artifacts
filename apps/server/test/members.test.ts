@@ -67,6 +67,7 @@ describe("GET /api/v1/me", () => {
       emailEnabled: false,
       plan: "free",
       update: null,
+      features: ["guests_read_only"],
     });
   });
 });

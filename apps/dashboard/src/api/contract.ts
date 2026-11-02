@@ -10,6 +10,7 @@ import {
   type AuthProviders,
   AuthProvidersSchema,
   artifactCan,
+  type CapReason,
   type DirectoryMode,
   directoryModeOf,
   type FeatureFlag,
@@ -114,12 +115,13 @@ export const directoryMode = (me: Me | null | undefined): DirectoryMode =>
 export const canOf = (
   a: ArtifactSummary,
   feats: FeatureFlag[],
+  cap: CapReason | null = null,
 ): ArtifactCan => {
   const can =
     a.can ??
     artifactCan(a.access, {
       personal: true,
-      cap: null,
+      cap,
       dataWriters: a.dataWriters,
     });
   return feats.includes("spaces")

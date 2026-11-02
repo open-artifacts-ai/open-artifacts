@@ -58,8 +58,10 @@ export function useHosted(): Hosted {
 }
 
 /** What the caller may do with `a`. Every action gate reads this, never `access`. */
-export const useCan = (a: ArtifactSummary): ArtifactCan =>
-  canOf(a, useHosted().features);
+export const useCan = (a: ArtifactSummary): ArtifactCan => {
+  const { features, cap } = useHosted();
+  return canOf(a, features, cap);
+};
 
 /** Whether the caller may publish into a space: never when capped (guest, restricted). */
 export const canPublishTo = (
