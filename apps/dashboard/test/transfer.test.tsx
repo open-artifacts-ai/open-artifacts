@@ -167,7 +167,7 @@ it("to a space: the helper says who can open them, and it posts the space", asyn
   );
   await chooseOption("Space", "Engineering");
   expect(d).toHaveTextContent(
-    "Everyone with access to Engineering can open them, by their role. They can't be moved back to anyone's Personal afterwards.",
+    "Everyone with access to Engineering can open them, by their role. These artifacts can't be moved back to anyone's Personal afterwards.",
   );
   fireEvent.click(await within(d).findByRole("button", { name: "Transfer 2" }));
   await waitFor(() =>
@@ -419,7 +419,7 @@ describe("the dialog on what the install can do", () => {
     fireEvent.click(await screen.findByRole("option", { name: "Engineering" }));
     expect(
       await within(d).findByText(
-        "You won't see titles or contents. owner1@outside.example loses access. Anyone with access to the space can see them. They can't be moved back to anyone's Personal afterwards.",
+        "You won't see titles or contents. owner1@outside.example loses access. Anyone with access to the space can see them. This artifact can't be moved back to anyone's Personal afterwards.",
       ),
     ).toBeVisible();
     expect(within(d).queryByText(/Everyone with access/)).toBeNull();

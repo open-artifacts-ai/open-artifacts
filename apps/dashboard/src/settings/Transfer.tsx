@@ -95,6 +95,7 @@ export function TransferDialog({
   // Fixed once a run starts: the summary refetches as pages move.
   const live = first.current?.live ?? summary.data?.live ?? 0;
   const trash = summary.data?.deleted ?? 0;
+  const noWayBack = `${live + trash === 1 ? "This artifact" : "These artifacts"} can't be moved back to anyone's Personal afterwards.`;
   // Active, non-guest, non-restricted members other than them.
   const successors = (members.data ?? []).filter(
     (m) =>
@@ -284,8 +285,8 @@ export function TransferDialog({
               {space && (
                 <p className={muted}>
                   {activeGuest
-                    ? `You won't see titles or contents. ${name} loses access. Anyone with access to the space can see them. They can't be moved back to anyone's Personal afterwards.`
-                    : `Everyone with access to ${space.name} can open them, by their role. They can't be moved back to anyone's Personal afterwards.`}
+                    ? `You won't see titles or contents. ${name} loses access. Anyone with access to the space can see them. ${noWayBack}`
+                    : `Everyone with access to ${space.name} can open them, by their role. ${noWayBack}`}
                 </p>
               )}
             </div>

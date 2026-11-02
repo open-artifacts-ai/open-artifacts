@@ -62,7 +62,7 @@ function SharesNotice({
         Guests have view-only access to these artifacts of yours, even if you
         chose Editor. To let someone edit, ask an admin to make them a member.
       </p>
-      <ul aria-label="Your shares that became view-only" className={LIST}>
+      <ul aria-label="Your shares that are view-only" className={LIST}>
         {shares.items.map((i) => (
           <li key={`${i.artifactId}:${i.guestEmail}`} className="break-words">
             <AppLink
@@ -108,8 +108,11 @@ function SummaryNotice({
       {summary.shares > 0 && (
         <p>
           {n(summary.shares, "guest share", "guest shares")} set to edit access,
-          on {n(summary.owners, "person's", "people's")} artifacts, work as
-          view-only. Each of those people sees their own list.
+          on {n(summary.owners, "person's", "people's")} artifacts,{" "}
+          {summary.shares === 1 ? "works" : "work"} as view-only.{" "}
+          {summary.owners === 1
+            ? "That person sees their own list."
+            : "Each of those people sees their own list."}
         </p>
       )}
       {summary.guestOwners.length > 0 && (
