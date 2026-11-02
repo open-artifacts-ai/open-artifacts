@@ -2450,6 +2450,14 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       : { canSignIn: false, reason: "outside_domains" };
   };
 
+  /** Share.guest (GET R.shares): the server's guestRecipients for the mock's providers. */
+  const shareGuest = (email: string): boolean => {
+    const row = members.find((m) => m.email === email);
+    if (row) return row.role === "guest";
+    if (mode === "access") return true;
+    return !email.endsWith(`@${MOCK_DOMAIN}`) && providerIds.includes("email");
+  };
+
   /**
    * signInMethods (#799) for an invite (a member row about to exist) or a
    * share, the server's reach rules for the mock's providers, in
@@ -2482,6 +2490,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     /** No level for the signed-in caller: 404 and unlisted (sharedLevel). */
     hidden: (id: string) => hidden.has(id),
     shareRecipient,
+    shareGuest,
     signInMethods,
     checkPublish,
     placeNew,

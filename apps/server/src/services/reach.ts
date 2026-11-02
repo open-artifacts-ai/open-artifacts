@@ -38,8 +38,7 @@ export type Reach = {
   inDomain: boolean;
 };
 
-export const domainOf = (email: string) =>
-  email.slice(email.lastIndexOf("@") + 1);
+const domainOf = (email: string) => email.slice(email.lastIndexOf("@") + 1);
 
 /**
  * Which offered sign-in methods would admit `email` (normalized) given its
@@ -78,6 +77,31 @@ export async function reachOf(
     methods: orderSignInMethods(methods),
     googleUncertain,
     inDomain: inDomains(cfg.domains, domain),
+  };
+}
+
+/**
+ * Who can only view, for the share rows and the share email alike: `role` is
+ * the org role, null with no user row. No row: what the sign-in paths would
+ * make of a shared address. A path to a member row wins (Google's admit,
+ * codeRule); else a guest by Access (upsertOnLogin) or by code. No path at all
+ * isn't a guest: an invite would make them a member. One config read, no D1,
+ * so a list can ask per row.
+ */
+export function guestRecipients(env: Env) {
+  const cfg = authConfig(env);
+  const offered = new Set(authProviders(env).providers.map((p) => p.id));
+  return async (email: string, role: string | null): Promise<boolean> => {
+    if (role !== null) return role === "guest";
+    const google =
+      offered.has("google") &&
+      googleNewRowOk(cfg, false) &&
+      googleTenantOk(cfg, domainOf(email));
+    const code = offered.has("email")
+      ? (await codeRule(cfg, email, null, async () => true)).kind
+      : "none";
+    if (google || code === "member") return false;
+    return offered.has("access") || code === "guest";
   };
 }
 

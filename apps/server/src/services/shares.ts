@@ -1,4 +1,4 @@
-import { inDomains, normalizeEmail } from "@oa/auth-core";
+import { normalizeEmail } from "@oa/auth-core";
 import {
   type Format,
   type Member,
@@ -10,8 +10,7 @@ import {
 } from "@oa/shared";
 import { asc, eq } from "drizzle-orm";
 import { authorize, callerOf } from "../auth/authz.js";
-import { authConfig, type SignInProvider } from "../auth/config.js";
-import { signInMode } from "../auth/sign-in.js";
+import type { SignInProvider } from "../auth/config.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -24,7 +23,7 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
 import { getSettings } from "./members.js";
-import { domainOf, shareReach } from "./reach.js";
+import { guestRecipients, shareReach } from "./reach.js";
 
 export const MAX_SHARES = 200;
 
@@ -45,19 +44,6 @@ const ownerOnly = (
   action: "share" | "unshare" = "share",
 ) => authorize(env, callerOf(user), id, action).then((r) => r.artifact);
 
-/**
- * Whether a share's recipient can only view, given their org role (null: no
- * user row). No row: they become a guest at first sign-in, on Access or outside
- * the verified domains; in a verified domain they join as a member.
- */
-const isGuestRecipient = (env: Env, email: string, role: string | null) => {
-  if (role !== null) return role === "guest";
-  const cfg = authConfig(env);
-  return (
-    signInMode(cfg) === "access" || !inDomains(cfg.domains, domainOf(email))
-  );
-};
-
 export async function listShares(
   env: Env,
   user: Member,
@@ -76,10 +62,13 @@ export async function listShares(
     .where(eq(shares.artifactId, id))
     .orderBy(asc(shares.createdAt), asc(shares.email))
     .limit(MAX_SHARES);
-  return rows.map((r) => ({
-    ...toShare(r),
-    ...(isGuestRecipient(env, r.email, r.orgRole) ? { guest: true } : {}),
-  }));
+  const isGuest = guestRecipients(env);
+  return Promise.all(
+    rows.map(async (r) => ({
+      ...toShare(r),
+      ...((await isGuest(r.email, r.orgRole)) ? { guest: true } : {}),
+    })),
+  );
 }
 
 /**
@@ -230,6 +219,8 @@ async function emailShare(
       getSettings(env),
     ]);
     if (member) return false;
+    // No user row here: the level they'll have, as the share rows show it.
+    const viewOnly = await guestRecipients(env)(email, null);
     return await sendEmail(
       env,
       user.id,
@@ -243,8 +234,7 @@ async function emailShare(
           title: artifact.title,
           path: viewerPath(artifact.id),
           format: artifact.format as Format,
-          // Only addresses with no user row get here: the level they'll have.
-          role: isGuestRecipient(env, email, null) ? "viewer" : role,
+          role: viewOnly ? "viewer" : role,
           signIn: reach.methods,
           cantSignIn: reach.recipient?.reason,
         }),

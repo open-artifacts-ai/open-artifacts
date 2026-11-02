@@ -868,7 +868,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     ),
     http.get(
       `${A}/shares`,
-      withArt((a) => HttpResponse.json(shares[a.id] ?? [])),
+      withArt((a) =>
+        HttpResponse.json(
+          (shares[a.id] ?? []).map((s) =>
+            h?.shareGuest(s.email) ? { ...s, guest: true } : s,
+          ),
+        ),
+      ),
     ),
     http.put(
       `${A}/shares`,

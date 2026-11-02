@@ -3,7 +3,7 @@
 // ShareResult.recipient says so and the share email doesn't promise a
 // sign-in that can't work.
 import { env } from "cloudflare:workers";
-import { R, ShareResultSchema } from "@oa/shared";
+import { R, ShareResultSchema, ShareSchema } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
@@ -54,7 +54,18 @@ async function setup(make: (o: Partial<Env>) => Env, over: Partial<Env>) {
     expect(r.status).toBe(200);
     return ShareResultSchema.parse(await r.json());
   };
-  return { share, sent: m.sent };
+  const list = async (db?: D1Database) => {
+    const r = await fetchAndWait(
+      app,
+      new Request(`http://app.localhost${R.shares(id)}`, {
+        headers: { cookie: o.cookie },
+      }),
+      db ? ({ ...e, DB: db } as Env) : e,
+    );
+    expect(r.status).toBe(200);
+    return ShareSchema.array().parse(await r.json());
+  };
+  return { share, list, sent: m.sent };
 }
 
 describe("share recipient reach (review item 37)", () => {
@@ -199,6 +210,112 @@ describe("the share email names the level the recipient will have", () => {
     expect(sent.find((x) => x.to === email)?.text).toContain(
       "Your role: Editor",
     );
+  });
+});
+
+describe("guest on a share row, and the email, from one rule", () => {
+  const access = (o: Partial<Env>) => ({ ...env, ...o }) as Env;
+  const CODES = { AUTH_PROVIDERS: "email", EMAIL_CODE_DOMAIN: "on" };
+  const IN = "a.com";
+  const OUT = "out.com";
+  it.each<[string, (o: Partial<Env>) => Env, Partial<Env>, string, boolean]>([
+    ["Access-only", access, {}, IN, true],
+    [
+      "Google only, join member, in-domain",
+      direct,
+      { AUTH_PROVIDERS: "google" },
+      IN,
+      false,
+    ],
+    [
+      "Google only, invite, in-domain",
+      direct,
+      { AUTH_PROVIDERS: "google", AUTH_DOMAIN_JOIN: "invite" },
+      IN,
+      false,
+    ],
+    [
+      "Google only, invite, outside",
+      direct,
+      { AUTH_PROVIDERS: "google", AUTH_DOMAIN_JOIN: "invite" },
+      OUT,
+      false,
+    ],
+    [
+      "Google only, join member, outside",
+      direct,
+      { AUTH_PROVIDERS: "google" },
+      OUT,
+      false,
+    ],
+    ["codes, join member, in-domain", direct, CODES, IN, false],
+    [
+      "codes, invite, in-domain",
+      direct,
+      { ...CODES, AUTH_DOMAIN_JOIN: "invite" },
+      IN,
+      false,
+    ],
+    [
+      "codes, domain codes off, in-domain",
+      direct,
+      { AUTH_PROVIDERS: "email" },
+      IN,
+      false,
+    ],
+    ["codes, outside", direct, CODES, OUT, true],
+    ["Google and codes, outside", direct, {}, OUT, true],
+    ["Google and codes, invite, in-domain", direct, HOSTED, IN, false],
+  ])("%s", async (_name, make, over, domain, guest) => {
+    const { share, list, sent } = await setup(make, over);
+    const email = uniq("r", domain);
+    await share(email, "editor");
+    const row = (await list()).find((r) => r.email === email);
+    expect(row?.role).toBe("editor");
+    expect(row?.guest === true).toBe(guest);
+    expect(sent.find((x) => x.to === email)?.text).toContain(
+      `Your role: ${guest ? "Viewer" : "Editor"}`,
+    );
+  });
+
+  it("listing more no-row shares runs no more statements", async () => {
+    const { share, list } = await setup(direct, {});
+    let n = 0;
+    // Counts executions: stmt() caches a prepared statement, so prepare can't.
+    const statement = (real: D1PreparedStatement): D1PreparedStatement =>
+      new Proxy(real, {
+        get(t, k) {
+          const v = Reflect.get(t, k);
+          if (typeof v !== "function") return v;
+          return (...a: unknown[]) => {
+            if (k === "bind") return statement(v.apply(t, a));
+            if (["first", "all", "run", "raw"].includes(String(k))) n++;
+            return v.apply(t, a);
+          };
+        },
+      });
+    const counted = new Proxy(env.DB, {
+      get(t, k) {
+        const v = Reflect.get(t, k);
+        if (typeof v !== "function") return v;
+        return (...a: unknown[]) => {
+          if (k === "batch") n++;
+          const out = v.apply(t, a);
+          return k === "prepare" ? statement(out) : out;
+        };
+      },
+    });
+    const count = async () => {
+      n = 0;
+      await list(counted);
+      return n;
+    };
+    await share(uniq("n", OUT));
+    const one = await count();
+    await share(uniq("n", OUT));
+    await share(uniq("n", IN));
+    expect(one).toBeGreaterThan(0);
+    expect(await count()).toBe(one);
   });
 });
 
