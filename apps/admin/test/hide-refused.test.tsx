@@ -101,6 +101,32 @@ it("test admin: no Agent tokens nav, no overview call, the no-email search, Crea
   ).toHaveAttribute("placeholder", "Search slug, id or host");
   expect(screen.getByRole("link", { name: "Create install" })).toBeVisible();
   expect(seen.some((s) => s.path.startsWith("/api/v1/world"))).toBe(false);
+  expect(
+    screen.getByText(
+      "Test admin: no overview, agent tokens, or actions beyond Create and Upgrade.",
+    ),
+  ).toBeVisible();
+});
+
+it("real admin: no test admin note", async () => {
+  signIn("admin");
+  renderApp("/installs");
+  await navLinks();
+  expect(screen.queryByText(/^Test admin:/)).toBeNull();
+});
+
+it("an install without ownerEmail (no pii) has no Owner row; with it, one", async () => {
+  signIn("test-admin");
+  await openDetail({ ...ALL_ACTIONS, ownerEmail: null });
+  expect(screen.queryByText("Owner", { selector: "dt" })).toBeNull();
+  expect(screen.queryByText("hidden")).toBeNull();
+});
+
+it("a real admin sees the Owner row", async () => {
+  signIn("admin");
+  await openDetail({ ...ALL_ACTIONS, ownerEmail: "owner@example.com" });
+  expect(screen.getByText("Owner", { selector: "dt" })).toBeVisible();
+  expect(screen.getByText("owner@example.com")).toBeVisible();
 });
 
 it("real admin: Agent tokens nav, the email search and Create install", async () => {

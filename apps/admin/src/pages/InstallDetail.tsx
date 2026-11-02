@@ -625,10 +625,13 @@ export function InstallDetail({ id }: { id: string }) {
                   ` · ${i.auth.domains.length} ${i.auth.domains.length === 1 ? "domain" : "domains"}`}
               </dd>
             </div>
-            <div>
-              <dt>Owner</dt>
-              <dd>{i.ownerEmail ?? "hidden"}</dd>
-            </div>
+            {/* A caller without pii gets no ownerEmail: no row (Design). */}
+            {i.ownerEmail && (
+              <div>
+                <dt>Owner</dt>
+                <dd>{i.ownerEmail}</dd>
+              </div>
+            )}
             <div>
               <dt>Created</dt>
               <dd>{fmtDay(i.createdAt)}</dd>

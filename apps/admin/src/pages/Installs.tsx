@@ -234,7 +234,8 @@ export function Installs() {
   const env = useEnv();
   const mayCreate = useCan("R4");
   // R2's q matches owner email only for a pii caller (#1074).
-  const searchLabel = canSeePii(useMe().data)
+  const me = useMe().data;
+  const searchLabel = canSeePii(me)
     ? "Search slug, id, host or email"
     : "Search slug, id or host";
   const navigate = useNavigate();
@@ -297,6 +298,12 @@ export function Installs() {
       <div className="oa-head">
         <div>
           <h1>Installs</h1>
+          {me?.principal === "test-admin" && (
+            <p className="oa-sub">
+              Test admin: no overview, agent tokens, or actions beyond Create
+              and Upgrade.
+            </p>
+          )}
           {world.data && (
             <p className="oa-sub">
               {world.data.installs.total}{" "}

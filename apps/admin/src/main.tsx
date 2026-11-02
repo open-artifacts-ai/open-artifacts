@@ -136,6 +136,7 @@ async function startMocks() {
   const at = Date.now();
   const mock = createMock({
     now: Date.now,
+    pii: flag !== "test-admin",
     tokens: [
       {
         id: "01JMCKSEED0000000000000001",
