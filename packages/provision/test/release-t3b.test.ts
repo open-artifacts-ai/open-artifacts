@@ -34,6 +34,8 @@ import {
   probeR2Conditionals,
   publishFloor,
   publishRelease,
+  type R2ReleaseBucket,
+  r2BindingReleaseReader,
   r2ReleaseReader,
   releaseKey,
 } from "../src/publish.js";
@@ -1667,15 +1669,71 @@ describe("F: r2ReleaseReader", () => {
     }
   });
 
+  it("assets lists the record's entries without downloading any asset", async () => {
+    const s = await published();
+    const r = r2ReleaseReader(s.cf, "staging");
+    expect(await r.assets("0.34.0", "release")).toEqual(recordOf().assets);
+    expect(gets(s, "/assets/")).toEqual([]);
+  });
+
+  it("assetBytes downloads one asset, checked against the record", async () => {
+    const s = await published();
+    const r = r2ReleaseReader(s.cf, "staging");
+    const want = ASSETS.find((a) => a.path === "index.html")?.bytes;
+    // With or without an assets call first (the record is read either way).
+    expect(await r.assetBytes("0.34.0", "release", "index.html")).toEqual(want);
+    await r.assets("0.34.0", "release");
+    s.fake.r2Log.length = 0;
+    expect(await r.assetBytes("0.34.0", "release", "index.html")).toEqual(want);
+    expect(gets(s, "").map((e) => e.key)).toEqual([
+      "releases/0.34.0/release/assets/index.html",
+    ]);
+  });
+
+  it("assetBytes refuses a path the record does not list, before any download", async () => {
+    const s = await published();
+    s.fake.r2Seed(
+      s.bucket,
+      "releases/0.34.0/release/assets/extra.js",
+      enc("x"),
+    );
+    const r = r2ReleaseReader(s.cf, "staging");
+    await r.assets("0.34.0", "release").catch(() => {});
+    s.fake.r2Log.length = 0;
+    for (const path of ["extra.js", "../record.sig.json", ""]) {
+      const e = await fails(r.assetBytes("0.34.0", "release", path));
+      expect(e.message).toMatch(/not in the 0\.34\.0 \(release\) record/);
+    }
+    expect(gets(s, "/assets/")).toEqual([]);
+  });
+
   it("checks each object's size against the record before its hash", async () => {
     const s = await published();
     // The listing says the record's size; the bytes served differ.
     s.fake.r2Serve = (key, bytes) =>
       key.endsWith("assets/index.html") ? concat(bytes, enc("!")) : bytes;
     const e = await fails(
-      r2ReleaseReader(s.cf, "staging").assets("0.34.0", "release"),
+      r2ReleaseReader(s.cf, "staging").assetBytes(
+        "0.34.0",
+        "release",
+        "index.html",
+      ),
     );
     expect(e.message).toMatch(/size/);
+  });
+
+  it("refuses an asset whose bytes are not the record's", async () => {
+    const s = await published();
+    s.fake.r2Serve = (key, bytes) =>
+      key.endsWith("assets/assets/app.js") ? enc("console.log(2)") : bytes;
+    const e = await fails(
+      r2ReleaseReader(s.cf, "staging").assetBytes(
+        "0.34.0",
+        "release",
+        "assets/app.js",
+      ),
+    );
+    expect(e.message).toMatch(/sha256 does not match the record/);
   });
 
   it("caps the asset count by ASSET_LIMITS before any download", async () => {
@@ -1748,16 +1806,148 @@ describe("F: r2ReleaseReader", () => {
     expect((await r2.get(k))?.bytes).toEqual(enc("3"));
     expect(await r2.head("releases/missing")).toBeNull();
   });
+
+  /** A Workers R2 binding over the fake's releases bucket (r2Serve applies; every get is logged). */
+  const bindingOf = (s: ReturnType<typeof setup>): R2ReleaseBucket => ({
+    async get(key) {
+      s.fake.r2Log.push({
+        api: "rest",
+        method: "GET",
+        bucket: s.bucket,
+        key,
+        status: 200,
+      });
+      const o = s.fake.r2Object(s.bucket, key);
+      if (!o) return null;
+      const bytes = s.fake.r2Serve?.(key, o.bytes) ?? o.bytes;
+      return {
+        size: o.bytes.length,
+        arrayBuffer: async () => bytes.slice().buffer,
+      };
+    },
+    async list({ prefix, cursor, limit }) {
+      const keys = [...(s.fake.r2Objects.get(s.bucket)?.keys() ?? [])]
+        .filter((k) => k.startsWith(prefix))
+        .sort();
+      const from = cursor ? Number(cursor) : 0;
+      const n = Math.min(limit ?? 1000, s.fake.r2PerPage ?? 1000);
+      const page = keys.slice(from, from + n).map((key) => ({
+        key,
+        size: s.fake.r2Object(s.bucket, key)?.bytes.length ?? 0,
+      }));
+      return from + n < keys.length
+        ? { objects: page, truncated: true, cursor: String(from + n) }
+        : { objects: page, truncated: false };
+    },
+  });
+
+  it("r2BindingReleaseReader reads what r2ReleaseReader reads", async () => {
+    const s = await published(1);
+    const rest = r2ReleaseReader(s.cf, "staging");
+    const bound = r2BindingReleaseReader(bindingOf(s), "staging");
+    const v = "0.34.0";
+    expect(await bound.record(v, "release")).toEqual(
+      await rest.record(v, "release"),
+    );
+    expect(await bound.modules(v, "release")).toEqual(
+      await rest.modules(v, "release"),
+    );
+    const listed = await bound.assets(v, "release");
+    expect(listed).toEqual(await rest.assets(v, "release"));
+    for (const a of listed)
+      expect(await bound.assetBytes(v, "release", a.path)).toEqual(
+        await rest.assetBytes(v, "release", a.path),
+      );
+    expect(await bound.template(v, "release")).toEqual(
+      await rest.template(v, "release"),
+    );
+    expect(await bound.migrations(v, "release")).toEqual(
+      await rest.migrations(v, "release"),
+    );
+    expect(await bound.welcome(v, "release")).toEqual(
+      await rest.welcome(v, "release"),
+    );
+    expect(await bound.floor()).toEqual(await rest.floor());
+    expect(await bound.record(v, "redline")).toBeNull();
+  });
+
+  it("r2BindingReleaseReader refuses what r2ReleaseReader refuses", async () => {
+    // An extra asset: refused before any asset download.
+    let s = await published();
+    s.fake.r2Seed(
+      s.bucket,
+      "releases/0.34.0/release/assets/extra.js",
+      enc("x"),
+    );
+    s.fake.r2Log.length = 0;
+    let r = r2BindingReleaseReader(bindingOf(s), "staging");
+    expect((await fails(r.assets("0.34.0", "release"))).message).toMatch(
+      /do not match the record/,
+    );
+    expect(gets(s, "/assets/")).toEqual([]);
+    // A path the record does not list: refused before any download.
+    s.fake.r2Log.length = 0;
+    for (const path of ["extra.js", "../record.sig.json", ""])
+      expect(
+        (await fails(r.assetBytes("0.34.0", "release", path))).message,
+      ).toMatch(/not in the 0\.34\.0 \(release\) record/);
+    expect(gets(s, "/assets/")).toEqual([]);
+    // Served bytes over the record size, then different bytes of that size.
+    s = await published();
+    r = r2BindingReleaseReader(bindingOf(s), "staging");
+    s.fake.r2Serve = (key, bytes) =>
+      key.endsWith("assets/index.html") ? concat(bytes, enc("!")) : bytes;
+    expect(
+      (await fails(r.assetBytes("0.34.0", "release", "index.html"))).message,
+    ).toMatch(/size/);
+    s.fake.r2Serve = (key, bytes) =>
+      key.endsWith("assets/assets/app.js") ? enc("console.log(2)") : bytes;
+    expect(
+      (await fails(r.assetBytes("0.34.0", "release", "assets/app.js"))).message,
+    ).toMatch(/sha256 does not match the record/);
+    // A malformed version or variant: refused before any read.
+    s.fake.r2Log.length = 0;
+    await expect(r.record("../x", "release")).rejects.toThrow();
+    await expect(r.record("0.34.0", "evil" as "release")).rejects.toThrow();
+    expect(s.fake.r2Log).toEqual([]);
+  });
+
+  it("r2BindingReleaseReader caps a read at the record size before reading the body", async () => {
+    const s = await published();
+    const b = bindingOf(s);
+    let read = false;
+    const r = r2BindingReleaseReader(
+      {
+        list: b.list,
+        async get(key) {
+          const o = await b.get(key);
+          if (!o || !key.endsWith("assets/index.html")) return o;
+          return {
+            size: o.size + 1,
+            arrayBuffer: async () => {
+              read = true;
+              return o.arrayBuffer();
+            },
+          };
+        },
+      },
+      "staging",
+    );
+    expect(
+      (await fails(r.assetBytes("0.34.0", "release", "index.html"))).message,
+    ).toMatch(/over|size/);
+    expect(read).toBe(false);
+  });
 });
 
 // ---------- G: gates ----------
 
 describe("G: gates", () => {
-  it("PROD_UNLOCKED stays false, RELEASE_PUBKEY is pinned (key ceremony 2026-10-24), FLOOR_MIN_SEQ starts at 1", async () => {
+  it("PROD_UNLOCKED is open, RELEASE_PUBKEY is pinned (key ceremony 2026-10-24), FLOOR_MIN_SEQ starts at 1", async () => {
     const real = await vi.importActual<
       typeof import("../src/internal/gates.js")
     >("../src/internal/gates.js");
-    expect(real.PROD_UNLOCKED).toBe(false);
+    expect(real.PROD_UNLOCKED).toBe(true);
     expect(real.RELEASE_PUBKEY.staging).not.toBe(
       real.RELEASE_PUBKEY_PLACEHOLDER,
     );
