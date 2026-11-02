@@ -16,6 +16,14 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
+      # #1084: refuse first. Setup prints the address normalized, and only the
+      # exact stored value is masked, so it must already be in that form.
+      - name: The owner address is set and normalized
+        env:
+          OWNER: ${{ secrets.OA_OWNER_EMAIL }}
+        run: |
+          [ -n "$OWNER" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
+          [[ ! "$OWNER" =~ [[:upper:][:space:]] ]] || { echo "::error::OA_OWNER_EMAIL must be trimmed and lowercase"; exit 1; }
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -38,7 +46,6 @@ jobs:
         env:
           OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
         run: |
-          [ -n "$OA_OWNER_EMAIL" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
           pnpm --filter @oa/server exec wrangler deploy -c wrangler.staging.jsonc --env staging --var "OWNER_EMAIL:$OA_OWNER_EMAIL"
       - name: set ANALYTICS_TOKEN (dedicated read-only token; skipped when unset)
         id: analytics

@@ -27,6 +27,14 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
+      # #1084: refuse first. Setup prints the address normalized, and only the
+      # exact stored value is masked, so it must already be in that form.
+      - name: The owner address is set and normalized
+        env:
+          OWNER: ${{ secrets.OA_OWNER_EMAIL }}
+        run: |
+          [ -n "$OWNER" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
+          [[ ! "$OWNER" =~ [[:upper:][:space:]] ]] || { echo "::error::OA_OWNER_EMAIL must be trimmed and lowercase"; exit 1; }
       - uses: actions/checkout@v4
         with:
           persist-credentials: false

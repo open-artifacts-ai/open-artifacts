@@ -956,8 +956,9 @@ describe("prod and staging tokens never cross", () => {
       );
     });
     it("scopes tokens to the setup step and uses --ci", () => {
+      // The owner-address guard's step holds that secret and no token.
       const withTok = steps.filter((s) =>
-        JSON.stringify(s.env ?? {}).includes("secrets."),
+        /secrets\.\w*(TOKEN|ACCOUNT_ID)/.test(JSON.stringify(s.env ?? {})),
       );
       expect(withTok).toHaveLength(2);
       expect(withTok[0]?.env).toHaveProperty("OA_ACCESS_TOKEN");
@@ -1034,7 +1035,7 @@ describe("prod and staging tokens never cross", () => {
       expect(steps[pre]?.if ?? "").not.toContain("always()");
       expect(steps[up]?.if ?? "").not.toContain("always()");
       const withTok = steps.filter((s) =>
-        JSON.stringify(s.env ?? {}).includes("secrets."),
+        /secrets\.\w*(TOKEN|ACCOUNT_ID)/.test(JSON.stringify(s.env ?? {})),
       );
       // setup's three steps carry both tokens; the migration guard's record,
       // verify and restore steps carry the Cloudflare token only.

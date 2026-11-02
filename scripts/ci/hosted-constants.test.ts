@@ -288,7 +288,7 @@ describe("hosted-constants.sh", () => {
     }
   });
 
-  it("OA_OWNER_EMAIL: optional (no ALERT_TO without it, and the scheduler deploy refuses), checked like any other address", () => {
+  it("OA_OWNER_EMAIL: optional here (no ALERT_TO without it; deploy-hosted-platform refuses first when the targets include the scheduler), checked like any other", () => {
     const none = load(PROD());
     expect(none.code, none.err).toBe(0);
     expect(none.ghEnv).not.toContain("ALERT_TO=");
@@ -298,6 +298,7 @@ describe("hosted-constants.sh", () => {
       "a@b.com,c@d.com",
       "a@b.com/x",
       "a@b.com\nX=y",
+      " a@b.com",
     ]) {
       const bad = load(PROD(), "prod", undefined, { OA_OWNER_EMAIL: v });
       expect(bad.code, JSON.stringify(v)).toBe(1);
@@ -305,6 +306,16 @@ describe("hosted-constants.sh", () => {
       expect(bad.err).not.toContain(v);
       expect(bad.ghEnv).toBe("");
     }
+  });
+
+  it("OA_OWNER_EMAIL: refuses an unnormalized address, without printing it", () => {
+    const bad = load(PROD(), "prod", undefined, {
+      OA_OWNER_EMAIL: "Me@Test.Invalid",
+    });
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain("OA_OWNER_EMAIL must be lowercase");
+    expect(bad.err).not.toContain("Test.Invalid");
+    expect(bad.ghEnv).toBe("");
   });
 
   it("SIGNUPS_ENABLED test-users loads for staging only", () => {

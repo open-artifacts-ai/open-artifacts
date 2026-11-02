@@ -61,6 +61,7 @@ describe("deploy-hosted-platform.yml", () => {
       TARGETS: "${{ inputs.targets }}",
       REASON: "${{ inputs.reason }}",
       VERIFY_ONLY: "${{ inputs.verify_only }}",
+      OA_OWNER_EMAIL: "${{ secrets.OA_OWNER_EMAIL }}",
     });
     const go = (TARGETS: string, REASON: string, VERIFY_ONLY = "false") =>
       spawnSync("bash", ["-c", c.run], {
@@ -70,6 +71,7 @@ describe("deploy-hosted-platform.yml", () => {
           TARGETS,
           REASON,
           VERIFY_ONLY,
+          OA_OWNER_EMAIL: "me@test.invalid",
         },
         encoding: "utf8",
       });
@@ -296,6 +298,7 @@ describe("deploy-hosted-platform.yml", () => {
       JSON.stringify(s).includes("secrets."),
     );
     expect(withSecrets.map((s) => s.name)).toEqual([
+      "Check the inputs",
       "Load the hosted constants",
       "Resolve the resource ids",
       "Deploy and verify",
@@ -307,6 +310,10 @@ describe("deploy-hosted-platform.yml", () => {
     for (const old of ["DEPLOY_TOKEN", "ZONE_TOKEN", "PROVISION_TOKEN"])
       expect(text).not.toContain(old);
     // #1084: the alert address, the owner's, is a secret, never committed.
+    // The input check sees that one secret, and no token.
+    expect(
+      JSON.stringify(named("Check the inputs").env).match(/secrets\.\w+/g),
+    ).toEqual(["secrets.OA_OWNER_EMAIL"]);
     expect(named("Load the hosted constants").env).toEqual({
       DEPLOY_ENV: "${{ inputs.env }}",
       OA_OWNER_EMAIL: "${{ secrets.OA_OWNER_EMAIL }}",
@@ -402,7 +409,13 @@ describe("deploy-hosted-platform.yml", () => {
     const check = named("Check the inputs").run as string;
     const go = (TAG: string, TARGETS: string) =>
       spawnSync("bash", ["-c", check], {
-        env: { PATH: process.env.PATH, TAG, TARGETS, REASON: "test" },
+        env: {
+          PATH: process.env.PATH,
+          TAG,
+          TARGETS,
+          REASON: "test",
+          OA_OWNER_EMAIL: "me@test.invalid",
+        },
         encoding: "utf8",
       }).status;
     expect(

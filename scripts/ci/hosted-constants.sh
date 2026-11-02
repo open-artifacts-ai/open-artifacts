@@ -54,6 +54,7 @@ EOF
 owner=""
 if [ -n "${OA_OWNER_EMAIL:-}" ]; then
   [[ "$OA_OWNER_EMAIL" != *$'\n'* && "$OA_OWNER_EMAIL" =~ $email ]] || { echo "OA_OWNER_EMAIL is not a valid address" >&2; exit 1; }
+  [[ ! "$OA_OWNER_EMAIL" =~ [[:upper:]] ]] || { echo "OA_OWNER_EMAIL must be lowercase" >&2; exit 1; }
   owner="ALERT_TO=$OA_OWNER_EMAIL"$'\n'
 fi
 printf '%s%s' "$lines" "$owner" >> "$GITHUB_ENV"

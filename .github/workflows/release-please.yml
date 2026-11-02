@@ -129,6 +129,15 @@ jobs:
             [ "$latest" = "$TAG" ] || { echo "$TAG is not the latest stable release ($latest)"; exit 1; }
           fi
           echo "deploy=true" >> "$GITHUB_OUTPUT"
+      # #1084: refuse first. Setup prints the address normalized, and only the
+      # exact stored value is masked, so it must already be in that form.
+      - name: The owner address is set and normalized
+        if: steps.guard.outputs.deploy == 'true'
+        env:
+          OWNER: ${{ secrets.OA_OWNER_EMAIL }}
+        run: |
+          [ -n "$OWNER" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
+          [[ ! "$OWNER" =~ [[:upper:][:space:]] ]] || { echo "::error::OA_OWNER_EMAIL must be trimmed and lowercase"; exit 1; }
       - if: steps.guard.outputs.deploy == 'true'
         uses: actions/checkout@v4
         with:
@@ -267,6 +276,15 @@ jobs:
             echo "deploy=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           echo "deploy=true" >> "$GITHUB_OUTPUT"
+      # #1084: refuse first. Setup prints the address normalized, and only the
+      # exact stored value is masked, so it must already be in that form.
+      - name: The owner address is set and normalized
+        if: steps.guard.outputs.deploy == 'true'
+        env:
+          OWNER: ${{ secrets.OA_OWNER_EMAIL }}
+        run: |
+          [ -n "$OWNER" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
+          [[ ! "$OWNER" =~ [[:upper:][:space:]] ]] || { echo "::error::OA_OWNER_EMAIL must be trimmed and lowercase"; exit 1; }
       - if: steps.guard.outputs.deploy == 'true'
         uses: actions/checkout@v4
         with:
