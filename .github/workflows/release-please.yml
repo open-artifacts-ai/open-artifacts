@@ -104,7 +104,6 @@ jobs:
       PROD_NAME: open-artifacts-prod
       PROD_APP_HOST: artifacts.leourbina.com
       PROD_CONTENT_HOST: artifacts-content.leourbina.com
-      PROD_OWNER_EMAIL: me@leourbina.com
       # Direct sign-in (docs/self-hosting/direct-sign-in.md): repository
       # variables, read by prod-setup.sh from env. Unset keeps the live value.
       PROD_AUTH_PROVIDERS: ${{ vars.PROD_AUTH_PROVIDERS }}
@@ -130,6 +129,15 @@ jobs:
             [ "$latest" = "$TAG" ] || { echo "$TAG is not the latest stable release ($latest)"; exit 1; }
           fi
           echo "deploy=true" >> "$GITHUB_OUTPUT"
+      # #1084: refuse first. Setup prints the address normalized, and only the
+      # exact stored value is masked, so it must already be in that form.
+      - name: The owner address is set and normalized
+        if: steps.guard.outputs.deploy == 'true'
+        env:
+          OWNER: ${{ secrets.OA_OWNER_EMAIL }}
+        run: |
+          [ -n "$OWNER" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
+          [[ ! "$OWNER" =~ [[:upper:][:space:]] ]] || { echo "::error::OA_OWNER_EMAIL must be trimmed and lowercase"; exit 1; }
       - if: steps.guard.outputs.deploy == 'true'
         uses: actions/checkout@v4
         with:
@@ -179,6 +187,7 @@ jobs:
         name: Preflight (read-only; skips if not installed, fails if drifted or partial)
         if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false'
         env:
+          PROD_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           OA_ACCESS_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -193,6 +202,7 @@ jobs:
       - name: Upgrade prod (deploy + selftest, CI token)
         if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed == 'true'
         env:
+          PROD_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           OA_ACCESS_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -232,6 +242,7 @@ jobs:
         if: always() && steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed != 'false'
         timeout-minutes: 3
         env:
+          PROD_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           OA_ACCESS_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -251,7 +262,6 @@ jobs:
       DEMO_NAME: open-artifacts-demo
       DEMO_APP_HOST: demo.open-artifacts.com
       DEMO_CONTENT_HOST: demo-content.open-artifacts.com
-      DEMO_OWNER_EMAIL: me@leourbina.com
       TAG: ${{ needs.release-please.outputs.tag_name }}
     steps:
       - id: guard
@@ -266,6 +276,15 @@ jobs:
             echo "deploy=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           echo "deploy=true" >> "$GITHUB_OUTPUT"
+      # #1084: refuse first. Setup prints the address normalized, and only the
+      # exact stored value is masked, so it must already be in that form.
+      - name: The owner address is set and normalized
+        if: steps.guard.outputs.deploy == 'true'
+        env:
+          OWNER: ${{ secrets.OA_OWNER_EMAIL }}
+        run: |
+          [ -n "$OWNER" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
+          [[ ! "$OWNER" =~ [[:upper:][:space:]] ]] || { echo "::error::OA_OWNER_EMAIL must be trimmed and lowercase"; exit 1; }
       - if: steps.guard.outputs.deploy == 'true'
         uses: actions/checkout@v4
         with:
@@ -283,6 +302,7 @@ jobs:
       - name: Upgrade the demo
         if: steps.guard.outputs.deploy == 'true'
         env:
+          DEMO_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           OA_ACCESS_TOKEN: ${{ secrets.DEMO_OA_ACCESS_TOKEN }}
@@ -292,6 +312,7 @@ jobs:
         if: always() && steps.guard.outputs.deploy == 'true'
         timeout-minutes: 3
         env:
+          DEMO_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           OA_ACCESS_TOKEN: ${{ secrets.DEMO_OA_ACCESS_TOKEN }}

@@ -20,6 +20,7 @@ import {
 } from "../src/oidc.ts";
 import {
   ADMIN_FLOW_COOKIE,
+  BROKER_IP_PERIOD_MS,
   BROKER_IP_WAIT_MS,
   bringUpgrade,
   failText,
@@ -383,7 +384,7 @@ describe("each probe fails on the behaviour it guards", () => {
     });
   });
 
-  describe("P34 allows the broker's per-IP 429 and waits out its window", () => {
+  describe("P34 allows the broker's per-IP 429 and waits on the hop itself", () => {
     const p34 = async (ipLimit: number, fault?: Fault) => {
       const f = fakeApi();
       f.broker.ipLimit = ipLimit;
@@ -407,9 +408,67 @@ describe("each probe fails on the behaviour it guards", () => {
       expect(out).toEqual({ level: "pass" });
       expect(waited).toBeGreaterThan(0);
       expect(waited).toBeLessThanOrEqual(BROKER_IP_WAIT_MS);
-      // The last broker request is the hop, after the wait.
+      // The 400, then the hop every POLL_MS until it reaches Google.
       const hops = f.log.filter((l) => l.startsWith(`GET ${CONFIG.broker}`));
-      expect(hops).toHaveLength(400 + 1 + 1 + waited / 3000);
+      expect(hops).toHaveLength(400 + 1 + waited / 3000);
+    });
+
+    // Run 41444760207: the unsigned 404 passed, then the hop was 429.
+    const withHop = async (o: {
+      limited?: number;
+      status?: number;
+      location?: string;
+    }) => {
+      const f = fakeApi();
+      f.broker.hopLimited = o.limited ?? 0;
+      f.broker.hopStatus = o.status ?? 302;
+      f.broker.hopLocation = o.location;
+      const t0 = f.clock.t;
+      const out = await PROBES.find((p) => p.id === "P34")
+        ?.run(new Run(CONFIG, f.io))
+        .catch((e: unknown) => e);
+      return { out, waited: f.clock.t - t0, f };
+    };
+
+    it("a 429 on the hop waits, though unsigned requests answer 404", async () => {
+      const { out, waited } = await withHop({ limited: 3 });
+      expect(out).toEqual({ level: "pass" });
+      expect(waited).toBe(3 * 3000);
+    });
+
+    it("one /auth/start: more would spend RL_PV_SIGNIN_IP", async () => {
+      const { f } = await withHop({ limited: 3 });
+      expect(
+        f.log.filter((l) => l === `GET ${CONFIG.admin}/auth/start`),
+      ).toHaveLength(1);
+    });
+
+    it("a hop still 429 at the deadline fails: a limiter that doesn't reopen is a real bug", async () => {
+      const { out, waited } = await withHop({
+        limited: Number.POSITIVE_INFINITY,
+      });
+      expect(msg(out)).toContain(
+        `P34: the broker hop was still 429 after ${BROKER_IP_WAIT_MS / 1000} s; RL_BROKER_IP's window is ${BROKER_IP_PERIOD_MS / 1000} s, so a limiter did not reopen (status 429,`,
+      );
+      expect(waited).toBeLessThanOrEqual(BROKER_IP_WAIT_MS);
+    });
+
+    it("a redirect anywhere but Google fails at once", async () => {
+      const { out, waited } = await withHop({
+        location: "https://evil.test/auth",
+      });
+      expect(msg(out)).toContain(
+        "P34: the broker did not send /auth/start on to Google",
+      );
+      expect(waited).toBe(0);
+    });
+
+    it("any other hop answer fails at once", async () => {
+      const { out, waited } = await withHop({ status: 404 });
+      expect(msg(out)).toContain(
+        "P34: the broker did not send /auth/start on to Google (status 404",
+      );
+      expect(waited).toBe(0);
     });
 
     it("fails on any redirect", async () => {
@@ -441,8 +500,8 @@ describe("each probe fails on the behaviour it guards", () => {
       const out = await PROBES.find((p) => p.id === "P34")
         ?.run(run)
         .catch((e: unknown) => e);
-      expect(msg(out)).toBe(
-        `P34: unsigned authorize still 429 after ${BROKER_IP_WAIT_MS / 1000} s; the broker IP window (RL_BROKER_IP, 60 s) did not reopen`,
+      expect(msg(out)).toContain(
+        `P34: the broker hop was still 429 after ${BROKER_IP_WAIT_MS / 1000} s;`,
       );
     });
   });

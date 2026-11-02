@@ -1,7 +1,6 @@
 {
   "account_id": "26ac346086d4405f7a976d48747a2a75",
   "alert_from": "alerts@mail.open-artifacts.app",
-  "alert_to": "me@leourbina.com",
   "app_zone": "open-artifacts.app",
   "content_zone": "open-artifacts.page",
   "dispatch_namespace": "oa-prod",

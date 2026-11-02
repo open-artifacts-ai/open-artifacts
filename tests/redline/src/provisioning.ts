@@ -88,7 +88,7 @@ export const PROBE_TIMEOUT_MS = JOB_WITHIN_MS + 5 * 60_000;
 export const P34_REQUESTS = 400;
 /** RL_BROKER_IP's period (apps/auth-broker/wrangler.jsonc: limit 60 per 60 s). */
 export const BROKER_IP_PERIOD_MS = 60_000;
-/** P34's bound to see the broker IP window reopen: two periods (counts sync late). */
+/** P34's bound for its hop to get past the broker IP window: two periods (counts sync late). */
 export const BROKER_IP_WAIT_MS = 2 * BROKER_IP_PERIOD_MS;
 /** RL_PV_SIGNIN_IP's limit per IP per 60 s (apps/provisioning/wrangler.jsonc). */
 export const SIGNIN_IP_LIMIT = 10;
@@ -1550,41 +1550,42 @@ export const PROBES: readonly Probe[] = [
         throw new ProbeFail(
           `P34: none of ${P34_REQUESTS} unsigned authorize requests was 404 (${statusCounts(seen)})`,
         );
-      // The /auth/start hop below shares this IP's broker bucket: wait out
-      // the window until an unsigned authorize is 404 again.
-      const end = run.io.now() + BROKER_IP_WAIT_MS;
-      for (;;) {
-        const r = await authorize();
-        if (!allowed(r))
-          throw new ProbeFail(
-            `P34: an unsigned authorize while waiting out the IP window was ${desc(r)}`,
-          );
-        if (r.status === 404) break;
-        if (run.io.now() >= end)
-          throw new ProbeFail(
-            `P34: unsigned authorize still 429 after ${BROKER_IP_WAIT_MS / 1000} s; the broker IP window (RL_BROKER_IP, ${BROKER_IP_PERIOD_MS / 1000} s) did not reopen`,
-          );
-        await run.io.wait(POLL_MS);
-      }
+      // The hop shares this IP's RL_BROKER_IP bucket, which the flood spent
+      // (it never charges RL_BROKER_INSTALL: an unsigned authorize stops at
+      // the ticket). An unsigned 404 doesn't show the bucket reopened, since
+      // counts sync late, so wait on the hop itself. Only 429 rate_limited
+      // waits; the bound keeps a limiter that never reopens a failure. One
+      // /auth/start: its ticket outlives the wait, and more would spend
+      // RL_PV_SIGNIN_IP.
       const start = await run.raw(`${run.c.admin}/auth/start`, {
         auth: "none",
       });
       const loc = start.headers.get("location");
       if (start.status !== 302 || !loc)
         throw new ProbeFail(`P34 /auth/start: ${desc(start)}`);
-      const hop = await run.raw(new URL(loc, run.c.admin).toString(), {
-        auth: "none",
-      });
-      const g = hop.headers.get("location");
-      if (
-        hop.status < 300 ||
-        hop.status > 303 ||
-        !g ||
-        new URL(g).hostname !== "accounts.google.com"
-      )
-        throw new ProbeFail(
-          `P34: the broker did not send /auth/start on to Google (${desc(hop)})`,
-        );
+      const end = run.io.now() + BROKER_IP_WAIT_MS;
+      for (;;) {
+        const hop = await run.raw(new URL(loc, run.c.admin).toString(), {
+          auth: "none",
+        });
+        const g = hop.headers.get("location");
+        if (
+          hop.status >= 300 &&
+          hop.status <= 303 &&
+          g &&
+          new URL(g).hostname === "accounts.google.com"
+        )
+          break;
+        if (hop.status !== 429 || errCode(hop) !== "rate_limited")
+          throw new ProbeFail(
+            `P34: the broker did not send /auth/start on to Google (${desc(hop)})`,
+          );
+        if (run.io.now() >= end)
+          throw new ProbeFail(
+            `P34: the broker hop was still 429 after ${BROKER_IP_WAIT_MS / 1000} s; RL_BROKER_IP's window is ${BROKER_IP_PERIOD_MS / 1000} s, so a limiter did not reopen (${desc(hop)})`,
+          );
+        await run.io.wait(POLL_MS);
+      }
       return pass();
     },
   },

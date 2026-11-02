@@ -387,7 +387,8 @@ export const versions = sqliteTable(
     agentName: text("agent_name"),
     agentVersion: text("agent_version"),
     // The grant or token that published this version: `g:<grantId>` or
-    // `t:<tokenId>` (NULL: a session, or written before 0012).
+    // `t:<tokenId>` (NULL: a session, or written before 0012; `r:`: a private
+    // label scrubbed when its publisher's row was deleted, SCRUBBED_VIA).
     agentVia: text("agent_via"),
     createdBy: text("created_by")
       .notNull()
