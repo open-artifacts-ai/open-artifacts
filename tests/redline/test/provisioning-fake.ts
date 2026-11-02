@@ -50,6 +50,8 @@ interface FInstall {
   owner: string;
   mode: Mode;
   activeJobId: string | null;
+  /** Set when a discard or purge is done: R3 still reads the row as deleted. */
+  deletedAt: number | null;
 }
 interface FJob {
   id: string;
@@ -71,6 +73,8 @@ export type Fault =
   | "p1_200"
   | "p6_alg_none_ok"
   | "p13_replay_new_job"
+  | "p13_hosts_cache"
+  | "p13_healthz_404"
   | "p15_mode_early"
   | "p16_late"
   | "p22_closed_404"
@@ -79,6 +83,7 @@ export type Fault =
   | "p24_old"
   | "p27_no_token_ok"
   | "p34_admin_429"
+  | "p34_authorize_302"
   | "p25_limited_cookie"
   | "p25_limited_google"
   | "p43_redirect"
@@ -108,7 +113,18 @@ export interface FakeApi {
   audit: { actor: string; action: string; jobId: string }[];
   /** Every request URL, in order. */
   log: string[];
+  /**
+   * /auth/start answers past `limit` starts in a minute are limited; the
+   * limited 303 sends `limitedCookie` (default: clearFlowCookie()).
+   */
+  signin: { limit: number; limitedCookie?: string };
+  /** RL_BROKER_IP: broker requests past `ipLimit` in a 60 s window are 429. */
+  broker: { ipLimit: number };
 }
+
+/** apps/provisioning/src/auth/flow.ts clearFlowCookie(). */
+export const CLEAR_FLOW_COOKIE =
+  "__Host-oa-admin-flow=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax";
 
 const ACTOR = {
   kind: "oidc",
@@ -133,8 +149,16 @@ export function fakeApi(): FakeApi {
   const replays = new Map<string, Response>();
   const log: string[] = [];
   const signupAccounts = new Set<string>();
-  const purged = new Map<string, FInstall>();
+  /** Purged rows inventory lost (fault p23_no_row). */
+  const noRow = new Set<string>();
+  /** Rows a done discard or purge freed: slug, HOSTS and pages forget them. */
+  const live = (i: FInstall) => i.deletedAt === null;
   const authStarts = new Map<number, number>();
+  /** Dispatch's 60 s HOSTS cache: a new host's /healthz 404s until then. */
+  const hostsCachedUntil = new Map<string, number>();
+  const signin: FakeApi["signin"] = { limit: 10 };
+  const broker = { ipLimit: Number.POSITIVE_INFINITY };
+  const brokerHits = new Map<number, number>();
   let registrations = 0;
   let n = 0;
   const releases = [
@@ -173,6 +197,7 @@ export function fakeApi(): FakeApi {
       owner: "oidc",
       mode: "serving",
       activeJobId: null,
+      deletedAt: null,
       ...i,
     };
     installs.set(x.id, x);
@@ -206,7 +231,7 @@ export function fakeApi(): FakeApi {
     previousVersion: i.previousVersion,
     suspendedAt: null,
     suspendReason: null,
-    deletedAt: null,
+    deletedAt: i.deletedAt,
     purgeAt: null,
     restorable: i.state === "deleting",
     testHooks: i.testHooks,
@@ -359,7 +384,7 @@ export function fakeApi(): FakeApi {
     if (m)
       return ok({
         slug: m[1],
-        status: [...installs.values()].some((i) => i.slug === m?.[1])
+        status: [...installs.values()].some((i) => live(i) && i.slug === m?.[1])
           ? "taken"
           : "ok",
       });
@@ -397,7 +422,7 @@ export function fakeApi(): FakeApi {
       // One live install per account (signup_accounts): freed only on a
       // failed create or 7 days after a purge, never within a run.
       if (user && signupAccounts.has(p)) return err(409, "signup_limit");
-      if ([...installs.values()].some((i) => i.slug === body.slug))
+      if ([...installs.values()].some((i) => live(i) && i.slug === body.slug))
         return err(409, "slug_taken");
       const version = (body.version as string | undefined) ?? "0.82.0";
       const rel = releases.find((r) => r.version === version);
@@ -423,6 +448,8 @@ export function fakeApi(): FakeApi {
         onDone: () => {
           i.state = "active";
           i.version = version;
+          if (faults.has("p13_hosts_cache"))
+            hostsCachedUntil.set(i.id, clock.t + 60_000);
         },
       });
       // The create finishes before the probe's next request.
@@ -516,13 +543,15 @@ export function fakeApi(): FakeApi {
       case "purge": {
         if (!confirm()) return err(400, "confirm_mismatch");
         const kind = i.state === "failed" ? "discard" : "purge";
-        // Inventory keeps the row as deleted (install_status); HOSTS and
-        // the API forget it.
+        // Design 3.4 row 1: the row stays, R3 reads it as deleted (the
+        // status view maps discarded_at); inventory keeps it as deleted
+        // (install_status); HOSTS forgets it and the slug is free.
         const j = startJob(i, kind, p, {
           onDone: () => {
-            installs.delete(i.id);
-            if (!faults.has("p23_no_row"))
-              purged.set(i.id, { ...i, state: "deleted", mode: null });
+            i.state = "deleted";
+            i.mode = null;
+            i.deletedAt = clock.t;
+            if (faults.has("p23_no_row")) noRow.add(i.id);
           },
         });
         return ok({ job: jobView(j, false), install: summary(i) }, 202);
@@ -640,11 +669,17 @@ export function fakeApi(): FakeApi {
 
   const page = (host: string, path: string): Response => {
     const i = [...installs.values()].find(
-      (x) => x.appHost === host || x.contentHost === host,
+      (x) => live(x) && (x.appHost === host || x.contentHost === host),
     );
     if (host === "rl-a.open-artifacts-staging.app" && path === "/api/v1/me")
       return new Response(null, { status: 401 });
     if (!i || i.mode === null) return new Response("nf", { status: 404 });
+    if (
+      path === "/healthz" &&
+      ((hostsCachedUntil.get(i.id) ?? 0) > clock.t ||
+        (faults.has("p13_healthz_404") && i.slug.startsWith("rl-p-")))
+    )
+      return new Response("nf", { status: 404 });
     if (i.mode === "paused") return new Response("paused", { status: 503 });
     // Dispatch serves the closed page as 503 too (apps/dispatch/src/unavailable.ts).
     if (i.mode === "closed")
@@ -732,18 +767,20 @@ export function fakeApi(): FakeApi {
           return new Response(null, { status: 429 });
         const flow = "__Host-oa-admin-flow=f; Path=/; Secure; HttpOnly";
         // As signin.ts: a limited start goes to the sign-in error screen.
-        if (c > 10)
+        if (c > signin.limit) {
           return new Response(null, {
             status: 303,
             headers: {
               location: faults.has("p25_limited_google")
                 ? "https://accounts.google.com/o/oauth2/v2/auth"
                 : "/sign-in?error=rate_limited",
-              ...(faults.has("p25_limited_cookie")
-                ? { "set-cookie": flow }
-                : {}),
+              // As signin.ts: the limited 303 clears the flow cookie.
+              "set-cookie": faults.has("p25_limited_cookie")
+                ? flow
+                : (signin.limitedCookie ?? CLEAR_FLOW_COOKIE),
             },
           });
+        }
         return new Response(null, {
           status: 302,
           headers: {
@@ -803,7 +840,12 @@ export function fakeApi(): FakeApi {
         : new Response(null, { status: 404 });
     }
     if (host === "auth.open-artifacts-staging.app") {
-      if (url.searchParams.get("ticket"))
+      // Design 4.3: the per-IP bucket runs before the ticket check.
+      const w = Math.floor(clock.t / 60_000);
+      const c = (brokerHits.get(w) ?? 0) + 1;
+      brokerHits.set(w, c);
+      if (c > broker.ipLimit) return err(429, "rate_limited");
+      if (url.searchParams.get("ticket") || faults.has("p34_authorize_302"))
         return new Response(null, {
           status: 302,
           headers: {
@@ -818,19 +860,21 @@ export function fakeApi(): FakeApi {
         return new Response(null, { status: 404 });
       if (url.pathname === "/installs")
         return ok({
-          installs: [...installs.values(), ...purged.values()].map((i) => ({
-            id: i.id,
-            appHost: i.appHost,
-            contentHost: i.contentHost,
-            state: i.state,
-            testHooks: i.testHooks,
-            mode: i.mode,
-          })),
+          installs: [...installs.values()]
+            .filter((i) => !noRow.has(i.id))
+            .map((i) => ({
+              id: i.id,
+              appHost: i.appHost,
+              contentHost: i.contentHost,
+              state: i.state,
+              testHooks: i.testHooks,
+              mode: i.mode,
+            })),
         });
       if (url.pathname === "/hosts") {
         const h = url.searchParams.get("host");
         const i = [...installs.values()].find(
-          (x) => x.appHost === h || x.contentHost === h,
+          (x) => live(x) && (x.appHost === h || x.contentHost === h),
         );
         return ok({ host: h, installId: i?.id ?? null, mode: i?.mode ?? null });
       }
@@ -868,6 +912,8 @@ export function fakeApi(): FakeApi {
     clock,
     audit,
     log,
+    signin,
+    broker,
   };
 }
 

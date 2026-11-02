@@ -27,6 +27,14 @@ if (!window.matchMedia)
 if (!Element.prototype.scrollIntoView)
   Element.prototype.scrollIntoView = () => {};
 
+// jsdom has no ResizeObserver; the Radix Checkbox measures itself with one.
+if (!("ResizeObserver" in globalThis))
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+
 // Sonner keeps toasts in module state; start each test with none.
 afterEach(() => {
   toast.dismiss();

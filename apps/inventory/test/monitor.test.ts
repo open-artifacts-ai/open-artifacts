@@ -193,6 +193,24 @@ describe("prodclean-monitor", () => {
     );
   });
 
+  it("mints a fresh JWT right before each inventory call (5-minute lifetime)", async () => {
+    const r = await monitor(world());
+    expect(r.code).toBe(0);
+    // Each inventory request follows its own mint: none reuses an earlier one.
+    const seq = r.calls
+      .filter((c) => c.url.startsWith(MINT) || c.url.startsWith(INV))
+      .map((c) => (c.url.startsWith(MINT) ? "mint" : new URL(c.url).pathname));
+    for (const path of ["/installs", "/health", "/prodclean"]) {
+      const i = seq.indexOf(path);
+      expect(i, path).toBeGreaterThan(0);
+      expect(
+        seq.slice(0, i).filter((x) => x === "mint").length,
+        path,
+      ).toBeGreaterThan(seq.slice(0, i).filter((x) => x !== "mint").length);
+    }
+    expect(seq.filter((x) => x === "mint").length).toBe(4);
+  });
+
   it("a dirty install: the code only in the line, the detail only in the report", async () => {
     const w = world();
     dirtyInstall(w);

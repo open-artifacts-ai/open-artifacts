@@ -7,6 +7,9 @@ import {
   type Release,
   TOKEN_SCOPES,
 } from "@oa/shared/provisioning";
+import { notResolved } from "./fetch-timeout.ts";
+import { note } from "./notes.ts";
+import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { PRE_PROD_REASON } from "./report.ts";
 
 // The red-line provisioning probes (design v7 12.2, P1-P47) against the
@@ -83,11 +86,24 @@ export const JOB_WITHIN_MS = 20 * 60_000;
 /** A case's vitest timeout: its slowest wait plus margin. */
 export const PROBE_TIMEOUT_MS = JOB_WITHIN_MS + 5 * 60_000;
 export const P34_REQUESTS = 400;
-export const P25_REQUESTS = 15;
+/** RL_BROKER_IP's period (apps/auth-broker/wrangler.jsonc: limit 60 per 60 s). */
+export const BROKER_IP_PERIOD_MS = 60_000;
+/** P34's bound to see the broker IP window reopen: two periods (counts sync late). */
+export const BROKER_IP_WAIT_MS = 2 * BROKER_IP_PERIOD_MS;
+/** RL_PV_SIGNIN_IP's limit per IP per 60 s (apps/provisioning/wrangler.jsonc). */
+export const SIGNIN_IP_LIMIT = 10;
+/**
+ * P25's cap: 3x the limit, sent one at a time. The binding counts per isolate
+ * and syncs in the background, so a parallel burst slips through.
+ */
+export const P25_MAX_REQUESTS = 3 * SIGNIN_IP_LIMIT;
 export const P44_REGISTRATIONS = 11;
 export const P42_BYTES = 40 * 1024;
 export const DUMMY_TURNSTILE = "XXXX.DUMMY.TOKEN.XXXX";
 export const EVIL = "https://evil.example";
+/** P29's unproven reason after a done create and delete (fixed: no run-specific text). */
+export const P29_UNPROVEN =
+  "self-serve purge doesn't free signup_accounts (#1046); signups off on prod";
 
 // --- HTTP ----------------------------------------------------------------
 
@@ -466,16 +482,41 @@ export function statusCounts(
 /** The admin sign-in flow cookie /auth/start sets (apps/provisioning/src/auth/flow.ts). */
 export const ADMIN_FLOW_COOKIE = "__Host-oa-admin-flow";
 
+/**
+ * Whether one Set-Cookie sets a live admin flow cookie: the flow name, a
+ * non-empty value, and neither Max-Age<=0 nor an Expires before `now`. The
+ * limited 303 sends clearFlowCookie() (apps/provisioning/src/auth/flow.ts),
+ * "__Host-oa-admin-flow=; Max-Age=0; ...", which clears and does not count.
+ */
+export function setsLiveFlowCookie(c: string, now: number): boolean {
+  const [pair = "", ...attrs] = c.split(";").map((x) => x.trim());
+  const eq = pair.indexOf("=");
+  if (eq < 0 || pair.slice(0, eq) !== ADMIN_FLOW_COOKIE) return false;
+  if (pair.slice(eq + 1) === "") return false;
+  // RFC 6265 5.3: a valid Max-Age decides alone; Expires only without one.
+  let maxAge: number | undefined;
+  let expires: number | undefined;
+  for (const a of attrs) {
+    const i = a.indexOf("=");
+    const k = (i < 0 ? a : a.slice(0, i)).trim().toLowerCase();
+    const v = i < 0 ? "" : a.slice(i + 1).trim();
+    if (k === "max-age" && /^-?\d+$/.test(v)) maxAge = Number(v);
+    if (k === "expires") {
+      const t = Date.parse(v);
+      if (!Number.isNaN(t)) expires = t;
+    }
+  }
+  if (maxAge !== undefined) return maxAge > 0;
+  return expires === undefined || expires > now;
+}
+
 /** Every Set-Cookie on an answer. */
 const setCookies = (r: Pick<Res, "headers">): string[] =>
   r.headers.getSetCookie?.() ??
   [r.headers.get("set-cookie") ?? ""].filter(Boolean);
 
-/** A fetch that failed because the host name has no DNS record. */
-export function notResolved(e: unknown): boolean {
-  const cause = (e as { cause?: { code?: unknown } } | null)?.cause;
-  return cause?.code === "ENOTFOUND";
-}
+// The not-resolved test lives in fetch-timeout.ts (the red-line guard shares it).
+export { notResolved };
 
 function rlp(run: Run): RlP {
   if (!run.s.rlp) throw new ProbeFail("no rl-p install (P13 failed)");
@@ -833,12 +874,20 @@ export const PROBES: readonly Probe[] = [
         );
       run.s.rlp.appHost = dj.appHost;
       run.s.rlp.contentHost = dj.contentHost;
-      const h = await run.page(dj.appHost);
-      const hz = h.json as { testHooks?: unknown } | undefined;
-      if (h.status !== 200 || hz?.testHooks !== true)
+      // Dispatch's HOSTS cache (60 s) can still miss the new host: poll.
+      let h: Res | undefined;
+      try {
+        await run.within(PAGE_WITHIN_MS, "P13 redline /healthz", async () => {
+          h = await run.page(dj.appHost);
+          const hz = h.json as { testHooks?: unknown } | undefined;
+          return h.status === 200 && hz?.testHooks === true;
+        });
+      } catch (e) {
+        if (!(e instanceof ProbeFail) || !h) throw e;
         throw new ProbeFail(
-          `P13: /healthz is not the redline variant (${desc(h)})`,
+          `P13: /healthz is not the redline variant within ${PAGE_WITHIN_MS / 1000} s (${desc(h)})`,
         );
+      }
       return pass(`job ${final.id} at ${version}`);
     },
   },
@@ -1255,10 +1304,13 @@ export const PROBES: readonly Probe[] = [
       // Design gap: no principal can purge a test user's install within a
       // run (U's R11 is 403, O cannot reach a self-serve install, the
       // scheduler purges at purge_at), so an earlier run's claim holds.
-      if (c.status === 409 && errCode(c) === "signup_limit")
-        return unproven(
-          "test user b still holds signup_accounts from an earlier run: no principal can purge a self-serve install within a run",
+      if (c.status === 409 && errCode(c) === "signup_limit") {
+        // The explanation goes to a note: the reason stays one fixed string.
+        note(
+          "P29: test user b still holds signup_accounts from an earlier run: no principal can purge a self-serve install within a run",
         );
+        return unproven(P29_UNPROVEN);
+      }
       const a = run.accepted(c, "P29 create", { asTestUser: true });
       const j = await run.done(a.job.id, "P29 create", "b");
       const d = await detail(run, a.install.id, "b");
@@ -1288,9 +1340,9 @@ export const PROBES: readonly Probe[] = [
         403,
         "P29 R11 as the user",
       );
-      return unproven(
-        `create job ${j.id} done and deleted; the purge that frees signup_accounts is not runnable by any principal in a run (design gap)`,
-      );
+      // The job id goes to a note: the reason stays one fixed string.
+      note(`P29: create job ${j.id} done and deleted`);
+      return unproven(P29_UNPROVEN);
     },
   },
   {
@@ -1364,7 +1416,14 @@ export const PROBES: readonly Probe[] = [
       if (p.job.kind !== "discard")
         throw new ProbeFail(`P32: R11 ran ${p.job.kind}, want discard`);
       await run.done(p.job.id, "P32 discard");
-      expect(await detail(run, a.install.id), 404, "P32 R3");
+      // Design 3.4 row 1: R3 still reads a discarded row, as deleted.
+      const gone = await detail(run, a.install.id);
+      expect(gone, 200, "P32 R3");
+      const gi = gone.json as InstallDetail;
+      if (gi.state !== "deleted" || gi.deletedAt == null)
+        throw new ProbeFail(
+          `P32 R3: state ${gi.state}, deletedAt ${gi.deletedAt == null ? "null" : "set"}; want deleted with deletedAt`,
+        );
       const s = await run.v1(`/slugs/${slug}`);
       if ((s.json as { status?: string })?.status !== "ok")
         throw new ProbeFail(`P32: slug ${desc(s)}`);
@@ -1407,26 +1466,53 @@ export const PROBES: readonly Probe[] = [
   {
     id: "P34",
     title:
-      "400 unsigned broker authorize for i000000admin: 404s; /auth/start still reaches Google",
+      "400 unsigned broker authorize for i000000admin: 404s (429 past the IP limit); /auth/start still reaches Google",
     run: async (run) => {
+      const authorize = () =>
+        run.raw(
+          `${run.c.broker}/google/authorize?install=i000000admin&state=${randomBytes(12).toString("base64url")}&nonce=${randomBytes(12).toString("base64url")}&code_challenge=${randomBytes(32).toString("base64url")}`,
+          { auth: "none" },
+        );
+      // Design 4.3: RL_BROKER_IP runs before the ticket check, so past its
+      // limit an unsigned authorize is 429 rate_limited; any other answer
+      // (a redirect toward Google above all) or any cookie fails.
+      const allowed = (r: Res) =>
+        (r.status === 404 || r.status === 429) && setCookies(r).length === 0;
       let bad = 0;
+      let notFound = 0;
       const seen: Res[] = [];
       for (let i = 0; i < P34_REQUESTS; i += 10) {
         const batch = await Promise.all(
-          Array.from({ length: Math.min(10, P34_REQUESTS - i) }, () =>
-            run.raw(
-              `${run.c.broker}/google/authorize?install=i000000admin&state=${randomBytes(12).toString("base64url")}&nonce=${randomBytes(12).toString("base64url")}&code_challenge=${randomBytes(32).toString("base64url")}`,
-              { auth: "none" },
-            ),
-          ),
+          Array.from({ length: Math.min(10, P34_REQUESTS - i) }, authorize),
         );
-        bad += batch.filter((r) => r.status !== 404).length;
+        bad += batch.filter((r) => !allowed(r)).length;
+        notFound += batch.filter((r) => r.status === 404).length;
         seen.push(...batch);
       }
       if (bad)
         throw new ProbeFail(
-          `P34: ${bad} of ${P34_REQUESTS} unsigned authorize requests were not 404 (${statusCounts(seen)})`,
+          `P34: ${bad} of ${P34_REQUESTS} unsigned authorize requests were not 404 or 429 without a cookie (${statusCounts(seen)})`,
         );
+      if (!notFound)
+        throw new ProbeFail(
+          `P34: none of ${P34_REQUESTS} unsigned authorize requests was 404 (${statusCounts(seen)})`,
+        );
+      // The /auth/start hop below shares this IP's broker bucket: wait out
+      // the window until an unsigned authorize is 404 again.
+      const end = run.io.now() + BROKER_IP_WAIT_MS;
+      for (;;) {
+        const r = await authorize();
+        if (!allowed(r))
+          throw new ProbeFail(
+            `P34: an unsigned authorize while waiting out the IP window was ${desc(r)}`,
+          );
+        if (r.status === 404) break;
+        if (run.io.now() >= end)
+          throw new ProbeFail(
+            `P34: unsigned authorize still 429 after ${BROKER_IP_WAIT_MS / 1000} s; the broker IP window (RL_BROKER_IP, ${BROKER_IP_PERIOD_MS / 1000} s) did not reopen`,
+          );
+        await run.io.wait(POLL_MS);
+      }
       const start = await run.raw(`${run.c.admin}/auth/start`, {
         auth: "none",
       });
@@ -1732,18 +1818,15 @@ export const PROBES: readonly Probe[] = [
   {
     id: "P25",
     title:
-      "15 rapid GET /auth/start: at least one 303 to /sign-in?error=rate_limited, never to Google nor with a flow cookie",
+      "GET /auth/start one at a time (up to 30): a 303 to /sign-in?error=rate_limited, with no flow cookie",
     // Last: it spends RL_PV_SIGNIN_IP (10 per 60 s), which P30's callbacks
     // and P34's /auth/start share; nothing after it signs in.
     run: async (run) => {
-      const out = await Promise.all(
-        Array.from({ length: P25_REQUESTS }, () =>
-          run.raw(`${run.c.admin}/auth/start`, { auth: "none" }),
-        ),
-      );
+      const start = () =>
+        run.raw(`${run.c.admin}/auth/start`, { auth: "none" });
       // Design 5.8 (#1012): a limited start lands on the sign-in screen's
       // rate_limited error; it must not start a flow (no Google, no cookie).
-      const limited = out.filter((r) => {
+      const limited = (r: Res) => {
         const loc = r.headers.get("location");
         if (r.status !== 303 || !loc) return false;
         const u = new URL(loc, run.c.admin);
@@ -1752,15 +1835,26 @@ export const PROBES: readonly Probe[] = [
           u.pathname === "/sign-in" &&
           u.searchParams.get("error") === "rate_limited"
         );
-      });
-      if (!limited.length)
+      };
+      // Only a cookie that sets a live flow counts: the limited 303 clears it.
+      const flowCookie = (r: Res) =>
+        setCookies(r).some((c) => setsLiveFlowCookie(c, run.io.now()));
+      const out: Res[] = [];
+      let last: Res | undefined;
+      while (out.length < P25_MAX_REQUESTS && !(last && limited(last))) {
+        last = await start();
+        out.push(last);
+      }
+      const k = out.length;
+      if (!last || !limited(last))
         throw new ProbeFail(
-          `P25: no 303 to /sign-in?error=rate_limited in ${P25_REQUESTS} requests (${statusCounts(out)})`,
+          `P25: no 303 to /sign-in?error=rate_limited in ${k} sequential requests (${statusCounts(out)})`,
         );
-      for (const r of limited)
-        if (setCookies(r).some((c) => c.startsWith(`${ADMIN_FLOW_COOKIE}=`)))
-          throw new ProbeFail("P25: a limited /auth/start set the flow cookie");
-      return pass(`${limited.length} of ${P25_REQUESTS} limited`);
+      if (flowCookie(last))
+        throw new ProbeFail("P25: a limited /auth/start set the flow cookie");
+      // No follow-up request: the binding counts per isolate, so the next start
+      // may land on one that has not synced yet and rightly answer 302.
+      return pass(`limited on request ${k} of up to ${P25_MAX_REQUESTS}`);
     },
   },
 ];
@@ -1974,7 +2068,7 @@ export function provConfig(
     admin: o("REDLINE_PROV_ADMIN", "https://admin.open-artifacts-staging.app"),
     broker: o("REDLINE_BROKER", "https://auth.open-artifacts-staging.app"),
     prodApi: o("REDLINE_PROD_PROV_API", "https://api.open-artifacts.app"),
-    prodAdmin: o("REDLINE_PROD_PROV_ADMIN", "https://admin.open-artifacts.app"),
+    prodAdmin: o("REDLINE_PROD_PROV_ADMIN", PROD_ADMIN_ORIGIN),
     runId,
     version,
     dispatch: env.REDLINE_DISPATCH === "1",

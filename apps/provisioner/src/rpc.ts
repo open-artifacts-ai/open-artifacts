@@ -38,8 +38,14 @@ const IO: ProvisionerIo = {
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
 
-/** The release catalog of RELEASES (signed records, floor), newest first. */
-export async function listReleases(env: RpcEnv): Promise<Release[]> {
+/**
+ * The release catalog of RELEASES (signed records, floor), newest first;
+ * with `version`, that version's entry alone (R5 and create, #1029).
+ */
+export async function listReleases(
+  env: RpcEnv,
+  o: { version?: string } = {},
+): Promise<Release[]> {
   const e = deployEnv(env.OA_ENV);
   const bucket = env.RELEASES as unknown as R2CatalogBucket;
   return releaseCatalog({
@@ -47,6 +53,7 @@ export async function listReleases(env: RpcEnv): Promise<Release[]> {
     env: e,
     versions: await bucketVersions(bucket),
     publishedAt: bucketPublishedAt(bucket),
+    ...(o.version === undefined ? {} : { only: o.version }),
   });
 }
 
@@ -146,8 +153,8 @@ export class ProvisionerRpc
   extends WorkerEntrypoint<RpcEnv>
   implements ProvisionerRpcContract
 {
-  releases(): Promise<Release[]> {
-    return listReleases(this.env);
+  releases(o?: { version?: string }): Promise<Release[]> {
+    return listReleases(this.env, o);
   }
 
   verifyTurnstile(i: VerifyTurnstileInput): Promise<{ ok: boolean }> {

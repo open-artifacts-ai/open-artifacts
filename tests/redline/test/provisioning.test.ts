@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { takeFileNotes } from "../src/notes.ts";
 import {
   AUDIENCES,
   jwtClaims,
@@ -19,10 +20,13 @@ import {
 } from "../src/oidc.ts";
 import {
   ADMIN_FLOW_COOKIE,
+  BROKER_IP_WAIT_MS,
   bringUpgrade,
   failText,
   mintCreds,
   type Outcome,
+  P25_MAX_REQUESTS,
+  P29_UNPROVEN,
   PROBES,
   ProbeFail,
   type ProbeId,
@@ -34,7 +38,14 @@ import {
   statusCounts,
 } from "../src/provisioning.ts";
 import { credFile, rawTargets } from "../src/provisioning-live.ts";
-import { PRE_PROD_NA, PRE_PROD_REASON } from "../src/report.ts";
+import {
+  ACCEPTED_UNPROVEN,
+  acceptedUnproven,
+  caseKey,
+  PRE_PROD_NA,
+  PRE_PROD_REASON,
+  parseManifest,
+} from "../src/report.ts";
 import { newRecipient, openSealed, parseCreds } from "../src/seal.ts";
 import {
   parseProd,
@@ -44,6 +55,7 @@ import {
 import { sealTo } from "./provisioner-seal.ts";
 import {
   API_JWT,
+  CLEAR_FLOW_COOKIE,
   CONFIG,
   type FakeApi,
   type Fault,
@@ -134,6 +146,55 @@ describe("the probes on a conforming staging fake", () => {
     expect(preProd.filter((k) => level(out.get(k)) !== "pass")).toEqual([
       ...PRE_PROD_NA,
     ]);
+  });
+
+  // A renamed probe title is a required case that did not run plus a case not
+  // in the manifest (run 41322062244's P22): catch it before the live run.
+  it("live/manifest.json lists every probe by the name the reporter gives it, and nothing else", () => {
+    const file = "live/provisioning.test.ts";
+    const m = parseManifest(
+      readFileSync(
+        join(import.meta.dirname, "..", "live", "manifest.json"),
+        "utf8",
+      ),
+    );
+    const listed = new Set(
+      m.cases
+        .filter((x) => x.file === file)
+        .map((x) => caseKey(x.file, x.name)),
+    );
+    const named = new Set(
+      PROBES.map((p) => caseKey(file, `provisioning > ${p.id}: ${p.title}`)),
+    );
+    const show = (k: string) => k.split("\u0000")[1];
+    expect([...listed].filter((k) => !named.has(k)).map(show)).toEqual([]);
+    expect([...named].filter((k) => !listed.has(k)).map(show)).toEqual([]);
+    expect(listed.size).toBe(PROBES.length);
+  });
+
+  // The gate matches these by exact name and reason: no run-specific text.
+  it("the unproven probes give the fixed reasons the gate's accepted list names", async () => {
+    const out = await runAll(fakeApi());
+    const name = (id: ProbeId) =>
+      `provisioning > ${id}: ${PROBES.find((p) => p.id === id)?.title}`;
+    for (const id of ["P29", "P30", "P35"] as const)
+      expect(
+        acceptedUnproven({
+          name: name(id),
+          file: "live/provisioning.test.ts",
+          ...(out.get(id) as Outcome & { level: "unproven-live" }),
+        }),
+        id,
+      ).toBeDefined();
+    expect(out.get("P29")).toEqual({
+      level: "unproven-live",
+      reason: P29_UNPROVEN,
+    });
+    // P29 is on the list for M1 only (#1046 takes it off).
+    expect(
+      ACCEPTED_UNPROVEN.find((e) => e.name.startsWith("provisioning > P29: "))
+        ?.evidence,
+    ).toContain("#1046");
   });
 
   it("prod probes run once prod admin answers 401", async () => {
@@ -229,6 +290,167 @@ describe("each probe fails on the behaviour it guards", () => {
       expect(out.get(id)).toMatch(re);
     });
 
+  it("P13 waits out the 60 s HOSTS cache for the redline /healthz", async () => {
+    const f = fakeApi();
+    f.faults.add("p13_hosts_cache");
+    const out = await runAll(f);
+    expect(level(out.get("P13"))).toBe("pass");
+  });
+
+  it("P13 fails after 120 s on a /healthz that never turns redline, naming the last answer", async () => {
+    const f = fakeApi();
+    f.faults.add("p13_healthz_404");
+    const out = await runAll(f);
+    expect(out.get("P13")).toMatch(
+      /^P13: \/healthz is not the redline variant within 120 s \(status 404, body sha256:[0-9a-f]{16} \(2 bytes\)\)$/,
+    );
+  });
+
+  describe("P25 sends /auth/start one at a time", () => {
+    const p25 = async (
+      limit: number,
+      fault?: Fault,
+      limitedCookie?: string,
+    ) => {
+      const f = fakeApi();
+      f.signin.limit = limit;
+      if (limitedCookie !== undefined) f.signin.limitedCookie = limitedCookie;
+      if (fault) f.faults.add(fault);
+      const out = await PROBES.find((p) => p.id === "P25")
+        ?.run(new Run(CONFIG, f.io))
+        .catch((e: unknown) => e);
+      const starts = f.log.filter(
+        (l) => l === `GET ${CONFIG.admin}/auth/start`,
+      );
+      return { out, starts: starts.length };
+    };
+
+    it("passes when the limit trips within 30 and stops sending", async () => {
+      for (const limit of [0, 10, 29]) {
+        const { out, starts } = await p25(limit);
+        expect(out).toEqual({
+          level: "pass",
+          note: `limited on request ${limit + 1} of up to ${P25_MAX_REQUESTS}`,
+        });
+        // Stops at the tripping request: no follow-up (per-isolate counts).
+        expect(starts).toBe(limit + 1);
+      }
+    });
+
+    it("counts only a Set-Cookie that sets a live flow", async () => {
+      const now = fakeApi().clock.t;
+      const past = new Date(now - 1000).toUTCString();
+      const future = new Date(now + 60_000).toUTCString();
+      // The honest limited 303 sends clearFlowCookie(); it passes.
+      expect((await p25(0)).out).toMatchObject({ level: "pass" });
+      for (const c of [
+        CLEAR_FLOW_COOKIE,
+        `${ADMIN_FLOW_COOKIE}=f; Max-Age=0; Path=/; HttpOnly; Secure`,
+        `${ADMIN_FLOW_COOKIE}=f; Max-Age=-1; Path=/`,
+        `${ADMIN_FLOW_COOKIE}=f; Expires=${past}; Path=/`,
+        "other=x; Path=/",
+      ])
+        expect((await p25(0, undefined, c)).out, c).toMatchObject({
+          level: "pass",
+        });
+      for (const c of [
+        `${ADMIN_FLOW_COOKIE}=f; Path=/; Secure; HttpOnly`,
+        `${ADMIN_FLOW_COOKIE}=f; Max-Age=600; Path=/`,
+        `${ADMIN_FLOW_COOKIE}=f; Expires=${future}`,
+        // Max-Age wins over a past Expires (RFC 6265 5.3): still live.
+        `${ADMIN_FLOW_COOKIE}=f; Max-Age=600; Expires=${past}`,
+      ])
+        expect(((await p25(0, undefined, c)).out as Error).message, c).toBe(
+          "P25: a limited /auth/start set the flow cookie",
+        );
+      expect(((await p25(0, "p25_limited_cookie")).out as Error).message).toBe(
+        "P25: a limited /auth/start set the flow cookie",
+      );
+    });
+
+    it("fails naming the counts when the limit never trips", async () => {
+      const { out, starts } = await p25(P25_MAX_REQUESTS);
+      expect(out).toBeInstanceOf(ProbeFail);
+      expect((out as Error).message).toBe(
+        "P25: no 303 to /sign-in?error=rate_limited in 30 sequential requests (302 x30)",
+      );
+      expect(starts).toBe(P25_MAX_REQUESTS);
+    });
+  });
+
+  describe("P34 allows the broker's per-IP 429 and waits out its window", () => {
+    const p34 = async (ipLimit: number, fault?: Fault) => {
+      const f = fakeApi();
+      f.broker.ipLimit = ipLimit;
+      if (fault) f.faults.add(fault);
+      const t0 = f.clock.t;
+      const out = await PROBES.find((p) => p.id === "P34")
+        ?.run(new Run(CONFIG, f.io))
+        .catch((e: unknown) => e);
+      return { out, waited: f.clock.t - t0, f };
+    };
+    const msg = (o: unknown) => (o as Error).message;
+
+    it("passes on all 404s without waiting", async () => {
+      const { out, waited } = await p34(Number.POSITIVE_INFINITY);
+      expect(out).toEqual({ level: "pass" });
+      expect(waited).toBe(0);
+    });
+
+    it("passes on 404s then 429s; the /auth/start hop works after the window", async () => {
+      const { out, waited, f } = await p34(60);
+      expect(out).toEqual({ level: "pass" });
+      expect(waited).toBeGreaterThan(0);
+      expect(waited).toBeLessThanOrEqual(BROKER_IP_WAIT_MS);
+      // The last broker request is the hop, after the wait.
+      const hops = f.log.filter((l) => l.startsWith(`GET ${CONFIG.broker}`));
+      expect(hops).toHaveLength(400 + 1 + 1 + waited / 3000);
+    });
+
+    it("fails on any redirect", async () => {
+      const { out } = await p34(Number.POSITIVE_INFINITY, "p34_authorize_302");
+      expect(msg(out)).toBe(
+        "P34: 400 of 400 unsigned authorize requests were not 404 or 429 without a cookie (302 x400)",
+      );
+    });
+
+    it("fails when no answer is 404", async () => {
+      const { out } = await p34(0);
+      expect(msg(out)).toBe(
+        "P34: none of 400 unsigned authorize requests was 404 (429 rate_limited x400)",
+      );
+    });
+
+    it("fails when the window never reopens by the deadline", async () => {
+      const f = fakeApi();
+      f.broker.ipLimit = 60;
+      let t = f.clock.t;
+      // The bucket stays spent: the fake's window never moves, time does.
+      const run = new Run(CONFIG, {
+        ...f.io,
+        now: () => t,
+        wait: async (ms) => {
+          t += ms;
+        },
+      });
+      const out = await PROBES.find((p) => p.id === "P34")
+        ?.run(run)
+        .catch((e: unknown) => e);
+      expect(msg(out)).toBe(
+        `P34: unsigned authorize still 429 after ${BROKER_IP_WAIT_MS / 1000} s; the broker IP window (RL_BROKER_IP, 60 s) did not reopen`,
+      );
+    });
+  });
+
+  it("P32 reads the discarded install on R3 as deleted", async () => {
+    const f = fakeApi();
+    const out = await runAll(f);
+    expect(level(out.get("P32"))).toBe("pass");
+    const q = [...f.installs.values()].find((i) => i.slug.startsWith("rl-q-"));
+    expect(q?.state).toBe("deleted");
+    expect(q?.deletedAt).not.toBeNull();
+  });
+
   it("P44 is unproven when this IP's daily DCR cap was partly spent earlier", async () => {
     const f = fakeApi();
     f.faults.add("p44_cap_spent");
@@ -290,20 +512,32 @@ describe("each probe fails on the behaviour it guards", () => {
   it("P29 deletes to deleting, U's purge is 403, and a later run's create meets signup_limit", async () => {
     const f = fakeApi();
     const p29 = PROBES.find((p) => p.id === "P29");
+    takeFileNotes();
     const first = await p29?.run(new Run(CONFIG, f.io));
-    expect(first).toMatchObject({
-      level: "unproven-live",
-      reason: expect.stringMatching(/^create job \S+ done and deleted/),
-    });
+    expect(first).toEqual({ level: "unproven-live", reason: P29_UNPROVEN });
+    // The job id is a note, outside the reason the gate would match.
+    expect(takeFileNotes()).toEqual([
+      expect.stringMatching(/^P29: create job \S+ done and deleted$/),
+    ]);
     const mine = [...f.installs.values()].filter(
       (i) => i.owner === "user:rl-test-b",
     );
     expect(mine.map((i) => i.state)).toEqual(["deleting"]);
     const later = await p29?.run(new Run({ ...CONFIG, runId: "5678" }, f.io));
-    expect(later).toMatchObject({
-      level: "unproven-live",
-      reason: expect.stringMatching(/signup_accounts from an earlier run/),
-    });
+    // Both paths give the one fixed reason the gate's accepted list names.
+    expect(later).toEqual({ level: "unproven-live", reason: P29_UNPROVEN });
+    expect(takeFileNotes()).toEqual([
+      expect.stringMatching(/signup_accounts from an earlier run/),
+    ]);
+    const name = `provisioning > P29: ${p29?.title}`;
+    for (const o of [first, later])
+      expect(
+        acceptedUnproven({
+          name,
+          file: "live/provisioning.test.ts",
+          ...(o as Outcome & { level: "unproven-live" }),
+        }),
+      ).toBeDefined();
   });
 
   it("P16 is unproven when the create already finished; P15 fails on a 200 /healthz", async () => {

@@ -1086,7 +1086,7 @@
     },
     {
       "file": "live/provisioning.test.ts",
-      "name": "provisioning > P22: delete, then restore: closed page, then serving"
+      "name": "provisioning > P22: delete, then restore: 503 closed page on both hosts, then serving"
     },
     {
       "file": "live/provisioning.test.ts",
@@ -1126,7 +1126,7 @@
     },
     {
       "file": "live/provisioning.test.ts",
-      "name": "provisioning > P34: 400 unsigned broker authorize for i000000admin: 404s; /auth/start still reaches Google"
+      "name": "provisioning > P34: 400 unsigned broker authorize for i000000admin: 404s (429 past the IP limit); /auth/start still reaches Google"
     },
     {
       "file": "live/provisioning.test.ts",
@@ -1178,7 +1178,7 @@
     },
     {
       "file": "live/provisioning.test.ts",
-      "name": "provisioning > P25: 15 rapid GET /auth/start: at least one 303 to /sign-in?error=rate_limited, never to Google nor with a flow cookie"
+      "name": "provisioning > P25: GET /auth/start one at a time (up to 30): a 303 to /sign-in?error=rate_limited, with no flow cookie"
     }
   ],
   "notes": [

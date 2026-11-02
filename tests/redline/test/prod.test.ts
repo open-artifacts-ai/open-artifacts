@@ -16,6 +16,12 @@ import {
   ProdDirty,
   prodClean,
 } from "../src/prod.ts";
+import {
+  buildReport,
+  gatePasses,
+  PRE_PROD_GUARD,
+  PRE_PROD_GUARD_REASON,
+} from "../src/report.ts";
 import { parseTargets } from "../src/targets.ts";
 import { type Fake, fakeServer, json, secretDir } from "./fake.ts";
 
@@ -47,6 +53,8 @@ interface World {
   inventoryAuth?: (string | undefined)[];
   /** Inventory refuses the bearer: its unknown-route plain 404 (#1016). */
   inventoryRefuses?: boolean;
+  /** Inventory's raw answer to /installs (e.g. #1043's 503 schema_missing). */
+  inventoryAnswer?: { status: number; body: string; type?: string };
   /** /healthz status (a paused or closed host answers 503). */
   healthzStatus?: number;
   /** The dispatch script is gone (purged): its routes answer 404. */
@@ -165,6 +173,12 @@ async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
         return res
           .writeHead(404, { "cache-control": "no-store" })
           .end("Not found");
+      if (w.inventoryAnswer)
+        return res
+          .writeHead(w.inventoryAnswer.status, {
+            "content-type": w.inventoryAnswer.type ?? "application/json",
+          })
+          .end(w.inventoryAnswer.body);
       return json(res, 200, { installs: w.installs });
     }
     if (u.pathname === "/healthz")
@@ -297,6 +311,34 @@ describe("prodClean (spec 2026-10-26)", () => {
     expect(await failCode(check(w))).toBe("inventory_bad");
     w.installs = [];
     expect(await failCode(check(w))).toBe("inventory_bad");
+  });
+
+  it("a bearer function is called after the release scan, right before /installs", async () => {
+    const w = cleanWorld();
+    const { fetch } = await serve(w);
+    const seen: string[] = [];
+    const counted: typeof fetch = (i, init) => {
+      seen.push(new URL(String(i instanceof Request ? i.url : i)).host);
+      return fetch(i, init);
+    };
+    let mintedAfter = -1;
+    await prodClean(probe(), {
+      fetch: counted,
+      pubkey: PUB,
+      inventoryBearer: async () => {
+        mintedAfter = seen.length;
+        return JWT;
+      },
+    });
+    expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+    // Every Cloudflare (release scan) call came before the mint.
+    expect(mintedAfter).toBeGreaterThan(0);
+    expect(
+      seen.slice(0, mintedAfter).every((h) => h === "api.cloudflare.com"),
+    ).toBe(true);
+    expect(
+      seen.slice(mintedAfter).some((h) => h !== "api.cloudflare.com"),
+    ).toBe(true);
   });
 
   it("the inventory bearer is only opts.inventoryBearer (OIDC), never the stored key", async () => {
@@ -445,6 +487,115 @@ describe("prodClean (spec 2026-10-26)", () => {
       });
       expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
     });
+    // Pre-prod (#1043 before #1014): the prod inventory answers a verified
+    // caller 503 {"error":"schema_missing"}. Only that answer, and only with
+    // the prod admin host not resolving (ENOTFOUND), is not-applicable.
+    describe("pre-prod: 503 schema_missing", () => {
+      const SCHEMA_MISSING = JSON.stringify({ error: "schema_missing" });
+      const ADMIN = "https://admin.prod.example";
+      const dnsErr = (code: string) =>
+        new TypeError("fetch failed", { cause: { code } });
+      /** The admin DNS probe: throws `code`, or answers `status`. */
+      const admin = (a: { code: string } | { status: number }) => {
+        const urls: string[] = [];
+        const fetch: typeof globalThis.fetch = async (input) => {
+          urls.push(String(input));
+          if ("code" in a) throw dnsErr(a.code);
+          return new Response("{}", { status: a.status });
+        };
+        return { urls, fetch };
+      };
+      async function guard(
+        answer: World["inventoryAnswer"] | "refuses" | undefined,
+        a: ReturnType<typeof admin>,
+      ) {
+        const w = cleanWorld();
+        if (answer === "refuses") w.inventoryRefuses = true;
+        else if (answer) w.inventoryAnswer = answer;
+        const { fetch } = await serve(w);
+        return guardProdClean(
+          { mode: "staging", prod: probe() },
+          (x) => prodClean(x, { fetch, pubkey: PUB, inventoryBearer: JWT }),
+          { fetch: a.fetch, adminOrigin: ADMIN },
+        );
+      }
+      const missing = { status: 503, body: SCHEMA_MISSING };
+
+      it("NXDOMAIN admin + schema_missing: not-applicable, fixed reason, gate accepts, report lists it", async () => {
+        const a = admin({ code: "ENOTFOUND" });
+        const r = await guard(missing, a);
+        expect(r).toEqual({
+          level: "not-applicable",
+          reason: PRE_PROD_GUARD_REASON,
+        });
+        expect(a.urls).toEqual([`${ADMIN}/api/v1/me`]);
+        if (r === "not-applicable" || r.level !== "not-applicable")
+          throw new Error("want pre-prod n/a");
+        const kase = { ...PRE_PROD_GUARD, level: r.level, reason: r.reason };
+        expect(gatePasses([kase])).toBe(true);
+        const rep = buildReport([kase], "staging");
+        expect(rep.gate.passed).toBe(true);
+        expect(rep.nonPass).toEqual([kase]);
+      });
+
+      it("prodClean alone still fails schema_missing inventory_bad (the hosted-ops precheck)", async () => {
+        const w = cleanWorld();
+        w.inventoryAnswer = missing;
+        expect(await failCode(check(w))).toBe("inventory_bad");
+      });
+
+      it("after the prod deploy (#1014): a resolving admin host + schema_missing fails", async () => {
+        for (const status of [401, 200, 404, 503]) {
+          const a = admin({ status });
+          expect(await failCode(guard(missing, a)), String(status)).toBe(
+            "inventory_bad",
+          );
+          expect(a.urls).toHaveLength(1);
+        }
+      });
+
+      it("after the prod deploy (#1014): a clean inventory runs for real and passes, no DNS probe", async () => {
+        const a = admin({ code: "ENOTFOUND" });
+        expect(await guard(undefined, a)).toEqual({
+          level: "pass",
+          releases: 0,
+          installs: 1,
+        });
+        expect(a.urls).toEqual([]);
+      });
+
+      it("schema_missing with any non-ENOTFOUND DNS or network error fails", async () => {
+        for (const code of ["EAI_AGAIN", "ECONNREFUSED", "ETIMEDOUT"])
+          expect(await failCode(guard(missing, admin({ code }))), code).toBe(
+            "inventory_bad",
+          );
+      });
+
+      it("NXDOMAIN admin + any other inventory answer fails, without a DNS probe", async () => {
+        for (const answer of [
+          "refuses" as const,
+          { status: 404, body: SCHEMA_MISSING },
+          { status: 500, body: SCHEMA_MISSING },
+          { status: 500, body: "{}" },
+          { status: 503, body: JSON.stringify({ error: "unavailable" }) },
+          {
+            status: 503,
+            body: JSON.stringify({ error: "schema_missing", x: 1 }),
+          },
+          { status: 503, body: JSON.stringify(["schema_missing"]) },
+          { status: 503, body: "schema_missing", type: "text/plain" },
+          { status: 503, body: "" },
+          { status: 200, body: SCHEMA_MISSING },
+        ]) {
+          const a = admin({ code: "ENOTFOUND" });
+          expect(await failCode(guard(answer, a)), JSON.stringify(answer)).toBe(
+            "inventory_bad",
+          );
+          expect(a.urls).toEqual([]);
+        }
+      });
+    });
+
     it("staging with a probe runs prodClean on it", async () => {
       const p = probe();
       const seen: unknown[] = [];

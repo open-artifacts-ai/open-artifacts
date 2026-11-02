@@ -85,6 +85,19 @@ describe("releases()", () => {
       },
     ]);
   });
+
+  it("{ version }: exactly that release; an unknown version is [] (#1029)", async () => {
+    expect(await listReleases(w.env, { version: V1 })).toEqual([
+      {
+        version: V1,
+        publishedAt: 0,
+        variants: ["release", "redline"],
+        installable: true,
+        latest: false,
+      },
+    ]);
+    expect(await listReleases(w.env, { version: "99.0.0" })).toEqual([]);
+  });
 });
 
 describe("verifyTurnstile()", () => {

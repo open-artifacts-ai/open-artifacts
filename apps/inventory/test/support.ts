@@ -3,6 +3,7 @@ import type { Claims, Pins } from "@oa/gh-oidc";
 import { afterEach, beforeEach, vi } from "vitest";
 import type { Verify } from "../src/auth.ts";
 import { type Env, makeWorker } from "../src/index.ts";
+import { REQUIRED_TABLES, SCHEMA_SQL } from "../src/schema.ts";
 
 export const REPO = "open-artifacts-ai/open-artifacts";
 export const WF = `${REPO}/.github/workflows`;
@@ -97,7 +98,7 @@ export function makeKv(entries: Record<string, string>, page = 2) {
   return { kv, calls };
 }
 
-/** A D1 stub: every all() answers `rows`; run() records its bindings. */
+/** A D1 stub: every all() answers `rows` (the schema check sees every table); run() records its bindings. */
 export function makeDb(rows: object[] = []) {
   const sqls: string[] = [];
   const binds: unknown[][] = [];
@@ -107,6 +108,9 @@ export function makeDb(rows: object[] = []) {
       sqls.push(sql);
       const stmt = (values: unknown[]) => ({
         async all() {
+          // The platform schema is present unless a test says otherwise.
+          if (sql === SCHEMA_SQL)
+            return { results: REQUIRED_TABLES.map((name) => ({ name })) };
           // The untracked-install check finds none unless a test says so.
           return { results: sql.includes("AS untracked") ? [] : rows };
         },

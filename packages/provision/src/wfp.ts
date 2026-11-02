@@ -300,6 +300,9 @@ export const DEFAULT_MAX_TOKEN_DAYS = 30;
 /** The hosted provisioner's cap: an end date at most 400 days out, required (design v7 Q2). */
 export const PROVISIONER_MAX_TOKEN_DAYS = 400;
 
+/** The cap on verify_clean.refused's audited reason (#1060). */
+export const VERIFY_CLEAN_REASON_MAX = 300;
+
 /** The binding types verify_clean refuses on any install (design v7 5.2 e). */
 export const VERIFY_CLEAN_REFUSED_BINDING_TYPES = Object.freeze([
   "secrets_store_secret",
@@ -1856,7 +1859,10 @@ export class WfpProvisioner {
     const secrets = await this.cf.secretList(this.target, script);
     const why = verifyCleanRefusal({ bindings, secrets }, v);
     if (why === null) return;
-    await this.logged("verify_clean.refused", {});
+    // #1060: why names bindings and secrets only, never a value; capped.
+    await this.logged("verify_clean.refused", {
+      reason: why.slice(0, VERIFY_CLEAN_REASON_MAX),
+    });
     throw new ProvisionRefused(
       `install ${v.id}: verify_clean refused: ${why}`,
       "prod_dirty",

@@ -4,6 +4,8 @@ import type {
   InstallState,
   Job,
   JobKind,
+  JobStatus,
+  Tier,
 } from "@oa/shared/provisioning";
 
 export const STATE_LABEL: Record<InstallState, string> = {
@@ -14,10 +16,57 @@ export const STATE_LABEL: Record<InstallState, string> = {
   deleted: "Deleted",
   failed: "Create failed",
 };
+export const JOB_STATUS_LABEL: Record<JobStatus, string> = {
+  queued: "Queued",
+  running: "Running",
+  done: "Done",
+  failed: "Failed",
+};
 export const HEALTH_LABEL: Record<Health, string> = {
   ok: "OK",
   failing: "Failing",
   unknown: "Unknown",
+};
+
+export type Tone = "success" | "accent" | "warning" | "danger" | "muted";
+/** The dot color for each state (the mock's .st --c). */
+export const STATE_TONE = {
+  provisioning: "accent",
+  active: "success",
+  suspended: "warning",
+  deleting: "muted",
+  deleted: "muted",
+  failed: "danger",
+} as const satisfies Record<InstallState, Tone>;
+
+/** The health dot color (the mock's .st --c). */
+export const HEALTH_TONE = {
+  ok: "success",
+  failing: "danger",
+  unknown: "muted",
+} as const satisfies Record<Health, Tone>;
+
+/** A sign-in provider in words. */
+export const providerLabel = (p: string): string =>
+  p === "google" ? "Google" : "Email";
+
+export const TIER_LABEL: Record<Tier, string> = {
+  trial: "Trial",
+  team: "Team",
+  business: "Business",
+};
+
+const ALERT_LABEL: Record<string, string> = {
+  job_failed: "Job failed",
+  install_failed: "Create failed",
+  health_failing: "Health failing",
+  mismatch: "Routing mismatch",
+};
+/** An attention kind in words: Design's label, else the kind as a sentence. */
+export const alertLabel = (kind: string): string => {
+  if (Object.hasOwn(ALERT_LABEL, kind)) return ALERT_LABEL[kind];
+  const t = kind.replaceAll("_", " ");
+  return t[0].toUpperCase() + t.slice(1);
 };
 
 /**
@@ -25,7 +74,7 @@ export const HEALTH_LABEL: Record<Health, string> = {
  * panel does not show ("active" folds into "Turn on sign-in"; "done" ends it).
  */
 const STEP_LABEL: Record<string, string | null> = {
-  admit: "Admit",
+  admit: "Queue the job",
   recheck: "Check the request",
   reserve: "Reserve slug and hosts",
   release_gate: "Check the release",
@@ -134,7 +183,8 @@ export const fmtDayClock = (ms: number) => `${fmtDay(ms)} ${fmtClock(ms)}`;
 /** "1 min", "45 s", "now". */
 export const fmtIn = (ms: number) => {
   if (ms <= 0) return "now";
-  if (ms < 59_500) return `${Math.ceil(ms / 1000)} s`;
+  // Seconds round up, so "59 s" is the most it shows; past that, minutes.
+  if (ms <= 59_000) return `${Math.ceil(ms / 1000)} s`;
   return `${Math.round(ms / 60_000)} min`;
 };
 /** "6 h", "40 min". */

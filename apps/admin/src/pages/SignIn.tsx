@@ -33,21 +33,21 @@ export function SignIn({
   const href = startHref(returnTo);
   return (
     <EdgePanel>
-      <h1>Open Artifacts Admin</h1>
+      <h1>Sign in</h1>
       <p>Sign in with the Google account an admin added for you.</p>
       {known && (
-        <p className="oa-error" role="alert">
+        <p className="oa-banner oa-banner-warn" role="alert">
           {ERRORS[known]}
         </p>
       )}
-      <Button asChild>
-        <a href={href}>Sign in with Google</a>
-      </Button>
+      <div className="oa-acts">
+        <Button asChild size="lg">
+          <a href={href}>Sign in with Google</a>
+        </Button>
+      </div>
       {known && (
-        <p style={{ marginTop: 16 }}>
-          <a className="oa-link" href={href}>
-            Use another account?
-          </a>
+        <p className="oa-cfoot">
+          <a href={href}>Use another account?</a>
         </p>
       )}
     </EdgePanel>
