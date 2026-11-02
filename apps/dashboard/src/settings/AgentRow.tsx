@@ -12,7 +12,7 @@ import {
   DropdownMenuTrigger,
   Input,
 } from "@oa/ui/shadcn";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { useLabelOAuthClient } from "../api/queries";
 import { initials } from "../layout/UserAvatar";
 import { AppLink } from "../library/AppLink";
@@ -66,6 +66,21 @@ const Reported = () => (
   </span>
 );
 
+/** The agent's self-reported name and version, muted. */
+const AgentName = ({ reported }: { reported: string }) => (
+  <span className={`min-w-0 truncate ${muted}`} title={reported}>
+    {reported}
+  </span>
+);
+
+/** A line that ends in the tag: the row's title, and the edit state's agent. */
+const ReportedLine = ({ children }: { children: ReactNode }) => (
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-[var(--oa-space-2)] gap-y-[2px]">
+    {children}
+    <Reported />
+  </div>
+);
+
 export function AgentRow({
   c,
   canLabel,
@@ -101,8 +116,9 @@ export function AgentRow({
     );
   };
 
-  // Only the field and its hint (Design ecAopo8RUyk2Xomu, section 3): the row's
-  // details and menu come back when editing ends.
+  // The field, its hint and the agent's line, so two installs of one agent stay
+  // apart while you type (Design's call for #1097, over ecAopo8RUyk2Xomu section
+  // 3). The row's other details and its menu come back when editing ends.
   if (editing)
     return (
       <li className={ROW}>
@@ -165,6 +181,9 @@ export function AgentRow({
               {error}
             </p>
           )}
+          <ReportedLine>
+            <AgentName reported={reported} />
+          </ReportedLine>
         </div>
       </li>
     );
@@ -173,7 +192,7 @@ export function AgentRow({
     <li className={ROW}>
       <Face c={c} />
       <div className="grid min-w-0 flex-1 gap-[2px] text-[length:var(--oa-text-sm)]">
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-[var(--oa-space-2)] gap-y-[2px]">
+        <ReportedLine>
           {c.label ? (
             <>
               <b
@@ -182,17 +201,14 @@ export function AgentRow({
               >
                 {c.label}
               </b>
-              <span className={`min-w-0 truncate ${muted}`} title={reported}>
-                {reported}
-              </span>
+              <AgentName reported={reported} />
             </>
           ) : (
             <b className="min-w-0 truncate font-semibold" title={reported}>
               {reported}
             </b>
           )}
-          <Reported />
-        </div>
+        </ReportedLine>
         {old ? (
           <span className={`${muted} italic`}>
             Connected {day.format(new Date(c.createdAt))}, before these details

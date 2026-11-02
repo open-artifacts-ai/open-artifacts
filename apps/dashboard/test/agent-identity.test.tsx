@@ -42,6 +42,8 @@ describe("the card", () => {
     const card = r.closest("section") as HTMLElement;
     const line = within(card).getByText(SUBTITLE);
     expect(line).toBeVisible();
+    // Settings' muted text: 12px.
+    expect(line).toHaveClass("text-[length:var(--oa-text-xs)]");
     // Beside the heading, above the list.
     expect(line.previousElementSibling).toContainElement(
       within(card).getByRole("heading", { name: "Connected agents" }),
@@ -214,7 +216,7 @@ describe("the face", () => {
 });
 
 describe("labels, with the buttons", () => {
-  it("edit state: Save and Cancel beside the field, the hint below, nothing else", async () => {
+  it("edit state: Save and Cancel beside the field, the hint below, then the agent's line", async () => {
     const { server } = await import("./harness");
     server.use(serve([{ ...BASE, versionsPublished: 3 }]));
     mount("/settings/agents");
@@ -242,9 +244,19 @@ describe("labels, with the buttons", () => {
       "Only you see it. Up to 60 characters.",
     );
 
-    // The face, the field and its hint: no details, agent line or ••• menu.
+    // The agent's line stays under the hint, tagged.
+    const agent = within(r).getByText("Example MCP client 1.2.0");
+    const tag = within(r).getByText("reported by the agent");
+    expect(agent).toBeVisible();
+    expect(tag).toBeVisible();
+    expect(agent.parentElement).toContainElement(tag);
+    expect(hint.compareDocumentPosition(agent)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+
+    // Exactly that: the other details and the ••• menu are gone.
     expect(r).toHaveTextContent(
-      /^EMYour labelSaveCancelOnly you see it\. Up to 60 characters\.$/,
+      /^EMYour labelSaveCancelOnly you see it\. Up to 60 characters\.Example MCP client 1\.2\.0reported by the agent$/,
     );
     expect(within(r).queryByRole("button", { name: /^More for / })).toBeNull();
 
@@ -264,7 +276,8 @@ describe("labels, with the buttons", () => {
     expect(within(r).getByRole("alert")).toHaveTextContent(
       "Use 60 characters or fewer.",
     );
-    expect(within(r).queryByText("reported by the agent")).toBeNull();
+    expect(within(r).getByText("reported by the agent")).toBeVisible();
+    expect(r).not.toHaveTextContent(/Last used|Never used/);
     expect(within(r).queryByRole("button", { name: /^More for / })).toBeNull();
   });
 
@@ -279,6 +292,7 @@ describe("labels, with the buttons", () => {
     );
     const box = within(r).getByRole("textbox", { name: "Your label" });
     expect(box).toHaveValue("Work laptop");
+    expect(within(r).getByText("Example MCP client 1.2.0")).toBeVisible();
     // Radix returns the focus on a later tick, and frees the page.
     await act(() => new Promise((done) => setTimeout(done, 20)));
     expect(box).toHaveFocus();

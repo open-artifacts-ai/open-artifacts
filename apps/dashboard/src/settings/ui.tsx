@@ -55,11 +55,7 @@ export function SettingsCard({
                 {title}
               </h2>
             </CardTitle>
-            {subtitle && (
-              <p className="m-0 text-[length:var(--oa-text-sm)] text-muted-foreground">
-                {subtitle}
-              </p>
-            )}
+            {subtitle && <p className={`m-0 ${muted}`}>{subtitle}</p>}
           </div>
           {action}
         </CardHeader>
