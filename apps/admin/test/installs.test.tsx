@@ -120,7 +120,7 @@ it("searches on the server and says so when nothing matches", async () => {
   renderApp("/installs");
   await screen.findAllByRole("link", { name: "leo" });
   fireEvent.change(
-    screen.getByRole("searchbox", { name: "Search slug or host" }),
+    screen.getByRole("searchbox", { name: "Search slug, id, host or email" }),
     {
       target: { value: "zzz" },
     },
@@ -218,7 +218,7 @@ it("going back to page 1 after typing a search resets the cursor", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
   await screen.findByRole("link", { name: "second" });
   fireEvent.change(
-    screen.getByRole("searchbox", { name: "Search slug or host" }),
+    screen.getByRole("searchbox", { name: "Search slug, id, host or email" }),
     {
       target: { value: "f" },
     },
@@ -252,8 +252,10 @@ it("shows a load error with retry", async () => {
 it("the toolbar searches slug or host with no extra hint line, and one page has no pager", async () => {
   renderApp("/installs");
   await screen.findAllByRole("link", { name: "leo" });
-  const box = screen.getByRole("searchbox", { name: "Search slug or host" });
-  expect(box).toHaveAttribute("placeholder", "Search slug or host");
+  const box = screen.getByRole("searchbox", {
+    name: "Search slug, id, host or email",
+  });
+  expect(box).toHaveAttribute("placeholder", "Search slug, id, host or email");
   expect(screen.queryByText(/Matches part of a slug/)).toBeNull();
   expect(screen.getByRole("combobox", { name: "State" })).toHaveTextContent(
     "All states",
@@ -490,7 +492,7 @@ it("a search and a tile filter are sent together", async () => {
   renderApp("/installs");
   await screen.findAllByRole("link", { name: "leo" });
   fireEvent.change(
-    screen.getByRole("searchbox", { name: "Search slug or host" }),
+    screen.getByRole("searchbox", { name: "Search slug, id, host or email" }),
     { target: { value: "le" } },
   );
   await waitFor(() => expect(lastList()).toContain("q=le"));
