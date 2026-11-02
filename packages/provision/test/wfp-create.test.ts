@@ -4078,6 +4078,7 @@ describe("EMAIL_CODE_DOMAIN for the hosted trial (H-ECD)", () => {
       const s = setup();
       const e = await fails(s.p.create(input("finqore", { vars })));
       expect(e.message).toMatch(re);
+      expect((e as ProvisionRefused).code).toBe("domain_codes_refused");
       // Only the domain list is a free-form value; it must never be echoed.
       expect(e.message).not.toContain("finqore.example");
       expect(s.fake.log).toEqual([]);
@@ -4090,6 +4091,7 @@ describe("EMAIL_CODE_DOMAIN for the hosted trial (H-ECD)", () => {
       s.mk({ turnstile: undefined }).create(input("finqore", { vars: GOOD })),
     );
     expect(e.message).toMatch(/Turnstile/);
+    expect((e as ProvisionRefused).code).toBe("turnstile_missing");
     expect(s.fake.log).toEqual([]);
   });
 
