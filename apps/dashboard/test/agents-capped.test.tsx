@@ -2,7 +2,13 @@
 // only with rows, and no Agents tab with nothing to revoke.
 import type { CapReason, Me, Role } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { installHarness, mountHosted, server } from "./harness";
@@ -107,6 +113,30 @@ describe("capped caller on Settings > Agents", () => {
     await waitFor(() =>
       expect(router.state.location.pathname).toBe("/settings/profile"),
     );
+    expect(await screen.findByText("Revoked.")).toBeInTheDocument();
+  });
+
+  it("revoking a row with others left: no toast, the row going says it", async () => {
+    const list = [...fixtures.tokens];
+    mountHosted("/settings/agents", true, capped(), [
+      http.get("*/api/v1/tokens", () => HttpResponse.json(list)),
+      http.delete("*/api/v1/tokens/:id", () => {
+        list.pop();
+        return new HttpResponse(null, { status: 204 });
+      }),
+    ]);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Revoke laptop" }),
+    );
+    const dlg = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dlg).getByRole("button", { name: "Revoke" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("heading", { name: "Personal access tokens" }),
+      ).toBeNull(),
+    );
+    await act(async () => {});
+    expect(screen.queryByText("Revoked.")).toBeNull();
   });
 });
 

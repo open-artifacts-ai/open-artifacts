@@ -27,6 +27,7 @@ import {
 } from "../api/queries";
 import { useMe } from "../auth/useMe";
 import { Modal } from "../layout/Modal";
+import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
 import { AgentRow } from "./AgentRow";
@@ -203,6 +204,25 @@ function Confirm({
   );
 }
 
+/**
+ * After a revoke: the last row of a revoke-only caller takes the page away, so
+ * nothing would show it worked. Failures toast in the mutation.
+ */
+function useConfirmLastRevoke() {
+  const qc = useQueryClient();
+  const revokeOnly = useRevokeOnly();
+  const none = (key: readonly unknown[]) =>
+    qc.getQueryData<unknown[]>(key)?.length === 0;
+  return (revoked: Promise<unknown>) =>
+    void revoked.then(
+      () => {
+        if (revokeOnly && none(qk.tokens) && none(qk.oauthClients))
+          toast({ title: "Revoked." });
+      },
+      () => {},
+    );
+}
+
 /** The one line under each card's title for a revoke-only caller. */
 const AGENTS_LINE = "You can't connect new agents. You can revoke these.";
 const TOKENS_LINE = "You can't create new tokens. You can revoke these.";
@@ -213,6 +233,7 @@ const CardLine = ({ children }: { children: string }) => (
 function OAuthClients() {
   const q = useOAuthClients();
   const revoke = useRevokeOAuthClient();
+  const confirmLast = useConfirmLastRevoke();
   // Capped (guest, restricted): renaming answers 404, so no label controls.
   const revokeOnly = useRevokeOnly();
   const [target, setTarget] = useState<{
@@ -252,7 +273,7 @@ function OAuthClients() {
           title={`Revoke "${target.clientName}"?`}
           action="Revoke"
           onClose={() => setTarget(null)}
-          onConfirm={() => revoke.mutate(target.grantId)}
+          onConfirm={() => confirmLast(revoke.mutateAsync(target.grantId))}
         />
       )}
     </SettingsCard>
@@ -367,6 +388,7 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
 function Tokens() {
   const q = useTokens();
   const revoke = useRevokeToken();
+  const confirmLast = useConfirmLastRevoke();
   const [creating, setCreating] = useState(false);
   const [target, setTarget] = useState<{ id: string; label: string } | null>(
     null,
@@ -428,7 +450,7 @@ function Tokens() {
           title={`Revoke "${target.label}"?`}
           action="Revoke"
           onClose={() => setTarget(null)}
-          onConfirm={() => revoke.mutate(target.id)}
+          onConfirm={() => confirmLast(revoke.mutateAsync(target.id))}
         />
       )}
     </SettingsCard>
