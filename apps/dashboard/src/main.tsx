@@ -94,6 +94,19 @@ async function startMocks() {
       }),
     );
   }
+  // ?mock=restricted and ?mock=restricted-rows (with ?hosted=1): see mockRestricted.ts.
+  const restricted = params.get("mock");
+  if (restricted === "restricted" || restricted === "restricted-rows") {
+    const { restrictedHandlers } = await import("./mockRestricted");
+    extra.push(
+      ...restrictedHandlers(
+        createHandlers({
+          hosted: parseHostedParam(params.get("hosted")) ?? {},
+        }),
+        restricted === "restricted-rows",
+      ),
+    );
+  }
   // ?mock=group-race (with ?hosted=1): changing a group's role on a space is refused as a race
   // (403 space_forbidden { target: "mapping" }).
   if (params.get("mock") === "group-race")
