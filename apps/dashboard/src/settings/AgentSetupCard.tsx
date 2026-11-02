@@ -4,10 +4,12 @@ import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
 import { muted, SettingsCard } from "./ui";
 
-/** The instruction a member pastes into any AI agent. The origin is the app
-    host, which serves /llms.txt. */
-export const setupInstruction = () =>
-  `Add this Open Artifacts instance: follow ${location.origin}/llms.txt. Never paste a token in chat.`;
+/** The prompt a member pastes into any AI agent, written to the agent. The
+    origin is the app host, which serves /llms.txt. The URL ends its line, so
+    no punctuation can read as part of it. */
+export const setupPrompt = () =>
+  `Set up Open Artifacts for me: follow ${location.origin}/llms.txt
+Sign in through the browser. Never ask me to paste a token into this chat.`;
 
 /** Same rule as the MCP server card on Settings > Agents: whoever has an
     MCP URL to connect with. */
@@ -16,11 +18,11 @@ export function useCanSetUpAgent() {
   return state.status === "authed" && Boolean(state.me.instance.mcpUrl);
 }
 
-/** The card's body: one line, the instruction in a read-only field (wrapped,
+/** The card's body: one line, the prompt in a read-only field (wrapped,
     so it doesn't truncate on phones), and a Copy button. */
 export function AgentSetupBody() {
   const id = useId();
-  const text = setupInstruction();
+  const text = setupPrompt();
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -40,12 +42,13 @@ export function AgentSetupBody() {
   return (
     <div className="grid min-w-0 gap-[var(--oa-space-2)] text-left">
       <p className={`m-0 ${muted}`}>
-        Paste this into any AI agent to connect it to this instance.
+        Paste this into any AI agent. It connects itself and asks you to approve
+        it in your browser.
       </p>
       <Textarea
         id={id}
         readOnly
-        aria-label="Setup instruction"
+        aria-label="Setup prompt"
         rows={3}
         value={text}
         onFocus={(e) => e.currentTarget.select()}
@@ -56,6 +59,7 @@ export function AgentSetupBody() {
           variant="outline"
           size="sm"
           className="h-[30px] text-[length:var(--oa-text-sm)]"
+          aria-label={copied ? undefined : "Copy setup prompt"}
           onClick={copy}
         >
           {copied ? "✓ Copied" : "Copy"}

@@ -7,7 +7,7 @@ import { installHarness, mount, mountHosted, page, server } from "./harness";
 installHarness();
 
 const INSTRUCTION = () =>
-  `Add this Open Artifacts instance: follow ${location.origin}/llms.txt. Never paste a token in chat.`;
+  `Set up Open Artifacts for me: follow ${location.origin}/llms.txt\nSign in through the browser. Never ask me to paste a token into this chat.`;
 const none = http.get("*/api/v1/artifacts", () => page([], null));
 const empty = () => server.use(none);
 const clipboard = () => {
@@ -28,14 +28,17 @@ describe("AgentSetupCard", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Paste this into any AI agent to connect it to this instance.",
+        "Paste this into any AI agent. It connects itself and asks you to approve it in your browser.",
       ),
     ).toBeInTheDocument();
-    const field = screen.getByLabelText("Setup instruction");
+    const field = screen.getByLabelText("Setup prompt");
     expect(field).toHaveValue(INSTRUCTION());
     expect(field).toHaveAttribute("readonly");
-    expect(INSTRUCTION()).toContain(`${location.origin}/llms.txt`);
-    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    // The URL ends its line: nothing after it can read as part of it.
+    expect(INSTRUCTION().split("\n")[0]).toMatch(
+      new RegExp(`${location.origin}/llms\\.txt$`),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Copy setup prompt" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(INSTRUCTION()));
     expect(await screen.findByRole("button", { name: /Copied/ })).toBeTruthy();
   });
@@ -46,7 +49,9 @@ describe("AgentSetupCard", () => {
       configurable: true,
     });
     mount("/settings/agents");
-    fireEvent.click(await screen.findByRole("button", { name: "Copy" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Copy setup prompt" }),
+    );
     await screen.findByText(/couldn't copy/i);
   });
 
@@ -54,7 +59,7 @@ describe("AgentSetupCard", () => {
     empty();
     mount("/mine");
     await screen.findByText("Ask your agent to publish something");
-    expect(await screen.findByLabelText("Setup instruction")).toHaveValue(
+    expect(await screen.findByLabelText("Setup prompt")).toHaveValue(
       INSTRUCTION(),
     );
     expect(screen.getByRole("link", { name: /agents/i })).toHaveAttribute(
@@ -67,7 +72,7 @@ describe("AgentSetupCard", () => {
     empty();
     mount("/mine?format=markdown");
     await screen.findByText("No artifacts match these filters");
-    expect(screen.queryByLabelText("Setup instruction")).toBeNull();
+    expect(screen.queryByLabelText("Setup prompt")).toBeNull();
   });
 
   it("shows for a guest, as the MCP card does", async () => {
@@ -77,7 +82,7 @@ describe("AgentSetupCard", () => {
       (m) => ({ ...m, user: { ...m.user, role: "guest" } }),
       [none],
     );
-    expect(await screen.findByLabelText("Setup instruction")).toHaveValue(
+    expect(await screen.findByLabelText("Setup prompt")).toHaveValue(
       INSTRUCTION(),
     );
   });
@@ -88,11 +93,11 @@ describe("AgentSetupCard", () => {
       auth: m.auth ? { ...m.auth, cap: "restricted" } : m.auth,
     });
     mountHosted("/mine", true, capped, [none]);
-    expect(await screen.findByLabelText("Setup instruction")).toBeTruthy();
+    expect(await screen.findByLabelText("Setup prompt")).toBeTruthy();
     cleanup();
     mountHosted("/settings/agents", true, capped);
     await screen.findByRole("heading", { name: "MCP server" });
-    expect(screen.getByLabelText("Setup instruction")).toBeTruthy();
+    expect(screen.getByLabelText("Setup prompt")).toBeTruthy();
   });
 
   it("hides with the MCP card when the instance has no MCP URL", async () => {
@@ -103,7 +108,7 @@ describe("AgentSetupCard", () => {
     mountHosted("/settings/agents", true, none_);
     await screen.findByRole("heading", { name: "Connected agents" });
     expect(screen.queryByRole("heading", { name: "MCP server" })).toBeNull();
-    expect(screen.queryByLabelText("Setup instruction")).toBeNull();
+    expect(screen.queryByLabelText("Setup prompt")).toBeNull();
   });
 
   it("has no em dash", () => {
