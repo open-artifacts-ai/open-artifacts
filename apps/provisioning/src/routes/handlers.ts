@@ -14,6 +14,7 @@ import {
   me,
   queryAudit,
 } from "./reads.js";
+import { testAdminSession } from "./test-admin.js";
 import { listTokensHandler, mintToken, revokeTokens } from "./tokens.js";
 import { world } from "./world.js";
 import { cancelJob, lifecycleWrite } from "./writes.js";
@@ -64,4 +65,5 @@ export const HANDLERS: Readonly<Record<ApiRouteId, Handler>> = {
   R25: cancelJob,
   R26: lifecycleWrite,
   R27: world,
+  R28: testAdminSession,
 };

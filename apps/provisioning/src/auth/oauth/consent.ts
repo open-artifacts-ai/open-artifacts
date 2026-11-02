@@ -147,6 +147,18 @@ const signedOut = (env: Env) =>
     401,
   );
 
+/**
+ * A grant is a token: only an admin session may consent. The staging test
+ * admin (#1053) gets 403 here (PROTOCOL_AUTHZ).
+ */
+const noGrant = (env: Env) =>
+  messagePage(
+    chrome(env),
+    "Cannot connect this agent",
+    "This account cannot connect agents.",
+    403,
+  );
+
 /** GET /oauth/authorize. */
 export async function showConsent(req: Request, env: Env): Promise<Response> {
   const lim = await limited(req, env);
@@ -169,6 +181,7 @@ export async function showConsent(req: Request, env: Env): Promise<Response> {
     }
     return signinPage(chrome(env), signInPath(url));
   }
+  if (p.kind !== "admin") return noGrant(env);
   const left = (p.session?.expiresAt ?? 0) - now;
   if (left < CONSENT_MIN_SESSION_MS)
     return reauthPage(chrome(env), {
@@ -228,6 +241,7 @@ export async function decideConsent(req: Request, env: Env): Promise<Response> {
   const p = await sessionPrincipal(req, env, Date.now());
   const sid = readCookie(req, SESSION_COOKIE);
   if (isRefusal(p) || !sid) return signedOut(env);
+  if (p.kind !== "admin") return noGrant(env);
   const body = await capped(req);
   if (!body)
     return messagePage(

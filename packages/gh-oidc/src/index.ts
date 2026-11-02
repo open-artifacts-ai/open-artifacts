@@ -87,6 +87,9 @@ export type Claims = {
   environment: string;
   event_name: (typeof GITHUB_OIDC_EVENT_NAMES)[number];
   runner_environment: "github-hosted";
+  /** Present on Actions tokens, never pinned: who started the run, and which run (audit only). */
+  actor?: string;
+  run_id?: string;
 };
 
 /** Any failure; callers answer one fixed refusal (inventory: its plain 404) and never echo `code`. */

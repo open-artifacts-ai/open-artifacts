@@ -3,6 +3,7 @@ import {
   type CreateInstallSchema,
   canonicalJson,
   checkCreateFields,
+  fieldRulesOf,
   slugError,
   type Tier,
 } from "@oa/shared/provisioning";
@@ -89,8 +90,9 @@ export async function createInstall(a: HandlerArgs): Promise<RouteResult> {
   const { env } = a;
   const p = factsOf(a.principal);
   const body = a.input.body as Body;
-  if (p.kind === "system") throw new ApiError("forbidden");
-  const f = checkCreateFields(body, p.kind, env.OA_ENV, STAGING_TEST_DOMAIN);
+  const rules = fieldRulesOf(p.kind);
+  if (!rules) throw new ApiError("forbidden");
+  const f = checkCreateFields(body, rules, env.OA_ENV, STAGING_TEST_DOMAIN);
   if (f) throw new ApiError(f.code, `${f.field}: ${f.code}`);
 
   const w = await writeOf(env, p, a.surface, "R4", null, body);

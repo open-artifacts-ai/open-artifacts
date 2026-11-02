@@ -4,6 +4,7 @@ import type { SessionRow } from "../services/tokens.js";
 import { randomToken, sameString, sha256Hex } from "./crypto.js";
 import { csrfToken } from "./csrf.js";
 import { isAdminIdentity } from "./identities.js";
+import { isTestAdminRow, testAdminPrincipal } from "./test-admin.js";
 
 // Admin sessions (design v7 4.5): `__Host-oa-admin=<sid>` (32 random bytes),
 // Secure, HttpOnly, SameSite=Strict, 8 h absolute. D1 keeps sha256(sid) and
@@ -83,6 +84,8 @@ export async function liveSession(
 /**
  * The admin principal for the request's session cookie: the row is live and
  * its (email, sub) is still in ADMIN_IDENTITIES (read on every request, 4.1).
+ * The pinned test admin's row (#1053) is kind "test-admin" on staging and
+ * refused anywhere else, whatever ADMIN_IDENTITIES holds.
  */
 export async function sessionPrincipal(
   req: Request,
@@ -92,7 +95,12 @@ export async function sessionPrincipal(
   const sid = readCookie(req, SESSION_COOKIE);
   if (!sid || !SID_RE.test(sid)) return refusal("unauthenticated");
   const row = await liveSession(env, sid, now);
-  if (!row || !isAdminIdentity(env.ADMIN_IDENTITIES, row.email, row.sub))
+  if (!row) return refusal("unauthenticated");
+  if (isTestAdminRow(row))
+    return (
+      (await testAdminPrincipal(env, row, sid)) ?? refusal("unauthenticated")
+    );
+  if (!isAdminIdentity(env.ADMIN_IDENTITIES, row.email, row.sub))
     return refusal("unauthenticated");
   const key = `admin:${row.email}`;
   return {

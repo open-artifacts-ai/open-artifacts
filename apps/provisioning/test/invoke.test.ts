@@ -35,8 +35,9 @@ const SURFACES: Surface[] = [
 const PRINCIPALS: Record<Exclude<AuthzColumn, "none">, Principal[]> = {
   admin: [P("admin")],
   token: [P("token"), P("token", ["installs:read"]), P("token", ALL)],
-  oidc: [P("oidc")],
+  oidc: [P("oidc"), { ...P("oidc"), oidcWorkflow: "test-admin" }],
   user: [P("user")],
+  "test-admin": [P("test-admin")],
 };
 
 async function run(

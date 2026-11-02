@@ -12,9 +12,13 @@ import { LoadError } from "./LoadError";
 
 export function Shell() {
   const me = useMe();
-  // The panel is for an admin session (C1 MeSchema: principal "admin", role "admin").
+  // The panel is for an admin session (C1 MeSchema: principal "admin", role "admin"),
+  // or staging's test admin (#1053), whose refusals the API enforces.
   // Any other principal that gets a /me answer sees the no-access screen.
-  const isAdmin = me.data?.principal === "admin" && me.data.role === "admin";
+  const isAdmin =
+    me.data?.role === "admin" &&
+    (me.data.principal === "admin" ||
+      (me.data.principal === "test-admin" && me.data.env === "staging"));
   const notAdmin = !!me.data && !isAdmin;
   useEffect(() => {
     if (notAdmin) api.redirect("/no-access?error=not_listed");
