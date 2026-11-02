@@ -16,6 +16,7 @@ describe("/healthz installId", () => {
       "ok",
       "plan",
       "version",
+      "oauthStore",
     ]);
   });
 
@@ -25,13 +26,14 @@ describe("/healthz installId", () => {
       ok: true,
       plan: "free",
       version: VERSION,
+      oauthStore: { mode: "kv", backfilled: false, kvWritesOffSince: null },
     });
   });
 
   it("reports the trimmed installId as the last key", async () => {
     const r = await get({ INSTALL_ID: "  inst-a\n" });
     expect(await r.text()).toBe(
-      `{"ok":true,"plan":"free","version":"${VERSION}","installId":"inst-a"}`,
+      `{"ok":true,"plan":"free","version":"${VERSION}","oauthStore":{"mode":"kv","backfilled":false,"kvWritesOffSince":null},"installId":"inst-a"}`,
     );
   });
 
@@ -41,6 +43,7 @@ describe("/healthz installId", () => {
       "ok",
       "plan",
       "version",
+      "oauthStore",
     ]);
   });
 });

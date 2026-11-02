@@ -1,18 +1,14 @@
 import {
   brokerNonce,
-  flowHash,
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_TOKEN_URL,
   GoogleTokenError,
-  keyId,
-  publicFromPkcs8,
-  signRedeem,
+  brokerRedeemRequest as signedRedeemRequest,
   verifyGoogleIdToken,
 } from "@oa/auth-core";
 import { AUTH } from "@oa/shared";
 import type { Env } from "../../env.js";
 import { ApiError, appOrigin } from "../../http/errors.js";
-import { b64urlEncode } from "../../util/crypto.js";
 import {
   BrokerGateRefusedError,
   BrokerGateStaleError,
@@ -42,55 +38,17 @@ function googleConfig(env: Env) {
   return { ...cfg.google, domains: cfg.domains };
 }
 
-const kids = new Map<string, Promise<string>>();
-/** This install's key id: derived from its public key, never configured (N3). */
-const kidOf = (signingKey: string) => {
-  let k = kids.get(signingKey);
-  if (!k) {
-    k = publicFromPkcs8(signingKey).then(keyId);
-    k.catch(() => kids.delete(signingKey));
-    kids.set(signingKey, k);
-  }
-  return k;
-};
-
-/** The PKCE S256 challenge of `verifier`. */
-const s256 = async (verifier: string) =>
-  b64urlEncode(
-    new Uint8Array(
-      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
-    ),
-  );
-
 /**
  * The signed redeem request for the auth broker (POST /google/redeem). The
  * broker check (services/broker-check.ts) builds it too, with junk values,
- * so that probe signs exactly as a real sign-in does.
+ * so that probe signs exactly as a real sign-in does. The signing lives in
+ * @oa/auth-core, shared with the Provisioning API's admin sign-in.
  */
-export async function brokerRedeemRequest(
+export function brokerRedeemRequest(
   t: Extract<GoogleTransport, { kind: "broker" }>,
   a: { code: string; verifier: string; nonce: string; bstate?: string },
 ): Promise<Request> {
-  const body = JSON.stringify({
-    install: t.installId,
-    code: a.code,
-    verifier: a.verifier,
-    ts: Date.now(),
-    // The broker refuses unless its state binds this exact flow.
-    bstate: a.bstate ?? "",
-    h: await flowHash(a.nonce, await s256(a.verifier)),
-  });
-  const kid = await kidOf(t.signingKey);
-  return new Request(`${t.url}/google/redeem`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-oa-kid": kid,
-      "x-oa-sig": await signRedeem(t.signingKey, kid, body),
-    },
-    body,
-    redirect: "manual",
-  });
+  return signedRedeemRequest(t, a);
 }
 
 /** Google's raw ID token for `code`, by this install's transport. */

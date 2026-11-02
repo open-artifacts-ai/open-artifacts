@@ -85,7 +85,7 @@
         "ENVIRONMENT": "production",
         "APP_HOST": "staging.open-artifacts.com",
         "CONTENT_HOST": "staging-content.open-artifacts.com",
-        "OWNER_EMAIL": "me@leourbina.com",
+        // OWNER_EMAIL: set at deploy from the OA_OWNER_EMAIL secret (#1084).
         "EMAIL_FROM": "noreply@mail.open-artifacts.com",
         // Staging is Workers Paid: server-side thumbnails on (BROWSER above).
         "SERVER_THUMBNAILS": "on",

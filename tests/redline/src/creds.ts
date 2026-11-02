@@ -1,5 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
-import { InfraError, isNetworkError, networkCode } from "./fetch-timeout.ts";
+import {
+  InfraError,
+  isNetworkError,
+  LIVE_TEST_TIMEOUT_MS,
+  networkCode,
+} from "./fetch-timeout.ts";
 import {
   type Cred,
   describeRes,
@@ -263,6 +268,15 @@ export const KV_CACHE_TTL_MS = 60_000;
 /** Past the TTL: clock skew and the cache's own expiry lag. */
 export const KV_SETTLE_SLACK_MS = 5_000;
 
+/**
+ * A live case's timeout when it waits out the KV cache `waits` times in all
+ * (untilKvSettled, each up to KV_CACHE_TTL_MS + KV_SETTLE_SLACK_MS): the
+ * suite's usual budget plus the waits, so a KV-mode case never times out on
+ * its own waits.
+ */
+export const kvCaseTimeout = (waits: number): number =>
+  LIVE_TEST_TIMEOUT_MS + waits * (KV_CACHE_TTL_MS + KV_SETTLE_SLACK_MS);
+
 let lastRedeem = 0;
 /** When this process last redeemed a code (0: never). */
 export const lastRedeemAt = () => lastRedeem;
@@ -280,6 +294,26 @@ export async function untilKvSettled(
   while (now() < deadline)
     await new Promise((r) => setTimeout(r, deadline - now()));
   return deadline;
+}
+
+export type OAuthStoreMode = "kv" | "dual" | "d1";
+
+/**
+ * The install's OAuth store (/healthz oauthStore.mode, the OAuth store
+ * move). "kv" when the field is absent (a build from before the move) or
+ * holds anything else: the cautious answer, since only dual and d1 read
+ * the grant from D1. Throws on a non-200 /healthz.
+ */
+export async function oauthStoreMode(t: Target): Promise<OAuthStoreMode> {
+  const res = await fetch(`${t.app}/healthz`, { redirect: "manual" });
+  const text = await readBody(res);
+  if (res.status !== 200) throw new HttpError(`${t.name} /healthz`, res, text);
+  const mode = (
+    parseJson(res, text, `${t.name} /healthz`) as {
+      oauthStore?: { mode?: unknown };
+    }
+  ).oauthStore?.mode;
+  return mode === "dual" || mode === "d1" ? mode : "kv";
 }
 
 /** A 200 from /oauth/token that issued an access token. */

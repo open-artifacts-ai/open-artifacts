@@ -64,14 +64,21 @@ beforeAll(async () => {
   const ub = await getUser(env, b.userId);
   if (!ua || !ub) throw new Error("no users");
   pat = (await createPat(env, b.userId, "snap pat")).token;
+  const grants: Record<string, string> = {
+    [a.userId]: newId(),
+    [b.userId]: newId(),
+  };
   const pub = async (
     u: typeof ua,
     input: Record<string, unknown>,
     v?: string,
   ) => {
+    // An OAuth client's name (a grant): public, so every caller's bytes
+    // match. A token label is private (agent-label-privacy.test.ts).
     const r = await publish(env, u, input as never, {
       name: agent,
       version: v ?? null,
+      via: { kind: "grant", id: grants[u.id] ?? "" },
     });
     ids.push(r.id);
     await runIndex(r.id);
@@ -135,11 +142,13 @@ describe("JSON shapes (byte snapshots)", () => {
     expect(norm(all)).toMatchSnapshot("with deleted");
   });
 
-  it("healthz: public, version last", async () => {
+  it("healthz: public, then oauthStore", async () => {
     const r = await app.request("http://app.localhost/healthz", {}, env);
     expect(r.status).toBe(200);
     const body = await r.text();
-    expect(body).toBe(`{"ok":true,"plan":"free","version":"${VERSION}"}`);
+    expect(body).toBe(
+      `{"ok":true,"plan":"free","version":"${VERSION}","oauthStore":{"mode":"kv","backfilled":false,"kvWritesOffSince":null}}`,
+    );
     expect(body.replace(VERSION, "<VERSION>")).toMatchSnapshot("healthz");
   });
 
