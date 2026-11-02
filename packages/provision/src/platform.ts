@@ -3,7 +3,7 @@
 // customer data and no secret; every write checks the env prefix first.
 import { createHash } from "node:crypto";
 import type { Cf, D1Result } from "./cf.js";
-import { assertOwnResource, type Env } from "./names.js";
+import { assertOwnResource, type Env, isPlatformPrincipalId } from "./names.js";
 import type { InstallId } from "./types.js";
 
 export interface InstallRow {
@@ -81,7 +81,11 @@ export function canonicalJson(v: unknown): string {
   return JSON.stringify(v);
 }
 
-/** sha256 of the canonical JSON of what a resume must not change. */
+/**
+ * sha256 of the canonical JSON of what a resume or a replay must not change:
+ * owner, vars and testHooks. Not the version: a `creating` resume may move up
+ * (never down, F2/I1), and a replay compares installs.version itself (5.7).
+ */
 export function inputsHash(o: {
   ownerEmail: string;
   vars?: Record<string, string>;
@@ -135,7 +139,16 @@ export class PlatformDb {
     private readonly db: { id: string; name: string },
     private readonly env: Env,
     private readonly now: () => number,
-  ) {}
+    /**
+     * Who the operation's own hosted_audit rows are written as (design v7
+     * 4.9: the provisioner's `job:<jobId>`, through auditAs); none for the
+     * CLI, which writes its before and after rows with auditAs itself.
+     */
+    private readonly actor: string | null = null,
+  ) {
+    if (actor !== null && (actor === "" || actor.length > 300))
+      throw new Error("an audit actor is one to 300 characters");
+  }
 
   private async read(sql: string, params: unknown[]): Promise<InstallRow[]> {
     const r = await this.cf.d1Query(this.db.id, sql, params);
@@ -181,6 +194,9 @@ export class PlatformDb {
     testHooks: boolean;
     inputsHash: string;
   }): Promise<InstallRow> {
+    // 4.1: a platform principal's id is never an install.
+    if (isPlatformPrincipalId(r.id))
+      throw new Error(`${r.id} is a platform principal id, never an install`);
     const base = RL_BASE[this.env];
     const now = this.now();
     assertOwnResource(this.db.name, this.env);
@@ -211,8 +227,8 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
         params: [r.contentHost, r.id],
       },
       {
-        sql: "INSERT INTO hosted_audit (at, install_id, action, detail) VALUES (?1, ?2, 'create.start', ?3)",
-        params: [now, r.id, canonicalJson({ slug: r.slug })],
+        sql: "INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, ?4, ?2, 'create.start', ?3)",
+        params: [now, r.id, canonicalJson({ slug: r.slug }), this.actor],
       },
     ]);
     const row = await this.byId(r.id);
@@ -282,8 +298,8 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
         params: [r.contentHost, r.id],
       },
       {
-        sql: "INSERT INTO hosted_audit (at, install_id, action, detail) VALUES (?1, ?2, 'create.resume', ?3)",
-        params: [now, r.id, canonicalJson({ slug: r.slug })],
+        sql: "INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, ?4, ?2, 'create.resume', ?3)",
+        params: [now, r.id, canonicalJson({ slug: r.slug }), this.actor],
       },
     ]);
   }
@@ -480,12 +496,17 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
     return (r[0]?.results ?? []).length > 0;
   }
 
-  /** Appends an audit row; `detail` must never carry a secret or an email. */
+  /**
+   * Appends an audit row, as the operation's actor when it has one (auditAs);
+   * `detail` must never carry a secret or an email.
+   */
   async audit(
     id: InstallId,
     action: string,
     detail: Record<string, string | number> = {},
   ): Promise<void> {
+    if (this.actor !== null)
+      return this.auditAs(this.actor, id, action, detail);
     await this.write(
       "INSERT INTO hosted_audit (at, install_id, action, detail) VALUES (?1, ?2, ?3, ?4)",
       [this.now(), id, action, canonicalJson(detail)],
