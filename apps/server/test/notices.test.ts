@@ -232,6 +232,76 @@ describe("Me.notices.guestShares (parity 2)", () => {
     expect((await dismiss(a.cookie, "guest_summary")).status).toBe(404);
   });
 
+  describe("an artifact moved to a shared space", () => {
+    /** An editor-shared artifact the caller owns in a shared space, as `role`. */
+    async function inSpace(
+      a: U,
+      role: "manager" | "editor" | "viewer" | null,
+      visibility = "private",
+    ) {
+      const sid = newId();
+      const id = await artifact(a.userId, "Moved");
+      await env.DB.batch([
+        env.DB.prepare(
+          "insert into spaces (id, kind, name, public_links, created_at) values (?, 'shared', ?, 1, 1)",
+        ).bind(sid, `N ${sid}`),
+        env.DB.prepare(
+          "update artifacts set space_id = ?, visibility = ? where id = ?",
+        ).bind(sid, visibility, id),
+        ...(role
+          ? [
+              env.DB.prepare(
+                "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, ?, 'manual', 1)",
+              ).bind(sid, a.userId, role),
+            ]
+          : []),
+      ]);
+      await share(id, uniq("g", "x.com"));
+      return id;
+    }
+
+    it("a current manager still sees it", async () => {
+      const a = await user("sm");
+      const id = await inSpace(a, "manager");
+      expect(
+        (await notices(a.cookie))?.guestShares?.items.map((i) => i.artifactId),
+      ).toEqual([id]);
+    });
+
+    it("removed from the space: nothing, whatever the visibility", async () => {
+      const a = await user("sr");
+      await inSpace(a, null);
+      await inSpace(a, null, "team");
+      await inSpace(a, null, "public");
+      expect(await notices(a.cookie)).toBeUndefined();
+    });
+
+    it.each(["editor", "viewer"] as const)(
+      "demoted to %s: nothing",
+      async (role) => {
+        const a = await user("sd");
+        await inSpace(a, role);
+        expect(await notices(a.cookie)).toBeUndefined();
+      },
+    );
+
+    it("a hidden row leaves their personal artifacts and the limit alone", async () => {
+      const a = await user("sp");
+      await inSpace(a, null);
+      const mine = await artifact(a.userId, "Mine");
+      await share(mine, uniq("g", "x.com"));
+      const n = (await notices(a.cookie))?.guestShares;
+      expect(n?.items.map((i) => i.artifactId)).toEqual([mine]);
+      expect(n?.more).toBe(false);
+    });
+
+    it("the owner's summary still counts them", async () => {
+      const a = await user("ss");
+      await inSpace(a, null);
+      expect((await notices(owner.cookie))?.guestSummary?.shares).toBe(1);
+    });
+  });
+
   it("guests get none and their dismiss is 404; a member can dismiss with a PAT", async () => {
     const g = await user("g", "guest");
     const own = await artifact(g.userId, "Guest-owned");
