@@ -56,10 +56,12 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /robots.txt": { public: "robots" },
   "GET /skill.md": { public: "agent skill" },
   "GET /upgrade.md": { public: "upgrade guide" },
+  "GET /llms.txt": { public: "AI agent setup guide" },
   "ALL /healthz": { public: "405" },
   "ALL /robots.txt": { public: "405" },
   "ALL /skill.md": { public: "405" },
   "ALL /upgrade.md": { public: "405" },
+  "ALL /llms.txt": { public: "405" },
   "GET /auth/providers": {
     public: "sign-in offering; config only, never D1",
   },
