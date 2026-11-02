@@ -531,6 +531,11 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                   <span className="text-muted-foreground">{s.role}</span>
                 )}
               </div>
+              {people && s.guest && s.role === "editor" && (
+                <p role="status" className="m-0 text-muted-foreground">
+                  Guests can only view, so they were invited as viewers.
+                </p>
+              )}
             </li>
           ))}
         </ul>

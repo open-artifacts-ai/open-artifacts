@@ -148,6 +148,31 @@ describe("share panel", () => {
     ).toBeInTheDocument();
   });
 
+  it("a guest invited as Editor gets one status line; a Viewer guest and a member get none", async () => {
+    const LINE = "Guests can only view, so they were invited as viewers.";
+    const row = (email: string, role: string, guest?: boolean) => ({
+      email,
+      role,
+      createdAt: "2026-10-01T00:00:00.000Z",
+      ...(guest ? { guest } : {}),
+    });
+    server.use(
+      http.get("*/api/v1/artifacts/:id/shares", () =>
+        HttpResponse.json([
+          row("bob@example.com", "editor"),
+          row("gus@elsewhere.test", "viewer", true),
+          row("gia@elsewhere.test", "editor", true),
+        ]),
+      ),
+    );
+    mount(panel(OWNED));
+    const person = await screen.findByTitle("gia@elsewhere.test");
+    const lines = screen.getAllByText(LINE);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toHaveAttribute("role", "status");
+    expect(person.closest("li")).toContainElement(lines[0] as HTMLElement);
+  });
+
   it("changes a share role and removes it", async () => {
     mount(panel(OWNED));
     const trigger = await screen.findByRole("combobox", {
