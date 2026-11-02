@@ -275,6 +275,64 @@ describe("R4 create by an admin session", () => {
   });
 });
 
+describe("R4 auth.domainCodes (#1088)", () => {
+  const codes = {
+    auth: {
+      providers: ["email"],
+      domains: ["test.invalid"],
+      domainCodes: true,
+    },
+  };
+  const vars = async (id: string) =>
+    JSON.parse(
+      (
+        await row<{ vars: string }>(
+          "SELECT vars FROM signups WHERE signup_id = ?",
+          id,
+        )
+      )?.vars as string,
+    );
+
+  it("true stores EMAIL_CODE_DOMAIN=on with the signup's vars", async () => {
+    const r = await call(fakeEnv(), ADMIN_P, "R4", { body: leo(codes) });
+    expect(r.status).toBe(202);
+    expect(await vars(r.body.job.id)).toEqual({
+      AUTH_PROVIDERS: "email",
+      AUTH_DOMAINS: "test.invalid",
+      EMAIL_CODE_DOMAIN: "on",
+      TIER: "business",
+    });
+  });
+
+  it("false or absent stores nothing", async () => {
+    const off = await call(fakeEnv(), ADMIN_P, "R4", {
+      body: leo({
+        auth: {
+          providers: ["email"],
+          domains: ["test.invalid"],
+          domainCodes: false,
+        },
+      }),
+    });
+    expect(off.status).toBe(202);
+    expect(await vars(off.body.job.id)).not.toHaveProperty("EMAIL_CODE_DOMAIN");
+  });
+
+  it("with google: invalid_input naming the field", async () => {
+    const r = await call(fakeEnv(), ADMIN_P, "R4", {
+      body: leo({
+        auth: {
+          providers: ["google"],
+          domains: ["test.invalid"],
+          domainCodes: true,
+        },
+      }),
+    });
+    expect(r.code).toBe("invalid_input");
+    expect(r.details).toEqual({ fields: ["body.auth.domainCodes"] });
+  });
+});
+
 describe("R4 create by a token and by OIDC", () => {
   it("a token: owner domain must be in auth.domains; sendWelcome and testHooks forbidden", async () => {
     const e = fakeEnv();

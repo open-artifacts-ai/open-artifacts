@@ -123,8 +123,9 @@ const DOMAIN = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
 
 /**
  * signups.vars under the strict schema (2.5 item 3): exactly AUTH_PROVIDERS,
- * AUTH_DOMAINS, TIER, and TEST_DOMAIN (equal to STAGING_TEST_DOMAIN) only on
- * a staging test-hook row. Self-serve also needs TIER = SELF_SERVE_TIER,
+ * AUTH_DOMAINS, TIER, TEST_DOMAIN (equal to STAGING_TEST_DOMAIN) only on a
+ * staging test-hook row, and EMAIL_CODE_DOMAIN=on only on an admin create with
+ * email, no google and a domain (#1088). Self-serve also needs TIER = SELF_SERVE_TIER,
  * providers exactly google and at most one domain (with google, exactly
  * one). Returns the vars create renders: AUTH_DOMAIN_JOIN=invite forced,
  * an empty AUTH_DOMAINS dropped.
@@ -150,7 +151,7 @@ export function strictVars(
   const allowed = ["AUTH_PROVIDERS", "AUTH_DOMAINS", "TIER"];
   if (o.testHooks) allowed.push("TEST_DOMAIN");
   for (const k of Object.keys(vars))
-    if (!allowed.includes(k))
+    if (!allowed.includes(k) && k !== "EMAIL_CODE_DOMAIN")
       throw refused(`var ${k.slice(0, 40)} is not allowed`);
   for (const k of allowed)
     if (typeof vars[k] !== "string") throw refused(`var ${k} is missing`);
@@ -168,6 +169,16 @@ export function strictVars(
     throw refused("AUTH_DOMAINS is not a domain list");
   if (providers.includes("google") && domains.length === 0)
     throw refused("google needs at least one domain");
+  const codes = vars.EMAIL_CODE_DOMAIN;
+  if (
+    codes !== undefined &&
+    (codes !== "on" ||
+      o.source !== "admin" ||
+      !providers.includes("email") ||
+      providers.includes("google") ||
+      domains.length === 0)
+  )
+    throw refused("EMAIL_CODE_DOMAIN is not allowed here");
   const tier = TierSchema.safeParse(vars.TIER);
   if (!tier.success) throw refused("TIER is not a tier");
   if (o.testHooks) {
@@ -187,6 +198,7 @@ export function strictVars(
     ...(domains.length > 0 ? { AUTH_DOMAINS: domains.join(",") } : {}),
     AUTH_DOMAIN_JOIN: "invite",
     TIER: tier.data,
+    ...(codes === undefined ? {} : { EMAIL_CODE_DOMAIN: "on" }),
     ...(o.testHooks ? { TEST_DOMAIN: STAGING_TEST_DOMAIN } : {}),
   };
 }
