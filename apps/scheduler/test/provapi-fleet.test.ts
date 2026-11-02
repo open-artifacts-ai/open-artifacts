@@ -369,6 +369,30 @@ describe("the rollout", () => {
     expect(inserts).toEqual([]);
   });
 
+  it("review 12: a stale cap read can't open more: the insert's guard holds the cap", async () => {
+    const canary = await on(TARGET);
+    for (let i = 0; i < FLEET_CONCURRENCY; i++) {
+      const id = await on(TARGET, { created: 2 + i });
+      await fleetJob(id, { status: "running", finished_at: null });
+    }
+    await on("0.92.0", { created: 50 });
+    const f = fakes({ canary });
+    // An overlapping tick read the count before the 3 opened.
+    const stale = new Proxy(db, {
+      get(t, p) {
+        if (p !== "prepare") return Reflect.get(t, p);
+        return (sql: string) =>
+          sql.startsWith("SELECT COUNT(*) AS n FROM jobs j")
+            ? { first: async () => ({ n: 0 }) }
+            : t.prepare(sql);
+      },
+    });
+    await fleetDue({ ...f.env, PLATFORM_DB: stale } as ProvapiEnv, NOW, f.opts);
+    expect((await fleetJobs()).filter((j) => j.status === "queued")).toEqual(
+      [],
+    );
+  });
+
   it("an install that moves between the read and the insert is not upgraded (the insert's own guard)", async () => {
     const canary = await on(TARGET);
     const moved = await on("0.92.0");
@@ -644,6 +668,23 @@ describe("the watch and auto-rollback", () => {
     const f = fakes({ canary, answers: new Map([[id, "down"]]) });
     await ticks(f, NOW, NOW + FLEET_BLIP_MS);
     expect(await rollbacks(id)).toHaveLength(1);
+  });
+
+  it("re-review N1: no control at all (every eligible install is in the watch): the failure counts as the release's", async () => {
+    const canary = await on(TARGET, { created: 0 });
+    await fleetJob(canary, {});
+    const id = await on(TARGET, { created: 5 });
+    await fleetJob(id, {});
+    const f = fakes({
+      canary,
+      answers: new Map([
+        [id, "down"],
+        [canary, "down"],
+      ]),
+    });
+    await ticks(f, NOW, NOW + FLEET_BLIP_MS);
+    expect(await rollbacks(id)).toHaveLength(1);
+    expect(await rollbacks(canary)).toHaveLength(1);
   });
 
   it("re-review N2: a watched install that is suspended or paused drops out: no probe, no halt; busy only holds", async () => {
