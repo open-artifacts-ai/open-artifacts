@@ -1,0 +1,5 @@
+/* Tailwind with its preflight reset, plus the shadcn theme, for the whole
+   admin app. tokens.css comes first, from styles.css. */
+@import "@oa/ui/shadcn.css";
+
+@source "./";

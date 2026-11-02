@@ -109,23 +109,41 @@ export function staleAtOf(h: Health, now = Date.now()): number | null {
 const READ = "select value from directory_state where key = ?";
 
 export async function readHealth(env: Pick<Env, "DB">): Promise<Health> {
+  return (await readHealthRaw(env)).h;
+}
+
+/** Health and the stored JSON it came from (null: no row), for a compare-and-set. */
+export async function readHealthRaw(
+  env: Pick<Env, "DB">,
+): Promise<{ h: Health; raw: string | null }> {
   const row = await stmt(env.DB, READ)
     .bind(HK.health)
     .first<{ value: string }>();
-  if (!row) return NEVER;
+  if (!row) return { h: NEVER, raw: null };
   try {
     const v = JSON.parse(row.value) as Partial<Health>;
     return {
-      ...NEVER,
-      ...v,
-      held: Array.isArray(v.held) ? v.held : [],
-      liftsPaused: Array.isArray(v.liftsPaused) ? v.liftsPaused : [],
-      lanes: { ...NEVER.lanes, ...(v.lanes ?? {}) },
+      h: {
+        ...NEVER,
+        ...v,
+        held: Array.isArray(v.held) ? v.held : [],
+        liftsPaused: Array.isArray(v.liftsPaused) ? v.liftsPaused : [],
+        lanes: { ...NEVER.lanes, ...(v.lanes ?? {}) },
+      },
+      raw: row.value,
     };
   } catch {
-    return NEVER;
+    return { h: NEVER, raw: row.value };
   }
 }
+
+/**
+ * The health JSON replaced only while it is still `?3` (what the writer
+ * read): changes 0 when another write (an alarm's, a reset's clear) landed
+ * in between.
+ */
+export const HEALTH_CAS =
+  "update directory_state set value = ?1 where key = ?2 and value = ?3";
 
 /**
  * The statements writing `next` over `prev`: none when unchanged; the bare
@@ -182,6 +200,20 @@ export async function readSyncState(
 const iso = (n: number | null) =>
   n === null ? null : new Date(n).toISOString();
 
+/** Snoozed at `now` (#412): until is still ahead. */
+const snoozedAt = (x: HeldSweep, now: number) =>
+  !!x.snoozedUntil && Date.parse(x.snoozedUntil) > now;
+
+/**
+ * The held list as readers see it: a snooze whose `until` passed shows as
+ * none even before the next alarm ends it (and an entry from before #412
+ * gets the snooze fields).
+ */
+export const heldAt = (held: HeldSweep[], now: number): HeldSweep[] =>
+  held.map((x) =>
+    snoozedAt(x, now) ? x : { ...x, snoozedUntil: null, snoozeReason: null },
+  );
+
 /** The SyncStatus fields that come from health. */
 export function healthFields(h: Health, now = Date.now()) {
   return {
@@ -198,7 +230,7 @@ export function healthFields(h: Health, now = Date.now()) {
     staleAt: iso(staleAtOf(h, now)),
     alertedAt: iso(h.alertedAt),
     customerMismatch: h.customerMismatch,
-    held: h.held,
+    held: heldAt(h.held, now),
     liftsPaused: h.liftsPaused,
   };
 }
@@ -234,6 +266,7 @@ export function instanceDirectory(
     tokensUnverified: unhealthy,
     state: h.state,
     staleAt: f.staleAt,
-    heldSweeps: h.held.length,
+    // A snoozed hold doesn't light the Settings dot (#412).
+    heldSweeps: h.held.filter((x) => !snoozedAt(x, now)).length,
   };
 }

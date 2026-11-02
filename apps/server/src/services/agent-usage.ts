@@ -19,7 +19,7 @@ export type Via = { kind: "grant" | "token"; id: string };
 /** An agent ref plus the grant or token behind it (server-internal; never serialized). */
 export type AgentAttr = AgentRef & { via?: Via };
 
-/** `versions.agent_via`: `g:<grantId>` or `t:<tokenId>`. */
+/** `versions.agent_via` for a publish: `g:<grantId>` or `t:<tokenId>` (a scrubbed row: SCRUBBED_VIA). */
 export const viaKey = (v: Via) => `${v.kind === "grant" ? "g" : "t"}:${v.id}`;
 
 export const USE_WRITE_MS = 60_000;

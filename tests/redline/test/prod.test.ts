@@ -8,7 +8,20 @@ import {
   TEST_HOOKS_DEFINE,
 } from "@oa/provision";
 import { afterEach, describe, expect, it } from "vitest";
-import { HOOK_SQL_MARKERS, ProdDirty, prodClean } from "../src/prod.ts";
+import {
+  guardProdClean,
+  HOOK_SQL_MARKERS,
+  PROD_CLEAN_CODES,
+  PROD_CLEAN_LINE_RE,
+  ProdDirty,
+  prodClean,
+} from "../src/prod.ts";
+import {
+  buildReport,
+  gatePasses,
+  PRE_PROD_GUARD,
+  PRE_PROD_GUARD_REASON,
+} from "../src/report.ts";
 import { parseTargets } from "../src/targets.ts";
 import { type Fake, fakeServer, json, secretDir } from "./fake.ts";
 
@@ -36,6 +49,20 @@ interface World {
   healthz: Record<string, unknown>;
   secretNames: string[];
   bindings: string[];
+  /** The authorization header of each /installs read. */
+  inventoryAuth?: (string | undefined)[];
+  /** Inventory refuses the bearer: its unknown-route plain 404 (#1016). */
+  inventoryRefuses?: boolean;
+  /** Inventory's raw answer to /installs (e.g. #1043's 503 schema_missing). */
+  inventoryAnswer?: { status: number; body: string; type?: string };
+  /** /healthz status (a paused or closed host answers 503). */
+  healthzStatus?: number;
+  /** The dispatch script is gone (purged): its routes answer 404. */
+  scriptMissing?: boolean;
+  /** Paths requested, in order. */
+  seen?: string[];
+  /** Full URLs requested through the injected fetch, in order. */
+  urls?: string[];
 }
 
 function signedRecord(o: {
@@ -102,8 +129,9 @@ const cleanWorld = (): World => ({
       id: ID,
       appHost: "acme.open-artifacts.app",
       contentHost: "c",
-      state: "live",
+      state: "active",
       testHooks: false,
+      mode: "serving",
     },
   ],
   healthz: { ok: true, installId: ID },
@@ -117,6 +145,9 @@ async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
   const script = `/client/v4/accounts/${ACCT}/workers/dispatch/namespaces/oa-prod/scripts/oa-p-${ID}`;
   const f = await fakeServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://x");
+    w.seen = [...(w.seen ?? []), u.pathname];
+    if (w.scriptMissing && u.pathname.startsWith(`${script}/`))
+      return json(res, 404, { success: false, errors: [{ code: 10007 }] });
     if (u.pathname === r2) {
       if (!w.objects)
         return json(res, 404, { success: false, errors: [{ code: 10006 }] });
@@ -136,9 +167,22 @@ async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
       if (!b) return json(res, 404, { success: false });
       return res.writeHead(200, { etag: '"e"' }).end(Buffer.from(b));
     }
-    if (u.pathname === "/installs")
+    if (u.pathname === "/installs") {
+      w.inventoryAuth = [...(w.inventoryAuth ?? []), req.headers.authorization];
+      if (w.inventoryRefuses)
+        return res
+          .writeHead(404, { "cache-control": "no-store" })
+          .end("Not found");
+      if (w.inventoryAnswer)
+        return res
+          .writeHead(w.inventoryAnswer.status, {
+            "content-type": w.inventoryAnswer.type ?? "application/json",
+          })
+          .end(w.inventoryAnswer.body);
       return json(res, 200, { installs: w.installs });
-    if (u.pathname === "/healthz") return json(res, 200, w.healthz);
+    }
+    if (u.pathname === "/healthz")
+      return json(res, w.healthzStatus ?? 200, w.healthz);
     if (u.pathname === `${script}/secrets`)
       return json(res, 200, {
         success: true,
@@ -153,20 +197,24 @@ async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
   });
   dispose.push(() => f.close());
   const routed: typeof fetch = (input, init) => {
-    const u = new URL(input instanceof Request ? input.url : String(input));
+    const raw = input instanceof Request ? input.url : String(input);
+    w.urls = [...(w.urls ?? []), raw];
+    const u = new URL(raw);
     return fetch(`${f.origin}${u.pathname}${u.search}`, init);
   };
   return { f, fetch: routed };
 }
 
 /** A staging REDLINE_TARGETS with the CI layout for prod. */
-function probe(o: { inventory?: boolean } = {}) {
+function probe(o: { inventory?: boolean; jwtFile?: string } = {}) {
   const s = secretDir({
     REDLINE_RL_A_HOOK_KEY: "a".repeat(40),
     REDLINE_RL_B_HOOK_KEY: "b".repeat(40),
     REDLINE_PROD_R2_TOKEN: "r2-token",
     REDLINE_PROD_SCRIPTS_TOKEN: "scripts-token",
-    REDLINE_PROD_INVENTORY_KEY: "inv-key",
+    ...(o.jwtFile === undefined
+      ? {}
+      : { REDLINE_PROD_INVENTORY_OIDC: o.jwtFile }),
   });
   dispose.push(s.cleanup);
   const t = (n: string, d: string) => ({
@@ -191,9 +239,24 @@ function probe(o: { inventory?: boolean } = {}) {
   return T.prod;
 }
 
+/** The minted GitHub OIDC JWT a configured caller passes (never a stored key). */
+const JWT = "jwt.x.y";
+const bearerOf = (o: { inventory?: boolean }) =>
+  o.inventory === false ? {} : { inventoryBearer: JWT };
+
 async function check(w: World, o: { inventory?: boolean } = {}) {
   const { fetch } = await serve(w);
-  return prodClean(probe(o), { fetch, pubkey: PUB });
+  return prodClean(probe(o), { fetch, pubkey: PUB, ...bearerOf(o) });
+}
+
+/** The ProdDirty code a rejected promise carries. */
+async function failCode(p: Promise<unknown>): Promise<string> {
+  const e = await p.then(
+    () => null,
+    (x: unknown) => x,
+  );
+  if (!(e instanceof ProdDirty)) throw new Error(`not ProdDirty: ${String(e)}`);
+  return e.code;
 }
 
 describe("prodClean (spec 2026-10-26)", () => {
@@ -207,32 +270,344 @@ describe("prodClean (spec 2026-10-26)", () => {
     expect(JSON.stringify(p)).not.toContain("r2-token");
   });
 
+  it("an inventory URL needs no REDLINE_PROD_INVENTORY_KEY file (OIDC only)", () => {
+    const p = probe();
+    expect(p.inventoryUrl).toBe("https://inventory.example");
+    expect(Object.keys(p).sort()).toEqual([
+      "accountId",
+      "inventoryUrl",
+      "r2TokenFile",
+      "scriptsTokenFile",
+    ]);
+  });
+
   it("a clean prod (signed release, clean install) passes", async () => {
     const w = cleanWorld();
     publish(w, { version: "1.2.3" });
     expect(await check(w)).toEqual({ level: "pass", releases: 1, installs: 1 });
   });
 
-  it("a missing bucket is not-applicable, never pass", async () => {
+  it("a missing bucket fails bucket_missing, never pass", async () => {
     const w = cleanWorld();
     w.objects = null;
-    expect(await check(w)).toEqual({
-      level: "not-applicable",
-      reason: "prod not brought up",
-    });
+    expect(await failCode(check(w))).toBe("bucket_missing");
   });
 
-  it("an empty bucket is not-applicable", async () => {
-    expect((await check(cleanWorld())).level).toBe("not-applicable");
-  });
-
-  it("0 inventory rows is not-applicable", async () => {
+  it("configured with an empty bucket and 0 rows passes", async () => {
     const w = cleanWorld();
-    publish(w, { version: "1.2.3" });
     w.installs = [];
-    expect(await check(w)).toEqual({
-      level: "not-applicable",
-      reason: "prod not brought up",
+    expect(await check(w)).toEqual({ level: "pass", releases: 0, installs: 0 });
+  });
+
+  it("an inventory that is not the installs schema fails inventory_bad", async () => {
+    const w = cleanWorld();
+    w.installs = [{ id: ID, appHost: "a", testHooks: false }];
+    expect(await failCode(check(w))).toBe("inventory_bad");
+  });
+
+  it("an inventory refusing the bearer (its plain 404) fails inventory_bad, never a pass", async () => {
+    const w = cleanWorld();
+    w.inventoryRefuses = true;
+    expect(await failCode(check(w))).toBe("inventory_bad");
+    w.installs = [];
+    expect(await failCode(check(w))).toBe("inventory_bad");
+  });
+
+  it("a bearer function is called after the release scan, right before /installs", async () => {
+    const w = cleanWorld();
+    const { fetch } = await serve(w);
+    const seen: string[] = [];
+    const counted: typeof fetch = (i, init) => {
+      seen.push(new URL(String(i instanceof Request ? i.url : i)).host);
+      return fetch(i, init);
+    };
+    let mintedAfter = -1;
+    await prodClean(probe(), {
+      fetch: counted,
+      pubkey: PUB,
+      inventoryBearer: async () => {
+        mintedAfter = seen.length;
+        return JWT;
+      },
+    });
+    expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+    // Every Cloudflare (release scan) call came before the mint.
+    expect(mintedAfter).toBeGreaterThan(0);
+    expect(
+      seen.slice(0, mintedAfter).every((h) => h === "api.cloudflare.com"),
+    ).toBe(true);
+    expect(
+      seen.slice(mintedAfter).some((h) => h !== "api.cloudflare.com"),
+    ).toBe(true);
+  });
+
+  it("the inventory bearer is only opts.inventoryBearer (OIDC), never the stored key", async () => {
+    const w = cleanWorld();
+    const { fetch } = await serve(w);
+    await prodClean(probe(), { fetch, pubkey: PUB, inventoryBearer: JWT });
+    expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+    // A probe with an inventory URL but no OIDC bearer is
+    // unconfigured: it fails before any request and never sends the key.
+    let calls = 0;
+    const counted: typeof fetch = (i, init) => {
+      calls++;
+      return fetch(i, init);
+    };
+    expect(
+      await failCode(prodClean(probe(), { fetch: counted, pubkey: PUB })),
+    ).toBe("inventory_unconfigured");
+    expect(calls).toBe(0);
+    expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+  });
+
+  it("an unconfigured probe fails before any request", async () => {
+    let calls = 0;
+    const f = (async () => {
+      calls++;
+      throw new Error("no");
+    }) as unknown as typeof fetch;
+    expect(await failCode(prodClean(undefined, { fetch: f }))).toBe(
+      "not_configured",
+    );
+    expect(
+      await failCode(prodClean(probe({ inventory: false }), { fetch: f })),
+    ).toBe("inventory_unconfigured");
+    expect(calls).toBe(0);
+  });
+
+  it("a dirty install carries its code, id and a detail of at most 200", async () => {
+    const w = cleanWorld();
+    w.secretNames = ["TEST_HOOK_KEY"];
+    const e = await check(w).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(ProdDirty);
+    expect((e as ProdDirty).code).toBe("install_dirty");
+    expect((e as ProdDirty).installId).toBe(ID);
+    expect(new ProdDirty("unreachable", "x".repeat(300)).message).toHaveLength(
+      200,
+    );
+    for (const c of PROD_CLEAN_CODES)
+      expect(c).toMatch(/^[a-z][a-z0-9_]{0,39}$/);
+  });
+
+  describe("truth table (2026-10-30: configured + zero = pass, unconfigured = fail)", () => {
+    type Bucket = "404" | "empty" | "releases";
+    const cases: {
+      r2: boolean;
+      bucket: Bucket;
+      inv: boolean;
+      rows: number;
+      dirty: boolean;
+    }[] = [];
+    // Dirty needs something to be dirty: a release or a row.
+    for (const r2 of [true, false])
+      for (const bucket of ["404", "empty", "releases"] as Bucket[])
+        for (const inv of [true, false])
+          for (const rows of [0, 1])
+            for (const dirty of [false, true])
+              if (!dirty || bucket === "releases" || rows > 0)
+                cases.push({ r2, bucket, inv, rows, dirty });
+    const expected = (c: (typeof cases)[number]) => {
+      if (!c.r2) return "not_configured";
+      if (!c.inv) return "inventory_unconfigured";
+      if (c.bucket === "404") return "bucket_missing";
+      if (c.dirty)
+        return c.bucket === "releases" ? "release_dirty" : "install_dirty";
+      return "pass";
+    };
+    for (const c of cases) {
+      const want = expected(c);
+      it(`R2 ${c.r2 ? "yes" : "no"}, bucket ${c.bucket}, inventory ${c.inv ? "yes" : "no"}, rows ${c.rows}, dirty ${c.dirty ? "yes" : "no"} -> ${want}`, async () => {
+        const w = cleanWorld();
+        if (c.bucket === "404") w.objects = null;
+        if (c.bucket === "releases")
+          publish(w, {
+            version: "1.2.3",
+            ...(c.dirty ? { js: `const q = "${HOOK_SQL_MARKERS[0]}";` } : {}),
+          });
+        if (c.rows === 0) w.installs = [];
+        if (c.dirty && c.bucket !== "releases") w.bindings = ["TEST_HOOKS"];
+        const { fetch } = await serve(w);
+        const p = c.r2 ? probe({ inventory: c.inv }) : undefined;
+        const r = prodClean(p, {
+          fetch,
+          pubkey: PUB,
+          ...bearerOf({ inventory: c.inv }),
+        });
+        if (want === "pass")
+          expect(await r).toEqual({
+            level: "pass",
+            releases: c.bucket === "releases" ? 1 : 0,
+            installs: c.rows,
+          });
+        else expect(await failCode(r)).toBe(want);
+      });
+    }
+  });
+
+  describe("the red-line guard", () => {
+    const pass = { level: "pass", releases: 0, installs: 0 } as const;
+    it("local mode is not-applicable and never probes", async () => {
+      let n = 0;
+      const r = await guardProdClean({ mode: "local" }, async () => {
+        n++;
+        return pass;
+      });
+      expect(r).toBe("not-applicable");
+      expect(n).toBe(0);
+    });
+    it("staging with no prod probe fails: prod probe not configured", async () => {
+      await expect(guardProdClean({ mode: "staging" })).rejects.toThrow(
+        "prod probe not configured",
+      );
+    });
+    it("staging with a probe but no OIDC bearer fails inventory_unconfigured", async () => {
+      expect(
+        await failCode(guardProdClean({ mode: "staging", prod: probe() })),
+      ).toBe("inventory_unconfigured");
+    });
+    it("staging reads the minted OIDC JWT from the secrets dir (REDLINE_PROD_INVENTORY_OIDC)", async () => {
+      const w = cleanWorld();
+      publish(w, { version: "1.2.3" });
+      const { fetch } = await serve(w);
+      const p = probe({ jwtFile: `${JWT}\n` });
+      expect(JSON.stringify(p)).not.toContain(JWT);
+      const r = await guardProdClean({ mode: "staging", prod: p }, (x) =>
+        prodClean(x, { fetch, pubkey: PUB }),
+      );
+      expect(r).toEqual({ level: "pass", releases: 1, installs: 1 });
+      expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+    });
+    it("an explicit opts.inventoryBearer wins over the secrets-dir JWT", async () => {
+      const w = cleanWorld();
+      const { fetch } = await serve(w);
+      await prodClean(probe({ jwtFile: "file.jwt.z" }), {
+        fetch,
+        pubkey: PUB,
+        inventoryBearer: JWT,
+      });
+      expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+    });
+    // Pre-prod (#1043 before #1014): the prod inventory answers a verified
+    // caller 503 {"error":"schema_missing"}. Only that answer, and only with
+    // the prod admin host not resolving (ENOTFOUND), is not-applicable.
+    describe("pre-prod: 503 schema_missing", () => {
+      const SCHEMA_MISSING = JSON.stringify({ error: "schema_missing" });
+      const ADMIN = "https://admin.prod.example";
+      const dnsErr = (code: string) =>
+        new TypeError("fetch failed", { cause: { code } });
+      /** The admin DNS probe: throws `code`, or answers `status`. */
+      const admin = (a: { code: string } | { status: number }) => {
+        const urls: string[] = [];
+        const fetch: typeof globalThis.fetch = async (input) => {
+          urls.push(String(input));
+          if ("code" in a) throw dnsErr(a.code);
+          return new Response("{}", { status: a.status });
+        };
+        return { urls, fetch };
+      };
+      async function guard(
+        answer: World["inventoryAnswer"] | "refuses" | undefined,
+        a: ReturnType<typeof admin>,
+      ) {
+        const w = cleanWorld();
+        if (answer === "refuses") w.inventoryRefuses = true;
+        else if (answer) w.inventoryAnswer = answer;
+        const { fetch } = await serve(w);
+        return guardProdClean(
+          { mode: "staging", prod: probe() },
+          (x) => prodClean(x, { fetch, pubkey: PUB, inventoryBearer: JWT }),
+          { fetch: a.fetch, adminOrigin: ADMIN },
+        );
+      }
+      const missing = { status: 503, body: SCHEMA_MISSING };
+
+      it("NXDOMAIN admin + schema_missing: not-applicable, fixed reason, gate accepts, report lists it", async () => {
+        const a = admin({ code: "ENOTFOUND" });
+        const r = await guard(missing, a);
+        expect(r).toEqual({
+          level: "not-applicable",
+          reason: PRE_PROD_GUARD_REASON,
+        });
+        expect(a.urls).toEqual([`${ADMIN}/api/v1/me`]);
+        if (r === "not-applicable" || r.level !== "not-applicable")
+          throw new Error("want pre-prod n/a");
+        const kase = { ...PRE_PROD_GUARD, level: r.level, reason: r.reason };
+        expect(gatePasses([kase])).toBe(true);
+        const rep = buildReport([kase], "staging");
+        expect(rep.gate.passed).toBe(true);
+        expect(rep.nonPass).toEqual([kase]);
+      });
+
+      it("prodClean alone still fails schema_missing inventory_bad (the hosted-ops precheck)", async () => {
+        const w = cleanWorld();
+        w.inventoryAnswer = missing;
+        expect(await failCode(check(w))).toBe("inventory_bad");
+      });
+
+      it("after the prod deploy (#1014): a resolving admin host + schema_missing fails", async () => {
+        for (const status of [401, 200, 404, 503]) {
+          const a = admin({ status });
+          expect(await failCode(guard(missing, a)), String(status)).toBe(
+            "inventory_bad",
+          );
+          expect(a.urls).toHaveLength(1);
+        }
+      });
+
+      it("after the prod deploy (#1014): a clean inventory runs for real and passes, no DNS probe", async () => {
+        const a = admin({ code: "ENOTFOUND" });
+        expect(await guard(undefined, a)).toEqual({
+          level: "pass",
+          releases: 0,
+          installs: 1,
+        });
+        expect(a.urls).toEqual([]);
+      });
+
+      it("schema_missing with any non-ENOTFOUND DNS or network error fails", async () => {
+        for (const code of ["EAI_AGAIN", "ECONNREFUSED", "ETIMEDOUT"])
+          expect(await failCode(guard(missing, admin({ code }))), code).toBe(
+            "inventory_bad",
+          );
+      });
+
+      it("NXDOMAIN admin + any other inventory answer fails, without a DNS probe", async () => {
+        for (const answer of [
+          "refuses" as const,
+          { status: 404, body: SCHEMA_MISSING },
+          { status: 500, body: SCHEMA_MISSING },
+          { status: 500, body: "{}" },
+          { status: 503, body: JSON.stringify({ error: "unavailable" }) },
+          {
+            status: 503,
+            body: JSON.stringify({ error: "schema_missing", x: 1 }),
+          },
+          { status: 503, body: JSON.stringify(["schema_missing"]) },
+          { status: 503, body: "schema_missing", type: "text/plain" },
+          { status: 503, body: "" },
+          { status: 200, body: SCHEMA_MISSING },
+        ]) {
+          const a = admin({ code: "ENOTFOUND" });
+          expect(await failCode(guard(answer, a)), JSON.stringify(answer)).toBe(
+            "inventory_bad",
+          );
+          expect(a.urls).toEqual([]);
+        }
+      });
+    });
+
+    it("staging with a probe runs prodClean on it", async () => {
+      const p = probe();
+      const seen: unknown[] = [];
+      const r = await guardProdClean(
+        { mode: "staging", prod: p },
+        async (x) => {
+          seen.push(x);
+          return pass;
+        },
+      );
+      expect(r).toEqual(pass);
+      expect(seen).toEqual([p]);
     });
   });
 
@@ -292,10 +667,132 @@ describe("prodClean (spec 2026-10-26)", () => {
     await expect(check(w)).rejects.toThrow(/installId differs/);
   });
 
-  it("a release with no inventory configured is not-applicable", async () => {
+  describe("rows that do not serve (suspended, deleting, deleted, failed, unmapped)", () => {
+    const row = (state: string, mode: string | null) => ({
+      ...cleanWorld().installs[0],
+      state,
+      mode,
+    });
+    const notServing: [string, string | null][] = [
+      ["suspended", "paused"],
+      ["deleting", "closed"],
+      ["deleted", null],
+      ["failed", null],
+      ["active", null],
+    ];
+    for (const [state, mode] of notServing) {
+      it(`${state}/${mode ?? "unmapped"}: no /healthz probe; a 503 page or a purged script passes`, async () => {
+        const w = cleanWorld();
+        w.installs = [row(state, mode)];
+        w.healthzStatus = 503;
+        w.scriptMissing = true;
+        expect(await check(w)).toEqual({
+          level: "pass",
+          releases: 0,
+          installs: 1,
+        });
+        expect(w.seen).not.toContain("/healthz");
+      });
+      it(`${state}/${mode ?? "unmapped"}: a script that still lists a hook fails`, async () => {
+        const w = cleanWorld();
+        w.installs = [row(state, mode)];
+        w.healthzStatus = 503;
+        w.secretNames = ["TEST_HOOK_KEY"];
+        expect(await failCode(check(w))).toBe("install_dirty");
+      });
+      it(`${state}/${mode ?? "unmapped"}: testHooks not false fails`, async () => {
+        const w = cleanWorld();
+        w.installs = [{ ...row(state, mode), testHooks: true }];
+        w.scriptMissing = true;
+        expect(await failCode(check(w))).toBe("install_dirty");
+      });
+    }
+    it("a serving row still needs /healthz 200 and its script", async () => {
+      const w = cleanWorld();
+      w.healthzStatus = 503;
+      expect(await failCode(check(w))).toBe("unreachable");
+      const w2 = cleanWorld();
+      w2.scriptMissing = true;
+      await expect(check(w2)).rejects.toThrow();
+    });
+  });
+
+  describe("a hostless install (a signup before its installs row): no route", () => {
+    const hostless = () => ({
+      ...cleanWorld().installs[0],
+      state: "provisioning",
+      appHost: null,
+      contentHost: null,
+      mode: null,
+    });
+    const noHealthz = (w: World) => {
+      expect(w.seen).not.toContain("/healthz");
+      expect(
+        (w.urls ?? []).filter((u) => /healthz|\/\/null\b/.test(u)),
+      ).toEqual([]);
+    };
+    it("clean data passes with no /healthz request, but its script is still read", async () => {
+      const w = cleanWorld();
+      w.installs = [hostless()];
+      expect(await check(w)).toEqual({
+        level: "pass",
+        releases: 0,
+        installs: 1,
+      });
+      noHealthz(w);
+      expect(w.seen?.some((x) => x.endsWith(`oa-p-${ID}/secrets`))).toBe(true);
+      expect(w.seen?.some((x) => x.endsWith(`oa-p-${ID}/settings`))).toBe(true);
+    });
+    it("no script yet passes with no /healthz request", async () => {
+      const w = cleanWorld();
+      w.installs = [hostless()];
+      w.scriptMissing = true;
+      expect((await check(w)).level).toBe("pass");
+      noHealthz(w);
+    });
+    it("testHooks not false fails install_dirty", async () => {
+      const w = cleanWorld();
+      w.installs = [{ ...hostless(), testHooks: true }];
+      expect(await failCode(check(w))).toBe("install_dirty");
+      noHealthz(w);
+    });
+    it("a script that lists a hook secret or binds TEST_HOOKS fails install_dirty", async () => {
+      const w = cleanWorld();
+      w.installs = [hostless()];
+      w.secretNames = ["TEST_HOOK_KEY"];
+      expect(await failCode(check(w))).toBe("install_dirty");
+      noHealthz(w);
+      const w2 = cleanWorld();
+      w2.installs = [hostless()];
+      w2.bindings = ["DB", "TEST_HOOKS"];
+      expect(await failCode(check(w2))).toBe("install_dirty");
+      noHealthz(w2);
+    });
+    it("one host null and the other set is inventory_bad, never probed", async () => {
+      for (const hosts of [
+        { appHost: "a.test", contentHost: null },
+        { appHost: null, contentHost: "c.test" },
+      ]) {
+        const w = cleanWorld();
+        w.installs = [{ ...hostless(), ...hosts }];
+        expect(await failCode(check(w))).toBe("inventory_bad");
+        noHealthz(w);
+      }
+    });
+    it("a hostless row with a serving mode is inventory_bad (the schema), never https://null", async () => {
+      const w = cleanWorld();
+      w.installs = [{ ...hostless(), mode: "serving" }];
+      expect(await failCode(check(w))).toBe("inventory_bad");
+      noHealthz(w);
+    });
+  });
+
+  it("a release with no inventory configured fails inventory_unconfigured", async () => {
     const w = cleanWorld();
     publish(w, { version: "1.2.3" });
-    expect((await check(w, { inventory: false })).level).toBe("not-applicable");
+    expect(await failCode(check(w, { inventory: false }))).toBe(
+      "inventory_unconfigured",
+    );
   });
 
   it("the hook SQL markers equal the server's strip test", () => {
