@@ -9,13 +9,22 @@ import {
   R,
   type TransferSummary,
 } from "@oa/shared";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { callerOf } from "../src/auth/authz.js";
+import { sessionCookieName, signSession } from "../src/auth/session.js";
+import { deleteUser } from "../src/directory/apply.js";
 import type { Env } from "../src/env.js";
-import { SYSTEM_ACTOR, setUserStatus } from "../src/services/members.js";
-import { directoryMode } from "../src/services/spaces.js";
+import {
+  placeholder,
+  reviveFromSync,
+  SYSTEM_ACTOR,
+  setUserStatus,
+} from "../src/services/members.js";
+import { directoryMode, mySharedSpaces } from "../src/services/spaces.js";
+import { getUser } from "../src/services/users.js";
 import { direct, uniq } from "./auth-helpers.js";
-import { directEnv } from "./directory-helpers.js";
+import { directEnv, resetDirectory } from "./directory-helpers.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
 
 const app = createApp();
@@ -82,6 +91,53 @@ async function removed(role: Member["role"] = "member"): Promise<U> {
   expect((await remove(u.userId, by.cookie)).status).toBe(204);
   return u;
 }
+
+/** A connected Workspace: the live binding and token, as confirm leaves them. */
+const connectWorkspace = () =>
+  env.DB.batch([
+    env.DB.prepare(
+      "insert or replace into directory_state (key, value) values ('binding', ?)",
+    ).bind(
+      JSON.stringify({
+        provider: "google",
+        customerId: "C0123",
+        domain: "a.com",
+        connectedBy: owner.userId,
+        connectedAt: new Date().toISOString(),
+      }),
+    ),
+    env.DB.prepare(
+      "insert or replace into directory_state (key, value) values ('refresh', 'sealed')",
+    ),
+  ]);
+afterEach(resetDirectory);
+
+/** A directory removal, as sync records it. */
+const removedBySync = (id: string) =>
+  setUserStatus(env, id, "removed", "directory_delete", SYSTEM_ACTOR);
+
+/** `id` in a restricted group: the flag stays 0 while they are an admin. */
+async function inRestrictedGroup(id: string) {
+  const g = `rs-group-${newId()}`;
+  await env.DB.batch([
+    env.DB.prepare(
+      "insert into directory_groups (group_id, email) values (?, ?)",
+    ).bind(g, `${g}@a.com`),
+    env.DB.prepare(
+      "insert into restricted_groups (group_id, group_email) values (?, ?)",
+    ).bind(g, `${g}@a.com`),
+    env.DB.prepare(
+      "insert into directory_members (group_id, user_id, gen) values (?, ?, 1)",
+    ).bind(g, id),
+  ]);
+  return g;
+}
+const restrictedSync = async (id: string) =>
+  (
+    await env.DB.prepare("select restricted_sync r from users where id = ?")
+      .bind(id)
+      .first<{ r: number }>()
+  )?.r;
 
 beforeAll(async () => {
   owner = await login(uniq("rs-owner"), "owner");
@@ -227,6 +283,7 @@ describe("POST R.memberRestore(id): behaviour", () => {
   });
 
   it("removed by directory sync → 409 directory_managed while Google sync is on; allowed when it is off or frozen", async () => {
+    await connectWorkspace();
     const u = await login(uniq("rs-dir", "a.com"), "member");
     await setUserStatus(
       env,
@@ -256,6 +313,7 @@ describe("POST R.memberRestore(id): behaviour", () => {
   });
 
   it("self-host with a working directory transport and no FEATURES entry is Google sync: a directory removal stays 409, restore and invite", async () => {
+    await connectWorkspace();
     const email = uniq("rs-transport", "a.com");
     const u = await login(email, "member");
     await setUserStatus(
@@ -279,7 +337,36 @@ describe("POST R.memberRestore(id): behaviour", () => {
     expect((await row(u.userId))?.status).toBe("removed");
   });
 
+  it.each([
+    ["FEATURES sync_google", { FEATURES: "sync_google" }],
+    ["a transport and no FEATURES entry", { FEATURES: "" }],
+  ])(
+    "%s, no Workspace connected: nothing syncs, so a directory removal is an admin's to restore",
+    async (_, over) => {
+      const email = uniq("rs-unbound", "a.com");
+      const u = await login(email, "member");
+      await removedBySync(u.userId);
+      const e = directEnv(over);
+      expect(directoryMode(e)).toBe("google");
+      const inv = await call(e, R.members, admin.cookie, {
+        method: "POST",
+        body: { email, role: "member" },
+      });
+      expect(inv.status).toBe(409);
+      expect(await errOf(inv)).toMatchObject({
+        code: "member_removed",
+        details: { userId: u.userId },
+      });
+      expect((await restore(u.userId, admin.cookie, e)).status).toBe(200);
+      expect(await row(u.userId)).toMatchObject({
+        status: "active",
+        bySync: 0,
+      });
+    },
+  );
+
   it("a directory removal stays refused after audit retention sweeps its audit row", async () => {
+    await connectWorkspace();
     const u = await login(uniq("rs-dir-swept", "a.com"), "member");
     await setUserStatus(
       env,
@@ -318,6 +405,155 @@ describe("POST R.memberRestore(id): behaviour", () => {
     expect((await row(u.userId))?.bySync).toBe(0);
     const GOOGLE = { ...(env as object), FEATURES: "sync_google" } as Env;
     expect((await restore(u.userId, admin.cookie, GOOGLE)).status).toBe(200);
+  });
+});
+
+describe("what a restore brings back", () => {
+  it("a restricted admin comes back capped on a restore: the group restriction follows the new role", async () => {
+    const u = await login(uniq("rs-r-admin", "a.com"), "admin");
+    const g = await inRestrictedGroup(u.userId);
+    expect(await restrictedSync(u.userId)).toBe(0);
+    expect((await remove(u.userId, owner.cookie)).status).toBe(204);
+    // Sync stopped: nothing else would ever raise the flag.
+    const FROZEN = { ...(env as object), FEATURES: "sync_frozen" } as Env;
+    const r = await restore(u.userId, owner.cookie, FROZEN);
+    expect(r.status).toBe(200);
+    expect(await restrictedSync(u.userId)).toBe(1);
+    const m = MemberSchema.parse(await r.json());
+    expect(m.role).toBe("member");
+    expect(m.restriction?.groups.map((x) => x.groupId)).toEqual([g]);
+  });
+
+  it("a restricted admin comes back capped on a sync revive", async () => {
+    const email = uniq("rs-r-sync", "a.com").toLowerCase();
+    const u = await login(email, "admin");
+    await inRestrictedGroup(u.userId);
+    const sub = `g-rs-${newId()}`;
+    await env.DB.prepare(
+      "insert into identities (provider, subject, tenant, user_id, created_at, directory_bound) values ('google', ?, 'a.com', ?, 1, 1)",
+    )
+      .bind(sub, u.userId)
+      .run();
+    await removedBySync(u.userId);
+    expect(await restrictedSync(u.userId)).toBe(0);
+    expect(await reviveFromSync(env, u.userId, sub, email)).toBe(true);
+    expect(await row(u.userId)).toMatchObject({
+      status: "active",
+      role: "member",
+    });
+    expect(await restrictedSync(u.userId)).toBe(1);
+  });
+
+  it("a restored member has their space role back", async () => {
+    const ON = { ...(env as object), FEATURES: "spaces" } as Env;
+    const u = await login(uniq("rs-space", "a.com"), "member");
+    const spaceId = newId();
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into spaces (id, kind, name, created_at) values (?, 'shared', ?, 1)",
+      ).bind(spaceId, `Restore ${spaceId}`),
+      env.DB.prepare(
+        "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'manual', 1)",
+      ).bind(spaceId, u.userId),
+    ]);
+    expect((await remove(u.userId, admin.cookie, ON)).status).toBe(204);
+    expect((await restore(u.userId, admin.cookie, ON)).status).toBe(200);
+    const m = (await getUser(env, u.userId)) as Member;
+    const mine = await mySharedSpaces(ON, callerOf(m));
+    expect(mine.find((s) => s.id === spaceId)?.myRole).toBe("editor");
+  });
+
+  it("a row a directory deletion released (removed+<id>@invalid) is refused, never an active ghost; while sync manages it, directory_managed", async () => {
+    const u = await login(uniq("rs-ghost", "a.com"), "member");
+    await deleteUser(env, u.userId, "directory_delete", () => {});
+    const email = await env.DB.prepare("select email from users where id = ?")
+      .bind(u.userId)
+      .first<{ email: string }>();
+    expect(email?.email).toBe(placeholder(u.userId));
+    const r = await restore(u.userId, admin.cookie);
+    expect(r.status).toBe(409);
+    expect((await errOf(r)).code).toBe("conflict");
+    expect(await row(u.userId)).toMatchObject({ status: "removed", bySync: 1 });
+    expect(await statusAudits(u.userId)).toHaveLength(1);
+    await connectWorkspace();
+    const GOOGLE = { ...(env as object), FEATURES: "sync_google" } as Env;
+    const managed = await restore(u.userId, admin.cookie, GOOGLE);
+    expect((await errOf(managed)).code).toBe("directory_managed");
+    // Not for the list tests below: MemberSchema refuses this address.
+    await env.DB.prepare("update users set email = ? where id = ?")
+      .bind(uniq("rs-ghost-done", "a.com"), u.userId)
+      .run();
+  });
+
+  it("a capped admin (a code session) gets 404 and changes nothing", async () => {
+    const u = await removed();
+    const before = await row(u.userId);
+    const cookie = `${sessionCookieName(env)}=${await signSession(
+      env,
+      admin.userId,
+      Date.now(),
+      { provider: "code", epoch: 0 },
+    )}`;
+    expect((await restore(u.userId, cookie)).status).toBe(404);
+    expect(await row(u.userId)).toEqual(before);
+  });
+});
+
+describe("migration 0021's backfill", () => {
+  const { TEST_MIGRATIONS } = env as unknown as {
+    TEST_MIGRATIONS: { name: string; queries: string[] }[];
+  };
+  const backfill = TEST_MIGRATIONS.find(
+    (m) => m.name === "0021_removed_by_sync.sql",
+  )?.queries.find((q) => q.includes("UPDATE `users`"));
+  const run = async () => {
+    expect(backfill).toBeTruthy();
+    await env.DB.prepare(backfill as string).run();
+  };
+  const audited = (id: string, at: number, reason: string) =>
+    env.DB.prepare(
+      "insert into audit_events (id, at, actor_kind, action, target_type, target_id, detail) values (?, ?, 'system', 'user.status', 'user', ?, ?)",
+    )
+      .bind(newId(), at, id, JSON.stringify({ reason }))
+      .run();
+  const flag = async (id: string) => (await row(id))?.bySync;
+  const mk = async (status: string) => {
+    const u = await login(uniq("rs-bf", "a.com"), "member");
+    await env.DB.prepare("update users set status = ? where id = ?")
+      .bind(status, u.userId)
+      .run();
+    return u.userId;
+  };
+
+  it("sets the flag only for a removed row whose latest user.status reason is directory_*, idempotently", async () => {
+    // As setUserStatus writes it, from before the column existed.
+    const live = (await login(uniq("rs-bf", "a.com"), "member")).userId;
+    await removedBySync(live);
+    await env.DB.prepare("update users set removed_by_sync = 0 where id = ?")
+      .bind(live)
+      .run();
+    const directory = await mk("removed");
+    await audited(directory, 1, "admin_suspend");
+    await audited(directory, 2, "directory_stale");
+    const adminLast = await mk("removed");
+    await audited(adminLast, 1, "directory_delete");
+    await audited(adminLast, 2, "admin_remove");
+    const swept = await mk("removed");
+    const active = await mk("active");
+    await audited(active, 1, "directory_delete");
+    // The LIKE escapes `_`: a reason merely starting "directory" isn't one.
+    const lookalike = await mk("removed");
+    await audited(lookalike, 1, "directoryXdelete");
+
+    for (let i = 0; i < 2; i++) {
+      await run();
+      expect(await flag(live)).toBe(1);
+      expect(await flag(directory)).toBe(1);
+      expect(await flag(adminLast)).toBe(0);
+      expect(await flag(swept)).toBe(0);
+      expect(await flag(active)).toBe(0);
+      expect(await flag(lookalike)).toBe(0);
+    }
   });
 });
 
@@ -381,6 +617,7 @@ describe("invite of a removed address", () => {
   );
 
   it("a directory removal's address under Google sync → 409 directory_managed (no Restore offered); member_removed when sync is off; nothing created", async () => {
+    await connectWorkspace();
     const u = await login(uniq("rs-inv-dir", "a.com"), "member");
     await setUserStatus(
       env,

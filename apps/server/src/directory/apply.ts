@@ -8,6 +8,7 @@ import { revokeUserLive, revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
 import { moveUserEmail } from "../services/email-move.js";
 import {
+  placeholder,
   reviveFromSync,
   SYSTEM_ACTOR,
   setUserStatus,
@@ -237,8 +238,6 @@ async function applyChunk(
 }
 
 // ------------------------------------------------------------ users
-
-const placeholder = (id: string) => `removed+${id}@invalid`;
 
 /**
  * Each listed directory user's install row (by identity) and the row now

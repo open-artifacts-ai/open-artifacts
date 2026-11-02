@@ -178,7 +178,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     }
   });
 
-  it("deny-only: the three real-only drops, each still a recorded drop", () => {
+  it("deny-only: the six real-only drops, each still a recorded drop", () => {
     const only = cases.filter((c) => c.denyOnly);
     expect(only.map((c) => c.name).sort()).toEqual(
       Object.entries(DROPPED)
@@ -186,7 +186,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         .map(([n]) => `${n} [session]`)
         .sort(),
     );
-    expect(only).toHaveLength(3);
+    expect(only).toHaveLength(6);
     for (const c of only) expect(c.run).toBeDefined();
   });
 

@@ -31,6 +31,9 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // before end) and moves status_changed_at (grants issued before stay
   // refused); their presence is revoked again, belt and braces.
   "services/members.ts:restoreMember": "user",
+  // Directory sync's revive: the same rules, and the group restriction it
+  // recomputes can raise a cap; their presence is revoked after the batch.
+  "services/members.ts:reviveFromSync": "user",
   // Suspend or remove (P3 T6): PATs, grants and sessions revoked.
   "services/members.ts:setUserStatus": "user",
   // A role change ends their sessions; sockets were authorized under the old role.
