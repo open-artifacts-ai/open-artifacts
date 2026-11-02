@@ -325,6 +325,19 @@ describe("Library", () => {
       await waitFor(() => expect(router.state.location.search).toEqual({}));
     });
 
+    it("All agents drops a hidden agent with agentVia, so it can't come back", async () => {
+      const router = mount(`/?agent=Alpha&agentVia=g:${GRANT.grantId}`);
+      await waitFor(async () =>
+        expect(await agentBox()).toHaveTextContent(GRANT.clientName),
+      );
+      fireEvent.click(await agentBox());
+      fireEvent.click(
+        await screen.findByRole("option", { name: "All agents" }),
+      );
+      await waitFor(() => expect(router.state.location.search).toEqual({}));
+      expect(await agentBox()).toHaveTextContent("All agents");
+    });
+
     it("All agents clears agentVia", async () => {
       const router = mount(`/?agentVia=g:${GRANT.grantId}`);
       await waitFor(async () =>
