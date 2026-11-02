@@ -405,6 +405,36 @@ describe("reads and writes: rl- reach, no pii", () => {
   });
 });
 
+describe("the admin form's test-install body", () => {
+  const body = () => ({
+    requestId: requestId(),
+    slug: "rl-form",
+    ownerEmail: "a@oa-redline-a.fyi",
+    tier: "team",
+    auth: { providers: ["google"], domains: ["oa-redline-a.fyi"] },
+    version: "1.42.0",
+    testHooks: true,
+  });
+
+  it("is accepted as the form sends it", async () => {
+    const r = await call(fakeEnv(), TA, "R4", { body: body() });
+    expect(r.status).toBe(202);
+  });
+
+  it("each thing the form leaves out or guards is refused", async () => {
+    const e = fakeEnv();
+    const refused = async (over: object, code: string) =>
+      expect(
+        (await call(e, TA, "R4", { body: { ...body(), ...over } })).code,
+      ).toBe(code);
+    await refused({ sendWelcome: true }, "forbidden");
+    await refused({ slug: "customer3" }, "forbidden");
+    await refused({ ownerEmail: "a@example.com" }, "forbidden");
+    await refused({ testHooks: false }, "forbidden");
+    await refused({ testHooks: undefined }, "invalid_input");
+  });
+});
+
 describe("OAuth consent: a grant is a token, so the test admin gets none", () => {
   it("GET and POST /oauth/authorize answer 403 for a test admin session", async () => {
     vi.restoreAllMocks();

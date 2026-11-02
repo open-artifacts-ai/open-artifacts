@@ -2,10 +2,12 @@ import {
   AuthProviderSchema,
   AuthSchema,
   JOB_STEPS,
+  OIDC_LIMITS,
   slugRule,
   type Tier,
   TierSchema,
 } from "@oa/shared/provisioning";
+import { STAGING_TEST_DOMAIN } from "@oa/shared/provisioning/constants";
 import {
   Button,
   Checkbox,
@@ -33,8 +35,11 @@ const SLUG_COPY = {
   reserved: "That name is reserved.",
   taken: "That name is taken.",
 } as const;
+/** The test admin's rule (R4's field rules for its principal). */
+const TEST_SLUG = `Use an ${OIDC_LIMITS.slugPrefix} slug. This session can only create those.`;
+const TEST_OWNER = `Use an owner at ${STAGING_TEST_DOMAIN}, the staging test domain.`;
 /** Slug answers shown as an error (red help, red border). */
-const BAD_SLUG = new Set(["invalid", "reserved", "taken"]);
+const BAD_SLUG = new Set(["invalid", "reserved", "taken", "test_rule"]);
 const APP_DOMAIN = {
   prod: "open-artifacts.app",
   staging: "open-artifacts-staging.app",
@@ -46,8 +51,10 @@ export const appDomainFor = (env: "prod" | "staging", host: string) =>
     : APP_DOMAIN[env];
 
 /** Slug rules on the client, then (after a pause) the live check. */
-function useSlugStatus(slug: string, domain: string) {
+function useSlugStatus(slug: string, domain: string, testAdmin: boolean) {
   const local = slug ? slugRule(slug) : null;
+  const refused =
+    testAdmin && local === "ok" && !slug.startsWith(OIDC_LIMITS.slugPrefix);
   const [settled, setSettled] = useState("");
   useEffect(() => {
     const t = setTimeout(() => setSettled(slug), DEBOUNCE_MS);
@@ -55,11 +62,12 @@ function useSlugStatus(slug: string, domain: string) {
   }, [slug]);
   const remote = useQuery({
     ...slugQuery(settled),
-    enabled: local === "ok" && settled === slug,
+    enabled: local === "ok" && !refused && settled === slug,
   });
   if (!slug) return { status: null, text: `Becomes <slug>.${domain}` };
   if (local !== "ok")
     return { status: local, text: SLUG_COPY[local as "invalid" | "reserved"] };
+  if (refused) return { status: "test_rule", text: TEST_SLUG };
   if (settled !== slug || remote.isFetching)
     return { status: "checking", text: "Checking..." };
   if (remote.isError)
@@ -76,17 +84,24 @@ function useSlugStatus(slug: string, domain: string) {
 export function CreateInstall() {
   const navigate = useNavigate();
   const releases = useQuery(releasesQuery());
-  const installable = (releases.data?.items ?? []).filter((r) => r.installable);
-  const latest = installable.find((r) => r.latest)?.version ?? "";
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  // Test-hook creates only: R4 requires it, so there's no control to show.
+  const testAdmin = me.data?.principal === "test-admin";
+  // release_gate runs a test-hook install's redline bundle.
+  const installable = (releases.data?.items ?? []).filter(
+    (r) => r.installable && (!testAdmin || r.variants.includes("redline")),
+  );
+  const latest =
+    (installable.find((r) => r.latest) ?? (testAdmin ? installable[0] : null))
+      ?.version ?? "";
   const [slug, setSlug] = useState("");
   const [picked, setPicked] = useState("");
   const version = picked || latest;
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
   const domain = appDomainFor(
     me.data?.env ?? "prod",
     globalThis.location?.hostname ?? "",
   );
-  const check = useSlugStatus(slug, domain);
+  const check = useSlugStatus(slug, domain, testAdmin);
   const [ownerEmail, setOwnerEmail] = useState("");
   const [tier, setTier] = useState<Tier>("team");
   const [providers, setProviders] = useState<string[]>(["google"]);
@@ -107,6 +122,8 @@ export function CreateInstall() {
     domains,
   });
   const noProvider = providers.length === 0;
+  const ownerRefused =
+    testAdmin && emailOk && ownerDomain !== STAGING_TEST_DOMAIN;
   /** Design's Allowed domains rules (option A): any method, owner's domain included. */
   const domainsError =
     domains.length === 0
@@ -126,19 +143,23 @@ export function CreateInstall() {
   /** Why Create install is off, shown beside it. */
   const blocker = !slug
     ? "Add a slug."
-    : check.status !== "ok"
-      ? "Pick an available slug."
-      : !ownerEmail
-        ? "Add an owner email."
-        : !emailOk
-          ? "Enter a valid owner email."
-          : noProvider
-            ? "Pick a sign-in method."
-            : !domainsOk
-              ? "Fix the allowed domains."
-              : !version
-                ? "Pick a release."
-                : null;
+    : check.status === "test_rule"
+      ? TEST_SLUG
+      : check.status !== "ok"
+        ? "Pick an available slug."
+        : !ownerEmail
+          ? "Add an owner email."
+          : !emailOk
+            ? "Enter a valid owner email."
+            : ownerRefused
+              ? TEST_OWNER
+              : noProvider
+                ? "Pick a sign-in method."
+                : !domainsOk
+                  ? "Fix the allowed domains."
+                  : !version
+                    ? "Pick a release."
+                    : null;
   const create = useAction(
     (_: void, requestId) =>
       api.call("R4", {
@@ -150,11 +171,12 @@ export function CreateInstall() {
           auth: auth.data,
           ...(version ? { version } : {}),
           ...(sendWelcome ? { sendWelcome } : {}),
+          ...(testAdmin ? { testHooks: true } : {}),
         },
       }),
     {
       // A retry after a dropped connection keeps its request id only while the body is the same.
-      key: [slug, ownerEmail, tier, auth.data, version, sendWelcome],
+      key: [slug, ownerEmail, tier, auth.data, version, sendWelcome, testAdmin],
       invalidate: [["installs"], ["world"]],
       onSuccess: (r) =>
         void navigate({ to: "/jobs/$id", params: { id: r.job.id } }),
@@ -169,6 +191,12 @@ export function CreateInstall() {
       <p className="oa-sub">
         Runs as a job. You can leave this page; it keeps going.
       </p>
+      {testAdmin && (
+        <p className="oa-banner oa-banner-info">
+          Test install. This session can only create installs with an rl- slug
+          and an owner on the staging test domain, with test hooks on.
+        </p>
+      )}
       <div className="oa-split oa-create">
         <form
           className="oa-form"
@@ -196,16 +224,23 @@ export function CreateInstall() {
               {check.text}
             </small>
           </div>
-          <div>
+          <div className={ownerRefused ? "oa-field-bad" : undefined}>
             <Label htmlFor="owner">Owner email</Label>
             <Input
               id="owner"
               type="email"
               value={ownerEmail}
               autoComplete="off"
+              aria-invalid={ownerRefused ? true : undefined}
+              aria-describedby="owner-help"
               onChange={(e) => setOwnerEmail(e.target.value)}
             />
-            <small>Gets admin on the new workspace.</small>
+            <small
+              id="owner-help"
+              className={ownerRefused ? "oa-help-bad" : undefined}
+            >
+              {ownerRefused ? TEST_OWNER : "Gets admin on the new workspace."}
+            </small>
           </div>
           <fieldset>
             <legend>Tier</legend>
@@ -293,14 +328,17 @@ export function CreateInstall() {
             </Select>
             <small>Only signed, published releases are listed.</small>
           </div>
-          <label className="oa-check" htmlFor="welcome">
-            <Checkbox
-              id="welcome"
-              checked={sendWelcome}
-              onCheckedChange={(on) => setSendWelcome(on === true)}
-            />
-            Send the owner a welcome email
-          </label>
+          {/* R4 refuses sendWelcome from the test admin. */}
+          {!testAdmin && (
+            <label className="oa-check" htmlFor="welcome">
+              <Checkbox
+                id="welcome"
+                checked={sendWelcome}
+                onCheckedChange={(on) => setSendWelcome(on === true)}
+              />
+              Send the owner a welcome email
+            </label>
+          )}
           <ErrorLine error={create.error} />
           <div className="oa-actions oa-form-acts">
             <Button
