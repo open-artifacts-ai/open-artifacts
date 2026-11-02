@@ -215,6 +215,8 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     recipient?: ShareRecipient;
     /** How they sign in, from the server (older servers omit it). */
     with: string | null;
+    /** The role picked: a guest's row corrects Editor, once, just after. */
+    role: ShareRole;
   } | null>(null);
   const domains = useSignInDomains();
   const state = useMe();
@@ -262,6 +264,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               emailed: r.emailed,
               recipient: r.recipient,
               with: signInWith(r.signInMethods),
+              role,
             });
           },
           onError: (x) => fail(x, "Couldn't share"),
@@ -531,11 +534,13 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                   <span className="text-muted-foreground">{s.role}</span>
                 )}
               </div>
-              {people && s.guest && s.role === "editor" && (
-                <p role="status" className="m-0 text-muted-foreground">
-                  Guests can only view, so they were invited as viewers.
-                </p>
-              )}
+              {s.guest &&
+                shared?.email === s.email &&
+                shared.role === "editor" && (
+                  <p role="status" className="m-0 text-muted-foreground">
+                    Guests can only view, so they were invited as viewers.
+                  </p>
+                )}
             </li>
           ))}
         </ul>

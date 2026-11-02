@@ -2,6 +2,7 @@ import { R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import {
   act,
+  cleanup,
   fireEvent,
   screen,
   waitFor,
@@ -9,7 +10,14 @@ import {
 } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
-import { installHarness, mount, seen, server, wait } from "./harness";
+import {
+  installHarness,
+  mount,
+  mountHosted,
+  seen,
+  server,
+  wait,
+} from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
@@ -148,29 +156,43 @@ describe("share panel", () => {
     ).toBeInTheDocument();
   });
 
-  it("a guest invited as Editor gets one status line; a Viewer guest and a member get none", async () => {
+  describe("a guest invited as Editor", () => {
     const LINE = "Guests can only view, so they were invited as viewers.";
-    const row = (email: string, role: string, guest?: boolean) => ({
-      email,
-      role,
-      createdAt: "2026-10-01T00:00:00.000Z",
-      ...(guest ? { guest } : {}),
+    const invite = async (email: string, role: "Editor" | "Viewer") => {
+      fireEvent.keyDown(
+        await screen.findByRole("combobox", { name: "Invite role" }),
+        { key: "Enter" },
+      );
+      fireEvent.click(await screen.findByRole("option", { name: role }));
+      fireEvent.change(screen.getByLabelText("Email"), {
+        target: { value: email },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Add" }));
+      await screen.findByTitle(email);
+    };
+
+    it("gets the status line just after inviting, and not on a later open", async () => {
+      const guest = "gia@elsewhere.test";
+      mountHosted(panel(OWNED));
+      await invite(guest, "Editor");
+      const line = await screen.findByText(LINE);
+      expect(line).toHaveAttribute("role", "status");
+      expect(screen.getByTitle(guest).closest("li")).toContainElement(line);
+      cleanup();
+      mount(panel(OWNED));
+      await screen.findByTitle(guest);
+      expect(await screen.findByText("Guest · can only view")).toBeTruthy();
+      expect(screen.queryByText(LINE)).toBeNull();
     });
-    server.use(
-      http.get("*/api/v1/artifacts/:id/shares", () =>
-        HttpResponse.json([
-          row("bob@example.com", "editor"),
-          row("gus@elsewhere.test", "viewer", true),
-          row("gia@elsewhere.test", "editor", true),
-        ]),
-      ),
-    );
-    mount(panel(OWNED));
-    const person = await screen.findByTitle("gia@elsewhere.test");
-    const lines = screen.getAllByText(LINE);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toHaveAttribute("role", "status");
-    expect(person.closest("li")).toContainElement(lines[0] as HTMLElement);
+
+    it("no line for a guest invited as Viewer, or a member as Editor", async () => {
+      mountHosted(panel(OWNED));
+      await invite("gus@elsewhere.test", "Viewer");
+      await screen.findByText("Guest · can only view");
+      expect(screen.queryByText(LINE)).toBeNull();
+      await invite("carol@example.com", "Editor");
+      expect(screen.queryByText(LINE)).toBeNull();
+    });
   });
 
   it("changes a share role and removes it", async () => {
