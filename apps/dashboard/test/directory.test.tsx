@@ -952,6 +952,10 @@ it("a snoozed row shows when it ends and why; Unsnooze sends DELETE; Apply still
   expect(
     within(h).queryByRole("button", { name: "Snooze Engineering" }),
   ).toBeNull();
+  // A snoozed row's Apply is an outline button (Design).
+  expect(
+    within(h).getByRole("button", { name: "Apply Engineering" }),
+  ).toHaveClass("border-input");
   fireEvent.click(
     within(h).getByRole("button", { name: "Unsnooze Engineering" }),
   );
@@ -974,7 +978,12 @@ it("an admin sees a snoozed row without buttons", async () => {
   mountHosted("/settings/directory", true, asAdmin, snoozedStatus());
   const h = await held();
   expect(h).toHaveTextContent("Snoozed until ");
-  expect(h).toHaveTextContent(/Snoozed until .+ or the group changes/);
+  // Its own line, date only (Design): "Snoozed until Dec 2 or the group changes".
+  const line = within(h).getByText(/^Snoozed until/, { selector: "small" });
+  expect(line).toHaveTextContent(/or the group changes$/);
+  expect(line.querySelector("time [aria-hidden='true']")?.textContent).toMatch(
+    /^[A-Z][a-z]{2} \d{1,2}$/,
+  );
   expect(within(h).queryByRole("button")).toBeNull();
 });
 

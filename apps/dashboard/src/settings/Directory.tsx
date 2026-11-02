@@ -720,13 +720,17 @@ function HeldRow({
             ? "Google lists the group as empty"
             : "more than half the group"}{" "}
           · since <At iso={h.since} />
-          {h.snoozedUntil && (
-            <>
-              {" "}
-              · Snoozed until <At iso={h.snoozedUntil} /> or the group changes
-            </>
-          )}
         </small>
+        {h.snoozedUntil && (
+          <small className={`block ${muted}`}>
+            Snoozed until{" "}
+            <When
+              iso={h.snoozedUntil}
+              text={dayFmt.format(new Date(h.snoozedUntil))}
+            />{" "}
+            or the group changes
+          </small>
+        )}
         {h.snoozedUntil && h.snoozeReason && (
           <small className={`block ${muted}`}>
             {"\u201c"}
@@ -761,6 +765,8 @@ function HeldRow({
           )}
           <Button
             size="sm"
+            // Primary while held; a snoozed row's Apply is quiet (Design).
+            variant={h.snoozedUntil ? "outline" : "default"}
             className="text-[length:var(--oa-text-sm)]"
             aria-label={`Apply ${h.name}`}
             onClick={() => setAsking(true)}
