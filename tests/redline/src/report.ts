@@ -481,9 +481,29 @@ export function acceptedUnproven(c: CaseResult): AcceptedUnproven | undefined {
   );
 }
 
-/** A non-pass the gate accepts: a pre-prod not-applicable or a listed unproven-live. */
+/**
+ * P30 opens an alert that emails the owner, so the nightly (a scheduled run)
+ * skips it. A candidate can't: redline-staging.yml sets REDLINE_DISPATCH on
+ * every dispatch, and redline-staging.test.ts pins that.
+ */
+export const NIGHTLY_NA_REASON = "dispatch runs only";
+
+/** The nightly's not-applicable the gate accepts: P30, exact reason. */
+export function nightlyNa(c: CaseResult): boolean {
+  return (
+    c.level === "not-applicable" &&
+    c.reason === NIGHTLY_NA_REASON &&
+    (c.file === undefined || c.file.endsWith("provisioning.test.ts")) &&
+    c.name.startsWith("provisioning > P30: ")
+  );
+}
+
+/** A non-pass the gate accepts: a pre-prod or nightly not-applicable, or a listed unproven-live. */
 const accepted = (c: CaseResult) =>
-  preProdNa(c) || preProdGuardNa(c) || acceptedUnproven(c) !== undefined;
+  preProdNa(c) ||
+  preProdGuardNa(c) ||
+  nightlyNa(c) ||
+  acceptedUnproven(c) !== undefined;
 
 export function gatePasses(cases: readonly CaseResult[]): boolean {
   return (

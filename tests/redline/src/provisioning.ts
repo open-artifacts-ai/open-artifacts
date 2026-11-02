@@ -10,7 +10,7 @@ import {
 import { notResolved } from "./fetch-timeout.ts";
 import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
-import { PRE_PROD_REASON } from "./report.ts";
+import { NIGHTLY_NA_REASON, PRE_PROD_REASON } from "./report.ts";
 
 // The red-line provisioning probes (design v7 12.2, P1-P49) against the
 // staging Provisioning API, as the GitHub OIDC principal "O" (4.4): `rl-`
@@ -1435,7 +1435,7 @@ export const PROBES: readonly Probe[] = [
     title:
       "dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens",
     run: async (run) => {
-      if (!run.c.dispatch) return na("dispatch runs only");
+      if (!run.c.dispatch) return na(NIGHTLY_NA_REASON);
       for (let i = 0; i < 5; i++) {
         const r = await run.raw(
           `${run.c.admin}/auth/callback/google?code=redline&state=${randomBytes(16).toString("base64url")}`,

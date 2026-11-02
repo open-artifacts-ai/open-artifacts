@@ -22,6 +22,7 @@ import {
   label,
   labelOf,
   levelOf,
+  NIGHTLY_NA_REASON,
   PRE_PROD_GUARD,
   PRE_PROD_GUARD_REASON,
   PRE_PROD_NA,
@@ -704,5 +705,32 @@ describe("bindingOf: the suite's commit (#1137)", () => {
       }),
     });
     expect(b?.suiteSha).toBe(head);
+  });
+});
+
+describe("nightlyNa: P30 is skipped only in a scheduled run (#1137)", () => {
+  const P30 =
+    "provisioning > P30: dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens";
+  const c = (over: Partial<CaseResult>): CaseResult => ({
+    name: P30,
+    level: "not-applicable",
+    reason: NIGHTLY_NA_REASON,
+    file: "provisioning.test.ts",
+    ...over,
+  });
+
+  it("the gate accepts exactly that", () => {
+    expect(gatePasses([c({})])).toBe(true);
+  });
+
+  it("any other reason, level, case or file still fails", () => {
+    for (const bad of [
+      c({ reason: "skipped" }),
+      c({ level: "fail" }),
+      c({ level: "infra" }),
+      c({ name: "provisioning > P31: x" }),
+      c({ file: "surfaces.test.ts" }),
+    ])
+      expect(gatePasses([bad])).toBe(false);
   });
 });
