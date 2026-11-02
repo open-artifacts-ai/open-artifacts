@@ -706,7 +706,8 @@ export async function disconnectDirectory(
 /**
  * GET R.directory until T13's DirectorySync serves it. With no transport,
  * mode is "off" and, with `showProblem` (the org owner: directory.manage),
- * lastError carries the configuration problem. An expired pending
+ * lastError carries the configuration problem and held sweeps their
+ * snoozeReason (null without it, #412). An expired pending
  * confirmation is dropped first (lazy expiry), except with expire: false.
  */
 export async function directoryStatus(
@@ -765,7 +766,10 @@ export async function directoryStatus(
     staleAt: h.staleAt,
     alertedAt: h.alertedAt,
     customerMismatch: h.customerMismatch,
-    held: h.held,
+    // A snooze's note is the owner's (#412): an admin sees the snooze only.
+    held: o.showProblem
+      ? h.held
+      : h.held.map((x) => ({ ...x, snoozeReason: null })),
     liftsPaused: binding ? h.liftsPaused : [],
     pendingCount: pending ? pending.count : null,
     pendingCountCapped: pending ? pending.capped : false,
