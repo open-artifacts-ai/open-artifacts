@@ -907,20 +907,39 @@ export const PROBES: readonly Probe[] = [
       const p = rlp(run);
       const email = OIDC_OWNER_EMAIL;
       const local = email.slice(0, email.indexOf("@"));
-      const ids = async (q: string, what: string) => {
+      type Row = {
+        id: string;
+        slug: string;
+        appHost: string;
+        contentHost: string;
+      };
+      // A row whose own slug, id or host holds q is a fair match, not a leak.
+      const fair = (r: Row, q: string) =>
+        [r.slug, r.id, r.appHost, r.contentHost].some((c) =>
+          String(c ?? "")
+            .toLowerCase()
+            .includes(q.toLowerCase()),
+        );
+      if (fair(p, local))
+        throw new ProbeFail(
+          "P49 setup: the owner email's local part is in rl-p's slug, id or a host",
+        );
+      const rows = async (q: string, what: string) => {
         const l = await run.v1(`/installs?${new URLSearchParams({ q })}`);
         expect(l, 200, `P49 R2 q=${what}`);
-        return (l.json as { items: { id: string }[] }).items.map((x) => x.id);
+        return (l.json as { items: Row[] }).items;
       };
-      if (!(await ids(p.slug, "rl-p slug")).includes(p.id))
+      if (!(await rows(p.slug, "rl-p slug")).some((x) => x.id === p.id))
         throw new ProbeFail("P49 R2 q=rl-p slug: rl-p is not in the results");
       for (const [q, what] of [
         [email, "owner email"],
         [local, "owner email local part"],
       ] as const) {
-        const n = (await ids(q, what)).length;
+        const n = (await rows(q, what)).filter((r) => !fair(r, q)).length;
         if (n !== 0)
-          throw new ProbeFail(`P49 R2 q=${what}: ${n} items, want 0`);
+          throw new ProbeFail(
+            `P49 R2 q=${what}: ${n} items match by owner email only, want 0`,
+          );
       }
       return pass();
     },

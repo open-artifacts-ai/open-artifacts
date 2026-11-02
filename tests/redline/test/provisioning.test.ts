@@ -281,7 +281,11 @@ describe("each probe fails on the behaviour it guards", () => {
       "P47",
       /P47: want 401 unauthenticated, got status 401.*code internal/,
     ],
-    ["r2_q_owner_email", "P49", /P49 R2 q=owner email: 1 items, want 0/],
+    [
+      "r2_q_owner_email",
+      "P49",
+      /P49 R2 q=owner email: 1 items match by owner email only, want 0/,
+    ],
   ];
   for (const [fault, id, re] of cases)
     it(`${id} on ${fault}`, async () => {
