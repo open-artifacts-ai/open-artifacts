@@ -21,6 +21,7 @@ import {
   session,
 } from "./http/middleware.js";
 import { cancelUnreadOnRefusal } from "./http/unread-body.js";
+import { mountOAuthCopy } from "./mcp/oauth-copy.js";
 import { oauthStoreHealth } from "./mcp/oauth-store.js";
 import { SKILL_PATH, serveSkill } from "./mcp/skill.js";
 import { serveUpgrade, UPGRADE_PATH } from "./mcp/upgrade.js";
@@ -45,7 +46,8 @@ export const methodNotAllowed = () =>
 // Paths owned by the Worker; never served by the SPA fallback.
 // (/a/*, /no-access and /search are SPA routes and fall through to ASSETS.)
 // /_oa/* (render bundles) is content-host only: a JSON 404 here. /__oa/* is
-// reserved for platform internals (no route today): a JSON 404, never the SPA.
+// reserved for platform internals: a JSON 404, never the SPA, except POST
+// /__oa/oauth-store/copy where it is on (mcp/oauth-copy.ts).
 const WORKER_PREFIX =
   /^\/(api|auth|oauth|\.well-known|mcp|_oa|__oa|__test)(\/|$)/;
 
@@ -139,6 +141,9 @@ export function createApp(
   // Public, outside SESSION_PATHS: no session read, no D1.
   // /__test/* (P5 hooks): before any session read; 404 unless enabled.
   if (hooks) hooks.mountTestHooks(app);
+  // POST /__oa/oauth-store/copy (#1008): before any session read; 404
+  // unless OAUTH_COPY_KEY is set (mcp/oauth-copy.ts decides).
+  mountOAuthCopy(app);
   app.get(SKILL_PATH, serveSkill);
   app.get(UPGRADE_PATH, serveUpgrade);
   // Public sign-in offering (#359 AuthProviders): config only, before the
