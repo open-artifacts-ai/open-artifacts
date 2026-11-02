@@ -434,14 +434,16 @@ export const CSRF_HEADER = "X-OA-Request";
 /**
  * The non-GET routes a capped caller keeps, matched exactly (method and whole
  * path, never a prefix): their own display name, a data query (a read sent as
- * POST), and revoking their own tokens and agent grants (both routes check
- * ownership).
+ * POST), revoking their own tokens and agent grants (both routes check
+ * ownership), and dismissing their own guest-share notice.
  */
 const CAPPED_ALLOWED: readonly (readonly [string, RegExp])[] = [
   ["PATCH", /^\/api\/v1\/me$/],
   ["POST", /^\/api\/v1\/artifacts\/[^/]+\/data\/[^/]+\/query$/],
   ["DELETE", /^\/api\/v1\/tokens\/[^/]+$/],
   ["DELETE", /^\/api\/v1\/oauth-clients\/[^/]+$/],
+  // Dismissing their own guest-share notice (notices.own; guests get 404 there).
+  ["POST", /^\/api\/v1\/notices\/guest_shares\/dismiss$/],
 ];
 
 /**

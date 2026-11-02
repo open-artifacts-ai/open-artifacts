@@ -183,12 +183,23 @@ describe("GET /me spaces", () => {
     expect(me.instance.hosted).toBe(false);
     expect(me.instance.tier).toBeNull();
     expect(me.instance.signIn?.mode).toBe("access");
-    expect(me.instance.features).toContain("spaces");
+    expect(me.instance.features).toEqual(
+      expect.arrayContaining(["spaces", "guests_read_only"]),
+    );
     expect(me.personalSpaceId).toBe(member.userId);
     expect(mine(me)).toEqual([
       ["Alpha", "viewer"],
       ["Mid", "editor"],
       ["Zeta", "manager"],
     ]);
+  });
+
+  it("Access-only with spaces off sends no spaces data, in the same shape", async () => {
+    const me = await getMe({ ...ACCESS, FEATURES: "" } as Env, member.cookie);
+    expect(me.instance.features).toEqual(["guests_read_only"]);
+    expect(me.auth).toMatchObject({ readOnly: false, cap: null });
+    expect(me.instance.hosted).toBe(false);
+    expect(me).not.toHaveProperty("personalSpaceId");
+    expect(me).not.toHaveProperty("spaces");
   });
 });

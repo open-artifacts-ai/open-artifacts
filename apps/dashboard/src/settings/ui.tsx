@@ -30,12 +30,14 @@ export const errorText = "text-[length:var(--oa-text-sm)] text-destructive";
 export function SettingsCard({
   id,
   title,
+  subtitle,
   action,
   focusable = false,
   children,
 }: {
   id: string;
   title: string;
+  subtitle?: string;
   action?: ReactNode;
   /** The heading can take focus from code (not a tab stop). */
   focusable?: boolean;
@@ -47,15 +49,18 @@ export function SettingsCard({
         <CardHeader
           className={`flex min-h-[30px] items-center justify-between ${GAP} ${INSET}`}
         >
-          <CardTitle>
-            <h2
-              id={id}
-              tabIndex={focusable ? -1 : undefined}
-              className="text-[length:var(--oa-text-md)] font-semibold outline-none"
-            >
-              {title}
-            </h2>
-          </CardTitle>
+          <div className="grid min-w-0 gap-[2px]">
+            <CardTitle>
+              <h2
+                id={id}
+                tabIndex={focusable ? -1 : undefined}
+                className="text-[length:var(--oa-text-md)] font-semibold outline-none"
+              >
+                {title}
+              </h2>
+            </CardTitle>
+            {subtitle && <p className={`m-0 ${muted}`}>{subtitle}</p>}
+          </div>
           {action}
         </CardHeader>
         <CardContent className={`grid min-w-0 ${GAP} ${INSET}`}>

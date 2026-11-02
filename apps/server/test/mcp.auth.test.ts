@@ -407,6 +407,39 @@ describe("MCP auth: OAuth", () => {
     ).toEqual([]);
   });
 
+  it("a grant is its owner's: another member can't label or revoke it, or see it", async () => {
+    const email = `oauth-own-${tag}@x.com`;
+    const { member, accessToken } = await oauthToken(email, "Owned");
+    const clients = (await (
+      await api(app, R.oauthClients, member.cookie)
+    ).json()) as OAuthClient[];
+    const grantId = clients[0]?.grantId ?? "";
+    expect(grantId).not.toBe("");
+
+    const other = await login(`oauth-own-other-${tag}@x.com`);
+    expect(
+      (await (await api(app, R.oauthClients, other.cookie)).json()) as [],
+    ).toEqual([]);
+    const label = await api(app, R.oauthClient(grantId), other.cookie, {
+      method: "PATCH",
+      body: { label: "taken" },
+    });
+    expect(label.status).toBe(404);
+    const revoke = await api(app, R.oauthClient(grantId), other.cookie, {
+      method: "DELETE",
+    });
+    expect(revoke.status).toBe(404);
+
+    // Untouched: the same label, and the token still works.
+    const after = (await (
+      await api(app, R.oauthClients, member.cookie)
+    ).json()) as OAuthClient[];
+    expect(after.map((c) => [c.grantId, c.label])).toEqual([
+      [grantId, undefined],
+    ]);
+    expect((await listTools(`Bearer ${accessToken}`)).status).toBe(200);
+  });
+
   it("deny → redirect with access_denied", async () => {
     const m = await login(`oauth-deny-${tag}@x.com`);
     const clientId = await register();

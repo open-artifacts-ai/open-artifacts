@@ -8,6 +8,7 @@ import {
   InstanceSignInSchema,
   MeAuthSchema,
   MemberStatusSchema,
+  MeNoticesSchema,
   MySpaceSchema,
   RestrictionSchema,
   SignInProviderIdSchema,
@@ -583,7 +584,7 @@ export const MeSchema = z.object({
     plan: z.enum(["free", "paid"]),
     /** Null for members and guests, and before the first good check. Optional: older servers omit it. */
     update: InstanceUpdateSchema.nullable().optional(),
-    /** Hosted M1 (all optional; older and self-hosted servers omit them). A hosted install (HOSTED=1). */
+    /** Hosted M1 (all optional; older servers omit them, and Access-only installs omit hosted, tier and signIn). A hosted install (HOSTED=1). */
     hosted: z.boolean().optional(),
     /** Hosted billing tier; null when self-hosted. */
     tier: TierSchema.nullable().optional(),
@@ -604,6 +605,8 @@ export const MeSchema = z.object({
   personalSpaceId: z.string().optional(),
   /** Hosted M1: shared spaces the caller has a role in, by name, at most 200 (then page R.spaces). */
   spaces: z.array(MySpaceSchema).optional(),
+  /** Parity 2: one-time notices, org owner only; absent when there are none. */
+  notices: MeNoticesSchema.optional(),
 });
 export type Me = z.infer<typeof MeSchema>;
 

@@ -106,6 +106,32 @@ describe("authz-probe", () => {
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/MISMATCH rest get otherMember personalTeam/);
   });
+  it("skips PUT space member without org.spaceMemberId (no refusal to send)", async () => {
+    const PUT_MEMBER = "PUT /api/v1/spaces/:id/members/:userId";
+    const cells = async (org: Record<string, string>) => {
+      const lines: string[] = [];
+      const code = await main(
+        ["--base", u, "--creds", "f"],
+        {},
+        {
+          log: (l) => lines.push(l),
+          fetch: nothing,
+          only: (n) => n === PUT_MEMBER,
+          readFile: async () => JSON.stringify({ ...FILE, org }),
+        },
+      );
+      return { code, last: lines.at(-1) };
+    };
+    const org = { spaceId: "S", memberId: "M", departedId: "D" };
+    expect(await cells(org)).toEqual({
+      code: 0,
+      last: "0 cells, 0 mismatches",
+    });
+    expect(await cells({ ...org, spaceMemberId: "E" })).toEqual({
+      code: 0,
+      last: "2 cells, 0 mismatches",
+    });
+  });
   it("never runs a probe that writes", async () => {
     const methods = new Set<string>();
     await main(
@@ -115,8 +141,11 @@ describe("authz-probe", () => {
         log: () => {},
         fetch: async (req) => {
           methods.add(
-            req.headers.get("x-oa-request") === null && req.method !== "GET"
-              ? "csrf-probe"
+            // A cookie write without the header (bearer ones are exempt).
+            req.headers.get("x-oa-request") === null &&
+              req.headers.has("cookie") &&
+              req.method !== "GET"
+              ? "no-csrf-header"
               : req.method,
           );
           return nothing();
@@ -124,14 +153,19 @@ describe("authz-probe", () => {
         readFile: async () => JSON.stringify(FILE),
       },
     );
-    // Writes only as CSRF probes (no X-OA-Request: refused before any
-    // handler), or bodies that fail validation after the access check.
+    // #839: every write carries X-OA-Request (it reaches the route's rules)
+    // and is the refusal mode: refused after the access rules, or a no-op.
+    // Real writes (the `mutates` ones, realOnly routes) are skipped.
     expect([...methods].sort()).toEqual(
-      ["GET", "POST", "PATCH", "PUT", "DELETE", "csrf-probe"].sort(),
+      ["GET", "POST", "PATCH", "PUT", "DELETE"].sort(),
     );
     expect(SURFACES.filter((s) => s.mutates).map((s) => s.name)).toEqual([
+      "rest restore_version",
       "rest uploads",
+      "rest unshare",
       "rest visibility",
+      "rest delete",
+      "rest undelete",
       "mcp restore_version",
       "mcp unshare_artifact",
       "mcp set_visibility",

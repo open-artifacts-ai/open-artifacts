@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.98.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.97.0...v0.98.0) (2026-11-02)
+
+
+### Features
+
+* **instance:** "Sign-in needs attention." for sign-in problems (parity 3) ([#836](https://github.com/open-artifacts-ai/open-artifacts/issues/836)) ([f7b82bc](https://github.com/open-artifacts-ai/open-artifacts/commit/f7b82bcac0c87cc255c3559ae2932610af2c3102))
+* **scheduler:** every install follows the platform's release, canary first, with a soak and a durable halt ([#955](https://github.com/open-artifacts-ai/open-artifacts/issues/955)) ([#1110](https://github.com/open-artifacts-ai/open-artifacts/issues/1110)) ([5533fa4](https://github.com/open-artifacts-ai/open-artifacts/commit/5533fa4efadd7955a79a3194784e16fbb5a38710))
+* **server:** Turnstile warning, sync on connect, recovery cron (parity 3) ([#835](https://github.com/open-artifacts-ai/open-artifacts/issues/835)) ([00e3a04](https://github.com/open-artifacts-ai/open-artifacts/commit/00e3a04b7d644d89488678f0daad217a7be33256))
+
+
+### Bug Fixes
+
+* **server:** self-hosts log the app's lines but not every request ([#843](https://github.com/open-artifacts-ai/open-artifacts/issues/843)) ([19b0932](https://github.com/open-artifacts-ai/open-artifacts/commit/19b0932b6b790f8215b19d811ffa4fd1d397df26))
+* sweep fixes from the [#1052](https://github.com/open-artifacts-ai/open-artifacts/issues/1052) audit, and [#853](https://github.com/open-artifacts-ai/open-artifacts/issues/853)'s review follow-ups ([#1097](https://github.com/open-artifacts-ai/open-artifacts/issues/1097)) ([#1128](https://github.com/open-artifacts-ai/open-artifacts/issues/1128)) ([453d993](https://github.com/open-artifacts-ai/open-artifacts/commit/453d993adc851a4abc0b160b4422b7c55bdd07bd))
+
 ## [0.97.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.96.0...v0.97.0) (2026-11-02)
 
 

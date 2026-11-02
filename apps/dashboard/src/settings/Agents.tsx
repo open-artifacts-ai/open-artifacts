@@ -210,7 +210,11 @@ function OAuthClients() {
     clientName: string;
   } | null>(null);
   return (
-    <SettingsCard id="oa-oauth-h" title="Connected agents">
+    <SettingsCard
+      id="oa-oauth-h"
+      title="Connected agents"
+      subtitle="Agents you approved can publish as you."
+    >
       {q.isError ? (
         <p role="alert" className={errorText}>
           Couldn't load connected agents.

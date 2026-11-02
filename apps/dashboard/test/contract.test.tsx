@@ -57,6 +57,17 @@ test("canOf derives the action table when the server omits can", () => {
   });
 });
 
+test("canOf takes data writes from a capped caller when the server omits can", () => {
+  const a = {
+    ...fixtures.artifacts[0],
+    access: "viewer" as const,
+    dataWriters: "viewers" as const,
+    can: undefined,
+  };
+  expect(canOf(a, []).dataWrite).toBe(true);
+  expect(canOf(a, [], "guest").dataWrite).toBe(false);
+});
+
 test("self-hosted owner: no move or transfer", () => {
   const a = {
     ...fixtures.artifacts[0],

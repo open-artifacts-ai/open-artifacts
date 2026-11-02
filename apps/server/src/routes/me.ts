@@ -3,6 +3,7 @@ import {
   type Me,
   type Member,
   MePatchSchema,
+  type NoticeId,
   parseTier,
   planOf,
   R,
@@ -15,10 +16,11 @@ import { instanceFeatures, instanceSignIn } from "../auth/sign-in.js";
 import { instanceDirectory, readHealth } from "../directory/health.js";
 import { emailEnabled } from "../email/send.js";
 import { jsonBody } from "../http/body.js";
-import { appOrigin } from "../http/errors.js";
+import { ApiError, appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import { logWarn } from "../log.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
+import { dismissNotice, meNotices } from "../services/notices.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
 import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
 import { getProfile, type Profile, setDisplayName } from "../services/users.js";
@@ -61,19 +63,13 @@ async function toMe(
     },
     ...profile,
   };
-  // Hosted M1 (#359): appended last, in every sign-in mode (Access-only
-  // included, parity 1), so the dashboard reads one shape.
   const cap = capOfCaller(caller(c));
+  // Parity 2: one-time notices of guest shares, Access-only installs only.
+  const notices = await meNotices(c.env, user, cap, kv);
+  if (notices) me.notices = notices;
   const exp = c.var.sessionExp;
-  me.instance.hosted = c.env.HOSTED === "1";
-  // Reported only (behaviour follows FEATURES, which provisioning derives
-  // from TIER); null off hosted.
-  me.instance.tier = me.instance.hosted ? hostedTier(c.env.TIER) : null;
-  // Owners also see why configured sign-in is off (AuthConfig.problems).
-  me.instance.signIn = instanceSignIn(
-    c.env,
-    orgCan(user, "signin.problems", { cap }),
-  );
+  // Every install (parity 2): guests_read_only and the caller's cap reach an
+  // Access-only dashboard too, or a guest sees no view-only state.
   me.instance.features = instanceFeatures(c.env);
   // P3 T13: only while a directory mode is on; health for owners and admins.
   const mode = directoryMode(c.env);
@@ -94,6 +90,17 @@ async function toMe(
     me.personalSpaceId = user.id;
     me.spaces = await mySharedSpaces(c.env, caller(c));
   }
+  // Hosted M1 (#359): in every sign-in mode (Access-only included, parity 1),
+  // so the dashboard reads one shape.
+  me.instance.hosted = c.env.HOSTED === "1";
+  // Reported only (behaviour follows FEATURES, which provisioning derives
+  // from TIER); null off hosted.
+  me.instance.tier = me.instance.hosted ? hostedTier(c.env.TIER) : null;
+  // Owners also see why configured sign-in is off (AuthConfig.problems).
+  me.instance.signIn = instanceSignIn(
+    c.env,
+    orgCan(user, "signin.problems", { cap }),
+  );
   return me;
 }
 
@@ -114,4 +121,27 @@ export function mountMe(app: AppType): void {
     );
     return c.json(await toMe(c, member, profile));
   });
+
+  // Parity 2: dismiss a notice (R.noticeDismiss). Literal per id, so each
+  // has its own gate rule; an unknown id has no route (404).
+  const dismiss =
+    (id: NoticeId, action: "notices.own" | "notices.manage") =>
+    async (c: Context<AppEnv>) => {
+      const user = requireUser(c);
+      // The gate already refused anyone else (404); belt and braces.
+      if (!orgCan(user, action, { cap: capOfCaller(caller(c)) }))
+        throw new ApiError("not_found", "Not found");
+      await dismissNotice(c.env, user.id, id);
+      return c.body(null, 204);
+    };
+  // The caller's own list, per user: any non-guest member.
+  app.post(
+    "/api/v1/notices/guest_shares/dismiss",
+    dismiss("guest_shares", "notices.own"),
+  );
+  // The install-wide summary: the uncapped org owner.
+  app.post(
+    "/api/v1/notices/guest_summary/dismiss",
+    dismiss("guest_summary", "notices.manage"),
+  );
 }

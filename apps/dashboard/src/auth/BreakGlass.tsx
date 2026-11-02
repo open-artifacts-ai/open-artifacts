@@ -134,7 +134,7 @@ function Step({ title, children }: { title: string; children: ReactNode }) {
         <div className="mt-[var(--oa-space-4)] grid gap-[var(--oa-space-3)] [&_p]:!m-0">
           <Button
             variant="link"
-            className="w-full text-[var(--oa-text)]"
+            className="w-full text-[length:var(--oa-text-xs)] text-[var(--oa-text)]"
             onClick={signOut}
           >
             {C.signOut}

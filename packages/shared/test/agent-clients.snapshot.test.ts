@@ -33,8 +33,13 @@ describe("agentClients snapshots", () => {
     expect(text).not.toContain("open-artifacts ");
     expect(text).not.toContain("publish_artifact");
     expect(text).toContain("get_world");
-    expect(admin.find((s) => s.agent === "Claude Code")?.code).toBe(
-      "claude mcp add --transport http oa-admin https://api.open-artifacts.app/mcp",
+    const claude = admin.filter((s) => s.agent === "Claude Code");
+    expect(claude.map((s) => s.variant)).toEqual(["oauth", "token"]);
+    expect(claude[0]?.code).toBe(
+      "claude mcp add --transport http -s user oa-admin https://api.open-artifacts.app/mcp",
+    );
+    expect(claude[1]?.code).toContain(
+      'claude mcp add --transport http -s user oa-admin https://api.open-artifacts.app/mcp --header "Authorization: Bearer $OA_TOKEN"',
     );
   });
 

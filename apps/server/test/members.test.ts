@@ -71,7 +71,7 @@ describe("GET /api/v1/me", () => {
       hosted: false,
       tier: null,
       signIn: { mode: "access", providers: ["access"] },
-      features: [],
+      features: ["guests_read_only"],
     });
     expect(me.auth).toEqual({
       method: expect.any(String),

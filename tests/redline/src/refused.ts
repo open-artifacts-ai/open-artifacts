@@ -298,12 +298,27 @@ async function leg(
 ): Promise<{ verdict: Verdict; seen: Response[]; reqs: Request[] }> {
   const seen: Response[] = [];
   const reqs: Request[] = [];
+  // An allow leg reads the body inside sendProbe, so a connection cut mid-body
+  // is retried, then infra. A deny leg never: a 200 with a cut body, then a
+  // 403 on the retry, would read as a refusal and hide a leak.
+  const go =
+    what === "A's credential at B"
+      ? undefined
+      : async (req: Request) => {
+          const r = await send(req);
+          if (NULL_BODY.has(r.status)) return r;
+          return new Response(await r.arrayBuffer(), {
+            status: r.status,
+            statusText: r.statusText,
+            headers: r.headers,
+          });
+        };
   // Buffered, not clone(): a probe that cancels its body would wait on the
   // unread tee branch forever.
   const f: ProbeFetch = async (req) => {
     // URL and headers only: a clone would tee the body.
     reqs.push(new Request(req.url, { headers: req.headers }));
-    const r = await sendProbe(req);
+    const r = await sendProbe(req, go);
     const buf = NULL_BODY.has(r.status) ? null : await r.arrayBuffer();
     const copy = () =>
       new Response(buf, {
@@ -353,6 +368,15 @@ export async function crossProbe<C>(
     if (a.verdict !== "allow")
       throw new Error("A's credential failed at A (the probe said deny)");
   });
+  await deniedAtB(run, o);
+}
+
+/** A's credential at B: it arrives, every response refuses it, and it's denied. */
+async function deniedAtB<C>(
+  run: (cred: C, host: Target, fetch: ProbeFetch) => Promise<Verdict>,
+  o: CrossProbe<C>,
+  each?: (r: Response) => void,
+): Promise<void> {
   await atLeg(
     {
       leg: "A's credential at B",
@@ -365,11 +389,29 @@ export async function crossProbe<C>(
         throw new NotRefused(
           `${o.b.name}: no request carrying A's credential reached B`,
         );
-      for (const r of x.seen) await expectRefused(r, o.b);
+      for (const r of x.seen) {
+        each?.(r);
+        await expectRefused(r, o.b);
+      }
       if (x.verdict !== "deny")
         throw new NotRefused(`${o.b.name} allowed A's credential (the probe)`);
     },
   );
+}
+
+/**
+ * Only crossProbe's last leg, for a route with no success leg: every response
+ * to A's credential at B is a 401, so B knows no such caller. A 404 won't do:
+ * a broken B answers that to everyone, and nothing else here shows B works.
+ */
+export async function crossDenied<C>(
+  run: (cred: C, host: Target, fetch: ProbeFetch) => Promise<Verdict>,
+  o: CrossProbe<C>,
+): Promise<void> {
+  await deniedAtB(run, o, (r) => {
+    if (r.status !== 401)
+      throw new NotRefused(`${o.b.name} answered ${r.status}, not 401`);
+  });
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
