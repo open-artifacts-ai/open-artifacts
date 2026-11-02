@@ -1293,3 +1293,67 @@ describe("config", () => {
     expect(run.rid("x")).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
   });
 });
+
+describe("Run.raw: an allow-side GET survives a dropped connection", () => {
+  const reset = () =>
+    new TypeError("fetch failed", {
+      cause: Object.assign(new Error("read ECONNRESET"), {
+        code: "ECONNRESET",
+      }),
+    });
+  const flaky = (fails: number, status = 200) => {
+    const calls: string[] = [];
+    const waits: number[] = [];
+    const run = new Run(CONFIG, {
+      ...fakeApi().io,
+      wait: async (ms: number) => {
+        waits.push(ms);
+      },
+      fetch: (async (_u: string, init: RequestInit) => {
+        calls.push(init.method ?? "GET");
+        if (calls.length <= fails) throw reset();
+        return new Response("{}", { status });
+      }) as unknown as typeof fetch,
+    });
+    return { run, calls, waits };
+  };
+
+  it("read: a reset is tried again, with the backoff", async () => {
+    const { run, calls, waits } = flaky(2);
+    expect((await run.v1("/world", { read: true })).status).toBe(200);
+    expect(calls).toHaveLength(3);
+    expect(waits).toEqual([250, 1000]);
+  });
+
+  it("read: a third reset still throws", async () => {
+    const { run, calls } = flaky(3);
+    await expect(run.v1("/world", { read: true })).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(calls).toHaveLength(3);
+  });
+
+  it("an answer is never retried, a refusal or a 500", async () => {
+    for (const status of [401, 500]) {
+      const { run, calls } = flaky(0, status);
+      expect((await run.v1("/world", { read: true })).status).toBe(status);
+      expect(calls).toHaveLength(1);
+    }
+  });
+
+  it("a deny check has one try: no `read`, as P1 to P3 and P6", async () => {
+    const { run, calls } = flaky(1);
+    await expect(
+      run.v1("/me", { host: "admin", auth: "none" }),
+    ).rejects.toThrow("fetch failed");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("a write has one try, even with `read`", async () => {
+    const { run, calls } = flaky(1);
+    await expect(run.v1("/installs", { body: {}, read: true })).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(calls).toHaveLength(1);
+  });
+});
