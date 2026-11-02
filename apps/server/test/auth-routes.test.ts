@@ -452,12 +452,26 @@ describe("Me sign-in fields", () => {
     );
   };
 
-  it("access-only installs omit them (shape unchanged)", async () => {
+  it("access-only installs send features and auth, and omit the sign-in fields", async () => {
     const { cookie } = await login(uniq("plain"));
     const m = await me(env, cookie);
-    expect(m.auth).toBeUndefined();
+    expect(m.instance.features).toContain("guests_read_only");
+    expect(m.auth).toEqual({
+      method: expect.any(String),
+      readOnly: false,
+      cap: null,
+      expiresAt: expect.any(String),
+    });
     expect(m.instance.hosted).toBeUndefined();
+    expect(m.instance.tier).toBeUndefined();
     expect(m.instance.signIn).toBeUndefined();
+  });
+
+  it("an access-only guest is told they are read-only (parity 2)", async () => {
+    const { cookie } = await login(uniq("guest", "x.com"), "guest");
+    const m = await me(env, cookie);
+    expect(m.instance.features).toContain("guests_read_only");
+    expect(m.auth).toMatchObject({ readOnly: true, cap: "guest" });
   });
 
   it("direct: auth for a session and a PAT, signIn, features, hosted", async () => {

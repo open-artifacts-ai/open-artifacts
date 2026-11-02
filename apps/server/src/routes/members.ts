@@ -20,11 +20,7 @@ import {
   patchMember,
   removeMember,
 } from "../services/members.js";
-import {
-  requireSpaces,
-  transferPersonal,
-  transferSummary,
-} from "../services/spaces.js";
+import { transferPersonal, transferSummary } from "../services/spaces.js";
 import type { AppType } from "./index.js";
 
 /** Owner/admin only: 401 anonymous, 404 for everyone else (route hidden). */
@@ -36,9 +32,11 @@ export function requireManager(c: Context<AppEnv>): Member {
   return user;
 }
 
-/** An uncapped org owner or admin with spaces on (P3 T10), else 404. */
+/**
+ * An uncapped org owner or admin (P3 T10), else 404. On every install: a
+ * guest's personal artifacts need a home with or without spaces (parity 2).
+ */
 function requireDeparted(c: Context<AppEnv>): Member {
-  requireSpaces(c.env);
   const user = requireUser(c);
   if (!orgCan(user, "transfer.departed", { cap: capOfCaller(caller(c)) }))
     throw new ApiError("not_found", "Not found");
@@ -83,11 +81,12 @@ export function mountMembers(app: AppType): void {
     return c.body(null, 204);
   });
 
-  // A departed member's personal artifacts (P3 T10). Literal so Hono infers
+  // A departed member's or a guest's personal artifacts (P3 T10, parity 2).
+  // Literal so Hono infers
   // :id; must equal R.memberTransfer(id).
   app.get("/api/v1/members/:id/transfer", async (c) => {
-    requireDeparted(c);
-    return c.json(await transferSummary(c.env, c.req.param("id")));
+    const actor = requireDeparted(c);
+    return c.json(await transferSummary(c.env, actor, c.req.param("id")));
   });
 
   app.post("/api/v1/members/:id/transfer", async (c) => {

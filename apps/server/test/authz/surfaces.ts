@@ -1630,6 +1630,16 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     refuse: { req: async () => ({ path: "" }), allow: ok(200) },
     real: { req: () => ({ path: "" }), allow: ok(200) },
   },
+  // No body to refuse. Only ever the caller's own marker, and idempotent.
+  "POST /api/v1/notices/guest_shares/dismiss": {
+    refuse: { req: async () => ({ path: "" }), allow: ok(204) },
+    real: { req: () => ({ path: "" }), allow: ok(204) },
+  },
+  // The install's summary, dismissed for good: real only, so a probe of a
+  // live install can never hide it from its owner.
+  "POST /api/v1/notices/guest_summary/dismiss": {
+    real: { req: () => ({ path: "" }), allow: ok(204) },
+  },
   "POST /api/v1/artifacts": {
     refuse: invalid(),
     real: {
@@ -1808,6 +1818,8 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["POST /api/v1/directory/disconnect", org("directory.disconnect")],
   ["DELETE /api/v1/directory", org("directory.disconnect")],
   ["POST /api/v1/admin/broker-check", org("broker.check")],
+  ["POST /api/v1/notices/guest_shares/dismiss", org("notices.own")],
+  ["POST /api/v1/notices/guest_summary/dismiss", org("notices.manage")],
   ["POST /api/v1/artifacts", org("artifact.create")],
   ["GET /api/v1/tokens", U, [200]],
   ["POST /api/v1/tokens", org("tokens.create")],
