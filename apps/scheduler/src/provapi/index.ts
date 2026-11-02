@@ -104,7 +104,7 @@ export function provapiTick(
     {
       name: "fleet",
       timeoutMs: t.fleet,
-      run: () => fleetDue(env, now, { budgetMs: t.fleet, ...o.fleet }),
+      run: () => fleetDue(env, now, o.fleet),
     },
     { name: "alerts", timeoutMs: t.alerts, run: () => alertsTick(env, now) },
     { name: "prune", timeoutMs: t.prune, run: () => prune(env, now) },

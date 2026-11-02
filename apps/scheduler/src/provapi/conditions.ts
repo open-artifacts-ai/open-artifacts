@@ -118,7 +118,6 @@ export async function alertConditions(
         PLATFORM_DB: db,
         CF_VERSION_METADATA: o.versionMetadata,
         FLEET_CANARY: o.fleetCanary,
-        ...(rpc ? { PROVISIONER: rpc } : {}),
       },
       input.now,
     )),

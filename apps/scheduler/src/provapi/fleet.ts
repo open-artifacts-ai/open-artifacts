@@ -10,48 +10,49 @@
 // paused ones (prod_dirty) to purge or discard, and an install above the
 // target is never downgraded.
 //
-// After a fleet upgrade, the install is watched (watchRecent). A failure
-// that lasts FLEET_BLIP_MS, while a control install answers, halts the
-// version durably (a fleet_halt mark: fleet_halted opens) and rolls the
-// install back; a failure the control shares is the platform's, not the
-// release's, and restarts the clock. A halted version gets no more fleet
-// upgrades; the next release starts a new rollout. version_skew opens for an
-// install still behind FLEET_SKEW_MS after the first release past its
-// version reached this env.
+// The watch (watchRecent): after a fleet upgrade the install is probed every
+// tick. A failure holds the rollout. One that lasts FLEET_BLIP_MS always
+// halts its version for good (a fleet_halt mark; fleet_halted opens) and
+// ends that install's hold. It is also rolled back, but only inside
+// FLEET_ROLLBACK_WINDOW_MS of the upgrade and only when a control proves
+// the platform is fine: an install on an older version, health ok, that
+// passes this tick. Otherwise a human decides. The next release clears the
+// halt. version_skew opens for an install behind the target for
+// FLEET_SKEW_MS, counted from when the duty first saw it behind.
 import { isInstallId } from "@oa/provision/names";
 import { compareVersions } from "@oa/provision/versions";
-import type { ProvisionerRpc } from "@oa/shared/provisioning";
 import type { AlertRow } from "@oa/shared/provisioning/alerts";
 import { SYSTEM_ACTOR } from "@oa/shared/provisioning/system";
 import type { Condition } from "./conditions.js";
-import { bound, d1, lanes, type ProvapiEnv, within } from "./env.js";
+import { bound, d1, type ProvapiEnv, within } from "./env.js";
 import { type HealthProbe, publicRouteProbe } from "./health.js";
 import { insertSystemJob, startJob } from "./jobs.js";
 import { dutyCategory } from "./run.js";
 
-/** Open fleet upgrades at once, the canary's included. */
+/** Open fleet upgrades at once, the canary's included; also rollbacks per tick. */
 export const FLEET_CONCURRENCY = 3;
-/** A fleet upgrade is watched this long after it finished. */
+/** Rollback only within this long of the upgrade (D1 is forward-only). */
 export const FLEET_ROLLBACK_WINDOW_MS = 30 * 60_000;
 /** A failure shorter than this is a blip: it holds, never halts. */
 export const FLEET_BLIP_MS = 10 * 60_000;
+/** A failure seen this long without a verdict opens fleet_halted (holding). */
+export const FLEET_HOLD_ALERT_MS = 30 * 60_000;
 /** version_skew: an install behind this long. */
 export const FLEET_SKEW_MS = 6 * 60 * 60_000;
-/** One /healthz probe. */
+/** One /healthz probe; every probe of a tick runs at once. */
 export const FLEET_PROBE_TIMEOUT_MS = 8_000;
-/** The duty's default budget (index.ts passes its own). */
-export const FLEET_BUDGET_MS = 15_000;
-/** Kept back from the budget for the D1 writes after the probes. */
-export const FLEET_BUDGET_SLACK_MS = 2_000;
-/** Recent halts on other versions keep fleet_halted open this long. */
+/** Watched installs probed per tick; the rest wait (and hold). */
+export const FLEET_PROBES_PER_TICK = 6;
+/** Halts on other versions stay on fleet_halted this long. */
 export const FLEET_HALT_ALERT_MS = 6 * 60 * 60_000;
-/** `fleet_failing:<installId>`: when its current failure was first seen. */
+/** Halt marks of other versions are pruned after this long. */
+export const FLEET_HALT_KEEP_MS = 7 * 24 * 60 * 60_000;
+/** `fleet_failing:<id>`: when its current failure was first seen. */
 export const FLEET_FAILING_PREFIX = "fleet_failing:";
-/**
- * `fleet_halt:<version>:<installId>`: an install's upgrade to the version
- * failed past a blip; the rollout to that version stops.
- */
+/** `fleet_halt:<version>:<id>`: the install's upgrade to it failed. */
 export const FLEET_HALT_PREFIX = "fleet_halt:";
+/** `fleet_behind:<id>`: when the duty first saw it behind the target. */
+export const FLEET_BEHIND_PREFIX = "fleet_behind:";
 
 const STABLE_TAG = /^v(\d+\.\d+\.\d+)$/;
 
@@ -60,14 +61,6 @@ export function fleetTarget(
   meta: Pick<WorkerVersionMetadata, "tag"> | undefined,
 ): string | null {
   return STABLE_TAG.exec(meta?.tag ?? "")?.[1] ?? null;
-}
-
-/** When this version was uploaded (epoch ms), else null. */
-export function fleetSince(
-  meta: Pick<WorkerVersionMetadata, "timestamp"> | undefined,
-): number | null {
-  const t = Date.parse(meta?.timestamp ?? "");
-  return Number.isFinite(t) ? t : null;
 }
 
 /** FLEET_CANARY when it is an install id, else null (no rollout). */
@@ -93,10 +86,11 @@ const haltKey = (version: string, id: string) =>
   `${FLEET_HALT_PREFIX}${version}:${id}`;
 const strikeKey = (id: string) => `${FLEET_FAILING_PREFIX}${id}`;
 
+const SYS = `'${SYSTEM_ACTOR.key}'`;
 // Every system fleet job: request ids `fleet-…` and `fleetrb-…` (no LIKE
 // wildcard in either prefix). `j` is the jobs alias.
-const FLEET_UP = `j.actor_key = '${SYSTEM_ACTOR.key}' AND j.kind = 'upgrade' AND j.request_id LIKE 'fleet-%'`;
-const FLEET_RB = `j.actor_key = '${SYSTEM_ACTOR.key}' AND j.kind = 'rollback' AND j.request_id LIKE 'fleetrb-%'`;
+const FLEET_UP = `j.actor_key = ${SYS} AND j.kind = 'upgrade' AND j.request_id LIKE 'fleet-%'`;
+const FLEET_RB = `j.actor_key = ${SYS} AND j.kind = 'rollback' AND j.request_id LIKE 'fleetrb-%'`;
 // What the duty may upgrade: active (not suspended, not upgrading), serving
 // (not paused, closed or unrouted), idle, test hooks off.
 const ELIGIBLE = `state = 'active' AND install_state = 'active' AND serving_mode = 'serving' AND active_job_id IS NULL AND COALESCE(test_hooks, 0) = 0 AND version IS NOT NULL`;
@@ -105,39 +99,38 @@ const CANARY = `SELECT install_id, version, app_host, state, install_state, serv
 const CANARY_JOB = `SELECT status FROM jobs WHERE install_id = ?1 AND kind = 'upgrade' AND json_extract(args, '$.to') = ?2 ORDER BY created_at DESC, id DESC LIMIT 1`;
 const BEHIND = `SELECT install_id, version FROM install_status WHERE ${ELIGIBLE} AND version <> ?1 AND install_id <> ?2 ORDER BY created_at, install_id`;
 const OPEN = `SELECT COUNT(*) AS n FROM jobs j WHERE ${FLEET_UP} AND j.status IN ('queued', 'running')`;
-// Every halt, with the version it halts: a failed fleet upgrade (to), a
-// fleet rollback (from). The fleet_halt marks are read separately.
+// Every halting job, with the version it halts: a failed fleet upgrade
+// (to), a fleet rollback (from). The marks are read with STATE.
 const HALT_JOBS = `SELECT j.install_id AS install_id, j.id AS job_id, j.kind AS job_kind, j.error_code AS code, substr(j.error_message, 1, 200) AS message, COALESCE(j.finished_at, j.updated_at) AS since,
   CASE WHEN j.kind = 'upgrade' THEN json_extract(j.args, '$.to') ELSE json_extract(j.args, '$.from') END AS version
-FROM jobs j WHERE (${FLEET_UP} AND j.status = 'failed') OR (${FLEET_RB})
-ORDER BY since, j.id`;
-const HALT_MARKS = `SELECT key, value FROM platform_state WHERE key GLOB '${FLEET_HALT_PREFIX}*'`;
-// Each install's latest fleet upgrade, done, still on the version it went
-// to with no fleet rollback off it, finished since ?1 or with a failure
-// still open (a strike): the watch.
-const RECENT = `SELECT j.install_id AS install_id, json_extract(j.args, '$.from') AS prev, json_extract(j.args, '$.to') AS version, j.finished_at AS done_at, st.app_host AS app_host, st.state AS state, st.install_state AS install_state, st.serving_mode AS serving_mode, st.active_job_id AS active_job_id
+FROM jobs j WHERE (${FLEET_UP} AND j.status = 'failed') OR (${FLEET_RB})`;
+const STATE = `SELECT key, value FROM platform_state WHERE key GLOB 'fleet_*'`;
+// The watch: each serving, active, idle install whose latest fleet upgrade
+// is done and still live (no fleet rollback off it), finished since ?1 or
+// with a failure still open. Halted ones are dropped in code.
+const WATCH = `SELECT j.install_id AS install_id, json_extract(j.args, '$.from') AS prev, json_extract(j.args, '$.to') AS version, j.finished_at AS done_at, st.app_host AS app_host
 FROM jobs j JOIN install_status st ON st.install_id = j.install_id
 WHERE ${FLEET_UP} AND j.status = 'done' AND st.version = json_extract(j.args, '$.to')
-  AND j.id = (SELECT k.id FROM jobs k WHERE k.install_id = j.install_id AND k.actor_key = '${SYSTEM_ACTOR.key}' AND k.kind = 'upgrade' AND k.request_id LIKE 'fleet-%' ORDER BY k.created_at DESC, k.id DESC LIMIT 1)
+  AND st.state = 'active' AND st.install_state = 'active' AND st.serving_mode = 'serving' AND st.active_job_id IS NULL
+  AND j.id = (SELECT k.id FROM jobs k WHERE k.install_id = j.install_id AND k.actor_key = ${SYS} AND k.kind = 'upgrade' AND k.request_id LIKE 'fleet-%' ORDER BY k.created_at DESC, k.id DESC LIMIT 1)
   AND (j.finished_at >= ?1 OR EXISTS (SELECT 1 FROM platform_state p WHERE p.key = '${FLEET_FAILING_PREFIX}' || j.install_id))
-  AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.install_id = j.install_id AND r.actor_key = '${SYSTEM_ACTOR.key}' AND r.kind = 'rollback' AND r.request_id LIKE 'fleetrb-%' AND json_extract(r.args, '$.from') = json_extract(j.args, '$.to'))
+  AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.install_id = j.install_id AND r.actor_key = ${SYS} AND r.kind = 'rollback' AND r.request_id LIKE 'fleetrb-%' AND json_extract(r.args, '$.from') = json_extract(j.args, '$.to'))
 ORDER BY j.finished_at, j.install_id`;
-// The control: the oldest eligible install not in the watch (?1, a JSON
-// array of ids), probed on its own version.
-const CONTROL = `SELECT install_id, version, app_host FROM install_status WHERE ${ELIGIBLE} AND app_host IS NOT NULL AND install_id NOT IN (SELECT value FROM json_each(?1)) ORDER BY created_at, install_id LIMIT 1`;
-const LAGGING = `SELECT install_id, version FROM install_status
-WHERE state = 'active' AND serving_mode = 'serving' AND COALESCE(test_hooks, 0) = 0 AND version IS NOT NULL AND version <> ?1
-ORDER BY created_at, install_id`;
+// Control candidates: eligible, health ok, oldest first.
+const CONTROLS = `SELECT s.install_id AS install_id, s.version AS version, s.app_host AS app_host FROM install_status s JOIN install_lifecycle l ON l.install_id = s.install_id
+WHERE ${ELIGIBLE.replaceAll(/\b(state|install_state|serving_mode|active_job_id|test_hooks|version)\b/g, "s.$1")} AND s.app_host IS NOT NULL AND l.health = 'ok'
+ORDER BY s.created_at, s.install_id`;
+const LAGGING = `SELECT install_id FROM install_status
+WHERE state = 'active' AND serving_mode = 'serving' AND COALESCE(test_hooks, 0) = 0 AND version IS NOT NULL AND version <> ?1`;
 // The insert's own checks, in the same statement: still eligible and still
 // on `from` (?9); for an upgrade also under the cap, so overlapping ticks
 // never open more than FLEET_CONCURRENCY between them.
 const STILL_ON = `EXISTS (SELECT 1 FROM install_status WHERE install_id = ?3 AND ${ELIGIBLE} AND version = ?9)`;
 const UNDER_CAP = `(SELECT COUNT(*) FROM jobs j WHERE ${FLEET_UP} AND j.status IN ('queued', 'running')) < ${FLEET_CONCURRENCY}`;
-const GET = "SELECT value FROM platform_state WHERE key = ?1";
+const SET_ONCE =
+  "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2) ON CONFLICT (key) DO NOTHING";
 const SET =
   "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
-const MARK =
-  "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2) ON CONFLICT (key) DO NOTHING";
 const CLEAR = "DELETE FROM platform_state WHERE key = ?1";
 
 interface CanaryRow {
@@ -151,19 +144,66 @@ interface CanaryRow {
   test_hooks: number | null;
 }
 
-interface RecentRow {
+interface Watched {
   install_id: string;
   prev: unknown;
-  version: unknown;
+  version: string;
   done_at: number;
   app_host: string | null;
-  state: string;
-  install_state: string | null;
-  serving_mode: string | null;
-  active_job_id: string | null;
 }
 
 type HaltRow = AlertRow & { version: string | null };
+
+/** The fleet's platform_state rows, by prefix. */
+interface FleetState {
+  strikes: Map<string, number>;
+  halts: HaltRow[];
+  behind: Map<string, number>;
+  keys: { key: string; value: number }[];
+}
+
+async function fleetState(db: D1Database): Promise<FleetState> {
+  const { results } = await d1(
+    db.prepare(STATE).all<{ key: string; value: number }>(),
+  );
+  const s: FleetState = {
+    strikes: new Map(),
+    halts: [],
+    behind: new Map(),
+    keys: results,
+  };
+  for (const { key, value } of results) {
+    if (key.startsWith(FLEET_FAILING_PREFIX))
+      s.strikes.set(key.slice(FLEET_FAILING_PREFIX.length), value);
+    else if (key.startsWith(FLEET_BEHIND_PREFIX))
+      s.behind.set(key.slice(FLEET_BEHIND_PREFIX.length), value);
+    else if (key.startsWith(FLEET_HALT_PREFIX)) {
+      const rest = key.slice(FLEET_HALT_PREFIX.length);
+      const i = rest.lastIndexOf(":");
+      if (i > 0)
+        s.halts.push({
+          install_id: rest.slice(i + 1),
+          job_id: null,
+          job_kind: null,
+          code: "fleet_halt",
+          message: null,
+          since: value,
+          version: rest.slice(0, i),
+        });
+    }
+  }
+  return s;
+}
+
+/** Every halt (jobs and marks), each with the version it halts. */
+async function halts(db: D1Database, st: FleetState): Promise<HaltRow[]> {
+  const { results } = await d1(db.prepare(HALT_JOBS).all<HaltRow>());
+  return [...results, ...st.halts].sort(
+    (a, b) =>
+      a.since - b.since ||
+      String(a.install_id).localeCompare(String(b.install_id)),
+  );
+}
 
 /**
  * ok iff /healthz answers 200 with ok, this install's id, the version and
@@ -202,56 +242,6 @@ export async function onTarget(
 export interface FleetOptions {
   probe?: HealthProbe;
   timeoutMs?: number;
-  /** The duty's budget: no probe starts that could end past it. */
-  budgetMs?: number;
-  /** Tests only: elapsed time (default Date.now). */
-  clock?: () => number;
-}
-
-/** Probes within the duty's budget; `null` when it had no time to. */
-type Prober = (
-  id: string,
-  appHost: string,
-  version: string,
-) => Promise<boolean | null>;
-
-function prober(o: FleetOptions): Prober {
-  const probe = o.probe ?? publicRouteProbe;
-  const ms = o.timeoutMs ?? FLEET_PROBE_TIMEOUT_MS;
-  const budget = o.budgetMs ?? FLEET_BUDGET_MS;
-  const clock = o.clock ?? Date.now;
-  const started = clock();
-  return async (id, appHost, version) =>
-    clock() - started + ms > budget - FLEET_BUDGET_SLACK_MS
-      ? null
-      : onTarget(probe, id, appHost, version, ms);
-}
-
-/** Every halt (jobs and marks), each with the version it halts. */
-async function halts(db: D1Database): Promise<HaltRow[]> {
-  const { results: jobs } = await d1(db.prepare(HALT_JOBS).all<HaltRow>());
-  const { results: marks } = await d1(
-    db.prepare(HALT_MARKS).all<{ key: string; value: number }>(),
-  );
-  const fromMarks = marks.flatMap((m): HaltRow[] => {
-    const rest = m.key.slice(FLEET_HALT_PREFIX.length);
-    const i = rest.lastIndexOf(":");
-    if (i <= 0) return [];
-    return [
-      {
-        install_id: rest.slice(i + 1),
-        job_id: null,
-        job_kind: null,
-        code: "fleet_halt",
-        message: null,
-        since: m.value,
-        version: rest.slice(0, i),
-      },
-    ];
-  });
-  return [...jobs, ...fromMarks].sort(
-    (a, b) => a.since - b.since || String(a.install_id).localeCompare(String(b.install_id)),
-  );
 }
 
 /** One fleet tick. */
@@ -261,28 +251,32 @@ export async function fleetDue(
   o: FleetOptions = {},
 ): Promise<void> {
   const db = env.PLATFORM_DB;
-  const probe = prober(o);
+  const probe = o.probe ?? publicRouteProbe;
+  const ms = o.timeoutMs ?? FLEET_PROBE_TIMEOUT_MS;
+  const target = fleetTarget(env.CF_VERSION_METADATA);
+  const st = await fleetState(db);
 
   // The watch runs with or without a canary or target: an upgrade already
   // made stays watched if the rollout is switched off.
-  const recent = await watchRecent(env, now, probe);
+  const watch = await watchRecent(env, now, st, probe, ms);
+  await prune(env, now, st, target);
 
   const canaryId = fleetCanary(env.FLEET_CANARY);
   if (canaryId === null) {
     console.log("provapi fleet no_canary");
     return;
   }
-  const target = fleetTarget(env.CF_VERSION_METADATA);
   if (target === null) {
     // fleet_halted opens for it (fleetConditions).
     console.log("provapi fleet no_target");
     return;
   }
-  if (recent.hold) {
+  await trackBehind(db, now, st, target);
+  if (watch.hold) {
     console.log("provapi fleet holding");
     return;
   }
-  if ((await halts(db)).some((h) => h.version === target)) {
+  if ((await halts(db, st)).some((h) => h.version === target)) {
     console.log("provapi fleet halted", target);
     return;
   }
@@ -321,14 +315,11 @@ export async function fleetDue(
     console.log("provapi fleet canary_not_done");
     return;
   }
-  const healthy =
-    recent.healthy.has(canaryId) ||
-    (await probe(canaryId, canary.app_host, target));
-  if (healthy !== true) {
-    console.log(
-      "provapi fleet",
-      healthy === null ? "canary_unprobed" : "canary_unhealthy",
-    );
+  if (
+    !watch.healthy.has(canaryId) &&
+    !(await onTarget(probe, canaryId, canary.app_host, target, ms))
+  ) {
+    console.log("provapi fleet canary_unhealthy");
     return;
   }
 
@@ -426,142 +417,167 @@ async function upgrade(
 }
 
 /**
- * The watch. Each watched install that is active and serving is probed on
- * the version it went to; one busy with a job holds without a probe; one
- * that left active or serving (suspended, deleting, paused) is no longer
- * the fleet's and drops out. A failure is first stamped (its strike), then:
- *
- * - under FLEET_BLIP_MS it only holds the rollout;
- * - past it, the failure is checked against a control. Any watched install
- *   passing this tick, or else the control (the oldest eligible install
- *   outside the watch, on its own version), answering proves the platform
- *   path works: the version is halted for good (fleet_halt) and the install
- *   rolled back. A control that fails too is the platform's failure: no
- *   halt, and every strike restarts so a recovery is timed from the end of
- *   it. With no control at all, the failure is the release's.
- *
- * `hold` when any watched install failed, was busy or wasn't probed;
- * `healthy` lists those that passed this tick.
+ * Probes the watch (up to FLEET_PROBES_PER_TICK) and the control all at
+ * once, each bounded by its own timeout, so a hanging install can't starve
+ * the control. Then, per failing install: a first failure is stamped; one
+ * past FLEET_BLIP_MS is halted (always) and rolled back (at most
+ * FLEET_CONCURRENCY a tick) when inside the rollback window and the control
+ * passed. `hold` while any watched install fails or wasn't probed.
  */
 async function watchRecent(
   env: ProvapiEnv,
   now: number,
-  probe: Prober,
+  st: FleetState,
+  probe: HealthProbe,
+  ms: number,
 ): Promise<{ hold: boolean; healthy: Set<string> }> {
   const db = env.PLATFORM_DB;
-  const healthy = new Set<string>();
   const { results } = await d1(
     db
-      .prepare(RECENT)
+      .prepare(WATCH)
       .bind(now - FLEET_ROLLBACK_WINDOW_MS)
-      .all<RecentRow>(),
+      .all<Watched>(),
   );
-  const failing: { r: RecentRow; first: number }[] = [];
-  let hold = false;
-  await lanes(results, FLEET_CONCURRENCY, async (r) => {
-    if (r.state !== "active" || r.serving_mode !== "serving") {
-      await d1(db.prepare(CLEAR).bind(strikeKey(r.install_id)).run());
-      return;
+  const halted = new Set(st.halts.map((h) => `${h.version}:${h.install_id}`));
+  const all = results.filter(
+    (r) =>
+      typeof r.version === "string" &&
+      !halted.has(`${r.version}:${r.install_id}`),
+  );
+  const healthy = new Set<string>();
+  // A strike of an install that left the watch (suspended, paused, busy,
+  // rolled back, halted) is over.
+  const watched = new Set(all.map((r) => r.install_id));
+  for (const id of st.strikes.keys())
+    if (!watched.has(id)) {
+      await d1(db.prepare(CLEAR).bind(strikeKey(id)).run());
+      st.strikes.delete(id);
     }
-    if (r.install_state !== "active" || r.active_job_id !== null) {
-      hold = true;
-      return;
-    }
-    const ok =
-      r.app_host === null || typeof r.version !== "string"
-        ? false
-        : await probe(r.install_id, r.app_host, r.version);
-    if (ok === true) {
-      healthy.add(r.install_id);
-      await d1(db.prepare(CLEAR).bind(strikeKey(r.install_id)).run());
-      return;
-    }
-    hold = true;
-    if (ok === null) return;
-    const s = await d1(
-      db.prepare(GET).bind(strikeKey(r.install_id)).first<{ value: number }>(),
-    );
-    // None yet, or one from before this upgrade finished: this is the first.
-    if (s === null || s.value < r.done_at || s.value > now) {
-      await d1(db.prepare(SET).bind(strikeKey(r.install_id), now).run());
-      console.log("provapi fleet unhealthy", r.install_id, "first");
-      return;
-    }
-    failing.push({ r, first: s.value });
-  });
-  const lasting = failing.filter((f) => now - f.first >= FLEET_BLIP_MS);
-  if (lasting.length === 0) return { hold, healthy };
-
-  let shared = false;
-  if (healthy.size === 0) {
-    const control = await d1(
-      db
-        .prepare(CONTROL)
-        .bind(JSON.stringify(results.map((r) => r.install_id)))
-        .first<{ install_id: string; version: string; app_host: string }>(),
-    );
-    if (control !== null) {
-      const ok = await probe(
-        control.install_id,
-        control.app_host,
-        control.version,
-      );
-      if (ok === null) return { hold: true, healthy };
-      shared = !ok;
-    }
-  }
-  if (shared) {
-    console.log("provapi fleet shared_failure", `n=${failing.length}`);
-    for (const f of failing)
-      await d1(db.prepare(SET).bind(strikeKey(f.r.install_id), now).run());
-    return { hold: true, healthy };
-  }
-  for (const f of lasting) {
+  if (all.length === 0) return { hold: false, healthy };
+  const probed = all.slice(0, FLEET_PROBES_PER_TICK);
+  const control = await pickControl(db, probed);
+  const [verdicts, controlOk] = await Promise.all([
+    Promise.all(
+      probed.map((r) =>
+        r.app_host === null
+          ? false
+          : onTarget(probe, r.install_id, r.app_host, r.version, ms),
+      ),
+    ),
+    control === null
+      ? false
+      : onTarget(
+          probe,
+          control.install_id,
+          control.app_host,
+          control.version,
+          ms,
+        ),
+  ]);
+  let hold = all.length > probed.length;
+  let rollbacks = 0;
+  for (const [i, r] of probed.entries()) {
     try {
-      await haltAndRollBack(env, now, f.r);
+      if (verdicts[i]) {
+        healthy.add(r.install_id);
+        if (st.strikes.has(r.install_id))
+          await d1(db.prepare(CLEAR).bind(strikeKey(r.install_id)).run());
+        continue;
+      }
+      const first = st.strikes.get(r.install_id);
+      // None yet, or one from before this upgrade finished: this is the first.
+      if (first === undefined || first < r.done_at || first > now) {
+        hold = true;
+        await d1(db.prepare(SET).bind(strikeKey(r.install_id), now).run());
+        console.log("provapi fleet unhealthy", r.install_id);
+        continue;
+      }
+      if (now - first < FLEET_BLIP_MS) {
+        hold = true;
+        continue;
+      }
+      // Halted: the version stops, and this install no longer holds.
+      await d1(
+        db.prepare(SET_ONCE).bind(haltKey(r.version, r.install_id), now).run(),
+      );
+      await d1(db.prepare(CLEAR).bind(strikeKey(r.install_id)).run());
+      st.strikes.delete(r.install_id);
+      console.log("provapi fleet halted_by", r.install_id, r.version);
+      const why =
+        now - r.done_at > FLEET_ROLLBACK_WINDOW_MS
+          ? "past_window"
+          : !controlOk
+            ? "no_control"
+            : rollbacks >= FLEET_CONCURRENCY
+              ? "rollback_cap"
+              : typeof r.prev !== "string"
+                ? "no_prev"
+                : null;
+      if (why !== null) {
+        console.log("provapi fleet no_rollback", r.install_id, why);
+        continue;
+      }
+      rollbacks++;
+      await rollBack(env, now, r, r.prev as string);
     } catch (e) {
+      hold = true;
       console.error(
-        "provapi fleet rollback_failed",
+        "provapi fleet watch_failed",
         dutyCategory(e),
-        f.r.install_id,
+        r.install_id,
       );
     }
   }
-  return { hold: true, healthy };
+  return { hold, healthy };
 }
 
-/** fleet_halt for the version, then the rollback to the version it left. */
-async function haltAndRollBack(
+/**
+ * The control: the oldest eligible install outside the watch, health ok,
+ * on a version below every probed one.
+ */
+async function pickControl(
+  db: D1Database,
+  probed: readonly Watched[],
+): Promise<{ install_id: string; version: string; app_host: string } | null> {
+  const ids = new Set(probed.map((r) => r.install_id));
+  const { results } = await d1(
+    db
+      .prepare(CONTROLS)
+      .all<{ install_id: string; version: string; app_host: string }>(),
+  );
+  for (const c of results) {
+    if (ids.has(c.install_id)) continue;
+    try {
+      if (probed.every((r) => compareVersions(c.version, r.version) < 0))
+        return c;
+    } catch {}
+  }
+  return null;
+}
+
+async function rollBack(
   env: ProvapiEnv,
   now: number,
-  r: RecentRow,
+  r: Watched,
+  to: string,
 ): Promise<void> {
-  const db = env.PLATFORM_DB;
-  const version = r.version as string;
-  await d1(db.prepare(MARK).bind(haltKey(version, r.install_id), now).run());
-  console.log("provapi fleet halted_by", r.install_id, version);
-  if (typeof r.prev !== "string") {
-    console.log("provapi fleet rollback_no_prev", r.install_id);
-    return;
-  }
   const id = await insertSystemJob(
-    db,
+    env.PLATFORM_DB,
     {
       kind: "rollback",
       installId: r.install_id,
       signupId: null,
       parentJobId: null,
-      requestId: fleetRollbackRequestId(r.install_id, version),
-      args: { from: version, to: r.prev },
+      requestId: fleetRollbackRequestId(r.install_id, r.version),
+      args: { from: r.version, to },
     },
     now,
-    { sql: STILL_ON, params: [version] },
+    { sql: STILL_ON, params: [r.version] },
   );
   if (id === null) {
-    console.log("provapi fleet rollback_not_queued", r.install_id);
+    console.log("provapi fleet no_rollback", r.install_id, "not_queued");
     return;
   }
-  await d1(db.prepare(CLEAR).bind(strikeKey(r.install_id)).run());
   console.log("provapi fleet rollback queued", r.install_id, id);
   try {
     await startJob(bound(env.MANAGE_INSTALL), id);
@@ -570,110 +586,107 @@ async function haltAndRollBack(
   }
 }
 
-/**
- * When an install on `version` fell behind: the publish time of the first
- * release past it; for the target itself, no earlier than this env's deploy.
- * Null when the catalog doesn't say.
- */
-function behindSince(
-  version: string,
+/** Stamps when each lagging install was first seen behind; clears the rest. */
+async function trackBehind(
+  db: D1Database,
+  now: number,
+  st: FleetState,
   target: string,
-  releases: readonly { version: string; publishedAt: number | null }[],
-  deployed: number,
-): number | null {
-  let next: { version: string; publishedAt: number | null } | undefined;
-  for (const r of releases) {
-    try {
-      if (
-        compareVersions(r.version, version) > 0 &&
-        compareVersions(r.version, target) <= 0 &&
-        (next === undefined || compareVersions(r.version, next.version) < 0)
-      )
-        next = r;
-    } catch {}
-  }
-  if (next === undefined) return deployed;
-  if (next.version === target)
-    return Math.max(next.publishedAt ?? deployed, deployed);
-  return next.publishedAt;
+): Promise<void> {
+  const { results } = await d1(
+    db.prepare(LAGGING).bind(target).all<{ install_id: string }>(),
+  );
+  const lagging = new Set(results.map((r) => r.install_id));
+  for (const id of lagging)
+    if (!st.behind.has(id))
+      await d1(
+        db.prepare(SET_ONCE).bind(`${FLEET_BEHIND_PREFIX}${id}`, now).run(),
+      );
+  for (const id of st.behind.keys())
+    if (!lagging.has(id))
+      await d1(db.prepare(CLEAR).bind(`${FLEET_BEHIND_PREFIX}${id}`).run());
+}
+
+/**
+ * Drops fleet state nothing reads any more: strikes of installs that left
+ * the watch a day ago, and halt marks of other versions past
+ * FLEET_HALT_KEEP_MS.
+ */
+async function prune(
+  env: ProvapiEnv,
+  now: number,
+  st: FleetState,
+  target: string | null,
+): Promise<void> {
+  const db = env.PLATFORM_DB;
+  for (const [id, at] of st.strikes)
+    if (at < now - 24 * 60 * 60_000)
+      await d1(db.prepare(CLEAR).bind(strikeKey(id)).run());
+  for (const h of st.halts)
+    if (h.version !== target && h.since < now - FLEET_HALT_KEEP_MS)
+      await d1(
+        db
+          .prepare(CLEAR)
+          .bind(haltKey(h.version as string, h.install_id as string))
+          .run(),
+      );
 }
 
 /**
  * fleet_halted and version_skew for this tick.
- * - fleet_halted: halts on the target, and any halt on another version in
- *   the last FLEET_HALT_ALERT_MS (the watch acts on earlier releases too).
- *   A canary set with no target opens it too (no_target).
- * - version_skew: installs behind for FLEET_SKEW_MS (behindSince). Unknown
- *   with no canary, no target, no deploy time or no catalog, so it never
- *   sends a false all-clear.
+ * - fleet_halted: halts on the target, any halt on another version in the
+ *   last FLEET_HALT_ALERT_MS, a failure held past FLEET_HOLD_ALERT_MS
+ *   (holding), and a canary set with no target (no_target).
+ * - version_skew: installs first seen behind FLEET_SKEW_MS ago. Unknown with
+ *   no canary or no target, so it never sends a false all-clear.
  */
 export async function fleetConditions(
-  env: Pick<ProvapiEnv, "PLATFORM_DB" | "CF_VERSION_METADATA" | "FLEET_CANARY"> & {
-    PROVISIONER?: ProvisionerRpc;
-  },
+  env: Pick<ProvapiEnv, "PLATFORM_DB" | "CF_VERSION_METADATA" | "FLEET_CANARY">,
   now: number,
 ): Promise<{ fleet_halted: Condition; version_skew: Condition }> {
   const unknown: Condition = { open: null, rows: [] };
   const db = env.PLATFORM_DB;
   const target = fleetTarget(env.CF_VERSION_METADATA);
   const canary = fleetCanary(env.FLEET_CANARY);
+  let st: FleetState;
+  try {
+    st = await fleetState(db);
+  } catch {
+    console.error("provapi alert fleet query_error");
+    return { fleet_halted: unknown, version_skew: unknown };
+  }
+  const row = (
+    o: Partial<AlertRow> & { since: number; code: string },
+  ): AlertRow => ({
+    install_id: null,
+    job_id: null,
+    job_kind: null,
+    message: null,
+    ...o,
+  });
   let fleet_halted: Condition;
   try {
-    const all = await halts(db);
-    const rows = all
+    const rows: AlertRow[] = (await halts(db, st))
       .filter(
         (h) =>
           (target !== null && h.version === target) ||
           h.since >= now - FLEET_HALT_ALERT_MS,
       )
-      .map(({ version: _v, ...row }) => row);
+      .map(({ version: _v, ...r }) => r);
+    for (const [id, at] of st.strikes)
+      if (now - at >= FLEET_HOLD_ALERT_MS)
+        rows.push(row({ install_id: id, code: "holding", since: at }));
     if (canary !== null && target === null)
-      rows.push({
-        install_id: null,
-        job_id: null,
-        job_kind: null,
-        code: "no_target",
-        message: null,
-        since: now,
-      });
+      rows.push(row({ code: "no_target", since: now }));
     fleet_halted = { open: rows.length > 0, rows };
   } catch {
     console.error("provapi alert fleet query_error");
     fleet_halted = unknown;
   }
-  const deployed = fleetSince(env.CF_VERSION_METADATA);
-  if (canary === null || target === null || deployed === null || !env.PROVISIONER)
+  if (canary === null || target === null)
     return { fleet_halted, version_skew: unknown };
-  let version_skew: Condition;
-  try {
-    const rpc = env.PROVISIONER;
-    const releases = await within(
-      Promise.resolve().then(() => rpc.releases()),
-      5_000,
-    );
-    const { results } = await db
-      .prepare(LAGGING)
-      .bind(target)
-      .all<{ install_id: string; version: string }>();
-    const rows: AlertRow[] = results.flatMap((r) => {
-      const since = behindSince(r.version, target, releases, deployed);
-      return since !== null && now - since >= FLEET_SKEW_MS
-        ? [
-            {
-              install_id: r.install_id,
-              job_id: null,
-              job_kind: null,
-              code: r.version,
-              message: null,
-              since,
-            },
-          ]
-        : [];
-    });
-    version_skew = { open: rows.length > 0, rows };
-  } catch {
-    console.error("provapi alert fleet skew_error");
-    version_skew = unknown;
-  }
-  return { fleet_halted, version_skew };
+  const rows = [...st.behind]
+    .filter(([, at]) => now - at >= FLEET_SKEW_MS)
+    .map(([id, at]) => row({ install_id: id, code: "behind", since: at }));
+  return { fleet_halted, version_skew: { open: rows.length > 0, rows } };
 }
