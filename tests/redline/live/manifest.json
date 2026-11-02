@@ -1195,6 +1195,10 @@
     {
       "file": "live/provisioning.test.ts",
       "name": "provisioning > P25: GET /auth/start one at a time (up to 30): a 303 to /sign-in?error=rate_limited, with no flow cookie"
+    },
+    {
+      "file": "live/snooze.test.ts",
+      "name": "held-sweep snooze > the org owner snoozes a held sweep (off heldSweeps, snoozedUntil set), cancels it (counts again), both audited"
     }
   ],
   "notes": [
