@@ -1,0 +1,60 @@
+# A 1 h staging admin session for agents (#1053): the staging test admin,
+# rl-test-admin@test.invalid. The job mints a GitHub OIDC JWT for the staging
+# Provisioning API and calls R28, which revokes any earlier test admin
+# session and answers with the new sid sealed to `recipient_key` (an X25519
+# public key the caller holds the private half of). Only the sealed value is
+# printed: the run log is public, and without the caller's private key it
+# opens to nothing. scripts/hosted/test-admin-session.ts runs this end to end.
+# The redline-staging Environment is the OIDC pin (OIDC_ENVIRONMENT); this
+# job reads none of its secrets. Staging only: prod has no OIDC principal.
+name: staging-test-admin
+run-name: staging-test-admin
+
+on:
+  workflow_dispatch:
+    inputs:
+      recipient_key:
+        description: "X25519 public key, raw 32 bytes, base64url without padding"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-test-admin
+  cancel-in-progress: false
+
+jobs:
+  session:
+    runs-on: ubuntu-latest
+    environment: redline-staging
+    # The OIDC principal: this job only.
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 5
+    steps:
+      - name: Mint the session
+        env:
+          REF: ${{ github.ref }}
+          RECIPIENT_KEY: ${{ inputs.recipient_key }}
+          # apps/provisioning/wrangler.jsonc env.staging OIDC_AUDIENCE.
+          AUDIENCE: https://api.open-artifacts-staging.app
+        run: |
+          set +x
+          set -euo pipefail
+          [ "$REF" = refs/heads/main ] || { echo "dispatch staging-test-admin on main"; exit 1; }
+          [[ "$RECIPIENT_KEY" =~ ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$ ]] || { echo "recipient_key is not a base64url X25519 public key"; exit 1; }
+          jwt="$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -r .value)"
+          if [ -z "$jwt" ] || [ "$jwt" = null ]; then echo "no OIDC token"; exit 1; fi
+          body="$(jq -nc --arg k "$RECIPIENT_KEY" '{recipientKey: $k}')"
+          out="$(printf 'header = "Authorization: Bearer %s"\n' "$jwt" |
+            curl -fsS -K - -X POST -H "content-type: application/json" \
+              --data "$body" "$AUDIENCE/v1/test-admin/session")"
+          sealed="$(jq -r .sealed <<< "$out")"
+          expires="$(jq -r .expiresAt <<< "$out")"
+          [[ "$sealed" =~ ^oa-seal-v1\.[A-Za-z0-9_.-]+$ ]] || { echo "no sealed session in the answer"; exit 1; }
+          echo "test-admin-sealed: $sealed"
+          echo "test-admin-expires-at: $expires"

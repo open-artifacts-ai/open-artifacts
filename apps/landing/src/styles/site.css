@@ -606,3 +606,14 @@ code,
     background-color: var(--shiki-dark-bg) !important;
   }
 }
+
+/* Privacy Policy and Terms */
+.legal .prose {
+  max-width: 72ch;
+  margin: 0 auto;
+  padding: 48px 0 72px;
+}
+.legal-updated {
+  color: var(--oa-text-muted);
+  font-size: var(--oa-text-md);
+}

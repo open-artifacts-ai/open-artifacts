@@ -56,7 +56,7 @@ Events are kept for 400 days. A daily job then deletes older ones; a large backl
 
 ## Never indexed
 
-Public links are for sharing, not search. Both hosts send `X-Robots-Tag: noindex, nofollow` on every response, and their `robots.txt` disallows everything. Only public artifacts get their real title in link previews; private links show a generic title.
+Public links are for sharing, not search. Both hosts send `X-Robots-Tag: noindex, nofollow` on every response, and their `robots.txt` disallows everything except the app host's agent guides. Only public artifacts get their real title in link previews; private links show a generic title.
 
 ## No telemetry
 

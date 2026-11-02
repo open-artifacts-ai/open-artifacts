@@ -367,13 +367,18 @@ describe("the gate's team routes", () => {
         body: {},
       }),
     () =>
+      send(props, R.directoryHeldSnooze("g1"), owner.cookie, {
+        method: "POST",
+        body: {},
+      }),
+    () =>
       send(props, R.restrictedGroup("g1"), owner.cookie, {
         method: "PUT",
         body: {},
       }),
   ];
 
-  it("directory sync now, a held confirm and a restricted group: refused under a lock, the owner included", async () => {
+  it("directory sync now, a held confirm or snooze and a restricted group: refused under a lock, the owner included", async () => {
     await cachePlan(row({ version: 1 }), mid);
     for (const f of DIRECTORY_WRITES)
       expect(await code(await f())).not.toMatch(/^plan_/);
@@ -383,6 +388,14 @@ describe("the gate's team routes", () => {
     await cachePlan(row({ tier: "free", trialEndsAt: 1, version: 3 }), mid);
     for (const f of DIRECTORY_WRITES)
       expect(await code(await f())).toBe("plan_required");
+  });
+
+  it("cancelling a snooze is a removal: it passes the plan gate under a lock", async () => {
+    await cachePlan(row({ tier: "team", status: "lapsed", version: 1 }), mid);
+    const r = await send(props, R.directoryHeldSnooze("g1"), owner.cookie, {
+      method: "DELETE",
+    });
+    expect(await code(r)).not.toMatch(/^plan_/);
   });
 
   it("a free instance refuses only a promotion or a reactivation; demotions pass, and read-only lets them all through (R3)", async () => {

@@ -30,6 +30,7 @@ import { Modal } from "../layout/Modal";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
 import { AgentRow } from "./AgentRow";
+import { AgentSetupCard } from "./AgentSetupCard";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { saveTokenCommand, snippets, tokenFile } from "./snippets";
 import {
@@ -430,6 +431,7 @@ export function Agents() {
   return (
     <div className={STACK}>
       <ReadOnlyNote />
+      <AgentSetupCard />
       {mcpUrl && (
         <SettingsCard id="oa-mcp-h" title="MCP server">
           <div className="flex min-w-0 items-center gap-[var(--oa-space-2)]">
