@@ -81,7 +81,7 @@ describe("R17 email rule (4.9): tokens without installs:pii see no email detail"
   it("keeps detail.admin on the caller's own admin's rows (9A.8)", () => {
     const me = {
       ...P("token", ["audit:read"]),
-      email: "Me@LeoUrbina.com",
+      email: "Me@Test.Invalid",
     } as Principal;
     const d = { admin: "me@test.invalid", ownerEmail: "owner@acme.test" };
     expect(redactAuditEntry(entry(d), me).detail).toEqual({

@@ -37,7 +37,7 @@ const leo = (o: Record<string, unknown> = {}) => ({
   slug: "leo",
   ownerEmail: "me@test.invalid",
   tier: "business",
-  auth: { providers: ["google"], domains: ["leourbina.com"] },
+  auth: { providers: ["google"], domains: ["test.invalid"] },
   sendWelcome: false,
   ...o,
 });
@@ -101,7 +101,7 @@ describe("R4 create by an admin session", () => {
     });
     expect(JSON.parse(s?.vars as string)).toEqual({
       AUTH_PROVIDERS: "google",
-      AUTH_DOMAINS: "leourbina.com",
+      AUTH_DOMAINS: "test.invalid",
       TIER: "business",
     });
     expect(
