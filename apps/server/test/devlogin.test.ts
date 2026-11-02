@@ -28,6 +28,16 @@ describe("GET /auth/dev-login", () => {
     }
   });
 
+  it("refuses an address that isn't one, like the placeholder a deletion leaves", async () => {
+    for (const email of ["nope", "removed+abc@invalid"]) {
+      const r = await call(
+        `/auth/dev-login?email=${encodeURIComponent(email)}`,
+      );
+      expect(r.status).toBe(400);
+      expect(sessionOf(r)).toBeUndefined();
+    }
+  });
+
   it("dev → 302 and sets the session cookie (default role member)", async () => {
     const r = await call("/auth/dev-login?email=Dev@X.com");
     expect(r.status).toBe(302);

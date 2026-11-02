@@ -3,9 +3,11 @@
 // restriction, the removed-members list), with their authorization.
 import { env } from "cloudflare:workers";
 import {
+  AuditEventSchema,
   type Member,
   MemberSchema,
   newId,
+  PageSchema,
   R,
   type TransferSummary,
 } from "@oa/shared";
@@ -17,6 +19,7 @@ import { deleteUser } from "../src/directory/apply.js";
 import type { Env } from "../src/env.js";
 import {
   placeholder,
+  restoreMember,
   reviveFromSync,
   SYSTEM_ACTOR,
   setUserStatus,
@@ -479,10 +482,36 @@ describe("what a restore brings back", () => {
     const GOOGLE = { ...(env as object), FEATURES: "sync_google" } as Env;
     const managed = await restore(u.userId, admin.cookie, GOOGLE);
     expect((await errOf(managed)).code).toBe("directory_managed");
-    // Not for the list tests below: MemberSchema refuses this address.
-    await env.DB.prepare("update users set email = ? where id = ?")
-      .bind(uniq("rs-ghost-done", "a.com"), u.userId)
+  });
+
+  it("an address released between the read and the write is refused in the write", async () => {
+    const u = await login(uniq("rs-ghost-race", "a.com"), "member");
+    await env.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(u.userId)
       .run();
+    let raced = false;
+    const DB = new Proxy(env.DB, {
+      get(t, k) {
+        const v = Reflect.get(t, k);
+        if (typeof v !== "function") return v;
+        if (k !== "batch") return v.bind(t);
+        return async (s: D1PreparedStatement[]) => {
+          if (!raced) {
+            raced = true;
+            await t
+              .prepare("update users set email = ? where id = ?")
+              .bind(placeholder(u.userId), u.userId)
+              .run();
+          }
+          return t.batch(s);
+        };
+      },
+    });
+    const actor = (await getUser(env, admin.userId)) as Member;
+    await expect(
+      restoreMember({ ...env, DB } as Env, u.userId, actor),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect((await row(u.userId))?.status).toBe("removed");
   });
 
   it("a capped admin (a code session) gets 404 and changes nothing", async () => {
@@ -496,6 +525,79 @@ describe("what a restore brings back", () => {
     )}`;
     expect((await restore(u.userId, cookie)).status).toBe(404);
     expect(await row(u.userId)).toEqual(before);
+  });
+});
+
+describe("DELETE on a member directory sync removed", () => {
+  const managed = (id: string) =>
+    env.DB.prepare(
+      "select actor_kind, actor_id, target_type, detail from audit_events where target_id = ? and action = 'user.sync_managed'",
+    )
+      .bind(id)
+      .all<{
+        actor_kind: string;
+        actor_id: string | null;
+        target_type: string;
+        detail: string;
+      }>()
+      .then((r) => r.results);
+  const stored = (id: string) =>
+    env.DB.prepare(
+      "select email, status, removed_by_sync, guest_lapsed, session_epoch, status_changed_at from users where id = ?",
+    )
+      .bind(id)
+      .first();
+
+  it("while sync manages the install: 204, audited user.sync_managed, nothing changes", async () => {
+    await connectWorkspace();
+    const GOOGLE = { ...(env as object), FEATURES: "sync_google" } as Env;
+    const email = uniq("rs-del-sync", "a.com");
+    const u = await login(email, "member");
+    await removedBySync(u.userId);
+    const before = await stored(u.userId);
+    const audits = await statusAudits(u.userId);
+
+    expect((await remove(u.userId, admin.cookie, GOOGLE)).status).toBe(204);
+
+    expect(await stored(u.userId)).toEqual(before);
+    expect(await statusAudits(u.userId)).toEqual(audits);
+    const rows = await managed(u.userId);
+    expect(rows).toEqual([
+      {
+        actor_kind: "user",
+        actor_id: admin.userId,
+        target_type: "user",
+        detail: JSON.stringify({ status: "removed" }),
+      },
+    ]);
+    expect(rows[0]?.detail).not.toContain("@");
+    // Through the log too: a row outside AuditActionSchema reads as nothing.
+    const log = PageSchema(AuditEventSchema).parse(
+      await (await call(GOOGLE, `${R.audit}?limit=100`, owner.cookie)).json(),
+    );
+    expect(
+      log.items.find(
+        (e) => e.action === "user.sync_managed" && e.target.id === u.userId,
+      ),
+    ).toMatchObject({ detail: { status: "removed" } });
+  });
+
+  it("with no Workspace connected, or on an admin's removal: no row, sync manages nothing here", async () => {
+    const unbound = await login(uniq("rs-del-unbound", "a.com"), "member");
+    await removedBySync(unbound.userId);
+    expect(
+      (await remove(unbound.userId, admin.cookie, directEnv({ FEATURES: "" })))
+        .status,
+    ).toBe(204);
+    expect(await managed(unbound.userId)).toEqual([]);
+
+    await connectWorkspace();
+    const GOOGLE = { ...(env as object), FEATURES: "sync_google" } as Env;
+    const byAdmin = await removed();
+    expect((await remove(byAdmin.userId, admin.cookie, GOOGLE)).status).toBe(
+      204,
+    );
+    expect(await managed(byAdmin.userId)).toEqual([]);
   });
 });
 

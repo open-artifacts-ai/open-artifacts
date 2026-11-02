@@ -408,15 +408,19 @@ describe("fix round 4", () => {
 });
 
 describe("UserRefSchema email", () => {
-  it("accepts null, rejects non-email strings", async () => {
+  it("accepts null and the placeholder a directory deletion leaves (#1144)", async () => {
     const { UserRefSchema, ArtifactSummarySchema, VersionInfoSchema } =
       await import("../src/index.js");
     expect(
       UserRefSchema.safeParse({ id: "a", email: null, name: null }).success,
     ).toBe(true);
     expect(
-      UserRefSchema.safeParse({ id: "a", email: "x", name: null }).success,
-    ).toBe(false);
+      UserRefSchema.safeParse({
+        id: "a",
+        email: "removed+a@invalid",
+        name: null,
+      }).success,
+    ).toBe(true);
     expect(ArtifactSummarySchema.shape.owner).toBe(UserRefSchema);
     expect(VersionInfoSchema.shape.createdBy).toBe(UserRefSchema);
   });

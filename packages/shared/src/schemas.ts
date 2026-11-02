@@ -80,10 +80,14 @@ export const CapabilitiesPatchSchema = z.strictObject({
 });
 export type CapabilitiesPatch = z.infer<typeof CapabilitiesPatchSchema>;
 
-/** `email` is null for anonymous viewers (no session, no Bearer) of public artifacts. */
+/**
+ * `email` is null for anonymous viewers (no session, no Bearer) of public
+ * artifacts. A stored value, never input: after a directory deletion it is
+ * `removed+<id>@invalid`, on authorship that outlives the address.
+ */
 export const UserRefSchema = z.object({
   id: z.string(),
-  email: z.string().email().nullable(),
+  email: z.string().nullable(),
   name: z.string().nullable(),
 });
 export type UserRef = z.infer<typeof UserRefSchema>;
@@ -416,7 +420,8 @@ export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
 
 export const MemberSchema = z.object({
   id: z.string(),
-  email: z.string().email(),
+  /** A stored value, never input: `removed+<id>@invalid` after a directory deletion. */
+  email: z.string(),
   name: z.string().nullable(),
   role: RoleSchema,
   lastSeenAt: z.string().nullable(),
