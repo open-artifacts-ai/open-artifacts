@@ -119,8 +119,8 @@ function InstanceSettings() {
           if (dirty && valid) save();
         }}
       >
-        <WriteLock>
-          <CardContent className={`grid min-w-0 ${INSET}`}>
+        <CardContent className={`grid min-w-0 ${INSET}`}>
+          <WriteLock>
             {settings.isError && (
               <div className="pb-[var(--oa-space-3)]">
                 <Notice tone="warning" title="Couldn't refresh settings.">
@@ -196,10 +196,12 @@ function InstanceSettings() {
                 <p className={muted}>{HELP[visibility]}</p>
               </div>
             </div>
-          </CardContent>
-          <CardFooter
-            className={`justify-end gap-[var(--oa-space-2)] border-t ${INSET} [.border-t]:pt-[var(--oa-space-5)] max-[600px]:[.border-t]:pt-[var(--oa-space-4)]`}
-          >
+          </WriteLock>
+        </CardContent>
+        <CardFooter
+          className={`justify-end gap-[var(--oa-space-2)] border-t ${INSET} [.border-t]:pt-[var(--oa-space-5)] max-[600px]:[.border-t]:pt-[var(--oa-space-4)]`}
+        >
+          <WriteLock>
             <Button
               variant="ghost"
               type="button"
@@ -218,8 +220,8 @@ function InstanceSettings() {
             >
               Save changes
             </Button>
-          </CardFooter>
-        </WriteLock>
+          </WriteLock>
+        </CardFooter>
       </form>
     </Card>
   );
