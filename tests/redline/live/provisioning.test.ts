@@ -1,5 +1,10 @@
-import { beforeAll, describe, it } from "vitest";
-import { PROBE_TIMEOUT_MS, PROBES, type Run } from "../src/provisioning.ts";
+import { afterAll, beforeAll, describe, it } from "vitest";
+import {
+  cleanupInstalls,
+  PROBE_TIMEOUT_MS,
+  PROBES,
+  type Run,
+} from "../src/provisioning.ts";
 import { liveRun, rawTargets } from "../src/provisioning-live.ts";
 import { label, proof } from "../src/report.ts";
 
@@ -21,6 +26,11 @@ beforeAll(() => {
   run = liveRun(env, rawTargets(env.REDLINE_TARGETS));
 });
 
+// Whatever a probe created and could not remove (P50's rl-snz) goes here.
+afterAll(async () => {
+  if (run) await cleanupInstalls(run);
+}, PROBE_TIMEOUT_MS);
+
 describe("provisioning", () => {
   for (const p of PROBES)
     it(
@@ -34,6 +44,6 @@ describe("provisioning", () => {
         }
         proof(ctx, o.level, o.reason);
       },
-      PROBE_TIMEOUT_MS,
+      p.timeoutMs ?? PROBE_TIMEOUT_MS,
     );
 });

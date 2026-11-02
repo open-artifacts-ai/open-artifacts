@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { STAGING_TEST_DOMAIN } from "@oa/provision/names";
 import { afterEach, describe, expect, it } from "vitest";
 import { takeFileNotes } from "../src/notes.ts";
 import {
@@ -22,6 +23,7 @@ import {
   ADMIN_FLOW_COOKIE,
   BROKER_IP_WAIT_MS,
   bringUpgrade,
+  cleanupInstalls,
   failText,
   mintCreds,
   type Outcome,
@@ -47,6 +49,7 @@ import {
   parseManifest,
 } from "../src/report.ts";
 import { newRecipient, openSealed, parseCreds } from "../src/seal.ts";
+import { NO_OWNER } from "../src/snooze.ts";
 import {
   parseProd,
   parseTargets,
@@ -116,9 +119,9 @@ const level = (o: Outcome | string | undefined) =>
   typeof o === "string" ? `fail: ${o}` : o?.level;
 
 describe("the probes on a conforming staging fake", () => {
-  it("covers P1-P49 exactly once", () => {
+  it("covers P1-P50 exactly once", () => {
     const ids = PROBES.map((p) => Number(p.id.slice(1))).sort((a, b) => a - b);
-    expect(ids).toEqual(Array.from({ length: 49 }, (_, i) => i + 1));
+    expect(ids).toEqual(Array.from({ length: 50 }, (_, i) => i + 1));
   });
 
   it("every probe passes but the gated and unprovable ones", async () => {
@@ -226,6 +229,104 @@ describe("the probes on a conforming staging fake", () => {
       .filter((j) => j.owner === "oidc")
       .map((j) => j.id);
     expect(run.s.jobIds.every((id) => oidcJobs.includes(id))).toBe(true);
+  });
+});
+
+describe("P50: the snooze owner path on an install the run creates (#1078)", () => {
+  const fakes: FakeApi[] = [];
+  afterEach(async () => {
+    for (const f of fakes.splice(0)) await f.closeTenants();
+  });
+  const p50 = async (fault?: Fault) => {
+    const f = fakeApi();
+    fakes.push(f);
+    if (fault) f.faults.add(fault);
+    await bringUp(f);
+    const run = new Run(CONFIG, f.io);
+    const p = PROBES.find((x) => x.id === "P50");
+    if (!p) throw new Error("no P50");
+    const out = await p.run(run).then(
+      (o) => o,
+      (e: Error) => e,
+    );
+    const snz = [...f.installs.values()].find((i) =>
+      i.slug.startsWith("rl-snz-"),
+    );
+    return { f, run, out, snz };
+  };
+
+  it("creates rl-snz-<run> business tier with domain codes and test hooks, mints R26 creds, passes the snooze path, then deletes and purges it", async () => {
+    const { f, run, out, snz } = await p50();
+    expect(out).toEqual({ level: "pass" });
+    expect(snz?.slug).toBe("rl-snz-1234");
+    expect(snz?.slug.length).toBeLessThanOrEqual(32);
+    expect(f.creates.find((b) => b.slug === snz?.slug)).toMatchObject({
+      tier: "business",
+      ownerEmail: `redline-owner@${STAGING_TEST_DOMAIN}`,
+      testHooks: true,
+      auth: {
+        providers: ["email"],
+        domains: [STAGING_TEST_DOMAIN],
+        domainCodes: true,
+      },
+    });
+    // R26 ran for it.
+    expect(f.log).toContain(
+      `POST ${CONFIG.api}/v1/installs/${snz?.id}/redline-creds`,
+    );
+    expect(snz?.state).toBe("deleted");
+    expect(f.tenants.size).toBe(0);
+    expect(run.s.cleanup).toEqual([]);
+  });
+
+  it("a snooze that leaves the hold counted fails P50 with no address, host or install id; the install is still removed", async () => {
+    const { out, snz, f } = await p50("p50_snooze_counts");
+    expect(out).toBeInstanceOf(ProbeFail);
+    const msg = (out as Error).message;
+    expect(msg).toBe(
+      "P50 snooze: rl-snz: heldSweeps is 1 after the snooze, want 0 (the snoozed hold still counts)",
+    );
+    expect(msg).not.toContain("@");
+    expect(msg).not.toContain(snz?.id);
+    expect(msg).not.toContain(snz?.appHost);
+    expect(snz?.state).toBe("deleted");
+    expect(f.tenants.size).toBe(0);
+  });
+
+  it("an owner the server sends no code (domain codes off until #1088): unproven-live NO_OWNER; the install is still removed", async () => {
+    const { out, snz } = await p50("p50_ineligible");
+    expect(out).toEqual({ level: "unproven-live", reason: NO_OWNER });
+    expect(snz?.state).toBe("deleted");
+  });
+
+  it("a create that lands on another tier fails P50 before any hook; the install is still removed", async () => {
+    const { out, snz } = await p50("p50_team_tier");
+    expect((out as Error).message).toBe("P50: tier is team, want business");
+    expect(snz?.state).toBe("deleted");
+  });
+
+  it("cleanupInstalls removes an install left on the list (a run that stopped after the create)", async () => {
+    const f = fakeApi();
+    fakes.push(f);
+    const run = new Run(CONFIG, f.io);
+    const slug = run.slug("snz");
+    run.s.cleanup.push({ slug });
+    const a = run.accepted(
+      await run.v1("/installs", {
+        body: {
+          requestId: run.rid("left"),
+          slug,
+          tier: "business",
+          testHooks: true,
+        },
+      }),
+      "create",
+    );
+    await cleanupInstalls(run);
+    expect(f.installs.get(a.install.id)?.state).toBe("deleted");
+    expect(run.s.cleanup).toEqual([]);
+    // Nothing left: a second pass is a no-op.
+    await cleanupInstalls(run);
   });
 });
 
