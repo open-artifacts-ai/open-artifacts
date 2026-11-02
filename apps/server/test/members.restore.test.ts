@@ -13,7 +13,9 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
 import { SYSTEM_ACTOR, setUserStatus } from "../src/services/members.js";
+import { directoryMode } from "../src/services/spaces.js";
 import { direct, uniq } from "./auth-helpers.js";
+import { directEnv } from "./directory-helpers.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
 
 const app = createApp();
@@ -251,6 +253,30 @@ describe("POST R.memberRestore(id): behaviour", () => {
     const FROZEN = { ...(env as object), FEATURES: "sync_frozen" } as Env;
     expect((await restore(u.userId, admin.cookie, FROZEN)).status).toBe(200);
     expect(await row(u.userId)).toMatchObject({ status: "active", bySync: 0 });
+  });
+
+  it("self-host with a working directory transport and no FEATURES entry is Google sync: a directory removal stays 409, restore and invite", async () => {
+    const email = uniq("rs-transport", "a.com");
+    const u = await login(email, "member");
+    await setUserStatus(
+      env,
+      u.userId,
+      "removed",
+      "directory_delete",
+      SYSTEM_ACTOR,
+    );
+    const CONNECTED = directEnv({ FEATURES: "" });
+    expect(directoryMode(CONNECTED)).toBe("google");
+    const r = await restore(u.userId, admin.cookie, CONNECTED);
+    expect(r.status).toBe(409);
+    expect((await errOf(r)).code).toBe("directory_managed");
+    const inv = await call(CONNECTED, R.members, admin.cookie, {
+      method: "POST",
+      body: { email, role: "member" },
+    });
+    expect(inv.status).toBe(409);
+    expect((await errOf(inv)).code).toBe("directory_managed");
+    expect((await row(u.userId))?.status).toBe("removed");
   });
 
   it("a directory removal stays refused after audit retention sweeps its audit row", async () => {
