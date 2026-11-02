@@ -476,7 +476,8 @@ export const TRANSITIONS: Readonly<
     ...lease("failed"),
   },
   active: {
-    upgrade: t(["A", "T"], "active"),
+    // S: the scheduler's fleet rollout (#955); never from suspended.
+    upgrade: t(["A", "T", "S"], "active"),
     rollback: t(["A", "T"], "active"),
     suspend: t(["A", "T"], "suspended"),
     delete: t(["A", "T", "U"], "deleting"),
