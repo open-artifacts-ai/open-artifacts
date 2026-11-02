@@ -5,6 +5,8 @@ import {
   authorizeRefused,
   authorizeUrl,
   codeForm,
+  KV_CACHE_TTL_MS,
+  KV_SETTLE_SLACK_MS,
   lastRedeemAt,
   mcpResource,
   oauthStoreMode,
@@ -336,52 +338,64 @@ describe("credentials", () => {
     // waits out the edge cache (#769) and the case says so (label).
     const KV_WAIT_LABEL =
       "KV OAuth store: waited out the edge cache (no wait needs dual or d1)";
+    // Each KV wait runs up to TTL + slack, so the suite's 180 s default holds
+    // two waits, not four: a case gets its waits plus a minute for requests.
+    const kvTimeout = (waits: number) =>
+      waits * (KV_CACHE_TTL_MS + KV_SETTLE_SLACK_MS) + 60_000;
 
-    it("An OAuth refresh straight after the redeem: a new token, on A and on B (#769)", async (ctx) => {
-      for (const t of [T.a, T.b]) {
-        const kv = (await oauthStoreMode(t)) === "kv";
-        if (kv) label(ctx, KV_WAIT_LABEL);
-        const clientId = await registerClient(t);
-        const rt = await refresh(t, clientId);
-        if (kv) await untilKvSettled(lastRedeemAt());
-        const r = await fetch(
-          tokenRequest(t, refreshForm(clientId, rt, res(t))),
-        );
-        const ok = await tokenIssued(r);
-        await r.body?.cancel();
-        expect(ok, `${t.name}: refresh right after the redeem`).toBe(true);
-      }
-    });
+    it(
+      "An OAuth refresh straight after the redeem: a new token, on A and on B (#769)",
+      async (ctx) => {
+        for (const t of [T.a, T.b]) {
+          const kv = (await oauthStoreMode(t)) === "kv";
+          if (kv) label(ctx, KV_WAIT_LABEL);
+          const clientId = await registerClient(t);
+          const rt = await refresh(t, clientId);
+          if (kv) await untilKvSettled(lastRedeemAt());
+          const r = await fetch(
+            tokenRequest(t, refreshForm(clientId, rt, res(t))),
+          );
+          const ok = await tokenIssued(r);
+          await r.body?.cancel();
+          expect(ok, `${t.name}: refresh right after the redeem`).toBe(true);
+        }
+      },
+      kvTimeout(2),
+    );
 
-    it("A revoked OAuth refresh token is refused at once, on A and on B", async (ctx) => {
-      for (const t of [T.a, T.b]) {
-        const kv = (await oauthStoreMode(t)) === "kv";
-        if (kv) label(ctx, KV_WAIT_LABEL);
-        const clientId = await registerClient(t);
-        const rt = await refresh(t, clientId);
-        if (kv) await untilKvSettled(lastRedeemAt());
-        // RFC 7009 at the token endpoint: the refresh token's grant goes.
-        const rv = await fetch(
-          new Request(`${t.app}/oauth/token`, {
-            method: "POST",
-            redirect: "manual",
-            headers: { "content-type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-              token: rt,
-              token_type_hint: "refresh_token",
-              client_id: clientId,
+    it(
+      "A revoked OAuth refresh token is refused at once, on A and on B",
+      async (ctx) => {
+        for (const t of [T.a, T.b]) {
+          const kv = (await oauthStoreMode(t)) === "kv";
+          if (kv) label(ctx, KV_WAIT_LABEL);
+          const clientId = await registerClient(t);
+          const rt = await refresh(t, clientId);
+          if (kv) await untilKvSettled(lastRedeemAt());
+          // RFC 7009 at the token endpoint: the refresh token's grant goes.
+          const rv = await fetch(
+            new Request(`${t.app}/oauth/token`, {
+              method: "POST",
+              redirect: "manual",
+              headers: { "content-type": "application/x-www-form-urlencoded" },
+              body: new URLSearchParams({
+                token: rt,
+                token_type_hint: "refresh_token",
+                client_id: clientId,
+              }),
             }),
-          }),
-        );
-        await rv.body?.cancel();
-        expect(rv.status, `${t.name}: revoke`).toBe(200);
-        if (kv) await untilKvSettled(Date.now());
-        await tokenRefused(["invalid_grant"])(
-          await fetch(tokenRequest(t, refreshForm(clientId, rt, res(t)))),
-          t,
-        );
-      }
-    });
+          );
+          await rv.body?.cancel();
+          expect(rv.status, `${t.name}: revoke`).toBe(200);
+          if (kv) await untilKvSettled(Date.now());
+          await tokenRefused(["invalid_grant"])(
+            await fetch(tokenRequest(t, refreshForm(clientId, rt, res(t)))),
+            t,
+          );
+        }
+      },
+      kvTimeout(4),
+    );
   });
 
   // ------------------------------------------------------------ signed URLs
