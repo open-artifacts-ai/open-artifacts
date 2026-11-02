@@ -528,6 +528,18 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       } satisfies PlanRefusalDetails);
     return null;
   };
+  /**
+   * The server's planGate on a team route other than an invite (TEAM_ROUTES):
+   * a free instance is refused whether or not its trial ran.
+   */
+  const teamRefusal = (): Response | null => {
+    if (!o.selfHosted && billing.tier === "free" && !billing.readOnly)
+      return err("plan_required", "This needs a team plan", {
+        tier: "free",
+        reason: "solo",
+      } satisfies PlanRefusalDetails);
+    return planRefusal();
+  };
   const billingUrl = (kind: "checkout" | "portal") =>
     HttpResponse.json({
       url: `https://checkout.stripe.com/c/pay/cs_test_mock_${kind}`,
@@ -2128,6 +2140,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       "*/api/v1/directory/held/:groupId/snooze",
       authed(async ({ params, request }) => {
         if (me.user.role !== "owner") return notFound();
+        const refused = teamRefusal();
+        if (refused) return refused;
         const off = syncOff();
         if (off) return off;
         // The body is optional: none means no reason.
