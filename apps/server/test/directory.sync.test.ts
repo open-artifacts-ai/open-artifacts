@@ -27,6 +27,7 @@ import {
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { SYNC_DO_NAME } from "../src/services/directory.js";
+import { directoryMode } from "../src/services/spaces.js";
 import { mailer, type SentMail, uniq } from "./auth-helpers.js";
 import {
   APP,
@@ -1878,5 +1879,94 @@ describe("P2.5 #15: a pending reconnect keeps the live binding synced and enforc
     expect(await readPending(e, exp - 1)).toMatchObject({ exp });
     expect(await readPending(e, exp)).toBeNull();
     expect(await readPendingAny(e)).toMatchObject({ exp });
+  });
+});
+
+// P4: on self-host the directory mode comes from the connection itself. A
+// working transport with no sync_* FEATURES entry is google; the live
+// binding decides whether anything syncs. Hosted keeps its tier rules
+// (directory.transport.test.ts).
+describe("P4: self-host sync with no FEATURES entry", () => {
+  beforeEach(() => {
+    // A fresh env object: authConfig and the transport are memoized per env.
+    e = { ...e, FEATURES: "spaces" };
+  });
+
+  it("the mode is google from the transport; sync_frozen still freezes; no transport is off", () => {
+    expect(directoryMode(e)).toBe("google");
+    expect(directoryMode({ ...e, FEATURES: undefined } as Env)).toBe("google");
+    expect(directoryMode({ ...e, FEATURES: "spaces,sync_frozen" } as Env)).toBe(
+      "frozen",
+    );
+    expect(
+      directoryMode({
+        ...e,
+        GOOGLE_DIRECTORY_CLIENT_ID: undefined,
+        GOOGLE_DIRECTORY_CLIENT_SECRET: undefined,
+      } as Env),
+    ).toBe("off");
+  });
+
+  it("without a binding nothing syncs: no Google call, no user linked", async () => {
+    const [u] = dirUsers(1, "p4-unbound");
+    const calls = g.adminCalls.length;
+    const tokens = g.tokenCalls.length;
+    await tick(Date.now());
+    expect(g.adminCalls.length).toBe(calls);
+    expect(g.tokenCalls.length).toBe(tokens);
+    expect(await uidOf(u?.id as string)).toBeUndefined();
+    expect((await status()).state).toBe("never");
+  });
+
+  it("with a binding it syncs: a suspension in Google applies on the next tick", async () => {
+    const [u] = dirUsers(1, "p4-susp");
+    const t0 = Date.now();
+    await connected(t0);
+    const uid = await uidOf(u?.id as string);
+    expect(await statusOf(uid)).toBe("active");
+    (g.users.get(u?.id as string) as { suspended?: boolean }).suspended = true;
+    g.activity("admin", "SUSPEND_USER", { USER_EMAIL: u?.primaryEmail ?? "" });
+    await drain(t0 + 2 * MIN);
+    expect(await statusOf(uid)).toBe("suspended");
+    // /me reports the directory to the owner, as with sync_google.
+    const me = (await (await get(e, R.me, owner.cookie)).json()) as Me;
+    expect(me.instance.directory?.mode).toBe("google");
+  });
+
+  it("a held sweep still waits for the owner's confirm", async () => {
+    const us = dirUsers(2, "p4-held");
+    const gid = `grp-p4-held-${crypto.randomUUID()}`;
+    await mappedGroup(
+      gid,
+      us.map((x) => x.id),
+    );
+    const t0 = Date.now();
+    await connected(t0);
+    g.deleteGroup(gid);
+    await drain(t0 + 61 * MIN);
+    expect(await membersOf(gid)).toHaveLength(2);
+    expect((await status()).held.map((h) => h.groupId)).toEqual([gid]);
+    expect(
+      (await post(e, R.directoryHeldConfirm(gid), owner.cookie)).status,
+    ).toBe(202);
+    await drain(t0 + 62 * MIN);
+    expect(await membersOf(gid)).toEqual([]);
+  });
+
+  it("disconnect stops sync even though the transport still works", async () => {
+    const [u] = dirUsers(1, "p4-disc");
+    const t0 = Date.now();
+    await connected(t0);
+    const uid = await uidOf(u?.id as string);
+    expect((await post(e, R.directoryDisconnect, owner.cookie)).status).toBe(
+      200,
+    );
+    expect(directoryMode(e)).toBe("google");
+    const calls = g.adminCalls.length;
+    (g.users.get(u?.id as string) as { suspended?: boolean }).suspended = true;
+    g.activity("admin", "SUSPEND_USER", { USER_EMAIL: u?.primaryEmail ?? "" });
+    for (const at of [t0 + 2 * MIN, t0 + 61 * MIN]) await tick(at);
+    expect(g.adminCalls.length).toBe(calls);
+    expect(await statusOf(uid)).toBe("active");
   });
 });
