@@ -599,8 +599,8 @@ function Row({
         onClose={() => setConfirm(false)}
         title={`Remove ${label}?`}
         description={
-          // Removing also unshares what was shared with them (#795), so they stay removed.
-          // Parity 1: every install keeps them where they are.
+          // Parity 1, every install: artifacts stay, and shares stay on the removed
+          // row, which refuses every sign-in, so they stay removed.
           "They lose access, including to anything shared with them. Their artifacts stay where they are. You can transfer them later under Departed, or restore this person."
         }
         footer={

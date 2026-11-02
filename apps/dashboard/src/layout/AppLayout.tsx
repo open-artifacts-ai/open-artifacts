@@ -369,7 +369,7 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
   const { space } = useSearch({ strict: false }) as { space?: string };
   const inSpace = Boolean(space) && hasFeature(me, "spaces");
   const update = instanceUpdate(me);
-  // Departed people with artifacts to transfer (org admins, hosted).
+  // Departed people with artifacts to transfer (org admins, every install).
   const departed = useDeparted(me);
   const usageOff = hasFeature(me, "usage_off");
   const sync = syncDot(me);

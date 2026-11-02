@@ -176,7 +176,7 @@ export const useSearch = (q: SearchQuery) =>
       api.get(withQuery(R.search, q), SearchPage, signal),
     enabled: q.q.length > 0,
   });
-/** Active members by default; `status` (a comma list) is hosted, so the default sends none. */
+/** Active members by default; `status` is a comma list (every install, parity 1). */
 export const useMembers = (status?: string, enabled = true) =>
   useQuery({
     enabled,
@@ -914,9 +914,9 @@ export const useRunTransfer = (memberId: string) =>
     () => true,
   );
 /**
- * POST R.memberRestore: a removed member comes back active, as a plain member
- * (parity 1). Errors are the caller's to show inline (409 directory_managed,
- * guest_lapsed, member_active).
+ * POST R.memberRestore: a removed member comes back active, as a member, a
+ * guest as a guest (parity 1). Errors are the caller's to show inline (403
+ * owner_only, 409 directory_managed, guest_lapsed, member_active).
  */
 export const useRestoreMember = () =>
   useInvalidating(
