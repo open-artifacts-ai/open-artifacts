@@ -27,6 +27,15 @@ import { guestRecipients, shareReach } from "./reach.js";
 
 export const MAX_SHARES = 200;
 
+/**
+ * What a guest's share comes to, in words. Copy only: access is decided in
+ * src/auth. A stored editor gets edit back if they become a member.
+ */
+export const guestShareLine = (s: { role: ShareRole }): string =>
+  s.role === "viewer"
+    ? "They're a guest, so they can only view."
+    : "They're a guest, so they can only view for now.";
+
 const toShare = (r: {
   email: string;
   role: string;

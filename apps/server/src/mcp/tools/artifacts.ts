@@ -25,7 +25,11 @@ import {
   undelete,
 } from "../../services/artifacts.js";
 import { search } from "../../services/search.js";
-import { deleteShare, putShare } from "../../services/shares.js";
+import {
+  deleteShare,
+  guestShareLine,
+  putShare,
+} from "../../services/shares.js";
 import { publishableSpaces } from "../../services/spaces.js";
 import { createUpload } from "../../services/uploads.js";
 import { guard, ok, type ToolEnv } from "../server.js";
@@ -211,7 +215,7 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       return ok(
         `${
           s.guest
-            ? `Shared ${input.id} with ${s.email}. They're a guest, so they can only view${s.role === "editor" ? " for now" : ""}. ${viewUrl(env, input.id)}.`
+            ? `Shared ${input.id} with ${s.email}. ${guestShareLine(s)} ${viewUrl(env, input.id)}.`
             : `Shared ${input.id} with ${s.email} as ${s.role}: ${viewUrl(env, input.id)}.`
         } ${s.emailed ? `Emailed ${s.email} a link.` : "No email sent."}${
           s.recipient
