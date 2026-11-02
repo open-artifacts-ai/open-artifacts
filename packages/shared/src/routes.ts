@@ -234,7 +234,7 @@ export const R = {
    */
   directoryHeldSnooze: (groupId: string) =>
     `/api/v1/directory/held/${seg(groupId)}/snooze`,
-  /** GET -> TransferSummary; POST TransferInput -> TransferResult (409 member_active). Org owner, admin. */
+  /** GET -> TransferSummary; POST TransferInput -> TransferResult (409 member_active). Org owner, admin, on every install; a space target needs the spaces feature (404 without it). */
   memberTransfer: (id: string) => `/api/v1/members/${seg(id)}/transfer`,
   /**
    * PUT (no body) -> Member; DELETE -> Member: set or clear the MANUAL

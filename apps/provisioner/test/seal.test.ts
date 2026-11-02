@@ -29,9 +29,11 @@ describe("sealTo / openSealed", () => {
     expect(a).not.toContain("oa_pat_x");
     expect(await openSealed(me, a)).toBe('{"pat":"oa_pat_x"}');
     await expect(openSealed(other, a)).rejects.toThrow();
-    const [p, e, i, c] = a.split(".");
+    const [p, e, i, c] = a.split(".") as [string, string, string, string];
+    // The first character, always changed: a fixed tail can equal the real one.
+    const tampered = `${c.startsWith("A") ? "B" : "A"}${c.slice(1)}`;
     await expect(
-      openSealed(me, [p, e, i, `${(c as string).slice(0, -2)}AA`].join(".")),
+      openSealed(me, [p, e, i, tampered].join(".")),
     ).rejects.toThrow();
     await expect(sealTo("AAAA", "x")).rejects.toThrow(/32 bytes/);
   });

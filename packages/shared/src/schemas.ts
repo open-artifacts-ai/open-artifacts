@@ -289,6 +289,13 @@ export const VersionInfoSchema = z.object({
 export type VersionInfo = z.infer<typeof VersionInfoSchema>;
 
 /**
+ * A connection, as `versions.agent_via` records it: `g:<grantId>` (an OAuth
+ * grant) or `t:<tokenId>` (a personal access token). Both ids are 16
+ * characters today (the OAuth provider's [A-Za-z0-9_-], newId's base58).
+ */
+export const AgentViaSchema = z.string().regex(/^[gt]:[A-Za-z0-9_-]{1,64}$/);
+
+/**
  * GET R.artifacts. scope "mine" = the caller's personal space; "space" = one
  * space (needs spaceId, 400 without); "spaces" = every shared space the
  * caller has a role in. spaceId narrows any scope; another user's personal
@@ -311,6 +318,11 @@ export const ListQuerySchema = z
     cursor: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(100).default(25),
     includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
+    /**
+     * Artifacts with any version from this connection (AgentViaSchema). Only
+     * the caller's own grant or token matches; any other is an empty page.
+     */
+    agentVia: AgentViaSchema.optional(),
   })
   .refine((q) => q.scope !== "space" || q.spaceId !== undefined, {
     message: 'scope "space" requires spaceId',
@@ -575,7 +587,7 @@ export const MeSchema = z.object({
     plan: z.enum(["free", "paid"]),
     /** Null for members and guests, and before the first good check. Optional: older servers omit it. */
     update: InstanceUpdateSchema.nullable().optional(),
-    /** Hosted M1 (all optional; older and self-hosted servers omit them). A hosted install (HOSTED=1). */
+    /** Hosted M1 (all optional; older servers omit them, and Access-only installs omit hosted, tier and signIn). A hosted install (HOSTED=1). */
     hosted: z.boolean().optional(),
     /** Hosted billing tier; null when self-hosted. */
     tier: TierSchema.nullable().optional(),
@@ -1042,6 +1054,8 @@ export const SearchQuerySchema = z.strictObject({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(25),
   spaceId: z.string().optional(),
+  /** Narrows the hits to the caller's own connection (as the list's). */
+  agentVia: AgentViaSchema.optional(),
 });
 export type SearchQuery = z.infer<typeof SearchQuerySchema>;
 export type SearchQueryInput = z.input<typeof SearchQuerySchema>;

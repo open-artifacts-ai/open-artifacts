@@ -155,6 +155,7 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
           input.cursor,
           input.limit,
           input.spaceId,
+          input.agentVia,
         );
         return ok(
           `${plural(page.items.length, "match")}${more(page.nextCursor)}: ${appOrigin(env)}/search?q=${encodeURIComponent(input.q)}`,

@@ -886,6 +886,120 @@ describe("departed transfer", () => {
     return g;
   };
 
+  it("spaces off: an active or lapsed guest moves to a user; a space target is 404", async () => {
+    const heir = await mk("heir");
+    const s = await createSpace();
+    const active = await mk("offg", "guest");
+    const lapsed = await mk("offl", "guest");
+    await run(
+      "update users set status = 'removed', guest_lapsed = 1 where id = ?",
+      lapsed.userId,
+    );
+    for (const g of [active, lapsed]) {
+      const art = await insertArtifact(g.userId, g.userId);
+      const sum = await call(R.memberTransfer(g.userId), admin.cookie, {}, OFF);
+      expect(await json<TransferSummary>(sum)).toEqual({ live: 1, deleted: 0 });
+      const post = (body: unknown) =>
+        call(
+          R.memberTransfer(g.userId),
+          admin.cookie,
+          { method: "POST", body },
+          OFF,
+        );
+      // Refused before any read: a real space, an unknown one and a personal
+      // one answer alike, and nothing moves or is audited.
+      for (const spaceId of [s.id, newId(), heir.userId]) {
+        const refused = await post({ to: { kind: "space", spaceId } });
+        expect(refused.status).toBe(404);
+        expect(await code(refused)).toBe("not_found");
+      }
+      expect(await row(art)).toMatchObject({
+        space_id: g.userId,
+        owner_id: g.userId,
+      });
+      expect(await audits("artifact.transfer", g.userId)).toHaveLength(0);
+      const r = await post({ to: { kind: "user", userId: heir.userId } });
+      expect(await json<TransferResult>(r)).toEqual({
+        moved: 1,
+        remaining: 0,
+        nextCursor: null,
+      });
+      expect(await row(art)).toMatchObject({
+        space_id: heir.userId,
+        owner_id: heir.userId,
+      });
+    }
+  });
+
+  it("spaces off: a guest's published artifact reaches its heir end to end", async () => {
+    const heir = await mk("heir2");
+    const g = await mk("offe");
+    const made = await call(
+      R.artifacts,
+      g.cookie,
+      { method: "POST", body: base },
+      OFF,
+    );
+    expect(made.status).toBe(201);
+    const { id } = await json<{ id: string }>(made);
+    await run("update users set role = 'guest' where id = ?", g.userId);
+    expect((await call(R.artifact(id), heir.cookie, {}, OFF)).status).toBe(404);
+
+    const r = await call(
+      R.memberTransfer(g.userId),
+      admin.cookie,
+      {
+        method: "POST",
+        body: { to: { kind: "user", userId: heir.userId } },
+      },
+      OFF,
+    );
+    expect(await json<TransferResult>(r)).toEqual({
+      moved: 1,
+      remaining: 0,
+      nextCursor: null,
+    });
+    const read = await call(R.artifact(id), heir.cookie, {}, OFF);
+    expect(read.status).toBe(200);
+    expect(await json<ArtifactSummary>(read)).toMatchObject({
+      access: "owner",
+      owner: { id: heir.userId },
+    });
+    const mine = await json<{ items: { id: string }[] }>(
+      await call(`${R.artifacts}?scope=mine`, heir.cookie, {}, OFF),
+    );
+    expect(mine.items.map((a) => a.id)).toContain(id);
+    const after = await call(R.memberTransfer(g.userId), admin.cookie, {}, OFF);
+    expect(await json<TransferSummary>(after)).toEqual({ live: 0, deleted: 0 });
+    expect(await audits("artifact.transfer", g.userId)).toHaveLength(1);
+  });
+
+  it("spaces off: an active member is 409, a member caller 404, a deleted member 404", async () => {
+    await mk("offo", "owner");
+    const m = await mk("offm");
+    expect(
+      (await call(R.memberTransfer(m.userId), admin.cookie, {}, OFF)).status,
+    ).toBe(409);
+    expect(
+      (await call(R.memberTransfer(m.userId), m.cookie, {}, OFF)).status,
+    ).toBe(404);
+    const removed = await mk("offr");
+    expect(
+      (
+        await call(
+          R.member(removed.userId),
+          admin.cookie,
+          { method: "DELETE" },
+          OFF,
+        )
+      ).status,
+    ).toBe(204);
+    expect(
+      (await call(R.memberTransfer(removed.userId), admin.cookie, {}, OFF))
+        .status,
+    ).toBe(404);
+  });
+
   it("departed transfer on an active member → 409 member_active", async () => {
     const m = await mk("act");
     const s = await createSpace();

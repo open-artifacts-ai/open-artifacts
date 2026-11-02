@@ -20,11 +20,7 @@ import {
   patchMember,
   removeMember,
 } from "../services/members.js";
-import {
-  requireSpaces,
-  transferPersonal,
-  transferSummary,
-} from "../services/spaces.js";
+import { transferPersonal, transferSummary } from "../services/spaces.js";
 import type { AppType } from "./index.js";
 
 /** Owner/admin only: 401 anonymous, 404 for everyone else (route hidden). */
@@ -36,9 +32,11 @@ export function requireManager(c: Context<AppEnv>): Member {
   return user;
 }
 
-/** An uncapped org owner or admin with spaces on (P3 T10), else 404. */
+/**
+ * An uncapped org owner or admin (P3 T10), else 404. On every install: a
+ * guest's personal artifacts need a home with or without spaces (parity 2).
+ */
 function requireDeparted(c: Context<AppEnv>): Member {
-  requireSpaces(c.env);
   const user = requireUser(c);
   if (!orgCan(user, "transfer.departed", { cap: capOfCaller(caller(c)) }))
     throw new ApiError("not_found", "Not found");

@@ -179,10 +179,24 @@ describe("GET /me spaces", () => {
     expect(me).not.toHaveProperty("spaces");
   });
 
-  it("Access-only installs keep today's shape even with spaces on", async () => {
+  it("Access-only with spaces on sends features, auth and spaces, not the sign-in fields", async () => {
     expect(showsSignInFields(ACCESS)).toBe(false);
     const me = await getMe(ACCESS, member.cookie);
-    expect(me).not.toHaveProperty("auth");
+    expect(me.instance.features).toEqual(
+      expect.arrayContaining(["spaces", "guests_read_only"]),
+    );
+    expect(me.auth).toMatchObject({ readOnly: false, cap: null });
+    expect(me.personalSpaceId).toBe(member.userId);
+    expect(me.spaces).toEqual(expect.any(Array));
+    expect(me.instance).not.toHaveProperty("hosted");
+    expect(me.instance).not.toHaveProperty("tier");
+    expect(me.instance).not.toHaveProperty("signIn");
+  });
+
+  it("Access-only with spaces off sends no spaces data", async () => {
+    const me = await getMe({ ...ACCESS, FEATURES: "" } as Env, member.cookie);
+    expect(me.instance.features).toEqual(["guests_read_only"]);
+    expect(me.auth).toMatchObject({ readOnly: false, cap: null });
     expect(me).not.toHaveProperty("personalSpaceId");
     expect(me).not.toHaveProperty("spaces");
   });

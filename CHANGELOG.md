@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.97.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.96.0...v0.97.0) (2026-11-02)
+
+
+### Features
+
+* filter the library by the connection that published ([#589](https://github.com/open-artifacts-ai/open-artifacts/issues/589)) ([#853](https://github.com/open-artifacts-ai/open-artifacts/issues/853)) ([3518861](https://github.com/open-artifacts-ai/open-artifacts/commit/3518861ab4ac0df313c137a0e559904a854bc756))
+
 ## [0.96.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.95.0...v0.96.0) (2026-11-02)
 
 
