@@ -15,6 +15,7 @@ import { qk } from "../api/queries";
 import { useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { AgentSetupBody, useCanSetUpAgent } from "../settings/AgentSetupCard";
 import { copyText } from "../settings/ui";
 import { sharedSpaceName } from "../spaces/label";
 import { useUploadSpace } from "../spaces/SpacePicker";
@@ -158,9 +159,12 @@ export function Library({ scope }: { scope: Scope }) {
   const showRevoked = gone || revoked !== null;
   const items = uniqueItems(q.data?.pages);
   // Remember agents seen so far so others stay selectable while one is filtered.
+  // A masked agent (another member's token, shown as "<owner>'s agent") gets
+  // no chip: no filter matches it.
   const seenAgents = useRef(new Set<string>());
   for (const a of items)
-    if (a.lastAgent) seenAgents.current.add(a.lastAgent.name);
+    if (a.lastAgent && !a.lastAgent.masked)
+      seenAgents.current.add(a.lastAgent.name);
   const agents = [...seenAgents.current].sort();
   const guest = me.status === "authed" && me.me.user.role === "guest";
   const meId = me.status === "authed" ? me.me.user.id : undefined;
@@ -168,6 +172,7 @@ export function Library({ scope }: { scope: Scope }) {
   const canCreate =
     me.status === "authed" && !guest && (me.me.auth?.cap ?? null) === null;
 
+  const canSetUpAgent = useCanSetUpAgent();
   const sentinel = useSentinel(q);
 
   const filtered = Boolean(s.format || s.agent);
@@ -192,7 +197,13 @@ export function Library({ scope }: { scope: Scope }) {
             ]
       : EMPTY[scope];
   const emptyAction =
-    space && scope === "all" && !personal && canPublishHere ? (
+    scope === "mine" && !space ? (
+      canSetUpAgent ? (
+        <div className="w-full max-w-[420px]">
+          <AgentSetupBody />
+        </div>
+      ) : undefined
+    ) : space && scope === "all" && !personal && canPublishHere ? (
       <Button
         size="sm"
         variant="outline"

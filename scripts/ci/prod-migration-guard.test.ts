@@ -184,6 +184,57 @@ describe("prod-migration-guard.sh detect", () => {
       }).out,
     ).toBe("hold=false\nguarded=true\n");
   });
+  describe("an already-deployed migration changes", () => {
+    const detect = (r: ReturnType<typeof repo>, event = "push") =>
+      r.run("detect", { TAG: "v1.1.0", EVENT: event, PROD_VERSION: "1.0.0" });
+    const held = (d: ReturnType<ReturnType<typeof repo>["run"]>) => {
+      expect(d.out).toBe("hold=true\nguarded=false\n");
+      expect(d.summary).toContain("0001_init.sql");
+    };
+    it("a modified migration holds, even for a manual run", () => {
+      const r = repo();
+      r.release("v1.1.0", {
+        "apps/server/migrations/0001_init.sql": "create table a (x, y);\n",
+      });
+      held(detect(r));
+      held(detect(r, "workflow_dispatch"));
+    });
+    it("a deleted migration holds", () => {
+      const r = repo();
+      execFileSync(
+        "git",
+        ["rm", "-q", "apps/server/migrations/0001_init.sql"],
+        {
+          cwd: r.dir,
+        },
+      );
+      r.release("v1.1.0", {});
+      held(detect(r));
+    });
+    it("a renamed migration holds", () => {
+      const r = repo();
+      execFileSync(
+        "git",
+        [
+          "mv",
+          "apps/server/migrations/0001_init.sql",
+          "apps/server/migrations/0001_renamed.sql",
+        ],
+        { cwd: r.dir },
+      );
+      r.release("v1.1.0", {});
+      const d = detect(r);
+      expect(d.out).toBe("hold=true\nguarded=false\n");
+      expect(d.summary).toContain("0001_renamed.sql");
+    });
+    it("an added additive migration alone does not hold", () => {
+      const r = repo();
+      r.release("v1.1.0", {
+        "apps/server/migrations/0002_add.sql": "alter table a add y;\n",
+      });
+      expect(detect(r).out).toBe("hold=false\nguarded=false\n");
+    });
+  });
   it("any doubt holds: prod's version unknown, not a release, or without a tag; an unknown tag", () => {
     const r = repo();
     r.release("v1.1.0", {

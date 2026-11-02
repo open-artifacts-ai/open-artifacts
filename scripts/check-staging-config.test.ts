@@ -153,10 +153,18 @@ describe("wrangler.staging.jsonc env.staging", () => {
       ENVIRONMENT: "production",
       APP_HOST: "staging.open-artifacts.com",
       CONTENT_HOST: "staging-content.open-artifacts.com",
-      OWNER_EMAIL: expect.stringMatching(/^[^@\s]+@[^@\s]+$/),
       ACCESS_TEAM_DOMAIN: expect.stringMatching(/\.cloudflareaccess\.com$/),
       CF_ACCOUNT_ID: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
+    // #1084: OWNER_EMAIL is the owner's address, never committed: the
+    // deploy passes it with --var from the OA_OWNER_EMAIL secret.
+    expect(vars).not.toHaveProperty("OWNER_EMAIL");
+    const wf = readFileSync(
+      join(root, ".github/workflows/deploy-staging.yml"),
+      "utf8",
+    );
+    expect(wf).toContain('--var "OWNER_EMAIL:$OA_OWNER_EMAIL"');
+    expect(wf).toContain("OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}");
     // Only ACCESS_CLIENT_ID (a public id) may look credential-like.
     expect(
       Object.keys(vars).filter((k) =>

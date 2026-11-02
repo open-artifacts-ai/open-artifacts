@@ -81,7 +81,7 @@ Anything shown to the user goes to them as visually rich HTML in the visual comp
 
 **Steps:**
 - [ ] **Step 1: Prove setup adopts the existing staging resources.**
-  - Run `pnpm oa:setup --name open-artifacts-staging --app-host staging.open-artifacts.com --content-host staging-content.open-artifacts.com --owner-email me@leourbina.com --upgrade --json`.
+  - Run `pnpm oa:setup --name open-artifacts-staging --app-host staging.open-artifacts.com --content-host staging-content.open-artifacts.com --owner-email <the owner's address> --upgrade --json`.
   - Expected: every resource step reports `skipped`, and `deploy` and `selftest` report `ok`.
 - [ ] **Step 2: Prove the install flow end to end, following `llms.txt` to the letter.**
   - Do a fresh clone into a scratch dir, using the landing preview's `/llms.txt`.
@@ -100,7 +100,7 @@ Anything shown to the user goes to them as visually rich HTML in the visual comp
 ### Task I3b: Production instance at artifacts.leourbina.com (owner: OpenArtifacts Platform)
 
 - [ ] **Step 1:** At the first stable release (after B14), install production by following llms.txt from that tag:
-  `pnpm oa:setup --name open-artifacts-prod --app-host artifacts.leourbina.com --content-host artifacts-content.leourbina.com --owner-email me@leourbina.com --json`.
+  `pnpm oa:setup --name open-artifacts-prod --app-host artifacts.leourbina.com --content-host artifacts-content.leourbina.com --owner-email <the owner's address> --json`.
   Relay each `action_required` to the user as a blocker.
 - [ ] **Step 2:** Add a `deploy-prod` job to `release-please.yml` that runs only for stable releases and calls `oa:setup --upgrade --name open-artifacts-prod --json`, with the same secrets preflight and smoke as staging. A test asserts that it never runs for pre-releases or on pushes to main.
 - [ ] **Step 3:** Verify: owner login on `artifacts.leourbina.com`, a publish from a real agent over MCP, and the B17 CPU budgets on production.

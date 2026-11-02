@@ -147,9 +147,9 @@ describe("copy (#213)", () => {
   });
 
   it("a user named 'me' (the sign-in default) is shown as the full address", () => {
-    const inviter = senderName({ name: "me", email: "me@leourbina.com" });
+    const inviter = senderName({ name: "me", email: "me@test.invalid" });
     const m = inviteEmail({ ...common, inviter, instance: "Open Artifacts" });
-    expect(m.subject).toBe("me@leourbina.com added you to Open Artifacts");
+    expect(m.subject).toBe("me@test.invalid added you to Open Artifacts");
   });
 });
 
