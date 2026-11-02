@@ -247,7 +247,9 @@ describe("events socket", () => {
     });
     expect(r2.status).toBe(201);
     const f = await s.next();
-    expect(f).toMatchObject({ by: { kind: "agent", name: "Member's agent" } });
+    expect(f).toMatchObject({
+      by: { kind: "agent", name: "A member's agent" },
+    });
     expect(JSON.stringify(f)).not.toContain(n.email);
     expect(JSON.stringify(f)).not.toContain("9q2x");
     s.ws.close();

@@ -43,11 +43,14 @@ export const shownName = (u: { name: string | null; email: string }): string =>
 export const isPrivateAgent = (via: string | null): boolean =>
   !via?.startsWith("g:");
 
-/** The stand-in for a private label: "<publisher>'s agent". */
+/** The stand-in for a private label: "<publisher>'s agent", or "A member's agent". */
 export const ownersAgent = (publisher: {
   name: string | null;
   email: string;
-}): string => `${shownName(publisher)}'s agent`;
+}): string => {
+  const name = publicName(publisher);
+  return name === null ? "A member's agent" : `${name}'s agent`;
+};
 
 /**
  * The agent as `viewerId` sees it (null: anonymous). The publisher (the

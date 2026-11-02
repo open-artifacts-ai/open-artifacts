@@ -187,8 +187,8 @@ describe("a PAT publish: REST", () => {
       artifact: { lastAgent: { name: string } };
       versions: { agent: { name: string } }[];
     };
-    expect(r.artifact.lastAgent.name).toBe("Member's agent");
-    expect(r.versions[0]?.agent.name).toBe("Member's agent");
+    expect(r.artifact.lastAgent.name).toBe("A member's agent");
+    expect(r.versions[0]?.agent.name).toBe("A member's agent");
     expect(JSON.stringify(r)).not.toContain("9q2x");
     const anon = await restReads(namelessId, null);
     expect(JSON.stringify(anon)).not.toContain("9q2x");
