@@ -48,8 +48,10 @@ const cmp = (a: string, b: string) => {
     if (x[i] !== y[i]) return (x[i] as number) - (y[i] as number);
   return 0;
 };
+// Tags this checkout contains: worktrees share .git, so a plain list would
+// hold a branch behind a release that was tagged after it forked.
 const latestTag = (): string | undefined => {
-  const tags = execFileSync("git", ["tag", "--list", "v*"], {
+  const tags = execFileSync("git", ["tag", "--merged", "HEAD", "--list", "v*"], {
     cwd: root,
     encoding: "utf8",
   })
