@@ -1,5 +1,7 @@
 export * from "./bundle.js";
 export * from "./cf.js";
+export * from "./direct-fetch.js";
+export * from "./gate.js";
 export * from "./metadata.js";
 export * from "./names.js";
 export * from "./platform.js";

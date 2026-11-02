@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { cfClient } from "../src/cf.js";
 import { platformNames } from "../src/names.js";
 import { PlatformDb } from "../src/platform.js";
+import type { InstallId } from "../src/types.js";
 import { FakeCf } from "./fake-cf.js";
 
 const ROOT = new URL("../../../", import.meta.url);
@@ -29,7 +30,7 @@ function world() {
     sleep: async () => {},
   });
   const db = new PlatformDb(cf, { id, name }, "staging", () => t);
-  return { cf, id, db, tick: (ms: number) => (t += ms) };
+  return { cf, fake, id, db, tick: (ms: number) => (t += ms) };
 }
 
 async function row(w: ReturnType<typeof world>) {
@@ -126,5 +127,82 @@ describe("install CAS writes on D1's real meta.changes", () => {
         r.row_version,
       ),
     ).toBe(false);
+  });
+});
+
+describe("insertCreating and platform principals (4.1)", () => {
+  it.each(["i000000admin", "i00000signup"])(
+    "refuses %s before any write",
+    async (id) => {
+      const w = world();
+      const n = w.fake.log.length;
+      await expect(
+        w.db.insertCreating({
+          id: id as InstallId,
+          slug: "acme",
+          appHost: "acme.open-artifacts-staging.app",
+          contentHost: "acme.open-artifacts-staging.page",
+          ownerEmail: "owner@acme.test",
+          testHooks: false,
+          inputsHash: "h",
+        }),
+      ).rejects.toThrow(/platform principal/);
+      expect(w.fake.log.length).toBe(n);
+    },
+  );
+});
+
+describe("the operation's audit actor (design v7 4.9)", () => {
+  const actors = async (w: ReturnType<typeof world>) =>
+    (
+      await w.cf.d1Query(
+        w.id,
+        "SELECT actor, action FROM hosted_audit ORDER BY id",
+        [],
+      )
+    )[0]?.results;
+
+  it("with an actor, every row (create.start included) goes through auditAs as it", async () => {
+    const w = world();
+    const db = new PlatformDb(
+      w.cf,
+      { id: w.id, name: platformNames("staging").db },
+      "staging",
+      () => 1,
+      "job:01JOB",
+    );
+    await db.insertCreating({
+      id: "iaaaaaaaaaaa",
+      slug: "acme",
+      appHost: "acme.open-artifacts-staging.app",
+      contentHost: "acme.open-artifacts-staging.page",
+      ownerEmail: "owner@acme.test",
+      testHooks: false,
+      inputsHash: "h",
+    });
+    await db.audit("iaaaaaaaaaaa" as InstallId, "upgrade.start", {});
+    expect(await actors(w)).toEqual([
+      { actor: "job:01JOB", action: "create.start" },
+      { actor: "job:01JOB", action: "upgrade.start" },
+    ]);
+  });
+
+  it("without one (the CLI) the rows carry none, as before", async () => {
+    const w = world();
+    await row(w);
+    await w.db.audit("iaaaaaaaaaaa" as InstallId, "upgrade.start", {});
+    expect(await actors(w)).toEqual([
+      { actor: null, action: "create.start" },
+      { actor: null, action: "upgrade.start" },
+    ]);
+  });
+
+  it("an empty or overlong actor is refused", () => {
+    const w = world();
+    for (const a of ["", "x".repeat(301)])
+      expect(
+        () =>
+          new PlatformDb(w.cf, { id: w.id, name: "n" }, "staging", () => 1, a),
+      ).toThrow(/audit actor/);
   });
 });

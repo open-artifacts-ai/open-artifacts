@@ -188,6 +188,8 @@ export class FakeCf {
   /** The Content-Type each uploaded asset will be served with, by path. */
   readonly assetTypes = new Map<string, string>();
   private bucketJwts = new Map<string, string>();
+  /** How many missing files the assets session puts in each bucket. */
+  assetsPerBucket = 1;
   private completions = new Set<string>();
   readonly artifacts = new Map<string, { title: string; content: string }>();
   private faults: Fault[] = [];
@@ -199,6 +201,16 @@ export class FakeCf {
   ignoreMigrationTag = false;
   /** /healthz override for a script (e.g. to simulate a slow start). */
   health?: (s: FakeScript) => unknown;
+  /**
+   * Edits the bindings a settings GET answers with (verify_clean tests: a
+   * binding the upload never sent, a changed value). Secrets included.
+   */
+  settingsEdit?: (
+    s: FakeScript,
+    bindings: { name: string; type: string; [k: string]: unknown }[],
+  ) => { name: string; type: string; [k: string]: unknown }[];
+  /** Every request served through dispatcher(), by script name. */
+  readonly dispatched: { script: string; path: string }[] = [];
 
   constructor(o: { token?: string; now?: number } = {}) {
     this.token = o.token ?? `cf-token-${randomBytes(12).toString("hex")}`;
@@ -743,7 +755,9 @@ export class FakeCf {
         this.completions.add(jwt);
         return env({ jwt, buckets: [] });
       }
-      const buckets = missing.map((h) => [h]);
+      const buckets: string[][] = [];
+      for (let i = 0; i < missing.length; i += this.assetsPerBucket)
+        buckets.push(missing.slice(i, i + this.assetsPerBucket));
       const paths = new Map(
         Object.entries(manifest).map(([p, v]) => [v.hash, p] as const),
       );
@@ -753,7 +767,7 @@ export class FakeCf {
     if (!s)
       return fail(404, "This Worker does not exist on your account.", 10007);
     if (sub === "/settings" && req.method === "GET")
-      return env({ bindings: [], migration_tag: null });
+      return env({ bindings: this.settingsOf(s) });
     if (sub === "/secrets" && req.method === "GET")
       return env(
         [...s.secrets.keys()].map((n) => ({ name: n, type: "secret_text" })),
@@ -871,6 +885,48 @@ export class FakeCf {
     }
     this.completions.add(s.completion);
     return env({ jwt: s.completion }, 201);
+  }
+
+  /**
+   * The settings GET's bindings, as Cloudflare answers them (the shape of
+   * tests/redline/src/prod.ts's read): every binding the script runs with,
+   * plain_text and json with their values, secret_text by name only.
+   * TODO(S8): replace this hand-built shape with S8's captured rl-b settings
+   * GET fixture once the spikes run lands.
+   */
+  private settingsOf(
+    s: FakeScript,
+  ): { name: string; type: string; [k: string]: unknown }[] {
+    const out: { name: string; type: string; [k: string]: unknown }[] = (
+      s.metadata.bindings as { name: string; type: string }[]
+    )
+      .filter((b) => !b.type.startsWith("secret"))
+      .map((b) => ({ ...b }));
+    for (const n of s.secrets.keys())
+      out.push({ name: n, type: "secret_text" });
+    return this.settingsEdit ? this.settingsEdit(s, out) : out;
+  }
+
+  /**
+   * The dispatch namespace binding (env.DISPATCHER) of the provisioner
+   * Worker: get(script) reaches that script whether or not HOSTS maps it.
+   */
+  dispatcher(ns: string | null): {
+    get(name: string): { fetch(req: Request): Promise<Response> };
+  } {
+    return {
+      get: (name) => ({
+        fetch: async (req) => {
+          const s = this.scripts.get(`${ns ?? ""}/${name}`);
+          this.dispatched.push({
+            script: name,
+            path: new URL(req.url).pathname,
+          });
+          if (!s) return new Response("Not found", { status: 404 });
+          return this.answer(s, req, await req.text());
+        },
+      }),
+    };
   }
 
   // ----- dispatch emulation (Task 6's job in production) -----
@@ -1014,6 +1070,12 @@ export class FakeCf {
   private async serve(req: Request, url: URL, body: string): Promise<Response> {
     const s = this.findScript(url.hostname);
     if (!s) return new Response("Not found", { status: 404 });
+    return this.answer(s, req, body);
+  }
+
+  /** What the user Worker `s` answers: /healthz and a minimal /mcp. */
+  private answer(s: FakeScript, req: Request, body: string): Response {
+    const url = new URL(req.url);
     if (url.pathname === "/healthz") {
       const custom = this.health?.(s);
       if (custom instanceof Response) return custom;
@@ -1026,6 +1088,8 @@ export class FakeCf {
           ok: true,
           plan: this.plain(s, "PLAN"),
           version,
+          // As the server: only where hooks are on.
+          ...(this.plain(s, "TEST_HOOKS") === "1" ? { testHooks: true } : {}),
           installId: this.plain(s, "INSTALL_ID"),
         },
       );

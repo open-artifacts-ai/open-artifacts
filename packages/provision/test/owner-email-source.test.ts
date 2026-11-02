@@ -49,9 +49,34 @@ const ALLOWED: Record<string, RegExp[]> = {
     /^\s*const v = row\.owner_email;$/,
     /^export function ownerEmailOf\(row: \{ owner_email\?: unknown \}\): string \| null \{$/,
   ],
+  // signup_secret.owner_email, not installs': read once to create the install;
+  // the row is deleted when the create is done, never purged to ''.
+  "apps/provisioner/src/workflow.ts": [
+    /^\s*"SELECT owner_email AS email FROM signup_secret WHERE signup_id = \?";$/,
+  ],
   // The purge (a write).
   "apps/scheduler/src/index.ts": [
     /^\s*"UPDATE installs SET owner_email = '', inputs_hash = '' WHERE state='deleted' AND updated_at < \?1 AND owner_email <> '' RETURNING id";$/,
+  ],
+  // signup_secret.owner_email, not installs': the row is deleted once the
+  // create is done, never purged to ''.
+  "apps/provisioning/src/model.ts": [
+    // The pending signup's email, read when the installs row has none.
+    /^\s*"SELECT owner_email FROM signup_secret WHERE signup_id = \?1",$/,
+    // `s` is that signup_secret column (installs' goes through ownerEmailOf).
+    /^\s*const s = secret\?\.results\[0\]\?\.owner_email;$/,
+  ],
+  // R2's q matches the owner email in SQL for a pii caller, never reading
+  // it out: a purged '' never contains a non-empty q. signup_secret holds a
+  // pending or failed signup's email until the create finishes or the 30-day
+  // prune removes it; these lines only match it in SQL, never read it out.
+  "apps/provisioning/src/routes/reads.ts": [
+    /^\s*"i\.owner_email",$/,
+    /^\s*"\(SELECT ss\.owner_email FROM signup_secret ss WHERE ss\.signup_id = st\.signup_id\)",$/,
+  ],
+  "apps/provisioning/src/routes/create.ts": [
+    // The create's write of the signup's email.
+    /^\s*"INSERT INTO signup_secret \(signup_id, owner_email\) VALUES \(\?1, \?2\)",$/,
   ],
 };
 

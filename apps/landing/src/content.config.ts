@@ -57,4 +57,15 @@ const docs = defineCollection({
   }),
 });
 
-export const collections = { docs };
+// Privacy Policy and Terms, at /privacy and /terms. Plain markdown, no
+// placeholders.
+const legal = defineCollection({
+  loader: glob({ pattern: "*.md", base: "./src/content/legal" }),
+  schema: z.object({
+    title: z.string(),
+    description: z.string(),
+    updated: z.string(),
+  }),
+});
+
+export const collections = { docs, legal };

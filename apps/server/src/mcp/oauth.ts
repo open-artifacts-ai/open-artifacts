@@ -54,6 +54,13 @@ import {
   providerOptions,
 } from "./oauth-api.js";
 import {
+  type OAuthEnv,
+  OAuthStoreConfigError,
+  oauthEnv,
+  storeMisconfigured,
+  syncStoreMarkers,
+} from "./oauth-store.js";
+import {
   markClientGranted,
   registrationAllowed,
   trackRegisteredClient,
@@ -346,7 +353,20 @@ export async function serveAppHost(
     if (gated instanceof Response) return gated;
     req = gated;
   }
-  const res = await oauthProvider(env, app).fetch(req, env, ctx);
+  // This install's OAuth store (OAUTH_STORE), one per request; the app and
+  // the /mcp handler get it too, so their helpers share its cache. /healthz
+  // only reads (oauthStoreHealth): the markers are written on serve paths.
+  // kv refuses leaving d1 at its first store operation, which may run
+  // inside the provider: that refusal is the same 503.
+  let res: Response;
+  try {
+    if (new URL(req.url).pathname !== "/healthz") await syncStoreMarkers(env);
+    const store: OAuthEnv = oauthEnv(env);
+    res = await oauthProvider(env, app).fetch(req, store, ctx);
+  } catch (e) {
+    if (!(e instanceof OAuthStoreConfigError)) throw e;
+    return storeMisconfigured(e);
+  }
   if (res.status === 401 && res.body === null) return explainNoToken(req, res);
   if (req.method === "POST" && new URL(req.url).pathname === OAUTH.register)
     await trackRegisteredClient(env, res);
