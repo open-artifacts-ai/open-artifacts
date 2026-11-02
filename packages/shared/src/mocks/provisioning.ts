@@ -72,6 +72,12 @@ export type ProvisioningMockOptions = {
   now?: () => number;
   /** Tokens the mock starts with (e.g. an `oauth` grant, which R19 never mints). */
   tokens?: readonly Token[];
+  /**
+   * Whether the caller may read owner emails (the server's pii rule; default
+   * true). False is staging's test admin (#1053): R3 sends no ownerEmail and
+   * R2's q never matches one, as the API.
+   */
+  pii?: boolean;
 };
 
 export type ProvisioningMock = {
@@ -134,6 +140,7 @@ export function createProvisioningMock(
   opts: ProvisioningMockOptions = {},
 ): ProvisioningMock {
   const env = opts.env ?? "prod";
+  const pii = opts.pii ?? true;
   const T0 = fixtureWorld().at;
   let seq = 0;
   const now = opts.now ?? (() => T0 + ++seq * 1000);
@@ -438,9 +445,13 @@ export function createProvisioningMock(
       // id, a stored host or (this mock is an admin, so pii) the owner email.
       const matchesQ = (d: InstallDetail, needle: string) =>
         !needle ||
-        [d.slug, d.id, d.appHost, d.contentHost, d.ownerEmail].some((v) =>
-          v?.toLowerCase().includes(needle),
-        );
+        [
+          d.slug,
+          d.id,
+          d.appHost,
+          d.contentHost,
+          pii ? d.ownerEmail : null,
+        ].some((v) => v?.toLowerCase().includes(needle));
       const q = url.searchParams;
       const items = [...installs.values()]
         .filter((d) => !q.get("state") || d.state === q.get("state"))
@@ -452,7 +463,8 @@ export function createProvisioningMock(
     },
     R3: ({ params }) => {
       const d = installs.get(params.id);
-      return d ? HttpResponse.json(d) : err("not_found", "No such install.");
+      if (!d) return err("not_found", "No such install.");
+      return HttpResponse.json(pii ? d : { ...d, ownerEmail: null });
     },
     R14: ({ params, url }) => {
       if (!installs.has(params.id)) return err("not_found", "No such install.");

@@ -17,6 +17,7 @@ import {
   visibleSteps,
 } from "../components/labels";
 import { useAction } from "../hooks/useAction";
+import { useCan } from "../hooks/useEnv";
 import { LoadError } from "../layout/LoadError";
 
 /** The first shown step the job has not passed, or the one it stopped at. */
@@ -94,6 +95,9 @@ export function JobPage({ id }: { id: string }) {
   const slug = install.data?.slug;
   const [confirming, setConfirming] = useState(false);
   const now = useNow(!!job?.retryAt && !jobIsTerminal(job.status));
+  // Buttons follow the shared authz table (#1074).
+  const mayCancel = useCan("R25");
+  const mayRetry = useCan("R12");
   const cancel = useAction(
     (_: void, requestId) =>
       api.call("R25", {
@@ -166,7 +170,7 @@ export function JobPage({ id }: { id: string }) {
             </span>
           </p>
         </div>
-        {live && (
+        {mayCancel && live && (
           <Button
             variant="outline"
             disabled={!install.data}
@@ -217,19 +221,21 @@ export function JobPage({ id }: { id: string }) {
                   <code>{job.error.message}</code>
                 </p>
               )}
-              {job.kind === "create" && install.data?.state === "failed" && (
-                <>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={retry.isPending}
-                    onClick={() => retry.mutate()}
-                  >
-                    Retry
-                  </Button>
-                  <ErrorLine error={retry.error} />
-                </>
-              )}
+              {mayRetry &&
+                job.kind === "create" &&
+                install.data?.state === "failed" && (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={retry.isPending}
+                      onClick={() => retry.mutate()}
+                    >
+                      Retry
+                    </Button>
+                    <ErrorLine error={retry.error} />
+                  </>
+                )}
             </div>
           )}
           {live && job.lastErrorCode && (
