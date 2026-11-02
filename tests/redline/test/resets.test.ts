@@ -70,6 +70,24 @@ describe("reset evidence", () => {
     expect(takeFileNotes()).toEqual([]);
   });
 
+  it("a listener that throws can't touch the request or fail a case", async () => {
+    const uncaught: unknown[] = [];
+    const seen = (e: unknown) => uncaught.push(e);
+    process.on("uncaughtException", seen);
+    watchResets(() => {
+      throw new Error("evidence broke");
+    });
+    try {
+      await get("/a");
+      await expect(get("/cut")).rejects.toThrow("fetch failed");
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      process.off("uncaughtException", seen);
+    }
+    expect(uncaught).toEqual([]);
+    takeFileNotes();
+  });
+
   it("totals carry the denominator", () => {
     expect(watch.totals()).toMatch(
       /^connections: \d+ requests, \d+ on new sockets$/,

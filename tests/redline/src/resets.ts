@@ -3,7 +3,8 @@
 // whether the socket was new or reused, and how long it had sat idle. The
 // file's totals go with them: "resets hit reused sockets" means nothing unless
 // you know how many requests did. Node's own diagnostics channels, read only:
-// no request is changed. Logs are public: no full path, query or host name.
+// no request is changed, and no header or body is read. Logs are public: no
+// full path, query or host name.
 import { createHash } from "node:crypto";
 import { subscribe } from "node:diagnostics_channel";
 import { networkCode } from "./fetch-timeout.ts";
@@ -29,9 +30,18 @@ export function watchResets(now: () => number = Date.now): {
 } {
   const sockets = new WeakMap<object, Sock>();
   const sent = new WeakMap<object, Sent>();
+  const socketOf = new WeakMap<object, object>();
   let requests = 0;
   let fresh = 0;
-  subscribe("undici:client:sendHeaders", (m) => {
+  // A listener that throws would surface as an uncaught error and fail a
+  // case. Evidence is never worth that: it drops the record instead.
+  const on = (channel: string, f: (m: unknown) => void) =>
+    subscribe(channel, (m) => {
+      try {
+        f(m);
+      } catch {}
+    });
+  on("undici:client:sendHeaders", (m) => {
     const { request, socket } = m as { request: Req; socket: object };
     let s = sockets.get(socket);
     const reused = s !== undefined;
@@ -47,14 +57,15 @@ export function watchResets(now: () => number = Date.now): {
       idleMs: reused ? now() - s.lastDone : 0,
       nth: s.requests,
     });
-    (request as { socket?: object }).socket = socket;
+    socketOf.set(request, socket);
   });
-  subscribe("undici:request:trailers", (m) => {
-    const { request } = m as { request: { socket?: object } };
-    const s = request.socket && sockets.get(request.socket);
+  on("undici:request:trailers", (m) => {
+    const { request } = m as { request: object };
+    const socket = socketOf.get(request);
+    const s = socket && sockets.get(socket);
     if (s) s.lastDone = now();
   });
-  subscribe("undici:request:error", (m) => {
+  on("undici:request:error", (m) => {
     const { request, error } = m as { request: Req; error: unknown };
     // Our own bound (src/fetch-timeout.ts) or a caller's abort: not a reset.
     const name = (error as Error).name;
