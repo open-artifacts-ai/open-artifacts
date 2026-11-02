@@ -18,11 +18,11 @@ import {
   type MeNotices,
   type NoticeId,
 } from "@oa/shared";
-import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
-import { levelSql } from "../auth/authz.js";
+import { readsSharesSql } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { can, orgCan } from "../auth/policy.js";
+import { orgCan } from "../auth/policy.js";
 import { signInMode } from "../auth/sign-in.js";
 import { getDb } from "../db/client.js";
 import { artifacts, settings, shares, spaces, users } from "../db/schema.js";
@@ -67,18 +67,12 @@ const GUEST_SHARE = `from shares s
   where s.role <> 'viewer' and a.deleted_at is null
     and (u.id is null or (u.role = 'guest' and u.status = 'active'))`;
 
-/** The levels that may read an artifact's share list (GET R.shares). */
-const SHARE_LEVELS = (["owner", "manager", "editor", "viewer"] as const).filter(
-  (l) => can(l, "share", { cap: null, personal: true }),
-);
-
 /**
  * The caller's own artifacts, where they can still read the share list: a
  * row names a guest, so it follows GET R.shares, not owner_id alone (someone
- * removed from or demoted in a shared space keeps owner_id). levelSql is
- * decide() in the same statement. Uncapped: a cap reads every level as viewer,
- * and a restricted member still owns what the notice lists. Newest share
- * first; one past the limit says more.
+ * removed from or demoted in a shared space keeps owner_id). readsSharesSql
+ * is decide() in the same statement. Newest share first; one past the limit
+ * says more.
  */
 function myGuestShares(env: Env, user: Member, limit: number) {
   const guest = alias(shares, "guest_share");
@@ -109,7 +103,7 @@ function myGuestShares(env: Env, user: Member, limit: number) {
           isNull(users.id),
           and(eq(users.role, "guest"), eq(users.status, "active")),
         ),
-        inArray(levelSql({ kind: "user", user }), SHARE_LEVELS),
+        readsSharesSql(user),
       ),
     )
     .orderBy(desc(guest.createdAt), guest.artifactId, guest.email)
