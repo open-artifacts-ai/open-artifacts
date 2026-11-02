@@ -159,8 +159,16 @@ describe("wrangler.jsonc", () => {
         for (const k of OIDC)
           if (env === "staging") expect(e.vars[k]).toBeTruthy();
           else expect(e.vars[k]).toBeUndefined();
-        if (env === "staging")
+        if (env === "staging") {
           expect(e.vars.OIDC_AUDIENCE).toBe(`https://api.${APP.staging}`);
+          // Red-line's and the test admin's workflows (#1053), on main only.
+          expect(e.vars.OIDC_JOB_WORKFLOW_REFS.split(",")).toEqual(
+            ["redline-staging.yml", "staging-test-admin.yml"].map(
+              (w) =>
+                `open-artifacts-ai/open-artifacts/.github/workflows/${w}@refs/heads/main`,
+            ),
+          );
+        }
       });
 
       it("every placeholder carries this env's suffix (the deploy leftover check)", () => {

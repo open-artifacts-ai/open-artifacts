@@ -24,6 +24,7 @@ for (const who of [
   { principal: "user", role: "user" },
   { principal: "admin", role: "user" },
   { principal: "token", role: "admin" },
+  { principal: "test-admin", role: "admin", env: "prod" },
 ]) {
   it(`sends ${who.principal}/${who.role} to no-access and shows no admin page or action`, async () => {
     const assign = vi.fn();
@@ -43,6 +44,18 @@ for (const who of [
     expect(screen.queryByRole("navigation", { name: "Main" })).not.toBeNull();
   });
 }
+
+it("staging's test admin session sees the pages (#1053)", async () => {
+  use(
+    http.get("*/api/v1/me", () =>
+      me({ principal: "test-admin", env: "staging" }),
+    ),
+  );
+  renderApp("/installs");
+  expect(
+    await screen.findByRole("heading", { name: "Installs" }),
+  ).toBeInTheDocument();
+});
 
 it("an admin session sees the pages", async () => {
   renderApp("/installs");
