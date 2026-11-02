@@ -181,19 +181,21 @@ async function fleetState(db: D1Database): Promise<FleetState> {
       const rest = key.slice(FLEET_HALT_PREFIX.length);
       const i = rest.lastIndexOf(":");
       if (i > 0)
-        s.halts.push({
-          install_id: rest.slice(i + 1),
-          job_id: null,
-          job_kind: null,
-          code: "fleet_halt",
-          message: null,
-          since: value,
-          version: rest.slice(0, i),
-        });
+        s.halts.push(haltMark(rest.slice(0, i), rest.slice(i + 1), value));
     }
   }
   return s;
 }
+
+const haltMark = (version: string, id: string, since: number): HaltRow => ({
+  install_id: id,
+  job_id: null,
+  job_kind: null,
+  code: "fleet_halt",
+  message: null,
+  since,
+  version,
+});
 
 /** Every halt (jobs and marks), each with the version it halts. */
 async function halts(db: D1Database, st: FleetState): Promise<HaltRow[]> {
@@ -500,6 +502,8 @@ async function watchRecent(
       await d1(
         db.prepare(SET_ONCE).bind(haltKey(r.version, r.install_id), now).run(),
       );
+      // This tick's halt check reads `st`: it must see this mark too.
+      st.halts.push(haltMark(r.version, r.install_id, now));
       await d1(db.prepare(CLEAR).bind(strikeKey(r.install_id)).run());
       st.strikes.delete(r.install_id);
       console.log("provapi fleet halted_by", r.install_id, r.version);

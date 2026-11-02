@@ -35,6 +35,7 @@ import {
   tokenConditions,
 } from "../src/provapi/conditions.js";
 import {
+  FLEET_BEHIND_PREFIX,
   FLEET_HALT_ALERT_MS,
   FLEET_SKEW_MS,
   fleetRequestId,
@@ -60,7 +61,6 @@ beforeAll(migrate);
 beforeEach(async () => {
   await reset();
   tag = "v1.2.0";
-  deployedAgo = FLEET_SKEW_MS;
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -98,14 +98,12 @@ const doneJob = (c: Ctx, kind: string) =>
     updated_at: c.now,
     finished_at: c.now,
   });
-// The fleet target (#955): the scheduler's version tag, deployed past the
-// skew window unless a fixture moves it.
+// The fleet target (#955): the scheduler's version tag.
 let tag = "v1.2.0";
-let deployedAgo = FLEET_SKEW_MS;
 const meta = (now: number): WorkerVersionMetadata => ({
   id: "v",
   tag,
-  timestamp: new Date(now - deployedAgo).toISOString(),
+  timestamp: new Date(now).toISOString(),
 });
 const onVersion = async (c: Ctx, version: string) => {
   await set(
@@ -333,12 +331,23 @@ const FIXTURES: Record<AlertKey, Fixture> = {
     },
   },
   version_skew: {
+    // The duty's mark: first seen behind, one skew window ago.
     async open(c) {
       await onVersion(c, "1.1.0");
+      await set(
+        "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2)",
+        `${FLEET_BEHIND_PREFIX}${c.install}`,
+        c.now - FLEET_SKEW_MS,
+      );
       return undefined;
     },
-    async clear() {
+    // The duty clears the mark once the install is on the target.
+    async clear(c) {
       await set("UPDATE installs SET version = '1.2.0'");
+      await set(
+        "DELETE FROM platform_state WHERE key = ?1",
+        `${FLEET_BEHIND_PREFIX}${c.install}`,
+      );
       return undefined;
     },
   },

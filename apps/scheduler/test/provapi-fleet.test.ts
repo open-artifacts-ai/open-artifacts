@@ -677,6 +677,17 @@ describe("the watch", () => {
     expect(queued.map((j) => j.install_id)).toEqual([canary]);
   });
 
+  it("third review: the tick that halts queues nothing onto the halted version", async () => {
+    // Past the deadline, so no rollback job: only the mark says it halted.
+    const { canary, id } = await upgraded(NOW - 25 * MIN);
+    const f = fakes({ canary, answers: new Map([[id, "down"]]) });
+    await ticks(f, NOW, NOW + FLEET_BLIP_MS);
+    expect((await marks()).length).toBe(1);
+    expect((await fleetJobs()).filter((j) => j.status === "queued")).toEqual(
+      [],
+    );
+  });
+
   it("re-review N2, third review 4: suspended, paused or busy installs drop out of the watch, and never hold", async () => {
     const { canary, id } = await upgraded();
     const paused = await on(TARGET, { created: 6, serving: "paused" });
