@@ -25,6 +25,8 @@ const OWNER: Cred = { kind: "cookie", name: "oa_session", value: "owner-c" };
 type Opts = {
   mode?: string;
   ownerEmail?: (domain: string) => string;
+  /** otp/latest's final no_code outcome (default: a code). */
+  otpOutcome?: string;
   /** The fake's snooze leaves the hold counted (a server bug). */
   snoozeStillCounts?: boolean;
   /** The fake's cancel writes no audit row. */
@@ -103,7 +105,16 @@ async function install(o: Opts = {}) {
     // The owner's code sign-in.
     if (url === "/auth/code/request")
       return json(r, 202, {}, { "set-cookie": ["oa_code=p; Path=/"] });
-    if (url === "/__test/otp/latest") return json(r, 200, { code: "123456" });
+    if (url === "/__test/otp/latest")
+      return o.otpOutcome
+        ? json(r, 404, {
+            error: {
+              code: "not_found",
+              message: "Not found",
+              details: { reason: "no_code", outcome: o.otpOutcome },
+            },
+          })
+        : json(r, 200, { code: "123456" });
     if (url === "/auth/code/verify") {
       expect(JSON.parse(body)).toEqual({ code: "123456" });
       expect(q.headers.cookie).toBe("oa_code=p");
@@ -213,6 +224,22 @@ describe("snoozeOwnerPath (#1078)", () => {
       `${x.t.cookieName}=owner-s`,
       `${x.t.cookieName}=owner-s`,
     ]);
+  });
+
+  it("an owner the server sends no code (ineligible): unproven-live (NO_OWNER), nothing held", async () => {
+    const x = await install({ otpOutcome: "ineligible" });
+    expect(await snoozeOwnerPath(x.t, PAT)).toEqual({
+      level: "unproven-live",
+      reason: NO_OWNER,
+    });
+    expect(x.log).not.toContain(`POST ${HELD_HOOK}`);
+  });
+
+  it("any other final no_code outcome fails the case", async () => {
+    const x = await install({ otpOutcome: "capped" });
+    await expect(snoozeOwnerPath(x.t, PAT)).rejects.toThrow(
+      /owner code: none arrived \(capped\)/,
+    );
   });
 
   it("not on Google sync: unproven-live (NOT_GOOGLE), nothing held", async () => {

@@ -7,7 +7,7 @@ import {
   readBody,
   withCred,
 } from "./http.ts";
-import { codeAccepted, latestOtp, requestCode, verifyReq } from "./signin.ts";
+import { codeAccepted, otpOutcome, requestCode, verifyReq } from "./signin.ts";
 import type { Target } from "./targets.ts";
 
 // The held-sweep snooze owner path (#1078, #854, #412). The directory-held
@@ -49,7 +49,7 @@ export function snoozeGroup(testDomain: string): {
 export const NOT_GOOGLE =
   "directory sync is not on Google sync here, so a snooze is refused (409)";
 export const NO_OWNER =
-  "the org owner's address is outside the test domain, so no owner session can be made";
+  "the org owner can't sign in by code here (address outside the test domain, Google-linked, or domain codes off), so no owner session can be made";
 
 export type SnoozeResult =
   | { level: "pass"; target: string }
@@ -120,15 +120,26 @@ export async function ownerAddress(
     : null;
 }
 
-/** An owner session through the real code sign-in. */
-export async function ownerSession(t: Target, email: string): Promise<Cred> {
+/**
+ * An owner session through the real code sign-in; null when the server
+ * sent no code because the owner is ineligible (codeRule: Google-linked,
+ * or the domain isn't one of the install's with domain codes on).
+ */
+export async function ownerSession(
+  t: Target,
+  email: string,
+): Promise<Cred | null> {
   const req = await requestCode(t, email);
   if (req.status !== 202 || !req.pending)
     throw new Error(
       `${t.name} owner code request: status ${req.status}, pending cookie ${req.pending ? "set" : "missing"}`,
     );
-  const code = await latestOtp(t, email);
-  if (!code) throw new Error(`${t.name} owner code: none arrived`);
+  const otp = await otpOutcome(t, email);
+  if (!("code" in otp)) {
+    if (otp.outcome === "ineligible") return null;
+    throw new Error(`${t.name} owner code: none arrived (${otp.outcome})`);
+  }
+  const code = otp.code;
   const res = await fetch(verifyReq(t, code, req.pending), {
     redirect: "manual",
   });
@@ -169,13 +180,14 @@ type AuditRow = {
 export async function snoozeOwnerPath(
   t: Target,
   adminPat: Cred,
-  o: { ownerCred?: (email: string) => Promise<Cred> } = {},
+  o: { ownerCred?: (email: string) => Promise<Cred | null> } = {},
 ): Promise<SnoozeResult> {
   const mode = (await meOf(t, adminPat, "admin Me")).instance?.directory?.mode;
   if (mode !== "google") return { level: "unproven-live", reason: NOT_GOOGLE };
   const email = await ownerAddress(t, adminPat);
   if (!email) return { level: "unproven-live", reason: NO_OWNER };
   const owner = await (o.ownerCred ?? ((e) => ownerSession(t, e)))(email);
+  if (!owner) return { level: "unproven-live", reason: NO_OWNER };
   const g = snoozeGroup(t.testDomain);
   const since = Date.now() - SKEW_MS;
   await hook(t, GROUPS_HOOK, { groups: [g] }, { setup: true });
