@@ -34,7 +34,11 @@ import {
   sqlConditions,
   tokenConditions,
 } from "../src/provapi/conditions.js";
-import { FLEET_SKEW_MS, fleetRequestId } from "../src/provapi/fleet.js";
+import {
+  FLEET_HALT_ALERT_MS,
+  FLEET_SKEW_MS,
+  fleetRequestId,
+} from "../src/provapi/fleet.js";
 import {
   captureLogs,
   db,
@@ -321,10 +325,11 @@ const FIXTURES: Record<AlertKey, Fixture> = {
       });
       return undefined;
     },
-    // The next release starts a new rollout.
-    async clear() {
+    // The next release starts a new rollout; the old halt stays on the
+    // alert for FLEET_HALT_ALERT_MS.
+    async clear(c) {
       tag = "v1.2.1";
-      return undefined;
+      return c.now + FLEET_HALT_ALERT_MS;
     },
   },
   version_skew: {

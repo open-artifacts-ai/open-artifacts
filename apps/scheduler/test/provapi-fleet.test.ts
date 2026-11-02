@@ -15,9 +15,11 @@ import {
 } from "vitest";
 import type { ProvapiEnv } from "../src/provapi/env.js";
 import {
+  FLEET_BLIP_MS,
   FLEET_BUDGET_MS,
   FLEET_CONCURRENCY,
   FLEET_FAILING_PREFIX,
+  FLEET_HALT_ALERT_MS,
   FLEET_ROLLBACK_WINDOW_MS,
   FLEET_SKEW_MS,
   fleetConditions,
@@ -341,6 +343,32 @@ describe("the rollout", () => {
     );
   });
 
+  it("re-review N4: at the cap, no insert is even tried", async () => {
+    const canary = await on(TARGET);
+    for (let i = 0; i < FLEET_CONCURRENCY; i++) {
+      const id = await on(TARGET, { created: 2 + i });
+      await fleetJob(id, { status: "running", finished_at: null });
+    }
+    for (let i = 0; i < 5; i++) await on("0.92.0", { created: 50 + i });
+    const f = fakes({ canary });
+    const inserts: string[] = [];
+    const counting = new Proxy(db, {
+      get(t, p) {
+        if (p !== "prepare") return Reflect.get(t, p);
+        return (sql: string) => {
+          if (sql.startsWith("INSERT INTO jobs")) inserts.push(sql);
+          return t.prepare(sql);
+        };
+      },
+    });
+    await fleetDue(
+      { ...f.env, PLATFORM_DB: counting } as ProvapiEnv,
+      NOW,
+      f.opts,
+    );
+    expect(inserts).toEqual([]);
+  });
+
   it("an install that moves between the read and the insert is not upgraded (the insert's own guard)", async () => {
     const canary = await on(TARGET);
     const moved = await on("0.92.0");
@@ -449,17 +477,22 @@ describe("the rollout", () => {
     await fleetDue(g.env, NOW + 4 * MIN, g.opts);
     const next = (await fleetJobs()).filter((x) => x.status === "queued");
     expect(next.map((x) => x.install_id)).toEqual([canary]);
+    // The old version's halt stays on the alert for FLEET_HALT_ALERT_MS.
     expect(
       (await fleetConditions(g.env, NOW + 4 * MIN)).fleet_halted.open,
+    ).toBe(true);
+    expect(
+      (await fleetConditions(g.env, NOW + 2 * MIN + FLEET_HALT_ALERT_MS))
+        .fleet_halted.open,
     ).toBe(false);
   });
 });
 
-describe("auto-rollback", () => {
-  /** A done fleet upgrade 0.92.0 -> `to` on a non-canary install. */
+describe("the watch and auto-rollback", () => {
+  /** A done fleet upgrade 0.92.0 -> `to`; the canary stays out of the watch (the control). */
   async function upgraded(doneAt = NOW - MIN, to = TARGET) {
-    const canary = await on(TARGET);
-    const id = await on(to);
+    const canary = await on(TARGET, { created: 0 });
+    const id = await on(to, { created: 5 });
     await fleetJob(id, { to, finished_at: doneAt });
     return { canary, id };
   }
@@ -470,17 +503,30 @@ describe("auto-rollback", () => {
       "SELECT value FROM platform_state WHERE key = ?1",
       `${FLEET_FAILING_PREFIX}${id}`,
     );
+  const marks = () =>
+    rows("SELECT key FROM platform_state WHERE key GLOB 'fleet_halt:*'");
+  /** Ticks every 2 minutes from `from` through `to`. */
+  async function ticks(f: ReturnType<typeof fakes>, from: number, to: number) {
+    for (let t = from; t <= to; t += 2 * MIN) await fleetDue(f.env, t, f.opts);
+  }
 
-  it("unhealthy on two ticks within the window: a rollback to the version it left, and the rollout halts", async () => {
-    const { canary, id } = await upgraded();
-    const behind = await on("0.92.0");
-    const f = fakes({ canary, answers: new Map([[id, "down"]]) });
+  it("unhealthy past FLEET_BLIP_MS while the control answers: halted for good and rolled back to the version it left", async () => {
+    const { id } = await upgraded();
+    const behind = await on("0.92.0", { created: 9 });
+    const f = fakes({
+      canary: (
+        await rows(
+          "SELECT install_id FROM install_lifecycle ORDER BY created_at LIMIT 1",
+        )
+      )[0]?.install_id as string,
+      answers: new Map([[id, "down"]]),
+    });
     const lines = captureLogs(vi.spyOn);
-    await fleetDue(f.env, NOW, f.opts);
+    await ticks(f, NOW, NOW + FLEET_BLIP_MS - 2 * MIN);
     expect(await rollbacks(id)).toEqual([]);
-    expect(await failing(id)).toEqual([{ value: NOW }]);
+    expect(await marks()).toEqual([]);
     expect(lines).toContain("provapi fleet holding");
-    await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+    await fleetDue(f.env, NOW + FLEET_BLIP_MS, f.opts);
     const [rb, ...rest] = await rollbacks(id);
     expect(rest).toEqual([]);
     expect(rb).toMatchObject({
@@ -492,67 +538,141 @@ describe("auto-rollback", () => {
       from: TARGET,
       to: "0.92.0",
     });
+    expect(await marks()).toEqual([{ key: `fleet_halt:${TARGET}:${id}` }]);
     expect(await failing(id)).toEqual([]);
     expect((await fleetJobs()).filter((j) => j.install_id === behind)).toEqual(
       [],
     );
     expect(
-      (await fleetConditions(f.env, NOW + 2 * MIN)).fleet_halted.open,
+      (await fleetConditions(f.env, NOW + FLEET_BLIP_MS)).fleet_halted,
+    ).toMatchObject({
+      open: true,
+    });
+  });
+
+  it("re-review N1: several failing past the blip with the control answering: every one halted and rolled back, durably", async () => {
+    const { canary, id } = await upgraded();
+    const other = await on(TARGET, { created: 6 });
+    await fleetJob(other, {});
+    const f = fakes({
+      canary,
+      answers: new Map([
+        [id, "down"],
+        [other, "down"],
+      ]),
+    });
+    // The canary is in the watch too here? No: it has no fleet job, so it is
+    // the control, and it answers.
+    await ticks(f, NOW, NOW + FLEET_BLIP_MS);
+    expect(await rollbacks(id)).toHaveLength(1);
+    expect(await rollbacks(other)).toHaveLength(1);
+    expect((await marks()).length).toBe(2);
+    // Past the window nothing lapses: the halt stays.
+    await ticks(
+      f,
+      NOW + FLEET_ROLLBACK_WINDOW_MS,
+      NOW + FLEET_ROLLBACK_WINDOW_MS + 4 * MIN,
+    );
+    expect(
+      (await fleetConditions(f.env, NOW + FLEET_ROLLBACK_WINDOW_MS + 4 * MIN))
+        .fleet_halted.open,
     ).toBe(true);
   });
 
-  it("review 6: more than one failing in a tick is a shared cause: strikes kept, nothing rolled back", async () => {
+  it("re-review N1: a watched install passing this tick proves the platform path: no control needed", async () => {
     const { canary, id } = await upgraded();
-    const other = await on(TARGET);
-    await fleetJob(other, {});
+    const fine = await on(TARGET, { created: 6 });
+    await fleetJob(fine, {});
+    // The control would fail, but it is never asked.
+    const f = fakes({
+      canary,
+      answers: new Map([
+        [id, "down"],
+        [canary, "down"],
+      ]),
+    });
+    await ticks(f, NOW, NOW + FLEET_BLIP_MS);
+    expect(await rollbacks(id)).toHaveLength(1);
+    expect(await rollbacks(fine)).toEqual([]);
+  });
+
+  it("re-review N1, N3: when the control fails too it is the platform's failure: no halt, and the clock restarts after it", async () => {
+    const { canary, id } = await upgraded();
     const answers: Answers = new Map([
       [id, "down"],
-      [other, "down"],
+      [canary, "down"],
     ]);
     const f = fakes({ canary, answers });
     const lines = captureLogs(vi.spyOn);
-    for (let t = 0; t < 4; t++)
-      await fleetDue(f.env, NOW + t * 2 * MIN, f.opts);
+    await ticks(f, NOW, NOW + 2 * FLEET_BLIP_MS);
     expect(await rollbacks(id)).toEqual([]);
-    expect(await rollbacks(other)).toEqual([]);
-    expect(lines).toContain("provapi fleet shared_failure n=2");
-    // The blip ends for one: the other, still failing, is rolled back.
-    answers.delete(other);
-    await fleetDue(f.env, NOW + 8 * MIN, f.opts);
-    expect(await rollbacks(id)).toHaveLength(1);
-    expect(await rollbacks(other)).toEqual([]);
-  });
-
-  it("review 7: a rollback the duty can't queue halts the target, with the alert, and the halt outlives the window", async () => {
-    const { canary, id } = await upgraded();
-    await on("0.92.0");
-    const f = fakes({ canary, answers: new Map([[id, "down"]]) });
-    await fleetDue(f.env, NOW, f.opts);
-    // An operator's job on it: the rollback insert's guard refuses.
-    await job(id, { kind: "suspend", workflow: "manage_install" });
-    const lines = captureLogs(vi.spyOn);
-    await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+    expect(await marks()).toEqual([]);
+    expect(lines).toContain("provapi fleet shared_failure n=1");
+    // The platform recovers; the install is still down: timed from now.
+    answers.delete(canary);
+    const back = NOW + 2 * FLEET_BLIP_MS + 2 * MIN;
+    await ticks(f, back, back + FLEET_BLIP_MS - 4 * MIN);
     expect(await rollbacks(id)).toEqual([]);
-    expect(lines).toContain(`provapi fleet rollback_not_queued ${id}`);
-    const c = await fleetConditions(f.env, NOW + 2 * MIN);
-    expect(c.fleet_halted).toMatchObject({
-      open: true,
-      rows: [{ install_id: id, code: "fleet_halt" }],
-    });
-    // Past the window the hold lapses, but the halt does not.
-    await db
-      .prepare("DELETE FROM jobs WHERE install_id = ?1 AND kind = 'suspend'")
-      .bind(id)
-      .run();
-    await fleetDue(f.env, NOW + FLEET_ROLLBACK_WINDOW_MS + MIN, f.opts);
-    expect((await fleetJobs()).filter((j) => j.status === "queued")).toEqual(
-      [],
+    await ticks(
+      f,
+      back + FLEET_BLIP_MS - 2 * MIN,
+      back + FLEET_BLIP_MS + 2 * MIN,
     );
+    expect(await rollbacks(id)).toHaveLength(1);
   });
 
-  it("review 7: an unhealthy fleet upgrade with no version to go back to halts the target", async () => {
-    const canary = await on(TARGET);
-    const id = await on(TARGET);
+  it("re-review N3: a blip under FLEET_BLIP_MS on a lone install only holds", async () => {
+    const { canary, id } = await upgraded();
+    const answers: Answers = new Map([[id, "down"]]);
+    const f = fakes({ canary, answers });
+    await ticks(f, NOW, NOW + FLEET_BLIP_MS - 4 * MIN);
+    answers.delete(id);
+    await ticks(
+      f,
+      NOW + FLEET_BLIP_MS - 2 * MIN,
+      NOW + FLEET_BLIP_MS + 4 * MIN,
+    );
+    expect(await rollbacks(id)).toEqual([]);
+    expect(await marks()).toEqual([]);
+    expect(await failing(id)).toEqual([]);
+  });
+
+  it("re-review N1: a failure that starts late in the window is still watched past it until it ends", async () => {
+    const { canary, id } = await upgraded(
+      NOW - FLEET_ROLLBACK_WINDOW_MS + 2 * MIN,
+    );
+    const f = fakes({ canary, answers: new Map([[id, "down"]]) });
+    await ticks(f, NOW, NOW + FLEET_BLIP_MS);
+    expect(await rollbacks(id)).toHaveLength(1);
+  });
+
+  it("re-review N2: a watched install that is suspended or paused drops out: no probe, no halt; busy only holds", async () => {
+    const { canary, id } = await upgraded();
+    const paused = await on(TARGET, { created: 6, serving: "paused" });
+    await fleetJob(paused, {});
+    const busy = await on(TARGET, { created: 7 });
+    await fleetJob(busy, {});
+    await job(busy, { kind: "suspend", workflow: "manage_install" });
+    await lifecycleSuspend(id);
+    await on("0.92.0", { created: 9 });
+    const f = fakes({
+      canary,
+      answers: new Map([
+        [id, "down"],
+        [paused, "down"],
+      ]),
+    });
+    const lines = captureLogs(vi.spyOn);
+    await ticks(f, NOW, NOW + 2 * FLEET_BLIP_MS);
+    expect(f.probed.filter((p) => p !== canary)).toEqual([]);
+    expect(await marks()).toEqual([]);
+    expect(await rollbacks(id)).toEqual([]);
+    expect(lines).toContain("provapi fleet holding");
+  });
+
+  it("an unhealthy fleet upgrade with no version to go back to: halted, no rollback", async () => {
+    const canary = await on(TARGET, { created: 0 });
+    const id = await on(TARGET, { created: 5 });
     await job(id, {
       kind: "upgrade",
       workflow: "manage_install",
@@ -564,27 +684,27 @@ describe("auto-rollback", () => {
       finished_at: NOW - MIN,
     });
     const f = fakes({ canary, answers: new Map([[id, "down"]]) });
-    await fleetDue(f.env, NOW, f.opts);
     const lines = captureLogs(vi.spyOn);
-    await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+    await ticks(f, NOW, NOW + FLEET_BLIP_MS);
     expect(await rollbacks(id)).toEqual([]);
     expect(lines).toContain(`provapi fleet rollback_no_prev ${id}`);
-    expect(
-      (await fleetConditions(f.env, NOW + 2 * MIN)).fleet_halted,
-    ).toMatchObject({ open: true, rows: [{ install_id: id }] });
+    expect(await marks()).toEqual([{ key: `fleet_halt:${TARGET}:${id}` }]);
   });
 
-  it("review 8: a new release mid-window keeps watching the last one's upgrades", async () => {
-    // Upgraded to 0.93.0; the platform is now on 0.93.1.
+  it("re-review N6, review 8: the watch runs with no canary and across a new release", async () => {
+    // Upgraded to 0.93.0; the platform is now on 0.93.1 and the canary var
+    // was emptied.
     const { canary, id } = await upgraded(NOW - MIN, TARGET);
     await setVersion(canary, "0.93.1");
     const f = fakes({
-      canary,
+      canary: "",
       tag: "v0.93.1",
-      answers: new Map([[id, "down"]]),
+      answers: new Map([
+        [id, "down"],
+        [canary, "0.93.1"],
+      ]),
     });
-    await fleetDue(f.env, NOW, f.opts);
-    await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+    await ticks(f, NOW, NOW + FLEET_BLIP_MS);
     const [rb] = await rollbacks(id);
     expect(JSON.parse(String(rb?.args))).toEqual({
       from: TARGET,
@@ -592,7 +712,7 @@ describe("auto-rollback", () => {
     });
   });
 
-  it("a passing probe forgets the first failure", async () => {
+  it("a passing probe forgets the failure", async () => {
     const { canary, id } = await upgraded();
     const answers: Answers = new Map([[id, "down"]]);
     const f = fakes({ canary, answers });
@@ -600,18 +720,15 @@ describe("auto-rollback", () => {
     answers.delete(id);
     await fleetDue(f.env, NOW + 2 * MIN, f.opts);
     expect(await failing(id)).toEqual([]);
-    answers.set(id, "down");
-    await fleetDue(f.env, NOW + 4 * MIN, f.opts);
-    expect(await rollbacks(id)).toEqual([]);
   });
 
-  it("review 10: a failure from before the upgrade finished counts as a first", async () => {
+  it("review 10: a failure stamped before the upgrade finished starts over", async () => {
     const { canary, id } = await upgraded(NOW - MIN);
     await db
       .prepare(
         "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2)",
       )
-      .bind(`${FLEET_FAILING_PREFIX}${id}`, NOW - 2 * MIN)
+      .bind(`${FLEET_FAILING_PREFIX}${id}`, NOW - FLEET_BLIP_MS - MIN)
       .run();
     const f = fakes({ canary, answers: new Map([[id, "down"]]) });
     await fleetDue(f.env, NOW, f.opts);
@@ -621,7 +738,7 @@ describe("auto-rollback", () => {
 
   it("review 11: a probe that could outrun the budget is not run: no strike, the rollout holds", async () => {
     const { canary, id } = await upgraded();
-    await on("0.92.0");
+    await on("0.92.0", { created: 9 });
     const f = fakes({ canary, answers: new Map([[id, "down"]]) });
     let t = 0;
     const lines = captureLogs(vi.spyOn);
@@ -638,21 +755,36 @@ describe("auto-rollback", () => {
     expect(lines).toEqual(["provapi fleet holding"]);
   });
 
-  it("past the window, no probe and no rollback", async () => {
+  it("past the window with no open failure, no probe", async () => {
     const { canary, id } = await upgraded(NOW - FLEET_ROLLBACK_WINDOW_MS - MIN);
     const f = fakes({ canary, answers: new Map([[id, "down"]]) });
-    await fleetDue(f.env, NOW, f.opts);
-    await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+    await ticks(f, NOW, NOW + FLEET_BLIP_MS);
     expect(await rollbacks(id)).toEqual([]);
     expect(f.probed).not.toContain(id);
   });
 });
 
 describe("the alerts", () => {
-  const env = (deployedAt: number, o: { tag?: string; canary?: string } = {}) =>
+  const H = 60 * MIN;
+  const env = (
+    deployedAt: number,
+    o: {
+      tag?: string;
+      canary?: string;
+      releases?: { version: string; publishedAt: number | null }[];
+    } = {},
+  ) =>
     ({
       PLATFORM_DB: db,
       FLEET_CANARY: o.canary ?? "ifhx5rpmrhwh",
+      PROVISIONER: fakeProvisionerRpc({
+        releases: (
+          o.releases ?? [{ version: TARGET, publishedAt: deployedAt }]
+        ).map((r) => ({
+          ...release(r.version),
+          publishedAt: r.publishedAt,
+        })),
+      }),
       CF_VERSION_METADATA: {
         id: "x",
         tag: o.tag ?? `v${TARGET}`,
@@ -660,7 +792,7 @@ describe("the alerts", () => {
       },
     }) as unknown as ProvapiEnv;
 
-  it("version_skew opens for an install off the target FLEET_SKEW_MS after the deploy; red-line, suspended and paused left out", async () => {
+  it("version_skew opens for an install behind FLEET_SKEW_MS; red-line, suspended and paused left out", async () => {
     const behind = await on("0.92.0");
     await on("0.92.0", { test_hooks: 1 });
     await on("0.92.0", { suspended: true });
@@ -672,38 +804,93 @@ describe("the alerts", () => {
     await setVersion(behind, TARGET);
     expect(
       (await fleetConditions(env(NOW - FLEET_SKEW_MS), NOW)).version_skew,
-    ).toEqual({ open: false, rows: [] });
+    ).toEqual({
+      open: false,
+      rows: [],
+    });
   });
 
-  it("review 9: inside the window after a deploy, version_skew is unknown, never an all-clear", async () => {
+  it("re-review N8: behind since the first release past its version, so frequent releases don't hide a stuck install", async () => {
+    const stuck = await on("0.91.0");
+    // 0.92.0 published 9 h ago, the target 0.93.0 published and deployed 1 h ago.
+    const c = await fleetConditions(
+      env(NOW - H, {
+        releases: [
+          { version: "0.92.0", publishedAt: NOW - 9 * H },
+          { version: TARGET, publishedAt: NOW - H },
+        ],
+      }),
+      NOW,
+    );
+    expect(c.version_skew.rows.map((r) => r.install_id)).toEqual([stuck]);
+    // One release behind, deployed 1 h ago: not yet.
+    await setVersion(stuck, "0.92.0");
+    expect(
+      (
+        await fleetConditions(
+          env(NOW - H, {
+            releases: [
+              { version: "0.92.0", publishedAt: NOW - 9 * H },
+              { version: TARGET, publishedAt: NOW - 2 * H },
+            ],
+          }),
+          NOW,
+        )
+      ).version_skew.open,
+    ).toBe(false);
+  });
+
+  it("review 9: version_skew never sends an early all-clear: unknown without a canary, a target, a deploy time or the catalog", async () => {
     await on("0.92.0");
-    const early = await fleetConditions(env(NOW - FLEET_SKEW_MS + MIN), NOW);
-    expect(early.version_skew).toEqual({ open: null, rows: [] });
+    expect(
+      (await fleetConditions(env(NOW, { canary: "" }), NOW)).version_skew.open,
+    ).toBeNull();
+    expect(
+      (await fleetConditions(env(NOW, { tag: "dev" }), NOW)).version_skew.open,
+    ).toBeNull();
+    const noTime = {
+      PLATFORM_DB: db,
+      FLEET_CANARY: "ifhx5rpmrhwh",
+      PROVISIONER: fakeProvisionerRpc(),
+      CF_VERSION_METADATA: { id: "x", tag: `v${TARGET}`, timestamp: "" },
+    } as unknown as ProvapiEnv;
+    expect((await fleetConditions(noTime, NOW)).version_skew.open).toBeNull();
   });
 
-  it("review 3: no canary is a true no-op: both alerts clear, whatever lags", async () => {
+  it("review 3: no canary and nothing ever halted: fleet_halted clear", async () => {
     await on("0.92.0");
-    for (const canary of ["", "canary"])
-      expect(
-        await fleetConditions(env(NOW - 2 * FLEET_SKEW_MS, { canary }), NOW),
-      ).toEqual({
-        fleet_halted: { open: false, rows: [] },
-        version_skew: { open: false, rows: [] },
-      });
+    expect(
+      (await fleetConditions(env(NOW - 2 * FLEET_SKEW_MS, { canary: "" }), NOW))
+        .fleet_halted,
+    ).toEqual({
+      open: false,
+      rows: [],
+    });
   });
 
-  it("review 13: a canary set but no target opens fleet_halted (no_target); version_skew is unknown", async () => {
+  it("review 13: a canary set but no target opens fleet_halted (no_target)", async () => {
     const c = await fleetConditions(env(NOW, { tag: "dev" }), NOW);
     expect(c.fleet_halted).toMatchObject({
       open: true,
       rows: [{ code: "no_target" }],
     });
-    expect(c.version_skew).toEqual({ open: null, rows: [] });
-    const noTime = {
-      PLATFORM_DB: db,
-      FLEET_CANARY: "ifhx5rpmrhwh",
-      CF_VERSION_METADATA: { id: "x", tag: `v${TARGET}`, timestamp: "" },
-    } as unknown as ProvapiEnv;
-    expect((await fleetConditions(noTime, NOW)).version_skew.open).toBeNull();
+  });
+
+  it("re-review N7: a halt on an earlier version stays on fleet_halted for FLEET_HALT_ALERT_MS", async () => {
+    const id = await on("0.92.0");
+    await db
+      .prepare(
+        "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2)",
+      )
+      .bind(`fleet_halt:0.92.5:${id}`, NOW - H)
+      .run();
+    expect((await fleetConditions(env(NOW), NOW)).fleet_halted).toMatchObject({
+      open: true,
+      rows: [{ install_id: id, code: "fleet_halt" }],
+    });
+    expect(
+      (await fleetConditions(env(NOW), NOW + FLEET_HALT_ALERT_MS)).fleet_halted
+        .open,
+    ).toBe(false);
   });
 });

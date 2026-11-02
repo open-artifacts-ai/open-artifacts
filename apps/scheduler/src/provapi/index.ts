@@ -16,13 +16,16 @@ export { SCHEDULER_TICK_KEY } from "@oa/shared/provisioning/state";
 export type { ProvapiEnv } from "./env.js";
 export { writeTick } from "./run.js";
 
-/** Each duty's budget; together well inside the 2 minutes. */
+/**
+ * Each duty's budget: 115 s together, inside the 2 minutes. Ticks may still
+ * overlap (a slow D1 call); every duty's writes are guarded for that.
+ */
 export const DUTY_TIMEOUT_MS = {
   sweep: 20_000,
   signups: 5_000,
   purge: 10_000,
   health: 30_000,
-  fleet: 20_000,
+  fleet: 15_000,
   alerts: 30_000,
   prune: 5_000,
 } as const satisfies Record<Duty["name"], number>;

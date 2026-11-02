@@ -475,7 +475,7 @@ const COPY: Record<AlertKey, Copy> = {
   fleet_halted: {
     title: "fleet rollout halted",
     open: (f) =>
-      `The rollout of this release stopped: ${plural(f.count, "fleet upgrade")} failed or ${f.count === 1 ? "was" : "were"} rolled back. No other install is upgraded to it. Fix the cause and ship the next release, which starts a new rollout.`,
+      `The fleet rollout stopped (${plural(f.count, "problem")}; codes: ${f.codes.join(", ") || "none"}). fleet_halt: an upgraded install stayed unhealthy while a control answered, so it was halted and rolled back. A job code: a fleet upgrade failed, or was rolled back. no_target: the scheduler has no release tag, so nothing can move. No install is upgraded to a halted version. Fix the cause and ship the next release, which starts a new rollout.`,
     clear: "No fleet rollout is halted.",
   },
   version_skew: {
