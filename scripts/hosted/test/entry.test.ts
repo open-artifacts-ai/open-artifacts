@@ -16,5 +16,5 @@ it("node loads src/cli.ts and prints the help", () => {
     timeout: 30_000,
   });
   expect(out).toContain("Usage: pnpm oa:hosted");
-  expect(out).toContain("redline-creds");
+  expect(out).toContain("publish-release");
 });

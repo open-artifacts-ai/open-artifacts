@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Derives the R2 S3 credentials from the Environment's one Cloudflare API token
 # and writes <accessKeyId>:<secretAccessKey> to a 0600 file for the oa:hosted
-# CLI (hosted-ops.yml, OA_HOSTED_R2_FILE). Per Cloudflare ("Get S3 API
+# CLI (hosted-publish.yml, OA_HOSTED_R2_FILE). Per Cloudflare ("Get S3 API
 # credentials from an API token", https://developers.cloudflare.com/r2/api/tokens/):
 # the access key id is the token's id (GET /user/tokens/verify, result.id) and
 # the secret is the SHA-256 hex of the token value. Both halves are masked

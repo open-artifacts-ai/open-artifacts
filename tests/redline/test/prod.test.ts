@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -17,7 +16,6 @@ import {
   ProdDirty,
   prodClean,
 } from "../src/prod.ts";
-import { prodCleanGate, run } from "../src/prod-clean-cli.ts";
 import {
   buildReport,
   gatePasses,
@@ -803,138 +801,5 @@ describe("prodClean (spec 2026-10-26)", () => {
       "utf8",
     );
     for (const m of HOOK_SQL_MARKERS) expect(src).toContain(JSON.stringify(m));
-  });
-});
-
-describe("prod-clean-cli: the hosted-ops precheck", () => {
-  async function gate(
-    w: World,
-    op: string,
-    o: { inventory?: boolean; fetch?: typeof fetch } = {},
-  ) {
-    const { fetch } = await serve(w);
-    return prodCleanGate(op, probe(o), {
-      fetch: o.fetch ?? fetch,
-      pubkey: PUB,
-      ...bearerOf(o),
-    });
-  }
-  const released = () => {
-    const w = cleanWorld();
-    publish(w, { version: "1.2.3" });
-    return w;
-  };
-
-  it("a pass is exit 0 for create and upgrade", async () => {
-    for (const op of ["create", "upgrade"])
-      expect(await gate(released(), op)).toEqual({
-        code: 0,
-        line: "prod-clean: pass",
-      });
-  });
-
-  it("a dirty prod is exit 1 with only its code", async () => {
-    const w = cleanWorld();
-    publish(w, { version: "1.2.3", variant: "redline" });
-    for (const op of ["create", "upgrade"])
-      expect(await gate(w, op)).toEqual({
-        code: 1,
-        line: "prod-clean: fail (release_dirty)",
-      });
-  });
-
-  it("configured with no install or no release passes, for create and upgrade", async () => {
-    const w = released();
-    w.installs = [];
-    expect((await gate(w, "create")).code).toBe(0);
-    expect((await gate(w, "upgrade")).code).toBe(0);
-    expect((await gate(cleanWorld(), "create")).code).toBe(0);
-  });
-
-  it("no inventory configured is exit 1", async () => {
-    expect(await gate(released(), "create", { inventory: false })).toEqual({
-      code: 1,
-      line: "prod-clean: fail (inventory_unconfigured)",
-    });
-  });
-
-  it("an error (network, inventory down) is exit 1", async () => {
-    const down: typeof fetch = () => Promise.reject(new TypeError("down"));
-    expect(await gate(released(), "create", { fetch: down })).toEqual({
-      code: 1,
-      line: "prod-clean: fail (error)",
-    });
-    const w = released();
-    w.installs = "nope" as unknown as Record<string, unknown>[];
-    expect(await gate(w, "create")).toEqual({
-      code: 1,
-      line: "prod-clean: fail (inventory_bad)",
-    });
-  });
-
-  it("any other op is exit 1", async () => {
-    expect((await gate(released(), "rollback")).code).toBe(1);
-    expect((await gate(released(), "")).code).toBe(1);
-  });
-
-  it("every line is one of the two fixed forms, never a detail", async () => {
-    const w = cleanWorld();
-    publish(w, { version: "1.2.3" });
-    w.secretNames = ["TEST_HOOK_KEY"];
-    const v = await gate(w, "create");
-    expect(v.line).toBe("prod-clean: fail (install_dirty)");
-    expect(v.line).toMatch(PROD_CLEAN_LINE_RE);
-    expect(v.line).not.toContain(ID);
-  });
-
-  it("run: reads the CI layout from env; an unconfigured probe is exit 1", async () => {
-    const s = secretDir({
-      REDLINE_PROD_R2_TOKEN: "r2-token",
-      REDLINE_PROD_SCRIPTS_TOKEN: "scripts-token",
-    });
-    dispose.push(s.cleanup);
-    const { fetch } = await serve(released());
-    const lines: string[] = [];
-    const io = {
-      out: (l: string) => lines.push(l),
-      err: (l: string) => lines.push(l),
-    };
-    const env = {
-      OPS_OP: "upgrade",
-      REDLINE_PROD_SECRETS_DIR: s.dir,
-      REDLINE_PROD_ACCOUNT_ID: ACCT,
-      REDLINE_PROD_INVENTORY_URL: "https://inventory.example",
-    };
-    expect(
-      await run(env, io, { fetch, pubkey: PUB, inventoryBearer: JWT }),
-    ).toBe(0);
-    // The stored key file alone is not an inventory bearer.
-    expect(await run(env, io, { fetch, pubkey: PUB })).toBe(1);
-    expect(await run({ ...env, REDLINE_PROD_SECRETS_DIR: "" }, io)).toBe(1);
-    expect(await run({ ...env, REDLINE_PROD_ACCOUNT_ID: "x" }, io)).toBe(1);
-    expect(lines).toEqual([
-      "prod-clean: pass",
-      "prod-clean: fail (inventory_unconfigured)",
-      "prod-clean: fail (not_configured)",
-      "prod-clean: fail (not_configured)",
-    ]);
-  });
-
-  it("runs under plain node: no probe is exit 1", () => {
-    const r = spawnSync(
-      process.execPath,
-      [join(import.meta.dirname, "..", "src", "prod-clean-cli.ts")],
-      {
-        env: {
-          PATH: process.env.PATH ?? "",
-          OPS_OP: "create",
-          NODE_NO_WARNINGS: "1",
-        },
-        encoding: "utf8",
-      },
-    );
-    expect(r.stderr).toBe("prod-clean: fail (not_configured)\n");
-    expect(r.stdout).toBe("");
-    expect(r.status).toBe(1);
   });
 });
