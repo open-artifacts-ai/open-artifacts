@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { suiteSha } from "../src/capture.ts";
+import { bindingOf } from "../src/reporter.ts";
 import {
   ID_TOKEN_CASES,
   ID_TOKEN_DESCRIBE,
@@ -688,4 +690,19 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     expect(r.status).not.toBe(0);
     expect(r.report.counts.fail).toBe(1);
   }, 60_000);
+});
+
+describe("bindingOf: the suite's commit (#1137)", () => {
+  it("is the checkout's HEAD, never the workflow's GITHUB_SHA", async () => {
+    const head = suiteSha();
+    expect(head).toMatch(/^[0-9a-f]{40}$/);
+    const b = await bindingOf({
+      GITHUB_SHA: "f".repeat(40),
+      REDLINE_TARGETS: JSON.stringify({
+        a: { installId: "ia", app: "http://127.0.0.1:9" },
+        b: { installId: "ib", app: "http://127.0.0.1:9" },
+      }),
+    });
+    expect(b?.suiteSha).toBe(head);
+  });
 });

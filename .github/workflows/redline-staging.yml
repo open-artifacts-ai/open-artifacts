@@ -14,6 +14,14 @@
 # step of the id-token job, so before it runs every JWT and prod token file
 # is deleted, and its shell unsets the OIDC request variables and fails if
 # they survive, so no process it starts can mint.
+# The suite is the tag's, never main's (#1137), so suite and release always
+# match: this file, the platform-tags job and the constants are main's, and
+# everything the redline job runs comes from the tag's checkout. So the
+# commands below (provisioning mint-oidc, bringup, staged-version and revoke,
+# live, the T19 config) are a contract with every tag still in use; a rename
+# fails redline-staging.test.ts. A suite fix reaches a candidate only in a new
+# release. Release tags can't be moved, and platform-tags passes only for a
+# tag a gated deploy put on every staging Worker.
 name: redline-staging
 # scripts/ci/staging-first-gate.sh finds this run by the tag in its name.
 run-name: redline-staging ${{ inputs.tag }}
@@ -73,9 +81,27 @@ jobs:
       id-token: write
     timeout-minutes: 150
     steps:
+      # Before the checkout: the input picks the code this job runs.
+      - name: On main, for a release tag
+        env:
+          TAG: ${{ inputs.tag }}
+          # staging-first-gate.sh only counts runs of main's workflow.
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [ "$REF" = refs/heads/main ] || { echo "dispatch redline-staging on main"; exit 1; }
+          [[ "$TAG" =~ ^v[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]] || { echo "tag must be vX.Y.Z"; exit 1; }
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: refs/tags/${{ inputs.tag }}
           persist-credentials: false
+      - name: The checkout is exactly the tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$(git describe --tags --exact-match)" = "$TAG"
+          test -z "$(git status --porcelain)"
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -107,18 +133,14 @@ jobs:
             [ -e "$f" ] || continue
             test -s "$f" || { echo "empty secret file: ${f##*/}"; exit 1; }
           done
-      - name: Check the tag and set the targets
+      - name: Set the targets
         env:
           TAG: ${{ inputs.tag }}
           REDLINE_TARGETS_BASE: ${{ vars.REDLINE_TARGETS }}
           REDLINE_PROD_INVENTORY_URL: ${{ vars.REDLINE_PROD_INVENTORY_URL }}
           RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
-          # staging-first-gate.sh only counts runs of main's workflow.
-          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          [ "$REF" = refs/heads/main ] || { echo "dispatch redline-staging on main"; exit 1; }
-          [[ "$TAG" =~ ^v[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]] || { echo "tag must be vX.Y.Z"; exit 1; }
           [[ "$RUN_ID" =~ ^[0-9]{1,20}-[0-9]{1,3}$ ]] || { echo "bad run id"; exit 1; }
           umask 077
           d="$RUNNER_TEMP/redline-secrets"

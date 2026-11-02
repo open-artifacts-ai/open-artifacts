@@ -3,6 +3,7 @@
 // 0600 files by path; no other step sees them.
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -113,7 +114,11 @@ describe("redline-staging.yml", () => {
 
   it("pins every action by SHA and keeps no git credentials", () => {
     for (const s of steps) if (s.uses) expect(s.uses).toMatch(SHA_PIN);
-    expect(steps[0]?.with?.["persist-credentials"]).toBe(false);
+    const checkouts = steps.filter((s) =>
+      String(s.uses).startsWith("actions/checkout@"),
+    );
+    expect(checkouts).toHaveLength(1);
+    expect(checkouts[0]?.with?.["persist-credentials"]).toBe(false);
     for (const s of steps) expect(s.with?.cache).toBeUndefined();
   });
 
@@ -169,8 +174,83 @@ describe("redline-staging.yml", () => {
     expect(partial.out).toContain("empty secret file: REDLINE_PROD_");
   });
 
-  it("the targets step checks the tag and sets REDLINE_TARGETS, REDLINE_RELEASE and REDLINE_RUN_ID", () => {
-    const st = named("Check the tag and set the targets");
+  it("checks the input before anything else, then runs from exactly the tag's checkout (#1137)", () => {
+    const guard = named("On main, for a release tag");
+    expect(steps[0]).toBe(guard);
+    expect(steps[1]?.uses).toMatch(/^actions\/checkout@/);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(steps[1]?.with?.ref).toBe("refs/tags/${{ inputs.tag }}");
+    const exact = named("The checkout is exactly the tag");
+    expect(steps[2]).toBe(exact);
+    expect(exact.run).toContain(
+      'test "$(git describe --tags --exact-match)" = "$TAG"',
+    );
+    expect(exact.run).toContain('test -z "$(git status --porcelain)"');
+    // Nothing else may check out a different ref, and the deploy logic stays
+    // main's: platform-tags keeps its own checkout of the workflow's commit.
+    expect(text.match(/refs\/tags\//g)).toHaveLength(1);
+    expect(guard.run).not.toContain("${{");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(guard.env).toEqual({
+      TAG: "${{ inputs.tag }}",
+      REF: "${{ github.ref }}",
+    });
+    const go = (TAG: string, REF: string) =>
+      runBash(String(guard.run), { TAG, REF });
+    expect(go("v0.82.0", "refs/heads/main").status).toBe(0);
+    for (const bad of ["0.82.0", "v0.82", "v1.2.3; echo x", "main", "../x"]) {
+      const r = go(bad, "refs/heads/main");
+      expect(r.status).toBe(1);
+      expect(r.stdout).toContain("tag must be vX.Y.Z");
+    }
+    // The gate counts main's runs only, so a dispatch off main stops here.
+    for (const ref of ["refs/heads/pl/x", "refs/tags/v0.82.0", ""]) {
+      const r = go("v0.82.0", ref);
+      expect(r.status).toBe(1);
+      expect(r.stdout).toContain("dispatch redline-staging on main");
+    }
+  });
+
+  // A rename on main breaks every tag still in use: the workflow is main's and
+  // these are the tag's. Change this list only with the tags in mind (#1137).
+  it("keeps the commands main's workflow calls in a tag's checkout (#1137)", () => {
+    const CLI = ["mint-oidc", "bringup", "staged-version", "revoke"];
+    const called = [
+      ...text.matchAll(/pnpm --filter @oa\/redline provisioning ([a-z-]+)/g),
+    ].map((m) => m[1]);
+    expect([...new Set(called)].sort()).toEqual([...CLI].sort());
+    const cli = readFileSync(
+      join(root, "tests/redline/scripts/provisioning.ts"),
+      "utf8",
+    );
+    for (const c of CLI) expect(cli).toContain(`cmd === "${c}"`);
+    const scripts = JSON.parse(
+      readFileSync(join(root, "tests/redline/package.json"), "utf8"),
+    ).scripts;
+    expect(Object.keys(scripts)).toEqual(
+      expect.arrayContaining(["live", "provisioning"]),
+    );
+    expect(text).toContain("playwright test -c playwright.staging.config.ts");
+    expect(
+      existsSync(join(root, "apps/dashboard/playwright.staging.config.ts")),
+    ).toBe(true);
+    // What the workflow hands the suite, by name.
+    const read = ["REDLINE_RELEASE", "REDLINE_TARGETS", "REDLINE_REPORT"];
+    const src = [
+      "src/provisioning.ts",
+      "src/targets.ts",
+      "src/reporter.ts",
+    ]
+      .map((f) => readFileSync(join(root, "tests/redline", f), "utf8"))
+      .join("\n");
+    for (const v of read) {
+      expect(text).toContain(v);
+      expect(src).toContain(v);
+    }
+  });
+
+  it("the targets step sets REDLINE_TARGETS, REDLINE_RELEASE and REDLINE_RUN_ID", () => {
+    const st = named("Set the targets");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(st.env.TAG).toBe("${{ inputs.tag }}");
     expect(st.run).not.toContain("${{");
@@ -192,7 +272,6 @@ describe("redline-staging.yml", () => {
           REDLINE_TARGETS_BASE:
             '{"mode":"staging","a":{"name":"rl-a"},"b":{"name":"rl-b"}}',
           RUN_ID: "123-1",
-          REF: "refs/heads/main",
           ...env,
         });
         return {
@@ -235,20 +314,6 @@ describe("redline-staging.yml", () => {
       )[1] as string,
     );
     expect(t2.prod).toBeUndefined();
-    for (const bad of ["0.82.0", "v0.82", "v1.2.3; echo x", "main"]) {
-      const r = go({ TAG: bad });
-      expect(r.code).toBe(1);
-      expect(r.out).toContain("tag must be vX.Y.Z");
-    }
-    // The gate counts main's runs only, so a dispatch off main stops here.
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    expect(st.env.REF).toBe("${{ github.ref }}");
-    for (const ref of ["refs/heads/pl/x", "refs/tags/v0.82.0", ""]) {
-      const r = go({ TAG: "v0.82.0", REF: ref });
-      expect(r.code).toBe(1);
-      expect(r.out).toContain("dispatch redline-staging on main");
-      expect(r.env).toBe("");
-    }
   });
 
   it("mints the staging audiences, brings rl-a and rl-b up, mints prod's after bring-up, then the suite and T19", () => {
@@ -378,7 +443,7 @@ describe("redline-staging.yml", () => {
       at((s) => s.run === "pnpm install --frozen-lockfile --ignore-scripts"),
       at((s) => s.run === "pnpm --filter @oa/provision build"),
       at((s) => JSON.stringify(s).includes("secrets.")),
-      at((s) => s.name === "Check the tag and set the targets"),
+      at((s) => s.name === "Set the targets"),
       at((s) => s.id === "mint"),
       at((s) => s.id === "bringup"),
       at((s) => s.name === "Mint the prod inventory OIDC JWT"),
@@ -488,7 +553,7 @@ describe("redline-staging.yml", () => {
   });
 
   it("both targets send Cloudflare's dummy Turnstile token from a 0600 file outside the secrets dir", () => {
-    const st = named("Check the tag and set the targets");
+    const st = named("Set the targets");
     expect(st.run).toContain('t="$RUNNER_TEMP/redline-turnstile-token"');
     expect(st.run).toContain(`printf '%s' 'XXXX.DUMMY.TOKEN.XXXX' > "$t"`);
     expect(st.run).toMatch(/umask 077[\s\S]*printf '%s' 'XXXX/);
