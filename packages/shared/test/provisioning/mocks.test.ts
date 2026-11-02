@@ -75,6 +75,33 @@ describe("provisioning MSW mocks", () => {
     );
   });
 
+  it("R2 q: a case-insensitive substring of slug, id, a host or the owner email", async () => {
+    server.use(...createProvisioningHandlers());
+    type Item = { id: string; slug: string; appHost: string };
+    const list = async (q: string) =>
+      (
+        (await (
+          await fetch(`${ADMIN}/installs?q=${encodeURIComponent(q)}`)
+        ).json()) as { items: Item[] }
+      ).items;
+    const all = await list("");
+    const leo = all.find((d) => d.slug === "leo") as Item;
+    const detail = InstallDetailSchema.parse(
+      await (await fetch(`${ADMIN}/installs/${leo.id}`)).json(),
+    );
+    for (const q of [
+      "LEO",
+      leo.id.slice(2, 9),
+      leo.appHost.toUpperCase(),
+      (detail.ownerEmail as string).toUpperCase(),
+    ])
+      expect(
+        (await list(q)).map((d) => d.id),
+        q,
+      ).toContain(leo.id);
+    expect(await list("no-such-install-anywhere")).toEqual([]);
+  });
+
   it("writes: 202 with a queued job, replay with the same requestId, 400 on a bad body", async () => {
     server.use(...createProvisioningHandlers());
     const list = (await (await fetch(`${ADMIN}/installs`)).json()) as {

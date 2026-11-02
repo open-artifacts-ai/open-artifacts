@@ -331,8 +331,8 @@ export function Installs() {
             </svg>
             <Input
               type="search"
-              aria-label="Search slug or host"
-              placeholder="Search slug or host"
+              aria-label="Search slug, id, host or email"
+              placeholder="Search slug, id, host or email"
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
             />
