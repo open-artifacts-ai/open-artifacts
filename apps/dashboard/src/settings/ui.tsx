@@ -144,6 +144,8 @@ export function Code({
 /**
  * Write controls only. Under the plan cap the fieldset turns the controls
  * inside off (it adds no box); reads, lists, pagers and Retry stay outside.
+ * Goes inside a card part, never around one: card parts stay direct children
+ * of the card or its form.
  */
 export function WriteLock({ children }: { children: ReactNode }) {
   return (
