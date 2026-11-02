@@ -1,3 +1,4 @@
+import type { Me } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useEffect, useId, useState } from "react";
 import { useMe } from "../auth/useMe";
@@ -13,12 +14,17 @@ Sign in through the browser. Never ask me to paste a token into this chat.`;
 
 /** Whoever the server lets connect an agent (its canConnect): not a guest,
     not capped. The role covers Access-only installs, whose /me has no auth.
-    Consent answers 403 for anyone else, so the prompt would only fail them. */
+    Consent answers 403 for anyone else, so agent prompts would only fail them. */
+export const canConnectAgents = (me: Me) =>
+  me.user.role !== "guest" && me.auth?.cap == null;
+
 export function useCanSetUpAgent() {
   const state = useMe();
-  if (state.status !== "authed") return false;
-  const { user, auth, instance } = state.me;
-  return Boolean(instance.mcpUrl) && user.role !== "guest" && auth?.cap == null;
+  return (
+    state.status === "authed" &&
+    Boolean(state.me.instance.mcpUrl) &&
+    canConnectAgents(state.me)
+  );
 }
 
 /** The card's body: one line, the prompt in a read-only field (wrapped,

@@ -151,9 +151,33 @@ describe("AgentSetupCard", () => {
     ],
   ])("not for %s in the empty Mine library", async (_who, me) => {
     mountHosted("/mine", true, me, [none]);
-    await screen.findByText("Ask your agent to publish something");
+    await screen.findByText("No artifacts yet");
     await meLoaded();
+    expect(
+      screen.getByText("Artifacts shared with you show up in Shared with me."),
+    ).toBeInTheDocument();
     expect(screen.queryByLabelText("Setup prompt")).toBeNull();
+    expect(
+      screen.queryByText("Ask your agent to publish something"),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: /connect an agent/i }),
+    ).toBeNull();
+  });
+
+  it("a member with no MCP URL keeps Mine's agent wording", async () => {
+    mountHosted(
+      "/mine",
+      true,
+      (m) => ({
+        ...asRole("member")(m),
+        instance: { ...m.instance, mcpUrl: "" },
+      }),
+      [none],
+    );
+    await meLoaded();
+    await screen.findByText("Ask your agent to publish something");
+    expect(screen.queryByText("No artifacts yet")).toBeNull();
   });
 
   // The rule itself, away from the redirects that keep guests off both screens.
