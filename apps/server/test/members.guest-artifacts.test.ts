@@ -41,10 +41,15 @@ describe.each([
     await env.DB.prepare("update artifacts set deleted_at = ? where id = ?")
       .bind(Date.now(), trashed.id)
       .run();
+    // In their space, but someone else's: not theirs to transfer.
+    const notTheirs = await owner("guest");
+    await env.DB.prepare("update artifacts set owner_id = ? where id = ?")
+      .bind(member.userId, notTheirs.id)
+      .run();
     const rows = await listMembers(env, ["active"], hosted);
     const of = (id: string) => rows.find((r) => r.id === id);
     expect(of(withOne.userId)?.personalArtifacts).toBe(true);
-    for (const u of [none, member, trashed])
+    for (const u of [none, member, trashed, notTheirs])
       expect(of(u.userId)).not.toHaveProperty("personalArtifacts");
   });
 
