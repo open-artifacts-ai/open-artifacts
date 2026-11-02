@@ -68,16 +68,31 @@ const chooseOption = async (label: string, option: string) => {
 };
 
 it("self-hosted: the Departed card shows, with no spaces in the copy or the dialog", async () => {
-  server.use(...removedCarol);
+  server.use(
+    http.get(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ live: 2, deleted: 1 }),
+    ),
+    ...removedCarol,
+  );
   const seen = calls("GET");
   mount("/settings/members");
   const row = await carolRow();
-  await waitFor(() => expect(row).toHaveTextContent("2 personal artifacts"));
+  await waitFor(() =>
+    expect(within(row).getByText(/in trash/)).toHaveTextContent(
+      /^2 artifacts \(plus 1 in trash\)$/,
+    ),
+  );
   expect(row).not.toHaveTextContent("space");
   const d = await openFromCard();
   expect(within(d).queryByRole("radio", { name: /To a space/ })).toBeNull();
   expect(
     within(d).getByRole("combobox", { name: "Give them to" }),
+  ).toBeVisible();
+  await chooseOption("Give them to", "Bob Builder");
+  expect(
+    await within(d).findByText(
+      "You won't see titles or contents. Bob Builder gets them, with Carol Departed's shares kept.",
+    ),
   ).toBeVisible();
   expect(seen.some((c) => c.path === R.spaces)).toBe(false);
 });

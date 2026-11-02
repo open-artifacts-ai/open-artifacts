@@ -930,7 +930,8 @@ function DepartedRow({
       <small
         className={`col-start-2 row-start-2 block self-start ${muted} max-[600px]:col-span-full max-[600px]:col-start-1`}
       >
-        {n} personal {n === 1 ? "artifact" : "artifacts"}
+        {n} {spaces && "personal "}
+        {n === 1 ? "artifact" : "artifacts"}
         {summary.deleted > 0 && ` (plus ${summary.deleted} in trash)`}
         {spaces && " · their space artifacts stay put"}
       </small>

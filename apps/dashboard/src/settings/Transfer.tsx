@@ -250,7 +250,8 @@ export function TransferDialog({
               {person && (
                 <p className={muted}>
                   You won't see titles or contents. {displayName(person)} gets
-                  them in their Personal, with {name}'s shares kept.
+                  them{withSpaces && " in their Personal"}, with {name}'s shares
+                  kept.
                 </p>
               )}
             </div>
