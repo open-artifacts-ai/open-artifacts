@@ -1,5 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
-import { InfraError, isNetworkError, networkCode } from "./fetch-timeout.ts";
+import {
+  InfraError,
+  isNetworkError,
+  LIVE_TEST_TIMEOUT_MS,
+  networkCode,
+} from "./fetch-timeout.ts";
 import {
   type Cred,
   describeRes,
@@ -262,6 +267,15 @@ export async function redeem(
 export const KV_CACHE_TTL_MS = 60_000;
 /** Past the TTL: clock skew and the cache's own expiry lag. */
 export const KV_SETTLE_SLACK_MS = 5_000;
+
+/**
+ * A live case's timeout when it waits out the KV cache `waits` times in all
+ * (untilKvSettled, each up to KV_CACHE_TTL_MS + KV_SETTLE_SLACK_MS): the
+ * suite's usual budget plus the waits, so a KV-mode case never times out on
+ * its own waits.
+ */
+export const kvCaseTimeout = (waits: number): number =>
+  LIVE_TEST_TIMEOUT_MS + waits * (KV_CACHE_TTL_MS + KV_SETTLE_SLACK_MS);
 
 let lastRedeem = 0;
 /** When this process last redeemed a code (0: never). */

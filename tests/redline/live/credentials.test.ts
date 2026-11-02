@@ -5,6 +5,7 @@ import {
   authorizeRefused,
   authorizeUrl,
   codeForm,
+  kvCaseTimeout,
   lastRedeemAt,
   mcpResource,
   oauthStoreMode,
@@ -337,51 +338,61 @@ describe("credentials", () => {
     const KV_WAIT_LABEL =
       "KV OAuth store: waited out the edge cache (no wait needs dual or d1)";
 
-    it("An OAuth refresh straight after the redeem: a new token, on A and on B (#769)", async (ctx) => {
-      for (const t of [T.a, T.b]) {
-        const kv = (await oauthStoreMode(t)) === "kv";
-        if (kv) label(ctx, KV_WAIT_LABEL);
-        const clientId = await registerClient(t);
-        const rt = await refresh(t, clientId);
-        if (kv) await untilKvSettled(lastRedeemAt());
-        const r = await fetch(
-          tokenRequest(t, refreshForm(clientId, rt, res(t))),
-        );
-        const ok = await tokenIssued(r);
-        await r.body?.cancel();
-        expect(ok, `${t.name}: refresh right after the redeem`).toBe(true);
-      }
-    });
+    it(
+      "An OAuth refresh straight after the redeem: a new token, on A and on B (#769)",
+      async (ctx) => {
+        for (const t of [T.a, T.b]) {
+          const kv = (await oauthStoreMode(t)) === "kv";
+          if (kv) label(ctx, KV_WAIT_LABEL);
+          const clientId = await registerClient(t);
+          const rt = await refresh(t, clientId);
+          if (kv) await untilKvSettled(lastRedeemAt());
+          const r = await fetch(
+            tokenRequest(t, refreshForm(clientId, rt, res(t))),
+          );
+          const ok = await tokenIssued(r);
+          await r.body?.cancel();
+          expect(ok, `${t.name}: refresh right after the redeem`).toBe(true);
+        }
+        // KV: one settle wait per install.
+      },
+      kvCaseTimeout(2),
+    );
 
-    it("A revoked OAuth refresh token is refused at once, on A and on B", async (ctx) => {
-      for (const t of [T.a, T.b]) {
-        const kv = (await oauthStoreMode(t)) === "kv";
-        if (kv) label(ctx, KV_WAIT_LABEL);
-        const clientId = await registerClient(t);
-        const rt = await refresh(t, clientId);
-        if (kv) await untilKvSettled(lastRedeemAt());
-        // RFC 7009 at the token endpoint: the refresh token's grant goes.
-        const rv = await fetch(
-          new Request(`${t.app}/oauth/token`, {
-            method: "POST",
-            redirect: "manual",
-            headers: { "content-type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-              token: rt,
-              token_type_hint: "refresh_token",
-              client_id: clientId,
+    it(
+      "A revoked OAuth refresh token is refused at once, on A and on B",
+      async (ctx) => {
+        for (const t of [T.a, T.b]) {
+          const kv = (await oauthStoreMode(t)) === "kv";
+          if (kv) label(ctx, KV_WAIT_LABEL);
+          const clientId = await registerClient(t);
+          const rt = await refresh(t, clientId);
+          if (kv) await untilKvSettled(lastRedeemAt());
+          // RFC 7009 at the token endpoint: the refresh token's grant goes.
+          const rv = await fetch(
+            new Request(`${t.app}/oauth/token`, {
+              method: "POST",
+              redirect: "manual",
+              headers: { "content-type": "application/x-www-form-urlencoded" },
+              body: new URLSearchParams({
+                token: rt,
+                token_type_hint: "refresh_token",
+                client_id: clientId,
+              }),
             }),
-          }),
-        );
-        await rv.body?.cancel();
-        expect(rv.status, `${t.name}: revoke`).toBe(200);
-        if (kv) await untilKvSettled(Date.now());
-        await tokenRefused(["invalid_grant"])(
-          await fetch(tokenRequest(t, refreshForm(clientId, rt, res(t)))),
-          t,
-        );
-      }
-    });
+          );
+          await rv.body?.cancel();
+          expect(rv.status, `${t.name}: revoke`).toBe(200);
+          if (kv) await untilKvSettled(Date.now());
+          await tokenRefused(["invalid_grant"])(
+            await fetch(tokenRequest(t, refreshForm(clientId, rt, res(t)))),
+            t,
+          );
+        }
+        // KV: two settle waits per install (after the redeem, after the revoke).
+      },
+      kvCaseTimeout(4),
+    );
   });
 
   // ------------------------------------------------------------ signed URLs
