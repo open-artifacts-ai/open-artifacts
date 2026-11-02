@@ -8,6 +8,7 @@ import {
   TOKEN_SCOPES,
 } from "@oa/shared/provisioning";
 import { notResolved } from "./fetch-timeout.ts";
+import { safeCode } from "./http.ts";
 import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { PRE_PROD_REASON } from "./report.ts";
@@ -377,7 +378,7 @@ const bare = (h: string) => h.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
 
 /** status, error code and body hash: what a failure may say. */
 export function desc(r: Res): string {
-  const code = errCode(r);
+  const code = safeCode(errCode(r));
   const h = createHash("sha256").update(r.text).digest("hex").slice(0, 16);
   return `status ${r.status}, body sha256:${h} (${Buffer.byteLength(r.text)} bytes)${code ? `, code ${code}` : ""}`;
 }
