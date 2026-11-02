@@ -30,6 +30,12 @@ import {
 import { useMe } from "../../auth/useMe";
 import { LoadError } from "../../layout/LoadError";
 import { Modal } from "../../layout/Modal";
+import {
+  isReleased,
+  personFirst,
+  personFirstAtStart,
+  personName,
+} from "../../layout/person";
 import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -46,9 +52,9 @@ const SEARCH_FROM = 20;
 
 /** "eng@" from eng@example.com. */
 const short = (email: string) => `${email.split("@")[0]}@`;
-const first = (m: SpaceMember) =>
-  m.user.name?.trim().split(/\s+/)[0] || m.user.email?.split("@")[0] || "";
-const nameOf = (m: SpaceMember) => displayName(m.user);
+const first = (m: SpaceMember) => personFirst(m.user);
+const First = (m: SpaceMember) => personFirstAtStart(m.user);
+const nameOf = (m: SpaceMember) => personName(m.user);
 
 /**
  * The groups that grant the synced role, one per group: a group mapped here
@@ -163,7 +169,7 @@ const refusal = (
     if ((e.code as string) === "managed_by_org_mapping")
       return everyLine(admin);
     if (e.code === "member_synced")
-      return `${first(m)} is here through ${syncShort(m)}. Change it in Google, or remove the group under Who gets access.`;
+      return `${First(m)} is here through ${syncShort(m)}. Change it in Google, or remove the group under Who gets access.`;
     if (e.code === "space_forbidden")
       return promote
         ? "Only an admin can make someone a manager."
@@ -262,7 +268,7 @@ function PersonRow({
           ? {
               item: `Remove from ${space.name}…`,
               title: `Remove ${name} from ${space.name}?`,
-              body: `${first(m)} loses access to ${space.name} within a minute. If sync comes back and ${syncShort(m)} still includes ${first(m)}, ${first(m)} gets ${ROLE_LABEL[m.syncRole as SpaceRole]} again.`,
+              body: `${First(m)} loses access to ${space.name} within a minute. If sync comes back and ${syncShort(m)} still includes ${first(m)}, ${first(m)} gets ${ROLE_LABEL[m.syncRole as SpaceRole]} again.`,
               button: "Remove",
             }
           : m.manualRole &&
@@ -271,17 +277,17 @@ function PersonRow({
               everyOnly({ ...m, manualRole: null })
             ? {
                 item: "Remove manually added role…",
-                hint: `${first(m)} keeps ${ROLE_LABEL[every]} from an Every space group.`,
+                hint: `${First(m)} keeps ${ROLE_LABEL[every]} from an Every space group.`,
                 title: `Remove ${first(m)}'s manually added role?`,
-                body: `${first(m)} goes from ${ROLE_LABEL[m.manualRole]} to ${ROLE_LABEL[every]}. They keep ${ROLE_LABEL[every]} from an Every space group.`,
+                body: `${First(m)} goes from ${ROLE_LABEL[m.manualRole]} to ${ROLE_LABEL[every]}. They keep ${ROLE_LABEL[every]} from an Every space group.`,
                 button: "Remove role",
               }
             : m.manualRole && m.syncRole
               ? {
                   item: "Remove manually added role…",
-                  hint: `Also synced from ${syncShort(m)}. ${first(m)} keeps ${ROLE_LABEL[m.syncRole]} through it.`,
+                  hint: `Also synced from ${syncShort(m)}. ${First(m)} keeps ${ROLE_LABEL[m.syncRole]} through it.`,
                   title: `Remove ${first(m)}'s manually added role?`,
-                  body: `${first(m)} goes from ${ROLE_LABEL[m.manualRole]} to ${ROLE_LABEL[m.syncRole]}, the role ${syncShort(m)} gives. To take ${first(m)} out of the space, change ${syncShort(m)} in Google or under Who gets access.`,
+                  body: `${First(m)} goes from ${ROLE_LABEL[m.manualRole]} to ${ROLE_LABEL[m.syncRole]}, the role ${syncShort(m)} gives. To take ${first(m)} out of the space, change ${syncShort(m)} in Google or under Who gets access.`,
                   button: "Remove role",
                 }
               : m.manualRole
@@ -289,8 +295,8 @@ function PersonRow({
                     item: `Remove from ${space.name}…`,
                     title: `Remove ${name} from ${space.name}?`,
                     body: m.allMembers
-                      ? `${first(m)} keeps ${ROLE_LABEL[m.allMembers]} through All members. Artifacts ${first(m)} made here stay in the space.`
-                      : `${first(m)} loses access to ${space.name} within a minute. Artifacts ${first(m)} made here stay in the space.`,
+                      ? `${First(m)} keeps ${ROLE_LABEL[m.allMembers]} through All members. Artifacts ${first(m)} made here stay in the space.`
+                      : `${First(m)} loses access to ${space.name} within a minute. Artifacts ${first(m)} made here stay in the space.`,
                     button: "Remove",
                   }
                 : null;
@@ -335,7 +341,8 @@ function PersonRow({
             {m.status === "removed" && <Badge variant="outline">Removed</Badge>}
           </b>
           <small className={`block ${muted}`}>
-            {m.user.email} · {reason(m, frozen, restricted)}
+            {!isReleased(m.user) && `${m.user.email} · `}
+            {reason(m, frozen, restricted)}
           </small>
         </div>
       </div>

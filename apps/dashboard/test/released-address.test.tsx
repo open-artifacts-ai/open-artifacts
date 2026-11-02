@@ -1,7 +1,7 @@
 // A deleted Workspace account: its row's address is released
 // (removed+<id>@invalid) and never shown (Design's ruling on #828).
-import { R } from "@oa/shared";
-import { fixtures } from "@oa/shared/mocks";
+import { R, viewerPath } from "@oa/shared";
+import { createHandlers, fixtures } from "@oa/shared/mocks";
 import {
   fireEvent,
   render,
@@ -9,25 +9,39 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { HttpResponse, http } from "msw";
+import { getResponse, HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
 import {
   personFirst,
+  personFirstAtStart,
   personInSentence,
   personName,
 } from "../src/layout/person";
 import { initials, UserAvatar } from "../src/layout/UserAvatar";
 import { findVisibleToast, installHarness, mountHosted } from "./harness";
 
-// Until #829 relaxes the schema: without this the list doesn't parse at all.
-vi.mock("@oa/shared", async (original) => {
-  const shared = await original<typeof import("@oa/shared")>();
+// Until #829 relaxes MemberSchema and UserRefSchema these rows don't parse at
+// all, so this file skips response parsing. Remove when that lands.
+vi.mock("../src/api/client", async (original) => {
+  const client = await original<typeof import("../src/api/client")>();
   const { z } = await import("zod");
   return {
-    ...shared,
-    MemberSchema: shared.MemberSchema.extend({ email: z.string() }),
+    ...client,
+    api: {
+      ...client.api,
+      get: (path: string, _schema: unknown, signal?: AbortSignal) =>
+        client.api.get(path, z.any(), signal),
+    },
   };
 });
+vi.mock("../src/viewer/bridge", () => ({
+  createBridge: () => ({
+    dispose: vi.fn(),
+    requestThumbnail: vi.fn(),
+    setTheme: vi.fn(),
+    setArtifact: vi.fn(),
+  }),
+}));
 
 installHarness();
 
@@ -210,4 +224,112 @@ it("a named person keeps their first name in a failure", async () => {
   expect(await within(card).findByRole("alert")).toHaveTextContent(
     "Couldn't move Pat's artifacts. Try again.",
   );
+});
+
+const GONE_EMAIL = `removed+${NONE}@invalid`;
+const goneRef = { id: NONE, email: GONE_EMAIL, name: GONE_EMAIL };
+/** Every UserRef in `v` that `pick` matches becomes the released person. */
+const swap = (
+  v: unknown,
+  keys: string[],
+  pick: (u: { email?: string }) => boolean,
+): unknown => {
+  if (Array.isArray(v)) return v.map((x) => swap(x, keys, pick));
+  if (!v || typeof v !== "object") return v;
+  return Object.fromEntries(
+    // A version's agent takes the row's name; here the person should show.
+    Object.entries(v).flatMap(([k, x]) =>
+      k === "agent"
+        ? []
+        : [
+            [
+              k,
+              keys.includes(k) && x && pick(x as { email?: string })
+                ? goneRef
+                : swap(x, keys, pick),
+            ],
+          ],
+    ),
+  );
+};
+/** The hosted mock's GETs under `url`, with those UserRefs swapped. */
+const releasedRefs = (
+  url: RegExp,
+  keys: string[],
+  pick = (_: { email?: string }) => true,
+) => {
+  const hosted = createHandlers({ hosted: true });
+  return http.get(url, async ({ request }) => {
+    const res = await getResponse(hosted, request);
+    if (!res?.ok) return res;
+    return HttpResponse.json(swap(await res.json(), keys, pick) as never);
+  });
+};
+const ARTIFACTS = /\/api\/v1\/artifacts/;
+const LANDING = (
+  fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
+).id;
+const noAddress = () => expect(document.body).not.toHaveTextContent("@invalid");
+const noAddressAnywhere = () =>
+  expect(document.body.innerHTML).not.toContain("@invalid");
+
+it("a library card's owner avatar never names the address", async () => {
+  mountHosted("/", true, undefined, [releasedRefs(ARTIFACTS, ["owner"])]);
+  const avatars = await screen.findAllByRole("img", { name: "Former member" });
+  expect(avatars[0]).toHaveTextContent("FM");
+  noAddressAnywhere();
+});
+
+it("Details names the owner, and the personal space, without the address", async () => {
+  mountHosted(
+    `${viewerPath(LANDING)}?panel=open&tab=details`,
+    true,
+    undefined,
+    [releasedRefs(ARTIFACTS, ["owner", "createdBy"])],
+  );
+  await screen.findByText("Former member");
+  noAddress();
+});
+
+it("Share's owner row names the person without the address", async () => {
+  mountHosted(`${viewerPath(LANDING)}?panel=open&tab=share`, true, undefined, [
+    releasedRefs(ARTIFACTS, ["owner", "createdBy"]),
+  ]);
+  await screen.findByText("Former member");
+  noAddressAnywhere();
+});
+
+it("Versions names the creator without the address", async () => {
+  mountHosted(
+    `${viewerPath(LANDING)}?panel=open&tab=versions`,
+    true,
+    undefined,
+    [releasedRefs(ARTIFACTS, ["owner", "createdBy"])],
+  );
+  const list = await screen.findByRole("list", { name: "Versions" });
+  await waitFor(() => expect(list).toHaveTextContent("Former member"));
+  noAddress();
+});
+
+it("space People names a released member, with no address line", async () => {
+  mountHosted("/settings/spaces?space=SpEngNpQrSt2uVwX", true, undefined, [
+    releasedRefs(
+      /\/api\/v1\/spaces\/[^/]+\/members/,
+      ["user"],
+      (u) => u.email === "bob@example.com",
+    ),
+  ]);
+  const people = await screen.findByRole("region", { name: "People" });
+  await within(people).findByText("Former member");
+  noAddressAnywhere();
+});
+
+it("a sentence's start capitalises: A former member", () => {
+  expect(personFirstAtStart({ email: GONE_EMAIL, name: null })).toBe(
+    "A former member",
+  );
+  expect(personFirstAtStart({ email: "bo@example.com", name: null })).toBe(
+    "bo",
+  );
+  expect(personFirstAtStart({ email: "b@x.io", name: "Bob B" })).toBe("Bob");
 });

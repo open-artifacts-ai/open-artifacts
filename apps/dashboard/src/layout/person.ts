@@ -25,6 +25,12 @@ export const personName = (u: Person) =>
 export const personInSentence = (u: Person) =>
   isReleased(u) && !realName(u) ? IN_A_SENTENCE : personName(u);
 
+/** personFirst at the start of a sentence. */
+export const personFirstAtStart = (u: Person) => {
+  const first = personFirst(u);
+  return first === IN_A_SENTENCE ? "A former member" : first;
+};
+
 /** "Bob" from "Bob Builder", else the email's local part, else in a sentence. */
 export const personFirst = (u: Person) =>
   isReleased(u) && !realName(u)
