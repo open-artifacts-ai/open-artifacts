@@ -30,7 +30,11 @@ import { Modal } from "../layout/Modal";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
 import { AgentRow } from "./AgentRow";
-import { AgentSetupCard, useCanSetUpAgent } from "./AgentSetupCard";
+import {
+  AgentSetupCard,
+  useCanSetUpAgent,
+  useRevokeOnly,
+} from "./AgentSetupCard";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { saveTokenCommand, snippets, tokenFile } from "./snippets";
 import {
@@ -199,18 +203,26 @@ function Confirm({
   );
 }
 
+/** The one line under each card's title for a revoke-only caller. */
+const AGENTS_LINE = "You can't connect new agents. You can revoke these.";
+const TOKENS_LINE = "You can't create new tokens. You can revoke these.";
+const CardLine = ({ children }: { children: string }) => (
+  <p className={`m-0 ${muted}`}>{children}</p>
+);
+
 function OAuthClients() {
   const q = useOAuthClients();
   const revoke = useRevokeOAuthClient();
-  const state = useMe();
   // Capped (guest, restricted): renaming answers 404, so no label controls.
-  const canLabel = state.status === "authed" && state.me.auth?.cap == null;
+  const revokeOnly = useRevokeOnly();
   const [target, setTarget] = useState<{
     grantId: string;
     clientName: string;
   } | null>(null);
+  if (revokeOnly && !q.isError && !q.data?.length) return null;
   return (
     <SettingsCard id="oa-oauth-h" title="Connected agents">
+      {revokeOnly && <CardLine>{AGENTS_LINE}</CardLine>}
       {q.isError ? (
         <p role="alert" className={errorText}>
           Couldn't load connected agents.
@@ -229,7 +241,7 @@ function OAuthClients() {
             <AgentRow
               key={c.grantId}
               c={c}
-              canLabel={canLabel}
+              canLabel={!revokeOnly}
               onRevoke={() => setTarget(c)}
             />
           ))}
@@ -359,21 +371,26 @@ function Tokens() {
   const [target, setTarget] = useState<{ id: string; label: string } | null>(
     null,
   );
+  const revokeOnly = useRevokeOnly();
+  if (revokeOnly && !q.isError && !q.data?.length) return null;
   return (
     <SettingsCard
       id="oa-pat-h"
       title="Personal access tokens"
       action={
-        <Button
-          variant="outline"
-          size="sm"
-          className="text-[length:var(--oa-text-sm)]"
-          onClick={() => setCreating(true)}
-        >
-          Create token
-        </Button>
+        !revokeOnly && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-[length:var(--oa-text-sm)]"
+            onClick={() => setCreating(true)}
+          >
+            Create token
+          </Button>
+        )
       }
     >
+      {revokeOnly && <CardLine>{TOKENS_LINE}</CardLine>}
       {q.isError ? (
         <p role="alert" className={errorText}>
           Couldn't load tokens.

@@ -1,6 +1,7 @@
 import type { Me } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useEffect, useId, useState } from "react";
+import { useOAuthClients, useTokens } from "../api/queries";
 import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
 import { muted, SettingsCard } from "./ui";
@@ -25,6 +26,24 @@ export function useCanSetUpAgent() {
     Boolean(state.me.instance.mcpUrl) &&
     canConnectAgents(state.me)
   );
+}
+
+/** A caller the server won't connect: Agents only lets them revoke. */
+export function useRevokeOnly() {
+  const state = useMe();
+  return state.status === "authed" && !canConnectAgents(state.me);
+}
+
+/** Revoke-only with nothing to revoke: no Agents page. Guests never reach it. */
+export function useNoAgentsPage() {
+  const state = useMe();
+  const revokeOnly =
+    useRevokeOnly() &&
+    state.status === "authed" &&
+    state.me.user.role !== "guest";
+  const tokens = useTokens(revokeOnly);
+  const agents = useOAuthClients(revokeOnly);
+  return revokeOnly && tokens.data?.length === 0 && agents.data?.length === 0;
 }
 
 /** The card's body: one line, the prompt in a read-only field (wrapped,
