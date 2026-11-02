@@ -22,7 +22,7 @@ export const DUTY_TIMEOUT_MS = {
   signups: 5_000,
   purge: 10_000,
   health: 30_000,
-  fleet: 10_000,
+  fleet: 20_000,
   alerts: 30_000,
   prune: 5_000,
 } as const satisfies Record<Duty["name"], number>;
@@ -33,7 +33,10 @@ export async function alertsTick(env: ProvapiEnv, now: number): Promise<void> {
     env.PLATFORM_DB,
     env.PROVISIONER,
     { now, signupDailyCap: signupDailyCap(env.SIGNUP_DAILY_CAP) },
-    { versionMetadata: env.CF_VERSION_METADATA },
+    {
+      versionMetadata: env.CF_VERSION_METADATA,
+      fleetCanary: env.FLEET_CANARY,
+    },
   );
   for (const k of ALERT_KEYS) {
     const cond = c[k];
@@ -98,7 +101,7 @@ export function provapiTick(
     {
       name: "fleet",
       timeoutMs: t.fleet,
-      run: () => fleetDue(env, now, o.fleet),
+      run: () => fleetDue(env, now, { budgetMs: t.fleet, ...o.fleet }),
     },
     { name: "alerts", timeoutMs: t.alerts, run: () => alertsTick(env, now) },
     { name: "prune", timeoutMs: t.prune, run: () => prune(env, now) },

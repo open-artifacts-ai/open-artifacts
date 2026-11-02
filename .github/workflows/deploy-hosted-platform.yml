@@ -181,11 +181,12 @@ jobs:
           # main's migration pins: the tag may add a migration, never re-pin one.
           cp .deploy-logic/apps/platform-db/migration-lock.json "$RUNNER_TEMP/main-ci/migration-lock.json"
           rm -rf .deploy-logic
-      # Staging first, automatic: prod's platform-db, provisioner and
-      # provisioning deploy a tag only after redline-staging.yml passed it
-      # (within 7 days; scripts/ci/staging-first-gate.sh states the contract).
+      # Staging first, automatic: prod's platform-db, provisioner,
+      # provisioning and scheduler (its tag is the fleet target, #955) deploy
+      # a tag only after redline-staging.yml passed it (within 7 days;
+      # scripts/ci/staging-first-gate.sh states the contract).
       - name: Staging passed this tag
-        if: ${{ inputs.env == 'prod' && (contains(format(',{0},', inputs.targets), ',platform-db,') || contains(format(',{0},', inputs.targets), ',provisioner,') || contains(format(',{0},', inputs.targets), ',provisioning,')) }}
+        if: ${{ inputs.env == 'prod' && (contains(format(',{0},', inputs.targets), ',platform-db,') || contains(format(',{0},', inputs.targets), ',provisioner,') || contains(format(',{0},', inputs.targets), ',provisioning,') || contains(format(',{0},', inputs.targets), ',scheduler,')) }}
         env:
           TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}

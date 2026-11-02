@@ -106,13 +106,19 @@ export async function alertConditions(
     tokenTimeoutMs?: number;
     /** The fleet target's source; without it the fleet keys are unknown. */
     versionMetadata?: WorkerVersionMetadata;
+    /** FLEET_CANARY: unset, the fleet keys are clear (no rollout). */
+    fleetCanary?: string;
   } = {},
 ): Promise<Record<AlertKey, Condition>> {
   return {
     ...(await sqlConditions(db, input)),
     ...(await tokenConditions(rpc, o.tokenTimeoutMs)),
     ...(await fleetConditions(
-      { PLATFORM_DB: db, CF_VERSION_METADATA: o.versionMetadata },
+      {
+        PLATFORM_DB: db,
+        CF_VERSION_METADATA: o.versionMetadata,
+        FLEET_CANARY: o.fleetCanary,
+      },
       input.now,
     )),
   };

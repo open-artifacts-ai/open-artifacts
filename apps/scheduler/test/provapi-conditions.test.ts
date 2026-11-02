@@ -109,7 +109,7 @@ const onVersion = async (c: Ctx, version: string) => {
     c.install,
     version,
   );
-  await lifecycle(c.install);
+  await lifecycle(c.install, { serving_mode: "serving" });
 };
 const set = (sql: string, ...b: unknown[]) =>
   db
@@ -358,7 +358,7 @@ async function evaluate(now: number, token: TokenStatus = ACTIVE) {
     db,
     fakeProvisionerRpc({ tokenStatus: token }),
     { now, signupDailyCap: CAP },
-    { versionMetadata: meta(now) },
+    { versionMetadata: meta(now), fleetCanary: "ifhx5rpmrhwh" },
   );
 }
 
