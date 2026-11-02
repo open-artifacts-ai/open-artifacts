@@ -48,6 +48,11 @@ export type Principal = {
   session?: PrincipalSession;
   /** OIDC only: the pinned workflow behind the JWT (authorize, #1053). */
   oidcWorkflow?: "redline" | "test-admin";
+  /**
+   * The test admin workflow's run, from its JWT (audit only, #1053): who
+   * dispatched it, which run, which workflow ref.
+   */
+  oidcRun?: { actor: string | null; runId: string | null; workflowRef: string };
 };
 
 /** A browser session behind a principal (see Principal.session). */

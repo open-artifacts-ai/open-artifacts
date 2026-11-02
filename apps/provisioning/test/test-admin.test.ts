@@ -6,7 +6,7 @@ import {
 } from "@oa/shared/provisioning";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decideConsent, showConsent } from "../src/auth/oauth/consent.js";
-import { openSealed } from "../src/auth/seal.js";
+import { openSealed, SEAL_INFO } from "../src/auth/seal.js";
 import { SESSION_COOKIE, sessionPrincipal } from "../src/auth/session.js";
 import {
   mintTestAdminSession,
@@ -62,7 +62,17 @@ const TA: Principal = {
   sub: TEST_ADMIN.sub,
   authAt: NOW,
 };
-const TA_OIDC: Principal = { ...OIDC_P, oidcWorkflow: "test-admin" };
+const TA_OIDC: Principal = {
+  ...OIDC_P,
+  rateKey: `${OIDC_P.rateKey}:test-admin`,
+  oidcWorkflow: "test-admin",
+  oidcRun: {
+    actor: "octocat",
+    runId: "123456",
+    workflowRef:
+      "open-artifacts-ai/open-artifacts/.github/workflows/staging-test-admin.yml@refs/heads/main",
+  },
+};
 const RL_OIDC: Principal = { ...OIDC_P, oidcWorkflow: "redline" };
 
 async function keyPair() {
@@ -163,7 +173,8 @@ describe("R28: the sealed 1 h session", () => {
     const body = TestAdminSessionResultSchema.parse(r.body);
     expect(body.expiresAt).toBe(NOW + TEST_ADMIN_TTL_MS);
     expect(body.sealed).toMatch(/^oa-seal-v1\./);
-    const sid = await openSealed(k, body.sealed);
+    const sid = await openSealed(k, body.sealed, SEAL_INFO.testAdminSession);
+    await expect(openSealed(k, body.sealed)).rejects.toThrow();
     expect(JSON.stringify(r.body)).not.toContain(sid);
     const p = await sessionPrincipal(cookieReq(sid), e.env, NOW);
     expect(p).toMatchObject({
@@ -179,6 +190,27 @@ describe("R28: the sealed 1 h session", () => {
       .first<{ actor_kind: string; outcome: string; detail: string }>();
     expect(a).toMatchObject({ actor_kind: "oidc", outcome: "ok" });
     expect(a?.detail).not.toContain(sid);
+    // Traceable to the run that minted it (#1053 review).
+    expect(JSON.parse(a?.detail as string)).toMatchObject({
+      runActor: "octocat",
+      runId: "123456",
+      workflowRef: expect.stringContaining(
+        "staging-test-admin.yml@refs/heads/main",
+      ),
+    });
+  });
+
+  it("a small-order key is 400 invalid_input, and the live session stays live", async () => {
+    const e = fakeEnv();
+    const live = await mintTestAdminSession(e.env, NOW);
+    const zero = Buffer.alloc(32).toString("base64url");
+    const r = await call(e, TA_OIDC, "R28", { body: { recipientKey: zero } });
+    expect(r).toMatchObject({ status: 400, code: "invalid_input" });
+    expect(
+      await sessionPrincipal(cookieReq(live.sid), e.env, NOW),
+    ).toMatchObject({
+      kind: "test-admin",
+    });
   });
 
   it("ends after 1 h", async () => {
@@ -309,6 +341,39 @@ describe("reads and writes: rl- reach, no pii", () => {
     });
     const r = await call(e, TA, "R2", { query: { q: "findme" } });
     expect(r.body.items).toEqual([]);
+  });
+
+  it("R5 upgrade end to end: an rl- install's job is accepted and stored as oidc; another install is 404", async () => {
+    const e = fakeEnv();
+    const rl = await seedInstall({
+      slug: "rl-ta5",
+      testHooks: true,
+      version: "1.41.2",
+    });
+    const up = await call(e, TA, "R5", {
+      params: { id: rl.id },
+      body: { requestId: requestId() },
+    });
+    expect(up.status).toBe(202);
+    expect(up.body.job.args).toEqual({ from: "1.41.2", to: "1.42.0" });
+    const j = await db
+      .prepare("SELECT kind, actor_kind, actor_label FROM jobs WHERE id = ?")
+      .bind(up.body.job.id)
+      .first();
+    expect(j).toEqual({
+      kind: "upgrade",
+      actor_kind: "oidc",
+      actor_label: "test admin",
+    });
+    const other = await seedInstall({ slug: "customer3", version: "1.41.2" });
+    expect(
+      (
+        await call(e, TA, "R5", {
+          params: { id: other.id },
+          body: { requestId: requestId() },
+        })
+      ).status,
+    ).toBe(404);
   });
 
   it("R4 takes O's field rules, and the job is stored as oidc under the test admin's key", async () => {

@@ -69,14 +69,25 @@ export async function oidcPrincipal(
     };
   }
   const key = `oidc:${claims.repository_id}`;
+  const str = (v: unknown) => (typeof v === "string" && v ? v : null);
   return {
     kind: "oidc",
     actorKey: key,
-    rateKey: key,
+    // Its own bucket: R28 and red-line never starve each other.
+    rateKey: testAdmin ? `${key}:test-admin` : key,
     label: claims.repository,
     scopes: [],
     sub: claims.sub,
     authAt: null,
     oidcWorkflow: testAdmin ? "test-admin" : "redline",
+    ...(testAdmin
+      ? {
+          oidcRun: {
+            actor: str(claims.actor),
+            runId: str(claims.run_id),
+            workflowRef: claims.job_workflow_ref,
+          },
+        }
+      : {}),
   };
 }

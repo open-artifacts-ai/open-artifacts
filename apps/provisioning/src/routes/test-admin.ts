@@ -1,5 +1,5 @@
 import { audit } from "../audit.js";
-import { sealTo } from "../auth/seal.js";
+import { isLowOrderKey, SEAL_INFO, sealTo } from "../auth/seal.js";
 import {
   mintTestAdminSession,
   TEST_ADMIN,
@@ -25,15 +25,33 @@ export async function testAdminSession(a: HandlerArgs): Promise<RouteResult> {
   )
     throw new ApiError("forbidden");
   const { recipientKey } = a.input.body as { recipientKey: string };
+  // Before the mint, so a bad key never revokes the live session.
+  const raw = Uint8Array.from(
+    atob(recipientKey.replace(/-/g, "+").replace(/_/g, "/") + "="),
+    (c) => c.charCodeAt(0),
+  );
+  if (raw.length !== 32 || isLowOrderKey(raw))
+    throw new ApiError(
+      "invalid_input",
+      "recipientKey: not a usable X25519 key",
+    );
   const { sid, expiresAt } = await mintTestAdminSession(a.env, Date.now());
-  const sealed = await sealTo(recipientKey, sid);
+  const sealed = await sealTo(recipientKey, sid, SEAL_INFO.testAdminSession);
   await audit(a.env, {
     action: "test_admin.session",
     actor: p,
     outcome: "ok",
     route: "R28",
     surface: a.surface,
-    detail: { identity: TEST_ADMIN_LABEL, sub: TEST_ADMIN.sub, expiresAt },
+    // Who dispatched the run, which run and which workflow (#1053 review).
+    detail: {
+      identity: TEST_ADMIN_LABEL,
+      sub: TEST_ADMIN.sub,
+      expiresAt,
+      runActor: p.oidcRun?.actor ?? null,
+      runId: p.oidcRun?.runId ?? null,
+      workflowRef: p.oidcRun?.workflowRef ?? null,
+    },
   });
   return { status: 201, body: { sealed, expiresAt }, headers: {} };
 }

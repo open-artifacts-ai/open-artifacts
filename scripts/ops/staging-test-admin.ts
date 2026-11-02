@@ -32,11 +32,15 @@ const EXPIRES_RE = /test-admin-expires-at: (\d+)/;
 /**
  * Opens an oa-seal-v1 value (apps/provisioning/src/auth/seal.ts, R28) with
  * the caller's X25519 private key: ECDH, HKDF-SHA256 over (epk || own public
- * key) with info oa-redline-creds-v1, AES-256-GCM. node:crypto, so the agent
+ * key) with R28's info (oa-test-admin-session-v1), AES-256-GCM. node:crypto, so the agent
  * side is an independent implementation; test/node/seal-interop.test.ts in
  * apps/provisioning checks the two agree.
  */
-export function openSealedNode(priv: KeyObject, sealed: string): string {
+export function openSealedNode(
+  priv: KeyObject,
+  sealed: string,
+  info = "oa-test-admin-session-v1",
+): string {
   const [p, e, i, c, ...rest] = sealed.split(".");
   if (p !== "oa-seal-v1" || !e || !i || !c || rest.length)
     throw new Error("not an oa-seal-v1 value");
@@ -53,13 +57,7 @@ export function openSealedNode(priv: KeyObject, sealed: string): string {
     }),
   });
   const key = Buffer.from(
-    hkdfSync(
-      "sha256",
-      shared,
-      Buffer.concat([epk, mine]),
-      "oa-redline-creds-v1",
-      32,
-    ),
+    hkdfSync("sha256", shared, Buffer.concat([epk, mine]), info, 32),
   );
   const ct = Buffer.from(c, "base64url");
   const d = createDecipheriv("aes-256-gcm", key, Buffer.from(i, "base64url"));

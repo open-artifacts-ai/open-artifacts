@@ -282,6 +282,28 @@ describe("the test admin's workflow (#1053)", () => {
     expect(r).toMatchObject({ kind: "oidc", oidcWorkflow: "redline" });
   });
 
+  it("its own rate bucket, and its run recorded for audit; red-line keeps the shared key and no run", async () => {
+    const a = await oidcPrincipal(
+      req(),
+      env(),
+      await jwt({ job_workflow_ref: TA, actor: "octocat", run_id: "99" }),
+      vopts(),
+    );
+    expect(a).toMatchObject({
+      actorKey: "oidc:4242",
+      rateKey: "oidc:4242:test-admin",
+      oidcRun: { actor: "octocat", runId: "99", workflowRef: TA },
+    });
+    const r = await oidcPrincipal(
+      req(),
+      env(),
+      await jwt({ actor: "x" }),
+      vopts(),
+    );
+    expect(r).toMatchObject({ rateKey: "oidc:4242" });
+    expect(r).not.toHaveProperty("oidcRun");
+  });
+
   it("its JWT is never a test user", async () => {
     for (const u of ["a", "b", "c"])
       expect(
