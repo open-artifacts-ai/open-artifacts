@@ -661,7 +661,7 @@ it("a Restore refused because the address was released says why, inline, with no
   mountHosted("/settings/members", true, undefined, [
     http.post(`*${R.memberRestore(CAROL)}`, () =>
       HttpResponse.json(
-        { error: { code: "conflict", message: released } },
+        { error: { code: "conflict", message: "the server's words" } },
         { status: 409 },
       ),
     ),

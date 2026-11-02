@@ -4,7 +4,6 @@ import {
   MemberRemovedDetailsSchema,
   type Role,
 } from "@oa/shared";
-import { displayName } from "@oa/ui";
 import {
   Badge,
   Button,
@@ -47,6 +46,12 @@ import { CopyLink } from "../layout/CopyLink";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
+import {
+  isReleased,
+  personFirst,
+  personInSentence,
+  personName,
+} from "../layout/person";
 import { toast } from "../layout/toast";
 import { UserAvatar } from "../layout/UserAvatar";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
@@ -341,10 +346,6 @@ const ROW =
 const RESTRICTED_BADGE =
   "border-transparent bg-[var(--oa-warning-soft)] text-[var(--oa-warning)]";
 
-/** "Bob" from "Bob Builder", else the email's local part. */
-const firstName = (m: Member) =>
-  m.name?.trim().split(/\s+/)[0] || m.email.split("@")[0];
-
 /**
  * Who may reset `m`'s Google link: linked to Google, never the owner, never
  * yourself. Only the owner resets another admin (the server enforces it too:
@@ -384,7 +385,7 @@ function Row({
   const resetGoogle = useResetIdentity();
   const [resetting, setResetting] = useState(false);
   const canResetGoogle = mayResetGoogle(m, you, owner);
-  const label = displayName(m);
+  const label = personName(m);
   // Another admin's (or the owner's) row, seen by anyone but the owner: read-only.
   const readOnly = !owner && (m.role === "admin" || m.role === "owner");
   const locked = m.role === "owner" || you || readOnly;
@@ -394,7 +395,7 @@ function Row({
   // The manual flag only: active members, never owners, admins or guests.
   const canRestrict =
     m.role === "member" && (m.status ?? "active") === "active";
-  const first = firstName(m);
+  const first = personFirst(m);
   return (
     <li className={ROW}>
       <div className="flex min-w-0 items-center gap-[10px]">
@@ -415,7 +416,7 @@ function Row({
           </b>
           {(m.name || why) && (
             <small className={`block truncate ${muted}`}>
-              {m.name ? m.email : null}
+              {m.name && !isReleased(m) ? m.email : null}
               {/* At <= 600px the badge and reason move to the control line. */}
               <span className="max-[600px]:hidden">
                 {m.name && why ? " · " : null}
@@ -749,6 +750,9 @@ export function Members() {
 const STATUS = { suspended: "Suspended", removed: "Removed" } as const;
 
 const RESTORE_ONLY = "Only the owner can restore an admin.";
+/** A deleted Workspace account: the row's muted line and restore's 409 conflict. */
+const ADDRESS_RELEASED =
+  "This person's Google Workspace account was deleted, so they can't be restored. Invite them instead.";
 
 /** One removed person under the Removed filter: Restore, refusals inline. */
 function RemovedRow({
@@ -759,10 +763,14 @@ function RemovedRow({
   /** The viewer is the owner, uncapped: only they restore an admin. */
   owner: boolean;
 }) {
-  const ownerOnly = ownerOnlySource(m, owner);
+  const refusal = isReleased(m)
+    ? ADDRESS_RELEASED
+    : ownerOnlySource(m, owner)
+      ? RESTORE_ONLY
+      : null;
   const [restoring, setRestoring] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const label = displayName(m);
+  const label = personName(m);
   return (
     <li className="flex flex-wrap items-center gap-[10px] border-0 border-t border-border py-[var(--oa-space-2)] first:border-t-0">
       <UserAvatar name={m.name} email={m.email} />
@@ -773,9 +781,11 @@ function RemovedRow({
             Removed
           </Badge>
         </b>
-        {m.name && <small className={`block ${muted}`}>{m.email}</small>}
+        {m.name && !isReleased(m) && (
+          <small className={`block ${muted}`}>{m.email}</small>
+        )}
       </div>
-      {!ownerOnly && (
+      {!refusal && (
         <Button
           size="sm"
           variant="outline"
@@ -789,13 +799,13 @@ function RemovedRow({
           Restore…
         </Button>
       )}
-      {ownerOnly && <p className={`m-0 basis-full ${muted}`}>{RESTORE_ONLY}</p>}
+      {refusal && <p className={`m-0 basis-full ${muted}`}>{refusal}</p>}
       {problem && (
         <p role="alert" className={`m-0 basis-full ${errorText}`}>
           {problem}
         </p>
       )}
-      {!ownerOnly && (
+      {!refusal && (
         <RestoreDialog
           member={m}
           open={restoring}
@@ -816,6 +826,7 @@ const restoreRefusal = (e: unknown, first: string) => {
     return `${first} was a guest whose shares ended. Share something with them to bring them back.`;
   if (code === "member_active") return `${first} is already active.`;
   if (code === "owner_only") return RESTORE_ONLY;
+  if (code === "conflict") return ADDRESS_RELEASED;
   return errorCopy(e, `Couldn't restore ${first}. Try again.`);
 };
 
@@ -897,8 +908,8 @@ function DepartedRow({
   const [moving, setMoving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const run = useRunTransfer(m.id);
-  const label = displayName(m);
-  const first = firstName(m);
+  const label = personName(m);
+  const first = personFirst(m);
   const n = summary.live;
   const transferAllToMe = async () => {
     if (!toMe) return;
@@ -915,7 +926,7 @@ function DepartedRow({
         moved === 0
           ? { title: ALREADY_HANDLED, tone: "info" }
           : {
-              title: `Moved ${movedCount(moved, summary.live, summary.deleted)} from ${label} to you.`,
+              title: `Moved ${movedCount(moved, summary.live, summary.deleted)} from ${personInSentence(m)} to you.`,
               tone: "success",
             },
       );
@@ -994,7 +1005,7 @@ function DepartedRow({
             <DropdownMenuItem disabled={moving} onSelect={() => setOpen(true)}>
               Transfer to someone else…
             </DropdownMenuItem>
-            {m.status === "removed" && (
+            {m.status === "removed" && !isReleased(m) && (
               <DropdownMenuItem
                 disabled={moving}
                 onSelect={() => setRestoring(true)}
@@ -1005,6 +1016,9 @@ function DepartedRow({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      {isReleased(m) && (
+        <p className={`col-span-full m-0 ${muted}`}>{ADDRESS_RELEASED}</p>
+      )}
       {problem && (
         <p role="alert" className={`col-span-full m-0 ${errorText}`}>
           {problem}
@@ -1036,8 +1050,8 @@ function RestoreDialog({
   const restore = useRestoreMember();
   const state = useMe();
   const spaces = state.status === "authed" && hasFeature(state.me, "spaces");
-  const label = displayName(m);
-  const first = firstName(m);
+  const label = personName(m);
+  const first = personFirst(m);
   return (
     <ConfirmDialog
       open={open}

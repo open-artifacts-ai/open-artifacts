@@ -1,5 +1,4 @@
 import type { ArtifactSummary } from "@oa/shared";
-import { displayName } from "@oa/ui";
 import { Button, Input, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -12,6 +11,7 @@ import {
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { useCan, useHosted } from "../../auth/permissions";
 import { ConflictNote, isConflict } from "../../layout/ConflictNote";
+import { personName } from "../../layout/person";
 import { toast } from "../../layout/toast";
 import { ConfirmDialog } from "../../settings/ConfirmDialog";
 import { MoveDialog, useMoveTargets } from "../../spaces/MoveDialog";
@@ -160,7 +160,7 @@ export function Details({ artifact }: { artifact: ArtifactSummary }) {
         <dt>Created</dt>
         <dd>{new Date(artifact.createdAt).toLocaleString()}</dd>
         <dt>{artifact.space?.kind === "shared" ? "Created by" : "Owner"}</dt>
-        <dd>{displayName(artifact.owner)}</dd>
+        <dd>{personName(artifact.owner)}</dd>
         {spaces && artifact.space && (
           <>
             <dt>Space</dt>
@@ -169,7 +169,7 @@ export function Details({ artifact }: { artifact: ArtifactSummary }) {
                 ? artifact.space.name
                 : artifact.space.id === personalSpaceId
                   ? "Personal"
-                  : `${displayName(artifact.owner)}'s personal space`}
+                  : `${personName(artifact.owner)}'s personal space`}
             </dd>
           </>
         )}

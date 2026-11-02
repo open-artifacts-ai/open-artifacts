@@ -4,7 +4,6 @@
 // repeats R.memberTransfer until nextCursor is null; a failure part-way shows
 // inline, and Retry moves only what's left.
 import type { Member, TransferInput, TransferResult } from "@oa/shared";
-import { displayName } from "@oa/ui";
 import { Button, Label } from "@oa/ui/shadcn";
 import { useEffect, useId, useRef, useState } from "react";
 import { hasFeature } from "../api/contract";
@@ -19,6 +18,7 @@ import {
 import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
+import { personInSentence, personName } from "../layout/person";
 import { toast } from "../layout/toast";
 import { sharedSpaceName } from "../spaces/label";
 import { OptionSelect } from "./OptionSelect";
@@ -71,7 +71,7 @@ export function TransferDialog({
   member: Member;
   onClose: () => void;
 }) {
-  const name = displayName(member);
+  const name = personInSentence(member);
   const summary = useTransferSummary(member.id);
   const members = useMembers();
   const state = useMe();
@@ -120,7 +120,7 @@ export function TransferDialog({
     kind === "user"
       ? person && {
           to: { kind, userId: person.id } as const,
-          label: displayName(person),
+          label: personName(person),
         }
       : space && {
           to: { kind, spaceId: space.id } as const,
@@ -237,7 +237,7 @@ export function TransferDialog({
                 value={userId}
                 options={successors.map((m) => ({
                   value: m.id,
-                  label: displayName(m),
+                  label: personName(m),
                 }))}
                 placeholder="Choose a person"
                 disabled={busy}
@@ -246,7 +246,7 @@ export function TransferDialog({
             )}
             {person && (
               <p className={muted}>
-                You won't see titles or contents. {displayName(person)}{" "}
+                You won't see titles or contents. {personName(person)}{" "}
                 {withSpaces
                   ? "gets them in their Personal"
                   : "becomes the owner"}
