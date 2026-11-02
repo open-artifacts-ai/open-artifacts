@@ -252,7 +252,7 @@ describe("snoozeOwnerPath (#1078)", () => {
     expect(err?.message).not.toContain("@");
     expect(err?.message).not.toContain(x.origin);
     expect(x.st.held).toBe(false);
-    expect(x.log.at(-1)).toBe(`POST ${HELD_HOOK}`);
+    expect(x.log.slice(-2)).toEqual([`POST ${HELD_HOOK}`, "GET /api/v1/me"]);
   });
 
   it("a release that answers held:false but still counts fails the case, with no address or host", async () => {
