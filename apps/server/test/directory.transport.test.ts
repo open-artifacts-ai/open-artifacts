@@ -13,6 +13,7 @@ import {
   HOSTED_NEEDS_BROKER,
 } from "../src/directory/transport.js";
 import type { Env } from "../src/env.js";
+import { directoryMode } from "../src/services/spaces.js";
 import { seedUser, TEST_BROKER_KEY, uniq } from "./auth-helpers.js";
 import {
   BROKER,
@@ -117,16 +118,29 @@ describe("directoryTransport", () => {
     expect(sa.lastError).toBeNull();
   });
 
-  it("connect is 404 while directory sync is off (FEATURES)", async () => {
-    expect(
-      (
-        await get(
-          directEnv({ FEATURES: "spaces" }),
-          R.directoryConnect,
-          owner.cookie,
-        )
-      ).status,
-    ).toBe(404);
+  // P4: self-host takes the mode from the connection; hosted keeps its tier
+  // rules (FEATURES from TIER), and HOSTED=1 only tightens.
+  it("self-host: a working transport offers connect with no sync FEATURES entry; none is 404", async () => {
+    const on = directEnv({ FEATURES: "spaces" });
+    expect(directoryMode(on)).toBe("google");
+    expect((await get(on, R.directoryConnect, owner.cookie)).status).toBe(302);
+    const off = directEnv({
+      FEATURES: "spaces",
+      GOOGLE_DIRECTORY_CLIENT_SECRET: undefined,
+    });
+    expect(directoryMode(off)).toBe("off");
+    expect((await get(off, R.directoryConnect, owner.cookie)).status).toBe(404);
+  });
+
+  it("hosted is unchanged: connect is 404 while its FEATURES have no sync mode", async () => {
+    const h = hostedEnv({ FEATURES: "spaces" });
+    expect(directoryTransport(h).kind).toBe("broker");
+    expect(directoryMode(h)).toBe("off");
+    expect((await get(h, R.directoryConnect, owner.cookie)).status).toBe(404);
+    expect(directoryMode(hostedEnv())).toBe("google");
+    expect(directoryMode(hostedEnv({ FEATURES: "spaces,sync_frozen" }))).toBe(
+      "frozen",
+    );
   });
 });
 
