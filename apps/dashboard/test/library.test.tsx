@@ -249,6 +249,38 @@ describe("Library", () => {
       await waitFor(() => expect(router.state.location.search).toEqual({}));
     });
 
+    it("agents actually named like the select's sentinels stay themselves", async () => {
+      server.use(
+        http.get("*/api/v1/artifacts", () =>
+          page(
+            [
+              { ...arts[0], lastAgent: { name: "__via", version: null } },
+              {
+                ...arts[1],
+                lastAgent: { name: "__all", version: null },
+              },
+            ],
+            null,
+          ),
+        ),
+      );
+      const router = mount(`/?agentVia=g:${GRANT.grantId}`);
+      await waitFor(async () =>
+        expect(await agentBox()).toHaveTextContent(GRANT.clientName),
+      );
+      fireEvent.click(await agentBox());
+      fireEvent.click(await screen.findByRole("option", { name: "__via" }));
+      await waitFor(() =>
+        expect(router.state.location.search).toEqual({ agent: "__via" }),
+      );
+      expect(await agentBox()).toHaveTextContent("__via");
+      fireEvent.click(await agentBox());
+      fireEvent.click(await screen.findByRole("option", { name: "__all" }));
+      await waitFor(() =>
+        expect(router.state.location.search).toEqual({ agent: "__all" }),
+      );
+    });
+
     it("an agent param under the connection never narrows; Clear filters removes both", async () => {
       const router = mount(`/?agent=Alpha&agentVia=g:${GRANT.grantId}`);
       await waitFor(async () =>
