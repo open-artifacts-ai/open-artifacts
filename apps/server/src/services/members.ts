@@ -15,6 +15,7 @@ import {
   and,
   asc,
   eq,
+  getTableColumns,
   inArray,
   isNotNull,
   isNull,
@@ -64,6 +65,10 @@ import {
 } from "./restriction.js";
 import { insertUser, toMember } from "./users.js";
 
+/** A guest with a live artifact in their personal space (notices' guestOwners). */
+const GUEST_OWNS_SQL = `(users.role = 'guest' and exists (select 1 from artifacts a
+  where a.space_id = users.id and a.owner_id = users.id and a.deleted_at is null))`;
+
 const STATUSES: readonly MemberStatus[] = ["active", "suspended", "removed"];
 /** A stored status; anything unknown reads as suspended (fail closed). */
 export const statusOf = (v: unknown): MemberStatus =>
@@ -88,15 +93,23 @@ export async function listMembers(
     conds.push(notInArray(users.status, [...STATUSES]));
   const where = or(...conds);
   const order = [asc(users.createdAt), asc(users.id)] as const;
+  // In the list's own query: a row needs no request of its own.
+  const owns = sql<number>`${sql.raw(GUEST_OWNS_SQL)}`;
+  const flag = (r: { owns: number }) =>
+    r.owns ? { personalArtifacts: true } : {};
   if (!hosted) {
     const rows = await getDb(env)
-      .select()
+      .select({ ...getTableColumns(users), owns })
       .from(users)
       .where(where)
       .orderBy(...order);
     return rows.map((r) => {
       const status = statusOf(r.status);
-      return status === "active" ? toMember(r) : { ...toMember(r), status };
+      return {
+        ...toMember(r),
+        ...(status === "active" ? {} : { status }),
+        ...flag(r),
+      };
     });
   }
   const rows = await getDb(env)
@@ -111,6 +124,7 @@ export async function listMembers(
       rm: users.restrictedManual,
       groups: sql<string | null>`${sql.raw(RESTRICTED_GROUPS_SQL)}`,
       idents: sql<string | null>`${sql.raw(IDENTITIES_SQL)}`,
+      owns,
     })
     .from(users)
     .where(where)
@@ -120,6 +134,7 @@ export async function listMembers(
     status: statusOf(r.status),
     identities: identitiesOf(r),
     restriction: restrictionOf(r),
+    ...flag(r),
   }));
 }
 

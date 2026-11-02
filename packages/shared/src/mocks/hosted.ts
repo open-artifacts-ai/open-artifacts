@@ -1376,7 +1376,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         // managers search R.spaceCandidates instead.
         if (!isAdmin()) return notFound();
         return HttpResponse.json(
-          members.filter((m) => r.data.status.includes(m.status ?? "active")),
+          members
+            .filter((m) => r.data.status.includes(m.status ?? "active"))
+            .map((m) =>
+              m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0
+                ? { ...m, personalArtifacts: true }
+                : m,
+            ),
         );
       }),
     ),

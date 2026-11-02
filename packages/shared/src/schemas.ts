@@ -429,6 +429,8 @@ export const MemberSchema = z.object({
   identities: z.array(IdentityProviderSchema).optional(),
   /** Hosted M1: the member's restriction (manual flag and/or restricted groups); null when unrestricted. */
   restriction: RestrictionSchema.nullable().optional(),
+  /** GET R.members: a guest with live artifacts in their personal space, for Transfer. Absent otherwise. */
+  personalArtifacts: z.boolean().optional(),
 });
 export type Member = z.infer<typeof MemberSchema>;
 

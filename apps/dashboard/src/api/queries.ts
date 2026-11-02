@@ -935,7 +935,7 @@ export const useRunTransfer = (memberId: string) =>
   useInvalidating(
     (input: TransferInput) =>
       api.send("POST", R.memberTransfer(memberId), input, TransferResultSchema),
-    () => [qk.memberTransfer(memberId)],
+    () => [qk.memberTransfer(memberId), qk.members],
     "Couldn't transfer the artifacts.",
     // The transfer dialog reports every failure inline, with Retry.
     () => true,

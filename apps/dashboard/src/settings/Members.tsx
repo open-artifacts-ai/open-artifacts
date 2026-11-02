@@ -307,6 +307,7 @@ function Row({
   const setRestricted = useSetRestricted();
   const resetGoogle = useResetIdentity();
   const [resetting, setResetting] = useState(false);
+  const [moving, setMoving] = useState(false);
   const canResetGoogle = hosted && mayResetGoogle(m, you, owner);
   const label = displayName(m);
   // Another admin's (or the owner's) row, seen by anyone but the owner: read-only.
@@ -382,7 +383,7 @@ function Row({
       </span>
       {locked ? (
         <span />
-      ) : hosted ? (
+      ) : hosted || m.personalArtifacts ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -408,6 +409,11 @@ function Row({
             align="end"
             className="text-[length:var(--oa-text-sm)]"
           >
+            {m.personalArtifacts && (
+              <DropdownMenuItem onSelect={() => setMoving(true)}>
+                Transfer their artifacts
+              </DropdownMenuItem>
+            )}
             {canRestrict && (
               <DropdownMenuItem
                 onSelect={() =>
@@ -458,6 +464,7 @@ function Row({
           {denied}
         </p>
       )}
+      {moving && <TransferDialog member={m} onClose={() => setMoving(false)} />}
       <ConfirmDialog
         open={resetting}
         onClose={() => setResetting(false)}
