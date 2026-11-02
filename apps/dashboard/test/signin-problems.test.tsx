@@ -34,9 +34,7 @@ const withProblems = (problems?: string[]) =>
 it("the owner sees each problem verbatim on Instance settings", async () => {
   withProblems([EMAIL, GOOGLE]);
   mount("/settings/instance");
-  expect(
-    await screen.findByText("Some sign-in methods are off."),
-  ).toBeVisible();
+  expect(await screen.findByText("Sign-in needs attention.")).toBeVisible();
   const items = [EMAIL, GOOGLE].map((t) => screen.getByText(t));
   for (const li of items) expect(li.tagName).toBe("LI");
 });
@@ -45,12 +43,21 @@ it("no note when the list is empty or absent", async () => {
   withProblems([]);
   mount("/settings/instance");
   expect(await screen.findByLabelText("Instance name")).toBeVisible();
-  expect(screen.queryByText("Some sign-in methods are off.")).toBeNull();
+  expect(screen.queryByText("Sign-in needs attention.")).toBeNull();
 });
 
 it("no note for an older server that sends no list", async () => {
   withProblems(undefined);
   mount("/settings/instance");
   expect(await screen.findByLabelText("Instance name")).toBeVisible();
-  expect(screen.queryByText("Some sign-in methods are off.")).toBeNull();
+  expect(screen.queryByText("Sign-in needs attention.")).toBeNull();
+});
+
+it("codes without Turnstile (parity A4) show under the same heading", async () => {
+  const TURNSTILE =
+    "Sign-in codes are on without a bot check. Add a Turnstile key so bots can't use your email quota.";
+  withProblems([TURNSTILE]);
+  mount("/settings/instance");
+  expect(await screen.findByText("Sign-in needs attention.")).toBeVisible();
+  expect(screen.getByText(TURNSTILE).tagName).toBe("LI");
 });
