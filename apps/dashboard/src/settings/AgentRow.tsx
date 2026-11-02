@@ -12,7 +12,7 @@ import {
   DropdownMenuTrigger,
   Input,
 } from "@oa/ui/shadcn";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { useLabelOAuthClient } from "../api/queries";
 import { initials } from "../layout/UserAvatar";
 import { AppLink } from "../library/AppLink";
@@ -20,6 +20,9 @@ import { relativeTime } from "../library/time";
 import { errorText, muted } from "./ui";
 
 export const LABEL_MAX = 60;
+
+const ROW =
+  "flex min-w-0 items-start gap-[var(--oa-space-3)] border-0 border-t border-border py-[var(--oa-space-3)] first:border-t-0";
 
 const BROWSER: Record<string, string> = {
   chrome: "Chrome",
@@ -63,6 +66,21 @@ const Reported = () => (
   </span>
 );
 
+/** The agent's self-reported name and version, muted. */
+const AgentName = ({ reported }: { reported: string }) => (
+  <span className={`min-w-0 truncate ${muted}`} title={reported}>
+    {reported}
+  </span>
+);
+
+/** A line that ends in the tag: the row's title, and the edit state's agent. */
+const ReportedLine = ({ children }: { children: ReactNode }) => (
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-[var(--oa-space-2)] gap-y-[2px]">
+    {children}
+    <Reported />
+  </div>
+);
+
 export function AgentRow({
   c,
   canLabel,
@@ -98,18 +116,24 @@ export function AgentRow({
     );
   };
 
-  return (
-    <li className="flex min-w-0 items-start gap-[var(--oa-space-3)] border-0 border-t border-border py-[var(--oa-space-3)] first:border-t-0">
-      <Face c={c} />
-      <div className="grid min-w-0 flex-1 gap-[2px] text-[length:var(--oa-text-sm)]">
-        {editing ? (
-          <div className="grid gap-[var(--oa-space-1)]">
-            <label
-              htmlFor={`${c.grantId}-label`}
-              className="text-[length:var(--oa-text-sm)] font-medium"
-            >
-              Your label
-            </label>
+  // The field, its hint and the agent's line, so two installs of one agent stay
+  // apart while you type (Design's call for #1097, over ecAopo8RUyk2Xomu section
+  // 3). The row's other details and its menu come back when editing ends.
+  if (editing)
+    return (
+      <li className={ROW}>
+        <Face c={c} />
+        <div className="grid min-w-0 flex-1 gap-[var(--oa-space-1)] text-[length:var(--oa-text-sm)]">
+          <label
+            htmlFor={`${c.grantId}-label`}
+            className="text-[length:var(--oa-text-sm)] font-medium"
+          >
+            Your label
+          </label>
+          <div
+            data-testid="label-edit"
+            className="flex flex-wrap items-center gap-[var(--oa-space-2)]"
+          >
             <Input
               id={`${c.grantId}-label`}
               autoFocus
@@ -129,65 +153,62 @@ export function AgentRow({
                   setEditing(false);
                 }
               }}
-              className="h-8 text-[length:var(--oa-text-sm)]"
+              className="h-8 min-w-[160px] flex-1 text-[length:var(--oa-text-sm)] max-[600px]:basis-full"
             />
-            <small id={`${c.grantId}-label-help`} className={muted}>
-              Only you see it. Up to 60 characters.
-            </small>
-            {error && (
-              <p role="alert" className={`m-0 ${errorText}`}>
-                {error}
-              </p>
-            )}
             {/* Enter and Esc stay as shortcuts. */}
-            <div className="flex gap-[var(--oa-space-2)]">
-              <Button
-                size="sm"
-                disabled={label.isPending}
-                aria-busy={label.isPending || undefined}
-                onClick={save}
-              >
-                Save
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={label.isPending}
-                onClick={() => setEditing(false)}
-              >
-                Cancel
-              </Button>
-            </div>
-            {/* What the label is for stays in view while you type. */}
-            <div className="flex min-w-0 flex-wrap items-baseline gap-x-[var(--oa-space-2)] gap-y-[2px]">
-              <span className={`min-w-0 truncate ${muted}`} title={reported}>
-                {reported}
-              </span>
-              <Reported />
-            </div>
+            <Button
+              size="sm"
+              disabled={label.isPending}
+              aria-busy={label.isPending || undefined}
+              onClick={save}
+            >
+              Save
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={label.isPending}
+              onClick={() => setEditing(false)}
+            >
+              Cancel
+            </Button>
           </div>
-        ) : (
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-[var(--oa-space-2)] gap-y-[2px]">
-            {c.label ? (
-              <>
-                <b
-                  className="min-w-0 truncate font-semibold max-[600px]:line-clamp-2 max-[600px]:whitespace-normal"
-                  title={c.label}
-                >
-                  {c.label}
-                </b>
-                <span className={`min-w-0 truncate ${muted}`} title={reported}>
-                  {reported}
-                </span>
-              </>
-            ) : (
-              <b className="min-w-0 truncate font-semibold" title={reported}>
-                {reported}
+          <small id={`${c.grantId}-label-help`} className={muted}>
+            Only you see it. Up to 60 characters.
+          </small>
+          {error && (
+            <p role="alert" className={`m-0 ${errorText}`}>
+              {error}
+            </p>
+          )}
+          <ReportedLine>
+            <AgentName reported={reported} />
+          </ReportedLine>
+        </div>
+      </li>
+    );
+
+  return (
+    <li className={ROW}>
+      <Face c={c} />
+      <div className="grid min-w-0 flex-1 gap-[2px] text-[length:var(--oa-text-sm)]">
+        <ReportedLine>
+          {c.label ? (
+            <>
+              <b
+                className="min-w-0 truncate font-semibold max-[600px]:line-clamp-2 max-[600px]:whitespace-normal"
+                title={c.label}
+              >
+                {c.label}
               </b>
-            )}
-            <Reported />
-          </div>
-        )}
+              <AgentName reported={reported} />
+            </>
+          ) : (
+            <b className="min-w-0 truncate font-semibold" title={reported}>
+              {reported}
+            </b>
+          )}
+        </ReportedLine>
         {old ? (
           <span className={`${muted} italic`}>
             Connected {day.format(new Date(c.createdAt))}, before these details
@@ -225,11 +246,11 @@ export function AgentRow({
         </span>
       </div>
       <div className="flex flex-none items-center gap-[var(--oa-space-1)]">
-        {canLabel && !c.label && !editing && (
+        {canLabel && !c.label && (
           <Button
             variant="link"
             size="sm"
-            className="h-auto px-0 text-[length:var(--oa-text-sm)]"
+            className="h-auto px-0 text-[length:var(--oa-text-sm)] underline underline-offset-3"
             onClick={edit}
           >
             Add label
@@ -264,8 +285,11 @@ export function AgentRow({
             )}
             {versions > 0 && (
               <DropdownMenuItem asChild>
-                <AppLink href={`/?agent=${encodeURIComponent(c.clientName)}`}>
-                  View versions from {c.clientName}
+                {/* This connection only (#589), not every agent with its name. */}
+                <AppLink
+                  href={`/?agentVia=${encodeURIComponent(`g:${c.grantId}`)}`}
+                >
+                  View published versions
                 </AppLink>
               </DropdownMenuItem>
             )}

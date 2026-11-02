@@ -1,5 +1,77 @@
 # Changelog
 
+## [0.99.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.98.0...v0.99.0) (2026-11-02)
+
+
+### Features
+
+* **admin:** Create works for the staging test admin as a locked test install ([#1108](https://github.com/open-artifacts-ai/open-artifacts/issues/1108)) ([#1138](https://github.com/open-artifacts-ai/open-artifacts/issues/1138)) ([8f2b3ae](https://github.com/open-artifacts-ai/open-artifacts/commit/8f2b3ae6297d5ddee20695d102457b24afec5a9a))
+* **provisioning:** create takes auth.domainCodes, for domain sign-in codes ([#1088](https://github.com/open-artifacts-ai/open-artifacts/issues/1088)) ([#1120](https://github.com/open-artifacts-ai/open-artifacts/issues/1120)) ([a1ce230](https://github.com/open-artifacts-ai/open-artifacts/commit/a1ce2300179e70ed4f61022e187071387f2dd8b2))
+* **server:** guests view-only everywhere (parity 2) ([#831](https://github.com/open-artifacts-ai/open-artifacts/issues/831)) ([f4432b1](https://github.com/open-artifacts-ai/open-artifacts/commit/f4432b1f06b3998a85731ee184e1f365c9323b9e))
+
+
+### Bug Fixes
+
+* **admin:** the Audit page shows what's really logged ([#1117](https://github.com/open-artifacts-ai/open-artifacts/issues/1117)) ([#1139](https://github.com/open-artifacts-ai/open-artifacts/issues/1139)) ([e3d2be9](https://github.com/open-artifacts-ai/open-artifacts/commit/e3d2be98a0b1b14ec21a011160c73cd3b152909c))
+
+## [0.98.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.97.0...v0.98.0) (2026-11-02)
+
+
+### Features
+
+* **instance:** "Sign-in needs attention." for sign-in problems (parity 3) ([#836](https://github.com/open-artifacts-ai/open-artifacts/issues/836)) ([f7b82bc](https://github.com/open-artifacts-ai/open-artifacts/commit/f7b82bcac0c87cc255c3559ae2932610af2c3102))
+* **scheduler:** every install follows the platform's release, canary first, with a soak and a durable halt ([#955](https://github.com/open-artifacts-ai/open-artifacts/issues/955)) ([#1110](https://github.com/open-artifacts-ai/open-artifacts/issues/1110)) ([5533fa4](https://github.com/open-artifacts-ai/open-artifacts/commit/5533fa4efadd7955a79a3194784e16fbb5a38710))
+* **server:** Turnstile warning, sync on connect, recovery cron (parity 3) ([#835](https://github.com/open-artifacts-ai/open-artifacts/issues/835)) ([00e3a04](https://github.com/open-artifacts-ai/open-artifacts/commit/00e3a04b7d644d89488678f0daad217a7be33256))
+
+
+### Bug Fixes
+
+* **server:** self-hosts log the app's lines but not every request ([#843](https://github.com/open-artifacts-ai/open-artifacts/issues/843)) ([19b0932](https://github.com/open-artifacts-ai/open-artifacts/commit/19b0932b6b790f8215b19d811ffa4fd1d397df26))
+* sweep fixes from the [#1052](https://github.com/open-artifacts-ai/open-artifacts/issues/1052) audit, and [#853](https://github.com/open-artifacts-ai/open-artifacts/issues/853)'s review follow-ups ([#1097](https://github.com/open-artifacts-ai/open-artifacts/issues/1097)) ([#1128](https://github.com/open-artifacts-ai/open-artifacts/issues/1128)) ([453d993](https://github.com/open-artifacts-ai/open-artifacts/commit/453d993adc851a4abc0b160b4422b7c55bdd07bd))
+
+## [0.97.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.96.0...v0.97.0) (2026-11-02)
+
+
+### Features
+
+* filter the library by the connection that published ([#589](https://github.com/open-artifacts-ai/open-artifacts/issues/589)) ([#853](https://github.com/open-artifacts-ai/open-artifacts/issues/853)) ([3518861](https://github.com/open-artifacts-ai/open-artifacts/commit/3518861ab4ac0df313c137a0e559904a854bc756))
+
+## [0.96.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.95.0...v0.96.0) (2026-11-02)
+
+
+### Features
+
+* **dashboard:** "Set up with an agent" card on Agents and the first-run screen ([#871](https://github.com/open-artifacts-ai/open-artifacts/issues/871)) ([4b70a3a](https://github.com/open-artifacts-ai/open-artifacts/commit/4b70a3ae6eb5c8f2fe0350079fcb7b91528a06da))
+* **server:** per-instance /llms.txt setup guide for any AI agent ([4768eb2](https://github.com/open-artifacts-ai/open-artifacts/commit/4768eb243bac8541eed50feeebeaf1e9ab7e2186))
+
+
+### Bug Fixes
+
+* an agent's token label is the owner's private note; others see "&lt;owner&gt;'s agent" ([#851](https://github.com/open-artifacts-ai/open-artifacts/issues/851)) ([8900591](https://github.com/open-artifacts-ai/open-artifacts/commit/8900591a8bdb1588e14d907e9afee96e842b0e65))
+
+## [0.95.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.94.0...v0.95.0) (2026-11-02)
+
+
+### Features
+
+* **admin:** hide what the session can't do, from the shared authz table ([#1074](https://github.com/open-artifacts-ai/open-artifacts/issues/1074)) ([#1091](https://github.com/open-artifacts-ai/open-artifacts/issues/1091)) ([c6b7477](https://github.com/open-artifacts-ai/open-artifacts/commit/c6b7477f36a143872f8a8a8ece52c1ad684dab61))
+
+## [0.94.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.93.0...v0.94.0) (2026-11-02)
+
+
+### Features
+
+* **dashboard:** snooze a held directory sweep ([#412](https://github.com/open-artifacts-ai/open-artifacts/issues/412)) ([#855](https://github.com/open-artifacts-ai/open-artifacts/issues/855)) ([0527344](https://github.com/open-artifacts-ai/open-artifacts/commit/05273445cb5d2cadd14da62038db585169399136))
+* **provisioning:** staging test admin for agents, a CI-minted sealed 1 h session ([#1053](https://github.com/open-artifacts-ai/open-artifacts/issues/1053)) ([#1073](https://github.com/open-artifacts-ai/open-artifacts/issues/1073)) ([11bc806](https://github.com/open-artifacts-ai/open-artifacts/commit/11bc806e724da9beeb1965696beef35c6cbf69d7))
+
+## [0.93.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.92.0...v0.93.0) (2026-11-02)
+
+
+### Features
+
+* **admin:** search says it matches slug, id, host or email; the mock matches as R2 does ([#1033](https://github.com/open-artifacts-ai/open-artifacts/issues/1033)) ([#1068](https://github.com/open-artifacts-ai/open-artifacts/issues/1068)) ([74f3558](https://github.com/open-artifacts-ai/open-artifacts/commit/74f35583a260404f9d4d830606cd6f652f05970f))
+* **server:** POST /__oa/oauth-store/copy for the OAuth KV -&gt; D1 copy job ([#1008](https://github.com/open-artifacts-ai/open-artifacts/issues/1008)) ([#1013](https://github.com/open-artifacts-ai/open-artifacts/issues/1013)) ([4d932e4](https://github.com/open-artifacts-ai/open-artifacts/commit/4d932e4d322786c2d3f99385946eb7415ca07c3f))
+
 ## [0.92.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.91.2...v0.92.0) (2026-11-02)
 
 

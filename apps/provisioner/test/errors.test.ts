@@ -12,6 +12,7 @@ import {
   detailOf,
   ERROR_MESSAGE_MAX,
   JOB_ERROR_TEXT,
+  redactDetail,
   redactEmail,
   StepRefusal,
   stepError,
@@ -69,6 +70,76 @@ describe("redactEmail", () => {
   });
 });
 
+describe("redactDetail (#1088)", () => {
+  // What requestValues gathers for a create with domain codes on: vars' keys
+  // and values, the slug, the owner.
+  const VALUES = [
+    "acme",
+    "AUTH_PROVIDERS",
+    "email",
+    "AUTH_DOMAINS",
+    "acme.test",
+    "EMAIL_CODE_DOMAIN",
+    "on",
+    "TIER",
+    "business",
+    EMAIL,
+  ];
+
+  it("a domain-codes refusal stays readable", () => {
+    for (const t of [
+      "EMAIL_CODE_DOMAIN=on needs email in AUTH_PROVIDERS",
+      "EMAIL_CODE_DOMAIN=on needs google out of AUTH_PROVIDERS",
+      "EMAIL_CODE_DOMAIN=on needs AUTH_DOMAINS",
+      "EMAIL_CODE_DOMAIN is not allowed here",
+    ])
+      expect(redactDetail(t, VALUES)).toBe(t);
+  });
+
+  it("a value under the minimum length never eats into words", () => {
+    expect(
+      redactDetail("codes are on, conditions noted", ["on", "x", "12"]),
+    ).toBe("codes are on, conditions noted");
+  });
+
+  it("a value at the minimum length is still redacted", () => {
+    expect(redactDetail("slug ibm refused", ["ibm"])).toBe(
+      "slug [value] refused",
+    );
+  });
+
+  it("tokens, secrets and other request values stay redacted", () => {
+    const token = "oa_pat_0123456789abcdefghij";
+    const secret = "0x4AAAAAAAts-secret";
+    expect(
+      redactDetail(`bad ${token} and ${encodeURIComponent(secret)} on acme`, [
+        token,
+        secret,
+        "acme",
+      ]),
+    ).toBe("bad [value] and [value] on [value]");
+    // A value only looks like a plain word when it is exactly that word.
+    expect(redactDetail("got email-secret-1", ["email-secret-1"])).toBe(
+      "got [value]",
+    );
+  });
+
+  it("emails, URLs and IPs go whatever the values list says", () => {
+    expect(
+      redactDetail("o@ab.io https://x.test/a?k=1 10.0.0.1 user%40ab.io", [
+        "on",
+      ]),
+    ).toBe("[email] [url] [ip] [email]");
+    // Listed, and short: the email pattern still applies.
+    expect(redactDetail("a@b from on", ["a@b", "on"])).toBe("[value] from on");
+  });
+
+  it("a request value equal to a plain word in another case is redacted", () => {
+    expect(redactDetail("slug Google-X", ["Google-X"])).toBe("slug [value]");
+    expect(redactDetail("slug GOOGLE", ["GOOGLE"])).toBe("slug [value]");
+  });
+});
+
 describe("stepError", () => {
   it("a terminal refusal: NonRetryableError '<code>: <fixed text>', never its own message", () => {
     const e = stepError(
@@ -107,6 +178,21 @@ describe("refused (recheck)", () => {
     expect(e.message).not.toContain("LEAK_KEY");
     expect(detailOf(e)).toBe("var LEAK_KEY is not allowed");
     expect(codeOf(e)).toBe("invalid_state");
+  });
+});
+
+describe("the code-sign-in refusals (#1088)", () => {
+  it("are terminal, and say what is missing in fixed text", () => {
+    for (const [code, re] of [
+      ["domain_codes_refused", /email.*Google.*domain/],
+      ["turnstile_missing", /Turnstile/],
+    ] as const) {
+      const e = stepError(new ProvisionRefused(`leak ${EMAIL}`, code));
+      expect(e).toBeInstanceOf(NonRetryableError);
+      expect(e.message).toBe(`${code}: ${JOB_ERROR_TEXT[code]}`);
+      expect(e.message).toMatch(re);
+      expect(e.message).not.toContain("leak");
+    }
   });
 });
 

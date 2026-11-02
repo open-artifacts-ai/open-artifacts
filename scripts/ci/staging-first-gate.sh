@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Staging first, automatic (design v7 10.2): prod's platform-db, provisioner
-# and provisioning targets of deploy-hosted-platform.yml deploy a tag only
+# Staging first, automatic (design v7 10.2): prod's platform-db, provisioner,
+# provisioning and scheduler (the fleet target, #955) targets of
+# deploy-hosted-platform.yml deploy a tag only
 # after staging ran it. Read-only (`gh api`, GH_TOKEN with actions: read).
 # Fails closed: an API error, an unparsable answer, no such run or a version
 # mismatch is exit 1. GATE_NOW (epoch seconds) pins the clock in tests.

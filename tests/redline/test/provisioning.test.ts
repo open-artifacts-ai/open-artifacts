@@ -22,6 +22,7 @@ import {
 } from "../src/oidc.ts";
 import {
   ADMIN_FLOW_COOKIE,
+  BROKER_IP_PERIOD_MS,
   BROKER_IP_WAIT_MS,
   bringUpgrade,
   cleanupInstalls,
@@ -295,9 +296,19 @@ describe("P50: the snooze owner path on an install the run creates (#1078)", () 
     expect(f.tenants.size).toBe(0);
   });
 
-  it("an owner the server sends no code (domain codes off until #1088): unproven-live NO_OWNER; the install is still removed", async () => {
+  it("an owner the server sends no code is a broken create: P50 fails; the install is still removed", async () => {
     const { out, snz } = await p50("p50_ineligible");
-    expect(out).toEqual({ level: "unproven-live", reason: NO_OWNER });
+    expect(out).toBeInstanceOf(ProbeFail);
+    expect((out as Error).message).toBe(`P50: ${NO_OWNER}`);
+    expect(snz?.state).toBe("deleted");
+  });
+
+  it("a create with domain codes off fails P50 before any hook; the install is still removed", async () => {
+    const { out, snz } = await p50("p50_no_codes");
+    expect(out).toBeInstanceOf(ProbeFail);
+    expect((out as Error).message).toBe(
+      "P50: the create did not turn domain codes on",
+    );
     expect(snz?.state).toBe("deleted");
   });
 
@@ -502,7 +513,7 @@ describe("each probe fails on the behaviour it guards", () => {
     });
   });
 
-  describe("P34 allows the broker's per-IP 429 and waits out its window", () => {
+  describe("P34 allows the broker's per-IP 429 and waits on the hop itself", () => {
     const p34 = async (ipLimit: number, fault?: Fault) => {
       const f = fakeApi();
       f.broker.ipLimit = ipLimit;
@@ -526,9 +537,67 @@ describe("each probe fails on the behaviour it guards", () => {
       expect(out).toEqual({ level: "pass" });
       expect(waited).toBeGreaterThan(0);
       expect(waited).toBeLessThanOrEqual(BROKER_IP_WAIT_MS);
-      // The last broker request is the hop, after the wait.
+      // The 400, then the hop every POLL_MS until it reaches Google.
       const hops = f.log.filter((l) => l.startsWith(`GET ${CONFIG.broker}`));
-      expect(hops).toHaveLength(400 + 1 + 1 + waited / 3000);
+      expect(hops).toHaveLength(400 + 1 + waited / 3000);
+    });
+
+    // Run 41444760207: the unsigned 404 passed, then the hop was 429.
+    const withHop = async (o: {
+      limited?: number;
+      status?: number;
+      location?: string;
+    }) => {
+      const f = fakeApi();
+      f.broker.hopLimited = o.limited ?? 0;
+      f.broker.hopStatus = o.status ?? 302;
+      f.broker.hopLocation = o.location;
+      const t0 = f.clock.t;
+      const out = await PROBES.find((p) => p.id === "P34")
+        ?.run(new Run(CONFIG, f.io))
+        .catch((e: unknown) => e);
+      return { out, waited: f.clock.t - t0, f };
+    };
+
+    it("a 429 on the hop waits, though unsigned requests answer 404", async () => {
+      const { out, waited } = await withHop({ limited: 3 });
+      expect(out).toEqual({ level: "pass" });
+      expect(waited).toBe(3 * 3000);
+    });
+
+    it("one /auth/start: more would spend RL_PV_SIGNIN_IP", async () => {
+      const { f } = await withHop({ limited: 3 });
+      expect(
+        f.log.filter((l) => l === `GET ${CONFIG.admin}/auth/start`),
+      ).toHaveLength(1);
+    });
+
+    it("a hop still 429 at the deadline fails: a limiter that doesn't reopen is a real bug", async () => {
+      const { out, waited } = await withHop({
+        limited: Number.POSITIVE_INFINITY,
+      });
+      expect(msg(out)).toContain(
+        `P34: the broker hop was still 429 after ${BROKER_IP_WAIT_MS / 1000} s; RL_BROKER_IP's window is ${BROKER_IP_PERIOD_MS / 1000} s, so a limiter did not reopen (status 429,`,
+      );
+      expect(waited).toBeLessThanOrEqual(BROKER_IP_WAIT_MS);
+    });
+
+    it("a redirect anywhere but Google fails at once", async () => {
+      const { out, waited } = await withHop({
+        location: "https://evil.test/auth",
+      });
+      expect(msg(out)).toContain(
+        "P34: the broker did not send /auth/start on to Google",
+      );
+      expect(waited).toBe(0);
+    });
+
+    it("any other hop answer fails at once", async () => {
+      const { out, waited } = await withHop({ status: 404 });
+      expect(msg(out)).toContain(
+        "P34: the broker did not send /auth/start on to Google (status 404",
+      );
+      expect(waited).toBe(0);
     });
 
     it("fails on any redirect", async () => {
@@ -560,9 +629,160 @@ describe("each probe fails on the behaviour it guards", () => {
       const out = await PROBES.find((p) => p.id === "P34")
         ?.run(run)
         .catch((e: unknown) => e);
-      expect(msg(out)).toBe(
-        `P34: unsigned authorize still 429 after ${BROKER_IP_WAIT_MS / 1000} s; the broker IP window (RL_BROKER_IP, 60 s) did not reopen`,
+      expect(msg(out)).toContain(
+        `P34: the broker hop was still 429 after ${BROKER_IP_WAIT_MS / 1000} s;`,
       );
+    });
+  });
+
+  describe("the inventory's mode settles: HOSTS is eventually consistent", () => {
+    /** The inventory answers `stale` for reads of a mode, `times` times. */
+    const staleFor = (
+      f: ReturnType<typeof fakeApi>,
+      fresh: string | null,
+      stale: string,
+      times: number,
+    ) => {
+      const real = f.io.fetch;
+      let left = times;
+      f.io.fetch = (async (u: string, i?: RequestInit) => {
+        const r = await real(u, i);
+        if (!String(u).includes("/hosts?host=")) return r;
+        const j = (await r.clone().json()) as { mode?: string | null };
+        if ((j.mode ?? null) !== fresh || left <= 0) return r;
+        left--;
+        return Response.json({ ...j, mode: stale });
+      }) as typeof fetch;
+    };
+
+    for (const [id, fresh, stale] of [
+      ["P20", "paused", "serving"],
+      ["P22", "closed", "serving"],
+      ["P22", "serving", "closed"],
+    ] as const)
+      it(`${id}: a stale ${stale} read that clears to ${fresh} passes`, async () => {
+        const f = fakeApi();
+        staleFor(f, fresh, stale, 2);
+        expect(level((await runAll(f)).get(id))).toBe("pass");
+      });
+
+    it("P23: a host still mapped for a moment passes", async () => {
+      const f = fakeApi();
+      staleFor(f, null, "closed", 2);
+      expect(level((await runAll(f)).get("P23"))).toBe("pass");
+    });
+
+    for (const [id, fresh, stale, msg] of [
+      ["P20", "paused", "serving", "serving, want paused"],
+      ["P22", "closed", "serving", "serving, want closed"],
+      ["P22", "serving", "closed", "closed, want serving"],
+      ["P23", null, "closed", "closed, want null"],
+    ] as const)
+      it(`${id}: a mode that never reaches ${fresh} fails, naming the last one`, async () => {
+        const f = fakeApi();
+        staleFor(f, fresh, stale, Number.POSITIVE_INFINITY);
+        expect(level((await runAll(f)).get(id))).toBe(
+          `fail: ${id}: inventory mode is ${msg}, after 120 s`,
+        );
+      });
+  });
+
+  describe("bring-up survives a dropped connection and a busy install", () => {
+    const POLL = 3_000;
+    /** A Run whose fetch `answer` handles first; undefined falls through. */
+    const runWith = (
+      answer: (url: string) => Response | undefined,
+      f = fakeApi(),
+    ) => {
+      const seen: string[] = [];
+      const run = new Run(CONFIG, {
+        ...f.io,
+        fetch: (async (u: string, i?: RequestInit) => {
+          seen.push(`${i?.method ?? "GET"} ${u}`);
+          return answer(String(u)) ?? f.io.fetch(u, i);
+        }) as typeof fetch,
+      });
+      return { run, f, seen };
+    };
+    const job = (status: string) =>
+      Response.json({ id: "j1", status, step: "x" });
+    const dropped = () => {
+      throw new TypeError("fetch failed");
+    };
+
+    it("waitJob retries a dropped connection, then carries on", async () => {
+      let n = 0;
+      const { run, f } = runWith((u) =>
+        u.includes("/jobs/j1")
+          ? ++n <= 2
+            ? dropped()
+            : job("done")
+          : undefined,
+      );
+      const t0 = f.clock.t;
+      expect((await run.waitJob("j1")).status).toBe("done");
+      expect(f.clock.t - t0).toBe(2 * POLL);
+    });
+
+    it("waitJob gives up at its bound, naming the job and no detail", async () => {
+      const { run, f } = runWith((u) =>
+        u.includes("/jobs/j1") ? dropped() : undefined,
+      );
+      const t0 = f.clock.t;
+      await expect(run.waitJob("j1", { within: 30_000 })).rejects.toThrow(
+        "R15 j1: no answer for 30 s",
+      );
+      expect(f.clock.t - t0).toBeLessThanOrEqual(30_000);
+    });
+
+    it("waitJob still fails at once on a real API error", async () => {
+      const { run, f } = runWith((u) =>
+        u.includes("/jobs/j1")
+          ? Response.json({ error: { code: "x" } }, { status: 500 })
+          : undefined,
+      );
+      const t0 = f.clock.t;
+      await expect(run.waitJob("j1")).rejects.toThrow("R15 j1: status 500");
+      expect(f.clock.t - t0).toBe(0);
+    });
+
+    const busy = () =>
+      Response.json(
+        { error: { code: "job_in_progress", message: "x" } },
+        { status: 409 },
+      );
+    const revoke = (run: Run) =>
+      revokeCreds(run, CONFIG.rlA.id, "rl-a", CONFIG.rlA.app);
+
+    it("revoke waits out a job already running on the install", async () => {
+      let n = 0;
+      const { run, f, seen } = runWith((u) =>
+        u.includes("/redline-creds") && ++n <= 2 ? busy() : undefined,
+      );
+      const t0 = f.clock.t;
+      await revoke(run);
+      expect(f.clock.t - t0).toBeGreaterThanOrEqual(2 * POLL);
+      expect(seen.filter((l) => l.includes("/redline-creds"))).toHaveLength(3);
+    });
+
+    it("revoke gives up at the job bound", async () => {
+      const { run } = runWith((u) =>
+        u.includes("/redline-creds") ? busy() : undefined,
+      );
+      await expect(revoke(run)).rejects.toThrow(
+        /R26 revoke rl-a: .*job_in_progress/,
+      );
+    });
+
+    it("revoke fails at once on any other refusal", async () => {
+      const { run, f } = runWith((u) =>
+        u.includes("/redline-creds")
+          ? Response.json({ error: { code: "forbidden" } }, { status: 403 })
+          : undefined,
+      );
+      const t0 = f.clock.t;
+      await expect(revoke(run)).rejects.toThrow(/forbidden/);
+      expect(f.clock.t - t0).toBe(0);
     });
   });
 

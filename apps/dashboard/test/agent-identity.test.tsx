@@ -4,7 +4,13 @@
 // "Add label" and a ••• menu (Rename label, View published versions, Revoke…).
 import { type Me, type OAuthClient, R } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { calls, installHarness, mount, mountHosted } from "./harness";
@@ -14,6 +20,7 @@ installHarness();
 const BASE = fixtures.oauthClients[0] as OAuthClient;
 const serve = (clients: OAuthClient[]) =>
   http.get("*/api/v1/oauth-clients", () => HttpResponse.json(clients));
+const SUBTITLE = "Agents you approved can publish as you.";
 const rowOf = async (text: string) => {
   const card = await screen.findByRole("region", { name: "Connected agents" });
   const el = (await within(card).findByText(text)).closest("li");
@@ -27,6 +34,32 @@ const openMenu = (r: HTMLElement) => {
   });
   return screen.findByRole("menu");
 };
+
+describe("the card", () => {
+  it("says what connecting means, under the title", async () => {
+    mount("/settings/agents");
+    const r = await rowOf("Example MCP client 1.2.0");
+    const card = r.closest("section") as HTMLElement;
+    const line = within(card).getByText(SUBTITLE);
+    expect(line).toBeVisible();
+    // Settings' muted text: 12px.
+    expect(line).toHaveClass("text-[length:var(--oa-text-xs)]");
+    // Beside the heading, above the list.
+    expect(line.previousElementSibling).toContainElement(
+      within(card).getByRole("heading", { name: "Connected agents" }),
+    );
+    expect(line.compareDocumentPosition(r)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("underlines Add label", async () => {
+    mount("/settings/agents");
+    const r = await rowOf("Example MCP client 1.2.0");
+    const add = within(r).getByRole("button", { name: "Add label" });
+    expect(add).toHaveClass("underline", "underline-offset-3");
+  });
+});
 
 describe("a row", () => {
   it("names the agent with its reported version, where it runs, approval, use", async () => {
@@ -103,14 +136,11 @@ describe("labels", () => {
     fireEvent.click(within(r).getByRole("button", { name: "Add label" }));
     const box = within(r).getByRole("textbox", { name: "Your label" });
     expect(r).toHaveTextContent("Only you see it. Up to 60 characters.");
-    // A visible field label, Save and Cancel, and the agent's line stays.
     expect(
       within(r).getByText("Your label", { selector: "label" }),
     ).toBeVisible();
     expect(within(r).getByRole("button", { name: "Save" })).toBeVisible();
     expect(within(r).getByRole("button", { name: "Cancel" })).toBeVisible();
-    expect(within(r).getByText("Example MCP client 1.2.0")).toBeVisible();
-    expect(within(r).getByText("reported by the agent")).toBeVisible();
     fireEvent.change(box, { target: { value: "  Work laptop  " } });
     fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() =>
@@ -186,6 +216,90 @@ describe("the face", () => {
 });
 
 describe("labels, with the buttons", () => {
+  it("edit state: Save and Cancel beside the field, the hint below, then the agent's line", async () => {
+    const { server } = await import("./harness");
+    server.use(serve([{ ...BASE, versionsPublished: 3 }]));
+    mount("/settings/agents");
+    const r = await rowOf("Example MCP client 1.2.0");
+    const details = r.textContent;
+    fireEvent.click(within(r).getByRole("button", { name: "Add label" }));
+
+    const box = within(r).getByRole("textbox", { name: "Your label" });
+    const line = within(r).getByTestId("label-edit");
+    expect(line).toContainElement(box);
+    // On a phone the field takes the line, so Save and Cancel stay together.
+    expect(box).toHaveClass("max-[600px]:basis-full");
+    expect(line).toContainElement(
+      within(r).getByRole("button", { name: "Save" }),
+    );
+    expect(line).toContainElement(
+      within(r).getByRole("button", { name: "Cancel" }),
+    );
+    const hint = within(r).getByText("Only you see it. Up to 60 characters.");
+    expect(line).not.toContainElement(hint);
+    expect(line.compareDocumentPosition(hint)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(box).toHaveAccessibleDescription(
+      "Only you see it. Up to 60 characters.",
+    );
+
+    // The agent's line stays under the hint, tagged.
+    const agent = within(r).getByText("Example MCP client 1.2.0");
+    const tag = within(r).getByText("reported by the agent");
+    expect(agent).toBeVisible();
+    expect(tag).toBeVisible();
+    expect(agent.parentElement).toContainElement(tag);
+    expect(hint.compareDocumentPosition(agent)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+
+    // Exactly that: the other details and the ••• menu are gone.
+    expect(r).toHaveTextContent(
+      /^EMYour labelSaveCancelOnly you see it\. Up to 60 characters\.Example MCP client 1\.2\.0reported by the agent$/,
+    );
+    expect(within(r).queryByRole("button", { name: /^More for / })).toBeNull();
+
+    // Cancel brings the row back as it was.
+    fireEvent.click(within(r).getByRole("button", { name: "Cancel" }));
+    expect(r.textContent).toBe(details);
+    expect(within(r).getByRole("button", { name: /^More for / })).toBeVisible();
+  });
+
+  it("an error shows under the hint while the details stay hidden", async () => {
+    mount("/settings/agents");
+    const r = await rowOf("Example MCP client 1.2.0");
+    fireEvent.click(within(r).getByRole("button", { name: "Add label" }));
+    const box = within(r).getByRole("textbox", { name: "Your label" });
+    fireEvent.change(box, { target: { value: "x".repeat(61) } });
+    fireEvent.click(within(r).getByRole("button", { name: "Save" }));
+    expect(within(r).getByRole("alert")).toHaveTextContent(
+      "Use 60 characters or fewer.",
+    );
+    expect(within(r).getByText("reported by the agent")).toBeVisible();
+    expect(r).not.toHaveTextContent(/Last used|Never used/);
+    expect(within(r).queryByRole("button", { name: /^More for / })).toBeNull();
+  });
+
+  it("Rename label from the menu leaves the focus in the field", async () => {
+    const { server } = await import("./harness");
+    server.use(serve([{ ...BASE, label: "Work laptop" }]));
+    mount("/settings/agents");
+    const r = await rowOf("Work laptop");
+    const menu = await openMenu(r);
+    fireEvent.click(
+      within(menu).getByRole("menuitem", { name: "Rename label" }),
+    );
+    const box = within(r).getByRole("textbox", { name: "Your label" });
+    expect(box).toHaveValue("Work laptop");
+    expect(within(r).getByText("Example MCP client 1.2.0")).toBeVisible();
+    // Radix returns the focus on a later tick, and frees the page.
+    await act(() => new Promise((done) => setTimeout(done, 20)));
+    expect(box).toHaveFocus();
+    expect(document.body.style.pointerEvents).not.toBe("none");
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   it("Save saves and Cancel cancels", async () => {
     const patches = calls("PATCH");
     mount("/settings/agents");
@@ -212,13 +326,13 @@ describe("the menu and the empty state", () => {
   it("View published versions and Revoke… (the existing confirm)", async () => {
     mount("/settings/agents");
     const menu = await openMenu(await rowOf("Example MCP client 1.2.0"));
-    // The server filters by agent name only (#589): the item says so.
+    // #589: this connection only (agentVia), not every "Example MCP client".
     const view = within(menu).getByRole("menuitem", {
-      name: "View versions from Example MCP client",
+      name: "View published versions",
     });
     expect(view).toHaveAttribute(
       "href",
-      `/?agent=${encodeURIComponent("Example MCP client")}`,
+      `/?agentVia=${encodeURIComponent(`g:${BASE.grantId}`)}`,
     );
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Revoke…" }));
     expect(
@@ -238,6 +352,7 @@ describe("the menu and the empty state", () => {
     expect(
       await within(card).findByText("No agents connected yet."),
     ).toBeVisible();
+    expect(within(card).getByText(SUBTITLE)).toBeVisible();
     expect(card).toHaveTextContent(
       "Connect any AI agent with the MCP server above. It shows here once you approve it.",
     );

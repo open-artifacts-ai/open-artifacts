@@ -109,7 +109,7 @@ describe("wrangler.staging.jsonc env.staging", () => {
     );
     expect(tpl.vars.SERVER_THUMBNAILS).toBe("on");
   });
-  it("logs every staging request to Workers Logs; the template logs too", () => {
+  it("logs every staging request to Workers Logs; the template logs only the app's lines", () => {
     expect(env.observability).toEqual({
       enabled: true,
       head_sampling_rate: 1,
@@ -117,8 +117,12 @@ describe("wrangler.staging.jsonc env.staging", () => {
     const tpl = JSON.parse(
       readFileSync(join(root, "apps/server/wrangler.template.jsonc"), "utf8"),
     );
-    expect(tpl.observability.enabled).toBe(true);
-    expect(tpl.observability.head_sampling_rate ?? 1).toBe(1);
+    // Self-hosts keep the app's own lines but no per-request invocation logs
+    // (which would record every URL), as hosted installs do.
+    expect(tpl.observability).toEqual({
+      enabled: true,
+      logs: { enabled: true, invocation_logs: false },
+    });
   });
   it("runs staging with PLAN=paid (the account is on Workers Paid)", () => {
     expect(env.vars.PLAN).toBe("paid");
@@ -149,10 +153,18 @@ describe("wrangler.staging.jsonc env.staging", () => {
       ENVIRONMENT: "production",
       APP_HOST: "staging.open-artifacts.com",
       CONTENT_HOST: "staging-content.open-artifacts.com",
-      OWNER_EMAIL: expect.stringMatching(/^[^@\s]+@[^@\s]+$/),
       ACCESS_TEAM_DOMAIN: expect.stringMatching(/\.cloudflareaccess\.com$/),
       CF_ACCOUNT_ID: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
+    // #1084: OWNER_EMAIL is the owner's address, never committed: the
+    // deploy passes it with --var from the OA_OWNER_EMAIL secret.
+    expect(vars).not.toHaveProperty("OWNER_EMAIL");
+    const wf = readFileSync(
+      join(root, ".github/workflows/deploy-staging.yml"),
+      "utf8",
+    );
+    expect(wf).toContain('--var "OWNER_EMAIL:$OA_OWNER_EMAIL"');
+    expect(wf).toContain("OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}");
     // Only ACCESS_CLIENT_ID (a public id) may look credential-like.
     expect(
       Object.keys(vars).filter((k) =>

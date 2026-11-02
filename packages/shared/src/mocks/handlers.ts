@@ -44,6 +44,7 @@ import {
 } from "../limits.js";
 import { viewerPath } from "../routes.js";
 import {
+  AgentViaSchema,
   ArtifactPatchSchema,
   type ArtifactSummary,
   type DataDoc,
@@ -456,10 +457,19 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     c.set("scope", scope);
     return c;
   };
+  /**
+   * The server's agentViaSql. Every seeded via is the caller's, so anyone
+   * else's or an unknown one matches nothing. A revoked grant loses its usage
+   * row and stops matching; a revoked token keeps its row and still matches.
+   */
+  const fromConnection = (a: ArtifactSummary, via: string) =>
+    f.agentVias[a.id]?.includes(via) === true &&
+    (via.startsWith("t:") || clients.some((c) => `g:${c.grantId}` === via));
   const matches = (a: ArtifactSummary, q: URLSearchParams) => {
     const needle = (q.get("q") ?? "").toLowerCase();
     const scope = q.get("scope") ?? "all";
     const owner = q.get("owner");
+    const via = q.get("agentVia");
     return (
       (q.get("includeDeleted") === "true" || a.deletedAt === null) &&
       (scope === "all" ||
@@ -473,6 +483,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           ? a.owner.id === me.user.id
           : a.owner.id === owner || a.owner.email === owner)) &&
       (!q.get("agent") || a.lastAgent?.name === q.get("agent")) &&
+      (!via || fromConnection(a, via)) &&
       (!needle ||
         a.title.toLowerCase().includes(needle) ||
         (a.description ?? "").toLowerCase().includes(needle))
@@ -937,6 +948,9 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       const q = new URL(request.url).searchParams;
       const needle = (q.get("q") ?? "").trim();
       if (!needle) return badRequest("q is required");
+      const via = q.get("agentVia");
+      if (via !== null && !AgentViaSchema.safeParse(via).success)
+        return badRequest("Invalid agentVia");
       // spaceId narrows the hits as the list's scope "space" does.
       const spaceId = q.get("spaceId") ?? undefined;
       const inSpace = spaceId ? h?.listScope("space", spaceId) : null;
@@ -947,7 +961,10 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
             a.deletedAt === null &&
             !h?.hidden(a.id) &&
             (!inSpace || inSpace(a.space)) &&
-            matches(a, new URLSearchParams({ q: needle })),
+            matches(
+              a,
+              new URLSearchParams({ q: needle, ...(via && { agentVia: via }) }),
+            ),
         )
         .map((a) => ({
           ...redactArt(a, request),

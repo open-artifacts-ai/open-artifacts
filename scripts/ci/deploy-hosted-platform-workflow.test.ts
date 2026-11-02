@@ -34,13 +34,15 @@ describe("deploy-hosted-platform.yml", () => {
     // The order the input check enforces.
     const check = named("Check the inputs").run as string;
     expect(/order="([^"]+)"/.exec(check)?.[1]?.split(" ").join(",")).toBe(FULL);
-    // The scheduler refuses without alert_to, so both envs commit one.
+    // The scheduler refuses without ALERT_TO. It is the owner's address, so
+    // it is never committed (#1084): it comes from the OA_OWNER_EMAIL secret.
     for (const e of ["staging", "prod"])
       expect(
         JSON.parse(readFileSync(join(root, `.github/hosted/${e}.json`), "utf8"))
           .alert_to,
         e,
-      ).toBeDefined();
+      ).toBeUndefined();
+    expect(text).toContain("OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}");
   });
   it("names each run after its env and tag", () => {
     expect(w["run-name"]).toBe(
@@ -59,6 +61,7 @@ describe("deploy-hosted-platform.yml", () => {
       TARGETS: "${{ inputs.targets }}",
       REASON: "${{ inputs.reason }}",
       VERIFY_ONLY: "${{ inputs.verify_only }}",
+      OA_OWNER_EMAIL: "${{ secrets.OA_OWNER_EMAIL }}",
     });
     const go = (TARGETS: string, REASON: string, VERIFY_ONLY = "false") =>
       spawnSync("bash", ["-c", c.run], {
@@ -68,6 +71,7 @@ describe("deploy-hosted-platform.yml", () => {
           TARGETS,
           REASON,
           VERIFY_ONLY,
+          OA_OWNER_EMAIL: "me@test.invalid",
         },
         encoding: "utf8",
       });
@@ -294,6 +298,8 @@ describe("deploy-hosted-platform.yml", () => {
       JSON.stringify(s).includes("secrets."),
     );
     expect(withSecrets.map((s) => s.name)).toEqual([
+      "Check the inputs",
+      "Load the hosted constants",
       "Resolve the resource ids",
       "Deploy and verify",
       "Zones",
@@ -303,6 +309,15 @@ describe("deploy-hosted-platform.yml", () => {
     // One Cloudflare token for everything; the old names are gone.
     for (const old of ["DEPLOY_TOKEN", "ZONE_TOKEN", "PROVISION_TOKEN"])
       expect(text).not.toContain(old);
+    // #1084: the alert address, the owner's, is a secret, never committed.
+    // The input check sees that one secret, and no token.
+    expect(
+      JSON.stringify(named("Check the inputs").env).match(/secrets\.\w+/g),
+    ).toEqual(["secrets.OA_OWNER_EMAIL"]);
+    expect(named("Load the hosted constants").env).toEqual({
+      DEPLOY_ENV: "${{ inputs.env }}",
+      OA_OWNER_EMAIL: "${{ secrets.OA_OWNER_EMAIL }}",
+    });
     expect(named("Zones").env).toEqual({
       DEPLOY_ENV: "${{ inputs.env }}",
       VERIFY_ONLY: "${{ inputs.verify_only && '1' || '' }}",
@@ -394,7 +409,13 @@ describe("deploy-hosted-platform.yml", () => {
     const check = named("Check the inputs").run as string;
     const go = (TAG: string, TARGETS: string) =>
       spawnSync("bash", ["-c", check], {
-        env: { PATH: process.env.PATH, TAG, TARGETS, REASON: "test" },
+        env: {
+          PATH: process.env.PATH,
+          TAG,
+          TARGETS,
+          REASON: "test",
+          OA_OWNER_EMAIL: "me@test.invalid",
+        },
         encoding: "utf8",
       }).status;
     expect(
@@ -517,6 +538,9 @@ describe("deploy-hosted-platform.yml", () => {
     expect(runsFor("prod", "platform-db")).toBe(true);
     expect(runsFor("prod", "platform-db,auth-broker")).toBe(true);
     expect(runsFor("staging", "platform-db")).toBe(false);
+    // The scheduler's tag is the fleet target (#955): break-glass included.
+    expect(runsFor("prod", "scheduler")).toBe(true);
+    expect(runsFor("staging", "scheduler")).toBe(false);
     expect(runsFor("prod", "provision-token,dispatch")).toBe(false);
     expect(runsFor("staging", "provisioner,provisioning")).toBe(false);
     const i = (n: string) => steps.indexOf(named(n));

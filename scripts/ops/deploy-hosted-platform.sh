@@ -228,6 +228,13 @@ expect() {
   got="$(jq -r "$2" <<< "$1")"
   [ "$got" = "$3" ] || { echo "$4: got '$got', want '$3'" >&2; exit 1; }
 }
+# expect_private: expect, for the owner's address (#1084). A verify_only run can
+# hold the old one, which isn't masked: it names the field, never a value.
+expect_private() {
+  local got
+  got="$(jq -r "$2" <<< "$1")"
+  [ "$got" = "$3" ] || { echo "$4: not the expected value" >&2; exit 1; }
+}
 
 # broker_pin: provision's BROKER_GOOGLE_CLIENT_ID[$env] from $BROKER_PIN_FILE
 # (main's wfp.ts), or "null". Exit 1 when the pin can't be read.
@@ -558,12 +565,12 @@ case "$target" in
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_QUOTA_ZONES") | .text' "$EMAIL_ZONE_TAGS" "EMAIL_QUOTA_ZONES"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_DAILY_LIMIT") | .text' "$EMAIL_DAILY_LIMIT" "EMAIL_DAILY_LIMIT"
     signups_deployed "$S" oa-$P-scheduler
-    expect "$S" '[.result.bindings[] | select(.name == "ALERT_TO") | .text] | join(",")' "$ALERT_TO" "ALERT_TO"
+    expect_private "$S" '[.result.bindings[] | select(.name == "ALERT_TO") | .text] | join(",")' "$ALERT_TO" "ALERT_TO"
     expect "$S" '[.result.bindings[] | select(.name == "ALERT_FROM") | .text] | join(",")' "$ALERT_FROM" "ALERT_FROM"
     expect "$S" '[.result.bindings[] | select(.name == "SIGNUP_DAILY_CAP") | .text] | join(",")' "$SIGNUP_DAILY_CAP" "SIGNUP_DAILY_CAP"
     expect "$S" '[.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text] | join(",")' "$SIGNUPS_ENABLED" "SIGNUPS_ENABLED"
     # The alert mail goes to ALERT_TO and nowhere else: never empty (4.8).
-    expect "$S" '[.result.bindings[] | select(.name == "ALERT_EMAIL") | .destination_address // ""] | join(",")' \
+    expect_private "$S" '[.result.bindings[] | select(.name == "ALERT_EMAIL") | .destination_address // ""] | join(",")' \
       "$ALERT_TO" "ALERT_EMAIL destination"
     crons="$(cf_get /workers/scripts/oa-$P-scheduler/schedules | must "read oa-$P-scheduler schedules" | jq -r '[.result.schedules[].cron] | sort | join(",")')"
     [ "$crons" = "*/2 * * * *,17 3 * * *" ] || { echo "oa-$P-scheduler schedules are '$crons'" >&2; exit 1; }

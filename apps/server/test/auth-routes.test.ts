@@ -8,7 +8,7 @@ import {
 } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
-import { authConfig } from "../src/auth/config.js";
+import { authConfig, NO_BOT_CHECK } from "../src/auth/config.js";
 import { createPat } from "../src/auth/pat.js";
 import { readSession, sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
@@ -452,12 +452,26 @@ describe("Me sign-in fields", () => {
     );
   };
 
-  it("access-only installs omit them (shape unchanged)", async () => {
+  it("access-only installs send features and auth, and omit the sign-in fields", async () => {
     const { cookie } = await login(uniq("plain"));
     const m = await me(env, cookie);
-    expect(m.auth).toBeUndefined();
+    expect(m.instance.features).toContain("guests_read_only");
+    expect(m.auth).toEqual({
+      method: expect.any(String),
+      readOnly: false,
+      cap: null,
+      expiresAt: expect.any(String),
+    });
     expect(m.instance.hosted).toBeUndefined();
+    expect(m.instance.tier).toBeUndefined();
     expect(m.instance.signIn).toBeUndefined();
+  });
+
+  it("an access-only guest is told they are read-only (parity 2)", async () => {
+    const { cookie } = await login(uniq("guest", "x.com"), "guest");
+    const m = await me(env, cookie);
+    expect(m.instance.features).toContain("guests_read_only");
+    expect(m.auth).toMatchObject({ readOnly: true, cap: "guest" });
   });
 
   it("direct: auth for a session and a PAT, signIn, features, hosted", async () => {
@@ -505,8 +519,37 @@ describe("Me sign-in fields", () => {
       "problems",
     );
     expect(
-      (await me(direct(), owner.cookie)).instance.signIn?.problems,
+      (
+        await me(
+          direct({ TURNSTILE_SITE_KEY: "k", TURNSTILE_SECRET: "s" }),
+          owner.cookie,
+        )
+      ).instance.signIn?.problems,
     ).toEqual([]);
+  });
+
+  // A4: codes with no Turnstile keys stay on (self-host) and warn the owner.
+  it("signIn.problems: codes without Turnstile warn the owner only; codes still offered; hosted unchanged", async () => {
+    const owner = await login(uniq("own"), "owner");
+    const admin = await login(uniq("adm"), "admin");
+    const member = await login(uniq("mem"));
+    const o = await me(direct(), owner.cookie);
+    expect(o.instance.signIn?.problems).toEqual([NO_BOT_CHECK]);
+    expect(o.instance.signIn?.providers).toEqual(["google", "email"]);
+    expect(MeSchema.safeParse(o).success).toBe(true);
+    for (const u of [admin, member])
+      expect((await me(direct(), u.cookie)).instance.signIn).not.toHaveProperty(
+        "problems",
+      );
+    const hosted = direct({
+      HOSTED: "1",
+      AUTH_BROKER_URL: "https://auth.h.test",
+      BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+      GOOGLE_CLIENT_SECRET: undefined,
+    });
+    expect(
+      (await me(hosted, owner.cookie)).instance.signIn?.problems,
+    ).not.toContain(NO_BOT_CHECK);
   });
 
   it("tier: the hosted install's TIER; null off hosted, or for an unknown value; absent access-only", async () => {

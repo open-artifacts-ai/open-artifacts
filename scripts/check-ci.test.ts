@@ -48,11 +48,17 @@ const cmp = (a: string, b: string) => {
     if (x[i] !== y[i]) return (x[i] as number) - (y[i] as number);
   return 0;
 };
+// Tags this checkout contains: worktrees share .git, so a plain list would
+// hold a branch behind a release that was tagged after it forked.
 const latestTag = (): string | undefined => {
-  const tags = execFileSync("git", ["tag", "--list", "v*"], {
-    cwd: root,
-    encoding: "utf8",
-  })
+  const tags = execFileSync(
+    "git",
+    ["tag", "--merged", "HEAD", "--list", "v*"],
+    {
+      cwd: root,
+      encoding: "utf8",
+    },
+  )
     .split("\n")
     .filter((t) => /^v\d+\.\d+\.\d+$/.test(t))
     .map((t) => t.slice(1))
@@ -956,8 +962,9 @@ describe("prod and staging tokens never cross", () => {
       );
     });
     it("scopes tokens to the setup step and uses --ci", () => {
+      // The owner-address guard's step holds that secret and no token.
       const withTok = steps.filter((s) =>
-        JSON.stringify(s.env ?? {}).includes("secrets."),
+        /secrets\.\w*(TOKEN|ACCOUNT_ID)/.test(JSON.stringify(s.env ?? {})),
       );
       expect(withTok).toHaveLength(2);
       expect(withTok[0]?.env).toHaveProperty("OA_ACCESS_TOKEN");
@@ -967,6 +974,7 @@ describe("prod and staging tokens never cross", () => {
       expect([...refs(f)].sort()).toEqual([
         "ANALYTICS_TOKEN",
         "CLOUDFLARE_ACCOUNT_ID",
+        "OA_OWNER_EMAIL",
         "PROD_CLOUDFLARE_API_TOKEN",
       ]);
     });
@@ -1033,7 +1041,7 @@ describe("prod and staging tokens never cross", () => {
       expect(steps[pre]?.if ?? "").not.toContain("always()");
       expect(steps[up]?.if ?? "").not.toContain("always()");
       const withTok = steps.filter((s) =>
-        JSON.stringify(s.env ?? {}).includes("secrets."),
+        /secrets\.\w*(TOKEN|ACCOUNT_ID)/.test(JSON.stringify(s.env ?? {})),
       );
       // setup's three steps carry both tokens; the migration guard's record,
       // verify and restore steps carry the Cloudflare token only.
@@ -1396,7 +1404,7 @@ describe("demo instance workflows", () => {
   const CF = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"];
   // Per file: staging-scoped Cloudflare credentials plus that file's own demo secret; never PROD.
   const ALLOWED: Record<string, string[]> = {
-    "ops-demo-install.yml": [...CF, "DEMO_OA_ACCESS_TOKEN"],
+    "ops-demo-install.yml": [...CF, "DEMO_OA_ACCESS_TOKEN", "OA_OWNER_EMAIL"],
     "ops-demo-ops-deploy.yml": [...CF, "DEMO_OA_TOKEN"],
     "demo-reset.yml": ["DEMO_OA_TOKEN"],
     "demo-publish.yml": ["DEMO_OA_TOKEN"],
@@ -1501,8 +1509,10 @@ describe("demo instance workflows", () => {
         DEMO_NAME: "open-artifacts-demo",
         DEMO_APP_HOST: "demo.open-artifacts.com",
         DEMO_CONTENT_HOST: "demo-content.open-artifacts.com",
-        DEMO_OWNER_EMAIL: "me@leourbina.com",
       });
+      // #1084: the owner's address is a secret, on the step that needs it.
+      expect(w.env).not.toHaveProperty("DEMO_OWNER_EMAIL");
+      expect(step.env.DEMO_OWNER_EMAIL).toBe("${{ secrets.OA_OWNER_EMAIL }}");
     });
     it("never calls oa:setup directly", () => {
       expect(JSON.stringify(w)).not.toContain("pnpm -s oa:setup");

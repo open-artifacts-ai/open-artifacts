@@ -249,11 +249,15 @@ describe("scheduled() and the provapi duties", () => {
       signups: "ok",
       purge: "ok",
       health: "ok",
+      fleet: "ok",
       alerts: "timeout",
       prune: "ok",
     });
     expect(lines).toContain("provapi alerts failed timeout");
     for (const l of lines) expect(l).toMatch(LINE);
     expect(Object.keys(DUTY_TIMEOUT_MS)).toEqual(Object.keys(out));
+    // #1083 re-review N9: the budgets fit inside the 2-minute tick with room.
+    const total = Object.values(DUTY_TIMEOUT_MS).reduce((a, b) => a + b, 0);
+    expect(total).toBeLessThan(120_000);
   });
 });

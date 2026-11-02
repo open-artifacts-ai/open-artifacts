@@ -57,6 +57,9 @@ export const PRINCIPAL_KINDS = [
   "user",
   "oidc",
   "system",
+  // Staging's agent admin (#1053): its own kind, so every admin check fails
+  // closed for it.
+  "test-admin",
 ] as const;
 export type PrincipalKind = (typeof PRINCIPAL_KINDS)[number];
 /** "oat": an `oat_` bearer minted in the panel; "oauth": an MCP consent grant. */
@@ -166,5 +169,7 @@ export const ALERT_KEYS = [
   "oauth_register_flood",
   "token_expiring",
   "token_invalid",
+  "fleet_halted",
+  "version_skew",
 ] as const;
 export type AlertKey = (typeof ALERT_KEYS)[number];

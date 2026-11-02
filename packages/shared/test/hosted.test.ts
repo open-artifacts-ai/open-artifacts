@@ -3,7 +3,15 @@
 // request cases run against the real server in
 // apps/server/test/hosted.contract.test.ts.
 import { setupServer } from "msw/node";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   ApiErrorSchema,
   ArtifactSummarySchema,
@@ -17,6 +25,9 @@ import {
   directoryModeOf,
   ENV_FEATURE_FLAGS,
   ERROR_CODES,
+  GUEST_SHARES_NOTICE_LIMIT,
+  HELD_SNOOZE_MS,
+  HELD_SNOOZE_REASON_MAX,
   HealthzSchema,
   INVITE_UNREACHABLE_MESSAGE,
   InviteUnreachableDetailsSchema,
@@ -96,6 +107,143 @@ const msw: ContractDriver = {
 };
 
 hostedContract(msw);
+
+// #1077 item 3: the held-snooze handlers as the server answers
+// (apps/server/src/routes/directory.ts, directory/sync.ts, health.ts heldAt).
+describe("mock held snooze matches the server (#1077)", () => {
+  const SALES = "gSales03";
+  const CON = "gCon04";
+  type Held = {
+    groupId: string;
+    snoozedUntil: string | null;
+    snoozeReason: string | null;
+  };
+  const fresh = (o: Record<string, unknown> = {}) => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: { ...o } }));
+  };
+  const snooze = (g: string, body?: unknown) =>
+    call("POST", R.directoryHeldSnooze(g), body);
+  const heldOf = async (r: Response) =>
+    ((await r.json()) as { held: Held[] }).held;
+  const code = async (r: Response) =>
+    ((await r.json()) as { error: { code: string; message: string } }).error;
+  afterEach(() => vi.useRealTimers());
+
+  it("refusals: unreadable or missing hold 409 conflict; admin 404", async () => {
+    fresh({ heldUnreadable: true });
+    const s = await snooze(CON);
+    expect(s.status).toBe(409);
+    expect(await code(s)).toEqual({
+      code: "conflict",
+      message:
+        "This group has no held sweep to snooze, or it is being re-checked; try again after the next sync",
+    });
+    expect((await snooze("gNone")).status).toBe(409);
+    const c = await call("POST", R.directoryHeldConfirm(CON));
+    expect(c.status).toBe(409);
+    expect(await code(c)).toEqual({
+      code: "conflict",
+      message:
+        "This group has no held sweep to confirm; it can't be read from Google",
+    });
+    expect((await call("POST", R.directoryHeldConfirm("gNone"))).status).toBe(
+      409,
+    );
+    // Body errors come before the hold check, as on the server.
+    const bad = await snooze("gNone", { reason: 1 });
+    expect(bad.status).toBe(400);
+    expect((await code(bad)).message).toBe("Invalid request body");
+    fresh({ actAs: "admin" });
+    expect((await snooze(SALES)).status).toBe(404);
+    expect((await call("DELETE", R.directoryHeldSnooze(SALES))).status).toBe(
+      404,
+    );
+    expect((await call("POST", R.directoryHeldConfirm(SALES))).status).toBe(
+      404,
+    );
+  });
+
+  it("reason: cleaned, then capped by code points with an ellipsis", async () => {
+    fresh();
+    // Astral chars are 2 UTF-16 units each: a .slice cap would cut at 100.
+    const astral = "\u{1F600}".repeat(HELD_SNOOZE_REASON_MAX);
+    let [h] = await heldOf(await snooze(SALES, { reason: astral }));
+    expect(h?.snoozeReason).toBe(astral);
+    [h] = await heldOf(await snooze(SALES, { reason: `${astral}x` }));
+    expect(Array.from(h?.snoozeReason ?? "")).toHaveLength(
+      HELD_SNOOZE_REASON_MAX,
+    );
+    expect(h?.snoozeReason).toBe(
+      `${"\u{1F600}".repeat(HELD_SNOOZE_REASON_MAX - 1)}…`,
+    );
+    // Unsafe chars become spaces, runs collapse, then trim.
+    [h] = await heldOf(
+      await snooze(SALES, { reason: "  a\n\u200Bb\u202E  c\t " }),
+    );
+    expect(h?.snoozeReason).toBe("a b c");
+    [h] = await heldOf(await snooze(SALES, { reason: " \u0000\u2028 " }));
+    expect(h?.snoozeReason).toBeNull();
+  });
+
+  it.each(["off", "frozen"] as const)(
+    "directory %s: snooze and confirm 409 directory_sync_off; DELETE works",
+    async (directory) => {
+      fresh({ directory });
+      for (const r of [
+        await snooze(SALES),
+        await call("POST", R.directoryHeldConfirm(SALES)),
+      ]) {
+        expect(r.status).toBe(409);
+        expect(await code(r)).toEqual({
+          code: "directory_sync_off",
+          message: "Directory sync is off or frozen",
+        });
+      }
+      expect((await call("DELETE", R.directoryHeldSnooze(SALES))).status).toBe(
+        200,
+      );
+    },
+  );
+
+  it("an expired snooze reads as none (GET, /me heldSweeps, snooze replies)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.parse("2026-11-02T00:00:00.000Z");
+    vi.setSystemTime(t0);
+    fresh();
+    const [h] = await heldOf(await snooze(SALES, { reason: "later" }));
+    expect(h?.snoozedUntil).toBe(new Date(t0 + HELD_SNOOZE_MS).toISOString());
+    const dir = async () => heldOf(await call("GET", R.directory));
+    const dot = async () =>
+      (
+        (await (await call("GET", R.me)).json()) as {
+          instance: { directory: { heldSweeps: number } };
+        }
+      ).instance.directory.heldSweeps;
+    vi.setSystemTime(t0 + HELD_SNOOZE_MS - 1);
+    expect((await dir())[0]?.snoozeReason).toBe("later");
+    expect(await dot()).toBe(0);
+    // until <= now: no longer snoozed.
+    vi.setSystemTime(t0 + HELD_SNOOZE_MS);
+    expect((await dir())[0]).toMatchObject({
+      snoozedUntil: null,
+      snoozeReason: null,
+    });
+    expect(await dot()).toBe(1);
+    expect(
+      (await heldOf(await call("POST", R.directorySync)))[0],
+    ).toMatchObject({ snoozedUntil: null });
+    // A snooze of the expired one is a renewal (the row is still there).
+    await snooze(SALES);
+    const audit = (await (await call("GET", R.audit)).json()) as {
+      items: { action: string; detail: Record<string, unknown> | null }[];
+    };
+    const snoozed = audit.items.filter(
+      (e) => e.action === "directory.sweep.snoozed",
+    );
+    expect(snoozed.map((e) => e.detail?.renewed)).toEqual([true, false]);
+  });
+});
 
 describe("mock move after losing the space role (review of #792)", () => {
   it("a stale manager level can't move the artifact out", async () => {
@@ -280,6 +428,122 @@ describe("mock invite reachability (review item 11)", () => {
     expect(
       MemberInviteResultSchema.parse(await r.json()).signIn,
     ).toBeUndefined();
+  });
+});
+
+describe("mock guest share notices (parity 2)", () => {
+  const notices = async () =>
+    MeSchema.parse(await (await call("GET", R.me)).json()).notices;
+  const dismiss = (id: "guest_shares" | "guest_summary") =>
+    call("POST", R.noticeDismiss(id));
+
+  it("Access-only self-host: the caller's shares, capped at the limit with more, until dismissed (per user)", async () => {
+    server.use(
+      ...createHandlers({
+        hosted: {
+          selfHosted: true,
+          guestShares: GUEST_SHARES_NOTICE_LIMIT + 1,
+        },
+      }),
+    );
+    const n = (await notices())?.guestShares;
+    expect(n?.items).toHaveLength(GUEST_SHARES_NOTICE_LIMIT);
+    expect(n?.more).toBe(true);
+    expect(n?.items[0]).toMatchObject({
+      title: "Landing page",
+      guestEmail: `guest${GUEST_SHARES_NOTICE_LIMIT + 1}@outside.example`,
+      role: "editor",
+    });
+    expect((await dismiss("guest_shares")).status).toBe(204);
+    const after = await notices();
+    expect(after?.guestShares).toBeUndefined();
+    // The owner's summary is separate: counts only, no titles.
+    expect(after?.guestSummary).toEqual({
+      shares: GUEST_SHARES_NOTICE_LIMIT + 1,
+      owners: 1,
+      guestOwners: [],
+      more: false,
+    });
+    expect((await dismiss("guest_shares")).status).toBe(204);
+  });
+
+  it("guestOwners: the owner's summary lists guests who own artifacts, until dismissed; transfer takes a guest", async () => {
+    server.use(
+      ...createHandlers({ hosted: { selfHosted: true, guestOwners: 2 } }),
+    );
+    const n = await notices();
+    expect(n?.guestShares).toBeUndefined();
+    expect(n?.guestSummary).toEqual({
+      shares: 0,
+      owners: 0,
+      guestOwners: [
+        {
+          userId: "Go0001AbCdEfGhIj",
+          email: "owner1@outside.example",
+          artifacts: 1,
+        },
+        {
+          userId: "Go0002AbCdEfGhIj",
+          email: "owner2@outside.example",
+          artifacts: 1,
+        },
+      ],
+      more: false,
+    });
+    // An active guest: no suspension needed.
+    const sum = await call("GET", R.memberTransfer("Go0001AbCdEfGhIj"));
+    expect(sum.status).toBe(200);
+    expect(await sum.json()).toEqual({ live: 1, deleted: 0 });
+    const t = await call("POST", R.memberTransfer("Go0001AbCdEfGhIj"), {
+      to: { kind: "user", userId: "Bc4eFgHjKm5nPqRs" },
+    });
+    expect(t.status).toBe(200);
+    expect((await notices())?.guestSummary?.guestOwners).toHaveLength(1);
+    expect((await dismiss("guest_summary")).status).toBe(204);
+    expect(await notices()).toBeUndefined();
+  });
+
+  it("absent with no guest shares, on hosted, and on direct sign-in; admins get no summary (dismiss 404)", async () => {
+    server.use(...createHandlers({ hosted: { selfHosted: true } }));
+    expect(await notices()).toBeUndefined();
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: { guestShares: 2 } }));
+    expect(await notices()).toBeUndefined();
+    server.resetHandlers();
+    server.use(
+      ...createHandlers({
+        hosted: { selfHosted: true, guestShares: 2, mode: "direct" },
+      }),
+    );
+    expect(await notices()).toBeUndefined();
+    server.resetHandlers();
+    server.use(
+      ...createHandlers({
+        hosted: { selfHosted: true, guestShares: 2, actAs: "admin" },
+      }),
+    );
+    const n = await notices();
+    // The admin owns "Landing page" here, so they see their own shares.
+    expect(n?.guestShares?.items).toHaveLength(2);
+    expect(n?.guestSummary).toBeUndefined();
+    expect((await dismiss("guest_summary")).status).toBe(404);
+    expect((await dismiss("guest_shares")).status).toBe(204);
+    expect((await call("POST", "/api/v1/notices/nope/dismiss")).status).toBe(
+      404,
+    );
+  });
+
+  it("transfer: an active member is 409 member_active; an admin on an admin source is 403 owner_only", async () => {
+    server.use(...createHandlers({ hosted: { selfHosted: true } }));
+    const dan = await call("GET", R.memberTransfer("Dn8uPqRsTu9vWxYz"));
+    expect(dan.status).toBe(409);
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: { actAs: "admin" } }));
+    const erin = await call("GET", R.memberTransfer("Er9vQrStUv0wXyZa"));
+    expect(erin.status).toBe(403);
+    expect(ApiErrorSchema.parse(await erin.json()).error.code).toBe(
+      "owner_only",
+    );
   });
 });
 

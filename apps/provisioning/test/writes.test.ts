@@ -35,9 +35,9 @@ afterEach(() => vi.restoreAllMocks());
 const leo = (o: Record<string, unknown> = {}) => ({
   requestId: requestId(),
   slug: "leo",
-  ownerEmail: "me@leourbina.com",
+  ownerEmail: "me@test.invalid",
   tier: "business",
-  auth: { providers: ["google"], domains: ["leourbina.com"] },
+  auth: { providers: ["google"], domains: ["test.invalid"] },
   sendWelcome: false,
   ...o,
 });
@@ -101,7 +101,7 @@ describe("R4 create by an admin session", () => {
     });
     expect(JSON.parse(s?.vars as string)).toEqual({
       AUTH_PROVIDERS: "google",
-      AUTH_DOMAINS: "leourbina.com",
+      AUTH_DOMAINS: "test.invalid",
       TIER: "business",
     });
     expect(
@@ -109,7 +109,7 @@ describe("R4 create by an admin session", () => {
         "SELECT owner_email FROM signup_secret WHERE signup_id = ?",
         job.id,
       ),
-    ).toEqual({ owner_email: "me@leourbina.com" });
+    ).toEqual({ owner_email: "me@test.invalid" });
     const j = await row<Record<string, string>>(
       "SELECT * FROM jobs WHERE id = ?",
       job.id,
@@ -272,6 +272,64 @@ describe("R4 create by an admin session", () => {
     expect(
       await row("SELECT status FROM jobs WHERE id = ?", r.body.job.id),
     ).toEqual({ status: "queued" });
+  });
+});
+
+describe("R4 auth.domainCodes (#1088)", () => {
+  const codes = {
+    auth: {
+      providers: ["email"],
+      domains: ["test.invalid"],
+      domainCodes: true,
+    },
+  };
+  const vars = async (id: string) =>
+    JSON.parse(
+      (
+        await row<{ vars: string }>(
+          "SELECT vars FROM signups WHERE signup_id = ?",
+          id,
+        )
+      )?.vars as string,
+    );
+
+  it("true stores EMAIL_CODE_DOMAIN=on with the signup's vars", async () => {
+    const r = await call(fakeEnv(), ADMIN_P, "R4", { body: leo(codes) });
+    expect(r.status).toBe(202);
+    expect(await vars(r.body.job.id)).toEqual({
+      AUTH_PROVIDERS: "email",
+      AUTH_DOMAINS: "test.invalid",
+      EMAIL_CODE_DOMAIN: "on",
+      TIER: "business",
+    });
+  });
+
+  it("false or absent stores nothing", async () => {
+    const off = await call(fakeEnv(), ADMIN_P, "R4", {
+      body: leo({
+        auth: {
+          providers: ["email"],
+          domains: ["test.invalid"],
+          domainCodes: false,
+        },
+      }),
+    });
+    expect(off.status).toBe(202);
+    expect(await vars(off.body.job.id)).not.toHaveProperty("EMAIL_CODE_DOMAIN");
+  });
+
+  it("with google: invalid_input naming the field", async () => {
+    const r = await call(fakeEnv(), ADMIN_P, "R4", {
+      body: leo({
+        auth: {
+          providers: ["google"],
+          domains: ["test.invalid"],
+          domainCodes: true,
+        },
+      }),
+    });
+    expect(r.code).toBe("invalid_input");
+    expect(r.details).toEqual({ fields: ["body.auth.domainCodes"] });
   });
 });
 

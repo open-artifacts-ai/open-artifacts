@@ -42,6 +42,10 @@ import {
   type DirectoryMode,
   type FeatureFlag,
   type GroupRef,
+  GUEST_OWNERS_NOTICE_LIMIT,
+  GUEST_SHARES_NOTICE_LIMIT,
+  type GuestSharesNotice,
+  type GuestSummaryNotice,
   type MySpace,
   orderSignInMethods,
   type SignInProviderId,
@@ -54,7 +58,9 @@ import {
   type AuditEvent,
   type DirectoryGroup,
   HELD_SNOOZE_MS,
+  HELD_SNOOZE_REASON_MAX,
   HeldSnoozeInputSchema,
+  type HeldSweep,
   type SyncStatus,
 } from "../hosted/directory.js";
 import {
@@ -131,7 +137,29 @@ export type HostedMockOptions = {
    * customer_mismatch removed.
    */
   pendingCustomerChange?: NonNullable<SyncStatus["pendingCustomerChange"]>;
-  /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on when google or email is enabled). */
+  /**
+   * Also hold an unreadable group (Contractors): a held entry that removes
+   * nobody (wouldRemove 0), which can't be confirmed or snoozed.
+   */
+  heldUnreadable?: boolean;
+  /**
+   * Parity 2: seed this many guests, each holding an editor share on the
+   * caller's "Landing page" (default 0). With selfHosted on an Access-only
+   * install (`mode` defaults to "access" when this or guestOwners is set),
+   * the caller (any non-guest) sees Me.notices.guestShares for artifacts they
+   * own (at most 50 items, `more` past that) until POST
+   * R.noticeDismiss("guest_shares") (per user), and the uncapped owner sees
+   * Me.notices.guestSummary (counts only) until R.noticeDismiss("guest_summary").
+   */
+  guestShares?: number;
+  /**
+   * Parity 2: seed this many guests, each owning one live artifact in their
+   * personal space (default 0). The uncapped owner sees them in
+   * Me.notices.guestSummary.guestOwners (same conditions as guestShares), and
+   * R.memberTransfer(guest id) moves them (a guest needs no suspension).
+   */
+  guestOwners?: number;
+  /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on for every install). */
   features?: FeatureFlag[];
 };
 
@@ -194,11 +222,31 @@ const mask = (email: string) => {
 
 export type HostedMock = ReturnType<typeof createHostedMock>;
 
+/** A snooze body's cap (server routes/directory.ts SNOOZE_BODY_MAX). */
+const SNOOZE_BODY_MAX = 4096;
+
+// server email/templates.ts UNSAFE
+const UNSAFE =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+  /[\u0000-\u001F\u007F-\u009F\u2028\u2029\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]+/g;
+
+/**
+ * One plain line, at most `max` code points (server email/templates.ts
+ * oneLine): unsafe characters become a space, runs of spaces collapse, then
+ * trim, then a longer line is cut to max - 1 code points plus "…".
+ */
+function oneLine(s: string, max: number): string {
+  const t = s.replace(UNSAFE, " ").replace(/ {2,}/g, " ").trim();
+  const cps = Array.from(t);
+  return cps.length <= max ? t : `${cps.slice(0, max - 1).join("")}…`;
+}
+
 export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   const { me, members, artifacts, shares, err } = c;
   const notFound = () => err("not_found", "Not found");
   const directoryMode: DirectoryMode = o.directory ?? "google";
-  const mode = o.mode ?? "direct";
+  // Parity 2: guest notices exist only on Access-only installs.
+  const mode = o.mode ?? (o.guestShares || o.guestOwners ? "access" : "direct");
   const providerIds = o.providers ?? ["google", "email"];
 
   // ---- members: status, identities, a departed member --------------------
@@ -238,9 +286,52 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     identities: [],
   };
   members.push(carol, dan, erin);
+  // Parity 2: guests holding editor shares (the owner notice's source).
+  const landing = artifacts.find((a) => a.title === "Landing page");
+  for (let i = 1; landing && i <= (o.guestShares ?? 0); i++) {
+    const email = `guest${i}@outside.example`;
+    members.push({
+      id: `Gs${String(i).padStart(4, "0")}AbCdEfGhIj`,
+      email,
+      name: email,
+      role: "guest",
+      lastSeenAt: null,
+      status: "active",
+      identities: [],
+    });
+    const list = shares[landing.id] ?? [];
+    shares[landing.id] = list;
+    list.push({
+      email,
+      role: "editor",
+      createdAt: new Date(Date.parse(T0) + i * 60_000).toISOString(),
+    });
+  }
+  /** Users who dismissed guest_shares (R.noticeDismiss, per user). */
+  const sharesDismissed = new Set<string>();
+  /** guest_summary dismissed for the install. */
+  let summaryDismissed = false;
   if (o.actAs === "admin") me.user.role = "admin";
-  /** Departed members' personal artifacts, counts only (admins never see titles). */
+  /**
+   * Departed members' and guests' personal artifacts, counts only (admins
+   * never see titles).
+   */
   const departed = new Map([[carol.id, { live: 2, deleted: 1 }]]);
+  // Parity 2: guests who own artifacts (the owner summary's guestOwners).
+  for (let i = 1; i <= (o.guestOwners ?? 0); i++) {
+    const email = `owner${i}@outside.example`;
+    const id = `Go${String(i).padStart(4, "0")}AbCdEfGhIj`;
+    members.push({
+      id,
+      email,
+      name: email,
+      role: "guest",
+      lastSeenAt: null,
+      status: "active",
+      identities: [],
+    });
+    departed.set(id, { live: 1, deleted: 0 });
+  }
 
   // ---- spaces --------------------------------------------------------------
   const spaces: SpaceRow[] = members.map((m) => ({
@@ -418,6 +509,18 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
               snoozedUntil: null,
               snoozeReason: null,
             },
+            ...(o.heldUnreadable
+              ? [
+                  {
+                    ...G.contractors,
+                    wouldRemove: 0,
+                    members: 3,
+                    since: T0,
+                    snoozedUntil: null,
+                    snoozeReason: null,
+                  },
+                ]
+              : []),
           ]
         : [],
   };
@@ -445,6 +548,19 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
 
   // ---- derived views --------------------------------------------------------
   const isAdmin = () => me.user.role === "owner" || me.user.role === "admin";
+  /** Snoozed now (#412): until is still ahead (server health.ts snoozedAt). */
+  const snoozedNow = (h: HeldSweep) =>
+    !!h.snoozedUntil && Date.parse(h.snoozedUntil) > Date.now();
+  /**
+   * SyncStatus as readers see it (server health.ts heldAt): a snooze whose
+   * until passed shows as none, even before the server's alarm ends it.
+   */
+  const syncView = (): SyncStatus => ({
+    ...sync,
+    held: sync.held.map((h) =>
+      snoozedNow(h) ? h : { ...h, snoozedUntil: null, snoozeReason: null },
+    ),
+  });
   /**
    * R.directoryDisconnect / DELETE R.directory: the binding and health go,
    * memberships stay (frozen). Nothing connected: no change, no audit row.
@@ -481,8 +597,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     (me.user.role !== "owner" || cap() !== null);
   const findSpace = (id: unknown) => spaces.find((s) => s.id === id);
   const memberOf = (id: string) => members.find((m) => m.id === id);
-  /** guests_read_only: P2's authConfig.guestsReadOnly, true whenever google or email sign-in is on. */
-  const guestsReadOnly = () => mode === "direct" && providerIds.length > 0;
+  /** guests_read_only: authConfig.guestsReadOnly, true on every install (parity 2). */
+  const guestsReadOnly = () => true;
   const restrictionOf = (userId: string) => {
     const gs = restricted
       .filter((g) => groupMembers.get(g.groupId)?.includes(userId))
@@ -731,6 +847,60 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         };
 
   /** Refresh Me's hosted fields and every artifact's space/can. Runs before each request. */
+  /**
+   * Shares above viewer on live artifacts to an active guest, or to an
+   * address with no member yet (a guest at first Access sign-in), newest first.
+   */
+  const guestShareRows = () =>
+    artifacts
+      .filter((a) => a.deletedAt === null)
+      .flatMap((a) =>
+        (shares[a.id] ?? [])
+          .filter((s) => {
+            if (s.role !== "editor") return false;
+            const m = members.find((x) => x.email === s.email);
+            return (
+              !m || (m.role === "guest" && (m.status ?? "active") === "active")
+            );
+          })
+          .map((s) => ({ a, s })),
+      )
+      .sort((x, y) => y.s.createdAt.localeCompare(x.s.createdAt));
+  /** The caller's own artifacts only. */
+  const guestSharesNotice = (): GuestSharesNotice | null => {
+    const rows = guestShareRows().filter(({ a }) => a.owner.id === me.user.id);
+    if (rows.length === 0) return null;
+    return {
+      items: rows.slice(0, GUEST_SHARES_NOTICE_LIMIT).map(({ a, s }) => ({
+        artifactId: a.id,
+        title: a.title,
+        guestEmail: s.email,
+        role: "editor" as const,
+      })),
+      more: rows.length > GUEST_SHARES_NOTICE_LIMIT,
+    };
+  };
+  /** The owner's install-wide summary: counts only, plus guest owners. */
+  const guestSummaryNotice = (): GuestSummaryNotice | null => {
+    const rows = guestShareRows();
+    const owners = members
+      .filter((m) => m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0)
+      .map((m) => ({
+        userId: m.id,
+        email: m.email,
+        artifacts: departed.get(m.id)?.live ?? 0,
+      }))
+      .sort(
+        (x, y) => y.artifacts - x.artifacts || x.email.localeCompare(y.email),
+      );
+    if (rows.length === 0 && owners.length === 0) return null;
+    return {
+      shares: rows.length,
+      owners: new Set(rows.map(({ a }) => a.owner.id)).size,
+      guestOwners: owners.slice(0, GUEST_OWNERS_NOTICE_LIMIT),
+      more: owners.length > GUEST_OWNERS_NOTICE_LIMIT,
+    };
+  };
   const refresh = () => {
     me.instance.hosted = !o.selfHosted;
     me.instance.tier = o.tier === undefined ? "business" : o.tier;
@@ -749,9 +919,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       state: isAdmin() ? sync.state : null,
       staleAt: isAdmin() ? sync.staleAt : null,
       heldSweeps: isAdmin()
-        ? sync.held.filter(
-            (h) => !h.snoozedUntil || Date.parse(h.snoozedUntil) <= Date.now(),
-          ).length
+        ? sync.held.filter((h) => !snoozedNow(h)).length
         : 0,
     };
     for (const m of members) m.restriction = restrictionOf(m.id);
@@ -762,6 +930,25 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       cap: myCap,
       expiresAt: me.auth?.expiresAt ?? "2026-12-31T00:00:00.000Z",
     };
+    // Parity 2: guest notices, Access-only self-host installs, computed live.
+    const accessOnly = !!o.selfHosted && mode === "access";
+    const guestShares =
+      accessOnly && me.user.role !== "guest" && !sharesDismissed.has(me.user.id)
+        ? guestSharesNotice()
+        : null;
+    const guestSummary =
+      accessOnly &&
+      me.user.role === "owner" &&
+      myCap === null &&
+      !summaryDismissed
+        ? guestSummaryNotice()
+        : null;
+    if (guestShares || guestSummary)
+      me.notices = {
+        ...(guestShares ? { guestShares } : {}),
+        ...(guestSummary ? { guestSummary } : {}),
+      };
+    else delete me.notices;
     me.personalSpaceId = me.user.id;
     me.spaces = spaces
       .filter((s) => s.kind === "shared" && roleIn(s))
@@ -915,6 +1102,18 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     spaceManagerMappings,
   });
   const sp = "*/api/v1/spaces/:id";
+  /**
+   * R.memberTransfer's source rules: an owner or admin needs the owner
+   * (#475, 403 owner_only); a departed member or any guest (parity 2)
+   * qualifies; any other active member is 409 member_active.
+   */
+  const transferSourceError = (m: Member) => {
+    if (needsOwner(m))
+      return err("owner_only", "Only the owner can manage an owner or admin");
+    if ((m.status ?? "active") === "active" && m.role !== "guest")
+      return err("member_active", "Suspend or remove the member first");
+    return null;
+  };
   const validSuccessor = (u: Member | undefined): u is Member =>
     !!u &&
     u.role !== "guest" &&
@@ -1170,6 +1369,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       authed(({ params }) => {
         const m = memberOf(params.id as string);
         if (!m || !isAdmin()) return notFound();
+        const bad = transferSourceError(m);
+        if (bad) return bad;
         return HttpResponse.json(departed.get(m.id) ?? { live: 0, deleted: 0 });
       }),
     ),
@@ -1180,8 +1381,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         if (!m || !isAdmin()) return notFound();
         const r = await c.body(request, TransferInputSchema);
         if (r.error) return r.error;
-        if ((m.status ?? "active") === "active")
-          return err("member_active", "Suspend or remove the member first");
+        const bad = transferSourceError(m);
+        if (bad) return bad;
         const to = r.data.to;
         if (to.kind === "user") {
           const u = memberOf(to.userId);
@@ -1926,7 +2127,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         if (directoryMode !== "google")
           return err("directory_sync_off", "Directory sync is off or frozen");
         sync.nextRunAt = iso();
-        return HttpResponse.json(sync, { status: 202 });
+        return HttpResponse.json(syncView(), { status: 202 });
       }),
     ),
     http.post(
@@ -1942,7 +2143,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           pendingCustomerChange: null,
         });
         log("directory.connect", { type: "directory", id: "google" });
-        return HttpResponse.json(sync);
+        return HttpResponse.json(syncView());
       }),
     ),
     http.post(
@@ -1962,13 +2163,25 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         return noContent();
       }),
     ),
+    // Server: routes/directory.ts (held/:groupId/confirm), sync.ts confirmHeld.
     http.post(
       "*/api/v1/directory/held/:groupId/confirm",
       authed(({ params }) => {
         if (me.user.role !== "owner") return notFound();
-        const i = sync.held.findIndex((h) => h.groupId === params.groupId);
-        if (i < 0) return notFound();
+        const off = syncOff();
+        if (off) return off;
+        // Only a 'sweep' hold (an unreadable one removes nobody) confirms.
+        const i = sync.held.findIndex(
+          (h) => h.groupId === params.groupId && h.wouldRemove > 0,
+        );
+        if (i < 0)
+          return err(
+            "conflict",
+            "This group has no held sweep to confirm; it can't be read from Google",
+          );
+        // The server applies it on the confirm's sweep; the mock at once.
         const [h] = sync.held.splice(i, 1);
+        // The snooze row stays until the alarm ends it, expired or not.
         if (h?.snoozedUntil)
           log(
             "directory.sweep.unsnoozed",
@@ -1980,7 +2193,75 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           type: "group",
           id: params.groupId as string,
         });
-        return HttpResponse.json(sync, { status: 202 });
+        return HttpResponse.json(syncView(), { status: 202 });
+      }),
+    ),
+    // Server: routes/directory.ts (held/:groupId/snooze), sync.ts snoozeHeld.
+    http.post(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(async ({ params, request }) => {
+        if (me.user.role !== "owner") return notFound();
+        const off = syncOff();
+        if (off) return off;
+        // The body is optional: none means no reason.
+        const raw = await request.clone().text();
+        if (new TextEncoder().encode(raw).byteLength > SNOOZE_BODY_MAX)
+          return err(
+            "too_large",
+            `Request body exceeds ${SNOOZE_BODY_MAX} bytes`,
+          );
+        let body: unknown = {};
+        if (raw) {
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            return err("bad_request", "Invalid JSON body");
+          }
+        }
+        const input = HeldSnoozeInputSchema.safeParse(body);
+        if (!input.success)
+          return err("bad_request", "Invalid request body", input.error.issues);
+        const reason =
+          oneLine(input.data.reason ?? "", HELD_SNOOZE_REASON_MAX) || null;
+        // Only a 'sweep' hold (an unreadable one removes nobody) snoozes.
+        const h = sync.held.find(
+          (x) => x.groupId === params.groupId && x.wouldRemove > 0,
+        );
+        if (!h)
+          return err(
+            "conflict",
+            "This group has no held sweep to snooze, or it is being re-checked; try again after the next sync",
+          );
+        // A snooze row (expired or not) is renewed.
+        const renewed = h.snoozedUntil !== null;
+        h.snoozedUntil = new Date(Date.now() + HELD_SNOOZE_MS).toISOString();
+        h.snoozeReason = reason;
+        log(
+          "directory.sweep.snoozed",
+          { type: "group", id: params.groupId as string },
+          null,
+          { until: h.snoozedUntil, renewed },
+        );
+        return HttpResponse.json(syncView());
+      }),
+    ),
+    // Server: sync.ts unsnoozeHeld. Any mode; no snooze row: no change.
+    http.delete(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(({ params }) => {
+        if (me.user.role !== "owner") return notFound();
+        const h = sync.held.find((x) => x.groupId === params.groupId);
+        if (h?.snoozedUntil) {
+          h.snoozedUntil = null;
+          h.snoozeReason = null;
+          log(
+            "directory.sweep.unsnoozed",
+            { type: "group", id: params.groupId as string },
+            null,
+            { why: "owner_cancel" },
+          );
+        }
+        return HttpResponse.json(syncView());
       }),
     ),
     http.post(
@@ -2035,10 +2316,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           : // A snooze's note is the owner's (#412).
             HttpResponse.json(
               me.user.role === "owner"
-                ? sync
+                ? syncView()
                 : {
-                    ...sync,
-                    held: sync.held.map((h) => ({ ...h, snoozeReason: null })),
+                    ...syncView(),
+                    held: syncView().held.map((h) => ({
+                      ...h,
+                      snoozeReason: null,
+                    })),
                   },
             ),
       ),
@@ -2048,7 +2332,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       authed(() => {
         if (me.user.role !== "owner") return notFound();
         disconnect();
-        return HttpResponse.json(sync);
+        return HttpResponse.json(syncView());
       }),
     ),
     http.delete(
@@ -2056,6 +2340,24 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       authed(() => {
         if (me.user.role !== "owner") return notFound();
         disconnect();
+        return noContent();
+      }),
+    ),
+    // Parity 2: dismiss a notice. guest_shares: per user, any non-guest;
+    // guest_summary: install-wide, the uncapped owner. Else 404.
+    http.post(
+      "*/api/v1/notices/:notice/dismiss",
+      authed(({ params }) => {
+        if (params.notice === "guest_shares" && me.user.role !== "guest")
+          sharesDismissed.add(me.user.id);
+        else if (
+          params.notice === "guest_summary" &&
+          me.user.role === "owner" &&
+          cap() === null
+        )
+          summaryDismissed = true;
+        else return notFound();
+        refresh();
         return noContent();
       }),
     ),

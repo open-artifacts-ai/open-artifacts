@@ -114,6 +114,7 @@ export type Fault =
   | "p50_ineligible"
   | "p50_groups_refused"
   | "p50_team_tier"
+  | "p50_no_codes"
   | "prod_live";
 
 export interface FakeApi {
@@ -132,8 +133,19 @@ export interface FakeApi {
    * limited 303 sends `limitedCookie` (default: clearFlowCookie()).
    */
   signin: { limit: number; limitedCookie?: string };
-  /** RL_BROKER_IP: broker requests past `ipLimit` in a 60 s window are 429. */
-  broker: { ipLimit: number };
+  /**
+   * RL_BROKER_IP: broker requests past `ipLimit` in a 60 s window are 429.
+   * `hopLimited`: this many ticketed requests are 429 whatever the window
+   * says, as when an unsigned 404 passes but the count catches up (#P34).
+   * `hopStatus`: a ticketed request's answer past the limiter, 302 by default;
+   * `hopLocation` replaces the Google redirect target.
+   */
+  broker: {
+    ipLimit: number;
+    hopLimited: number;
+    hopStatus: number;
+    hopLocation?: string;
+  };
   /**
    * P50's installs (rl-snz-*), each a local fake install (test/snooze-fake.ts)
    * from its create until its purge, by app host.
@@ -183,7 +195,11 @@ export function fakeApi(): FakeApi {
   /** Dispatch's 60 s HOSTS cache: a new host's /healthz 404s until then. */
   const hostsCachedUntil = new Map<string, number>();
   const signin: FakeApi["signin"] = { limit: 10 };
-  const broker = { ipLimit: Number.POSITIVE_INFINITY };
+  const broker: FakeApi["broker"] = {
+    ipLimit: Number.POSITIVE_INFINITY,
+    hopLimited: 0,
+    hopStatus: 302,
+  };
   const brokerHits = new Map<number, number>();
   let registrations = 0;
   let n = 0;
@@ -254,7 +270,14 @@ export function fakeApi(): FakeApi {
   const detail = (i: FInstall) => ({
     ...summary(i),
     ownerEmail: null,
-    auth: { providers: ["email"], domains: [] },
+    auth: {
+      providers: ["email"],
+      domains: [],
+      // authOf: present only when on. P50's create asks for it.
+      ...(i.slug.startsWith("rl-snz-") && !faults.has("p50_no_codes")
+        ? { domainCodes: true }
+        : {}),
+    },
     previousVersion: i.previousVersion,
     suspendedAt: null,
     suspendReason: null,
@@ -915,11 +938,21 @@ export function fakeApi(): FakeApi {
       const c = (brokerHits.get(w) ?? 0) + 1;
       brokerHits.set(w, c);
       if (c > broker.ipLimit) return err(429, "rate_limited");
+      if (url.searchParams.get("ticket")) {
+        if (broker.hopLimited > 0) {
+          broker.hopLimited--;
+          return err(429, "rate_limited");
+        }
+        if (broker.hopStatus !== 302)
+          return new Response(null, { status: broker.hopStatus });
+      }
       if (url.searchParams.get("ticket") || faults.has("p34_authorize_302"))
         return new Response(null, {
           status: 302,
           headers: {
-            location: "https://accounts.google.com/o/oauth2/v2/auth?x=1",
+            location:
+              broker.hopLocation ??
+              "https://accounts.google.com/o/oauth2/v2/auth?x=1",
           },
         });
       return new Response(null, { status: 404 });

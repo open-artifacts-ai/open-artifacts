@@ -3,6 +3,7 @@ import {
   type CreateInstallSchema,
   canonicalJson,
   checkCreateFields,
+  fieldRulesOf,
   slugError,
   type Tier,
 } from "@oa/shared/provisioning";
@@ -29,13 +30,18 @@ type Body = z.infer<typeof CreateInstallSchema>;
 
 /** The canonical signups.vars (0007): never an email. */
 export function signupVars(
-  auth: { providers: readonly string[]; domains: readonly string[] },
+  auth: {
+    providers: readonly string[];
+    domains: readonly string[];
+    domainCodes?: boolean;
+  },
   tier: Tier,
   testHooks: boolean,
 ): string {
   return canonicalJson({
     AUTH_PROVIDERS: auth.providers.join(","),
     AUTH_DOMAINS: auth.domains.join(","),
+    ...(auth.domainCodes === true ? { EMAIL_CODE_DOMAIN: "on" } : {}),
     TIER: tier,
     ...(testHooks ? { TEST_DOMAIN: STAGING_TEST_DOMAIN } : {}),
   });
@@ -89,8 +95,9 @@ export async function createInstall(a: HandlerArgs): Promise<RouteResult> {
   const { env } = a;
   const p = factsOf(a.principal);
   const body = a.input.body as Body;
-  if (p.kind === "system") throw new ApiError("forbidden");
-  const f = checkCreateFields(body, p.kind, env.OA_ENV, STAGING_TEST_DOMAIN);
+  const rules = fieldRulesOf(p.kind);
+  if (!rules) throw new ApiError("forbidden");
+  const f = checkCreateFields(body, rules, env.OA_ENV, STAGING_TEST_DOMAIN);
   if (f) throw new ApiError(f.code, `${f.field}: ${f.code}`);
 
   const w = await writeOf(env, p, a.surface, "R4", null, body);

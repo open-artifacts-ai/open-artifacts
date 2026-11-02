@@ -3,7 +3,7 @@
 // access and offers the one fix; below it, held sweeps, restricted groups,
 // then the connection with Disconnect last. Copy: build spec t6cjQuskQ6zrZaJd
 // v5. Losing sync never cuts access, so `staleAt` is never shown.
-import { R } from "@oa/shared";
+import { HELD_SNOOZE_REASON_MAX, R } from "@oa/shared";
 import { displayName } from "@oa/ui";
 import {
   AlertDialog,
@@ -15,6 +15,8 @@ import {
   AlertDialogTitle,
   Button,
   DialogFooter,
+  Input,
+  Label,
 } from "@oa/ui/shadcn";
 import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -41,6 +43,8 @@ import {
   useMembers,
   usePutRestrictedGroup,
   useRestrictedGroups,
+  useSnoozeHeld,
+  useUnsnoozeHeld,
 } from "../api/queries";
 import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
@@ -694,10 +698,18 @@ function HeldRow({
   restricted: boolean;
 }) {
   const [asking, setAsking] = useState(false);
+  const [snoozing, setSnoozing] = useState(false);
+  const [reason, setReason] = useState("");
   const confirm = useConfirmHeld();
+  const snooze = useSnoozeHeld();
+  const unsnooze = useUnsnoozeHeld();
   const empty = h.wouldRemove >= h.members;
   return (
-    <li className="flex flex-wrap items-center justify-between gap-[var(--oa-space-3)] border-0 border-t border-border py-[var(--oa-space-3)] first:border-t-0">
+    // Layout per the directory spec's held row: text left, actions right; one
+    // column under 520px. A held row is tinted until it's snoozed.
+    <li
+      className={`grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-0 border-t border-border px-3 py-2.5 first:border-t-0 max-[520px]:grid-cols-1 ${h.snoozedUntil ? "" : "bg-[var(--oa-warning-soft)]"}`}
+    >
       <div className="min-w-0">
         <b className="block font-medium">
           {h.name} ({h.email})
@@ -709,17 +721,98 @@ function HeldRow({
             : "more than half the group"}{" "}
           · since <At iso={h.since} />
         </small>
+        {h.snoozedUntil && (
+          <small className={`block ${muted}`}>
+            Snoozed until{" "}
+            <When
+              iso={h.snoozedUntil}
+              text={dayFmt.format(new Date(h.snoozedUntil))}
+            />{" "}
+            or the group changes
+          </small>
+        )}
+        {h.snoozedUntil && h.snoozeReason && (
+          <small className={`block ${muted}`}>
+            {"\u201c"}
+            {h.snoozeReason}
+            {"\u201d"}
+          </small>
+        )}
       </div>
       {owner && (
-        <Button
-          size="sm"
-          variant="outline"
-          className="text-[length:var(--oa-text-sm)]"
-          onClick={() => setAsking(true)}
-        >
-          Apply
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-1.5 max-[520px]:justify-start">
+          {h.snoozedUntil ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-[length:var(--oa-text-sm)]"
+              disabled={unsnooze.isPending}
+              aria-label={`Unsnooze ${h.name}`}
+              onClick={() => unsnooze.mutate(h.groupId)}
+            >
+              Unsnooze
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-[length:var(--oa-text-sm)]"
+              aria-label={`Snooze ${h.name}`}
+              onClick={() => setSnoozing(true)}
+            >
+              Snooze
+            </Button>
+          )}
+          <Button
+            size="sm"
+            // Primary while held; a snoozed row's Apply is quiet (Design).
+            variant={h.snoozedUntil ? "outline" : "default"}
+            className="text-[length:var(--oa-text-sm)]"
+            aria-label={`Apply ${h.name}`}
+            onClick={() => setAsking(true)}
+          >
+            Apply
+          </Button>
+        </div>
       )}
+      <Confirm
+        open={snoozing}
+        onClose={() => {
+          setSnoozing(false);
+          setReason("");
+        }}
+        title={`Snooze changes to ${h.name}?`}
+        body={
+          <>
+            <p>
+              Nobody loses access while it's snoozed. It comes back when
+              Google's list for this group changes, or in 30 days.
+            </p>
+            <div className="grid gap-1.5 text-left">
+              <Label htmlFor={`oa-held-reason-${h.groupId}`}>
+                Reason (optional)
+              </Label>
+              <Input
+                id={`oa-held-reason-${h.groupId}`}
+                aria-describedby={`oa-held-reason-help-${h.groupId}`}
+                autoComplete="off"
+                maxLength={HELD_SNOOZE_REASON_MAX}
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
+              <p id={`oa-held-reason-help-${h.groupId}`} className={muted}>
+                Admins see this on the row.
+              </p>
+            </div>
+          </>
+        }
+        confirm="Snooze"
+        onConfirm={() => {
+          const r = reason.trim();
+          snooze.mutate({ groupId: h.groupId, ...(r ? { reason: r } : {}) });
+          setReason("");
+        }}
+      />
       <Confirm
         open={asking}
         onClose={() => setAsking(false)}
@@ -762,7 +855,12 @@ function HeldSweeps({
         These changes from Google would remove a lot of people at once, so we
         held them. Nobody loses access until you apply one.
       </p>
-      <ul>
+      {held.every((h) => h.snoozedUntil) && (
+        <p className={muted}>
+          Everything here is snoozed, so Settings shows no dot.
+        </p>
+      )}
+      <ul className="overflow-hidden rounded-lg border border-border">
         {held.map((h) => (
           <HeldRow
             key={h.groupId}

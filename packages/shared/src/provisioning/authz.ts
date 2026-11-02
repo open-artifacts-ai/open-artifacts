@@ -15,6 +15,7 @@ export const AUTHZ_COLUMNS = [
   "token",
   "oidc",
   "user",
+  "test-admin",
   "none",
 ] as const;
 export type AuthzColumn = (typeof AUTHZ_COLUMNS)[number];
@@ -45,26 +46,38 @@ const row = (
   oidc: AuthzRule,
   user: AuthzRule,
   noAuth: AuthzRule = unauth,
+  // Staging's test admin (#1053): refused unless its row says otherwise.
+  testAdmin: AuthzRule = no,
 ): Record<AuthzColumn, AuthzRule> => ({
   admin,
   token,
   oidc,
   user,
+  "test-admin": testAdmin,
   none: noAuth,
 });
+/** A row with the test admin's own rule (#1053: reads, create, upgrade). */
+const withTestAdmin = (
+  r: Record<AuthzColumn, AuthzRule>,
+  testAdmin: AuthzRule,
+): Record<AuthzColumn, AuthzRule> => ({ ...r, "test-admin": testAdmin });
+/** The test admin's reach: the `rl-` test installs, as O's (oidcOwns). */
+const taOwn = { ...own, note: "rl- and testHooks (oidcOwns)" } as const;
 
 const opRow = row(all, tok("installs:write"), own, no);
 const adminOnly = row(all, no, no, no);
 
 export const AUTHZ: Readonly<Record<RouteId, Record<AuthzColumn, AuthzRule>>> =
   {
-    R1: row(all, all, all, all),
-    R2: row(all, tok("installs:read"), own, own),
+    R1: row(all, all, all, all, unauth, all),
+    R2: row(all, tok("installs:read"), own, own, unauth, taOwn),
     R3: row(
       all,
       tok("installs:read", "ownerEmail needs installs:pii"),
       own,
       own,
+      unauth,
+      taOwn,
     ),
     R4: row(
       { ...all, note: "3.3 field rules (checkCreateFields)" },
@@ -74,8 +87,10 @@ export const AUTHZ: Readonly<Record<RouteId, Record<AuthzColumn, AuthzRule>>> =
         note: "rl- slug, testHooks: true, @STAGING_TEST_DOMAIN owner (checkCreateFields)",
       },
       { ...own, note: "self-serve policy (4.2)" },
+      unauth,
+      { ...taOwn, note: "O's field rules (checkCreateFields)" },
     ),
-    R5: opRow,
+    R5: withTestAdmin(opRow, taOwn),
     R6: opRow,
     R7: opRow,
     R8: opRow,
@@ -98,36 +113,54 @@ export const AUTHZ: Readonly<Record<RouteId, Record<AuthzColumn, AuthzRule>>> =
       ...adminOnly,
       admin: { ...all, note: "force needs a live lease, audited" },
     },
-    R14: row(all, tok("installs:read"), own, own),
+    R14: row(all, tok("installs:read"), own, own, unauth, taOwn),
     R15: row(
       all,
       tok("installs:read"),
       { ...own, note: "sealed only to the creating OIDC caller, once" },
       own,
+      unauth,
+      taOwn,
     ),
-    R16: row(all, tok("installs:read"), all, no),
+    R16: row(all, tok("installs:read"), all, no, unauth, all),
     R17: row(
       all,
       tok("audit:read", "email detail fields need installs:pii"),
       { ...own, note: "own actor rows" },
       no,
+      unauth,
+      { ...own, note: "own actor rows" },
     ),
-    R18: row(all, tok("installs:read"), all, { ...all, note: "RL_PV_SLUG_IP" }),
+    R18: row(
+      all,
+      tok("installs:read"),
+      all,
+      { ...all, note: "RL_PV_SLUG_IP" },
+      unauth,
+      all,
+    ),
     R19: adminOnly,
     R20: adminOnly,
     R21: adminOnly,
     // Browser hosts; a bearer there is 401 (host policy).
-    R22: row(all, all, all, all, all),
-    R23: row(all, all, all, all, all),
-    R24: row(all, unauth, unauth, all),
+    R22: row(all, all, all, all, all, all),
+    R23: row(all, all, all, all, all, all),
+    R24: row(all, unauth, unauth, all, unauth, all),
     R25: { ...adminOnly, admin: { ...all, note: "typed slug, audited" } },
     R26: row(no, no, { ...own, note: "staging, rl- and testHooks" }, no),
     R27: row(all, tok("installs:read"), no, no),
+    // Only the pinned staging-test-admin.yml caller (authorize, oidcWorkflow).
+    R28: row(no, no, { ...own, note: "staging-test-admin.yml only" }, no),
   };
 
 export type AuthzPrincipal = {
   kind: PrincipalKind;
   scopes?: readonly TokenScope[];
+  /**
+   * OIDC only: which pinned workflow minted the JWT. "test-admin" may call
+   * R28 and nothing else; any other OIDC caller never calls R28 (#1053).
+   */
+  oidcWorkflow?: "redline" | "test-admin";
 } | null;
 export type AuthzDecision =
   | { ok: true; reach: "all" | "own" }
@@ -144,8 +177,16 @@ export function authorize(
   env: ProvisioningEnv,
 ): AuthzDecision {
   if (principal?.kind === "system") return { ok: false, code: "forbidden" };
-  if (principal?.kind === "oidc" && !OIDC_LIMITS.envs.includes(env))
+  if (
+    (principal?.kind === "oidc" || principal?.kind === "test-admin") &&
+    !OIDC_LIMITS.envs.includes(env)
+  )
     return { ok: false, code: "unauthenticated" };
+  if (principal?.kind === "oidc") {
+    const testAdmin = principal.oidcWorkflow === "test-admin";
+    if (testAdmin !== (route === "R28"))
+      return { ok: false, code: "forbidden" };
+  }
   const rule = AUTHZ[route][principal ? principal.kind : "none"];
   if (!rule.allow) return { ok: false, code: rule.code };
   if (rule.scope && !principal?.scopes?.includes(rule.scope))
@@ -185,6 +226,7 @@ export const PROTOCOL_AUTHZ = {
     token: "yes; each tool uses its route's row",
     oidc: "staging only; each tool uses its route's O row",
     user: "401",
+    "test-admin": "401 (an admin-host session, no bearer)",
     none: "401",
   },
   "/oauth/authorize": {
@@ -192,6 +234,7 @@ export const PROTOCOL_AUTHZ = {
     token: "api host 404",
     oidc: "n/a",
     user: "403",
+    "test-admin": "403 (no OAuth grant: a grant is a token)",
     none: "bounce page, then 302 to /auth/start",
   },
 } as const satisfies Record<string, Record<AuthzColumn, string>>;
@@ -238,6 +281,12 @@ export const CREATE_FIELDS = [
 ] as const;
 export type CreateField = (typeof CREATE_FIELDS)[number];
 export type CreatePrincipal = "admin" | "token" | "oidc" | "user";
+/**
+ * Whose field rules a principal kind follows: the test admin (#1053) takes
+ * O's (rl- slug, testHooks, a test-domain owner); system none.
+ */
+export const fieldRulesOf = (kind: PrincipalKind): CreatePrincipal | null =>
+  kind === "system" ? null : kind === "test-admin" ? "oidc" : kind;
 
 export const CREATE_FIELD_RULES: Readonly<
   Record<CreateField, Record<CreatePrincipal, EnvFieldRule>>
@@ -316,11 +365,13 @@ export type CreateFieldRefusal = {
  * forbidden or server-set field first (403), then missing required fields
  * (400), then value rules (403). U's turnstile is left to its own step. O
  * is held to `rl-` slugs on staging and refused on prod here too, so this one
- * call enforces every 3.3 rule. Null when the body passes.
+ * call enforces every 3.3 rule. auth.domainCodes adds one value rule for every
+ * principal: code sign-in only admits auth.domains, so the owner's domain must
+ * be one (#1088). Null when the body passes.
  */
 export function checkCreateFields(
   body: Readonly<Partial<Record<CreateField, unknown>>> & {
-    auth?: { domains: readonly string[] };
+    auth?: { domains: readonly string[]; domainCodes?: boolean };
   },
   principal: CreatePrincipal,
   env: ProvisioningEnv,
@@ -358,6 +409,13 @@ export function checkCreateFields(
     )
       return { field: f, code: "forbidden" };
   }
+  if (
+    body.auth?.domainCodes === true &&
+    !body.auth.domains
+      .map((d) => d.toLowerCase())
+      .includes(emailDomain(body.ownerEmail as string) ?? "")
+  )
+    return { field: "ownerEmail", code: "forbidden" };
   return null;
 }
 
@@ -427,7 +485,8 @@ export const TRANSITIONS: Readonly<
     ...lease("failed"),
   },
   active: {
-    upgrade: t(["A", "T"], "active"),
+    // S: the scheduler's fleet rollout (#955); never from suspended.
+    upgrade: t(["A", "T", "S"], "active"),
     rollback: t(["A", "T"], "active"),
     suspend: t(["A", "T"], "suspended"),
     delete: t(["A", "T", "U"], "deleting"),
