@@ -690,6 +690,16 @@ describe("soak", () => {
     expect([...f.probed].sort()).toEqual([...ids].sort());
   });
 
+  it("a soaked install is left alone: no more probes, and it holds nothing back", async () => {
+    const { canary, id } = await upgraded();
+    await soaked(id);
+    const rest = await on("0.92.0", { created: 9 });
+    const f = fakes({ canary });
+    await fleetDue(f.env, NOW, f.opts);
+    expect(f.probed).not.toContain(id);
+    expect(await queued()).toEqual([rest]);
+  });
+
   it("only the target is watched: an unsoaked install on an older version holds nothing", async () => {
     const { canary, id } = await upgraded();
     const g = fakes({ canary, tag: "v0.93.1" });
