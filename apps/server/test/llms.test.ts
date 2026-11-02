@@ -9,6 +9,11 @@ import {
   LLMS_PATH,
   renderLlms,
 } from "../src/mcp/llms.js";
+import {
+  BACKFILLED_KEY,
+  KV_WRITES_OFF_KEY,
+  resetOAuthStoreMarkers,
+} from "../src/mcp/oauth-store.js";
 import { skillOrigin } from "../src/mcp/skill-common.js";
 import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
@@ -18,6 +23,12 @@ import { login } from "./helpers.js";
 import { APP, callWorker, E } from "./mcp-helpers.js";
 
 const CONTENT = "https://content.localhost";
+const markBackfilled = () =>
+  env.DB.prepare(
+    "insert into settings (key, value) values (?, '1') on conflict(key) do nothing",
+  )
+    .bind(BACKFILLED_KEY)
+    .run();
 const HOST = new URL(APP).host;
 
 const get = (url: string, init: RequestInit = {}, e: unknown = E()) =>
@@ -83,7 +94,7 @@ describe("GET /llms.txt", () => {
     expect(Object.keys(CONTENT_POLICY)).not.toContain("GET /llms.txt");
   });
 
-  it("touches no D1 binding", async () => {
+  it("touches no D1 binding in kv mode", async () => {
     let touched = 0;
     const DB = new Proxy(
       {},
@@ -96,6 +107,40 @@ describe("GET /llms.txt", () => {
     );
     expect((await get(`${APP}/llms.txt`, {}, E({ DB }))).status).toBe(200);
     expect(touched).toBe(0);
+  });
+
+  it("OAUTH_STORE=dual: same guide, after serveAppHost's store marker check", async () => {
+    expect(await guide(E({ OAUTH_STORE: "dual" }))).toBe(await guide());
+  });
+
+  it("OAUTH_STORE=dual after this install served in d1: the store's 503", async () => {
+    resetOAuthStoreMarkers();
+    await env.DB.prepare("insert into settings (key, value) values (?, ?)")
+      .bind(KV_WRITES_OFF_KEY, String(Date.now()))
+      .run();
+    try {
+      const r = await get(`${APP}${LLMS_PATH}`, {}, E({ OAUTH_STORE: "dual" }));
+      expect(r.status).toBe(503);
+    } finally {
+      await env.DB.prepare("delete from settings where key = ?")
+        .bind(KV_WRITES_OFF_KEY)
+        .run();
+      resetOAuthStoreMarkers();
+    }
+  });
+
+  it("OAUTH_STORE=d1: same guide once a copy completed; before that, the store's 503", async () => {
+    const kv = await guide();
+    const d1 = E({ OAUTH_STORE: "d1" });
+    expect((await get(`${APP}${LLMS_PATH}`, {}, d1)).status).toBe(503);
+    resetOAuthStoreMarkers();
+    await markBackfilled();
+    expect(await guide(d1)).toBe(kv);
+    // Leaving d1 is refused: later tests here serve in kv mode.
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(KV_WRITES_OFF_KEY)
+      .run();
+    resetOAuthStoreMarkers();
   });
 
   it("has Connect, Restart, Verify and Troubleshoot, in order, for this instance", async () => {

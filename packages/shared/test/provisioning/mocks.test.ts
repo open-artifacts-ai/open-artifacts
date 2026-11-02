@@ -102,6 +102,22 @@ describe("provisioning MSW mocks", () => {
     expect(await list("no-such-install-anywhere")).toEqual([]);
   });
 
+  it("pii: false sends no ownerEmail on R3 and q never matches an email", async () => {
+    server.use(...createProvisioningMock({ pii: false }).handlers);
+    const list = (await (await fetch(`${ADMIN}/installs`)).json()) as {
+      items: { id: string }[];
+    };
+    const id = list.items[0]?.id as string;
+    const d = InstallDetailSchema.parse(
+      await (await fetch(`${ADMIN}/installs/${id}`)).json(),
+    );
+    expect(d.ownerEmail).toBeNull();
+    const byEmail = (await (
+      await fetch(`${ADMIN}/installs?q=owner%40example.com`)
+    ).json()) as { items: unknown[] };
+    expect(byEmail.items).toEqual([]);
+  });
+
   it("writes: 202 with a queued job, replay with the same requestId, 400 on a bad body", async () => {
     server.use(...createProvisioningHandlers());
     const list = (await (await fetch(`${ADMIN}/installs`)).json()) as {

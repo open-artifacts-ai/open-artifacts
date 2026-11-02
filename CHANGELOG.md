@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.95.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.94.0...v0.95.0) (2026-11-02)
+
+
+### Features
+
+* **admin:** hide what the session can't do, from the shared authz table ([#1074](https://github.com/open-artifacts-ai/open-artifacts/issues/1074)) ([#1091](https://github.com/open-artifacts-ai/open-artifacts/issues/1091)) ([c6b7477](https://github.com/open-artifacts-ai/open-artifacts/commit/c6b7477f36a143872f8a8a8ece52c1ad684dab61))
+
 ## [0.94.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.93.0...v0.94.0) (2026-11-02)
 
 

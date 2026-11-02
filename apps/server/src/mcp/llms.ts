@@ -3,7 +3,11 @@
 // file. The per-client blocks come from agentClients (@oa/shared), the same
 // source as the dashboard's Settings → Agents tabs, so the two can't drift.
 // Public: the instance's address and nothing else (no user data, no tokens).
-// Rendered once per isolate (APP_HOST is fixed per deploy): no D1, no session.
+// Rendered once per isolate (APP_HOST is fixed per deploy): no session, and
+// this route reads no D1. With OAUTH_STORE dual or d1, serveAppHost's store
+// marker check still runs first, as on every app-host path but /healthz: an
+// OAuthStoreConfigError from it is a 503, and any other failure there (D1
+// erroring on a cold isolate) is uncaught.
 import {
   agentClients,
   hostSlug,
