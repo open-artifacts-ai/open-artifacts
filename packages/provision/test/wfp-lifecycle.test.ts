@@ -1075,7 +1075,9 @@ describe("EMAIL_CODE_DOMAIN across versions (#1088)", () => {
     const inst = keep(
       await s.p.create(input("finqore", { vars: DOMAIN_CODES })),
     );
-    const e = await fails(s.mk({ turnstile: undefined }).upgrade(inst.id, "0.24.0"));
+    const e = await fails(
+      s.mk({ turnstile: undefined }).upgrade(inst.id, "0.24.0"),
+    );
     expect((e as ProvisionRefused).code).toBe("turnstile_missing");
   });
 });

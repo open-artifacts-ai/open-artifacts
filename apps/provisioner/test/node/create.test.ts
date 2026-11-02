@@ -250,15 +250,16 @@ describe("ProvisionInstall: code sign-in refusals (#1088)", () => {
   });
 
   it("two widgets of the env's name, or one with no secret: turnstile_missing", async () => {
-    const [sitekey, one] = [...w.fake.turnstile.entries()][0] as [
-      string,
-      Record<string, unknown>,
-    ];
-    w.fake.turnstile.set("0x4AAAAAAAtwin", { ...one, sitekey: "0x4AAAAAAAtwin" });
+    const one = w.fake.turnstile.get(TS.sitekey);
+    if (!one) throw new Error("no seeded widget");
+    w.fake.turnstile.set("0x4AAAAAAAtwin", {
+      ...one,
+      sitekey: "0x4AAAAAAAtwin",
+    });
     const a = seedCreate(w, { slug: "codesc", vars: CODES });
     await failsWith(a.jobId, "turnstile_missing");
     w.fake.turnstile.delete("0x4AAAAAAAtwin");
-    w.fake.turnstile.set(sitekey, { ...one, secret: "" });
+    w.fake.turnstile.set(TS.sitekey, { ...one, secret: "" });
     const b = seedCreate(w, { slug: "codesd", vars: CODES });
     await failsWith(b.jobId, "turnstile_missing");
   });

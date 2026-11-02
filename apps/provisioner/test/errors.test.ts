@@ -126,15 +126,12 @@ describe("redactDetail (#1088)", () => {
 
   it("emails, URLs and IPs go whatever the values list says", () => {
     expect(
-      redactDetail(
-        "o@ab.io https://x.test/a?k=1 10.0.0.1 user%40ab.io",
-        ["on"],
-      ),
+      redactDetail("o@ab.io https://x.test/a?k=1 10.0.0.1 user%40ab.io", [
+        "on",
+      ]),
     ).toBe("[email] [url] [ip] [email]");
     // Listed, and short: the email pattern still applies.
-    expect(redactDetail("a@b from on", ["a@b", "on"])).toBe(
-      "[value] from on",
-    );
+    expect(redactDetail("a@b from on", ["a@b", "on"])).toBe("[value] from on");
   });
 
   it("a request value equal to a plain word in another case is redacted", () => {
