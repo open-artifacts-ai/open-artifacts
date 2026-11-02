@@ -8,6 +8,7 @@ import {
   checkCreateFields,
   checkPurgeFields,
   createFieldRule,
+  fieldRulesOf,
   InstallStateSchema,
   JobKindSchema,
   OIDC_LIMITS,
@@ -275,6 +276,87 @@ describe("R4 field rules (3.3)", () => {
     expect(
       checkCreateFields({ ...full, testHooks: true }, "admin", "prod", D),
     ).toEqual({ field: "testHooks", code: "forbidden" });
+  });
+
+  describe("auth.domainCodes: the owner must be able to sign in (#1088)", () => {
+    const codes = {
+      providers: ["email"],
+      domains: ["acme.com"],
+      domainCodes: true,
+    };
+    const owner = (ownerEmail: string) => ({
+      ownerEmail,
+      tier: "team",
+      auth: codes,
+    });
+
+    it("admin: the owner's domain must be listed", () => {
+      expect(
+        checkCreateFields(owner("o@acme.com"), "admin", "prod", D),
+      ).toBeNull();
+      expect(
+        checkCreateFields(owner("o@ACME.com"), "admin", "prod", D),
+      ).toBeNull();
+      expect(
+        checkCreateFields(owner("o@other.com"), "admin", "prod", D),
+      ).toEqual({ field: "ownerEmail", code: "forbidden" });
+    });
+
+    it("token: the same", () => {
+      expect(
+        checkCreateFields(owner("o@acme.com"), "token", "prod", D),
+      ).toBeNull();
+      expect(
+        checkCreateFields(owner("o@other.com"), "token", "prod", D),
+      ).toEqual({ field: "ownerEmail", code: "forbidden" });
+    });
+
+    it("oidc, which the test admin's rules are: the test domain must be listed", () => {
+      expect(fieldRulesOf("test-admin")).toBe("oidc");
+      const o = { slug: "rl-a", testHooks: true, tier: "team" };
+      expect(
+        checkCreateFields(
+          {
+            ...o,
+            ownerEmail: `o@${D}`,
+            auth: { ...codes, domains: [D] },
+          },
+          "oidc",
+          "staging",
+          D,
+        ),
+      ).toBeNull();
+      expect(
+        checkCreateFields(
+          { ...o, ownerEmail: `o@${D}`, auth: codes },
+          "oidc",
+          "staging",
+          D,
+        ),
+      ).toEqual({ field: "ownerEmail", code: "forbidden" });
+    });
+
+    it("user: auth is the server's, so the field never reaches the rule", () => {
+      expect(checkCreateFields({ auth: codes }, "user", "prod", D)).toEqual({
+        field: "auth",
+        code: "forbidden",
+      });
+    });
+
+    it("off or absent: no such rule for an admin", () => {
+      for (const domainCodes of [false, undefined])
+        expect(
+          checkCreateFields(
+            {
+              ...owner("o@other.com"),
+              auth: { ...codes, domainCodes },
+            },
+            "admin",
+            "prod",
+            D,
+          ),
+        ).toBeNull();
+    });
   });
 
   it("token: ownerEmail's domain must be in auth.domains", () => {

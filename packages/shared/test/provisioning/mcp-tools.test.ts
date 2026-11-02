@@ -196,6 +196,25 @@ describe("derived schemas", () => {
   });
 });
 
+describe("create_install's auth.domainCodes (#1088)", () => {
+  it("says what it does and what it needs, in the tool's JSON schema", () => {
+    const schema = z.toJSONSchema(toolInput(byName("create_install")), {
+      io: "input",
+    }) as unknown as {
+      properties: {
+        auth: { properties: { domainCodes: { description?: string } } };
+      };
+    };
+    const d = schema.properties.auth.properties.domainCodes.description;
+    expect(d).toMatch(/EMAIL_CODE_DOMAIN=on/);
+    expect(d).toMatch(/email/);
+    expect(d).toMatch(/google/);
+    expect(d).toMatch(/ownerEmail/);
+    expect(d).toMatch(/not checked/);
+    expect(d).not.toContain("—");
+  });
+});
+
 describe("annotations", () => {
   it("readOnlyHint iff GET; destructive for suspend, rollback, delete, purge", () => {
     for (const t of ADMIN_TOOLS) {

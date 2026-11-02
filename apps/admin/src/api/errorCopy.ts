@@ -39,6 +39,10 @@ const COPY: Record<string, string> = {
   upgrade_rolled_back: "The upgrade failed and was rolled back.",
   upgrade_incomplete: "The upgrade did not finish. Check the install.",
   canceled: "The job was canceled.",
+  domain_codes_refused:
+    "Domain sign-in codes need email sign-in on, Google off and at least one domain.",
+  turnstile_missing:
+    "Code sign-in needs this environment's Turnstile widget. Fix the widget, then retry.",
   cf_error: "Cloudflare returned an error. It will retry.",
 };
 
