@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.99.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.98.0...v0.99.0) (2026-11-02)
+
+
+### Features
+
+* **admin:** Create works for the staging test admin as a locked test install ([#1108](https://github.com/open-artifacts-ai/open-artifacts/issues/1108)) ([#1138](https://github.com/open-artifacts-ai/open-artifacts/issues/1138)) ([8f2b3ae](https://github.com/open-artifacts-ai/open-artifacts/commit/8f2b3ae6297d5ddee20695d102457b24afec5a9a))
+* **provisioning:** create takes auth.domainCodes, for domain sign-in codes ([#1088](https://github.com/open-artifacts-ai/open-artifacts/issues/1088)) ([#1120](https://github.com/open-artifacts-ai/open-artifacts/issues/1120)) ([a1ce230](https://github.com/open-artifacts-ai/open-artifacts/commit/a1ce2300179e70ed4f61022e187071387f2dd8b2))
+* **server:** guests view-only everywhere (parity 2) ([#831](https://github.com/open-artifacts-ai/open-artifacts/issues/831)) ([f4432b1](https://github.com/open-artifacts-ai/open-artifacts/commit/f4432b1f06b3998a85731ee184e1f365c9323b9e))
+
+
+### Bug Fixes
+
+* **admin:** the Audit page shows what's really logged ([#1117](https://github.com/open-artifacts-ai/open-artifacts/issues/1117)) ([#1139](https://github.com/open-artifacts-ai/open-artifacts/issues/1139)) ([e3d2be9](https://github.com/open-artifacts-ai/open-artifacts/commit/e3d2be98a0b1b14ec21a011160c73cd3b152909c))
+
 ## [0.98.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.97.0...v0.98.0) (2026-11-02)
 
 
