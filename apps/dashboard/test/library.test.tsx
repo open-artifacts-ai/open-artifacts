@@ -249,6 +249,25 @@ describe("Library", () => {
       await waitFor(() => expect(router.state.location.search).toEqual({}));
     });
 
+    it("an agent param under the connection never narrows; Clear filters removes both", async () => {
+      const router = mount(`/?agent=Alpha&agentVia=g:${GRANT.grantId}`);
+      await waitFor(async () =>
+        expect(await agentBox()).toHaveTextContent(GRANT.clientName),
+      );
+      expect(sent("agentVia")).toContain(`g:${GRANT.grantId}`);
+      expect(sent("agent").filter(Boolean)).toEqual([]);
+      fireEvent.click(await agentBox());
+      expect(
+        await screen.findByRole("option", { name: "All agents" }),
+      ).toBeVisible();
+      expect(screen.queryByRole("option", { name: "Alpha" })).toBeNull();
+      fireEvent.keyDown(await screen.findByRole("listbox"), { key: "Escape" });
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Clear filters" }),
+      );
+      await waitFor(() => expect(router.state.location.search).toEqual({}));
+    });
+
     it("another agent replaces agentVia, and All agents then clears it", async () => {
       server.use(
         http.get("*/api/v1/artifacts", () =>
