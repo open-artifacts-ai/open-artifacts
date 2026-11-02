@@ -1,4 +1,5 @@
 import { parseDomains } from "@oa/auth-core/domains";
+import { STAGING_TEST_DOMAIN } from "@oa/shared/provisioning/constants";
 import {
   isValidSlug,
   RESERVED_SLUGS,
@@ -40,12 +41,7 @@ export const PLATFORM_PRINCIPAL_IDS: readonly InstallId[] = Object.freeze([
 export const isPlatformPrincipalId = (id: unknown): boolean =>
   typeof id === "string" && PLATFORM_PRINCIPAL_IDS.includes(id);
 
-/**
- * TEST_DOMAIN of every API-created test-hook install on staging (design v7
- * 3.3); prod refuses TEST_DOMAIN. rl-a's value in tests/redline's local pair;
- * the staging installs' stored value is unverified until W2 reads it (14.4).
- */
-export const STAGING_TEST_DOMAIN = "oa-redline-a.fyi";
+export { STAGING_TEST_DOMAIN };
 
 /**
  * Every TEST_DOMAIN redline_creds accepts on a stored staging row, matched
