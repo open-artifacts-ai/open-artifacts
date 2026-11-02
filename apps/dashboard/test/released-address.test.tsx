@@ -21,20 +21,6 @@ import {
 import { initials, UserAvatar } from "../src/layout/UserAvatar";
 import { findVisibleToast, installHarness, mountHosted } from "./harness";
 
-// Until #829 relaxes MemberSchema and UserRefSchema these rows don't parse at
-// all, so this file skips response parsing. Remove when that lands.
-vi.mock("../src/api/client", async (original) => {
-  const client = await original<typeof import("../src/api/client")>();
-  const { z } = await import("zod");
-  return {
-    ...client,
-    api: {
-      ...client.api,
-      get: (path: string, _schema: unknown, signal?: AbortSignal) =>
-        client.api.get(path, z.any(), signal),
-    },
-  };
-});
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
     dispose: vi.fn(),
@@ -46,9 +32,10 @@ vi.mock("../src/viewer/bridge", () => ({
 
 installHarness();
 
+// The members list lowercases addresses; the stored row keeps the id's case.
 const released = (id: string, name: string | null) => ({
   id,
-  email: `removed+${id}@invalid`,
+  email: `removed+${id.toLowerCase()}@invalid`,
   name,
   role: "member" as const,
   lastSeenAt: null,
@@ -78,6 +65,37 @@ const openRemoved = async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Removed (1)" }));
   return screen.findByRole("list", { name: "Removed people" });
 };
+
+it("one released row parses, and doesn't take the Departed list down", async () => {
+  const carol = {
+    id: "Cr7tNpQrSt8uVwXy",
+    email: "carol@example.com",
+    name: "Carol Departed",
+    role: "member" as const,
+    lastSeenAt: null,
+    status: "removed" as const,
+  };
+  mountHosted("/settings/members", true, undefined, [
+    http.get(`*${R.members}`, ({ request }) =>
+      HttpResponse.json(
+        new URL(request.url).searchParams.get("status")
+          ? [carol, nameless(NONE)]
+          : fixtures.members,
+      ),
+    ),
+    http.get("*/api/v1/members/:id/transfer", () =>
+      HttpResponse.json({ live: 2, deleted: 0 }),
+    ),
+  ]);
+  const card = await departed();
+  await within(card).findByText("Carol Departed");
+  await within(card).findByText("Former member");
+  expect(card).toHaveTextContent("2 people left");
+  expect(card).not.toHaveTextContent(/load/);
+  expect(
+    await screen.findByRole("button", { name: "Removed (2)" }),
+  ).toBeVisible();
+});
 
 it("names: the name, else Former member, never the address", () => {
   const gone = { email: `removed+${PAT}@invalid` };
@@ -238,19 +256,15 @@ const swap = (
   if (Array.isArray(v)) return v.map((x) => swap(x, keys, pick));
   if (!v || typeof v !== "object") return v;
   return Object.fromEntries(
-    // A version's agent takes the row's name; here the person should show.
-    Object.entries(v).flatMap(([k, x]) =>
+    Object.entries(v).map(([k, x]) => [
+      k,
+      // A version's agent takes the row's name; here the person should show.
       k === "agent"
-        ? []
-        : [
-            [
-              k,
-              keys.includes(k) && x && pick(x as { email?: string })
-                ? goneRef
-                : swap(x, keys, pick),
-            ],
-          ],
-    ),
+        ? null
+        : keys.includes(k) && x && pick(x as { email?: string })
+          ? goneRef
+          : swap(x, keys, pick),
+    ]),
   );
 };
 /** The hosted mock's GETs under `url`, with those UserRefs swapped. */
@@ -307,7 +321,12 @@ it("Details starts someone else's personal space with A former member", async ()
           (body && typeof body === "object" && "space" in body
             ? {
                 ...body,
-                space: { id: NONE, kind: "personal", name: "Personal" },
+                space: {
+                  id: NONE,
+                  kind: "personal",
+                  name: "Personal",
+                  publicLinks: true,
+                },
               }
             : body) as never,
         );
