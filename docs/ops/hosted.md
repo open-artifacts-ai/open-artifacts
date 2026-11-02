@@ -370,7 +370,7 @@ Every install follows the platform's release on its own. The target is the sched
 - **Halt.** A failed fleet upgrade (ManageInstall's own rollback included), a fleet rollback, or a rollback the duty could not queue (`fleet_halt:<version>:<id>` in platform_state) halts the rollout to that target, and alert `fleet_halted` opens. It also opens when a canary is set but the scheduler has no stable version tag (`no_target`). Fix the cause and ship the next release, which starts a new rollout, canary first; the halt clears with it.
 - **`version_skew`** opens when a serving, non-suspended install with test hooks off is not on the target 6 hours after the platform's version was uploaded. It names the installs and clears when none is left. Before the 6 hours it is unknown, so it never sends an early all-clear.
 
-Both fleet alerts are decided in the scheduler only (`SCHEDULER_ALERT_KEYS`); R27 shows them while open, with no rows. The probes use the same public route as the hourly health duty (`publicRouteProbe`); red-line's "a Worker without a route fetches rl-a /healthz" case proves that path on staging.
+Both fleet alerts are decided in the scheduler only (`SCHEDULER_ALERT_KEYS`); R27 shows them while open, with no rows. The probes use the same public route as the hourly health duty (`publicRouteProbe`). That route from a Worker without a route of its own is not yet proven (red-line P35 is accepted unproven). Before setting an env's `FLEET_CANARY`, read the installs' hourly `health` (R3): `ok` there proves the path. If the path is broken, the first fleet upgrade fails its probes and is rolled back, and the rollout halts.
 
 ## Platform Workers through CI (`deploy-hosted-platform.yml`)
 
