@@ -20,16 +20,23 @@ describe("skeleton", () => {
       ok: true,
       plan: "free",
       version: VERSION,
+      oauthStore: { mode: "kv", backfilled: false, kvWritesOffSince: null },
     });
   });
 
-  for (const base of [APP, CONTENT]) {
-    it(`robots.txt on ${base}`, async () => {
-      const res = await call(`${base}/robots.txt`);
-      expect(res.status).toBe(200);
-      expect(await res.text()).toBe("User-agent: *\nDisallow: /");
-    });
-  }
+  it("robots.txt on the app host: only the agent guides are open", async () => {
+    const res = await call(`${APP}/robots.txt`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(
+      "User-agent: *\nAllow: /llms.txt\nAllow: /skill.md\nAllow: /upgrade.md\nDisallow: /",
+    );
+  });
+
+  it("robots.txt on the content host: everything is disallowed", async () => {
+    const res = await call(`${CONTENT}/robots.txt`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("User-agent: *\nDisallow: /");
+  });
 
   for (const url of [
     `${APP}/healthz`,

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "fc5faf61-fb81-49dd-8ceb-6c1178acc534",
+  "id": "350b73b6-f5b2-4c28-b2f3-395835d5d8d9",
   "prevId": "c2f3ac70-231d-4c5b-9754-c33fe36b7f51",
   "tables": {
     "agent_grants": {
@@ -826,6 +826,51 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "oauth_kv": {
+      "name": "oauth_kv",
+      "columns": {
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "value": {
+          "name": "value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "oauth_kv_exp": {
+          "name": "oauth_kv_exp",
+          "columns": ["expires_at"],
+          "isUnique": false,
+          "where": "\"oauth_kv\".\"expires_at\" is not null"
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "org_group_mappings": {
       "name": "org_group_mappings",
       "columns": {
@@ -1488,14 +1533,6 @@
         },
         "google_relink": {
           "name": "google_relink",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "removed_by_sync": {
-          "name": "removed_by_sync",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,

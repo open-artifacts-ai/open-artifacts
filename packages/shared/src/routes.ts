@@ -223,6 +223,15 @@ export const R = {
   /** POST -> 202 SyncStatus (org owner; apply a held sweep). */
   directoryHeldConfirm: (groupId: string) =>
     `/api/v1/directory/held/${seg(groupId)}/confirm`,
+  /**
+   * POST HeldSnoozeInput -> 200 SyncStatus: snooze a held sweep for
+   * HELD_SNOOZE_MS (visibility only; nothing is applied or reverted). DELETE
+   * -> 200 SyncStatus: cancel the snooze (none: no change). Org owner (a cap
+   * drops it), anyone else 404; frozen or off 409 directory_sync_off; no
+   * snoozable hold for the group 409 conflict.
+   */
+  directoryHeldSnooze: (groupId: string) =>
+    `/api/v1/directory/held/${seg(groupId)}/snooze`,
   /** GET -> TransferSummary; POST TransferInput -> TransferResult (409 member_active). Org owner, admin. */
   memberTransfer: (id: string) => `/api/v1/members/${seg(id)}/transfer`,
   /**
