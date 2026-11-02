@@ -1016,9 +1016,6 @@ function DepartedRow({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      {isReleased(m) && (
-        <p className={`col-span-full m-0 ${muted}`}>{ADDRESS_RELEASED}</p>
-      )}
       {problem && (
         <p role="alert" className={`col-span-full m-0 ${errorText}`}>
           {problem}

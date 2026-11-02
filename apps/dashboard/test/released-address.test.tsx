@@ -16,6 +16,7 @@ import {
   personFirstAtStart,
   personInSentence,
   personName,
+  personNameAtStart,
 } from "../src/layout/person";
 import { initials, UserAvatar } from "../src/layout/UserAvatar";
 import { findVisibleToast, installHarness, mountHosted } from "./harness";
@@ -137,11 +138,11 @@ it("Restore is hidden on the Removed row, with the muted line", async () => {
   expect(within(list).queryByRole("button", { name: /^Restore/ })).toBeNull();
 });
 
-it("the Departed row keeps Transfer, hides Restore, and shows the muted line", async () => {
+it("the Departed row keeps Transfer and hides Restore, with no muted line", async () => {
   mountHosted("/settings/members", true, undefined, withGone(nameless(NONE)));
   const card = await departed();
   await within(card).findByRole("button", { name: "Transfer all to me" });
-  expect(within(card).getByText(MANAGED)).toBeVisible();
+  expect(within(card).queryByText(MANAGED)).toBeNull();
   fireEvent.pointerDown(
     within(card).getByRole("button", { name: "More for Former member" }),
     { button: 0, pointerType: "mouse" },
@@ -289,6 +290,42 @@ it("Details names the owner, and the personal space, without the address", async
   );
   await screen.findByText("Former member");
   noAddress();
+});
+
+it("Details starts someone else's personal space with A former member", async () => {
+  const hosted = createHandlers({ hosted: true });
+  mountHosted(
+    `${viewerPath(LANDING)}?panel=open&tab=details`,
+    true,
+    undefined,
+    [
+      http.get(ARTIFACTS, async ({ request }) => {
+        const res = await getResponse(hosted, request);
+        if (!res?.ok) return res;
+        const body = swap(await res.json(), ["owner", "createdBy"], () => true);
+        return HttpResponse.json(
+          (body && typeof body === "object" && "space" in body
+            ? {
+                ...body,
+                space: { id: NONE, kind: "personal", name: "Personal" },
+              }
+            : body) as never,
+        );
+      }),
+    ],
+  );
+  expect(
+    await screen.findByText("A former member's personal space"),
+  ).toBeVisible();
+});
+
+it("a named owner's personal space keeps their name", () => {
+  expect(
+    personNameAtStart({ email: `removed+${PAT}@invalid`, name: "Pat Deleted" }),
+  ).toBe("Pat Deleted");
+  expect(personNameAtStart({ email: "bo@example.com", name: null })).toBe(
+    "bo@example.com",
+  );
 });
 
 it("Share's owner row names the person without the address", async () => {

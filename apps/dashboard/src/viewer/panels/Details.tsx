@@ -11,7 +11,7 @@ import {
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { useCan, useHosted } from "../../auth/permissions";
 import { ConflictNote, isConflict } from "../../layout/ConflictNote";
-import { personName } from "../../layout/person";
+import { personName, personNameAtStart } from "../../layout/person";
 import { toast } from "../../layout/toast";
 import { ConfirmDialog } from "../../settings/ConfirmDialog";
 import { MoveDialog, useMoveTargets } from "../../spaces/MoveDialog";
@@ -169,7 +169,7 @@ export function Details({ artifact }: { artifact: ArtifactSummary }) {
                 ? artifact.space.name
                 : artifact.space.id === personalSpaceId
                   ? "Personal"
-                  : `${personName(artifact.owner)}'s personal space`}
+                  : `${personNameAtStart(artifact.owner)}'s personal space`}
             </dd>
           </>
         )}

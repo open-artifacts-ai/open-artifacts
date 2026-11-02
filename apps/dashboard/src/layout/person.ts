@@ -25,6 +25,10 @@ export const personName = (u: Person) =>
 export const personInSentence = (u: Person) =>
   isReleased(u) && !realName(u) ? IN_A_SENTENCE : personName(u);
 
+/** personName at the start of a sentence or value. */
+export const personNameAtStart = (u: Person) =>
+  isReleased(u) && !realName(u) ? "A former member" : personName(u);
+
 /** personFirst at the start of a sentence. */
 export const personFirstAtStart = (u: Person) => {
   const first = personFirst(u);
