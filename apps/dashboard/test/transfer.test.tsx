@@ -655,6 +655,31 @@ it("self-hosted: the Removed filter's Restore refused by Workspace says why", as
   expect(await within(list).findByRole("alert")).toHaveTextContent(WORKSPACE);
 });
 
+it("a Restore refused because the address was released says why, inline, with no toast", async () => {
+  const released =
+    "This person's Google Workspace account was deleted, so they can't be restored. Invite them instead.";
+  mountHosted("/settings/members", true, undefined, [
+    http.post(`*${R.memberRestore(CAROL)}`, () =>
+      HttpResponse.json(
+        { error: { code: "conflict", message: released } },
+        { status: 409 },
+      ),
+    ),
+    ...removedCarol,
+  ]);
+  await openMenu(await carolRow());
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Restore…" }));
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Restore",
+    }),
+  );
+  expect(await within(await carolRow()).findByRole("alert")).toHaveTextContent(
+    released,
+  );
+  expect(screen.queryByText("Couldn't restore them.")).toBeNull();
+});
+
 it("runAll loops until nextCursor is null and reports progress", async () => {
   const run = vi
     .fn()
