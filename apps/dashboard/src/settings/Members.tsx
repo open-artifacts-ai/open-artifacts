@@ -128,6 +128,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const sends = emailEnabled(me);
+  const spaces = hasFeature(me, "spaces");
   const invite = useInviteMember();
   const domains = useSignInDomains();
   const [email, setEmail] = useState("");
@@ -285,9 +286,9 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
           >
             <p className="m-0">
               {removed.email} was removed. Restore them to bring back their
-              account and the personal artifacts you haven't transferred. They
-              come back with the access they had (no admin role) and sign in
-              again.
+              account and the {spaces && "personal "}artifacts you haven't
+              transferred. They come back with the access they had (no admin
+              role) and sign in again.
             </p>
             <Button
               type="button"
@@ -836,8 +837,8 @@ function DepartedCard({
         <>
           <p className={muted}>
             {people.length === 1
-              ? "1 person left with personal artifacts to transfer."
-              : `${people.length} people left with personal artifacts to transfer.`}
+              ? `1 person left with ${spaces ? "personal " : ""}artifacts to transfer.`
+              : `${people.length} people left with ${spaces ? "personal " : ""}artifacts to transfer.`}
           </p>
           <ul className="grid p-0">
             {people.map((d) => (
@@ -1030,6 +1031,8 @@ function RestoreDialog({
   onRefused: (why: string) => void;
 }) {
   const restore = useRestoreMember();
+  const state = useMe();
+  const spaces = state.status === "authed" && hasFeature(state.me, "spaces");
   const label = displayName(m);
   const first = firstName(m);
   return (
@@ -1042,9 +1045,9 @@ function RestoreDialog({
           {/* Manager's ruling: a guest stays a guest; anyone else comes back a member. */}
           {first} comes back{" "}
           {m.role === "guest" ? "as a guest" : "as a member (no admin role)"},
-          with any manual restriction kept, and gets back the personal artifacts
-          you haven't transferred. Their old tokens and agent connections stay
-          off, so they sign in again.
+          with any manual restriction kept, and gets back the{" "}
+          {spaces && "personal "}artifacts you haven't transferred. Their old
+          tokens and agent connections stay off, so they sign in again.
         </p>
       }
       confirm="Restore"

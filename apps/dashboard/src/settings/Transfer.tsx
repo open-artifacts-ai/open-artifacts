@@ -169,7 +169,7 @@ export function TransferDialog({
   return (
     <Modal
       onClose={busy ? () => {} : onClose}
-      title={`Transfer ${name}'s ${live} personal ${live === 1 ? "artifact" : "artifacts"}`}
+      title={`Transfer ${name}'s ${live} ${withSpaces ? "personal " : ""}${live === 1 ? "artifact" : "artifacts"}`}
       description={
         trash > 0
           ? `Plus ${trash} in trash: ${trash === 1 ? "it moves" : "they move"} too and ${trash === 1 ? "keeps its" : "keep their"} trash timer.`
@@ -249,9 +249,11 @@ export function TransferDialog({
               )}
               {person && (
                 <p className={muted}>
-                  You won't see titles or contents. {displayName(person)} gets
-                  them{withSpaces && " in their Personal"}, with {name}'s shares
-                  kept.
+                  You won't see titles or contents. {displayName(person)}{" "}
+                  {withSpaces
+                    ? "gets them in their Personal"
+                    : "becomes the owner"}
+                  , with {name}'s shares kept.
                 </p>
               )}
             </div>

@@ -9,7 +9,7 @@ import {
 } from "@testing-library/react";
 import { delay, HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
-import { installHarness, mount, server } from "./harness";
+import { installHarness, mount, mountHosted, server } from "./harness";
 
 installHarness();
 
@@ -262,6 +262,31 @@ describe("members: failures and edge cases", () => {
     );
   });
 
+  it("with spaces on, the invite's Restore offer says personal artifacts", async () => {
+    mountHosted("/settings/members", true, undefined, [
+      http.post(`*${R.members}`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "member_removed",
+              message: "This person was removed. Restore them instead.",
+              details: { userId: "gone1" },
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    ]);
+    fireEvent.click(await screen.findByRole("button", { name: "Add member" }));
+    fireEvent.change(await screen.findByLabelText("Email"), {
+      target: { value: "gone@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Restore them to bring back their account and the personal artifacts you haven't transferred.",
+    );
+  });
+
   it("inviting a removed address offers Restore instead of a toast (parity 1)", async () => {
     const posts = bodies("POST");
     server.use(
@@ -289,7 +314,7 @@ describe("members: failures and edge cases", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add member" }));
     const offer = await screen.findByRole("alert");
     expect(offer).toHaveTextContent(
-      "gone@example.com was removed. Restore them to bring back their account and the personal artifacts you haven't transferred. They come back with the access they had (no admin role) and sign in again.",
+      "gone@example.com was removed. Restore them to bring back their account and the artifacts you haven't transferred. They come back with the access they had (no admin role) and sign in again.",
     );
     expect(screen.queryByRole("status")).toBeNull();
     fireEvent.click(

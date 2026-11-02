@@ -83,7 +83,17 @@ it("self-hosted: the Departed card shows, with no spaces in the copy or the dial
     ),
   );
   expect(row).not.toHaveTextContent("space");
+  expect(
+    within(await departed()).getByText(
+      "1 person left with artifacts to transfer.",
+    ),
+  ).toBeVisible();
   const d = await openFromCard();
+  expect(
+    within(d).getByRole("heading", {
+      name: "Transfer Carol Departed's 2 artifacts",
+    }),
+  ).toBeVisible();
   expect(within(d).queryByRole("radio", { name: /To a space/ })).toBeNull();
   expect(
     within(d).getByRole("combobox", { name: "Give them to" }),
@@ -91,10 +101,63 @@ it("self-hosted: the Departed card shows, with no spaces in the copy or the dial
   await chooseOption("Give them to", "Bob Builder");
   expect(
     await within(d).findByText(
-      "You won't see titles or contents. Bob Builder gets them, with Carol Departed's shares kept.",
+      "You won't see titles or contents. Bob Builder becomes the owner, with Carol Departed's shares kept.",
     ),
   ).toBeVisible();
   expect(seen.some((c) => c.path === R.spaces)).toBe(false);
+});
+
+it("with spaces on, several people keep the word personal", async () => {
+  const dan = { ...carol, id: "Dn7tNpQrSt8uVwXy", name: "Dan Gone" };
+  mountHosted("/settings/members", true, undefined, [
+    http.get(`*${R.memberTransfer(dan.id)}`, () =>
+      HttpResponse.json({ live: 1, deleted: 0 }),
+    ),
+    http.get(`*${R.members}`, ({ request }) =>
+      HttpResponse.json(
+        new URL(request.url).searchParams.get("status")
+          ? [carol, dan]
+          : fixtures.members,
+      ),
+    ),
+    ...removedCarol,
+  ]);
+  expect(
+    await within(await departed()).findByText(
+      "2 people left with personal artifacts to transfer.",
+    ),
+  ).toBeVisible();
+});
+
+it("self-hosted: several people and the Restore confirm don't say personal", async () => {
+  const dan = { ...carol, id: "Dn7tNpQrSt8uVwXy", name: "Dan Gone" };
+  server.use(
+    http.get(`*${R.memberTransfer(dan.id)}`, () =>
+      HttpResponse.json({ live: 1, deleted: 0 }),
+    ),
+    http.get(`*${R.members}`, ({ request }) =>
+      HttpResponse.json(
+        new URL(request.url).searchParams.get("status")
+          ? [carol, dan]
+          : fixtures.members,
+      ),
+    ),
+    ...removedCarol,
+  );
+  mount("/settings/members");
+  expect(
+    await within(await departed()).findByText(
+      "2 people left with artifacts to transfer.",
+    ),
+  ).toBeVisible();
+  await openMenu(await carolRow());
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Restore…" }));
+  const d = await screen.findByRole("alertdialog", {
+    name: "Restore Carol Departed?",
+  });
+  expect(d).toHaveTextContent(
+    "gets back the artifacts you haven't transferred.",
+  );
 });
 
 it("the Departed card lists Carol with counts, never titles", async () => {
@@ -506,6 +569,9 @@ it("Restore is offered for removed people, and posts R.memberRestore", async () 
   });
   expect(d).toHaveTextContent(
     "Carol comes back as a member (no admin role), with any manual restriction kept",
+  );
+  expect(d).toHaveTextContent(
+    "gets back the personal artifacts you haven't transferred.",
   );
   fireEvent.click(within(d).getByRole("button", { name: "Restore" }));
   await waitFor(() =>
