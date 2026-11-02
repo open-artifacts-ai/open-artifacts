@@ -265,6 +265,13 @@ describe("guest on a share row, and the email, from one rule", () => {
     ],
     ["codes, outside", direct, CODES, OUT, true],
     ["Google and codes, outside", direct, {}, OUT, true],
+    [
+      "Access and Google, in-domain: Access would make a guest",
+      direct,
+      { AUTH_PROVIDERS: "access,google" },
+      IN,
+      true,
+    ],
     ["Google and codes, invite, in-domain", direct, HOSTED, IN, false],
   ])("%s", async (_name, make, over, domain, guest) => {
     const { share, list, sent } = await setup(make, over);
