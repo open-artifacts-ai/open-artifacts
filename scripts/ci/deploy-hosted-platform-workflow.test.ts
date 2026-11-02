@@ -207,7 +207,7 @@ describe("deploy-hosted-platform.yml", () => {
     );
     // The constants and the id lookup are main's too, never the tag's.
     expect(use).toContain(
-      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh; do",
+      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh platform-tags.sh; do",
     );
     expect(use).toContain(
       'cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"',
@@ -289,7 +289,7 @@ describe("deploy-hosted-platform.yml", () => {
       expect(named("Deploy and verify").env[k], k).toBeUndefined();
   });
 
-  it("only the id lookup, deploy and zones steps see secrets, through env, exactly these", () => {
+  it("only the id lookup, deploy, zones, tag read-back and expiry steps see secrets, through env, exactly these", () => {
     const withSecrets = steps.filter((s) =>
       JSON.stringify(s).includes("secrets."),
     );
@@ -297,6 +297,7 @@ describe("deploy-hosted-platform.yml", () => {
       "Resolve the resource ids",
       "Deploy and verify",
       "Zones",
+      "Every platform Worker runs the tag",
       "The deploy token's expiry",
     ]);
     // One Cloudflare token for everything; the old names are gone.
@@ -530,6 +531,25 @@ describe("deploy-hosted-platform.yml", () => {
       .run as string;
     for (const p of ["@oa/provisioner", "@oa/provisioning", "@oa/admin"])
       expect(run).toContain(`--filter ${p}`);
+  });
+
+  it("reads every Worker's tag back with main's script after a full-list run (#1064)", () => {
+    const t = named("Every platform Worker runs the tag");
+    expect(t.if).toBe(
+      "${{ inputs.targets == 'platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones' }}",
+    );
+    expect(t.run).toBe(
+      'bash "$RUNNER_TEMP/main-ci/platform-tags.sh" "$DEPLOY_ENV" "$TAG"',
+    );
+    expect(t.env).toEqual({
+      DEPLOY_ENV: "${{ inputs.env }}",
+      TAG: "${{ inputs.tag }}",
+      CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+    });
+    expect(steps.indexOf(named("Zones"))).toBeLessThan(steps.indexOf(t));
+    expect(steps.indexOf(t)).toBeLessThan(
+      steps.indexOf(named("The deploy token's expiry")),
+    );
   });
 
   it("passes the repository id for the OIDC principals, and reads back the token's expiry last", () => {

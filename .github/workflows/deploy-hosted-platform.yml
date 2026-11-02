@@ -174,7 +174,7 @@ jobs:
           done
           cp .deploy-logic/packages/provision/src/wfp.ts "$RUNNER_TEMP/main-wfp.ts"
           mkdir "$RUNNER_TEMP/main-ci"
-          for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh; do
+          for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh platform-tags.sh; do
             cp ".deploy-logic/scripts/ci/$f" "$RUNNER_TEMP/main-ci/$f"
           done
           cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"
@@ -256,6 +256,17 @@ jobs:
           set -euo pipefail
           bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" plan
           [ -n "$VERIFY_ONLY" ] || bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" apply
+      # One version everywhere (#1040, #1064): read every Worker's
+      # "workers/tag" back after a full-list run, on prod as on staging. A
+      # break-glass run (fewer targets) leaves the others on their own tag,
+      # so it is not checked here.
+      - name: Every platform Worker runs the tag
+        if: ${{ inputs.targets == 'platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones' }}
+        env:
+          DEPLOY_ENV: ${{ inputs.env }}
+          TAG: ${{ inputs.tag }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash "$RUNNER_TEMP/main-ci/platform-tags.sh" "$DEPLOY_ENV" "$TAG"
       # The token's own end date (provision's checkToken never sees it): an
       # issue naming only the secret, 30 days ahead.
       - name: The deploy token's expiry
