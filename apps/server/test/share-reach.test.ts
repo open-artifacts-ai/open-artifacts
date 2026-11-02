@@ -6,8 +6,10 @@ import { env } from "cloudflare:workers";
 import { R, ShareResultSchema, ShareSchema } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { authConfig } from "../src/auth/config.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
+import { admit } from "../src/services/identity.js";
 import { getUser } from "../src/services/users.js";
 import { direct, mailer, TEST_BROKER_KEY, uniq } from "./auth-helpers.js";
 import { fetchAndWait, login } from "./helpers.js";
@@ -283,6 +285,25 @@ describe("guest on a share row, and the email, from one rule", () => {
     expect(sent.find((x) => x.to === email)?.text).toContain(
       `Your role: ${guest ? "Viewer" : "Editor"}`,
     );
+  });
+
+  it("once a shared address has a member row, the row's role decides", async () => {
+    const e = direct({ AUTH_PROVIDERS: "access,google" });
+    const { share, list } = await setup(() => e, {});
+    const email = uniq("join", IN);
+    await share(email, "editor");
+    const row = async () => (await list()).find((r) => r.email === email);
+    expect(await row()).toMatchObject({ role: "editor", guest: true });
+    const signedIn = await admit(e, authConfig(e), {
+      provider: "google",
+      subject: uniq("sub", IN),
+      email,
+      name: null,
+      tenant: IN,
+    });
+    expect(signedIn).toMatchObject({ ok: true, user: { role: "member" } });
+    expect(await row()).toMatchObject({ role: "editor" });
+    expect(await row()).not.toHaveProperty("guest");
   });
 
   it("listing more no-row shares runs no more statements", async () => {
