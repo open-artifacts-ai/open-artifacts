@@ -8,9 +8,11 @@
 // FLEET_CONCURRENCY, each soaking whole before the next starts. Only serving,
 // active, idle installs with health ok and test hooks off move: a broken
 // install is skipped (version_skew reports it), so it can't halt a release.
-// The exception is an install that halted a version: it may take the next
-// release whatever its health or serving mode, as that may be its fix. An
-// install above the target is never downgraded.
+// The exception is an install on a halted version, or one that halted a
+// version: it gets one try at a later release whatever its health or serving
+// mode, as that may be its fix. It has to soak to earn another, so one broken
+// install can't halt every release. An install above the target is never
+// downgraded.
 //
 // Soak: every tick probes the installs upgraded to the target. One soaks once
 // its probes pass unbroken for FLEET_SOAK_MS. A tick with no probe doesn't
@@ -44,7 +46,7 @@ export const FLEET_SOAK_MS = 15 * 60_000;
 /** Passes further apart than this aren't unbroken: the clock restarts. */
 export const FLEET_SOAK_GAP_MS = 5 * 60_000;
 /** The canary isn't soaked on the target this long: fleet_halted opens. */
-export const FLEET_BLOCKED_MS = 30 * 60_000;
+export const FLEET_BLOCKED_MS = 45 * 60_000;
 /** version_skew: an install off the target this long. */
 export const FLEET_SKEW_MS = 6 * 60 * 60_000;
 /** One /healthz probe; every probe of a tick runs at once. */
@@ -63,6 +65,8 @@ export const FLEET_PASS_PREFIX = "fleet_pass:";
 export const FLEET_SOAKED_PREFIX = "fleet_soaked:";
 /** `fleet_blocked:<version>`: when the duty first saw it as the target, the canary not soaked on it. */
 export const FLEET_BLOCKED_PREFIX = "fleet_blocked:";
+/** `fleet_retry:<id>`: it spent its one try while broken. Soaking clears it. */
+export const FLEET_RETRY_PREFIX = "fleet_retry:";
 /** `fleet_behind:<id>`: when the duty first saw it off the target. */
 export const FLEET_BEHIND_PREFIX = "fleet_behind:";
 
@@ -101,6 +105,7 @@ const failKey = (v: string) => `${FLEET_FAIL_PREFIX}${v}`;
 const passKey = (v: string, id: string) => `${FLEET_PASS_PREFIX}${v}:${id}`;
 const soakedKey = (v: string, id: string) => `${FLEET_SOAKED_PREFIX}${v}:${id}`;
 const blockedKey = (v: string) => `${FLEET_BLOCKED_PREFIX}${v}`;
+const retryKey = (id: string) => `${FLEET_RETRY_PREFIX}${id}`;
 
 const SYS = `'${SYSTEM_ACTOR.key}'`;
 // Every fleet upgrade: request ids `fleet-…` (no LIKE wildcard in the prefix).
@@ -109,15 +114,15 @@ const FLEET_UP = `j.actor_key = ${SYS} AND j.kind = 'upgrade' AND j.request_id L
 // A failure of the release: an operator's cancel, or the halt's own, is not.
 const FAILED = `j.status = 'failed' AND COALESCE(j.error_code, '') <> 'canceled'`;
 // What the duty may upgrade: active (not suspended, not upgrading), idle, test
-// hooks off, and either serving and healthy or an install that halted a
-// version, which the next release may be the fix for.
-const VICTIM = (id: string) =>
-  `EXISTS (SELECT 1 FROM platform_state v WHERE v.key GLOB '${FLEET_HALT_PREFIX}*:' || ${id})`;
-const ELIGIBLE = `state = 'active' AND install_state = 'active' AND active_job_id IS NULL AND COALESCE(test_hooks, 0) = 0 AND version IS NOT NULL AND ((serving_mode = 'serving' AND health = 'ok') OR ${VICTIM("install_id")})`;
+// hooks off, and either serving and healthy or on its one try: on a halted
+// version, or having halted one, with no try spent.
+const ON_TRY = `(EXISTS (SELECT 1 FROM platform_state v WHERE v.key GLOB '${FLEET_HALT_PREFIX}' || version || ':*' OR v.key GLOB '${FLEET_HALT_PREFIX}*:' || install_id)
+  AND NOT EXISTS (SELECT 1 FROM platform_state t WHERE t.key = '${FLEET_RETRY_PREFIX}' || install_id))`;
+const ELIGIBLE = `state = 'active' AND install_state = 'active' AND active_job_id IS NULL AND COALESCE(test_hooks, 0) = 0 AND version IS NOT NULL AND ((serving_mode = 'serving' AND health = 'ok') OR ${ON_TRY})`;
 const CANARY = `SELECT install_id, version, app_host, state, install_state, serving_mode, active_job_id, test_hooks, health FROM install_status WHERE install_id = ?1`;
 // The canary's latest upgrade to ?2, any actor.
-const CANARY_JOB = `SELECT status FROM jobs WHERE install_id = ?1 AND kind = 'upgrade' AND json_extract(args, '$.to') = ?2 ORDER BY created_at DESC, id DESC LIMIT 1`;
-const BEHIND = `SELECT install_id, version FROM install_status WHERE ${ELIGIBLE} AND version <> ?1 AND install_id <> ?2 ORDER BY created_at, install_id`;
+const CANARY_JOB = `SELECT status, error_code FROM jobs WHERE install_id = ?1 AND kind = 'upgrade' AND json_extract(args, '$.to') = ?2 ORDER BY created_at DESC, id DESC LIMIT 1`;
+const BEHIND = `SELECT install_id, version, serving_mode, health FROM install_status WHERE ${ELIGIBLE} AND version <> ?1 AND install_id <> ?2 ORDER BY created_at, install_id`;
 const OPEN = `SELECT COUNT(*) AS n FROM jobs j WHERE ${FLEET_UP} AND j.status IN ('queued', 'running')`;
 // The batch of version `to`, as SQL: every install a fleet upgrade to it
 // reached, not yet soaked there. A canceled job counts if the install is on
@@ -125,11 +130,12 @@ const OPEN = `SELECT COUNT(*) AS n FROM jobs j WHERE ${FLEET_UP} AND j.status IN
 // out, or the install going away. Suspended, paused, busy or rolled back, it
 // still holds the next batch: a person acted on it, so nothing moves past it.
 const BATCH = (to: string) =>
-  `SELECT 1 FROM jobs j JOIN install_status s ON s.install_id = j.install_id
+  `SELECT j.install_id AS install_id FROM jobs j JOIN install_status s ON s.install_id = j.install_id
 WHERE ${FLEET_UP} AND json_extract(j.args, '$.to') = ${to}
   AND (j.status = 'done' OR (j.status = 'failed' AND j.error_code = 'canceled' AND s.version = ${to}))
   AND s.state NOT IN ('deleting', 'deleted')
   AND NOT EXISTS (SELECT 1 FROM platform_state p WHERE p.key = '${FLEET_SOAKED_PREFIX}' || ${to} || ':' || j.install_id)`;
+const HELD = `${BATCH("?1")} LIMIT 1`;
 // Every failed fleet upgrade, with the version it halts.
 const HALT_JOBS = `SELECT j.install_id AS install_id, j.id AS job_id, j.kind AS job_kind, j.error_code AS code, substr(j.error_message, 1, 200) AS message, COALESCE(j.finished_at, j.updated_at) AS since, json_extract(j.args, '$.to') AS version
 FROM jobs j WHERE ${FLEET_UP} AND ${FAILED}`;
@@ -160,9 +166,11 @@ const SET_ONCE =
 const SET_PASS =
   "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
 const CLEAR = "DELETE FROM platform_state WHERE key = ?1";
-const AUDIT = `INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, '${SYSTEM_ACTOR.key}', ?2, 'fleet.halted', ?3)`;
+// Both only for a new mark, so they run before the batch writes it.
+const AUDIT = `INSERT INTO hosted_audit (at, actor, install_id, action, detail) SELECT ?1, '${SYSTEM_ACTOR.key}', ?2, 'fleet.halted', ?3 WHERE NOT EXISTS (SELECT 1 FROM platform_state WHERE key = ?4)`;
 // A new halt owes an email, even while the alert is already open.
-const OWE_EMAIL = "UPDATE platform_state SET value = 0 WHERE key = ?1";
+const OWE_EMAIL =
+  "UPDATE platform_state SET value = 0 WHERE key = ?1 AND NOT EXISTS (SELECT 1 FROM platform_state WHERE key = ?2)";
 // A started instance stops at its recheck (checkJob: the job is failed), so
 // no terminate. Queued only: one already running finishes.
 const CANCEL_QUEUED = `UPDATE jobs AS j SET status = 'failed', error_code = 'canceled', error_message = 'the fleet rollout of this version halted', finished_at = ?2, updated_at = ?2
@@ -263,8 +271,10 @@ function isHalted(st: FleetState, version: string): boolean {
   return false;
 }
 
-/** Whether this install halted a version, so the next release may be its fix. */
-function isVictim(st: FleetState, id: string): boolean {
+/** Whether this install has its one try: as ON_TRY, for what the tick read. */
+function onTry(st: FleetState, id: string, version: string | null): boolean {
+  if (st.rows.has(retryKey(id))) return false;
+  if (version !== null && isHalted(st, version)) return true;
   for (const key of st.rows.keys())
     if (key.startsWith(FLEET_HALT_PREFIX) && key.endsWith(`:${id}`))
       return true;
@@ -285,10 +295,12 @@ async function halt(
   const key = haltKey(version, id);
   await d1(
     db.batch([
+      db.prepare(AUDIT).bind(now, id, JSON.stringify({ version }), key),
+      db
+        .prepare(OWE_EMAIL)
+        .bind(alertStateKey("fleet_halted", "notified_at"), key),
       db.prepare(SET_ONCE).bind(key, now),
       db.prepare(CANCEL_QUEUED).bind(version, now),
-      db.prepare(AUDIT).bind(now, id, JSON.stringify({ version })),
-      db.prepare(OWE_EMAIL).bind(alertStateKey("fleet_halted", "notified_at")),
     ]),
   );
   if (!st.rows.has(key)) st.rows.set(key, { key, value: now, updated_at: now });
@@ -392,7 +404,11 @@ export async function fleetDue(
   const manage = bound(env.MANAGE_INSTALL);
 
   const ready = await canaryReady(env, now, st, canary, target, manage);
-  if (!ready) return;
+  if (!ready) {
+    await stamp(db, now, st, target);
+    return;
+  }
+  await clearBlocked(db, st);
 
   // A batch starts whole, and only once the last one has soaked: the watch
   // holds until then, and this until its last job is done. The insert's
@@ -400,10 +416,12 @@ export async function fleetDue(
   const open = await d1(db.prepare(OPEN).first<{ n: number }>());
   if ((open?.n ?? 0) > 0) return;
   const { results } = await d1(
-    db
-      .prepare(BEHIND)
-      .bind(target, canaryId)
-      .all<{ install_id: string; version: string }>(),
+    db.prepare(BEHIND).bind(target, canaryId).all<{
+      install_id: string;
+      version: string;
+      serving_mode: string | null;
+      health: string | null;
+    }>(),
   );
   let slots = FLEET_CONCURRENCY;
   for (const r of results) {
@@ -415,16 +433,20 @@ export async function fleetDue(
       continue;
     }
     if (!below) continue;
-    if (await upgrade(env, manage, now, r.install_id, r.version, target))
+    const broken = r.serving_mode !== "serving" || r.health !== "ok";
+    if (
+      await upgrade(env, manage, now, r.install_id, r.version, target, broken)
+    )
       slots--;
   }
 }
 
 /**
  * The clock of canary_blocked: from when the duty first saw a target the canary
- * hasn't soaked on, whatever the reason. It stops only once the canary has
- * soaked, or the target halted (fleet_halted says so itself). An older stamp
- * stays, so a release shipped during a block doesn't read as an all-clear.
+ * hasn't soaked on, whatever the reason, and again if a soaked canary can't
+ * lead. It stops only once the canary is ready, or the target halted
+ * (fleet_halted says so itself). An older stamp stays, so a release shipped
+ * during a block doesn't read as an all-clear.
  */
 async function trackCanary(
   db: D1Database,
@@ -433,18 +455,29 @@ async function trackCanary(
   target: string,
   canaryId: string,
 ): Promise<void> {
+  if (isHalted(st, target)) await clearBlocked(db, st);
+  else if (!st.rows.has(soakedKey(target, canaryId)))
+    await stamp(db, now, st, target);
+}
+
+async function stamp(
+  db: D1Database,
+  now: number,
+  st: FleetState,
+  target: string,
+): Promise<void> {
   const key = blockedKey(target);
-  if (st.rows.has(soakedKey(target, canaryId)) || isHalted(st, target)) {
-    for (const k of [...st.rows.keys()])
-      if (k.startsWith(FLEET_BLOCKED_PREFIX)) {
-        await d1(db.prepare(CLEAR).bind(k).run());
-        st.rows.delete(k);
-      }
-    return;
-  }
   if (st.rows.has(key)) return;
   await d1(db.prepare(SET_ONCE).bind(key, now).run());
   st.rows.set(key, { key, value: now, updated_at: now });
+}
+
+async function clearBlocked(db: D1Database, st: FleetState): Promise<void> {
+  for (const k of [...st.rows.keys()])
+    if (k.startsWith(FLEET_BLOCKED_PREFIX)) {
+      await d1(db.prepare(CLEAR).bind(k).run());
+      st.rows.delete(k);
+    }
 }
 
 /** Moves the canary toward the target; true once it has soaked there. */
@@ -469,10 +502,13 @@ async function canaryReady(
   )
     return stuck("unavailable");
   const id = canary.install_id;
-  const victim = isVictim(st, id);
-  if (canary.serving_mode !== "serving" && !victim) return stuck("unavailable");
+  const exempt = onTry(st, id, canary.version);
+  if (canary.serving_mode !== "serving" && !exempt) return stuck("unavailable");
   const last = await d1(
-    db.prepare(CANARY_JOB).bind(id, target).first<{ status: string }>(),
+    db
+      .prepare(CANARY_JOB)
+      .bind(id, target)
+      .first<{ status: string; error_code: string | null }>(),
   );
   const openJob = last?.status === "queued" || last?.status === "running";
   if (canary.install_state !== "active" || canary.active_job_id !== null) {
@@ -487,14 +523,20 @@ async function canaryReady(
     return stuck("bad_version");
   }
   if (c > 0) return stuck("off_target");
-  if (c < 0 && canary.health !== "ok" && !victim) return stuck("unhealthy");
+  if (c < 0 && canary.health !== "ok" && !exempt) return stuck("unhealthy");
   if (!(await published(env, target))) return false;
   if (c < 0) {
-    await upgrade(env, manage, now, id, canary.version, target);
+    const broken = canary.serving_mode !== "serving" || canary.health !== "ok";
+    await upgrade(env, manage, now, id, canary.version, target, broken);
     return false;
   }
-  // On the target, its upgrade (if it had one) done and not just written.
-  if (last !== null && last.status !== "done") {
+  // On the target, its upgrade (if it had one) done and not just written. A
+  // cancel landed after the version moved: it soaked, so it counts.
+  if (
+    last !== null &&
+    last.status !== "done" &&
+    last.error_code !== "canceled"
+  ) {
     console.log("provapi fleet canary_not_done");
     return false;
   }
@@ -538,6 +580,7 @@ async function upgrade(
   installId: string,
   from: string,
   to: string,
+  broken = false,
 ): Promise<boolean> {
   let id: string | null;
   try {
@@ -561,8 +604,20 @@ async function upgrade(
     console.error("provapi fleet install_failed", dutyCategory(e), installId);
     return false;
   }
-  // null: already queued for this target, at the cap, halted, or not eligible.
-  if (id === null) return false;
+  // null: already queued for this target, at the cap, halted, held by the
+  // last batch, or not eligible.
+  if (id === null) {
+    const by = await env.PLATFORM_DB.prepare(HELD)
+      .bind(to)
+      .first<{ install_id: string }>()
+      .catch(() => null);
+    if (by) console.log(`provapi fleet held by ${by.install_id}`);
+    return false;
+  }
+  if (broken)
+    await d1(
+      env.PLATFORM_DB.prepare(SET_ONCE).bind(retryKey(installId), now).run(),
+    ).catch(() => console.error("provapi fleet retry_mark_failed", installId));
   console.log("provapi fleet upgrade queued", installId, id, `to=${to}`);
   try {
     await startJob(manage, id);
@@ -650,10 +705,12 @@ async function passed(
     db.batch([
       db.prepare(SET_ONCE).bind(done, now),
       db.prepare(CLEAR).bind(key),
+      db.prepare(CLEAR).bind(retryKey(id)),
     ]),
   );
   st.rows.set(done, { key: done, value: now, updated_at: now });
   st.rows.delete(key);
+  st.rows.delete(retryKey(id));
   console.log("provapi fleet soaked", id, target);
   return true;
 }
@@ -738,6 +795,21 @@ async function prune(
   }
 }
 
+/** A row's version and the install's fleet upgrade to it, if it had one. */
+async function named(db: D1Database, id: string, version: string | null) {
+  if (version === null) return {};
+  const job = await d1(
+    db
+      .prepare(MARK_JOB)
+      .bind(id, version)
+      .first<{ id: string; kind: string }>(),
+  );
+  return { version, job_id: job?.id ?? null, job_kind: job?.kind ?? null };
+}
+
+const isHeld = async (db: D1Database, target: string) =>
+  (await d1(db.prepare(HELD).bind(target).first())) !== null;
+
 /**
  * fleet_halted and version_skew for this tick.
  * - fleet_halted: halts on the target, any halt on another version in the
@@ -785,18 +857,36 @@ export async function fleetConditions(
       .map((r) => r.value);
     const since = stamps.length > 0 ? Math.min(...stamps) : null;
     if (canary !== null && since !== null && now - since >= FLEET_BLOCKED_MS)
-      rows.push(row({ install_id: canary, code: "canary_blocked", since }));
+      rows.push(
+        row({
+          install_id: canary,
+          code: "canary_blocked",
+          since,
+          ...(await named(db, canary, target)),
+        }),
+      );
     if (canary !== null && target === null)
       rows.push(row({ code: "no_target", since: now }));
-    fleet_halted = { open: rows.length > 0, rows };
+    // Nothing to report, but a batch still unsoaked: no all-clear yet.
+    const held =
+      rows.length === 0 && target !== null && (await isHeld(db, target));
+    fleet_halted = held ? unknown : { open: rows.length > 0, rows };
   } catch {
     console.error("provapi alert fleet query_error");
     fleet_halted = unknown;
   }
   if (canary === null || target === null)
     return { fleet_halted, version_skew: unknown };
-  const rows = [...st.behind]
-    .filter(([, at]) => now - at >= FLEET_SKEW_MS)
-    .map(([id, at]) => row({ install_id: id, code: "behind", since: at }));
+  const rows: AlertRow[] = [];
+  for (const [id, at] of st.behind)
+    if (now - at >= FLEET_SKEW_MS)
+      rows.push(
+        row({
+          install_id: id,
+          code: "behind",
+          since: at,
+          ...(await named(db, id, target)),
+        }),
+      );
   return { fleet_halted, version_skew: { open: rows.length > 0, rows } };
 }

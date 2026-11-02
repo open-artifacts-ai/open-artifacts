@@ -22,6 +22,7 @@ import {
   FLEET_FAIL_PREFIX,
   FLEET_HALT_ALERT_MS,
   FLEET_KEEP_MS,
+  FLEET_RETRY_PREFIX,
   FLEET_SKEW_MS,
   FLEET_SOAK_GAP_MS,
   FLEET_SOAK_MS,
@@ -1489,6 +1490,259 @@ describe("#1110 review: halts count per version, and say so", () => {
     expect(await stateKeys("fleet_halt:")).toEqual([
       `fleet_halt:${TARGET}:${a}`,
     ]);
+  });
+});
+
+describe("#1110 last round", () => {
+  const seedHalt = (v: string, id: string) =>
+    db
+      .prepare(
+        "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2)",
+      )
+      .bind(`fleet_halt:${v}:${id}`, NOW - MIN)
+      .run();
+
+  describe("F1: an exempted install gets one try", () => {
+    it("a broken install takes one release, and isn't exempt for the next", async () => {
+      const canary = await on("0.93.1", { created: 0 });
+      await soaked(canary, "0.93.1");
+      const broken = await on(TARGET, { created: 5, health: "failing" });
+      await seedHalt(TARGET, broken);
+      const f = fakes({ canary, tag: "v0.93.1" });
+      await fleetDue(f.env, NOW, f.opts);
+      expect(await queued()).toEqual([broken]);
+      expect(await stateKeys(FLEET_RETRY_PREFIX)).toEqual([
+        `${FLEET_RETRY_PREFIX}${broken}`,
+      ]);
+      // It fails. The release halts, once.
+      const [j] = await fleetJobs();
+      await finish(j?.id, "failed", NOW + MIN, "upgrade_rolled_back");
+      await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+      expect(await stateKeys("fleet_halt:0.93.1:")).toHaveLength(1);
+      // The next release doesn't touch it, so it can't halt that one too.
+      const next = await on("0.93.2", { created: 0 });
+      await soaked(next, "0.93.2");
+      const g = fakes({ canary: next, tag: "v0.93.2" });
+      await fleetDue(g.env, NOW + 4 * MIN, g.opts);
+      expect(await queued()).toEqual([canary]);
+      expect(await stateKeys("fleet_halt:0.93.2:")).toEqual([]);
+    });
+
+    it("soaking gives the try back", async () => {
+      const canary = await on(TARGET, { created: 0 });
+      await soaked(canary);
+      const id = await on(TARGET, { created: 5 });
+      await fleetJob(id, {});
+      await db
+        .prepare(
+          "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2)",
+        )
+        .bind(`${FLEET_RETRY_PREFIX}${id}`, NOW)
+        .run();
+      const f = fakes({ canary });
+      await ticks(f, NOW, NOW + FLEET_SOAK_MS + 2 * MIN);
+      expect(await stateKeys(FLEET_RETRY_PREFIX)).toEqual([]);
+    });
+
+    it("a healthy install on a halted version spends no try", async () => {
+      const canary = await on("0.93.1", { created: 0 });
+      await soaked(canary, "0.93.1");
+      const fine = await on(TARGET, { created: 5 });
+      await seedHalt(TARGET, canary);
+      const f = fakes({ canary, tag: "v0.93.1" });
+      await fleetDue(f.env, NOW, f.opts);
+      expect(await queued()).toEqual([fine]);
+      expect(await stateKeys(FLEET_RETRY_PREFIX)).toEqual([]);
+    });
+  });
+
+  it("F3: every install on the halted version is exempt, not only the one that tripped it", async () => {
+    const canary = await on("0.93.1", { created: 0 });
+    await soaked(canary, "0.93.1");
+    const tripped = await on(TARGET, { created: 5, health: "failing" });
+    const other = await on(TARGET, { created: 6, health: "failing" });
+    const unrelated = await on("0.92.0", { created: 7, health: "failing" });
+    await seedHalt(TARGET, tripped);
+    const f = fakes({ canary, tag: "v0.93.1" });
+    await fleetDue(f.env, NOW, f.opts);
+    expect(await queued()).toEqual([tripped, other]);
+    expect(unrelated).toBeTruthy();
+  });
+
+  it("F1: a broken canary gets one try too", async () => {
+    const canary = await on(TARGET, { health: "failing" });
+    await seedHalt(TARGET, canary);
+    const f = fakes({ canary, tag: "v0.93.1" });
+    await fleetDue(f.env, NOW, f.opts);
+    expect(await queued()).toEqual([canary]);
+    const [j] = await fleetJobs();
+    await finish(j?.id, "failed", NOW + MIN, "upgrade_rolled_back");
+    const g = fakes({ canary, tag: "v0.93.2" });
+    await fleetDue(g.env, NOW + 2 * MIN, g.opts);
+    expect(await fleetJobs()).toHaveLength(1);
+  });
+
+  describe("F2: no silent stall after the canary soaks", () => {
+    it("a canceled job on a canary that landed still releases the rest", async () => {
+      const canary = await on(TARGET, { created: 0 });
+      await fleetJob(canary, { status: "failed", error_code: "canceled" });
+      const rest = await on("0.92.0", { created: 5 });
+      const f = fakes({ canary });
+      await ticks(f, NOW, NOW + FLEET_SOAK_MS + 2 * MIN);
+      expect(await queued()).toEqual([rest]);
+      expect(await stateKeys(FLEET_BLOCKED_PREFIX)).toEqual([]);
+    });
+
+    it("the stamp clears only when the canary is ready, and comes back if it stops", async () => {
+      const canary = await on(TARGET, { created: 0 });
+      await soaked(canary);
+      const f = fakes({ canary });
+      await fleetDue(f.env, NOW, f.opts);
+      expect(await stateKeys(FLEET_BLOCKED_PREFIX)).toEqual([]);
+      // Soaked, but it can no longer lead: paused by a person.
+      await db
+        .prepare(
+          "UPDATE install_lifecycle SET serving_mode = 'paused' WHERE install_id = ?1",
+        )
+        .bind(canary)
+        .run();
+      await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+      const c = await fleetConditions(f.env, NOW + 2 * MIN + FLEET_BLOCKED_MS);
+      expect(c.fleet_halted.rows.map((r) => r.code)).toEqual([
+        "canary_blocked",
+      ]);
+    });
+  });
+
+  describe("F4: a held rollout", () => {
+    async function held() {
+      const canary = await on(TARGET, { created: 0 });
+      await soaked(canary);
+      const member = await on(TARGET, { created: 5 });
+      await fleetJob(member, {});
+      await lifecycleSuspend(member);
+      await on("0.92.0", { created: 9 });
+      return { canary, member, f: fakes({ canary }) };
+    }
+
+    it("logs who holds it", async () => {
+      const { member, f } = await held();
+      const lines = captureLogs(vi.spyOn);
+      await fleetDue(f.env, NOW, f.opts);
+      expect(lines).toContain(`provapi fleet held by ${member}`);
+    });
+
+    it("sends no fleet_halted all-clear while held", async () => {
+      const { f } = await held();
+      const c = await fleetConditions(f.env, NOW);
+      expect(c.fleet_halted).toEqual({ open: null, rows: [] });
+    });
+
+    it("clears as usual when nothing holds it", async () => {
+      const canary = await on(TARGET, { created: 0 });
+      await soaked(canary);
+      const f = fakes({ canary });
+      const c = await fleetConditions(f.env, NOW);
+      expect(c.fleet_halted).toEqual({ open: false, rows: [] });
+    });
+
+    it("a real row still opens the alert while held", async () => {
+      const { member, f } = await held();
+      await seedHalt("0.92.9", member);
+      const c = await fleetConditions(f.env, NOW);
+      expect(c.fleet_halted.open).toBe(true);
+    });
+  });
+
+  describe("F5: the rows name version and job", () => {
+    it("canary_blocked", async () => {
+      const canary = await on("0.92.0");
+      const f = fakes({ canary });
+      await fleetDue(f.env, NOW, f.opts);
+      const [j] = await fleetJobs();
+      await finish(j?.id, "failed", NOW + MIN, "canceled");
+      await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+      const c = await fleetConditions(f.env, NOW + FLEET_BLOCKED_MS);
+      expect(c.fleet_halted.rows[0]).toMatchObject({
+        code: "canary_blocked",
+        version: TARGET,
+        job_id: j?.id,
+      });
+    });
+
+    it("version_skew", async () => {
+      const canary = await on(TARGET);
+      await soaked(canary);
+      const behind = await on("0.92.0", { created: 5 });
+      const f = fakes({ canary });
+      await fleetDue(f.env, NOW, f.opts);
+      const [j] = await fleetJobs();
+      const c = await fleetConditions(f.env, NOW + FLEET_SKEW_MS);
+      expect(c.version_skew.rows[0]).toMatchObject({
+        install_id: behind,
+        version: TARGET,
+        job_id: j?.id,
+      });
+    });
+
+    it("version_skew with no job says null", async () => {
+      const canary = await on(TARGET);
+      await soaked(canary);
+      const behind = await on("0.92.0", { created: 5, health: "failing" });
+      const f = fakes({ canary });
+      await fleetDue(f.env, NOW, f.opts);
+      const c = await fleetConditions(f.env, NOW + FLEET_SKEW_MS);
+      expect(c.version_skew.rows[0]).toMatchObject({
+        install_id: behind,
+        version: TARGET,
+        job_id: null,
+      });
+    });
+  });
+
+  it("F8: a repeat of a halt writes no second audit row and owes no second email", async () => {
+    const canary = await on("0.92.0");
+    const f = fakes({ canary });
+    await fleetDue(f.env, NOW, f.opts);
+    const [j] = await fleetJobs();
+    await finish(j?.id, "failed", NOW + MIN, "upgrade_rolled_back");
+    await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+    // The tick's state was read before an overlapping tick wrote the mark.
+    await db
+      .prepare(
+        "INSERT INTO platform_state (key, value, updated_at) VALUES ('fleet_halted_notified_at', ?1, ?1)",
+      )
+      .bind(NOW)
+      .run();
+    const stale = new Proxy(db, {
+      get(t, p) {
+        if (p !== "prepare") {
+          const v = Reflect.get(t, p);
+          return typeof v === "function" ? v.bind(t) : v;
+        }
+        return (sql: string) =>
+          sql.startsWith("SELECT key, value, updated_at FROM platform_state")
+            ? t.prepare(
+                "SELECT key, value, updated_at FROM platform_state WHERE 0",
+              )
+            : t.prepare(sql);
+      },
+    });
+    await fleetDue(
+      { ...f.env, PLATFORM_DB: stale } as ProvapiEnv,
+      NOW + 4 * MIN,
+      f.opts,
+    );
+    expect(
+      await rows(
+        "SELECT id FROM hosted_audit WHERE action = 'fleet.halted' AND install_id = ?1",
+        canary,
+      ),
+    ).toHaveLength(1);
+    const [n] = await rows(
+      "SELECT value FROM platform_state WHERE key = 'fleet_halted_notified_at'",
+    );
+    expect(n?.value).toBe(NOW);
   });
 });
 
