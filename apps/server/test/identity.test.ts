@@ -11,7 +11,12 @@ import { oauthApi } from "../src/mcp/oauth-api.js";
 import type { UserPresence } from "../src/runtime/presence.js";
 import {
   admit,
+  CONFLICT_KEY,
+  CONFLICT_MAX,
+  CONFLICT_SHOWN_MS,
   codeEligibility,
+  conflictProblem,
+  PERSONAL_TENANT,
   resetIdentity,
 } from "../src/services/identity.js";
 import { direct, seedShare, seedUser, trial, uniq } from "./auth-helpers.js";
@@ -656,5 +661,286 @@ describe("user inserts", () => {
       .map(([f]) => f);
     expect(Object.keys(src).length).toBeGreaterThan(20);
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("admit (personal Google account, no hd)", () => {
+  // Pinned at midday UTC: the conflict flag's windows are relative to `now`.
+  const NOON = Date.UTC(2026, 9, 29, 12, 0, 0);
+  const p = (o: Partial<VerifiedIdentity> = {}) =>
+    g({ email: uniq("pat", "gmail.com"), tenant: null, ...o });
+  const flag = () =>
+    one<{ value: string } | null>(
+      "select value from settings where key = ?",
+      CONFLICT_KEY,
+    );
+  /** The owner's conflict list (CONFLICT_KEY), newest first. */
+  const flags = async () =>
+    JSON.parse((await flag())?.value ?? "[]") as { uid: string; at: number }[];
+  const flagOf = async (uid: string) =>
+    (await flags()).find((f) => f.uid === uid) ?? null;
+  const refusedRows = (uid: string) =>
+    env.DB.prepare(
+      "select actor_kind, actor_id, detail from audit_events where action = 'auth.refused' and target_id = ?",
+    )
+      .bind(uid)
+      .all<{ actor_kind: string; actor_id: string | null; detail: string }>()
+      .then((r) => r.results);
+
+  it("an invited row (never signed in) is admitted and its sub pinned", async () => {
+    const id = p();
+    const uid = await seedUser(id.email, "member");
+    const r = await admit(env, cfg(), id, NOON);
+    expect(r).toMatchObject({ ok: true, user: { id: uid, role: "member" } });
+    expect(await subjectOf(uid)).toBe(id.subject);
+    expect(
+      await one<{ t: string }>(
+        "select tenant t from identities where user_id = ?",
+        uid,
+      ),
+    ).toEqual({ t: PERSONAL_TENANT });
+    // The pin holds on the next sign-in.
+    expect(await admit(env, cfg(), id, NOON)).toMatchObject({ ok: true });
+  });
+
+  it("an uninvited address is refused and no user is created, even with join = member or as OWNER_EMAIL", async () => {
+    for (const asOwner of [false, true]) {
+      const id = p();
+      const e = direct({
+        AUTH_DOMAIN_JOIN: "member",
+        ...(asOwner ? { OWNER_EMAIL: id.email } : {}),
+      });
+      expect(await admit(e, authConfig(e), id, NOON)).toEqual({
+        ok: false,
+        reason: "no_access",
+      });
+      expect(await count("users where email = ?", id.email)).toBe(0);
+      expect(await count("identities where subject = ?", id.subject)).toBe(0);
+    }
+  });
+
+  it("an AUTH_DOMAINS address with no hd is refused (tenant), even when invited", async () => {
+    const id = p({ email: uniq("in") });
+    const uid = await seedUser(id.email, "member");
+    expect(await admit(env, cfg(), id, NOON)).toEqual({
+      ok: false,
+      reason: "tenant",
+    });
+    expect(await subjectOf(uid)).toBeNull();
+  });
+
+  it("a removed, suspended or lapsed guest row is refused (removed), never revived", async () => {
+    for (const status of ["removed", "suspended"]) {
+      const id = p();
+      await seedUser(id.email, "guest", { status });
+      if (status === "removed")
+        await env.DB.prepare(
+          "update users set guest_lapsed = 1 where email = ?",
+        )
+          .bind(id.email)
+          .run();
+      expect(await admit(env, cfg(), id, NOON)).toEqual({
+        ok: false,
+        reason: "removed",
+      });
+      expect(await count("identities where subject = ?", id.subject)).toBe(0);
+    }
+  });
+
+  it("a guest stays a guest (no hd proves no domain membership)", async () => {
+    const id = p();
+    const uid = await seedUser(id.email, "guest");
+    const r = await admit(env, cfg(), id, NOON);
+    expect(r).toMatchObject({ ok: true, user: { id: uid, role: "guest" } });
+    expect((await rowOf(uid)).role).toBe("guest");
+  });
+
+  it("another Google account for a pinned person: identity_conflict, one audit row an hour, owner flag with no address", async () => {
+    const email = uniq("pin", "gmail.com");
+    const uid = await seedUser(email, "member", {
+      googleSub: `first-${email}`,
+      tenant: PERSONAL_TENANT,
+    });
+    const other = p({ email, subject: `other-${email}` });
+    for (const at of [NOON, NOON + 60_000])
+      expect(await admit(env, cfg(), other, at)).toEqual({
+        ok: false,
+        reason: "identity_conflict",
+      });
+    expect(await subjectOf(uid)).toBe(`first-${email}`);
+    const rows = await refusedRows(uid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.actor_kind).toBe("system");
+    expect(JSON.parse(rows[0]?.detail ?? "")).toEqual({
+      provider: "google",
+      reason: "identity_conflict",
+    });
+    for (const s of [email, other.subject, `first-${email}`])
+      expect(rows[0]?.detail).not.toContain(s);
+    // An hour on, the next attempt is audited again.
+    await admit(env, cfg(), other, NOON + 61 * 60_000);
+    expect(await refusedRows(uid)).toHaveLength(2);
+    const v = (await flag())?.value ?? "";
+    expect(await flagOf(uid)).toEqual({ uid, at: NOON + 61 * 60_000 });
+    // One entry per person: the later conflict replaced the earlier.
+    expect((await flags()).filter((f) => f.uid === uid)).toHaveLength(1);
+    expect(v).not.toContain(email);
+    const sentence = conflictProblem(v, NOON + 62 * 60_000);
+    expect(sentence).toMatch(/^A Google sign-in was refused/);
+    expect(sentence).not.toMatch(/@/);
+    // Shown for a week after the latest conflict, then gone.
+    expect(
+      conflictProblem(
+        JSON.stringify([{ uid, at: NOON + 61 * 60_000 }]),
+        NOON + 61 * 60_000 + CONFLICT_SHOWN_MS,
+      ),
+    ).toBeNull();
+  });
+
+  it("a Workspace sub mismatch is flagged the same way", async () => {
+    const email = uniq("ws");
+    const uid = await seedUser(email, "member", { googleSub: `ws1-${email}` });
+    expect(
+      await admit(env, cfg(), g({ email, subject: `ws2-${email}` }), NOON),
+    ).toEqual({ ok: false, reason: "identity_conflict" });
+    expect(await refusedRows(uid)).toHaveLength(1);
+  });
+
+  it("a subject already pinned to another row is refused for this row", async () => {
+    const sub = `held-${crypto.randomUUID()}`;
+    const holder = await seedUser(uniq("a", "gmail.com"), "member", {
+      googleSub: sub,
+      tenant: PERSONAL_TENANT,
+    });
+    const id = p({ subject: sub });
+    const uid = await seedUser(id.email, "member");
+    expect(await admit(env, cfg(), id, NOON)).toEqual({
+      ok: false,
+      reason: "identity_conflict",
+    });
+    expect(await subjectOf(uid)).toBeNull();
+    // R4: flagged against the pinned row's owner, not the address's row.
+    expect(await flagOf(holder)).toEqual({ uid: holder, at: NOON });
+    expect(await flagOf(uid)).toBeNull();
+    expect(await refusedRows(holder)).toHaveLength(1);
+    expect(await refusedRows(uid)).toHaveLength(0);
+  });
+
+  it("the invited owner of a Gmail-only install (no AUTH_DOMAINS) is admitted", async () => {
+    const e = direct({ AUTH_DOMAINS: "", AUTH_DOMAIN_JOIN: "invite" });
+    const id = p();
+    const uid = await seedUser(id.email, "owner");
+    const r = await admit(e, authConfig(e), id, NOON);
+    expect(r).toMatchObject({ ok: true, user: { id: uid, role: "owner" } });
+    expect(await subjectOf(uid)).toBe(id.subject);
+  });
+
+  it("resetting the flagged person's link clears the owner's flag", async () => {
+    const email = uniq("rs", "gmail.com");
+    const uid = await seedUser(email, "member", {
+      googleSub: `rs1-${email}`,
+      tenant: PERSONAL_TENANT,
+    });
+    // Another person's conflict, which the reset must keep.
+    const other = uniq("rso", "gmail.com");
+    const otherUid = await seedUser(other, "member", {
+      googleSub: `rso1-${other}`,
+      tenant: PERSONAL_TENANT,
+    });
+    await admit(env, cfg(), p({ email: other, subject: `x-${other}` }), NOON);
+    await admit(env, cfg(), p({ email, subject: `rs2-${email}` }), NOON);
+    expect(await flagOf(uid)).toEqual({ uid, at: NOON });
+    await resetIdentity(env, admin, uid);
+    expect(await flagOf(uid)).toBeNull();
+    expect(await flagOf(otherUid)).toEqual({ uid: otherUid, at: NOON });
+    // The new account links on its next sign-in.
+    expect(
+      await admit(env, cfg(), p({ email, subject: `rs2-${email}` }), NOON),
+    ).toMatchObject({ ok: true });
+  });
+  it("R1: a no-hd token outside gmail.com and googlemail.com is refused (tenant), even when invited", async () => {
+    for (const domain of ["partner.com", "gmail.co", "mail.gmail.com"]) {
+      const id = p({ email: uniq("bob", domain) });
+      const uid = await seedUser(id.email, "member");
+      expect(await admit(env, cfg(), id, NOON)).toEqual({
+        ok: false,
+        reason: "tenant",
+      });
+      expect(await subjectOf(uid)).toBeNull();
+    }
+  });
+
+  it("R1: an invited googlemail.com address is admitted", async () => {
+    const id = p({ email: uniq("gm", "googlemail.com") });
+    const uid = await seedUser(id.email, "member");
+    expect(await admit(env, cfg(), id, NOON)).toMatchObject({
+      ok: true,
+      user: { id: uid },
+    });
+    expect(await subjectOf(uid)).toBe(id.subject);
+  });
+
+  it("R3: a Workspace sign-in by a personal identity's sub adopts the tenant", async () => {
+    const email = uniq("adopt", "gmail.com");
+    const sub = `ad-${email}`;
+    const uid = await seedUser(email, "member", {
+      googleSub: sub,
+      tenant: PERSONAL_TENANT,
+    });
+    const tenantOf = () =>
+      one<{ t: string }>(
+        "select tenant t from identities where user_id = ?",
+        uid,
+      );
+    // Still a personal sign-in: the tenant stays ''.
+    expect(
+      await admit(env, cfg(), p({ email, subject: sub }), NOON),
+    ).toMatchObject({ ok: true });
+    expect(await tenantOf()).toEqual({ t: PERSONAL_TENANT });
+    const e = direct({ AUTH_DOMAINS: "a.com,gmail.com" });
+    expect(
+      await admit(
+        e,
+        authConfig(e),
+        g({ email, subject: sub, tenant: "gmail.com" }),
+        NOON,
+      ),
+    ).toMatchObject({ ok: true, user: { id: uid } });
+    expect(await tenantOf()).toEqual({ t: "gmail.com" });
+  });
+
+  it("R5: conflicts are kept per person, bounded, and stale entries dropped", async () => {
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(CONFLICT_KEY)
+      .run();
+    const people: string[] = [];
+    for (let i = 0; i <= CONFLICT_MAX; i++) {
+      const email = uniq(`many${i}`, "gmail.com");
+      people.push(
+        await seedUser(email, "member", {
+          googleSub: `m1-${email}`,
+          tenant: PERSONAL_TENANT,
+        }),
+      );
+      await admit(env, cfg(), p({ email, subject: `m2-${email}` }), NOON + i);
+    }
+    const list = await flags();
+    expect(list).toHaveLength(CONFLICT_MAX);
+    // Newest first; the oldest fell off; every kept person is distinct.
+    expect(list[0]).toEqual({
+      uid: people[CONFLICT_MAX],
+      at: NOON + CONFLICT_MAX,
+    });
+    expect(await flagOf(people[0] as string)).toBeNull();
+    expect(new Set(list.map((f) => f.uid)).size).toBe(CONFLICT_MAX);
+    // A conflict past the 7-day window drops every stale entry.
+    const late = uniq("late", "gmail.com");
+    const lateUid = await seedUser(late, "member", {
+      googleSub: `l1-${late}`,
+      tenant: PERSONAL_TENANT,
+    });
+    const later = NOON + CONFLICT_MAX + CONFLICT_SHOWN_MS;
+    await admit(env, cfg(), p({ email: late, subject: `l2-${late}` }), later);
+    expect(await flags()).toEqual([{ uid: lateUid, at: later }]);
   });
 });

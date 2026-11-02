@@ -60,8 +60,12 @@ export type GoogleIdentity = {
   sub: string;
   email: string;
   name: string | null;
-  /** The verified Workspace domain; always one of the caller's domains. */
-  hd: string;
+  /**
+   * The verified Workspace domain, always one of the caller's domains; null
+   * for a token with no hd claim (a personal Google account). The caller
+   * decides whether a personal account is admitted.
+   */
+  hd: string | null;
   /** When the user last authenticated at Google (auth_time, ms), if sent. */
   authTime: number | null;
 };
@@ -102,9 +106,7 @@ async function sameString(a: string, b: string): Promise<boolean> {
 }
 
 /** What verifyGoogleIdTokenAnyDomain returns: hd, when sent, is reported, never checked. */
-export type GoogleAnyIdentity = Omit<GoogleIdentity, "hd"> & {
-  hd: string | null;
-};
+export type GoogleAnyIdentity = GoogleIdentity;
 
 type VerifyOpts = {
   clientId: string;
@@ -174,18 +176,24 @@ async function verifyClaims(
  * (RS256 only, Google's JWKS unless `jwks` is given), iss, aud, exp/iat
  * (60 s skew, issued at most 1 h ago) and required claims; then aud is exactly the client id; azp,
  * when present, is the client id; nonce equals this flow's nonce (constant
- * time); email_verified is true; the email normalizes (normalizeEmail); hd is one of `domains` exactly. The email
- * domain is never consulted.
+ * time); email_verified is true; the email normalizes (normalizeEmail); hd,
+ * when the claim is present, is one of `domains` exactly. A token with no hd
+ * claim (a personal account) returns hd null. The email domain is never
+ * consulted.
  */
 export async function verifyGoogleIdToken(
   opts: VerifyOpts & { domains: readonly string[] },
   idToken: string,
   nonce: string,
 ): Promise<GoogleIdentity> {
-  const id = await verifyClaims(opts, idToken, nonce, (hd) =>
-    inDomains(opts.domains, hd),
+  // Absent hd: a personal account (hd null). Present: exactly a domain, so a
+  // non-string, empty or foreign hd is refused as before.
+  return verifyClaims(
+    opts,
+    idToken,
+    nonce,
+    (hd) => hd === undefined || inDomains(opts.domains, hd),
   );
-  return { ...id, hd: id.hd as string };
 }
 
 /**

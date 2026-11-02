@@ -3214,6 +3214,7 @@ describe("fix round 4 (T8): every server precondition for hosted google", () => 
         clientId: string;
         transport: { kind: string; url?: string };
       } | null;
+      domains: readonly string[];
       problems: string[];
     };
   };
@@ -3247,7 +3248,6 @@ describe("fix round 4 (T8): every server precondition for hosted google", () => 
       "BROKER_SIGNING_KEY",
       /BROKER_SIGNING_KEY isn't/,
     ],
-    ["AUTH_DOMAINS non-empty", "AUTH_DOMAINS", /AUTH_DOMAINS is empty/],
   ];
   it.each(RENDERED)(
     "rendered by provision: %s (without %s the server refuses google)",
@@ -3273,6 +3273,20 @@ describe("fix round 4 (T8): every server precondition for hosted google", () => 
       expect(bad.problems.join("\n")).toMatch(why);
     },
   );
+
+  // #864: with no AUTH_DOMAINS the server still offers Google, to invited
+  // personal accounts only, so provision is the layer that refuses it (the M3
+  // cases above); the server keeps hosted on the broker.
+  it("without AUTH_DOMAINS the server offers google over the broker with no domains", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: GOOGLE })));
+    const { authConfig } = await server();
+    const { AUTH_DOMAINS: _gone, ...without } = renderedEnv(s, inst.id);
+    const bare = authConfig(without);
+    expect(bare.domains).toEqual([]);
+    expect(bare.problems).toEqual([]);
+    expect(bare.google?.transport.kind).toBe("broker");
+  });
 
   // Review item 6: on HOSTED=1 the server's directory transport is "none"
   // unless DIRECTORY_BROKER_URL is set. Provision renders it with the broker,

@@ -63,8 +63,11 @@ export async function reachOf(
     // Accepted assumption (review #799): an address in a verified domain is
     // treated as certain, as if its Google tenant (hd) were that domain. A
     // consumer Google account registered with a work address has no hd and
-    // would get "tenant"; we don't flag that rare case. Outside the domains,
-    // only a Workspace secondary domain could pass, so that is "uncertain".
+    // gets "tenant" (no-hd admission is for gmail.com and googlemail.com
+    // only); we don't flag that rare case. Outside the domains, a Workspace
+    // secondary domain could pass, or, for an existing row at gmail.com or
+    // googlemail.com, a personal account (admitPersonal): "uncertain", since
+    // the server can't tell which account they'll pick.
     if (googleTenantOk(cfg, domain)) methods.push("google");
     else googleUncertain = true;
   }

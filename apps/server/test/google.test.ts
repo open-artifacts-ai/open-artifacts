@@ -86,8 +86,9 @@ describe("google provider (direct)", () => {
 
   it.each([
     [{ hd: "b.com" }, "tenant"],
-    [{ hd: undefined }, "tenant"],
+    [{ hd: "" }, "tenant"],
     [{ email_verified: false }, "email_unverified"],
+    [{ hd: undefined, email_verified: false }, "email_unverified"],
     [{ aud: "other" }, "jwt_verify"],
     [{ azp: "other" }, "azp"],
   ])("refuses %o (stage %s), logging only the stage", async (claims, stage) => {
@@ -162,8 +163,29 @@ describe("google provider (direct)", () => {
     expect(lines).toEqual([{ evt: "oidc_fail", stage: "token_http_500" }]);
   });
 
+  it("no hd (a personal account): the identity has tenant null; admission decides", async () => {
+    const e = direct();
+    const b = await begin(e);
+    const code = g.issueCode(
+      { nonce: b.nonce, hd: undefined, email: "bob@gmail.com" },
+      b.challenge,
+    );
+    const r = await handleCallback(e, googleProvider, callback(b, code));
+    expect(r).toMatchObject({
+      provider: "google",
+      email: "bob@gmail.com",
+      tenant: null,
+    });
+  });
+
+  it("no AUTH_DOMAINS: Google is offered with no hd hint", async () => {
+    const { loc } = await begin(direct({ AUTH_DOMAINS: "" }));
+    expect(loc.searchParams.get("client_id")).toBe(CID);
+    expect(loc.searchParams.has("hd")).toBe(false);
+  });
+
   it("Google not configured: no authorize URL and no token call", async () => {
-    const e = direct({ AUTH_DOMAINS: "" });
+    const e = direct({ GOOGLE_CLIENT_ID: "" });
     await expect(
       buildAuthorizeRedirect(e, googleProvider, "/"),
     ).rejects.toMatchObject({ code: "not_found" });

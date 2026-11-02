@@ -22,6 +22,7 @@ import { jsonBody } from "../http/body.js";
 import { appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import { logWarn } from "../log.js";
+import { CONFLICT_KEY, conflictProblem } from "../services/identity.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
 import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
@@ -79,6 +80,11 @@ async function toMe(
     c.env,
     orgCan(user, "signin.problems", { cap }),
   );
+  // And a recent refused sign-in by a Google account other than the one
+  // pinned to the person (settings row, already read): no address in it.
+  const conflict = conflictProblem(kv.get(CONFLICT_KEY));
+  if (conflict && me.instance.signIn.problems)
+    me.instance.signIn.problems.push(conflict);
   me.instance.features = instanceFeatures(c.env);
   // P3 T13: only while a directory mode is on; health for owners and admins.
   const mode = directoryMode(c.env);

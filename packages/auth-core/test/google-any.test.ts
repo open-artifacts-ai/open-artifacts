@@ -101,16 +101,19 @@ describe("verifyGoogleIdTokenAnyDomain", () => {
     expect(await stageOf(verify(await mint(claims)))).toBe(stage);
   });
 
-  test("a separate export: verifyGoogleIdToken still requires hd", async () => {
-    expect(
-      await stageOf(
-        core.verifyGoogleIdToken(
-          { clientId: CID, domains: ["gmail.com"], jwks, now: NOW * 1000 },
-          await mint(),
-          "n1",
+  test("a separate export: verifyGoogleIdToken still checks hd", async () => {
+    // An absent hd (a personal account) passes there as hd null, and the
+    // caller decides; a present hd must be exactly one of the domains.
+    for (const hd of ["b.com", ["a.com"], "", null])
+      expect(
+        await stageOf(
+          core.verifyGoogleIdToken(
+            { clientId: CID, domains: ["a.com"], jwks, now: NOW * 1000 },
+            await mint({ hd }),
+            "n1",
+          ),
         ),
-      ),
-    ).toBe("tenant");
+      ).toBe("tenant");
     expect(core.verifyGoogleIdTokenAnyDomain).toBe(
       verifyGoogleIdTokenAnyDomain,
     );

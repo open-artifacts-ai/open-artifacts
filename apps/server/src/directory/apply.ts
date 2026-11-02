@@ -29,6 +29,8 @@ import type { GoogleUser } from "./google.js";
 //   behind an address an old row still holds: that row gets the deletion
 //   treatment first, then the new row is created), except a row whose link
 //   an admin reset (google_relink): it is relinked by email instead.
+// A personal Google account (identities.tenant '') is never matched or
+// managed here: personal accounts aren't the directory's.
 
 /** Throws when a reset landed since the caller started (DirectorySync). */
 export type Guard = () => void;
@@ -247,9 +249,12 @@ const ROWS = `select json_extract(j.value, '$.id') as sub,
     (select hi.subject from identities hi where hi.provider = 'google' and hi.user_id = h.id) as hsub,
     h.google_relink as hrelink,
     (h.status = 'active' and h.last_seen_at is null
-      and not exists (select 1 from identities hx where hx.user_id = h.id)) as hinvite
+      and not exists (select 1 from identities hx where hx.user_id = h.id)) as hinvite,
+    exists (select 1 from identities hp where hp.provider = 'google'
+      and hp.user_id = h.id and hp.tenant = '') as hpersonal
   from json_each(?1) j
-  left join identities i on i.provider = 'google' and i.subject = json_extract(j.value, '$.id')
+  left join identities i on i.provider = 'google' and i.tenant <> ''
+    and i.subject = json_extract(j.value, '$.id')
   left join users u on u.id = i.user_id
   left join users h on h.email = json_extract(j.value, '$.email')`;
 
@@ -312,6 +317,8 @@ type Row = {
   hstatus: string | null;
   hinvite: number | null;
   hrelink: number | null;
+  /** The row at the address is a personal Google account's (tenant ''). */
+  hpersonal: number | null;
 };
 
 /** One directory user (the plan's applyUser); `run` names the pass in logs. */
@@ -358,6 +365,9 @@ export async function applyUsers(
     // created by bindPage in the listings).
     if (!email || u.deleted || u.suspended || !r.hid) continue;
     if (r.hsub === u.id) continue;
+    // A personal Google account's row (invited, no hd) is never the
+    // directory's: not linked, renamed or deleted on this signal.
+    if (r.hpersonal) continue;
     if (!domains.has(email.slice(email.lastIndexOf("@") + 1))) continue;
     if (r.howner) {
       logWarn("directory_recycled_owner_address");
