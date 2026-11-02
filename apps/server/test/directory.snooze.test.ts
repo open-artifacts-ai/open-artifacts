@@ -8,12 +8,19 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { HELD_SNOOZE_MS, R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  DAILY_RAN_KEY,
+  DAILY_SLOT_START_MS,
+  RECOVERY_CRON,
+  scheduled,
+} from "../src/cron.js";
 import { instanceDirectory, readHealth } from "../src/directory/health.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { userActor } from "../src/services/audit.js";
 import { SYNC_DO_NAME } from "../src/services/directory.js";
+import { directoryMode } from "../src/services/spaces.js";
 import { mailer, uniq } from "./auth-helpers.js";
 import {
   APP,
@@ -193,6 +200,54 @@ beforeEach(async () => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+// P4 and O1 on a self-hosted install: the mode comes from the connection (no
+// sync_* FEATURES entry), and RECOVERY_CRON's daily slot tick kicks sync.
+describe("held sweep snooze: self-host with no sync FEATURES entry", () => {
+  it("snoozes; the recovery cron's daily tick applies nothing; the owner's confirm still does", async () => {
+    e = { ...e, FEATURES: "spaces" };
+    expect(directoryMode(e)).toBe("google");
+    const a = await heldGroup("p4");
+    await connected();
+    await a.hold();
+    const before = await membersOf(a.gid);
+    const r = await send("POST", R.directoryHeldSnooze(a.gid), owner.cookie);
+    expect(r.status).toBe(200);
+    const until = (await heldOf(a.gid))?.snoozedUntil;
+    expect(until).toBeTruthy();
+    expect(await dot(Date.now())).toBe(0);
+
+    // 03:18 on t0's UTC day: the slot tick claims the day and runs the daily
+    // work, the sync kick included.
+    const slot = t0 - (t0 % (24 * 60 * MIN)) + DAILY_SLOT_START_MS + MIN;
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(DAILY_RAN_KEY)
+      .run();
+    const pending: Promise<unknown>[] = [];
+    await scheduled({ cron: RECOVERY_CRON, scheduledTime: slot }, e, {
+      waitUntil: (p: Promise<unknown>) => void pending.push(p),
+      passThroughOnException() {},
+      props: {},
+    } as unknown as ExecutionContext);
+    await Promise.all(pending);
+    const ran = await env.DB.prepare("select value from settings where key = ?")
+      .bind(DAILY_RAN_KEY)
+      .first<{ value: string }>();
+    expect(ran?.value).toBe(new Date(slot).toISOString().slice(0, 10));
+
+    await drain(t0 + 122 * MIN);
+    expect(await membersOf(a.gid)).toEqual(before);
+    expect((await heldOf(a.gid))?.snoozedUntil).toBe(until);
+    expect(await dot(t0 + 122 * MIN)).toBe(0);
+
+    expect(
+      (await post(e, R.directoryHeldConfirm(a.gid), owner.cookie)).status,
+    ).toBe(202);
+    await drain(t0 + 123 * MIN);
+    expect(await membersOf(a.gid)).toHaveLength(2);
+    expect(await snoozeRows()).toEqual([]);
+  });
 });
 
 describe("held sweep snooze (#412)", () => {
