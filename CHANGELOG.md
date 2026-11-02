@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.94.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.93.0...v0.94.0) (2026-11-02)
+
+
+### Features
+
+* **dashboard:** snooze a held directory sweep ([#412](https://github.com/open-artifacts-ai/open-artifacts/issues/412)) ([#855](https://github.com/open-artifacts-ai/open-artifacts/issues/855)) ([0527344](https://github.com/open-artifacts-ai/open-artifacts/commit/05273445cb5d2cadd14da62038db585169399136))
+* **provisioning:** staging test admin for agents, a CI-minted sealed 1 h session ([#1053](https://github.com/open-artifacts-ai/open-artifacts/issues/1053)) ([#1073](https://github.com/open-artifacts-ai/open-artifacts/issues/1073)) ([11bc806](https://github.com/open-artifacts-ai/open-artifacts/commit/11bc806e724da9beeb1965696beef35c6cbf69d7))
+
 ## [0.93.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.92.0...v0.93.0) (2026-11-02)
 
 
