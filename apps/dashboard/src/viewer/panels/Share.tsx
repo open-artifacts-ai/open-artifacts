@@ -497,7 +497,9 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                       {s.email}
                     </span>
                     <span className={`block ${MUTED}`}>
-                      Guest · can only view
+                      {s.role === "editor"
+                        ? "Guest · can only view for now"
+                        : "Guest · can only view"}
                     </span>
                   </div>
                 ) : (
@@ -507,18 +509,16 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                 )}
                 {people ? (
                   <>
-                    {!s.guest && (
-                      <RoleSelect
-                        label={`Role for ${s.email}`}
-                        value={s.role}
-                        onChange={(r) =>
-                          put.mutate(
-                            { email: s.email, role: r },
-                            { onError: (x) => fail(x, "Couldn't change role") },
-                          )
-                        }
-                      />
-                    )}
+                    <RoleSelect
+                      label={`Role for ${s.email}`}
+                      value={s.role}
+                      onChange={(r) =>
+                        put.mutate(
+                          { email: s.email, role: r },
+                          { onError: (x) => fail(x, "Couldn't change role") },
+                        )
+                      }
+                    />
                     <Button
                       size="sm"
                       variant="ghost"
@@ -548,7 +548,8 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                 shared?.email === s.email &&
                 shared.role === "editor" && (
                   <p role="status" className="m-0 text-muted-foreground">
-                    Guests can only view, so they were invited as viewers.
+                    Guests can only view. If they become a member, they'll be
+                    able to edit.
                   </p>
                 )}
             </li>

@@ -126,45 +126,45 @@ describe("share panel", () => {
     );
   });
 
-  it("a guest's row shows they can only view, with no role to pick, and can be removed", async () => {
-    const guest = "gus@elsewhere.test";
-    const row = (email: string, extra = {}) => ({
-      email,
-      role: "editor",
-      createdAt: "2026-10-01T00:00:00.000Z",
-      ...extra,
-    });
-    server.use(
-      http.get("*/api/v1/artifacts/:id/shares", () =>
-        HttpResponse.json([
-          row("bob@example.com"),
-          row(guest, { guest: true }),
-        ]),
-      ),
-    );
-    mount(panel(OWNED));
-    await screen.findByTitle(guest);
-    const label = screen.getByText("Guest · can only view");
-    // Email above the label, in full; Remove to their right.
-    const email = screen.getByTitle(guest);
-    expect(email).not.toHaveClass("truncate");
-    expect(email.nextElementSibling).toBe(label);
-    expect(email.parentElement?.nextElementSibling).toBe(
-      screen.getByRole("button", { name: `Remove ${guest}` }),
-    );
-    expect(
-      screen.queryByRole("combobox", { name: `Role for ${guest}` }),
-    ).toBeNull();
-    expect(
-      screen.getByRole("combobox", { name: "Role for bob@example.com" }),
-    ).toHaveTextContent("Editor");
-    expect(
-      screen.getByRole("button", { name: `Remove ${guest}` }),
-    ).toBeInTheDocument();
-  });
+  it.each([
+    ["editor", "Editor", "Guest · can only view for now"],
+    ["viewer", "Viewer", "Guest · can only view"],
+  ])(
+    "a guest's row with stored %s: email, caption, then the select and Remove",
+    async (role, shown, caption) => {
+      const guest = "gus@elsewhere.test";
+      server.use(
+        http.get("*/api/v1/artifacts/:id/shares", () =>
+          HttpResponse.json([
+            {
+              email: guest,
+              role,
+              createdAt: "2026-10-01T00:00:00.000Z",
+              guest: true,
+            },
+          ]),
+        ),
+      );
+      mount(panel(OWNED));
+      const email = await screen.findByTitle(guest);
+      const label = screen.getByText(caption);
+      expect(email).not.toHaveClass("truncate");
+      expect(email.nextElementSibling).toBe(label);
+      const select = screen.getByRole("combobox", {
+        name: `Role for ${guest}`,
+      });
+      expect(select).toHaveTextContent(shown);
+      const remove = screen.getByRole("button", { name: `Remove ${guest}` });
+      const after = (a: Element, b: Element) =>
+        a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+      expect(after(label, select)).toBeTruthy();
+      expect(after(select, remove)).toBeTruthy();
+    },
+  );
 
   describe("a guest invited as Editor", () => {
-    const LINE = "Guests can only view, so they were invited as viewers.";
+    const LINE =
+      "Guests can only view. If they become a member, they'll be able to edit.";
     const invite = async (email: string, role: "Editor" | "Viewer") => {
       fireEvent.keyDown(
         await screen.findByRole("combobox", { name: "Invite role" }),
@@ -188,7 +188,9 @@ describe("share panel", () => {
       cleanup();
       mount(panel(OWNED));
       await screen.findByTitle(guest);
-      expect(await screen.findByText("Guest · can only view")).toBeTruthy();
+      expect(
+        await screen.findByText("Guest · can only view for now"),
+      ).toBeTruthy();
       expect(screen.queryByText(LINE)).toBeNull();
     });
 
