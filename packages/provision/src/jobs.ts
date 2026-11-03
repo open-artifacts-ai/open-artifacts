@@ -51,6 +51,14 @@ export const PROVISION_ERROR_CODES = Object.freeze([
   // Code sign-in on with no usable Turnstile widget in the env (#1088).
   // Terminal: a person fixes the widget, then retries the job.
   "turnstile_missing",
+  // The OAuth store jobs (#1008). All terminal.
+  "mode_not_live",
+  "leave_d1_refused",
+  "copy_incomplete",
+  "copy_not_dual",
+  "copy_markers",
+  "copy_key_not_live",
+  "copy_key_left",
   "cf_error",
   "internal",
 ] as const);
@@ -79,6 +87,7 @@ export const PROVISION_JOB_KINDS = Object.freeze([
   "release_lease",
   "cleanup",
   "redline_creds",
+  "update",
 ] as const);
 export type ProvisionJobKind = (typeof PROVISION_JOB_KINDS)[number];
 
@@ -96,6 +105,7 @@ export const NEAR_EXPIRY_MODE: Readonly<
   resume: "refuse",
   restore: "refuse",
   redline_creds: "refuse",
+  update: "refuse",
   suspend: "warn",
   delete: "warn",
   purge: "warn",

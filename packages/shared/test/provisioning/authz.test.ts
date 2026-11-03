@@ -49,8 +49,9 @@ describe("authz table", () => {
         ok: false,
         code: "forbidden",
       });
+      const kind = r.tokenKind ? { tokenKind: r.tokenKind } : {};
       expect(
-        authorize(id, { kind: "token", scopes: [r.scope] }, "prod").ok,
+        authorize(id, { kind: "token", scopes: [r.scope], ...kind }, "prod").ok,
         id,
       ).toBe(true);
     }
@@ -82,10 +83,10 @@ describe("authz table", () => {
     expect(scope("R17")).toBe("audit:read");
   });
 
-  it("admin session reaches every API route but R26 and R28 (O's own)", () => {
+  it("admin session reaches every API route but R26 and R28 (O's own) and R29 and R30 (admin MCP only)", () => {
     for (const id of ROUTE_IDS) {
       const d = authorize(id, { kind: "admin" }, "prod");
-      if (id === "R26" || id === "R28")
+      if (id === "R26" || id === "R28" || id === "R29" || id === "R30")
         expect(d, id).toEqual({ ok: false, code: "forbidden" });
       else expect(d.ok, id).toBe(true);
     }
@@ -245,9 +246,10 @@ describe("TRANSITIONS", () => {
     expect(canTransition("deleting", "purge", "T")).toBe(false);
     expect(canTransition("active", "redline_creds", "T")).toBe(false);
     expect(canTransition("active", "release_lease", "T")).toBe(false);
+    // update: admin MCP only (#1008), so T alone; its authz row says which.
     for (const [from, row] of Object.entries(TRANSITIONS))
       for (const [kind, t] of Object.entries(row))
-        if (t?.actors.includes("T"))
+        if (t?.actors.includes("T") && kind !== "update")
           expect(t.actors, `${from} ${kind}`).toContain("A");
   });
 

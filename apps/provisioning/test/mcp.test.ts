@@ -84,6 +84,9 @@ async function caller(scopes: TokenScope[] = ALL, label = "ci bot") {
   return { ...a, bearer: m.token as string, tokenId: m.tokenId, ...waits() };
 }
 type Caller = Awaited<ReturnType<typeof caller>>;
+/** The tools behind an OAuth-only authz rule (#1008). */
+const grantOnly = (n: AdminToolName) =>
+  n === "set_oauth_store" || n === "copy_oauth_store";
 
 const mcpReq = (
   bearer: string | null,
@@ -586,9 +589,10 @@ describe("parity with /v1 (12.1): writes", () => {
     ];
     expect(new Set(writes.map(([n]) => n))).toEqual(
       new Set(
-        ADMIN_TOOLS.filter((t) => !t.annotations.readOnlyHint).map(
-          (t) => t.name,
-        ),
+        // These two have no /v1 to compare with; "admin MCP only" below.
+        ADMIN_TOOLS.filter(
+          (t) => !t.annotations.readOnlyHint && !grantOnly(t.name),
+        ).map((t) => t.name),
       ),
     );
     for (const [name, args] of writes) {
@@ -703,6 +707,116 @@ describe("OAuth principal (the W13b seam)", () => {
     expect(who.structuredContent).toMatchObject({ tokenKind: "oauth" });
     const bad = await handleMcp(mcpReq("other", INIT), a.env, w.ctx, deps);
     expect(bad.status).toBe(401);
+  });
+});
+
+describe("admin MCP only: set_oauth_store and copy_oauth_store (#1008)", () => {
+  const VARS = { AUTH_PROVIDERS: "google", TIER: "team" };
+  /** A grant's client on /mcp, as bearer.ts's oauthPrincipal answers it. */
+  async function granted(scopes: TokenScope[]) {
+    const a = await seedAdmin(db, Date.now());
+    const m = await mintAgentToken(a.env, a.principal, {
+      kind: "oauth",
+      scopes,
+      clientId: "client-a",
+      clientName: "Claude",
+    });
+    const w = waits();
+    const deps: McpDeps = {
+      oauthPrincipal: (_r, env) => principalByTokenId(env, m.tokenId, "oauth"),
+    };
+    return {
+      client: await connect({ env: a.env, ctx: w.ctx }, "grant-access", {
+        deps,
+      }),
+      tokenId: m.tokenId,
+    };
+  }
+  const liveDual = (id: string) =>
+    insert("hosted_audit", {
+      at: Date.now() - 600_000,
+      actor: "job:x",
+      install_id: id,
+      action: "oauth_store.mode_live",
+      detail: '{"mode":"dual"}',
+    });
+
+  it("a grant with installs:write starts each job, as itself", async () => {
+    const { client, tokenId } = await granted(["installs:write"]);
+    const a = await seedInstall({ vars: VARS });
+    const set = await callTool(client, "set_oauth_store", {
+      id: a.id,
+      requestId: requestId(),
+      vars: { OAUTH_STORE: "dual" },
+    });
+    expect(set.isError ?? false).toBe(false);
+    expect(set.structuredContent.job).toMatchObject({
+      kind: "update",
+      args: { vars: { OAUTH_STORE: "dual" } },
+      actor: { kind: "token", tokenId },
+    });
+    const b = await seedInstall({ vars: { ...VARS, OAUTH_STORE: "dual" } });
+    await liveDual(b.id);
+    const copy = await callTool(client, "copy_oauth_store", {
+      id: b.id,
+      requestId: requestId(),
+    });
+    expect(copy.isError ?? false).toBe(false);
+    expect(copy.structuredContent.job).toMatchObject({
+      kind: "update",
+      args: { oauthCopy: true },
+    });
+  });
+
+  it("a grant without installs:write is forbidden", async () => {
+    const { client } = await granted(["installs:read"]);
+    const { id } = await seedInstall({ vars: VARS });
+    const r = await callTool(client, "set_oauth_store", {
+      id,
+      requestId: requestId(),
+      vars: { OAUTH_STORE: "dual" },
+    });
+    expect(r.structuredContent.error.code).toBe("forbidden");
+  });
+
+  it("an oat_ on /mcp is forbidden", async () => {
+    const c = await caller();
+    const client = await connect(c, c.bearer);
+    const { id } = await seedInstall({ vars: VARS });
+    for (const [n, extra] of [
+      ["set_oauth_store", { vars: { OAUTH_STORE: "dual" } }],
+      ["copy_oauth_store", {}],
+    ] as const) {
+      const r = await callTool(client, n, {
+        id,
+        requestId: requestId(),
+        ...extra,
+      });
+      expect(r.structuredContent.error.code, n).toBe("forbidden");
+    }
+  });
+
+  it("/v1 has no use of them: an oat_ is 403, and an OAuth bearer 401", async () => {
+    const c = await caller();
+    const { id } = await seedInstall({ vars: VARS });
+    const post = (bearer: string) =>
+      fetchWorker(
+        new Request(`${API}/v1/installs/${id}/vars`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${bearer}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            requestId: requestId(),
+            vars: { OAUTH_STORE: "dual" },
+          }),
+        }),
+        c.env,
+        c.ctx,
+      );
+    expect((await post(c.bearer)).status).toBe(403);
+    expect((await post("opaque-oauth-bearer")).status).toBe(401);
   });
 });
 
@@ -984,6 +1098,8 @@ describe("every tool goes through invokeRoute and its route's authz (9A.4)", () 
       restore_install: w(),
       delete_install: { ...w(), confirmSlug: slug },
       purge_install: { ...w(), confirmSlug: slug },
+      set_oauth_store: { ...w(), vars: { OAUTH_STORE: "dual" } },
+      copy_oauth_store: w(),
     };
   }
   const rowsOf = async (tokenId: string, action: string) =>
@@ -1007,10 +1123,12 @@ describe("every tool goes through invokeRoute and its route's authz (9A.4)", () 
     const c = await caller();
     const client = await connect(c, c.bearer);
     const args = await argsByTool();
-    for (const t of ADMIN_TOOLS) await callTool(client, t.name, args[t.name]);
+    // An `oat_` here; "admin MCP only" below has the grant's two tools.
+    const tools = ADMIN_TOOLS.filter((t) => !grantOnly(t.name));
+    for (const t of tools) await callTool(client, t.name, args[t.name]);
     await c.flush();
     const used = await rowsOf(c.tokenId, "token.used");
-    for (const t of ADMIN_TOOLS)
+    for (const t of tools)
       expect(
         used.some((d) => d.route === t.route && d.tool === t.name),
         t.name,

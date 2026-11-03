@@ -53,6 +53,13 @@ describe("ProvisionRefused.code and ProvisionRetry (3.5)", () => {
       "migration_held",
       "restore_point_failed",
       "turnstile_missing",
+      "mode_not_live",
+      "leave_d1_refused",
+      "copy_incomplete",
+      "copy_not_dual",
+      "copy_markers",
+      "copy_key_not_live",
+      "copy_key_left",
       "cf_error",
       "internal",
     ]);
@@ -136,6 +143,7 @@ describe("near-expiry mode per job kind (5.7)", () => {
       "resume",
       "restore",
       "redline_creds",
+      "update",
     ];
     for (const k of warn) expect(NEAR_EXPIRY_MODE[k as never]).toBe("warn");
     for (const k of refuse) expect(NEAR_EXPIRY_MODE[k as never]).toBe("refuse");
