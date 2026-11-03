@@ -548,7 +548,8 @@ it("a HOSTS row reads by its mode; a binding check names its problems only when 
   expect(rows.map((_, i) => cell(i, 2))).toEqual([
     "brought the install back online",
     "took the install offline",
-    "changed the install's hosts",
+    // Delete's closed mode keeps its own row; any other mode, the plain change.
+    "closed the install",
     "changed the install's hosts",
     "checked that its bindings point at its own resources",
     "checked that its bindings point at its own resources",

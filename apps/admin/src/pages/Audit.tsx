@@ -126,6 +126,7 @@ for (const kind of HOST_KINDS) VERB[`${kind}.hosts`] = HOSTS_CHANGED;
 const HOSTS_BY_MODE: Record<string, string> = {
   serving: "brought the install back online",
   paused: "took the install offline",
+  closed: "closed the install",
 };
 for (const op of LOCK_OPS) {
   VERB[`${op}.lost_lease`] = "lost its lock";
