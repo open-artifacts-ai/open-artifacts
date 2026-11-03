@@ -486,6 +486,9 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             <span className="text-muted-foreground">Owner</span>
           </li>
           {(people ? (shares.data ?? []) : []).map((s) => {
+            // s.email is always a real address: a directory deletion drops
+            // the shares on an address (DROP_SHARES) in the same batch, before
+            // it writes the removed+<id>@invalid placeholder (directory/apply.ts).
             const controls = people ? (
               <>
                 <RoleSelect
