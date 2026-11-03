@@ -520,6 +520,8 @@ A fleet upgrade never crosses a migration that can lose data (MIG-2). Before an 
 
 `redline-staging.yml` stays on main, with its Environment rule, but its `redline` job checks out the tag under test and runs everything from there (#1137). Suite and release always match.
 
+The run applies the gate: it fails unless every case passes or is one the report accepts by name, the five unproven-live cases and the pre-prod not-applicables. `staging-first-gate.sh` reads only the run's conclusion, so this is what makes the rule hold for prod.
+
 - A suite fix reaches a candidate only in a new release, and rerunning the same tag runs the same suite. A `test:` merge alone opens no release, so ship the fix with a `Release-As: X.Y.Z` footer (see "Forcing a release when only non-releasable commits landed").
 - The commands the workflow calls (`provisioning mint-oidc`, `bringup`, `staged-version`, `revoke`, `live`, the T19 config) must keep working for every tag still in use. `redline-staging.test.ts` pins them.
 

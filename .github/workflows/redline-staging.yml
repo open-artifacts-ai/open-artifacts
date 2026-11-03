@@ -196,6 +196,10 @@ jobs:
           REDLINE_PROD_ACCOUNT_ID: ${{ vars.REDLINE_PROD_ACCOUNT_ID }}
           REDLINE_PROD_INVENTORY_URL: ${{ vars.REDLINE_PROD_INVENTORY_URL }}
           REDLINE_DISPATCH: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+          # The gate, enforced: the run fails unless every case passes or is
+          # one the report accepts by name. staging-first-gate.sh reads only
+          # the run's conclusion, so without this the rule was only printed.
+          REDLINE_GATE: "1"
         run: |
           set -euo pipefail
           export REDLINE_REPORT="$RUNNER_TEMP/redline-report/report.json"
