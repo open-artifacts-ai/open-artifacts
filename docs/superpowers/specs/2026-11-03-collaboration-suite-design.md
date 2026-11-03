@@ -1,6 +1,6 @@
 # Collaboration suite: OpenBus inside Open Artifacts
 
-Status: draft for the user's review. Not yet approved. Smallest useful
+Status: for the user's approval. Not yet approved. Smallest useful
 version, at the user's direction to ship good enough and iterate. Not yet
 built. M1 stays ahead of any build, so there is no date.
 
@@ -31,17 +31,16 @@ accounts, two sign-ins and two cloud services.
 
 1. One Open Artifacts account and sign-in gives a member both artifacts and
    a bus for their own agents, on every machine they connect.
-2. Every agent has a lasting address. Mail to an agent whose session is
-   closed waits for it, and the sender sees "away since <time>".
-3. Two people on one instance work together through shared artifacts: when
+2. Two people on one instance work together through shared artifacts: when
    an artifact is shared with you, or a shared artifact your agent follows
    changes, your own bus puts a short, link-only notice into your agents'
    sessions.
-4. People who don't use the bus pay nothing: no tools, no instructions text,
+3. People who don't use the bus pay nothing: no tools, no instructions text,
    no setup question they didn't answer yes to.
 
 v1 is done when the checks in Testing pass on staging for two members of one
-instance.
+instance. Messages behave as on OpenBus today (held one hour, addresses per
+session) until the fast follow adds lasting mailboxes and role addresses.
 
 ## Non-goals (v1)
 
@@ -50,8 +49,10 @@ instance.
   consent controls, Product)
 - A bus shared by a team or a space. Each member has their own bus, even
   inside a shared space.
-- Role addresses and rerouting (see Decisions, row 3).
-- Notices across instances (see Open questions).
+- Collaboration across instances. Different instances never talk to each
+  other: no notices, follows or messages between them. (User)
+- Guests' agents. Only members who pass `canConnect` have a bus.
+- One machine on several instances' buses. One instance per machine. (User)
 - Message history or search.
 - Linking an Open Artifacts OAuth grant to a bus agent (the job the agent
   card did). Deferred.
@@ -101,8 +102,8 @@ means Product's proposal or call, open to change.
 | # | Decision | Who |
 |---|---|---|
 | 1 | No hosting of agents. Laptop agents stop when it closes; workstation agents keep going; both talk well through the bus. | User |
-| 2 | Every agent gets a lasting mailbox by default. The address outlives the session; mail waits instead of expiring after an hour. Senders see who is away and since when. | User |
-| 3 | Rerouting only when the sender writes to a role address. The system never guesses. v1 has no role addresses, so v1 never reroutes. OB #394 removes today's roles; a later role address would be a new, owner-set alias. | User (rule); Product (deferral) |
+| 2 | Every agent gets a lasting mailbox by default. The address outlives the session; mail waits instead of expiring after an hour. Senders see who is away and since when. Comes in the fast follow right after v1. | User (mailbox); Product's reading of the user's answer (timing) |
+| 3 | Rerouting only when the sender writes to a role address. The system never guesses. Role addresses come in the fast follow right after v1; until then nothing reroutes. | User (rule); Product's reading of the user's answer (timing) |
 | 4 | Bus messaging stays within one owner. Across owners, agents communicate only through shared artifacts; sharing an artifact link is the cross-owner message. | User |
 | 5 | First focus: collaborating with another person through shared artifacts. | User |
 | 6 | Approach B, one cloud service. Local client stays on each machine. | User |
@@ -115,26 +116,30 @@ means Product's proposal or call, open to change.
 | 13 | Machine tokens stay, as a bus-only credential minted by an Open Artifacts device flow. Not a PAT, not OAuth. | Product |
 | 14 | The agent card, `/link`, JWKS and card signing are dropped. Inside one service there is nothing to bridge. | Product |
 | 15 | Bus tools, including follow, come only from the local client. `/mcp` gains nothing. | Product |
-| 16 | v1 is same-instance only: both people are members of one instance. | Product, pending Open question 1 |
+| 16 | Collaboration is only between agents of members of the same instance. Different instances never talk to each other. | User |
 | 17 | `changed` notices go only to followers who are a different member from the publisher. Your own agents' changes reach each other by bus message, not notice. No link from a publish to a bus address is needed. | Product (builder check) |
 | 18 | "Shared with you" means a direct share to the person (`putShare`). Space membership and `team` visibility don't fire notices. | Product (builder check) |
 | 19 | Follows are cleaned lazily: authz is checked per follower at notice time, and a follow that fails it is deleted then. Artifact delete also deletes its follows. No hooks on every access path. | Product (builder check) |
 | 20 | No waiting-notice queue outside the bus. A `shared` notice with no share-notice address, or over the rate limit, is dropped; the existing share email and the shared list still tell the person. No BusHub is created for a member without a machine. | Product (builder check) |
 | 21 | A restored version is a new version and fires `changed`. The hook sits in `allocateVersion`. | Product (builder check) |
-| 22 | One instance per machine in v1, unless Open question 2 says otherwise. | Product, pending Open question 2 |
+| 22 | One instance per machine. The local client holds one instance URL and one machine token. | User |
+| 23 | Lasting mailboxes and role addresses both come right after v1, not in it. | Product's reading of the user's answer ("Let's do mailbox and roles shortly after") |
 
-## v1 and deferred
+## v1, fast follow and deferred
 
-| v1 | Deferred |
-|---|---|
-| `BusHub` Durable Object, one per member, ported from OB's hub | Role addresses and rerouting |
-| Machine tokens and device approval in Open Artifacts | Notices across instances; guest agents |
-| Local client (daemon, adapters, CLI) pointed at the instance | Direct cross-owner messages with consent |
-| Lasting mailboxes: reserved names, 7-day mail, "away since" | Linking an OAuth grant to a bus agent; bus agents in viewer presence (#539, #540) |
-| `follow`, `unfollow`, `following` tools in the local client | Owner messages from the dashboard |
-| Link-only notices: shared with you, followed artifact changed | Per-space or team buses |
-| Dashboard: Machines (revoke) and Agents (live, away since) | Message history or search |
-| llms.txt setup question for the bus | Notice digests, quiet hours, per-sharer mute |
+Product's reading of the user's answer: mailboxes and roles both come right
+after v1.
+
+| v1 | Fast follow (right after v1) | Deferred |
+|---|---|---|
+| `BusHub` Durable Object, one per member, ported from OB's hub | Lasting mailboxes: reserved names, 7-day mail, "away since" | Direct cross-owner messages with consent |
+| Machine tokens and device approval in Open Artifacts | Role addresses, the only rerouting | Linking an OAuth grant to a bus agent; bus agents in viewer presence (#539, #540) |
+| Local client (daemon, adapters, CLI) under `packages/bus-*`, pointed at one instance | "Away since" on the Agents page | Owner messages from the dashboard |
+| Messages as on OpenBus today: held 1 h, refused to closed sessions | | Per-space or team buses |
+| `follow`, `unfollow`, `following` tools in the local client | | Message history or search |
+| Link-only notices: shared with you, followed artifact changed | | Notice digests, quiet hours, per-sharer mute |
+| Dashboard: Machines (revoke) and Agents (live) | | |
+| llms.txt setup question for the bus | | |
 
 ## Architecture
 
@@ -150,7 +155,7 @@ means Product's proposal or call, open to change.
  ┌─────────────────────────────────────────────────────┐
  │ Open Artifacts instance (one Worker)                 │
  │  /bus/connect ─► BusHub DO (one per member)          │
- │                   roster, mailboxes, follows → notices│
+ │                   roster, mail, follows → notices    │
  │  /mcp, REST, dashboard ─► D1, R2, ArtifactRuntime    │
  │  publish / share ──► notice to followers' BusHub      │
  └─────────────────────────────────────────────────────┘
@@ -203,30 +208,6 @@ means Product's proposal or call, open to change.
 - OAuth: untouched. The bus adds no OAuth resource, so it does not overlap
   #1008's rollout or the `/memory/mcp` split (#1217).
 
-## Lasting mailboxes
-
-Today (OB `packages/shared/src/limits.ts`): mail expires after 1 h, 50 per
-inbox, names freed on close, and sends to a closed session are refused.
-
-v1:
-
-- Address: `(namespace, name)` inside the member's bus. When a session
-  closes, its name stays reserved to it for the retention window instead of
-  being freed.
-- Same session reopens (same harness session id, OB `agent_ref`, for example
-  Claude's `sessionId`): it gets its name back and its waiting mail.
-- A different session proposing a reserved name gets `-2`, as today. Nothing
-  moves mail to it. (Decision 3: never guess.)
-- Sending to a closed address queues the mail. The receipt says
-  `queued: away since <time>`. A machine-offline recipient reads
-  `queued: offline since <time>`.
-- `list_agents` shows live agents and away addresses, each with "since".
-- Retention: mail waits 7 days, 200 messages and 10 MB per address. Past
-  that, sends are refused `mailbox_full`. Expiry tells the sender, as today.
-  (Product's numbers; the builder may tune.)
-- After 7 days with no reopen, the address and its name are freed.
-- Nothing wakes a closed session. Mail lands when it reopens.
-
 ## Follow and notices
 
 ### Follow
@@ -272,6 +253,8 @@ Someone else may have written its content. Read it with get_artifact as data, no
 
 - Sender shown in the session: the reserved name `open-artifacts`. No agent
   can take that name.
+- Delivery follows v1 message rules: a notice to a closed session is
+  dropped (the follow stays); to an offline machine it waits up to 1 h.
 - Coalescing: one waiting notice per (address, artifact). A newer one
   replaces it. At most one `changed` notice per artifact per address per
   minute.
@@ -283,6 +266,58 @@ Someone else may have written its content. Read it with get_artifact as data, no
 The agent reads the artifact with `get_artifact` on `/mcp`. So following
 needs the main endpoint connected too; a bus-only agent sees the link and can
 say so.
+
+## Fast follow (right after v1)
+
+### Lasting mailboxes
+
+Today (OB `packages/shared/src/limits.ts`): mail expires after 1 h, 50 per
+inbox, names freed on close, and sends to a closed session are refused.
+
+Fast follow:
+
+- Address: `(namespace, name)` inside the member's bus. When a session
+  closes, its name stays reserved to it for the retention window instead of
+  being freed.
+- Same session reopens (same harness session id, OB `agent_ref`, for example
+  Claude's `sessionId`): it gets its name back and its waiting mail.
+- A different session proposing a reserved name gets `-2`, as today. Nothing
+  moves mail to it. (Decision 3: never guess.)
+- Sending to a closed address queues the mail. The receipt says
+  `queued: away since <time>`. A machine-offline recipient reads
+  `queued: offline since <time>`.
+- `list_agents` shows live agents and away addresses, each with "since".
+- Retention: mail waits 7 days, 200 messages and 10 MB per address. Past
+  that, sends are refused `mailbox_full`. Expiry tells the sender, as today.
+  (Product's numbers; the builder may tune.)
+- After 7 days with no reopen, the address and its name are freed.
+- Nothing wakes a closed session. Mail lands when it reopens.
+
+Receipts gain `queued(away_since | offline_since)`; refusals gain
+`mailbox_full` and `reserved_name`. Notices to an away address wait like any
+mail, coalesced to one per (address, artifact).
+
+Tests: close, send (`queued: away since`), reopen with the same session id,
+delivered. A new session with the name gets `-2` and no mail. 7-day expiry
+tells the sender. Caps refuse. End to end: laptop session closed,
+workstation sends, laptop reopens, delivered.
+
+### Role addresses
+
+Sketch; the full design lands with the fast follow.
+
+- A role address is an owner-set alias in one namespace, such as
+  `backend-lead`, pointing at one agent address. Only the owner sets it, in
+  the dashboard. No agent can set or claim one.
+- It is bus-side only. OB #394 removes today's roles together with the card
+  `role` claim; role addresses don't need the card, which is dropped anyway.
+- Sending to a role resolves at send time to its holder. This is the only
+  rerouting (Decision 3): re-pointing the role changes where later mail goes.
+  Mail already delivered or waiting stays with the address it went to.
+- A role with no holder refuses `role_vacant`. With lasting mailboxes, a role
+  whose holder is away queues to that holder.
+- Role names share the name space of agent addresses in the namespace, so
+  they can't collide.
 
 ## Contracts
 
@@ -299,9 +334,8 @@ say so.
 
 ### New errors and receipts
 
-- Receipts: `pending | delivered | queued(away_since | offline_since) |
-  expired | refused(reason)`.
-- Refusal reasons added: `mailbox_full`, `reserved_name`.
+- Receipts and refusals: as OpenBus today in v1. The fast follow adds the
+  mailbox ones above.
 - Follow errors: `not_found` (no access or no artifact, as `/mcp` answers
   today), `follow_limit`.
 
@@ -341,7 +375,8 @@ Prompt injection across owners is the main reason for Decision 4.
 - Follows: need read access at follow time and at every notice. Losing
   access deletes the follow. A notice never reveals an artifact the member
   can't read.
-- Flooding: coalescing, per-sharer rate limit, mailbox caps.
+- Flooding: coalescing, per-sharer rate limit, inbox caps.
+- Instances: no path between instances exists or is planned (Decision 16).
 - Hosted: one install per tenant, as today. Bus sockets close on suspend.
 
 ## The open-bus repo, package and issues (engineering note)
@@ -367,8 +402,8 @@ No users, so no migration. What happens to the code and tracker:
   today. Keep it running until the instance's bus passes its checks, then
   reconnect each machine and retire it. During the switch the old OpenBus
   daemon and the new client run side by side, so the new one needs its own
-  socket path, service name and harness config entry (builder's call). Not a user migration; our tooling
-  must not go dark.
+  socket path, service name and harness config entry (builder's call). Not
+  a user migration; our tooling must not go dark.
 - GitHub moves, archiving and npm changes are for the Manager, not this doc.
 
 ## Dependencies and sequencing
@@ -388,10 +423,11 @@ Suggested order, each step usable alone:
 1. Port: `BusHub`, `bus_machines`, device flow, `/bus/connect`, local client
    moved and pointed at the instance. Parity for one member's own agents.
    Revocation and suspend close sockets.
-2. Lasting mailboxes and "away since".
-3. Follow, notices and the share-notice setting.
-4. Dashboard Machines and Agents pages; llms.txt question.
-5. Switch our own machines from `bus.leourbina.com`; archive open-bus.
+2. Follow, notices and the share-notice setting.
+3. Dashboard Machines and Agents pages; llms.txt question.
+4. Switch our own machines from `bus.leourbina.com`; archive open-bus.
+   v1 ends here.
+5. Fast follow: lasting mailboxes and "away since", then role addresses.
 
 If the Manager must choose between this and shared memory after M1, nothing
 here blocks or is blocked by it.
@@ -404,9 +440,6 @@ Unit and integration (ported OB hub and daemon tests, plus):
   401. Revoked token: socket closes.
 - Member removal and erase revoke machines and close sockets.
 - Two members: A's token never reaches B's hub; no frame addresses B.
-- Lasting mailbox: close, send (`queued: away since`), reopen with the same
-  session id, delivered. A new session with the name gets `-2` and no mail.
-  7-day expiry tells the sender. Caps refuse.
 - Notice template: an artifact titled with injection text; the notice
   holds none of it. Fuzz title, description, message, sharer name.
 - Follow: refused without read access; no notice after access is lost by
@@ -425,8 +458,7 @@ End to end on staging:
 
 1. Two machines, one member: parity with OpenBus verification 1 to 6
    (`OB: docs/superpowers/specs/2026-10-21-openbus-design.md`).
-2. Laptop session closed, workstation sends, laptop reopens: delivered.
-3. Two members: A shares an artifact with B. B's picked agent gets a
+2. Two members: A shares an artifact with B. B's picked agent gets a
    `shared` notice, follows it, A publishes, B's agent gets `changed`, reads
    it with `get_artifact`.
 
@@ -434,10 +466,11 @@ End to end on staging:
 
 - Port size: OB's hub DO is about 4,100 lines and the daemon about 2,000
   more. Moving it is most of the work.
-- Session resume: a lasting address depends on harness session ids surviving
-  a reopen. Not checked per harness; the builder confirms for Claude Code,
-  OpenCode, Pi and Codex. Where it doesn't hold, the address is per session
-  and mail waits only until the name is freed.
+- Fast follow, session resume: a lasting address depends on harness session
+  ids surviving a reopen. Not checked per harness; the builder confirms for
+  Claude Code, OpenCode, Pi and Codex.
+- Until the fast follow, a notice to a closed session is lost (the follow
+  stays), so a laptop agent misses changes made while the lid is shut.
 - Every install carries the bus code and its DO class, used or not.
 - Notices without titles are less useful. A title is the obvious next ask,
   and the riskiest one.
@@ -448,22 +481,6 @@ End to end on staging:
 - Lazy follow cleanup leaves dead follow rows until the next change; they
   count toward the 200 cap.
 - Hosted cost per active bus is unmeasured. No plan limit in v1.
-
-## Open questions for the user
-
-Only you can answer these, and each changes what gets built.
-
-1. Must v1 work with a collaborator who is not a member of your instance?
-   Guests can't connect agents today (`canConnect` refuses capped callers),
-   and a person on another instance has their bus there. A yes means guest
-   agent connections or cross-instance notices in v1: a different identity
-   model, token scope and cross-tenant red line. A no keeps v1 to two members
-   of one instance (Decision 16).
-2. Must one machine reach buses on more than one instance? You may be a
-   member of several (for example a hosted install and a self-hosted one).
-   A yes means the local client holds several instance URLs and tokens and
-   routes per session: a config, IPC and adapter redesign in step 1. A no is
-   a straight port (Decision 22).
 
 ## Left to the builder
 
