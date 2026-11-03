@@ -18,7 +18,12 @@ import {
 import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
-import { personInSentence, personName } from "../layout/person";
+import {
+  isReleased,
+  personFirst,
+  personInSentence,
+  personName,
+} from "../layout/person";
 import { toast } from "../layout/toast";
 import { sharedSpaceName } from "../spaces/label";
 import { OptionSelect } from "./OptionSelect";
@@ -66,12 +71,16 @@ class PartialError extends Error {
 
 export function TransferDialog({
   member,
+  pick = null,
   onClose,
 }: {
   member: Member;
+  /** Someone already chosen: "Transfer all to me" opens with the viewer. */
+  pick?: string | null;
   onClose: () => void;
 }) {
   const name = personInSentence(member);
+  const firstName = personFirst(member);
   const summary = useTransferSummary(member.id);
   const members = useMembers();
   const state = useMe();
@@ -81,7 +90,7 @@ export function TransferDialog({
   const spaces = useSpaces({ kind: "shared" }, withSpaces);
   const run = useRunTransfer(member.id);
   const [kind, setKind] = useState<"user" | "space">("user");
-  const [userId, setUserId] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(pick);
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; of: number } | null>(
     null,
@@ -121,6 +130,9 @@ export function TransferDialog({
     (s) => s.kind === "shared",
   );
   const person = successors.find((m) => m.id === userId);
+  const meId = state.status === "authed" ? state.me.user.id : null;
+  /** They go to the viewer: the helper and the toast speak to them. */
+  const toYou = !!person && person.id === meId;
   const space = shared.find((s) => s.id === spaceId);
   const target =
     kind === "user"
@@ -161,7 +173,9 @@ export function TransferDialog({
         done === 0
           ? { title: ALREADY_HANDLED, tone: "info" }
           : {
-              title: `Moved ${movedCount(done, t.live, t.of - t.live)} to ${target.label}.`,
+              title: toYou
+                ? `Moved ${movedCount(done, t.live, t.of - t.live)} from ${name} to you.`
+                : `Moved ${movedCount(done, t.live, t.of - t.live)} to ${target.label}.`,
               tone: "success",
             },
       );
@@ -260,14 +274,30 @@ export function TransferDialog({
                   value={userId}
                   options={successors.map((m) => ({
                     value: m.id,
-                    label: personName(m),
+                    // As Members marks you.
+                    label:
+                      m.id === meId ? `${personName(m)} (you)` : personName(m),
                   }))}
                   placeholder="Choose a person"
                   disabled={busy}
                   onChange={setUserId}
                 />
               )}
-              {person && (
+              {person && toYou && (
+                <p className={muted}>
+                  {withSpaces
+                    ? "They go to your Personal"
+                    : "You become the owner"}
+                  {activeGuest
+                    ? `, ${name} loses access, and people they shared with keep theirs.`
+                    : `, with ${firstName}'s shares kept.`}
+                  {/* True whether they're suspended, removed or can't be restored; a deleted Workspace account can't come back. */}
+                  {!activeGuest &&
+                    !isReleased(member) &&
+                    ` If ${firstName} comes back later, these stay with you.`}
+                </p>
+              )}
+              {person && !toYou && (
                 <p className={muted}>
                   You won't see titles or contents. {personName(person)}{" "}
                   {withSpaces

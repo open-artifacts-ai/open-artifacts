@@ -55,6 +55,23 @@ const carolRow = async () =>
   (await within(await departed()).findByText("Carol Departed")).closest(
     "li",
   ) as HTMLElement;
+/** "Transfer all to me": the dialog, with the viewer chosen. */
+const openToMe = async () => {
+  fireEvent.click(
+    await within(await carolRow()).findByRole("button", {
+      name: "Transfer all to me…",
+    }),
+  );
+  return screen.findByRole("dialog");
+};
+/** openToMe, then its Transfer button. */
+const runToMe = async () => {
+  const d = await openToMe();
+  fireEvent.click(
+    await within(d).findByRole("button", { name: /^Transfer \d/ }),
+  );
+  return d;
+};
 const openFromCard = async () => {
   await openMenu(await carolRow());
   fireEvent.click(
@@ -251,7 +268,7 @@ it("successors exclude Carol, guests and restricted Dan; an active admin counts"
   );
   expect(
     (await screen.findAllByRole("option")).map((o) => o.textContent),
-  ).toEqual(["Ada Lovelace", "Bob Builder", "Erin Admin"]);
+  ).toEqual(["Ada Lovelace (you)", "Bob Builder", "Erin Admin"]);
 });
 
 it("to a person: the helper names both, and the transfer posts the user", async () => {
@@ -293,7 +310,7 @@ it("to a space: the helper says who can open them, and it posts the space", asyn
   await findVisibleToast("Moved 2 artifacts (and 1 in trash) to Engineering.");
 });
 
-it("Transfer all to me moves every page to the caller in one click", async () => {
+it("Transfer all to me, then Transfer in the dialog, moves every page to the caller", async () => {
   const seen = calls("POST");
   mountHosted("/settings/members", true, undefined, [
     http.post(`*${R.memberTransfer(CAROL)}`, async ({ request }) => {
@@ -305,11 +322,7 @@ it("Transfer all to me moves every page to the caller in one click", async () =>
       );
     }),
   ]);
-  fireEvent.click(
-    within(await carolRow()).getByRole("button", {
-      name: "Transfer all to me",
-    }),
-  );
+  await runToMe();
   await findVisibleToast(
     "Moved 2 artifacts (and 1 in trash) from Carol Departed to you.",
   );
@@ -328,11 +341,7 @@ it("Transfer all to me's toast has no bracket with nothing in trash", async () =
       HttpResponse.json({ moved: 2, remaining: 0, nextCursor: null }),
     ),
   ]);
-  fireEvent.click(
-    await within(await carolRow()).findByRole("button", {
-      name: "Transfer all to me",
-    }),
-  );
+  await runToMe();
   await findVisibleToast("Moved 2 artifacts from Carol Departed to you.");
 });
 
@@ -484,7 +493,7 @@ it("the row's actions share a line of their own, apart from the count", async ()
   const row = await carolRow();
   const actions = within(row).getByTestId("departed-actions");
   expect(
-    within(actions).getByRole("button", { name: "Transfer all to me" }),
+    within(actions).getByRole("button", { name: "Transfer all to me…" }),
   ).toBeVisible();
   expect(
     within(actions).getByRole("button", { name: "More for Carol Departed" }),
@@ -547,6 +556,84 @@ it("a 404 is the role gate, not a load failure: no card", async () => {
   expect(screen.queryByRole("region", { name: "Departed" })).toBeNull();
 });
 
+it("Transfer all to me opens the dialog with you chosen, and moves nothing yet", async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/members");
+  const d = await openToMe();
+  expect(
+    within(d).getByRole("heading", {
+      name: "Transfer Carol Departed's 2 personal artifacts",
+    }),
+  ).toBeVisible();
+  await waitFor(() =>
+    expect(
+      within(d).getByRole("combobox", { name: "Give them to" }),
+    ).toHaveTextContent("Ada Lovelace (you)"),
+  );
+  // Marked as Members marks you; nobody else is.
+  fireEvent.click(within(d).getByRole("combobox", { name: "Give them to" }));
+  expect(
+    (await screen.findAllByRole("option")).map((o) => o.textContent),
+  ).toEqual(expect.arrayContaining(["Ada Lovelace (you)", "Bob Builder"]));
+  fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+  expect(within(d).getByRole("button", { name: "Transfer 2" })).toBeEnabled();
+  expect(within(d).getByRole("button", { name: "Later" })).toBeVisible();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(seen.some((c) => c.path === R.memberTransfer(CAROL))).toBe(false);
+});
+
+const YOURS_OFF =
+  "You become the owner, with Carol's shares kept. If Carol comes back later, these stay with you.";
+const YOURS_ON =
+  "They go to your Personal, with Carol's shares kept. If Carol comes back later, these stay with you.";
+
+it("self-hosted: with you chosen, the dialog says you become the owner", async () => {
+  server.use(...removedCarol);
+  mount("/settings/members");
+  const d = await openToMe();
+  expect(await within(d).findByText(YOURS_OFF)).toBeVisible();
+  expect(within(d).queryByText(/You won't see titles/)).toBeNull();
+});
+
+it("with spaces, with you chosen, the dialog says they go to your Personal", async () => {
+  mountHosted("/settings/members");
+  const d = await openToMe();
+  expect(await within(d).findByText(YOURS_ON)).toBeVisible();
+  expect(within(d).queryByText(/You won't see titles/)).toBeNull();
+});
+
+it("choosing someone else brings back their copy", async () => {
+  mountHosted("/settings/members");
+  const d = await openToMe();
+  await within(d).findByText(YOURS_ON);
+  await chooseOption("Give them to", "Bob Builder");
+  expect(
+    await within(d).findByText(
+      "You won't see titles or contents. Bob Builder gets them in their Personal, with Carol Departed's shares kept.",
+    ),
+  ).toBeVisible();
+  expect(within(d).queryByText(YOURS_ON)).toBeNull();
+});
+
+it("Transfer all to me gets the dialog's partial count and Retry", async () => {
+  let posts = 0;
+  mountHosted("/settings/members", true, undefined, [
+    http.post(`*${R.memberTransfer(CAROL)}`, () => {
+      posts += 1;
+      return posts === 1
+        ? HttpResponse.json({ moved: 1, remaining: 2, nextCursor: "c1" })
+        : HttpResponse.json(
+            { error: { code: "internal", message: "Boom" } },
+            { status: 400 },
+          );
+    }),
+  ]);
+  const d = await runToMe();
+  const alert = await within(d).findByRole("alert");
+  expect(alert).toHaveTextContent("Moved 1 of 3. 2 didn't move.");
+  expect(within(alert).getByRole("button", { name: "Retry" })).toBeVisible();
+});
+
 it("a capped (restricted) owner gets Transfer, not Transfer all to me", async () => {
   mountHosted("/settings/members", true, (m) => ({
     ...m,
@@ -559,7 +646,7 @@ it("a capped (restricted) owner gets Transfer, not Transfer all to me", async ()
     }),
   ).toBeVisible();
   expect(
-    within(row).queryByRole("button", { name: "Transfer all to me" }),
+    within(row).queryByRole("button", { name: "Transfer all to me…" }),
   ).toBeNull();
 });
 
@@ -898,6 +985,32 @@ describe("the dialog on what the install can do", () => {
     ).toBeVisible();
   });
 
+  it.each([
+    [
+      false,
+      "You become the owner, owner1@outside.example loses access, and people they shared with keep theirs.",
+    ],
+    [
+      true,
+      "They go to your Personal, owner1@outside.example loses access, and people they shared with keep theirs.",
+    ],
+  ])(
+    "an active guest with you chosen gets the you form (spaces %s), with no comes-back line",
+    async (spaces, copy) => {
+      mountHosted("/", { ...notices, spaces });
+      const d = await open();
+      fireEvent.click(
+        await within(d).findByRole("combobox", { name: "Give them to" }),
+      );
+      fireEvent.click(
+        await screen.findByRole("option", { name: "Ada Lovelace (you)" }),
+      );
+      expect(await within(d).findByText(copy)).toBeVisible();
+      expect(d).not.toHaveTextContent("comes back");
+      expect(d).not.toHaveTextContent("You won't see titles");
+    },
+  );
+
   it("to a space, for an active guest: the note says they lose access", async () => {
     mountHosted("/", { ...notices, spaces: true });
     const d = await open();
@@ -1159,7 +1272,7 @@ it("an admin's card counts only the rows they see", async () => {
     ...removedCarol.slice(1),
   ]);
   const row = await carolRow();
-  await within(row).findByRole("button", { name: "Transfer all to me" });
+  await within(row).findByRole("button", { name: "Transfer all to me…" });
   const card = await departed();
   expect(card).toHaveTextContent(
     "1 person left with personal artifacts to transfer.",
@@ -1189,11 +1302,7 @@ it("Transfer all to me that moves nothing says someone got there first", async (
       HttpResponse.json({ moved: 0, remaining: 0, nextCursor: null }),
     ),
   ]);
-  fireEvent.click(
-    await within(await carolRow()).findByRole("button", {
-      name: "Transfer all to me",
-    }),
-  );
+  await runToMe();
   await findVisibleToast(
     "Someone already handled this. The list is up to date.",
   );
@@ -1266,11 +1375,7 @@ const runDialog = async (moved: number) => {
 };
 const runRow = async (moved: number) => {
   mountHosted("/settings/members", true, undefined, movesOfFour(moved));
-  fireEvent.click(
-    await within(await carolRow()).findByRole("button", {
-      name: "Transfer all to me",
-    }),
-  );
+  await runToMe();
 };
 
 it("the dialog splits out trash when everything planned moved", async () => {
@@ -1370,6 +1475,6 @@ it("the owner can still transfer a departed admin's artifacts", async () => {
   mountHosted("/settings/members", true, undefined, removedAdminCarol);
   const row = await carolRow();
   expect(
-    await within(row).findByRole("button", { name: "Transfer all to me" }),
+    await within(row).findByRole("button", { name: "Transfer all to me…" }),
   ).toBeVisible();
 });

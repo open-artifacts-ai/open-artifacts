@@ -23,6 +23,13 @@ const notFound = () => new ApiError("not_found", "Not found");
 /** Upload URLs: the "oa:upload" subkey (never the content-token one). */
 const signingKey = (env: Env) => contentKey(env, "oa:upload");
 
+/** An upload URL's `sig` for `uploadId` expiring at `exp` (unix seconds). */
+export const signUpload = async (
+  env: Env,
+  uploadId: string,
+  exp: number,
+): Promise<string> => hmacSign(await signingKey(env), `${uploadId}:${exp}`);
+
 /**
  * Registers an upload and returns a signed PUT URL (valid LIMITS.uploadUrlTtlSec).
  * No artifactId → reserves a new id for this user; otherwise the caller must be
@@ -64,7 +71,8 @@ export async function createUpload(
       path: input.path,
       reason: "invalid_content_type",
     });
-  const key = await signingKey(env);
+  // A missing or short key fails here, before any row is written.
+  await signingKey(env);
   const db = env.DB;
   const stmts: D1PreparedStatement[] = [];
   let artifactId = input.artifactId;
@@ -121,7 +129,7 @@ export async function createUpload(
   );
   await db.batch(stmts);
   const exp = Math.floor(now / 1000) + LIMITS.uploadUrlTtlSec;
-  const sig = await hmacSign(key, `${uploadId}:${exp}`);
+  const sig = await signUpload(env, uploadId, exp);
   return {
     uploadId,
     artifactId,

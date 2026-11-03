@@ -697,32 +697,42 @@ describe("upgrade", () => {
     );
   });
 
-  it("a failed healthcheck after upgrade rolls back to the previous bundle and reports it, leaving other installs alone", async () => {
+  it("a failed healthcheck after upgrade stays on the new version and reports forward-fix, leaving other installs alone (#1106)", async () => {
     const s = setup();
     const a = keep(await s.p.create(input("alpha")));
     const b = keep(await s.p.create(input("beta")));
     const bUploads = s.scriptOf(b.id)?.uploads;
     unhealthyAt(s, "0.24.0");
+    const aUploads = s.scriptOf(a.id)?.uploads ?? 0;
     const r = keep(await s.p.upgrade(a.id, "0.24.0"));
     expect(r).toMatchObject({
       id: a.id,
       from: "0.23.0",
       to: "0.24.0",
       ok: false,
-      rolledBack: true,
+      rolledBack: false,
+      forwardFix: true,
     });
     expect(r.reason).toMatch(/healthz/);
-    expect(modulesText(s, a.id)).toContain("0.23.0");
-    expect(s.scriptOf(a.id)?.metadata.tags).toEqual([a.id, "v0.23.0"]);
+    // Only the upgrade's own upload: the old code is never put back.
+    expect(s.scriptOf(a.id)?.uploads).toBe(aUploads + 1);
+    expect(modulesText(s, a.id)).toContain("0.24.0");
     expect(s.row(a.id)).toMatchObject({
       state: "active",
-      version: "0.23.0",
-      previous_version: "0.24.0",
-      do_migration_tag: BASE_TAG,
+      version: "0.24.0",
+      previous_version: "0.23.0",
     });
     expect(s.audit(a.id)).toEqual(
-      expect.arrayContaining(["upgrade.failed", "rollback.done"]),
+      expect.arrayContaining(["upgrade.failed", "upgrade.forward_fix"]),
     );
+    expect(s.audit(a.id)).not.toContain("rollback.done");
+    // 0.24.0 carries a D1 migration: code and schema still match.
+    expect(
+      s
+        .installDb(a.id)
+        .prepare("SELECT name FROM d1_migrations WHERE name = ?")
+        .get(NEW_MIGRATION.name),
+    ).toBeDefined();
     expect(s.scriptOf(b.id)?.uploads).toBe(bUploads);
     expect(s.row(b.id)).toMatchObject({ version: "0.23.0", state: "active" });
   });
@@ -1042,7 +1052,7 @@ describe("rollback", () => {
     unhealthyAt(s, "0.24.0");
     const r = keep(await s.p.upgrade(inst.id, "0.24.0"));
     expect(r).toMatchObject({ ok: false, rolledBack: false, forwardFix: true });
-    expect(r.reason).toMatch(/revoked/);
+    expect(r.reason).toMatch(/healthz/);
     expect(s.row(inst.id)).toMatchObject({
       version: "0.24.0",
       state: "active",
@@ -2099,9 +2109,8 @@ describe("fix round 2", () => {
   it("L3: a rollback that would move forward is refused (use upgrade)", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));
-    unhealthyAt(s, "0.24.0");
-    expect((await s.p.upgrade(inst.id, "0.24.0")).rolledBack).toBe(true);
-    s.fake.health = undefined;
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    expect(keep(await s.p.rollback(inst.id))).toMatchObject({ ok: true });
     const from = s.fake.log.length;
     const e = await fails(s.p.rollback(inst.id));
     expect(e.message).toMatch(/newer than 0\.23\.0; use upgrade/);
@@ -2192,27 +2201,12 @@ describe("fix round 2", () => {
     expect(out).toEqual([{ id: off.id, ok: true, rotated: false }]);
   });
 
-  it("N3: rollback runs checkFloorSeq, and so does the auto-rollback", async () => {
+  it("N3: rollback runs checkFloorSeq", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));
     await s.p.upgrade(inst.id, "0.24.0");
     s.db().prepare("UPDATE release_floor SET floor_seq = 5").run();
     expect((await fails(s.p.rollback(inst.id))).message).toMatch(/below 5/);
-    // Auto-rollback: the floor read for the rollback is below the cache the
-    // upgrade raised, so it is refused and the upgrade reports forward-fix.
-    const t = setup();
-    const b = keep(await t.p.create(input()));
-    t.rel.st.floor = signFloor("staging", { seq: 3 });
-    t.fake.health = (sc) => {
-      if ((sc.metadata.tags as string[]).includes("v0.24.0")) {
-        t.rel.st.floor = signFloor("staging", { seq: 2 });
-        return { ok: false };
-      }
-      return undefined;
-    };
-    const r = keep(await t.p.upgrade(b.id, "0.24.0"));
-    expect(r).toMatchObject({ ok: false, rolledBack: false, forwardFix: true });
-    expect(r.reason).toMatch(/below 3/);
   });
 
   it("N4: stored metadata holds no email", async () => {
@@ -2866,30 +2860,6 @@ describe("P1 Task 8 follow-ups", () => {
       state: "active",
       version: "0.24.0",
       lease: null,
-    });
-  });
-
-  it("an upgrade whose auto-rollback meets a render that does not match the release stays forward, with the refusal", async () => {
-    const s = setup();
-    const inst = keep(await s.p.create(input()));
-    const st = s.stored(inst.id, "0.23.0");
-    const meta = JSON.parse(st?.metadata as string);
-    s.db()
-      .prepare(
-        "UPDATE install_versions SET metadata = ? WHERE install_id = ? AND version = ?",
-      )
-      .run(
-        JSON.stringify({ ...meta, tags: [inst.id, "v0.22.0"] }),
-        inst.id,
-        "0.23.0",
-      );
-    unhealthyAt(s, "0.24.0");
-    const r = keep(await s.p.upgrade(inst.id, "0.24.0"));
-    expect(r).toMatchObject({ ok: false, rolledBack: false, forwardFix: true });
-    expect(r.reason).toMatch(/is not a render of that release/);
-    expect(s.row(inst.id)).toMatchObject({
-      state: "active",
-      version: "0.24.0",
     });
   });
 
@@ -4401,12 +4371,12 @@ describe("OPS-B: the CI owner token (ciOwnerToken)", () => {
     );
   });
 
-  it("a failed upgrade's automatic rollback selftests with the same ci token, then revokes it", async () => {
+  it("a failed upgrade still revokes its ci token", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));
     unhealthyAt(s, "0.24.0");
     const r = keep(await s.mk(CI).upgrade(inst.id, "0.24.0"));
-    expect(r).toMatchObject({ ok: false, rolledBack: true });
+    expect(r).toMatchObject({ ok: false, rolledBack: false, forwardFix: true });
     const ci = ciTokens(s, inst.id);
     expect(ci).toHaveLength(1);
     expect(ci[0]?.revoked_at).not.toBeNull();
@@ -5698,28 +5668,24 @@ describe("W2 upgrade and rollback: verify_clean and onStep (5.4)", () => {
     expect(seen).toEqual(["upload", "verify_clean", "health"]);
   });
 
-  it("a dirty upgrade rolls back; a clean rollback is not prodDirty", async () => {
+  it("a dirty upgrade stays on the new version and is prodDirty (#1106)", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));
     dirtyAt(s, "0.24.0");
     const r = keep(await s.mk().upgrade(inst.id, "0.24.0"));
-    expect(r).toMatchObject({ ok: false, rolledBack: true });
-    expect(r.prodDirty).toBeUndefined();
+    expect(r).toMatchObject({
+      ok: false,
+      rolledBack: false,
+      forwardFix: true,
+      prodDirty: true,
+    });
     expect(r.reason).toMatch(/verify_clean refused/);
     expect(s.row(inst.id)).toMatchObject({
-      version: "0.23.0",
+      version: "0.24.0",
       state: "active",
       lease: null,
     });
     expect(s.audit(inst.id)).toContain("verify_clean.refused");
-  });
-
-  it("a dirty upgrade whose rollback is dirty too is prodDirty", async () => {
-    const s = setup();
-    const inst = keep(await s.p.create(input()));
-    dirtyAt(s);
-    const r = keep(await s.mk().upgrade(inst.id, "0.24.0"));
-    expect(r).toMatchObject({ ok: false, rolledBack: true, prodDirty: true });
   });
 
   it("a dirty upgrade with no rollback (previous version revoked) is prodDirty", async () => {

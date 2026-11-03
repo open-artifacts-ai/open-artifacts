@@ -12,6 +12,11 @@ import {
 } from "../../../../packages/provision/test/fixtures/release.js";
 import { JOB_ERROR_TEXT } from "../../src/errors.js";
 import { GRACE_MS, NEVER_ROUTED, runManage } from "../../src/manage.js";
+import {
+  CLOSE_SOCKETS_FAILED,
+  CLOSE_SOCKETS_JOB,
+  closeInstallSockets,
+} from "../../src/ops.js";
 import { KEY_LIVE_WAITS_MS, REDLINE_STEP } from "../../src/redline.js";
 import { openSealed } from "../../src/seal.js";
 import { runCreate } from "../../src/workflow.js";
@@ -278,7 +283,7 @@ describe("upgrade and rollback (5.4)", () => {
     }
   });
 
-  it("an upgrade whose health fails rolls back: upgrade_rolled_back, still on from", async () => {
+  it("an upgrade whose health fails stays on `to`: upgrade_incomplete, never reverted (#1106)", async () => {
     const s = await active({ slug: "rbco", version: V1 });
     // Only the new version is unhealthy.
     w.fake.health = (sc) =>
@@ -290,15 +295,24 @@ describe("upgrade and rollback (5.4)", () => {
     });
     w.fake.health = undefined;
     expect(r.job).toMatchObject({ status: "failed" });
-    expect(r.job?.error_code).toBe("upgrade_rolled_back");
+    expect(r.job?.error_code).toBe("upgrade_incomplete");
     expect(w.install(s.installId)).toMatchObject({
-      version: V1,
+      version: V2,
+      previous_version: V1,
       lease: null,
       state: "active",
     });
+    const audited = (action: string) =>
+      w.all(
+        "SELECT 1 FROM hosted_audit WHERE install_id = ? AND action = ?",
+        s.installId,
+        action,
+      );
+    expect(audited("upgrade.forward_fix")).toHaveLength(1);
+    expect(audited("rollback.done")).toHaveLength(0);
   });
 
-  it("an upgrade whose script and rollback both fail verify_clean: paused, prod_dirty", async () => {
+  it("an upgrade whose script fails verify_clean: paused, prod_dirty, still on `to`", async () => {
     const s = await active({ slug: "dirtyup", version: V1 });
     w.fake.settingsEdit = (_x, b) => [...b, { name: "EXTRA", type: "service" }];
     const r = await manage("upgrade", s.installId, {
@@ -312,6 +326,7 @@ describe("upgrade and rollback (5.4)", () => {
     ]);
     expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
     expect(w.install(s.installId)).toMatchObject({
+      version: V2,
       state: "active",
       lease: null,
     });
@@ -454,6 +469,69 @@ describe("suspend, resume, delete, restore (5.5, 5.6)", () => {
       suspended_at: null,
       suspend_reason: null,
     });
+  });
+
+  // #1182: suspend asks the install to close its open sockets, after the pause.
+  it("suspend calls the install's oa:close-sockets once, after both HOSTS keys are paused", async () => {
+    const s = await active({ slug: "sockco" });
+    const before = w.fake.scheduledCalls.length;
+    const r = await manage("suspend", s.installId, {
+      args: { reason: "billing" },
+    });
+    expect(r.error).toBeNull();
+    const calls = w.fake.scheduledCalls.slice(before);
+    expect(calls).toEqual([
+      {
+        script: expect.stringMatching(new RegExp(`${s.installId}$`)),
+        cron: CLOSE_SOCKETS_JOB,
+        hosts: [`paused:${s.installId}`, `paused:${s.installId}`],
+      },
+    ]);
+    // Resume needs nothing new: no call.
+    const n = w.fake.scheduledCalls.length;
+    expect((await manage("resume", s.installId)).error).toBeNull();
+    expect(w.fake.scheduledCalls.length).toBe(n);
+  });
+
+  it.each([
+    ["throw", () => Promise.reject(new Error("unknown system job a@b.co"))],
+    ["outcome", () => Promise.resolve({ outcome: "exception" })],
+  ] as const)(
+    "a close-sockets call that fails (%s) logs one fixed line and the suspend completes",
+    async (cat, fail) => {
+      const s = await active({ slug: `fail${cat}` });
+      w.fake.onScheduled = fail;
+      const r = await manage("suspend", s.installId, {
+        args: { reason: "billing" },
+      });
+      expect(r.error).toBeNull();
+      expect(w.fake.scheduledCalls.at(-1)?.cron).toBe(CLOSE_SOCKETS_JOB);
+      expect(w.hosts(`fail${cat}`)).toEqual([
+        `paused:${s.installId}`,
+        `paused:${s.installId}`,
+      ]);
+      expect(w.lifecycle(s.installId)).toMatchObject({
+        serving_mode: "paused",
+        suspended_at: expect.any(Number),
+      });
+      expect(w.status(s.installId)?.state).toBe("suspended");
+      const lines = (warn?.mock.calls ?? []).filter(
+        (c) => c[0] === CLOSE_SOCKETS_FAILED,
+      );
+      expect(lines).toEqual([[CLOSE_SOCKETS_FAILED, cat]]);
+      // No id, no error text.
+      expect(JSON.stringify(lines)).not.toContain(s.installId);
+      expect(JSON.stringify(lines)).not.toContain("a@b.co");
+    },
+  );
+
+  it("a close-sockets call that never settles times out, logged; it never throws", async () => {
+    const s = await active({ slug: "stallco" });
+    w.fake.onScheduled = () => new Promise(() => {});
+    expect(await closeInstallSockets(w.ctx, s.installId, 20)).toBe("timeout");
+    expect(
+      (warn?.mock.calls ?? []).filter((c) => c[0] === CLOSE_SOCKETS_FAILED),
+    ).toEqual([[CLOSE_SOCKETS_FAILED, "timeout"]]);
   });
 
   it("delete closes and starts the grace; restore reopens (paused if it was suspended)", async () => {
@@ -1846,15 +1924,8 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
   });
 
   /** An upgrade whose isolate dies after upload's body, before its result is stored, then replayed. */
-  async function lostUpload(slug: string, dirty?: "to" | "both") {
+  async function lostUpload(slug: string, dirty?: true) {
     const s = await active({ slug, version: V1 });
-    if (dirty === "to")
-      // No rollback (the DO tag moved): the dirty `to` keeps serving.
-      w.db
-        .prepare(
-          "UPDATE install_versions SET do_migration_tag = 'v-older' WHERE install_id = ? AND version = ?",
-        )
-        .run(s.installId, V1);
     if (dirty)
       w.fake.settingsEdit = (_x, b) => [
         ...b,
@@ -1902,23 +1973,9 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
   });
 
   it("a dirty `to` whose upload result was lost: the replay pauses it, prod_dirty", async () => {
-    const { s, id, again } = await lostUpload("dirtydied", "to");
+    const { s, id, again } = await lostUpload("dirtydied", true);
     expect(w.install(s.installId)).toMatchObject({
       version: V2,
-      state: "active",
-    });
-    expect(w.job(id)).toMatchObject({
-      status: "failed",
-      error_code: "prod_dirty",
-    });
-    expect(again.log.map((l) => l.name)).toContain("pause_dirty");
-    expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
-  });
-
-  it("a dirty rollback whose upload result was lost: back on from, paused, prod_dirty, never a second upload", async () => {
-    const { s, id, again } = await lostUpload("dirtyback", "both");
-    expect(w.install(s.installId)).toMatchObject({
-      version: V1,
       state: "active",
     });
     expect(w.job(id)).toMatchObject({

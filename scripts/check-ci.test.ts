@@ -72,12 +72,34 @@ const RETRY_FLAGS = /--retry \d+ --retry-delay \d+ --retry-max-time \d+/;
 
 describe("ci.yml", () => {
   const w = wf("ci.yml");
-  it("triggers on pull_request and push to main", () => {
+  it("triggers on pull_request and dispatch, never on push (#965)", () => {
     expect(triggers(w)).toEqual(
-      expect.arrayContaining(["pull_request", "push", "workflow_dispatch"]),
+      expect.arrayContaining(["pull_request", "workflow_dispatch"]),
     );
-    expect(w.on.push.branches).toContain("main");
-    expect("workflow_dispatch" in w.on).toBe(true);
+    // Main moves only through the merge queue, which already ran CI on the
+    // same commit; a push run would only retest it and take runners.
+    expect("push" in w.on).toBe(false);
+  });
+  it("no workflow waits on a push-to-main CI run (#965)", () => {
+    const dir = join(root, ".github/workflows");
+    const onCi: string[] = [];
+    for (const f of readdirSync(dir).filter((n) => /\.ya?ml$/.test(n))) {
+      const x = wf(f);
+      const wr = x.on?.workflow_run;
+      if (wr && (wr.workflows ?? []).includes("CI")) {
+        onCi.push(f);
+        // No branch filter: it still fires on pull request and merge-queue
+        // CI runs (the release PR's own checks are what it reads).
+        expect(wr.branches).toBeUndefined();
+        expect(wr["branches-ignore"]).toBeUndefined();
+      }
+    }
+    expect(onCi).toEqual(["release-cadence.yml"]);
+    // release-cadence reads the release PR's check rollup and the merge
+    // queue, never a check on main's commit.
+    const cadence = ci("release-cadence.ts");
+    expect(cadence).toContain("statusCheckRollup");
+    expect(cadence).toContain("mergeQueue(branch: $branch)");
   });
   it("test: pull requests run the affected packages; everything else runs the full suite", () => {
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
@@ -105,6 +127,29 @@ describe("ci.yml", () => {
     expect(Object.keys(w.jobs)).toEqual(
       expect.arrayContaining(["build", "e2e", "lint", "test", "typecheck"]),
     );
+  });
+  // #1213: the migration timing job filters by path inside the job, so it
+  // always reports (a filtered-out workflow would leave a required check
+  // pending, a skipped job would pass one); any diff error means run.
+  it("migration-timing always runs and decides its path filter inside", () => {
+    const job = w.jobs["migration-timing"];
+    expect(job).toBeDefined();
+    expect(job.if).toBeUndefined();
+    expect(job.needs).toBeUndefined();
+    expect(w.on.pull_request?.paths).toBeUndefined();
+    expect(w.on.merge_group?.paths).toBeUndefined();
+    expect(JSON.stringify(job)).not.toContain("continue-on-error");
+    expect(JSON.stringify(job)).not.toContain("secrets.");
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = job.steps;
+    const changed = steps.find((s) => s.id === "changed");
+    expect(changed.run).toMatch(/^run=true\n/);
+    expect(changed.run).toContain("apps/server/migrations/");
+    const time = steps.find((s) =>
+      (s.run ?? "").includes("migration-timing.ts --seed-file"),
+    );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(time.if).toBe("${{ steps.changed.outputs.run == 'true' }}");
   });
   // P3 T16 (#605): the authz matrix runs in its own job, in parallel, so the
   // main test job's wall time drops. Required check (repo setting).
@@ -135,28 +180,21 @@ describe("ci.yml", () => {
   });
   it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
     const job = w.jobs["e2e-shard"];
-    // Free plan (20 concurrent jobs): one shard on pull requests, four on the
-    // merge queue and main.
-    expect(job.strategy.matrix.shard).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3,4]') }}",
-    );
+    // Four shards on every event: pull requests too, as the merge queue
+    // (#965). No per-event expression anywhere in the shard setup.
+    expect(job.strategy.matrix.shard).toEqual([1, 2, 3, 4]);
     expect(job.strategy["fail-fast"]).toBe(false);
-    expect(job.env.E2E_SHARD).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 1 || 4 }}",
-    );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(job.env.E2E_SHARD).toBe("${{ matrix.shard }}/4");
+    expect(JSON.stringify(job)).not.toContain("github.event_name");
     // Browsers and their OS deps come baked into the image, pinned by digest:
     // no apt step, so a slow Ubuntu mirror can't eat the job's budget (#462).
     expect(job.container.image).toMatch(
       /^mcr\.microsoft\.com\/playwright:v\d+\.\d+\.\d+-noble@sha256:[0-9a-f]{64}$/,
     );
     expect(job.container.options ?? "").toContain("--ipc=host");
-    // 25 min for the single pull-request shard (every suite), 15 for one of four.
-    expect(job["timeout-minutes"]).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ github.event_name == 'pull_request' && 25 || 15 }}",
-    );
+    // 15 min for one shard of four.
+    expect(job["timeout-minutes"]).toBe(15);
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     const steps: any[] = job.steps;
     const runs = steps.map((s) => s.run ?? "");
@@ -193,11 +231,20 @@ describe("ci.yml", () => {
       "apps/dashboard/test-results",
     ]);
     expect(uploads[1].if).toBe("failure()");
-    // The spaces suite (one spec, its own server) runs whole in one shard.
-    const spaces = steps.find((s) => s.run === "bash scripts/ci/e2e.sh spaces");
-    expect(spaces.if).toContain(
-      "matrix.shard == (github.event_name == 'pull_request' && 1 || 3)",
-    );
+    // The spaces suite (one spec, its own server) runs whole in shard 3 only;
+    // the unsharded ui, landing and provisioning checks in shard 1 only.
+    const shardOf = (name: string) => {
+      const step = steps.find(
+        (s) => s.run === `bash scripts/ci/e2e.sh ${name}`,
+      );
+      return [...(step.if as string).matchAll(/matrix\.shard == (\d+)/g)].map(
+        (m) => Number(m[1]),
+      );
+    };
+    expect(shardOf("spaces")).toEqual([3]);
+    for (const name of ["ui", "landing", "provisioning"]) {
+      expect(shardOf(name)).toEqual([1]);
+    }
     // Local wrangler dev only: no secrets, nothing pointing at staging.
     const s = JSON.stringify(job);
     expect(s).not.toContain("secrets.");
@@ -1256,6 +1303,29 @@ describe("workflow jobs that use repo files have a checkout", () => {
       });
     }
   }
+});
+
+describe("cache-seed.yml (#965)", () => {
+  const w = wf("cache-seed.yml");
+  it("seeds main's pnpm cache when the lockfile changes; no tests, no secrets", () => {
+    expect(triggers(w).sort()).toEqual(["push", "workflow_dispatch"]);
+    expect(w.on.push.branches).toEqual(["main"]);
+    expect(w.on.push.paths).toEqual(
+      expect.arrayContaining(["pnpm-lock.yaml", ".nvmrc"]),
+    );
+    expect(w.permissions).toEqual({ contents: "read" });
+    const text = read(".github/workflows/cache-seed.yml");
+    expect(text).not.toContain("secrets.");
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = w.jobs.seed.steps;
+    const node = steps.find((s) =>
+      String(s.uses).startsWith("actions/setup-node@"),
+    );
+    expect(node.with.cache).toBe("pnpm");
+    expect(steps.at(-1).run).toBe(
+      "pnpm install --frozen-lockfile --ignore-scripts",
+    );
+  });
 });
 
 describe("release cadence", () => {

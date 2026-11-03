@@ -415,7 +415,7 @@ case "$target" in
     [ -n "$want" ] || { echo "can't read provisioning's committed rate limits" >&2; exit 1; }
     got="$(jq -c '[.result.bindings[] | select(.type == "ratelimit") | {name, namespace_id: (.namespace_id | tostring), limit: .simple.limit, period: .simple.period}] | sort_by(.name)' <<< "$S")"
     [ "$got" = "$want" ] || { echo "rate limits: got $got, want $want" >&2; exit 1; }
-    names_are "$S" "$(jq -r '[.[].name, "ASSETS", "AUTH_BROKER", "MANAGE_INSTALL", "OAUTH_KV", "PLATFORM_DB", "PROVISIONER", "PROVISION_INSTALL", "SIGNUPS"] | sort | join(",")' <<< "$want")"
+    names_are "$S" "$(jq -r '[.[].name, "ASSETS", "AUTH_BROKER", "CF_VERSION_METADATA", "MANAGE_INSTALL", "OAUTH_KV", "PLATFORM_DB", "PROVISIONER", "PROVISION_INSTALL", "SIGNUPS"] | sort | join(",")' <<< "$want")"
     if [ "$env" = prod ]; then
       oidc="$(jq -r '[.result.bindings[] | select(.name | startswith("OIDC_")) | .name] | join(",")' <<< "$S")"
       [ -z "$oidc" ] || { echo "prod $W binds $oidc; prod has no OIDC principal" >&2; exit 1; }

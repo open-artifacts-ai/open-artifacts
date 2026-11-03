@@ -232,7 +232,7 @@ it("upgrade offers other installable releases and sends the choice", async () =>
   fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
   const dialog = await screen.findByRole("dialog");
   const version = within(dialog).getByRole("combobox", { name: "Version" });
-  expect(version).toHaveTextContent("Latest release");
+  expect(version).toHaveTextContent("The platform's release");
   // 1.42.0 is installed, so only 1.41.2 is offered besides "latest".
   fireEvent.click(version);
   await screen.findByRole("option", { name: "1.41.2" });

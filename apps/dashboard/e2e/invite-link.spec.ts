@@ -249,7 +249,7 @@ for (const scheme of ["light", "dark"] as const)
         path: info.outputPath(`departed-${scheme}-${width}.png`),
         fullPage: true,
       });
-      // Parity 1: the row's button is "Transfer all to me"; the dialog is in More.
+      // #1125: "Transfer all to me" opens this dialog with you chosen; More opens it with nobody.
       await card
         .getByRole("button", { name: "More for Carol Departed" })
         .click();

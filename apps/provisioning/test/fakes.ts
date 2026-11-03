@@ -82,6 +82,8 @@ export function fakeEnv(over: Partial<Env> = {}) {
   const env = {
     OA_ENV: "staging",
     APP_DOMAIN: APP,
+    // The platform runs the newest fake release.
+    CF_VERSION_METADATA: { tag: "v1.42.0" },
     ADMIN_IDENTITIES: "me@example.com:123",
     SIGNUPS_ENABLED: "false",
     SELF_SERVE_TIER: "trial",
