@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.105.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.104.1...v0.105.0) (2026-11-03)
+
+
+### Features
+
+* **admin:** Audit labels the provisioner's step rows and counted refusals ([#1136](https://github.com/open-artifacts-ai/open-artifacts/issues/1136)) ([#1248](https://github.com/open-artifacts-ai/open-artifacts/issues/1248)) ([e942e41](https://github.com/open-artifacts-ai/open-artifacts/commit/e942e41bfad5270326b449076a61617d6b62b0ef))
+
 ## [0.104.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.104.0...v0.104.1) (2026-11-03)
 
 

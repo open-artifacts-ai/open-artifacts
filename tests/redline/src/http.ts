@@ -214,8 +214,12 @@ function readLedger(path: string): number[] {
   }
 }
 
-/** Waits until a hook call to `t` stays under the limit, then records it. */
-async function paceHook(t: Target): Promise<void> {
+/**
+ * Waits until a hook call to `t` stays under the limit, then records it. Any
+ * request to a /__test/* path counts (the server charges the bucket before
+ * the key), so a raw probe there paces through this too.
+ */
+export async function paceHook(t: Target): Promise<void> {
   const path = hookLedger(t);
   for (;;) {
     const now = Date.now();
