@@ -6,7 +6,7 @@ import {
   ROUTE_IDS,
   ROUTES,
   TokenScopeSchema,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ApiError } from "../src/errors.js";
 import type { Principal } from "../src/principal.js";

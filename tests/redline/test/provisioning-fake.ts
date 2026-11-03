@@ -3,7 +3,7 @@ import {
   ADMIN_TOOL_NAMES,
   JOB_STEPS,
   TOKEN_SCOPES,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import type { ProvConfig, ProvIo } from "../src/provisioning.ts";
 import { type Fake, fakeServer } from "./fake.ts";
 import { sealTo } from "./provisioner-seal.ts";

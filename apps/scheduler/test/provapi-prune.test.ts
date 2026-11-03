@@ -1,15 +1,15 @@
-import { AUDIT_REFUSAL_WINDOW_MS } from "@oa/shared/provisioning/alerts";
+import { AUDIT_REFUSAL_WINDOW_MS } from "@oa/provisioning-contract/alerts";
 import {
   DCR_COUNTER_PREFIX,
   FAILED_SECRET_RETENTION_MS,
   OAUTH_CLIENT_UNCLAIMED_MS,
-} from "@oa/shared/provisioning/constants";
+} from "@oa/provisioning-contract/constants";
 import {
   AUDIT_REFUSAL_RETENTION_MS,
   DCR_COUNTER_RETENTION_MS,
   EXPIRED_AUTH_RETENTION_MS,
   RATE_COUNTER_RETENTION_MS,
-} from "@oa/shared/provisioning/state";
+} from "@oa/provisioning-contract/state";
 import {
   afterEach,
   beforeAll,

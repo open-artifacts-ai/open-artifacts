@@ -26,6 +26,7 @@
     "@oa/broker-core": "workspace:*",
     "@oa/dashboard": "workspace:*",
     "@oa/directory-broker": "workspace:*",
+    "@oa/provisioning-contract": "workspace:*",
     "@oa/render": "workspace:*",
     "@oa/runtime": "workspace:*",
     "@types/node": "^20.19.43",

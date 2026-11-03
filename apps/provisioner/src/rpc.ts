@@ -19,7 +19,7 @@ import {
   TOKEN_EXPIRING_DAYS,
   type TokenStatus,
   type VerifyTurnstileInput,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import {
   deployEnv,
   type ProvisionerEnv,

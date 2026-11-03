@@ -1,4 +1,4 @@
-import { MintedTokenSchema, TokensSchema } from "@oa/shared/provisioning";
+import { MintedTokenSchema, TokensSchema } from "@oa/provisioning-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/errors.js";
 import type { Principal } from "../src/principal.js";

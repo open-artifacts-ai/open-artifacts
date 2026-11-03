@@ -7,7 +7,7 @@ import {
   ProvisionRefused,
   provisionErrorCode,
 } from "@oa/provision/jobs";
-import { SCHEDULER_TICK_KEY } from "@oa/shared/provisioning/state";
+import { SCHEDULER_TICK_KEY } from "@oa/provisioning-contract/state";
 import { type DutyCategory, DutyFailure, Stall, within } from "./env.js";
 import { raiseState } from "./state.js";
 

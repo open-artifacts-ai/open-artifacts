@@ -1,4 +1,4 @@
-import { emptyWorld, fixtureWorld } from "@oa/shared/provisioning/fixtures";
+import { emptyWorld, fixtureWorld } from "@oa/provisioning-contract/fixtures";
 import {
   act,
   fireEvent,

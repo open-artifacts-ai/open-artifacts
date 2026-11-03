@@ -3,12 +3,12 @@
 // its create job. The consumer admits the row under the daily cap, starts the
 // row's job (instance id = job id, params { jobId }), and never reads or
 // writes the email.
-import type { WorkflowParams } from "@oa/shared/provisioning";
+import type { WorkflowParams } from "@oa/provisioning-contract";
 import {
   createWorkflowInstance,
   getWorkflowInstance,
   isWorkflowExists,
-} from "@oa/shared/provisioning/workflow";
+} from "@oa/provisioning-contract/workflow";
 import { parseSignup, signupIdOf } from "./message.js";
 
 export interface ConsumerEnv {

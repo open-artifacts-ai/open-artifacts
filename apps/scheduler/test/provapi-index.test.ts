@@ -3,11 +3,11 @@ import { REVOKE_MIN_VERSION } from "@oa/provision/versions";
 import {
   FakeWorkflow,
   fakeProvisionerRpc,
-} from "@oa/shared/provisioning/fakes";
+} from "@oa/provisioning-contract/fakes";
 import {
   JOB_START_GRACE_MS,
   SCHEDULER_TICK_KEY,
-} from "@oa/shared/provisioning/state";
+} from "@oa/provisioning-contract/state";
 import {
   afterEach,
   beforeAll,

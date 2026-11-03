@@ -4,7 +4,7 @@ import {
   type TokenExchangeCallbackOptions,
   type TokenExchangeCallbackResult,
 } from "@cloudflare/workers-oauth-provider";
-import { TokenScopeSchema } from "@oa/shared/provisioning";
+import { TokenScopeSchema } from "@oa/provisioning-contract";
 import type { Env } from "../../env.js";
 import { limit } from "../../limits.js";
 import { isRefusal } from "../../principal.js";

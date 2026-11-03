@@ -1,4 +1,4 @@
-import { fixtureMe, fixtureWorld } from "@oa/shared/provisioning/fixtures";
+import { fixtureMe, fixtureWorld } from "@oa/provisioning-contract/fixtures";
 import { screen, within } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { http, json, renderApp, use } from "./harness";

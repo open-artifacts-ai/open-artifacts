@@ -1,5 +1,5 @@
-import { InventoryHealthSchema } from "@oa/shared/provisioning";
-import { SCHEDULER_TICK_KEY } from "@oa/shared/provisioning/state";
+import { InventoryHealthSchema } from "@oa/provisioning-contract";
+import { SCHEDULER_TICK_KEY } from "@oa/provisioning-contract/state";
 import { type D1Like, json } from "./http.ts";
 
 // GET /health: the scheduler's dead-man (design v7 5.8). The monitor fails

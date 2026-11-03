@@ -1,4 +1,4 @@
-import { AUDIT_REFUSAL_WINDOW_MS } from "@oa/shared/provisioning";
+import { AUDIT_REFUSAL_WINDOW_MS } from "@oa/provisioning-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hmac16 } from "../src/auth/crypto.js";
 import worker from "../src/index.js";

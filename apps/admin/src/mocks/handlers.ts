@@ -1,7 +1,7 @@
 import {
   createProvisioningMock,
   type ProvisioningMockOptions,
-} from "@oa/shared/provisioning/mocks";
+} from "@oa/provisioning-contract/mocks";
 
 /**
  * The contract's MSW mock (C1), as an admin session on staging. Fresh state per

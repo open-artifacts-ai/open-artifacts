@@ -1,12 +1,12 @@
-// #1188: the mock-parity cases (packages/shared/test/provisioning/
+// #1188: the mock-parity cases (packages/provisioning-contract/test/
 // mock-parity.ts) against the worker, through invokeRoute as an admin, on D1
 // seeded with the MSW mock's own starting world (mockWorld).
-import { mockWorld } from "@oa/shared/provisioning";
+import { mockWorld } from "@oa/provisioning-contract";
 import { beforeEach } from "vitest";
 import {
   mockParity,
   type ParityDriver,
-} from "../../../packages/shared/test/provisioning/mock-parity.js";
+} from "../../../packages/provisioning-contract/test/mock-parity.js";
 import { call } from "./call.js";
 import { ADMIN_P, fakeEnv, insert, jobId, next, resetDb } from "./fakes.js";
 

@@ -16,7 +16,7 @@ import {
   WfpProvisioner,
   type WfpStep,
 } from "@oa/provision";
-import type { ServingMode } from "@oa/shared/provisioning";
+import type { ServingMode } from "@oa/provisioning-contract";
 import {
   deployEnv,
   type ProvisionerEnv,

@@ -37,17 +37,17 @@ import {
   SIGNIN_BURST_MIN,
   SIGNIN_BURST_WINDOW_MS,
   WELCOME_CLAIM_MS,
-} from "@oa/shared/provisioning/alerts";
+} from "@oa/provisioning-contract/alerts";
 import {
   TOKEN_EXPIRING_DAYS,
   ULID_RE,
-} from "@oa/shared/provisioning/constants";
+} from "@oa/provisioning-contract/constants";
 import {
   ALERT_KEYS,
   type AlertKey,
   JOB_KINDS,
-} from "@oa/shared/provisioning/enum-values";
-import { alertStateKey } from "@oa/shared/provisioning/state";
+} from "@oa/provisioning-contract/enum-values";
+import { alertStateKey } from "@oa/provisioning-contract/state";
 import type { ProvapiEnv } from "./env.js";
 import { FLEET_BLOCKED_MS, FLEET_SKEW_MS } from "./fleet.js";
 import { claimState, getState, raiseState, unclaimState } from "./state.js";

@@ -1,4 +1,4 @@
-import type { ProvisioningEnv } from "@oa/shared/provisioning";
+import type { ProvisioningEnv } from "@oa/provisioning-contract";
 import { clientDisplayName } from "../../services/tokens.js";
 
 // Server-rendered pages on the admin host for MCP consent (design v7

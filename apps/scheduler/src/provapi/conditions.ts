@@ -2,7 +2,7 @@
 // D1, never a copy, plus token_expiring and token_invalid from
 // PROVISIONER.tokenStatus() and the fleet keys from fleet.ts (#955). Rows mean open, no rows clear, and a failed
 // read is null (left as it is).
-import type { ProvisionerRpc } from "@oa/shared/provisioning";
+import type { ProvisionerRpc } from "@oa/provisioning-contract";
 import {
   ALERT_CONDITIONS,
   type AlertRow,
@@ -10,9 +10,9 @@ import {
   type RPC_ALERT_KEYS,
   SQL_ALERT_KEYS,
   type SqlAlertKey,
-} from "@oa/shared/provisioning/alerts";
-import { isTokenStatus } from "@oa/shared/provisioning/constants";
-import type { AlertKey } from "@oa/shared/provisioning/enum-values";
+} from "@oa/provisioning-contract/alerts";
+import { isTokenStatus } from "@oa/provisioning-contract/constants";
+import type { AlertKey } from "@oa/provisioning-contract/enum-values";
 import { within } from "./env.js";
 import { fleetConditions } from "./fleet.js";
 

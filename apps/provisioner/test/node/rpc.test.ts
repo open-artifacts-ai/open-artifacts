@@ -2,7 +2,7 @@
 // RELEASES, siteverify with the env widget's secret (or Turnstile's test
 // secret for a staging test user only), and the token's status. No answer
 // carries a token or secret.
-import { ReleaseSchema, TokenStatusSchema } from "@oa/shared/provisioning";
+import { ReleaseSchema, TokenStatusSchema } from "@oa/provisioning-contract";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
 import {

@@ -1,4 +1,4 @@
-import { fixtureMe } from "@oa/shared/provisioning/fixtures";
+import { fixtureMe } from "@oa/provisioning-contract/fixtures";
 
 /** GET /me as an admin session with this CSRF token. */
 export const adminMe = (csrf: string) =>

@@ -1,4 +1,4 @@
-import { InventoryHealthSchema } from "@oa/shared/provisioning";
+import { InventoryHealthSchema } from "@oa/provisioning-contract";
 import { describe, expect, it } from "vitest";
 import {
   insert,

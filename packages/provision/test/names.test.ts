@@ -1,4 +1,4 @@
-import { RESERVED_SLUGS as SHARED_RESERVED } from "@oa/shared/provisioning/slugs";
+import { RESERVED_SLUGS as SHARED_RESERVED } from "@oa/provisioning-contract/slugs";
 import { describe, expect, it } from "vitest";
 import {
   assertOwnResource,

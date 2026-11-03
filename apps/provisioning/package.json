@@ -17,6 +17,7 @@
     "@oa/auth-core": "workspace:*",
     "@oa/gh-oidc": "workspace:*",
     "@oa/provision": "workspace:*",
+    "@oa/provisioning-contract": "workspace:*",
     "@oa/shared": "workspace:*",
     "agents": "0.28.1",
     "zod": "^4.6.7"

@@ -1,4 +1,4 @@
-import { type AuditEntry, InstallIdSchema } from "@oa/shared/provisioning";
+import { type AuditEntry, InstallIdSchema } from "@oa/provisioning-contract";
 import {
   Input,
   Select,

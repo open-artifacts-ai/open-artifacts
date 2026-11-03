@@ -5,7 +5,7 @@ import {
   type InstallSummary,
   type JobListItem,
   type World,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import {
   Input,
   Select,

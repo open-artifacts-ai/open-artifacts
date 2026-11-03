@@ -1,5 +1,5 @@
 import { CfError, ProvisionRefused } from "@oa/provision/jobs";
-import { SCHEDULER_TICK_KEY } from "@oa/shared/provisioning/state";
+import { SCHEDULER_TICK_KEY } from "@oa/provisioning-contract/state";
 import {
   afterEach,
   beforeAll,
