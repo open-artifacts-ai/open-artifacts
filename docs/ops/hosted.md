@@ -505,6 +505,17 @@ Agents (Frontend, Design and Platform walkthroughs, and e2e tests) sign in to th
 
 `verify_clean` matches bindings by name and type. A second check compares the real ids a live script is bound to with the install's own: D1 and KV resolved by name and the installs row, R2 by name, rate limits inside `rl_ns`, and Durable Objects by class and script. Today it's stage 1 (#1137): one `verify_clean.binding_ids` audit line at create, upgrade, rollback and var changes, with the binding names and codes it found, the live fields by type, and whether the provisioner's token can read a D1 bookmark, never its value. It never holds a job: any error of its own, or 10 s, skips the line. Stage 2 turns a problem into a refusal, after a staging release shows the live fields match.
 
+### Migrations that can lose data
+
+A fleet upgrade never crosses a migration that can lose data (MIG-2). Before an upgrade changes anything, the provisioner reads this install's pending migrations, the ones it hasn't run yet. One is held if its first line is `-- oa:non-additive`, or if its SQL, without comments and strings, has `DROP TABLE`, `ALTER TABLE ... DROP`, `RENAME`, or a `DELETE` or `UPDATE` with no `WHERE`.
+
+- A held upgrade fails with `migration_held`, and nothing changes. An `upgrade.held` audit row names the files. On a fleet job this halts the version at the canary, and `fleet_halted` opens.
+- To cross one, a person upgrades that install with `nonAdditive: true`: the box in the admin Upgrade dialog, or the `upgrade_install` field. This is an admin write. Red-line's bring-up passes it for rl-a and rl-b, so a release like this meets red-line first.
+- It takes a D1 Time Travel bookmark first, and refuses without one. The `upgrade.restore_point` audit row has the bookmark and the files.
+- Nothing restores automatically. To go back: `wrangler d1 time-travel restore <db> --bookmark <bookmark>`, then roll the install back. That discards every write since the bookmark.
+- Old code still serves on the new schema during the upgrade, because migrations run before the upload.
+- A create isn't held: there's no data to lose.
+
 ### Inventory `GET /hosts` (read-only, for the red-line suite)
 
 `apps/inventory` binds `HOSTS` (`oa-<p>-hosts`) next to `PLATFORM_DB`; the Worker only reads both (a source test forbids KV and D1 writes). Same `Authorization: Bearer <GitHub OIDC JWT>` as `/installs` (design 6.3; the inventory key is gone), and the same plain 404 for anything else: every auth failure (no, empty or oversized bearer, a malformed or expired token, any claim that misses its pin, a staging token on prod, a JWKS fetch failure) is that unknown-route 404 byte for byte (`Not found`, `cache-control: no-store`), never a 401. Missing or empty `OIDC_*` vars are a fixed 503 before the header is read. `GET /hosts` returns `{"hosts":[{"host","installId"}],"complete":true}`, sorted by host, paged through every KV cursor, capped at 10,000 keys (`complete:false` past it). `GET /hosts?host=<h>` returns `{"host","installId"}` for that exact key (nothing is normalized). `installId` is `null` for a miss or a value that isn't an install id; raw values are never returned. Fill the `HOSTS` id in `wrangler.jsonc` at deploy, as for `PLATFORM_DB`. The red-line env reads the endpoint through `REDLINE_STG_INVENTORY_URL` (variable) with a GitHub OIDC token `redline-staging.yml` mints per run (no stored secret).
