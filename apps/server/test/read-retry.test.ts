@@ -273,6 +273,29 @@ describe("D1 read retry", () => {
     }
   });
 
+  it("batch() receives the statements the binding made, not the wrappers", async () => {
+    const made: unknown[] = [];
+    let got: unknown[] = [];
+    const db = retryingD1({
+      prepare: (sql: string) => {
+        const s = new FakeStmt(sql, new Script());
+        made.push(s);
+        return s;
+      },
+      batch: async (x: unknown[]) => {
+        got = x;
+        return [];
+      },
+    } as unknown as D1Database);
+    const read = db.prepare("select 1");
+    const write = db.prepare("insert into t values (1)");
+    await db.batch([read, write]);
+    expect(read).not.toBe(made[0]);
+    expect(got).toHaveLength(2);
+    expect(got[0]).toBe(made[0]);
+    expect(got[1]).toBe(made[1]);
+  });
+
   it("never retries batch() or exec()", async () => {
     const s = new Script([d1Down(), "ok"]);
     const db = retryingD1(fakeDb(s));
