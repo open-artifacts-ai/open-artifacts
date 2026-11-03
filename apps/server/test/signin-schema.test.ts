@@ -106,7 +106,7 @@ describe("migration 0008", () => {
 });
 
 describe("lifecycle", () => {
-  it("removeMember deletes the member's identities", async () => {
+  it("removeMember keeps the member's identities (soft removal, parity 1: a restore or relink reuses them)", async () => {
     const { userId } = await login(`s3-rm-${tag}@a.com`);
     await linkGoogle(userId, `RM-${tag}`);
     await removeMember(env, userId, SYSTEM_ACTOR);
@@ -115,7 +115,7 @@ describe("lifecycle", () => {
         "select count(*) n from identities where user_id = ?",
         userId,
       ),
-    ).toEqual({ n: 0 });
+    ).toEqual({ n: 1 });
   });
 
   it("a role change bumps session_epoch", async () => {
