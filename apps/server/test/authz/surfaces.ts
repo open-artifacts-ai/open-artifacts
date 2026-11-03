@@ -1188,6 +1188,8 @@ export type OrgReal = {
   memberId: string;
   /** A removed member the probe may restore. */
   removedId: string;
+  /** A removed member with nothing in their personal space the probe may erase. */
+  erasableId: string;
   /** An active member with a Google link the probe may reset. */
   linkedId: string;
   /** An active member restricted by hand (the probe lifts it). */
@@ -1381,6 +1383,20 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       needs: ["removedId"],
       req: (r) => ({ path: `${MEMBERS}/${r.removedId}/restore` }),
       allow: ok(200),
+    },
+  },
+  // Refuse: the caller themself (active, so the owner is 409 member_active;
+  // an admin is the owner's to manage, 403 owner_only). Cookie sessions
+  // only: a PAT or grant is 404 (members.erase.test.ts).
+  "POST /api/v1/members/:id/erase": {
+    refuse: {
+      req: async (c) => ({ path: `${MEMBERS}/${await c.self()}/erase` }),
+      allow: code("member_active", "owner_only"),
+    },
+    real: {
+      needs: ["erasableId"],
+      req: (r) => ({ path: `${MEMBERS}/${r.erasableId}/erase` }),
+      allow: ok(204),
     },
   },
   "POST /api/v1/members/:id/transfer": {
@@ -1772,6 +1788,7 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["PATCH /api/v1/members/:id", org("members.manage")],
   ["DELETE /api/v1/members/:id", org("members.manage")],
   ["POST /api/v1/members/:id/restore", org("members.manage")],
+  ["POST /api/v1/members/:id/erase", org("members.manage")],
   // 409 member_active is past the guard: redline's target is an active member.
   ["GET /api/v1/members/:id/transfer", org("transfer.departed"), [200, 409]],
   ["POST /api/v1/members/:id/transfer", org("transfer.departed")],

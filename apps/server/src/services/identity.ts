@@ -323,8 +323,12 @@ export async function resetIdentity(
     stmt(
       env.DB,
       // google_relink: the next directory users page relinks this row by
-      // email (applyUsers), never deleting it as a recycled address.
-      `update users set session_epoch = session_epoch + 1, google_relink = 1 where id = ?1 and ${RESETTABLE}`,
+      // email (applyUsers), never deleting it as a recycled address. Never
+      // on an erased row (#1204): its address is gone, so the reset only
+      // frees that Google account to come back as a new, empty person.
+      `update users set session_epoch = session_epoch + 1,
+        google_relink = case when erased_at is null then 1 else 0 end
+        where id = ?1 and ${RESETTABLE}`,
     ).bind(userId, null, owner),
     // Directly after the session_epoch update (gated on RESETTABLE): audited
     // only when that update changed the row, i.e. the reset happens.

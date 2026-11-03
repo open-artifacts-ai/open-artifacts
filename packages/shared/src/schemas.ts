@@ -425,7 +425,7 @@ export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
 
 export const MemberSchema = z.object({
   id: z.string(),
-  /** A stored value, never input: `removed+<id>@invalid` after a directory deletion. */
+  /** A stored value, never input: `removed+<id>@invalid` after a directory deletion or an erase (R.memberErase). */
   email: z.string(),
   name: z.string().nullable(),
   role: RoleSchema,
