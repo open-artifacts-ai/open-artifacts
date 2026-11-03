@@ -21,12 +21,7 @@ const CONTENT_TYPE =
 const notFound = () => new ApiError("not_found", "Not found");
 
 /** Upload URLs: the "oa:upload" subkey (never the content-token one). */
-// MUTATION (#1137): one upload key for every install.
-const signingKey = (_env: Env) =>
-  contentKey(
-    { CONTENT_SIGNING_KEY: "one-upload-key-for-every-install-0000" },
-    "oa:upload",
-  );
+const signingKey = (env: Env) => contentKey(env, "oa:upload");
 
 /**
  * Registers an upload and returns a signed PUT URL (valid LIMITS.uploadUrlTtlSec).
