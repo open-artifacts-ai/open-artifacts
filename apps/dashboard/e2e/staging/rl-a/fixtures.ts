@@ -16,6 +16,7 @@ import {
   type Page,
 } from "@playwright/test";
 import { gate } from "../gate";
+import { sendRead } from "../retry";
 import { FETCH_MS, hookKey, rlA } from "../targets";
 
 // rl-a's helpers: sessions through TEST_HOOKS.session for users in its
@@ -93,23 +94,38 @@ export async function person(
   return { ...p, id: me.user.id, page: await ctx.newPage() };
 }
 
-/** An API call as `p` (X-OA-Request set), bounded. */
+/**
+ * An API call as `p` (X-OA-Request set), bounded. A GET that gets no response
+ * is sent again (retry.ts), so a poll keeps polling; writes never are.
+ */
 export const api = (
   p: Pick<Person, "cookie">,
   path: string,
   init: RequestInit = {},
 ) =>
-  fetch(`${A.app}${path}`, {
-    ...init,
-    redirect: "manual",
-    headers: {
-      cookie: `${COOKIE}=${p.cookie}`,
-      "x-oa-request": "1",
-      ...(init.body ? { "content-type": "application/json" } : {}),
-      ...init.headers,
-    },
-    signal: AbortSignal.timeout(FETCH_MS),
-  });
+  sendRead(init.method, () =>
+    fetch(`${A.app}${path}`, {
+      ...init,
+      redirect: "manual",
+      headers: {
+        cookie: `${COOKIE}=${p.cookie}`,
+        "x-oa-request": "1",
+        ...(init.body ? { "content-type": "application/json" } : {}),
+        ...init.headers,
+      },
+      signal: AbortSignal.timeout(FETCH_MS),
+    }),
+  );
+
+/** An anonymous call to rl-a, bounded; a GET with no response is sent again. */
+export const anon = (path: string, init: RequestInit = {}) =>
+  sendRead(init.method, () =>
+    fetch(`${A.app}${path}`, {
+      ...init,
+      redirect: "manual",
+      signal: AbortSignal.timeout(FETCH_MS),
+    }),
+  );
 
 /** The body of a 2xx response; anything else throws with its status. */
 export async function json<T>(res: Response): Promise<T> {
@@ -232,9 +248,7 @@ export async function t19Spaces(admin: Person): Promise<void> {
 /** rl-a's version, from /healthz (read once). */
 let version: Promise<string> | undefined;
 export const rlAVersion = () => {
-  version ??= fetch(`${A.app}/healthz`, {
-    signal: AbortSignal.timeout(FETCH_MS),
-  })
+  version ??= anon("/healthz")
     .then((r) => json<{ version: string }>(r))
     .then((h) => h.version);
   return version;

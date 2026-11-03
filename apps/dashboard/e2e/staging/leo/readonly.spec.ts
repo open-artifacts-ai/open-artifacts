@@ -2,16 +2,19 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { R } from "@oa/shared";
 import { expect, test } from "@playwright/test";
+import { sendRead } from "../retry";
 import { FETCH_MS, LEO } from "../targets";
 
 // leo is the user's install: anonymous GETs and page loads only. Nothing here
 // signs in, creates, or changes anything.
 
 const get = (path: string) =>
-  fetch(`${LEO}${path}`, {
-    redirect: "manual",
-    signal: AbortSignal.timeout(FETCH_MS),
-  });
+  sendRead("GET", () =>
+    fetch(`${LEO}${path}`, {
+      redirect: "manual",
+      signal: AbortSignal.timeout(FETCH_MS),
+    }),
+  );
 
 test("leo runs a release build: healthz ok, a version, and no test hooks", async () => {
   const res = await get("/healthz");
