@@ -616,7 +616,13 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<ManageJob> {
       if (!STRING(args.from, 20) || !STRING(args.to, 20))
         throw refused("the job has no from and to");
       if (!row) throw refused("no installs row");
-      out.args = { from: args.from, to: args.to };
+      out.args = {
+        from: args.from,
+        to: args.to,
+        ...(kind === "upgrade" && args.nonAdditive === true
+          ? { nonAdditive: true }
+          : {}),
+      };
       if (
         kind === "rollback" &&
         row.previous_version !== args.to &&

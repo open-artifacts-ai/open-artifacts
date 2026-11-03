@@ -66,6 +66,7 @@ export const JOB_ERROR_RETRY = {
   run_dead: "terminal",
   domain_codes_refused: "terminal",
   migration_held: "terminal",
+  restore_point_failed: "terminal",
   turnstile_missing: "terminal",
   cf_error: "retry",
   internal: "retry",

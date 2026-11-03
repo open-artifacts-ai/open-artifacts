@@ -3307,9 +3307,14 @@ export class WfpProvisioner {
     try {
       return { bookmark: await this.cf.d1Bookmark(d1Id), files };
     } catch (e) {
+      await this.platform.audit(id, "upgrade.held", {
+        to: rel.rec.version,
+        migrations: files.slice(0, RESTORE_POINT_FILES_MAX),
+        reason: "no_restore_point",
+      });
       throw new ProvisionRefused(
         `install ${id}: no restore point, so the migration wasn't run (${errCode(e)})`,
-        "migration_held",
+        "restore_point_failed",
       );
     }
   }

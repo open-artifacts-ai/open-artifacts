@@ -2,8 +2,6 @@
 // rechecks and purge preconditions, replays, upgrade outcome mapping, the
 // fail and cleanup compensation, redline_creds sealing. Each install is made
 // by ProvisionInstall first, as in production.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { FLOOR_KEY, HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
 import { REDLINE_SCOPE_FIXTURE } from "@oa/shared/provisioning/fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,6 +19,7 @@ import {
   type CreateSeed,
   ENV,
   event,
+  HELD,
   seedCreate,
   seedJob,
   stepRunner,
@@ -223,12 +222,22 @@ describe("upgrade and rollback (5.4)", () => {
     expect(logged()).toContain("Turnstile widgets are named");
   });
 
-  it("the upgrade passes args.nonAdditive to provision, and only that (MIG-2)", async () => {
-    const src = readFileSync(
-      join(import.meta.dirname, "../../src/manage.ts"),
-      "utf8",
-    );
-    expect(src).toContain("nonAdditive: job.args.nonAdditive === true");
+  it("a held migration: refused without the flag, crossed with it (MIG-2)", async () => {
+    w = await world({ held: true });
+    const s = await active({ slug: "held", version: V1 });
+    const no = await manage("upgrade", s.installId, {
+      args: { from: V1, to: HELD },
+    });
+    expect(no.job).toMatchObject({
+      status: "failed",
+      error_code: "migration_held",
+    });
+    expect(w.install(s.installId)).toMatchObject({ version: V1 });
+    const yes = await manage("upgrade", s.installId, {
+      args: { from: V1, to: HELD, nonAdditive: true },
+    });
+    expect(yes.job).toMatchObject({ status: "done", error_code: null });
+    expect(w.install(s.installId)).toMatchObject({ version: HELD });
   });
 
   it("upgrade refusals: from moved is invalid_state; to at or below from is downgrade_refused", async () => {

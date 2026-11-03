@@ -45,6 +45,9 @@ export const PROVISION_ERROR_CODES = Object.freeze([
   // A pending migration can lose data, and this upgrade didn't ask to cross
   // it (MIG-2). Terminal: a person upgrades with nonAdditive.
   "migration_held",
+  // nonAdditive was asked for, but the restore point couldn't be taken.
+  // Nothing changed. Terminal: a person checks the token, then retries.
+  "restore_point_failed",
   // Code sign-in on with no usable Turnstile widget in the env (#1088).
   // Terminal: a person fixes the widget, then retries the job.
   "turnstile_missing",

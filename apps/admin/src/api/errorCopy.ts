@@ -41,6 +41,8 @@ const COPY: Record<string, string> = {
   canceled: "The job was canceled.",
   migration_held:
     "This release has a migration that can lose data, so it was held and nothing changed. To cross it, open Upgrade and tick the restore point box.",
+  restore_point_failed:
+    "The restore point couldn't be taken, so the migration didn't run and nothing changed. Try again, or check the provisioning token.",
   domain_codes_refused:
     "Domain sign-in codes need email sign-in on, Google off and at least one domain.",
   turnstile_missing:

@@ -777,7 +777,11 @@ describe("halts", () => {
     const f = fakes({ canary });
     await fleetDue(f.env, NOW, f.opts);
     const [j] = await fleetJobs();
-    expect(JSON.stringify(j)).not.toContain("nonAdditive");
+    // Exactly these: nothing here could ask to cross a held migration.
+    expect(Object.keys(JSON.parse(String(j?.args))).sort()).toEqual([
+      "from",
+      "to",
+    ]);
     await finish(j?.id, "failed", NOW + MIN, "migration_held");
     await fleetDue(f.env, NOW + 2 * MIN, f.opts);
     expect(await fleetJobs()).toHaveLength(1);

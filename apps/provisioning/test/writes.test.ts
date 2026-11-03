@@ -1,6 +1,7 @@
 import { JOB_STEPS, redlineCredsJobArgs } from "@oa/shared/provisioning";
 import { fakeProvisionerRpc } from "@oa/shared/provisioning/fakes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Principal } from "../src/principal.js";
 import { call, type HTTP } from "./call.js";
 import {
   ADMIN_P,
@@ -796,6 +797,46 @@ describe("lifecycle writes (R5-R13)", () => {
         })
       ).code,
     ).toBe("invalid_input");
+  });
+
+  it("R5: only an admin or red-line on a test install may send nonAdditive (MIG-2)", async () => {
+    const e = fakeEnv();
+    const send = async (p: Principal, testHooks = false) => {
+      const { id } = await seedInstall({
+        version: "1.41.2",
+        slug: `rl-p-${requestId().slice(-8).toLowerCase()}`,
+        testHooks,
+      });
+      return call(e, p, "R5", {
+        params: { id },
+        body: { requestId: requestId(), nonAdditive: true },
+      });
+    };
+    const base = tokenP(["installs:write"]);
+    const oauth: Principal = { ...base, tokenKind: "oauth" };
+    const oat: Principal = { ...base, tokenKind: "oat" };
+    const noKind: Principal = { ...base, tokenKind: undefined };
+    const redline: Principal = { ...OIDC_P, oidcWorkflow: "redline" };
+    expect((await send(ADMIN_P)).code).toBeUndefined();
+    expect((await send(oauth)).code).toBeUndefined();
+    expect((await send(oat)).code).toBe("forbidden");
+    expect((await send(noKind)).code).toBe("forbidden");
+    expect((await send(redline, true)).code).toBeUndefined();
+    expect(
+      (await send({ ...OIDC_P, oidcWorkflow: "test-admin" }, true)).code,
+    ).toBeDefined();
+    // Red-line's reach stops at test installs before this rule does.
+    expect((await send(redline, false)).code).toBe("not_found");
+    const owned = await seedInstall({
+      version: "1.41.2",
+      source: "self-serve",
+      ownerSub: "u1",
+    });
+    const asUser = await call(e, userP("u1"), "R5", {
+      params: { id: owned.id },
+      body: { requestId: requestId(), nonAdditive: true },
+    });
+    expect(asUser.code).toBe("forbidden");
   });
 
   it("R5 upgrade: default latest installable; at or below current is downgrade_refused", async () => {

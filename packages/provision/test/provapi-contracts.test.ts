@@ -51,6 +51,7 @@ describe("ProvisionRefused.code and ProvisionRetry (3.5)", () => {
       "run_dead",
       "domain_codes_refused",
       "migration_held",
+      "restore_point_failed",
       "turnstile_missing",
       "cf_error",
       "internal",

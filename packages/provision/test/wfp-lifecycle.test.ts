@@ -5993,10 +5993,15 @@ describe("MIG-2: a migration that can lose data is held (#1137)", () => {
         migrations: "9003_marked.sql (marker)",
       },
     ]);
-    const actions = s.audit(inst.id);
-    expect(actions.indexOf("upgrade.restore_point")).toBeLessThan(
-      actions.lastIndexOf("upgrade.done"),
-    );
+    // The bookmark, then the audit row that keeps it, then the migration.
+    const at = (re: RegExp) =>
+      s.fake.raw.findIndex((x) => re.test(x.path + x.body));
+    const bookmark = at(/time_travel\/bookmark/);
+    const audit = at(/upgrade\.restore_point/);
+    const migrated = at(/INSERT INTO d1_migrations[^]*9003_marked/);
+    expect(bookmark).toBeGreaterThanOrEqual(0);
+    expect(audit).toBeGreaterThan(bookmark);
+    expect(migrated).toBeGreaterThan(audit);
   });
 
   it("with the flag but no bookmark: refused, nothing touched", async () => {
@@ -6007,9 +6012,16 @@ describe("MIG-2: a migration that can lose data is held (#1137)", () => {
     const e = await fails(
       s.p.upgrade(inst.id, "0.24.6", { nonAdditive: true }),
     );
-    expect(e.code).toBe("migration_held");
+    expect(e.code).toBe("restore_point_failed");
     expect(applied(s, inst.id)).toEqual(before);
     expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    expect(detail(s, inst.id, "upgrade.held")).toEqual([
+      {
+        to: "0.24.6",
+        migrations: "9003_marked.sql (marker)",
+        reason: "no_restore_point",
+      },
+    ]);
   });
 
   it("an additive upgrade needs no flag and no restore point", async () => {
