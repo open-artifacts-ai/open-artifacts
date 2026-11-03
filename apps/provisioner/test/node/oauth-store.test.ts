@@ -7,6 +7,7 @@ import { OAUTH_MODE_LIVE_ACTION } from "@oa/shared/provisioning";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
 import { runManage } from "../../src/manage.js";
+import { COPY_MAX_PAGES } from "../../src/oauth-store.js";
 import { runCreate } from "../../src/workflow.js";
 import {
   ENV,
@@ -578,6 +579,40 @@ describe("update: the KV to D1 copy (R30)", () => {
     expect(keyBodies(f.calls).filter((b) => b === "{}")).toHaveLength(1);
   });
 
+  it("counts a cursor answered twice once, last write wins", async () => {
+    const { r } = await copied({
+      pages: [
+        page({ nextCursor: CURSOR_A }),
+        page({
+          kvKeys: 1,
+          copied: 1,
+          skippedExpiring: 0,
+          nextCursor: CURSOR_A,
+        }),
+        page({ kvKeys: 7, copied: 7, skippedExpiring: 0, d1Rows: 8 }),
+      ],
+    });
+    expect(JSON.parse(r.job.args as string).counts).toEqual({
+      kvKeys: 807,
+      copied: 707,
+      skippedExpiring: 100,
+      d1Rows: 8,
+    });
+  });
+
+  it("a pass that never ends fails at the page cap, and the key goes", async () => {
+    const pages = Array.from({ length: COPY_MAX_PAGES + 5 }, (_, i) =>
+      page({ nextCursor: `gen.c${i}` }),
+    );
+    const { id, r, f } = await copied({ pages });
+    expect(r.job).toMatchObject({
+      status: "failed",
+      error_code: "copy_incomplete",
+    });
+    expect(f.pages.length).toBe(5);
+    expect(scriptOf(id).secrets.has(KEY)).toBe(false);
+  });
+
   it("a page retried after a 500 resends its cursor, never {}, and counts once", async () => {
     let failed = false;
     const { r, f } = await copied({
@@ -830,6 +865,17 @@ describe("update: the KV to D1 copy (R30)", () => {
       await run(setMode("dual"), id);
       w.clock.t += 59_000;
       // The recheck and precheck run at the same pinned time here.
+      const r = await run(COPY, id);
+      expect(r.job.error_code).toBe("invalid_state");
+      noKey(id, f.calls);
+    });
+
+    it("refuses a row left upgrading", async () => {
+      const id = await active();
+      const f = await dual(id);
+      w.db
+        .prepare("UPDATE installs SET state = 'upgrading' WHERE id = ?")
+        .run(id);
       const r = await run(COPY, id);
       expect(r.job.error_code).toBe("invalid_state");
       noKey(id, f.calls);
