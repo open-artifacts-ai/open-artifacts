@@ -246,8 +246,8 @@ describe("TRANSITIONS", () => {
     expect(canTransition("deleting", "purge", "T")).toBe(false);
     expect(canTransition("active", "redline_creds", "T")).toBe(false);
     expect(canTransition("active", "release_lease", "T")).toBe(false);
+    // update: admin MCP only (#1008), so T alone; its authz row says which.
     for (const [from, row] of Object.entries(TRANSITIONS))
-      // update: admin MCP only (#1008), so T alone; its authz row says which.
       for (const [kind, t] of Object.entries(row))
         if (t?.actors.includes("T") && kind !== "update")
           expect(t.actors, `${from} ${kind}`).toContain("A");
