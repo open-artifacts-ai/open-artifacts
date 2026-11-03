@@ -58,6 +58,8 @@ export interface Cf {
   d1Create(name: string): Promise<string>;
   d1Get(name: string): Promise<string | null>;
   d1Query(id: string, sql: string, params?: unknown[]): Promise<D1Result[]>;
+  /** GET .../time_travel/bookmark: where the database is now. Read-only. */
+  d1Bookmark(id: string): Promise<string>;
   /** REST batch: the statements run as one transaction (all or none). */
   d1Batch(
     id: string,
@@ -437,6 +439,15 @@ export function cfClient(o: {
         } else if (r.length < per) return null;
       }
       throw new Error("D1 database listing did not end after 100 pages");
+    },
+    async d1Bookmark(id) {
+      const r = await result<{ bookmark?: unknown }>(
+        "GET",
+        `${acct}/d1/database/${seg(id)}/time_travel/bookmark`,
+      );
+      if (typeof r?.bookmark !== "string" || r.bookmark === "")
+        throw new Error("D1 answered no bookmark");
+      return r.bookmark;
     },
     d1Query: (id, sql, params = []) =>
       result<D1Result[]>("POST", `${acct}/d1/database/${seg(id)}/query`, {

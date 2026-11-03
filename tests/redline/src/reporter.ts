@@ -165,8 +165,9 @@ export function collectFileNotes(
 
 /**
  * The run's binding: REDLINE_TARGETS' install ids, their /healthz versions
- * now, and the suite's commit (GITHUB_SHA, else git HEAD). Undefined without
- * targets.
+ * now, and the suite's commit: the checkout's HEAD, which in CI is the tag
+ * (GITHUB_SHA is the workflow's commit on main, so only a fallback). Undefined
+ * without targets.
  */
 export async function bindingOf(
   env: Record<string, string | undefined> = process.env,
@@ -192,10 +193,11 @@ export async function bindingOf(
   };
   const [a, b] = await Promise.all([side(raw.a), side(raw.b)]);
   if (!a.id || !b.id) return undefined;
+  const head = suiteSha();
   return {
     installs: { a: a.id, b: b.id },
     versions: { a: a.version, b: b.version },
-    suiteSha: env.GITHUB_SHA || suiteSha(),
+    suiteSha: head === "unknown" ? env.GITHUB_SHA || head : head,
   };
 }
 

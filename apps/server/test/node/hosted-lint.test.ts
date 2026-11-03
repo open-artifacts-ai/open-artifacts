@@ -16,8 +16,6 @@ const READS: Record<string, string> = {
     "fail closed: a hosted install never reaches a broker over HTTPS (no binding, no props: broker_unavailable)",
   "auth/broker-transport.ts: brokerTransportKind":
     "fail closed: reports no transport for a hosted install without a binding or props",
-  "auth/sign-in.ts: showsSignInFields":
-    "reports: Me carries the hosted sign-in fields (shape only, no access)",
   "auth/config.ts: domainJoin":
     "fail closed: hosted installs admit by invite only, never by domain",
   "auth/config.ts: googleConfig":

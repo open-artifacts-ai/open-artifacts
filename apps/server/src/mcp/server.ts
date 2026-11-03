@@ -20,6 +20,7 @@ import {
 import { logError } from "../log.js";
 import { toRuntimeApiError } from "../runtime/do.js";
 import { type AgentAttr, clientVersionOf } from "../services/agent-usage.js";
+import { spacesOn } from "../services/spaces.js";
 import { cpuNudge } from "../services/usage.js";
 import { VERSION } from "../version.gen.js";
 import { INSTRUCTIONS, RUNTIME_DOC_URI } from "./instructions.js";
@@ -98,7 +99,12 @@ export async function guard(
 
 export function createServer(ctx: McpContext): McpServer {
   const { plan, docBytes } = dataLimits(ctx.env);
-  const instructions = INSTRUCTIONS(plan, skillUrl(ctx.env), docBytes);
+  const instructions = INSTRUCTIONS(
+    plan,
+    skillUrl(ctx.env),
+    docBytes,
+    spacesOn(ctx.env),
+  );
   const server = new McpServer(
     { name: "open-artifacts", version: VERSION },
     { instructions },
