@@ -357,6 +357,10 @@ describe("tag-passed-checks.sh", () => {
         ["a pull request", (r) => (r.event = "pull_request")],
         ["another branch", (r) => (r.head_branch = "pl/x")],
         [
+          "another repository",
+          (r) => (r.repository = { full_name: "evil/open-artifacts" }),
+        ],
+        [
           "a fork",
           (r) => (r.head_repository = { full_name: "evil/open-artifacts" }),
         ],
