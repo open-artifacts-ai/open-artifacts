@@ -4,13 +4,20 @@ import {
   canTransition,
   checkPurgeFields,
   type DeleteSchema,
+  dualLiveAt,
   fieldRulesOf,
   type JobKind,
+  OAUTH_DUAL_SETTLE_MS,
+  OAUTH_MODE_LIVE_SQL,
+  oauthCopyJobArgs,
+  oauthStoreJobArgs,
   type PurgeSchema,
   type RedlineCredsSchema,
   type ReleaseLeaseSchema,
   redlineCredsJobArgs,
+  type SetOAuthStoreSchema,
   type SuspendSchema,
+  storedOAuthMode,
   TOKEN_DELETING_PURGE,
   type TransitionFrom,
   type UpgradeSchema,
@@ -231,6 +238,35 @@ const PLANS: Partial<Record<ApiRouteId, Planner>> = {
       args: redlineCredsJobArgs(bodyOf<typeof RedlineCredsSchema>(a)),
     };
   },
+  // #1008. The job re-reads all of this against /healthz; these are the
+  // refusals D1 can answer now. An open job, a second copy included, is
+  // job_in_progress already.
+  R29: async (a, row) => {
+    refuseUnless(can(row, "update", a.principal));
+    const body = bodyOf<typeof SetOAuthStoreSchema>(a);
+    if (
+      storedOAuthMode(row.install_vars) === "d1" &&
+      body.vars.OAUTH_STORE !== "d1"
+    )
+      throw new ApiError("invalid_state", "an install on d1 stays on d1");
+    return { kind: "update", args: oauthStoreJobArgs(body) };
+  },
+  R30: async (a, row) => {
+    refuseUnless(can(row, "update", a.principal));
+    if (storedOAuthMode(row.install_vars) !== "dual")
+      throw new ApiError("invalid_state", "the install is not in dual");
+    const live = dualLiveAt(
+      await a.env.PLATFORM_DB.prepare(OAUTH_MODE_LIVE_SQL)
+        .bind(row.install_id)
+        .first<{ at: number; detail: string | null }>(),
+    );
+    if (live === null || Date.now() - live < OAUTH_DUAL_SETTLE_MS)
+      throw new ApiError(
+        "invalid_state",
+        "dual must have been live for 60 seconds",
+      );
+    return { kind: "update", args: oauthCopyJobArgs() };
+  },
 };
 
 /** Another live signup holds the account's one-install claim (7). */
@@ -298,7 +334,7 @@ function purgePolicy(a: HandlerArgs, row: StatusRow) {
 // A system caller takes the admin's purge rules.
 const createPrincipal = (p: Principal) => fieldRulesOf(p.kind) ?? "admin";
 
-/** R5-R13 and R26: one handler, the route's planner. */
+/** R5-R13, R26, R29 and R30: one handler, the route's planner. */
 export async function lifecycleWrite(a: HandlerArgs): Promise<RouteResult> {
   const route = a.route;
   const plan = PLANS[route];

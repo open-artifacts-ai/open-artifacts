@@ -293,6 +293,8 @@ export const NO_TOOL: Readonly<Partial<Record<RouteId, string>>> = {
   R23: "browser only",
   R24: "browser only",
   R26: "OIDC on staging only",
+  R29: "admin session only",
+  R30: "admin session only",
 };
 
 /** The MCP text line for a 2xx result; a replay says so. */

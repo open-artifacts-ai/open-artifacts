@@ -98,7 +98,19 @@ describe("tool table", () => {
       purge_install: "R11",
     });
     expect(Object.keys(NO_TOOL).sort()).toEqual(
-      ["R13", "R19", "R20", "R21", "R22", "R23", "R24", "R25", "R26"].sort(),
+      [
+        "R13",
+        "R19",
+        "R20",
+        "R21",
+        "R22",
+        "R23",
+        "R24",
+        "R25",
+        "R26",
+        "R29",
+        "R30",
+      ].sort(),
     );
   });
 });

@@ -138,6 +138,7 @@ export const JOB_VERB: Record<JobKind, { ing: string; noun: string }> = {
   release_lease: { ing: "Releasing the lease on", noun: "Release lease" },
   cleanup: { ing: "Cleaning up", noun: "Cleanup" },
   redline_creds: { ing: "Minting credentials for", noun: "Credentials" },
+  update: { ing: "Updating", noun: "Update" },
 };
 
 /** The version an upgrade-like job moves to: the API stores `version`, fixtures use `to`. */

@@ -151,6 +151,9 @@ export const AUTHZ: Readonly<Record<RouteId, Record<AuthzColumn, AuthzRule>>> =
     R27: row(all, tok("installs:read"), no, no),
     // Only the pinned staging-test-admin.yml caller (authorize, oidcWorkflow).
     R28: row(no, no, { ...own, note: "staging-test-admin.yml only" }, no),
+    // #1008: an admin session on both envs; each flip is one person's yes.
+    R29: adminOnly,
+    R30: adminOnly,
   };
 
 export type AuthzPrincipal = {
@@ -491,6 +494,9 @@ export const TRANSITIONS: Readonly<
     suspend: t(["A", "T"], "suspended"),
     delete: t(["A", "T", "U"], "deleting"),
     redline_creds: t(["A"], "active"),
+    // R29, R30 (#1008): no state change. OIDC reads as A here; authz and the
+    // provisioner's recheck keep it off.
+    update: t(["A"], "active"),
     ...lease("active"),
   },
   suspended: {

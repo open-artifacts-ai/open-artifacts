@@ -66,6 +66,18 @@ export const JOB_ERROR_RETRY = {
   run_dead: "terminal",
   domain_codes_refused: "terminal",
   turnstile_missing: "terminal",
+  /** #1008: /healthz never showed the mode asked for. */
+  mode_not_live: "terminal",
+  /** Leaving d1, which only a person's separate override may do. */
+  leave_d1_refused: "terminal",
+  /** No complete copy: d1 asked for without one, or a copy that didn't end. */
+  copy_incomplete: "terminal",
+  copy_not_dual: "terminal",
+  copy_markers: "terminal",
+  /** The fresh OAUTH_COPY_KEY never went live on the install. */
+  copy_key_not_live: "terminal",
+  /** OAUTH_COPY_KEY is still on the script; job_failed alerts. */
+  copy_key_left: "terminal",
   cf_error: "retry",
   internal: "retry",
 } as const satisfies Record<string, "retry" | "terminal" | "terminal_alert">;

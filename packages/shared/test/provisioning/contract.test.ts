@@ -206,7 +206,7 @@ describe("enums and JOB_STEPS", () => {
     }
     expect(JOB_STEPS.retry).toEqual(JOB_STEPS.create);
     expect(Object.keys(JOB_STEPS).sort()).toEqual(
-      [...JobKindSchema.options, "redline_creds_revoke"].sort(),
+      [...JobKindSchema.options, "redline_creds_revoke", "oauth_copy"].sort(),
     );
   });
 
@@ -217,8 +217,9 @@ describe("enums and JOB_STEPS", () => {
     expect(c.indexOf("route")).toBeLessThan(c.indexOf("enable_signin"));
   });
 
-  it("the reserved M1.1 kind is not in the enum", () => {
-    expect(JobKindSchema.safeParse("update").success).toBe(false);
+  it("oauth_copy is the update kind's variant: 0008's CHECK has no such kind", () => {
+    expect(JobKindSchema.safeParse("update").success).toBe(true);
+    expect(JobKindSchema.safeParse("oauth_copy").success).toBe(false);
   });
 
   it("ALERT_KEYS lists the scheduler's alerts once each", () => {
@@ -417,9 +418,9 @@ describe("shapes", () => {
 });
 
 describe("routes", () => {
-  it("R1..R28, each once", () => {
+  it("R1..R30, each once", () => {
     expect(ROUTE_IDS).toEqual(
-      Array.from({ length: 28 }, (_, i) => `R${i + 1}`),
+      Array.from({ length: 30 }, (_, i) => `R${i + 1}`),
     );
     for (const id of ROUTE_IDS) expect(ROUTES[id].id).toBe(id);
   });

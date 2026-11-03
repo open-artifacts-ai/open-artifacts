@@ -43,6 +43,13 @@ const COPY: Record<string, string> = {
     "Domain sign-in codes need email sign-in on, Google off and at least one domain.",
   turnstile_missing:
     "Code sign-in needs this environment's Turnstile widget. Fix the widget, then retry.",
+  mode_not_live: "The install did not report the new OAuth store mode.",
+  leave_d1_refused: "This install has served from D1 and cannot leave it here.",
+  copy_incomplete: "No complete OAuth copy to D1 is recorded.",
+  copy_not_dual: "The OAuth copy needs the install in dual mode.",
+  copy_markers: "The install refused the OAuth copy. Check its store markers.",
+  copy_key_not_live: "The OAuth copy key did not go live. Nothing was copied.",
+  copy_key_left: "The OAuth copy key is still on the install. Check it now.",
   cf_error: "Cloudflare returned an error. It will retry.",
 };
 

@@ -116,6 +116,14 @@ export const JOB_ERROR_TEXT = Object.freeze({
     "Domain sign-in codes need email sign-in on, Google off and at least one domain.",
   turnstile_missing:
     "Code sign-in needs exactly one Turnstile widget with a secret on this environment.",
+  mode_not_live:
+    "The install's health check never showed the OAuth store mode.",
+  leave_d1_refused: "An install that has served from D1 cannot leave it here.",
+  copy_incomplete: "No complete OAuth copy to D1 is recorded.",
+  copy_not_dual: "The OAuth copy needs the install in dual mode.",
+  copy_markers: "The install's OAuth store markers refused the copy.",
+  copy_key_not_live: "The OAuth copy key did not go live on the install.",
+  copy_key_left: "The OAuth copy key could not be deleted from the install.",
   cf_error: "A Cloudflare API call failed.",
   internal: "An internal error occurred.",
 } as const satisfies Record<ProvisionErrorCode, string>);

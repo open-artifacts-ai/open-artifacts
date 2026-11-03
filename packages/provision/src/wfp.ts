@@ -311,6 +311,13 @@ export const VERIFY_CLEAN_REFUSED_BINDING_TYPES = Object.freeze([
 ] as const);
 
 /**
+ * Secrets verify_clean takes present or absent: OAUTH_COPY_KEY lives only
+ * for an oauth copy job, and one the job couldn't delete is left rotated to a
+ * value nobody holds (#1008).
+ */
+const OPTIONAL_SECRETS: readonly string[] = ["OAUTH_COPY_KEY"];
+
+/**
  * The exact secret names verify_clean expects on an install (design v7 5.2
  * e, rule 4), sorted: CREATE_SECRETS, BROKER_SIGNING_KEY with the broker,
  * TURNSTILE_SECRET with codes on, TEST_HOOK_KEY iff test hooks.
@@ -337,7 +344,7 @@ export function expectedSecretNames(o: {
  * 2. Refuse any binding of a VERIFY_CLEAN_REFUSED_BINDING_TYPES type.
  * 3. Non-secret bindings minus OWNER_EMAIL equal `sent`'s by (name, type);
  *    for plain_text and json, sha256 of the value equals the render's.
- * 4. Secret names equal expectedSecretNames(...) exactly.
+ * 4. Secret names equal expectedSecretNames(...) exactly, OPTIONAL_SECRETS aside.
  * 5. TEST_HOOK_KEY, TEST_HOOKS and TEST_DOMAIN absent unless testHooks
  *    (keyed on testHooks, not OA_ENV).
  * 6. The release record's variant is `release` unless testHooks, and the
@@ -406,7 +413,9 @@ export function verifyCleanRefusal(
     if (!l || digest(l) !== digest(b))
       return `binding ${key(b)} has another value than the render`;
   }
-  const secrets = [...live.secrets].sort();
+  const secrets = live.secrets
+    .filter((n) => !OPTIONAL_SECRETS.includes(n))
+    .sort();
   const expected = expectedSecretNames(v);
   for (const n of secrets)
     if (!expected.includes(n)) return `secret ${n} is not expected`;
