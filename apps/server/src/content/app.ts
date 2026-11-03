@@ -563,7 +563,6 @@ contentApp.onError((e) => toErrorResponse(e));
 contentApp.notFound(() => toErrorResponse(notFound()));
 
 contentApp.get("/robots.txt", (c) => c.text(ROBOTS));
-contentApp.get("/llms.txt", (c) => c.text("guide")); // MUTATION S2
 // Ordering: after the GET route so only non-GET/HEAD methods land here.
 contentApp.all("/robots.txt", methodNotAllowed);
 
