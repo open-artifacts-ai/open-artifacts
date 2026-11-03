@@ -6,6 +6,7 @@ import {
 } from "@oa/shared";
 import {
   A,
+  anon,
   api,
   cleanup,
   expect,
@@ -210,11 +211,7 @@ test("#800: inviting outside the sign-in domain warns that they may not sign in"
 }) => {
   await needs("#800", "0.74.0");
   const admin = await person(browser, "admin", "admin");
-  const providers = await json<AuthProviders>(
-    await fetch(`${A.app}/auth/providers`, {
-      signal: AbortSignal.timeout(30_000),
-    }),
-  );
+  const providers = await json<AuthProviders>(await anon("/auth/providers"));
   const google = providers.providers.find((p) => p.id === "google");
   const domains = google && "domains" in google ? google.domains : [];
   expect(domains.length).toBeGreaterThan(0);
