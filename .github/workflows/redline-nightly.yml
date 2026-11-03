@@ -5,8 +5,8 @@
 # closes it; it sends no email, so P30, which opens an alert, doesn't run here.
 # The gate accepts that on a scheduled run only (report.ts, runKindOf).
 # Not a prod gate: staging-first-gate.sh reads runs of redline-staging.yml, and
-# a run called from here isn't one. The suite applies the gate here (green only
-# if every case passes, P30 aside). A running nightly holds a candidate on the
+# a run called from here isn't one. Every red-line run applies the gate, so a
+# nightly is green only if every case passes, P30 aside. A running nightly holds a candidate on the
 # `redline` group for up to about 150 min, and a second dispatch while one waits
 # replaces it, so a nightly waits 3 h after any candidate run.
 name: redline-nightly

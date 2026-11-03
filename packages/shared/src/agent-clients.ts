@@ -28,7 +28,8 @@ export type AgentClientOpts = {
    * The PAT file (e.g. `~/.open-artifacts/<host slug>-pat-token`). With it,
    * each client gets one token mechanism that reads the file at connect
    * time: no env vars, nothing inlined, nothing printed. Cursor has none
-   * (OAuth only). Without it: the dashboard's OA_TOKEN env-var snippets.
+   * (OAuth only). Without it: the OA_TOKEN env-var snippets, which only the
+   * admin panel's connect card uses now.
    */
   tokenFile?: string;
   /** The MCP server name in every snippet: /^[a-z0-9][a-z0-9-]{0,62}$/, else it throws. Default "open-artifacts". */
@@ -183,8 +184,8 @@ function fileClients(
 }
 
 /**
- * The dashboard's form (unchanged until Frontend switches to tokenFile):
- * token variants read `OA_TOKEN` from the environment.
+ * The admin panel's form (its connect card): token variants read `OA_TOKEN`
+ * from the environment. The dashboard and the skill use the file form.
  */
 function envClients(
   mcpUrl: string,

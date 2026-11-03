@@ -1530,7 +1530,8 @@ export const PROBES: readonly Probe[] = [
   {
     id: "P23",
     needs: ["P13"],
-    title: "delete, then purge: 404; inventory deleted; no HOSTS key",
+    title:
+      "delete, then purge: 404; inventory deleted; no HOSTS key; the slug stays taken",
     run: async (run) => {
       const p = rlp(run);
       const d = run.accepted(
@@ -1562,6 +1563,12 @@ export const PROBES: readonly Probe[] = [
       await run.settledMode("P23", p.appHost, null);
       if ((await run.hostMode(p.appHost)).installId !== null)
         throw new ProbeFail("P23: HOSTS still maps the app host");
+      // A purged install keeps its row, and installs.slug is UNIQUE: a new
+      // customer can never take this slug, and with it old links and agent
+      // configs. P32 is the other side: a discarded create frees its slug.
+      const s = await run.v1(`/slugs/${p.slug}`, { read: true });
+      if ((s.json as { status?: string })?.status !== "taken")
+        throw new ProbeFail(`P23: R18 after purge: ${desc(s)}, want taken`);
       return pass();
     },
   },
