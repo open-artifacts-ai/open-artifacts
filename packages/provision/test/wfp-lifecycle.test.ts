@@ -5749,3 +5749,94 @@ describe("W2 upgrade and rollback: verify_clean and onStep (5.4)", () => {
     expect(s.fake.dispatched.slice(n).map((d) => d.path)).toContain("/healthz");
   });
 });
+
+describe("the binding id audit, stage 1 (#1137)", () => {
+  const AUDIT = "verify_clean.binding_ids";
+  const lines = (s: S, id: string) =>
+    (
+      s
+        .db()
+        .prepare(
+          "SELECT detail FROM hosted_audit WHERE install_id = ? AND action = ? ORDER BY id",
+        )
+        .all(id, AUDIT) as { detail: string }[]
+    ).map(
+      (r) =>
+        JSON.parse(r.detail) as {
+          problems: number;
+          detail: string;
+          shape: string;
+        },
+    );
+  /** A Cloudflare client whose `call` misbehaves only during verify_clean. */
+  const faulty = (
+    s: S,
+    call: "d1Get" | "kvFind",
+    fault: () => Promise<never>,
+  ) => {
+    const cf = s.cfWith();
+    let step = "";
+    const real = cf[call].bind(cf);
+    return s.mk({
+      cf: {
+        ...cf,
+        [call]: (n: string) => (step === "verify_clean" ? fault() : real(n)),
+      },
+      onStep: (x: string) => {
+        step = x;
+      },
+      bindingIdAuditMs: 5,
+    });
+  };
+
+  it("writes a clean line at create, upgrade, rollback and a var change", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    expect(lines(s, inst.id)).toHaveLength(1);
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    expect(lines(s, inst.id)).toHaveLength(2);
+    await s.p.rollback(inst.id);
+    expect(lines(s, inst.id)).toHaveLength(3);
+    await s.p.updateVars(inst.id, {});
+    expect(lines(s, inst.id)).toHaveLength(4);
+    for (const l of lines(s, inst.id)) {
+      expect(l).toMatchObject({ problems: 0, detail: "" });
+      expect(l.shape).toContain("d1:");
+    }
+  });
+
+  it("reports a foreign binding and refuses nothing", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.settingsEdit = (_s, bindings) =>
+      bindings.map((b) =>
+        b.type === "d1" ? { ...b, id: "another-install" } : b,
+      );
+    expect(keep(await s.p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    const last = lines(s, inst.id).at(-1);
+    expect(last?.problems).toBe(1);
+    expect(last?.detail).toBe("DB:d1_foreign");
+    expect(JSON.stringify(last)).not.toContain("another-install");
+  });
+
+  it.each(["d1Get", "kvFind"] as const)(
+    "fails open when %s throws: the job carries on, with no line",
+    async (call) => {
+      const s = setup();
+      const inst = keep(await s.p.create(input()));
+      const p = faulty(s, call, async () => {
+        throw new Error("cloudflare is down");
+      });
+      expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+      expect(lines(s, inst.id)).toHaveLength(1);
+    },
+  );
+
+  it("gives up on a call that never answers, and the job carries on", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const p = faulty(s, "kvFind", () => new Promise(() => {}));
+    expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+});

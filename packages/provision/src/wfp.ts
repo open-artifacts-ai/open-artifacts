@@ -34,6 +34,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { newId, newPat } from "@oa/shared";
+import { bindingIdProblems, bindingShape } from "./binding-ids.js";
 import {
   type AssetFile,
   assetHash,
@@ -261,6 +262,8 @@ export interface WfpOptions {
    * CLI): the rows carry no actor, the CLI's own auditAs rows frame them.
    */
   auditActor?: string;
+  /** Tests only: the binding id audit's time limit. */
+  bindingIdAuditMs?: number;
 }
 
 /**
@@ -302,6 +305,11 @@ export const PROVISIONER_MAX_TOKEN_DAYS = 400;
 
 /** The cap on verify_clean.refused's audited reason (#1060). */
 export const VERIFY_CLEAN_REASON_MAX = 300;
+
+/** The cap on the binding id audit's list of live fields. */
+export const BINDING_SHAPE_MAX = 600;
+/** The binding id audit gives up after this, and the job carries on. */
+export const BINDING_ID_AUDIT_MS = 10_000;
 
 /** The binding types verify_clean refuses on any install (design v7 5.2 e). */
 export const VERIFY_CLEAN_REFUSED_BINDING_TYPES = Object.freeze([
@@ -1857,6 +1865,7 @@ export class WfpProvisioner {
     await this.hold();
     const { bindings } = await this.cf.scriptSettings(this.target, script);
     const secrets = await this.cf.secretList(this.target, script);
+    await this.bindingIdAudit(v.id, script, v.sent.bindings, bindings);
     const why = verifyCleanRefusal({ bindings, secrets }, v);
     if (why === null) return;
     // #1060: why names bindings and secrets only, never a value; capped.
@@ -1867,6 +1876,66 @@ export class WfpProvisioner {
       `install ${v.id}: verify_clean refused: ${why}`,
       "prod_dirty",
     );
+  }
+
+  /**
+   * Stage 1 of the binding id check (#1137): one audit line, whatever it
+   * finds. It fails open and is bounded: any error of its own, a slow
+   * Cloudflare call included, ends here and the job carries on.
+   */
+  private async bindingIdAudit(
+    id: InstallId,
+    script: string,
+    sent: readonly { type: string; class_name?: unknown }[],
+    fetched?: readonly SettingsBinding[],
+  ): Promise<void> {
+    const check = async () => {
+      const row = await this.platform.byId(id);
+      if (!row) throw new Error("no installs row");
+      const n = names(id, this.env);
+      const [d1Id, kvId, bindings] = await Promise.all([
+        this.cf.d1Get(n.d1),
+        this.cf.kvFind(n.kv),
+        fetched ??
+          this.cf.scriptSettings(this.target, script).then((s) => s.bindings),
+      ]);
+      const problems = bindingIdProblems(bindings, {
+        d1Id,
+        kvId,
+        rowD1Id: row.d1_id,
+        rowKvId: row.kv_id,
+        r2: n.r2,
+        rlNs: row.rl_ns,
+        script,
+        classes: sent.flatMap((b) =>
+          b.type === "durable_object_namespace" ? [String(b.class_name)] : [],
+        ),
+      });
+      await this.logged("verify_clean.binding_ids", {
+        problems: problems.length,
+        detail: problems
+          .map((p) => `${p.binding}:${p.code}`)
+          .join(" ")
+          .slice(0, VERIFY_CLEAN_REASON_MAX),
+        shape: bindingShape(bindings).slice(0, BINDING_SHAPE_MAX),
+      });
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        check(),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("timed out")),
+            this.o.bindingIdAuditMs ?? BINDING_ID_AUDIT_MS,
+          );
+        }),
+      ]);
+    } catch (e) {
+      console.warn("provision binding_ids skipped", id, errCode(e));
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** H1: the platform D1, HOSTS, registry and directory copy come from env names, never from ids handed in. */
@@ -3795,6 +3864,8 @@ export class WfpProvisioner {
         });
         uploaded = true;
         await this.write({ vars: canonicalJson(vars) });
+        // Stage 2 runs the whole of verify_clean here (#1137).
+        await this.bindingIdAudit(id, n.script, sent.bindings);
         // H-RD: the registry copies follow the live vars, in this lease.
         if (domains !== null) await this.syncRegistry(id, m.appHost, domains);
         await this.hold();
