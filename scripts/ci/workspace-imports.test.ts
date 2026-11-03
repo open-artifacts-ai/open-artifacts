@@ -115,6 +115,7 @@ describe("test-affected.sh", () => {
       env: {
         GITHUB_EVENT_NAME: "",
         BASE_SHA: "",
+        TEST_SHARD: "",
         GITHUB_STEP_SUMMARY: "",
         GITHUB_OUTPUT: out,
         ...env,
@@ -126,34 +127,110 @@ describe("test-affected.sh", () => {
     } catch {}
     return { ...r, log: sb.log(), outputs: o };
   };
-  it("anything but a pull request runs everything", () => {
-    for (const e of ["merge_group", "push", "schedule"]) {
-      const r = run({ GITHUB_EVENT_NAME: e, BASE_SHA: "HEAD" });
-      expect(r.code).toBe(0);
-      expect(r.log).toEqual(["pnpm test"]);
-      expect(r.outputs).toBe("server=true\n");
+  const WHOLE: Record<string, string[]> = {
+    server: ["pnpm run test:prep", "pnpm --filter @oa/server test"],
+    rest: [
+      "pnpm run test:prep",
+      "pnpm exec vitest run",
+      "pnpm -r --if-present --filter !@oa/server test",
+    ],
+    cpu: ["pnpm run test:prep", "pnpm --filter @oa/server test:cpu"],
+  };
+  it("a missing or unknown shard fails, and runs nothing", () => {
+    for (const TEST_SHARD of ["", "all", "Server"]) {
+      const r = run({ GITHUB_EVENT_NAME: "merge_group", TEST_SHARD });
+      expect(r.code, TEST_SHARD).toBe(2);
+      expect(r.log, TEST_SHARD).toEqual([]);
     }
   });
-  it("a pull request with no base, or a scope error, runs everything", () => {
-    expect(run({ GITHUB_EVENT_NAME: "pull_request" }).log).toEqual([
-      "pnpm test",
-    ]);
-    const bad = run({
-      GITHUB_EVENT_NAME: "pull_request",
-      BASE_SHA: "not-a-commit",
-    });
-    expect(bad.log).toEqual(["pnpm test"]);
-    expect(bad.out).toContain("the scope check failed");
+  it("anything but a pull request runs the whole shard", () => {
+    for (const e of ["merge_group", "push", "schedule", "workflow_dispatch"])
+      for (const [TEST_SHARD, cmds] of Object.entries(WHOLE)) {
+        const r = run({ GITHUB_EVENT_NAME: e, BASE_SHA: "HEAD", TEST_SHARD });
+        expect(r.code, `${e} ${TEST_SHARD}`).toBe(0);
+        expect(r.log, `${e} ${TEST_SHARD}`).toEqual(cmds);
+      }
   });
-  it("a pull request with nothing affected runs the root suite only", () => {
+  it("the three shards together are the whole suite: pnpm test plus test:cpu", () => {
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    expect(pkg.scripts.test).toBe(
+      "pnpm run test:prep && vitest run && pnpm -r --if-present test",
+    );
+  });
+  it("a pull request with no base, or a scope error, runs the whole shard", () => {
+    for (const [TEST_SHARD, cmds] of Object.entries(WHOLE)) {
+      expect(
+        run({ GITHUB_EVENT_NAME: "pull_request", TEST_SHARD }).log,
+      ).toEqual(cmds);
+      const bad = run({
+        GITHUB_EVENT_NAME: "pull_request",
+        BASE_SHA: "not-a-commit",
+        TEST_SHARD,
+      });
+      expect(bad.log).toEqual(cmds);
+      expect(bad.out).toContain("the scope check failed");
+    }
+  });
+  it("a pull request with nothing affected: rest runs the root suite only; server and cpu run nothing", () => {
     // HEAD...HEAD: nothing changed.
-    const r = run({ GITHUB_EVENT_NAME: "pull_request", BASE_SHA: "HEAD" });
+    const ls = "pnpm --filter ...[HEAD] ls --depth -1 --json";
+    const r = run({
+      GITHUB_EVENT_NAME: "pull_request",
+      BASE_SHA: "HEAD",
+      TEST_SHARD: "rest",
+    });
     expect(r.code).toBe(0);
-    expect(r.log).toEqual([
-      "pnpm --filter ...[HEAD] ls --depth -1 --json",
+    expect(r.log).toEqual([ls, "pnpm run test:prep", "pnpm exec vitest run"]);
+    for (const TEST_SHARD of ["server", "cpu"]) {
+      const x = run({
+        GITHUB_EVENT_NAME: "pull_request",
+        BASE_SHA: "HEAD",
+        TEST_SHARD,
+      });
+      expect(x.code, TEST_SHARD).toBe(0);
+      expect(x.log, TEST_SHARD).toEqual([ls]);
+      expect(x.out, TEST_SHARD).toContain("@oa/server is not affected");
+    }
+  });
+  it("a pull request that affects the server: each shard runs its share", () => {
+    const listed = (names: string[]) =>
+      `case " $* " in *" ls "*) echo '${JSON.stringify(names.map((name) => ({ name })))}' ;; esac`;
+    const runWith = (names: string[], TEST_SHARD: string) => {
+      const sb = sandbox({ pnpm: listed(names) });
+      const r = sb.run(["bash", script("test-affected.sh")], {
+        env: {
+          GITHUB_EVENT_NAME: "pull_request",
+          BASE_SHA: "HEAD",
+          GITHUB_STEP_SUMMARY: "",
+          GITHUB_OUTPUT: join(sb.dir, "out"),
+          TEST_SHARD,
+        },
+      });
+      return { ...r, log: sb.log() };
+    };
+    const ls = "pnpm --filter ...[HEAD] ls --depth -1 --json";
+    const both = ["@oa/server", "@oa/dashboard"];
+    expect(runWith(both, "server").log).toEqual([
+      ls,
+      "pnpm run test:prep",
+      "pnpm --filter @oa/server test",
+    ]);
+    expect(runWith(both, "cpu").log).toEqual([
+      ls,
+      "pnpm run test:prep",
+      "pnpm --filter @oa/server test:cpu",
+    ]);
+    expect(runWith(both, "rest").log).toEqual([
+      ls,
+      "pnpm run test:prep",
+      "pnpm exec vitest run",
+      "pnpm -r --if-present --filter ...[HEAD] --filter !@oa/server test",
+    ]);
+    // Only the server: rest runs the root suite and no package.
+    expect(runWith(["@oa/server"], "rest").log).toEqual([
+      ls,
       "pnpm run test:prep",
       "pnpm exec vitest run",
     ]);
-    expect(r.outputs).toBe("server=false\n");
   });
 });
