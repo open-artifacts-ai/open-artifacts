@@ -58,7 +58,11 @@ describe("what counts as retryable", () => {
   });
 
   it("never a non-refusal, `internal`, or an error naming no leg", () => {
-    expect(retryableError(leg(new NotRefused("200"), allow))).toBeUndefined();
+    expect(
+      retryableError(
+        leg(new NotRefused("status 200, code storage_unavailable"), allow),
+      ),
+    ).toBeUndefined();
     expect(retryableError(leg(internal, allow))).toBeUndefined();
     expect(retryableError(storage)).toBeUndefined();
     expect(retryableError("storage_unavailable")).toBeUndefined();
@@ -101,6 +105,21 @@ describe("retryCase", () => {
     const f = flaky([leg(storage, allow), new Error("still down")]);
     await expect(retryCase(f.run, open)).rejects.toThrow("still down");
     expect(f.calls.n).toBe(2);
+  });
+
+  it("a retry isn't retried, even on the same named error", async () => {
+    const f = flaky([leg(storage, allow), leg(storage, allow), undefined]);
+    let takes = 0;
+    await expect(
+      retryCase(f.run, {
+        take: () => {
+          takes++;
+          return true;
+        },
+      }),
+    ).rejects.toThrow("storage_unavailable");
+    expect(f.calls.n).toBe(2);
+    expect(takes).toBe(1);
   });
 
   it("a deny leg gets one try", async () => {
