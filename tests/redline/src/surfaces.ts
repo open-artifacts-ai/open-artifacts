@@ -706,7 +706,7 @@ export function derive(): Derived {
  */
 function legsOf(c: Omit<ProbeCase, "legs">): Legs {
   if (c.denyOnly || c.variant === "oauth") return "atB";
-  return SMOKES[c.variant] === c.name ? "cross" : "own";
+  return "own";
 }
 
 /** The realOnly instance writes a throwaway serves (the rest are dropped). */
