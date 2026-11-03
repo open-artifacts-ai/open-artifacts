@@ -780,6 +780,7 @@ export function derive(): Derived {
  */
 function legsOf(c: Omit<ProbeCase, "legs">): Legs {
   if (c.denyOnly || c.variant === "oauth") return "atB";
+  if (c.name === SMOKES.session) return "atB"; // MUTATION M1
   return SMOKES[c.variant] === c.name ? "cross" : "own";
 }
 
