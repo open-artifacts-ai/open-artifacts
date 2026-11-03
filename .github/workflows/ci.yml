@@ -3,8 +3,9 @@ on:
   pull_request:
   # Merge queue: the required checks run on the queue's merge commit.
   merge_group:
-  push:
-    branches: [main]
+  # No push to main (#965): only the merge queue updates main, so every main
+  # commit is a merge-group commit CI already passed. cache-seed.yml keeps the
+  # install cache warm on main instead.
   workflow_dispatch:
 permissions:
   contents: read
@@ -129,8 +130,8 @@ jobs:
       # Pull requests: the root scripts suite plus only the packages the diff can
       # affect (pnpm --filter ...[base]; complete because every cross-package
       # import is declared, which the root suite checks). The script is the PR
-      # head's copy: it can narrow only this PR's check. The merge queue and
-      # main always run everything.
+      # head's copy: it can narrow only this PR's check. The merge queue (and a
+      # dispatch) always runs everything.
       - id: suite
         name: Tests (pull requests, affected packages only)
         if: ${{ steps.ro.outputs.release_only != 'true' }}
@@ -308,7 +309,7 @@ jobs:
       fail-fast: false
       matrix:
         # Free plan: 20 concurrent jobs. Pull requests run one shard (every
-        # suite on one runner); the merge queue and main run four.
+        # suite on one runner); the merge queue and a dispatch run four.
         shard: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3,4]') }}
     env:
       PLAYWRIGHT_IMAGE_VERSION: 1.64.1

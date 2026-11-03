@@ -72,12 +72,34 @@ const RETRY_FLAGS = /--retry \d+ --retry-delay \d+ --retry-max-time \d+/;
 
 describe("ci.yml", () => {
   const w = wf("ci.yml");
-  it("triggers on pull_request and push to main", () => {
+  it("triggers on pull_request and dispatch, never on push (#965)", () => {
     expect(triggers(w)).toEqual(
-      expect.arrayContaining(["pull_request", "push", "workflow_dispatch"]),
+      expect.arrayContaining(["pull_request", "workflow_dispatch"]),
     );
-    expect(w.on.push.branches).toContain("main");
-    expect("workflow_dispatch" in w.on).toBe(true);
+    // Main moves only through the merge queue, which already ran CI on the
+    // same commit; a push run would only retest it and take runners.
+    expect("push" in w.on).toBe(false);
+  });
+  it("no workflow waits on a push-to-main CI run (#965)", () => {
+    const dir = join(root, ".github/workflows");
+    const onCi: string[] = [];
+    for (const f of readdirSync(dir).filter((n) => /\.ya?ml$/.test(n))) {
+      const x = wf(f);
+      const wr = x.on?.workflow_run;
+      if (wr && (wr.workflows ?? []).includes("CI")) {
+        onCi.push(f);
+        // No branch filter: it still fires on pull request and merge-queue
+        // CI runs (the release PR's own checks are what it reads).
+        expect(wr.branches).toBeUndefined();
+        expect(wr["branches-ignore"]).toBeUndefined();
+      }
+    }
+    expect(onCi).toEqual(["release-cadence.yml"]);
+    // release-cadence reads the release PR's check rollup and the merge
+    // queue, never a check on main's commit.
+    const cadence = ci("release-cadence.ts");
+    expect(cadence).toContain("statusCheckRollup");
+    expect(cadence).toContain("mergeQueue(branch: $branch)");
   });
   it("test: pull requests run the affected packages; everything else runs the full suite", () => {
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
@@ -1256,6 +1278,29 @@ describe("workflow jobs that use repo files have a checkout", () => {
       });
     }
   }
+});
+
+describe("cache-seed.yml (#965)", () => {
+  const w = wf("cache-seed.yml");
+  it("seeds main's pnpm cache when the lockfile changes; no tests, no secrets", () => {
+    expect(triggers(w).sort()).toEqual(["push", "workflow_dispatch"]);
+    expect(w.on.push.branches).toEqual(["main"]);
+    expect(w.on.push.paths).toEqual(
+      expect.arrayContaining(["pnpm-lock.yaml", ".nvmrc"]),
+    );
+    expect(w.permissions).toEqual({ contents: "read" });
+    const text = read(".github/workflows/cache-seed.yml");
+    expect(text).not.toContain("secrets.");
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = w.jobs.seed.steps;
+    const node = steps.find((s) =>
+      String(s.uses).startsWith("actions/setup-node@"),
+    );
+    expect(node.with.cache).toBe("pnpm");
+    expect(steps.at(-1).run).toBe(
+      "pnpm install --frozen-lockfile --ignore-scripts",
+    );
+  });
 });
 
 describe("release cadence", () => {
