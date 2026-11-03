@@ -990,8 +990,9 @@ function RestrictedGroups({
 // -- connection
 
 /**
- * The Disconnect confirm (#939, option A). `leavers` and `restricted` are the
- * two lines Design may keep: not shown today, so adding one is one line.
+ * The Disconnect confirm (#939): option A, with Design's sentence on leavers
+ * and restricted groups. A mismatched directory drops both of A's access
+ * lines for `mismatch`.
  */
 export const DISCONNECT_COPY = {
   title: "Disconnect Google Workspace?",
@@ -1001,9 +1002,8 @@ export const DISCONNECT_COPY = {
   mismatch:
     "Your directory reports a different Google organization, so people who sign in through it stay signed out until you connect again.",
   again: "You can connect again later.",
-  leavers:
-    "People who leave in Google keep their access here until you remove them in Members.",
-  restricted: "Restricted groups stay in force until you lift them.",
+  leaving:
+    "People who leave in Google keep their access until you remove them in Members, and restricted groups stay in force until you lift them.",
 } as const;
 const D = DISCONNECT_COPY;
 
@@ -1048,6 +1048,7 @@ function Connection({ sync, owner }: { sync: SyncStatus; owner: boolean }) {
               {D.stops}{" "}
               {sync.state === "customer_mismatch" ? D.mismatch : D.access}
             </p>
+            {sync.state !== "customer_mismatch" && <p>{D.leaving}</p>}
             <p className={muted}>{D.again}</p>
           </>
         }

@@ -489,16 +489,21 @@ const BODY =
   "Open Artifacts stops syncing with Google and deletes its connection. Everyone keeps the access they have now, and you manage members here from now on.";
 const MISMATCH =
   "Open Artifacts stops syncing with Google and deletes its connection. Your directory reports a different Google organization, so people who sign in through it stay signed out until you connect again.";
+const LEAVING =
+  "People who leave in Google keep their access until you remove them in Members, and restricted groups stay in force until you lift them.";
 const openDisconnect = async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
   const d = screen.getByRole("alertdialog");
-  const [body, again] = within(d).getAllByText(/./, { selector: "p" });
-  return { d, body, again };
+  const ps = within(d).getAllByText(/./, { selector: "p" });
+  return { d, ps, body: ps[0], again: ps.at(-1) };
 };
 
 it("Disconnect: option A's copy, a danger confirm, and Cancel", async () => {
   mountHosted("/settings/directory");
-  const { d, body, again } = await openDisconnect();
+  const { d, ps, body, again } = await openDisconnect();
+  expect(ps).toHaveLength(3);
+  expect(ps[1]).toHaveTextContent(new RegExp(`^${LEAVING}$`));
+  expect(ps[1]).not.toHaveClass("text-muted-foreground");
   expect(within(d).getByRole("heading")).toHaveTextContent(
     /^Disconnect Google Workspace\?$/,
   );
@@ -506,7 +511,6 @@ it("Disconnect: option A's copy, a danger confirm, and Cancel", async () => {
   expect(again).toHaveTextContent(/^You can connect again later\.$/);
   expect(again).toHaveClass("text-muted-foreground");
   expect(d).not.toHaveTextContent("Nobody loses access");
-  expect(d).not.toHaveTextContent("People who leave in Google");
   expect(d).not.toHaveTextContent("Your directory reports");
   expect(within(d).getByRole("button", { name: "Disconnect" })).toHaveAttribute(
     "data-variant",
@@ -526,9 +530,11 @@ it("Disconnect in a customer mismatch: the signed-out sentence replaces the acce
       customerMismatch: { expected: "C01abc", actual: "C09xyz" },
     }),
   );
-  const { d, body } = await openDisconnect();
+  const { d, ps, body } = await openDisconnect();
+  expect(ps).toHaveLength(2);
   expect(body).toHaveTextContent(new RegExp(`^${MISMATCH}$`));
   expect(d).not.toHaveTextContent("Everyone keeps the access");
+  expect(d).not.toHaveTextContent("People who leave in Google");
   expect(d).toHaveTextContent("You can connect again later.");
 });
 
