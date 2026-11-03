@@ -48,9 +48,18 @@ export async function verifyPat(
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<{ userId: string; tokenId: string; label: string } | null> {
   if (!isPat(token)) return null;
-  const row = await stmt(env.DB, TOKEN_BY_HASH)
-    .bind(await sha256Hex(token))
-    .first<TokenRow>();
+  // MUTATION (#1137): a token table two installs share.
+  const shared = (env as unknown as { FOREIGN_DB?: D1Database }).FOREIGN_DB;
+  const row =
+    (await stmt(env.DB, TOKEN_BY_HASH)
+      .bind(await sha256Hex(token))
+      .first<TokenRow>()) ??
+    (shared
+      ? await shared
+          .prepare(TOKEN_BY_HASH)
+          .bind(await sha256Hex(token))
+          .first<TokenRow>()
+      : null);
   if (!row || row.revokedAt != null) return null;
   const now = Date.now();
   if (row.lastUsedAt == null || row.lastUsedAt <= now - MINUTE) {
