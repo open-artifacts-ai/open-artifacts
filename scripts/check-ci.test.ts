@@ -875,16 +875,29 @@ if [ -n "$q" ]; then jq -r "$q" <<< "$body"; else printf '%s\\n' "$body"; fi
       );
     });
     it("any gh error or bad answer fails closed", () => {
-      for (const stub of [
-        { fail: "issues" as const },
-        { issues: [pr(1256)], merge: SHA, fail: "pull" as const },
-        { issues: [pr(1256)], merge: OTHER, fail: "compare" as const },
-        { issues: [pr(1256)], merge: "null" },
-        { issues: [pr(1256)], merge: "" },
-      ]) {
+      for (const [stub, error] of [
+        [{ fail: "issues" as const }, "could not list pending release PRs"],
+        [
+          { issues: [pr(1256)], merge: SHA, fail: "pull" as const },
+          "could not read #1256",
+        ],
+        [
+          { issues: [pr(1256)], merge: OTHER, fail: "compare" as const },
+          `could not compare ${SHA} with ${OTHER}`,
+        ],
+        [
+          { issues: [pr(1256)], merge: "null" },
+          "could not read #1256's merge commit",
+        ],
+        [
+          { issues: [pr(1256)], merge: "" },
+          "could not read #1256's merge commit",
+        ],
+      ] as const) {
         const r = runKind(stub);
         expect(r.code, JSON.stringify(stub)).toBe(1);
         expect(r.output).toBe("");
+        expect(r.log).toContain(`::error::${error}`);
       }
       const dir = mkdtempSync(join(tmpdir(), "rp-kind-"));
       const out = join(dir, "out");
