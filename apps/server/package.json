@@ -8,7 +8,7 @@
     "gen": "pnpm --filter @oa/shared build && pnpm run version:emit && node --experimental-strip-types scripts/emit-tool-manifest.ts && node --experimental-strip-types scripts/emit-skill.ts && node --experimental-strip-types scripts/emit-upgrade.ts",
     "build": "pnpm run gen && node --experimental-strip-types scripts/emit-consent-template.ts && node --experimental-strip-types scripts/emit-email-templates.ts && pnpm --filter @oa/dashboard run --if-present build && pnpm --filter @oa/render build --if-present && pnpm --filter @oa/runtime build --if-present && node scripts/assemble-assets.mjs && node scripts/check-worker-size.mjs",
     "dev": "echo \"@oa/server dev: placeholder\"",
-    "test": "pnpm run gen && vitest run --exclude \"test/smoke/**\" --passWithNoTests && vitest run -c vitest.node.config.ts && vitest run -c vitest.xt.config.ts",
+    "test": "pnpm run gen && pnpm --filter @oa/provisioning-contract build && vitest run --exclude \"test/smoke/**\" --passWithNoTests && vitest run -c vitest.node.config.ts && vitest run -c vitest.xt.config.ts",
     "test:authz": "pnpm run gen && vitest run -c vitest.authz.config.ts",
     "test:authz-probe": "node --experimental-strip-types scripts/authz-probe.ts",
     "test:cpu": "pnpm run gen && vitest run -c vitest.cpu.config.ts && vitest run -c vitest.codecpu.config.ts",
@@ -16,7 +16,7 @@
     "xt:live": "XT_LIVE=1 vitest run -c vitest.xt.config.ts",
     "bench": "pnpm run gen && vitest run -c vitest.bench.config.ts",
     "smoke": "pnpm --filter @oa/shared build && vitest run -c vitest.smoke.config.ts --passWithNoTests",
-    "typecheck": "pnpm run gen && tsc --noEmit -p tsconfig.json"
+    "typecheck": "pnpm run gen && pnpm --filter @oa/provisioning-contract build && tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.4",

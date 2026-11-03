@@ -214,7 +214,7 @@ const refusalPhrase = (e: AuditEntry) => {
     : REFUSED;
 };
 
-/** System actors by the label the audit records (shared/provisioning/system.ts). */
+/** System actors by the label the audit records (@oa/provisioning-contract/system). */
 const SYSTEM_LABEL: Record<string, string> = {
   "system:scheduler": "Scheduler",
   anonymous: "Anonymous callers",
