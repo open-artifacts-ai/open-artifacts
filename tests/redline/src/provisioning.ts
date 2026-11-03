@@ -17,18 +17,26 @@ import { RETRY_BACKOFF_MS, safeCode } from "./http.ts";
 import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { NIGHTLY_NA_REASON, PRE_PROD_REASON } from "./report.ts";
-import { newRecipient, openSealed, parseCreds } from "./seal.ts";
-import { snoozeOwnerPath } from "./snooze.ts";
-import { adoptTarget } from "./targets.ts";
 
-// The red-line provisioning probes (design v7 12.2, P1-P50) against the
-// staging Provisioning API, as the GitHub OIDC principal "O" (4.4): `rl-`
+// The red-line provisioning probes (design v7 12.2, P1-P50 but
+// REMOVED_PROBES) against the staging Provisioning API, as the GitHub OIDC principal "O" (4.4): `rl-`
 // slugs and testHooks only, plus the `x-oa-test-user` self-serve test users
 // (P8, P9, P11, P29). Every request goes through ProvIo, so test/
 // provisioning.test.ts runs each probe on a fake API with a pinned clock.
 // Failure text is a status, an error code and a body hash, never a body.
 
 export type ProbeId = `P${number}`;
+
+/**
+ * Probes of design 12.2 no longer in red-line, each with the issue that
+ * records why and where its ground is covered now. P1-P50 is PROBES plus
+ * these, exactly once (test/provisioning.test.ts).
+ */
+export const REMOVED_PROBES: Readonly<Partial<Record<ProbeId, string>>> =
+  Object.freeze({
+    P35: "#1260: a routeless Worker fetching rl-a /healthz; the runner can't stand in for it, so the case could only ever be unproven",
+    P50: "#1078: the held-sweep snooze owner path, proved live once; covered by apps/server/test/directory.snooze.test.ts and the authz surface list (apps/server/test/authz/surfaces.ts)",
+  });
 
 export interface ProvConfig {
   /** https://api.open-artifacts-staging.app (paths under /v1). */
@@ -71,11 +79,6 @@ export interface ProvIo {
   rlAPat?: () => string;
   /** Hides a secret the run learns from the public log (CI: ::add-mask::). */
   mask?: (v: string) => void;
-  /**
-   * The origin a probe's own target is reached at for an R3 host (P50).
-   * Live: https://<host>; tests map it to a local fake install.
-   */
-  tenantOrigin?: (host: string) => string;
 }
 
 export type Outcome =
@@ -574,7 +577,6 @@ export interface Chain {
  *   upgrade (P45) and the rollback of it (P31), then delete and purge (P23).
  * - rl-l: its own install (lifecycleInstall), suspend, resume, delete and
  *   restore; the tail deletes and purges it.
- * - rl-snz: P50, which makes and removes its own install.
  * - api: everything else, in the old order: no install of the run's but
  *   rl-q (P32, made and discarded inside it). P25 stays last: it spends
  *   RL_PV_SIGNIN_IP, which P30 and P34 share, and no other chain signs in.
@@ -598,7 +600,6 @@ export const CHAINS: readonly Chain[] = [
     ],
   },
   { name: "rl-l", probes: ["P20", "P21", "P22"], tail: removeLifecycle },
-  { name: "rl-snz", probes: ["P50"] },
   {
     name: "api",
     probes: [
@@ -623,7 +624,6 @@ export const CHAINS: readonly Chain[] = [
       "P30",
       "P32",
       "P34",
-      "P35",
       "P36",
       "P37",
       "P38",
@@ -983,18 +983,6 @@ const oidcCreate = (
   auth: { providers: ["email"], domains: [] },
   testHooks: true,
   ...(version ? { version } : {}),
-});
-
-/** P50's create: business tier (sync_google), code sign-in for the test domain. */
-const snoozeCreate = (run: Run, slug: string, requestId: string) => ({
-  ...oidcCreate(run, slug, requestId),
-  tier: "business",
-  // domainCodes sets EMAIL_CODE_DOMAIN=on (#1088).
-  auth: {
-    providers: ["email"],
-    domains: [STAGING_TEST_DOMAIN],
-    domainCodes: true,
-  },
 });
 
 /**
@@ -1407,109 +1395,6 @@ export const PROBES: readonly Probe[] = [
           );
       }
       return pass();
-    },
-  },
-  {
-    id: "P50",
-    title:
-      "rl-snz-<run> (business tier, Google sync, domain codes): the org owner snoozes a held sweep (off heldSweeps, snoozedUntil set), cancels it (counts again), both audited; then deleted (#1078)",
-    // The held-sweep snooze owner path (#854, #412) on an install this run
-    // makes: rl-a and rl-b are team tier with outside owners. The owner is
-    // OIDC_OWNER_EMAIL, under the test domain, so it signs in by code.
-    // Messages name the probe and step only (the run log is public).
-    // Up to four job waits (create, R26, delete, purge) can outlast this; a
-    // timeout fails the probe, and the afterAll cleanup replays the same
-    // requestIds (run.rid(`${slug}-del` / `-purge`)), so it is idempotent.
-    timeoutMs: 2 * JOB_WITHIN_MS + 10 * 60_000,
-    run: async (run) => {
-      const slug = run.slug("snz");
-      const entry = { slug };
-      // Listed before the create: a run that stops anywhere still removes it.
-      run.s.cleanup.push(entry);
-      let out: Outcome | undefined;
-      let failed: unknown = null;
-      try {
-        const a = run.accepted(
-          await run.v1("/installs", {
-            body: snoozeCreate(run, slug, run.rid("p50")),
-          }),
-          "P50 create",
-        );
-        const id = a.install.id;
-        await run.done(a.job.id, "P50 create");
-        const d = await detail(run, id);
-        expect(d, 200, "P50 R3");
-        const dj = d.json as InstallDetail;
-        if (dj.testHooks !== true)
-          throw new ProbeFail("P50: testHooks is not true");
-        if (dj.tier !== "business")
-          throw new ProbeFail(`P50: tier is ${dj.tier}, want business`);
-        if (dj.auth?.domainCodes !== true)
-          throw new ProbeFail("P50: the create did not turn domain codes on");
-        if (!dj.appHost || !dj.contentHost)
-          throw new ProbeFail(
-            "P50: the finished install has no app or content host",
-          );
-        // Dispatch's HOSTS cache (60 s) can still miss the new host: poll.
-        await run.within(PAGE_WITHIN_MS, "P50 redline /healthz", async () => {
-          const h = await run.page(dj.appHost);
-          const hz = h.json as
-            | { testHooks?: unknown; installId?: unknown }
-            | undefined;
-          return (
-            h.status === 200 && hz?.testHooks === true && hz.installId === id
-          );
-        });
-        const r = await newRecipient();
-        const c = await mintCreds(run, id, slug, {
-          publicKey: r.publicKey,
-          open: async (sealed) => {
-            const v = parseCreds(await openSealed(r, sealed));
-            run.io.mask?.(v.pat);
-            run.io.mask?.(v.hookKey);
-            return v;
-          },
-        });
-        const origin = (h: string) =>
-          run.io.tenantOrigin?.(h) ?? `https://${bare(h)}`;
-        const t = adoptTarget(
-          {
-            name: "rl-snz",
-            installId: id,
-            app: origin(dj.appHost),
-            content: origin(dj.contentHost),
-            testDomain: STAGING_TEST_DOMAIN,
-            cookieName: "__Host-oa_session",
-            hookKeyFile: "",
-          },
-          // Staging takes Turnstile's test-key answer on live-hook installs.
-          { hookKey: c.hookKey, pat: c.pat, turnstile: DUMMY_TURNSTILE },
-        );
-        let res: Awaited<ReturnType<typeof snoozeOwnerPath>>;
-        try {
-          res = await snoozeOwnerPath(t, { kind: "pat", token: c.pat });
-        } catch (e) {
-          // A setup hook's refusal stays infra (report.ts SETUP_HOOK_RE).
-          if (e instanceof InfraError) throw e;
-          throw new ProbeFail(`P50 snooze: ${(e as Error).message}`);
-        }
-        // The creds go with the install: the purge below removes both.
-        // This install was made for the case, so a reason it can't run is a
-        // broken create, not a missing proof.
-        if (res.level !== "pass") throw new ProbeFail(`P50: ${res.reason}`);
-        out = pass();
-      } catch (e) {
-        failed = e;
-      }
-      try {
-        await removeInstall(run, slug, "P50 cleanup");
-        run.s.cleanup.splice(run.s.cleanup.indexOf(entry), 1);
-      } catch (e) {
-        failed ??= e;
-      }
-      if (failed) throw failed;
-      if (!out) throw new ProbeFail("P50: no outcome");
-      return out;
     },
   },
   {
@@ -2182,14 +2067,6 @@ export const PROBES: readonly Probe[] = [
       }
       return pass();
     },
-  },
-  {
-    id: "P35",
-    title: "reachable path: a Worker without a route fetches rl-a /healthz",
-    run: async () =>
-      unproven(
-        "needs a Worker with no route (spike S7); the runner cannot stand in for it",
-      ),
   },
   {
     id: "P36",

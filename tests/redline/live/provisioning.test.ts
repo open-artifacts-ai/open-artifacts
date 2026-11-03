@@ -14,7 +14,7 @@ import { label, proof } from "../src/report.ts";
 // The provisioning probes (design v7 12.2) against the staging Provisioning
 // API as the GitHub OIDC principal. The probes run as chains, all at once
 // (src/provisioning.ts CHAINS): rl-p's create, upgrade, rollback and purge;
-// rl-l's suspend, resume and restore; P50's rl-snz; the API checks. Inside a
+// rl-l's suspend, resume and restore; the API checks. Inside a
 // chain, later probes use what earlier ones made. Each case awaits its own
 // probe; every case is listed in live/manifest.json. Local mode has no API:
 // each case is not-applicable.

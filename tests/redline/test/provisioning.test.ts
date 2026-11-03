@@ -8,7 +8,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { STAGING_TEST_DOMAIN } from "@oa/provision/names";
 import { afterEach, describe, expect, it } from "vitest";
 import { InfraError } from "../src/fetch-timeout.ts";
 import { takeFileNotes } from "../src/notes.ts";
@@ -38,6 +37,7 @@ import {
   type ProbeId,
   prodLive,
   provConfig,
+  REMOVED_PROBES,
   Run,
   revokeCreds,
   runProbe,
@@ -54,10 +54,8 @@ import {
   PRE_PROD_NA,
   PRE_PROD_REASON,
   parseManifest,
-  setupHookName,
 } from "../src/report.ts";
 import { newRecipient, openSealed, parseCreds } from "../src/seal.ts";
-import { NO_OWNER } from "../src/snooze.ts";
 import {
   parseProd,
   parseTargets,
@@ -135,7 +133,7 @@ async function runChains(
   }
   await plan.settled;
   const liveAtSettle = [...f.installs.values()]
-    .filter((i) => /^rl-(p|l|q|snz)-/.test(i.slug) && i.state !== "deleted")
+    .filter((i) => /^rl-(p|l|q)-/.test(i.slug) && i.state !== "deleted")
     .map((i) => i.slug);
   await cleanupInstalls(run);
   return { out, run, liveAtSettle };
@@ -153,9 +151,43 @@ const level = (o: Outcome | string | undefined) =>
     : o?.level;
 
 describe("the probes on a conforming staging fake", () => {
-  it("covers P1-P50 exactly once", () => {
-    const ids = PROBES.map((p) => Number(p.id.slice(1))).sort((a, b) => a - b);
+  it("covers P1-P50 exactly once: a probe, or removed with the issue that says why", () => {
+    const removed = Object.keys(REMOVED_PROBES);
+    const ids = [...PROBES.map((p) => p.id), ...removed]
+      .map((id) => Number(id.slice(1)))
+      .sort((a, b) => a - b);
     expect(ids).toEqual(Array.from({ length: 50 }, (_, i) => i + 1));
+    expect(removed.sort()).toEqual(["P35", "P50"]);
+    expect(REMOVED_PROBES.P35).toMatch(/^#1260: /);
+    expect(REMOVED_PROBES.P50).toMatch(/^#1078: /);
+    expect(Object.isFrozen(REMOVED_PROBES)).toBe(true);
+  });
+
+  it("a removed probe is cited in the manifest's notes with its issue, and is no accepted unproven case", () => {
+    const m = JSON.parse(
+      readFileSync(
+        join(import.meta.dirname, "..", "live", "manifest.json"),
+        "utf8",
+      ),
+    ) as { notes: string[] };
+    for (const [id, why] of Object.entries(REMOVED_PROBES)) {
+      const issue = why?.match(/^#\d+/)?.[0] as string;
+      expect(
+        m.notes.some(
+          (n) =>
+            n.startsWith("live/provisioning.test.ts no longer runs ") &&
+            n.includes(`${id} `) &&
+            n.includes(issue),
+        ),
+        id,
+      ).toBe(true);
+      expect(
+        ACCEPTED_UNPROVEN.some((e) =>
+          e.name.startsWith(`provisioning > ${id}:`),
+        ),
+        id,
+      ).toBe(false);
+    }
   });
 
   it("every probe passes but the gated and unprovable ones", async () => {
@@ -167,7 +199,6 @@ describe("the probes on a conforming staging fake", () => {
       P46: "not-applicable",
       P29: "unproven-live",
       P30: "unproven-live",
-      P35: "unproven-live",
     });
     expect(levels).toEqual(expected);
     // #1012: the gate's frozen list is exactly the probes that give the
@@ -214,7 +245,7 @@ describe("the probes on a conforming staging fake", () => {
     const out = await runAll(fakeApi());
     const name = (id: ProbeId) =>
       `provisioning > ${id}: ${PROBES.find((p) => p.id === id)?.title}`;
-    for (const id of ["P29", "P30", "P35"] as const)
+    for (const id of ["P29", "P30"] as const)
       expect(
         acceptedUnproven({
           name: name(id),
@@ -263,120 +294,6 @@ describe("the probes on a conforming staging fake", () => {
       .filter((j) => j.owner === "oidc")
       .map((j) => j.id);
     expect(run.s.jobIds.every((id) => oidcJobs.includes(id))).toBe(true);
-  });
-});
-
-describe("P50: the snooze owner path on an install the run creates (#1078)", () => {
-  const fakes: FakeApi[] = [];
-  afterEach(async () => {
-    for (const f of fakes.splice(0)) await f.closeTenants();
-  });
-  const p50 = async (fault?: Fault) => {
-    const f = fakeApi();
-    fakes.push(f);
-    if (fault) f.faults.add(fault);
-    await bringUp(f);
-    const run = new Run(CONFIG, f.io);
-    const p = PROBES.find((x) => x.id === "P50");
-    if (!p) throw new Error("no P50");
-    const out = await p.run(run).then(
-      (o) => o,
-      (e: Error) => e,
-    );
-    const snz = [...f.installs.values()].find((i) =>
-      i.slug.startsWith("rl-snz-"),
-    );
-    return { f, run, out, snz };
-  };
-
-  it("creates rl-snz-<run> business tier with domain codes and test hooks, mints R26 creds, passes the snooze path, then deletes and purges it", async () => {
-    const { f, run, out, snz } = await p50();
-    expect(out).toEqual({ level: "pass" });
-    expect(snz?.slug).toBe("rl-snz-1234");
-    expect(snz?.slug.length).toBeLessThanOrEqual(32);
-    expect(f.creates.find((b) => b.slug === snz?.slug)).toMatchObject({
-      tier: "business",
-      ownerEmail: `redline-owner@${STAGING_TEST_DOMAIN}`,
-      testHooks: true,
-      auth: {
-        providers: ["email"],
-        domains: [STAGING_TEST_DOMAIN],
-        domainCodes: true,
-      },
-    });
-    // R26 ran for it.
-    expect(f.log).toContain(
-      `POST ${CONFIG.api}/v1/installs/${snz?.id}/redline-creds`,
-    );
-    expect(snz?.state).toBe("deleted");
-    expect(f.tenants.size).toBe(0);
-    expect(run.s.cleanup).toEqual([]);
-  });
-
-  it("a server whose status hides the test hold (no binding, no seam: v0.101.0) fails P50 with the held-list message; the install is still removed", async () => {
-    const { out, snz, f } = await p50("p50_no_test_held");
-    expect(out).toBeInstanceOf(ProbeFail);
-    const msg = (out as Error).message;
-    expect(msg).toBe(
-      "P50 snooze: rl-snz owner snooze: the group is not in the status's held list",
-    );
-    expect(msg).not.toContain("@");
-    expect(msg).not.toContain(snz?.id);
-    expect(msg).not.toContain(snz?.appHost);
-    expect(snz?.state).toBe("deleted");
-    expect(f.tenants.size).toBe(0);
-  });
-
-  it("a snooze that leaves the hold counted fails P50 with no address, host or install id; the install is still removed", async () => {
-    const { out, snz, f } = await p50("p50_snooze_counts");
-    expect(out).toBeInstanceOf(ProbeFail);
-    const msg = (out as Error).message;
-    expect(msg).toBe(
-      "P50 snooze: rl-snz: heldSweeps is 1 after the snooze, want 0 (the snoozed hold still counts)",
-    );
-    expect(msg).not.toContain("@");
-    expect(msg).not.toContain(snz?.id);
-    expect(msg).not.toContain(snz?.appHost);
-    expect(snz?.state).toBe("deleted");
-    expect(f.tenants.size).toBe(0);
-  });
-
-  it("an owner the server sends no code is a broken create: P50 fails; the install is still removed", async () => {
-    const { out, snz } = await p50("p50_ineligible");
-    expect(out).toBeInstanceOf(ProbeFail);
-    expect((out as Error).message).toBe(`P50: ${NO_OWNER}`);
-    expect(snz?.state).toBe("deleted");
-  });
-
-  it("a create with domain codes off fails P50 before any hook; the install is still removed", async () => {
-    const { out, snz } = await p50("p50_no_codes");
-    expect(out).toBeInstanceOf(ProbeFail);
-    expect((out as Error).message).toBe(
-      "P50: the create did not turn domain codes on",
-    );
-    expect(snz?.state).toBe("deleted");
-  });
-
-  it("a setup hook's refusal on rl-snz stays infra, not a P50 fail; the install is still removed", async () => {
-    const { out, snz, f } = await p50("p50_groups_refused");
-    expect(out).toBeInstanceOf(InfraError);
-    expect(out).not.toBeInstanceOf(ProbeFail);
-    const msg = (out as Error).message;
-    expect(msg.startsWith("infra: setup ")).toBe(true);
-    expect(setupHookName(msg)).toBe(
-      "infra: setup /__test/directory-groups no_reason",
-    );
-    expect(msg).not.toContain("@");
-    expect(msg).not.toContain(snz?.id);
-    expect(msg).not.toContain(snz?.appHost);
-    expect(snz?.state).toBe("deleted");
-    expect(f.tenants.size).toBe(0);
-  });
-
-  it("a create that lands on another tier fails P50 before any hook; the install is still removed", async () => {
-    const { out, snz } = await p50("p50_team_tier");
-    expect((out as Error).message).toBe("P50: tier is team, want business");
-    expect(snz?.state).toBe("deleted");
   });
 });
 
@@ -438,8 +355,8 @@ describe("each probe fails on the behaviour it guards", () => {
     [
       "r2_q_owner_email",
       "P49",
-      // rl-p, and rl-l and rl-snz when their chains have them live.
-      /P49 R2 q=owner email: [1-3] items match by owner email only, want 0/,
+      // rl-p, and rl-l when its chain has it live.
+      /P49 R2 q=owner email: [1-2] items match by owner email only, want 0/,
     ],
   ];
   for (const [fault, id, re] of cases)
@@ -1788,7 +1705,6 @@ describe("the chains run at once (startChains)", () => {
     P46: "not-applicable",
     P29: "unproven-live",
     P30: "unproven-live",
-    P35: "unproven-live",
   };
   const levels = (out: Map<ProbeId, Outcome | string>) =>
     Object.fromEntries([...out].map(([k, v]) => [k, level(v)]));
@@ -1805,10 +1721,10 @@ describe("the chains run at once (startChains)", () => {
     "P31",
     "P23",
   ];
-  /** The run's own installs (rl-p, rl-l, rl-q, rl-snz) still live. */
+  /** The run's own installs (rl-p, rl-l, rl-q) still live. */
   const live = (f: FakeApi) =>
     [...f.installs.values()]
-      .filter((i) => /^rl-(p|l|q|snz)-/.test(i.slug))
+      .filter((i) => /^rl-(p|l|q)-/.test(i.slug))
       .filter((i) => i.state !== "deleted")
       .map((i) => `${i.slug} ${i.state}`);
   const bySlug = (f: FakeApi, prefix: string) =>
