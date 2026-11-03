@@ -14,6 +14,7 @@ import { logInfo, logWarn } from "../log.js";
 import { type AuditActor, audit, userActor } from "../services/audit.js";
 import { afterDirectoryConnect, resetSync } from "../services/directory.js";
 import { directoryMode } from "../services/spaces.js";
+import { testHeldShown } from "../test-hooks/held.js";
 import {
   b64urlDecode,
   b64urlEncode,
@@ -33,6 +34,7 @@ import {
 } from "./google.js";
 import {
   healthFields,
+  heldAt,
   MISMATCH_TOMBSTONE,
   NEVER,
   readHealth,
@@ -75,6 +77,12 @@ import {
 // (R.directoryConfirm: afterConsent runs the initial binding pass and hands
 // off to T13) or cancels (R.directoryCancel). Unconfirmed for 24 h, it is
 // dropped: lazily on the next status read or confirm, and by the daily cron.
+
+// `false` in release builds (build-flags.d.ts): no reference to test-hooks/.
+const testHeldFn =
+  typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
+  __OA_TEST_HOOKS_ALLOWED__ === true &&
+  testHeldShown;
 
 export const SETTINGS_DIRECTORY = "/settings/directory";
 const STATE_TTL_MS = 10 * 60_000;
@@ -744,6 +752,12 @@ export async function directoryStatus(
       : null;
   // T13: DirectorySync's health while a live binding exists.
   const h = healthFields(binding ? health : NEVER);
+  // No binding, so no real hold: test builds with hooks live still show the
+  // directory-held hook's `test-` holds (test-hooks/held.ts testHeldShown).
+  const held =
+    binding || !testHeldFn
+      ? h.held
+      : heldAt(testHeldFn(env, health.held), Date.now());
   return {
     mode,
     binding,
@@ -768,8 +782,8 @@ export async function directoryStatus(
     customerMismatch: h.customerMismatch,
     // A snooze's note is the owner's (#412): an admin sees the snooze only.
     held: o.showProblem
-      ? h.held
-      : h.held.map((x) => ({ ...x, snoozeReason: null })),
+      ? held
+      : held.map((x) => ({ ...x, snoozeReason: null })),
     liftsPaused: binding ? h.liftsPaused : [],
     pendingCount: pending ? pending.count : null,
     pendingCountCapped: pending ? pending.capped : false,

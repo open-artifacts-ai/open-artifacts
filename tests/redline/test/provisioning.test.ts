@@ -284,6 +284,20 @@ describe("P50: the snooze owner path on an install the run creates (#1078)", () 
     expect(run.s.cleanup).toEqual([]);
   });
 
+  it("a server whose status hides the test hold (no binding, no seam: v0.101.0) fails P50 with the held-list message; the install is still removed", async () => {
+    const { out, snz, f } = await p50("p50_no_test_held");
+    expect(out).toBeInstanceOf(ProbeFail);
+    const msg = (out as Error).message;
+    expect(msg).toBe(
+      "P50 snooze: rl-snz owner snooze: the group is not in the status's held list",
+    );
+    expect(msg).not.toContain("@");
+    expect(msg).not.toContain(snz?.id);
+    expect(msg).not.toContain(snz?.appHost);
+    expect(snz?.state).toBe("deleted");
+    expect(f.tenants.size).toBe(0);
+  });
+
   it("a snooze that leaves the hold counted fails P50 with no address, host or install id; the install is still removed", async () => {
     const { out, snz, f } = await p50("p50_snooze_counts");
     expect(out).toBeInstanceOf(ProbeFail);
