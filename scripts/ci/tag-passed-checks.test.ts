@@ -19,7 +19,11 @@ case "$p" in
   commits/*) k=commit ;;
   compare/*) k=compare ;;
   actions/workflows/release-please.yml/runs\\?*) k=runs ;;
-  actions/runs/*/jobs\\?*) k=jobs ;;
+  actions/artifacts\\?*) k=artifacts ;;
+  actions/runs/*/jobs\\?*)
+    id="\${p#actions/runs/}"; id="\${id%%/*}"
+    k=jobs; [ -f "$STATE/jobs-$id.json" ] && k="jobs-$id" ;;
+  actions/runs/*) k="run-\${p#actions/runs/}" ;;
   *) exit 1 ;;
 esac
 [ -f "$STATE/$k.json" ] || { echo "HTTP 404" >&2; exit 1; }
@@ -51,16 +55,54 @@ const good = (): State => ({
       },
     ],
   },
-  jobs: {
-    jobs: [
-      "release-please",
-      "verify-release",
-      "hosted-check",
-      "hosted-attach-staging",
-      "hosted-attach-prod",
-    ].map((name) => ({ name, conclusion: "success" })),
-  },
+  jobs: allJobs(),
+  // No run built the tag (a release from before the marker): the legacy rule.
+  artifacts: { total_count: 0, artifacts: [] },
 });
+
+const allJobs = (conclusion = "success") => ({
+  jobs: [
+    "release-please",
+    "verify-release",
+    "hosted-check",
+    "hosted-attach-staging",
+    "hosted-attach-prod",
+  ].map((name) => ({ name, conclusion })),
+});
+
+// #1282: the run that created and built the tag is another push run (v0.105.0:
+// run 41676652301, head 8490e7bf), and the run on the tag's commit skipped
+// everything.
+const MARKER = `built-from-${TAG}-${SHA}`;
+const OTHER = "e".repeat(40);
+const pushRun = (id: number, head = OTHER) => ({
+  id,
+  path: ".github/workflows/release-please.yml",
+  head_sha: head,
+  head_branch: "main",
+  event: "push",
+  status: "completed",
+  conclusion: "success",
+  created_at: "2026-10-30T00:00:00Z",
+  repository: { full_name: REPO },
+  head_repository: { full_name: REPO },
+});
+const artifact = (runId: number, name = MARKER) => ({
+  name,
+  expired: false,
+  workflow_run: { id: runId, head_branch: "main", head_sha: OTHER },
+});
+// biome-ignore lint/suspicious/noExplicitAny: test fixtures
+const raced = (f: (s: any) => void = () => {}) => {
+  // biome-ignore lint/suspicious/noExplicitAny: test fixtures
+  const s: any = good();
+  s.jobs = allJobs("skipped"); // the tag commit's own run did nothing
+  s.artifacts = { total_count: 1, artifacts: [artifact(77)] };
+  s["run-77"] = pushRun(77);
+  s["jobs-77"] = allJobs();
+  f(s);
+  return s as State;
+};
 
 const run = (state: State, env = "prod", tag = TAG) => {
   const sb = sandbox({ gh });
@@ -259,6 +301,220 @@ describe("tag-passed-checks.sh", () => {
     );
     expect(run(s, "staging").err).toMatch(/job hosted-attach-staging: failure/);
     expect(run(s, "prod").code).toBe(0);
+  });
+
+  describe("the run that built the tag (#1282)", () => {
+    const fails = (state: State, msg: RegExp, env = "prod") => {
+      const r = run(state, env);
+      expect(r.code, r.out).toBe(1);
+      expect(r.err).toMatch(/^release gate failed: /m);
+      expect(r.err).toMatch(msg);
+      expect(r.out).not.toContain("passed every check");
+    };
+
+    it("passes on another push run that built the tag, and checks that run's jobs", () => {
+      for (const env of ["staging", "prod"]) {
+        const r = run(raced(), env);
+        expect(r.code, r.err).toBe(0);
+        expect(r.out).toContain(
+          `${TAG} passed every check for ${env} (commit ${SHA}, run 77, built from ${TAG})`,
+        );
+        expect(r.calls).toContain(
+          `gh api -X GET repos/${REPO}/actions/artifacts?name=${MARKER}&per_page=100&page=1`,
+        );
+        expect(r.calls).toContain(
+          `gh api -X GET repos/${REPO}/actions/runs/77/jobs?filter=latest&per_page=100`,
+        );
+        // The marker decides: the tag commit's own run is not read.
+        expect(r.calls.some((c) => c.includes("/runs?event=push"))).toBe(false);
+        for (const c of r.calls.filter((c) => c.startsWith("gh ")))
+          expect(c).toMatch(/^gh api -X GET /);
+      }
+    });
+
+    it("passes when the marker run is the run on the tag's commit", () => {
+      const r = run(
+        raced((s) => {
+          s["run-77"] = pushRun(77, SHA);
+        }),
+      );
+      expect(r.code, r.err).toBe(0);
+    });
+
+    it("counts a run once however many markers it uploaded (a re-run)", () => {
+      const r = run(
+        raced((s) => {
+          s.artifacts.artifacts.push(artifact(77));
+        }),
+      );
+      expect(r.code, r.err).toBe(0);
+    });
+
+    it("ignores markers from runs that are not release-please.yml pushes on main", () => {
+      const others: [string, (r: Record<string, unknown>) => void][] = [
+        ["another workflow", (r) => (r.path = ".github/workflows/ci.yml")],
+        ["a dispatch", (r) => (r.event = "workflow_dispatch")],
+        ["a pull request", (r) => (r.event = "pull_request")],
+        ["another branch", (r) => (r.head_branch = "pl/x")],
+        [
+          "a fork",
+          (r) => (r.head_repository = { full_name: "evil/open-artifacts" }),
+        ],
+      ];
+      for (const [name, f] of others) {
+        // With the real run beside it, the stray one doesn't make two.
+        const two = raced((s) => {
+          s.artifacts.artifacts.push(artifact(88));
+          s["run-88"] = pushRun(88);
+          f(s["run-88"]);
+        });
+        expect(run(two).code, name).toBe(0);
+        // Alone, it doesn't count: the legacy run (skipped jobs) is read.
+        const alone = raced((s) => {
+          s.artifacts.artifacts = [artifact(88)];
+          s["run-88"] = pushRun(88);
+          f(s["run-88"]);
+        });
+        const r = run(alone);
+        expect(r.code, name).toBe(1);
+        expect(r.err, name).toMatch(/job verify-release: skipped/);
+      }
+    });
+
+    it("fails on two push runs that built the tag", () => {
+      fails(
+        raced((s) => {
+          s.artifacts.artifacts.push(artifact(78));
+          s["run-78"] = pushRun(78);
+          s["jobs-78"] = allJobs();
+        }),
+        /2 push runs built v0\.80\.0 \(built-from-v0\.80\.0-c{40}\); exactly one must/,
+      );
+    });
+
+    it("fails on a marker for another commit, with no run on the tag's commit", () => {
+      fails(
+        raced((s) => {
+          s.artifacts.artifacts = [artifact(77, `built-from-${TAG}-${OTHER}`)];
+          s.runs.workflow_runs = [];
+        }),
+        /no run built v0\.80\.0 \(built-from-v0\.80\.0-c{40}\) and no push run for c{40}/,
+      );
+    });
+
+    it("never takes a marker for another commit or tag as this one", () => {
+      for (const name of [
+        `built-from-${TAG}-${OTHER}`,
+        `built-from-v0.80.1-${SHA}`,
+        `built-from-${TAG}`,
+        "hosted-release",
+      ])
+        fails(
+          raced((s) => {
+            s.artifacts.artifacts = [artifact(77, name)];
+          }),
+          /job verify-release: skipped/,
+        );
+    });
+
+    const jobFails = (name: string, conclusion: string | null) =>
+      raced((s) => {
+        s["jobs-77"].jobs = s["jobs-77"].jobs.map((j: { name: string }) =>
+          j.name === name ? { name, conclusion } : j,
+        );
+      });
+    it.each([
+      ["verify-release", "failure"],
+      ["hosted-check", "skipped"],
+      ["hosted-attach-prod", "failure"],
+      ["hosted-attach-prod", null],
+    ])("fails when the marker run's %s is %s", (name, conclusion) => {
+      fails(
+        jobFails(name, conclusion),
+        new RegExp(`job ${name}: ${conclusion}`),
+      );
+    });
+
+    it("fails when the marker run's hosted-attach-<env> is missing, per env", () => {
+      const s = raced((x) => {
+        x["jobs-77"].jobs = x["jobs-77"].jobs.filter(
+          (j: { name: string }) => j.name !== "hosted-attach-staging",
+        );
+      });
+      fails(s, /job hosted-attach-staging: missing/, "staging");
+      expect(run(s, "prod").code).toBe(0);
+    });
+
+    it("fails when the marker run is unfinished or failed", () => {
+      fails(
+        raced((s) => (s["run-77"].status = "in_progress")),
+        /not completed/,
+      );
+      fails(
+        raced((s) => (s["run-77"].conclusion = "failure")),
+        /concluded failure/,
+      );
+    });
+
+    it("fails with no marker and no run on the tag's commit", () => {
+      fails(
+        edit((s) => (s.runs.workflow_runs = [])),
+        /no run built v0\.80\.0 .* and no push run for c{40}/,
+      );
+    });
+
+    it("passes the legacy run on the tag's commit, with no marker", () => {
+      const r = run(good());
+      expect(r.code, r.err).toBe(0);
+      expect(r.out).toContain(`run 41, legacy: the run on ${SHA}`);
+    });
+
+    it("fails closed on every API error and bad response", () => {
+      fails(
+        raced((s) => delete s.artifacts),
+        /build marker: GitHub API error/,
+      );
+      fails(
+        raced((s) => (s.artifacts = "<html>")),
+        /build marker: unparsable response/,
+      );
+      fails(
+        raced((s) => (s.artifacts = { message: "Not Found" })),
+        /build marker: unparsable response/,
+      );
+      fails(
+        raced((s) => delete s["run-77"]),
+        /build marker run 77: GitHub API error/,
+      );
+      fails(
+        raced((s) => delete s["jobs-77"]),
+        // Falls back to the stub's shared jobs file: skipped, never a pass.
+        /job verify-release: skipped/,
+      );
+      fails(
+        raced((s) => (s.artifacts.artifacts[0].workflow_run.id = "77; rm")),
+        /build marker: bad run id/,
+      );
+      fails(
+        raced((s) => (s.artifacts.artifacts[0].workflow_run = null)),
+        /build marker: bad run id/,
+      );
+    });
+
+    it("reads every page of markers, and fails past ten", () => {
+      // 100 on a page means read the next; the stub serves the same page.
+      const full = raced((s) => {
+        s.artifacts.artifacts = Array.from({ length: 100 }, () => artifact(77));
+      });
+      const r = run(full);
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(
+        /more than 1000 built-from-v0\.80\.0-c{40} artifacts/,
+      );
+      expect(
+        r.calls.filter((c) => c.includes("/actions/artifacts?")).length,
+      ).toBe(10);
+    });
   });
 
   it("refuses a bad env or tag before any call", () => {

@@ -455,6 +455,31 @@ jobs:
           path: ${{ runner.temp }}/hosted
           if-no-files-found: error
           retention-days: 7
+      # #1282: the release gate (scripts/ci/tag-passed-checks.sh) finds the push
+      # run that built this tag by this artifact's name, built-from-<tag>-<commit>,
+      # through the artifacts API (actions: read, no download). It is written
+      # last, from this checkout once it is <tag>^{commit}. The name is the
+      # marker; the file only repeats it. 90 days outlives any deploy of the tag.
+      - id: marker
+        name: Record the tag and commit this run built from
+        env:
+          TAG: ${{ needs.hosted-guard.outputs.tag }}
+          GUARD_SHA: ${{ needs.hosted-guard.outputs.sha }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          test "$sha" = "$GUARD_SHA"
+          test "$(git rev-parse "$TAG^{commit}")" = "$sha"
+          mkdir -p "$RUNNER_TEMP/built-from"
+          jq -n --arg tag "$TAG" --arg sha "$sha" '{tag: $tag, sha: $sha}' > "$RUNNER_TEMP/built-from/built-from.json"
+          echo "name=built-from-$TAG-$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.marker.outputs.name }}
+          path: ${{ runner.temp }}/built-from
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
   hosted-check:
     needs: [hosted-guard, hosted-build]
     if: ${{ !cancelled() && needs.hosted-guard.result == 'success' && needs.hosted-build.result == 'success' }}

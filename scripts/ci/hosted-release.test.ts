@@ -1,6 +1,7 @@
 // T3b: the hosted release jobs in release-please.yml (guard, build, check,
 // sign and attach per env) and hosted-floor.yml. The signing key never
 // shares a job with installed code.
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -199,7 +200,7 @@ describe("release-please.yml hosted jobs", () => {
       }
   });
 
-  it("hosted-build has no secrets, contents: read, builds both variants and uploads one artifact", () => {
+  it("hosted-build has no secrets, contents: read, builds both variants and uploads the release and its marker", () => {
     const job = w.jobs["hosted-build"];
     expect(JSON.stringify(job)).not.toContain("secrets.");
     expect(job.permissions).toEqual({ contents: "read" });
@@ -214,8 +215,75 @@ describe("release-please.yml hosted jobs", () => {
     const up = steps("hosted-build").filter((s) =>
       String(s.uses ?? "").startsWith("actions/upload-artifact"),
     );
-    expect(up).toHaveLength(1);
+    expect(up).toHaveLength(2);
     expect(up[0]?.with?.name).toBe("hosted-release");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(up[1]?.with?.name).toBe("${{ steps.marker.outputs.name }}");
+  });
+
+  it("hosted-build's last steps record built-from-<tag>-<commit>, from a checkout that is the tag (#1282)", () => {
+    // The release gate finds the push run that built the tag by this name.
+    const st = steps("hosted-build");
+    const m = st.findIndex((x) => x.id === "marker");
+    expect(m).toBe(st.length - 2);
+    for (const k of [
+      "build-hosted-release",
+      "refs/tags/$TAG",
+      "version.gen.ts",
+    ])
+      expect(
+        st.findIndex((x) => (x.run ?? "").includes(k)),
+        k,
+      ).toBeLessThan(m);
+    expect(st[m]?.env?.TAG).toBe(TAG);
+    expect(st[m]?.env?.GUARD_SHA).toBe(GUARD_SHA);
+    const up = st[m + 1];
+    expect(String(up?.uses)).toMatch(/^actions\/upload-artifact@/);
+    expect(up?.with?.["retention-days"]).toBe(90);
+    expect(up?.with?.["if-no-files-found"]).toBe("error");
+    // Runs the step: the name comes only from a HEAD that is <tag>^{commit}.
+    const sh = (head: string, tagSha: string) => {
+      const out = join(mkdtempSync(join(tmpdir(), "marker-")), "out");
+      const bin = join(dirname(out), "bin");
+      writeFileSync(out, "");
+      execFileSync("mkdir", ["-p", bin]);
+      writeFileSync(
+        join(bin, "git"),
+        `#!/usr/bin/env bash\ncase "$2" in HEAD) echo ${head} ;; *) echo ${tagSha} ;; esac\n`,
+        { mode: 0o755 },
+      );
+      try {
+        execFileSync("bash", ["-c", st[m]?.run], {
+          env: {
+            PATH: `${bin}:${process.env.PATH}`,
+            TAG: "v1.2.3",
+            GUARD_SHA: "a".repeat(40),
+            RUNNER_TEMP: dirname(out),
+            GITHUB_OUTPUT: out,
+          },
+          stdio: "pipe",
+        });
+      } catch {
+        return null;
+      }
+      return {
+        out: readFileSync(out, "utf8"),
+        file: JSON.parse(
+          readFileSync(
+            join(dirname(out), "built-from/built-from.json"),
+            "utf8",
+          ),
+        ),
+      };
+    };
+    const a = "a".repeat(40);
+    const b = "b".repeat(40);
+    expect(sh(a, a)).toEqual({
+      out: `name=built-from-v1.2.3-${a}\n`,
+      file: { tag: "v1.2.3", sha: a },
+    });
+    expect(sh(b, b)).toBeNull(); // HEAD is not the guard's commit
+    expect(sh(a, b)).toBeNull(); // the tag is not HEAD
   });
 
   it("hosted-build fetches the guard's tag and checks it is the guard's commit, before building", () => {
