@@ -74,7 +74,8 @@ const VERB: Record<string, string> = {
   "vars.session_cut_failed": "couldn't sign everyone out",
   "vars.session_cut_dropped": "skipped a sign-out it no longer needed",
   "verify_clean.refused": "failed the clean check",
-  "verify_clean.binding_ids": "checked its bindings point at its own resources",
+  "verify_clean.binding_ids":
+    "checked that its bindings point at its own resources",
   "prod_dirty.snapshot":
     "recorded what the install was running when it failed the clean check",
   "delete.start": "started deleting the install",
@@ -135,8 +136,8 @@ const REFUSAL_REASON: Record<string, string> = {
   pre: "too many requests",
   auth: "not signed in",
   csrf: "failed cross-site check",
-  oauth: "agent sign-in",
-  oauth_register: "agent registration",
+  oauth: "at agent sign-in",
+  oauth_register: "at agent registration",
 };
 for (const [bucket, why] of Object.entries(REFUSAL_REASON))
   VERB[`${bucket}.refused`] = `were refused (${why})`;

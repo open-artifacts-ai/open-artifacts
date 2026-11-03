@@ -467,7 +467,7 @@ it("a counted refusal reads its bucket's reason; an unmapped bucket reads plain"
     "were refused (not signed in)",
     "were refused (failed cross-site check)",
     "were refused (too many requests)",
-    "were refused (agent registration)",
+    "were refused (at agent registration)",
     "were rate limited",
     "couldn't sign in",
     "were refused",
@@ -497,8 +497,8 @@ it("the Action filter adds only Design's step and refusal options", async () => 
     "were refused (not signed in)",
     "were refused (too many requests)",
     "were refused (failed cross-site check)",
-    "were refused (agent sign-in)",
-    "were refused (agent registration)",
+    "were refused (at agent sign-in)",
+    "were refused (at agent registration)",
     "were rate limited",
   ])
     expect(options).toContain(label);
@@ -550,8 +550,8 @@ it("a HOSTS row reads by its mode; a binding check names its problems only when 
     "took the install offline",
     "changed the install's hosts",
     "changed the install's hosts",
-    "checked its bindings point at its own resources",
-    "checked its bindings point at its own resources",
+    "checked that its bindings point at its own resources",
+    "checked that its bindings point at its own resources",
   ]);
   expect(cell(4, 4)).toContain("DB:wrong_id KV:missing");
   expect(cell(5, 4)).not.toContain("DB:");
