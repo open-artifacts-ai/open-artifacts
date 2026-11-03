@@ -53,6 +53,9 @@ export const INDEX_WINDOW_MS = SOCKET_TTL_MS + INDEX_REPORT_MS + 60_000;
  * socket TTL is the ceiling.
  */
 export const LATER_PASSES_MS = [120_000, 300_000] as const;
+// One sweep row per later pass (ids 1 and 2). The table shipped with this
+// check: a deployed DO keeps the check it was created with, so adding a pass
+// later means a new table, not a wider check.
 export const SECOND_PASS_MS = LATER_PASSES_MS[0];
 
 const SCHEMA = `
@@ -69,7 +72,7 @@ create table if not exists retry (
 ) without rowid;
 create index if not exists retry_due on retry (due);
 create table if not exists sweep (
-  id integer primary key check (id = 1), reason text not null, due integer not null
+  id integer primary key check (id in (1, 2)), reason text not null, due integer not null
 );
 `;
 
