@@ -157,28 +157,21 @@ describe("ci.yml", () => {
   });
   it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
     const job = w.jobs["e2e-shard"];
-    // Free plan (20 concurrent jobs): one shard on pull requests, four on the
-    // merge queue and main.
-    expect(job.strategy.matrix.shard).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3,4]') }}",
-    );
+    // Four shards on every event: pull requests too, as the merge queue
+    // (#965). No per-event expression anywhere in the shard setup.
+    expect(job.strategy.matrix.shard).toEqual([1, 2, 3, 4]);
     expect(job.strategy["fail-fast"]).toBe(false);
-    expect(job.env.E2E_SHARD).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 1 || 4 }}",
-    );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(job.env.E2E_SHARD).toBe("${{ matrix.shard }}/4");
+    expect(JSON.stringify(job)).not.toContain("github.event_name");
     // Browsers and their OS deps come baked into the image, pinned by digest:
     // no apt step, so a slow Ubuntu mirror can't eat the job's budget (#462).
     expect(job.container.image).toMatch(
       /^mcr\.microsoft\.com\/playwright:v\d+\.\d+\.\d+-noble@sha256:[0-9a-f]{64}$/,
     );
     expect(job.container.options ?? "").toContain("--ipc=host");
-    // 25 min for the single pull-request shard (every suite), 15 for one of four.
-    expect(job["timeout-minutes"]).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ github.event_name == 'pull_request' && 25 || 15 }}",
-    );
+    // 15 min for one shard of four.
+    expect(job["timeout-minutes"]).toBe(15);
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     const steps: any[] = job.steps;
     const runs = steps.map((s) => s.run ?? "");
@@ -215,11 +208,20 @@ describe("ci.yml", () => {
       "apps/dashboard/test-results",
     ]);
     expect(uploads[1].if).toBe("failure()");
-    // The spaces suite (one spec, its own server) runs whole in one shard.
-    const spaces = steps.find((s) => s.run === "bash scripts/ci/e2e.sh spaces");
-    expect(spaces.if).toContain(
-      "matrix.shard == (github.event_name == 'pull_request' && 1 || 3)",
-    );
+    // The spaces suite (one spec, its own server) runs whole in shard 3 only;
+    // the unsharded ui, landing and provisioning checks in shard 1 only.
+    const shardOf = (name: string) => {
+      const step = steps.find(
+        (s) => s.run === `bash scripts/ci/e2e.sh ${name}`,
+      );
+      return [...(step.if as string).matchAll(/matrix\.shard == (\d+)/g)].map(
+        (m) => Number(m[1]),
+      );
+    };
+    expect(shardOf("spaces")).toEqual([3]);
+    for (const name of ["ui", "landing", "provisioning"]) {
+      expect(shardOf(name)).toEqual([1]);
+    }
     // Local wrangler dev only: no secrets, nothing pointing at staging.
     const s = JSON.stringify(job);
     expect(s).not.toContain("secrets.");
