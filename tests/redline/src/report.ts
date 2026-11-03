@@ -203,6 +203,23 @@ export function label(ctx: TaskLike, text: string): void {
   (ctx.task.meta as { redlineLabel?: string }).redlineLabel = text;
 }
 
+/** The run summary's line, from every note the run kept. */
+export function resetSummary(notes: readonly string[]): string | undefined {
+  const resets = notes.filter((n) => n.startsWith("reset: "));
+  let requests = 0;
+  let fresh = 0;
+  for (const n of notes) {
+    const m = /^connections: (\d+) requests, (\d+) on new sockets$/.exec(n);
+    if (m) {
+      requests += Number(m[1]);
+      fresh += Number(m[2]);
+    }
+  }
+  if (!resets.length && !requests) return undefined;
+  const reused = resets.filter((n) => n.includes("reused socket")).length;
+  return `Resets: ${resets.length} (${reused} on reused sockets), of ${requests} requests (${fresh} on new sockets)`;
+}
+
 /** The notes src/notes.ts put on a task's (or a file's) meta, redacted. */
 export function notesOf(meta: object | undefined): string[] {
   const n = (meta as { redlineNotes?: unknown } | undefined)?.redlineNotes;
@@ -568,6 +585,11 @@ export function formatReport(r: Report): string {
     for (const c of labeled) lines.push(`  [${c.label}] ${c.name}`);
   }
   const noted = r.cases.filter((c) => c.notes?.length);
+  const resets = resetSummary([
+    ...(r.fileNotes ?? []).map((n) => n.note),
+    ...noted.flatMap((c) => c.notes ?? []),
+  ]);
+  if (resets) lines.push(resets);
   if (noted.length || r.fileNotes?.length) {
     lines.push("Notes:");
     for (const n of r.fileNotes ?? []) lines.push(`  [${n.file}] ${n.note}`);
