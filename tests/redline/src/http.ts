@@ -2,6 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ERROR_CODES } from "@oa/shared";
+import { API_ERROR_CODES } from "@oa/shared/provisioning";
 import {
   InfraError,
   isNetworkError,
@@ -21,10 +23,46 @@ export type Cred =
   | { kind: "cookie"; name: string; value: string }
   | { kind: "none" };
 
-/** Status, body hash and length: what a failure message may show. */
+const KNOWN_CODES: ReadonlySet<string> = new Set([
+  ...ERROR_CODES,
+  ...API_ERROR_CODES,
+  // RFC 6749's and the provider's OAuth errors.
+  "invalid_client",
+  "invalid_grant",
+  "invalid_redirect_uri",
+  "invalid_request",
+  "invalid_scope",
+  "invalid_token",
+  "unauthorized_client",
+  "unsupported_grant_type",
+]);
+
+/**
+ * A code a public log may show: one from shared's closed lists, else "other".
+ * The body's own string never reaches a log. Undefined when it names none.
+ */
+export function safeCode(code: unknown): string | undefined {
+  if (typeof code !== "string") return undefined;
+  return KNOWN_CODES.has(code) ? code : "other";
+}
+
+function bodyCode(body: string): string | undefined {
+  try {
+    const j = JSON.parse(body) as { error?: unknown } | null;
+    const e = j?.error;
+    return safeCode(
+      typeof e === "string" ? e : (e as { code?: unknown })?.code,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** Status, body hash, length and safe code: what a failure message may show. */
 export function describeRes(res: Response, body: string): string {
   const h = createHash("sha256").update(body).digest("hex").slice(0, 16);
-  return `status ${res.status}, body sha256:${h} (${Buffer.byteLength(body)} bytes)`;
+  const code = bodyCode(body);
+  return `status ${res.status}, body sha256:${h} (${Buffer.byteLength(body)} bytes)${code ? `, code ${code}` : ""}`;
 }
 
 /** Reads the body as text, at most once; "" when there is none. */
