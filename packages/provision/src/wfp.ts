@@ -3501,7 +3501,6 @@ export class WfpProvisioner {
           from,
           to,
           reason,
-          own,
         );
         await this.release("active");
         // What serves now failed verify_clean: `to` with no rollback, or the
@@ -3535,42 +3534,26 @@ export class WfpProvisioner {
     }
   }
 
-  /** Review Focus 3: roll back, unless the DO tag moved or the previous version is refused. */
+  /**
+   * #1106, the user's rule: never revert, only move forward. A failed upgrade
+   * stays on `to`, already recorded, and the job fails, so the fleet halts
+   * and a new release is the fix. Code is never put back on a newer schema.
+   */
   private async afterFailedUpgrade(
     row: InstallRow,
     from: string,
     to: string,
     reason: string,
-    own: OwnerToken,
   ): Promise<UpgradeResult> {
-    const forwardFix = async (why: string) => {
-      await this.logged("upgrade.forward_fix", { from, to });
-      return {
-        id: row.id,
-        from,
-        to,
-        ok: false,
-        rolledBack: false,
-        forwardFix: true,
-        reason: why,
-      };
-    };
-    let back: { ok: boolean; reason?: string; prodDirty?: true };
-    try {
-      const plan = await this.planRollback(row, own);
-      back = await this.applyRollback(plan, null, false);
-    } catch (e) {
-      if (e instanceof LostLease || !(e instanceof ProvisionRefused)) throw e;
-      return forwardFix(`${reason}; no rollback: ${this.reasonOf(e)}`);
-    }
+    await this.logged("upgrade.forward_fix", { from, to });
     return {
       id: row.id,
       from,
       to,
       ok: false,
-      rolledBack: true,
-      reason: back.ok ? reason : `${reason}; ${back.reason}`,
-      ...(back.prodDirty ? { prodDirty: true } : {}),
+      rolledBack: false,
+      forwardFix: true,
+      reason,
     };
   }
 
