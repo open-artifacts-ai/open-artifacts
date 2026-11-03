@@ -477,6 +477,13 @@ describe("Me sign-in fields", () => {
     expect(m.auth).toMatchObject({ readOnly: true, cap: "guest" });
   });
 
+  it("an access-only guest is told they are read-only (parity 2)", async () => {
+    const { cookie } = await login(uniq("guest", "x.com"), "guest");
+    const m = await me(env, cookie);
+    expect(m.instance.features).toContain("guests_read_only");
+    expect(m.auth).toMatchObject({ readOnly: true, cap: "guest" });
+  });
+
   it("direct: auth for a session and a PAT, signIn, features, hosted", async () => {
     const e = direct({
       HOSTED: "1",

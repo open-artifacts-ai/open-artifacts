@@ -112,6 +112,10 @@ export const JOB_ERROR_TEXT = Object.freeze({
   upgrade_incomplete: "The upgrade did not complete.",
   canceled: "The job was canceled.",
   run_dead: "The job's Workflow run stopped.",
+  migration_held:
+    "A pending migration can lose data. Upgrade with nonAdditive to take a restore point and cross it.",
+  restore_point_failed:
+    "The D1 restore point could not be taken, so the migration was not run.",
   domain_codes_refused:
     "Domain sign-in codes need email sign-in on, Google off and at least one domain.",
   turnstile_missing:

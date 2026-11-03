@@ -2,6 +2,7 @@ import { R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import {
   act,
+  cleanup,
   fireEvent,
   screen,
   waitFor,
@@ -9,7 +10,14 @@ import {
 } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
-import { installHarness, mount, seen, server, wait } from "./harness";
+import {
+  installHarness,
+  mount,
+  mountHosted,
+  seen,
+  server,
+  wait,
+} from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
@@ -116,6 +124,89 @@ describe("share panel", () => {
     expect(await screen.findByTitle("bob@example.com")).toHaveTextContent(
       "bob@example.com",
     );
+  });
+
+  it.each([
+    ["editor", "Editor", "Guest · can only view for now"],
+    ["viewer", "Viewer", "Guest · can only view"],
+  ])(
+    "a guest's row with stored %s: email, caption, then the select and Remove",
+    async (role, shown, caption) => {
+      const guest = "gus@elsewhere.test";
+      server.use(
+        http.get("*/api/v1/artifacts/:id/shares", () =>
+          HttpResponse.json([
+            {
+              email: guest,
+              role,
+              createdAt: "2026-10-01T00:00:00.000Z",
+              guest: true,
+            },
+          ]),
+        ),
+      );
+      mount(panel(OWNED));
+      const email = await screen.findByTitle(guest);
+      const label = screen.getByText(caption);
+      // Two lines: the email alone, then the caption with the controls.
+      expect(email).not.toHaveClass("truncate");
+      expect(email.nextElementSibling).toBeNull();
+      expect(label).toHaveClass("whitespace-nowrap");
+      const select = screen.getByRole("combobox", {
+        name: `Role for ${guest}`,
+      });
+      expect(select).toHaveTextContent(shown);
+      const remove = screen.getByRole("button", { name: `Remove ${guest}` });
+      const follows = (a: Element, b: Element) =>
+        a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+      expect(follows(label, select)).toBeTruthy();
+      expect(follows(select, remove)).toBeTruthy();
+      expect(label.parentElement).not.toBe(email.parentElement);
+      expect(label.parentElement).toContainElement(select);
+      expect(label.parentElement).toContainElement(remove);
+    },
+  );
+
+  describe("a guest invited as Editor", () => {
+    const LINE =
+      "Guests can only view. If they become a member, they'll be able to edit.";
+    const invite = async (email: string, role: "Editor" | "Viewer") => {
+      fireEvent.keyDown(
+        await screen.findByRole("combobox", { name: "Invite role" }),
+        { key: "Enter" },
+      );
+      fireEvent.click(await screen.findByRole("option", { name: role }));
+      fireEvent.change(screen.getByLabelText("Email"), {
+        target: { value: email },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Add" }));
+      await screen.findByTitle(email);
+    };
+
+    it("gets the status line just after inviting, and not on a later open", async () => {
+      const guest = "gia@elsewhere.test";
+      mountHosted(panel(OWNED));
+      await invite(guest, "Editor");
+      const line = await screen.findByText(LINE);
+      expect(line).toHaveAttribute("role", "status");
+      expect(screen.getByTitle(guest).closest("li")).toContainElement(line);
+      cleanup();
+      mount(panel(OWNED));
+      await screen.findByTitle(guest);
+      expect(
+        await screen.findByText("Guest · can only view for now"),
+      ).toBeTruthy();
+      expect(screen.queryByText(LINE)).toBeNull();
+    });
+
+    it("no line for a guest invited as Viewer, or a member as Editor", async () => {
+      mountHosted(panel(OWNED));
+      await invite("gus@elsewhere.test", "Viewer");
+      await screen.findByText("Guest · can only view");
+      expect(screen.queryByText(LINE)).toBeNull();
+      await invite("carol@example.com", "Editor");
+      expect(screen.queryByText(LINE)).toBeNull();
+    });
   });
 
   it("changes a share role and removes it", async () => {

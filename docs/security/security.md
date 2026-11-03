@@ -41,6 +41,7 @@ Data-subscribe sockets split the same way: 200 per DO for signed-in viewers (20 
 Suspending or removing a user (`setUserStatus`) writes the status, ends every session (`session_epoch`), revokes their PATs and audits `user.status` in one D1 batch, then revokes their OAuth grants and closes their live sockets. Only `active` rows resolve to a user, on every credential.
 
 - **OAuth grants.** Each grant records when consent was approved, and each user row when its status last changed. A grant approved at or before that change is refused at `/mcp`. A grant minted while a suspension commits, or missed by KV's eventually consistent grant listing, is refused even after an unsuspend. Consent re-checks that the user is active just before the grant is written.
+- **Revoking an OAuth token.** On an install whose OAuth store is KV, a revoked refresh token can still be accepted for up to KV's read-cache TTL (60 s) wherever the grant was cached. Red-line proves refusal within that window, not at once. With the store on D1 there is no such window.
 - **PATs.** A PAT is inserted only while its user is active (one statement), so none minted during a suspension comes back on unsuspend. Unsuspending never revives revoked PATs or sessions.
 - **Guests.** A guest whose last share went comes back on a new share. A guest removed by an admin or by the directory stays removed.
 - **Removal and shares.**

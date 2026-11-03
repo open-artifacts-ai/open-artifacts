@@ -371,8 +371,11 @@ export type SearchHit = z.infer<typeof SearchHitSchema>;
 
 export const ShareSchema = z.object({
   email: z.string().email(),
+  /** As stored: a guest's row keeps it, but they can only view (see `guest`). */
   role: ShareRoleSchema,
   createdAt: z.string(),
+  /** A guest, or an address that becomes one at first sign-in. Absent otherwise, and from older servers. */
+  guest: z.boolean().optional(),
 });
 export type Share = z.infer<typeof ShareSchema>;
 
@@ -431,6 +434,8 @@ export const MemberSchema = z.object({
   identities: z.array(IdentityProviderSchema).optional(),
   /** Hosted M1: the member's restriction (manual flag and/or restricted groups); null when unrestricted. */
   restriction: RestrictionSchema.nullable().optional(),
+  /** GET R.members: a guest with live artifacts in their personal space, for Transfer. Absent otherwise. */
+  personalArtifacts: z.boolean().optional(),
 });
 export type Member = z.infer<typeof MemberSchema>;
 

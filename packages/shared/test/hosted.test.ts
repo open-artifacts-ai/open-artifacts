@@ -546,6 +546,37 @@ describe("mock guest share notices (parity 2)", () => {
     expect(await notices()).toBeUndefined();
   });
 
+  it("spaces off: to user works; to space is 404 for a real, unknown or personal id; spaces routes are 404", async () => {
+    const spaceOn = createHandlers({
+      hosted: { selfHosted: true, guestOwners: 3, spaces: true },
+    });
+    server.use(...spaceOn);
+    const ENG = "SpEngNpQrSt2uVwX";
+    const go = (to: object, id = "Go0001AbCdEfGhIj") =>
+      call("POST", R.memberTransfer(id), { to });
+    expect((await go({ kind: "space", spaceId: ENG })).status).toBe(200);
+    server.resetHandlers();
+    server.use(
+      ...createHandlers({ hosted: { selfHosted: true, guestOwners: 3 } }),
+    );
+    const me = MeSchema.parse(await (await call("GET", R.me)).json());
+    expect(me.instance.features).not.toContain("spaces");
+    expect(me.spaces).toBeUndefined();
+    expect((await call("GET", R.spaces)).status).toBe(404);
+    for (const spaceId of [ENG, "SpNoSuchSpaceXyz", "Ab3dEfGhJk4mNpQr"]) {
+      const r = await go({ kind: "space", spaceId });
+      expect(r.status).toBe(404);
+      expect(await r.json()).toMatchObject({ error: { code: "not_found" } });
+    }
+    expect(
+      (await go({ kind: "user", userId: "Bc4eFgHjKm5nPqRs" })).status,
+    ).toBe(200);
+    // An active non-guest isn't a source.
+    expect(
+      (await call("GET", R.memberTransfer("Bc4eFgHjKm5nPqRs"))).status,
+    ).toBe(409);
+  });
+
   it("absent with no guest shares, on hosted, and on direct sign-in; admins get no summary (dismiss 404)", async () => {
     server.use(...createHandlers({ hosted: { selfHosted: true } }));
     expect(await notices()).toBeUndefined();

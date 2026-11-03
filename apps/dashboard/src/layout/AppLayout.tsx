@@ -46,6 +46,7 @@ import { SpaceSwitcher } from "../spaces/SpaceSwitcher";
 import { ATTENTION, AttentionDot } from "./AttentionDot";
 import { CpuBanner } from "./CpuBanner";
 import { DisplayNamePrompt } from "./DisplayNamePrompt";
+import { GuestSharesBanner } from "./GuestSharesBanner";
 import { QuotaBanner } from "./QuotaBanner";
 import { SyncBanner, SyncDot, syncDot } from "./SyncBanner";
 import { Toaster } from "./toast";
@@ -206,6 +207,10 @@ function Layout() {
                 className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
               />
             )}
+            <GuestSharesBanner
+              me={me}
+              className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
+            />
             <CpuBanner
               role={me?.user.role}
               plan={me?.instance.plan}

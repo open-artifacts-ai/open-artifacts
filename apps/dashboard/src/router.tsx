@@ -18,6 +18,7 @@ import { NoAccess } from "./pages/NoAccess";
 import { NotFound } from "./pages/NotFound";
 import { RenderError } from "./pages/RenderError";
 import { SignIn } from "./pages/SignIn";
+import { useNoAgentsPage } from "./settings/AgentSetupCard";
 import { Agents } from "./settings/Agents";
 import { Directory } from "./settings/Directory";
 import { Instance } from "./settings/Instance";
@@ -176,6 +177,19 @@ function SpacesRoute() {
     </Gate>
   );
 }
+/** Revoke-only with nothing to revoke: no Agents page, so Profile, the first tab. */
+function AgentsRoute() {
+  const none = useNoAgentsPage();
+  const to = "/settings/profile";
+  return (
+    <Gate
+      allow={none ? [] : [...ADMINS, "member"]}
+      redirects={{ guest: "/shared", member: to, owner: to, admin: to }}
+    >
+      <Agents />
+    </Gate>
+  );
+}
 const settings = createRoute({
   getParentRoute: () => root,
   id: "settings",
@@ -229,7 +243,11 @@ const routeTree = root.addChildren([
       component: SpacesRoute,
     }),
     gated("/settings/directory", ADMINS, "/settings/agents", Directory),
-    gated("/settings/agents", [...ADMINS, "member"], "/", Agents),
+    createRoute({
+      getParentRoute: () => settings,
+      path: "/settings/agents",
+      component: AgentsRoute,
+    }),
     gated("/settings/instance", ADMINS, "/settings/agents", Instance),
   ]),
   usage,

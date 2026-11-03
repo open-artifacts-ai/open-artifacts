@@ -258,6 +258,56 @@ describe("credentials", () => {
       };
     }
 
+    type Via = "A's client_id" | "B's client_id";
+    type Own = { clientId: string; rt: string };
+    interface Minted {
+      via: Record<
+        Via,
+        {
+          c: Awaited<ReturnType<typeof clients>>;
+          rtB: string;
+          rtAatA: string;
+          rtAatB: string;
+        }
+      >;
+      after: Map<Target, Own>;
+      revoked: Map<Target, Own>;
+      /** When the last of them was redeemed: one KV settle deadline for all. */
+      at: number;
+    }
+    let minted: Promise<Minted> | undefined;
+    const own = async (t: Target): Promise<Own> => {
+      const clientId = await registerClient(t);
+      return { clientId, rt: await refresh(t, clientId) };
+    };
+    /**
+     * Every refresh token the cases below read, minted together on first use.
+     * Each still has its own client, and every assertion is unchanged; only
+     * the wait is shared: KV's read cache (#769) is waited out once from the
+     * last redeem, not once per case and install. Lazy, so a failed mint fails
+     * the case that needed it, not setup.
+     */
+    const mintAll = (): Promise<Minted> =>
+      (minted ??= (async () => {
+        const via = {} as Minted["via"];
+        for (const v of ["A's client_id", "B's client_id"] as const) {
+          const c = await clients();
+          via[v] = {
+            c,
+            rtB: await refresh(T.b, c.b),
+            rtAatA: await refresh(T.a, c.aAtA),
+            rtAatB: await refresh(T.a, c.aAtB),
+          };
+        }
+        const after = new Map<Target, Own>();
+        const revoked = new Map<Target, Own>();
+        for (const t of [T.a, T.b]) {
+          after.set(t, await own(t));
+          revoked.set(t, await own(t));
+        }
+        return { via, after, revoked, at: lastRedeemAt() };
+      })());
+
     it("A's OAuth client_id in B's /authorize: no auto-grant", async () => {
       const p = pkce();
       const c = await clients();
@@ -282,27 +332,26 @@ describe("credentials", () => {
           : ["invalid_grant"];
 
       it(`A's OAuth refresh token at B's /token (${via}): no token`, async () => {
-        const c = await clients();
+        const m = await mintAll();
+        const { c, rtB, rtAatA, rtAatB } = m.via[via];
         const atB = via === "A's client_id" ? c.aAtB : c.b;
-        const rtB = await refresh(T.b, c.b);
-        const rtAatA = await refresh(T.a, c.aAtA);
-        const rtAatB = await refresh(T.a, c.aAtB);
         const credB = slot(() => refreshForm(c.b, rtB, res(T.b)));
         const credA = slot((t) =>
           t === T.a
             ? refreshForm(c.aAtA, rtAatA, res(T.a))
             : refreshForm(atB, rtAatB, res(T.b)),
         );
-        // Each refresh reads a grant just written by its redeem: wait out
-        // KV's read cache first, or a stale read refuses a valid token (#769).
-        await untilKvSettled(lastRedeemAt());
+        // Each refresh reads a grant written by its redeem: wait out KV's
+        // read cache first, or a stale read refuses a valid token (#769).
+        await untilKvSettled(m.at);
         await crossCheck((cr, t) => tokenRequest(t, slotValue(cr, t)), {
           ...pair(credA, credB),
           ok: okStatus(200),
           refused: tokenRefused(errors),
         });
-        // The token B refused is live at A.
-        await untilKvSettled(lastRedeemAt());
+        // The token B refused is live at A. Its grant was minted with the
+        // rest, so the same deadline covers it.
+        await untilKvSettled(m.at);
         const r = await fetch(
           tokenRequest(T.a, refreshForm(c.aAtB, rtAatB, res(T.a))),
         );
@@ -354,11 +403,11 @@ describe("credentials", () => {
       "An OAuth refresh straight after the redeem: a new token, on A and on B (#769)",
       async (ctx) => {
         const modes: string[] = [];
+        const m = await mintAll();
         for (const t of [T.a, T.b]) {
           const kv = await storeMode(ctx, t, modes);
-          const clientId = await registerClient(t);
-          const rt = await refresh(t, clientId);
-          if (kv) await untilKvSettled(lastRedeemAt());
+          const { clientId, rt } = m.after.get(t) as Own;
+          if (kv) await untilKvSettled(m.at);
           const r = await fetch(
             tokenRequest(t, refreshForm(clientId, rt, res(t))),
           );
@@ -366,20 +415,21 @@ describe("credentials", () => {
           await r.body?.cancel();
           expect(ok, `${t.name}: refresh right after the redeem`).toBe(true);
         }
-        // KV: one settle wait per install.
+        // KV: the shared deadline, past by now unless this case runs first.
       },
       kvCaseTimeout(2),
     );
 
     it(
-      "A revoked OAuth refresh token is refused at once, on A and on B",
+      "A revoked OAuth refresh token is refused within KV's cache window, on A and on B",
       async (ctx) => {
         const modes: string[] = [];
+        const m = await mintAll();
+        let kv = false;
         for (const t of [T.a, T.b]) {
-          const kv = await storeMode(ctx, t, modes);
-          const clientId = await registerClient(t);
-          const rt = await refresh(t, clientId);
-          if (kv) await untilKvSettled(lastRedeemAt());
+          if (await storeMode(ctx, t, modes)) kv = true;
+          if (kv) await untilKvSettled(m.at);
+          const { clientId, rt } = m.revoked.get(t) as Own;
           // RFC 7009 at the token endpoint: the refresh token's grant goes.
           const rv = await fetch(
             new Request(`${t.app}/oauth/token`, {
@@ -395,13 +445,18 @@ describe("credentials", () => {
           );
           await rv.body?.cancel();
           expect(rv.status, `${t.name}: revoke`).toBe(200);
-          if (kv) await untilKvSettled(Date.now());
+        }
+        // Both revoked; one wait for both. On KV a revoked grant can still be
+        // read from the edge cache for up to its TTL, so this proves refusal
+        // within that window, not at once (docs/security/security.md).
+        if (kv) await untilKvSettled(Date.now());
+        for (const t of [T.a, T.b]) {
+          const { clientId, rt } = m.revoked.get(t) as Own;
           await tokenRefused(["invalid_grant"])(
             await fetch(tokenRequest(t, refreshForm(clientId, rt, res(t)))),
             t,
           );
         }
-        // KV: two settle waits per install (after the redeem, after the revoke).
       },
       kvCaseTimeout(4),
     );

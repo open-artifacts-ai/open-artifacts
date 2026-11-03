@@ -215,6 +215,21 @@ describe("create_install's auth.domainCodes (#1088)", () => {
   });
 });
 
+describe("upgrade_install's nonAdditive (MIG-2)", () => {
+  it("offers the flag and says when to use it", () => {
+    const t = byName("upgrade_install");
+    expect(t.description).toMatch(/migration_held/);
+    expect(t.description).toMatch(/explicit yes/);
+    const schema = z.toJSONSchema(toolInput(t), { io: "input" }) as unknown as {
+      properties: { nonAdditive: { description?: string } };
+    };
+    expect(schema.properties.nonAdditive.description).toMatch(/restore point/);
+    expect(
+      toolInput(t).safeParse({ id: "x", nonAdditive: false }).success,
+    ).toBe(false);
+  });
+});
+
 describe("annotations", () => {
   it("readOnlyHint iff GET; destructive for suspend, rollback, delete, purge", () => {
     for (const t of ADMIN_TOOLS) {

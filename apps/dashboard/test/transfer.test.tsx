@@ -6,7 +6,7 @@ import { type Me, R } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { qk } from "../src/api/queries";
 import { runAll } from "../src/settings/Transfer";
 import {
@@ -275,10 +275,14 @@ it("to a space: the helper says who can open them, and it posts the space", asyn
   const seen = calls("POST");
   mountHosted("/settings/members");
   const d = await openFromCard();
-  fireEvent.click(within(d).getByRole("radio", { name: /To a space/ }));
+  fireEvent.click(
+    within(d).getByRole("radio", {
+      name: "To a space · people with access to it can see them",
+    }),
+  );
   await chooseOption("Space", "Engineering");
   expect(d).toHaveTextContent(
-    "Everyone with access to Engineering can open them, by their role.",
+    "Everyone with access to Engineering can open them, by their role. These artifacts can't be moved back to anyone's Personal afterwards.",
   );
   fireEvent.click(await within(d).findByRole("button", { name: "Transfer 2" }));
   await waitFor(() =>
@@ -841,6 +845,124 @@ it("no trash: plain progress and toast", async () => {
   expect(await within(d).findByText("Transferring… 0 of 2")).toBeVisible();
   release();
   await findVisibleToast("Moved 2 artifacts to Bob Builder.");
+});
+
+describe("the dialog on what the install can do", () => {
+  const open = async () => {
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Transfer owner1@outside.example's artifacts",
+      }),
+    );
+    return screen.findByRole("dialog");
+  };
+  const notices = { selfHosted: true, guestOwners: 1 };
+
+  it("spaces off: no space option, and no spaces request", async () => {
+    const seen = calls("GET");
+    mountHosted("/", notices);
+    const d = await open();
+    await within(d).findByRole("combobox", { name: "Give them to" });
+    expect(within(d).queryByRole("radio")).toBeNull();
+    expect(seen.some((c) => c.path === R.spaces)).toBe(false);
+    expect(within(d).queryByText(/stay where they are/)).toBeNull();
+    expect(within(d).queryByText(/personal/)).toBeNull();
+    expect(
+      screen.getByRole("dialog", {
+        name: "Transfer owner1@outside.example's 1 artifact",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("spaces on: the choice stays", async () => {
+    mountHosted("/", { ...notices, spaces: true });
+    const d = await open();
+    expect(
+      await within(d).findByRole("radio", { name: /To a space/ }),
+    ).toBeTruthy();
+    expect(within(d).getByRole("radio", { name: /To a person/ })).toBeChecked();
+    expect(
+      screen.getByRole("dialog", {
+        name: "Transfer owner1@outside.example's 1 personal artifact",
+      }),
+    ).toBeTruthy();
+    expect(
+      within(d).getByText("Their space artifacts stay where they are."),
+    ).toBeTruthy();
+    fireEvent.click(within(d).getByRole("combobox", { name: "Give them to" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Bob Builder" }));
+    expect(
+      await within(d).findByText(
+        "You won't see titles or contents. Bob Builder gets them in their Personal, owner1@outside.example loses access, and people they shared with keep theirs.",
+      ),
+    ).toBeVisible();
+  });
+
+  it("to a space, for an active guest: the note says they lose access", async () => {
+    mountHosted("/", { ...notices, spaces: true });
+    const d = await open();
+    fireEvent.click(
+      await within(d).findByRole("radio", {
+        name: "To a space · people with access to it can see them",
+      }),
+    );
+    fireEvent.click(within(d).getByRole("combobox", { name: "Space" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Engineering" }));
+    expect(
+      await within(d).findByText(
+        "You won't see titles or contents. owner1@outside.example loses access. Anyone with access to the space can see them. This artifact can't be moved back to anyone's Personal afterwards.",
+      ),
+    ).toBeVisible();
+    expect(within(d).queryByText(/Everyone with access/)).toBeNull();
+  });
+
+  it("counts that fail to load say so, with Retry, never 0 artifacts", async () => {
+    let fail = true;
+    mountHosted("/", notices, undefined, [
+      http.get("*/api/v1/members/:id/transfer", () =>
+        fail
+          ? HttpResponse.json(
+              { error: { code: "not_found", message: "Not found" } },
+              { status: 404 },
+            )
+          : undefined,
+      ),
+    ]);
+    const d = await open();
+    expect(
+      await within(d).findByText("Couldn't load their artifacts."),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("dialog", {
+        name: "Transfer owner1@outside.example's artifacts",
+      }),
+    ).toBeTruthy();
+    expect(within(d).queryByText(/0 personal artifacts/)).toBeNull();
+    expect(within(d).queryByRole("button", { name: /^Transfer/ })).toBeNull();
+    fail = false;
+    fireEvent.click(within(d).getByRole("button", { name: "Retry" }));
+    expect(
+      await screen.findByRole("dialog", {
+        name: "Transfer owner1@outside.example's 1 artifact",
+      }),
+    ).toBeTruthy();
+    expect(within(d).getByRole("button", { name: "Transfer 1" })).toBeTruthy();
+  });
+});
+
+it("a departed person's note stays as approved", async () => {
+  mountHosted("/settings/members");
+  const d = await openFromCard();
+  fireEvent.click(
+    await within(d).findByRole("combobox", { name: "Give them to" }),
+  );
+  fireEvent.click(await screen.findByRole("option", { name: "Bob Builder" }));
+  expect(
+    await within(d).findByText(
+      /Bob Builder gets them in their Personal, with Carol.*'s shares kept\./,
+    ),
+  ).toBeVisible();
+  expect(within(d).queryByText(/loses access/)).toBeNull();
 });
 
 it("the Removed filter lists a removed person with nothing left, and restores them", async () => {

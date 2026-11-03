@@ -35,6 +35,12 @@ import {
 import { join } from "node:path";
 import { newId, newPat } from "@oa/shared";
 import {
+  bindingIdProblems,
+  bindingShape,
+  doNamespaceDigest,
+  plannedBindings,
+} from "./binding-ids.js";
+import {
   type AssetFile,
   assetHash,
   type Cf,
@@ -89,6 +95,7 @@ import {
   registryEntry,
   registryKey,
 } from "./names.js";
+import { nonAdditiveReason } from "./non-additive.js";
 import {
   canonicalJson,
   type DirectoryRevoke,
@@ -261,6 +268,8 @@ export interface WfpOptions {
    * CLI): the rows carry no actor, the CLI's own auditAs rows frame them.
    */
   auditActor?: string;
+  /** Tests only: the binding id audit's time limit. */
+  bindingIdAuditMs?: number;
 }
 
 /**
@@ -302,6 +311,14 @@ export const PROVISIONER_MAX_TOKEN_DAYS = 400;
 
 /** The cap on verify_clean.refused's audited reason (#1060). */
 export const VERIFY_CLEAN_REASON_MAX = 300;
+
+/** The cap on the binding id audit's list of live fields. */
+export const BINDING_SHAPE_MAX = 600;
+/** The binding id audit gives up after this, and the job carries on. */
+export const BINDING_ID_AUDIT_MS = 10_000;
+
+/** The cap on a restore point's audited list of migrations. */
+export const RESTORE_POINT_FILES_MAX = 300;
 
 /** The binding types verify_clean refuses on any install (design v7 5.2 e). */
 export const VERIFY_CLEAN_REFUSED_BINDING_TYPES = Object.freeze([
@@ -825,6 +842,7 @@ interface RollbackPlan {
   m: Meta;
   rel: Checked;
   d1Id: string;
+  kvId: string;
   /** Absent with ciOwnerToken: the selftest uses the in-memory CI token. */
   patFile?: string;
   /** R-L1: the PAT was refused; the rollback checks /healthz only. */
@@ -1853,10 +1871,12 @@ export class WfpProvisioner {
   private async verifyClean(
     script: string,
     v: VerifyCleanInput,
+    ids: { d1Id: string; kvId: string; template: Template },
   ): Promise<void> {
     await this.hold();
     const { bindings } = await this.cf.scriptSettings(this.target, script);
     const secrets = await this.cf.secretList(this.target, script);
+    await this.bindingIdAudit(v.id, script, { ...ids, bindings });
     const why = verifyCleanRefusal({ bindings, secrets }, v);
     if (why === null) return;
     // #1060: why names bindings and secrets only, never a value; capped.
@@ -1867,6 +1887,77 @@ export class WfpProvisioner {
       `install ${v.id}: verify_clean refused: ${why}`,
       "prod_dirty",
     );
+  }
+
+  /**
+   * Stage 1 of the binding id check (#1137): one audit line, whatever it
+   * finds. It fails open and is bounded: any error of its own, a slow
+   * Cloudflare call included, ends here and the job carries on.
+   *
+   * Never hold() or logged() in here: a LostLease swallowed below would clear
+   * this.held and turn off the fence for the rest of the job. The job's own
+   * next hold() finds a lost lease. Once timed out it writes nothing.
+   */
+  private async bindingIdAudit(
+    id: InstallId,
+    script: string,
+    o: {
+      d1Id: string;
+      kvId: string;
+      template: Template;
+      bindings?: readonly SettingsBinding[];
+    },
+  ): Promise<void> {
+    let expired = false;
+    const check = async () => {
+      const row = await this.platform.byId(id);
+      if (!row) throw new Error("no installs row");
+      const bindings =
+        o.bindings ??
+        (await this.cf.scriptSettings(this.target, script)).bindings;
+      // Read-only, and the real call MIG-2 needs: can this token reach it?
+      const bookmark = await this.cf.d1Bookmark(o.d1Id).then(
+        () => "ok",
+        (e: { status?: number }) =>
+          String(e?.status ?? errCode(e)).slice(0, 40),
+      );
+      const problems = bindingIdProblems(bindings, {
+        d1Id: o.d1Id,
+        kvId: o.kvId,
+        rowD1Id: row.d1_id,
+        rowKvId: row.kv_id,
+        r2: names(id, this.env).r2,
+        script,
+        planned: plannedBindings(o.template, row.rl_ns),
+      });
+      if (expired) return;
+      await this.platform.audit(id, "verify_clean.binding_ids", {
+        problems: problems.length,
+        bookmark,
+        doNs: doNamespaceDigest(bindings, sha256Hex),
+        detail: problems
+          .map((p) => `${p.binding}:${p.code}`)
+          .join(" ")
+          .slice(0, VERIFY_CLEAN_REASON_MAX),
+        shape: bindingShape(bindings).slice(0, BINDING_SHAPE_MAX),
+      });
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        check(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            expired = true;
+            reject(new Error("timed out"));
+          }, this.o.bindingIdAuditMs ?? BINDING_ID_AUDIT_MS);
+        }),
+      ]);
+    } catch (e) {
+      console.warn("provision binding_ids skipped", id, errCode(e));
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** H1: the platform D1, HOSTS, registry and directory copy come from env names, never from ids handed in. */
@@ -2218,16 +2309,20 @@ export class WfpProvisioner {
     sent ??= (await this.storedOf(row, version)).metadata as unknown as {
       bindings: VerifyCleanInput["sent"]["bindings"];
     };
-    await this.verifyClean(n.script, {
-      id,
-      sent,
-      rec,
-      broker: this.o.brokerEnabled === true,
-      codes: m.sitekey !== null,
-      testHooks,
-      lastTag: latest,
-      tag,
-    });
+    await this.verifyClean(
+      n.script,
+      {
+        id,
+        sent,
+        rec,
+        broker: this.o.brokerEnabled === true,
+        codes: m.sitekey !== null,
+        testHooks,
+        lastTag: latest,
+        tag,
+      },
+      { d1Id, kvId, template: rel.template },
+    );
 
     // f, g: with a directFetch, health and the selftest reach the script
     // before HOSTS routes it; the public route (the CLI) needs HOSTS first.
@@ -3179,6 +3274,51 @@ export class WfpProvisioner {
     );
   }
 
+  /**
+   * MIG-2: this install's pending migrations, not the release's, are what an
+   * upgrade would run. One that can lose data needs o.nonAdditive, which a
+   * fleet job never has, and then a restore point: no bookmark, no upgrade.
+   */
+  private async migrationHold(
+    id: InstallId,
+    rel: Checked,
+    d1Id: string,
+    o: { nonAdditive?: boolean },
+  ): Promise<{ bookmark: string; files: string } | null> {
+    const r = await this.cf.d1Query(d1Id, "SELECT name FROM d1_migrations");
+    const done = new Set((r[0]?.results ?? []).map((x) => String(x.name)));
+    const held = rel.migrations.flatMap((f) => {
+      if (done.has(f.name)) return [];
+      const why = nonAdditiveReason(new TextDecoder().decode(f.bytes));
+      return why ? [`${f.name} (${why})`] : [];
+    });
+    if (held.length === 0) return null;
+    const files = held.join(", ");
+    if (o.nonAdditive !== true) {
+      await this.platform.audit(id, "upgrade.held", {
+        to: rel.rec.version,
+        migrations: files.slice(0, RESTORE_POINT_FILES_MAX),
+      });
+      throw new ProvisionRefused(
+        `install ${id}: held, a pending migration can lose data: ${files}`,
+        "migration_held",
+      );
+    }
+    try {
+      return { bookmark: await this.cf.d1Bookmark(d1Id), files };
+    } catch (e) {
+      await this.platform.audit(id, "upgrade.held", {
+        to: rel.rec.version,
+        migrations: files.slice(0, RESTORE_POINT_FILES_MAX),
+        reason: "no_restore_point",
+      });
+      throw new ProvisionRefused(
+        `install ${id}: no restore point, so the migration wasn't run (${errCode(e)})`,
+        "restore_point_failed",
+      );
+    }
+  }
+
   /** L5: the DO rule, re-run on the probed live tag. */
   private doRule(t: Template): (live: string | null) => void {
     return (live) => {
@@ -3195,11 +3335,19 @@ export class WfpProvisioner {
    * secret value) -> /healthz and the read-only MCP selftest -> active. A
    * failed check rolls back, unless the DO tag moved (forward-fix only).
    */
-  async upgrade(id: InstallId, toVersion: string): Promise<UpgradeResult> {
-    return this.guarded(() => this.runUpgrade(id, toVersion));
+  async upgrade(
+    id: InstallId,
+    toVersion: string,
+    o: { nonAdditive?: boolean } = {},
+  ): Promise<UpgradeResult> {
+    return this.guarded(() => this.runUpgrade(id, toVersion, o));
   }
 
-  private async runUpgrade(id: InstallId, to: string): Promise<UpgradeResult> {
+  private async runUpgrade(
+    id: InstallId,
+    to: string,
+    o: { nonAdditive?: boolean },
+  ): Promise<UpgradeResult> {
     const row = await this.openInstall(id, ["active"]);
     this.checkDirect(row.app_host, row.id);
     const from = row.version;
@@ -3235,6 +3383,7 @@ export class WfpProvisioner {
     this.doRule(rel.template)(row.do_migration_tag);
     const { d1Id, kvId } = await this.liveInstall(row, m);
     await this.checkMigrationOrder(rel, d1Id);
+    const restorePoint = await this.migrationHold(id, rel, d1Id, o);
     const own = await this.ownerToken(row, m.appHost);
     const n = names(id, this.env);
     this.metadata(id, m, rel, {
@@ -3260,6 +3409,11 @@ export class WfpProvisioner {
         await this.platform.raiseFloorSeq(rel.floor.seq);
       }
       await this.logged("upgrade.start", { from, to });
+      if (restorePoint)
+        await this.logged("upgrade.restore_point", {
+          bookmark: restorePoint.bookmark,
+          migrations: restorePoint.files.slice(0, RESTORE_POINT_FILES_MAX),
+        });
       await this.hold();
       await this.migrate(rel.rec, d1Id, n.d1);
       const out: UploadOut = { reached: null, maybe: false };
@@ -3298,16 +3452,20 @@ export class WfpProvisioner {
       try {
         // 5.4: verify_clean right after the upload, before health.
         await this.step("verify_clean");
-        await this.verifyClean(n.script, {
-          id,
-          sent,
-          rec: rel.rec,
-          broker: row.broker_kid !== null,
-          codes: m.sitekey !== null,
-          testHooks: m.testHooks,
-          lastTag: tagsOf(rel.template).at(-1) ?? null,
-          tag: reached,
-        });
+        await this.verifyClean(
+          n.script,
+          {
+            id,
+            sent,
+            rec: rel.rec,
+            broker: row.broker_kid !== null,
+            codes: m.sitekey !== null,
+            testHooks: m.testHooks,
+            lastTag: tagsOf(rel.template).at(-1) ?? null,
+            tag: reached,
+          },
+          { d1Id, kvId, template: rel.template },
+        );
         await this.step("health");
         await this.health(
           id,
@@ -3546,6 +3704,7 @@ export class WfpProvisioner {
       m,
       rel,
       d1Id,
+      kvId,
       ...(tok.patFile === undefined ? {} : { patFile: tok.patFile }),
       ...(tok.refused === undefined ? {} : { refused: tok.refused }),
       raiseFloor,
@@ -3619,16 +3778,20 @@ export class WfpProvisioner {
       await this.write({ version: to, previous_version: from });
       await this.settleCutOrDefer(cut, p.vars, p.d1Id, n.d1, to);
       if (report) await this.step("verify_clean");
-      await this.verifyClean(n.script, {
-        id,
-        sent: meta,
-        rec: rel.rec,
-        broker: row.broker_kid !== null,
-        codes: p.m.sitekey !== null,
-        testHooks: p.m.testHooks,
-        lastTag: tagsOf(rel.template).at(-1) ?? null,
-        tag: row.do_migration_tag,
-      });
+      await this.verifyClean(
+        n.script,
+        {
+          id,
+          sent: meta,
+          rec: rel.rec,
+          broker: row.broker_kid !== null,
+          codes: p.m.sitekey !== null,
+          testHooks: p.m.testHooks,
+          lastTag: tagsOf(rel.template).at(-1) ?? null,
+          tag: row.do_migration_tag,
+        },
+        { d1Id: p.d1Id, kvId: p.kvId, template: rel.template },
+      );
       if (report) await this.step("health");
       await this.health(
         id,
@@ -3795,6 +3958,12 @@ export class WfpProvisioner {
         });
         uploaded = true;
         await this.write({ vars: canonicalJson(vars) });
+        // Stage 2 runs the whole of verify_clean here (#1137).
+        await this.bindingIdAudit(id, n.script, {
+          d1Id,
+          kvId,
+          template: rel.template,
+        });
         // H-RD: the registry copies follow the live vars, in this lease.
         if (domains !== null) await this.syncRegistry(id, m.appHost, domains);
         await this.hold();

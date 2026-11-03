@@ -14,6 +14,7 @@ import {
   type TestAuditResult,
   TestCodeCapsResetInputSchema,
   TestDirectoryGroupsInputSchema,
+  TestDirectoryHeldInputSchema,
   type TestHookRefusal,
   type TestOtpOutcome,
   TestSessionInputSchema,
@@ -34,6 +35,7 @@ import { oauthEnv } from "../mcp/oauth-store.js";
 import { mcpResource } from "../mcp/server.js";
 import type { AppType } from "../routes/index.js";
 import { revokeUserLive } from "../runtime/revoke.js";
+import { SYNC_DO_NAME } from "../services/directory.js";
 import { getUserWithEpoch, insertUser, toMember } from "../services/users.js";
 import { b64urlEncode, sameKey } from "../util/crypto.js";
 
@@ -209,6 +211,7 @@ type HookName =
   | "audit"
   | "code_caps_reset"
   | "directory_groups"
+  | "directory_held"
   | "unknown";
 type Outcome = "ok" | "denied" | "refused" | "none" | "error";
 
@@ -227,7 +230,9 @@ const hookName = (path: string): HookName =>
             ? "code_caps_reset"
             : path === TEST_HOOKS.directoryGroups
               ? "directory_groups"
-              : "unknown";
+              : path === TEST_HOOKS.directoryHeld
+                ? "directory_held"
+                : "unknown";
 
 // directory_groups seed: `test-` ids with an email exactly under TEST_DOMAIN
 // only, enforced here in SQL too (no LIKE wildcards), so a handler slip can't
@@ -256,6 +261,20 @@ async function seedDirectoryGroups(
   );
   return res.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
 }
+
+// directory_held: only a suite group, i.e. a `test-` id whose
+// directory_groups row carries exactly this TEST_DOMAIN email (the
+// directory-groups hook seeds it). Enforced here in SQL too (no LIKE
+// wildcards). ?1 id, ?2 email, ?3 domain.
+const SUITE_GROUP = `select 1 from directory_groups
+  where group_id = ?1 and email = ?2
+    and substr(?1, 1, 5) = 'test-'
+    and substr(?2, length(?2) - length(?3)) = '@' || ?3`;
+
+const suiteGroup = async (env: Env, groupId: string, email: string) =>
+  (await env.DB.prepare(SUITE_GROUP)
+    .bind(groupId, email, env.TEST_DOMAIN ?? "")
+    .first()) !== null;
 
 // The caller's own per-IP code buckets (auth/codes.ts takeRequestSlot and
 // verify), by its ipKey: exactly these two keys, never a prefix match, so no
@@ -653,6 +672,34 @@ export function mountTestHooks(app: AppType): void {
       );
       await audit(env, hook, ip, "ok");
       return c.json({ seeded });
+    }
+
+    if (hook === "directory_held") {
+      const input = TestDirectoryHeldInputSchema.safeParse(body);
+      const email = input.success ? normalizeEmail(input.data.email) : null;
+      const ns = env.DIRECTORY_SYNC;
+      if (
+        !input.success ||
+        !email ||
+        !inTestDomain(env, email) ||
+        !ns ||
+        !(await suiteGroup(env, input.data.groupId, email))
+      ) {
+        await audit(env, hook, ip, "refused", email ? { email } : {});
+        return refused("bad_input");
+      }
+      // A throw is a write the D1 held list never showed (testHold's
+      // confirm): an error, never a held/released answer.
+      const held = await ns
+        .get(ns.idFromName(SYNC_DO_NAME))
+        .testHold(input.data.groupId, email, input.data.held)
+        .catch(() => null);
+      if (held === null) {
+        await audit(env, hook, ip, "error", { email });
+        throw new ApiError("internal", "directory-held unavailable");
+      }
+      await audit(env, hook, ip, "ok", { email });
+      return c.json({ held });
     }
 
     if (hook === "audit") {

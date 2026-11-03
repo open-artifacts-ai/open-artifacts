@@ -114,7 +114,7 @@
     },
     {
       "file": "live/credentials.test.ts",
-      "name": "credentials > OAuth endpoints > A revoked OAuth refresh token is refused at once, on A and on B"
+      "name": "credentials > OAuth endpoints > A revoked OAuth refresh token is refused within KV's cache window, on A and on B"
     },
     {
       "file": "live/credentials.test.ts",
@@ -1211,6 +1211,10 @@
     {
       "file": "live/provisioning.test.ts",
       "name": "provisioning > P25: GET /auth/start one at a time (up to 30): a 303 to /sign-in?error=rate_limited, with no flow cookie"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P50: rl-snz-<run> (business tier, Google sync, domain codes): the org owner snoozes a held sweep (off heldSweeps, snoozedUntil set), cancels it (counts again), both audited; then deleted (#1078)"
     }
   ],
   "notes": [
