@@ -7,6 +7,7 @@ import {
 import type { Page } from "@playwright/test";
 import {
   A,
+  anon,
   api,
   cleanup,
   expect,
@@ -199,11 +200,10 @@ test("public links off in t19-exec: Public is disabled, and anonymous /full gets
   expect(await refusal(pub, 403)).toBe("public_links_off");
 
   // Nobody signed in: the API has nothing, and /full shows nothing of it.
-  const anon = await fetch(`${A.app}${R.artifact(id)}`, {
+  const nobody = await anon(R.artifact(id), {
     headers: { "x-oa-request": "1" },
-    signal: AbortSignal.timeout(30_000),
   });
-  expect(anon.status).toBe(404);
+  expect(nobody.status).toBe(404);
   const stranger = await (
     await browser.newContext({ baseURL: A.app })
   ).newPage();
