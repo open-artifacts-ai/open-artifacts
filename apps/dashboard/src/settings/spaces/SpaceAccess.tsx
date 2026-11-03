@@ -27,6 +27,7 @@ import {
 } from "../../api/queries";
 import { LoadError } from "../../layout/LoadError";
 import { AppLink } from "../../library/AppLink";
+import { ConfirmDialog } from "../ConfirmDialog";
 import { GroupPicker } from "../GroupPicker";
 import { errorText, muted, SettingsCard } from "../ui";
 
@@ -97,6 +98,49 @@ export function RoleSelect({
         ))}
       </SelectContent>
     </Select>
+  );
+}
+
+/**
+ * What removing a group's mapping costs (Design, #1190). `space` null is Every
+ * space: there's no one space to name, so it says every shared space.
+ */
+export const removeMappingCopy = (g: GroupMapping, space: string | null) => {
+  const role = ROLE_LABEL[g.role];
+  const where = space ? `on ${space}` : "in every shared space";
+  const who =
+    g.memberCount === null
+      ? `People in ${g.email} lose`
+      : `${g.memberCount} ${g.memberCount === 1 ? "person loses" : "people lose"}`;
+  return {
+    title: `Remove ${g.email} from ${space ?? "every space"}?`,
+    body: `${who} ${role} ${where} within a minute. People with access through another group keep it. Their artifacts stay in ${space ? "the space" : "their spaces"}.`,
+  };
+};
+
+/** The Remove confirm for a group's mapping, here or in Every space. */
+export function RemoveMapping({
+  mapping,
+  space,
+  onClose,
+  onConfirm,
+}: {
+  mapping: GroupMapping;
+  space: string | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const copy = removeMappingCopy(mapping, space);
+  return (
+    <ConfirmDialog
+      open
+      onClose={onClose}
+      title={copy.title}
+      body={<p>{copy.body}</p>}
+      confirm="Remove"
+      danger
+      onConfirm={onConfirm}
+    />
   );
 }
 
@@ -209,6 +253,7 @@ export function SpaceAccess({
   const patch = usePatchSpace(space.id);
   const qc = useQueryClient();
   const [pending, setPending] = useState<Record<string, SpaceRole>>({});
+  const [removing, setRemoving] = useState<GroupMapping | null>(null);
   const [problem, setProblem] = useState<ReturnType<
     typeof mappingProblem
   > | null>(null);
@@ -306,9 +351,7 @@ export function SpaceAccess({
                         onClick={() => {
                           setProblem(null);
                           setRowProblem(null);
-                          remove.mutate(g.groupId, {
-                            onError: (e) => refused(e, g.groupId),
-                          });
+                          setRemoving(g);
                         }}
                       >
                         Remove
@@ -399,14 +442,30 @@ export function SpaceAccess({
         </p>
       )}
       <Problem problem={problem} />
+      {removing && (
+        <RemoveMapping
+          mapping={removing}
+          space={space.name}
+          onClose={() => setRemoving(null)}
+          onConfirm={() => {
+            const g = removing;
+            setRemoving(null);
+            remove.mutate(g.groupId, {
+              onError: (e) => refused(e, g.groupId),
+            });
+          }}
+        />
+      )}
       <p className={muted}>
-        {!syncOn
-          ? "Group sync is off, so mappings can't change. Edit people manually under People."
-          : admin
-            ? "Someone in more than one group gets the highest role. Changes apply within a minute and are recorded in the audit log."
-            : canMap
-              ? "You can give a group Viewer or Editor. Only an admin can make a group a manager. Changes are recorded in the audit log."
-              : "An admin has turned off group mapping by space managers. Ask an admin to add or change groups."}
+        {frozen
+          ? "Group sync is paused, so groups can't change here. Each space kept the people it had at the last sync. You can still add and remove people under People."
+          : !syncOn
+            ? "Group sync is off, so mappings can't change. Edit people manually under People."
+            : admin
+              ? "Someone in more than one group gets the highest role. Changes apply within a minute and are recorded in the audit log."
+              : canMap
+                ? "You can give a group Viewer or Editor. Only an admin can make a group a manager. Changes are recorded in the audit log."
+                : "An admin has turned off group mapping by space managers. Ask an admin to add or change groups."}
       </p>
     </SettingsCard>
   );

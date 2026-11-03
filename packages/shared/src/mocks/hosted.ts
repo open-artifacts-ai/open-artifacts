@@ -172,6 +172,10 @@ export type HostedMockOptions = {
    * `to: space` for any id; `to: user` still works.
    */
   spaces?: boolean;
+  /** No shared spaces at all: an install that hasn't set any up (#1190). */
+  noSharedSpaces?: boolean;
+  /** The caller is also an editor in Clients, so Engineering's artifact can move there (#1190). */
+  moveTarget?: boolean;
   /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on for every install). */
   features?: FeatureFlag[];
 };
@@ -389,6 +393,12 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   shared(ENG, "Engineering", { allMembersRole: "viewer" });
   shared(EXEC, "Exec", { publicLinks: false });
   shared(CLIENTS, "Clients");
+  if (o.noSharedSpaces)
+    spaces.splice(
+      0,
+      spaces.length,
+      ...spaces.filter((s) => s.kind !== "shared"),
+    );
   const ada = members[0] as Member;
   const bob = members[1] as Member;
   const G = {
@@ -434,7 +444,12 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         },
       ],
     ],
-    [CLIENTS, []],
+    [
+      CLIENTS,
+      o.moveTarget
+        ? [{ userId: ada.id, manualRole: "editor", syncRole: null, groups: [] }]
+        : [],
+    ],
   ]);
   const mappings = new Map<string, GroupMapping[]>([
     [
@@ -1013,7 +1028,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   // Seed: "Meeting notes" in Engineering, where the caller is manager.
   // (refresh recomputes every shared-space level per caller: sharedLevel.)
   const notes = artifacts.find((a) => a.title === "Meeting notes");
-  if (notes) {
+  if (notes && findSpace(ENG)) {
     notes.space = ref(findSpace(ENG) as SpaceRow);
     notes.access = "manager";
   }

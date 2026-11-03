@@ -53,13 +53,16 @@ export function MoveDialog({
     .flatMap((p) => p.items)
     .find((s) => s.id === to)?.memberCount;
 
+  /** "1 person in Clients gets", "3 people in Clients get", "People in Clients get". */
+  const gain = (name: string) =>
+    count === undefined
+      ? `People in ${name} get`
+      : `${count} ${count === 1 ? "person" : "people"} in ${name} ${count === 1 ? "gets" : "get"}`;
   const impact = !target
     ? null
     : fromPersonal
-      ? count !== undefined
-        ? `${target.name}'s ${count} ${count === 1 ? "member gets" : "members get"} access by their role. You can't move it back to Personal.`
-        : `People in ${target.name} get access by their role. You can't move it back to Personal.`
-      : `${target.name} members get access. People only in ${a.space?.name} lose it.`;
+      ? `${gain(target.name)} access by their role. You can't move it back to Personal.`
+      : `${gain(target.name)} access. People only in ${a.space?.name} lose it.`;
 
   const run = () => {
     if (!target) return;
@@ -127,7 +130,22 @@ export function MoveDialog({
                 </span>
               </label>
             ))}
+            {!fromPersonal && (
+              // Design (#1190): shown, never offered.
+              <label className="flex items-center gap-[var(--oa-space-2)] rounded-md px-[var(--oa-space-2)] py-[var(--oa-space-2)] opacity-60">
+                <input type="radio" name="oa-move-to" value="" disabled />
+                <span className="flex-1 font-medium">Personal</span>
+                <span className="text-[length:var(--oa-text-xs)] text-muted-foreground">
+                  Not allowed
+                </span>
+              </label>
+            )}
           </fieldset>
+          {!fromPersonal && (
+            <p className="m-0 text-[length:var(--oa-text-xs)] text-muted-foreground">
+              Space artifacts can't move back to Personal.
+            </p>
+          )}
           {impact && (
             <p className="m-0 text-[length:var(--oa-text-sm)] text-muted-foreground">
               {impact}
