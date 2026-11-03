@@ -1159,10 +1159,6 @@
     {
       "file": "live/provisioning.test.ts",
       "name": "provisioning > P50: rl-snz-<run> (business tier, Google sync, domain codes): the org owner snoozes a held sweep (off heldSweeps, snoozedUntil set), cancels it (counts again), both audited; then deleted (#1078)"
-    },
-    {
-      "file": "live/edge.test.ts",
-      "name": "scheduler > no /__oa/nightly route on either install"
     }
   ],
   "notes": [
