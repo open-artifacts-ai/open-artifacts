@@ -363,6 +363,8 @@ describe("redline-staging.yml", () => {
       t19.run.indexOf("playwright test -c playwright.staging.config.ts"),
     );
     expect(t19.env).not.toHaveProperty("T19_EXPECT_VERSION");
+    // leo's pin stays unset in CI until #955 keeps leo current (#1251).
+    expect(text).not.toContain("T19_EXPECT_LEO_VERSION");
     expect(t19.run).not.toContain("No version pin");
   });
 
