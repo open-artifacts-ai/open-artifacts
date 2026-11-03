@@ -253,6 +253,7 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
 /** Content host routes: the handlers verify signed tokens or public visibility. */
 export const CONTENT_POLICY: Readonly<Record<string, Policy>> = {
   "GET /robots.txt": { public: "robots" },
+  "GET /llms.txt": { public: "guide" }, // MUTATION S2
   "ALL /robots.txt": { public: "405" },
   "GET /_oa/*": { public: "render bundles" },
   "GET /*": { signed: "/c/ signed token or /p/ public visibility" },
