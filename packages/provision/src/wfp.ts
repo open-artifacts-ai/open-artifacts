@@ -1903,6 +1903,15 @@ export class WfpProvisioner {
         fetched ??
           this.cf.scriptSettings(this.target, script).then((s) => s.bindings),
       ]);
+      // Read-only, and the real call MIG-2 needs: can this token reach it?
+      const bookmark = await (d1Id === null
+        ? Promise.reject(new Error("no D1"))
+        : this.cf.d1Bookmark(d1Id)
+      ).then(
+        () => "ok",
+        (e: { status?: number }) =>
+          String(e?.status ?? errCode(e)).slice(0, 40),
+      );
       const problems = bindingIdProblems(bindings, {
         d1Id,
         kvId,
@@ -1917,6 +1926,7 @@ export class WfpProvisioner {
       });
       await this.logged("verify_clean.binding_ids", {
         problems: problems.length,
+        bookmark,
         detail: problems
           .map((p) => `${p.binding}:${p.code}`)
           .join(" ")
