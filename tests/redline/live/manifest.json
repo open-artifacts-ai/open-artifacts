@@ -1002,6 +1002,10 @@
     },
     {
       "file": "live/live.test.ts",
+      "name": "a public link on B > serves while public, and is refused as soon as the artifact is private"
+    },
+    {
+      "file": "live/live.test.ts",
       "name": "anonymous writes on a B public artifact > A's PAT sent along does not change the actor to A's user"
     },
     {
