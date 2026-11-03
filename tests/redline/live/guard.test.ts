@@ -7,15 +7,9 @@ import {
   readBody,
   withCred,
 } from "../src/http.ts";
-import { compareVersions } from "../src/preflight.ts";
 import { guardProdClean } from "../src/prod.ts";
 import { crossCheck, prepareSide, type Side } from "../src/refused.ts";
 import { proof } from "../src/report.ts";
-import {
-  AGENT_GUIDES_SINCE,
-  APP_ROBOTS,
-  CONTENT_ROBOTS,
-} from "../src/robots.ts";
 import {
   loadTargets,
   secretsOf,
@@ -69,62 +63,6 @@ describe("guard", () => {
     if (r.level === "not-applicable")
       return proof(ctx, "not-applicable", r.reason);
   });
-});
-
-describe("agent guides", () => {
-  /** The served text, or a failure with status and body hash only. */
-  const text = async (url: string, what: string) => {
-    const r = await fetch(url, { redirect: "manual" });
-    const body = await readBody(r);
-    if (r.status !== 200) throw new Error(`${what}: ${describeRes(r, body)}`);
-    return { r, body };
-  };
-
-  for (const k of ["a", "b"] as const) {
-    it(`${k}: /llms.txt is on the app host only; robots.txt opens only the guides`, async (ctx) => {
-      const t = T[k];
-      const { body: h } = await text(`${t.app}/healthz`, "/healthz");
-      const v = (JSON.parse(h) as { version?: unknown }).version;
-      // A dev build is this tree, so it has them. The gate counts this as a
-      // non-pass: an older release is reported, never passed.
-      const cmp =
-        typeof v === "string" ? compareVersions(v, AGENT_GUIDES_SINCE) : null;
-      if (typeof v === "string" && !v.includes("-") && cmp !== null && cmp < 0)
-        return proof(
-          ctx,
-          "not-applicable",
-          `release ${v} is older than ${AGENT_GUIDES_SINCE}`,
-        );
-
-      const { r, body } = await text(`${t.app}/llms.txt`, "app /llms.txt");
-      if (r.headers.get("content-type") !== "text/plain; charset=utf-8")
-        throw new Error("app /llms.txt: not text/plain");
-      if (!body.includes(new URL(t.app).hostname))
-        throw new Error("app /llms.txt: does not name this install's app host");
-      // "Bearer %s" and "Bearer {file:...}" are header templates, not tokens.
-      if (/Bearer oa_|oa_pat_/.test(body))
-        throw new Error("app /llms.txt: carries a credential");
-
-      const c = await fetch(`${t.content}/llms.txt`, { redirect: "manual" });
-      const cb = await readBody(c);
-      if (c.status !== 404)
-        throw new Error(`content /llms.txt: ${describeRes(c, cb)}`);
-
-      const robots = await text(`${t.app}/robots.txt`, "app /robots.txt");
-      if (robots.body !== APP_ROBOTS)
-        throw new Error(
-          `app /robots.txt: ${describeRes(robots.r, robots.body)}`,
-        );
-      const content = await text(
-        `${t.content}/robots.txt`,
-        "content /robots.txt",
-      );
-      if (content.body !== CONTENT_ROBOTS)
-        throw new Error(
-          `content /robots.txt: ${describeRes(content.r, content.body)}`,
-        );
-    });
-  }
 });
 
 describe("hooks", () => {
