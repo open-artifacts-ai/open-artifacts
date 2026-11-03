@@ -1,7 +1,11 @@
 // #1008 PR1: the update kind's two operations on fake-cf, with a fake of the
-// install's /healthz and copy route written from the issue's route contract
-// (not from apps/server), so a wrong reading of it fails here and on staging,
-// never silently in both. Each install is made by ProvisionInstall first.
+// install's /healthz and copy route, checked against apps/server's
+// mcp/oauth-copy.ts: off or a wrong key is a reasonless 404 (the rate limit
+// too), `[]` is 404 bad_input, a page is the counts plus `backfilled`, and
+// not_dual and markers are 404 reasons once the key verifies. Before it, a
+// markers refusal is the 503 the respond hook injects here. The route itself
+// runs in oauth-store-real.test.ts. Each install is made by ProvisionInstall
+// first.
 import { NAMESPACES } from "@oa/provision";
 import { OAUTH_MODE_LIVE_ACTION } from "@oa/shared/provisioning";
 import { beforeEach, describe, expect, it, vi } from "vitest";
