@@ -9,7 +9,7 @@
   "scripts": {
     "test": "pnpm --filter @oa/provision build && vitest run && vitest run -c vitest.node.config.ts",
     "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit",
-    "test:e2e": "playwright test"
+    "test:e2e": "pnpm --filter @oa/provision build && playwright test"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
