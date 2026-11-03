@@ -1,5 +1,6 @@
 import { R } from "@oa/shared";
 import type { Page, WebSocket } from "@playwright/test";
+import { NOTE_MS } from "../../src/viewer/LiveChip";
 import {
   APP,
   artifactFrame,
@@ -43,6 +44,68 @@ const helloOn = (page: Page, id: string) =>
 const swapped = (page: Page) =>
   expect(page.locator("iframe.oa-vframe")).toHaveCount(1, { timeout: 15_000 });
 
+/**
+ * "Updated to vN" is on screen for NOTE_MS only, too short to catch by polling
+ * on a loaded CI runner: twice in WebKit (#1230) v3 swapped in and kept row 52,
+ * yet an 8 s wait never saw its note. The page records each note itself
+ * instead: when it showed, visible, and when it left. Call it before the goto.
+ */
+const recordNotes = (page: Page) =>
+  page.addInitScript(() => {
+    // The shell only: the artifact's own frame stays as it is.
+    if (window !== window.top) return;
+    const w = window as unknown as {
+      __oaNotes: Record<number, { shown: number; gone?: number }>;
+    };
+    w.__oaNotes = {};
+    const look = () => {
+      const now = performance.now();
+      const on = new Set<number>();
+      for (const el of document.querySelectorAll(".oa-lchip")) {
+        const m = /Updated to v(\d+)/.exec(el.textContent ?? "");
+        if (m && el.getClientRects().length > 0) on.add(Number(m[1]));
+      }
+      for (const v of on) w.__oaNotes[v] ??= { shown: now };
+      for (const [v, n] of Object.entries(w.__oaNotes))
+        if (!on.has(Number(v)) && n.gone === undefined) n.gone = now;
+    };
+    addEventListener("DOMContentLoaded", () =>
+      new MutationObserver(look).observe(document.body, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      }),
+    );
+  });
+const note = (page: Page, n: number) =>
+  page.evaluate(
+    (v) =>
+      (
+        window as unknown as {
+          __oaNotes: Record<number, { shown: number; gone?: number }>;
+        }
+      ).__oaNotes[v] ?? null,
+    n,
+  );
+/** The swap to v<n> is done: shown, alone, announced by its note. */
+const swappedTo = async (page: Page, n: number) => {
+  // A generous deadline, not the 2 s target: CI runners are slower.
+  await expect(
+    page.getByRole("button", { name: `Version: v${n} · Current` }),
+  ).toBeVisible({ timeout: 15_000 });
+  await swapped(page);
+  await expect(artifactFrame(page).locator("#v")).toHaveText(`version ${n}`);
+  expect(await note(page, n), `"Updated to v${n}" was shown`).not.toBeNull();
+};
+/** v<n>'s note left on its own, after its full NOTE_MS. */
+const noteExpired = async (page: Page, n: number) => {
+  await expect
+    .poll(async () => (await note(page, n))?.gone, { timeout: 15_000 })
+    .toBeDefined();
+  const t = await note(page, n);
+  expect(t && (t.gone ?? 0) - t.shown).toBeGreaterThanOrEqual(NOTE_MS);
+};
+
 const publishVersion = (pat: string, id: string, n: number) =>
   fetch(`${APP}${R.versions(id)}`, {
     method: "POST",
@@ -65,19 +128,12 @@ test("publish v2 while v1 is open: it swaps in within about 2 s", async ({
     content: page1(1),
   });
   const hello = helloOn(page, id);
+  await recordNotes(page);
   await page.goto(`/a/${id}`);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
   await hello;
   await publishVersion(member.pat, id, 2);
-  // A generous deadline, not the 2 s target: CI runners are slower.
-  await expect(page.getByText("Updated to v2")).toBeVisible({
-    timeout: 15_000,
-  });
-  await swapped(page);
-  await expect(artifactFrame(page).locator("#v")).toHaveText("version 2");
-  await expect(
-    page.getByRole("button", { name: "Version: v2 · Current" }),
-  ).toBeVisible();
+  await swappedTo(page, 2);
 });
 
 test("touched (typed in the frame): the chip, and the typing survives", async ({
@@ -157,6 +213,7 @@ test("scrolled, then a new version: it swaps and keeps the place", async ({
     content: LONG(1),
   });
   const hello = helloOn(page, id);
+  await recordNotes(page);
   await page.goto(`/a/${id}`);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
   await hello;
@@ -169,10 +226,7 @@ test("scrolled, then a new version: it swaps and keeps the place", async ({
   const before = await settledScroll(page);
   await page.waitForTimeout(400); // the throttled report reaches the shell
   await publishLong(member.pat, id, 2);
-  await expect(page.getByText("Updated to v2")).toBeVisible({
-    timeout: 15_000,
-  });
-  await swapped(page);
+  await swappedTo(page, 2);
   await expect(artifactFrame(page).locator("#p0")).toHaveText(
     "paragraph 0 of version 2",
   );
@@ -193,23 +247,19 @@ test("the side panel open: a new version still swaps", async ({
     content: LONG(1),
   });
   const hello = helloOn(page, id);
+  await recordNotes(page);
   await page.goto(`/a/${id}?panel=open&tab=versions`);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
   await hello;
   await publishLong(member.pat, id, 2);
-  await expect(page.getByText("Updated to v2")).toBeVisible({
-    timeout: 15_000,
-  });
-  await swapped(page);
-  await expect(artifactFrame(page).locator("#v")).toHaveText("version 2");
+  await swappedTo(page, 2);
   await expect(
     page.getByRole("complementary", { name: "Side panel" }),
   ).toBeVisible();
-  // Design: a brief note, no Undo; about 3 s later the chip is back to normal.
+  // Design: a brief note, no Undo; NOTE_MS later the chip is back to normal.
   await expect(page.getByRole("button", { name: /^Undo/ })).toHaveCount(0);
-  await expect(page.getByText("Updated to v2")).toHaveCount(0, {
-    timeout: 5_000,
-  });
+  await noteExpired(page, 2);
+  await expect(page.getByText("Updated to v2")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Version: v2 · Current" }),
   ).toBeVisible();
@@ -279,15 +329,6 @@ const publishRows = (pat: string, id: string, n: number, rows = 80) =>
   }).then((r) => {
     expect(r.ok).toBe(true);
   });
-/** The swap to v<n> has settled: announced, and the old frame faded out. */
-const settled = async (page: import("@playwright/test").Page, n: number) => {
-  await expect(page.getByText(`Updated to v${n}`)).toBeVisible({
-    timeout: 8_000,
-  });
-  await expect(page.locator("iframe.oa-vframe")).toHaveCount(1, {
-    timeout: 5_000,
-  });
-};
 
 test("row 52, v2 swaps in, then the panel opens and v3 lands on row 52 too", async ({
   page,
@@ -299,6 +340,7 @@ test("row 52, v2 swaps in, then the panel opens and v3 lands on row 52 too", asy
     content: ROWS(1),
   });
   const hello = helloOn(page, id);
+  await recordNotes(page);
   await page.goto(`/a/${id}`);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
   await hello;
@@ -308,7 +350,7 @@ test("row 52, v2 swaps in, then the panel opens and v3 lands on row 52 too", asy
     .evaluate(() => window.scrollTo(0, 60 + 52 * 60));
   await page.waitForTimeout(400);
   await publishRows(member.pat, id, 2);
-  await settled(page, 2);
+  await swappedTo(page, 2);
   await expect.poll(() => frameScroll(page)).toBe(60 + 52 * 60);
   await page.getByRole("button", { name: /^Version: v2/ }).click();
   await expect(
@@ -316,8 +358,9 @@ test("row 52, v2 swaps in, then the panel opens and v3 lands on row 52 too", asy
   ).toBeVisible();
   await page.waitForTimeout(400);
   await publishRows(member.pat, id, 3);
-  await settled(page, 3);
+  await swappedTo(page, 3);
   await expect.poll(() => frameScroll(page)).toBe(60 + 52 * 60);
+  await noteExpired(page, 3);
 });
 
 test("a new artifact's first load starts at the top", async ({
@@ -331,6 +374,7 @@ test("a new artifact's first load starts at the top", async ({
     content: ROWS(1),
   });
   const hello = helloOn(page, a);
+  await recordNotes(page);
   await page.goto(`/a/${a}`);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
   await hello;
@@ -339,7 +383,7 @@ test("a new artifact's first load starts at the top", async ({
     .evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await page.waitForTimeout(400);
   await publishRows(member.pat, a, 2);
-  await settled(page, 2);
+  await swappedTo(page, 2);
   const { id: b } = await publishViaApi(member.pat, {
     title: `Rows B ${uniq()}`,
     format: "html",
