@@ -5,11 +5,25 @@
 export const PROP_SEED = 0x4f41_0401;
 export const PROP_CASES = 1000;
 /**
- * Per-test timeout for a PROP_CASES loop. Each case is CPU-bound (two sha256
- * lookups, no I/O wait): about 1.2 s locally, over vitest's 5 s default on a
- * busy CI runner. 60 s leaves 50x headroom without hiding a hang.
+ * Worst measured wall time of one case of the costliest PROP_CASES loop (the
+ * bearer property in tokens.test.ts), on a loaded host: the provisioning
+ * package run with its files in parallel plus 4 CPU hogs, load average 23-63
+ * on 24 cores, 20 runs of 10.1-27.5 s per 1000 cases. Two real local-D1
+ * queries per case dominate (7-12 ms each under that load); its four SHA-256
+ * digests cost about 0.02 ms each. The mint property makes no real D1 query
+ * per case, so this bounds it too.
  */
-export const PROP_TIMEOUT_MS = 60_000;
+export const PROP_CASE_MS = 28;
+/**
+ * Slack over PROP_CASE_MS for a runner slower than the worst one measured;
+ * the measured runs already spread 2.7x.
+ */
+export const PROP_HEADROOM = 3;
+/**
+ * Per-test timeout for a PROP_CASES loop, from its own work: cases x worst
+ * per-case cost x headroom (84 s). A hang still fails in under 2 minutes.
+ */
+export const PROP_TIMEOUT_MS = PROP_CASES * PROP_CASE_MS * PROP_HEADROOM;
 
 /** mulberry32: a small deterministic PRNG in [0, 1). */
 export function rng(seed: number) {
