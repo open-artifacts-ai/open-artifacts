@@ -44,6 +44,7 @@ import {
   DIRECTORY_REVOKE_SKIPPED_NOTE,
   HOSTED_DOMAINS,
   hostsKvTitle,
+  LostLease,
   NAMESPACES,
   ProdLocked,
   ProvisionRefused,
@@ -5769,20 +5770,15 @@ describe("the binding id audit, stage 1 (#1137)", () => {
           bookmark: string;
         },
     );
-  /** A Cloudflare client whose `call` misbehaves only during verify_clean. */
+  /** A provisioner whose Cloudflare client misbehaves during verify_clean. */
   const faulty = (
     s: S,
-    call: "d1Get" | "kvFind",
-    fault: () => Promise<never>,
+    edit: (cf: ReturnType<S["cfWith"]>, during: () => boolean) => object,
   ) => {
     const cf = s.cfWith();
     let step = "";
-    const real = cf[call].bind(cf);
     return s.mk({
-      cf: {
-        ...cf,
-        [call]: (n: string) => (step === "verify_clean" ? fault() : real(n)),
-      },
+      cf: { ...cf, ...edit(cf, () => step === "verify_clean") },
       onStep: (x: string) => {
         step = x;
       },
@@ -5830,24 +5826,96 @@ describe("the binding id audit, stage 1 (#1137)", () => {
     expect(last?.problems).toBe(0);
   });
 
-  it.each(["d1Get", "kvFind"] as const)(
-    "fails open when %s throws: the job carries on, with no line",
-    async (call) => {
-      const s = setup();
-      const inst = keep(await s.p.create(input()));
-      const p = faulty(s, call, async () => {
-        throw new Error("cloudflare is down");
-      });
-      expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
-      expect(lines(s, inst.id)).toHaveLength(1);
-    },
-  );
-
-  it("gives up on a call that never answers, and the job carries on", async () => {
+  it("a bookmark call that throws is in the line, and the job carries on", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));
-    const p = faulty(s, "kvFind", () => new Promise(() => {}));
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) =>
+        during() ? Promise.reject(new TypeError("down")) : cf.d1Bookmark(id),
+    }));
+    expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    expect(lines(s, inst.id).at(-1)?.bookmark).toBe("TypeError");
+  });
+
+  it("fails open when the settings read throws in a var change", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let reads = 0;
+    const p = s.mk({
+      cf: {
+        ...s.cfWith(),
+        scriptSettings: () => {
+          reads++;
+          return Promise.reject(new TypeError("down"));
+        },
+      },
+    });
+    await p.updateVars(inst.id, {});
+    expect(reads).toBe(1);
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("gives up on a bookmark call that never answers, and writes no line", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) =>
+        during() ? new Promise(() => {}) : cf.d1Bookmark(id),
+    }));
     expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
     expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("gives up on an audit write that never answers", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const cf = s.cfWith();
+    const p = s.mk({
+      cf: {
+        ...cf,
+        d1Query: (id, sql, params) =>
+          (params ?? []).includes("verify_clean.binding_ids")
+            ? new Promise(() => {})
+            : cf.d1Query(id, sql, params),
+      },
+      bindingIdAuditMs: 5,
+    });
+    expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("a timed-out check that answers late writes nothing", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let late: ((v: string) => void) | undefined;
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) =>
+        during()
+          ? new Promise<string>((r) => {
+              late = r;
+            })
+          : cf.d1Bookmark(id),
+    }));
+    keep(await p.upgrade(inst.id, "0.24.0"));
+    late?.("x");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("a lease lost during the audit still stops the job: the fence stays on", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) => {
+        if (during())
+          s.db()
+            .prepare("UPDATE installs SET lease = 'someone-else' WHERE id = ?")
+            .run(inst.id);
+        return cf.d1Bookmark(id);
+      },
+    }));
+    const e = await fails(p.upgrade(inst.id, "0.24.0"));
+    expect(e).toBeInstanceOf(LostLease);
+    expect(s.row(inst.id).lease).toBe("someone-else");
   });
 });
