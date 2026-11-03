@@ -1,4 +1,4 @@
-import type { ApiRouteId } from "@oa/shared/provisioning";
+import type { ApiRouteId } from "@oa/provisioning-contract";
 import type { Env } from "../env.js";
 import { NOT_IMPLEMENTED_BODY } from "../errors.js";
 import type { Principal } from "../principal.js";

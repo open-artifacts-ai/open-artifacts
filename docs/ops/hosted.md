@@ -377,7 +377,9 @@ Every install follows the platform's release on its own. The target is the sched
 - **`fleet_halted`** opens for halts on the target and for any halt in the last 6 hours on another version; when the canary hasn't soaked on the target 45 minutes after the duty first saw it, or can't lead after soaking, whatever the reason (`canary_blocked`), so a stuck canary doesn't wait for `version_skew`; the clock survives a new release, so shipping one doesn't read as an all-clear; and when a canary is set but the scheduler has no stable version tag (`no_target`). It sends no all-clear while a batch is still unsoaked.
 - **`version_skew`** opens when a serving, non-suspended install with test hooks off has been off the target for 6 hours, counted from when the duty first saw it off (`fleet_behind:<id>`, cleared once it is on the target). So a stuck install shows even when releases come faster than 6 hours apart. It is unknown (never an all-clear) with no canary or no target.
 
-Both fleet alerts are decided in the scheduler only (`SCHEDULER_ALERT_KEYS`); R27 shows them while open, with no rows. The public route from a Worker without a route of its own is not yet proven (red-line P35 is accepted unproven). An install's `health` (R3) doesn't prove it: create writes that value itself. The proof is the scheduler's own probes passing after a staging canary upgrade. If the path is broken, the canary fails its probes, the version halts, and nothing moves.
+Both fleet alerts are decided in the scheduler only (`SCHEDULER_ALERT_KEYS`); R27 shows them while open, with no rows. The public route from a Worker without a route of its own is not yet proven (red-line no longer runs P35; the gap is #1260). An install's `health` (R3) doesn't prove it: create writes that value itself. The proof is the scheduler's own probes passing after a staging canary upgrade. If the path is broken, the canary fails its probes, the version halts, and nothing moves.
+
+What each alert means and what to do about it: [alerts.md](alerts.md).
 
 ## OAuth store jobs (#1008)
 
@@ -552,6 +554,10 @@ The run applies the gate: it fails unless every case passes or is one the report
 4. Laptop only (CI derives its key): create the env's R2 API token and keychain item `oa-hosted-<env>-r2` (see "R2 API token").
 5. Sign the env's first floor with the `hosted-floor` workflow (dispatch on `main`: `env`, `seq` >= `FLOOR_MIN_SEQ[env]`, `min_version`, `revoked`), download its `floor-<env>-<seq>` artifact, and `publishFloor` it.
 6. `publishRelease` the signed tar and `.sig.json` from the GitHub release for each variant the env takes.
+
+### Release recovery
+
+Only the `release-please.yml` push run of the release commit itself creates the GitHub release: its `kind` step finds the one merged release PR labelled `autorelease: pending` and passes `skip-github-release` unless that PR's merge commit is the run's `github.sha`. A run on an earlier commit skips and leaves the release to the release commit's own run. A run on a later commit fails with "release commit <sha> (#<n>) has no own run", and so does a run that finds two pending release PRs. That happens when the release PR merged in a merge-queue batch, or its pending run was cancelled. If the release commit's own push run exists, re-run it. If it never ran, the release gate (`tag-passed-checks.sh`) refuses that commit whatever happens, so recover with a new patch release. First remove the `autorelease: pending` label from the stranded release PR: until then every run fails here, and release-please opens no new release PR. Then merge an empty commit with a `Release-As: X.Y.Z` footer (see the next section), or wait for the next release. #1282 tracks making the gate accept the run that created the release.
 
 ### Forcing a release when only non-releasable commits landed
 

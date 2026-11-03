@@ -3,7 +3,7 @@ import {
   type ApiErrorCode,
   AUDIT_REFUSAL_WINDOW_MS,
   type AuditRefusalBucket,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { hmac16 } from "./auth/crypto.js";
 import type { Env } from "./env.js";
 import { errorResponse } from "./errors.js";

@@ -4,7 +4,7 @@ import {
   isApiRoute,
   PROTOCOL_ROUTES,
   ROUTES,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { authenticate } from "./auth/authenticate.js";
 import { checkCsrf, checkOrigin } from "./auth/csrf.js";
 import {

@@ -33,7 +33,7 @@ import {
   OAUTH_MODE_LIVE_SQL,
   type OAuthStoreMode,
   storedOAuthMode,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { failingAt, tagFail } from "./errors.js";
 import type { ManageJob } from "./manage.js";
 import {

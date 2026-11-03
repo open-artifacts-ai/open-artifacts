@@ -1,4 +1,4 @@
-// Admin panel fixtures: C1's fixtures (@oa/shared/provisioning/fixtures) plus
+// Admin panel fixtures: C1's fixtures (@oa/provisioning-contract/fixtures) plus
 // the cases it does not cover, so every install state, every job status, audit
 // entries of each outcome and both token kinds are represented.
 
@@ -10,14 +10,14 @@ import {
   type Job,
   type JobStatus,
   type Token,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import {
   FIXTURE_IDS,
   fixtureAudit,
   fixtureInstall,
   fixtureJob,
   fixtureWorld,
-} from "@oa/shared/provisioning/fixtures";
+} from "@oa/provisioning-contract/fixtures";
 
 export { FIXTURE_IDS, fixtureWorld };
 

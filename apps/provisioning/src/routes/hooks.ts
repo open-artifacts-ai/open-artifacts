@@ -1,4 +1,4 @@
-import type { ApiRouteId } from "@oa/shared/provisioning";
+import type { ApiRouteId } from "@oa/provisioning-contract";
 import type { Env } from "../env.js";
 import type { Principal } from "../principal.js";
 import { recordTokenUse } from "../services/tokens.js";

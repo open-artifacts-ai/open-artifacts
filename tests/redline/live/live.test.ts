@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import {
   apiReq,
@@ -7,7 +6,6 @@ import {
   dataPath,
   deleteThrowaways,
   serverOrigin,
-  snapshotBeforeAttack,
   whoami,
 } from "../src/fixtures.ts";
 import {
@@ -29,25 +27,20 @@ import {
 import { loadTargets, type Target, type Targets } from "../src/targets.ts";
 import { wsHandshake } from "../src/ws.ts";
 
-// P5 Task 5: live data and sockets. Every refusal goes through crossCheck (B's
-// own credential succeeds at B, A's at A, then A's is refused at B). Writes:
-// each side's success leg writes its OWN throwaway; A's attempt at B targets
-// B's victim doc/key, and B's state is re-read before and after it.
+// P5 Task 5: live sockets and anonymous writes. Every socket refusal goes
+// through crossCheck (B's own credential succeeds at B, A's at A, then A's is
+// refused at B). #1235: the data API cases (A's PAT at B on each data and
+// storage route) are retired; src/retired.ts names what guards them.
 
 const COL = "c";
 
 interface Live {
   s: Side;
   user: { id: string; email: string };
-  /** Private, db + storage: data API and sockets. */
+  /** Private, db + storage: the sockets' artifact. */
   data: string;
-  /** Private, db: PUT data (reset). */
-  reset: string;
   /** Public, db, allowAnonymousWrites. */
   anon: string;
-  /** Markers in the data and reset throwaways' seeded state. */
-  dataMarker: string;
-  resetMarker: string;
 }
 
 let T: Targets;
@@ -57,15 +50,6 @@ let B: Live;
 const made = new Map<Side, string[]>();
 
 const side = (t: Target): Live => (t === T.a ? A : B);
-const hashOf = (s: string) =>
-  createHash("sha256").update(s).digest("hex").slice(0, 16);
-
-async function putDoc(l: Live, art: string, doc: string, data: unknown) {
-  await call(
-    apiReq(l.s.t, l.s.pat, "PUT", dataPath(art, "data", COL, doc), data),
-    `${l.s.t.name} seed ${doc}`,
-  );
-}
 
 async function setup(t: Target): Promise<Live> {
   const s = await prepareSide(t);
@@ -78,32 +62,12 @@ async function setup(t: Target): Promise<Live> {
     return w;
   };
   const data = await mk({ capabilities: { db: true, storage: true } });
-  const reset = await mk({ capabilities: { db: true } });
   const anon = await mk({
     visibility: "public",
     capabilities: { db: true },
     allowAnonymousWrites: true,
   });
-  const l: Live = {
-    s,
-    user,
-    data: data.id,
-    reset: reset.id,
-    anon: anon.id,
-    dataMarker: data.marker,
-    resetMarker: reset.marker,
-  };
-  for (const doc of ["victim", "own-put", "own-patch", "own-del"])
-    await putDoc(l, l.data, doc, { marker: data.marker, doc });
-  await putDoc(l, l.reset, "victim", { marker: reset.marker });
-  for (const key of ["victim", "own-del"])
-    await call(
-      apiReq(t, s.pat, "PUT", dataPath(l.data, "storage", key), {
-        value: { marker: data.marker, key },
-      }),
-      `${t.name} seed storage ${key}`,
-    );
-  return l;
+  return { s, user, data: data.id, anon: anon.id };
 }
 
 beforeAll(async () => {
@@ -124,186 +88,6 @@ afterAll(async () => {
     throw new Error(
       `${bad} throwaway artifacts were not deleted; ${partial} side(s) failed setup`,
     );
-});
-
-/** Status and body of a GET with B's PAT: the state A's attempt must not change. */
-const stateOf = (path: string) => async () => {
-  const res = await send(apiReq(T.b, B.s.pat, "GET", path));
-  return `${res.status}\n${await readBody(res)}`;
-};
-
-function expectSame(before: string, after: string, what: string): void {
-  if (before !== after)
-    throw new Error(
-      `B's ${what} changed after A's attempt (sha256:${hashOf(before)} -> sha256:${hashOf(after)})`,
-    );
-}
-
-/** crossCheck a write, then prove B's state at `path` is what A's attempt met. */
-async function writeCase(
-  req: (cred: Cred, t: Target) => Request,
-  statePath: string,
-  what: string,
-  marker: string,
-): Promise<void> {
-  const snap = snapshotBeforeAttack(stateOf(statePath));
-  await crossCheck(req, {
-    a: T.a,
-    b: T.b,
-    credA: A.s.pat,
-    credB: B.s.pat,
-    send: snap.send,
-  });
-  const before = snap.before();
-  // The state A's attempt met must be B's real seeded state, so a 404 = 404
-  // match can't pass.
-  if (!before.startsWith("200\n") || !before.includes(marker))
-    throw new Error(`B's ${what} was not readable before A's attempt`);
-  expectSame(before, await stateOf(statePath)(), what);
-}
-
-/** The doc a leg writes: B's victim for A's attempt at B, else the side's own. */
-const docFor = (cred: Cred, t: Target, own: string) =>
-  t === T.b && cred === A.s.pat ? "victim" : own;
-
-describe("data API at B with A's PAT", () => {
-  const pat = () => ({ a: T.a, b: T.b, credA: A.s.pat, credB: B.s.pat });
-
-  it("GET data/:col/:doc", async () => {
-    await crossCheck(
-      (cred, t) =>
-        apiReq(t, cred, "GET", dataPath(side(t).data, "data", COL, "victim")),
-      pat(),
-    );
-  });
-
-  it("GET data/:col (list)", async () => {
-    await crossCheck(
-      (cred, t) => apiReq(t, cred, "GET", dataPath(side(t).data, "data", COL)),
-      pat(),
-    );
-  });
-
-  it("POST data/:col/query", async () => {
-    await crossCheck(
-      (cred, t) =>
-        apiReq(t, cred, "POST", dataPath(side(t).data, "data", COL, "query"), {
-          limit: 10,
-        }),
-      pat(),
-    );
-  });
-
-  it("PUT data/:col/:doc: refused, and B's doc is unchanged", async () => {
-    await writeCase(
-      (cred, t) =>
-        apiReq(
-          t,
-          cred,
-          "PUT",
-          dataPath(side(t).data, "data", COL, docFor(cred, t, "own-put")),
-          { from: "redline-put" },
-        ),
-      dataPath(B.data, "data", COL, "victim"),
-      "victim doc",
-      B.dataMarker,
-    );
-  });
-
-  it("PATCH data/:col/:doc: refused, and B's doc is unchanged", async () => {
-    await writeCase(
-      (cred, t) =>
-        apiReq(
-          t,
-          cred,
-          "PATCH",
-          dataPath(side(t).data, "data", COL, docFor(cred, t, "own-patch")),
-          { patched: "redline-patch" },
-        ),
-      dataPath(B.data, "data", COL, "victim"),
-      "victim doc",
-      B.dataMarker,
-    );
-  });
-
-  it("DELETE data/:col/:doc: refused, and B's doc is unchanged", async () => {
-    await writeCase(
-      (cred, t) =>
-        apiReq(
-          t,
-          cred,
-          "DELETE",
-          dataPath(side(t).data, "data", COL, docFor(cred, t, "own-del")),
-        ),
-      dataPath(B.data, "data", COL, "victim"),
-      "victim doc",
-      B.dataMarker,
-    );
-  });
-
-  it("PUT data (reset): refused, and B's data is unchanged", async () => {
-    await writeCase(
-      (cred, t) =>
-        apiReq(t, cred, "PUT", dataPath(side(t).reset, "data"), {
-          collections: {
-            [COL]: {
-              ...(cred === A.s.pat && t === T.b
-                ? { "from-a": { by: "a" } }
-                : { own: { by: t.name, marker: side(t).resetMarker } }),
-            },
-          },
-        }),
-      dataPath(B.reset, "data", COL),
-      "reset artifact's data",
-      B.resetMarker,
-    );
-  });
-
-  it("GET storage (list)", async () => {
-    await crossCheck(
-      (cred, t) => apiReq(t, cred, "GET", dataPath(side(t).data, "storage")),
-      pat(),
-    );
-  });
-
-  it("GET storage/:key", async () => {
-    await crossCheck(
-      (cred, t) =>
-        apiReq(t, cred, "GET", dataPath(side(t).data, "storage", "victim")),
-      pat(),
-    );
-  });
-
-  it("PUT storage/:key: refused, and B's key is unchanged", async () => {
-    await writeCase(
-      (cred, t) =>
-        apiReq(
-          t,
-          cred,
-          "PUT",
-          dataPath(side(t).data, "storage", docFor(cred, t, "own-put")),
-          { value: { from: "redline-put" } },
-        ),
-      dataPath(B.data, "storage", "victim"),
-      "victim storage key",
-      B.dataMarker,
-    );
-  });
-
-  it("DELETE storage/:key: refused, and B's key is unchanged", async () => {
-    await writeCase(
-      (cred, t) =>
-        apiReq(
-          t,
-          cred,
-          "DELETE",
-          dataPath(side(t).data, "storage", docFor(cred, t, "own-del")),
-        ),
-      dataPath(B.data, "storage", "victim"),
-      "victim storage key",
-      B.dataMarker,
-    );
-  });
 });
 
 const subscribeUrl = (t: Target) =>

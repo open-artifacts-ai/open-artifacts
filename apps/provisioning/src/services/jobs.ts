@@ -4,7 +4,7 @@ import {
   bodyHash,
   type JobKind,
   type TransitionActor,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { auditStatement } from "../audit.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";

@@ -123,6 +123,35 @@ export function planPage(domains: ReadonlySet<string>, page: GoogleUser[]) {
   return { all, link, create, suspended };
 }
 
+/**
+ * user.readmitted_by_sync for the row this batch creates for `readmit.sub`
+ * (its fresh id only exists once CREATE_USERS and LINK_CREATED wrote it), so
+ * a batch that creates nothing writes nothing. Ids only, never the address.
+ */
+function readmitAudit(
+  env: Env,
+  create: { id: string; uid: string }[],
+  readmit?: { sub: string; previousUserId: string },
+): D1PreparedStatement[] {
+  const row = readmit && create.find((c) => c.id === readmit.sub);
+  if (!readmit || !row) return [];
+  return [
+    audit(
+      env,
+      "user.readmitted_by_sync",
+      { type: "user", id: row.uid },
+      SYNC_ACTOR,
+      {
+        detail: { previousUserId: readmit.previousUserId },
+        when: {
+          sql: "exists (select 1 from identities where provider = 'google' and subject = ? and user_id = ?)",
+          args: [readmit.sub, row.uid],
+        },
+      },
+    ),
+  ];
+}
+
 /** Links (and creates) one page of directory users in one batch. */
 export async function bindPage(
   env: Env,
@@ -133,6 +162,12 @@ export async function bindPage(
     ctx?: Pick<ExecutionContext, "waitUntil">;
     /** Re-checked before every write (DirectorySync's reset epoch). */
     guard?: () => void;
+    /**
+     * A removed row's address handed to directory user `sub` (applyUsers,
+     * #1146): the row created for it in this batch is audited
+     * user.readmitted_by_sync (actor sync, detail { previousUserId }).
+     */
+    readmit?: { sub: string; previousUserId: string };
   },
 ): Promise<void> {
   const guard = o.guard ?? (() => {});
@@ -159,6 +194,7 @@ export async function bindPage(
       ? [
           stmt(env.DB, CREATE_USERS).bind(createJson, now),
           stmt(env.DB, LINK_CREATED).bind(createJson, o.tenant, now),
+          ...readmitAudit(env, create, o.readmit),
         ]
       : []),
   ]);

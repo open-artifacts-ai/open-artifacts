@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { handle } from "../src/app.js";
+import { windowOf } from "../src/auth/counters.js";
 import { hmac16 } from "../src/auth/crypto.js";
 import { csrfToken } from "../src/auth/csrf.js";
 import {
@@ -816,10 +817,12 @@ describe("POST /oauth/authorize", () => {
   it("a spent mint budget (20/h, shared with oat_) shows the 429 page and mints nothing", async () => {
     const w = await oauthWorld();
     const key = `mint:${await hmac16(w.env.ADMIN_SESSION_KEY, `mint\n${w.email}`)}`;
-    // This window and the next, so a rollover mid-test changes nothing.
+    // This window and the next, so a rollover mid-test changes nothing. One
+    // clock read through the limiter's own windowOf: two reads can straddle
+    // a millisecond and give a start that is no window at all (#1206).
     const H = D1_LIMITS.mint.windowMs;
-    const start = Date.now() - (Date.now() % H);
-    for (const ws of [start, start + H])
+    const now = Date.now();
+    for (const ws of [windowOf(now, H), windowOf(now + H, H)])
       await w.db
         .prepare(
           "INSERT INTO rate_counters (key, window_start, count) VALUES (?1, ?2, ?3)",

@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport, McpServer } from "@modelcontextprotocol/server";
-import { ADMIN_TOOLS, toolInput, toolOutput } from "@oa/shared/provisioning";
-import { fixtureWorld } from "@oa/shared/provisioning/fakes";
+import { ADMIN_TOOLS, toolInput, toolOutput } from "@oa/provisioning-contract";
+import { fixtureWorld } from "@oa/provisioning-contract/fakes";
 import { describe, expect, it } from "vitest";
 
 // Design v7 9A.6 / 14.4 (C1 test): the admin MCP server returns route

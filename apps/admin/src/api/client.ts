@@ -14,10 +14,10 @@ import {
   type SlugCheck,
   type Token,
   type World,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { safeReturn } from "../auth/safeReturn";
 
-export { type Me, MeSchema } from "@oa/shared/provisioning";
+export { type Me, MeSchema } from "@oa/provisioning-contract";
 
 /** A non-2xx answer: the contract envelope `{ error: { code, message, details } }`. */
 type Page<T> = { items: T[]; nextCursor: string | null };

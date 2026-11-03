@@ -1,4 +1,4 @@
-import { ULID_RE } from "@oa/shared/provisioning";
+import { ULID_RE } from "@oa/provisioning-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hmac16, sha256Hex } from "../src/auth/crypto.js";
 import { ApiError } from "../src/errors.js";

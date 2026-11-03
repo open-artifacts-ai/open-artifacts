@@ -2,7 +2,7 @@ import { parseHostsValue } from "@oa/provision/names";
 import {
   InventoryHostSchema,
   InventoryHostsSchema,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import type { z } from "zod";
 import { json, type KvReadLike } from "./http.ts";
 

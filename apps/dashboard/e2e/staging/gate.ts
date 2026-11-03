@@ -13,6 +13,14 @@ export const below = (v: string, min: string): boolean => {
 };
 
 /**
+ * The version leo must report, or undefined to skip that check. Its own
+ * variable, never rl-a's T19_EXPECT_VERSION: leo can lag the tag until #955
+ * keeps it current, and only then can CI set T19_EXPECT_LEO_VERSION.
+ */
+export const leoPin = (env: Record<string, string | undefined>) =>
+  env.T19_EXPECT_LEO_VERSION || undefined;
+
+/**
  * Whether `flow` (needing `min`) runs on rl-a at `version`: null to run, or
  * the reason to skip. Pinned (`pin` non-empty) and too old, it throws.
  */

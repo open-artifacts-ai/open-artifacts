@@ -76,7 +76,7 @@ const stepsWritten = () => {
       new RegExp(`auditStatement\\(\\s*[^,]+,\\s*[^,]+,\\s*"${NAME}"`, "g"),
     ]),
     // The provisioner's named actions (OAUTH_MODE_LIVE_ACTION and the like).
-    ...scan("packages/shared/src/provisioning", [
+    ...scan("packages/provisioning-contract/src", [
       new RegExp(`export const [A-Z_]+_ACTION = "${NAME}"`, "g"),
     ]),
     ...scan("apps/scheduler/src", [

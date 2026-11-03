@@ -8,7 +8,7 @@ import { authServer } from "./server.js";
 // The MCP OAuth authorization server (design v7 9A.3.1), W13b: the AS on the
 // api host (/oauth/token, /oauth/register, RFC 8414 metadata), our RFC 9728
 // handler, and the consent page on the admin host (/oauth/authorize). Which
-// method and host serve each path is PROTOCOL_ROUTES (@oa/shared/provisioning);
+// method and host serve each path is PROTOCOL_ROUTES (@oa/provisioning-contract);
 // the adapter has checked both before this runs.
 
 export { mcpUnauthorized, oauthPrincipal } from "./bearer.js";

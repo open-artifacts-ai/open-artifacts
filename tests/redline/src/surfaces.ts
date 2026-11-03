@@ -107,11 +107,14 @@ export interface Throwaway {
 export type Variant = "session" | "pat" | "oauth";
 
 /**
- * Which legs a case runs live (#1137 group B):
- * - "own": B's own credential at B and A's at A. A's credential at B is the
- *   in-server matrix's foreign caller of the same kind (MATRIX_AT_B), on
- *   every PR, so the live leg is gone.
+ * Which legs a case runs live (#1137 group B, #1235):
+ * - "own": B's own credential at B only. A's credential at B is the
+ *   in-server matrix's foreign caller of the same kind (MATRIX_AT_B); A's at
+ *   A is this same leg on the other install, plus the in-server tests of
+ *   rl-a's frozen directory sync (A_AT_A), so neither runs live.
  * - "cross": all three legs; only the live A-at-B smoke of a kind (SMOKES).
+ *   Its A-at-A leg is the positive control: A's credential works on A's
+ *   deployed install, so its refusal at B means something.
  * - "atB": A's credential at B only: a deny-only case (crossDenied), or the
  *   OAuth smoke (smokeAtB; no per-route OAuth case exists).
  */
@@ -180,6 +183,7 @@ const CELLS = [
 
 export type DropWhy =
   | "real-only"
+  | "interactive-only"
   | "owner-only"
   | "nobody"
   | "no-world-caller"
@@ -208,6 +212,8 @@ const NO_DIRECTORY = {
 const WHY: Record<DropWhy, string> = {
   "real-only":
     "real-only (#839): past the access rules the route either writes or answers a 404 that looks like a refusal, and the row it needs can't be made on the red-line installs, so crossCheck has no success leg. Live, a deny-only case still proves A's session is a 401 at B; that an admin is allowed is covered by the matrix only",
+  "interactive-only":
+    "interactive-only (#1204): the route answers only a person signed in in a browser (Google, an email code or Access) and hides itself from every other credential with a 404, the same as a refusal. The suite's sessions come from the session hook (provider test), which is not an interactive sign-in, and no red-line install has one for its admin, so crossCheck has no success leg. Live, a deny-only case still proves A's session is a 401 at B; that an admin erases a removed person who owns nothing (204) is covered by the matrix and the route's own tests",
   "owner-only":
     "owner-only: hooks never mint the owner and no owner credential is stored in CI, so crossCheck has no success leg",
   nobody:
@@ -291,7 +297,22 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
     "real-only: on rl-b an unknown group is 404 past the owner rule, the same as a refusal; A at B is deny-only",
   "DELETE /api/v1/directory/restricted-groups/:groupId":
     "real-only: PUT refuses a restricted_groups row while directory sync is off (409), and the hook-seeded directory group is not that row; A at B is deny-only",
+  "POST /api/v1/members/:id/erase":
+    "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
 };
+
+/**
+ * #1204: instance routes that answer only an interactive sign-in
+ * (apps/server/src/auth/authz.ts interactiveSession) and are not already
+ * dropped as owner-only. The suite's hook sessions never pass that check,
+ * so each is a recorded drop with a deny-only case.
+ */
+export const INTERACTIVE_ONLY: readonly string[] = [
+  "POST /api/v1/members/:id/erase",
+];
+
+const ERASE_TESTS = "apps/server/test/members.erase.test.ts";
+const ERASE_AUTHZ = "POST R.memberErase(id): authorization";
 
 /**
  * The surfaces dropped from the cross-install suite (P5 plan, Task 3b;
@@ -414,6 +435,24 @@ export const DROPPED: Readonly<
     why: "real-only",
     coveredBy: [INSTANCE],
   },
+  // The matrix erases a real removed, artifact-less person (erasableId) as
+  // each allowed caller in an Access session: 204 or the cell fails.
+  "org POST /api/v1/members/:id/erase": {
+    why: "interactive-only",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: ERASE_TESTS,
+        describe: ERASE_AUTHZ,
+        test: "an admin's PAT or an AI agent's OAuth grant never erases (cookie sessions only); nothing changes",
+      },
+      {
+        file: ERASE_TESTS,
+        describe: "POST R.memberErase(id): what goes and what stays",
+        test: "audited once as user.erased by the admin, with no address or name in the row",
+      },
+    ],
+  },
   "org DELETE /api/v1/spaces/:id/mappings/:groupId": {
     why: "real-only",
     coveredBy: [INSTANCE],
@@ -485,6 +524,60 @@ export const MATRIX_AT_B: Readonly<
   space: [BY_PERSONAL[0] as Citation, FOREIGN_PROOF],
 };
 
+/** The redline fakes that prove a B-at-B leg fails when B refuses its own caller. */
+const OWN_LEG_FAILS: Citation[] = [
+  {
+    file: "tests/redline/test/surfaces.test.ts",
+    describe: "crossProbe",
+    test: "fails when B's own credential is denied (a B that refuses everything)",
+  },
+  {
+    file: "tests/redline/test/surfaces.test.ts",
+    describe: "crossWrite",
+    test: "fails when B's own write is refused (a broken B)",
+  },
+];
+const SPACES_API = "apps/server/test/spaces.api.test.ts";
+
+/**
+ * #1235: what replaces the live A-at-A leg of an "own" case. rl-a and rl-b
+ * run the same release, so B's own credential at B (the case's kept leg,
+ * proven able to fail by OWN_LEG_FAILS) is the same request on a hosted
+ * build. The one thing rl-a has that rl-b doesn't is frozen directory sync
+ * (local-pair.ts localFeatures; staging the same), which only changes space
+ * and directory writes: spaces.api.test.ts runs those on sync_frozen. The
+ * allow cells for every caller are the matrix's. citationGaps checks each
+ * citation resolves.
+ */
+export const A_AT_A: Readonly<
+  Record<"artifact" | "org" | "space", readonly Citation[]>
+> = {
+  artifact: [...OWN_LEG_FAILS, ARTIFACTS],
+  org: [
+    ...OWN_LEG_FAILS,
+    INSTANCE,
+    {
+      file: SPACES_API,
+      describe: "restrictions",
+      test: "restricted group PUT while sync is frozen → 409 directory_sync_off; existing frozen restrictions still cap",
+    },
+  ],
+  space: [
+    ...OWN_LEG_FAILS,
+    BY_PERSONAL[0] as Citation,
+    {
+      file: SPACES_API,
+      describe: "space members",
+      test: "frozen: PUT on a synced row becomes a manual override (syncRole null), audited",
+    },
+    {
+      file: SPACES_API,
+      describe: "space mappings",
+      test: "mapping PUT while sync is off or frozen → 409 directory_sync_off",
+    },
+  ],
+};
+
 /** A case's family, from its name ("artifact …", "org …", "space …"). */
 const familyOf = (name: string): keyof typeof MATRIX_AT_B | undefined => {
   const f = name.split(" ")[0];
@@ -499,18 +592,34 @@ const familyOf = (name: string): keyof typeof MATRIX_AT_B | undefined => {
 export function citationGaps(
   read: (repoPath: string) => string | null,
 ): string[] {
+  return resolveCitations(
+    [
+      ...Object.entries(DROPPED).map(([n, d]) => [n, d.coveredBy] as const),
+      ...Object.entries(MATRIX_AT_B).map(
+        ([f, coveredBy]) => [`A at B (${f})`, coveredBy] as const,
+      ),
+      ...Object.entries(A_AT_A).map(
+        ([f, coveredBy]) => [`A at A (${f})`, coveredBy] as const,
+      ),
+    ],
+    read,
+  );
+}
+
+/**
+ * Citations that don't resolve, for each named entry: none at all, a missing
+ * file, or a describe or test name not found verbatim (quoted) in it.
+ */
+export function resolveCitations(
+  cited: readonly (readonly [string, readonly Citation[]])[],
+  read: (repoPath: string) => string | null,
+): string[] {
   const gaps: string[] = [];
   const quoted = (text: string, s: string) =>
     ['"', "'", "`"].some((q) => text.includes(`${q}${s}${q}`));
-  const cited = [
-    ...Object.entries(DROPPED),
-    ...Object.entries(MATRIX_AT_B).map(
-      ([f, coveredBy]) => [`A at B (${f})`, { coveredBy }] as const,
-    ),
-  ];
-  for (const [name, d] of cited) {
-    if (d.coveredBy.length === 0) gaps.push(`${name}: no covering test`);
-    for (const c of d.coveredBy) {
+  for (const [name, coveredBy] of cited) {
+    if (coveredBy.length === 0) gaps.push(`${name}: no covering test`);
+    for (const c of coveredBy) {
       const text = read(c.file);
       if (text === null) gaps.push(`${name}: missing file ${c.file}`);
       else {
@@ -619,9 +728,11 @@ export function derive(): Derived {
     // #839: a real write on a throwaway the install makes for itself
     // (crossWrite) wherever a refusal-mode request would touch the world or
     // none exists; a realOnly route with no throwaway is a recorded drop.
+    // #1204: an interactive-only route is the same, whatever its refusal.
     const fresh = ORG_FRESH[s.route];
-    if (s.realOnly === true && !fresh) {
-      drop(name, [s.route], "real-only");
+    const interactive = INTERACTIVE_ONLY.includes(s.route);
+    if ((s.realOnly === true || interactive) && !fresh) {
+      drop(name, [s.route], interactive ? "interactive-only" : "real-only");
       // No success leg, but the tenant boundary is still checked: A's session
       // at B, which needs no throwaway and never runs as an allowed caller.
       cases.push({
@@ -700,9 +811,10 @@ export function derive(): Derived {
 }
 
 /**
- * #1137 group B: a deny-only case and the OAuth smoke run A at B only; a
- * kind's smoke (SMOKES) keeps all three legs; every other case runs its
- * success legs only, its A at B proven by the matrix's foreign callers.
+ * #1137 group B and #1235: a deny-only case and the OAuth smoke run A at B
+ * only; a kind's smoke (SMOKES) keeps all three legs; every other case runs
+ * B's own credential at B only, its A at B the matrix's foreign callers and
+ * its A at A the citations in A_AT_A.
  */
 function legsOf(c: Omit<ProbeCase, "legs">): Legs {
   if (c.denyOnly || c.variant === "oauth") return "atB";
@@ -809,6 +921,7 @@ export function coverageGaps(
       .filter((k) => reached.has(k) || !droppedRoutes.has(k))
       .map((k) => `stale exclusion: ${k}`),
     ...atBGaps(cases, foreign),
+    ...atAGaps(cases),
   ];
   // The probe list is never shorter than the policy manifest it covers.
   const n = cases.length + Object.keys(EXCLUDED_ROUTES).length;
@@ -850,6 +963,31 @@ function atBGaps(
       gaps.push(`A at B for ${c.name}: no matrix foreign caller ${f}`);
     if (!familyOf(c.name))
       gaps.push(`A at B for ${c.name}: no matrix citation`);
+  }
+  return gaps;
+}
+
+/**
+ * #1235: A at A runs live only as a smoke's positive control. Each kind whose
+ * A credential the surfaces send (session, PAT) keeps it on its smoke
+ * (SMOKES, all three legs); no other case runs it; every "own" case's family
+ * cites what replaces it (A_AT_A, resolved by citationGaps). The OAuth
+ * smoke's token comes from A's real provider (the oauth-client hook) and its
+ * A-at-A is live/credentials.test.ts's OAuth crossCheck.
+ */
+function atAGaps(cases: readonly ProbeCase[]): string[] {
+  const gaps: string[] = [];
+  const byName = new Map(cases.map((c) => [c.name, c]));
+  for (const v of ["session", "pat"] as const) {
+    const c = byName.get(SMOKES[v]);
+    if (!c || c.legs !== "cross")
+      gaps.push(`no live A-at-A positive control for ${v}: ${SMOKES[v]}`);
+  }
+  for (const c of cases) {
+    if (c.legs !== "own") continue;
+    const f = familyOf(c.name);
+    if (!f || (A_AT_A[f]?.length ?? 0) === 0)
+      gaps.push(`A at A for ${c.name}: no citation`);
   }
   return gaps;
 }

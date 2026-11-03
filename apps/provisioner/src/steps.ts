@@ -8,7 +8,7 @@
 import type { WorkflowStep, WorkflowStepConfig } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { PROVISION_ERROR_CODES, type ProvisionErrorCode } from "@oa/provision";
-import type { JobKind } from "@oa/shared/provisioning";
+import type { JobKind } from "@oa/provisioning-contract";
 import {
   codeOf,
   detailOf,

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FOREIGN_CALLERS } from "../../../apps/server/test/authz/expect.ts";
@@ -35,6 +35,7 @@ import {
 } from "../src/refused.ts";
 import { parseManifest } from "../src/report.ts";
 import {
+  A_AT_A,
   citationGaps,
   cleanup,
   coverageGaps,
@@ -46,6 +47,7 @@ import {
   groupSeed,
   HOOK_SPACE_ID,
   HOSTED_FEATURES,
+  INTERACTIVE_ONLY,
   MATRIX_AT_B,
   ORG_FRESH,
   type ProbeCase,
@@ -188,16 +190,48 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     }
   });
 
-  it("deny-only: the six real-only drops, each still a recorded drop", () => {
+  it("deny-only: the six real-only drops and the interactive-only one, each still a recorded drop", () => {
     const only = cases.filter((c) => c.denyOnly);
     expect(only.map((c) => c.name).sort()).toEqual(
       Object.entries(DROPPED)
-        .filter(([, d]) => d.why === "real-only")
+        .filter(
+          ([, d]) => d.why === "real-only" || d.why === "interactive-only",
+        )
         .map(([n]) => `${n} [session]`)
         .sort(),
     );
-    expect(only).toHaveLength(6);
+    expect(only).toHaveLength(7);
     for (const c of only) expect(c.run).toBeDefined();
+  });
+
+  it("#1204: every route behind interactiveSession is interactive-only or owner-only, and no other is", () => {
+    // Literal handlers whose body checks interactiveSession(c). Directory
+    // disconnect (R.* paths, a shared handler) is owner-only, dropped above.
+    const dir = join(import.meta.dirname, "../../../apps/server/src/routes");
+    const found: string[] = [];
+    for (const f of readdirSync(dir).filter((n) => n.endsWith(".ts"))) {
+      const src = readFileSync(join(dir, f), "utf8");
+      const handlers = src.split(
+        /\n\s*app\.(?=(?:get|post|put|patch|delete)\()/,
+      );
+      for (const h of handlers.slice(1)) {
+        const m = /^(get|post|put|patch|delete)\(\s*"([^"]+)"/.exec(h);
+        if (m && h.includes("interactiveSession(c)"))
+          found.push(`${m[1]?.toUpperCase()} ${m[2]}`);
+      }
+    }
+    expect(found).toContain("POST /api/v1/members/:id/erase");
+    expect([...INTERACTIVE_ONLY].sort()).toEqual(found.sort());
+    for (const r of INTERACTIVE_ONLY) {
+      const x = dropped.find((y) => y.routes.includes(r));
+      expect(x?.why).toBe("interactive-only");
+      expect(cases.find((c) => c.routes.includes(r))?.denyOnly).toBe(true);
+    }
+    for (const r of [
+      "POST /api/v1/directory/disconnect",
+      "DELETE /api/v1/directory",
+    ])
+      expect(dropped.find((y) => y.routes.includes(r))?.why).toBe("owner-only");
   });
 
   it("#1137 group B: one live A-at-B smoke per credential kind; the rest are the matrix's", () => {
@@ -211,9 +245,9 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         .filter((c) => !c.denyOnly)
         .map((c) => [c.name, c.variant]),
     ).toEqual([[SMOKES.oauth, "oauth"]]);
-    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(6);
-    // Every other case: success legs only, its kind a matrix foreign caller.
-    expect(by("own")).toHaveLength(cases.length - 2 - 7);
+    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(7);
+    // Every other case: B at B only, its kind a matrix foreign caller.
+    expect(by("own")).toHaveLength(cases.length - 2 - 8);
     for (const c of by("own"))
       expect(FOREIGN_CALLERS).toContain(FOREIGN_OF[c.variant]);
   });
@@ -239,6 +273,50 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     expect(coverageGaps(d, ["foreignPat", "foreignOAuth"])).toContain(
       "A at B for org GET /api/v1/me [session]: no matrix foreign caller foreignSession",
     );
+  });
+
+  it("#1235: A at A runs live only on the session and PAT smokes; every other case's family cites its replacement", () => {
+    const withAtA = cases.filter((c) => c.legs === "cross");
+    expect(withAtA.map((c) => c.name)).toEqual([SMOKES.session, SMOKES.pat]);
+    for (const c of cases.filter((x) => x.legs === "own"))
+      expect(A_AT_A[c.name.split(" ")[0] as keyof typeof A_AT_A]).toBeDefined();
+  });
+
+  it("#1235: flag a smoke that loses its A-at-A positive control", () => {
+    const set = (name: string, legs: ProbeCase["legs"]) =>
+      cases.map((c) => (c.name === name ? { ...c, legs } : c));
+    // A-at-B only: the A-at-B check passes, the A-at-A one doesn't.
+    const atB = coverageGaps({ cases: set(SMOKES.pat, "atB"), dropped });
+    expect(atB).toContain(
+      `no live A-at-A positive control for pat: ${SMOKES.pat}`,
+    );
+    expect(atB).not.toContain(`no live A-at-B smoke for pat: ${SMOKES.pat}`);
+    expect(
+      coverageGaps({ cases: set(SMOKES.session, "own"), dropped }),
+    ).toContain(
+      `no live A-at-A positive control for session: ${SMOKES.session}`,
+    );
+    // No smoke case at all.
+    expect(
+      coverageGaps({
+        cases: cases.filter((c) => c.name !== SMOKES.session),
+        dropped,
+      }),
+    ).toContain(
+      `no live A-at-A positive control for session: ${SMOKES.session}`,
+    );
+  });
+
+  it("#1235: flag an A-at-A citation that doesn't resolve", () => {
+    const file = A_AT_A.space[A_AT_A.space.length - 1]?.file ?? "";
+    const test = A_AT_A.space[A_AT_A.space.length - 1]?.test ?? "";
+    expect(test).not.toBe("");
+    const gaps = citationGaps((p) =>
+      p === file
+        ? (readRepoFile(p) ?? "").replaceAll(test, "renamed")
+        : readRepoFile(p),
+    );
+    expect(gaps).toContain(`A at A (space): no test "${test}" in ${file}`);
   });
 
   it("flag a matrix citation for A at B that doesn't resolve", () => {
@@ -529,6 +607,70 @@ describe("crossProbe", () => {
   });
 });
 
+describe("crossProbe and crossWrite with ownOnly (#1235)", () => {
+  it("crossProbe sends only B's own credential at B: nothing to A", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    const sent: [string, string][] = [];
+    const run: typeof me = async (cred, t, f) => {
+      sent.push([cred, t.name]);
+      return me(cred, t, f);
+    };
+    await crossProbe(run, {
+      a: T.a,
+      b: T.b,
+      credA: "ta",
+      credB: "tb",
+      carries: bearer,
+      ownOnly: true,
+    });
+    expect(sent).toEqual([["tb", T.b.name]]);
+  });
+
+  it("crossProbe still fails when B refuses its own credential", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "nothing")),
+    );
+    await expect(
+      crossProbe(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+        ownOnly: true,
+      }),
+    ).rejects.toThrow(/B's own credential failed at B/);
+  });
+
+  it("a kept smoke (all three legs) fails when A's credential is refused at A", async () => {
+    // The positive control #1235 keeps: without it, a dead A credential
+    // would pass the A-at-B leg as a refusal.
+    const T = await pair(
+      await fake(install("rl-a-id", "nothing")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    const world = (t: Target) =>
+      ({ artifactId: t === T.a ? "art-a" : "art-b" }) as World;
+    const c = derive().cases.find((x) => x.name === SMOKES.pat);
+    if (!c) throw new Error("no PAT smoke");
+    const err = await runRead(
+      { ...c, run: (cred, t, _w, f) => me(cred.token ?? "", t, f) },
+      {
+        a: T.a,
+        b: T.b,
+        credA: { token: "ta" },
+        credB: { token: "tb" },
+        world,
+      },
+    ).catch((e: unknown) => e);
+    expect(String(err)).toMatch(/A's credential failed at A/);
+  });
+});
+
 describe("crossDenied", () => {
   it("passes on A's 401 at B, and never sends B's or A's own legs", async () => {
     const T = await pair(
@@ -796,6 +938,19 @@ describe("crossWrite", () => {
       /B's own credential failed at B/,
     );
     expect([...w.disposed].sort()).toEqual([...w.made].sort());
+  });
+
+  it("ownOnly (#1235): one throwaway, on B, written by B's own credential", async () => {
+    const w = await world();
+    await expect(
+      crossWrite(w.write, { ...w.o, ownOnly: true }),
+    ).resolves.toBeUndefined();
+    expect(w.made).toEqual(["rl-b/x0"]);
+    expect(w.disposed).toEqual(["rl-b/x0"]);
+    const broken = await world();
+    await expect(
+      crossWrite(broken.write, { ...broken.o, credB: "nope", ownOnly: true }),
+    ).rejects.toThrow(/B's own credential failed at B/);
   });
 });
 

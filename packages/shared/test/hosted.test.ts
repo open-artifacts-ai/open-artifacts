@@ -520,6 +520,40 @@ describe("mock lapsed guests (#829 review item 3)", () => {
   });
 });
 
+describe("mock Member.directoryManaged (#1146)", () => {
+  const members = async () =>
+    MemberSchema.array().parse(
+      await (await call("GET", `${R.members}?status=active,suspended`)).json(),
+    );
+
+  it("Google sync connected: only the in-domain member with no Google link (Dan); never the owner or a linked member; removal unchanged", async () => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: {} }));
+    const all = await members();
+    expect(all.filter((m) => m.directoryManaged).map((m) => m.email)).toEqual([
+      "dan@example.com",
+    ]);
+    const dan = all.find((m) => m.email === "dan@example.com");
+    expect((await call("DELETE", R.member(dan?.id ?? ""))).status).toBe(204);
+  });
+
+  it.each(["off", "frozen"] as const)(
+    "directory %s: never set",
+    async (directory) => {
+      server.resetHandlers();
+      server.use(...createHandlers({ hosted: { directory } }));
+      expect((await members()).some((m) => m.directoryManaged)).toBe(false);
+    },
+  );
+
+  it("disconnected: never set", async () => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: {} }));
+    expect((await call("DELETE", R.directory)).status).toBe(204);
+    expect((await members()).some((m) => m.directoryManaged)).toBe(false);
+  });
+});
+
 describe("mock guest share notices (parity 2)", () => {
   const notices = async () =>
     MeSchema.parse(await (await call("GET", R.me)).json()).notices;

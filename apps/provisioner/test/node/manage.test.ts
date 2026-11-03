@@ -3,7 +3,7 @@
 // fail and cleanup compensation, redline_creds sealing. Each install is made
 // by ProvisionInstall first, as in production.
 import { FLOOR_KEY, HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
-import { REDLINE_SCOPE_FIXTURE } from "@oa/shared/provisioning/fixtures";
+import { REDLINE_SCOPE_FIXTURE } from "@oa/provisioning-contract/fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   floorOf,

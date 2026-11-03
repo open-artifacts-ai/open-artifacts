@@ -2,7 +2,7 @@
 // dark. Same setup and rules as the dashboard's m1-a11y.spec.ts: axe-core
 // from @oa/ui, default rules, serious and critical violations fail.
 import { createRequire } from "node:module";
-import { FIXTURE_IDS } from "@oa/shared/provisioning/fixtures";
+import { FIXTURE_IDS } from "@oa/provisioning-contract/fixtures";
 import { expect, type Page, test } from "@playwright/test";
 
 const AXE = createRequire(import.meta.url).resolve("axe-core/axe.min.js", {

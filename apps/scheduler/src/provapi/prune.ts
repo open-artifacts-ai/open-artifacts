@@ -9,13 +9,13 @@ import {
   DCR_COUNTER_PREFIX,
   FAILED_SECRET_RETENTION_MS,
   OAUTH_CLIENT_UNCLAIMED_MS,
-} from "@oa/shared/provisioning/constants";
+} from "@oa/provisioning-contract/constants";
 import {
   AUDIT_REFUSAL_RETENTION_MS,
   DCR_COUNTER_RETENTION_MS,
   EXPIRED_AUTH_RETENTION_MS,
   RATE_COUNTER_RETENTION_MS,
-} from "@oa/shared/provisioning/state";
+} from "@oa/provisioning-contract/state";
 import { d1, type ProvapiEnv } from "./env.js";
 
 /** Rows deleted per table per tick. */
