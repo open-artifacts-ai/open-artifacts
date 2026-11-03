@@ -24,6 +24,14 @@ export type Cred = {
   token?: string;
   /** The caller's address (share_artifact: a share with oneself). */
   email?: string;
+  /**
+   * #1137: send the cookie write probes with the bearer token instead of
+   * refusing to run them. Only for a token-only caller every write must
+   * refuse (the matrix's foreign PAT and OAuth callers): a refusal by bearer
+   * is a verdict, while an allow by bearer would not match the app's own
+   * cookie request. The matrix's coverage test checks no other caller sets it.
+   */
+  bearerWrites?: true;
 };
 export type Verdict = "allow" | "deny";
 export type ProbeIO = {
@@ -187,7 +195,7 @@ const read =
 const COOKIE_PROBES = new WeakSet<object>();
 const byCookie = (probe: Surface["probe"]): Surface["probe"] => {
   const p: Surface["probe"] = (base, cred, id, io) => {
-    if (!cred.cookie && cred.token)
+    if (!cred.cookie && cred.token && !cred.bearerWrites)
       throw new Unexpected("this write probe needs a session cookie");
     return probe(base, cred, id, io);
   };
@@ -1720,7 +1728,7 @@ function orgProbe(
       );
     }
     if (!w) throw new Unexpected(`${route}: no ORG_WRITES entry`);
-    if (!cred.cookie && cred.token)
+    if (!cred.cookie && cred.token && !cred.bearerWrites)
       throw new Unexpected("this write probe needs a session cookie");
     const c: Ctx = { t, self: () => selfId(io, base, cred) };
     let req: Req;
