@@ -65,7 +65,7 @@ type Dialog =
   | null;
 
 const GRACE_DAYS = 7;
-/** The upgrade's "latest release" value (Radix Select has no empty value). */
+/** The upgrade's default value, the platform's release (Radix Select has no empty value). */
 const LATEST = "latest";
 const REAUTH_MS = 10 * 60_000;
 const can = (i: Install, kind: JobKind) => canTransition(i.state, kind, "A");
@@ -278,7 +278,7 @@ function Actions({ install }: { install: Install }) {
           open
           onClose={close}
           title="Upgrade"
-          description={`Currently ${install.version ?? "none"}. Leave it on the default to take the latest release.`}
+          description={`Currently ${install.version ?? "none"}. Leave it on the default to take the release the platform runs.`}
           submitLabel="Upgrade"
           pending={upgrade.isPending}
           error={upgrade.error}
@@ -294,7 +294,7 @@ function Actions({ install }: { install: Install }) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent position="popper" align="start">
-                <SelectItem value={LATEST}>Latest release</SelectItem>
+                <SelectItem value={LATEST}>The platform's release</SelectItem>
                 {versions.map((r) => (
                   <SelectItem
                     key={r.version}

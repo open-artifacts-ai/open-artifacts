@@ -8,6 +8,8 @@ import type {
 /** The bindings of oa-<p>-provisioning (design v7 2.4, wrangler.jsonc). */
 export interface Env {
   PLATFORM_DB: D1Database;
+  /** This Worker's version; its tag is the release the platform runs. */
+  CF_VERSION_METADATA?: { tag?: string };
   /** Workflows on oa-<p>-provisioner (script_name). */
   PROVISION_INSTALL: WorkflowLike;
   MANAGE_INSTALL: WorkflowLike;

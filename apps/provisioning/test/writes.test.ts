@@ -842,6 +842,58 @@ describe("lifecycle writes (R5-R13)", () => {
     expect(asUser.code).toBe("forbidden");
   });
 
+  describe("the default release is the platform's own (#1137)", () => {
+    const at = (tag?: string) =>
+      fakeEnv({ CF_VERSION_METADATA: tag === undefined ? undefined : { tag } });
+
+    it("R5 with no version goes to the platform's release, not the newest", async () => {
+      const e = at("v1.41.2");
+      const { id } = await seedInstall({ version: "1.41.0" });
+      const up = await call(e, ADMIN_P, "R5", {
+        params: { id },
+        body: { requestId: requestId() },
+      });
+      expect(up.body.job.args).toEqual({ from: "1.41.0", to: "1.41.2" });
+    });
+
+    it("an explicit version still works, newer than the platform's too", async () => {
+      const e = at("v1.41.2");
+      const { id } = await seedInstall({ version: "1.41.0" });
+      const up = await call(e, ADMIN_P, "R5", {
+        params: { id },
+        body: { requestId: requestId(), version: "1.42.0" },
+      });
+      expect(up.body.job.args).toEqual({ from: "1.41.0", to: "1.42.0" });
+    });
+
+    it("R4 with no version pins the platform's release on the signup", async () => {
+      const e = at("v1.41.2");
+      const r = await call(e, ADMIN_P, "R4", { body: leo({ slug: "pinned" }) });
+      expect(r.status).toBe(202);
+      const row = await db
+        .prepare("SELECT version FROM signups WHERE slug = ?")
+        .bind("pinned")
+        .first<{ version: string | null }>();
+      expect(row?.version).toBe("1.41.2");
+    });
+
+    it("fails closed: no tag, a branch tag, or an unpublished one", async () => {
+      for (const tag of [undefined, "", "main", "v1.42", "v9.9.9", "1.42.0"]) {
+        const e = at(tag);
+        const { id } = await seedInstall({ version: "1.41.0" });
+        const up = await call(e, ADMIN_P, "R5", {
+          params: { id },
+          body: { requestId: requestId() },
+        });
+        expect(up.code, String(tag)).toBe("release_not_published");
+        const r4 = await call(e, ADMIN_P, "R4", {
+          body: leo({ slug: `n${requestId().slice(-6).toLowerCase()}` }),
+        });
+        expect(r4.code, String(tag)).toBe("release_not_published");
+      }
+    });
+  });
+
   it("R5 upgrade: default latest installable; at or below current is downgrade_refused", async () => {
     const e = fakeEnv();
     const { id } = await seedInstall({ version: "1.41.2" });

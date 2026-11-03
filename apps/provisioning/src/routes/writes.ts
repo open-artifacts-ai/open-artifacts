@@ -69,6 +69,24 @@ export function compareVersions(a: string, b: string): number {
  * only, reading that version alone (3.5, #1029); floor, revocation and
  * variant are release_gate's (release_unverified, P32).
  */
+/**
+ * The platform's own release: this Worker's version tag, which a deploy sets
+ * to the release it deployed, the same tag the fleet follows. Null when there
+ * isn't a stable one.
+ */
+export function platformRelease(
+  env: Pick<Env, "CF_VERSION_METADATA">,
+): string | null {
+  return (
+    /^v(\d+\.\d+\.\d+)$/.exec(env.CF_VERSION_METADATA?.tag ?? "")?.[1] ?? null
+  );
+}
+
+/**
+ * The release a create or upgrade runs: the one asked for, or by default the
+ * platform's own, as the fleet does, never just the newest published. A
+ * release published before its platform deploy reaches no install by default.
+ */
 export async function resolveRelease(
   env: Env,
   version: string | undefined,
@@ -79,13 +97,16 @@ export async function resolveRelease(
       throw new ApiError("release_not_published");
     return version;
   }
-  const newest = (await releases(env))
-    .filter((r) => r.installable && r.variants.includes(variant))
-    .map((r) => r.version)
-    .sort(compareVersions)
-    .at(-1);
-  if (!newest) throw new ApiError("release_not_published");
-  return newest;
+  const own = platformRelease(env);
+  if (own === null)
+    throw new ApiError(
+      "release_not_published",
+      "the platform has no release tag",
+    );
+  const r = await releaseOf(env, own);
+  if (!r || !r.installable || !r.variants.includes(variant))
+    throw new ApiError("release_not_published");
+  return own;
 }
 
 type Plan = {
