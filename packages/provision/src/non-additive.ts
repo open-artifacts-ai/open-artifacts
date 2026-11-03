@@ -9,6 +9,9 @@ export const NON_ADDITIVE_MARK = "-- oa:non-additive";
 
 type Token =
   | { t: "word"; v: string }
+  /** A quoted name: never a keyword. */
+  | { t: "name"; v: string }
+  /** A string. */
   | { t: "lit" }
   | { t: "punct"; v: string };
 
@@ -35,11 +38,17 @@ function tokens(sql: string): Token[] | null {
       if (n < 0) return null;
       i = n + 2;
     } else if (c === "'" || c === '"' || c === "`") {
+      const at = i;
       if (!quoted(c)) return null;
-      out.push({ t: "lit" });
+      out.push(
+        c === "'"
+          ? { t: "lit" }
+          : { t: "name", v: sql.slice(at + 1, i - 1).toUpperCase() },
+      );
     } else if (c === "[") {
+      const at = i;
       if (!quoted("]")) return null;
-      out.push({ t: "lit" });
+      out.push({ t: "name", v: sql.slice(at + 1, i - 1).toUpperCase() });
     } else {
       const w = /^[\p{L}\p{N}_$]+/u.exec(sql.slice(i))?.[0];
       if (w) {
@@ -58,9 +67,12 @@ const word = (x: Token | undefined) => (x?.t === "word" ? x.v : "");
 
 /** The index just past this statement's end; a trigger ends at its END. */
 function statementEnd(ts: readonly Token[], from: number): number {
+  const second = word(ts[from + 1]);
   const trigger =
     word(ts[from]) === "CREATE" &&
-    ts.slice(from, from + 4).some((x) => word(x) === "TRIGGER");
+    (second === "TRIGGER" ||
+      ((second === "TEMP" || second === "TEMPORARY") &&
+        word(ts[from + 2]) === "TRIGGER"));
   let depth = 0;
   let body = false;
   let cases = 0;
@@ -93,23 +105,79 @@ function statements(ts: readonly Token[]): Token[][] {
   return out;
 }
 
-/** A WHERE outside every parenthesis, that isn't always true. */
-function narrowed(s: readonly Token[]): boolean {
+const isPunct = (x: Token | undefined, v: string) =>
+  x?.t === "punct" && x.v === v;
+
+/** The tokens split on these words, outside every parenthesis. */
+function splitTop(s: readonly Token[], words: readonly string[]): Token[][] {
+  const out: Token[][] = [[]];
   let depth = 0;
-  for (let i = 0; i < s.length; i++) {
-    const x = s[i] as Token;
-    if (x.t === "punct" && x.v === "(") depth++;
-    else if (x.t === "punct" && x.v === ")") depth--;
-    else if (depth === 0 && word(x) === "WHERE")
-      return s
-        .slice(i + 1)
-        .some(
-          (y) =>
-            y.t === "lit" ||
-            (y.t === "word" && !/^(\d+|TRUE|NOT|NULL)$/.test(y.v)),
-        );
+  for (const x of s) {
+    if (isPunct(x, "(")) depth++;
+    else if (isPunct(x, ")")) depth--;
+    if (depth === 0 && words.includes(word(x))) out.push([]);
+    else out.at(-1)?.push(x);
   }
-  return false;
+  return out;
+}
+
+const NOT_A_COLUMN =
+  /^(\d.*|NULL|TRUE|FALSE|NOT|CASE|EXISTS|SELECT|CURRENT_TIME|CURRENT_DATE|CURRENT_TIMESTAMP)$/;
+
+/** A column reference at the start of `c`: its name and length, else null. */
+function columnAt(c: readonly Token[]): { name: string; len: number } | null {
+  const one = (x: Token | undefined) =>
+    x?.t === "name" || (x?.t === "word" && !NOT_A_COLUMN.test(x.v))
+      ? x.v
+      : null;
+  const a = one(c[0]);
+  if (a === null) return null;
+  if (!isPunct(c[1], ".")) return { name: a, len: 1 };
+  const b = one(c[2]);
+  return b === null ? null : { name: b, len: 3 };
+}
+
+const COMPARISONS = ["=", "<", ">", "!"];
+const WORD_COMPARISONS = ["IS", "IN", "LIKE", "GLOB", "BETWEEN"];
+
+/** `column op value`, where the value isn't that same column. */
+function comparesColumn(c: readonly Token[]): boolean {
+  const col = columnAt(c);
+  if (!col) return false;
+  let i = col.len;
+  if (word(c[i]) === "NOT") i++;
+  const op = c[i];
+  const compares =
+    (op?.t === "punct" && COMPARISONS.includes(op.v)) ||
+    WORD_COMPARISONS.includes(word(op));
+  if (!compares) return false;
+  const rhs = c.slice(i + 1).filter((x) => x.t !== "punct" || x.v !== "=");
+  if (rhs.length === 0) return false;
+  // new.id and old.id, in a trigger, are another row's: anything else named
+  // like the column may be the column.
+  return !rhs.some((x, k) => {
+    const same = (x.t === "word" || x.t === "name") && x.v === col.name;
+    const row = /^(NEW|OLD)$/.test(word(rhs[k - 2]));
+    return same && !(isPunct(rhs[k - 1], ".") && row);
+  });
+}
+
+/**
+ * A WHERE that really narrows: outside every parenthesis, no OR, and at least
+ * one AND term compares a real column. Anything else holds, so a clause that's
+ * always true can't pass, whatever form it takes.
+ */
+function narrowed(s: readonly Token[]): boolean {
+  const [, ...where] = splitTop(s, ["WHERE"]);
+  if (where.length !== 1) return false;
+  const [clause] = splitTop(where[0] as Token[], [
+    "RETURNING",
+    "ORDER",
+    "LIMIT",
+  ]);
+  const c = clause as Token[];
+  if (splitTop(c, ["OR"]).length > 1) return false;
+  return splitTop(c, ["AND"]).some(comparesColumn);
 }
 
 const has = (s: readonly Token[], ...seq: string[]) =>

@@ -104,6 +104,20 @@ describe("nonAdditiveReason", () => {
     );
   });
 
+  it("a name that reads like a trigger can't hide the next statement", () => {
+    for (const sql of [
+      "CREATE TABLE trigger (begin TEXT); DROP TABLE x;",
+      "CREATE VIEW trigger AS SELECT 1 AS begin; DROP TABLE x;",
+      "CREATE TABLE IF NOT trigger (begin TEXT); DROP TABLE x;",
+    ])
+      expect(nonAdditiveReason(sql), sql).toBe("drop_table");
+    expect(
+      nonAdditiveReason(
+        "CREATE TEMP TRIGGER t BEGIN SELECT 1; END; DROP TABLE x;",
+      ),
+    ).toBe("unknown");
+  });
+
   it("a safe trigger passes, and the statement after it is still read", () => {
     const t =
       "CREATE TRIGGER t BEFORE DELETE ON a BEGIN SELECT CASE WHEN old.x THEN RAISE(ABORT, 'no') END; END;";
@@ -118,8 +132,52 @@ describe("nonAdditiveReason", () => {
     expect(
       nonAdditiveReason("DELETE FROM a WHERE b IN (SELECT c FROM d);"),
     ).toBeNull();
-    for (const w of ["1", "1 = 1", "TRUE", "NOT NULL", "(1)"])
-      expect(nonAdditiveReason(`DELETE FROM a WHERE ${w};`)).toBe("delete_all");
+    for (const w of [
+      "1",
+      "1 = 1",
+      "TRUE",
+      "NOT NULL",
+      "(1)",
+      "1 OR 1",
+      "'a' = 'a'",
+      "1 IS 1",
+      "1e0",
+      "NULL IS NULL",
+      "1 RETURNING b",
+      "a = a",
+      "a = a + 0",
+      '"a" = [A]',
+      "t.a IS t.a",
+      "a = t.a",
+      "b = 1 OR 1",
+      "lower(a) = 'x'",
+      "(a = 1)",
+      "a",
+    ])
+      expect(nonAdditiveReason(`DELETE FROM a WHERE ${w};`), w).toBe(
+        "delete_all",
+      );
+    for (const w of [
+      "a = 1",
+      "a = 'x'",
+      "a = b",
+      "t.a = t.b",
+      '"a" = 1',
+      "a IS NULL",
+      "a IS NOT NULL",
+      "a IN (1, 2)",
+      "a NOT IN (SELECT b FROM c)",
+      "a LIKE 'x%'",
+      "a BETWEEN 1 AND 2",
+      "a = new.a",
+      "a <> 1",
+      "a >= 1",
+      "a = 1 AND 1",
+      "1 AND a = 1",
+      "a = 1 RETURNING b",
+      "a = 1 ORDER BY b LIMIT 1",
+    ])
+      expect(nonAdditiveReason(`DELETE FROM a WHERE ${w};`), w).toBeNull();
   });
 
   it("anything that overwrites holds", () => {

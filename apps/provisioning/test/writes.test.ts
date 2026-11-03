@@ -827,6 +827,9 @@ describe("lifecycle writes (R5-R13)", () => {
     ).toBe("forbidden");
     // Red-line's reach stops at test installs before this rule does.
     expect((await send(redline, false)).code).toBe("not_found");
+    expect((await send({ ...OIDC_P, kind: "test-admin" }, true)).code).toBe(
+      "forbidden",
+    );
     const owned = await seedInstall({
       version: "1.41.2",
       source: "self-serve",
