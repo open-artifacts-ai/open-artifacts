@@ -29,7 +29,7 @@ export function fileSnippets(
       title: "Claude Code",
       path: null,
       note: "then run /mcp in Claude Code and sign in; no token goes in the command",
-      text: `claude mcp add --transport http ${name} ${url}`,
+      text: `claude mcp add --transport http -s user ${name} ${url}`,
     },
     cursor: {
       title: "Cursor",

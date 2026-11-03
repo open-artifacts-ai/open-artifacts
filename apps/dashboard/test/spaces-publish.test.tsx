@@ -41,7 +41,9 @@ it("the Space select comes first, with its helper; Personal, then publishable sp
     fields.indexOf(within(d).getByLabelText("Title")),
   );
   expect(
-    within(d).getByText("Only you, and anyone you share it with."),
+    within(d).getByText(
+      "Only you can see it until you share it or move it to a space.",
+    ),
   ).toBeVisible();
   expect(box).toHaveTextContent("Personal");
   fireEvent.click(box);
@@ -55,7 +57,9 @@ it("the helper follows the selection: Personal, then a space", async () => {
   const d = await openUpload();
   expect(await space()).toHaveTextContent("Personal");
   expect(
-    within(d).getByText("Only you, and anyone you share it with."),
+    within(d).getByText(
+      "Only you can see it until you share it or move it to a space.",
+    ),
   ).toBeVisible();
   expect(
     within(d).queryByText("People in this space get access by their role."),
@@ -68,7 +72,9 @@ it("the helper follows the selection: Personal, then a space", async () => {
     ),
   ).toBeVisible();
   expect(
-    within(d).queryByText("Only you, and anyone you share it with."),
+    within(d).queryByText(
+      "Only you can see it until you share it or move it to a space.",
+    ),
   ).toBeNull();
 });
 

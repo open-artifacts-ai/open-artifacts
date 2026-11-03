@@ -523,6 +523,23 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             ) : (
               <span className="text-muted-foreground">{s.role}</span>
             );
+            // Guests first; then a member who can only view (never why),
+            // flagged only where the stored role says more than they get.
+            const caption = s.guest
+              ? s.role === "editor"
+                ? "Guest · can only view for now"
+                : "Guest · can only view"
+              : s.viewOnly && s.role === "editor"
+                ? "Can only view for now"
+                : null;
+            const justShared =
+              shared?.email === s.email && shared.role === "editor";
+            // The guest note adds what happens next; a viewOnly member's
+            // caption already says all there is.
+            const note =
+              justShared && s.guest
+                ? "Guests can only view. If they become a member, they'll be able to edit."
+                : null;
             return (
               <li
                 key={s.email}
@@ -530,7 +547,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               >
                 <div className={PERSON}>
                   <UserAvatar name={null} email={s.email} />
-                  {s.guest ? (
+                  {caption ? (
                     <span
                       className="min-w-0 flex-1 [overflow-wrap:anywhere]"
                       title={s.email}
@@ -546,27 +563,22 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                     </>
                   )}
                 </div>
-                {s.guest && (
+                {caption && (
                   // Wraps only where the line can't hold them, under about 340px.
                   <div className="flex flex-wrap items-center justify-between gap-x-[var(--oa-space-2)] gap-y-[var(--oa-space-1)]">
                     <span className={`whitespace-nowrap ${MUTED}`}>
-                      {s.role === "editor"
-                        ? "Guest · can only view for now"
-                        : "Guest · can only view"}
+                      {caption}
                     </span>
                     <div className="ml-auto flex items-center gap-[var(--oa-space-2)]">
                       {controls}
                     </div>
                   </div>
                 )}
-                {s.guest &&
-                  shared?.email === s.email &&
-                  shared.role === "editor" && (
-                    <p role="status" className="m-0 text-muted-foreground">
-                      Guests can only view. If they become a member, they'll be
-                      able to edit.
-                    </p>
-                  )}
+                {note && (
+                  <p role="status" className="m-0 text-muted-foreground">
+                    {note}
+                  </p>
+                )}
               </li>
             );
           })}

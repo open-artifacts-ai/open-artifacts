@@ -753,8 +753,8 @@ export function SpacePeople({
         )}
       {frozen && (
         <p className={muted}>
-          Group sync is off. Everyone below was kept as of the last sync and is
-          edited manually.
+          Group sync is paused. Everyone below was kept as of the last sync. Add
+          and remove people by hand.
         </p>
       )}
       {(allTotal > SEARCH_FROM || q) && (

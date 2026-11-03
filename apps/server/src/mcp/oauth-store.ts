@@ -1,3 +1,4 @@
+import { retryingKv } from "../db/retry.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { logError, logWarn } from "../log.js";
@@ -134,8 +135,11 @@ export function checkedStoreMode(
  * is kv or dual with no OAUTH_KV binding.
  */
 export function oauthEnv(env: Env): OAuthEnv {
-  const kv = env.OAUTH_KV;
-  if (kv instanceof StoreBase) return env as OAuthEnv;
+  if (env.OAUTH_KV instanceof StoreBase) return env as OAuthEnv;
+  // KV gets retry on a storage failure (db/retry.ts); put, delete and list
+  // get one try. One wrapper per binding, so this is a no-op when the entry
+  // point already wrapped env (withRetries).
+  const kv = retryingKv(env.OAUTH_KV);
   const mode = checkedStoreMode(env);
   const store =
     mode === "kv"
@@ -1111,7 +1115,8 @@ export async function copyKvToD1(
 ): Promise<CopyCounts> {
   const now = opt.now ?? Date.now();
   const mode = oauthStoreMode(env);
-  const kv = rawKv(env.OAUTH_KV);
+  // Its gets retry on a storage failure (db/retry.ts); its list doesn't.
+  const kv = retryingKv(rawKv(env.OAUTH_KV));
   if (mode !== "dual" || !kv)
     throw new OAuthStoreConfigError(
       "the KV -> D1 copy runs only with OAUTH_STORE=dual and OAUTH_KV bound",

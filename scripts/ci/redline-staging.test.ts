@@ -45,7 +45,11 @@ const runBash = (script: string, env: Record<string, string>) =>
 
 describe("redline-staging.yml", () => {
   it("runs only on demand for a tag, in the redline-staging Environment, bounded; id-token on the job only", () => {
-    expect(Object.keys(w.on)).toEqual(["workflow_dispatch"]);
+    expect(Object.keys(w.on)).toEqual(["workflow_dispatch", "workflow_call"]);
+    expect(w.on.workflow_call.inputs.tag).toEqual({
+      type: "string",
+      required: true,
+    });
     expect(w.on.workflow_dispatch.inputs.tag.required).toBe(true);
     expect(w.permissions).toEqual({ contents: "read" });
     expect(Object.keys(w.jobs)).toEqual(["platform-tags", "redline"]);
@@ -101,6 +105,14 @@ describe("redline-staging.yml", () => {
       ps.filter((s) => JSON.stringify(s).includes("secrets.")),
     ).toHaveLength(1);
     expect(JSON.stringify(job)).not.toContain("CLOUDFLARE_API_TOKEN");
+  });
+
+  // P30 runs only with this set, and without it a dispatched run fails the
+  // gate: only a scheduled run may leave it out (report.test.ts).
+  it("sets REDLINE_DISPATCH on a dispatch, and only then (#1137)", () => {
+    expect(named("Run the suite").env.REDLINE_DISPATCH).toBe(
+      "${{ github.event_name == 'workflow_dispatch' && '1' || '' }}",
+    );
   });
 
   it("names each run after its tag, the shape staging-first-gate.sh matches", () => {
@@ -330,7 +342,10 @@ describe("redline-staging.yml", () => {
     expect(text).not.toContain("redline-deploy.sh");
     const suite = named("Run the suite");
     expect(suite.run).toContain("pnpm --filter @oa/redline live");
-    expect(suite.run).not.toMatch(/--gate|REDLINE_GATE/);
+    // The gate is enforced through env, not a flag (#1137): the prod gate
+    // reads only this run's conclusion.
+    expect(suite.run).not.toContain("--gate");
+    expect(suite.env.REDLINE_GATE).toBe("1");
     const t19 = named("t19");
     expect(t19.if).toBe(
       "${{ !cancelled() && steps.bringup.outcome == 'success' }}",

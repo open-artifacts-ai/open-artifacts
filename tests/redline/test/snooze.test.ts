@@ -177,6 +177,43 @@ describe("snoozeOwnerPath (#1078)", () => {
     expect(err?.message).not.toContain(x.origin);
   });
 
+  it("a server without the test-hold seam (no binding hides the hold): the snooze says the group isn't in the held list; the hold is still taken off", async () => {
+    const x = await install({ testHeldShown: false });
+    const err = await snoozeOwnerPath(x.t, PAT, { ownerCred: asOwner }).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(err?.message).toBe(
+      "rl-a owner snooze: the group is not in the status's held list",
+    );
+    expect(err?.message).not.toContain("@");
+    expect(err?.message).not.toContain("test-");
+    expect(err?.message).not.toContain(x.origin);
+    expect(x.st.held).toBe(false);
+  });
+
+  it("a bound install shows the hold without the seam: passes", async () => {
+    const x = await install({ bound: true, testHeldShown: false });
+    expect(
+      (await snoozeOwnerPath(x.t, PAT, { ownerCred: asOwner })).level,
+    ).toBe("pass");
+  });
+
+  for (const until of ["none", "past"] as const)
+    it(`a held group whose snooze shows ${until === "none" ? "no" : "a past"} snoozedUntil fails with its own message`, async () => {
+      const x = await install({ snoozeUntil: until });
+      const err = await snoozeOwnerPath(x.t, PAT, { ownerCred: asOwner }).then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err?.message).toBe(
+        "rl-a owner snooze: the group is held but has no future snoozedUntil",
+      );
+      expect(err?.message).not.toContain("@");
+      expect(err?.message).not.toContain("test-");
+      expect(x.st.held).toBe(false);
+    });
+
   it("no owner_cancel audit row fails the case", async () => {
     const x = await install({ noCancelAudit: true });
     await expect(

@@ -57,6 +57,8 @@ load_constants() {
   APP_ZONE="$(jq -r '.app_zone // ""' "$f")"
   CONTENT_ZONE="$(jq -r '.content_zone // ""' "$f")"
   EMAIL_ZONE="$(jq -r '.email_zone // ""' "$f")"
+  ALERT_FROM="$(jq -r '.alert_from // ""' "$f")"
+  WELCOME_FROM="$(jq -r '.welcome_from // ""' "$f")"
   DEPLOY_TOKEN_ID="$(jq -r '.deploy_token_id // ""' "$f")"
   [[ "$ACCOUNT" =~ ^[0-9a-f]{32}$ ]] || refuse "account_id is not 32 hex"
   if [ "$ENV" = staging ]; then zone_re='^[a-z0-9-]+-staging\.(app|page)$'; else zone_re='^[a-z0-9-]+\.(app|page)$'; fi
@@ -184,7 +186,19 @@ EOF
   [ "$EMAIL_ZONE" = "$CONTENT_ZONE" ] && ez="$ZONE_CONTENT"
   if [ -n "$ez" ]; then
     cf_get "/zones/$ez/email/sending/subdomains"
-    record $s "Email Sending ($EMAIL_ZONE)" "$(tf ok)" "HTTP $HTTP; $(jq -r '[.result[]?] | length' <<< "$BODY") sending subdomains"
+    # Read-only proof the senders can send: each sender's domain (mail.<zone>)
+    # is onboarded in Email Sending. A 200 alone proves only the token's reach.
+    local names want missing=""
+    names="$(jq -r '[.result[]? | (.name // .subdomain // .domain // empty)] | join(",")' <<< "$BODY" 2> /dev/null)" || names=""
+    # An empty sender never matches: its domain is "", and no listed name is.
+    for want in "${ALERT_FROM#*@}" "${WELCOME_FROM#*@}"; do
+      [[ ",$names," == *",$want,"* ]] || missing="$missing $want"
+    done
+    if [ "$(tf ok)" = true ] && [ -z "$missing" ]; then
+      record $s "Email Sending ($EMAIL_ZONE)" true "HTTP $HTTP; senders onboarded: ${ALERT_FROM#*@}"
+    else
+      record $s "Email Sending ($EMAIL_ZONE)" false "HTTP $HTTP; not onboarded:${missing:- (no sender in $ENV.json)}; listed: ${names:-none}"
+    fi
   else
     record $s "Email Sending ($EMAIL_ZONE)" false "email zone not resolved"
   fi

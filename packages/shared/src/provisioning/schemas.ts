@@ -22,6 +22,7 @@ import {
   RequestIdSchema,
   TokenIdSchema,
 } from "./ids.js";
+import { OAUTH_STORE_MODES } from "./oauth-store.js";
 import { SLUG_RE, slugRule } from "./slugs.js";
 
 // Design v7 3.3. Times are epoch ms.
@@ -252,6 +253,16 @@ export const redlineCredsJobArgs = (b: RedlineCreds): RedlineCredsJobArgs =>
   b.revoke === true
     ? { revoke: true }
     : { revoke: false, recipientKey: b.recipientKey };
+
+/** R29 (#1008): OAUTH_STORE alone; every flip is one person's yes. */
+export const SetOAuthStoreSchema = z
+  .object({
+    requestId,
+    vars: z.object({ OAUTH_STORE: z.enum(OAUTH_STORE_MODES) }).strict(),
+  })
+  .strict();
+/** R30 (#1008). */
+export const OAuthCopySchema = z.object({ requestId }).strict();
 
 export const JobSchema = z.object({
   id: JobIdSchema,

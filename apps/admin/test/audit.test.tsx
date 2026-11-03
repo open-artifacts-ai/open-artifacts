@@ -292,7 +292,10 @@ it("filters by actor and action, and keeps both in the URL", async () => {
 
 it("shows an actor and an action from the URL that are not in the lists", async () => {
   renderApp("/audit?action=upgrade.start&actor=someone%40example.com");
-  await screen.findAllByRole("row");
+  // The mock filters as R17 does (#1188): nothing matches, so no rows to wait on.
+  await waitFor(() =>
+    expect(seen.some((s) => s.path.startsWith("/api/v1/audit"))).toBe(true),
+  );
   expect(screen.getByRole("combobox", { name: "Action" })).toHaveTextContent(
     "upgrade.start",
   );

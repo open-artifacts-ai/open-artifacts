@@ -28,11 +28,7 @@ import { type HttpHandler, HttpResponse, http } from "msw";
 import { checkCreateFields, TRANSITIONS } from "../provisioning/authz.js";
 import { bodyHash } from "../provisioning/bodyhash.js";
 import { LIVE_TOKENS_PER_ADMIN } from "../provisioning/constants.js";
-import {
-  JOB_STEPS,
-  jobStepsFor,
-  type ProvisioningEnv,
-} from "../provisioning/enums.js";
+import { jobStepsFor, type ProvisioningEnv } from "../provisioning/enums.js";
 import {
   API_ERROR_STATUS,
   type ApiErrorCode,
@@ -41,22 +37,21 @@ import {
 import { FAKE_RELEASES } from "../provisioning/fakes.js";
 import {
   emptyWorld,
-  FIXTURE_IDS,
-  fixtureAudit,
   fixtureInstall,
-  fixtureJob,
   fixtureMe,
   fixtureWorld,
 } from "../provisioning/fixtures.js";
+import { mockWorld } from "../provisioning/mock-world.js";
 import { ROUTE_IDS, ROUTES, type RouteDef } from "../provisioning/routes.js";
-import type {
-  Accepted,
-  CreateInstall,
-  InstallDetail,
-  InstallSummary,
-  Job,
-  Token,
-  World,
+import {
+  type Accepted,
+  type CreateInstall,
+  type InstallDetail,
+  type InstallSummary,
+  type Job,
+  PAGE_LIMIT,
+  type Token,
+  type World,
 } from "../provisioning/schemas.js";
 import { slugError, slugRule } from "../provisioning/slugs.js";
 
@@ -98,6 +93,41 @@ export type ProvisioningMock = {
 };
 
 const BASES = ["*/api/v1", "*/v1"];
+
+/** The query tag a cursor carries: the route and the filters that made it. */
+const queryTag = (route: string, filters: Record<string, unknown>) =>
+  `${route}:${JSON.stringify(
+    Object.entries(filters)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b)),
+  )}`;
+const b64url = (s: string) =>
+  btoa(s).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+const makeCursor = (offset: number, tag: string) =>
+  b64url(JSON.stringify({ q: tag, k: offset }));
+/** The offset, or null for anything this query didn't issue. */
+const readCursor = (c: string, tag: string): number | null => {
+  try {
+    const o = JSON.parse(atob(c.replaceAll("-", "+").replaceAll("_", "/"))) as {
+      q?: unknown;
+      k?: unknown;
+    };
+    return o?.q === tag && Number.isInteger(o.k) && (o.k as number) >= 0
+      ? (o.k as number)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+/** The API's schema refusal (invokeRoute's parseInput): every failing field. */
+const invalidInput = (
+  where: "params" | "query" | "body",
+  issues: readonly { path: readonly PropertyKey[] }[],
+) =>
+  err("invalid_input", "invalid input", {
+    fields: issues.map((i) => [where, ...i.path.map(String)].join(".")),
+  });
 const err = (code: ApiErrorCode, message: string, details?: unknown) =>
   HttpResponse.json(
     { error: { code, message, ...(details ? { details } : {}) } },
@@ -144,6 +174,9 @@ export function createProvisioningMock(
   const T0 = fixtureWorld().at;
   let seq = 0;
   const now = opts.now ?? (() => T0 + ++seq * 1000);
+  const start = mockWorld();
+  /** R17's rows (mockWorld): `tokenId` is the token that acted (the API's token_id). */
+  const audit = start.audit;
 
   const installs = new Map<string, InstallDetail>();
   const jobs = new Map<string, Job>();
@@ -157,40 +190,8 @@ export function createProvisioningMock(
     install: summaryOf(installs.get(installId) as InstallDetail),
   });
   if (opts.world !== "empty") {
-    for (const s of fixtureWorld().installs.items)
-      installs.set(
-        s.id,
-        fixtureInstall({
-          ...s,
-          auth: fixtureInstall().auth,
-          activeJobId: null,
-        }),
-      );
-    jobs.set(
-      FIXTURE_IDS.jobLeo,
-      fixtureJob({
-        status: "done",
-        step: "done",
-        stepIndex: 5,
-        finishedAt: T0 + 5000,
-      }),
-    );
-    jobs.set(
-      FIXTURE_IDS.jobBroken,
-      fixtureJob({
-        id: FIXTURE_IDS.jobBroken,
-        kind: "create",
-        installId: FIXTURE_IDS.broken,
-        status: "failed",
-        step: "verify_clean",
-        steps: [...JOB_STEPS.create],
-        stepIndex: 5,
-        lastErrorCode: "prod_dirty",
-        error: { code: "prod_dirty", message: "verify_clean refused" },
-        args: { version: "1.42.0" },
-        finishedAt: T0 + 6000,
-      }),
-    );
+    for (const d of start.installs) installs.set(d.id, d);
+    for (const j of start.jobs) jobs.set(j.id, j);
   }
 
   const newJob = (
@@ -403,18 +404,32 @@ export function createProvisioningMock(
     };
   };
 
-  const page = <T>(items: T[], url: URL) => {
-    const limit = Math.min(
-      Number(url.searchParams.get("limit") ?? 50) || 50,
-      100,
-    );
-    const start = Number(url.searchParams.get("cursor") ?? 0) || 0;
+  /**
+   * A page of `items`. The cursor is opaque and tied to the query that made
+   * it (`tag`: the route and its filters), as the API's: anything else is the
+   * API's 400 `bad cursor`. Inside, only an offset.
+   */
+  const page = <T>(items: T[], c: Ctx, tag: string) => {
+    const limit = (c.query.limit as number | undefined) ?? PAGE_LIMIT.default;
+    let start = 0;
+    if (c.query.cursor !== undefined) {
+      const at = readCursor(String(c.query.cursor), tag);
+      if (at === null) return err("invalid_input", "bad cursor");
+      start = at;
+    }
     const slice = items.slice(start, start + limit);
-    const next = start + limit < items.length ? String(start + limit) : null;
+    const next =
+      start + limit < items.length ? makeCursor(start + limit, tag) : null;
     return HttpResponse.json({ items: slice, nextCursor: next });
   };
 
-  type Ctx = { params: Record<string, string>; url: URL; body: unknown };
+  type Ctx = {
+    params: Record<string, string>;
+    url: URL;
+    body: unknown;
+    /** The query as the route's schema parsed it (defaults and coercion applied). */
+    query: Record<string, unknown>;
+  };
   const reads: Partial<
     Record<(typeof ROUTE_IDS)[number], (c: Ctx) => Response>
   > = {
@@ -440,7 +455,7 @@ export function createProvisioningMock(
           tokenExpiresAt: null,
         }),
       ),
-    R2: ({ url }) => {
+    R2: (c) => {
       // As the server's R2 q: a case-insensitive substring of the slug, the
       // id, a stored host or (this mock is an admin, so pii) the owner email.
       const matchesQ = (d: InstallDetail, needle: string) =>
@@ -452,34 +467,67 @@ export function createProvisioningMock(
           d.contentHost,
           pii ? d.ownerEmail : null,
         ].some((v) => v?.toLowerCase().includes(needle));
-      const q = url.searchParams;
+      const q = c.query as { state?: string; source?: string; q?: string };
       const items = [...installs.values()]
-        .filter((d) => !q.get("state") || d.state === q.get("state"))
-        .filter((d) => !q.get("source") || d.source === q.get("source"))
-        .filter((d) => matchesQ(d, (q.get("q") ?? "").toLowerCase()))
+        .filter((d) => !q.state || d.state === q.state)
+        .filter((d) => !q.source || d.source === q.source)
+        .filter((d) => matchesQ(d, (q.q ?? "").toLowerCase()))
         .sort((a, b) => b.createdAt - a.createdAt)
         .map(summaryOf);
-      return page(items, url);
+      return page(
+        items,
+        c,
+        queryTag("R2", { ...q, cursor: undefined, limit: undefined }),
+      );
     },
     R3: ({ params }) => {
       const d = installs.get(params.id);
       if (!d) return err("not_found", "No such install.");
       return HttpResponse.json(pii ? d : { ...d, ownerEmail: null });
     },
-    R14: ({ params, url }) => {
+    R14: (c) => {
+      const { params } = c;
       if (!installs.has(params.id)) return err("not_found", "No such install.");
       const items = [...jobs.values()]
         .filter((j) => j.installId === params.id)
         .sort((a, b) => b.createdAt - a.createdAt)
         .map(({ sealed: _s, ...j }) => j);
-      return page(items, url);
+      return page(items, c, queryTag("R14", { id: params.id }));
     },
     R15: ({ params }) => {
       const j = jobs.get(params.jobId);
       return j ? HttpResponse.json(j) : err("not_found", "No such job.");
     },
     R16: () => HttpResponse.json({ items: structuredClone(FAKE_RELEASES) }),
-    R17: ({ url }) => page([fixtureAudit()], url),
+    R17: (c) => {
+      const q = c.query as {
+        installId?: string;
+        actor?: string;
+        action?: string;
+      };
+      // As the API's filters: one install, one exact action, and an actor by
+      // its label, or `token:<id>` by the token that acted.
+      const items = audit
+        .filter((r) => !q.installId || r.entry.installId === q.installId)
+        .filter((r) => !q.action || r.entry.action === q.action)
+        .filter((r) =>
+          !q.actor
+            ? true
+            : q.actor.startsWith("token:")
+              ? r.tokenId === q.actor.slice("token:".length)
+              : r.entry.actor.label === q.actor,
+        )
+        .map((r) => r.entry);
+      return page(
+        items,
+        c,
+        queryTag("R17", {
+          installId: q.installId,
+          action: q.action,
+          actor: q.actor,
+        }),
+      );
+    },
     R18: ({ params }) => {
       const rule = slugRule(params.slug);
       const taken = [...installs.values()].some(
@@ -599,6 +647,18 @@ export function createProvisioningMock(
     const r = ROUTES[id];
     if (r.base !== "api" || id === "R26") continue;
     const run = async (c: Ctx): Promise<Response> => {
+      if (id === "R28") {
+        const p = r.body.safeParse(c.body);
+        if (!p.success) return invalidInput("body", p.error.issues);
+        // As the API: the session's sid sealed to recipientKey, and its end.
+        return HttpResponse.json(
+          {
+            sealed: "oa-seal-v1.MOCK_not_sealed",
+            expiresAt: now() + 3_600_000,
+          },
+          { status: 201 },
+        );
+      }
       if (r.method === "GET")
         return reads[id]?.(c) ?? err("internal", "Not mocked.");
       if (id === "R19") {
@@ -663,10 +723,19 @@ export function createProvisioningMock(
             r.method === "POST"
               ? await request.json().catch(() => undefined)
               : undefined;
+          const url = new URL(request.url);
+          // The route's query schema first, as the API's parseInput.
+          const raw: Record<string, string> = {};
+          url.searchParams.forEach((v, k) => {
+            raw[k] = v;
+          });
+          const q = r.query.safeParse(raw);
+          if (!q.success) return invalidInput("query", q.error.issues);
           return run({
             params: params as Record<string, string>,
-            url: new URL(request.url),
+            url,
             body,
+            query: q.data as Record<string, unknown>,
           });
         }),
       );

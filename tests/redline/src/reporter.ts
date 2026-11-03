@@ -17,6 +17,7 @@ import {
   parseManifest,
   type RunBinding,
   redactReason,
+  runKindOf,
   setupHookCase,
   setupHookName,
 } from "./report.ts";
@@ -213,6 +214,7 @@ export default class RedlineReporter implements Reporter {
       ...buildReport(
         applyManifest(collect(modules, unhandled, root), loadManifest()),
         modeOf(),
+        runKindOf(process.env),
       ),
       ...(binding ? { binding } : {}),
       ...(fileNotes.length ? { fileNotes } : {}),

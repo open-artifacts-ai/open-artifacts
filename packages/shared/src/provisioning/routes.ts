@@ -14,6 +14,7 @@ import {
   MeSchema,
   MintedTokenSchema,
   MintTokenSchema,
+  OAuthCopySchema,
   PAGE_LIMIT,
   PageSchema,
   PurgeSchema,
@@ -24,6 +25,7 @@ import {
   ResumeSchema,
   RetrySchema,
   RollbackSchema,
+  SetOAuthStoreSchema,
   SlugCheckSchema,
   SuspendSchema,
   TestAdminSessionResultSchema,
@@ -66,6 +68,8 @@ export const ROUTE_IDS = [
   "R26",
   "R27",
   "R28",
+  "R29",
+  "R30",
 ] as const;
 export type RouteId = (typeof ROUTE_IDS)[number];
 export const RouteIdSchema = z.enum(ROUTE_IDS);
@@ -280,6 +284,9 @@ export const ROUTES: Readonly<Record<RouteId, RouteDef>> = {
     status: 201,
     write: true,
   },
+  // #1008: one install's OAuth store, one step at a time.
+  R29: job("R29", "/installs/:id/vars", "update", SetOAuthStoreSchema),
+  R30: job("R30", "/installs/:id/oauth-copy", "update", OAuthCopySchema),
 };
 
 /** The object schemas of a route body: itself, or each union option. */

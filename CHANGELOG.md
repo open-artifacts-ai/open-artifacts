@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.102.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.102.0...v0.102.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **spaces:** Move shows Personal as not allowed; remove asks first; frozen sync says so ([#1190](https://github.com/open-artifacts-ai/open-artifacts/issues/1190)) ([#1199](https://github.com/open-artifacts-ai/open-artifacts/issues/1199)) ([d488772](https://github.com/open-artifacts-ai/open-artifacts/commit/d488772babe0526fd0a2ca3281d45b919905a7e4))
+
+## [0.102.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.101.1...v0.102.0) (2026-11-03)
+
+
+### Features
+
+* **provisioning:** OAuth store jobs, kv to dual to copy to d1, admin MCP only ([#1008](https://github.com/open-artifacts-ai/open-artifacts/issues/1008)) ([#1171](https://github.com/open-artifacts-ai/open-artifacts/issues/1171)) ([0a14aa5](https://github.com/open-artifacts-ai/open-artifacts/commit/0a14aa5e23fc60f6f713eb3a9aea11e3837e9a69))
+
+## [0.101.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.101.0...v0.101.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **dashboard:** focus returns after an agent label edit; docs give -s user ([#1114](https://github.com/open-artifacts-ai/open-artifacts/issues/1114)) ([#1180](https://github.com/open-artifacts-ai/open-artifacts/issues/1180)) ([6df0b84](https://github.com/open-artifacts-ai/open-artifacts/commit/6df0b845889e5eed87d1efc16e6a030489afde30))
+* **server:** retry a transient D1 or KV read with bounded backoff ([#1174](https://github.com/open-artifacts-ai/open-artifacts/issues/1174)) ([dd8919e](https://github.com/open-artifacts-ai/open-artifacts/commit/dd8919e0e1df9f184324f99a380002a913af52d2))
+* **shares:** a member who can only view isn't shown as an editor ([#1119](https://github.com/open-artifacts-ai/open-artifacts/issues/1119)) ([#1181](https://github.com/open-artifacts-ai/open-artifacts/issues/1181)) ([b45219e](https://github.com/open-artifacts-ai/open-artifacts/commit/b45219e95501d06862b0ded87d10220c3dd247b8))
+
 ## [0.101.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.100.0...v0.101.0) (2026-11-03)
 
 

@@ -32,6 +32,14 @@ it("shows steps, attempt, the last error in plain words and the next retry", asy
   );
 });
 
+it("the side panel is a named landmark, apart from the shell's sidebar", async () => {
+  renderApp(`/jobs/${JOB}`);
+  const side = await screen.findByRole("complementary", {
+    name: "What happens",
+  });
+  expect(side).toHaveTextContent("If it fails");
+});
+
 it("shows Design's step labels, step count and the attempt line", async () => {
   // 75 s out reads "1 min" for anything from 30 s to 90 s, so render time can't move it.
   const retryAt = Date.now() + 75_000;

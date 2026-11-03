@@ -1,6 +1,6 @@
 // ManageInstall (design v7 5.4-5.7): every job kind but create and retry
 // (upgrade, rollback, suspend, resume, delete, restore, purge, discard,
-// release_lease, cleanup, redline_creds), one instance per job. Instance id =
+// release_lease, cleanup, redline_creds, update), one instance per job. Instance id =
 // job id; params are exactly { jobId } (3.6). Each kind's steps are
 // JOB_STEPS[kind]: every kind but cleanup starts with the 2.5 recheck, and
 // the kind is read from D1 (step `load`), so operate picks the steps. As in
@@ -29,11 +29,21 @@ import {
 } from "@oa/provision";
 import {
   type JobKind,
+  type OAuthJob,
+  oauthJobOf,
+  parseOAuthJob,
   redlineCredsJobArgs,
   type WorkflowParams,
   WorkflowParamsSchema,
 } from "@oa/shared/provisioning";
 import { codeOf } from "./errors.js";
+import {
+  dropCopyKeySettled,
+  leftKeyOpen,
+  oauthCopy,
+  seeLeftKey,
+  setOAuthStore,
+} from "./oauth-store.js";
 import {
   closeInstallSockets,
   installRow,
@@ -87,6 +97,7 @@ const KINDS: readonly ManageKind[] = [
   "release_lease",
   "cleanup",
   "redline_creds",
+  "update",
 ];
 
 /** The rechecked job: its kind, install and args (never an email). */
@@ -112,6 +123,8 @@ export type ManageJob = {
     /** redline_creds: the R26 variant (C6 RedlineCredsSchema; never the key). */
     revoke?: boolean;
   };
+  /** update: R29's mode or R30's copy (#1008). */
+  oauth?: OAuthJob;
   /** upgrade, rollback: the install is already on `to`; nothing to do. */
   already?: boolean;
   /** purge: the skip reason for the directory revoke, if any. */
@@ -382,7 +395,29 @@ async function operate(
     case "redline_creds":
       await redlineCreds(ctx, step, jobId, job);
       break;
+    case "update":
+      if (job.oauth?.op === "set")
+        await setOAuthStore(ctx, step, job, labelOf(job), job.oauth.mode);
+      else await oauthCopy(ctx, step, job, labelOf(job));
+      break;
   }
+  // #1008: a left copy key's alert shuts only once a secret list sees it gone.
+  // Only then is the step there: no other upgrade changes.
+  if (
+    (job.kind === "upgrade" ||
+      job.kind === "rollback" ||
+      (job.kind === "update" && job.oauth?.op === "set")) &&
+    (await leftKeyOpen(ctx, job.installId))
+  )
+    await jobStep(
+      ctx,
+      step,
+      jobId,
+      "copy_key_check",
+      undefined,
+      () => seeLeftKey(ctx, jobId, job.installId),
+      job.kind === "update" ? "mode_live" : "health",
+    );
   await s("done", undefined, () => finish(ctx, job));
 }
 
@@ -675,11 +710,31 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<ManageJob> {
       if (row.state !== "active") throw refused("the install is not active");
       out.args = redlineCredsJobArgs(redlineArgs(job));
       break;
+    case "update": {
+      // Admin MCP only (AUTHZ R29, R30): the row's token is an OAuth grant.
+      if (!(await oauthGrant(ctx, job)))
+        throw refused("update needs an OAuth grant");
+      const oauth = parseOAuthJob(args);
+      if (!oauth) throw refused("the update args do not parse");
+      out.oauth = oauth;
+      break;
+    }
     default:
       break;
   }
   return out;
 }
+
+/** The job's token row is an OAuth grant; TRANSITIONS admits only T here. */
+const oauthGrant = async (ctx: CreateCtx, job: JobRow) =>
+  job.token_id !== null &&
+  (
+    await transient(
+      ctx.env.PLATFORM_DB.prepare("SELECT kind FROM agent_tokens WHERE id = ?")
+        .bind(job.token_id)
+        .first<{ kind: string }>(),
+    )
+  )?.kind === "oauth";
 
 /** TRANSITIONS for the job's actor, with the provisioner's own purge. */
 async function checkKind(
@@ -800,6 +855,9 @@ async function cleanup(
     )
       throw refused("a cleanup needs its parent job");
     const row = await installRow(ctx, j.install_id);
+    // A copy's run can stop with its key up (R25, a dead run).
+    const copyKey =
+      parent.kind === "update" && oauthJobOf(parent.args)?.op === "copy";
     // The label the parent minted its owner token under: a create's or
     // retry's signup (workflow.ts), else labelOf (the install's signup,
     // else the parent job's own id).
@@ -816,6 +874,18 @@ async function cleanup(
       installId: j.install_id,
       parentId: parent.id,
       label,
+      copyKey,
+      // When the parent stopped: a cancel's or the sweep's settle.
+      stoppedAt:
+        (
+          await transient(
+            ctx.env.PLATFORM_DB.prepare(
+              "SELECT COALESCE(finished_at, updated_at) AS t FROM jobs WHERE id = ?",
+            )
+              .bind(parent.id)
+              .first<{ t: number }>(),
+          )
+        )?.t ?? ctx.io.now(),
       until: row?.lease ? (row.lease_until ?? 0) : null,
     };
   });
@@ -835,6 +905,20 @@ async function cleanup(
   } catch (e) {
     released = e;
   }
+  // Like the release: a key that wouldn't go never blocks the settle.
+  let keyLeft: unknown = null;
+  // The parent's run may have had a put_key in flight when it stopped.
+  if (job.copyKey)
+    await dropCopyKeySettled(
+      ctx,
+      step,
+      jobId,
+      job.installId,
+      job.stoppedAt,
+      "sweep_tokens",
+    ).catch((e: unknown) => {
+      keyLeft = e;
+    });
   await s("sweep_tokens", undefined, async () =>
     label ? sweepTokens(ctx, label, job.installId, jobId) : { revoked: 0 },
   );
@@ -852,6 +936,7 @@ async function cleanup(
     return { settled: parentId };
   });
   if (released !== null) throw released;
+  if (keyLeft !== null) throw keyLeft;
   await s("done", undefined, () =>
     finish(ctx, { jobId, kind: "cleanup", installId: job.installId }),
   );
@@ -938,7 +1023,12 @@ async function fail(
       ...(await reconcile(ctx, job.install_id)),
     ]),
   );
-  if (job.kind === "upgrade" || job.kind === "rollback") {
+  // update: updateVars claims the same lease.
+  if (
+    job.kind === "upgrade" ||
+    job.kind === "rollback" ||
+    job.kind === "update"
+  ) {
     const row = await installRow(ctx, job.install_id);
     if (row && ownLease(job, row, run.claimedLease))
       return {

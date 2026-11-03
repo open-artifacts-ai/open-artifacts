@@ -464,7 +464,9 @@ const verifyFx = (
         created: "2026-10-30T00:00:00Z",
       },
     ]),
-    [key("GET", `/zones/${ZAPP}/email/sending/subdomains`)]: ok([]),
+    [key("GET", `/zones/${ZAPP}/email/sending/subdomains`)]: ok([
+      { name: `mail.open-artifacts${sfx}.app` },
+    ]),
   };
   for (const p of [
     `${A}/workers/scripts`,
@@ -485,6 +487,55 @@ const verifyFx = (
       fx[key("GET", p)] = ok([]);
   return fx;
 };
+
+describe("Email Sending: the senders' domain is onboarded (#967)", () => {
+  const sending = (t: ReturnType<typeof setup>) =>
+    t.results("verify").find((x) => x.check.startsWith("Email Sending"));
+  const subdomains = (list: unknown[]) => {
+    const fx = verifyFx(365);
+    fx[key("GET", `/zones/${ZAPP}/email/sending/subdomains`)] = ok(list);
+    return fx;
+  };
+
+  it("passes when mail.<zone> is listed", () => {
+    const t = setup(verifyFx(365));
+    t.run("verify");
+    expect(sending(t)).toMatchObject({ pass: true });
+  });
+
+  it("fails on a 200 that doesn't list it: the old check passed this", () => {
+    for (const list of [
+      [],
+      [{ name: "news.open-artifacts-staging.app" }],
+      [{ name: "xmail.open-artifacts-staging.app" }],
+      [{ name: "mail.open-artifacts-staging.app.example" }],
+    ]) {
+      const t = setup(subdomains(list));
+      t.run("verify");
+      const r = sending(t);
+      expect(r.pass, JSON.stringify(list)).toBe(false);
+      expect(String(r.observed)).toContain(
+        "not onboarded: mail.open-artifacts-staging.app",
+      );
+    }
+  });
+
+  it("checks every sender: a welcome address on another domain must be listed too", () => {
+    const t = setup(verifyFx(365), {
+      welcome_from: "welcome@hello.open-artifacts-staging.app",
+    });
+    t.run("verify");
+    expect(String(sending(t)?.observed)).toContain(
+      "not onboarded: hello.open-artifacts-staging.app",
+    );
+  });
+
+  it("fails when the env names no sender", () => {
+    const t = setup(verifyFx(365), { alert_from: "", welcome_from: "" });
+    t.run("verify");
+    expect(sending(t)?.pass).toBe(false);
+  });
+});
 
 describe("provapi-spikes.sh verify", () => {
   it("passes a token 365 days out with every group readable, GETs only", () => {

@@ -16,7 +16,7 @@ import {
 import { RETRY_BACKOFF_MS, safeCode } from "./http.ts";
 import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
-import { PRE_PROD_REASON } from "./report.ts";
+import { NIGHTLY_NA_REASON, PRE_PROD_REASON } from "./report.ts";
 import { newRecipient, openSealed, parseCreds } from "./seal.ts";
 import { snoozeOwnerPath } from "./snooze.ts";
 import { adoptTarget } from "./targets.ts";
@@ -1530,7 +1530,8 @@ export const PROBES: readonly Probe[] = [
   {
     id: "P23",
     needs: ["P13"],
-    title: "delete, then purge: 404; inventory deleted; no HOSTS key",
+    title:
+      "delete, then purge: 404; inventory deleted; no HOSTS key; the slug stays taken",
     run: async (run) => {
       const p = rlp(run);
       const d = run.accepted(
@@ -1562,6 +1563,12 @@ export const PROBES: readonly Probe[] = [
       await run.settledMode("P23", p.appHost, null);
       if ((await run.hostMode(p.appHost)).installId !== null)
         throw new ProbeFail("P23: HOSTS still maps the app host");
+      // A purged install keeps its row, and installs.slug is UNIQUE: a new
+      // customer can never take this slug, and with it old links and agent
+      // configs. P32 is the other side: a discarded create frees its slug.
+      const s = await run.v1(`/slugs/${p.slug}`, { read: true });
+      if ((s.json as { status?: string })?.status !== "taken")
+        throw new ProbeFail(`P23: R18 after purge: ${desc(s)}, want taken`);
       return pass();
     },
   },
@@ -1711,7 +1718,7 @@ export const PROBES: readonly Probe[] = [
     title:
       "dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens",
     run: async (run) => {
-      if (!run.c.dispatch) return na("dispatch runs only");
+      if (!run.c.dispatch) return na(NIGHTLY_NA_REASON);
       for (let i = 0; i < 5; i++) {
         const r = await run.raw(
           `${run.c.admin}/auth/callback/google?code=redline&state=${randomBytes(16).toString("base64url")}`,

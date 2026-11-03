@@ -39,10 +39,13 @@ describe("lifecycle doc (oa-admin://docs/lifecycle)", () => {
           `| ${from} | ${kind} | ${t?.actors.join(", ")} | ${t?.to.join(", ")} |`,
         );
     for (const [kind, steps] of Object.entries(JOB_STEPS))
-      if (kind !== "redline_creds_revoke")
+      if (kind !== "redline_creds_revoke" && kind !== "oauth_copy")
         expect(doc, kind).toContain(`| ${kind} | ${steps.join(" > ")} |`);
     // Not a job kind: R26's revoke variant of redline_creds.
     expect(doc).not.toContain("| redline_creds_revoke |");
+    expect(doc).toContain(
+      `| update (oauthCopy: true) | ${JOB_STEPS.oauth_copy.join(" > ")} |`,
+    );
     expect(doc).toContain(
       `| redline_creds (revoke: true) | ${JOB_STEPS.redline_creds_revoke.join(" > ")} |`,
     );

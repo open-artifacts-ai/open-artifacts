@@ -435,3 +435,8 @@ it("sharedSpaceName labels only the reserved name", () => {
   expect(sharedSpaceName("Personal stuff")).toBe("Personal stuff");
   expect(sharedSpaceName("Engineering")).toBe("Engineering");
 });
+
+it("an install with no shared spaces (the mock's noSharedSpaces): No spaces yet", async () => {
+  mountHosted("/", { noSharedSpaces: true });
+  expect(await screen.findByText("No spaces yet")).toBeVisible();
+});

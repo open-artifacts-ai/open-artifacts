@@ -1,7 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   ID_TOKEN_CASES,
@@ -22,6 +28,8 @@ import {
   label,
   labelOf,
   levelOf,
+  NIGHTLY_NA_FILE,
+  NIGHTLY_NA_REASON,
   PRE_PROD_GUARD,
   PRE_PROD_GUARD_REASON,
   PRE_PROD_NA,
@@ -29,6 +37,7 @@ import {
   proof,
   type Report,
   redactReason,
+  runKindOf,
 } from "../src/report.ts";
 import { bindingOf } from "../src/reporter.ts";
 
@@ -705,5 +714,100 @@ describe("bindingOf: the suite's commit (#1137)", () => {
       }),
     });
     expect(b?.suiteSha).toBe(head);
+  });
+});
+
+describe("nightly-only: P30 is accepted on a scheduled run and never on a candidate (#1137)", () => {
+  const P30 =
+    "provisioning > P30: dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens";
+  const c = (over: Partial<CaseResult> = {}): CaseResult => ({
+    name: P30,
+    level: "not-applicable",
+    reason: NIGHTLY_NA_REASON,
+    file: NIGHTLY_NA_FILE,
+    ...over,
+  });
+  const OK: CaseResult = { name: "x", level: "pass" };
+  const SCHEDULED = { scheduled: true };
+
+  it("a scheduled run accepts exactly that", () => {
+    expect(gatePasses([OK, c()], SCHEDULED)).toBe(true);
+  });
+
+  it("fails closed: a dispatched run with P30 not-applicable fails the gate", () => {
+    const dispatched = runKindOf({
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      REDLINE_DISPATCH: "1",
+    });
+    expect(gatePasses([OK, c()], dispatched)).toBe(false);
+    const r = buildReport([OK, c()], "staging", dispatched);
+    expect(r.gate.passed).toBe(false);
+    expect(r.nightlyOnly).toBeUndefined();
+    expect(formatReport(r)).toContain("[not-applicable] " + P30);
+  });
+
+  it("fails closed: a dispatch with REDLINE_DISPATCH lost, and no run named", () => {
+    const lost = runKindOf({ GITHUB_EVENT_NAME: "workflow_dispatch" });
+    expect(gatePasses([OK, c()], lost)).toBe(false);
+    expect(gatePasses([OK, c()])).toBe(false);
+    expect(gatePasses([OK, c()], {})).toBe(false);
+    expect(buildReport([OK, c()], "staging").gate.passed).toBe(false);
+  });
+
+  it("is scheduled only on GitHub's schedule event, without the dispatch mark", () => {
+    expect(runKindOf({ GITHUB_EVENT_NAME: "schedule" }).scheduled).toBe(true);
+    for (const env of [
+      {},
+      { GITHUB_EVENT_NAME: "" },
+      { GITHUB_EVENT_NAME: "workflow_dispatch" },
+      { GITHUB_EVENT_NAME: "workflow_call" },
+      { GITHUB_EVENT_NAME: "SCHEDULE" },
+      { GITHUB_EVENT_NAME: "schedule", REDLINE_DISPATCH: "1" },
+    ])
+      expect(runKindOf(env).scheduled).toBe(false);
+  });
+
+  it("any other reason, level, case or file fails, scheduled or not", () => {
+    for (const bad of [
+      c({ reason: "skipped" }),
+      c({ level: "fail" }),
+      c({ level: "infra" }),
+      c({ level: "blocked" }),
+      c({ name: "provisioning > P31: x" }),
+      c({ file: "live/surfaces.test.ts" }),
+      c({ file: "live/xprovisioning.test.ts" }),
+      c({ file: "provisioning.test.ts" }),
+      c({ file: undefined }),
+    ])
+      expect(gatePasses([bad], SCHEDULED)).toBe(false);
+  });
+
+  it("the report shows it by name, as nightly-only", () => {
+    const r = buildReport([OK, c()], "staging", SCHEDULED);
+    expect(r.gate.passed).toBe(true);
+    expect(r.nightlyOnly).toEqual([P30]);
+    expect(r.gate.reason).toContain("1 nightly-only not-applicable");
+    const text = formatReport(r);
+    expect(text).toContain("never on a candidate");
+    expect(text).toContain(P30);
+    expect(text).not.toContain("Not pass:");
+  });
+
+  it("the live reporter passes the run's own kind", () => {
+    const src = readFileSync(
+      join(import.meta.dirname, "../src/reporter.ts"),
+      "utf8",
+    );
+    expect(src).toContain("runKindOf(process.env)");
+  });
+});
+
+describe("the reporter's file for P30 (#1137)", () => {
+  it("is the nightly's exact path", () => {
+    const root = join(import.meta.dirname, "..");
+    expect(relative(root, join(root, "live", "provisioning.test.ts"))).toBe(
+      NIGHTLY_NA_FILE,
+    );
+    expect(existsSync(join(root, NIGHTLY_NA_FILE))).toBe(true);
   });
 });

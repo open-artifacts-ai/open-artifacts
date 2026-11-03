@@ -4,7 +4,8 @@
 import type { Me } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { removeMappingCopy } from "../src/settings/spaces/SpaceAccess";
 import { calls, installHarness, mountHosted } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
@@ -53,6 +54,14 @@ const serveOrg = http.get("*/api/v1/directory/org-mappings", () =>
 
 /** The first wait after a mount gets the page-load deadline. */
 const firstLoad = { timeout: FIRST_LOAD_MS };
+/** The Remove confirm (#1190): its title and body, then Remove. */
+const confirmRemove = async (title: string, body?: string) => {
+  const d = await screen.findByRole("alertdialog", { name: title });
+  if (body) expect(d).toHaveTextContent(body);
+  const go = within(d).getByRole("button", { name: "Remove" });
+  expect(go).toHaveAttribute("data-variant", "destructive");
+  fireEvent.click(go);
+};
 const groups = () => screen.findByRole("table", { name: "Groups" }, firstLoad);
 /** A Groups row, under one page-load deadline for the table and its rows. */
 const row = (re: RegExp) =>
@@ -157,6 +166,11 @@ it("Remove DELETEs the mapping", async () => {
       name: "Remove eng@example.com",
     }),
   );
+  expect(seen).toHaveLength(0);
+  await confirmRemove(
+    "Remove eng@example.com from Engineering?",
+    "1 person loses Editor on Engineering within a minute. People with access through another group keep it. Their artifacts stay in the space.",
+  );
   await waitFor(() =>
     expect(seen.at(-1)?.path).toBe(`/api/v1/spaces/${ID}/mappings/gEng01`),
   );
@@ -175,9 +189,44 @@ it("frozen: the mapping shows, but no control adds or changes one", async () => 
   ).toBeNull();
   expect(
     screen.getByText(
+      "Group sync is paused, so groups can't change here. Each space kept the people it had at the last sync. You can still add and remove people under People.",
+    ),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("link", { name: "Open directory settings" }),
+  ).toBeNull();
+  expect(
+    within(screen.getByRole("region", { name: "Who gets access" })).queryByText(
+      /Group sync is off/,
+    ),
+  ).toBeNull();
+});
+
+it("sync off keeps its own line", async () => {
+  mountHosted(ENG, { directory: "off" });
+  await row(/eng@example.com/);
+  expect(
+    screen.getByText(
       "Group sync is off, so mappings can't change. Edit people manually under People.",
     ),
   ).toBeVisible();
+  expect(screen.queryByText(/Group sync is paused/)).toBeNull();
+});
+
+it("Cancel on the Remove confirm removes nothing", async () => {
+  const del = calls("DELETE");
+  mountHosted(ENG);
+  fireEvent.click(
+    within(await row(/eng@example.com/)).getByRole("button", {
+      name: "Remove eng@example.com",
+    }),
+  );
+  const d = await screen.findByRole("alertdialog", {
+    name: "Remove eng@example.com from Engineering?",
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(del).toHaveLength(0);
 });
 
 it("a 409 directory_sync_off shows the message once, with the link, and restores the role", async () => {
@@ -270,6 +319,7 @@ it("mapping off: a space manager can still remove viewer/editor rows; add and ro
   });
   expect(remove).toBeEnabled();
   fireEvent.click(remove);
+  await confirmRemove("Remove eng@example.com from Engineering?");
   await waitFor(() =>
     expect(del.at(-1)?.path).toBe(`/api/v1/spaces/${ID}/mappings/gEng01`),
   );
@@ -428,6 +478,10 @@ it("an Every space row changes role and removes", async () => {
   fireEvent.click(
     within(r).getByRole("button", { name: "Remove exec@example.com" }),
   );
+  await confirmRemove(
+    "Remove exec@example.com from every space?",
+    "5 people lose Viewer in every shared space within a minute. People with access through another group keep it. Their artifacts stay in their spaces.",
+  );
   await waitFor(() =>
     expect(del.at(-1)?.path).toBe("/api/v1/directory/org-mappings/gExec02"),
   );
@@ -456,4 +510,41 @@ it("frozen: the Every space card is read-only", async () => {
   const r = await within(card).findByRole("row", { name: /exec@example.com/ });
   expect(within(r).queryByRole("combobox")).toBeNull();
   expect(within(card).queryByRole("combobox")).toBeNull();
+});
+
+describe("the Remove confirm's copy", () => {
+  const g = {
+    groupId: "gFin",
+    email: "finance@example.com",
+    name: "Finance",
+    role: "viewer" as const,
+    lastSyncedAt: null,
+  };
+  it.each([
+    [
+      3,
+      "Finance",
+      "3 people lose Viewer on Finance within a minute. People with access through another group keep it. Their artifacts stay in the space.",
+    ],
+    [
+      1,
+      "Finance",
+      "1 person loses Viewer on Finance within a minute. People with access through another group keep it. Their artifacts stay in the space.",
+    ],
+    [
+      null,
+      "Finance",
+      "People in finance@example.com lose Viewer on Finance within a minute. People with access through another group keep it. Their artifacts stay in the space.",
+    ],
+    [
+      null,
+      null,
+      "People in finance@example.com lose Viewer in every shared space within a minute. People with access through another group keep it. Their artifacts stay in their spaces.",
+    ],
+  ])("%s people, %s", (memberCount, space, body) => {
+    expect(removeMappingCopy({ ...g, memberCount }, space)).toEqual({
+      title: `Remove finance@example.com from ${space ?? "every space"}?`,
+      body,
+    });
+  });
 });

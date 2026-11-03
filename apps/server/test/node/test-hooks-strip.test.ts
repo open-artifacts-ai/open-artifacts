@@ -28,6 +28,8 @@ const MARKERS = [
   // The refusal reasons the hooks give after the key verifies.
   '"spaces_blocked"',
   '"grant_refused"',
+  // P50: the status's test-hold seam (directory/connect.ts testHeldFn).
+  "function testHeldShown(",
 ];
 // Cloudflare's always-pass Turnstile TEST secret: never in a release bundle.
 const TURNSTILE_TEST_SECRET = "1x0000000000000000000000000000000AA";

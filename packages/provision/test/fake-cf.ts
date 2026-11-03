@@ -803,6 +803,11 @@ export class FakeCf {
       s.secrets.set(n, text);
       return env({ name: n, type });
     }
+    if (sub.startsWith("/secrets/") && req.method === "DELETE") {
+      const n = decodeURIComponent(sub.slice("/secrets/".length));
+      if (!s.secrets.delete(n)) return fail(404, "secret not found", 10056);
+      return env(null);
+    }
     if (sub === "/subdomain" && req.method === "POST") {
       if (ns !== null) return fail(405, "Method Not Allowed", 10405);
       s.subdomain = JSON.parse(body);
@@ -1137,6 +1142,11 @@ export class FakeCf {
           // As the server: only where hooks are on.
           ...(this.plain(s, "TEST_HOOKS") === "1" ? { testHooks: true } : {}),
           installId: this.plain(s, "INSTALL_ID"),
+          oauthStore: {
+            mode: this.plain(s, "OAUTH_STORE") ?? "kv",
+            backfilled: false,
+            kvWritesOffSince: null,
+          },
         },
       );
     }

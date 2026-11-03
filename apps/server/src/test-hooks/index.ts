@@ -38,6 +38,7 @@ import { revokeUserLive } from "../runtime/revoke.js";
 import { SYNC_DO_NAME } from "../services/directory.js";
 import { getUserWithEpoch, insertUser, toMember } from "../services/users.js";
 import { b64urlEncode, sameKey } from "../util/crypto.js";
+import { type HookEnv, testHooksOn } from "./on.js";
 
 // /__test/* (P2 T14): hooks P5's cross-tenant suite uses against stg-a and
 // stg-b. Release builds drop this module (`hooks` in app.ts folds to
@@ -50,24 +51,9 @@ import { b64urlEncode, sameKey } from "../util/crypto.js";
 // verifies the 404 is uniform (no reason); after it, the 404 body's
 // error.details.reason says why (TEST_HOOK_REFUSALS, a fixed enum).
 
-const MIN_KEY = 32;
 const OTP_TTL_S = 600;
 
-type HookEnv = Pick<
-  Env,
-  "TEST_HOOKS" | "TEST_HOOK_KEY" | "TEST_DOMAIN" | "RL_ANON"
->;
-
-export function testHooksOn(env: HookEnv): boolean {
-  return (
-    TEST_HOOKS_ALLOWED &&
-    env.TEST_HOOKS === "1" &&
-    typeof env.TEST_HOOK_KEY === "string" &&
-    env.TEST_HOOK_KEY.length >= MIN_KEY &&
-    typeof env.TEST_DOMAIN === "string" &&
-    env.TEST_DOMAIN.length > 0
-  );
-}
+export { testHooksOn };
 
 // Cloudflare's always-pass Turnstile TEST secret. With it, siteverify
 // answers { success: true, hostname: "example.com", metadata:
