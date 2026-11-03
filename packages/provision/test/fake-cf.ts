@@ -110,6 +110,8 @@ export class FakeCf {
   readonly raw: { method: string; path: string; body: string }[] = [];
   readonly d1 = new Map<string, { name: string; db: DatabaseSync }>();
   readonly r2 = new Set<string>();
+  /** A token that can't read a D1 bookmark. */
+  bookmarkFails = false;
   /** R2 objects by bucket, then key (the releases bucket; T3b). */
   readonly r2Objects = new Map<
     string,
@@ -465,6 +467,13 @@ export class FakeCf {
       const w = this.turnstile.get(decodeURIComponent(m[1] as string));
       if (!w) return fail(404, "widget not found", 10404);
       return env({ ...w, created_on: "2026-10-01T00:00:00Z" });
+    }
+    m = r.match(/^\/d1\/database\/([^/]+)\/time_travel\/bookmark$/);
+    if (m && req.method === "GET") {
+      if (this.bookmarkFails) return fail(403, "Authentication error", 10000);
+      return env({
+        bookmark: `bookmark-${decodeURIComponent(m[1] as string)}`,
+      });
     }
     m = r.match(/^\/d1\/database\/([^/]+)\/query$/);
     if (m) {

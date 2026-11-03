@@ -106,6 +106,8 @@ export type ManageJob = {
     to?: string;
     reason?: string;
     force?: boolean;
+    /** upgrade: a person chose to cross a held migration (MIG-2). */
+    nonAdditive?: boolean;
     /** redline_creds: the R26 variant (C6 RedlineCredsSchema; never the key). */
     revoke?: boolean;
   };
@@ -446,7 +448,9 @@ async function render(
   });
   const r: UpgradeResult =
     kind === "upgrade"
-      ? await w.upgrade(job.installId, to)
+      ? await w.upgrade(job.installId, to, {
+          nonAdditive: job.args.nonAdditive === true,
+        })
       : await w.rollback(job.installId);
   if (r.ok) return { version: r.to };
   if (r.prodDirty) {

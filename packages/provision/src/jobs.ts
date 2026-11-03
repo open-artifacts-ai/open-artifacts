@@ -42,6 +42,9 @@ export const PROVISION_ERROR_CODES = Object.freeze([
   "run_dead",
   // Domain sign-in codes asked for without what they need (#1088). Terminal.
   "domain_codes_refused",
+  // A pending migration can lose data, and this upgrade didn't ask to cross
+  // it (MIG-2). Terminal: a person upgrades with nonAdditive.
+  "migration_held",
   // Code sign-in on with no usable Turnstile widget in the env (#1088).
   // Terminal: a person fixes the widget, then retries the job.
   "turnstile_missing",

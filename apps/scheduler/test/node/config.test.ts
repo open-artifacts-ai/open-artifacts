@@ -192,3 +192,11 @@ describe("bundle", () => {
     }
   });
 });
+
+it("no fleet job can ask to cross a held migration (MIG-2)", () => {
+  const src = readFileSync(
+    join(import.meta.dirname, "../../src/provapi/fleet.ts"),
+    "utf8",
+  );
+  expect(src).not.toContain("nonAdditive");
+});

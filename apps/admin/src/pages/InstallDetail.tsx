@@ -76,6 +76,7 @@ function Actions({ install }: { install: Install }) {
   const [reason, setReason] = useState("");
   const [version, setVersion] = useState("");
   const [force, setForce] = useState(false);
+  const [nonAdditive, setNonAdditive] = useState(false);
   const releases = useQuery({
     ...releasesQuery(),
     enabled: dialog === "upgrade",
@@ -106,9 +107,13 @@ function Actions({ install }: { install: Install }) {
     (_: void, requestId) =>
       api.call("R5", {
         params: { id },
-        body: { requestId, ...(version ? { version } : {}) },
+        body: {
+          requestId,
+          ...(version ? { version } : {}),
+          ...(nonAdditive ? { nonAdditive: true as const } : {}),
+        },
       }),
-    { ...done, key: version },
+    { ...done, key: `${version}:${nonAdditive}` },
   );
   const rollback = useAction(
     (_: void, requestId) =>
@@ -199,6 +204,7 @@ function Actions({ install }: { install: Install }) {
   const close = () => {
     setDialog(null);
     setForce(false);
+    setNonAdditive(false);
     for (const m of [upgrade, suspend, del, purge, lease, cancel]) m.reset();
   };
   const versions = (releases.data?.items ?? []).filter(
@@ -300,6 +306,18 @@ function Actions({ install }: { install: Install }) {
                 ))}
               </SelectContent>
             </Select>
+          </div>
+          <div className="oa-check">
+            <Checkbox
+              id="up-non-additive"
+              checked={nonAdditive}
+              onCheckedChange={(c) => setNonAdditive(c === true)}
+            />
+            <label htmlFor="up-non-additive" className="oa-check">
+              Cross a migration that can lose data, if there is one. A restore
+              point is taken first, and only a person can restore it. Without
+              this, such an upgrade is held and nothing changes.
+            </label>
           </div>
         </ActionDialog>
       )}

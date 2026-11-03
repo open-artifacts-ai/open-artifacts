@@ -775,6 +775,29 @@ describe("lifecycle writes (R5-R13)", () => {
     });
   });
 
+  it("R5: nonAdditive reaches the job's args only when sent, and only as true (MIG-2)", async () => {
+    const e = fakeEnv();
+    const a = await seedInstall({ version: "1.41.2" });
+    const up = await call(e, ADMIN_P, "R5", {
+      params: { id: a.id },
+      body: { requestId: requestId(), nonAdditive: true },
+    });
+    expect(up.body.job.args).toEqual({
+      from: "1.41.2",
+      to: "1.42.0",
+      nonAdditive: true,
+    });
+    const b = await seedInstall({ version: "1.41.2" });
+    expect(
+      (
+        await call(e, ADMIN_P, "R5", {
+          params: { id: b.id },
+          body: { requestId: requestId(), nonAdditive: false },
+        })
+      ).code,
+    ).toBe("invalid_input");
+  });
+
   it("R5 upgrade: default latest installable; at or below current is downgrade_refused", async () => {
     const e = fakeEnv();
     const { id } = await seedInstall({ version: "1.41.2" });

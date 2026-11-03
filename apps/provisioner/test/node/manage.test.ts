@@ -2,6 +2,8 @@
 // rechecks and purge preconditions, replays, upgrade outcome mapping, the
 // fail and cleanup compensation, redline_creds sealing. Each install is made
 // by ProvisionInstall first, as in production.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { FLOOR_KEY, HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
 import { REDLINE_SCOPE_FIXTURE } from "@oa/shared/provisioning/fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -219,6 +221,14 @@ describe("upgrade and rollback (5.4)", () => {
       lease: null,
     });
     expect(logged()).toContain("Turnstile widgets are named");
+  });
+
+  it("the upgrade passes args.nonAdditive to provision, and only that (MIG-2)", async () => {
+    const src = readFileSync(
+      join(import.meta.dirname, "../../src/manage.ts"),
+      "utf8",
+    );
+    expect(src).toContain("nonAdditive: job.args.nonAdditive === true");
   });
 
   it("upgrade refusals: from moved is invalid_state; to at or below from is downgrade_refused", async () => {

@@ -114,7 +114,14 @@ const PLANS: Partial<Record<ApiRouteId, Planner>> = {
     );
     if (compareVersions(to, row.version) <= 0)
       throw new ApiError("downgrade_refused");
-    return { kind: "upgrade", args: { from: row.version, to } };
+    return {
+      kind: "upgrade",
+      args: {
+        from: row.version,
+        to,
+        ...(body.nonAdditive ? { nonAdditive: true } : {}),
+      },
+    };
   },
   R6: async (a, row) => {
     refuseUnless(can(row, "rollback", a.principal));

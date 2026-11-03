@@ -771,6 +771,25 @@ describe("halts", () => {
     expect(await marks()).toEqual([`fleet_halt:${TARGET}:${id}`]);
   });
 
+  it("a held migration halts the rollout at the canary, and no fleet job can cross it (MIG-2)", async () => {
+    const canary = await on("0.92.0");
+    const member = await on("0.92.0");
+    const f = fakes({ canary });
+    await fleetDue(f.env, NOW, f.opts);
+    const [j] = await fleetJobs();
+    expect(JSON.stringify(j)).not.toContain("nonAdditive");
+    await finish(j?.id, "failed", NOW + MIN, "migration_held");
+    await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+    expect(await fleetJobs()).toHaveLength(1);
+    expect(await marks()).toEqual([`fleet_halt:${TARGET}:${canary}`]);
+    const c = await fleetConditions(f.env, NOW + 2 * MIN);
+    expect(c.fleet_halted.rows[0]).toMatchObject({
+      install_id: canary,
+      code: "migration_held",
+    });
+    expect(member).not.toBe(canary);
+  });
+
   it("a failed fleet upgrade halts its version, with a durable mark", async () => {
     const canary = await on("0.92.0");
     await on("0.92.0");
