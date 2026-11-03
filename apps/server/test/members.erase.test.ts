@@ -3,6 +3,7 @@
 // their Google identity, and writes one user.erased audit row.
 import { env } from "cloudflare:workers";
 import {
+  AUTH,
   AuditEventSchema,
   MemberOwnsArtifactsDetailsSchema,
   MemberSchema,
@@ -28,7 +29,9 @@ import {
   setUserStatus,
 } from "../src/services/members.js";
 import { getUser } from "../src/services/users.js";
+import { sessionCookieName } from "../src/auth/session.js";
 import { direct, uniq } from "./auth-helpers.js";
+import { type FakeGoogle, fakeGoogle } from "./fixtures/fake-google.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
 import { oauthToken } from "./mcp-helpers.js";
 
@@ -732,7 +735,7 @@ describe("directory sync after erase", () => {
     ["an admin's removal", false],
     ["a directory removal", true],
   ] as const)(
-    "%s: the same Google account still listed active never comes back, as a new row or a revive",
+    "%s: the same Google account still listed active is blocked, as a new row or a revive, until the link is reset",
     async (_, bySync) => {
       const email = uniq("er-sync", "a.com").toLowerCase();
       const sub = `g-er-sync-${newId()}`;
@@ -785,6 +788,145 @@ describe("directory sync after erase", () => {
     expect(await userRow(u.userId)).toMatchObject({
       email: placeholder(u.userId),
       status: "removed",
+    });
+  });
+});
+
+describe("Google sign-in after erase, and the way back (reset the Google link)", () => {
+  const SESSION = sessionCookieName(env);
+  const D = direct();
+  const raw = (path: string, cookie: string | null) =>
+    fetchAndWait(
+      app,
+      new Request(`http://app.localhost${path}`, {
+        redirect: "manual",
+        headers: {
+          "x-oa-request": "1",
+          "sec-fetch-site": "same-origin",
+          ...(cookie ? { cookie } : {}),
+        },
+      }),
+      D,
+    );
+  /** A full Google sign-in by subject `sub-<email>` (the fake Google). */
+  async function googleSignIn(g: FakeGoogle, email: string) {
+    const start = await raw(`${AUTH.loginGoogle}?next=/a/x`, null);
+    expect(start.status).toBe(302);
+    const u = new URL(start.headers.get("location") ?? "");
+    const state =
+      start.headers
+        .getSetCookie()
+        .find((c) => /oa_oidc_/.test(c))
+        ?.split(";")[0] ?? "";
+    const code = g.issueCode(
+      { nonce: u.searchParams.get("nonce"), email, sub: `sub-${email}` },
+      u.searchParams.get("code_challenge") as string,
+    );
+    const r = await raw(
+      `${AUTH.callbackGoogle}?state=${u.searchParams.get("state")}&code=${code}`,
+      state,
+    );
+    const admitted =
+      r.headers.get("location") === "/a/x" &&
+      r.headers
+        .getSetCookie()
+        .some((c) => c.startsWith(`${SESSION}=`) && !/Max-Age=0/i.test(c));
+    return admitted;
+  }
+  const idsAt = (email: string) =>
+    env.DB.prepare("select id from users where email = ?")
+      .bind(email)
+      .all<{ id: string }>()
+      .then((r) => r.results.map((x) => x.id));
+  const resetLink = (id: string, who: U) =>
+    call(D, R.memberIdentity(id, "google"), who.cookie, { method: "DELETE" });
+
+  /** A person who signed in with Google, then was removed and erased. */
+  async function erasedGoogleUser(g: FakeGoogle) {
+    const email = uniq("er-g", "a.com").toLowerCase();
+    expect(await googleSignIn(g, email)).toBe(true);
+    const [id] = await idsAt(email);
+    if (!id) throw new Error("no row");
+    expect((await remove(id, admin.cookie, D)).status).toBe(204);
+    expect((await erase(id, admin.cookie, D)).status).toBe(204);
+    return { email, id };
+  }
+
+  it("the kept link refuses that Google account on sign-in; no new row at the address", async () => {
+    const g = await fakeGoogle();
+    const { email, id } = await erasedGoogleUser(g);
+    expect(await googleSignIn(g, email)).toBe(false);
+    expect(await idsAt(email)).toEqual([]);
+    expect(await userRow(id)).toMatchObject({
+      email: placeholder(id),
+      status: "removed",
+    });
+  });
+
+  it("an admin resets the erased row's Google link: the next Google sign-in makes a new, empty row; the erased row stays erased", async () => {
+    const g = await fakeGoogle();
+    const { email, id } = await erasedGoogleUser(g);
+    const before = await userRow(id);
+    expect((await resetLink(id, admin)).status).toBe(204);
+    const after = await userRow(id);
+    // Still erased: placeholder, erased_at, and no relink flag that could
+    // ever bind the address back to this row.
+    expect(after).toMatchObject({
+      email: placeholder(id),
+      status: "removed",
+      name: "",
+      erased_at: before?.erased_at,
+      google_relink: 0,
+    });
+    expect(
+      await count("select count(*) n from identities where user_id = ?", id),
+    ).toBe(0);
+    expect(await googleSignIn(g, email)).toBe(true);
+    const ids = await idsAt(email);
+    expect(ids).toHaveLength(1);
+    const fresh = ids[0] ?? "";
+    expect(fresh).not.toBe(id);
+    expect(await leftovers(fresh, email)).toEqual({
+      ...NONE,
+      googleIdentity: 1,
+    });
+    expect(
+      await count(
+        "select count(*) n from artifacts where owner_id = ? or space_id = ?",
+        fresh,
+        fresh,
+      ),
+    ).toBe(0);
+    expect(await userRow(id)).toEqual(after);
+  });
+
+  it("after a reset, the next sync listing that Google user makes a new row too", async () => {
+    const g = await fakeGoogle();
+    const { email, id } = await erasedGoogleUser(g);
+    expect((await resetLink(id, owner)).status).toBe(204);
+    const gu: GoogleUser = {
+      id: `sub-${email}`,
+      primaryEmail: email,
+      suspended: false,
+      deleted: false,
+      isAdmin: false,
+      customerId: "C0123",
+    };
+    await bindPage(D, [gu], { tenant: "a.com", allowEmail: false });
+    await applyUsers(D, [gu], { tenant: "a.com" });
+    const ids = await idsAt(email);
+    expect(ids).toHaveLength(1);
+    expect(ids[0]).not.toBe(id);
+    expect(
+      await one(
+        "select user_id from identities where provider = 'google' and subject = ?",
+        `sub-${email}`,
+      ),
+    ).toEqual({ user_id: ids[0] });
+    expect(await userRow(id)).toMatchObject({
+      email: placeholder(id),
+      status: "removed",
+      google_relink: 0,
     });
   });
 });

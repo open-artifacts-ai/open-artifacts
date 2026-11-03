@@ -305,7 +305,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   members.push(carol, dan, erin);
   /** Lapsed guests' ids: removed when their last share went (a share revives them). */
   const lapsed = new Set<string>();
-  /** Erased people's ids (R.memberErase): off the Departed list for good. */
+  /** Erased people's ids (R.memberErase): never listed or restored again. */
   const erased = new Set<string>();
   for (const email of o.lapsedGuests ?? []) {
     const g: Member = {

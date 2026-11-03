@@ -474,7 +474,7 @@ describe("mock lapsed guests (#829 review item 3)", () => {
     );
   });
 
-  it("#1204 erase: a removed person with nothing left goes for good; idempotent; restore is member_erased", async () => {
+  it("#1204 erase: a removed person with nothing left is erased and leaves the list; idempotent; restore is member_erased", async () => {
     use(["google", "email"]);
     const removed = async () =>
       MemberSchema.array().parse(

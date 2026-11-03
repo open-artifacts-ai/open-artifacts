@@ -701,8 +701,9 @@ const ERASE_WIPES = [
   `delete from space_members where user_id = ?1 and ${ERASABLE}`,
   `delete from frozen_edits where user_id = ?1 and ${ERASABLE}`,
   `delete from directory_members where user_id = ?1 and ${ERASABLE}`,
-  // The Google identity stays: it keeps that Google account out for good, on
-  // sync (CREATE_USERS skips a known subject) and on Google sign-in.
+  // The Google identity stays: it blocks that Google account on sync
+  // (CREATE_USERS skips a known subject) and on Google sign-in until an admin
+  // resets the Google link; then it comes back as a new, empty person.
   `delete from identities where user_id = ?1 and provider <> 'google'
     and ${ERASABLE}`,
   `delete from tokens where user_id = ?1 and ${ERASABLE}`,

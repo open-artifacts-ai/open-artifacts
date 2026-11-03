@@ -257,8 +257,10 @@ export const R = {
    * becomes the placeholder, their names, last seen and personal space name
    * are cleared, and their sessions, PATs, agent connections, shares to
    * their address, space roles and directory rows are deleted. The row id
-   * (authorship) and their Google link stay, so the same Google account
-   * never comes back by sync or Google sign-in. Org owner, admin, from a
+   * (authorship) and their Google link stay, so the same Google account is
+   * blocked on sync and Google sign-in until an admin resets the Google link
+   * (R.memberIdentity); then it comes back as a new, empty person. The
+   * erased row stays erased. Org owner, admin, from a
    * signed-in browser session only (a PAT or an agent's token: 404); an
    * admin target needs the owner (403 owner_only). 404 unknown; 409
    * member_active (not removed, the owner, or the owner's address); 409
