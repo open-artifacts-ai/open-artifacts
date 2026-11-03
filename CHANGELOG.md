@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.106.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.105.0...v0.106.0) (2026-11-03)
+
+
+### Features
+
+* **members:** erase a removed person, from the Removed list ([#1222](https://github.com/open-artifacts-ai/open-artifacts/issues/1222)) ([#1274](https://github.com/open-artifacts-ai/open-artifacts/issues/1274)) ([eb586ca](https://github.com/open-artifacts-ai/open-artifacts/commit/eb586ca325a0e2f3a7ac65ff61aac0228aac955b))
+* **members:** warn when Workspace can add a removed person back ([#1146](https://github.com/open-artifacts-ai/open-artifacts/issues/1146)) ([#1275](https://github.com/open-artifacts-ai/open-artifacts/issues/1275)) ([2b0fcea](https://github.com/open-artifacts-ai/open-artifacts/commit/2b0fcea742e05adb4ad1b24560e59e7161103843))
+* **server:** warn before a removal sync can undo, audit sync re-admission ([#1146](https://github.com/open-artifacts-ai/open-artifacts/issues/1146)) ([#1241](https://github.com/open-artifacts-ai/open-artifacts/issues/1241)) ([ae8865f](https://github.com/open-artifacts-ai/open-artifacts/commit/ae8865ff1212dc3ad67d333fb9a5b869302dd545))
+
 ## [0.105.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.104.1...v0.105.0) (2026-11-03)
 
 
