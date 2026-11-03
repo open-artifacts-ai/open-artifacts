@@ -32,6 +32,13 @@ on:
       tag:
         description: "The release under test (vX.Y.Z): rl-a and rl-b are upgraded to it"
         required: true
+  # The nightly (redline-nightly.yml). Not a prod gate: the gate reads this
+  # file's own runs, event workflow_dispatch, and a called run is neither.
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
 
 permissions:
   contents: read

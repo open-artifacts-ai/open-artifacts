@@ -156,6 +156,8 @@ export interface Report {
   nonPass: CaseResult[];
   cases: CaseResult[];
   gate: { passed: boolean; reason: string };
+  /** Accepted because this run was scheduled; never on a candidate. By name. */
+  nightlyOnly?: string[];
   /** What this run ran against (the reporter): what combine() matches verdicts to. */
   binding?: RunBinding;
   /** Set by combine(): the capture run whose verdicts replaced the ID-token cases. */
@@ -502,19 +504,63 @@ export function acceptedUnproven(c: CaseResult): AcceptedUnproven | undefined {
   );
 }
 
-/** A non-pass the gate accepts: a pre-prod not-applicable or a listed unproven-live. */
-const accepted = (c: CaseResult) =>
-  preProdNa(c) || preProdGuardNa(c) || acceptedUnproven(c) !== undefined;
+/**
+ * P30 opens an alert that emails the owner, so the nightly (a scheduled run)
+ * skips it. Only a scheduled run may: anything else, a dispatched candidate or
+ * a report with no run named, fails the gate on that same result.
+ */
+export const NIGHTLY_NA_REASON = "dispatch runs only";
+/** P30's file as the reporter records it: relative to tests/redline. */
+export const NIGHTLY_NA_FILE = "live/provisioning.test.ts";
 
-export function gatePasses(cases: readonly CaseResult[]): boolean {
+/** What the gate knows about the run itself. The default is a candidate's. */
+export interface RunKind {
+  scheduled?: boolean;
+}
+
+/** Scheduled only when GitHub says so and the workflow didn't mark a dispatch. */
+export function runKindOf(env: Record<string, string | undefined>): RunKind {
+  return {
+    scheduled:
+      env.GITHUB_EVENT_NAME === "schedule" && env.REDLINE_DISPATCH !== "1",
+  };
+}
+
+/** The nightly's not-applicable the gate accepts: P30, exact reason. */
+export function nightlyNa(c: CaseResult): boolean {
   return (
-    cases.length > 0 && cases.every((c) => c.level === "pass" || accepted(c))
+    c.level === "not-applicable" &&
+    c.reason === NIGHTLY_NA_REASON &&
+    c.file === NIGHTLY_NA_FILE &&
+    c.name.startsWith("provisioning > P30: ")
+  );
+}
+
+/** On a scheduled run only: the nightly's accepted not-applicable. */
+const nightlyOnly = (c: CaseResult, run: RunKind) =>
+  run.scheduled === true && nightlyNa(c);
+
+/** A non-pass the gate accepts: a pre-prod not-applicable, a listed unproven-live, or nightly-only. */
+const accepted = (c: CaseResult, run: RunKind) =>
+  preProdNa(c) ||
+  preProdGuardNa(c) ||
+  acceptedUnproven(c) !== undefined ||
+  nightlyOnly(c, run);
+
+export function gatePasses(
+  cases: readonly CaseResult[],
+  run: RunKind = {},
+): boolean {
+  return (
+    cases.length > 0 &&
+    cases.every((c) => c.level === "pass" || accepted(c, run))
   );
 }
 
 export function buildReport(
   cases: readonly CaseResult[],
   mode = "unknown",
+  run: RunKind = {},
 ): Report {
   const counts = Object.fromEntries(LEVELS.map((l) => [l, 0])) as Record<
     Level,
@@ -522,8 +568,9 @@ export function buildReport(
   >;
   for (const c of cases) counts[c.level]++;
   const nonPass = cases.filter((c) => c.level !== "pass");
-  const passed = gatePasses(cases);
-  const failing = nonPass.filter((c) => !accepted(c)).length;
+  const passed = gatePasses(cases, run);
+  const failing = nonPass.filter((c) => !accepted(c, run)).length;
+  const nNightly = cases.filter((c) => nightlyOnly(c, run)).length;
   const nAccepted = cases.filter((c) => acceptedUnproven(c)).length;
   const nPreProd = cases.filter(
     (c) => preProdNa(c) || preProdGuardNa(c),
@@ -531,6 +578,7 @@ export function buildReport(
   const acceptedText = [
     nAccepted ? `${nAccepted} accepted unproven-live` : "",
     nPreProd ? `${nPreProd} pre-prod not-applicable` : "",
+    nNightly ? `${nNightly} nightly-only not-applicable` : "",
   ]
     .filter(Boolean)
     .join(", ");
@@ -541,6 +589,13 @@ export function buildReport(
     counts,
     nonPass,
     cases: [...cases],
+    ...(nNightly
+      ? {
+          nightlyOnly: cases
+            .filter((c) => nightlyOnly(c, run))
+            .map((c) => c.name),
+        }
+      : {}),
     gate: {
       passed,
       reason: passed
@@ -559,7 +614,10 @@ export function formatReport(r: Report): string {
     `Red-line report (${r.mode}): ${r.total} cases`,
     `  ${LEVELS.map((l) => `${l} ${r.counts[l]}`).join(", ")}`,
   ];
-  const notPass = r.nonPass.filter((c) => !acceptedUnproven(c));
+  const nightly = r.nightlyOnly ?? [];
+  const notPass = r.nonPass.filter(
+    (c) => !acceptedUnproven(c) && !nightly.includes(c.name),
+  );
   if (notPass.length) {
     lines.push("Not pass:");
     for (const c of notPass) {
@@ -578,6 +636,10 @@ export function formatReport(r: Report): string {
     lines.push("Accepted unproven-live:");
     for (const e of acc)
       lines.push(`  ${e.name} (${e.reason})`, `      evidence: ${e.evidence}`);
+  }
+  if (nightly.length) {
+    lines.push("Accepted on this scheduled run only, never on a candidate:");
+    for (const n of nightly) lines.push(`  ${n} (${NIGHTLY_NA_REASON})`);
   }
   const labeled = r.cases.filter((c) => c.label);
   if (labeled.length) {

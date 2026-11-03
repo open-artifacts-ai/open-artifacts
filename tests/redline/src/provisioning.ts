@@ -16,7 +16,7 @@ import {
 import { RETRY_BACKOFF_MS, safeCode } from "./http.ts";
 import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
-import { PRE_PROD_REASON } from "./report.ts";
+import { NIGHTLY_NA_REASON, PRE_PROD_REASON } from "./report.ts";
 import { newRecipient, openSealed, parseCreds } from "./seal.ts";
 import { snoozeOwnerPath } from "./snooze.ts";
 import { adoptTarget } from "./targets.ts";
@@ -1718,7 +1718,7 @@ export const PROBES: readonly Probe[] = [
     title:
       "dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens",
     run: async (run) => {
-      if (!run.c.dispatch) return na("dispatch runs only");
+      if (!run.c.dispatch) return na(NIGHTLY_NA_REASON);
       for (let i = 0; i < 5; i++) {
         const r = await run.raw(
           `${run.c.admin}/auth/callback/google?code=redline&state=${randomBytes(16).toString("base64url")}`,

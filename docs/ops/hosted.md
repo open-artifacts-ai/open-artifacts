@@ -534,6 +534,7 @@ The run applies the gate: it fails unless every case passes or is one the report
 
 - A suite fix reaches a candidate only in a new release, and rerunning the same tag runs the same suite. A `test:` merge alone opens no release, so ship the fix with a `Release-As: X.Y.Z` footer (see "Forcing a release when only non-releasable commits landed").
 - The commands the workflow calls (`provisioning mint-oidc`, `bringup`, `staged-version`, `revoke`, `live`, the T19 config) must keep working for every tag still in use. `redline-staging.test.ts` pins them.
+- `redline-nightly.yml` runs the latest release's own suite once per release, so idle nights use nothing. It waits while any red-line run is going and until staging runs the release. A red run keeps one issue open, labeled `blocker` and titled "Nightly red-line failed", and a green one closes it. It sends no email, so P30, which opens an alert, doesn't run there. A nightly applies the gate, so it's green only when every case passes, P30 aside. It waits 3 h after any candidate run, because a running nightly holds a candidate on the `redline` group for up to about 150 min, and a second dispatch while one is waiting replaces it. The gate accepts that on a scheduled run only, and the report names it; a dispatched run without P30 fails. A nightly can't satisfy the prod gate, and a release gets one nightly, red or green.
 
 ### Inventory `GET /hosts` (read-only, for the red-line suite)
 
