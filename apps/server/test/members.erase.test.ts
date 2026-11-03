@@ -14,6 +14,7 @@ import {
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
+import { sessionCookieName } from "../src/auth/session.js";
 import { getDb } from "../src/db/client.js";
 import { artifacts } from "../src/db/schema.js";
 import { applyUsers } from "../src/directory/apply.js";
@@ -29,7 +30,6 @@ import {
   setUserStatus,
 } from "../src/services/members.js";
 import { getUser } from "../src/services/users.js";
-import { sessionCookieName } from "../src/auth/session.js";
 import { direct, uniq } from "./auth-helpers.js";
 import { type FakeGoogle, fakeGoogle } from "./fixtures/fake-google.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
