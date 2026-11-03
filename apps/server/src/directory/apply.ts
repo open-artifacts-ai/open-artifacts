@@ -392,7 +392,8 @@ export async function applyUsers(
       await deleteUser(env, r.hid, "directory_new_id", guard, o.ctx);
       // A removed person's address (an admin removal sync can't match by
       // id): the fresh row below is their re-admission, audited (#1146).
-      if (r.hstatus === "removed") readmit = { sub: u.id, previousUserId: r.hid };
+      if (r.hstatus === "removed")
+        readmit = { sub: u.id, previousUserId: r.hid };
     } else {
       // A new directory id behind an address an old Google-linked row holds:
       // the old user renamed (their row and shares follow them), or gone
