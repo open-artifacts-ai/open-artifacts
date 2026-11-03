@@ -164,6 +164,12 @@ export type HostedMockOptions = {
    * R.memberTransfer(guest id) moves them (a guest needs no suspension).
    */
   guestOwners?: number;
+  /**
+   * The spaces feature. Default: on, off with selfHosted (an Access-only
+   * install's default). Off, spaces routes are 404, as is R.memberTransfer's
+   * `to: space` for any id; `to: user` still works.
+   */
+  spaces?: boolean;
   /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on for every install). */
   features?: FeatureFlag[];
 };
@@ -816,9 +822,10 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     return cap() === null && roleIn(s) === "manager";
   };
 
+  const spacesOn = o.spaces ?? !o.selfHosted;
   const features = (): FeatureFlag[] => [
     ...new Set<FeatureFlag>([
-      "spaces",
+      ...(spacesOn ? (["spaces"] as const) : []),
       ...(guestsReadOnly() ? (["guests_read_only"] as const) : []),
       "content_revocation",
       "usage_off",
@@ -969,11 +976,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         ...(guestSummary ? { guestSummary } : {}),
       };
     else delete me.notices;
-    me.personalSpaceId = me.user.id;
-    me.spaces = spaces
-      .filter((s) => s.kind === "shared" && roleIn(s))
-      .map((s): MySpace => ({ ...ref(s), myRole: roleIn(s) as SpaceRole }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    if (spacesOn) {
+      me.personalSpaceId = me.user.id;
+      me.spaces = spaces
+        .filter((s) => s.kind === "shared" && roleIn(s))
+        .map((s): MySpace => ({ ...ref(s), myRole: roleIn(s) as SpaceRole }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
     for (const a of artifacts) {
       const s =
         findSpace(a.space?.id) ??
@@ -1145,6 +1154,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       refresh();
       return undefined;
     }),
+    // -- spaces off: requireSpaces, before any other rule
+    ...(spacesOn
+      ? []
+      : [
+          http.all("*/api/v1/spaces", () => notFound()),
+          http.all("*/api/v1/spaces/*", () => notFound()),
+        ]),
     // -- break-glass (P3 T18): the mismatch owner's Me
     ...(o.breakGlass
       ? [
@@ -1395,7 +1411,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         // managers search R.spaceCandidates instead.
         if (!isAdmin()) return notFound();
         return HttpResponse.json(
-          members.filter((m) => r.data.status.includes(m.status ?? "active")),
+          members
+            .filter((m) => r.data.status.includes(m.status ?? "active"))
+            .map((m) =>
+              m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0
+                ? { ...m, personalArtifacts: true }
+                : m,
+            ),
         );
       }),
     ),
@@ -1424,6 +1446,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           if (!validSuccessor(u))
             return err("invalid_successor", "Pick an active member");
         } else {
+          if (!spacesOn) return notFound();
           const s = findSpace(to.spaceId);
           if (!s) return notFound();
           if (s.kind === "personal")
@@ -2514,6 +2537,14 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       : { canSignIn: false, reason: "outside_domains" };
   };
 
+  /** Share.guest (GET R.shares): the server's guestRecipients for the mock's providers. */
+  const shareGuest = (email: string): boolean => {
+    const row = members.find((m) => m.email === email);
+    if (row) return row.role === "guest";
+    if (mode === "access") return true;
+    return !email.endsWith(`@${MOCK_DOMAIN}`) && providerIds.includes("email");
+  };
+
   /**
    * signInMethods (#799) for an invite (a member row about to exist) or a
    * share, the server's reach rules for the mock's providers, in
@@ -2546,6 +2577,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     /** No level for the signed-in caller: 404 and unlisted (sharedLevel). */
     hidden: (id: string) => hidden.has(id),
     shareRecipient,
+    shareGuest,
     signInMethods,
     checkPublish,
     placeNew,

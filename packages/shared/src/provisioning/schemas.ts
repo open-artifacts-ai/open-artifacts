@@ -171,6 +171,12 @@ const requestId = RequestIdSchema;
 export const UpgradeSchema = z.object({
   requestId,
   version: VersionSchema.optional(),
+  nonAdditive: z
+    .literal(true)
+    .optional()
+    .describe(
+      "Cross a migration that can lose data. Takes a D1 restore point first, and refuses without one. Only when a job failed with migration_held and a person has decided.",
+    ),
 });
 export const RollbackSchema = z.object({ requestId });
 export const SuspendSchema = z.object({

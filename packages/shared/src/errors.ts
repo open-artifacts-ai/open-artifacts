@@ -9,6 +9,7 @@ export const ERROR_CODES = [
   "too_large",
   "rate_limited",
   "quota_exceeded",
+  "storage_unavailable",
   "capability_denied",
   "data_editors_only",
   "internal",
@@ -64,6 +65,7 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   too_large: 413,
   rate_limited: 429,
   quota_exceeded: 503,
+  storage_unavailable: 503,
   capability_denied: 403,
   /** A data write by a caller below editor on an artifact whose dataWriters is "editors" (#681). */
   data_editors_only: 403,

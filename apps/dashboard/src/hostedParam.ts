@@ -20,6 +20,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
   frozen: { directory: "frozen" },
   "sync-off": { directory: "off" },
   admin: { actAs: "admin" },
+  "guest-notices": { selfHosted: true, guestShares: 2, guestOwners: 2 },
+  "spaces-on": { spaces: true },
   "workspace-change": {
     pendingCustomerChange: {
       previous: { customerId: "C01abc", domain: "old.example" },
@@ -42,7 +44,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
  * Mock-only: `?hosted=` turns on the hosted mocks. Comma tokens: 1 (defaults),
  * access, email-only, turnstile, unhealthy (backoff), auth-failed,
  * scope-missing, customer-mismatch, trial, team, business, frozen, sync-off,
- * admin (you are an admin, not the owner), workspace-change (the confirm
+ * admin (you are an admin, not the owner), guest-notices (an Access-only
+ * install with parity 2's notices, spaces off), spaces-on, workspace-change (the confirm
  * step for a different Google Workspace), break-glass and break-glass-stale
  * (the owner locked out by customer-mismatch, signed in fresh or not). Absent: the self-hosted mocks.
  */

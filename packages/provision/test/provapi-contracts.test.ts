@@ -50,6 +50,8 @@ describe("ProvisionRefused.code and ProvisionRetry (3.5)", () => {
       "canceled",
       "run_dead",
       "domain_codes_refused",
+      "migration_held",
+      "restore_point_failed",
       "turnstile_missing",
       "mode_not_live",
       "leave_d1_refused",
@@ -258,7 +260,11 @@ describe("@oa/provision/jobs (node-free, for the scheduler)", () => {
 
 describe("the code sign-in refusals (#1088)", () => {
   it("are terminal: a person must change the create or the env", () => {
-    for (const c of ["domain_codes_refused", "turnstile_missing"] as const) {
+    for (const c of [
+      "domain_codes_refused",
+      "turnstile_missing",
+      "migration_held",
+    ] as const) {
       expect(PROVISION_RETRY_CODES).not.toContain(c as never);
       expect(JOB_ERROR_RETRY[c]).toBe("terminal");
       expect(provisionErrorCode(new ProvisionRefused("x", c))).toBe(c);

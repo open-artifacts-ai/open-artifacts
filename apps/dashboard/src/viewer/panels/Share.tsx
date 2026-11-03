@@ -216,6 +216,8 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     recipient?: ShareRecipient;
     /** How they sign in, from the server (older servers omit it). */
     with: string | null;
+    /** The role picked: a guest's row corrects Editor, once, just after. */
+    role: ShareRole;
   } | null>(null);
   const domains = useSignInDomains();
   const state = useMe();
@@ -263,6 +265,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               emailed: r.emailed,
               recipient: r.recipient,
               with: signInWith(r.signInMethods),
+              role,
             });
           },
           onError: (x) => fail(x, "Couldn't share"),
@@ -482,52 +485,91 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             </span>
             <span className="text-muted-foreground">Owner</span>
           </li>
-          {(people ? (shares.data ?? []) : []).map((s) => (
-            <li key={s.email} className="flex flex-col gap-[var(--oa-space-2)]">
-              <div className={PERSON}>
-                <UserAvatar name={null} email={s.email} />
-                <span className={NAME} title={s.email}>
-                  {s.email}
-                </span>
-                {people ? (
-                  <>
-                    <RoleSelect
-                      label={`Role for ${s.email}`}
-                      value={s.role}
-                      onChange={(r) =>
-                        put.mutate(
-                          { email: s.email, role: r },
-                          { onError: (x) => fail(x, "Couldn't change role") },
-                        )
-                      }
-                    />
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="size-[30px] flex-none p-0"
-                      aria-label={`Remove ${s.email}`}
-                      onClick={() =>
-                        removeOnce((done) =>
-                          del.mutate(s.email, {
-                            onSettled: done,
-                            onSuccess: () =>
-                              setShared((x) =>
-                                x?.email === s.email ? null : x,
-                              ),
-                            onError: (x) => fail(x, "Couldn't remove"),
-                          }),
-                        )
-                      }
+          {(people ? (shares.data ?? []) : []).map((s) => {
+            // s.email is always a real address: a directory deletion drops
+            // the shares on an address (DROP_SHARES) in the same batch, before
+            // it writes the removed+<id>@invalid placeholder (directory/apply.ts).
+            const controls = people ? (
+              <>
+                <RoleSelect
+                  label={`Role for ${s.email}`}
+                  value={s.role}
+                  onChange={(r) =>
+                    put.mutate(
+                      { email: s.email, role: r },
+                      { onError: (x) => fail(x, "Couldn't change role") },
+                    )
+                  }
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="size-[30px] flex-none p-0"
+                  aria-label={`Remove ${s.email}`}
+                  onClick={() =>
+                    removeOnce((done) =>
+                      del.mutate(s.email, {
+                        onSettled: done,
+                        onSuccess: () =>
+                          setShared((x) => (x?.email === s.email ? null : x)),
+                        onError: (x) => fail(x, "Couldn't remove"),
+                      }),
+                    )
+                  }
+                >
+                  ×
+                </Button>
+              </>
+            ) : (
+              <span className="text-muted-foreground">{s.role}</span>
+            );
+            return (
+              <li
+                key={s.email}
+                className="flex flex-col gap-[var(--oa-space-2)]"
+              >
+                <div className={PERSON}>
+                  <UserAvatar name={null} email={s.email} />
+                  {s.guest ? (
+                    <span
+                      className="min-w-0 flex-1 [overflow-wrap:anywhere]"
+                      title={s.email}
                     >
-                      ×
-                    </Button>
-                  </>
-                ) : (
-                  <span className="text-muted-foreground">{s.role}</span>
+                      {s.email}
+                    </span>
+                  ) : (
+                    <>
+                      <span className={NAME} title={s.email}>
+                        {s.email}
+                      </span>
+                      {controls}
+                    </>
+                  )}
+                </div>
+                {s.guest && (
+                  // Wraps only where the line can't hold them, under about 340px.
+                  <div className="flex flex-wrap items-center justify-between gap-x-[var(--oa-space-2)] gap-y-[var(--oa-space-1)]">
+                    <span className={`whitespace-nowrap ${MUTED}`}>
+                      {s.role === "editor"
+                        ? "Guest · can only view for now"
+                        : "Guest · can only view"}
+                    </span>
+                    <div className="ml-auto flex items-center gap-[var(--oa-space-2)]">
+                      {controls}
+                    </div>
+                  </div>
                 )}
-              </div>
-            </li>
-          ))}
+                {s.guest &&
+                  shared?.email === s.email &&
+                  shared.role === "editor" && (
+                    <p role="status" className="m-0 text-muted-foreground">
+                      Guests can only view. If they become a member, they'll be
+                      able to edit.
+                    </p>
+                  )}
+              </li>
+            );
+          })}
         </ul>
         {shares.isError && (
           <LoadError

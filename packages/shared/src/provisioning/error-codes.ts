@@ -65,6 +65,8 @@ export const JOB_ERROR_RETRY = {
    */
   run_dead: "terminal",
   domain_codes_refused: "terminal",
+  migration_held: "terminal",
+  restore_point_failed: "terminal",
   turnstile_missing: "terminal",
   /** #1008: /healthz never showed the mode asked for. */
   mode_not_live: "terminal",

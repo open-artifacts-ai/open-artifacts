@@ -253,7 +253,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
   write(
     "upgrade_install",
     "R5",
-    "Upgrade an install. version defaults to the latest installable release.",
+    "Upgrade an install. version defaults to the latest installable release. A job that fails with migration_held has a migration that can lose data; nothing changed. Crossing it needs nonAdditive: true, an admin write that needs your user's explicit yes for that install.",
   ),
   write(
     "rollback_install",

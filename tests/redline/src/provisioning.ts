@@ -7,13 +7,21 @@ import {
   type Release,
   TOKEN_SCOPES,
 } from "@oa/shared/provisioning";
-import { isNetworkError, networkCode, notResolved } from "./fetch-timeout.ts";
+import {
+  InfraError,
+  isNetworkError,
+  networkCode,
+  notResolved,
+} from "./fetch-timeout.ts";
 import { RETRY_BACKOFF_MS, safeCode } from "./http.ts";
 import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { PRE_PROD_REASON } from "./report.ts";
+import { newRecipient, openSealed, parseCreds } from "./seal.ts";
+import { snoozeOwnerPath } from "./snooze.ts";
+import { adoptTarget } from "./targets.ts";
 
-// The red-line provisioning probes (design v7 12.2, P1-P49) against the
+// The red-line provisioning probes (design v7 12.2, P1-P50) against the
 // staging Provisioning API, as the GitHub OIDC principal "O" (4.4): `rl-`
 // slugs and testHooks only, plus the `x-oa-test-user` self-serve test users
 // (P8, P9, P11, P29). Every request goes through ProvIo, so test/
@@ -61,6 +69,13 @@ export interface ProvIo {
   prodInventoryJwt?: () => Promise<string>;
   /** The rl-a admin PAT R26 sealed for this run (P36). */
   rlAPat?: () => string;
+  /** Hides a secret the run learns from the public log (CI: ::add-mask::). */
+  mask?: (v: string) => void;
+  /**
+   * The origin a probe's own target is reached at for an R3 host (P50).
+   * Live: https://<host>; tests map it to a local fake install.
+   */
+  tenantOrigin?: (host: string) => string;
 }
 
 export type Outcome =
@@ -511,6 +526,8 @@ export interface Probe {
   id: ProbeId;
   title: string;
   run: (r: Run) => Promise<Outcome>;
+  /** Its vitest timeout when longer than PROBE_TIMEOUT_MS. */
+  timeoutMs?: number;
 }
 
 /**
@@ -697,6 +714,18 @@ const oidcCreate = (
   auth: { providers: ["email"], domains: [] },
   testHooks: true,
   ...(version ? { version } : {}),
+});
+
+/** P50's create: business tier (sync_google), code sign-in for the test domain. */
+const snoozeCreate = (run: Run, slug: string, requestId: string) => ({
+  ...oidcCreate(run, slug, requestId),
+  tier: "business",
+  // domainCodes sets EMAIL_CODE_DOMAIN=on (#1088).
+  auth: {
+    providers: ["email"],
+    domains: [STAGING_TEST_DOMAIN],
+    domainCodes: true,
+  },
 });
 
 /**
@@ -1109,6 +1138,109 @@ export const PROBES: readonly Probe[] = [
           );
       }
       return pass();
+    },
+  },
+  {
+    id: "P50",
+    title:
+      "rl-snz-<run> (business tier, Google sync, domain codes): the org owner snoozes a held sweep (off heldSweeps, snoozedUntil set), cancels it (counts again), both audited; then deleted (#1078)",
+    // The held-sweep snooze owner path (#854, #412) on an install this run
+    // makes: rl-a and rl-b are team tier with outside owners. The owner is
+    // OIDC_OWNER_EMAIL, under the test domain, so it signs in by code.
+    // Messages name the probe and step only (the run log is public).
+    // Up to four job waits (create, R26, delete, purge) can outlast this; a
+    // timeout fails the probe, and the afterAll cleanup replays the same
+    // requestIds (run.rid(`${slug}-del` / `-purge`)), so it is idempotent.
+    timeoutMs: 2 * JOB_WITHIN_MS + 10 * 60_000,
+    run: async (run) => {
+      const slug = run.slug("snz");
+      const entry = { slug };
+      // Listed before the create: a run that stops anywhere still removes it.
+      run.s.cleanup.push(entry);
+      let out: Outcome | undefined;
+      let failed: unknown = null;
+      try {
+        const a = run.accepted(
+          await run.v1("/installs", {
+            body: snoozeCreate(run, slug, run.rid("p50")),
+          }),
+          "P50 create",
+        );
+        const id = a.install.id;
+        await run.done(a.job.id, "P50 create");
+        const d = await detail(run, id);
+        expect(d, 200, "P50 R3");
+        const dj = d.json as InstallDetail;
+        if (dj.testHooks !== true)
+          throw new ProbeFail("P50: testHooks is not true");
+        if (dj.tier !== "business")
+          throw new ProbeFail(`P50: tier is ${dj.tier}, want business`);
+        if (dj.auth?.domainCodes !== true)
+          throw new ProbeFail("P50: the create did not turn domain codes on");
+        if (!dj.appHost || !dj.contentHost)
+          throw new ProbeFail(
+            "P50: the finished install has no app or content host",
+          );
+        // Dispatch's HOSTS cache (60 s) can still miss the new host: poll.
+        await run.within(PAGE_WITHIN_MS, "P50 redline /healthz", async () => {
+          const h = await run.page(dj.appHost);
+          const hz = h.json as
+            | { testHooks?: unknown; installId?: unknown }
+            | undefined;
+          return (
+            h.status === 200 && hz?.testHooks === true && hz.installId === id
+          );
+        });
+        const r = await newRecipient();
+        const c = await mintCreds(run, id, slug, {
+          publicKey: r.publicKey,
+          open: async (sealed) => {
+            const v = parseCreds(await openSealed(r, sealed));
+            run.io.mask?.(v.pat);
+            run.io.mask?.(v.hookKey);
+            return v;
+          },
+        });
+        const origin = (h: string) =>
+          run.io.tenantOrigin?.(h) ?? `https://${bare(h)}`;
+        const t = adoptTarget(
+          {
+            name: "rl-snz",
+            installId: id,
+            app: origin(dj.appHost),
+            content: origin(dj.contentHost),
+            testDomain: STAGING_TEST_DOMAIN,
+            cookieName: "__Host-oa_session",
+            hookKeyFile: "",
+          },
+          // Staging takes Turnstile's test-key answer on live-hook installs.
+          { hookKey: c.hookKey, pat: c.pat, turnstile: DUMMY_TURNSTILE },
+        );
+        let res: Awaited<ReturnType<typeof snoozeOwnerPath>>;
+        try {
+          res = await snoozeOwnerPath(t, { kind: "pat", token: c.pat });
+        } catch (e) {
+          // A setup hook's refusal stays infra (report.ts SETUP_HOOK_RE).
+          if (e instanceof InfraError) throw e;
+          throw new ProbeFail(`P50 snooze: ${(e as Error).message}`);
+        }
+        // The creds go with the install: the purge below removes both.
+        // This install was made for the case, so a reason it can't run is a
+        // broken create, not a missing proof.
+        if (res.level !== "pass") throw new ProbeFail(`P50: ${res.reason}`);
+        out = pass();
+      } catch (e) {
+        failed = e;
+      }
+      try {
+        await removeInstall(run, slug, "P50 cleanup");
+        run.s.cleanup.splice(run.s.cleanup.indexOf(entry), 1);
+      } catch (e) {
+        failed ??= e;
+      }
+      if (failed) throw failed;
+      if (!out) throw new ProbeFail("P50: no outcome");
+      return out;
     },
   },
   {
@@ -2189,7 +2321,13 @@ export async function bringUpgrade(
     );
   const a = run.accepted(
     await run.v1(`/installs/${id}/upgrade`, {
-      body: { requestId: run.rid(`up-${slug}`), version: run.c.version },
+      // rl-a and rl-b cross a held migration here, so a release that has one
+      // meets red-line before prod (MIG-2).
+      body: {
+        requestId: run.rid(`up-${slug}`),
+        version: run.c.version,
+        nonAdditive: true,
+      },
     }),
     `R5 ${slug}`,
   );

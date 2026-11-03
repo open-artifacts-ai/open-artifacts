@@ -47,6 +47,6 @@ describe("provisioning", () => {
         }
         proof(ctx, o.level, o.reason);
       },
-      PROBE_TIMEOUT_MS,
+      p.timeoutMs ?? PROBE_TIMEOUT_MS,
     );
 });

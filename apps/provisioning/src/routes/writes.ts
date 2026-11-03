@@ -109,10 +109,22 @@ type Planner = (a: HandlerArgs, row: StatusRow) => Promise<Plan>;
 const bodyOf = <S extends z.ZodType>(a: HandlerArgs) =>
   a.input.body as z.infer<S>;
 
+/**
+ * Who may cross a migration that can lose data (MIG-2): an admin, in a session
+ * or an admin's OAuth grant, and OIDC, which authorize and its reach already
+ * limit to red-line on rl- test installs, staging only.
+ */
+const mayCrossHeld = (p: Principal) =>
+  p.kind === "admin" ||
+  (p.kind === "token" && p.tokenKind === "oauth") ||
+  p.kind === "oidc";
+
 const PLANS: Partial<Record<ApiRouteId, Planner>> = {
   R5: async (a, row) => {
     refuseUnless(can(row, "upgrade", a.principal));
     const body = bodyOf<typeof UpgradeSchema>(a);
+    if (body.nonAdditive && !mayCrossHeld(a.principal))
+      throw new ApiError("forbidden");
     if (row.version === null) throw new ApiError("invalid_state");
     const to = await resolveRelease(
       a.env,
@@ -121,7 +133,14 @@ const PLANS: Partial<Record<ApiRouteId, Planner>> = {
     );
     if (compareVersions(to, row.version) <= 0)
       throw new ApiError("downgrade_refused");
-    return { kind: "upgrade", args: { from: row.version, to } };
+    return {
+      kind: "upgrade",
+      args: {
+        from: row.version,
+        to,
+        ...(body.nonAdditive ? { nonAdditive: true } : {}),
+      },
+    };
   },
   R6: async (a, row) => {
     refuseUnless(can(row, "rollback", a.principal));

@@ -515,6 +515,17 @@ Agents (Frontend, Design and Platform walkthroughs, and e2e tests) sign in to th
 
 `verify_clean` matches bindings by name and type. A second check compares the real ids a live script is bound to with the install's own: D1 and KV resolved by name and the installs row, R2 by name, rate limits inside `rl_ns`, and Durable Objects by class and script. Today it's stage 1 (#1137): one `verify_clean.binding_ids` audit line at create, upgrade, rollback and var changes, with the binding names and codes it found, the live fields by type, and whether the provisioner's token can read a D1 bookmark, never its value. It never holds a job: any error of its own, or 10 s, skips the line. Stage 2 turns a problem into a refusal, after a staging release shows the live fields match.
 
+### Migrations that can lose data
+
+A fleet upgrade never crosses a migration that can lose data (MIG-2). Before an upgrade changes anything, the provisioner reads this install's pending migrations, the ones it hasn't run yet. One is held if its first line is `-- oa:non-additive`, or if any statement falls outside a short list of forms that keep data (`packages/provision/src/non-additive.ts`), read as SQL tokens. That list covers `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE TRIGGER` with a safe body, `ALTER TABLE ... ADD`, `DROP INDEX`, `SELECT`, and `INSERT` or `INSERT OR IGNORE` with no upsert. A `DELETE` or `UPDATE` also needs a `WHERE` with no top-level `OR` that compares a real column to something else. Anything else holds, including SQL it can't read: a false hold costs one manual upgrade, and a miss costs data. It can't tell a comparison that's always true for the data, such as `WHERE a > -1` on a column that's never negative, so a person still reads every migration.
+
+- A held upgrade fails with `migration_held`, and nothing changes. An `upgrade.held` audit row names the files. On the canary this halts the version, and `fleet_halted` opens. On any other install it doesn't: that install stays behind, `version_skew` shows it, and the rollout carries on past it. It isn't tried again for that release.
+- To cross one, a person upgrades that install with `nonAdditive: true`: the box in the admin Upgrade dialog, or the `upgrade_install` field. This is an admin write. Red-line's bring-up passes it for rl-a and rl-b, so a release like this meets red-line first.
+- It takes a D1 Time Travel bookmark first, and refuses without one. The `upgrade.restore_point` audit row has the bookmark and the files.
+- Nothing restores automatically. To go back: `wrangler d1 time-travel restore <db> --bookmark <bookmark>`, then roll the install back. That discards every write since the bookmark.
+- Old code still serves on the new schema during the upgrade, because migrations run before the upload.
+- A create isn't held: there's no data to lose.
+
 ### Red-line runs the tag's suite
 
 `redline-staging.yml` stays on main, with its Environment rule, but its `redline` job checks out the tag under test and runs everything from there (#1137). Suite and release always match.
