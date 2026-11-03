@@ -3,7 +3,7 @@ import {
   ADMIN_TOOLS,
   type AdminToolName,
   toolInput,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { createMcpHandler } from "agents/mcp/server";
 import { chargeTransport, countUnauthenticated } from "../auth/mcp-gate.js";
 import type { Env } from "../env.js";

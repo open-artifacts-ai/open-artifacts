@@ -10,7 +10,7 @@ import {
   PURGE_MAX_TRIES,
   purgeRequestId,
   SYSTEM_ACTOR,
-} from "@oa/shared/provisioning/system";
+} from "@oa/provisioning-contract/system";
 import { bound, d1, lanes, type ProvapiEnv } from "./env.js";
 import { insertSystemJob, startJob } from "./jobs.js";
 import { dutyCategory } from "./run.js";

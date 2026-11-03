@@ -2,7 +2,7 @@ import { ipKey } from "@oa/auth-core";
 import {
   OAUTH_CLIENT_TTL_MS,
   OAUTH_CLIENT_UNCLAIMED_MS,
-} from "@oa/shared/provisioning/constants";
+} from "@oa/provisioning-contract/constants";
 import type { Env } from "../../env.js";
 import { limit } from "../../limits.js";
 import { countRefusal } from "../../refuse.js";

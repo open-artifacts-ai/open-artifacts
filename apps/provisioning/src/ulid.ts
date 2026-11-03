@@ -1,4 +1,4 @@
-// Crockford base32 ULIDs (ULID_RE in @oa/shared/provisioning): 48-bit ms
+// Crockford base32 ULIDs (ULID_RE in @oa/provisioning-contract): 48-bit ms
 // time, then 80 random bits.
 
 const B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";

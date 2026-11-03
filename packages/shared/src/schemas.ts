@@ -425,7 +425,7 @@ export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
 
 export const MemberSchema = z.object({
   id: z.string(),
-  /** A stored value, never input: `removed+<id>@invalid` after a directory deletion. */
+  /** A stored value, never input: `removed+<id>@invalid` after a directory deletion or an erase (R.memberErase). */
   email: z.string(),
   name: z.string().nullable(),
   role: RoleSchema,
@@ -438,6 +438,13 @@ export const MemberSchema = z.object({
   restriction: RestrictionSchema.nullable().optional(),
   /** GET R.members: a guest with live artifacts in their personal space, for Transfer. Absent otherwise. */
   personalArtifacts: z.boolean().optional(),
+  /**
+   * GET R.members (#1146): true when removing this person can be undone by
+   * directory sync, which would bring their address back as a new, empty
+   * account (Google sync on and a Workspace connected, no Google link, an
+   * address in the sign-in domains). Absent otherwise. Removal still works.
+   */
+  directoryManaged: z.boolean().optional(),
 });
 export type Member = z.infer<typeof MemberSchema>;
 

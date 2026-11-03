@@ -3,7 +3,7 @@ import {
   isApiRoute,
   ROUTE_IDS,
   TEST_MEMBER,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Principal } from "../src/principal.js";
 import { call } from "./call.js";

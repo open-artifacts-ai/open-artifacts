@@ -1,5 +1,4 @@
 import { ownerEmailOf } from "@oa/provision/names";
-import { TEST_HOOK_REFUSALS, type TestHookRefusal } from "@oa/shared";
 import {
   type Auth,
   AuthProviderSchema,
@@ -18,7 +17,8 @@ import {
   type Tier,
   testMemberOwns,
   VersionSchema,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
+import { TEST_HOOK_REFUSALS, type TestHookRefusal } from "@oa/shared";
 import { z } from "zod";
 import type { Env } from "./env.js";
 import { ApiError } from "./errors.js";

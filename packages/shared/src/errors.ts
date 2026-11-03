@@ -41,6 +41,9 @@ export const ERROR_CODES = [
   "member_removed",
   "directory_managed",
   "guest_lapsed",
+  // Member erase (#1204).
+  "member_owns_artifacts",
+  "member_erased",
   // Runtime data query.
   "cursor_stale",
   "query_too_large",
@@ -120,6 +123,10 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   directory_managed: 409,
   /** POST R.memberRestore(id) on a lapsed guest, or POST R.members (invite) for a lapsed guest's address (removed when their last share went): a new share brings them back instead. */
   guest_lapsed: 409,
+  /** POST R.memberErase(id) while anything is left in their personal space, trash included; details MemberOwnsArtifactsDetails { live, deleted }: transfer them first (R.memberTransfer). Nothing is changed. */
+  member_owns_artifacts: 409,
+  /** POST R.memberRestore(id) on an erased person (R.memberErase): invite them instead. */
+  member_erased: 409,
   /** db.query cursor whose anchor doc changed since the page was read (long sort values only): restart without a cursor. */
   cursor_stale: 409,
   /** db query() with where/orderBy on a collection over LIMITS.queryCollectionBytes; message QUERY_TOO_LARGE_MESSAGE. */
@@ -157,6 +164,15 @@ export type InviteUnreachableDetails = z.infer<
 /** 409 member_removed details: the removed member's id, for R.memberRestore. */
 export const MemberRemovedDetailsSchema = z.object({ userId: z.string() });
 export type MemberRemovedDetails = z.infer<typeof MemberRemovedDetailsSchema>;
+
+/** 409 member_owns_artifacts details: what is left in their personal space (live, and in the trash). */
+export const MemberOwnsArtifactsDetailsSchema = z.object({
+  live: z.number().int().nonnegative(),
+  deleted: z.number().int().nonnegative(),
+});
+export type MemberOwnsArtifactsDetails = z.infer<
+  typeof MemberOwnsArtifactsDetailsSchema
+>;
 
 /** 400 invite_unreachable message, per reason. */
 export const INVITE_UNREACHABLE_MESSAGE: Record<

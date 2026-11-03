@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { fixtureAudit } from "@oa/shared/provisioning/fixtures";
+import { fixtureAudit } from "@oa/provisioning-contract/fixtures";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { auditEntries, FIXTURE_IDS, tokens } from "../src/mocks/fixtures";
-import { actionPhrase, detailLine } from "../src/pages/Audit";
+import { AUDIT_ACTIONS, actionPhrase, detailLine } from "../src/pages/Audit";
 import { http, json, renderApp, seen, use } from "./harness";
 
 it("lists entries of each outcome; aggregated refusals show a count", async () => {
@@ -296,8 +296,9 @@ it("shows an actor and an action from the URL that are not in the lists", async 
   await waitFor(() =>
     expect(seen.some((s) => s.path.startsWith("/api/v1/audit"))).toBe(true),
   );
+  // A step row isn't offered, but its label still reads in the select.
   expect(screen.getByRole("combobox", { name: "Action" })).toHaveTextContent(
-    "upgrade.start",
+    "started an upgrade",
   );
   expect(screen.getByRole("combobox", { name: "Actor" })).toHaveTextContent(
     "someone@example.com",
@@ -373,5 +374,200 @@ it("detailLine reads the fields people read and drops the rest", () => {
   expect(detailLine({ stage: "auth_time" })).toBe("auth_time");
   expect(detailLine({ tokenId: "x", admin: "a@b.c", nested: { a: 1 } })).toBe(
     "",
+  );
+});
+
+// #1136: the provisioner's step rows and the counted anonymous refusals.
+const step = (
+  n: number,
+  action: string,
+  actor = "job:01JD7Z9W5Q8X3N4M2K1H0G9F8A",
+) =>
+  fixtureAudit({
+    id: `prov:${n}`,
+    source: "provision",
+    actor: { kind: "system", label: actor },
+    action,
+    outcome: action.includes("failed") ? "error" : "ok",
+    detail: null,
+  });
+const refusal = (n: number, action: string, bucket: string, code: string) =>
+  fixtureAudit({
+    id: `agg:${n}`,
+    source: "refusals",
+    actor: { kind: "system", label: "anonymous" },
+    action,
+    outcome: "refused",
+    code,
+    count: 3,
+    installId: null,
+    jobId: null,
+    detail: { bucket },
+  });
+const actionCells = async () => {
+  await screen.findAllByRole("row");
+  return screen
+    .getAllByRole("row")
+    .slice(1)
+    .map((r) => {
+      const c = within(r).getAllByRole("cell");
+      return [c[1]?.textContent, c[2]?.textContent];
+    });
+};
+
+it("step rows read as past-tense sentences, never raw names; the Scheduler is the actor", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          step(1, "upgrade.held"),
+          step(2, "delete.revoke_pending"),
+          step(3, "owner-token.lost_lease"),
+          { ...step(4, "suspend.hosts"), detail: { mode: "paused" } },
+          step(5, "oauth_copy.counts"),
+          step(6, "fleet.halted", "system:scheduler"),
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  const cells = await actionCells();
+  expect(cells.map((c) => c[1])).toEqual([
+    "held an upgrade",
+    "waited to revoke Google access",
+    "lost its lock",
+    "took the install offline",
+    "counted agent sign-ins to move",
+    "halted the fleet rollout",
+  ]);
+  expect(cells[5]?.[0]).toBe("Scheduler");
+});
+
+it("a counted refusal reads its bucket's reason; an unmapped bucket reads plain", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          refusal(1, "auth.refused", "auth", "unauthenticated"),
+          refusal(2, "csrf.refused", "csrf", "csrf_failed"),
+          refusal(3, "pre.refused", "pre", "forbidden"),
+          refusal(4, "oauth_register.refused", "oauth_register", "forbidden"),
+          refusal(5, "rate_limited", "signin", "rate_limited"),
+          refusal(6, "signin.refused", "signin", "unauthenticated"),
+          refusal(7, "slug.refused", "slug", "forbidden"),
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  const cells = await actionCells();
+  expect(cells.map((c) => c[1]?.replace(/ 3 times$/, ""))).toEqual([
+    "were refused (not signed in)",
+    "were refused (failed cross-site check)",
+    "were refused (too many requests)",
+    "were refused (at agent registration)",
+    "were rate limited",
+    "couldn't sign in",
+    "were refused",
+  ]);
+  expect(cells[0]?.[0]).toBe("Anonymous callers");
+  expect(screen.getByRole("table")).not.toHaveTextContent(
+    /\b(auth|slug|pre)\.refused\b/,
+  );
+});
+
+it("the Action filter adds only Design's step and refusal options", async () => {
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  fireEvent.click(screen.getByRole("combobox", { name: "Action" }));
+  const options = (await screen.findAllByRole("option")).map(
+    (o) => o.textContent,
+  );
+  for (const label of [
+    "held an upgrade",
+    "flagged an upgrade for a forward fix",
+    "rolled back to an unhealthy version",
+    "forced the lock open",
+    "halted the fleet rollout",
+    "recorded what the install was running when it failed the clean check",
+    "couldn't revoke Google access",
+    "couldn't sign everyone out",
+    "were refused (not signed in)",
+    "were refused (too many requests)",
+    "were refused (failed cross-site check)",
+    "were refused (at agent sign-in)",
+    "were refused (at agent registration)",
+    "were rate limited",
+  ])
+    expect(options).toContain(label);
+  // Steps job.done and job.failed sum up stay out.
+  for (const label of [
+    "started an upgrade",
+    "lost its lock",
+    "deleted the install",
+  ])
+    expect(options).not.toContain(label);
+  expect(options).toHaveLength(AUDIT_ACTIONS.length + 1);
+});
+
+it("a HOSTS row reads by its mode; a binding check names its problems only when it has some", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          { ...step(1, "resume.hosts"), detail: { mode: "serving" } },
+          { ...step(2, "restore.hosts"), detail: { mode: "paused" } },
+          { ...step(3, "delete.hosts"), detail: { mode: "closed" } },
+          { ...step(4, "suspend.hosts"), detail: null },
+          {
+            ...step(5, "verify_clean.binding_ids"),
+            detail: {
+              problems: 2,
+              bookmark: "b1",
+              doNs: "x",
+              detail: "DB:wrong_id KV:missing",
+            },
+          },
+          {
+            ...step(6, "verify_clean.binding_ids"),
+            // Only problems > 0 shows it, whatever detail holds.
+            detail: { problems: 0, bookmark: "b1", doNs: "x", detail: "DB:ok" },
+          },
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const rows = screen.getAllByRole("row").slice(1);
+  const cell = (i: number, c: number) =>
+    within(rows[i] as HTMLElement).getAllByRole("cell")[c]?.textContent;
+  expect(rows.map((_, i) => cell(i, 2))).toEqual([
+    "brought the install back online",
+    "took the install offline",
+    // Delete's closed mode keeps its own row; any other mode, the plain change.
+    "closed the install",
+    "changed the install's hosts",
+    "checked that its bindings point at its own resources",
+    "checked that its bindings point at its own resources",
+  ]);
+  expect(cell(4, 4)).toContain("DB:wrong_id KV:missing");
+  expect(cell(5, 4)).not.toContain("DB:");
+  expect(cell(5, 4)).not.toContain("b1");
+});
+
+it("labels are past tense, and every lock op reads the same", () => {
+  expect(actionPhrase("delete.revoke_pending")).toBe(
+    "waited to revoke Google access",
+  );
+  expect(actionPhrase("owner_token.lost_lease")).toBe("lost its lock");
+  // The op is owner_token now; rows written before keep owner-token.
+  expect(actionPhrase("owner-token.aborted")).toBe("stopped partway");
+  expect(actionPhrase("owner_token.aborted")).toBe("stopped partway");
+  expect(actionPhrase("oauth_store.mode_live")).toBe(
+    "switched where agent sign-ins are stored",
   );
 });

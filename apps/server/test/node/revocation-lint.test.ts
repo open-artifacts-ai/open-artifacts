@@ -34,6 +34,9 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // Directory sync's revive: the same rules, and the group restriction it
   // recomputes can raise a cap; their presence is revoked after the batch.
   "services/members.ts:reviveFromSync": "user",
+  // #1204 erase: PATs, grants and memberships deleted on a removed row; its
+  // presence is revoked again after the batch, belt and braces.
+  "services/members.ts:eraseMember": "user",
   // Suspend or remove (P3 T6): PATs, grants and sessions revoked.
   "services/members.ts:setUserStatus": "user",
   // A role change ends their sessions; sockets were authorized under the old role.

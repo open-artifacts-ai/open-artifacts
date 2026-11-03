@@ -22,7 +22,7 @@ const COPY: Record<string, string> = {
   invalid_state: "That is not possible in the install's current state.",
   grace_expired: "The restore window has passed.",
   downgrade_refused:
-    "That version is older than the one installed. Use rollback to go back one version.",
+    "That version is older than the one installed. Installs only move forward: ship the fix as a new release.",
   signup_limit: "The sign-up limit is reached.",
   token_limit: "There are too many tokens. Revoke one first.",
   release_not_published: "That release is not published.",
@@ -36,8 +36,10 @@ const COPY: Record<string, string> = {
   lease_held: "Another job holds the install's lease. It will retry.",
   revoke_pending: "Directory access is still being revoked. It will retry.",
   token_invalid: "The provisioning token is invalid. It will retry.",
-  upgrade_rolled_back: "The upgrade failed and was rolled back.",
-  upgrade_incomplete: "The upgrade did not finish. Check the install.",
+  upgrade_rolled_back:
+    "An older job: the upgrade failed and its old code was put back. Upgrades no longer revert. Ship the fix as a new release.",
+  upgrade_incomplete:
+    "The upgrade failed and the install stays on the new version. Ship the fix as a new release, then upgrade to it.",
   canceled: "The job was canceled.",
   migration_held:
     "This release has a migration that can lose data, so it was held and nothing changed. To cross it, open Upgrade and tick the restore point box.",
@@ -53,7 +55,8 @@ const COPY: Record<string, string> = {
   copy_not_dual: "The OAuth copy needs the install in dual mode.",
   copy_markers: "The install refused the OAuth copy. Check its store markers.",
   copy_key_not_live: "The OAuth copy key did not go live. Nothing was copied.",
-  copy_key_left: "The OAuth copy key is still on the install. Check it now.",
+  copy_key_left:
+    "The OAuth copy key may still be on the install. Delete its OAUTH_COPY_KEY secret; the next upgrade or OAuth store change confirms it is gone.",
   cf_error: "Cloudflare returned an error. It will retry.",
 };
 

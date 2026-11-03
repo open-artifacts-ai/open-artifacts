@@ -16,7 +16,7 @@ import {
   WfpProvisioner,
   type WfpStep,
 } from "@oa/provision";
-import type { ServingMode } from "@oa/shared/provisioning";
+import type { ServingMode } from "@oa/provisioning-contract";
 import {
   deployEnv,
   type ProvisionerEnv,
@@ -129,6 +129,74 @@ export async function renderOptions(
     ...(turnstile ? { turnstile } : {}),
     ...(o.registryDisabled ? { registryDisabled: true } : {}),
   });
+}
+
+/**
+ * The install's system job that closes its open WebSockets (apps/server
+ * cron.ts CLOSE_SOCKETS_CRON, #1182). Called on the install's script through
+ * DISPATCHER with .scheduled( only, as the scheduler does: no HTTP route.
+ */
+export const CLOSE_SOCKETS_JOB = "oa:close-sockets";
+/** One close-sockets call, at most; the suspend never waits longer. */
+export const CLOSE_SOCKETS_TIMEOUT_MS = 15_000;
+/** The one log line of a failed close: fixed text, a fixed category, no ids. */
+export const CLOSE_SOCKETS_FAILED = "suspend close_sockets failed";
+
+/** As the scheduler's (measured): resolves undefined on success, rejects on a throw. */
+interface ScheduledFetcher {
+  scheduled(o: { cron?: string; scheduledTime?: Date }): Promise<unknown>;
+}
+
+/** What a close-sockets call came to. */
+export type CloseSocketsOutcome = "ok" | "throw" | "timeout" | "outcome";
+
+/**
+ * After a suspend's HOSTS pause: asks the install to close every open
+ * WebSocket (events and data, signed-in and anonymous). Never throws: the
+ * pause is the hard stop and this is cleanup, so a failure (an install on a
+ * release without the job rejects it as unknown, a stall, an exception) logs
+ * CLOSE_SOCKETS_FAILED with its category and the suspend goes on. Failing
+ * the job instead would leave a paused install with no suspended_at record,
+ * and make every suspend of an older release fail. Bounded by
+ * CLOSE_SOCKETS_TIMEOUT_MS; the install does the fan-out itself (its socket
+ * index, CLOSE_FANOUT per run), so this is one call.
+ */
+export async function closeInstallSockets(
+  ctx: OpsCtx,
+  installId: string,
+  timeoutMs = CLOSE_SOCKETS_TIMEOUT_MS,
+): Promise<CloseSocketsOutcome> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let out: CloseSocketsOutcome;
+  try {
+    const script = names(installId, deployEnv(ctx.env.OA_ENV)).script;
+    const r = await Promise.race([
+      (ctx.env.DISPATCHER.get(script) as unknown as ScheduledFetcher).scheduled(
+        {
+          cron: CLOSE_SOCKETS_JOB,
+          scheduledTime: new Date(ctx.io.now()),
+        },
+      ),
+      new Promise<"timeout">((res) => {
+        timer = setTimeout(() => res("timeout"), timeoutMs);
+      }),
+    ]);
+    // A { outcome } result (the experimental types) is read defensively.
+    out =
+      r === "timeout"
+        ? "timeout"
+        : r === undefined ||
+            (r as { outcome?: unknown } | null)?.outcome === "ok"
+          ? "ok"
+          : "outcome";
+  } catch {
+    // Never the error text: it can carry the install's own message.
+    out = "throw";
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  if (out !== "ok") console.warn(CLOSE_SOCKETS_FAILED, out);
+  return out;
 }
 
 /** The stored vars of an install (installs.vars), as strings. */

@@ -24,8 +24,28 @@ export const CALLERS = [
   "everySpaceMember",
   "everySpaceGuest",
   "anonymous",
+  "foreignSession",
+  "foreignPat",
+  "foreignOAuth",
 ] as const;
 export type CallerName = (typeof CALLERS)[number];
+
+/**
+ * #1137: a caller holding a valid credential of ANOTHER install (A), one per
+ * credential kind the matrix sends: a session cookie signed with A's own
+ * SESSION_SECRET, a PAT stored in A's D1, an OAuth access token stored in
+ * A's OAuth store. Each names this install's org owner as its subject (the
+ * worst case: a credential naming one of A's own users finds no one here
+ * even with the install check gone). Built in test/authz/foreign.ts, where
+ * each is first shown to work at A. Here (install B) each must resolve to no
+ * one: exactly anonymous's access, never more, on every surface and route.
+ */
+export const FOREIGN_CALLERS = [
+  "foreignSession",
+  "foreignPat",
+  "foreignOAuth",
+] as const satisfies readonly CallerName[];
+export type ForeignCaller = (typeof FOREIGN_CALLERS)[number];
 
 export const ARTIFACTS = [
   "personalPrivate",
@@ -130,6 +150,10 @@ export const TRAITS: Record<CallerName, Traits> = {
     sRole: "editor",
   }),
   anonymous: NONE,
+  // #1137: another install's credential resolves to no one here.
+  foreignSession: NONE,
+  foreignPat: NONE,
+  foreignOAuth: NONE,
 };
 
 const O = "owner",
@@ -165,6 +189,9 @@ const LEVELS: Record<CallerName, Row> = {
   everySpaceMember:     [_,   V,    V,   E,    E,    E,   E,   _,   _],
   everySpaceGuest:      [_,   _,    V,   V,    V,    V,   V,   _,   _],
   anonymous:            [_,   _,    V,   _,    _,    V,   V,   _,   _],
+  foreignSession:       [_,   _,    V,   _,    _,    V,   V,   _,   _],
+  foreignPat:           [_,   _,    V,   _,    _,    V,   V,   _,   _],
+  foreignOAuth:         [_,   _,    V,   _,    _,    V,   V,   _,   _],
 };
 
 export const EXPECTED: Record<

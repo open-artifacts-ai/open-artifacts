@@ -4,7 +4,7 @@ import type {
   PrincipalKind,
   TokenKind,
   TokenScope,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 
 /**
  * An authenticated caller (design v7 4.1). Both bearer kinds (`oat_` and

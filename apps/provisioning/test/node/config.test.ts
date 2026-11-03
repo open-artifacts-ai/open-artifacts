@@ -63,6 +63,10 @@ describe("wrangler.jsonc", () => {
           expect(e[k]).toBeUndefined();
       });
 
+      it("binds its version metadata: the default release is the platform's", () => {
+        expect(e.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
+      });
+
       it("binds PLATFORM_DB to oa-<p>-platform", () => {
         expect(e.d1_databases).toEqual([
           {
@@ -200,6 +204,8 @@ describe("wrangler.jsonc", () => {
             "services",
             "triggers",
             "vars",
+            // Read-only: the deployed version's own tag (#1137).
+            "version_metadata",
             "workers_dev",
             "workflows",
           ].sort(),

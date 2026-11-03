@@ -13,7 +13,7 @@ import {
   ADMIN_TOOLS,
   type AdminToolName,
   ROUTES,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { STAGING_API_HOST } from "../src/auth/oidc.js";
 import type { Env } from "../src/env.js";

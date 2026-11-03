@@ -33,6 +33,7 @@ import {
   InviteUnreachableDetailsSchema,
   ListQuerySchema,
   MemberInviteResultSchema,
+  MemberOwnsArtifactsDetailsSchema,
   MemberSchema,
   MembersQuerySchema,
   MeSchema,
@@ -471,6 +472,85 @@ describe("mock lapsed guests (#829 review item 3)", () => {
     expect(ApiErrorSchema.parse(await r.json()).error.code).toBe(
       "guest_lapsed",
     );
+  });
+
+  it("#1204 erase: a removed person with nothing left is erased and leaves the list; idempotent; restore is member_erased", async () => {
+    use(["google", "email"]);
+    const removed = async () =>
+      MemberSchema.array().parse(
+        await (await call("GET", `${R.members}?status=removed`)).json(),
+      );
+    const g = (await removed()).find((m) => m.email === LAPSED);
+    const id = g?.id ?? "";
+    expect((await call("POST", R.memberErase(id))).status).toBe(204);
+    expect((await call("POST", R.memberErase(id))).status).toBe(204);
+    expect((await removed()).map((m) => m.id)).not.toContain(id);
+    const r = await call("POST", R.memberRestore(id));
+    expect(r.status).toBe(409);
+    expect(ApiErrorSchema.parse(await r.json()).error.code).toBe(
+      "member_erased",
+    );
+    // The address is free: an invite makes a new person.
+    const inv = await call("POST", R.members, {
+      email: LAPSED,
+      role: "member",
+    });
+    expect(inv.status).toBe(201);
+    expect(MemberSchema.parse(await inv.json()).id).not.toBe(id);
+  });
+
+  it("#1204 erase refusals: member_active for an active or suspended person, 404 unknown", async () => {
+    use(["google", "email"]);
+    // Dan is active; Carol is suspended (not removed).
+    for (const id of ["Dn8uPqRsTu9vWxYz", "Cr7tNpQrSt8uVwXy"]) {
+      const r = await call("POST", R.memberErase(id));
+      expect(r.status).toBe(409);
+      expect(ApiErrorSchema.parse(await r.json()).error.code).toBe(
+        "member_active",
+      );
+    }
+    expect((await call("POST", R.memberErase("Nobody0000000000"))).status).toBe(
+      404,
+    );
+    // The details schema the server sends with member_owns_artifacts.
+    expect(
+      MemberOwnsArtifactsDetailsSchema.safeParse({ live: 2, deleted: -1 })
+        .success,
+    ).toBe(false);
+  });
+});
+
+describe("mock Member.directoryManaged (#1146)", () => {
+  const members = async () =>
+    MemberSchema.array().parse(
+      await (await call("GET", `${R.members}?status=active,suspended`)).json(),
+    );
+
+  it("Google sync connected: only the in-domain member with no Google link (Dan); never the owner or a linked member; removal unchanged", async () => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: {} }));
+    const all = await members();
+    expect(all.filter((m) => m.directoryManaged).map((m) => m.email)).toEqual([
+      "dan@example.com",
+    ]);
+    const dan = all.find((m) => m.email === "dan@example.com");
+    expect((await call("DELETE", R.member(dan?.id ?? ""))).status).toBe(204);
+  });
+
+  it.each(["off", "frozen"] as const)(
+    "directory %s: never set",
+    async (directory) => {
+      server.resetHandlers();
+      server.use(...createHandlers({ hosted: { directory } }));
+      expect((await members()).some((m) => m.directoryManaged)).toBe(false);
+    },
+  );
+
+  it("disconnected: never set", async () => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: {} }));
+    expect((await call("DELETE", R.directory)).status).toBe(204);
+    expect((await members()).some((m) => m.directoryManaged)).toBe(false);
   });
 });
 

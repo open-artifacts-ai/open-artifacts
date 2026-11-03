@@ -83,6 +83,12 @@ export const users = sqliteTable(
      * Google sync is on: the next sync would remove them again.
      */
     removedBySync: integer("removed_by_sync").notNull().default(0),
+    /**
+     * When an admin erased this removed person (ms; null = never, #1204).
+     * The row stays (its id is authorship), under the placeholder address
+     * with no name. Never cleared: an erased row is never restored.
+     */
+    erasedAt: integer("erased_at"),
   },
   () => [check("users_role_check", inList("role", RoleSchema.options))],
 );

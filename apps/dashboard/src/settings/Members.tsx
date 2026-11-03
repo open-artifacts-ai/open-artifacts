@@ -24,14 +24,12 @@ import { ApiClientError } from "../api/client";
 import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
 import { errorCopy } from "../api/errorCopy";
 import {
-  ALREADY_HANDLED,
   useInviteMember,
   useMembers,
   usePatchMember,
   useRemoveMember,
   useResetIdentity,
   useRestoreMember,
-  useRunTransfer,
   useSetRestricted,
 } from "../api/queries";
 import { emailEnabled } from "../auth/emailEnabled";
@@ -49,7 +47,7 @@ import { Notice } from "../layout/Notice";
 import {
   isReleased,
   personFirst,
-  personInSentence,
+  personFirstAtStart,
   personName,
 } from "../layout/person";
 import { toast } from "../layout/toast";
@@ -64,8 +62,9 @@ import {
   seesDeparted,
   useDeparted,
 } from "./departed";
+import { EraseDialog } from "./EraseDialog";
 import { restrictionReason } from "./restriction";
-import { movedCount, runAll, TransferDialog } from "./Transfer";
+import { TransferDialog } from "./Transfer";
 import { errorText, muted, SettingsCard, STACK } from "./ui";
 
 type Assignable = "admin" | "member";
@@ -784,6 +783,8 @@ function RemovedRow({
       ? RESTORE_ONLY
       : null;
   const [restoring, setRestoring] = useState(false);
+  const [erasing, setErasing] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const label = personName(m);
   return (
@@ -814,6 +815,40 @@ function RemovedRow({
           Restore…
         </Button>
       )}
+      {!ownerOnlySource(m, owner) && (
+        // Only the admin-row rule (owner only): a deleted account's row can
+        // be erased too, though it can't be restored.
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" aria-label={`More for ${label}`}>
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 16 16"
+                width="16"
+                height="16"
+                fill="currentColor"
+              >
+                <circle cx="3" cy="8" r="1.5" />
+                <circle cx="8" cy="8" r="1.5" />
+                <circle cx="13" cy="8" r="1.5" />
+              </svg>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            className="text-[length:var(--oa-text-sm)]"
+          >
+            <DropdownMenuItem
+              onSelect={() => {
+                setProblem(null);
+                setErasing(true);
+              }}
+            >
+              Erase…
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
       {refusal && <p className={`m-0 basis-full ${muted}`}>{refusal}</p>}
       {problem && (
         <p role="alert" className={`m-0 basis-full ${errorText}`}>
@@ -828,12 +863,30 @@ function RemovedRow({
           onRefused={setProblem}
         />
       )}
+      {erasing && (
+        <EraseDialog
+          member={m}
+          onClose={() => setErasing(false)}
+          onTransfer={() => {
+            setErasing(false);
+            setMoving(true);
+          }}
+        />
+      )}
+      {moving && <TransferDialog member={m} onClose={() => setMoving(false)} />}
     </li>
   );
 }
 
-/** Inline copy for a refused restore (parity 1). */
-const restoreRefusal = (e: unknown, first: string) => {
+/**
+ * Inline copy for a refused restore (parity 1). `atStart` is `first` where it
+ * starts the sentence ("A former member's account…"); default `first`.
+ */
+export const restoreRefusal = (
+  e: unknown,
+  first: string,
+  atStart: string = first,
+) => {
   const code = e instanceof ApiClientError ? e.code : "";
   if (code === "directory_managed")
     return `Removed by your Google Workspace. They come back if their Workspace account is restored.`;
@@ -842,6 +895,8 @@ const restoreRefusal = (e: unknown, first: string) => {
   if (code === "member_active") return `${first} is already active.`;
   if (code === "owner_only") return RESTORE_ONLY;
   if (code === "conflict") return ADDRESS_RELEASED;
+  if (code === "member_erased")
+    return `${atStart}'s account was erased, so it can't be restored. If they need access again, invite them.`;
   return errorCopy(e, `Couldn't restore ${first}. Try again.`);
 };
 
@@ -918,41 +973,12 @@ function DepartedRow({
   toMe: string | null;
   spaces: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  /** The dialog, opened from the row (with the viewer chosen) or the menu. */
+  const [open, setOpen] = useState<{ pick: string | null } | null>(null);
   const [restoring, setRestoring] = useState(false);
-  const [moving, setMoving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const run = useRunTransfer(m.id);
   const label = personName(m);
-  const first = personFirst(m);
   const n = summary.live;
-  const transferAllToMe = async () => {
-    if (!toMe) return;
-    setProblem(null);
-    setMoving(true);
-    try {
-      const moved = await runAll(
-        (i) => run.mutateAsync(i),
-        { kind: "user", userId: toMe },
-        () => {},
-      );
-      // 200 with nothing moved: another admin got there first, not a success.
-      toast(
-        moved === 0
-          ? { title: ALREADY_HANDLED, tone: "info" }
-          : {
-              title: `Moved ${movedCount(moved, summary.live, summary.deleted)} from ${personInSentence(m)} to you.`,
-              tone: "success",
-            },
-      );
-    } catch (e) {
-      setProblem(
-        errorCopy(e, `Couldn't move ${first}'s artifacts. Try again.`),
-      );
-    } finally {
-      setMoving(false);
-    }
-  };
   return (
     <li className={DEPARTED_ROW}>
       <div className="col-start-1 row-span-2 row-start-1 max-[600px]:row-span-1">
@@ -981,10 +1007,9 @@ function DepartedRow({
             size="sm"
             variant="outline"
             className="text-[length:var(--oa-text-sm)]"
-            disabled={moving}
-            onClick={() => void transferAllToMe()}
+            onClick={() => setOpen({ pick: toMe })}
           >
-            {moving ? "Moving…" : "Transfer all to me"}
+            Transfer all to me…
           </Button>
         ) : (
           <Button
@@ -992,7 +1017,7 @@ function DepartedRow({
             variant="outline"
             className="text-[length:var(--oa-text-sm)]"
             aria-label={`Transfer ${label}'s artifacts`}
-            onClick={() => setOpen(true)}
+            onClick={() => setOpen({ pick: null })}
           >
             Transfer
           </Button>
@@ -1017,14 +1042,11 @@ function DepartedRow({
             align="end"
             className="text-[length:var(--oa-text-sm)]"
           >
-            <DropdownMenuItem disabled={moving} onSelect={() => setOpen(true)}>
+            <DropdownMenuItem onSelect={() => setOpen({ pick: null })}>
               Transfer to someone else…
             </DropdownMenuItem>
             {m.status === "removed" && !isReleased(m) && (
-              <DropdownMenuItem
-                disabled={moving}
-                onSelect={() => setRestoring(true)}
-              >
+              <DropdownMenuItem onSelect={() => setRestoring(true)}>
                 Restore…
               </DropdownMenuItem>
             )}
@@ -1036,7 +1058,13 @@ function DepartedRow({
           {problem}
         </p>
       )}
-      {open && <TransferDialog member={m} onClose={() => setOpen(false)} />}
+      {open && (
+        <TransferDialog
+          member={m}
+          pick={open.pick}
+          onClose={() => setOpen(null)}
+        />
+      )}
       <RestoreDialog
         member={m}
         open={restoring}
@@ -1087,7 +1115,8 @@ function RestoreDialog({
               title: `${label} is restored. They can sign in again.`,
               tone: "success",
             }),
-          onError: (e) => onRefused(restoreRefusal(e, first)),
+          onError: (e) =>
+            onRefused(restoreRefusal(e, first, personFirstAtStart(m))),
         })
       }
     />

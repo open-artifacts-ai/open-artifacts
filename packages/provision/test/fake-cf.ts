@@ -213,6 +213,22 @@ export class FakeCf {
   ) => { name: string; type: string; [k: string]: unknown }[];
   /** Every request served through dispatcher(), by script name. */
   readonly dispatched: { script: string; path: string }[] = [];
+  /**
+   * Every scheduled() call through dispatcher(), in order, with the HOSTS
+   * value of the script's install at the time of the call (so a test can
+   * see what was paused first).
+   */
+  readonly scheduledCalls: {
+    script: string;
+    cron: string | undefined;
+    hosts: (string | null)[];
+  }[] = [];
+  /**
+   * What a scheduled() call does: resolve (the default, undefined, as
+   * measured through a dispatch namespace), or this, which may throw or
+   * never settle.
+   */
+  onScheduled?: (script: string, cron: string | undefined) => Promise<unknown>;
 
   constructor(o: { token?: string; now?: number } = {}) {
     this.token = o.token ?? `cf-token-${randomBytes(12).toString("hex")}`;
@@ -926,10 +942,31 @@ export class FakeCf {
    * Worker: get(script) reaches that script whether or not HOSTS maps it.
    */
   dispatcher(ns: string | null): {
-    get(name: string): { fetch(req: Request): Promise<Response> };
+    get(name: string): {
+      fetch(req: Request): Promise<Response>;
+      scheduled(o: { cron?: string; scheduledTime?: Date }): Promise<unknown>;
+    };
   } {
     return {
       get: (name) => ({
+        scheduled: async (o) => {
+          const kv = this.dispatch
+            ? this.kv.get(this.dispatch.hostsKvId)?.values
+            : undefined;
+          // A script is named <prefix><install id>; a HOSTS value is
+          // [<mode>:]<install id>.
+          this.scheduledCalls.push({
+            script: name,
+            cron: o.cron,
+            hosts: kv
+              ? [...kv.values()]
+                  .filter((v) => name.endsWith(v.replace(/^[a-z]+:/, "")))
+                  .sort()
+              : [],
+          });
+          if (this.onScheduled) return this.onScheduled(name, o.cron);
+          return undefined;
+        },
         fetch: async (req) => {
           const s = this.scripts.get(`${ns ?? ""}/${name}`);
           this.dispatched.push({

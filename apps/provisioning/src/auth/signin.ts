@@ -8,7 +8,7 @@ import {
   signBrokerTicket,
   verifyGoogleIdTokenAnyDomain,
 } from "@oa/auth-core";
-import { type BrowserRouteId, safeReturn } from "@oa/shared/provisioning";
+import { type BrowserRouteId, safeReturn } from "@oa/provisioning-contract";
 import { type AuditEntry, audit, type SigninActor } from "../audit.js";
 import type { Env } from "../env.js";
 import { errorResponse } from "../errors.js";

@@ -3,7 +3,7 @@ import {
   type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
 import { ipKey } from "@oa/auth-core";
-import { type TokenScope, TokenScopeSchema } from "@oa/shared/provisioning";
+import { type TokenScope, TokenScopeSchema } from "@oa/provisioning-contract";
 import type { Env } from "../../env.js";
 import { ApiError } from "../../errors.js";
 import { limit } from "../../limits.js";

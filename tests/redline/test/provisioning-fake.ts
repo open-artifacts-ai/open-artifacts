@@ -1,19 +1,12 @@
-import { STAGING_TEST_DOMAIN } from "@oa/provision/names";
 import {
   ADMIN_TOOL_NAMES,
   JOB_STEPS,
   TOKEN_SCOPES,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import type { ProvConfig, ProvIo } from "../src/provisioning.ts";
-import { type Fake, fakeServer } from "./fake.ts";
 import { sealTo } from "./provisioner-seal.ts";
-import {
-  type SnoozeInstall,
-  type SnoozeOpts,
-  snoozeInstall,
-} from "./snooze-fake.ts";
 
-// An in-memory staging Provisioning API, inventory, broker and tenant hosts
+// An in-memory staging Provisioning API, inventory, broker and tenant pages
 // that behave as design v7 says, as a fetch function. Each R15 read moves a
 // running job one step (no timers); the clock moves only by io.wait. Tests
 // flip `faults` to make one behaviour wrong and check the probe catches it.
@@ -117,13 +110,12 @@ export type Fault =
   | "r2_q_owner_email"
   | "signups_closed"
   | "revoke_noop"
-  | "p50_snooze_counts"
-  | "p50_ineligible"
-  | "p50_groups_refused"
-  | "p50_team_tier"
-  | "p50_no_codes"
-  | "p50_no_test_held"
-  | "prod_live";
+  | "prod_live"
+  /** rl-l's create fails at upload (as a Cloudflare API error would). */
+  | "rll_create_failed"
+  | "rll_old_version"
+  | "p20_content_serving"
+  | "p21_stays_paused";
 
 export interface FakeApi {
   fetch: typeof fetch;
@@ -154,15 +146,8 @@ export interface FakeApi {
     hopStatus: number;
     hopLocation?: string;
   };
-  /**
-   * P50's installs (rl-snz-*), each a local fake install (test/snooze-fake.ts)
-   * from its create until its purge, by app host.
-   */
-  tenants: Map<string, { server: Fake; install: SnoozeInstall }>;
   /** Every accepted OIDC create's body, in order. */
   creates: Record<string, unknown>[];
-  /** Every tenant server the fake started (closed or not), for afterEach. */
-  closeTenants: () => Promise<void>;
 }
 
 /** apps/provisioning/src/auth/flow.ts clearFlowCookie(). */
@@ -191,12 +176,12 @@ export function fakeApi(): FakeApi {
   const audit: FakeApi["audit"] = [];
   const replays = new Map<string, Response>();
   const log: string[] = [];
-  const tenants: FakeApi["tenants"] = new Map();
-  const servers: Fake[] = [];
   const creates: Record<string, unknown>[] = [];
   const signupAccounts = new Set<string>();
   /** Purged rows inventory lost (fault p23_no_row). */
   const noRow = new Set<string>();
+  /** Suspended installs whose content host still serves (p20_content_serving). */
+  const contentServing = new Set<string>();
   /** Rows a done discard or purge freed: HOSTS and pages forget them. */
   const live = (i: FInstall) => i.deletedAt === null;
   /** Every row but a discarded create's holds its slug (installs.slug UNIQUE). */
@@ -280,14 +265,7 @@ export function fakeApi(): FakeApi {
   const detail = (i: FInstall) => ({
     ...summary(i),
     ownerEmail: null,
-    auth: {
-      providers: ["email"],
-      domains: [],
-      // authOf: present only when on. P50's create asks for it.
-      ...(i.slug.startsWith("rl-snz-") && !faults.has("p50_no_codes")
-        ? { domainCodes: true }
-        : {}),
-    },
+    auth: { providers: ["email"], domains: [] },
     previousVersion: i.previousVersion,
     suspendedAt: null,
     suspendReason: null,
@@ -504,10 +482,7 @@ export function fakeApi(): FakeApi {
       const version = (body.version as string | undefined) ?? "0.82.0";
       const rel = releases.find((r) => r.version === version);
       if (!rel) return err(422, "release_not_published");
-      const tier =
-        typeof body.tier === "string" && !faults.has("p50_team_tier")
-          ? body.tier
-          : "team";
+      const tier = typeof body.tier === "string" ? body.tier : "team";
       const i = add({
         slug: String(body.slug),
         tier,
@@ -523,34 +498,23 @@ export function fakeApi(): FakeApi {
       });
       if (user) signupAccounts.add(p);
       else creates.push(body);
-      // P50's install answers the snooze path for real (snooze.ts fetches).
-      if (i.slug.startsWith("rl-snz-")) {
-        const o: SnoozeOpts = {
-          ownerEmail: () => String(body.ownerEmail),
-          ...(faults.has("p50_snooze_counts")
-            ? { snoozeStillCounts: true }
-            : {}),
-          ...(faults.has("p50_ineligible") ? { otpOutcome: "ineligible" } : {}),
-          ...(faults.has("p50_groups_refused") ? { groupsRefused: true } : {}),
-          ...(faults.has("p50_no_test_held") ? { testHeldShown: false } : {}),
-          ...(tier === "business" ? {} : { mode: "frozen" }),
-        };
-        const install = snoozeInstall(() => STAGING_TEST_DOMAIN, i.id, o);
-        const server = await fakeServer(install.handle);
-        servers.push(server);
-        tenants.set(i.appHost, { server, install });
-      }
       const j = startJob(i, "create", p, {
-        failAt: rel.installable
-          ? undefined
-          : { step: "release_gate", code: "release_unverified" },
+        failAt: !rel.installable
+          ? { step: "release_gate", code: "release_unverified" }
+          : faults.has("rll_create_failed") && i.slug.startsWith("rl-l-")
+            ? { step: "upload", code: "cf_api_error" }
+            : undefined,
         onStep: (s) => {
           if (s === "route") i.mode = "serving";
           if (faults.has("p15_mode_early") && s === "admit") i.mode = "serving";
         },
         onDone: () => {
           i.state = "active";
-          i.version = version;
+          // rll_old_version: rl-l lands on the previous release, whatever asked.
+          i.version =
+            faults.has("rll_old_version") && i.slug.startsWith("rl-l-")
+              ? "0.81.0"
+              : version;
           if (faults.has("p13_hosts_cache"))
             hostsCachedUntil.set(i.id, clock.t + 60_000);
         },
@@ -609,8 +573,10 @@ export function fakeApi(): FakeApi {
       case "suspend": {
         const j = startJob(i, "suspend", p, {
           onDone: () => {
+            // p20_content_serving: the content host keeps serving.
             i.mode = "paused";
             i.state = "suspended";
+            if (faults.has("p20_content_serving")) contentServing.add(i.id);
           },
         });
         return ok({ job: jobView(j, false), install: summary(i) }, 202);
@@ -618,7 +584,8 @@ export function fakeApi(): FakeApi {
       case "resume": {
         const j = startJob(i, "resume", p, {
           onDone: () => {
-            i.mode = "serving";
+            // p21_stays_paused: the job is done but the page stays paused.
+            if (!faults.has("p21_stays_paused")) i.mode = "serving";
             i.state = "active";
           },
         });
@@ -657,11 +624,6 @@ export function fakeApi(): FakeApi {
             i.deletedAt = clock.t;
             if (kind === "discard" || faults.has("p23_slug_freed"))
               i.discarded = true;
-            const tn = tenants.get(i.appHost);
-            if (tn) {
-              tenants.delete(i.appHost);
-              void tn.server.close();
-            }
             if (faults.has("p23_no_row")) noRow.add(i.id);
           },
         });
@@ -791,6 +753,12 @@ export function fakeApi(): FakeApi {
         (faults.has("p13_healthz_404") && i.slug.startsWith("rl-p-")))
     )
       return new Response("nf", { status: 404 });
+    if (
+      i.mode === "paused" &&
+      contentServing.has(i.id) &&
+      host === i.contentHost
+    )
+      return new Response("app");
     if (i.mode === "paused") return new Response("paused", { status: 503 });
     // Dispatch serves the closed page as 503 too (apps/dispatch/src/unavailable.ts).
     if (i.mode === "closed")
@@ -1014,8 +982,6 @@ export function fakeApi(): FakeApi {
   };
 
   const io: ProvIo = {
-    // A tenant's app host is its local fake; any other host stays as live.
-    tenantOrigin: (h) => tenants.get(h)?.server.origin ?? `https://${h}`,
     fetch: handler as typeof fetch,
     now: () => clock.t,
     wait: async (ms) => {
@@ -1037,11 +1003,7 @@ export function fakeApi(): FakeApi {
     log,
     signin,
     broker,
-    tenants,
     creates,
-    closeTenants: async () => {
-      for (const sv of servers.splice(0)) await sv.close().catch(() => {});
-    },
   };
 }
 

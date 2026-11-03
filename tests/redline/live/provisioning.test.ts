@@ -1,22 +1,27 @@
 import { afterAll, beforeAll, describe, it } from "vitest";
 import {
   CLEANUP_TIMEOUT_MS,
+  caseTimeoutMs,
   cleanupInstalls,
-  PROBE_TIMEOUT_MS,
+  type Outcome,
   PROBES,
   type Run,
-  runProbe,
+  startChains,
 } from "../src/provisioning.ts";
 import { liveRun, rawTargets } from "../src/provisioning-live.ts";
 import { label, proof } from "../src/report.ts";
 
 // The provisioning probes (design v7 12.2) against the staging Provisioning
-// API as the GitHub OIDC principal. In order: later probes use what earlier
-// ones made (P13's rl-p install, P44's client). Every case is listed in
-// live/manifest.json. Local mode has no API: each case is not-applicable.
+// API as the GitHub OIDC principal. The probes run as chains, all at once
+// (src/provisioning.ts CHAINS): rl-p's create, upgrade, rollback and purge;
+// rl-l's suspend, resume and restore; the API checks. Inside a
+// chain, later probes use what earlier ones made. Each case awaits its own
+// probe; every case is listed in live/manifest.json. Local mode has no API:
+// each case is not-applicable.
 
 let run: Run | undefined;
 let why: string | undefined;
+let plan: ReturnType<typeof startChains> | undefined;
 
 beforeAll(() => {
   const env = process.env;
@@ -26,27 +31,31 @@ beforeAll(() => {
     return;
   }
   run = liveRun(env, rawTargets(env.REDLINE_TARGETS));
+  plan = startChains(run);
 });
 
-// Whatever a probe created and didn't remove: a failed P13 blocks P23.
+// Once every chain is done (so it never races one): whatever a probe created
+// and didn't remove, e.g. rl-p after a failed P13 blocks P23.
 afterAll(async () => {
+  if (plan) await plan.settled;
   if (run) await cleanupInstalls(run);
-}, CLEANUP_TIMEOUT_MS);
+}, CLEANUP_TIMEOUT_MS + caseTimeoutMs("P33"));
 
 describe("provisioning", () => {
-  const failed = new Set<string>();
   for (const p of PROBES)
     it(
       `${p.id}: ${p.title}`,
       async (ctx) => {
-        if (!run) return proof(ctx, "not-applicable", why ?? "not configured");
-        const o = await runProbe(p, run, failed);
+        if (!run || !plan)
+          return proof(ctx, "not-applicable", why ?? "not configured");
+        const o: Outcome = await (plan.outcomes.get(p.id) ??
+          Promise.reject(new Error(`${p.id} is in no chain`)));
         if (o.level === "pass") {
           if (o.note) label(ctx, o.note);
           return;
         }
         proof(ctx, o.level, o.reason);
       },
-      p.timeoutMs ?? PROBE_TIMEOUT_MS,
+      caseTimeoutMs(p.id),
     );
 });

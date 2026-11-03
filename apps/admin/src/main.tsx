@@ -28,7 +28,7 @@ async function startMocks() {
   // the AUTHZ "test-admin" routes (#1074 hides the rest).
   const flag = new URLSearchParams(location.search).get("mock");
   const { fixtureMe, fixtureWorld } = await import(
-    "@oa/shared/provisioning/fixtures"
+    "@oa/provisioning-contract/fixtures"
   );
   const extra =
     flag === "unauth"

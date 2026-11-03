@@ -1,0 +1,35 @@
+name: cache-seed
+# Keeps the pnpm store cache on main's scope (#965). CI no longer runs on push
+# to main, and pull requests and merge-queue runs can restore only their own
+# caches and main's, so main needs one run that saves the store whenever the
+# lockfile changes. No tests, no secrets; never a required check.
+on:
+  push:
+    branches: [main]
+    paths:
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - package.json
+      - .nvmrc
+      - .github/workflows/cache-seed.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cache-seed
+  cancel-in-progress: true
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      # Same cache key as CI's setup-node (pnpm, lockfile hash); saved on a miss.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts

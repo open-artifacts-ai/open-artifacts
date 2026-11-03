@@ -8,7 +8,7 @@ import {
   ROUTES,
   type RouteDef,
   ULID_RE,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { type AuditEntry, audit } from "../audit.js";
 import { LazyBody } from "../body.js";
 import type { Env } from "../env.js";

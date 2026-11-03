@@ -9,7 +9,7 @@ import {
   SIGNIN_REFUSAL_BUCKET,
   SQL_ALERT_KEYS,
   type SqlAlertKey,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { describe, expect, it } from "vitest";
 import { insert, job, lifecycle, platformDb, signup } from "./platform-db.js";
 

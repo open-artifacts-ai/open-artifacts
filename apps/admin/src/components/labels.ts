@@ -6,7 +6,7 @@ import type {
   JobKind,
   JobStatus,
   Tier,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 
 export const STATE_LABEL: Record<InstallState, string> = {
   provisioning: "Creating",

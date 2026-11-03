@@ -6,7 +6,7 @@ import {
   fieldRulesOf,
   slugError,
   type Tier,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import type { z } from "zod";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
@@ -108,14 +108,12 @@ export async function createInstall(a: HandlerArgs): Promise<RouteResult> {
   const ss = user ? await selfServePolicy(a, p, body) : null;
   slugRule(body.slug);
   const testHooks = body.testHooks === true;
-  const version =
-    body.version === undefined
-      ? undefined
-      : await resolveRelease(
-          env,
-          body.version,
-          testHooks ? "redline" : "release",
-        );
+  // Pinned here, so the provisioner never picks the newest by itself.
+  const version = await resolveRelease(
+    env,
+    body.version,
+    testHooks ? "redline" : "release",
+  );
   if (await slugHeld(env, body.slug)) throw new ApiError("slug_taken");
 
   // checkCreateFields required these for every principal but U.

@@ -1,9 +1,10 @@
-import type { InstallDetail, RouteId } from "@oa/shared/provisioning";
-import { fixtureMe } from "@oa/shared/provisioning/fixtures";
+import type { InstallDetail, RouteId } from "@oa/provisioning-contract";
+import { fixtureMe } from "@oa/provisioning-contract/fixtures";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { canCall, canSeePii } from "../src/hooks/useEnv";
 import { installsByState } from "../src/mocks/fixtures";
+import { AUDIT_ACTIONS } from "../src/pages/Audit";
 import { http, json, renderApp, seen, use } from "./harness";
 
 // #1074: the panel hides what the session can't do, from the shared authz table.
@@ -161,7 +162,8 @@ it("real admin Audit: keeps Actor and every action", async () => {
   expect(await options("Actor")).toContain("Any actor");
   fireEvent.keyDown(await screen.findByRole("listbox"), { key: "Escape" });
   const all = await options("Action");
-  expect(all).toHaveLength(20);
+  // Any action, then every option (#1136 added the step and refusal rows).
+  expect(all).toHaveLength(AUDIT_ACTIONS.length + 1);
   expect(all).toContain("was refused");
   expect(all).toContain("signed out");
   expect(all).not.toContain("deleted for good");

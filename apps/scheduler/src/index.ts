@@ -81,6 +81,11 @@ export interface NightlyOptions {
    * https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/#limits).
    */
   concurrency?: number;
+  /**
+   * Leave out suspended installs, in the page and the recheck before each
+   * call (#1155). Directory sync only: nightly clean-up still runs.
+   */
+  skipSuspended?: boolean;
   timeoutMs?: number;
   /** No new call starts after this; under the 15-minute cron wall time. */
   deadlineMs?: number;
@@ -109,10 +114,18 @@ const GOLDEN = 0.3819660112501051;
 const PAGE_SQL =
   "SELECT id FROM installs WHERE state = 'active' AND id > ?1 ORDER BY id LIMIT ?2";
 
+// A job a suspended install mustn't run (#1155: directory sync reaches the
+// customer's Google): the same pages and recheck, minus suspended installs.
+// Suspension is install_lifecycle.suspended_at; installs.state stays active.
+const NOT_SUSPENDED =
+  "NOT EXISTS (SELECT 1 FROM install_lifecycle l WHERE l.install_id = installs.id AND l.suspended_at IS NOT NULL)";
+const PAGE_SQL_UNSUSPENDED = `SELECT id FROM installs WHERE state = 'active' AND ${NOT_SUSPENDED} AND id > ?1 ORDER BY id LIMIT ?2`;
+
 // Right before each call: still active, and no live lifecycle lease
 // (provision holds one through upgrade, rollback and delete).
 const RECHECK_SQL =
   "SELECT 1 AS ok FROM installs WHERE id = ?1 AND state = 'active' AND (lease_until IS NULL OR lease_until <= ?2)";
+const RECHECK_SQL_UNSUSPENDED = `${RECHECK_SQL} AND ${NOT_SUSPENDED}`;
 
 /**
  * Measured on staging through a dispatch namespace (2026-10-24): scheduled()
@@ -157,13 +170,14 @@ function checkOutcome(r: unknown): void {
 async function activeIds(
   db: D1Database,
   pageSize: number,
+  sql = PAGE_SQL,
 ): Promise<{ ids: string[]; invalid: number }> {
   const ids: string[] = [];
   let invalid = 0;
   let after = "";
   for (;;) {
     const { results } = await db
-      .prepare(PAGE_SQL)
+      .prepare(sql)
       .bind(after, pageSize)
       .all<{ id: unknown }>();
     for (const r of results)
@@ -267,6 +281,7 @@ export async function runNightly(
     job = CRON,
     label = "nightly",
     gates,
+    skipSuspended = false,
   }: NightlyOptions = {},
 ): Promise<NightlyResult> {
   positive("concurrency", concurrency, true);
@@ -278,7 +293,11 @@ export async function runNightly(
   positive("pageSize", pageSize, true);
   const start = Date.now();
 
-  const rows = await activeIds(env.PLATFORM_DB, pageSize);
+  const rows = await activeIds(
+    env.PLATFORM_DB,
+    pageSize,
+    skipSuspended ? PAGE_SQL_UNSUSPENDED : PAGE_SQL,
+  );
   const valid = rows.ids.filter((id) => isInstallId(id));
   // Resolve every script name first: an unknown OA_ENV throws before any call.
   for (const id of valid) names(id, env.OA_ENV);
@@ -387,7 +406,11 @@ export async function runNightly(
         let still: unknown;
         try {
           still = await within(
-            env.PLATFORM_DB.prepare(RECHECK_SQL).bind(id, Date.now()).first(),
+            env.PLATFORM_DB.prepare(
+              skipSuspended ? RECHECK_SQL_UNSUSPENDED : RECHECK_SQL,
+            )
+              .bind(id, Date.now())
+              .first(),
             byDeadline ? left : recheckMs,
           );
         } catch (e) {
@@ -689,6 +712,8 @@ export function directorySync(
     ...SYNC_OPTIONS,
     job: SYNC_JOB,
     label: "directory-sync",
+    // A suspended install doesn't reach the customer's Google (#1155).
+    skipSuspended: true,
     ...(gates ? { gates } : {}),
   });
 }

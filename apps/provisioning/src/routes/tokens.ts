@@ -1,4 +1,4 @@
-import { MintTokenSchema, TokenIdSchema } from "@oa/shared/provisioning";
+import { MintTokenSchema, TokenIdSchema } from "@oa/provisioning-contract";
 import { revokeLibraryGrants } from "../auth/oauth/server.js";
 import { ApiError } from "../errors.js";
 import {

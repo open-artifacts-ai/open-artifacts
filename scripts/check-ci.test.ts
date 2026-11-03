@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -72,31 +72,59 @@ const RETRY_FLAGS = /--retry \d+ --retry-delay \d+ --retry-max-time \d+/;
 
 describe("ci.yml", () => {
   const w = wf("ci.yml");
-  it("triggers on pull_request and push to main", () => {
+  it("triggers on pull_request and dispatch, never on push (#965)", () => {
     expect(triggers(w)).toEqual(
-      expect.arrayContaining(["pull_request", "push", "workflow_dispatch"]),
+      expect.arrayContaining(["pull_request", "workflow_dispatch"]),
     );
-    expect(w.on.push.branches).toContain("main");
-    expect("workflow_dispatch" in w.on).toBe(true);
+    // Main moves only through the merge queue, which already ran CI on the
+    // same commit; a push run would only retest it and take runners.
+    expect("push" in w.on).toBe(false);
   });
-  it("test: pull requests run the affected packages; everything else runs the full suite", () => {
+  it("no workflow waits on a push-to-main CI run (#965)", () => {
+    const dir = join(root, ".github/workflows");
+    const onCi: string[] = [];
+    for (const f of readdirSync(dir).filter((n) => /\.ya?ml$/.test(n))) {
+      const x = wf(f);
+      const wr = x.on?.workflow_run;
+      if (wr && (wr.workflows ?? []).includes("CI")) {
+        onCi.push(f);
+        // No branch filter: it still fires on pull request and merge-queue
+        // CI runs (the release PR's own checks are what it reads).
+        expect(wr.branches).toBeUndefined();
+        expect(wr["branches-ignore"]).toBeUndefined();
+      }
+    }
+    expect(onCi).toEqual(["release-cadence.yml"]);
+    // release-cadence reads the release PR's check rollup and the merge
+    // queue, never a check on main's commit.
+    const cadence = ci("release-cadence.ts");
+    expect(cadence).toContain("statusCheckRollup");
+    expect(cadence).toContain("mergeQueue(branch: $branch)");
+  });
+  it("test: three shards (server, rest, cpu); pull requests run the affected packages, everything else the whole shard (#965)", () => {
+    const job = w.jobs["test-shard"];
+    expect(job.strategy.matrix.shard).toEqual(["server", "rest", "cpu"]);
+    expect(job.strategy["fail-fast"]).toBe(false);
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
-    const steps: any[] = w.jobs.test.steps;
+    const steps: any[] = job.steps;
     const suite = steps.find((s) => s.id === "suite");
     expect(suite.run).toBe("bash scripts/ci/test-affected.sh");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(suite.env.BASE_SHA).toBe(
       "${{ github.event.pull_request.base.sha }}",
     );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(suite.env.TEST_SHARD).toBe("${{ matrix.shard }}");
     expect(suite.if).toContain("steps.ro.outputs.release_only != 'true'");
     expect(steps.some((s) => s.run === "pnpm test")).toBe(false);
-    const cpu = steps.find((s) => (s.run ?? "").includes("test:cpu"));
-    expect(cpu.if).toContain("steps.suite.outputs.server == 'true'");
+    // test:cpu runs only in its own shard, never after another suite.
+    expect(JSON.stringify(steps)).not.toContain("test:cpu");
     const sh = ci("test-affected.sh");
     expect(sh).toContain(
       '[ "${GITHUB_EVENT_NAME:-}" = pull_request ] || everything',
     );
     expect(sh).toContain('--filter "...[$BASE_SHA]"');
+    expect(sh).toContain("pnpm --filter @oa/server test:cpu");
   });
   it("runs on merge_group so the merge queue gets its required checks", () => {
     expect(triggers(w)).toContain("merge_group");
@@ -105,6 +133,29 @@ describe("ci.yml", () => {
     expect(Object.keys(w.jobs)).toEqual(
       expect.arrayContaining(["build", "e2e", "lint", "test", "typecheck"]),
     );
+  });
+  // #1213: the migration timing job filters by path inside the job, so it
+  // always reports (a filtered-out workflow would leave a required check
+  // pending, a skipped job would pass one); any diff error means run.
+  it("migration-timing always runs and decides its path filter inside", () => {
+    const job = w.jobs["migration-timing"];
+    expect(job).toBeDefined();
+    expect(job.if).toBeUndefined();
+    expect(job.needs).toBeUndefined();
+    expect(w.on.pull_request?.paths).toBeUndefined();
+    expect(w.on.merge_group?.paths).toBeUndefined();
+    expect(JSON.stringify(job)).not.toContain("continue-on-error");
+    expect(JSON.stringify(job)).not.toContain("secrets.");
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = job.steps;
+    const changed = steps.find((s) => s.id === "changed");
+    expect(changed.run).toMatch(/^run=true\n/);
+    expect(changed.run).toContain("apps/server/migrations/");
+    const time = steps.find((s) =>
+      (s.run ?? "").includes("migration-timing.ts --seed-file"),
+    );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(time.if).toBe("${{ steps.changed.outputs.run == 'true' }}");
   });
   // P3 T16 (#605): the authz matrix runs in its own job, in parallel, so the
   // main test job's wall time drops. Required check (repo setting).
@@ -135,28 +186,21 @@ describe("ci.yml", () => {
   });
   it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
     const job = w.jobs["e2e-shard"];
-    // Free plan (20 concurrent jobs): one shard on pull requests, four on the
-    // merge queue and main.
-    expect(job.strategy.matrix.shard).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3,4]') }}",
-    );
+    // Four shards on every event: pull requests too, as the merge queue
+    // (#965). No per-event expression anywhere in the shard setup.
+    expect(job.strategy.matrix.shard).toEqual([1, 2, 3, 4]);
     expect(job.strategy["fail-fast"]).toBe(false);
-    expect(job.env.E2E_SHARD).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 1 || 4 }}",
-    );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(job.env.E2E_SHARD).toBe("${{ matrix.shard }}/4");
+    expect(JSON.stringify(job)).not.toContain("github.event_name");
     // Browsers and their OS deps come baked into the image, pinned by digest:
     // no apt step, so a slow Ubuntu mirror can't eat the job's budget (#462).
     expect(job.container.image).toMatch(
       /^mcr\.microsoft\.com\/playwright:v\d+\.\d+\.\d+-noble@sha256:[0-9a-f]{64}$/,
     );
     expect(job.container.options ?? "").toContain("--ipc=host");
-    // 25 min for the single pull-request shard (every suite), 15 for one of four.
-    expect(job["timeout-minutes"]).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ github.event_name == 'pull_request' && 25 || 15 }}",
-    );
+    // 15 min for one shard of four.
+    expect(job["timeout-minutes"]).toBe(15);
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     const steps: any[] = job.steps;
     const runs = steps.map((s) => s.run ?? "");
@@ -193,11 +237,20 @@ describe("ci.yml", () => {
       "apps/dashboard/test-results",
     ]);
     expect(uploads[1].if).toBe("failure()");
-    // The spaces suite (one spec, its own server) runs whole in one shard.
-    const spaces = steps.find((s) => s.run === "bash scripts/ci/e2e.sh spaces");
-    expect(spaces.if).toContain(
-      "matrix.shard == (github.event_name == 'pull_request' && 1 || 3)",
-    );
+    // The spaces suite (one spec, its own server) runs whole in shard 3 only;
+    // the unsharded ui, landing and provisioning checks in shard 1 only.
+    const shardOf = (name: string) => {
+      const step = steps.find(
+        (s) => s.run === `bash scripts/ci/e2e.sh ${name}`,
+      );
+      return [...(step.if as string).matchAll(/matrix\.shard == (\d+)/g)].map(
+        (m) => Number(m[1]),
+      );
+    };
+    expect(shardOf("spaces")).toEqual([3]);
+    for (const name of ["ui", "landing", "provisioning"]) {
+      expect(shardOf(name)).toEqual([1]);
+    }
     // Local wrangler dev only: no secrets, nothing pointing at staging.
     const s = JSON.stringify(job);
     expect(s).not.toContain("secrets.");
@@ -214,10 +267,10 @@ describe("ci.yml", () => {
       "e2e",
       "authz-matrix",
     ];
-    // `e2e` is an aggregate (below); its shards do the heavy work.
+    // `e2e` and `test` are aggregates (below); their shards do the heavy work.
     const HEAVY = [
       "typecheck",
-      "test",
+      "test-shard",
       "build",
       "e2e-shard",
       "e2e-admin",
@@ -234,10 +287,12 @@ describe("ci.yml", () => {
       expect(Object.keys(w.jobs)).toEqual(expect.arrayContaining(REQUIRED));
     });
     it("no required job has a job-level if or needs (a skipped job counts as passing)", () => {
-      for (const j of REQUIRED.filter((j) => j !== "e2e")) {
+      for (const j of REQUIRED.filter((j) => j !== "e2e" && j !== "test")) {
         expect(w.jobs[j].if, `${j} if`).toBeUndefined();
         expect(w.jobs[j].needs, `${j} needs`).toBeUndefined();
       }
+      expect(w.jobs["test-shard"].if).toBeUndefined();
+      expect(w.jobs["test-shard"].needs).toBeUndefined();
       expect(w.jobs["e2e-shard"].if).toBeUndefined();
       expect(w.jobs["e2e-shard"].needs).toBeUndefined();
       expect(w.jobs["e2e-admin"].if).toBeUndefined();
@@ -262,6 +317,22 @@ describe("ci.yml", () => {
       expect(gate.run).toMatch(
         /^\[ "\$SHARDS" = success \] && \[ "\$ADMIN" = success \]$/m,
       );
+      expect(JSON.stringify(job)).not.toContain("secrets.");
+    });
+    // Same for `test` (#965): it always runs, and its first, ungated step
+    // fails unless every test shard succeeded.
+    it("test is the aggregate of its shards: always runs, passes only when all passed", () => {
+      const job = w.jobs.test;
+      expect(job.needs).toEqual(["test-shard"]);
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(job.if).toBe("${{ always() }}");
+      expect(steps("test")).toHaveLength(1);
+      const [gate] = steps("test");
+      expect(gate.if).toBeUndefined();
+      expect(gate["continue-on-error"]).toBeUndefined();
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.SHARDS).toBe("${{ needs.test-shard.result }}");
+      expect(gate.run).toMatch(/^\[ "\$SHARDS" = success \]$/m);
       expect(JSON.stringify(job)).not.toContain("secrets.");
     });
     it("each heavy job checks out full history, then runs the release-only step first", () => {
@@ -693,6 +764,195 @@ describe("release-please", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(rp.with.token).toBe("${{ steps.app.outputs.token }}");
     expect(steps.indexOf(app)).toBeLessThan(steps.indexOf(rp));
+  });
+  describe("only the release commit's own run creates GitHub releases", () => {
+    // 2026-11-03: a non-release push queued behind the concurrency group ran
+    // after release PR #1256 merged and created v0.105.0 (the action reads
+    // main's head), so the tag commit's own run skipped every downstream job.
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const rpSteps = (): any[] =>
+      wf("release-please.yml").jobs["release-please"].steps;
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const kind = () => rpSteps().find((s: any) => s.id === "kind");
+    const SHA = "a".repeat(40);
+    const OTHER = "b".repeat(40);
+    // A gh that answers the three reads from env; any other call exits 2.
+    const GH_STUB = `#!/usr/bin/env bash
+echo "$*" >> "$STUB_LOG"
+[ "$1" = api ] || exit 2
+path=$2; q=
+if [ "$#" -eq 4 ] && [ "$3" = -q ]; then q=$4; elif [ "$#" -ne 2 ]; then exit 2; fi
+case "$path" in
+  "repos/o/r/issues?state=closed&labels=autorelease:%20pending&per_page=100")
+    [ -z "\${STUB_FAIL:-}" ] || [ "$STUB_FAIL" != issues ] || exit 1; body=$STUB_ISSUES ;;
+  repos/o/r/pulls/*)
+    [ "\${STUB_FAIL:-}" != pull ] || exit 1
+    body=$(jq -n --arg s "$STUB_MERGE" '{merge_commit_sha: $s}') ;;
+  "repos/o/r/compare/$SHA...$STUB_MERGE")
+    [ "\${STUB_FAIL:-}" != compare ] || exit 1
+    body=$(jq -n --arg s "$STUB_COMPARE" '{status: $s}') ;;
+  *) exit 3 ;;
+esac
+if [ -n "$q" ]; then jq -r "$q" <<< "$body"; else printf '%s\\n' "$body"; fi
+`;
+    const pr = (number: number, merged = true) => ({
+      number,
+      pull_request: { merged_at: merged ? "2026-11-03T00:00:00Z" : null },
+    });
+    const runKind = (stub: {
+      issues?: readonly unknown[];
+      merge?: string;
+      compare?: string;
+      fail?: "issues" | "pull" | "compare";
+    }) => {
+      const dir = mkdtempSync(join(tmpdir(), "rp-kind-"));
+      const out = join(dir, "out");
+      writeFileSync(out, "");
+      writeFileSync(join(dir, "gh"), GH_STUB, { mode: 0o755 });
+      const r = spawnSync("bash", ["-c", kind().run], {
+        encoding: "utf8",
+        env: {
+          PATH: `${dir}:${process.env.PATH}`,
+          GITHUB_OUTPUT: out,
+          GH_TOKEN: "t",
+          REPO: "o/r",
+          SHA,
+          STUB_LOG: join(dir, "log"),
+          STUB_ISSUES: JSON.stringify(stub.issues ?? []),
+          STUB_MERGE: stub.merge ?? "",
+          STUB_COMPARE: stub.compare ?? "",
+          STUB_FAIL: stub.fail ?? "",
+        },
+      });
+      return {
+        code: r.status,
+        output: readFileSync(out, "utf8"),
+        log: r.stdout + r.stderr,
+      };
+    };
+    const NO_OWN_RUN = `release commit ${OTHER} (#1256) has no own run: see docs/ops/hosted.md, Release recovery`;
+
+    it("skip-github-release is wired to the kind step, which runs before the action", () => {
+      const steps = rpSteps();
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const rp = steps.find((s: any) => s.id === "rp");
+      expect(rp.with["skip-github-release"]).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ steps.kind.outputs.is_release != 'true' }}",
+      );
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const k = steps.findIndex((s: any) => s.id === "kind");
+      expect(k).toBeGreaterThan(
+        // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+        steps.findIndex((s: any) => s.id === "app"),
+      );
+      expect(k).toBeLessThan(steps.indexOf(rp));
+    });
+    it("the kind step reads with the App token and takes every value from env", () => {
+      const k = kind();
+      expect(k.env).toEqual({
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        GH_TOKEN: "${{ steps.app.outputs.token }}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        REPO: "${{ github.repository }}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        SHA: "${{ github.sha }}",
+      });
+      expect(k.run).not.toContain("${{");
+      // Reads only: no method override, no fields.
+      expect(k.run).not.toMatch(
+        /gh api[^\n]*(\s-X|--method|\s-f|\s-F|--field|--input)/,
+      );
+    });
+    it("the pending release PR merged as this commit gives true", () => {
+      expect(runKind({ issues: [pr(1256)], merge: SHA })).toMatchObject({
+        code: 0,
+        output: "is_release=true\n",
+      });
+    });
+    it("no merged pending release PR gives false (the PR step runs)", () => {
+      for (const issues of [[], [pr(1250, false)]])
+        expect(runKind({ issues })).toMatchObject({
+          code: 0,
+          output: "is_release=false\n",
+        });
+    });
+    it("a pending release PR merged after this commit gives false: its own run is queued", () => {
+      expect(
+        runKind({ issues: [pr(1256)], merge: OTHER, compare: "ahead" }),
+      ).toMatchObject({ code: 0, output: "is_release=false\n" });
+    });
+    it("a pending release PR merged before this commit (batched or cancelled) fails loudly", () => {
+      for (const compare of ["behind", "diverged", ""]) {
+        const r = runKind({ issues: [pr(1256)], merge: OTHER, compare });
+        expect(r.code, compare).toBe(1);
+        expect(r.output).toBe("");
+        expect(r.log).toContain(`::error::${NO_OWN_RUN}`);
+      }
+    });
+    it("a full page of pending-labelled items fails: a later page could hold another", () => {
+      const closed = (k: number) =>
+        Array.from({ length: k }, (_, i) => pr(1000 + i, false));
+      const full = runKind({ issues: [pr(1256), ...closed(99)], merge: SHA });
+      expect(full.code).toBe(1);
+      expect(full.output).toBe("");
+      expect(full.log).toContain(
+        "::error::pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery\n",
+      );
+      expect(
+        runKind({ issues: [pr(1256), ...closed(98)], merge: SHA }),
+      ).toMatchObject({ code: 0, output: "is_release=true\n" });
+    });
+    it("two merged pending release PRs fail", () => {
+      const r = runKind({ issues: [pr(1256), pr(1260)], merge: SHA });
+      expect(r.code).toBe(1);
+      expect(r.output).toBe("");
+      expect(r.log).toContain(
+        "more than one merged release PR is pending (1256 1260)",
+      );
+    });
+    it("any gh error or bad answer fails closed", () => {
+      for (const [stub, error] of [
+        [{ fail: "issues" as const }, "could not list pending release PRs"],
+        [
+          { issues: [pr(1256)], merge: SHA, fail: "pull" as const },
+          "could not read #1256",
+        ],
+        [
+          { issues: [pr(1256)], merge: OTHER, fail: "compare" as const },
+          `could not compare ${SHA} with ${OTHER}`,
+        ],
+        [
+          { issues: [pr(1256)], merge: "null" },
+          "could not read #1256's merge commit",
+        ],
+        [
+          { issues: [pr(1256)], merge: "" },
+          "could not read #1256's merge commit",
+        ],
+      ] as const) {
+        const r = runKind(stub);
+        expect(r.code, JSON.stringify(stub)).toBe(1);
+        expect(r.output).toBe("");
+        expect(r.log).toContain(`::error::${error}\n`);
+      }
+      const dir = mkdtempSync(join(tmpdir(), "rp-kind-"));
+      const out = join(dir, "out");
+      writeFileSync(out, "");
+      writeFileSync(join(dir, "gh"), "#!/usr/bin/env bash\necho not-json\n", {
+        mode: 0o755,
+      });
+      const r = spawnSync("bash", ["-c", kind().run], {
+        env: {
+          PATH: `${dir}:${process.env.PATH}`,
+          GITHUB_OUTPUT: out,
+          REPO: "o/r",
+          SHA,
+        },
+      });
+      expect(r.status).toBe(1);
+      expect(readFileSync(out, "utf8")).toBe("");
+    });
   });
   it("has no dispatch workaround for the release PR", () => {
     const raw = read(".github/workflows/release-please.yml");
@@ -1256,6 +1516,29 @@ describe("workflow jobs that use repo files have a checkout", () => {
       });
     }
   }
+});
+
+describe("cache-seed.yml (#965)", () => {
+  const w = wf("cache-seed.yml");
+  it("seeds main's pnpm cache when the lockfile changes; no tests, no secrets", () => {
+    expect(triggers(w).sort()).toEqual(["push", "workflow_dispatch"]);
+    expect(w.on.push.branches).toEqual(["main"]);
+    expect(w.on.push.paths).toEqual(
+      expect.arrayContaining(["pnpm-lock.yaml", ".nvmrc"]),
+    );
+    expect(w.permissions).toEqual({ contents: "read" });
+    const text = read(".github/workflows/cache-seed.yml");
+    expect(text).not.toContain("secrets.");
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = w.jobs.seed.steps;
+    const node = steps.find((s) =>
+      String(s.uses).startsWith("actions/setup-node@"),
+    );
+    expect(node.with.cache).toBe("pnpm");
+    expect(steps.at(-1).run).toBe(
+      "pnpm install --frozen-lockfile --ignore-scripts",
+    );
+  });
 });
 
 describe("release cadence", () => {

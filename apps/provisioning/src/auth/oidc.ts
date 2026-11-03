@@ -4,7 +4,7 @@ import {
   type VerifyOptions,
   verify,
 } from "@oa/gh-oidc";
-import { type OidcWorkflow, TEST_MEMBER } from "@oa/shared/provisioning";
+import { type OidcWorkflow, TEST_MEMBER } from "@oa/provisioning-contract";
 import type { Env } from "../env.js";
 import { type Principal, type Refusal, refusal } from "../principal.js";
 

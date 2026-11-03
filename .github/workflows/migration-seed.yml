@@ -1,0 +1,54 @@
+name: migration-seed
+# Keeps CI's migration-timing seed (#1213) in main's cache scope. Pull
+# requests and merge-queue runs can restore only their own caches and main's,
+# and CI doesn't run on push to main (#965). The seed's key changes with the
+# last release's migrations or the seeder, so this runs daily, on dispatch,
+# and when the seeder or timer changes on main. Not on release pushes: the
+# release manifest can land before its tag, so a run then keys the old one.
+# Until the next daily run after a release that adds a migration, PRs build
+# the seed cold (about 53 s). A hit ends in seconds. No secrets; never a
+# required check.
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/server/scripts/migration-seed.ts
+      - apps/server/scripts/migration-timing.ts
+      - .github/workflows/migration-seed.yml
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: migration-seed
+  cancel-in-progress: true
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - id: key
+        run: |
+          key="$(node --experimental-strip-types --no-warnings apps/server/scripts/migration-timing.ts --key)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/oa-migration-seed
+          key: ${{ steps.key.outputs.key }}
+          lookup-only: true
+      - if: ${{ steps.restore.outputs.cache-hit != 'true' }}
+        run: node --experimental-strip-types --no-warnings apps/server/scripts/migration-timing.ts --seed-only --seed-file "$HOME/.cache/oa-migration-seed/seed.sqlite"
+      - if: ${{ steps.restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/oa-migration-seed
+          key: ${{ steps.key.outputs.key }}

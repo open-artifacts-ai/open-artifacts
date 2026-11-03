@@ -17,7 +17,7 @@ import {
   platformNames,
   registryKey,
 } from "@oa/provision";
-import { FakeWorkflow } from "@oa/shared/provisioning/fakes";
+import { FakeWorkflow } from "@oa/provisioning-contract/fakes";
 import { nodeD1 } from "../../../../packages/provision/test/d1-node.js";
 import { FakeCf } from "../../../../packages/provision/test/fake-cf.js";
 import {

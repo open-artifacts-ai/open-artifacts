@@ -1,5 +1,8 @@
-import { JOB_STEPS, redlineCredsJobArgs } from "@oa/shared/provisioning";
-import { fakeProvisionerRpc } from "@oa/shared/provisioning/fakes";
+import { JOB_STEPS, redlineCredsJobArgs } from "@oa/provisioning-contract";
+import {
+  FAKE_RELEASES,
+  fakeProvisionerRpc,
+} from "@oa/provisioning-contract/fakes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Principal } from "../src/principal.js";
 import { call, type HTTP } from "./call.js";
@@ -840,6 +843,94 @@ describe("lifecycle writes (R5-R13)", () => {
       body: { requestId: requestId(), nonAdditive: true },
     });
     expect(asUser.code).toBe("forbidden");
+  });
+
+  describe("the default release is the platform's own (#1137)", () => {
+    const at = (tag?: string) =>
+      fakeEnv({ CF_VERSION_METADATA: tag === undefined ? undefined : { tag } });
+
+    it("R5 with no version goes to the platform's release, not the newest", async () => {
+      const e = at("v1.41.2");
+      const { id } = await seedInstall({ version: "1.41.0" });
+      const up = await call(e, ADMIN_P, "R5", {
+        params: { id },
+        body: { requestId: requestId() },
+      });
+      expect(up.body.job.args).toEqual({ from: "1.41.0", to: "1.41.2" });
+    });
+
+    it("an explicit version still works, newer than the platform's too", async () => {
+      const e = at("v1.41.2");
+      const { id } = await seedInstall({ version: "1.41.0" });
+      const up = await call(e, ADMIN_P, "R5", {
+        params: { id },
+        body: { requestId: requestId(), version: "1.42.0" },
+      });
+      expect(up.body.job.args).toEqual({ from: "1.41.0", to: "1.42.0" });
+    });
+
+    it("R4 with no version pins the platform's release on the signup", async () => {
+      const e = at("v1.41.2");
+      const r = await call(e, ADMIN_P, "R4", { body: leo({ slug: "pinned" }) });
+      expect(r.status).toBe(202);
+      const row = await db
+        .prepare("SELECT version FROM signups WHERE slug = ?")
+        .bind("pinned")
+        .first<{ version: string | null }>();
+      expect(row?.version).toBe("1.41.2");
+    });
+
+    it("refuses a platform release that isn't installable, or lacks the variant", async () => {
+      const PROVISIONER = fakeProvisionerRpc({
+        releases: FAKE_RELEASES.map((r) =>
+          r.version === "1.42.0" ? { ...r, installable: false } : r,
+        ),
+      });
+      const e = fakeEnv({
+        PROVISIONER,
+        CF_VERSION_METADATA: { tag: "v1.42.0" },
+      });
+      const { id } = await seedInstall({ version: "1.41.0" });
+      expect(
+        (
+          await call(e, ADMIN_P, "R5", {
+            params: { id },
+            body: { requestId: requestId() },
+          })
+        ).code,
+      ).toBe("release_not_published");
+      // 1.41.2 has no redline variant: a test install can't default to it.
+      const t = at("v1.41.2");
+      const rl = await seedInstall({
+        version: "1.41.0",
+        slug: "rl-p-variant",
+        testHooks: true,
+      });
+      expect(
+        (
+          await call(t, ADMIN_P, "R5", {
+            params: { id: rl.id },
+            body: { requestId: requestId() },
+          })
+        ).code,
+      ).toBe("release_not_published");
+    });
+
+    it("fails closed: no tag, a branch tag, or an unpublished one", async () => {
+      for (const tag of [undefined, "", "main", "v1.42", "v9.9.9", "1.42.0"]) {
+        const e = at(tag);
+        const { id } = await seedInstall({ version: "1.41.0" });
+        const up = await call(e, ADMIN_P, "R5", {
+          params: { id },
+          body: { requestId: requestId() },
+        });
+        expect(up.code, String(tag)).toBe("release_not_published");
+        const r4 = await call(e, ADMIN_P, "R4", {
+          body: leo({ slug: `n${requestId().slice(-6).toLowerCase()}` }),
+        });
+        expect(r4.code, String(tag)).toBe("release_not_published");
+      }
+    });
   });
 
   it("R5 upgrade: default latest installable; at or below current is downgrade_refused", async () => {

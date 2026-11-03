@@ -17,8 +17,8 @@
 import {
   parseSignupsEnabled,
   ULID_RE,
-} from "@oa/shared/provisioning/constants";
-import { SELF_SERVE_STALE_MS } from "@oa/shared/provisioning/state";
+} from "@oa/provisioning-contract/constants";
+import { SELF_SERVE_STALE_MS } from "@oa/provisioning-contract/state";
 import { signupDailyCap } from "./conditions.js";
 import { bound, DutyFailure, d1, type ProvapiEnv } from "./env.js";
 /** Rows re-sent per list per tick. */

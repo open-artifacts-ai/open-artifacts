@@ -142,6 +142,8 @@ export type HostedMockOptions = {
    * inviting or restoring one answers 409 guest_lapsed (default none).
    */
   lapsedGuests?: string[];
+  /** Carol, who still has artifacts, is removed rather than suspended (#1222's erase refusal). */
+  carolRemoved?: boolean;
   /**
    * Also hold an unreadable group (Contractors): a held entry that removes
    * nobody (wouldRemove 0), which can't be confirmed or snoozed.
@@ -290,7 +292,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     name: "Carol Departed",
     role: "member",
     lastSeenAt: "2025-12-01T10:00:00.000Z",
-    status: "suspended",
+    status: o.carolRemoved ? "removed" : "suspended",
     identities: ["google"],
   };
   const dan: Member = {
@@ -305,6 +307,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   members.push(carol, dan, erin);
   /** Lapsed guests' ids: removed when their last share went (a share revives them). */
   const lapsed = new Set<string>();
+  /** Erased people's ids (R.memberErase): never listed or restored again. */
+  const erased = new Set<string>();
   for (const email of o.lapsedGuests ?? []) {
     const g: Member = {
       id: newId(),
@@ -1429,14 +1433,30 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         // Org owners and admins only, as the server (members.manage): space
         // managers search R.spaceCandidates instead.
         if (!isAdmin()) return notFound();
+        // directoryManaged (#1146), as the server: Google sync on and
+        // connected, no Google link, an address in MOCK_DOMAIN, not the
+        // owner, not removed (Dan by default).
+        const managed = (m: Member) =>
+          directoryMode === "google" &&
+          !!sync.binding &&
+          m.role !== "owner" &&
+          (m.status ?? "active") !== "removed" &&
+          m.email.endsWith(`@${MOCK_DOMAIN}`) &&
+          !(m.identities ?? []).includes("google");
         return HttpResponse.json(
           members
-            .filter((m) => r.data.status.includes(m.status ?? "active"))
-            .map((m) =>
-              m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0
-                ? { ...m, personalArtifacts: true }
-                : m,
-            ),
+            .filter(
+              (m) =>
+                r.data.status.includes(m.status ?? "active") &&
+                !erased.has(m.id),
+            )
+            .map((m) => ({
+              ...m,
+              ...(m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0
+                ? { personalArtifacts: true }
+                : {}),
+              ...(managed(m) ? { directoryManaged: true } : {}),
+            })),
         );
       }),
     ),
@@ -1504,6 +1524,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           );
         if (m.status !== "removed")
           return err("member_active", "This member isn't removed");
+        if (erased.has(m.id))
+          return err(
+            "member_erased",
+            "This person was erased. Invite them instead.",
+          );
         if (lapsed.has(m.id))
           return err(
             "guest_lapsed",
@@ -1516,6 +1541,39 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           reason: "admin_restore",
         });
         return HttpResponse.json(m);
+      }),
+    ),
+    // #1204: erase a removed person with nothing left in their personal
+    // space. The address becomes the placeholder and the names go; the row
+    // leaves the Departed list. Idempotent. The server's cookie-session-only
+    // rule isn't modelled (the mock has no PATs on REST).
+    http.post(
+      "*/api/v1/members/:id/erase",
+      authed(({ params }) => {
+        const m = memberOf(params.id as string);
+        if (!m || !isAdmin()) return notFound();
+        if (needsOwner(m))
+          return err(
+            "owner_only",
+            "Only the owner can manage an owner or admin",
+          );
+        if (m.status !== "removed" || m.role === "owner")
+          return err("member_active", "This member isn't removed");
+        if (erased.has(m.id)) return noContent();
+        const left = departed.get(m.id) ?? { live: 0, deleted: 0 };
+        if (left.live + left.deleted > 0)
+          return err(
+            "member_owns_artifacts",
+            "Transfer their artifacts first",
+            { live: left.live, deleted: left.deleted },
+          );
+        erased.add(m.id);
+        lapsed.delete(m.id);
+        m.email = `removed+${m.id}@invalid`;
+        m.name = null;
+        m.lastSeenAt = null;
+        log("user.erased", { type: "user", id: m.id });
+        return noContent();
       }),
     ),
     ...(["put", "delete"] as const).map((method) =>

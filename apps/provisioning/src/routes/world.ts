@@ -14,7 +14,7 @@ import {
   SQL_ALERT_KEYS,
   WORLD_CAPS,
   type World,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import type { Env } from "../env.js";
 import {
   type JobRow,

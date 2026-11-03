@@ -8,6 +8,8 @@ import {
   type TestOtpOutcome,
 } from "@oa/shared";
 import type { Browser, Page } from "@playwright/test";
+import { untilSettled } from "../poll";
+import { stubTurnstile, TURNSTILE_DUMMY_TOKEN } from "../turnstile";
 import {
   A,
   api,
@@ -39,30 +41,19 @@ test.beforeAll(async () => {
 });
 test.afterAll(cleanup);
 
-/** How long an emailed code may take to land (the send runs after the 202). */
-const OTP_MS = 20_000;
-
 /**
- * The otp/latest hook for `address`, polled while it says "pending": the code,
- * or the final no_code outcome (TestOtpOutcome).
+ * The otp/latest hook for `address`, read once a second while it says
+ * "pending" (the send runs after the 202): the code, or the final no_code
+ * outcome (TestOtpOutcome). No budget of its own: the test's timeout bounds
+ * it, and a refusal (readOtp throws with the status) fails at once.
  */
-async function otp(
+const otp = (
   address: string,
-): Promise<{ code: string } | { outcome: TestOtpOutcome }> {
-  let last: { code: string } | { outcome: TestOtpOutcome } = {
-    outcome: "pending",
-  };
-  await expect
-    .poll(
-      async () => {
-        last = await readOtp(address);
-        return "code" in last ? "code" : last.outcome;
-      },
-      { timeout: OTP_MS, intervals: [1000] },
-    )
-    .not.toBe("pending");
-  return last;
-}
+): Promise<{ code: string } | { outcome: TestOtpOutcome }> =>
+  untilSettled(
+    () => readOtp(address),
+    (r) => !("code" in r) && r.outcome === "pending",
+  );
 
 /** One otp/latest answer: the code, or the no_code 404's outcome. */
 async function readOtp(
@@ -83,31 +74,29 @@ async function readOtp(
 
 /** An anonymous browser on the guest code page, asking for a code for `address`. */
 async function askForCode(browser: Browser, address: string): Promise<Page> {
-  const page = await (await browser.newContext({ baseURL: A.app })).newPage();
+  const ctx = await browser.newContext({ baseURL: A.app });
+  // Cloudflare's dummy token instead of its widget, as the live suite sends it
+  // (turnstile.ts): the code request below is still the real one.
+  await ctx.addInitScript(stubTurnstile, TURNSTILE_DUMMY_TOKEN);
+  const page = await ctx.newPage();
   await page.goto("/sign-in?method=code");
   await expect(
     page.getByRole("heading", { level: 1, name: "Get a sign-in code" }),
   ).toBeVisible();
   await page.getByRole("textbox", { name: "Email" }).fill(address);
-  // rl-a's widget runs on Cloudflare's always-pass test key: wait for its
-  // token, as the red-line suite sends the dummy token with each request.
-  await expect
-    .poll(
-      () =>
-        page
-          .locator("[data-testid=turnstile] input[name=cf-turnstile-response]")
-          .inputValue()
-          .catch(() => ""),
-      { timeout: 30_000 },
-    )
-    .not.toBe("");
+  // The slot is rendered, so the page has a site key and asks for a token.
+  await expect(page.getByTestId("turnstile")).toBeAttached();
   const sent = page.waitForResponse(
     (r) =>
       r.url().endsWith("/auth/code/request") && r.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Send code" }).click();
+  const res = await sent;
+  expect(res.request().postDataJSON()).toMatchObject({
+    turnstileToken: TURNSTILE_DUMMY_TOKEN,
+  });
   // The same 202 for every address: the page never says who can sign in.
-  expect((await sent).status()).toBe(202);
+  expect(res.status()).toBe(202);
   await expect(
     page.getByRole("heading", { name: "Check your email" }),
   ).toBeVisible();
@@ -117,11 +106,15 @@ async function askForCode(browser: Browser, address: string): Promise<Page> {
   return page;
 }
 
-/** Every member row for `address`, whatever its status. */
+/**
+ * Every member row for `address`, whatever its status. The list must hold the
+ * admin who asked, so an empty answer fails instead of reading as "no rows".
+ */
 async function rowsFor(admin: Person, address: string): Promise<Member[]> {
   const all = await json<Member[]>(
     await api(admin, `${R.members}?status=active,suspended,removed`),
   );
+  expect(all.map((m) => m.email)).toContain(admin.email);
   return all.filter((m) => m.email === address);
 }
 
@@ -225,5 +218,9 @@ test("an outside guest signs in by code, sees only Shared with me, and is read-o
     headers: { "x-oa-request": "1" },
     data: { v: 1 },
   });
-  expect([403, 404]).toContain(write.status());
+  // A guest is capped, so data.write fails for them whatever dataWriters
+  // says; that isn't an editors-only refusal, so it's 404, not 403
+  // data_editors_only (apps/server/src/auth/policy.ts can "data.write" and
+  // editorsOnlyRefusal; apps/server/src/runtime/routes.ts).
+  expect(write.status()).toBe(404);
 });

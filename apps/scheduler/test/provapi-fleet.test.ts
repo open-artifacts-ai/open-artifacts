@@ -1,9 +1,9 @@
-import { canTransition, REQUEST_ID_RE } from "@oa/shared/provisioning";
+import { canTransition, REQUEST_ID_RE } from "@oa/provisioning-contract";
 import {
   FakeWorkflow,
   fakeProvisionerRpc,
-} from "@oa/shared/provisioning/fakes";
-import { SYSTEM_ACTOR } from "@oa/shared/provisioning/system";
+} from "@oa/provisioning-contract/fakes";
+import { SYSTEM_ACTOR } from "@oa/provisioning-contract/system";
 import {
   afterEach,
   beforeAll,

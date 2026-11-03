@@ -1,4 +1,4 @@
-import type { Release, TokenStatus } from "@oa/shared/provisioning";
+import type { Release, TokenStatus } from "@oa/provisioning-contract";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 

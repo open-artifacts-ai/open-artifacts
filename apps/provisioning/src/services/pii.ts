@@ -1,4 +1,4 @@
-import type { AuditEntry } from "@oa/shared/provisioning";
+import type { AuditEntry } from "@oa/provisioning-contract";
 import type { Principal } from "../principal.js";
 
 // The R17 email rule (design v7 4.2, 4.9): a token principal without

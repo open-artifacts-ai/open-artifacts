@@ -273,10 +273,24 @@ export interface CrossProbe<C> {
   credB: C;
   /** True when `req` carries `cred` (its cookie or bearer token). */
   carries: (req: Request, cred: C) => boolean;
+  /**
+   * Only B's own credential at B. A's credential at B is the in-server
+   * matrix's foreign callers (apps/server/test/authz, #1137 group B); A's at
+   * A runs only on each kind's live smoke, as the positive control for its
+   * A-at-B leg (#1235).
+   */
+  ownOnly?: boolean;
 }
 
+/**
+ * What A's credential at B needs: B, A's credential, and how to spot it. The
+ * rest of a CrossProbe may come along; the A-at-B leg never reads it.
+ */
+export type AtB<C> = Pick<CrossProbe<C>, "b" | "credA" | "carries"> &
+  Partial<CrossProbe<C>>;
+
 /** True when a request carrying A's credential went to B's app or content origin. */
-function reachedB<C>(reqs: readonly Request[], o: CrossProbe<C>): boolean {
+function reachedB<C>(reqs: readonly Request[], o: AtB<C>): boolean {
   const own = new Set([new URL(o.b.app).origin, new URL(o.b.content).origin]);
   return reqs.some((r) => {
     try {
@@ -347,7 +361,7 @@ async function leg(
  * crossCheck for a Backend surface probe (many requests, one verdict): B's
  * own credential is allowed at B, A's at A, then A's is denied at B and
  * every response B gave passes expectRefused. A probe that sends nothing to
- * B proves nothing and fails.
+ * B proves nothing and fails. With `ownOnly`, B's own credential at B only.
  */
 export async function crossProbe<C>(
   run: (cred: C, host: Target, fetch: ProbeFetch) => Promise<Verdict>,
@@ -363,6 +377,7 @@ export async function crossProbe<C>(
     if (b.verdict !== "allow")
       throw new Error("B's own credential failed at B (the probe said deny)");
   });
+  if (o.ownOnly) return;
   await atLeg(ok("A's credential at A", o.a), async () => {
     const a = await leg("A's credential at A", (f) => run(o.credA, o.a, f));
     if (a.verdict !== "allow")
@@ -371,10 +386,22 @@ export async function crossProbe<C>(
   await deniedAtB(run, o);
 }
 
+/**
+ * Only crossProbe's last leg: one credential kind's live A-at-B smoke
+ * (#1137 group B). A's credential reaches B, every response B gives passes
+ * expectRefused, and the probe says deny. One try: no retry, no polling.
+ */
+export async function smokeAtB<C>(
+  run: (cred: C, host: Target, fetch: ProbeFetch) => Promise<Verdict>,
+  o: AtB<C>,
+): Promise<void> {
+  await deniedAtB(run, o);
+}
+
 /** A's credential at B: it arrives, every response refuses it, and it's denied. */
 async function deniedAtB<C>(
   run: (cred: C, host: Target, fetch: ProbeFetch) => Promise<Verdict>,
-  o: CrossProbe<C>,
+  o: AtB<C>,
   each?: (r: Response) => void,
 ): Promise<void> {
   await atLeg(
@@ -406,7 +433,7 @@ async function deniedAtB<C>(
  */
 export async function crossDenied<C>(
   run: (cred: C, host: Target, fetch: ProbeFetch) => Promise<Verdict>,
-  o: CrossProbe<C>,
+  o: AtB<C>,
 ): Promise<void> {
   await deniedAtB(run, o, (r) => {
     if (r.status !== 401)
@@ -509,7 +536,8 @@ export interface CrossWrite<C, X> extends CrossProbe<C> {
  * crossProbe for a probe that writes when allowed. Each leg gets its own
  * throwaway on the install it targets: B's own credential is allowed on B's,
  * A's on A's, then A's is denied on a fresh one of B's, every response B gave
- * passes expectRefused, and that throwaway reads back unchanged.
+ * passes expectRefused, and that throwaway reads back unchanged. With
+ * `ownOnly`, B's own credential at B only: one throwaway, on B.
  */
 export async function crossWrite<C, X>(
   run: (cred: C, host: Target, x: X, fetch: ProbeFetch) => Promise<Verdict>,
@@ -546,6 +574,7 @@ export async function crossWrite<C, X>(
       if (b.verdict !== "allow")
         throw new Error("B's own credential failed at B (the probe said deny)");
     });
+    if (o.ownOnly) return;
     await atLeg(okAt("A's credential at A", o.a), async () => {
       const xa = await fresh(o.a);
       const a = await leg("A's credential at A", (f) =>

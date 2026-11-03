@@ -1,6 +1,6 @@
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
-import { PROVISIONER_RPC_METHODS } from "@oa/shared/provisioning";
+import { PROVISIONER_RPC_METHODS } from "@oa/provisioning-contract";
 import { describe, expect, it } from "vitest";
 import * as entry from "../src/index.js";
 import { ManageInstall } from "../src/manage.js";

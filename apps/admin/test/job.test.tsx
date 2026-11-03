@@ -1,4 +1,4 @@
-import { JOB_STEPS, type Job } from "@oa/shared/provisioning";
+import { JOB_STEPS, type Job } from "@oa/provisioning-contract";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import {

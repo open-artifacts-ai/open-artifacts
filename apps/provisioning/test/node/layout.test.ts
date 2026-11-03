@@ -74,9 +74,9 @@ describe("src/mcp is only a transport adapter (9A.4)", () => {
     target.startsWith("src/mcp/") ||
     target === "src/routes/invoke.ts" ||
     target.startsWith("src/auth/");
-  // Packages: the tool table (@oa/shared/provisioning) and the MCP SDK.
+  // Packages: the tool table (@oa/provisioning-contract) and the MCP SDK.
   const allowedPkg = (spec: string) =>
-    spec === "@oa/shared/provisioning" ||
+    spec === "@oa/provisioning-contract" ||
     spec.startsWith("agents/") ||
     spec.startsWith("@modelcontextprotocol/");
 
