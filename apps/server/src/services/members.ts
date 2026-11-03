@@ -34,6 +34,7 @@ import { emailEnabled, sendEmail } from "../email/send.js";
 import { inviteEmail, senderName } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
+import { logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
 import {
   closeRuntimeSockets,
@@ -647,6 +648,12 @@ export async function reviveFromSync(
   email: string,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<boolean> {
+  // Never onto OWNER_EMAIL, as moveUserEmail (#1160): the SQL only checks that
+  // no other row holds the address, which an install with no owner row passes.
+  if (normalizeEmail(email) === normalizeEmail(env.OWNER_EMAIL ?? "")) {
+    logWarn("directory_revive_owner_address");
+    return false;
+  }
   const out = await env.DB.batch([
     stmt(env.DB, SYNC_REVIVE).bind(id, Date.now(), 1, email, sub),
     audit(env, "user.status", { type: "user", id }, actorFor("sync_revive"), {

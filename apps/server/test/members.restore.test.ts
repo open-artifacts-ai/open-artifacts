@@ -447,6 +447,36 @@ describe("what a restore brings back", () => {
     expect(await restrictedSync(u.userId)).toBe(1);
   });
 
+  it("a sync revive never takes the owner's address, even with no owner row holding it (#1160)", async () => {
+    const email = uniq("rs-owner", "a.com").toLowerCase();
+    const u = await login(email, "member");
+    const sub = `g-rs-${newId()}`;
+    await env.DB.prepare(
+      "insert into identities (provider, subject, tenant, user_id, created_at, directory_bound) values ('google', ?, 'a.com', ?, 1, 1)",
+    )
+      .bind(sub, u.userId)
+      .run();
+    await removedBySync(u.userId);
+    const emailOf = async () =>
+      (
+        await env.DB.prepare("select email from users where id = ?")
+          .bind(u.userId)
+          .first<{ email: string }>()
+      )?.email;
+    const before = await emailOf();
+    // OWNER_EMAIL names this address, and no row holds it: the case the
+    // SQL's own check lets through.
+    const OWNED = {
+      ...(env as object),
+      OWNER_EMAIL: email.toUpperCase(),
+    } as Env;
+    expect(await reviveFromSync(OWNED, u.userId, sub, email)).toBe(false);
+    expect(await row(u.userId)).toMatchObject({ status: "removed" });
+    expect(await emailOf()).toBe(before);
+    // The same revive with another owner address goes through.
+    expect(await reviveFromSync(env, u.userId, sub, email)).toBe(true);
+  });
+
   it("a restored member has their space role back", async () => {
     const ON = { ...(env as object), FEATURES: "spaces" } as Env;
     const u = await login(uniq("rs-space", "a.com"), "member");
