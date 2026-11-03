@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.103.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.102.1...v0.103.0) (2026-11-03)
+
+
+### Features
+
+* **dashboard:** Transfer all to me opens the Transfer dialog ([#1125](https://github.com/open-artifacts-ai/open-artifacts/issues/1125)) ([#1184](https://github.com/open-artifacts-ai/open-artifacts/issues/1184)) ([9743673](https://github.com/open-artifacts-ai/open-artifacts/commit/9743673da8fb4955b61494a610438a0d2cd1f0c1))
+* **provisioning:** a create or upgrade defaults to the platform's own release ([#1137](https://github.com/open-artifacts-ai/open-artifacts/issues/1137)) ([#1176](https://github.com/open-artifacts-ai/open-artifacts/issues/1176)) ([1b6b43f](https://github.com/open-artifacts-ai/open-artifacts/commit/1b6b43fdec37668565e829d5fd6d30b16ac826d1))
+* **scheduler:** directory sync skips suspended installs ([#1155](https://github.com/open-artifacts-ai/open-artifacts/issues/1155)) ([#1209](https://github.com/open-artifacts-ai/open-artifacts/issues/1209)) ([4696330](https://github.com/open-artifacts-ai/open-artifacts/commit/46963305025bbc2c7f072a8a7a3153880b3de5c5))
+
+
+### Bug Fixes
+
+* **provision:** a failed upgrade never reverts; it stays forward and halts ([#1106](https://github.com/open-artifacts-ai/open-artifacts/issues/1106)) ([#1211](https://github.com/open-artifacts-ai/open-artifacts/issues/1211)) ([264e877](https://github.com/open-artifacts-ai/open-artifacts/commit/264e877c579d4c95c96f7445c092a2c9606994e1))
+* **server:** suspending an install closes its open sockets ([#1193](https://github.com/open-artifacts-ai/open-artifacts/issues/1193)) ([a5e80b4](https://github.com/open-artifacts-ai/open-artifacts/commit/a5e80b41fb3860a8ad650ddd1a9caaedfa485e24))
+
 ## [0.102.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.102.0...v0.102.1) (2026-11-03)
 
 
