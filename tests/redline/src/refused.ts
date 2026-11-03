@@ -281,8 +281,12 @@ export interface CrossProbe<C> {
   ownOnly?: boolean;
 }
 
-/** What A's credential at B needs: B, A's credential, and how to spot it. */
-export type AtB<C> = Pick<CrossProbe<C>, "b" | "credA" | "carries">;
+/**
+ * What A's credential at B needs: B, A's credential, and how to spot it. The
+ * rest of a CrossProbe may come along; the A-at-B leg never reads it.
+ */
+export type AtB<C> = Pick<CrossProbe<C>, "b" | "credA" | "carries"> &
+  Partial<CrossProbe<C>>;
 
 /** True when a request carrying A's credential went to B's app or content origin. */
 function reachedB<C>(reqs: readonly Request[], o: AtB<C>): boolean {
