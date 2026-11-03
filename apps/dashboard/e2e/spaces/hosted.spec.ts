@@ -104,8 +104,9 @@ test("admin: removing someone with personal artifacts lists them under Departed,
   await expect(row).toContainText("2 personal artifacts");
   await expect(departed.getByText(mgr.name)).toHaveCount(0);
 
-  await row
-    .getByRole("button", { name: `Transfer ${gone.name}'s artifacts` })
+  await row.getByRole("button", { name: `More for ${gone.name}` }).click();
+  await page
+    .getByRole("menuitem", { name: "Transfer to someone else…" })
     .click();
   const d = page.getByRole("dialog");
   await d.getByRole("combobox", { name: "Give them to" }).click();

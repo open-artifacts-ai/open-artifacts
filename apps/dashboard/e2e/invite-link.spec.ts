@@ -249,8 +249,12 @@ for (const scheme of ["light", "dark"] as const)
         path: info.outputPath(`departed-${scheme}-${width}.png`),
         fullPage: true,
       });
+      // Parity 1: the row's button is "Transfer all to me"; the dialog is in More.
       await card
-        .getByRole("button", { name: "Transfer Carol Departed's artifacts" })
+        .getByRole("button", { name: "More for Carol Departed" })
+        .click();
+      await page
+        .getByRole("menuitem", { name: "Transfer to someone else…" })
         .click();
       const d = page.getByRole("dialog");
       await expect(d).toContainText(

@@ -237,13 +237,13 @@ it("any other 403 falls back to the owner copy", async () => {
   expect(screen.queryByText("server text")).toBeNull();
 });
 
-it("hosted: Remove says artifacts stay and personal ones transfer under Departed", async () => {
+it("Remove says artifacts stay; transfer or restore under Departed", async () => {
   mountHosted("/settings/members", true, undefined, [withAdminBob]);
   const menu = await openMenu(fixtures.members[1]?.name as string);
   fireEvent.click(within(menu).getByRole("menuitem", { name: "Remove…" }));
   expect(
     await screen.findByText(
-      "They lose access, including to anything shared with them. Their artifacts stay where they are. You can transfer their personal artifacts later under Departed.",
+      "They lose access, including to anything shared with them. Their artifacts stay where they are. You can transfer them later under Departed, or restore this person.",
     ),
   ).toBeTruthy();
 });
