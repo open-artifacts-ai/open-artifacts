@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.101.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.101.0...v0.101.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **dashboard:** focus returns after an agent label edit; docs give -s user ([#1114](https://github.com/open-artifacts-ai/open-artifacts/issues/1114)) ([#1180](https://github.com/open-artifacts-ai/open-artifacts/issues/1180)) ([6df0b84](https://github.com/open-artifacts-ai/open-artifacts/commit/6df0b845889e5eed87d1efc16e6a030489afde30))
+* **server:** retry a transient D1 or KV read with bounded backoff ([#1174](https://github.com/open-artifacts-ai/open-artifacts/issues/1174)) ([dd8919e](https://github.com/open-artifacts-ai/open-artifacts/commit/dd8919e0e1df9f184324f99a380002a913af52d2))
+* **shares:** a member who can only view isn't shown as an editor ([#1119](https://github.com/open-artifacts-ai/open-artifacts/issues/1119)) ([#1181](https://github.com/open-artifacts-ai/open-artifacts/issues/1181)) ([b45219e](https://github.com/open-artifacts-ai/open-artifacts/commit/b45219e95501d06862b0ded87d10220c3dd247b8))
+
 ## [0.101.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.100.0...v0.101.0) (2026-11-03)
 
 
