@@ -123,6 +123,7 @@ means Product's proposal or call, open to change.
 | 20 | No waiting-notice queue outside the bus. A `shared` notice with no share-notice address, or over the rate limit, is dropped; the existing share email and the shared list still tell the person. No BusHub is created for a member without a machine. | Product (builder check) |
 | 21 | A restored version is a new version and fires `changed`. The hook sits in `allocateVersion`. | Product (builder check) |
 | 22 | One instance per machine. The local client holds one instance URL and one machine token. | User |
+| 22a | The ported local client keeps OpenBus's per-home settings folder (`OPENBUS_HOME` today, renamed with the package): config, machine token, IPC socket and service name all derive from it. So several instances per machine, chosen by project folder, can come later with little rework; that later step would add per-project instance selection and one harness entry per instance. | Product |
 | 23 | Lasting mailboxes and role addresses both come right after v1, not in it. | Product's reading of the user's answer ("Let's do mailbox and roles shortly after") |
 
 ## v1, fast follow and deferred
