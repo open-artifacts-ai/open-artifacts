@@ -1803,19 +1803,28 @@ describe("delete", () => {
     expect(again.message).toMatch(/deleted|taken/);
   });
 
-  it("delete is idempotent after a partial failure at any step", async () => {
-    const steps: [string, (m: string, p: string) => boolean][] = [
-      ["hosts", (m, p) => m === "DELETE" && p.includes("/values/")],
-      ["script", (m, p) => m === "DELETE" && /\/scripts\/oa-s-/.test(p)],
-      [
-        "kv",
-        (m, p) => m === "DELETE" && /\/storage\/kv\/namespaces\/[^/]+$/.test(p),
-      ],
-      ["r2-object", (m, p) => m === "DELETE" && /\/objects\//.test(p)],
-      ["r2", (m, p) => m === "DELETE" && /\/r2\/buckets\/[^/]+$/.test(p)],
-      ["d1", (m, p) => m === "DELETE" && /\/d1\/database\/[^/]+$/.test(p)],
-    ];
-    for (const [name, when] of steps) {
+  const DELETE_STEPS: [string, (m: string, p: string) => boolean][] = [
+    ["hosts", (m, p) => m === "DELETE" && p.includes("/values/")],
+    ["script", (m, p) => m === "DELETE" && /\/scripts\/oa-s-/.test(p)],
+    [
+      "kv",
+      (m, p) => m === "DELETE" && /\/storage\/kv\/namespaces\/[^/]+$/.test(p),
+    ],
+    ["r2-object", (m, p) => m === "DELETE" && /\/objects\//.test(p)],
+    ["r2", (m, p) => m === "DELETE" && /\/r2\/buckets\/[^/]+$/.test(p)],
+    ["d1", (m, p) => m === "DELETE" && /\/d1\/database\/[^/]+$/.test(p)],
+  ];
+  // Each step is real work, not waits (the clock and every sleep are
+  // injected): a full create, then three deletes against the fake. The
+  // slowest measured step: 5123 ms / 6 steps on a CI runner (queue run
+  // 41640977874), so 900 ms per step, with 3x headroom. The budget grows
+  // with the steps instead of hitting the 5 s default as the list grows.
+  const PARTIAL_STEP_MS = 900;
+  const PARTIAL_HEADROOM = 3;
+  it("delete is idempotent after a partial failure at any step", {
+    timeout: DELETE_STEPS.length * PARTIAL_STEP_MS * PARTIAL_HEADROOM,
+  }, async () => {
+    for (const [name, when] of DELETE_STEPS) {
       const s = setup();
       const inst = keep(await s.p.create(input()));
       s.fake.r2Seed(`oa-s-${inst.id}`, "files/a", enc("x"));

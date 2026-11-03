@@ -469,14 +469,6 @@ export const ACCEPTED_UNPROVEN: readonly AcceptedUnproven[] = Object.freeze(
         'apps/scheduler/test/provapi-conditions.test.ts "alert conditions > signin_refused_burst: its fixture opens it, a change clears it"; apps/scheduler/test/provapi-alerts.test.ts "signin_refused_burst: at most one email per hour, count and window only"',
     },
     {
-      name: "provisioning > P35: reachable path: a Worker without a route fetches rl-a /healthz",
-      reason:
-        "needs a Worker with no route (spike S7); the runner cannot stand in for it",
-      file: "provisioning.test.ts",
-      evidence:
-        'spike S7 (spikes/provapi-staging/src/index.ts s7, a routeless Worker GETs rl-a /healthz): scripts/ci/provapi-spikes.test.ts "the spike Worker > S2 and S7 fetch rl-b and rl-a with GETs and no body"; apps/dispatch/test/dispatch.test.ts "dispatch > routes on the URL host only, never a Host or X-Forwarded-Host header"',
-    },
-    {
       name: "sign-in: ID tokens > an ID token with hd of A at B's callback: no session",
       reason: "unproven: needs capture",
       file: "signin.test.ts",
