@@ -5958,7 +5958,9 @@ describe("MIG-2: a migration that can lose data is held (#1137)", () => {
 
   it("create runs a held file: there's no data to lose", async () => {
     const s = setup();
-    const inst = keep(await s.p.create(input("finqore", { version: "0.24.6" })));
+    const inst = keep(
+      await s.p.create(input("finqore", { version: "0.24.6" })),
+    );
     expect(applied(s, inst.id)).toContain("9003_marked.sql");
   });
 });
