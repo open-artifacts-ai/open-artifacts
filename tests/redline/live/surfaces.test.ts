@@ -31,7 +31,7 @@ import { loadTargets, type Target, type Targets } from "../src/targets.ts";
 // #1137 group B: each case runs B's own credential at B and A's at A; A's
 // credential at B is the in-server matrix's foreign callers, on every PR.
 // One case per credential kind keeps a live A-at-B leg (SMOKES in
-// src/surfaces.ts); the six deny-only cases keep theirs.
+// src/surfaces.ts); the seven deny-only cases keep theirs.
 // Surfaces with no possible success leg are dropped through DROPPED (P5
 // plan, Task 3b). Each case is listed in live/manifest.json.
 

@@ -49,10 +49,6 @@ const page1 = (title: string, spaceId?: string) => ({
   ...(spaceId ? { spaceId } : {}),
 });
 
-// A 2x2 red PNG, valid to the byte (as e2e/real/image.spec.ts).
-const PNG =
-  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR42mP4z8DwH4QZYAwAR8oH+Rq28akAAAAASUVORK5CYII=";
-
 test("#764: a space manager who isn't an admin adds people", async ({
   browser,
 }) => {
@@ -154,28 +150,14 @@ test("#766: Trash: delete, find it in Trash, Restore", async ({ browser }) => {
   expect(back.deletedAt).toBeNull();
 });
 
-test("#783: an image artifact opens as an image", async ({ browser }) => {
-  await needs("#783", "0.73.0");
-  const owner = await person(browser, "image", "member");
-  const { id } = await publish(owner, {
-    title: `T19 ${RUN} image`,
-    format: "image",
-    files: { "dot.png": { base64: PNG } },
-    entry: "dot.png",
-  });
-  const page = owner.page;
-  await page.goto(`/a/${id}`);
-  const frame = page.frameLocator("iframe.oa-vframe");
-  const size = await frame
-    .locator(".oa-image img")
-    .evaluate(async (img: HTMLImageElement) => {
-      await img.decode();
-      return [img.naturalWidth, img.naturalHeight];
-    });
-  expect(size).toEqual([2, 2]);
-  await expect(frame.locator(".oa-code")).toHaveCount(0);
-});
+// Cut (#1251): "#783: an image artifact opens as an image". Covered by
+// apps/dashboard/e2e/real/image.spec.ts ("a PNG opens as an image": one <img>
+// at its natural 2x2 size, no code view), against the real server.
 
+// Kept (#1251): no server test checks that GET R.artifact returns
+// can.dataWrite false for a viewer of an editors-only artifact at the route,
+// only artifactCan (apps/server/test/policy.table.test.ts), so this is the
+// one end-to-end check of that wiring.
 // #794 brought the chip to self-hosted installs; on a hosted install it
 // already followed can.dataWrite, so this runs on 0.72.0 too.
 test("#794: a member who views editors-only live data sees View only", async ({
@@ -230,19 +212,6 @@ test("#800: inviting outside the sign-in domain warns that they may not sign in"
   );
 });
 
-test('#807: New space has "Add me as a manager", on by default', async ({
-  browser,
-}) => {
-  await needs("#807", "0.73.0");
-  const admin = await person(browser, "admin", "admin");
-  const page = admin.page;
-  await page.goto("/settings/spaces");
-  await page.getByRole("button", { name: "New space" }).click();
-  const d = page.getByRole("dialog", { name: "New space" });
-  await expect(
-    d.getByRole("checkbox", { name: "Add me as a manager" }),
-  ).toBeChecked();
-  // Nothing is created: T19 makes no spaces but its own two.
-  await d.getByRole("button", { name: "Cancel" }).click();
-  await expect(d).toHaveCount(0);
-});
+// Cut (#1251): '#807: New space has "Add me as a manager", on by default'.
+// Covered by apps/dashboard/test/spaces-admin.test.tsx ("New space: Add me as
+// a manager is on by default; unticked, it sends addMe false").
