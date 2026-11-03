@@ -80,10 +80,14 @@ export const CapabilitiesPatchSchema = z.strictObject({
 });
 export type CapabilitiesPatch = z.infer<typeof CapabilitiesPatchSchema>;
 
-/** `email` is null for anonymous viewers (no session, no Bearer) of public artifacts. */
+/**
+ * `email` is null for anonymous viewers (no session, no Bearer) of public
+ * artifacts. A stored value, never input: after a directory deletion it is
+ * `removed+<id>@invalid`, on authorship that outlives the address.
+ */
 export const UserRefSchema = z.object({
   id: z.string(),
-  email: z.string().email().nullable(),
+  email: z.string().nullable(),
   name: z.string().nullable(),
 });
 export type UserRef = z.infer<typeof UserRefSchema>;
@@ -367,8 +371,11 @@ export type SearchHit = z.infer<typeof SearchHitSchema>;
 
 export const ShareSchema = z.object({
   email: z.string().email(),
+  /** As stored: a guest's row keeps it, but they can only view (see `guest`). */
   role: ShareRoleSchema,
   createdAt: z.string(),
+  /** A guest, or an address that becomes one at first sign-in. Absent otherwise, and from older servers. */
+  guest: z.boolean().optional(),
 });
 export type Share = z.infer<typeof ShareSchema>;
 
@@ -416,7 +423,8 @@ export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
 
 export const MemberSchema = z.object({
   id: z.string(),
-  email: z.string().email(),
+  /** A stored value, never input: `removed+<id>@invalid` after a directory deletion. */
+  email: z.string(),
   name: z.string().nullable(),
   role: RoleSchema,
   lastSeenAt: z.string().nullable(),
@@ -426,6 +434,8 @@ export const MemberSchema = z.object({
   identities: z.array(IdentityProviderSchema).optional(),
   /** Hosted M1: the member's restriction (manual flag and/or restricted groups); null when unrestricted. */
   restriction: RestrictionSchema.nullable().optional(),
+  /** GET R.members: a guest with live artifacts in their personal space, for Transfer. Absent otherwise. */
+  personalArtifacts: z.boolean().optional(),
 });
 export type Member = z.infer<typeof MemberSchema>;
 

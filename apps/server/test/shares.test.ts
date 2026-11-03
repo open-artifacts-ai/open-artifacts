@@ -48,6 +48,26 @@ beforeAll(async () => {
   guest = await mk("sh-guest", "guest");
 });
 
+describe("GET R.shares marks guests, who can only view", () => {
+  it("a guest and a new address on Access; a member isn't; rows keep their role", async () => {
+    const id = await pub();
+    // Their own guest: the tests below rely on `guest` lapsing.
+    const g = await mk("sh-marked", "guest");
+    const fresh = `sh-new-${tag}@x.com`;
+    expect((await put(id, owner, g.email, "editor")).status).toBe(200);
+    expect((await put(id, owner, member.email, "editor")).status).toBe(200);
+    expect((await put(id, owner, fresh, "editor")).status).toBe(200);
+    const rows = ShareSchema.array().parse(
+      await (await api(app, R.shares(id), owner.cookie)).json(),
+    );
+    const of = (e: string) => rows.find((r) => r.email === e);
+    expect(of(g.email)).toMatchObject({ role: "editor", guest: true });
+    expect(of(fresh)).toMatchObject({ role: "editor", guest: true });
+    expect(of(member.email)?.role).toBe("editor");
+    expect(of(member.email)).not.toHaveProperty("guest");
+  });
+});
+
 describe("shares", () => {
   it("viewer share lets a guest read; an editor share stays view-only (parity 2); delete revokes at once", async () => {
     const id = await pub();

@@ -143,7 +143,7 @@ describe("content url route", () => {
     expect(r.status).toBe(200);
     const cu = ContentUrlSchema.parse(await r.json());
     expect(cu.url).toMatch(
-      new RegExp(`^${CONTENT}/c/\\d+\\.[A-Za-z0-9_-]+/${id}/v1/__view$`),
+      new RegExp(`^${CONTENT}/c/\\d+\\.[A-Za-z0-9_.-]+/${id}/v1/__view$`),
     );
     expect(cu.expiresAt).not.toBeNull();
     const exp = Date.parse(cu.expiresAt ?? "");
@@ -644,18 +644,18 @@ describe("content host revocation in D1 (P3 T11)", () => {
       )
     ).id;
 
-  it("contentViewer fails closed: flag on, a user and no epoch throws", () => {
+  it("contentViewer fails closed: a user and no epoch throws, flag or not (parity 1)", () => {
     const uid = "Z".repeat(16);
-    expect(() => contentViewer(REV, uid, null)).toThrow(/needs an epoch/);
-    expect(() => contentViewer(REV, uid, undefined)).toThrow(/needs an epoch/);
-    expect(contentViewer(REV, uid, 3)).toEqual({ uid, epoch: 3 });
-    // Anonymous, or the flag off: today's two-part token.
-    expect(contentViewer(REV, null, null)).toBeNull();
-    expect(contentViewer(env, uid, null)).toBeNull();
-    expect(contentViewer(env, uid, 3)).toBeNull();
+    for (const e of [REV, env]) {
+      expect(() => contentViewer(e, uid, null)).toThrow(/needs an epoch/);
+      expect(() => contentViewer(e, uid, undefined)).toThrow(/needs an epoch/);
+      expect(contentViewer(e, uid, 3)).toEqual({ uid, epoch: 3 });
+      // Anonymous: the two-part token.
+      expect(contentViewer(e, null, null)).toBeNull();
+    }
   });
 
-  it("content-url binds uid and epoch with the flag on, two-part without it", async () => {
+  it("content-url binds uid and epoch with the flag on and without it (parity 1)", async () => {
     const u = await fresh("rev-shape");
     const id = await site(u.member);
     expect(await mint(id, u.cookie)).toMatch(
@@ -663,9 +663,12 @@ describe("content host revocation in D1 (P3 T11)", () => {
         `^/c/\\d+\\.${u.member.id}\\.\\d+\\.[A-Za-z0-9_-]{43}/${id}/v1/__view$`,
       ),
     );
+    // No content_revocation flag (a self-host default): bound all the same.
     const r = await api(app, R.contentUrl(id), u.cookie);
     expect(ContentUrlSchema.parse(await r.json()).url).toMatch(
-      new RegExp(`/c/\\d+\\.[A-Za-z0-9_-]{43}/${id}/v1/__view$`),
+      new RegExp(
+        `/c/\\d+\\.${u.member.id}\\.\\d+\\.[A-Za-z0-9_-]{43}/${id}/v1/__view$`,
+      ),
     );
   });
 

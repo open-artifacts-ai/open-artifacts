@@ -9,6 +9,7 @@ export const ERROR_CODES = [
   "too_large",
   "rate_limited",
   "quota_exceeded",
+  "storage_unavailable",
   "capability_denied",
   "data_editors_only",
   "internal",
@@ -36,6 +37,10 @@ export const ERROR_CODES = [
   "binary_entry",
   "space_name_reserved",
   "invite_unreachable",
+  // Member restore (parity 1).
+  "member_removed",
+  "directory_managed",
+  "guest_lapsed",
   // Runtime data query.
   "cursor_stale",
   "query_too_large",
@@ -60,6 +65,7 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   too_large: 413,
   rate_limited: 429,
   quota_exceeded: 503,
+  storage_unavailable: 503,
   capability_denied: 403,
   /** A data write by a caller below editor on an artifact whose dataWriters is "editors" (#681). */
   data_editors_only: 403,
@@ -108,6 +114,12 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   space_name_reserved: 400,
   /** POST R.members (invite) for an address no sign-in method this install offers could ever admit; details InviteUnreachableDetails, message INVITE_UNREACHABLE_MESSAGE[reason]. Nothing is created. */
   invite_unreachable: 400,
+  /** POST R.members (invite) for an address whose member was removed; details MemberRemovedDetails { userId }: offer R.memberRestore(userId). Nothing is created. */
+  member_removed: 409,
+  /** POST R.memberRestore(id) on a member the directory removed while Google sync is on (sync would remove them again), or POST R.members (invite) for that member's address: sync revives them when their Workspace account is restored. Nothing is created. */
+  directory_managed: 409,
+  /** POST R.memberRestore(id) on a lapsed guest, or POST R.members (invite) for a lapsed guest's address (removed when their last share went): a new share brings them back instead. */
+  guest_lapsed: 409,
   /** db.query cursor whose anchor doc changed since the page was read (long sort values only): restart without a cursor. */
   cursor_stale: 409,
   /** db query() with where/orderBy on a collection over LIMITS.queryCollectionBytes; message QUERY_TOO_LARGE_MESSAGE. */
@@ -141,6 +153,10 @@ export const InviteUnreachableDetailsSchema = z.object({
 export type InviteUnreachableDetails = z.infer<
   typeof InviteUnreachableDetailsSchema
 >;
+
+/** 409 member_removed details: the removed member's id, for R.memberRestore. */
+export const MemberRemovedDetailsSchema = z.object({ userId: z.string() });
+export type MemberRemovedDetails = z.infer<typeof MemberRemovedDetailsSchema>;
 
 /** 400 invite_unreachable message, per reason. */
 export const INVITE_UNREACHABLE_MESSAGE: Record<

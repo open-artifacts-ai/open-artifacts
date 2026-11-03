@@ -19,6 +19,7 @@ import {
   type CreateSeed,
   ENV,
   event,
+  HELD,
   seedCreate,
   seedJob,
   stepRunner,
@@ -219,6 +220,24 @@ describe("upgrade and rollback (5.4)", () => {
       lease: null,
     });
     expect(logged()).toContain("Turnstile widgets are named");
+  });
+
+  it("a held migration: refused without the flag, crossed with it (MIG-2)", async () => {
+    w = await world({ held: true });
+    const s = await active({ slug: "held", version: V1 });
+    const no = await manage("upgrade", s.installId, {
+      args: { from: V1, to: HELD },
+    });
+    expect(no.job).toMatchObject({
+      status: "failed",
+      error_code: "migration_held",
+    });
+    expect(w.install(s.installId)).toMatchObject({ version: V1 });
+    const yes = await manage("upgrade", s.installId, {
+      args: { from: V1, to: HELD, nonAdditive: true },
+    });
+    expect(yes.job).toMatchObject({ status: "done", error_code: null });
+    expect(w.install(s.installId)).toMatchObject({ version: HELD });
   });
 
   it("upgrade refusals: from moved is invalid_state; to at or below from is downgrade_refused", async () => {

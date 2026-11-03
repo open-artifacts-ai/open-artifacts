@@ -63,7 +63,7 @@ describe("MCP auth: PAT", () => {
     const u = await login(`auth-rev-${tag}@x.com`);
     const { id, token } = await createPat(env, u.userId, "rev");
     const c = await connect(token);
-    expect((await c.listTools()).tools.length).toBe(19);
+    expect((await c.listTools()).tools.length).toBe(18);
     await c.close();
     await env.DB.prepare("update tokens set revoked_at = ? where id = ?")
       .bind(Date.now(), id)
@@ -336,7 +336,7 @@ describe("MCP auth: OAuth", () => {
       modern: true,
       clientInfo: { name: "self-reported", version: "4.5.6" },
     });
-    expect((await c.listTools()).tools).toHaveLength(19);
+    expect((await c.listTools()).tools).toHaveLength(18);
     const pub = (
       await tool(c, "publish_artifact", {
         title: "oauth",
@@ -405,6 +405,30 @@ describe("MCP auth: OAuth", () => {
     expect(
       (await (await api(app, R.oauthClients, member.cookie)).json()) as [],
     ).toEqual([]);
+  });
+
+  // Red-line's grant existence read (src/surfaces.ts) depends on this order:
+  // ownGrant runs before the body is validated, so an invalid body answers
+  // 400 for a live grant of the caller's and 404 for any other.
+  it("PATCH oauth-clients checks the grant before the body", async () => {
+    const { member } = await oauthToken(`oauth-order-${tag}@x.com`, "Order");
+    const list = await api(app, R.oauthClients, member.cookie);
+    const [client] = (await list.json()) as OAuthClient[];
+    const grantId = client?.grantId ?? "";
+    const invalid = (cookie: string) =>
+      api(app, R.oauthClient(grantId), cookie, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label: 5 }),
+      });
+    expect((await invalid(member.cookie)).status).toBe(400);
+    const other = await login(`oauth-order-other-${tag}@x.com`);
+    expect((await invalid(other.cookie)).status).toBe(404);
+    const d = await api(app, R.oauthClient(grantId), member.cookie, {
+      method: "DELETE",
+    });
+    expect(d.status).toBe(204);
+    expect((await invalid(member.cookie)).status).toBe(404);
   });
 
   it("a grant is its owner's: another member can't label or revoke it, or see it", async () => {

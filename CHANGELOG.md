@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.100.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.99.1...v0.100.0) (2026-11-03)
+
+
+### Features
+
+* **dashboard:** parity 1 UI: Departed everywhere, Transfer all to me, Restore ([#828](https://github.com/open-artifacts-ai/open-artifacts/issues/828)) ([a477a87](https://github.com/open-artifacts-ai/open-artifacts/commit/a477a871bc077fba07e7d5cf086483e73d795010))
+* **server:** soft member removal, Departed and Restore (parity 1) ([#829](https://github.com/open-artifacts-ai/open-artifacts/issues/829)) ([f1d76df](https://github.com/open-artifacts-ai/open-artifacts/commit/f1d76dfa73c19e49a4566df3b36c6930ade589ef))
+
+## [0.99.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.99.0...v0.99.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* **members:** a directory-deleted member's placeholder can't fail a whole list ([#1148](https://github.com/open-artifacts-ai/open-artifacts/issues/1148)) ([2c986c8](https://github.com/open-artifacts-ai/open-artifacts/commit/2c986c816340bc10241b7ea7cf490016f589cee0))
+
 ## [0.99.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.98.0...v0.99.0) (2026-11-02)
 
 

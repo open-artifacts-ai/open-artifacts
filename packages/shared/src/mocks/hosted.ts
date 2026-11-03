@@ -138,6 +138,11 @@ export type HostedMockOptions = {
    */
   pendingCustomerChange?: NonNullable<SyncStatus["pendingCustomerChange"]>;
   /**
+   * Seed these emails as lapsed guests (removed when their last share went):
+   * inviting or restoring one answers 409 guest_lapsed (default none).
+   */
+  lapsedGuests?: string[];
+  /**
    * Also hold an unreadable group (Contractors): a held entry that removes
    * nobody (wouldRemove 0), which can't be confirmed or snoozed.
    */
@@ -159,6 +164,14 @@ export type HostedMockOptions = {
    * R.memberTransfer(guest id) moves them (a guest needs no suspension).
    */
   guestOwners?: number;
+  /** With guestOwners: the last of them has left (status removed). */
+  departedGuestOwner?: boolean;
+  /**
+   * The spaces feature. Default: on, off with selfHosted (an Access-only
+   * install's default). Off, spaces routes are 404, as is R.memberTransfer's
+   * `to: space` for any id; `to: user` still works.
+   */
+  spaces?: boolean;
   /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on for every install). */
   features?: FeatureFlag[];
 };
@@ -286,6 +299,21 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     identities: [],
   };
   members.push(carol, dan, erin);
+  /** Lapsed guests' ids: removed when their last share went (a share revives them). */
+  const lapsed = new Set<string>();
+  for (const email of o.lapsedGuests ?? []) {
+    const g: Member = {
+      id: newId(),
+      email: email.toLowerCase(),
+      name: null,
+      role: "guest",
+      lastSeenAt: null,
+      status: "removed",
+      identities: [],
+    };
+    members.push(g);
+    lapsed.add(g.id);
+  }
   // Parity 2: guests holding editor shares (the owner notice's source).
   const landing = artifacts.find((a) => a.title === "Landing page");
   for (let i = 1; landing && i <= (o.guestShares ?? 0); i++) {
@@ -327,7 +355,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       name: email,
       role: "guest",
       lastSeenAt: null,
-      status: "active",
+      status:
+        o.departedGuestOwner && i === o.guestOwners ? "removed" : "active",
       identities: [],
     });
     departed.set(id, { live: 1, deleted: 0 });
@@ -796,9 +825,10 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     return cap() === null && roleIn(s) === "manager";
   };
 
+  const spacesOn = o.spaces ?? !o.selfHosted;
   const features = (): FeatureFlag[] => [
     ...new Set<FeatureFlag>([
-      "spaces",
+      ...(spacesOn ? (["spaces"] as const) : []),
       ...(guestsReadOnly() ? (["guests_read_only"] as const) : []),
       "content_revocation",
       "usage_off",
@@ -889,6 +919,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         userId: m.id,
         email: m.email,
         artifacts: departed.get(m.id)?.live ?? 0,
+        status: m.status ?? "active",
       }))
       .sort(
         (x, y) => y.artifacts - x.artifacts || x.email.localeCompare(y.email),
@@ -949,11 +980,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         ...(guestSummary ? { guestSummary } : {}),
       };
     else delete me.notices;
-    me.personalSpaceId = me.user.id;
-    me.spaces = spaces
-      .filter((s) => s.kind === "shared" && roleIn(s))
-      .map((s): MySpace => ({ ...ref(s), myRole: roleIn(s) as SpaceRole }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    if (spacesOn) {
+      me.personalSpaceId = me.user.id;
+      me.spaces = spaces
+        .filter((s) => s.kind === "shared" && roleIn(s))
+        .map((s): MySpace => ({ ...ref(s), myRole: roleIn(s) as SpaceRole }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
     for (const a of artifacts) {
       const s =
         findSpace(a.space?.id) ??
@@ -1125,6 +1158,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       refresh();
       return undefined;
     }),
+    // -- spaces off: requireSpaces, before any other rule
+    ...(spacesOn
+      ? []
+      : [
+          http.all("*/api/v1/spaces", () => notFound()),
+          http.all("*/api/v1/spaces/*", () => notFound()),
+        ]),
     // -- break-glass (P3 T18): the mismatch owner's Me
     ...(o.breakGlass
       ? [
@@ -1314,6 +1354,21 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       const r = await c.body(request.clone(), MemberInviteSchema);
       if (r.error) return undefined;
       const email = r.data.email.toLowerCase();
+      // An existing removed row is a 409 before reachability (as the server).
+      const removed = members.find(
+        (m) => m.email === email && m.status === "removed",
+      );
+      if (removed && lapsed.has(removed.id))
+        return err(
+          "guest_lapsed",
+          "This guest left when their last share went; share an artifact with them to bring them back",
+        );
+      if (removed)
+        return err(
+          "member_removed",
+          "This person was removed. Restore them instead.",
+          { userId: removed.id },
+        );
       const inDomain = email.endsWith(`@${MOCK_DOMAIN}`);
       const google = providerIds.includes("google");
       if (inDomain && (google || providerIds.includes("email")))
@@ -1360,7 +1415,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         // managers search R.spaceCandidates instead.
         if (!isAdmin()) return notFound();
         return HttpResponse.json(
-          members.filter((m) => r.data.status.includes(m.status ?? "active")),
+          members
+            .filter((m) => r.data.status.includes(m.status ?? "active"))
+            .map((m) =>
+              m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0
+                ? { ...m, personalArtifacts: true }
+                : m,
+            ),
         );
       }),
     ),
@@ -1389,6 +1450,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           if (!validSuccessor(u))
             return err("invalid_successor", "Pick an active member");
         } else {
+          if (!spacesOn) return notFound();
           const s = findSpace(to.spaceId);
           if (!s) return notFound();
           if (s.kind === "personal")
@@ -1410,6 +1472,35 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           remaining,
           nextCursor: remaining > 0 ? btoa(String(moved)) : null,
         });
+      }),
+    ),
+    // Parity 1: a removed member or admin comes back active as a member, a
+    // removed guest as a guest, the manual restriction kept. A lapsed guest
+    // is 409 guest_lapsed; directory removals aren't modelled here.
+    http.post(
+      "*/api/v1/members/:id/restore",
+      authed(({ params }) => {
+        const m = memberOf(params.id as string);
+        if (!m || !isAdmin()) return notFound();
+        if (needsOwner(m))
+          return err(
+            "owner_only",
+            "Only the owner can manage an owner or admin",
+          );
+        if (m.status !== "removed")
+          return err("member_active", "This member isn't removed");
+        if (lapsed.has(m.id))
+          return err(
+            "guest_lapsed",
+            "This guest left when their last share went; share an artifact with them to bring them back",
+          );
+        m.status = "active";
+        if (m.role !== "guest") m.role = "member";
+        log("user.status", { type: "user", id: m.id }, null, {
+          status: "active",
+          reason: "admin_restore",
+        });
+        return HttpResponse.json(m);
       }),
     ),
     ...(["put", "delete"] as const).map((method) =>
@@ -2450,6 +2541,14 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       : { canSignIn: false, reason: "outside_domains" };
   };
 
+  /** Share.guest (GET R.shares): the server's guestRecipients for the mock's providers. */
+  const shareGuest = (email: string): boolean => {
+    const row = members.find((m) => m.email === email);
+    if (row) return row.role === "guest";
+    if (mode === "access") return true;
+    return !email.endsWith(`@${MOCK_DOMAIN}`) && providerIds.includes("email");
+  };
+
   /**
    * signInMethods (#799) for an invite (a member row about to exist) or a
    * share, the server's reach rules for the mock's providers, in
@@ -2482,6 +2581,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     /** No level for the signed-in caller: 404 and unlisted (sharedLevel). */
     hidden: (id: string) => hidden.has(id),
     shareRecipient,
+    shareGuest,
     signInMethods,
     checkPublish,
     placeNew,

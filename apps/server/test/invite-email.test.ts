@@ -309,6 +309,45 @@ describe("share email", () => {
     expect(m.sent).toHaveLength(0);
   });
 
+  it("share_artifact says a guest can only view; a member keeps their role", async () => {
+    const { o, id } = await setup();
+    const pat = (await createPat(env, o.userId, "agent")).token;
+    const client = await connect(pat, { env: E({}) });
+    const email = fresh();
+    const r = await tool(client, "share_artifact", {
+      id,
+      email,
+      role: "editor",
+    });
+    const url = `http://app.localhost/a/${id}`;
+    expect(textOf(r)).toBe(
+      `Shared ${id} with ${email}. They're a guest, so they can only view for now. ${url}. No email sent.`,
+    );
+    expect(r.structuredContent).toMatchObject({ role: "editor", guest: true });
+    const viewer = fresh();
+    expect(
+      textOf(
+        await tool(client, "share_artifact", {
+          id,
+          email: viewer,
+          role: "viewer",
+        }),
+      ),
+    ).toBe(
+      `Shared ${id} with ${viewer}. They're a guest, so they can only view. ${url}. No email sent.`,
+    );
+    const m = await login(fresh(), "member");
+    const memberEmail = (await getUser(env, m.userId))?.email;
+    const r2 = await tool(client, "share_artifact", {
+      id,
+      email: memberEmail,
+      role: "editor",
+    });
+    expect(textOf(r2)).toContain(`with ${memberEmail} as editor`);
+    expect(r2.structuredContent).not.toHaveProperty("guest");
+    await client.close();
+  });
+
   it("share_artifact says whether it emailed", async () => {
     const { o, id } = await setup();
     const pat = (await createPat(env, o.userId, "agent")).token;

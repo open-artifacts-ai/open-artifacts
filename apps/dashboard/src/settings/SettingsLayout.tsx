@@ -5,6 +5,7 @@ import { useMe } from "../auth/useMe";
 import { ATTENTION, AttentionDot } from "../layout/AttentionDot";
 import { SyncDot, syncDot } from "../layout/SyncBanner";
 import { AppLink } from "../library/AppLink";
+import { useNoAgentsPage } from "./AgentSetupCard";
 import { useDeparted } from "./departed";
 import { canAdminSpaces } from "./spaces/access";
 import { MEASURE } from "./ui";
@@ -60,7 +61,10 @@ export function SettingsLayout() {
   // Compare the normalized path: the router matches case-insensitively, ignoring a trailing slash.
   const here = path.toLowerCase().replace(/\/+$/, "");
   // Departed people with artifacts to transfer light the Members tab.
-  const departed = useDeparted(state.status === "authed" ? state.me : null);
+  const departed = useDeparted(
+    state.status === "authed" ? state.me : null,
+  ).people;
+  const noAgents = useNoAgentsPage();
   if (role === "guest") return <Outlet />; // no chrome; the gate redirects
   return (
     // The 880px measure, centered in the shell gutter.
@@ -79,7 +83,8 @@ export function SettingsLayout() {
             role &&
             t.roles.includes(role) &&
             (!t.directory || directory) &&
-            (!t.spaces || canAdminSpaces(me)),
+            (!t.spaces || canAdminSpaces(me)) &&
+            (t.to !== "/settings/agents" || !noAgents),
         ).map((t) => (
           <AppLink
             key={t.to}

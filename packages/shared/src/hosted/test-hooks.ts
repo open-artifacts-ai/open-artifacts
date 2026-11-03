@@ -25,6 +25,7 @@ export const TEST_HOOKS = {
   audit: "/__test/audit",
   codeCapsReset: "/__test/code-caps/reset",
   directoryGroups: "/__test/directory-groups",
+  directoryHeld: "/__test/directory-held",
 } as const;
 
 /**
@@ -150,6 +151,29 @@ export const TestDirectoryGroupsResultSchema = z.object({
 });
 export type TestDirectoryGroupsResult = z.infer<
   typeof TestDirectoryGroupsResultSchema
+>;
+
+/**
+ * POST TEST_HOOKS.directoryHeld (#1078): `held: true` puts a held sweep
+ * (kind 'sweep', one removal waiting) on a suite group: a `test-` id whose
+ * directory_groups row (TEST_HOOKS.directoryGroups) carries exactly this
+ * TEST_DOMAIN email. `held: false` takes it off again (a snooze of it ends,
+ * audited "released", as for a real release). Written where real sync keeps
+ * holds (the DirectorySync DO and the D1 health row), so the owner's snooze
+ * routes act on it unchanged. Never touches any other group's hold.
+ */
+export const TestDirectoryHeldInputSchema = z.strictObject({
+  groupId: z.string().regex(TEST_GROUP_ID),
+  email: z.email(),
+  held: z.boolean(),
+});
+export type TestDirectoryHeldInput = z.infer<
+  typeof TestDirectoryHeldInputSchema
+>;
+/** `held`: whether the group is held now. */
+export const TestDirectoryHeldResultSchema = z.object({ held: z.boolean() });
+export type TestDirectoryHeldResult = z.infer<
+  typeof TestDirectoryHeldResultSchema
 >;
 
 /** Most rows POST TEST_HOOKS.audit returns. */

@@ -431,6 +431,49 @@ describe("mock invite reachability (review item 11)", () => {
   });
 });
 
+describe("mock lapsed guests (#829 review item 3)", () => {
+  const LAPSED = "gone@elsewhere.com";
+  const use = (providers: ("google" | "email")[]) => {
+    server.resetHandlers();
+    server.use(
+      ...createHandlers({ hosted: { providers, lapsedGuests: [LAPSED] } }),
+    );
+  };
+
+  it.each([[["google", "email"]], [["email"]]] as const)(
+    "%j: inviting a lapsed guest is 409 guest_lapsed, never member_removed; nothing created",
+    async (providers) => {
+      use([...providers]);
+      const r = await call("POST", R.members, {
+        email: LAPSED,
+        role: "member",
+      });
+      expect(r.status).toBe(409);
+      const { error } = ApiErrorSchema.parse(await r.json());
+      expect(error.code).toBe("guest_lapsed");
+      expect(error.details).toBeUndefined();
+      const all = MemberSchema.array().parse(
+        await (await call("GET", `${R.members}?status=removed`)).json(),
+      );
+      expect(all.filter((m) => m.email === LAPSED)).toHaveLength(1);
+    },
+  );
+
+  it("restoring a lapsed guest is 409 guest_lapsed; they stay a removed guest", async () => {
+    use(["google", "email"]);
+    const all = MemberSchema.array().parse(
+      await (await call("GET", `${R.members}?status=removed`)).json(),
+    );
+    const g = all.find((m) => m.email === LAPSED);
+    expect(g).toMatchObject({ role: "guest", status: "removed" });
+    const r = await call("POST", R.memberRestore(g?.id ?? ""));
+    expect(r.status).toBe(409);
+    expect(ApiErrorSchema.parse(await r.json()).error.code).toBe(
+      "guest_lapsed",
+    );
+  });
+});
+
 describe("mock guest share notices (parity 2)", () => {
   const notices = async () =>
     MeSchema.parse(await (await call("GET", R.me)).json()).notices;
@@ -481,11 +524,13 @@ describe("mock guest share notices (parity 2)", () => {
           userId: "Go0001AbCdEfGhIj",
           email: "owner1@outside.example",
           artifacts: 1,
+          status: "active",
         },
         {
           userId: "Go0002AbCdEfGhIj",
           email: "owner2@outside.example",
           artifacts: 1,
+          status: "active",
         },
       ],
       more: false,
@@ -501,6 +546,37 @@ describe("mock guest share notices (parity 2)", () => {
     expect((await notices())?.guestSummary?.guestOwners).toHaveLength(1);
     expect((await dismiss("guest_summary")).status).toBe(204);
     expect(await notices()).toBeUndefined();
+  });
+
+  it("spaces off: to user works; to space is 404 for a real, unknown or personal id; spaces routes are 404", async () => {
+    const spaceOn = createHandlers({
+      hosted: { selfHosted: true, guestOwners: 3, spaces: true },
+    });
+    server.use(...spaceOn);
+    const ENG = "SpEngNpQrSt2uVwX";
+    const go = (to: object, id = "Go0001AbCdEfGhIj") =>
+      call("POST", R.memberTransfer(id), { to });
+    expect((await go({ kind: "space", spaceId: ENG })).status).toBe(200);
+    server.resetHandlers();
+    server.use(
+      ...createHandlers({ hosted: { selfHosted: true, guestOwners: 3 } }),
+    );
+    const me = MeSchema.parse(await (await call("GET", R.me)).json());
+    expect(me.instance.features).not.toContain("spaces");
+    expect(me.spaces).toBeUndefined();
+    expect((await call("GET", R.spaces)).status).toBe(404);
+    for (const spaceId of [ENG, "SpNoSuchSpaceXyz", "Ab3dEfGhJk4mNpQr"]) {
+      const r = await go({ kind: "space", spaceId });
+      expect(r.status).toBe(404);
+      expect(await r.json()).toMatchObject({ error: { code: "not_found" } });
+    }
+    expect(
+      (await go({ kind: "user", userId: "Bc4eFgHjKm5nPqRs" })).status,
+    ).toBe(200);
+    // An active non-guest isn't a source.
+    expect(
+      (await call("GET", R.memberTransfer("Bc4eFgHjKm5nPqRs"))).status,
+    ).toBe(409);
   });
 
   it("absent with no guest shares, on hosted, and on direct sign-in; admins get no summary (dismiss 404)", async () => {

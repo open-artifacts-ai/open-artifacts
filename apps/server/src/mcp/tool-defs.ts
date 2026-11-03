@@ -193,11 +193,58 @@ const defOf = <N extends ToolName>(name: N): Extract<ToolDef, { name: N }> => {
 
 export const describeTool = (name: ToolName): string => defOf(name).description;
 
-/** registerTool's config for `name`: its description and input schema. */
-export const toolConfig = <N extends ToolName>(name: N) => {
+/**
+ * The spaces wording in the descriptions and what an install without the
+ * spaces feature says instead (parity 1, B12): no spaces, list_spaces or
+ * spaceId there. Each `from` must occur in its tool's description (tested).
+ */
+export const NO_SPACES_TEXT: Readonly<
+  Partial<Record<ToolName, readonly { from: string; to: string }[]>>
+> = {
+  publish_artifact: [
+    {
+      from: " To create it in a shared space, pass `spaceId` from list_spaces (new artifacts only).",
+      to: "",
+    },
+  ],
+  get_artifact: [
+    {
+      from: "(with its space and what you may do, when spaces are on)",
+      to: "(with what you may do)",
+    },
+  ],
+  share_artifact: [{ from: "Owner or space manager only.", to: "Owner only." }],
+  unshare_artifact: [
+    { from: "Owner or space manager only.", to: "Owner only." },
+  ],
+  set_visibility: [{ from: "Owner or space manager only.", to: "Owner only." }],
+  delete_artifact: [
+    { from: "Owner or space manager only.", to: "Owner only." },
+  ],
+  undelete_artifact: [
+    {
+      from: "Its personal owner, or in a shared space that space's manager.",
+      to: "Its owner.",
+    },
+  ],
+};
+
+/** `name`'s description; `spaces` false drops the spaces wording (NO_SPACES_TEXT). */
+export const descriptionFor = (name: ToolName, spaces = true): string => {
+  let d: string = defOf(name).description;
+  if (!spaces)
+    for (const r of NO_SPACES_TEXT[name] ?? []) d = d.replace(r.from, r.to);
+  return d;
+};
+
+/**
+ * registerTool's config for `name`: its description and input schema.
+ * `spaces` false: the description without the spaces wording.
+ */
+export const toolConfig = <N extends ToolName>(name: N, spaces = true) => {
   const d = defOf(name);
   return {
-    description: d.description as string,
+    description: descriptionFor(name, spaces),
     inputSchema: d.inputSchema as Extract<ToolDef, { name: N }>["inputSchema"],
   };
 };

@@ -11,6 +11,7 @@ import {
   MemberSchema,
   type MePatch,
   MeSchema,
+  type NoticeId,
   type OAuthClient,
   OAuthClientSchema,
   PageSchema,
@@ -176,7 +177,7 @@ export const useSearch = (q: SearchQuery) =>
       api.get(withQuery(R.search, q), SearchPage, signal),
     enabled: q.q.length > 0,
   });
-/** Active members by default; `status` (a comma list) is hosted, so the default sends none. */
+/** Active members by default; `status` is a comma list (every install, parity 1). */
 export const useMembers = (status?: string, enabled = true) =>
   useQuery({
     enabled,
@@ -293,6 +294,8 @@ const useInvalidating = <V, T>(
   keys: () => (readonly unknown[])[],
   failure?: string,
   inline?: (e: ApiClientError) => boolean,
+  /** A success toast, shown at once: the component may be gone by the refetch. */
+  success?: string,
 ) => {
   const qc = useQueryClient();
   return useMutation({
@@ -308,8 +311,12 @@ const useInvalidating = <V, T>(
       if (e instanceof ApiClientError && inline?.(e)) return;
       failureToast(qc, failure, e);
     },
-    onSuccess: () =>
-      Promise.all(keys().map((queryKey) => qc.invalidateQueries({ queryKey }))),
+    onSuccess: () => {
+      if (success) toast({ title: success, tone: "success" });
+      return Promise.all(
+        keys().map((queryKey) => qc.invalidateQueries({ queryKey })),
+      );
+    },
   });
 };
 
@@ -358,8 +365,15 @@ export const useInviteMember = () => {
       api.send("POST", R.members, input, MemberInviteResultSchema),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.members }),
     // invite_unreachable: the dialog says why under the email field.
+    // member_removed: the dialog offers Restore; guest_lapsed: it says to share (parity 1).
     onError: (e) => {
-      if (e instanceof ApiClientError && e.code === "invite_unreachable")
+      if (
+        e instanceof ApiClientError &&
+        (e.code === "invite_unreachable" ||
+          e.code === "member_removed" ||
+          e.code === "guest_lapsed" ||
+          e.code === "directory_managed")
+      )
         return;
       failToast(e, "Couldn't send the invite.");
     },
@@ -416,6 +430,39 @@ export const useRemoveMember = (onOwnerOnly?: (id: string) => void) =>
     "Couldn't remove the member.",
     onOwnerOnly,
   );
+
+/**
+ * POST R.noticeDismiss (parity 2): the owner's one-time notice goes for good.
+ * Hidden at once; /me refetches to confirm. A failure toasts and it returns.
+ */
+/** Which Me.notices field each dismissable notice is. */
+const NOTICE_FIELD = {
+  guest_shares: "guestShares",
+  guest_summary: "guestSummary",
+} as const satisfies Record<NoticeId, keyof NonNullable<Me["notices"]>>;
+
+export const useDismissNotice = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (notice: NoticeId) =>
+      api.send("POST", R.noticeDismiss(notice), undefined),
+    onMutate: (notice) => {
+      const before = qc.getQueryData<Me>(qk.me);
+      const key = NOTICE_FIELD[notice];
+      if (before?.notices)
+        qc.setQueryData<Me>(qk.me, {
+          ...before,
+          notices: { ...before.notices, [key]: undefined },
+        });
+      return { before };
+    },
+    onError: (e, _n, ctx) => {
+      if (ctx?.before) qc.setQueryData(qk.me, ctx.before);
+      failToast(e, "Couldn't dismiss the notice.");
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.me }),
+  });
+};
 
 /** PATCH /me; the response is the new Me, so it replaces the cache. Errors are the caller's to show. */
 export const useUpdateMe = () => {
@@ -807,6 +854,9 @@ export const useConfirmHeld = () =>
     "Couldn't apply the change.",
     directoryInline,
   );
+/** Someone else got there first. */
+export const ALREADY_HANDLED =
+  "Someone already handled this. The list is up to date.";
 /**
  * Snooze / unsnooze a held sweep (#412). A 404 means the caller lost the owner
  * role: refetch /me (the page then shows the owner-only line) and skip the toast.
@@ -827,7 +877,7 @@ const useHeldSnooze = <V>(fn: (v: V) => Promise<unknown>, failure: string) => {
         void qc.invalidateQueries({ queryKey: qk.directory });
         if (e.code === "conflict")
           return toast({
-            title: "Someone already handled this. The list is up to date.",
+            title: ALREADY_HANDLED,
             tone: "info",
           });
       }
@@ -869,6 +919,7 @@ export const useDisconnectDirectory = () =>
     () => [qk.directory, qk.me],
     "Couldn't disconnect.",
     directoryInline,
+    "Directory disconnected. Members are now managed here.",
   );
 /** Refreshes on failure too: a refused move may mean the page is stale. */
 /** `quiet`: the caller shows failures itself (the Move dialog does, inline). */
@@ -901,11 +952,25 @@ export const useRunTransfer = (memberId: string) =>
   useInvalidating(
     (input: TransferInput) =>
       api.send("POST", R.memberTransfer(memberId), input, TransferResultSchema),
-    () => [qk.memberTransfer(memberId)],
+    () => [qk.memberTransfer(memberId), qk.members],
     "Couldn't transfer the artifacts.",
     // The transfer dialog reports every failure inline, with Retry.
     () => true,
   );
+/**
+ * POST R.memberRestore: a removed member comes back active, as a member, a
+ * guest as a guest (parity 1). Errors are the caller's to show inline (403
+ * owner_only, 409 directory_managed, guest_lapsed, member_active).
+ */
+export const useRestoreMember = () =>
+  useInvalidating(
+    (memberId: string) =>
+      api.send("POST", R.memberRestore(memberId), undefined, MemberSchema),
+    () => [qk.members],
+    "Couldn't restore them.",
+    () => true,
+  );
+
 export const useResetIdentity = () => {
   const qc = useQueryClient();
   const refresh = () =>

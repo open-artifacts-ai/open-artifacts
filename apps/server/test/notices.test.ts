@@ -6,6 +6,7 @@ import { env } from "cloudflare:workers";
 import {
   GUEST_SHARES_NOTICE_LIMIT,
   type Me,
+  type Member,
   MeSchema,
   type NoticeId,
   newId,
@@ -15,7 +16,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
-import { getSettingsKv } from "../src/services/members.js";
+import {
+  getSettingsKv,
+  removeMember,
+  restoreMember,
+} from "../src/services/members.js";
+import { meNotices } from "../src/services/notices.js";
+import { getUser } from "../src/services/users.js";
 import { direct, uniq } from "./auth-helpers.js";
 import { login } from "./helpers.js";
 
@@ -85,6 +92,38 @@ beforeEach(async () => {
     env.DB.prepare("update users set role = 'member' where role = 'guest'"),
   ]);
   owner ??= await user("owner", "owner");
+});
+
+describe("Me.notices with soft removal (parity 1)", () => {
+  it("a removed owner's guest shares stay in the summary; restored, the notice is theirs again", async () => {
+    const a = await user("rm");
+    const plan = await artifact(a.userId, "Plan");
+    const g = await user("rm-g", "guest");
+    await share(plan, g.email);
+    const actor = (await getUser(env, owner.userId)) as Member;
+    await removeMember(ACCESS_ONLY, a.userId, actor, ctx);
+    expect((await notices(owner.cookie))?.guestSummary).toMatchObject({
+      shares: 1,
+      owners: 1,
+    });
+
+    await restoreMember(ACCESS_ONLY, a.userId, actor, ctx);
+    // Restore ends their old session, so read as the restored row.
+    const back = (await getUser(env, a.userId)) as Member;
+    const n = await meNotices(
+      ACCESS_ONLY,
+      back,
+      null,
+      await getSettingsKv(ACCESS_ONLY),
+    );
+    expect(n?.guestShares?.items).toEqual([
+      expect.objectContaining({
+        title: "Plan",
+        guestEmail: g.email,
+        role: "editor",
+      }),
+    ]);
+  });
 });
 
 describe("Me.notices.guestShares (parity 2)", () => {
@@ -340,12 +379,38 @@ describe("Me.notices.guestSummary (parity 2)", () => {
     expect(n?.guestSummary).toEqual({
       shares: 3,
       owners: 2,
-      guestOwners: [{ userId: go.userId, email: go.email, artifacts: 2 }],
+      guestOwners: [
+        { userId: go.userId, email: go.email, artifacts: 2, status: "active" },
+      ],
       more: false,
     });
     const text = JSON.stringify(n);
     for (const secret of ["Alpha", "Beta", "Guest one", g.email, fresh])
       expect(text).not.toContain(secret);
+  });
+
+  it("lists a guest who left with their status, and adds or drops no one", async () => {
+    const here = await user("here", "guest");
+    const gone = await user("gone", "guest");
+    const away = await user("away", "guest");
+    for (const u of [here, gone, away]) await artifact(u.userId, "Mine");
+    const owners = async () =>
+      (await notices(owner.cookie))?.guestSummary?.guestOwners ?? [];
+    const before = (await owners()).map((o) => o.userId).sort();
+    await env.DB.batch([
+      env.DB.prepare("update users set status = 'removed' where id = ?").bind(
+        gone.userId,
+      ),
+      env.DB.prepare("update users set status = 'suspended' where id = ?").bind(
+        away.userId,
+      ),
+    ]);
+    const after = await owners();
+    expect(after.map((o) => o.userId).sort()).toEqual(before);
+    const of = (id: string) => after.find((o) => o.userId === id)?.status;
+    expect(of(here.userId)).toBe("active");
+    expect(of(gone.userId)).toBe("removed");
+    expect(of(away.userId)).toBe("suspended");
   });
 
   it("only the uncapped org owner sees it; others get 404 on dismiss", async () => {

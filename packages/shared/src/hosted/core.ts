@@ -274,6 +274,8 @@ export const GuestOwnerSchema = z.object({
   email: z.string(),
   /** Live artifacts in their personal space. */
   artifacts: z.number().int().positive(),
+  /** Any status: a guest who left still owns what they made. */
+  status: MemberStatusSchema,
 });
 export type GuestOwner = z.infer<typeof GuestOwnerSchema>;
 
