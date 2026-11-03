@@ -99,6 +99,9 @@ export async function listMembers(
       groups: sql<string | null>`${sql.raw(RESTRICTED_GROUPS_SQL)}`,
       idents: sql<string | null>`${sql.raw(IDENTITIES_SQL)}`,
       owns,
+      // A target-row fact for directoryManaged (the owner is never synced
+      // away), read in SQL: role checks stay in src/auth (authz-lint).
+      isOwner: sql<number>`(users.role = 'owner')`,
     })
     .from(users)
     .where(where)
@@ -129,9 +132,9 @@ async function directoryManagedOf(env: Env) {
   if (!(await syncManages(env))) return () => false;
   const domains = new Set(authConfig(env).domains);
   return (
-    r: MemberExtrasRow & { email: string; role: string; status: string },
+    r: MemberExtrasRow & { email: string; status: string; isOwner: number },
   ) =>
-    r.role !== "owner" &&
+    !r.isOwner &&
     statusOf(r.status) !== "removed" &&
     domains.has(r.email.slice(r.email.lastIndexOf("@") + 1)) &&
     !identitiesOf(r).includes("google");
