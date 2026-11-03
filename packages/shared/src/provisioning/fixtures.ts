@@ -123,7 +123,7 @@ export function fixtureAudit(o: Partial<AuditEntry> = {}): AuditEntry {
     at: T0 + 3000,
     source: "api",
     actor: { kind: "token", label: FREE_TEXT[3] },
-    action: "install.upgrade",
+    action: "job.accepted",
     installId: FIXTURE_IDS.leo,
     jobId: FIXTURE_IDS.jobLeo,
     outcome: "ok",

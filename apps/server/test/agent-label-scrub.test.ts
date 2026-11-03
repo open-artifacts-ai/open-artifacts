@@ -1,8 +1,9 @@
 // A token label stays its publisher's, past the publisher's removal and past a
-// read that races a publish. Without spaces, deleteMember moves created_by to
-// the instance owner, so the label is overwritten with the stand-in first
-// (agent_via "r:"): nobody reads it, nobody is credited with the version, and
-// no filter finds it. With spaces the row stays and created_by stays true.
+// read that races a publish. Removal is soft on every install: the row stays,
+// created_by stays true and nothing is scrubbed. Before that (#829) a hard
+// delete moved created_by to the instance owner and overwrote the label with
+// the stand-in (agent_via "r:"). Those rows stay that way forever: nobody reads
+// the label, nobody is credited with the version, and no filter finds it.
 import { env } from "cloudflare:workers";
 import {
   ArtifactSummarySchema,
@@ -10,6 +11,7 @@ import {
   newId,
   PageSchema,
   R,
+  TransferInputSchema,
   TrashQuerySchema,
   VersionInfoSchema,
 } from "@oa/shared";
@@ -27,11 +29,13 @@ import {
   SCRUBBED_VIA,
 } from "../src/services/agent-display.js";
 import {
+  getSummary,
   publish,
   shownLastAgent,
   softDelete,
 } from "../src/services/artifacts.js";
-import { removeMember } from "../src/services/members.js";
+import { removeMember, restoreMember } from "../src/services/members.js";
+import { transferPersonal } from "../src/services/spaces.js";
 import { listTrash } from "../src/services/trash.js";
 import { getUser } from "../src/services/users.js";
 import { api, login, runIndex } from "./helpers.js";
@@ -64,7 +68,7 @@ let carol: U;
 let adminActor: Member;
 
 beforeAll(async () => {
-  // First, so it is the owner a spaces-off removal reassigns to.
+  // First, so it is the owner a scrubbed row names as created_by.
   instance = await mk("owner", "Ivy Instance");
   admin = await mk("admin", "Ada Admin");
   carol = await mk("member", "Carol Colleague");
@@ -150,11 +154,43 @@ const listed = async (query: string, auth: string) => {
 };
 const agentQuery = (name: string) => `agent=${encodeURIComponent(name)}`;
 
-describe("removal, spaces off: the label is scrubbed", () => {
+/**
+ * What the hard delete (gone since #829) left behind for publisher `u`: their
+ * private labels overwritten and marked "r:", then their artifacts and
+ * versions reassigned to the instance owner. Nothing writes this any more, but
+ * rows scrubbed before #829 stay like this forever.
+ */
+async function scrub(u: U) {
+  const by = u.userId;
+  const to = instance.userId;
+  const priv = "(agent_via is null or agent_via not like 'g:%')";
+  await env.DB.batch([
+    env.DB.prepare(
+      `update artifacts set last_agent_name = ? where exists (
+         select 1 from versions where artifact_id = artifacts.id
+           and version = artifacts.current_version and created_by = ?
+           and agent_name is not null and ${priv})`,
+    ).bind(MEMBERS_AGENT, by),
+    env.DB.prepare(
+      `update versions set agent_name = ?, agent_via = ?
+         where created_by = ? and agent_name is not null and ${priv}`,
+    ).bind(MEMBERS_AGENT, SCRUBBED_VIA, by),
+    env.DB.prepare(
+      `update artifacts set owner_id = ?,
+         space_id = case when space_id = ? then ? else space_id end
+         where owner_id = ?`,
+    ).bind(to, by, to, by),
+    env.DB.prepare(
+      "update versions set created_by = ? where created_by = ?",
+    ).bind(to, by),
+  ]);
+}
+
+describe("a scrubbed row (agent_via r:) reads as the stand-in forever", () => {
   it("nobody reads it, and the instance owner isn't named as the agent's owner", async () => {
     const bob = await mk("member", "Bob Builder");
     const id = await pub(bob, token());
-    await removeMember(env, bob.userId, adminActor, ctx);
+    await scrub(bob);
     for (const auth of [instance.cookie, admin.cookie, carol.cookie, null]) {
       const r = await reads(id, auth);
       const text = JSON.stringify(r);
@@ -171,56 +207,13 @@ describe("removal, spaces off: the label is scrubbed", () => {
     expect(await lastAgentCol(id)).toBe(MEMBERS_AGENT);
   });
 
-  it("a row with no via (before 0012) is private, so it is scrubbed too", async () => {
-    const bob = await mk("member", "Bob Builder");
-    const id = await pub(bob, token());
-    await env.DB.prepare(
-      "update versions set agent_via = null where artifact_id = ?",
-    )
-      .bind(id)
-      .run();
-    await removeMember(env, bob.userId, adminActor, ctx);
-    expect(JSON.stringify(await reads(id, instance.cookie))).not.toContain(
-      "7k3w",
-    );
-    expect((await row(id, 1))?.agent_via).toBe(SCRUBBED_VIA);
-  });
-
-  it("a grant's client name is a product and stays", async () => {
-    const bob = await mk("member", "Bob Builder");
-    const via = { kind: "grant" as const, id: newId() };
-    const id = await pub(bob, { name: "Claude Code", via });
-    await removeMember(env, bob.userId, adminActor, ctx);
-    const r = await reads(id, carol.cookie);
-    expect(r.artifact.lastAgent).toEqual({ name: "Claude Code", version: "1" });
-    expect((await row(id, 1))?.agent_via).toBe(`g:${via.id}`);
-  });
-
-  it("a session publish has no agent, so nothing is scrubbed", async () => {
-    const bob = await mk("member", "Bob Builder");
-    const { id } = await publish(
-      env,
-      await member(bob),
-      { title: "s", format: "html", content: "<p>s</p>" } as never,
-      null,
-      undefined,
-      "create",
-    );
-    await removeMember(env, bob.userId, adminActor, ctx);
-    expect(await row(id, 1)).toMatchObject({
-      agent_name: null,
-      agent_via: null,
-    });
-    expect(await lastAgentCol(id)).toBeNull();
-  });
-
   it("no filter finds it, the instance owner included", async () => {
     const bob = await mk("member", "Bob Builder");
     const id = await pub(bob, token());
     await share(id, bob, carol, "viewer");
     await share(id, bob, admin, "viewer");
     expect(await listed(agentQuery(LABEL), bob.cookie)).toContain(id);
-    await removeMember(env, bob.userId, adminActor, ctx);
+    await scrub(bob);
     for (const auth of [instance.cookie, admin.cookie, carol.cookie]) {
       expect(await listed("", auth)).toContain(id);
       expect(await listed(agentQuery(MEMBERS_AGENT), auth)).not.toContain(id);
@@ -228,14 +221,14 @@ describe("removal, spaces off: the label is scrubbed", () => {
     }
   });
 
-  it("lastAgent keeps a later publisher's label; only the removed member's version changes", async () => {
+  it("beside a later publisher's label, each version reads as its own", async () => {
     const bob = await mk("member", "Bob Builder");
     const dana = await mk("member", "Dana Doer");
     const id = await pub(bob, token());
     await share(id, bob, dana, "editor");
     const danas = `dana ${LABEL}`;
     await pub(dana, token(danas), id);
-    await removeMember(env, bob.userId, adminActor, ctx);
+    await scrub(bob);
     expect(await lastAgentCol(id)).toBe(danas);
     expect((await row(id, 1))?.agent_via).toBe(SCRUBBED_VIA);
     expect((await row(id, 2))?.agent_name).toBe(danas);
@@ -255,14 +248,14 @@ describe("removal, spaces off: the label is scrubbed", () => {
     ]);
   });
 
-  it("on another owner's artifact: lastAgent is scrubbed, the owner's version isn't", async () => {
+  it("on another owner's artifact: lastAgent is the stand-in, the owner's own version isn't", async () => {
     const olive = await mk("member", "Olive Owner");
     const bob = await mk("member", "Bob Builder");
     const olives = `olive ${LABEL}`;
     const id = await pub(olive, token(olives));
     await share(id, olive, bob, "editor");
     await pub(bob, token(), id);
-    await removeMember(env, bob.userId, adminActor, ctx);
+    await scrub(bob);
     expect(await lastAgentCol(id)).toBe(MEMBERS_AGENT);
     expect(await row(id, 1)).toMatchObject({
       agent_name: olives,
@@ -277,45 +270,22 @@ describe("removal, spaces off: the label is scrubbed", () => {
     ]);
   });
 
-  it("in a shared space: it keeps its space and is scrubbed", async () => {
-    const bob = await mk("member", "Bob Builder");
-    const id = await pub(bob, token());
-    const spaceId = newId();
-    await env.DB.prepare(
-      "insert into spaces (id, kind, name, created_at) values (?, 'shared', ?, 1)",
-    )
-      .bind(spaceId, `Scrub ${tag}`)
-      .run();
-    await env.DB.prepare("update artifacts set space_id = ? where id = ?")
-      .bind(spaceId, id)
-      .run();
-    await removeMember(env, bob.userId, adminActor, ctx);
-    const a = await env.DB.prepare(
-      "select space_id s from artifacts where id = ?",
-    )
-      .bind(id)
-      .first<{ s: string }>();
-    expect(a?.s).toBe(spaceId);
-    expect(await lastAgentCol(id)).toBe(MEMBERS_AGENT);
-    expect((await row(id, 1))?.agent_via).toBe(SCRUBBED_VIA);
-  });
-
-  it("in the trash: scrubbed, and it reads as the stand-in there", async () => {
+  it("in the trash: it reads as the stand-in there", async () => {
     const bob = await mk("member", "Bob Builder");
     const id = await pub(bob, token());
     await softDelete(env, await member(bob), id);
-    await removeMember(env, bob.userId, adminActor, ctx);
+    await scrub(bob);
     expect(await lastAgentCol(id)).toBe(MEMBERS_AGENT);
     expect((await trashed(id, instance))?.lastAgent).toEqual(SCRUBBED);
   });
 
-  it("a scrubbed row reads the same through list, search and trash", async () => {
+  it("reads the same through list, search and trash", async () => {
     const bob = await mk("member", "Bob Builder");
     const word = `scrubword${tag}`;
     const id = await pub(bob, token(), undefined, `<p>${word}</p>`);
     await runIndex(id);
     await share(id, bob, carol, "viewer");
-    await removeMember(env, bob.userId, adminActor, ctx);
+    await scrub(bob);
 
     const list = (await (
       await api(app, `${R.artifacts}?limit=100`, carol.cookie)
@@ -330,49 +300,28 @@ describe("removal, spaces off: the label is scrubbed", () => {
     await softDelete(env, await member(instance), id);
     expect((await trashed(id, instance))?.lastAgent).toEqual(SCRUBBED);
   });
-
-  it("a removal refused at the batch scrubs nothing", async () => {
-    const bob = await mk("member", "Bob Builder");
-    const id = await pub(bob, token());
-    // Promoted between the precheck and the batch: `target` refuses every write.
-    let raced = false;
-    const DB = new Proxy(env.DB, {
-      get(t, k) {
-        const v = Reflect.get(t, k);
-        if (typeof v !== "function") return v;
-        if (k !== "batch") return v.bind(t);
-        return async (s: D1PreparedStatement[]) => {
-          if (!raced) {
-            raced = true;
-            await t
-              .prepare("update users set role = 'admin' where id = ?")
-              .bind(bob.userId)
-              .run();
-          }
-          return t.batch(s);
-        };
-      },
-    });
-    await expect(
-      removeMember({ ...env, DB } as Env, bob.userId, adminActor, ctx),
-    ).rejects.toMatchObject({ code: "owner_only" });
-    expect(await row(id, 1)).toMatchObject({
-      agent_name: LABEL,
-      created_by: bob.userId,
-    });
-    expect(await lastAgentCol(id)).toBe(LABEL);
-  });
 });
 
-describe("removal, spaces on: the row stays, so nothing is scrubbed", () => {
+describe.each([
+  ["spaces off", env as Env],
+  ["spaces on", SPACES],
+])("removal, %s: nothing is scrubbed", (_, e) => {
+  /** Every column of the version row: none of them may move. */
+  const whole = (id: string) =>
+    env.DB.prepare("select * from versions where artifact_id = ?")
+      .bind(id)
+      .all()
+      .then((r) => r.results);
+
   it("created_by stays true and the stand-in names the publisher", async () => {
     const bob = await mk("member", "Bob Builder");
     const id = await pub(bob, token());
-    await removeMember(SPACES, bob.userId, adminActor, ctx);
+    await removeMember(e, bob.userId, adminActor, ctx);
     expect(await row(id, 1)).toMatchObject({
       agent_name: LABEL,
       created_by: bob.userId,
     });
+    expect((await row(id, 1))?.agent_via).toMatch(/^t:/);
     const shown = await reads(id, instance.cookie);
     expect(JSON.stringify(shown)).not.toContain("7k3w");
     expect(shown.artifact.lastAgent).toEqual({
@@ -380,6 +329,68 @@ describe("removal, spaces on: the row stays, so nothing is scrubbed", () => {
       version: "1",
       masked: true,
     });
+  });
+
+  it("removal, transfer and restore never write a version row", async () => {
+    const bob = await mk("member", "Bob Builder");
+    const id = await pub(bob, token());
+    const before = await whole(id);
+    expect(before).toHaveLength(1);
+
+    await removeMember(e, bob.userId, adminActor, ctx);
+    expect(await whole(id)).toEqual(before);
+
+    const moved = await transferPersonal(
+      e,
+      adminActor,
+      bob.userId,
+      TransferInputSchema.parse({
+        to: { kind: "user", userId: admin.userId },
+      }),
+      ctx,
+    );
+    expect(moved.moved).toBe(1);
+    expect(await whole(id)).toEqual(before);
+    // The new owner never reads the label as theirs: the publisher is still
+    // the one who published.
+    const shown = await reads(id, admin.cookie);
+    expect(JSON.stringify(shown)).not.toContain("7k3w");
+    expect(shown.artifact.lastAgent).toEqual({
+      name: "Bob Builder's agent",
+      version: "1",
+      masked: true,
+    });
+
+    await restoreMember(e, bob.userId, adminActor, ctx);
+    expect(await whole(id)).toEqual(before);
+    // The token is theirs again, so the label is too.
+    const mine = await getSummary(e, callerOf(await member(bob)), id);
+    expect(mine.lastAgent).toEqual({ name: LABEL, version: "1" });
+  });
+
+  it("a row with no via (before 0012) stays private and stays as it was", async () => {
+    const bob = await mk("member", "Bob Builder");
+    const id = await pub(bob, token());
+    await env.DB.prepare(
+      "update versions set agent_via = null where artifact_id = ?",
+    )
+      .bind(id)
+      .run();
+    await removeMember(e, bob.userId, adminActor, ctx);
+    expect(JSON.stringify(await reads(id, instance.cookie))).not.toContain(
+      "7k3w",
+    );
+    expect((await row(id, 1))?.agent_via).toBeNull();
+  });
+
+  it("a grant's client name is a product and stays", async () => {
+    const bob = await mk("member", "Bob Builder");
+    const via = { kind: "grant" as const, id: newId() };
+    const id = await pub(bob, { name: "Claude Code", via });
+    await removeMember(e, bob.userId, adminActor, ctx);
+    const r = await reads(id, carol.cookie);
+    expect(r.artifact.lastAgent).toEqual({ name: "Claude Code", version: "1" });
+    expect((await row(id, 1))?.agent_via).toBe(`g:${via.id}`);
   });
 });
 

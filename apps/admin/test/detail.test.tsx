@@ -244,6 +244,25 @@ it("upgrade offers other installable releases and sends the choice", async () =>
   expect(writes()[0].body).toMatchObject({ version: "1.41.2" });
 });
 
+it("sends nonAdditive only when the restore point box is ticked (MIG-2)", async () => {
+  const i = installsByState.active;
+  await open(i);
+  fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
+  let dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Upgrade" }));
+  await waitFor(() => expect(writes()).toHaveLength(1));
+  expect(writes()[0].body).not.toHaveProperty("nonAdditive");
+  await open(i);
+  fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
+  dialog = await screen.findByRole("dialog");
+  fireEvent.click(
+    within(dialog).getByRole("checkbox", { name: /migration that can lose/ }),
+  );
+  fireEvent.click(within(dialog).getByRole("button", { name: "Upgrade" }));
+  await waitFor(() => expect(writes()).toHaveLength(2));
+  expect(writes()[1].body).toMatchObject({ nonAdditive: true });
+});
+
 it("explains downgrade_refused", async () => {
   const i = installsByState.active;
   use(
@@ -317,6 +336,13 @@ it("a failed create's purge goes straight to type-to-confirm, even when the sign
   fireEvent.click(go);
   await waitFor(() => expect(writes()).toHaveLength(1));
   expect(writes()[0].path).toBe(`/api/v1/installs/${i.id}/purge`);
+});
+
+it("a missing tier reads – as in the list", async () => {
+  await open({ ...installsByState.active, tier: null });
+  const row = (await screen.findByText("Tier · Sign-in")).parentElement;
+  expect(row).toHaveTextContent(/^Tier · Sign-in– · /);
+  expect(row).not.toHaveTextContent("None");
 });
 
 it("purge with a fresh sign-in is type-to-confirm", async () => {

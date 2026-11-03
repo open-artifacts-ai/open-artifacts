@@ -26,6 +26,15 @@ import {
   uncovered,
   unlisted,
 } from "../../../apps/server/test/authz/surfaces.ts";
+import {
+  authorizeCode,
+  KV_CACHE_TTL_MS,
+  KV_SETTLE_SLACK_MS,
+  kvCaseTimeout,
+  mcpResource,
+  pkce,
+  registerClient,
+} from "./creds.ts";
 import { InfraError, setupFetch } from "./fetch-timeout.ts";
 import {
   adminEmail,
@@ -68,11 +77,20 @@ export interface World {
 }
 
 /** A throwaway a mutating probe writes to (made by the install's own admin). */
-export type Fresh = "artifact-space" | "artifact-personal" | "space";
+export type Fresh =
+  | "artifact-space"
+  | "artifact-personal"
+  | "space"
+  /** A token of the admin's (POST R.tokens, by session). */
+  | "token"
+  /** An OAuth grant of the admin's (the consent flow, by session). */
+  | "grant";
 export interface Throwaway {
   fresh: Fresh;
   artifactId?: string;
   space?: SpaceTarget;
+  tokenId?: string;
+  grantId?: string;
 }
 
 export type Variant = "session" | "pat";
@@ -82,6 +100,13 @@ export interface ProbeCase {
   /** ROUTE_POLICY keys, `tool:<name>`, `content:<key>` this case reaches. */
   routes: readonly string[];
   variant: Variant;
+  /**
+   * Only A's credential at B runs (crossDenied), on `run`: a refusal across
+   * installs with no success leg. The route stays a recorded drop.
+   */
+  denyOnly?: true;
+  /** This case's own timeout, when its waits exceed the suite's budget. */
+  timeout?: number;
   /** Read-only: runs on the seeded world. */
   run?: (
     cred: ProbeCred,
@@ -131,6 +156,7 @@ const CELLS = [
 ] as const;
 
 export type DropWhy =
+  | "real-only"
   | "owner-only"
   | "nobody"
   | "no-world-caller"
@@ -157,6 +183,8 @@ const NO_DIRECTORY = {
 
 /** Why a surface can't run cross-install: no success leg is possible. */
 const WHY: Record<DropWhy, string> = {
+  "real-only":
+    "real-only (#839): past the access rules the route either writes or answers a 404 that looks like a refusal, and the row it needs can't be made on the red-line installs, so crossCheck has no success leg. Live, a deny-only case still proves A's session is a 401 at B; that an admin is allowed is covered by the matrix only",
   "owner-only":
     "owner-only: hooks never mint the owner and no owner credential is stored in CI, so crossCheck has no success leg",
   nobody:
@@ -184,6 +212,11 @@ const FOREIGN = "apps/server/test/redline.foreign-credential.test.ts";
 const FOREIGN_D =
   "red line: another install's credential on the dropped directory surfaces";
 const INSTANCE: Citation = { file: MATRIX, describe: "instance routes" };
+/** Hosted billing's authz: owner and admin allowed, member, guest, anonymous refused. */
+const BILLING_AUTHZ: Citation = {
+  file: "apps/server/test/authz/plan.matrix.test.ts",
+  describe: "plan %s: billing and admin reads",
+};
 const ARTIFACTS: Citation = {
   file: MATRIX,
   describe: "artifact surfaces (sync stale 8 days)",
@@ -220,11 +253,35 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
   "DELETE /api/v1/directory": OWNER_ONLY,
   "POST /api/v1/admin/broker-check":
     "owner-only (the broker check): no admin success leg",
+  "POST /api/v1/notices/guest_summary/dismiss":
+    "owner-only (the guest summary notice, parity 2): no admin success leg",
   "GET /api/v1/directory/callback":
     "needs the Google directory connector (404 without it)",
   "GET /api/v1/artifacts/:id/anon-id":
     "anonymous callers only (signed-in callers get 401), so no tenant credential crosses",
   "GET /api/v1/usage": "off on every hosted install (usage_off)",
+  // #839 real-only: no success leg, because the row each needs can't be made
+  // here. A deny-only case still runs A's session at B, but that alone doesn't
+  // cover the route (see `reached` in coverageGaps).
+  "DELETE /api/v1/members/:id/identities/google":
+    "real-only: a reset needs a member with a Google sign-in; A at B is deny-only",
+  "DELETE /api/v1/spaces/:id/mappings/:groupId":
+    "real-only: PUT refuses a mapping row while directory sync is off (409); A at B is deny-only",
+  "DELETE /api/v1/directory/org-mappings/:groupId":
+    "real-only: on rl-b no mapping row exists to delete, so the owner gets a 404 the same as a refusal; A at B is deny-only",
+  "PUT /api/v1/directory/restricted-groups/:groupId":
+    "real-only: on rl-b an unknown group is 404 past the owner rule, the same as a refusal; A at B is deny-only",
+  "DELETE /api/v1/directory/restricted-groups/:groupId":
+    "real-only: PUT refuses a restricted_groups row while directory sync is off (409), and the hook-seeded directory group is not that row; A at B is deny-only",
+  // Self-serve billing (hosted only): an allowed caller's request reaches
+  // billing (a Stripe session or a usage report), so no success leg runs
+  // live. A at B is deny-only.
+  "POST /api/v1/billing/checkout":
+    "real-only: an allowed request opens a Stripe Checkout session through billing; A at B is deny-only",
+  "POST /api/v1/billing/portal":
+    "real-only: an allowed request opens a Stripe Customer Portal session through billing; A at B is deny-only",
+  "POST /api/v1/billing/usage":
+    "real-only: an allowed request sends this month's usage report to billing; A at B is deny-only",
 };
 
 /**
@@ -289,6 +346,17 @@ export const DROPPED: Readonly<
       },
     ],
   },
+  "org POST /api/v1/notices/guest_summary/dismiss": {
+    why: "owner-only",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: "apps/server/test/notices.test.ts",
+        describe: "Me.notices.guestSummary (parity 2)",
+        test: "only the uncapped org owner sees it; others get 404 on dismiss",
+      },
+    ],
+  },
   "org GET /api/v1/directory/callback": {
     why: "no-directory",
     coveredBy: [
@@ -332,6 +400,42 @@ export const DROPPED: Readonly<
         test: "usage_off → GET /api/v1/usage 404 for the owner",
       },
     ],
+  },
+  "org DELETE /api/v1/members/:id/identities/google": {
+    why: "real-only",
+    coveredBy: [INSTANCE],
+  },
+  "org POST /api/v1/billing/checkout": {
+    why: "real-only",
+    coveredBy: [INSTANCE, BILLING_AUTHZ],
+  },
+  "org POST /api/v1/billing/portal": {
+    why: "real-only",
+    coveredBy: [INSTANCE, BILLING_AUTHZ],
+  },
+  "org POST /api/v1/billing/usage": {
+    why: "real-only",
+    coveredBy: [INSTANCE, BILLING_AUTHZ],
+  },
+  "org DELETE /api/v1/spaces/:id/mappings/:groupId": {
+    why: "real-only",
+    coveredBy: [INSTANCE],
+  },
+  "org PUT /api/v1/spaces/:id/mappings/:groupId": {
+    why: "real-only",
+    coveredBy: [INSTANCE],
+  },
+  "org DELETE /api/v1/directory/org-mappings/:groupId": {
+    why: "real-only",
+    coveredBy: [INSTANCE],
+  },
+  "org PUT /api/v1/directory/restricted-groups/:groupId": {
+    why: "real-only",
+    coveredBy: [INSTANCE],
+  },
+  "org DELETE /api/v1/directory/restricted-groups/:groupId": {
+    why: "real-only",
+    coveredBy: [INSTANCE],
   },
   "space patch {} (personal)": { why: "nobody", coveredBy: BY_PERSONAL },
   "space delete (personal)": { why: "nobody", coveredBy: BY_PERSONAL },
@@ -434,7 +538,7 @@ export function derive(): Derived {
   }
   for (const s of ORG_SURFACES) {
     const name = `org ${s.route}`;
-    if (orgExpected(CALLER, s.rule) === "deny") {
+    if (orgExpected(CALLER, s.rule, s.route) === "deny") {
       drop(name, [s.route], "owner-only");
       continue;
     }
@@ -458,7 +562,39 @@ export function derive(): Derived {
       unsupported.push(name);
       continue;
     }
-    // Writes are probed by CSRF (a cookie); reads take either credential.
+    // #839: a real write on a throwaway the install makes for itself
+    // (crossWrite) wherever a refusal-mode request would touch the world or
+    // none exists; a realOnly route with no throwaway is a recorded drop.
+    const fresh = ORG_FRESH[s.route];
+    if (s.realOnly === true && !fresh) {
+      drop(name, [s.route], "real-only");
+      // No success leg, but the tenant boundary is still checked: A's session
+      // at B, which needs no throwaway and never runs as an allowed caller.
+      cases.push({
+        name: `${name} [session]`,
+        routes: [s.route],
+        variant: "session",
+        denyOnly: true,
+        run: (cred, t, w, fetch) => s.probe(t.app, cred, w.org, { fetch }),
+      });
+      continue;
+    }
+    if (fresh) {
+      cases.push({
+        name: `${name} [session]`,
+        routes: [s.route],
+        variant: "session",
+        ...(fresh === "grant" ? { timeout: GRANT_CASE_TIMEOUT_MS } : {}),
+        write: {
+          fresh,
+          run: (cred, t, x, fetch) =>
+            s.probe(t.app, cred, orgThrowaway(x), { fetch }),
+        },
+      });
+      continue;
+    }
+    // Writes send the session cookie with X-OA-Request (#839) and stop past
+    // the access rules; reads take either credential.
     for (const v of variants(!s.route.startsWith("GET ")))
       cases.push({
         name: `${name} [${v}]`,
@@ -505,6 +641,36 @@ export function derive(): Derived {
   return { cases, dropped, unsupported };
 }
 
+/** The realOnly instance writes a throwaway serves (the rest are dropped). */
+export const ORG_FRESH: Readonly<Record<string, Fresh>> = {
+  "DELETE /api/v1/tokens/:id": "token",
+  "PATCH /api/v1/oauth-clients/:grantId": "grant",
+  "DELETE /api/v1/oauth-clients/:grantId": "grant",
+  "DELETE /api/v1/spaces/:id/members/:userId": "space",
+  // The throwaway's member is a viewer already: a no-op 200.
+  "PUT /api/v1/spaces/:id/members/:userId": "space",
+  // The empty throwaway itself goes (204), never the world space.
+  "DELETE /api/v1/spaces/:id": "space",
+};
+
+/** An instance probe's real-mode target on a throwaway. */
+const orgThrowaway = (x: Throwaway): OrgTarget => ({
+  spaceId: x.space?.cloneId ?? "",
+  memberId: "",
+  departedId: "",
+  real: {
+    ...(x.tokenId ? { tokenId: x.tokenId } : {}),
+    ...(x.grantId ? { grantId: x.grantId } : {}),
+    ...(x.space?.cloneId
+      ? {
+          spaceId: x.space.cloneId,
+          spaceEditorId: x.space.editorId,
+          memberId: x.space.memberId,
+        }
+      : {}),
+  },
+});
+
 function need<T>(v: T | undefined): T {
   if (v === undefined)
     throw new Error("the throwaway lacks what this probe needs");
@@ -524,8 +690,11 @@ export const probeCases = (): ProbeCase[] => derive().cases;
 export function coverageGaps(d: Derived = derive()): string[] {
   const { cases, dropped, unsupported = [] } = d;
   const recorded = dropped.filter((x) => DROPPED[x.name]?.why === x.why);
-  // Only a case covers a route; a drop never does.
-  const reached = new Set(cases.flatMap((c) => c.routes));
+  // Only a full case covers a route: a drop never does, and a deny-only case
+  // has no success leg, so its route stays a recorded drop.
+  const reached = new Set(
+    cases.filter((c) => !c.denyOnly).flatMap((c) => c.routes),
+  );
   const droppedRoutes = new Set(recorded.flatMap((x) => x.routes));
   const derivedNames = new Set(dropped.map((x) => x.name));
   const scoped = Object.keys(ROUTE_POLICY).filter(
@@ -929,6 +1098,43 @@ export async function throwaway(
   LIVE.set(side.t, set);
   set.add(x);
   const { t, pat } = side;
+  if (fresh === "token") {
+    // PATs can't mint PATs: the admin's session, as the app sends it.
+    const r = await fetch(
+      `${t.app}/api/v1/tokens`,
+      withCred(side.cookie, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-oa-request": "1" },
+        body: JSON.stringify({
+          label: `test-redline-throwaway ${side.marker.slice(-8)}`,
+        }),
+      }),
+    );
+    const body = await readBody(r);
+    if (r.status !== 201)
+      throw new HttpError(`${t.name} throwaway token`, r, body);
+    x.tokenId = (parseJson(r, body, "token") as { id: string }).id;
+    return x;
+  }
+  if (fresh === "grant") {
+    // The consent flow, as the admin (the code names the grant). Listed
+    // before and after, so a code without one still finds the grant and
+    // dispose always revokes it.
+    const before = new Set(await grantIds(side));
+    const code = await authorizeCode(
+      t,
+      side.cookie,
+      await registerClient(t),
+      pkce(),
+      mcpResource(t),
+    );
+    const grantId =
+      code.split(":")[1] ||
+      (await grantIds(side)).find((id) => !before.has(id));
+    if (!grantId) throw new Error(`${t.name}: the consent made no grant`);
+    x.grantId = grantId;
+    return x;
+  }
   if (fresh === "space") {
     // A real (unprefixed) space: deleted after the case (it holds no artifact).
     const space = (await api(t, pat, "POST", "/api/v1/spaces", {
@@ -992,7 +1198,100 @@ export function snapshot(side: Side, x: Throwaway): Promise<string> {
     const S = `/api/v1/spaces/${x.space.cloneId}`;
     return reads(side, [S, `${S}/members`, `${S}/mappings`]);
   }
+  // Only the throwaway's own entry: the reading PAT's lastUsedAt moves.
+  if (x.tokenId) return entry(side, "/api/v1/tokens", x.tokenId);
+  if (x.grantId) return grantSnapshot(side, x.grantId);
   throw new Error(`${side.t.name}: an empty throwaway has no snapshot`);
+}
+
+/**
+ * The longest this suite waits for GET R.oauthClients to list a new grant:
+ * on a kv-mode install it is a KV list, eventually consistent. Bounded as
+ * the KV-mode OAuth cases are (untilKvSettled).
+ */
+export const GRANT_LIST_MS = KV_CACHE_TTL_MS + KV_SETTLE_SLACK_MS;
+/** settle, then the snapshots before and after: three bounded list waits. */
+export const GRANT_CASE_TIMEOUT_MS = kvCaseTimeout(3);
+
+/**
+ * Whether the grant exists, by a direct read (no listing, so no list lag):
+ * PATCH with a body the schema refuses. ownGrant reads the grant's own KV key
+ * first, so 400 is "there" and 404 "gone", and nothing is written. There is
+ * no GET of one grant.
+ */
+async function grantExists(side: Side, id: string): Promise<boolean> {
+  const path = `/api/v1/oauth-clients/${id}`;
+  const r = await fetch(
+    `${side.t.app}${path}`,
+    withCred(side.pat, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ probe: 1 }),
+    }),
+  );
+  const body = await readBody(r);
+  if (r.status !== 400 && r.status !== 404)
+    throw new HttpError(
+      `${side.t.name} snapshot PATCH ${redact(path)}`,
+      r,
+      body,
+    );
+  return r.status === 400;
+}
+
+/**
+ * A grant as its owner sees it. Revoked: the direct read says so at once,
+ * whatever the list still shows. Else its list entry: the label is only
+ * there (a D1 row, joined to the KV list).
+ */
+async function grantSnapshot(side: Side, id: string): Promise<string> {
+  if (!(await grantExists(side, id))) return "gone";
+  return entry(side, "/api/v1/oauth-clients", id, { ms: GRANT_LIST_MS });
+}
+
+/** The admin's grant ids (GET R.oauthClients). */
+async function grantIds(side: Side): Promise<string[]> {
+  const v = (await api(side.t, side.pat, "GET", "/api/v1/oauth-clients")) as
+    | { grantId: string }[]
+    | { items?: { grantId: string }[] };
+  return (Array.isArray(v) ? v : (v.items ?? [])).map((g) => g.grantId);
+}
+
+/**
+ * The list entry with `id` (the "grantId" or "id" field), as text. It must be
+ * there: with `ms`, polled for that long (a list that lags; a timeout is
+ * infra); without, on the first read.
+ */
+async function entry(
+  side: Side,
+  path: string,
+  id: string,
+  o: { ms?: number; pollMs?: number } = {},
+): Promise<string> {
+  const pollMs = o.pollMs ?? SETTLE_POLL_MS;
+  const end = Date.now() + (o.ms ?? 0);
+  for (;;) {
+    const r = await fetch(`${side.t.app}${path}`, withCred(side.pat));
+    const body = await readBody(r);
+    if (r.status !== 200)
+      throw new HttpError(`${side.t.name} snapshot GET ${path}`, r, body);
+    const v = parseJson(r, body, path) as unknown;
+    const list = (
+      Array.isArray(v) ? v : ((v as { items?: unknown[] }).items ?? [])
+    ) as {
+      id?: string;
+      grantId?: string;
+    }[];
+    const e = list.find((x) => x.id === id || x.grantId === id);
+    if (e) return JSON.stringify(e);
+    if (o.ms === undefined)
+      throw new Error(`${side.t.name} snapshot: ${path} lacks the throwaway`);
+    if (Date.now() + pollMs > end)
+      throw new InfraError(
+        `${side.t.name}: ${path} did not list the throwaway within ${Math.round(o.ms / 1000)}s`,
+      );
+    await new Promise((res) => setTimeout(res, pollMs));
+  }
 }
 
 /** How long `settle` waits for indexing, and how often it looks. */
@@ -1012,13 +1311,28 @@ export const SETTLE_POLL_MS = 500;
  * - versions[].textIndexed: the index alarm flips it to true about
  *   LIMITS.indexDebounceMs after a publish. Waits until every entry is true,
  *   polling every `pollMs`, at most `ms`; a timeout is an InfraError.
- * Spaces have neither, so a space throwaway settles at once.
+ * - a grant: GET R.oauthClients is a KV list that lags the consent (kv mode),
+ *   so this waits for it to list the grant, at most GRANT_LIST_MS, and checks
+ *   the direct read finds it. A timeout is an InfraError. Without this the
+ *   snapshot could not tell a lagging list from a missing grant.
+ * Spaces and tokens have none of these, so they settle at once.
  */
 export async function settle(
   side: Side,
   x: Throwaway,
   o: { ms?: number; pollMs?: number } = {},
 ): Promise<void> {
+  if (x.grantId) {
+    await entry(side, "/api/v1/oauth-clients", x.grantId, {
+      ms: o.ms ?? GRANT_LIST_MS,
+      ...(o.pollMs === undefined ? {} : { pollMs: o.pollMs }),
+    });
+    if (!(await grantExists(side, x.grantId)))
+      throw new InfraError(
+        `${side.t.name}: the list shows the throwaway grant, the direct read doesn't`,
+      );
+    return;
+  }
   if (!x.artifactId) return;
   const { t, pat } = side;
   const A = `/api/v1/artifacts/${x.artifactId}`;
@@ -1083,8 +1397,15 @@ export async function dispose(side: Side, x: Throwaway): Promise<void> {
       await cleanup(side, A);
     });
   }
-  if (x.space?.cloneId)
-    await cleanup(side, `/api/v1/spaces/${x.space.cloneId}`);
+  // Gone already when B's own probe ran (the success leg revokes the
+  // token or grant, or deletes the space): a 404 then.
+  const revoke = async (path: string) =>
+    cleanup(side, path).catch((e) => {
+      if (!(e instanceof HttpError && e.status === 404)) throw e;
+    });
+  if (x.space?.cloneId) await revoke(`/api/v1/spaces/${x.space.cloneId}`);
+  if (x.tokenId) await revoke(`/api/v1/tokens/${x.tokenId}`);
+  if (x.grantId) await revoke(`/api/v1/oauth-clients/${x.grantId}`);
 }
 
 /** Disposes every throwaway still live on `side`'s install; throws the first failure after trying all. */

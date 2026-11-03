@@ -27,10 +27,15 @@ import {
 } from "../api/queries";
 import { useMe } from "../auth/useMe";
 import { Modal } from "../layout/Modal";
+import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
 import { AgentRow } from "./AgentRow";
-import { AgentSetupCard } from "./AgentSetupCard";
+import {
+  AgentSetupCard,
+  useCanSetUpAgent,
+  useRevokeOnly,
+} from "./AgentSetupCard";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { saveTokenCommand, snippets, tokenFile } from "./snippets";
 import {
@@ -199,18 +204,51 @@ function Confirm({
   );
 }
 
+/**
+ * After a revoke: the last row of a revoke-only caller takes the page away, so
+ * nothing would show it worked. Failures toast in the mutation.
+ */
+function useConfirmLastRevoke() {
+  const qc = useQueryClient();
+  const revokeOnly = useRevokeOnly();
+  const none = (key: readonly unknown[]) =>
+    qc.getQueryData<unknown[]>(key)?.length === 0;
+  return (revoked: Promise<unknown>) =>
+    void revoked.then(
+      () => {
+        if (revokeOnly && none(qk.tokens) && none(qk.oauthClients))
+          toast({ title: "Revoked." });
+      },
+      () => {},
+    );
+}
+
+/** The one line under each card's title for a revoke-only caller. */
+const AGENTS_LINE = "You can't connect new agents. You can revoke these.";
+const TOKENS_LINE = "You can't create new tokens. You can revoke these.";
+const CardLine = ({ children }: { children: string }) => (
+  <p className={`m-0 ${muted}`}>{children}</p>
+);
+
 function OAuthClients() {
   const q = useOAuthClients();
   const revoke = useRevokeOAuthClient();
-  const state = useMe();
+  const confirmLast = useConfirmLastRevoke();
   // Capped (guest, restricted): renaming answers 404, so no label controls.
-  const canLabel = state.status === "authed" && state.me.auth?.cap == null;
+  const revokeOnly = useRevokeOnly();
   const [target, setTarget] = useState<{
     grantId: string;
     clientName: string;
   } | null>(null);
+  if (revokeOnly && !q.isError && !q.data?.length) return null;
   return (
-    <SettingsCard id="oa-oauth-h" title="Connected agents">
+    <SettingsCard
+      id="oa-oauth-h"
+      title="Connected agents"
+      subtitle={
+        revokeOnly ? AGENTS_LINE : "Agents you approved can publish as you."
+      }
+    >
       {q.isError ? (
         <p role="alert" className={errorText}>
           Couldn't load connected agents.
@@ -229,7 +267,7 @@ function OAuthClients() {
             <AgentRow
               key={c.grantId}
               c={c}
-              canLabel={canLabel}
+              canLabel={!revokeOnly}
               onRevoke={() => setTarget(c)}
             />
           ))}
@@ -240,7 +278,7 @@ function OAuthClients() {
           title={`Revoke "${target.clientName}"?`}
           action="Revoke"
           onClose={() => setTarget(null)}
-          onConfirm={() => revoke.mutate(target.grantId)}
+          onConfirm={() => confirmLast(revoke.mutateAsync(target.grantId))}
         />
       )}
     </SettingsCard>
@@ -355,25 +393,31 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
 function Tokens() {
   const q = useTokens();
   const revoke = useRevokeToken();
+  const confirmLast = useConfirmLastRevoke();
   const [creating, setCreating] = useState(false);
   const [target, setTarget] = useState<{ id: string; label: string } | null>(
     null,
   );
+  const revokeOnly = useRevokeOnly();
+  if (revokeOnly && !q.isError && !q.data?.length) return null;
   return (
     <SettingsCard
       id="oa-pat-h"
       title="Personal access tokens"
       action={
-        <Button
-          variant="outline"
-          size="sm"
-          className="text-[length:var(--oa-text-sm)]"
-          onClick={() => setCreating(true)}
-        >
-          Create token
-        </Button>
+        !revokeOnly && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-[length:var(--oa-text-sm)]"
+            onClick={() => setCreating(true)}
+          >
+            Create token
+          </Button>
+        )
       }
     >
+      {revokeOnly && <CardLine>{TOKENS_LINE}</CardLine>}
       {q.isError ? (
         <p role="alert" className={errorText}>
           Couldn't load tokens.
@@ -411,7 +455,7 @@ function Tokens() {
           title={`Revoke "${target.label}"?`}
           action="Revoke"
           onClose={() => setTarget(null)}
-          onConfirm={() => revoke.mutate(target.id)}
+          onConfirm={() => confirmLast(revoke.mutateAsync(target.id))}
         />
       )}
     </SettingsCard>
@@ -422,10 +466,11 @@ export function Agents() {
   useDocumentTitle("Agents");
   const state = useMe();
   const mcpUrl = state.status === "authed" ? state.me.instance.mcpUrl : null;
+  const canConnect = useCanSetUpAgent();
   return (
     <div className={STACK}>
       <AgentSetupCard />
-      {mcpUrl && (
+      {canConnect && mcpUrl && (
         <SettingsCard id="oa-mcp-h" title="MCP server">
           <div className="flex min-w-0 items-center gap-[var(--oa-space-2)]">
             <Input

@@ -43,7 +43,11 @@ describe("wrangler.jsonc", () => {
         ALERT_FROM: `{{ALERT_FROM_${env.toUpperCase()}}}`,
         SIGNUP_DAILY_CAP: `{{SIGNUP_DAILY_CAP_${env.toUpperCase()}}}`,
         SIGNUPS_ENABLED: `{{SIGNUPS_ENABLED_${env.toUpperCase()}}}`,
+        // #955: prod stays empty until a green staging rollout.
+        FLEET_CANARY: env === "staging" ? "i33m6mbc3zuz" : "",
       });
+      // The fleet target is this version's tag (provapi/fleet.ts).
+      expect(e.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
       const names = platformNames(env);
       const provisioner = names.provisioner;
       // BrokerGate's bindings: this env's two brokers, never the other env's;

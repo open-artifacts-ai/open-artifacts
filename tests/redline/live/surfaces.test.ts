@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  crossDenied,
   crossProbe,
   crossWrite,
   prepareSide,
   type Side,
 } from "../src/refused.ts";
+import { retryCase } from "../src/retry.ts";
 import {
   carries,
   citationGaps,
@@ -76,33 +78,47 @@ describe("surface probes (cross-install)", () => {
   });
 
   for (const c of probeCases())
-    it(c.name, async () => {
-      const pair = {
-        a: T.a,
-        b: T.b,
-        credA: probeCred(A, c.variant),
-        credB: probeCred(B, c.variant),
-        carries,
-      };
-      if (c.write) {
-        const { fresh, run } = c.write;
-        await crossWrite(
-          (cred, t, x: Throwaway, f) => run(cred, t, x, viaTarget(t, f)),
-          {
-            ...pair,
-            fresh: (t) => throwaway(side(t), world(t), fresh),
-            settle: (t, x) => settle(side(t), x),
-            snapshot: (t, x) => snapshot(side(t), x),
-            dispose: (t, x) => dispose(side(t), x),
-          },
+    it(
+      c.name,
+      async () => {
+        const pair = {
+          a: T.a,
+          b: T.b,
+          credA: probeCred(A, c.variant),
+          credB: probeCred(B, c.variant),
+          carries,
+        };
+        if (c.write) {
+          const { fresh, run } = c.write;
+          await crossWrite(
+            (cred, t, x: Throwaway, f) => run(cred, t, x, viaTarget(t, f)),
+            {
+              ...pair,
+              fresh: (t) => throwaway(side(t), world(t), fresh),
+              settle: (t, x) => settle(side(t), x),
+              snapshot: (t, x) => snapshot(side(t), x),
+              dispose: (t, x) => dispose(side(t), x),
+            },
+          );
+          return;
+        }
+        const { run } = c;
+        if (!run) throw new Error("a case needs run or write");
+        if (c.denyOnly) {
+          await crossDenied(
+            (cred, t, f) => run(cred, t, world(t), viaTarget(t, f)),
+            pair,
+          );
+          return;
+        }
+        // Read-only, so a second try is safe. Deny-only and writes get one.
+        await retryCase(() =>
+          crossProbe(
+            (cred, t, f) => run(cred, t, world(t), viaTarget(t, f)),
+            pair,
+          ),
         );
-        return;
-      }
-      const { run } = c;
-      if (!run) throw new Error("a case needs run or write");
-      await crossProbe(
-        (cred, t, f) => run(cred, t, world(t), viaTarget(t, f)),
-        pair,
-      );
-    });
+      },
+      c.timeout,
+    );
 });

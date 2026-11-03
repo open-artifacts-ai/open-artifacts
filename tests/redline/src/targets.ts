@@ -177,6 +177,17 @@ export function secretsOf(t: Target): Secrets {
   return s;
 }
 
+/**
+ * A target the run made itself (P50: an install the probe created), with its
+ * secrets held off the object as loadTargets does. No file and no guard.
+ */
+export function adoptTarget(t: Target, s: Secrets): Target {
+  if (s.hookKey.length < 32)
+    throw new Error(`${t.name} hook key: shorter than 32 chars`);
+  SECRETS.set(t, { ...s });
+  return t;
+}
+
 /** @internal */
 export function setPat(t: Target, pat: string): void {
   secretsOf(t).pat = pat;

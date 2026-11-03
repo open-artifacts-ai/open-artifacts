@@ -22,7 +22,7 @@ Claude Code, Cursor, and OpenCode use OAuth, so their snippets are only the URL:
 ## Claude Code
 
 ```sh
-claude mcp add --transport http open-artifacts https://artifacts.example.com/mcp
+claude mcp add --transport http -s user open-artifacts https://artifacts.example.com/mcp
 ```
 
 Then run `/mcp` in Claude Code and sign in.

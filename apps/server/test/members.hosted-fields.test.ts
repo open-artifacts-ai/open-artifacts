@@ -158,16 +158,16 @@ describe("GET /members on a direct-sign-in install", () => {
 });
 
 describe("GET /members on an Access-only install", () => {
-  it("keeps today's shape: no identities, no restriction, status only when not active", async () => {
+  it("the same shape as every install: status, identities and restriction on every row (parity 1, A8)", async () => {
     const o = await login(uniq("hf-access-owner"), "owner");
     const r = await get(env as Env, R.members, o.cookie);
     expect(r.status).toBe(200);
     const ms = (await r.json()) as Record<string, unknown>[];
     expect(ms.length).toBeGreaterThan(0);
     for (const m of ms) {
-      expect(m).not.toHaveProperty("identities");
-      expect(m).not.toHaveProperty("restriction");
-      expect(m).not.toHaveProperty("status");
+      expect(m).toHaveProperty("identities");
+      expect(m).toHaveProperty("restriction");
+      expect(m.status).toBe("active");
     }
   });
 });

@@ -4,7 +4,7 @@ exports[`agentClients snapshots > admin snippets: oa-admin with get_world 1`] = 
 [
   {
     "agent": "Claude Code",
-    "code": "claude mcp add --transport http oa-admin https://api.open-artifacts.app/mcp",
+    "code": "claude mcp add --transport http -s user oa-admin https://api.open-artifacts.app/mcp",
     "language": "bash",
     "reload": "Start a new Claude Code session, or reconnect from \`/mcp\`.",
     "variant": "oauth",
@@ -71,7 +71,7 @@ url = "https://api.open-artifacts.app/mcp"",
   {
     "agent": "Claude Code",
     "code": "read -rs OA_TOKEN
-claude mcp add --transport http oa-admin https://api.open-artifacts.app/mcp --header "Authorization: Bearer $OA_TOKEN"
+claude mcp add --transport http -s user oa-admin https://api.open-artifacts.app/mcp --header "Authorization: Bearer $OA_TOKEN"
 unset OA_TOKEN",
     "hint": "Paste your token when prompted. It stays hidden as you type, and Claude Code saves it in its own config.",
     "language": "bash",
@@ -159,7 +159,7 @@ exports[`agentClients snapshots > default output is unchanged (dashboard form) 1
 [
   {
     "agent": "Claude Code",
-    "code": "claude mcp add --transport http open-artifacts https://oa.example.com/mcp",
+    "code": "claude mcp add --transport http -s user open-artifacts https://oa.example.com/mcp",
     "language": "bash",
     "reload": "Start a new Claude Code session, or reconnect from \`/mcp\`.",
     "variant": "oauth",
@@ -226,7 +226,7 @@ url = "https://oa.example.com/mcp"",
   {
     "agent": "Claude Code",
     "code": "read -rs OA_TOKEN
-claude mcp add --transport http open-artifacts https://oa.example.com/mcp --header "Authorization: Bearer $OA_TOKEN"
+claude mcp add --transport http -s user open-artifacts https://oa.example.com/mcp --header "Authorization: Bearer $OA_TOKEN"
 unset OA_TOKEN",
     "hint": "Paste your token when prompted. It stays hidden as you type, and Claude Code saves it in its own config.",
     "language": "bash",

@@ -70,13 +70,9 @@ export function instanceSignIn(env: Env, owner = false): InstanceSignIn {
   return out;
 }
 
-/** Me.instance.features: FEATURES plus guests_read_only when the guest cap is on (reported only). */
+/** Me.instance.features: FEATURES plus guests_read_only (reported only; on for every install since parity 2). */
 export function instanceFeatures(env: Env): FeatureFlag[] {
   const cfg = authConfig(env);
   const features = featuresOf(env);
   return cfg.guestsReadOnly ? [...features, "guests_read_only"] : [...features];
 }
-
-/** Hosted sign-in fields appear in Me only on hosted or direct-sign-in installs. */
-export const showsSignInFields = (env: Env): boolean =>
-  env.HOSTED === "1" || signInMode(authConfig(env)) === "direct";

@@ -50,10 +50,10 @@ export const MEMBERS_AGENT = "A member's agent";
 
 /**
  * `versions.agent_via` of a row whose private label was overwritten with
- * MEMBERS_AGENT because its publisher's user row was deleted (deleteMember).
- * created_by then names the instance owner, not the publisher, so nothing may
- * be derived from it. #829 removes that scrub, never this read path: rows
- * already scrubbed keep the marker.
+ * MEMBERS_AGENT because its publisher's user row was deleted, before removal
+ * became soft (#829). created_by there names the instance owner, not the
+ * publisher, so nothing may be derived from it. Nothing writes this marker any
+ * more, but those rows keep it forever, so this read path stays.
  */
 export const SCRUBBED_VIA = "r:";
 

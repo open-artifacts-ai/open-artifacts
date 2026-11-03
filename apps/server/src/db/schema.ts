@@ -76,6 +76,13 @@ export const users = sqliteTable(
      * Google identity.
      */
     googleRelink: integer("google_relink").notNull().default(0),
+    /**
+     * 1 while the row is removed because directory sync removed it (a
+     * directory_* reason in setUserStatus). Any other status change and a
+     * restore clear it. Restore refuses it (409 directory_managed) while
+     * Google sync is on: the next sync would remove them again.
+     */
+    removedBySync: integer("removed_by_sync").notNull().default(0),
   },
   () => [check("users_role_check", inList("role", RoleSchema.options))],
 );

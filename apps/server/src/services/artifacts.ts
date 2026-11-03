@@ -766,6 +766,23 @@ const agentShownSql = (caller: Caller) =>
     and (v.agent_via like 'g:%' or (v.created_by = ${caller.kind === "user" ? caller.user.id : null}
       and (v.agent_via is null or v.agent_via <> ${SCRUBBED_VIA}))))`;
 
+/**
+ * The `agentVia` filter (#589): artifacts with any version from this
+ * connection (`g:<grantId>` or `t:<tokenId>`), only while that grant or token
+ * is the caller's (agent_grants or tokens, by primary key). Anyone else's via
+ * matches nothing: an empty page, never 403 or 404, so ids can't be probed.
+ * The versions EXISTS is keyed by artifact_id (the versions primary key).
+ */
+export const agentViaSql = (caller: Caller, via: string) => {
+  const uid = caller.kind === "user" ? caller.user.id : null;
+  const id = via.slice(2);
+  const owns = via.startsWith("g:")
+    ? sql`exists (select 1 from agent_grants ag where ag.grant_id = ${id} and ag.user_id = ${uid})`
+    : sql`exists (select 1 from tokens tk where tk.id = ${id} and tk.user_id = ${uid})`;
+  return sql`(${owns} and exists (select 1 from versions vv
+    where vv.artifact_id = "artifacts"."id" and vv.agent_via = ${via}))`;
+};
+
 /** Anonymous callers never see member emails (not even as a name fallback). */
 export function redact(
   u: { id: string; email: string; name: string; displayName: string | null },
@@ -810,7 +827,8 @@ export async function getSummary(
   ]);
   const out = toSummary(env, r.artifact, owner, r.level);
   out.lastAgent = shownLastAgent(pub, caller);
-  if (!decorates(env, caller)) return out;
+  if (!decorates(env, caller))
+    return decorate(env, caller, out, r.level, null, null);
   // One PK read for the space (lists and search read it from their join).
   const [sp] = await getDb(env)
     .select(spaceCols(caller, true, sql`${spaces.id}`))
@@ -847,8 +865,9 @@ export const spaceCols = (
 });
 
 /**
- * Hosted M1: `space` and `can` go on artifact responses for signed-in
- * callers while spaces are on (getSummary, list, search; never anonymous).
+ * Hosted M1: `space` (and `can` with it) go on artifact responses for
+ * signed-in callers while spaces are on (getSummary, list, search; never
+ * anonymous). Without spaces, `decorate` still sets `can` (withCan).
  */
 export const decorates = (env: Env, caller: Caller): boolean =>
   caller.kind === "user" && featuresOf(env).includes("spaces");
@@ -884,6 +903,47 @@ export function withSpace<T extends ArtifactSummary>(
     dataWriters: out.dataWriters,
   });
   return out;
+}
+
+/**
+ * `can` for a signed-in caller on an install without spaces (parity 1:
+ * artifacts always carry the server's `can`): every artifact is personal
+ * there, and move and transfer (spaces routes, 404 without them) are false.
+ * No `space`.
+ */
+export function withCan<T extends ArtifactSummary>(
+  caller: Caller,
+  out: T,
+  level: AccessLevel,
+): T {
+  out.can = {
+    ...artifactCan(level, {
+      personal: true,
+      cap: capOfCaller(caller),
+      dataWriters: out.dataWriters,
+    }),
+    move: false,
+    transfer: false,
+  };
+  return out;
+}
+
+/**
+ * A signed-in caller's decoration: `space` and `can` with spaces on
+ * (withSpace), `can` alone without (withCan). Anonymous callers get neither.
+ */
+export function decorate<T extends ArtifactSummary>(
+  env: Env,
+  caller: Caller,
+  out: T,
+  level: AccessLevel,
+  spaceId: string | null,
+  sp: SpaceCols | null | undefined,
+): T {
+  if (caller.kind !== "user") return out;
+  return decorates(env, caller)
+    ? withSpace(caller, out, level, spaceId, sp)
+    : withCan(caller, out, level);
 }
 
 // --------------------------------------------------------------------- list
@@ -940,6 +1000,7 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
   if (q.visibility) conds.push(eq(artifacts.visibility, q.visibility));
   if (q.agent !== undefined)
     conds.push(eq(artifacts.lastAgentName, q.agent), agentShownSql(caller));
+  if (q.agentVia !== undefined) conds.push(agentViaSql(caller, q.agentVia));
   // owner "me" (any case) is the caller; anything else is an email.
   if (q.owner !== undefined && q.owner.trim().toLowerCase() === "me") {
     if (caller.kind !== "user") throw bad("Invalid owner email", "owner");
@@ -1012,7 +1073,6 @@ export async function list(
   // listFilterSql: a row it denies is dropped, never shown with a guessed
   // level. The cursor still follows the SQL page.
   const items: ArtifactSummary[] = [];
-  const dec = decorates(env, caller);
   for (const r of page) {
     const { level } = r;
     if (!level) continue;
@@ -1031,7 +1091,7 @@ export async function list(
       level,
     );
     out.lastAgent = shownLastAgent(r.lastPub, caller);
-    items.push(dec ? withSpace(caller, out, level, r.a.spaceId, r.space) : out);
+    items.push(decorate(env, caller, out, level, r.a.spaceId, r.space));
   }
   return {
     items,

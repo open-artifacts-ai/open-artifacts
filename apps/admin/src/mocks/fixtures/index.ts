@@ -114,7 +114,7 @@ export const auditEntries: AuditEntry[] = [
   fixtureAudit({
     id: "agg:1",
     source: "refusals",
-    action: "install.purge",
+    action: "signin.refused",
     outcome: "refused",
     code: "forbidden",
     count: 12,

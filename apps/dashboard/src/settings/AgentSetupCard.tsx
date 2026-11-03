@@ -1,5 +1,7 @@
+import type { Me } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useEffect, useId, useState } from "react";
+import { useOAuthClients, useTokens } from "../api/queries";
 import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
 import { muted, SettingsCard } from "./ui";
@@ -11,11 +13,37 @@ export const setupPrompt = () =>
   `Set up Open Artifacts for me: follow ${location.origin}/llms.txt
 Sign in through the browser. Never ask me to paste a token into this chat.`;
 
-/** Same rule as the MCP server card on Settings > Agents: whoever has an
-    MCP URL to connect with. */
+/** Whoever the server lets connect an agent (its canConnect): not a guest,
+    not capped. The role covers an older server, whose /me has no auth.
+    Consent answers 403 for anyone else, so agent prompts would only fail them. */
+export const canConnectAgents = (me: Me) =>
+  me.user.role !== "guest" && me.auth?.cap == null;
+
 export function useCanSetUpAgent() {
   const state = useMe();
-  return state.status === "authed" && Boolean(state.me.instance.mcpUrl);
+  return (
+    state.status === "authed" &&
+    Boolean(state.me.instance.mcpUrl) &&
+    canConnectAgents(state.me)
+  );
+}
+
+/** A caller the server won't connect: Agents only lets them revoke. */
+export function useRevokeOnly() {
+  const state = useMe();
+  return state.status === "authed" && !canConnectAgents(state.me);
+}
+
+/** Revoke-only with nothing to revoke: no Agents page. Guests never reach it. */
+export function useNoAgentsPage() {
+  const state = useMe();
+  const revokeOnly =
+    useRevokeOnly() &&
+    state.status === "authed" &&
+    state.me.user.role !== "guest";
+  const tokens = useTokens(revokeOnly);
+  const agents = useOAuthClients(revokeOnly);
+  return revokeOnly && tokens.data?.length === 0 && agents.data?.length === 0;
 }
 
 /** The card's body: one line, the prompt in a read-only field (wrapped,

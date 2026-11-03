@@ -13,7 +13,7 @@ import { authorize, callerOf, planOfMember } from "../auth/authz.js";
 import type { SignInProvider } from "../auth/config.js";
 import { requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
-import { shares } from "../db/schema.js";
+import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import { emailEnabled, sendEmail } from "../email/send.js";
 import { senderName, shareEmail } from "../email/templates.js";
@@ -24,9 +24,18 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
 import { getSettings } from "./members.js";
-import { shareReach } from "./reach.js";
+import { guestRecipients, shareReach } from "./reach.js";
 
 export const MAX_SHARES = 200;
+
+/**
+ * What a guest's share comes to, in words. Copy only: access is decided in
+ * src/auth. A stored editor gets edit back if they become a member.
+ */
+export const guestShareLine = (s: { role: ShareRole }): string =>
+  s.role === "viewer"
+    ? "They're a guest, so they can only view."
+    : "They're a guest, so they can only view for now.";
 
 const toShare = (r: {
   email: string;
@@ -52,12 +61,24 @@ export async function listShares(
 ): Promise<Share[]> {
   await ownerOnly(env, user, id);
   const rows = await getDb(env)
-    .select()
+    .select({
+      email: shares.email,
+      role: shares.role,
+      createdAt: shares.createdAt,
+      orgRole: users.role,
+    })
     .from(shares)
+    .leftJoin(users, eq(users.email, shares.email))
     .where(eq(shares.artifactId, id))
     .orderBy(asc(shares.createdAt), asc(shares.email))
     .limit(MAX_SHARES);
-  return rows.map(toShare);
+  const isGuest = guestRecipients(env);
+  return Promise.all(
+    rows.map(async (r) => ({
+      ...toShare(r),
+      ...((await isGuest(r.email, r.orgRole)) ? { guest: true } : {}),
+    })),
+  );
 }
 
 /**
@@ -185,8 +206,10 @@ export async function putShare(
   // Review item 37: whether they can sign in at all (an in-domain
   // non-member on an invite-only install can't); the share stands either way.
   const reach = await shareReach(env, email);
+  const guest = await guestRecipients(env)(email, reach.role);
   return {
     ...toShare(row),
+    ...(guest ? { guest: true } : {}),
     emailed:
       created && (await emailShare(env, user, artifact, email, s.role, reach)),
     ...(reach.recipient ? { recipient: reach.recipient } : {}),
@@ -211,6 +234,8 @@ async function emailShare(
       getSettings(env),
     ]);
     if (member) return false;
+    // No user row here: the level they'll have, as the share rows show it.
+    const viewOnly = await guestRecipients(env)(email, null);
     return await sendEmail(
       env,
       user.id,
@@ -224,7 +249,7 @@ async function emailShare(
           title: artifact.title,
           path: viewerPath(artifact.id),
           format: artifact.format as Format,
-          role,
+          role: viewOnly ? "viewer" : role,
           signIn: reach.methods,
           cantSignIn: reach.recipient?.reason,
         }),

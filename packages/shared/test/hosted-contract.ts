@@ -28,6 +28,8 @@ import {
   RestrictedGroupSchema,
   SearchHitSchema,
   SettingsSchema,
+  ShareResultSchema,
+  ShareSchema,
   SPACE_NAME_RESERVED_MESSAGE,
   SpaceCandidateSchema,
   SpaceForbiddenDetailsSchema,
@@ -928,6 +930,40 @@ export function hostedContract(d: ContractDriver): ContractCases {
     );
   });
 
+  describe("hosted contract: guests on share rows", () => {
+    t("R.shares marks who can only view; role stays as stored", async () => {
+      await d.fresh({ hosted: true });
+      const id = fixtures.artifacts.find((a) => a.title === "Landing page")
+        ?.id as string;
+      for (const [email, guest] of [
+        ["outside@elsewhere.test", true],
+        ["newhire@example.com", false],
+        ["bob@example.com", false],
+      ] as const) {
+        const r = await d.call("PUT", R.shares(id), {
+          email,
+          role: "editor",
+        });
+        expect(r.status).toBe(200);
+        expect(ShareResultSchema.parse(await r.json()).guest === true).toBe(
+          guest,
+        );
+      }
+      const rows = ShareSchema.strict()
+        .array()
+        .parse(await json(await d.call("GET", R.shares(id))));
+      const of = (e: string) => rows.find((r) => r.email === e);
+      expect(of("outside@elsewhere.test")).toMatchObject({
+        role: "editor",
+        guest: true,
+      });
+      for (const e of ["newhire@example.com", "bob@example.com"]) {
+        expect(of(e)?.role).toBe("editor");
+        expect(of(e)).not.toHaveProperty("guest");
+      }
+    });
+  });
+
   describe("hosted mocks: data writers", () => {
     t(
       "a viewer of an editors-only artifact gets can.dataWrite false",
@@ -1235,13 +1271,11 @@ export function hostedContract(d: ContractDriver): ContractCases {
     });
 
     t(
-      "guests_read_only is reported from sign-in config, never from FEATURES",
+      "guests_read_only is on for every install (parity 2), Access-only too",
       async () => {
-        await d.fresh({
-          hosted: { mode: "access", features: ["guests_read_only"] },
-        });
+        await d.fresh({ hosted: { mode: "access" } });
         const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
-        expect(me.instance.features).not.toContain("guests_read_only");
+        expect(me.instance.features).toContain("guests_read_only");
         await d.fresh({ hosted: true });
         const me2 = Strict.Me.parse(await json(await d.call("GET", R.me)));
         expect(me2.instance.features).toContain("guests_read_only");

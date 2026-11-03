@@ -345,6 +345,19 @@ export function levelSql(
     else ${rest} end)`;
 }
 
+/** The levels that may read an artifact's share list (GET R.shares). */
+const SHARE_LEVELS = (["owner", "manager", "editor", "viewer"] as const).filter(
+  (l) => can(l, "share", { cap: null, personal: true }),
+);
+
+/**
+ * Whether `user`'s roles let them read the share list, over levelSql's joins.
+ * Under no cap: a cap reads every level as viewer, and a restricted member
+ * still owns their personal artifacts (Me.notices.guestShares).
+ */
+export const readsSharesSql = (user: Member): SQL =>
+  inArray(levelSql({ kind: "user", user }), SHARE_LEVELS);
+
 /**
  * A viewer's first-thumbnail right (can "thumbnail.write" with
  * firstThumbnail): through a share, or team access on a team artifact.

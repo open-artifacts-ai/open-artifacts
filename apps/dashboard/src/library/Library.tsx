@@ -1,4 +1,4 @@
-import type { Format } from "@oa/shared";
+import { AgentViaSchema, type Format } from "@oa/shared";
 import {
   Button,
   Skeleton,
@@ -11,11 +11,15 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
-import { qk } from "../api/queries";
+import { qk, useOAuthClients, useTokens } from "../api/queries";
 import { useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
-import { AgentSetupBody, useCanSetUpAgent } from "../settings/AgentSetupCard";
+import {
+  AgentSetupBody,
+  canConnectAgents,
+  useCanSetUpAgent,
+} from "../settings/AgentSetupCard";
 import { copyText } from "../settings/ui";
 import { sharedSpaceName } from "../spaces/label";
 import { useUploadSpace } from "../spaces/SpacePicker";
@@ -65,6 +69,11 @@ const storeView = (v: View) => {
   } catch {}
 };
 
+/** Mine for callers the server won't connect: no agent wording. */
+const EMPTY_NO_AGENTS: [string, React.ReactNode] = [
+  "No artifacts yet",
+  "Artifacts shared with you show up in Shared with me.",
+];
 const EMPTY: Record<Scope, [string, React.ReactNode]> = {
   all: [
     "No artifacts yet",
@@ -90,6 +99,31 @@ const EMPTY: Record<Scope, [string, React.ReactNode]> = {
   ],
 };
 
+/**
+ * The name of the caller's own connection behind `agentVia` (#589), from the
+ * Settings › Agents queries: a grant's label, else its client name; a
+ * token's label. Only the owner loads these, so the label stays theirs.
+ * "" while the list loads; "This connection" once loaded and not found.
+ */
+function useConnectionName(via: string | undefined): string | undefined {
+  const grant = via?.startsWith("g:") ? via.slice(2) : undefined;
+  const token = via?.startsWith("t:") ? via.slice(2) : undefined;
+  const clients = useOAuthClients(grant !== undefined);
+  const tokens = useTokens(token !== undefined);
+  if (via === undefined) return undefined;
+  // No label while the list loads, so the chip never flashes the fallback.
+  const q = grant !== undefined ? clients : tokens;
+  if (q.isPending) return "";
+  const name =
+    grant !== undefined
+      ? (() => {
+          const c = clients.data?.find((x) => x.grantId === grant);
+          return c ? (c.label ?? c.clientName) : undefined;
+        })()
+      : tokens.data?.find((x) => x.id === token)?.label;
+  return name ?? "This connection";
+}
+
 export function Library({ scope }: { scope: Scope }) {
   const me = useMe();
   const { space } = useCurrentSpace();
@@ -113,9 +147,18 @@ export function Library({ scope }: { scope: Scope }) {
   const s = useSearch({ strict: false }) as {
     format?: Format;
     agent?: string;
+    agentVia?: string;
     space?: string;
     view?: View;
   };
+  // The root route passes unvalidated params through: only a well-formed via.
+  const agentVia = AgentViaSchema.safeParse(s.agentVia).success
+    ? s.agentVia
+    : undefined;
+  const viaName = useConnectionName(agentVia);
+  // The Agent select shows one choice, and the connection wins: an `agent` left
+  // in the URL would narrow the list with nothing on screen saying so.
+  const agent = agentVia ? undefined : s.agent;
   const view: View = s.view ?? storedView() ?? "grid";
   const go = (to: string, search: object) =>
     void navigate({ to, search } as never);
@@ -124,7 +167,8 @@ export function Library({ scope }: { scope: Scope }) {
   const q = useLibraryQuery({
     scope,
     format: s.format,
-    agent: s.agent,
+    agent,
+    agentVia,
     space: space?.id,
   });
   // A space-scoped 404: the caller's role in it is gone (or the space is), and
@@ -175,27 +219,30 @@ export function Library({ scope }: { scope: Scope }) {
   const canSetUpAgent = useCanSetUpAgent();
   const sentinel = useSentinel(q);
 
-  const filtered = Boolean(s.format || s.agent);
+  const filtered = Boolean(s.format || agent || agentVia);
   const canPublishHere =
     personal || myRole === "editor" || myRole === "manager";
   const uploadSpace = useUploadSpace(space?.id);
+  const noAgents = me.status === "authed" && !canConnectAgents(me.me);
   const [emptyTitle, emptyText] =
-    space && scope === "all"
-      ? personal
-        ? [
-            "Your personal space",
-            "Only you can see what's here until you share it or move it to a space.",
-          ]
-        : canPublishHere
+    scope === "mine" && !space && noAgents
+      ? EMPTY_NO_AGENTS
+      : space && scope === "all"
+        ? personal
           ? [
-              `Nothing in ${space.name} yet`,
-              `Ask any AI agent to publish here, for example "publish this to ${space.name}".`,
+              "Your personal space",
+              "Only you can see what's here until you share it or move it to a space.",
             ]
-          : [
-              `Nothing in ${space.name} yet`,
-              "You can view this space. What its editors publish shows up here.",
-            ]
-      : EMPTY[scope];
+          : canPublishHere
+            ? [
+                `Nothing in ${space.name} yet`,
+                `Ask any AI agent to publish here, for example "publish this to ${space.name}".`,
+              ]
+            : [
+                `Nothing in ${space.name} yet`,
+                "You can view this space. What its editors publish shows up here.",
+              ]
+        : EMPTY[scope];
   const emptyAction =
     scope === "mine" && !space ? (
       canSetUpAgent ? (
@@ -220,12 +267,15 @@ export function Library({ scope }: { scope: Scope }) {
     <>
       <Filters
         format={s.format}
-        agent={s.agent}
+        agent={agent}
         agents={agents}
+        via={agentVia === undefined ? undefined : { label: viaName ?? "" }}
         view={view}
         onFormat={(format) => set({ format })}
-        onAgent={(agent) => set({ agent })}
-        onClear={() => set({ format: undefined, agent: undefined })}
+        onAgent={(agent) => set({ agent, agentVia: undefined })}
+        onClear={() =>
+          set({ format: undefined, agent: undefined, agentVia: undefined })
+        }
         onView={(v) => {
           storeView(v);
           set({ view: v });

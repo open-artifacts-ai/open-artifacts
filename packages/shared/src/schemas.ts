@@ -9,6 +9,7 @@ import {
   InstanceSignInSchema,
   MeAuthSchema,
   MemberStatusSchema,
+  MeNoticesSchema,
   MySpaceSchema,
   RestrictionSchema,
   SignInProviderIdSchema,
@@ -80,10 +81,14 @@ export const CapabilitiesPatchSchema = z.strictObject({
 });
 export type CapabilitiesPatch = z.infer<typeof CapabilitiesPatchSchema>;
 
-/** `email` is null for anonymous viewers (no session, no Bearer) of public artifacts. */
+/**
+ * `email` is null for anonymous viewers (no session, no Bearer) of public
+ * artifacts. A stored value, never input: after a directory deletion it is
+ * `removed+<id>@invalid`, on authorship that outlives the address.
+ */
 export const UserRefSchema = z.object({
   id: z.string(),
-  email: z.string().email().nullable(),
+  email: z.string().nullable(),
   name: z.string().nullable(),
 });
 export type UserRef = z.infer<typeof UserRefSchema>;
@@ -289,6 +294,13 @@ export const VersionInfoSchema = z.object({
 export type VersionInfo = z.infer<typeof VersionInfoSchema>;
 
 /**
+ * A connection, as `versions.agent_via` records it: `g:<grantId>` (an OAuth
+ * grant) or `t:<tokenId>` (a personal access token). Both ids are 16
+ * characters today (the OAuth provider's [A-Za-z0-9_-], newId's base58).
+ */
+export const AgentViaSchema = z.string().regex(/^[gt]:[A-Za-z0-9_-]{1,64}$/);
+
+/**
  * GET R.artifacts. scope "mine" = the caller's personal space; "space" = one
  * space (needs spaceId, 400 without); "spaces" = every shared space the
  * caller has a role in. spaceId narrows any scope; another user's personal
@@ -311,6 +323,11 @@ export const ListQuerySchema = z
     cursor: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(100).default(25),
     includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
+    /**
+     * Artifacts with any version from this connection (AgentViaSchema). Only
+     * the caller's own grant or token matches; any other is an empty page.
+     */
+    agentVia: AgentViaSchema.optional(),
   })
   .refine((q) => q.scope !== "space" || q.spaceId !== undefined, {
     message: 'scope "space" requires spaceId',
@@ -355,8 +372,11 @@ export type SearchHit = z.infer<typeof SearchHitSchema>;
 
 export const ShareSchema = z.object({
   email: z.string().email(),
+  /** As stored: a guest's row keeps it, but they can only view (see `guest`). */
   role: ShareRoleSchema,
   createdAt: z.string(),
+  /** A guest, or an address that becomes one at first sign-in. Absent otherwise, and from older servers. */
+  guest: z.boolean().optional(),
 });
 export type Share = z.infer<typeof ShareSchema>;
 
@@ -404,7 +424,8 @@ export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
 
 export const MemberSchema = z.object({
   id: z.string(),
-  email: z.string().email(),
+  /** A stored value, never input: `removed+<id>@invalid` after a directory deletion. */
+  email: z.string(),
   name: z.string().nullable(),
   role: RoleSchema,
   lastSeenAt: z.string().nullable(),
@@ -414,6 +435,8 @@ export const MemberSchema = z.object({
   identities: z.array(IdentityProviderSchema).optional(),
   /** Hosted M1: the member's restriction (manual flag and/or restricted groups); null when unrestricted. */
   restriction: RestrictionSchema.nullable().optional(),
+  /** GET R.members: a guest with live artifacts in their personal space, for Transfer. Absent otherwise. */
+  personalArtifacts: z.boolean().optional(),
 });
 export type Member = z.infer<typeof MemberSchema>;
 
@@ -572,7 +595,7 @@ export const MeSchema = z.object({
     plan: z.enum(["free", "paid"]),
     /** Null for members and guests, and before the first good check. Optional: older servers omit it. */
     update: InstanceUpdateSchema.nullable().optional(),
-    /** Hosted M1 (all optional; older and self-hosted servers omit them). A hosted install (HOSTED=1). */
+    /** Hosted M1 (all optional; older servers omit them, and Access-only installs omit hosted, tier and signIn). A hosted install (HOSTED=1). */
     hosted: z.boolean().optional(),
     /** Hosted billing tier; null when self-hosted. */
     tier: TierSchema.nullable().optional(),
@@ -598,6 +621,8 @@ export const MeSchema = z.object({
   personalSpaceId: z.string().optional(),
   /** Hosted M1: shared spaces the caller has a role in, by name, at most 200 (then page R.spaces). */
   spaces: z.array(MySpaceSchema).optional(),
+  /** Parity 2: one-time notices, org owner only; absent when there are none. */
+  notices: MeNoticesSchema.optional(),
 });
 export type Me = z.infer<typeof MeSchema>;
 
@@ -1042,6 +1067,8 @@ export const SearchQuerySchema = z.strictObject({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(25),
   spaceId: z.string().optional(),
+  /** Narrows the hits to the caller's own connection (as the list's). */
+  agentVia: AgentViaSchema.optional(),
 });
 export type SearchQuery = z.infer<typeof SearchQuerySchema>;
 export type SearchQueryInput = z.input<typeof SearchQuerySchema>;

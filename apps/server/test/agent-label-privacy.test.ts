@@ -21,7 +21,13 @@ const tag = newId().slice(0, 6).toLowerCase();
 const LABEL = `label-9q2x private ${tag}`;
 const WORD = `zebrafy${tag}`;
 
-type U = { cookie: string; userId: string; email: string; pat: string };
+type U = {
+  cookie: string;
+  userId: string;
+  email: string;
+  pat: string;
+  patId: string;
+};
 let owner: U;
 let nameless: U;
 let other: U;
@@ -40,11 +46,11 @@ async function mk(
     await env.DB.prepare("update users set display_name = ? where id = ?")
       .bind(displayName, l.userId)
       .run();
-  const pat =
+  const { token: pat, id: patId } =
     role === "member"
-      ? (await createPat(env, l.userId, `${prefix} ${LABEL}`)).token
-      : "";
-  return { ...l, email, pat };
+      ? await createPat(env, l.userId, `${prefix} ${LABEL}`)
+      : { token: "", id: "" };
+  return { ...l, email, pat, patId };
 }
 
 const json = async (r: Response) => {
@@ -180,6 +186,86 @@ describe("a PAT publish: REST", () => {
       items: { id: string }[];
     };
     expect(theirs.items.map((i) => i.id)).not.toContain(pubId);
+  });
+
+  it("agentVia (#589) matches only the token's owner; no response to anyone else carries the label", async () => {
+    const via = `agentVia=${encodeURIComponent(`t:${owner.patId}`)}`;
+    const ids = (r: unknown) =>
+      (r as { items: { id: string }[] }).items.map((i) => i.id);
+    const mine = await json(
+      await api(app, `${R.artifacts}?${via}`, owner.cookie),
+    );
+    expect(ids(mine)).toEqual([pubId]);
+    const found = await json(
+      await api(
+        app,
+        `${R.search}?q=${encodeURIComponent(WORD)}&${via}`,
+        owner.cookie,
+      ),
+    );
+    expect(ids(found)).toEqual([pubId]);
+    // other and guest can see pubId, but not through the owner's token.
+    for (const u of [other, guest]) {
+      const r = {
+        list: await json(await api(app, `${R.artifacts}?${via}`, u.cookie)),
+        search: await json(
+          await api(
+            app,
+            `${R.search}?q=${encodeURIComponent(WORD)}&${via}`,
+            u.cookie,
+          ),
+        ),
+      };
+      expect(ids(r.list)).toEqual([]);
+      expect(ids(r.search)).toEqual([]);
+      expect(JSON.stringify(r)).not.toContain("9q2x");
+    }
+    const c = await connect(other.pat);
+    const results = [
+      await tool(c, "list_artifacts", { agentVia: `t:${owner.patId}` }),
+      await tool(c, "search_artifacts", {
+        q: WORD,
+        agentVia: `t:${owner.patId}`,
+      }),
+    ];
+    await c.close();
+    for (const r of results) {
+      expect(r.isError).toBeFalsy();
+      expect((r.structuredContent as { items: unknown[] }).items).toEqual([]);
+    }
+    expect(JSON.stringify(results)).not.toContain("9q2x");
+  });
+
+  it("agentVia over MCP (#589): the owner's own token narrows list and search", async () => {
+    const m = await getUser(env, owner.userId);
+    if (!m) throw new Error("no user");
+    // A second artifact, from no connection, that the filter must leave out.
+    const { id: plain } = await publish(
+      env,
+      m,
+      { title: "plain", format: "html", content: `<p>${WORD}</p>` } as never,
+      null,
+      undefined,
+      "create",
+    );
+    await runIndex(plain);
+    const agentVia = `t:${owner.patId}`;
+    const c = await connect(owner.pat);
+    const ids = (r: { structuredContent?: unknown }) =>
+      (r.structuredContent as { items: { id: string }[] }).items.map(
+        (i) => i.id,
+      );
+    const everything = await tool(c, "list_artifacts", { limit: 100 });
+    const found = await tool(c, "search_artifacts", { q: WORD });
+    const list = await tool(c, "list_artifacts", { agentVia });
+    const search = await tool(c, "search_artifacts", { q: WORD, agentVia });
+    await c.close();
+    expect(ids(everything)).toContain(plain);
+    expect(ids(found)).toContain(plain);
+    expect(ids(list)).toEqual([pubId]);
+    expect(ids(search)).toEqual([pubId]);
+    // The owner's own view: the label, unmasked.
+    expect(JSON.stringify(list)).toContain("9q2x");
   });
 
   it('an owner with no real name: "A member\'s agent", and no email in it', async () => {

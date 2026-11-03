@@ -46,6 +46,7 @@ import { SpaceSwitcher } from "../spaces/SpaceSwitcher";
 import { ATTENTION, AttentionDot } from "./AttentionDot";
 import { CpuBanner } from "./CpuBanner";
 import { DisplayNamePrompt } from "./DisplayNamePrompt";
+import { GuestSharesBanner } from "./GuestSharesBanner";
 import { QuotaBanner } from "./QuotaBanner";
 import { SyncBanner, SyncDot, syncDot } from "./SyncBanner";
 import { Toaster } from "./toast";
@@ -206,6 +207,10 @@ function Layout() {
                 className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
               />
             )}
+            <GuestSharesBanner
+              me={me}
+              className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
+            />
             <CpuBanner
               role={me?.user.role}
               plan={me?.instance.plan}
@@ -228,7 +233,7 @@ function MenuTrigger({ me }: { me: Me | null }) {
   const { isMobile } = useSidebar();
   const update = instanceUpdate(me);
   const sync = syncDot(me);
-  const departed = useDeparted(me).length > 0;
+  const departed = useDeparted(me).people.length > 0;
   const dot = isMobile && shouldNudge(update);
   // A sync tone wins; departed people alone get the accent.
   const settingsTone =
@@ -369,8 +374,8 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
   const { space } = useSearch({ strict: false }) as { space?: string };
   const inSpace = Boolean(space) && hasFeature(me, "spaces");
   const update = instanceUpdate(me);
-  // Departed people with artifacts to transfer (org admins, hosted).
-  const departed = useDeparted(me);
+  // Departed people with artifacts to transfer (org admins, every install).
+  const departed = useDeparted(me).people;
   const usageOff = hasFeature(me, "usage_off");
   const sync = syncDot(me);
   return (

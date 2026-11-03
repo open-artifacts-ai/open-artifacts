@@ -7,6 +7,7 @@ import {
   ID_TOKEN_CASES,
   ID_TOKEN_DESCRIBE,
   NEEDS_CAPTURE,
+  suiteSha,
 } from "../src/capture.ts";
 import {
   ACCEPTED_UNPROVEN,
@@ -29,6 +30,7 @@ import {
   type Report,
   redactReason,
 } from "../src/report.ts";
+import { bindingOf } from "../src/reporter.ts";
 
 const c = (name: string, level: Level, reason?: string): CaseResult => ({
   name,
@@ -385,6 +387,7 @@ describe("report", () => {
       "not-applicable": 1,
       "unproven-live": 1,
       infra: 0,
+      blocked: 0,
     });
     expect(r.nonPass.map((x) => x.name)).toEqual([
       "prodClean",
@@ -657,7 +660,7 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     expect(only?.name).toBe("infra: setup /__test/session spaces_blocked");
     expect(only?.level).toBe("infra");
     expect(only?.reason).toMatch(
-      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, body sha256:[0-9a-f]{16} \(\d+ bytes\)\); 3 case\(s\) in test\/fixtures\/gate\.fixture\.ts did not run$/,
+      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, body sha256:[0-9a-f]{16} \(\d+ bytes\), code not_found\); 3 case\(s\) in test\/fixtures\/gate\.fixture\.ts did not run$/,
     );
     // The manifest counts the blocked cases as run (no "did not run" fails).
     expect(only?.blocked).toEqual({
@@ -679,7 +682,7 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     const [only] = r.report.cases;
     expect(only?.name).toBe("infra: setup /__test/session spaces_blocked");
     expect(only?.reason).toMatch(
-      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, [^)]+\)\); infra: setup publish timed out after 60s on rl-b; 3 case\(s\) in test\/fixtures\/gate\.fixture\.ts did not run$/,
+      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, [^)]+\), code not_found\); infra: setup publish timed out after 60s on rl-b; 3 case\(s\) in test\/fixtures\/gate\.fixture\.ts did not run$/,
     );
   }, 60_000);
 
@@ -688,4 +691,19 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     expect(r.status).not.toBe(0);
     expect(r.report.counts.fail).toBe(1);
   }, 60_000);
+});
+
+describe("bindingOf: the suite's commit (#1137)", () => {
+  it("is the checkout's HEAD, never the workflow's GITHUB_SHA", async () => {
+    const head = suiteSha();
+    expect(head).toMatch(/^[0-9a-f]{40}$/);
+    const b = await bindingOf({
+      GITHUB_SHA: "f".repeat(40),
+      REDLINE_TARGETS: JSON.stringify({
+        a: { installId: "ia", app: "http://127.0.0.1:9" },
+        b: { installId: "ib", app: "http://127.0.0.1:9" },
+      }),
+    });
+    expect(b?.suiteSha).toBe(head);
+  });
 });

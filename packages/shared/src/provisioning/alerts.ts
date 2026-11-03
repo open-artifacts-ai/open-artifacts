@@ -8,7 +8,8 @@
  * Every query is read-only and returns rows of one shape (`AlertRow`): no
  * row means the condition does not hold. Times are epoch milliseconds; a
  * query that takes `now` binds it as `?1` (`alertParams`). `token_expiring` and `token_invalid` come from
- * `PROVISIONER.tokenStatus()`, not D1, so they have no query. The key list
+ * `PROVISIONER.tokenStatus()`, not D1, so they have no query, and the
+ * SCHEDULER_ALERT_KEYS have none either. The key list
  * is `ALERT_KEYS` (enum-values.ts).
  */
 
@@ -19,9 +20,21 @@ export const RPC_ALERT_KEYS = [
   "token_expiring",
   "token_invalid",
 ] as const satisfies readonly AlertKey[];
-export type SqlAlertKey = Exclude<AlertKey, (typeof RPC_ALERT_KEYS)[number]>;
+/**
+ * Keys only the scheduler can decide: they need the fleet target, its own
+ * release (#955). R27 shows them while open, with no rows.
+ */
+export const SCHEDULER_ALERT_KEYS = [
+  "fleet_halted",
+  "version_skew",
+] as const satisfies readonly AlertKey[];
+export type SqlAlertKey = Exclude<
+  AlertKey,
+  (typeof RPC_ALERT_KEYS)[number] | (typeof SCHEDULER_ALERT_KEYS)[number]
+>;
+const NOT_SQL: readonly string[] = [...RPC_ALERT_KEYS, ...SCHEDULER_ALERT_KEYS];
 export const SQL_ALERT_KEYS = ALERT_KEYS.filter(
-  (k): k is SqlAlertKey => !(RPC_ALERT_KEYS as readonly string[]).includes(k),
+  (k): k is SqlAlertKey => !NOT_SQL.includes(k),
 );
 
 /** Refused sign-ins over this window open `signin_refused_burst` (4.8). */
@@ -81,6 +94,8 @@ export interface AlertRow {
   code: string | null;
   message: string | null;
   since: number;
+  /** fleet_halted: the version the row is about. */
+  version?: string;
 }
 
 export interface AlertInput {

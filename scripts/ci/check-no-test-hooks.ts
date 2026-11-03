@@ -20,6 +20,7 @@ const HOOK_PATHS = [
   "/__test/audit",
   "/__test/code-caps/reset",
   "/__test/directory-groups",
+  "/__test/directory-held",
   "/__test/x",
 ];
 const METHODS = ["GET", "POST"];

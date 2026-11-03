@@ -16,10 +16,12 @@ import {
   appOrigin,
   errorJson,
   isD1QuotaError,
+  isStorageFailure,
 } from "../http/errors.js";
 import { logError } from "../log.js";
 import { toRuntimeApiError } from "../runtime/do.js";
 import { type AgentAttr, clientVersionOf } from "../services/agent-usage.js";
+import { spacesOn } from "../services/spaces.js";
 import { cpuNudge } from "../services/usage.js";
 import { VERSION } from "../version.gen.js";
 import { INSTRUCTIONS, RUNTIME_DOC_URI } from "./instructions.js";
@@ -74,6 +76,12 @@ export function errorResult(e: unknown): CallToolResult {
   }
   if (isD1QuotaError(e)) return text("quota_exceeded", QUOTA_MESSAGE);
   logError("mcp_tool_error", e);
+  // The same answer the API gives, so any AI agent knows to try again.
+  if (isStorageFailure(e))
+    return text(
+      "storage_unavailable",
+      "Temporarily unavailable. Try again shortly.",
+    );
   return text("internal", "Internal error");
 }
 
@@ -98,7 +106,12 @@ export async function guard(
 
 export function createServer(ctx: McpContext): McpServer {
   const { plan, docBytes } = dataLimits(ctx.env);
-  const instructions = INSTRUCTIONS(plan, skillUrl(ctx.env), docBytes);
+  const instructions = INSTRUCTIONS(
+    plan,
+    skillUrl(ctx.env),
+    docBytes,
+    spacesOn(ctx.env),
+  );
   const server = new McpServer(
     { name: "open-artifacts", version: VERSION },
     { instructions },

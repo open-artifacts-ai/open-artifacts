@@ -7,6 +7,7 @@ import { verifyPat } from "./auth/pat.js";
 import { withPlanScope } from "./billing/features.js";
 import { contentApp } from "./content/app.js";
 import { scheduled } from "./cron.js";
+import { withReadBudget, withRetries } from "./db/retry.js";
 import type { Env } from "./env.js";
 import { appHostOpts, withSecurityHeaders } from "./http/middleware.js";
 import { serveAppHost } from "./mcp/oauth.js";
@@ -83,15 +84,22 @@ async function mcpWithPat(
   );
 }
 
+// Every entry point reads D1 and KV through withRetries (db/retry.ts): one
+// wrapper per env, never per request, with one waiting budget per
+// invocation (withReadBudget).
 export default {
   fetch(req, env, ctx) {
+    const e = withRetries(env);
     // The platform's broker capabilities (ctx.props) for this invocation,
     // then (hosted) the billing plan, read once for every features check.
-    return withBrokerProps(ctx, () =>
-      withPlanScope(env, () => serve(req, env, ctx)),
+    return withReadBudget(() =>
+      withBrokerProps(ctx, () => withPlanScope(e, () => serve(req, e, ctx))),
     );
   },
-  scheduled,
+  scheduled(event, env, ctx) {
+    const e = withRetries(env);
+    return withReadBudget(() => scheduled(event, e, ctx));
+  },
 } satisfies ExportedHandler<Env>;
 
 async function serve(

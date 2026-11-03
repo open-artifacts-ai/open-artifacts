@@ -1,6 +1,6 @@
 // GET /me personalSpaceId and spaces (hosted M1 item 2): the shared spaces
 // where the caller has a role (rank >= 1), by name, at most LIST_SPACES_MAX.
-// Only where /me shows its hosted fields, and only with the spaces feature.
+// Only with the spaces feature; /me has one shape in every sign-in mode (parity 1).
 import { env } from "cloudflare:workers";
 import {
   LIST_SPACES_MAX,
@@ -12,7 +12,6 @@ import {
 } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { showsSignInFields } from "../src/auth/sign-in.js";
 import type { Env } from "../src/env.js";
 import { fetchAndWait, login } from "./helpers.js";
 
@@ -39,7 +38,7 @@ const FROZEN = {
  * (TIER_FEATURES), so there is no hosted install without them.
  */
 const OFF = { ...base, FEATURES: "" } as unknown as Env;
-/** Access-only self-host with spaces: /me keeps today's shape. */
+/** Access-only self-host with spaces: the same shape as hosted (parity 1, A7). */
 const ACCESS = { ...base, FEATURES: "spaces" } as unknown as Env;
 
 const call = (e: Env, path: string, cookie: string, method = "GET") =>
@@ -112,7 +111,6 @@ beforeAll(async () => {
 
 describe("GET /me spaces", () => {
   it("lists the shared spaces the caller has a role in, by name, with personalSpaceId", async () => {
-    expect(showsSignInFields(ON)).toBe(true);
     const me = await getMe(ON, member.cookie);
     expect(me.personalSpaceId).toBe(member.userId);
     // Alpha via allMembersRole; Mid and Zeta manual; Nobody (no role) and
@@ -187,10 +185,28 @@ describe("GET /me spaces", () => {
     expect(me).not.toHaveProperty("spaces");
   });
 
-  it("Access-only installs keep today's shape even with spaces on", async () => {
-    expect(showsSignInFields(ACCESS)).toBe(false);
+  it("Access-only installs get the same shape (parity 1, A7)", async () => {
     const me = await getMe(ACCESS, member.cookie);
-    expect(me).not.toHaveProperty("auth");
+    expect(me.auth).toMatchObject({ readOnly: false, cap: null });
+    expect(me.instance.hosted).toBe(false);
+    expect(me.instance.tier).toBeNull();
+    expect(me.instance.signIn?.mode).toBe("access");
+    expect(me.instance.features).toEqual(
+      expect.arrayContaining(["spaces", "guests_read_only"]),
+    );
+    expect(me.personalSpaceId).toBe(member.userId);
+    expect(mine(me)).toEqual([
+      ["Alpha", "viewer"],
+      ["Mid", "editor"],
+      ["Zeta", "manager"],
+    ]);
+  });
+
+  it("Access-only with spaces off sends no spaces data, in the same shape", async () => {
+    const me = await getMe({ ...ACCESS, FEATURES: "" } as Env, member.cookie);
+    expect(me.instance.features).toEqual(["guests_read_only"]);
+    expect(me.auth).toMatchObject({ readOnly: false, cap: null });
+    expect(me.instance.hosted).toBe(false);
     expect(me).not.toHaveProperty("personalSpaceId");
     expect(me).not.toHaveProperty("spaces");
   });
