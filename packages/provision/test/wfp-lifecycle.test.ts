@@ -5766,6 +5766,7 @@ describe("the binding id audit, stage 1 (#1137)", () => {
           problems: number;
           detail: string;
           shape: string;
+          bookmark: string;
         },
     );
   /** A Cloudflare client whose `call` misbehaves only during verify_clean. */
@@ -5800,7 +5801,7 @@ describe("the binding id audit, stage 1 (#1137)", () => {
     await s.p.updateVars(inst.id, {});
     expect(lines(s, inst.id)).toHaveLength(4);
     for (const l of lines(s, inst.id)) {
-      expect(l).toMatchObject({ problems: 0, detail: "" });
+      expect(l).toMatchObject({ problems: 0, detail: "", bookmark: "ok" });
       expect(l.shape).toContain("d1:");
     }
   });
@@ -5817,6 +5818,16 @@ describe("the binding id audit, stage 1 (#1137)", () => {
     expect(last?.problems).toBe(1);
     expect(last?.detail).toBe("DB:d1_foreign");
     expect(JSON.stringify(last)).not.toContain("another-install");
+  });
+
+  it("a token that can't read a bookmark is reported, and refuses nothing", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.bookmarkFails = true;
+    expect(keep(await s.p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    const last = lines(s, inst.id).at(-1);
+    expect(last?.bookmark).not.toBe("ok");
+    expect(last?.problems).toBe(0);
   });
 
   it.each(["d1Get", "kvFind"] as const)(
