@@ -95,6 +95,12 @@ async function everyKind(pubId: string, teamId: string) {
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
+/** The close code, or "open" if the socket is still open after 2 s. */
+const closedIn = (s: Sock): Promise<number | "open"> =>
+  Promise.race([
+    s.closed,
+    new Promise<"open">((r) => setTimeout(() => r("open"), 2000)),
+  ]);
 const ctx = () =>
   ({
     waitUntil: () => {},
@@ -141,7 +147,7 @@ describe("oa:close-sockets (#1182)", () => {
     await runJob();
     const codes = Object.fromEntries(
       await Promise.all(
-        Object.entries(s).map(async ([k, v]) => [k, await v.closed] as const),
+        Object.entries(s).map(async ([k, v]) => [k, await closedIn(v)] as const),
       ),
     );
     expect(codes).toEqual({
@@ -165,7 +171,7 @@ describe("oa:close-sockets (#1182)", () => {
     const teamId = await pub("team");
     const before = await everyKind(pubId, teamId);
     await runJob();
-    for (const v of Object.values(before)) expect(await v.closed).toBe(4403);
+    for (const v of Object.values(before)) expect(await closedIn(v)).toBe(4403);
     // The reconnect: same users, same artifacts, right after the close.
     const after = await everyKind(pubId, teamId);
     await tick();
@@ -198,7 +204,7 @@ describe("oa:close-sockets (#1182)", () => {
     const pubId = await pub("public");
     const first = await viaRoute(R.events(pubId), null);
     await runJob();
-    expect(await first.closed).toBe(4403);
+    expect(await closedIn(first)).toBe(4403);
     const due = await runInDurableObject(index(), (p) => p.pendingSweep());
     expect(due).toEqual(expect.any(Number));
     // Reconnected inside the HOSTS propagation window.
@@ -213,7 +219,7 @@ describe("oa:close-sockets (#1182)", () => {
     try {
       // The pass queues the closes; they run on that alarm or the next.
       await alarmsUntil(() => !again.isOpen());
-      expect(await again.closed).toBe(4403);
+      expect(await closedIn(again)).toBe(4403);
       expect(
         await runInDurableObject(index(), (p) => p.pendingSweep()),
       ).toBeNull();
