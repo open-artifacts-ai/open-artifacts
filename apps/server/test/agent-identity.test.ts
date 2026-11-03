@@ -582,7 +582,7 @@ describe("PATCH labels", () => {
 });
 
 describe("member removal", () => {
-  it("removes the member's grant usage rows (they reference the user)", async () => {
+  it("soft removal (parity 1) keeps the grant usage row; the user row it references stays", async () => {
     const { member, card } = await grant(`card-rm-${tag}@x.com`);
     await api(app, R.oauthClient(card.grantId), member.cookie, {
       method: "PATCH",
@@ -591,7 +591,12 @@ describe("member removal", () => {
     expect(await usageRow(card.grantId)).not.toBeNull();
     await login(`card-rm-owner-${tag}@x.com`, "owner");
     await removeMember(env, member.userId, SYSTEM_ACTOR);
-    expect(await usageRow(card.grantId)).toBeNull();
+    expect(await usageRow(card.grantId)).not.toBeNull();
+    expect(
+      await env.DB.prepare("select status from users where id = ?")
+        .bind(member.userId)
+        .first(),
+    ).toEqual({ status: "removed" });
   });
 });
 

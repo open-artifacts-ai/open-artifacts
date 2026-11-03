@@ -293,6 +293,7 @@ describe("orgCan with a cap", () => {
     "directory.disconnect",
     "broker.check",
     "signin.problems",
+    "notices.manage",
     "audit.read",
     "members.manage",
     "members.manageAdmins",

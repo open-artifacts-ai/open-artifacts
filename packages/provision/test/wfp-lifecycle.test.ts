@@ -44,6 +44,7 @@ import {
   DIRECTORY_REVOKE_SKIPPED_NOTE,
   HOSTED_DOMAINS,
   hostsKvTitle,
+  LostLease,
   NAMESPACES,
   ProdLocked,
   ProvisionRefused,
@@ -215,6 +216,18 @@ const MIGRATION_FILES: ReleaseFile[] = SERVER_MIGRATIONS.map((name) => ({
 const NEW_MIGRATION: ReleaseFile = {
   name: "9001_t5_lifecycle.sql",
   bytes: enc("CREATE TABLE t5_probe (id INTEGER PRIMARY KEY);"),
+};
+const DROPPING: ReleaseFile = {
+  name: "9002_rebuild.sql",
+  bytes: enc("DROP TABLE t5_gone;"),
+};
+const MARKED: ReleaseFile = {
+  name: "9003_marked.sql",
+  bytes: enc("-- oa:non-additive\nCREATE TABLE t5_marked (id INTEGER);"),
+};
+const AFTER_MARKED: ReleaseFile = {
+  name: "9004_after.sql",
+  bytes: enc("CREATE TABLE t5_after (id INTEGER);"),
 };
 const ASSETS: ReleaseAsset[] = [
   { path: "index.html", bytes: enc("<!doctype html><p>hi</p>") },
@@ -406,6 +419,10 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
     "0.24.0": V24,
     "0.25.0": V25_TAG,
     "0.26.0": V26_BOUND,
+    // A rebuild with no marker: MIG-2 reads the SQL too.
+    "0.24.5": { migrations: [...MIGRATION_FILES, DROPPING] },
+    "0.24.6": { migrations: [...MIGRATION_FILES, MARKED] },
+    "0.24.7": { migrations: [...MIGRATION_FILES, MARKED, AFTER_MARKED] },
     "0.21.0": V21_NAME_CLASH,
     // 0.25.0's DO step on top of 0.24.0's migrations.
     "0.28.0": { ...V25_TAG, migrations: V24.migrations },
@@ -1030,6 +1047,55 @@ describe("rollback", () => {
       version: "0.24.0",
       state: "active",
     });
+  });
+});
+
+describe("EMAIL_CODE_DOMAIN across versions (#1088)", () => {
+  const DOMAIN_CODES = {
+    EMAIL_CODE_DOMAIN: "on",
+    AUTH_PROVIDERS: "email",
+    AUTH_DOMAINS: "finqore.test",
+  };
+  const onIn = (fake: Fake, from: number) => {
+    const b = metaOf(uploads(fake, from)[0]?.body as string).bindings as {
+      name: string;
+      text?: string;
+    }[];
+    return b.find((x) => x.name === "EMAIL_CODE_DOMAIN")?.text;
+  };
+
+  it("an upgrade renders it, and a rollback's upload still has it", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(input("finqore", { vars: DOMAIN_CODES })),
+    );
+    expect(onIn(s.fake, 0)).toBe("on");
+    let from = s.fake.log.length;
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    expect(onIn(s.fake, from)).toBe("on");
+    expect(JSON.parse(s.row(inst.id).vars as string)).toMatchObject({
+      EMAIL_CODE_DOMAIN: "on",
+    });
+    from = s.fake.log.length;
+    expect(keep(await s.p.rollback(inst.id))).toMatchObject({
+      rolledBack: true,
+      to: "0.23.0",
+    });
+    expect(onIn(s.fake, from)).toBe("on");
+    expect(JSON.parse(s.row(inst.id).vars as string)).toMatchObject({
+      EMAIL_CODE_DOMAIN: "on",
+    });
+  });
+
+  it("a refusal on upgrade carries the codes' own job code", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(input("finqore", { vars: DOMAIN_CODES })),
+    );
+    const e = await fails(
+      s.mk({ turnstile: undefined }).upgrade(inst.id, "0.24.0"),
+    );
+    expect((e as ProvisionRefused).code).toBe("turnstile_missing");
   });
 });
 
@@ -5698,5 +5764,288 @@ describe("W2 upgrade and rollback: verify_clean and onStep (5.4)", () => {
     );
     expect(r).toMatchObject({ ok: true });
     expect(s.fake.dispatched.slice(n).map((d) => d.path)).toContain("/healthz");
+  });
+});
+
+describe("the binding id audit, stage 1 (#1137)", () => {
+  const AUDIT = "verify_clean.binding_ids";
+  const lines = (s: S, id: string) =>
+    (
+      s
+        .db()
+        .prepare(
+          "SELECT detail FROM hosted_audit WHERE install_id = ? AND action = ? ORDER BY id",
+        )
+        .all(id, AUDIT) as { detail: string }[]
+    ).map(
+      (r) =>
+        JSON.parse(r.detail) as {
+          problems: number;
+          detail: string;
+          shape: string;
+          bookmark: string;
+        },
+    );
+  /** A provisioner whose Cloudflare client misbehaves during verify_clean. */
+  const faulty = (
+    s: S,
+    edit: (cf: ReturnType<S["cfWith"]>, during: () => boolean) => object,
+  ) => {
+    const cf = s.cfWith();
+    let step = "";
+    return s.mk({
+      cf: { ...cf, ...edit(cf, () => step === "verify_clean") },
+      onStep: (x: string) => {
+        step = x;
+      },
+      bindingIdAuditMs: 5,
+    });
+  };
+
+  it("writes a clean line at create, upgrade, rollback and a var change", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    expect(lines(s, inst.id)).toHaveLength(1);
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    expect(lines(s, inst.id)).toHaveLength(2);
+    await s.p.rollback(inst.id);
+    expect(lines(s, inst.id)).toHaveLength(3);
+    await s.p.updateVars(inst.id, {});
+    expect(lines(s, inst.id)).toHaveLength(4);
+    for (const l of lines(s, inst.id)) {
+      expect(l).toMatchObject({ problems: 0, detail: "", bookmark: "ok" });
+      expect(l.shape).toContain("d1:");
+    }
+  });
+
+  it("reports a foreign binding and refuses nothing", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.settingsEdit = (_s, bindings) =>
+      bindings.map((b) =>
+        b.type === "d1" ? { ...b, id: "another-install" } : b,
+      );
+    expect(keep(await s.p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    const last = lines(s, inst.id).at(-1);
+    expect(last?.problems).toBe(1);
+    expect(last?.detail).toBe("DB:d1_foreign");
+    expect(JSON.stringify(last)).not.toContain("another-install");
+  });
+
+  it("a token that can't read a bookmark is reported, and refuses nothing", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.bookmarkFails = true;
+    expect(keep(await s.p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    const last = lines(s, inst.id).at(-1);
+    expect(last?.bookmark).not.toBe("ok");
+    expect(last?.problems).toBe(0);
+  });
+
+  it("a bookmark call that throws is in the line, and the job carries on", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) =>
+        during() ? Promise.reject(new TypeError("down")) : cf.d1Bookmark(id),
+    }));
+    expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    expect(lines(s, inst.id).at(-1)?.bookmark).toBe("TypeError");
+  });
+
+  it("fails open when the settings read throws in a var change", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let reads = 0;
+    const p = s.mk({
+      cf: {
+        ...s.cfWith(),
+        scriptSettings: () => {
+          reads++;
+          return Promise.reject(new TypeError("down"));
+        },
+      },
+    });
+    await p.updateVars(inst.id, {});
+    expect(reads).toBe(1);
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("gives up on a bookmark call that never answers, and writes no line", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) =>
+        during() ? new Promise(() => {}) : cf.d1Bookmark(id),
+    }));
+    expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("gives up on an audit write that never answers", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const cf = s.cfWith();
+    const p = s.mk({
+      cf: {
+        ...cf,
+        d1Query: (id, sql, params) =>
+          (params ?? []).includes("verify_clean.binding_ids")
+            ? new Promise(() => {})
+            : cf.d1Query(id, sql, params),
+      },
+      bindingIdAuditMs: 5,
+    });
+    expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("a timed-out check that answers late writes nothing", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let late: ((v: string) => void) | undefined;
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) =>
+        during()
+          ? new Promise<string>((r) => {
+              late = r;
+            })
+          : cf.d1Bookmark(id),
+    }));
+    keep(await p.upgrade(inst.id, "0.24.0"));
+    late?.("x");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it.each(["secretList", "d1Bookmark"] as const)(
+    "a lease lost at %s, before or in the audit, still stops the job",
+    async (call) => {
+      const s = setup();
+      const inst = keep(await s.p.create(input()));
+      const p = faulty(s, (cf, during) => ({
+        [call]: (...a: [never, never]) => {
+          if (during())
+            s.db()
+              .prepare(
+                "UPDATE installs SET lease = 'someone-else' WHERE id = ?",
+              )
+              .run(inst.id);
+          return (cf[call] as (...x: [never, never]) => unknown)(...a);
+        },
+      }));
+      const e = await fails(p.upgrade(inst.id, "0.24.0"));
+      expect(e).toBeInstanceOf(LostLease);
+      expect(s.row(inst.id).lease).toBe("someone-else");
+    },
+  );
+});
+
+describe("MIG-2: a migration that can lose data is held (#1137)", () => {
+  const applied = (s: S, id: string) =>
+    s
+      .installDb(id)
+      .prepare("SELECT name FROM d1_migrations ORDER BY id")
+      .all()
+      .map((x) => (x as { name: string }).name);
+  const detail = (s: S, id: string, action: string) =>
+    (
+      s
+        .db()
+        .prepare(
+          "SELECT detail FROM hosted_audit WHERE install_id = ? AND action = ?",
+        )
+        .all(id, action) as { detail: string }[]
+    ).map((r) => JSON.parse(r.detail));
+
+  it.each([
+    ["0.24.5", "9002_rebuild.sql (drop_table)"],
+    ["0.24.6", "9003_marked.sql (marker)"],
+  ])("%s without the flag: held, nothing touched", async (to, files) => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const before = applied(s, inst.id);
+    const w = uploads(s.fake, 0).length;
+    const e = await fails(s.p.upgrade(inst.id, to));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.code).toBe("migration_held");
+    expect(applied(s, inst.id)).toEqual(before);
+    expect(uploads(s.fake, 0)).toHaveLength(w);
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.23.0",
+      lease: null,
+    });
+    expect(detail(s, inst.id, "upgrade.held")).toEqual([
+      { to, migrations: files },
+    ]);
+  });
+
+  it("with the flag: a restore point first, then the upgrade", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const r = keep(await s.p.upgrade(inst.id, "0.24.6", { nonAdditive: true }));
+    expect(r).toMatchObject({ ok: true, to: "0.24.6" });
+    expect(applied(s, inst.id)).toContain("9003_marked.sql");
+    expect(detail(s, inst.id, "upgrade.restore_point")).toEqual([
+      {
+        bookmark: `bookmark-${s.row(inst.id).d1_id}`,
+        migrations: "9003_marked.sql (marker)",
+      },
+    ]);
+    // The bookmark, then the audit row that keeps it, then the migration.
+    const at = (re: RegExp) =>
+      s.fake.raw.findIndex((x) => re.test(x.path + x.body));
+    const bookmark = at(/time_travel\/bookmark/);
+    const audit = at(/upgrade\.restore_point/);
+    const migrated = at(/INSERT INTO d1_migrations[\s\S]*9003_marked/);
+    expect(bookmark).toBeGreaterThanOrEqual(0);
+    expect(audit).toBeGreaterThan(bookmark);
+    expect(migrated).toBeGreaterThan(audit);
+  });
+
+  it("with the flag but no bookmark: refused, nothing touched", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const before = applied(s, inst.id);
+    s.fake.bookmarkFails = true;
+    const e = await fails(
+      s.p.upgrade(inst.id, "0.24.6", { nonAdditive: true }),
+    );
+    expect(e.code).toBe("restore_point_failed");
+    expect(applied(s, inst.id)).toEqual(before);
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    expect(detail(s, inst.id, "upgrade.held")).toEqual([
+      {
+        to: "0.24.6",
+        migrations: "9003_marked.sql (marker)",
+        reason: "no_restore_point",
+      },
+    ]);
+  });
+
+  it("an additive upgrade needs no flag and no restore point", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.bookmarkFails = true;
+    keep(await s.p.upgrade(inst.id, "0.24.0", { nonAdditive: true }));
+    expect(s.audit(inst.id)).not.toContain("upgrade.restore_point");
+  });
+
+  it("a held file this install already ran isn't pending", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.upgrade(inst.id, "0.24.6", { nonAdditive: true }));
+    const r = keep(await s.p.upgrade(inst.id, "0.24.7"));
+    expect(r.ok).toBe(true);
+    expect(s.audit(inst.id)).not.toContain("upgrade.held");
+  });
+
+  it("create runs a held file: there's no data to lose", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(input("finqore", { version: "0.24.6" })),
+    );
+    expect(applied(s, inst.id)).toContain("9003_marked.sql");
   });
 });

@@ -396,11 +396,11 @@ describe("anonymous access", () => {
       expect((await errOf(r)).code).toBe("data_editors_only");
     }
     // A signed-in viewer (public link, or a Viewer share) is refused alike.
-    for (const u of [viewer, guest]) {
-      const r = await put(id, u, "c", 1);
-      expect(r.status).toBe(403);
-      expect((await errOf(r)).code).toBe("data_editors_only");
-    }
+    const r = await put(id, viewer, "c", 1);
+    expect(r.status).toBe(403);
+    expect((await errOf(r)).code).toBe("data_editors_only");
+    // A guest is view-only on every install (parity 2): no data write at all.
+    expect((await put(id, guest, "c", 1)).status).toBe(404);
     const share = await api(app, R.shares(id), owner.cookie, {
       method: "PUT",
       body: { email: viewer.email, role: "viewer" },
@@ -425,9 +425,9 @@ describe("anonymous access", () => {
       const id = await pub({ visibility, dataWriters: "editors" });
       await api(app, R.shares(id), owner.cookie, {
         method: "PUT",
-        body: { email: guest.email, role: "viewer" },
+        body: { email: viewer.email, role: "viewer" },
       });
-      const r = await put(id, guest, "a", 1);
+      const r = await put(id, viewer, "a", 1);
       expect(r.status, visibility).toBe(403);
       expect((await errOf(r)).code, visibility).toBe("data_editors_only");
       if (visibility === "team") {
@@ -618,24 +618,30 @@ describe("data count", () => {
 describe("shares", () => {
   it("a viewer whose share was revoked → 404", async () => {
     const id = await pub();
-    expect((await put(id, guest, "a", 1)).status).toBe(404);
+    expect((await put(id, viewer, "a", 1)).status).toBe(404);
     const s = await api(app, R.shares(id), owner.cookie, {
       method: "PUT",
-      body: { email: guest.email, role: "viewer" },
+      body: { email: viewer.email, role: "viewer" },
     });
     expect(s.status).toBe(200);
-    expect((await put(id, guest, "a", 1)).status).toBe(200);
-    const del = await api(app, R.share(id, guest.email), owner.cookie, {
+    expect((await put(id, viewer, "a", 1)).status).toBe(200);
+    // A guest with the same share stays view-only (parity 2).
+    await api(app, R.shares(id), owner.cookie, {
+      method: "PUT",
+      body: { email: guest.email, role: "editor" },
+    });
+    expect((await put(id, guest, "a", 1)).status).toBe(404);
+    const del = await api(app, R.share(id, viewer.email), owner.cookie, {
       method: "DELETE",
     });
     expect(del.status).toBe(204);
-    const r = await put(id, guest, "a", 2);
+    const r = await put(id, viewer, "a", 2);
     expect(r.status).toBe(404);
     expect((await errOf(r)).code).toBe("not_found");
-    expect((await api(app, R.dataDoc(id, "c", "a"), guest.cookie)).status).toBe(
-      404,
-    );
-    expect((await api(app, R.storageKey(id, "k"), guest.cookie)).status).toBe(
+    expect(
+      (await api(app, R.dataDoc(id, "c", "a"), viewer.cookie)).status,
+    ).toBe(404);
+    expect((await api(app, R.storageKey(id, "k"), viewer.cookie)).status).toBe(
       404,
     );
   });

@@ -1,6 +1,6 @@
 import { QUOTA_MESSAGE } from "@oa/shared";
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env.js";
 import {
   ApiError,
@@ -29,6 +29,50 @@ describe("errors", () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({
       error: { code: "quota_exceeded", message: QUOTA_MESSAGE },
+    });
+  });
+
+  it.each([
+    "D1_ERROR: internal error; reference = abc123",
+    "KV GET failed: 500 Internal Server Error",
+    "KV PUT failed: 503 Service Unavailable",
+  ])("a storage failure is a retryable 503: %s", async (message) => {
+    const res = await appThrowing(new Error(message)).request("/x");
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("5");
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("storage_unavailable");
+    // The reference and the store's text stay in the log.
+    expect(JSON.stringify(body)).not.toMatch(/abc123|D1_ERROR|KV/);
+  });
+
+  it("finds it as a cause, and still logs it as unhandled", async () => {
+    const seen: string[] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...a) => void seen.push(a.join(" ")));
+    const e = new Error("list failed", {
+      cause: new Error("D1_ERROR: internal error; reference = abc123"),
+    });
+    const res = await appThrowing(e).request("/x");
+    spy.mockRestore();
+    expect(res.status).toBe(503);
+    expect(seen.join("\n")).toContain("unhandled_error");
+  });
+
+  it.each([
+    "D1_ERROR: no such table: artifacts",
+    "D1_ERROR: UNIQUE constraint failed: users.email",
+    "KV GET failed: 400 Bad Request",
+    "KV GET failed: 429 Too Many Requests",
+    "my KV GET failed: 500 in a handler",
+    "internal error",
+  ])("anything else stays a plain 500: %s", async (message) => {
+    const res = await appThrowing(new Error(message)).request("/x");
+    expect(res.status).toBe(500);
+    expect(res.headers.get("retry-after")).toBeNull();
+    expect(await res.json()).toEqual({
+      error: { code: "internal", message: "Internal error" },
     });
   });
 

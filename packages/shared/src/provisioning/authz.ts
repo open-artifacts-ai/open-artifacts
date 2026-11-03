@@ -365,11 +365,13 @@ export type CreateFieldRefusal = {
  * forbidden or server-set field first (403), then missing required fields
  * (400), then value rules (403). U's turnstile is left to its own step. O
  * is held to `rl-` slugs on staging and refused on prod here too, so this one
- * call enforces every 3.3 rule. Null when the body passes.
+ * call enforces every 3.3 rule. auth.domainCodes adds one value rule for every
+ * principal: code sign-in only admits auth.domains, so the owner's domain must
+ * be one (#1088). Null when the body passes.
  */
 export function checkCreateFields(
   body: Readonly<Partial<Record<CreateField, unknown>>> & {
-    auth?: { domains: readonly string[] };
+    auth?: { domains: readonly string[]; domainCodes?: boolean };
   },
   principal: CreatePrincipal,
   env: ProvisioningEnv,
@@ -407,6 +409,13 @@ export function checkCreateFields(
     )
       return { field: f, code: "forbidden" };
   }
+  if (
+    body.auth?.domainCodes === true &&
+    !body.auth.domains
+      .map((d) => d.toLowerCase())
+      .includes(emailDomain(body.ownerEmail as string) ?? "")
+  )
+    return { field: "ownerEmail", code: "forbidden" };
   return null;
 }
 
@@ -476,7 +485,8 @@ export const TRANSITIONS: Readonly<
     ...lease("failed"),
   },
   active: {
-    upgrade: t(["A", "T"], "active"),
+    // S: the scheduler's fleet rollout (#955); never from suspended.
+    upgrade: t(["A", "T", "S"], "active"),
     rollback: t(["A", "T"], "active"),
     suspend: t(["A", "T"], "suspended"),
     delete: t(["A", "T", "U"], "deleting"),

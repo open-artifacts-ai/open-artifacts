@@ -16,8 +16,6 @@ const READS: Record<string, string> = {
     "fail closed: a hosted install never reaches a broker over HTTPS (no binding, no props: broker_unavailable)",
   "auth/broker-transport.ts: brokerTransportKind":
     "fail closed: reports no transport for a hosted install without a binding or props",
-  "auth/sign-in.ts: showsSignInFields":
-    "reports: Me carries the hosted sign-in fields (shape only, no access)",
   "auth/config.ts: domainJoin":
     "fail closed: hosted installs admit by invite only, never by domain",
   "auth/config.ts: googleConfig":
@@ -26,12 +24,20 @@ const READS: Record<string, string> = {
     "fail closed: hosted code sign-in requires Turnstile",
   "routes/me.ts: toMe":
     "reports: Me.instance.hosted; tightens: Me.instance.update is null (no self-host upgrade nudge, review item 39)",
+  "services/notices.ts: meNotices":
+    "tightens: no guest share notice on hosted (guests there were always capped)",
   "runtime/routes.ts: gate":
     "tightens: RL_ANON still applies to anonymous data writes when RL_ANON_WRITES is bound (review item 38)",
   "auth/sign-in.ts: authProviders":
     "reports: AuthProviders.hosted (review item 36c)",
   "cron.ts: run":
+    "no access change: hosted's nightly call doesn't mark the day for RECOVERY_CRON, which a hosted install never gets (O1)",
+  "cron.ts: daily":
     "tightens: the daily cron skips the GitHub release check (review item 39)",
+  "auth/config.ts: build":
+    "reports: no bot-check problem on hosted, where codes already require Turnstile (A4)",
+  "services/spaces.ts: directoryMode":
+    "tightens: hosted takes the directory mode from FEATURES (its tier) only, never from the transport (P4)",
   "mcp/skill.ts: (module)":
     "type only: SkillEnv picks HOSTED for the upgrade line",
   "mcp/skill.ts: renderSkill":

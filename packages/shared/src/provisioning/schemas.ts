@@ -55,11 +55,31 @@ export const AuthSchema = z
   .object({
     providers: z.array(AuthProviderSchema).min(1).max(2),
     domains: z.array(DomainSchema).max(50),
+    /** Code sign-in for these domains: EMAIL_CODE_DOMAIN=on (#1088). */
+    domainCodes: z
+      .boolean()
+      .optional()
+      .describe(
+        "Code sign-in for anyone at auth.domains: sets EMAIL_CODE_DOMAIN=on. Needs email in auth.providers, no google, at least one domain, and ownerEmail's domain in auth.domains. Turnstile is checked; that the env can send email is not checked.",
+      ),
   })
   // checkGoogleBroker, until #865.
   .refine(
     (a) => !a.providers.includes("google") || a.domains.length > 0,
     "google needs at least one domain",
+  )
+  // The server's rule (auth/config.ts domainCodes), so a create can't ask for
+  // what it would silently leave off.
+  .refine(
+    (a) =>
+      a.domainCodes !== true ||
+      (a.providers.includes("email") &&
+        !a.providers.includes("google") &&
+        a.domains.length > 0),
+    {
+      path: ["domainCodes"],
+      message: "domainCodes needs email, no google and at least one domain",
+    },
   );
 export type Auth = z.infer<typeof AuthSchema>;
 
@@ -150,6 +170,12 @@ const requestId = RequestIdSchema;
 export const UpgradeSchema = z.object({
   requestId,
   version: VersionSchema.optional(),
+  nonAdditive: z
+    .literal(true)
+    .optional()
+    .describe(
+      "Cross a migration that can lose data. Takes a D1 restore point first, and refuses without one. Only when a job failed with migration_held and a person has decided.",
+    ),
 });
 export const RollbackSchema = z.object({ requestId });
 export const SuspendSchema = z.object({

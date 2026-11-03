@@ -1,3 +1,6 @@
+import { checkCreateFields, oidcMayCreate } from "@oa/shared/provisioning";
+import { STAGING_TEST_DOMAIN } from "@oa/shared/provisioning/constants";
+import { fixtureMe } from "@oa/shared/provisioning/fixtures";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse } from "msw";
 import { expect, it } from "vitest";
@@ -51,6 +54,149 @@ it("debounces the live check to the last slug typed", async () => {
   await screen.findByText(/ is available\./);
   const checks = seen.filter((s) => s.path.includes("/slugs/"));
   expect(checks.map((c) => c.path)).toEqual(["/api/v1/slugs/abc"]);
+});
+
+const NOTE =
+  "Test install. This session can only create installs with an rl- slug and an owner on the staging test domain, with test hooks on.";
+const signIn = (principal: "admin" | "test-admin") =>
+  use(
+    http.get("*/api/v1/me", () =>
+      HttpResponse.json(
+        fixtureMe({
+          principal,
+          role: "admin",
+          email: "a@example.com",
+          scopes: [],
+          env: "staging",
+          csrf: "c",
+          tokenId: null,
+          tokenKind: null,
+          tokenExpiresAt: null,
+        }),
+      ),
+    ),
+  );
+const createBody = () =>
+  writes().find((w) => w.path === "/api/v1/installs")?.body as Record<
+    string,
+    unknown
+  >;
+
+it("test admin: the note, no welcome email, and the form sends testHooks", async () => {
+  signIn("test-admin");
+  renderApp("/installs/new");
+  expect(await screen.findByText(NOTE)).toBeVisible();
+  expect(screen.queryByRole("checkbox", { name: /welcome email/ })).toBeNull();
+  // No control for it, either.
+  expect(screen.queryByText(/test hooks$/i)).toBeNull();
+  type("rl-fresh");
+  owner(`o@${STAGING_TEST_DOMAIN}`);
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(createBody()).toBeDefined());
+  const body = createBody();
+  expect(body.testHooks).toBe(true);
+  expect(body).not.toHaveProperty("sendWelcome");
+  // What the server's own R4 checks say about this exact body.
+  expect(
+    checkCreateFields(body, "oidc", "staging", STAGING_TEST_DOMAIN),
+  ).toBeNull();
+  expect(
+    oidcMayCreate(
+      body as { slug: string; testHooks: boolean; ownerEmail: string },
+      STAGING_TEST_DOMAIN,
+    ),
+  ).toBe(true);
+});
+
+it("test admin: slug and owner errors name the rule, and nothing is checked or sent", async () => {
+  signIn("test-admin");
+  renderApp("/installs/new");
+  await screen.findByText(NOTE);
+  type("customer");
+  const status = await screen.findByTestId("slug-status");
+  await waitFor(() =>
+    expect(status).toHaveTextContent(
+      "Use an rl- slug. This session can only create those.",
+    ),
+  );
+  expect(status).toHaveClass("oa-help-bad");
+  expect(screen.getByTestId("create-blocker")).toHaveTextContent(
+    "Use an rl- slug.",
+  );
+  expect(seen.some((s) => s.path.includes("/slugs/"))).toBe(false);
+
+  type("rl-fresh");
+  owner("o@example.com");
+  const rule = `Use an owner at ${STAGING_TEST_DOMAIN}, the staging test domain.`;
+  const help = await screen.findAllByText(rule);
+  expect(help[0]).toHaveClass("oa-help-bad");
+  expect(screen.getByLabelText("Owner email")).toHaveAccessibleDescription(
+    rule,
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId("create-blocker")).toHaveTextContent(rule),
+  );
+  expect(submit()).toBeDisabled();
+  expect(writes()).toEqual([]);
+});
+
+it("test admin: only releases with the redline bundle, defaulting to the newest", async () => {
+  const r = {
+    publishedAt: 1,
+    installable: true,
+  };
+  use(
+    http.get("*/api/v1/releases", () =>
+      HttpResponse.json({
+        items: [
+          { ...r, version: "2.0.0", variants: ["release"], latest: true },
+          {
+            ...r,
+            version: "1.9.0",
+            variants: ["release", "redline"],
+            latest: false,
+          },
+          { ...r, version: "1.8.0", variants: ["redline"], latest: false },
+        ],
+      }),
+    ),
+  );
+  signIn("test-admin");
+  renderApp("/installs/new");
+  await screen.findByText(NOTE);
+  await waitFor(() => expect(release()).toHaveTextContent("1.9.0"));
+  expect(
+    screen.getByText(
+      "Only redline releases are listed, because test hooks need them.",
+    ),
+  ).toBeVisible();
+  expect(
+    screen.queryByText("Only signed, published releases are listed."),
+  ).toBeNull();
+  fireEvent.click(release());
+  expect(
+    (await screen.findAllByRole("option")).map((o) => o.textContent),
+  ).toEqual(["1.9.0", "1.8.0"]);
+});
+
+it("a real admin gets no note and no rule, keeps the welcome email, and never sends testHooks", async () => {
+  signIn("admin");
+  renderApp("/installs/new");
+  await screen.findByLabelText("Slug");
+  await screen.findByRole("checkbox", { name: /welcome email/ });
+  expect(screen.queryByText(NOTE)).toBeNull();
+  expect(
+    screen.getByText("Only signed, published releases are listed."),
+  ).toBeVisible();
+  type("fresh-one");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(createBody()).toBeDefined());
+  expect(createBody()).not.toHaveProperty("testHooks");
 });
 
 const release = () => screen.getByRole("combobox", { name: "Release" });

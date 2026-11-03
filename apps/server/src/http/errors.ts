@@ -1,5 +1,6 @@
 import { type ErrorCode, QUOTA_MESSAGE, STATUS_FOR } from "@oa/shared";
 import { HTTPException } from "hono/http-exception";
+import { isStorageFailure } from "../db/storage-failure.js";
 import type { Env } from "../env.js";
 import { logError } from "../log.js";
 import {
@@ -33,6 +34,11 @@ export function isD1QuotaError(e: unknown): boolean {
   }
   return false;
 }
+
+export { isStorageFailure };
+
+/** Seconds a client should wait after a storage failure (Retry-After). */
+const STORAGE_RETRY_S = 5;
 
 export function errorJson(
   status: number,
@@ -72,6 +78,18 @@ export function toErrorResponse(e: unknown): Response {
       e.status,
       CODE_FOR_HTTP[e.status] ?? "internal",
       e.message,
+    );
+  }
+  if (isStorageFailure(e)) {
+    // Still an unhandled error to whoever reads the logs: only the answer
+    // changes, so a client can tell this from a bug and try again.
+    logError("unhandled_error", e);
+    return errorJson(
+      STATUS_FOR.storage_unavailable,
+      "storage_unavailable",
+      "Temporarily unavailable. Try again shortly.",
+      undefined,
+      { "retry-after": String(STORAGE_RETRY_S) },
     );
   }
   logError("unhandled_error", e);

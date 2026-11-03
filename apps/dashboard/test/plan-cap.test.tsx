@@ -15,6 +15,7 @@ import {
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
 import { canPublishTo } from "../src/auth/permissions";
+import { canConnectAgents } from "../src/settings/AgentSetupCard";
 import {
   arts,
   calls,
@@ -360,4 +361,100 @@ it("on free, a promotion refused with plan_limit shows by the member row, not as
     expect(patches.some((c) => c.path === R.member(BOB.id))).toBe(true),
   );
   expect(screen.queryByText("Couldn't change the role.")).toBeNull();
+});
+
+// Design's ruling A (#863): the plan cap is a billing state, not an access
+// limit. A locked admin sees every control, disabled; guests and restricted
+// members stay hidden, as main has them.
+
+const withCap = (
+  role: Me["user"]["role"],
+  cap: NonNullable<Me["auth"]>["cap"],
+): Me => ({
+  ...fixtures.me,
+  user: { ...fixtures.me.user, role },
+  auth: {
+    method: "google",
+    readOnly: cap != null,
+    cap,
+    expiresAt: null,
+  },
+});
+
+it("canConnectAgents: the plan cap connects; guests and restricted never do", () => {
+  expect(canConnectAgents(withCap("admin", null))).toBe(true);
+  expect(canConnectAgents(withCap("admin", "plan"))).toBe(true);
+  expect(canConnectAgents(withCap("member", "restricted"))).toBe(false);
+  expect(canConnectAgents(withCap("guest", "guest"))).toBe(false);
+  expect(canConnectAgents(withCap("guest", null))).toBe(false);
+  expect(canConnectAgents(withCap("guest", "plan"))).toBe(false);
+});
+
+const departedRegion = () => screen.findByRole("region", { name: "Departed" });
+
+it("departed: a locked admin's Transfer all to me and Transfer to someone else are disabled", async () => {
+  const posts = calls("POST");
+  lockedAdmin("/settings/members");
+  const d = await departedRegion();
+  const toMe = await within(d).findByRole("button", {
+    name: "Transfer all to me",
+  });
+  expect(toMe).toBeDisabled();
+  fireEvent.pointerDown(within(d).getByRole("button", { name: /^More for / }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  const other = await screen.findByRole("menuitem", {
+    name: "Transfer to someone else…",
+  });
+  expect(other).toHaveAttribute("aria-disabled", "true");
+  fireEvent.click(other);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(posts.some((c) => c.path.endsWith("/transfer"))).toBe(false);
+});
+
+it("departed: a restricted caller still gets no Transfer all to me", async () => {
+  mountHosted("/settings/members", OPTS, (m) => ({
+    ...m,
+    user: { ...m.user, role: "admin" },
+    auth: {
+      method: "google",
+      readOnly: true,
+      cap: "restricted",
+      expiresAt: null,
+    },
+  }));
+  const d = await departedRegion();
+  expect(
+    await within(d).findByRole("button", { name: /^Transfer .*'s artifacts$/ }),
+  ).toBeVisible();
+  expect(
+    within(d).queryByRole("button", { name: "Transfer all to me" }),
+  ).toBeNull();
+});
+
+it("agents: a restricted member still gets no Create token or MCP URL", async () => {
+  mountHosted("/settings/agents", OPTS, (m) => ({
+    ...m,
+    user: { ...m.user, role: "member" },
+    auth: {
+      method: "google",
+      readOnly: true,
+      cap: "restricted",
+      expiresAt: null,
+    },
+  }));
+  expect(
+    await screen.findByRole("region", { name: "Personal access tokens" }),
+  ).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Create token" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Copy URL" })).toBeNull();
+});
+
+it("agents: a locked admin sees Add label on a connected agent, disabled", async () => {
+  lockedAdmin("/settings/agents");
+  const label = await screen.findByRole("button", { name: "Add label" });
+  expect(label).toBeDisabled();
+  fireEvent.click(label);
+  expect(screen.queryByRole("textbox", { name: /label/i })).toBeNull();
 });

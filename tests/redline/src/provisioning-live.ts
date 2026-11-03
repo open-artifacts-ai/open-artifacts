@@ -89,6 +89,7 @@ export function liveRun(
     });
   const patFile = credFile(t, "a", "PAT");
   const io: ProvIo = {
+    mask: m,
     fetch: boundFetch(globalThis.fetch),
     now: Date.now,
     wait: (ms) => delay(ms),

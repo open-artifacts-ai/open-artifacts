@@ -19,6 +19,7 @@ import {
   type CreateSeed,
   ENV,
   event,
+  HELD,
   seedCreate,
   seedJob,
   stepRunner,
@@ -191,6 +192,52 @@ describe("upgrade and rollback (5.4)", () => {
     expect(again.job?.status).toBe("done");
     expect(again.log.map((l) => l.name)).toEqual(["load", "recheck", "done"]);
     expect(w.fake.writes().length).toBe(writes);
+  });
+
+  it("an upgrade with codes on and the widget gone: turnstile_missing, still on from, no lease kept (#1088)", async () => {
+    const s = await active({
+      slug: "nowidget",
+      version: V1,
+      vars: {
+        AUTH_PROVIDERS: "email",
+        AUTH_DOMAINS: "finqore.test",
+        EMAIL_CODE_DOMAIN: "on",
+        TIER: "team",
+      },
+    });
+    expect(plain(s.installId, "EMAIL_CODE_DOMAIN")).toBe("on");
+    w.fake.turnstile.clear();
+    const r = await manage("upgrade", s.installId, {
+      args: { from: V1, to: V2 },
+    });
+    expect(r.job).toMatchObject({
+      status: "failed",
+      error_code: "turnstile_missing",
+    });
+    expect(w.install(s.installId)).toMatchObject({
+      version: V1,
+      state: "active",
+      lease: null,
+    });
+    expect(logged()).toContain("Turnstile widgets are named");
+  });
+
+  it("a held migration: refused without the flag, crossed with it (MIG-2)", async () => {
+    w = await world({ held: true });
+    const s = await active({ slug: "held", version: V1 });
+    const no = await manage("upgrade", s.installId, {
+      args: { from: V1, to: HELD },
+    });
+    expect(no.job).toMatchObject({
+      status: "failed",
+      error_code: "migration_held",
+    });
+    expect(w.install(s.installId)).toMatchObject({ version: V1 });
+    const yes = await manage("upgrade", s.installId, {
+      args: { from: V1, to: HELD, nonAdditive: true },
+    });
+    expect(yes.job).toMatchObject({ status: "done", error_code: null });
+    expect(w.install(s.installId)).toMatchObject({ version: HELD });
   });
 
   it("upgrade refusals: from moved is invalid_state; to at or below from is downgrade_refused", async () => {

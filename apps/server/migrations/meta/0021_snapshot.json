@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "f211c8d4-32ac-402c-a2f1-010045a5a383",
+  "id": "46e59c4a-e20b-4001-8ddf-d9839577aa44",
   "prevId": "350b73b6-f5b2-4c28-b2f3-395835d5d8d9",
   "tables": {
     "agent_grants": {
@@ -431,54 +431,6 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
-    },
-    "creator_months": {
-      "name": "creator_months",
-      "columns": {
-        "month": {
-          "name": "month",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "source": {
-          "name": "source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "first_at": {
-          "name": "first_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "creator_months_month_user_id_pk": {
-          "columns": ["month", "user_id"],
-          "name": "creator_months_month_user_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "creator_months_source_check": {
-          "name": "creator_months_source_check",
-          "value": "\"creator_months\".\"source\" in ('version', 'data')"
-        }
-      }
     },
     "directory_groups": {
       "name": "directory_groups",
@@ -1581,6 +1533,14 @@
         },
         "google_relink": {
           "name": "google_relink",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "removed_by_sync": {
+          "name": "removed_by_sync",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,

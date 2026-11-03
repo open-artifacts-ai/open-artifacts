@@ -64,6 +64,10 @@ export const JOB_ERROR_RETRY = {
    * and the sweep's cleanup job runs (Manager C5).
    */
   run_dead: "terminal",
+  domain_codes_refused: "terminal",
+  migration_held: "terminal",
+  restore_point_failed: "terminal",
+  turnstile_missing: "terminal",
   cf_error: "retry",
   internal: "retry",
 } as const satisfies Record<string, "retry" | "terminal" | "terminal_alert">;

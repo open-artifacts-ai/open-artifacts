@@ -60,7 +60,7 @@ export function useHosted(): Hosted {
 /** What the caller may do with `a`. Every action gate reads this, never `access`. */
 export const useCan = (a: ArtifactSummary): ArtifactCan => {
   const { features, cap } = useHosted();
-  const can = canOf(a, features);
+  const can = canOf(a, features, cap);
   // A capped caller (guest, restricted, plan) writes nothing, whatever `can`
   // says: the server's answer is the same, this keeps the UI honest if stale.
   return cap == null

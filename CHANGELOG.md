@@ -1,5 +1,74 @@
 # Changelog
 
+## [0.101.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.100.0...v0.101.0) (2026-11-03)
+
+
+### Features
+
+* **dashboard:** Disconnect says what changes, option A ([#939](https://github.com/open-artifacts-ai/open-artifacts/issues/939)) ([#1173](https://github.com/open-artifacts-ai/open-artifacts/issues/1173)) ([2c0732b](https://github.com/open-artifacts-ai/open-artifacts/commit/2c0732b2cf01b642214f741d9289c05df4bab1c2))
+* **dashboard:** guest-share notices: per member, and the owner's summary with Transfer (parity 2) ([#833](https://github.com/open-artifacts-ai/open-artifacts/issues/833)) ([9c0d997](https://github.com/open-artifacts-ai/open-artifacts/commit/9c0d9975581d8b36854801c99216dc4f44171569))
+* **provision:** audit an install's real binding ids, stage 1 ([#1137](https://github.com/open-artifacts-ai/open-artifacts/issues/1137)) ([#1164](https://github.com/open-artifacts-ai/open-artifacts/issues/1164)) ([a5a1c63](https://github.com/open-artifacts-ai/open-artifacts/commit/a5a1c63c0dc08c6530c75f6445779264ea6f5435))
+* **provision:** hold a migration that can lose data, on the hosted path ([#1137](https://github.com/open-artifacts-ai/open-artifacts/issues/1137)) ([#1165](https://github.com/open-artifacts-ai/open-artifacts/issues/1165)) ([b6743d0](https://github.com/open-artifacts-ai/open-artifacts/commit/b6743d07b72fb1603de9c4bd1b17179aaaf6e031))
+
+
+### Bug Fixes
+
+* **dashboard:** a guest who already left isn't told they lose access ([#1169](https://github.com/open-artifacts-ai/open-artifacts/issues/1169)) ([#1172](https://github.com/open-artifacts-ai/open-artifacts/issues/1172)) ([47a6a4f](https://github.com/open-artifacts-ai/open-artifacts/commit/47a6a4fb4d7b95d3ad018edd6c7098bef24cc92d))
+* **server:** a Cloudflare storage failure answers a retryable 503, not internal ([#1159](https://github.com/open-artifacts-ai/open-artifacts/issues/1159)) ([15ed6fe](https://github.com/open-artifacts-ai/open-artifacts/commit/15ed6fe1cbfe11a5fd433a3cbffedd21574bba27))
+* **server:** a sync revive never takes the owner's address ([#1170](https://github.com/open-artifacts-ai/open-artifacts/issues/1170)) ([0292846](https://github.com/open-artifacts-ai/open-artifacts/commit/029284698dea64558bb9518bce61cd083b8b6fb2))
+* **server:** migration 0021's backfill uses a temporary index ([#1175](https://github.com/open-artifacts-ai/open-artifacts/issues/1175)) ([c1274ee](https://github.com/open-artifacts-ai/open-artifacts/commit/c1274ee8786a7b2885e040abb7b8f7ccc6c9191f))
+
+## [0.100.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.99.1...v0.100.0) (2026-11-03)
+
+
+### Features
+
+* **dashboard:** parity 1 UI: Departed everywhere, Transfer all to me, Restore ([#828](https://github.com/open-artifacts-ai/open-artifacts/issues/828)) ([a477a87](https://github.com/open-artifacts-ai/open-artifacts/commit/a477a871bc077fba07e7d5cf086483e73d795010))
+* **server:** soft member removal, Departed and Restore (parity 1) ([#829](https://github.com/open-artifacts-ai/open-artifacts/issues/829)) ([f1d76df](https://github.com/open-artifacts-ai/open-artifacts/commit/f1d76dfa73c19e49a4566df3b36c6930ade589ef))
+
+## [0.99.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.99.0...v0.99.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* **members:** a directory-deleted member's placeholder can't fail a whole list ([#1148](https://github.com/open-artifacts-ai/open-artifacts/issues/1148)) ([2c986c8](https://github.com/open-artifacts-ai/open-artifacts/commit/2c986c816340bc10241b7ea7cf490016f589cee0))
+
+## [0.99.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.98.0...v0.99.0) (2026-11-02)
+
+
+### Features
+
+* **admin:** Create works for the staging test admin as a locked test install ([#1108](https://github.com/open-artifacts-ai/open-artifacts/issues/1108)) ([#1138](https://github.com/open-artifacts-ai/open-artifacts/issues/1138)) ([8f2b3ae](https://github.com/open-artifacts-ai/open-artifacts/commit/8f2b3ae6297d5ddee20695d102457b24afec5a9a))
+* **provisioning:** create takes auth.domainCodes, for domain sign-in codes ([#1088](https://github.com/open-artifacts-ai/open-artifacts/issues/1088)) ([#1120](https://github.com/open-artifacts-ai/open-artifacts/issues/1120)) ([a1ce230](https://github.com/open-artifacts-ai/open-artifacts/commit/a1ce2300179e70ed4f61022e187071387f2dd8b2))
+* **server:** guests view-only everywhere (parity 2) ([#831](https://github.com/open-artifacts-ai/open-artifacts/issues/831)) ([f4432b1](https://github.com/open-artifacts-ai/open-artifacts/commit/f4432b1f06b3998a85731ee184e1f365c9323b9e))
+
+
+### Bug Fixes
+
+* **admin:** the Audit page shows what's really logged ([#1117](https://github.com/open-artifacts-ai/open-artifacts/issues/1117)) ([#1139](https://github.com/open-artifacts-ai/open-artifacts/issues/1139)) ([e3d2be9](https://github.com/open-artifacts-ai/open-artifacts/commit/e3d2be98a0b1b14ec21a011160c73cd3b152909c))
+
+## [0.98.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.97.0...v0.98.0) (2026-11-02)
+
+
+### Features
+
+* **instance:** "Sign-in needs attention." for sign-in problems (parity 3) ([#836](https://github.com/open-artifacts-ai/open-artifacts/issues/836)) ([f7b82bc](https://github.com/open-artifacts-ai/open-artifacts/commit/f7b82bcac0c87cc255c3559ae2932610af2c3102))
+* **scheduler:** every install follows the platform's release, canary first, with a soak and a durable halt ([#955](https://github.com/open-artifacts-ai/open-artifacts/issues/955)) ([#1110](https://github.com/open-artifacts-ai/open-artifacts/issues/1110)) ([5533fa4](https://github.com/open-artifacts-ai/open-artifacts/commit/5533fa4efadd7955a79a3194784e16fbb5a38710))
+* **server:** Turnstile warning, sync on connect, recovery cron (parity 3) ([#835](https://github.com/open-artifacts-ai/open-artifacts/issues/835)) ([00e3a04](https://github.com/open-artifacts-ai/open-artifacts/commit/00e3a04b7d644d89488678f0daad217a7be33256))
+
+
+### Bug Fixes
+
+* **server:** self-hosts log the app's lines but not every request ([#843](https://github.com/open-artifacts-ai/open-artifacts/issues/843)) ([19b0932](https://github.com/open-artifacts-ai/open-artifacts/commit/19b0932b6b790f8215b19d811ffa4fd1d397df26))
+* sweep fixes from the [#1052](https://github.com/open-artifacts-ai/open-artifacts/issues/1052) audit, and [#853](https://github.com/open-artifacts-ai/open-artifacts/issues/853)'s review follow-ups ([#1097](https://github.com/open-artifacts-ai/open-artifacts/issues/1097)) ([#1128](https://github.com/open-artifacts-ai/open-artifacts/issues/1128)) ([453d993](https://github.com/open-artifacts-ai/open-artifacts/commit/453d993adc851a4abc0b160b4422b7c55bdd07bd))
+
+## [0.97.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.96.0...v0.97.0) (2026-11-02)
+
+
+### Features
+
+* filter the library by the connection that published ([#589](https://github.com/open-artifacts-ai/open-artifacts/issues/589)) ([#853](https://github.com/open-artifacts-ai/open-artifacts/issues/853)) ([3518861](https://github.com/open-artifacts-ai/open-artifacts/commit/3518861ab4ac0df313c137a0e559904a854bc756))
+
 ## [0.96.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.95.0...v0.96.0) (2026-11-02)
 
 

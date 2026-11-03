@@ -94,6 +94,40 @@ async function startMocks() {
       }),
     );
   }
+  // ?mock=restricted and ?mock=restricted-rows (with ?hosted=1): see mockRestricted.ts.
+  const restricted = params.get("mock");
+  if (restricted === "restricted" || restricted === "restricted-rows") {
+    const { restrictedHandlers } = await import("./mockRestricted");
+    extra.push(
+      ...restrictedHandlers(
+        createHandlers({
+          hosted: parseHostedParam(params.get("hosted")) ?? {},
+        }),
+        restricted === "restricted-rows",
+      ),
+    );
+  }
+  // ?mock=plan-locked (with ?hosted=1): a plan-locked admin; see mockRestricted.ts.
+  if (restricted === "plan-locked") {
+    const { planLockedHandlers } = await import("./mockRestricted");
+    extra.push(
+      ...planLockedHandlers(
+        createHandlers({
+          hosted: parseHostedParam(params.get("hosted")) ?? {},
+        }),
+      ),
+    );
+  }
+  // ?mock=transfer-error (with ?hosted=1): a transfer's counts fail to load.
+  if (params.get("mock") === "transfer-error")
+    extra.push(
+      http.get("*/api/v1/members/:id/transfer", () =>
+        HttpResponse.json(
+          { error: { code: "internal", message: "Something went wrong" } },
+          { status: 503 },
+        ),
+      ),
+    );
   // ?mock=group-race (with ?hosted=1): changing a group's role on a space is refused as a race
   // (403 space_forbidden { target: "mapping" }).
   if (params.get("mock") === "group-race")

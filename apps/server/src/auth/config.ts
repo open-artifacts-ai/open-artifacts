@@ -25,7 +25,11 @@ export type AuthConfig = {
    * never a code request that silently sends nothing.
    */
   emailCodes: boolean;
-  /** Guests capped at viewer: whenever google or email is on. Not configurable. */
+  /**
+   * Guests capped at viewer on every install (parity 2): Access-only too,
+   * whatever share role they hold. Share rows are never rewritten. Not
+   * configurable.
+   */
   guestsReadOnly: boolean;
   features: FeatureFlag[];
   /** Null unless google is enabled and fully configured (fail closed). */
@@ -40,6 +44,10 @@ export type AuthConfig = {
    */
   problems: string[];
 };
+
+/** Me.instance.signIn.problems when email codes run with no Turnstile keys (self-host). */
+export const NO_BOT_CHECK =
+  "Sign-in codes are on without a bot check. Add a Turnstile key so bots can't use your email quota.";
 
 const PROVIDERS: readonly SignInProvider[] = ["access", "google", "email"];
 const CODE_EMAILS_DEFAULT = 200;
@@ -204,13 +212,24 @@ function build(env: Env): AuthConfig {
   const google = providers.has("google")
     ? googleConfig(env, domains, problems)
     : null;
-  const direct = providers.has("google") || providers.has("email");
   // Same rule as email/send.ts emailEnabled (not imported: it pulls in services).
   const canSend = !!env.EMAIL && !!env.EMAIL_FROM;
   if (providers.has("email") && !canSend)
     problems.push(
       "Email sign-in is on, but sending email isn't set up (EMAIL and EMAIL_FROM), so sign-in codes aren't offered. Set up email sending, or turn email sign-in off.",
     );
+
+  // A4: Turnstile stays optional on self-host, but codes without it let bots
+  // spend the install's email quota, so owners hear about it. Hosted already
+  // refuses codes without Turnstile (routes/codes.ts): no warning there.
+  if (
+    providers.has("email") &&
+    canSend &&
+    env.HOSTED !== "1" &&
+    !nonEmpty(env.TURNSTILE_SITE_KEY) &&
+    !nonEmpty(env.TURNSTILE_SECRET)
+  )
+    problems.push(NO_BOT_CHECK);
 
   return {
     providers,
@@ -224,7 +243,7 @@ function build(env: Env): AuthConfig {
       !providers.has("google") &&
       turnstile !== null &&
       domains.length > 0,
-    guestsReadOnly: direct,
+    guestsReadOnly: true,
     features: parseFeatures(env.FEATURES),
     google,
     turnstile,

@@ -21,6 +21,7 @@ import {
   SetupHookError,
 } from "../src/http.ts";
 import {
+  crossDenied,
   crossProbe,
   crossWrite,
   NotRefused,
@@ -36,9 +37,12 @@ import {
   coverageGaps,
   DROPPED,
   derive,
+  GRANT_CASE_TIMEOUT_MS,
+  GRANT_LIST_MS,
   groupSeed,
   HOOK_SPACE_ID,
   HOSTED_FEATURES,
+  ORG_FRESH,
   readRepoFile,
   viaTarget,
   worldGroups,
@@ -157,6 +161,8 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     const mutating = new Set([
       ...SURFACES.filter((s) => s.mutates).map((s) => `artifact ${s.name}`),
       ...ORG_SURFACES.filter((s) => s.mutates).map((s) => `org ${s.route}`),
+      // #839: realOnly instance writes run on a throwaway.
+      ...Object.keys(ORG_FRESH).map((r) => `org ${r}`),
       ...SPACE_SURFACES.filter((s) => s.mutates).map((s) => `space ${s.name}`),
     ]);
     expect(mutating.size).toBeGreaterThan(0);
@@ -170,6 +176,26 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         expect(c.write).toBeUndefined();
       }
     }
+  });
+
+  it("deny-only: the nine real-only drops, each still a recorded drop", () => {
+    const only = cases.filter((c) => c.denyOnly);
+    expect(only.map((c) => c.name).sort()).toEqual(
+      Object.entries(DROPPED)
+        .filter(([, d]) => d.why === "real-only")
+        .map(([n]) => `${n} [session]`)
+        .sort(),
+    );
+    // Six from #839, three hosted-only billing writes.
+    expect(only).toHaveLength(9);
+    for (const c of only) expect(c.run).toBeDefined();
+  });
+
+  it("grant cases get a timeout that outlasts their list waits", () => {
+    const grant = cases.filter((c) => c.write?.fresh === "grant");
+    expect(grant).toHaveLength(2);
+    for (const c of grant) expect(c.timeout).toBe(GRANT_CASE_TIMEOUT_MS);
+    expect(GRANT_CASE_TIMEOUT_MS).toBeGreaterThanOrEqual(3 * GRANT_LIST_MS);
   });
 
   it("are all in the required-case manifest, and no drop is", () => {
@@ -436,6 +462,62 @@ describe("crossProbe", () => {
   });
 });
 
+describe("crossDenied", () => {
+  it("passes on A's 401 at B, and never sends B's or A's own legs", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    const sent: [string, string][] = [];
+    const run: typeof me = async (cred, t, f) => {
+      sent.push([cred, t.name]);
+      return me(cred, t, f);
+    };
+    await expect(
+      crossDenied(run, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).resolves.toBeUndefined();
+    expect(sent).toEqual([["ta", T.b.name]]);
+  });
+
+  it("fails when B accepts A's credential", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "ta")),
+    );
+    await expect(
+      crossDenied(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(NotRefused);
+  });
+
+  it("fails on a 404: with no success leg, only a 401 shows B knows no such caller", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb", 404)),
+    );
+    await expect(
+      crossDenied(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(/answered 404, not 401/);
+  });
+});
+
 describe("crossWrite", () => {
   /** Throwaways per install: id -> value; `write` sets one when the token is the install's own. */
   async function world(leakB = false) {
@@ -662,7 +744,7 @@ describe("setup hooks", () => {
     expect(e).toBeInstanceOf(SetupHookError);
     const m = (e as Error).message;
     expect(m).toMatch(
-      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, body sha256:[0-9a-f]{16} \(\d+ bytes\)\)$/,
+      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, body sha256:[0-9a-f]{16} \(\d+ bytes\), code not_found\)$/,
     );
     expect(m).not.toContain("secret-body-text");
     // Outside setup, the same answer stays an HttpError (a verdict).

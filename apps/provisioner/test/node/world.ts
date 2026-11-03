@@ -36,6 +36,8 @@ export const ENV = "staging" as const;
 export const NOW = Date.parse("2026-10-31T12:00:00Z");
 export const V1 = "0.23.0";
 export const V2 = "0.24.0";
+/** A release with a migration that can lose data (MIG-2). */
+export const HELD = "0.24.1";
 export const EMAIL = "Owner+Tag@Finqore.TEST";
 export const TS = {
   sitekey: "0x4AAAAAAAstagingSITEKEY",
@@ -173,7 +175,7 @@ export type World = Awaited<ReturnType<typeof world>>;
 
 /** One fresh world per test. */
 export async function world(
-  o: { releases?: [string, "release" | "redline"][] } = {},
+  o: { held?: boolean; releases?: [string, "release" | "redline"][] } = {},
 ) {
   const clock = { t: NOW };
   const fake = new FakeCf({ now: NOW });
@@ -198,6 +200,24 @@ export async function world(
     [V2, "redline"],
   ])
     await seedRelease(r2, FIX.makeRelease(), v, variant);
+  if (o.held)
+    for (const variant of ["release", "redline"] as const)
+      await seedRelease(
+        r2,
+        FIX.makeRelease({
+          migrations: [
+            ...FIX.MIGRATION_FILES,
+            {
+              name: "9002_held.sql",
+              bytes: new TextEncoder().encode(
+                "-- oa:non-additive\nCREATE TABLE held_probe (id INTEGER);",
+              ),
+            },
+          ],
+        }),
+        HELD,
+        variant,
+      );
   const mail: Welcome[] = [];
   const manage = new FakeWorkflow();
   const dispatcher = fake.dispatcher(NAMESPACES[ENV]);

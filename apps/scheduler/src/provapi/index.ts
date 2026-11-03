@@ -4,6 +4,7 @@ import { ALERT_KEYS } from "@oa/shared/provisioning/enum-values";
 import { alertFor, factsOf, prodcleanReport, stepAlert } from "./alerts.js";
 import { alertConditions, signupDailyCap } from "./conditions.js";
 import type { ProvapiEnv } from "./env.js";
+import { type FleetOptions, fleetDue } from "./fleet.js";
 import { type HealthProbe, healthDue } from "./health.js";
 import { prune } from "./prune.js";
 import { purgeDue } from "./purge.js";
@@ -15,22 +16,31 @@ export { SCHEDULER_TICK_KEY } from "@oa/shared/provisioning/state";
 export type { ProvapiEnv } from "./env.js";
 export { writeTick } from "./run.js";
 
-/** Each duty's budget; together well inside the 2 minutes. */
+/**
+ * Each duty's budget: 115 s together, inside the 2 minutes. Ticks may still
+ * overlap (a slow D1 call); every duty's writes are guarded for that.
+ */
 export const DUTY_TIMEOUT_MS = {
   sweep: 20_000,
   signups: 5_000,
   purge: 10_000,
-  health: 40_000,
+  health: 30_000,
+  fleet: 15_000,
   alerts: 30_000,
   prune: 5_000,
 } as const satisfies Record<Duty["name"], number>;
 
 /** The scheduler opens and clears every alert here, and only here. */
 export async function alertsTick(env: ProvapiEnv, now: number): Promise<void> {
-  const c = await alertConditions(env.PLATFORM_DB, env.PROVISIONER, {
-    now,
-    signupDailyCap: signupDailyCap(env.SIGNUP_DAILY_CAP),
-  });
+  const c = await alertConditions(
+    env.PLATFORM_DB,
+    env.PROVISIONER,
+    { now, signupDailyCap: signupDailyCap(env.SIGNUP_DAILY_CAP) },
+    {
+      versionMetadata: env.CF_VERSION_METADATA,
+      fleetCanary: env.FLEET_CANARY,
+    },
+  );
   for (const k of ALERT_KEYS) {
     const cond = c[k];
     const report =
@@ -52,11 +62,13 @@ export interface ProvapiOptions extends SweepDeps {
   timeoutMs?: Partial<Record<Duty["name"], number>>;
   /** Tests only: the /healthz request (default publicRouteProbe). */
   healthProbe?: HealthProbe;
+  /** Tests only: the fleet duty's probe and its timeout. */
+  fleet?: FleetOptions;
 }
 
 /**
- * Sweep, signups, purge, health, alerts, prune: in that order, so the alerts read the
- * tick's own sweep, purge and health writes. Never throws.
+ * Sweep, signups, purge, health, fleet, alerts, prune: in that order, so the
+ * alerts read the tick's own sweep, purge, health and fleet writes. Never throws.
  */
 export function provapiTick(
   env: ProvapiEnv,
@@ -88,6 +100,11 @@ export function provapiTick(
           ...(o.healthProbe ? { probe: o.healthProbe } : {}),
         });
       },
+    },
+    {
+      name: "fleet",
+      timeoutMs: t.fleet,
+      run: () => fleetDue(env, now, o.fleet),
     },
     { name: "alerts", timeoutMs: t.alerts, run: () => alertsTick(env, now) },
     { name: "prune", timeoutMs: t.prune, run: () => prune(env, now) },

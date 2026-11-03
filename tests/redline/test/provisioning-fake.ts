@@ -1,10 +1,17 @@
+import { STAGING_TEST_DOMAIN } from "@oa/provision/names";
 import {
   ADMIN_TOOL_NAMES,
   JOB_STEPS,
   TOKEN_SCOPES,
 } from "@oa/shared/provisioning";
 import type { ProvConfig, ProvIo } from "../src/provisioning.ts";
+import { type Fake, fakeServer } from "./fake.ts";
 import { sealTo } from "./provisioner-seal.ts";
+import {
+  type SnoozeInstall,
+  type SnoozeOpts,
+  snoozeInstall,
+} from "./snooze-fake.ts";
 
 // An in-memory staging Provisioning API, inventory, broker and tenant hosts
 // that behave as design v7 says, as a fetch function. Each R15 read moves a
@@ -49,10 +56,17 @@ interface FInstall {
   source: "admin" | "self-serve";
   owner: string;
   ownerEmail?: string;
+  tier: string;
   mode: Mode;
   activeJobId: string | null;
   /** Set when a discard or purge is done: R3 still reads the row as deleted. */
   deletedAt: number | null;
+  /**
+   * A discard: the create never got an installs row (manage.ts), so its slug
+   * is free again. A purge keeps the row, and installs.slug is UNIQUE: that
+   * slug stays taken for good.
+   */
+  discarded?: boolean;
 }
 interface FJob {
   id: string;
@@ -80,6 +94,7 @@ export type Fault =
   | "p16_late"
   | "p22_closed_404"
   | "p23_no_row"
+  | "p23_slug_freed"
   | "p44_unlisted_redirect"
   | "p24_old"
   | "p27_no_token_ok"
@@ -102,6 +117,11 @@ export type Fault =
   | "r2_q_owner_email"
   | "signups_closed"
   | "revoke_noop"
+  | "p50_snooze_counts"
+  | "p50_ineligible"
+  | "p50_groups_refused"
+  | "p50_team_tier"
+  | "p50_no_codes"
   | "prod_live";
 
 export interface FakeApi {
@@ -133,6 +153,15 @@ export interface FakeApi {
     hopStatus: number;
     hopLocation?: string;
   };
+  /**
+   * P50's installs (rl-snz-*), each a local fake install (test/snooze-fake.ts)
+   * from its create until its purge, by app host.
+   */
+  tenants: Map<string, { server: Fake; install: SnoozeInstall }>;
+  /** Every accepted OIDC create's body, in order. */
+  creates: Record<string, unknown>[];
+  /** Every tenant server the fake started (closed or not), for afterEach. */
+  closeTenants: () => Promise<void>;
 }
 
 /** apps/provisioning/src/auth/flow.ts clearFlowCookie(). */
@@ -161,11 +190,16 @@ export function fakeApi(): FakeApi {
   const audit: FakeApi["audit"] = [];
   const replays = new Map<string, Response>();
   const log: string[] = [];
+  const tenants: FakeApi["tenants"] = new Map();
+  const servers: Fake[] = [];
+  const creates: Record<string, unknown>[] = [];
   const signupAccounts = new Set<string>();
   /** Purged rows inventory lost (fault p23_no_row). */
   const noRow = new Set<string>();
-  /** Rows a done discard or purge freed: slug, HOSTS and pages forget them. */
+  /** Rows a done discard or purge freed: HOSTS and pages forget them. */
   const live = (i: FInstall) => i.deletedAt === null;
+  /** Every row but a discarded create's holds its slug (installs.slug UNIQUE). */
+  const holdsSlug = (i: FInstall) => !i.discarded;
   const authStarts = new Map<number, number>();
   /** Dispatch's 60 s HOSTS cache: a new host's /healthz 404s until then. */
   const hostsCachedUntil = new Map<string, number>();
@@ -212,6 +246,7 @@ export function fakeApi(): FakeApi {
       testHooks: true,
       source: "admin",
       owner: "oidc",
+      tier: "team",
       mode: "serving",
       activeJobId: null,
       deletedAt: null,
@@ -234,7 +269,7 @@ export function fakeApi(): FakeApi {
     state: i.state,
     servingMode: i.mode ?? "unmapped",
     version: i.version,
-    tier: "team",
+    tier: i.tier,
     auth: { providers: ["email"], domainCount: 0 },
     health: "ok",
     source: i.source,
@@ -244,7 +279,14 @@ export function fakeApi(): FakeApi {
   const detail = (i: FInstall) => ({
     ...summary(i),
     ownerEmail: null,
-    auth: { providers: ["email"], domains: [] },
+    auth: {
+      providers: ["email"],
+      domains: [],
+      // authOf: present only when on. P50's create asks for it.
+      ...(i.slug.startsWith("rl-snz-") && !faults.has("p50_no_codes")
+        ? { domainCodes: true }
+        : {}),
+    },
     previousVersion: i.previousVersion,
     suspendedAt: null,
     suspendReason: null,
@@ -401,7 +443,9 @@ export function fakeApi(): FakeApi {
     if (m)
       return ok({
         slug: m[1],
-        status: [...installs.values()].some((i) => live(i) && i.slug === m?.[1])
+        status: [...installs.values()].some(
+          (i) => holdsSlug(i) && i.slug === m?.[1],
+        )
           ? "taken"
           : "ok",
       });
@@ -452,13 +496,20 @@ export function fakeApi(): FakeApi {
       // One live install per account (signup_accounts): freed only on a
       // failed create or 7 days after a purge, never within a run.
       if (user && signupAccounts.has(p)) return err(409, "signup_limit");
-      if ([...installs.values()].some((i) => live(i) && i.slug === body.slug))
+      if (
+        [...installs.values()].some((i) => holdsSlug(i) && i.slug === body.slug)
+      )
         return err(409, "slug_taken");
       const version = (body.version as string | undefined) ?? "0.82.0";
       const rel = releases.find((r) => r.version === version);
       if (!rel) return err(422, "release_not_published");
+      const tier =
+        typeof body.tier === "string" && !faults.has("p50_team_tier")
+          ? body.tier
+          : "team";
       const i = add({
         slug: String(body.slug),
+        tier,
         state: "provisioning",
         mode: null,
         version: null,
@@ -470,6 +521,23 @@ export function fakeApi(): FakeApi {
           : {}),
       });
       if (user) signupAccounts.add(p);
+      else creates.push(body);
+      // P50's install answers the snooze path for real (snooze.ts fetches).
+      if (i.slug.startsWith("rl-snz-")) {
+        const o: SnoozeOpts = {
+          ownerEmail: () => String(body.ownerEmail),
+          ...(faults.has("p50_snooze_counts")
+            ? { snoozeStillCounts: true }
+            : {}),
+          ...(faults.has("p50_ineligible") ? { otpOutcome: "ineligible" } : {}),
+          ...(faults.has("p50_groups_refused") ? { groupsRefused: true } : {}),
+          ...(tier === "business" ? {} : { mode: "frozen" }),
+        };
+        const install = snoozeInstall(() => STAGING_TEST_DOMAIN, i.id, o);
+        const server = await fakeServer(install.handle);
+        servers.push(server);
+        tenants.set(i.appHost, { server, install });
+      }
       const j = startJob(i, "create", p, {
         failAt: rel.installable
           ? undefined
@@ -578,12 +646,20 @@ export function fakeApi(): FakeApi {
         const kind = i.state === "failed" ? "discard" : "purge";
         // Design 3.4 row 1: the row stays, R3 reads it as deleted (the
         // status view maps discarded_at); inventory keeps it as deleted
-        // (install_status); HOSTS forgets it and the slug is free.
+        // (install_status); HOSTS forgets it. A discard frees the slug; a
+        // purge doesn't.
         const j = startJob(i, kind, p, {
           onDone: () => {
             i.state = "deleted";
             i.mode = null;
             i.deletedAt = clock.t;
+            if (kind === "discard" || faults.has("p23_slug_freed"))
+              i.discarded = true;
+            const tn = tenants.get(i.appHost);
+            if (tn) {
+              tenants.delete(i.appHost);
+              void tn.server.close();
+            }
             if (faults.has("p23_no_row")) noRow.add(i.id);
           },
         });
@@ -936,6 +1012,8 @@ export function fakeApi(): FakeApi {
   };
 
   const io: ProvIo = {
+    // A tenant's app host is its local fake; any other host stays as live.
+    tenantOrigin: (h) => tenants.get(h)?.server.origin ?? `https://${h}`,
     fetch: handler as typeof fetch,
     now: () => clock.t,
     wait: async (ms) => {
@@ -957,6 +1035,11 @@ export function fakeApi(): FakeApi {
     log,
     signin,
     broker,
+    tenants,
+    creates,
+    closeTenants: async () => {
+      for (const sv of servers.splice(0)) await sv.close().catch(() => {});
+    },
   };
 }
 
