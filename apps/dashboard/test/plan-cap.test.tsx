@@ -520,3 +520,18 @@ it("profile: PATCH /me is allowed under the cap, so a locked admin's name field 
   fireEvent.change(name, { target: { value: "Ada L." } });
   expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
 });
+
+it("library: a locked admin's space Copy prompt is disabled; the prompt text stays", async () => {
+  mountHosted("/?space=SpEngNpQrSt2uVwX", OPTS, locked("admin"), [
+    http.get("*/api/v1/artifacts", () =>
+      HttpResponse.json({ items: [], nextCursor: null }),
+    ),
+  ]);
+  expect(await screen.findByText("Nothing in Engineering yet")).toBeVisible();
+  expect(
+    screen.getByText(
+      'Ask any AI agent to publish here, for example "publish this to Engineering".',
+    ),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "Copy prompt" })).toBeDisabled();
+});
