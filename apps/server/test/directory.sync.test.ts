@@ -56,13 +56,11 @@ const MIN = 60_000;
 // slows alike: the whole file took up to 309 s against 74 s alone at a
 // 1-minute load of 8.7, so LOAD_SLOWDOWN = 309 / 74, rounded up. A budget is
 // a test's cost measured alone at low load (4-11), times that slowdown,
-// times the usual 3x headroom (#1249, #1266).
+// times the usual 3x headroom (#1249, #1266). Only a test that has timed
+// out takes one; the rest keep the pool's default, which catches hangs fast.
 const LOAD_SLOWDOWN = 4.2;
 const HEADROOM = 3;
 const budget = (lowLoadMs: number) => lowLoadMs * LOAD_SLOWDOWN * HEADROOM;
-// The slowest test but the carry-over one: liftsPaused (five reconciles),
-// 2526-2840 ms in two whole-file runs at load 4-11.
-vi.setConfig({ testTimeout: budget(2900) });
 let g: FakeDirectory;
 let e: Env;
 let sent: SentMail[];
