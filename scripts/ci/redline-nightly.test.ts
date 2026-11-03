@@ -16,6 +16,7 @@ type R = {
   status: string;
   conclusion: string | null;
   display_title: string;
+  created_at?: string;
 };
 
 const world = (o: {
