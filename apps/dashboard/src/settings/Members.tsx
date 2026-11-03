@@ -810,9 +810,9 @@ function RemovedRow({
           Restore…
         </Button>
       )}
-      {!refusal && (
-        // Restore's rules: never on an admin's row unless you're the
-        // uncapped owner, never on a deleted account's.
+      {!ownerOnlySource(m, owner) && (
+        // Only the admin-row rule (owner only): a deleted account's row can
+        // be erased too, though it can't be restored.
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="sm" aria-label={`More for ${label}`}>

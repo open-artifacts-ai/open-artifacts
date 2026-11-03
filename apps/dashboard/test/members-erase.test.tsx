@@ -61,14 +61,14 @@ const rowOf = async (name: string) =>
   (await within(await openRemoved()).findByText(name)).closest(
     "li",
   ) as HTMLElement;
-const openErase = async (name = "Gus Gone") => {
+const openErase = async (name = "Gus Gone", title = `Erase ${name}?`) => {
   const row = await rowOf(name);
   fireEvent.pointerDown(
     within(row).getByRole("button", { name: `More for ${name}` }),
     { button: 0, pointerType: "mouse" },
   );
   fireEvent.click(await screen.findByRole("menuitem", { name: "Erase…" }));
-  return screen.findByRole("dialog", { name: `Erase ${name}?` });
+  return screen.findByRole("dialog", { name: title });
 };
 const BODY = [
   "This deletes what's left of Gus's account: their name and email, sign-ins, agent connections and tokens, the shares they received, and their space roles. It can't be undone, and they can't be restored afterwards.",
@@ -167,11 +167,25 @@ describe("Erase on the Removed list", () => {
     expect(await openErase("Alma Admin")).toBeVisible();
   });
 
-  it("a deleted account's row has no Erase", async () => {
+  it("a deleted account's row: Erase, as a former member; still no Restore", async () => {
     removed = [RELEASED];
     mountHosted("/settings/members", true, undefined, [list]);
-    const row = await rowOf("Former member");
-    expect(within(row).queryByRole("button", { name: /^More for/ })).toBeNull();
+    const d = await openErase("Former member", "Erase a former member?");
+    const row = within(
+      screen.getByRole("list", { name: "Removed people", hidden: true }),
+    )
+      .getByText("Former member")
+      .closest("li") as HTMLElement;
+    expect(
+      within(row).queryByRole("button", { name: /^Restore/, hidden: true }),
+    ).toBeNull();
+    expect(
+      within(d).getByText(
+        "This deletes what's left of a former member's account: their name and email, sign-ins, agent connections and tokens, the shares they received, and their space roles. It can't be undone, and they can't be restored afterwards.",
+      ),
+    ).toBeVisible();
+    expect(within(d).getByText(BODY[1] as string)).toBeVisible();
+    expect(within(d).getByText(BODY[2] as string)).toBeVisible();
   });
 
   it("Departed rows have no Erase", async () => {
