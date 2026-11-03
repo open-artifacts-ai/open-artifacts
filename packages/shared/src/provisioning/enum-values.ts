@@ -135,8 +135,9 @@ export const JOB_STEPS = {
 
 /**
  * A job's steps from its kind and `jobs.args`: `redline_creds` with
- * `args.revoke === true` runs JOB_STEPS.redline_creds_revoke, `update` with `args.oauthCopy === true` runs JOB_STEPS.oauth_copy; every
- * other case is JOB_STEPS[kind].
+ * `args.revoke === true` runs JOB_STEPS.redline_creds_revoke, `update` with
+ * `args.oauthCopy === true` runs JOB_STEPS.oauth_copy; every other case is
+ * JOB_STEPS[kind].
  */
 export function jobStepsFor(
   kind: JobKind,
