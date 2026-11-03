@@ -44,6 +44,7 @@ import {
   DIRECTORY_REVOKE_SKIPPED_NOTE,
   HOSTED_DOMAINS,
   hostsKvTitle,
+  LostLease,
   NAMESPACES,
   ProdLocked,
   ProvisionRefused,
@@ -5748,4 +5749,178 @@ describe("W2 upgrade and rollback: verify_clean and onStep (5.4)", () => {
     expect(r).toMatchObject({ ok: true });
     expect(s.fake.dispatched.slice(n).map((d) => d.path)).toContain("/healthz");
   });
+});
+
+describe("the binding id audit, stage 1 (#1137)", () => {
+  const AUDIT = "verify_clean.binding_ids";
+  const lines = (s: S, id: string) =>
+    (
+      s
+        .db()
+        .prepare(
+          "SELECT detail FROM hosted_audit WHERE install_id = ? AND action = ? ORDER BY id",
+        )
+        .all(id, AUDIT) as { detail: string }[]
+    ).map(
+      (r) =>
+        JSON.parse(r.detail) as {
+          problems: number;
+          detail: string;
+          shape: string;
+          bookmark: string;
+        },
+    );
+  /** A provisioner whose Cloudflare client misbehaves during verify_clean. */
+  const faulty = (
+    s: S,
+    edit: (cf: ReturnType<S["cfWith"]>, during: () => boolean) => object,
+  ) => {
+    const cf = s.cfWith();
+    let step = "";
+    return s.mk({
+      cf: { ...cf, ...edit(cf, () => step === "verify_clean") },
+      onStep: (x: string) => {
+        step = x;
+      },
+      bindingIdAuditMs: 5,
+    });
+  };
+
+  it("writes a clean line at create, upgrade, rollback and a var change", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    expect(lines(s, inst.id)).toHaveLength(1);
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    expect(lines(s, inst.id)).toHaveLength(2);
+    await s.p.rollback(inst.id);
+    expect(lines(s, inst.id)).toHaveLength(3);
+    await s.p.updateVars(inst.id, {});
+    expect(lines(s, inst.id)).toHaveLength(4);
+    for (const l of lines(s, inst.id)) {
+      expect(l).toMatchObject({ problems: 0, detail: "", bookmark: "ok" });
+      expect(l.shape).toContain("d1:");
+    }
+  });
+
+  it("reports a foreign binding and refuses nothing", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.settingsEdit = (_s, bindings) =>
+      bindings.map((b) =>
+        b.type === "d1" ? { ...b, id: "another-install" } : b,
+      );
+    expect(keep(await s.p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    const last = lines(s, inst.id).at(-1);
+    expect(last?.problems).toBe(1);
+    expect(last?.detail).toBe("DB:d1_foreign");
+    expect(JSON.stringify(last)).not.toContain("another-install");
+  });
+
+  it("a token that can't read a bookmark is reported, and refuses nothing", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.bookmarkFails = true;
+    expect(keep(await s.p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    const last = lines(s, inst.id).at(-1);
+    expect(last?.bookmark).not.toBe("ok");
+    expect(last?.problems).toBe(0);
+  });
+
+  it("a bookmark call that throws is in the line, and the job carries on", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) =>
+        during() ? Promise.reject(new TypeError("down")) : cf.d1Bookmark(id),
+    }));
+    expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    expect(lines(s, inst.id).at(-1)?.bookmark).toBe("TypeError");
+  });
+
+  it("fails open when the settings read throws in a var change", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let reads = 0;
+    const p = s.mk({
+      cf: {
+        ...s.cfWith(),
+        scriptSettings: () => {
+          reads++;
+          return Promise.reject(new TypeError("down"));
+        },
+      },
+    });
+    await p.updateVars(inst.id, {});
+    expect(reads).toBe(1);
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("gives up on a bookmark call that never answers, and writes no line", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) =>
+        during() ? new Promise(() => {}) : cf.d1Bookmark(id),
+    }));
+    expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("gives up on an audit write that never answers", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const cf = s.cfWith();
+    const p = s.mk({
+      cf: {
+        ...cf,
+        d1Query: (id, sql, params) =>
+          (params ?? []).includes("verify_clean.binding_ids")
+            ? new Promise(() => {})
+            : cf.d1Query(id, sql, params),
+      },
+      bindingIdAuditMs: 5,
+    });
+    expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("a timed-out check that answers late writes nothing", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let late: ((v: string) => void) | undefined;
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) =>
+        during()
+          ? new Promise<string>((r) => {
+              late = r;
+            })
+          : cf.d1Bookmark(id),
+    }));
+    keep(await p.upgrade(inst.id, "0.24.0"));
+    late?.("x");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it.each(["secretList", "d1Bookmark"] as const)(
+    "a lease lost at %s, before or in the audit, still stops the job",
+    async (call) => {
+      const s = setup();
+      const inst = keep(await s.p.create(input()));
+      const p = faulty(s, (cf, during) => ({
+        [call]: (...a: [never, never]) => {
+          if (during())
+            s.db()
+              .prepare(
+                "UPDATE installs SET lease = 'someone-else' WHERE id = ?",
+              )
+              .run(inst.id);
+          return (cf[call] as (...x: [never, never]) => unknown)(...a);
+        },
+      }));
+      const e = await fails(p.upgrade(inst.id, "0.24.0"));
+      expect(e).toBeInstanceOf(LostLease);
+      expect(s.row(inst.id).lease).toBe("someone-else");
+    },
+  );
 });
