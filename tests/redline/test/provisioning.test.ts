@@ -450,6 +450,12 @@ describe("each probe fails on the behaviour it guards", () => {
       "P20",
       /^P20 socket: an events socket opened before the suspend is still open after the paused page shows \(WS-3: suspend closes no sockets\)$/,
     ],
+    // One look, no wait: a close that comes 30 s later is still a fail.
+    [
+      "socket_closes_late",
+      "P20",
+      /^P20 socket: an events socket opened before the suspend is still open after the paused page shows/,
+    ],
     [
       "socket_ttl_close",
       "P20",

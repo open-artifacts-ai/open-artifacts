@@ -97,6 +97,7 @@ export type Fault =
   | "socket_stays_open"
   | "socket_ttl_close"
   | "socket_closes_early"
+  | "socket_closes_late"
   | "seed_public"
   | "seed_b_reads"
   | "p1_200"
@@ -223,6 +224,8 @@ export function fakeApi(): FakeApi {
   const servers: Fake[] = [];
   const life: FakeApi["life"] = new Map();
   const lifeServers: LifeTenant[] = [];
+  /** socket_closes_late: when (fake clock) and where the suspend's close lands. */
+  let lateClose: { at: number; host: string } | undefined;
   /** A live PAT's standing at install `id`'s tenant. */
   const patAt = (id: string) => (token: string) => {
     const v = pats.get(token);
@@ -677,6 +680,11 @@ export function fakeApi(): FakeApi {
           // A suspend that closes sockets does it as it pauses (WS-3).
           onStep: (s) => {
             if (s !== "pause" || faults.has("socket_stays_open")) return;
+            // Closed 30 s after the pause: a probe that waits would pass it.
+            if (faults.has("socket_closes_late")) {
+              lateClose = { at: clock.t + 30_000, host: i.appHost };
+              return;
+            }
             life
               .get(i.appHost)
               ?.closeSockets(faults.has("socket_ttl_close") ? 4408 : 1001);
@@ -1098,6 +1106,10 @@ export function fakeApi(): FakeApi {
     now: () => clock.t,
     wait: async (ms) => {
       clock.t += ms;
+      if (lateClose && clock.t >= lateClose.at) {
+        life.get(lateClose.host)?.closeSockets(1001);
+        lateClose = undefined;
+      }
       // One turn of the event loop: a tenant's socket close (a real local
       // connection) reaches the client between polls, as on the network.
       await new Promise((r) => setImmediate(r));
