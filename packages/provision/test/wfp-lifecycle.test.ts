@@ -5902,20 +5902,25 @@ describe("the binding id audit, stage 1 (#1137)", () => {
     expect(lines(s, inst.id)).toHaveLength(1);
   });
 
-  it("a lease lost during the audit still stops the job: the fence stays on", async () => {
-    const s = setup();
-    const inst = keep(await s.p.create(input()));
-    const p = faulty(s, (cf, during) => ({
-      d1Bookmark: (id: string) => {
-        if (during())
-          s.db()
-            .prepare("UPDATE installs SET lease = 'someone-else' WHERE id = ?")
-            .run(inst.id);
-        return cf.d1Bookmark(id);
-      },
-    }));
-    const e = await fails(p.upgrade(inst.id, "0.24.0"));
-    expect(e).toBeInstanceOf(LostLease);
-    expect(s.row(inst.id).lease).toBe("someone-else");
-  });
+  it.each(["secretList", "d1Bookmark"] as const)(
+    "a lease lost at %s, before or in the audit, still stops the job",
+    async (call) => {
+      const s = setup();
+      const inst = keep(await s.p.create(input()));
+      const p = faulty(s, (cf, during) => ({
+        [call]: (...a: [never, never]) => {
+          if (during())
+            s.db()
+              .prepare(
+                "UPDATE installs SET lease = 'someone-else' WHERE id = ?",
+              )
+              .run(inst.id);
+          return (cf[call] as (...x: [never, never]) => unknown)(...a);
+        },
+      }));
+      const e = await fails(p.upgrade(inst.id, "0.24.0"));
+      expect(e).toBeInstanceOf(LostLease);
+      expect(s.row(inst.id).lease).toBe("someone-else");
+    },
+  );
 });
