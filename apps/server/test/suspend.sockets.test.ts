@@ -147,7 +147,9 @@ describe("oa:close-sockets (#1182)", () => {
     await runJob();
     const codes = Object.fromEntries(
       await Promise.all(
-        Object.entries(s).map(async ([k, v]) => [k, await closedIn(v)] as const),
+        Object.entries(s).map(
+          async ([k, v]) => [k, await closedIn(v)] as const,
+        ),
       ),
     );
     expect(codes).toEqual({
