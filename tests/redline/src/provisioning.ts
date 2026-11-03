@@ -416,12 +416,6 @@ export interface RunState {
   releases?: Release[];
   /** P44's first registered client, for P43. */
   clientId?: string;
-  /**
-   * Installs a probe creates for itself (P50), listed before the create:
-   * the probe removes its own, and the run's end (cleanupInstalls) removes
-   * any still here.
-   */
-  cleanup: { slug: string }[];
 }
 
 const bare = (h: string) => h.replace(/^https?:\/\//, "").replace(/\/.*$/, "");

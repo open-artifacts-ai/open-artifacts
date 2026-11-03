@@ -335,30 +335,6 @@ describe("P50: the snooze owner path on an install the run creates (#1078)", () 
     expect((out as Error).message).toBe("P50: tier is team, want business");
     expect(snz?.state).toBe("deleted");
   });
-
-  it("cleanupInstalls removes an install left on the list (a run that stopped after the create)", async () => {
-    const f = fakeApi();
-    fakes.push(f);
-    const run = new Run(CONFIG, f.io);
-    const slug = run.slug("snz");
-    run.s.cleanup.push({ slug });
-    const a = run.accepted(
-      await run.v1("/installs", {
-        body: {
-          requestId: run.rid("left"),
-          slug,
-          tier: "business",
-          testHooks: true,
-        },
-      }),
-      "create",
-    );
-    await cleanupInstalls(run);
-    expect(f.installs.get(a.install.id)?.state).toBe("deleted");
-    expect(run.s.cleanup).toEqual([]);
-    // Nothing left: a second pass is a no-op.
-    await cleanupInstalls(run);
-  });
 });
 
 describe("each probe fails on the behaviour it guards", () => {
