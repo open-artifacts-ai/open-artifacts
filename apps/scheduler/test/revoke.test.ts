@@ -28,6 +28,7 @@ import scheduler, {
   REVOKE_SQL,
   revokeCategory,
   revokeTick,
+  runNightly,
   SYNC_JOB,
   SYNC_OPTIONS,
 } from "../src/index.js";
@@ -48,6 +49,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   // install_versions first: it references installs (one test seeds it).
   await db.prepare("DELETE FROM install_versions").run();
+  await db.prepare("DELETE FROM install_lifecycle").run();
   await db.prepare("DELETE FROM installs").run();
 });
 
@@ -779,6 +781,74 @@ describe("broker gates on every install call", () => {
     expect(SYNC_OPTIONS.deadlineMs + SYNC_OPTIONS.timeoutMs).toBeLessThan(
       120_000,
     );
+  });
+
+  /** `id`'s lifecycle row, suspended (#1155): installs.state stays active. */
+  const suspend = (id: string) =>
+    db
+      .prepare(
+        `INSERT INTO install_lifecycle (install_id, source, suspended_at, created_at, updated_at)
+         VALUES (?1, 'admin', ?2, 0, 0)
+         ON CONFLICT (install_id) DO UPDATE SET suspended_at = excluded.suspended_at`,
+      )
+      .bind(id, NOW)
+      .run();
+
+  it("the directory sync never calls a suspended install; the nightly still does (#1155)", async () => {
+    await seed([
+      { id: idOf(0), state: "active", revoke: null },
+      { id: idOf(1), state: "active", revoke: null },
+    ]);
+    await suspend(idOf(1));
+    const f = fakes();
+    const r = await directorySync(f.env, NOW, gates);
+    expect(r.ok).toEqual([idOf(0)]);
+    expect(f.calls.map((c) => c.script)).toEqual([`oa-s-${idOf(0)}`]);
+    // Never listed, not merely skipped at the recheck.
+    expect(r.skipped).toEqual([]);
+    const n = fakes();
+    const nightly = await runNightly(n.env, NOW);
+    expect(nightly.ok.sort()).toEqual([idOf(0), idOf(1)]);
+  });
+
+  it("a resumed install is synced again (#1155)", async () => {
+    await seed([{ id: idOf(0), state: "active", revoke: null }]);
+    await suspend(idOf(0));
+    expect((await directorySync(fakes().env, NOW, gates)).ok).toEqual([]);
+    // As resume does (apps/provisioner/src/manage.ts).
+    await db
+      .prepare(
+        "UPDATE install_lifecycle SET suspended_at = NULL, suspend_reason = NULL WHERE install_id = ?1",
+      )
+      .bind(idOf(0))
+      .run();
+    const f = fakes();
+    expect((await directorySync(f.env, NOW, gates)).ok).toEqual([idOf(0)]);
+    expect(f.calls.map((c) => c.script)).toEqual([`oa-s-${idOf(0)}`]);
+  });
+
+  it("an install suspended while the sync runs is left out by the recheck (#1155)", async () => {
+    await seed([
+      { id: idOf(0), state: "active", revoke: null },
+      { id: idOf(1), state: "active", revoke: null },
+    ]);
+    // Whichever is called first suspends the other: the call order rotates.
+    let first: string | null = null;
+    const f = fakes(undefined, async (script) => {
+      if (first !== null) return;
+      first = script;
+      await suspend(script === `oa-s-${idOf(0)}` ? idOf(1) : idOf(0));
+    });
+    const r = await runNightly(f.env, NOW, {
+      ...SYNC_OPTIONS,
+      concurrency: 1,
+      job: SYNC_JOB,
+      label: "directory-sync",
+      skipSuspended: true,
+    });
+    expect(f.calls.map((c) => c.script)).toEqual([first]);
+    expect(r.ok).toHaveLength(1);
+    expect(r.skipped).toHaveLength(1);
   });
 
   it("without ctx.exports a call carries no props (the install then fails closed)", async () => {
