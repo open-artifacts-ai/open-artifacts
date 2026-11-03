@@ -866,6 +866,19 @@ if [ -n "$q" ]; then jq -r "$q" <<< "$body"; else printf '%s\\n' "$body"; fi
         expect(r.log).toContain(`::error::${NO_OWN_RUN}`);
       }
     });
+    it("a full page of pending-labelled items fails: a later page could hold another", () => {
+      const closed = (k: number) =>
+        Array.from({ length: k }, (_, i) => pr(1000 + i, false));
+      const full = runKind({ issues: [pr(1256), ...closed(99)], merge: SHA });
+      expect(full.code).toBe(1);
+      expect(full.output).toBe("");
+      expect(full.log).toContain(
+        "::error::pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery\n",
+      );
+      expect(
+        runKind({ issues: [pr(1256), ...closed(98)], merge: SHA }),
+      ).toMatchObject({ code: 0, output: "is_release=true\n" });
+    });
     it("two merged pending release PRs fail", () => {
       const r = runKind({ issues: [pr(1256), pr(1260)], merge: SHA });
       expect(r.code).toBe(1);

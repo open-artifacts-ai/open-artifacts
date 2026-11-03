@@ -60,6 +60,9 @@ jobs:
         run: |
           fail() { echo "::error::$1"; exit 1; }
           issues=$(gh api "repos/$REPO/issues?state=closed&labels=autorelease:%20pending&per_page=100") || fail "could not list pending release PRs"
+          # One page, no pagination: a full page could hide the pending PR.
+          count=$(jq -r 'length' <<< "$issues") || fail "could not read pending release PRs"
+          [ "$count" -lt 100 ] || fail "pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery"
           nums=$(jq -r '[.[] | select(.pull_request.merged_at != null) | .number] | join(" ")' <<< "$issues") || fail "could not read pending release PRs"
           read -ra pending <<< "$nums"
           if [ "${#pending[@]}" -eq 0 ]; then
