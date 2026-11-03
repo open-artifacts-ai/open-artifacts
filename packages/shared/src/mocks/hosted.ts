@@ -1433,6 +1433,16 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         // Org owners and admins only, as the server (members.manage): space
         // managers search R.spaceCandidates instead.
         if (!isAdmin()) return notFound();
+        // directoryManaged (#1146), as the server: Google sync on and
+        // connected, no Google link, an address in MOCK_DOMAIN, not the
+        // owner, not removed (Dan by default).
+        const managed = (m: Member) =>
+          directoryMode === "google" &&
+          !!sync.binding &&
+          m.role !== "owner" &&
+          (m.status ?? "active") !== "removed" &&
+          m.email.endsWith(`@${MOCK_DOMAIN}`) &&
+          !(m.identities ?? []).includes("google");
         return HttpResponse.json(
           members
             .filter(
@@ -1440,11 +1450,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
                 r.data.status.includes(m.status ?? "active") &&
                 !erased.has(m.id),
             )
-            .map((m) =>
-              m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0
-                ? { ...m, personalArtifacts: true }
-                : m,
-            ),
+            .map((m) => ({
+              ...m,
+              ...(m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0
+                ? { personalArtifacts: true }
+                : {}),
+              ...(managed(m) ? { directoryManaged: true } : {}),
+            })),
         );
       }),
     ),

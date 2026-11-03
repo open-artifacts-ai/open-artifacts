@@ -1246,4 +1246,90 @@ describe("parity 1 round 2: sync revives a row it removed (same directory id onl
     await list(gu(sub2, addr2));
     expect(await row(u2)).toMatchObject({ status: "removed", bySync: 0 });
   });
+
+  // #1146: an admin removed someone with no Google link; Workspace lists
+  // their address, so sync gives the old row the deletion treatment and
+  // creates a new one there. That re-admission is audited.
+  const readmits = () =>
+    all<{
+      actor_kind: string;
+      actor_id: string | null;
+      target_type: string;
+      target_id: string;
+      detail: string;
+    }>(
+      "select actor_kind, actor_id, target_type, target_id, detail from audit_events where action = 'user.readmitted_by_sync' order by at, id",
+    );
+
+  it("an admin removal with no Google link, its address listed: a new row, audited user.readmitted_by_sync once (actor sync, ids only); a steady listing writes no more", async () => {
+    const addr = uniq("ra-plain");
+    const sub = `g-ra-${crypto.randomUUID()}`;
+    const old = await seedUser(addr, "member");
+    await env.DB.prepare("update users set last_seen_at = ? where id = ?")
+      .bind(Date.now(), old)
+      .run();
+    await setUserStatus(e, old, "removed", "admin_remove", SYSTEM_ACTOR);
+    const before = (await readmits()).length;
+    await list(gu(sub, addr));
+    const fresh = await userByIdentity(sub);
+    expect(fresh).toMatchObject({ email: addr, status: "active" });
+    expect(fresh?.id).not.toBe(old);
+    expect(await row(old)).toMatchObject({
+      status: "removed",
+      email: `removed+${old}@invalid`,
+    });
+    const rows = (await readmits()).slice(before);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actor_kind: "sync",
+      actor_id: null,
+      target_type: "user",
+      target_id: fresh?.id,
+    });
+    expect(JSON.parse(rows[0]?.detail ?? "{}")).toEqual({
+      previousUserId: old,
+    });
+    // Ids only: never an address.
+    expect(rows[0]?.detail).not.toContain("@");
+    // Steady: the new row is linked, so later listings write nothing more.
+    await list(gu(sub, addr));
+    expect((await readmits()).slice(before)).toHaveLength(1);
+  });
+
+  it("no user.readmitted_by_sync for a brand-new address, an active row's recycled address, or a sync revive", async () => {
+    const before = (await readmits()).length;
+    // A new address: just created.
+    await list(gu(`g-ra-new-${crypto.randomUUID()}`, uniq("ra-new")));
+    // An active row with sign-in history and no link: the recycled-address
+    // treatment, not a re-admission of someone removed.
+    const busy = uniq("ra-active");
+    const was = await seedUser(busy, "member");
+    await env.DB.prepare("update users set last_seen_at = ? where id = ?")
+      .bind(Date.now(), was)
+      .run();
+    await list(gu(`g-ra-act-${crypto.randomUUID()}`, busy));
+    expect(await row(was)).toMatchObject({ status: "removed" });
+    // A sync removal revived by the same id: audited sync_revive instead.
+    const addr = uniq("ra-rv");
+    const sub = `g-ra-rv-${crypto.randomUUID()}`;
+    const uid = await seedUser(addr, "member", { googleSub: sub });
+    await list(gu(sub, addr, { deleted: true }));
+    await list(gu(sub, addr));
+    expect((await row(uid))?.status).toBe("active");
+    expect((await readmits()).slice(before)).toEqual([]);
+  });
+
+  it("a batch that creates no row writes no user.readmitted_by_sync (the address still held)", async () => {
+    const addr = uniq("ra-held");
+    const sub = `g-ra-held-${crypto.randomUUID()}`;
+    const holder = await seedUser(addr, "member");
+    const before = (await readmits()).length;
+    await bindPage(e, [gu(sub, addr)], {
+      tenant: "a.com",
+      allowEmail: false,
+      readmit: { sub, previousUserId: holder },
+    });
+    expect(await userByIdentity(sub)).toBeNull();
+    expect((await readmits()).slice(before)).toEqual([]);
+  });
 });

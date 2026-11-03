@@ -438,6 +438,13 @@ export const MemberSchema = z.object({
   restriction: RestrictionSchema.nullable().optional(),
   /** GET R.members: a guest with live artifacts in their personal space, for Transfer. Absent otherwise. */
   personalArtifacts: z.boolean().optional(),
+  /**
+   * GET R.members (#1146): true when removing this person can be undone by
+   * directory sync, which would bring their address back as a new, empty
+   * account (Google sync on and a Workspace connected, no Google link, an
+   * address in the sign-in domains). Absent otherwise. Removal still works.
+   */
+  directoryManaged: z.boolean().optional(),
 });
 export type Member = z.infer<typeof MemberSchema>;
 
