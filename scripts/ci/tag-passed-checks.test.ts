@@ -474,6 +474,15 @@ describe("tag-passed-checks.sh", () => {
         raced((s) => delete s.artifacts),
         /build marker: GitHub API error/,
       );
+      // Never read as "no marker": a green legacy run must not pass either.
+      fails(
+        edit((s) => delete s.artifacts),
+        /build marker: GitHub API error/,
+      );
+      fails(
+        edit((s) => (s.artifacts = "<html>")),
+        /build marker: unparsable response/,
+      );
       fails(
         raced((s) => (s.artifacts = "<html>")),
         /build marker: unparsable response/,
