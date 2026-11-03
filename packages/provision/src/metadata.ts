@@ -3,41 +3,13 @@
 // Bindings: https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/bindings/
 // The same metadata works for `/workers/scripts/{name}` (account) and the
 // dispatch-namespace endpoint; only the target URL differs (not decided here).
+import type { Template } from "@oa/bundle";
 import { normalizeVar, parseTier, TIER_FEATURES, TUNABLES } from "@oa/shared";
 import { assertOwnResource, isInstallId, names } from "./names.js";
 import type { InstallId } from "./types.js";
 
-/** Remove // and /* *\/ comments and trailing commas, leaving strings intact. */
-export function stripJsonc(text: string): string {
-  let out = "";
-  let i = 0;
-  while (i < text.length) {
-    const c = text[i] as string;
-    const n = text[i + 1];
-    if (c === '"') {
-      let j = i + 1;
-      while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
-      out += text.slice(i, j + 1);
-      i = j + 1;
-    } else if (c === "/" && n === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-    } else if (c === "/" && n === "*") {
-      const end = text.indexOf("*/", i + 2);
-      i = end < 0 ? text.length : end + 2;
-    } else {
-      out += c;
-      i++;
-    }
-  }
-  return out.replace(/,(\s*[}\]])/g, "$1");
-}
-
-// biome-ignore lint/suspicious/noExplicitAny: the template is arbitrary JSON
-export type Template = Record<string, any>;
-
-export function parseTemplate(text: string): Template {
-  return JSON.parse(stripJsonc(text)) as Template;
-}
+// Moved to the public @oa/bundle (#1056); re-exported for provision's callers.
+export { parseTemplate, stripJsonc, type Template } from "@oa/bundle";
 
 /** Template entries hosted does not upload as bindings, each with a reason. */
 export const TEMPLATE_BINDINGS_EXCLUDED: Record<string, string> = {
