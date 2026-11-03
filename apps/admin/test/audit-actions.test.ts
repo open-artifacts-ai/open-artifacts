@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
-import { AUDIT_ACTIONS } from "../src/pages/Audit";
+import { AUDIT_ACTIONS, actionPhrase } from "../src/pages/Audit";
 
 // R17 filters on one exact action, so an option nothing writes returns nothing
 // for ever: it happened with the install.* names. This reads the writers.
@@ -11,19 +11,21 @@ const files = (dir: string): string[] =>
     const p = join(dir, f);
     return statSync(p).isDirectory() ? files(p) : p.endsWith(".ts") ? [p] : [];
   });
+/** Every captured group of every match, across the dir's .ts files. */
 const scan = (dir: string, patterns: RegExp[]) => {
   const out = new Set<string>();
   for (const f of files(join(repo, dir))) {
     const text = readFileSync(f, "utf8");
     for (const re of patterns)
-      for (const m of text.matchAll(re)) out.add(m[1] as string);
+      for (const m of text.matchAll(re))
+        for (const g of m.slice(1)) if (g) out.add(g);
   }
   return out;
 };
 const NAME = "([a-z_]+\\.[a-z_]+)";
 
 /** Every admin_audit action, and the two rows that end a job in hosted_audit. */
-const written = () =>
+const apiWritten = () =>
   new Set([
     ...scan("apps/provisioning/src", [
       new RegExp(`\\baction: "${NAME}"`, "g"),
@@ -35,10 +37,97 @@ const written = () =>
     ...scan("apps/provisioner/src", [/^\s+"(job\.[a-z]+)",$/gm]),
   ]);
 
-it("every option is written, and every written action is an option", () => {
+/** The kinds pause and unpause take (their HOSTS row is `<kind>.hosts`). */
+const hostKinds = () =>
+  scan("apps/provisioner/src", [/\.(?:un)?pause\([^;]*?kind: "([a-z_]+)"/g]);
+/** The operations a lock is claimed for, plus those kinds (setMode claims as its kind). */
+const lockOps = () =>
+  new Set([
+    ...scan("packages/provision/src", [
+      /this\.claim\([^;]*?"([a-z_-]+)",?\s*\)/g,
+    ]),
+    ...hostKinds(),
+  ]);
+
+/** hosted_audit's step rows: the provisioner package, its jobs and the scheduler. */
+const stepsWritten = () => {
+  const out = new Set([
+    ...scan("packages/provision/src", [
+      new RegExp(`logged\\(\\s*"${NAME}"`, "g"),
+      new RegExp(`\\.audit\\(\\s*[^,]+,\\s*"${NAME}"`, "g"),
+      new RegExp(
+        `\\.audit\\(\\s*[^,]+,\\s*[a-z]+ \\? "${NAME}" : "${NAME}"`,
+        "g",
+      ),
+      new RegExp(`INSERT INTO hosted_audit[^"]*?'${NAME}'`, "g"),
+    ]),
+    ...scan("apps/provisioner/src", [
+      new RegExp(`auditStatement\\(\\s*[^,]+,\\s*[^,]+,\\s*"${NAME}"`, "g"),
+    ]),
+    // The provisioner's named actions (OAUTH_MODE_LIVE_ACTION and the like).
+    ...scan("packages/shared/src/provisioning", [
+      new RegExp(`export const [A-Z_]+_ACTION = "${NAME}"`, "g"),
+    ]),
+    ...scan("apps/scheduler/src", [
+      new RegExp(`INSERT INTO hosted_audit[^\`]*?'${NAME}'`, "g"),
+    ]),
+  ]);
+  const wfp = readFileSync(join(repo, "packages/provision/src/wfp.ts"), "utf8");
+  // Templated: `${h.op}.lost_lease`, `${h.op}.aborted`, `${k.kind}.hosts`.
+  for (const t of ["lost_lease", "aborted"])
+    if (wfp.includes(`\`\${h.op}.${t}\``))
+      for (const op of lockOps()) out.add(`${op}.${t}`);
+  if (wfp.includes("`${k.kind}.hosts`"))
+    for (const k of hostKinds()) out.add(`${k}.hosts`);
+  return out;
+};
+
+/** audit_refusals' rows: `<bucket>.refused`, or rate_limited (R17's union). */
+const refusalsWritten = () => {
+  const call = "(?:refuse|countRefusal|count)\\(\\s*env,\\s*";
+  const out = new Set(
+    [
+      ...scan("apps/provisioning/src", [
+        new RegExp(`${call}"([a-z_]+)",`, "g"),
+      ]),
+    ].map((b) => `${b}.refused`),
+  );
+  for (const a of scan("apps/provisioning/src", [
+    new RegExp(`${call}[^,]+,\\s*"(rate_limited)"`, "g"),
+  ]))
+    out.add(a);
+  return out;
+};
+
+const written = () =>
+  new Set([...apiWritten(), ...stepsWritten(), ...refusalsWritten()]);
+
+it("every option is written", () => {
   const found = written();
-  // The scan still sees the writers: an empty set would prove nothing.
+  // The scans still see the writers: an empty set would prove nothing.
   expect(found).toContain("token.revoke_all");
-  expect(found).toContain("job.failed");
-  expect([...found].sort()).toEqual([...AUDIT_ACTIONS].sort());
+  expect(found).toContain("upgrade.held");
+  expect(found).toContain("fleet.halted");
+  expect(found).toContain("prod_dirty.snapshot");
+  expect(found).toContain("auth.refused");
+  expect(found).toContain("rate_limited");
+  expect(AUDIT_ACTIONS.filter((a) => !found.has(a))).toEqual([]);
+});
+
+it("every action the API writes is an option", () => {
+  const api = apiWritten();
+  expect(api).toContain("job.failed");
+  expect([...api].filter((a) => !AUDIT_ACTIONS.includes(a))).toEqual([]);
+});
+
+it("every step and refusal row has a label, never its raw name", () => {
+  const rows = [...stepsWritten(), ...refusalsWritten()];
+  expect(rows).toContain("owner-token.lost_lease");
+  expect(rows).toContain("suspend.hosts");
+  expect(rows).toContain("create.start");
+  expect(rows.filter((a) => actionPhrase(a) === a)).toEqual([]);
+});
+
+it("offers no option twice", () => {
+  expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
 });

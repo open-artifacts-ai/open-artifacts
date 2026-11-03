@@ -24,10 +24,10 @@ import { usePaging } from "../hooks/usePaging";
 import { LoadError } from "../layout/LoadError";
 
 /**
- * Each action a filter can offer, as written by the API and the provisioner.
- * audit-actions.test.ts checks this against the code that writes them, so an
- * option can't return nothing. Step rows such as upgrade.start aren't offered:
- * job.done and job.failed summarize them.
+ * Design's sentence verb for each action the API and the provisioner write,
+ * past tense (it's a log). The Action filter offers AUDIT_ACTIONS, a subset;
+ * audit-actions.test.ts checks those against the code that writes them, so
+ * an option can't return nothing.
  */
 const VERB: Record<string, string> = {
   "job.accepted": "started a job",
@@ -49,8 +49,127 @@ const VERB: Record<string, string> = {
   "oauth.refresh_refused": "had a token refresh refused",
   "oauth.client_expired": "had an agent client expire",
   "test_admin.session": "started a test admin session",
+  // The provisioner's step rows (#1136); job.done and job.failed sum them up.
+  "create.start": "started creating the install",
+  "create.resume": "resumed creating the install",
+  "create.upload": "uploaded the app",
+  "create.broker": "registered the sign-in key",
+  "create.active": "made the install live",
+  "upgrade.start": "started an upgrade",
+  "upgrade.held": "held an upgrade",
+  "upgrade.restore_point": "saved a restore point",
+  "upgrade.done": "finished an upgrade",
+  "upgrade.failed": "had an upgrade fail",
+  "upgrade.incomplete": "left an upgrade unfinished",
+  "upgrade.forward_fix": "flagged an upgrade for a forward fix",
+  "rollback.start": "started a rollback",
+  "rollback.selftest_skipped": "skipped the rollback self-test",
+  "rollback.done": "finished a rollback",
+  "rollback.incomplete": "left a rollback unfinished",
+  "rollback.unhealthy": "rolled back to an unhealthy version",
+  "vars.start": "started changing settings",
+  "vars.done": "changed settings",
+  "vars.failed": "couldn't change settings",
+  "vars.session_cut": "signed everyone out",
+  "vars.session_cut_failed": "couldn't sign everyone out",
+  "vars.session_cut_dropped": "skipped a sign-out it no longer needed",
+  "verify_clean.refused": "failed the clean check",
+  "verify_clean.binding_ids": "checked the bindings",
+  "prod_dirty.snapshot": "recorded an unclean install",
+  "delete.start": "started deleting the install",
+  "delete.unmap_stale": "removed stale hosts",
+  "delete.revoke_pending": "waited to revoke Google access",
+  "delete.revoke_skipped": "skipped revoking Google access",
+  "delete.revoke_unsupported": "couldn't revoke Google access",
+  "delete.done": "deleted the install",
+  "suspend.hosts": "took the install offline",
+  "resume.hosts": "brought the install back",
+  "delete.hosts": "closed the install",
+  "restore.hosts": "paused the install for a restore",
+  "lease.release": "released the lock",
+  "lease.force_release": "forced the lock open",
+  "lease.release_refused": "couldn't release the lock",
+  "ci_token.mint": "minted a deploy token",
+  "ci_token.revoke": "revoked a deploy token",
+  "ci_token.sweep": "cleared old deploy tokens",
+  "owner_token.reissue": "reissued the owner's token",
+  "turnstile.rotate": "rotated the bot-check keys",
+  "oauth_store.mode_live": "switched where agent sign-ins are stored",
+  "oauth_copy.counts": "counted agent sign-ins to move",
+  "oauth_copy.key_gone": "removed the key for moving agent sign-ins",
+  "fleet.halted": "halted the fleet rollout",
+  // Anonymous refusals, counted per bucket (audit_refusals); signin.refused is above.
+  rate_limited: "were rate limited",
 };
-export const AUDIT_ACTIONS = Object.keys(VERB);
+/**
+ * The operations a held lock names (`<op>.lost_lease`, `<op>.aborted`).
+ * owner-token is the writer's spelling; owner_token too, in case it moves.
+ */
+const LOCK_OPS = [
+  "create",
+  "upgrade",
+  "rollback",
+  "vars",
+  "turnstile",
+  "delete",
+  "suspend",
+  "resume",
+  "restore",
+  "owner-token",
+  "owner_token",
+];
+for (const op of LOCK_OPS) {
+  VERB[`${op}.lost_lease`] = "lost its lock";
+  VERB[`${op}.aborted`] = "stopped partway";
+}
+/** Why an anonymous call was refused, by audit_refusals bucket (refuse.ts' callers). */
+const REFUSAL_REASON: Record<string, string> = {
+  pre: "too many requests",
+  auth: "not signed in",
+  csrf: "failed cross-site check",
+  oauth: "agent sign-in",
+  oauth_register: "agent registration",
+};
+for (const [bucket, why] of Object.entries(REFUSAL_REASON))
+  VERB[`${bucket}.refused`] = `were refused (${why})`;
+/** A refusal row with a bucket nobody mapped: the outcome, no raw name. */
+const REFUSED = "were refused";
+
+/**
+ * Each action the Action filter offers, as written by the API, the
+ * provisioner and the scheduler (audit-actions.test.ts checks it).
+ */
+export const AUDIT_ACTIONS = [
+  "job.accepted",
+  "job.replayed",
+  "job.refused",
+  "job.canceled",
+  "job.done",
+  "job.failed",
+  "authz.refused",
+  "signin.ok",
+  "signin.refused",
+  "session.logout",
+  "token.mint",
+  "token.used",
+  "token.revoke",
+  "token.revoke_all",
+  "oauth.grant",
+  "oauth.denied",
+  "oauth.refresh_refused",
+  "oauth.client_expired",
+  "test_admin.session",
+  "upgrade.held",
+  "upgrade.forward_fix",
+  "rollback.unhealthy",
+  "lease.force_release",
+  "fleet.halted",
+  "prod_dirty.snapshot",
+  "delete.revoke_unsupported",
+  "vars.session_cut_failed",
+  ...Object.keys(REFUSAL_REASON).map((b) => `${b}.refused`),
+  "rate_limited",
+];
 /**
  * The actions `own` reach writes: its rows are its API calls. A create and an
  * upgrade are both job.accepted (detail.kind tells them apart), and R17
@@ -66,6 +185,29 @@ const OWN_ACTIONS = [
 /** Design's sentence verb for a known action; the raw action name otherwise. */
 export const actionPhrase = (action: string) =>
   Object.hasOwn(VERB, action) ? VERB[action] : action;
+
+/** A counted anonymous refusal reads by its bucket; signin keeps its verb. */
+const refusalPhrase = (e: AuditEntry) => {
+  if (e.action === "rate_limited" || e.action === "signin.refused")
+    return actionPhrase(e.action);
+  const bucket = typeof e.detail?.bucket === "string" ? e.detail.bucket : null;
+  return bucket && Object.hasOwn(REFUSAL_REASON, bucket)
+    ? `were refused (${REFUSAL_REASON[bucket]})`
+    : REFUSED;
+};
+
+/** System actors by the label the audit records (shared/provisioning/system.ts). */
+const SYSTEM_LABEL: Record<string, string> = {
+  "system:scheduler": "Scheduler",
+  anonymous: "Anonymous callers",
+};
+/** The Actor cell: a token by its label, a system actor by its name. */
+export const actorLabel = (a: AuditEntry["actor"]) =>
+  a.kind === "token"
+    ? `token: ${a.label}`
+    : a.kind === "system" && Object.hasOwn(SYSTEM_LABEL, a.label)
+      ? (SYSTEM_LABEL[a.label] as string)
+      : a.label;
 
 /** The filters' "any" value (Radix Select has no empty value). */
 const ANY = "__any";
@@ -112,7 +254,9 @@ export function detailLine(detail: Record<string, unknown> | null): string {
 
 /** A row's verb: a job names its install when it has one. */
 const rowPhrase = (e: AuditEntry) =>
-  `${actionPhrase(e.action)}${e.installId && e.action.startsWith("job.") ? " on" : ""}`;
+  e.source === "refusals"
+    ? refusalPhrase(e)
+    : `${actionPhrase(e.action)}${e.installId && e.action.startsWith("job.") ? " on" : ""}`;
 
 /** A refusal's verb says the outcome, so its code is the row's detail. */
 const isRefusal = (e: AuditEntry) => e.action === "authz.refused";
@@ -138,7 +282,7 @@ export function Audit({
   // Every row is this principal's, so an actor filter could only hide them.
   const ownReach = me.data?.principal === "test-admin";
   const actor = ownReach ? undefined : actorParam;
-  const actions = ownReach ? OWN_ACTIONS : Object.keys(VERB);
+  const actions = ownReach ? OWN_ACTIONS : AUDIT_ACTIONS;
   // A refused call writes an audit row, so don't ask without the capability.
   const tokens = useQuery({
     ...tokensQuery(),
@@ -311,11 +455,7 @@ export function Audit({
                     <TableCell className="oa-mono">
                       {fmtDayClock(e.at)}
                     </TableCell>
-                    <TableCell>
-                      {e.actor.kind === "token"
-                        ? `token: ${e.actor.label}`
-                        : e.actor.label}
-                    </TableCell>
+                    <TableCell>{actorLabel(e.actor)}</TableCell>
                     <TableCell>
                       {rowPhrase(e)}
                       {e.count > 1 && (
