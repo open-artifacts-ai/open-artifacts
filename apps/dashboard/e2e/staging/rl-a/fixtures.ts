@@ -91,6 +91,9 @@ export async function person(
       body: JSON.stringify({ displayName: name }),
     }),
   );
+  // Space roles the hook granted: this file's cleanup takes them away again.
+  for (const s of spaces ?? [])
+    grantedHere().push({ spaceId: s.spaceId, userId: me.user.id });
   return { ...p, id: me.user.id, page: await ctx.newPage() };
 }
 
@@ -147,13 +150,22 @@ export async function refusal(res: Response, status: number): Promise<string> {
  * Artifacts each spec file made, keyed by the file, so its `cleanup` deletes
  * only its own: one file's afterAll never touches another's (#1251).
  */
-const made = new Map<string, { by: Person; id: string }[]>();
-const madeHere = () => {
-  const file = base.info().file;
-  const list = made.get(file) ?? [];
-  made.set(file, list);
-  return list;
+const perFile = <T>() => {
+  const all = new Map<string, T[]>();
+  return () => {
+    const file = base.info().file;
+    const list = all.get(file) ?? [];
+    all.set(file, list);
+    return list;
+  };
 };
+const madeHere = perFile<{ by: Person; id: string }>();
+/**
+ * Space roles each file's people got through the session hook, removed again
+ * by that file's `cleanup`, so the fixed t19 spaces don't gain members per
+ * run (#1251).
+ */
+const grantedHere = perFile<{ spaceId: string; userId: string }>();
 
 /**
  * Publishes as `p` and remembers the artifact for `cleanup`, which deletes it
@@ -174,7 +186,11 @@ export async function publish(
 /** `cleanup` deletes `id` as `by` (an artifact made in the UI, or one that changed owner). */
 export const remember = (by: Person, id: string) => madeHere().push({ by, id });
 
-/** Soft-deletes every artifact this file made; one already gone (404) is fine. */
+/**
+ * Soft-deletes every artifact this file made, then takes away every space
+ * role its people were granted (as an org admin, who may remove any manual
+ * member). One already gone (404) is fine.
+ */
 export async function cleanup(): Promise<void> {
   const left = madeHere().splice(0);
   const failed: string[] = [];
@@ -183,6 +199,23 @@ export async function cleanup(): Promise<void> {
       () => null,
     );
     if (!res || (res.status !== 204 && res.status !== 404)) failed.push(id);
+  }
+  const roles = grantedHere().splice(0);
+  if (roles.length) {
+    const { cookie } = await hook<{ cookie: string }>(TEST_HOOKS.session, {
+      email: email("admin"),
+      role: "admin",
+    } satisfies TestSessionInput);
+    const done = new Set<string>();
+    for (const { spaceId, userId } of roles) {
+      const key = `${spaceId} ${userId}`;
+      if (done.has(key)) continue;
+      done.add(key);
+      const res = await api({ cookie }, R.spaceMember(spaceId, userId), {
+        method: "DELETE",
+      }).catch(() => null);
+      if (!res || ![200, 204, 404].includes(res.status)) failed.push(key);
+    }
   }
   if (failed.length) throw new Error(`T19 cleanup left ${failed.join(", ")}`);
 }
