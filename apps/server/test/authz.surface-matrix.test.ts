@@ -287,9 +287,10 @@ describe("foreign credentials: another install's, valid there (#1137)", () => {
     expect(w.creds.foreignOAuth.token).toMatch(/^[^:]+:[^:]+:[^:]+$/);
     // Bearer writes (cookie write probes sent by token) only for callers
     // every write must refuse: the foreign token callers.
-    expect(
-      CALLERS.filter((c) => w.creds[c].bearerWrites).sort(),
-    ).toEqual(["foreignOAuth", "foreignPat"]);
+    expect(CALLERS.filter((c) => w.creds[c].bearerWrites).sort()).toEqual([
+      "foreignOAuth",
+      "foreignPat",
+    ]);
   });
 
   it("each works at A, the install that issued it, as B's owner id; at B it is no one", async () => {
@@ -353,7 +354,8 @@ describe("foreign credentials: another install's, valid there (#1137)", () => {
     expect(got).toEqual(exp);
 
     // A real pending upload at B (its owner's), then A's signature for it.
-    const created = await io.fetch?.(
+    const created = await fetchAndWait(
+      worker as never,
       new Request(`${BASE}/api/v1/uploads`, {
         method: "POST",
         headers: {
@@ -363,9 +365,10 @@ describe("foreign credentials: another install's, valid there (#1137)", () => {
         },
         body: JSON.stringify({ path: "foreign.txt", size: 3 }),
       }),
+      E,
     );
-    expect(created?.status).toBe(201);
-    const { uploadId, url } = (await created?.json()) as {
+    expect(created.status).toBe(201);
+    const { uploadId, url } = (await created.json()) as {
       uploadId: string;
       url: string;
     };

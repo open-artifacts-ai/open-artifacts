@@ -20,7 +20,7 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { D1Migration } from "@cloudflare/vitest-plugin";
-import { contentKey } from "../../src/auth/keys.js";
+import { LIMITS } from "@oa/shared";
 import { createPat } from "../../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../../src/auth/session.js";
 import { type ContentViewer, signContent } from "../../src/content/signing.js";
@@ -28,7 +28,8 @@ import type { Env } from "../../src/env.js";
 import worker from "../../src/index.js";
 import { oauthApi } from "../../src/mcp/oauth-api.js";
 import { mcpResource } from "../../src/mcp/server.js";
-import { b64urlEncode, hmacSign } from "../../src/util/crypto.js";
+import { signUpload } from "../../src/services/uploads.js";
+import { b64urlEncode } from "../../src/util/crypto.js";
 import { fetchAndWait } from "../helpers.js";
 import type { ForeignCaller } from "./expect.ts";
 import type { Cred } from "./surfaces.ts";
@@ -189,12 +190,8 @@ export async function contentPath(
   return `${prefix}index.html${mode === "dl" ? "?dl=1" : ""}`;
 }
 
-/** An upload URL path's query for `uploadId`, signed as `e` signs one (uploads.ts). */
+/** An upload URL's query for `uploadId`, signed by `e`'s own upload signer. */
 export async function uploadQuery(e: Env, uploadId: string): Promise<string> {
-  const exp = String(Math.floor(Date.now() / 1000) + 600);
-  const sig = await hmacSign(
-    await contentKey(e, "oa:upload"),
-    `${uploadId}:${exp}`,
-  );
-  return `exp=${exp}&sig=${sig}`;
+  const exp = Math.floor(Date.now() / 1000) + LIMITS.uploadUrlTtlSec;
+  return `exp=${exp}&sig=${await signUpload(e, uploadId, exp)}`;
 }
