@@ -10,6 +10,7 @@ import {
   oidcPrincipal,
   STAGING_API_HOST,
   TEST_ADMIN_WORKFLOW_REF,
+  TEST_MEMBER_WORKFLOW_REF,
   TEST_USER_HEADER,
 } from "../src/auth/oidc.js";
 import type { Env } from "../src/env.js";
@@ -341,6 +342,97 @@ describe("the test admin's workflow (#1053)", () => {
         await jwt({
           job_workflow_ref: TA.replace("@refs/heads/main", "@refs/heads/x"),
         }),
+        vopts(),
+      ),
+    ).toEqual(unauth);
+  });
+});
+
+describe("the test member's workflow (staging-test-member.yml)", () => {
+  const TM = TEST_MEMBER_WORKFLOW_REF;
+  const env = () => stagingEnv({ OIDC_JOB_WORKFLOW_REFS: `${WF},${TM}` });
+
+  it("is pinned to staging-test-member.yml on main", () => {
+    expect(TM).toBe(
+      `${REPO}/.github/workflows/staging-test-member.yml@refs/heads/main`,
+    );
+  });
+
+  it("its JWT is an oidc principal marked test-member, with its own actor and rate keys", async () => {
+    const m = await oidcPrincipal(
+      req(),
+      env(),
+      await jwt({ job_workflow_ref: TM }),
+      vopts(),
+    );
+    expect(m).toMatchObject({
+      kind: "oidc",
+      oidcWorkflow: "test-member",
+      actorKey: "oidc:4242:test-member",
+      rateKey: "oidc:4242:test-member",
+    });
+    expect(m).not.toHaveProperty("oidcRun");
+    const r = await oidcPrincipal(req(), env(), await jwt(), vopts());
+    expect(r).toMatchObject({
+      oidcWorkflow: "redline",
+      actorKey: "oidc:4242",
+      rateKey: "oidc:4242",
+    });
+  });
+
+  it("its JWT is never a test user", async () => {
+    for (const u of ["a", "b", "c"])
+      expect(
+        await oidcPrincipal(
+          req({ [TEST_USER_HEADER]: u }),
+          env(),
+          await jwt({ job_workflow_ref: TM }),
+          vopts(),
+        ),
+        u,
+      ).toEqual(unauth);
+  });
+
+  it("refused unless the workflow is in OIDC_JOB_WORKFLOW_REFS, off main, on prod, or off the staging host", async () => {
+    expect(
+      await oidcPrincipal(
+        req(),
+        stagingEnv(),
+        await jwt({ job_workflow_ref: TM }),
+        vopts(),
+      ),
+    ).toEqual(unauth);
+    expect(
+      await oidcPrincipal(
+        req(),
+        env(),
+        await jwt({ job_workflow_ref: TM, ref: "refs/heads/feature" }),
+        vopts(),
+      ),
+    ).toEqual(unauth);
+    expect(
+      await oidcPrincipal(
+        req(),
+        env(),
+        await jwt({
+          job_workflow_ref: TM.replace("@refs/heads/main", "@refs/heads/x"),
+        }),
+        vopts(),
+      ),
+    ).toEqual(unauth);
+    expect(
+      await oidcPrincipal(
+        req(),
+        { ...env(), OA_ENV: "prod" } as Env,
+        await jwt({ job_workflow_ref: TM }),
+        vopts(),
+      ),
+    ).toEqual(unauth);
+    expect(
+      await oidcPrincipal(
+        req({}, "api.open-artifacts.app"),
+        env(),
+        await jwt({ job_workflow_ref: TM }),
         vopts(),
       ),
     ).toEqual(unauth);

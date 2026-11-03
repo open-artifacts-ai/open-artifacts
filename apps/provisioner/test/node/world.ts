@@ -379,6 +379,8 @@ export function seedJob(
     installId: string;
     args?: Record<string, unknown>;
     actor?: "admin" | "token" | "user" | "oidc" | "system";
+    /** jobs.actor_key; default `<actor>:x`. */
+    actorKey?: string;
     signupId?: string | null;
     parentJobId?: string | null;
     status?: string;
@@ -399,7 +401,7 @@ VALUES (?, ?, 'manage_install', ?, ?, ?, ?, ?, ?, ?, 'h', ?, ?, ?, ?)`,
       o.signupId ?? null,
       o.parentJobId ?? null,
       actor,
-      `${actor}:x`,
+      o.actorKey ?? `${actor}:x`,
       actor,
       `req-${id}`,
       JSON.stringify(o.args ?? {}),

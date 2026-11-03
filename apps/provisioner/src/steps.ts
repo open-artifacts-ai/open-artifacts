@@ -32,6 +32,8 @@ export type JobRow = {
   signup_id: string | null;
   parent_job_id: string | null;
   actor_kind: "admin" | "token" | "user" | "oidc" | "system";
+  /** Who asked (idempotency, audit); checkOidcScope reads the test member's. */
+  actor_key: string;
   token_id: string | null;
   request_id: string;
   args: string;
@@ -47,7 +49,7 @@ export type JobRow = {
 export type StepCtx = { env: { PLATFORM_DB: D1Database }; io: ProvisionerIo };
 
 const JOB =
-  "SELECT id, kind, workflow, install_id, signup_id, parent_job_id, actor_kind, token_id, request_id, args, status, step, attempt, last_error_code, error_code, started_at FROM jobs WHERE id = ?";
+  "SELECT id, kind, workflow, install_id, signup_id, parent_job_id, actor_kind, actor_key, token_id, request_id, args, status, step, attempt, last_error_code, error_code, started_at FROM jobs WHERE id = ?";
 
 export async function readJob(
   ctx: StepCtx,

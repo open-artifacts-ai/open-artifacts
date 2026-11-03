@@ -161,9 +161,14 @@ describe("wrangler.jsonc", () => {
           else expect(e.vars[k]).toBeUndefined();
         if (env === "staging") {
           expect(e.vars.OIDC_AUDIENCE).toBe(`https://api.${APP.staging}`);
-          // Red-line's and the test admin's workflows (#1053), on main only.
+          // Red-line's, the test admin's (#1053) and the test member's
+          // workflows, on main only.
           expect(e.vars.OIDC_JOB_WORKFLOW_REFS.split(",")).toEqual(
-            ["redline-staging.yml", "staging-test-admin.yml"].map(
+            [
+              "redline-staging.yml",
+              "staging-test-admin.yml",
+              "staging-test-member.yml",
+            ].map(
               (w) =>
                 `open-artifacts-ai/open-artifacts/.github/workflows/${w}@refs/heads/main`,
             ),
