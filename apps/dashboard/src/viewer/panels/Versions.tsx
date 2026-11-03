@@ -4,7 +4,6 @@ import {
   type VersionInfo,
   viewerPath,
 } from "@oa/shared";
-import { displayName } from "@oa/ui";
 import { Input, Button as ShButton, Skeleton } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
@@ -16,6 +15,7 @@ import {
 } from "../../api/queries";
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { useCan } from "../../auth/permissions";
+import { personName } from "../../layout/person";
 import { toast } from "../../layout/toast";
 import { AppLink } from "../../library/AppLink";
 import { useSentinel } from "../../library/useInfinite";
@@ -34,7 +34,7 @@ let refocus: { id: string; version: number } | null = null;
 /** A row click is moving focus back to its row: the panel skips its own autofocus. */
 export const refocusPending = (id: string) => refocus?.id === id;
 
-const author = (x: VersionInfo) => x.agent?.name ?? displayName(x.createdBy);
+const author = (x: VersionInfo) => x.agent?.name ?? personName(x.createdBy);
 /** "12" or "v12": a version number to jump to. */
 const jumpTo = (q: string) => {
   const m = /^v?(\d+)$/i.exec(q.trim());

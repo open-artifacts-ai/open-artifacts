@@ -60,7 +60,9 @@ export function SettingsLayout() {
   // Compare the normalized path: the router matches case-insensitively, ignoring a trailing slash.
   const here = path.toLowerCase().replace(/\/+$/, "");
   // Departed people with artifacts to transfer light the Members tab.
-  const departed = useDeparted(state.status === "authed" ? state.me : null);
+  const departed = useDeparted(
+    state.status === "authed" ? state.me : null,
+  ).people;
   if (role === "guest") return <Outlet />; // no chrome; the gate redirects
   return (
     // The 880px measure, centered in the shell gutter.

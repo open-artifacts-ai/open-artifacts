@@ -302,8 +302,9 @@ test("Remove someone with personal artifacts: Departed lists them, and Transfer 
   const row = departed.getByRole("listitem").filter({ hasText: gone.name });
   await expect(row).toContainText("Removed");
   await expect(row).toContainText("2 personal artifacts");
-  await row
-    .getByRole("button", { name: `Transfer ${gone.name}'s artifacts` })
+  await row.getByRole("button", { name: `More for ${gone.name}` }).click();
+  await page
+    .getByRole("menuitem", { name: "Transfer to someone else…" })
     .click();
   const d = page.getByRole("dialog");
   await d.getByRole("combobox", { name: "Give them to" }).click();
