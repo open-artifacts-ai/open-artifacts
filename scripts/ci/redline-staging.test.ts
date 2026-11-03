@@ -452,7 +452,7 @@ describe("redline-staging.yml", () => {
       steps.findIndex(pred);
     const order = [
       at((s) => s.run === "pnpm install --frozen-lockfile --ignore-scripts"),
-      at((s) => s.run === "pnpm --filter @oa/provision build"),
+      at((s) => s.id === "prep"),
       at((s) => JSON.stringify(s).includes("secrets.")),
       at((s) => s.name === "Set the targets"),
       at((s) => s.id === "mint"),
@@ -484,6 +484,55 @@ describe("redline-staging.yml", () => {
     expect(
       steps.filter((s) => (s.run ?? "").includes("@oa/provision build")),
     ).toHaveLength(1);
+  });
+
+  it("prep: Chromium installs beside the builds, and either failing fails the step", () => {
+    const prep = named("prep");
+    expect(prep.if).toBeUndefined();
+    expect(prep["continue-on-error"]).toBeUndefined();
+    const dir = mkdtempSync(join(tmpdir(), "rl-prep-"));
+    try {
+      // A fake pnpm: logs its args, fails when they contain $FAIL.
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      writeFileSync(
+        join(bin, "pnpm"),
+        '#!/usr/bin/env bash\necho "$*" >> "$CALLS"\ncase "$*" in *"$FAIL"*) exit 3;; esac\n',
+        { mode: 0o755 },
+      );
+      const run = (fail: string) => {
+        const calls = join(dir, `calls-${fail || "none"}`);
+        const r = runBash(prep.run, {
+          PATH: `${bin}:${process.env.PATH}`,
+          RUNNER_TEMP: dir,
+          CALLS: calls,
+          FAIL: fail || "no-such-arg",
+        });
+        return {
+          status: r.status,
+          calls: existsSync(calls)
+            ? readFileSync(calls, "utf8").trim().split("\n").sort()
+            : [],
+        };
+      };
+      const all = [
+        "--filter @oa/dashboard exec playwright install --with-deps chromium",
+        "--filter @oa/provision build",
+        "--filter @oa/shared build",
+      ];
+      expect(run("")).toEqual({ status: 0, calls: all });
+      // The install fails in the background: the step still fails.
+      expect(run("playwright").status).toBe(1);
+      // A build fails: the step fails, and the install was still waited on.
+      const b = run("provision");
+      expect(b.status).toBe(1);
+      expect(b.calls).toEqual(all.filter((c) => !c.includes("shared")));
+      expect(run("shared").status).toBe(1);
+      // The install's log is printed and removed, never left in RUNNER_TEMP.
+      expect(existsSync(join(dir, "playwright-install.log"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("a secret file's contents anywhere in either report fails the job and stops both uploads", () => {
