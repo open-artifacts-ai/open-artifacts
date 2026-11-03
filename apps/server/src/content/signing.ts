@@ -55,7 +55,12 @@ export const CAPTURE_HEADER = "X-OA-Capture";
 export const CAPTURE_MAX_TTL_SEC = 120;
 
 /** Content tokens and capture headers: the "oa:content-url" subkey (never the upload one). */
-const signingKey = (env: Env) => contentKey(env, "oa:content-url");
+// MUTATION (#1137): one content key for every install.
+const signingKey = (_env: Env) =>
+  contentKey(
+    { CONTENT_SIGNING_KEY: "one-content-key-for-every-install-000" },
+    "oa:content-url",
+  );
 
 /**
  * The mode is in the MAC: a frame token can't be turned into dl. So is the
