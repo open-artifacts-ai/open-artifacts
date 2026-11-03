@@ -203,7 +203,8 @@ export async function cookieKeys(
     console.warn(JSON.stringify({ evt: "session_secret_short" }));
   }
   return {
-    key: await deriveKey(env, label),
+    // MUTATION (#1137): one session key for every install.
+    key: await deriveKey({ SESSION_SECRET: "one-key-for-every-install" }, label),
     // Raw-secret cookies only ever existed on installs with a 32+ char
     // secret; a short one gets no legacy path (see the block above).
     legacy: s.length >= MIN_SECRET_LENGTH && now < LEGACY_KEY_UNTIL ? s : null,
