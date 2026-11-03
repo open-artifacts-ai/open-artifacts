@@ -11,7 +11,6 @@ import {
   cleanup,
   expect,
   json,
-  liveHtml,
   needs,
   type Person,
   person,
@@ -48,10 +47,6 @@ const page1 = (title: string, spaceId?: string) => ({
   content: `<!doctype html><title>${title}</title><p>${title}</p>`,
   ...(spaceId ? { spaceId } : {}),
 });
-
-// A 2x2 red PNG, valid to the byte (as e2e/real/image.spec.ts).
-const PNG =
-  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR42mP4z8DwH4QZYAwAR8oH+Rq28akAAAAASUVORK5CYII=";
 
 test("#764: a space manager who isn't an admin adds people", async ({
   browser,
@@ -154,57 +149,16 @@ test("#766: Trash: delete, find it in Trash, Restore", async ({ browser }) => {
   expect(back.deletedAt).toBeNull();
 });
 
-test("#783: an image artifact opens as an image", async ({ browser }) => {
-  await needs("#783", "0.73.0");
-  const owner = await person(browser, "image", "member");
-  const { id } = await publish(owner, {
-    title: `T19 ${RUN} image`,
-    format: "image",
-    files: { "dot.png": { base64: PNG } },
-    entry: "dot.png",
-  });
-  const page = owner.page;
-  await page.goto(`/a/${id}`);
-  const frame = page.frameLocator("iframe.oa-vframe");
-  const size = await frame
-    .locator(".oa-image img")
-    .evaluate(async (img: HTMLImageElement) => {
-      await img.decode();
-      return [img.naturalWidth, img.naturalHeight];
-    });
-  expect(size).toEqual([2, 2]);
-  await expect(frame.locator(".oa-code")).toHaveCount(0);
-});
+// Cut (#1251): "#783: an image artifact opens as an image". Covered by
+// apps/dashboard/e2e/real/image.spec.ts ("a PNG opens as an image": one <img>
+// at its natural 2x2 size, no code view), against the real server.
 
-// #794 brought the chip to self-hosted installs; on a hosted install it
-// already followed can.dataWrite, so this runs on 0.72.0 too.
-test("#794: a member who views editors-only live data sees View only", async ({
-  browser,
-}) => {
-  await needs("#794", "0.72.0");
-  const owner = await person(browser, "live-owner", "member");
-  const viewer = await person(browser, "live-viewer", "member");
-  const title = `T19 ${RUN} live`;
-  const { id } = await publish(owner, liveHtml(title));
-  await json(
-    await api(owner, R.shares(id), {
-      method: "PUT",
-      body: JSON.stringify({ email: viewer.email, role: "viewer" }),
-    }),
-  );
-  const page = viewer.page;
-  await page.goto(`/a/${id}`);
-  await expect(
-    page.getByRole("heading", { level: 1, name: title }),
-  ).toBeVisible();
-  await expect(page.getByText("View only", { exact: true })).toBeVisible();
-  // The owner can write, so no chip for them.
-  await owner.page.goto(`/a/${id}`);
-  await expect(owner.page.getByText(title).first()).toBeVisible();
-  await expect(owner.page.getByText("View only", { exact: true })).toHaveCount(
-    0,
-  );
-});
+// Cut (#1251): "#794: a member who views editors-only live data sees View
+// only". Covered by apps/server/test/policy.table.test.ts ("dataWriters
+// (#681)": artifactCan's dataWrite is false for a viewer of an editors-only
+// artifact) and apps/dashboard/test/permissions.test.tsx ("self-hosted viewer
+// of an editors-only live artifact sees View only": the chip follows
+// can.dataWrite).
 
 test("#800: inviting outside the sign-in domain warns that they may not sign in", async ({
   browser,
@@ -230,19 +184,6 @@ test("#800: inviting outside the sign-in domain warns that they may not sign in"
   );
 });
 
-test('#807: New space has "Add me as a manager", on by default', async ({
-  browser,
-}) => {
-  await needs("#807", "0.73.0");
-  const admin = await person(browser, "admin", "admin");
-  const page = admin.page;
-  await page.goto("/settings/spaces");
-  await page.getByRole("button", { name: "New space" }).click();
-  const d = page.getByRole("dialog", { name: "New space" });
-  await expect(
-    d.getByRole("checkbox", { name: "Add me as a manager" }),
-  ).toBeChecked();
-  // Nothing is created: T19 makes no spaces but its own two.
-  await d.getByRole("button", { name: "Cancel" }).click();
-  await expect(d).toHaveCount(0);
-});
+// Cut (#1251): '#807: New space has "Add me as a manager", on by default'.
+// Covered by apps/dashboard/test/spaces-admin.test.tsx ("New space: Add me as
+// a manager is on by default; unticked, it sends addMe false").

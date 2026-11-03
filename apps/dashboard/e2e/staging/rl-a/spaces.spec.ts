@@ -11,7 +11,6 @@ import {
   api,
   cleanup,
   expect,
-  get,
   json,
   type Person,
   person,
@@ -126,7 +125,10 @@ test("a viewer sees no edit controls, and the API refuses their publish", async 
     method: "POST",
     body: JSON.stringify({ format: "html", content: "<p>no</p>" }),
   });
-  expect([403, 404]).toContain(version.status);
+  // A viewer may not publish, so authorize() answers 404, never 403
+  // (apps/server/src/auth/authz.ts authorize; apps/server/test/publish.test.ts
+  // "a viewer publishing → 404").
+  expect(version.status).toBe(404);
 });
 
 test("an editor publishes into t19-eng; a manager moves it to t19-exec", async ({
@@ -226,22 +228,30 @@ test("an admin never sees another person's personal space", async ({
   const m = await person(browser, "private", "member");
   const title = `T19 ${RUN} private page`;
   await publish(m, page1(title));
+  // The admin's own page matches the same search, so an empty list fails.
+  const own = `${title} (admin)`;
+  await publish(admin, page1(own));
 
   const personal = await json<ListPage<Space>>(
-    await get(admin, `${R.spaces}?kind=personal&limit=200`),
+    await api(admin, `${R.spaces}?kind=personal&limit=200`),
   );
-  expect(personal.items.map((s) => s.id)).not.toContain(m.id);
-  expect(personal.items.every((s) => s.id === admin.id)).toBe(true);
+  // Their own personal space is listed, and nobody else's.
+  expect(personal.items.map((s) => s.id)).toEqual([admin.id]);
   const list = await api(
     admin,
     `${R.artifacts}?scope=space&spaceId=${encodeURIComponent(m.id)}`,
   );
   expect(await refusal(list, 400)).toBe("space_personal");
-  expect([400, 404]).toContain((await api(admin, R.space(m.id))).status);
+  // Another person's personal space isn't visible to anyone else, admins
+  // included: getSpace's seeSpace answers 404 (apps/server/src/services/
+  // spaces.ts visibleTo and seeSpace).
+  expect((await api(admin, R.space(m.id))).status).toBe(404);
   const search = await json<ListPage<ArtifactSummary>>(
-    await get(admin, `${R.artifacts}?scope=all&q=${encodeURIComponent(title)}`),
+    await api(admin, `${R.artifacts}?scope=all&q=${encodeURIComponent(title)}`),
   );
-  expect(search.items.map((a) => a.title)).not.toContain(title);
+  const found = search.items.map((a) => a.title);
+  expect(found).toContain(own);
+  expect(found).not.toContain(title);
 
   // The UI: one Personal (their own), and the member's page nowhere.
   await admin.page.goto("/");
@@ -256,27 +266,12 @@ test("an admin never sees another person's personal space", async ({
   await expect(admin.page.getByText(title)).toHaveCount(0);
 });
 
-test('a space named "Personal" is refused inline', async ({ browser }) => {
-  const admin = await person(browser, "admin", "admin");
-  const page = admin.page;
-  await page.goto("/settings/spaces");
-  await page.getByRole("button", { name: "New space" }).click();
-  const d = page.getByRole("dialog", { name: "New space" });
-  await d.getByRole("textbox", { name: "Name" }).fill("Personal");
-  await d.getByRole("button", { name: "Create space" }).click();
-  // The dashboard's own words for it (settings/spaces/name.ts NAME_RESERVED).
-  await expect(d.getByRole("alert")).toHaveText(
-    "Everyone already has a space called Personal. Use another name.",
-  );
-  await expect(d).toBeVisible();
-  await d.getByRole("button", { name: "Cancel" }).click();
-
-  const res = await api(admin, R.spaces, {
-    method: "POST",
-    body: JSON.stringify({ name: "personal ", addMe: false }),
-  });
-  expect(await refusal(res, 400)).toBe("space_name_reserved");
-});
+// Cut (#1251): 'a space named "Personal" is refused inline'. Covered by
+// apps/dashboard/test/spaces-admin.test.tsx ('create refuses "Personal" in any
+// case before sending', and 'a server 400 space_name_reserved shows the
+// reserved copy under the field') and apps/server/test/spaces.api.test.ts
+// ('"Personal" (trimmed, any case) is 400 space_name_reserved on create and
+// rename').
 
 test("Remove someone with personal artifacts: Departed lists them, and Transfer gives them to a successor", async ({
   browser,
