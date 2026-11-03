@@ -74,18 +74,15 @@ const VERB: Record<string, string> = {
   "vars.session_cut_failed": "couldn't sign everyone out",
   "vars.session_cut_dropped": "skipped a sign-out it no longer needed",
   "verify_clean.refused": "failed the clean check",
-  "verify_clean.binding_ids": "checked the bindings",
-  "prod_dirty.snapshot": "recorded an unclean install",
+  "verify_clean.binding_ids": "checked its bindings point at its own resources",
+  "prod_dirty.snapshot":
+    "recorded what the install was running when it failed the clean check",
   "delete.start": "started deleting the install",
   "delete.unmap_stale": "removed stale hosts",
   "delete.revoke_pending": "waited to revoke Google access",
   "delete.revoke_skipped": "skipped revoking Google access",
   "delete.revoke_unsupported": "couldn't revoke Google access",
   "delete.done": "deleted the install",
-  "suspend.hosts": "took the install offline",
-  "resume.hosts": "brought the install back",
-  "delete.hosts": "closed the install",
-  "restore.hosts": "paused the install for a restore",
   "lease.release": "released the lock",
   "lease.force_release": "forced the lock open",
   "lease.release_refused": "couldn't release the lock",
@@ -103,7 +100,7 @@ const VERB: Record<string, string> = {
 };
 /**
  * The operations a held lock names (`<op>.lost_lease`, `<op>.aborted`).
- * owner-token is the writer's spelling; owner_token too, in case it moves.
+ * owner_token is the writer's spelling; owner-token stays for older rows.
  */
 const LOCK_OPS = [
   "create",
@@ -118,6 +115,17 @@ const LOCK_OPS = [
   "owner-token",
   "owner_token",
 ];
+/**
+ * The job kinds that call setMode, whose HOSTS row is `<kind>.hosts` with
+ * {mode}: the row reads by its mode (hostsPhrase), the filter by this.
+ */
+const HOST_KINDS = ["suspend", "resume", "delete", "restore"];
+const HOSTS_CHANGED = "changed the install's hosts";
+for (const kind of HOST_KINDS) VERB[`${kind}.hosts`] = HOSTS_CHANGED;
+const HOSTS_BY_MODE: Record<string, string> = {
+  serving: "brought the install back online",
+  paused: "took the install offline",
+};
 for (const op of LOCK_OPS) {
   VERB[`${op}.lost_lease`] = "lost its lock";
   VERB[`${op}.aborted`] = "stopped partway";
@@ -185,6 +193,14 @@ const OWN_ACTIONS = [
 /** Design's sentence verb for a known action; the raw action name otherwise. */
 export const actionPhrase = (action: string) =>
   Object.hasOwn(VERB, action) ? VERB[action] : action;
+
+/** A HOSTS row reads by the mode it set; any other mode, the plain change. */
+const hostsPhrase = (e: AuditEntry) => {
+  const mode = typeof e.detail?.mode === "string" ? e.detail.mode : "";
+  return Object.hasOwn(HOSTS_BY_MODE, mode)
+    ? (HOSTS_BY_MODE[mode] as string)
+    : HOSTS_CHANGED;
+};
 
 /** A counted anonymous refusal reads by its bucket; signin keeps its verb. */
 const refusalPhrase = (e: AuditEntry) => {
@@ -256,13 +272,22 @@ export function detailLine(detail: Record<string, unknown> | null): string {
 const rowPhrase = (e: AuditEntry) =>
   e.source === "refusals"
     ? refusalPhrase(e)
-    : `${actionPhrase(e.action)}${e.installId && e.action.startsWith("job.") ? " on" : ""}`;
+    : e.source === "provision" && /^[a-z_]+\.hosts$/.test(e.action)
+      ? hostsPhrase(e)
+      : `${actionPhrase(e.action)}${e.installId && e.action.startsWith("job.") ? " on" : ""}`;
 
 /** A refusal's verb says the outcome, so its code is the row's detail. */
 const isRefusal = (e: AuditEntry) => e.action === "authz.refused";
 const hasChip = (e: AuditEntry) => e.outcome !== "ok" && !isRefusal(e);
+/** The binding check names what's wrong only when something is (Platform, #1136). */
+const bindingProblems = (e: AuditEntry) =>
+  e.action === "verify_clean.binding_ids" &&
+  Number(e.detail?.problems) > 0 &&
+  typeof e.detail?.detail === "string"
+    ? e.detail.detail
+    : null;
 const detailOf = (e: AuditEntry) =>
-  [isRefusal(e) ? e.code : null, detailLine(e.detail)]
+  [isRefusal(e) ? e.code : null, bindingProblems(e), detailLine(e.detail)]
     .filter(Boolean)
     .join(" · ");
 

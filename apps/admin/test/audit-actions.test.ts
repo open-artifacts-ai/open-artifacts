@@ -122,7 +122,11 @@ it("every action the API writes is an option", () => {
 
 it("every step and refusal row has a label, never its raw name", () => {
   const rows = [...stepsWritten(), ...refusalsWritten()];
-  expect(rows).toContain("owner-token.lost_lease");
+  // The composed actions, from their enumerated prefixes.
+  expect(rows).toContain("owner_token.lost_lease");
+  expect(rows).toContain("upgrade.aborted");
+  for (const kind of ["suspend", "resume", "delete", "restore"])
+    expect(rows).toContain(`${kind}.hosts`);
   expect(rows).toContain("suspend.hosts");
   expect(rows).toContain("create.start");
   expect(rows.filter((a) => actionPhrase(a) === a)).toEqual([]);

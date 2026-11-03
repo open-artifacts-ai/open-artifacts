@@ -423,7 +423,7 @@ it("step rows read as past-tense sentences, never raw names; the Scheduler is th
           step(1, "upgrade.held"),
           step(2, "delete.revoke_pending"),
           step(3, "owner-token.lost_lease"),
-          step(4, "suspend.hosts"),
+          { ...step(4, "suspend.hosts"), detail: { mode: "paused" } },
           step(5, "oauth_copy.counts"),
           step(6, "fleet.halted", "system:scheduler"),
         ],
@@ -491,7 +491,7 @@ it("the Action filter adds only Design's step and refusal options", async () => 
     "rolled back to an unhealthy version",
     "forced the lock open",
     "halted the fleet rollout",
-    "recorded an unclean install",
+    "recorded what the install was running when it failed the clean check",
     "couldn't revoke Google access",
     "couldn't sign everyone out",
     "were refused (not signed in)",
@@ -512,12 +512,60 @@ it("the Action filter adds only Design's step and refusal options", async () => 
   expect(options).toHaveLength(AUDIT_ACTIONS.length + 1);
 });
 
+it("a HOSTS row reads by its mode; a binding check names its problems only when it has some", async () => {
+  use(
+    http.get("*/api/v1/audit", () =>
+      json({
+        items: [
+          { ...step(1, "resume.hosts"), detail: { mode: "serving" } },
+          { ...step(2, "restore.hosts"), detail: { mode: "paused" } },
+          { ...step(3, "delete.hosts"), detail: { mode: "closed" } },
+          { ...step(4, "suspend.hosts"), detail: null },
+          {
+            ...step(5, "verify_clean.binding_ids"),
+            detail: {
+              problems: 2,
+              bookmark: "b1",
+              doNs: "x",
+              detail: "DB:wrong_id KV:missing",
+            },
+          },
+          {
+            ...step(6, "verify_clean.binding_ids"),
+            // Only problems > 0 shows it, whatever detail holds.
+            detail: { problems: 0, bookmark: "b1", doNs: "x", detail: "DB:ok" },
+          },
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  renderApp("/audit");
+  await screen.findAllByRole("row");
+  const rows = screen.getAllByRole("row").slice(1);
+  const cell = (i: number, c: number) =>
+    within(rows[i] as HTMLElement).getAllByRole("cell")[c]?.textContent;
+  expect(rows.map((_, i) => cell(i, 2))).toEqual([
+    "brought the install back online",
+    "took the install offline",
+    "changed the install's hosts",
+    "changed the install's hosts",
+    "checked its bindings point at its own resources",
+    "checked its bindings point at its own resources",
+  ]);
+  expect(cell(4, 4)).toContain("DB:wrong_id KV:missing");
+  expect(cell(5, 4)).not.toContain("DB:");
+  expect(cell(5, 4)).not.toContain("b1");
+});
+
 it("labels are past tense, and every lock op reads the same", () => {
   expect(actionPhrase("delete.revoke_pending")).toBe(
     "waited to revoke Google access",
   );
   expect(actionPhrase("owner_token.lost_lease")).toBe("lost its lock");
+  // The op is owner_token now; rows written before keep owner-token.
   expect(actionPhrase("owner-token.aborted")).toBe("stopped partway");
+  expect(actionPhrase("owner_token.aborted")).toBe("stopped partway");
   expect(actionPhrase("oauth_store.mode_live")).toBe(
     "switched where agent sign-ins are stored",
   );
