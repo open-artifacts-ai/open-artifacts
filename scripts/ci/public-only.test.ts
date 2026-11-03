@@ -180,13 +180,16 @@ describe("private-paths.txt", () => {
     .map((l) => (l.split("#")[0] ?? "").trim().replace(/\/$/, ""))
     .filter(Boolean);
 
-  // Drift guard: a renamed hosted path must be renamed here too. When the
-  // hosted code is deleted from this repo (#1056 phase 2), the list moves to
-  // the private repo's sync and this check goes with it.
-  it("names only paths that exist", () => {
+  // Drift guard: a renamed hosted path must be renamed here too. In a tree
+  // with none of them (public-only.sh's own copy, or after the hosted code is
+  // deleted in #1056 phase 2) there is nothing to drift from; a tree with
+  // some but not all of them is drift.
+  it("names only paths that exist, or none of them is present", () => {
     expect(entries.length).toBeGreaterThan(0);
-    for (const p of entries) expect(existsSync(join(root, p)), p).toBe(true);
     expect(new Set(entries).size).toBe(entries.length);
+    const present = entries.filter((p) => existsSync(join(root, p)));
+    if (present.length === 0) return;
+    for (const p of entries) expect(existsSync(join(root, p)), p).toBe(true);
   });
 
   it("never names a public path", () => {
