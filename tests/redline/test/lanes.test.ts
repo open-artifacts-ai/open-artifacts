@@ -18,7 +18,12 @@ import {
   type Phase,
   PLAN,
 } from "../src/lanes.ts";
-import { parseManifest, type Report } from "../src/report.ts";
+import {
+  buildReport,
+  exitCode,
+  parseManifest,
+  type Report,
+} from "../src/report.ts";
 import { MAX_RETRIED_CASES } from "../src/retry.ts";
 
 const pkg = join(import.meta.dirname, "..");
@@ -222,6 +227,44 @@ describe("mergeLanes", () => {
         level: "fail",
       }),
     );
+  });
+
+  // The provisioning lane fails while the install lane passes: the run fails,
+  // whether the lane reported its failure or died without a part.
+  it.each<[string, LaneResult]>([
+    [
+      "a failed case",
+      lane(
+        ["live/provisioning.test.ts"],
+        {
+          cases: [
+            {
+              name: "P11",
+              file: "live/provisioning.test.ts",
+              level: "fail",
+              reason: "403 expected",
+            },
+          ],
+          fileNotes: [],
+        },
+        1,
+      ),
+    ],
+    ["no part at all", lane(["live/provisioning.test.ts"], null, 1)],
+  ])("one lane fails, the other passes: the run fails (%s)", (_, bad) => {
+    const m = mergeLanes([
+      lane(["live/guard.test.ts"], {
+        cases: [pass("live/guard.test.ts")],
+        fileNotes: [],
+      }),
+      bad,
+    ]);
+    const r = buildReport(m.cases, "staging");
+    expect(r.counts.fail).toBeGreaterThan(0);
+    expect(r.gate.passed).toBe(false);
+    expect(exitCode(r, true, m.runExit)).not.toBe(0);
+    // Even had the lane's vitest exited 0, its fail case fails the run.
+    expect(exitCode(r, false, 0)).not.toBe(0);
   });
 });
 
