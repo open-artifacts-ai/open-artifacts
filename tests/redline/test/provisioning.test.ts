@@ -254,6 +254,10 @@ describe("P50: the snooze owner path on an install the run creates (#1078)", () 
       (o) => o,
       (e: Error) => e,
     );
+    // P50 returns with its removal started, not done.
+    const behind = run.s.cleanup.find((e) => e.slug.startsWith("rl-snz-"));
+    expect(behind?.removing).toBeInstanceOf(Promise);
+    await behind?.removing;
     const snz = [...f.installs.values()].find((i) =>
       i.slug.startsWith("rl-snz-"),
     );
@@ -262,7 +266,12 @@ describe("P50: the snooze owner path on an install the run creates (#1078)", () 
 
   it("creates rl-snz-<run> business tier with domain codes and test hooks, mints R26 creds, passes the snooze path, then deletes and purges it", async () => {
     const { f, run, out, snz } = await p50();
-    expect(out).toEqual({ level: "pass" });
+    expect(out).toEqual({
+      level: "pass",
+      note: expect.stringMatching(
+        /^create \d+ s, \/healthz \d+ s, R26 \d+ s, snooze \d+ s; delete and purge behind the run$/,
+      ),
+    });
     expect(snz?.slug).toBe("rl-snz-1234");
     expect(snz?.slug.length).toBeLessThanOrEqual(32);
     expect(f.creates.find((b) => b.slug === snz?.slug)).toMatchObject({
@@ -342,6 +351,41 @@ describe("P50: the snooze owner path on an install the run creates (#1078)", () 
     expect(msg).not.toContain(snz?.appHost);
     expect(snz?.state).toBe("deleted");
     expect(f.tenants.size).toBe(0);
+  });
+
+  it("a purge of rl-snz that fails behind the run fails the run's cleanup with P50's message, even when the cleanup's own retry removes it", async () => {
+    const f = fakeApi();
+    fakes.push(f);
+    await bringUp(f);
+    let refused = 0;
+    const run = new Run(CONFIG, {
+      ...f.io,
+      fetch: (async (u: string, init: RequestInit) => {
+        const m = /\/installs\/([^/]+)\/purge$/.exec(new URL(u).pathname);
+        if (
+          m &&
+          refused === 0 &&
+          f.installs.get(m[1] ?? "")?.slug.startsWith("rl-snz-")
+        ) {
+          refused++;
+          return new Response("{}", { status: 500 });
+        }
+        return f.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    });
+    const p = PROBES.find((x) => x.id === "P50");
+    if (!p) throw new Error("no P50");
+    expect((await p.run(run)).level).toBe("pass");
+    const behind = run.s.cleanup.find((e) => e.slug.startsWith("rl-snz-"));
+    await behind?.removing;
+    expect(refused).toBe(1);
+    expect(behind?.failure).toMatch(/^P50 cleanup purge: /);
+    await expect(cleanupInstalls(run)).rejects.toThrow(/^P50 cleanup purge: /);
+    const snz = [...f.installs.values()].find((i) =>
+      i.slug.startsWith("rl-snz-"),
+    );
+    expect(snz?.state).toBe("deleted");
+    expect(run.s.cleanup).toEqual([]);
   });
 
   it("a create that lands on another tier fails P50 before any hook; the install is still removed", async () => {

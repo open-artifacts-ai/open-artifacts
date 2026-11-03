@@ -394,6 +394,17 @@ export interface RlP {
   version: string;
 }
 
+/**
+ * One install on the run's cleanup list. `removing` is a removal already
+ * running behind later probes (removeBehind); `failure` is what it failed
+ * with, kept so the run stays red even when the end's retry removes it.
+ */
+export interface CleanupEntry {
+  slug: string;
+  removing?: Promise<void>;
+  failure?: string;
+}
+
 export interface RunState {
   jobIds: string[];
   /**
@@ -402,7 +413,7 @@ export interface RunState {
    * here: no principal can purge a test user's install within a run, and the
    * scheduler does at purge_at (P29).
    */
-  cleanup: { slug: string }[];
+  cleanup: CleanupEntry[];
   /** The OIDC actor label (Job.actor.label). */
   actor?: string;
   rlp?: RlP;
@@ -781,6 +792,12 @@ export async function removeInstall(
 export async function cleanupInstalls(run: Run): Promise<void> {
   const failed: string[] = [];
   for (const e of [...run.s.cleanup]) {
+    // A removal running behind the probes ends first; a done one has taken
+    // its entry off the list. A failed one fails the run even if the retry
+    // below removes the install: the product's delete or purge broke.
+    await e.removing;
+    if (!run.s.cleanup.includes(e)) continue;
+    if (e.failure) failed.push(e.failure);
     try {
       await removeInstall(run, e.slug, `cleanup ${e.slug}`);
       run.s.cleanup.splice(run.s.cleanup.indexOf(e), 1);
@@ -789,6 +806,25 @@ export async function cleanupInstalls(run: Run): Promise<void> {
     }
   }
   if (failed.length) throw new ProbeFail(failed.join("; "));
+}
+
+/**
+ * Starts removing `e`'s install without waiting: the delete and purge jobs
+ * run behind the later probes. Only for an install no later probe touches
+ * (job locks are per install). Never rejects: a failure stays on the entry,
+ * and cleanupInstalls (afterAll, always) waits for it and fails the run
+ * with it. A done removal takes the entry off the list.
+ */
+export function removeBehind(run: Run, e: CleanupEntry, what: string): void {
+  e.removing = removeInstall(run, e.slug, what).then(
+    () => {
+      const i = run.s.cleanup.indexOf(e);
+      if (i >= 0) run.s.cleanup.splice(i, 1);
+    },
+    (x: unknown) => {
+      e.failure = x instanceof ProbeFail ? x.message : `${what}: error`;
+    },
+  );
 }
 
 export const PROBES: readonly Probe[] = [
@@ -1148,17 +1184,28 @@ export const PROBES: readonly Probe[] = [
     // makes: rl-a and rl-b are team tier with outside owners. The owner is
     // OIDC_OWNER_EMAIL, under the test domain, so it signs in by code.
     // Messages name the probe and step only (the run log is public).
-    // Up to four job waits (create, R26, delete, purge) can outlast this; a
-    // timeout fails the probe, and the afterAll cleanup replays the same
-    // requestIds (run.rid(`${slug}-del` / `-purge`)), so it is idempotent.
+    // Two job waits (create, R26) can outlast this; a timeout fails the
+    // probe, and the afterAll cleanup removes the install. The delete and
+    // purge run behind the later probes (removeBehind): no later probe
+    // touches rl-snz, and the afterAll waits for them and fails the run if
+    // they failed. Removals replay the same requestIds
+    // (run.rid(`${slug}-del` / `-purge`)), so a second one is idempotent.
     timeoutMs: 2 * JOB_WITHIN_MS + 10 * 60_000,
     run: async (run) => {
       const slug = run.slug("snz");
-      const entry = { slug };
+      const entry: CleanupEntry = { slug };
       // Listed before the create: a run that stops anywhere still removes it.
       run.s.cleanup.push(entry);
       let out: Outcome | undefined;
       let failed: unknown = null;
+      // Seconds per step, on the pass label: where P50's time goes.
+      const laps: string[] = [];
+      let at = run.io.now();
+      const lap = (step: string) => {
+        const now = run.io.now();
+        laps.push(`${step} ${Math.round((now - at) / 1000)} s`);
+        at = now;
+      };
       try {
         const a = run.accepted(
           await run.v1("/installs", {
@@ -1168,6 +1215,7 @@ export const PROBES: readonly Probe[] = [
         );
         const id = a.install.id;
         await run.done(a.job.id, "P50 create");
+        lap("create");
         const d = await detail(run, id);
         expect(d, 200, "P50 R3");
         const dj = d.json as InstallDetail;
@@ -1191,6 +1239,7 @@ export const PROBES: readonly Probe[] = [
             h.status === 200 && hz?.testHooks === true && hz.installId === id
           );
         });
+        lap("/healthz");
         const r = await newRecipient();
         const c = await mintCreds(run, id, slug, {
           publicKey: r.publicKey,
@@ -1201,6 +1250,7 @@ export const PROBES: readonly Probe[] = [
             return v;
           },
         });
+        lap("R26");
         const origin = (h: string) =>
           run.io.tenantOrigin?.(h) ?? `https://${bare(h)}`;
         const t = adoptTarget(
@@ -1224,20 +1274,17 @@ export const PROBES: readonly Probe[] = [
           if (e instanceof InfraError) throw e;
           throw new ProbeFail(`P50 snooze: ${(e as Error).message}`);
         }
-        // The creds go with the install: the purge below removes both.
+        // The creds go with the install: its purge removes both.
         // This install was made for the case, so a reason it can't run is a
         // broken create, not a missing proof.
         if (res.level !== "pass") throw new ProbeFail(`P50: ${res.reason}`);
-        out = pass();
+        lap("snooze");
+        out = pass(`${laps.join(", ")}; delete and purge behind the run`);
       } catch (e) {
         failed = e;
       }
-      try {
-        await removeInstall(run, slug, "P50 cleanup");
-        run.s.cleanup.splice(run.s.cleanup.indexOf(entry), 1);
-      } catch (e) {
-        failed ??= e;
-      }
+      // Pass or fail, the removal starts now; the run's end waits for it.
+      removeBehind(run, entry, "P50 cleanup");
       if (failed) throw failed;
       if (!out) throw new ProbeFail("P50: no outcome");
       return out;
