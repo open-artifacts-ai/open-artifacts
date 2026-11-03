@@ -1,6 +1,6 @@
 # Collaboration suite: OpenBus inside Open Artifacts
 
-Status: for the user's approval. Not yet approved. Smallest useful
+Status: approved by the user on 2026-11-03. Smallest useful
 version, at the user's direction to ship good enough and iterate. Not yet
 built. M1 stays ahead of any build, so there is no date.
 
