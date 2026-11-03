@@ -13,6 +13,7 @@ export * from "./inventory.js";
 export * from "./lifecycle-doc.js";
 export * from "./mcp-tools.js";
 export * from "./mock-world.js";
+export * from "./oauth-store.js";
 export * from "./redline.js";
 export * from "./return.js";
 export * from "./routes.js";

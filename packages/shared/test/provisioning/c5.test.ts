@@ -246,7 +246,10 @@ describe("run_dead (Manager C5)", () => {
     expect(JOB_ERROR_RETRY.run_dead).toBe("terminal");
     expect(JobErrorCodeSchema.parse("run_dead")).toBe("run_dead");
     const sql = ALERTS.ALERT_CONDITIONS.job_failed.sql;
-    expect(sql).toMatch(/NOT IN \('prod_dirty', 'upgrade_incomplete'\)/);
+    // copy_key_left has its own standing branch (#1008); run_dead is no exception.
+    expect(sql).toMatch(
+      /NOT IN \('prod_dirty', 'upgrade_incomplete', 'copy_key_left'\)/,
+    );
     expect(sql).not.toMatch(/run_dead/);
   });
 });

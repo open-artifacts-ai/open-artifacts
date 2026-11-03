@@ -122,6 +122,12 @@ export const HOSTED_VARS: Record<string, (v: string) => string | undefined> = {
     v === "invite"
       ? undefined
       : 'hosted installs must use "invite" until domain ownership is proven (#572)',
+  // The OAuth store (#1008): set by the provisioner's update job, on the
+  // install's vars, so upgrades and rollbacks keep it.
+  OAUTH_STORE: (v) =>
+    v === "kv" || v === "dual" || v === "d1"
+      ? undefined
+      : 'expected "kv", "dual" or "d1"',
   // Hosted: only the env's broker sign-in client (wfp.ts brokerVars checks
   // the exact value). Public; GOOGLE_CLIENT_SECRET is never a hosted var.
   GOOGLE_CLIENT_ID: (v) =>
@@ -180,6 +186,7 @@ const PASSTHROUGH = [
   "AUTH_BROKER_URL",
   "DIRECTORY_BROKER_URL",
   "NIGHTLY_PUBKEY",
+  "OAUTH_STORE",
 ];
 
 export type Vars = Record<string, string>;

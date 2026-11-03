@@ -376,6 +376,8 @@ export const ShareSchema = z.object({
   createdAt: z.string(),
   /** A guest, or an address that becomes one at first sign-in. Absent otherwise, and from older servers. */
   guest: z.boolean().optional(),
+  /** GET R.shares: the recipient can only view, whatever role says (a guest, or a member who can only view). Never why. Absent with no user row, or when they can do what role says. */
+  viewOnly: z.boolean().optional(),
 });
 export type Share = z.infer<typeof ShareSchema>;
 

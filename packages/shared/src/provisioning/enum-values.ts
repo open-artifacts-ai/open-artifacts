@@ -38,7 +38,8 @@ export const JOB_KINDS = [
   "cleanup",
   // Staging only.
   "redline_creds",
-  // Reserved for M1.1: "update".
+  // A live install's own change (#1008): R29's mode, R30's copy.
+  "update",
 ] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 export const JOB_STATUSES = ["queued", "running", "done", "failed"] as const;
@@ -106,28 +107,46 @@ export const JOB_STEPS = {
   release_lease: ["recheck", "release", "done"],
   cleanup: ["release_lease", "sweep_tokens", "settle", "done"],
   redline_creds: ["recheck", "rotate_hook_key", "mint", "seal", "done"],
+  update: ["recheck", "precheck", "update_vars", "mode_live", "done"],
   /**
    * R26 with `revoke: true` (10.1): the same job kind (0008's CHECK is
    * unchanged), not a JobKind. Revokes the install's live redline-* PATs
    * only (redlinePatsToRevoke); with none left it is a no-op `done`.
    */
   redline_creds_revoke: ["recheck", "revoke", "done"],
+  /**
+   * R30 (#1008): the update kind with `args.oauthCopy === true`, not a
+   * JobKind, for the same reason: 0008's CHECK is unchanged.
+   */
+  oauth_copy: [
+    "recheck",
+    "precheck",
+    "put_key",
+    "key_live",
+    "copy",
+    "drop_key",
+    "verify",
+    "done",
+  ],
 } as const satisfies Record<
-  JobKind | "redline_creds_revoke",
+  JobKind | "redline_creds_revoke" | "oauth_copy",
   readonly string[]
 >;
 
 /**
  * A job's steps from its kind and `jobs.args`: `redline_creds` with
- * `args.revoke === true` runs JOB_STEPS.redline_creds_revoke; every other
- * case is JOB_STEPS[kind].
+ * `args.revoke === true` runs JOB_STEPS.redline_creds_revoke, `update` with
+ * `args.oauthCopy === true` runs JOB_STEPS.oauth_copy; every other case is
+ * JOB_STEPS[kind].
  */
 export function jobStepsFor(
   kind: JobKind,
-  args?: { readonly revoke?: unknown } | null,
+  args?: { readonly revoke?: unknown; readonly oauthCopy?: unknown } | null,
 ): readonly string[] {
   if (kind === "redline_creds" && args?.revoke === true)
     return JOB_STEPS.redline_creds_revoke;
+  if (kind === "update" && args?.oauthCopy === true)
+    return JOB_STEPS.oauth_copy;
   return JOB_STEPS[kind];
 }
 
@@ -146,6 +165,10 @@ export const JOB_FAIL_POINTS = [
   "new_token_check",
   "revoke_token",
   "seal",
+  // #1008's calls to the install.
+  "oauth_healthz",
+  "copy_key_live",
+  "copy_page",
 ] as const;
 export type JobFailPoint = (typeof JOB_FAIL_POINTS)[number];
 

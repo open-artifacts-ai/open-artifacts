@@ -93,6 +93,7 @@ export interface Cf {
     name: string,
     text: string,
   ): Promise<void>;
+  secretDelete(t: Target, script: string, name: string): Promise<void>;
   secretList(t: Target, script: string): Promise<string[]>;
   /**
    * GET the script's settings (read-only): the bindings it runs with,
@@ -560,6 +561,12 @@ export function cfClient(o: {
       await call("PUT", `${acct}${scriptBase(t, script)}/secrets`, {
         json: { name, text, type: "secret_text" },
       });
+    },
+    async secretDelete(t, script, name) {
+      await call(
+        "DELETE",
+        `${acct}${scriptBase(t, script)}/secrets/${seg(name)}`,
+      );
     },
     async secretList(t, script) {
       const r = await result<{ name: string }[]>(

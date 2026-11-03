@@ -2,6 +2,7 @@ import { normalizeEmail } from "@oa/auth-core";
 import {
   type Format,
   type Member,
+  type Role,
   type Share,
   type ShareRecipient,
   type ShareResult,
@@ -10,7 +11,8 @@ import {
 } from "@oa/shared";
 import { asc, eq } from "drizzle-orm";
 import { authorize, callerOf } from "../auth/authz.js";
-import type { SignInProvider } from "../auth/config.js";
+import { authConfig, type SignInProvider } from "../auth/config.js";
+import { capOf } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -65,6 +67,8 @@ export async function listShares(
       role: shares.role,
       createdAt: shares.createdAt,
       orgRole: users.role,
+      rm: users.restrictedManual,
+      rs: users.restrictedSync,
     })
     .from(shares)
     .leftJoin(users, eq(users.email, shares.email))
@@ -72,10 +76,25 @@ export async function listShares(
     .orderBy(asc(shares.createdAt), asc(shares.email))
     .limit(MAX_SHARES);
   const isGuest = guestRecipients(env);
+  const cfg = authConfig(env);
+  // Access's own cap (capOf), so a member who can only view says so. Never
+  // why: a row has no user, or no cap, and the field is absent.
+  const viewOnly = (r: (typeof rows)[number]) =>
+    r.orgRole !== null &&
+    capOf(
+      {
+        role: r.orgRole as Role,
+        // Fail closed, as getUser reads them: any non-zero flag restricts.
+        restrictedManual: (r.rm ?? 0) !== 0,
+        restrictedSync: (r.rs ?? 0) !== 0,
+      },
+      cfg,
+    ) !== null;
   return Promise.all(
     rows.map(async (r) => ({
       ...toShare(r),
       ...((await isGuest(r.email, r.orgRole)) ? { guest: true } : {}),
+      ...(viewOnly(r) ? { viewOnly: true } : {}),
     })),
   );
 }
