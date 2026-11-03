@@ -72,6 +72,15 @@ export class DirectorySync extends DurableObject<Env> {
     return withoutCred(() => this.engine.unsnoozeHeld(groupId, by));
   }
 
+  /** Test builds only (the directory-held hook); null in release builds. */
+  testHold(
+    groupId: string,
+    email: string,
+    on: boolean,
+  ): Promise<boolean | null> {
+    return withoutCred(() => this.engine.testHold(groupId, email, on));
+  }
+
   reset(): Promise<void> {
     return withoutCred(() => this.engine.reset());
   }

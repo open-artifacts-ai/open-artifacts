@@ -1,3 +1,4 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   AUTH,
@@ -12,10 +13,16 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emailKey, ipKey } from "../src/auth/codes.js";
 import { sessionCookieName } from "../src/auth/session.js";
+import { instanceDirectory, readHealth } from "../src/directory/health.js";
+import { SyncEngine } from "../src/directory/sync.js";
+import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import worker from "../src/index.js";
 import { revokeAllGrants } from "../src/mcp/oauth-api.js";
 import { BACKFILLED_KEY, KV_WRITES_OFF_KEY } from "../src/mcp/oauth-store.js";
+import { userActor } from "../src/services/audit.js";
+import { SYNC_DO_NAME } from "../src/services/directory.js";
+import { type TestHoldIo, testHold } from "../src/test-hooks/held.js";
 import { direct, mailer, seedUser, uniq } from "./auth-helpers.js";
 
 // P2 Task 14: test hooks for P5's cross-tenant suite.
@@ -840,6 +847,230 @@ describe("hooks", () => {
     ).toBe(true);
   });
 
+  // #1078: a held sweep on a suite group, for the red-line's snooze case.
+  const syncStub = () => {
+    const ns = env.DIRECTORY_SYNC;
+    if (!ns) throw new Error("DIRECTORY_SYNC unbound");
+    return ns.get(
+      ns.idFromName(SYNC_DO_NAME),
+    ) as unknown as DurableObjectStub<DirectorySync>;
+  };
+  const inSync = <T>(f: (s: DurableObjectState) => T | Promise<T>) =>
+    runInDurableObject(syncStub(), (_i, s) => f(s));
+  const heldRow = (gid: string) =>
+    inSync(
+      (s) =>
+        new SyncEngine(env, s.storage) &&
+        (s.storage.sql
+          .exec("select kind, would, hash from held where group_id = ?", gid)
+          .toArray()[0] ??
+          null),
+    );
+  const snoozedRow = (gid: string) =>
+    inSync(
+      (s) =>
+        new SyncEngine(env, s.storage) &&
+        (s.storage.sql
+          .exec("select group_id from snoozed where group_id = ?", gid)
+          .toArray()[0] ??
+          null),
+    );
+  /** The group in Me's held list (D1 health), and whether it lights the dot. */
+  const inHealth = async (gid: string) => {
+    const h = await readHealth(env);
+    const x = h.held.find((y) => y.groupId === gid);
+    const dot = instanceDirectory(
+      "google",
+      { ...h, held: h.held.filter((y) => y.groupId === gid) },
+      true,
+      Date.now(),
+    ).heldSweeps;
+    return x ? { dot, snoozed: x.snoozedUntil !== null } : null;
+  };
+  /** A suite group seeded through the directory-groups hook. */
+  async function suiteGroup() {
+    const gid = `test-held-${crypto.randomUUID().slice(0, 8)}`;
+    const email = `${gid}@${TD}`;
+    const r = await hook(on(), TEST_HOOKS.directoryGroups, {
+      groups: [{ groupId: gid, email }],
+    });
+    expect(r.status).toBe(200);
+    return { gid, email };
+  }
+
+  it("directory-held: before the key (or hooks off), the uniform 404 and nothing held", async () => {
+    const { gid, email } = await suiteGroup();
+    const body = { groupId: gid, email, held: true };
+    for (const r of [
+      await call(on(), TEST_HOOKS.directoryHeld, {
+        body,
+        key: "x".repeat(32),
+      }),
+      await call(on(), TEST_HOOKS.directoryHeld, { body }),
+      await hook(env, TEST_HOOKS.directoryHeld, body),
+      await hook(on({ TEST_HOOKS: "0" }), TEST_HOOKS.directoryHeld, body),
+    ])
+      await same404(r);
+    expect(await heldRow(gid)).toBeNull();
+    expect(await inHealth(gid)).toBeNull();
+  });
+
+  it("directory-held: holds a suite group where sync keeps holds; the owner's snooze and cancel act on it; off releases it", async () => {
+    const { gid, email } = await suiteGroup();
+    const since = await freshSince();
+    const r = await hook(on(), TEST_HOOKS.directoryHeld, {
+      groupId: gid,
+      email,
+      held: true,
+    });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ held: true });
+    // The DO's hold, hashed like a sweep's, so a snooze can take it.
+    expect(await heldRow(gid)).toMatchObject({ kind: "sweep", would: 1 });
+    expect(typeof (await heldRow(gid))?.hash).toBe("string");
+    expect(await inHealth(gid)).toEqual({ dot: 1, snoozed: false });
+    // Idempotent.
+    expect(
+      (
+        await hook(on(), TEST_HOOKS.directoryHeld, {
+          groupId: gid,
+          email,
+          held: true,
+        })
+      ).status,
+    ).toBe(200);
+    // The real snooze path (the route's RPC) takes it off the dot.
+    const actor = userActor("u-owner");
+    expect(await syncStub().snoozeHeld(gid, actor, "test")).not.toBeNull();
+    expect(await inHealth(gid)).toEqual({ dot: 0, snoozed: true });
+    await syncStub().unsnoozeHeld(gid, actor);
+    expect(await inHealth(gid)).toEqual({ dot: 1, snoozed: false });
+    // Snoozed again, then released by the hook: the snooze ends "released".
+    expect(await syncStub().snoozeHeld(gid, actor, null)).not.toBeNull();
+    const off = await hook(on(), TEST_HOOKS.directoryHeld, {
+      groupId: gid,
+      email,
+      held: false,
+    });
+    expect(off.status).toBe(200);
+    expect(await off.json()).toEqual({ held: false });
+    expect(await heldRow(gid)).toBeNull();
+    expect(await snoozedRow(gid)).toBeNull();
+    expect(await inHealth(gid)).toBeNull();
+    const rows = (
+      await env.DB.prepare(
+        `select action, json_extract(detail, '$.why') why from audit_events
+          where target_id = ? and at >= ? order by at, action`,
+      )
+        .bind(gid, since)
+        .all<{ action: string; why: string | null }>()
+    ).results;
+    expect(rows).toEqual([
+      { action: "directory.sweep.snoozed", why: null },
+      { action: "directory.sweep.unsnoozed", why: "owner_cancel" },
+      { action: "directory.sweep.snoozed", why: null },
+      { action: "directory.sweep.unsnoozed", why: "released" },
+    ]);
+    const hooks = await auditRows(since);
+    expect(
+      hooks
+        .filter((x) => x.action === "test_hook.directory_held")
+        .map((x) => x.detail),
+    ).toEqual([
+      {
+        hook: "directory_held",
+        ip: "198.51.100.200",
+        outcome: "ok",
+        domain: TD,
+      },
+      {
+        hook: "directory_held",
+        ip: "198.51.100.200",
+        outcome: "ok",
+        domain: TD,
+      },
+      {
+        hook: "directory_held",
+        ip: "198.51.100.200",
+        outcome: "ok",
+        domain: TD,
+      },
+    ]);
+  });
+
+  it("directory-held: only a suite group at its own TEST_DOMAIN email; anything else is the 404 with bad_input and nothing held", async () => {
+    const { gid, email } = await suiteGroup();
+    const other = await suiteGroup();
+    const unseeded = `test-held-${crypto.randomUUID().slice(0, 8)}`;
+    const since = await freshSince();
+    for (const body of [
+      // Outside TEST_DOMAIN, or a subdomain of it.
+      { groupId: gid, email: `${gid}@corp.example`, held: true },
+      { groupId: gid, email: `${gid}@sub.${TD}`, held: true },
+      // Another suite group's email, or a group the hook never seeded.
+      { groupId: gid, email: other.email, held: true },
+      { groupId: unseeded, email: `${unseeded}@${TD}`, held: true },
+      // Not a test- id.
+      { groupId: "TEST-x", email, held: true },
+      { groupId: "g-real", email, held: true },
+      // Bad bodies.
+      { groupId: gid, email, held: "yes" },
+      { groupId: gid, email },
+      { groupId: gid, email, held: true, extra: 1 },
+      {},
+    ])
+      await refused404(
+        await hook(on(), TEST_HOOKS.directoryHeld, body),
+        "bad_input",
+      );
+    for (const g of [gid, other.gid, unseeded, "g-real"]) {
+      expect(await heldRow(g)).toBeNull();
+      expect(await inHealth(g)).toBeNull();
+    }
+    const rows = (await auditRows(since)).filter(
+      (r) => r.action === "test_hook.directory_held",
+    );
+    expect(rows).toHaveLength(10);
+    expect(rows.every((r) => r.detail.outcome === "refused")).toBe(true);
+  });
+
+  it("directory-held: DIRECTORY_SYNC unbound is the 404 with bad_input", async () => {
+    const { gid, email } = await suiteGroup();
+    await refused404(
+      await hook(on({ DIRECTORY_SYNC: undefined }), TEST_HOOKS.directoryHeld, {
+        groupId: gid,
+        email,
+        held: true,
+      }),
+      "bad_input",
+    );
+    expect(await heldRow(gid)).toBeNull();
+  });
+
+  it("directory-held: the engine never holds or releases an unprefixed group (a real hold stays)", async () => {
+    const real = `g-${crypto.randomUUID().slice(0, 8)}`;
+    await inSync((s) => {
+      new SyncEngine(env, s.storage);
+      s.storage.sql.exec(
+        "insert into held (group_id, since, kind, would, hash) values (?, 1, 'sweep', 3, 'h')",
+        real,
+      );
+    });
+    for (const on of [true, false])
+      expect(
+        await inSync((s) =>
+          new SyncEngine(env, s.storage).testHold(real, `x@${TD}`, on).then(
+            () => "held",
+            (e: Error) => e.message,
+          ),
+        ),
+      ).toBe("not a test group");
+    expect(await heldRow(real)).toEqual({ kind: "sweep", would: 3, hash: "h" });
+    await inSync((s) =>
+      s.storage.sql.exec("delete from held where group_id = ?", real),
+    );
+  });
+
   it("/healthz reports testHooks", async () => {
     const h = HealthzSchema.parse(
       await (await call(env, "/healthz", { method: "GET" })).json(),
@@ -850,5 +1081,81 @@ describe("hooks", () => {
         await (await call(on(), "/healthz", { method: "GET" })).json(),
       ).testHooks,
     ).toBe(true);
+  });
+});
+
+describe("testHold's held-list confirm (#1078)", () => {
+  const gid = "test-confirm";
+  const NOW = Date.UTC(2026, 10, 2, 12);
+  /**
+   * A DO side with no prior hold or snooze and a D1 held list in `d1`.
+   * `writes` answers each health write (false: every CAS try lost);
+   * `clobber` wipes the list after a write (an alarm's blind write landing).
+   */
+  function io(o: { writes?: boolean[]; clobber?: boolean[] } = {}) {
+    let d1: HealthLike = { held: [] };
+    const st = { writes: 0, reads: 0 };
+    const sql = {
+      exec: () => ({ toArray: () => [] }),
+    } as unknown as SqlStorage;
+    const x: TestHoldIo = {
+      sql,
+      transactionSync: (f) => f(),
+      hash: async () => "h",
+      endSnooze: async () => {},
+      health: async (f) => {
+        const i = st.writes++;
+        if (o.writes?.[i] === false) return false;
+        d1 = f(d1 as never) as HealthLike;
+        if (o.clobber?.[i]) d1 = { held: [] };
+        return true;
+      },
+      heldIds: async () => {
+        st.reads++;
+        return d1.held.map((h) => h.groupId);
+      },
+    };
+    return { x, st, list: () => d1.held.map((h) => h.groupId) };
+  }
+  type HealthLike = { held: { groupId: string }[] };
+
+  it("on: a write the re-read shows answers held", async () => {
+    const f = io();
+    expect(await testHold(f.x, gid, `${gid}@t`, true, NOW)).toBe(true);
+    expect(f.list()).toEqual([gid]);
+    expect(f.st).toEqual({ writes: 1, reads: 1 });
+  });
+
+  it("on: an alarm write over the first round is redone, then confirmed", async () => {
+    const f = io({ clobber: [true] });
+    expect(await testHold(f.x, gid, `${gid}@t`, true, NOW)).toBe(true);
+    expect(f.list()).toEqual([gid]);
+    expect(f.st).toEqual({ writes: 2, reads: 2 });
+  });
+
+  it("on: every CAS try lost, or every round overwritten, throws (never held:true with nothing in D1)", async () => {
+    const lost = io({ writes: [false, false, false] });
+    await expect(testHold(lost.x, gid, `${gid}@t`, true, NOW)).rejects.toThrow(
+      "held list write lost",
+    );
+    expect(lost.list()).toEqual([]);
+    const clobbered = io({ clobber: [true, true, true] });
+    await expect(
+      testHold(clobbered.x, gid, `${gid}@t`, true, NOW),
+    ).rejects.toThrow("held list write lost");
+    expect(clobbered.st.writes).toBe(3);
+  });
+
+  it("off: a release whose entry stays in D1 throws (never held:false with the hold still counted)", async () => {
+    const f = io({ writes: [true, false, false, false] });
+    await testHold(f.x, gid, `${gid}@t`, true, NOW);
+    await expect(testHold(f.x, gid, `${gid}@t`, false, NOW)).rejects.toThrow(
+      "held list write lost",
+    );
+    expect(f.list()).toEqual([gid]);
+    const g = io({ writes: [true, false] });
+    await testHold(g.x, gid, `${gid}@t`, true, NOW);
+    expect(await testHold(g.x, gid, `${gid}@t`, false, NOW)).toBe(false);
+    expect(g.list()).toEqual([]);
   });
 });
