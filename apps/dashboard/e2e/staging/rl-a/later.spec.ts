@@ -11,6 +11,7 @@ import {
   cleanup,
   expect,
   json,
+  liveHtml,
   needs,
   type Person,
   person,
@@ -153,12 +154,39 @@ test("#766: Trash: delete, find it in Trash, Restore", async ({ browser }) => {
 // apps/dashboard/e2e/real/image.spec.ts ("a PNG opens as an image": one <img>
 // at its natural 2x2 size, no code view), against the real server.
 
-// Cut (#1251): "#794: a member who views editors-only live data sees View
-// only". Covered by apps/server/test/policy.table.test.ts ("dataWriters
-// (#681)": artifactCan's dataWrite is false for a viewer of an editors-only
-// artifact) and apps/dashboard/test/permissions.test.tsx ("self-hosted viewer
-// of an editors-only live artifact sees View only": the chip follows
-// can.dataWrite).
+// Kept (#1251): no server test checks that GET R.artifact returns
+// can.dataWrite false for a viewer of an editors-only artifact at the route,
+// only artifactCan (apps/server/test/policy.table.test.ts), so this is the
+// one end-to-end check of that wiring.
+// #794 brought the chip to self-hosted installs; on a hosted install it
+// already followed can.dataWrite, so this runs on 0.72.0 too.
+test("#794: a member who views editors-only live data sees View only", async ({
+  browser,
+}) => {
+  await needs("#794", "0.72.0");
+  const owner = await person(browser, "live-owner", "member");
+  const viewer = await person(browser, "live-viewer", "member");
+  const title = `T19 ${RUN} live`;
+  const { id } = await publish(owner, liveHtml(title));
+  await json(
+    await api(owner, R.shares(id), {
+      method: "PUT",
+      body: JSON.stringify({ email: viewer.email, role: "viewer" }),
+    }),
+  );
+  const page = viewer.page;
+  await page.goto(`/a/${id}`);
+  await expect(
+    page.getByRole("heading", { level: 1, name: title }),
+  ).toBeVisible();
+  await expect(page.getByText("View only", { exact: true })).toBeVisible();
+  // The owner can write, so no chip for them.
+  await owner.page.goto(`/a/${id}`);
+  await expect(owner.page.getByText(title).first()).toBeVisible();
+  await expect(owner.page.getByText("View only", { exact: true })).toHaveCount(
+    0,
+  );
+});
 
 test("#800: inviting outside the sign-in domain warns that they may not sign in", async ({
   browser,

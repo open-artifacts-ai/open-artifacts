@@ -229,6 +229,11 @@ test("an admin never sees another person's personal space", async ({
   const title = `T19 ${RUN} private page`;
   await publish(m, page1(title));
   // The admin's own page matches the same search, so an empty list fails.
+  // List q is FTS5 (porter unicode61): each word of `title` is a quoted
+  // phrase, ANDed, the last a prefix (apps/server/src/services/search.ts
+  // sanitizeQuery, ftsFilter). `own` holds every word of `title`, and its
+  // title is indexed in the publish batch, before any body indexing
+  // (seedSearchStmt, joined at apps/server/src/services/artifacts.ts publish).
   const own = `${title} (admin)`;
   await publish(admin, page1(own));
 
