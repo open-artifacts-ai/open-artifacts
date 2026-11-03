@@ -776,7 +776,7 @@ if [ -n "$q" ]; then jq -r "$q" <<< "$body"; else printf '%s\\n' "$body"; fi
       pull_request: { merged_at: merged ? "2026-11-03T00:00:00Z" : null },
     });
     const runKind = (stub: {
-      issues?: unknown[];
+      issues?: readonly unknown[];
       merge?: string;
       compare?: string;
       fail?: "issues" | "pull" | "compare";
