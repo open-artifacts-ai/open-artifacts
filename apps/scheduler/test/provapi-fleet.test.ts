@@ -794,6 +794,89 @@ describe("halts", () => {
     expect(member).not.toBe(canary);
   });
 
+  describe("a held member (MIG-2)", () => {
+    /** A soaked canary, member `held` failed migration_held, then a tick. */
+    const heldMember = async () => {
+      const canary = await on(TARGET);
+      await soaked(canary);
+      const held = await on("0.92.0", { created: 5 });
+      const next = await on("0.92.0", { created: 6 });
+      const f = fakes({ canary });
+      await fleetDue(f.env, NOW, f.opts);
+      const jobs = await fleetJobs();
+      const j = jobs.find((x) => x.install_id === held);
+      expect(j).toBeDefined();
+      await finish(j?.id, "failed", NOW + MIN, "migration_held");
+      for (const x of jobs)
+        if (x.install_id !== held) await finish(x.id, "done", NOW + MIN);
+      return { canary, held, next, f, j };
+    };
+
+    it("doesn't halt the version, and the rollout carries on past it", async () => {
+      const { held, f } = await heldMember();
+      // Past this batch: it starts only if the held member doesn't block it.
+      const last = [
+        await on("0.92.0", { created: 7 }),
+        await on("0.92.0", { created: 8 }),
+        await on("0.92.0", { created: 9 }),
+      ];
+      const bump = await fleetJobs();
+      for (const x of bump)
+        if (x.status === "done") await setVersion(String(x.install_id), TARGET);
+      for (let t = 2; t < 60; t += 2) {
+        await fleetDue(f.env, NOW + t * MIN, f.opts);
+        for (const x of await fleetJobs())
+          if (x.status === "queued") {
+            await finish(x.id, "done", NOW + t * MIN);
+            await setVersion(String(x.install_id), TARGET);
+          }
+      }
+      expect(await marks()).toEqual([]);
+      const c = await fleetConditions(f.env, NOW + 60 * MIN);
+      expect(c.fleet_halted.rows).toEqual([]);
+      const reached = (await fleetJobs()).map((x) => x.install_id);
+      expect(reached).toEqual(expect.arrayContaining(last));
+      expect(reached.filter((x) => x === held)).toHaveLength(1);
+    });
+
+    it("isn't tried again for this target", async () => {
+      const { held, f } = await heldMember();
+      await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+      await fleetDue(f.env, NOW + 4 * MIN, f.opts);
+      expect(
+        (await fleetJobs()).filter((x) => x.install_id === held),
+      ).toHaveLength(1);
+    });
+
+    it("can't be mistaken for upgraded: no soak, and version_skew shows it", async () => {
+      const { held, f, j } = await heldMember();
+      for (let t = 2; t < 40; t += 2)
+        await fleetDue(f.env, NOW + t * MIN, f.opts);
+      expect(await stateKeys(`fleet_soaked:${TARGET}:${held}`)).toEqual([]);
+      expect(await stateKeys(`fleet_pass:${TARGET}:${held}`)).toEqual([]);
+      const c = await fleetConditions(f.env, NOW + FLEET_SKEW_MS + MIN);
+      expect(c.version_skew.rows).toContainEqual(
+        expect.objectContaining({
+          install_id: held,
+          version: TARGET,
+          job_id: j?.id,
+        }),
+      );
+    });
+
+    it("any other failure on a member still halts", async () => {
+      const canary = await on(TARGET);
+      await soaked(canary);
+      const m = await on("0.92.0", { created: 5 });
+      const f = fakes({ canary });
+      await fleetDue(f.env, NOW, f.opts);
+      const [j] = await fleetJobs();
+      await finish(j?.id, "failed", NOW + MIN, "upgrade_rolled_back");
+      await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+      expect(await marks()).toEqual([`fleet_halt:${TARGET}:${m}`]);
+    });
+  });
+
   it("a failed fleet upgrade halts its version, with a durable mark", async () => {
     const canary = await on("0.92.0");
     await on("0.92.0");

@@ -824,7 +824,7 @@ describe("lifecycle writes (R5-R13)", () => {
     expect((await send(redline, true)).code).toBeUndefined();
     expect(
       (await send({ ...OIDC_P, oidcWorkflow: "test-admin" }, true)).code,
-    ).toBeDefined();
+    ).toBe("forbidden");
     // Red-line's reach stops at test installs before this rule does.
     expect((await send(redline, false)).code).toBe("not_found");
     const owned = await seedInstall({

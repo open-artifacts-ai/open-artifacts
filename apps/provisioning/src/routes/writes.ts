@@ -104,18 +104,19 @@ const bodyOf = <S extends z.ZodType>(a: HandlerArgs) =>
 
 /**
  * Who may cross a migration that can lose data (MIG-2): an admin, in a session
- * or an admin's OAuth grant, and red-line's OIDC on a test install.
+ * or an admin's OAuth grant, and OIDC, which authorize and its reach already
+ * limit to red-line on rl- test installs, staging only.
  */
-const mayCrossHeld = (p: Principal, row: StatusRow) =>
+const mayCrossHeld = (p: Principal) =>
   p.kind === "admin" ||
   (p.kind === "token" && p.tokenKind === "oauth") ||
-  (p.kind === "oidc" && p.oidcWorkflow === "redline" && row.test_hooks === 1);
+  p.kind === "oidc";
 
 const PLANS: Partial<Record<ApiRouteId, Planner>> = {
   R5: async (a, row) => {
     refuseUnless(can(row, "upgrade", a.principal));
     const body = bodyOf<typeof UpgradeSchema>(a);
-    if (body.nonAdditive && !mayCrossHeld(a.principal, row))
+    if (body.nonAdditive && !mayCrossHeld(a.principal))
       throw new ApiError("forbidden");
     if (row.version === null) throw new ApiError("invalid_state");
     const to = await resolveRelease(

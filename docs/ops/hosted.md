@@ -509,7 +509,7 @@ Agents (Frontend, Design and Platform walkthroughs, and e2e tests) sign in to th
 
 A fleet upgrade never crosses a migration that can lose data (MIG-2). Before an upgrade changes anything, the provisioner reads this install's pending migrations, the ones it hasn't run yet. One is held if its first line is `-- oa:non-additive`, or if its SQL, without comments and strings, has `DROP TABLE`, `ALTER TABLE ... DROP`, `RENAME`, or a `DELETE` or `UPDATE` with no `WHERE`.
 
-- A held upgrade fails with `migration_held`, and nothing changes. An `upgrade.held` audit row names the files. On a fleet job this halts the version at the canary, and `fleet_halted` opens.
+- A held upgrade fails with `migration_held`, and nothing changes. An `upgrade.held` audit row names the files. On the canary this halts the version, and `fleet_halted` opens. On any other install it doesn't: that install stays behind, `version_skew` shows it, and the rollout carries on past it. It isn't tried again for that release.
 - To cross one, a person upgrades that install with `nonAdditive: true`: the box in the admin Upgrade dialog, or the `upgrade_install` field. This is an admin write. Red-line's bring-up passes it for rl-a and rl-b, so a release like this meets red-line first.
 - It takes a D1 Time Travel bookmark first, and refuses without one. The `upgrade.restore_point` audit row has the bookmark and the files.
 - Nothing restores automatically. To go back: `wrangler d1 time-travel restore <db> --bookmark <bookmark>`, then roll the install back. That discards every write since the bookmark.

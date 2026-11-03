@@ -136,9 +136,11 @@ WHERE ${FLEET_UP} AND json_extract(j.args, '$.to') = ${to}
   AND s.state NOT IN ('deleting', 'deleted')
   AND NOT EXISTS (SELECT 1 FROM platform_state p WHERE p.key = '${FLEET_SOAKED_PREFIX}' || ${to} || ':' || j.install_id)`;
 const HELD = `${BATCH("?1")} LIMIT 1`;
-// Every failed fleet upgrade, with the version it halts.
+// Every failed fleet upgrade, with the version it halts. A member held by a
+// migration only a person may cross doesn't halt it: it stays behind, version_skew
+// shows it, and the rollout carries on. The canary's hold (?1) still halts.
 const HALT_JOBS = `SELECT j.install_id AS install_id, j.id AS job_id, j.kind AS job_kind, j.error_code AS code, substr(j.error_message, 1, 200) AS message, COALESCE(j.finished_at, j.updated_at) AS since, json_extract(j.args, '$.to') AS version
-FROM jobs j WHERE ${FLEET_UP} AND ${FAILED}`;
+FROM jobs j WHERE ${FLEET_UP} AND ${FAILED} AND (COALESCE(j.error_code, '') <> 'migration_held' OR j.install_id = ?1)`;
 // The fleet upgrade behind a mark, for the alert.
 const MARK_JOB = `SELECT j.id AS id, j.kind AS kind FROM jobs j WHERE ${FLEET_UP} AND j.install_id = ?1 AND json_extract(j.args, '$.to') = ?2 LIMIT 1`;
 const STATE = `SELECT key, value, updated_at FROM platform_state WHERE key GLOB 'fleet_*'`;
@@ -158,8 +160,10 @@ WHERE state = 'active' AND serving_mode = 'serving' AND COALESCE(test_hooks, 0) 
 // between them and the insert. ?9 is `from`; ?10, the args, holds the version.
 const STILL_ON = `EXISTS (SELECT 1 FROM install_status WHERE install_id = ?3 AND ${ELIGIBLE} AND version = ?9)`;
 const UNDER_CAP = `(SELECT COUNT(*) FROM jobs j WHERE ${FLEET_UP} AND j.status IN ('queued', 'running')) < ${FLEET_CONCURRENCY}`;
+// A held job isn't a failure of the release here: on the canary, the tick's
+// haltFailedJobs has already marked the version, and the first line stops it.
 const NOT_HALTED = `NOT EXISTS (SELECT 1 FROM platform_state p WHERE p.key GLOB '${FLEET_HALT_PREFIX}' || json_extract(?10, '$.to') || ':*')
-AND NOT EXISTS (SELECT 1 FROM jobs j WHERE ${FLEET_UP} AND ${FAILED} AND json_extract(j.args, '$.to') = json_extract(?10, '$.to'))
+AND NOT EXISTS (SELECT 1 FROM jobs j WHERE ${FLEET_UP} AND ${FAILED} AND COALESCE(j.error_code, '') <> 'migration_held' AND json_extract(j.args, '$.to') = json_extract(?10, '$.to'))
 AND NOT EXISTS (${BATCH("json_extract(?10, '$.to')")})`;
 const SET_ONCE =
   "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2) ON CONFLICT (key) DO NOTHING";
@@ -226,12 +230,16 @@ function versionOf(key: string): string | null {
   return null;
 }
 
-const failedJobs = async (db: D1Database) =>
-  (await d1(db.prepare(HALT_JOBS).all<HaltRow>())).results;
+const failedJobs = async (db: D1Database, canary: string | null) =>
+  (await d1(db.prepare(HALT_JOBS).bind(canary).all<HaltRow>())).results;
 
 /** Every halt: failed jobs, and marks with no failed job behind them. */
-async function halts(db: D1Database, st: FleetState): Promise<HaltRow[]> {
-  const jobs = await failedJobs(db);
+async function halts(
+  db: D1Database,
+  st: FleetState,
+  canary: string | null,
+): Promise<HaltRow[]> {
+  const jobs = await failedJobs(db, canary);
   const fromJob = new Set(jobs.map((j) => `${j.version}:${j.install_id}`));
   const marks: HaltRow[] = [];
   for (const [key, r] of st.rows) {
@@ -312,8 +320,9 @@ async function haltFailedJobs(
   db: D1Database,
   now: number,
   st: FleetState,
+  canary: string | null,
 ): Promise<void> {
-  for (const j of await failedJobs(db)) {
+  for (const j of await failedJobs(db, canary)) {
     if (typeof j.version !== "string" || typeof j.install_id !== "string")
       continue;
     if (!st.rows.has(haltKey(j.version, j.install_id)))
@@ -373,7 +382,7 @@ export async function fleetDue(
   const canaryId = fleetCanary(env.FLEET_CANARY);
   const st = await fleetState(db);
 
-  await haltFailedJobs(db, now, st);
+  await haltFailedJobs(db, now, st, canaryId);
   await prune(db, now, st, target);
   if (target === null) {
     // With a canary set, fleet_halted opens for it (fleetConditions).
@@ -845,7 +854,7 @@ export async function fleetConditions(
   });
   let fleet_halted: Condition;
   try {
-    const rows: AlertRow[] = (await halts(db, st))
+    const rows: AlertRow[] = (await halts(db, st, canary))
       .filter(
         (h) =>
           (target !== null && h.version === target) ||
