@@ -971,6 +971,15 @@ export const useRestoreMember = () =>
     () => true,
   );
 
+/** POST R.memberErase (#1204): 204; every refusal is shown in the dialog. */
+export const useEraseMember = () =>
+  useInvalidating(
+    (memberId: string) => api.send("POST", R.memberErase(memberId), undefined),
+    () => [qk.members],
+    "Couldn't erase them.",
+    () => true,
+  );
+
 export const useResetIdentity = () => {
   const qc = useQueryClient();
   const refresh = () =>
