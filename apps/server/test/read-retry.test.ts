@@ -615,7 +615,7 @@ function flakyD1(db: D1Database, failures: number): D1Database {
 describe("the Worker's fetch reads through the wrapper", () => {
   it("a read that fails once still answers (/healthz's markers read)", async () => {
     const res = await fetchAndWait(
-      worker as unknown as Fetcher,
+      worker as unknown as Parameters<typeof fetchAndWait>[0],
       new Request(`https://${E.APP_HOST}/healthz`),
       { ...E, DB: flakyD1(E.DB, 1) },
     );
