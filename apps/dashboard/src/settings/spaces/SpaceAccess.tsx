@@ -16,7 +16,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiClientError } from "../../api/client";
 import type { GroupMapping, Space, SpaceRole } from "../../api/contract";
-import { DIRECTORY_SETTINGS, errorCopy, errorLink } from "../../api/errorCopy";
+import { errorCopy, errorLink } from "../../api/errorCopy";
 import {
   qk,
   useDeleteMapping,
@@ -457,29 +457,15 @@ export function SpaceAccess({
         />
       )}
       <p className={muted}>
-        {frozen ? (
-          <>
-            Google sync stopped, so groups can't change here. Access is frozen
-            as of the last sync. You can still add and remove people under
-            People.
-            {admin && (
-              <>
-                {" "}
-                <AppLink href={DIRECTORY_SETTINGS} className="underline">
-                  Open directory settings
-                </AppLink>
-              </>
-            )}
-          </>
-        ) : !syncOn ? (
-          "Group sync is off, so mappings can't change. Edit people manually under People."
-        ) : admin ? (
-          "Someone in more than one group gets the highest role. Changes apply within a minute and are recorded in the audit log."
-        ) : canMap ? (
-          "You can give a group Viewer or Editor. Only an admin can make a group a manager. Changes are recorded in the audit log."
-        ) : (
-          "An admin has turned off group mapping by space managers. Ask an admin to add or change groups."
-        )}
+        {frozen
+          ? "Group sync is paused, so groups can't change here. Each space kept the people it had at the last sync. You can still add and remove people under People."
+          : !syncOn
+            ? "Group sync is off, so mappings can't change. Edit people manually under People."
+            : admin
+              ? "Someone in more than one group gets the highest role. Changes apply within a minute and are recorded in the audit log."
+              : canMap
+                ? "You can give a group Viewer or Editor. Only an admin can make a group a manager. Changes are recorded in the audit log."
+                : "An admin has turned off group mapping by space managers. Ask an admin to add or change groups."}
       </p>
     </SettingsCard>
   );

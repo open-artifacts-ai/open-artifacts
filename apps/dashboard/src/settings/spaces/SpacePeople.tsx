@@ -753,8 +753,8 @@ export function SpacePeople({
         )}
       {frozen && (
         <p className={muted}>
-          Google sync stopped, so everyone below is kept as of the last sync.
-          You can still add and remove people by hand.
+          Group sync is paused. Everyone below was kept as of the last sync. Add
+          and remove people by hand.
         </p>
       )}
       {(allTotal > SEARCH_FROM || q) && (

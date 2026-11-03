@@ -189,12 +189,12 @@ it("frozen: the mapping shows, but no control adds or changes one", async () => 
   ).toBeNull();
   expect(
     screen.getByText(
-      /^Google sync stopped, so groups can't change here\. Access is frozen as of the last sync\. You can still add and remove people under People\./,
+      "Group sync is paused, so groups can't change here. Each space kept the people it had at the last sync. You can still add and remove people under People.",
     ),
   ).toBeVisible();
   expect(
-    screen.getByRole("link", { name: "Open directory settings" }),
-  ).toHaveAttribute("href", "/settings/directory");
+    screen.queryByRole("link", { name: "Open directory settings" }),
+  ).toBeNull();
   expect(
     within(screen.getByRole("region", { name: "Who gets access" })).queryByText(
       /Group sync is off/,
@@ -210,7 +210,7 @@ it("sync off keeps its own line", async () => {
       "Group sync is off, so mappings can't change. Edit people manually under People.",
     ),
   ).toBeVisible();
-  expect(screen.queryByText(/Google sync stopped/)).toBeNull();
+  expect(screen.queryByText(/Group sync is paused/)).toBeNull();
 });
 
 it("Cancel on the Remove confirm removes nothing", async () => {
