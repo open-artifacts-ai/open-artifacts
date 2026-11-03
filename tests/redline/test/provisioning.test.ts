@@ -1584,6 +1584,28 @@ describe("the run's cleanup", () => {
     expect(run.s.cleanup).toEqual([{ slug: run.slug("p") }]);
   });
 
+  it("P32 lists rl-q before its create, so a create that dies is still swept", async () => {
+    const f = fakeApi();
+    const out = await runAll(f);
+    expect(level(out.get("P32"))).toBe("pass");
+    const q = [...f.installs.values()].find((i) => i.slug.startsWith("rl-q-"));
+    expect(q).toBeDefined();
+    const g = fakeApi();
+    await bringUp(g);
+    const run = new Run(CONFIG, {
+      ...g.io,
+      fetch: (async (u: string, init: RequestInit) => {
+        if (init.method === "POST" && new URL(u).pathname === "/v1/installs")
+          throw new TypeError("fetch failed");
+        return g.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    });
+    await expect(PROBES.find((p) => p.id === "P32")?.run(run)).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(run.s.cleanup).toEqual([{ slug: run.slug("q") }]);
+  });
+
   it("a green run leaves rl-p purged", async () => {
     const f = fakeApi();
     const out = await runAll(f);
