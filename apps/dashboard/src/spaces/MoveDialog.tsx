@@ -127,7 +127,22 @@ export function MoveDialog({
                 </span>
               </label>
             ))}
+            {!fromPersonal && (
+              // Design (#1190): shown, never offered.
+              <label className="flex items-center gap-[var(--oa-space-2)] rounded-md px-[var(--oa-space-2)] py-[var(--oa-space-2)] opacity-60">
+                <input type="radio" name="oa-move-to" value="" disabled />
+                <span className="flex-1 font-medium">Personal</span>
+                <span className="text-[length:var(--oa-text-xs)] text-muted-foreground">
+                  Not allowed
+                </span>
+              </label>
+            )}
           </fieldset>
+          {!fromPersonal && (
+            <p className="m-0 text-[length:var(--oa-text-xs)] text-muted-foreground">
+              Space artifacts can't move back to Personal.
+            </p>
+          )}
           {impact && (
             <p className="m-0 text-[length:var(--oa-text-sm)] text-muted-foreground">
               {impact}

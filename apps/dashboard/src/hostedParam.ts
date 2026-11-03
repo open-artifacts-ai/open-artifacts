@@ -28,6 +28,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
     departedGuestOwner: true,
   },
   "spaces-on": { spaces: true },
+  "no-spaces": { noSharedSpaces: true },
+  "move-target": { moveTarget: true },
   "workspace-change": {
     pendingCustomerChange: {
       previous: { customerId: "C01abc", domain: "old.example" },
