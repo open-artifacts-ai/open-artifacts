@@ -393,7 +393,6 @@ export async function smokeAtB<C>(
   run: (cred: C, host: Target, fetch: ProbeFetch) => Promise<Verdict>,
   o: AtB<C>,
 ): Promise<void> {
-  if (o.b) return;
   await deniedAtB(run, o);
 }
 
