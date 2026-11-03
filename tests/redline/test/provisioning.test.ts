@@ -1560,7 +1560,23 @@ describe("the run's cleanup", () => {
     expect(f.installs.get(a.install.id)?.state).toBe("deleted");
   });
 
-  it("a green run leaves nothing to clean, and P13 listed rl-p before its create", async () => {
+  it("P13 lists rl-p before its create, so a create that dies is still swept", async () => {
+    const f = fakeApi();
+    const run = new Run(CONFIG, {
+      ...f.io,
+      fetch: (async (u: string, init: RequestInit) => {
+        if (init.method === "POST" && new URL(u).pathname === "/v1/installs")
+          throw new TypeError("fetch failed");
+        return f.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    });
+    await expect(PROBES.find((p) => p.id === "P13")?.run(run)).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(run.s.cleanup).toEqual([{ slug: run.slug("p") }]);
+  });
+
+  it("a green run leaves rl-p purged", async () => {
     const f = fakeApi();
     const out = await runAll(f);
     expect(out.get("P23")).toEqual({ level: "pass" });
