@@ -379,6 +379,8 @@ Every install follows the platform's release on its own. The target is the sched
 
 Both fleet alerts are decided in the scheduler only (`SCHEDULER_ALERT_KEYS`); R27 shows them while open, with no rows. The public route from a Worker without a route of its own is not yet proven (red-line P35 is accepted unproven). An install's `health` (R3) doesn't prove it: create writes that value itself. The proof is the scheduler's own probes passing after a staging canary upgrade. If the path is broken, the canary fails its probes, the version halts, and nothing moves.
 
+What each alert means and what to do about it: [alerts.md](alerts.md).
+
 ## OAuth store jobs (#1008)
 
 An install moves kv, dual, copy, d1 through two Provisioning API jobs, on both envs, from the admin MCP only: the tools `set_oauth_store` and `copy_oauth_store`. R29 and R30 pass only an OAuth grant with `installs:write`, the token an admin's MCP client gets at consent. `/v1` answers that token 401, so the routes have no REST use; an admin session, an `oat_` token, OIDC, the test admin and users are forbidden, and there is no panel control. The provisioner's recheck reads the grant's `agent_tokens` row again. Each flip is a separate user yes for that one operation.
@@ -522,7 +524,7 @@ A fleet upgrade never crosses a migration that can lose data (MIG-2). Before an 
 - A held upgrade fails with `migration_held`, and nothing changes. An `upgrade.held` audit row names the files. On the canary this halts the version, and `fleet_halted` opens. On any other install it doesn't: that install stays behind, `version_skew` shows it, and the rollout carries on past it. It isn't tried again for that release.
 - To cross one, a person upgrades that install with `nonAdditive: true`: the box in the admin Upgrade dialog, or the `upgrade_install` field. This is an admin write. Red-line's bring-up passes it for rl-a and rl-b, so a release like this meets red-line first.
 - It takes a D1 Time Travel bookmark first, and refuses without one. The `upgrade.restore_point` audit row has the bookmark and the files.
-- Nothing restores automatically. To go back: `wrangler d1 time-travel restore <db> --bookmark <bookmark>`, then roll the install back. That discards every write since the bookmark.
+- Nothing restores automatically, and nothing goes back (forward only, #1106): a bad migration is fixed in a new release. The bookmark is a disaster record, for a migration that destroyed data, used only with the user's yes. Restoring it discards every write since the bookmark.
 - Old code still serves on the new schema during the upgrade, because migrations run before the upload.
 - A create isn't held: there's no data to lose.
 

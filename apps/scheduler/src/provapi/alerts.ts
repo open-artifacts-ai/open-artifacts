@@ -434,7 +434,7 @@ const COPY: Record<AlertKey, Copy> = {
   upgrade_incomplete: {
     title: "upgrade incomplete",
     open: (f) =>
-      `${plural(f.count, "upgrade")} ended upgrade_incomplete, with no later upgrade, rollback, purge or discard.`,
+      `${plural(f.count, "upgrade")} stopped partway (upgrade_incomplete) and need${f.count === 1 ? "s" : ""} a fix forward. Ship the fix as a new release, then upgrade each install to it. This clears once a later upgrade, purge or discard of the install finishes.`,
     clear: "No install is left upgrade_incomplete.",
   },
   unreachable_after_route: {
@@ -482,7 +482,7 @@ const COPY: Record<AlertKey, Copy> = {
   fleet_halted: {
     title: "fleet rollout halted",
     open: (f) =>
-      `The fleet rollout stopped (${plural(f.count, "problem")}; codes: ${f.codes.join(", ") || "none"}). fleet_halt: upgraded installs failed two health probes of this version on separate ticks, so it was halted. Nothing rolled them back: someone has to decide. A job code: a fleet upgrade failed, and ManageInstall may already have reverted that install. canary_blocked: the canary (FLEET_CANARY) has not soaked on the release after ${FLEET_BLOCKED_MS / 60_000} minutes, for any reason, so nothing else moved. no_target: the scheduler has no release tag, so nothing can move. No install is upgraded to a halted version. Fix the cause and ship the next release, which starts a new rollout.`,
+      `The fleet rollout stopped (${plural(f.count, "problem")}; codes: ${f.codes.join(", ") || "none"}). No install is upgraded to a halted version, and the fleet never rolls one back. fleet_halt: upgraded installs failed two health probes of this version on separate ticks. A job code: a fleet upgrade failed; migration_held on the canary means a migration that can lose data waits for a person to read it. canary_blocked: the canary (FLEET_CANARY) has not soaked on the release after ${FLEET_BLOCKED_MS / 60_000} minutes, for any reason, so nothing else moved. no_target: the scheduler has no release tag, so nothing can move. Do not roll back: fix the cause and ship the next release, which starts a new rollout from the canary.`,
     clear: "No fleet rollout is halted.",
   },
   version_skew: {
@@ -492,6 +492,9 @@ const COPY: Record<AlertKey, Copy> = {
     clear: "Every install is on the platform's release.",
   },
 };
+
+/** Where every open and reminder email points: one section per key. */
+export const RUNBOOK = "What to do: docs/ops/alerts.md,";
 
 const NO_FACTS: AlertFacts = { count: 0, installIds: [], jobs: [], codes: [] };
 
@@ -517,6 +520,6 @@ export function alertFor(
     text: (state, at) =>
       state === "clear"
         ? `${c.clear} (cleared at ${iso(at)}, alert ${key}).\n`
-        : `${c.open(facts)} (alert ${key}, opened at ${iso(at)}).${remind}\n${idLines(facts)}`,
+        : `${c.open(facts)} (alert ${key}, opened at ${iso(at)}).${remind}\n${idLines(facts)}\n${RUNBOOK} section ${key}.\n`,
   };
 }
