@@ -947,7 +947,7 @@ function DepartedRow({
             className="text-[length:var(--oa-text-sm)]"
             onClick={() => setOpen({ pick: toMe })}
           >
-            Transfer all to me
+            Transfer all to me…
           </Button>
         ) : (
           <Button

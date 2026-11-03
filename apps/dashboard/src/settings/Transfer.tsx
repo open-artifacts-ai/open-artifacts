@@ -18,7 +18,12 @@ import {
 import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
-import { personFirst, personInSentence, personName } from "../layout/person";
+import {
+  isReleased,
+  personFirst,
+  personInSentence,
+  personName,
+} from "../layout/person";
 import { toast } from "../layout/toast";
 import { sharedSpaceName } from "../spaces/label";
 import { OptionSelect } from "./OptionSelect";
@@ -269,22 +274,30 @@ export function TransferDialog({
                   value={userId}
                   options={successors.map((m) => ({
                     value: m.id,
-                    label: personName(m),
+                    // As Members marks you.
+                    label:
+                      m.id === meId ? `${personName(m)} (you)` : personName(m),
                   }))}
                   placeholder="Choose a person"
                   disabled={busy}
                   onChange={setUserId}
                 />
               )}
-              {person && toYou && !activeGuest && (
+              {person && toYou && (
                 <p className={muted}>
                   {withSpaces
-                    ? `They go to your Personal, with ${firstName}'s shares kept.`
-                    : `You become the owner, with ${firstName}'s shares kept.`}{" "}
-                  If you restore {firstName} later, these stay with you.
+                    ? "They go to your Personal"
+                    : "You become the owner"}
+                  {activeGuest
+                    ? `, ${name} loses access, and people they shared with keep theirs.`
+                    : `, with ${firstName}'s shares kept.`}
+                  {/* True whether they're suspended, removed or can't be restored; a deleted Workspace account can't come back. */}
+                  {!activeGuest &&
+                    !isReleased(member) &&
+                    ` If ${firstName} comes back later, these stay with you.`}
                 </p>
               )}
-              {person && !(toYou && !activeGuest) && (
+              {person && !toYou && (
                 <p className={muted}>
                   You won't see titles or contents. {personName(person)}{" "}
                   {withSpaces

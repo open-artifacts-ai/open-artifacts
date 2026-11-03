@@ -59,7 +59,7 @@ const carolRow = async () =>
 const openToMe = async () => {
   fireEvent.click(
     await within(await carolRow()).findByRole("button", {
-      name: "Transfer all to me",
+      name: "Transfer all to me…",
     }),
   );
   return screen.findByRole("dialog");
@@ -268,7 +268,7 @@ it("successors exclude Carol, guests and restricted Dan; an active admin counts"
   );
   expect(
     (await screen.findAllByRole("option")).map((o) => o.textContent),
-  ).toEqual(["Ada Lovelace", "Bob Builder", "Erin Admin"]);
+  ).toEqual(["Ada Lovelace (you)", "Bob Builder", "Erin Admin"]);
 });
 
 it("to a person: the helper names both, and the transfer posts the user", async () => {
@@ -493,7 +493,7 @@ it("the row's actions share a line of their own, apart from the count", async ()
   const row = await carolRow();
   const actions = within(row).getByTestId("departed-actions");
   expect(
-    within(actions).getByRole("button", { name: "Transfer all to me" }),
+    within(actions).getByRole("button", { name: "Transfer all to me…" }),
   ).toBeVisible();
   expect(
     within(actions).getByRole("button", { name: "More for Carol Departed" }),
@@ -568,8 +568,14 @@ it("Transfer all to me opens the dialog with you chosen, and moves nothing yet",
   await waitFor(() =>
     expect(
       within(d).getByRole("combobox", { name: "Give them to" }),
-    ).toHaveTextContent("Ada Lovelace"),
+    ).toHaveTextContent("Ada Lovelace (you)"),
   );
+  // Marked as Members marks you; nobody else is.
+  fireEvent.click(within(d).getByRole("combobox", { name: "Give them to" }));
+  expect(
+    (await screen.findAllByRole("option")).map((o) => o.textContent),
+  ).toEqual(expect.arrayContaining(["Ada Lovelace (you)", "Bob Builder"]));
+  fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
   expect(within(d).getByRole("button", { name: "Transfer 2" })).toBeEnabled();
   expect(within(d).getByRole("button", { name: "Later" })).toBeVisible();
   await new Promise((r) => setTimeout(r, 20));
@@ -577,9 +583,9 @@ it("Transfer all to me opens the dialog with you chosen, and moves nothing yet",
 });
 
 const YOURS_OFF =
-  "You become the owner, with Carol's shares kept. If you restore Carol later, these stay with you.";
+  "You become the owner, with Carol's shares kept. If Carol comes back later, these stay with you.";
 const YOURS_ON =
-  "They go to your Personal, with Carol's shares kept. If you restore Carol later, these stay with you.";
+  "They go to your Personal, with Carol's shares kept. If Carol comes back later, these stay with you.";
 
 it("self-hosted: with you chosen, the dialog says you become the owner", async () => {
   server.use(...removedCarol);
@@ -640,7 +646,7 @@ it("a capped (restricted) owner gets Transfer, not Transfer all to me", async ()
     }),
   ).toBeVisible();
   expect(
-    within(row).queryByRole("button", { name: "Transfer all to me" }),
+    within(row).queryByRole("button", { name: "Transfer all to me…" }),
   ).toBeNull();
 });
 
@@ -979,6 +985,32 @@ describe("the dialog on what the install can do", () => {
     ).toBeVisible();
   });
 
+  it.each([
+    [
+      false,
+      "You become the owner, owner1@outside.example loses access, and people they shared with keep theirs.",
+    ],
+    [
+      true,
+      "They go to your Personal, owner1@outside.example loses access, and people they shared with keep theirs.",
+    ],
+  ])(
+    "an active guest with you chosen gets the you form (spaces %s), with no comes-back line",
+    async (spaces, copy) => {
+      mountHosted("/", { ...notices, spaces });
+      const d = await open();
+      fireEvent.click(
+        await within(d).findByRole("combobox", { name: "Give them to" }),
+      );
+      fireEvent.click(
+        await screen.findByRole("option", { name: "Ada Lovelace (you)" }),
+      );
+      expect(await within(d).findByText(copy)).toBeVisible();
+      expect(d).not.toHaveTextContent("comes back");
+      expect(d).not.toHaveTextContent("You won't see titles");
+    },
+  );
+
   it("to a space, for an active guest: the note says they lose access", async () => {
     mountHosted("/", { ...notices, spaces: true });
     const d = await open();
@@ -1240,7 +1272,7 @@ it("an admin's card counts only the rows they see", async () => {
     ...removedCarol.slice(1),
   ]);
   const row = await carolRow();
-  await within(row).findByRole("button", { name: "Transfer all to me" });
+  await within(row).findByRole("button", { name: "Transfer all to me…" });
   const card = await departed();
   expect(card).toHaveTextContent(
     "1 person left with personal artifacts to transfer.",
@@ -1443,6 +1475,6 @@ it("the owner can still transfer a departed admin's artifacts", async () => {
   mountHosted("/settings/members", true, undefined, removedAdminCarol);
   const row = await carolRow();
   expect(
-    await within(row).findByRole("button", { name: "Transfer all to me" }),
+    await within(row).findByRole("button", { name: "Transfer all to me…" }),
   ).toBeVisible();
 });

@@ -159,7 +159,7 @@ it("Restore is hidden on the Removed row, with the muted line", async () => {
 it("the Departed row keeps Transfer and hides Restore, with no muted line", async () => {
   mountHosted("/settings/members", true, undefined, withGone(nameless(NONE)));
   const card = await departed();
-  await within(card).findByRole("button", { name: "Transfer all to me" });
+  await within(card).findByRole("button", { name: "Transfer all to me…" });
   expect(within(card).queryByText(MANAGED)).toBeNull();
   fireEvent.pointerDown(
     within(card).getByRole("button", { name: "More for Former member" }),
@@ -179,7 +179,7 @@ it("sentences say a former member: title, toast and failure", async () => {
   ]);
   const card = await departed();
   fireEvent.click(
-    await within(card).findByRole("button", { name: "Transfer all to me" }),
+    await within(card).findByRole("button", { name: "Transfer all to me…" }),
   );
   const d = await screen.findByRole("dialog");
   expect(
@@ -189,7 +189,7 @@ it("sentences say a former member: title, toast and failure", async () => {
   ).toBeVisible();
   expect(
     await within(d).findByText(
-      "They go to your Personal, with a former member's shares kept. If you restore a former member later, these stay with you.",
+      "They go to your Personal, with a former member's shares kept.",
     ),
   ).toBeVisible();
   fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
@@ -209,7 +209,7 @@ it("a failed run from the row fails inline in the dialog", async () => {
   ]);
   const card = await departed();
   fireEvent.click(
-    await within(card).findByRole("button", { name: "Transfer all to me" }),
+    await within(card).findByRole("button", { name: "Transfer all to me…" }),
   );
   const d = await screen.findByRole("dialog");
   fireEvent.click(await within(d).findByRole("button", { name: "Transfer 2" }));
@@ -252,14 +252,16 @@ it("a named person keeps their first name in your copy", async () => {
   ]);
   const card = await departed();
   fireEvent.click(
-    await within(card).findByRole("button", { name: "Transfer all to me" }),
+    await within(card).findByRole("button", { name: "Transfer all to me…" }),
   );
   const d = await screen.findByRole("dialog");
   expect(
     await within(d).findByText(
-      "They go to your Personal, with Pat's shares kept. If you restore Pat later, these stay with you.",
+      "They go to your Personal, with Pat's shares kept.",
     ),
   ).toBeVisible();
+  // A deleted Workspace account can't come back.
+  expect(d).not.toHaveTextContent("comes back");
 });
 
 const GONE_EMAIL = `removed+${NONE}@invalid`;
