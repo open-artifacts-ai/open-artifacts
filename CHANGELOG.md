@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.102.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.102.0...v0.102.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **spaces:** Move shows Personal as not allowed; remove asks first; frozen sync says so ([#1190](https://github.com/open-artifacts-ai/open-artifacts/issues/1190)) ([#1199](https://github.com/open-artifacts-ai/open-artifacts/issues/1199)) ([d488772](https://github.com/open-artifacts-ai/open-artifacts/commit/d488772babe0526fd0a2ca3281d45b919905a7e4))
+
 ## [0.102.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.101.1...v0.102.0) (2026-11-03)
 
 
