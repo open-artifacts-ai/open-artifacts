@@ -12,8 +12,7 @@ const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "../src");
 const ENTRY = resolve(SRC, "mocks/index.ts");
 
 // Static and dynamic specifiers, including `import type` / `export type`.
-const SPECIFIER =
-  /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)["']([^"']+)["']/g;
+const SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)["']([^"']+)["']/g;
 
 function resolveLocal(from: string, spec: string): string {
   const base = resolve(dirname(from), spec);
