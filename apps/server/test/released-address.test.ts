@@ -7,25 +7,27 @@ import {
   MemberSchema,
   PageSchema,
   R,
+  SpaceMembersPageSchema,
   VersionInfoSchema,
 } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createApp } from "../src/app.js";
 import { deleteUser } from "../src/directory/apply.js";
+import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
 import { uniq } from "./auth-helpers.js";
 import { fetchAndWait, login } from "./helpers.js";
 
 const app = createApp();
-const get = (path: string, cookie: string) =>
+const get = (path: string, cookie: string, e: Env = env as Env) =>
   fetchAndWait(
     app,
     new Request(`http://app.localhost${path}`, {
       headers: { "x-oa-request": "1", cookie },
     }),
-    env,
+    e,
   );
 
 describe("a member a directory deletion released", () => {
@@ -78,5 +80,37 @@ describe("a member a directory deletion released", () => {
     expect(
       z.array(VersionInfoSchema).parse(await v.json())[0]?.createdBy.email,
     ).toBe(placeholder());
+  });
+
+  it("a space's member list still parses, with someone an Every-space group still names", async () => {
+    const ON = { ...(env as object), FEATURES: "spaces" } as Env;
+    const u = await login(uniq("ra-space", "a.com"), "member");
+    const g = `ra-group-${u.userId}`;
+    const spaceId = `ra-space-${u.userId}`;
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into spaces (id, kind, name, created_at) values (?, 'shared', ?, 1)",
+      ).bind(spaceId, `Released ${u.userId}`),
+      env.DB.prepare(
+        "insert into directory_groups (group_id, email) values (?, ?)",
+      ).bind(g, `${g}@a.com`),
+      env.DB.prepare(
+        "insert into org_group_mappings (group_id, group_email, role) values (?, ?, 'viewer')",
+      ).bind(g, `${g}@a.com`),
+      env.DB.prepare(
+        "insert into directory_members (group_id, user_id, gen) values (?, ?, 1)",
+      ).bind(g, u.userId),
+    ]);
+    await deleteUser(env, u.userId, "directory_delete", () => {});
+    const r = await get(
+      `${R.spaceMembers(spaceId)}?limit=100`,
+      admin.cookie,
+      ON,
+    );
+    expect(r.status).toBe(200);
+    const { items } = SpaceMembersPageSchema.parse(await r.json());
+    expect(
+      items.find((m) => m.user.id === u.userId)?.user.email?.toLowerCase(),
+    ).toBe(`removed+${u.userId}@invalid`.toLowerCase());
   });
 });

@@ -812,7 +812,8 @@ export async function getSummary(
   ]);
   const out = toSummary(env, r.artifact, owner, r.level);
   out.lastAgent = shownLastAgent(pub, caller);
-  if (!decorates(env, caller)) return out;
+  if (!decorates(env, caller))
+    return decorate(env, caller, out, r.level, null, null);
   // One PK read for the space (lists and search read it from their join).
   const [sp] = await getDb(env)
     .select(spaceCols(caller, true, sql`${spaces.id}`))
@@ -849,8 +850,9 @@ export const spaceCols = (
 });
 
 /**
- * Hosted M1: `space` and `can` go on artifact responses for signed-in
- * callers while spaces are on (getSummary, list, search; never anonymous).
+ * Hosted M1: `space` (and `can` with it) go on artifact responses for
+ * signed-in callers while spaces are on (getSummary, list, search; never
+ * anonymous). Without spaces, `decorate` still sets `can` (withCan).
  */
 export const decorates = (env: Env, caller: Caller): boolean =>
   caller.kind === "user" && authConfig(env).features.includes("spaces");
@@ -886,6 +888,47 @@ export function withSpace<T extends ArtifactSummary>(
     dataWriters: out.dataWriters,
   });
   return out;
+}
+
+/**
+ * `can` for a signed-in caller on an install without spaces (parity 1:
+ * artifacts always carry the server's `can`): every artifact is personal
+ * there, and move and transfer (spaces routes, 404 without them) are false.
+ * No `space`.
+ */
+export function withCan<T extends ArtifactSummary>(
+  caller: Caller,
+  out: T,
+  level: AccessLevel,
+): T {
+  out.can = {
+    ...artifactCan(level, {
+      personal: true,
+      cap: capOfCaller(caller),
+      dataWriters: out.dataWriters,
+    }),
+    move: false,
+    transfer: false,
+  };
+  return out;
+}
+
+/**
+ * A signed-in caller's decoration: `space` and `can` with spaces on
+ * (withSpace), `can` alone without (withCan). Anonymous callers get neither.
+ */
+export function decorate<T extends ArtifactSummary>(
+  env: Env,
+  caller: Caller,
+  out: T,
+  level: AccessLevel,
+  spaceId: string | null,
+  sp: SpaceCols | null | undefined,
+): T {
+  if (caller.kind !== "user") return out;
+  return decorates(env, caller)
+    ? withSpace(caller, out, level, spaceId, sp)
+    : withCan(caller, out, level);
 }
 
 // --------------------------------------------------------------------- list
@@ -1015,7 +1058,6 @@ export async function list(
   // listFilterSql: a row it denies is dropped, never shown with a guessed
   // level. The cursor still follows the SQL page.
   const items: ArtifactSummary[] = [];
-  const dec = decorates(env, caller);
   for (const r of page) {
     const { level } = r;
     if (!level) continue;
@@ -1034,7 +1076,7 @@ export async function list(
       level,
     );
     out.lastAgent = shownLastAgent(r.lastPub, caller);
-    items.push(dec ? withSpace(caller, out, level, r.a.spaceId, r.space) : out);
+    items.push(decorate(env, caller, out, level, r.a.spaceId, r.space));
   }
   return {
     items,

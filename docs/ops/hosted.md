@@ -501,6 +501,13 @@ Agents (Frontend, Design and Platform walkthroughs, and e2e tests) sign in to th
 - The principal kind is `test-admin`, so every check for an admin fails closed. Audit rows show the kind `test-admin` with the label "test admin". Its jobs are stored as `oidc`, so the provisioner holds them to the red-line scope (staging, `rl-` with test hooks).
 - R28 admits only a JWT from `staging-test-admin.yml@refs/heads/main`, and that JWT can call nothing else. Red-line's JWT never reaches R28. Prod has no OIDC principal, and a test admin session row is refused there before anything else.
 
+### Red-line runs the tag's suite
+
+`redline-staging.yml` stays on main, with its Environment rule, but its `redline` job checks out the tag under test and runs everything from there (#1137). Suite and release always match.
+
+- A suite fix reaches a candidate only in a new release, and rerunning the same tag runs the same suite. A `test:` merge alone opens no release, so ship the fix with a `Release-As: X.Y.Z` footer (see "Forcing a release when only non-releasable commits landed").
+- The commands the workflow calls (`provisioning mint-oidc`, `bringup`, `staged-version`, `revoke`, `live`, the T19 config) must keep working for every tag still in use. `redline-staging.test.ts` pins them.
+
 ### Inventory `GET /hosts` (read-only, for the red-line suite)
 
 `apps/inventory` binds `HOSTS` (`oa-<p>-hosts`) next to `PLATFORM_DB`; the Worker only reads both (a source test forbids KV and D1 writes). Same `Authorization: Bearer <GitHub OIDC JWT>` as `/installs` (design 6.3; the inventory key is gone), and the same plain 404 for anything else: every auth failure (no, empty or oversized bearer, a malformed or expired token, any claim that misses its pin, a staging token on prod, a JWKS fetch failure) is that unknown-route 404 byte for byte (`Not found`, `cache-control: no-store`), never a 401. Missing or empty `OIDC_*` vars are a fixed 503 before the header is read. `GET /hosts` returns `{"hosts":[{"host","installId"}],"complete":true}`, sorted by host, paged through every KV cursor, capped at 10,000 keys (`complete:false` past it). `GET /hosts?host=<h>` returns `{"host","installId"}` for that exact key (nothing is normalized). `installId` is `null` for a miss or a value that isn't an install id; raw values are never returned. Fill the `HOSTS` id in `wrangler.jsonc` at deploy, as for `PLATFORM_DB`. The red-line env reads the endpoint through `REDLINE_STG_INVENTORY_URL` (variable) with a GitHub OIDC token `redline-staging.yml` mints per run (no stored secret).
