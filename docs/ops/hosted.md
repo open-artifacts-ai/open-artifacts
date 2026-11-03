@@ -555,6 +555,8 @@ The run applies the gate: it fails unless every case passes or is one the report
 
 ### Forcing a release when only non-releasable commits landed
 
+Only the `release-please.yml` push run of the release commit itself (subject `chore(main): release X.Y.Z`) creates the GitHub release; every other run passes `skip-github-release`, so a run queued behind the release PR's merge can't create the tag in a run whose `head_sha` isn't the tag's commit, which the release gate would refuse. If that run fails before the release exists, re-run it (a re-run stays a push run on the same commit).
+
 release-please opens a release PR only for releasable commits (`feat`, `fix`, `perf`, `deps`, or a breaking change). A `test:`, `ci:`, `docs:` or `chore:` merge alone never ships, so a fix that red-line needs can sit on main unreleased. To ship it, merge a PR whose squash commit ends with a `Release-As: X.Y.Z` footer.
 
 The squash message is the PR body (repo setting). GitHub appends a `---------` line and a separate `Co-authored-by:` block when the branch's commits carry co-author trailers. That block becomes the footer, and release-please then ignores a `Release-As:` line above it (checked with release-please 16's own parser). So put `Release-As: X.Y.Z` in the PR body's last block, together with any `Co-authored-by:` line, and leave the co-author trailer out of the branch's commits.

@@ -741,6 +741,68 @@ describe("release-please", () => {
     expect(rp.with.token).toBe("${{ steps.app.outputs.token }}");
     expect(steps.indexOf(app)).toBeLessThan(steps.indexOf(rp));
   });
+  describe("only the release commit's own run creates GitHub releases", () => {
+    // 2026-11-03: a non-release push queued behind the concurrency group ran
+    // after release PR #1256 merged and created v0.105.0 (the action reads
+    // main's head), so the tag commit's own run skipped every downstream job.
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const rpSteps = (): any[] =>
+      wf("release-please.yml").jobs["release-please"].steps;
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const kind = () => rpSteps().find((s: any) => s.id === "kind");
+    const runKind = (message: string): string => {
+      const out = join(mkdtempSync(join(tmpdir(), "rp-kind-")), "out");
+      writeFileSync(out, "");
+      execFileSync("bash", ["-c", kind().run], {
+        env: { PATH: process.env.PATH, MESSAGE: message, GITHUB_OUTPUT: out },
+      });
+      return readFileSync(out, "utf8");
+    };
+
+    it("skip-github-release is wired to the kind step, which runs before the action", () => {
+      const steps = rpSteps();
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const rp = steps.find((s: any) => s.id === "rp");
+      expect(rp.with["skip-github-release"]).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ steps.kind.outputs.is_release != 'true' }}",
+      );
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const k = steps.findIndex((s: any) => s.id === "kind");
+      expect(k).toBeGreaterThanOrEqual(0);
+      expect(k).toBeLessThan(steps.indexOf(rp));
+    });
+    it("the kind step reads the commit message from env, never by interpolation", () => {
+      const k = kind();
+      expect(k.env.MESSAGE).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ github.event.head_commit.message }}",
+      );
+      expect(k.run).not.toContain("${{");
+    });
+    it("a release commit gives true", () => {
+      expect(runKind("chore(main): release 0.106.0 (#1300)")).toBe(
+        "is_release=true\n",
+      );
+      expect(
+        runKind("chore(main): release 0.106.0 (#1300)\n\nbody\n"),
+      ).toBe("is_release=true\n");
+    });
+    it("any other commit gives false", () => {
+      const marker = join(mkdtempSync(join(tmpdir(), "rp-kind-")), "pwned");
+      for (const m of [
+        "feat(dashboard): snooze a held directory sweep (#412) (#855)",
+        "fix: x\n\nchore(main): release 0.106.0",
+        " chore(main): release 0.106.0",
+        "chore(main): released notes",
+        "chore: release 0.106.0",
+        "",
+        `$(touch ${marker}) \`touch ${marker}\``,
+      ])
+        expect(runKind(m), JSON.stringify(m)).toBe("is_release=false\n");
+      expect(existsSync(marker)).toBe(false);
+    });
+  });
   it("has no dispatch workaround for the release PR", () => {
     const raw = read(".github/workflows/release-please.yml");
     expect(raw).not.toContain("release-pr-dispatch");
