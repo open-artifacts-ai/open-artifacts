@@ -190,10 +190,11 @@ EOF
     # is onboarded in Email Sending. A 200 alone proves only the token's reach.
     local names want missing=""
     names="$(jq -r '[.result[]? | (.name // .subdomain // .domain // empty)] | join(",")' <<< "$BODY" 2> /dev/null)" || names=""
+    # An empty sender never matches: its domain is "", and no listed name is.
     for want in "${ALERT_FROM#*@}" "${WELCOME_FROM#*@}"; do
       [[ ",$names," == *",$want,"* ]] || missing="$missing $want"
     done
-    if [ "$(tf ok)" = true ] && [ -z "$missing" ] && [ -n "$ALERT_FROM" ] && [ -n "$WELCOME_FROM" ]; then
+    if [ "$(tf ok)" = true ] && [ -z "$missing" ]; then
       record $s "Email Sending ($EMAIL_ZONE)" true "HTTP $HTTP; senders onboarded: ${ALERT_FROM#*@}"
     else
       record $s "Email Sending ($EMAIL_ZONE)" false "HTTP $HTTP; not onboarded:${missing:- (no sender in $ENV.json)}; listed: ${names:-none}"

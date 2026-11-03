@@ -504,7 +504,12 @@ describe("Email Sending: the senders' domain is onboarded (#967)", () => {
   });
 
   it("fails on a 200 that doesn't list it: the old check passed this", () => {
-    for (const list of [[], [{ name: "news.open-artifacts-staging.app" }]]) {
+    for (const list of [
+      [],
+      [{ name: "news.open-artifacts-staging.app" }],
+      [{ name: "xmail.open-artifacts-staging.app" }],
+      [{ name: "mail.open-artifacts-staging.app.example" }],
+    ]) {
       const t = setup(subdomains(list));
       t.run("verify");
       const r = sending(t);
@@ -513,6 +518,16 @@ describe("Email Sending: the senders' domain is onboarded (#967)", () => {
         "not onboarded: mail.open-artifacts-staging.app",
       );
     }
+  });
+
+  it("checks every sender: a welcome address on another domain must be listed too", () => {
+    const t = setup(verifyFx(365), {
+      welcome_from: "welcome@hello.open-artifacts-staging.app",
+    });
+    t.run("verify");
+    expect(String(sending(t)?.observed)).toContain(
+      "not onboarded: hello.open-artifacts-staging.app",
+    );
   });
 
   it("fails when the env names no sender", () => {
