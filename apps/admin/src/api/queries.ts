@@ -1,4 +1,4 @@
-import type { InstallState } from "@oa/shared/provisioning";
+import type { InstallState } from "@oa/provisioning-contract";
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 import { api } from "./client";
 

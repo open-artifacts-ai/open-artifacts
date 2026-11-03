@@ -11,7 +11,7 @@ import {
   toolInput,
   toolOutput,
   toolText,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import type { z } from "zod";
 import { refusalOf } from "../auth/mcp-gate.js";
 import type { Env } from "../env.js";

@@ -1,7 +1,7 @@
 import {
   API_ERROR_STATUS,
   AUDIT_REFUSAL_WINDOW_MS,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hmac16 } from "../src/auth/crypto.js";
 import { refuse } from "../src/refuse.js";

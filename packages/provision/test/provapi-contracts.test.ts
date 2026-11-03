@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   JOB_ERROR_CODES,
   JOB_ERROR_RETRY,
-} from "@oa/shared/provisioning/error-codes";
+} from "@oa/provisioning-contract/error-codes";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { CfError } from "../src/cf.js";
 import * as INDEX from "../src/index.js";

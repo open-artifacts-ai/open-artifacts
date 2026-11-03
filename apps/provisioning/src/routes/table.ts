@@ -1,7 +1,7 @@
-import { ROUTE_IDS, ROUTES, type RouteId } from "@oa/shared/provisioning";
+import { ROUTE_IDS, ROUTES, type RouteId } from "@oa/provisioning-contract";
 import type { HostKind } from "../hosts.js";
 
-// The route table (design v7 3.4) compiled from @oa/shared/provisioning.
+// The route table (design v7 3.4) compiled from @oa/provisioning-contract.
 // "api" routes sit under /v1 on api.<app> and /api/v1 on admin.<app>;
 // "browser" routes (sign-in, logout) at the admin host's root only.
 

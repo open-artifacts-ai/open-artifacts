@@ -1,6 +1,6 @@
+import { type Token, TokenScopeSchema } from "@oa/provisioning-contract";
+import { LIVE_TOKENS_PER_ADMIN } from "@oa/provisioning-contract/constants";
 import { agentClients } from "@oa/shared";
-import { type Token, TokenScopeSchema } from "@oa/shared/provisioning";
-import { LIVE_TOKENS_PER_ADMIN } from "@oa/shared/provisioning/constants";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse } from "msw";
 import { expect, it, vi } from "vitest";

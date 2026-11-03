@@ -1,4 +1,4 @@
-import { API_ERROR_STATUS, type ApiRouteId } from "@oa/shared/provisioning";
+import { API_ERROR_STATUS, type ApiRouteId } from "@oa/provisioning-contract";
 import { ApiError } from "../src/errors.js";
 import type { Principal } from "../src/principal.js";
 import {

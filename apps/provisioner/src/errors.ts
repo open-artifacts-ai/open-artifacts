@@ -11,8 +11,8 @@ import {
   ProvisionRetry,
   provisionErrorCode,
 } from "@oa/provision";
+import { JOB_FAIL_POINTS, type JobFailPoint } from "@oa/provisioning-contract";
 import { TEST_HOOK_REFUSALS, type TestHookRefusal } from "@oa/shared";
-import { JOB_FAIL_POINTS, type JobFailPoint } from "@oa/shared/provisioning";
 
 /** jobs.error_message is at most 300 characters (0008). */
 export const ERROR_MESSAGE_MAX = 300;

@@ -13,13 +13,13 @@ const repo = resolve(pkg, "../..");
 /** Private modules, as package names and as repo paths. */
 const FORBIDDEN = [
   "@oa/provision",
-  "@oa/shared/provisioning",
+  "@oa/provisioning-contract",
   "@oa/gh-oidc",
   "@oa/hosted",
   "@oa/redline",
   "packages/provision",
   "packages/gh-oidc",
-  "packages/shared/src/provisioning",
+  "packages/provisioning-contract",
   "packages/shared/dist/provisioning",
   "apps/provisioner",
   "apps/provisioning",
@@ -98,7 +98,7 @@ describe("@oa/bundle imports nothing private (#1056)", () => {
     for (const code of [
       `import { x } from ${q("@oa/provision")};`,
       `export * from ${q("@oa/provision/jobs")};`,
-      `import type { T } from ${q("@oa/shared/provisioning")};`,
+      `import type { T } from ${q("@oa/provisioning-contract")};`,
       `const m = await import(${q("../../../apps/provisioner/src/index.js")});`,
       `const m = require(${q("../../../tests/redline/src/a.js")});`,
       `import ${q("../../../scripts/hosted/src/cli.ts")};`,

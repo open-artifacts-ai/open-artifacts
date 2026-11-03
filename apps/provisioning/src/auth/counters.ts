@@ -9,7 +9,9 @@ export const SIGNIN_REFUSALS = {
   ip: { limit: 30, windowMs: HOUR_MS },
 } as const;
 
-const windowOf = (now: number, windowMs: number) => now - (now % windowMs);
+/** The start of `now`'s fixed window: what bump and peek key a count by. */
+export const windowOf = (now: number, windowMs: number) =>
+  now - (now % windowMs);
 
 /** Adds one to `key`'s current window; the count after it. */
 export async function bump(

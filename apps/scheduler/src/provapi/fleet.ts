@@ -30,9 +30,9 @@
 // queued for it.
 import { isInstallId } from "@oa/provision/names";
 import { compareVersions } from "@oa/provision/versions";
-import type { AlertRow } from "@oa/shared/provisioning/alerts";
-import { alertStateKey } from "@oa/shared/provisioning/state";
-import { SYSTEM_ACTOR } from "@oa/shared/provisioning/system";
+import type { AlertRow } from "@oa/provisioning-contract/alerts";
+import { alertStateKey } from "@oa/provisioning-contract/state";
+import { SYSTEM_ACTOR } from "@oa/provisioning-contract/system";
 import type { Condition } from "./conditions.js";
 import { bound, d1, type ProvapiEnv, within } from "./env.js";
 import { type HealthProbe, publicRouteProbe } from "./health.js";

@@ -16,6 +16,7 @@ import {
   type Page,
 } from "@playwright/test";
 import { gate } from "../gate";
+import { sendRead } from "../retry";
 import { FETCH_MS, hookKey, rlA } from "../targets";
 
 // rl-a's helpers: sessions through TEST_HOOKS.session for users in its
@@ -90,26 +91,44 @@ export async function person(
       body: JSON.stringify({ displayName: name }),
     }),
   );
+  // Space roles the hook granted: this file's cleanup takes them away again.
+  for (const s of spaces ?? [])
+    grantedHere().push({ spaceId: s.spaceId, userId: me.user.id });
   return { ...p, id: me.user.id, page: await ctx.newPage() };
 }
 
-/** An API call as `p` (X-OA-Request set), bounded. */
+/**
+ * An API call as `p` (X-OA-Request set), bounded. A GET that gets no response
+ * is sent again (retry.ts), so a poll keeps polling; writes never are.
+ */
 export const api = (
   p: Pick<Person, "cookie">,
   path: string,
   init: RequestInit = {},
 ) =>
-  fetch(`${A.app}${path}`, {
-    ...init,
-    redirect: "manual",
-    headers: {
-      cookie: `${COOKIE}=${p.cookie}`,
-      "x-oa-request": "1",
-      ...(init.body ? { "content-type": "application/json" } : {}),
-      ...init.headers,
-    },
-    signal: AbortSignal.timeout(FETCH_MS),
-  });
+  sendRead(init.method, () =>
+    fetch(`${A.app}${path}`, {
+      ...init,
+      redirect: "manual",
+      headers: {
+        cookie: `${COOKIE}=${p.cookie}`,
+        "x-oa-request": "1",
+        ...(init.body ? { "content-type": "application/json" } : {}),
+        ...init.headers,
+      },
+      signal: AbortSignal.timeout(FETCH_MS),
+    }),
+  );
+
+/** An anonymous call to rl-a, bounded; a GET with no response is sent again. */
+export const anon = (path: string, init: RequestInit = {}) =>
+  sendRead(init.method, () =>
+    fetch(`${A.app}${path}`, {
+      ...init,
+      redirect: "manual",
+      signal: AbortSignal.timeout(FETCH_MS),
+    }),
+  );
 
 /** The body of a 2xx response; anything else throws with its status. */
 export async function json<T>(res: Response): Promise<T> {
@@ -127,19 +146,26 @@ export async function refusal(res: Response, status: number): Promise<string> {
   return body.error?.code ?? "";
 }
 
-/** A GET retried once on a transient answer (network error, 502 to 504). */
-export async function get(p: Pick<Person, "cookie">, path: string) {
-  for (let i = 0; ; i++) {
-    const res = await api(p, path).catch((e: unknown) => {
-      if (i > 0) throw e;
-      return null;
-    });
-    if (res && (i > 0 || ![502, 503, 504].includes(res.status))) return res;
-  }
-}
-
-/** Artifacts this run made, deleted (by their owner, through the API) by `cleanup`. */
-const made: { by: Person; id: string }[] = [];
+/**
+ * Artifacts each spec file made, keyed by the file, so its `cleanup` deletes
+ * only its own: one file's afterAll never touches another's (#1251).
+ */
+const perFile = <T>() => {
+  const all = new Map<string, T[]>();
+  return () => {
+    const file = base.info().file;
+    const list = all.get(file) ?? [];
+    all.set(file, list);
+    return list;
+  };
+};
+const madeHere = perFile<{ by: Person; id: string }>();
+/**
+ * Space roles each file's people got through the session hook, removed again
+ * by that file's `cleanup`, so the fixed t19 spaces don't gain members per
+ * run (#1251).
+ */
+const grantedHere = perFile<{ spaceId: string; userId: string }>();
 
 /**
  * Publishes as `p` and remembers the artifact for `cleanup`, which deletes it
@@ -153,22 +179,43 @@ export async function publish(
   const r = await json<PublishResult>(
     await api(p, R.artifacts, { method: "POST", body: JSON.stringify(input) }),
   );
-  made.push({ by, id: r.id });
+  madeHere().push({ by, id: r.id });
   return r;
 }
 
 /** `cleanup` deletes `id` as `by` (an artifact made in the UI, or one that changed owner). */
-export const remember = (by: Person, id: string) => made.push({ by, id });
+export const remember = (by: Person, id: string) => madeHere().push({ by, id });
 
-/** Soft-deletes every artifact this run made; one already gone (404) is fine. */
+/**
+ * Soft-deletes every artifact this file made, then takes away every space
+ * role its people were granted (as an org admin, who may remove any manual
+ * member). One already gone (404) is fine.
+ */
 export async function cleanup(): Promise<void> {
-  const left = made.splice(0);
+  const left = madeHere().splice(0);
   const failed: string[] = [];
   for (const { by, id } of left) {
     const res = await api(by, R.artifact(id), { method: "DELETE" }).catch(
       () => null,
     );
     if (!res || (res.status !== 204 && res.status !== 404)) failed.push(id);
+  }
+  const roles = grantedHere().splice(0);
+  if (roles.length) {
+    const { cookie } = await hook<{ cookie: string }>(TEST_HOOKS.session, {
+      email: email("admin"),
+      role: "admin",
+    } satisfies TestSessionInput);
+    const done = new Set<string>();
+    for (const { spaceId, userId } of roles) {
+      const key = `${spaceId} ${userId}`;
+      if (done.has(key)) continue;
+      done.add(key);
+      const res = await api({ cookie }, R.spaceMember(spaceId, userId), {
+        method: "DELETE",
+      }).catch(() => null);
+      if (!res || ![200, 204, 404].includes(res.status)) failed.push(key);
+    }
   }
   if (failed.length) throw new Error(`T19 cleanup left ${failed.join(", ")}`);
 }
@@ -197,7 +244,7 @@ async function sharedSpaces(admin: Person): Promise<Space[]> {
     const q = new URLSearchParams({ kind: "shared", limit: "200" });
     if (cursor) q.set("cursor", cursor);
     const page = await json<{ items: Space[]; nextCursor: string | null }>(
-      await get(admin, `${R.spaces}?${q}`),
+      await api(admin, `${R.spaces}?${q}`),
     );
     out.push(...page.items);
     cursor = page.nextCursor;
@@ -232,9 +279,7 @@ export async function t19Spaces(admin: Person): Promise<void> {
 /** rl-a's version, from /healthz (read once). */
 let version: Promise<string> | undefined;
 export const rlAVersion = () => {
-  version ??= fetch(`${A.app}/healthz`, {
-    signal: AbortSignal.timeout(FETCH_MS),
-  })
+  version ??= anon("/healthz")
     .then((r) => json<{ version: string }>(r))
     .then((h) => h.version);
   return version;

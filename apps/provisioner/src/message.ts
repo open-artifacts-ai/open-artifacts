@@ -1,4 +1,4 @@
-import { ULID_RE } from "@oa/shared/provisioning";
+import { ULID_RE } from "@oa/provisioning-contract";
 
 /**
  * One `oa-<p>-signups` message: the signup id only. The API writes the

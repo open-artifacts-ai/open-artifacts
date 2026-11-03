@@ -16,9 +16,9 @@ import {
   TOKEN_EXPIRING_DAYS,
   type TokenStatus,
   WELCOME_CLAIM_MS,
-} from "@oa/shared/provisioning";
-import { fakeProvisionerRpc } from "@oa/shared/provisioning/fakes";
-import { SYSTEM_ACTOR } from "@oa/shared/provisioning/system";
+} from "@oa/provisioning-contract";
+import { fakeProvisionerRpc } from "@oa/provisioning-contract/fakes";
+import { SYSTEM_ACTOR } from "@oa/provisioning-contract/system";
 import {
   afterEach,
   beforeAll,

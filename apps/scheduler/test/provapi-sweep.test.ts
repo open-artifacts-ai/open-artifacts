@@ -1,17 +1,20 @@
 import { type SettleFailed, settledWith } from "@oa/provision/jobs";
-import { REQUEST_ID_RE, ULID_RE } from "@oa/shared/provisioning";
-import { FakeWorkflow } from "@oa/shared/provisioning/fakes";
+import { REQUEST_ID_RE, ULID_RE } from "@oa/provisioning-contract";
+import { FakeWorkflow } from "@oa/provisioning-contract/fakes";
 import {
   JOB_START_GRACE_MS,
   JOB_TERMINATED_GRACE_MS,
   sweepTerminatedKey,
-} from "@oa/shared/provisioning/state";
-import { cleanupRequestId, SYSTEM_ACTOR } from "@oa/shared/provisioning/system";
+} from "@oa/provisioning-contract/state";
+import {
+  cleanupRequestId,
+  SYSTEM_ACTOR,
+} from "@oa/provisioning-contract/system";
 import {
   type WorkflowInstanceStatus,
   type WorkflowLike,
   WorkflowNotFoundError,
-} from "@oa/shared/provisioning/workflow";
+} from "@oa/provisioning-contract/workflow";
 import {
   afterEach,
   beforeAll,

@@ -1,4 +1,4 @@
-import { ALERT_CONDITIONS } from "@oa/shared/provisioning";
+import { ALERT_CONDITIONS } from "@oa/provisioning-contract";
 import { beforeAll, describe, expect, it } from "vitest";
 import { platformDb } from "../../../packages/provision/test/platform-db.ts";
 import { MAX_REPORT_BYTES } from "../src/prodclean.ts";

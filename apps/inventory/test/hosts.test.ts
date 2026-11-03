@@ -1,7 +1,7 @@
 import {
   InventoryHostSchema,
   InventoryHostsSchema,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { describe, expect, it } from "vitest";
 import { getJson, makeEnv, makeKv } from "./support.ts";
 

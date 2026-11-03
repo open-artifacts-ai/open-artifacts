@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -101,24 +101,30 @@ describe("ci.yml", () => {
     expect(cadence).toContain("statusCheckRollup");
     expect(cadence).toContain("mergeQueue(branch: $branch)");
   });
-  it("test: pull requests run the affected packages; everything else runs the full suite", () => {
+  it("test: three shards (server, rest, cpu); pull requests run the affected packages, everything else the whole shard (#965)", () => {
+    const job = w.jobs["test-shard"];
+    expect(job.strategy.matrix.shard).toEqual(["server", "rest", "cpu"]);
+    expect(job.strategy["fail-fast"]).toBe(false);
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
-    const steps: any[] = w.jobs.test.steps;
+    const steps: any[] = job.steps;
     const suite = steps.find((s) => s.id === "suite");
     expect(suite.run).toBe("bash scripts/ci/test-affected.sh");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(suite.env.BASE_SHA).toBe(
       "${{ github.event.pull_request.base.sha }}",
     );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(suite.env.TEST_SHARD).toBe("${{ matrix.shard }}");
     expect(suite.if).toContain("steps.ro.outputs.release_only != 'true'");
     expect(steps.some((s) => s.run === "pnpm test")).toBe(false);
-    const cpu = steps.find((s) => (s.run ?? "").includes("test:cpu"));
-    expect(cpu.if).toContain("steps.suite.outputs.server == 'true'");
+    // test:cpu runs only in its own shard, never after another suite.
+    expect(JSON.stringify(steps)).not.toContain("test:cpu");
     const sh = ci("test-affected.sh");
     expect(sh).toContain(
       '[ "${GITHUB_EVENT_NAME:-}" = pull_request ] || everything',
     );
     expect(sh).toContain('--filter "...[$BASE_SHA]"');
+    expect(sh).toContain("pnpm --filter @oa/server test:cpu");
   });
   it("runs on merge_group so the merge queue gets its required checks", () => {
     expect(triggers(w)).toContain("merge_group");
@@ -261,10 +267,10 @@ describe("ci.yml", () => {
       "e2e",
       "authz-matrix",
     ];
-    // `e2e` is an aggregate (below); its shards do the heavy work.
+    // `e2e` and `test` are aggregates (below); their shards do the heavy work.
     const HEAVY = [
       "typecheck",
-      "test",
+      "test-shard",
       "build",
       "e2e-shard",
       "e2e-admin",
@@ -281,10 +287,12 @@ describe("ci.yml", () => {
       expect(Object.keys(w.jobs)).toEqual(expect.arrayContaining(REQUIRED));
     });
     it("no required job has a job-level if or needs (a skipped job counts as passing)", () => {
-      for (const j of REQUIRED.filter((j) => j !== "e2e")) {
+      for (const j of REQUIRED.filter((j) => j !== "e2e" && j !== "test")) {
         expect(w.jobs[j].if, `${j} if`).toBeUndefined();
         expect(w.jobs[j].needs, `${j} needs`).toBeUndefined();
       }
+      expect(w.jobs["test-shard"].if).toBeUndefined();
+      expect(w.jobs["test-shard"].needs).toBeUndefined();
       expect(w.jobs["e2e-shard"].if).toBeUndefined();
       expect(w.jobs["e2e-shard"].needs).toBeUndefined();
       expect(w.jobs["e2e-admin"].if).toBeUndefined();
@@ -309,6 +317,22 @@ describe("ci.yml", () => {
       expect(gate.run).toMatch(
         /^\[ "\$SHARDS" = success \] && \[ "\$ADMIN" = success \]$/m,
       );
+      expect(JSON.stringify(job)).not.toContain("secrets.");
+    });
+    // Same for `test` (#965): it always runs, and its first, ungated step
+    // fails unless every test shard succeeded.
+    it("test is the aggregate of its shards: always runs, passes only when all passed", () => {
+      const job = w.jobs.test;
+      expect(job.needs).toEqual(["test-shard"]);
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(job.if).toBe("${{ always() }}");
+      expect(steps("test")).toHaveLength(1);
+      const [gate] = steps("test");
+      expect(gate.if).toBeUndefined();
+      expect(gate["continue-on-error"]).toBeUndefined();
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.SHARDS).toBe("${{ needs.test-shard.result }}");
+      expect(gate.run).toMatch(/^\[ "\$SHARDS" = success \]$/m);
       expect(JSON.stringify(job)).not.toContain("secrets.");
     });
     it("each heavy job checks out full history, then runs the release-only step first", () => {
@@ -740,6 +764,195 @@ describe("release-please", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(rp.with.token).toBe("${{ steps.app.outputs.token }}");
     expect(steps.indexOf(app)).toBeLessThan(steps.indexOf(rp));
+  });
+  describe("only the release commit's own run creates GitHub releases", () => {
+    // 2026-11-03: a non-release push queued behind the concurrency group ran
+    // after release PR #1256 merged and created v0.105.0 (the action reads
+    // main's head), so the tag commit's own run skipped every downstream job.
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const rpSteps = (): any[] =>
+      wf("release-please.yml").jobs["release-please"].steps;
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const kind = () => rpSteps().find((s: any) => s.id === "kind");
+    const SHA = "a".repeat(40);
+    const OTHER = "b".repeat(40);
+    // A gh that answers the three reads from env; any other call exits 2.
+    const GH_STUB = `#!/usr/bin/env bash
+echo "$*" >> "$STUB_LOG"
+[ "$1" = api ] || exit 2
+path=$2; q=
+if [ "$#" -eq 4 ] && [ "$3" = -q ]; then q=$4; elif [ "$#" -ne 2 ]; then exit 2; fi
+case "$path" in
+  "repos/o/r/issues?state=closed&labels=autorelease:%20pending&per_page=100")
+    [ -z "\${STUB_FAIL:-}" ] || [ "$STUB_FAIL" != issues ] || exit 1; body=$STUB_ISSUES ;;
+  repos/o/r/pulls/*)
+    [ "\${STUB_FAIL:-}" != pull ] || exit 1
+    body=$(jq -n --arg s "$STUB_MERGE" '{merge_commit_sha: $s}') ;;
+  "repos/o/r/compare/$SHA...$STUB_MERGE")
+    [ "\${STUB_FAIL:-}" != compare ] || exit 1
+    body=$(jq -n --arg s "$STUB_COMPARE" '{status: $s}') ;;
+  *) exit 3 ;;
+esac
+if [ -n "$q" ]; then jq -r "$q" <<< "$body"; else printf '%s\\n' "$body"; fi
+`;
+    const pr = (number: number, merged = true) => ({
+      number,
+      pull_request: { merged_at: merged ? "2026-11-03T00:00:00Z" : null },
+    });
+    const runKind = (stub: {
+      issues?: readonly unknown[];
+      merge?: string;
+      compare?: string;
+      fail?: "issues" | "pull" | "compare";
+    }) => {
+      const dir = mkdtempSync(join(tmpdir(), "rp-kind-"));
+      const out = join(dir, "out");
+      writeFileSync(out, "");
+      writeFileSync(join(dir, "gh"), GH_STUB, { mode: 0o755 });
+      const r = spawnSync("bash", ["-c", kind().run], {
+        encoding: "utf8",
+        env: {
+          PATH: `${dir}:${process.env.PATH}`,
+          GITHUB_OUTPUT: out,
+          GH_TOKEN: "t",
+          REPO: "o/r",
+          SHA,
+          STUB_LOG: join(dir, "log"),
+          STUB_ISSUES: JSON.stringify(stub.issues ?? []),
+          STUB_MERGE: stub.merge ?? "",
+          STUB_COMPARE: stub.compare ?? "",
+          STUB_FAIL: stub.fail ?? "",
+        },
+      });
+      return {
+        code: r.status,
+        output: readFileSync(out, "utf8"),
+        log: r.stdout + r.stderr,
+      };
+    };
+    const NO_OWN_RUN = `release commit ${OTHER} (#1256) has no own run: see docs/ops/hosted.md, Release recovery`;
+
+    it("skip-github-release is wired to the kind step, which runs before the action", () => {
+      const steps = rpSteps();
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const rp = steps.find((s: any) => s.id === "rp");
+      expect(rp.with["skip-github-release"]).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ steps.kind.outputs.is_release != 'true' }}",
+      );
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const k = steps.findIndex((s: any) => s.id === "kind");
+      expect(k).toBeGreaterThan(
+        // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+        steps.findIndex((s: any) => s.id === "app"),
+      );
+      expect(k).toBeLessThan(steps.indexOf(rp));
+    });
+    it("the kind step reads with the App token and takes every value from env", () => {
+      const k = kind();
+      expect(k.env).toEqual({
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        GH_TOKEN: "${{ steps.app.outputs.token }}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        REPO: "${{ github.repository }}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        SHA: "${{ github.sha }}",
+      });
+      expect(k.run).not.toContain("${{");
+      // Reads only: no method override, no fields.
+      expect(k.run).not.toMatch(
+        /gh api[^\n]*(\s-X|--method|\s-f|\s-F|--field|--input)/,
+      );
+    });
+    it("the pending release PR merged as this commit gives true", () => {
+      expect(runKind({ issues: [pr(1256)], merge: SHA })).toMatchObject({
+        code: 0,
+        output: "is_release=true\n",
+      });
+    });
+    it("no merged pending release PR gives false (the PR step runs)", () => {
+      for (const issues of [[], [pr(1250, false)]])
+        expect(runKind({ issues })).toMatchObject({
+          code: 0,
+          output: "is_release=false\n",
+        });
+    });
+    it("a pending release PR merged after this commit gives false: its own run is queued", () => {
+      expect(
+        runKind({ issues: [pr(1256)], merge: OTHER, compare: "ahead" }),
+      ).toMatchObject({ code: 0, output: "is_release=false\n" });
+    });
+    it("a pending release PR merged before this commit (batched or cancelled) fails loudly", () => {
+      for (const compare of ["behind", "diverged", ""]) {
+        const r = runKind({ issues: [pr(1256)], merge: OTHER, compare });
+        expect(r.code, compare).toBe(1);
+        expect(r.output).toBe("");
+        expect(r.log).toContain(`::error::${NO_OWN_RUN}`);
+      }
+    });
+    it("a full page of pending-labelled items fails: a later page could hold another", () => {
+      const closed = (k: number) =>
+        Array.from({ length: k }, (_, i) => pr(1000 + i, false));
+      const full = runKind({ issues: [pr(1256), ...closed(99)], merge: SHA });
+      expect(full.code).toBe(1);
+      expect(full.output).toBe("");
+      expect(full.log).toContain(
+        "::error::pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery\n",
+      );
+      expect(
+        runKind({ issues: [pr(1256), ...closed(98)], merge: SHA }),
+      ).toMatchObject({ code: 0, output: "is_release=true\n" });
+    });
+    it("two merged pending release PRs fail", () => {
+      const r = runKind({ issues: [pr(1256), pr(1260)], merge: SHA });
+      expect(r.code).toBe(1);
+      expect(r.output).toBe("");
+      expect(r.log).toContain(
+        "more than one merged release PR is pending (1256 1260)",
+      );
+    });
+    it("any gh error or bad answer fails closed", () => {
+      for (const [stub, error] of [
+        [{ fail: "issues" as const }, "could not list pending release PRs"],
+        [
+          { issues: [pr(1256)], merge: SHA, fail: "pull" as const },
+          "could not read #1256",
+        ],
+        [
+          { issues: [pr(1256)], merge: OTHER, fail: "compare" as const },
+          `could not compare ${SHA} with ${OTHER}`,
+        ],
+        [
+          { issues: [pr(1256)], merge: "null" },
+          "could not read #1256's merge commit",
+        ],
+        [
+          { issues: [pr(1256)], merge: "" },
+          "could not read #1256's merge commit",
+        ],
+      ] as const) {
+        const r = runKind(stub);
+        expect(r.code, JSON.stringify(stub)).toBe(1);
+        expect(r.output).toBe("");
+        expect(r.log).toContain(`::error::${error}\n`);
+      }
+      const dir = mkdtempSync(join(tmpdir(), "rp-kind-"));
+      const out = join(dir, "out");
+      writeFileSync(out, "");
+      writeFileSync(join(dir, "gh"), "#!/usr/bin/env bash\necho not-json\n", {
+        mode: 0o755,
+      });
+      const r = spawnSync("bash", ["-c", kind().run], {
+        env: {
+          PATH: `${dir}:${process.env.PATH}`,
+          GITHUB_OUTPUT: out,
+          REPO: "o/r",
+          SHA,
+        },
+      });
+      expect(r.status).toBe(1);
+      expect(readFileSync(out, "utf8")).toBe("");
+    });
   });
   it("has no dispatch workaround for the release PR", () => {
     const raw = read(".github/workflows/release-please.yml");

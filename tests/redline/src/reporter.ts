@@ -202,28 +202,67 @@ export async function bindingOf(
   };
 }
 
+/**
+ * One lane's results (scripts/redline.ts runs lanes as separate vitest runs):
+ * its cases before the manifest, which only the whole run can apply.
+ */
+export interface LanePart {
+  v: 1;
+  cases: CaseResult[];
+  fileNotes: { file: string; note: string }[];
+}
+
+/**
+ * The report for the run's cases: the manifest applied, then the gate, for
+ * this process's run (the reporter's, or scripts/redline.ts's for lanes).
+ */
+export async function finalReport(
+  cases: readonly CaseResult[],
+  fileNotes: readonly { file: string; note: string }[],
+) {
+  const binding = await bindingOf();
+  return {
+    ...buildReport(
+      applyManifest(cases, loadManifest()),
+      modeOf(),
+      runKindOf(process.env),
+    ),
+    ...(binding ? { binding } : {}),
+    ...(fileNotes.length ? { fileNotes: [...fileNotes] } : {}),
+  };
+}
+
+/** Writes the report as JSON and text at `out` (0600) and returns the text. */
+export function writeReport(
+  report: Awaited<ReturnType<typeof finalReport>>,
+  out: string,
+): string {
+  mkdirSync(dirname(out), { recursive: true, mode: 0o700 });
+  writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+  const text = formatReport(report);
+  writeFileSync(out.replace(/\.json$/, "") + ".txt", text, { mode: 0o600 });
+  return text;
+}
+
 export default class RedlineReporter implements Reporter {
   async onTestRunEnd(
     modules: ReadonlyArray<TestModule>,
     unhandled: ReadonlyArray<unknown>,
   ): Promise<void> {
     const root = join(import.meta.dirname, "..");
-    const binding = await bindingOf();
+    const cases = collect(modules, unhandled, root);
     const fileNotes = collectFileNotes(modules, root);
-    const report = {
-      ...buildReport(
-        applyManifest(collect(modules, unhandled, root), loadManifest()),
-        modeOf(),
-        runKindOf(process.env),
-      ),
-      ...(binding ? { binding } : {}),
-      ...(fileNotes.length ? { fileNotes } : {}),
-    };
-    const out = reportPath();
-    mkdirSync(dirname(out), { recursive: true, mode: 0o700 });
-    writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
-    const text = formatReport(report);
-    writeFileSync(out.replace(/\.json$/, "") + ".txt", text, { mode: 0o600 });
+    // A lane: its part only; scripts/redline.ts builds the report and decides
+    // the exit code once every lane is in.
+    const part = process.env.REDLINE_REPORT_PART;
+    if (part) {
+      const p: LanePart = { v: 1, cases, fileNotes };
+      mkdirSync(dirname(part), { recursive: true, mode: 0o700 });
+      writeFileSync(part, `${JSON.stringify(p, null, 2)}\n`, { mode: 0o600 });
+      return;
+    }
+    const report = await finalReport(cases, fileNotes);
+    const text = writeReport(report, reportPath());
     process.stdout.write(`\n${text}`);
     // A FAIL or infra always fails the run; with the gate, so does any non-pass.
     if (

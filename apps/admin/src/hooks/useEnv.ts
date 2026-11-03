@@ -1,4 +1,4 @@
-import { authorize, type Me, type RouteId } from "@oa/shared/provisioning";
+import { authorize, type Me, type RouteId } from "@oa/provisioning-contract";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 

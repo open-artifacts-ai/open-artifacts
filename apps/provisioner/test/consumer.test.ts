@@ -1,5 +1,5 @@
 import { env as testEnv } from "cloudflare:workers";
-import type { WorkflowParams } from "@oa/shared/provisioning";
+import type { WorkflowParams } from "@oa/provisioning-contract";
 import {
   afterEach,
   beforeAll,

@@ -1,7 +1,7 @@
 import {
   safeReturn as contractSafeReturn,
   RETURN_FALLBACK,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 
 /** Where sign-in lands when the return path is missing or unsafe. */
 export const DEFAULT_RETURN = RETURN_FALLBACK;

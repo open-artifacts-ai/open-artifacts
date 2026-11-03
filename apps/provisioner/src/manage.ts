@@ -35,7 +35,7 @@ import {
   redlineCredsJobArgs,
   type WorkflowParams,
   WorkflowParamsSchema,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { codeOf } from "./errors.js";
 import {
   dropCopyKeySettled,
