@@ -14,6 +14,7 @@
  */
 
 import { ALERT_KEYS, type AlertKey } from "./enum-values.js";
+import { copyKeyLeftOpen } from "./oauth-store.js";
 
 /** Keys read from `PROVISIONER.tokenStatus()` rather than D1. */
 export const RPC_ALERT_KEYS = [
@@ -144,12 +145,15 @@ export const ALERT_CONDITIONS: Record<SqlAlertKey, AlertCondition> = {
     params: NOW,
   },
   job_failed: {
-    // An admin cancel (code canceled) alerts too: the job did not finish.
+    // An admin cancel (code canceled) alerts too: the job did not finish. A
+    // copy_key_left job (#1008) stays until its key is seen gone, whatever
+    // the lookback or a later job says: the key may still be live.
     sql: `SELECT ${FAILED_JOB} FROM jobs j
-WHERE j.status = 'failed' AND COALESCE(j.finished_at, j.updated_at) > ?1 - ${ALERT_LOOKBACK_MS}
-  AND COALESCE(j.error_code, '') NOT IN ('prod_dirty', 'upgrade_incomplete')
+WHERE (j.status = 'failed' AND COALESCE(j.finished_at, j.updated_at) > ?1 - ${ALERT_LOOKBACK_MS}
+  AND COALESCE(j.error_code, '') NOT IN ('prod_dirty', 'upgrade_incomplete', 'copy_key_left')
   AND ${FIXED_BY(STATE_KINDS)}
-  AND NOT (j.kind = 'purge' AND (SELECT COUNT(*) FROM jobs p WHERE p.install_id = j.install_id AND p.kind = 'purge' AND p.status = 'failed') >= ${PURGE_STUCK_FAILURES})
+  AND NOT (j.kind = 'purge' AND (SELECT COUNT(*) FROM jobs p WHERE p.install_id = j.install_id AND p.kind = 'purge' AND p.status = 'failed') >= ${PURGE_STUCK_FAILURES}))
+  OR ${copyKeyLeftOpen("j")}
 ORDER BY since, j.id`,
     params: NOW,
   },

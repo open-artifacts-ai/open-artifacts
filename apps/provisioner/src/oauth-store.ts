@@ -25,6 +25,8 @@ import {
   ProvisionRefused,
 } from "@oa/provision";
 import {
+  COPY_KEY_GONE_ACTION,
+  COPY_KEY_LEFT_SQL,
   dualLiveAt,
   OAUTH_DUAL_SETTLE_MS,
   OAUTH_MODE_LIVE_ACTION,
@@ -67,6 +69,12 @@ export const MODE_LIVE_WAITS_MS = [2_000, 4_000, 8_000, 16_000, 30_000];
 export const COPY_PACE_MS = 2_500;
 /** A reasonless 404 mid-loop is RL_ANON: these, then the step's own retries. */
 export const COPY_LIMIT_WAITS_MS = [5_000, 10_000, 20_000, 30_000];
+/**
+ * How long after a run stops a put_key it had in flight may still land: the
+ * put step's attempt timeout (OAUTH_READ_STEP). A delete before then is
+ * done again after it.
+ */
+export const COPY_KEY_SETTLE_MS = 5 * 60_000;
 /**
  * Pages in one job, restarts included: 720,000 keys at 800 a page, and under
  * a Workflow's step limit. A pass that never ends fails rather than loops.
@@ -480,13 +488,14 @@ export async function dropCopyKey(
   jobId: string,
   installId: string,
   mark = "drop_key",
+  n = "",
 ): Promise<void> {
   const { target, script } = scriptTarget(ctx, installId);
   const dropped = await jobStep(
     ctx,
     step,
     jobId,
-    "drop_copy_key",
+    `drop_copy_key${n}`,
     OAUTH_READ_STEP,
     async () => {
       try {
@@ -494,6 +503,9 @@ export async function dropCopyKey(
       } catch (e) {
         if (!(e instanceof CfError && e.status === 404)) throw e;
       }
+      await transient(
+        auditStatement(ctx, installId, COPY_KEY_GONE_ACTION, {}, jobId).run(),
+      );
       return { dropped: true };
     },
     mark,
@@ -503,7 +515,7 @@ export async function dropCopyKey(
     ctx,
     step,
     jobId,
-    "rotate_copy_key",
+    `rotate_copy_key${n}`,
     OAUTH_READ_STEP,
     async () => {
       await putKey(ctx, installId);
@@ -515,7 +527,7 @@ export async function dropCopyKey(
     ctx,
     step,
     jobId,
-    "copy_key_left",
+    `copy_key_left${n}`,
     undefined,
     async () => {
       throw new ProvisionRefused("the key was not deleted", "copy_key_left");
@@ -534,6 +546,69 @@ async function verifyBackfilled(
   return { backfilled: true };
 }
 
+/**
+ * dropCopyKey after a run that may have had a put in flight (canceled, dead,
+ * or its own put_key failed): once now, then again once that put could no
+ * longer land (`stoppedAt` + COPY_KEY_SETTLE_MS).
+ */
+export async function dropCopyKeySettled(
+  ctx: CreateCtx,
+  step: WorkflowStep,
+  jobId: string,
+  installId: string,
+  stoppedAt: number,
+  mark = "drop_key",
+): Promise<void> {
+  await dropCopyKey(ctx, step, jobId, installId, mark);
+  const at = stoppedAt + COPY_KEY_SETTLE_MS;
+  if (at >= ctx.io.now())
+    await step.sleepUntil("copy_key_settle", new Date(at + 1));
+  await dropCopyKey(ctx, step, jobId, installId, mark, "_2");
+}
+
+/** A left key still open on the install; a read that fails is no. */
+export async function leftKeyOpen(
+  ctx: CreateCtx,
+  installId: string,
+): Promise<boolean> {
+  try {
+    return (
+      (await transient(
+        ctx.env.PLATFORM_DB.prepare(COPY_KEY_LEFT_SQL).bind(installId).first(),
+      )) !== null
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Best effort, after an upgrade, rollback or mode change: with a left key
+ * still open on the install (COPY_KEY_LEFT_SQL), a secret list without it is
+ * recorded gone, which shuts the alert. Never fails the job it ends.
+ */
+export async function seeLeftKey(
+  ctx: CreateCtx,
+  jobId: string,
+  installId: string,
+): Promise<{ open: boolean; gone?: boolean }> {
+  try {
+    const open = await transient(
+      ctx.env.PLATFORM_DB.prepare(COPY_KEY_LEFT_SQL).bind(installId).first(),
+    );
+    if (!open) return { open: false };
+    const { target, script } = scriptTarget(ctx, installId);
+    if ((await (await cfFor(ctx)).secretList(target, script)).includes(KEY))
+      return { open: true, gone: false };
+    await transient(
+      auditStatement(ctx, installId, COPY_KEY_GONE_ACTION, {}, jobId).run(),
+    );
+    return { open: true, gone: true };
+  } catch {
+    return { open: true, gone: false };
+  }
+}
+
 /** R30's steps. Everything after the put ends through dropCopyKey. */
 export async function oauthCopy(
   ctx: CreateCtx,
@@ -546,6 +621,7 @@ export async function oauthCopy(
     checkCopy(ctx, job, label),
   );
   let stopped: { e: unknown } | null = null;
+  let keyUp = false;
   try {
     const { key } = await jobStep(
       ctx,
@@ -555,6 +631,7 @@ export async function oauthCopy(
       OAUTH_READ_STEP,
       async () => ({ key: await putKey(ctx, installId) }),
     );
+    keyUp = true;
     await jobStep(ctx, step, jobId, "key_live", OAUTH_READ_STEP, () =>
       keyLive(ctx, job, key),
     );
@@ -564,7 +641,9 @@ export async function oauthCopy(
     // rethrow once the key is off.
     stopped = { e };
   }
-  await dropCopyKey(ctx, step, jobId, installId);
+  // A put_key that failed may still land (an attempt that timed out).
+  if (keyUp) await dropCopyKey(ctx, step, jobId, installId);
+  else await dropCopyKeySettled(ctx, step, jobId, installId, ctx.io.now());
   if (stopped) throw stopped.e;
   await jobStep(ctx, step, jobId, "verify", OAUTH_READ_STEP, () =>
     verifyBackfilled(ctx, job),

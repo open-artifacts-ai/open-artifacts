@@ -7,7 +7,11 @@
 // runs in oauth-store-real.test.ts. Each install is made by ProvisionInstall
 // first.
 import { NAMESPACES } from "@oa/provision";
-import { OAUTH_MODE_LIVE_ACTION } from "@oa/shared/provisioning";
+import {
+  ALERT_CONDITIONS,
+  alertParams,
+  OAUTH_MODE_LIVE_ACTION,
+} from "@oa/shared/provisioning";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
 import { runManage } from "../../src/manage.js";
@@ -851,6 +855,27 @@ describe("update: the KV to D1 copy (R30)", () => {
     expect(JSON.stringify(r.log)).not.toContain(left);
   });
 
+  it("a put_key that failed deletes again once a late put could have landed", async () => {
+    const id = await active();
+    await dual(id);
+    w.fake.inject((m, p) => m === "PUT" && p.endsWith("/secrets"), {
+      status: 500,
+      times: 1000,
+    });
+    let late = false;
+    const r = await run(COPY, id, {
+      onStep: (n) => {
+        if (n === "drop_copy_key_2" && !late) {
+          late = true;
+          scriptOf(id).secrets.set(KEY, "late".repeat(16));
+        }
+      },
+    });
+    expect(r.job.status).toBe("failed");
+    expect(late).toBe(true);
+    expect(scriptOf(id).secrets.has(KEY)).toBe(false);
+  });
+
   it("a failed delete and a failed rotate still fail copy_key_left", async () => {
     const id = await active();
     await dual(id);
@@ -869,6 +894,97 @@ describe("update: the KV to D1 copy (R30)", () => {
     expect(r.job).toMatchObject({
       status: "failed",
       error_code: "copy_key_left",
+    });
+  });
+
+  it("a delete that works records the key gone", async () => {
+    const { id } = await copied();
+    expect(auditOf(id).map((a) => a.action)).toContain("oauth_copy.key_gone");
+  });
+
+  describe("a left key stays an open alert until it is seen gone", () => {
+    const openFor = () =>
+      w
+        .all(
+          ALERT_CONDITIONS.job_failed.sql,
+          ...alertParams("job_failed", { now: w.clock.t, signupDailyCap: 1 }),
+        )
+        .filter((r) => r.code === "copy_key_left")
+        .map((r) => r.install_id);
+    async function leftKey() {
+      const id = await active(V1);
+      await dual(id);
+      w.fake.inject((m, p) => m === "DELETE" && p.includes("/secrets/"), {
+        status: 500,
+        times: 100,
+      });
+      await run(COPY, id);
+      w.fake.inject(() => false, { times: 0 });
+      return id;
+    }
+    const upgrade = async (id: string, onStep?: (n: string) => void) => {
+      const up = seedJob(w, {
+        kind: "upgrade",
+        installId: id,
+        args: { from: V1, to: V2 },
+      });
+      const r = stepRunner(w.clock, { onStep });
+      await runManage(w.ctx, event(up), r.step);
+      expect(w.job(up)?.status).toBe("done");
+      return r.log.map((l) => l.name);
+    };
+
+    it("past a done upgrade and the lookback, while the key is up", async () => {
+      const id = await leftKey();
+      expect(openFor()).toEqual([id]);
+      w.clock.t += 2 * 86_400_000;
+      await upgrade(id);
+      expect(scriptOf(id).secrets.has(KEY)).toBe(true);
+      expect(openFor()).toEqual([id]);
+    });
+
+    it("shut once a later job lists the script without it", async () => {
+      const id = await leftKey();
+      // Someone deleted it by hand; the next upgrade's secret list sees that.
+      scriptOf(id).secrets.delete(KEY);
+      const steps = await upgrade(id);
+      expect(steps).toContain("copy_key_check");
+      expect(openFor()).toEqual([]);
+    });
+
+    it("a failed check never fails the upgrade it ends", async () => {
+      const id = await leftKey();
+      scriptOf(id).secrets.delete(KEY);
+      const steps = await upgrade(id, (n) => {
+        if (n === "copy_key_check")
+          w.fake.inject((m, p) => m === "GET" && p.endsWith("/secrets"), {
+            status: 500,
+            times: 1000,
+          });
+      });
+      expect(steps).toContain("copy_key_check");
+      expect(openFor()).toEqual([id]);
+    });
+
+    it("an upgrade with no left key open has no such step", async () => {
+      const id = await active(V1);
+      install(id);
+      expect(await upgrade(id)).not.toContain("copy_key_check");
+    });
+
+    it("once seen gone, the next job doesn't look again", async () => {
+      const id = await leftKey();
+      scriptOf(id).secrets.delete(KEY);
+      await upgrade(id);
+      const back = seedJob(w, {
+        kind: "rollback",
+        installId: id,
+        args: { from: V2, to: V1 },
+      });
+      const r = stepRunner(w.clock);
+      await runManage(w.ctx, event(back), r.step);
+      expect(w.job(back)?.status).toBe("done");
+      expect(r.log.map((l) => l.name)).not.toContain("copy_key_check");
     });
   });
 
@@ -1031,6 +1147,37 @@ describe("cleanup of a canceled or dead copy", () => {
     const c = await cleanup(parent, id);
     expect(c.error).toBeNull();
     expect(w.job(c.id)?.status).toBe("done");
+  });
+
+  it("deletes again once the parent's in-flight put could have landed", async () => {
+    const id = await active();
+    const parent = dead(id);
+    const stopped = w.clock.t;
+    let second: number | null = null;
+    const cid = seedJob(w, {
+      kind: "cleanup",
+      installId: id,
+      parentJobId: parent,
+      actor: "system",
+      args: { parentJobId: parent },
+    });
+    const r = stepRunner(w.clock, {
+      onStep: (n) => {
+        // The terminated run's put_key lands after the first delete.
+        if (n === "drop_copy_key_2" && second === null) {
+          second = w.clock.t;
+          scriptOf(id).secrets.set(KEY, "late".repeat(16));
+        }
+      },
+    });
+    await runManage(w.ctx, event(cid), r.step);
+    expect(w.job(cid)?.status).toBe("done");
+    expect(second).not.toBeNull();
+    // The second delete runs after the put step's timeout, from the stop.
+    expect((second as unknown as number) - stopped).toBeGreaterThanOrEqual(
+      5 * 60_000,
+    );
+    expect(scriptOf(id).secrets.has(KEY)).toBe(false);
   });
 
   it("rotates when the delete fails, settles anyway, and fails copy_key_left", async () => {

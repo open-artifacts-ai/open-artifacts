@@ -43,6 +43,21 @@ export function storedOAuthMode(vars: string | null): string {
   }
 }
 
+/**
+ * hosted_audit's record that OAUTH_COPY_KEY is off an install's script: a
+ * delete that worked, or a secret list without it. Detail {}.
+ */
+export const COPY_KEY_GONE_ACTION = "oauth_copy.key_gone";
+
+/**
+ * SQL over jobs alias `j`: a copy_key_left job whose key no later record saw
+ * gone. Open until then: no lookback, and no later job's success closes it.
+ */
+export const copyKeyLeftOpen = (j: string) =>
+  `(${j}.status = 'failed' AND ${j}.error_code = 'copy_key_left' AND NOT EXISTS (SELECT 1 FROM hosted_audit g WHERE g.install_id = ${j}.install_id AND g.action = '${COPY_KEY_GONE_ACTION}' AND g.at >= COALESCE(${j}.finished_at, ${j}.updated_at)))`;
+/** An install with a left key still open. Bind: install id. */
+export const COPY_KEY_LEFT_SQL = `SELECT 1 AS x FROM jobs j WHERE j.install_id = ? AND ${copyKeyLeftOpen("j")} LIMIT 1`;
+
 export type OAuthJob = { op: "set"; mode: OAuthStoreMode } | { op: "copy" };
 
 /** jobs.args of an R29 job. */

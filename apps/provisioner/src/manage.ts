@@ -37,7 +37,13 @@ import {
   WorkflowParamsSchema,
 } from "@oa/shared/provisioning";
 import { codeOf } from "./errors.js";
-import { dropCopyKey, oauthCopy, setOAuthStore } from "./oauth-store.js";
+import {
+  dropCopyKeySettled,
+  leftKeyOpen,
+  oauthCopy,
+  seeLeftKey,
+  setOAuthStore,
+} from "./oauth-store.js";
 import {
   installRow,
   liveMode,
@@ -390,6 +396,23 @@ async function operate(
       else await oauthCopy(ctx, step, job, labelOf(job));
       break;
   }
+  // #1008: a left copy key's alert shuts only once a secret list sees it gone.
+  // Only then is the step there: no other upgrade changes.
+  if (
+    (job.kind === "upgrade" ||
+      job.kind === "rollback" ||
+      (job.kind === "update" && job.oauth?.op === "set")) &&
+    (await leftKeyOpen(ctx, job.installId))
+  )
+    await jobStep(
+      ctx,
+      step,
+      jobId,
+      "copy_key_check",
+      undefined,
+      () => seeLeftKey(ctx, jobId, job.installId),
+      job.kind === "update" ? "mode_live" : "health",
+    );
   await s("done", undefined, () => finish(ctx, job));
 }
 
@@ -839,6 +862,17 @@ async function cleanup(
       parentId: parent.id,
       label,
       copyKey,
+      // When the parent stopped: a cancel's or the sweep's settle.
+      stoppedAt:
+        (
+          await transient(
+            ctx.env.PLATFORM_DB.prepare(
+              "SELECT COALESCE(finished_at, updated_at) AS t FROM jobs WHERE id = ?",
+            )
+              .bind(parent.id)
+              .first<{ t: number }>(),
+          )
+        )?.t ?? ctx.io.now(),
       until: row?.lease ? (row.lease_until ?? 0) : null,
     };
   });
@@ -860,12 +894,18 @@ async function cleanup(
   }
   // Like the release: a key that wouldn't go never blocks the settle.
   let keyLeft: unknown = null;
+  // The parent's run may have had a put_key in flight when it stopped.
   if (job.copyKey)
-    await dropCopyKey(ctx, step, jobId, job.installId, "sweep_tokens").catch(
-      (e: unknown) => {
-        keyLeft = e;
-      },
-    );
+    await dropCopyKeySettled(
+      ctx,
+      step,
+      jobId,
+      job.installId,
+      job.stoppedAt,
+      "sweep_tokens",
+    ).catch((e: unknown) => {
+      keyLeft = e;
+    });
   await s("sweep_tokens", undefined, async () =>
     label ? sweepTokens(ctx, label, job.installId, jobId) : { revoked: 0 },
   );
