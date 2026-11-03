@@ -828,7 +828,7 @@ it("frozen: the note, kept rows say kept from, any role, and Remove from the spa
   mountHosted(ENG, { directory: "frozen" });
   const card = await people();
   expect(card).toHaveTextContent(
-    "Group sync is off. Everyone below was kept as of the last sync and is edited manually.",
+    "Google sync stopped, so everyone below is kept as of the last sync. You can still add and remove people by hand.",
   );
   const bob = await row("Bob Builder");
   expect(bob).toHaveTextContent("bob@example.com · kept from eng@");

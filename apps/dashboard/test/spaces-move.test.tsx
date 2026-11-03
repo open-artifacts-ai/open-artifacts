@@ -8,6 +8,7 @@ import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
+import { possessive } from "../src/spaces/MoveDialog";
 import {
   calls,
   findVisibleToast,
@@ -130,8 +131,27 @@ it("space to space: who gains and who loses access", async () => {
   const d = await openMove();
   fireEvent.click(within(d).getByRole("radio", { name: /^Ops/ }));
   expect(d).toHaveTextContent(
-    "Ops members get access. People only in Engineering lose it.",
+    "People in Ops get access. People only in Engineering lose it.",
   );
+});
+
+it("space to space, with the count: Clients' 1 person gets access", async () => {
+  mountHosted(details(NOTES), { moveTarget: true });
+  const d = await openMove();
+  fireEvent.click(within(d).getByRole("radio", { name: /^Clients/ }));
+  expect(
+    await within(d).findByText(
+      "Clients' 1 person gets access. People only in Engineering lose it.",
+    ),
+  ).toBeVisible();
+});
+
+it.each([
+  ["Engineering", "Engineering's"],
+  ["Clients", "Clients'"],
+  ["Ops", "Ops'"],
+])("possessive(%s)", (name, want) => {
+  expect(possessive(name)).toBe(want);
 });
 
 it("out of Personal: one-way, with the space's name and member count", async () => {

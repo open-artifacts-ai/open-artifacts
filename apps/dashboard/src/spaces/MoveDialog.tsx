@@ -23,6 +23,10 @@ const ROLE = {
 } as const;
 
 /** Where `a` may move: shared spaces you can publish to, other than its own. */
+/** "Engineering's", "Clients'": a name ending in s takes the apostrophe alone. */
+export const possessive = (name: string) =>
+  /s$/i.test(name) ? `${name}'` : `${name}'s`;
+
 export const useMoveTargets = (a: ArtifactSummary): MySpace[] => {
   const { spaces, cap } = useHosted();
   return spaces
@@ -57,9 +61,13 @@ export function MoveDialog({
     ? null
     : fromPersonal
       ? count !== undefined
-        ? `${target.name}'s ${count} ${count === 1 ? "member gets" : "members get"} access by their role. You can't move it back to Personal.`
+        ? `${possessive(target.name)} ${count} ${count === 1 ? "member gets" : "members get"} access by their role. You can't move it back to Personal.`
         : `People in ${target.name} get access by their role. You can't move it back to Personal.`
-      : `${target.name} members get access. People only in ${a.space?.name} lose it.`;
+      : `${
+          count !== undefined
+            ? `${possessive(target.name)} ${count} ${count === 1 ? "person gets" : "people get"} access.`
+            : `People in ${target.name} get access.`
+        } People only in ${a.space?.name} lose it.`;
 
   const run = () => {
     if (!target) return;
