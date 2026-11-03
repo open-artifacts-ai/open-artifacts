@@ -7,8 +7,8 @@ import {
   type Release,
   TOKEN_SCOPES,
 } from "@oa/shared/provisioning";
-import { notResolved } from "./fetch-timeout.ts";
-import { safeCode } from "./http.ts";
+import { isNetworkError, networkCode, notResolved } from "./fetch-timeout.ts";
+import { RETRY_BACKOFF_MS, safeCode } from "./http.ts";
 import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { PRE_PROD_REASON } from "./report.ts";
@@ -129,6 +129,11 @@ export interface CallOpts {
   auth?: Auth;
   testUser?: "a" | "b" | "c";
   headers?: Record<string, string>;
+  /**
+   * An allow-side GET: no response is tried again, twice, with a note. Never
+   * set it on a request whose expected answer is a refusal.
+   */
+  read?: boolean;
 }
 
 export class Run {
@@ -171,12 +176,26 @@ export class Run {
       if (!headers.has("content-type"))
         headers.set("content-type", "application/json");
     }
-    const res = await this.io.fetch(url, {
-      method: o.method ?? (o.body === undefined ? "GET" : "POST"),
-      headers,
-      body,
-      redirect: "manual",
-    });
+    const method = o.method ?? (o.body === undefined ? "GET" : "POST");
+    const backoff = o.read && method === "GET" ? RETRY_BACKOFF_MS : [];
+    let res: Response;
+    for (let i = 0; ; i++) {
+      try {
+        res = await this.io.fetch(url, {
+          method,
+          headers,
+          body,
+          redirect: "manual",
+        });
+        break;
+      } catch (e) {
+        const wait = backoff[i];
+        if (wait === undefined || !isNetworkError(e)) throw e;
+        const at = new URL(url).pathname.split("/").slice(0, 3).join("/");
+        note(`GET ${at} retried (no response: ${networkCode(e)})`);
+        await this.io.wait(wait);
+      }
+    }
     let text = "";
     try {
       text = await res.text();
@@ -303,6 +322,7 @@ export class Run {
       throw new ProbeFail("no staging inventory configured");
     const r = await this.raw(`${this.c.inventory}${path}`, {
       auth: { bearer: await this.io.stgInventoryJwt() },
+      read: true,
     });
     if (r.status !== 200)
       throw new ProbeFail(`inventory ${path.split("?")[0]}: ${desc(r)}`);
@@ -341,8 +361,8 @@ export class Run {
   }
 
   /** A public GET on a tenant host (no credential). */
-  async page(host: string, path = "/healthz"): Promise<Res> {
-    return this.raw(`https://${bare(host)}${path}`, { auth: "none" });
+  async page(host: string, path = "/healthz", read = false): Promise<Res> {
+    return this.raw(`https://${bare(host)}${path}`, { auth: "none", read });
   }
 }
 
@@ -564,7 +584,7 @@ function rlp(run: Run): RlP {
 
 async function releases(run: Run): Promise<Release[]> {
   if (run.s.releases) return run.s.releases;
-  const r = await run.v1("/releases");
+  const r = await run.v1("/releases", { read: true });
   expect(r, 200, "R16");
   run.s.releases = (r.json as { items: Release[] }).items;
   return run.s.releases;
@@ -599,6 +619,10 @@ async function detail(
 ): Promise<Res> {
   return run.v1(`/installs/${id}`, { testUser });
 }
+
+/** The run's own install, expected to answer: `detail` stays one try for refusals. */
+const ownDetail = (run: Run, id: string): Promise<Res> =>
+  run.v1(`/installs/${id}`, { read: true });
 
 async function panelInstall(run: Run): Promise<string | null> {
   if (run.s.panelInstall !== undefined) return run.s.panelInstall;
@@ -827,7 +851,9 @@ export const PROBES: readonly Probe[] = [
         403,
         "P12 R19",
       );
-      const jobs = await run.v1(`/installs/${run.c.rlA.id}/jobs?limit=1`);
+      const jobs = await run.v1(`/installs/${run.c.rlA.id}/jobs?limit=1`, {
+        read: true,
+      });
       const jobId =
         (jobs.json as { items?: { id: string }[] } | undefined)?.items?.[0]
           ?.id ?? ulidish();
@@ -847,7 +873,7 @@ export const PROBES: readonly Probe[] = [
       "create rl-p-<run> twice with one requestId: one job, one install, done (redline variant)",
     run: async (run) => {
       const slug = run.slug("p");
-      const before = await run.v1(`/installs?q=${slug}`);
+      const before = await run.v1(`/installs?q=${slug}`, { read: true });
       expect(before, 200, "P13 list before");
       const n0 = (before.json as { items: { slug: string }[] }).items.filter(
         (i) => i.slug === slug,
@@ -897,13 +923,13 @@ export const PROBES: readonly Probe[] = [
         await run.done(lateJob, "P16 late upgrade");
         run.s.rlp.version = run.c.version;
       }
-      const after = await run.v1(`/installs?q=${slug}`);
+      const after = await run.v1(`/installs?q=${slug}`, { read: true });
       const n1 = (after.json as { items: { slug: string }[] }).items.filter(
         (i) => i.slug === slug,
       ).length;
       if (n1 - n0 !== 1)
         throw new ProbeFail(`P13: installs +${n1 - n0}, want +1`);
-      const d = await detail(run, a.install.id);
+      const d = await ownDetail(run, a.install.id);
       expect(d, 200, "P13 R3");
       const dj = d.json as InstallDetail;
       if (dj.testHooks !== true)
@@ -1059,7 +1085,7 @@ export const PROBES: readonly Probe[] = [
       });
       if (r.status !== 400)
         throw new ProbeFail(`P19: want 400, got ${desc(r)}`);
-      const d = await detail(run, p.id);
+      const d = await ownDetail(run, p.id);
       if ((d.json as InstallDetail | undefined)?.state !== "active")
         throw new ProbeFail("P19: the install is no longer active");
       return pass();
@@ -1090,7 +1116,7 @@ export const PROBES: readonly Probe[] = [
         throw new ProbeFail("P45: tools/list names differ from ADMIN_TOOLS");
       // get_world equals REST R27 for this principal (O is 403 on R27: 4.2).
       const world = await tool(run, "get_world", {});
-      const rest = await run.v1("/world");
+      const rest = await run.v1("/world", { read: true });
       if (rest.status === 200) {
         if (world.isError)
           throw new ProbeFail(`P45 get_world: ${toolCode(world)}`);
@@ -1099,7 +1125,7 @@ export const PROBES: readonly Probe[] = [
           `P45 get_world: ${toolCode(world) ?? "ok"} on /mcp, ${desc(rest)} on /v1`,
         );
       const gi = await tool(run, "get_install", { id: p.id });
-      const gr = await detail(run, p.id);
+      const gr = await ownDetail(run, p.id);
       if (
         gi.isError ||
         JSON.stringify(gi.structuredContent) !== JSON.stringify(gr.json)
@@ -1122,7 +1148,9 @@ export const PROBES: readonly Probe[] = [
       });
       if (!del.isError || toolCode(del) !== "confirm_mismatch")
         throw new ProbeFail(`P45 delete_install: ${toolCode(del) ?? "ok"}`);
-      if (((await detail(run, p.id)).json as InstallDetail).state !== "active")
+      if (
+        ((await ownDetail(run, p.id)).json as InstallDetail).state !== "active"
+      )
         throw new ProbeFail("P45: delete_install changed the install");
       if (p.version === run.c.version)
         return unproven(
@@ -1166,7 +1194,7 @@ export const PROBES: readonly Probe[] = [
         "P31",
       );
       await run.done(a.job.id, "P31 rollback");
-      const v = ((await detail(run, p.id)).json as InstallDetail).version;
+      const v = ((await ownDetail(run, p.id)).json as InstallDetail).version;
       if (v !== p.createdAt)
         throw new ProbeFail(`P31: version ${v}, want ${p.createdAt}`);
       p.version = v;
@@ -1296,7 +1324,7 @@ export const PROBES: readonly Probe[] = [
       "rl-a and rl-b run the release under test (upgraded by the workflow, R5)",
     run: async (run) => {
       for (const t of [run.c.rlA, run.c.rlB]) {
-        const d = await detail(run, t.id);
+        const d = await ownDetail(run, t.id);
         expect(d, 200, `P24 R3 ${t.id}`);
         const v = (d.json as InstallDetail).version;
         if (v !== run.c.version)
@@ -1503,7 +1531,7 @@ export const PROBES: readonly Probe[] = [
         throw new ProbeFail(`P32: R11 ran ${p.job.kind}, want discard`);
       await run.done(p.job.id, "P32 discard");
       // Design 3.4 row 1: R3 still reads a discarded row, as deleted.
-      const gone = await detail(run, a.install.id);
+      const gone = await ownDetail(run, a.install.id);
       expect(gone, 200, "P32 R3");
       const gi = gone.json as InstallDetail;
       if (gi.state !== "deleted" || gi.deletedAt == null)
@@ -1531,7 +1559,7 @@ export const PROBES: readonly Probe[] = [
           limit: "100",
         });
         if (cursor) q.set("cursor", cursor);
-        const r = await run.v1(`/audit?${q}`);
+        const r = await run.v1(`/audit?${q}`, { read: true });
         expect(r, 200, "P33 R17");
         const b = r.json as {
           items: { jobId: string | null }[];
@@ -1911,7 +1939,7 @@ export const PROBES: readonly Probe[] = [
     // leg is not here: O is not a pii principal, so R3 hides the email and an
     // email-only q is a no-match for it (apps/provisioning/test/reads.test.ts).
     run: async (run) => {
-      const d = await detail(run, run.c.rlA.id);
+      const d = await ownDetail(run, run.c.rlA.id);
       expect(d, 200, "P48 R3 rl-a");
       const i = d.json as InstallDetail;
       const fields: [string, unknown][] = [
@@ -1928,7 +1956,7 @@ export const PROBES: readonly Probe[] = [
         for (let page = 0; !found && page < P48_MAX_PAGES; page++) {
           const qs = new URLSearchParams({ q: v });
           if (cursor) qs.set("cursor", cursor);
-          const l = await run.v1(`/installs?${qs}`);
+          const l = await run.v1(`/installs?${qs}`, { read: true });
           expect(l, 200, `P48 R2 q=${field}`);
           const b = l.json as {
             items: { id: string }[];
@@ -2002,8 +2030,8 @@ export async function p15Check(
   const rec = run.s.p15;
   if (!p || !rec) return "after";
   const mode = run.c.inventory ? (await run.hostMode(p.appHost)).mode : null;
-  const hz = (await run.page(p.appHost)).status;
-  const j = await run.v1(`/jobs/${jobId}`);
+  const hz = (await run.page(p.appHost, "/healthz", true)).status;
+  const j = await run.v1(`/jobs/${jobId}`, { read: true });
   const job = j.json as Job | undefined;
   if (
     !job ||
@@ -2033,7 +2061,7 @@ export async function bringUpgrade(
   id: string,
   slug: string,
 ): Promise<"upgraded" | "current"> {
-  const d = await detail(run, id);
+  const d = await ownDetail(run, id);
   expect(d, 200, `R3 ${slug}`);
   const i = d.json as InstallDetail;
   if (i.slug !== slug) throw new ProbeFail(`${id} is ${i.slug}, not ${slug}`);
@@ -2066,7 +2094,7 @@ export async function stagedVersion(run: Run): Promise<string> {
     ["rl-a", run.c.rlA],
     ["rl-b", run.c.rlB],
   ] as const) {
-    const d = await detail(run, t.id);
+    const d = await ownDetail(run, t.id);
     expect(d, 200, `R3 ${slug}`);
     const appHost = (d.json as { appHost?: unknown } | undefined)?.appHost;
     if (typeof appHost !== "string" || !appHost)
