@@ -455,7 +455,7 @@ export const DROPPED: Readonly<
  */
 export const SMOKES: Readonly<Record<Variant, string>> = {
   session: "artifact rest get [session]",
-  pat: "artifact rest get [pat] (dropped)", // MUTATION M2
+  pat: "artifact rest get [pat]",
   oauth: "artifact mcp get_artifact [oauth]",
 };
 
