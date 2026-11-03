@@ -34,7 +34,12 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { newId, newPat } from "@oa/shared";
-import { bindingIdProblems, bindingShape } from "./binding-ids.js";
+import {
+  bindingIdProblems,
+  bindingShape,
+  doNamespaceDigest,
+  plannedBindings,
+} from "./binding-ids.js";
 import {
   type AssetFile,
   assetHash,
@@ -837,6 +842,7 @@ interface RollbackPlan {
   m: Meta;
   rel: Checked;
   d1Id: string;
+  kvId: string;
   /** Absent with ciOwnerToken: the selftest uses the in-memory CI token. */
   patFile?: string;
   /** R-L1: the PAT was refused; the rollback checks /healthz only. */
@@ -1865,11 +1871,12 @@ export class WfpProvisioner {
   private async verifyClean(
     script: string,
     v: VerifyCleanInput,
+    ids: { d1Id: string; kvId: string; template: Template },
   ): Promise<void> {
     await this.hold();
     const { bindings } = await this.cf.scriptSettings(this.target, script);
     const secrets = await this.cf.secretList(this.target, script);
-    await this.bindingIdAudit(v.id, script, v.sent.bindings, bindings);
+    await this.bindingIdAudit(v.id, script, { ...ids, bindings });
     const why = verifyCleanRefusal({ bindings, secrets }, v);
     if (why === null) return;
     // #1060: why names bindings and secrets only, never a value; capped.
@@ -1886,47 +1893,48 @@ export class WfpProvisioner {
    * Stage 1 of the binding id check (#1137): one audit line, whatever it
    * finds. It fails open and is bounded: any error of its own, a slow
    * Cloudflare call included, ends here and the job carries on.
+   *
+   * Never hold() or logged() in here: a LostLease swallowed below would clear
+   * this.held and turn off the fence for the rest of the job. The job's own
+   * next hold() finds a lost lease. Once timed out it writes nothing.
    */
   private async bindingIdAudit(
     id: InstallId,
     script: string,
-    sent: readonly { type: string; class_name?: unknown }[],
-    fetched?: readonly SettingsBinding[],
+    o: {
+      d1Id: string;
+      kvId: string;
+      template: Template;
+      bindings?: readonly SettingsBinding[];
+    },
   ): Promise<void> {
+    let expired = false;
     const check = async () => {
       const row = await this.platform.byId(id);
       if (!row) throw new Error("no installs row");
-      const n = names(id, this.env);
-      const [d1Id, kvId, bindings] = await Promise.all([
-        this.cf.d1Get(n.d1),
-        this.cf.kvFind(n.kv),
-        fetched ??
-          this.cf.scriptSettings(this.target, script).then((s) => s.bindings),
-      ]);
+      const bindings =
+        o.bindings ??
+        (await this.cf.scriptSettings(this.target, script)).bindings;
       // Read-only, and the real call MIG-2 needs: can this token reach it?
-      const bookmark = await (d1Id === null
-        ? Promise.reject(new Error("no D1"))
-        : this.cf.d1Bookmark(d1Id)
-      ).then(
+      const bookmark = await this.cf.d1Bookmark(o.d1Id).then(
         () => "ok",
         (e: { status?: number }) =>
           String(e?.status ?? errCode(e)).slice(0, 40),
       );
       const problems = bindingIdProblems(bindings, {
-        d1Id,
-        kvId,
+        d1Id: o.d1Id,
+        kvId: o.kvId,
         rowD1Id: row.d1_id,
         rowKvId: row.kv_id,
-        r2: n.r2,
-        rlNs: row.rl_ns,
+        r2: names(id, this.env).r2,
         script,
-        classes: sent.flatMap((b) =>
-          b.type === "durable_object_namespace" ? [String(b.class_name)] : [],
-        ),
+        planned: plannedBindings(o.template, row.rl_ns),
       });
-      await this.logged("verify_clean.binding_ids", {
+      if (expired) return;
+      await this.platform.audit(id, "verify_clean.binding_ids", {
         problems: problems.length,
         bookmark,
+        doNs: doNamespaceDigest(bindings, sha256Hex),
         detail: problems
           .map((p) => `${p.binding}:${p.code}`)
           .join(" ")
@@ -1939,10 +1947,10 @@ export class WfpProvisioner {
       await Promise.race([
         check(),
         new Promise((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error("timed out")),
-            this.o.bindingIdAuditMs ?? BINDING_ID_AUDIT_MS,
-          );
+          timer = setTimeout(() => {
+            expired = true;
+            reject(new Error("timed out"));
+          }, this.o.bindingIdAuditMs ?? BINDING_ID_AUDIT_MS);
         }),
       ]);
     } catch (e) {
@@ -2301,16 +2309,20 @@ export class WfpProvisioner {
     sent ??= (await this.storedOf(row, version)).metadata as unknown as {
       bindings: VerifyCleanInput["sent"]["bindings"];
     };
-    await this.verifyClean(n.script, {
-      id,
-      sent,
-      rec,
-      broker: this.o.brokerEnabled === true,
-      codes: m.sitekey !== null,
-      testHooks,
-      lastTag: latest,
-      tag,
-    });
+    await this.verifyClean(
+      n.script,
+      {
+        id,
+        sent,
+        rec,
+        broker: this.o.brokerEnabled === true,
+        codes: m.sitekey !== null,
+        testHooks,
+        lastTag: latest,
+        tag,
+      },
+      { d1Id, kvId, template: rel.template },
+    );
 
     // f, g: with a directFetch, health and the selftest reach the script
     // before HOSTS routes it; the public route (the CLI) needs HOSTS first.
@@ -3435,16 +3447,20 @@ export class WfpProvisioner {
       try {
         // 5.4: verify_clean right after the upload, before health.
         await this.step("verify_clean");
-        await this.verifyClean(n.script, {
-          id,
-          sent,
-          rec: rel.rec,
-          broker: row.broker_kid !== null,
-          codes: m.sitekey !== null,
-          testHooks: m.testHooks,
-          lastTag: tagsOf(rel.template).at(-1) ?? null,
-          tag: reached,
-        });
+        await this.verifyClean(
+          n.script,
+          {
+            id,
+            sent,
+            rec: rel.rec,
+            broker: row.broker_kid !== null,
+            codes: m.sitekey !== null,
+            testHooks: m.testHooks,
+            lastTag: tagsOf(rel.template).at(-1) ?? null,
+            tag: reached,
+          },
+          { d1Id, kvId, template: rel.template },
+        );
         await this.step("health");
         await this.health(
           id,
@@ -3683,6 +3699,7 @@ export class WfpProvisioner {
       m,
       rel,
       d1Id,
+      kvId,
       ...(tok.patFile === undefined ? {} : { patFile: tok.patFile }),
       ...(tok.refused === undefined ? {} : { refused: tok.refused }),
       raiseFloor,
@@ -3756,16 +3773,20 @@ export class WfpProvisioner {
       await this.write({ version: to, previous_version: from });
       await this.settleCutOrDefer(cut, p.vars, p.d1Id, n.d1, to);
       if (report) await this.step("verify_clean");
-      await this.verifyClean(n.script, {
-        id,
-        sent: meta,
-        rec: rel.rec,
-        broker: row.broker_kid !== null,
-        codes: p.m.sitekey !== null,
-        testHooks: p.m.testHooks,
-        lastTag: tagsOf(rel.template).at(-1) ?? null,
-        tag: row.do_migration_tag,
-      });
+      await this.verifyClean(
+        n.script,
+        {
+          id,
+          sent: meta,
+          rec: rel.rec,
+          broker: row.broker_kid !== null,
+          codes: p.m.sitekey !== null,
+          testHooks: p.m.testHooks,
+          lastTag: tagsOf(rel.template).at(-1) ?? null,
+          tag: row.do_migration_tag,
+        },
+        { d1Id: p.d1Id, kvId: p.kvId, template: rel.template },
+      );
       if (report) await this.step("health");
       await this.health(
         id,
@@ -3933,7 +3954,11 @@ export class WfpProvisioner {
         uploaded = true;
         await this.write({ vars: canonicalJson(vars) });
         // Stage 2 runs the whole of verify_clean here (#1137).
-        await this.bindingIdAudit(id, n.script, sent.bindings);
+        await this.bindingIdAudit(id, n.script, {
+          d1Id,
+          kvId,
+          template: rel.template,
+        });
         // H-RD: the registry copies follow the live vars, in this lease.
         if (domains !== null) await this.syncRegistry(id, m.appHost, domains);
         await this.hold();
