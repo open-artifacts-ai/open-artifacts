@@ -139,11 +139,7 @@ export function oauthEnv(env: Env): OAuthEnv {
   // KV gets retry on a storage failure (db/retry.ts); put, delete and list
   // get one try. One wrapper per binding, so this is a no-op when the entry
   // point already wrapped env (withRetries).
-  // MUTATION (#1137): every install bound to one OAuth store.
-  const kv = retryingKv(
-    (env as unknown as { FOREIGN_OAUTH_KV?: KVNamespace }).FOREIGN_OAUTH_KV ??
-      env.OAUTH_KV,
-  );
+  const kv = retryingKv(env.OAUTH_KV);
   const mode = checkedStoreMode(env);
   const store =
     mode === "kv"
