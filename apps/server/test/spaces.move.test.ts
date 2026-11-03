@@ -974,7 +974,7 @@ describe("departed transfer", () => {
     expect(await audits("artifact.transfer", g.userId)).toHaveLength(1);
   });
 
-  it("spaces off: an active member is 409, a member caller 404, a deleted member 404", async () => {
+  it("spaces off: an active member is 409, a member caller 404, a removed member reachable (soft removal), an unknown id 404", async () => {
     await mk("offo", "owner");
     const m = await mk("offm");
     expect(
@@ -994,9 +994,17 @@ describe("departed transfer", () => {
         )
       ).status,
     ).toBe(204);
+    // The row stays, so its personal artifacts can still be moved (parity 1).
+    const sum = await call(
+      R.memberTransfer(removed.userId),
+      admin.cookie,
+      {},
+      OFF,
+    );
+    expect(sum.status).toBe(200);
+    expect(await sum.json()).toEqual({ live: 0, deleted: 0 });
     expect(
-      (await call(R.memberTransfer(removed.userId), admin.cookie, {}, OFF))
-        .status,
+      (await call(R.memberTransfer(newId()), admin.cookie, {}, OFF)).status,
     ).toBe(404);
   });
 
