@@ -107,84 +107,82 @@ const seen = (el: HTMLElement) => {
   for (const n of c.querySelectorAll(".sr-only")) n.remove();
   return c.textContent ?? "";
 };
-const fmt = (iso: string, o: Intl.DateTimeFormatOptions) =>
-  new Intl.DateTimeFormat("en-US", o).format(new Date(iso));
 
-it("times from another day show the date: frozen as of, failing since", async () => {
-  const day = "2026-10-20T04:44:00.000Z";
-  const since = "2026-10-20T06:10:00.000Z";
-  mountHosted(
-    "/settings/directory",
-    true,
-    undefined,
-    serveStatus({
-      healthy: false,
-      state: "backoff",
-      unhealthySince: since,
-      lastSuccessAt: day,
-    }),
-  );
-  const s = await status();
-  const dayTime = (iso: string) =>
-    fmt(iso, {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  expect(seen(s)).toContain(`Failing since ${dayTime(since)} (`);
-  expect(seen(s)).toContain(
-    `Access is frozen as of the last sync (${dayTime(day)}).`,
-  );
-  expect(dayTime(day)).toMatch(/^Oct 20, /);
-});
-
-it("times from today show the time only", async () => {
-  // Local midday, so "a minute ago" is always today. Only Date is faked.
+// Times carry their day (Design, #1189). The clock is pinned to local noon on
+// Nov 3, 2026, so "today", another day and another year are fixed.
+const pinClock = () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   onTestFinished(() => {
     vi.useRealTimers();
   });
-  const noon = new Date();
-  noon.setHours(12, 0, 0, 0);
-  vi.setSystemTime(noon);
-  const now = Date.now();
-  const today = new Date(now - 60_000).toISOString();
-  const since = new Date(now - 30_000).toISOString();
+  vi.setSystemTime(new Date(2026, 10, 3, 12, 0));
+};
+const local = (...a: [number, number, number, number, number]) =>
+  new Date(...a).toISOString();
+const TODAY = local(2026, 10, 3, 11, 55);
+const EARLIER = local(2026, 9, 20, 15, 12);
+const LAST_YEAR = local(2025, 9, 20, 15, 12);
+const mountState = (state: string, iso: string) =>
   mountHosted(
     "/settings/directory",
-    true,
+    state === "frozen" ? { directory: "frozen" } : true,
     undefined,
-    serveStatus({
-      healthy: false,
-      state: "backoff",
-      unhealthySince: since,
-      lastSuccessAt: today,
-    }),
+    serveStatus(
+      state === "frozen"
+        ? { mode: "frozen", lastSuccessAt: iso }
+        : { healthy: false, state, unhealthySince: iso, lastSuccessAt: iso },
+    ),
   );
-  const s = await status();
-  const time = (iso: string) =>
-    fmt(iso, { hour: "numeric", minute: "2-digit" });
-  expect(seen(s)).toContain(`Failing since ${time(since)} (`);
-  expect(seen(s)).toContain(
-    `Access is frozen as of the last sync (${time(today)}).`,
+
+it.each([
+  ["today", TODAY, "today at 11:55 AM"],
+  ["an earlier day", EARLIER, "on Oct 20 at 3:12 PM"],
+  ["another year", LAST_YEAR, "on Oct 20, 2025 at 3:12 PM"],
+])("Google access lost %s: %s", async (_, iso, text) => {
+  pinClock();
+  mountState("auth_failed", iso);
+  expect(seen(await status())).toContain(
+    `Our connection to Google was revoked or expired ${text}.`,
   );
-  expect(seen(s)).not.toContain(fmt(today, { month: "short", day: "numeric" }));
 });
 
-it("frozen from another day: kept as of the date and time", async () => {
-  const day = "2026-10-20T04:44:00.000Z";
-  mountHosted(
-    "/settings/directory",
-    { directory: "frozen" },
-    undefined,
-    serveStatus({ mode: "frozen", lastSuccessAt: day }),
-  );
-  const s = await status();
-  expect(seen(s)).toContain(
-    `Space memberships were kept as of ${fmt(day, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} and are managed manually.`,
+it.each([
+  ["today", TODAY, "today at 11:55 AM"],
+  ["an earlier day", EARLIER, "on Oct 20 at 3:12 PM"],
+  ["another year", LAST_YEAR, "on Oct 20, 2025 at 3:12 PM"],
+])("Permission removed %s: %s", async (_, iso, text) => {
+  pinClock();
+  mountState("scope_missing", iso);
+  expect(seen(await status())).toContain(
+    `A permission we need was removed in Google ${text}.`,
   );
 });
+
+it.each([
+  ["today", TODAY, "today at 11:55 AM"],
+  ["an earlier day", EARLIER, "Oct 20 at 3:12 PM"],
+  ["another year", LAST_YEAR, "Oct 20, 2025 at 3:12 PM"],
+])("Frozen %s: kept as of %s", async (_, iso, text) => {
+  pinClock();
+  mountState("frozen", iso);
+  expect(seen(await status())).toContain(
+    `Space memberships were kept as of ${text} and are managed manually.`,
+  );
+});
+
+it.each([
+  ["today", TODAY, "today at 11:55 AM"],
+  ["an earlier day", EARLIER, "Oct 20 at 3:12 PM"],
+])(
+  "Retrying %s: failing since and frozen as of carry the day",
+  async (_, iso, text) => {
+    pinClock();
+    mountState("backoff", iso);
+    const s = seen(await status());
+    expect(s).toContain(`Failing since ${text} (`);
+    expect(s).toContain(`Access is frozen as of the last sync (${text}).`);
+  },
+);
 
 it("unhealthy (mock): Retrying, the last error and the tokens line", async () => {
   mountHosted("/settings/directory", { unhealthy: true });
