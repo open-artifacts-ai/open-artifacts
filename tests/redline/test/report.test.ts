@@ -768,6 +768,7 @@ describe("nightly-only: P30 is accepted on a scheduled run and never on a candid
       c({ level: "blocked" }),
       c({ name: "provisioning > P31: x" }),
       c({ file: "surfaces.test.ts" }),
+      c({ file: undefined }),
     ])
       expect(gatePasses([bad], SCHEDULED)).toBe(false);
   });

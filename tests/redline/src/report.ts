@@ -529,7 +529,7 @@ export function nightlyNa(c: CaseResult): boolean {
   return (
     c.level === "not-applicable" &&
     c.reason === NIGHTLY_NA_REASON &&
-    (c.file === undefined || c.file.endsWith("provisioning.test.ts")) &&
+    c.file?.endsWith("provisioning.test.ts") === true &&
     c.name.startsWith("provisioning > P30: ")
   );
 }
