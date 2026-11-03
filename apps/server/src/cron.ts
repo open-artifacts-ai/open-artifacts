@@ -8,6 +8,7 @@ import type { Env } from "./env.js";
 import { logError, logInfo, logWarn } from "./log.js";
 import { sweepOAuthStore } from "./mcp/oauth-store.js";
 import { sweepUngrantedClients } from "./mcp/registrations.js";
+import { socketIndexStub } from "./runtime/presence.js";
 import {
   purgeDeleted,
   reindexStale,
@@ -59,6 +60,20 @@ export const DIRECTORY_DISCONNECT_CRON = "oa:directory-disconnect";
  */
 export const DIRECTORY_SYNC_CRON = "oa:directory-sync";
 
+/**
+ * After the platform paused this install's HOSTS (suspend, #1182): close
+ * every open WebSocket on it, events and data, signed-in and anonymous, so
+ * no socket opened before the pause keeps streaming until its 10 minute
+ * TTL. Through the install's socket index (runtime/presence.ts
+ * closeInstall): CLOSE_FANOUT artifacts now, the rest by its alarm, and a
+ * second pass SECOND_PASS_MS later for reconnects that reached the install
+ * before dispatch saw the pause. Sets nothing that refuses a later accept,
+ * so a resume needs nothing. Logs counts only. Rejects when the index is
+ * unbound (no USER_PRESENCE) or its call fails, so the caller can log it;
+ * the platform's suspend never waits on it (the HOSTS pause is the stop).
+ */
+export const CLOSE_SOCKETS_CRON = "oa:close-sockets";
+
 /** Daily cron: purge soft-deleted artifacts past 30 days, sweep stale uploads,
  * delete OAuth clients that never completed a grant, re-enqueue search
  * indexing or a thumbnail job that never landed (C3), drop past days' email counters and
@@ -105,6 +120,21 @@ async function run(
       const fed = await feedSync(env);
       if (fed === "fed" || fed === "mint_failed")
         logInfo("system_job", { job: "directory-sync", state: fed });
+      return;
+    }
+    if (event.cron === CLOSE_SOCKETS_CRON) {
+      const idx = socketIndexStub(env);
+      if (!idx) {
+        logWarn("system_job_failed", new Error("socket index unbound"));
+        throw new Error("socket index unbound");
+      }
+      const r = await idx.closeInstall("suspended");
+      logInfo("system_job", {
+        job: "close-sockets",
+        artifacts: r.artifacts,
+        closed: r.closed,
+        queued: r.queued,
+      });
       return;
     }
     if (event.cron !== DIRECTORY_DISCONNECT_CRON) {

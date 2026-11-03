@@ -38,7 +38,12 @@ import {
   THUMB,
   type ThumbResult,
 } from "../services/thumbs.js";
-import { presenceStub, SKEW_MS } from "./presence.js";
+import {
+  INDEX_REPORT_MS,
+  presenceStub,
+  SKEW_MS,
+  socketIndexStub,
+} from "./presence.js";
 
 // Errors cross the RPC boundary as plain Error (subclass + fields are lost), so the
 // code rides in the message: "oa:<code>:<message>". B13 maps it back with toRuntimeApiError.
@@ -1301,7 +1306,33 @@ export class ArtifactRuntime extends DurableObject<Env> {
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
     if (hello) pair[1].send(hello);
+    // After the accept, as with touch: a closeInstall that runs meanwhile
+    // finds the socket here, and one that missed this report gets it on its
+    // second pass.
+    await this.reportToIndex();
     return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+
+  /** When this instance last reported to the socket index (ms; memory only). */
+  private indexedAt = Number.NEGATIVE_INFINITY;
+
+  /**
+   * Tells the install's socket index (presence.ts INSTALL_INDEX) that this
+   * artifact holds a live socket, at most once per INDEX_REPORT_MS per
+   * instance. Fails open: the index is the suspend's cleanup, never an
+   * access check, so an error only logs (socket_index_failed).
+   */
+  private async reportToIndex(): Promise<void> {
+    const now = this.now();
+    if (now - this.indexedAt < INDEX_REPORT_MS) return;
+    const idx = socketIndexStub(this.env);
+    if (!idx) return;
+    try {
+      await idx.seen(this.artifactId());
+      this.indexedAt = now;
+    } catch (e) {
+      logError("socket_index_failed", e);
+    }
   }
 
   /**
@@ -1802,6 +1833,28 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return socks.size;
   }
 
+  /**
+   * Closes every socket here, events and data, signed-in and anonymous
+   * (4403; events sockets get `gone` "changed" first, so clients ask the API
+   * again), for the platform's suspend (UserPresence.closeInstall). Unlike
+   * closeSockets it records no access change: nothing here refuses a later
+   * accept, so after a resume a reconnect is served as before. Returns the
+   * number closed.
+   */
+  closeAllSockets(reason: string): number {
+    const why = String(reason).slice(0, 120);
+    const all = this.ctx.getWebSockets();
+    for (const ws of all) {
+      try {
+        if (this.ctx.getTags(ws).includes(EVENTS_TAG)) ws.send(GONE_CHANGED);
+        ws.close(4403, why);
+      } catch {
+        // already closed
+      }
+    }
+    return all.length;
+  }
+
   /** Wipes all data (called by purge). The schema is recreated lazily on next use. */
   async destroy(): Promise<void> {
     for (const ws of this.ctx.getWebSockets()) {
@@ -1835,6 +1888,7 @@ type RpcMethods =
   | "replaceRaw"
   | "closeSockets"
   | "closeActor"
+  | "closeAllSockets"
   | "scheduleIndex"
   | "pendingIndex"
   | "storageDelete"

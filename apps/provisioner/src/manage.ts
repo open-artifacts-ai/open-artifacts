@@ -45,6 +45,7 @@ import {
   setOAuthStore,
 } from "./oauth-store.js";
 import {
+  closeInstallSockets,
   installRow,
   liveMode,
   modeStatement,
@@ -280,6 +281,8 @@ async function operate(
           kind: "suspend",
         });
         await transient(modeStatement(ctx, job.installId, "paused").run());
+        // #1182: then the sockets opened before the pause; never throws.
+        await closeInstallSockets(ctx, job.installId);
         return { mode: "paused" };
       });
       await s("record", undefined, () =>
