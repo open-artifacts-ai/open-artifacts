@@ -491,7 +491,10 @@ describe("mock lapsed guests (#829 review item 3)", () => {
       "member_erased",
     );
     // The address is free: an invite makes a new person.
-    const inv = await call("POST", R.members, { email: LAPSED, role: "member" });
+    const inv = await call("POST", R.members, {
+      email: LAPSED,
+      role: "member",
+    });
     expect(inv.status).toBe(201);
     expect(MemberSchema.parse(await inv.json()).id).not.toBe(id);
   });

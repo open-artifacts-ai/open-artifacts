@@ -158,10 +158,7 @@ const addressReleased = () =>
   );
 /** An erased person (#1204): never restored. */
 const erasedMember = () =>
-  new ApiError(
-    "member_erased",
-    "This person was erased. Invite them instead.",
-  );
+  new ApiError("member_erased", "This person was erased. Invite them instead.");
 
 const guestLapsed = () =>
   new ApiError(
