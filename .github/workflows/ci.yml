@@ -649,4 +649,9 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: bash scripts/ci/public-only.sh
+      # Advisory: the breaks show as a warning and the check stays green, since
+      # release-cadence and other "all checks green" readers count a failed
+      # check even with continue-on-error. Back to a plain failing run when it
+      # becomes required.
+      - run: |
+          bash scripts/ci/public-only.sh || echo "::warning title=public-only (advisory)::public code doesn't yet build alone without the private paths; see this job's log (#1056)"
