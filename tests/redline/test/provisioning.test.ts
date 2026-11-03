@@ -35,6 +35,7 @@ import {
   provConfig,
   Run,
   revokeCreds,
+  runProbe,
   stagedVersion,
   statusCounts,
 } from "../src/provisioning.ts";
@@ -43,6 +44,7 @@ import {
   ACCEPTED_UNPROVEN,
   acceptedUnproven,
   caseKey,
+  gatePasses,
   PRE_PROD_NA,
   PRE_PROD_REASON,
   parseManifest,
@@ -1401,5 +1403,87 @@ describe("Run.raw: an allow-side GET survives a dropped connection", () => {
       "fetch failed",
     );
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("a failed step doesn't cascade", () => {
+  const probe = (id: `P${number}`, needs?: `P${number}`[]) => {
+    const calls = { n: 0 };
+    return {
+      calls,
+      p: {
+        id,
+        title: id,
+        ...(needs ? { needs } : {}),
+        run: async () => {
+          calls.n++;
+          return { level: "pass" as const };
+        },
+      },
+    };
+  };
+  const run = {} as Run;
+
+  it("a dependant doesn't run, and names the root through a chain", async () => {
+    const failed = new Set<string>(["P13"]);
+    const b = probe("P20", ["P13"]);
+    const c = probe("P21", ["P13", "P20"]);
+    expect(await runProbe(b.p, run, failed)).toEqual({
+      level: "blocked",
+      reason: "blocked by P13",
+    });
+    expect(await runProbe(c.p, run, failed)).toEqual({
+      level: "blocked",
+      reason: "blocked by P13",
+    });
+    expect(b.calls.n + c.calls.n).toBe(0);
+  });
+
+  it("a thrown failure marks the case; a later dependant is blocked", async () => {
+    const failed = new Set<string>();
+    const boom = {
+      id: "P20" as const,
+      title: "x",
+      run: async () => {
+        throw new ProbeFail("boom");
+      },
+    };
+    await expect(runProbe(boom, run, failed)).rejects.toThrow("boom");
+    expect(failed.has("P20")).toBe(true);
+    const c = probe("P21", ["P20"]);
+    expect((await runProbe(c.p, run, failed)).level).toBe("blocked");
+  });
+
+  it("a pass or an unproven case doesn't block its dependants", async () => {
+    const failed = new Set<string>();
+    const unproven = {
+      id: "P13" as const,
+      title: "x",
+      run: async () => ({ level: "unproven-live" as const, reason: "why" }),
+    };
+    await runProbe(unproven, run, failed);
+    expect(failed.size).toBe(0);
+    const d = probe("P14", ["P13"]);
+    expect((await runProbe(d.p, run, failed)).level).toBe("pass");
+    expect(d.calls.n).toBe(1);
+  });
+
+  it("every needs names an earlier probe, or it could never block", () => {
+    const seen = new Set<string>();
+    for (const p of PROBES) {
+      for (const n of p.needs ?? [])
+        expect(seen.has(n), `${p.id} ${n}`).toBe(true);
+      seen.add(p.id);
+    }
+    expect(PROBES.filter((p) => p.needs).length).toBe(13);
+  });
+
+  it("the gate never takes a blocked case", () => {
+    expect(
+      gatePasses([
+        { name: "a", level: "pass" },
+        { name: "b", level: "blocked", reason: "blocked by P13" },
+      ]),
+    ).toBe(false);
   });
 });

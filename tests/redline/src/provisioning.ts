@@ -65,7 +65,7 @@ export interface ProvIo {
 
 export type Outcome =
   | { level: "pass"; note?: string }
-  | { level: "not-applicable" | "unproven-live"; reason: string };
+  | { level: "not-applicable" | "unproven-live" | "blocked"; reason: string };
 
 const pass = (note?: string): Outcome =>
   note ? { level: "pass", note } : { level: "pass" };
@@ -493,9 +493,39 @@ const toolCode = (t: ToolResult) =>
 // --- Probes ----------------------------------------------------------------
 
 export interface Probe {
+  /**
+   * Cases this one can't mean anything without: they make the install or
+   * state it reads. If one didn't pass, this reports `blocked` instead of
+   * running. Mapped by hand from what each case uses.
+   */
+  needs?: readonly ProbeId[];
   id: ProbeId;
   title: string;
   run: (r: Run) => Promise<Outcome>;
+}
+
+/**
+ * Runs `p`, or reports it blocked by the first of `needs` in `failed`. A thrown
+ * failure or a blocked result goes in `failed`, so a chain stops once and each
+ * case below it names the root. An unproven or not-applicable case isn't a
+ * failure: its dependants still run.
+ */
+export async function runProbe(
+  p: Probe,
+  run: Run,
+  failed: Set<string>,
+): Promise<Outcome> {
+  const root = p.needs?.find((n) => failed.has(n));
+  if (root) {
+    failed.add(p.id);
+    return { level: "blocked", reason: `blocked by ${root}` };
+  }
+  try {
+    return await p.run(run);
+  } catch (e) {
+    failed.add(p.id);
+    throw e;
+  }
 }
 
 /**
@@ -961,6 +991,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P49",
+    needs: ["P13"],
     title:
       "R2 q as O never matches by owner email: rl-p's email and its local part find nothing; its slug still finds rl-p (#1033)",
     // The privacy half of #1033. O is not a pii principal, so an owner-email
@@ -1009,6 +1040,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P14",
+    needs: ["P13"],
     title: "a second create of that slug with a new requestId: 409 slug_taken",
     run: async (run) => {
       const p = rlp(run);
@@ -1025,6 +1057,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P15",
+    needs: ["P13"],
     title:
       "during the create: inventory mode null and public /healthz 404 until route",
     run: async (run) => {
@@ -1043,6 +1076,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P16",
+    needs: ["P13"],
     title: "upgrade while its create runs: 409 job_in_progress",
     run: async (run) => {
       const r = run.s.p16;
@@ -1065,6 +1099,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P18",
+    needs: ["P13"],
     title: "upgrade to its current version: 409 downgrade_refused",
     run: async (run) => {
       const p = rlp(run);
@@ -1077,6 +1112,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P19",
+    needs: ["P13"],
     title: "delete with a wrong confirmSlug: 400; unchanged",
     run: async (run) => {
       const p = rlp(run);
@@ -1093,6 +1129,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P45",
+    needs: ["P13"],
     title:
       "OIDC on /mcp: tools/list, get_world, get_install, delete_install refusal, upgrade_install",
     run: async (run) => {
@@ -1179,6 +1216,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P31",
+    needs: ["P13"],
     title:
       "rollback of the rl-p install after an upgrade: the previous version",
     run: async (run) => {
@@ -1203,6 +1241,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P20",
+    needs: ["P13"],
     title:
       "suspend: 503 paused page on both hosts within 120 s; inventory paused",
     run: async (run) => {
@@ -1227,6 +1266,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P21",
+    needs: ["P13", "P20"],
     title: "resume: 200 within 120 s",
     run: async (run) => {
       const p = rlp(run);
@@ -1247,6 +1287,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P22",
+    needs: ["P13"],
     title: "delete, then restore: 503 closed page on both hosts, then serving",
     run: async (run) => {
       const p = rlp(run);
@@ -1283,6 +1324,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P23",
+    needs: ["P13"],
     title: "delete, then purge: 404; inventory deleted; no HOSTS key",
     run: async (run) => {
       const p = rlp(run);
@@ -1864,6 +1906,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P43",
+    needs: ["P44"],
     title:
       "GET /oauth/authorize, no cookie, cross-site: 200 bounce page; with b=1: 200 sign-in page linking /auth/start back to this request, no auto-redirect",
     run: async (run) => {

@@ -1,5 +1,10 @@
 import { beforeAll, describe, it } from "vitest";
-import { PROBE_TIMEOUT_MS, PROBES, type Run } from "../src/provisioning.ts";
+import {
+  PROBE_TIMEOUT_MS,
+  PROBES,
+  type Run,
+  runProbe,
+} from "../src/provisioning.ts";
 import { liveRun, rawTargets } from "../src/provisioning-live.ts";
 import { label, proof } from "../src/report.ts";
 
@@ -22,12 +27,13 @@ beforeAll(() => {
 });
 
 describe("provisioning", () => {
+  const failed = new Set<string>();
   for (const p of PROBES)
     it(
       `${p.id}: ${p.title}`,
       async (ctx) => {
         if (!run) return proof(ctx, "not-applicable", why ?? "not configured");
-        const o = await p.run(run);
+        const o = await runProbe(p, run, failed);
         if (o.level === "pass") {
           if (o.note) label(ctx, o.note);
           return;
