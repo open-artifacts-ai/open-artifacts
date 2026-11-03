@@ -322,6 +322,44 @@ describe("labels, with the buttons", () => {
   });
 });
 
+describe("focus after editing a label", () => {
+  const more = (r: HTMLElement) =>
+    within(r).getByRole("button", { name: /^More for / });
+  const start = async () => {
+    mount("/settings/agents");
+    const r = await rowOf("Example MCP client 1.2.0");
+    fireEvent.click(within(r).getByRole("button", { name: "Add label" }));
+    return r;
+  };
+
+  it("Cancel returns it to the row's ••• trigger", async () => {
+    const r = await start();
+    fireEvent.click(within(r).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(more(r)).toHaveFocus());
+  });
+
+  it("Escape returns it to the row's ••• trigger", async () => {
+    const r = await start();
+    fireEvent.keyDown(within(r).getByRole("textbox", { name: "Your label" }), {
+      key: "Escape",
+    });
+    await waitFor(() => expect(more(r)).toHaveFocus());
+  });
+
+  it("Save returns it to the row's ••• trigger, now named by the label", async () => {
+    const r = await start();
+    fireEvent.change(within(r).getByRole("textbox", { name: "Your label" }), {
+      target: { value: "Desk" },
+    });
+    fireEvent.click(within(r).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(
+        within(r).getByRole("button", { name: "More for Desk" }),
+      ).toHaveFocus(),
+    );
+  });
+});
+
 describe("the menu and the empty state", () => {
   it("View published versions and Revoke… (the existing confirm)", async () => {
     mount("/settings/agents");
