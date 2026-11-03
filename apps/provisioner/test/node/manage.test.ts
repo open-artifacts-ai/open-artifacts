@@ -278,7 +278,7 @@ describe("upgrade and rollback (5.4)", () => {
     }
   });
 
-  it("an upgrade whose health fails rolls back: upgrade_rolled_back, still on from", async () => {
+  it("an upgrade whose health fails stays on `to`: upgrade_incomplete, never reverted (#1106)", async () => {
     const s = await active({ slug: "rbco", version: V1 });
     // Only the new version is unhealthy.
     w.fake.health = (sc) =>
@@ -290,15 +290,24 @@ describe("upgrade and rollback (5.4)", () => {
     });
     w.fake.health = undefined;
     expect(r.job).toMatchObject({ status: "failed" });
-    expect(r.job?.error_code).toBe("upgrade_rolled_back");
+    expect(r.job?.error_code).toBe("upgrade_incomplete");
     expect(w.install(s.installId)).toMatchObject({
-      version: V1,
+      version: V2,
+      previous_version: V1,
       lease: null,
       state: "active",
     });
+    const audited = (action: string) =>
+      w.all(
+        "SELECT 1 FROM hosted_audit WHERE install_id = ? AND action = ?",
+        s.installId,
+        action,
+      );
+    expect(audited("upgrade.forward_fix")).toHaveLength(1);
+    expect(audited("rollback.done")).toHaveLength(0);
   });
 
-  it("an upgrade whose script and rollback both fail verify_clean: paused, prod_dirty", async () => {
+  it("an upgrade whose script fails verify_clean: paused, prod_dirty, still on `to`", async () => {
     const s = await active({ slug: "dirtyup", version: V1 });
     w.fake.settingsEdit = (_x, b) => [...b, { name: "EXTRA", type: "service" }];
     const r = await manage("upgrade", s.installId, {
@@ -312,6 +321,7 @@ describe("upgrade and rollback (5.4)", () => {
     ]);
     expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
     expect(w.install(s.installId)).toMatchObject({
+      version: V2,
       state: "active",
       lease: null,
     });
@@ -1846,15 +1856,8 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
   });
 
   /** An upgrade whose isolate dies after upload's body, before its result is stored, then replayed. */
-  async function lostUpload(slug: string, dirty?: "to" | "both") {
+  async function lostUpload(slug: string, dirty?: true) {
     const s = await active({ slug, version: V1 });
-    if (dirty === "to")
-      // No rollback (the DO tag moved): the dirty `to` keeps serving.
-      w.db
-        .prepare(
-          "UPDATE install_versions SET do_migration_tag = 'v-older' WHERE install_id = ? AND version = ?",
-        )
-        .run(s.installId, V1);
     if (dirty)
       w.fake.settingsEdit = (_x, b) => [
         ...b,
@@ -1902,23 +1905,9 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
   });
 
   it("a dirty `to` whose upload result was lost: the replay pauses it, prod_dirty", async () => {
-    const { s, id, again } = await lostUpload("dirtydied", "to");
+    const { s, id, again } = await lostUpload("dirtydied", true);
     expect(w.install(s.installId)).toMatchObject({
       version: V2,
-      state: "active",
-    });
-    expect(w.job(id)).toMatchObject({
-      status: "failed",
-      error_code: "prod_dirty",
-    });
-    expect(again.log.map((l) => l.name)).toContain("pause_dirty");
-    expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
-  });
-
-  it("a dirty rollback whose upload result was lost: back on from, paused, prod_dirty, never a second upload", async () => {
-    const { s, id, again } = await lostUpload("dirtyback", "both");
-    expect(w.install(s.installId)).toMatchObject({
-      version: V1,
       state: "active",
     });
     expect(w.job(id)).toMatchObject({
