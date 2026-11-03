@@ -7,6 +7,9 @@ import { LIVE_TEST_TIMEOUT_MS } from "./src/fetch-timeout.ts";
 export default defineConfig({
   test: {
     include: ["live/**/*.test.ts"],
+    // One file at a time within a vitest run. scripts/redline.ts runs the
+    // lanes of src/lanes.ts as separate runs, side by side only where the
+    // plan proves no shared state or rate-limit bucket (test/lanes.test.ts).
     fileParallelism: false,
     // A paced hook() (src/http.ts) can wait up to a minute inside a test or a
     // setup hook.
