@@ -25,8 +25,10 @@
 //
 // Usage (from anywhere in the repo):
 //   node --experimental-strip-types apps/server/scripts/migration-timing.ts \
-//     [--seed-file PATH] [--key]
+//     [--seed-file PATH] [--key | --seed-only]
 //   --key prints the seed's cache key and exits.
+//   --seed-only builds (or reuses) the seed and exits, new migrations or not
+//   (the main-branch cache warmer, migration-seed.yml).
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -164,7 +166,8 @@ function main(argv: string[]): number {
     return 1;
   }
 
-  if (p.fresh.length === 0) {
+  const seedOnly = argv.includes("--seed-only");
+  if (p.fresh.length === 0 && !seedOnly) {
     console.log(`no migration newer than ${p.base}: nothing to time`);
     return 0;
   }
@@ -196,6 +199,7 @@ function main(argv: string[]): number {
   console.log(
     `seed file: ${mb(statSync(seedFile).size)} (users ${SHAPE.users}, audit_events ${SHAPE.audit_events})`,
   );
+  if (seedOnly) return 0;
 
   const work = mkdtempSync(path.join(tmpdir(), "oa-migration-timing-"));
   const db = path.join(work, "work.sqlite");

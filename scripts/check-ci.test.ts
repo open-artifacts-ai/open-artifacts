@@ -128,6 +128,27 @@ describe("ci.yml", () => {
       expect.arrayContaining(["build", "e2e", "lint", "test", "typecheck"]),
     );
   });
+  // #1213: the migration timing job filters by path inside the job, so it
+  // always reports (a filtered-out workflow would leave a required check
+  // pending, a skipped job would pass one); any diff error means run.
+  it("migration-timing always runs and decides its path filter inside", () => {
+    const job = w.jobs["migration-timing"];
+    expect(job).toBeDefined();
+    expect(job.if).toBeUndefined();
+    expect(job.needs).toBeUndefined();
+    expect(w.on.pull_request?.paths).toBeUndefined();
+    expect(w.on.merge_group?.paths).toBeUndefined();
+    expect(JSON.stringify(job)).not.toContain("continue-on-error");
+    expect(JSON.stringify(job)).not.toContain("secrets.");
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = job.steps;
+    const changed = steps.find((s) => s.id === "changed");
+    expect(changed.run).toMatch(/^run=true\n/);
+    expect(changed.run).toContain("apps/server/migrations/");
+    const time = steps.find((s) => (s.run ?? "").includes("migration-timing.ts --seed-file"));
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(time.if).toBe("${{ steps.changed.outputs.run == 'true' }}");
+  });
   // P3 T16 (#605): the authz matrix runs in its own job, in parallel, so the
   // main test job's wall time drops. Required check (repo setting).
   it("authz-matrix job runs the server authz matrix, gated and unskippable", () => {
