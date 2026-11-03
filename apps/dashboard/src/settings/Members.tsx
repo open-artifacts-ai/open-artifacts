@@ -44,7 +44,12 @@ import { CopyLink } from "../layout/CopyLink";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
-import { isReleased, personFirst, personName } from "../layout/person";
+import {
+  isReleased,
+  personFirst,
+  personFirstAtStart,
+  personName,
+} from "../layout/person";
 import { toast } from "../layout/toast";
 import { UserAvatar } from "../layout/UserAvatar";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
@@ -873,8 +878,15 @@ function RemovedRow({
   );
 }
 
-/** Inline copy for a refused restore (parity 1). */
-const restoreRefusal = (e: unknown, first: string) => {
+/**
+ * Inline copy for a refused restore (parity 1). `atStart` is `first` where it
+ * starts the sentence ("A former member's account…"); default `first`.
+ */
+export const restoreRefusal = (
+  e: unknown,
+  first: string,
+  atStart: string = first,
+) => {
   const code = e instanceof ApiClientError ? e.code : "";
   if (code === "directory_managed")
     return `Removed by your Google Workspace. They come back if their Workspace account is restored.`;
@@ -884,7 +896,7 @@ const restoreRefusal = (e: unknown, first: string) => {
   if (code === "owner_only") return RESTORE_ONLY;
   if (code === "conflict") return ADDRESS_RELEASED;
   if (code === "member_erased")
-    return `${first}'s account was erased, so it can't be restored. If they need access again, invite them.`;
+    return `${atStart}'s account was erased, so it can't be restored. If they need access again, invite them.`;
   return errorCopy(e, `Couldn't restore ${first}. Try again.`);
 };
 
@@ -1103,7 +1115,8 @@ function RestoreDialog({
               title: `${label} is restored. They can sign in again.`,
               tone: "success",
             }),
-          onError: (e) => onRefused(restoreRefusal(e, first)),
+          onError: (e) =>
+            onRefused(restoreRefusal(e, first, personFirstAtStart(m))),
         })
       }
     />

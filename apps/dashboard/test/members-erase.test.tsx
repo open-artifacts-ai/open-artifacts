@@ -4,7 +4,9 @@ import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
+import { ApiClientError } from "../src/api/client";
 import { ownedCount } from "../src/settings/EraseDialog";
+import { restoreRefusal } from "../src/settings/Members";
 import {
   calls,
   findVisibleToast,
@@ -186,6 +188,34 @@ describe("Erase on the Removed list", () => {
     ).toBeVisible();
     expect(within(d).getByText(BODY[1] as string)).toBeVisible();
     expect(within(d).getByText(BODY[2] as string)).toBeVisible();
+  });
+
+  it("a former member's 409 and member_erased lines start with a capital", async () => {
+    removed = [RELEASED];
+    mountHosted("/settings/members", true, undefined, [
+      list,
+      eraseAnswer(409, {
+        error: {
+          code: "member_owns_artifacts",
+          message: "x",
+          details: { live: 2, deleted: 1 },
+        },
+      }),
+    ]);
+    const d = await openErase("Former member", "Erase a former member?");
+    fireEvent.change(within(d).getByLabelText('Type "erase" to confirm'), {
+      target: { value: "erase" },
+    });
+    fireEvent.click(within(d).getByRole("button", { name: "Erase" }));
+    expect(
+      await within(d).findByText(
+        "A former member still owns 2 artifacts (and 1 in trash). Transfer them first, then erase.",
+      ),
+    ).toBeVisible();
+    const erased = new ApiClientError("member_erased", "x", 409);
+    expect(restoreRefusal(erased, "a former member", "A former member")).toBe(
+      "A former member's account was erased, so it can't be restored. If they need access again, invite them.",
+    );
   });
 
   it("Departed rows have no Erase", async () => {

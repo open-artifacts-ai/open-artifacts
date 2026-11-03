@@ -8,7 +8,11 @@ import { ApiClientError } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
 import { useEraseMember } from "../api/queries";
 import { Modal } from "../layout/Modal";
-import { personFirst, personInSentence } from "../layout/person";
+import {
+  personFirst,
+  personFirstAtStart,
+  personInSentence,
+} from "../layout/person";
 import { toast } from "../layout/toast";
 import { artifacts } from "./Transfer";
 import { errorText, muted } from "./ui";
@@ -87,8 +91,9 @@ export function EraseDialog({
     >
       {owns ? (
         <p className="m-0">
-          {first} still owns {ownedCount(owns.live, owns.deleted)}. Transfer
-          them first, then erase.
+          {personFirstAtStart(m)} still owns{" "}
+          {ownedCount(owns.live, owns.deleted)}. Transfer them first, then
+          erase.
         </p>
       ) : (
         <form
