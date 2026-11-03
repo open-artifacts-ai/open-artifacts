@@ -44,12 +44,16 @@ export const INDEX_REPORT_MS = 60_000;
  */
 export const INDEX_WINDOW_MS = SOCKET_TTL_MS + INDEX_REPORT_MS + 60_000;
 /**
- * closeInstall's second pass, this long after the first: dispatch caches a
- * HOSTS value for up to 60 s (cacheTtl) on top of KV's own propagation, so a
- * client that reconnects right after the first pass can still reach the
- * install for about two minutes. The second pass closes those sockets.
+ * closeInstall's later passes, this long after the first. Dispatch refuses
+ * every request, upgrades included, once it reads the paused HOSTS value
+ * (apps/dispatch/src/index.ts), so only an edge still serving the old value
+ * can accept a new socket. That window is dispatch's 60 s cacheTtl on top of
+ * KV propagation, which has no hard bound: about two minutes usually, so a
+ * pass at 2 minutes, and one at 5 for a slow edge. Past that, the 10-minute
+ * socket TTL is the ceiling.
  */
-export const SECOND_PASS_MS = 120_000;
+export const LATER_PASSES_MS = [120_000, 300_000] as const;
+export const SECOND_PASS_MS = LATER_PASSES_MS[0];
 
 const SCHEMA = `
 create table if not exists state (
@@ -284,11 +288,14 @@ export class UserPresence extends DurableObject<Env> {
     this.indexOnly();
     const why = String(reason).slice(0, MAX_REASON);
     const now = this.now();
-    this.sql.exec(
-      `insert into sweep (id, reason, due) values (1, ?, ?)
-       on conflict (id) do update set reason = excluded.reason, due = excluded.due`,
-      why,
-      now + SECOND_PASS_MS,
+    LATER_PASSES_MS.forEach((after, i) =>
+      this.sql.exec(
+        `insert into sweep (id, reason, due) values (?, ?, ?)
+         on conflict (id) do update set reason = excluded.reason, due = excluded.due`,
+        i + 1,
+        why,
+        now + after,
+      ),
     );
     const ids = this.indexed(now);
     const nowIds = ids.slice(0, CLOSE_FANOUT);
@@ -334,11 +341,11 @@ export class UserPresence extends DurableObject<Env> {
     if (!this.isIndex) throw new Error("not the install index");
   }
 
-  /** The second pass's due time, while one is pending (tests). */
+  /** The next later pass's due time, while one is pending (tests). */
   pendingSweep(): number | null {
     return (
       this.sql
-        .exec<{ due: number }>("select due from sweep where id = 1")
+        .exec<{ due: number | null }>("select min(due) as due from sweep")
         .toArray()[0]?.due ?? null
     );
   }
@@ -404,7 +411,7 @@ export class UserPresence extends DurableObject<Env> {
     const now = this.now();
     const sweep = this.sql
       .exec<{ reason: string }>(
-        "delete from sweep where id = 1 and due <= ? returning reason",
+        "delete from sweep where due <= ? returning reason",
         now,
       )
       .toArray()[0];

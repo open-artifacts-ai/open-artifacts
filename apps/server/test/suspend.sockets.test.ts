@@ -14,6 +14,7 @@ import {
   CLOSE_FANOUT,
   INDEX_WINDOW_MS,
   INSTALL_INDEX,
+  LATER_PASSES_MS,
   SECOND_PASS_MS,
   type UserPresence,
 } from "../src/runtime/presence.js";
@@ -222,6 +223,20 @@ describe("oa:close-sockets (#1182)", () => {
       // The pass queues the closes; they run on that alarm or the next.
       await alarmsUntil(() => !again.isOpen());
       expect(await closedIn(again)).toBe(4403);
+      // The 5-minute pass is still to come, for a slow edge.
+      expect(
+        await runInDurableObject(index(), (p) => p.pendingSweep()),
+      ).toEqual(expect.any(Number));
+      // A slow edge: a reconnect after the second pass.
+      const late = await viaRoute(R.events(pubId), null);
+      await tick();
+      expect(late.isOpen()).toBe(true);
+      await runInDurableObject(index(), (p) => {
+        const base = p.now;
+        p.now = () => base() + (LATER_PASSES_MS[1] - SECOND_PASS_MS);
+      });
+      await alarmsUntil(() => !late.isOpen());
+      expect(await closedIn(late)).toBe(4403);
       expect(
         await runInDurableObject(index(), (p) => p.pendingSweep()),
       ).toBeNull();
