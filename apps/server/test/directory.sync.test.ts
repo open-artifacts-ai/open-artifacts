@@ -23,6 +23,7 @@ import {
   FAST_MS,
   RECONCILE_MS,
   SyncEngine,
+  USER_EVENTS_PER_PAGE,
 } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
@@ -765,8 +766,19 @@ describe("review fixes (P3 T13)", () => {
     expect((await status()).state).toBe("customer_mismatch");
   });
 
-  it("suspension events past the first 100 on a page carry over", async () => {
-    const us = dirUsers(130, "many");
+  // Real work, no waits (the clock is explicit and no retry sleeps here):
+  // each suspended user is one D1 batch, a grant listing and, with no ctx in
+  // this engine, an awaited UserPresence.closeAll on a fresh DO (most of the
+  // time). Measured 47-61 ms per user for connect plus both alarms, at a
+  // 1-minute load of 20-33 (7 runs alone); a 20 s budget failed at load
+  // 60-80. The budget grows with the user count, with 6x headroom.
+  const CARRY_USERS = USER_EVENTS_PER_PAGE + 30;
+  const CARRY_USER_MS = 60;
+  const CARRY_HEADROOM = 6;
+  it("suspension events past the first 100 on a page carry over", {
+    timeout: CARRY_USERS * CARRY_USER_MS * CARRY_HEADROOM,
+  }, async () => {
+    const us = dirUsers(CARRY_USERS, "many");
     const t0 = Date.now();
     await connected(t0);
     for (const u of us) {
@@ -774,7 +786,9 @@ describe("review fixes (P3 T13)", () => {
       g.activity("admin", "SUSPEND_USER", { USER_EMAIL: u.primaryEmail });
     }
     await drain(t0 + 2 * MIN);
-    for (const u of [us[0], us[99], us[100], us[129]])
+    const last = CARRY_USERS - 1;
+    const first = USER_EVENTS_PER_PAGE - 1;
+    for (const u of [us[0], us[first], us[first + 1], us[last]])
       expect(await statusOf(await uidOf(u?.id as string))).toBe("suspended");
   });
 
