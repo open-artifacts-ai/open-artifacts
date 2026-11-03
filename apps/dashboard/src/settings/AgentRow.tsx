@@ -315,7 +315,7 @@ export function AgentRow({
             )}
             <DropdownMenuItem
               variant="destructive"
-              disabled={frozen}
+              // Never locked: a capped caller may revoke (CAPPED_ALLOWED).
               onSelect={onRevoke}
             >
               Revoke…
