@@ -21,6 +21,12 @@ const TOKENS: Record<string, HostedMockOptions> = {
   "sync-off": { directory: "off" },
   admin: { actAs: "admin" },
   "guest-notices": { selfHosted: true, guestShares: 2, guestOwners: 2 },
+  "guest-departed": {
+    selfHosted: true,
+    guestShares: 2,
+    guestOwners: 2,
+    departedGuestOwner: true,
+  },
   "spaces-on": { spaces: true },
   "workspace-change": {
     pendingCustomerChange: {
@@ -45,7 +51,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
  * access, email-only, turnstile, unhealthy (backoff), auth-failed,
  * scope-missing, customer-mismatch, trial, team, business, frozen, sync-off,
  * admin (you are an admin, not the owner), guest-notices (an Access-only
- * install with parity 2's notices, spaces off), spaces-on, workspace-change (the confirm
+ * install with parity 2's notices, spaces off), guest-departed (the same, one
+ * guest owner has left), spaces-on, workspace-change (the confirm
  * step for a different Google Workspace), break-glass and break-glass-stale
  * (the owner locked out by customer-mismatch, signed in fresh or not). Absent: the self-hosted mocks.
  */

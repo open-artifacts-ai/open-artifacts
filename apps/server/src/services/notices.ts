@@ -28,6 +28,7 @@ import { getDb } from "../db/client.js";
 import { artifacts, settings, shares, spaces, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
+import { statusOf } from "./members.js";
 
 /** The settings row that marks guest_summary dismissed for this install. */
 export const summaryKey = "notice_dismissed:guest_summary";
@@ -116,7 +117,7 @@ const SUMMARY_COUNTS = `select count(*) as shares, count(distinct a.owner_id) as
   ${GUEST_SHARE}`;
 
 /** Guests (any status) with live artifacts in their personal space. */
-const GUEST_OWNERS = `select u.id as userId, u.email as email, count(*) as artifacts
+const GUEST_OWNERS = `select u.id as userId, u.email as email, u.status as status, count(*) as artifacts
   from users u join artifacts a on a.space_id = u.id and a.owner_id = u.id
   where u.role = 'guest' and a.deleted_at is null
   group by u.id
@@ -124,7 +125,12 @@ const GUEST_OWNERS = `select u.id as userId, u.email as email, count(*) as artif
   limit ?1`;
 
 type ShareRow = { artifactId: string; title: string; guestEmail: string };
-type OwnerRow = { userId: string; email: string; artifacts: number };
+type OwnerRow = {
+  userId: string;
+  email: string;
+  artifacts: number;
+  status: string;
+};
 
 /**
  * Me.notices for `user`, or null when none is present. `kv` is the settings
@@ -192,6 +198,7 @@ async function guestSummary(env: Env): Promise<GuestSummaryNotice | null> {
       userId: r.userId,
       email: r.email,
       artifacts: r.artifacts,
+      status: statusOf(r.status),
     })),
     more: owners.length > GUEST_OWNERS_NOTICE_LIMIT,
   };

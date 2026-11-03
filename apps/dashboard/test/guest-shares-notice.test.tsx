@@ -86,7 +86,9 @@ it("a released address never shows, in either notice", async () => {
       guestSummary: {
         shares: 1,
         owners: 1,
-        guestOwners: [{ userId: "u1", email: gone, artifacts: 1 }],
+        guestOwners: [
+          { userId: "u1", email: gone, artifacts: 1, status: "active" },
+        ],
         more: false,
       },
     },
