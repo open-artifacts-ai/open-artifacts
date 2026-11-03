@@ -92,14 +92,17 @@ describe("@oa/bundle imports nothing private (#1056)", () => {
 
   it("the scan catches each private module, static or dynamic", () => {
     const f = join(src, "bundle.ts");
+    // Assembled at run time, so the repo-wide workspace-imports scan does not
+    // read these fixtures as this file's own relative imports.
+    const q = (s: string) => JSON.stringify(s);
     for (const code of [
-      'import { x } from "@oa/provision";',
-      'export * from "@oa/provision/jobs";',
-      'import type { T } from "@oa/shared/provisioning";',
-      'const m = await import("../../../apps/provisioner/src/index.js");',
-      'const m = require("../../../tests/redline/src/a.js");',
-      'import "../../../scripts/hosted/src/cli.ts";',
-      'import { y } from "../../provision/src/release.js";',
+      `import { x } from ${q("@oa/provision")};`,
+      `export * from ${q("@oa/provision/jobs")};`,
+      `import type { T } from ${q("@oa/shared/provisioning")};`,
+      `const m = await import(${q("../../../apps/provisioner/src/index.js")});`,
+      `const m = require(${q("../../../tests/redline/src/a.js")});`,
+      `import ${q("../../../scripts/hosted/src/cli.ts")};`,
+      `import { y } from ${q("../../provision/src/release.js")};`,
     ]) {
       const [s] = specifiers(code);
       expect(s, code).toBeDefined();
