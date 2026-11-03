@@ -164,26 +164,14 @@ describe("staging-test-member.yml", () => {
 });
 
 describe("parseArgs", () => {
-  it("member by default; guest; --revoke; --help", () => {
-    expect(parseArgs([])).toEqual({
-      role: "member",
-      revoke: false,
-      help: false,
-    });
-    expect(parseArgs(["--role", "guest"])).toMatchObject({ role: "guest" });
-    expect(parseArgs(["--role=member"])).toMatchObject({ role: "member" });
+  it("member only: --revoke and --help, nothing else", () => {
+    expect(parseArgs([])).toEqual({ revoke: false, help: false });
     expect(parseArgs(["--revoke"])).toMatchObject({ revoke: true });
     expect(parseArgs(["--help"])).toMatchObject({ help: true });
-  });
-
-  it("refuses admin, owner, editor, a missing role, --revoke with --role, and anything unknown", () => {
     for (const a of [
       ["--role", "admin"],
-      ["--role", "owner"],
-      ["--role=admin"],
-      ["--role", "editor"],
-      ["--role"],
-      ["--revoke", "--role", "member"],
+      ["--role=owner"],
+      ["--role", "member"],
       ["--slug", "rl-a"],
       ["extra"],
     ])
@@ -386,12 +374,6 @@ describe("main, with gh and fetch mocked", () => {
     );
   });
 
-  it("--role guest asks for a guest", async () => {
-    const { d, fetchCalls } = deps();
-    expect(await main(["--role", "guest"], d)).toBe(0);
-    expect(JSON.parse(String(fetchCalls[0]?.init.body)).role).toBe("guest");
-  });
-
   it("a log naming another host: no fetch, no file", async () => {
     const { d, fetchCalls } = deps({ host: "evil.example" });
     await expect(main([], d)).rejects.toThrow(/no sealed credentials/);
@@ -424,7 +406,7 @@ describe("main, with gh and fetch mocked", () => {
   it("bad arguments: exit 2, the help, no dispatch", async () => {
     const { d, lines, ghCalls } = deps();
     expect(await main(["--role", "admin"], d)).toBe(2);
-    expect(lines[0]).toContain("--role is one of member, guest");
+    expect(lines[0]).toContain("unknown argument: --role");
     expect(ghCalls).toHaveLength(0);
   });
 });

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Member sign-in for an agent on the staging install rl-agents:
-// `node scripts/ops/staging-test-member.ts [--role member|guest] [--revoke]`.
+// `node scripts/ops/staging-test-member.ts [--revoke]`.
 // See HELP below and docs/ops/hosted.md, "Staging test member for agents".
 import { execFile as execFileCb } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
@@ -22,15 +22,13 @@ export const EMAIL = "agent-member@oa-redline-a.fyi";
 export const SEAL_INFO = "oa-redline-creds-v1";
 /** apps/server/src/auth/session.ts MAX_AGE_S: a session cookie lives 7 days. */
 export const SESSION_MAX_AGE_MS = 7 * 86_400_000;
-/** Install roles this may ask for. Never admin or owner. */
-export const ROLES = ["member", "guest"] as const;
-export type Role = (typeof ROLES)[number];
+/** The one install role this asks for. Never admin or owner. */
+export const ROLE = "member";
 
-export const HELP = `Usage: node scripts/ops/staging-test-member.ts [--role member|guest] [--revoke]
+export const HELP = `Usage: node scripts/ops/staging-test-member.ts [--revoke]
 
-Signs an agent in to the staging install rl-agents as ${EMAIL}
-(role member unless --role says otherwise), with no credential any person
-hands over. It makes an X25519 key pair in memory, dispatches ${WORKFLOW}
+Signs an agent in to the staging install rl-agents as ${EMAIL}, role
+member, with no credential any person hands over. It makes an X25519 key pair in memory, dispatches ${WORKFLOW}
 on main and waits. That job's OIDC JWT calls R26 on rl-agents, which
 rotates the install's TEST_HOOK_KEY, mints a new PAT and revokes the earlier
 ones; the result comes back sealed to this process's key. The hook key is
@@ -43,7 +41,6 @@ the credentials of every earlier mint, another agent's included. A session
 already written to a storage-state file is not cut off: it lasts until its
 cookie expires (7 days). Delete those files when you are done.
 
-  --role member|guest  the install role of the test user (default member)
   --revoke             dispatch with revoke: true instead: rotate the hook
                        key to one nobody holds and revoke the PATs; writes
                        nothing
@@ -51,28 +48,16 @@ cookie expires (7 days). Delete those files when you are done.
 
 Staging and rl-agents only. Needs gh, signed in.`;
 
-export type Args = { role: Role; revoke: boolean; help: boolean };
+export type Args = { revoke: boolean; help: boolean };
 
 /** The command line, or an Error saying what is wrong. */
 export function parseArgs(argv: readonly string[]): Args | Error {
-  const out: Args = { role: "member", revoke: false, help: false };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
+  const out: Args = { revoke: false, help: false };
+  for (const a of argv) {
     if (a === "--help" || a === "-h") out.help = true;
     else if (a === "--revoke") out.revoke = true;
-    else if (a === "--role" || a?.startsWith("--role=")) {
-      const v = a === "--role" ? argv[++i] : a.slice("--role=".length);
-      if (v === "editor")
-        return new Error(
-          "--role editor: editor is a space role, not an install role; use member",
-        );
-      if (!(ROLES as readonly string[]).includes(v ?? ""))
-        return new Error(`--role is one of ${ROLES.join(", ")}`);
-      out.role = v as Role;
-    } else return new Error(`unknown argument: ${a}`);
+    else return new Error(`unknown argument: ${a}`);
   }
-  if (out.revoke && argv.some((a) => a.startsWith("--role")))
-    return new Error("--revoke takes no --role");
   return out;
 }
 
@@ -115,7 +100,6 @@ export function hookKeyOf(plain: string): string {
 export async function testSession(
   f: typeof fetch,
   hookKey: string,
-  role: Role,
 ): Promise<string> {
   const res = await f(`https://${APP_HOST}/__test/session`, {
     method: "POST",
@@ -123,7 +107,7 @@ export async function testSession(
       authorization: `Bearer ${hookKey}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ email: EMAIL, role }),
+    body: JSON.stringify({ email: EMAIL, role: ROLE }),
     redirect: "error",
   });
   // Never the body: a refusal names only a reason, but keep the log plain.
@@ -250,7 +234,7 @@ export async function main(argv: readonly string[], d: Deps): Promise<number> {
   const got = parseMintLog(run.log);
   if (!got) throw new Error(`run ${run.id}: no sealed credentials in its log`);
   const hookKey = hookKeyOf(openSealedNode(privateKey, got.sealed, SEAL_INFO));
-  const cookie = await testSession(d.fetch, hookKey, args.role);
+  const cookie = await testSession(d.fetch, hookKey);
   const expiresAt = d.now() + SESSION_MAX_AGE_MS;
   const file = writeState(storageState(cookie, expiresAt), d.tmp);
   d.log(JSON.stringify({ storageState: file, expiresAt, run: run.id }));
