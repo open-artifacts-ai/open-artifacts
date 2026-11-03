@@ -10,19 +10,23 @@ const SCRIPT = script("tag-passed-checks.sh");
 const TAG = "v0.80.0";
 const SHA = "c".repeat(40);
 const REPO = "open-artifacts-ai/open-artifacts";
+const MAIN = "f".repeat(40); // main's branch head
 
 // gh api -X GET <path>: $STATE/<key>.json, or exit 1 when it is missing.
+// compare/<a>...<b> reads compare-<a>...<b>.json when there is one, else
+// compare.json; jobs.json is run 41's (the legacy run) only.
 const gh = `
 p="\${@: -1}"; p="\${p#repos/$REPO/}"
 case "$p" in
   releases/tags/*) k=release ;;
   commits/*) k=commit ;;
-  compare/*) k=compare ;;
+  git/ref/heads/main) k=mainref ;;
+  compare/*) k=compare; [ -f "$STATE/compare-\${p#compare/}.json" ] && k="compare-\${p#compare/}" ;;
   actions/workflows/release-please.yml/runs\\?*) k=runs ;;
   actions/artifacts\\?*) k=artifacts ;;
   actions/runs/*/jobs\\?*)
     id="\${p#actions/runs/}"; id="\${id%%/*}"
-    k=jobs; [ -f "$STATE/jobs-$id.json" ] && k="jobs-$id" ;;
+    k="jobs-$id"; [ "$id" = 41 ] && k=jobs ;;
   actions/runs/*) k="run-\${p#actions/runs/}" ;;
   *) exit 1 ;;
 esac
@@ -42,6 +46,7 @@ const good = (): State => ({
     ],
   },
   commit: { sha: SHA },
+  mainref: { object: { sha: MAIN } },
   compare: { status: "behind" },
   runs: {
     workflow_runs: [
@@ -100,6 +105,9 @@ const raced = (f: (s: any) => void = () => {}) => {
   s.artifacts = { total_count: 1, artifacts: [artifact(77)] };
   s["run-77"] = pushRun(77);
   s["jobs-77"] = allJobs();
+  // Its head is on main's branch and after the tag's commit.
+  s[`compare-${MAIN}...${OTHER}`] = { status: "behind" };
+  s[`compare-${SHA}...${OTHER}`] = { status: "ahead" };
   f(s);
   return s as State;
 };
@@ -336,6 +344,7 @@ describe("tag-passed-checks.sh", () => {
       const r = run(
         raced((s) => {
           s["run-77"] = pushRun(77, SHA);
+          s[`compare-${SHA}...${SHA}`] = { status: "identical" };
         }),
       );
       expect(r.code, r.err).toBe(0);
@@ -383,6 +392,83 @@ describe("tag-passed-checks.sh", () => {
         expect(r.code, name).toBe(1);
         expect(r.err, name).toMatch(/job verify-release: skipped/);
       }
+    });
+
+    it("reads main by its branch SHA, never the bare name (a tag named main)", () => {
+      const r = run(raced());
+      expect(r.code, r.err).toBe(0);
+      expect(r.calls).toContain(
+        `gh api -X GET repos/${REPO}/git/ref/heads/main`,
+      );
+      expect(r.calls).toContain(
+        `gh api -X GET repos/${REPO}/compare/${MAIN}...${SHA}`,
+      );
+      expect(r.calls).toContain(
+        `gh api -X GET repos/${REPO}/compare/${MAIN}...${OTHER}`,
+      );
+      expect(r.calls).toContain(
+        `gh api -X GET repos/${REPO}/compare/${SHA}...${OTHER}`,
+      );
+      expect(r.calls.some((c) => c.includes("/compare/main..."))).toBe(false);
+      fails(
+        edit((s) => delete s.mainref),
+        /main: GitHub API error/,
+      );
+      fails(
+        edit((s) => (s.mainref = { object: { sha: "main" } })),
+        /main: not found/,
+      );
+    });
+
+    // A push of a tag named main has head_branch "main", and its
+    // release-please.yml is whatever the pusher wrote: green jobs by the right
+    // names and a forged marker. Its head_sha is not on main's branch.
+    it("fails on a marker run whose head_sha is off main's branch", () => {
+      for (const status of ["ahead", "diverged", ""])
+        fails(
+          raced((s) => {
+            s[`compare-${MAIN}...${OTHER}`] = { status };
+          }),
+          /build marker run 77: e{40} is not on main/,
+        );
+      // Off main is a failure, not a run to skip: the green legacy run beside
+      // it doesn't pass either.
+      fails(
+        raced((s) => {
+          s.jobs = allJobs();
+          s[`compare-${MAIN}...${OTHER}`] = { status: "ahead" };
+        }),
+        /is not on main \(ahead\)/,
+      );
+    });
+
+    it("fails on a marker run whose head_sha is before the tag's commit", () => {
+      for (const status of ["behind", "diverged", ""])
+        fails(
+          raced((s) => {
+            s[`compare-${SHA}...${OTHER}`] = { status };
+          }),
+          /build marker run 77: e{40} is not v0\.80\.0's commit or after it/,
+        );
+    });
+
+    it("fails closed on a compare error or bad head_sha for a marker run", () => {
+      fails(
+        raced((s) => {
+          s[`compare-${MAIN}...${OTHER}`] = "<html>";
+        }),
+        /build marker run 77 on main: unparsable response/,
+      );
+      fails(
+        raced((s) => {
+          s[`compare-${SHA}...${OTHER}`] = "<html>";
+        }),
+        /build marker run 77 after v0\.80\.0: unparsable response/,
+      );
+      fails(
+        raced((s) => (s["run-77"].head_sha = "main")),
+        /build marker run 77: bad head_sha/,
+      );
     });
 
     it("fails on two push runs that built the tag", () => {
@@ -504,9 +590,9 @@ describe("tag-passed-checks.sh", () => {
         /build marker run 77: GitHub API error/,
       );
       fails(
+        // The stub serves no other run's jobs, so a fallback can't hide this.
         raced((s) => delete s["jobs-77"]),
-        // Falls back to the stub's shared jobs file: skipped, never a pass.
-        /job verify-release: skipped/,
+        /release-please jobs: GitHub API error/,
       );
       fails(
         raced((s) => (s.artifacts.artifacts[0].workflow_run.id = "77; rm")),

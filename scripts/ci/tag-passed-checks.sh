@@ -15,10 +15,14 @@
 # commit: a release-please job queued behind a release PR's merge creates the
 # release in a run whose head_sha is another commit (v0.105.0, 2026-11-03). Its
 # hosted-build uploads an artifact named built-from-<tag>-<commit>, last, from
-# a checkout verified to be <tag>^{commit}. Every run that has one is read, and
-# only release-please.yml push runs on main of this repository count: any
-# workflow can upload an artifact by that name, but only main's
-# release-please.yml can be such a run. One counts: that run. Two or more: fail.
+# a checkout verified to be <tag>^{commit}. Any workflow can upload an artifact
+# by that name, so every run that has one is read, and it counts only if it is a
+# release-please.yml push run with head_branch main, of this repository, whose
+# head_sha is on main's branch (compared by SHA) and is the tag's commit or after
+# it. A push of a tag named main also has head_branch main, and its workflow file
+# is whatever the pusher wrote; a head_sha on main's branch means the workflow
+# that ran is main's reviewed copy. A run that passes the first filters but
+# fails either compare fails the gate. One counts: that run. Two or more: fail.
 # None: the legacy rule, for releases from before the marker, which can't carry
 # one: the latest release-please.yml push run whose head_sha is the tag's
 # commit. Its hosted-build checked out that commit too. Every check below
@@ -56,8 +60,12 @@ rel="$(api "release $tag" "$R/releases/tags/$tag")"
 sha="$(api "commit of $tag" "$R/commits/$tag" | jq -r '.sha // empty')"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "commit of $tag: not found"
 
+# main's branch SHA, never the bare name: a tag named main would win (L4).
+main_sha="$(api "main" "$R/git/ref/heads/main" | jq -r '.object.sha // empty')"
+[[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] || fail "main: not found"
+
 # The tag's commit is main or behind it: an ancestor of main.
-cmp="$(api "$tag on main" "$R/compare/main...$sha" | jq -r '.status // empty')"
+cmp="$(api "$tag on main" "$R/compare/$main_sha...$sha" | jq -r '.status // empty')"
 case "$cmp" in identical | behind) ;; *) fail "$tag on main: $sha is not on main ($cmp)" ;; esac
 
 WF=".github/workflows/release-please.yml"
@@ -81,6 +89,15 @@ for id in $(tr ' ' '\n' <<< "$ids" | sort -u); do
   [ "$(jq -r --arg wf "$WF" --arg repo "$GITHUB_REPOSITORY" '
     .path == $wf and .event == "push" and .head_branch == "main"
     and .repository.full_name == $repo and .head_repository.full_name == $repo' <<< "$r")" = true ] || continue
+  # head_branch "main" is also a push of a tag named main, whose workflow file
+  # anyone with write access can edit. A real one ran on a commit of main's
+  # branch at or after the tag's commit: anything else fails the gate.
+  head="$(jq -r '.head_sha // empty' <<< "$r")"
+  [[ "$head" =~ ^[0-9a-f]{40}$ ]] || fail "build marker run $id: bad head_sha"
+  c="$(api "build marker run $id on main" "$R/compare/$main_sha...$head" | jq -r '.status // empty')"
+  case "$c" in identical | behind) ;; *) fail "build marker run $id: $head is not on main ($c)" ;; esac
+  c="$(api "build marker run $id after $tag" "$R/compare/$sha...$head" | jq -r '.status // empty')"
+  case "$c" in identical | ahead) ;; *) fail "build marker run $id: $head is not $tag's commit or after it ($c)" ;; esac
   built+=("$r")
 done
 case "${#built[@]}" in
