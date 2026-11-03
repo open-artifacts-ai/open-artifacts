@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.102.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.101.1...v0.102.0) (2026-11-03)
+
+
+### Features
+
+* **provisioning:** OAuth store jobs, kv to dual to copy to d1, admin MCP only ([#1008](https://github.com/open-artifacts-ai/open-artifacts/issues/1008)) ([#1171](https://github.com/open-artifacts-ai/open-artifacts/issues/1171)) ([0a14aa5](https://github.com/open-artifacts-ai/open-artifacts/commit/0a14aa5e23fc60f6f713eb3a9aea11e3837e9a69))
+
 ## [0.101.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.101.0...v0.101.1) (2026-11-03)
 
 
