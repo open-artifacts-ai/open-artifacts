@@ -879,7 +879,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     ),
     http.get(
       `${A}/shares`,
-      withArt((a) => HttpResponse.json(shares[a.id] ?? [])),
+      withArt((a) =>
+        HttpResponse.json(
+          (shares[a.id] ?? []).map((s) =>
+            h?.shareGuest(s.email) ? { ...s, guest: true } : s,
+          ),
+        ),
+      ),
     ),
     http.put(
       `${A}/shares`,
@@ -902,6 +908,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         const recipient = h?.shareRecipient(email);
         return HttpResponse.json({
           ...share,
+          ...(h?.shareGuest(email) ? { guest: true } : {}),
           emailed: false,
           ...(recipient ? { recipient } : {}),
           ...(h ? { signInMethods: h.signInMethods(email, "share") } : {}),

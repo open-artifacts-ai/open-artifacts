@@ -80,6 +80,27 @@ export async function reachOf(
   };
 }
 
+/**
+ * Who can only view, for the share rows and the share email alike: `role` is
+ * the org role, null with no user row. No row: a guest if any offered sign-in
+ * path would make them one, Access (upsertOnLogin) or a code (codeRule). The
+ * server can't know which path they'll use, so they may end up with more than
+ * promised, never less. No guest path isn't a guest: they join as a member, or
+ * an invite would make them one. One config read, no D1, so a list can ask per
+ * row.
+ */
+export function guestRecipients(env: Env) {
+  const cfg = authConfig(env);
+  const offered = new Set(authProviders(env).providers.map((p) => p.id));
+  return async (email: string, role: string | null): Promise<boolean> => {
+    if (role !== null) return role === "guest";
+    if (offered.has("access")) return true;
+    if (!offered.has("email")) return false;
+    const code = await codeRule(cfg, email, null, async () => true);
+    return code.kind === "guest";
+  };
+}
+
 /** reachOf for an invite: the active, unlinked row the invite is about to create. */
 export const inviteReach = (
   env: Env,
@@ -104,12 +125,18 @@ export const inviteReach = (
 export async function shareReach(
   env: Env,
   email: string,
-): Promise<{ methods: SignInProvider[]; recipient?: ShareRecipient }> {
+): Promise<{
+  methods: SignInProvider[];
+  recipient?: ShareRecipient;
+  /** The address's org role, null with no user row (guestRecipients takes it). */
+  role: string | null;
+}> {
   const row = await stmt(env.DB, ELIGIBILITY).bind(email).first<CodeRow>();
+  const role = row?.role ?? null;
   const r = await reachOf(env, email, row, async () => true);
-  if (r.methods.length > 0) return { methods: r.methods };
-  if (r.googleUncertain) return { methods: ["google"] };
-  if (row && row.status !== "active") return { methods: [] };
+  if (r.methods.length > 0) return { methods: r.methods, role };
+  if (r.googleUncertain) return { methods: ["google"], role };
+  if (row && row.status !== "active") return { methods: [], role };
   // In a verified domain: an invite as a member would let them in, unless
   // no offered method admits a member there either.
   const reason: ShareRecipient["reason"] = !r.inDomain
@@ -117,5 +144,5 @@ export async function shareReach(
     : (await inviteReach(env, email, "member")).methods.length > 0
       ? "needs_invite"
       : "no_sign_in_method";
-  return { methods: [], recipient: { canSignIn: false, reason } };
+  return { methods: [], recipient: { canSignIn: false, reason }, role };
 }

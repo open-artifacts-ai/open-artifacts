@@ -361,6 +361,13 @@ const mayResetGoogle = (m: Member, you: boolean, owner: boolean) =>
 const ADMIN_ONLY = "Only the owner can change another admin's access.";
 const RESET_ONLY = "Only the owner can reset another admin's Google link.";
 
+/**
+ * The email under the name, only when it adds something: the server's name
+ * falls back to the email (effectiveName), and a released address never shows.
+ */
+const secondLine = (m: Member) =>
+  m.name && m.name !== m.email && !isReleased(m) ? m.email : null;
+
 function Row({
   m,
   you,
@@ -377,6 +384,7 @@ function Row({
   const denyAdmin = (id: string) => denyMember(id, ADMIN_ONLY);
   const patch = usePatchMember(denyAdmin);
   const [confirm, setConfirm] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [restricting, setRestricting] = useState(false);
   const [lifting, setLifting] = useState(false);
   const remove = useRemoveMember(denyAdmin);
@@ -395,6 +403,7 @@ function Row({
   // The manual flag only: active members, never owners, admins or guests.
   const canRestrict =
     m.role === "member" && (m.status ?? "active") === "active";
+  const address = secondLine(m);
   const first = personFirst(m);
   return (
     <li className={ROW}>
@@ -414,12 +423,12 @@ function Row({
               </Badge>
             )}
           </b>
-          {(m.name || why) && (
+          {(address || why) && (
             <small className={`block truncate ${muted}`}>
-              {m.name && !isReleased(m) ? m.email : null}
+              {address}
               {/* At <= 600px the badge and reason move to the control line. */}
               <span className="max-[600px]:hidden">
-                {m.name && why ? " · " : null}
+                {address && why ? " · " : null}
                 {why}
               </span>
             </small>
@@ -485,6 +494,11 @@ function Row({
             align="end"
             className="text-[length:var(--oa-text-sm)]"
           >
+            {m.personalArtifacts && (
+              <DropdownMenuItem onSelect={() => setMoving(true)}>
+                Transfer their artifacts
+              </DropdownMenuItem>
+            )}
             {canRestrict && (
               <DropdownMenuItem
                 onSelect={() =>
@@ -525,6 +539,7 @@ function Row({
           {denied}
         </p>
       )}
+      {moving && <TransferDialog member={m} onClose={() => setMoving(false)} />}
       <ConfirmDialog
         open={resetting}
         onClose={() => setResetting(false)}
@@ -781,8 +796,8 @@ function RemovedRow({
             Removed
           </Badge>
         </b>
-        {m.name && !isReleased(m) && (
-          <small className={`block ${muted}`}>{m.email}</small>
+        {secondLine(m) && (
+          <small className={`block ${muted}`}>{secondLine(m)}</small>
         )}
       </div>
       {!refusal && (

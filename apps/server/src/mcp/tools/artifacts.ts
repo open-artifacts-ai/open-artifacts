@@ -25,7 +25,11 @@ import {
   undelete,
 } from "../../services/artifacts.js";
 import { search } from "../../services/search.js";
-import { deleteShare, putShare } from "../../services/shares.js";
+import {
+  deleteShare,
+  guestShareLine,
+  putShare,
+} from "../../services/shares.js";
 import { publishableSpaces, spacesOn } from "../../services/spaces.js";
 import { createUpload } from "../../services/uploads.js";
 import { guard, ok, type ToolEnv } from "../server.js";
@@ -225,9 +229,11 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       guard(async () => {
         const s = await putShare(env, user, input.id, input, t.exec);
         return ok(
-          `Shared ${input.id} with ${s.email} as ${s.role}: ${viewUrl(env, input.id)}. ${
-            s.emailed ? `Emailed ${s.email} a link.` : "No email sent."
-          }${
+          `${
+            s.guest
+              ? `Shared ${input.id} with ${s.email}. ${guestShareLine(s)} ${viewUrl(env, input.id)}.`
+              : `Shared ${input.id} with ${s.email} as ${s.role}: ${viewUrl(env, input.id)}.`
+          } ${s.emailed ? `Emailed ${s.email} a link.` : "No email sent."}${
             s.recipient
               ? s.recipient.reason === "needs_invite"
                 ? ` ${s.email} can't sign in until an admin invites them as a member.`

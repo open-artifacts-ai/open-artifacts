@@ -15,7 +15,11 @@ import { qk, useOAuthClients, useTokens } from "../api/queries";
 import { useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
-import { AgentSetupBody, useCanSetUpAgent } from "../settings/AgentSetupCard";
+import {
+  AgentSetupBody,
+  canConnectAgents,
+  useCanSetUpAgent,
+} from "../settings/AgentSetupCard";
 import { copyText } from "../settings/ui";
 import { sharedSpaceName } from "../spaces/label";
 import { useUploadSpace } from "../spaces/SpacePicker";
@@ -65,6 +69,11 @@ const storeView = (v: View) => {
   } catch {}
 };
 
+/** Mine for callers the server won't connect: no agent wording. */
+const EMPTY_NO_AGENTS: [string, React.ReactNode] = [
+  "No artifacts yet",
+  "Artifacts shared with you show up in Shared with me.",
+];
 const EMPTY: Record<Scope, [string, React.ReactNode]> = {
   all: [
     "No artifacts yet",
@@ -214,23 +223,26 @@ export function Library({ scope }: { scope: Scope }) {
   const canPublishHere =
     personal || myRole === "editor" || myRole === "manager";
   const uploadSpace = useUploadSpace(space?.id);
+  const noAgents = me.status === "authed" && !canConnectAgents(me.me);
   const [emptyTitle, emptyText] =
-    space && scope === "all"
-      ? personal
-        ? [
-            "Your personal space",
-            "Only you can see what's here until you share it or move it to a space.",
-          ]
-        : canPublishHere
+    scope === "mine" && !space && noAgents
+      ? EMPTY_NO_AGENTS
+      : space && scope === "all"
+        ? personal
           ? [
-              `Nothing in ${space.name} yet`,
-              `Ask any AI agent to publish here, for example "publish this to ${space.name}".`,
+              "Your personal space",
+              "Only you can see what's here until you share it or move it to a space.",
             ]
-          : [
-              `Nothing in ${space.name} yet`,
-              "You can view this space. What its editors publish shows up here.",
-            ]
-      : EMPTY[scope];
+          : canPublishHere
+            ? [
+                `Nothing in ${space.name} yet`,
+                `Ask any AI agent to publish here, for example "publish this to ${space.name}".`,
+              ]
+            : [
+                `Nothing in ${space.name} yet`,
+                "You can view this space. What its editors publish shows up here.",
+              ]
+        : EMPTY[scope];
   const emptyAction =
     scope === "mine" && !space ? (
       canSetUpAgent ? (
