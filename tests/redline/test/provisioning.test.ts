@@ -1530,15 +1530,23 @@ describe("the run's cleanup", () => {
     );
     await run.done(d.job.id, "delete");
     expect(f.installs.get(a.install.id)?.state).toBe("deleting");
+    const n = f.log.filter((u) => u.endsWith("/delete")).length;
     await cleanupInstalls(run);
     expect(f.installs.get(a.install.id)?.state).toBe("deleted");
+    expect(f.log.filter((u) => u.endsWith("/delete")).length).toBe(n);
   });
 
-  it("touches only what this run listed", async () => {
+  it("touches only what this run listed: q is a search, so a longer slug can match", async () => {
     const f = fakeApi();
     const run = new Run(CONFIG, f.io);
-    const other = await made(f, run, "rl-p-another-run");
+    const slug = run.slug("p");
+    const other = await made(f, run, `${slug}0`);
     await run.done(other.job.id, "create");
+    const hits = await run.v1(`/installs?q=${slug}`, { read: true });
+    expect(
+      (hits.json as { items: { slug: string }[] }).items.map((i) => i.slug),
+    ).toContain(`${slug}0`);
+    run.s.cleanup.push({ slug });
     await cleanupInstalls(run);
     expect(f.installs.get(other.install.id)?.state).toBe("active");
   });
