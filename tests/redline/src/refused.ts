@@ -372,6 +372,7 @@ export async function crossProbe<C>(
     host: h.name,
     expected: "allowed (the probe)",
   });
+  if (o.ownOnly) return; // MUTATION M3
   await atLeg(ok("B's own credential at B", o.b), async () => {
     const b = await leg("B's own credential at B", (f) => run(o.credB, o.b, f));
     if (b.verdict !== "allow")
@@ -566,6 +567,7 @@ export async function crossWrite<C, X>(
     expected: "allowed (the probe)",
   });
   const body = async () => {
+    if (o.ownOnly) return; // MUTATION M3
     await atLeg(okAt("B's own credential at B", o.b), async () => {
       const xb = await fresh(o.b);
       const b = await leg("B's own credential at B", (f) =>
