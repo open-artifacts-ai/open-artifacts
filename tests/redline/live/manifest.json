@@ -114,7 +114,7 @@
     },
     {
       "file": "live/credentials.test.ts",
-      "name": "credentials > OAuth endpoints > A revoked OAuth refresh token is refused at once, on A and on B"
+      "name": "credentials > OAuth endpoints > A revoked OAuth refresh token is refused within KV's cache window, on A and on B"
     },
     {
       "file": "live/credentials.test.ts",
