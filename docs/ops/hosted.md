@@ -504,6 +504,7 @@ Agents (Frontend, Design and Platform walkthroughs, and e2e tests) sign in to th
 ### Binding ids
 
 `verify_clean` matches bindings by name and type. A second check compares the real ids a live script is bound to with the install's own: D1 and KV resolved by name and the installs row, R2 by name, rate limits inside `rl_ns`, and Durable Objects by class and script. Today it's stage 1 (#1137): one `verify_clean.binding_ids` audit line at create, upgrade, rollback and var changes, with the binding names and codes it found, the live fields by type, and whether the provisioner's token can read a D1 bookmark, never its value. It never holds a job: any error of its own, or 10 s, skips the line. Stage 2 turns a problem into a refusal, after a staging release shows the live fields match.
+
 ### Red-line runs the tag's suite
 
 `redline-staging.yml` stays on main, with its Environment rule, but its `redline` job checks out the tag under test and runs everything from there (#1137). Suite and release always match.
