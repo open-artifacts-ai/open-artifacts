@@ -175,7 +175,7 @@ it("instance: a locked admin sees the settings; the fields are disabled", async 
 });
 
 it("tokens: a locked admin sees the token list; Create token is disabled", async () => {
-  lockedAdmin("/settings/agents");
+  lockedAdmin("/settings/connections");
   expect(
     await screen.findByRole("region", { name: "Personal access tokens" }),
   ).toBeVisible();
@@ -183,9 +183,11 @@ it("tokens: a locked admin sees the token list; Create token is disabled", async
   expect(screen.getByRole("button", { name: "Create token" })).toBeDisabled();
 });
 
-it("reads stay enabled for a locked admin: Copy URL, snippet tabs, Retry", async () => {
-  lockedAdmin("/settings/agents");
-  expect(await screen.findByRole("button", { name: "Copy URL" })).toBeEnabled();
+it("reads stay enabled for a locked admin: snippet tabs; Copy URL is off (Design)", async () => {
+  lockedAdmin("/settings/connections");
+  expect(
+    await screen.findByRole("button", { name: "Copy URL" }),
+  ).toBeDisabled();
   const tabs = await screen.findAllByRole("tab");
   expect(tabs.length).toBeGreaterThan(1);
   for (const t of tabs) expect(t).toBeEnabled();
@@ -360,4 +362,161 @@ it("on free, a promotion refused with plan_limit shows by the member row, not as
     expect(patches.some((c) => c.path === R.member(BOB.id))).toBe(true),
   );
   expect(screen.queryByText("Couldn't change the role.")).toBeNull();
+});
+
+// Design's ruling A (#863): the plan cap is a billing state, not an access
+// limit. A locked admin sees every control, disabled; guests and restricted
+// members stay hidden, as main has them.
+
+const withCap = (
+  role: Me["user"]["role"],
+  cap: NonNullable<Me["auth"]>["cap"],
+): Me => ({
+  ...fixtures.me,
+  user: { ...fixtures.me.user, role },
+  auth: {
+    method: "google",
+    readOnly: cap != null,
+    cap,
+    expiresAt: null,
+  },
+});
+
+it("canConnectAgents: the plan cap connects; guests and restricted never do", () => {
+  expect(canConnectAgents(withCap("admin", null))).toBe(true);
+  expect(canConnectAgents(withCap("admin", "plan"))).toBe(true);
+  expect(canConnectAgents(withCap("member", "restricted"))).toBe(false);
+  expect(canConnectAgents(withCap("guest", "guest"))).toBe(false);
+  expect(canConnectAgents(withCap("guest", null))).toBe(false);
+  expect(canConnectAgents(withCap("guest", "plan"))).toBe(false);
+});
+
+const departedRegion = () => screen.findByRole("region", { name: "Departed" });
+
+it("departed: a locked admin's Transfer all to me and Transfer to someone else are disabled", async () => {
+  const posts = calls("POST");
+  lockedAdmin("/settings/members");
+  const d = await departedRegion();
+  const toMe = await within(d).findByRole("button", {
+    name: "Transfer all to me",
+  });
+  expect(toMe).toBeDisabled();
+  fireEvent.pointerDown(within(d).getByRole("button", { name: /^More for / }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  const other = await screen.findByRole("menuitem", {
+    name: "Transfer to someone else…",
+  });
+  expect(other).toHaveAttribute("aria-disabled", "true");
+  fireEvent.click(other);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(posts.some((c) => c.path.endsWith("/transfer"))).toBe(false);
+});
+
+it("departed: a restricted caller still gets no Transfer all to me", async () => {
+  mountHosted("/settings/members", OPTS, (m) => ({
+    ...m,
+    user: { ...m.user, role: "admin" },
+    auth: {
+      method: "google",
+      readOnly: true,
+      cap: "restricted",
+      expiresAt: null,
+    },
+  }));
+  const d = await departedRegion();
+  expect(
+    await within(d).findByRole("button", { name: /^Transfer .*'s artifacts$/ }),
+  ).toBeVisible();
+  expect(
+    within(d).queryByRole("button", { name: "Transfer all to me" }),
+  ).toBeNull();
+});
+
+it("agents: a restricted member still gets no Create token or MCP URL", async () => {
+  mountHosted("/settings/connections", OPTS, (m) => ({
+    ...m,
+    user: { ...m.user, role: "member" },
+    auth: {
+      method: "google",
+      readOnly: true,
+      cap: "restricted",
+      expiresAt: null,
+    },
+  }));
+  expect(
+    await screen.findByRole("region", { name: "Personal access tokens" }),
+  ).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Create token" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Copy URL" })).toBeNull();
+});
+
+it("agents: a locked admin sees Add label on a connected agent, disabled", async () => {
+  lockedAdmin("/settings/connections");
+  const label = await screen.findByRole("button", { name: "Add label" });
+  expect(label).toBeDisabled();
+  fireEvent.click(label);
+  expect(screen.queryByRole("textbox", { name: /label/i })).toBeNull();
+});
+
+// Design's second ruling (#863): a locked admin's agent copy buttons are off,
+// their text stays readable; revokes stay on, as the server allows them under
+// any cap (CAPPED_ALLOWED: DELETE /tokens/:id, DELETE /oauth-clients/:id).
+
+it("agents: a locked admin's copy buttons are disabled; the text stays readable", async () => {
+  lockedAdmin("/settings/connections");
+  expect(
+    await screen.findByRole("button", { name: "Copy setup prompt" }),
+  ).toBeDisabled();
+  expect(screen.getByRole("textbox", { name: "Setup prompt" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Copy URL" })).toBeDisabled();
+  expect(screen.getByRole("textbox", { name: "MCP server URL" })).toBeVisible();
+  const snippet = screen.getByRole("button", {
+    name: /^Copy (command|config)$/,
+  });
+  expect(snippet).toBeDisabled();
+  expect(
+    snippet.parentElement?.querySelector("code")?.textContent,
+  ).toBeTruthy();
+});
+
+it("library: a locked admin's agent setup prompt shows, its Copy disabled", async () => {
+  mountHosted("/mine", OPTS, locked("admin"), [
+    http.get("*/api/v1/artifacts", () =>
+      HttpResponse.json({ items: [], nextCursor: null }),
+    ),
+  ]);
+  expect(
+    await screen.findByRole("button", { name: "Copy setup prompt" }),
+  ).toBeDisabled();
+  expect(screen.getByRole("textbox", { name: "Setup prompt" })).toBeVisible();
+});
+
+it("agents: both revokes stay enabled for a locked admin", async () => {
+  lockedAdmin("/settings/connections");
+  const token = await screen.findByRole("button", { name: /^Revoke / });
+  expect(token).toBeEnabled();
+  fireEvent.click(token);
+  expect(await screen.findByRole("alertdialog")).toBeVisible();
+  cleanup();
+  lockedAdmin("/settings/connections");
+  const agents = await screen.findByRole("region", {
+    name: "Connected agents",
+  });
+  fireEvent.pointerDown(
+    within(agents).getByRole("button", { name: /^More for / }),
+    { button: 0, ctrlKey: false },
+  );
+  const item = await screen.findByRole("menuitem", { name: "Revoke…" });
+  expect(item).not.toHaveAttribute("aria-disabled");
+  expect(item).not.toHaveAttribute("data-disabled");
+});
+
+it("profile: PATCH /me is allowed under the cap, so a locked admin's name field and Save work", async () => {
+  lockedAdmin("/settings/profile");
+  const name = await screen.findByLabelText(/^Display name|^Name/);
+  expect(name).toBeEnabled();
+  fireEvent.change(name, { target: { value: "Ada L." } });
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
 });
