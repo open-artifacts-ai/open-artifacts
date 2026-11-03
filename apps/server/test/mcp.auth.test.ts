@@ -407,6 +407,30 @@ describe("MCP auth: OAuth", () => {
     ).toEqual([]);
   });
 
+  // Red-line's grant existence read (src/surfaces.ts) depends on this order:
+  // ownGrant runs before the body is validated, so an invalid body answers
+  // 400 for a live grant of the caller's and 404 for any other.
+  it("PATCH oauth-clients checks the grant before the body", async () => {
+    const { member } = await oauthToken(`oauth-order-${tag}@x.com`, "Order");
+    const list = await api(app, R.oauthClients, member.cookie);
+    const [client] = (await list.json()) as OAuthClient[];
+    const grantId = client?.grantId ?? "";
+    const invalid = (cookie: string) =>
+      api(app, R.oauthClient(grantId), cookie, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label: 5 }),
+      });
+    expect((await invalid(member.cookie)).status).toBe(400);
+    const other = await login(`oauth-order-other-${tag}@x.com`);
+    expect((await invalid(other.cookie)).status).toBe(404);
+    const d = await api(app, R.oauthClient(grantId), member.cookie, {
+      method: "DELETE",
+    });
+    expect(d.status).toBe(204);
+    expect((await invalid(member.cookie)).status).toBe(404);
+  });
+
   it("a grant is its owner's: another member can't label or revoke it, or see it", async () => {
     const email = `oauth-own-${tag}@x.com`;
     const { member, accessToken } = await oauthToken(email, "Owned");
