@@ -101,24 +101,30 @@ describe("ci.yml", () => {
     expect(cadence).toContain("statusCheckRollup");
     expect(cadence).toContain("mergeQueue(branch: $branch)");
   });
-  it("test: pull requests run the affected packages; everything else runs the full suite", () => {
+  it("test: three shards (server, rest, cpu); pull requests run the affected packages, everything else the whole shard (#965)", () => {
+    const job = w.jobs["test-shard"];
+    expect(job.strategy.matrix.shard).toEqual(["server", "rest", "cpu"]);
+    expect(job.strategy["fail-fast"]).toBe(false);
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
-    const steps: any[] = w.jobs.test.steps;
+    const steps: any[] = job.steps;
     const suite = steps.find((s) => s.id === "suite");
     expect(suite.run).toBe("bash scripts/ci/test-affected.sh");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(suite.env.BASE_SHA).toBe(
       "${{ github.event.pull_request.base.sha }}",
     );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(suite.env.TEST_SHARD).toBe("${{ matrix.shard }}");
     expect(suite.if).toContain("steps.ro.outputs.release_only != 'true'");
     expect(steps.some((s) => s.run === "pnpm test")).toBe(false);
-    const cpu = steps.find((s) => (s.run ?? "").includes("test:cpu"));
-    expect(cpu.if).toContain("steps.suite.outputs.server == 'true'");
+    // test:cpu runs only in its own shard, never after another suite.
+    expect(JSON.stringify(steps)).not.toContain("test:cpu");
     const sh = ci("test-affected.sh");
     expect(sh).toContain(
       '[ "${GITHUB_EVENT_NAME:-}" = pull_request ] || everything',
     );
     expect(sh).toContain('--filter "...[$BASE_SHA]"');
+    expect(sh).toContain("pnpm --filter @oa/server test:cpu");
   });
   it("runs on merge_group so the merge queue gets its required checks", () => {
     expect(triggers(w)).toContain("merge_group");
@@ -238,10 +244,10 @@ describe("ci.yml", () => {
       "e2e",
       "authz-matrix",
     ];
-    // `e2e` is an aggregate (below); its shards do the heavy work.
+    // `e2e` and `test` are aggregates (below); their shards do the heavy work.
     const HEAVY = [
       "typecheck",
-      "test",
+      "test-shard",
       "build",
       "e2e-shard",
       "e2e-admin",
@@ -258,10 +264,12 @@ describe("ci.yml", () => {
       expect(Object.keys(w.jobs)).toEqual(expect.arrayContaining(REQUIRED));
     });
     it("no required job has a job-level if or needs (a skipped job counts as passing)", () => {
-      for (const j of REQUIRED.filter((j) => j !== "e2e")) {
+      for (const j of REQUIRED.filter((j) => j !== "e2e" && j !== "test")) {
         expect(w.jobs[j].if, `${j} if`).toBeUndefined();
         expect(w.jobs[j].needs, `${j} needs`).toBeUndefined();
       }
+      expect(w.jobs["test-shard"].if).toBeUndefined();
+      expect(w.jobs["test-shard"].needs).toBeUndefined();
       expect(w.jobs["e2e-shard"].if).toBeUndefined();
       expect(w.jobs["e2e-shard"].needs).toBeUndefined();
       expect(w.jobs["e2e-admin"].if).toBeUndefined();
@@ -286,6 +294,22 @@ describe("ci.yml", () => {
       expect(gate.run).toMatch(
         /^\[ "\$SHARDS" = success \] && \[ "\$ADMIN" = success \]$/m,
       );
+      expect(JSON.stringify(job)).not.toContain("secrets.");
+    });
+    // Same for `test` (#965): it always runs, and its first, ungated step
+    // fails unless every test shard succeeded.
+    it("test is the aggregate of its shards: always runs, passes only when all passed", () => {
+      const job = w.jobs.test;
+      expect(job.needs).toEqual(["test-shard"]);
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(job.if).toBe("${{ always() }}");
+      expect(steps("test")).toHaveLength(1);
+      const [gate] = steps("test");
+      expect(gate.if).toBeUndefined();
+      expect(gate["continue-on-error"]).toBeUndefined();
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.SHARDS).toBe("${{ needs.test-shard.result }}");
+      expect(gate.run).toMatch(/^\[ "\$SHARDS" = success \]$/m);
       expect(JSON.stringify(job)).not.toContain("secrets.");
     });
     it("each heavy job checks out full history, then runs the release-only step first", () => {

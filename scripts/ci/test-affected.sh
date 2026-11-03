@@ -1,21 +1,51 @@
 #!/usr/bin/env bash
-# The CI test job's suite. Pull requests run the root scripts suite plus only
-# the packages their diff can affect: pnpm's own `--filter ...[base]` (each
-# changed package and its dependents). That graph is complete because every
+# One shard of the CI test suite (#965), chosen by TEST_SHARD:
+#   server  the @oa/server suite
+#   rest    the root scripts suite plus every other package
+#   cpu     the server's wall-clock CPU budgets, alone on their runner
+# Together they are `pnpm test` plus `test:cpu`. Pull requests run only the
+# packages their diff can affect: pnpm's own `--filter ...[base]` (each changed
+# package and its dependents). That graph is complete because every
 # cross-package import is declared (scripts/ci/workspace-imports.ts check, in
-# the root suite). Every other event (the merge queue, main), a change pnpm
-# can't place (root config, lockfile, workflows, ROOT_PATHS), and any error run
-# everything (`pnpm test`).
-#   GITHUB_EVENT_NAME, BASE_SHA (the pull request's base) from the job.
-# Writes server=true|false to $GITHUB_OUTPUT (the server's CPU budgets step).
+# the root suite). Every other event (the merge queue, a dispatch), a change
+# pnpm can't place (root config, lockfile, workflows, ROOT_PATHS), and any
+# error run the whole shard. A missing or unknown shard is an error, never a
+# pass.
+#   GITHUB_EVENT_NAME, BASE_SHA (the pull request's base), TEST_SHARD.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-out="${GITHUB_OUTPUT:-/dev/null}"
+shard="${TEST_SHARD:-}"
+case "$shard" in
+  server | rest | cpu) ;;
+  *)
+    echo "TEST_SHARD must be server, rest or cpu (got '$shard')" >&2
+    exit 2
+    ;;
+esac
 
+summary() {
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then echo "$1" >> "$GITHUB_STEP_SUMMARY"; fi
+}
+
+# The whole shard.
 everything() {
-  echo "server=true" >> "$out"
-  echo "test scope: everything ($1)"
-  exec pnpm test
+  echo "test scope: everything, shard $shard ($1)"
+  summary "### test ($shard): everything ($1)"
+  case "$shard" in
+    server)
+      pnpm run test:prep
+      exec pnpm --filter @oa/server test
+      ;;
+    rest)
+      pnpm run test:prep
+      pnpm exec vitest run
+      exec pnpm -r --if-present --filter '!@oa/server' test
+      ;;
+    cpu)
+      pnpm run test:prep
+      exec pnpm --filter @oa/server test:cpu
+      ;;
+  esac
 }
 
 [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || everything "${GITHUB_EVENT_NAME:-no event}"
@@ -33,28 +63,35 @@ if ! names="$(node -e 'const a=JSON.parse(require("fs").readFileSync(0,"utf8")||
 fi
 
 server=false
-count=0
+others=0
 while IFS= read -r p; do
   [ -n "$p" ] || continue
-  count=$((count + 1))
-  if [ "$p" = @oa/server ]; then server=true; fi
+  if [ "$p" = @oa/server ]; then server=true; else others=$((others + 1)); fi
 done <<< "$names"
-echo "server=$server" >> "$out"
-echo "test scope: $count affected package(s) of the diff from $BASE_SHA"
+echo "test scope: shard $shard, affected package(s) of the diff from $BASE_SHA"
 while IFS= read -r p; do [ -z "$p" ] || echo "  $p"; done <<< "$names"
-if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  {
-    echo "### test: affected packages only (pull request)"
-    if [ "$count" -eq 0 ]; then
-      echo "None: the root scripts suite only."
-    else
-      while IFS= read -r p; do [ -z "$p" ] || echo "- $p"; done <<< "$names"
-    fi
-  } >> "$GITHUB_STEP_SUMMARY"
-fi
 
-pnpm run test:prep
-pnpm exec vitest run
-if [ "$count" -gt 0 ]; then
-  pnpm -r --if-present --filter "...[$BASE_SHA]" test
-fi
+case "$shard" in
+  server | cpu)
+    if [ "$server" != true ]; then
+      echo "@oa/server is not affected: nothing to run in this shard"
+      summary "### test ($shard): @oa/server not affected, nothing to run"
+      exit 0
+    fi
+    summary "### test ($shard): @oa/server affected"
+    pnpm run test:prep
+    if [ "$shard" = server ]; then
+      pnpm --filter @oa/server test
+    else
+      pnpm --filter @oa/server test:cpu
+    fi
+    ;;
+  rest)
+    summary "### test (rest): the root suite and $others other affected package(s)"
+    pnpm run test:prep
+    pnpm exec vitest run
+    if [ "$others" -gt 0 ]; then
+      pnpm -r --if-present --filter "...[$BASE_SHA]" --filter '!@oa/server' test
+    fi
+    ;;
+esac
