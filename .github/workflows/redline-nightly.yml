@@ -5,7 +5,10 @@
 # closes it; it sends no email, so P30, which opens an alert, doesn't run here.
 # The gate accepts that on a scheduled run only (report.ts, runKindOf).
 # Not a prod gate: staging-first-gate.sh reads runs of redline-staging.yml, and
-# a run called from here isn't one.
+# a run called from here isn't one. The suite applies the gate here (green only
+# if every case passes, P30 aside). A running nightly holds a candidate on the
+# `redline` group for up to about 150 min, and a second dispatch while one waits
+# replaces it, so a nightly waits 3 h after any candidate run.
 name: redline-nightly
 
 on:
@@ -65,7 +68,8 @@ jobs:
     uses: ./.github/workflows/redline-staging.yml
     with:
       tag: ${{ needs.pick.outputs.tag }}
-    secrets: inherit
+    # No secrets passed: the called jobs name their Environments, and an
+    # Environment's secrets reach them there. Nothing repo-level goes along.
   report:
     needs: [pick, redline]
     if: ${{ always() && (needs.pick.result != 'success' || needs.pick.outputs.run == 'true') }}

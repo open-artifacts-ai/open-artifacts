@@ -203,6 +203,9 @@ jobs:
           REDLINE_PROD_ACCOUNT_ID: ${{ vars.REDLINE_PROD_ACCOUNT_ID }}
           REDLINE_PROD_INVENTORY_URL: ${{ vars.REDLINE_PROD_INVENTORY_URL }}
           REDLINE_DISPATCH: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+          # The nightly is green only when the gate passes, its P30 acceptance
+          # included: no one reads it, so unproven or skipped cases must fail.
+          REDLINE_GATE: ${{ github.event_name == 'schedule' && '1' || '' }}
         run: |
           set -euo pipefail
           export REDLINE_REPORT="$RUNNER_TEMP/redline-report/report.json"

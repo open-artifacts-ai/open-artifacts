@@ -8,6 +8,8 @@ import { parse } from "yaml";
 import { type Exec, plan, ranArtifact, report } from "./redline-nightly.ts";
 
 const REPO = "open-artifacts-ai/open-artifacts";
+const NOW = Date.parse("2026-11-03T03:17:00Z");
+const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
 const TAG = "v0.99.0";
 type R = {
   id: number;
@@ -51,6 +53,7 @@ const go = (o: Parameters<typeof world>[0], version = "0.99.0") =>
     exec: world(o).exec,
     repo: REPO,
     ownRun: 1,
+    now: NOW,
     stagingVersion: async () => version,
   });
 const done = (id: number, title: string, conclusion: string): R => ({
@@ -58,6 +61,7 @@ const done = (id: number, title: string, conclusion: string): R => ({
   status: "completed",
   conclusion,
   display_title: title,
+  created_at: hoursAgo(30),
 });
 
 describe("plan", () => {
@@ -115,6 +119,15 @@ describe("plan", () => {
     ).toMatchObject({ run: true });
   });
 
+  it("waits 3 h after any candidate run, so it never holds one", async () => {
+    const r = (h: number): R => ({
+      ...done(9, "redline-staging v0.98.0", "success"),
+      created_at: hoursAgo(h),
+    });
+    expect(await go({ staging: [r(2.9)] })).toMatchObject({ run: false });
+    expect(await go({ staging: [r(3.1)] })).toMatchObject({ run: true });
+  });
+
   it("waits until staging runs the release", async () => {
     expect(await go({}, "0.98.0")).toMatchObject({
       run: false,
@@ -136,13 +149,22 @@ describe("plan", () => {
 });
 
 describe("report", () => {
-  const issues = (open: { number: number; title: string }[]) => {
+  const issues = (
+    open: { number: number; title: string }[],
+    labels: string[] = ["blocker"],
+  ) => {
     const calls: string[][] = [];
     const exec: Exec = (_c, args) => {
       calls.push(args);
+      const list =
+        args[0] === "label"
+          ? labels.map((name) => ({ name }))
+          : args[1] === "list"
+            ? open
+            : null;
       return {
         code: 0,
-        stdout: args[1] === "list" ? JSON.stringify(open) : "",
+        stdout: list ? JSON.stringify(list) : "",
         stderr: "",
       };
     };
@@ -162,6 +184,20 @@ describe("report", () => {
     expect(create).toContain("Nightly red-line failed: v0.99.0");
     expect(create).toContain("blocker");
     expect(create?.join(" ")).toContain(RUN);
+  });
+
+  it("never resets the shared label; creates it only when missing", () => {
+    const has = issues([]);
+    report({ ...base, exec: has.exec, result: "failure" });
+    expect(has.calls.some((c) => c[0] === "label" && c[1] === "create")).toBe(
+      false,
+    );
+    expect(has.calls.flat()).not.toContain("--force");
+    const none = issues([], ["blocked-ish"]);
+    report({ ...base, exec: none.exec, result: "failure" });
+    expect(none.calls.some((c) => c[0] === "label" && c[1] === "create")).toBe(
+      true,
+    );
   });
 
   it("red with one open refreshes it, no second issue", () => {
@@ -220,6 +256,8 @@ describe("redline-nightly.yml", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(j.with).toEqual({ tag: "${{ needs.pick.outputs.tag }}" });
     expect(j.permissions).toEqual({ contents: "read", "id-token": "write" });
+    // The callee's Environments carry its secrets; nothing repo-level goes.
+    expect(j.secrets).toBeUndefined();
   });
 
   it("records the release before it runs", () => {

@@ -1,7 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   ID_TOKEN_CASES,
@@ -22,6 +28,7 @@ import {
   label,
   labelOf,
   levelOf,
+  NIGHTLY_NA_FILE,
   NIGHTLY_NA_REASON,
   PRE_PROD_GUARD,
   PRE_PROD_GUARD_REASON,
@@ -717,7 +724,7 @@ describe("nightly-only: P30 is accepted on a scheduled run and never on a candid
     name: P30,
     level: "not-applicable",
     reason: NIGHTLY_NA_REASON,
-    file: "provisioning.test.ts",
+    file: NIGHTLY_NA_FILE,
     ...over,
   });
   const OK: CaseResult = { name: "x", level: "pass" };
@@ -767,7 +774,9 @@ describe("nightly-only: P30 is accepted on a scheduled run and never on a candid
       c({ level: "infra" }),
       c({ level: "blocked" }),
       c({ name: "provisioning > P31: x" }),
-      c({ file: "surfaces.test.ts" }),
+      c({ file: "live/surfaces.test.ts" }),
+      c({ file: "live/xprovisioning.test.ts" }),
+      c({ file: "provisioning.test.ts" }),
       c({ file: undefined }),
     ])
       expect(gatePasses([bad], SCHEDULED)).toBe(false);
@@ -790,5 +799,15 @@ describe("nightly-only: P30 is accepted on a scheduled run and never on a candid
       "utf8",
     );
     expect(src).toContain("runKindOf(process.env)");
+  });
+});
+
+describe("the reporter's file for P30 (#1137)", () => {
+  it("is the nightly's exact path", () => {
+    const root = join(import.meta.dirname, "..");
+    expect(relative(root, join(root, "live", "provisioning.test.ts"))).toBe(
+      NIGHTLY_NA_FILE,
+    );
+    expect(existsSync(join(root, NIGHTLY_NA_FILE))).toBe(true);
   });
 });

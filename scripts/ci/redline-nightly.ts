@@ -24,7 +24,11 @@ type Run = {
   status: string;
   conclusion: string | null;
   display_title: string;
+  created_at?: string;
 };
+
+/** A nightly waits this long after any candidate run, so it never holds one. */
+export const CANDIDATE_QUIET_MS = 3 * 60 * 60_000;
 export type Plan = { run: boolean; tag: string; why: string };
 
 function gh(exec: Exec, args: string[]): string {
@@ -51,6 +55,7 @@ export async function plan(o: {
   exec: Exec;
   repo: string;
   ownRun: number;
+  now: number;
   stagingVersion: () => Promise<string>;
 }): Promise<Plan> {
   const tag = (
@@ -69,6 +74,10 @@ export async function plan(o: {
     (r) => r.id !== o.ownRun && BUSY.includes(r.status),
   );
   if (busy) return skip(`run ${busy.id} is ${busy.status}`);
+  const recent = staging.find(
+    (r) => o.now - Date.parse(r.created_at ?? "") < CANDIDATE_QUIET_MS,
+  );
+  if (recent) return skip(`candidate run ${recent.id} started under 3 h ago`);
 
   const seen = staging.find(
     (r) =>
@@ -163,18 +172,31 @@ export function report(o: {
     ]);
     return { action: "refreshed", issue: existing.number };
   }
-  gh(o.exec, [
-    "label",
-    "create",
-    "blocker",
-    "--repo",
-    o.repo,
-    "--force",
-    "--color",
-    "B60205",
-    "--description",
-    "A release or deploy is stuck",
-  ]);
+  // The label is shared: create it if it's missing, never reset it.
+  const labels = JSON.parse(
+    gh(o.exec, [
+      "label",
+      "list",
+      "--repo",
+      o.repo,
+      "--search",
+      "blocker",
+      "--json",
+      "name",
+    ]),
+  ) as { name: string }[];
+  if (!labels.some((l) => l.name === "blocker"))
+    gh(o.exec, [
+      "label",
+      "create",
+      "blocker",
+      "--repo",
+      o.repo,
+      "--color",
+      "B60205",
+      "--description",
+      "A release or deploy is stuck",
+    ]);
   gh(o.exec, [
     "issue",
     "create",
@@ -216,6 +238,7 @@ async function main(argv: string[]) {
       exec: realExec,
       repo,
       ownRun: Number(process.env.GITHUB_RUN_ID),
+      now: Date.now(),
       stagingVersion: async () => {
         const r = await fetch(STAGING_HEALTHZ, {
           signal: AbortSignal.timeout(15_000),

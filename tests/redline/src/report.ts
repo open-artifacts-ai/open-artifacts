@@ -510,6 +510,8 @@ export function acceptedUnproven(c: CaseResult): AcceptedUnproven | undefined {
  * a report with no run named, fails the gate on that same result.
  */
 export const NIGHTLY_NA_REASON = "dispatch runs only";
+/** P30's file as the reporter records it: relative to tests/redline. */
+export const NIGHTLY_NA_FILE = "live/provisioning.test.ts";
 
 /** What the gate knows about the run itself. The default is a candidate's. */
 export interface RunKind {
@@ -529,7 +531,7 @@ export function nightlyNa(c: CaseResult): boolean {
   return (
     c.level === "not-applicable" &&
     c.reason === NIGHTLY_NA_REASON &&
-    c.file?.endsWith("provisioning.test.ts") === true &&
+    c.file === NIGHTLY_NA_FILE &&
     c.name.startsWith("provisioning > P30: ")
   );
 }

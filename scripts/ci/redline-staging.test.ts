@@ -343,6 +343,10 @@ describe("redline-staging.yml", () => {
     const suite = named("Run the suite");
     expect(suite.run).toContain("pnpm --filter @oa/redline live");
     expect(suite.run).not.toMatch(/--gate|REDLINE_GATE/);
+    // Only a scheduled run, the nightly, applies the gate (#1137).
+    expect(suite.env.REDLINE_GATE).toBe(
+      "${{ github.event_name == 'schedule' && '1' || '' }}",
+    );
     const t19 = named("t19");
     expect(t19.if).toBe(
       "${{ !cancelled() && steps.bringup.outcome == 'success' }}",
