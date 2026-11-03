@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.104.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.104.0...v0.104.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **directory:** every time says its day, so an old failure can't read as today's ([#1189](https://github.com/open-artifacts-ai/open-artifacts/issues/1189)) ([#1238](https://github.com/open-artifacts-ai/open-artifacts/issues/1238)) ([2c63e8d](https://github.com/open-artifacts-ai/open-artifacts/commit/2c63e8d679faf4d181d2f8e7996275b1ddbe90af))
+
 ## [0.104.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.103.0...v0.104.0) (2026-11-03)
 
 
