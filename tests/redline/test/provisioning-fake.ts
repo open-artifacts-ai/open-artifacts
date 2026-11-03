@@ -87,7 +87,9 @@ export type LifeHarm =
   | "change_artifact"
   | "make_public"
   | "drop_share"
+  | "widen_share"
   | "drop_member"
+  | "promote_member"
   | "b_reads";
 
 export type Fault =
@@ -243,9 +245,14 @@ export function fakeApi(): FakeApi {
       if (on("change_artifact")) a.content = `${a.content}\nchanged`;
       if (on("make_public")) a.visibility = "public";
       if (on("drop_share")) a.shares.clear();
+      if (on("widen_share"))
+        for (const e of a.shares.keys()) a.shares.set(e, "editor");
     }
-    if (on("drop_member"))
-      for (const [e, r] of t.members) if (r === "member") t.members.delete(e);
+    for (const [e, r] of t.members) {
+      if (r !== "member") continue;
+      if (on("drop_member")) t.members.delete(e);
+      if (on("promote_member")) t.members.set(e, "admin");
+    }
     if (on("b_reads")) t.foreignReads = true;
   };
   const creates: Record<string, unknown>[] = [];

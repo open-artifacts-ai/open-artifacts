@@ -165,7 +165,9 @@ const LIFE_HARMS: [LifeHarm, RegExp][] = [
   ],
   ["make_public", /the artifact's visibility changed$/],
   ["drop_share", /the share to the seeded member is gone$/],
+  ["widen_share", /the share's role is editor, want viewer$/],
   ["drop_member", /the seeded member is gone$/],
+  ["promote_member", /the seeded member's role is admin, want member$/],
   [
     "b_reads",
     /rl-b's PAT at rl-p: A's credential at B \(rl-p; expected refused\): rl-p did not refuse \(status 200, /,
