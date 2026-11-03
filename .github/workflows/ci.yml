@@ -522,8 +522,6 @@ jobs:
   migration-timing:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      MIGRATION_BASE: v0.99.1
     steps:
       - uses: actions/checkout@v4
         with:
