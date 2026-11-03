@@ -586,6 +586,10 @@ export function formatReport(r: Report): string {
     ...noted.flatMap((c) => c.notes ?? []),
   ]);
   if (resets) lines.push(resets);
+  const retried = r.cases.filter((c) =>
+    c.notes?.some((n) => n.startsWith("case retried")),
+  ).length;
+  if (retried) lines.push(`Cases retried: ${retried}`);
   if (noted.length || r.fileNotes?.length) {
     lines.push("Notes:");
     for (const n of r.fileNotes ?? []) lines.push(`  [${n.file}] ${n.note}`);

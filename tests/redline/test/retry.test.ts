@@ -1,219 +1,139 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { beforeEach, describe, expect, it } from "vitest";
+import { InfraError } from "../src/fetch-timeout.ts";
+import { setCurrentTest, takeFileNotes } from "../src/notes.ts";
+import { NotRefused, tagLeg } from "../src/refused.ts";
+import { buildReport, formatReport } from "../src/report.ts";
 import {
-  InfraError,
-  isNetworkError,
-  setupFetch,
-} from "../src/fetch-timeout.ts";
-import { deleteThrowaways } from "../src/fixtures.ts";
-import { retryIdempotent, sendProbe } from "../src/http.ts";
-import { note, setCurrentTest, takeFileNotes } from "../src/notes.ts";
-import { infraOf, notesOf } from "../src/report.ts";
-import type { Target } from "../src/targets.ts";
+  type Budget,
+  MAX_RETRIED_CASES,
+  retryableError,
+  retryCase,
+  runBudget,
+} from "../src/retry.ts";
 
-const URL_ = "https://rl-b.example.test/api/v1/me";
-const fetchFailed = () =>
-  Object.assign(new TypeError("fetch failed"), {
-    cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+const leg = (e: Error, name: string) =>
+  tagLeg(e, {
+    leg: name as "A's credential at A",
+    host: "rl-a",
+    expected: "allowed",
   });
-/** A send that answers from `script` in order: a status or an error to throw. */
-function scripted(script: (number | Error)[]) {
-  const calls: string[] = [];
-  const go = async (r: Request) => {
-    calls.push(`${r.method} ${await r.text()}`);
-    const s = script.shift();
-    if (s === undefined) throw new Error("script ran out");
-    if (s instanceof Error) throw s;
-    return new Response(s === 204 ? null : "x", { status: s });
-  };
-  return { go, calls };
-}
-const fast = { backoff: [0, 0] };
+const storage = new Error(
+  "rl-a seed GET /x: status 503, body sha256:ab (9 bytes), code storage_unavailable",
+);
+const internal = new Error(
+  "rl-a seed GET /x: status 500, body sha256:ba8ffbc8ccb01eed (56 bytes), code internal",
+);
+const allow = "A's credential at A";
+const deny = "A's credential at B";
+const open: Budget = { take: () => true };
 
-afterEach(() => {
+beforeEach(() => {
   setCurrentTest(() => undefined);
   takeFileNotes();
 });
 
-describe("isNetworkError", () => {
-  it("no response at all: fetch failed, socket codes, aborts and timeouts", () => {
-    expect(isNetworkError(fetchFailed())).toBe(true);
-    expect(isNetworkError(new DOMException("x", "AbortError"))).toBe(true);
-    expect(isNetworkError(new DOMException("x", "TimeoutError"))).toBe(true);
+describe("what counts as retryable", () => {
+  it("a named error on an allow leg", () => {
+    expect(retryableError(leg(storage, allow))).toBe("storage_unavailable");
     expect(
-      isNetworkError(Object.assign(new Error("r"), { code: "ECONNRESET" })),
-    ).toBe(true);
+      retryableError(
+        leg(
+          new InfraError("setup on rl-b got no response (ECONNRESET)"),
+          "B's own credential at B",
+        ),
+      ),
+    ).toBe("ECONNRESET");
   });
-  it("never an assertion, an HTTP error or another TypeError", () => {
-    expect(isNetworkError(new Error("expected 200, got 404"))).toBe(false);
-    expect(isNetworkError(new TypeError("x is not a function"))).toBe(false);
-    expect(isNetworkError("fetch failed")).toBe(false);
+
+  it("never a deny leg, even on a named error", () => {
+    expect(retryableError(leg(storage, deny))).toBeUndefined();
+    expect(
+      retryableError(
+        leg(new InfraError("x got no response (ECONNRESET)"), deny),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("never a non-refusal, `internal`, or an error naming no leg", () => {
+    expect(retryableError(leg(new NotRefused("200"), allow))).toBeUndefined();
+    expect(retryableError(leg(internal, allow))).toBeUndefined();
+    expect(retryableError(storage)).toBeUndefined();
+    expect(retryableError("storage_unavailable")).toBeUndefined();
+  });
+
+  it("not a body that merely says it: only the code field does", () => {
+    expect(
+      retryableError(
+        leg(new Error("storage_unavailable was in the text"), allow),
+      ),
+    ).toBeUndefined();
   });
 });
 
-describe("retryIdempotent", () => {
-  it("GET: retries a fetch failed and a 5xx, then answers", async () => {
-    const s = scripted([fetchFailed(), 503, 200]);
-    const res = await retryIdempotent(new Request(URL_), {
-      ...fast,
-      send: s.go,
-    });
-    expect(res.status).toBe(200);
-    expect(s.calls).toHaveLength(3);
-  });
+describe("retryCase", () => {
+  const flaky = (fails: unknown[]) => {
+    let n = 0;
+    const calls = { n: 0 };
+    return {
+      calls,
+      run: async () => {
+        calls.n++;
+        const e = fails[n++];
+        if (e) throw e;
+        return "ok";
+      },
+    };
+  };
 
-  it("PUT: the body is sent again on the retry", async () => {
-    const s = scripted([fetchFailed(), 200]);
-    await retryIdempotent(new Request(URL_, { method: "PUT", body: "b" }), {
-      ...fast,
-      send: s.go,
-    });
-    expect(s.calls).toEqual(["PUT b", "PUT b"]);
-  });
-
-  it("never retries a 4xx", async () => {
-    const s = scripted([404, 200]);
-    const res = await retryIdempotent(new Request(URL_), {
-      ...fast,
-      send: s.go,
-    });
-    expect(res.status).toBe(404);
-    expect(s.calls).toHaveLength(1);
-  });
-
-  it("never retries a POST (a publish) or a DELETE, even on fetch failed", async () => {
-    for (const method of ["POST", "DELETE"]) {
-      const s = scripted([fetchFailed(), 200]);
-      await expect(
-        retryIdempotent(new Request(URL_, { method, body: "p" }), {
-          ...fast,
-          send: s.go,
-        }),
-      ).rejects.toThrow("fetch failed");
-      expect(s.calls).toHaveLength(1);
-    }
-  });
-
-  it("never retries a non-network error", async () => {
-    const s = scripted([new Error("boom"), 200]);
-    await expect(
-      retryIdempotent(new Request(URL_), { ...fast, send: s.go }),
-    ).rejects.toThrow("boom");
-    expect(s.calls).toHaveLength(1);
-  });
-
-  it("3 tries at most: the last 5xx is returned, the last error thrown", async () => {
-    const a = scripted([500, 502, 503, 200]);
-    expect(
-      (await retryIdempotent(new Request(URL_), { ...fast, send: a.go }))
-        .status,
-    ).toBe(503);
-    expect(a.calls).toHaveLength(3);
-    const b = scripted([fetchFailed(), fetchFailed(), fetchFailed(), 200]);
-    await expect(
-      retryIdempotent(new Request(URL_), { ...fast, send: b.go }),
-    ).rejects.toThrow("fetch failed");
-    expect(b.calls).toHaveLength(3);
-  });
-
-  it("notes each retry on the running test", async () => {
-    const meta = {};
-    setCurrentTest(() => ({ meta }));
-    const s = scripted([fetchFailed(), 200]);
-    await retryIdempotent(new Request(URL_), { ...fast, send: s.go });
-    expect(notesOf(meta)).toEqual([
-      "GET /api/v1/me retried (try 2 of 3; ECONNRESET)",
+  it("once, with a note, and the second try's answer counts", async () => {
+    const f = flaky([leg(storage, allow)]);
+    expect(await retryCase(f.run, open)).toBe("ok");
+    expect(f.calls.n).toBe(2);
+    expect(takeFileNotes()).toEqual([
+      "case retried once (storage_unavailable)",
     ]);
   });
-});
 
-describe("sendProbe", () => {
-  it("no response: one more try, then the answer (whatever its status)", async () => {
-    const s = scripted([fetchFailed(), 403]);
-    expect((await sendProbe(new Request(URL_), s.go)).status).toBe(403);
-    expect(s.calls).toHaveLength(2);
+  it("a second failure fails", async () => {
+    const f = flaky([leg(storage, allow), new Error("still down")]);
+    await expect(retryCase(f.run, open)).rejects.toThrow("still down");
+    expect(f.calls.n).toBe(2);
   });
 
-  it("no response twice: infra, never a verdict", async () => {
-    const s = scripted([fetchFailed(), fetchFailed()]);
-    const e = await sendProbe(
-      new Request(URL_, { method: "PUT", body: "p" }),
-      s.go,
-    ).catch((x: unknown) => x);
-    expect(e).toBeInstanceOf(InfraError);
-    expect(infraOf([e as Error])).toMatch(
-      /^infra: probe PUT \/api\/v1\/me on rl-b\.example\.test got no response twice \(ECONNRESET\)/,
-    );
-    expect(s.calls).toEqual(["PUT p", "PUT p"]);
+  it("a deny leg gets one try", async () => {
+    const f = flaky([leg(storage, deny)]);
+    await expect(retryCase(f.run, open)).rejects.toThrow();
+    expect(f.calls.n).toBe(1);
   });
 
-  it("a POST (or DELETE, PATCH) with no response: infra at once, never sent again", async () => {
-    // A refresh-token POST B wrongly accepted, its answer lost: a retry would
-    // get invalid_grant (the token spent) and read as a refusal.
-    for (const method of ["POST", "DELETE", "PATCH"]) {
-      const s = scripted([fetchFailed(), 400]);
-      const e = await sendProbe(
-        new Request(URL_, { method, body: "p" }),
-        s.go,
-      ).catch((x: unknown) => x);
-      expect(e).toBeInstanceOf(InfraError);
-      expect((e as Error).message).toMatch(
-        new RegExp(`^infra: probe ${method} .* not idempotent, not retried`),
-      );
-      expect(s.calls).toEqual([`${method} p`]);
-    }
-  });
-
-  it("a response is never retried, and nor is another error", async () => {
-    const a = scripted([500, 200]);
-    expect((await sendProbe(new Request(URL_), a.go)).status).toBe(500);
-    expect(a.calls).toHaveLength(1);
-    const b = scripted([new Error("boom"), 200]);
-    await expect(sendProbe(new Request(URL_), b.go)).rejects.toThrow("boom");
+  it("a spent cap fails, with a note", async () => {
+    const f = flaky([leg(storage, allow)]);
+    await expect(retryCase(f.run, { take: () => false })).rejects.toThrow();
+    expect(f.calls.n).toBe(1);
+    expect(takeFileNotes()[0]).toMatch(/cap is spent/);
   });
 });
 
-describe("setup publishes", () => {
-  it("no response: infra at once, never retried", async () => {
-    let calls = 0;
-    const f = (async () => {
-      calls++;
-      throw fetchFailed();
-    }) as unknown as typeof fetch;
-    const e = await setupFetch(
-      "rl-b",
-      new Request(URL_, { method: "POST", body: "{}" }),
-      { fetch: f },
-    ).catch((x: unknown) => x);
-    expect(e).toBeInstanceOf(InfraError);
-    expect((e as Error).message).toBe(
-      "infra: setup publish got no response on rl-b (ECONNRESET)",
-    );
-    expect(calls).toBe(1);
+describe("the run's cap", () => {
+  it("holds across budgets, as separate test files have", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "rl-retry-")), "n");
+    for (let i = 0; i < MAX_RETRIED_CASES; i++)
+      expect(runBudget(file).take()).toBe(true);
+    expect(runBudget(file).take()).toBe(false);
+    expect(MAX_RETRIED_CASES).toBe(5);
   });
 });
 
-describe("deleteThrowaways", () => {
-  const t = { name: "rl-b", app: "https://rl-b.example.test" } as Target;
-  const pat = { kind: "pat", token: "x" } as const;
-
-  it("one retry per id, counts failures, never throws mid-loop", async () => {
-    const s = scripted([
-      fetchFailed(), // id 1: retried
-      204,
-      fetchFailed(), // id 2: fails twice
-      new Error("boom"),
-      500, // id 3: 500 then 404 (already gone)
-      404,
+describe("the report", () => {
+  it("counts retried cases, and a retried pass still passes", () => {
+    const r = buildReport([
+      { name: "a", level: "pass", notes: ["case retried once (ECONNRESET)"] },
+      { name: "b", level: "pass" },
     ]);
-    expect(await deleteThrowaways(t, pat, ["1", "2", "3"], s.go)).toBe(1);
-    expect(s.calls).toHaveLength(6);
-  });
-});
-
-describe("notes", () => {
-  it("outside a test: kept for the file", () => {
-    note("GET /healthz retried");
-    expect(takeFileNotes()).toEqual(["GET /healthz retried"]);
-    expect(takeFileNotes()).toEqual([]);
+    expect(r.passed).toBe(true);
+    expect(formatReport(r)).toContain("Cases retried: 1");
   });
 });

@@ -6,6 +6,7 @@ import {
   prepareSide,
   type Side,
 } from "../src/refused.ts";
+import { retryCase } from "../src/retry.ts";
 import {
   carries,
   citationGaps,
@@ -103,10 +104,14 @@ describe("surface probes (cross-install)", () => {
         }
         const { run } = c;
         if (!run) throw new Error("a case needs run or write");
-        await (c.denyOnly ? crossDenied : crossProbe)(
-          (cred, t, f) => run(cred, t, world(t), viaTarget(t, f)),
-          pair,
-        );
+        const probe = (
+          cred: Parameters<typeof run>[0],
+          t: Target,
+          f: typeof fetch,
+        ) => run(cred, t, world(t), viaTarget(t, f));
+        if (c.denyOnly) await crossDenied(probe, pair);
+        // Read-only, so a second try is safe; deny-only and writes get one.
+        else await retryCase(() => crossProbe(probe, pair));
       },
       c.timeout,
     );
