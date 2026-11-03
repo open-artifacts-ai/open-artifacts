@@ -1,5 +1,6 @@
 import { R } from "@oa/shared";
 import { expect, test } from "@playwright/test";
+import { leoPin } from "../gate";
 import { sendRead } from "../retry";
 import { FETCH_MS, LEO } from "../targets";
 
@@ -21,7 +22,9 @@ test("leo runs a release build: healthz ok, a version, and no test hooks", async
   expect(h.ok).toBe(true);
   expect(String(h.version)).toMatch(/^\d+\.\d+\.\d+$/);
   expect(h).not.toHaveProperty("testHooks");
-  const want = process.env.T19_EXPECT_VERSION;
+  // leo's own pin (#1251), unset in CI: leo can lag the tag until #955 keeps
+  // it current, which is what lets CI set T19_EXPECT_LEO_VERSION.
+  const want = leoPin(process.env);
   if (want) expect(h.version).toBe(want);
 });
 

@@ -350,10 +350,22 @@ describe("redline-staging.yml", () => {
     expect(t19.if).toBe(
       "${{ !cancelled() && steps.bringup.outcome == 'success' }}",
     );
-    // #1039: no version pin until #955 keeps leo current; the spec still
-    // requires a version and no testHooks.
-    expect(t19.run).not.toContain("T19_EXPECT_VERSION");
+    // #1251: the pin is the version the staged step saw (version.txt),
+    // read before Playwright starts, never a literal in env; no file fails.
+    const pin =
+      'T19_EXPECT_VERSION="$(cat "$RUNNER_TEMP/redline-staged/version.txt")"';
+    expect(t19.run).toContain(pin);
+    expect(t19.run).toContain(
+      'if [ -z "$T19_EXPECT_VERSION" ]; then echo "T19: no staged version to pin"; exit 1; fi',
+    );
+    expect(t19.run).toContain("export T19_EXPECT_VERSION");
+    expect(t19.run.indexOf(pin)).toBeLessThan(
+      t19.run.indexOf("playwright test -c playwright.staging.config.ts"),
+    );
     expect(t19.env).not.toHaveProperty("T19_EXPECT_VERSION");
+    // leo's pin stays unset in CI until #955 keeps leo current (#1251).
+    expect(text).not.toContain("T19_EXPECT_LEO_VERSION");
+    expect(t19.run).not.toContain("No version pin");
   });
 
   it("uploads redline-staged-version (version.txt) after bring-up, only once rl-a and rl-b /healthz report the tag", () => {
@@ -422,9 +434,14 @@ describe("redline-staging.yml", () => {
     expect(pre).toContain(
       "unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN",
     );
+    // The staged version the pin reads (#1251), as the staged step leaves it.
+    const temp = mkdtempSync(join(tmpdir(), "t19-pin-"));
+    mkdirSync(join(temp, "redline-staged"));
+    writeFileSync(join(temp, "redline-staged", "version.txt"), "0.97.0\n");
     const vars = {
       ACTIONS_ID_TOKEN_REQUEST_URL: "https://runner.example/token",
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: "tok",
+      RUNNER_TEMP: temp,
     };
     const r = runBash(`${pre}\nenv`, vars);
     expect(r.status).toBe(0);
@@ -434,6 +451,30 @@ describe("redline-staging.yml", () => {
     const g = runBash(guard, vars);
     expect(g.status).toBe(1);
     expect(g.stdout).toContain("T19 can reach the OIDC request variables");
+    rmSync(temp, { recursive: true, force: true });
+  });
+
+  it("T19 exports the staged version as its pin, and stops when there is none (#1251)", () => {
+    const run = String(named("t19").run);
+    const pre = run.slice(0, run.indexOf("pnpm --filter @oa/dashboard"));
+    const temp = mkdtempSync(join(tmpdir(), "t19-pin-"));
+    try {
+      mkdirSync(join(temp, "redline-staged"));
+      writeFileSync(join(temp, "redline-staged", "version.txt"), "0.97.0\n");
+      const ok = runBash(`${pre}\nenv`, { RUNNER_TEMP: temp });
+      expect(ok.status).toBe(0);
+      expect(ok.stdout).toMatch(/^T19_EXPECT_VERSION=0\.97\.0$/m);
+      // No file: staging didn't take the tag, so T19 never runs unpinned.
+      rmSync(join(temp, "redline-staged", "version.txt"));
+      expect(runBash(pre, { RUNNER_TEMP: temp }).status).not.toBe(0);
+      // An empty file stops it too, with its own line.
+      writeFileSync(join(temp, "redline-staged", "version.txt"), "");
+      const empty = runBash(pre, { RUNNER_TEMP: temp });
+      expect(empty.status).toBe(1);
+      expect(empty.stdout).toContain("T19: no staged version to pin");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 
   it("installs without lifecycle scripts: every step of the job can reach the OIDC request token", () => {
