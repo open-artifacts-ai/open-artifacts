@@ -50,6 +50,17 @@ import usersPage from "./fixtures/google/users-page.json";
 import { errOf, fetchAndWait, login } from "./helpers.js";
 
 const MIN = 60_000;
+// This file's tests are real work, never waits: alarms run on an explicit
+// clock, the beforeEach is a flat ~50 ms (no state grows across tests), and
+// each drain is a full run of D1 and DO calls. The slowest test (bar the
+// carry-over test, budgeted from its user count) measured 4614 ms
+// (liftsPaused, five reconciles) at a 1-minute load of 13-18. Under suite
+// load the whole file ran 2.7-4.1x slower than alone (270-309 s against
+// 76-116 s), so the budget is the slowest test with 6x headroom, not the
+// pool's flat 20 s.
+const SLOWEST_TEST_MS = 4700;
+const LOAD_HEADROOM = 6;
+vi.setConfig({ testTimeout: SLOWEST_TEST_MS * LOAD_HEADROOM });
 let g: FakeDirectory;
 let e: Env;
 let sent: SentMail[];
@@ -771,12 +782,11 @@ describe("review fixes (P3 T13)", () => {
   // this engine, an awaited UserPresence.closeAll on a fresh DO (most of the
   // time). Measured 47-61 ms per user for connect plus both alarms, at a
   // 1-minute load of 20-33 (7 runs alone); a 20 s budget failed at load
-  // 60-80. The budget grows with the user count, with 6x headroom.
+  // 60-80. The budget grows with the user count, with the file's headroom.
   const CARRY_USERS = USER_EVENTS_PER_PAGE + 30;
   const CARRY_USER_MS = 60;
-  const CARRY_HEADROOM = 6;
   it("suspension events past the first 100 on a page carry over", {
-    timeout: CARRY_USERS * CARRY_USER_MS * CARRY_HEADROOM,
+    timeout: CARRY_USERS * CARRY_USER_MS * LOAD_HEADROOM,
   }, async () => {
     const us = dirUsers(CARRY_USERS, "many");
     const t0 = Date.now();
