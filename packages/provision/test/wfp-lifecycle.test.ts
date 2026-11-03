@@ -5998,7 +5998,7 @@ describe("MIG-2: a migration that can lose data is held (#1137)", () => {
       s.fake.raw.findIndex((x) => re.test(x.path + x.body));
     const bookmark = at(/time_travel\/bookmark/);
     const audit = at(/upgrade\.restore_point/);
-    const migrated = at(/INSERT INTO d1_migrations[^]*9003_marked/);
+    const migrated = at(/INSERT INTO d1_migrations[\s\S]*9003_marked/);
     expect(bookmark).toBeGreaterThanOrEqual(0);
     expect(audit).toBeGreaterThan(bookmark);
     expect(migrated).toBeGreaterThan(audit);
