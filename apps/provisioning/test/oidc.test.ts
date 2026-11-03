@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   oidcPins,
   oidcPrincipal,
+  REDLINE_WORKFLOW_REF,
   STAGING_API_HOST,
   TEST_ADMIN_WORKFLOW_REF,
   TEST_MEMBER_WORKFLOW_REF,
@@ -433,6 +434,38 @@ describe("the test member's workflow (staging-test-member.yml)", () => {
         req({}, "api.open-artifacts.app"),
         env(),
         await jwt({ job_workflow_ref: TM }),
+        vopts(),
+      ),
+    ).toEqual(unauth);
+  });
+});
+
+describe("each allowed workflow ref maps to its own scope; none falls back", () => {
+  const OTHER = `${REPO}/.github/workflows/other.yml@refs/heads/main`;
+
+  it("red-line's ref is pinned and maps to redline", async () => {
+    expect(REDLINE_WORKFLOW_REF).toBe(WF);
+    expect(
+      await oidcPrincipal(req(), stagingEnv(), await jwt(), vopts()),
+    ).toMatchObject({ kind: "oidc", oidcWorkflow: "redline" });
+  });
+
+  it("a ref in OIDC_JOB_WORKFLOW_REFS with no scope of its own is 401, as an oidc caller or a test user", async () => {
+    // stagingEnv's OIDC_JOB_WORKFLOW_REFS lists other.yml, so verify passes.
+    expect(oidcPins(stagingEnv())?.jobWorkflowRefs).toContain(OTHER);
+    expect(
+      await oidcPrincipal(
+        req(),
+        stagingEnv(),
+        await jwt({ job_workflow_ref: OTHER }),
+        vopts(),
+      ),
+    ).toEqual(unauth);
+    expect(
+      await oidcPrincipal(
+        req({ [TEST_USER_HEADER]: "a" }),
+        stagingEnv(),
+        await jwt({ job_workflow_ref: OTHER }),
         vopts(),
       ),
     ).toEqual(unauth);

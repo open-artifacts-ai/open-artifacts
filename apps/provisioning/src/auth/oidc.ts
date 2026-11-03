@@ -4,7 +4,7 @@ import {
   type VerifyOptions,
   verify,
 } from "@oa/gh-oidc";
-import { TEST_MEMBER } from "@oa/shared/provisioning";
+import { type OidcWorkflow, TEST_MEMBER } from "@oa/shared/provisioning";
 import type { Env } from "../env.js";
 import { type Principal, type Refusal, refusal } from "../principal.js";
 
@@ -37,6 +37,21 @@ export const TEST_ADMIN_WORKFLOW_REF =
 export const TEST_MEMBER_WORKFLOW_REF =
   "open-artifacts-ai/open-artifacts/.github/workflows/staging-test-member.yml@refs/heads/main";
 
+/** Red-line's workflow (redline-staging.yml): the rl- test installs' scope. */
+export const REDLINE_WORKFLOW_REF =
+  "open-artifacts-ai/open-artifacts/.github/workflows/redline-staging.yml@refs/heads/main";
+
+/**
+ * Each pinned workflow's scope. A JWT whose job_workflow_ref is in
+ * OIDC_JOB_WORKFLOW_REFS but not here is refused (401): no ref falls back to
+ * red-line's scope.
+ */
+const WORKFLOW_SCOPES: ReadonlyMap<string, OidcWorkflow> = new Map([
+  [REDLINE_WORKFLOW_REF, "redline"],
+  [TEST_ADMIN_WORKFLOW_REF, "test-admin"],
+  [TEST_MEMBER_WORKFLOW_REF, "test-member"],
+]);
+
 /** The caller's pins, or null unless staging and every OIDC_* var is set. */
 export function oidcPins(env: Env): Pins | null {
   return env.OA_ENV === "staging" ? pinsFromEnv(env) : null;
@@ -58,8 +73,10 @@ export async function oidcPrincipal(
   } catch {
     return refusal("unauthenticated");
   }
-  const testAdmin = claims.job_workflow_ref === TEST_ADMIN_WORKFLOW_REF;
-  const testMember = claims.job_workflow_ref === TEST_MEMBER_WORKFLOW_REF;
+  const workflow = WORKFLOW_SCOPES.get(claims.job_workflow_ref);
+  if (workflow === undefined) return refusal("unauthenticated");
+  const testAdmin = workflow === "test-admin";
+  const testMember = workflow === "test-member";
   const testUser = req.headers.get(TEST_USER_HEADER);
   if (testUser !== null) {
     // The test admin's and test member's workflows are never a test user.
@@ -93,11 +110,7 @@ export async function oidcPrincipal(
     scopes: [],
     sub: claims.sub,
     authAt: null,
-    oidcWorkflow: testAdmin
-      ? "test-admin"
-      : testMember
-        ? "test-member"
-        : "redline",
+    oidcWorkflow: workflow,
     ...(testAdmin
       ? {
           oidcRun: {
