@@ -534,13 +534,12 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                 : null;
             const justShared =
               shared?.email === s.email && shared.role === "editor";
-            const note = !justShared
-              ? null
-              : s.guest
+            // The guest note adds what happens next; a viewOnly member's
+            // caption already says all there is.
+            const note =
+              justShared && s.guest
                 ? "Guests can only view. If they become a member, they'll be able to edit."
-                : s.viewOnly
-                  ? "They can only view for now."
-                  : null;
+                : null;
             return (
               <li
                 key={s.email}

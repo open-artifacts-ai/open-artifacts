@@ -218,7 +218,7 @@ describe("share panel", () => {
       expect(screen.queryByText(NOW)).toBeNull();
     });
 
-    it("right after sharing as Editor: the status note", async () => {
+    it("right after sharing as Editor: the caption, and no status note", async () => {
       let list: object[] = [];
       server.use(
         http.get("*/api/v1/artifacts/:id/shares", () =>
@@ -241,8 +241,12 @@ describe("share panel", () => {
         target: { value: "dan@example.com" },
       });
       fireEvent.click(screen.getByRole("button", { name: "Add" }));
-      const note = await screen.findByText("They can only view for now.");
-      expect(note).toHaveAttribute("role", "status");
+      expect(await screen.findByText(NOW)).toBeVisible();
+      expect(screen.queryByText("They can only view for now.")).toBeNull();
+      const row = (await screen.findByTitle("dan@example.com")).closest(
+        "li",
+      ) as HTMLElement;
+      expect(within(row).queryByRole("status")).toBeNull();
     });
   });
 
