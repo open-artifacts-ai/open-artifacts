@@ -27,6 +27,7 @@ import {
   StorageKeyNameSchema,
   StorageSetBodySchema,
 } from "@oa/shared";
+import { withRetries } from "../db/retry.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError } from "../log.js";
@@ -438,6 +439,12 @@ export type VersionEvent = {
  */
 export class ArtifactRuntime extends DurableObject<Env> {
   private ready = false;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    // D1 reads (the indexer, the thumbnailer) retry on a storage failure
+    // (db/retry.ts), one wrapper per env.
+    super(ctx, withRetries(env));
+  }
 
   /** The instance's data-doc limit (env PLAN, DATA_DOC_BYTES). */
   private get docLimit(): DocLimit {
