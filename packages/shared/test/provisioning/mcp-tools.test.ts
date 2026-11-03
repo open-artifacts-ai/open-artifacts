@@ -64,9 +64,22 @@ describe("tool table", () => {
       const covered = ADMIN_TOOLS.some((x) => x.route === id) || id in NO_TOOL;
       if (!refused) expect(covered, id).toBe(true);
     }
-    // And a tool never fronts a route tokens may not use.
+    // And a tool never fronts a route tokens may not use. Two routes take
+    // only an OAuth grant (#1008): every MCP tool caller with a grant passes,
+    // an `oat_` token doesn't. No other tool or route has such a rule.
     for (const t of ADMIN_TOOLS)
       expect(AUTHZ[t.route].token.allow, t.name).toBe(true);
+    const narrowed = (r: (typeof AUTHZ)[keyof typeof AUTHZ]["token"]) =>
+      r.allow && r.tokenKind !== undefined;
+    expect(
+      ADMIN_TOOLS.filter((t) => narrowed(AUTHZ[t.route].token)).map(
+        (t) => t.name,
+      ),
+    ).toEqual(["set_oauth_store", "copy_oauth_store"]);
+    expect(ROUTE_IDS.filter((id) => narrowed(AUTHZ[id].token))).toEqual([
+      "R29",
+      "R30",
+    ]);
     for (const id of Object.keys(NO_TOOL))
       expect(
         ADMIN_TOOLS.some((t) => t.route === id),
@@ -96,21 +109,11 @@ describe("tool table", () => {
       restore_install: "R10",
       delete_install: "R9",
       purge_install: "R11",
+      set_oauth_store: "R29",
+      copy_oauth_store: "R30",
     });
     expect(Object.keys(NO_TOOL).sort()).toEqual(
-      [
-        "R13",
-        "R19",
-        "R20",
-        "R21",
-        "R22",
-        "R23",
-        "R24",
-        "R25",
-        "R26",
-        "R29",
-        "R30",
-      ].sort(),
+      ["R13", "R19", "R20", "R21", "R22", "R23", "R24", "R25", "R26"].sort(),
     );
   });
 });

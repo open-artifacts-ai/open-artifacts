@@ -1,5 +1,6 @@
 import { JOB_STEPS } from "@oa/shared/provisioning";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Principal } from "../src/principal.js";
 import { call } from "./call.js";
 import {
   ADMIN_P,
@@ -18,7 +19,25 @@ import {
 // /healthz; apps/provisioner/test/node/oauth-store.test.ts covers that.
 
 const NOW = Date.UTC(2026, 10, 3, 12);
-const WRITE = tokenP(["installs:read", "installs:write", "installs:delete"]);
+const ALL = ["installs:read", "installs:write", "installs:delete"] as const;
+/** What principalByTokenId(..., "oauth") answers for a grant. */
+const GRANT: Principal = { ...tokenP([...ALL]), tokenKind: "oauth" };
+const OAT: Principal = { ...tokenP([...ALL]), tokenKind: "oat" };
+const NO_KIND = tokenP([...ALL]);
+const NO_WRITE: Principal = {
+  ...tokenP(["installs:read", "installs:delete"]),
+  tokenKind: "oauth",
+};
+const TEST_ADMIN: Principal = { ...ADMIN_P, kind: "test-admin" };
+const REFUSED = [
+  ["an admin session", ADMIN_P],
+  ["an oat_ token", OAT],
+  ["a token of no kind", NO_KIND],
+  ["a grant without installs:write", NO_WRITE],
+  ["OIDC", OIDC_P],
+  ["the test admin", TEST_ADMIN],
+  ["a user", userP()],
+] as const;
 const VARS = {
   AUTH_PROVIDERS: "google",
   AUTH_DOMAINS: "acme.test",
@@ -48,10 +67,10 @@ const liveRow = (installId: string, mode: string, at: number) =>
   });
 
 describe("R29 set the OAuth store", () => {
-  it("an admin's request is an update job with the mode alone", async () => {
+  it("a grant's request is an update job with the mode alone", async () => {
     const e = fakeEnv();
     const { id } = await onMode();
-    const r = await call(e, ADMIN_P, "R29", {
+    const r = await call(e, GRANT, "R29", {
       params: params(id),
       body: setBody("dual"),
     });
@@ -69,34 +88,32 @@ describe("R29 set the OAuth store", () => {
     const e = fakeEnv();
     const { id } = await onMode();
     const body = setBody("dual");
-    const a = await call(e, ADMIN_P, "R29", { params: params(id), body });
-    const b = await call(e, ADMIN_P, "R29", { params: params(id), body });
+    const a = await call(e, GRANT, "R29", { params: params(id), body });
+    const b = await call(e, GRANT, "R29", { params: params(id), body });
     expect(b.headers["oa-idempotent-replay"]).toBe("1");
     expect(b.body.job.id).toBe(a.body.job.id);
-    const c = await call(e, ADMIN_P, "R29", {
+    const c = await call(e, GRANT, "R29", {
       params: params(id),
       body: { ...body, vars: { OAUTH_STORE: "kv" } },
     });
     expect(c.code).toBe("idempotency_conflict");
   });
 
-  it("no token, OIDC or user reaches it", async () => {
+  it.each(REFUSED)("%s is forbidden", async (_who, p) => {
     const e = fakeEnv();
     const { id } = await onMode();
-    for (const p of [WRITE, OIDC_P, userP()]) {
-      const r = await call(e, p, "R29", {
-        params: params(id),
-        body: setBody("dual"),
-      });
-      expect(r.status).toBeGreaterThanOrEqual(400);
-    }
+    const r = await call(e, p, "R29", {
+      params: params(id),
+      body: setBody("dual"),
+    });
+    expect(r.code).toBe("forbidden");
     expect(e.manageInstall.created).toHaveLength(0);
   });
 
   it("takes OAUTH_STORE and nothing else", async () => {
     const e = fakeEnv();
     const { id } = await onMode();
-    const r = await call(e, ADMIN_P, "R29", {
+    const r = await call(e, GRANT, "R29", {
       params: params(id),
       body: {
         requestId: requestId(),
@@ -110,13 +127,13 @@ describe("R29 set the OAuth store", () => {
     const e = fakeEnv();
     const { id } = await onMode("d1");
     for (const m of ["kv", "dual"]) {
-      const r = await call(e, ADMIN_P, "R29", {
+      const r = await call(e, GRANT, "R29", {
         params: params(id),
         body: setBody(m),
       });
       expect(r.code, m).toBe("invalid_state");
     }
-    const r = await call(e, ADMIN_P, "R29", {
+    const r = await call(e, GRANT, "R29", {
       params: params(id),
       body: setBody("d1"),
     });
@@ -129,7 +146,7 @@ describe("R29 set the OAuth store", () => {
       vars: VARS,
       lifecycle: { suspended_at: 5 },
     });
-    const r = await call(e, ADMIN_P, "R29", {
+    const r = await call(e, GRANT, "R29", {
       params: params(id),
       body: setBody("dual"),
     });
@@ -144,7 +161,7 @@ describe("R30 copy the OAuth store", () => {
     const e = fakeEnv();
     const { id } = await onMode("dual");
     const refuse = () =>
-      call(e, ADMIN_P, "R30", { params: params(id), body: body() });
+      call(e, GRANT, "R30", { params: params(id), body: body() });
     expect((await refuse()).code).toBe("invalid_state");
     await liveRow(id, "dual", NOW - 59_999);
     expect((await refuse()).code).toBe("invalid_state");
@@ -163,7 +180,7 @@ describe("R30 copy the OAuth store", () => {
     const { id } = await onMode("dual");
     await liveRow(id, "dual", NOW - 600_000);
     await liveRow(id, "kv", NOW - 500_000);
-    const r = await call(e, ADMIN_P, "R30", {
+    const r = await call(e, GRANT, "R30", {
       params: params(id),
       body: body(),
     });
@@ -174,7 +191,7 @@ describe("R30 copy the OAuth store", () => {
     const e = fakeEnv();
     const { id } = await onMode("kv");
     await liveRow(id, "dual", NOW - 600_000);
-    const r = await call(e, ADMIN_P, "R30", {
+    const r = await call(e, GRANT, "R30", {
       params: params(id),
       body: body(),
     });
@@ -185,12 +202,12 @@ describe("R30 copy the OAuth store", () => {
     const e = fakeEnv();
     const { id } = await onMode("dual");
     await liveRow(id, "dual", NOW - 600_000);
-    const first = await call(e, ADMIN_P, "R30", {
+    const first = await call(e, GRANT, "R30", {
       params: params(id),
       body: body(),
     });
     expect(first.status).toBe(202);
-    const r = await call(e, ADMIN_P, "R30", {
+    const r = await call(e, GRANT, "R30", {
       params: params(id),
       body: body(),
     });
@@ -198,14 +215,12 @@ describe("R30 copy the OAuth store", () => {
     expect(e.manageInstall.created).toHaveLength(1);
   });
 
-  it("no token, OIDC or user reaches it", async () => {
+  it.each(REFUSED)("%s is forbidden", async (_who, p) => {
     const e = fakeEnv();
     const { id } = await onMode("dual");
     await liveRow(id, "dual", NOW - 600_000);
-    for (const p of [WRITE, OIDC_P, userP()]) {
-      const r = await call(e, p, "R30", { params: params(id), body: body() });
-      expect(r.status).toBeGreaterThanOrEqual(400);
-    }
+    const r = await call(e, p, "R30", { params: params(id), body: body() });
+    expect(r.code).toBe("forbidden");
     expect(e.manageInstall.created).toHaveLength(0);
   });
 

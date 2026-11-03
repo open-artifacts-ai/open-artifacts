@@ -15,6 +15,7 @@ import {
   seedCreate,
   seedJob,
   stepRunner,
+  ulid,
   V1,
   V2,
   type World,
@@ -175,20 +176,50 @@ const refusal = (reason: string) =>
   );
 const keyBodies = (calls: Call[]) => calls.map((c) => c.body);
 
+/** An agent_tokens row of `kind`; its id. */
+function agentToken(kind: "oauth" | "oat"): string {
+  const id = ulid();
+  const oauth = kind === "oauth";
+  w.db
+    .prepare(
+      `INSERT INTO agent_tokens (id, kind, token_hash, session_hash, admin_email, label, scopes, client_id, oauth_user, created_at, expires_at)
+VALUES (?, ?, ?, 'sh', 'a@example.com', 'x', '["installs:write"]', ?, ?, 1, 9)`,
+    )
+    .run(
+      id,
+      kind,
+      oauth ? null : `hash-${id}`,
+      oauth ? "client" : null,
+      oauth ? "adm_x" : null,
+    );
+  return id;
+}
+
 /** Runs a job to its end; the failure, if any, as the engine's error. */
 async function run(
   args: Record<string, unknown>,
   installId: string,
   o: Parameters<typeof seedJob>[1] extends infer T
-    ? Partial<T> & { twice?: boolean; onStep?: (n: string) => void }
+    ? Partial<T> & {
+        twice?: boolean;
+        onStep?: (n: string) => void;
+        /** The job's agent_tokens row; null: the job has no token_id. */
+        grant?: "oauth" | "oat" | null;
+      }
     : never = {},
 ) {
   const id = seedJob(w, {
     kind: "update",
     installId,
     args,
+    actor: "token",
     ...o,
   } as Parameters<typeof seedJob>[1]);
+  const grant = o.grant === undefined ? "oauth" : o.grant;
+  if (grant !== null)
+    w.db
+      .prepare("UPDATE jobs SET token_id = ? WHERE id = ?")
+      .run(agentToken(grant), id);
   const r = stepRunner(w.clock, { twice: o.twice, onStep: o.onStep });
   const error = await runManage(w.ctx, event(id), r.step).then(
     () => null,
@@ -394,26 +425,47 @@ describe("update: set OAUTH_STORE (R29)", () => {
     expect(r.job.status).toBe("done");
   });
 
-  it.each(["token", "oidc", "user", "system"] as const)(
-    "the recheck refuses a %s job",
-    async (actor) => {
-      const id = await active();
-      install(id);
-      const r = await run(setMode("dual"), id, { actor });
-      expect(r.job).toMatchObject({
-        status: "failed",
-        error_code: "invalid_state",
-      });
-      expect(plain(id, "OAUTH_STORE")).toBeUndefined();
-    },
-  );
+  it.each([
+    ["an admin session", { actor: "admin", grant: null }],
+    ["an oat_ token", { grant: "oat" }],
+    ["a token with no token_id", { grant: null }],
+    ["OIDC", { actor: "oidc", grant: null }],
+    ["a user", { actor: "user", grant: null }],
+    ["the system", { actor: "system", grant: null }],
+  ] as const)("the recheck refuses a job by %s", async (_who, o) => {
+    const id = await active();
+    install(id);
+    const r = await run(setMode("dual"), id, o);
+    expect(r.job).toMatchObject({
+      status: "failed",
+      error_code: "invalid_state",
+    });
+    expect(plain(id, "OAUTH_STORE")).toBeUndefined();
+  });
 
-  it("the recheck refuses an OIDC job inside OIDC's own scope (the test admin's rows)", async () => {
+  it("the recheck refuses a job whose grant row is gone", async () => {
+    const id = await active();
+    install(id);
+    const job = seedJob(w, {
+      kind: "update",
+      installId: id,
+      args: setMode("dual"),
+      actor: "token",
+    });
+    w.db.prepare("UPDATE jobs SET token_id = 'gone' WHERE id = ?").run(job);
+    await runManage(w.ctx, event(job), stepRunner(w.clock).step).catch(
+      () => {},
+    );
+    expect(w.job(job)?.error_code).toBe("invalid_state");
+  });
+
+  it("the recheck refuses OIDC inside its own scope, with a grant row (the test admin's rows)", async () => {
     const s = seedCreate(w, { slug: "rl-a", testHooks: true });
     await runCreate(w.ctx, event(s.jobId), stepRunner(w.clock).step);
     expect(w.job(s.jobId)?.status).toBe("done");
     install(s.installId);
     const r = await run(setMode("dual"), s.installId, { actor: "oidc" });
+    expect(r.job.token_id).not.toBeNull();
     expect(r.job).toMatchObject({
       status: "failed",
       error_code: "invalid_state",
@@ -909,10 +961,10 @@ describe("update: the KV to D1 copy (R30)", () => {
       noKey(id, f.calls);
     });
 
-    it("refuses a non-admin job", async () => {
+    it("refuses a job with no OAuth grant", async () => {
       const id = await active();
       const f = await dual(id);
-      const r = await run(COPY, id, { actor: "oidc" });
+      const r = await run(COPY, id, { grant: "oat" });
       expect(r.job.error_code).toBe("invalid_state");
       noKey(id, f.calls);
     });
@@ -937,7 +989,9 @@ describe("cleanup of a canceled or dead copy", () => {
       installId,
       parentJobId: parent,
       actor: "system",
-      args: {},
+      // As the scheduler's sweep and R25 write it: the parent's kind and args
+      // aren't in here, so a cleanup reads the parent row.
+      args: { parentJobId: parent },
     });
     const r = stepRunner(w.clock);
     const error = await runManage(w.ctx, event(id), r.step).then(

@@ -675,8 +675,9 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<ManageJob> {
       out.args = redlineCredsJobArgs(redlineArgs(job));
       break;
     case "update": {
-      // TRANSITIONS reads OIDC as A; the test admin's rows store as oidc.
-      if (job.actor_kind !== "admin") throw refused("update is an admin's");
+      // Admin MCP only (AUTHZ R29, R30): the row's token is an OAuth grant.
+      if (!(await oauthGrant(ctx, job)))
+        throw refused("update needs an OAuth grant");
       const oauth = parseOAuthJob(args);
       if (!oauth) throw refused("the update args do not parse");
       out.oauth = oauth;
@@ -687,6 +688,18 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<ManageJob> {
   }
   return out;
 }
+
+/** The job's actor is a token whose agent_tokens row is an OAuth grant. */
+const oauthGrant = async (ctx: CreateCtx, job: JobRow) =>
+  job.actor_kind === "token" &&
+  job.token_id !== null &&
+  (
+    await transient(
+      ctx.env.PLATFORM_DB.prepare("SELECT kind FROM agent_tokens WHERE id = ?")
+        .bind(job.token_id)
+        .first<{ kind: string }>(),
+    )
+  )?.kind === "oauth";
 
 /** TRANSITIONS for the job's actor, with the provisioner's own purge. */
 async function checkKind(

@@ -3,6 +3,7 @@ import type {
   JobKind,
   PrincipalKind,
   ProvisioningEnv,
+  TokenKind,
   TokenScope,
 } from "./enums.js";
 import type { RouteId } from "./routes.js";
@@ -23,12 +24,19 @@ export type AuthzColumn = (typeof AUTHZ_COLUMNS)[number];
 /**
  * allow: `reach` "all" or "own" (the handler scopes to the principal's
  * installs: O own `rl-` test installs, U its own; outside it is 404), and for
- * tokens the one `scope` the row needs. `note` is the business rule the
- * handler adds after authz.
+ * tokens the one `scope` the row needs and, where set, the one `tokenKind`
+ * that may use it (anything else, unset included, is forbidden). `note` is the
+ * business rule the handler adds after authz.
  */
 export type AuthzRule =
   | { allow: false; code: "unauthenticated" | "forbidden" }
-  | { allow: true; reach: "all" | "own"; scope?: TokenScope; note?: string };
+  | {
+      allow: true;
+      reach: "all" | "own";
+      scope?: TokenScope;
+      tokenKind?: TokenKind;
+      note?: string;
+    };
 
 const all = { allow: true, reach: "all" } as const;
 const own = { allow: true, reach: "own" } as const;
@@ -66,6 +74,17 @@ const taOwn = { ...own, note: "rl- and testHooks (oidcOwns)" } as const;
 
 const opRow = row(all, tok("installs:write"), own, no);
 const adminOnly = row(all, no, no, no);
+/**
+ * Admin MCP only (#1008): an OAuth grant with installs:write, which /mcp alone
+ * authenticates (authenticate() answers it 401 on /v1). Not the admin session,
+ * not an `oat_` token. It stays this one rule: tested, and on these routes only.
+ */
+const adminMcpOnly = row(
+  no,
+  { allow: true, reach: "all", scope: "installs:write", tokenKind: "oauth" },
+  no,
+  no,
+);
 
 export const AUTHZ: Readonly<Record<RouteId, Record<AuthzColumn, AuthzRule>>> =
   {
@@ -151,14 +170,16 @@ export const AUTHZ: Readonly<Record<RouteId, Record<AuthzColumn, AuthzRule>>> =
     R27: row(all, tok("installs:read"), no, no),
     // Only the pinned staging-test-admin.yml caller (authorize, oidcWorkflow).
     R28: row(no, no, { ...own, note: "staging-test-admin.yml only" }, no),
-    // #1008: an admin session on both envs; each flip is one person's yes.
-    R29: adminOnly,
-    R30: adminOnly,
+    // #1008: each flip is one person's yes for that install and env.
+    R29: adminMcpOnly,
+    R30: adminMcpOnly,
   };
 
 export type AuthzPrincipal = {
   kind: PrincipalKind;
   scopes?: readonly TokenScope[];
+  /** Tokens: "oat" or "oauth", from the row (AuthzRule.tokenKind). */
+  tokenKind?: TokenKind;
   /**
    * OIDC only: which pinned workflow minted the JWT. "test-admin" may call
    * R28 and nothing else; any other OIDC caller never calls R28 (#1053).
@@ -193,6 +214,8 @@ export function authorize(
   const rule = AUTHZ[route][principal ? principal.kind : "none"];
   if (!rule.allow) return { ok: false, code: rule.code };
   if (rule.scope && !principal?.scopes?.includes(rule.scope))
+    return { ok: false, code: "forbidden" };
+  if (rule.tokenKind && principal?.tokenKind !== rule.tokenKind)
     return { ok: false, code: "forbidden" };
   return { ok: true, reach: rule.reach };
 }
@@ -494,9 +517,9 @@ export const TRANSITIONS: Readonly<
     suspend: t(["A", "T"], "suspended"),
     delete: t(["A", "T", "U"], "deleting"),
     redline_creds: t(["A"], "active"),
-    // R29, R30 (#1008): no state change. OIDC reads as A here; authz and the
-    // provisioner's recheck keep it off.
-    update: t(["A"], "active"),
+    // R29, R30 (#1008): no state change. T: an OAuth grant, by their authz
+    // rows; the provisioner's recheck reads the grant again.
+    update: t(["T"], "active"),
     ...lease("active"),
   },
   suspended: {

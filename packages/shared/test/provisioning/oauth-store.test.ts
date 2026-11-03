@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  ADMIN_TOOL_NAMES,
   ADMIN_TOOLS,
   AUTHZ,
   authorize,
@@ -75,30 +74,73 @@ describe("R29 and R30", () => {
     );
   });
 
-  it("reach admins on both envs and no one else", () => {
-    for (const r of ["R29", "R30"] as const) {
-      for (const env of ["staging", "prod"] as const)
-        expect(authorize(r, { kind: "admin" }, env)).toEqual({
-          ok: true,
-          reach: "all",
+  describe("reach: an OAuth grant with installs:write, and nothing else", () => {
+    const write = ["installs:write"] as const;
+    const all = [
+      "installs:read",
+      "installs:write",
+      "installs:delete",
+      "installs:pii",
+      "audit:read",
+    ] as const;
+    const forbidden = { ok: false, code: "forbidden" };
+    describe.each(["R29", "R30"] as const)("%s", (r) => {
+      it.each(["staging", "prod"] as const)("allowed on %s", (env) => {
+        expect(
+          authorize(
+            r,
+            { kind: "token", tokenKind: "oauth", scopes: write },
+            env,
+          ),
+        ).toEqual({ ok: true, reach: "all" });
+      });
+      it.each(["staging", "prod"] as const)("refused on %s", (env) => {
+        const refused = [
+          { kind: "admin" },
+          { kind: "admin", tokenKind: "oauth", scopes: all },
+          { kind: "token", tokenKind: "oauth", scopes: [] },
+          {
+            kind: "token",
+            tokenKind: "oauth",
+            scopes: all.filter((x) => x !== "installs:write"),
+          },
+          { kind: "token", tokenKind: "oat", scopes: all },
+          { kind: "token", scopes: all },
+          { kind: "oidc", tokenKind: "oauth", scopes: all },
+          { kind: "test-admin", tokenKind: "oauth", scopes: all },
+          { kind: "user", tokenKind: "oauth", scopes: all },
+          { kind: "system", tokenKind: "oauth", scopes: all },
+        ] as const;
+        for (const p of refused)
+          expect(authorize(r, p, env).ok, JSON.stringify(p)).toBe(false);
+        expect(authorize(r, { kind: "admin" }, env)).toEqual(forbidden);
+      });
+      it("no credential is 401", () => {
+        expect(authorize(r, null, "prod")).toEqual({
+          ok: false,
+          code: "unauthenticated",
         });
-      const scopes = [
-        "installs:read",
-        "installs:write",
-        "installs:delete",
-      ] as const;
-      expect(authorize(r, { kind: "token", scopes }, "prod").ok).toBe(false);
-      expect(authorize(r, { kind: "oidc" }, "staging").ok).toBe(false);
-      expect(authorize(r, { kind: "test-admin" }, "staging").ok).toBe(false);
-      expect(authorize(r, { kind: "user" }, "prod").ok).toBe(false);
-      expect(authorize(r, null, "prod").ok).toBe(false);
-      expect(AUTHZ[r]["test-admin"].allow).toBe(false);
-    }
+      });
+    });
+    it("the table shows the rule, and no other route has one", () => {
+      const withKind = Object.entries(AUTHZ)
+        .filter(([, c]) =>
+          Object.values(c).some((x) => x.allow && x.tokenKind !== undefined),
+        )
+        .map(([id]) => id);
+      expect(withKind).toEqual(["R29", "R30"]);
+      for (const r of ["R29", "R30"] as const)
+        expect(AUTHZ[r].token).toMatchObject({
+          allow: true,
+          scope: "installs:write",
+          tokenKind: "oauth",
+        });
+    });
   });
 
-  it("only an admin moves an active install", () => {
-    expect(canTransition("active", "update", "A")).toBe(true);
-    for (const a of ["T", "U", "S"] as const)
+  it("only a token actor moves an active install (A is admin and OIDC)", () => {
+    expect(canTransition("active", "update", "T")).toBe(true);
+    for (const a of ["A", "U", "S"] as const)
       expect(canTransition("active", "update", a)).toBe(false);
     for (const s of [
       "suspended",
@@ -107,7 +149,7 @@ describe("R29 and R30", () => {
       "provisioning",
       "deleted",
     ] as const)
-      expect(canTransition(s, "update", "A")).toBe(false);
+      expect(canTransition(s, "update", "T")).toBe(false);
   });
 });
 
@@ -179,11 +221,31 @@ describe("job codes", () => {
 });
 
 describe("MCP tools", () => {
-  it("are decided with authz: a tool never fronts a route tokens can't use", () => {
-    for (const r of ["R29", "R30"] as const) {
-      const tool = ADMIN_TOOLS.find((t) => t.route === r);
-      expect(tool !== undefined || r in NO_TOOL, r).toBe(true);
-    }
-    expect(ADMIN_TOOL_NAMES.length).toBe(ADMIN_TOOLS.length);
+  const tool = (n: string) => ADMIN_TOOLS.find((t) => t.name === n);
+
+  it("name the two routes, and are the only tools behind an OAuth-only rule", () => {
+    expect(tool("set_oauth_store")?.route).toBe("R29");
+    expect(tool("copy_oauth_store")?.route).toBe("R30");
+    expect(
+      ADMIN_TOOLS.filter((t) => {
+        const r = AUTHZ[t.route].token;
+        return r.allow && r.tokenKind !== undefined;
+      }).map((t) => t.name),
+    ).toEqual(["set_oauth_store", "copy_oauth_store"]);
+    expect(NO_TOOL).not.toHaveProperty("R29");
+    expect(NO_TOOL).not.toHaveProperty("R30");
+  });
+
+  it("say each needs the user's yes for that install and env", () => {
+    for (const n of ["set_oauth_store", "copy_oauth_store"])
+      expect(tool(n)?.description).toMatch(
+        /explicit yes for this install and this environment/,
+      );
+  });
+
+  it("are annotated as the other writes are", () => {
+    const other = tool("upgrade_install");
+    for (const n of ["set_oauth_store", "copy_oauth_store"])
+      expect(tool(n)?.annotations).toEqual(other?.annotations);
   });
 });
