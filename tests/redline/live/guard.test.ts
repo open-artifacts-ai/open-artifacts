@@ -4,6 +4,7 @@ import {
   type Cred,
   describeRes,
   fromContentApp,
+  paceHook,
   readBody,
   withCred,
 } from "../src/http.ts";
@@ -131,6 +132,9 @@ describe("hooks", () => {
   for (const k of ["a", "b"] as const) {
     it(`${k}: a wrong hook key gets the 404`, async () => {
       const t = T[k];
+      // The rate limit answers the same 404 before the key is read: paced
+      // like every hook call, the 404 here is the key check's.
+      await paceHook(t);
       const res = await fetch(`${t.app}/__test/session`, {
         method: "POST",
         redirect: "manual",

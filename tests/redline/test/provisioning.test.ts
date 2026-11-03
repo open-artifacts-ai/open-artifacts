@@ -8,7 +8,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { STAGING_TEST_DOMAIN } from "@oa/provision/names";
 import { afterEach, describe, expect, it } from "vitest";
 import { InfraError } from "../src/fetch-timeout.ts";
 import { takeFileNotes } from "../src/notes.ts";
@@ -22,9 +21,11 @@ import {
 } from "../src/oidc.ts";
 import {
   ADMIN_FLOW_COOKIE,
+  AFTER_CHAINS,
   BROKER_IP_PERIOD_MS,
   BROKER_IP_WAIT_MS,
   bringUpgrade,
+  CHAINS,
   cleanupInstalls,
   failText,
   mintCreds,
@@ -36,10 +37,12 @@ import {
   type ProbeId,
   prodLive,
   provConfig,
+  REMOVED_PROBES,
   Run,
   revokeCreds,
   runProbe,
   stagedVersion,
+  startChains,
   statusCounts,
 } from "../src/provisioning.ts";
 import { credFile, rawTargets } from "../src/provisioning-live.ts";
@@ -51,10 +54,8 @@ import {
   PRE_PROD_NA,
   PRE_PROD_REASON,
   parseManifest,
-  setupHookName,
 } from "../src/report.ts";
 import { newRecipient, openSealed, parseCreds } from "../src/seal.ts";
-import { NO_OWNER } from "../src/snooze.ts";
 import {
   parseProd,
   parseTargets,
@@ -104,29 +105,89 @@ async function bringUp(f: FakeApi): Promise<string> {
   return pat;
 }
 
-/** Every probe in order; the outcome or the failure message per id. */
-async function runAll(f: FakeApi): Promise<Map<ProbeId, Outcome | string>> {
+/**
+ * Every probe as the live suite runs them (startChains: the chains at once,
+ * then P33), then the run's cleanup; the outcome or the failure message per
+ * id (an infra message keeps its "infra: " prefix).
+ */
+async function runChains(
+  f: FakeApi,
+  o: Parameters<typeof startChains>[1] = {},
+): Promise<{
+  out: Map<ProbeId, Outcome | string>;
+  run: Run;
+  /** The run's installs still live once the chains settled, before cleanup. */
+  liveAtSettle: string[];
+}> {
   const pat = await bringUp(f);
   const run = new Run(CONFIG, { ...f.io, rlAPat: () => pat });
+  const plan = startChains(run, o);
   const out = new Map<ProbeId, Outcome | string>();
-  for (const p of PROBES) {
+  for (const [id, r] of plan.outcomes) {
     try {
-      out.set(p.id, await p.run(run));
+      out.set(id, await r);
     } catch (e) {
-      if (!(e instanceof ProbeFail)) throw e;
-      out.set(p.id, e.message);
+      if (!(e instanceof ProbeFail) && !(e instanceof InfraError)) throw e;
+      out.set(id, e.message);
     }
   }
-  return out;
+  await plan.settled;
+  const liveAtSettle = [...f.installs.values()]
+    .filter((i) => /^rl-(p|l|q)-/.test(i.slug) && i.state !== "deleted")
+    .map((i) => i.slug);
+  await cleanupInstalls(run);
+  return { out, run, liveAtSettle };
+}
+
+async function runAll(f: FakeApi): Promise<Map<ProbeId, Outcome | string>> {
+  return (await runChains(f)).out;
 }
 
 const level = (o: Outcome | string | undefined) =>
-  typeof o === "string" ? `fail: ${o}` : o?.level;
+  typeof o === "string"
+    ? o.startsWith("infra: ")
+      ? "infra"
+      : `fail: ${o}`
+    : o?.level;
 
 describe("the probes on a conforming staging fake", () => {
-  it("covers P1-P50 exactly once", () => {
-    const ids = PROBES.map((p) => Number(p.id.slice(1))).sort((a, b) => a - b);
+  it("covers P1-P50 exactly once: a probe, or removed with the issue that says why", () => {
+    const removed = Object.keys(REMOVED_PROBES);
+    const ids = [...PROBES.map((p) => p.id), ...removed]
+      .map((id) => Number(id.slice(1)))
+      .sort((a, b) => a - b);
     expect(ids).toEqual(Array.from({ length: 50 }, (_, i) => i + 1));
+    expect(removed.sort()).toEqual(["P35", "P50"]);
+    expect(REMOVED_PROBES.P35).toMatch(/^#1260: /);
+    expect(REMOVED_PROBES.P50).toMatch(/^#1078: /);
+    expect(Object.isFrozen(REMOVED_PROBES)).toBe(true);
+  });
+
+  it("a removed probe is cited in the manifest's notes with its issue, and is no accepted unproven case", () => {
+    const m = JSON.parse(
+      readFileSync(
+        join(import.meta.dirname, "..", "live", "manifest.json"),
+        "utf8",
+      ),
+    ) as { notes: string[] };
+    for (const [id, why] of Object.entries(REMOVED_PROBES)) {
+      const issue = why?.match(/^#\d+/)?.[0] as string;
+      expect(
+        m.notes.some(
+          (n) =>
+            n.startsWith("live/provisioning.test.ts no longer runs ") &&
+            n.includes(`${id} `) &&
+            n.includes(issue),
+        ),
+        id,
+      ).toBe(true);
+      expect(
+        ACCEPTED_UNPROVEN.some((e) =>
+          e.name.startsWith(`provisioning > ${id}:`),
+        ),
+        id,
+      ).toBe(false);
+    }
   });
 
   it("every probe passes but the gated and unprovable ones", async () => {
@@ -138,7 +199,6 @@ describe("the probes on a conforming staging fake", () => {
       P46: "not-applicable",
       P29: "unproven-live",
       P30: "unproven-live",
-      P35: "unproven-live",
     });
     expect(levels).toEqual(expected);
     // #1012: the gate's frozen list is exactly the probes that give the
@@ -185,7 +245,7 @@ describe("the probes on a conforming staging fake", () => {
     const out = await runAll(fakeApi());
     const name = (id: ProbeId) =>
       `provisioning > ${id}: ${PROBES.find((p) => p.id === id)?.title}`;
-    for (const id of ["P29", "P30", "P35"] as const)
+    for (const id of ["P29", "P30"] as const)
       expect(
         acceptedUnproven({
           name: name(id),
@@ -237,120 +297,6 @@ describe("the probes on a conforming staging fake", () => {
   });
 });
 
-describe("P50: the snooze owner path on an install the run creates (#1078)", () => {
-  const fakes: FakeApi[] = [];
-  afterEach(async () => {
-    for (const f of fakes.splice(0)) await f.closeTenants();
-  });
-  const p50 = async (fault?: Fault) => {
-    const f = fakeApi();
-    fakes.push(f);
-    if (fault) f.faults.add(fault);
-    await bringUp(f);
-    const run = new Run(CONFIG, f.io);
-    const p = PROBES.find((x) => x.id === "P50");
-    if (!p) throw new Error("no P50");
-    const out = await p.run(run).then(
-      (o) => o,
-      (e: Error) => e,
-    );
-    const snz = [...f.installs.values()].find((i) =>
-      i.slug.startsWith("rl-snz-"),
-    );
-    return { f, run, out, snz };
-  };
-
-  it("creates rl-snz-<run> business tier with domain codes and test hooks, mints R26 creds, passes the snooze path, then deletes and purges it", async () => {
-    const { f, run, out, snz } = await p50();
-    expect(out).toEqual({ level: "pass" });
-    expect(snz?.slug).toBe("rl-snz-1234");
-    expect(snz?.slug.length).toBeLessThanOrEqual(32);
-    expect(f.creates.find((b) => b.slug === snz?.slug)).toMatchObject({
-      tier: "business",
-      ownerEmail: `redline-owner@${STAGING_TEST_DOMAIN}`,
-      testHooks: true,
-      auth: {
-        providers: ["email"],
-        domains: [STAGING_TEST_DOMAIN],
-        domainCodes: true,
-      },
-    });
-    // R26 ran for it.
-    expect(f.log).toContain(
-      `POST ${CONFIG.api}/v1/installs/${snz?.id}/redline-creds`,
-    );
-    expect(snz?.state).toBe("deleted");
-    expect(f.tenants.size).toBe(0);
-    expect(run.s.cleanup).toEqual([]);
-  });
-
-  it("a server whose status hides the test hold (no binding, no seam: v0.101.0) fails P50 with the held-list message; the install is still removed", async () => {
-    const { out, snz, f } = await p50("p50_no_test_held");
-    expect(out).toBeInstanceOf(ProbeFail);
-    const msg = (out as Error).message;
-    expect(msg).toBe(
-      "P50 snooze: rl-snz owner snooze: the group is not in the status's held list",
-    );
-    expect(msg).not.toContain("@");
-    expect(msg).not.toContain(snz?.id);
-    expect(msg).not.toContain(snz?.appHost);
-    expect(snz?.state).toBe("deleted");
-    expect(f.tenants.size).toBe(0);
-  });
-
-  it("a snooze that leaves the hold counted fails P50 with no address, host or install id; the install is still removed", async () => {
-    const { out, snz, f } = await p50("p50_snooze_counts");
-    expect(out).toBeInstanceOf(ProbeFail);
-    const msg = (out as Error).message;
-    expect(msg).toBe(
-      "P50 snooze: rl-snz: heldSweeps is 1 after the snooze, want 0 (the snoozed hold still counts)",
-    );
-    expect(msg).not.toContain("@");
-    expect(msg).not.toContain(snz?.id);
-    expect(msg).not.toContain(snz?.appHost);
-    expect(snz?.state).toBe("deleted");
-    expect(f.tenants.size).toBe(0);
-  });
-
-  it("an owner the server sends no code is a broken create: P50 fails; the install is still removed", async () => {
-    const { out, snz } = await p50("p50_ineligible");
-    expect(out).toBeInstanceOf(ProbeFail);
-    expect((out as Error).message).toBe(`P50: ${NO_OWNER}`);
-    expect(snz?.state).toBe("deleted");
-  });
-
-  it("a create with domain codes off fails P50 before any hook; the install is still removed", async () => {
-    const { out, snz } = await p50("p50_no_codes");
-    expect(out).toBeInstanceOf(ProbeFail);
-    expect((out as Error).message).toBe(
-      "P50: the create did not turn domain codes on",
-    );
-    expect(snz?.state).toBe("deleted");
-  });
-
-  it("a setup hook's refusal on rl-snz stays infra, not a P50 fail; the install is still removed", async () => {
-    const { out, snz, f } = await p50("p50_groups_refused");
-    expect(out).toBeInstanceOf(InfraError);
-    expect(out).not.toBeInstanceOf(ProbeFail);
-    const msg = (out as Error).message;
-    expect(msg.startsWith("infra: setup ")).toBe(true);
-    expect(setupHookName(msg)).toBe(
-      "infra: setup /__test/directory-groups no_reason",
-    );
-    expect(msg).not.toContain("@");
-    expect(msg).not.toContain(snz?.id);
-    expect(msg).not.toContain(snz?.appHost);
-    expect(snz?.state).toBe("deleted");
-    expect(f.tenants.size).toBe(0);
-  });
-
-  it("a create that lands on another tier fails P50 before any hook; the install is still removed", async () => {
-    const { out, snz } = await p50("p50_team_tier");
-    expect((out as Error).message).toBe("P50: tier is team, want business");
-    expect(snz?.state).toBe("deleted");
-  });
-});
-
 describe("each probe fails on the behaviour it guards", () => {
   const cases: [Fault, ProbeId, RegExp][] = [
     ["p1_200", "P1", /P1: want 401, got status 200/],
@@ -395,6 +341,8 @@ describe("each probe fails on the behaviour it guards", () => {
       "P44",
       /P44: registration 1 want 201 with a client_id or 429, got status 400/,
     ],
+    ["p20_content_serving", "P20", /P20 paused page: not within 120 s/],
+    ["p21_stays_paused", "P21", /P21 \/healthz 200: not within 120 s/],
     ["p22_closed_404", "P22", /P22 closed page/],
     ["p23_no_row", "P23", /P23: inventory has no row for it/],
     ["p23_slug_freed", "P23", /P23: R18 after purge: .*, want taken/],
@@ -407,7 +355,8 @@ describe("each probe fails on the behaviour it guards", () => {
     [
       "r2_q_owner_email",
       "P49",
-      /P49 R2 q=owner email: 1 items match by owner email only, want 0/,
+      // rl-p, and rl-l when its chain has it live.
+      /P49 R2 q=owner email: [1-2] items match by owner email only, want 0/,
     ],
   ];
   for (const [fault, id, re] of cases)
@@ -1595,7 +1544,20 @@ describe("a failed step doesn't cascade", () => {
         expect(seen.has(n), `${p.id} ${n}`).toBe(true);
       seen.add(p.id);
     }
-    expect(PROBES.filter((p) => p.needs).length).toBe(13);
+    // P20 and P22 need nothing now: they run on rl-l, not P13's rl-p.
+    expect(PROBES.filter((p) => p.needs).length).toBe(11);
+  });
+
+  it("every needs is earlier in the probe's own chain, so a failure blocks only its own chain", () => {
+    for (const c of [...CHAINS, { name: "after", probes: AFTER_CHAINS }]) {
+      const seen = new Set<string>();
+      for (const id of c.probes) {
+        const p = PROBES.find((x) => x.id === id);
+        for (const n of p?.needs ?? [])
+          expect(seen.has(n), `${c.name}: ${id} needs ${n}`).toBe(true);
+        seen.add(id);
+      }
+    }
   });
 
   it("the gate never takes a blocked case", () => {
@@ -1733,5 +1695,233 @@ describe("the run's cleanup", () => {
       i.slug.startsWith("rl-p-"),
     );
     expect(rlp?.state).toBe("deleted");
+  });
+});
+
+describe("the chains run at once (startChains)", () => {
+  const HAPPY: Record<string, string> = {
+    ...Object.fromEntries(PROBES.map((p) => [p.id, "pass"])),
+    P7: "not-applicable",
+    P46: "not-applicable",
+    P29: "unproven-live",
+    P30: "unproven-live",
+  };
+  const levels = (out: Map<ProbeId, Outcome | string>) =>
+    Object.fromEntries([...out].map(([k, v]) => [k, level(v)]));
+  const without = (m: Record<string, unknown>, ids: readonly string[]) =>
+    Object.fromEntries(Object.entries(m).filter(([k]) => !ids.includes(k)));
+  const RLP_AFTER_P13: ProbeId[] = [
+    "P49",
+    "P14",
+    "P15",
+    "P16",
+    "P18",
+    "P19",
+    "P45",
+    "P31",
+    "P23",
+  ];
+  /** The run's own installs (rl-p, rl-l, rl-q) still live. */
+  const live = (f: FakeApi) =>
+    [...f.installs.values()]
+      .filter((i) => /^rl-(p|l|q)-/.test(i.slug))
+      .filter((i) => i.state !== "deleted")
+      .map((i) => `${i.slug} ${i.state}`);
+  const bySlug = (f: FakeApi, prefix: string) =>
+    [...f.installs.values()].find((i) => i.slug.startsWith(prefix));
+
+  it("every probe is in exactly one chain or after them all", () => {
+    const ids = [...CHAINS.flatMap((c) => c.probes), ...AFTER_CHAINS];
+    expect(new Set(ids).size).toBe(ids.length);
+    expect([...ids].sort()).toEqual(PROBES.map((p) => p.id).sort());
+  });
+
+  it("a conforming fake: every level as before; the chains overlap; rl-l is made as rl-p but at the tag, and removed; nothing of the run's is left", async () => {
+    const f = fakeApi();
+    const { out, run, liveAtSettle } = await runChains(f);
+    expect(levels(out)).toEqual(HAPPY);
+    // Each chain removed its own install (rl-l by its tail): the run's
+    // cleanup had nothing left to do.
+    expect(liveAtSettle).toEqual([]);
+    // Overlap: rl-l is suspended before rl-p's rollback (in PROBES order
+    // P31 comes first, so a one-at-a-time run can't do this).
+    const rll = bySlug(f, "rl-l-");
+    const rlp = bySlug(f, "rl-p-");
+    const at = (s: string) => f.log.findIndex((l) => l.endsWith(s));
+    expect(at(`/installs/${rll?.id}/suspend`)).toBeGreaterThan(-1);
+    expect(at(`/installs/${rll?.id}/suspend`)).toBeLessThan(
+      at(`/installs/${rlp?.id}/rollback`),
+    );
+    // rl-l: rl-p's create body, but at the release under test (rl-p's is
+    // the previous one, so P45 has an upgrade to make).
+    const create = (slug?: string) => f.creates.find((b) => b.slug === slug);
+    expect(create(rlp?.slug)?.version).toBe("0.81.0");
+    expect(create(rll?.slug)).toEqual({
+      ...create(rlp?.slug),
+      slug: rll?.slug,
+      requestId: run.rid("rll"),
+      version: CONFIG.version,
+    });
+    expect(rll?.slug).toBe("rl-l-1234");
+    // P20's suspend went to an install running the tag.
+    expect(
+      f.log.some((l) => l.endsWith(`/installs/${rll?.id}/suspend`)) &&
+        rll?.version === CONFIG.version,
+    ).toBe(true);
+    expect(live(f)).toEqual([]);
+    expect(run.s.cleanup).toEqual([]);
+    // P33 ran last and checked every chain's jobs, rl-l's included.
+    expect(out.get("P33")).toEqual({
+      level: "pass",
+      note: `${run.s.jobIds.length} job(s)`,
+    });
+    const rllJobs = [...f.jobs.values()].filter((j) => j.installId === rll?.id);
+    expect(rllJobs.length).toBeGreaterThan(0);
+    for (const j of rllJobs) expect(run.s.jobIds).toContain(j.id);
+  });
+
+  it("a failed P13 blocks only rl-p's chain, naming P13; the other chains pass and every install is removed", async () => {
+    const f = fakeApi();
+    f.faults.add("p13_replay_new_job");
+    const { out } = await runChains(f);
+    expect(out.get("P13")).toMatch(/replay answered another job id/);
+    for (const id of RLP_AFTER_P13)
+      expect(out.get(id), id).toEqual({
+        level: "blocked",
+        reason: "blocked by P13",
+      });
+    const rlpChain = ["P13", ...RLP_AFTER_P13];
+    expect(without(levels(out), rlpChain)).toEqual(without(HAPPY, rlpChain));
+    expect(live(f)).toEqual([]);
+  });
+
+  it("rl-l's create failing is infra on P20 and P22 (P21 blocked by P20), never a fail; rl-p's chain still passes; the failed rl-l is removed", async () => {
+    const f = fakeApi();
+    f.faults.add("rll_create_failed");
+    const { out, run } = await runChains(f);
+    const infra = out.get("P20") as string;
+    expect(infra).toMatch(
+      /^infra: rl-l setup: rl-l create: job failed \(cf_api_error\)/,
+    );
+    expect(out.get("P22")).toBe(infra);
+    expect(out.get("P21")).toEqual({
+      level: "blocked",
+      reason: "blocked by P20",
+    });
+    // No install id or host in the reason (the run log is public).
+    const rll = bySlug(f, "rl-l-");
+    expect(infra).not.toContain(rll?.id);
+    expect(infra).not.toContain("open-artifacts");
+    const rllChain = ["P20", "P21", "P22"];
+    expect(without(levels(out), rllChain)).toEqual(without(HAPPY, rllChain));
+    expect(rll?.state).toBe("deleted");
+    expect(live(f)).toEqual([]);
+    expect(run.s.cleanup).toEqual([]);
+  });
+
+  it("rl-l not on the release under test when P20 starts fails P20 before any suspend (P21 blocked); rl-l is still removed", async () => {
+    const f = fakeApi();
+    f.faults.add("rll_old_version");
+    const { out } = await runChains(f);
+    expect(out.get("P20")).toBe(
+      `P20: rl-l runs 0.81.0, want the release under test ${CONFIG.version}`,
+    );
+    expect(out.get("P21")).toEqual({
+      level: "blocked",
+      reason: "blocked by P20",
+    });
+    const rll = bySlug(f, "rl-l-");
+    expect(f.log.some((l) => l.endsWith(`/installs/${rll?.id}/suspend`))).toBe(
+      false,
+    );
+    expect(without(levels(out), ["P20", "P21"])).toEqual(
+      without(HAPPY, ["P20", "P21"]),
+    );
+    expect(rll?.state).toBe("deleted");
+    expect(live(f)).toEqual([]);
+  });
+
+  it("a failed P22 fails only P22: P20 and P21 pass, rl-p's chain passes, and the tail still removes rl-l", async () => {
+    const f = fakeApi();
+    f.faults.add("p22_closed_404");
+    const { out } = await runChains(f);
+    expect(out.get("P22")).toMatch(/P22 closed page/);
+    expect(without(levels(out), ["P22"])).toEqual(without(HAPPY, ["P22"]));
+    expect(bySlug(f, "rl-l-")?.state).toBe("deleted");
+    expect(live(f)).toEqual([]);
+  });
+
+  it("a probe past its bound fails naming it and blocks its dependants; another chain and the after step still run", async () => {
+    const run = new Run(CONFIG, fakeApi().io);
+    let ranAfter = false;
+    const ok = async (): Promise<Outcome> => ({ level: "pass" });
+    const plan = startChains(run, {
+      probes: [
+        { id: "P901", title: "hangs", run: () => new Promise(() => {}) },
+        { id: "P902", title: "needs it", needs: ["P901"], run: ok },
+        { id: "P903", title: "other chain", run: ok },
+        {
+          id: "P904",
+          title: "after",
+          run: async () => {
+            ranAfter = true;
+            return ok();
+          },
+        },
+      ],
+      chains: [
+        { name: "a", probes: ["P901", "P902"] },
+        { name: "b", probes: ["P903"] },
+      ],
+      after: ["P904"],
+      boundMs: () => 30,
+    });
+    await expect(plan.outcomes.get("P901")).rejects.toThrow(
+      "P901: no result within 0 s",
+    );
+    await expect(plan.outcomes.get("P902")).resolves.toEqual({
+      level: "blocked",
+      reason: "blocked by P901",
+    });
+    await expect(plan.outcomes.get("P903")).resolves.toEqual({
+      level: "pass",
+    });
+    await plan.settled;
+    expect(ranAfter).toBe(true);
+  });
+
+  it("an rl-l removal that fails stays listed, so the run's cleanup removes it", async () => {
+    const f = fakeApi();
+    const pat = await bringUp(f);
+    let refuse = true;
+    const run = new Run(CONFIG, {
+      ...f.io,
+      rlAPat: () => pat,
+      fetch: (async (u: string, init?: RequestInit) => {
+        const rll = bySlug(f, "rl-l-");
+        if (
+          refuse &&
+          rll &&
+          String(u).endsWith(`/installs/${rll.id}/delete`) &&
+          !String(init?.body).includes("p22-del")
+        )
+          return Response.json(
+            { error: { code: "internal", message: "x" } },
+            { status: 500 },
+          );
+        return f.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    });
+    const plan = startChains(run);
+    for (const r of plan.outcomes.values()) await r.catch(() => undefined);
+    await plan.settled;
+    // rl-p and rl-q stay listed too: their purges are probes (P23, P32), and
+    // the cleanup's pass over them is a no-op.
+    expect(run.s.cleanup).toContainEqual({ slug: "rl-l-1234" });
+    expect(bySlug(f, "rl-l-")?.state).toBe("active");
+    refuse = false;
+    await cleanupInstalls(run);
+    expect(run.s.cleanup).toEqual([]);
+    expect(live(f)).toEqual([]);
   });
 });

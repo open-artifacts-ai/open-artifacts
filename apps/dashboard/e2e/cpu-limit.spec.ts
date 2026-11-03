@@ -25,9 +25,16 @@ const open = async (page: Page, path: string, plan: "free" | "paid") => {
  * the count is seen the timer exists and one fast-forward fires it. No retries,
  * no sleeps, and nothing depends on how long the machine takes. Call before
  * `open`; returns `slow()`, which waits for the next load and fires the timer.
+ *
+ * The clock starts at midday UTC: the CPU copy needs usage dated today
+ * (`useCpuSignals` drops hits whose `date` isn't the current UTC day), and each
+ * `slow()` moves the clock SLOW_MS on. Started from the wall clock, a run just
+ * before midnight crossed into the next day and lost the CPU notice (#1207).
  */
 const silentFrame = async (page: Page) => {
-  await page.clock.install();
+  const noon = new Date();
+  noon.setUTCHours(12, 0, 0, 0);
+  await page.clock.install({ time: noon });
   await page.addInitScript(() => {
     const w = window as unknown as { __frameLoads: number };
     w.__frameLoads = 0;

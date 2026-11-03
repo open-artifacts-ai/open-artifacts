@@ -103,6 +103,25 @@ export function requireUser(c: Context<AppEnv>): Member {
   return user;
 }
 
+/**
+ * Interactive cookie sessions: a Cloudflare Access sign-in (self-host),
+ * Google or an email code. Never "pat" (or any bearer token).
+ */
+const INTERACTIVE: ReadonlySet<string> = new Set(["access", "google", "code"]);
+
+/**
+ * Whether the request is a signed-in person in a browser: an interactive
+ * cookie session and no Authorization header, so never a PAT, an MCP grant
+ * or an AI agent's token, whoever holds it. Directory disconnect and member
+ * erase (#1204) require it.
+ */
+export function interactiveSession(c: Context<AppEnv>): boolean {
+  const m = c.get("authMethod");
+  return (
+    !!m && INTERACTIVE.has(m) && c.req.header("authorization") === undefined
+  );
+}
+
 const callerEmail = (u: Member) => normalizeEmail(u.email);
 
 /**

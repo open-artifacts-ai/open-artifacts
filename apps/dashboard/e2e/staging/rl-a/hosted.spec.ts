@@ -38,12 +38,9 @@ test("usage_off: no Usage in Settings, the page goes to Profile, and R.usage is 
   expect((await api(admin, R.usage)).status).toBe(404);
 });
 
-test("the sign-in page never calls rl-a self-hosted", async ({ page }) => {
-  await page.goto(`${A.app}/sign-in`);
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-  await expect(page.getByText("Self-hosted on Cloudflare")).toHaveCount(0);
-});
-
+// Cut (#1251): "the sign-in page never calls rl-a self-hosted". The page shows
+// one line or the other (apps/dashboard/src/pages/SignIn.tsx: hosted ? "Hosted
+// by Open Artifacts" : "Self-hosted on Cloudflare"), so the test below covers it.
 test("the sign-in page says it's hosted by Open Artifacts", async ({
   page,
 }) => {
