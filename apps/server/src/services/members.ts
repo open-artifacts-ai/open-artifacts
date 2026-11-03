@@ -24,7 +24,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { managesAdmins } from "../auth/authz.js";
-import type { SignInProvider } from "../auth/config.js";
+import { authConfig, type SignInProvider } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { shares, tokens, users } from "../db/schema.js";
@@ -85,6 +85,7 @@ export async function listMembers(
   const owns = sql<number>`${sql.raw(GUEST_OWNS_SQL)}`;
   const flag = (r: { owns: number }) =>
     r.owns ? { personalArtifacts: true } : {};
+  const managed = await directoryManagedOf(env);
   const rows = await getDb(env)
     .select({
       id: users.id,
@@ -108,7 +109,32 @@ export async function listMembers(
     identities: identitiesOf(r),
     restriction: restrictionOf(r),
     ...flag(r),
+    ...(managed(r) ? { directoryManaged: true } : {}),
   }));
+}
+
+/**
+ * Member.directoryManaged (#1146): whether removing this row can be undone
+ * by directory sync. While sync manages the install (syncManages), a listing
+ * that finds a Workspace account at the address of a row with no Google
+ * identity gives that row the deletion treatment and creates a new, active
+ * row there (directory/apply.ts applyUsers), audited user.readmitted_by_sync.
+ * Only for an address in AUTH_DOMAINS (applyUsers skips the rest), never the
+ * owner (skipped too) and never a row already removed. A Google-linked row
+ * stays removed: sync matches it by id and revives only its own removals.
+ * Whether Workspace lists the address is Google's to say; this is the
+ * install's side of it.
+ */
+async function directoryManagedOf(env: Env) {
+  if (!(await syncManages(env))) return () => false;
+  const domains = new Set(authConfig(env).domains);
+  return (
+    r: MemberExtrasRow & { email: string; role: string; status: string },
+  ) =>
+    r.role !== "owner" &&
+    statusOf(r.status) !== "removed" &&
+    domains.has(r.email.slice(r.email.lastIndexOf("@") + 1)) &&
+    !identitiesOf(r).includes("google");
 }
 
 /** One user's hosted Member fields by id (?1): read back with hostedFields. */
