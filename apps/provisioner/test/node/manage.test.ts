@@ -12,6 +12,11 @@ import {
 } from "../../../../packages/provision/test/fixtures/release.js";
 import { JOB_ERROR_TEXT } from "../../src/errors.js";
 import { GRACE_MS, NEVER_ROUTED, runManage } from "../../src/manage.js";
+import {
+  CLOSE_SOCKETS_FAILED,
+  CLOSE_SOCKETS_JOB,
+  closeInstallSockets,
+} from "../../src/ops.js";
 import { KEY_LIVE_WAITS_MS, REDLINE_STEP } from "../../src/redline.js";
 import { openSealed } from "../../src/seal.js";
 import { runCreate } from "../../src/workflow.js";
@@ -454,6 +459,69 @@ describe("suspend, resume, delete, restore (5.5, 5.6)", () => {
       suspended_at: null,
       suspend_reason: null,
     });
+  });
+
+  // #1182: suspend asks the install to close its open sockets, after the pause.
+  it("suspend calls the install's oa:close-sockets once, after both HOSTS keys are paused", async () => {
+    const s = await active({ slug: "sockco" });
+    const before = w.fake.scheduledCalls.length;
+    const r = await manage("suspend", s.installId, {
+      args: { reason: "billing" },
+    });
+    expect(r.error).toBeNull();
+    const calls = w.fake.scheduledCalls.slice(before);
+    expect(calls).toEqual([
+      {
+        script: expect.stringMatching(new RegExp(`${s.installId}$`)),
+        cron: CLOSE_SOCKETS_JOB,
+        hosts: [`paused:${s.installId}`, `paused:${s.installId}`],
+      },
+    ]);
+    // Resume needs nothing new: no call.
+    const n = w.fake.scheduledCalls.length;
+    expect((await manage("resume", s.installId)).error).toBeNull();
+    expect(w.fake.scheduledCalls.length).toBe(n);
+  });
+
+  it.each([
+    ["throw", () => Promise.reject(new Error("unknown system job a@b.co"))],
+    ["outcome", () => Promise.resolve({ outcome: "exception" })],
+  ] as const)(
+    "a close-sockets call that fails (%s) logs one fixed line and the suspend completes",
+    async (cat, fail) => {
+      const s = await active({ slug: `fail${cat}` });
+      w.fake.onScheduled = fail;
+      const r = await manage("suspend", s.installId, {
+        args: { reason: "billing" },
+      });
+      expect(r.error).toBeNull();
+      expect(w.fake.scheduledCalls.at(-1)?.cron).toBe(CLOSE_SOCKETS_JOB);
+      expect(w.hosts(`fail${cat}`)).toEqual([
+        `paused:${s.installId}`,
+        `paused:${s.installId}`,
+      ]);
+      expect(w.lifecycle(s.installId)).toMatchObject({
+        serving_mode: "paused",
+        suspended_at: expect.any(Number),
+      });
+      expect(w.status(s.installId)?.state).toBe("suspended");
+      const lines = (warn?.mock.calls ?? []).filter(
+        (c) => c[0] === CLOSE_SOCKETS_FAILED,
+      );
+      expect(lines).toEqual([[CLOSE_SOCKETS_FAILED, cat]]);
+      // No id, no error text.
+      expect(JSON.stringify(lines)).not.toContain(s.installId);
+      expect(JSON.stringify(lines)).not.toContain("a@b.co");
+    },
+  );
+
+  it("a close-sockets call that never settles times out, logged; it never throws", async () => {
+    const s = await active({ slug: "stallco" });
+    w.fake.onScheduled = () => new Promise(() => {});
+    expect(await closeInstallSockets(w.ctx, s.installId, 20)).toBe("timeout");
+    expect(
+      (warn?.mock.calls ?? []).filter((c) => c[0] === CLOSE_SOCKETS_FAILED),
+    ).toEqual([[CLOSE_SOCKETS_FAILED, "timeout"]]);
   });
 
   it("delete closes and starts the grace; restore reopens (paused if it was suspended)", async () => {
