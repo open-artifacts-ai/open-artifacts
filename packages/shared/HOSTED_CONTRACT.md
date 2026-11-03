@@ -292,6 +292,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `turnstile_required` | 400 | code request with no Turnstile token while Turnstile is configured |
 | `turnstile_failed` | 403 | Turnstile token rejected |
 | `code_unavailable` | 503 | code sign-in can't run: `SESSION_SECRET` is under 32 characters, so the code keys can't be derived, or the `RL_AUTH` rate-limit binding is missing |
+| `storage_unavailable` | 503 | Cloudflare D1 or KV failed on this request, with `Retry-After`. Not a bug in the request: try again. Any other unexpected failure stays `internal` |
 | `reauth_required` | 401 | break-glass routes need a fresh Google sign-in |
 | `break_glass_required` | 401 | `GET R.me` for the org owner refused by a directory customer_mismatch; details `{ fresh }` (see Sign-in) |
 | `space_name_reserved` | 400 | `POST R.spaces` or a `PATCH R.space(id)` rename to "Personal" (trimmed, any case); details `{ field: "name" }`, message `SPACE_NAME_RESERVED_MESSAGE`. Existing spaces with that name are left alone |

@@ -876,6 +876,30 @@ describe("MCP quota errors", () => {
     expect(textOf(r)).toBe(`quota_exceeded: ${QUOTA_MESSAGE}`);
     await c.close();
   });
+
+  it("a storage failure → isError any AI agent can read as try again", async () => {
+    const boom = () => {
+      throw new Error("D1_ERROR: internal error; reference = abc123");
+    };
+    const DB = new Proxy(env.DB, {
+      get(t, k) {
+        if (k === "batch") return boom;
+        const v = Reflect.get(t, k);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const c = await connect(ownerPat, { env: E({ DB }) });
+    const r = await tool(c, "publish_artifact", {
+      title: "q",
+      format: "markdown",
+      content: "# q",
+    });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe(
+      "storage_unavailable: Temporarily unavailable. Try again shortly.",
+    );
+    await c.close();
+  });
 });
 
 describe("tool manifest", () => {

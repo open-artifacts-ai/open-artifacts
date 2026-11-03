@@ -16,6 +16,7 @@ import {
   appOrigin,
   errorJson,
   isD1QuotaError,
+  isStorageFailure,
 } from "../http/errors.js";
 import { logError } from "../log.js";
 import { toRuntimeApiError } from "../runtime/do.js";
@@ -75,6 +76,12 @@ export function errorResult(e: unknown): CallToolResult {
   }
   if (isD1QuotaError(e)) return text("quota_exceeded", QUOTA_MESSAGE);
   logError("mcp_tool_error", e);
+  // The same answer the API gives, so any AI agent knows to try again.
+  if (isStorageFailure(e))
+    return text(
+      "storage_unavailable",
+      "Temporarily unavailable. Try again shortly.",
+    );
   return text("internal", "Internal error");
 }
 

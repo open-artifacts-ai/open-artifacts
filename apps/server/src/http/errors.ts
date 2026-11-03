@@ -34,6 +34,34 @@ export function isD1QuotaError(e: unknown): boolean {
   return false;
 }
 
+/**
+ * Cloudflare's storage failing, not our code: the two forms seen on staging
+ * (#1126). Exact on purpose: this answer is retryable, so a bug of ours that
+ * merely mentions D1 or KV has to stay a plain `internal`.
+ */
+const STORAGE_FAILURE = [
+  /^D1_ERROR: internal error\b/,
+  /^KV (?:GET|PUT|DELETE|LIST) failed: 5\d\d\b/,
+];
+
+export function isStorageFailure(e: unknown): boolean {
+  let cur: unknown = e;
+  for (let i = 0; i <= MAX_CAUSE_DEPTH; i++) {
+    if (cur === null || typeof cur !== "object") return false;
+    const { message, cause } = cur as { message?: unknown; cause?: unknown };
+    if (
+      typeof message === "string" &&
+      STORAGE_FAILURE.some((re) => re.test(message))
+    )
+      return true;
+    cur = cause;
+  }
+  return false;
+}
+
+/** Seconds a client should wait after a storage failure (Retry-After). */
+const STORAGE_RETRY_S = 5;
+
 export function errorJson(
   status: number,
   code: ErrorCode,
@@ -72,6 +100,18 @@ export function toErrorResponse(e: unknown): Response {
       e.status,
       CODE_FOR_HTTP[e.status] ?? "internal",
       e.message,
+    );
+  }
+  if (isStorageFailure(e)) {
+    // Still an unhandled error to whoever reads the logs: only the answer
+    // changes, so a client can tell this from a bug and try again.
+    logError("unhandled_error", e);
+    return errorJson(
+      STATUS_FOR.storage_unavailable,
+      "storage_unavailable",
+      "Temporarily unavailable. Try again shortly.",
+      undefined,
+      { "retry-after": String(STORAGE_RETRY_S) },
     );
   }
   logError("unhandled_error", e);
