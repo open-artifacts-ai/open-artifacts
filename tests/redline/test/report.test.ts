@@ -765,6 +765,7 @@ describe("nightly-only: P30 is accepted on a scheduled run and never on a candid
       c({ reason: "skipped" }),
       c({ level: "fail" }),
       c({ level: "infra" }),
+      c({ level: "blocked" }),
       c({ name: "provisioning > P31: x" }),
       c({ file: "surfaces.test.ts" }),
     ])
