@@ -34,6 +34,8 @@ export interface LifeTenant {
   foreignReads: boolean;
   /** Fault: a socket is closed (1001) right after its 101. */
   closeOnOpen: boolean;
+  /** Fault: a publish stores the artifact public, whatever was asked. */
+  forcePublic: boolean;
   /** Every request, as "METHOD path". */
   log: string[];
   /** Sends each open socket a close frame with `code`, then ends it. */
@@ -61,6 +63,7 @@ export async function lifeTenant(
     sockets: new Set(),
     foreignReads: false,
     closeOnOpen: false,
+    forcePublic: false,
     log: [],
     closeSockets: (code) => {
       for (const s of t.sockets) {
@@ -109,7 +112,7 @@ export async function lifeTenant(
       t.artifacts.set(id, {
         title: String(b.title),
         format: String(b.format),
-        visibility: b.visibility ?? "private",
+        visibility: t.forcePublic ? "public" : (b.visibility ?? "private"),
         content: String(b.content),
         shares: new Map(),
       });

@@ -458,6 +458,17 @@ describe("each probe fails on the behaviour it guards", () => {
       "P20",
       /^P20 socket: closed before the suspend was sent, so its close proves nothing$/,
     ],
+    // LIFE-6: the seed is checked before any step, so a later failure is the step's.
+    [
+      "seed_public",
+      "P13",
+      /^P13 seed: the seeded artifact is not the private marker sent$/,
+    ],
+    [
+      "seed_b_reads",
+      "P13",
+      /^P13 seed: rl-b's PAT at rl-p: A's credential at B \(rl-p; expected refused\): rl-p did not refuse \(status 200, /,
+    ],
     // LIFE-6: every harm after every step that keeps rl-p fails that step's probe.
     ...LIFE_STEPS.flatMap(([step, id]) =>
       LIFE_HARMS.map(

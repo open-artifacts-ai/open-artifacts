@@ -95,6 +95,8 @@ export type Fault =
   | "socket_stays_open"
   | "socket_ttl_close"
   | "socket_closes_early"
+  | "seed_public"
+  | "seed_b_reads"
   | "p1_200"
   | "p6_alg_none_ok"
   | "p13_replay_new_job"
@@ -574,6 +576,8 @@ export function fakeApi(): FakeApi {
       if (i.slug.startsWith("rl-p-")) {
         const t = await startLife(i);
         t.closeOnOpen = faults.has("socket_closes_early");
+        t.forcePublic = faults.has("seed_public");
+        t.foreignReads = faults.has("seed_b_reads");
         const b = installs.get(CONFIG.rlB.id) as FInstall;
         if (!life.has(b.appHost)) await startLife(b);
       }
