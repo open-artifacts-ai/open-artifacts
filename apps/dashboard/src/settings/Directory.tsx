@@ -76,22 +76,31 @@ const timeFmt = new Intl.DateTimeFormat("en-US", {
   hour: "numeric",
   minute: "2-digit",
 });
-const dayTimeFmt = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-});
 const dayFmt = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
 });
+const dayYearFmt = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
 
 const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
-/** "2:04 PM" today, else "Oct 20, 3:12 PM". */
+const isToday = (iso: string) => sameDay(new Date(iso), new Date());
+/**
+ * Every time on this page carries its day (Design, #1189): "today at 2:04
+ * PM", "Oct 20 at 3:12 PM", and "Oct 20, 2025 at 3:12 PM" in another year.
+ */
 const when = (iso: string) => {
   const d = new Date(iso);
-  return sameDay(d, new Date()) ? timeFmt.format(d) : dayTimeFmt.format(d);
+  const time = timeFmt.format(d);
+  if (isToday(iso)) return `today at ${time}`;
+  const day =
+    d.getFullYear() === new Date().getFullYear()
+      ? dayFmt.format(d)
+      : dayYearFmt.format(d);
+  return `${day} at ${time}`;
 };
 /** "3 h", "25 min", "2 days". */
 const span = (iso: string) => {
@@ -114,7 +123,10 @@ function When({ iso, text }: { iso: string; text: string }) {
 const Rel = ({ iso }: { iso: string }) => (
   <When iso={iso} text={relativeTime(iso)} />
 );
-const At = ({ iso }: { iso: string }) => <When iso={iso} text={when(iso)} />;
+/** `on`: "on Oct 20 at 3:12 PM", but "today at 11:55 AM" (no "on") today. */
+const At = ({ iso, on }: { iso: string; on?: boolean }) => (
+  <When iso={iso} text={on && !isToday(iso) ? `on ${when(iso)}` : when(iso)} />
+);
 
 // -- connect errors (`?error=` after Google)
 
@@ -575,7 +587,7 @@ function StatusHeader({
             {sync.unhealthySince ? (
               <>
                 {" "}
-                on <At iso={sync.unhealthySince} />
+                <At on iso={sync.unhealthySince} />
               </>
             ) : null}
             .
@@ -593,7 +605,7 @@ function StatusHeader({
             {sync.unhealthySince ? (
               <>
                 {" "}
-                on <At iso={sync.unhealthySince} />
+                <At on iso={sync.unhealthySince} />
               </>
             ) : null}
             .
