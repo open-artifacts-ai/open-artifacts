@@ -42,7 +42,7 @@ export const ROBOTS = "User-agent: *\nDisallow: /";
 
 // The app host also opens the guides any AI agent is sent to read.
 // Allow comes first for parsers that take the first match.
-const APP_ROBOTS = "User-agent: *\nAllow: /"; // MUTATION S1
+const APP_ROBOTS = `User-agent: *\nAllow: ${LLMS_PATH}\nAllow: ${SKILL_PATH}\nAllow: ${UPGRADE_PATH}\nDisallow: /`;
 
 export const methodNotAllowed = () =>
   errorJson(405, "bad_request", "Method not allowed", undefined, {
