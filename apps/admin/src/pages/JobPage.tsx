@@ -256,7 +256,7 @@ export function JobPage({ id }: { id: string }) {
         </div>
         {/* Once the job has failed there is nothing left to say here. */}
         {job.status !== "failed" && (
-          <aside className="oa-side oa-job-side">
+          <aside className="oa-side oa-job-side" aria-label="What happens">
             {live && (
               <>
                 <h2>If you cancel</h2>
