@@ -23,6 +23,7 @@ import {
   BROKER_IP_PERIOD_MS,
   BROKER_IP_WAIT_MS,
   bringUpgrade,
+  cleanupInstalls,
   failText,
   mintCreds,
   type Outcome,
@@ -1485,5 +1486,87 @@ describe("a failed step doesn't cascade", () => {
         { name: "b", level: "blocked", reason: "blocked by P13" },
       ]),
     ).toBe(false);
+  });
+});
+
+describe("the run's cleanup", () => {
+  const made = async (f: FakeApi, run: Run, slug: string) =>
+    run.accepted(
+      await run.v1("/installs", {
+        body: {
+          requestId: run.rid(slug),
+          slug,
+          tier: "team",
+          testHooks: true,
+        },
+      }),
+      "create",
+    );
+
+  it("removes an install left on the list, and a second pass is a no-op", async () => {
+    const f = fakeApi();
+    const run = new Run(CONFIG, f.io);
+    const slug = run.slug("p");
+    run.s.cleanup.push({ slug });
+    const a = await made(f, run, slug);
+    await cleanupInstalls(run);
+    expect(f.installs.get(a.install.id)?.state).toBe("deleted");
+    expect(run.s.cleanup).toEqual([]);
+    await cleanupInstalls(run);
+  });
+
+  it("an install stuck in `deleting` goes straight to purge", async () => {
+    const f = fakeApi();
+    const run = new Run(CONFIG, f.io);
+    const slug = run.slug("p");
+    run.s.cleanup.push({ slug });
+    const a = await made(f, run, slug);
+    await run.done(a.job.id, "create");
+    const d = run.accepted(
+      await run.v1(`/installs/${a.install.id}/delete`, {
+        body: { requestId: run.rid("d"), confirmSlug: slug },
+      }),
+      "delete",
+    );
+    await run.done(d.job.id, "delete");
+    expect(f.installs.get(a.install.id)?.state).toBe("deleting");
+    await cleanupInstalls(run);
+    expect(f.installs.get(a.install.id)?.state).toBe("deleted");
+  });
+
+  it("touches only what this run listed", async () => {
+    const f = fakeApi();
+    const run = new Run(CONFIG, f.io);
+    const other = await made(f, run, "rl-p-another-run");
+    await run.done(other.job.id, "create");
+    await cleanupInstalls(run);
+    expect(f.installs.get(other.install.id)?.state).toBe("active");
+  });
+
+  it("a removal that fails stays on the list and fails the run, after trying the rest", async () => {
+    const f = fakeApi();
+    const run = new Run(CONFIG, {
+      ...f.io,
+      fetch: (async (u: string, init: RequestInit) =>
+        new URL(u).searchParams.get("q") === "rl-p-broken"
+          ? new Response("{}", { status: 500 })
+          : f.io.fetch(u, init)) as unknown as typeof fetch,
+    });
+    const slug = run.slug("p");
+    const a = await made(f, run, slug);
+    run.s.cleanup.push({ slug: "rl-p-broken" }, { slug });
+    await expect(cleanupInstalls(run)).rejects.toThrow(/cleanup rl-p-broken/);
+    expect(run.s.cleanup).toEqual([{ slug: "rl-p-broken" }]);
+    expect(f.installs.get(a.install.id)?.state).toBe("deleted");
+  });
+
+  it("a green run leaves nothing to clean, and P13 listed rl-p before its create", async () => {
+    const f = fakeApi();
+    const out = await runAll(f);
+    expect(out.get("P23")).toEqual({ level: "pass" });
+    const rlp = [...f.installs.values()].find((i) =>
+      i.slug.startsWith("rl-p-"),
+    );
+    expect(rlp?.state).toBe("deleted");
   });
 });

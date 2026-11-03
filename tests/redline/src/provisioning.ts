@@ -88,6 +88,8 @@ export const HOSTS_SETTLE_MS = 120_000;
 export const JOB_WITHIN_MS = 20 * 60_000;
 /** A case's vitest timeout: its slowest wait plus margin. */
 export const PROBE_TIMEOUT_MS = JOB_WITHIN_MS + 5 * 60_000;
+/** The run's cleanup: one install can wait on a live job, a delete and a purge. */
+export const CLEANUP_TIMEOUT_MS = 3 * JOB_WITHIN_MS + 5 * 60_000;
 export const P34_REQUESTS = 400;
 /** RL_BROKER_IP's period (apps/auth-broker/wrangler.jsonc: limit 60 per 60 s). */
 export const BROKER_IP_PERIOD_MS = 60_000;
@@ -140,7 +142,7 @@ export class Run {
   readonly c: ProvConfig;
   readonly io: ProvIo;
   /** Shared state between ordered probes. */
-  readonly s: RunState = { jobIds: [] };
+  readonly s: RunState = { jobIds: [], cleanup: [] };
   constructor(c: ProvConfig, io: ProvIo) {
     this.c = c;
     this.io = io;
@@ -379,6 +381,13 @@ export interface RlP {
 
 export interface RunState {
   jobIds: string[];
+  /**
+   * This run's installs, listed before their create: a probe that stops
+   * anywhere still leaves them for the run's end (cleanupInstalls). rl-s isn't
+   * here: no principal can purge a test user's install within a run, and the
+   * scheduler does at purge_at (P29).
+   */
+  cleanup: { slug: string }[];
   /** The OIDC actor label (Job.actor.label). */
   actor?: string;
   rlp?: RlP;
@@ -690,6 +699,69 @@ const oidcCreate = (
   ...(version ? { version } : {}),
 });
 
+/**
+ * Deletes and purges one install this run created, found by its slug: the
+ * create may have failed before its answer. Done when no live row is left, so
+ * it's a no-op after P23. Waits out a live job; a row already `deleting` or
+ * `failed` goes straight to purge.
+ */
+export async function removeInstall(
+  run: Run,
+  slug: string,
+  what: string,
+): Promise<void> {
+  const l = await run.v1(`/installs?${new URLSearchParams({ q: slug })}`, {
+    read: true,
+  });
+  expect(l, 200, `${what} R2`);
+  const row = (
+    l.json as { items: { id: string; slug: string; state: string }[] }
+  ).items.find((i) => i.slug === slug && i.state !== "deleted");
+  if (!row) return;
+  let d = await ownDetail(run, row.id);
+  expect(d, 200, `${what} R3`);
+  let i = d.json as InstallDetail;
+  if (i.activeJobId) await run.waitJob(i.activeJobId);
+  d = await ownDetail(run, row.id);
+  expect(d, 200, `${what} R3`);
+  i = d.json as InstallDetail;
+  if (i.state === "deleted") return;
+  if (i.state !== "failed" && i.state !== "deleting") {
+    const del = run.accepted(
+      await run.v1(`/installs/${row.id}/delete`, {
+        body: { requestId: run.rid(`${slug}-del`), confirmSlug: slug },
+      }),
+      `${what} delete`,
+    );
+    await run.done(del.job.id, `${what} delete`);
+  }
+  const g = run.accepted(
+    await run.v1(`/installs/${row.id}/purge`, {
+      body: { requestId: run.rid(`${slug}-purge`), confirmSlug: slug },
+    }),
+    `${what} purge`,
+  );
+  await run.done(g.job.id, `${what} purge`);
+}
+
+/**
+ * The run's end: removes every install left on run.s.cleanup. Tries them all,
+ * then fails naming the ones it couldn't: a run that strands an install stays
+ * red. Only slugs this run listed, so another run's install can't be touched.
+ */
+export async function cleanupInstalls(run: Run): Promise<void> {
+  const failed: string[] = [];
+  for (const e of [...run.s.cleanup]) {
+    try {
+      await removeInstall(run, e.slug, `cleanup ${e.slug}`);
+      run.s.cleanup.splice(run.s.cleanup.indexOf(e), 1);
+    } catch (x) {
+      failed.push(x instanceof ProbeFail ? x.message : `${e.slug}: error`);
+    }
+  }
+  if (failed.length) throw new ProbeFail(failed.join("; "));
+}
+
 export const PROBES: readonly Probe[] = [
   {
     id: "P1",
@@ -903,6 +975,7 @@ export const PROBES: readonly Probe[] = [
       "create rl-p-<run> twice with one requestId: one job, one install, done (redline variant)",
     run: async (run) => {
       const slug = run.slug("p");
+      run.s.cleanup.push({ slug });
       const before = await run.v1(`/installs?q=${slug}`, { read: true });
       expect(before, 200, "P13 list before");
       const n0 = (before.json as { items: { slug: string }[] }).items.filter(
@@ -1544,6 +1617,7 @@ export const PROBES: readonly Probe[] = [
         .pop();
       if (!below) return na("no published release below the floor");
       const slug = run.slug("q");
+      run.s.cleanup.push({ slug });
       const a = run.accepted(
         await run.v1("/installs", {
           body: oidcCreate(run, slug, run.rid("p32"), below),

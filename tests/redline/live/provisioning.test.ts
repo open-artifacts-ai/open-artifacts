@@ -1,5 +1,7 @@
-import { beforeAll, describe, it } from "vitest";
+import { afterAll, beforeAll, describe, it } from "vitest";
 import {
+  CLEANUP_TIMEOUT_MS,
+  cleanupInstalls,
   PROBE_TIMEOUT_MS,
   PROBES,
   type Run,
@@ -25,6 +27,11 @@ beforeAll(() => {
   }
   run = liveRun(env, rawTargets(env.REDLINE_TARGETS));
 });
+
+// Whatever a probe created and didn't remove: a failed P13 blocks P23.
+afterAll(async () => {
+  if (run) await cleanupInstalls(run);
+}, CLEANUP_TIMEOUT_MS);
 
 describe("provisioning", () => {
   const failed = new Set<string>();
