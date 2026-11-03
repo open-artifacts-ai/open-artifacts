@@ -58,12 +58,19 @@ const recordNotes = (page: Page) =>
       __oaNotes: Record<number, { shown: number; gone?: number }>;
     };
     w.__oaNotes = {};
+    // Shown means in the DOM and visible, so the times hold however LiveChip
+    // renders the note: mounted and unmounted (today), or toggled by class,
+    // style or `hidden` on it or an ancestor (the preload layer hides by
+    // data-preload), which the observer below also watches.
+    const visible = (el: Element) =>
+      el.getClientRects().length > 0 &&
+      getComputedStyle(el).visibility !== "hidden";
     const look = () => {
       const now = performance.now();
       const on = new Set<number>();
       for (const el of document.querySelectorAll(".oa-lchip")) {
         const m = /Updated to v(\d+)/.exec(el.textContent ?? "");
-        if (m && el.getClientRects().length > 0) on.add(Number(m[1]));
+        if (m && visible(el)) on.add(Number(m[1]));
       }
       for (const v of on) w.__oaNotes[v] ??= { shown: now };
       for (const [v, n] of Object.entries(w.__oaNotes))
@@ -74,6 +81,8 @@ const recordNotes = (page: Page) =>
         subtree: true,
         childList: true,
         characterData: true,
+        attributes: true,
+        attributeFilter: ["class", "style", "hidden", "data-preload"],
       }),
     );
   });
