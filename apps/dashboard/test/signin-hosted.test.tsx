@@ -776,8 +776,10 @@ it("code_unavailable on verify: back to the email step, email kept, Google live"
     "bob@example.com",
   );
   expect(screen.queryByRole("textbox", { name: "Code" })).toBeNull();
+  // The page shows Google again once CodeSignIn's onStep effect reports the
+  // email step, a render after the alert commits: wait for it.
   expect(
-    screen.getByRole("link", { name: "Continue with Google" }),
+    await screen.findByRole("link", { name: "Continue with Google" }),
   ).toHaveAttribute("href", "/auth/login/google?next=%2F");
 });
 
