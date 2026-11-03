@@ -519,7 +519,32 @@ describe("fleet_halted copy (#1083 re-review N5)", () => {
     expect(text).toContain("fleet_halt");
     expect(text).toMatch(/no release tag/);
     expect(text).toMatch(/two health probes of this version on separate ticks/);
-    expect(text).toMatch(/Nothing rolled them back/);
+    expect(text).toMatch(/the fleet never rolls one back/);
     expect(text).toMatch(/canary_blocked/);
+  });
+  it("never suggests a revert (forward only, #1106)", () => {
+    const text = alertFor("fleet_halted", "staging").text("open", 1);
+    expect(text).not.toMatch(/reverted|someone has to decide/);
+    expect(text).toMatch(/Do not roll back/);
+    expect(text).toMatch(/stays on the new version/);
+    expect(text).toMatch(/upgrade_rolled_back is an older job's/);
+  });
+});
+
+describe("runbook pointer", () => {
+  it("every open and reminder email names its runbook section; a clear doesn't", () => {
+    for (const k of ALERT_KEYS) {
+      const a = alertFor(k, "prod");
+      for (const s of ["open", "remind"] as const)
+        expect(a.text(s, T0), `${k} ${s}`).toContain(
+          `docs/ops/alerts.md, section ${k}.`,
+        );
+      expect(a.text("clear", T0)).not.toContain("docs/ops/alerts.md");
+    }
+  });
+  it("upgrade_incomplete asks for a fix forward and never names a rollback", () => {
+    const text = alertFor("upgrade_incomplete", "prod").text("open", T0);
+    expect(text).toMatch(/fix forward/);
+    expect(text).not.toMatch(/rollback|roll back/);
   });
 });
