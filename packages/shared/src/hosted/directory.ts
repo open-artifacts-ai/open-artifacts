@@ -237,6 +237,7 @@ export const AuditActionSchema = z.enum([
   "user.status",
   "user.role",
   "user.sync_managed",
+  "user.erased",
   "identity.reset",
   "directory.connect",
   "directory.disconnect",

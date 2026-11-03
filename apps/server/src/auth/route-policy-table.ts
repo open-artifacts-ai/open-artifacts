@@ -89,6 +89,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "PATCH /api/v1/members/:id": { org: "members.manage" },
   "DELETE /api/v1/members/:id": { org: "members.manage" },
   "POST /api/v1/members/:id/restore": { org: "members.manage" },
+  // #1204: the handler also requires an interactive cookie session.
+  "POST /api/v1/members/:id/erase": { org: "members.manage" },
   // P3 T10: a departed member's artifacts (every install, parity 1).
   "GET /api/v1/members/:id/transfer": { org: "transfer.departed" },
   "POST /api/v1/members/:id/transfer": { org: "transfer.departed" },

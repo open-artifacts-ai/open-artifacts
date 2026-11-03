@@ -248,9 +248,25 @@ export const R = {
    * so their address is gone), guest_lapsed (a lapsed guest: a new share
    * brings them back). Their space roles come back with them. Directory
    * sync revives a member it removed by itself (reason sync_revive) when
-   * Google lists the same directory user active again.
+   * Google lists the same directory user active again. An erased person:
+   * 409 member_erased (invite them instead).
    */
   memberRestore: (id: string) => `/api/v1/members/${seg(id)}/restore`,
+  /**
+   * POST (no body) -> 204: erase a removed person (#1204). Their address
+   * becomes the placeholder, their names, last seen and personal space name
+   * are cleared, and their sessions, PATs, agent connections, shares to
+   * their address, space roles and directory rows are deleted. The row id
+   * (authorship) and their Google link stay, so the same Google account
+   * never comes back by sync or Google sign-in. Org owner, admin, from a
+   * signed-in browser session only (a PAT or an agent's token: 404); an
+   * admin target needs the owner (403 owner_only). 404 unknown; 409
+   * member_active (not removed, the owner, or the owner's address); 409
+   * member_owns_artifacts (details MemberOwnsArtifactsDetails: transfer
+   * them first). Idempotent: an erased row is 204 again, audited once
+   * (user.erased). Erased rows leave GET R.members?status=removed.
+   */
+  memberErase: (id: string) => `/api/v1/members/${seg(id)}/erase`,
   /**
    * PUT (no body) -> Member; DELETE -> Member: set or clear the MANUAL
    * restricted flag (org owner, admin; any sync mode). Audited

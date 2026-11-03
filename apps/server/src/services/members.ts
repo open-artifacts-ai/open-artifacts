@@ -6,6 +6,7 @@ import {
   type Member,
   type MemberInvite,
   type MemberInviteResult,
+  type MemberOwnsArtifactsDetails,
   type MemberPatch,
   type MemberRemovedDetails,
   type MemberStatus,
@@ -79,7 +80,8 @@ export async function listMembers(
   // An unknown stored value reads as suspended (statusOf).
   if (statuses.includes("suspended"))
     conds.push(notInArray(users.status, [...STATUSES]));
-  const where = or(...conds);
+  // An erased person (#1204) is listed nowhere: the audit log is the record.
+  const where = and(or(...conds), isNull(users.erasedAt));
   const order = [asc(users.createdAt), asc(users.id)] as const;
   // In the list's own query: a row needs no request of its own.
   const owns = sql<number>`${sql.raw(GUEST_OWNS_SQL)}`;
@@ -154,6 +156,13 @@ const addressReleased = () =>
     "conflict",
     "This person's Google Workspace account was deleted, so they can't be restored. Invite them instead.",
   );
+/** An erased person (#1204): never restored. */
+const erasedMember = () =>
+  new ApiError(
+    "member_erased",
+    "This person was erased. Invite them instead.",
+  );
+
 const guestLapsed = () =>
   new ApiError(
     "guest_lapsed",
@@ -583,7 +592,8 @@ const RESTORED = `select id, email, name, display_name as displayName, role,
  * member_active when not removed; 409 guest_lapsed for a lapsed guest; 409
  * directory_managed when directory sync removed them (users.removed_by_sync)
  * and sync manages the install (syncManages: the next sync would remove them
- * again); 409 conflict when the deletion treatment released their address.
+ * again); 409 conflict when the deletion treatment released their address;
+ * 409 member_erased for an erased person (#1204: invite them instead).
  * Their old credentials stay dead: they sign in again (a kept Google identity
  * relinks the same subject).
  */
@@ -598,6 +608,7 @@ export async function restoreMember(
   checkTarget(row.role, admins);
   if (statusOf(row.status) !== "removed" || row.role === "owner")
     throw new ApiError("member_active", "This member isn't removed");
+  if (row.erasedAt !== null) throw erasedMember();
   if (row.guestLapsed) throw guestLapsed();
   const synced = (await syncManages(env)) ? 1 : 0;
   if (synced && row.removedBySync) throw directoryManaged();
@@ -622,6 +633,7 @@ export async function restoreMember(
     const now = await getRow(env, id);
     if (synced && statusOf(now.status) === "removed" && now.removedBySync)
       throw directoryManaged();
+    if (now.erasedAt !== null) throw erasedMember();
     if (now.email === placeholder(id)) throw addressReleased();
     throw new ApiError("member_active", "This member isn't removed");
   }
@@ -667,6 +679,130 @@ export async function reviveFromSync(
   // Belt and braces: nothing they held before survives the epoch bump.
   await revokeUserLive(env, id, "member revived", ctx);
   return true;
+}
+
+// #1204 erase. ERASABLE is every rule erase keeps, re-checked inside each
+// statement of the one batch, so a revive, restore, promotion, invite or a
+// late artifact that commits between the precheck and the batch makes the
+// whole batch a no-op: a removed row (never the owner), an admin only when
+// ?2 = 1 (#475), not yet erased, not at the owner's configured address (?3),
+// and nothing left in the personal space, live or trash (one partial index
+// each: artifacts_space_live_idx, artifacts_space_deleted_idx).
+const ERASABLE_ROW = `status = 'removed' and role <> 'owner'
+  and (role <> 'admin' or ?2 = 1) and erased_at is null and email <> ?3`;
+const NOTHING_LEFT = `not exists (select 1 from artifacts
+    where space_id = ?1 and deleted_at is null)
+  and not exists (select 1 from artifacts
+    where space_id = ?1 and deleted_at is not null)`;
+const ERASABLE = `exists (select 1 from users where id = ?1 and ${ERASABLE_ROW})
+  and ${NOTHING_LEFT}`;
+// Shares are keyed by address only (email-move.ts): the shares a person
+// holds are those on their current address, read before it changes.
+const ERASE_WIPES = [
+  `delete from shares where email = (select email from users where id = ?1)
+    and ${ERASABLE}`,
+  `delete from space_members where user_id = ?1 and ${ERASABLE}`,
+  `delete from frozen_edits where user_id = ?1 and ${ERASABLE}`,
+  `delete from directory_members where user_id = ?1 and ${ERASABLE}`,
+  // The Google identity stays: it keeps that Google account out for good, on
+  // sync (CREATE_USERS skips a known subject) and on Google sign-in.
+  `delete from identities where user_id = ?1 and provider <> 'google'
+    and ${ERASABLE}`,
+  `delete from tokens where user_id = ?1 and ${ERASABLE}`,
+  `delete from agent_grants where user_id = ?1 and ${ERASABLE}`,
+  `delete from reserved_artifacts where user_id = ?1 and ${ERASABLE}`,
+  // The users_personal_space trigger copied their name or address into it.
+  `update spaces set name = '' where id = ?1 and kind = 'personal'
+    and ${ERASABLE}`,
+];
+// Last: it makes ERASABLE false (erased_at). Clearing removed_by_sync,
+// guest_lapsed and google_relink means no revive, share or relink can take
+// the row back; restricted_manual has nothing left to cap.
+const ERASE_USER = `update users set email = ?4, name = '', display_name = null,
+  last_seen_at = null, removed_by_sync = 0, guest_lapsed = 0, google_relink = 0,
+  restricted_manual = 0, session_epoch = session_epoch + 1,
+  status_changed_at = ?5, erased_at = ?5
+  where id = ?1 and ${ERASABLE_ROW} and ${NOTHING_LEFT}`;
+const ERASE_COUNTS = `select
+    (select count(*) from artifacts where space_id = ?1 and deleted_at is null) as live,
+    (select count(*) from artifacts where space_id = ?1 and deleted_at is not null) as deleted`;
+
+/** 409 member_owns_artifacts while their personal space holds anything. */
+async function checkNothingLeft(env: Env, id: string): Promise<void> {
+  const c = await stmt(env.DB, ERASE_COUNTS)
+    .bind(id)
+    .first<MemberOwnsArtifactsDetails>();
+  const details: MemberOwnsArtifactsDetails = {
+    live: c?.live ?? 0,
+    deleted: c?.deleted ?? 0,
+  };
+  if (details.live + details.deleted > 0)
+    throw new ApiError(
+      "member_owns_artifacts",
+      "Transfer their artifacts first",
+      details,
+    );
+}
+
+/**
+ * POST R.memberErase(id) (#1204): erases a removed person with nothing left
+ * in their personal space, in one guarded D1 batch (ERASE_WIPES, then
+ * ERASE_USER, then the user.erased audit row only when the row changed).
+ * The row id stays (authorship), with its Google identity. 404 unknown; 403
+ * owner_only for an admin target unless the actor is the owner; 409
+ * member_active when not removed, the owner, or the owner's configured
+ * address; 409 member_owns_artifacts { live, deleted }. Idempotent: an
+ * erased row resolves with nothing written. The route allows only an
+ * interactive cookie session.
+ */
+export async function eraseMember(
+  env: Env,
+  id: string,
+  actor: Member,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<void> {
+  const row = await getRow(env, id);
+  const admins = adminsOk(actor);
+  checkTarget(row.role, admins);
+  const ownerEmail = normalizeEmail(env.OWNER_EMAIL ?? "") ?? "";
+  const active = () =>
+    new ApiError("member_active", "This member isn't removed");
+  if (
+    statusOf(row.status) !== "removed" ||
+    row.role === "owner" ||
+    (ownerEmail !== "" && normalizeEmail(row.email) === ownerEmail)
+  )
+    throw active();
+  if (row.erasedAt !== null) return;
+  await checkNothingLeft(env, id);
+  const args = [id, admins, ownerEmail, placeholder(id), Date.now()] as const;
+  const out = await env.DB.batch([
+    ...ERASE_WIPES.map((q) => stmt(env.DB, q).bind(...args.slice(0, 3))),
+    stmt(env.DB, ERASE_USER).bind(...args),
+    // Directly after the users update: audited only when it changed the row.
+    // No detail: audit rows hold ids and enums only.
+    audit(env, "user.erased", { type: "user", id }, userActor(actor.id), {
+      when: { sql: "changes() > 0", args: [] },
+    }),
+  ]);
+  if (!out[ERASE_WIPES.length]?.meta.changes) {
+    // Something committed between the precheck and the batch.
+    await raceCheck(env, id, admins);
+    const now = await getRow(env, id);
+    if (now.erasedAt !== null) return;
+    if (statusOf(now.status) !== "removed") throw active();
+    await checkNothingLeft(env, id);
+    throw active();
+  }
+  try {
+    // Belt and braces: the removal already revoked them, and the row is
+    // refused everywhere; a KV grant this misses is still refused.
+    await revokeAllGrants(env, id);
+  } catch (e) {
+    logWarn("member_erase_revoke_grants", e);
+  } finally {
+    await revokeUserLive(env, id, "member erased", ctx);
+  }
 }
 
 const DEFAULT_SETTINGS: Settings = {

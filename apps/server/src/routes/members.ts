@@ -7,13 +7,19 @@ import {
   TransferInputSchema,
 } from "@oa/shared";
 import type { Context } from "hono";
-import { caller, capOfCaller, requireUser } from "../auth/authz.js";
+import {
+  caller,
+  capOfCaller,
+  interactiveSession,
+  requireUser,
+} from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import { resetIdentity } from "../services/identity.js";
 import {
+  eraseMember,
   inviteMember,
   listMembers,
   patchMember,
@@ -86,6 +92,17 @@ export function mountMembers(app: AppType): void {
     return c.json(
       await restoreMember(c.env, c.req.param("id"), actor, execCtx(c)),
     );
+  });
+
+  // Erase a removed person (#1204). Literal so Hono infers :id; must equal
+  // R.memberErase(id). Irreversible, so a signed-in person in a browser only
+  // (as directory disconnect): a PAT or any bearer token is 404, whoever
+  // holds it.
+  app.post("/api/v1/members/:id/erase", async (c) => {
+    const actor = requireManager(c);
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    await eraseMember(c.env, c.req.param("id"), actor, execCtx(c));
+    return c.body(null, 204);
   });
 
   // A departed member's or a guest's personal artifacts (P3 T10, parity 2).

@@ -512,6 +512,11 @@ export async function buildWorld(): Promise<World> {
       await run("update users set status = 'removed' where id = ?", id);
       return id;
     },
+    erasableId: async () => {
+      const id = await seedUser(uniq("mx-erasable"), "member");
+      await run("update users set status = 'removed' where id = ?", id);
+      return id;
+    },
     linkedId: (_who) =>
       seedUser(uniq("mx-linked"), "member", {
         googleSub: `g-mx-l-${newId().slice(0, 8)}`,
