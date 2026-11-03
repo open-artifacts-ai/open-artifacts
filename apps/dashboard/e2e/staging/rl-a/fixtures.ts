@@ -16,6 +16,7 @@ import {
   type Page,
 } from "@playwright/test";
 import { gate } from "../gate";
+import { sendRead } from "../retry";
 import { FETCH_MS, hookKey, rlA } from "../targets";
 
 // rl-a's helpers: sessions through TEST_HOOKS.session for users in its
@@ -93,23 +94,38 @@ export async function person(
   return { ...p, id: me.user.id, page: await ctx.newPage() };
 }
 
-/** An API call as `p` (X-OA-Request set), bounded. */
+/**
+ * An API call as `p` (X-OA-Request set), bounded. A GET that gets no response
+ * is sent again (retry.ts), so a poll keeps polling; writes never are.
+ */
 export const api = (
   p: Pick<Person, "cookie">,
   path: string,
   init: RequestInit = {},
 ) =>
-  fetch(`${A.app}${path}`, {
-    ...init,
-    redirect: "manual",
-    headers: {
-      cookie: `${COOKIE}=${p.cookie}`,
-      "x-oa-request": "1",
-      ...(init.body ? { "content-type": "application/json" } : {}),
-      ...init.headers,
-    },
-    signal: AbortSignal.timeout(FETCH_MS),
-  });
+  sendRead(init.method, () =>
+    fetch(`${A.app}${path}`, {
+      ...init,
+      redirect: "manual",
+      headers: {
+        cookie: `${COOKIE}=${p.cookie}`,
+        "x-oa-request": "1",
+        ...(init.body ? { "content-type": "application/json" } : {}),
+        ...init.headers,
+      },
+      signal: AbortSignal.timeout(FETCH_MS),
+    }),
+  );
+
+/** An anonymous call to rl-a, bounded; a GET with no response is sent again. */
+export const anon = (path: string, init: RequestInit = {}) =>
+  sendRead(init.method, () =>
+    fetch(`${A.app}${path}`, {
+      ...init,
+      redirect: "manual",
+      signal: AbortSignal.timeout(FETCH_MS),
+    }),
+  );
 
 /** The body of a 2xx response; anything else throws with its status. */
 export async function json<T>(res: Response): Promise<T> {
@@ -127,19 +143,17 @@ export async function refusal(res: Response, status: number): Promise<string> {
   return body.error?.code ?? "";
 }
 
-/** A GET retried once on a transient answer (network error, 502 to 504). */
-export async function get(p: Pick<Person, "cookie">, path: string) {
-  for (let i = 0; ; i++) {
-    const res = await api(p, path).catch((e: unknown) => {
-      if (i > 0) throw e;
-      return null;
-    });
-    if (res && (i > 0 || ![502, 503, 504].includes(res.status))) return res;
-  }
-}
-
-/** Artifacts this run made, deleted (by their owner, through the API) by `cleanup`. */
-const made: { by: Person; id: string }[] = [];
+/**
+ * Artifacts each spec file made, keyed by the file, so its `cleanup` deletes
+ * only its own: one file's afterAll never touches another's (#1251).
+ */
+const made = new Map<string, { by: Person; id: string }[]>();
+const madeHere = () => {
+  const file = base.info().file;
+  const list = made.get(file) ?? [];
+  made.set(file, list);
+  return list;
+};
 
 /**
  * Publishes as `p` and remembers the artifact for `cleanup`, which deletes it
@@ -153,16 +167,16 @@ export async function publish(
   const r = await json<PublishResult>(
     await api(p, R.artifacts, { method: "POST", body: JSON.stringify(input) }),
   );
-  made.push({ by, id: r.id });
+  madeHere().push({ by, id: r.id });
   return r;
 }
 
 /** `cleanup` deletes `id` as `by` (an artifact made in the UI, or one that changed owner). */
-export const remember = (by: Person, id: string) => made.push({ by, id });
+export const remember = (by: Person, id: string) => madeHere().push({ by, id });
 
-/** Soft-deletes every artifact this run made; one already gone (404) is fine. */
+/** Soft-deletes every artifact this file made; one already gone (404) is fine. */
 export async function cleanup(): Promise<void> {
-  const left = made.splice(0);
+  const left = madeHere().splice(0);
   const failed: string[] = [];
   for (const { by, id } of left) {
     const res = await api(by, R.artifact(id), { method: "DELETE" }).catch(
@@ -197,7 +211,7 @@ async function sharedSpaces(admin: Person): Promise<Space[]> {
     const q = new URLSearchParams({ kind: "shared", limit: "200" });
     if (cursor) q.set("cursor", cursor);
     const page = await json<{ items: Space[]; nextCursor: string | null }>(
-      await get(admin, `${R.spaces}?${q}`),
+      await api(admin, `${R.spaces}?${q}`),
     );
     out.push(...page.items);
     cursor = page.nextCursor;
@@ -232,9 +246,7 @@ export async function t19Spaces(admin: Person): Promise<void> {
 /** rl-a's version, from /healthz (read once). */
 let version: Promise<string> | undefined;
 export const rlAVersion = () => {
-  version ??= fetch(`${A.app}/healthz`, {
-    signal: AbortSignal.timeout(FETCH_MS),
-  })
+  version ??= anon("/healthz")
     .then((r) => json<{ version: string }>(r))
     .then((h) => h.version);
   return version;

@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.105.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.104.1...v0.105.0) (2026-11-03)
+
+
+### Features
+
+* **admin:** Audit labels the provisioner's step rows and counted refusals ([#1136](https://github.com/open-artifacts-ai/open-artifacts/issues/1136)) ([#1248](https://github.com/open-artifacts-ai/open-artifacts/issues/1248)) ([e942e41](https://github.com/open-artifacts-ai/open-artifacts/commit/e942e41bfad5270326b449076a61617d6b62b0ef))
+
+## [0.104.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.104.0...v0.104.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **directory:** every time says its day, so an old failure can't read as today's ([#1189](https://github.com/open-artifacts-ai/open-artifacts/issues/1189)) ([#1238](https://github.com/open-artifacts-ai/open-artifacts/issues/1238)) ([2c63e8d](https://github.com/open-artifacts-ai/open-artifacts/commit/2c63e8d679faf4d181d2f8e7996275b1ddbe90af))
+
+## [0.104.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.103.0...v0.104.0) (2026-11-03)
+
+
+### Features
+
+* **server:** an admin can erase a removed person ([#1204](https://github.com/open-artifacts-ai/open-artifacts/issues/1204)) ([#1221](https://github.com/open-artifacts-ai/open-artifacts/issues/1221)) ([27191ff](https://github.com/open-artifacts-ai/open-artifacts/commit/27191ffda6a3163dd919761961d51a078324b1c8))
+
+
+### Bug Fixes
+
+* **deploy:** provisioning's read-back expects CF_VERSION_METADATA ([#1176](https://github.com/open-artifacts-ai/open-artifacts/issues/1176)) ([#1227](https://github.com/open-artifacts-ai/open-artifacts/issues/1227)) ([519fc7a](https://github.com/open-artifacts-ai/open-artifacts/commit/519fc7a5b0a5c1762dc71e31f62fd94900cd1b69))
+
 ## [0.103.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.102.1...v0.103.0) (2026-11-03)
 
 

@@ -44,7 +44,12 @@ import { CopyLink } from "../layout/CopyLink";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
-import { isReleased, personFirst, personName } from "../layout/person";
+import {
+  isReleased,
+  personFirst,
+  personFirstAtStart,
+  personName,
+} from "../layout/person";
 import { toast } from "../layout/toast";
 import { UserAvatar } from "../layout/UserAvatar";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
@@ -57,6 +62,7 @@ import {
   seesDeparted,
   useDeparted,
 } from "./departed";
+import { EraseDialog } from "./EraseDialog";
 import { restrictionReason } from "./restriction";
 import { TransferDialog } from "./Transfer";
 import { errorText, muted, SettingsCard, STACK } from "./ui";
@@ -777,6 +783,8 @@ function RemovedRow({
       ? RESTORE_ONLY
       : null;
   const [restoring, setRestoring] = useState(false);
+  const [erasing, setErasing] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const label = personName(m);
   return (
@@ -807,6 +815,40 @@ function RemovedRow({
           Restore…
         </Button>
       )}
+      {!ownerOnlySource(m, owner) && (
+        // Only the admin-row rule (owner only): a deleted account's row can
+        // be erased too, though it can't be restored.
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" aria-label={`More for ${label}`}>
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 16 16"
+                width="16"
+                height="16"
+                fill="currentColor"
+              >
+                <circle cx="3" cy="8" r="1.5" />
+                <circle cx="8" cy="8" r="1.5" />
+                <circle cx="13" cy="8" r="1.5" />
+              </svg>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            className="text-[length:var(--oa-text-sm)]"
+          >
+            <DropdownMenuItem
+              onSelect={() => {
+                setProblem(null);
+                setErasing(true);
+              }}
+            >
+              Erase…
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
       {refusal && <p className={`m-0 basis-full ${muted}`}>{refusal}</p>}
       {problem && (
         <p role="alert" className={`m-0 basis-full ${errorText}`}>
@@ -821,12 +863,30 @@ function RemovedRow({
           onRefused={setProblem}
         />
       )}
+      {erasing && (
+        <EraseDialog
+          member={m}
+          onClose={() => setErasing(false)}
+          onTransfer={() => {
+            setErasing(false);
+            setMoving(true);
+          }}
+        />
+      )}
+      {moving && <TransferDialog member={m} onClose={() => setMoving(false)} />}
     </li>
   );
 }
 
-/** Inline copy for a refused restore (parity 1). */
-const restoreRefusal = (e: unknown, first: string) => {
+/**
+ * Inline copy for a refused restore (parity 1). `atStart` is `first` where it
+ * starts the sentence ("A former member's account…"); default `first`.
+ */
+export const restoreRefusal = (
+  e: unknown,
+  first: string,
+  atStart: string = first,
+) => {
   const code = e instanceof ApiClientError ? e.code : "";
   if (code === "directory_managed")
     return `Removed by your Google Workspace. They come back if their Workspace account is restored.`;
@@ -835,6 +895,8 @@ const restoreRefusal = (e: unknown, first: string) => {
   if (code === "member_active") return `${first} is already active.`;
   if (code === "owner_only") return RESTORE_ONLY;
   if (code === "conflict") return ADDRESS_RELEASED;
+  if (code === "member_erased")
+    return `${atStart}'s account was erased, so it can't be restored. If they need access again, invite them.`;
   return errorCopy(e, `Couldn't restore ${first}. Try again.`);
 };
 
@@ -1053,7 +1115,8 @@ function RestoreDialog({
               title: `${label} is restored. They can sign in again.`,
               tone: "success",
             }),
-          onError: (e) => onRefused(restoreRefusal(e, first)),
+          onError: (e) =>
+            onRefused(restoreRefusal(e, first, personFirstAtStart(m))),
         })
       }
     />

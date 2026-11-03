@@ -81,8 +81,17 @@ jobs:
         if: ${{ steps.ro.outputs.release_only != 'true' }}
       - run: pnpm typecheck
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-  test:
+  # Three shards (one runner each, #965): the server suite, everything else
+  # (with the root scripts suite), and the server's CPU budgets alone, so they
+  # never run under another suite's load. The `test` job below is the required
+  # check.
+  test-shard:
     runs-on: ubuntu-latest
+    strategy:
+      # Every shard reports, so one failure never hides another.
+      fail-fast: false
+      matrix:
+        shard: [server, rest, cpu]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -127,20 +136,33 @@ jobs:
         # @oa/shared first: both bundle it from its dist (`pnpm test` builds
         # it too, but only after this step).
         run: pnpm --filter @oa/shared build && pnpm --filter @oa/render --filter @oa/runtime build
-      # Pull requests: the root scripts suite plus only the packages the diff can
+      # This shard's share. Pull requests: only the packages the diff can
       # affect (pnpm --filter ...[base]; complete because every cross-package
       # import is declared, which the root suite checks). The script is the PR
       # head's copy: it can narrow only this PR's check. The merge queue (and a
-      # dispatch) always runs everything.
+      # dispatch) always runs every shard whole.
       - id: suite
-        name: Tests (pull requests, affected packages only)
+        name: Tests (this shard; pull requests, affected packages only)
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          TEST_SHARD: ${{ matrix.shard }}
         run: bash scripts/ci/test-affected.sh
-      # Wall-clock CPU budgets, serial (not under the parallel suite's load).
-      - run: pnpm --filter @oa/server test:cpu
-        if: ${{ steps.ro.outputs.release_only != 'true' && steps.suite.outputs.server == 'true' }}
+  # The required check (its name is branch protection's). Always runs, and
+  # passes only when every shard passed: a skipped, cancelled or failed shard
+  # fails it.
+  test:
+    needs: [test-shard]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          SHARDS: ${{ needs.test-shard.result }}
+        run: |
+          echo "test-shard: $SHARDS"
+          [ "$SHARDS" = success ]
   # P3 T16 (#605): the server authz matrix, in parallel with `test` so total
   # wall time drops. A required check; same release-only pattern as `test`.
   authz-matrix:
@@ -511,6 +533,71 @@ jobs:
           name: playwright-report
           path: apps/dashboard/playwright-report
           retention-days: 14
+  # #1213: times every migration newer than the last release against a large
+  # synthetic database (100k users, 1M audit rows) and fails at 3 s or more
+  # for any one (D1 stops a query at 30 s). Not a required check. The path
+  # filter is decided inside the job, never by a workflow `paths:` filter or
+  # a job `if:` (a filtered-out workflow leaves a required check pending
+  # forever), so the job always reports and could be made required as is:
+  # with no migration or seeder change it passes in seconds. Any error in the
+  # diff means run. No pnpm install: node:sqlite and git only.
+  migration-timing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: changed
+        name: Did a migration or the seeder change?
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          run=true
+          if [ "$EVENT" != workflow_dispatch ] && [ -n "${BASE_SHA:-}" ] \
+            && files="$(git diff --name-only "$BASE_SHA"...HEAD)" \
+            && ! grep -qE '^(apps/server/migrations/|apps/server/scripts/migration-(seed|timing)\.ts$|apps/server/test/node/migration-seed\.test\.ts$|\.github/workflows/ci\.yml$)' <<< "$files"; then
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          if [ "$run" = false ]; then
+            echo "no migration or seeder change: nothing to time"
+          fi
+      - uses: actions/setup-node@v4
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        with:
+          node-version-file: .nvmrc
+      - id: key
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        run: |
+          key="$(node --experimental-strip-types --no-warnings apps/server/scripts/migration-timing.ts --key)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      # Keyed on the release's migration blobs and the seeder's hash; main's
+      # copy comes from migration-seed.yml.
+      - id: restore
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/oa-migration-seed
+          key: ${{ steps.key.outputs.key }}
+      - name: Time the new migrations
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        run: node --experimental-strip-types --no-warnings apps/server/scripts/migration-timing.ts --seed-file "$HOME/.cache/oa-migration-seed/seed.sqlite"
+      # Saved even when a migration was too slow: the key file is written only
+      # after a complete seed.
+      - id: seeded
+        if: ${{ !cancelled() && steps.changed.outputs.run == 'true' && steps.restore.outputs.cache-hit != 'true' }}
+        run: |
+          if [ -f "$HOME/.cache/oa-migration-seed/seed.sqlite.key" ]; then
+            echo "save=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: ${{ !cancelled() && steps.seeded.outputs.save == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/oa-migration-seed
+          key: ${{ steps.key.outputs.key }}
   # Not a required check: skipped unless a release-config file changed.
   release-dry-run:
     if: ${{ github.event_name == 'pull_request' }}
@@ -544,3 +631,22 @@ jobs:
         run: |
           npm install --no-save --prefix "$RUNNER_TEMP/rp" release-please@17.3.0
           RELEASE_PLEASE="$RUNNER_TEMP/rp/node_modules/.bin/release-please" bash scripts/ci/release-dry-run.sh
+  # #1056 untangle D: the public code installs, builds, typechecks and tests
+  # with every private path (scripts/ci/private-paths.txt) removed.
+  # Advisory for now: it becomes required (drop continue-on-error, add it to
+  # the ruleset) once untangle A (bundle builder), B (@oa/shared/mocks) and C
+  # (the @oa/shared/provisioning contract) have merged.
+  public-only:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: bash scripts/ci/public-only.sh

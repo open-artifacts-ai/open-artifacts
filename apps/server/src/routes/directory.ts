@@ -6,7 +6,12 @@ import {
 } from "@oa/shared";
 import type { Context } from "hono";
 import { getCookie } from "hono/cookie";
-import { caller, capOfCaller, requireUser } from "../auth/authz.js";
+import {
+  caller,
+  capOfCaller,
+  interactiveSession,
+  requireUser,
+} from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import {
   afterConsent,
@@ -37,12 +42,6 @@ import type { AppType } from "./index.js";
 // sweeps, and serves R.directory from DirectorySync.
 
 const notFound = () => new ApiError("not_found", "Not found");
-
-/**
- * Interactive cookie sessions: a Cloudflare Access sign-in (self-host),
- * Google or an email code. Never "pat" (or any bearer token).
- */
-const INTERACTIVE: ReadonlySet<string> = new Set(["access", "google", "code"]);
 
 const redirect = (location: string, cookie?: string) =>
   new Response(null, {
@@ -130,11 +129,8 @@ export function mountDirectory(app: AppType): void {
   // platform's install delete uses cron.ts DIRECTORY_DISCONNECT_CRON instead.
   const disconnect = (c: Context<AppEnv>) => {
     const user = requireUser(c);
-    const m = c.get("authMethod");
     if (
-      !m ||
-      !INTERACTIVE.has(m) ||
-      c.req.header("authorization") !== undefined ||
+      !interactiveSession(c) ||
       !orgCan(user, "directory.disconnect", { cap: capOfCaller(caller(c)) })
     )
       throw notFound();

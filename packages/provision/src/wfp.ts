@@ -2886,7 +2886,7 @@ export class WfpProvisioner {
       const { d1 } = await this.resources(row);
       if (!d1)
         throw new ProvisionRefused(`install ${id} has no D1`, "invalid_state");
-      await this.claim(row, ["active"], "active", "owner-token");
+      await this.claim(row, ["active"], "active", "owner_token");
       try {
         await this.hold();
         const patFile = await this.mintPat(

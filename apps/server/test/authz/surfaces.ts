@@ -24,6 +24,14 @@ export type Cred = {
   token?: string;
   /** The caller's address (share_artifact: a share with oneself). */
   email?: string;
+  /**
+   * #1137: send the cookie write probes with the bearer token instead of
+   * refusing to run them. Only for a token-only caller every write must
+   * refuse (the matrix's foreign PAT and OAuth callers): a refusal by bearer
+   * is a verdict, while an allow by bearer would not match the app's own
+   * cookie request. The matrix's coverage test checks no other caller sets it.
+   */
+  bearerWrites?: true;
 };
 export type Verdict = "allow" | "deny";
 export type ProbeIO = {
@@ -187,7 +195,7 @@ const read =
 const COOKIE_PROBES = new WeakSet<object>();
 const byCookie = (probe: Surface["probe"]): Surface["probe"] => {
   const p: Surface["probe"] = (base, cred, id, io) => {
-    if (!cred.cookie && cred.token)
+    if (!cred.cookie && cred.token && !cred.bearerWrites)
       throw new Unexpected("this write probe needs a session cookie");
     return probe(base, cred, id, io);
   };
@@ -1180,6 +1188,8 @@ export type OrgReal = {
   memberId: string;
   /** A removed member the probe may restore. */
   removedId: string;
+  /** A removed member with nothing in their personal space the probe may erase. */
+  erasableId: string;
   /** An active member with a Google link the probe may reset. */
   linkedId: string;
   /** An active member restricted by hand (the probe lifts it). */
@@ -1373,6 +1383,20 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       needs: ["removedId"],
       req: (r) => ({ path: `${MEMBERS}/${r.removedId}/restore` }),
       allow: ok(200),
+    },
+  },
+  // Refuse: the caller themself (active, so the owner is 409 member_active;
+  // an admin is the owner's to manage, 403 owner_only). Cookie sessions
+  // only: a PAT or grant is 404 (members.erase.test.ts).
+  "POST /api/v1/members/:id/erase": {
+    refuse: {
+      req: async (c) => ({ path: `${MEMBERS}/${await c.self()}/erase` }),
+      allow: code("member_active", "owner_only"),
+    },
+    real: {
+      needs: ["erasableId"],
+      req: (r) => ({ path: `${MEMBERS}/${r.erasableId}/erase` }),
+      allow: ok(204),
     },
   },
   "POST /api/v1/members/:id/transfer": {
@@ -1720,7 +1744,7 @@ function orgProbe(
       );
     }
     if (!w) throw new Unexpected(`${route}: no ORG_WRITES entry`);
-    if (!cred.cookie && cred.token)
+    if (!cred.cookie && cred.token && !cred.bearerWrites)
       throw new Unexpected("this write probe needs a session cookie");
     const c: Ctx = { t, self: () => selfId(io, base, cred) };
     let req: Req;
@@ -1764,6 +1788,7 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["PATCH /api/v1/members/:id", org("members.manage")],
   ["DELETE /api/v1/members/:id", org("members.manage")],
   ["POST /api/v1/members/:id/restore", org("members.manage")],
+  ["POST /api/v1/members/:id/erase", org("members.manage")],
   // 409 member_active is past the guard: redline's target is an active member.
   ["GET /api/v1/members/:id/transfer", org("transfer.departed"), [200, 409]],
   ["POST /api/v1/members/:id/transfer", org("transfer.departed")],
