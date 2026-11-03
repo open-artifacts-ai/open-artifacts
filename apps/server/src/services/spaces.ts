@@ -1044,7 +1044,7 @@ export async function putSpaceMember(
     throw managedByOrgMapping(userId, every);
   if (role === every && !manual && !synced)
     return memberView(env, id, r.allMembersRole, userId);
-  const override = false && synced !== null; // MUTATION S5
+  const override = directoryMode(env) === "frozen" && synced !== null;
   const actor = userActor(u.id);
   const target = { type: "user", id: userId } as const;
   const a = admin ? 1 : 0;
