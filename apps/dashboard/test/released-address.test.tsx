@@ -181,10 +181,22 @@ it("sentences say a former member: title, toast and failure", async () => {
   fireEvent.click(
     await within(card).findByRole("button", { name: "Transfer all to me" }),
   );
+  const d = await screen.findByRole("dialog");
+  expect(
+    within(d).getByRole("heading", {
+      name: "Transfer a former member's 2 personal artifacts",
+    }),
+  ).toBeVisible();
+  expect(
+    await within(d).findByText(
+      "They go to your Personal, with a former member's shares kept. If you restore a former member later, these stay with you.",
+    ),
+  ).toBeVisible();
+  fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
   await findVisibleToast("Moved 2 artifacts from a former member to you.");
 });
 
-it("a failed run says Couldn't move a former member's artifacts", async () => {
+it("a failed run from the row fails inline in the dialog", async () => {
   const gone = nameless(NONE);
   mountHosted("/settings/members", true, undefined, [
     ...withGone(gone),
@@ -199,8 +211,10 @@ it("a failed run says Couldn't move a former member's artifacts", async () => {
   fireEvent.click(
     await within(card).findByRole("button", { name: "Transfer all to me" }),
   );
-  expect(await within(card).findByRole("alert")).toHaveTextContent(
-    "Couldn't move a former member's artifacts. Try again.",
+  const d = await screen.findByRole("dialog");
+  fireEvent.click(await within(d).findByRole("button", { name: "Transfer 2" }));
+  expect(await within(d).findByRole("alert")).toHaveTextContent(
+    "Couldn't transfer the artifacts. Try again.",
   );
 });
 
@@ -225,7 +239,7 @@ it("the dialog's title says a former member", async () => {
   );
 });
 
-it("a named person keeps their first name in a failure", async () => {
+it("a named person keeps their first name in your copy", async () => {
   const gone = released(PAT, "Pat Deleted");
   mountHosted("/settings/members", true, undefined, [
     ...withGone(gone),
@@ -240,9 +254,12 @@ it("a named person keeps their first name in a failure", async () => {
   fireEvent.click(
     await within(card).findByRole("button", { name: "Transfer all to me" }),
   );
-  expect(await within(card).findByRole("alert")).toHaveTextContent(
-    "Couldn't move Pat's artifacts. Try again.",
-  );
+  const d = await screen.findByRole("dialog");
+  expect(
+    await within(d).findByText(
+      "They go to your Personal, with Pat's shares kept. If you restore Pat later, these stay with you.",
+    ),
+  ).toBeVisible();
 });
 
 const GONE_EMAIL = `removed+${NONE}@invalid`;
