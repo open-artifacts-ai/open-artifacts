@@ -46,7 +46,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { missingRules, SHAPE, seed } from "./migration-seed.ts";
+import { closeDb, missingRules, SHAPE, seed } from "./migration-seed.ts";
 
 export const BUDGET_MS = 3_000;
 export const STOP_MS = 30_000;
@@ -120,7 +120,7 @@ function buildSeed(base: string, released: string[], file: string) {
     applyMigration(db, name, git(["show", `${base}:${MIGRATIONS}/${name}`]));
   }
   const r = seed(db);
-  db.close();
+  closeDb(db);
   renameSync(tmp, file);
   return r;
 }
@@ -133,7 +133,7 @@ function child(dbFile: string, migration: string) {
   const t0 = performance.now();
   applyMigration(db, path.basename(migration), sql);
   const ms = performance.now() - t0;
-  db.close();
+  closeDb(db);
   process.stdout.write(`${JSON.stringify({ ms })}\n`);
 }
 
@@ -158,7 +158,7 @@ function main(argv: string[]): number {
     schema.exec(readFileSync(path.join(p.root, MIGRATIONS, name), "utf8"));
   }
   const missing = missingRules(schema);
-  schema.close();
+  closeDb(schema);
   if (missing.length > 0) {
     console.log(
       `FAIL: no seed rule for table(s): ${missing.join(", ")}. Add a rule to RULES in apps/server/scripts/migration-seed.ts`,
@@ -231,16 +231,18 @@ function main(argv: string[]): number {
         failed = true;
         break;
       }
-      const ms = (JSON.parse(r.stdout.trim().split("\n").pop() ?? "{}") as {
-        ms: number;
-      }).ms;
+      const ms = (
+        JSON.parse(r.stdout.trim().split("\n").pop() ?? "{}") as {
+          ms: number;
+        }
+      ).ms;
       results.push({ name, ms, stopped: false });
       console.log(`${name}: ${secs(ms)}`);
     }
     if (!failed) {
       const after = new DatabaseSync(db);
       const left = missingRules(after);
-      after.close();
+      closeDb(after);
       if (left.length > 0) {
         console.log(`FAIL: no seed rule for table(s): ${left.join(", ")}`);
         failed = true;

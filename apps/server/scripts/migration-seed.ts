@@ -15,7 +15,13 @@
 //
 // Deterministic: a fixed PRNG seed, so the same schema seeds the same rows.
 // No Node imports but node:sqlite: the timing CLI and the node test share it.
-import type { DatabaseSync, SQLInputValue } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
+
+// The server's @types/node (20.x) predates these parts of node:sqlite.
+type SQLInputValue = null | number | bigint | string | Uint8Array;
+/** DatabaseSync.close(), which the server's @types/node doesn't declare. */
+export const closeDb = (d: DatabaseSync) =>
+  (d as unknown as { close(): void }).close();
 
 /** Row counts at scale 1 (the CI shape). */
 export const SHAPE = {
@@ -144,9 +150,7 @@ export const RULES: Record<string, Rule> = {
         email,
         name: `User ${i}`,
         role:
-          i === 0
-            ? "owner"
-            : c.weighted({ admin: 1, member: 85, guest: 14 }),
+          i === 0 ? "owner" : c.weighted({ admin: 1, member: 85, guest: 14 }),
         created_at: created,
         last_seen_at: c.rand() < 0.9 ? created + c.int(SPAN / 2) : null,
         display_name: c.rand() < 0.3 ? `Display ${i}` : null,
@@ -187,7 +191,8 @@ export const RULES: Record<string, Rule> = {
       return {
         group_id: g.id,
         email: g.email,
-        parent_ids: i > 10 && c.rand() < 0.2 ? `["${c.groups[c.int(10)]?.id}"]` : "[]",
+        parent_ids:
+          i > 10 && c.rand() < 0.2 ? `["${c.groups[c.int(10)]?.id}"]` : "[]",
         gen: c.int(50),
       };
     },
@@ -309,7 +314,13 @@ export const RULES: Record<string, Rule> = {
         owner_id: owner.id,
         title: `${words(c, 3)} ${i}`,
         description: c.rand() < 0.5 ? words(c, 8) : null,
-        format: c.weighted({ html: 6, markdown: 2, code: 1, pdf: 0.5, image: 0.5 }),
+        format: c.weighted({
+          html: 6,
+          markdown: 2,
+          code: 1,
+          pdf: 0.5,
+          image: 0.5,
+        }),
         visibility: c.weighted({ private: 6, team: 3, public: 1 }),
         current_version: 1 + (i % 4),
         capabilities: '{"db":false,"viewer":false,"storage":false}',
@@ -520,17 +531,27 @@ export const RULES: Record<string, Rule> = {
         target === "user"
           ? c.pick(c.users).id
           : target === "space"
-            ? (c.sharedSpaces.length ? c.pick(c.sharedSpaces) : null)
+            ? c.sharedSpaces.length
+              ? c.pick(c.sharedSpaces)
+              : null
             : target === "directory"
               ? null
-              : (c.artifacts.length ? c.pick(c.artifacts).id : null);
+              : c.artifacts.length
+                ? c.pick(c.artifacts).id
+                : null;
       const detail =
         action === "user.status"
           ? JSON.stringify({ status: "active", reason: "admin" })
           : action.startsWith("version.")
             ? JSON.stringify({ version: 1 + c.int(4), bytes: c.int(100_000) })
             : "{}";
-      return { ...base, action, target_type: target, target_id: targetId, detail };
+      return {
+        ...base,
+        action,
+        target_type: target,
+        target_id: targetId,
+        detail,
+      };
     },
   },
 };
@@ -654,7 +675,11 @@ export function seed(
         if (!stmt) {
           keys = Object.keys(row).filter((k) => k === "rowid" || cols.has(k));
           for (const col of info) {
-            if (col.notnull && col.dflt_value === null && !keys.includes(col.name)) {
+            if (
+              col.notnull &&
+              col.dflt_value === null &&
+              !keys.includes(col.name)
+            ) {
               throw new Error(
                 `seed rule for ${table} leaves required column ${col.name} empty`,
               );

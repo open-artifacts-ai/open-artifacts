@@ -145,7 +145,9 @@ describe("ci.yml", () => {
     const changed = steps.find((s) => s.id === "changed");
     expect(changed.run).toMatch(/^run=true\n/);
     expect(changed.run).toContain("apps/server/migrations/");
-    const time = steps.find((s) => (s.run ?? "").includes("migration-timing.ts --seed-file"));
+    const time = steps.find((s) =>
+      (s.run ?? "").includes("migration-timing.ts --seed-file"),
+    );
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(time.if).toBe("${{ steps.changed.outputs.run == 'true' }}");
   });

@@ -20,7 +20,8 @@ const files = readdirSync(dir)
 function migrated() {
   const d = new DatabaseSync(":memory:");
   d.exec(D1_MIGRATIONS);
-  for (const f of files) applyMigration(d, f, readFileSync(join(dir, f), "utf8"));
+  for (const f of files)
+    applyMigration(d, f, readFileSync(join(dir, f), "utf8"));
   return d;
 }
 
@@ -60,9 +61,14 @@ describe("migration seeder", () => {
 
   it("fails a rule that leaves a required column empty, naming it", () => {
     const d = migrated();
-    d.exec("create table `t2` (`id` text primary key not null, `n` integer not null)");
+    d.exec(
+      "create table `t2` (`id` text primary key not null, `n` integer not null)",
+    );
     expect(() =>
-      seed(d, { scale: 0.002, rules: { ...RULES, t2: { rows: () => 1, row: () => ({ id: "x" }) } } }),
+      seed(d, {
+        scale: 0.002,
+        rules: { ...RULES, t2: { rows: () => 1, row: () => ({ id: "x" }) } },
+      }),
     ).toThrow(/seed rule for t2 leaves required column n empty/);
   });
 });
