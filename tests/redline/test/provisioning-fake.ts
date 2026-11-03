@@ -123,7 +123,11 @@ export type Fault =
   | "p50_team_tier"
   | "p50_no_codes"
   | "p50_no_test_held"
-  | "prod_live";
+  | "prod_live"
+  /** rl-l's create fails at upload (as a Cloudflare API error would). */
+  | "rll_create_failed"
+  | "p20_content_serving"
+  | "p21_stays_paused";
 
 export interface FakeApi {
   fetch: typeof fetch;
@@ -197,6 +201,8 @@ export function fakeApi(): FakeApi {
   const signupAccounts = new Set<string>();
   /** Purged rows inventory lost (fault p23_no_row). */
   const noRow = new Set<string>();
+  /** Suspended installs whose content host still serves (p20_content_serving). */
+  const contentServing = new Set<string>();
   /** Rows a done discard or purge freed: HOSTS and pages forget them. */
   const live = (i: FInstall) => i.deletedAt === null;
   /** Every row but a discarded create's holds its slug (installs.slug UNIQUE). */
@@ -541,9 +547,11 @@ export function fakeApi(): FakeApi {
         tenants.set(i.appHost, { server, install });
       }
       const j = startJob(i, "create", p, {
-        failAt: rel.installable
-          ? undefined
-          : { step: "release_gate", code: "release_unverified" },
+        failAt: !rel.installable
+          ? { step: "release_gate", code: "release_unverified" }
+          : faults.has("rll_create_failed") && i.slug.startsWith("rl-l-")
+            ? { step: "upload", code: "cf_api_error" }
+            : undefined,
         onStep: (s) => {
           if (s === "route") i.mode = "serving";
           if (faults.has("p15_mode_early") && s === "admit") i.mode = "serving";
@@ -609,8 +617,10 @@ export function fakeApi(): FakeApi {
       case "suspend": {
         const j = startJob(i, "suspend", p, {
           onDone: () => {
+            // p20_content_serving: the content host keeps serving.
             i.mode = "paused";
             i.state = "suspended";
+            if (faults.has("p20_content_serving")) contentServing.add(i.id);
           },
         });
         return ok({ job: jobView(j, false), install: summary(i) }, 202);
@@ -618,7 +628,8 @@ export function fakeApi(): FakeApi {
       case "resume": {
         const j = startJob(i, "resume", p, {
           onDone: () => {
-            i.mode = "serving";
+            // p21_stays_paused: the job is done but the page stays paused.
+            if (!faults.has("p21_stays_paused")) i.mode = "serving";
             i.state = "active";
           },
         });
@@ -791,6 +802,12 @@ export function fakeApi(): FakeApi {
         (faults.has("p13_healthz_404") && i.slug.startsWith("rl-p-")))
     )
       return new Response("nf", { status: 404 });
+    if (
+      i.mode === "paused" &&
+      contentServing.has(i.id) &&
+      host === i.contentHost
+    )
+      return new Response("app");
     if (i.mode === "paused") return new Response("paused", { status: 503 });
     // Dispatch serves the closed page as 503 too (apps/dispatch/src/unavailable.ts).
     if (i.mode === "closed")

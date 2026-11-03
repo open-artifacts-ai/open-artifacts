@@ -416,6 +416,8 @@ export interface RunState {
   releases?: Release[];
   /** P44's first registered client, for P43. */
   clientId?: string;
+  /** rl-l-<run>, the install P20 to P22 run on (lifecycleInstall). */
+  rll?: Promise<RlP>;
 }
 
 const bare = (h: string) => h.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
@@ -555,6 +557,192 @@ export async function runProbe(
 }
 
 /**
+ * One sequence of probes that share state; the chains run at once. A probe
+ * is in a chain with what it reads: every `needs` is earlier in its own
+ * chain, so a failure blocks only its own chain. `tail` runs once the
+ * chain's last probe settles, pass or not.
+ */
+export interface Chain {
+  name: string;
+  probes: readonly ProbeId[];
+  tail?: (run: Run) => Promise<void>;
+}
+
+/**
+ * The provisioning chains (dependency graph in the PR for #1137's split):
+ * - rl-p: create (with P15, P16 riding on it), the reads on it, MCP's
+ *   upgrade (P45) and the rollback of it (P31), then delete and purge (P23).
+ * - rl-l: its own install (lifecycleInstall), suspend, resume, delete and
+ *   restore; the tail deletes and purges it.
+ * - rl-snz: P50, which makes and removes its own install.
+ * - api: everything else, in the old order: no install of the run's but
+ *   rl-q (P32, made and discarded inside it). P25 stays last: it spends
+ *   RL_PV_SIGNIN_IP, which P30 and P34 share, and no other chain signs in.
+ * P33 runs after every chain: it checks the job.accepted row of every job
+ * the run's OIDC actor started.
+ */
+export const CHAINS: readonly Chain[] = [
+  {
+    name: "rl-p",
+    probes: [
+      "P13",
+      "P49",
+      "P14",
+      "P15",
+      "P16",
+      "P18",
+      "P19",
+      "P45",
+      "P31",
+      "P23",
+    ],
+  },
+  { name: "rl-l", probes: ["P20", "P21", "P22"], tail: removeLifecycle },
+  { name: "rl-snz", probes: ["P50"] },
+  {
+    name: "api",
+    probes: [
+      "P1",
+      "P2",
+      "P3",
+      "P4",
+      "P5",
+      "P6",
+      "P7",
+      "P8",
+      "P9",
+      "P10",
+      "P11",
+      "P12",
+      "P17",
+      "P24",
+      "P26",
+      "P27",
+      "P28",
+      "P29",
+      "P30",
+      "P32",
+      "P34",
+      "P35",
+      "P36",
+      "P37",
+      "P38",
+      "P39",
+      "P40",
+      "P41",
+      "P42",
+      "P44",
+      "P43",
+      "P46",
+      "P47",
+      "P48",
+      "P25",
+    ],
+  },
+];
+/** After every chain and its tail. */
+export const AFTER_CHAINS: readonly ProbeId[] = ["P33"];
+
+/** A probe's own bound: its vitest timeout before the split. */
+export const probeBoundMs = (p: Probe): number =>
+  p.timeoutMs ?? PROBE_TIMEOUT_MS;
+
+/**
+ * Starts every chain at once and returns each probe's outcome; `settled`
+ * resolves once every probe and tail is done (the run's cleanup waits on it,
+ * so it never races a chain). A probe past its bound fails naming the bound
+ * and counts as failed for its dependants, as a vitest timeout did. Errors
+ * pass through unchanged: a ProbeFail fails, an InfraError is infra.
+ */
+export function startChains(
+  run: Run,
+  o: {
+    chains?: readonly Chain[];
+    after?: readonly ProbeId[];
+    probes?: readonly Probe[];
+    boundMs?: (p: Probe) => number;
+  } = {},
+): { outcomes: Map<ProbeId, Promise<Outcome>>; settled: Promise<void> } {
+  const probes = new Map((o.probes ?? PROBES).map((p) => [p.id, p]));
+  const bound = o.boundMs ?? probeBoundMs;
+  const failed = new Set<string>();
+  const outcomes = new Map<ProbeId, Promise<Outcome>>();
+  const one = (id: ProbeId): Promise<Outcome> => {
+    const p = probes.get(id);
+    if (!p) return Promise.reject(new Error(`no probe ${id}`));
+    const ms = bound(p);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        failed.add(id);
+        reject(
+          new ProbeFail(`${id}: no result within ${Math.round(ms / 1000)} s`),
+        );
+      }, ms);
+    });
+    return Promise.race([runProbe(p, run, failed), late]).finally(() =>
+      clearTimeout(timer),
+    );
+  };
+  const sequence = (
+    ids: readonly ProbeId[],
+    start: Promise<unknown>,
+  ): Promise<void> => {
+    let prev: Promise<unknown> = start;
+    for (const id of ids) {
+      const r = prev.then(() => one(id));
+      // Handled here; each case still awaits (and reports) its own.
+      r.catch(() => undefined);
+      outcomes.set(id, r);
+      prev = r.catch(() => undefined);
+    }
+    return prev.then(() => undefined);
+  };
+  const ends = (o.chains ?? CHAINS).map((c) =>
+    sequence(c.probes, Promise.resolve()).then(() =>
+      c.tail?.(run).catch(() => undefined),
+    ),
+  );
+  const settled = sequence(o.after ?? AFTER_CHAINS, Promise.all(ends));
+  return { outcomes, settled };
+}
+
+/**
+ * A case's vitest timeout once the chains run at once: the case waits on
+ * every probe before it in its chain (P33 on the longest chain), each up to
+ * its own bound, plus a margin. Above the probe's own bound, so the probe's
+ * bound always fires first.
+ */
+export function caseTimeoutMs(
+  id: ProbeId,
+  o: {
+    chains?: readonly Chain[];
+    after?: readonly ProbeId[];
+    probes?: readonly Probe[];
+  } = {},
+): number {
+  const probes = new Map((o.probes ?? PROBES).map((p) => [p.id, p]));
+  const sum = (ids: readonly ProbeId[]) =>
+    ids.reduce((t, x) => {
+      const p = probes.get(x);
+      return t + (p ? probeBoundMs(p) : 0);
+    }, 0);
+  const margin = 60_000;
+  const chains = o.chains ?? CHAINS;
+  for (const c of chains) {
+    const at = c.probes.indexOf(id);
+    if (at >= 0) return sum(c.probes.slice(0, at + 1)) + margin;
+  }
+  const after = o.after ?? AFTER_CHAINS;
+  const at = after.indexOf(id);
+  if (at < 0) return PROBE_TIMEOUT_MS;
+  const longest = Math.max(
+    ...chains.map((c) => sum(c.probes) + (c.tail ? CLEANUP_TIMEOUT_MS : 0)),
+  );
+  return longest + sum(after.slice(0, at + 1)) + margin;
+}
+
+/**
  * Prod probes wait until the prod admin host answers 401 (12.2). Not live
  * means only one thing (#1012): the name does not resolve, as before the
  * prod platform deploy. A host that resolves must answer 401; anything else
@@ -636,6 +824,85 @@ export { notResolved };
 function rlp(run: Run): RlP {
   if (!run.s.rlp) throw new ProbeFail("no rl-p install (P13 failed)");
   return run.s.rlp;
+}
+
+/**
+ * rl-l-<run>: the install P20 to P22 run on, so suspend, resume and restore
+ * run while rl-p goes through its upgrade and rollback. Made as P13 makes
+ * rl-p (oidcCreate, the same version, testHooks) and ready as P13 leaves
+ * rl-p: done, both hosts set, the redline /healthz served. That create is
+ * P13's case, so here it's setup: any failure is infra (never a pass, never
+ * a red-line verdict) and P20 to P22 report it. Listed for cleanup before
+ * its create; the chain's tail removes it (removeLifecycle). Memoized: every
+ * caller gets the one install.
+ */
+export function lifecycleInstall(run: Run): Promise<RlP> {
+  run.s.rll ??= makeLifecycle(run);
+  return run.s.rll;
+}
+
+async function makeLifecycle(run: Run): Promise<RlP> {
+  const slug = run.slug("l");
+  run.s.cleanup.push({ slug });
+  try {
+    const version = (await previous(run)) ?? run.c.version;
+    const a = run.accepted(
+      await run.v1("/installs", {
+        body: oidcCreate(run, slug, run.rid("rll"), version),
+      }),
+      "rl-l create",
+    );
+    await run.done(a.job.id, "rl-l create");
+    const d = await ownDetail(run, a.install.id);
+    expect(d, 200, "rl-l R3");
+    const dj = d.json as InstallDetail;
+    if (dj.testHooks !== true)
+      throw new ProbeFail("rl-l: testHooks is not true");
+    if (!dj.appHost || !dj.contentHost)
+      throw new ProbeFail(
+        "rl-l: the finished install has no app or content host",
+      );
+    // Dispatch's HOSTS cache (60 s) can still miss the new host: poll.
+    await run.within(PAGE_WITHIN_MS, "rl-l redline /healthz", async () => {
+      const h = await run.page(dj.appHost);
+      const hz = h.json as { testHooks?: unknown } | undefined;
+      return h.status === 200 && hz?.testHooks === true;
+    });
+    return {
+      id: a.install.id,
+      slug,
+      appHost: dj.appHost,
+      contentHost: dj.contentHost,
+      createdAt: version,
+      version,
+    };
+  } catch (e) {
+    if (e instanceof InfraError) throw e;
+    throw new InfraError(
+      `rl-l setup: ${e instanceof ProbeFail ? e.message : `error ${(e as Error)?.name ?? "unknown"}`}`,
+      { cause: e },
+    );
+  }
+}
+
+/**
+ * The rl-l chain's tail: deletes and purges rl-l once P22 is done, so the
+ * run's cleanup has nothing left of it. A failure leaves it listed: the
+ * run's cleanup tries again, and fails the run naming it.
+ */
+export async function removeLifecycle(run: Run): Promise<void> {
+  const slug = run.slug("l");
+  const at = run.s.cleanup.findIndex((e) => e.slug === slug);
+  if (at < 0) return;
+  try {
+    await removeInstall(run, slug, "rl-l cleanup");
+    run.s.cleanup.splice(
+      run.s.cleanup.findIndex((e) => e.slug === slug),
+      1,
+    );
+  } catch {
+    // Left on run.s.cleanup for cleanupInstalls.
+  }
 }
 
 async function releases(run: Run): Promise<Release[]> {
@@ -1446,11 +1713,11 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P20",
-    needs: ["P13"],
     title:
       "suspend: 503 paused page on both hosts within 120 s; inventory paused",
+    // On rl-l (lifecycleInstall): a serving install, as rl-p was here.
     run: async (run) => {
-      const p = rlp(run);
+      const p = await lifecycleInstall(run);
       const a = run.accepted(
         await run.v1(`/installs/${p.id}/suspend`, {
           body: { requestId: run.rid("p20"), reason: "red-line P20" },
@@ -1471,10 +1738,11 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P21",
-    needs: ["P13", "P20"],
+    needs: ["P20"],
     title: "resume: 200 within 120 s",
+    // On rl-l, which P20 suspended.
     run: async (run) => {
-      const p = rlp(run);
+      const p = await lifecycleInstall(run);
       const a = run.accepted(
         await run.v1(`/installs/${p.id}/resume`, {
           body: { requestId: run.rid("p21") },
@@ -1492,10 +1760,10 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P22",
-    needs: ["P13"],
     title: "delete, then restore: 503 closed page on both hosts, then serving",
+    // On rl-l, serving again after P21.
     run: async (run) => {
-      const p = rlp(run);
+      const p = await lifecycleInstall(run);
       const d = run.accepted(
         await run.v1(`/installs/${p.id}/delete`, {
           body: { requestId: run.rid("p22-del"), confirmSlug: p.slug },
@@ -1532,6 +1800,8 @@ export const PROBES: readonly Probe[] = [
     needs: ["P13"],
     title:
       "delete, then purge: 404; inventory deleted; no HOSTS key; the slug stays taken",
+    // Last on rl-p (after P31): it ends the install, so rl-p's chain cleans
+    // up after itself.
     run: async (run) => {
       const p = rlp(run);
       const d = run.accepted(
