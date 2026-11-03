@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
 import { AUDIT_ACTIONS, actionPhrase } from "../src/pages/Audit";
@@ -11,15 +11,26 @@ const files = (dir: string): string[] =>
     const p = join(dir, f);
     return statSync(p).isDirectory() ? files(p) : p.endsWith(".ts") ? [p] : [];
   });
-/** Every captured group of every match, across the dir's .ts files. */
+/**
+ * Every captured group of every match, across the dir's .ts files. Loud, not
+ * empty (#1250): a scanned directory that moved, or one that no longer yields
+ * anything, throws, so a path change can't quietly hide every writer in it.
+ */
 const scan = (dir: string, patterns: RegExp[]) => {
+  const root = join(repo, dir);
+  if (!existsSync(root) || !statSync(root).isDirectory())
+    throw new Error(`audit-actions: ${dir} is not a directory; did it move?`);
   const out = new Set<string>();
-  for (const f of files(join(repo, dir))) {
+  for (const f of files(root)) {
     const text = readFileSync(f, "utf8");
     for (const re of patterns)
       for (const m of text.matchAll(re))
         for (const g of m.slice(1)) if (g) out.add(g);
   }
+  if (out.size === 0)
+    throw new Error(
+      `audit-actions: nothing in ${dir} matches ${patterns.join(" ")}; did its writers move?`,
+    );
   return out;
 };
 const NAME = "([a-z_]+\\.[a-z_]+)";
