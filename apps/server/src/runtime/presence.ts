@@ -291,15 +291,14 @@ export class UserPresence extends DurableObject<Env> {
     this.indexOnly();
     const why = String(reason).slice(0, MAX_REASON);
     const now = this.now();
-    LATER_PASSES_MS.forEach((after, i) =>
+    for (const [i, after] of LATER_PASSES_MS.entries())
       this.sql.exec(
         `insert into sweep (id, reason, due) values (?, ?, ?)
          on conflict (id) do update set reason = excluded.reason, due = excluded.due`,
         i + 1,
         why,
         now + after,
-      ),
-    );
+      );
     const ids = this.indexed(now);
     const nowIds = ids.slice(0, CLOSE_FANOUT);
     for (const id of ids.slice(CLOSE_FANOUT))
