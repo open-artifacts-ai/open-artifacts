@@ -92,10 +92,13 @@ export function CodeBlock({
   children,
   copy,
   label,
+  disabled = false,
 }: {
   children: ReactNode;
   copy: string;
   label: string;
+  /** The button only: the code stays readable and selectable. */
+  disabled?: boolean;
 }) {
   return (
     <div className="flex min-w-0 items-start gap-[var(--oa-space-1)] rounded-md bg-secondary">
@@ -105,6 +108,7 @@ export function CodeBlock({
         size="sm"
         className="m-[var(--oa-space-1)] flex-none text-[length:var(--oa-text-sm)]"
         aria-label={label}
+        disabled={disabled}
         onClick={() => copyText(copy, "Copied")}
       >
         Copy
@@ -118,13 +122,15 @@ export function Code({
   code,
   label,
   wrap = false,
+  disabled = false,
 }: {
   code: string;
   label: string;
   wrap?: boolean;
+  disabled?: boolean;
 }) {
   return (
-    <CodeBlock copy={code} label={label}>
+    <CodeBlock copy={code} label={label} disabled={disabled}>
       <pre
         // Focusable so keyboard users can scroll a long line (wrapped ones
         // don't scroll).
