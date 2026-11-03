@@ -45,18 +45,40 @@ jobs:
       # Only the release commit's own run creates GitHub releases. The action
       # reads main's head, not this run's sha, so a run queued behind the
       # concurrency group could otherwise create a release whose tag is not
-      # its head_sha, and tag-passed-checks.sh would refuse that tag.
+      # its head_sha, and tag-passed-checks.sh would refuse that tag. The
+      # release commit is the merge commit of the one merged release PR still
+      # labelled "autorelease: pending". A pending release PR merged before
+      # this commit never got its own run (batched by the merge queue, or
+      # cancelled while pending): fail loudly rather than stall with no tag.
+      # Reads only, with the App token (this job's GITHUB_TOKEN has no scope).
       - id: kind
         name: Is this push the release commit?
         env:
-          MESSAGE: ${{ github.event.head_commit.message }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
         run: |
-          # A prefix match on the message is a match on its first line.
-          if [[ "$MESSAGE" == "chore(main): release "* ]]; then
-            echo "is_release=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fail() { echo "::error::$1"; exit 1; }
+          issues=$(gh api "repos/$REPO/issues?state=closed&labels=autorelease:%20pending&per_page=100") || fail "could not list pending release PRs"
+          nums=$(jq -r '[.[] | select(.pull_request.merged_at != null) | .number] | join(" ")' <<< "$issues") || fail "could not read pending release PRs"
+          read -ra pending <<< "$nums"
+          if [ "${#pending[@]}" -eq 0 ]; then
+            echo "is_release=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          [ "${#pending[@]}" -eq 1 ] || fail "more than one merged release PR is pending (${pending[*]}): see docs/ops/hosted.md, Release recovery"
+          n=${pending[0]}
+          merge=$(gh api "repos/$REPO/pulls/$n" -q .merge_commit_sha) || fail "could not read #$n"
+          [[ "$merge" =~ ^[0-9a-f]{40}$ ]] || fail "could not read #$n's merge commit"
+          if [ "$merge" = "$SHA" ]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Merged after this commit: its own run is queued behind this one.
+          status=$(gh api "repos/$REPO/compare/$SHA...$merge" -q .status) || fail "could not compare $SHA with $merge"
+          if [ "$status" = ahead ]; then
+            echo "Release commit $merge (#$n) is newer; its own run creates the release."
+            echo "is_release=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          fail "release commit $merge (#$n) has no own run: see docs/ops/hosted.md, Release recovery"
       - id: rp
         uses: googleapis/release-please-action@v4
         with:

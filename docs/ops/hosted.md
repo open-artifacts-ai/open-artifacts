@@ -553,9 +553,11 @@ The run applies the gate: it fails unless every case passes or is one the report
 5. Sign the env's first floor with the `hosted-floor` workflow (dispatch on `main`: `env`, `seq` >= `FLOOR_MIN_SEQ[env]`, `min_version`, `revoked`), download its `floor-<env>-<seq>` artifact, and `publishFloor` it.
 6. `publishRelease` the signed tar and `.sig.json` from the GitHub release for each variant the env takes.
 
-### Forcing a release when only non-releasable commits landed
+### Release recovery
 
-Only the `release-please.yml` push run of the release commit itself (subject `chore(main): release X.Y.Z`) creates the GitHub release; every other run passes `skip-github-release`, so a run queued behind the release PR's merge can't create the tag in a run whose `head_sha` isn't the tag's commit, which the release gate would refuse. If that run fails before the release exists, re-run it (a re-run stays a push run on the same commit).
+Only the `release-please.yml` push run of the release commit itself creates the GitHub release: its `kind` step finds the one merged release PR labelled `autorelease: pending` and passes `skip-github-release` unless that PR's merge commit is the run's `github.sha`. A run on an earlier commit skips and leaves the release to the release commit's own run. A run on a later commit fails with "release commit <sha> (#<n>) has no own run", and so does a run that finds two pending release PRs. That happens when the release PR merged in a merge-queue batch, or its pending run was cancelled. If the release commit's own push run exists, re-run it. If it never ran, the release gate (`tag-passed-checks.sh`) refuses that commit whatever happens, so recover with a new patch release. First remove the `autorelease: pending` label from the stranded release PR: until then every run fails here, and release-please opens no new release PR. Then merge an empty commit with a `Release-As: X.Y.Z` footer (see the next section), or wait for the next release. #1282 tracks making the gate accept the run that created the release.
+
+### Forcing a release when only non-releasable commits landed
 
 release-please opens a release PR only for releasable commits (`feat`, `fix`, `perf`, `deps`, or a breaking change). A `test:`, `ci:`, `docs:` or `chore:` merge alone never ships, so a fix that red-line needs can sit on main unreleased. To ship it, merge a PR whose squash commit ends with a `Release-As: X.Y.Z` footer.
 
