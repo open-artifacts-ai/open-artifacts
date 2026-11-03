@@ -31,7 +31,7 @@ const msw: ParityDriver = {
   addPendingSignup: async () => {},
   knownGaps: {
     "R2: q on a pending signup's email": {
-      why: "the mock has no signups, so q never matches one's email",
+      why: "the mock has no signups, so q never matches one's email (#1196: https://github.com/open-artifacts-ai/open-artifacts/issues/1196)",
     },
   },
 };
