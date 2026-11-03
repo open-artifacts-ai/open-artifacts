@@ -689,9 +689,8 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<ManageJob> {
   return out;
 }
 
-/** The job's actor is a token whose agent_tokens row is an OAuth grant. */
+/** The job's token row is an OAuth grant; TRANSITIONS admits only T here. */
 const oauthGrant = async (ctx: CreateCtx, job: JobRow) =>
-  job.actor_kind === "token" &&
   job.token_id !== null &&
   (
     await transient(
