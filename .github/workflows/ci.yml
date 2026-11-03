@@ -609,3 +609,22 @@ jobs:
         run: |
           npm install --no-save --prefix "$RUNNER_TEMP/rp" release-please@17.3.0
           RELEASE_PLEASE="$RUNNER_TEMP/rp/node_modules/.bin/release-please" bash scripts/ci/release-dry-run.sh
+  # #1056 untangle D: the public code installs, builds, typechecks and tests
+  # with every private path (scripts/ci/private-paths.txt) removed.
+  # Advisory for now: it becomes required (drop continue-on-error, add it to
+  # the ruleset) once untangle A (bundle builder), B (@oa/shared/mocks) and C
+  # (the @oa/shared/provisioning contract) have merged.
+  public-only:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: bash scripts/ci/public-only.sh
