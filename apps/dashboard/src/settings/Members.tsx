@@ -350,6 +350,10 @@ const mayResetGoogle = (m: Member, you: boolean, owner: boolean) =>
   !you &&
   (m.role !== "admin" || owner);
 
+/** #1146, Design's copy: in the Remove confirm when directory sync can re-add the person. */
+export const READMIT_WARNING =
+  "Google Workspace can add them back. Their address is in your Workspace domain, so if they're still active in Google, the next directory sync creates a new, empty account for it. To keep them out, suspend or remove them in Google Workspace too.";
+
 /** Design's copy: role change and Remove on another admin's row. */
 const ADMIN_ONLY = "Only the owner can change another admin's access.";
 const RESET_ONLY = "Only the owner can reset another admin's Google link.";
@@ -630,7 +634,12 @@ function Row({
             </Button>
           </>
         }
-      />
+      >
+        {/* #1146: sync can re-add this address; Remove still works. */}
+        {m.directoryManaged && (
+          <p className={`m-0 ${muted}`}>{READMIT_WARNING}</p>
+        )}
+      </Modal>
     </li>
   );
 }

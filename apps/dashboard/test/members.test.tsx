@@ -65,6 +65,9 @@ const openRemove = async (row: HTMLElement) => {
 const REMOVE_COPY =
   "They lose access, including to anything shared with them. Their artifacts stay where they are. You can transfer them later under Departed, or restore this person.";
 
+const WARNING =
+  "Google Workspace can add them back. Their address is in your Workspace domain, so if they're still active in Google, the next directory sync creates a new, empty account for it. To keep them out, suspend or remove them in Google Workspace too.";
+
 const rowOf = (email: string) =>
   waitFor(() => {
     const row = screen
@@ -219,6 +222,46 @@ describe("members", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove member" }));
     await waitFor(() => expect(dels.length).toBe(1));
     expect(dels[0]?.url).toBe(R.member(other.id));
+  });
+
+  it("a directory-managed person: the Workspace warning, and Remove still DELETEs", async () => {
+    const dels = bodies("DELETE");
+    as(owner, [owner, admin, { ...other, directoryManaged: true }]);
+    mount("/settings/members");
+    await openRemove(await rowOf(other.email));
+    const dialog = await screen.findByRole("dialog");
+    const warning = within(dialog).getByText(WARNING);
+    expect(warning).toHaveClass("text-muted-foreground");
+    // Above the buttons, after the usual copy.
+    const remove = within(dialog).getByRole("button", {
+      name: "Remove member",
+    });
+    expect(warning.compareDocumentPosition(remove)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(within(dialog).getByText(REMOVE_COPY)).toBeTruthy();
+    expect(remove).toBeEnabled();
+    fireEvent.click(remove);
+    await waitFor(() => expect(dels.length).toBe(1));
+    expect(dels[0]?.url).toBe(R.member(other.id));
+  });
+
+  it("without the flag, no Workspace warning", async () => {
+    as(owner, [owner, admin, other]);
+    mount("/settings/members");
+    await openRemove(await rowOf(other.email));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(REMOVE_COPY)).toBeTruthy();
+    expect(within(dialog).queryByText(WARNING)).toBeNull();
+    expect(dialog).not.toHaveTextContent("Google Workspace can add them back");
+  });
+
+  it("hosted mock: Dan carries the flag while sync is connected, so his confirm warns", async () => {
+    mountHosted("/settings/members");
+    await openRemove(await rowOf("dan@example.com"));
+    expect(
+      within(await screen.findByRole("dialog")).getByText(WARNING),
+    ).toBeVisible();
   });
 
   it("a guest row shows no admin/member false state", async () => {
