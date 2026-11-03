@@ -897,7 +897,7 @@ if [ -n "$q" ]; then jq -r "$q" <<< "$body"; else printf '%s\\n' "$body"; fi
         const r = runKind(stub);
         expect(r.code, JSON.stringify(stub)).toBe(1);
         expect(r.output).toBe("");
-        expect(r.log).toContain(`::error::${error}`);
+        expect(r.log).toContain(`::error::${error}\n`);
       }
       const dir = mkdtempSync(join(tmpdir(), "rp-kind-"));
       const out = join(dir, "out");
