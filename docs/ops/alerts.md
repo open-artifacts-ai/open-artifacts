@@ -20,7 +20,7 @@ A Google account that isn't on the admin list tried to sign in. Clears on its ow
 A job failed in the last 24 hours, and no later job on that install finished. Clears on its own after 24 hours, or once a later job on the install finishes. Read the job's code on the admin job page.
 
 - A code that says it will retry (`lease_held`, `cf_error`, `token_invalid`): the Manager retries it, with the user's yes.
-- `upgrade_rolled_back`: the upgrade failed its own checks, and they put the old code back (#1106 ends this). Ship a fix as a new release.
+- `upgrade_rolled_back`: only on older jobs, from before upgrades stopped reverting. Ship a fix as a new release.
 - `copy_key_left`: see the next section. It stays open until the key is gone.
 - Anything else: a bug. Ship a fix as a new release.
 
@@ -46,7 +46,7 @@ The latest hourly prod-clean report failed. The email names the install and the 
 
 ## upgrade_incomplete
 
-An upgrade stopped partway and needs a fix forward. Clears once a later upgrade, purge or discard of that install finishes. Ship the fix as a new release. A fleet upgrade's install gets one automatic try at the next release. Any other install: the Manager upgrades it, with the user's yes.
+An upgrade failed, and the install stays on the new version (forward only). It may serve with errors until the fix lands. Clears once a later upgrade, purge or discard of that install finishes. Ship the fix as a new release. A fleet upgrade's install gets one automatic try at the next release. Any other install: the Manager upgrades it, with the user's yes.
 
 ## unreachable_after_route
 
@@ -81,7 +81,7 @@ The provisioner's Cloudflare token is invalid or expired. Jobs that need it retr
 The fleet rollout stopped. No install is upgraded to a halted version, and the fleet never rolls one back. It clears on its own once a new release ships and its canary soaks. A halt on an older version stays on the alert for 6 hours. The email lists a code per problem:
 
 - `fleet_halt`: upgraded installs failed two health probes of this version on separate ticks. Ship a fix as a new release. Its rollout starts again from the canary.
-- A job code (such as `upgrade_rolled_back` or `upgrade_incomplete`): a fleet upgrade failed. Ship a fix as a new release.
+- A job code (usually `upgrade_incomplete`): a fleet upgrade failed, and that install stays on the new version. Ship a fix as a new release. `upgrade_rolled_back` shows only on older jobs.
 - `migration_held` (canary only): the release has a migration that can lose data. A person reads the migration. If it is safe, the Manager upgrades the canary with `nonAdditive: true`, with the user's yes. If not, fix the migration in a new release. On any other install, `migration_held` shows in `version_skew` instead.
 - `canary_blocked`: the canary (`FLEET_CANARY`) hasn't soaked on the release after 45 minutes, so nothing else moved. Check the canary on the admin panel. If it is suspended, paused, unhealthy or busy, that is the cause. A bug ships as a new release.
 - `no_target`: the scheduler has no stable release tag, so nothing can move. It was deployed without one. The next release's deploy sets it.

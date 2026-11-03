@@ -37,9 +37,9 @@ const COPY: Record<string, string> = {
   revoke_pending: "Directory access is still being revoked. It will retry.",
   token_invalid: "The provisioning token is invalid. It will retry.",
   upgrade_rolled_back:
-    "The upgrade failed its checks and the old code was put back. Ship the fix as a new release.",
+    "An older job: the upgrade failed and its old code was put back. Upgrades no longer revert. Ship the fix as a new release.",
   upgrade_incomplete:
-    "The upgrade stopped partway and needs a fix forward. Ship the fix as a new release, then upgrade to it.",
+    "The upgrade failed and the install stays on the new version. Ship the fix as a new release, then upgrade to it.",
   canceled: "The job was canceled.",
   migration_held:
     "This release has a migration that can lose data, so it was held and nothing changed. To cross it, open Upgrade and tick the restore point box.",

@@ -526,6 +526,8 @@ describe("fleet_halted copy (#1083 re-review N5)", () => {
     const text = alertFor("fleet_halted", "staging").text("open", 1);
     expect(text).not.toMatch(/reverted|someone has to decide/);
     expect(text).toMatch(/Do not roll back/);
+    expect(text).toMatch(/stays on the new version/);
+    expect(text).toMatch(/upgrade_rolled_back is an older job's/);
   });
 });
 

@@ -20,6 +20,10 @@ describe("codeCopy: forward only (#1106)", () => {
       expect(codeCopy(c), c).not.toMatch(/rollback|roll back|go back/i);
     }
   });
+  it("upgrade_rolled_back is about older jobs; upgrade_incomplete stays on the new version", () => {
+    expect(codeCopy("upgrade_rolled_back")).toMatch(/older job/);
+    expect(codeCopy("upgrade_incomplete")).toMatch(/stays on the new version/);
+  });
   it("copy_key_left says what to delete", () => {
     expect(codeCopy("copy_key_left")).toMatch(/OAUTH_COPY_KEY/);
   });
