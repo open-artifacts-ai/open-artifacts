@@ -16,17 +16,12 @@ type Token =
 function tokens(sql: string): Token[] | null {
   const out: Token[] = [];
   let i = 0;
-  const quoted = (close: string, doubled: boolean): boolean => {
-    for (let j = i + 1; j < sql.length; j++) {
-      if (sql[j] !== close) continue;
-      if (doubled && sql[j + 1] === close) {
-        j++;
-        continue;
-      }
-      i = j + 1;
-      return true;
-    }
-    return false;
+  // A doubled quote inside reads as two strings in a row: the same tokens.
+  const quoted = (close: string): boolean => {
+    const n = sql.indexOf(close, i + 1);
+    if (n < 0) return false;
+    i = n + 1;
+    return true;
   };
   while (i < sql.length) {
     const c = sql[i] as string;
@@ -40,10 +35,10 @@ function tokens(sql: string): Token[] | null {
       if (n < 0) return null;
       i = n + 2;
     } else if (c === "'" || c === '"' || c === "`") {
-      if (!quoted(c, true)) return null;
+      if (!quoted(c)) return null;
       out.push({ t: "lit" });
     } else if (c === "[") {
-      if (!quoted("]", false)) return null;
+      if (!quoted("]")) return null;
       out.push({ t: "lit" });
     } else {
       const w = /^[\p{L}\p{N}_$]+/u.exec(sql.slice(i))?.[0];
