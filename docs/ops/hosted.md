@@ -519,6 +519,7 @@ Agents sign in to the dashboard of the staging install `rl-agents` as a member, 
 - Staging and `rl-agents` only. That JWT may call R2, R15 and R26, and only on the install whose slug is exactly `rl-agents`, with test hooks. Every other route is 403 and every other install 404, and the provisioner holds its jobs to `rl-agents` too. Prod has no OIDC principal. Its jobs and sealed results are its own (`oidc:<repository_id>:test-member`): red-line never reads them, and it never reads red-line's.
 - A mint cuts off the previous one: the old hook key and PATs stop working, another agent's included. A session already written to a storage-state file is not cut off. It lasts until the cookie expires (7 days), so delete the file when you are done.
 - `rl-agents`' `TEST_DOMAIN` is `oa-redline-a.fyi`, a real Google Workspace tenant, so code sign-in there sends real mail. Agents sign in only through `/__test/session`, which sends none. Nobody requests codes for made-up addresses on `oa-redline-a.fyi`.
+- What a misuse could do: R26 mints an admin PAT on `rl-agents`, and the hook key can make a session of any role, so whoever holds them can likely send invite mail from the install. Because `TEST_DOMAIN` is a real Workspace tenant, the realistic harm is unwanted staging mail, not data: `rl-agents` holds only test data.
 - To revoke: `node scripts/ops/staging-test-member.ts --revoke`. It rotates the hook key to one nobody holds and revokes the PATs.
 
 ### Binding ids
