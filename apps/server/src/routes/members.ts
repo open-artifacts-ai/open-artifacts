@@ -9,7 +9,6 @@ import {
 import type { Context } from "hono";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
-import { showsSignInFields } from "../auth/sign-in.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
@@ -19,6 +18,7 @@ import {
   listMembers,
   patchMember,
   removeMember,
+  restoreMember,
 } from "../services/members.js";
 import { transferPersonal, transferSummary } from "../services/spaces.js";
 import type { AppType } from "./index.js";
@@ -52,9 +52,7 @@ export function mountMembers(app: AppType): void {
     const q = MembersQuerySchema.safeParse(c.req.query());
     if (!q.success)
       throw new ApiError("bad_request", "Invalid query", q.error.issues);
-    return c.json(
-      await listMembers(c.env, q.data.status, showsSignInFields(c.env)),
-    );
+    return c.json(await listMembers(c.env, q.data.status));
   });
 
   /**
@@ -79,6 +77,15 @@ export function mountMembers(app: AppType): void {
     const actor = requireManager(c);
     await removeMember(c.env, c.req.param("id"), actor, execCtx(c));
     return c.body(null, 204);
+  });
+
+  // Restore a removed member (parity 1). Literal so Hono infers :id; must
+  // equal R.memberRestore(id).
+  app.post("/api/v1/members/:id/restore", async (c) => {
+    const actor = requireManager(c);
+    return c.json(
+      await restoreMember(c.env, c.req.param("id"), actor, execCtx(c)),
+    );
   });
 
   // A departed member's or a guest's personal artifacts (P3 T10, parity 2).

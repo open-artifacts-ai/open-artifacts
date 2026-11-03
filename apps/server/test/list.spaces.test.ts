@@ -903,14 +903,36 @@ describe("space and can on list and search rows", () => {
     expect(hit?.can).toEqual(got.can);
   });
 
-  it("spaces off, or anonymous: no space or can on rows", async () => {
+  it("spaces off: the server's can on every row and hit (parity 1, B5), no space; move and transfer false", async () => {
     const page = await list(
       env,
       who.memberA.caller,
       ListQuerySchema.parse({ limit: 100 }),
     );
+    const hits = await search(env, who.memberA.caller, word, undefined, 100);
     expect(page.items.length).toBeGreaterThan(0);
-    for (const a of page.items) {
+    for (const a of [...page.items, ...hits.items]) {
+      expect(a.space).toBeUndefined();
+      expect(a.can).toBeDefined();
+      expect(a.can?.move).toBe(false);
+      expect(a.can?.transfer).toBe(false);
+    }
+    const first = page.items[0];
+    if (!first) throw new Error("no row");
+    const one = await getSummary(env, who.memberA.caller, first.id);
+    expect(one.space).toBeUndefined();
+    expect(one.can).toEqual(first.can);
+  });
+
+  it("anonymous: no space or can, spaces on or off", async () => {
+    const pub = (
+      await env.DB.prepare(
+        "select id from artifacts where visibility = 'public' and deleted_at is null limit 1",
+      ).first<{ id: string }>()
+    )?.id;
+    if (!pub) return;
+    for (const e of [env, ON]) {
+      const a = await getSummary(e, { kind: "anonymous" }, pub);
       expect(a.space).toBeUndefined();
       expect(a.can).toBeUndefined();
     }
