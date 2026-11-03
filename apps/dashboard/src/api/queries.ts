@@ -294,6 +294,8 @@ const useInvalidating = <V, T>(
   keys: () => (readonly unknown[])[],
   failure?: string,
   inline?: (e: ApiClientError) => boolean,
+  /** A success toast, shown at once: the component may be gone by the refetch. */
+  success?: string,
 ) => {
   const qc = useQueryClient();
   return useMutation({
@@ -309,8 +311,12 @@ const useInvalidating = <V, T>(
       if (e instanceof ApiClientError && inline?.(e)) return;
       failureToast(qc, failure, e);
     },
-    onSuccess: () =>
-      Promise.all(keys().map((queryKey) => qc.invalidateQueries({ queryKey }))),
+    onSuccess: () => {
+      if (success) toast({ title: success, tone: "success" });
+      return Promise.all(
+        keys().map((queryKey) => qc.invalidateQueries({ queryKey })),
+      );
+    },
   });
 };
 
@@ -913,6 +919,7 @@ export const useDisconnectDirectory = () =>
     () => [qk.directory, qk.me],
     "Couldn't disconnect.",
     directoryInline,
+    "Directory disconnected. Members are now managed here.",
   );
 /** Refreshes on failure too: a refused move may mean the page is stale. */
 /** `quiet`: the caller shows failures itself (the Move dialog does, inline). */

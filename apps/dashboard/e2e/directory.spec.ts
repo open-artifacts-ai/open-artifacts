@@ -130,7 +130,7 @@ test("keyboard: Disconnect's confirm opens, cancels and returns focus", async ({
   await disconnect.focus();
   await page.keyboard.press("Enter");
   const d = page.getByRole("alertdialog");
-  await expect(d).toContainText("Nobody loses access.");
+  await expect(d).toContainText("You can connect again later.");
   await page.keyboard.press("Escape");
   await expect(d).toHaveCount(0);
   await expect(disconnect).toBeFocused();

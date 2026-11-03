@@ -485,20 +485,118 @@ it("Sync now while sync is off: the copy under the header, no link", async () =>
   expect(screen.queryByText("server text")).toBeNull();
 });
 
-it("Disconnect warns that memberships freeze and nobody loses access", async () => {
-  const seen = calls("DELETE");
-  mountHosted("/settings/directory");
+const BODY =
+  "Open Artifacts stops syncing with Google and deletes its connection. Everyone keeps the access they have now, and you manage members here from now on.";
+const MISMATCH =
+  "Open Artifacts stops syncing with Google and deletes its connection. Your directory reports a different Google organization, so people who sign in through it stay signed out until you connect again.";
+const openDisconnect = async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
   const d = screen.getByRole("alertdialog");
-  expect(d).toHaveTextContent("Disconnect Google Workspace?");
-  expect(d).toHaveTextContent(
-    "Sync stops. Space memberships stay as they are and are managed manually. Nobody loses access.",
+  const [body, again] = within(d).getAllByText(/./, { selector: "p" });
+  return { d, body, again };
+};
+
+it("Disconnect: option A's copy, a danger confirm, and Cancel", async () => {
+  mountHosted("/settings/directory");
+  const { d, body, again } = await openDisconnect();
+  expect(within(d).getByRole("heading")).toHaveTextContent(
+    /^Disconnect Google Workspace\?$/,
   );
-  expect(d).toHaveTextContent(
-    "People who leave in Google keep their access here until you remove them in Members. Restricted groups stay in force until you lift them.",
+  expect(body).toHaveTextContent(new RegExp(`^${BODY}$`));
+  expect(again).toHaveTextContent(/^You can connect again later\.$/);
+  expect(again).toHaveClass("text-muted-foreground");
+  expect(d).not.toHaveTextContent("Nobody loses access");
+  expect(d).not.toHaveTextContent("People who leave in Google");
+  expect(d).not.toHaveTextContent("Your directory reports");
+  expect(within(d).getByRole("button", { name: "Disconnect" })).toHaveAttribute(
+    "data-variant",
+    "destructive",
   );
+  expect(within(d).getByRole("button", { name: "Cancel" })).toBeVisible();
+});
+
+it("Disconnect in a customer mismatch: the signed-out sentence replaces the access one", async () => {
+  mountHosted(
+    "/settings/directory",
+    true,
+    undefined,
+    serveStatus({
+      healthy: false,
+      state: "customer_mismatch",
+      customerMismatch: { expected: "C01abc", actual: "C09xyz" },
+    }),
+  );
+  const { d, body } = await openDisconnect();
+  expect(body).toHaveTextContent(new RegExp(`^${MISMATCH}$`));
+  expect(d).not.toHaveTextContent("Everyone keeps the access");
+  expect(d).toHaveTextContent("You can connect again later.");
+});
+
+it("Disconnect sends the DELETE and says what changed", async () => {
+  const seen = calls("DELETE");
+  mountHosted("/settings/directory");
+  const { d } = await openDisconnect();
   fireEvent.click(within(d).getByRole("button", { name: "Disconnect" }));
   await waitFor(() => expect(seen.at(-1)?.path).toBe("/api/v1/directory"));
+  await findVisibleToast(
+    "Directory disconnected. Members are now managed here.",
+  );
+});
+
+it("a failed Disconnect keeps the existing failure toast, and no success one", async () => {
+  mountHosted("/settings/directory", true, undefined, [
+    http.delete("*/api/v1/directory", () =>
+      HttpResponse.json(
+        { error: { code: "internal", message: "server text" } },
+        { status: 500 },
+      ),
+    ),
+  ]);
+  const { d } = await openDisconnect();
+  fireEvent.click(within(d).getByRole("button", { name: "Disconnect" }));
+  await findVisibleToast("Couldn't disconnect.");
+  expect(
+    screen.queryByText("Directory disconnected. Members are now managed here."),
+  ).toBeNull();
+});
+
+it("a capped owner gets no Disconnect, as the server refuses one", async () => {
+  mountHosted(
+    "/settings/directory",
+    true,
+    (m: Me): Me => ({
+      ...m,
+      auth: {
+        method: "google",
+        readOnly: true,
+        cap: "restricted",
+        expiresAt: null,
+      },
+    }),
+  );
+  await status();
+  expect(screen.getByRole("region", { name: "Connection" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
+});
+
+it("a member never reaches the page, so no Disconnect", async () => {
+  mountHosted("/settings/directory", true, (m: Me) => ({
+    ...m,
+    user: { ...m.user, role: "member" },
+  }));
+  await waitFor(() =>
+    expect(lastClient.getQueryState(["me"])?.status).toBe("success"),
+  );
+  await new Promise((r) => setTimeout(r, 50));
+  expect(screen.queryByRole("status", { name: "Sync status" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
+});
+
+it("an admin sees the connection but no Disconnect", async () => {
+  mountHosted("/settings/directory", true, asAdmin);
+  await status();
+  expect(screen.getByRole("region", { name: "Connection" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
 });
 
 it("reauth_required offers a fresh Google sign-in back to this page", async () => {
