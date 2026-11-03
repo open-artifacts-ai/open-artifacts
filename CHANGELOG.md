@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.104.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.103.0...v0.104.0) (2026-11-03)
+
+
+### Features
+
+* **server:** an admin can erase a removed person ([#1204](https://github.com/open-artifacts-ai/open-artifacts/issues/1204)) ([#1221](https://github.com/open-artifacts-ai/open-artifacts/issues/1221)) ([27191ff](https://github.com/open-artifacts-ai/open-artifacts/commit/27191ffda6a3163dd919761961d51a078324b1c8))
+
+
+### Bug Fixes
+
+* **deploy:** provisioning's read-back expects CF_VERSION_METADATA ([#1176](https://github.com/open-artifacts-ai/open-artifacts/issues/1176)) ([#1227](https://github.com/open-artifacts-ai/open-artifacts/issues/1227)) ([519fc7a](https://github.com/open-artifacts-ai/open-artifacts/commit/519fc7a5b0a5c1762dc71e31f62fd94900cd1b69))
+
 ## [0.103.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.102.1...v0.103.0) (2026-11-03)
 
 
