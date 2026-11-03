@@ -156,7 +156,6 @@ export function createApp(
     });
   });
   app.get("/robots.txt", (c) => c.text(APP_ROBOTS));
-  app.get("/__oa/nightly", (c) => c.text("ran")); // MUTATION S3
   // Public, outside SESSION_PATHS: no session read, no D1.
   // /__test/* (P5 hooks): before any session read; 404 unless enabled.
   if (hooks) hooks.mountTestHooks(app);

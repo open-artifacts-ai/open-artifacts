@@ -54,7 +54,6 @@ const signedIn = { signedIn: true } as const;
 export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /healthz": { public: "health probe" },
   "GET /robots.txt": { public: "robots" },
-  "GET /__oa/nightly": { public: "nightly" }, // MUTATION S3
   "GET /skill.md": { public: "agent skill" },
   "GET /upgrade.md": { public: "upgrade guide" },
   "GET /llms.txt": { public: "AI agent setup guide" },
