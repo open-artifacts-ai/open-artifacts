@@ -262,6 +262,10 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
     "real-only: a reset needs a member with a Google sign-in; A at B is deny-only",
   "DELETE /api/v1/spaces/:id/mappings/:groupId":
     "real-only: PUT refuses a mapping row while directory sync is off (409); A at B is deny-only",
+  "DELETE /api/v1/directory/org-mappings/:groupId":
+    "real-only: on rl-b no mapping row exists to delete, so the owner gets a 404 the same as a refusal; A at B is deny-only",
+  "PUT /api/v1/directory/restricted-groups/:groupId":
+    "real-only: on rl-b an unknown group is 404 past the owner rule, the same as a refusal; A at B is deny-only",
   "DELETE /api/v1/directory/restricted-groups/:groupId":
     "real-only: PUT refuses a restricted_groups row while directory sync is off (409), and the hook-seeded directory group is not that row; A at B is deny-only",
 };
@@ -388,6 +392,18 @@ export const DROPPED: Readonly<
     coveredBy: [INSTANCE],
   },
   "org DELETE /api/v1/spaces/:id/mappings/:groupId": {
+    why: "real-only",
+    coveredBy: [INSTANCE],
+  },
+  "org PUT /api/v1/spaces/:id/mappings/:groupId": {
+    why: "real-only",
+    coveredBy: [INSTANCE],
+  },
+  "org DELETE /api/v1/directory/org-mappings/:groupId": {
+    why: "real-only",
+    coveredBy: [INSTANCE],
+  },
+  "org PUT /api/v1/directory/restricted-groups/:groupId": {
     why: "real-only",
     coveredBy: [INSTANCE],
   },

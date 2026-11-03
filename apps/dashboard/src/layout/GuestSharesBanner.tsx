@@ -11,6 +11,7 @@ import { qk, useDismissNotice } from "../api/queries";
 import { AppLink } from "../library/AppLink";
 import { TransferDialog } from "../settings/Transfer";
 import { Notice } from "./Notice";
+import { personInSentence, personName } from "./person";
 
 const LIST = "m-0 grid max-h-[220px] gap-[2px] overflow-auto pl-[18px]";
 const n = (k: number, one: string, many: string) =>
@@ -71,7 +72,7 @@ function SharesNotice({
             >
               {i.title}
             </AppLink>{" "}
-            · {i.guestEmail}
+            · {personName({ email: i.guestEmail })}
           </li>
         ))}
       </ul>
@@ -129,12 +130,13 @@ function SummaryNotice({
                 className="flex flex-wrap items-center gap-x-[var(--oa-space-2)] gap-y-[2px]"
               >
                 <span className="min-w-0 break-words">
-                  {g.email} · {n(g.artifacts, "artifact", "artifacts")}
+                  {personName({ email: g.email })} ·{" "}
+                  {n(g.artifacts, "artifact", "artifacts")}
                 </span>
                 <Button
                   size="sm"
                   variant="ghost"
-                  aria-label={`Transfer ${g.email}'s artifacts`}
+                  aria-label={`Transfer ${personInSentence({ email: g.email })}'s artifacts`}
                   onClick={() => setMoving(g)}
                 >
                   Transfer their artifacts

@@ -298,12 +298,27 @@ async function leg(
 ): Promise<{ verdict: Verdict; seen: Response[]; reqs: Request[] }> {
   const seen: Response[] = [];
   const reqs: Request[] = [];
+  // An allow leg reads the body inside sendProbe, so a connection cut mid-body
+  // is retried, then infra. A deny leg never: a 200 with a cut body, then a
+  // 403 on the retry, would read as a refusal and hide a leak.
+  const go =
+    what === "A's credential at B"
+      ? undefined
+      : async (req: Request) => {
+          const r = await send(req);
+          if (NULL_BODY.has(r.status)) return r;
+          return new Response(await r.arrayBuffer(), {
+            status: r.status,
+            statusText: r.statusText,
+            headers: r.headers,
+          });
+        };
   // Buffered, not clone(): a probe that cancels its body would wait on the
   // unread tee branch forever.
   const f: ProbeFetch = async (req) => {
     // URL and headers only: a clone would tee the body.
     reqs.push(new Request(req.url, { headers: req.headers }));
-    const r = await sendProbe(req);
+    const r = await sendProbe(req, go);
     const buf = NULL_BODY.has(r.status) ? null : await r.arrayBuffer();
     const copy = () =>
       new Response(buf, {

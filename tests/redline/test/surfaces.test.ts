@@ -178,7 +178,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     }
   });
 
-  it("deny-only: the three real-only drops, each still a recorded drop", () => {
+  it("deny-only: the six real-only drops, each still a recorded drop", () => {
     const only = cases.filter((c) => c.denyOnly);
     expect(only.map((c) => c.name).sort()).toEqual(
       Object.entries(DROPPED)
@@ -186,7 +186,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         .map(([n]) => `${n} [session]`)
         .sort(),
     );
-    expect(only).toHaveLength(3);
+    expect(only).toHaveLength(6);
     for (const c of only) expect(c.run).toBeDefined();
   });
 
@@ -743,7 +743,7 @@ describe("setup hooks", () => {
     expect(e).toBeInstanceOf(SetupHookError);
     const m = (e as Error).message;
     expect(m).toMatch(
-      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, body sha256:[0-9a-f]{16} \(\d+ bytes\)\)$/,
+      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, body sha256:[0-9a-f]{16} \(\d+ bytes\), code not_found\)$/,
     );
     expect(m).not.toContain("secret-body-text");
     // Outside setup, the same answer stays an HttpError (a verdict).

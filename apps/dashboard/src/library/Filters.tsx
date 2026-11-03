@@ -22,6 +22,9 @@ const LABEL: Record<Format, string> = {
 const ALL = "__all";
 // The one-connection filter (agentVia) as the Agent select's value.
 const VIA = "__via";
+// Agent names are self-reported, so a name's value carries a prefix no
+// sentinel has: an agent called "__via" or "__all" is still that agent.
+const AGENT = "agent:";
 const FORMATS = [
   { value: ALL, label: "All formats" },
   ...FormatSchema.options.map((value) => ({ value, label: LABEL[value] })),
@@ -109,8 +112,11 @@ export function Filters(p: FilterProps) {
         </SelectContent>
       </Select>
       <Select
-        value={p.via ? VIA : (p.agent ?? ALL)}
-        onValueChange={(v) => v !== VIA && p.onAgent(v === ALL ? undefined : v)}
+        value={p.via ? VIA : p.agent ? `${AGENT}${p.agent}` : ALL}
+        onValueChange={(v) => {
+          if (v === ALL) p.onAgent(undefined);
+          else if (v !== VIA) p.onAgent(v.slice(AGENT.length));
+        }}
       >
         <SelectTrigger
           aria-label="Agent"
@@ -135,7 +141,7 @@ export function Filters(p: FilterProps) {
             </SelectItem>
           )}
           {agents.map((a) => (
-            <SelectItem key={a} value={a} className={TEXT}>
+            <SelectItem key={a} value={`${AGENT}${a}`} className={TEXT}>
               {a}
             </SelectItem>
           ))}

@@ -7,7 +7,7 @@ import {
   type Visibility,
   viewerPath,
 } from "@oa/shared";
-import { displayName, VisibilityBadge } from "@oa/ui";
+import { VisibilityBadge } from "@oa/ui";
 import {
   Button,
   Input,
@@ -40,6 +40,7 @@ import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
 import { LoadError } from "../../layout/LoadError";
 import { Modal } from "../../layout/Modal";
 import { Notice } from "../../layout/Notice";
+import { personName } from "../../layout/person";
 import { toast } from "../../layout/toast";
 import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
@@ -479,8 +480,8 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               name={artifact.owner.name}
               email={artifact.owner.email}
             />
-            <span className={NAME} title={displayName(artifact.owner)}>
-              {displayName(artifact.owner)}
+            <span className={NAME} title={personName(artifact.owner)}>
+              {personName(artifact.owner)}
             </span>
             <span className="text-muted-foreground">Owner</span>
           </li>

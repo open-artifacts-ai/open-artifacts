@@ -423,6 +423,28 @@ describe("R2 list and R3 detail", () => {
     expect(u.body.items.map((i: { id: string }) => i.id)).toEqual([mine.id]);
   });
 
+  it("R3: auth.domainCodes shows the install's EMAIL_CODE_DOMAIN (#1088)", async () => {
+    const e = fakeEnv();
+    const plain = await seedInstall();
+    const off = await call(e, ADMIN_P, "R3", { params: { id: plain.id } });
+    expect(InstallDetailSchema.parse(off.body).auth).not.toHaveProperty(
+      "domainCodes",
+    );
+    const { id } = await seedInstall({
+      vars: {
+        AUTH_PROVIDERS: "email",
+        AUTH_DOMAINS: "acme.test",
+        EMAIL_CODE_DOMAIN: "on",
+      },
+    });
+    const on = await call(e, ADMIN_P, "R3", { params: { id } });
+    expect(InstallDetailSchema.parse(on.body).auth).toEqual({
+      providers: ["email"],
+      domains: ["acme.test"],
+      domainCodes: true,
+    });
+  });
+
   it("R3: detail; ownerEmail for admin, owner and installs:pii only", async () => {
     const e = fakeEnv();
     const { id } = await seedInstall({

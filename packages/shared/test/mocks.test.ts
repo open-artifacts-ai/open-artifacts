@@ -584,6 +584,62 @@ describe("list query", () => {
     expect(await ids("?agent=nobody")).toEqual([]);
     expect(await ids("?q=Q4", R.search)).toEqual([pdf.id]);
   });
+  describe("agentVia", () => {
+    const GRANT = `g:${fixtures.oauthClients[0]?.grantId}`;
+    const TOKEN = `t:${fixtures.tokens[0]?.id}`;
+    const FOREIGN = ["g:SomeoneElses123", "t:SomeoneElses123"];
+    const from = (via: string) =>
+      fixtures.artifacts
+        .filter((a) => fixtures.agentVias[a.id]?.includes(via))
+        .map((a) => a.id);
+    const search = (via: string) => ids(`?q=e&agentVia=${via}`, R.search);
+
+    it("lists one connection, grant or token; anyone else's is an empty page", async () => {
+      fresh();
+      expect(await ids(`?agentVia=${GRANT}`)).toEqual(from(GRANT));
+      expect(from(GRANT)).toHaveLength(3);
+      expect(await ids(`?agentVia=${TOKEN}`)).toEqual(from(TOKEN));
+      expect(from(TOKEN)).toHaveLength(1);
+      for (const via of FOREIGN)
+        expect(await ids(`?agentVia=${via}`)).toEqual([]);
+    });
+
+    it("search narrows the same way", async () => {
+      fresh();
+      const all = await ids("?q=e", R.search);
+      const got = await search(GRANT);
+      expect(got.length).toBeGreaterThan(0);
+      expect(got.length).toBeLessThan(all.length);
+      expect(got.every((id: string) => from(GRANT).includes(id))).toBe(true);
+      for (const via of FOREIGN) expect(await search(via)).toEqual([]);
+    });
+
+    it("combines with the other filters", async () => {
+      fresh();
+      expect(await ids(`?agentVia=${GRANT}&format=pdf`)).toEqual([pdf.id]);
+      expect(await ids(`?agentVia=${TOKEN}&format=pdf`)).toEqual([]);
+    });
+
+    it("a malformed via, or a scrubbed row's marker, is 400 on list and search", async () => {
+      fresh();
+      for (const via of ["nope", "r:"]) {
+        for (const url of [
+          `${R.artifacts}?agentVia=${via}`,
+          `${R.search}?q=e&agentVia=${via}`,
+        ])
+          expect((await call("GET", url)).status).toBe(400);
+      }
+    });
+
+    it("a revoked grant matches nothing; a revoked token still matches", async () => {
+      fresh();
+      await call("DELETE", R.oauthClient(GRANT.slice(2)));
+      expect(await ids(`?agentVia=${GRANT}`)).toEqual([]);
+      await call("DELETE", R.token(TOKEN.slice(2)));
+      expect(await ids(`?agentVia=${TOKEN}`)).toEqual(from(TOKEN));
+    });
+  });
+
   it("limit + cursor", async () => {
     fresh();
     const p1 = await json(await call("GET", `${R.artifacts}?limit=2`));

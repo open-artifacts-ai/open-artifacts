@@ -1178,6 +1178,8 @@ export type OrgTarget = {
 export type OrgReal = {
   /** An active member the probe may change, restrict or remove. */
   memberId: string;
+  /** A removed member the probe may restore. */
+  removedId: string;
   /** An active member with a Google link the probe may reset. */
   linkedId: string;
   /** An active member restricted by hand (the probe lifts it). */
@@ -1360,6 +1362,19 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
+  // Refuse: the caller themself (active, so the owner is 409 member_active;
+  // an admin is the owner's to manage, 403 owner_only).
+  "POST /api/v1/members/:id/restore": {
+    refuse: {
+      req: async (c) => ({ path: `${MEMBERS}/${await c.self()}/restore` }),
+      allow: code("member_active", "owner_only"),
+    },
+    real: {
+      needs: ["removedId"],
+      req: (r) => ({ path: `${MEMBERS}/${r.removedId}/restore` }),
+      allow: ok(200),
+    },
+  },
   "POST /api/v1/members/:id/transfer": {
     refuse: invalid(),
     // The departed member owns nothing: a transfer of no artifacts.
@@ -1488,16 +1503,9 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
-  // Refuse: the mapping S already has, at its role (no change, 200); 409
-  // directory_sync_off without a directory.
+  // No refusal after the manager rule: with sync on, an unknown group is a
+  // plain 404, the same as a refusal, and there's no row to act on live.
   "PUT /api/v1/spaces/:id/mappings/:groupId": {
-    refuse: {
-      req: async (c) => ({
-        path: `${SPACES}/${c.t.spaceId}/mappings/${c.t.groupId ?? "probe-group"}`,
-        body: { role: "viewer" },
-      }),
-      allow: either(ok(200), syncOff),
-    },
     real: {
       needs: ["spaceId", "groupId"],
       req: (r) => ({
@@ -1528,26 +1536,16 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
-  // Refuse: 409 directory_sync_off, only without a directory (the matrix's
-  // world has one: its probe-script check skips it).
+  // No refusal after the owner rule: as PUT above, a plain 404 with sync on.
   "DELETE /api/v1/directory/org-mappings/:groupId": {
-    refuse: {
-      req: async () => ({ path: `${DIR}/org-mappings/probe-group` }),
-      allow: syncOff,
-      noDirectory: true,
-    },
     real: {
       needs: ["orgMappingGroupId"],
       req: (r) => ({ path: `${DIR}/org-mappings/${r.orgMappingGroupId}` }),
       allow: ok(204),
     },
   },
+  // No refusal after the owner rule: an unknown group is a plain 404 with sync on.
   "PUT /api/v1/directory/restricted-groups/:groupId": {
-    refuse: {
-      req: async () => ({ path: `${DIR}/restricted-groups/probe-group` }),
-      allow: syncOff,
-      noDirectory: true,
-    },
     real: {
       needs: ["groupId"],
       req: (r) => ({ path: `${DIR}/restricted-groups/${r.groupId}` }),
@@ -1765,6 +1763,7 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["POST /api/v1/members", org("members.manage")],
   ["PATCH /api/v1/members/:id", org("members.manage")],
   ["DELETE /api/v1/members/:id", org("members.manage")],
+  ["POST /api/v1/members/:id/restore", org("members.manage")],
   // 409 member_active is past the guard: redline's target is an active member.
   ["GET /api/v1/members/:id/transfer", org("transfer.departed"), [200, 409]],
   ["POST /api/v1/members/:id/transfer", org("transfer.departed")],

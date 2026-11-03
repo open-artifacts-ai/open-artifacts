@@ -1,34 +1,64 @@
 // Hosted P4 Task 13: transfer a departed person's personal artifacts (Design
 // D7, answers of 2026-10-22). A "Departed" card above Members and a
 // "Transfer…" row-menu item open the same dialog; counts only, never titles.
+// Parity 1: on every install, with "Transfer all to me" and Restore.
 import { type Me, R } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
+import { qk } from "../src/api/queries";
 import { runAll } from "../src/settings/Transfer";
 import {
   calls,
   findVisibleToast,
   installHarness,
+  lastClient,
   mount,
   mountHosted,
+  server,
 } from "./harness";
 
 installHarness();
 
 const CAROL = "Cr7tNpQrSt8uVwXy";
 const ENG = "SpEngNpQrSt2uVwX";
+const ADA = "Ab3dEfGhJk4mNpQr";
+const carol = {
+  id: CAROL,
+  email: "carol@example.com",
+  name: "Carol Departed",
+  role: "member" as const,
+  lastSeenAt: null,
+  status: "removed" as const,
+};
+/** Carol removed (not suspended), with 2 artifacts left. */
+const removedCarol = [
+  http.get(`*${R.members}`, ({ request }) =>
+    HttpResponse.json(
+      new URL(request.url).searchParams.get("status")
+        ? [carol]
+        : fixtures.members,
+    ),
+  ),
+  http.get(`*${R.memberTransfer(CAROL)}`, () =>
+    HttpResponse.json({ live: 2, deleted: 0 }),
+  ),
+];
+const openMenu = async (row: HTMLElement) =>
+  fireEvent.pointerDown(
+    within(row).getByRole("button", { name: "More for Carol Departed" }),
+    { button: 0, pointerType: "mouse" },
+  );
 const departed = () => screen.findByRole("region", { name: "Departed" });
 const carolRow = async () =>
   (await within(await departed()).findByText("Carol Departed")).closest(
     "li",
   ) as HTMLElement;
 const openFromCard = async () => {
+  await openMenu(await carolRow());
   fireEvent.click(
-    within(await carolRow()).getByRole("button", {
-      name: "Transfer Carol Departed's artifacts",
-    }),
+    await screen.findByRole("menuitem", { name: "Transfer to someone else…" }),
   );
   return screen.findByRole("dialog");
 };
@@ -37,12 +67,97 @@ const chooseOption = async (label: string, option: string) => {
   fireEvent.click(await screen.findByRole("option", { name: option }));
 };
 
-it("self-hosted: no Departed card and no status request", async () => {
+it("self-hosted: the Departed card shows, with no spaces in the copy or the dialog", async () => {
+  server.use(
+    http.get(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ live: 2, deleted: 1 }),
+    ),
+    ...removedCarol,
+  );
   const seen = calls("GET");
   mount("/settings/members");
-  await screen.findByText("Bob Builder");
-  expect(screen.queryByRole("region", { name: "Departed" })).toBeNull();
-  expect(seen.some((c) => c.search.get("status") !== null)).toBe(false);
+  const row = await carolRow();
+  await waitFor(() =>
+    expect(within(row).getByText(/in trash/)).toHaveTextContent(
+      /^2 artifacts \(plus 1 in trash\)$/,
+    ),
+  );
+  expect(row).not.toHaveTextContent("space");
+  expect(
+    within(await departed()).getByText(
+      "1 person left with artifacts to transfer.",
+    ),
+  ).toBeVisible();
+  const d = await openFromCard();
+  expect(
+    within(d).getByRole("heading", {
+      name: "Transfer Carol Departed's 2 artifacts",
+    }),
+  ).toBeVisible();
+  expect(within(d).queryByRole("radio", { name: /To a space/ })).toBeNull();
+  expect(
+    within(d).getByRole("combobox", { name: "Give them to" }),
+  ).toBeVisible();
+  await chooseOption("Give them to", "Bob Builder");
+  expect(
+    await within(d).findByText(
+      "You won't see titles or contents. Bob Builder becomes the owner, with Carol Departed's shares kept.",
+    ),
+  ).toBeVisible();
+  expect(seen.some((c) => c.path === R.spaces)).toBe(false);
+});
+
+it("with spaces on, several people keep the word personal", async () => {
+  const dan = { ...carol, id: "Dn7tNpQrSt8uVwXy", name: "Dan Gone" };
+  mountHosted("/settings/members", true, undefined, [
+    http.get(`*${R.memberTransfer(dan.id)}`, () =>
+      HttpResponse.json({ live: 1, deleted: 0 }),
+    ),
+    http.get(`*${R.members}`, ({ request }) =>
+      HttpResponse.json(
+        new URL(request.url).searchParams.get("status")
+          ? [carol, dan]
+          : fixtures.members,
+      ),
+    ),
+    ...removedCarol,
+  ]);
+  expect(
+    await within(await departed()).findByText(
+      "2 people left with personal artifacts to transfer.",
+    ),
+  ).toBeVisible();
+});
+
+it("self-hosted: several people and the Restore confirm don't say personal", async () => {
+  const dan = { ...carol, id: "Dn7tNpQrSt8uVwXy", name: "Dan Gone" };
+  server.use(
+    http.get(`*${R.memberTransfer(dan.id)}`, () =>
+      HttpResponse.json({ live: 1, deleted: 0 }),
+    ),
+    http.get(`*${R.members}`, ({ request }) =>
+      HttpResponse.json(
+        new URL(request.url).searchParams.get("status")
+          ? [carol, dan]
+          : fixtures.members,
+      ),
+    ),
+    ...removedCarol,
+  );
+  mount("/settings/members");
+  expect(
+    await within(await departed()).findByText(
+      "2 people left with artifacts to transfer.",
+    ),
+  ).toBeVisible();
+  await openMenu(await carolRow());
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Restore…" }));
+  const d = await screen.findByRole("alertdialog", {
+    name: "Restore Carol Departed?",
+  });
+  expect(d).toHaveTextContent(
+    "gets back the artifacts you haven't transferred.",
+  );
 });
 
 it("the Departed card lists Carol with counts, never titles", async () => {
@@ -178,19 +293,395 @@ it("to a space: the helper says who can open them, and it posts the space", asyn
   await findVisibleToast("Moved 2 artifacts (and 1 in trash) to Engineering.");
 });
 
-it("the row menu's Transfer… opens the same dialog", async () => {
+it("Transfer all to me moves every page to the caller in one click", async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/members", true, undefined, [
+    http.post(`*${R.memberTransfer(CAROL)}`, async ({ request }) => {
+      const body = (await request.json()) as { cursor?: string };
+      return HttpResponse.json(
+        body.cursor
+          ? { moved: 1, remaining: 0, nextCursor: null }
+          : { moved: 2, remaining: 1, nextCursor: "c1" },
+      );
+    }),
+  ]);
+  fireEvent.click(
+    within(await carolRow()).getByRole("button", {
+      name: "Transfer all to me",
+    }),
+  );
+  await findVisibleToast(
+    "Moved 2 artifacts (and 1 in trash) from Carol Departed to you.",
+  );
+  expect(
+    seen.filter((c) => c.path === R.memberTransfer(CAROL)).map((c) => c.body),
+  ).toEqual([
+    { to: { kind: "user", userId: ADA } },
+    { to: { kind: "user", userId: ADA }, cursor: "c1" },
+  ]);
+});
+
+it("Transfer all to me's toast has no bracket with nothing in trash", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    ...removedCarol,
+    http.post(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ moved: 2, remaining: 0, nextCursor: null }),
+    ),
+  ]);
+  fireEvent.click(
+    await within(await carolRow()).findByRole("button", {
+      name: "Transfer all to me",
+    }),
+  );
+  await findVisibleToast("Moved 2 artifacts from Carol Departed to you.");
+});
+
+const LOAD_ERROR = "Couldn't load departed people.";
+const refused = (status: number) =>
+  HttpResponse.json(
+    { error: { code: "internal", message: "Refused" } },
+    { status },
+  );
+/** GET R.members: the active list, and `gone` for ?status=. */
+const membersWith = (gone: () => Response) =>
+  http.get(`*${R.members}`, ({ request }) =>
+    new URL(request.url).searchParams.get("status")
+      ? gone()
+      : HttpResponse.json(fixtures.members),
+  );
+
+it("a list that won't load (5xx, after its retries) shows the error, and Retry loads it", async () => {
+  let fail = true;
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => (fail ? refused(500) : HttpResponse.json([carol]))),
+    removedCarol[1],
+  ]);
+  const card = await screen.findByRole(
+    "region",
+    { name: "Departed" },
+    { timeout: 8000 },
+  );
+  expect(within(card).getByText(LOAD_ERROR)).toBeVisible();
+  expect(card).not.toHaveTextContent(/left with personal artifacts/);
+  fail = false;
+  fireEvent.click(within(card).getByRole("button", { name: "Retry" }));
+  // The old card goes while Retry runs: look again from the page.
+  await screen.findByText("Carol Departed");
+  expect(screen.queryByText(LOAD_ERROR)).toBeNull();
+}, 15000);
+
+it("while Retry runs the card and error stay, and focus stays on the button", async () => {
+  let fail = true;
+  let release = () => {};
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => (fail ? refused(403) : HttpResponse.json([carol]))),
+    // The list answers first: the card must also hold for the new summary.
+    http.get(`*${R.memberTransfer(CAROL)}`, async () => {
+      await held;
+      return HttpResponse.json({ live: 2, deleted: 0 });
+    }),
+  ]);
+  const card = await departed();
+  const retry = await within(card).findByRole("button", { name: "Retry" });
+  retry.focus();
+  fail = false;
+  fireEvent.click(retry);
+  await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+  expect(retry).toHaveAttribute("aria-disabled", "true");
+  expect(retry).not.toBeDisabled();
+  // Past the list's answer, into the summary's wait.
+  await waitFor(() =>
+    expect(
+      lastClient.getQueryState(qk.memberTransfer(CAROL))?.fetchStatus,
+    ).toBe("fetching"),
+  );
+  expect(retry).toBeInTheDocument();
+  expect(retry).toHaveFocus();
+  expect(within(card).getByText(LOAD_ERROR)).toBeVisible();
+  // The detail stays too, so nothing jumps; a second press changes nothing.
+  expect(within(card).getByText("Refused")).toBeVisible();
+  fireEvent.click(retry);
+  await new Promise((r) => setTimeout(r, 20));
+  expect(within(card).getByText("Refused")).toBeVisible();
+  release();
+  await screen.findByText("Carol Departed");
+  await waitFor(() => expect(screen.queryByText(LOAD_ERROR)).toBeNull());
+  // The button went with the error: focus moves on, with no new tab stop.
+  const heading = screen.getByRole("heading", { name: "Departed" });
+  await waitFor(() => expect(heading).toHaveFocus());
+  expect(heading).toHaveAttribute("tabindex", "-1");
+});
+
+it("a Retry that finds nobody left moves focus to the Members heading", async () => {
+  let fail = true;
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => (fail ? refused(403) : HttpResponse.json([]))),
+  ]);
+  const card = await departed();
+  const retry = await within(card).findByRole("button", { name: "Retry" });
+  retry.focus();
+  fail = false;
+  fireEvent.click(retry);
+  await waitFor(() =>
+    expect(screen.queryByRole("region", { name: "Departed" })).toBeNull(),
+  );
+  await waitFor(() =>
+    expect(screen.getByRole("heading", { name: "Members" })).toHaveFocus(),
+  );
+});
+
+it("a failed Retry never moves focus to a heading, even from no focus (a browser that doesn't focus on click)", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => refused(403)),
+  ]);
+  const card = await departed();
+  const retry = await within(card).findByRole("button", { name: "Retry" });
+  fireEvent.click(retry);
+  await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+  await waitFor(() => expect(retry).not.toHaveAttribute("aria-busy"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(document.activeElement).toBe(document.body);
+});
+
+it("a Retry that worked leaves focus alone if it has moved elsewhere", async () => {
+  let fail = true;
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => (fail ? refused(403) : HttpResponse.json([carol]))),
+    removedCarol[1],
+  ]);
+  const card = await departed();
+  const retry = await within(card).findByRole("button", { name: "Retry" });
+  const add = screen.getByRole("button", { name: "Add member" });
+  fail = false;
+  fireEvent.click(retry);
+  add.focus();
+  await screen.findByText("Carol Departed");
+  await waitFor(() => expect(screen.queryByText(LOAD_ERROR)).toBeNull());
+  await new Promise((r) => setTimeout(r, 20));
+  expect(add).toHaveFocus();
+});
+
+it("a Retry that fails again ends busy, with the error and the button", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => refused(403)),
+  ]);
+  const card = await departed();
+  const retry = await within(card).findByRole("button", { name: "Retry" });
+  retry.focus();
+  fireEvent.click(retry);
+  await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+  await waitFor(() => expect(retry).not.toHaveAttribute("aria-busy"));
+  expect(retry).toHaveFocus();
+  expect(retry).not.toHaveAttribute("aria-disabled");
+  expect(within(card).getByText(LOAD_ERROR)).toBeVisible();
+});
+
+it("the row's actions share a line of their own, apart from the count", async () => {
   mountHosted("/settings/members");
   const row = await carolRow();
-  fireEvent.pointerDown(
-    within(row).getByRole("button", { name: "More for Carol Departed" }),
-    { button: 0, pointerType: "mouse" },
-  );
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Transfer…" }));
+  const actions = within(row).getByTestId("departed-actions");
   expect(
-    await screen.findByRole("heading", {
-      name: "Transfer Carol Departed's 2 personal artifacts",
+    within(actions).getByRole("button", { name: "Transfer all to me" }),
+  ).toBeVisible();
+  expect(
+    within(actions).getByRole("button", { name: "More for Carol Departed" }),
+  ).toBeVisible();
+  expect(actions).toHaveClass("max-[600px]:col-span-full");
+  const count = within(row).getByText(/personal artifacts/);
+  expect(count).toHaveClass("max-[600px]:col-span-full");
+  expect(actions).not.toContainElement(count);
+  expect(count.closest("b")).toBeNull();
+  expect(count.parentElement).toBe(row);
+});
+
+it("a summary that won't load keeps the other rows and shows the error", async () => {
+  const dan = { ...carol, id: "Dn7tNpQrSt8uVwXy", name: "Dan Gone" };
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => HttpResponse.json([carol, dan])),
+    removedCarol[1],
+    http.get(`*${R.memberTransfer(dan.id)}`, () => refused(403)),
+  ]);
+  await carolRow();
+  const card = await departed();
+  expect(
+    await within(card).findByText("Some departed people didn't load."),
+  ).toBeVisible();
+  expect(within(card).queryByText(LOAD_ERROR)).toBeNull();
+  expect(card).toHaveTextContent("1 person left");
+  expect(card).not.toHaveTextContent("Dan Gone");
+});
+
+it("a failed refetch keeps the cached rows, with no error", async () => {
+  let fail = false;
+  mountHosted("/settings/members", true, undefined, [
+    removedCarol[0],
+    http.get(`*${R.memberTransfer(CAROL)}`, () =>
+      fail ? refused(403) : HttpResponse.json({ live: 2, deleted: 0 }),
+    ),
+  ]);
+  await carolRow();
+  fail = true;
+  await lastClient.refetchQueries({ queryKey: qk.memberTransfer(CAROL) });
+  await waitFor(() =>
+    expect(lastClient.getQueryState(qk.memberTransfer(CAROL))?.status).toBe(
+      "error",
+    ),
+  );
+  expect(screen.queryByText(LOAD_ERROR)).toBeNull();
+  expect(await carolRow()).toHaveTextContent("2 personal artifacts");
+});
+
+it("a 404 is the role gate, not a load failure: no card", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    membersWith(() => refused(404)),
+  ]);
+  await screen.findByText("Bob Builder");
+  await waitFor(() =>
+    expect(
+      lastClient.getQueryState(qk.memberList("suspended,removed"))?.status,
+    ).toBe("error"),
+  );
+  expect(screen.queryByRole("region", { name: "Departed" })).toBeNull();
+});
+
+it("a capped (restricted) owner gets Transfer, not Transfer all to me", async () => {
+  mountHosted("/settings/members", true, (m) => ({
+    ...m,
+    auth: { ...m.auth, cap: "restricted" } as Me["auth"],
+  }));
+  const row = await carolRow();
+  expect(
+    within(row).getByRole("button", {
+      name: "Transfer Carol Departed's artifacts",
     }),
   ).toBeVisible();
+  expect(
+    within(row).queryByRole("button", { name: "Transfer all to me" }),
+  ).toBeNull();
+});
+
+it("Restore is offered for removed people, and posts R.memberRestore", async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/members", true, undefined, removedCarol);
+  await openMenu(await carolRow());
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Restore…" }));
+  const d = await screen.findByRole("alertdialog", {
+    name: "Restore Carol Departed?",
+  });
+  expect(d).toHaveTextContent(
+    "Carol comes back as a member (no admin role), with any manual restriction kept",
+  );
+  expect(d).toHaveTextContent(
+    "gets back the personal artifacts you haven't transferred.",
+  );
+  fireEvent.click(within(d).getByRole("button", { name: "Restore" }));
+  await waitFor(() =>
+    expect(seen.some((c) => c.path === R.memberRestore(CAROL))).toBe(true),
+  );
+});
+
+it("a suspended person has no Restore", async () => {
+  mountHosted("/settings/members");
+  await openMenu(await carolRow());
+  await screen.findByRole("menuitem", { name: "Transfer to someone else…" });
+  expect(screen.queryByRole("menuitem", { name: "Restore…" })).toBeNull();
+});
+
+it("409 directory_managed shows why inline", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    ...removedCarol,
+    http.post(`*${R.memberRestore(CAROL)}`, () =>
+      HttpResponse.json(
+        { error: { code: "directory_managed", message: "x" } },
+        { status: 409 },
+      ),
+    ),
+  ]);
+  await openMenu(await carolRow());
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Restore…" }));
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Restore",
+    }),
+  );
+  expect(await within(await carolRow()).findByRole("alert")).toHaveTextContent(
+    "Removed by your Google Workspace. They come back if their Workspace account is restored.",
+  );
+});
+
+const WORKSPACE =
+  "Removed by your Google Workspace. They come back if their Workspace account is restored.";
+/** What a self-host with Workspace connected answers (the server's words). */
+const managedRestore = http.post(`*${R.memberRestore(CAROL)}`, () =>
+  HttpResponse.json(
+    {
+      error: {
+        code: "directory_managed",
+        message:
+          "Directory sync removed this member; restore them in Google Workspace",
+      },
+    },
+    { status: 409 },
+  ),
+);
+
+it("self-hosted: a Departed row's Restore refused by Workspace says why", async () => {
+  server.use(managedRestore, ...removedCarol);
+  mount("/settings/members");
+  await openMenu(await carolRow());
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Restore…" }));
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Restore",
+    }),
+  );
+  const alert = await within(await carolRow()).findByRole("alert");
+  expect(alert).toHaveTextContent(WORKSPACE);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+});
+
+it("self-hosted: the Removed filter's Restore refused by Workspace says why", async () => {
+  server.use(managedRestore, ...removedCarol);
+  mount("/settings/members");
+  fireEvent.click(await screen.findByRole("button", { name: "Removed (1)" }));
+  const list = await screen.findByRole("list", { name: "Removed people" });
+  fireEvent.click(
+    within(list).getByRole("button", { name: "Restore Carol Departed" }),
+  );
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Restore",
+    }),
+  );
+  expect(await within(list).findByRole("alert")).toHaveTextContent(WORKSPACE);
+});
+
+it("a Restore refused because the address was released says why, inline, with no toast", async () => {
+  const released =
+    "This person's Google Workspace account was deleted, so they can't be restored. Invite them instead.";
+  mountHosted("/settings/members", true, undefined, [
+    http.post(`*${R.memberRestore(CAROL)}`, () =>
+      HttpResponse.json(
+        { error: { code: "conflict", message: "the server's words" } },
+        { status: 409 },
+      ),
+    ),
+    ...removedCarol,
+  ]);
+  await openMenu(await carolRow());
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Restore…" }));
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Restore",
+    }),
+  );
+  expect(await within(await carolRow()).findByRole("alert")).toHaveTextContent(
+    released,
+  );
+  expect(screen.queryByText("Couldn't restore them.")).toBeNull();
 });
 
 it("runAll loops until nextCursor is null and reports progress", async () => {
@@ -461,10 +952,7 @@ describe("the dialog on what the install can do", () => {
 
 it("a departed person's note stays as approved", async () => {
   mountHosted("/settings/members");
-  fireEvent.click(
-    await screen.findByRole("button", { name: /^Transfer Carol.*artifacts$/ }),
-  );
-  const d = await screen.findByRole("dialog");
+  const d = await openFromCard();
   fireEvent.click(
     await within(d).findByRole("combobox", { name: "Give them to" }),
   );
@@ -475,4 +963,319 @@ it("a departed person's note stays as approved", async () => {
     ),
   ).toBeVisible();
   expect(within(d).queryByText(/loses access/)).toBeNull();
+});
+
+it("the Removed filter lists a removed person with nothing left, and restores them", async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/members", true, undefined, [
+    // First match wins: nothing left to transfer.
+    http.get(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ live: 0, deleted: 0 }),
+    ),
+    ...removedCarol,
+  ]);
+  fireEvent.click(await screen.findByRole("button", { name: "Removed (1)" }));
+  const list = await screen.findByRole("list", { name: "Removed people" });
+  expect(list).toHaveTextContent("Carol Departed");
+  // Nothing left to transfer: no Departed card, yet Restore is still offered.
+  expect(screen.queryByRole("region", { name: "Departed" })).toBeNull();
+  fireEvent.click(
+    within(list).getByRole("button", { name: "Restore Carol Departed" }),
+  );
+  fireEvent.click(
+    within(
+      await screen.findByRole("alertdialog", {
+        name: "Restore Carol Departed?",
+      }),
+    ).getByRole("button", { name: "Restore" }),
+  );
+  await waitFor(() =>
+    expect(seen.some((c) => c.path === R.memberRestore(CAROL))).toBe(true),
+  );
+});
+
+it("no removed people: no Removed filter", async () => {
+  mountHosted("/settings/members");
+  await screen.findByText("Bob Builder");
+  expect(screen.queryByRole("button", { name: /^Removed/ })).toBeNull();
+});
+
+/** Carol was an admin, removed, with 2 artifacts left. */
+const refused403 = () =>
+  HttpResponse.json(
+    {
+      error: {
+        code: "owner_only",
+        message: "Only the owner can manage an owner or admin",
+      },
+    },
+    { status: 403 },
+  );
+const removedAdminCarol = [
+  http.get(`*${R.members}`, ({ request }) =>
+    HttpResponse.json(
+      new URL(request.url).searchParams.get("status")
+        ? [{ ...carol, role: "admin" as const }]
+        : fixtures.members,
+    ),
+  ),
+  http.get(`*${R.memberTransfer(CAROL)}`, () =>
+    HttpResponse.json({ live: 2, deleted: 0 }),
+  ),
+];
+
+it("an admin with only a departed admin left: no call, no card, no dot, no error", async () => {
+  const seen = calls("GET");
+  mountHosted("/settings/members", { actAs: "admin" }, undefined, [
+    ...removedAdminCarol.slice(0, 1),
+    http.get(`*${R.memberTransfer(CAROL)}`, () => refused403()),
+  ]);
+  await screen.findByText("Bob Builder");
+  await waitFor(() =>
+    expect(
+      lastClient.getQueryState(qk.memberList("suspended,removed"))?.status,
+    ).toBe("success"),
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  expect(seen.some((c) => c.path === R.memberTransfer(CAROL))).toBe(false);
+  expect(screen.queryByRole("region", { name: "Departed" })).toBeNull();
+  expect(screen.queryByText(/load departed people|didn't load/)).toBeNull();
+  expect(
+    within(
+      screen.getByRole("navigation", { name: "Settings sections" }),
+    ).getByRole("link", { name: /^Members/ }),
+  ).toHaveAccessibleName("Members");
+});
+
+it("an admin's card counts only the rows they see", async () => {
+  const eve = {
+    ...carol,
+    id: "Ev7tNpQrSt8uVwXy",
+    name: "Eve Owner",
+    role: "owner" as const,
+  };
+  mountHosted("/settings/members", { actAs: "admin" }, undefined, [
+    http.get(`*${R.members}`, ({ request }) =>
+      HttpResponse.json(
+        new URL(request.url).searchParams.get("status")
+          ? [carol, eve]
+          : fixtures.members,
+      ),
+    ),
+    ...removedCarol.slice(1),
+  ]);
+  const row = await carolRow();
+  await within(row).findByRole("button", { name: "Transfer all to me" });
+  const card = await departed();
+  expect(card).toHaveTextContent(
+    "1 person left with personal artifacts to transfer.",
+  );
+  expect(card).not.toHaveTextContent("Eve Owner");
+  expect(card).not.toHaveTextContent(/didn't load|Couldn't load/);
+});
+
+it("a refused summary (a stale role) is no error: no row, no LoadError", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    http.get(`*${R.memberTransfer(CAROL)}`, () => refused403()),
+    ...removedAdminCarol,
+  ]);
+  await screen.findByText("Bob Builder");
+  await waitFor(() =>
+    expect(lastClient.getQueryState(qk.memberTransfer(CAROL))?.status).toBe(
+      "error",
+    ),
+  );
+  expect(screen.queryByRole("region", { name: "Departed" })).toBeNull();
+});
+
+it("Transfer all to me that moves nothing says someone got there first", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    ...removedCarol,
+    http.post(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ moved: 0, remaining: 0, nextCursor: null }),
+    ),
+  ]);
+  fireEvent.click(
+    await within(await carolRow()).findByRole("button", {
+      name: "Transfer all to me",
+    }),
+  );
+  await findVisibleToast(
+    "Someone already handled this. The list is up to date.",
+  );
+  expect(screen.queryByText(/^Moved /)).toBeNull();
+});
+
+it("the dialog's run that moves nothing says someone got there first", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    ...removedCarol,
+    http.post(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ moved: 0, remaining: 0, nextCursor: null }),
+    ),
+  ]);
+  const d = await openFromCard();
+  await chooseOption("Give them to", "Bob Builder");
+  fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
+  await findVisibleToast(
+    "Someone already handled this. The list is up to date.",
+  );
+  expect(screen.queryByText(/^Moved /)).toBeNull();
+});
+
+it("a dialog run that moves 1 of 2 says 1, not 2", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    ...removedCarol,
+    http.post(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ moved: 1, remaining: 0, nextCursor: null }),
+    ),
+  ]);
+  const d = await openFromCard();
+  await chooseOption("Give them to", "Bob Builder");
+  fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
+  await findVisibleToast("Moved 1 artifact to Bob Builder.");
+});
+
+it("a dialog Retry that finds the rest gone says what really moved", async () => {
+  let posts = 0;
+  mountHosted("/settings/members", true, undefined, [
+    ...removedCarol,
+    http.post(`*${R.memberTransfer(CAROL)}`, () => {
+      posts += 1;
+      if (posts === 1)
+        return HttpResponse.json({ moved: 1, remaining: 1, nextCursor: "c1" });
+      if (posts === 2) return refused403();
+      return HttpResponse.json({ moved: 0, remaining: 0, nextCursor: null });
+    }),
+  ]);
+  const d = await openFromCard();
+  await chooseOption("Give them to", "Bob Builder");
+  fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
+  fireEvent.click(await within(d).findByRole("button", { name: "Retry" }));
+  await findVisibleToast("Moved 1 artifact to Bob Builder.");
+});
+
+/** Carol has 2 and 2 in trash; a run moves `moved` of them. */
+const movesOfFour = (moved: number) => [
+  http.get(`*${R.memberTransfer(CAROL)}`, () =>
+    HttpResponse.json({ live: 2, deleted: 2 }),
+  ),
+  ...removedCarol,
+  http.post(`*${R.memberTransfer(CAROL)}`, () =>
+    HttpResponse.json({ moved, remaining: 0, nextCursor: null }),
+  ),
+];
+const runDialog = async (moved: number) => {
+  mountHosted("/settings/members", true, undefined, movesOfFour(moved));
+  const d = await openFromCard();
+  await chooseOption("Give them to", "Bob Builder");
+  fireEvent.click(within(d).getByRole("button", { name: "Transfer 2" }));
+};
+const runRow = async (moved: number) => {
+  mountHosted("/settings/members", true, undefined, movesOfFour(moved));
+  fireEvent.click(
+    await within(await carolRow()).findByRole("button", {
+      name: "Transfer all to me",
+    }),
+  );
+};
+
+it("the dialog splits out trash when everything planned moved", async () => {
+  await runDialog(4);
+  await findVisibleToast("Moved 2 artifacts (and 2 in trash) to Bob Builder.");
+});
+
+it("the dialog says the total alone when less than planned moved", async () => {
+  await runDialog(1);
+  await findVisibleToast("Moved 1 artifact to Bob Builder.");
+});
+
+it("the dialog says the total alone when more than planned moved", async () => {
+  await runDialog(5);
+  await findVisibleToast("Moved 5 artifacts to Bob Builder.");
+});
+
+it("the row splits out trash when everything planned moved", async () => {
+  await runRow(4);
+  await findVisibleToast(
+    "Moved 2 artifacts (and 2 in trash) from Carol Departed to you.",
+  );
+});
+
+it("the row says the total alone when less than planned moved", async () => {
+  await runRow(1);
+  await findVisibleToast("Moved 1 artifact from Carol Departed to you.");
+});
+
+it("the row says the total alone when more than planned moved", async () => {
+  await runRow(5);
+  await findVisibleToast("Moved 5 artifacts from Carol Departed to you.");
+});
+
+const openRemoved = async () => {
+  fireEvent.click(await screen.findByRole("button", { name: "Removed (1)" }));
+  return screen.findByRole("list", { name: "Removed people" });
+};
+const RESTORE_ONLY = "Only the owner can restore an admin.";
+
+it("an admin sees a removed admin's row, the owner-only line, and no Restore", async () => {
+  mountHosted(
+    "/settings/members",
+    { actAs: "admin" },
+    undefined,
+    removedAdminCarol,
+  );
+  const list = await openRemoved();
+  expect(within(list).getByText("Carol Departed")).toBeVisible();
+  const line = within(list).getByText(RESTORE_ONLY);
+  expect(line).toBeVisible();
+  expect(line).not.toHaveAttribute("role", "alert");
+  expect(within(list).queryByRole("button", { name: /^Restore/ })).toBeNull();
+});
+
+it("a capped owner counts as an admin for a removed admin's row", async () => {
+  const cappedOwner = (m: Me): Me => ({
+    ...m,
+    auth: { ...m.auth, cap: "restricted" } as Me["auth"],
+  });
+  mountHosted("/settings/members", true, cappedOwner, removedAdminCarol);
+  const list = await openRemoved();
+  expect(within(list).getByText(RESTORE_ONLY)).toBeVisible();
+  expect(within(list).queryByRole("button", { name: /^Restore/ })).toBeNull();
+});
+
+it("an admin keeps Restore on a removed member, with no owner-only line", async () => {
+  mountHosted("/settings/members", { actAs: "admin" }, undefined, removedCarol);
+  const list = await openRemoved();
+  expect(
+    within(list).getByRole("button", { name: "Restore Carol Departed" }),
+  ).toBeVisible();
+  expect(within(list).queryByText(RESTORE_ONLY)).toBeNull();
+});
+
+it("the owner restores a removed admin; a stale role's refusal shows inline", async () => {
+  mountHosted("/settings/members", true, undefined, [
+    http.post(`*${R.memberRestore(CAROL)}`, () => refused403()),
+    ...removedAdminCarol,
+  ]);
+  const list = await openRemoved();
+  expect(within(list).queryByText(RESTORE_ONLY)).toBeNull();
+  fireEvent.click(
+    within(list).getByRole("button", { name: "Restore Carol Departed" }),
+  );
+  fireEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Restore",
+    }),
+  );
+  expect(await within(list).findByRole("alert")).toHaveTextContent(
+    RESTORE_ONLY,
+  );
+});
+
+it("the owner can still transfer a departed admin's artifacts", async () => {
+  mountHosted("/settings/members", true, undefined, removedAdminCarol);
+  const row = await carolRow();
+  expect(
+    await within(row).findByRole("button", { name: "Transfer all to me" }),
+  ).toBeVisible();
 });

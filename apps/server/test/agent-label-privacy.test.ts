@@ -236,6 +236,38 @@ describe("a PAT publish: REST", () => {
     expect(JSON.stringify(results)).not.toContain("9q2x");
   });
 
+  it("agentVia over MCP (#589): the owner's own token narrows list and search", async () => {
+    const m = await getUser(env, owner.userId);
+    if (!m) throw new Error("no user");
+    // A second artifact, from no connection, that the filter must leave out.
+    const { id: plain } = await publish(
+      env,
+      m,
+      { title: "plain", format: "html", content: `<p>${WORD}</p>` } as never,
+      null,
+      undefined,
+      "create",
+    );
+    await runIndex(plain);
+    const agentVia = `t:${owner.patId}`;
+    const c = await connect(owner.pat);
+    const ids = (r: { structuredContent?: unknown }) =>
+      (r.structuredContent as { items: { id: string }[] }).items.map(
+        (i) => i.id,
+      );
+    const everything = await tool(c, "list_artifacts", { limit: 100 });
+    const found = await tool(c, "search_artifacts", { q: WORD });
+    const list = await tool(c, "list_artifacts", { agentVia });
+    const search = await tool(c, "search_artifacts", { q: WORD, agentVia });
+    await c.close();
+    expect(ids(everything)).toContain(plain);
+    expect(ids(found)).toContain(plain);
+    expect(ids(list)).toEqual([pubId]);
+    expect(ids(search)).toEqual([pubId]);
+    // The owner's own view: the label, unmasked.
+    expect(JSON.stringify(list)).toContain("9q2x");
+  });
+
   it('an owner with no real name: "A member\'s agent", and no email in it', async () => {
     const r = (await restReads(namelessId, other.cookie)) as {
       artifact: { lastAgent: { name: string } };

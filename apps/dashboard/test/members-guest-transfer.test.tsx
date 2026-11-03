@@ -32,24 +32,22 @@ it("spaces off: the menu shows for a guest with artifacts and opens the dialog; 
   fireEvent.click(await screen.findByRole("option", { name: "Bob Builder" }));
   fireEvent.click(within(d).getByRole("button", { name: "Transfer 1" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  await waitFor(() =>
-    expect(
-      screen.queryByRole("button", { name: `More for ${OWNER}` }),
-    ).toBeNull(),
-  );
+  await waitFor(async () => {
+    const after = await openMore(OWNER);
+    expect(within(after).queryByRole("menuitem", { name: ITEM })).toBeNull();
+    fireEvent.keyDown(after, { key: "Escape" });
+  });
 });
 
-it("spaces off: a guest with no artifacts has no menu, only Remove", async () => {
+it("spaces off: a guest with no artifacts has the menu, without the item", async () => {
   mountHosted("/settings/members", {
     selfHosted: true,
     guestShares: 1,
     guestOwners: 1,
   });
-  await more(OWNER);
-  expect(
-    screen.queryByRole("button", { name: `More for ${GUEST}` }),
-  ).toBeNull();
-  expect(screen.getByRole("button", { name: `Remove ${GUEST}` })).toBeTruthy();
+  const menu = await openMore(GUEST);
+  expect(within(menu).queryByRole("menuitem", { name: ITEM })).toBeNull();
+  expect(within(menu).getByRole("menuitem", { name: "Remove…" })).toBeTruthy();
 });
 
 it("spaces on: a guest with no artifacts has the menu, without the item", async () => {

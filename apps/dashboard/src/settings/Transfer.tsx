@@ -4,12 +4,12 @@
 // repeats R.memberTransfer until nextCursor is null; a failure part-way shows
 // inline, and Retry moves only what's left.
 import type { Member, TransferInput, TransferResult } from "@oa/shared";
-import { displayName } from "@oa/ui";
 import { Button, Label } from "@oa/ui/shadcn";
 import { useEffect, useId, useRef, useState } from "react";
 import { hasFeature } from "../api/contract";
 import { errorCopy } from "../api/errorCopy";
 import {
+  ALREADY_HANDLED,
   useMembers,
   useRunTransfer,
   useSpaces,
@@ -18,12 +18,24 @@ import {
 import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
+import { personInSentence, personName } from "../layout/person";
 import { toast } from "../layout/toast";
 import { sharedSpaceName } from "../spaces/label";
 import { OptionSelect } from "./OptionSelect";
 import { errorText, muted } from "./ui";
 
-const artifacts = (n: number) => `${n} ${n === 1 ? "artifact" : "artifacts"}`;
+export const artifacts = (n: number) =>
+  `${n} ${n === 1 ? "artifact" : "artifacts"}`;
+
+/**
+ * "2 artifacts (and 1 in trash)", no bracket with nothing in trash. The run
+ * counts trash too, so unless all that was planned moved the split would be
+ * a guess: then the total alone.
+ */
+export const movedCount = (moved: number, live: number, trash: number) =>
+  moved === live + trash && trash > 0
+    ? `${artifacts(live)} (and ${trash} in trash)`
+    : artifacts(moved);
 
 /** Runs every page; resolves with the number moved. `onProgress(moved, remaining)`. */
 export async function runAll(
@@ -59,13 +71,14 @@ export function TransferDialog({
   member: Member;
   onClose: () => void;
 }) {
-  const name = displayName(member);
+  const name = personInSentence(member);
   const summary = useTransferSummary(member.id);
   const members = useMembers();
   const state = useMe();
-  // Off, the server has no spaces to offer: 404 for any `to: space`.
-  const spacesOn = state.status === "authed" && hasFeature(state.me, "spaces");
-  const spaces = useSpaces({ kind: "shared" }, spacesOn);
+  // Without spaces every artifact is personal: only a person can receive them (parity 1).
+  const withSpaces =
+    state.status === "authed" && hasFeature(state.me, "spaces");
+  const spaces = useSpaces({ kind: "shared" }, withSpaces);
   const run = useRunTransfer(member.id);
   const [kind, setKind] = useState<"user" | "space">("user");
   const [userId, setUserId] = useState<string | null>(null);
@@ -113,7 +126,7 @@ export function TransferDialog({
     kind === "user"
       ? person && {
           to: { kind, userId: person.id } as const,
-          label: displayName(person),
+          label: personName(person),
         }
       : space && {
           to: { kind, spaceId: space.id } as const,
@@ -142,10 +155,16 @@ export function TransferDialog({
           setProgress({ done, of: t.of });
         },
       );
-      toast({
-        title: `Moved ${artifacts(t.live)}${t.of > t.live ? ` (and ${t.of - t.live} in trash)` : ""} to ${target.label}.`,
-        tone: "success",
-      });
+      // What really moved: another admin may have taken some, and nothing at
+      // all means they got there first.
+      toast(
+        done === 0
+          ? { title: ALREADY_HANDLED, tone: "info" }
+          : {
+              title: `Moved ${movedCount(done, t.live, t.of - t.live)} to ${target.label}.`,
+              tone: "success",
+            },
+      );
       onClose();
     } catch (e) {
       const p = e instanceof PartialError ? e : new PartialError(done, e);
@@ -161,14 +180,14 @@ export function TransferDialog({
       title={
         unknown
           ? `Transfer ${name}'s artifacts`
-          : `Transfer ${name}'s ${live} ${spacesOn ? "personal " : ""}${live === 1 ? "artifact" : "artifacts"}`
+          : `Transfer ${name}'s ${live} ${withSpaces ? "personal " : ""}${live === 1 ? "artifact" : "artifacts"}`
       }
       description={
         unknown
           ? undefined
           : trash > 0
             ? `Plus ${trash} in trash: ${trash === 1 ? "it moves" : "they move"} too and ${trash === 1 ? "keeps its" : "keep their"} trash timer.`
-            : spacesOn
+            : withSpaces
               ? "Their space artifacts stay where they are."
               : undefined
       }
@@ -193,7 +212,7 @@ export function TransferDialog({
         />
       ) : (
         <div className="grid gap-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]">
-          {spacesOn && (
+          {withSpaces && (
             <fieldset className="grid gap-[var(--oa-space-2)] border-0 p-0">
               <legend className="sr-only">Transfer to</legend>
               <label className="flex items-center gap-[var(--oa-space-2)]">
@@ -241,7 +260,7 @@ export function TransferDialog({
                   value={userId}
                   options={successors.map((m) => ({
                     value: m.id,
-                    label: displayName(m),
+                    label: personName(m),
                   }))}
                   placeholder="Choose a person"
                   disabled={busy}
@@ -250,8 +269,8 @@ export function TransferDialog({
               )}
               {person && (
                 <p className={muted}>
-                  You won't see titles or contents. {displayName(person)}{" "}
-                  {spacesOn
+                  You won't see titles or contents. {personName(person)}{" "}
+                  {withSpaces
                     ? "gets them in their Personal"
                     : "becomes the owner"}
                   {activeGuest

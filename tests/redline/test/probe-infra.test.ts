@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { InfraError, isNetworkError } from "../src/fetch-timeout.ts";
 import { sendProbe } from "../src/http.ts";
 import { setCurrentTest, takeFileNotes } from "../src/notes.ts";
-import { crossWrite } from "../src/refused.ts";
+import { crossProbe, crossWrite } from "../src/refused.ts";
 import type { Target } from "../src/targets.ts";
 import { rawRequest, wsHandshake } from "../src/ws.ts";
 
@@ -98,6 +98,65 @@ describe("WebSocket probes with no response", () => {
     }).catch((x: unknown) => x);
     expect(isNetworkError(e)).toBe(true);
     server.closeAllConnections();
+  });
+});
+
+describe("a connection cut mid-body in a cross-install probe", () => {
+  /** B's own credential at /rl-b, A's at /rl-a and /rl-b, through one server. */
+  async function probe(cut: "B at B" | "A at B") {
+    let cuts = 0;
+    let denies = 0;
+    server = createServer((req, res) => {
+      const who = req.headers.authorization;
+      const key = `${who} at ${req.url === "/rl-a" ? "A" : "B"}`;
+      if (key === "A at B") denies++;
+      if (key === cut && cuts === 0) {
+        cuts++;
+        res.writeHead(200, { "content-length": "100" });
+        res.write("partial", () => req.socket.destroy());
+        return;
+      }
+      if (key === "A at B") res.writeHead(403).end("{}");
+      else res.writeHead(200).end("{}");
+    });
+    await new Promise<void>((r) => server?.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as AddressInfo;
+    const t = (name: string) =>
+      ({
+        name,
+        app: `http://127.0.0.1:${port}`,
+        content: `http://127.0.0.1:${port}`,
+      }) as Target;
+    const run = crossProbe<string>(
+      async (cred, host, f) => {
+        const r = await f(
+          new Request(`${host.app}/${host.name}`, {
+            headers: { authorization: cred },
+          }),
+        );
+        await r.text();
+        return r.status === 200 ? "allow" : "deny";
+      },
+      {
+        a: t("rl-a"),
+        b: t("rl-b"),
+        credA: "A",
+        credB: "B",
+        carries: (r, c) => r.headers.get("authorization") === c,
+      },
+    );
+    return { run, denies: () => denies };
+  }
+
+  it("on an allow leg is retried, and the probe goes on", async () => {
+    const { run } = await probe("B at B");
+    await expect(run).resolves.toBeUndefined();
+  });
+
+  it("on the deny leg is a fail, never retried into a refusal", async () => {
+    const { run, denies } = await probe("A at B");
+    await expect(run).rejects.toThrow(/A's credential at B/);
+    expect(denies()).toBe(1);
   });
 });
 

@@ -1,5 +1,5 @@
 // Member.personalArtifacts: which guests have something to transfer, in the
-// list's own query, on every install.
+// list's own query. R.members has one path on every install (parity 1).
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { publish } from "../src/services/artifacts.js";
@@ -29,10 +29,7 @@ const owner = async (role: "guest" | "member", artifacts = 1) => {
   return { userId: l.userId, id };
 };
 
-describe.each([
-  ["Access-only", false],
-  ["hosted or direct", true],
-])("R.members on %s", (_name, hosted) => {
+describe("R.members", () => {
   it("flags only a guest with a live artifact of their own", async () => {
     const withOne = await owner("guest");
     const none = await owner("guest", 0);
@@ -46,7 +43,7 @@ describe.each([
     await env.DB.prepare("update artifacts set owner_id = ? where id = ?")
       .bind(member.userId, notTheirs.id)
       .run();
-    const rows = await listMembers(env, ["active"], hosted);
+    const rows = await listMembers(env, ["active"]);
     const of = (id: string) => rows.find((r) => r.id === id);
     expect(of(withOne.userId)?.personalArtifacts).toBe(true);
     for (const u of [none, member, trashed, notTheirs])
@@ -67,7 +64,7 @@ describe.each([
         };
       },
     });
-    await listMembers({ ...env, DB } as typeof env, ["active"], hosted);
+    await listMembers({ ...env, DB } as typeof env, ["active"]);
     expect(n).toBe(1);
   });
 });

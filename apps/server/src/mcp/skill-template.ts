@@ -11,7 +11,7 @@ import {
   secretRules,
   secretSnippet,
 } from "./skill-common.ts";
-import { TOOL_DEFS } from "./tool-defs.ts";
+import { descriptionFor, TOOL_DEFS } from "./tool-defs.ts";
 
 /** Tokens skill.ts fills at request time (one pass, memoized per isolate). */
 export const SKILL_TOKENS = [
@@ -88,18 +88,24 @@ function params(schema: z.ZodType): string {
     .join(", ");
 }
 
-const tools = (): string =>
-  TOOL_DEFS.map(
-    (t) => `### ${t.name}
+/** The tools tools/list offers: list_spaces only with the spaces feature. */
+const toolDefs = (spaces: boolean) =>
+  TOOL_DEFS.filter((t) => spaces || t.name !== "list_spaces");
 
-${t.description}
+const tools = (spaces: boolean): string =>
+  toolDefs(spaces)
+    .map(
+      (t) => `### ${t.name}
+
+${descriptionFor(t.name, spaces)}
 
 Parameters (? = optional): ${params(t.inputSchema)}
 
 \`\`\`json
 ${JSON.stringify(t.example)}
 \`\`\``,
-  ).join("\n\n");
+    )
+    .join("\n\n");
 
 const PAT_FILE = secretFile("pat", { hostSlug: T("hostSlug") });
 const MCP_URL = `${T("origin")}/mcp`;
@@ -138,8 +144,14 @@ export const clientsSection = (): string => {
     .join("\n\n");
 };
 
-export function renderSkillTemplate(): string {
+/**
+ * The /skill.md template. `spaces` false (an install without the spaces
+ * feature) leaves every spaces line out, as tools/list and the server
+ * instructions do there: no list_spaces or spaces wording.
+ */
+export function renderSkillTemplate(spaces = true): string {
   const plan = {
+    spaces,
     plan: T("plan"),
     dataDoc: T("dataDoc"),
     dataDocNote: T("dataDocNote"),
@@ -167,7 +179,7 @@ ${T("upgradeLine")}Open Artifacts hosts the pages, documents and code you publis
 - MCP endpoint: \`${T("origin")}/mcp\` (Streamable HTTP).
 - OAuth (preferred): add \`${T("origin")}/mcp\` as a remote MCP server in your client. The client registers itself (dynamic client registration) and the user signs in through the browser.
 - Personal access token: the user creates one at ${T("origin")}/settings/agents and saves it with the line under Secrets. Send it as \`Authorization: Bearer <token>\`, read from \`${PAT_FILE}\` in the command or config, never pasted in.
-- Per-client setup is under Client setup below; after a change, reload the client and check that tools/list shows the ${TOOL_DEFS.length} tools.
+- Per-client setup is under Client setup below; after a change, reload the client and check that tools/list shows the ${toolDefs(spaces).length} tools.
 - Only members can connect agents; guests cannot.
 - Without MCP support, call the endpoint with curl (JSON-RPC; \`tools/call\` takes \`{ "name": "<tool>", "arguments": { ... } }\`):
 
@@ -191,7 +203,7 @@ ${clientsSection()}
 
 ## Tools
 
-${tools()}
+${tools(spaces)}
 
 ${renderSections(plan, (t) => `## ${t}\n`)}
 

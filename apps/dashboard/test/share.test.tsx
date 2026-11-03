@@ -229,6 +229,20 @@ describe("share panel", () => {
     );
   });
 
+  it("each Live data checkbox has its hint as its accessible description", async () => {
+    mount(panel(OWNED));
+    await screen.findByRole("checkbox", { name: "Database" });
+    for (const [name, hint] of [
+      ["Database", "Lets the page store shared data."],
+      ["Viewer identity", "Lets the page see who is viewing."],
+      ["File storage", "Lets the page keep uploaded files."],
+    ] as const) {
+      expect(
+        screen.getByRole("checkbox", { name }),
+      ).toHaveAccessibleDescription(hint);
+    }
+  });
+
   it("who can change the live data: shown only with db, and says who", async () => {
     mount(panel(OWNED));
     await screen.findByRole("checkbox", { name: "Database" });

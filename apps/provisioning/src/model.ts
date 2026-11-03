@@ -121,7 +121,10 @@ const list = (v: unknown) =>
         .filter(Boolean)
     : [];
 
-/** AUTH_PROVIDERS and AUTH_DOMAINS from the installs row's vars, else the signup's. */
+/**
+ * AUTH_PROVIDERS, AUTH_DOMAINS and EMAIL_CODE_DOMAIN from the installs row's
+ * vars, else the signup's. domainCodes is there only when on, as in the vars.
+ */
 export function authOf(row: StatusRow): Auth {
   let vars: Record<string, unknown> = {};
   try {
@@ -133,6 +136,7 @@ export function authOf(row: StatusRow): Auth {
         AuthProviderSchema.safeParse(p).success,
     ),
     domains: list(vars.AUTH_DOMAINS),
+    ...(vars.EMAIL_CODE_DOMAIN === "on" ? { domainCodes: true } : {}),
   };
 }
 

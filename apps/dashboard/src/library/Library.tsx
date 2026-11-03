@@ -156,6 +156,9 @@ export function Library({ scope }: { scope: Scope }) {
     ? s.agentVia
     : undefined;
   const viaName = useConnectionName(agentVia);
+  // The Agent select shows one choice, and the connection wins: an `agent` left
+  // in the URL would narrow the list with nothing on screen saying so.
+  const agent = agentVia ? undefined : s.agent;
   const view: View = s.view ?? storedView() ?? "grid";
   const go = (to: string, search: object) =>
     void navigate({ to, search } as never);
@@ -164,7 +167,7 @@ export function Library({ scope }: { scope: Scope }) {
   const q = useLibraryQuery({
     scope,
     format: s.format,
-    agent: s.agent,
+    agent,
     agentVia,
     space: space?.id,
   });
@@ -216,7 +219,7 @@ export function Library({ scope }: { scope: Scope }) {
   const canSetUpAgent = useCanSetUpAgent();
   const sentinel = useSentinel(q);
 
-  const filtered = Boolean(s.format || s.agent || agentVia);
+  const filtered = Boolean(s.format || agent || agentVia);
   const canPublishHere =
     personal || myRole === "editor" || myRole === "manager";
   const uploadSpace = useUploadSpace(space?.id);
@@ -264,7 +267,7 @@ export function Library({ scope }: { scope: Scope }) {
     <>
       <Filters
         format={s.format}
-        agent={s.agent}
+        agent={agent}
         agents={agents}
         via={agentVia === undefined ? undefined : { label: viaName ?? "" }}
         view={view}

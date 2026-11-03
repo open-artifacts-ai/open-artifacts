@@ -30,13 +30,18 @@ type Body = z.infer<typeof CreateInstallSchema>;
 
 /** The canonical signups.vars (0007): never an email. */
 export function signupVars(
-  auth: { providers: readonly string[]; domains: readonly string[] },
+  auth: {
+    providers: readonly string[];
+    domains: readonly string[];
+    domainCodes?: boolean;
+  },
   tier: Tier,
   testHooks: boolean,
 ): string {
   return canonicalJson({
     AUTH_PROVIDERS: auth.providers.join(","),
     AUTH_DOMAINS: auth.domains.join(","),
+    ...(auth.domainCodes === true ? { EMAIL_CODE_DOMAIN: "on" } : {}),
     TIER: tier,
     ...(testHooks ? { TEST_DOMAIN: STAGING_TEST_DOMAIN } : {}),
   });

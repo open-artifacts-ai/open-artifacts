@@ -1482,19 +1482,19 @@ export class WfpProvisioner {
       if (!providers.includes("email"))
         throw new ProvisionRefused(
           "EMAIL_CODE_DOMAIN=on needs email in AUTH_PROVIDERS",
-          "invalid_state",
+          "domain_codes_refused",
         );
       if (providers.includes("google"))
         throw new ProvisionRefused(
           "EMAIL_CODE_DOMAIN=on needs google out of AUTH_PROVIDERS",
-          "invalid_state",
+          "domain_codes_refused",
         );
     } else if (
       !(vars.AUTH_DOMAINS ?? "").split(",").some((d) => d.trim() !== "")
     )
       throw new ProvisionRefused(
         "EMAIL_CODE_DOMAIN=on needs AUTH_DOMAINS",
-        "invalid_state",
+        "domain_codes_refused",
       );
   }
 
@@ -1526,7 +1526,7 @@ export class WfpProvisioner {
     )
       throw new ProvisionRefused(
         `codes are on (AUTH_PROVIDERS has email, or EMAIL_CODE_DOMAIN=on) but the ${this.env} Turnstile sitekey and secret are missing; run the Turnstile init for ${this.env} first`,
-        "invalid_state",
+        "turnstile_missing",
       );
     if (!SITEKEY_RE.test(ts.sitekey))
       throw new ProvisionRefused(

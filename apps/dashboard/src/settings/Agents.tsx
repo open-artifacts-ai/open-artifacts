@@ -242,8 +242,13 @@ function OAuthClients() {
   } | null>(null);
   if (revokeOnly && !q.isError && !q.data?.length) return null;
   return (
-    <SettingsCard id="oa-oauth-h" title="Connected agents">
-      {revokeOnly && <CardLine>{AGENTS_LINE}</CardLine>}
+    <SettingsCard
+      id="oa-oauth-h"
+      title="Connected agents"
+      subtitle={
+        revokeOnly ? AGENTS_LINE : "Agents you approved can publish as you."
+      }
+    >
       {q.isError ? (
         <p role="alert" className={errorText}>
           Couldn't load connected agents.

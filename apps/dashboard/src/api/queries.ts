@@ -177,7 +177,7 @@ export const useSearch = (q: SearchQuery) =>
       api.get(withQuery(R.search, q), SearchPage, signal),
     enabled: q.q.length > 0,
   });
-/** Active members by default; `status` (a comma list) is hosted, so the default sends none. */
+/** Active members by default; `status` is a comma list (every install, parity 1). */
 export const useMembers = (status?: string, enabled = true) =>
   useQuery({
     enabled,
@@ -359,8 +359,15 @@ export const useInviteMember = () => {
       api.send("POST", R.members, input, MemberInviteResultSchema),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.members }),
     // invite_unreachable: the dialog says why under the email field.
+    // member_removed: the dialog offers Restore; guest_lapsed: it says to share (parity 1).
     onError: (e) => {
-      if (e instanceof ApiClientError && e.code === "invite_unreachable")
+      if (
+        e instanceof ApiClientError &&
+        (e.code === "invite_unreachable" ||
+          e.code === "member_removed" ||
+          e.code === "guest_lapsed" ||
+          e.code === "directory_managed")
+      )
         return;
       failToast(e, "Couldn't send the invite.");
     },
@@ -841,6 +848,9 @@ export const useConfirmHeld = () =>
     "Couldn't apply the change.",
     directoryInline,
   );
+/** Someone else got there first. */
+export const ALREADY_HANDLED =
+  "Someone already handled this. The list is up to date.";
 /**
  * Snooze / unsnooze a held sweep (#412). A 404 means the caller lost the owner
  * role: refetch /me (the page then shows the owner-only line) and skip the toast.
@@ -861,7 +871,7 @@ const useHeldSnooze = <V>(fn: (v: V) => Promise<unknown>, failure: string) => {
         void qc.invalidateQueries({ queryKey: qk.directory });
         if (e.code === "conflict")
           return toast({
-            title: "Someone already handled this. The list is up to date.",
+            title: ALREADY_HANDLED,
             tone: "info",
           });
       }
@@ -940,6 +950,20 @@ export const useRunTransfer = (memberId: string) =>
     // The transfer dialog reports every failure inline, with Retry.
     () => true,
   );
+/**
+ * POST R.memberRestore: a removed member comes back active, as a member, a
+ * guest as a guest (parity 1). Errors are the caller's to show inline (403
+ * owner_only, 409 directory_managed, guest_lapsed, member_active).
+ */
+export const useRestoreMember = () =>
+  useInvalidating(
+    (memberId: string) =>
+      api.send("POST", R.memberRestore(memberId), undefined, MemberSchema),
+    () => [qk.members],
+    "Couldn't restore them.",
+    () => true,
+  );
+
 export const useResetIdentity = () => {
   const qc = useQueryClient();
   const refresh = () =>

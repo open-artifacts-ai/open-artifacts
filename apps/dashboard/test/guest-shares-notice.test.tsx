@@ -72,6 +72,35 @@ it.each([
   },
 );
 
+it("a released address never shows, in either notice", async () => {
+  const gone = "removed+Xy12@invalid";
+  mountHosted("/", { selfHosted: true, guestShares: 1 }, (m) => ({
+    ...m,
+    notices: {
+      guestShares: {
+        items: [
+          { artifactId: "a1", title: "Plan", guestEmail: gone, role: "editor" },
+        ],
+        more: false,
+      },
+      guestSummary: {
+        shares: 1,
+        owners: 1,
+        guestOwners: [{ userId: "u1", email: gone, artifacts: 1 }],
+        more: false,
+      },
+    },
+  }));
+  await shares();
+  expect(
+    screen.getByRole("button", {
+      name: "Transfer a former member's artifacts",
+    }),
+  ).toBeTruthy();
+  expect(screen.getAllByText(/Former member/)).toHaveLength(2);
+  expect(document.body).not.toHaveTextContent("@invalid");
+});
+
 it("Got it dismisses guest_shares only", async () => {
   const seen = calls("POST");
   mountHosted("/", { selfHosted: true, guestShares: 1 });
