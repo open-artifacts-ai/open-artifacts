@@ -1,8 +1,9 @@
 // A person's avatar on shadcn's Avatar: initials on a hue taken from their
 // email (else their name), 24px or 32px, named for assistive tech.
-import { avatarHue, displayName } from "@oa/ui";
+import { avatarHue } from "@oa/ui";
 import { Avatar, AvatarFallback } from "@oa/ui/shadcn";
 import type { CSSProperties } from "react";
+import { isReleased, personName } from "./person";
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const graphemes = (s: string) =>
@@ -45,14 +46,17 @@ export function UserAvatar({
   return (
     <Avatar
       role="img"
-      aria-label={displayName({ name, email })}
+      aria-label={personName({ name, email })}
       size={size === 24 ? "sm" : "default"}
     >
       <AvatarFallback
         style={style}
         className={`text-[13px] font-semibold group-data-[size=sm]/avatar:text-[10px]${quiet}`}
       >
-        {initials(name, email ?? "")}
+        {initials(
+          isReleased({ email }) ? personName({ name, email }) : name,
+          email ?? "",
+        )}
       </AvatarFallback>
     </Avatar>
   );
