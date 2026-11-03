@@ -1,13 +1,13 @@
 import { normalizeEmail } from "@oa/auth-core";
 import {
   AUTH,
-  MemberSchema,
   PAGES,
   RoleSchema,
   SIGN_IN_PAGE,
   type SignInError,
   type SignInVia,
 } from "@oa/shared";
+import { z } from "zod";
 import { logAuth, oidcStage } from "../auth/audit.js";
 import { authConfig } from "../auth/config.js";
 import {
@@ -80,7 +80,7 @@ ${FAVICON_TAGS}
   return new Response(html, { status: 400, headers: h });
 }
 
-const EmailSchema = MemberSchema.shape.email;
+const EmailSchema = z.string().email();
 
 /**
  * Every refused redirect sign-in lands here (#359): the SPA shows the reason.

@@ -7,7 +7,13 @@ import {
   type Release,
   TOKEN_SCOPES,
 } from "@oa/shared/provisioning";
-import { InfraError, notResolved } from "./fetch-timeout.ts";
+import {
+  InfraError,
+  isNetworkError,
+  networkCode,
+  notResolved,
+} from "./fetch-timeout.ts";
+import { RETRY_BACKOFF_MS, safeCode } from "./http.ts";
 import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { PRE_PROD_REASON } from "./report.ts";
@@ -74,7 +80,7 @@ export interface ProvIo {
 
 export type Outcome =
   | { level: "pass"; note?: string }
-  | { level: "not-applicable" | "unproven-live"; reason: string };
+  | { level: "not-applicable" | "unproven-live" | "blocked"; reason: string };
 
 const pass = (note?: string): Outcome =>
   note ? { level: "pass", note } : { level: "pass" };
@@ -97,8 +103,8 @@ export const HOSTS_SETTLE_MS = 120_000;
 export const JOB_WITHIN_MS = 20 * 60_000;
 /** A case's vitest timeout: its slowest wait plus margin. */
 export const PROBE_TIMEOUT_MS = JOB_WITHIN_MS + 5 * 60_000;
-/** The run's cleanup: removeInstall can wait on two jobs (delete, then purge). */
-export const CLEANUP_TIMEOUT_MS = 2 * JOB_WITHIN_MS + 5 * 60_000;
+/** The run's cleanup: one install can wait on a live job, a delete and a purge. */
+export const CLEANUP_TIMEOUT_MS = 3 * JOB_WITHIN_MS + 5 * 60_000;
 export const P34_REQUESTS = 400;
 /** RL_BROKER_IP's period (apps/auth-broker/wrangler.jsonc: limit 60 per 60 s). */
 export const BROKER_IP_PERIOD_MS = 60_000;
@@ -140,6 +146,11 @@ export interface CallOpts {
   auth?: Auth;
   testUser?: "a" | "b" | "c";
   headers?: Record<string, string>;
+  /**
+   * An allow-side GET: no response is tried again, twice, with a note. Never
+   * set it on a request whose expected answer is a refusal.
+   */
+  read?: boolean;
 }
 
 export class Run {
@@ -182,12 +193,26 @@ export class Run {
       if (!headers.has("content-type"))
         headers.set("content-type", "application/json");
     }
-    const res = await this.io.fetch(url, {
-      method: o.method ?? (o.body === undefined ? "GET" : "POST"),
-      headers,
-      body,
-      redirect: "manual",
-    });
+    const method = o.method ?? (o.body === undefined ? "GET" : "POST");
+    const backoff = o.read && method === "GET" ? RETRY_BACKOFF_MS : [];
+    let res: Response;
+    for (let i = 0; ; i++) {
+      try {
+        res = await this.io.fetch(url, {
+          method,
+          headers,
+          body,
+          redirect: "manual",
+        });
+        break;
+      } catch (e) {
+        const wait = backoff[i];
+        if (wait === undefined || !isNetworkError(e)) throw e;
+        const at = new URL(url).pathname.split("/").slice(0, 3).join("/");
+        note(`GET ${at} retried (no response: ${networkCode(e)})`);
+        await this.io.wait(wait);
+      }
+    }
     let text = "";
     try {
       text = await res.text();
@@ -314,6 +339,7 @@ export class Run {
       throw new ProbeFail("no staging inventory configured");
     const r = await this.raw(`${this.c.inventory}${path}`, {
       auth: { bearer: await this.io.stgInventoryJwt() },
+      read: true,
     });
     if (r.status !== 200)
       throw new ProbeFail(`inventory ${path.split("?")[0]}: ${desc(r)}`);
@@ -352,8 +378,8 @@ export class Run {
   }
 
   /** A public GET on a tenant host (no credential). */
-  async page(host: string, path = "/healthz"): Promise<Res> {
-    return this.raw(`https://${bare(host)}${path}`, { auth: "none" });
+  async page(host: string, path = "/healthz", read = false): Promise<Res> {
+    return this.raw(`https://${bare(host)}${path}`, { auth: "none", read });
   }
 }
 
@@ -370,6 +396,13 @@ export interface RlP {
 
 export interface RunState {
   jobIds: string[];
+  /**
+   * This run's installs, listed before their create: a probe that stops
+   * anywhere still leaves them for the run's end (cleanupInstalls). rl-s isn't
+   * here: no principal can purge a test user's install within a run, and the
+   * scheduler does at purge_at (P29).
+   */
+  cleanup: { slug: string }[];
   /** The OIDC actor label (Job.actor.label). */
   actor?: string;
   rlp?: RlP;
@@ -395,7 +428,7 @@ const bare = (h: string) => h.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
 
 /** status, error code and body hash: what a failure may say. */
 export function desc(r: Res): string {
-  const code = errCode(r);
+  const code = safeCode(errCode(r));
   const h = createHash("sha256").update(r.text).digest("hex").slice(0, 16);
   return `status ${r.status}, body sha256:${h} (${Buffer.byteLength(r.text)} bytes)${code ? `, code ${code}` : ""}`;
 }
@@ -490,11 +523,41 @@ const toolCode = (t: ToolResult) =>
 // --- Probes ----------------------------------------------------------------
 
 export interface Probe {
+  /**
+   * Cases this one can't mean anything without: they make the install or
+   * state it reads. If one didn't pass, this reports `blocked` instead of
+   * running. Mapped by hand from what each case uses.
+   */
+  needs?: readonly ProbeId[];
   id: ProbeId;
   title: string;
   run: (r: Run) => Promise<Outcome>;
   /** Its vitest timeout when longer than PROBE_TIMEOUT_MS. */
   timeoutMs?: number;
+}
+
+/**
+ * Runs `p`, or reports it blocked by the first of `needs` in `failed`. A thrown
+ * failure or a blocked result goes in `failed`, so a chain stops once and each
+ * case below it names the root. An unproven or not-applicable case isn't a
+ * failure: its dependants still run.
+ */
+export async function runProbe(
+  p: Probe,
+  run: Run,
+  failed: Set<string>,
+): Promise<Outcome> {
+  const root = p.needs?.find((n) => failed.has(n));
+  if (root) {
+    failed.add(p.id);
+    return { level: "blocked", reason: `blocked by ${root}` };
+  }
+  try {
+    return await p.run(run);
+  } catch (e) {
+    failed.add(p.id);
+    throw e;
+  }
 }
 
 /**
@@ -583,7 +646,7 @@ function rlp(run: Run): RlP {
 
 async function releases(run: Run): Promise<Release[]> {
   if (run.s.releases) return run.s.releases;
-  const r = await run.v1("/releases");
+  const r = await run.v1("/releases", { read: true });
   expect(r, 200, "R16");
   run.s.releases = (r.json as { items: Release[] }).items;
   return run.s.releases;
@@ -618,6 +681,10 @@ async function detail(
 ): Promise<Res> {
   return run.v1(`/installs/${id}`, { testUser });
 }
+
+/** The run's own install, expected to answer: `detail` stays one try for refusals. */
+const ownDetail = (run: Run, id: string): Promise<Res> =>
+  run.v1(`/installs/${id}`, { read: true });
 
 async function panelInstall(run: Run): Promise<string | null> {
   if (run.s.panelInstall !== undefined) return run.s.panelInstall;
@@ -668,30 +735,32 @@ const snoozeCreate = (run: Run, slug: string, requestId: string) => ({
 });
 
 /**
- * Deletes and purges one install a probe created (found by its slug: the
- * create may have failed before its answer). Done when no live row is left.
+ * Deletes and purges one install this run created, found by its slug: the
+ * create may have failed before its answer. Done when no live row is left, so
+ * it's a no-op after P23. Waits out a live job; a row already `deleting` or
+ * `failed` goes straight to purge.
  */
 export async function removeInstall(
   run: Run,
   slug: string,
   what: string,
 ): Promise<void> {
-  const l = await run.v1(`/installs?${new URLSearchParams({ q: slug })}`);
+  const l = await run.v1(`/installs?${new URLSearchParams({ q: slug })}`, {
+    read: true,
+  });
   expect(l, 200, `${what} R2`);
   const row = (
     l.json as { items: { id: string; slug: string; state: string }[] }
   ).items.find((i) => i.slug === slug && i.state !== "deleted");
   if (!row) return;
-  let d = await detail(run, row.id);
+  let d = await ownDetail(run, row.id);
   expect(d, 200, `${what} R3`);
   let i = d.json as InstallDetail;
   if (i.activeJobId) await run.waitJob(i.activeJobId);
-  d = await detail(run, row.id);
+  d = await ownDetail(run, row.id);
   expect(d, 200, `${what} R3`);
   i = d.json as InstallDetail;
   if (i.state === "deleted") return;
-  // A failed install has nothing to delete: it is purged directly (purge
-  // from failed is allowed, P32).
   if (i.state !== "failed" && i.state !== "deleting") {
     const del = run.accepted(
       await run.v1(`/installs/${row.id}/delete`, {
@@ -710,7 +779,11 @@ export async function removeInstall(
   await run.done(g.job.id, `${what} purge`);
 }
 
-/** The run's end: removes every install a probe left on run.s.cleanup. */
+/**
+ * The run's end: removes every install left on run.s.cleanup. Tries them all,
+ * then fails naming the ones it couldn't: a run that strands an install stays
+ * red. Only slugs this run listed, so another run's install can't be touched.
+ */
 export async function cleanupInstalls(run: Run): Promise<void> {
   const failed: string[] = [];
   for (const e of [...run.s.cleanup]) {
@@ -915,7 +988,9 @@ export const PROBES: readonly Probe[] = [
         403,
         "P12 R19",
       );
-      const jobs = await run.v1(`/installs/${run.c.rlA.id}/jobs?limit=1`);
+      const jobs = await run.v1(`/installs/${run.c.rlA.id}/jobs?limit=1`, {
+        read: true,
+      });
       const jobId =
         (jobs.json as { items?: { id: string }[] } | undefined)?.items?.[0]
           ?.id ?? ulidish();
@@ -935,7 +1010,8 @@ export const PROBES: readonly Probe[] = [
       "create rl-p-<run> twice with one requestId: one job, one install, done (redline variant)",
     run: async (run) => {
       const slug = run.slug("p");
-      const before = await run.v1(`/installs?q=${slug}`);
+      run.s.cleanup.push({ slug });
+      const before = await run.v1(`/installs?q=${slug}`, { read: true });
       expect(before, 200, "P13 list before");
       const n0 = (before.json as { items: { slug: string }[] }).items.filter(
         (i) => i.slug === slug,
@@ -985,13 +1061,13 @@ export const PROBES: readonly Probe[] = [
         await run.done(lateJob, "P16 late upgrade");
         run.s.rlp.version = run.c.version;
       }
-      const after = await run.v1(`/installs?q=${slug}`);
+      const after = await run.v1(`/installs?q=${slug}`, { read: true });
       const n1 = (after.json as { items: { slug: string }[] }).items.filter(
         (i) => i.slug === slug,
       ).length;
       if (n1 - n0 !== 1)
         throw new ProbeFail(`P13: installs +${n1 - n0}, want +1`);
-      const d = await detail(run, a.install.id);
+      const d = await ownDetail(run, a.install.id);
       expect(d, 200, "P13 R3");
       const dj = d.json as InstallDetail;
       if (dj.testHooks !== true)
@@ -1023,6 +1099,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P49",
+    needs: ["P13"],
     title:
       "R2 q as O never matches by owner email: rl-p's email and its local part find nothing; its slug still finds rl-p (#1033)",
     // The privacy half of #1033. O is not a pii principal, so an owner-email
@@ -1174,6 +1251,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P14",
+    needs: ["P13"],
     title: "a second create of that slug with a new requestId: 409 slug_taken",
     run: async (run) => {
       const p = rlp(run);
@@ -1190,6 +1268,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P15",
+    needs: ["P13"],
     title:
       "during the create: inventory mode null and public /healthz 404 until route",
     run: async (run) => {
@@ -1208,6 +1287,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P16",
+    needs: ["P13"],
     title: "upgrade while its create runs: 409 job_in_progress",
     run: async (run) => {
       const r = run.s.p16;
@@ -1230,6 +1310,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P18",
+    needs: ["P13"],
     title: "upgrade to its current version: 409 downgrade_refused",
     run: async (run) => {
       const p = rlp(run);
@@ -1242,6 +1323,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P19",
+    needs: ["P13"],
     title: "delete with a wrong confirmSlug: 400; unchanged",
     run: async (run) => {
       const p = rlp(run);
@@ -1250,7 +1332,7 @@ export const PROBES: readonly Probe[] = [
       });
       if (r.status !== 400)
         throw new ProbeFail(`P19: want 400, got ${desc(r)}`);
-      const d = await detail(run, p.id);
+      const d = await ownDetail(run, p.id);
       if ((d.json as InstallDetail | undefined)?.state !== "active")
         throw new ProbeFail("P19: the install is no longer active");
       return pass();
@@ -1258,6 +1340,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P45",
+    needs: ["P13"],
     title:
       "OIDC on /mcp: tools/list, get_world, get_install, delete_install refusal, upgrade_install",
     run: async (run) => {
@@ -1281,7 +1364,7 @@ export const PROBES: readonly Probe[] = [
         throw new ProbeFail("P45: tools/list names differ from ADMIN_TOOLS");
       // get_world equals REST R27 for this principal (O is 403 on R27: 4.2).
       const world = await tool(run, "get_world", {});
-      const rest = await run.v1("/world");
+      const rest = await run.v1("/world", { read: true });
       if (rest.status === 200) {
         if (world.isError)
           throw new ProbeFail(`P45 get_world: ${toolCode(world)}`);
@@ -1290,7 +1373,7 @@ export const PROBES: readonly Probe[] = [
           `P45 get_world: ${toolCode(world) ?? "ok"} on /mcp, ${desc(rest)} on /v1`,
         );
       const gi = await tool(run, "get_install", { id: p.id });
-      const gr = await detail(run, p.id);
+      const gr = await ownDetail(run, p.id);
       if (
         gi.isError ||
         JSON.stringify(gi.structuredContent) !== JSON.stringify(gr.json)
@@ -1313,7 +1396,9 @@ export const PROBES: readonly Probe[] = [
       });
       if (!del.isError || toolCode(del) !== "confirm_mismatch")
         throw new ProbeFail(`P45 delete_install: ${toolCode(del) ?? "ok"}`);
-      if (((await detail(run, p.id)).json as InstallDetail).state !== "active")
+      if (
+        ((await ownDetail(run, p.id)).json as InstallDetail).state !== "active"
+      )
         throw new ProbeFail("P45: delete_install changed the install");
       if (p.version === run.c.version)
         return unproven(
@@ -1342,6 +1427,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P31",
+    needs: ["P13"],
     title:
       "rollback of the rl-p install after an upgrade: the previous version",
     run: async (run) => {
@@ -1357,7 +1443,7 @@ export const PROBES: readonly Probe[] = [
         "P31",
       );
       await run.done(a.job.id, "P31 rollback");
-      const v = ((await detail(run, p.id)).json as InstallDetail).version;
+      const v = ((await ownDetail(run, p.id)).json as InstallDetail).version;
       if (v !== p.createdAt)
         throw new ProbeFail(`P31: version ${v}, want ${p.createdAt}`);
       p.version = v;
@@ -1366,6 +1452,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P20",
+    needs: ["P13"],
     title:
       "suspend: 503 paused page on both hosts within 120 s; inventory paused",
     run: async (run) => {
@@ -1390,6 +1477,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P21",
+    needs: ["P13", "P20"],
     title: "resume: 200 within 120 s",
     run: async (run) => {
       const p = rlp(run);
@@ -1410,6 +1498,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P22",
+    needs: ["P13"],
     title: "delete, then restore: 503 closed page on both hosts, then serving",
     run: async (run) => {
       const p = rlp(run);
@@ -1446,6 +1535,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P23",
+    needs: ["P13"],
     title: "delete, then purge: 404; inventory deleted; no HOSTS key",
     run: async (run) => {
       const p = rlp(run);
@@ -1487,7 +1577,7 @@ export const PROBES: readonly Probe[] = [
       "rl-a and rl-b run the release under test (upgraded by the workflow, R5)",
     run: async (run) => {
       for (const t of [run.c.rlA, run.c.rlB]) {
-        const d = await detail(run, t.id);
+        const d = await ownDetail(run, t.id);
         expect(d, 200, `P24 R3 ${t.id}`);
         const v = (d.json as InstallDetail).version;
         if (v !== run.c.version)
@@ -1665,6 +1755,7 @@ export const PROBES: readonly Probe[] = [
         .pop();
       if (!below) return na("no published release below the floor");
       const slug = run.slug("q");
+      run.s.cleanup.push({ slug });
       const a = run.accepted(
         await run.v1("/installs", {
           body: oidcCreate(run, slug, run.rid("p32"), below),
@@ -1694,7 +1785,7 @@ export const PROBES: readonly Probe[] = [
         throw new ProbeFail(`P32: R11 ran ${p.job.kind}, want discard`);
       await run.done(p.job.id, "P32 discard");
       // Design 3.4 row 1: R3 still reads a discarded row, as deleted.
-      const gone = await detail(run, a.install.id);
+      const gone = await ownDetail(run, a.install.id);
       expect(gone, 200, "P32 R3");
       const gi = gone.json as InstallDetail;
       if (gi.state !== "deleted" || gi.deletedAt == null)
@@ -1722,7 +1813,7 @@ export const PROBES: readonly Probe[] = [
           limit: "100",
         });
         if (cursor) q.set("cursor", cursor);
-        const r = await run.v1(`/audit?${q}`);
+        const r = await run.v1(`/audit?${q}`, { read: true });
         expect(r, 200, "P33 R17");
         const b = r.json as {
           items: { jobId: string | null }[];
@@ -2027,6 +2118,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P43",
+    needs: ["P44"],
     title:
       "GET /oauth/authorize, no cookie, cross-site: 200 bounce page; with b=1: 200 sign-in page linking /auth/start back to this request, no auto-redirect",
     run: async (run) => {
@@ -2102,7 +2194,7 @@ export const PROBES: readonly Probe[] = [
     // leg is not here: O is not a pii principal, so R3 hides the email and an
     // email-only q is a no-match for it (apps/provisioning/test/reads.test.ts).
     run: async (run) => {
-      const d = await detail(run, run.c.rlA.id);
+      const d = await ownDetail(run, run.c.rlA.id);
       expect(d, 200, "P48 R3 rl-a");
       const i = d.json as InstallDetail;
       const fields: [string, unknown][] = [
@@ -2119,7 +2211,7 @@ export const PROBES: readonly Probe[] = [
         for (let page = 0; !found && page < P48_MAX_PAGES; page++) {
           const qs = new URLSearchParams({ q: v });
           if (cursor) qs.set("cursor", cursor);
-          const l = await run.v1(`/installs?${qs}`);
+          const l = await run.v1(`/installs?${qs}`, { read: true });
           expect(l, 200, `P48 R2 q=${field}`);
           const b = l.json as {
             items: { id: string }[];
@@ -2193,8 +2285,8 @@ export async function p15Check(
   const rec = run.s.p15;
   if (!p || !rec) return "after";
   const mode = run.c.inventory ? (await run.hostMode(p.appHost)).mode : null;
-  const hz = (await run.page(p.appHost)).status;
-  const j = await run.v1(`/jobs/${jobId}`);
+  const hz = (await run.page(p.appHost, "/healthz", true)).status;
+  const j = await run.v1(`/jobs/${jobId}`, { read: true });
   const job = j.json as Job | undefined;
   if (
     !job ||
@@ -2224,7 +2316,7 @@ export async function bringUpgrade(
   id: string,
   slug: string,
 ): Promise<"upgraded" | "current"> {
-  const d = await detail(run, id);
+  const d = await ownDetail(run, id);
   expect(d, 200, `R3 ${slug}`);
   const i = d.json as InstallDetail;
   if (i.slug !== slug) throw new ProbeFail(`${id} is ${i.slug}, not ${slug}`);
@@ -2257,7 +2349,7 @@ export async function stagedVersion(run: Run): Promise<string> {
     ["rl-a", run.c.rlA],
     ["rl-b", run.c.rlB],
   ] as const) {
-    const d = await detail(run, t.id);
+    const d = await ownDetail(run, t.id);
     expect(d, 200, `R3 ${slug}`);
     const appHost = (d.json as { appHost?: unknown } | undefined)?.appHost;
     if (typeof appHost !== "string" || !appHost)

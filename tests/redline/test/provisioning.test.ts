@@ -38,6 +38,7 @@ import {
   provConfig,
   Run,
   revokeCreds,
+  runProbe,
   stagedVersion,
   statusCounts,
 } from "../src/provisioning.ts";
@@ -46,6 +47,7 @@ import {
   ACCEPTED_UNPROVEN,
   acceptedUnproven,
   caseKey,
+  gatePasses,
   PRE_PROD_NA,
   PRE_PROD_REASON,
   parseManifest,
@@ -1199,12 +1201,36 @@ describe("OIDC JWT files", () => {
     await expect(
       mintJwt(AUDIENCES.provisioning, env, minter("https://other").f),
     ).rejects.toThrow(/another audience/);
+    const down = minter(undefined, 500);
     const e = await mintJwt(
       AUDIENCES.provisioning,
       env,
-      minter(undefined, 500).f,
+      down.f,
+      async () => {},
     ).catch((x: Error) => x.message);
     expect(e).toBe("OIDC: the token endpoint answered 500");
+    expect(down.calls).toHaveLength(3);
+    const refused = minter(undefined, 403);
+    await expect(
+      mintJwt(AUDIENCES.provisioning, env, refused.f, async () => {}),
+    ).rejects.toThrow("answered 403");
+    expect(refused.calls).toHaveLength(1);
+    const ok = minter(AUDIENCES.provisioning);
+    let first = true;
+    const waits: number[] = [];
+    const flaky = (async (...a: Parameters<typeof fetch>) => {
+      if (first) {
+        first = false;
+        return new Response("", { status: 503 });
+      }
+      return ok.f(...a);
+    }) as typeof fetch;
+    await expect(
+      mintJwt(AUDIENCES.provisioning, env, flaky, async (ms) => {
+        waits.push(ms);
+      }),
+    ).resolves.toMatch(/\./);
+    expect(waits).toEqual([1_000]);
     await expect(mintJwt(AUDIENCES.provisioning, {}, m.f)).rejects.toThrow(
       /id-token: write/,
     );
@@ -1420,5 +1446,301 @@ describe("config", () => {
     const run = new Run({ ...CONFIG, runId: "123456789012-3" }, fakeApi().io);
     expect(run.slug("p")).toMatch(/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/);
     expect(run.rid("x")).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
+  });
+});
+
+describe("Run.raw: an allow-side GET survives a dropped connection", () => {
+  const reset = () =>
+    new TypeError("fetch failed", {
+      cause: Object.assign(new Error("read ECONNRESET"), {
+        code: "ECONNRESET",
+      }),
+    });
+  const flaky = (fails: number, status = 200) => {
+    const calls: string[] = [];
+    const waits: number[] = [];
+    const run = new Run(CONFIG, {
+      ...fakeApi().io,
+      wait: async (ms: number) => {
+        waits.push(ms);
+      },
+      fetch: (async (_u: string, init: RequestInit) => {
+        calls.push(init.method ?? "GET");
+        if (calls.length <= fails) throw reset();
+        return new Response("{}", { status });
+      }) as unknown as typeof fetch,
+    });
+    return { run, calls, waits };
+  };
+
+  it("read: a reset is tried again, with the backoff", async () => {
+    const { run, calls, waits } = flaky(2);
+    expect((await run.v1("/world", { read: true })).status).toBe(200);
+    expect(calls).toHaveLength(3);
+    expect(waits).toEqual([250, 1000]);
+  });
+
+  it("read: a third reset still throws", async () => {
+    const { run, calls } = flaky(3);
+    await expect(run.v1("/world", { read: true })).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(calls).toHaveLength(3);
+  });
+
+  it("an answer is never retried, a refusal or a 500", async () => {
+    for (const status of [401, 500]) {
+      const { run, calls } = flaky(0, status);
+      expect((await run.v1("/world", { read: true })).status).toBe(status);
+      expect(calls).toHaveLength(1);
+    }
+  });
+
+  it("a deny check has one try: no `read`, as P1 to P3 and P6", async () => {
+    const { run, calls } = flaky(1);
+    await expect(
+      run.v1("/me", { host: "admin", auth: "none" }),
+    ).rejects.toThrow("fetch failed");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("P10's refusal has one try: a reset on its GET fails the case", async () => {
+    const f = fakeApi();
+    let gets = 0;
+    const io = {
+      ...f.io,
+      wait: async () => {},
+      fetch: (async (u: string, init: RequestInit) => {
+        if (/\/v1\/installs\/[^/?]+$/.test(new URL(u).pathname)) {
+          gets++;
+          throw reset();
+        }
+        return f.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    };
+    const p10 = PROBES.find((p) => p.id === "P10");
+    const out = await p10?.run(new Run(CONFIG, io)).catch((e: Error) => e);
+    if ((out as { level?: string }).level === "not-applicable")
+      throw new Error("the fake must hold a panel-made install for P10");
+    expect((out as Error).message).toBe("fetch failed");
+    expect(gets).toBe(1);
+  });
+
+  it("a write has one try, even with `read`", async () => {
+    const { run, calls } = flaky(1);
+    await expect(run.v1("/installs", { body: {}, read: true })).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe("a failed step doesn't cascade", () => {
+  const probe = (id: `P${number}`, needs?: `P${number}`[]) => {
+    const calls = { n: 0 };
+    return {
+      calls,
+      p: {
+        id,
+        title: id,
+        ...(needs ? { needs } : {}),
+        run: async () => {
+          calls.n++;
+          return { level: "pass" as const };
+        },
+      },
+    };
+  };
+  const run = {} as Run;
+
+  it("a dependant doesn't run, and names the root through a chain", async () => {
+    const failed = new Set<string>(["P13"]);
+    const b = probe("P20", ["P13"]);
+    const c = probe("P21", ["P13", "P20"]);
+    expect(await runProbe(b.p, run, failed)).toEqual({
+      level: "blocked",
+      reason: "blocked by P13",
+    });
+    expect(await runProbe(c.p, run, failed)).toEqual({
+      level: "blocked",
+      reason: "blocked by P13",
+    });
+    expect(b.calls.n + c.calls.n).toBe(0);
+  });
+
+  it("a thrown failure marks the case; a later dependant is blocked", async () => {
+    const failed = new Set<string>();
+    const boom = {
+      id: "P20" as const,
+      title: "x",
+      run: async () => {
+        throw new ProbeFail("boom");
+      },
+    };
+    await expect(runProbe(boom, run, failed)).rejects.toThrow("boom");
+    expect(failed.has("P20")).toBe(true);
+    const c = probe("P21", ["P20"]);
+    expect((await runProbe(c.p, run, failed)).level).toBe("blocked");
+  });
+
+  it("a pass or an unproven case doesn't block its dependants", async () => {
+    const failed = new Set<string>();
+    const unproven = {
+      id: "P13" as const,
+      title: "x",
+      run: async () => ({ level: "unproven-live" as const, reason: "why" }),
+    };
+    await runProbe(unproven, run, failed);
+    expect(failed.size).toBe(0);
+    const d = probe("P14", ["P13"]);
+    expect((await runProbe(d.p, run, failed)).level).toBe("pass");
+    expect(d.calls.n).toBe(1);
+  });
+
+  it("every needs names an earlier probe, or it could never block", () => {
+    const seen = new Set<string>();
+    for (const p of PROBES) {
+      for (const n of p.needs ?? [])
+        expect(seen.has(n), `${p.id} ${n}`).toBe(true);
+      seen.add(p.id);
+    }
+    expect(PROBES.filter((p) => p.needs).length).toBe(13);
+  });
+
+  it("the gate never takes a blocked case", () => {
+    expect(
+      gatePasses([
+        { name: "a", level: "pass" },
+        { name: "b", level: "blocked", reason: "blocked by P13" },
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe("the run's cleanup", () => {
+  const made = async (f: FakeApi, run: Run, slug: string) =>
+    run.accepted(
+      await run.v1("/installs", {
+        body: {
+          requestId: run.rid(slug),
+          slug,
+          tier: "team",
+          testHooks: true,
+        },
+      }),
+      "create",
+    );
+
+  it("removes an install left on the list, and a second pass is a no-op", async () => {
+    const f = fakeApi();
+    const run = new Run(CONFIG, f.io);
+    const slug = run.slug("p");
+    run.s.cleanup.push({ slug });
+    const a = await made(f, run, slug);
+    await cleanupInstalls(run);
+    expect(f.installs.get(a.install.id)?.state).toBe("deleted");
+    expect(run.s.cleanup).toEqual([]);
+    await cleanupInstalls(run);
+  });
+
+  it("an install stuck in `deleting` goes straight to purge", async () => {
+    const f = fakeApi();
+    const run = new Run(CONFIG, f.io);
+    const slug = run.slug("p");
+    run.s.cleanup.push({ slug });
+    const a = await made(f, run, slug);
+    await run.done(a.job.id, "create");
+    const d = run.accepted(
+      await run.v1(`/installs/${a.install.id}/delete`, {
+        body: { requestId: run.rid("d"), confirmSlug: slug },
+      }),
+      "delete",
+    );
+    await run.done(d.job.id, "delete");
+    expect(f.installs.get(a.install.id)?.state).toBe("deleting");
+    const n = f.log.filter((u) => u.endsWith("/delete")).length;
+    await cleanupInstalls(run);
+    expect(f.installs.get(a.install.id)?.state).toBe("deleted");
+    expect(f.log.filter((u) => u.endsWith("/delete")).length).toBe(n);
+  });
+
+  it("touches only what this run listed: q is a search, so a longer slug can match", async () => {
+    const f = fakeApi();
+    const run = new Run(CONFIG, f.io);
+    const slug = run.slug("p");
+    const other = await made(f, run, `${slug}0`);
+    await run.done(other.job.id, "create");
+    const hits = await run.v1(`/installs?q=${slug}`, { read: true });
+    expect(
+      (hits.json as { items: { slug: string }[] }).items.map((i) => i.slug),
+    ).toContain(`${slug}0`);
+    run.s.cleanup.push({ slug });
+    await cleanupInstalls(run);
+    expect(f.installs.get(other.install.id)?.state).toBe("active");
+  });
+
+  it("a removal that fails stays on the list and fails the run, after trying the rest", async () => {
+    const f = fakeApi();
+    const run = new Run(CONFIG, {
+      ...f.io,
+      fetch: (async (u: string, init: RequestInit) =>
+        new URL(u).searchParams.get("q") === "rl-p-broken"
+          ? new Response("{}", { status: 500 })
+          : f.io.fetch(u, init)) as unknown as typeof fetch,
+    });
+    const slug = run.slug("p");
+    const a = await made(f, run, slug);
+    run.s.cleanup.push({ slug: "rl-p-broken" }, { slug });
+    await expect(cleanupInstalls(run)).rejects.toThrow(/cleanup rl-p-broken/);
+    expect(run.s.cleanup).toEqual([{ slug: "rl-p-broken" }]);
+    expect(f.installs.get(a.install.id)?.state).toBe("deleted");
+  });
+
+  it("P13 lists rl-p before its create, so a create that dies is still swept", async () => {
+    const f = fakeApi();
+    const run = new Run(CONFIG, {
+      ...f.io,
+      fetch: (async (u: string, init: RequestInit) => {
+        if (init.method === "POST" && new URL(u).pathname === "/v1/installs")
+          throw new TypeError("fetch failed");
+        return f.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    });
+    await expect(PROBES.find((p) => p.id === "P13")?.run(run)).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(run.s.cleanup).toEqual([{ slug: run.slug("p") }]);
+  });
+
+  it("P32 lists rl-q before its create, so a create that dies is still swept", async () => {
+    const f = fakeApi();
+    const out = await runAll(f);
+    expect(level(out.get("P32"))).toBe("pass");
+    const q = [...f.installs.values()].find((i) => i.slug.startsWith("rl-q-"));
+    expect(q).toBeDefined();
+    const g = fakeApi();
+    await bringUp(g);
+    const run = new Run(CONFIG, {
+      ...g.io,
+      fetch: (async (u: string, init: RequestInit) => {
+        if (init.method === "POST" && new URL(u).pathname === "/v1/installs")
+          throw new TypeError("fetch failed");
+        return g.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    });
+    await expect(PROBES.find((p) => p.id === "P32")?.run(run)).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(run.s.cleanup).toEqual([{ slug: run.slug("q") }]);
+  });
+
+  it("a green run leaves rl-p purged", async () => {
+    const f = fakeApi();
+    const out = await runAll(f);
+    expect(out.get("P23")).toEqual({ level: "pass" });
+    const rlp = [...f.installs.values()].find((i) =>
+      i.slug.startsWith("rl-p-"),
+    );
+    expect(rlp?.state).toBe("deleted");
   });
 });

@@ -5,6 +5,7 @@ import {
   PROBE_TIMEOUT_MS,
   PROBES,
   type Run,
+  runProbe,
 } from "../src/provisioning.ts";
 import { liveRun, rawTargets } from "../src/provisioning-live.ts";
 import { label, proof } from "../src/report.ts";
@@ -27,18 +28,19 @@ beforeAll(() => {
   run = liveRun(env, rawTargets(env.REDLINE_TARGETS));
 });
 
-// Whatever a probe created and could not remove (P50's rl-snz) goes here.
+// Whatever a probe created and didn't remove: a failed P13 blocks P23.
 afterAll(async () => {
   if (run) await cleanupInstalls(run);
 }, CLEANUP_TIMEOUT_MS);
 
 describe("provisioning", () => {
+  const failed = new Set<string>();
   for (const p of PROBES)
     it(
       `${p.id}: ${p.title}`,
       async (ctx) => {
         if (!run) return proof(ctx, "not-applicable", why ?? "not configured");
-        const o = await p.run(run);
+        const o = await runProbe(p, run, failed);
         if (o.level === "pass") {
           if (o.note) label(ctx, o.note);
           return;

@@ -385,6 +385,7 @@ describe("report", () => {
       "not-applicable": 1,
       "unproven-live": 1,
       infra: 0,
+      blocked: 0,
     });
     expect(r.nonPass.map((x) => x.name)).toEqual([
       "prodClean",
@@ -657,7 +658,7 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     expect(only?.name).toBe("infra: setup /__test/session spaces_blocked");
     expect(only?.level).toBe("infra");
     expect(only?.reason).toMatch(
-      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, body sha256:[0-9a-f]{16} \(\d+ bytes\)\); 3 case\(s\) in test\/fixtures\/gate\.fixture\.ts did not run$/,
+      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, body sha256:[0-9a-f]{16} \(\d+ bytes\), code not_found\); 3 case\(s\) in test\/fixtures\/gate\.fixture\.ts did not run$/,
     );
     // The manifest counts the blocked cases as run (no "did not run" fails).
     expect(only?.blocked).toEqual({
@@ -679,7 +680,7 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     const [only] = r.report.cases;
     expect(only?.name).toBe("infra: setup /__test/session spaces_blocked");
     expect(only?.reason).toMatch(
-      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, [^)]+\)\); infra: setup publish timed out after 60s on rl-b; 3 case\(s\) in test\/fixtures\/gate\.fixture\.ts did not run$/,
+      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, [^)]+\), code not_found\); infra: setup publish timed out after 60s on rl-b; 3 case\(s\) in test\/fixtures\/gate\.fixture\.ts did not run$/,
     );
   }, 60_000);
 
