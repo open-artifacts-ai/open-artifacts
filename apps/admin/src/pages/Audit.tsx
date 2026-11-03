@@ -69,7 +69,7 @@ export const actionPhrase = (action: string) =>
 
 /** The filters' "any" value (Radix Select has no empty value). */
 const ANY = "__any";
-/** System actors the audit records by label (shared/provisioning/system.ts). */
+/** System actors the audit records by label (provisioning-contract/src/system.ts). */
 const SYSTEM_ACTORS: [string, string][] = [["scheduler", "Scheduler"]];
 const PROVIDER: Record<string, string> = { google: "Google", email: "Email" };
 const text = (v: unknown) =>

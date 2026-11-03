@@ -1,4 +1,4 @@
-// The provisioning MSW mock's starting world (mocks/provisioning.ts), apart
+// The provisioning MSW mock's starting world (mocks.ts), apart
 // from msw so the worker's mock-parity test (#1188) can seed D1 with exactly
 // what the mock starts with. A fresh copy per call.
 import { JOB_STEPS } from "./enum-values.js";
