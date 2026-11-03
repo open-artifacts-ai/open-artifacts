@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { auditCheck } from "../src/audit.ts";
 import {
   type Cred,
+  describeRes,
   fromContentApp,
   HttpError,
   hook,
@@ -565,5 +566,39 @@ describe("auditCheck (staging path, POST /__test/audit)", () => {
     await expect((await run("other-actor")).r).rejects.toThrow(
       /no test_hook.session audit row/,
     );
+  });
+});
+
+describe("safe error codes in failure text", () => {
+  const res = (status: number) => new Response(null, { status });
+
+  it("shows a listed code, the generic 500's included", () => {
+    expect(
+      describeRes(
+        res(500),
+        '{"error":{"code":"internal","message":"Internal error"}}',
+      ),
+    ).toMatch(
+      /^status 500, body sha256:[0-9a-f]{16} \(56 bytes\), code internal$/,
+    );
+    expect(describeRes(res(400), '{"error":"invalid_grant"}')).toMatch(
+      /, code invalid_grant$/,
+    );
+  });
+
+  it("never shows a body's own string: an unlisted code is `other`", () => {
+    for (const body of [
+      '{"error":{"code":"me@example.com"}}',
+      '{"error":"sk-secret-value"}',
+    ]) {
+      const text = describeRes(res(403), body);
+      expect(text).toMatch(/, code other$/);
+      expect(text).not.toMatch(/example|secret/);
+    }
+  });
+
+  it("names no code when the body has none", () => {
+    for (const body of ["", "<html>", "null", "[]", '{"ok":true}'])
+      expect(describeRes(res(502), body)).toMatch(/ bytes\)$/);
   });
 });

@@ -1070,12 +1070,36 @@ describe("OIDC JWT files", () => {
     await expect(
       mintJwt(AUDIENCES.provisioning, env, minter("https://other").f),
     ).rejects.toThrow(/another audience/);
+    const down = minter(undefined, 500);
     const e = await mintJwt(
       AUDIENCES.provisioning,
       env,
-      minter(undefined, 500).f,
+      down.f,
+      async () => {},
     ).catch((x: Error) => x.message);
     expect(e).toBe("OIDC: the token endpoint answered 500");
+    expect(down.calls).toHaveLength(3);
+    const refused = minter(undefined, 403);
+    await expect(
+      mintJwt(AUDIENCES.provisioning, env, refused.f, async () => {}),
+    ).rejects.toThrow("answered 403");
+    expect(refused.calls).toHaveLength(1);
+    const ok = minter(AUDIENCES.provisioning);
+    let first = true;
+    const waits: number[] = [];
+    const flaky = (async (...a: Parameters<typeof fetch>) => {
+      if (first) {
+        first = false;
+        return new Response("", { status: 503 });
+      }
+      return ok.f(...a);
+    }) as typeof fetch;
+    await expect(
+      mintJwt(AUDIENCES.provisioning, env, flaky, async (ms) => {
+        waits.push(ms);
+      }),
+    ).resolves.toMatch(/\./);
+    expect(waits).toEqual([1_000]);
     await expect(mintJwt(AUDIENCES.provisioning, {}, m.f)).rejects.toThrow(
       /id-token: write/,
     );
@@ -1291,5 +1315,91 @@ describe("config", () => {
     const run = new Run({ ...CONFIG, runId: "123456789012-3" }, fakeApi().io);
     expect(run.slug("p")).toMatch(/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/);
     expect(run.rid("x")).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
+  });
+});
+
+describe("Run.raw: an allow-side GET survives a dropped connection", () => {
+  const reset = () =>
+    new TypeError("fetch failed", {
+      cause: Object.assign(new Error("read ECONNRESET"), {
+        code: "ECONNRESET",
+      }),
+    });
+  const flaky = (fails: number, status = 200) => {
+    const calls: string[] = [];
+    const waits: number[] = [];
+    const run = new Run(CONFIG, {
+      ...fakeApi().io,
+      wait: async (ms: number) => {
+        waits.push(ms);
+      },
+      fetch: (async (_u: string, init: RequestInit) => {
+        calls.push(init.method ?? "GET");
+        if (calls.length <= fails) throw reset();
+        return new Response("{}", { status });
+      }) as unknown as typeof fetch,
+    });
+    return { run, calls, waits };
+  };
+
+  it("read: a reset is tried again, with the backoff", async () => {
+    const { run, calls, waits } = flaky(2);
+    expect((await run.v1("/world", { read: true })).status).toBe(200);
+    expect(calls).toHaveLength(3);
+    expect(waits).toEqual([250, 1000]);
+  });
+
+  it("read: a third reset still throws", async () => {
+    const { run, calls } = flaky(3);
+    await expect(run.v1("/world", { read: true })).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(calls).toHaveLength(3);
+  });
+
+  it("an answer is never retried, a refusal or a 500", async () => {
+    for (const status of [401, 500]) {
+      const { run, calls } = flaky(0, status);
+      expect((await run.v1("/world", { read: true })).status).toBe(status);
+      expect(calls).toHaveLength(1);
+    }
+  });
+
+  it("a deny check has one try: no `read`, as P1 to P3 and P6", async () => {
+    const { run, calls } = flaky(1);
+    await expect(
+      run.v1("/me", { host: "admin", auth: "none" }),
+    ).rejects.toThrow("fetch failed");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("P10's refusal has one try: a reset on its GET fails the case", async () => {
+    const f = fakeApi();
+    let gets = 0;
+    const io = {
+      ...f.io,
+      wait: async () => {},
+      fetch: (async (u: string, init: RequestInit) => {
+        if (/\/v1\/installs\/[^/?]+$/.test(new URL(u).pathname)) {
+          gets++;
+          throw reset();
+        }
+        return f.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    };
+    const p10 = PROBES.find((p) => p.id === "P10");
+    const out = await p10?.run(new Run(CONFIG, io)).catch((e: Error) => e);
+    if ((out as { level?: string }).level === "not-applicable")
+      throw new Error("the fake must hold a panel-made install for P10");
+    expect((out as Error).message).toBe("fetch failed");
+    expect(gets).toBe(1);
+  });
+
+  it("a write has one try, even with `read`", async () => {
+    const { run, calls } = flaky(1);
+    await expect(run.v1("/installs", { body: {}, read: true })).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(calls).toHaveLength(1);
   });
 });
