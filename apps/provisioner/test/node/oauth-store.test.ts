@@ -408,6 +408,34 @@ describe("update: set OAUTH_STORE (R29)", () => {
     },
   );
 
+  it("the recheck refuses an OIDC job inside OIDC's own scope (the test admin's rows)", async () => {
+    const s = seedCreate(w, { slug: "rl-a", testHooks: true });
+    await runCreate(w.ctx, event(s.jobId), stepRunner(w.clock).step);
+    expect(w.job(s.jobId)?.status).toBe("done");
+    install(s.installId);
+    const r = await run(setMode("dual"), s.installId, { actor: "oidc" });
+    expect(r.job).toMatchObject({
+      status: "failed",
+      error_code: "invalid_state",
+    });
+    expect(plain(s.installId, "OAUTH_STORE")).toBeUndefined();
+  });
+
+  it("a half oauthStore is not a pass", async () => {
+    const id = await active();
+    install(id);
+    const ok = w.fake.health as NonNullable<typeof w.fake.health>;
+    w.fake.health = (s) => ({
+      ...(ok(s) as object),
+      oauthStore: { mode: "dual" },
+    });
+    const r = await run(setMode("dual"), id);
+    expect(r.job.status).toBe("failed");
+    expect(
+      auditOf(id).filter((a) => a.action === OAUTH_MODE_LIVE_ACTION),
+    ).toEqual([]);
+  });
+
   it.each([
     [{}],
     [{ vars: {} }],

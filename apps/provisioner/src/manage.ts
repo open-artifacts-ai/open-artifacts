@@ -679,8 +679,6 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<ManageJob> {
       if (job.actor_kind !== "admin") throw refused("update is an admin's");
       const oauth = parseOAuthJob(args);
       if (!oauth) throw refused("the update args do not parse");
-      if (!row || row.state !== "active")
-        throw refused("the install is not active");
       out.oauth = oauth;
       break;
     }
