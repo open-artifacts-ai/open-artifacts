@@ -149,6 +149,11 @@ describe("nonAdditiveReason", () => {
       '"a" = [A]',
       "t.a IS t.a",
       "a = t.a",
+      "1 < 2",
+      "1e0 > 0",
+      "NULL IS NOT 1",
+      "'a' <> 1",
+      "a =",
       "b = 1 OR 1",
       "lower(a) = 'x'",
       "(a = 1)",
@@ -175,6 +180,8 @@ describe("nonAdditiveReason", () => {
       "a = 1 AND 1",
       "1 AND a = 1",
       "a = 1 RETURNING b",
+      "a = 1 RETURNING a",
+      "a = 1 ORDER BY a",
       "a = 1 ORDER BY b LIMIT 1",
     ])
       expect(nonAdditiveReason(`DELETE FROM a WHERE ${w};`), w).toBeNull();
