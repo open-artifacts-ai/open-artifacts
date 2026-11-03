@@ -385,6 +385,7 @@ describe("report", () => {
       "not-applicable": 1,
       "unproven-live": 1,
       infra: 0,
+      blocked: 0,
     });
     expect(r.nonPass.map((x) => x.name)).toEqual([
       "prodClean",

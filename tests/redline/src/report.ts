@@ -4,6 +4,8 @@
 // do a skipped test, an empty run or an error outside a test. "infra" is a
 // case (or its setup) that failed only on "infra: " errors (a setup publish or
 // a settle wait that ran out of time): no red-line verdict, never green.
+// "blocked" is a case that didn't run because one it needs failed: its reason
+// names that root, so one failure reads as one failure. Never green either.
 
 export const LEVELS = [
   "pass",
@@ -12,6 +14,8 @@ export const LEVELS = [
   "not-applicable",
   "unproven-live",
   "infra",
+  // Not run: a case it depends on didn't pass. Never a pass.
+  "blocked",
 ] as const;
 export type Level = (typeof LEVELS)[number];
 

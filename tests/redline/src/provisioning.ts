@@ -65,7 +65,7 @@ export interface ProvIo {
 
 export type Outcome =
   | { level: "pass"; note?: string }
-  | { level: "not-applicable" | "unproven-live"; reason: string };
+  | { level: "not-applicable" | "unproven-live" | "blocked"; reason: string };
 
 const pass = (note?: string): Outcome =>
   note ? { level: "pass", note } : { level: "pass" };
@@ -88,6 +88,8 @@ export const HOSTS_SETTLE_MS = 120_000;
 export const JOB_WITHIN_MS = 20 * 60_000;
 /** A case's vitest timeout: its slowest wait plus margin. */
 export const PROBE_TIMEOUT_MS = JOB_WITHIN_MS + 5 * 60_000;
+/** The run's cleanup: one install can wait on a live job, a delete and a purge. */
+export const CLEANUP_TIMEOUT_MS = 3 * JOB_WITHIN_MS + 5 * 60_000;
 export const P34_REQUESTS = 400;
 /** RL_BROKER_IP's period (apps/auth-broker/wrangler.jsonc: limit 60 per 60 s). */
 export const BROKER_IP_PERIOD_MS = 60_000;
@@ -140,7 +142,7 @@ export class Run {
   readonly c: ProvConfig;
   readonly io: ProvIo;
   /** Shared state between ordered probes. */
-  readonly s: RunState = { jobIds: [] };
+  readonly s: RunState = { jobIds: [], cleanup: [] };
   constructor(c: ProvConfig, io: ProvIo) {
     this.c = c;
     this.io = io;
@@ -379,6 +381,13 @@ export interface RlP {
 
 export interface RunState {
   jobIds: string[];
+  /**
+   * This run's installs, listed before their create: a probe that stops
+   * anywhere still leaves them for the run's end (cleanupInstalls). rl-s isn't
+   * here: no principal can purge a test user's install within a run, and the
+   * scheduler does at purge_at (P29).
+   */
+  cleanup: { slug: string }[];
   /** The OIDC actor label (Job.actor.label). */
   actor?: string;
   rlp?: RlP;
@@ -493,9 +502,39 @@ const toolCode = (t: ToolResult) =>
 // --- Probes ----------------------------------------------------------------
 
 export interface Probe {
+  /**
+   * Cases this one can't mean anything without: they make the install or
+   * state it reads. If one didn't pass, this reports `blocked` instead of
+   * running. Mapped by hand from what each case uses.
+   */
+  needs?: readonly ProbeId[];
   id: ProbeId;
   title: string;
   run: (r: Run) => Promise<Outcome>;
+}
+
+/**
+ * Runs `p`, or reports it blocked by the first of `needs` in `failed`. A thrown
+ * failure or a blocked result goes in `failed`, so a chain stops once and each
+ * case below it names the root. An unproven or not-applicable case isn't a
+ * failure: its dependants still run.
+ */
+export async function runProbe(
+  p: Probe,
+  run: Run,
+  failed: Set<string>,
+): Promise<Outcome> {
+  const root = p.needs?.find((n) => failed.has(n));
+  if (root) {
+    failed.add(p.id);
+    return { level: "blocked", reason: `blocked by ${root}` };
+  }
+  try {
+    return await p.run(run);
+  } catch (e) {
+    failed.add(p.id);
+    throw e;
+  }
 }
 
 /**
@@ -659,6 +698,69 @@ const oidcCreate = (
   testHooks: true,
   ...(version ? { version } : {}),
 });
+
+/**
+ * Deletes and purges one install this run created, found by its slug: the
+ * create may have failed before its answer. Done when no live row is left, so
+ * it's a no-op after P23. Waits out a live job; a row already `deleting` or
+ * `failed` goes straight to purge.
+ */
+export async function removeInstall(
+  run: Run,
+  slug: string,
+  what: string,
+): Promise<void> {
+  const l = await run.v1(`/installs?${new URLSearchParams({ q: slug })}`, {
+    read: true,
+  });
+  expect(l, 200, `${what} R2`);
+  const row = (
+    l.json as { items: { id: string; slug: string; state: string }[] }
+  ).items.find((i) => i.slug === slug && i.state !== "deleted");
+  if (!row) return;
+  let d = await ownDetail(run, row.id);
+  expect(d, 200, `${what} R3`);
+  let i = d.json as InstallDetail;
+  if (i.activeJobId) await run.waitJob(i.activeJobId);
+  d = await ownDetail(run, row.id);
+  expect(d, 200, `${what} R3`);
+  i = d.json as InstallDetail;
+  if (i.state === "deleted") return;
+  if (i.state !== "failed" && i.state !== "deleting") {
+    const del = run.accepted(
+      await run.v1(`/installs/${row.id}/delete`, {
+        body: { requestId: run.rid(`${slug}-del`), confirmSlug: slug },
+      }),
+      `${what} delete`,
+    );
+    await run.done(del.job.id, `${what} delete`);
+  }
+  const g = run.accepted(
+    await run.v1(`/installs/${row.id}/purge`, {
+      body: { requestId: run.rid(`${slug}-purge`), confirmSlug: slug },
+    }),
+    `${what} purge`,
+  );
+  await run.done(g.job.id, `${what} purge`);
+}
+
+/**
+ * The run's end: removes every install left on run.s.cleanup. Tries them all,
+ * then fails naming the ones it couldn't: a run that strands an install stays
+ * red. Only slugs this run listed, so another run's install can't be touched.
+ */
+export async function cleanupInstalls(run: Run): Promise<void> {
+  const failed: string[] = [];
+  for (const e of [...run.s.cleanup]) {
+    try {
+      await removeInstall(run, e.slug, `cleanup ${e.slug}`);
+      run.s.cleanup.splice(run.s.cleanup.indexOf(e), 1);
+    } catch (x) {
+      failed.push(x instanceof ProbeFail ? x.message : `${e.slug}: error`);
+    }
+  }
+  if (failed.length) throw new ProbeFail(failed.join("; "));
+}
 
 export const PROBES: readonly Probe[] = [
   {
@@ -873,6 +975,7 @@ export const PROBES: readonly Probe[] = [
       "create rl-p-<run> twice with one requestId: one job, one install, done (redline variant)",
     run: async (run) => {
       const slug = run.slug("p");
+      run.s.cleanup.push({ slug });
       const before = await run.v1(`/installs?q=${slug}`, { read: true });
       expect(before, 200, "P13 list before");
       const n0 = (before.json as { items: { slug: string }[] }).items.filter(
@@ -961,6 +1064,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P49",
+    needs: ["P13"],
     title:
       "R2 q as O never matches by owner email: rl-p's email and its local part find nothing; its slug still finds rl-p (#1033)",
     // The privacy half of #1033. O is not a pii principal, so an owner-email
@@ -1009,6 +1113,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P14",
+    needs: ["P13"],
     title: "a second create of that slug with a new requestId: 409 slug_taken",
     run: async (run) => {
       const p = rlp(run);
@@ -1025,6 +1130,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P15",
+    needs: ["P13"],
     title:
       "during the create: inventory mode null and public /healthz 404 until route",
     run: async (run) => {
@@ -1043,6 +1149,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P16",
+    needs: ["P13"],
     title: "upgrade while its create runs: 409 job_in_progress",
     run: async (run) => {
       const r = run.s.p16;
@@ -1065,6 +1172,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P18",
+    needs: ["P13"],
     title: "upgrade to its current version: 409 downgrade_refused",
     run: async (run) => {
       const p = rlp(run);
@@ -1077,6 +1185,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P19",
+    needs: ["P13"],
     title: "delete with a wrong confirmSlug: 400; unchanged",
     run: async (run) => {
       const p = rlp(run);
@@ -1093,6 +1202,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P45",
+    needs: ["P13"],
     title:
       "OIDC on /mcp: tools/list, get_world, get_install, delete_install refusal, upgrade_install",
     run: async (run) => {
@@ -1179,6 +1289,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P31",
+    needs: ["P13"],
     title:
       "rollback of the rl-p install after an upgrade: the previous version",
     run: async (run) => {
@@ -1203,6 +1314,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P20",
+    needs: ["P13"],
     title:
       "suspend: 503 paused page on both hosts within 120 s; inventory paused",
     run: async (run) => {
@@ -1227,6 +1339,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P21",
+    needs: ["P13", "P20"],
     title: "resume: 200 within 120 s",
     run: async (run) => {
       const p = rlp(run);
@@ -1247,6 +1360,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P22",
+    needs: ["P13"],
     title: "delete, then restore: 503 closed page on both hosts, then serving",
     run: async (run) => {
       const p = rlp(run);
@@ -1283,6 +1397,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P23",
+    needs: ["P13"],
     title: "delete, then purge: 404; inventory deleted; no HOSTS key",
     run: async (run) => {
       const p = rlp(run);
@@ -1502,6 +1617,7 @@ export const PROBES: readonly Probe[] = [
         .pop();
       if (!below) return na("no published release below the floor");
       const slug = run.slug("q");
+      run.s.cleanup.push({ slug });
       const a = run.accepted(
         await run.v1("/installs", {
           body: oidcCreate(run, slug, run.rid("p32"), below),
@@ -1864,6 +1980,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P43",
+    needs: ["P44"],
     title:
       "GET /oauth/authorize, no cookie, cross-site: 200 bounce page; with b=1: 200 sign-in page linking /auth/start back to this request, no auto-redirect",
     run: async (run) => {
