@@ -18,8 +18,9 @@ import { isStorageFailure } from "./storage-failure.js";
  *   Durable Object calls have no request scope (RPC doesn't carry it), so
  *   there the cap is per call.
  * - Breaker, per isolate: RETRY.breakerFailures storage failures within
- *   breakerWindowMs open it for breakerOpenMs; while open nothing retries,
- *   so an outage fails at once into the 503 instead of piling up.
+ *   breakerWindowMs open it for breakerOpenMs; while open nothing retries.
+ *   Each read still makes its one first try, so during an outage a request
+ *   reaches the 503 after one failed try, not several: nothing piles up.
  *
  * The wrappers are memoized per binding and per env, never per request:
  * many caches key on Env or D1Database (stmt.ts, auth config, ...), and a
@@ -160,7 +161,7 @@ async function settle<T>(
 // ---------------------------------------------------------------- d1
 
 const WRITE_WORD =
-  /\b(?:insert|update|delete|replace|upsert|returning|create|drop|alter|pragma)\b/i;
+  /\b(?:insert|update|delete|replace|upsert|returning|create|drop|alter|pragma|vacuum|analyze|reindex|attach|detach|begin|savepoint)\b/i;
 const READ_START = /^(?:select|explain|with)\b/i;
 const LEADING_NOISE = /^(?:\s+|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)/;
 

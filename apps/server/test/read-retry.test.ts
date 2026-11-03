@@ -165,6 +165,15 @@ describe("isReadOnlySql", () => {
     ["replace into t values (1)", false],
     ["create table t (a)", false],
     ["values (1)", false],
+    ["vacuum", false],
+    ["analyze", false],
+    ["reindex t", false],
+    ["attach database 'x' as y", false],
+    ["detach database y", false],
+    ["begin", false],
+    ["savepoint s", false],
+    ["select 1; vacuum", false],
+    ["with x as (select 1) select * from x; analyze", false],
     ["", false],
   ])("%s -> %s", (sql, want) => {
     expect(isReadOnlySql(sql)).toBe(want);
@@ -620,6 +629,33 @@ describe("KV", () => {
     const w = withRetries({ OAUTH_KV: kv } as { OAUTH_KV: KVNamespace });
     expect(await w.OAUTH_KV.get("k")).toBe("v");
     expect(kv.get).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ------------------------------------------------------------ real D1
+
+// The statements are Object.create(real), not the real objects. Real workerd
+// D1, not a fake: every method still works on them, including the ones the
+// wrapper doesn't define (run), and batch() takes them.
+describe("a wrapped read statement under real workerd D1", () => {
+  it("run, first, all, raw and batch all work", async () => {
+    const db = retryingD1(E.DB);
+    const s = db.prepare("select ?1 as n");
+    const bound = s.bind(7);
+    expect(Object.getPrototypeOf(bound)).not.toBe(Object.prototype);
+    const run = await bound.run<{ n: number }>();
+    expect(run.success).toBe(true);
+    expect(run.results).toEqual([{ n: 7 }]);
+    expect(await bound.first<{ n: number }>()).toEqual({ n: 7 });
+    expect((await bound.all<{ n: number }>()).results).toEqual([{ n: 7 }]);
+    expect(await bound.raw()).toEqual([[7]]);
+    const unbound = db.prepare("select 1 as one");
+    expect((await unbound.run()).results).toEqual([{ one: 1 }]);
+    const out = await db.batch([bound, db.prepare("select 2 as two")]);
+    expect(out.map((r) => r.results)).toEqual([[{ n: 7 }], [{ two: 2 }]]);
+    // An unwrapped batch() given a wrapped statement: real D1 takes it too.
+    const raw = await E.DB.batch([bound]);
+    expect(raw[0]?.results).toEqual([{ n: 7 }]);
   });
 });
 
