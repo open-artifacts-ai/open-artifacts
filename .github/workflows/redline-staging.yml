@@ -248,7 +248,12 @@ jobs:
           set -euo pipefail
           unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL+x}${ACTIONS_ID_TOKEN_REQUEST_TOKEN+x}" ]; then echo "T19 can reach the OIDC request variables"; exit 1; fi
-          # No version pin: leo lags the tag (#1039); the pin returns once #955 keeps leo current.
+          # The pin (#1251): the version the staged step saw on rl-a's and rl-b's
+          # /healthz (version.txt, X.Y.Z). A gated skip then fails, and
+          # guard.setup and leo check it. No file means staging didn't take the tag.
+          T19_EXPECT_VERSION="$(cat "$RUNNER_TEMP/redline-staged/version.txt")"
+          if [ -z "$T19_EXPECT_VERSION" ]; then echo "T19: no staged version to pin"; exit 1; fi
+          export T19_EXPECT_VERSION
           pnpm --filter @oa/dashboard exec playwright test -c playwright.staging.config.ts
       # Artifacts are not masked: a secret echoed into a report stops the upload.
       - id: scan
