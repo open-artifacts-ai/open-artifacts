@@ -642,7 +642,9 @@ describe("a wrapped read statement under real workerd D1", () => {
     const db = retryingD1(E.DB);
     const s = db.prepare("select ?1 as n");
     const bound = s.bind(7);
-    expect(Object.getPrototypeOf(bound)).not.toBe(Object.prototype);
+    // run is inherited from the real statement, not one of the wrapper's.
+    expect(Object.hasOwn(bound, "run")).toBe(false);
+    expect(Object.hasOwn(bound, "first")).toBe(true);
     const run = await bound.run<{ n: number }>();
     expect(run.success).toBe(true);
     expect(run.results).toEqual([{ n: 7 }]);
