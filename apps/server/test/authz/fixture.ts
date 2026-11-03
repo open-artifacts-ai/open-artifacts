@@ -21,8 +21,11 @@ import {
   type ArtifactName,
   CALLERS,
   type CallerName,
+  FOREIGN_CALLERS,
+  type ForeignCaller,
   TRAITS,
 } from "./expect.ts";
+import { foreignCreds, installA, seedSubjectAtA } from "./foreign.ts";
 import {
   type ArtifactReal,
   type Cred,
@@ -164,7 +167,15 @@ export type World = {
   /** A throwaway copy of S: its members, plus viewer and manager mappings. */
   cloneSpace(): Promise<string>;
   groups: { every: string; viewer: string; manager: string; free: string };
+  /**
+   * #1137: install A (its own keys, D1 and OAuth store), which issued the
+   * foreign callers' credentials, and the subject they name (B's org owner).
+   */
+  foreign: { a: Env; subject: string };
 };
+
+const isForeign = (c: CallerName): c is ForeignCaller =>
+  (FOREIGN_CALLERS as readonly string[]).includes(c);
 
 const tag = newId().slice(0, 6).toLowerCase();
 
@@ -188,7 +199,8 @@ export async function buildWorld(): Promise<World> {
           ? "guest"
           : "member";
   for (const c of CALLERS) {
-    if (c === "anonymous" || c === "recycledEmailUser") continue;
+    if (c === "anonymous" || c === "recycledEmailUser" || isForeign(c))
+      continue;
     const guest = role(c) === "guest";
     const email = uniq(`mx-${c.toLowerCase()}`, guest ? "x.com" : "a.com");
     emails[c] = email;
@@ -359,6 +371,7 @@ export async function buildWorld(): Promise<World> {
       creds[c] = {};
       continue;
     }
+    if (isForeign(c)) continue;
     const id = u(c);
     creds[c] = {
       cookie: await cookieOf(id),
@@ -373,6 +386,15 @@ export async function buildWorld(): Promise<World> {
   // The grant drives MCP; its PAT is checked on its own (matrix test).
   const staleSyncedPat = creds.staleSynced.token as string;
   creds.staleSynced = { ...creds.staleSynced, token: grant.accessToken };
+  // #1137: install A's credentials for B's org owner, at B's epoch.
+  const a = await installA(E);
+  const subject = {
+    id: u("orgOwner"),
+    email: emails.orgOwner as string,
+    epoch: await epoch(u("orgOwner")),
+  };
+  await seedSubjectAtA(a, subject);
+  Object.assign(creds, await foreignCreds(a, subject));
   // Restricted after the PAT was minted (tokens.create refuses capped callers).
   await run(
     "update users set restricted_manual = 1 where id = ?",
@@ -592,6 +614,7 @@ export async function buildWorld(): Promise<World> {
     googleSubs: subs,
     staleSyncedPat,
     clone,
+    foreign: { a, subject: subject.id },
   };
 }
 

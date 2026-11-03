@@ -31,6 +31,7 @@ import {
   CAPPED_WRITES,
   type CallerName,
   expected,
+  FOREIGN_CALLERS,
   orgExpected,
   spaceExpected,
   TRAITS,
@@ -39,6 +40,7 @@ import {
 import {
   BASE,
   buildWorld,
+  CONTENT,
   cookieOf,
   E,
   googleCookie,
@@ -47,6 +49,7 @@ import {
   staleHealth,
   type World,
 } from "./authz/fixture.ts";
+import { contentPath, uploadQuery } from "./authz/foreign.ts";
 import {
   type Cred,
   contentUnlisted,
@@ -200,6 +203,181 @@ describe("coverage (derived from the router and the registries)", () => {
       expect(ROUTE_POLICY[s.route], s.route).toEqual({
         user: expect.any(String),
       });
+  });
+});
+
+/**
+ * #1137: every credential kind the server accepts, and where the matrix sends
+ * one issued by another install (test/authz/foreign.ts). A new kind fails
+ * the coverage test below until it is listed here with its foreign case.
+ */
+const FOREIGN_KINDS = {
+  /** `__Host-oa_session`, HMAC under SESSION_SECRET's "oa:session" key. */
+  "session cookie": "foreignSession",
+  /** `oa_pat_…`, looked up by hash in the install's D1. */
+  PAT: "foreignPat",
+  /** The OAuth provider's access token, held in the install's OAuth store. */
+  "OAuth access token": "foreignOAuth",
+  /** `/c/{token}/…`, HMAC under CONTENT_SIGNING_KEY's "oa:content-url" key. */
+  "content URL token": "foreign signed URLs",
+  /** `PUT /api/v1/uploads/:id?exp&sig`, HMAC under the "oa:upload" key. */
+  "upload URL signature": "foreign signed URLs",
+} as const;
+
+describe("foreign credentials: another install's, valid there (#1137)", () => {
+  const meAt = async (e: unknown, cred: Cred) => {
+    const r = await fetchAndWait(
+      worker as never,
+      new Request(`${BASE}${R.me}`, {
+        headers: cred.cookie
+          ? { cookie: cred.cookie }
+          : { authorization: `Bearer ${cred.token}` },
+      }),
+      e,
+    );
+    const body = (await r.json().catch(() => ({}))) as { id?: string };
+    return { status: r.status, id: body.id };
+  };
+  const toolsAt = async (e: unknown, token: string) => {
+    const r = await fetchAndWait(
+      worker as never,
+      new Request(`${BASE}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": "2025-06-18",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+      e,
+    );
+    await r.body?.cancel();
+    return r.status;
+  };
+
+  it("every credential kind has a foreign case, and every foreign caller is a matrix caller", () => {
+    expect(Object.keys(FOREIGN_KINDS).sort()).toEqual(
+      [
+        "OAuth access token",
+        "PAT",
+        "content URL token",
+        "session cookie",
+        "upload URL signature",
+      ].sort(),
+    );
+    const callers = Object.values(FOREIGN_KINDS).filter(
+      (v) => v !== "foreign signed URLs",
+    );
+    expect([...callers].sort()).toEqual([...FOREIGN_CALLERS].sort());
+    for (const c of FOREIGN_CALLERS) {
+      expect(CALLERS).toContain(c);
+      expect(TRAITS[c]).toEqual(TRAITS.anonymous);
+    }
+    // Each sends exactly one credential, of its own kind.
+    expect(Object.keys(w.creds.foreignSession)).toEqual(["cookie"]);
+    expect(Object.keys(w.creds.foreignPat)).toEqual(["token"]);
+    expect(w.creds.foreignPat.token).toMatch(/^oa_pat_/);
+    expect(Object.keys(w.creds.foreignOAuth)).toEqual(["token"]);
+    expect(w.creds.foreignOAuth.token).toMatch(/^[^:]+:[^:]+:[^:]+$/);
+  });
+
+  it("each works at A, the install that issued it, as B's owner id; at B it is no one", async () => {
+    const { a, subject } = w.foreign;
+    for (const c of ["foreignSession", "foreignPat"] as const) {
+      expect(await meAt(a, w.creds[c]), `${c} at A`).toEqual({
+        status: 200,
+        id: subject,
+      });
+      expect((await meAt(E, w.creds[c])).status, `${c} at B`).toBe(401);
+    }
+    const oauth = w.creds.foreignOAuth.token as string;
+    expect(await toolsAt(a, oauth), "foreignOAuth at A").toBe(200);
+    expect(await toolsAt(E, oauth), "foreignOAuth at B").toBe(401);
+    // B's own owner credential, the same request: the subject is real at B.
+    expect(await meAt(E, w.creds.orgOwner)).toEqual({
+      status: 200,
+      id: subject,
+    });
+  });
+
+  it("foreign signed URLs: A's content tokens and upload signature for B's ids are refused at B", async () => {
+    const { a, subject } = w.foreign;
+    const viewer = {
+      uid: subject,
+      epoch: (
+        await env.DB.prepare("select session_epoch e from users where id = ?")
+          .bind(subject)
+          .first<{ e: number }>()
+      )?.e as number,
+    };
+    const load = async (path: string) => {
+      const r = await io.fetch?.(new Request(`${CONTENT}${path}`));
+      await r?.body?.cancel();
+      return r?.status ?? 0;
+    };
+    const got: Record<string, number> = {};
+    const exp: Record<string, number | "refused"> = {};
+    for (const art of ARTIFACTS)
+      for (const [kind, mode, v] of [
+        ["frame", "frame", null],
+        ["frame, viewer-bound", "frame", viewer],
+        ["dl", "dl", null],
+        ["dl, viewer-bound", "dl", viewer],
+      ] as const) {
+        const id = w.ids[art];
+        // B's own signature on the same URL: served (the trash: 404), so
+        // the request shape works and only the key differs.
+        const own = await load(await contentPath(E, id, mode, v));
+        got[`${art} ${kind} B's key`] = own;
+        exp[`${art} ${kind} B's key`] = art.startsWith("deleted") ? 404 : 200;
+        const foreign = await load(await contentPath(a, id, mode, v));
+        got[`${art} ${kind} A's key`] = foreign;
+        exp[`${art} ${kind} A's key`] = "refused";
+      }
+    for (const k of Object.keys(exp))
+      if (exp[k] === "refused") {
+        expect([401, 403, 404], k).toContain(got[k]);
+        exp[k] = got[k] as number;
+      }
+    expect(got).toEqual(exp);
+
+    // A real pending upload at B (its owner's), then A's signature for it.
+    const created = await io.fetch?.(
+      new Request(`${BASE}/api/v1/uploads`, {
+        method: "POST",
+        headers: {
+          cookie: w.creds.personalOwner.cookie as string,
+          "x-oa-request": "1",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ path: "foreign.txt", size: 3 }),
+      }),
+    );
+    expect(created?.status).toBe(201);
+    const { uploadId, url } = (await created?.json()) as {
+      uploadId: string;
+      url: string;
+    };
+    const put = async (q: string) => {
+      const r = await io.fetch?.(
+        new Request(`${BASE}/api/v1/uploads/${uploadId}?${q}`, {
+          method: "PUT",
+          headers: { "content-length": "3", "content-type": "text/plain" },
+          body: "abc",
+        }),
+      );
+      await r?.body?.cancel();
+      return r?.status;
+    };
+    expect(await put(await uploadQuery(a, uploadId)), "A's signature").toBe(
+      404,
+    );
+    // B's own URL for it still works: A's attempt took nothing.
+    expect(await put(new URL(url).search.slice(1)), "B's own URL").toBeLessThan(
+      300,
+    );
   });
 });
 
