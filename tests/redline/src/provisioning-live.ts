@@ -88,6 +88,7 @@ export function liveRun(
       onMint: m,
     });
   const patFile = credFile(t, "a", "PAT");
+  const bPatFile = credFile(t, "b", "PAT");
   const io: ProvIo = {
     mask: m,
     fetch: boundFetch(globalThis.fetch),
@@ -97,6 +98,9 @@ export function liveRun(
     stgInventoryJwt: src("stagingInventory"),
     rlAPat: existsSync(patFile)
       ? () => readSecretFile(patFile, secretFileName(t.a.name, "PAT"))
+      : undefined,
+    rlBPat: existsSync(bPatFile)
+      ? () => readSecretFile(bPatFile, secretFileName(t.b.name, "PAT"))
       : undefined,
   };
   return new Run(provConfig(env, t), io);

@@ -6,6 +6,7 @@ import {
 } from "@oa/shared/provisioning";
 import type { ProvConfig, ProvIo } from "../src/provisioning.ts";
 import { type Fake, fakeServer } from "./fake.ts";
+import { type LifeTenant, lifeTenant } from "./lifecycle-fake.ts";
 import { sealTo } from "./provisioner-seal.ts";
 import {
   type SnoozeInstall,
@@ -78,7 +79,22 @@ interface FJob {
   onDone?: () => void;
 }
 
+/** A lifecycle step whose done can damage rl-p's seed (LIFE-6). */
+export type LifeStep = "upgrade" | "rollback" | "resume" | "restore";
+/** What the damaging step does to the seed. */
+export type LifeHarm =
+  | "drop_artifact"
+  | "change_artifact"
+  | "make_public"
+  | "drop_share"
+  | "drop_member"
+  | "b_reads";
+
 export type Fault =
+  | `life:${LifeHarm}:${LifeStep}`
+  | "socket_stays_open"
+  | "socket_ttl_close"
+  | "socket_closes_early"
   | "p1_200"
   | "p6_alg_none_ok"
   | "p13_replay_new_job"
@@ -153,8 +169,24 @@ export interface FakeApi {
   tenants: Map<string, { server: Fake; install: SnoozeInstall }>;
   /** Every accepted OIDC create's body, in order. */
   creates: Record<string, unknown>[];
+  /**
+   * rl-p's and rl-b's tenants for P13's seed (test/lifecycle-fake.ts), by app
+   * host: rl-p's from its create until its purge, rl-b's from rl-p's create.
+   */
+  life: Map<string, LifeTenant>;
   /** Every tenant server the fake started (closed or not), for afterEach. */
   closeTenants: () => Promise<void>;
+}
+
+/** Every fake made, so a test file can close all their tenants. */
+const made = new Set<FakeApi>();
+
+/** Closes the tenant servers of every fake made so far. */
+export async function closeAllFakes(): Promise<void> {
+  for (const f of [...made]) {
+    made.delete(f);
+    await f.closeTenants();
+  }
 }
 
 /** apps/provisioning/src/auth/flow.ts clearFlowCookie(). */
@@ -185,6 +217,35 @@ export function fakeApi(): FakeApi {
   const log: string[] = [];
   const tenants: FakeApi["tenants"] = new Map();
   const servers: Fake[] = [];
+  const life: FakeApi["life"] = new Map();
+  const lifeServers: LifeTenant[] = [];
+  /** A live PAT's standing at install `id`'s tenant. */
+  const patAt = (id: string) => (token: string) => {
+    const v = pats.get(token);
+    if (!v || v.revoked) return null;
+    return v.install === id ? ("own" as const) : ("foreign" as const);
+  };
+  const startLife = async (i: { id: string; appHost: string }) => {
+    const t = await lifeTenant(patAt(i.id));
+    lifeServers.push(t);
+    life.set(i.appHost, t);
+    return t;
+  };
+  /** The life faults on `step`, applied to rl-p's tenant when the job is done. */
+  const harm = (i: FInstall, step: LifeStep) => {
+    const t = life.get(i.appHost);
+    if (!t || !i.slug.startsWith("rl-p-")) return;
+    const on = (h: LifeHarm) => faults.has(`life:${h}:${step}`);
+    for (const [id, a] of t.artifacts) {
+      if (on("drop_artifact")) t.artifacts.delete(id);
+      if (on("change_artifact")) a.content = `${a.content}\nchanged`;
+      if (on("make_public")) a.visibility = "public";
+      if (on("drop_share")) a.shares.clear();
+    }
+    if (on("drop_member"))
+      for (const [e, r] of t.members) if (r === "member") t.members.delete(e);
+    if (on("b_reads")) t.foreignReads = true;
+  };
   const creates: Record<string, unknown>[] = [];
   const signupAccounts = new Set<string>();
   /** Purged rows inventory lost (fault p23_no_row). */
@@ -509,6 +570,13 @@ export function fakeApi(): FakeApi {
       });
       if (user) signupAccounts.add(p);
       else creates.push(body);
+      // rl-p's seed reaches its tenant and rl-b's for real (lifecycle.ts).
+      if (i.slug.startsWith("rl-p-")) {
+        const t = await startLife(i);
+        t.closeOnOpen = faults.has("socket_closes_early");
+        const b = installs.get(CONFIG.rlB.id) as FInstall;
+        if (!life.has(b.appHost)) await startLife(b);
+      }
       // P50's install answers the snooze path for real (snooze.ts fetches).
       if (i.slug.startsWith("rl-snz-")) {
         const o: SnoozeOpts = {
@@ -579,6 +647,7 @@ export function fakeApi(): FakeApi {
           onDone: () => {
             i.previousVersion = i.version;
             i.version = to;
+            harm(i, "upgrade");
           },
         });
         return ok({ job: jobView(j, false), install: summary(i) }, 202);
@@ -587,12 +656,20 @@ export function fakeApi(): FakeApi {
         const j = startJob(i, "rollback", p, {
           onDone: () => {
             i.version = i.previousVersion;
+            harm(i, "rollback");
           },
         });
         return ok({ job: jobView(j, false), install: summary(i) }, 202);
       }
       case "suspend": {
         const j = startJob(i, "suspend", p, {
+          // A suspend that closes sockets does it as it pauses (WS-3).
+          onStep: (s) => {
+            if (s !== "pause" || faults.has("socket_stays_open")) return;
+            life
+              .get(i.appHost)
+              ?.closeSockets(faults.has("socket_ttl_close") ? 4408 : 1001);
+          },
           onDone: () => {
             i.mode = "paused";
             i.state = "suspended";
@@ -605,6 +682,7 @@ export function fakeApi(): FakeApi {
           onDone: () => {
             i.mode = "serving";
             i.state = "active";
+            harm(i, "resume");
           },
         });
         return ok({ job: jobView(j, false), install: summary(i) }, 202);
@@ -624,6 +702,7 @@ export function fakeApi(): FakeApi {
           onDone: () => {
             i.mode = "serving";
             i.state = "active";
+            harm(i, "restore");
           },
         });
         return ok({ job: jobView(j, false), install: summary(i) }, 202);
@@ -643,6 +722,11 @@ export function fakeApi(): FakeApi {
             if (tn) {
               tenants.delete(i.appHost);
               void tn.server.close();
+            }
+            const lt = life.get(i.appHost);
+            if (lt) {
+              life.delete(i.appHost);
+              void lt.close();
             }
             if (faults.has("p23_no_row")) noRow.add(i.id);
           },
@@ -997,17 +1081,21 @@ export function fakeApi(): FakeApi {
 
   const io: ProvIo = {
     // A tenant's app host is its local fake; any other host stays as live.
-    tenantOrigin: (h) => tenants.get(h)?.server.origin ?? `https://${h}`,
+    tenantOrigin: (h) =>
+      tenants.get(h)?.server.origin ?? life.get(h)?.origin ?? `https://${h}`,
     fetch: handler as typeof fetch,
     now: () => clock.t,
     wait: async (ms) => {
       clock.t += ms;
+      // One turn of the event loop: a tenant's socket close (a real local
+      // connection) reaches the client between polls, as on the network.
+      await new Promise((r) => setImmediate(r));
     },
     jwt: async () => API_JWT,
     stgInventoryJwt: async () => INV_JWT,
   };
   void panel;
-  return {
+  const fake: FakeApi = {
     fetch: io.fetch,
     io,
     installs,
@@ -1020,11 +1108,15 @@ export function fakeApi(): FakeApi {
     signin,
     broker,
     tenants,
+    life,
     creates,
     closeTenants: async () => {
       for (const sv of servers.splice(0)) await sv.close().catch(() => {});
+      for (const t of lifeServers.splice(0)) await t.close().catch(() => {});
     },
   };
+  made.add(fake);
+  return fake;
 }
 
 /** The fake's version for rl-a after P24's bring-up (tests set it). */
