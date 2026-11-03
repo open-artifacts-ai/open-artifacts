@@ -65,10 +65,13 @@ import {
   API_JWT,
   CLEAR_FLOW_COOKIE,
   CONFIG,
+  closeAllFakes,
   type FakeApi,
   type Fault,
   fakeApi,
   jwt,
+  type LifeHarm,
+  type LifeStep,
   setVersion,
 } from "./provisioning-fake.ts";
 
@@ -87,27 +90,47 @@ const tmp = () => {
   return d;
 };
 
+afterEach(closeAllFakes);
+
 /** The workflow's bring-up on the fake: rl-a and rl-b at the release, rl-a's PAT. */
 async function bringUp(f: FakeApi): Promise<string> {
+  return (await bringUpBoth(f)).a;
+}
+
+/** bringUp, with rl-b's PAT too (P13's seed: B's refusal). */
+async function bringUpBoth(f: FakeApi): Promise<{ a: string; b: string }> {
   const run = new Run(CONFIG, f.io);
   const r = await newRecipient();
   const open = async (s: string) => parseCreds(await openSealed(r, s));
-  let pat = "";
+  const pats = { a: "", b: "" };
   for (const [id, slug] of [
     [CONFIG.rlA.id, "rl-a"],
     [CONFIG.rlB.id, "rl-b"],
   ] as const) {
     await bringUpgrade(run, id, slug);
     const c = await mintCreds(run, id, slug, { publicKey: r.publicKey, open });
-    if (slug === "rl-a") pat = c.pat;
+    pats[slug === "rl-a" ? "a" : "b"] = c.pat;
   }
-  return pat;
+  return pats;
+}
+
+/** A Run after the fake's bring-up, with both R26 PATs. */
+async function liveLike(f: FakeApi): Promise<Run> {
+  const pats = await bringUpBoth(f);
+  return new Run(CONFIG, {
+    ...f.io,
+    rlAPat: () => pats.a,
+    rlBPat: () => pats.b,
+  });
 }
 
 /** Every probe in order; the outcome or the failure message per id. */
-async function runAll(f: FakeApi): Promise<Map<ProbeId, Outcome | string>> {
-  const pat = await bringUp(f);
-  const run = new Run(CONFIG, { ...f.io, rlAPat: () => pat });
+async function runAll(
+  f: FakeApi,
+  o: { run?: (r: Run) => void } = {},
+): Promise<Map<ProbeId, Outcome | string>> {
+  const run = await liveLike(f);
+  o.run?.(run);
   const out = new Map<ProbeId, Outcome | string>();
   for (const p of PROBES) {
     try {
@@ -122,6 +145,34 @@ async function runAll(f: FakeApi): Promise<Map<ProbeId, Outcome | string>> {
 
 const level = (o: Outcome | string | undefined) =>
   typeof o === "string" ? `fail: ${o}` : o?.level;
+
+/** LIFE-6: each step that keeps rl-p, and the probe that re-reads after it. */
+const LIFE_STEPS: [LifeStep, ProbeId][] = [
+  ["upgrade", "P45"],
+  ["rollback", "P31"],
+  ["resume", "P21"],
+  ["restore", "P22"],
+];
+/** Each harm a step can do to the seed, and the failure it must give. */
+const LIFE_HARMS: [LifeHarm, RegExp][] = [
+  [
+    "drop_artifact",
+    /the artifact: status 404, body sha256:[0-9a-f]{16} \(\d+ bytes\), code not_found$/,
+  ],
+  [
+    "change_artifact",
+    /the artifact's content changed \(sha256:[0-9a-f]{16} -> sha256:[0-9a-f]{16}\)$/,
+  ],
+  ["make_public", /the artifact's visibility changed$/],
+  ["drop_share", /the share to the seeded member is gone$/],
+  ["widen_share", /the share's role is editor, want viewer$/],
+  ["drop_member", /the seeded member is gone$/],
+  ["promote_member", /the seeded member's role is admin, want member$/],
+  [
+    "b_reads",
+    /rl-b's PAT at rl-p: A's credential at B \(rl-p; expected refused\): rl-p did not refuse \(status 200, /,
+  ],
+];
 
 describe("the probes on a conforming staging fake", () => {
   it("covers P1-P50 exactly once", () => {
@@ -223,8 +274,7 @@ describe("the probes on a conforming staging fake", () => {
 
   it("asks P15 before route at least once and keeps the P33 job list to OIDC jobs", async () => {
     const f = fakeApi();
-    await bringUp(f);
-    const run = new Run(CONFIG, f.io);
+    const run = await liveLike(f);
     for (const p of PROBES) {
       if (p.id === "P34") break;
       await p.run(run).catch(() => undefined);
@@ -394,6 +444,50 @@ describe("each probe fails on the behaviour it guards", () => {
       "P49",
       /P49 R2 q=owner email: 1 items match by owner email only, want 0/,
     ],
+    // WS-3: the events socket P20 holds across the suspend.
+    [
+      "socket_stays_open",
+      "P20",
+      /^P20 socket: an events socket opened before the suspend is still open after the paused page shows \(WS-3: suspend closes no sockets\)$/,
+    ],
+    // One look, no wait: a close that comes 30 s later is still a fail.
+    [
+      "socket_closes_late",
+      "P20",
+      /^P20 socket: an events socket opened before the suspend is still open after the paused page shows/,
+    ],
+    [
+      "socket_ttl_close",
+      "P20",
+      /^P20 socket: closed by the socket TTL \(4408\), not by the suspend$/,
+    ],
+    [
+      "socket_closes_early",
+      "P20",
+      /^P20 socket: closed before the suspend was sent, so its close proves nothing$/,
+    ],
+    // LIFE-6: the seed is checked before any step, so a later failure is the step's.
+    [
+      "seed_public",
+      "P13",
+      /^P13 seed: the seeded artifact is not the private marker sent$/,
+    ],
+    [
+      "seed_b_reads",
+      "P13",
+      /^P13 seed: rl-b's PAT at rl-p: A's credential at B \(rl-p; expected refused\): rl-p did not refuse \(status 200, /,
+    ],
+    // LIFE-6: every harm after every step that keeps rl-p fails that step's probe.
+    ...LIFE_STEPS.flatMap(([step, id]) =>
+      LIFE_HARMS.map(
+        ([harm, re]) =>
+          [
+            `life:${harm}:${step}`,
+            id,
+            new RegExp(`^${id} seed after ${step}: ${re.source}`),
+          ] as [Fault, ProbeId, RegExp],
+      ),
+    ),
   ];
   for (const [fault, id, re] of cases)
     it(`${id} on ${fault}`, async () => {
@@ -402,6 +496,120 @@ describe("each probe fails on the behaviour it guards", () => {
       const out = await runAll(f);
       expect(out.get(id)).toMatch(re);
     });
+
+  describe("LIFE-6 and WS-3: rl-p's seed through its lifecycle (#1137)", () => {
+    const RLB_HOST = "rl-b.open-artifacts-staging.app";
+    /** Every probe in order, with the requests each sent to rl-p and rl-b. */
+    const stepped = async (f: FakeApi) => {
+      const run = await liveLike(f);
+      const out = new Map<ProbeId, Outcome | string>();
+      const sent = new Map<ProbeId, { p: number; b: number }>();
+      let rlp: { log: string[] } | undefined;
+      for (const pr of PROBES) {
+        const b = f.life.get(RLB_HOST);
+        const p0 = rlp?.log.length ?? 0;
+        const b0 = b?.log.length ?? 0;
+        try {
+          out.set(pr.id, await pr.run(run));
+        } catch (e) {
+          if (!(e instanceof ProbeFail)) throw e;
+          out.set(pr.id, e.message);
+        }
+        if (pr.id === "P13")
+          rlp = [...f.life].find(([h]) => h.startsWith("rl-p-"))?.[1];
+        sent.set(pr.id, {
+          p: (rlp?.log.length ?? 0) - p0,
+          b: (f.life.get(RLB_HOST)?.log.length ?? 0) - b0,
+        });
+      }
+      return { run, out, sent, rlp };
+    };
+
+    it("P13 seeds rl-p; each step's probe re-reads it in 7 requests; the suspend closes P20's socket; cleanup leaves nothing", async () => {
+      const f = fakeApi();
+      const { run, out, sent, rlp } = await stepped(f);
+      for (const id of ["P13", "P20", "P21", "P22", "P31", "P45"] as const)
+        expect(level(out.get(id)), id).toBe("pass");
+      expect(run.s.life?.artifact).toBeTruthy();
+      expect(run.s.life?.lostAt).toBeUndefined();
+      // One try each: summary, content, shares, members, then crossCheck's
+      // B at B and A at B on rl-p, and A at A on rl-b.
+      for (const id of ["P45", "P31", "P21", "P22"] as const)
+        expect(sent.get(id), id).toEqual({ p: 6, b: 1 });
+      // P20: the upgrade, nothing else.
+      expect(rlp?.log.filter((l) => l.startsWith("UPGRADE "))).toHaveLength(1);
+      expect(sent.get("P20")).toEqual({ p: 1, b: 0 });
+      // P23 purged rl-p and closed its tenant; cleanup deletes rl-b's marker.
+      expect([...f.life.keys()]).toEqual([RLB_HOST]);
+      expect(f.life.get(RLB_HOST)?.artifacts.size).toBe(1);
+      await cleanupInstalls(run);
+      expect(f.life.get(RLB_HOST)?.artifacts.size).toBe(0);
+      expect(run.s.life?.twinGone).toBe(true);
+      expect(run.s.cleanup).toEqual([]);
+    });
+
+    it("a seed lost at one step blocks the later re-reads, naming that step", async () => {
+      const f = fakeApi();
+      f.faults.add("life:drop_artifact:upgrade");
+      const { out } = await stepped(f);
+      expect(level(out.get("P45"))).toMatch(/^fail: P45 seed after upgrade: /);
+      for (const id of ["P31", "P21", "P22"] as const)
+        expect(out.get(id), id).toEqual({
+          level: "blocked",
+          reason: "the seed was already lost after P45",
+        });
+    });
+
+    it("a failed re-read stops at the first broken item: no request is tried again", async () => {
+      const f = fakeApi();
+      f.faults.add("life:drop_share:resume");
+      const { out, sent } = await stepped(f);
+      expect(level(out.get("P21"))).toMatch(/share to the seeded member/);
+      expect(sent.get("P21")).toEqual({ p: 3, b: 0 });
+      const g = fakeApi();
+      g.faults.add("life:b_reads:restore");
+      const r = await stepped(g);
+      expect(level(r.out.get("P22"))).toMatch(/rl-p did not refuse/);
+      expect(r.sent.get("P22")).toEqual({ p: 6, b: 1 });
+    });
+
+    it("no lifecycle failure names an address, an install id, a host or a marker", async () => {
+      for (const fault of [
+        "life:drop_artifact:upgrade",
+        "life:change_artifact:rollback",
+        "life:make_public:resume",
+        "life:drop_member:restore",
+        "life:b_reads:upgrade",
+        "socket_stays_open",
+      ] as const) {
+        const f = fakeApi();
+        f.faults.add(fault);
+        const { out, run } = await stepped(f);
+        const msgs = [...out.values()].filter(
+          (v): v is string => typeof v === "string",
+        );
+        expect(msgs.length, fault).toBeGreaterThan(0);
+        for (const m of msgs) {
+          expect(m).not.toContain("@");
+          expect(m).not.toContain(run.s.rlp?.id);
+          expect(m).not.toContain("open-artifacts-staging");
+          expect(m).not.toContain("127.0.0.1");
+          expect(m).not.toContain("REDLINE-");
+        }
+      }
+    });
+
+    it("P13 fails without rl-b's R26 PAT: B's refusal has no A side", async () => {
+      const f = fakeApi();
+      await bringUp(f);
+      const run = new Run(CONFIG, f.io);
+      const p13 = PROBES.find((p) => p.id === "P13");
+      await expect(p13?.run(run)).rejects.toThrow(
+        "P13 seed: no R26 PAT for rl-b in this run",
+      );
+      await cleanupInstalls(run);
+    });
+  });
 
   it("P13 waits out the 60 s HOSTS cache for the redline /healthz", async () => {
     const f = fakeApi();

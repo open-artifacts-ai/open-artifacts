@@ -105,15 +105,135 @@ export function rawRequest(o: RawOpts): Promise<Response> {
   });
 }
 
-/**
- * The WebSocket handshake for `req` (its URL and headers, plus Upgrade). 101
- * when the server upgraded; the socket is closed straight away.
- */
-export function wsHandshake(req: Request): Promise<Response> {
+const upgradeHeaders = (req: Request): Headers => {
   const headers = new Headers(req.headers);
   headers.set("connection", "Upgrade");
   headers.set("upgrade", "websocket");
   headers.set("sec-websocket-version", "13");
   headers.set("sec-websocket-key", randomBytes(16).toString("base64"));
-  return rawRequest({ url: req.url, headers });
+  return headers;
+};
+
+/**
+ * The WebSocket handshake for `req` (its URL and headers, plus Upgrade). 101
+ * when the server upgraded; the socket is closed straight away.
+ */
+export function wsHandshake(req: Request): Promise<Response> {
+  return rawRequest({ url: req.url, headers: upgradeHeaders(req) });
+}
+
+/** A WebSocket kept open after its 101, watched for the server's close. */
+export interface OpenSocket {
+  /**
+   * Null while open. Once the server closed it: the close frame's code, or
+   * null when the connection ended without one.
+   */
+  readonly closed: { code: number | null } | null;
+  /** Closes it from this side (idempotent). */
+  close(): void;
+}
+
+/**
+ * The WebSocket handshake for `req`, kept open on a 101 (`socket`); any other
+ * answer is returned as a Response with no socket. The socket reads server
+ * frames only to see a close frame and to answer pings (a ping left
+ * unanswered could close it for a reason of its own). It never sends data.
+ */
+export function wsOpen(
+  req: Request,
+  timeoutMs = TIMEOUT_MS,
+): Promise<{ res: Response; socket?: OpenSocket }> {
+  const u = new URL(req.url);
+  const headers: Record<string, string> = {};
+  upgradeHeaders(req).forEach((v, k) => {
+    headers[k] = v;
+  });
+  const tls = u.protocol === "https:";
+  const r = (tls ? httpsRequest : httpRequest)({
+    protocol: u.protocol,
+    hostname: u.hostname,
+    port: u.port || (tls ? 443 : 80),
+    path: `${u.pathname}${u.search}`,
+    method: "GET",
+    headers,
+    agent: false,
+  });
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      r.destroy();
+      const e = new Error(`timed out after ${timeoutMs} ms`);
+      e.name = "TimeoutError";
+      reject(e);
+    }, timeoutMs);
+    r.on("upgrade", (res, sock, head: Buffer) => {
+      clearTimeout(timer);
+      const s: { closed: { code: number | null } | null; close(): void } = {
+        closed: null,
+        close: () => sock.destroy(),
+      };
+      const end = (code: number | null) => {
+        s.closed ??= { code };
+      };
+      let buf = Buffer.alloc(0);
+      const feed = (chunk: Buffer) => {
+        buf = Buffer.concat([buf, chunk]);
+        for (;;) {
+          if (buf.length < 2) return;
+          const op = (buf[0] as number) & 0x0f;
+          let len = (buf[1] as number) & 0x7f;
+          let off = 2;
+          if (len === 126) {
+            if (buf.length < 4) return;
+            len = buf.readUInt16BE(2);
+            off = 4;
+          } else if (len === 127) {
+            if (buf.length < 10) return;
+            len = Number(buf.readBigUInt64BE(2));
+            off = 10;
+          }
+          if ((buf[1] as number) & 0x80) off += 4;
+          if (buf.length < off + len) return;
+          const payload = buf.subarray(off, off + len);
+          buf = buf.subarray(off + len);
+          if (op === 0x8) end(len >= 2 ? payload.readUInt16BE(0) : null);
+          else if (op === 0x9 && !s.closed && len <= 125) {
+            // A pong carries the ping's payload, masked (RFC 6455 5.5.3).
+            const mask = randomBytes(4);
+            const out = Buffer.alloc(len);
+            for (let i = 0; i < len; i++)
+              out[i] = (payload[i] as number) ^ (mask[i % 4] as number);
+            sock.write(
+              Buffer.concat([Buffer.from([0x8a, 0x80 | len]), mask, out]),
+            );
+          }
+        }
+      };
+      sock.on("data", feed);
+      sock.on("end", () => end(null));
+      sock.on("close", () => end(null));
+      sock.on("error", () => end(null));
+      if (head.length) feed(head);
+      resolve({ res: toResponse(res, Buffer.alloc(0)), socket: s });
+    });
+    r.on("response", (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("end", () => {
+        clearTimeout(timer);
+        resolve({ res: toResponse(res, Buffer.concat(chunks)) });
+      });
+      res.on("error", () => {
+        clearTimeout(timer);
+        reject(new Error(`body failed after status ${res.statusCode ?? "?"}`));
+      });
+    });
+    r.on("error", (e) => {
+      clearTimeout(timer);
+      const code = (e as { code?: string }).code;
+      reject(
+        Object.assign(new Error(`request failed (${code ?? "?"})`), { code }),
+      );
+    });
+    r.end();
+  });
 }

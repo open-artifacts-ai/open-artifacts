@@ -14,12 +14,19 @@ import {
   notResolved,
 } from "./fetch-timeout.ts";
 import { RETRY_BACKOFF_MS, safeCode } from "./http.ts";
+import {
+  dropTwin,
+  openSocket,
+  reread,
+  type Seed,
+  seedLife,
+} from "./lifecycle.ts";
 import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { PRE_PROD_REASON } from "./report.ts";
 import { newRecipient, openSealed, parseCreds } from "./seal.ts";
 import { snoozeOwnerPath } from "./snooze.ts";
-import { adoptTarget } from "./targets.ts";
+import { adoptTarget, type Target } from "./targets.ts";
 
 // The red-line provisioning probes (design v7 12.2, P1-P50) against the
 // staging Provisioning API, as the GitHub OIDC principal "O" (4.4): `rl-`
@@ -69,6 +76,8 @@ export interface ProvIo {
   prodInventoryJwt?: () => Promise<string>;
   /** The rl-a admin PAT R26 sealed for this run (P36). */
   rlAPat?: () => string;
+  /** The rl-b admin PAT R26 sealed for this run (P13's seed: B's refusal). */
+  rlBPat?: () => string;
   /** Hides a secret the run learns from the public log (CI: ::add-mask::). */
   mask?: (v: string) => void;
   /**
@@ -416,6 +425,12 @@ export interface RunState {
   releases?: Release[];
   /** P44's first registered client, for P43. */
   clientId?: string;
+  /**
+   * P13's seed on rl-p (LIFE-6), re-read after each lifecycle step.
+   * `lostAt`: the first probe whose re-read failed; later ones can't tell.
+   * `twinGone`: rl-b's marker is deleted (cleanupInstalls).
+   */
+  life?: Seed & { lostAt?: ProbeId; twinGone?: boolean };
 }
 
 const bare = (h: string) => h.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
@@ -638,6 +653,87 @@ function rlp(run: Run): RlP {
   return run.s.rlp;
 }
 
+/** A failure from src/lifecycle.ts as `what`'s ProbeFail; infra stays infra. */
+function lifeFail(what: string, e: unknown): Error {
+  if (e instanceof InfraError || e instanceof ProbeFail) return e;
+  return new ProbeFail(`${what}: ${(e as Error)?.message ?? String(e)}`);
+}
+
+/**
+ * P13's seed (LIFE-6): R26 creds for rl-p as P50 mints them, then
+ * seedLife, then one re-read as the baseline, so a later failure is the
+ * step's and not the seed's. rl-b's PAT is the bring-up's (R26).
+ */
+async function seedRlp(run: Run, dj: InstallDetail): Promise<void> {
+  const bPat = run.io.rlBPat?.();
+  if (!bPat) throw new ProbeFail("P13 seed: no R26 PAT for rl-b in this run");
+  const r = await newRecipient();
+  const c = await mintCreds(run, dj.id, dj.slug, {
+    publicKey: r.publicKey,
+    open: async (sealed) => {
+      const v = parseCreds(await openSealed(r, sealed));
+      run.io.mask?.(v.pat);
+      run.io.mask?.(v.hookKey);
+      return v;
+    },
+  });
+  const origin = (h: string) =>
+    run.io.tenantOrigin?.(bare(h)) ?? `https://${bare(h)}`;
+  const p = adoptTarget(
+    {
+      name: "rl-p",
+      installId: dj.id,
+      app: origin(dj.appHost),
+      content: origin(dj.contentHost),
+      testDomain: STAGING_TEST_DOMAIN,
+      cookieName: "__Host-oa_session",
+      hookKeyFile: "",
+    },
+    { hookKey: c.hookKey, pat: c.pat, turnstile: DUMMY_TURNSTILE },
+  );
+  // The A side of crossCheck: only its app origin and name are read.
+  const b: Target = {
+    name: "rl-b",
+    installId: run.c.rlB.id,
+    app: origin(run.c.rlB.app),
+    content: origin(run.c.rlB.app),
+    testDomain: STAGING_TEST_DOMAIN,
+    cookieName: "__Host-oa_session",
+    hookKeyFile: "",
+  };
+  try {
+    run.s.life = await seedLife(p, { kind: "pat", token: c.pat }, b, {
+      kind: "pat",
+      token: bPat,
+    });
+    await reread(run.s.life);
+  } catch (e) {
+    throw lifeFail("P13 seed", e);
+  }
+}
+
+/**
+ * The seed re-read after `step` (one try per request, no polling), then
+ * pass. A seed an earlier step already lost proves nothing here: blocked.
+ */
+async function carry(run: Run, id: ProbeId, step: string): Promise<Outcome> {
+  const life = run.s.life;
+  if (!life) throw new ProbeFail(`${id}: no seed from P13`);
+  if (life.lostAt)
+    return {
+      level: "blocked",
+      reason: `the seed was already lost after ${life.lostAt}`,
+    };
+  try {
+    await reread(life);
+  } catch (e) {
+    const f = lifeFail(`${id} seed after ${step}`, e);
+    if (f instanceof ProbeFail) life.lostAt = id;
+    throw f;
+  }
+  return pass();
+}
+
 async function releases(run: Run): Promise<Release[]> {
   if (run.s.releases) return run.s.releases;
   const r = await run.v1("/releases", { read: true });
@@ -780,6 +876,16 @@ export async function removeInstall(
  */
 export async function cleanupInstalls(run: Run): Promise<void> {
   const failed: string[] = [];
+  // P13's seed left a marker on rl-b (rl-p's data goes with its purge).
+  const life = run.s.life;
+  if (life && !life.twinGone) {
+    try {
+      await dropTwin(life);
+      life.twinGone = true;
+    } catch (x) {
+      failed.push(`cleanup: ${(x as Error).message}`);
+    }
+  }
   for (const e of [...run.s.cleanup]) {
     try {
       await removeInstall(run, e.slug, `cleanup ${e.slug}`);
@@ -1088,6 +1194,7 @@ export const PROBES: readonly Probe[] = [
           `P13: /healthz is not the redline variant within ${PAGE_WITHIN_MS / 1000} s (${desc(h)})`,
         );
       }
+      await seedRlp(run, dj);
       return pass(`job ${final.id} at ${version}`);
     },
   },
@@ -1414,6 +1521,8 @@ export const PROBES: readonly Probe[] = [
         throw new ProbeFail("P45: the job's actor is not the OIDC actor");
       await run.done(job.id, "P45 upgrade_install");
       p.version = run.c.version;
+      const c = await carry(run, "P45", "upgrade");
+      if (c.level !== "pass") return c;
       return pass(
         other ? undefined : "no non-rl install for the not_found leg",
       );
@@ -1441,7 +1550,7 @@ export const PROBES: readonly Probe[] = [
       if (v !== p.createdAt)
         throw new ProbeFail(`P31: version ${v}, want ${p.createdAt}`);
       p.version = v;
-      return pass();
+      return carry(run, "P31", "rollback");
     },
   },
   {
@@ -1451,21 +1560,51 @@ export const PROBES: readonly Probe[] = [
       "suspend: 503 paused page on both hosts within 120 s; inventory paused",
     run: async (run) => {
       const p = rlp(run);
-      const a = run.accepted(
-        await run.v1(`/installs/${p.id}/suspend`, {
-          body: { requestId: run.rid("p20"), reason: "red-line P20" },
-        }),
-        "P20",
-      );
-      await run.done(a.job.id, "P20 suspend");
-      await run.within(
-        PAGE_WITHIN_MS,
-        "P20 paused page",
-        async () =>
-          (await run.page(p.appHost, "/")).status === 503 &&
-          (await run.page(p.contentHost, "/")).status === 503,
-      );
-      await run.settledMode("P20", p.appHost, "paused");
+      const life = run.s.life;
+      if (!life) throw new ProbeFail("P20: no seed from P13");
+      // WS-3: a socket opened before the suspend must not outlive it.
+      let sock: Awaited<ReturnType<typeof openSocket>>;
+      try {
+        sock = await openSocket(life);
+      } catch (e) {
+        throw lifeFail("P20 socket", e);
+      }
+      try {
+        // The control: open when the suspend is sent, so its close is news.
+        if (sock.closed)
+          throw new ProbeFail(
+            "P20 socket: closed before the suspend was sent, so its close proves nothing",
+          );
+        const a = run.accepted(
+          await run.v1(`/installs/${p.id}/suspend`, {
+            body: { requestId: run.rid("p20"), reason: "red-line P20" },
+          }),
+          "P20",
+        );
+        await run.done(a.job.id, "P20 suspend");
+        await run.within(
+          PAGE_WITHIN_MS,
+          "P20 paused page",
+          async () =>
+            (await run.page(p.appHost, "/")).status === 503 &&
+            (await run.page(p.contentHost, "/")).status === 503,
+        );
+        // One look, no wait: the paused page shows, so a close the suspend
+        // sent has had a round trip to arrive.
+        const closed = sock.closed as { code: number | null } | null;
+        if (!closed)
+          throw new ProbeFail(
+            "P20 socket: an events socket opened before the suspend is still open after the paused page shows (WS-3: suspend closes no sockets)",
+          );
+        // apps/server runtime/do.ts SOCKET_TTL_MS: the TTL's close, not the suspend's.
+        if (closed.code === 4408)
+          throw new ProbeFail(
+            "P20 socket: closed by the socket TTL (4408), not by the suspend",
+          );
+        await run.settledMode("P20", p.appHost, "paused");
+      } finally {
+        sock.close();
+      }
       return pass();
     },
   },
@@ -1487,7 +1626,7 @@ export const PROBES: readonly Probe[] = [
         "P21 /healthz 200",
         async () => (await run.page(p.appHost)).status === 200,
       );
-      return pass();
+      return carry(run, "P21", "resume");
     },
   },
   {
@@ -1524,7 +1663,7 @@ export const PROBES: readonly Probe[] = [
         async () => (await run.page(p.appHost)).status === 200,
       );
       await run.settledMode("P22", p.appHost, "serving");
-      return pass();
+      return carry(run, "P22", "restore");
     },
   },
   {
