@@ -51,8 +51,8 @@ jobs:
         env:
           MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          subject="${MESSAGE%%$'\n'*}"
-          if [[ "$subject" == "chore(main): release "* ]]; then
+          # A prefix match on the message is a match on its first line.
+          if [[ "$MESSAGE" == "chore(main): release "* ]]; then
             echo "is_release=true" >> "$GITHUB_OUTPUT"
           else
             echo "is_release=false" >> "$GITHUB_OUTPUT"
