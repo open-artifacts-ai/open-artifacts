@@ -42,6 +42,7 @@ export type CallerName = (typeof CALLERS)[number];
  */
 export const FOREIGN_CALLERS = [
   "foreignSession",
+  "foreignPat",
   "foreignOAuth",
 ] as const satisfies readonly CallerName[];
 export type ForeignCaller = (typeof FOREIGN_CALLERS)[number];
