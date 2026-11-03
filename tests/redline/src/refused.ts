@@ -380,7 +380,7 @@ export async function crossProbe<C>(
   if (o.ownOnly) return;
   await atLeg(ok("A's credential at A", o.a), async () => {
     const a = await leg("A's credential at A", (f) => run(o.credA, o.a, f));
-    if (a.verdict !== "allow" && false) // MUTATION M4
+    if (a.verdict !== "allow")
       throw new Error("A's credential failed at A (the probe said deny)");
   });
   await deniedAtB(run, o);
