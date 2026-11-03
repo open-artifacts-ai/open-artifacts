@@ -28,11 +28,7 @@ import { type HttpHandler, HttpResponse, http } from "msw";
 import { checkCreateFields, TRANSITIONS } from "../provisioning/authz.js";
 import { bodyHash } from "../provisioning/bodyhash.js";
 import { LIVE_TOKENS_PER_ADMIN } from "../provisioning/constants.js";
-import {
-  JOB_STEPS,
-  jobStepsFor,
-  type ProvisioningEnv,
-} from "../provisioning/enums.js";
+import { jobStepsFor, type ProvisioningEnv } from "../provisioning/enums.js";
 import {
   API_ERROR_STATUS,
   type ApiErrorCode,
@@ -41,17 +37,14 @@ import {
 import { FAKE_RELEASES } from "../provisioning/fakes.js";
 import {
   emptyWorld,
-  FIXTURE_IDS,
-  fixtureAudit,
   fixtureInstall,
-  fixtureJob,
   fixtureMe,
   fixtureWorld,
 } from "../provisioning/fixtures.js";
+import { mockWorld } from "../provisioning/mock-world.js";
 import { ROUTE_IDS, ROUTES, type RouteDef } from "../provisioning/routes.js";
 import {
   type Accepted,
-  type AuditEntry,
   type CreateInstall,
   type InstallDetail,
   type InstallSummary,
@@ -181,39 +174,9 @@ export function createProvisioningMock(
   const T0 = fixtureWorld().at;
   let seq = 0;
   const now = opts.now ?? (() => T0 + ++seq * 1000);
-  /**
-   * R17's rows, newest first: one per actor kind R17 filters on, so each
-   * filter shows. `tokenId` is the token that acted (the API's token_id).
-   */
-  const audit: { entry: AuditEntry; tokenId: string | null }[] = [
-    {
-      entry: fixtureAudit({
-        id: "api:3",
-        at: T0 + 5000,
-        actor: { kind: "admin", label: "admin@example.com" },
-        action: "install.suspend",
-        installId: FIXTURE_IDS.acme,
-        jobId: null,
-        detail: null,
-      }),
-      tokenId: null,
-    },
-    {
-      entry: fixtureAudit({
-        id: "prov:2",
-        at: T0 + 4000,
-        source: "provision",
-        actor: { kind: "system", label: "provisioner" },
-        action: "job.failed",
-        installId: FIXTURE_IDS.broken,
-        jobId: FIXTURE_IDS.jobBroken,
-        outcome: "error",
-        detail: null,
-      }),
-      tokenId: null,
-    },
-    { entry: fixtureAudit(), tokenId: FIXTURE_IDS.token },
-  ];
+  const start = mockWorld();
+  /** R17's rows (mockWorld): `tokenId` is the token that acted (the API's token_id). */
+  const audit = start.audit;
 
   const installs = new Map<string, InstallDetail>();
   const jobs = new Map<string, Job>();
@@ -227,40 +190,8 @@ export function createProvisioningMock(
     install: summaryOf(installs.get(installId) as InstallDetail),
   });
   if (opts.world !== "empty") {
-    for (const s of fixtureWorld().installs.items)
-      installs.set(
-        s.id,
-        fixtureInstall({
-          ...s,
-          auth: fixtureInstall().auth,
-          activeJobId: null,
-        }),
-      );
-    jobs.set(
-      FIXTURE_IDS.jobLeo,
-      fixtureJob({
-        status: "done",
-        step: "done",
-        stepIndex: 5,
-        finishedAt: T0 + 5000,
-      }),
-    );
-    jobs.set(
-      FIXTURE_IDS.jobBroken,
-      fixtureJob({
-        id: FIXTURE_IDS.jobBroken,
-        kind: "create",
-        installId: FIXTURE_IDS.broken,
-        status: "failed",
-        step: "verify_clean",
-        steps: [...JOB_STEPS.create],
-        stepIndex: 5,
-        lastErrorCode: "prod_dirty",
-        error: { code: "prod_dirty", message: "verify_clean refused" },
-        args: { version: "1.42.0" },
-        finishedAt: T0 + 6000,
-      }),
-    );
+    for (const d of start.installs) installs.set(d.id, d);
+    for (const j of start.jobs) jobs.set(j.id, j);
   }
 
   const newJob = (
