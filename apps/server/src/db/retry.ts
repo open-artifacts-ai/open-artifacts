@@ -168,34 +168,33 @@ export function isReadOnlySql(sql: string): boolean {
 type ReadMethod = "first" | "all" | "raw";
 const READS: readonly ReadMethod[] = ["first", "all", "raw"];
 
+/** A retrying statement -> the real statement it reads through. */
+const realStatement = new WeakMap<object, D1PreparedStatement>();
+
 /**
- * Gives a read-only statement retrying `first`, `all` and `raw`, and a
- * `bind` whose result gets the same, as own properties. The statement stays
- * the real D1PreparedStatement (no Proxy), so batch() accepts it; `run` is
- * untouched.
+ * A read-only statement whose `first`, `all` and `raw` retry, and whose
+ * `bind` returns the same kind: a plain object inheriting from the real
+ * statement (Object.create, no Proxy), with those four as own properties.
+ * The real statement itself is never changed (patching it in place recurses
+ * when a binding hands back proxied statements, as test doubles do), and
+ * the wrapped binding's batch() unwraps it (realStatement), so D1 always
+ * receives real D1PreparedStatement objects. `run` is inherited untouched.
  */
 function patchStatement(s: D1PreparedStatement): D1PreparedStatement {
   const rec = s as unknown as Record<string, (...a: unknown[]) => unknown>;
-  for (const m of READS) {
-    const orig = rec[m];
-    if (typeof orig !== "function") continue;
-    Object.defineProperty(s, m, {
-      configurable: true,
-      writable: true,
-      value: (...a: unknown[]) =>
-        retryRead("d1", () => orig.apply(s, a) as Promise<unknown>),
-    });
-  }
-  const bind = rec.bind;
-  if (typeof bind === "function")
-    Object.defineProperty(s, "bind", {
-      configurable: true,
-      writable: true,
-      value: (...a: unknown[]) =>
-        patchStatement(bind.apply(s, a) as D1PreparedStatement),
-    });
-  return s;
+  const p = Object.create(s) as Record<string, unknown>;
+  for (const m of READS)
+    p[m] = (...a: unknown[]) =>
+      retryRead("d1", () => rec[m]?.(...a) as Promise<unknown>);
+  p.bind = (...a: unknown[]) =>
+    patchStatement(rec.bind?.(...a) as D1PreparedStatement);
+  realStatement.set(p, s);
+  return p as unknown as D1PreparedStatement;
 }
+
+/** The statements D1 itself should see: retrying ones unwrapped. */
+const unwrapAll = (stmts: D1PreparedStatement[]): D1PreparedStatement[] =>
+  stmts.map((x) => realStatement.get(x) ?? x);
 
 /** Every wrapper made here, so wrapping one again is a no-op. */
 const wrappers = new WeakSet<object>();
@@ -213,9 +212,13 @@ export function retryingD1<T extends D1Database | undefined>(db: T): T {
     const s = target.prepare(sql);
     return isReadOnlySql(sql) ? patchStatement(s) : s;
   };
+  // Never retried: a batch may hold writes.
+  const batch = (stmts: D1PreparedStatement[]) =>
+    target.batch(unwrapAll(stmts));
   const w = new Proxy(target, {
     get(t, p) {
       if (p === "prepare") return prepare;
+      if (p === "batch") return batch;
       const v = Reflect.get(t, p, t);
       return typeof v === "function" ? v.bind(t) : v;
     },

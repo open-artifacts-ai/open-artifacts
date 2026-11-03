@@ -501,6 +501,37 @@ describe("real D1 through the wrapper", () => {
       /no such column/,
     );
   });
+
+  it("leaves the real statement alone, and works over proxied statements", async () => {
+    // A binding whose statements are Proxies (as the counting test doubles
+    // are): patching them in place would recurse.
+    let reads = 0;
+    const proxied = new Proxy(E.DB, {
+      get(t, p) {
+        if (p !== "prepare") {
+          const v = Reflect.get(t, p, t);
+          return typeof v === "function" ? v.bind(t) : v;
+        }
+        const wrap = (s: D1PreparedStatement): D1PreparedStatement =>
+          new Proxy(s, {
+            get(st, q) {
+              if (q === "bind") return (...a: unknown[]) => wrap(st.bind(...a));
+              const v = Reflect.get(st, q, st);
+              if (q === "first") reads++;
+              return typeof v === "function" ? v.bind(st) : v;
+            },
+          });
+        return (sql: string) => wrap(t.prepare(sql));
+      },
+    });
+    const db = retryingD1(proxied);
+    expect(await db.prepare("select ? as v").bind(3).first("v")).toBe(3);
+    expect(reads).toBe(1);
+    const raw = E.DB.prepare("select 1 as one");
+    const wrapped = retryingD1(E.DB).prepare("select 1 as one");
+    expect(Object.hasOwn(raw, "first")).toBe(false);
+    expect(wrapped).not.toBe(raw);
+  });
 });
 
 // ------------------------------------------------------------ kv
