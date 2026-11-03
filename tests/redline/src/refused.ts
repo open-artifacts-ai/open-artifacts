@@ -274,9 +274,10 @@ export interface CrossProbe<C> {
   /** True when `req` carries `cred` (its cookie or bearer token). */
   carries: (req: Request, cred: C) => boolean;
   /**
-   * #1137 group B: only the success legs, B's own credential at B and A's at
-   * A. A's credential at B is the in-server matrix's foreign callers
-   * (apps/server/test/authz), plus one live smoke per credential kind.
+   * Only B's own credential at B. A's credential at B is the in-server
+   * matrix's foreign callers (apps/server/test/authz, #1137 group B); A's at
+   * A runs only on each kind's live smoke, as the positive control for its
+   * A-at-B leg (#1235).
    */
   ownOnly?: boolean;
 }
@@ -360,7 +361,7 @@ async function leg(
  * crossCheck for a Backend surface probe (many requests, one verdict): B's
  * own credential is allowed at B, A's at A, then A's is denied at B and
  * every response B gave passes expectRefused. A probe that sends nothing to
- * B proves nothing and fails. With `ownOnly`, the first two legs only.
+ * B proves nothing and fails. With `ownOnly`, B's own credential at B only.
  */
 export async function crossProbe<C>(
   run: (cred: C, host: Target, fetch: ProbeFetch) => Promise<Verdict>,
@@ -376,12 +377,13 @@ export async function crossProbe<C>(
     if (b.verdict !== "allow")
       throw new Error("B's own credential failed at B (the probe said deny)");
   });
+  if (o.ownOnly) return;
   await atLeg(ok("A's credential at A", o.a), async () => {
     const a = await leg("A's credential at A", (f) => run(o.credA, o.a, f));
     if (a.verdict !== "allow")
       throw new Error("A's credential failed at A (the probe said deny)");
   });
-  if (!o.ownOnly) await deniedAtB(run, o);
+  await deniedAtB(run, o);
 }
 
 /**
@@ -535,7 +537,7 @@ export interface CrossWrite<C, X> extends CrossProbe<C> {
  * throwaway on the install it targets: B's own credential is allowed on B's,
  * A's on A's, then A's is denied on a fresh one of B's, every response B gave
  * passes expectRefused, and that throwaway reads back unchanged. With
- * `ownOnly`, the first two legs only: no third throwaway, settle or snapshot.
+ * `ownOnly`, B's own credential at B only: one throwaway, on B.
  */
 export async function crossWrite<C, X>(
   run: (cred: C, host: Target, x: X, fetch: ProbeFetch) => Promise<Verdict>,
@@ -572,6 +574,7 @@ export async function crossWrite<C, X>(
       if (b.verdict !== "allow")
         throw new Error("B's own credential failed at B (the probe said deny)");
     });
+    if (o.ownOnly) return;
     await atLeg(okAt("A's credential at A", o.a), async () => {
       const xa = await fresh(o.a);
       const a = await leg("A's credential at A", (f) =>
@@ -580,7 +583,6 @@ export async function crossWrite<C, X>(
       if (a.verdict !== "allow")
         throw new Error("A's credential failed at A (the probe said deny)");
     });
-    if (o.ownOnly) return;
     await atLeg(
       {
         leg: "A's credential at B",

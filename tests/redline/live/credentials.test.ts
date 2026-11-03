@@ -144,26 +144,11 @@ const okStatus = (s: number) => (r: Response) => r.status === s;
 describe("credentials", () => {
   // ------------------------------------------------------------- admin PAT
 
-  it("A's admin PAT at B: /api/v1/me", async () => {
-    await crossCheck(me, pair(A.pat, B.pat));
-  });
-
-  it("A's admin PAT at B: /api/v1/artifacts", async () => {
-    await crossCheck(
-      (c, t) => new Request(`${t.app}/api/v1/artifacts`, withCred(c)),
-      pair(A.pat, B.pat),
-    );
-  });
-
   it("A's admin PAT at B: /mcp tools/list", async () => {
     await crossCheck(mcpList, pair(A.pat, B.pat));
   });
 
   // ---------------------------------------------------------- session cookie
-
-  it("A's session cookie at B: replayed on B's app host", async () => {
-    await crossCheck(me, pair(A.cookie, B.cookie));
-  });
 
   it("A's session cookie at B: replayed under the alternate cookie name", async () => {
     // A's value under both names (__Host-oa_session and oa_session) at B.

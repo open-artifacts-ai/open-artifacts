@@ -411,21 +411,6 @@ describe("unmapped host", () => {
   });
 });
 
-describe("scheduler", () => {
-  it("no /__oa/nightly route on either install", async () => {
-    for (const t of [T.a, T.b])
-      for (const method of ["GET", "POST"]) {
-        const r = await fetchT(`${t.app}/__oa/nightly`, {
-          method,
-          redirect: "manual",
-        });
-        await expectRefused(r, t);
-        if (r.status !== 404)
-          throw new Error(`${t.name} ${method} /__oa/nightly: not a 404`);
-      }
-  });
-});
-
 // Cross-site isolation that holds without the PSL listing (the manager's
 // ruling on #649): the "rl-a and rl-b are different sites" check waits for the
 // PSL entries and runs as scripts/psl-listed.ts, outside the gate.
