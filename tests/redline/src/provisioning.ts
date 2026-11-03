@@ -2321,7 +2321,13 @@ export async function bringUpgrade(
     );
   const a = run.accepted(
     await run.v1(`/installs/${id}/upgrade`, {
-      body: { requestId: run.rid(`up-${slug}`), version: run.c.version },
+      // rl-a and rl-b cross a held migration here, so a release that has one
+      // meets red-line before prod (MIG-2).
+      body: {
+        requestId: run.rid(`up-${slug}`),
+        version: run.c.version,
+        nonAdditive: true,
+      },
     }),
     `R5 ${slug}`,
   );

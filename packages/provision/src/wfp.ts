@@ -95,6 +95,7 @@ import {
   registryEntry,
   registryKey,
 } from "./names.js";
+import { nonAdditiveReason } from "./non-additive.js";
 import {
   canonicalJson,
   type DirectoryRevoke,
@@ -315,6 +316,9 @@ export const VERIFY_CLEAN_REASON_MAX = 300;
 export const BINDING_SHAPE_MAX = 600;
 /** The binding id audit gives up after this, and the job carries on. */
 export const BINDING_ID_AUDIT_MS = 10_000;
+
+/** The cap on a restore point's audited list of migrations. */
+export const RESTORE_POINT_FILES_MAX = 300;
 
 /** The binding types verify_clean refuses on any install (design v7 5.2 e). */
 export const VERIFY_CLEAN_REFUSED_BINDING_TYPES = Object.freeze([
@@ -3270,6 +3274,51 @@ export class WfpProvisioner {
     );
   }
 
+  /**
+   * MIG-2: this install's pending migrations, not the release's, are what an
+   * upgrade would run. One that can lose data needs o.nonAdditive, which a
+   * fleet job never has, and then a restore point: no bookmark, no upgrade.
+   */
+  private async migrationHold(
+    id: InstallId,
+    rel: Checked,
+    d1Id: string,
+    o: { nonAdditive?: boolean },
+  ): Promise<{ bookmark: string; files: string } | null> {
+    const r = await this.cf.d1Query(d1Id, "SELECT name FROM d1_migrations");
+    const done = new Set((r[0]?.results ?? []).map((x) => String(x.name)));
+    const held = rel.migrations.flatMap((f) => {
+      if (done.has(f.name)) return [];
+      const why = nonAdditiveReason(new TextDecoder().decode(f.bytes));
+      return why ? [`${f.name} (${why})`] : [];
+    });
+    if (held.length === 0) return null;
+    const files = held.join(", ");
+    if (o.nonAdditive !== true) {
+      await this.platform.audit(id, "upgrade.held", {
+        to: rel.rec.version,
+        migrations: files.slice(0, RESTORE_POINT_FILES_MAX),
+      });
+      throw new ProvisionRefused(
+        `install ${id}: held, a pending migration can lose data: ${files}`,
+        "migration_held",
+      );
+    }
+    try {
+      return { bookmark: await this.cf.d1Bookmark(d1Id), files };
+    } catch (e) {
+      await this.platform.audit(id, "upgrade.held", {
+        to: rel.rec.version,
+        migrations: files.slice(0, RESTORE_POINT_FILES_MAX),
+        reason: "no_restore_point",
+      });
+      throw new ProvisionRefused(
+        `install ${id}: no restore point, so the migration wasn't run (${errCode(e)})`,
+        "restore_point_failed",
+      );
+    }
+  }
+
   /** L5: the DO rule, re-run on the probed live tag. */
   private doRule(t: Template): (live: string | null) => void {
     return (live) => {
@@ -3286,11 +3335,19 @@ export class WfpProvisioner {
    * secret value) -> /healthz and the read-only MCP selftest -> active. A
    * failed check rolls back, unless the DO tag moved (forward-fix only).
    */
-  async upgrade(id: InstallId, toVersion: string): Promise<UpgradeResult> {
-    return this.guarded(() => this.runUpgrade(id, toVersion));
+  async upgrade(
+    id: InstallId,
+    toVersion: string,
+    o: { nonAdditive?: boolean } = {},
+  ): Promise<UpgradeResult> {
+    return this.guarded(() => this.runUpgrade(id, toVersion, o));
   }
 
-  private async runUpgrade(id: InstallId, to: string): Promise<UpgradeResult> {
+  private async runUpgrade(
+    id: InstallId,
+    to: string,
+    o: { nonAdditive?: boolean },
+  ): Promise<UpgradeResult> {
     const row = await this.openInstall(id, ["active"]);
     this.checkDirect(row.app_host, row.id);
     const from = row.version;
@@ -3326,6 +3383,7 @@ export class WfpProvisioner {
     this.doRule(rel.template)(row.do_migration_tag);
     const { d1Id, kvId } = await this.liveInstall(row, m);
     await this.checkMigrationOrder(rel, d1Id);
+    const restorePoint = await this.migrationHold(id, rel, d1Id, o);
     const own = await this.ownerToken(row, m.appHost);
     const n = names(id, this.env);
     this.metadata(id, m, rel, {
@@ -3351,6 +3409,11 @@ export class WfpProvisioner {
         await this.platform.raiseFloorSeq(rel.floor.seq);
       }
       await this.logged("upgrade.start", { from, to });
+      if (restorePoint)
+        await this.logged("upgrade.restore_point", {
+          bookmark: restorePoint.bookmark,
+          migrations: restorePoint.files.slice(0, RESTORE_POINT_FILES_MAX),
+        });
       await this.hold();
       await this.migrate(rel.rec, d1Id, n.d1);
       const out: UploadOut = { reached: null, maybe: false };
