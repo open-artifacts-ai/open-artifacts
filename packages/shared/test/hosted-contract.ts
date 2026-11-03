@@ -939,6 +939,7 @@ export function hostedContract(d: ContractDriver): ContractCases {
         ["outside@elsewhere.test", true],
         ["newhire@example.com", false],
         ["bob@example.com", false],
+        ["dan@example.com", false],
       ] as const) {
         const r = await d.call("PUT", R.shares(id), {
           email,
@@ -960,7 +961,16 @@ export function hostedContract(d: ContractDriver): ContractCases {
       for (const e of ["newhire@example.com", "bob@example.com"]) {
         expect(of(e)?.role).toBe("editor");
         expect(of(e)).not.toHaveProperty("guest");
+        expect(of(e)).not.toHaveProperty("viewOnly");
       }
+      // Dan is restricted (gCon04): view-only, never why; no user row, absent.
+      expect(of("dan@example.com")).toMatchObject({
+        role: "editor",
+        viewOnly: true,
+      });
+      expect(of("dan@example.com")).not.toHaveProperty("guest");
+      expect(of("outside@elsewhere.test")).not.toHaveProperty("viewOnly");
+      expect(JSON.stringify(rows)).not.toContain("restrict");
     });
   });
 

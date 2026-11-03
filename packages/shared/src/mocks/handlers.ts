@@ -882,7 +882,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       withArt((a) =>
         HttpResponse.json(
           (shares[a.id] ?? []).map((s) =>
-            h?.shareGuest(s.email) ? { ...s, guest: true } : s,
+            h
+              ? {
+                  ...s,
+                  ...(h.shareGuest(s.email) ? { guest: true } : {}),
+                  ...(h.shareViewOnly(s.email) ? { viewOnly: true } : {}),
+                }
+              : s,
           ),
         ),
       ),

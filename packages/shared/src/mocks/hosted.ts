@@ -2549,6 +2549,12 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     return !email.endsWith(`@${MOCK_DOMAIN}`) && providerIds.includes("email");
   };
 
+  /** Share.viewOnly (GET R.shares): a user row with a cap, as the server's capOf. */
+  const shareViewOnly = (email: string): boolean => {
+    const row = members.find((m) => m.email === email);
+    return !!row && capOf(row) !== null;
+  };
+
   /**
    * signInMethods (#799) for an invite (a member row about to exist) or a
    * share, the server's reach rules for the mock's providers, in
@@ -2582,6 +2588,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     hidden: (id: string) => hidden.has(id),
     shareRecipient,
     shareGuest,
+    shareViewOnly,
     signInMethods,
     checkPublish,
     placeNew,
