@@ -164,6 +164,8 @@ export type HostedMockOptions = {
    * R.memberTransfer(guest id) moves them (a guest needs no suspension).
    */
   guestOwners?: number;
+  /** With guestOwners: the last of them has left (status removed). */
+  departedGuestOwner?: boolean;
   /**
    * The spaces feature. Default: on, off with selfHosted (an Access-only
    * install's default). Off, spaces routes are 404, as is R.memberTransfer's
@@ -353,7 +355,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       name: email,
       role: "guest",
       lastSeenAt: null,
-      status: "active",
+      status:
+        o.departedGuestOwner && i === o.guestOwners ? "removed" : "active",
       identities: [],
     });
     departed.set(id, { live: 1, deleted: 0 });
@@ -916,6 +919,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         userId: m.id,
         email: m.email,
         artifacts: departed.get(m.id)?.live ?? 0,
+        status: m.status ?? "active",
       }))
       .sort(
         (x, y) => y.artifacts - x.artifacts || x.email.localeCompare(y.email),
@@ -2545,6 +2549,12 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     return !email.endsWith(`@${MOCK_DOMAIN}`) && providerIds.includes("email");
   };
 
+  /** Share.viewOnly (GET R.shares): a user row with a cap, as the server's capOf. */
+  const shareViewOnly = (email: string): boolean => {
+    const row = members.find((m) => m.email === email);
+    return !!row && capOf(row) !== null;
+  };
+
   /**
    * signInMethods (#799) for an invite (a member row about to exist) or a
    * share, the server's reach rules for the mock's providers, in
@@ -2578,6 +2588,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     hidden: (id: string) => hidden.has(id),
     shareRecipient,
     shareGuest,
+    shareViewOnly,
     signInMethods,
     checkPublish,
     placeNew,

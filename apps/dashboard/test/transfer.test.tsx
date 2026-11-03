@@ -916,6 +916,100 @@ describe("the dialog on what the install can do", () => {
     expect(within(d).queryByText(/Everyone with access/)).toBeNull();
   });
 
+  describe("a guest who has left", () => {
+    const gone = {
+      selfHosted: true,
+      guestOwners: 2,
+      departedGuestOwner: true,
+    } as const;
+    const openGone = async () => {
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "Transfer owner2@outside.example's artifacts",
+        }),
+      );
+      return screen.findByRole("dialog");
+    };
+
+    it("to a person: the Departed wording, not loses access", async () => {
+      mountHosted("/", gone);
+      const d = await openGone();
+      fireEvent.click(
+        await within(d).findByRole("combobox", { name: "Give them to" }),
+      );
+      fireEvent.click(
+        await screen.findByRole("option", { name: "Bob Builder" }),
+      );
+      expect(
+        await within(d).findByText(
+          "You won't see titles or contents. Bob Builder becomes the owner, with owner2@outside.example's shares kept.",
+        ),
+      ).toBeVisible();
+      expect(within(d).queryByText(/loses access/)).toBeNull();
+    });
+
+    it("a released address never shows in the dialog", async () => {
+      const released = "removed+Go0002AbCdEfGhIj@invalid";
+      mountHosted("/", gone, (m) => ({
+        ...m,
+        notices: {
+          ...m.notices,
+          guestSummary: {
+            shares: 0,
+            owners: 0,
+            guestOwners: [
+              {
+                userId: "Go0002AbCdEfGhIj",
+                email: released,
+                artifacts: 1,
+                status: "removed",
+              },
+            ],
+            more: false,
+          },
+        },
+      }));
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "Transfer a former member's artifacts",
+        }),
+      );
+      const d = await screen.findByRole("dialog", {
+        name: "Transfer a former member's 1 artifact",
+      });
+      fireEvent.click(
+        await within(d).findByRole("combobox", { name: "Give them to" }),
+      );
+      fireEvent.click(
+        await screen.findByRole("option", { name: "Bob Builder" }),
+      );
+      expect(
+        await within(d).findByText(
+          "You won't see titles or contents. Bob Builder becomes the owner, with a former member's shares kept.",
+        ),
+      ).toBeVisible();
+      expect(document.body).not.toHaveTextContent("@invalid");
+    });
+
+    it("to a space: the Departed wording", async () => {
+      mountHosted("/", { ...gone, spaces: true });
+      const d = await openGone();
+      fireEvent.click(
+        await within(d).findByRole("radio", { name: /To a space/ }),
+      );
+      fireEvent.click(within(d).getByRole("combobox", { name: "Space" }));
+      fireEvent.click(
+        await screen.findByRole("option", { name: "Engineering" }),
+      );
+      expect(
+        await within(d).findByText(
+          "Everyone with access to Engineering can open them, by their role. This artifact can't be moved back to anyone's Personal afterwards.",
+        ),
+      ).toBeVisible();
+      expect(within(d).queryByText(/loses access/)).toBeNull();
+    });
+  });
+
   it("counts that fail to load say so, with Retry, never 0 artifacts", async () => {
     let fail = true;
     mountHosted("/", notices, undefined, [

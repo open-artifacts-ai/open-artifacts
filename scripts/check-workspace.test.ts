@@ -54,6 +54,16 @@ describe("workspace", () => {
     expect(rootPkg.scripts["oa:setup"]).toBe("pnpm --filter @oa/setup start");
   });
 
+  // #1158: packages' own typecheck scripts each build @oa/provision first, and
+  // pnpm -r runs them in parallel. On a fresh checkout several `tsc -b` then
+  // write its dist at once while another package's tsc reads it. Built once
+  // here, every later build is up to date and writes nothing.
+  it("typecheck builds the shared packages once, before the parallel run", () => {
+    const t = String(rootPkg.scripts.typecheck);
+    expect(t.startsWith("pnpm --filter @oa/provision build && ")).toBe(true);
+    expect(t.indexOf("@oa/provision build")).toBeLessThan(t.indexOf("pnpm -r"));
+  });
+
   it("pins tool versions", () => {
     expect(rootPkg.devDependencies.vitest).toMatch(/^[\^~]?4\.1/);
     expect(rootPkg.devDependencies.typescript).toMatch(/^[\^~]?5\./);

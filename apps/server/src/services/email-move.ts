@@ -10,8 +10,10 @@ import type { Env } from "../env.js";
 // nobody holding the old address, so a freed address inherits nothing and a
 // stale read never re-keys a new holder's shares. Callers: sign-in drift
 // (services/identity.ts followDrift) and directory sync (directory/apply.ts).
-// The deletion treatment's placeholder address is the only other users.email
-// write: it drops the address's shares in its own batch.
+// Two other writes set users.email: the deletion treatment's placeholder,
+// which drops the address's shares in its own batch, and a sync revive
+// taking back a released address (services/members.ts reviveFromSync). Both
+// refuse OWNER_EMAIL, as this does.
 
 const MOVE = `update users set email = ?2
   where id = ?1 and email = ?3 and status <> 'removed'

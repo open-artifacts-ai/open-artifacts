@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { SyncStatus } from "@oa/shared";
 import { withoutCred } from "../auth/cred.js";
+import { withRetries } from "../db/retry.js";
 import type { Env } from "../env.js";
 import type { AuditActor } from "../services/audit.js";
 import {
@@ -29,8 +30,9 @@ export class DirectorySync extends DurableObject<Env> {
   private box = new TokenBox();
 
   constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    this.engine = new SyncEngine(env, ctx.storage, ctx, this.box);
+    // D1 reads retry on a storage failure (db/retry.ts), one wrapper per env.
+    super(ctx, withRetries(env));
+    this.engine = new SyncEngine(this.env, ctx.storage, ctx, this.box);
   }
 
   kick(reason: KickReason): Promise<SyncStatus> {

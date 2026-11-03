@@ -95,7 +95,7 @@ describe("#2: the minted PAT goes to a file, not stdout", () => {
     const pat = (w.files.get(FILE) ?? "").trim();
     const sn = cfg.snippets;
     expect(sn.claudeCode).toBe(
-      "claude mcp add --transport http open-artifacts https://app.example.com/mcp",
+      "claude mcp add --transport http -s user open-artifacts https://app.example.com/mcp",
     );
     expect(JSON.parse(sn.cursor).mcpServers["open-artifacts"]).toEqual({
       url: "https://app.example.com/mcp",
@@ -157,7 +157,7 @@ describe("#2: agent-config needs no token", () => {
     expect(await run(HOSTS, w.deps, ROOT, [agentConfig])).toBe(0);
     const cfg = line(w, "agent-config").data;
     expect(cfg.snippets.claudeCode).toBe(
-      "claude mcp add --transport http open-artifacts https://app.example.com/mcp",
+      "claude mcp add --transport http -s user open-artifacts https://app.example.com/mcp",
     );
     expect(cfg.snippets).not.toHaveProperty("opencodeToken");
     expect(cfg).not.toHaveProperty("tokenFile");
@@ -304,7 +304,7 @@ describe("#22: the docs have no OA_TOKEN export or shell-profile guidance", () =
   it("connect-agents.md puts OAuth first and reads the PAT file for the token variant", () => {
     const md = docs("connect-agents.md");
     expect(md).toContain(
-      "claude mcp add --transport http open-artifacts https://artifacts.example.com/mcp",
+      "claude mcp add --transport http -s user open-artifacts https://artifacts.example.com/mcp",
     );
     expect(md).toContain("{file:<token file>}");
     expect(md).toContain('OA_TOKEN="$(cat <token file>)" codex');
