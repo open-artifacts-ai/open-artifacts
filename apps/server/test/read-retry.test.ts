@@ -14,7 +14,9 @@ import {
 } from "../src/db/retry.js";
 import { stmt } from "../src/db/stmt.js";
 import type { Env } from "../src/env.js";
+import worker from "../src/index.js";
 import { oauthEnv } from "../src/mcp/oauth-store.js";
+import { fetchAndWait } from "./helpers.js";
 
 const E = env as unknown as Env;
 
@@ -578,5 +580,50 @@ describe("Durable Objects read through the wrapper", () => {
       expect(retryingD1(env.DB)).toBe(env.DB);
       expect(withRetries(env)).toBe(env);
     });
+  });
+});
+
+/**
+ * Real D1 whose next `failures` reads (first/all/raw) fail with a storage
+ * error; statements stay real, so batch() still works.
+ */
+function flakyD1(db: D1Database, failures: number): D1Database {
+  let left = failures;
+  const wrap = (s: D1PreparedStatement): D1PreparedStatement => {
+    const rec = s as unknown as Record<string, (...a: unknown[]) => unknown>;
+    for (const m of ["first", "all", "raw"]) {
+      const orig = rec[m] as (...a: unknown[]) => unknown;
+      rec[m] = (...a: unknown[]) => {
+        if (left > 0) {
+          left--;
+          return Promise.reject(d1Down());
+        }
+        return orig.apply(s, a);
+      };
+    }
+    const bind = rec.bind as (...a: unknown[]) => D1PreparedStatement;
+    rec.bind = (...a: unknown[]) => wrap(bind.apply(s, a));
+    return s;
+  };
+  return {
+    prepare: (sql: string) => wrap(db.prepare(sql)),
+    batch: (x: D1PreparedStatement[]) => db.batch(x),
+    exec: (q: string) => db.exec(q),
+  } as unknown as D1Database;
+}
+
+describe("the Worker's fetch reads through the wrapper", () => {
+  it("a read that fails once still answers (/healthz's markers read)", async () => {
+    const res = await fetchAndWait(
+      worker as unknown as Fetcher,
+      new Request(`https://${E.APP_HOST}/healthz`),
+      { ...E, DB: flakyD1(E.DB, 1) },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { oauthStore: unknown };
+    expect(body.oauthStore).not.toBeNull();
+    expect(events().filter((e) => e.evt === "storage_read_retry_ok")).toEqual([
+      { evt: "storage_read_retry_ok", store: "d1", attempts: 2 },
+    ]);
   });
 });
