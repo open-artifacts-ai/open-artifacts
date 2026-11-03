@@ -7,7 +7,7 @@
 // - at most MAX_RETRIED_CASES in a run, so an outage can't retry its way to
 //   green. Past that, cases fail, as they should.
 // Callers are read-only cases: a write isn't safe to run twice.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { note } from "./notes.ts";
 import { NotRefused } from "./refused.ts";
 
@@ -37,18 +37,26 @@ export interface Budget {
 }
 
 /**
- * Counted in a file beside the report: each live test file gets fresh module
- * state, and the cap is per run. Files run one at a time, so no lock is needed.
+ * Counted beside the report: each live test file gets fresh module state, and
+ * the cap is per run. Lanes run files at the same time (src/lanes.ts), so a
+ * retry takes a slot file `<file>.<n>` with an exclusive create: two
+ * processes can never both take slot n, and the run never takes more than
+ * MAX_RETRIED_CASES.
  */
 export function runBudget(
   file = `${process.env.REDLINE_REPORT ?? ".report/report.json"}.retries`,
 ): Budget {
   return {
     take() {
-      const n = existsSync(file) ? Number(readFileSync(file, "utf8")) || 0 : 0;
-      if (n >= MAX_RETRIED_CASES) return false;
-      writeFileSync(file, String(n + 1));
-      return true;
+      for (let n = 0; n < MAX_RETRIED_CASES; n++) {
+        try {
+          writeFileSync(`${file}.${n}`, "1", { flag: "wx", mode: 0o600 });
+          return true;
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+        }
+      }
+      return false;
     },
   };
 }

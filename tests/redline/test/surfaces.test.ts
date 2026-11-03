@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { FOREIGN_CALLERS } from "../../../apps/server/test/authz/expect.ts";
 import {
   ORG_SURFACES,
   SPACE_SURFACES,
@@ -12,6 +13,7 @@ import {
   TEST_OTP_OUTCOMES,
   TestDirectoryGroupsInputSchema,
 } from "../../../packages/shared/src/hosted/test-hooks.ts";
+import { slot, slotValue } from "../src/creds.ts";
 import {
   HOOK_OTP_OUTCOMES,
   HOOK_REFUSALS,
@@ -21,6 +23,7 @@ import {
   SetupHookError,
 } from "../src/http.ts";
 import {
+  crossCheck,
   crossDenied,
   crossProbe,
   crossWrite,
@@ -37,14 +40,21 @@ import {
   coverageGaps,
   DROPPED,
   derive,
+  FOREIGN_OF,
   GRANT_CASE_TIMEOUT_MS,
   GRANT_LIST_MS,
   groupSeed,
   HOOK_SPACE_ID,
   HOSTED_FEATURES,
+  INTERACTIVE_ONLY,
+  MATRIX_AT_B,
   ORG_FRESH,
+  type ProbeCase,
   readRepoFile,
+  runRead,
+  SMOKES,
   viaTarget,
+  type World,
   worldGroups,
   worldSpaces,
 } from "../src/surfaces.ts";
@@ -121,6 +131,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
       name: "org GET /api/v1/usage [pat]",
       routes: ["GET /api/v1/usage"],
       variant: "pat" as const,
+      legs: "own" as const,
       run: async () => "allow" as const,
     };
     expect(coverageGaps({ cases: [...cases, fake], dropped })).toContain(
@@ -167,7 +178,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     ]);
     expect(mutating.size).toBeGreaterThan(0);
     for (const c of cases) {
-      const base = c.name.replace(/ \[(session|pat)\]$/, "");
+      const base = c.name.replace(/ \[(session|pat|oauth)\]$/, "");
       if (mutating.has(base)) {
         expect(c.write).toBeDefined();
         expect(c.run).toBeUndefined();
@@ -178,16 +189,104 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     }
   });
 
-  it("deny-only: the six real-only drops, each still a recorded drop", () => {
+  it("deny-only: the six real-only drops and the interactive-only one, each still a recorded drop", () => {
     const only = cases.filter((c) => c.denyOnly);
     expect(only.map((c) => c.name).sort()).toEqual(
       Object.entries(DROPPED)
-        .filter(([, d]) => d.why === "real-only")
+        .filter(
+          ([, d]) => d.why === "real-only" || d.why === "interactive-only",
+        )
         .map(([n]) => `${n} [session]`)
         .sort(),
     );
-    expect(only).toHaveLength(6);
+    expect(only).toHaveLength(7);
     for (const c of only) expect(c.run).toBeDefined();
+  });
+
+  it("#1204: every route behind interactiveSession is interactive-only or owner-only, and no other is", () => {
+    // Literal handlers whose body checks interactiveSession(c). Directory
+    // disconnect (R.* paths, a shared handler) is owner-only, dropped above.
+    const dir = join(import.meta.dirname, "../../../apps/server/src/routes");
+    const found: string[] = [];
+    for (const f of readdirSync(dir).filter((n) => n.endsWith(".ts"))) {
+      const src = readFileSync(join(dir, f), "utf8");
+      const handlers = src.split(
+        /\n\s*app\.(?=(?:get|post|put|patch|delete)\()/,
+      );
+      for (const h of handlers.slice(1)) {
+        const m = /^(get|post|put|patch|delete)\(\s*"([^"]+)"/.exec(h);
+        if (m && h.includes("interactiveSession(c)"))
+          found.push(`${m[1]?.toUpperCase()} ${m[2]}`);
+      }
+    }
+    expect(found).toContain("POST /api/v1/members/:id/erase");
+    expect([...INTERACTIVE_ONLY].sort()).toEqual(found.sort());
+    for (const r of INTERACTIVE_ONLY) {
+      const x = dropped.find((y) => y.routes.includes(r));
+      expect(x?.why).toBe("interactive-only");
+      expect(cases.find((c) => c.routes.includes(r))?.denyOnly).toBe(true);
+    }
+    for (const r of [
+      "POST /api/v1/directory/disconnect",
+      "DELETE /api/v1/directory",
+    ])
+      expect(dropped.find((y) => y.routes.includes(r))?.why).toBe("owner-only");
+  });
+
+  it("#1137 group B: one live A-at-B smoke per credential kind; the rest are the matrix's", () => {
+    const by = (l: string) => cases.filter((c) => c.legs === l);
+    expect(by("cross").map((c) => c.name)).toEqual([
+      SMOKES.session,
+      SMOKES.pat,
+    ]);
+    expect(
+      by("atB")
+        .filter((c) => !c.denyOnly)
+        .map((c) => [c.name, c.variant]),
+    ).toEqual([[SMOKES.oauth, "oauth"]]);
+    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(7);
+    // Every other case: success legs only, its kind a matrix foreign caller.
+    expect(by("own")).toHaveLength(cases.length - 2 - 8);
+    for (const c of by("own"))
+      expect(FOREIGN_CALLERS).toContain(FOREIGN_OF[c.variant]);
+  });
+
+  it("flag a kind with no live smoke, a stray live A-at-B leg, and a kind the matrix lacks", () => {
+    const set = (name: string, legs: ProbeCase["legs"]) =>
+      cases.map((c) => (c.name === name ? { ...c, legs } : c));
+    expect(
+      coverageGaps({ cases: set(SMOKES.session, "own"), dropped }),
+    ).toContain(`no live A-at-B smoke for session: ${SMOKES.session}`);
+    expect(
+      coverageGaps({ cases: set(SMOKES.oauth, "own"), dropped }),
+    ).toContain(`no live A-at-B smoke for oauth: ${SMOKES.oauth}`);
+    expect(
+      coverageGaps({
+        cases: set("artifact rest patch [pat]", "cross"),
+        dropped,
+      }),
+    ).toContain("live A-at-B leg not in SMOKES: artifact rest patch [pat]");
+    expect(coverageGaps(d, ["foreignSession", "foreignOAuth"])).toContain(
+      "A at B for artifact rest patch [pat]: no matrix foreign caller foreignPat",
+    );
+    expect(coverageGaps(d, ["foreignPat", "foreignOAuth"])).toContain(
+      "A at B for org GET /api/v1/me [session]: no matrix foreign caller foreignSession",
+    );
+  });
+
+  it("flag a matrix citation for A at B that doesn't resolve", () => {
+    const matrix = readRepoFile(MATRIX_AT_B.artifact[0]?.file ?? "") ?? "";
+    const foreign = MATRIX_AT_B.artifact[1]?.describe ?? "";
+    expect(foreign).not.toBe("");
+    const gaps = citationGaps((p) =>
+      p === MATRIX_AT_B.artifact[0]?.file
+        ? matrix.replaceAll(foreign, "renamed")
+        : readRepoFile(p),
+    );
+    for (const f of ["artifact", "org", "space"])
+      expect(gaps).toContain(
+        `A at B (${f}): no describe "${foreign}" in ${MATRIX_AT_B.artifact[0]?.file}`,
+      );
   });
 
   it("grant cases get a timeout that outlasts their list waits", () => {
@@ -235,14 +334,16 @@ const install = (installId: string, token: string, refuse = 401, body = "{}") =>
     res.writeHead(refuse).end(body);
   }) as Parameters<typeof fakeServer>[0];
 
-async function pair(a: Fake, b: Fake) {
+async function pair(a: Fake, b: Fake, content?: { a: string; b: string }) {
   const s = secretDir({ "a-key": KEY_A, "b-key": KEY_B });
   toDispose.push(s.cleanup);
   const t = (name: string, f: Fake, file: string, domain: string) => ({
     name,
     installId: `${name}-id`,
     app: f.origin,
-    content: `http://${name}.content.localhost:1`,
+    content:
+      (name === "rl-a" ? content?.a : content?.b) ??
+      `http://${name}.content.localhost:1`,
     testDomain: domain,
     hookKeyFile: s.path(file),
   });
@@ -514,6 +615,122 @@ describe("crossDenied", () => {
         carries: bearer,
       }),
     ).rejects.toThrow(/answered 404, not 401/);
+  });
+});
+
+// ------------------------------------------- the live A-at-B smokes (#1137)
+
+describe("A-at-B smokes: each fails when B accepts A's credential of its kind", () => {
+  const smoke = (name: string): ProbeCase => {
+    const c = derive().cases.find((x) => x.name === name);
+    if (!c) throw new Error(`no case ${name}`);
+    return c;
+  };
+  /** Each kind's credential on each install (the session as `name=value`). */
+  const CREDS = {
+    session: { a: "oa_session=sess-a", b: "oa_session=sess-b" },
+    pat: { a: "oa_pat_a", b: "oa_pat_b" },
+    oauth: { a: "u:g:oauth-a", b: "u:g:oauth-b" },
+  } as const;
+  const credOf = (v: keyof typeof CREDS, side: "a" | "b") =>
+    v === "session"
+      ? { cookie: CREDS.session[side] }
+      : { token: CREDS[v][side] };
+  /**
+   * A fake install serving its artifact (GET) and get_artifact on /mcp to
+   * the credentials in `accepts` (a cookie pair or a bearer token), else 401.
+   */
+  const install =
+    (
+      installId: string,
+      accepts: Set<string>,
+    ): Parameters<typeof fakeServer>[0] =>
+    (req, res) => {
+      if (req.url === "/healthz")
+        return json(res, 200, { ok: true, testHooks: true, installId });
+      const cookies = (req.headers.cookie ?? "").split(/;\s*/);
+      const bearer = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+      const ok = cookies.some((c) => accepts.has(c)) || accepts.has(bearer);
+      if (!ok) return json(res, 401, { error: "unauthorized" });
+      if (req.method === "POST" && req.url === "/mcp")
+        return json(res, 200, {
+          jsonrpc: "2.0",
+          id: 1,
+          result: { content: [{ text: "{}" }], structuredContent: {} },
+        });
+      if (req.method === "GET" && req.url?.startsWith("/api/v1/artifacts/"))
+        return json(res, 200, { id: req.url.split("/").pop() });
+      json(res, 404, { error: "not_found" });
+    };
+  async function run(v: keyof typeof CREDS, faulty: boolean, c?: ProbeCase) {
+    const a = await fake(install("rl-a-id", new Set([CREDS[v].a])));
+    const b = await fake(
+      install(
+        "rl-b-id",
+        new Set(faulty ? [CREDS[v].b, CREDS[v].a] : [CREDS[v].b]),
+      ),
+    );
+    const T = await pair(a, b);
+    const world = (t: Target) =>
+      ({ artifactId: t === T.a ? "art-a" : "art-b" }) as World;
+    await runRead(c ?? smoke(SMOKES[v]), {
+      a: T.a,
+      b: T.b,
+      credA: credOf(v, "a"),
+      credB: credOf(v, "b"),
+      world,
+    });
+  }
+
+  for (const v of ["session", "pat", "oauth"] as const) {
+    it(`${v}: passes when B refuses A's credential`, async () => {
+      await run(v, false);
+    });
+    it(`${v}: fails when B accepts A's credential`, async () => {
+      const e = await run(v, true).catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(NotRefused);
+      expect((e as Error).message).toMatch(/^A's credential at B \(rl-b;/);
+    });
+  }
+
+  it("an own-legs case doesn't catch it: that is the matrix's job, so each kind keeps its smoke", async () => {
+    // The session smoke with its A-at-B leg trimmed passes against the same
+    // faulty B: coverageGaps keeps one live smoke per kind for this reason.
+    await run("session", true, { ...smoke(SMOKES.session), legs: "own" });
+  });
+
+  it("signed content URL (live/credentials.test.ts): fails when B's content host serves A's", async () => {
+    const PATH = {
+      a: "/c/tok-a/id-a/v1/README.md",
+      b: "/c/tok-b/id-b/v1/README.md",
+    };
+    const content = (serves: Set<string>) =>
+      fake((req, res) => {
+        if (req.url && serves.has(req.url)) return res.writeHead(200).end("ok");
+        res.writeHead(404).end();
+      });
+    const go = async (faulty: boolean) => {
+      const a = await fake(install("rl-a-id", new Set()));
+      const b = await fake(install("rl-b-id", new Set()));
+      const ca = await content(new Set([PATH.a]));
+      const cb = await content(new Set(faulty ? [PATH.b, PATH.a] : [PATH.b]));
+      const T = await pair(a, b, { a: ca.origin, b: cb.origin });
+      // The live case's request: the signed path on the host's content origin.
+      const req = (c: Parameters<typeof slotValue>[0], t: Target) =>
+        new Request(`${t.content}${slotValue<string>(c, t)}`, {
+          redirect: "manual",
+        });
+      await crossCheck(req, {
+        a: T.a,
+        b: T.b,
+        credA: slot(() => PATH.a),
+        credB: slot(() => PATH.b),
+      });
+    };
+    await go(false);
+    const e = await go(true).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(NotRefused);
+    expect((e as Error).message).toMatch(/^A's credential at B \(rl-b;/);
   });
 });
 

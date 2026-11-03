@@ -264,9 +264,27 @@ describe("the socket index (UserPresence INSTALL_INDEX)", () => {
     // The real index, with a counting closer.
     const calls: (string | null)[][] = [];
     const n = CLOSE_FANOUT * 2 + 7;
+    // The queue is due at once, so workerd also fires the alarm on its own,
+    // besides the runs the test starts: each run is measured where it runs.
+    const runs: number[] = [];
+    let active = 0;
+    let overlapped = false;
     const result = await runInDurableObject(index(), async (p) => {
       const base = Date.now();
       p.now = () => base;
+      const alarm = p.alarm.bind(p);
+      p.alarm = async () => {
+        if (active++ > 0) overlapped = true;
+        const start = calls.length;
+        try {
+          await alarm();
+        } finally {
+          active--;
+          runs.push(calls.length - start);
+        }
+      };
+      // The schema, when this test runs alone.
+      p.pendingSweep();
       // Clear what earlier tests left.
       sqlOf(p).exec("delete from seen");
       sqlOf(p).exec("delete from retry");
@@ -291,11 +309,16 @@ describe("the socket index (UserPresence INSTALL_INDEX)", () => {
     expect(calls).toHaveLength(CLOSE_FANOUT);
     // actor null: every socket on the artifact.
     expect(calls.every(([, a]) => a === null)).toBe(true);
-    await runDurableObjectAlarm(index());
-    // One alarm run closes CLOSE_FANOUT more, at most.
-    expect(calls.length).toBeLessThanOrEqual(CLOSE_FANOUT * 2);
     await alarmsUntil(() => calls.length >= n);
     expect(calls).toHaveLength(n);
+    // Each alarm run closes CLOSE_FANOUT at most: the queue drains in full
+    // runs and a remainder, one run at a time. Runs with nothing due close
+    // nothing.
+    expect(overlapped).toBe(false);
+    expect(runs.filter((c) => c > 0)).toEqual([
+      CLOSE_FANOUT,
+      n - CLOSE_FANOUT * 2,
+    ]);
     expect(new Set(calls.map(([id]) => id))).toEqual(
       new Set(Array.from({ length: n }, (_, i) => `art${i}`)),
     );
@@ -312,6 +335,8 @@ describe("the socket index (UserPresence INSTALL_INDEX)", () => {
       sqlOf(p).exec("delete from sweep");
       p.now = () => Date.now();
       p.closer = UserPresenceCloser;
+      // The prototype's alarm again.
+      delete (p as { alarm?: unknown }).alarm;
     });
   });
 
