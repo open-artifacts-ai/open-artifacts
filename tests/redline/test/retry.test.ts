@@ -133,7 +133,7 @@ describe("the report", () => {
       { name: "a", level: "pass", notes: ["case retried once (ECONNRESET)"] },
       { name: "b", level: "pass" },
     ]);
-    expect(r.passed).toBe(true);
+    expect(r.gate.passed).toBe(true);
     expect(formatReport(r)).toContain("Cases retried: 1");
   });
 });
