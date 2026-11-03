@@ -142,6 +142,8 @@ export type HostedMockOptions = {
    * inviting or restoring one answers 409 guest_lapsed (default none).
    */
   lapsedGuests?: string[];
+  /** Carol, who still has artifacts, is removed rather than suspended (#1222's erase refusal). */
+  carolRemoved?: boolean;
   /**
    * Also hold an unreadable group (Contractors): a held entry that removes
    * nobody (wouldRemove 0), which can't be confirmed or snoozed.
@@ -290,7 +292,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     name: "Carol Departed",
     role: "member",
     lastSeenAt: "2025-12-01T10:00:00.000Z",
-    status: "suspended",
+    status: o.carolRemoved ? "removed" : "suspended",
     identities: ["google"],
   };
   const dan: Member = {
