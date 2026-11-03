@@ -948,6 +948,49 @@ describe("the dialog on what the install can do", () => {
       expect(within(d).queryByText(/loses access/)).toBeNull();
     });
 
+    it("a released address never shows in the dialog", async () => {
+      const released = "removed+Go0002AbCdEfGhIj@invalid";
+      mountHosted("/", gone, (m) => ({
+        ...m,
+        notices: {
+          ...m.notices,
+          guestSummary: {
+            shares: 0,
+            owners: 0,
+            guestOwners: [
+              {
+                userId: "Go0002AbCdEfGhIj",
+                email: released,
+                artifacts: 1,
+                status: "removed",
+              },
+            ],
+            more: false,
+          },
+        },
+      }));
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "Transfer a former member's artifacts",
+        }),
+      );
+      const d = await screen.findByRole("dialog", {
+        name: "Transfer a former member's 1 artifact",
+      });
+      fireEvent.click(
+        await within(d).findByRole("combobox", { name: "Give them to" }),
+      );
+      fireEvent.click(
+        await screen.findByRole("option", { name: "Bob Builder" }),
+      );
+      expect(
+        await within(d).findByText(
+          "You won't see titles or contents. Bob Builder becomes the owner, with a former member's shares kept.",
+        ),
+      ).toBeVisible();
+      expect(document.body).not.toHaveTextContent("@invalid");
+    });
+
     it("to a space: the Departed wording", async () => {
       mountHosted("/", { ...gone, spaces: true });
       const d = await openGone();
