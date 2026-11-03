@@ -1820,7 +1820,7 @@ describe("the chains run at once (startChains)", () => {
     expect([...ids].sort()).toEqual(PROBES.map((p) => p.id).sort());
   });
 
-  it("a conforming fake: every level as before; the chains overlap; rl-l is made as rl-p, at its version, and removed; nothing of the run's is left", async () => {
+  it("a conforming fake: every level as before; the chains overlap; rl-l is made as rl-p but at the tag, and removed; nothing of the run's is left", async () => {
     const f = fakeApi();
     const { out, run, liveAtSettle } = await runChains(f);
     expect(levels(out)).toEqual(HAPPY);
@@ -1836,15 +1836,22 @@ describe("the chains run at once (startChains)", () => {
     expect(at(`/installs/${rll?.id}/suspend`)).toBeLessThan(
       at(`/installs/${rlp?.id}/rollback`),
     );
-    // rl-l: the same create body as rl-p's, at the same (previous) version.
+    // rl-l: rl-p's create body, but at the release under test (rl-p's is
+    // the previous one, so P45 has an upgrade to make).
     const create = (slug?: string) => f.creates.find((b) => b.slug === slug);
+    expect(create(rlp?.slug)?.version).toBe("0.81.0");
     expect(create(rll?.slug)).toEqual({
       ...create(rlp?.slug),
       slug: rll?.slug,
       requestId: run.rid("rll"),
+      version: CONFIG.version,
     });
-    expect(create(rll?.slug)?.version).toBe("0.81.0");
     expect(rll?.slug).toBe("rl-l-1234");
+    // P20's suspend went to an install running the tag.
+    expect(
+      f.log.some((l) => l.endsWith(`/installs/${rll?.id}/suspend`)) &&
+        rll?.version === CONFIG.version,
+    ).toBe(true);
     expect(live(f)).toEqual([]);
     expect(run.s.cleanup).toEqual([]);
     // P33 ran last and checked every chain's jobs, rl-l's included.
@@ -1894,6 +1901,28 @@ describe("the chains run at once (startChains)", () => {
     expect(rll?.state).toBe("deleted");
     expect(live(f)).toEqual([]);
     expect(run.s.cleanup).toEqual([]);
+  });
+
+  it("rl-l not on the release under test when P20 starts fails P20 before any suspend (P21 blocked); rl-l is still removed", async () => {
+    const f = fakeApi();
+    f.faults.add("rll_old_version");
+    const { out } = await runChains(f);
+    expect(out.get("P20")).toBe(
+      `P20: rl-l runs 0.81.0, want the release under test ${CONFIG.version}`,
+    );
+    expect(out.get("P21")).toEqual({
+      level: "blocked",
+      reason: "blocked by P20",
+    });
+    const rll = bySlug(f, "rl-l-");
+    expect(f.log.some((l) => l.endsWith(`/installs/${rll?.id}/suspend`))).toBe(
+      false,
+    );
+    expect(without(levels(out), ["P20", "P21"])).toEqual(
+      without(HAPPY, ["P20", "P21"]),
+    );
+    expect(rll?.state).toBe("deleted");
+    expect(live(f)).toEqual([]);
   });
 
   it("a failed P22 fails only P22: P20 and P21 pass, rl-p's chain passes, and the tail still removes rl-l", async () => {

@@ -829,8 +829,8 @@ function rlp(run: Run): RlP {
 /**
  * rl-l-<run>: the install P20 to P22 run on, so suspend, resume and restore
  * run while rl-p goes through its upgrade and rollback. Made as P13 makes
- * rl-p (oidcCreate, the same version, testHooks) and ready as P13 leaves
- * rl-p: done, both hosts set, the redline /healthz served. That create is
+ * rl-p (oidcCreate, testHooks) but at the release under test, and ready as
+ * P13 leaves rl-p: done, both hosts set, the redline /healthz served. That create is
  * P13's case, so here it's setup: any failure is infra (never a pass, never
  * a red-line verdict) and P20 to P22 report it. Listed for cleanup before
  * its create; the chain's tail removes it (removeLifecycle). Memoized: every
@@ -845,7 +845,9 @@ async function makeLifecycle(run: Run): Promise<RlP> {
   const slug = run.slug("l");
   run.s.cleanup.push({ slug });
   try {
-    const version = (await previous(run)) ?? run.c.version;
+    // The release under test, so a green P20-P22 proves suspend, resume and
+    // restore on what ships (P28 holds it installable).
+    const version = run.c.version;
     const a = run.accepted(
       await run.v1("/installs", {
         body: oidcCreate(run, slug, run.rid("rll"), version),
@@ -1715,9 +1717,15 @@ export const PROBES: readonly Probe[] = [
     id: "P20",
     title:
       "suspend: 503 paused page on both hosts within 120 s; inventory paused",
-    // On rl-l (lifecycleInstall): a serving install, as rl-p was here.
+    // On rl-l (lifecycleInstall): a serving install at the release under
+    // test, so a pass here and in P21 and P22 is about what ships.
     run: async (run) => {
       const p = await lifecycleInstall(run);
+      const v = (await ownDetail(run, p.id)).json as InstallDetail | undefined;
+      if (v?.version !== run.c.version)
+        throw new ProbeFail(
+          `P20: rl-l runs ${typeof v?.version === "string" ? v.version.slice(0, 20) : "no version"}, want the release under test ${run.c.version}`,
+        );
       const a = run.accepted(
         await run.v1(`/installs/${p.id}/suspend`, {
           body: { requestId: run.rid("p20"), reason: "red-line P20" },

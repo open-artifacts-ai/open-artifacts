@@ -126,6 +126,7 @@ export type Fault =
   | "prod_live"
   /** rl-l's create fails at upload (as a Cloudflare API error would). */
   | "rll_create_failed"
+  | "rll_old_version"
   | "p20_content_serving"
   | "p21_stays_paused";
 
@@ -558,7 +559,11 @@ export function fakeApi(): FakeApi {
         },
         onDone: () => {
           i.state = "active";
-          i.version = version;
+          // rll_old_version: rl-l lands on the previous release, whatever asked.
+          i.version =
+            faults.has("rll_old_version") && i.slug.startsWith("rl-l-")
+              ? "0.81.0"
+              : version;
           if (faults.has("p13_hosts_cache"))
             hostsCachedUntil.set(i.id, clock.t + 60_000);
         },
