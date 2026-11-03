@@ -144,7 +144,7 @@ async function oauthAtA(a: Env, userId: string): Promise<string> {
 /** The foreign callers' credentials, each issued by A for `subject`. */
 export async function foreignCreds(
   a: Env,
-  subject: { id: string; epoch: number },
+  subject: { id: string; email: string; epoch: number },
 ): Promise<Record<ForeignCaller, Cred>> {
   const cookie = `${sessionCookieName(a)}=${await signSession(
     a,
@@ -152,10 +152,21 @@ export async function foreignCreds(
     Date.now(),
     { provider: "access", epoch: subject.epoch },
   )}`;
+  const { email } = subject;
+  // The token callers send even the cookie write probes, by bearer (a PAT
+  // or grant also reaches those routes): every one must refuse.
   return {
-    foreignSession: { cookie },
-    foreignPat: { token: (await createPat(a, subject.id, "mx-foreign")).token },
-    foreignOAuth: { token: await oauthAtA(a, subject.id) },
+    foreignSession: { cookie, email },
+    foreignPat: {
+      token: (await createPat(a, subject.id, "mx-foreign")).token,
+      email,
+      bearerWrites: true,
+    },
+    foreignOAuth: {
+      token: await oauthAtA(a, subject.id),
+      email,
+      bearerWrites: true,
+    },
   };
 }
 

@@ -235,8 +235,10 @@ describe("foreign credentials: another install's, valid there (#1137)", () => {
       }),
       e,
     );
-    const body = (await r.json().catch(() => ({}))) as { id?: string };
-    return { status: r.status, id: body.id };
+    const body = (await r.json().catch(() => ({}))) as {
+      user?: { id?: string };
+    };
+    return { status: r.status, id: body.user?.id };
   };
   const toolsAt = async (e: unknown, token: string) => {
     const r = await fetchAndWait(
@@ -276,11 +278,18 @@ describe("foreign credentials: another install's, valid there (#1137)", () => {
       expect(TRAITS[c]).toEqual(TRAITS.anonymous);
     }
     // Each sends exactly one credential, of its own kind.
-    expect(Object.keys(w.creds.foreignSession)).toEqual(["cookie"]);
-    expect(Object.keys(w.creds.foreignPat)).toEqual(["token"]);
+    const sent = (c: Cred) =>
+      Object.keys(c).filter((k) => k === "cookie" || k === "token");
+    expect(sent(w.creds.foreignSession)).toEqual(["cookie"]);
+    expect(sent(w.creds.foreignPat)).toEqual(["token"]);
     expect(w.creds.foreignPat.token).toMatch(/^oa_pat_/);
-    expect(Object.keys(w.creds.foreignOAuth)).toEqual(["token"]);
+    expect(sent(w.creds.foreignOAuth)).toEqual(["token"]);
     expect(w.creds.foreignOAuth.token).toMatch(/^[^:]+:[^:]+:[^:]+$/);
+    // Bearer writes (cookie write probes sent by token) only for callers
+    // every write must refuse: the foreign token callers.
+    expect(
+      CALLERS.filter((c) => w.creds[c].bearerWrites).sort(),
+    ).toEqual(["foreignOAuth", "foreignPat"]);
   });
 
   it("each works at A, the install that issued it, as B's owner id; at B it is no one", async () => {
