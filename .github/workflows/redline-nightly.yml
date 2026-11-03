@@ -1,0 +1,95 @@
+# The nightly red-line run (#1137): the latest release's own suite, once per
+# release, so idle nights use nothing. It skips while any red-line run is going
+# and until staging runs the release. A run's result is the workflow's own
+# record: no session watches it. Red keeps one `blocker` issue open, and green
+# closes it; it sends no email, so P30, which opens an alert, doesn't run here.
+# The gate accepts that on a scheduled run only (report.ts, runKindOf).
+# Not a prod gate: staging-first-gate.sh reads runs of redline-staging.yml, and
+# a run called from here isn't one. Every red-line run applies the gate, so a
+# nightly is green only if every case passes, P30 aside. A running nightly holds a candidate on the
+# `redline` group for up to about 150 min, and a second dispatch while one waits
+# replaces it, so a nightly waits 3 h after any candidate run.
+name: redline-nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions: {}
+
+concurrency:
+  group: redline-nightly
+  cancel-in-progress: false
+
+jobs:
+  pick:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 10
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - id: plan
+        name: Does this release need its run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node --experimental-strip-types scripts/ci/redline-nightly.ts plan --repo "$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
+      # Before the run: a release gets one nightly, green or red.
+      - name: Record the release as run
+        if: steps.plan.outputs.run == 'true'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ran"
+          printf '%s\n' "$TAG" > "$RUNNER_TEMP/ran/tag.txt"
+      - if: steps.plan.outputs.run == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: redline-nightly-${{ steps.plan.outputs.tag }}
+          path: ${{ runner.temp }}/ran/tag.txt
+          if-no-files-found: error
+          retention-days: 90
+  redline:
+    needs: pick
+    if: needs.pick.outputs.run == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/redline-staging.yml
+    with:
+      tag: ${{ needs.pick.outputs.tag }}
+    # No secrets passed: the called jobs name their Environments, and an
+    # Environment's secrets reach them there. Nothing repo-level goes along.
+  report:
+    needs: [pick, redline]
+    if: ${{ always() && (needs.pick.result != 'success' || needs.pick.outputs.run == 'true') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Keep the blocker issue in step
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.pick.outputs.tag }}
+          # A failed pick is reported too: a nightly never fails quietly.
+          RESULT: ${{ needs.pick.result == 'success' && needs.redline.result || needs.pick.result }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/ci/redline-nightly.ts report --repo "$GITHUB_REPOSITORY" --tag "$TAG" --result "$RESULT" --run "$RUN"

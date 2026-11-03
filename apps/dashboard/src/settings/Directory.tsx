@@ -637,6 +637,7 @@ function Confirm({
   title,
   body,
   confirm,
+  danger,
   onConfirm,
 }: {
   open: boolean;
@@ -644,6 +645,8 @@ function Confirm({
   title: string;
   body: ReactNode;
   confirm: string;
+  /** The action can't be undone from here: the danger button. */
+  danger?: boolean;
   onConfirm: () => void;
 }) {
   const opener = useRef<HTMLElement | null>(null);
@@ -673,6 +676,7 @@ function Confirm({
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <Button
+            variant={danger ? "destructive" : "default"}
             onClick={() => {
               onClose();
               onConfirm();
@@ -985,6 +989,24 @@ function RestrictedGroups({
 
 // -- connection
 
+/**
+ * The Disconnect confirm (#939): option A, with Design's sentence on leavers
+ * and restricted groups. A mismatched directory drops both of A's access
+ * lines for `mismatch`.
+ */
+export const DISCONNECT_COPY = {
+  title: "Disconnect Google Workspace?",
+  stops: "Open Artifacts stops syncing with Google and deletes its connection.",
+  access:
+    "Everyone keeps the access they have now, and you manage members here from now on.",
+  mismatch:
+    "Your directory reports a different Google organization, so people who sign in through it stay signed out until you connect again.",
+  again: "You can connect again later.",
+  leaving:
+    "People who leave in Google keep their access until you remove them in Members, and restricted groups stay in force until you lift them.",
+} as const;
+const D = DISCONNECT_COPY;
+
 function Connection({ sync, owner }: { sync: SyncStatus; owner: boolean }) {
   const [asking, setAsking] = useState(false);
   const disconnect = useDisconnectDirectory();
@@ -1019,21 +1041,19 @@ function Connection({ sync, owner }: { sync: SyncStatus; owner: boolean }) {
       <Confirm
         open={asking}
         onClose={() => setAsking(false)}
-        title="Disconnect Google Workspace?"
+        title={D.title}
         body={
           <>
             <p>
-              Sync stops. Space memberships stay as they are and are managed
-              manually. Nobody loses access.
+              {D.stops}{" "}
+              {sync.state === "customer_mismatch" ? D.mismatch : D.access}
             </p>
-            <p>
-              People who leave in Google keep their access here until you remove
-              them in Members. Restricted groups stay in force until you lift
-              them.
-            </p>
+            {sync.state !== "customer_mismatch" && <p>{D.leaving}</p>}
+            <p className={muted}>{D.again}</p>
           </>
         }
         confirm="Disconnect"
+        danger
         onConfirm={() => disconnect.mutate()}
       />
     </SettingsCard>
@@ -1067,7 +1087,8 @@ export function Directory() {
   useDocumentTitle("Directory");
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
-  const owner = me?.user.role === "owner";
+  // The server's rule (directory.manage, directory.disconnect): the owner, uncapped.
+  const owner = me?.user.role === "owner" && me.auth?.cap == null;
   const search = useSearch({ strict: false }) as {
     connected?: string;
     error?: string;

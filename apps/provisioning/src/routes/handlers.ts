@@ -66,4 +66,6 @@ export const HANDLERS: Readonly<Record<ApiRouteId, Handler>> = {
   R26: lifecycleWrite,
   R27: world,
   R28: testAdminSession,
+  R29: lifecycleWrite,
+  R30: lifecycleWrite,
 };

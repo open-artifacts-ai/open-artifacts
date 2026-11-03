@@ -98,6 +98,15 @@ const STEP_LABEL: Record<string, string | null> = {
   teardown: "Remove the install",
   free: "Free the slug",
   release: "Release the lease",
+  // The OAuth store jobs (#1008).
+  precheck: "Check the install",
+  update_vars: "Update the settings",
+  mode_live: "Check the new mode",
+  put_key: "Set the copy key",
+  key_live: "Wait for the key",
+  copy: "Copy to D1",
+  drop_key: "Remove the copy key",
+  verify: "Check the copy",
   release_lease: "Release the lease",
   sweep_tokens: "Sweep tokens",
   settle: "Settle",
@@ -138,6 +147,7 @@ export const JOB_VERB: Record<JobKind, { ing: string; noun: string }> = {
   release_lease: { ing: "Releasing the lease on", noun: "Release lease" },
   cleanup: { ing: "Cleaning up", noun: "Cleanup" },
   redline_creds: { ing: "Minting credentials for", noun: "Credentials" },
+  update: { ing: "Updating", noun: "Update" },
 };
 
 /** The version an upgrade-like job moves to: the API stores `version`, fixtures use `to`. */

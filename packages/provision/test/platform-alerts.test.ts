@@ -18,6 +18,7 @@ const DAY = Date.parse("2026-10-31T00:00:00Z");
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const CAP = 3;
+const DAY_MS = 24 * HOUR;
 
 const run = (db: DatabaseSync, key: SqlAlertKey, now = NOW): AlertRow[] =>
   db
@@ -58,6 +59,48 @@ describe("alert conditions", () => {
       "since",
     ]);
     expect(row?.message).toHaveLength(200);
+  });
+
+  it("job_failed: a copy_key_left job stays open until the key is seen gone (#1008)", () => {
+    const db = platformDb();
+    const left = (id: string, finished: number) =>
+      job(db, id, {
+        kind: "update",
+        workflow: "manage_install",
+        status: "failed",
+        error_code: "copy_key_left",
+        created_at: finished - MIN,
+        finished_at: finished,
+      });
+    const gone = (installId: string, at: number) =>
+      insert(db, "hosted_audit", {
+        at,
+        actor: "job:x",
+        install_id: installId,
+        action: "oauth_copy.key_gone",
+        detail: "{}",
+      });
+    const ids = () => run(db, "job_failed").map((r) => r.install_id);
+    // Older than the lookback, and a later done upgrade: still open.
+    left("old", NOW - 30 * DAY_MS);
+    job(db, "old", {
+      kind: "upgrade",
+      status: "done",
+      created_at: NOW - 2 * HOUR,
+      finished_at: NOW - HOUR,
+    });
+    expect(ids()).toEqual(["old"]);
+    // A gone row from before the job doesn't count; one after it does.
+    left("seen", NOW - HOUR);
+    gone("seen", NOW - 2 * HOUR);
+    expect(ids().sort()).toEqual(["old", "seen"]);
+    gone("seen", NOW - MIN);
+    gone("old", NOW - 29 * DAY_MS);
+    expect(ids()).toEqual([]);
+    // Another install's gone row is not this one's.
+    left("other", NOW - HOUR);
+    gone("elsewhere", NOW - MIN);
+    expect(ids()).toEqual(["other"]);
   });
 
   it("signin_refused_burst: 5 refusals in 10 minutes, audit rows plus sign-in aggregates", () => {

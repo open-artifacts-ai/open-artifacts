@@ -59,7 +59,7 @@ export function SpacePicker({
       </Select>
       <small id={`${id}-help`} className="up-help">
         {value && value === personalSpaceId
-          ? "Only you, and anyone you share it with."
+          ? "Only you can see it until you share it or move it to a space."
           : "People in this space get access by their role."}
       </small>
     </div>

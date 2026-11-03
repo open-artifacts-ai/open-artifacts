@@ -7,7 +7,12 @@ import { Badge, Button, Input, Label } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useId, useState } from "react";
 import { ApiClientError } from "../../api/client";
-import { directoryMode, type Space, type SpaceRole } from "../../api/contract";
+import {
+  directoryMode,
+  type GroupMapping,
+  type Space,
+  type SpaceRole,
+} from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
 import {
   useAddSelfToSpace,
@@ -38,6 +43,7 @@ import {
   mappingProblem,
   Problem,
   people,
+  RemoveMapping,
   ROLE_LABEL,
   RoleSelect,
   SpaceAccess,
@@ -204,6 +210,7 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
   const put = usePutOrgMapping();
   const remove = useDeleteOrgMapping();
   const [pending, setPending] = useState<Record<string, SpaceRole>>({});
+  const [removing, setRemoving] = useState<GroupMapping | null>(null);
   const [problem, setProblem] = useState<ReturnType<
     typeof mappingProblem
   > | null>(null);
@@ -264,9 +271,7 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
                         aria-label={`Remove ${g.email}`}
                         onClick={() => {
                           setProblem(null);
-                          remove.mutate(g.groupId, {
-                            onError: (e) => setProblem(mappingProblem(e)),
-                          });
+                          setRemoving(g);
                         }}
                       >
                         Remove
@@ -282,6 +287,20 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
             ))}
           </tbody>
         </table>
+      )}
+      {removing && (
+        <RemoveMapping
+          mapping={removing}
+          space={null}
+          onClose={() => setRemoving(null)}
+          onConfirm={() => {
+            const g = removing;
+            setRemoving(null);
+            remove.mutate(g.groupId, {
+              onError: (e) => setProblem(mappingProblem(e)),
+            });
+          }}
+        />
       )}
       {syncOn && (
         <GroupPicker

@@ -167,6 +167,89 @@ describe("share panel", () => {
     },
   );
 
+  describe("a member who can only view (viewOnly)", () => {
+    const rows = (list: object[]) =>
+      server.use(
+        http.get("*/api/v1/artifacts/:id/shares", () =>
+          HttpResponse.json(
+            list.map((r) => ({ createdAt: "2026-10-01T00:00:00.000Z", ...r })),
+          ),
+        ),
+      );
+    const NOW = "Can only view for now";
+
+    it("an editor share: the stored role, and the caption line with the controls", async () => {
+      rows([{ email: "dan@example.com", role: "editor", viewOnly: true }]);
+      mount(panel(OWNED));
+      const email = await screen.findByTitle("dan@example.com");
+      const caption = screen.getByText(NOW);
+      expect(email.nextElementSibling).toBeNull();
+      const select = screen.getByRole("combobox", {
+        name: "Role for dan@example.com",
+      });
+      expect(select).toHaveTextContent("Editor");
+      expect(caption.parentElement).toContainElement(select);
+      expect(caption.parentElement).toContainElement(
+        screen.getByRole("button", { name: "Remove dan@example.com" }),
+      );
+      expect(document.body).not.toHaveTextContent(/restrict/i);
+    });
+
+    it("a viewer share: no line", async () => {
+      rows([{ email: "dan@example.com", role: "viewer", viewOnly: true }]);
+      mount(panel(OWNED));
+      await screen.findByTitle("dan@example.com");
+      expect(screen.queryByText(NOW)).toBeNull();
+    });
+
+    it("a guest stays a guest when both are set", async () => {
+      rows([
+        {
+          email: "gus@elsewhere.test",
+          role: "editor",
+          guest: true,
+          viewOnly: true,
+        },
+      ]);
+      mount(panel(OWNED));
+      expect(
+        await screen.findByText("Guest · can only view for now"),
+      ).toBeTruthy();
+      expect(screen.queryByText(NOW)).toBeNull();
+    });
+
+    it("right after sharing as Editor: the caption, and no status note", async () => {
+      let list: object[] = [];
+      server.use(
+        http.get("*/api/v1/artifacts/:id/shares", () =>
+          HttpResponse.json(list),
+        ),
+        http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
+          const b = (await request.json()) as { email: string; role: string };
+          const row = { ...b, createdAt: "2026-10-01T00:00:00.000Z" };
+          list = [{ ...row, viewOnly: true }];
+          return HttpResponse.json({ ...row, emailed: false });
+        }),
+      );
+      mount(panel(OWNED));
+      fireEvent.keyDown(
+        await screen.findByRole("combobox", { name: "Invite role" }),
+        { key: "Enter" },
+      );
+      fireEvent.click(await screen.findByRole("option", { name: "Editor" }));
+      fireEvent.change(screen.getByLabelText("Email"), {
+        target: { value: "dan@example.com" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Add" }));
+      expect(await screen.findByText(NOW)).toBeVisible();
+      expect(screen.queryByText("They can only view for now.")).toBeNull();
+      const row = (await screen.findByTitle("dan@example.com")).closest(
+        "li",
+      ) as HTMLElement;
+      expect(within(row).queryByRole("status")).toBeNull();
+    });
+  });
+
   describe("a guest invited as Editor", () => {
     const LINE =
       "Guests can only view. If they become a member, they'll be able to edit.";

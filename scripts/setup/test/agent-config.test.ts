@@ -12,7 +12,7 @@ describe("agent-config snippets", () => {
   });
   it("OAuth clients get only the URL: no header, token or env", () => {
     expect(s.claudeCode).toBe(
-      `claude mcp add --transport http open-artifacts ${URL}`,
+      `claude mcp add --transport http -s user open-artifacts ${URL}`,
     );
     expect(JSON.parse(s.cursor as string).mcpServers["open-artifacts"]).toEqual(
       {

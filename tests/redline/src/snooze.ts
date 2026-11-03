@@ -215,9 +215,13 @@ export async function snoozeOwnerPath(
       { reason: SNOOZE_REASON },
     );
     const until = snoozedUntilIn(snoozed, g.groupId);
+    if (until === undefined)
+      throw new Error(
+        `${t.name} owner snooze: the group is not in the status's held list`,
+      );
     if (typeof until !== "string" || !(Date.parse(until) > Date.now()))
       throw new Error(
-        `${t.name} owner snooze: the hold has no future snoozedUntil`,
+        `${t.name} owner snooze: the group is held but has no future snoozedUntil`,
       );
     const after = await heldSweeps(t, owner, "owner Me after the snooze");
     if (after !== base)

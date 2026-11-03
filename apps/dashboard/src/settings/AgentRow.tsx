@@ -12,7 +12,7 @@ import {
   DropdownMenuTrigger,
   Input,
 } from "@oa/ui/shadcn";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useLabelOAuthClient } from "../api/queries";
 import { initials } from "../layout/UserAvatar";
 import { AppLink } from "../library/AppLink";
@@ -98,6 +98,19 @@ export function AgentRow({
   const reported = [c.clientName, c.clientVersion].filter(Boolean).join(" ");
   const versions = c.versionsPublished ?? 0;
   const old = !c.approvedFrom && !c.redirectKind;
+  // Editing replaces the row, so the control that opened it is gone: when
+  // editing ends, focus goes to the row's ••• trigger, not to the page.
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [refocus, setRefocus] = useState(false);
+  const stop = () => {
+    setEditing(false);
+    setRefocus(true);
+  };
+  useEffect(() => {
+    if (editing || !refocus) return;
+    trigger.current?.focus();
+    setRefocus(false);
+  }, [editing, refocus]);
   const edit = () => {
     setDraft(c.label ?? "");
     setError(null);
@@ -110,7 +123,7 @@ export function AgentRow({
     label.mutate(
       { grantId: c.grantId, label: v || null },
       {
-        onSuccess: () => setEditing(false),
+        onSuccess: stop,
         onError: () => setError("Couldn't save the label. Try again."),
       },
     );
@@ -150,7 +163,7 @@ export function AgentRow({
                   save();
                 } else if (e.key === "Escape") {
                   e.preventDefault();
-                  setEditing(false);
+                  stop();
                 }
               }}
               className="h-8 min-w-[160px] flex-1 text-[length:var(--oa-text-sm)] max-[600px]:basis-full"
@@ -168,7 +181,7 @@ export function AgentRow({
               size="sm"
               variant="outline"
               disabled={label.isPending}
-              onClick={() => setEditing(false)}
+              onClick={stop}
             >
               Cancel
             </Button>
@@ -259,6 +272,7 @@ export function AgentRow({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
+              ref={trigger}
               variant="ghost"
               size="sm"
               aria-label={`More for ${c.label ?? c.clientName}`}

@@ -180,7 +180,7 @@ describe("deploy, owner-token, selftest, agent-config", () => {
     expect(JSON.stringify(cfg)).not.toContain(pat);
     // #2: OAuth clients get only the URL; no token or header in any command.
     expect(cfg.snippets.claudeCode).toBe(
-      "claude mcp add --transport http open-artifacts https://app.example.com/mcp",
+      "claude mcp add --transport http -s user open-artifacts https://app.example.com/mcp",
     );
     expect(cfg.snippets.codex).toContain("[mcp_servers.open-artifacts]");
     expect(JSON.parse(cfg.snippets.cursor)).toEqual({
@@ -333,7 +333,7 @@ describe("deploy, owner-token, selftest, agent-config", () => {
     const cfg = line(w, "agent-config");
     expect(cfg.status).toBe("ok");
     expect(cfg.data.snippets.claudeCode).toBe(
-      "claude mcp add --transport http open-artifacts https://app.example.com/mcp",
+      "claude mcp add --transport http -s user open-artifacts https://app.example.com/mcp",
     );
     expect(cfg.data.snippets).not.toHaveProperty("opencodeToken");
     expect(cfg.data.tokenNote).toMatch(/fallback snippets appear once/);

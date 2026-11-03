@@ -8,11 +8,11 @@ import {
   type InstallDetail,
   type InstallState,
   type InstallSummary,
-  JOB_STEPS,
   type Job,
   JobErrorCodeSchema,
   JobFailPointSchema,
   type JobKind,
+  jobStepsFor,
   type ServingMode,
   type Tier,
   VersionSchema,
@@ -302,15 +302,13 @@ function failureOf(r: JobRow): Job["failure"] {
 
 /** A Job without `sealed` (R14, R27); jobOf adds it for R15. */
 export function jobItemOf(r: JobRow): Omit<Job, "sealed"> {
-  const steps: string[] = [
-    ...((JOB_STEPS as Record<string, readonly string[]>)[r.kind] ?? []),
-  ];
-  const at = r.step === null ? -1 : steps.indexOf(r.step);
   let args: Record<string, unknown> = {};
   try {
     const a = JSON.parse(r.args);
     if (a && typeof a === "object" && !Array.isArray(a)) args = a;
   } catch {}
+  const steps: string[] = [...(jobStepsFor(r.kind, args) ?? [])];
+  const at = r.step === null ? -1 : steps.indexOf(r.step);
   return {
     id: r.id,
     kind: r.kind,

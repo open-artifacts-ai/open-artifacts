@@ -61,6 +61,12 @@ interface FInstall {
   activeJobId: string | null;
   /** Set when a discard or purge is done: R3 still reads the row as deleted. */
   deletedAt: number | null;
+  /**
+   * A discard: the create never got an installs row (manage.ts), so its slug
+   * is free again. A purge keeps the row, and installs.slug is UNIQUE: that
+   * slug stays taken for good.
+   */
+  discarded?: boolean;
 }
 interface FJob {
   id: string;
@@ -88,6 +94,7 @@ export type Fault =
   | "p16_late"
   | "p22_closed_404"
   | "p23_no_row"
+  | "p23_slug_freed"
   | "p44_unlisted_redirect"
   | "p24_old"
   | "p27_no_token_ok"
@@ -115,6 +122,7 @@ export type Fault =
   | "p50_groups_refused"
   | "p50_team_tier"
   | "p50_no_codes"
+  | "p50_no_test_held"
   | "prod_live";
 
 export interface FakeApi {
@@ -189,8 +197,10 @@ export function fakeApi(): FakeApi {
   const signupAccounts = new Set<string>();
   /** Purged rows inventory lost (fault p23_no_row). */
   const noRow = new Set<string>();
-  /** Rows a done discard or purge freed: slug, HOSTS and pages forget them. */
+  /** Rows a done discard or purge freed: HOSTS and pages forget them. */
   const live = (i: FInstall) => i.deletedAt === null;
+  /** Every row but a discarded create's holds its slug (installs.slug UNIQUE). */
+  const holdsSlug = (i: FInstall) => !i.discarded;
   const authStarts = new Map<number, number>();
   /** Dispatch's 60 s HOSTS cache: a new host's /healthz 404s until then. */
   const hostsCachedUntil = new Map<string, number>();
@@ -434,7 +444,9 @@ export function fakeApi(): FakeApi {
     if (m)
       return ok({
         slug: m[1],
-        status: [...installs.values()].some((i) => live(i) && i.slug === m?.[1])
+        status: [...installs.values()].some(
+          (i) => holdsSlug(i) && i.slug === m?.[1],
+        )
           ? "taken"
           : "ok",
       });
@@ -485,7 +497,9 @@ export function fakeApi(): FakeApi {
       // One live install per account (signup_accounts): freed only on a
       // failed create or 7 days after a purge, never within a run.
       if (user && signupAccounts.has(p)) return err(409, "signup_limit");
-      if ([...installs.values()].some((i) => live(i) && i.slug === body.slug))
+      if (
+        [...installs.values()].some((i) => holdsSlug(i) && i.slug === body.slug)
+      )
         return err(409, "slug_taken");
       const version = (body.version as string | undefined) ?? "0.82.0";
       const rel = releases.find((r) => r.version === version);
@@ -518,6 +532,7 @@ export function fakeApi(): FakeApi {
             : {}),
           ...(faults.has("p50_ineligible") ? { otpOutcome: "ineligible" } : {}),
           ...(faults.has("p50_groups_refused") ? { groupsRefused: true } : {}),
+          ...(faults.has("p50_no_test_held") ? { testHeldShown: false } : {}),
           ...(tier === "business" ? {} : { mode: "frozen" }),
         };
         const install = snoozeInstall(() => STAGING_TEST_DOMAIN, i.id, o);
@@ -633,12 +648,15 @@ export function fakeApi(): FakeApi {
         const kind = i.state === "failed" ? "discard" : "purge";
         // Design 3.4 row 1: the row stays, R3 reads it as deleted (the
         // status view maps discarded_at); inventory keeps it as deleted
-        // (install_status); HOSTS forgets it and the slug is free.
+        // (install_status); HOSTS forgets it. A discard frees the slug; a
+        // purge doesn't.
         const j = startJob(i, kind, p, {
           onDone: () => {
             i.state = "deleted";
             i.mode = null;
             i.deletedAt = clock.t;
+            if (kind === "discard" || faults.has("p23_slug_freed"))
+              i.discarded = true;
             const tn = tenants.get(i.appHost);
             if (tn) {
               tenants.delete(i.appHost);

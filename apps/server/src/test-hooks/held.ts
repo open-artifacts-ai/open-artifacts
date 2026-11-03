@@ -1,12 +1,14 @@
 import type { HeldSweep } from "@oa/shared";
 import type { Health } from "../directory/health.js";
+import { type HookEnv, testHooksOn } from "./on.js";
 
 // The directory-held hook's DO half (#1078): puts a held sweep on a suite
 // group, or takes it off, in the same places real sync keeps one (the
 // DirectorySync DO's held table and the D1 health row's held list), so the
 // owner's snooze and cancel routes run unchanged against it. Only
-// directory/sync.ts reaches this, through a build-flag gate: release builds
-// drop it with the rest of test-hooks/.
+// directory/sync.ts (testHold) and directory/connect.ts (testHeldShown) reach
+// this, each through a build-flag gate: release builds drop it with the rest
+// of test-hooks/.
 
 /** What the hold needs from the engine (directory/sync.ts testHold). */
 export interface TestHoldIo {
@@ -61,6 +63,19 @@ const RELEASE =
   "delete from held where group_id = ?1 and substr(group_id, 1, 5) = 'test-'";
 const SNOOZE_AT =
   "select at from snoozed where group_id = ?1 and substr(group_id, 1, 5) = 'test-'";
+
+/**
+ * The held list SyncStatus shows on an install with no directory binding
+ * (directory/connect.ts directoryStatus): the test hook's holds only, while
+ * hooks are live. Real sync never holds a sweep without a binding, so a
+ * status without one shows none; a red-line install has no binding, and its
+ * snooze case must still see its `test-` hold. Anything not `test-`, or
+ * hooks off: nothing, as without this.
+ */
+export function testHeldShown(env: HookEnv, held: HeldSweep[]): HeldSweep[] {
+  if (!testHooksOn(env)) return [];
+  return held.filter((x) => x.groupId.startsWith("test-"));
+}
 
 /**
  * `on`: `groupId` held (one removal waiting, two members), shown in the held

@@ -99,17 +99,30 @@ it("no eligible target: Move is hidden", async () => {
   expect(screen.queryByRole("button", { name: "Move" })).toBeNull();
 });
 
-it("targets: spaces you can publish to, with your role; never Personal or the current space", async () => {
+it("targets: spaces you can publish to, with your role; Personal shown but not allowed; never the current space", async () => {
   mountHosted(details(NOTES), true, withOps);
   const d = await openMove();
   expect(
     within(d).getByRole("heading", { name: 'Move "Meeting notes" to' }),
   ).toBeVisible();
+  const radios = within(d).getAllByRole("radio");
+  expect(radios.map((r) => r.closest("label")?.textContent)).toEqual([
+    "OpsEditor",
+    "PersonalNot allowed",
+  ]);
+  expect(radios[1]).toBeDisabled();
   expect(
-    within(d)
-      .getAllByRole("radio")
-      .map((r) => r.closest("label")?.textContent),
-  ).toEqual(["OpsEditor"]);
+    within(d).getByText("Space artifacts can't move back to Personal."),
+  ).toBeVisible();
+});
+
+it("out of Personal, Personal isn't listed at all", async () => {
+  mountHosted(details(LANDING));
+  const d = await openMove();
+  expect(within(d).queryByText("Not allowed")).toBeNull();
+  expect(
+    within(d).queryByText("Space artifacts can't move back to Personal."),
+  ).toBeNull();
 });
 
 it("space to space: who gains and who loses access", async () => {
@@ -117,8 +130,19 @@ it("space to space: who gains and who loses access", async () => {
   const d = await openMove();
   fireEvent.click(within(d).getByRole("radio", { name: /^Ops/ }));
   expect(d).toHaveTextContent(
-    "Ops members get access. People only in Engineering lose it.",
+    "People in Ops get access. People only in Engineering lose it.",
   );
+});
+
+it("space to space, with the count: 1 person in Clients gets access", async () => {
+  mountHosted(details(NOTES), { moveTarget: true });
+  const d = await openMove();
+  fireEvent.click(within(d).getByRole("radio", { name: /^Clients/ }));
+  expect(
+    await within(d).findByText(
+      "1 person in Clients gets access. People only in Engineering lose it.",
+    ),
+  ).toBeVisible();
 });
 
 it("out of Personal: one-way, with the space's name and member count", async () => {
@@ -127,7 +151,7 @@ it("out of Personal: one-way, with the space's name and member count", async () 
   fireEvent.click(within(d).getByRole("radio", { name: /^Engineering/ }));
   expect(
     await within(d).findByText(
-      /^Engineering's \d+ members? gets? access by their role\. You can't move it back to Personal\.$/,
+      "2 people in Engineering get access by their role. You can't move it back to Personal.",
     ),
   ).toBeVisible();
 });

@@ -427,3 +427,31 @@ describe("anonymous writes on a B public artifact", () => {
         throw new Error("A's PAT at B: the stored doc carries A's identity");
   });
 });
+
+// Failure model gap 13 (PUBLIC-1): /p/ serves a public artifact to anyone, so
+// no tenant credential is involved, and the surface probes drop it. What
+// only a live run shows: the deployed content host stops serving it the
+// moment it goes private, with no edge cache in between. One try, no poll:
+// waiting for a refusal would hide exactly that window.
+describe("a public link on B", () => {
+  it("serves while public, and is refused as soon as the artifact is private", async () => {
+    const w = await createThrowaway(T.b, B.s.pat, { visibility: "public" });
+    made.get(B.s)?.push(w.id);
+    const url = `${T.b.content}/p/${encodeURIComponent(w.id)}/v1/index.html`;
+    const open = await fetch(url, { redirect: "manual" });
+    const body = await readBody(open);
+    if (open.status !== 200 || !body.includes(w.marker))
+      throw new Error(
+        `B's public link didn't serve the artifact (${describeRes(open, body)})`,
+      );
+    const flip = await send(
+      apiReq(T.b, B.s.pat, "PATCH", `/api/v1/artifacts/${w.id}`, {
+        visibility: "private",
+      }),
+    );
+    const flipped = await readBody(flip);
+    if (flip.status !== 200)
+      throw new Error(`B's flip to private: ${describeRes(flip, flipped)}`);
+    await expectRefused(await fetch(url, { redirect: "manual" }), T.b);
+  });
+});

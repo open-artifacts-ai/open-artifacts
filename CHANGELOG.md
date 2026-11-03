@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.102.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.101.1...v0.102.0) (2026-11-03)
+
+
+### Features
+
+* **provisioning:** OAuth store jobs, kv to dual to copy to d1, admin MCP only ([#1008](https://github.com/open-artifacts-ai/open-artifacts/issues/1008)) ([#1171](https://github.com/open-artifacts-ai/open-artifacts/issues/1171)) ([0a14aa5](https://github.com/open-artifacts-ai/open-artifacts/commit/0a14aa5e23fc60f6f713eb3a9aea11e3837e9a69))
+
+## [0.101.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.101.0...v0.101.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **dashboard:** focus returns after an agent label edit; docs give -s user ([#1114](https://github.com/open-artifacts-ai/open-artifacts/issues/1114)) ([#1180](https://github.com/open-artifacts-ai/open-artifacts/issues/1180)) ([6df0b84](https://github.com/open-artifacts-ai/open-artifacts/commit/6df0b845889e5eed87d1efc16e6a030489afde30))
+* **server:** retry a transient D1 or KV read with bounded backoff ([#1174](https://github.com/open-artifacts-ai/open-artifacts/issues/1174)) ([dd8919e](https://github.com/open-artifacts-ai/open-artifacts/commit/dd8919e0e1df9f184324f99a380002a913af52d2))
+* **shares:** a member who can only view isn't shown as an editor ([#1119](https://github.com/open-artifacts-ai/open-artifacts/issues/1119)) ([#1181](https://github.com/open-artifacts-ai/open-artifacts/issues/1181)) ([b45219e](https://github.com/open-artifacts-ai/open-artifacts/commit/b45219e95501d06862b0ded87d10220c3dd247b8))
+
+## [0.101.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.100.0...v0.101.0) (2026-11-03)
+
+
+### Features
+
+* **dashboard:** Disconnect says what changes, option A ([#939](https://github.com/open-artifacts-ai/open-artifacts/issues/939)) ([#1173](https://github.com/open-artifacts-ai/open-artifacts/issues/1173)) ([2c0732b](https://github.com/open-artifacts-ai/open-artifacts/commit/2c0732b2cf01b642214f741d9289c05df4bab1c2))
+* **dashboard:** guest-share notices: per member, and the owner's summary with Transfer (parity 2) ([#833](https://github.com/open-artifacts-ai/open-artifacts/issues/833)) ([9c0d997](https://github.com/open-artifacts-ai/open-artifacts/commit/9c0d9975581d8b36854801c99216dc4f44171569))
+* **provision:** audit an install's real binding ids, stage 1 ([#1137](https://github.com/open-artifacts-ai/open-artifacts/issues/1137)) ([#1164](https://github.com/open-artifacts-ai/open-artifacts/issues/1164)) ([a5a1c63](https://github.com/open-artifacts-ai/open-artifacts/commit/a5a1c63c0dc08c6530c75f6445779264ea6f5435))
+* **provision:** hold a migration that can lose data, on the hosted path ([#1137](https://github.com/open-artifacts-ai/open-artifacts/issues/1137)) ([#1165](https://github.com/open-artifacts-ai/open-artifacts/issues/1165)) ([b6743d0](https://github.com/open-artifacts-ai/open-artifacts/commit/b6743d07b72fb1603de9c4bd1b17179aaaf6e031))
+
+
+### Bug Fixes
+
+* **dashboard:** a guest who already left isn't told they lose access ([#1169](https://github.com/open-artifacts-ai/open-artifacts/issues/1169)) ([#1172](https://github.com/open-artifacts-ai/open-artifacts/issues/1172)) ([47a6a4f](https://github.com/open-artifacts-ai/open-artifacts/commit/47a6a4fb4d7b95d3ad018edd6c7098bef24cc92d))
+* **server:** a Cloudflare storage failure answers a retryable 503, not internal ([#1159](https://github.com/open-artifacts-ai/open-artifacts/issues/1159)) ([15ed6fe](https://github.com/open-artifacts-ai/open-artifacts/commit/15ed6fe1cbfe11a5fd433a3cbffedd21574bba27))
+* **server:** a sync revive never takes the owner's address ([#1170](https://github.com/open-artifacts-ai/open-artifacts/issues/1170)) ([0292846](https://github.com/open-artifacts-ai/open-artifacts/commit/029284698dea64558bb9518bce61cd083b8b6fb2))
+* **server:** migration 0021's backfill uses a temporary index ([#1175](https://github.com/open-artifacts-ai/open-artifacts/issues/1175)) ([c1274ee](https://github.com/open-artifacts-ai/open-artifacts/commit/c1274ee8786a7b2885e040abb7b8f7ccc6c9191f))
+
 ## [0.100.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.99.1...v0.100.0) (2026-11-03)
 
 

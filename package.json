@@ -13,7 +13,7 @@
     "lint": "biome check .",
     "check-no-test-hooks": "node --experimental-strip-types scripts/ci/check-no-test-hooks.ts",
     "check-no-fake-idp": "node --experimental-strip-types scripts/ci/check-no-fake-idp.ts",
-    "typecheck": "pnpm --filter @oa/shared build && tsc --noEmit -p tsconfig.json && pnpm -r --if-present typecheck",
+    "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit -p tsconfig.json && pnpm -r --if-present typecheck",
     "dev": "pnpm --parallel --filter @oa/server --filter @oa/dashboard --if-present dev",
     "oa:setup": "pnpm --filter @oa/setup start",
     "oa:hosted": "pnpm --silent --filter @oa/hosted start"
@@ -25,5 +25,5 @@
     "vitest": "^4.1.12",
     "yaml": "^2.9.1"
   },
-  "version": "0.100.0"
+  "version": "0.102.0"
 }

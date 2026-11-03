@@ -52,6 +52,8 @@ export const ADMIN_TOOL_NAMES = [
   "restore_install",
   "delete_install",
   "purge_install",
+  "set_oauth_store",
+  "copy_oauth_store",
 ] as const;
 export const AdminToolNameSchema = z.enum(ADMIN_TOOL_NAMES);
 export type AdminToolName = z.infer<typeof AdminToolNameSchema>;
@@ -75,6 +77,8 @@ const CONFIRM_HINT =
 const POLL_HINT =
   "Returns a job: poll get_job every 2 s, every 10 s after 2 minutes.";
 const LIST_LIMIT = { limit: 20 } as const;
+const YES_HINT =
+  "Call it only with your user's explicit yes for this install and this environment, given for this one operation; a yes for another install, environment or step does not carry over.";
 
 /** Routes whose tools carry destructiveHint. */
 const DESTRUCTIVE: readonly RouteId[] = ["R6", "R7", "R9", "R11"];
@@ -279,6 +283,18 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     "R11",
     "Purge a failed create. A soft-deleted install is refused with details.needs admin_session: an admin purges it in the panel with a fresh sign-in.",
     [CONFIRM_HINT],
+  ),
+  write(
+    "set_oauth_store",
+    "R29",
+    "Move an install's OAuth store: OAUTH_STORE to kv, dual or d1, verified on the install's /healthz. d1 needs a complete copy, and an install on d1 stays on d1.",
+    [YES_HINT],
+  ),
+  write(
+    "copy_oauth_store",
+    "R30",
+    "Copy an install's OAuth store from KV to D1. It needs dual live for at least 60 seconds.",
+    [YES_HINT],
   ),
 ];
 
