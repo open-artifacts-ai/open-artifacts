@@ -3,9 +3,11 @@ import { env } from "cloudflare:workers";
 import {
   AUTH,
   HealthzSchema,
+  type HeldSweep,
   MeSchema,
   OAuthClientHookResultSchema,
   R,
+  SyncStatusSchema,
   TEST_HOOKS,
   TEST_HOOKS_ALLOWED,
   TestSessionResultSchema,
@@ -13,7 +15,15 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emailKey, ipKey } from "../src/auth/codes.js";
 import { sessionCookieName } from "../src/auth/session.js";
-import { instanceDirectory, readHealth } from "../src/directory/health.js";
+import { directoryStatus } from "../src/directory/connect.js";
+import {
+  HEALTH_CAS,
+  HK,
+  instanceDirectory,
+  readHealth,
+  readHealthRaw,
+} from "../src/directory/health.js";
+import { readBinding } from "../src/directory/store.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
@@ -24,6 +34,7 @@ import { userActor } from "../src/services/audit.js";
 import { SYNC_DO_NAME } from "../src/services/directory.js";
 import { type TestHoldIo, testHold } from "../src/test-hooks/held.js";
 import { direct, mailer, seedUser, uniq } from "./auth-helpers.js";
+import { login } from "./helpers.js";
 
 // P2 Task 14: test hooks for P5's cross-tenant suite.
 const KEY = "k".repeat(32);
@@ -1069,6 +1080,91 @@ describe("hooks", () => {
     await inSync((s) =>
       s.storage.sql.exec("delete from held where group_id = ?", real),
     );
+  });
+
+  // P50 (v0.101.0): a red-line install has no binding, and the status shows
+  // holds only with one. The test-hold seam (connect.ts testHeldFn) shows a
+  // `test-` hold there while hooks are live; nothing else changes.
+  it("directory-held, no binding: hooks on, the snooze's status and the status GET show the test- hold with its snoozedUntil; hooks off or a real group, as before", async () => {
+    expect((await readBinding(env)).binding).toBeNull();
+    const { gid, email } = await suiteGroup();
+    expect(
+      (
+        await hook(on(), TEST_HOOKS.directoryHeld, {
+          groupId: gid,
+          email,
+          held: true,
+        })
+      ).status,
+    ).toBe(200);
+    // A real group's entry in the same held list (sync never writes one
+    // without a binding; the seam must not show it either).
+    const real = `g-real-${crypto.randomUUID().slice(0, 8)}`;
+    const editHeld = async (f: (h: HeldSweep[]) => HeldSweep[]) => {
+      const { raw } = await readHealthRaw(env);
+      if (raw === null) throw new Error("no health row");
+      const v = JSON.parse(raw) as { held: HeldSweep[] };
+      await env.DB.prepare(HEALTH_CAS)
+        .bind(JSON.stringify({ ...v, held: f(v.held) }), HK.health, raw)
+        .run();
+    };
+    await editHeld((h) => [
+      ...h,
+      { ...(h.find((x) => x.groupId === gid) as HeldSweep), groupId: real },
+    ]);
+    const ids = (s: { held: HeldSweep[] }) => s.held.map((x) => x.groupId);
+    try {
+      // Before the snooze: hooks on shows the test hold, unsnoozed.
+      const before = await directoryStatus(on(), { showProblem: true });
+      expect(before.binding).toBeNull();
+      expect(before.held.find((x) => x.groupId === gid)).toMatchObject({
+        snoozedUntil: null,
+      });
+      // The owner's snooze (the route's engine call), on a hooks-on env.
+      const actor = userActor("u-owner");
+      const snoozed = await inSync((s) =>
+        new SyncEngine(on(), s.storage).snoozeHeld(gid, actor, "why"),
+      );
+      if (!snoozed) throw new Error("snooze refused");
+      const mine = snoozed.held.find((x) => x.groupId === gid);
+      expect(Date.parse(mine?.snoozedUntil ?? "")).toBeGreaterThan(Date.now());
+      expect(mine?.snoozeReason).toBe("why");
+      expect(ids(snoozed)).not.toContain(real);
+      // The status GET, as the owner.
+      const { cookie } = await login(tu("own"), "owner");
+      const get = async (e: Env) => {
+        const r = await call(e, R.directory, {
+          method: "GET",
+          headers: { cookie },
+        });
+        expect(r.status).toBe(200);
+        return SyncStatusSchema.parse(await r.json());
+      };
+      const shown = await get(on());
+      expect(shown.held.find((x) => x.groupId === gid)?.snoozedUntil).toBe(
+        mine?.snoozedUntil,
+      );
+      expect(ids(shown)).not.toContain(real);
+      expect(ids(shown).every((x) => x.startsWith("test-"))).toBe(true);
+      // Hooks off (unset, or TEST_HOOKS 0): the status as today, no holds.
+      for (const e of [env, on({ TEST_HOOKS: "0" })]) {
+        expect((await get(e)).held).toEqual([]);
+        expect((await directoryStatus(e, { showProblem: true })).held).toEqual(
+          [],
+        );
+        const z = await inSync((s) =>
+          new SyncEngine(e, s.storage).snoozeHeld(gid, actor, null),
+        );
+        expect(z?.held).toEqual([]);
+      }
+    } finally {
+      await editHeld((h) => h.filter((x) => x.groupId !== real));
+      await hook(on(), TEST_HOOKS.directoryHeld, {
+        groupId: gid,
+        email,
+        held: false,
+      });
+    }
   });
 
   it("/healthz reports testHooks", async () => {

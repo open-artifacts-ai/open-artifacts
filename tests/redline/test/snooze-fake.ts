@@ -9,7 +9,10 @@ import {
 import { json } from "./fake.ts";
 
 // #1078: a fake install for the snooze owner path that keeps one hold, its
-// snooze and the audit rows the way the server does. Shared by
+// snooze and the audit rows the way the server does. Like a red-line install
+// it has no directory binding by default, so its SyncStatus shows a hold only
+// through the server's test-hold seam (directory/connect.ts testHeldFn: a
+// `test-` hold while hooks are live). Shared by
 // test/snooze.test.ts (the helper) and test/provisioning-fake.ts (P50's
 // install). A handler for fakeServer.
 
@@ -29,6 +32,15 @@ export type SnoozeOpts = {
   releaseLeaks?: boolean;
   /** The groups setup hook answers 503 (a setup refusal: infra). */
   groupsRefused?: boolean;
+  /** A live directory binding: the status shows every hold (default none). */
+  bound?: boolean;
+  /**
+   * The server's test-hold seam: with no binding, the status still shows a
+   * `test-` hold. False: a server without it (the v0.101.0 P50 failure).
+   */
+  testHeldShown?: boolean;
+  /** The snooze's status lists the hold with no, or a past, snoozedUntil (a server bug). */
+  snoozeUntil?: "none" | "past";
 };
 
 export interface SnoozeInstall {
@@ -50,14 +62,23 @@ export function snoozeInstall(
   const cookies: string[] = [];
   const st = { held: false, snoozed: false, audit: [] as unknown[] };
   const gid = () => snoozeGroup(domain()).groupId;
+  /** directoryStatus: holds only with a binding, or a `test-` one via the seam. */
+  const shown = () =>
+    st.held &&
+    (o.bound === true ||
+      (o.testHeldShown !== false && gid().startsWith("test-")));
   const status = () => ({
-    held: st.held
+    held: shown()
       ? [
           {
             groupId: gid(),
-            snoozedUntil: st.snoozed
-              ? new Date(Date.now() + 30 * DAY).toISOString()
-              : null,
+            snoozedUntil: !st.snoozed
+              ? null
+              : o.snoozeUntil === "none"
+                ? null
+                : new Date(
+                    Date.now() + (o.snoozeUntil === "past" ? -1 : 30 * DAY),
+                  ).toISOString(),
           },
         ]
       : [],

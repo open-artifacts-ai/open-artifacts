@@ -122,6 +122,7 @@ export type Fault =
   | "p50_groups_refused"
   | "p50_team_tier"
   | "p50_no_codes"
+  | "p50_no_test_held"
   | "prod_live";
 
 export interface FakeApi {
@@ -531,6 +532,7 @@ export function fakeApi(): FakeApi {
             : {}),
           ...(faults.has("p50_ineligible") ? { otpOutcome: "ineligible" } : {}),
           ...(faults.has("p50_groups_refused") ? { groupsRefused: true } : {}),
+          ...(faults.has("p50_no_test_held") ? { testHeldShown: false } : {}),
           ...(tier === "business" ? {} : { mode: "frozen" }),
         };
         const install = snoozeInstall(() => STAGING_TEST_DOMAIN, i.id, o);
