@@ -207,6 +207,7 @@ export const AuditReasonSchema = z.enum([
   "admin_suspend",
   "admin_remove",
   "admin_restore",
+  "sync_revive",
 ]);
 export type AuditReason = z.infer<typeof AuditReasonSchema>;
 
@@ -235,6 +236,7 @@ export const AuditActionSchema = z.enum([
   "artifact.purge",
   "user.status",
   "user.role",
+  "user.sync_managed",
   "identity.reset",
   "directory.connect",
   "directory.disconnect",

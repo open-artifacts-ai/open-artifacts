@@ -1,8 +1,6 @@
-// Review item 7: a removed member or guest stays removed. Without spaces the
-// removal drops the shares addressed to their email in the same batch, so no
-// leftover share re-admits the address at the next code or Access sign-in; a
-// share made after the removal is a fresh grant. With spaces the removed row
-// refuses every sign-in and keeps its shares.
+// Review item 7: a removed member or guest stays removed. Parity 1: on every
+// install (spaces or not) the removal is soft: the removed row refuses every
+// sign-in and keeps its shares, and a later share never revives it.
 import { env } from "cloudflare:workers";
 import { AUTH, type Member, PAGES, R } from "@oa/shared";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -20,7 +18,7 @@ import { fetchAndWait, login } from "./helpers.js";
 
 const app = createApp();
 afterEach(() => vi.restoreAllMocks());
-// The spaces-off removal reassigns to the instance owner: one must exist.
+// An instance owner (the sharer's audits and the actor checks expect one).
 beforeAll(async () => {
   await login(uniq("owner", "a.com"), "owner");
 });
@@ -133,14 +131,17 @@ async function expectRefused(e: Env, email: string) {
   vi.restoreAllMocks();
 }
 
-describe("removal sticks without spaces (row deleted)", () => {
-  it("a removed guest: code (pending and new) and Access refused, no access to what was shared", async () => {
+describe.each([
+  ["spaces off (parity 1)", env as Env, {}],
+  ["spaces on (hosted)", SPACES, { FEATURES: "spaces" }],
+] as const)("removal is soft and sticks, %s", (_, E, over) => {
+  it("a removed guest: a code sent before, a new code and Access are refused, shares kept, nothing readable", async () => {
     const s = await sharer();
     const [a, b] = [await s.pub(), await s.pub()];
     const email = uniq("g", "x.com");
     expect((await s.share(a, email)).status).toBe(200);
     expect((await s.share(b, email)).status).toBe(200);
-    const e = direct();
+    const e = direct(over);
     // A signed-in guest, holding a code they asked for before the removal.
     const { cookie: session } = await login(email, "guest");
     expect((await call(e, R.artifact(a), session)).status).toBe(200);
@@ -149,83 +150,37 @@ describe("removal sticks without spaces (row deleted)", () => {
     const guest = await userRow(email);
     const admin = await login(uniq("adm", "a.com"), "admin");
 
-    const r = await call(env, R.member(guest?.id ?? ""), admin.cookie, {
+    const r = await call(E, R.member(guest?.id ?? ""), admin.cookie, {
       method: "DELETE",
     });
     expect(r.status).toBe(204);
-    expect(await sharesTo(email)).toBe(0);
+    // The row stays, removed; the shares stay with it and admit no one.
+    expect(await userRow(email)).toEqual({ id: guest?.id, status: "removed" });
+    expect(await sharesTo(email)).toBe(2);
     expect(await removalAudit(guest?.id ?? "")).toEqual({
       status: "removed",
       reason: "admin_remove",
-      sharesDropped: 2,
     });
     // The code sent before the removal no longer verifies.
     const late = await verifyCode(pending.e, pending.code(), pending.pending);
     expect(late.status).toBe(401);
     expect(cookieOf(late, "oa_session")).toBeUndefined();
     await expectRefused(e, email);
-    expect(await userRow(email)).toBeNull();
     for (const id of [a, b])
       expect((await call(e, R.artifact(id), session)).status).toBe(404);
   });
 
-  it("a removed member: code and Access refused (a share to them re-admitted them as a guest)", async () => {
-    const s = await sharer();
-    const art = await s.pub();
-    const email = uniq("m", "x.com");
-    const m = await login(email, "member");
-    expect((await s.share(art, email)).status).toBe(200);
-    const admin = await login(uniq("adm", "a.com"), "admin");
-    const r = await call(env, R.member(m.userId), admin.cookie, {
-      method: "DELETE",
-    });
-    expect(r.status).toBe(204);
-    expect(await sharesTo(email)).toBe(0);
-    expect(await removalAudit(m.userId)).toMatchObject({ sharesDropped: 1 });
-    await expectRefused(direct(), email);
-    expect(await userRow(email)).toBeNull();
-    expect((await call(env, R.artifact(art), m.cookie)).status).toBe(404);
-  });
-
-  it("an owner's re-share after the removal is a fresh grant: that artifact only", async () => {
-    const s = await sharer();
-    const [old, fresh] = [await s.pub(), await s.pub()];
-    const email = uniq("g", "x.com");
-    const g = await login(email, "guest");
-    expect((await s.share(old, email)).status).toBe(200);
-    await removeMember(env, g.userId, actorOf(s.userId, "admin"));
-    expect((await s.share(fresh, email)).status).toBe(200);
-    // Code sign-in admits them again, as a new guest.
-    const e = direct();
-    const req = await requestCode(e, email);
-    const ok = await verifyCode(req.e, req.code(), req.pending);
-    expect(ok.status).toBe(200);
-    const session = cookieOf(ok, "oa_session") ?? "";
-    const again = await userRow(email);
-    expect(again?.id).not.toBe(g.userId);
-    expect((await call(e, R.artifact(fresh), session)).status).toBe(200);
-    expect((await call(e, R.artifact(old), session)).status).toBe(404);
-    // Access sign-in too.
-    expect((await accessSignIn(email)).headers.get("location")).toBe("/");
-  });
-});
-
-describe("removal with spaces on (hosted): unchanged", () => {
   it("the removed row is refused at every sign-in, its shares are kept, and a re-share never revives it", async () => {
     const s = await sharer();
     const [old, fresh] = [await s.pub(), await s.pub()];
     const email = uniq("g", "x.com");
     const g = await login(email, "guest");
     expect((await s.share(old, email)).status).toBe(200);
-    await removeMember(SPACES, g.userId, actorOf(s.userId, "admin"));
+    await removeMember(E, g.userId, actorOf(s.userId, "admin"));
     expect((await userRow(email))?.status).toBe("removed");
     // Kept with the row: the removed row is what refuses them.
     expect(await sharesTo(email)).toBe(1);
-    expect(await removalAudit(g.userId)).toEqual({
-      status: "removed",
-      reason: "admin_remove",
-    });
-    const e = direct({ FEATURES: "spaces" });
+    const e = direct(over);
     await expectRefused(e, email);
     expect((await call(e, R.artifact(old), g.cookie)).status).toBe(404);
     // A re-share adds a share, but the removed row stays removed.
@@ -234,5 +189,22 @@ describe("removal with spaces on (hosted): unchanged", () => {
     await expectRefused(e, email);
     expect((await userRow(email))?.status).toBe("removed");
     expect((await call(e, R.artifact(fresh), g.cookie)).status).toBe(404);
+  });
+
+  it("a removed member: code and Access refused while a share to them remains", async () => {
+    const s = await sharer();
+    const art = await s.pub();
+    const email = uniq("m", "x.com");
+    const m = await login(email, "member");
+    expect((await s.share(art, email)).status).toBe(200);
+    const admin = await login(uniq("adm", "a.com"), "admin");
+    const r = await call(E, R.member(m.userId), admin.cookie, {
+      method: "DELETE",
+    });
+    expect(r.status).toBe(204);
+    expect(await sharesTo(email)).toBe(1);
+    await expectRefused(direct(over), email);
+    expect((await userRow(email))?.status).toBe("removed");
+    expect((await call(E, R.artifact(art), m.cookie)).status).toBe(404);
   });
 });

@@ -96,7 +96,9 @@ describe("directory connect CPU (Free: 10 ms)", () => {
     });
     const confirmMs = Math.max(0, Math.round(t.delta));
     await budget(annotate, "directory confirm", confirmMs, 10);
-    expect(confirmMs).toBeLessThan(200);
+    // A gross-regression ceiling, not the budget: confirm is bimodal per
+    // process, about 127 ms or 205-235 ms, at any load (#1131).
+    expect(confirmMs).toBeLessThan(400);
     g.restore();
   });
 

@@ -144,10 +144,10 @@ const PATHS: Path[] = [
     done: async (id) => expect((await rowOf(id))?.role).toBe("member"),
   },
   {
-    name: "removeMember, spaces off (row deleted)",
+    name: "removeMember, spaces off (status removed, parity 1)",
     env,
     run: (e, id, a) => removeMember(e, id, a, ctx),
-    done: async (id) => expect(await rowOf(id)).toBeNull(),
+    done: async (id) => expect((await rowOf(id))?.status).toBe("removed"),
   },
   {
     name: "removeMember, spaces on (status removed)",
