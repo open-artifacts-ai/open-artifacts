@@ -52,15 +52,17 @@ import { errOf, fetchAndWait, login } from "./helpers.js";
 const MIN = 60_000;
 // This file's tests are real work, never waits: alarms run on an explicit
 // clock, the beforeEach is a flat ~50 ms (no state grows across tests), and
-// each drain is a full run of D1 and DO calls. The slowest test (bar the
-// carry-over test, budgeted from its user count) measured 4614 ms
-// (liftsPaused, five reconciles) at a 1-minute load of 13-18. Under suite
-// load the whole file ran 2.7-4.1x slower than alone (270-309 s against
-// 76-116 s), so the budget is the slowest test with 6x headroom, not the
-// pool's flat 20 s.
-const SLOWEST_TEST_MS = 4700;
-const LOAD_HEADROOM = 6;
-vi.setConfig({ testTimeout: SLOWEST_TEST_MS * LOAD_HEADROOM });
+// each drain is a full run of D1 and DO calls. Under suite load every test
+// slows alike: the whole file took up to 309 s against 74 s alone at a
+// 1-minute load of 8.7, so LOAD_SLOWDOWN = 309 / 74, rounded up. A budget is
+// a test's cost measured alone at low load (4-11), times that slowdown,
+// times the usual 3x headroom (#1249, #1266).
+const LOAD_SLOWDOWN = 4.2;
+const HEADROOM = 3;
+const budget = (lowLoadMs: number) => lowLoadMs * LOAD_SLOWDOWN * HEADROOM;
+// The slowest test but the carry-over one: liftsPaused (five reconciles),
+// 2526-2840 ms in two whole-file runs at load 4-11.
+vi.setConfig({ testTimeout: budget(2900) });
 let g: FakeDirectory;
 let e: Env;
 let sent: SentMail[];
@@ -777,16 +779,13 @@ describe("review fixes (P3 T13)", () => {
     expect((await status()).state).toBe("customer_mismatch");
   });
 
-  // Real work, no waits (the clock is explicit and no retry sleeps here):
-  // each suspended user is one D1 batch, a grant listing and, with no ctx in
-  // this engine, an awaited UserPresence.closeAll on a fresh DO (most of the
-  // time). Measured 47-61 ms per user for connect plus both alarms, at a
-  // 1-minute load of 20-33 (7 runs alone); a 20 s budget failed at load
-  // 60-80. The budget grows with the user count, with the file's headroom.
+  // Each suspended user is one D1 batch, a grant listing and an awaited
+  // UserPresence.closeAll on a fresh DO (about 23 ms of the user's ~35 ms).
+  // Measured 4078-4644 ms for 130 users alone at load 4-6: 36 ms per user.
   const CARRY_USERS = USER_EVENTS_PER_PAGE + 30;
-  const CARRY_USER_MS = 60;
+  const CARRY_USER_MS = 36;
   it("suspension events past the first 100 on a page carry over", {
-    timeout: CARRY_USERS * CARRY_USER_MS * LOAD_HEADROOM,
+    timeout: budget(CARRY_USERS * CARRY_USER_MS),
   }, async () => {
     const us = dirUsers(CARRY_USERS, "many");
     const t0 = Date.now();
