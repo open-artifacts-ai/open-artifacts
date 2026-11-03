@@ -184,9 +184,11 @@ it("tokens: a locked admin sees the token list; Create token is disabled", async
   expect(screen.getByRole("button", { name: "Create token" })).toBeDisabled();
 });
 
-it("reads stay enabled for a locked admin: Copy URL, snippet tabs, Retry", async () => {
+it("reads stay enabled for a locked admin: snippet tabs; Copy URL is off (Design)", async () => {
   lockedAdmin("/settings/agents");
-  expect(await screen.findByRole("button", { name: "Copy URL" })).toBeEnabled();
+  expect(
+    await screen.findByRole("button", { name: "Copy URL" }),
+  ).toBeDisabled();
   const tabs = await screen.findAllByRole("tab");
   expect(tabs.length).toBeGreaterThan(1);
   for (const t of tabs) expect(t).toBeEnabled();
@@ -457,4 +459,65 @@ it("agents: a locked admin sees Add label on a connected agent, disabled", async
   expect(label).toBeDisabled();
   fireEvent.click(label);
   expect(screen.queryByRole("textbox", { name: /label/i })).toBeNull();
+});
+
+// Design's second ruling (#863): a locked admin's agent copy buttons are off,
+// their text stays readable; revokes stay on, as the server allows them under
+// any cap (CAPPED_ALLOWED: DELETE /tokens/:id, DELETE /oauth-clients/:id).
+
+it("agents: a locked admin's copy buttons are disabled; the text stays readable", async () => {
+  lockedAdmin("/settings/agents");
+  expect(
+    await screen.findByRole("button", { name: "Copy setup prompt" }),
+  ).toBeDisabled();
+  expect(screen.getByRole("textbox", { name: "Setup prompt" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Copy URL" })).toBeDisabled();
+  expect(screen.getByRole("textbox", { name: "MCP server URL" })).toBeVisible();
+  const snippet = screen.getByRole("button", {
+    name: /^Copy (command|config)$/,
+  });
+  expect(snippet).toBeDisabled();
+  expect(
+    snippet.parentElement?.querySelector("code")?.textContent,
+  ).toBeTruthy();
+});
+
+it("library: a locked admin's agent setup prompt shows, its Copy disabled", async () => {
+  mountHosted("/mine", OPTS, locked("admin"), [
+    http.get("*/api/v1/artifacts", () =>
+      HttpResponse.json({ items: [], nextCursor: null }),
+    ),
+  ]);
+  expect(
+    await screen.findByRole("button", { name: "Copy setup prompt" }),
+  ).toBeDisabled();
+  expect(screen.getByRole("textbox", { name: "Setup prompt" })).toBeVisible();
+});
+
+it("agents: both revokes stay enabled for a locked admin", async () => {
+  lockedAdmin("/settings/agents");
+  const token = await screen.findByRole("button", { name: /^Revoke / });
+  expect(token).toBeEnabled();
+  fireEvent.click(token);
+  expect(await screen.findByRole("alertdialog")).toBeVisible();
+  cleanup();
+  lockedAdmin("/settings/agents");
+  const agents = await screen.findByRole("region", {
+    name: "Connected agents",
+  });
+  fireEvent.pointerDown(
+    within(agents).getByRole("button", { name: /^More for / }),
+    { button: 0, ctrlKey: false },
+  );
+  const item = await screen.findByRole("menuitem", { name: "Revoke…" });
+  expect(item).not.toHaveAttribute("aria-disabled");
+  expect(item).not.toHaveAttribute("data-disabled");
+});
+
+it("profile: PATCH /me is allowed under the cap, so a locked admin's name field and Save work", async () => {
+  lockedAdmin("/settings/profile");
+  const name = await screen.findByLabelText(/^Display name|^Name/);
+  expect(name).toBeEnabled();
+  fireEvent.change(name, { target: { value: "Ada L." } });
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
 });

@@ -2,6 +2,7 @@ import type { Me } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useEffect, useId, useState } from "react";
 import { useOAuthClients, useTokens } from "../api/queries";
+import { useFrozen } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
 import { muted, SettingsCard } from "./ui";
@@ -54,6 +55,9 @@ export function AgentSetupBody() {
   const id = useId();
   const text = setupPrompt();
   const [copied, setCopied] = useState(false);
+  // The plan lock (Design, #863): connecting is refused, so the copy is off.
+  // The prompt stays readable and selectable.
+  const frozen = useFrozen();
   useEffect(() => {
     if (!copied) return;
     const t = setTimeout(() => setCopied(false), 2000);
@@ -90,6 +94,7 @@ export function AgentSetupBody() {
           size="sm"
           className="h-[30px] text-[length:var(--oa-text-sm)]"
           aria-label={copied ? undefined : "Copy setup prompt"}
+          disabled={frozen}
           onClick={copy}
         >
           {copied ? "✓ Copied" : "Copy"}

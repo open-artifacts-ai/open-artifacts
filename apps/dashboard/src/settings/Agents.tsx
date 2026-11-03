@@ -25,6 +25,7 @@ import {
   useRevokeToken,
   useTokens,
 } from "../api/queries";
+import { useFrozen } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
@@ -63,6 +64,7 @@ function SnippetTabs({
   mcpUrl: string;
   variant: "oauth" | "token";
 }) {
+  const frozen = useFrozen();
   const all = snippets(mcpUrl, { tokenFile: tokenFile() });
   const list = all
     .filter((s) => s.variant === "oauth")
@@ -130,6 +132,7 @@ function SnippetTabs({
                 <Code
                   code={s.code}
                   label={s.language === "bash" ? "Copy command" : "Copy config"}
+                  disabled={frozen}
                   wrap={variant === "token"}
                 />
               )}
@@ -439,18 +442,17 @@ function Tokens() {
               <span className={muted}>
                 Last used {t.lastUsedAt ? when(t.lastUsedAt) : "Never"}
               </span>
-              <WriteLock>
-                <Button
-                  className={ACTION}
-                  variant="ghost"
-                  size="sm"
-                  aria-label={`Revoke ${t.label}`}
-                  disabled={revoke.isPending && revoke.variables === t.id}
-                  onClick={() => setTarget(t)}
-                >
-                  Revoke
-                </Button>
-              </WriteLock>
+              {/* Never locked: a capped caller may revoke (CAPPED_ALLOWED). */}
+              <Button
+                className={ACTION}
+                variant="ghost"
+                size="sm"
+                aria-label={`Revoke ${t.label}`}
+                disabled={revoke.isPending && revoke.variables === t.id}
+                onClick={() => setTarget(t)}
+              >
+                Revoke
+              </Button>
             </li>
           ))}
         </ul>
@@ -473,6 +475,9 @@ export function Agents() {
   const state = useMe();
   const mcpUrl = state.status === "authed" ? state.me.instance.mcpUrl : null;
   const canConnect = useCanSetUpAgent();
+  // The plan lock (Design, #863): connecting an agent is refused, so its
+  // copy buttons are off. The URL and snippets stay readable.
+  const frozen = useFrozen();
   return (
     <div className={STACK}>
       <ReadOnlyNote />
@@ -489,6 +494,7 @@ export function Agents() {
             <Button
               variant="outline"
               className="h-[30px] flex-none text-[length:var(--oa-text-sm)]"
+              disabled={frozen}
               onClick={() => copyText(mcpUrl, "MCP URL copied")}
             >
               Copy URL
