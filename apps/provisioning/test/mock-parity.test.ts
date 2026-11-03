@@ -14,6 +14,18 @@ beforeEach(() => resetDb());
 
 let auditSeeded = false;
 
+/**
+ * installs.state for a fixture's state, mapped one by one: a state the seed
+ * doesn't know would otherwise seed as something else and hide the drift
+ * this test is for. A failed create never got past creating; the view reads
+ * it as failed.
+ */
+const installState = (s: string) => {
+  if (s === "active") return "active";
+  if (s === "failed") return "creating";
+  throw new Error(`mock-parity seed: no installs.state for fixture state ${s}`);
+};
+
 /** D1 rows for the mock's world: installs, their jobs, and R17's rows. */
 async function seedMockWorld() {
   const w = mockWorld();
@@ -29,8 +41,7 @@ async function seedMockWorld() {
       version: d.version,
       previous_version: d.previousVersion,
       test_hooks: 0,
-      // A failed create never got past creating; the view reads it as failed.
-      state: d.state === "active" ? "active" : "creating",
+      state: installState(d.state),
       vars: JSON.stringify({
         AUTH_PROVIDERS: "google",
         AUTH_DOMAINS: "example.com",
@@ -108,6 +119,10 @@ const worker: ParityDriver = {
       ? { status: r.status, body: { error: { code: r.code } } }
       : { status: r.status, body: r.body };
   },
+  // create's rows by hand (routes/create.ts: lifecycle, signup, its queued
+  // job, signup_secret). R4 itself works here, but every accepted write adds
+  // an admin_audit row, which is append-only, so resetDb can't take it back
+  // and it would show in the R17 cases.
   addPendingSignup: async (slug, email) => {
     const id = `ipend${String(next()).padStart(7, "a")}`.slice(0, 12);
     const sid = jobId();
