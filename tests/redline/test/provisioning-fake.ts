@@ -94,6 +94,7 @@ export type Fault =
   | "p16_late"
   | "p22_closed_404"
   | "p23_no_row"
+  | "p23_slug_freed"
   | "p44_unlisted_redirect"
   | "p24_old"
   | "p27_no_token_ok"
@@ -652,7 +653,8 @@ export function fakeApi(): FakeApi {
             i.state = "deleted";
             i.mode = null;
             i.deletedAt = clock.t;
-            if (kind === "discard") i.discarded = true;
+            if (kind === "discard" || faults.has("p23_slug_freed"))
+              i.discarded = true;
             const tn = tenants.get(i.appHost);
             if (tn) {
               tenants.delete(i.appHost);

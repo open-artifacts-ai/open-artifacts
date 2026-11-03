@@ -383,6 +383,7 @@ describe("each probe fails on the behaviour it guards", () => {
     ],
     ["p22_closed_404", "P22", /P22 closed page/],
     ["p23_no_row", "P23", /P23: inventory has no row for it/],
+    ["p23_slug_freed", "P23", /P23: R18 after purge: .*, want taken/],
     ["p45_extra_tool", "P45", /tools\/list names differ/],
     [
       "p47_wrong_code",
