@@ -570,7 +570,7 @@ export function derive(): Derived {
     // MCP probes send the agent token only; one also sends an OAuth access
     // token, as the OAuth smoke (SMOKES).
     for (const v of s.via === "mcp"
-      ? ((s.name === `x${OAUTH_SMOKE}` ? ["pat", "oauth"] : ["pat"]) as Variant[])
+      ? ((s.name === OAUTH_SMOKE ? ["pat", "oauth"] : ["pat"]) as Variant[])
       : variants(needsCookie(s)))
       cases.push({
         name: `${name} [${v}]`,
