@@ -2,7 +2,7 @@ import {
   Client,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
-import type { AdminToolName } from "@oa/shared/provisioning";
+import type { AdminToolName } from "@oa/provisioning-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handle } from "../src/app.js";
 import { csrfToken } from "../src/auth/csrf.js";

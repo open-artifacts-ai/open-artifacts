@@ -2,8 +2,8 @@ import { pathToFileURL } from "node:url";
 import {
   InventoryHealthSchema,
   type ProdcleanReport,
-} from "@oa/shared/provisioning";
-import { SCHEDULER_STALE_MS } from "@oa/shared/provisioning/state";
+} from "@oa/provisioning-contract";
+import { SCHEDULER_STALE_MS } from "@oa/provisioning-contract/state";
 import {
   type ProdCleanOpts,
   ProdDirty,

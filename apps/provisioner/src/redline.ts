@@ -25,7 +25,6 @@ import {
   ProvisionRefused,
   REDLINE_TEST_DOMAINS,
 } from "@oa/provision";
-import { TEST_HOOK_REFUSALS, type TestHookRefusal } from "@oa/shared";
 import {
   type JobFailPoint,
   type JobKind,
@@ -35,7 +34,8 @@ import {
   RedlineCredsSchema,
   type RedlinePat,
   redlinePatsToRevoke,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
+import { TEST_HOOK_REFUSALS, type TestHookRefusal } from "@oa/shared";
 import { failingAt, tagFail } from "./errors.js";
 import type { ManageJob } from "./manage.js";
 import { cfFor, installRow, provisionerWith, storedVars } from "./ops.js";

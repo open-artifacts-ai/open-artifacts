@@ -1,4 +1,4 @@
-import { HEALTH_INTERVAL_MS } from "@oa/shared/provisioning/state";
+import { HEALTH_INTERVAL_MS } from "@oa/provisioning-contract/state";
 import {
   afterEach,
   beforeAll,

@@ -1,5 +1,5 @@
 import { ipKey } from "@oa/auth-core";
-import type { ApiErrorCode } from "@oa/shared/provisioning";
+import type { ApiErrorCode } from "@oa/provisioning-contract";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 import { limit } from "../limits.js";

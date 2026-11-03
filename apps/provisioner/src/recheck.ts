@@ -14,7 +14,7 @@ import {
   TierSchema,
   type TransitionActor,
   type TransitionFrom,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { StepRefusal } from "./errors.js";
 import { transient } from "./provisioner.js";
 import type { JobRow, StepCtx } from "./steps.js";

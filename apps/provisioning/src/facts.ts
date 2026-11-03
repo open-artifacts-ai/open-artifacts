@@ -1,4 +1,4 @@
-import type { TokenKind } from "@oa/shared/provisioning";
+import type { TokenKind } from "@oa/provisioning-contract";
 import type { Principal } from "./principal.js";
 
 /**

@@ -1,4 +1,4 @@
-import { fixtureMe } from "@oa/shared/provisioning/fixtures";
+import { fixtureMe } from "@oa/provisioning-contract/fixtures";
 import { screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { createClient } from "../src/api/client";

@@ -3,7 +3,7 @@ import {
   isApiRoute,
   ROUTE_IDS,
   TestAdminSessionResultSchema,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decideConsent, showConsent } from "../src/auth/oauth/consent.js";
 import { openSealed, SEAL_INFO } from "../src/auth/seal.js";

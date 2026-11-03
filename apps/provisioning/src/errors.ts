@@ -1,4 +1,4 @@
-import { API_ERROR_STATUS, type ApiErrorCode } from "@oa/shared/provisioning";
+import { API_ERROR_STATUS, type ApiErrorCode } from "@oa/provisioning-contract";
 
 /** A refusal thrown inside invokeRoute (3.5 code); the adapters render it. */
 export class ApiError extends Error {

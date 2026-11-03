@@ -3,7 +3,7 @@ import type {
   ProvisioningEnv,
   Tier,
   WorkflowLike,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 
 /** The bindings of oa-<p>-provisioning (design v7 2.4, wrangler.jsonc). */
 export interface Env {

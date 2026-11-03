@@ -5,7 +5,7 @@ import {
   type FakeProvisionerRpc,
   FakeWorkflow,
   fakeProvisionerRpc,
-} from "@oa/shared/provisioning/fakes";
+} from "@oa/provisioning-contract/fakes";
 import type { Env } from "../src/env.js";
 import { RATE_LIMIT_BINDINGS, type RateBucket } from "../src/limits.js";
 import type { Principal } from "../src/principal.js";

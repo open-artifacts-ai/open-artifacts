@@ -8,7 +8,7 @@ import {
   ProvisionRefused,
   STAGING_TEST_DOMAIN,
 } from "@oa/provision";
-import { JOB_STEPS } from "@oa/shared/provisioning";
+import { JOB_STEPS } from "@oa/provisioning-contract";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   floorOf,

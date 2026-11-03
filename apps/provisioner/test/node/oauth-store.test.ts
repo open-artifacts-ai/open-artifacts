@@ -11,7 +11,7 @@ import {
   ALERT_CONDITIONS,
   alertParams,
   OAUTH_MODE_LIVE_ACTION,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
 import { runManage } from "../../src/manage.js";

@@ -34,19 +34,23 @@ export default defineConfig({
           new URL("../../packages/shared/src/index.ts", import.meta.url),
         ),
       },
-      // The public specifier for the mock; its file is not at the same path.
       {
-        find: /^@oa\/shared\/provisioning\/mocks$/,
+        find: /^@oa\/shared\/(.*)$/,
+        replacement: `${fileURLToPath(new URL("../../packages/shared/src", import.meta.url))}/$1`,
+      },
+      // The hosted Provisioning API contract, also from source.
+      {
+        find: /^@oa\/provisioning-contract$/,
         replacement: fileURLToPath(
           new URL(
-            "../../packages/shared/src/mocks/provisioning.ts",
+            "../../packages/provisioning-contract/src/index.ts",
             import.meta.url,
           ),
         ),
       },
       {
-        find: /^@oa\/shared\/(.*)$/,
-        replacement: `${fileURLToPath(new URL("../../packages/shared/src", import.meta.url))}/$1`,
+        find: /^@oa\/provisioning-contract\/(.*)$/,
+        replacement: `${fileURLToPath(new URL("../../packages/provisioning-contract/src", import.meta.url))}/$1`,
       },
     ],
   },

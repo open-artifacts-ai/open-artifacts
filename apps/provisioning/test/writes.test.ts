@@ -1,8 +1,8 @@
-import { JOB_STEPS, redlineCredsJobArgs } from "@oa/shared/provisioning";
+import { JOB_STEPS, redlineCredsJobArgs } from "@oa/provisioning-contract";
 import {
   FAKE_RELEASES,
   fakeProvisionerRpc,
-} from "@oa/shared/provisioning/fakes";
+} from "@oa/provisioning-contract/fakes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Principal } from "../src/principal.js";
 import { call, type HTTP } from "./call.js";

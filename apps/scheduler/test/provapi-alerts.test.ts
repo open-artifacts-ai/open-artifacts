@@ -2,7 +2,7 @@ import {
   ALERT_KEYS,
   type AlertRow,
   SIGNIN_BURST_WINDOW_MS,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import {
   afterEach,
   beforeAll,

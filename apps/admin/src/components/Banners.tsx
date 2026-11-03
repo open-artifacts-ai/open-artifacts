@@ -1,4 +1,4 @@
-import type { World } from "@oa/shared/provisioning";
+import type { World } from "@oa/provisioning-contract";
 import { fmtDay } from "./labels";
 
 /** Token banners from the world (R27): expiring, or not working. */

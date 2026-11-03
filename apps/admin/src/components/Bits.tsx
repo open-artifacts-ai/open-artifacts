@@ -1,4 +1,4 @@
-import type { InstallState, JobStatus } from "@oa/shared/provisioning";
+import type { InstallState, JobStatus } from "@oa/provisioning-contract";
 import { Button } from "@oa/ui/shadcn";
 import { Link } from "@tanstack/react-router";
 import { ApiError } from "../api/client";

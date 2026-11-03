@@ -1,4 +1,4 @@
-import { API_ERROR_STATUS } from "@oa/shared/provisioning";
+import { API_ERROR_STATUS } from "@oa/provisioning-contract";
 import { authenticate } from "../auth/authenticate.js";
 import type { Env } from "../env.js";
 import type { Principal, Refusal } from "../principal.js";

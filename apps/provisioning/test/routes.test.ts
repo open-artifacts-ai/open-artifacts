@@ -1,4 +1,4 @@
-import { isApiRoute, ROUTE_IDS, ROUTES } from "@oa/shared/provisioning";
+import { isApiRoute, ROUTE_IDS, ROUTES } from "@oa/provisioning-contract";
 import { describe, expect, it } from "vitest";
 import { HANDLERS } from "../src/routes/handlers.js";
 import { matchRoute } from "../src/routes/table.js";

@@ -1,11 +1,11 @@
 import { parseDomains } from "@oa/auth-core/domains";
-import { STAGING_TEST_DOMAIN } from "@oa/shared/provisioning/constants";
+import { STAGING_TEST_DOMAIN } from "@oa/provisioning-contract/constants";
 import {
   isValidSlug,
   RESERVED_SLUGS,
   SLUG_RE,
   slugRule,
-} from "@oa/shared/provisioning/slugs";
+} from "@oa/provisioning-contract/slugs";
 import type { InstallId } from "./types.js";
 
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
@@ -13,7 +13,7 @@ const ID_RE = /^i[a-z0-9]{11}$/;
 /** A HOSTS value: an install id, optionally `paused:` or `closed:` first. */
 const HOSTS_VALUE_RE = /^(?:(paused|closed):)?(i[a-z0-9]{11})$/;
 
-// Moved to @oa/shared/provisioning (design v7 section 3); re-exported here.
+// Moved to @oa/provisioning-contract (design v7 section 3); re-exported here.
 export { isValidSlug, RESERVED_SLUGS, SLUG_RE, slugRule };
 
 export function isInstallId(s: string): s is InstallId {

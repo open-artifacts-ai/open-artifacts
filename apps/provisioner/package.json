@@ -7,11 +7,12 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provision build && vitest run && vitest run -c vitest.node.config.ts",
-    "typecheck": "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provision build && tsc --noEmit && tsc --noEmit -p test/tsconfig.json"
+    "test": "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provisioning-contract --filter @oa/provision build && vitest run && vitest run -c vitest.node.config.ts",
+    "typecheck": "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provisioning-contract --filter @oa/provision build && tsc --noEmit && tsc --noEmit -p test/tsconfig.json"
   },
   "dependencies": {
     "@oa/provision": "workspace:*",
+    "@oa/provisioning-contract": "workspace:*",
     "@oa/shared": "workspace:*"
   },
   "devDependencies": {
