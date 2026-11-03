@@ -97,15 +97,27 @@ export function withReadBudget<T>(f: () => T): T {
 
 // ---------------------------------------------------------------- retry
 
-/** Runs `read`, retrying it on a storage failure within the bounds above. */
-export async function retryRead<T>(
+/**
+ * Runs `read`, retrying it on a storage failure within the bounds above.
+ * The first try runs synchronously, so a read that throws rather than
+ * rejects still throws to its caller, exactly as without the wrapper.
+ */
+export function retryRead<T>(
   store: StoreKind,
   read: () => Promise<T>,
+): Promise<T> {
+  return settle(store, read, read());
+}
+
+async function settle<T>(
+  store: StoreKind,
+  read: () => Promise<T>,
+  first: Promise<T>,
 ): Promise<T> {
   let waited = 0;
   for (let attempt = 1; ; attempt++) {
     try {
-      const r = await read();
+      const r = await (attempt === 1 ? first : read());
       if (attempt > 1)
         logInfo("storage_read_retry_ok", { store, attempts: attempt });
       return r;

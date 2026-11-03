@@ -273,6 +273,18 @@ describe("D1 read retry", () => {
     }
   });
 
+  it("a read that throws synchronously still throws synchronously", () => {
+    const boom = new Error("D1_ERROR: free tier exceeded");
+    const db = retryingD1({
+      prepare: () => ({
+        first: () => {
+          throw boom;
+        },
+      }),
+    } as unknown as D1Database);
+    expect(() => db.prepare("select 1").first()).toThrow(boom);
+  });
+
   it("batch() receives the statements the binding made, not the wrappers", async () => {
     const made: unknown[] = [];
     let got: unknown[] = [];
