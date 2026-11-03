@@ -1180,6 +1180,41 @@ describe("cleanup of a canceled or dead copy", () => {
     expect(scriptOf(id).secrets.has(KEY)).toBe(false);
   });
 
+  it("a cleanup whose first delete worked but second didn't stays an open alert", async () => {
+    const id = await active();
+    const parent = dead(id);
+    const cid = seedJob(w, {
+      kind: "cleanup",
+      installId: id,
+      parentJobId: parent,
+      actor: "system",
+      args: { parentJobId: parent },
+    });
+    const r = stepRunner(w.clock, {
+      onStep: (n) => {
+        if (n === "drop_copy_key_2") {
+          scriptOf(id).secrets.set(KEY, "late".repeat(16));
+          w.fake.inject((m, p) => p.includes("/secrets"), {
+            status: 500,
+            times: 1000,
+          });
+        }
+      },
+    });
+    await runManage(w.ctx, event(cid), r.step).catch(() => {});
+    expect(w.job(cid)?.error_code).toBe("copy_key_left");
+    // Its own first delete recorded key_gone, earlier: that episode is over.
+    expect(auditOf(id).map((a) => a.action)).toContain("oauth_copy.key_gone");
+    const open = w
+      .all(
+        ALERT_CONDITIONS.job_failed.sql,
+        ...alertParams("job_failed", { now: w.clock.t, signupDailyCap: 1 }),
+      )
+      .filter((x) => x.code === "copy_key_left")
+      .map((x) => x.job_id);
+    expect(open).toEqual([cid]);
+  });
+
   it("rotates when the delete fails, settles anyway, and fails copy_key_left", async () => {
     const id = await active();
     const parent = dead(id);
