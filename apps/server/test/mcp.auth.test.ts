@@ -63,7 +63,7 @@ describe("MCP auth: PAT", () => {
     const u = await login(`auth-rev-${tag}@x.com`);
     const { id, token } = await createPat(env, u.userId, "rev");
     const c = await connect(token);
-    expect((await c.listTools()).tools.length).toBe(19);
+    expect((await c.listTools()).tools.length).toBe(18);
     await c.close();
     await env.DB.prepare("update tokens set revoked_at = ? where id = ?")
       .bind(Date.now(), id)
@@ -336,7 +336,7 @@ describe("MCP auth: OAuth", () => {
       modern: true,
       clientInfo: { name: "self-reported", version: "4.5.6" },
     });
-    expect((await c.listTools()).tools).toHaveLength(19);
+    expect((await c.listTools()).tools).toHaveLength(18);
     const pub = (
       await tool(c, "publish_artifact", {
         title: "oauth",
@@ -429,6 +429,39 @@ describe("MCP auth: OAuth", () => {
     });
     expect(d.status).toBe(204);
     expect((await invalid(member.cookie)).status).toBe(404);
+  });
+
+  it("a grant is its owner's: another member can't label or revoke it, or see it", async () => {
+    const email = `oauth-own-${tag}@x.com`;
+    const { member, accessToken } = await oauthToken(email, "Owned");
+    const clients = (await (
+      await api(app, R.oauthClients, member.cookie)
+    ).json()) as OAuthClient[];
+    const grantId = clients[0]?.grantId ?? "";
+    expect(grantId).not.toBe("");
+
+    const other = await login(`oauth-own-other-${tag}@x.com`);
+    expect(
+      (await (await api(app, R.oauthClients, other.cookie)).json()) as [],
+    ).toEqual([]);
+    const label = await api(app, R.oauthClient(grantId), other.cookie, {
+      method: "PATCH",
+      body: { label: "taken" },
+    });
+    expect(label.status).toBe(404);
+    const revoke = await api(app, R.oauthClient(grantId), other.cookie, {
+      method: "DELETE",
+    });
+    expect(revoke.status).toBe(404);
+
+    // Untouched: the same label, and the token still works.
+    const after = (await (
+      await api(app, R.oauthClients, member.cookie)
+    ).json()) as OAuthClient[];
+    expect(after.map((c) => [c.grantId, c.label])).toEqual([
+      [grantId, undefined],
+    ]);
+    expect((await listTools(`Bearer ${accessToken}`)).status).toBe(200);
   });
 
   it("deny → redirect with access_denied", async () => {

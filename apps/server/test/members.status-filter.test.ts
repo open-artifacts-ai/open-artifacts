@@ -130,7 +130,8 @@ describe("GET /members?status=", () => {
   it("no query, or status=active, lists active members only", async () => {
     const d = await list(admin.cookie);
     expect(ids(d)).toEqual(active());
-    expect(d.every((m) => m.status === undefined)).toBe(true);
+    // Every row carries its status (one shape, parity 1, A8).
+    expect(d.every((m) => m.status === "active")).toBe(true);
     expect(ids(await list(admin.cookie, "active"))).toEqual(active());
   });
 
@@ -193,8 +194,11 @@ describe("GET /members?status=", () => {
       });
     });
 
-    it("a removed member → its counts", async () => {
-      const r = await call(R.memberTransfer(removed), admin.cookie);
+    it("a removed member → its counts (an admin row: the owner only, #475)", async () => {
+      const denied = await call(R.memberTransfer(removed), admin.cookie);
+      expect(denied.status).toBe(403);
+      expect((await errOf(denied)).code).toBe("owner_only");
+      const r = await call(R.memberTransfer(removed), owner.cookie);
       expect(r.status).toBe(200);
       expect((await r.json()) as TransferSummary).toEqual({
         live: 1,

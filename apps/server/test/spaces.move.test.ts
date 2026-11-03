@@ -886,6 +886,128 @@ describe("departed transfer", () => {
     return g;
   };
 
+  it("spaces off: an active or lapsed guest moves to a user; a space target is 404", async () => {
+    const heir = await mk("heir");
+    const s = await createSpace();
+    const active = await mk("offg", "guest");
+    const lapsed = await mk("offl", "guest");
+    await run(
+      "update users set status = 'removed', guest_lapsed = 1 where id = ?",
+      lapsed.userId,
+    );
+    for (const g of [active, lapsed]) {
+      const art = await insertArtifact(g.userId, g.userId);
+      const sum = await call(R.memberTransfer(g.userId), admin.cookie, {}, OFF);
+      expect(await json<TransferSummary>(sum)).toEqual({ live: 1, deleted: 0 });
+      const post = (body: unknown) =>
+        call(
+          R.memberTransfer(g.userId),
+          admin.cookie,
+          { method: "POST", body },
+          OFF,
+        );
+      // Refused before any read: a real space, an unknown one and a personal
+      // one answer alike, and nothing moves or is audited.
+      for (const spaceId of [s.id, newId(), heir.userId]) {
+        const refused = await post({ to: { kind: "space", spaceId } });
+        expect(refused.status).toBe(404);
+        expect(await code(refused)).toBe("not_found");
+      }
+      expect(await row(art)).toMatchObject({
+        space_id: g.userId,
+        owner_id: g.userId,
+      });
+      expect(await audits("artifact.transfer", g.userId)).toHaveLength(0);
+      const r = await post({ to: { kind: "user", userId: heir.userId } });
+      expect(await json<TransferResult>(r)).toEqual({
+        moved: 1,
+        remaining: 0,
+        nextCursor: null,
+      });
+      expect(await row(art)).toMatchObject({
+        space_id: heir.userId,
+        owner_id: heir.userId,
+      });
+    }
+  });
+
+  it("spaces off: a guest's published artifact reaches its heir end to end", async () => {
+    const heir = await mk("heir2");
+    const g = await mk("offe");
+    const made = await call(
+      R.artifacts,
+      g.cookie,
+      { method: "POST", body: base },
+      OFF,
+    );
+    expect(made.status).toBe(201);
+    const { id } = await json<{ id: string }>(made);
+    await run("update users set role = 'guest' where id = ?", g.userId);
+    expect((await call(R.artifact(id), heir.cookie, {}, OFF)).status).toBe(404);
+
+    const r = await call(
+      R.memberTransfer(g.userId),
+      admin.cookie,
+      {
+        method: "POST",
+        body: { to: { kind: "user", userId: heir.userId } },
+      },
+      OFF,
+    );
+    expect(await json<TransferResult>(r)).toEqual({
+      moved: 1,
+      remaining: 0,
+      nextCursor: null,
+    });
+    const read = await call(R.artifact(id), heir.cookie, {}, OFF);
+    expect(read.status).toBe(200);
+    expect(await json<ArtifactSummary>(read)).toMatchObject({
+      access: "owner",
+      owner: { id: heir.userId },
+    });
+    const mine = await json<{ items: { id: string }[] }>(
+      await call(`${R.artifacts}?scope=mine`, heir.cookie, {}, OFF),
+    );
+    expect(mine.items.map((a) => a.id)).toContain(id);
+    const after = await call(R.memberTransfer(g.userId), admin.cookie, {}, OFF);
+    expect(await json<TransferSummary>(after)).toEqual({ live: 0, deleted: 0 });
+    expect(await audits("artifact.transfer", g.userId)).toHaveLength(1);
+  });
+
+  it("spaces off: an active member is 409, a member caller 404, a removed member reachable (soft removal), an unknown id 404", async () => {
+    await mk("offo", "owner");
+    const m = await mk("offm");
+    expect(
+      (await call(R.memberTransfer(m.userId), admin.cookie, {}, OFF)).status,
+    ).toBe(409);
+    expect(
+      (await call(R.memberTransfer(m.userId), m.cookie, {}, OFF)).status,
+    ).toBe(404);
+    const removed = await mk("offr");
+    expect(
+      (
+        await call(
+          R.member(removed.userId),
+          admin.cookie,
+          { method: "DELETE" },
+          OFF,
+        )
+      ).status,
+    ).toBe(204);
+    // The row stays, so its personal artifacts can still be moved (parity 1).
+    const sum = await call(
+      R.memberTransfer(removed.userId),
+      admin.cookie,
+      {},
+      OFF,
+    );
+    expect(sum.status).toBe(200);
+    expect(await sum.json()).toEqual({ live: 0, deleted: 0 });
+    expect(
+      (await call(R.memberTransfer(newId()), admin.cookie, {}, OFF)).status,
+    ).toBe(404);
+  });
+
   it("departed transfer on an active member → 409 member_active", async () => {
     const m = await mk("act");
     const s = await createSpace();
@@ -894,6 +1016,114 @@ describe("departed transfer", () => {
     });
     expect(r.status).toBe(409);
     expect(await code(r)).toBe("member_active");
+    // The summary too.
+    const sum = await call(R.memberTransfer(m.userId), admin.cookie);
+    expect(sum.status).toBe(409);
+    expect(await code(sum)).toBe("member_active");
+  });
+
+  // Parity 2: guests are view-only, so their artifacts need a new home.
+  it("a guest, active or not: an admin and the owner move only that guest's personal artifacts, audited", async () => {
+    const g = await mk("gst", "guest");
+    const mine = [
+      await insertArtifact(g.userId, g.userId),
+      await insertArtifact(g.userId, g.userId, "private", Date.now()),
+    ];
+    const s = await createSpace();
+    // Not personal: the guest's artifact in a shared space stays.
+    const inSpace = await insertArtifact(g.userId, s.id);
+    const other = await mk("gst2", "guest");
+    const theirs = await insertArtifact(other.userId, other.userId);
+    const b = await mk("gdst");
+    expect(
+      await json<TransferSummary>(
+        await call(R.memberTransfer(g.userId), admin.cookie),
+      ),
+    ).toEqual({ live: 1, deleted: 1 });
+    const r = await json<TransferResult>(
+      await departed(admin, g.userId, {
+        to: { kind: "user", userId: b.userId },
+      }),
+    );
+    expect(r).toEqual({ moved: 2, remaining: 0, nextCursor: null });
+    for (const id of mine)
+      expect(await row(id)).toMatchObject({ space_id: b.userId });
+    expect(await row(inSpace)).toMatchObject({ space_id: s.id });
+    expect(await row(theirs)).toMatchObject({ space_id: other.userId });
+    const audit = await audits("artifact.transfer", g.userId);
+    expect(audit).toHaveLength(1);
+    expect(audit[0]?.actor_id).toBe(admin.userId);
+    expect(JSON.parse(audit[0]?.detail ?? "{}")).toMatchObject({ moved: 2 });
+    // The guest stays a guest, active.
+    expect(
+      await one<{ role: string; status: string }>(
+        "select role, status from users where id = ?",
+        g.userId,
+      ),
+    ).toEqual({ role: "guest", status: "active" });
+    // A removed guest, by the owner.
+    const owner = await mk("gown", "owner");
+    await insertArtifact(other.userId, other.userId);
+    await run("update users set status = 'removed' where id = ?", other.userId);
+    const r2 = await json<TransferResult>(
+      await departed(owner, other.userId, {
+        to: { kind: "space", spaceId: s.id },
+      }),
+    );
+    expect(r2).toEqual({ moved: 2, remaining: 0, nextCursor: null });
+    expect(await audits("artifact.transfer", other.userId)).toHaveLength(1);
+  });
+
+  it("#475: an admin on an owner or admin source is 403 owner_only; the owner may", async () => {
+    const a = await mk("dadm", "admin");
+    await insertArtifact(a.userId, a.userId);
+    await run("update users set status = 'suspended' where id = ?", a.userId);
+    const s = await createSpace();
+    const sum = await call(R.memberTransfer(a.userId), admin.cookie);
+    expect(sum.status).toBe(403);
+    expect(await code(sum)).toBe("owner_only");
+    const r = await departed(admin, a.userId, {
+      to: { kind: "space", spaceId: s.id },
+    });
+    expect(r.status).toBe(403);
+    expect(await code(r)).toBe("owner_only");
+    const owner = await mk("oadm", "owner");
+    expect(
+      await json<TransferResult>(
+        await departed(owner, a.userId, {
+          to: { kind: "space", spaceId: s.id },
+        }),
+      ),
+    ).toMatchObject({ moved: 1 });
+  });
+
+  it("a guest promoted mid-call: to admin → 403 owner_only, to member → 409 member_active; nothing moved", async () => {
+    const s = await createSpace();
+    for (const [role, status, err] of [
+      ["admin", 403, "owner_only"],
+      ["member", 409, "member_active"],
+    ] as const) {
+      const g = await mk(`gp${role}`, "guest");
+      await insertArtifact(g.userId, g.userId);
+      const r = await call(
+        R.memberTransfer(g.userId),
+        admin.cookie,
+        { method: "POST", body: { to: { kind: "space", spaceId: s.id } } },
+        racing(() =>
+          run("update users set role = ? where id = ?", role, g.userId),
+        ),
+      );
+      expect(r.status, role).toBe(status);
+      expect(await code(r)).toBe(err);
+      expect(
+        (
+          await one<{ n: number }>(
+            "select count(*) n from artifacts where space_id = ?",
+            g.userId,
+          )
+        )?.n,
+      ).toBe(1);
+    }
   });
 
   it("org admins only; a member gets 404", async () => {

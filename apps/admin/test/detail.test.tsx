@@ -319,6 +319,13 @@ it("a failed create's purge goes straight to type-to-confirm, even when the sign
   expect(writes()[0].path).toBe(`/api/v1/installs/${i.id}/purge`);
 });
 
+it("a missing tier reads – as in the list", async () => {
+  await open({ ...installsByState.active, tier: null });
+  const row = (await screen.findByText("Tier · Sign-in")).parentElement;
+  expect(row).toHaveTextContent(/^Tier · Sign-in– · /);
+  expect(row).not.toHaveTextContent("None");
+});
+
 it("purge with a fresh sign-in is type-to-confirm", async () => {
   const i = installsByState.failed;
   use(

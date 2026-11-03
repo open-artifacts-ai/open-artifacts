@@ -48,16 +48,37 @@ export function redactEmail(text: string, email: string): string {
 export const LOG_DETAIL_MAX = 200;
 
 /**
+ * Shorter values aren't redacted: "on" is no secret, and matching it anywhere
+ * turns every "condition" in the line into noise. A token, a domain or an
+ * email is longer; a slug of 1 or 2 characters is public as a hostname.
+ */
+export const REDACT_MIN_LENGTH = 3;
+
+/**
+ * The fixed words of a refusal, not secrets: exact matches only, so a value
+ * that merely contains one, or differs in case, is still redacted.
+ */
+const PLAIN_WORDS: ReadonlySet<string> = new Set([
+  "AUTH_DOMAINS",
+  "AUTH_PROVIDERS",
+  "EMAIL_CODE_DOMAIN",
+  "TIER",
+  "email",
+  "google",
+]);
+
+/**
  * `text` for the Worker's own log: every request value in `values` (raw or
- * URL-encoded, any case, longest first), then any email, URL or IP address,
- * replaced by a placeholder; at most LOG_DETAIL_MAX characters.
+ * URL-encoded, any case, longest first) except one under REDACT_MIN_LENGTH
+ * or in PLAIN_WORDS, then any email, URL or IP address, replaced by a
+ * placeholder; at most LOG_DETAIL_MAX characters.
  */
 export function redactDetail(text: string, values: readonly string[]): string {
   let out = text;
   const forms = new Set<string>();
   for (const v of values) {
     const t = v.trim();
-    if (!t) continue;
+    if (t.length < REDACT_MIN_LENGTH || PLAIN_WORDS.has(t)) continue;
     forms.add(t);
     forms.add(encodeURIComponent(t));
   }
@@ -91,6 +112,10 @@ export const JOB_ERROR_TEXT = Object.freeze({
   upgrade_incomplete: "The upgrade did not complete.",
   canceled: "The job was canceled.",
   run_dead: "The job's Workflow run stopped.",
+  domain_codes_refused:
+    "Domain sign-in codes need email sign-in on, Google off and at least one domain.",
+  turnstile_missing:
+    "Code sign-in needs exactly one Turnstile widget with a secret on this environment.",
   cf_error: "A Cloudflare API call failed.",
   internal: "An internal error occurred.",
 } as const satisfies Record<ProvisionErrorCode, string>);

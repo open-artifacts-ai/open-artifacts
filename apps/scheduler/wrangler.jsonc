@@ -45,7 +45,7 @@
         "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_STAGING}}",
         "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_STAGING}}",
         // The fleet rollout's canary install id (#955); empty: no rollout.
-        "FLEET_CANARY": "",
+        "FLEET_CANARY": "i33m6mbc3zuz",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app"
       },

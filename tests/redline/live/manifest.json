@@ -570,6 +570,10 @@
     },
     {
       "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org POST /api/v1/members/:id/restore [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > org GET /api/v1/members/:id/transfer [session]"
     },
     {
@@ -603,6 +607,10 @@
     {
       "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > org PATCH /api/v1/settings [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org POST /api/v1/notices/guest_shares/dismiss [session]"
     },
     {
       "file": "live/surfaces.test.ts",

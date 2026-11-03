@@ -10,6 +10,14 @@ const DAY = 24 * HOUR;
 
 /** 2.6: `expiring` iff `daysLeft <= 30`; also the `token_expiring` alert (5.8). */
 export const TOKEN_EXPIRING_DAYS = 30;
+
+/**
+ * TEST_DOMAIN of every API-created test-hook install on staging (design v7
+ * 3.3), and the only owner domain a test-hook create may use; prod refuses
+ * TEST_DOMAIN. rl-a's value in tests/redline's local pair; the staging
+ * installs' stored value is unverified until W2 reads it (14.4).
+ */
+export const STAGING_TEST_DOMAIN = "oa-redline-a.fyi";
 /** ProvisionerRpc.tokenStatus() statuses (2.6). */
 export const TOKEN_STATUSES = ["active", "expiring", "invalid"] as const;
 export type TokenStatusValue = (typeof TOKEN_STATUSES)[number];

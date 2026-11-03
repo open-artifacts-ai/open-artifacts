@@ -332,6 +332,34 @@ describe("reads and writes: rl- reach, no pii", () => {
     expect(text).not.toContain("me@example.com");
   });
 
+  it("R17: a refused create is its own job.refused row, and a refused route authz.refused", async () => {
+    const e = fakeEnv();
+    const body = {
+      requestId: requestId(),
+      slug: "customer4",
+      ownerEmail: "a@oa-redline-a.fyi",
+      tier: "team",
+      auth: { providers: ["email"], domains: [] },
+      testHooks: true,
+    };
+    expect((await call(e, TA, "R4", { body })).code).toBe("forbidden");
+    expect((await call(e, TA, "R20")).code).toBe("forbidden");
+    const rows = async (action: string) =>
+      (await call(e, TA, "R17", { query: { action } })).body.items;
+    const refused = await rows("job.refused");
+    expect(refused[0]).toMatchObject({
+      outcome: "refused",
+      code: "forbidden",
+      actor: { kind: "test-admin", label: "test admin" },
+    });
+    expect((await rows("authz.refused"))[0]).toMatchObject({
+      outcome: "refused",
+      code: "forbidden",
+    });
+    // No route writes the install.* names the Action filter offered.
+    expect(await rows("install.create")).toEqual([]);
+  });
+
   it("R2's q never matches by owner email", async () => {
     const e = fakeEnv();
     await seedInstall({
@@ -402,6 +430,36 @@ describe("reads and writes: rl- reach, no pii", () => {
       actor_key: `admin:${TEST_ADMIN.email}`,
       actor_label: "test admin",
     });
+  });
+});
+
+describe("the admin form's test-install body", () => {
+  const body = () => ({
+    requestId: requestId(),
+    slug: "rl-form",
+    ownerEmail: "a@oa-redline-a.fyi",
+    tier: "team",
+    auth: { providers: ["google"], domains: ["oa-redline-a.fyi"] },
+    version: "1.42.0",
+    testHooks: true,
+  });
+
+  it("is accepted as the form sends it", async () => {
+    const r = await call(fakeEnv(), TA, "R4", { body: body() });
+    expect(r.status).toBe(202);
+  });
+
+  it("each thing the form leaves out or guards is refused", async () => {
+    const e = fakeEnv();
+    const refused = async (over: object, code: string) =>
+      expect(
+        (await call(e, TA, "R4", { body: { ...body(), ...over } })).code,
+      ).toBe(code);
+    await refused({ sendWelcome: true }, "forbidden");
+    await refused({ slug: "customer3" }, "forbidden");
+    await refused({ ownerEmail: "a@example.com" }, "forbidden");
+    await refused({ testHooks: false }, "forbidden");
+    await refused({ testHooks: undefined }, "invalid_input");
   });
 });
 

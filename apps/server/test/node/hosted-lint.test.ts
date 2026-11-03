@@ -16,8 +16,6 @@ const READS: Record<string, string> = {
     "fail closed: a hosted install never reaches a broker over HTTPS (no binding, no props: broker_unavailable)",
   "auth/broker-transport.ts: brokerTransportKind":
     "fail closed: reports no transport for a hosted install without a binding or props",
-  "auth/sign-in.ts: showsSignInFields":
-    "reports: Me carries the hosted sign-in fields (shape only, no access)",
   "auth/config.ts: domainJoin":
     "fail closed: hosted installs admit by invite only, never by domain",
   "auth/config.ts: googleConfig":
@@ -26,6 +24,8 @@ const READS: Record<string, string> = {
     "fail closed: hosted code sign-in requires Turnstile",
   "routes/me.ts: toMe":
     "reports: Me.instance.hosted; tightens: Me.instance.update is null (no self-host upgrade nudge, review item 39)",
+  "services/notices.ts: meNotices":
+    "tightens: no guest share notice on hosted (guests there were always capped)",
   "runtime/routes.ts: gate":
     "tightens: RL_ANON still applies to anonymous data writes when RL_ANON_WRITES is bound (review item 38)",
   "auth/sign-in.ts: authProviders":

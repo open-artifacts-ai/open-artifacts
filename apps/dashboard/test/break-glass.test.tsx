@@ -189,7 +189,11 @@ describe("stale (fresh: false)", () => {
     );
     expect(screen.getByText(C.reauthNote)).toBeVisible();
     expect(screen.getByText(C.audit)).toBeVisible();
-    expect(screen.getByRole("button", { name: C.signOut })).toBeVisible();
+    const out = screen.getByRole("button", { name: C.signOut });
+    expect(out).toBeVisible();
+    // 12px: the token wins over the Button's text-sm, which would be 14px.
+    expect(out).toHaveClass("text-[length:var(--oa-text-xs)]");
+    expect(out).not.toHaveClass("text-sm");
     expect(screen.queryByRole("button", { name: C.open })).toBeNull();
     expect(paths()).toEqual([]);
   });

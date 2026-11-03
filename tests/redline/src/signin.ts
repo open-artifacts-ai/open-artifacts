@@ -8,6 +8,7 @@ import {
   readBody,
   send,
 } from "./http.ts";
+import { note } from "./notes.ts";
 import { allMarkers, NotRefused } from "./refused.ts";
 import { label, type TaskLike } from "./report.ts";
 import { secretsOf, type Target } from "./targets.ts";
@@ -378,6 +379,48 @@ export async function latestOtp(
   if ("code" in r) return r.code;
   if (r.outcome === "pending") return null;
   throw new Error(`${t.name}: no code (${r.outcome})`);
+}
+
+/**
+ * Past the server's resend window (CODE_LIMITS.resendSec). A failed send
+ * doesn't refund it, so an immediate second request answers resend_wait.
+ */
+export const RESEND_WAIT_MS = 61_000;
+
+/**
+ * Requests a code at `t` for `email` and returns its pending cookie, the code
+ * (hook) and the request that got it. A send_failed outcome is the mail service's, not a verdict, so
+ * it requests once more past the resend window and notes it on the case. Any
+ * other outcome, and a second send_failed, throws.
+ */
+export async function requestOtp(
+  t: Target,
+  email: string,
+  o: {
+    request?: typeof requestCode;
+    outcome?: typeof otpOutcome;
+    wait?: (ms: number) => Promise<unknown>;
+  } = {},
+): Promise<{ pending: CookiePair; code: string; requested: CodeRequested }> {
+  const request = o.request ?? requestCode;
+  const outcome = o.outcome ?? otpOutcome;
+  const wait = o.wait ?? sleep;
+  for (let again = true; ; again = false) {
+    const r = await request(t, email);
+    if (r.status !== 202 || !r.pending)
+      throw new Error(`${t.name} code request: status ${r.status}`);
+    const got = await outcome(t, email);
+    if ("code" in got)
+      return { pending: r.pending, code: got.code, requested: r };
+    if (got.outcome === "send_failed" && again) {
+      note(`${t.name}: code send failed, requested once more (send_failed)`);
+      await wait(RESEND_WAIT_MS);
+      continue;
+    }
+    if (got.outcome === "pending")
+      throw new Error(`${t.name}: no code was sent to its own guest`);
+    throw new Error(`${t.name}: no code (${got.outcome})`);
+  }
 }
 
 /** How long the __Host- cookie case waits for its emailed code. */
