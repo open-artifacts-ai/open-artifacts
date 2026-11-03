@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FOREIGN_CALLERS } from "../../../apps/server/test/authz/expect.ts";
@@ -47,6 +47,7 @@ import {
   groupSeed,
   HOOK_SPACE_ID,
   HOSTED_FEATURES,
+  INTERACTIVE_ONLY,
   MATRIX_AT_B,
   ORG_FRESH,
   type ProbeCase,
@@ -189,16 +190,48 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     }
   });
 
-  it("deny-only: the six real-only drops, each still a recorded drop", () => {
+  it("deny-only: the six real-only drops and the interactive-only one, each still a recorded drop", () => {
     const only = cases.filter((c) => c.denyOnly);
     expect(only.map((c) => c.name).sort()).toEqual(
       Object.entries(DROPPED)
-        .filter(([, d]) => d.why === "real-only")
+        .filter(
+          ([, d]) => d.why === "real-only" || d.why === "interactive-only",
+        )
         .map(([n]) => `${n} [session]`)
         .sort(),
     );
-    expect(only).toHaveLength(6);
+    expect(only).toHaveLength(7);
     for (const c of only) expect(c.run).toBeDefined();
+  });
+
+  it("#1204: every route behind interactiveSession is interactive-only or owner-only, and no other is", () => {
+    // Literal handlers whose body checks interactiveSession(c). Directory
+    // disconnect (R.* paths, a shared handler) is owner-only, dropped above.
+    const dir = join(import.meta.dirname, "../../../apps/server/src/routes");
+    const found: string[] = [];
+    for (const f of readdirSync(dir).filter((n) => n.endsWith(".ts"))) {
+      const src = readFileSync(join(dir, f), "utf8");
+      const handlers = src.split(
+        /\n\s*app\.(?=(?:get|post|put|patch|delete)\()/,
+      );
+      for (const h of handlers.slice(1)) {
+        const m = /^(get|post|put|patch|delete)\(\s*"([^"]+)"/.exec(h);
+        if (m && h.includes("interactiveSession(c)"))
+          found.push(`${m[1]?.toUpperCase()} ${m[2]}`);
+      }
+    }
+    expect(found).toContain("POST /api/v1/members/:id/erase");
+    expect([...INTERACTIVE_ONLY].sort()).toEqual(found.sort());
+    for (const r of INTERACTIVE_ONLY) {
+      const x = dropped.find((y) => y.routes.includes(r));
+      expect(x?.why).toBe("interactive-only");
+      expect(cases.find((c) => c.routes.includes(r))?.denyOnly).toBe(true);
+    }
+    for (const r of [
+      "POST /api/v1/directory/disconnect",
+      "DELETE /api/v1/directory",
+    ])
+      expect(dropped.find((y) => y.routes.includes(r))?.why).toBe("owner-only");
   });
 
   it("#1137 group B: one live A-at-B smoke per credential kind; the rest are the matrix's", () => {
@@ -212,9 +245,9 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         .filter((c) => !c.denyOnly)
         .map((c) => [c.name, c.variant]),
     ).toEqual([[SMOKES.oauth, "oauth"]]);
-    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(6);
+    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(7);
     // Every other case: B at B only, its kind a matrix foreign caller.
-    expect(by("own")).toHaveLength(cases.length - 2 - 7);
+    expect(by("own")).toHaveLength(cases.length - 2 - 8);
     for (const c of by("own"))
       expect(FOREIGN_CALLERS).toContain(FOREIGN_OF[c.variant]);
   });

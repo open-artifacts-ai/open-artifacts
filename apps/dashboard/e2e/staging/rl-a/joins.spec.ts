@@ -117,11 +117,15 @@ async function askForCode(browser: Browser, address: string): Promise<Page> {
   return page;
 }
 
-/** Every member row for `address`, whatever its status. */
+/**
+ * Every member row for `address`, whatever its status. The list must hold the
+ * admin who asked, so an empty answer fails instead of reading as "no rows".
+ */
 async function rowsFor(admin: Person, address: string): Promise<Member[]> {
   const all = await json<Member[]>(
     await api(admin, `${R.members}?status=active,suspended,removed`),
   );
+  expect(all.map((m) => m.email)).toContain(admin.email);
   return all.filter((m) => m.email === address);
 }
 
@@ -225,5 +229,9 @@ test("an outside guest signs in by code, sees only Shared with me, and is read-o
     headers: { "x-oa-request": "1" },
     data: { v: 1 },
   });
-  expect([403, 404]).toContain(write.status());
+  // A guest is capped, so data.write fails for them whatever dataWriters
+  // says; that isn't an editors-only refusal, so it's 404, not 403
+  // data_editors_only (apps/server/src/auth/policy.ts can "data.write" and
+  // editorsOnlyRefusal; apps/server/src/runtime/routes.ts).
+  expect(write.status()).toBe(404);
 });

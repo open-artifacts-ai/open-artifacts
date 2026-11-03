@@ -183,6 +183,7 @@ const CELLS = [
 
 export type DropWhy =
   | "real-only"
+  | "interactive-only"
   | "owner-only"
   | "nobody"
   | "no-world-caller"
@@ -211,6 +212,8 @@ const NO_DIRECTORY = {
 const WHY: Record<DropWhy, string> = {
   "real-only":
     "real-only (#839): past the access rules the route either writes or answers a 404 that looks like a refusal, and the row it needs can't be made on the red-line installs, so crossCheck has no success leg. Live, a deny-only case still proves A's session is a 401 at B; that an admin is allowed is covered by the matrix only",
+  "interactive-only":
+    "interactive-only (#1204): the route answers only a person signed in in a browser (Google, an email code or Access) and hides itself from every other credential with a 404, the same as a refusal. The suite's sessions come from the session hook (provider test), which is not an interactive sign-in, and no red-line install has one for its admin, so crossCheck has no success leg. Live, a deny-only case still proves A's session is a 401 at B; that an admin erases a removed person who owns nothing (204) is covered by the matrix and the route's own tests",
   "owner-only":
     "owner-only: hooks never mint the owner and no owner credential is stored in CI, so crossCheck has no success leg",
   nobody:
@@ -294,7 +297,22 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
     "real-only: on rl-b an unknown group is 404 past the owner rule, the same as a refusal; A at B is deny-only",
   "DELETE /api/v1/directory/restricted-groups/:groupId":
     "real-only: PUT refuses a restricted_groups row while directory sync is off (409), and the hook-seeded directory group is not that row; A at B is deny-only",
+  "POST /api/v1/members/:id/erase":
+    "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
 };
+
+/**
+ * #1204: instance routes that answer only an interactive sign-in
+ * (apps/server/src/auth/authz.ts interactiveSession) and are not already
+ * dropped as owner-only. The suite's hook sessions never pass that check,
+ * so each is a recorded drop with a deny-only case.
+ */
+export const INTERACTIVE_ONLY: readonly string[] = [
+  "POST /api/v1/members/:id/erase",
+];
+
+const ERASE_TESTS = "apps/server/test/members.erase.test.ts";
+const ERASE_AUTHZ = "POST R.memberErase(id): authorization";
 
 /**
  * The surfaces dropped from the cross-install suite (P5 plan, Task 3b;
@@ -416,6 +434,24 @@ export const DROPPED: Readonly<
   "org DELETE /api/v1/members/:id/identities/google": {
     why: "real-only",
     coveredBy: [INSTANCE],
+  },
+  // The matrix erases a real removed, artifact-less person (erasableId) as
+  // each allowed caller in an Access session: 204 or the cell fails.
+  "org POST /api/v1/members/:id/erase": {
+    why: "interactive-only",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: ERASE_TESTS,
+        describe: ERASE_AUTHZ,
+        test: "an admin's PAT or an AI agent's OAuth grant never erases (cookie sessions only); nothing changes",
+      },
+      {
+        file: ERASE_TESTS,
+        describe: "POST R.memberErase(id): what goes and what stays",
+        test: "audited once as user.erased by the admin, with no address or name in the row",
+      },
+    ],
   },
   "org DELETE /api/v1/spaces/:id/mappings/:groupId": {
     why: "real-only",
@@ -692,9 +728,11 @@ export function derive(): Derived {
     // #839: a real write on a throwaway the install makes for itself
     // (crossWrite) wherever a refusal-mode request would touch the world or
     // none exists; a realOnly route with no throwaway is a recorded drop.
+    // #1204: an interactive-only route is the same, whatever its refusal.
     const fresh = ORG_FRESH[s.route];
-    if (s.realOnly === true && !fresh) {
-      drop(name, [s.route], "real-only");
+    const interactive = INTERACTIVE_ONLY.includes(s.route);
+    if ((s.realOnly === true || interactive) && !fresh) {
+      drop(name, [s.route], interactive ? "interactive-only" : "real-only");
       // No success leg, but the tenant boundary is still checked: A's session
       // at B, which needs no throwaway and never runs as an allowed caller.
       cases.push({
