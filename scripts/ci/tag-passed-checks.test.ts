@@ -496,6 +496,10 @@ describe("tag-passed-checks.sh", () => {
         /build marker run 77: GitHub API error/,
       );
       fails(
+        edit((s) => (s.artifacts = { artifacts: [artifact(77)] })),
+        /build marker run 77: GitHub API error/,
+      );
+      fails(
         raced((s) => delete s["jobs-77"]),
         // Falls back to the stub's shared jobs file: skipped, never a pass.
         /job verify-release: skipped/,
