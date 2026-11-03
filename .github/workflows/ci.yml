@@ -533,6 +533,71 @@ jobs:
           name: playwright-report
           path: apps/dashboard/playwright-report
           retention-days: 14
+  # #1213: times every migration newer than the last release against a large
+  # synthetic database (100k users, 1M audit rows) and fails at 3 s or more
+  # for any one (D1 stops a query at 30 s). Not a required check. The path
+  # filter is decided inside the job, never by a workflow `paths:` filter or
+  # a job `if:` (a filtered-out workflow leaves a required check pending
+  # forever), so the job always reports and could be made required as is:
+  # with no migration or seeder change it passes in seconds. Any error in the
+  # diff means run. No pnpm install: node:sqlite and git only.
+  migration-timing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: changed
+        name: Did a migration or the seeder change?
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          run=true
+          if [ "$EVENT" != workflow_dispatch ] && [ -n "${BASE_SHA:-}" ] \
+            && files="$(git diff --name-only "$BASE_SHA"...HEAD)" \
+            && ! grep -qE '^(apps/server/migrations/|apps/server/scripts/migration-(seed|timing)\.ts$|apps/server/test/node/migration-seed\.test\.ts$|\.github/workflows/ci\.yml$)' <<< "$files"; then
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          if [ "$run" = false ]; then
+            echo "no migration or seeder change: nothing to time"
+          fi
+      - uses: actions/setup-node@v4
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        with:
+          node-version-file: .nvmrc
+      - id: key
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        run: |
+          key="$(node --experimental-strip-types --no-warnings apps/server/scripts/migration-timing.ts --key)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      # Keyed on the release's migration blobs and the seeder's hash; main's
+      # copy comes from migration-seed.yml.
+      - id: restore
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/oa-migration-seed
+          key: ${{ steps.key.outputs.key }}
+      - name: Time the new migrations
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        run: node --experimental-strip-types --no-warnings apps/server/scripts/migration-timing.ts --seed-file "$HOME/.cache/oa-migration-seed/seed.sqlite"
+      # Saved even when a migration was too slow: the key file is written only
+      # after a complete seed.
+      - id: seeded
+        if: ${{ !cancelled() && steps.changed.outputs.run == 'true' && steps.restore.outputs.cache-hit != 'true' }}
+        run: |
+          if [ -f "$HOME/.cache/oa-migration-seed/seed.sqlite.key" ]; then
+            echo "save=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: ${{ !cancelled() && steps.seeded.outputs.save == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/oa-migration-seed
+          key: ${{ steps.key.outputs.key }}
   # Not a required check: skipped unless a release-config file changed.
   release-dry-run:
     if: ${{ github.event_name == 'pull_request' }}

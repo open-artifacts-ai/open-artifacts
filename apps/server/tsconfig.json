@@ -13,6 +13,7 @@
     "test",
     "scripts/bench*.ts",
     "scripts/bench-stubs",
-    "scripts/verify-migration*.ts"
+    "scripts/verify-migration*.ts",
+    "scripts/migration-*.ts"
   ]
 }

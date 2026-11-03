@@ -310,6 +310,8 @@ const provisionerSettings = (p = "p", env: "staging" | "prod" = "prod") =>
   ]);
 const provisioningBindings = (p = "p", env: "staging" | "prod" = "prod") => [
   { type: "d1", name: "PLATFORM_DB", id: DB },
+  // #1176: the platform's own release tag (apps/provisioning/wrangler.jsonc).
+  { type: "version_metadata", name: "CF_VERSION_METADATA" },
   { type: "kv_namespace", name: "OAUTH_KV", namespace_id: OAUTH },
   {
     type: "service",

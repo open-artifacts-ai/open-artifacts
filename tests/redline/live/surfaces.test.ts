@@ -1,12 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  crossDenied,
-  crossProbe,
-  crossWrite,
-  prepareSide,
-  type Side,
-} from "../src/refused.ts";
-import { retryCase } from "../src/retry.ts";
+import { hook } from "../src/http.ts";
+import { crossWrite, prepareSide, type Side } from "../src/refused.ts";
+import { proof } from "../src/report.ts";
 import {
   carries,
   citationGaps,
@@ -16,6 +11,7 @@ import {
   probeCases,
   probeCred,
   readRepoFile,
+  runRead,
   seedWorld,
   settle,
   snapshot,
@@ -28,10 +24,14 @@ import {
 import { loadTargets, type Target, type Targets } from "../src/targets.ts";
 
 // P5 Task 3b: every Backend surface probe (apps/server/test/authz/surfaces.ts)
-// with A's credentials against B's ids. Read-only probes go through
-// crossProbe on a seeded world; mutating ones through crossWrite on
-// throwaways each install makes for itself, deleted even on failure. The
-// world is fixed hook spaces and artifacts, reused every run.
+// on both installs. Read-only probes run on a seeded world (runRead);
+// mutating ones through crossWrite on throwaways each install makes for
+// itself, deleted even on failure. The world is fixed hook spaces and
+// artifacts, reused every run.
+// #1137 group B: each case runs B's own credential at B and A's at A; A's
+// credential at B is the in-server matrix's foreign callers, on every PR.
+// One case per credential kind keeps a live A-at-B leg (SMOKES in
+// src/surfaces.ts); the six deny-only cases keep theirs.
 // Surfaces with no possible success leg are dropped through DROPPED (P5
 // plan, Task 3b). Each case is listed in live/manifest.json.
 
@@ -80,13 +80,32 @@ describe("surface probes (cross-install)", () => {
   for (const c of probeCases())
     it(
       c.name,
-      async () => {
+      async (ctx) => {
+        if (c.variant === "oauth") {
+          // Local installs serve http, while the provider's /mcp resource is
+          // https://<APP_HOST>/mcp: an OAuth bearer at /mcp isn't served over
+          // local http (B's own token gets 401), so only staging proves this.
+          if (T.mode === "local")
+            return proof(
+              ctx,
+              "staging-only",
+              "OAuth bearer at /mcp needs the https resource; local installs serve http",
+            );
+          // A's access token, minted by A's real OAuth provider (the hook
+          // credentials.test.ts uses); only A's credential at B runs.
+          await runRead(c, {
+            a: T.a,
+            b: T.b,
+            credA: { token: await oauthToken(T.a) },
+            world,
+          });
+          return;
+        }
         const pair = {
           a: T.a,
           b: T.b,
           credA: probeCred(A, c.variant),
           credB: probeCred(B, c.variant),
-          carries,
         };
         if (c.write) {
           const { fresh, run } = c.write;
@@ -94,6 +113,8 @@ describe("surface probes (cross-install)", () => {
             (cred, t, x: Throwaway, f) => run(cred, t, x, viaTarget(t, f)),
             {
               ...pair,
+              carries,
+              ownOnly: c.legs === "own",
               fresh: (t) => throwaway(side(t), world(t), fresh),
               settle: (t, x) => settle(side(t), x),
               snapshot: (t, x) => snapshot(side(t), x),
@@ -102,23 +123,18 @@ describe("surface probes (cross-install)", () => {
           );
           return;
         }
-        const { run } = c;
-        if (!run) throw new Error("a case needs run or write");
-        if (c.denyOnly) {
-          await crossDenied(
-            (cred, t, f) => run(cred, t, world(t), viaTarget(t, f)),
-            pair,
-          );
-          return;
-        }
-        // Read-only, so a second try is safe. Deny-only and writes get one.
-        await retryCase(() =>
-          crossProbe(
-            (cred, t, f) => run(cred, t, world(t), viaTarget(t, f)),
-            pair,
-          ),
-        );
+        await runRead(c, { ...pair, world });
       },
       c.timeout,
     );
 });
+
+/** An OAuth access token on `t` (the oauth-client hook: its real provider). */
+async function oauthToken(t: Target): Promise<string> {
+  const r = (await hook(t, "/__test/oauth-client")) as {
+    accessToken?: unknown;
+  };
+  if (typeof r.accessToken !== "string")
+    throw new Error(`${t.name} oauth-client hook: no token`);
+  return r.accessToken;
+}
