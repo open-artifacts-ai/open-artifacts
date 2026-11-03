@@ -168,5 +168,6 @@ const asMember = (g: GuestOwner): Member => ({
   name: null,
   role: "guest",
   lastSeenAt: null,
-  status: "active",
+  // A guest who left gets the Departed wording, not "loses access".
+  status: g.status,
 });

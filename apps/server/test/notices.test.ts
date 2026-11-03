@@ -379,12 +379,38 @@ describe("Me.notices.guestSummary (parity 2)", () => {
     expect(n?.guestSummary).toEqual({
       shares: 3,
       owners: 2,
-      guestOwners: [{ userId: go.userId, email: go.email, artifacts: 2 }],
+      guestOwners: [
+        { userId: go.userId, email: go.email, artifacts: 2, status: "active" },
+      ],
       more: false,
     });
     const text = JSON.stringify(n);
     for (const secret of ["Alpha", "Beta", "Guest one", g.email, fresh])
       expect(text).not.toContain(secret);
+  });
+
+  it("lists a guest who left with their status, and adds or drops no one", async () => {
+    const here = await user("here", "guest");
+    const gone = await user("gone", "guest");
+    const away = await user("away", "guest");
+    for (const u of [here, gone, away]) await artifact(u.userId, "Mine");
+    const owners = async () =>
+      (await notices(owner.cookie))?.guestSummary?.guestOwners ?? [];
+    const before = (await owners()).map((o) => o.userId).sort();
+    await env.DB.batch([
+      env.DB.prepare("update users set status = 'removed' where id = ?").bind(
+        gone.userId,
+      ),
+      env.DB.prepare("update users set status = 'suspended' where id = ?").bind(
+        away.userId,
+      ),
+    ]);
+    const after = await owners();
+    expect(after.map((o) => o.userId).sort()).toEqual(before);
+    const of = (id: string) => after.find((o) => o.userId === id)?.status;
+    expect(of(here.userId)).toBe("active");
+    expect(of(gone.userId)).toBe("removed");
+    expect(of(away.userId)).toBe("suspended");
   });
 
   it("only the uncapped org owner sees it; others get 404 on dismiss", async () => {

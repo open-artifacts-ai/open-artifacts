@@ -524,11 +524,13 @@ describe("mock guest share notices (parity 2)", () => {
           userId: "Go0001AbCdEfGhIj",
           email: "owner1@outside.example",
           artifacts: 1,
+          status: "active",
         },
         {
           userId: "Go0002AbCdEfGhIj",
           email: "owner2@outside.example",
           artifacts: 1,
+          status: "active",
         },
       ],
       more: false,
