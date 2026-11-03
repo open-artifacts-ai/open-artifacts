@@ -1,5 +1,8 @@
 import { JOB_STEPS, redlineCredsJobArgs } from "@oa/shared/provisioning";
-import { fakeProvisionerRpc } from "@oa/shared/provisioning/fakes";
+import {
+  FAKE_RELEASES,
+  fakeProvisionerRpc,
+} from "@oa/shared/provisioning/fakes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Principal } from "../src/principal.js";
 import { call, type HTTP } from "./call.js";
@@ -875,6 +878,42 @@ describe("lifecycle writes (R5-R13)", () => {
         .bind("pinned")
         .first<{ version: string | null }>();
       expect(row?.version).toBe("1.41.2");
+    });
+
+    it("refuses a platform release that isn't installable, or lacks the variant", async () => {
+      const PROVISIONER = fakeProvisionerRpc({
+        releases: FAKE_RELEASES.map((r) =>
+          r.version === "1.42.0" ? { ...r, installable: false } : r,
+        ),
+      });
+      const e = fakeEnv({
+        PROVISIONER,
+        CF_VERSION_METADATA: { tag: "v1.42.0" },
+      });
+      const { id } = await seedInstall({ version: "1.41.0" });
+      expect(
+        (
+          await call(e, ADMIN_P, "R5", {
+            params: { id },
+            body: { requestId: requestId() },
+          })
+        ).code,
+      ).toBe("release_not_published");
+      // 1.41.2 has no redline variant: a test install can't default to it.
+      const t = at("v1.41.2");
+      const rl = await seedInstall({
+        version: "1.41.0",
+        slug: "rl-p-variant",
+        testHooks: true,
+      });
+      expect(
+        (
+          await call(t, ADMIN_P, "R5", {
+            params: { id: rl.id },
+            body: { requestId: requestId() },
+          })
+        ).code,
+      ).toBe("release_not_published");
     });
 
     it("fails closed: no tag, a branch tag, or an unpublished one", async () => {
