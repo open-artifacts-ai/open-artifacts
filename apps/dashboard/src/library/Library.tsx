@@ -12,7 +12,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
 import { qk, useOAuthClients, useTokens } from "../api/queries";
-import { useHosted } from "../auth/permissions";
+import { useFrozen, useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import {
@@ -217,6 +217,10 @@ export function Library({ scope }: { scope: Scope }) {
     me.status === "authed" && !guest && (me.me.auth?.cap ?? null) === null;
 
   const canSetUpAgent = useCanSetUpAgent();
+  // The plan lock (Design, #863): every publish is refused (readOnlyCap, and
+  // agents fail canConnect), so the space prompt's Copy is off. The prompt
+  // stays readable in the empty text.
+  const frozen = useFrozen();
   const sentinel = useSentinel(q);
 
   const filtered = Boolean(s.format || agent || agentVia);
@@ -255,6 +259,7 @@ export function Library({ scope }: { scope: Scope }) {
         size="sm"
         variant="outline"
         className="text-[length:var(--oa-text-sm)]"
+        disabled={frozen}
         onClick={() =>
           copyText(`publish this to ${space.name}`, "Prompt copied")
         }
