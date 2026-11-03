@@ -209,7 +209,7 @@ it("removing a manually added person asks, names All members, then DELETEs", asy
     }),
   ).toBeVisible();
   expect(d).toHaveTextContent(
-    "Lee keeps Viewer through All members. Artifacts Lee made here stay in the space.",
+    "Lee keeps Viewer through All members. Artifacts they made here stay in the space.",
   );
   fireEvent.click(within(d).getByRole("button", { name: "Remove" }));
   await waitFor(() =>
@@ -242,7 +242,7 @@ it("removing a combined row's manual role says what they keep", async () => {
     }),
   ).toBeVisible();
   expect(d).toHaveTextContent(
-    "Rina goes from Manager to Editor, the role eng@ gives. To take Rina out of the space, change eng@ in Google or under Who gets access.",
+    "Rina goes from Manager to Editor, the role eng@ gives. To take them out of the space, change eng@ in Google or under Who gets access.",
   );
   expect(within(d).getByRole("button", { name: "Remove role" })).toBeVisible();
 });
@@ -845,7 +845,7 @@ it("frozen: the note, kept rows say kept from, any role, and Remove from the spa
     }),
   );
   expect(screen.getByRole("alertdialog")).toHaveTextContent(
-    "Bob loses access to Engineering within a minute. If sync comes back and eng@ still includes Bob, Bob gets Editor again.",
+    "Bob loses access to Engineering within a minute. If sync comes back and eng@ still includes them, they get Editor again.",
   );
 });
 
