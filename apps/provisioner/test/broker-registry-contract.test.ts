@@ -2,15 +2,47 @@
 // is the entry the broker's lookupInstall (the reader) returns. Both brokers
 // read install:<id> (sign-in on BROKER_REGISTRY, directory on
 // DIRECTORY_REGISTRY), and provision writes both KVs through registryKey.
-// lookupInstall comes from wherever the auth broker imports it. After
-// Backend's T12 this test must target broker-core's lookupInstall, which
-// #564 tightens: when `domains` is present it must be an array of at most
-// 50 strings. Provision always writes `domains` (sorted, [] when none).
-import { env } from "cloudflare:workers";
-import { keyId, publicFromPkcs8 } from "@oa/auth-core";
+// lookupInstall comes from wherever the auth broker imports it (broker-core,
+// which #564 tightens: when `domains` is present it must be an array of at
+// most 50 strings). Provision always writes `domains` (sorted, [] when none).
+//
+// Moved from apps/auth-broker/test/registry-contract.test.ts (#1056): the
+// broker is public and must not depend on @oa/provision, so the contract
+// lives on the hosted side, in the provisioner (the registry's writer), and
+// reads the broker and @oa/auth-core by relative path. As the provisioner's
+// other suites do, it builds its own binding: an in-memory KV with the one
+// method the reader calls (get(key, "json")), plus put and delete.
 import { registryEntry, registryKey } from "@oa/provision/names";
 import { beforeEach, describe, expect, it } from "vitest";
-import { clearRegistryCache, lookupInstall } from "../src/registry.js";
+import {
+  keyId,
+  publicFromPkcs8,
+} from "../../../packages/auth-core/src/index.js";
+import {
+  clearRegistryCache,
+  lookupInstall,
+} from "../../auth-broker/src/registry.js";
+
+/** The KV surface lookupInstall uses, in memory. */
+function memoryKv() {
+  const m = new Map<string, string>();
+  return {
+    async get(key: string, type: "json") {
+      expect(type).toBe("json");
+      const v = m.get(key);
+      return v === undefined ? null : JSON.parse(v);
+    },
+    async put(key: string, value: string) {
+      m.set(key, value);
+    },
+    async delete(key: string) {
+      m.delete(key);
+    },
+  };
+}
+const kv = memoryKv();
+type Kv = Parameters<typeof lookupInstall>[0];
+const env = { BROKER_REGISTRY: kv as unknown as Kv & typeof kv };
 
 const ID = "iabc123def45";
 const ORIGIN = "https://acme.open-artifacts-staging.app";
