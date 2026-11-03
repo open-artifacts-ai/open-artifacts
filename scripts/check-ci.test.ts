@@ -784,9 +784,9 @@ describe("release-please", () => {
       expect(runKind("chore(main): release 0.106.0 (#1300)")).toBe(
         "is_release=true\n",
       );
-      expect(
-        runKind("chore(main): release 0.106.0 (#1300)\n\nbody\n"),
-      ).toBe("is_release=true\n");
+      expect(runKind("chore(main): release 0.106.0 (#1300)\n\nbody\n")).toBe(
+        "is_release=true\n",
+      );
     });
     it("any other commit gives false", () => {
       const marker = join(mkdtempSync(join(tmpdir(), "rp-kind-")), "pwned");
