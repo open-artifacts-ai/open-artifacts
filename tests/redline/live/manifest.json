@@ -1118,7 +1118,7 @@
     },
     {
       "file": "live/provisioning.test.ts",
-      "name": "provisioning > P23: delete, then purge: 404; inventory deleted; no HOSTS key"
+      "name": "provisioning > P23: delete, then purge: 404; inventory deleted; no HOSTS key; the slug stays taken"
     },
     {
       "file": "live/provisioning.test.ts",
