@@ -31,6 +31,10 @@ export interface ProvapiEnv {
   CF_VERSION_METADATA?: WorkerVersionMetadata;
   /** The install the fleet rollout upgrades first; unset means no rollout. */
   FLEET_CANARY?: string;
+  /** The install upgraded alone right after the canary (fleet.ts fleetSecond). */
+  FLEET_SECOND?: string;
+  /** Minutes of unbroken passing probes to soak; unset is 15 (fleetSoakMs). */
+  FLEET_SOAK_MIN?: string;
 }
 
 /** A duty failure with a fixed log category (never the error text). */
