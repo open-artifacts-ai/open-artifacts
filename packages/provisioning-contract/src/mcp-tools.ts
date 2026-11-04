@@ -253,7 +253,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
   write(
     "upgrade_install",
     "R5",
-    "Upgrade an install. version defaults to the release the platform runs, not the newest published. A job that fails with migration_held has a migration that can lose data; nothing changed. Crossing it needs nonAdditive: true, an admin write that needs your user's explicit yes for that install.",
+    "Upgrade an install. version defaults to the release the platform runs, not the newest published; a newer one is refused (release_ahead_of_platform). A job that fails with migration_held has a migration that can lose data; nothing changed. Crossing it needs nonAdditive: true, an admin write that needs your user's explicit yes for that install.",
   ),
   write(
     "rollback_install",
@@ -340,6 +340,7 @@ export const MCP_ERROR_RESULT: Readonly<
   invalid_state: "tool_error",
   grace_expired: "tool_error",
   downgrade_refused: "tool_error",
+  release_ahead_of_platform: "tool_error",
   signup_limit: "never",
   token_limit: "tool_error",
   release_not_published: "tool_error",

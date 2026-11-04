@@ -71,6 +71,7 @@ async function reg(
   name: string,
   namespace: string,
   global = false,
+  nameKind?: "default" | "chosen",
 ): Promise<string> {
   d.send({
     v: 1,
@@ -81,6 +82,7 @@ async function reg(
     proposed_name: name,
     namespace,
     global,
+    ...(nameKind === undefined ? {} : { name_kind: nameKind }),
   });
   return (await waitFor(d, "agent_ok")).bus_name;
 }
@@ -642,6 +644,69 @@ describe("role names share the agent-name space (#1296)", () => {
     expect(await put(uid, n, left, await agentId(uid, alice))).toEqual({
       ok: false,
       reason: "name_taken",
+    });
+    d.close();
+  });
+
+  it("a role can't take another agent's minted name: live, former, or after a close; the agent gets it back on reopen", async () => {
+    const uid = await owner();
+    const d = await at(uid, NEW);
+    const n = ns("ro");
+    const bob = await reg(d, "b", uniq("bob"), n);
+    const bid = await agentId(uid, bob);
+    const minted = await reg(d, "p", "pi", n, false, "default");
+    expect(minted).toMatch(/^pi-[0-9a-f]{4}$/);
+    const pid = await agentId(uid, minted);
+    const takenFor = async (agent: string | null) =>
+      expect(await put(uid, n, minted.toUpperCase(), agent)).toEqual({
+        ok: false,
+        reason: "name_taken",
+      });
+    // Live, then as a default former name.
+    await takenFor(bid);
+    d.send({
+      v: 1,
+      id: id("r"),
+      type: "rename",
+      agent_ref: "p",
+      proposed_name: uniq("chosen"),
+    });
+    await waitFor(d, "renamed");
+    await takenFor(bid);
+    await takenFor(null);
+    // Closed: the minted name stays the agent's.
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "p" });
+    d.send({ v: 1, id: id("l"), type: "list", from_ref: "b" });
+    await waitFor(d, "roster");
+    await takenFor(bid);
+    expect(await roles(uid)).toEqual([]);
+    // Reopened, it gets its own minted name back.
+    expect(await reg(d, "p", "pi", n, false, "default")).toBe(minted);
+    expect(await agentId(uid, minted)).toBe(pid);
+    d.close();
+  });
+
+  it("a role may take a minted name for the agent it was minted for, once that agent left it", async () => {
+    const uid = await owner();
+    const d = await at(uid, NEW);
+    const n = ns("ro");
+    const minted = await reg(d, "p", "pi", n, false, "default");
+    const pid = await agentId(uid, minted);
+    const chosen = uniq("chosen");
+    d.send({
+      v: 1,
+      id: id("r"),
+      type: "rename",
+      agent_ref: "p",
+      proposed_name: chosen,
+    });
+    await waitFor(d, "renamed");
+    await reg(d, "s", uniq("sender"), n);
+    const r = await put(uid, n, minted, pid);
+    expect(r.ok).toBe(true);
+    expect(await send(d, "s", minted)).toMatchObject({
+      state: "pending",
+      to_name: chosen,
     });
     d.close();
   });

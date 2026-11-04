@@ -560,7 +560,9 @@ With `--role admin --mcp` it also writes an MCP client config for `https://rl-ag
 
 ### Which release a create or upgrade gets
 
-Every release is published to both envs as soon as it's cut (`hosted-publish.yml`), before any platform deploy. So a create or upgrade with no `version` gets the platform's own release, the deployed Provisioning API's version tag, the same one the fleet follows. It never gets the newest in the bucket. An explicit `version` still works. With no stable tag, or a release that isn't installable, it refuses `release_not_published`.
+Every release is published to both envs as soon as it's cut (`hosted-publish.yml`), before any platform deploy. So a create or upgrade with no `version` gets the platform's own release, the deployed Provisioning API's version tag. At steady state that is the release the fleet follows; during a deploy, provisioning moves before the scheduler, so for a few minutes it can be one release ahead of the fleet. It never gets the newest in the bucket. An explicit `version` on a create or upgrade works up to the platform's release: a newer one refuses `release_ahead_of_platform` (#1176), so an install never runs ahead of the platform. With no stable tag, or a release that isn't installable, it refuses `release_not_published`.
+
+An untagged or non-stable Provisioning API version (no `vX.Y.Z` tag) refuses every create and upgrade, explicit `version` included, with `release_not_published`; redeploying the tagged release restores them.
 
 ### Migrations that can lose data
 
