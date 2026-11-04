@@ -233,6 +233,25 @@ describe("skill.md drift", () => {
       expect(section).toContain(phrase);
   });
 
+  it("has the working-with-other-agents section, before what to tell the user", async () => {
+    const md = await skill();
+    const at = md.indexOf("\n## Working with other agents\n");
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(md.indexOf("\n## What to tell the user\n"));
+    const section = md.slice(at).split("\n## ")[1] ?? "";
+    for (const phrase of [
+      "Keep chat terse.",
+      "One agent is the human's point of contact.",
+      "Find peers by bus name",
+      "Send links, not paths.",
+      "Name exact references.",
+      "One owner per action.",
+      "whose connection is down",
+      "never the human's approval",
+    ])
+      expect(section, phrase).toContain(phrase);
+  });
+
   it("every tool example passes its input schema", () => {
     for (const t of TOOL_DEFS) {
       const r = t.inputSchema.safeParse(t.example);
