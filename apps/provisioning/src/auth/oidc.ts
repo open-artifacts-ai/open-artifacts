@@ -4,6 +4,7 @@ import {
   type VerifyOptions,
   verify,
 } from "@oa/gh-oidc";
+import { type OidcWorkflow, TEST_MEMBER } from "@oa/provisioning-contract";
 import type { Env } from "../env.js";
 import { type Principal, type Refusal, refusal } from "../principal.js";
 
@@ -27,6 +28,30 @@ export const TEST_USER_DOMAIN = "test.invalid";
 export const TEST_ADMIN_WORKFLOW_REF =
   "open-artifacts-ai/open-artifacts/.github/workflows/staging-test-admin.yml@refs/heads/main";
 
+/**
+ * The one workflow whose JWT may take the staging test member's credentials
+ * (R26 on `rl-agents` only, then R15 and R2: TEST_MEMBER in authz). It must
+ * also be in OIDC_JOB_WORKFLOW_REFS; it is never a test user, and its jobs
+ * and sealed results are its own (actorKey `oidc:<repository_id>:test-member`).
+ */
+export const TEST_MEMBER_WORKFLOW_REF =
+  "open-artifacts-ai/open-artifacts/.github/workflows/staging-test-member.yml@refs/heads/main";
+
+/** Red-line's workflow (redline-staging.yml): the rl- test installs' scope. */
+export const REDLINE_WORKFLOW_REF =
+  "open-artifacts-ai/open-artifacts/.github/workflows/redline-staging.yml@refs/heads/main";
+
+/**
+ * Each pinned workflow's scope. A JWT whose job_workflow_ref is in
+ * OIDC_JOB_WORKFLOW_REFS but not here is refused (401): no ref falls back to
+ * red-line's scope.
+ */
+const WORKFLOW_SCOPES: ReadonlyMap<string, OidcWorkflow> = new Map([
+  [REDLINE_WORKFLOW_REF, "redline"],
+  [TEST_ADMIN_WORKFLOW_REF, "test-admin"],
+  [TEST_MEMBER_WORKFLOW_REF, "test-member"],
+]);
+
 /** The caller's pins, or null unless staging and every OIDC_* var is set. */
 export function oidcPins(env: Env): Pins | null {
   return env.OA_ENV === "staging" ? pinsFromEnv(env) : null;
@@ -48,11 +73,14 @@ export async function oidcPrincipal(
   } catch {
     return refusal("unauthenticated");
   }
-  const testAdmin = claims.job_workflow_ref === TEST_ADMIN_WORKFLOW_REF;
+  const workflow = WORKFLOW_SCOPES.get(claims.job_workflow_ref);
+  if (workflow === undefined) return refusal("unauthenticated");
+  const testAdmin = workflow === "test-admin";
+  const testMember = workflow === "test-member";
   const testUser = req.headers.get(TEST_USER_HEADER);
   if (testUser !== null) {
-    // The test admin's workflow is never a test user.
-    if (testAdmin) return refusal("unauthenticated");
+    // The test admin's and test member's workflows are never a test user.
+    if (testAdmin || testMember) return refusal("unauthenticated");
     if (!TEST_USERS.has(testUser)) return refusal("unauthenticated");
     const sub = `rl-test-${testUser}`;
     const email = `${sub}@${TEST_USER_DOMAIN}`;
@@ -70,16 +98,19 @@ export async function oidcPrincipal(
   }
   const key = `oidc:${claims.repository_id}`;
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
+  // The test member's own key: its R26 jobs (and their sealed results, R15)
+  // are never red-line's, and red-line's never its.
+  const memberKey = `${key}${TEST_MEMBER.actorSuffix}`;
   return {
     kind: "oidc",
-    actorKey: key,
+    actorKey: testMember ? memberKey : key,
     // Its own bucket: R28 and red-line never starve each other.
-    rateKey: testAdmin ? `${key}:test-admin` : key,
+    rateKey: testAdmin ? `${key}:test-admin` : testMember ? memberKey : key,
     label: claims.repository,
     scopes: [],
     sub: claims.sub,
     authAt: null,
-    oidcWorkflow: testAdmin ? "test-admin" : "redline",
+    oidcWorkflow: workflow,
     ...(testAdmin
       ? {
           oidcRun: {

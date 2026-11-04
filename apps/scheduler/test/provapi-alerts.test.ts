@@ -335,29 +335,43 @@ describe("signin_refused_burst: at most one email per hour, count and window onl
   it("reopens inside the hour send nothing; the first tick past it sends one", async () => {
     const m = mail();
     // A burst lasts one refusal window; it then clears and reopens every
-    // window, ticking every 2 minutes.
-    const ticks = Math.ceil((3 * BURST_EMAIL_INTERVAL_MS) / TICK);
+    // window, ticking every 2 minutes. The ticks run from T0 through the
+    // first whole open window that starts at or after the hour, so the
+    // hour's first open tick is in range wherever the hour falls in the
+    // open/closed cycle. No more: each tick is several D1 round trips.
     const window = SIGNIN_BURST_WINDOW_MS / TICK;
+    const ticks = Math.ceil(BURST_EMAIL_INTERVAL_MS / TICK) + 2 * window;
+    const holds = (i: number) => Math.floor(i / window) % 2 === 0;
+    // Expected: the first open tick, then the first open tick at least an
+    // hour after the last email; every other tick sends nothing.
+    const want: number[] = [];
+    for (let i = 0; i <= ticks; i++) {
+      const t = T0 + i * TICK;
+      const last = want.at(-1);
+      if (
+        holds(i) &&
+        (last === undefined || t - last >= BURST_EMAIL_INTERVAL_MS)
+      )
+        want.push(t);
+    }
     const sentAt: number[] = [];
     for (let i = 0; i <= ticks; i++) {
       const t = T0 + i * TICK;
       const before = m.sent.length;
-      await stepAlert(m.env(), BURST, Math.floor(i / window) % 2 === 0, t);
+      await stepAlert(m.env(), BURST, holds(i), t);
       if (m.sent.length > before) sentAt.push(t);
     }
-    expect(sentAt.length).toBeGreaterThan(1);
-    expect(sentAt[0]).toBe(T0);
-    for (let i = 1; i < sentAt.length; i++)
-      expect(
-        (sentAt[i] as number) - (sentAt[i - 1] as number),
-      ).toBeGreaterThanOrEqual(BURST_EMAIL_INTERVAL_MS);
+    expect(want).toHaveLength(2);
+    expect(sentAt).toEqual(want);
     expect(new Set(m.subjects())).toEqual(new Set([BURST.subject.open]));
     expect(await state("notified_at", B)).toBe(sentAt.at(-1));
   });
 
   it("a burst open across the hour never reminds", async () => {
     const m = mail();
-    for (let t = T0; t <= T0 + 3 * BURST_EMAIL_INTERVAL_MS; t += TICK)
+    // Through the first tick past the hour: the earliest a reminder or a
+    // second open email could go out.
+    for (let t = T0; t <= T0 + BURST_EMAIL_INTERVAL_MS + TICK; t += TICK)
       await stepAlert(m.env(), BURST, true, t);
     expect(m.subjects()).toEqual([BURST.subject.open]);
   });

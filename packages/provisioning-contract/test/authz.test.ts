@@ -18,9 +18,11 @@ import {
   PURGE_FIELD_RULES,
   ROUTE_IDS,
   ROUTES,
+  TEST_MEMBER,
   TOKEN_DELETING_PURGE,
   TokenScopeSchema,
   TRANSITIONS,
+  testMemberOwns,
 } from "../src/index.js";
 
 const ALL_SCOPES = TokenScopeSchema.options;
@@ -158,6 +160,36 @@ describe("OIDC principal (Q1: staging only, rl- test installs)", () => {
       expect(o(id).ok, id).toBe(true);
     for (const id of ["R13", "R19", "R20", "R21", "R25", "R27"] as const)
       expect(o(id), id).toEqual({ ok: false, code: "forbidden" });
+  });
+
+  it("the test member's workflow: exactly R2, R15 and R26 (own reach) on staging, 403 on every other route, 401 on prod", () => {
+    const tm = { kind: "oidc", oidcWorkflow: "test-member" } as const;
+    expect(TEST_MEMBER.routes).toEqual(["R2", "R15", "R26"]);
+    for (const id of ROUTE_IDS) {
+      expect(authorize(id, tm, "prod"), id).toEqual({
+        ok: false,
+        code: "unauthenticated",
+      });
+      expect(authorize(id, tm, "staging"), id).toEqual(
+        TEST_MEMBER.routes.includes(id)
+          ? { ok: true, reach: "own" }
+          : { ok: false, code: "forbidden" },
+      );
+    }
+  });
+
+  it("the test member's reach is exactly rl-agents with test hooks", () => {
+    expect(TEST_MEMBER.slug).toBe("rl-agents");
+    expect(testMemberOwns({ slug: "rl-agents", testHooks: true })).toBe(true);
+    for (const slug of [
+      "rl-a",
+      "rl-agents2",
+      "rl-agent",
+      "RL-AGENTS",
+      "agents",
+    ])
+      expect(testMemberOwns({ slug, testHooks: true }), slug).toBe(false);
+    expect(testMemberOwns({ slug: "rl-agents", testHooks: false })).toBe(false);
   });
 
   it("limits: rl- slug, testHooks and a @STAGING_TEST_DOMAIN owner", () => {
