@@ -25,6 +25,8 @@ export const REFUSAL_REASONS = [
    * whose hello listed `BUS_CAPS.roles`; any other gets `unknown_agent`.
    */
   "role_vacant",
+  /** A reply's `to_id` no longer holds the name: the agent it answers is gone. */
+  "agent_gone",
 ] as const;
 export const RefusalReasonSchema = z.enum(REFUSAL_REASONS);
 export type RefusalReason = z.infer<typeof RefusalReasonSchema>;

@@ -23,6 +23,7 @@ describe("receipts", () => {
       "revoked",
       "ambiguous",
       "role_vacant",
+      "agent_gone",
     ]);
   });
   it("rejects ambiguous on expired", () => {

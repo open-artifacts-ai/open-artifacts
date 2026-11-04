@@ -60,6 +60,11 @@ const refusals: Record<
       `That name exists in ${n && n > 1 ? `${n} namespaces` : "more than one namespace"}.`,
     "Send again with to_namespace set to one of them.",
   ],
+  // A reply's agent (to_id) no longer holds the name it wrote from.
+  agent_gone: [
+    "The agent you are answering is gone; another may hold its name now.",
+    "Run list_agents and message the agent you mean by name.",
+  ],
 };
 
 /**
@@ -413,3 +418,11 @@ export function selfText(
   };
   return JSON.stringify(shown, null, 2);
 }
+
+/**
+ * A native reply the local client did not send: what wrote to the session as
+ * `name` is gone, or wrote too long ago to be sure it still holds the name.
+ * Information only, from the local client; it quotes no peer text.
+ */
+export const replyGoneText = (name: string): string =>
+  `[oa-bus] Information: your reply to ${name} was not sent. The agent that wrote to you as ${name} is gone, or wrote over an hour ago, and another agent may hold that name now. Use list_agents and send_message to reach the agent you mean.`;

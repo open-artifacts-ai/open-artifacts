@@ -7,6 +7,8 @@ import type { HubConnection } from "./hub.ts";
 export type Mail = {
   msg_id: string;
   from_name: string;
+  /** The sender's agent id, from a hub that names it (BUS_CAPS.ids). */
+  from_id?: string;
   namespace: string;
   body: string;
   /**
@@ -99,6 +101,7 @@ export function createDeliver(ctx: {
     const done = fn(agent, {
       msg_id,
       from_name: stripTerminalControls(frame.from_name),
+      ...(frame.from_id === undefined ? {} : { from_id: frame.from_id }),
       namespace: frame.namespace,
       body,
       ...(frame.body === undefined

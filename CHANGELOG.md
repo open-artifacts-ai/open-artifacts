@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.114.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.113.0...v0.114.0) (2026-11-04)
+
+
+### Features
+
+* **server:** role addresses on the bus ([#1296](https://github.com/open-artifacts-ai/open-artifacts/issues/1296)) ([#1357](https://github.com/open-artifacts-ai/open-artifacts/issues/1357)) ([b0c1079](https://github.com/open-artifacts-ai/open-artifacts/commit/b0c10792d3d6a06ba7b4040d46b648041fdd49d1))
+* **skill:** links in a page need target=_blank rel=noopener ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1376](https://github.com/open-artifacts-ai/open-artifacts/issues/1376)) ([b899b8e](https://github.com/open-artifacts-ai/open-artifacts/commit/b899b8e4331a4c1b2b47281a37019bc20c648d7e))
+
+
+### Bug Fixes
+
+* **bus:** a Claude reply reaches only the agent that wrote, within the mail TTL ([#1370](https://github.com/open-artifacts-ai/open-artifacts/issues/1370)) ([f41dc7d](https://github.com/open-artifacts-ai/open-artifacts/commit/f41dc7db591209966cf119b89fd3ed6360b10524))
+* **ci:** select the admin audit-actions suite when the packages it scans change ([#1353](https://github.com/open-artifacts-ai/open-artifacts/issues/1353)) ([#1368](https://github.com/open-artifacts-ai/open-artifacts/issues/1368)) ([9d4dc02](https://github.com/open-artifacts-ai/open-artifacts/commit/9d4dc02e479034592036711ef0e7d4630a4e8abc))
+* **ops:** test-member parses the run's output, not its echoed script ([#1288](https://github.com/open-artifacts-ai/open-artifacts/issues/1288)) ([#1360](https://github.com/open-artifacts-ai/open-artifacts/issues/1360)) ([9dae5fc](https://github.com/open-artifacts-ai/open-artifacts/commit/9dae5fcf84c96242ebb8d068e5d62de38c0aef83))
+* **provisioning:** an upgrade can't run an install ahead of the platform ([#1176](https://github.com/open-artifacts-ai/open-artifacts/issues/1176)) ([#1382](https://github.com/open-artifacts-ai/open-artifacts/issues/1382)) ([82421c2](https://github.com/open-artifacts-ai/open-artifacts/commit/82421c2f7b4ca8fd50066a39907ebc19ef2036d6))
+* **provision:** rollback refuses when the install's schema is ahead of the target ([#1106](https://github.com/open-artifacts-ai/open-artifacts/issues/1106)) ([#1369](https://github.com/open-artifacts-ai/open-artifacts/issues/1369)) ([4eadb5e](https://github.com/open-artifacts-ai/open-artifacts/commit/4eadb5ef47fe6f8af560c1a3ff47921691a8ab9c))
+* **provision:** verify_clean retries Cloudflare read lag before prod_dirty ([#1352](https://github.com/open-artifacts-ai/open-artifacts/issues/1352)) ([#1353](https://github.com/open-artifacts-ai/open-artifacts/issues/1353)) ([68e26ef](https://github.com/open-artifacts-ai/open-artifacts/commit/68e26efe71ffe2933d370cd2a2dd01c2b25268f1))
+* **server:** close BusHub rename holes (port of open-bus [#446](https://github.com/open-artifacts-ai/open-artifacts/issues/446)) ([#1375](https://github.com/open-artifacts-ai/open-artifacts/issues/1375)) ([25c1661](https://github.com/open-artifacts-ai/open-artifacts/commit/25c16610ed29d45c5c4aa75d9ec0eff6096543b4))
+
 ## [0.113.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.112.0...v0.113.0) (2026-11-04)
 
 

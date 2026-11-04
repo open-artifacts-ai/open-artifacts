@@ -16,7 +16,7 @@ import {
   inject,
   MAX_SOCKET_PATH,
 } from "@oa/bus-adapter-claude-code";
-import { newMsgId } from "@oa/bus-protocol";
+import { isId, LIMITS, newMsgId } from "@oa/bus-protocol";
 import type { AgentRecord } from "../agents.ts";
 import type { DeliverOutcome, Mail } from "../deliver.ts";
 import { HeldStore } from "./held.ts";
@@ -46,6 +46,17 @@ type Sink = {
   claudeFrom: string;
   /** The notice socket: it believes nothing, so a notice never routes a reply. */
   notice?: boolean;
+  /**
+   * The agent this socket answers (deliver.from_id), when the hub named it.
+   * Part of the key: a reply to a message goes to that message's writer.
+   */
+  fromId?: string;
+  /** When mail last came through this socket, ms: a reply after the TTL is refused. */
+  at: number;
+  /** Bound again by `revive`, not by a delivery in this run. */
+  revived?: boolean;
+  /** Its entry is in the return index. */
+  indexed?: boolean;
 };
 
 /**
@@ -81,10 +92,38 @@ export function unsafeClaudeSocket(path: string): string | null {
 /** At most this many return sockets are remembered for revival; the oldest go first. */
 export const RETURN_INDEX_MAX = 500;
 
-type ReturnIndex = Record<
-  string,
-  { agentRef: string; namespace: string; peerName: string; at: number }
->;
+type ReturnEntry = {
+  agentRef: string;
+  namespace: string;
+  peerName: string;
+  /** The agent that wrote, when the hub named it (BUS_CAPS.ids). */
+  fromId?: string;
+  at: number;
+};
+type ReturnIndex = Record<string, ReturnEntry>;
+
+/**
+ * How long a return socket answers after the mail that bound it: the hub's
+ * mail TTL. Past it the name may belong to another agent, so a reply is
+ * refused, and the entry is dropped.
+ */
+export const RETURN_TTL_MS = LIMITS.mailTtlSec * 1000;
+/** A delivery through a known socket rewrites its index entry at most this often. */
+const INDEX_REFRESH_MS = 60_000;
+
+/**
+ * One return socket per (session, namespace, peer name, writer's agent id):
+ * a reply to a message goes to the agent that wrote it, even if another agent
+ * has written under the same name since. No id (an older hub) is "".
+ */
+function returnKey(
+  agentRef: string,
+  namespace: string,
+  peerName: string,
+  fromId: string | undefined,
+): string {
+  return `${agentRef}\u0000${namespace}\u0000${peerName}\u0000${fromId ?? ""}`;
+}
 
 /** The return index, its malformed entries dropped; empty when there is none. */
 function readReturnIndex(file: string): ReturnIndex {
@@ -104,12 +143,20 @@ function readReturnIndex(file: string): ReturnIndex {
       typeof e.namespace === "string" &&
       typeof e.peerName === "string" &&
       typeof e.at === "number" &&
-      k === `${e.agentRef}\u0000${e.namespace}\u0000${e.peerName}`
+      (e.fromId === undefined || isId(e.fromId)) &&
+      k ===
+        returnKey(
+          e.agentRef,
+          e.namespace,
+          e.peerName,
+          typeof e.fromId === "string" ? e.fromId : undefined,
+        )
     )
       out[k] = {
         agentRef: e.agentRef,
         namespace: e.namespace,
         peerName: e.peerName,
+        ...(typeof e.fromId === "string" ? { fromId: e.fromId } : {}),
         at: e.at,
       };
   }
@@ -158,14 +205,32 @@ export type ClaudeTransportOptions = {
    * the same paths, so a reply to one is routed by bus name (open-bus #426).
    */
   returnIndexFile?: string;
+  /** Test seam: the clock for the reply TTL. */
+  now?: () => number;
+  /**
+   * Whether the hub said it names writers (hello_ok listed BUS_CAPS.ids).
+   * Only then is a revived socket that does not know its writer refused; an
+   * older hub never names one, so the TTL alone guards its replies.
+   */
+  hubIds?: () => boolean;
   log?: (msg: string) => void;
-  /** A native reply from `agentRef`'s session to `peerName` in `namespace`. */
+  /**
+   * A native reply from `agentRef`'s session to `peerName` in `namespace`.
+   * `peerId` is the agent that wrote, when the hub named it: the reply must
+   * reach only that agent.
+   */
   onReply?: (
     agentRef: string,
     peerName: string,
     body: string,
     namespace: string,
+    peerId?: string,
   ) => void;
+  /**
+   * A native reply not sent: the mail it answers is older than RETURN_TTL_MS,
+   * or its socket was revived without knowing which agent wrote.
+   */
+  onReplyRefused?: (agentRef: string, peerName: string) => void;
 };
 
 /**
@@ -266,7 +331,12 @@ export class ClaudeTransport {
 
     let sink: Sink;
     try {
-      sink = await this.#sink(agent.ref, mail.namespace, mail.from_name);
+      sink = await this.#sink(
+        agent.ref,
+        mail.namespace,
+        mail.from_name,
+        mail.from_id,
+      );
     } catch (e) {
       // A return folder someone else could reach: never bound in, refused.
       if (e instanceof UnsafeDir) {
@@ -293,6 +363,8 @@ export class ClaudeTransport {
         ? { ok: false, reason: "closed" }
         : { ok: false, reason: "timeout" };
     }
+    // Claude has the mail: a reply through this socket answers it, from now.
+    this.#answered(sink);
 
     // Recorded only once Claude has drained the frame: a daemon killed before that
     // leaves no record, and the next one injects again. Losing mail is worse than
@@ -381,8 +453,53 @@ export class ClaudeTransport {
         /^\s*<cross-session-message\b[^>]*>([\s\S]*)<\/cross-session-message>\s*$/,
       )?.[1] ?? content
     ).trim();
-    if (body)
+    if (!body) return;
+    // Past the mail TTL, or revived without its agent's id, the name may now
+    // belong to another agent: refused, and the session is told.
+    if (
+      this.#now() - sink.at > RETURN_TTL_MS ||
+      (sink.revived &&
+        sink.fromId === undefined &&
+        (this.opts.hubIds?.() ?? false))
+    ) {
+      this.opts.onReplyRefused?.(sink.agentRef, sink.peerName);
+      return;
+    }
+    if (sink.fromId === undefined)
       this.opts.onReply?.(sink.agentRef, sink.peerName, body, sink.namespace);
+    else
+      this.opts.onReply?.(
+        sink.agentRef,
+        sink.peerName,
+        body,
+        sink.namespace,
+        sink.fromId,
+      );
+  }
+
+  #now(): number {
+    return (this.opts.now ?? Date.now)();
+  }
+
+  /**
+   * A mail went in through `sink`: replies through it are fresh again. The
+   * index is rewritten only when the entry is new or its time is stale by
+   * more than INDEX_REFRESH_MS, not on every delivery.
+   */
+  #answered(sink: Sink): void {
+    const now = this.#now();
+    const stale = now - sink.at > INDEX_REFRESH_MS;
+    const known = !sink.revived && sink.indexed;
+    sink.at = now;
+    sink.revived = false;
+    if (known && !stale) return;
+    sink.indexed = true;
+    this.#index("add", sink.key, {
+      agentRef: sink.agentRef,
+      namespace: sink.namespace,
+      peerName: sink.peerName,
+      ...(sink.fromId === undefined ? {} : { fromId: sink.fromId }),
+    });
   }
 
   /** The session's own socket now, from its session file; "" when it has none. */
@@ -393,11 +510,25 @@ export class ClaudeTransport {
   }
 
   /** A global session hears from alice@ns1 and alice@ns2 on different sockets. */
-  #sink(agentRef: string, namespace: string, peerName: string): Promise<Sink> {
-    const key = `${agentRef}\u0000${namespace}\u0000${peerName}`;
+  #sink(
+    agentRef: string,
+    namespace: string,
+    peerName: string,
+    fromId: string | undefined,
+    revived?: ReturnEntry,
+  ): Promise<Sink> {
+    const key = returnKey(agentRef, namespace, peerName, fromId);
     let sink = this.#sinks.get(key);
     if (!sink) {
-      sink = this.#listen(key, agentRef, namespace, peerName);
+      sink = this.#listen(
+        key,
+        agentRef,
+        namespace,
+        peerName,
+        false,
+        revived,
+        fromId,
+      );
       this.#sinks.set(key, sink);
       sink.catch(() => {
         this.#sinks.delete(key);
@@ -413,6 +544,8 @@ export class ClaudeTransport {
     namespace: string,
     peerName: string,
     notice = false,
+    revived?: ReturnEntry,
+    fromId?: string,
   ) {
     const path = join(
       this.opts.socketsDir,
@@ -437,6 +570,9 @@ export class ClaudeTransport {
       peerName,
       claudeFrom: "",
       notice,
+      at: revived?.at ?? this.#now(),
+      ...(revived ? { revived: true, indexed: true } : {}),
+      ...(fromId === undefined ? {} : { fromId }),
       server: createServer((sock) => {
         conns.add(sock);
         sock.on("close", () => conns.delete(sock));
@@ -451,7 +587,6 @@ export class ClaudeTransport {
       sink.server.listen(path, () => resolve());
     });
     chmodSync(path, 0o600);
-    if (!notice) this.#index("add", key, { agentRef, namespace, peerName });
     return sink;
   }
 
@@ -472,7 +607,9 @@ export class ClaudeTransport {
       Object.values(entries)
         .filter((e) => e.agentRef === agentRef)
         .map((e) =>
-          this.#sink(e.agentRef, e.namespace, e.peerName).catch(() => {}),
+          this.#sink(e.agentRef, e.namespace, e.peerName, e.fromId, e).catch(
+            () => {},
+          ),
         ),
     );
   }
@@ -481,15 +618,19 @@ export class ClaudeTransport {
   #index(
     op: "read" | "add",
     key?: string,
-    entry?: { agentRef: string; namespace: string; peerName: string },
+    entry?: Omit<ReturnEntry, "at">,
   ): ReturnIndex | undefined {
     const file = this.opts.returnIndexFile;
     if (!file) return undefined;
     try {
-      const all = readReturnIndex(file);
+      // Entries past the TTL are gone: never revived, dropped on the next write.
+      const cutoff = this.#now() - RETURN_TTL_MS;
+      const all: ReturnIndex = Object.create(null);
+      for (const [k, v] of Object.entries(readReturnIndex(file)))
+        if (v.at >= cutoff) all[k] = v;
       if (op === "read") return all;
       if (!key || !entry) return all;
-      all[key] = { ...entry, at: Date.now() };
+      all[key] = { ...entry, at: this.#now() };
       const keep = Object.entries(all)
         .sort(([, a], [, b]) => b.at - a.at)
         .slice(0, RETURN_INDEX_MAX);

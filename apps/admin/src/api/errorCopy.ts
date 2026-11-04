@@ -23,6 +23,8 @@ const COPY: Record<string, string> = {
   grace_expired: "The restore window has passed.",
   downgrade_refused:
     "That version is older than the one installed. Installs only move forward: ship the fix as a new release.",
+  release_ahead_of_platform:
+    "That release is newer than the platform's. Installs can't run ahead of the platform: deploy it first.",
   signup_limit: "The sign-up limit is reached.",
   token_limit: "There are too many tokens. Revoke one first.",
   release_not_published: "That release is not published.",
