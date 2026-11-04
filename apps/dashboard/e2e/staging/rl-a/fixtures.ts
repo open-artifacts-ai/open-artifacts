@@ -16,6 +16,7 @@ import {
   type Page,
 } from "@playwright/test";
 import { gate } from "../gate";
+import { hookFailure, paceT19Hook } from "../hook-pace";
 import { sendRead } from "../retry";
 import { FETCH_MS, hookKey, rlA } from "../targets";
 
@@ -36,14 +37,19 @@ const post = (path: string, body: unknown, headers: Record<string, string>) =>
     signal: AbortSignal.timeout(FETCH_MS),
   });
 
-/** POST a /__test/* hook with rl-a's key: the raw response. */
-export const hookRes = (path: string, body: unknown = {}) =>
-  post(path, body, { authorization: `Bearer ${KEY}` });
+/**
+ * POST a /__test/* hook with rl-a's key: the raw response. Paced first
+ * (hook-pace.ts): every /__test/* call counts against RL_ANON.
+ */
+export async function hookRes(path: string, body: unknown = {}) {
+  await paceT19Hook(A.app);
+  return post(path, body, { authorization: `Bearer ${KEY}` });
+}
 
 /** POST a /__test/* hook with rl-a's key; throws with the status unless 2xx. */
 export async function hook<T>(path: string, body: unknown = {}): Promise<T> {
   const res = await hookRes(path, body);
-  if (!res.ok) throw new Error(`rl-a hook ${path}: ${res.status}`);
+  if (!res.ok) throw hookFailure(A.app, `rl-a hook ${path}`, res.status);
   return (await res.json()) as T;
 }
 

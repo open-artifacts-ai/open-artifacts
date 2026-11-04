@@ -1,7 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { API_ERROR_CODES } from "@oa/provisioning-contract";
 import { ERROR_CODES } from "@oa/shared";
 import {
@@ -10,6 +7,7 @@ import {
   networkCode,
   setupFetch,
 } from "./fetch-timeout.ts";
+import { claimHookSlot, type PaceOpts } from "./hook-ledger.ts";
 import { note } from "./notes.ts";
 import { secretsOf, setPat, type Target } from "./targets.ts";
 
@@ -192,47 +190,14 @@ export class HttpError extends Error {
   }
 }
 
-// RL_ANON allows 30 hook calls a minute per install and IP, and its refusal is
-// the same 404 as every other. Stay under it: at most HOOK_LIMIT calls in any
-// HOOK_WINDOW_MS per install. Each live file runs in its own process, so the
-// call times live in a file shared across the run's files.
-const HOOK_LIMIT = 25;
-const HOOK_WINDOW_MS = 60_000;
-
-const hookLedger = (t: Target) =>
-  join(
-    tmpdir(),
-    `oa-redline-hooks-${createHash("sha256").update(t.app).digest("hex").slice(0, 16)}.json`,
-  );
-
-function readLedger(path: string): number[] {
-  try {
-    const v: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return Array.isArray(v) ? v.filter((n) => typeof n === "number") : [];
-  } catch {
-    return [];
-  }
-}
-
 /**
- * Waits until a hook call to `t` stays under the limit, then records it. Any
- * request to a /__test/* path counts (the server charges the bucket before
- * the key), so a raw probe there paces through this too.
+ * Waits until a hook call to `t` fits the runner's hook budget (#1254,
+ * src/hook-ledger.ts, shared with T19), then records it. Any request to a
+ * /__test/* path counts (the server charges the bucket before the key), so
+ * a raw probe there paces through this too. Returns the calls in the window.
  */
-export async function paceHook(t: Target): Promise<void> {
-  const path = hookLedger(t);
-  for (;;) {
-    const now = Date.now();
-    const calls = readLedger(path).filter((at) => now - at < HOOK_WINDOW_MS);
-    if (calls.length < HOOK_LIMIT) {
-      calls.push(now);
-      writeFileSync(path, JSON.stringify(calls), { mode: 0o600 });
-      return;
-    }
-    const wait = HOOK_WINDOW_MS - (now - Math.min(...calls)) + 100;
-    await new Promise((r) => setTimeout(r, wait));
-  }
-}
+export const paceHook = (t: Target, o: PaceOpts = {}): Promise<number> =>
+  claimHookSlot(t.app, o);
 
 // Why a hook refused after its key verified: the 404 body's
 // error.details.reason, a fixed enum (keep in sync with @oa/shared

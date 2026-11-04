@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { auditCheck } from "../src/audit.ts";
+import { hook404IsTheKeys } from "../src/hook-ledger.ts";
 import {
   type Cred,
   describeRes,
@@ -70,9 +71,12 @@ describe("hooks", () => {
   for (const k of ["a", "b"] as const) {
     it(`${k}: a wrong hook key gets the 404`, async () => {
       const t = T[k];
-      // The rate limit answers the same 404 before the key is read: paced
-      // like every hook call, the 404 here is the key check's.
-      await paceHook(t);
+      // The rate limit answers the same 404 before the key is read. Paced
+      // with one call of the budget kept free, the 404 here is the key
+      // check's (hook404IsTheKeys); never read it so while the ledger is full.
+      const inWindow = await paceHook(t, { reserve: 1 });
+      if (!hook404IsTheKeys(inWindow))
+        throw new Error(`wrong key: hook budget full (${inWindow})`);
       const res = await fetch(`${t.app}/__test/session`, {
         method: "POST",
         redirect: "manual",

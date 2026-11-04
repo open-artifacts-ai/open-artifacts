@@ -8,6 +8,7 @@ import {
   type TestOtpOutcome,
 } from "@oa/shared";
 import type { Browser, Page } from "@playwright/test";
+import { hookFailure } from "../hook-pace";
 import { untilSettled } from "../poll";
 import { stubTurnstile, TURNSTILE_DUMMY_TOKEN } from "../turnstile";
 import {
@@ -68,7 +69,7 @@ async function readOtp(
   const d = body.error?.details;
   // Anything else (hooks off, a wrong key, the rate limit) is the bare 404.
   if (res.status !== 404 || d?.reason !== "no_code" || !d.outcome)
-    throw new Error(`rl-a otp hook: ${res.status}`);
+    throw hookFailure(A.app, "rl-a otp hook", res.status);
   return { outcome: d.outcome };
 }
 
