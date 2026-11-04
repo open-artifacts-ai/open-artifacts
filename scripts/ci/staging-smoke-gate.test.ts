@@ -18,7 +18,11 @@ p="\${@: -1}"; p="\${p#repos/$GITHUB_REPOSITORY/}"
 [ -f "$STATE/fail" ] && { echo "HTTP 502" >&2; exit 1; }
 case "$p" in
   commits/*) [ -f "$STATE/fail-commit" ] && exit 1; cat "$STATE/commit.json" ;;
-  actions/workflows/deploy-staging.yml/runs\\?*) cat "$STATE/runs.json" ;;
+  actions/workflows/deploy-staging.yml/runs\\?*)
+    # Like the API: a status= filter drops every run of another status.
+    st="$(sed -n 's/.*[?&]status=\\([a-z_]*\\).*/\\1/p' <<< "$p")"
+    if [ -n "$st" ]; then jq -c --arg s "$st" 'if (.workflow_runs | type) == "array" then .workflow_runs |= map(select(.status == $s)) else . end' "$STATE/runs.json" 2> /dev/null || cat "$STATE/runs.json"
+    else cat "$STATE/runs.json"; fi ;;
   compare/main...*) [ -f "$STATE/fail-main" ] && exit 1; cat "$STATE/main.json" ;;
   compare/*) [ -f "$STATE/fail-compare" ] && exit 1; cat "$STATE/compare.json" ;;
   actions/runs/*/jobs\\?*) [ -f "$STATE/fail-jobs" ] && exit 1; id="\${p#actions/runs/}"; cat "$STATE/jobs-\${id%%/*}.json" ;;
@@ -89,7 +93,7 @@ describe("staging-smoke-gate.sh", () => {
     );
     expect(r.log).toEqual([
       `gh api -X GET repos/${REPO}/commits/${TAG}`,
-      `gh api -X GET repos/${REPO}/actions/workflows/deploy-staging.yml/runs?branch=main&event=push&status=completed&per_page=100`,
+      `gh api -X GET repos/${REPO}/actions/workflows/deploy-staging.yml/runs?branch=main&event=push&per_page=100`,
       `gh api -X GET repos/${REPO}/compare/${TSHA}...${HEAD}`,
       `gh api -X GET repos/${REPO}/compare/main...${HEAD}`,
       `gh api -X GET repos/${REPO}/actions/runs/9/jobs?filter=latest&per_page=100`,
@@ -117,10 +121,10 @@ describe("staging-smoke-gate.sh", () => {
     }
     const r = gate([runOf()], { jobs: { "9": jobsOf("failure") } });
     expect(r.err).toContain("run 9's smoke job: failure");
-    expect(r.err).toContain(`prod waits until a deploy-staging.yml run`);
+    expect(r.err).toContain("re-run deploy-staging.yml on main");
   });
 
-  it("only the newest completed run counts: an older green run never vouches for a newer red one", () => {
+  it("only the newest run counts: an older green run never vouches for a newer red one", () => {
     const newer = runOf({ id: 10, run_started_at: "2026-11-03T10:00:00Z" });
     const r = gate([newer, runOf()], {
       jobs: { "9": jobsOf("success"), "10": jobsOf("failure") },
@@ -157,6 +161,9 @@ describe("staging-smoke-gate.sh", () => {
     });
     expect(r.code).toBe(1);
     expect(r.err).toContain("run 10's smoke job: none");
+    // Cancelled while waiting on the shared staging group: blocks (fails
+    // safe) until the next run, and says to re-run deploy-staging.yml.
+    expect(r.err).toContain("re-run deploy-staging.yml on main");
   });
 
   it("a cancelled run whose smoke had already passed still counts (it was cancelled after)", () => {
@@ -178,13 +185,51 @@ describe("staging-smoke-gate.sh", () => {
     });
     expect(r.code).toBe(1);
     expect(r.err).toContain(
-      `the newest completed run 7 (head ${"c".repeat(40)}) is not at or after ${TAG}'s commit ${TSHA} (behind)`,
+      `the newest run 7 (head ${"c".repeat(40)}) is not at or after ${TAG}'s commit ${TSHA} (behind)`,
     );
   });
 
-  it("skips runs that are not completed pushes on main of this repository", () => {
+  it("refuses while the newest run is queued or running: retry when it finishes", () => {
+    for (const status of ["in_progress", "queued", "waiting", "pending"]) {
+      const newer = runOf({
+        id: 10,
+        status,
+        conclusion: null,
+        run_started_at: "2026-11-03T12:00:00Z",
+      });
+      const r = gate([newer, runOf()]);
+      expect(r.code, status).toBe(1);
+      expect(r.err, status).toContain(
+        `staging smoke is running (run 10 is ${status}); retry when it finishes`,
+      );
+      expect(r.log.some((l) => l.includes("/compare/"))).toBe(false);
+    }
+    const r = gate([runOf({ status: null })]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("run 9 is none");
+  });
+
+  it("a red run being re-run is never passed over for an older green one", () => {
+    // Run 10 went red, then someone re-ran it: its new attempt is running and
+    // is the newest start. The listing must not filter on status=completed
+    // (the stub honours that filter, as the API does), or run 9 would pass.
+    const rerunning = runOf({
+      id: 10,
+      status: "in_progress",
+      conclusion: null,
+      created_at: "2026-11-03T10:00:00Z",
+      run_started_at: "2026-11-03T12:00:00Z",
+    });
+    const r = gate([rerunning, runOf()], {
+      jobs: { "9": jobsOf("success"), "10": jobsOf("failure") },
+    });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("staging smoke is running (run 10 is in_progress)");
+    expect(r.log[1]).not.toContain("status=");
+  });
+
+  it("skips runs that are not pushes on main of this repository", () => {
     for (const [label, run] of [
-      ["in progress", runOf({ id: 10, status: "in_progress" })],
       ["branch", runOf({ id: 10, head_branch: "feature" })],
       ["dispatch", runOf({ id: 10, event: "workflow_dispatch" })],
       ["fork", runOf({ id: 10, head_repository: { full_name: "evil/x" } })],
@@ -200,11 +245,11 @@ describe("staging-smoke-gate.sh", () => {
     }
   });
 
-  it("refuses when there is no completed run on main", () => {
-    for (const runs of [[], [runOf({ status: "in_progress" })]]) {
+  it("refuses when there is no run on main", () => {
+    for (const runs of [[], [runOf({ head_branch: "feature" })]]) {
       const r = gate(runs);
       expect(r.code).toBe(1);
-      expect(r.err).toContain("no completed deploy-staging.yml run on main");
+      expect(r.err).toContain("no deploy-staging.yml run on main");
     }
   });
 

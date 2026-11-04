@@ -7,18 +7,27 @@
 # Fails closed: an API error, an unparsable answer, no run, or a run that is
 # not at or after the tag is exit 1.
 #
-# The run it reads is the newest completed deploy-staging.yml run on main:
-# event push, head_branch main, of this repository, newest by when its latest
-# attempt started (run_started_at, so a re-run of an older run, which put
-# older code on staging, counts as the newest). In-progress runs are skipped;
-# a cancelled run counts only if it is that newest one, so a run cancelled
-# while waiting and superseded by a newer completed run never blocks.
+# The run it reads is the newest deploy-staging.yml run on main of any
+# status: event push, head_branch main, of this repository, newest by when
+# its latest attempt started (run_started_at, so a re-run of an older run,
+# which puts older code on staging, counts as the newest, and a red run being
+# re-run is never passed over for an older green one).
+#   0. It has completed: while it is queued or running, the gate refuses
+#      ("staging smoke is running"); retry when it finishes.
 #   1. Its head is the tag's commit or a descendant of it
 #      (compare/<tag sha>...<head> is "identical" or "ahead"), and on main
 #      (compare/main...<head> is "identical" or "behind").
 #   2. Its latest attempt's `smoke` job concluded success.
 # Only the newest run counts: an older green run never vouches for staging
-# once a newer run went red.
+# once a newer run went red. An older cancelled run is never read once a
+# newer run exists. A newest run cancelled before its smoke passed (above all
+# one cancelled while waiting: the `staging` concurrency group is shared with
+# ops-staging-access.yml and ops-staging-token-id.yml) has no green smoke, so
+# it blocks until the next deploy-staging.yml run on main passes. That fails
+# safe; the refusal says to re-run deploy-staging.yml.
+# Limit: only the newest 100 runs are listed (one page). The newest run is
+# always on the first page, so this only matters if a page of 100 holds no
+# push run on main of this repository, which then refuses ("no run").
 # Usage: scripts/ci/staging-smoke-gate.sh vX.Y.Z
 set -euo pipefail
 
@@ -29,7 +38,7 @@ tag="$1"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 R="repos/$GITHUB_REPOSITORY"
 
-fail() { echo "staging smoke: $1; prod waits until a deploy-staging.yml run on main at or after $tag passes its smoke job" >&2; exit 1; }
+fail() { echo "staging smoke: $1; prod waits until the newest deploy-staging.yml run on main is at or after $tag and passed its smoke job (re-run deploy-staging.yml on main if its last run was cancelled or flaked)" >&2; exit 1; }
 # api <what> <path>: the JSON body, or fail naming what was read.
 api() {
   local body
@@ -41,26 +50,26 @@ api() {
 sha="$(api "the commit of $tag" "$R/commits/$tag" | jq -r '.sha // ""')"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "no commit for $tag"
 
-runs="$(api "deploy-staging.yml runs" "$R/actions/workflows/deploy-staging.yml/runs?branch=main&event=push&status=completed&per_page=100")"
+runs="$(api "deploy-staging.yml runs" "$R/actions/workflows/deploy-staging.yml/runs?branch=main&event=push&per_page=100")"
 run="$(jq -r --arg repo "$GITHUB_REPOSITORY" '
   if (.workflow_runs | type) != "array" then error("no runs") else . end
   | [.workflow_runs[]
-    | select(.status == "completed" and .head_branch == "main" and .event == "push")
+    | select(.head_branch == "main" and .event == "push")
     | select((.head_repository.full_name // "") == $repo)]
   | sort_by(.run_started_at // .created_at // "", .id) | last
-  | if . == null then "" else "\(.id) \(.head_sha // "")" end' <<< "$runs" 2> /dev/null)" ||
+  | if . == null then "" else "\(.id) \(.status // "none") \(.head_sha // "")" end' <<< "$runs" 2> /dev/null)" ||
   fail "unparsable deploy-staging.yml runs"
-[ -n "$run" ] || fail "no completed deploy-staging.yml run on main"
-head="${run#* }"
-run="${run%% *}"
+[ -n "$run" ] || fail "no deploy-staging.yml run on main"
+read -r run status head <<< "$run" || true
 [[ "$run" =~ ^[1-9][0-9]{0,19}$ ]] || fail "unparsable deploy-staging.yml runs"
+[ "$status" = completed ] || fail "staging smoke is running (run $run is $status); retry when it finishes"
 [[ "$head" =~ ^[0-9a-f]{40}$ ]] || fail "run $run has no head_sha"
 
 # The newest run's head is the tag's commit or after it ...
 st="$(api "the compare of $tag with run $run" "$R/compare/$sha...$head" | jq -r '.status // ""')"
 case "$st" in
   identical | ahead) ;;
-  *) fail "the newest completed run $run (head $head) is not at or after $tag's commit $sha (${st:-no status})" ;;
+  *) fail "the newest run $run (head $head) is not at or after $tag's commit $sha (${st:-no status})" ;;
 esac
 # ... and on main (head_branch is only a name).
 st="$(api "the compare of run $run with main" "$R/compare/main...$head" | jq -r '.status // ""')"
