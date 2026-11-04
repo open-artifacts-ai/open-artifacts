@@ -491,10 +491,22 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const n of receipts.owed(ref)) tell(n);
   };
 
-  // A Claude reply must not be lost to a hub reconnect.
-  const outbox = new Outbox<ClientFrame>({
-    send: (f, unsent) => sendToHub(f, true, unsent),
-    stale: (f) => f.type === "send" && !agents.byRef(f.from_ref)?.live,
+  /**
+   * A Claude reply, queued with the agent it answers: `to_id` is added when it
+   * is sent, from what the hub then says it supports (hubIds), never frozen
+   * at queue time.
+   */
+  type QueuedReply = { frame: SendFrame; peerId?: string };
+  const withTo = (r: QueuedReply): SendFrame =>
+    hubIds && r.peerId ? { ...r.frame, to_id: r.peerId } : r.frame;
+  // A Claude reply must not be lost to a hub reconnect. It waits for the
+  // link's hello_ok, so it knows whether the hub takes to_id.
+  const outbox = new Outbox<QueuedReply>({
+    send: (r, unsent) =>
+      hub.open && hubVersion !== undefined
+        ? sendToHub(withTo(r), true, unsent)
+        : false,
+    stale: (r) => !agents.byRef(r.frame.from_ref)?.live,
     log,
   });
   const claude = new ClaudeTransport({
@@ -520,24 +532,25 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           `a Claude reply to ${peerName} was not well-formed unicode; sent with U+FFFD`,
         );
       const body = (text as string & { toWellFormed(): string }).toWellFormed();
-      const f: ClientFrame = {
+      const f: SendFrame = {
         v: 1,
         id: frameId(),
         type: "send",
         from_ref: agentRef,
         to_name: peerName,
         to_namespace: namespace,
-        // Only the agent that wrote: never whoever holds the name now.
-        ...(hubIds && peerId ? { to_id: peerId } : {}),
         body,
       };
       if (!ClientFrameSchema.safeParse(f).success) {
         log(`dropped a Claude reply to ${peerName}: not valid on the hub wire`);
         return;
       }
-      outbox.push(f);
+      // Only the agent that wrote, never whoever holds the name now: to_id
+      // is added at send time (withTo).
+      outbox.push({ frame: f, ...(peerId ? { peerId } : {}) });
     },
     // A reply the daemon would not send: the session is told, as information.
+    hubIds: () => hubIds,
     onReplyRefused: (agentRef, peerName) => {
       const agent = agents.byRef(agentRef);
       if (agent) void claude.notify(agent, replyGoneText(peerName));
@@ -741,6 +754,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubVersion = frame.server_version;
           // A reply names its agent (to_id) only to a hub that said it can.
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
+          // Queued replies go now that the link says what it supports.
+          outbox.flush();
           return;
         // roster_changed has no local consumer yet (C6).
       }
@@ -781,7 +796,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubEver = true;
       hubDroppedAt = undefined;
       for (const rec of agents.all()) if (rec.live) announceUp(rec);
-      outbox.flush();
+      // Queued replies wait for hello_ok (to_id depends on it).
     },
     onClose: () => {
       // Failed retries close too: keep the first drop of this outage.

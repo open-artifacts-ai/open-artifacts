@@ -138,7 +138,7 @@ describe("reply ids in the daemon", () => {
   });
 
   it("a revived socket that does not know who wrote refuses the reply and tells the session", async () => {
-    const key = "s4242\u0000ns\u0000alice";
+    const key = "s4242\u0000ns\u0000alice\u0000";
     const { h, d, seen } = await session([BUS_CAPS.ids], (dd) => {
       const file = join(dd, "claude-return.json");
       // A daemon before ids recorded alice, with no agent id.
@@ -167,5 +167,56 @@ describe("reply ids in the daemon", () => {
     expect(seen.map((x) => x.content).join("\n")).not.toContain("pong");
     await new Promise((r) => setTimeout(r, 50));
     expect(h.of("send")).toEqual([]);
+  });
+
+  const helloOk = (caps?: string[]) => ({
+    id: "w2",
+    type: "hello_ok",
+    machine_id: "1".repeat(16),
+    machine_label: "laptop",
+    server_version: "1",
+    ...(caps === undefined ? {} : { caps }),
+  });
+  /** Drops the hub link and waits for the next one to open. */
+  async function reconnect(h: Awaited<ReturnType<typeof session>>["h"]) {
+    const first = h.hubSock();
+    first?.terminate();
+    await vi.waitFor(() => expect(h.hubSock()).not.toBe(first));
+    await vi.waitFor(() => expect(h.daemon.hub.open).toBe(true));
+  }
+
+  it("a reply made while the link is down waits for hello_ok, then names its agent", async () => {
+    const { h, sock, seen } = await session([BUS_CAPS.ids]);
+    h.toDaemon(deliver(ALICE));
+    await h.next("ack");
+    const returnPath = seen[0]?.from as string;
+    const first = h.hubSock();
+    first?.terminate();
+    await vi.waitFor(() => expect(h.hubSock()).not.toBe(first));
+    await vi.waitFor(() => expect(h.daemon.hub.open).toBe(true));
+    // A new link, no hello_ok yet. Alice dropped and a newcomer took "alice"
+    // meanwhile: the queued reply must still name alice's agent, so the hub
+    // refuses it agent_gone.
+    await answer(returnPath, reply(sock, "late answer"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.of("send")).toEqual([]); // not before the new link's hello_ok
+    h.toDaemon(helloOk([BUS_CAPS.ids]));
+    expect(await h.next("send")).toMatchObject({
+      to_name: "alice",
+      to_id: ALICE,
+      body: "late answer",
+    });
+  });
+
+  it("forgets the hub's caps with the link: a hub without ids gets no to_id", async () => {
+    const { h, sock, seen } = await session([BUS_CAPS.ids]);
+    h.toDaemon(deliver(ALICE));
+    await h.next("ack");
+    await reconnect(h);
+    h.toDaemon(helloOk(undefined));
+    await answer(seen[0]?.from as string, reply(sock, "pong"));
+    const sent = await h.next("send");
+    expect(sent).toMatchObject({ to_name: "alice", body: "pong" });
+    expect(sent).not.toHaveProperty("to_id");
   });
 });

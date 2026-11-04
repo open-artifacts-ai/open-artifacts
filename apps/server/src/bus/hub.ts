@@ -1361,8 +1361,12 @@ function payloadHash(f: SendFrame, sender: AgentRow): string {
     sender.global !== 1 && f.to_namespace === sender.namespace
       ? ""
       : (f.to_namespace ?? "");
+  // A reply's to_id is part of what was sent: a resend with another one is
+  // a different send, never the earlier receipt. Without one the hash is
+  // unchanged, so keys stored before to_id still match.
+  const to = f.to_id === undefined ? "" : `\n${f.to_id}`;
   return createHash("sha256")
-    .update(`${f.to_name.toLowerCase()}\n${ns}\n${body}`)
+    .update(`${f.to_name.toLowerCase()}\n${ns}\n${body}${to}`)
     .digest("hex");
 }
 
@@ -2361,8 +2365,9 @@ export class BusHub extends DurableObject<Env> {
           machine_id: machine.id,
           machine_label: machine.label,
           server_version: VERSION,
-          // Only to a hello that listed caps: an older client decodes strictly.
-          ...(f.caps === undefined ? {} : { caps: [...HUB_CAPS] }),
+          // Only to a hello that listed ids: any other client decodes hello_ok
+          // strictly, a rename-only one included.
+          ...(hasCap(f, BUS_CAPS.ids) ? { caps: [...HUB_CAPS] } : {}),
         });
         return;
       case "sessions": {

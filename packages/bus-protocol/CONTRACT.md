@@ -109,6 +109,28 @@ frames depth <= 5, 65536 and 131072, so a full roster of rows with status
 fields and 5 `former_names` fits. Either way at most 64 `:` plus `,` directly
 in one object.
 
+## Reply ids (`BUS_CAPS.ids`)
+
+A native reply goes to the agent that wrote the message it answers, never to
+whoever holds the name now.
+
+- `ids` in `hello.caps`: the hub sends `deliver.from_id` (the writer's agent
+  id) and the `agent_gone` refusal only to that socket, and answers
+  `hello_ok.caps` (what it supports) only to a hello that listed `ids`. Every
+  other client, a rename-only one included, decodes `hello_ok` strictly.
+- `send.to_id`: the client sends it only when the link's `hello_ok.caps`
+  listed `ids`. The hub refuses `agent_gone` when `to_name` now resolves to
+  another agent or none (an old socket reads `unknown_agent`). A former name
+  still reaching the same agent is delivered. `to_id` is part of the send's
+  idempotency hash.
+- The local client keeps one return socket per (session, namespace, peer
+  name, writer id), refuses a reply more than the mail TTL (1 h) after the
+  mail it answers, and, when the hub lists `ids`, a reply on a socket revived
+  without its writer's id. It tells the session, as information.
+- Compatibility, pre-launch: the local client always sends `hello.caps`, and a
+  hub before v0.111.0 refuses a hello with `caps` (`bad_frame`). There is no
+  shim: installs are upgraded instead (the only instance is the owner's).
+
 ## Renames (#393)
 
 Ported from OpenBus R393a; schemas in `rename.ts` and `caps.ts`. The hub side
