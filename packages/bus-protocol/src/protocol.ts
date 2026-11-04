@@ -1,20 +1,20 @@
 import { z } from "zod";
-import { newId } from "./ids.js";
-import { AgentKindSchema, KindTokenSchema } from "./kinds.js";
-import { LIMITS, utf8Exceeds } from "./limits.js";
-import { BusNameSchema } from "./names.js";
-import { WireNamespaceSchema } from "./namespace.js";
+import { newId } from "./ids.ts";
+import { AgentKindSchema, KindTokenSchema } from "./kinds.ts";
+import { LIMITS, utf8Exceeds } from "./limits.ts";
+import { BusNameSchema } from "./names.ts";
+import { WireNamespaceSchema } from "./namespace.ts";
 import {
   MsgIdSchema,
   receiptReasonMatchesState,
   receiptShape,
-} from "./receipts.js";
-import { AgentRefSchema, MachineLabelSchema } from "./refs.js";
+} from "./receipts.ts";
+import { AgentRefSchema, MachineLabelSchema } from "./refs.ts";
 import {
   IsoTimeSchema,
   StatusLabelSchema,
   StatusStateSchema,
-} from "./status.js";
+} from "./status.ts";
 
 export const PROTOCOL_VERSION = 1;
 

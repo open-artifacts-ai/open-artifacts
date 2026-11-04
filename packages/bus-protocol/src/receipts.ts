@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { newMsgId } from "./ids.js";
+import { newMsgId } from "./ids.ts";
 
 export const RECEIPT_STATES = [
   "pending",

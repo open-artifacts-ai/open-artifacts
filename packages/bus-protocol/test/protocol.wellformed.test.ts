@@ -4,7 +4,7 @@ import {
   decodeServerFrame,
   encodeFrame,
   type Frame,
-} from "../src/protocol.js";
+} from "../src/protocol.ts";
 
 const id = "7Yb3kQmZ1xRt9PvA";
 const mid = "aaaaaaaaaaaaaaaa";

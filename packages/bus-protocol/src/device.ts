@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { isDeviceSecret, isUserCode, MACHINE_TOKEN_PREFIX } from "./ids.js";
-import { LIMITS } from "./limits.js";
-import { BAD_NS_CHARS } from "./namespace.js";
-import { MachineLabelSchema } from "./refs.js";
+import { isDeviceSecret, isUserCode, MACHINE_TOKEN_PREFIX } from "./ids.ts";
+import { LIMITS } from "./limits.ts";
+import { BAD_NS_CHARS } from "./namespace.ts";
+import { MachineLabelSchema } from "./refs.ts";
 
 const seg = (s: string): string => {
   if (s === "." || s === "..")

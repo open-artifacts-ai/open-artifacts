@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BusConfigSchema, CONFIG_FILE, mergeConfigs } from "../src/config.js";
+import { BusConfigSchema, CONFIG_FILE, mergeConfigs } from "../src/config.ts";
 
 describe(".oa-bus.json", () => {
   it("is named exactly that", () => expect(CONFIG_FILE).toBe(".oa-bus.json"));

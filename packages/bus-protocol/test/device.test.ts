@@ -5,13 +5,13 @@ import {
   DeviceTokenRequestSchema,
   DeviceTokenResponseSchema,
   verificationUriMatches,
-} from "../src/device.js";
+} from "../src/device.ts";
 import {
   isDeviceSecret,
   isMachineToken,
   newDeviceSecret,
   newMachineToken,
-} from "../src/ids.js";
+} from "../src/ids.ts";
 
 const ok = {
   device_code: newDeviceSecret(),
