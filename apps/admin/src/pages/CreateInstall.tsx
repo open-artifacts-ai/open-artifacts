@@ -329,8 +329,12 @@ export function CreateInstall() {
           <div>
             <Label htmlFor="version">Release</Label>
             <Select value={version} onValueChange={setPicked}>
-              <SelectTrigger id="version" className="oa-release">
-                <SelectValue />
+              <SelectTrigger
+                id="version"
+                className="oa-release"
+                aria-describedby="version-help"
+              >
+                <SelectValue placeholder="No release available" />
               </SelectTrigger>
               <SelectContent position="popper" align="start">
                 {installable.map((r) => {
@@ -359,7 +363,7 @@ export function CreateInstall() {
                 })}
               </SelectContent>
             </Select>
-            <small>
+            <small id="version-help">
               {platform === null
                 ? NO_PLATFORM_CREATE
                 : testHooks

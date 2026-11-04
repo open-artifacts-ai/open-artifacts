@@ -675,6 +675,8 @@ it("with no platform release, every release is disabled and Create install says 
   expect(submit()).toBeDisabled();
   // The note under the release list, in place of the usual hint.
   expect(screen.getAllByText(PAUSED_CREATE)).toHaveLength(2);
+  expect(release()).toHaveAccessibleDescription(PAUSED_CREATE);
+  expect(release()).toHaveTextContent("No release available");
   expect(
     screen.queryByText("Only signed, published releases are listed."),
   ).toBeNull();
@@ -751,4 +753,43 @@ it("a pick that test hooks rule out falls back to an allowed release", async () 
   fireEvent.click(submit());
   await waitFor(() => expect(createBody()).toBeDefined());
   expect(createBody()).toMatchObject({ version: "2.0.0", testHooks: true });
+});
+
+it("create drops a pick the platform no longer allows after a refetch", async () => {
+  let platform = "1.42.0";
+  use(
+    http.get("*/api/v1/releases", () =>
+      HttpResponse.json({
+        items: [
+          relOf("1.42.0", ["release"], true),
+          relOf("1.41.2", ["release"]),
+        ],
+        platform,
+      }),
+    ),
+  );
+  signIn("admin");
+  const { qc } = renderApp("/installs/new");
+  await screen.findByLabelText("Slug");
+  await waitFor(() => expect(release()).toHaveTextContent("1.42.0"));
+  // Pick 1.41.2, then 1.42.0: re-picking the default would change nothing.
+  fireEvent.click(release());
+  fireEvent.click(await screen.findByRole("option", { name: "1.41.2" }));
+  await waitFor(() => expect(release()).toHaveTextContent(/^1\.41\.2$/));
+  fireEvent.click(release());
+  fireEvent.click(
+    await screen.findByRole("option", { name: "1.42.0 (latest)" }),
+  );
+  await waitFor(() => expect(release()).toHaveTextContent("1.42.0"));
+  // The platform rolls back to 1.41.2 while the form is open.
+  platform = "1.41.2";
+  await qc.refetchQueries({ queryKey: ["releases"] });
+  await waitFor(() => expect(release()).toHaveTextContent(/^1\.41\.2$/));
+  type("fresh-one");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(createBody()).toBeDefined());
+  expect(createBody()).toMatchObject({ version: "1.41.2" });
 });

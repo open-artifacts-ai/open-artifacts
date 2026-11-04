@@ -90,10 +90,15 @@ function Actions({ install }: { install: Install }) {
     enabled: dialog === "upgrade",
   });
   const platform = releases.data?.platform;
+  const items = releases.data?.items ?? [];
+  // release_gate runs a test-hook install's redline bundle; R5 only checks an
+  // explicit release is there, so the job would fail later without this.
+  const variant = install.testHooks ? "redline" : "release";
   // R5 refuses a release at or below the install's own (downgrade_refused).
-  const versions = (releases.data?.items ?? []).filter(
+  const versions = items.filter(
     (r) =>
       r.installable &&
+      (!install.testHooks || r.variants.includes("redline")) &&
       (!install.version || compareVersions(r.version, install.version) > 0),
   );
   const offered = versions
@@ -107,7 +112,19 @@ function Actions({ install }: { install: Install }) {
     install.version &&
     compareVersions(platform, install.version) <= 0
   );
-  const latestOk = latestShown && platform !== null;
+  // R5 takes it only when published, installable and with the install's
+  // variant (resolveRelease), else release_not_published.
+  const platformRelease = platform
+    ? items.find((r) => r.version === platform && r.installable)
+    : undefined;
+  const latestWhy = !platform
+    ? null
+    : !platformRelease
+      ? "Not published."
+      : !platformRelease.variants.includes(variant)
+        ? `No ${variant} build.`
+        : null;
+  const latestOk = latestShown && !!platform && latestWhy === null;
   /** The Select's value: the pick while it is offered, else the first item that is. */
   const chosen =
     version && offered.includes(version)
@@ -116,6 +133,16 @@ function Actions({ install }: { install: Install }) {
         ? LATEST
         : (newestVersion(offered) ?? "");
   const sentVersion = chosen === LATEST ? "" : chosen;
+  /** Why Upgrade is off; none with no platform release, whose note says it. */
+  const upgradeBlocker = releases.isPending
+    ? "Loading releases."
+    : releases.isError
+      ? `Could not load the releases. ${errorCopy(releases.error)}`
+      : platform === null
+        ? undefined
+        : !latestShown && offered.length === 0
+          ? "Already on the platform's release or newer. Nothing newer is deployed."
+          : "No release can be picked yet.";
   const id = install.id;
   // Purge needs a Google sign-in from the last 10 minutes (authz: reauth_required).
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
@@ -314,8 +341,8 @@ function Actions({ install }: { install: Install }) {
           submitLabel="Upgrade"
           pending={upgrade.isPending}
           error={upgrade.error}
-          canSubmit={chosen !== ""}
-          blocker="No release can be picked yet."
+          canSubmit={releases.isSuccess && chosen !== ""}
+          blocker={upgradeBlocker}
           onSubmit={() => upgrade.mutate()}
         >
           <div>
@@ -331,12 +358,19 @@ function Actions({ install }: { install: Install }) {
                   platform === null ? "up-version-note" : undefined
                 }
               >
-                <SelectValue placeholder="No release available" />
+                <SelectValue
+                  placeholder={
+                    releases.isPending
+                      ? "Loading releases..."
+                      : "No release available"
+                  }
+                />
               </SelectTrigger>
               <SelectContent position="popper" align="start">
                 {latestShown && (
                   <SelectItem value={LATEST} disabled={!latestOk}>
                     The platform's release
+                    {latestWhy && <span className="oa-note"> {latestWhy}</span>}
                   </SelectItem>
                 )}
                 {versions.map((r) => {
