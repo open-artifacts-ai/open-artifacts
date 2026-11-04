@@ -98,9 +98,11 @@ export function CreateInstall() {
   const hooksOption = !testAdmin && me.data?.env === "staging";
   const [hooksChecked, setHooksChecked] = useState(false);
   const testHooks = testAdmin || (hooksOption && hooksChecked);
-  // release_gate runs a test-hook install's redline bundle.
+  // release_gate runs the install's bundle: redline with test hooks, else
+  // release. R4 only checks an explicit version is present.
   const installable = (releases.data?.items ?? []).filter(
-    (r) => r.installable && (!testHooks || r.variants.includes("redline")),
+    (r) =>
+      r.installable && r.variants.includes(testHooks ? "redline" : "release"),
   );
   // R4 refuses a release newer than the platform's, and any while it has none.
   const platform = releases.data?.platform;

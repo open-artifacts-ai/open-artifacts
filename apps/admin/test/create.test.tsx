@@ -793,3 +793,37 @@ it("create drops a pick the platform no longer allows after a refetch", async ()
   await waitFor(() => expect(createBody()).toBeDefined());
   expect(createBody()).toMatchObject({ version: "1.41.2" });
 });
+
+it("an ordinary create is offered only releases with the release bundle", async () => {
+  // release_gate runs the release bundle without test hooks; R4 only checks an
+  // explicit version is present, so a redline-only one would fail the job later.
+  use(
+    http.get("*/api/v1/releases", () =>
+      HttpResponse.json({
+        items: [
+          relOf("1.42.0", ["release", "redline"], true),
+          relOf("1.41.2", ["redline"]),
+          relOf("1.41.0", ["release"]),
+        ],
+        platform: "1.42.0",
+      }),
+    ),
+  );
+  signIn("admin");
+  renderApp("/installs/new");
+  await screen.findByRole("checkbox", { name: "Test hooks" });
+  await waitFor(() => expect(release()).toHaveTextContent("1.42.0"));
+  fireEvent.click(release());
+  expect(await optionTexts()).toEqual([
+    ["1.42.0 (latest)", false],
+    ["1.41.0", false],
+  ]);
+  fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+  // With test hooks, the redline-only one is back and the release-only one goes.
+  fireEvent.click(hooksBox() as HTMLElement);
+  fireEvent.click(release());
+  expect(await optionTexts()).toEqual([
+    ["1.42.0 (latest)", false],
+    ["1.41.2", false],
+  ]);
+});
