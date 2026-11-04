@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.111.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.110.0...v0.111.0) (2026-11-04)
+
+
+### Features
+
+* **admin:** Test hooks checkbox on staging Create install ([#1339](https://github.com/open-artifacts-ai/open-artifacts/issues/1339)) ([9fe041c](https://github.com/open-artifacts-ai/open-artifacts/commit/9fe041c044457416b2fb860ef840862f5e55c745))
+* **admin:** Test hooks checkbox on staging Create install ([#1339](https://github.com/open-artifacts-ai/open-artifacts/issues/1339)) ([#1341](https://github.com/open-artifacts-ai/open-artifacts/issues/1341)) ([9fe041c](https://github.com/open-artifacts-ai/open-artifacts/commit/9fe041c044457416b2fb860ef840862f5e55c745))
+* **bus-protocol:** rename frames, former names and name_kind (OpenBus R393a, [#1325](https://github.com/open-artifacts-ai/open-artifacts/issues/1325)) ([#1335](https://github.com/open-artifacts-ai/open-artifacts/issues/1335)) ([c0f2d2f](https://github.com/open-artifacts-ai/open-artifacts/commit/c0f2d2f9a370f83939f77d5f897838992b4349ad))
+
+
+### Bug Fixes
+
+* **bus:** stale Claude return sockets reply by bus name (open-bus [#426](https://github.com/open-artifacts-ai/open-artifacts/issues/426)) ([#1323](https://github.com/open-artifacts-ai/open-artifacts/issues/1323)) ([181074a](https://github.com/open-artifacts-ai/open-artifacts/commit/181074a7e2dfeea5d7ba6ac07190e4b27f51aa2c))
+* **bus:** the approval link never carries the code (RFC 8628 5.4) ([#1291](https://github.com/open-artifacts-ai/open-artifacts/issues/1291)) ([#1319](https://github.com/open-artifacts-ai/open-artifacts/issues/1319)) ([40b68a7](https://github.com/open-artifacts-ai/open-artifacts/commit/40b68a7d12f9dbb2270e7aacd5451e637974fd3c))
+
 ## [0.110.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.109.0...v0.110.0) (2026-11-04)
 
 
