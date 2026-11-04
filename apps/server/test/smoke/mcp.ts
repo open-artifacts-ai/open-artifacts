@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { expectedToolCount, spacesOn } from "../smoke-setup/spaces.ts";
 
 const base = process.env.STAGING_URL;
 const pat = process.env.STAGING_OWNER_PAT;
 
 describe.skipIf(!base || !pat)("staging smoke: mcp", () => {
-  it("tools/list over a PAT lists all 19 tools", async () => {
+  it("tools/list over a PAT lists every tool, list_spaces only with spaces", async () => {
+    const spaces = await spacesOn(base ?? "", pat ?? "");
     const r = await fetch(`${base}/mcp`, {
       method: "POST",
       headers: {
@@ -21,8 +23,11 @@ describe.skipIf(!base || !pat)("staging smoke: mcp", () => {
       ? text
       : (text.split("\n").find((l) => l.startsWith("data:")) ?? "").slice(5);
     const body = JSON.parse(json) as { result: { tools: { name: string }[] } };
-    expect(body.result.tools.map((t) => t.name)).toContain("publish_artifact");
-    expect(body.result.tools).toHaveLength(19);
+    const names = body.result.tools.map((t) => t.name);
+    expect(names).toContain("publish_artifact");
+    if (spaces) expect(names).toContain("list_spaces");
+    else expect(names).not.toContain("list_spaces");
+    expect(names).toHaveLength(expectedToolCount(spaces));
   });
 
   it("no auth → 401 with a resource-metadata challenge", async () => {
