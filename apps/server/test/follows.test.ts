@@ -25,6 +25,7 @@ import {
 } from "../src/services/bus-delivery.js";
 import {
   CHANGED_WINDOW_MS,
+  FANOUT_MAX,
   follow,
   following,
   getShareNotices,
@@ -37,6 +38,7 @@ import {
   shouldNotifyFollower,
   unfollow,
 } from "../src/services/follows.js";
+import { eraseMember } from "../src/services/members.js";
 import { deleteShare, putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { api, errOf, login } from "./helpers.js";
@@ -386,6 +388,82 @@ describe("loss of access: no notice, and the follow is gone after the check", ()
     await republish(owner, id);
     expect(bus.to(b.userId)).toEqual([]);
     expect(await followRows(id)).toBe(0);
+  });
+
+  it("a removed member who follows a PUBLIC artifact gets nothing; the follow goes", async () => {
+    const owner = await mk("rp-owner");
+    const b = await mk("rp-b");
+    const c = await mk("rp-c");
+    const id = await create(owner, { visibility: "public" });
+    await follow(E, b.userId, agent("b"), id);
+    await follow(E, c.userId, agent("c"), id);
+    await E.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(b.userId)
+      .run();
+    await republish(owner, id);
+    expect(bus.to(b.userId)).toEqual([]);
+    // The active follower still hears it, so the check is the member's
+    // status, not the artifact's.
+    expect(bus.to(c.userId).map((n) => n.kind)).toEqual(["changed"]);
+    expect(await followRows(id)).toBe(1);
+  });
+});
+
+describe("member erase", () => {
+  it("wipes the person's follows and share-notice picks", async () => {
+    const owner = await mk("e-owner");
+    const admin = await mk("e-admin", "admin");
+    const b = await mk("e-b");
+    const id = await create(owner, { visibility: "team" });
+    await follow(E, b.userId, agent("b"), id);
+    await setShareNotices(E, b.userId, [agent("b")]);
+    await E.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(b.userId)
+      .run();
+    await eraseMember(E, b.userId, admin.member);
+    const left = await E.DB.prepare(
+      `select (select count(*) from follows where user_id = ?1) as f,
+              (select count(*) from share_notice_agents where user_id = ?1) as s,
+              (select erased_at from users where id = ?1) as erased`,
+    )
+      .bind(b.userId)
+      .first<{ f: number; s: number; erased: number | null }>();
+    expect(left?.erased).not.toBeNull();
+    expect(left).toMatchObject({ f: 0, s: 0 });
+  });
+});
+
+describe("the fan-out budget", () => {
+  it(`handles at most ${FANOUT_MAX} follows per run, least recently notified first, and doesn't fail`, async () => {
+    const owner = await mk("fo-owner");
+    const id = await create(owner, { visibility: "team" });
+    const members = await Promise.all(
+      Array.from({ length: 3 }, (_, i) => mk(`fo-m${i}`)),
+    );
+    // FANOUT_MAX + 1 rows across three members (a member's own cap is 200).
+    const rows: [string, string][] = [];
+    for (let i = 0; i <= FANOUT_MAX; i++)
+      rows.push([(members[i % 3] as U).userId, `a${i}`]);
+    await E.DB.batch(
+      rows.map(([u, name]) =>
+        E.DB.prepare(
+          "insert into follows (user_id, artifact_id, namespace, agent_name, created_at) values (?, ?, 'ns', ?, 1)",
+        ).bind(u, id, name),
+      ),
+    );
+    const t = Date.now();
+    await expect(notifyChanged(E, id, 2, owner.userId, t)).resolves.toBe(
+      undefined,
+    );
+    expect(bus.sent).toHaveLength(FANOUT_MAX);
+    const first = new Set(bus.sent.map((s) => s.notice.to.name));
+    const left = rows.map(([, n]) => n).filter((n) => !first.has(n));
+    expect(left).toHaveLength(1);
+    // The next run starts with the one left out.
+    bus.clear();
+    await notifyChanged(E, id, 3, owner.userId, t + 1);
+    expect(bus.sent[0]?.notice.to.name).toBe(left[0]);
+    expect(bus.sent[0]?.notice.notBefore).toBeUndefined();
   });
 });
 

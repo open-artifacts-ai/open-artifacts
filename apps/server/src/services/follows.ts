@@ -42,8 +42,16 @@ type Ctx = Pick<ExecutionContext, "waitUntil">;
 export const CHANGED_WINDOW_MS = 60_000;
 /** `shared` notices per sharer per recipient bus per hour; past it, dropped and counted. */
 export const SHARED_PER_HOUR = 30;
-/** Follow rows one notice fan-out reads (the 200-per-member cap bounds each member). */
-const FANOUT_MAX = 2000;
+/**
+ * Follow rows one `changed` fan-out handles; the rest of an artifact's
+ * followers get nothing this time (paging is a follow-up). It runs in the
+ * publish's waitUntil, under the Worker's ~1000 subrequest cap shared with
+ * the index enqueue. Worst case per row, when each row is its own member:
+ * the member reload, the access check, the slot claim and the delivery, so
+ * 4 calls; 200 rows are 800, plus the follower select, one batch for the
+ * drop counters and the index enqueue, which leaves about 190 spare.
+ */
+export const FANOUT_MAX = 200;
 
 const notFound = () => new ApiError("not_found", "Not found");
 
@@ -322,10 +330,13 @@ export async function setShareNotices(
 
 // ----------------------------------------------------------------- notices
 
-const DROPPED = `insert into counters (key, n, day) values (?1, 1, ?2)
+/** Adds ?3 dropped notices to the recipient's counter for the UTC day ?2. */
+const DROPPED = `insert into counters (key, n, day) values (?1, ?3, ?2)
   on conflict (key) do update set
-    n = case when counters.day = excluded.day then counters.n + 1 else 1 end,
+    n = case when counters.day = excluded.day then counters.n + ?3 else ?3 end,
     day = excluded.day`;
+const droppedStmt = (env: Env, userId: string, n: number, now: number) =>
+  stmt(env.DB, DROPPED).bind(`notice:dropped:${userId}`, utcDay(now), n);
 const utcDay = (now: number) => new Date(now).toISOString().slice(0, 10);
 const utcHour = (now: number) => new Date(now).toISOString().slice(0, 13);
 
@@ -338,9 +349,7 @@ async function dropped(
   reason: string,
   now: number,
 ): Promise<void> {
-  await stmt(env.DB, DROPPED)
-    .bind(`notice:dropped:${userId}`, utcDay(now))
-    .run();
+  await droppedStmt(env, userId, 1, now).run();
   logInfo("bus_notice_dropped", { kind, artifactId, userId, reason });
 }
 
@@ -381,8 +390,11 @@ export async function notifyChanged(
 ): Promise<void> {
   const { results } = await stmt(
     env.DB,
+    // Least recently notified first, so past FANOUT_MAX the rows left out
+    // this time come first next time.
     `select user_id as userId, namespace, agent_name as name from follows
-     where artifact_id = ? order by user_id limit ?`,
+     where artifact_id = ?
+     order by last_notice_at is not null, last_notice_at, user_id limit ?`,
   )
     .bind(artifactId, FANOUT_MAX)
     .all<{ userId: string; namespace: string; name: string }>();
@@ -393,7 +405,10 @@ export async function notifyChanged(
     list.push({ namespace: r.namespace, name: r.name });
     byUser.set(r.userId, list);
   }
+  const drops = new Map<string, number>();
   for (const [userId, addresses] of byUser) {
+    // Removed, erased or otherwise inactive: null, so even a public
+    // artifact (readable by anyone) sends nothing and the follow goes.
     const user = await getUser(env, userId);
     // Lost access by any route (unshare, visibility, space, delete, removal).
     if (!user || !(await readable(env, user, artifactId))) {
@@ -416,10 +431,22 @@ export async function notifyChanged(
         to,
         slot.at > now ? slot.at : undefined,
       );
-      if ((await deliverNotice(env, userId, n)) === "dropped")
-        await dropped(env, userId, "changed", artifactId, "undelivered", now);
+      if ((await deliverNotice(env, userId, n)) === "dropped") {
+        drops.set(userId, (drops.get(userId) ?? 0) + 1);
+        logInfo("bus_notice_dropped", {
+          kind: "changed",
+          artifactId,
+          userId,
+          reason: "undelivered",
+        });
+      }
     }
   }
+  // One call for every drop counter (the fan-out budget above).
+  if (drops.size)
+    await env.DB.batch(
+      [...drops].map(([userId, n]) => droppedStmt(env, userId, n, now)),
+    );
 }
 
 /**

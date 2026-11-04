@@ -738,6 +738,10 @@ const ERASE_WIPES = [
   `delete from tokens where user_id = ?1 and ${ERASABLE}`,
   `delete from agent_grants where user_id = ?1 and ${ERASABLE}`,
   `delete from reserved_artifacts where user_id = ?1 and ${ERASABLE}`,
+  // #1292: their bus agent addresses (an update never fires the users
+  // cascade).
+  `delete from follows where user_id = ?1 and ${ERASABLE}`,
+  `delete from share_notice_agents where user_id = ?1 and ${ERASABLE}`,
   // The users_personal_space trigger copied their name or address into it.
   `update spaces set name = '' where id = ?1 and kind = 'personal'
     and ${ERASABLE}`,
