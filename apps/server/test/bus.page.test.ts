@@ -435,10 +435,16 @@ describe("revoke", () => {
     expect(loc(r)).toBe("/bus?error=not_found");
   });
 
-  it("revoke throwing internal (sockets didn't close): revoke_failed; anything else: failed", async () => {
+  it("revoke throwing internal (sockets didn't close): the partial line links back to its confirm page; anything else: failed", async () => {
     const m = await login(email("revt"), "member");
     const t = await revokeToken(m.userId, "m1");
+    const revoked = machine({
+      id: "m1",
+      label: "<b>box</b>",
+      revokedAt: "2026-11-04T09:00:00Z",
+    });
     const internal = doubles({
+      view: { machines: [revoked] },
       revoke: async () => {
         throw new ApiError("internal", "close failed");
       },
@@ -446,11 +452,23 @@ describe("revoke", () => {
     const r1 = await post(internal.deps, revokeUrl("m1"), m.cookie, [
       ["csrf", t],
     ]);
-    expect(loc(r1)).toBe("/bus?error=revoke_failed");
-    const page = await get(internal.deps, "/bus?error=revoke_failed", m.cookie);
-    expect(await page.text()).toContain(
-      "Revoked, but we couldn&#39;t close its open connection. Try again.",
+    expect(loc(r1)).toBe("/bus?error=revoke_partial&m=m1");
+    const body = await (
+      await get(internal.deps, loc(r1) ?? "", m.cookie)
+    ).text();
+    expect(body).toContain(
+      `<span>&lt;b&gt;box&lt;/b&gt; is revoked and can't reconnect, but its open connection didn't close. <a href="/bus/machines/m1/revoke">Try again</a> to close it.</span>`,
     );
+    expect(body).toContain('class="msg err"');
+    // Without a machine of the caller's own to name, it's the generic line.
+    const gone = await get(
+      internal.deps,
+      "/bus?error=revoke_partial&m=zz",
+      m.cookie,
+    );
+    const goneBody = await gone.text();
+    expect(goneBody).not.toContain("Try again</a>");
+    expect(goneBody).toContain("Something went wrong and nothing changed.");
     const other = doubles({
       revoke: async () => {
         throw new Error("boom");
@@ -458,6 +476,28 @@ describe("revoke", () => {
     });
     const r2 = await post(other.deps, revokeUrl("m1"), m.cookie, [["csrf", t]]);
     expect(loc(r2)).toBe("/bus?error=failed");
+  });
+
+  it("retry: the confirm page loads for an own, already-revoked machine; its POST revokes again and shows the revoked line", async () => {
+    const m = await login(email("retry"), "member");
+    const revoked = machine({
+      id: "m7",
+      label: "build-box",
+      revokedAt: "2026-11-04T09:00:00Z",
+    });
+    const { deps, calls } = doubles({ view: { machines: [revoked] } });
+    const page = await get(deps, revokeUrl("m7"), m.cookie);
+    expect(page.status).toBe(200);
+    const body = await page.text();
+    expect(body).toContain('<h1>Revoke "build-box"?</h1>');
+    const csrf = /name="csrf" value="([^"]+)"/.exec(body)?.[1] ?? "";
+    expect(csrf).not.toBe("");
+    const r = await post(deps, revokeUrl("m7"), m.cookie, [["csrf", csrf]]);
+    expect(loc(r)).toBe("/bus?done=revoked&m=m7");
+    expect(calls.revoke).toEqual([[m.userId, "m7"]]);
+    const after = await (await get(deps, loc(r) ?? "", m.cookie)).text();
+    expect(after).toContain("build-box revoked.");
+    expect(after).toContain('class="msg ok"');
   });
 
   it("a revoke-only caller can revoke; a guest without machines gets 404", async () => {

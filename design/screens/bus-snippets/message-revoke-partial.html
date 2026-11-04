@@ -1,0 +1,4 @@
+<!-- Inline error after ?error=revoke_partial&m=<id>: the machine is revoked in D1, but closing its open
+     connection failed. "Try again" links to that machine's revoke confirm page (revoke is idempotent).
+     Fields: {{label}} {{retry_url}} (GET /bus/machines/<id>/revoke). -->
+<p class="msg err" role="alert"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01"/></svg><span>{{label}} is revoked and can't reconnect, but its open connection didn't close. <a href="{{retry_url}}">Try again</a> to close it.</span></p>

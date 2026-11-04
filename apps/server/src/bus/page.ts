@@ -124,11 +124,10 @@ const ERRORS = {
   not_allowed:
     "You can't change share notices. You can still revoke machines here.",
   failed: "Something went wrong and nothing changed. Try again in a minute.",
-  // Draft, pending Design.
-  revoke_failed:
-    "Revoked, but we couldn't close its open connection. Try again.",
 } as const;
 type ErrorCode = keyof typeof ERRORS;
+/** Revoked in D1, but its open connection didn't close (shown with `m`, the machine). */
+const REVOKE_PARTIAL = "revoke_partial";
 
 // ---------------------------------------------------------------- rendering
 
@@ -286,6 +285,16 @@ function messageOf(url: URL, view: BusView): SafeHtml | "" {
     });
   }
   const err = url.searchParams.get("error");
+  if (err === REVOKE_PARTIAL) {
+    const id = url.searchParams.get("m");
+    const m = view.machines.find((x) => x.id === id);
+    return m
+      ? snippet("message-revoke-partial", {
+          label: m.label,
+          retry_url: revokePath(m.id),
+        })
+      : snippet("message-error", { text: ERRORS.failed });
+  }
   if (err && Object.hasOwn(ERRORS, err))
     return snippet("message-error", { text: ERRORS[err as ErrorCode] });
   return "";
@@ -486,8 +495,9 @@ export function mountBusPage(app: AppType, deps: BusPageDeps): void {
       const m = MACHINE_ID.test(id)
         ? view.machines.find((x) => x.id === id)
         : undefined;
+      // An own machine that's already revoked still loads: revoke is
+      // idempotent, and it's how a partial revoke is retried.
       if (!m) return backError("not_found");
-      if (m.revokedAt) return back(`done=revoked&m=${encodeURIComponent(id)}`);
       const page = renderTemplate(BUS_REVOKE_TEMPLATE, {
         label: m.label,
         instance_host: c.env.APP_HOST,
@@ -517,11 +527,9 @@ export function mountBusPage(app: AppType, deps: BusPageDeps): void {
         return backError("not_found");
     } catch (e) {
       logError("bus_revoke_failed", e);
-      return backError(
-        e instanceof ApiError && e.code === "internal"
-          ? "revoke_failed"
-          : "failed",
-      );
+      return e instanceof ApiError && e.code === "internal"
+        ? back(`error=${REVOKE_PARTIAL}&m=${encodeURIComponent(id)}`)
+        : backError("failed");
     }
     return back(`done=revoked&m=${encodeURIComponent(id)}`);
   });

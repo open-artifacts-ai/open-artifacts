@@ -237,4 +237,5 @@ export const BUS_SNIPPETS = {
 </tr>`,
   "message-error": `<p class="msg err" role="alert"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01"/></svg><span>{{text}}</span></p>`,
   "message-ok": `<p class="msg ok" role="status"><svg viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></svg><span>{{text}}</span></p>`,
+  "message-revoke-partial": `<p class="msg err" role="alert"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01"/></svg><span>{{label}} is revoked and can't reconnect, but its open connection didn't close. <a href="{{retry_url}}">Try again</a> to close it.</span></p>`,
 } as const;
