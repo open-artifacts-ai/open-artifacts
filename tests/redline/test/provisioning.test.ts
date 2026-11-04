@@ -26,8 +26,11 @@ import {
   BROKER_IP_WAIT_MS,
   bringUpgrade,
   CHAINS,
+  CLEANUP_TIMEOUT_MS,
+  caseTimeoutMs,
   cleanupInstalls,
   failText,
+  JOB_WITHIN_MS,
   mintCreds,
   type Outcome,
   P25_MAX_REQUESTS,
@@ -41,6 +44,7 @@ import {
   Run,
   revokeCreds,
   runProbe,
+  settledTimeoutMs,
   stagedVersion,
   startChains,
   statusCounts,
@@ -1795,23 +1799,28 @@ describe("the chains run at once (startChains)", () => {
     expect(live(f)).toEqual([]);
   });
 
-  it("rl-l's create failing is infra on P20 and P22 (P21 blocked by P20), never a fail; rl-p's chain still passes; the failed rl-l is removed", async () => {
+  it("rl-l's create failing at the release under test fails P20 and P22 (product), naming the job, step, attempts and code (P21 blocked by P20); rl-p's chain still passes; the failed rl-l is removed", async () => {
     const f = fakeApi();
     f.faults.add("rll_create_failed");
     const { out, run } = await runChains(f);
-    const infra = out.get("P20") as string;
-    expect(infra).toMatch(
-      /^infra: rl-l setup: rl-l create: job failed \(cf_api_error\)/,
+    const fail = out.get("P20") as string;
+    const rll = bySlug(f, "rl-l-");
+    const create = [...f.jobs.values()].find(
+      (j) => j.installId === rll?.id && j.kind === "create",
     );
-    expect(out.get("P22")).toBe(infra);
+    expect(fail).toBe(
+      `rl-l create at the release under test: job ${create?.id} failed, step upload (attempt 1, last error cf_api_error)`,
+    );
+    expect(level(fail)).toBe(`fail: ${fail}`);
+    expect(out.get("P22")).toBe(fail);
     expect(out.get("P21")).toEqual({
       level: "blocked",
       reason: "blocked by P20",
     });
-    // No install id or host in the reason (the run log is public).
-    const rll = bySlug(f, "rl-l-");
-    expect(infra).not.toContain(rll?.id);
-    expect(infra).not.toContain("open-artifacts");
+    // No install id, host or email in the reason (the run log is public).
+    expect(fail).not.toContain(rll?.id);
+    expect(fail).not.toContain("open-artifacts");
+    expect(fail).not.toContain("@");
     const rllChain = ["P20", "P21", "P22"];
     expect(without(levels(out), rllChain)).toEqual(without(HAPPY, rllChain));
     expect(rll?.state).toBe("deleted");
@@ -1923,5 +1932,279 @@ describe("the chains run at once (startChains)", () => {
     await cleanupInstalls(run);
     expect(run.s.cleanup).toEqual([]);
     expect(live(f)).toEqual([]);
+  });
+
+  it("rl-l's create that never finishes: P20 and P22 fail (product) at one job wait, naming the job, step, attempts and code; the tail doesn't wait on it again; the run's cleanup still removes rl-l, or fails naming it", async () => {
+    const f = fakeApi();
+    f.faults.add("rll_create_stuck");
+    const pat = await bringUp(f);
+    const run = new Run(CONFIG, { ...f.io, rlAPat: () => pat });
+    const plan = startChains(run);
+    const reason = async (id: ProbeId) =>
+      (plan.outcomes.get(id) as Promise<Outcome>).then(
+        (o) => o,
+        (e: Error) => e.message,
+      );
+    const p20 = await reason("P20");
+    const rll = bySlug(f, "rl-l-");
+    const create = [...f.jobs.values()].find(
+      (j) => j.installId === rll?.id && j.kind === "create",
+    );
+    expect(p20).toBe(
+      `rl-l create at the release under test: R15 ${create?.id}: still running at upload after 1200 s (attempt 1, last error none)`,
+    );
+    expect(level(p20)).toBe(`fail: ${p20}`);
+    expect(await reason("P22")).toBe(p20);
+    // No install id, host or email in the reason (the run log is public).
+    expect(p20).not.toContain(rll?.id);
+    expect(p20).not.toContain("open-artifacts");
+    expect(p20).not.toContain("@");
+    expect(create?.status).toBe("running");
+    expect(run.s.rllCreateTimedOut).toBe(create?.id);
+    const polls = () =>
+      f.log.filter((u) => u.endsWith(`/jobs/${create?.id}`)).length;
+    const once = polls();
+    expect(once).toBeGreaterThan(1);
+    for (const r of plan.outcomes.values()) await r.catch(() => undefined);
+    await plan.settled;
+    // No second wait: the tail made no R15 read of the create, and sent no
+    // delete or purge for rl-l. rl-l stays listed for the run's cleanup.
+    expect(polls()).toBe(once);
+    expect(
+      f.log.some(
+        (u) =>
+          u.endsWith(`/installs/${rll?.id}/delete`) ||
+          u.endsWith(`/installs/${rll?.id}/purge`),
+      ),
+    ).toBe(false);
+    expect(run.s.cleanup).toContainEqual({ slug: "rl-l-1234" });
+    // Every other chain and P33 still pass.
+    const out = new Map<ProbeId, Outcome | string>();
+    for (const [id] of plan.outcomes) out.set(id, await reason(id));
+    expect(without(levels(out), ["P20", "P21", "P22"])).toEqual(
+      without(HAPPY, ["P20", "P21", "P22"]),
+    );
+    // Still running at the run's end: the cleanup fails naming rl-l and
+    // leaves it listed (a leftover keeps the run red).
+    await expect(cleanupInstalls(run)).rejects.toThrow(
+      /cleanup rl-l-1234: R15 \S+: still running at upload after 1200 s/,
+    );
+    expect(run.s.cleanup).toContainEqual({ slug: "rl-l-1234" });
+    expect(rll?.state).not.toBe("deleted");
+    // Once it ends, the cleanup removes it.
+    f.faults.delete("rll_create_stuck");
+    await cleanupInstalls(run);
+    expect(run.s.cleanup).toEqual([]);
+    expect(live(f)).toEqual([]);
+  });
+
+  it("no answer at all for rl-l's create (the network) stays infra on P20 and P22, not a product fail", async () => {
+    const f = fakeApi();
+    const pat = await bringUp(f);
+    const run = new Run(CONFIG, {
+      ...f.io,
+      rlAPat: () => pat,
+      fetch: (async (u: string, init?: RequestInit) => {
+        const rll = bySlug(f, "rl-l-");
+        const create = [...f.jobs.values()].find(
+          (j) => j.installId === rll?.id && j.kind === "create",
+        );
+        if (create && String(u).endsWith(`/jobs/${create.id}`))
+          throw new TypeError("fetch failed");
+        return f.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    });
+    const plan = startChains(run);
+    const reason = async (id: ProbeId) =>
+      (plan.outcomes.get(id) as Promise<Outcome>).then(
+        (o) => o,
+        (e: Error) => e.message,
+      );
+    const p20 = await reason("P20");
+    expect(p20).toMatch(/^infra: rl-l setup: R15 \S+: no answer for 1200 s$/);
+    expect(level(p20)).toBe("infra");
+    expect(await reason("P22")).toBe(p20);
+    for (const r of plan.outcomes.values()) await r.catch(() => undefined);
+    await plan.settled;
+  });
+
+  it("every waitJob timeout names the job's step, attempt count and last error code (public-safe)", async () => {
+    const at = (attempt: unknown, lastErrorCode: unknown) => {
+      const f = fakeApi();
+      const run = new Run(CONFIG, {
+        ...f.io,
+        fetch: (async (u: string, init?: RequestInit) =>
+          String(u).includes("/jobs/j1")
+            ? Response.json({
+                id: "j1",
+                status: "running",
+                step: "upload",
+                attempt,
+                lastErrorCode,
+              })
+            : f.io.fetch(u, init)) as unknown as typeof fetch,
+      });
+      return run.waitJob("j1", { within: 6_000 }).then(
+        () => "resolved",
+        (e: Error) => e.message,
+      );
+    };
+    expect(await at(3, "cf_api_error")).toBe(
+      "R15 j1: still running at upload after 6 s (attempt 3, last error cf_api_error)",
+    );
+    expect(await at(0, null)).toBe(
+      "R15 j1: still running at upload after 6 s (attempt 0, last error none)",
+    );
+    // A code that isn't a code is not echoed.
+    expect(await at(2, "x@y.example rl-l.open-artifacts-staging.app")).toBe(
+      "R15 j1: still running at upload after 6 s (attempt 2, last error other)",
+    );
+    expect(await at("2; drop", "a")).toBe(
+      "R15 j1: still running at upload after 6 s (attempt ?, last error a)",
+    );
+  });
+
+  it("rl-l's create answered `running` for the whole wait, then one network error on the poll past the bound: still a product fail, judged by the last answer", async () => {
+    const f = fakeApi();
+    f.faults.add("rll_create_stuck");
+    const pat = await bringUp(f);
+    let from: number | undefined;
+    const run = new Run(CONFIG, {
+      ...f.io,
+      rlAPat: () => pat,
+      fetch: (async (u: string, init?: RequestInit) => {
+        const rll = bySlug(f, "rl-l-");
+        const create = [...f.jobs.values()].find(
+          (j) => j.installId === rll?.id && j.kind === "create",
+        );
+        if (create && String(u).endsWith(`/jobs/${create.id}`)) {
+          from ??= f.clock.t;
+          // Every poll answers until the bound; the first one past it drops.
+          if (f.clock.t - from >= JOB_WITHIN_MS)
+            throw new TypeError("fetch failed");
+        }
+        return f.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    });
+    const plan = startChains(run);
+    const p20 = await (plan.outcomes.get("P20") as Promise<Outcome>).then(
+      (o) => o,
+      (e: Error) => e.message,
+    );
+    const rll = bySlug(f, "rl-l-");
+    const create = [...f.jobs.values()].find(
+      (j) => j.installId === rll?.id && j.kind === "create",
+    );
+    expect(p20).toBe(
+      `rl-l create at the release under test: R15 ${create?.id}: still running at upload after 1200 s (attempt 1, last error none)`,
+    );
+    expect(level(p20)).toBe(`fail: ${p20}`);
+    for (const r of plan.outcomes.values()) await r.catch(() => undefined);
+    await plan.settled;
+  });
+
+  it("settledTimeoutMs covers P33's case and the longest chain with its tail and the run's cleanup", () => {
+    const s = settledTimeoutMs();
+    expect(s).toBeGreaterThanOrEqual(caseTimeoutMs("P33"));
+    const rll = CHAINS.find((c) => c.name === "rl-l");
+    const last = rll?.probes[rll.probes.length - 1] as ProbeId;
+    expect(s).toBeGreaterThanOrEqual(caseTimeoutMs(last) + CLEANUP_TIMEOUT_MS);
+    for (const c of CHAINS) {
+      const end = c.probes[c.probes.length - 1] as ProbeId;
+      expect(s).toBeGreaterThanOrEqual(
+        caseTimeoutMs(end) + (c.tail ? CLEANUP_TIMEOUT_MS : 0),
+      );
+    }
+  });
+
+  it("the after step starts once every chain's probes are done, without waiting for a tail; settled still waits for the tail", async () => {
+    const run = new Run(CONFIG, fakeApi().io);
+    const order: string[] = [];
+    let endTail = () => {};
+    const tailHeld = new Promise<void>((r) => {
+      endTail = r;
+    });
+    let endSlow = () => {};
+    const slowHeld = new Promise<void>((r) => {
+      endSlow = r;
+    });
+    const step =
+      (name: string, wait?: Promise<void>) => async (): Promise<Outcome> => {
+        order.push(`${name} start`);
+        if (wait) await wait;
+        order.push(`${name} end`);
+        return { level: "pass" };
+      };
+    const plan = startChains(run, {
+      probes: [
+        { id: "P901", title: "tailed chain", run: step("P901") },
+        { id: "P903", title: "slow chain", run: step("P903", slowHeld) },
+        { id: "P904", title: "after", run: step("P904") },
+      ],
+      chains: [
+        {
+          name: "a",
+          probes: ["P901"],
+          tail: async () => {
+            order.push("tail start");
+            await tailHeld;
+            order.push("tail end");
+          },
+        },
+        { name: "b", probes: ["P903"] },
+      ],
+      after: ["P904"],
+    });
+    let settled = false;
+    void plan.settled.then(() => {
+      settled = true;
+    });
+    await plan.outcomes.get("P901");
+    await new Promise((r) => setTimeout(r, 0));
+    // Not before every chain's probes are done.
+    expect(order).not.toContain("P904 start");
+    endSlow();
+    await expect(plan.outcomes.get("P904")).resolves.toEqual({
+      level: "pass",
+    });
+    // The tail is still running: the after step didn't wait for it.
+    expect(order).toContain("tail start");
+    expect(order).not.toContain("tail end");
+    expect(settled).toBe(false);
+    endTail();
+    await plan.settled;
+    expect(order.indexOf("P903 end")).toBeLessThan(order.indexOf("P904 start"));
+    expect(order.indexOf("P904 end")).toBeLessThan(order.indexOf("tail end"));
+  });
+
+  it("P33 checks only the jobs accepted before it starts, so a tail's cleanup jobs can't race it", async () => {
+    const f = fakeApi();
+    const { out, run } = await runChains(f);
+    expect(out.get("P33")).toEqual({
+      level: "pass",
+      note: `${run.s.jobIds.length} job(s)`,
+    });
+    const p33 = PROBES.find((p) => p.id === "P33") as (typeof PROBES)[number];
+    // A job id added while P33 reads (no job.accepted row: not this run's)
+    // is not judged by that P33.
+    let added = false;
+    const racing = new Run(CONFIG, {
+      ...f.io,
+      fetch: (async (u: string, init?: RequestInit) => {
+        const r = await f.io.fetch(u, init);
+        if (!added && String(u).includes("/audit?")) {
+          added = true;
+          racing.s.jobIds.push("01RACINGTAILJOB0000000000");
+        }
+        return r;
+      }) as unknown as typeof fetch,
+    });
+    racing.s.actor = run.s.actor;
+    racing.s.jobIds.push(...run.s.jobIds);
+    await expect(p33.run(racing)).resolves.toEqual({
+      level: "pass",
+      note: `${run.s.jobIds.length} job(s)`,
+    });
+    expect(added).toBe(true);
   });
 });

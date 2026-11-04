@@ -6,6 +6,7 @@ import {
   type Outcome,
   PROBES,
   type Run,
+  settledTimeoutMs,
   startChains,
 } from "../src/provisioning.ts";
 import { liveRun, rawTargets } from "../src/provisioning-live.ts";
@@ -39,7 +40,7 @@ beforeAll(() => {
 afterAll(async () => {
   if (plan) await plan.settled;
   if (run) await cleanupInstalls(run);
-}, CLEANUP_TIMEOUT_MS + caseTimeoutMs("P33"));
+}, CLEANUP_TIMEOUT_MS + settledTimeoutMs());
 
 describe("provisioning", () => {
   for (const p of PROBES)

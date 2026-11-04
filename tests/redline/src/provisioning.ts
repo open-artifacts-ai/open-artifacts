@@ -98,6 +98,34 @@ export class ProbeFail extends Error {
   override name = "ProbeFail";
 }
 
+/**
+ * waitJob's bound ran out: the job may still be running. `answered`: R15
+ * answered with the job (it was slow); false: no answer at all (network).
+ */
+export class JobTimedOut extends ProbeFail {
+  override name = "JobTimedOut";
+  readonly jobId: string;
+  readonly answered: boolean;
+  constructor(message: string, jobId: string, answered: boolean) {
+    super(message);
+    this.jobId = jobId;
+    this.answered = answered;
+  }
+}
+
+/** A job's attempt count and last error code, as R15 gave them (public-safe). */
+export function jobRetries(j: Pick<Job, "attempt" | "lastErrorCode">): string {
+  const n = Number.isInteger(j.attempt) ? j.attempt : "?";
+  const c =
+    typeof j.lastErrorCode === "string" &&
+    /^[a-z0-9_]{1,40}$/.test(j.lastErrorCode)
+      ? j.lastErrorCode
+      : j.lastErrorCode == null
+        ? "none"
+        : "other";
+  return `attempt ${n}, last error ${c}`;
+}
+
 /** Poll cadence and bounds (12.2: paused and resumed pages within 120 s). */
 export const POLL_MS = 3_000;
 export const PAGE_WITHIN_MS = 120_000;
@@ -254,7 +282,17 @@ export class Run {
       within?: number;
     } = {},
   ): Promise<Job> {
-    const end = this.io.now() + (o.within ?? JOB_WITHIN_MS);
+    const within = o.within ?? JOB_WITHIN_MS;
+    const end = this.io.now() + within;
+    const still = (j: Job) =>
+      new JobTimedOut(
+        `R15 ${jobId}: still ${j.status} at ${j.step ?? "?"} after ${Math.round(within / 1000)} s (${jobRetries(j)})`,
+        jobId,
+        true,
+      );
+    // The last job R15 answered: a network error on the poll past the bound
+    // still judges the job by it (it was slow, not unanswered).
+    let last: Job | undefined;
     for (;;) {
       let r: Res;
       try {
@@ -262,10 +300,14 @@ export class Run {
       } catch {
         // A dropped connection says nothing about the job: keep polling. Only
         // the network throws here: an answer, however bad, fails below.
-        if (this.io.now() >= end)
-          throw new ProbeFail(
-            `R15 ${jobId}: no answer for ${Math.round((o.within ?? JOB_WITHIN_MS) / 1000)} s`,
+        if (this.io.now() >= end) {
+          if (last) throw still(last);
+          throw new JobTimedOut(
+            `R15 ${jobId}: no answer for ${Math.round(within / 1000)} s`,
+            jobId,
+            false,
           );
+        }
         await this.io.wait(POLL_MS);
         continue;
       }
@@ -273,10 +315,8 @@ export class Run {
       const j = r.json as Job;
       if (o.until ? o.until(j) : j.status === "done" || j.status === "failed")
         return j;
-      if (this.io.now() >= end)
-        throw new ProbeFail(
-          `R15 ${jobId}: still ${j.status} at ${j.step ?? "?"} after ${Math.round((o.within ?? JOB_WITHIN_MS) / 1000)} s`,
-        );
+      last = j;
+      if (this.io.now() >= end) throw still(j);
       await this.io.wait(POLL_MS);
     }
   }
@@ -421,6 +461,11 @@ export interface RunState {
   clientId?: string;
   /** rl-l-<run>, the install P20 to P22 run on (lifecycleInstall). */
   rll?: Promise<RlP>;
+  /**
+   * rl-l's create job when its wait already ran out (makeLifecycle): the
+   * tail doesn't wait on it a second time, and leaves rl-l to the run's end.
+   */
+  rllCreateTimedOut?: string;
 }
 
 const bare = (h: string) => h.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
@@ -580,8 +625,8 @@ export interface Chain {
  * - api: everything else, in the old order: no install of the run's but
  *   rl-q (P32, made and discarded inside it). P25 stays last: it spends
  *   RL_PV_SIGNIN_IP, which P30 and P34 share, and no other chain signs in.
- * P33 runs after every chain: it checks the job.accepted row of every job
- * the run's OIDC actor started.
+ * P33 runs after every chain's probes (not the tails): it checks the
+ * job.accepted row of every job the run's OIDC actor started before it.
  */
 export const CHAINS: readonly Chain[] = [
   {
@@ -640,7 +685,7 @@ export const CHAINS: readonly Chain[] = [
     ],
   },
 ];
-/** After every chain and its tail. */
+/** After every chain's probes (not their tails, which are cleanup). */
 export const AFTER_CHAINS: readonly ProbeId[] = ["P33"];
 
 /** A probe's own bound: its vitest timeout before the split. */
@@ -648,9 +693,10 @@ export const probeBoundMs = (p: Probe): number =>
   p.timeoutMs ?? PROBE_TIMEOUT_MS;
 
 /**
- * Starts every chain at once and returns each probe's outcome; `settled`
- * resolves once every probe and tail is done (the run's cleanup waits on it,
- * so it never races a chain). A probe past its bound fails naming the bound
+ * Starts every chain at once and returns each probe's outcome. The after
+ * step starts once every chain's probes are done; `settled` resolves once
+ * every probe and tail is done (the run's cleanup waits on it, so it never
+ * races a chain). A probe past its bound fails naming the bound
  * and counts as failed for its dependants, as a vitest timeout did. Errors
  * pass through unchanged: a ProbeFail fails, an InfraError is infra.
  */
@@ -698,12 +744,20 @@ export function startChains(
     }
     return prev.then(() => undefined);
   };
-  const ends = (o.chains ?? CHAINS).map((c) =>
-    sequence(c.probes, Promise.resolve()).then(() =>
-      c.tail?.(run).catch(() => undefined),
-    ),
+  const chains = (o.chains ?? CHAINS).map((c) => ({
+    c,
+    end: sequence(c.probes, Promise.resolve()),
+  }));
+  // The after step waits on the chains' probes only, not their tails: a tail
+  // is cleanup, and the run's cleanup still waits on it (settled).
+  const after = sequence(
+    o.after ?? AFTER_CHAINS,
+    Promise.all(chains.map((x) => x.end)),
   );
-  const settled = sequence(o.after ?? AFTER_CHAINS, Promise.all(ends));
+  const tails = chains.map(({ c, end }) =>
+    end.then(() => c.tail?.(run).catch(() => undefined)),
+  );
+  const settled = Promise.all([after, ...tails]).then(() => undefined);
   return { outcomes, settled };
 }
 
@@ -736,10 +790,36 @@ export function caseTimeoutMs(
   const after = o.after ?? AFTER_CHAINS;
   const at = after.indexOf(id);
   if (at < 0) return PROBE_TIMEOUT_MS;
-  const longest = Math.max(
-    ...chains.map((c) => sum(c.probes) + (c.tail ? CLEANUP_TIMEOUT_MS : 0)),
-  );
+  const longest = Math.max(...chains.map((c) => sum(c.probes)));
   return longest + sum(after.slice(0, at + 1)) + margin;
+}
+
+/**
+ * How long `settled` can take: the longest chain with its tail (one
+ * removeInstall, CLEANUP_TIMEOUT_MS), or the after step, whichever is later.
+ */
+export function settledTimeoutMs(
+  o: {
+    chains?: readonly Chain[];
+    after?: readonly ProbeId[];
+    probes?: readonly Probe[];
+  } = {},
+): number {
+  const after = o.after ?? AFTER_CHAINS;
+  const last = after[after.length - 1];
+  const chains = o.chains ?? CHAINS;
+  const tailed = chains.some((c) => c.tail);
+  const lastChain = Math.max(
+    ...chains.map((c) =>
+      c.probes.length
+        ? caseTimeoutMs(c.probes[c.probes.length - 1] as ProbeId, o)
+        : 0,
+    ),
+  );
+  return Math.max(
+    last ? caseTimeoutMs(last, o) : 0,
+    lastChain + (tailed ? CLEANUP_TIMEOUT_MS : 0),
+  );
 }
 
 /**
@@ -830,15 +910,22 @@ function rlp(run: Run): RlP {
  * rl-l-<run>: the install P20 to P22 run on, so suspend, resume and restore
  * run while rl-p goes through its upgrade and rollback. Made as P13 makes
  * rl-p (oidcCreate, testHooks) but at the release under test, and ready as
- * P13 leaves rl-p: done, both hosts set, the redline /healthz served. That create is
- * P13's case, so here it's setup: any failure is infra (never a pass, never
- * a red-line verdict) and P20 to P22 report it. Listed for cleanup before
+ * P13 leaves rl-p: done, both hosts set, the redline /healthz served. It is
+ * the only create at the release under test, so its job is judged: still
+ * running past JOB_WITHIN_MS, or failed, fails P20 and P22 (product), naming
+ * the job, its step, attempts and last error. Any other setup failure (no
+ * answer, the network, the hosts) is infra. Listed for cleanup before
  * its create; the chain's tail removes it (removeLifecycle). Memoized: every
  * caller gets the one install.
  */
 export function lifecycleInstall(run: Run): Promise<RlP> {
   run.s.rll ??= makeLifecycle(run);
   return run.s.rll;
+}
+
+/** rl-l's create judged as a product fail (not setup infra). */
+class CreateVerdict extends ProbeFail {
+  override name = "CreateVerdict";
 }
 
 async function makeLifecycle(run: Run): Promise<RlP> {
@@ -854,7 +941,26 @@ async function makeLifecycle(run: Run): Promise<RlP> {
       }),
       "rl-l create",
     );
-    await run.done(a.job.id, "rl-l create");
+    // The create at the release under test is judged: a job still running
+    // past its bound, or failed, is a product fail on P20 and P22. Only no
+    // answer at all (the network) stays infra.
+    let j: Job;
+    try {
+      j = await run.waitJob(a.job.id);
+    } catch (e) {
+      if (e instanceof JobTimedOut) {
+        run.s.rllCreateTimedOut = a.job.id;
+        if (e.answered)
+          throw new CreateVerdict(
+            `rl-l create at the release under test: ${e.message}`,
+          );
+      }
+      throw e;
+    }
+    if (j.status !== "done")
+      throw new CreateVerdict(
+        `rl-l create at the release under test: job ${a.job.id} ${j.status}, step ${j.step ?? "?"} (${jobRetries(j)})${failText(j)}`,
+      );
     const d = await ownDetail(run, a.install.id);
     expect(d, 200, "rl-l R3");
     const dj = d.json as InstallDetail;
@@ -879,7 +985,7 @@ async function makeLifecycle(run: Run): Promise<RlP> {
       version,
     };
   } catch (e) {
-    if (e instanceof InfraError) throw e;
+    if (e instanceof InfraError || e instanceof CreateVerdict) throw e;
     throw new InfraError(
       `rl-l setup: ${e instanceof ProbeFail ? e.message : `error ${(e as Error)?.name ?? "unknown"}`}`,
       { cause: e },
@@ -890,12 +996,15 @@ async function makeLifecycle(run: Run): Promise<RlP> {
 /**
  * The rl-l chain's tail: deletes and purges rl-l once P22 is done, so the
  * run's cleanup has nothing left of it. A failure leaves it listed: the
- * run's cleanup tries again, and fails the run naming it.
+ * run's cleanup tries again, and fails the run naming it. A create whose
+ * wait already ran out is not waited on again here: rl-l stays listed for
+ * the run's cleanup.
  */
 export async function removeLifecycle(run: Run): Promise<void> {
   const slug = run.slug("l");
   const at = run.s.cleanup.findIndex((e) => e.slug === slug);
   if (at < 0) return;
+  if (run.s.rllCreateTimedOut !== undefined) return;
   try {
     await removeInstall(run, slug, "rl-l cleanup");
     run.s.cleanup.splice(
@@ -1007,7 +1116,16 @@ export async function removeInstall(
   let d = await ownDetail(run, row.id);
   expect(d, 200, `${what} R3`);
   let i = d.json as InstallDetail;
-  if (i.activeJobId) await run.waitJob(i.activeJobId);
+  if (i.activeJobId) {
+    try {
+      await run.waitJob(i.activeJobId);
+    } catch (e) {
+      // Name the install: the run's cleanup reports which one it left.
+      if (e instanceof JobTimedOut)
+        throw new JobTimedOut(`${what}: ${e.message}`, e.jobId, e.answered);
+      throw e;
+    }
+  }
   d = await ownDetail(run, row.id);
   expect(d, 200, `${what} R3`);
   i = d.json as InstallDetail;
@@ -1966,7 +2084,10 @@ export const PROBES: readonly Probe[] = [
     id: "P33",
     title: "R17 for this run's actor: this run's job.accepted rows",
     run: async (run) => {
-      if (!run.s.actor || run.s.jobIds.length === 0)
+      // The jobs accepted before P33 started: a chain's tail may still be
+      // adding cleanup jobs while it reads.
+      const ids = [...run.s.jobIds];
+      if (!run.s.actor || ids.length === 0)
         throw new ProbeFail("P33: no job was accepted this run");
       const seen = new Set<string>();
       let cursor: string | null = null;
@@ -1985,14 +2106,14 @@ export const PROBES: readonly Probe[] = [
         };
         for (const i of b.items) if (i.jobId) seen.add(i.jobId);
         cursor = b.nextCursor;
-        if (!cursor || run.s.jobIds.every((id) => seen.has(id))) break;
+        if (!cursor || ids.every((id) => seen.has(id))) break;
       }
-      const missing = run.s.jobIds.filter((id) => !seen.has(id));
+      const missing = ids.filter((id) => !seen.has(id));
       if (missing.length)
         throw new ProbeFail(
           `P33: ${missing.length} of this run's jobs have no job.accepted row`,
         );
-      return pass(`${run.s.jobIds.length} job(s)`);
+      return pass(`${ids.length} job(s)`);
     },
   },
   {
