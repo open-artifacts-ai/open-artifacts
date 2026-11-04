@@ -491,18 +491,43 @@ describe("runNightly", () => {
 
   it("stops dispatching at deadlineMs; the rest is skipped and never called", async () => {
     await seed(ids(10));
-    const f = fakes("staging", () => "ok", 40);
+    const lines = captureLogs();
+    // The first call needs one installs page read, 10 SHA-256 digests
+    // (nightOrder) and a re-check before the deadline: tens of ms, but CI
+    // once stalled ~300 ms there (the lanes-at-deadline test below took
+    // 311 ms with no call made). 311 ms × headroom 3 ≈ 1 s.
+    const deadlineMs = 1_000;
+    // Each call takes 250 ms, so at most 4 can start by the deadline
+    // (5 × 250 ms > 1 s): at least 6 of 10 are left to skip, however fast.
+    const callMs = 250;
+    const t0 = Date.now();
+    const startedAt: number[] = [];
+    const f = fakes(
+      "staging",
+      () => "ok",
+      callMs,
+      () => {
+        startedAt.push(Date.now() - t0);
+      },
+    );
     const r = await runNightly(f.env, NOW, {
       concurrency: 1,
-      deadlineMs: 100,
+      deadlineMs,
       recheckFloorMs: 1,
     });
+    // Dispatch ran before the deadline, so the stop below is the deadline's.
+    expect(startedAt.length).toBeGreaterThanOrEqual(1);
+    expect(startedAt[0]).toBeLessThan(deadlineMs);
     expect(r.failed).toEqual([]);
     expect(r.ok.length).toBeGreaterThanOrEqual(1);
     expect(r.skipped.length).toBeGreaterThanOrEqual(5);
     expect([...r.ok, ...r.skipped]).toEqual(await night(10, NOW));
     expect(f.calls).toHaveLength(r.ok.length);
-  });
+    // Everything not called was skipped for the deadline.
+    expect(lines.filter((l) => l.startsWith("nightly skipped"))).toEqual(
+      r.skipped.map((id) => `nightly skipped deadline ${id}`),
+    );
+  }, 10_000);
 
   it("past the re-check floor, the rest is skipped without recursing through every install", async () => {
     // Skipping each install in its own run() recursed synchronously
