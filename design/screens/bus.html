@@ -101,7 +101,8 @@ button{height:36px;padding:0 16px;border-radius:6px;border:1px solid var(--borde
 font:inherit;font-size:14px;font-weight:500;line-height:1;cursor:pointer}
 button:hover{border-color:var(--border-strong)}
 button.primary{background:var(--text);border-color:var(--text);color:var(--surface)}
-button.link{height:auto;padding:4px 0;border:0;background:none;font-size:13px;text-decoration:underline;text-underline-offset:3px}
+button.link,a.link{height:auto;padding:4px 0;border:0;background:none;font-size:13px;text-decoration:underline;text-underline-offset:3px}
+a.link{color:inherit}
 .actions{display:flex;justify-content:flex-end}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (max-width:600px){

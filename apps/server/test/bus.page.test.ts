@@ -472,7 +472,7 @@ describe("revoke", () => {
       await get(internal.deps, loc(r1) ?? "", m.cookie)
     ).text();
     expect(body).toContain(
-      `<span>&lt;b&gt;box&lt;/b&gt; is revoked and can't reconnect, but its open connection didn't close. <a href="/bus/machines/m1/revoke">Try again</a> to close it.</span>`,
+      `<span>&lt;b&gt;box&lt;/b&gt; is revoked and can't reconnect, but its open connection didn't close. <a class="link" href="/bus/machines/m1/revoke">Try again</a> to close it.</span>`,
     );
     expect(body).toContain('class="msg err"');
     // Without a machine of the caller's own to name, it's the generic line.
@@ -574,7 +574,9 @@ describe("revoke", () => {
     const page = await get(internal.deps, loc(r) ?? "", g.cookie);
     expect(page.status).toBe(200);
     const body = await page.text();
-    expect(body).toContain('<a href="/bus/machines/mine/revoke">Try again</a>');
+    expect(body).toContain(
+      '<a class="link" href="/bus/machines/mine/revoke">Try again</a>',
+    );
     expect(body).toContain(
       "You can't connect new machines. You can revoke these.",
     );

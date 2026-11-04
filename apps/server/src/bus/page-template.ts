@@ -76,7 +76,8 @@ button{height:36px;padding:0 16px;border-radius:6px;border:1px solid var(--borde
 font:inherit;font-size:14px;font-weight:500;line-height:1;cursor:pointer}
 button:hover{border-color:var(--border-strong)}
 button.primary{background:var(--text);border-color:var(--text);color:var(--surface)}
-button.link{height:auto;padding:4px 0;border:0;background:none;font-size:13px;text-decoration:underline;text-underline-offset:3px}
+button.link,a.link{height:auto;padding:4px 0;border:0;background:none;font-size:13px;text-decoration:underline;text-underline-offset:3px}
+a.link{color:inherit}
 .actions{display:flex;justify-content:flex-end}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (max-width:600px){
@@ -237,5 +238,5 @@ export const BUS_SNIPPETS = {
 </tr>`,
   "message-error": `<p class="msg err" role="alert"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01"/></svg><span>{{text}}</span></p>`,
   "message-ok": `<p class="msg ok" role="status"><svg viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></svg><span>{{text}}</span></p>`,
-  "message-revoke-partial": `<p class="msg err" role="alert"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01"/></svg><span>{{label}} is revoked and can't reconnect, but its open connection didn't close. <a href="{{retry_url}}">Try again</a> to close it.</span></p>`,
+  "message-revoke-partial": `<p class="msg err" role="alert"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01"/></svg><span>{{label}} is revoked and can't reconnect, but its open connection didn't close. <a class="link" href="{{retry_url}}">Try again</a> to close it.</span></p>`,
 } as const;
