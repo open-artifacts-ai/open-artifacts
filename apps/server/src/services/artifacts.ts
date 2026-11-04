@@ -71,6 +71,17 @@ import { effectiveName, toUserRef } from "./users.js";
 type Ctx = Pick<ExecutionContext, "waitUntil">;
 const CAPS = { db: false, viewer: false, storage: false };
 
+/** #1292: never rejects, so it can share a hand-off with the index job. */
+const changedNotices = (
+  env: Env,
+  id: string,
+  version: number,
+  publisherId: string,
+) =>
+  notifyChanged(env, id, version, publisherId).catch((e) =>
+    logError("bus_notice_failed", e, { artifactId: id, version }),
+  );
+
 const later = async (ctx: Ctx | undefined, p: Promise<unknown>) => {
   const safe = p.catch((e) => logError("background_task_failed", e));
   if (ctx) ctx.waitUntil(safe);
@@ -478,12 +489,15 @@ export async function publish(
   // After the response (waitUntil): the index job, thumbnail job and version
   // frame. A lost one is recovered by sweepLostIndexJobs. enqueue_ms below is
   // now only the hand-off; index_enqueue logs the DO call's own wall time.
+  // #1292: in the same hand-off, followers' `changed` notices (a new
+  // artifact has none).
   await later(
     ctx,
-    enqueueIndex(env, id, version, true, versionEvent(user, agent, now)),
+    Promise.all([
+      enqueueIndex(env, id, version, true, versionEvent(user, agent, now)),
+      create ? null : changedNotices(env, id, version, user.id),
+    ]),
   );
-  // #1292: followers' `changed` notices (a new artifact has none).
-  if (!create) await later(ctx, notifyChanged(env, id, version, user.id));
   mark();
   logPublishTiming(env, id, create, at);
   const warning = dataWritersWarning({
@@ -1339,12 +1353,14 @@ export async function restoreVersion(
   ]);
   const version = res[0]?.results[0]?.current_version;
   if (version === undefined) throw notFound();
+  // #1292: a restore is a new version, so followers hear `changed`.
   await later(
     ctx,
-    enqueueIndex(env, id, version, true, versionEvent(user, agent, now, v)),
+    Promise.all([
+      enqueueIndex(env, id, version, true, versionEvent(user, agent, now, v)),
+      changedNotices(env, id, version, user.id),
+    ]),
   );
-  // #1292: a restore is a new version, so followers hear `changed`.
-  await later(ctx, notifyChanged(env, id, version, user.id));
   return { id, version, url: appOrigin(env) + viewerPath(id) };
 }
 
