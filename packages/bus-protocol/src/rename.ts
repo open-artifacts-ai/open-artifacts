@@ -12,7 +12,7 @@ import { IsoTimeSchema } from "./status.ts";
 
 /** Pinned `error` messages for `rename` refusals. Clients may match on them. */
 export const RENAME_MESSAGES = {
-  /** `rate_limited`: past LIMITS.renamesPerHour name changes in a rolling hour. */
+  /** `rate_limited`: past LIMITS.renamesPerHour name changes in a rolling hour, or LIMITS.maxFormerNames chosen former names in their grace (OpenBus #446). */
   rate: "Too many renames",
 } as const;
 
@@ -36,8 +36,9 @@ export const FormerNameSchema = z.strictObject({
 
 /**
  * An agent's live former names: 1 to LIMITS.maxFormerNames; the hub omits the
- * field when there are none. It may hold more live rows than it shows; those
- * still resolve and stay reserved.
+ * field when there are none. It holds no more rows than it shows (OpenBus
+ * #446): past the cap a default one is dropped first, and a chosen one in
+ * its grace never is (the rename is refused instead).
  *
  * The hub also guarantees, and its tests pin (R393b): newest first
  * (`expires_at` non-increasing), distinct case-insensitively, and never equal

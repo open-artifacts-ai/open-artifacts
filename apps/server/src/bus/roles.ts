@@ -111,11 +111,10 @@ export function listRoles(
  *   global;
  * - name_taken: a live agent visible in `namespace` (in it, or a global) has
  *   the name, or a live agent there holds it as a chosen former name still
- *   in its grace (R393b reservations), any case;
+ *   in its grace (R393b reservations), any case; or it was minted for an
+ *   agent other than `agentId` (OpenBus #446: a minted name is never handed
+ *   on, in any scope, so a default former name needs no reservation);
  * - role_limit: `max` roles exist and this would add one.
- * A default (unreserved) former name equal to it in scope is superseded, as
- * a new holder of a name supersedes one (commitName), so a name never has
- * two meanings in one scope.
  */
 export function putRole(
   sql: SqlStorage,
@@ -147,7 +146,8 @@ export function putRole(
     `select (exists (select 1 from agents where org_id = ? and lower(name) = ? and live = 1 and (namespace = ? or global = 1))
          or exists (select 1 from former_names f join agents a on a.id = f.agent_id
                      where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind = 'chosen'
-                       and a.live = 1 and (a.namespace = ? or a.global = 1))) as x`,
+                       and a.live = 1 and (a.namespace = ? or a.global = 1))
+         or exists (select 1 from minted_names where org_id = ? and lname = ? and agent_id is not ?)) as x`,
     orgId,
     lname,
     namespace,
@@ -155,6 +155,9 @@ export function putRole(
     lname,
     now,
     namespace,
+    orgId,
+    lname,
+    agentId,
   );
   if (taken?.x === 1) return { ok: false, reason: "name_taken" };
   const existing = one<{ id: string }>(
@@ -184,14 +187,6 @@ export function putRole(
     lname,
     agentId,
     now,
-  );
-  sql.exec(
-    `delete from former_names where org_id = ? and lname = ? and kind = 'default'
-       and agent_id in (select id from agents where org_id = ? and (namespace = ? or global = 1))`,
-    orgId,
-    lname,
-    orgId,
-    namespace,
   );
   const row = one<StoredRole>(sql, `${ROLE_SELECT} where r.id = ?`, id);
   if (row === null) throw new Error("role row missing after write");
