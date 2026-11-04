@@ -120,7 +120,6 @@ export const SIGNIN_IP_LIMIT = 10;
  * and syncs in the background, so a parallel burst slips through.
  */
 export const P25_MAX_REQUESTS = 3 * SIGNIN_IP_LIMIT;
-export const P44_REGISTRATIONS = 11;
 export const P42_BYTES = 40 * 1024;
 /** P48's bound on R2 pages per q (O reaches only rl- installs). */
 export const P48_MAX_PAGES = 10;
@@ -2219,7 +2218,7 @@ export const PROBES: readonly Probe[] = [
   {
     id: "P44",
     title:
-      "/oauth/register: foreign redirect URIs 400 invalid_redirect_uri; the 11th registration refused",
+      "/oauth/register: foreign redirect URIs 400 invalid_redirect_uri; the listed one 201 with a client_id",
     run: async (run) => {
       const reg = (uris: string[]) =>
         run.raw(`${run.c.api}/oauth/register`, {
@@ -2244,32 +2243,27 @@ export const PROBES: readonly Probe[] = [
         "P44 unlisted claude.ai",
         "invalid_redirect_uri",
       );
-      // The cap is 10 per ipKey per UTC day (9A.7); refused registrations
-      // give their slot back, so only an earlier 201 from this egress IP today
-      // spends it. 10 x 201 then 429 proves the limit; fewer 201s before the
-      // 429 cannot tell a lower cap from a spent one, so that is unproven. OAuth
-      // endpoints answer RFC 6749 errors (3.5): 429 is temporarily_unavailable.
-      let ok = 0;
-      for (let i = 1; i <= P44_REGISTRATIONS; i++) {
-        const r = await reg([run.c.mcpRedirectUri]);
-        if (r.status === 429) {
-          expect(r, 429, `P44 registration ${i}`, "temporarily_unavailable");
-          if (ok === P44_REGISTRATIONS - 1) return pass();
-          return unproven(
-            `the 429 came after ${ok} registration(s): this IP's daily cap was partly spent earlier`,
-          );
-        }
-        const id = (r.json as { client_id?: unknown } | undefined)?.client_id;
-        if (r.status !== 201 || typeof id !== "string" || !id)
-          throw new ProbeFail(
-            `P44: registration ${i} want 201 with a client_id or 429, got ${desc(r)}`,
-          );
-        if (ok === 0) run.s.clientId = id;
-        ok++;
+      // One listed registration, for P43's client. The 10 per ipKey per UTC
+      // day cap (9A.7) is not burst live: a runner's egress IP can move
+      // mid-burst (run 41923001970), so a live 11th 201 proves nothing.
+      // apps/provisioning/test/oauth.test.ts covers the cap, the concurrent
+      // burst and the refund. A 429 here means this IP's day was spent
+      // earlier: unproven. OAuth errors are RFC 6749 (3.5): 429 is
+      // temporarily_unavailable.
+      const r = await reg([run.c.mcpRedirectUri]);
+      if (r.status === 429) {
+        expect(r, 429, "P44 registration", "temporarily_unavailable");
+        return unproven(
+          "the registration got 429: this IP's daily cap was spent earlier",
+        );
       }
-      throw new ProbeFail(
-        `P44 registration ${P44_REGISTRATIONS}: want 429 temporarily_unavailable, got 201`,
-      );
+      const id = (r.json as { client_id?: unknown } | undefined)?.client_id;
+      if (r.status !== 201 || typeof id !== "string" || !id)
+        throw new ProbeFail(
+          `P44: registration want 201 with a client_id or 429, got ${desc(r)}`,
+        );
+      run.s.clientId = id;
+      return pass();
     },
   },
   {

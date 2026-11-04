@@ -111,7 +111,7 @@ export type Fault =
   | "prod_resolves_404"
   | "p37_no_header"
   | "p38_prm_no_scopes"
-  | "p44_no_limit"
+  | "p44_no_client_id"
   | "p44_cap_spent"
   | "p44_wrong_code"
   | "p45_extra_tool"
@@ -820,9 +820,8 @@ export function fakeApi(): FakeApi {
           faults.has("p44_unlisted_redirect")
         )
           return ok({ error: "invalid_redirect_uri" }, 400);
-        // An earlier run today from this IP spent 4 of the 10 (9A.7).
-        const spent = faults.has("p44_cap_spent") ? 4 : 0;
-        if (++registrations + spent > 10 && !faults.has("p44_no_limit"))
+        // Earlier runs today from this IP spent all 10 (9A.7).
+        if (faults.has("p44_cap_spent"))
           return ok(
             {
               error: faults.has("p44_wrong_code")
@@ -831,7 +830,8 @@ export function fakeApi(): FakeApi {
             },
             429,
           );
-        return ok({ client_id: `c${registrations}` }, 201);
+        if (faults.has("p44_no_client_id")) return ok({}, 201);
+        return ok({ client_id: `c${++registrations}` }, 201);
       }
       if (url.pathname === "/oauth/authorize")
         return new Response(null, { status: 404 });

@@ -327,19 +327,14 @@ describe("each probe fails on the behaviour it guards", () => {
       /protected resource scopes_supported is not exactly the five/,
     ],
     [
-      "p44_no_limit",
+      "p44_no_client_id",
       "P44",
-      /P44 registration 11: want 429 temporarily_unavailable, got 201/,
-    ],
-    [
-      "p44_wrong_code",
-      "P44",
-      /P44 registration 11: want 429 temporarily_unavailable, got status 429.*code rate_limited/,
+      /P44: registration want 201 with a client_id or 429, got status 201/,
     ],
     [
       "p44_unlisted_redirect",
       "P44",
-      /P44: registration 1 want 201 with a client_id or 429, got status 400/,
+      /P44: registration want 201 with a client_id or 429, got status 400/,
     ],
     ["p20_content_serving", "P20", /P20 paused page: not within 120 s/],
     ["p21_stays_paused", "P21", /P21 \/healthz 200: not within 120 s/],
@@ -737,13 +732,31 @@ describe("each probe fails on the behaviour it guards", () => {
     expect(q?.deletedAt).not.toBeNull();
   });
 
-  it("P44 is unproven when this IP's daily DCR cap was partly spent earlier", async () => {
+  it("P44 registers exactly one listed client and passes, giving P43 its client_id", async () => {
+    const f = fakeApi();
+    const out = await runAll(f);
+    expect(out.get("P44")).toEqual({ level: "pass" });
+    // The evil and unlisted 400s, then the one listed registration.
+    expect(f.log.filter((l) => l.endsWith("/oauth/register"))).toHaveLength(3);
+    expect(out.get("P43")).toEqual({ level: "pass" });
+  });
+
+  it("P44 is unproven when this IP's daily DCR cap was spent earlier", async () => {
     const f = fakeApi();
     f.faults.add("p44_cap_spent");
     expect((await runAll(f)).get("P44")).toEqual({
       level: "unproven-live",
-      reason: expect.stringMatching(/429 came after 6 registration/),
+      reason: "the registration got 429: this IP's daily cap was spent earlier",
     });
+  });
+
+  it("P44 fails on a 429 that is not temporarily_unavailable", async () => {
+    const f = fakeApi();
+    f.faults.add("p44_cap_spent");
+    f.faults.add("p44_wrong_code");
+    expect((await runAll(f)).get("P44")).toMatch(
+      /P44 registration: want 429 temporarily_unavailable, got status 429.*code rate_limited/,
+    );
   });
 
   it("P15 fails without a staging inventory, whatever /healthz said", async () => {
