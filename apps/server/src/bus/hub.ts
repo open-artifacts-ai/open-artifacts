@@ -534,7 +534,11 @@ function registeredAgent(
  * R393b: a live agent's chosen former name in that same scope is taken too
  * (reserved for its grace); the agent's own former names are free to it.
  * Reservations are per member: each member has its own hub.
- * One statement on agents_live_lname and former_names_lname.
+ * OpenBus #446: a name minted for ANOTHER agent is taken in every scope, for
+ * good (a minted name is never handed to another agent again); its own agent
+ * may take it back. Default former names reserve nothing themselves: the
+ * minted_names row does. One statement on agents_live_lname,
+ * former_names_lname and the minted_names primary key.
  */
 function nameTaken(
   sql: SqlStorage,
@@ -552,7 +556,8 @@ function nameTaken(
       `select (exists (select 1 from agents a where a.org_id = ? and lower(a.name) = ? and a.live = 1 and a.id != ? ${scope})
            or exists (select 1 from former_names f join agents a on a.id = f.agent_id
                        where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind = 'chosen'
-                         and f.agent_id != ? and a.live = 1 ${scope})) as x`,
+                         and f.agent_id != ? and a.live = 1 ${scope})
+           or exists (select 1 from minted_names m where m.org_id = ? and m.lname = ? and m.agent_id != ?)) as x`,
       OWNER_ORG_ID,
       lname,
       selfId,
@@ -562,6 +567,9 @@ function nameTaken(
       now,
       selfId,
       ...(global ? [] : [namespace]),
+      OWNER_ORG_ID,
+      lname,
+      selfId,
     )?.x === 1
   );
 }
@@ -574,13 +582,15 @@ const FORMER_PURGE_SQL =
 
 /**
  * R393b: a closed or revoked agent's former names go at once (the names
- * free), and its rename log with them (`closed`). A namespace move or global
- * flip drops only the former names.
+ * free); so do a namespace move's or global flip's. The rename log goes only
+ * on a revoke (`revoked`): OpenBus #446, a close keeps it, so a reopen (the
+ * same agent id) is still limited, and the alarm purges it by the rolling
+ * hour.
  */
 function dropNameState(
   sql: SqlStorage,
   agentIds: string[],
-  closed: boolean,
+  revoked: boolean,
 ): void {
   if (agentIds.length === 0) return;
   const ids = JSON.stringify(agentIds);
@@ -588,7 +598,7 @@ function dropNameState(
     "delete from former_names where agent_id in (select value from json_each(?))",
     ids,
   );
-  if (closed)
+  if (revoked)
     sql.exec(
       "delete from rename_rl where agent_id in (select value from json_each(?))",
       ids,
@@ -704,16 +714,15 @@ function mintName(
 /**
  * Writes the minted_names row of a freshly minted name, and drops the
  * agent's former name equal to its new name (a former name never equals the
- * current one, case-insensitively). Other agents' DEFAULT former names equal
- * to it, in the scope nameTaken checks, go too: they are unreserved, so the
- * new holder supersedes them, and no two agents ever hold one former name in
- * one scope (a chosen one is reserved, so it cannot be taken).
+ * current one, case-insensitively). Nothing of another agent's goes: its
+ * chosen former names are reserved and its default ones are names minted for
+ * it, which nameTaken never hands to anyone else (OpenBus #446), so the new
+ * name is never another agent's live former name in scope. Should two agents
+ * ever hold one former name in a scope, resolution refuses it as ambiguous.
  */
 function commitName(
   sql: SqlStorage,
   agentId: string,
-  namespace: string,
-  global: boolean,
   a: Assigned,
   now: number,
 ): void {
@@ -733,23 +742,110 @@ function commitName(
     agentId,
     lname,
   );
-  sql.exec(
-    `delete from former_names where org_id = ? and lname = ? and kind = 'default' and agent_id != ?
-       ${global ? "" : "and agent_id in (select id from agents where org_id = ? and (namespace = ? or global = 1))"}`,
-    OWNER_ORG_ID,
-    lname,
-    agentId,
-    ...(global ? [] : [OWNER_ORG_ID, namespace]),
-  );
 }
 
-/** Registers (or re-registers) an agent; returns the reply and changed namespaces. */
+/**
+ * R393b: whether the agent may change its name now: under
+ * LIMITS.renamesPerHour changes in the rolling hour (rename_rl, its expired
+ * rows dropped first).
+ */
+function renameAllowed(sql: SqlStorage, agentId: string, now: number): boolean {
+  sql.exec(
+    "delete from rename_rl where agent_id = ? and at <= ?",
+    agentId,
+    now - HOUR_MS,
+  );
+  const count =
+    one<{ n: number }>(
+      sql,
+      "select count(*) as n from rename_rl where agent_id = ?",
+      agentId,
+    )?.n ?? 0;
+  return count < LIMITS.renamesPerHour;
+}
+
+/** R393b: counts one name change in rename_rl; returns its purge time. */
+function countRename(sql: SqlStorage, agentId: string, now: number): number {
+  sql.exec("insert into rename_rl (agent_id, at) values (?, ?)", agentId, now);
+  return now + HOUR_MS;
+}
+
+/**
+ * R393b: records a name change from `former` to `name` (they differ
+ * exactly): one rename_rl row, and unless only the case changed (the old
+ * name already resolves) a former-name row for LIMITS.formerNameGraceMs,
+ * `default` when the name was minted for this agent (it is never handed on,
+ * so it needs no reservation), else `chosen`. OpenBus #446: at most
+ * LIMITS.maxFormerNames rows are stored per agent; an older one is dropped,
+ * so it stops resolving and is free again. Returns the times to arm the
+ * alarm for (the rename log's purge, the grace's end).
+ */
+function recordRename(
+  sql: SqlStorage,
+  agentId: string,
+  former: string,
+  name: string,
+  now: number,
+): number[] {
+  const arms = [countRename(sql, agentId, now)];
+  const lformer = former.toLowerCase();
+  // One row per name per agent: a reused former name is replaced.
+  sql.exec(
+    "delete from former_names where agent_id = ? and lname = ?",
+    agentId,
+    lformer,
+  );
+  if (lformer === name.toLowerCase()) return arms;
+  const minted = one(
+    sql,
+    "select 1 as x from minted_names where org_id = ? and lname = ? and agent_id = ?",
+    OWNER_ORG_ID,
+    lformer,
+    agentId,
+  );
+  const expires = now + LIMITS.formerNameGraceMs;
+  sql.exec(
+    "insert into former_names (agent_id, org_id, name, lname, kind, expires_at) values (?, ?, ?, ?, ?, ?)",
+    agentId,
+    OWNER_ORG_ID,
+    former,
+    lformer,
+    minted ? "default" : "chosen",
+    expires,
+  );
+  sql.exec(
+    `delete from former_names where agent_id = ? and rowid not in
+       (select rowid from former_names indexed by former_names_agent where agent_id = ? order by expires_at desc, rowid desc limit ?)`,
+    agentId,
+    agentId,
+    LIMITS.maxFormerNames,
+  );
+  arms.push(expires);
+  return arms;
+}
+
+/**
+ * Registers (or re-registers) an agent; returns the reply, the changed
+ * namespaces and the alarm times a name change needs.
+ *
+ * OpenBus #446: a re-sent agent_up that changes a LIVE agent's name (#1323)
+ * is a rename: it counts in rename_rl and, in an unchanged scope, leaves a
+ * former name as `rename` does. At the limit the agent_up still succeeds (it
+ * must never fail: it is also a reconnect) but keeps the current name. A
+ * namespace move or global flip drops the former names, as before; its name
+ * change still counts.
+ */
 function agentUp(
   sql: SqlStorage,
   machineId: string,
   f: AgentUpFrame,
   now: number,
-): { reply: ServerFrame; change: RosterChange; rowChanged: boolean } {
+): {
+  reply: ServerFrame;
+  change: RosterChange;
+  rowChanged: boolean;
+  arms: number[];
+} {
   const existing = one<{
     id: string;
     namespace: string;
@@ -765,9 +861,8 @@ function agentUp(
     OWNER_ORG_ID,
   );
   const id = existing?.id ?? newId();
-  // A repeat agent_up for a live agent may rename it (#1323); that never
-  // records a former name or counts toward the rename limit (R393b).
-  const assigned = assignName(
+  // A repeat agent_up for a live agent may rename it (#1323).
+  let assigned = assignName(
     sql,
     f.namespace,
     f.proposed_name,
@@ -776,6 +871,23 @@ function agentUp(
     now,
     f.name_kind,
   );
+  const wasLive = existing?.live === 1;
+  const sameScope =
+    existing?.namespace === f.namespace &&
+    existing?.global === (f.global ? 1 : 0);
+  let arms: number[] = [];
+  if (wasLive && assigned.name !== existing.name) {
+    if (renameAllowed(sql, id, now)) {
+      arms = sameScope
+        ? recordRename(sql, id, existing.name, assigned.name, now)
+        : [countRename(sql, id, now)];
+    } else {
+      logEvent("rate_limited", { kind: "rename", machineId });
+      // The current name (its own, minted or not), de-collided only when a
+      // move puts it in a scope where it is taken.
+      assigned = assignName(sql, f.namespace, existing.name, f.global, id, now);
+    }
+  }
   const name = assigned.name;
   // A new session starts when the agent was not live (B11): its boundary is
   // the newest receipt's rowid (receipts rowids only grow: the retention
@@ -813,8 +925,7 @@ function agentUp(
       existing.global !== (f.global ? 1 : 0))
   )
     dropNameState(sql, [id], false);
-  commitName(sql, id, f.namespace, f.global, assigned, now);
-  const wasLive = existing?.live === 1;
+  commitName(sql, id, assigned, now);
   // AC3: a reopened session starts with no status (a live move keeps it).
   if (existing && !wasLive) clearStatus(sql, [id]);
   const changed = [f.namespace];
@@ -832,6 +943,7 @@ function agentUp(
     existing.global !== (f.global ? 1 : 0);
   return {
     rowChanged,
+    arms,
     reply: {
       v: 1,
       id: f.id,
@@ -954,8 +1066,8 @@ function roster(
 
 /**
  * R393b: each row's live former names for the roster, newest first, at most
- * LIMITS.maxFormerNames (more may be live: they still resolve and stay
- * reserved). One statement on former_names_agent, ids as one JSON parameter.
+ * LIMITS.maxFormerNames (recordRename stores no more; the cap here is a
+ * guard). One statement on former_names_agent, ids as one JSON parameter.
  */
 function formerNamesOf(
   sql: SqlStorage,
@@ -1201,7 +1313,7 @@ function liveAnywhere(
  * R393b: live agents with the live former name `lname` (former_names_lname),
  * optionally in a scope: `ns` (namespace or global, as liveVisibleIn sees
  * it) or a global homed in `homedIn`. Globals first. A former name is never
- * held twice within a scope (commitName), so `limit` > 1 only finds a
+ * held twice within a scope (nameTaken), so `limit` > 1 only finds a
  * seeded or racing duplicate, or matches across namespaces.
  */
 function liveFormer(
@@ -1247,7 +1359,7 @@ function resolveTarget(
   now: number,
 ): Resolution {
   const lname = toName.toLowerCase();
-  // A former name is never held by two agents in one scope (commitName);
+  // A former name is never held by two agents in one scope (nameTaken);
   // if it ever were, the send is ambiguous rather than delivered to either.
   const formerIn = (
     scope: { ns: string } | { homedIn: string },
@@ -2387,7 +2499,8 @@ export class BusHub extends DurableObject<Env> {
           sendError(ws, f.id, "rate_limited", AGENT_CAP_MESSAGES.machine);
           return;
         }
-        const { reply, change } = agentUp(sql, machineId, f, this.#now());
+        const { reply, change, arms } = agentUp(sql, machineId, f, this.#now());
+        for (const t of arms) this.#arm(t);
         sendFrame(ws, reply);
         notifyRoster(this.ctx, change, ws);
         const a = registeredAgent(sql, machineId, f.agent_ref);
@@ -2498,64 +2611,21 @@ export class BusHub extends DurableObject<Env> {
       sendFrame(ws, reply);
       return;
     }
-    sql.exec(
-      "delete from rename_rl where agent_id = ? and at <= ?",
-      agent.id,
-      now - HOUR_MS,
-    );
-    const count =
-      one<{ n: number }>(
-        sql,
-        "select count(*) as n from rename_rl where agent_id = ?",
-        agent.id,
-      )?.n ?? 0;
-    if (count >= LIMITS.renamesPerHour) {
+    if (!renameAllowed(sql, agent.id, now)) {
       logEvent("rate_limited", { kind: "rename", machineId: agent.machineId });
       sendError(ws, f.id, "rate_limited", RENAME_MESSAGES.rate);
       return;
     }
-    sql.exec(
-      "insert into rename_rl (agent_id, at) values (?, ?)",
-      agent.id,
-      now,
-    );
-    this.#arm(now + HOUR_MS);
     const former = agent.name;
-    const lformer = former.toLowerCase();
-    // One row per name per agent: a reused former name is replaced.
-    sql.exec(
-      "delete from former_names where agent_id = ? and lname = ?",
-      agent.id,
-      lformer,
-    );
-    if (lformer !== name.toLowerCase()) {
-      // A name minted for this agent is a default name: never minted again,
-      // so it resolves without being reserved.
-      const minted = one(
-        sql,
-        "select 1 as x from minted_names where org_id = ? and lname = ? and agent_id = ?",
-        OWNER_ORG_ID,
-        lformer,
-        agent.id,
-      );
-      sql.exec(
-        "insert into former_names (agent_id, org_id, name, lname, kind, expires_at) values (?, ?, ?, ?, ?, ?)",
-        agent.id,
-        OWNER_ORG_ID,
-        former,
-        lformer,
-        minted ? "default" : "chosen",
-        now + LIMITS.formerNameGraceMs,
-      );
-      this.#arm(now + LIMITS.formerNameGraceMs);
-    }
+    for (const t of recordRename(sql, agent.id, former, name, now))
+      this.#arm(t);
     sql.exec(
       "update agents set name = ?, updated_at = ? where id = ?",
       name,
       now,
       agent.id,
     );
-    commitName(sql, agent.id, agent.namespace, global, assigned, now);
+    commitName(sql, agent.id, assigned, now);
     sendFrame(ws, { ...reply, former });
     notifyRoster(this.ctx, { namespaces: [agent.namespace], global }, ws);
   }
@@ -3055,7 +3125,7 @@ export class BusHub extends DurableObject<Env> {
   #closeSessions(agentIds: string[]): void {
     if (agentIds.length === 0) return;
     const sql = this.ctx.storage.sql;
-    dropNameState(sql, agentIds, true);
+    dropNameState(sql, agentIds, false);
     const closedAt = this.#now();
     // M1: the closed rows' purge deadline.
     this.#arm(closedAt + CLOSED_AGENT_RETAIN_MS);
