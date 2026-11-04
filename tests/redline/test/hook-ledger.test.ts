@@ -1,5 +1,7 @@
 // #1254: the runner's hook budget (src/hook-ledger.ts), shared by the live
-// suite (src/http.ts paceHook) and T19 (apps/dashboard/e2e/staging).
+// suite (src/http.ts paceHook) and T19 (apps/dashboard/e2e/staging). T19's
+// side is tested in apps/dashboard/test/t19-hook-pace.test.ts (redline never
+// imports dashboard code).
 import { spawn } from "node:child_process";
 import {
   existsSync,
@@ -13,17 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  clearT19HookWindow,
-  clearTestStart,
-  DEADLINE_MARGIN_MS,
-  hookDeadline,
-  hookFailure,
-  markTestStart,
-  paceT19Hook,
-} from "../../../apps/dashboard/e2e/staging/hook-pace";
-import { rlA } from "../../../apps/dashboard/e2e/staging/targets";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   claimHookSlot,
   HOOK_GAP_MS,
@@ -108,7 +100,10 @@ describe("the budget is RL_ANON's, less a stated margin", () => {
 });
 
 describe("one ledger per install, the same for the suite and T19", () => {
-  it("T19 and the suite derive the same key for the same target", () => {
+  // T19 keys on rl-a's app origin from REDLINE_TARGETS too (rlA().app; its
+  // side: apps/dashboard/test/t19-hook-pace.test.ts). Both use the JSON's
+  // a.app as given, so both derive hookLedgerDir(a.app).
+  it("the suite keys on the target's app origin, exactly as REDLINE_TARGETS gives it", () => {
     const s = secretDir({ ka: "a".repeat(40), kb: "b".repeat(40) });
     try {
       const t = (name: string, f: string) => ({
@@ -127,23 +122,22 @@ describe("one ledger per install, the same for the suite and T19", () => {
         }),
       };
       const suite = parseTargets(env);
-      // T19 reads REDLINE_TARGETS from process.env, as on CI.
-      vi.stubEnv("REDLINE_TARGETS", env.REDLINE_TARGETS);
-      const t19 = rlA();
-      expect(hookLedgerDir(t19.app)).toBe(hookLedgerDir(suite.a.app));
+      expect(suite.a.app).toBe("https://rl-a.open-artifacts-staging.app");
+      expect(hookLedgerDir(suite.a.app)).toBe(
+        hookLedgerDir("https://rl-a.open-artifacts-staging.app"),
+      );
       // Another install never shares it.
       expect(hookLedgerDir(suite.b.app)).not.toBe(hookLedgerDir(suite.a.app));
     } finally {
-      vi.unstubAllEnvs();
       s.cleanup();
     }
   });
 
-  it("a suite call and a T19 call count in one window", async () => {
+  it("a suite call counts in the app's window (where T19's claims count too)", async () => {
     const root = scratch();
     const c = clock();
     await paceHook({ app: APP } as never, { root, now: c.now });
-    await paceT19Hook(APP, { root, now: c.now, sleep: c.sleep });
+    await claimHookSlot(APP, { root, now: c.now });
     expect(hookWindowCount(APP, { root, now: c.now })).toBe(2);
     expect(hookWindowCount("https://rl-b.x.app", { root, now: c.now })).toBe(0);
   });
@@ -252,12 +246,17 @@ describe("waits come from the ledger, with a deadline", () => {
     expect(c.waits).toEqual([HOOK_WINDOW_MS - 30_000 + 100]);
   });
 
-  it("T19 spreads its calls one gap apart", async () => {
+  it("spread: one call per gap", async () => {
     const root = scratch();
     const c = clock();
-    await paceT19Hook(APP, { root, now: c.now, sleep: c.sleep });
+    await claimHookSlot(APP, { root, now: c.now, spread: true });
     c.set(c.now() + 1000);
-    await paceT19Hook(APP, { root, now: c.now, sleep: c.sleep });
+    await claimHookSlot(APP, {
+      root,
+      now: c.now,
+      sleep: c.sleep,
+      spread: true,
+    });
     expect(c.waits).toEqual([HOOK_GAP_MS - 1000]);
     expect(HOOK_GAP_MS).toBe(Math.ceil(HOOK_WINDOW_MS / HOOK_LIMIT));
   });
@@ -299,21 +298,6 @@ describe("a hook 404 isn't the key's while the budget is full", () => {
     // It waited for room rather than take the last slot.
     expect(c.waits).toHaveLength(1);
     expect(hook404IsTheKeys(n)).toBe(true);
-  });
-
-  it("T19 names a 404 with the budget full as maybe the rate limit", async () => {
-    const root = scratch();
-    const c = clock();
-    expect(
-      hookFailure(APP, "rl-a hook /x", 404, { root, now: c.now }).message,
-    ).toBe("rl-a hook /x: 404");
-    for (let i = 0; i < HOOK_LIMIT; i++)
-      await claimHookSlot(APP, { root, now: c.now });
-    expect(
-      hookFailure(APP, "rl-a hook /x", 404, { root, now: c.now }).message,
-    ).toMatch(
-      /404 with the hook budget full \(25 of 25.*may be the rate limit, not the key/,
-    );
   });
 });
 
@@ -472,70 +456,5 @@ describe("the generation chain", () => {
     expect(existsSync(join(dir, "s1.g0"))).toBe(true);
     expect(n).toBe(2);
     expect(hookWindowCount(APP, { root, now: c.now })).toBe(2);
-  });
-});
-
-describe("T19's deadline", () => {
-  // Playwright's TestInfo, as hook-pace takes it (only `timeout` is read).
-  type Info = NonNullable<Parameters<typeof hookDeadline>[1]>;
-  const info = (timeout: number) => ({ timeout }) as unknown as Info;
-
-  it("counts from the test's start, not its first hook call", () => {
-    const i = info(60_000);
-    markTestStart(i, 1_000);
-    expect(hookDeadline(41_000, i)).toBe(1_000 + 60_000 - DEADLINE_MARGIN_MS);
-    // A hook (no test start): from its first call.
-    const h = info(60_000);
-    expect(hookDeadline(5_000, h)).toBe(5_000 + 60_000 - DEADLINE_MARGIN_MS);
-    expect(hookDeadline(9_000, h)).toBe(5_000 + 60_000 - DEADLINE_MARGIN_MS);
-    expect(hookDeadline(9_000, info(0))).toBeUndefined();
-    expect(hookDeadline(9_000, undefined)).toBeUndefined();
-  });
-
-  it("an afterAll call after a long last test isn't refused: the mark is cleared at teardown", async () => {
-    const root = scratch();
-    const c = clock();
-    const i = info(60_000);
-    const t0 = c.now();
-    // The last test: marked at its start, a hook call just before it ends.
-    markTestStart(i, t0);
-    c.set(t0 + 57_000);
-    await paceT19Hook(APP, { root, now: c.now, sleep: c.sleep, info: i });
-    // Its fixtures tear down; afterAll runs with the same TestInfo.
-    clearTestStart(i);
-    c.set(t0 + 58_000);
-    expect(hookDeadline(c.now(), i)).toBe(
-      t0 + 58_000 + 60_000 - DEADLINE_MARGIN_MS,
-    );
-    // Its cleanup call waits out the spread instead of being refused.
-    await paceT19Hook(APP, { root, now: c.now, sleep: c.sleep, info: i });
-    expect(c.waits).toEqual([HOOK_GAP_MS - 1000]);
-  });
-
-  it("paceT19Hook fails with HookBudgetError rather than wait past the test's timeout", async () => {
-    const root = scratch();
-    const c = clock();
-    const i = info(60_000);
-    markTestStart(i, c.now());
-    for (let k = 0; k < HOOK_LIMIT; k++)
-      await claimHookSlot(APP, { root, now: c.now });
-    c.set(c.now() + 10_000);
-    // The oldest leaves at +60.1 s, past the deadline (+55 s).
-    await expect(
-      paceT19Hook(APP, { root, now: c.now, sleep: c.sleep, info: i }),
-    ).rejects.toBeInstanceOf(HookBudgetError);
-    expect(c.waits).toEqual([]);
-  });
-
-  it("clearT19HookWindow fails the same way", async () => {
-    const root = scratch();
-    const c = clock();
-    const i = info(20_000);
-    markTestStart(i, c.now());
-    await claimHookSlot(APP, { root, now: c.now });
-    await expect(
-      clearT19HookWindow(APP, { root, now: c.now, sleep: c.sleep, info: i }),
-    ).rejects.toBeInstanceOf(HookBudgetError);
-    expect(c.waits).toEqual([]);
   });
 });
