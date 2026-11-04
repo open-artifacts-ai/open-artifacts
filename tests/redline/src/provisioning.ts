@@ -467,36 +467,39 @@ export const ISSUE_1326 =
  * kept reading another mode for HOSTS_SETTLE_MS. Two causes look alike: KV
  * staleness at the inventory's location (its read is cached too, and the
  * probe's polling keeps that cache hot), or a late "closed" write landing
- * after the restore's "serving" (the lease race, #1326). Once dispatch's
- * cache has turned over since the first 200, the page shows what HOSTS
- * holds: still 200, with no delete or suspend job on the install after the
- * restore, is infra; a 503 or such a job is a product failure. No retry.
+ * after the restore's "serving" (the lease race, #1326). At least 60 s
+ * after the last 200, dispatch's cache has turned over, so the page shows
+ * what HOSTS holds: still 200, with no delete or suspend job on the install
+ * after the restore, is infra; a 503 or such a job is a product failure. No
+ * retry.
  *
- * O can't read the hosts audit rows (R17 gives it its own api rows only),
- * so a later write shows only through the page and R14.
+ * O can't read the hosts audit rows (R17 gives it its own api rows only), so
+ * a later write shows only through the page and R14; every message names the
+ * install and job ids for an admin's query_audit.
  */
 export async function servingLag(
   run: Run,
   o: {
     installId: string;
     appHost: string;
-    /** When the app host first answered 200 after the restore. */
-    firstOk: number;
+    /** When the app host last answered 200 after the restore. */
+    lastOk: number;
     /** The inventory's last mode. */
     mode: string | null;
     deleteJobId: string;
     restore: Job;
   },
 ): Promise<InfraError | ProbeFail> {
-  const left = o.firstOk + DISPATCH_HOSTS_TTL_MS - run.io.now();
+  const left = o.lastOk + DISPATCH_HOSTS_TTL_MS - run.io.now();
   if (left > 0) await run.io.wait(left);
-  const since = Math.round((run.io.now() - o.firstOk) / 1000);
+  const since = Math.round((run.io.now() - o.lastOk) / 1000);
   const pg = (await run.page(o.appHost, "/healthz", true)).status;
   const jobs = await run.v1(`/installs/${o.installId}/jobs`, { read: true });
-  const values = `inventory mode ${o.mode} after ${HOSTS_SETTLE_MS / 1000} s, app host page ${pg} ${since} s after its first 200`;
+  const values = `inventory mode ${o.mode} after ${HOSTS_SETTLE_MS / 1000} s, app host page ${pg} ${since} s after its last 200`;
+  const audit = `the hosts audit isn't readable by O: query_audit installId ${o.installId} (restore job ${o.restore.id}, delete job ${o.deleteJobId})`;
   if (jobs.status !== 200)
     return new ProbeFail(
-      `P22: ${values}; R14 jobs unreadable (${desc(jobs)}), so a late closed write (#1326 ${ISSUE_1326}) isn't ruled out`,
+      `P22: ${values}; R14 jobs unreadable (${desc(jobs)}), so a late closed write (#1326 ${ISSUE_1326}) isn't ruled out; ${audit}`,
     );
   const items = (jobs.json as { items?: Job[] } | undefined)?.items ?? [];
   const later = items.filter(
@@ -507,10 +510,10 @@ export async function servingLag(
   );
   if (pg === 200 && later.length === 0)
     return new InfraError(
-      `P22: KV propagation at the inventory location: ${values}; no delete or suspend job after the restore`,
+      `P22: KV propagation at the inventory location: ${values}; no delete or suspend job after the restore; ${audit}`,
     );
   return new ProbeFail(
-    `P22: a late closed write (#1326 ${ISSUE_1326}): ${values}; ${later.length} delete or suspend job(s) after the restore`,
+    `P22: a late closed write (#1326 ${ISSUE_1326}): ${values}; ${later.length} delete or suspend job(s) after the restore; ${audit}`,
   );
 }
 
@@ -1745,10 +1748,10 @@ export const PROBES: readonly Probe[] = [
         "P22 restore",
       );
       const restore = await run.done(r.job.id, "P22 restore");
-      let firstOk = 0;
+      let lastOk = 0;
       await run.within(PAGE_WITHIN_MS, "P22 serving", async () => {
         if ((await run.page(p.appHost)).status !== 200) return false;
-        firstOk = run.io.now();
+        lastOk = run.io.now();
         return true;
       });
       try {
@@ -1758,7 +1761,7 @@ export const PROBES: readonly Probe[] = [
         throw await servingLag(run, {
           installId: p.id,
           appHost: p.appHost,
-          firstOk,
+          lastOk,
           mode: e.mode,
           deleteJobId: d.job.id,
           restore,

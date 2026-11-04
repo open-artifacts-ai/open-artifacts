@@ -673,7 +673,7 @@ describe("each probe fails on the behaviour it guards", () => {
         const out = (await runAll(f)).get("P22");
         expect(level(out)).toBe("infra");
         expect(out).toMatch(
-          /^infra: P22: KV propagation at the inventory location: inventory mode closed after 120 s, app host page 200 \d+ s after its first 200; no delete or suspend job after the restore$/,
+          /^infra: P22: KV propagation at the inventory location: inventory mode closed after 120 s, app host page 200 \d+ s after its last 200; no delete or suspend job after the restore; the hosts audit isn't readable by O: query_audit installId i\w+ \(restore job \w+, delete job \w+\)$/,
         );
       });
 
@@ -688,6 +688,9 @@ describe("each probe fails on the behaviour it guards", () => {
         );
         expect(out).toContain("app host page 200");
         expect(out).toContain("1 delete or suspend job(s) after the restore");
+        expect(out).toMatch(
+          /; the hosts audit isn't readable by O: query_audit installId i\w+ \(restore job \w+, delete job \w+\)$/,
+        );
       });
 
       it("the page 503 on the re-check: a product failure linking #1326", async () => {
@@ -699,9 +702,10 @@ describe("each probe fails on the behaviour it guards", () => {
         expect(out).toContain("inventory mode closed after 120 s");
         expect(out).toContain("app host page 503");
         expect(out).toContain("0 delete or suspend job(s) after the restore");
+        expect(out).toContain("the hosts audit isn't readable by O");
       });
 
-      it("re-checks the page only once dispatch's 60 s cache has turned over since the first 200", async () => {
+      it("re-checks the page only once dispatch's 60 s cache has turned over since the last 200", async () => {
         const f = fakeApi();
         const run = new Run(CONFIG, f.io);
         const start = f.clock.t;
@@ -719,15 +723,18 @@ describe("each probe fails on the behaviour it guards", () => {
         const e = await servingLag(run, {
           installId: "i00000000001",
           appHost: "rl-l-x.open-artifacts-staging.app",
-          firstOk: start - 20_000,
+          lastOk: start - 20_000,
           mode: "closed",
           deleteJobId: "01DEL",
-          restore: { createdAt: 5 } as Job,
+          restore: { id: "01RES", createdAt: 5 } as Job,
         });
         expect(at).toEqual([start + 40_000]);
         expect(e).toBeInstanceOf(InfraError);
         expect(e.message).toContain(
-          "app host page 200 60 s after its first 200",
+          "app host page 200 60 s after its last 200",
+        );
+        expect(e.message).toContain(
+          "the hosts audit isn't readable by O: query_audit installId i00000000001 (restore job 01RES, delete job 01DEL)",
         );
       });
 
@@ -744,10 +751,10 @@ describe("each probe fails on the behaviour it guards", () => {
         const e = await servingLag(run, {
           installId: "i00000000001",
           appHost: "rl-l-x.open-artifacts-staging.app",
-          firstOk: f.clock.t - 120_000,
+          lastOk: f.clock.t - 120_000,
           mode: "closed",
           deleteJobId: "01DEL",
-          restore: { createdAt: 5 } as Job,
+          restore: { id: "01RES", createdAt: 5 } as Job,
         });
         expect(e).toBeInstanceOf(ProbeFail);
         expect(e.message).toMatch(/R14 jobs unreadable .*#1326/);
