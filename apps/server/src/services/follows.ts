@@ -103,15 +103,17 @@ function notice(
 // --------------------------------------------------------------- the rules
 
 /**
- * Who gets a `changed` notice: every follower who is a different member
- * from the publisher (design: "Follow and notices"). The one place this rule
- * lives; flipping it to "the publisher's other agents too" also needs the
- * publishing agent's bus address, which the publish path does not have.
+ * Who gets a `changed` notice: every follower, the publishing member
+ * included (the user's decision on #1292), so one person's agents on other
+ * machines hear each other's publishes. The one place this rule lives. The
+ * publish path has no bus address, so the agent that published, if it
+ * follows the artifact, is notified too. Read access is still re-checked
+ * per follower at send time.
  */
 export const shouldNotifyFollower = (
-  followerId: string,
-  publisherId: string,
-): boolean => followerId !== publisherId;
+  _followerId: string,
+  _publisherId: string,
+): boolean => true;
 
 /**
  * The member behind `userId` if they may hold a bus now (active, may connect
