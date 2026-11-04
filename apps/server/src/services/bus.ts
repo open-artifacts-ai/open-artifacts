@@ -15,14 +15,44 @@ export const BUS_HUB_TIMEOUT_MS = 2000;
 export const MAX_ACTIVE_MACHINES = 100;
 const MAX_LISTED = 100;
 
+/**
+ * #1350: what a closeAll means for the member's machines. "access": a
+ * transient change (a space role, a restore); the daemons reconnect within
+ * seconds. "revoked": the member can no longer connect (status, role, cap,
+ * erase, install suspend), so their machines never come back; the hub starts
+ * their offline clock and the 24 h reap closes their agents.
+ */
+export type BusCloseKind = "access" | "revoked";
+
+/**
+ * revokeUserLive reasons (and closeInstall's) that leave canConnect as it
+ * was: bus access is per member, never per space. Every other reason, and
+ * any new one, is "revoked": fails safe toward cleanup, and harmless for a
+ * transient change, since a reconnect clears the clock.
+ */
+const ACCESS_REASONS: ReadonlySet<string> = new Set([
+  "space role lowered",
+  "removed from space",
+  "artifacts transferred",
+  "member restored",
+  "member revived",
+]);
+
+export const busCloseKind = (reason: string): BusCloseKind =>
+  ACCESS_REASONS.has(reason) ? "access" : "revoked";
+
 /** What the Worker calls on a member's BusHub (bus/hub.ts), typed here so callers need not load the DO. */
 export type BusHubRpc = {
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(): Promise<{ connected: string[]; agents: BusAgent[] }>;
   /** Closes the machine's sockets and drains its agents; false when unknown or already revoked. */
   revokeMachine(id: string): Promise<boolean>;
-  /** Records revokedAt, then closes every daemon socket (4403). Returns how many. */
-  closeAll(reason: string): Promise<number>;
+  /**
+   * Records revokedAt, then closes every daemon socket (4403). Returns how
+   * many. "revoked" also starts the offline clock (#1350); the default kind
+   * is busCloseKind(reason).
+   */
+  closeAll(reason: string, kind?: BusCloseKind): Promise<number>;
   /** Closes every socket and deletes all of the hub's storage (erase). */
   wipe(): Promise<void>;
 };
@@ -231,5 +261,7 @@ export async function closeUserBus(
 ): Promise<number> {
   if (!env.BUS_HUB) return 0;
   if (!(await hasConnectedMachine(env, userId))) return 0;
-  return (await busHub(env, userId)?.closeAll(reason)) ?? 0;
+  return (
+    (await busHub(env, userId)?.closeAll(reason, busCloseKind(reason))) ?? 0
+  );
 }

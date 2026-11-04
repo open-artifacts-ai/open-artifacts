@@ -12,6 +12,7 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import type { ClientFrame, ServerFrame } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { BusHub, OFFLINE_REAP_MS, SWEEP_BATCH } from "../../src/bus/hub.js";
+import { busCloseKind } from "../../src/services/bus.js";
 import {
   type Daemon,
   daemon,
@@ -29,9 +30,10 @@ const inHub = async <R>(
   fn: (i: BusHub, s: DurableObjectState) => R,
   userId?: string,
 ) => runInDurableObject(await hubOf(userId), fn);
-const setClock = (ms: number | null) =>
-  inHub((i) => BusHub.setTestClock(i, ms));
-const runAlarm = async () => runDurableObjectAlarm(await hubOf());
+const setClock = (ms: number | null, userId?: string) =>
+  inHub((i) => BusHub.setTestClock(i, ms), userId);
+const runAlarm = async (userId?: string) =>
+  runDurableObjectAlarm(await hubOf(userId));
 const alarmAt = () => inHub((_, s) => s.storage.getAlarm());
 
 afterEach(async () => {
@@ -100,15 +102,17 @@ const disconnectedAt = (machineId: string, userId?: string) =>
     return r === undefined ? undefined : (r.t as number | null);
   }, userId);
 
-const liveOf = (machineId: string) =>
-  inHub((_, s) =>
-    s.storage.sql
-      .exec(
-        "select name from agents where machine_id = ? and live = 1 order by name",
-        machineId,
-      )
-      .toArray()
-      .map((r) => String(r.name)),
+const liveOf = (machineId: string, userId?: string) =>
+  inHub(
+    (_, s) =>
+      s.storage.sql
+        .exec(
+          "select name from agents where machine_id = ? and live = 1 order by name",
+          machineId,
+        )
+        .toArray()
+        .map((r) => String(r.name)),
+    userId,
   );
 
 /** Closes the daemon and waits until the hub has recorded the machine offline. */
@@ -128,12 +132,12 @@ async function goOffline(
 }
 
 /** Runs the alarm at hub time `t` (armed first, so it always runs). */
-async function alarmAtTime(t: number): Promise<void> {
-  await setClock(t);
+async function alarmAtTime(t: number, userId?: string): Promise<void> {
+  await setClock(t, userId);
   await inHub(async (_, s) => {
     if ((await s.storage.getAlarm()) === null) await s.storage.setAlarm(t);
-  });
-  await runAlarm();
+  }, userId);
+  await runAlarm(userId);
 }
 
 describe("offline reap (open-bus #422)", () => {
@@ -397,5 +401,83 @@ describe("offline reap (open-bus #422)", () => {
     const d = await connect(m.token);
     await reg(d, "z", uniq("Wiped"), ns("wiped"));
     expect(await goOffline(d, m.id, who.userId)).toEqual(expect.any(Number));
+  });
+});
+
+// #1350: closeAll runs for a transient access change (the daemon reconnects
+// in seconds) and for a revocation (its machines never come back). Only a
+// revocation starts the offline clock. Each test uses its own member's hub:
+// closeAll writes revokedAt, which would refuse the owner hub's later connects.
+describe("closeAll and the offline clock (#1350)", () => {
+  /** A member's hub with one machine and one live agent; hub time `t0`. */
+  async function setup(tag: string) {
+    const who = await member();
+    const uid = who.userId;
+    // Behind real time: a reconnect after closeAll is authorized past
+    // revokedAt + SKEW_MS.
+    const t0 = Date.now() - 60_000;
+    const m = await machine(tag, uid);
+    const d = await connect(m.token);
+    const name = await reg(d, "c", uniq(tag), ns(tag.toLowerCase()));
+    await setClock(t0, uid);
+    return { uid, t0, m, d, name, stub: await hubOf(uid) };
+  }
+
+  it('closeAll "access" leaves the clock unset; a reconnect reaps nothing', async () => {
+    const { uid, t0, m, d, name, stub } = await setup("Access");
+    expect(await stub.closeAll("space role lowered", "access")).toBe(1);
+    expect((await d.closed).code).toBe(4403);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await disconnectedAt(m.id, uid)).toBeNull();
+    const d2 = await connect(m.token);
+    await alarmAtTime(t0 + 2 * OFFLINE_REAP_MS, uid);
+    expect(await liveOf(m.id, uid)).toEqual([name]);
+    expect(await disconnectedAt(m.id, uid)).toBeNull();
+    d2.close();
+  });
+
+  it('closeAll "revoked" starts the clock; the agents are reaped at 24 h, not before', async () => {
+    const { uid, t0, m, d, name, stub } = await setup("Revoked");
+    expect(await stub.closeAll("user suspended", "revoked")).toBe(1);
+    expect((await d.closed).code).toBe(4403);
+    expect(await disconnectedAt(m.id, uid)).toBe(t0);
+    const at = await inHub((_, s) => s.storage.getAlarm(), uid);
+    expect(at).not.toBeNull();
+    expect(at as number).toBeLessThanOrEqual(t0 + OFFLINE_REAP_MS);
+    await alarmAtTime(t0 + OFFLINE_REAP_MS - 1, uid);
+    expect(await liveOf(m.id, uid)).toEqual([name]);
+    await alarmAtTime(t0 + OFFLINE_REAP_MS, uid);
+    expect(await liveOf(m.id, uid)).toEqual([]);
+  });
+
+  it("closeAll with no kind follows the reason: transient ones are access, the rest revoked", async () => {
+    expect(busCloseKind("space role lowered")).toBe("access");
+    expect(busCloseKind("removed from space")).toBe("access");
+    expect(busCloseKind("artifacts transferred")).toBe("access");
+    expect(busCloseKind("member restored")).toBe("access");
+    expect(busCloseKind("member revived")).toBe("access");
+    for (const r of [
+      "user suspended",
+      "role changed",
+      "restricted",
+      "member erased",
+      "guest removed",
+      "identity reset",
+      "directory delete",
+      "suspended",
+      "anything new",
+    ])
+      expect(busCloseKind(r)).toBe("revoked");
+    const { uid, t0, m, stub } = await setup("Default");
+    await stub.closeAll("suspended");
+    expect(await disconnectedAt(m.id, uid)).toBe(t0);
+  });
+
+  it("revokeMachine closes the machine's agents at once, never waiting for the reap", async () => {
+    const { uid, m, d, stub } = await setup("Gone");
+    expect(await stub.revokeMachine(m.id)).toBe(true);
+    expect((await d.closed).code).toBe(4403);
+    expect(await liveOf(m.id, uid)).toEqual([]);
+    expect(await disconnectedAt(m.id, uid)).toBeNull();
   });
 });

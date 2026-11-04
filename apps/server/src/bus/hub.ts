@@ -27,7 +27,11 @@ import type { BusAgent } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logError, logInfo } from "../log.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
-import { MAX_ACTIVE_MACHINES } from "../services/bus.js";
+import {
+  type BusCloseKind,
+  busCloseKind,
+  MAX_ACTIVE_MACHINES,
+} from "../services/bus.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
@@ -1677,7 +1681,10 @@ export class BusHub extends DurableObject<Env> {
     logEvent("wiped");
   }
 
-  async closeAll(reason: string): Promise<number> {
+  async closeAll(
+    reason: string,
+    kind: BusCloseKind = busCloseKind(reason),
+  ): Promise<number> {
     const now = this.#now();
     this.ctx.storage.sql.exec(
       `insert into meta (org_id, key, value) values (?, ?, ?)
@@ -1701,9 +1708,20 @@ export class BusHub extends DurableObject<Env> {
       closeSocket(ws, LIMITS.revokeCloseCode, "access changed");
       n++;
     }
+    // #1350: a revocation's machines never come back: their offline clock
+    // starts now (the sockets above are marked, so none counts as online),
+    // and the 24 h reap closes their agents. Not at once: queued mail keeps
+    // its TTL. A transient access change ("access") leaves it unset; the
+    // daemons reconnect within seconds.
+    if (kind !== "access") {
+      this.#markOfflineMachines(now);
+      const at = this.#offlineReapDeadline();
+      if (at !== null) this.#arm(at);
+      await this.#commitArm();
+    }
     // `reason` is a fixed string from the caller; not logged (ids and counts only).
     void reason;
-    logEvent("close_all", { closed: n });
+    logEvent("close_all", { closed: n, kind });
     return n;
   }
 
