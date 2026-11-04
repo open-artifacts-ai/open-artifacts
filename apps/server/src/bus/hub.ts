@@ -33,6 +33,11 @@ import type { BusAgent } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logError, logInfo } from "../log.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
+import {
+  type BusCloseKind,
+  busCloseKind,
+  MAX_ACTIVE_MACHINES,
+} from "../services/bus.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
@@ -1639,6 +1644,22 @@ const CLOSE_PREFIX = "close_drain:";
  */
 export const CLOSE_INLINE_BATCH = 10;
 const CLOSE_END = "close_drain;";
+/**
+ * open-bus #422: a machine with no daemon socket for this long has its live
+ * agents closed by the alarm, as agent_down closes one. Safe: a reconnecting
+ * daemon re-sends agent_up for every session it still has (bus-daemon
+ * onOpen), and queued mail (LIMITS.mailTtlSec) has long expired by then.
+ */
+export const OFFLINE_REAP_MS = 24 * HOUR_MS;
+/** Active machines that have live agents and an offline time, due first. */
+const OFFLINE_DUE_SQL = `select id from machines
+  where org_id = ? and revoked_at is null and disconnected_at is not null
+    and disconnected_at <= ?
+    and exists (select 1 from agents where agents.machine_id = machines.id and agents.live = 1)
+  order by disconnected_at limit ?`;
+/** Active machines with live agents and an offline time (the wake check, the deadline). */
+const OFFLINE_LIVE_WHERE = `org_id = ? and revoked_at is null and disconnected_at is not null
+    and exists (select 1 from agents where agents.machine_id = machines.id and agents.live = 1)`;
 /** Final receipts are kept this long after the sender was told (or, untold, past expiry). */
 const RETAIN_MS = 24 * HOUR_MS;
 /**
@@ -1791,10 +1812,12 @@ export class BusHub extends DurableObject<Env> {
 
   /**
    * On wake, when work exists (pending mail, a stored body or an untold
-   * final receipt) but no alarm is set, arm for its earliest deadline. One
+   * final receipt), arm for its earliest deadline unless an earlier alarm is
+   * set. One
    * indexed exists query; covers hubs whose rows never armed (B6-era).
    */
   async #armOnWake(): Promise<void> {
+    this.#markOfflineMachines(this.#now());
     const work = one<{ x: number }>(
       this.ctx.storage.sql,
       `select (exists (select 1 from receipts where state = 'pending')
@@ -1805,8 +1828,10 @@ export class BusHub extends DurableObject<Env> {
             or exists (select 1 from agents indexed by agents_status_due where status_due is not null)
             or exists (select 1 from former_names)
             or exists (select 1 from rename_rl)
+            or exists (select 1 from machines where ${OFFLINE_LIVE_WHERE})
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)) as x`,
+      OWNER_ORG_ID,
       OWNER_ORG_ID,
       DRAIN_PREFIX,
       DRAIN_END,
@@ -1815,10 +1840,11 @@ export class BusHub extends DurableObject<Env> {
       CLOSE_END,
     );
     if (!work?.x) return;
-    if ((await this.ctx.storage.getAlarm()) !== null) return;
+    // Arms the earliest deadline even when a later alarm is set (a reap
+    // deadline just started counting can be earlier than it).
     const at = this.#nextDeadline(null);
-    const t = at === null ? null : alarmTime(Math.max(at, this.#now() + 1));
-    if (t !== null) await this.ctx.storage.setAlarm(t);
+    if (at !== null) this.#arm(Math.max(at, this.#now() + 1));
+    await this.#commitArm();
   }
 
   /**
@@ -1969,7 +1995,10 @@ export class BusHub extends DurableObject<Env> {
     logEvent("wiped");
   }
 
-  async closeAll(reason: string): Promise<number> {
+  async closeAll(
+    reason: string,
+    kind: BusCloseKind = busCloseKind(reason),
+  ): Promise<number> {
     const now = this.#now();
     this.ctx.storage.sql.exec(
       `insert into meta (org_id, key, value) values (?, ?, ?)
@@ -1993,9 +2022,20 @@ export class BusHub extends DurableObject<Env> {
       closeSocket(ws, LIMITS.revokeCloseCode, "access changed");
       n++;
     }
+    // #1350: a revocation's machines never come back: their offline clock
+    // starts now (the sockets above are marked, so none counts as online),
+    // and the 24 h reap closes their agents. Not at once: queued mail keeps
+    // its TTL. A transient access change ("access") leaves it unset; the
+    // daemons reconnect within seconds.
+    if (kind !== "access") {
+      this.#markOfflineMachines(now);
+      const at = this.#offlineReapDeadline();
+      if (at !== null) this.#arm(at);
+      await this.#commitArm();
+    }
     // `reason` is a fixed string from the caller; not logged (ids and counts only).
     void reason;
-    logEvent("close_all", { closed: n });
+    logEvent("close_all", { closed: n, kind });
     return n;
   }
 
@@ -2153,6 +2193,11 @@ export class BusHub extends DurableObject<Env> {
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [DAEMON_TAG, machineId]);
     server.serializeAttachment({ machineId } satisfies Attachment);
+    // open-bus #422: online again; the offline clock stops.
+    this.ctx.storage.sql.exec(
+      "update machines set disconnected_at = null where id = ? and disconnected_at is not null",
+      machineId,
+    );
     // The machine's open agents flip from queued to live.
     if (!wasOnline)
       notifyRoster(
@@ -2579,7 +2624,123 @@ export class BusHub extends DurableObject<Env> {
     const machineId = machineOf(ws);
     if (!machineId || isReplaced(ws)) return;
     if (machineOnline(this.ctx, machineId, ws)) return;
-    notifyRoster(this.ctx, machineChange(this.ctx.storage.sql, machineId), ws);
+    const sql = this.ctx.storage.sql;
+    const change = machineChange(sql, machineId);
+    // open-bus #422: the offline clock starts (kept if already running); the
+    // reap deadline is armed only when there is something to reap.
+    sql.exec(
+      "update machines set disconnected_at = ? where id = ? and org_id = ? and revoked_at is null and disconnected_at is null",
+      this.#now(),
+      machineId,
+      OWNER_ORG_ID,
+    );
+    if (change.namespaces.length > 0) {
+      const since =
+        one<{ t: number | null }>(
+          sql,
+          "select disconnected_at as t from machines where id = ?",
+          machineId,
+        )?.t ?? null;
+      if (since !== null) this.#arm(since + OFFLINE_REAP_MS);
+    }
+    notifyRoster(this.ctx, change, ws);
+  }
+
+  /**
+   * open-bus #422: starts the offline clock (now) for every active machine
+   * with live agents, no open socket and none running: a hub that predates
+   * the column, or a close the hub never heard (an eviction or deploy drops
+   * sockets without a close; the hub then wakes here). Counting from now
+   * means a deploy never reaps at once. Run on wake only; bounded by
+   * MAX_ACTIVE_MACHINES.
+   */
+  #markOfflineMachines(now: number): void {
+    const sql = this.ctx.storage.sql;
+    const rows = all<{ id: string }>(
+      sql,
+      `select id from machines
+        where org_id = ? and revoked_at is null and disconnected_at is null
+          and exists (select 1 from agents where agents.machine_id = machines.id and agents.live = 1)
+        limit ?`,
+      OWNER_ORG_ID,
+      MAX_ACTIVE_MACHINES,
+    );
+    for (const r of rows) {
+      if (machineOnline(this.ctx, r.id)) continue;
+      sql.exec(
+        "update machines set disconnected_at = ? where id = ? and disconnected_at is null",
+        now,
+        r.id,
+      );
+    }
+  }
+
+  /** open-bus #422: the earliest offline reap deadline, scoped as OFFLINE_DUE_SQL; null if none. */
+  #offlineReapDeadline(): number | null {
+    const t =
+      one<{ t: number | null }>(
+        this.ctx.storage.sql,
+        `select min(disconnected_at) as t from machines where ${OFFLINE_LIVE_WHERE}`,
+        OWNER_ORG_ID,
+      )?.t ?? null;
+    return t === null ? null : t + OFFLINE_REAP_MS;
+  }
+
+  /**
+   * open-bus #422: closes the live agents of machines offline past
+   * OFFLINE_REAP_MS, at most BATCH agents per call, exactly as agent_down
+   * closes one (live = 0, last_name, status cleared, #closeSessions expires
+   * pending mail as recipient_closed and queues the rest), then tells the
+   * roster and dashboards. A due machine that is online after all (a missed
+   * clear) only has its clock cleared. True if the batch was full (the
+   * caller re-arms at now + 1).
+   */
+  #reapOffline(now: number): boolean {
+    const sql = this.ctx.storage.sql;
+    const due = all<{ id: string }>(
+      sql,
+      OFFLINE_DUE_SQL,
+      OWNER_ORG_ID,
+      now - OFFLINE_REAP_MS,
+      BATCH,
+    );
+    let budget = BATCH;
+    const change: RosterChange = { namespaces: [], global: false };
+    const closed: string[] = [];
+    for (const m of due) {
+      if (budget === 0) break;
+      if (machineOnline(this.ctx, m.id)) {
+        sql.exec(
+          "update machines set disconnected_at = null where id = ?",
+          m.id,
+        );
+        continue;
+      }
+      const rows = all<{ id: string; namespace: string; global: number }>(
+        sql,
+        `update agents set live = 0, last_name = name, updated_at = ?, ${STATUS_CLEAR}
+          where rowid in (select rowid from agents where machine_id = ? and live = 1 and org_id = ? limit ?)
+         returning id, namespace, global`,
+        now,
+        m.id,
+        OWNER_ORG_ID,
+        budget,
+      );
+      budget -= rows.length;
+      for (const a of rows) {
+        closed.push(a.id);
+        change.namespaces.push(a.namespace);
+        if (a.global === 1) change.global = true;
+      }
+      logEvent("machine_offline_reaped", {
+        machineId: m.id,
+        agents: rows.length,
+      });
+    }
+    if (closed.length === 0) return false;
+    this.#closeSessions(closed);
+    notifyRoster(this.ctx, change);
+    return budget === 0;
   }
 
   // -------------------------------------------------------------------- mail
@@ -3428,6 +3589,11 @@ export class BusHub extends DurableObject<Env> {
     for (const r of lost)
       if (!this.#held.has(r.id)) this.#expire(r.id, r.fromAgent);
 
+    // 2a. open-bus #422: machines offline past OFFLINE_REAP_MS have their
+    // agents closed (before the close drain, which takes their leftover mail).
+    // One with no clock yet started counting at the wake (#armOnWake).
+    if (this.#reapOffline(now)) more = true;
+
     // 2b. Revoked machines' inboxes that did not fit revokeMachine's batch,
     // before TTL so their receipts keep the `revoked` reason (B9 L2).
     if (this.#drainRevoked()) more = true;
@@ -3539,6 +3705,7 @@ export class BusHub extends DurableObject<Env> {
       nextStatusDue(sql),
       min("select min(expires_at) as t from former_names"),
       min("select min(at) as t from rename_rl", HOUR_MS),
+      this.#offlineReapDeadline(),
     ].filter((t): t is number => t !== null);
     return ts.length === 0 ? null : Math.min(...ts);
   }

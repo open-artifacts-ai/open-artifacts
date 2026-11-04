@@ -2,7 +2,11 @@ import { DurableObject } from "cloudflare:workers";
 import { LIMITS } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logError } from "../log.js";
-import { closeUserBus } from "../services/bus.js";
+import {
+  type BusCloseKind,
+  busCloseKind,
+  closeUserBus,
+} from "../services/bus.js";
 
 /** A socket lives at most this long (the ArtifactRuntime TTL, 4408 after it). */
 const SOCKET_TTL_MS = LIMITS.signedUrlTtlSec * 1000;
@@ -144,9 +148,9 @@ export class UserPresence extends DurableObject<Env> {
       const bus = env.BUS_HUB;
       if (!bus || actor !== null) return Promise.resolve(0);
       const hub = bus.get(bus.idFromName(artifactId)) as unknown as {
-        closeAll(reason: string): Promise<number>;
+        closeAll(reason: string, kind: BusCloseKind): Promise<number>;
       };
-      return hub.closeAll(reason);
+      return hub.closeAll(reason, busCloseKind(reason));
     }
     const ns = env.ARTIFACT_RUNTIME;
     const s = ns.get(ns.idFromName(artifactId)) as unknown as ActorCloser;

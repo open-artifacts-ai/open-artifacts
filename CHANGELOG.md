@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.113.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.112.0...v0.113.0) (2026-11-04)
+
+
+### Features
+
+* **server:** close BusHub agents of a machine offline for over 24 h (port of open-bus [#442](https://github.com/open-artifacts-ai/open-artifacts/issues/442)) ([#1350](https://github.com/open-artifacts-ai/open-artifacts/issues/1350)) ([41ee900](https://github.com/open-artifacts-ai/open-artifacts/commit/41ee900dc78025a5befd3539ba3643bd838dd635))
+
+## [0.112.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.111.0...v0.112.0) (2026-11-04)
+
+
+### Features
+
+* **ci:** automatic prod release chain, off until reviewed ([#1343](https://github.com/open-artifacts-ai/open-artifacts/issues/1343)) ([#1347](https://github.com/open-artifacts-ai/open-artifacts/issues/1347)) ([bb4ad76](https://github.com/open-artifacts-ai/open-artifacts/commit/bb4ad763e91b48d3c8585aa53c2436590466afcd))
+* **server:** BusHub renames, former names and name_kind (OpenBus R393b, [#1325](https://github.com/open-artifacts-ai/open-artifacts/issues/1325)) ([#1337](https://github.com/open-artifacts-ai/open-artifacts/issues/1337)) ([5693bae](https://github.com/open-artifacts-ai/open-artifacts/commit/5693bae221f98da57eed6b8d0f591748a22fbe16))
+
 ## [0.111.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.110.0...v0.111.0) (2026-11-04)
 
 
