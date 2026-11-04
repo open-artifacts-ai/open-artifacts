@@ -35,6 +35,8 @@ export interface ProvapiEnv {
   FLEET_SECOND?: string;
   /** The canary smoke: "off" (the passive soak) or "required"; else required. */
   FLEET_SMOKE?: string;
+  /** The passive soak in minutes with FLEET_SMOKE "off"; unset is 15. */
+  FLEET_SOAK_MIN?: string;
   /** smoke-a's PAT on the canary (secret, #1343 smoke.ts); unset: never smoked. */
   FLEET_SMOKE_TOKEN?: string;
   /** The smoke's share target, an existing canary member (secret); empty skips the share. */

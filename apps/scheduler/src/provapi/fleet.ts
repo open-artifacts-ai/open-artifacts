@@ -63,20 +63,33 @@ export const FLEET_CONCURRENCY = 3;
 export const FLEET_SOAK_MS = 2 * 60_000;
 /**
  * With the smoke off (FLEET_SMOKE "off"): the passive soak as before #1343's
- * smoke, unbroken passing probes this long, and no smoke.
+ * smoke, FLEET_SOAK_MIN minutes per env (staging 15, prod 60), and no smoke.
+ * This is the soak with FLEET_SOAK_MIN unset.
  */
 export const FLEET_SOAK_OFF_MS = 15 * 60_000;
+/** FLEET_SOAK_MIN's bound, in minutes. */
+export const FLEET_SOAK_MIN_MAX = 24 * 60;
 
 /**
- * FLEET_SMOKE, per env: "off" keeps the passive soak (FLEET_SOAK_OFF_MS) and
+ * FLEET_SOAK_MIN as milliseconds, for FLEET_SMOKE "off": unset or empty is
+ * FLEET_SOAK_OFF_MS; a whole number of minutes from 1 to FLEET_SOAK_MIN_MAX
+ * is that; anything else is the longest soak, so a typo never shortens it.
+ */
+export function fleetSoakOffMs(v: string | undefined): number {
+  const s = v?.trim() ?? "";
+  if (s === "") return FLEET_SOAK_OFF_MS;
+  const n = /^[1-9]\d{0,3}$/.test(s) ? Number(s) : Number.NaN;
+  return n <= FLEET_SOAK_MIN_MAX ? n * 60_000 : FLEET_SOAK_MIN_MAX * 60_000;
+}
+
+/**
+ * FLEET_SMOKE, per env: "off" keeps the passive soak (FLEET_SOAK_MIN) and
  * runs no smoke; "required" settles (FLEET_SOAK_MS) and must pass the smoke.
  * Anything else, unset included, is "required": a typo never skips it.
  */
 export type SmokeMode = "required" | "off";
 export const fleetSmokeMode = (v: string | undefined): SmokeMode =>
   v?.trim() === "off" ? "off" : "required";
-const soakOf = (m: SmokeMode) =>
-  m === "off" ? FLEET_SOAK_OFF_MS : FLEET_SOAK_MS;
 /** Passes further apart than this aren't unbroken: the clock restarts. */
 export const FLEET_SOAK_GAP_MS = 5 * 60_000;
 /** The canary isn't settled and smoked on the target this long: fleet_halted opens. */
@@ -487,7 +500,7 @@ export async function fleetDue(
     canary,
     probe,
     ms,
-    soakOf(mode),
+    mode === "off" ? fleetSoakOffMs(env.FLEET_SOAK_MIN) : FLEET_SOAK_MS,
   );
   if (canaryId === null) {
     console.log("provapi fleet no_canary");

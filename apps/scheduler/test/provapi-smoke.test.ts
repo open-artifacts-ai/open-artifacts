@@ -582,4 +582,21 @@ describe("the canary smoke", () => {
     });
     expect(live(c)).toEqual([]);
   });
+
+  it("the configured target in smoke-a's own domain passes the guard and is shared", async () => {
+    // On prod: the owner's own canary account, on smoke-a's domain.
+    const owner = "owner@example.test";
+    const c = canary();
+    expect((await smoke(input(c, { shareTo: owner }))).ok).toBe(true);
+    expect(
+      c.calls.filter((x) => x.method === "PUT" && x.path.endsWith("/shares")),
+    ).toHaveLength(1);
+    expect(
+      c.calls.some(
+        (x) =>
+          x.method === "DELETE" &&
+          x.path.endsWith(`/shares/${encodeURIComponent(owner)}`),
+      ),
+    ).toBe(true);
+  });
 });

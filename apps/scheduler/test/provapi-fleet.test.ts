@@ -26,6 +26,7 @@ import {
   FLEET_SKEW_MS,
   FLEET_SMOKED_PREFIX,
   FLEET_SOAK_GAP_MS,
+  FLEET_SOAK_MIN_MAX,
   FLEET_SOAK_MS,
   FLEET_SOAK_OFF_MS,
   FLEET_SOAKED_PREFIX,
@@ -34,6 +35,7 @@ import {
   fleetRequestId,
   fleetSecond,
   fleetSmokeMode,
+  fleetSoakOffMs,
   fleetTarget,
   onTarget,
 } from "../src/provapi/fleet.js";
@@ -2466,5 +2468,42 @@ describe("#1343: the smoke mark is the canary's own", () => {
     expect(await stateKeys(`${FLEET_BLOCKED_PREFIX}${TARGET}`)).toEqual([
       `${FLEET_BLOCKED_PREFIX}${TARGET}`,
     ]);
+  });
+});
+
+describe("#1343: FLEET_SMOKE off follows the per-env FLEET_SOAK_MIN", () => {
+  it("parses: unset is 15 minutes, whole minutes 1 to the max, else the longest soak", () => {
+    expect(fleetSoakOffMs(undefined)).toBe(FLEET_SOAK_OFF_MS);
+    expect(FLEET_SOAK_OFF_MS).toBe(15 * MIN);
+    expect(fleetSoakOffMs("")).toBe(15 * MIN);
+    expect(fleetSoakOffMs("60")).toBe(60 * MIN);
+    expect(fleetSoakOffMs(" 15 ")).toBe(15 * MIN);
+    for (const v of ["0", "-5", "6O", "60.5", "060", "99999"])
+      expect(fleetSoakOffMs(v), v).toBe(FLEET_SOAK_MIN_MAX * MIN);
+  });
+
+  it("off with prod's 60: the canary soaks 60 minutes, not 15", async () => {
+    const canary = await on(TARGET, { created: 0 });
+    await fleetJob(canary, { finished_at: NOW - MIN });
+    const rest = await on("0.92.0", { created: 5 });
+    const f = fakes({ canary });
+    Object.assign(f.env, { FLEET_SMOKE: "off", FLEET_SOAK_MIN: "60" });
+    await ticks(f, NOW, NOW + 60 * MIN - 2 * MIN);
+    expect(await queued()).toEqual([]);
+    await fleetDue(f.env, NOW + 60 * MIN, f.opts);
+    expect(await queued()).toEqual([rest]);
+    expect(f.smokes).toEqual([]);
+  });
+
+  it("required ignores FLEET_SOAK_MIN: the 2-minute settle and the smoke", async () => {
+    const canary = await on(TARGET, { created: 0 });
+    await fleetJob(canary, { finished_at: NOW - MIN });
+    const rest = await on("0.92.0", { created: 5 });
+    const f = fakes({ canary });
+    Object.assign(f.env, { FLEET_SMOKE: "required", FLEET_SOAK_MIN: "60" });
+    await fleetDue(f.env, NOW, f.opts);
+    await fleetDue(f.env, NOW + FLEET_SOAK_MS, f.opts);
+    expect(f.smokes).toHaveLength(1);
+    expect(await queued()).toEqual([rest]);
   });
 });
