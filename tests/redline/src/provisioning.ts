@@ -467,14 +467,22 @@ export const ISSUE_1326 =
  * kept reading another mode for HOSTS_SETTLE_MS. Two causes look alike: KV
  * staleness at the inventory's location (its read is cached too, and the
  * probe's polling keeps that cache hot), or a late "closed" write landing
- * after the restore's "serving" (the lease race, #1326). At least 60 s
- * after the last 200, dispatch's cache has turned over, so the page shows
- * what HOSTS holds: still 200, with no delete or suspend job on the install
- * after the restore, is infra; a 503 or such a job is a product failure. No
- * retry.
+ * after the restore's "serving" (the lease race, #1326).
+ *
+ * The app host stands in for both hosts (one write sets both HOSTS keys).
+ * The first re-check runs no earlier than 60 s after the last 200, which in
+ * the probe has already passed (the settle took 120 s), so it reads whatever
+ * dispatch's cache holds now. The second runs DISPATCH_HOSTS_TTL_MS after the
+ * first, so that cache has turned over at least once in between: a "closed"
+ * written before the first re-check shows as a 503 by the second. Infra needs
+ * 200 both times, no delete or suspend job accepted after the restore (R14),
+ * and the delete job itself (R15) run once, with no failure recorded,
+ * finished before the restore was accepted. Anything else, or an unreadable
+ * R14 or R15, fails linking #1326. No retry; the waits are bounded (at most
+ * two TTLs) and go through run.io.wait.
  *
  * O can't read the hosts audit rows (R17 gives it its own api rows only), so
- * a later write shows only through the page and R14; every message names the
+ * nothing here rules a zombie write out for certain: every message names the
  * install and job ids for an admin's query_audit.
  */
 export async function servingLag(
@@ -491,29 +499,40 @@ export async function servingLag(
   },
 ): Promise<InfraError | ProbeFail> {
   const left = o.lastOk + DISPATCH_HOSTS_TTL_MS - run.io.now();
-  if (left > 0) await run.io.wait(left);
+  if (left > 0) await run.io.wait(Math.min(left, DISPATCH_HOSTS_TTL_MS));
   const since = Math.round((run.io.now() - o.lastOk) / 1000);
-  const pg = (await run.page(o.appHost, "/healthz", true)).status;
-  const jobs = await run.v1(`/installs/${o.installId}/jobs`, { read: true });
-  const values = `inventory mode ${o.mode} after ${HOSTS_SETTLE_MS / 1000} s, app host page ${pg} ${since} s after its last 200`;
+  const pg1 = (await run.page(o.appHost, "/healthz", true)).status;
+  await run.io.wait(DISPATCH_HOSTS_TTL_MS);
+  const pg2 = (await run.page(o.appHost, "/healthz", true)).status;
+  const values = `inventory mode ${o.mode} after ${HOSTS_SETTLE_MS / 1000} s, app host page ${pg1} ${since} s after its last 200 and ${pg2} ${DISPATCH_HOSTS_TTL_MS / 1000} s later`;
   const audit = `the hosts audit isn't readable by O: query_audit installId ${o.installId} (restore job ${o.restore.id}, delete job ${o.deleteJobId})`;
-  if (jobs.status !== 200)
-    return new ProbeFail(
-      `P22: ${values}; R14 jobs unreadable (${desc(jobs)}), so a late closed write (#1326 ${ISSUE_1326}) isn't ruled out; ${audit}`,
+  const fail = (why: string) =>
+    new ProbeFail(
+      `P22: can't rule out a late closed write (#1326 ${ISSUE_1326}): ${values}; ${why}; ${audit}`,
     );
+  const jobs = await run.v1(`/installs/${o.installId}/jobs`, { read: true });
+  if (jobs.status !== 200) return fail(`R14 jobs unreadable (${desc(jobs)})`);
+  const del = await run.v1(`/jobs/${o.deleteJobId}`, { read: true });
+  if (del.status !== 200)
+    return fail(`R15 delete job unreadable (${desc(del)})`);
   const items = (jobs.json as { items?: Job[] } | undefined)?.items ?? [];
   const later = items.filter(
     (j) =>
       (j.kind === "delete" || j.kind === "suspend") &&
-      j.id !== o.deleteJobId &&
       j.createdAt > o.restore.createdAt,
-  );
-  if (pg === 200 && later.length === 0)
-    return new InfraError(
-      `P22: KV propagation at the inventory location: ${values}; no delete or suspend job after the restore; ${audit}`,
-    );
-  return new ProbeFail(
-    `P22: a late closed write (#1326 ${ISSUE_1326}): ${values}; ${later.length} delete or suspend job(s) after the restore; ${audit}`,
+  ).length;
+  const d = del.json as Job;
+  const why: string[] = [];
+  if (pg1 !== 200 || pg2 !== 200) why.push("the page isn't 200 both times");
+  if (later) why.push(`${later} delete or suspend job(s) after the restore`);
+  if (d.attempt > 1) why.push(`the delete job ran ${d.attempt} attempts`);
+  if (d.failure != null || d.lastErrorCode != null)
+    why.push("the delete job recorded a failure");
+  if (d.finishedAt === null || d.finishedAt > o.restore.createdAt)
+    why.push("the delete job didn't finish before the restore was accepted");
+  if (why.length) return fail(why.join(", "));
+  return new InfraError(
+    `P22: KV propagation at the inventory location, most likely: ${values}; no delete or suspend job after the restore, and the delete job ran once and finished before it; ${audit}`,
   );
 }
 

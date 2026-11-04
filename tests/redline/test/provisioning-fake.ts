@@ -84,6 +84,9 @@ interface FJob {
   sealedRead: boolean;
   onStep?: (step: string) => void;
   onDone?: () => void;
+  /** The fake clock at accept and at done or failed. */
+  createdAt: number;
+  finishedAt: number | null;
 }
 
 export type Fault =
@@ -304,9 +307,9 @@ export function fakeApi(): FakeApi {
     error:
       j.status === "failed" ? { code: j.failAt?.code, message: "x" } : null,
     sealed: withSealed ? j.sealed : null,
-    createdAt: 1,
-    startedAt: 1,
-    finishedAt: null,
+    createdAt: j.createdAt,
+    startedAt: j.createdAt,
+    finishedAt: j.finishedAt,
   });
   const startJob = (
     i: FInstall,
@@ -328,6 +331,8 @@ export function fakeApi(): FakeApi {
       args: {},
       sealed: null,
       sealedRead: false,
+      createdAt: clock.t,
+      finishedAt: null,
       ...extra,
     };
     jobs.set(j.id, j);
@@ -344,6 +349,7 @@ export function fakeApi(): FakeApi {
     const step = j.steps[j.stepIndex] as string;
     if (j.failAt?.step === step) {
       j.status = "failed";
+      j.finishedAt = clock.t;
       const i = installs.get(j.installId);
       if (i) {
         i.activeJobId = null;
@@ -356,6 +362,7 @@ export function fakeApi(): FakeApi {
     if (j.stepIndex >= j.steps.length - 1) {
       j.stepIndex = j.steps.length - 1;
       j.status = "done";
+      j.finishedAt = clock.t;
       const i = installs.get(j.installId);
       if (i) i.activeJobId = null;
       j.onDone?.();
