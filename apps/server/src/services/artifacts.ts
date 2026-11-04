@@ -60,6 +60,7 @@ import {
 } from "./agent-display.js";
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { audit, userActor } from "./audit.js";
+import { deleteFollowsStmt, notifyChanged } from "./follows.js";
 import { type ManifestEntry, materialize, planFiles } from "./manifest.js";
 import { getSettings } from "./members.js";
 import { ftsFilter, seedSearchStmt, syncTitleStmt } from "./search.js";
@@ -481,6 +482,8 @@ export async function publish(
     ctx,
     enqueueIndex(env, id, version, true, versionEvent(user, agent, now)),
   );
+  // #1292: followers' `changed` notices (a new artifact has none).
+  if (!create) await later(ctx, notifyChanged(env, id, version, user.id));
   mark();
   logPublishTiming(env, id, create, at);
   const warning = dataWritersWarning({
@@ -1340,6 +1343,8 @@ export async function restoreVersion(
     ctx,
     enqueueIndex(env, id, version, true, versionEvent(user, agent, now, v)),
   );
+  // #1292: a restore is a new version, so followers hear `changed`.
+  await later(ctx, notifyChanged(env, id, version, user.id));
   return { id, version, url: appOrigin(env) + viewerPath(id) };
 }
 
@@ -1589,6 +1594,9 @@ export async function softDelete(
         when: { sql: "changes() > 0", args: [] },
       },
     ),
+    // #1292: deleting an artifact deletes its follows; an undelete doesn't
+    // bring them back. After the audit row, which reads changes().
+    deleteFollowsStmt(env, id),
   ]);
   await closeRuntimeSockets(env, [id], "artifact deleted", ctx, "deleted");
 }
