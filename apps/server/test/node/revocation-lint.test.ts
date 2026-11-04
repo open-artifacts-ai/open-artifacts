@@ -141,7 +141,8 @@ const WIDENS: Readonly<Record<string, string>> = {
   // expired) in the BusHub, never a member's status.
   "bus/role-proposals.ts:expireProposals":
     "a role proposal's status, not access",
-  "bus/role-proposals.ts:decideProposal": "a role proposal's status, not access",
+  "bus/role-proposals.ts:decideProposal":
+    "a role proposal's status, not access",
 };
 
 /** Exempt from the scan: the primitives themselves. */
