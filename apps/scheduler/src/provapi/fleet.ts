@@ -426,11 +426,6 @@ export async function fleetDue(
 
   await haltFailedJobs(db, now, st, canaryId);
   await prune(db, now, st, target);
-  if (soakMs === null) {
-    // fleet_halted opens with bad_soak while a canary is set.
-    console.log("provapi fleet bad_soak");
-    return;
-  }
   if (target === null) {
     // With a canary set, fleet_halted opens for it (fleetConditions).
     console.log("provapi fleet no_target");
@@ -442,7 +437,23 @@ export async function fleetDue(
       : await d1(db.prepare(CANARY).bind(canaryId).first<CanaryRow>());
   // Runs with or without a canary: switching the rollout off never drops an
   // upgrade already made.
-  const hold = await watch(db, now, st, target, canary, probe, ms, soakMs);
+  // An invalid soak still watches, so a failing install still halts, but at
+  // the longest soak: a typo must never let an install soak early.
+  const hold = await watch(
+    db,
+    now,
+    st,
+    target,
+    canary,
+    probe,
+    ms,
+    soakMs ?? FLEET_SOAK_MIN_MAX * 60_000,
+  );
+  if (soakMs === null) {
+    // fleet_halted opens with bad_soak while a canary is set.
+    console.log("provapi fleet bad_soak");
+    return;
+  }
   if (canaryId === null) {
     console.log("provapi fleet no_canary");
     return;
@@ -480,7 +491,9 @@ export async function fleetDue(
     }>(),
   );
   // FLEET_SECOND first among those behind, and alone: the watch then holds
-  // the batches until it soaks, as it holds them for any batch.
+  // the batches until it soaks, as it holds them for any batch. If its insert
+  // doesn't land (its request id spent by a canceled job, or the guard
+  // refusing it), the batches go on without it: it can't stall the rollout.
   const below = (v: string) => {
     try {
       return compareVersions(v, target) < 0;
@@ -493,20 +506,23 @@ export async function fleetDue(
   );
   if (second !== undefined) {
     const broken = second.serving_mode !== "serving" || second.health !== "ok";
-    await upgrade(
-      env,
-      manage,
-      now,
-      second.install_id,
-      second.version,
-      target,
-      broken,
-    );
-    return;
+    if (
+      await upgrade(
+        env,
+        manage,
+        now,
+        second.install_id,
+        second.version,
+        target,
+        broken,
+      )
+    )
+      return;
   }
   let slots = FLEET_CONCURRENCY;
   for (const r of results) {
     if (slots <= 0) break;
+    if (r === second) continue;
     let below: boolean;
     try {
       below = compareVersions(r.version, target) < 0;

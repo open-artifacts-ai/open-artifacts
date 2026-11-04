@@ -2130,6 +2130,74 @@ describe("#1343: FLEET_SECOND and FLEET_SOAK_MIN", () => {
     expect((await fleetJobs()).map((r) => r.install_id)).not.toContain(rest);
   });
 
+  it("leo's job canceled before it landed: the batches still start", async () => {
+    const canary = await on(TARGET, { created: 0 });
+    await soaked(canary);
+    const old = [];
+    for (let i = 0; i < FLEET_CONCURRENCY + 1; i++)
+      old.push(await on("0.92.0", { created: 1 + i }));
+    const leo = await on("0.92.0", { created: 50 });
+    const f = fakes({ canary, second: leo });
+    await fleetDue(f.env, NOW, f.opts);
+    expect(await queued()).toEqual([leo]);
+    // R25 cancels it: its request id for the target is spent, and leo stays
+    // on 0.92.0. That's no failure of the release, and no halt.
+    const [j] = await fleetJobs();
+    await finish(j?.id, "failed", NOW + MIN, "canceled");
+    await ticks(f, NOW + 2 * MIN, NOW + 2 * 60 * MIN);
+    expect(await stateKeys("fleet_halt:")).toEqual([]);
+    expect(await queued()).toEqual(old.slice(0, FLEET_CONCURRENCY));
+    expect(
+      (await fleetJobs()).filter((r) => r.install_id === leo),
+    ).toHaveLength(1);
+  });
+
+  it("an invalid FLEET_SOAK_MIN still watches: a failing install halts the version", async () => {
+    const canary = await on(TARGET, { created: 0 });
+    await soaked(canary);
+    const id = await on(TARGET, { created: 5 });
+    await fleetJob(id, { finished_at: NOW - MIN });
+    const f = fakes({
+      canary,
+      soakMin: "6O",
+      answers: new Map([[id, "down"]]),
+    });
+    await fleetDue(f.env, NOW, f.opts);
+    await fleetDue(f.env, NOW + 2 * MIN, f.opts);
+    expect(f.probed).toEqual([id, id]);
+    expect(await stateKeys(`fleet_halt:${TARGET}:`)).toEqual([
+      `fleet_halt:${TARGET}:${id}`,
+    ]);
+  });
+
+  it("an invalid FLEET_SOAK_MIN never soaks early: it watches at the longest soak", async () => {
+    const canary = await on(TARGET, { created: 0 });
+    await soaked(canary);
+    const id = await on(TARGET, { created: 5 });
+    await fleetJob(id, { finished_at: NOW - MIN });
+    const f = fakes({ canary, soakMin: "-1" });
+    await ticks(f, NOW, NOW + 120 * MIN);
+    expect(await stateKeys(`${FLEET_SOAKED_PREFIX}${TARGET}:${id}`)).toEqual(
+      [],
+    );
+    // A run of unbroken passes as long as the longest soak does soak.
+    const end = NOW + 122 * MIN;
+    await db
+      .prepare(
+        "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+      )
+      .bind(
+        `fleet_pass:${TARGET}:${id}`,
+        end - FLEET_SOAK_MIN_MAX * MIN,
+        end - 2 * MIN,
+      )
+      .run();
+    await fleetDue(f.env, end, f.opts);
+    expect(await stateKeys(`${FLEET_SOAKED_PREFIX}${TARGET}:${id}`)).toEqual([
+      `${FLEET_SOAKED_PREFIX}${TARGET}:${id}`,
+    ]);
+  });
+
   it("FLEET_SOAK_MIN sets the soak: 60 minutes on the canary, not 15", async () => {
     const canary = await canaryUp();
     const rest = await on("0.92.0", { created: 5 });
