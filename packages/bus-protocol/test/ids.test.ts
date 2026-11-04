@@ -27,6 +27,11 @@ describe("ids", () => {
     expect(isMachineToken(t)).toBe(true);
     expect(isMachineToken(t.replace("oa_machine_", "oa_pat_"))).toBe(false);
     expect(isMachineToken(`${t}x`)).toBe(false);
+    // An OpenBus token is a different credential: never accepted here.
+    expect(isMachineToken(t.replace("oa_machine_", "ob_machine_"))).toBe(
+      false,
+    );
+    expect(isMachineToken(t.slice(0, -1))).toBe(false);
   });
   it("mints a 16-char msg id", () => {
     expect(newMsgId()).toHaveLength(16);
