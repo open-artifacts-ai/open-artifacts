@@ -1,0 +1,30 @@
+{
+  "name": "@oa/bus-daemon",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@oa/bus-adapter-claude-code": "workspace:*",
+    "@oa/bus-adapter-opencode": "workspace:*",
+    "@oa/bus-ipc": "workspace:*",
+    "@oa/bus-protocol": "workspace:*",
+    "ws": "^8.18.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "@types/ws": "^8.5.14",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
+  }
+}
