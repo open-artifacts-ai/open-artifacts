@@ -172,6 +172,10 @@ function main(argv: string[]): number {
   if (cmd === "cycles") {
     const found = cycles(workspace(root));
     for (const c of found) console.error(c);
+    if (found.length)
+      console.error(
+        "workspace-imports: a cycle leaves pnpm unable to order the graph for `--filter ...[base]`; break the edge, or move the shared data into a leaf module (#1368)",
+      );
     return found.length ? 1 : 0;
   }
   if (cmd === "scope" && base) {

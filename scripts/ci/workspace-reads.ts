@@ -79,11 +79,16 @@ export function reads(
   return out;
 }
 
-/** The "<file> <package>" entries of the known file, comments and blanks out. */
+/**
+ * The "<file> <package>" entries of the known file: comments cut from the end of
+ * a line, comment and blank lines dropped. A trailing comment says why a line is
+ * tolerated, so a reader does not have to declare a dependency that would be
+ * wrong (#1056's forbidden lists).
+ */
 export function parseKnown(text: string): string[] {
   return text
     .split("\n")
-    .map((l) => l.trim())
+    .map((l) => l.split("#")[0].trim())
     .filter((l) => l && !l.startsWith("#"));
 }
 
@@ -116,9 +121,9 @@ export function report(
   if (warn)
     return {
       lines: [
-        ...findings.map(
+        ...added.map(
           (r) =>
-            `::warning file=${r.file}::reads ${r.literal} in ${r.package}; ${hint(r.package)}`,
+            `::warning file=${r.file}::new cross-package read of ${r.package} (${r.literal}); ${hint(r.package)}`,
         ),
         ...stale.map(
           (l) =>

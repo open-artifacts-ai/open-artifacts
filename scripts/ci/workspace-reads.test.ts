@@ -179,17 +179,32 @@ describe("drift", () => {
     const r = report([finding], ["apps/reader/test/a.ts @oa/other"], false);
     expect(r).toEqual({ lines: [], code: 0 });
   });
-  it("warn mode tolerates both, as annotations, and says how many", () => {
-    const r = report(
-      [finding],
-      ["apps/reader/test/a.ts @oa/other", "apps/gone/test/a.ts @oa/other"],
-      true,
-    );
+  it("warn mode names only what changed, never the tolerated baseline", () => {
+    const r = report([finding], ["apps/gone/test/a.ts @oa/other"], true);
     expect(r.code).toBe(0);
     expect(r.lines[0]).toContain("::warning file=apps/reader/test/a.ts::");
+    expect(r.lines[0]).toContain("new cross-package read of @oa/other");
     expect(r.lines[1]).toContain(`::warning file=${KNOWN}::stale entry`);
     expect(r.lines[2]).toBe(
-      "workspace-reads (warn only): 1 cross-package read(s); 0 new, 1 stale",
+      "workspace-reads (warn only): 1 cross-package read(s); 1 new, 1 stale",
     );
+  });
+  it("warn mode is silent about a finding the baseline already tolerates", () => {
+    const r = report([finding], ["apps/reader/test/a.ts @oa/other"], true);
+    expect(r.code).toBe(0);
+    expect(r.lines).toEqual([
+      "workspace-reads (warn only): 1 cross-package read(s); 0 new, 0 stale",
+    ]);
+  });
+  it("a trailing comment says why a line is tolerated, and is not compared", () => {
+    const known = parseKnown(
+      [
+        "# header",
+        "apps/reader/test/a.ts @oa/other # lists it, does not read it",
+        "",
+      ].join("\n"),
+    );
+    expect(known).toEqual(["apps/reader/test/a.ts @oa/other"]);
+    expect(report([finding], known, false)).toEqual({ lines: [], code: 0 });
   });
 });

@@ -5,6 +5,9 @@
 # files by path literal without importing anything, so pnpm's affected-only
 # test run (`--filter ...[base]`) cannot see the edge (#1353, #1308).
 #
+# A line may end in "# ..." to say why it is tolerated; the comment is not
+# compared. Use it where the remedy the check suggests would be wrong.
+#
 # This list only shrinks. Declare the package in the reader's package.json
 # (dependencies or devDependencies) and delete the line, or drop the read. A
 # line that matches no current read fails the check as stale.
@@ -21,18 +24,18 @@ apps/provisioner/test/node/world.ts @oa/server
 apps/provisioning/test/node/seal-copy.test.ts @oa/provisioner
 apps/server/test/node/test-hooks-strip.test.ts @oa/bundle
 packages/bundle/src/bundle.ts @oa/server
-packages/bundle/test/imports.test.ts @oa/admin
-packages/bundle/test/imports.test.ts @oa/dispatch
-packages/bundle/test/imports.test.ts @oa/gh-oidc
-packages/bundle/test/imports.test.ts @oa/hosted
-packages/bundle/test/imports.test.ts @oa/inventory
-packages/bundle/test/imports.test.ts @oa/provision
-packages/bundle/test/imports.test.ts @oa/provisioner
-packages/bundle/test/imports.test.ts @oa/provisioning
-packages/bundle/test/imports.test.ts @oa/provisioning-contract
-packages/bundle/test/imports.test.ts @oa/redline
-packages/bundle/test/imports.test.ts @oa/scheduler
-packages/bundle/test/imports.test.ts @oa/shared
+packages/bundle/test/imports.test.ts @oa/admin  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/dispatch  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/gh-oidc  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/hosted  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/inventory  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/provision  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/provisioner  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/provisioning  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/provisioning-contract  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/redline  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/scheduler  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/shared  # forbidden-path list it must not import from, not a read (#1056)
 packages/bus-ipc/test/copy.test.ts @open-artifacts/bus
 packages/provision/src/internal/template.ts @oa/server
 packages/provision/test/gate.test.ts @oa/server
