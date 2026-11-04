@@ -12,8 +12,9 @@ import {
 // changes it checks. The root suite runs on every pull request. It imports
 // admin's plain-data audit-actions.ts, not the page, so the root tsconfig can
 // typecheck it. Moving it back under a package brings that gap back. It is on
-// scripts/ci/private-paths.txt, because it cannot run, or typecheck, without
-// the private paths it scans (#1056).
+// scripts/ci/private-paths.txt, because it cannot run without the private
+// writers it scans, and cannot typecheck without admin's audit-actions.ts,
+// which it imports (#1056).
 // R17 filters on one exact action, so an option nothing writes returns nothing
 // for ever: it happened with the install.* names. This reads the writers.
 const repo = resolve(__dirname, "../..");
