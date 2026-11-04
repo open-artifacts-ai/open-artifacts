@@ -325,10 +325,12 @@ Sketch; the full design lands with the fast follow.
   member opens it in a browser and sees the role, its namespace, the holder
   it displaces and the new one, by the names stored at proposal time, then
   confirms or rejects. Only an interactive cookie session of the hub's own
-  member decides it, signed in within the last 10 minutes (a Google session
-  also needs a forced re-authentication, auth_time, that recent); an older
-  one gets "Sign in again", a forced sign-in (Google max_age=0, Access
-  prompt=login and max_age=0, an email code). The form token and the POST
+  member decides it, and only after a forced sign-in in the last 10
+  minutes: the session's re-auth marker, set only by a forced flow (Google
+  max_age=0 with its auth_time, Access asked for prompt=login and
+  max_age=0, or an email code sign-in, which is one itself). A plain or
+  silent SSO sign-in has no marker; it gets "Sign in again", the forced
+  flow. The form token and the POST
   need that fresh session too. Any Authorization header (a PAT, an OAuth
   grant, a machine token) is refused, no `/mcp` tool and no frame confirms,
   and another member's session finds nothing. The confirm applies through
