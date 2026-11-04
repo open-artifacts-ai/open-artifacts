@@ -1624,6 +1624,39 @@ export class BusHub extends DurableObject<Env> {
    * (status, canConnect, the token). Machines are not revoked here: D1 does
    * that where the status changes. Returns the sockets closed.
    */
+  /**
+   * Erase (#1204, #1291): closes every daemon socket, then deletes all of
+   * this hub's storage (machine mirror and labels, agents, mail, receipts,
+   * send keys, meta) and its alarm, and starts again empty. Idempotent.
+   */
+  async wipe(): Promise<void> {
+    for (const ws of this.ctx.getWebSockets()) {
+      const m = machineOf(ws);
+      try {
+        if (m !== null)
+          ws.serializeAttachment({
+            machineId: m,
+            revoked: true,
+          } satisfies Attachment);
+      } catch {
+        // Already closed.
+      }
+      closeSocket(ws, LIMITS.revokeCloseCode, "erased");
+    }
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    this.#held.clear();
+    this.#heldBytes = 0;
+    this.#armWant = null;
+    this.#replayQueue.clear();
+    this.#machineBudgets.clear();
+    this.#sendKeys = null;
+    // The instance stays usable (empty), as on a first wake.
+    this.ctx.storage.sql.exec(HUB_SCHEMA);
+    migrateHub(this.ctx.storage.sql);
+    logEvent("wiped");
+  }
+
   async closeAll(reason: string): Promise<number> {
     const now = this.#now();
     this.ctx.storage.sql.exec(

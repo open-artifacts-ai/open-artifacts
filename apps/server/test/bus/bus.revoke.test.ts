@@ -118,7 +118,22 @@ describe("revocation closes bus sockets", () => {
 
   it("erase deletes their machines and device codes", async () => {
     const u = await member();
-    const a = await connected(u);
+    const a = await connected(u, "leos-macbook");
+    // Something for the hub to hold: an agent, mail to it, a receipt.
+    const space = ns("erase");
+    a.d.send(up("e1", "ref-1", "keeper", space));
+    await waitFor(a.d, "agent_ok");
+    a.d.send(up("e2", "ref-2", "sender", space));
+    await waitFor(a.d, "agent_ok");
+    a.d.send({
+      v: 1,
+      id: "s1",
+      type: "send",
+      from_ref: "ref-2",
+      to_name: "keeper",
+      body: "private words",
+    });
+    await waitFor(a.d, "receipt");
     await setUserStatus(env, u.userId, "removed", "admin_remove", SYSTEM_ACTOR);
     await a.d.closed;
     await env.DB.prepare(
@@ -142,6 +157,29 @@ describe("revocation closes bus sockets", () => {
     expect(rows.results).toEqual([
       { label: "", h: `erased:${a.id}`, r: expect.any(Number) },
     ]);
+    // The hub holds nothing: no machine label, agent, mail, receipt or meta.
+    const held = await runInDurableObject(
+      await hubOf(u.userId),
+      (_i: BusHub, s: DurableObjectState) =>
+        Object.fromEntries(
+          ["machines", "agents", "mail", "receipts", "send_keys", "meta"].map(
+            (t) => [
+              t,
+              s.storage.sql
+                .exec<{ n: number }>(`select count(*) as n from ${t}`)
+                .one().n,
+            ],
+          ),
+        ),
+    );
+    expect(held).toEqual({
+      machines: 0,
+      agents: 0,
+      mail: 0,
+      receipts: 0,
+      send_keys: 0,
+      meta: 0,
+    });
   });
 
   it("erase itself closes bus sockets (belt and braces, as for artifact sockets)", async () => {

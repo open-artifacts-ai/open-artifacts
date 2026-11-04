@@ -23,6 +23,8 @@ export type BusHubRpc = {
   revokeMachine(id: string): Promise<boolean>;
   /** Records revokedAt, then closes every daemon socket (4403). Returns how many. */
   closeAll(reason: string): Promise<number>;
+  /** Closes every socket and deletes all of the hub's storage (erase). */
+  wipe(): Promise<void>;
 };
 
 /** True when the bus routes answer: BUS_HUB bound, and not a hosted install (until #1299). */
@@ -198,6 +200,21 @@ export async function hasConnectedMachine(
     .bind(userId)
     .first<{ x: number }>();
   return r !== null;
+}
+
+/**
+ * Erase (#1204): deletes everything the member's BusHub holds (machine
+ * labels, agents, mail). Only when one may exist (a machine that ever
+ * connected; erase keeps those rows, emptied). Throws on failure, so the
+ * erase call fails and its retry wipes again.
+ */
+export async function wipeUserBus(
+  env: Pick<Env, "DB" | "BUS_HUB">,
+  userId: string,
+): Promise<void> {
+  if (!env.BUS_HUB) return;
+  if (!(await hasConnectedMachine(env, userId))) return;
+  await busHub(env, userId)?.wipe();
 }
 
 /**

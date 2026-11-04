@@ -43,6 +43,7 @@ import {
   revokeUserLive,
 } from "../runtime/revoke.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
+import { wipeUserBus } from "./bus.js";
 import { inviteReach } from "./reach.js";
 import {
   IDENTITIES_SQL,
@@ -822,7 +823,8 @@ export async function eraseMember(
     (ownerEmail !== "" && normalizeEmail(row.email) === ownerEmail)
   )
     throw active();
-  if (row.erasedAt !== null) return;
+  // Idempotent, and a retry also finishes a hub wipe that failed (#1291).
+  if (row.erasedAt !== null) return wipeUserBus(env, id);
   await checkNothingLeft(env, id);
   const args = [id, admins, ownerEmail, placeholder(id), Date.now()] as const;
   const out = await env.DB.batch([
@@ -851,6 +853,8 @@ export async function eraseMember(
     logWarn("member_erase_revoke_grants", e);
   } finally {
     await revokeUserLive(env, id, "member erased", ctx);
+    // #1291: the member's BusHub storage (hostname labels, agents, mail).
+    await wipeUserBus(env, id);
   }
 }
 
