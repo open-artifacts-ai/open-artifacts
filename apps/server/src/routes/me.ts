@@ -103,7 +103,10 @@ async function toMe(
     orgCan(user, "signin.problems", { cap }),
   );
   // #1291: the dashboard's bus tab follows the server's rule, never its own.
-  me.canConnect = canConnect(user);
+  // The request's member (it carries the cap), never PATCH's response-only
+  // copy, which has none and would throw.
+  const who = c.var.user;
+  me.canConnect = who ? canConnect(who) : false;
   return me;
 }
 

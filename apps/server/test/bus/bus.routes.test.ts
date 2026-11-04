@@ -628,6 +628,24 @@ describe("dashboard REST", () => {
     expect((await upgrade(other.token)).status).toBe(101);
   });
 
+  it("/me says canConnect, on GET and PATCH, from the server's rule", async () => {
+    const me = async (cookie: string, method = "GET") =>
+      (
+        (await (
+          await api(app, R.me, cookie, {
+            method,
+            ...(method === "PATCH"
+              ? { body: { displayName: "Bus Tester" } }
+              : {}),
+          })
+        ).json()) as { canConnect?: boolean }
+      ).canConnect;
+    expect(await me(bob.cookie)).toBe(true);
+    expect(await me(bob.cookie, "PATCH")).toBe(true);
+    expect(await me(guest.cookie)).toBe(false);
+    expect(await me(guest.cookie, "PATCH")).toBe(false);
+  });
+
   it("a capped (restricted) member can still list and revoke their own machines", async () => {
     const capped = await member();
     const m = await machine("capped", capped.userId);
