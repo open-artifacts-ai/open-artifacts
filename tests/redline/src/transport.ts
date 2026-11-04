@@ -9,11 +9,13 @@
 //   caller's), a TLS failure, or an assertion: those keep their own verdict.
 // - One retry, on a new connection, only when the failed attempt went out on
 //   a reused socket (src/resets.ts) and the request is safe to repeat: GET,
-//   HEAD, OPTIONS, or a call marked with idempotent() at its call site. Every
-//   retry is a note on the case and counted on the report's Resets line.
+//   HEAD, OPTIONS, a call marked with idempotent() at its call site, or a
+//   setup publish of a new throwaway artifact (NEW_ARTIFACT, set by
+//   setupFetch's retryFresh: "new-artifact"). Every retry is a note on the
+//   case and counted on the report's Resets line.
 // No case is ever re-run here.
 
-import { networkCode, noResponseCode } from "./fetch-timeout.ts";
+import { NEW_ARTIFACT, networkCode, noResponseCode } from "./fetch-timeout.ts";
 import { note } from "./notes.ts";
 import {
   INFRA_PREFIX,
@@ -36,7 +38,11 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // copy of the init ({ ...init, signal }), and a spread keeps them.
 const IDEMPOTENT = Symbol.for("redline.transport.idempotent");
 const CALLER_RETRIES = Symbol.for("redline.transport.callerRetries");
-type Marks = { [IDEMPOTENT]?: true; [CALLER_RETRIES]?: true };
+type Marks = {
+  [IDEMPOTENT]?: true;
+  [CALLER_RETRIES]?: true;
+  [NEW_ARTIFACT]?: true;
+};
 const marks = (x: unknown): Marks => (x ?? {}) as Marks;
 
 /**
@@ -113,6 +119,7 @@ function notRepeatable(
   if (init?.body instanceof ReadableStream) return "a stream body";
   if (SAFE_METHODS.has(method)) return undefined;
   if (marks(init)[IDEMPOTENT] || marks(input)[IDEMPOTENT]) return undefined;
+  if (marks(input)[NEW_ARTIFACT]) return undefined;
   return `${method} is not safe to repeat`;
 }
 
@@ -140,7 +147,8 @@ export function transportFetch(
       const code = noResponseCode(e);
       if (!code || signal?.aborted) throw e;
       const u = urlOf(input);
-      const where = `${code} ${method} ${routeOf(u?.pathname)} host ${hostOf(u?.origin)}, ${socketText(first.sent)}`;
+      const kind = marks(input)[NEW_ARTIFACT] ? " (new setup artifact)" : "";
+      const where = `${code} ${method} ${routeOf(u?.pathname)}${kind} host ${hostOf(u?.origin)}, ${socketText(first.sent)}`;
       const skip =
         why ?? (first.sent?.reused ? undefined : "not on a reused socket");
       if (skip) throw tag(e, `${where}; not retried: ${skip}`);

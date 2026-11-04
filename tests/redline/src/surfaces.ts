@@ -1239,7 +1239,10 @@ async function api(
     `${t.app}${path}`,
     withCred(pat, { method, headers, body: b }),
   );
-  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra (never retried).
+  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra. Never retried, no
+  // retryFresh: newArtifact also makes the fixed world, guard and trash
+  // artifacts, found again by title in a space listing, and the per-case
+  // throwaway can sit in the world space the probes list (#1133).
   const { res, text } = o.setup
     ? await setupFetch(t.name, req)
     : await fetch(req).then(async (r) => ({ res: r, text: await readBody(r) }));
