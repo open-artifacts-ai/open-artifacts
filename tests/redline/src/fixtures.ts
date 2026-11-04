@@ -89,15 +89,28 @@ export interface Throwaway {
   marker: string;
 }
 
+export interface ThrowawayOptions {
+  visibility?: "private" | "public";
+  capabilities?: { db?: boolean; storage?: boolean; viewer?: boolean };
+  allowAnonymousWrites?: boolean;
+}
+
+/**
+ * True when a throwaway's setup publish may get setupFetch's one retry
+ * (#1133): private, no capabilities, no anonymous writes. A retry whose first
+ * try reached the server leaves a spare nobody deletes, so a public or
+ * writable one (live.test.ts's anonymous-write artifact) never retries.
+ */
+export const throwawayRetries = (o: ThrowawayOptions): boolean =>
+  (o.visibility ?? "private") === "private" &&
+  o.capabilities === undefined &&
+  o.allowAnonymousWrites !== true;
+
 /** Publishes a throwaway html artifact on `t` (title and content carry a marker). */
 export async function createThrowaway(
   t: Target,
   pat: Cred,
-  o: {
-    visibility?: "private" | "public";
-    capabilities?: { db?: boolean; storage?: boolean; viewer?: boolean };
-    allowAnonymousWrites?: boolean;
-  } = {},
+  o: ThrowawayOptions = {},
 ): Promise<Throwaway> {
   const marker = newMarker(t);
   registerMarker(t, marker);
@@ -113,10 +126,13 @@ export async function createThrowaway(
         : {}),
     }),
     `${t.name} create throwaway`,
-    // retryFresh: a new throwaway with a random marker title; callers use
-    // only its id and marker and never list or count artifacts, so one retry
-    // after a reused-socket reset can at worst leave a spare (#1133).
-    { setupOn: t.name, retryFresh: "new-artifact" },
+    // retryFresh only for a plain private throwaway (random marker title;
+    // callers use only its id and marker and never list or count artifacts):
+    // a spare from a retry is then private and inert (#1133).
+    {
+      setupOn: t.name,
+      ...(throwawayRetries(o) ? { retryFresh: "new-artifact" as const } : {}),
+    },
   );
   const id = (
     parseJson(res, text, `${t.name} create throwaway`) as {

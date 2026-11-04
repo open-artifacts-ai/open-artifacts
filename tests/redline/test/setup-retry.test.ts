@@ -2,9 +2,12 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { boundFetch, InfraError, setupFetch } from "../src/fetch-timeout.ts";
+import { createThrowaway, throwawayRetries } from "../src/fixtures.ts";
+import type { Cred } from "../src/http.ts";
 import { setCurrentTest, takeFileNotes } from "../src/notes.ts";
 import { resetSummary } from "../src/report.ts";
 import { watchResets } from "../src/resets.ts";
+import type { Target } from "../src/targets.ts";
 import { transportFetch } from "../src/transport.ts";
 
 // #1133: a setup publish (POST /api/v1/artifacts) whose call site opts in
@@ -42,7 +45,10 @@ async function box(): Promise<Box> {
     const path = req.url ?? "";
     hits.push({ path, socket: rec.id, nth: rec.n });
     // A reset with no response: what the edge did in run 41919316028.
-    if (path === "/reset" || (path === "/reset-reused" && rec.n > 1)) {
+    // The publish route resets on a reused socket too (createThrowaway).
+    const reusedResets =
+      path === "/reset-reused" || path === "/api/v1/artifacts";
+    if (path === "/reset" || (reusedResets && rec.n > 1)) {
       req.resume();
       s.resetAndDestroy();
       return;
@@ -186,6 +192,62 @@ describe("setupFetch retryFresh: new-artifact (#1133)", () => {
       );
       expect(res.status).toBe(status);
       expect(b.hits.filter((h) => h.path === `/status/${status}`)).toHaveLength(
+        1,
+      );
+      expect(retried(takeFileNotes())).toEqual([]);
+    });
+  }
+});
+
+describe("createThrowaway: retry only for a plain private throwaway (#1133)", () => {
+  const pat: Cred = { kind: "pat", token: "x" };
+  const target = (b: Box) =>
+    ({ name: "rl-b", app: b.origin }) as unknown as Target;
+  // createThrowaway's setupFetch uses the global fetch, as in the live suite.
+  const real = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = real;
+  });
+
+  it("decides by visibility, capabilities and anonymous writes", () => {
+    expect(throwawayRetries({})).toBe(true);
+    expect(throwawayRetries({ visibility: "private" })).toBe(true);
+    expect(throwawayRetries({ visibility: "public" })).toBe(false);
+    expect(throwawayRetries({ capabilities: { db: true } })).toBe(false);
+    expect(throwawayRetries({ allowAnonymousWrites: true })).toBe(false);
+  });
+
+  it("a private throwaway's publish reset on a reused socket is retried and recovers", async () => {
+    const b = await box();
+    globalThis.fetch = tf;
+    await warm(b);
+    const w = await createThrowaway(target(b), pat);
+    expect(w.id).toBe("new-id");
+    expect(b.hits.filter((h) => h.path === "/api/v1/artifacts")).toHaveLength(
+      2,
+    );
+    expect(retried(takeFileNotes())).toHaveLength(1);
+  });
+
+  for (const [what, o] of [
+    ["public", { visibility: "public" }],
+    ["db-enabled", { capabilities: { db: true } }],
+    [
+      "live.test.ts's anonymous-write",
+      {
+        visibility: "public",
+        capabilities: { db: true },
+        allowAnonymousWrites: true,
+      },
+    ],
+  ] as const) {
+    it(`a ${what} throwaway's publish reset on a reused socket is not retried: infra`, async () => {
+      const b = await box();
+      globalThis.fetch = tf;
+      await warm(b);
+      const e = await rejection(createThrowaway(target(b), pat, o));
+      expect(e).toBeInstanceOf(InfraError);
+      expect(b.hits.filter((h) => h.path === "/api/v1/artifacts")).toHaveLength(
         1,
       );
       expect(retried(takeFileNotes())).toEqual([]);
