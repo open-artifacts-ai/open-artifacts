@@ -106,8 +106,12 @@ export function drift(
   };
 }
 
-const hint = (pkg: string) =>
-  `declare ${pkg} in its package.json, or remove the line from workspace-reads-known.txt`;
+/** A new read: declare the package, or drop the read. */
+const declare = (pkg: string) =>
+  `declare ${pkg} in its package.json, or drop the read`;
+/** A line the baseline still carries: declare the package, or delete the line. */
+const settle = (pkg: string) =>
+  `declare ${pkg} in its package.json, or delete the line from workspace-reads-known.txt`;
 /** The package named by a "<file> <package>" known line. */
 const knownPkg = (line: string) => line.slice(line.lastIndexOf(" ") + 1);
 
@@ -123,11 +127,11 @@ export function report(
       lines: [
         ...added.map(
           (r) =>
-            `::warning file=${r.file}::new cross-package read of ${r.package} (${r.literal}); ${hint(r.package)}`,
+            `::warning file=${r.file}::new cross-package read of ${r.package} (${r.literal}); ${declare(r.package)}`,
         ),
         ...stale.map(
           (l) =>
-            `::warning file=${KNOWN}::stale entry "${l}"; ${hint(knownPkg(l))}`,
+            `::warning file=${KNOWN}::stale entry "${l}"; ${settle(knownPkg(l))}`,
         ),
         `workspace-reads (warn only): ${findings.length} cross-package read(s); ${added.length} new, ${stale.length} stale`,
       ],
@@ -137,11 +141,11 @@ export function report(
     lines: [
       ...added.map(
         (r) =>
-          `${r.file}: reads ${r.literal} in ${r.package}; ${hint(r.package)}`,
+          `${r.file}: reads ${r.literal} in ${r.package}; ${declare(r.package)}`,
       ),
       ...stale.map(
         (l) =>
-          `${l}: stale entry in workspace-reads-known.txt; ${hint(knownPkg(l))}`,
+          `${l}: stale entry in workspace-reads-known.txt; ${settle(knownPkg(l))}`,
       ),
     ],
     code: added.length + stale.length ? 1 : 0,

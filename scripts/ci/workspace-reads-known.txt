@@ -1,12 +1,10 @@
 # Cross-package reads the workspace-reads check tolerates (scripts/ci/workspace-reads.ts).
 #
-# One "<file> <package-name>" per line: a single space, sorted, no comments
-# after the header. Each line is a source file that reaches another package's
-# files by path literal without importing anything, so pnpm's affected-only
-# test run (`--filter ...[base]`) cannot see the edge (#1353, #1308).
-#
-# A line may end in "# ..." to say why it is tolerated; the comment is not
-# compared. Use it where the remedy the check suggests would be wrong.
+# One "<file> <package-name>" per line: a single space, sorted, and optionally
+# a trailing "# ..." reason, which is not compared. Each line is a source file
+# that reaches another package's files by path literal without importing
+# anything, so pnpm's affected-only test run (`--filter ...[base]`) cannot see
+# the edge (#1353, #1308).
 #
 # This list only shrinks. Declare the package in the reader's package.json
 # (dependencies or devDependencies) and delete the line, or drop the read. A

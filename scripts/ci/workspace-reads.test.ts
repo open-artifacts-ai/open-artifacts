@@ -172,7 +172,7 @@ describe("drift", () => {
     expect(stale.code).toBe(1);
     expect(stale.lines[0]).toContain("apps/gone/test/a.ts @oa/other");
     expect(stale.lines[0]).toContain(
-      "remove the line from workspace-reads-known.txt",
+      "delete the line from workspace-reads-known.txt",
     );
   });
   it("an exactly matching known file passes", () => {
