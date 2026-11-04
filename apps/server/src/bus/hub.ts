@@ -4,19 +4,25 @@ import {
   AGENT_CAP_MESSAGES,
   type AgentKind,
   type AgentUpFrame,
+  BUS_CAPS,
+  BusNameSchema,
   type ClientFrame,
   candidateName,
   decodeClientFrame,
   encodeFrame,
   FALLBACK_BUS_NAME,
+  type FormerName,
   frameId,
+  hasCap,
   isId,
   LIMITS,
   MachineLabelSchema,
+  type NameKind,
   newId,
   PING,
   PONG,
   REFUSAL_REASONS,
+  RENAME_MESSAGES,
   type RefusalReason,
   type SendFrame,
   type ServerFrame,
@@ -184,12 +190,36 @@ type Attachment = {
   machineId: string;
   replaced?: true;
   revoked?: true;
+  /**
+   * The capability tokens of the socket's latest `hello` (#1325), kept in
+   * the attachment so they survive hibernation. Absent: no hello with caps.
+   */
+  caps?: string[];
 };
 
 function attachmentOf(ws: WebSocket): Attachment | null {
   const a = ws.deserializeAttachment() as Attachment | null;
   return typeof a?.machineId === "string" ? a : null;
 }
+
+/**
+ * The rename wire (#1325, OpenBus #393: roster `former_names`, a former-name
+ * receipt `to_name`) goes only to a socket whose hello listed
+ * BUS_CAPS.rename. Every other socket resolves the same, without those
+ * fields. Fails closed: no hello, or a hello without caps, gets none.
+ */
+const renameGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.rename);
+};
+
+/**
+ * A receipt's `to_name`: the resolved agent's current name, only when the
+ * send resolved through a former name (it differs from the name sent to,
+ * beyond case), and only to a rename-capable socket.
+ */
+const viaFormer = (ws: WebSocket, sentTo: string, toName: string): boolean =>
+  renameGated(ws) && sentTo.toLowerCase() !== toName.toLowerCase();
 
 function machineOf(ws: WebSocket): string | null {
   return attachmentOf(ws)?.machineId ?? null;
@@ -501,7 +531,10 @@ function registeredAgent(
  * Names compare case-insensitively (bus names are ASCII). A global agent's
  * name must be free among ALL live agents (it is visible everywhere); a
  * non-global's must be free in its namespace and among live globals.
- * One query on agents_live_lname.
+ * R393b: a live agent's chosen former name in that same scope is taken too
+ * (reserved for its grace); the agent's own former names are free to it.
+ * Reservations are per member: each member has its own hub.
+ * One statement on agents_live_lname and former_names_lname.
  */
 function nameTaken(
   sql: SqlStorage,
@@ -509,30 +542,73 @@ function nameTaken(
   name: string,
   global: boolean,
   selfId: string,
+  now: number,
 ): boolean {
   const lname = name.toLowerCase();
-  return global
-    ? one(
-        sql,
-        "select 1 as x from agents where org_id = ? and lower(name) = ? and live = 1 and id != ? limit 1",
-        OWNER_ORG_ID,
-        lname,
-        selfId,
-      ) !== null
-    : one(
-        sql,
-        "select 1 as x from agents where org_id = ? and lower(name) = ? and live = 1 and id != ? and (namespace = ? or global = 1) limit 1",
-        OWNER_ORG_ID,
-        lname,
-        selfId,
-        namespace,
-      ) !== null;
+  const scope = global ? "" : "and (a.namespace = ? or a.global = 1)";
+  return (
+    one<{ x: number }>(
+      sql,
+      `select (exists (select 1 from agents a where a.org_id = ? and lower(a.name) = ? and a.live = 1 and a.id != ? ${scope})
+           or exists (select 1 from former_names f join agents a on a.id = f.agent_id
+                       where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind = 'chosen'
+                         and f.agent_id != ? and a.live = 1 ${scope})) as x`,
+      OWNER_ORG_ID,
+      lname,
+      selfId,
+      ...(global ? [] : [namespace]),
+      OWNER_ORG_ID,
+      lname,
+      now,
+      selfId,
+      ...(global ? [] : [namespace]),
+    )?.x === 1
+  );
 }
+
+const RENAME_RL_PURGE_SQL =
+  "delete from rename_rl where rowid in (select rowid from rename_rl indexed by rename_rl_at where at <= ? limit ?) returning rowid";
+
+const FORMER_PURGE_SQL =
+  "delete from former_names where rowid in (select rowid from former_names indexed by former_names_due where expires_at <= ? limit ?) returning rowid";
+
+/**
+ * R393b: a closed or revoked agent's former names go at once (the names
+ * free), and its rename log with them (`closed`). A namespace move or global
+ * flip drops only the former names.
+ */
+function dropNameState(
+  sql: SqlStorage,
+  agentIds: string[],
+  closed: boolean,
+): void {
+  if (agentIds.length === 0) return;
+  const ids = JSON.stringify(agentIds);
+  sql.exec(
+    "delete from former_names where agent_id in (select value from json_each(?))",
+    ids,
+  );
+  if (closed)
+    sql.exec(
+      "delete from rename_rl where agent_id in (select value from json_each(?))",
+      ids,
+    );
+}
+
+/**
+ * An assigned name, and for a default name minted now the minted_names row
+ * to write (commitName), so a refused rename mints nothing.
+ */
+type Assigned = {
+  name: string;
+  mint: { lname: string; name: string; lbase: string } | null;
+};
 
 /**
  * The proposed name, else `-2`, `-3`... up to the roster cap, else the
  * fallback name suffixed the same way, else a random fallback suffix. Never
- * fails: a name collision is not an error.
+ * fails: a name collision is not an error. A `default` name is minted
+ * instead (mintName). Writes nothing.
  */
 function assignName(
   sql: SqlStorage,
@@ -540,13 +616,18 @@ function assignName(
   proposed: string,
   global: boolean,
   selfId: string,
-): string {
-  const free = (n: string) => !nameTaken(sql, namespace, n, global, selfId);
+  now: number,
+  kind: NameKind = "chosen",
+): Assigned {
+  if (kind === "default")
+    return mintName(sql, namespace, proposed, global, selfId, now);
+  const free = (n: string) =>
+    !nameTaken(sql, namespace, n, global, selfId, now);
   for (const base of new Set([candidateName(proposed), FALLBACK_BUS_NAME])) {
-    if (free(base)) return base;
+    if (free(base)) return { name: base, mint: null };
     for (let n = 2; n <= MAX_NAME_SUFFIX; n++) {
       const next = suffixName(base, n);
-      if (free(next)) return next;
+      if (free(next)) return { name: next, mint: null };
     }
   }
   for (;;) {
@@ -554,8 +635,112 @@ function assignName(
       FALLBACK_BUS_NAME,
       MAX_NAME_SUFFIX + 1 + Math.floor(Math.random() * 1e9),
     );
-    if (free(next)) return next;
+    if (free(next)) return { name: next, mint: null };
   }
+}
+
+/** Random tries at a 4-hex suffix before the suffix grows to 8 hex. */
+const MINT_TRIES = 32;
+
+function randomHex(digits: number): string {
+  const b = new Uint8Array(digits / 2);
+  crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+/** `<base>-<hex>` within the name cap (as suffixName trims). */
+function mintedName(base: string, hex: string): string {
+  const suffix = `-${hex}`;
+  const stem = base
+    .slice(0, LIMITS.maxBusNameChars - suffix.length)
+    .replace(/[ .]+$/, "");
+  return `${stem}${suffix}`;
+}
+
+/**
+ * R393b: a `default` name (the harness's fallback, which nobody chose) is
+ * `<base>-<4 hex>`. The agent's own minted name for this base comes back to
+ * it while no one else holds it (a reconnect or reopen keeps its name);
+ * otherwise a name never minted before, for anyone, so it needs no
+ * reservation. After MINT_TRIES taken 4-hex names the suffix is 8 hex.
+ */
+function mintName(
+  sql: SqlStorage,
+  namespace: string,
+  proposed: string,
+  global: boolean,
+  selfId: string,
+  now: number,
+): Assigned {
+  const proposedBase = candidateName(proposed);
+  // Never loops on a base that cannot carry a suffix (not expected).
+  const base = BusNameSchema.safeParse(mintedName(proposedBase, "0000")).success
+    ? proposedBase
+    : FALLBACK_BUS_NAME;
+  const lbase = base.toLowerCase();
+  const free = (n: string) =>
+    !nameTaken(sql, namespace, n, global, selfId, now);
+  const own = all<{ name: string }>(
+    sql,
+    "select name from minted_names indexed by minted_names_agent where agent_id = ? and lbase = ? order by created_at desc limit 4",
+    selfId,
+    lbase,
+  );
+  for (const o of own) if (free(o.name)) return { name: o.name, mint: null };
+  for (let i = 0; ; i++) {
+    const name = mintedName(base, randomHex(i < MINT_TRIES ? 4 : 8));
+    const lname = name.toLowerCase();
+    const minted = one(
+      sql,
+      "select 1 as x from minted_names where org_id = ? and lname = ?",
+      OWNER_ORG_ID,
+      lname,
+    );
+    if (minted === null && free(name))
+      return { name, mint: { lname, name, lbase } };
+  }
+}
+
+/**
+ * Writes the minted_names row of a freshly minted name, and drops the
+ * agent's former name equal to its new name (a former name never equals the
+ * current one, case-insensitively). Other agents' DEFAULT former names equal
+ * to it, in the scope nameTaken checks, go too: they are unreserved, so the
+ * new holder supersedes them, and no two agents ever hold one former name in
+ * one scope (a chosen one is reserved, so it cannot be taken).
+ */
+function commitName(
+  sql: SqlStorage,
+  agentId: string,
+  namespace: string,
+  global: boolean,
+  a: Assigned,
+  now: number,
+): void {
+  if (a.mint)
+    sql.exec(
+      "insert into minted_names (org_id, lname, name, agent_id, lbase, created_at) values (?, ?, ?, ?, ?, ?) on conflict do nothing",
+      OWNER_ORG_ID,
+      a.mint.lname,
+      a.mint.name,
+      agentId,
+      a.mint.lbase,
+      now,
+    );
+  const lname = a.name.toLowerCase();
+  sql.exec(
+    "delete from former_names where agent_id = ? and lname = ?",
+    agentId,
+    lname,
+  );
+  sql.exec(
+    `delete from former_names where org_id = ? and lname = ? and kind = 'default' and agent_id != ?
+       ${global ? "" : "and agent_id in (select id from agents where org_id = ? and (namespace = ? or global = 1))"}`,
+    OWNER_ORG_ID,
+    lname,
+    agentId,
+    ...(global ? [] : [OWNER_ORG_ID, namespace]),
+  );
 }
 
 /** Registers (or re-registers) an agent; returns the reply and changed namespaces. */
@@ -580,7 +765,18 @@ function agentUp(
     OWNER_ORG_ID,
   );
   const id = existing?.id ?? newId();
-  const name = assignName(sql, f.namespace, f.proposed_name, f.global, id);
+  // A repeat agent_up for a live agent may rename it (#1323); that never
+  // records a former name or counts toward the rename limit (R393b).
+  const assigned = assignName(
+    sql,
+    f.namespace,
+    f.proposed_name,
+    f.global,
+    id,
+    now,
+    f.name_kind,
+  );
+  const name = assigned.name;
   // A new session starts when the agent was not live (B11): its boundary is
   // the newest receipt's rowid (receipts rowids only grow: the retention
   // purge never deletes the newest), so the old session's mail is never
@@ -609,6 +805,15 @@ function agentUp(
       f.global ? 1 : 0,
       now,
     );
+  // A namespace move or a global flip drops the agent's former names: they
+  // were reserved and resolved in the old scope only.
+  if (
+    existing &&
+    (existing.namespace !== f.namespace ||
+      existing.global !== (f.global ? 1 : 0))
+  )
+    dropNameState(sql, [id], false);
+  commitName(sql, id, f.namespace, f.global, assigned, now);
   const wasLive = existing?.live === 1;
   // AC3: a reopened session starts with no status (a live move keeps it).
   if (existing && !wasLive) clearStatus(sql, [id]);
@@ -661,12 +866,15 @@ function agentDown(
  * agent sees every open agent. `state` is always sent: live while the
  * agent's machine holds an open, current socket (machineOnline, as the
  * dashboard and the send path decide it), queued otherwise. Each row
- * carries its self-reported status (AC3).
+ * carries its self-reported status (AC3), and, with `formerFields`
+ * (renameGated), its live former names (R393b).
  */
 function roster(
   ctx: DurableObjectState,
   agent: AgentRow,
   id: string,
+  formerFields: boolean,
+  now: number,
 ): ServerFrame {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
@@ -719,12 +927,16 @@ function roster(
     return on ? "live" : "queued";
   };
   const labels = machineLabels(sql, rows);
+  const formers = formerFields
+    ? formerNamesOf(sql, rows, now)
+    : new Map<string, FormerName[]>();
   return {
     v: 1,
     id,
     type: "roster",
     agents: rows.map((r) => {
       const label = labels.get(r.machineId);
+      const former = formers.get(r.id);
       return {
         bus_name: r.name,
         kind: r.kind as AgentKind,
@@ -734,9 +946,42 @@ function roster(
         // The key is omitted, never null, if a row's machine has no label.
         ...(label === undefined ? {} : { machine_label: label }),
         ...statusWire(r),
+        ...(former === undefined ? {} : { former_names: former }),
       };
     }),
   };
+}
+
+/**
+ * R393b: each row's live former names for the roster, newest first, at most
+ * LIMITS.maxFormerNames (more may be live: they still resolve and stay
+ * reserved). One statement on former_names_agent, ids as one JSON parameter.
+ */
+function formerNamesOf(
+  sql: SqlStorage,
+  rows: AgentRow[],
+  now: number,
+): Map<string, FormerName[]> {
+  const out = new Map<string, FormerName[]>();
+  if (rows.length === 0) return out;
+  const found = all<{ agentId: string; name: string; expiresAt: number }>(
+    sql,
+    `select agent_id as agentId, name, expires_at as expiresAt from former_names
+      where agent_id in (select value from json_each(?)) and expires_at > ?
+      order by agent_id, expires_at desc, rowid desc`,
+    JSON.stringify(rows.map((r) => r.id)),
+    now,
+  );
+  for (const f of found) {
+    const list = out.get(f.agentId) ?? [];
+    if (list.length >= LIMITS.maxFormerNames) continue;
+    list.push({
+      name: f.name,
+      expires_at: new Date(f.expiresAt).toISOString(),
+    });
+    out.set(f.agentId, list);
+  }
+  return out;
 }
 
 /**
@@ -952,24 +1197,80 @@ function liveAnywhere(
   );
 }
 
+/**
+ * R393b: live agents with the live former name `lname` (former_names_lname),
+ * optionally in a scope: `ns` (namespace or global, as liveVisibleIn sees
+ * it) or a global homed in `homedIn`. Globals first. A former name is never
+ * held twice within a scope (commitName), so `limit` > 1 only finds a
+ * seeded or racing duplicate, or matches across namespaces.
+ */
+function liveFormer(
+  sql: SqlStorage,
+  lname: string,
+  now: number,
+  scope: { ns: string } | { homedIn: string } | null,
+  limit = 1,
+): AgentRow[] {
+  const where =
+    scope === null
+      ? ""
+      : "ns" in scope
+        ? "and (namespace = ? or global = 1)"
+        : "and global = 1 and namespace = ?";
+  return all<AgentRow>(
+    sql,
+    `select ${AGENT_COLS} from agents where org_id = ? and live = 1
+       and id in (select agent_id from former_names indexed by former_names_lname where org_id = ? and lname = ? and expires_at > ?)
+       ${where} order by global desc limit ?`,
+    OWNER_ORG_ID,
+    OWNER_ORG_ID,
+    lname,
+    now,
+    ...(scope === null ? [] : ["ns" in scope ? scope.ns : scope.homedIn]),
+    limit,
+  );
+}
+
 const refused = (reason: RefusalReason): Resolution => ({ ok: false, reason });
 
+/**
+ * Within a scope a current live name comes before a live former name (R393b),
+ * then goneReason. The sender's own namespace is looked at first; a former
+ * name follows the visibility of its agent's current name. Identical for
+ * every client: the rename gate only hides wire fields.
+ */
 function resolveTarget(
   sql: SqlStorage,
   sender: AgentRow,
   toName: string,
   toNamespace: string | undefined,
+  now: number,
 ): Resolution {
   const lname = toName.toLowerCase();
+  // A former name is never held by two agents in one scope (commitName);
+  // if it ever were, the send is ambiguous rather than delivered to either.
+  const formerIn = (
+    scope: { ns: string } | { homedIn: string },
+  ): Resolution | null => {
+    const rows = liveFormer(sql, lname, now, scope, 2);
+    const hit = rows[0];
+    if (!hit) return null;
+    return rows.length > 1 ? refused("ambiguous") : { ok: true, agent: hit };
+  };
+  const visibleIn = (ns: string): Resolution | null => {
+    const hit = liveVisibleIn(sql, ns, lname);
+    return hit ? { ok: true, agent: hit } : formerIn({ ns });
+  };
   if (sender.global !== 1) {
     if (toNamespace !== undefined && toNamespace !== sender.namespace) {
       // Only a live global homed in X is reachable. Everything else is the
       // same refusal, so it cannot probe what exists in another namespace.
       const hit = liveGlobalHomedIn(sql, toNamespace, lname);
-      return hit ? { ok: true, agent: hit } : refused("other_namespace");
+      if (hit) return { ok: true, agent: hit };
+      return formerIn({ homedIn: toNamespace }) ?? refused("other_namespace");
     }
-    const hit = liveVisibleIn(sql, sender.namespace, lname);
-    if (hit) return { ok: true, agent: hit };
+    const hit = visibleIn(sender.namespace);
+    if (hit) return hit;
     // B9: the newest closed agent with the name says revoked or closed.
     const gone = goneReason(sql, sender.namespace, lname);
     if (gone) return refused(gone);
@@ -979,18 +1280,27 @@ function resolveTarget(
     return refused("unknown_agent");
   }
   if (toNamespace !== undefined) {
-    const hit = liveVisibleIn(sql, toNamespace, lname);
-    if (hit) return { ok: true, agent: hit };
+    const hit = visibleIn(toNamespace);
+    if (hit) return hit;
     const gone = goneReason(sql, toNamespace, lname);
     if (gone) return refused(gone);
     return refused("unknown_agent");
   }
+  // R393b: the sender's own namespace first, current then former names.
+  const own = visibleIn(sender.namespace);
+  if (own) return own;
   // A live global sorts first and is the only live agent with its name.
   const live = liveAnywhere(sql, lname, 2);
   const first = live[0];
   if (first && (first.global === 1 || live.length === 1))
     return { ok: true, agent: first };
   if (live.length > 1) return refused("ambiguous");
+  // Then former names elsewhere, under the same ambiguity rule.
+  const former = liveFormer(sql, lname, now, null, 2);
+  const f = former[0];
+  if (f && (f.global === 1 || former.length === 1))
+    return { ok: true, agent: f };
+  if (former.length > 1) return refused("ambiguous");
   const gone = goneReason(sql, null, lname);
   if (gone) return refused(gone);
   return refused("unknown_agent");
@@ -1515,6 +1825,8 @@ export class BusHub extends DurableObject<Env> {
             or exists (select 1 from receipts where notified_at is null and state != 'pending')
             or exists (select 1 from agents indexed by agents_closed where live = 0)
             or exists (select 1 from agents indexed by agents_status_due where status_due is not null)
+            or exists (select 1 from former_names)
+            or exists (select 1 from rename_rl)
             or exists (select 1 from machines where ${OFFLINE_LIVE_WHERE})
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)) as x`,
@@ -1779,6 +2091,7 @@ export class BusHub extends DurableObject<Env> {
       )
       .toArray()
       .map((r) => String(r.id));
+    dropNameState(sql, ids, true);
     sql.exec(
       "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do nothing",
       OWNER_ORG_ID,
@@ -2016,6 +2329,16 @@ export class BusHub extends DurableObject<Env> {
 
     switch (f.type) {
       case "hello":
+        // #1325: the hello's caps gate the rename wire (renameGated). Kept
+        // in the attachment so they survive hibernation; a later hello
+        // replaces them. Other attachment fields are kept.
+        {
+          const { caps: _old, ...rest } = attachmentOf(ws) ?? { machineId };
+          ws.serializeAttachment({
+            ...rest,
+            ...(f.caps === undefined ? {} : { caps: [...f.caps] }),
+          } satisfies Attachment);
+        }
         sendFrame(ws, {
           v: 1,
           id: f.id,
@@ -2088,7 +2411,11 @@ export class BusHub extends DurableObject<Env> {
         return;
       }
       case "list":
-        if (sender) sendFrame(ws, roster(this.ctx, sender, f.id));
+        if (sender)
+          sendFrame(
+            ws,
+            roster(this.ctx, sender, f.id, renameGated(ws), this.#now()),
+          );
         return;
       case "send":
         if (sender) this.#send(ws, f, sender);
@@ -2109,12 +2436,126 @@ export class BusHub extends DurableObject<Env> {
       case "status":
         if (sender) this.#status(ws, f, sender);
         return;
-      case "rename":
-        // Decoded since R393a (#1325), handled from R393b. Answer, never drop:
-        // a client waits on `renamed` and falls back on an error.
-        reject(ws, machineId, f.id, "bad_frame", "rename is not supported yet");
+      case "rename": {
+        // R393b: only a live agent this socket registered may be renamed.
+        const a = registeredAgent(sql, machineId, f.agent_ref);
+        if (!a) {
+          reject(
+            ws,
+            machineId,
+            f.id,
+            "not_registered",
+            "agent_ref is not registered on this socket",
+          );
+          return;
+        }
+        this.#rename(ws, f, a);
         return;
+      }
     }
+  }
+
+  /**
+   * `rename` (R393b, #1325) for a live agent: `renamed`, or `error
+   * rate_limited` past LIMITS.renamesPerHour name changes in a rolling hour.
+   * The name is assigned as agent_up assigns it (excluding self). A no-op
+   * (the assigned name is the current one, exactly) answers without
+   * `former`, records nothing and never counts. Otherwise the left name
+   * becomes a former name for LIMITS.formerNameGraceMs (none when only its
+   * case changed: it already resolves), and the roster changes. Status,
+   * inbox and session boundary are untouched.
+   */
+  #rename(
+    ws: WebSocket,
+    f: Extract<ClientFrame, { type: "rename" }>,
+    agent: AgentRow,
+  ): void {
+    const sql = this.ctx.storage.sql;
+    const now = this.#now();
+    const global = agent.global === 1;
+    const assigned = assignName(
+      sql,
+      agent.namespace,
+      f.proposed_name,
+      global,
+      agent.id,
+      now,
+      f.name_kind,
+    );
+    const name = assigned.name;
+    const reply = {
+      v: 1,
+      id: f.id,
+      type: "renamed",
+      agent_ref: f.agent_ref,
+      bus_name: name,
+    } as const;
+    // The exact no-op check (assignName writes nothing), then the rate
+    // limit, then the commit: a no-op never counts, a refusal changes nothing.
+    if (name === agent.name) {
+      sendFrame(ws, reply);
+      return;
+    }
+    sql.exec(
+      "delete from rename_rl where agent_id = ? and at <= ?",
+      agent.id,
+      now - HOUR_MS,
+    );
+    const count =
+      one<{ n: number }>(
+        sql,
+        "select count(*) as n from rename_rl where agent_id = ?",
+        agent.id,
+      )?.n ?? 0;
+    if (count >= LIMITS.renamesPerHour) {
+      logEvent("rate_limited", { kind: "rename", machineId: agent.machineId });
+      sendError(ws, f.id, "rate_limited", RENAME_MESSAGES.rate);
+      return;
+    }
+    sql.exec(
+      "insert into rename_rl (agent_id, at) values (?, ?)",
+      agent.id,
+      now,
+    );
+    this.#arm(now + HOUR_MS);
+    const former = agent.name;
+    const lformer = former.toLowerCase();
+    // One row per name per agent: a reused former name is replaced.
+    sql.exec(
+      "delete from former_names where agent_id = ? and lname = ?",
+      agent.id,
+      lformer,
+    );
+    if (lformer !== name.toLowerCase()) {
+      // A name minted for this agent is a default name: never minted again,
+      // so it resolves without being reserved.
+      const minted = one(
+        sql,
+        "select 1 as x from minted_names where org_id = ? and lname = ? and agent_id = ?",
+        OWNER_ORG_ID,
+        lformer,
+        agent.id,
+      );
+      sql.exec(
+        "insert into former_names (agent_id, org_id, name, lname, kind, expires_at) values (?, ?, ?, ?, ?, ?)",
+        agent.id,
+        OWNER_ORG_ID,
+        former,
+        lformer,
+        minted ? "default" : "chosen",
+        now + LIMITS.formerNameGraceMs,
+      );
+      this.#arm(now + LIMITS.formerNameGraceMs);
+    }
+    sql.exec(
+      "update agents set name = ?, updated_at = ? where id = ?",
+      name,
+      now,
+      agent.id,
+    );
+    commitName(sql, agent.id, agent.namespace, global, assigned, now);
+    sendFrame(ws, { ...reply, former });
+    notifyRoster(this.ctx, { namespaces: [agent.namespace], global }, ws);
   }
 
   /**
@@ -2318,11 +2759,11 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
     if (key.kind === "resend") {
-      this.#resend(ws, f.id, key.msgId);
+      this.#resend(ws, f.id, f.to_name, key.msgId);
       return;
     }
     if (key.dropped && this.#sendKeys !== null) this.#sendKeys--;
-    const res = resolveTarget(sql, sender, f.to_name, f.to_namespace);
+    const res = resolveTarget(sql, sender, f.to_name, f.to_namespace, now);
     if (!res.ok) {
       refuseSend(ws, f.id, res.reason);
       return;
@@ -2374,6 +2815,9 @@ export class BusHub extends DurableObject<Env> {
       type: "receipt",
       msg_id: msgId,
       state: "pending",
+      ...(viaFormer(ws, f.to_name, target.name)
+        ? { to_name: target.name }
+        : {}),
     });
     if (!socket) return;
 
@@ -2434,14 +2878,20 @@ export class BusHub extends DurableObject<Env> {
    * already got), which also marks the sender told. A receipt row missing
    * within the key's window (receipts outlive keys) would read as expired.
    */
-  #resend(ws: WebSocket, id: string, msgId: string): void {
+  #resend(ws: WebSocket, id: string, sentTo: string, msgId: string): void {
     const sql = this.ctx.storage.sql;
     const r = one<{
       state: string;
       reason: string | null;
-    }>(sql, "select state, reason from receipts where id = ?", msgId) ?? {
+      toName: string | null;
+    }>(
+      sql,
+      "select state, reason, to_name as toName from receipts where id = ?",
+      msgId,
+    ) ?? {
       state: "expired",
       reason: null,
+      toName: null,
     };
     sendFrame(ws, {
       v: 1,
@@ -2449,6 +2899,11 @@ export class BusHub extends DurableObject<Env> {
       type: "receipt",
       msg_id: msgId,
       state: "pending",
+      // R393b: a resend repeats a former-name hit's to_name (the name the
+      // send resolved to, from the receipt row).
+      ...(r.toName !== null && viaFormer(ws, sentTo, r.toName)
+        ? { to_name: r.toName }
+        : {}),
     });
     const update = updateFrame(msgId, r.state, r.reason);
     if (!update) return;
@@ -2598,6 +3053,7 @@ export class BusHub extends DurableObject<Env> {
   #closeSessions(agentIds: string[]): void {
     if (agentIds.length === 0) return;
     const sql = this.ctx.storage.sql;
+    dropNameState(sql, agentIds, true);
     const closedAt = this.#now();
     // M1: the closed rows' purge deadline.
     this.#arm(closedAt + CLOSED_AGENT_RETAIN_MS);
@@ -3199,6 +3655,9 @@ export class BusHub extends DurableObject<Env> {
     ).length;
     if (swept >= BATCH) more = true;
     if (this.#sendKeys !== null) this.#sendKeys -= swept;
+    // R393b: former names past their grace, rename windows that have ended.
+    if (purge(sql, FORMER_PURGE_SQL, now)) more = true;
+    if (purge(sql, RENAME_RL_PURGE_SQL, now - HOUR_MS)) more = true;
     // M1: closed agents idle past CLOSED_AGENT_RETAIN_MS (after the sweeps
     // above, so work they just cleared counts).
     if (this.#purgeClosedAgents(now)) more = true;
@@ -3242,6 +3701,8 @@ export class BusHub extends DurableObject<Env> {
       min("select min(created_at) as t from send_keys", SEND_KEY_RETAIN_MS + 1),
       this.#purgeDeadline(),
       nextStatusDue(sql),
+      min("select min(expires_at) as t from former_names"),
+      min("select min(at) as t from rename_rl", HOUR_MS),
       this.#offlineReapDeadline(),
     ].filter((t): t is number => t !== null);
     return ts.length === 0 ? null : Math.min(...ts);

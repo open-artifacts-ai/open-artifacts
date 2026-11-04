@@ -6,8 +6,8 @@ import { IsoTimeSchema } from "./status.ts";
 /**
  * Renames (#393, ported from OpenBus R393a). No version gate: the hub sends
  * roster `former_names` and a former-name receipt `to_name` only to a socket
- * whose `hello` listed `BUS_CAPS.rename` (caps.ts). Until the hub handles
- * `rename` (R393b) it answers it with `error bad_frame`.
+ * whose `hello` listed `BUS_CAPS.rename` (caps.ts). BusHub handles `rename`
+ * since R393b.
  */
 
 /** Pinned `error` messages for `rename` refusals. Clients may match on them. */

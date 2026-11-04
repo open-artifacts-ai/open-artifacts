@@ -1,6 +1,5 @@
 // Ported from OpenBus apps/server/test/hub.offline-reap.test.ts (open-bus #442).
-// Dropped: the former-names/rename-log test (this hub has no rename tables
-// yet; R393b). Added: wipe keeps the column.
+// Dropped: nothing. Added: wipe keeps the column, and closeAll's kinds (#1350).
 // A machine offline for over OFFLINE_REAP_MS (24 h) has its live agents
 // closed by the alarm, exactly as agent_down closes one. machines
 // .disconnected_at records when its last socket went; a connect clears it; a
@@ -9,7 +8,11 @@
 // next wake, so a deploy never reaps at once. Time is BusHub.setTestClock,
 // always set ahead of real time and reset after each test.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import type { ClientFrame, ServerFrame } from "@oa/bus-protocol";
+import {
+  BUS_CAPS,
+  type ClientFrame,
+  type ServerFrame,
+} from "@oa/bus-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { BusHub, OFFLINE_REAP_MS, SWEEP_BATCH } from "../../src/bus/hub.js";
 import { busCloseKind } from "../../src/services/bus.js";
@@ -49,9 +52,13 @@ const base = () => Date.now() + 3_600_000 + ++seq * 1000;
 type Roster = Extract<ServerFrame, { type: "roster" }>;
 type Receipt = Extract<ServerFrame, { type: "receipt" }>;
 
-async function connect(token: string): Promise<Daemon> {
+async function connect(token: string, renames = false): Promise<Daemon> {
   const d = await daemon(token);
-  d.send(hello(id("h")));
+  d.send(
+    renames
+      ? { ...hello(id("h")), caps: [BUS_CAPS.rename] }
+      : hello(id("h")),
+  );
   await waitFor(d, "hello_ok");
   return d;
 }
@@ -239,6 +246,62 @@ describe("offline reap (open-bus #422)", () => {
     expect(await reg(d2, "r", name, n)).toBe(name);
     expect(stateOf(await list(d2, "r"), name)).toBe("live");
     d2.close();
+  });
+
+  it("drops a reaped agent's former names and rename log", async () => {
+    const t0 = base();
+    await setClock(t0);
+    const m = await machine("Renamed");
+    const n = ns("fn");
+    const d = await connect(m.token, true);
+    const old = uniq("Old");
+    await reg(d, "f", old, n);
+    const fid = id("r");
+    const now = uniq("New");
+    d.send({
+      v: 1,
+      id: fid,
+      type: "rename",
+      agent_ref: "f",
+      proposed_name: now,
+    });
+    expect((await waitFor(d, "renamed")).bus_name).toBe(now);
+    const agentId = await inHub(
+      (_, s) =>
+        s.storage.sql
+          .exec("select id from agents where name = ?", now)
+          .toArray()[0]?.id as string,
+    );
+    // Kept past the reap, so only the close can drop them.
+    await inHub((_, s) => {
+      s.storage.sql.exec(
+        "update former_names set expires_at = ? where agent_id = ?",
+        t0 + 10 * OFFLINE_REAP_MS,
+        agentId,
+      );
+      s.storage.sql.exec(
+        "update rename_rl set at = ? where agent_id = ?",
+        t0 + 10 * OFFLINE_REAP_MS,
+        agentId,
+      );
+    });
+    const count = (table: string) =>
+      inHub(
+        (_, s) =>
+          s.storage.sql
+            .exec(
+              `select count(*) as n from ${table} where agent_id = ?`,
+              agentId,
+            )
+            .toArray()[0]?.n as number,
+      );
+    expect(await count("former_names")).toBe(1);
+    expect(await count("rename_rl")).toBeGreaterThan(0);
+    await goOffline(d, m.id);
+    await alarmAtTime(t0 + OFFLINE_REAP_MS);
+    expect(await liveOf(m.id)).toEqual([]);
+    expect(await count("former_names")).toBe(0);
+    expect(await count("rename_rl")).toBe(0);
   });
 
   it("an offline machine with no live agents arms no reap deadline", async () => {
