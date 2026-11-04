@@ -1924,4 +1924,154 @@ describe("the chains run at once (startChains)", () => {
     expect(run.s.cleanup).toEqual([]);
     expect(live(f)).toEqual([]);
   });
+
+  it("rl-l's create that never finishes: P20 and P22 infra at one job wait; the tail doesn't wait on it again; the run's cleanup still removes rl-l, or fails naming it", async () => {
+    const f = fakeApi();
+    f.faults.add("rll_create_stuck");
+    const pat = await bringUp(f);
+    const run = new Run(CONFIG, { ...f.io, rlAPat: () => pat });
+    const plan = startChains(run);
+    const reason = async (id: ProbeId) =>
+      (plan.outcomes.get(id) as Promise<Outcome>).then(
+        (o) => o,
+        (e: Error) => e.message,
+      );
+    const p20 = await reason("P20");
+    expect(p20).toMatch(
+      /^infra: rl-l setup: R15 \S+: still running at upload after 1200 s$/,
+    );
+    expect(await reason("P22")).toBe(p20);
+    const rll = bySlug(f, "rl-l-");
+    const create = [...f.jobs.values()].find(
+      (j) => j.installId === rll?.id && j.kind === "create",
+    );
+    expect(create?.status).toBe("running");
+    expect(run.s.rllCreateTimedOut).toBe(create?.id);
+    const polls = () =>
+      f.log.filter((u) => u.endsWith(`/jobs/${create?.id}`)).length;
+    const once = polls();
+    expect(once).toBeGreaterThan(1);
+    for (const r of plan.outcomes.values()) await r.catch(() => undefined);
+    await plan.settled;
+    // No second wait: the tail made no R15 read of the create, and sent no
+    // delete or purge for rl-l. rl-l stays listed for the run's cleanup.
+    expect(polls()).toBe(once);
+    expect(
+      f.log.some(
+        (u) =>
+          u.endsWith(`/installs/${rll?.id}/delete`) ||
+          u.endsWith(`/installs/${rll?.id}/purge`),
+      ),
+    ).toBe(false);
+    expect(run.s.cleanup).toContainEqual({ slug: "rl-l-1234" });
+    // Every other chain and P33 still pass.
+    const out = new Map<ProbeId, Outcome | string>();
+    for (const [id] of plan.outcomes) out.set(id, await reason(id));
+    expect(without(levels(out), ["P20", "P21", "P22"])).toEqual(
+      without(HAPPY, ["P20", "P21", "P22"]),
+    );
+    // Still running at the run's end: the cleanup fails naming rl-l and
+    // leaves it listed (a leftover keeps the run red).
+    await expect(cleanupInstalls(run)).rejects.toThrow(
+      /cleanup rl-l-1234: R15 \S+: still running at upload after 1200 s/,
+    );
+    expect(run.s.cleanup).toContainEqual({ slug: "rl-l-1234" });
+    expect(rll?.state).not.toBe("deleted");
+    // Once it ends, the cleanup removes it.
+    f.faults.delete("rll_create_stuck");
+    await cleanupInstalls(run);
+    expect(run.s.cleanup).toEqual([]);
+    expect(live(f)).toEqual([]);
+  });
+
+  it("the after step starts once every chain's probes are done, without waiting for a tail; settled still waits for the tail", async () => {
+    const run = new Run(CONFIG, fakeApi().io);
+    const order: string[] = [];
+    let endTail = () => {};
+    const tailHeld = new Promise<void>((r) => {
+      endTail = r;
+    });
+    let endSlow = () => {};
+    const slowHeld = new Promise<void>((r) => {
+      endSlow = r;
+    });
+    const step =
+      (name: string, wait?: Promise<void>) => async (): Promise<Outcome> => {
+        order.push(`${name} start`);
+        if (wait) await wait;
+        order.push(`${name} end`);
+        return { level: "pass" };
+      };
+    const plan = startChains(run, {
+      probes: [
+        { id: "P901", title: "tailed chain", run: step("P901") },
+        { id: "P903", title: "slow chain", run: step("P903", slowHeld) },
+        { id: "P904", title: "after", run: step("P904") },
+      ],
+      chains: [
+        {
+          name: "a",
+          probes: ["P901"],
+          tail: async () => {
+            order.push("tail start");
+            await tailHeld;
+            order.push("tail end");
+          },
+        },
+        { name: "b", probes: ["P903"] },
+      ],
+      after: ["P904"],
+    });
+    let settled = false;
+    void plan.settled.then(() => {
+      settled = true;
+    });
+    await plan.outcomes.get("P901");
+    await new Promise((r) => setTimeout(r, 0));
+    // Not before every chain's probes are done.
+    expect(order).not.toContain("P904 start");
+    endSlow();
+    await expect(plan.outcomes.get("P904")).resolves.toEqual({
+      level: "pass",
+    });
+    // The tail is still running: the after step didn't wait for it.
+    expect(order).toContain("tail start");
+    expect(order).not.toContain("tail end");
+    expect(settled).toBe(false);
+    endTail();
+    await plan.settled;
+    expect(order.indexOf("P903 end")).toBeLessThan(order.indexOf("P904 start"));
+    expect(order.indexOf("P904 end")).toBeLessThan(order.indexOf("tail end"));
+  });
+
+  it("P33 checks only the jobs accepted before it starts, so a tail's cleanup jobs can't race it", async () => {
+    const f = fakeApi();
+    const { out, run } = await runChains(f);
+    expect(out.get("P33")).toEqual({
+      level: "pass",
+      note: `${run.s.jobIds.length} job(s)`,
+    });
+    const p33 = PROBES.find((p) => p.id === "P33") as (typeof PROBES)[number];
+    // A job id added while P33 reads (no job.accepted row: not this run's)
+    // is not judged by that P33.
+    let added = false;
+    const racing = new Run(CONFIG, {
+      ...f.io,
+      fetch: (async (u: string, init?: RequestInit) => {
+        const r = await f.io.fetch(u, init);
+        if (!added && String(u).includes("/audit?")) {
+          added = true;
+          racing.s.jobIds.push("01RACINGTAILJOB0000000000");
+        }
+        return r;
+      }) as unknown as typeof fetch,
+    });
+    racing.s.actor = run.s.actor;
+    racing.s.jobIds.push(...run.s.jobIds);
+    await expect(p33.run(racing)).resolves.toEqual({
+      level: "pass",
+      note: `${run.s.jobIds.length} job(s)`,
+    });
+    expect(added).toBe(true);
+  });
 });

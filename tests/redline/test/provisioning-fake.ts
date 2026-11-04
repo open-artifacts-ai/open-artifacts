@@ -71,6 +71,8 @@ interface FJob {
   owner: string;
   args: Record<string, unknown>;
   failAt?: { step: string; code: string };
+  /** Never leaves this step while `stuckWhile` holds. */
+  stuckAt?: { step: string; stuckWhile: () => boolean };
   sealed: string | null;
   sealedRead: boolean;
   onStep?: (step: string) => void;
@@ -113,6 +115,8 @@ export type Fault =
   | "prod_live"
   /** rl-l's create fails at upload (as a Cloudflare API error would). */
   | "rll_create_failed"
+  /** rl-l's create stays running at upload while the fault is set. */
+  | "rll_create_stuck"
   | "rll_old_version"
   | "p20_content_serving"
   | "p21_stays_paused";
@@ -342,6 +346,7 @@ export function fakeApi(): FakeApi {
       }
       return;
     }
+    if (j.stuckAt?.step === step && j.stuckAt.stuckWhile()) return;
     j.onStep?.(step);
     j.stepIndex++;
     if (j.stepIndex >= j.steps.length - 1) {
@@ -504,6 +509,12 @@ export function fakeApi(): FakeApi {
           : faults.has("rll_create_failed") && i.slug.startsWith("rl-l-")
             ? { step: "upload", code: "cf_api_error" }
             : undefined,
+        stuckAt: i.slug.startsWith("rl-l-")
+          ? {
+              step: "upload",
+              stuckWhile: () => faults.has("rll_create_stuck"),
+            }
+          : undefined,
         onStep: (s) => {
           if (s === "route") i.mode = "serving";
           if (faults.has("p15_mode_early") && s === "admit") i.mode = "serving";
