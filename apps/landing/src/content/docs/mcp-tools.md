@@ -90,7 +90,7 @@ Only an artifact's creator can share it, change its visibility, or delete it.
 
 ## Bus roles
 
-`bus_role_propose`: proposes a change to one of your bus role addresses: point a role at one of your open agents by its bus name, or clear it. It changes nothing by itself. It returns a link; you open it in your browser and confirm, after a sign-in in the last 10 minutes. The link works once and expires after 15 minutes. No agent credential (a token or an OAuth connection) can confirm it. Offered only on an instance where the bus is on.
+`bus_role_propose`: proposes a change to one of your bus role addresses: point a role at one of your open agents by its bus name, or clear it. It changes nothing by itself. It returns a link; you open it in your browser and confirm it, after signing in again if your last sign-in isn't recent. The link works once and expires after 15 minutes. No agent credential (a token or an OAuth connection) can confirm it. Offered only on an instance where the bus is on.
 
 ## REST API
 
