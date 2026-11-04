@@ -38,8 +38,6 @@
     { "tag": "v1", "new_sqlite_classes": ["ArtifactRuntime"] },
     { "tag": "v2", "new_sqlite_classes": ["UserPresence"] },
     { "tag": "v3", "new_sqlite_classes": ["DirectorySync"] },
-    // #1291: BusHub ships unbound one release before anything binds it
-    // (BUS_HUB, a follow-up PR); until then every /bus route is 404.
     { "tag": "v4", "new_sqlite_classes": ["BusHub"] }
   ],
   "ratelimits": [
