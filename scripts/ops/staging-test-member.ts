@@ -10,6 +10,8 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -43,7 +45,8 @@ export type Role = (typeof ROLES)[number];
 export const emailFor = (role: Role): string =>
   role === "admin" ? ADMIN_EMAIL : EMAIL;
 
-export const HELP = `Usage: node scripts/ops/staging-test-member.ts [--role member|admin] [--mcp]
+export const HELP = `Usage: node scripts/ops/staging-test-member.ts [--role member|admin]
+       node scripts/ops/staging-test-member.ts --role admin --mcp
        node scripts/ops/staging-test-member.ts --revoke
 
 Signs an agent in to the staging install rl-agents as ${EMAIL}
@@ -65,12 +68,14 @@ lasts until its cookie expires (7 days). Delete the storage-state files and
 MCP configs when you are done.
 
   --role member|admin  the session's role (default member); owner is refused
-  --mcp                also write an MCP client config for ${MCP_URL}
-                       holding the PAT (Authorization: Bearer), as a new
-                       0600 file under ~/.oa-redline/rl-agents/ (0700); it
-                       refuses any place inside a git work tree. The PAT
-                       acts as the red-line admin test user, whatever --role
-                       says
+  --mcp                with --role admin only, since the PAT is the red-line
+                       admin test user's: also write an MCP client config
+                       for ${MCP_URL} holding the PAT
+                       (Authorization: Bearer), as a new 0600 file under
+                       ~/.oa-redline/rl-agents/ (0700). Before the mint it
+                       refuses a place inside a git work tree it can find
+                       (a .git above it); a bare repo whose work tree is
+                       home (git --git-dir ~/.dotfiles) is not detected
   --revoke             dispatch with revoke: true instead: rotate the hook
                        key to one nobody holds and revoke the PATs; writes
                        nothing
@@ -100,6 +105,10 @@ export function parseArgs(argv: readonly string[]): Args | Error {
   }
   if (out.revoke && (roleSet || out.mcp))
     return new Error("--revoke takes no --role or --mcp");
+  if (out.mcp && out.role !== "admin")
+    return new Error(
+      "--mcp needs --role admin: the PAT is admin whatever the role",
+    );
   return out;
 }
 
@@ -262,28 +271,47 @@ export function assertOutsideGit(base: string): void {
 }
 
 /**
- * Writes the MCP config to a new 0600 file named for this mint in `base`
- * (made 0700, as are any parents it makes); its path. Refuses a base inside a git work
- * tree, checked before anything is made and again on the real path after.
+ * Makes `base` ready for MCP configs, before any mint: refuses it inside a
+ * git work tree, makes it (and any parents it makes) 0700, then re-checks
+ * the real path, that it is a directory, and sets it 0700. Its real path.
  */
-export function writeMcpConfig(
-  config: unknown,
-  base: string,
-  name: string,
-): string {
+export function prepareMcpDir(base: string): string {
   assertOutsideGit(base);
-  mkdirSync(base, { recursive: true, mode: 0o700 });
-  const real = realpathSync(base);
+  let real: string;
+  try {
+    mkdirSync(base, { recursive: true, mode: 0o700 });
+    real = realpathSync(base);
+  } catch (e) {
+    const code = (e as { code?: unknown }).code;
+    throw new Error(`--mcp cannot use ${base}: ${String(code ?? e)}`);
+  }
   assertOutsideGit(real);
+  if (!statSync(real).isDirectory())
+    throw new Error(`--mcp cannot use ${base}: not a directory`);
   chmodSync(real, 0o700);
-  const file = join(real, name);
+  return real;
+}
+
+/** The config as a new 0600 file `name` in a prepared `dir`; its path. */
+export function writeMcpFile(
+  dir: string,
+  name: string,
+  config: unknown,
+): string {
+  const file = join(dir, name);
   writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, {
     mode: 0o600,
     flag: "wx",
   });
-  chmodSync(file, 0o600);
   return file;
 }
+
+/** prepareMcpDir then writeMcpFile; the file's path. */
+export const writeMcpConfig = (
+  config: unknown,
+  base: string,
+  name: string,
+): string => writeMcpFile(prepareMcpDir(base), name, config);
 
 export type Deps = {
   gh: (...args: string[]) => Promise<string>;
@@ -341,6 +369,9 @@ async function dispatchAndWait(
     ).trim();
   }
   if (!id) throw new Error("the dispatched run did not appear");
+  // A run id names files; only digits.
+  if (!/^\d+$/.test(id))
+    throw new Error("the dispatched run's id is not a number");
   await d.gh("run", "watch", id, "-R", REPO, "--exit-status");
   return { id, log: await d.gh("run", "view", id, "-R", REPO, "--log") };
 }
@@ -362,8 +393,9 @@ export async function main(argv: readonly string[], d: Deps): Promise<number> {
     d.log(JSON.stringify({ revoked: "rl-agents", run: run.id }));
     return 0;
   }
-  // Before the mint: a mint revokes everyone's earlier PATs.
-  if (args.mcp) assertOutsideGit(d.mcpBase);
+  // All directory setup before the mint, which revokes everyone's earlier
+  // PATs; after it, the only file step is the config's own wx write.
+  const mcpDir = args.mcp ? prepareMcpDir(d.mcpBase) : null;
   const { privateKey, publicKey } = generateKeyPairSync("x25519");
   const pub = publicKey.export({ format: "jwk" }).x as string;
   const run = await dispatchAndWait(d, [
@@ -384,12 +416,23 @@ export async function main(argv: readonly string[], d: Deps): Promise<number> {
     expiresAt,
     run: run.id,
   };
-  if (args.mcp && pat)
-    out.mcpConfig = writeMcpConfig(
-      mcpConfig(pat),
-      d.mcpBase,
-      `mcp-${run.id}-${d.now()}.json`,
-    );
+  if (mcpDir && pat) {
+    if (!/^\d+$/.test(run.id)) throw new Error("the run id is not a number");
+    try {
+      out.mcpConfig = writeMcpFile(
+        mcpDir,
+        `mcp-${run.id}-${d.now()}.json`,
+        mcpConfig(pat),
+      );
+    } catch (e) {
+      // Don't orphan the session: remove the state this run just wrote.
+      rmSync(dirname(file), { recursive: true, force: true });
+      const code = (e as { code?: unknown }).code;
+      throw new Error(
+        `--mcp could not write its config (${String(code ?? "error")}); the storage state was deleted`,
+      );
+    }
+  }
   d.log(JSON.stringify(out));
   return 0;
 }

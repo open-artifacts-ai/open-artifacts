@@ -10,6 +10,7 @@ import {
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -197,6 +198,9 @@ describe("parseArgs", () => {
       ["--role"],
       ["--role", "admin", "--role", "member"],
       ["--revoke", "--mcp"],
+      ["--mcp"],
+      ["--mcp", "--role", "member"],
+      ["--role=member", "--mcp"],
       ["--revoke", "--role", "member"],
       ["--slug", "rl-a"],
       ["extra"],
@@ -208,7 +212,8 @@ describe("parseArgs", () => {
     expect(HELP).toContain("cuts off");
     expect(HELP).toContain("--revoke");
     expect(HELP).toContain("--role member|admin");
-    expect(HELP).toContain("--mcp");
+    expect(HELP).toContain("--role admin --mcp");
+    expect(HELP).toContain("--git-dir ~/.dotfiles) is not detected");
     expect(HELP).toContain("disconnects an MCP agent");
     expect(HELP).toContain("is not cut off");
     expect(HELP).toContain("Delete the storage-state files and\nMCP configs");
@@ -572,7 +577,13 @@ describe("main, with gh and fetch mocked", () => {
   });
 
   it("bad arguments: exit 2, the help, no dispatch", async () => {
-    for (const a of [["--role", "owner"], ["--role=superadmin"], ["--x"]]) {
+    for (const a of [
+      ["--role", "owner"],
+      ["--role=superadmin"],
+      ["--x"],
+      ["--mcp"],
+      ["--mcp", "--role", "member"],
+    ]) {
       const { d, lines, ghCalls } = deps();
       expect(await main(a, d), a.join(" ")).toBe(2);
       expect(lines[0]).toContain("Usage:");
@@ -646,7 +657,7 @@ describe("main, with gh and fetch mocked", () => {
     const inRepo = mkdtempSync(join(root, "scripts/ops/.oa-tm-mcp-"));
     try {
       d.mcpBase = join(inRepo, "rl-agents");
-      await expect(main(["--mcp"], d)).rejects.toThrow(
+      await expect(main(["--mcp", "--role", "admin"], d)).rejects.toThrow(
         /inside the git work tree/,
       );
       expect(ghCalls).toHaveLength(0);
@@ -658,13 +669,85 @@ describe("main, with gh and fetch mocked", () => {
     }
   });
 
+  const ADMIN_MCP = ["--role", "admin", "--mcp"];
+  const oaRedline = () => join(home, ".oa-redline");
+
+  it("--mcp with ~/.oa-redline a dangling symlink: refused before any gh call", async () => {
+    const { d, ghCalls, fetchCalls } = deps();
+    symlinkSync(join(home, "nowhere"), oaRedline());
+    await expect(main(ADMIN_MCP, d)).rejects.toThrow(/--mcp cannot use/);
+    expect(ghCalls).toHaveLength(0);
+    expect(fetchCalls).toHaveLength(0);
+    expect(existsSync(join(home, "nowhere"))).toBe(false);
+    expect(readdirSync(tmp)).toEqual([]);
+  });
+
+  it("--mcp with ~/.oa-redline a regular file: refused before any gh call", async () => {
+    const { d, ghCalls } = deps();
+    writeFileSync(oaRedline(), "not a directory");
+    await expect(main(ADMIN_MCP, d)).rejects.toThrow(/--mcp cannot use/);
+    expect(ghCalls).toHaveLength(0);
+    expect(readFileSync(oaRedline(), "utf8")).toBe("not a directory");
+  });
+
+  it("--mcp with the base a regular file: refused before any gh call", async () => {
+    const { d, ghCalls } = deps();
+    mkdirSync(oaRedline(), { mode: 0o700 });
+    writeFileSync(d.mcpBase, "x");
+    await expect(main(ADMIN_MCP, d)).rejects.toThrow(/--mcp cannot use/);
+    expect(ghCalls).toHaveLength(0);
+  });
+
+  it("--mcp with the base already there as 0755: it ends up 0700", async () => {
+    const { d, lines } = deps();
+    mkdirSync(d.mcpBase, { recursive: true });
+    chmodSync(d.mcpBase, 0o755);
+    expect(await main(ADMIN_MCP, d)).toBe(0);
+    expect(statSync(d.mcpBase).mode & 0o777).toBe(0o700);
+    const out = JSON.parse(lines[0] as string);
+    expect(statSync(out.mcpConfig).mode & 0o777).toBe(0o600);
+  });
+
+  it("a run id that is not a number: no watch, no fetch, no file", async () => {
+    const { d, ghCalls, fetchCalls } = deps();
+    const gh = d.gh;
+    d.gh = async (...a: string[]) =>
+      a[0] === "run" && a[1] === "list" ? "../evil\n" : gh(...a);
+    await expect(main(ADMIN_MCP, d)).rejects.toThrow(/not a number/);
+    expect(ghCalls.some((a) => a[1] === "watch" || a[1] === "view")).toBe(
+      false,
+    );
+    expect(fetchCalls).toHaveLength(0);
+    expect(readdirSync(tmp)).toEqual([]);
+    expect(readdirSync(d.mcpBase)).toEqual([]);
+  });
+
+  it("a config write that fails after the mint deletes the storage state and names no secret", async () => {
+    const { d } = deps();
+    mkdirSync(d.mcpBase, { recursive: true, mode: 0o700 });
+    // The name this mint will use, already taken: the wx write fails.
+    writeFileSync(join(d.mcpBase, `mcp-4242-${NOW}.json`), "taken");
+    const err = await main(ADMIN_MCP, d).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(err?.message).toMatch(/EEXIST.*storage state was deleted/);
+    expect(err?.message).not.toContain(FAKE_PAT);
+    expect(err?.message).not.toContain(FAKE_HOOK);
+    expect(readdirSync(tmp)).toEqual([]);
+    expect(readFileSync(join(d.mcpBase, `mcp-4242-${NOW}.json`), "utf8")).toBe(
+      "taken",
+    );
+  });
+
   it("--mcp with no PAT in the seal: an error naming no secret, no file", async () => {
     const { d, fetchCalls } = deps({ noPat: true });
-    await expect(main(["--mcp"], d)).rejects.toThrow(
+    await expect(main(["--mcp", "--role", "admin"], d)).rejects.toThrow(
       /^the sealed credentials have no PAT$/,
     );
     expect(fetchCalls).toHaveLength(0);
     expect(readdirSync(tmp)).toEqual([]);
-    expect(existsSync(join(home, ".oa-redline"))).toBe(false);
+    // The directory was set up before the mint; no config went in it.
+    expect(readdirSync(d.mcpBase)).toEqual([]);
   });
 });
