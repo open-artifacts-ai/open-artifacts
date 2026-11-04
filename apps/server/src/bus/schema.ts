@@ -22,7 +22,8 @@
  * machines mirrors the D1 bus_machines rows this hub accepted a socket for
  * (id, label, revoked_at): the token and its hash live only in D1. Open
  * Artifacts owns sign-in and the device flow, so OpenBus's device_codes,
- * oidc_states, roles, linked_apps and card_rl tables are not here. meta holds
+ * oidc_states, linked_apps and card_rl tables are not here (roles came back
+ * as role addresses, #1296). meta holds
  * the drain queues and the revocation time (BusHub.closeAll).
  */
 export const HUB_SCHEMA = `
@@ -139,10 +140,12 @@ create index if not exists send_keys_due on send_keys(created_at);
 -- R393b (#1325, OpenBus #393): names an agent left by a rename, which still
 -- reach it until expires_at (LIMITS.formerNameGraceMs). kind is the left
 -- name's kind: 'chosen' rows are reserved (nameTaken) while live, 'default'
--- rows only resolve. An agent's rows go when it closes or is revoked, or
--- moves namespace or flips global; expired rows are purged by the alarm.
--- Never equal (case-insensitively) to the agent's current name, and distinct
--- per agent (lname). New tables, so create-if-not-exists adds them to an
+-- rows only resolve (their minted_names row keeps the name from anyone
+-- else). An agent's rows go when it closes or is revoked, or moves namespace
+-- or flips global; expired rows are purged by the alarm. Never equal
+-- (case-insensitively) to the agent's current name, distinct per agent
+-- (lname), at most LIMITS.maxFormerNames per agent (OpenBus #446: an older
+-- one is dropped). New tables, so create-if-not-exists adds them to an
 -- existing hub on its next wake; wipe() deletes them with everything else.
 create table if not exists former_names (
   agent_id text not null,
@@ -157,8 +160,9 @@ create index if not exists former_names_agent on former_names(agent_id, expires_
 create index if not exists former_names_due on former_names(expires_at);
 
 -- R393b: every name minted for a default name_kind (<base>-<4 hex>). Kept
--- for good: a minted name is never minted again, for any agent; its own
--- agent gets it back for the same base while no one else holds it.
+-- for good: a minted name is never minted again, and never assigned to any
+-- other agent (nameTaken, OpenBus #446; the primary key serves its lookup);
+-- its own agent gets it back.
 create table if not exists minted_names (
   org_id text not null,
   lname text not null,
@@ -171,7 +175,9 @@ create table if not exists minted_names (
 create index if not exists minted_names_agent on minted_names(agent_id, lbase, created_at);
 
 -- R393b: the rename rate limit, a sliding log: one row per name change
--- (no-ops excluded), LIMITS.renamesPerHour per agent per rolling hour.
+-- (no-ops excluded; a live agent_up's included), LIMITS.renamesPerHour per
+-- agent per rolling hour. Kept through a close (OpenBus #446), dropped on a
+-- revoke, purged by the alarm.
 create table if not exists rename_rl (
   agent_id text not null,
   at integer not null
@@ -179,6 +185,23 @@ create table if not exists rename_rl (
 create index if not exists rename_rl_agent on rename_rl(agent_id, at);
 create index if not exists rename_rl_at on rename_rl(at);
 
+-- #1296 role addresses: a member-set alias (name, lname = lower(name)) in one
+-- namespace pointing at one agent by id (agent_id, null: vacated), so it
+-- follows a rename. A close leaves agent_id: the role reads vacant while its
+-- holder isn't open in the namespace (bus/roles.ts). Role names share the
+-- agent-name space of their namespace (nameTaken, putRole). A new table, so
+-- create-if-not-exists adds it on the next wake; wipe() deletes it.
+create table if not exists roles (
+  id text primary key,
+  org_id text not null,
+  namespace text not null,
+  name text not null,
+  lname text not null,
+  agent_id text,
+  set_at integer not null,
+  unique (org_id, namespace, lname)
+);
+create index if not exists roles_lname on roles(org_id, lname);
 
 create table if not exists meta (
   org_id text not null,
@@ -332,6 +355,13 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
          (select 1 from receipts r where r.id = send_keys.msg_id and r.state = 'pending')`,
     );
   }
+  // #1296: send_keys.via_role is 1 when the send resolved through a role
+  // address, so a resend repeats the role hit's to_name only to a socket
+  // with BUS_CAPS.roles. Backfilled 0: no key predates roles.
+  if (!keyCols.has("via_role"))
+    sql.exec(
+      "alter table send_keys add column via_role integer not null default 0",
+    );
   sql.exec(HUB_SCHEMA_B14_INDEXES);
   sql.exec(HUB_SCHEMA_PURGE_INDEXES);
 }

@@ -1,11 +1,23 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
-import { AUDIT_ACTIONS, actionPhrase } from "../src/pages/Audit";
+import {
+  AUDIT_ACTIONS,
+  actionPhrase,
+} from "../../apps/admin/src/pages/audit-actions";
 
+// This lives in the root suite, not in apps/admin, on purpose (#1353): it reads
+// five packages' sources with fs, which leaves no import for pnpm's
+// affected-only PR selection to follow, so inside a package it never ran on the
+// changes it checks. The root suite runs on every pull request. It imports
+// admin's plain-data audit-actions.ts, not the page, so the root tsconfig can
+// typecheck it. Moving it back under a package brings that gap back. It is on
+// scripts/ci/private-paths.txt, because it cannot run without the private
+// writers it scans, and cannot typecheck without admin's audit-actions.ts,
+// which it imports (#1056).
 // R17 filters on one exact action, so an option nothing writes returns nothing
 // for ever: it happened with the install.* names. This reads the writers.
-const repo = resolve(__dirname, "../../..");
+const repo = resolve(__dirname, "../..");
 const files = (dir: string): string[] =>
   readdirSync(dir).flatMap((f) => {
     const p = join(dir, f);

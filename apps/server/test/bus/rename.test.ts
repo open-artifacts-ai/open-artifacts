@@ -1,5 +1,6 @@
 // #1291 / #1323 (open-bus #426): a repeat agent_up for a live agent renames
-// it, as OpenBus's agentUp does; the client relies on it.
+// it, as OpenBus's agentUp does; the client relies on it. Since OpenBus #446
+// it is a rename like `rename`: the old name is a former name.
 import { describe, expect, it } from "vitest";
 import { machine, ns, ready, up, waitFor } from "./helpers.js";
 
@@ -36,7 +37,8 @@ describe("repeat agent_up renames a live agent", () => {
     expect(del.to_ref).toBe("ref-a");
     expect(del.body).toBe("hello b");
 
-    // The old name is no longer an address.
+    // The old name is a former name (OpenBus #446): it still reaches the
+    // agent for the grace.
     d.send({
       v: 1,
       id: "s2",
@@ -45,8 +47,10 @@ describe("repeat agent_up renames a live agent", () => {
       to_name: "a",
       body: "hello a",
     });
-    const r2 = await waitFor(d, "receipt");
-    expect(r2.state).toBe("refused");
+    expect((await waitFor(d, "receipt")).state).toBe("pending");
+    const del2 = await waitFor(d, "deliver");
+    expect(del2.to_ref).toBe("ref-a");
+    expect(del2.body).toBe("hello a");
     d.close();
   });
 });

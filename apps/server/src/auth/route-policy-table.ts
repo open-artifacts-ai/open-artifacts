@@ -282,6 +282,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // In CAPPED_ALLOWED: a capped caller can always revoke.
   "DELETE /api/v1/bus/machines/:id": { user: "the caller's bus machines" },
   "GET /api/v1/bus/agents": { org: "mcp.connect" },
+  // #1296 role addresses; PUT and DELETE browser sessions only (handler).
+  "GET /api/v1/bus/roles": { org: "mcp.connect" },
+  "PUT /api/v1/bus/roles": { org: "mcp.connect" },
+  "DELETE /api/v1/bus/roles/:id": { org: "mcp.connect" },
   "GET /api/v1/oauth-clients": { user: "the caller's grants" },
   "PATCH /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
   "DELETE /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },

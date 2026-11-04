@@ -27,6 +27,9 @@ packages/gh-oidc
 # Hosted CLI, red-line, hosted constants, spikes
 scripts/hosted
 tests/redline
+# The audit-actions check reads the hosted writers and admin's action list, so
+# it cannot run, and cannot even typecheck, without them (#1353).
+scripts/audit
 .github/hosted
 spikes/provapi-staging
 

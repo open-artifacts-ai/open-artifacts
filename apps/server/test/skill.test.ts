@@ -9,7 +9,12 @@ import {
 } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createPat } from "../src/auth/pat.js";
-import { INSTRUCTIONS, planText, sizeText } from "../src/mcp/instructions.js";
+import {
+  INSTRUCTIONS,
+  LINK_RULE,
+  planText,
+  sizeText,
+} from "../src/mcp/instructions.js";
 import {
   SKILL_HASH,
   SKILL_HASH_NO_SPACES,
@@ -84,6 +89,21 @@ function toolSections(md: string): Map<string, string> {
 }
 
 describe("skill.md drift", () => {
+  it("tells every page writer how links open", async () => {
+    const md = await skill();
+    const at = md.indexOf("\n## Writing pages\n");
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(md.indexOf("\n## Public interactive artifacts\n"));
+    const section = md.slice(at).split("\n## ")[1] ?? "";
+    // One sentence, shared with the publishing section: no second wording.
+    expect(section).toContain(LINK_RULE);
+    expect(section).not.toMatch(/every link/i);
+    // Plain links are not dead: the runtime hands them to the shell, which
+    // opens them (docs/security/security.md).
+    expect(section).not.toContain("does nothing when clicked");
+    expect(section).not.toContain("cannot navigate itself");
+  });
+
   // skill.generated.ts is gitignored and written by `pnpm gen` before every
   // test run, so these check the emitter, not a committed copy.
   it("the template renders deterministically", () => {
@@ -294,6 +314,19 @@ describe("skill.md drift", () => {
       if (plan === "free") expect(ins).not.toContain("1 MB per document");
     });
   }
+
+  it("states the link rule the runtime enforces, in the skill and INSTRUCTIONS", async () => {
+    for (const doc of [await skill(), INSTRUCTIONS("free")]) {
+      expect(doc).toContain(LINK_RULE);
+      // The old claim is false: plain links are handed to the shell, which
+      // opens them (docs/security/security.md).
+      expect(doc).not.toContain("links can't navigate the viewer page");
+      // A target skips the refusal; the rule says what that costs, in plain
+      // terms about where the link opens, not as a security claim.
+      expect(doc).toContain("a target just opens it instead");
+      expect(doc).not.toMatch(/security|bypass|cookie/i);
+    }
+  });
 
   it("says artifacts can link to each other, in the skill and INSTRUCTIONS", async () => {
     const line =

@@ -4,7 +4,7 @@
 
 import { agentClients, LIMITS, type Snippet } from "@oa/shared";
 import { z } from "zod";
-import { renderSections } from "./instructions.ts";
+import { LINK_RULE, renderSections } from "./instructions.ts";
 import {
   SECRET_LABELS,
   secretFile,
@@ -207,6 +207,10 @@ ${clientsSection()}
 ${tools(spaces)}
 
 ${renderSections(plan, (t) => `## ${t}\n`)}
+
+## Writing pages
+
+- ${LINK_RULE}
 
 ## Public interactive artifacts
 

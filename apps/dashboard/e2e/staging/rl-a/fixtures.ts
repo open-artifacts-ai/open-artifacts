@@ -16,6 +16,12 @@ import {
   type Page,
 } from "@playwright/test";
 import { gate } from "../gate";
+import {
+  clearTestStart,
+  hookFailure,
+  markTestStart,
+  paceT19Hook,
+} from "../hook-pace";
 import { sendRead } from "../retry";
 import { FETCH_MS, hookKey, rlA } from "../targets";
 
@@ -37,14 +43,19 @@ const post = (path: string, body: unknown, headers: Record<string, string>) =>
     signal: AbortSignal.timeout(FETCH_MS),
   });
 
-/** POST a /__test/* hook with rl-a's key: the raw response. */
-export const hookRes = (path: string, body: unknown = {}) =>
-  post(path, body, { authorization: `Bearer ${KEY}` });
+/**
+ * POST a /__test/* hook with rl-a's key: the raw response. Paced first
+ * (hook-pace.ts): every /__test/* call counts against RL_ANON.
+ */
+export async function hookRes(path: string, body: unknown = {}) {
+  await paceT19Hook(A.app);
+  return post(path, body, { authorization: `Bearer ${KEY}` });
+}
 
 /** POST a /__test/* hook with rl-a's key; throws with the status unless 2xx. */
 export async function hook<T>(path: string, body: unknown = {}): Promise<T> {
   const res = await hookRes(path, body);
-  if (!res.ok) throw new Error(`rl-a hook ${path}: ${res.status}`);
+  if (!res.ok) throw hookFailure(A.app, `rl-a hook ${path}`, res.status);
   return (await res.json()) as T;
 }
 
@@ -296,5 +307,20 @@ export async function needs(flow: string, min: string): Promise<void> {
   test.skip(why !== null, why ?? "");
 }
 
-export const test = base;
+/**
+ * T19's test: an auto fixture records each test's start, so a paced hook
+ * call's deadline (hook-pace.ts) is the test's own timeout.
+ */
+export const test = base.extend<{ hookClock: void }>({
+  hookClock: [
+    // biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructured first argument.
+    async ({}, use, testInfo) => {
+      markTestStart(testInfo);
+      await use();
+      // afterAll gets this TestInfo but its own timeout (hook-pace.ts).
+      clearTestStart(testInfo);
+    },
+    { auto: true },
+  ],
+});
 export { expect };

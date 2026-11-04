@@ -29,7 +29,7 @@ import {
   suffixName,
   utf8Bytes,
 } from "@oa/bus-protocol";
-import type { BusAgent } from "@oa/shared";
+import { BUS_ROLE_MAX, type BusAgent, type BusRole } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logError, logInfo } from "../log.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
@@ -40,6 +40,15 @@ import {
 } from "../services/bus.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
+import {
+  deleteRole,
+  listRoles,
+  type PutRoleResult,
+  putRole,
+  resolveRoleAnywhere,
+  resolveRoleIn,
+  roleTakenSql,
+} from "./roles.js";
 import {
   AGENT_COLS,
   type AgentRow,
@@ -63,8 +72,9 @@ import {
 // member (idFromName(busHubName(userId))). Dropped from the port: machines'
 // tokens and the device flow (D1 bus_machines and bus_device_codes, bus/*.ts),
 // the OIDC states and session generation (Open Artifacts' sign-in), the
-// dashboard socket feed (the dashboard polls REST), roles, agent cards,
-// linked apps and the client-version gates. org_id stays on every row, always
+// dashboard socket feed (the dashboard polls REST), card roles, agent cards,
+// linked apps and the client-version gates (role addresses came back in
+// #1296, bus/roles.ts). org_id stays on every row, always
 // OWNER_ORG_ID (Product: a constant for now).
 
 /** The one org id every hub row carries. */
@@ -214,12 +224,55 @@ const renameGated = (ws: WebSocket): boolean => {
 };
 
 /**
- * A receipt's `to_name`: the resolved agent's current name, only when the
- * send resolved through a former name (it differs from the name sent to,
- * beyond case), and only to a rename-capable socket.
+ * Reply ids (BUS_CAPS.ids): `deliver.from_id`, `send.to_id` and the
+ * `agent_gone` refusal go only to a socket whose hello listed it. Fails
+ * closed, like renameGated.
  */
-const viaFormer = (ws: WebSocket, sentTo: string, toName: string): boolean =>
-  renameGated(ws) && sentTo.toLowerCase() !== toName.toLowerCase();
+const idsGated = (ws: WebSocket | null): boolean => {
+  const caps = ws ? attachmentOf(ws)?.caps : undefined;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.ids);
+};
+
+/** What this hub supports, listed in `hello_ok.caps` to a hello that listed ids. */
+const HUB_CAPS = [BUS_CAPS.rename, BUS_CAPS.roles, BUS_CAPS.ids];
+
+/**
+ * Role addresses (#1296): `role_vacant` and a role hit's receipt `to_name`
+ * go only to a socket whose hello listed BUS_CAPS.roles. Fails closed, as
+ * renameGated does.
+ */
+const rolesGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.roles);
+};
+
+/**
+ * A receipt's `to_name`: the resolved agent's current name, only when the
+ * send resolved through a role address (`viaRole`), to a roles-capable
+ * socket, or through a former name (it differs from the name sent to,
+ * beyond case), to a rename-capable socket.
+ */
+const toNameShown = (
+  ws: WebSocket,
+  sentTo: string,
+  toName: string,
+  viaRole: boolean,
+): boolean =>
+  viaRole
+    ? rolesGated(ws)
+    : renameGated(ws) && sentTo.toLowerCase() !== toName.toLowerCase();
+
+/**
+ * The refusal reason a socket may see: `role_vacant` only on a roles-capable
+ * socket and `agent_gone` only on an ids-capable one (an older client's
+ * strict decoder refuses the reason, failing the whole frame); any other gets
+ * `unknown_agent`, as if the role or the agent did not exist.
+ */
+const wireReason = (ws: WebSocket, reason: RefusalReason): RefusalReason =>
+  (reason === "role_vacant" && !rolesGated(ws)) ||
+  (reason === "agent_gone" && !idsGated(ws))
+    ? "unknown_agent"
+    : reason;
 
 function machineOf(ws: WebSocket): string | null {
   return attachmentOf(ws)?.machineId ?? null;
@@ -533,8 +586,14 @@ function registeredAgent(
  * non-global's must be free in its namespace and among live globals.
  * R393b: a live agent's chosen former name in that same scope is taken too
  * (reserved for its grace); the agent's own former names are free to it.
+ * #1296: a role address in that scope is taken too (a role in the
+ * namespace; for a global, a role in any namespace), vacant or not.
  * Reservations are per member: each member has its own hub.
- * One statement on agents_live_lname and former_names_lname.
+ * OpenBus #446: a name minted for ANOTHER agent is taken in every scope, for
+ * good (a minted name is never handed to another agent again); its own agent
+ * may take it back. Default former names reserve nothing themselves: the
+ * minted_names row does. One statement on agents_live_lname,
+ * former_names_lname, the minted_names primary key and roles.
  */
 function nameTaken(
   sql: SqlStorage,
@@ -546,13 +605,16 @@ function nameTaken(
 ): boolean {
   const lname = name.toLowerCase();
   const scope = global ? "" : "and (a.namespace = ? or a.global = 1)";
+  const role = roleTakenSql(OWNER_ORG_ID, lname, namespace, global);
   return (
     one<{ x: number }>(
       sql,
       `select (exists (select 1 from agents a where a.org_id = ? and lower(a.name) = ? and a.live = 1 and a.id != ? ${scope})
            or exists (select 1 from former_names f join agents a on a.id = f.agent_id
                        where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind = 'chosen'
-                         and f.agent_id != ? and a.live = 1 ${scope})) as x`,
+                         and f.agent_id != ? and a.live = 1 ${scope})
+           or exists (select 1 from minted_names m where m.org_id = ? and m.lname = ? and m.agent_id != ?)
+           or ${role.sql}) as x`,
       OWNER_ORG_ID,
       lname,
       selfId,
@@ -562,6 +624,10 @@ function nameTaken(
       now,
       selfId,
       ...(global ? [] : [namespace]),
+      OWNER_ORG_ID,
+      lname,
+      selfId,
+      ...role.binds,
     )?.x === 1
   );
 }
@@ -574,13 +640,15 @@ const FORMER_PURGE_SQL =
 
 /**
  * R393b: a closed or revoked agent's former names go at once (the names
- * free), and its rename log with them (`closed`). A namespace move or global
- * flip drops only the former names.
+ * free); so do a namespace move's or global flip's. The rename log goes only
+ * on a revoke (`revoked`): OpenBus #446, a close keeps it, so a reopen (the
+ * same agent id) is still limited, and the alarm purges it by the rolling
+ * hour.
  */
 function dropNameState(
   sql: SqlStorage,
   agentIds: string[],
-  closed: boolean,
+  revoked: boolean,
 ): void {
   if (agentIds.length === 0) return;
   const ids = JSON.stringify(agentIds);
@@ -588,7 +656,7 @@ function dropNameState(
     "delete from former_names where agent_id in (select value from json_each(?))",
     ids,
   );
-  if (closed)
+  if (revoked)
     sql.exec(
       "delete from rename_rl where agent_id in (select value from json_each(?))",
       ids,
@@ -704,16 +772,15 @@ function mintName(
 /**
  * Writes the minted_names row of a freshly minted name, and drops the
  * agent's former name equal to its new name (a former name never equals the
- * current one, case-insensitively). Other agents' DEFAULT former names equal
- * to it, in the scope nameTaken checks, go too: they are unreserved, so the
- * new holder supersedes them, and no two agents ever hold one former name in
- * one scope (a chosen one is reserved, so it cannot be taken).
+ * current one, case-insensitively). Nothing of another agent's goes: its
+ * chosen former names are reserved and its default ones are names minted for
+ * it, which nameTaken never hands to anyone else (OpenBus #446), so the new
+ * name is never another agent's live former name in scope. Should two agents
+ * ever hold one former name in a scope, resolution refuses it as ambiguous.
  */
 function commitName(
   sql: SqlStorage,
   agentId: string,
-  namespace: string,
-  global: boolean,
   a: Assigned,
   now: number,
 ): void {
@@ -733,23 +800,177 @@ function commitName(
     agentId,
     lname,
   );
-  sql.exec(
-    `delete from former_names where org_id = ? and lname = ? and kind = 'default' and agent_id != ?
-       ${global ? "" : "and agent_id in (select id from agents where org_id = ? and (namespace = ? or global = 1))"}`,
-    OWNER_ORG_ID,
-    lname,
-    agentId,
-    ...(global ? [] : [OWNER_ORG_ID, namespace]),
-  );
 }
 
-/** Registers (or re-registers) an agent; returns the reply and changed namespaces. */
+/**
+ * R393b: whether the agent may change its name now: under
+ * LIMITS.renamesPerHour changes in the rolling hour (rename_rl, its expired
+ * rows dropped first).
+ */
+function renameAllowed(sql: SqlStorage, agentId: string, now: number): boolean {
+  sql.exec(
+    "delete from rename_rl where agent_id = ? and at <= ?",
+    agentId,
+    now - HOUR_MS,
+  );
+  const count =
+    one<{ n: number }>(
+      sql,
+      "select count(*) as n from rename_rl where agent_id = ?",
+      agentId,
+    )?.n ?? 0;
+  return count < LIMITS.renamesPerHour;
+}
+
+/**
+ * Who `lname` was minted for, from this agent's side: `self` (a default
+ * name), `other` (taken through the hole OpenBus #446 closed; never this
+ * agent's to keep) or null (never minted).
+ */
+function mintedFor(
+  sql: SqlStorage,
+  agentId: string,
+  lname: string,
+): "self" | "other" | null {
+  const owner = one<{ agentId: string }>(
+    sql,
+    "select agent_id as agentId from minted_names where org_id = ? and lname = ?",
+    OWNER_ORG_ID,
+    lname,
+  )?.agentId;
+  return owner === undefined ? null : owner === agentId ? "self" : "other";
+}
+
+/**
+ * OpenBus #449 B1: whether a change from `former` to `name` has room for the
+ * former-name row it leaves. A chosen former name is reserved and is never
+ * dropped inside its grace, so at LIMITS.maxFormerNames chosen rows in grace
+ * (not counting the two names involved: the new one's own row goes, the old
+ * one's is replaced) a change that leaves another chosen row is refused. A
+ * case-only change or a minted (default) former name always has room.
+ */
+function formerRoom(
+  sql: SqlStorage,
+  agentId: string,
+  former: string,
+  name: string,
+  now: number,
+): boolean {
+  const lformer = former.toLowerCase();
+  const lname = name.toLowerCase();
+  if (lformer === lname || mintedFor(sql, agentId, lformer) !== null)
+    return true;
+  const chosen =
+    one<{ n: number }>(
+      sql,
+      `select count(*) as n from former_names indexed by former_names_agent
+        where agent_id = ? and expires_at > ? and kind = 'chosen' and lname != ? and lname != ?`,
+      agentId,
+      now,
+      lformer,
+      lname,
+    )?.n ?? 0;
+  return chosen < LIMITS.maxFormerNames;
+}
+
+/** R393b: counts one name change in rename_rl; returns its purge time. */
+function countRename(sql: SqlStorage, agentId: string, now: number): number {
+  sql.exec("insert into rename_rl (agent_id, at) values (?, ?)", agentId, now);
+  return now + HOUR_MS;
+}
+
+/**
+ * R393b: records a name change from `former` to `name` (they differ
+ * exactly; formerRoom allowed it): one rename_rl row, and unless only the
+ * case changed (the old name already resolves) a former-name row for
+ * LIMITS.formerNameGraceMs, `default` when the name was minted for this
+ * agent (it is never handed on, so it needs no reservation), else `chosen`.
+ * OpenBus #446/#449: at most LIMITS.maxFormerNames rows are stored per
+ * agent. Past it the oldest DEFAULT rows go (they stop resolving; the minted
+ * rule still keeps the name from anyone else); a chosen row in grace never
+ * goes. Returns the times to arm the alarm for (the rename log's purge, the
+ * grace's end).
+ */
+function recordRename(
+  sql: SqlStorage,
+  agentId: string,
+  former: string,
+  name: string,
+  now: number,
+): number[] {
+  const arms = [countRename(sql, agentId, now)];
+  const lformer = former.toLowerCase();
+  const lname = name.toLowerCase();
+  // One row per name per agent: a reused former name is replaced, and the
+  // new name's own row goes (commitName would drop it too), as do expired
+  // rows, before the cap is applied.
+  sql.exec(
+    "delete from former_names where agent_id = ? and (lname = ? or lname = ? or expires_at <= ?)",
+    agentId,
+    lformer,
+    lname,
+    now,
+  );
+  if (lformer === lname) return arms;
+  const minted = mintedFor(sql, agentId, lformer);
+  // OpenBus #449 N3: a name minted for another agent, held through the old
+  // hole, leaves no former row: it goes back to its own agent at once.
+  if (minted === "other") return arms;
+  const expires = now + LIMITS.formerNameGraceMs;
+  sql.exec(
+    "insert into former_names (agent_id, org_id, name, lname, kind, expires_at) values (?, ?, ?, ?, ?, ?)",
+    agentId,
+    OWNER_ORG_ID,
+    former,
+    lformer,
+    minted === "self" ? "default" : "chosen",
+    expires,
+  );
+  const excess =
+    (one<{ n: number }>(
+      sql,
+      "select count(*) as n from former_names where agent_id = ?",
+      agentId,
+    )?.n ?? 0) - LIMITS.maxFormerNames;
+  if (excess > 0)
+    sql.exec(
+      `delete from former_names where rowid in
+         (select rowid from former_names where agent_id = ? and kind = 'default' order by expires_at, rowid limit ?)`,
+      agentId,
+      excess,
+    );
+  arms.push(expires);
+  return arms;
+}
+
+/**
+ * Registers (or re-registers) an agent; returns the reply, the changed
+ * namespaces and the alarm times a name change needs.
+ *
+ * OpenBus #446: a re-sent agent_up that changes a LIVE agent's name (#1323)
+ * is a rename: it counts in rename_rl and, in an unchanged scope, leaves a
+ * former name as `rename` does. Where `rename` would answer rate_limited
+ * (the hourly limit, or OpenBus #449 no room for another chosen former name)
+ * the agent_up still succeeds (it must never fail: it is also a reconnect)
+ * but keeps the current name, logged as `rename_kept`. A namespace move or
+ * global flip drops the former names, as before; its name change still
+ * counts.
+ *
+ * OpenBus #449 N1: a reopen (the agent was closed) under a new name counts
+ * too, so close and reopen is no way around the limit, but leaves no former
+ * name: the close freed the old name at once, and someone may hold it by now.
+ */
 function agentUp(
   sql: SqlStorage,
   machineId: string,
   f: AgentUpFrame,
   now: number,
-): { reply: ServerFrame; change: RosterChange; rowChanged: boolean } {
+): {
+  reply: ServerFrame;
+  change: RosterChange;
+  rowChanged: boolean;
+  arms: number[];
+} {
   const existing = one<{
     id: string;
     namespace: string;
@@ -765,9 +986,8 @@ function agentUp(
     OWNER_ORG_ID,
   );
   const id = existing?.id ?? newId();
-  // A repeat agent_up for a live agent may rename it (#1323); that never
-  // records a former name or counts toward the rename limit (R393b).
-  const assigned = assignName(
+  // A repeat agent_up for a live agent may rename it (#1323).
+  let assigned = assignName(
     sql,
     f.namespace,
     f.proposed_name,
@@ -776,6 +996,29 @@ function agentUp(
     now,
     f.name_kind,
   );
+  const wasLive = existing?.live === 1;
+  const sameScope =
+    existing?.namespace === f.namespace &&
+    existing?.global === (f.global ? 1 : 0);
+  let arms: number[] = [];
+  if (existing && assigned.name !== existing.name) {
+    const former = wasLive && sameScope;
+    if (
+      renameAllowed(sql, id, now) &&
+      (!former || formerRoom(sql, id, existing.name, assigned.name, now))
+    ) {
+      arms = former
+        ? recordRename(sql, id, existing.name, assigned.name, now)
+        : [countRename(sql, id, now)];
+    } else {
+      // OpenBus #449 N2: the agent_up succeeds under its current name; the
+      // daemon is not told, so the kept name is logged.
+      logEvent("rename_kept", { machineId, reopen: !wasLive });
+      // The current name (its own, minted or not), de-collided only when a
+      // move or a reopen finds it taken.
+      assigned = assignName(sql, f.namespace, existing.name, f.global, id, now);
+    }
+  }
   const name = assigned.name;
   // A new session starts when the agent was not live (B11): its boundary is
   // the newest receipt's rowid (receipts rowids only grow: the retention
@@ -813,8 +1056,7 @@ function agentUp(
       existing.global !== (f.global ? 1 : 0))
   )
     dropNameState(sql, [id], false);
-  commitName(sql, id, f.namespace, f.global, assigned, now);
-  const wasLive = existing?.live === 1;
+  commitName(sql, id, assigned, now);
   // AC3: a reopened session starts with no status (a live move keeps it).
   if (existing && !wasLive) clearStatus(sql, [id]);
   const changed = [f.namespace];
@@ -832,6 +1074,7 @@ function agentUp(
     existing.global !== (f.global ? 1 : 0);
   return {
     rowChanged,
+    arms,
     reply: {
       v: 1,
       id: f.id,
@@ -954,8 +1197,8 @@ function roster(
 
 /**
  * R393b: each row's live former names for the roster, newest first, at most
- * LIMITS.maxFormerNames (more may be live: they still resolve and stay
- * reserved). One statement on former_names_agent, ids as one JSON parameter.
+ * LIMITS.maxFormerNames (recordRename stores no more; the cap here is a
+ * guard, never a hidden row). One statement on former_names_agent, ids as one JSON parameter.
  */
 function formerNamesOf(
   sql: SqlStorage,
@@ -1122,8 +1365,9 @@ type Held = {
   expiresAt: number;
 };
 
+/** `viaRole`: the send resolved through a role address (#1296). */
 type Resolution =
-  | { ok: true; agent: AgentRow }
+  | { ok: true; agent: AgentRow; viaRole?: true }
   | { ok: false; reason: RefusalReason };
 
 /** The live agent `lname` names in namespace `ns` (in `ns`, or a global). */
@@ -1201,7 +1445,7 @@ function liveAnywhere(
  * R393b: live agents with the live former name `lname` (former_names_lname),
  * optionally in a scope: `ns` (namespace or global, as liveVisibleIn sees
  * it) or a global homed in `homedIn`. Globals first. A former name is never
- * held twice within a scope (commitName), so `limit` > 1 only finds a
+ * held twice within a scope (nameTaken), so `limit` > 1 only finds a
  * seeded or racing duplicate, or matches across namespaces.
  */
 function liveFormer(
@@ -1234,10 +1478,43 @@ function liveFormer(
 const refused = (reason: RefusalReason): Resolution => ({ ok: false, reason });
 
 /**
- * Within a scope a current live name comes before a live former name (R393b),
- * then goneReason. The sender's own namespace is looked at first; a former
- * name follows the visibility of its agent's current name. Identical for
- * every client: the rename gate only hides wire fields.
+ * #1296: whether a live agent outside namespace `ns`'s scope has `lname` as
+ * its name, or as a live former name. A live agent of that scope never has
+ * a role's name (nameTaken, putRole), so any live name counts; a former name
+ * of a non-global agent in `ns` (a default one) does not. One statement on
+ * agents_live_lname and former_names_lname.
+ */
+function nameOutside(
+  sql: SqlStorage,
+  lname: string,
+  ns: string,
+  now: number,
+): boolean {
+  return (
+    one<{ x: number }>(
+      sql,
+      `select (exists (select 1 from agents where org_id = ? and lower(name) = ? and live = 1)
+           or exists (select 1 from former_names f join agents a on a.id = f.agent_id
+                       where f.org_id = ? and f.lname = ? and f.expires_at > ?
+                         and a.live = 1 and a.global = 0 and a.namespace != ?)) as x`,
+      OWNER_ORG_ID,
+      lname,
+      OWNER_ORG_ID,
+      lname,
+      now,
+      ns,
+    )?.x === 1
+  );
+}
+
+/**
+ * Within a scope a role address comes first (#1296: no live agent can share
+ * its name there), then a current live name, then a live former name
+ * (R393b), then goneReason. The sender's own namespace is looked at first; a
+ * former name follows the visibility of its agent's current name. A role is
+ * reached from its own namespace (or by a global sender); a non-global
+ * sender's explicit other to_namespace never reaches one. Identical for
+ * every client: the rename and roles gates only hide wire fields.
  */
 function resolveTarget(
   sql: SqlStorage,
@@ -1247,7 +1524,7 @@ function resolveTarget(
   now: number,
 ): Resolution {
   const lname = toName.toLowerCase();
-  // A former name is never held by two agents in one scope (commitName);
+  // A former name is never held by two agents in one scope (nameTaken);
   // if it ever were, the send is ambiguous rather than delivered to either.
   const formerIn = (
     scope: { ns: string } | { homedIn: string },
@@ -1258,6 +1535,8 @@ function resolveTarget(
     return rows.length > 1 ? refused("ambiguous") : { ok: true, agent: hit };
   };
   const visibleIn = (ns: string): Resolution | null => {
+    const role = resolveRoleIn(sql, OWNER_ORG_ID, ns, lname);
+    if (role) return role;
     const hit = liveVisibleIn(sql, ns, lname);
     return hit ? { ok: true, agent: hit } : formerIn({ ns });
   };
@@ -1289,6 +1568,12 @@ function resolveTarget(
   // R393b: the sender's own namespace first, current then former names.
   const own = visibleIn(sender.namespace);
   if (own) return own;
+  // #1296: a role in exactly one other namespace, unless a live agent (or a
+  // live former name) outside that namespace's scope shares the name.
+  const role = resolveRoleAnywhere(sql, OWNER_ORG_ID, lname, (ns) =>
+    nameOutside(sql, lname, ns, now),
+  );
+  if (role) return role;
   // A live global sorts first and is the only live agent with its name.
   const live = liveAnywhere(sql, lname, 2);
   const first = live[0];
@@ -1330,7 +1615,7 @@ function refuseSend(ws: WebSocket, id: string, reason: RefusalReason): void {
     type: "receipt",
     msg_id: newId(),
     state: "refused",
-    reason,
+    reason: wireReason(ws, reason),
   });
 }
 
@@ -1348,15 +1633,24 @@ function payloadHash(f: SendFrame, sender: AgentRow): string {
     sender.global !== 1 && f.to_namespace === sender.namespace
       ? ""
       : (f.to_namespace ?? "");
+  // A reply's to_id is part of what was sent: a resend with another one is
+  // a different send, never the earlier receipt. Without one the hash is
+  // unchanged, so keys stored before to_id still match.
+  const to = f.to_id === undefined ? "" : `\n${f.to_id}`;
   return createHash("sha256")
-    .update(`${f.to_name.toLowerCase()}\n${ns}\n${body}`)
+    .update(`${f.to_name.toLowerCase()}\n${ns}\n${body}${to}`)
     .digest("hex");
 }
 
-type SendKey = { payloadHash: string; msgId: string; createdAt: number };
+type SendKey = {
+  payloadHash: string;
+  msgId: string;
+  createdAt: number;
+  viaRole: number;
+};
 type SendKeyCheck =
   | { kind: "new"; hash: string; dropped: boolean }
-  | { kind: "resend"; msgId: string }
+  | { kind: "resend"; msgId: string; viaRole: boolean }
   | { kind: "reused" };
 
 /**
@@ -1378,14 +1672,14 @@ function findSendKey(
   const hash = payloadHash(f, sender);
   const key = one<SendKey>(
     sql,
-    "select payload_hash as payloadHash, msg_id as msgId, created_at as createdAt from send_keys where from_agent = ? and frame_id = ?",
+    "select payload_hash as payloadHash, msg_id as msgId, created_at as createdAt, via_role as viaRole from send_keys where from_agent = ? and frame_id = ?",
     agentId,
     f.id,
   );
   if (!key) return { kind: "new", hash, dropped: false };
   if (key.createdAt >= now - SEND_KEY_RETAIN_MS)
     return key.payloadHash === hash
-      ? { kind: "resend", msgId: key.msgId }
+      ? { kind: "resend", msgId: key.msgId, viaRole: key.viaRole === 1 }
       : { kind: "reused" };
   sql.exec(
     "delete from send_keys where from_agent = ? and frame_id = ?",
@@ -1407,16 +1701,18 @@ function insertSendKey(
   hash: string,
   msgId: string,
   now: number,
+  viaRole: boolean,
 ): void {
   sql.exec(
-    `insert into send_keys (from_agent, frame_id, org_id, payload_hash, msg_id, created_at)
-     values (?, ?, ?, ?, ?, ?) on conflict (from_agent, frame_id) do nothing`,
+    `insert into send_keys (from_agent, frame_id, org_id, payload_hash, msg_id, created_at, via_role)
+     values (?, ?, ?, ?, ?, ?, ?) on conflict (from_agent, frame_id) do nothing`,
     agentId,
     frameId,
     OWNER_ORG_ID,
     hash,
     msgId,
     now,
+    viaRole ? 1 : 0,
   );
 }
 
@@ -1941,6 +2237,52 @@ export class BusHub extends DurableObject<Env> {
     return { connected, agents: agentList(this.ctx) };
   }
 
+  // ------------------------------------------------------------------- roles
+
+  /** Tests only (static, not RPC): the role cap (null: BUS_ROLE_MAX). */
+  static setMaxRolesForTests(hub: BusHub, max: number | null): void {
+    hub.#maxRoles = max ?? BUS_ROLE_MAX;
+  }
+
+  #maxRoles = BUS_ROLE_MAX;
+
+  /**
+   * #1296: the member's role addresses, for the dashboard (services/bus.ts).
+   * Called only by the Worker, for the hub's own member: no frame reaches it.
+   */
+  async listRoles(): Promise<BusRole[]> {
+    return listRoles(this.ctx.storage.sql, OWNER_ORG_ID, this.#maxRoles);
+  }
+
+  /**
+   * #1296: sets, re-points or (agentId null) vacates role (namespace, name),
+   * creating it if needed (roles.ts putRole). Mail already sent stays with
+   * the agent it resolved to; only later sends follow. Worker only.
+   */
+  async putRole(
+    namespace: string,
+    name: string,
+    agentId: string | null,
+  ): Promise<PutRoleResult> {
+    const r = putRole(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      namespace,
+      name,
+      agentId,
+      this.#now(),
+      newId,
+      this.#maxRoles,
+    );
+    logEvent("role_set", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /** #1296: removes role `id` (its name is free at once); false when unknown. Worker only. */
+  async deleteRole(id: string): Promise<boolean> {
+    return deleteRole(this.ctx.storage.sql, OWNER_ORG_ID, id);
+  }
+
   /** When the last closeAll started (ms), or null. */
   #revokedAt(): number | null {
     const v = one<{ value: string }>(
@@ -2348,6 +2690,9 @@ export class BusHub extends DurableObject<Env> {
           machine_id: machine.id,
           machine_label: machine.label,
           server_version: VERSION,
+          // Only to a hello that listed ids: any other client decodes hello_ok
+          // strictly, a rename-only one included.
+          ...(hasCap(f, BUS_CAPS.ids) ? { caps: [...HUB_CAPS] } : {}),
         });
         return;
       case "sessions": {
@@ -2387,7 +2732,8 @@ export class BusHub extends DurableObject<Env> {
           sendError(ws, f.id, "rate_limited", AGENT_CAP_MESSAGES.machine);
           return;
         }
-        const { reply, change } = agentUp(sql, machineId, f, this.#now());
+        const { reply, change, arms } = agentUp(sql, machineId, f, this.#now());
+        for (const t of arms) this.#arm(t);
         sendFrame(ws, reply);
         notifyRoster(this.ctx, change, ws);
         const a = registeredAgent(sql, machineId, f.agent_ref);
@@ -2459,7 +2805,8 @@ export class BusHub extends DurableObject<Env> {
 
   /**
    * `rename` (R393b, #1325) for a live agent: `renamed`, or `error
-   * rate_limited` past LIMITS.renamesPerHour name changes in a rolling hour.
+   * rate_limited` past LIMITS.renamesPerHour name changes in a rolling hour
+   * or with no room for one more chosen former name (formerRoom).
    * The name is assigned as agent_up assigns it (excluding self). A no-op
    * (the assigned name is the current one, exactly) answers without
    * `former`, records nothing and never counts. Otherwise the left name
@@ -2498,64 +2845,24 @@ export class BusHub extends DurableObject<Env> {
       sendFrame(ws, reply);
       return;
     }
-    sql.exec(
-      "delete from rename_rl where agent_id = ? and at <= ?",
-      agent.id,
-      now - HOUR_MS,
-    );
-    const count =
-      one<{ n: number }>(
-        sql,
-        "select count(*) as n from rename_rl where agent_id = ?",
-        agent.id,
-      )?.n ?? 0;
-    if (count >= LIMITS.renamesPerHour) {
+    if (
+      !renameAllowed(sql, agent.id, now) ||
+      !formerRoom(sql, agent.id, agent.name, name, now)
+    ) {
       logEvent("rate_limited", { kind: "rename", machineId: agent.machineId });
       sendError(ws, f.id, "rate_limited", RENAME_MESSAGES.rate);
       return;
     }
-    sql.exec(
-      "insert into rename_rl (agent_id, at) values (?, ?)",
-      agent.id,
-      now,
-    );
-    this.#arm(now + HOUR_MS);
     const former = agent.name;
-    const lformer = former.toLowerCase();
-    // One row per name per agent: a reused former name is replaced.
-    sql.exec(
-      "delete from former_names where agent_id = ? and lname = ?",
-      agent.id,
-      lformer,
-    );
-    if (lformer !== name.toLowerCase()) {
-      // A name minted for this agent is a default name: never minted again,
-      // so it resolves without being reserved.
-      const minted = one(
-        sql,
-        "select 1 as x from minted_names where org_id = ? and lname = ? and agent_id = ?",
-        OWNER_ORG_ID,
-        lformer,
-        agent.id,
-      );
-      sql.exec(
-        "insert into former_names (agent_id, org_id, name, lname, kind, expires_at) values (?, ?, ?, ?, ?, ?)",
-        agent.id,
-        OWNER_ORG_ID,
-        former,
-        lformer,
-        minted ? "default" : "chosen",
-        now + LIMITS.formerNameGraceMs,
-      );
-      this.#arm(now + LIMITS.formerNameGraceMs);
-    }
+    for (const t of recordRename(sql, agent.id, former, name, now))
+      this.#arm(t);
     sql.exec(
       "update agents set name = ?, updated_at = ? where id = ?",
       name,
       now,
       agent.id,
     );
-    commitName(sql, agent.id, agent.namespace, global, assigned, now);
+    commitName(sql, agent.id, assigned, now);
     sendFrame(ws, { ...reply, former });
     notifyRoster(this.ctx, { namespaces: [agent.namespace], global }, ws);
   }
@@ -2761,11 +3068,18 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
     if (key.kind === "resend") {
-      this.#resend(ws, f.id, f.to_name, key.msgId);
+      this.#resend(ws, f.id, f.to_name, key.msgId, key.viaRole);
       return;
     }
     if (key.dropped && this.#sendKeys !== null) this.#sendKeys--;
     const res = resolveTarget(sql, sender, f.to_name, f.to_namespace, now);
+    // A reply (`to_id`) goes only to the agent it answers: never to whoever
+    // holds the name now (wireReason shows agent_gone only to an ids socket).
+    // Role resolution stays inside resolveTarget, before this check.
+    if (f.to_id !== undefined && (!res.ok || res.agent.id !== f.to_id)) {
+      refuseSend(ws, f.id, "agent_gone");
+      return;
+    }
     if (!res.ok) {
       refuseSend(ws, f.id, res.reason);
       return;
@@ -2802,7 +3116,8 @@ export class BusHub extends DurableObject<Env> {
       expiresAt,
       held ? now : null,
     );
-    insertSendKey(sql, sender.id, f.id, key.hash, msgId, now);
+    const viaRole = res.viaRole === true;
+    insertSendKey(sql, sender.id, f.id, key.hash, msgId, now, viaRole);
     if (this.#sendKeys !== null) this.#sendKeys++;
     this.#arm(now + SEND_KEY_RETAIN_MS + 1);
     // Write-on-miss: an offline machine (agent queued), an oversized body or
@@ -2817,7 +3132,7 @@ export class BusHub extends DurableObject<Env> {
       type: "receipt",
       msg_id: msgId,
       state: "pending",
-      ...(viaFormer(ws, f.to_name, target.name)
+      ...(toNameShown(ws, f.to_name, target.name, viaRole)
         ? { to_name: target.name }
         : {}),
     });
@@ -2830,6 +3145,7 @@ export class BusHub extends DurableObject<Env> {
       msg_id: msgId,
       to_ref: target.nativeRef,
       from_name: sender.name,
+      ...(idsGated(socket) ? { from_id: sender.id } : {}),
       namespace: sender.namespace,
     } as const;
     if (inline) sendFrame(socket, { ...head, body: f.body });
@@ -2880,7 +3196,13 @@ export class BusHub extends DurableObject<Env> {
    * already got), which also marks the sender told. A receipt row missing
    * within the key's window (receipts outlive keys) would read as expired.
    */
-  #resend(ws: WebSocket, id: string, sentTo: string, msgId: string): void {
+  #resend(
+    ws: WebSocket,
+    id: string,
+    sentTo: string,
+    msgId: string,
+    viaRole: boolean,
+  ): void {
     const sql = this.ctx.storage.sql;
     const r = one<{
       state: string;
@@ -2901,9 +3223,9 @@ export class BusHub extends DurableObject<Env> {
       type: "receipt",
       msg_id: msgId,
       state: "pending",
-      // R393b: a resend repeats a former-name hit's to_name (the name the
-      // send resolved to, from the receipt row).
-      ...(r.toName !== null && viaFormer(ws, sentTo, r.toName)
+      // R393b, #1296: a resend repeats a former-name or role hit's to_name
+      // (the name the send resolved to, from the receipt row).
+      ...(r.toName !== null && toNameShown(ws, sentTo, r.toName, viaRole)
         ? { to_name: r.toName }
         : {}),
     });
@@ -3055,7 +3377,7 @@ export class BusHub extends DurableObject<Env> {
   #closeSessions(agentIds: string[]): void {
     if (agentIds.length === 0) return;
     const sql = this.ctx.storage.sql;
-    dropNameState(sql, agentIds, true);
+    dropNameState(sql, agentIds, false);
     const closedAt = this.#now();
     // M1: the closed rows' purge deadline.
     this.#arm(closedAt + CLOSED_AGENT_RETAIN_MS);
@@ -3456,6 +3778,7 @@ export class BusHub extends DurableObject<Env> {
         msg_id: r.id,
         to_ref: agent.nativeRef,
         from_name: r.fromName,
+        ...(idsGated(ws) ? { from_id: r.fromAgent } : {}),
         namespace: r.namespace,
       } as const;
       if (r.size > LIMITS.inlineBodyBytes) {

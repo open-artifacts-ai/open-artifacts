@@ -1062,6 +1062,9 @@ importers:
       '@oa/auth-core':
         specifier: workspace:*
         version: link:../../packages/auth-core
+      '@oa/dashboard':
+        specifier: workspace:*
+        version: link:../../apps/dashboard
       '@oa/provisioning-contract':
         specifier: workspace:*
         version: link:../../packages/provisioning-contract
