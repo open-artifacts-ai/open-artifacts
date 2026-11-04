@@ -348,8 +348,9 @@ describe("GET /bus: the page", () => {
       view: {
         live: false,
         machines: [
-          machine({ connected: null }),
-          machine({ connected: null }),
+          // A stale connected value still reads Unknown while the hub is unknown.
+          machine({ connected: true }),
+          machine({ connected: false }),
           machine({ revokedAt: "2026-10-30T00:00:00Z", connected: null }),
         ],
       },
@@ -361,6 +362,7 @@ describe("GET /bus: the page", () => {
     );
     expect(body).toContain(">3 machines<");
     expect(body.match(/>Unknown</g)?.length).toBe(2);
+    expect(body).not.toMatch(/>(Live|Offline)<\/span>/);
     expect(body).toContain("Running agents can't be listed right now");
     expect(body).toContain(`name="remove" value="${encodeAddress(picked)}"`);
     expect(body).not.toContain('type="checkbox"');
