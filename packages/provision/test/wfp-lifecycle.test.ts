@@ -339,8 +339,10 @@ function makeReleases(env: Env, specs: Record<string, Spec> = {}) {
   return { st, reader };
 }
 
-/** 0.24.0 adds one D1 migration and new assets; same DO tag as 0.23.0. */
-const V24: Spec = {
+/** 0.24.0 has new code and assets only: same D1 schema and DO tag as 0.23.0. */
+const V24: Spec = { assets: ASSETS_24 };
+/** 0.24.2 adds one D1 migration and new assets; same DO tag as 0.23.0. */
+const V24_MIG: Spec = {
   migrations: [...MIGRATION_FILES, NEW_MIGRATION],
   assets: ASSETS_24,
 };
@@ -420,6 +422,7 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
   };
   const rel = makeReleases(env, {
     "0.24.0": V24,
+    "0.24.2": V24_MIG,
     "0.25.0": V25_TAG,
     "0.26.0": V26_BOUND,
     // A rebuild with no marker: MIG-2 reads the SQL too.
@@ -428,7 +431,7 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
     "0.24.7": { migrations: [...MIGRATION_FILES, MARKED, AFTER_MARKED] },
     "0.21.0": V21_NAME_CLASH,
     // 0.25.0's DO step on top of 0.24.0's migrations.
-    "0.28.0": { ...V25_TAG, migrations: V24.migrations },
+    "0.28.0": { ...V25_TAG, migrations: V24_MIG.migrations },
     "0.27.0": {
       migrations: [
         ...MIGRATION_FILES,
@@ -655,11 +658,11 @@ describe("upgrade", () => {
     const before = s.scriptOf(inst.id);
     const secretsBefore = new Map(before?.secrets);
     const from = s.fake.log.length;
-    const r = keep(await s.p.upgrade(inst.id, "0.24.0"));
+    const r = keep(await s.p.upgrade(inst.id, "0.24.2"));
     expect(r).toEqual({
       id: inst.id,
       from: "0.23.0",
-      to: "0.24.0",
+      to: "0.24.2",
       ok: true,
       rolledBack: false,
     });
@@ -684,17 +687,17 @@ describe("upgrade", () => {
       meta.bindings.filter((b: { type: string }) => b.type === "secret_text"),
     ).toEqual([]);
     expect(meta.migrations).toBeUndefined();
-    expect(meta.tags).toEqual([inst.id, "v0.24.0"]);
+    expect(meta.tags).toEqual([inst.id, "v0.24.2"]);
     expect(s.scriptOf(inst.id)?.secrets).toEqual(secretsBefore);
-    expect(modulesText(s, inst.id)).toContain("0.24.0");
+    expect(modulesText(s, inst.id)).toContain("0.24.2");
     expect(s.row(inst.id)).toMatchObject({
       state: "active",
-      version: "0.24.0",
+      version: "0.24.2",
       previous_version: "0.23.0",
       do_migration_tag: BASE_TAG,
       lease: null,
     });
-    expect(s.stored(inst.id, "0.24.0")).toBeDefined();
+    expect(s.stored(inst.id, "0.24.2")).toBeDefined();
     expect(s.audit(inst.id)).toEqual(
       expect.arrayContaining(["upgrade.start", "upgrade.done"]),
     );
@@ -705,13 +708,13 @@ describe("upgrade", () => {
     const a = keep(await s.p.create(input("alpha")));
     const b = keep(await s.p.create(input("beta")));
     const bUploads = s.scriptOf(b.id)?.uploads;
-    unhealthyAt(s, "0.24.0");
+    unhealthyAt(s, "0.24.2");
     const aUploads = s.scriptOf(a.id)?.uploads ?? 0;
-    const r = keep(await s.p.upgrade(a.id, "0.24.0"));
+    const r = keep(await s.p.upgrade(a.id, "0.24.2"));
     expect(r).toMatchObject({
       id: a.id,
       from: "0.23.0",
-      to: "0.24.0",
+      to: "0.24.2",
       ok: false,
       rolledBack: false,
       forwardFix: true,
@@ -719,17 +722,17 @@ describe("upgrade", () => {
     expect(r.reason).toMatch(/healthz/);
     // Only the upgrade's own upload: the old code is never put back.
     expect(s.scriptOf(a.id)?.uploads).toBe(aUploads + 1);
-    expect(modulesText(s, a.id)).toContain("0.24.0");
+    expect(modulesText(s, a.id)).toContain("0.24.2");
     expect(s.row(a.id)).toMatchObject({
       state: "active",
-      version: "0.24.0",
+      version: "0.24.2",
       previous_version: "0.23.0",
     });
     expect(s.audit(a.id)).toEqual(
       expect.arrayContaining(["upgrade.failed", "upgrade.forward_fix"]),
     );
     expect(s.audit(a.id)).not.toContain("rollback.done");
-    // 0.24.0 carries a D1 migration: code and schema still match.
+    // 0.24.2 carries a D1 migration: code and schema still match.
     expect(
       s
         .installDb(a.id)
@@ -937,6 +940,132 @@ describe("rollback", () => {
     expect(uploads(s.fake, from)).toHaveLength(0);
   });
 
+  it("#1106: after an upgrade applied a D1 migration, a rollback to a release without it is refused with nothing uploaded", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    unhealthyAt(s, "0.24.2");
+    const r = keep(await s.p.upgrade(inst.id, "0.24.2"));
+    expect(r).toMatchObject({ ok: false, forwardFix: true });
+    // The upgrade applied the migration 0.23.0 does not know.
+    expect(
+      s
+        .installDb(inst.id)
+        .prepare("SELECT name FROM d1_migrations WHERE name = ?")
+        .get(NEW_MIGRATION.name),
+    ).toBeDefined();
+    s.fake.health = undefined;
+    const from = s.fake.log.length;
+    const w = s.fake.writes().length;
+    const uploadsBefore = s.scriptOf(inst.id)?.uploads;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.code).toBe("invalid_state");
+    expect(e.message).toContain(NEW_MIGRATION.name);
+    expect(e.message).toMatch(
+      /which 0\.23\.0 does not; rollback is refused \(forward-fix only\)/,
+    );
+    expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(s.scriptOf(inst.id)?.uploads).toBe(uploadsBefore);
+    expect(s.fake.writes().length).toBe(w);
+    expect(modulesText(s, inst.id)).toContain("0.24.2");
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.24.2",
+      previous_version: "0.23.0",
+      lease: null,
+    });
+    expect(s.audit(inst.id)).not.toContain("rollback.start");
+  });
+
+  it("#1106: a rollback with no migration applied since the previous version runs as before", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    const from = s.fake.log.length;
+    expect(keep(await s.p.rollback(inst.id))).toMatchObject({
+      from: "0.24.0",
+      to: "0.23.0",
+      ok: true,
+      rolledBack: true,
+    });
+    expect(uploads(s.fake, from)).toHaveLength(1);
+    expect(modulesText(s, inst.id)).toContain("0.23.0");
+  });
+
+  it("#1106: an upgrade that applied its migration but left the row on its from version: the rollback is still refused", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    let armed = true;
+    const p = s.mk({
+      cf: s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+        const req = new Request(u, init);
+        const body = req.method === "POST" ? await req.clone().text() : "";
+        if (armed && body.includes("INSERT INTO install_versions")) {
+          armed = false;
+          return Response.json(
+            { success: false, errors: [{ code: 7500, message: "boom" }] },
+            { status: 400 },
+          );
+        }
+        return s.fake.fetch(u, init);
+      }) as typeof fetch),
+    });
+    const r = keep(await p.upgrade(inst.id, "0.24.2"));
+    expect(r).toMatchObject({ ok: false, forwardFix: true });
+    expect(s.audit(inst.id)).toContain("upgrade.incomplete");
+    // The migration ran and 0.24.2 is live, but the row still says 0.24.0.
+    expect(s.row(inst.id)).toMatchObject({
+      version: "0.24.0",
+      previous_version: "0.23.0",
+      lease: null,
+    });
+    expect(
+      s
+        .installDb(inst.id)
+        .prepare("SELECT name FROM d1_migrations WHERE name = ?")
+        .get(NEW_MIGRATION.name),
+    ).toBeDefined();
+    const from = s.fake.log.length;
+    const uploadsBefore = s.scriptOf(inst.id)?.uploads;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.code).toBe("invalid_state");
+    expect(e.message).toContain(NEW_MIGRATION.name);
+    expect(e.message).toMatch(/which 0\.23\.0 does not; rollback is refused/);
+    expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(probes(s.fake, from)).toHaveLength(0);
+    expect(s.scriptOf(inst.id)?.uploads).toBe(uploadsBefore);
+    expect(modulesText(s, inst.id)).toContain("0.24.2");
+  });
+
+  it("#1106: a Durable Object tag the target release does not have refuses the rollback, even when the stored tag agrees", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    // Journal and stored tag agree, on a tag 0.23.0's template lacks.
+    s.db()
+      .prepare("UPDATE installs SET do_migration_tag = ? WHERE id = ?")
+      .run(FOREIGN_TAG, inst.id);
+    s.db()
+      .prepare(
+        "UPDATE install_versions SET do_migration_tag = ? WHERE install_id = ? AND version = ?",
+      )
+      .run(FOREIGN_TAG, inst.id, "0.23.0");
+    const from = s.fake.log.length;
+    const w = s.fake.writes().length;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.code).toBe("invalid_state");
+    expect(e.message).toContain(
+      `migration tag ${FOREIGN_TAG} is not in 0.23.0; rollback is refused (forward-fix only)`,
+    );
+    expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(probes(s.fake, from)).toHaveLength(0);
+    expect(s.fake.writes().length).toBe(w);
+    expect(s.audit(inst.id)).not.toContain("rollback.start");
+  });
+
   it("rollback uploads exactly the stored metadata of the previous version", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
@@ -973,12 +1102,6 @@ describe("rollback", () => {
     }).toEqual(stored);
     // The previous release's verified bytes, and no D1 rollback.
     expect(modulesText(s, inst.id)).toContain("0.23.0");
-    expect(
-      s
-        .installDb(inst.id)
-        .prepare("SELECT name FROM d1_migrations WHERE name = ?")
-        .get(NEW_MIGRATION.name),
-    ).toBeDefined();
     expect(
       s.fake.raw
         .slice(from)
@@ -2589,15 +2712,28 @@ describe("fix round 5 (security review)", () => {
     const inst = keep(await s.p.create(input()));
     await s.p.upgrade(inst.id, "0.24.0");
     const from = s.fake.log.length;
-    for (const bad of [canonicalJson({ NOPE: "1" }), "{not json", "[]"]) {
+    const notStrings = /installs\.vars is not an object of strings/;
+    for (const [bad, onUpgrade, onRollback] of [
+      // A var that fails the render: the upgrade's is a plain Error (it
+      // reaches the render; 0.24.0 used to carry a migration 0.25.0 lacks,
+      // which refused it first), the rollback wraps it as a refusal.
+      [
+        canonicalJson({ NOPE: "1" }),
+        /unknown var "NOPE"/,
+        /current vars do not fit 0\.23\.0: unknown var "NOPE"/,
+      ],
+      ["{not json", notStrings, notStrings],
+      ["[]", notStrings, notStrings],
+    ] as const) {
       s.db()
         .prepare("UPDATE installs SET vars = ? WHERE id = ?")
         .run(bad, inst.id);
-      for (const op of [
-        () => s.p.upgrade(inst.id, "0.25.0"),
-        () => s.p.rollback(inst.id),
-      ])
-        expect(await fails(op())).toBeInstanceOf(ProvisionRefused);
+      expect((await fails(s.p.upgrade(inst.id, "0.25.0"))).message).toMatch(
+        onUpgrade,
+      );
+      const e = await fails(s.p.rollback(inst.id));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(onRollback);
     }
     expect(uploads(s.fake, from)).toHaveLength(0);
     expect(probes(s.fake, from)).toHaveLength(0);
