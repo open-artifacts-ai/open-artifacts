@@ -17,10 +17,10 @@ working directory's git remote; see `05-client.md` `namespace.ts`).
 oa-bus 0.1.0
 
 →  Opening your browser to approve this machine
-   If it did not open: [[accent]]https://bus.example.com/bus/approve/K3M7-QW29[[/accent]]
+   If it did not open: [[accent]]https://bus.example.com/bus/approve[[/accent]]
 
    [[hairline]]╭─────────────╮[[/hairline]]
-   [[hairline]]│[[/hairline]]  [[accent]]K3M7-QW29[[/accent]]  [[hairline]]│[[/hairline]]  Check this code on the approval page.
+   [[hairline]]│[[/hairline]]  [[accent]]K3M7-QW29[[/accent]]  [[hairline]]│[[/hairline]]  Your code. Type it on the approval page.
    [[hairline]]╰─────────────╯[[/hairline]]  [[muted]]Valid 10 minutes.[[/muted]]
 
 [[warning]]⠋[[/warning]]  Waiting for approval  [[muted]]9:41 left[[/muted]]
@@ -166,10 +166,10 @@ replaced by:
 oa-bus 0.1.0
 
 →  No browser found. Open this URL on any machine:
-   [[accent]]https://bus.example.com/bus/approve/K3M7-QW29[[/accent]]
+   [[accent]]https://bus.example.com/bus/approve[[/accent]]
 
    [[hairline]]╭─────────────╮[[/hairline]]
-   [[hairline]]│[[/hairline]]  [[accent]]K3M7-QW29[[/accent]]  [[hairline]]│[[/hairline]]  Check this code on the approval page.
+   [[hairline]]│[[/hairline]]  [[accent]]K3M7-QW29[[/accent]]  [[hairline]]│[[/hairline]]  Your code. Type it on the approval page.
    [[hairline]]╰─────────────╯[[/hairline]]  [[muted]]Valid 10 minutes.[[/muted]]
 
 [[warning]]⠋[[/warning]]  Waiting for approval  [[muted]]9:58 left[[/muted]]

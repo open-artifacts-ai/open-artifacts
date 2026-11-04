@@ -174,7 +174,7 @@ export function copy(style: Style) {
       return [
         next(p("hairline", `${b.tl}${rule}${b.tr}`)),
         next(
-          `${p("hairline", b.v)}  ${p("accent", code)}  ${p("hairline", b.v)}  Check this code on the approval page.`,
+          `${p("hairline", b.v)}  ${p("accent", code)}  ${p("hairline", b.v)}  Your code. Type it on the approval page.`,
         ),
         next(
           `${p("hairline", `${b.bl}${rule}${b.br}`)}  ${p("muted", "Valid 10 minutes.")}`,

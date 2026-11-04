@@ -18,6 +18,7 @@ import {
   DeviceTokenRequestSchema,
   DeviceTokenResponseSchema,
   newMachineLabel,
+  verificationUriMatches,
 } from "@oa/bus-protocol";
 import { type Deps, realDeps } from "../deps.ts";
 
@@ -87,38 +88,20 @@ export type LoginResult = {
 };
 
 const POLL_MAX_BACKOFF_MS = 30_000;
-const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 const normalizeHub = (hub: string) => hub.replace(/\/+$/, "");
 
 /**
- * https (http only for loopback), the instance's own origin, no userinfo and
- * exactly /bus/approve/<user_code>; anything else is never opened or shown.
- * The shared schema checks most of this too; the origin only the client can know.
+ * Exactly the instance's approval page, `<origin>/bus/approve`, with no code
+ * in it (RFC 8628 section 5.4); anything else is never opened or shown. The
+ * person types the code this terminal shows.
  */
-function checkVerificationUri(
-  uri: string,
-  hub: string,
-  userCode: string,
-): string {
-  const u = new URL(uri);
-  const secure =
-    u.protocol === "https:" ||
-    (u.protocol === "http:" && LOOPBACK.has(u.hostname));
-  if (
-    !secure ||
-    u.origin !== new URL(hub).origin ||
-    u.username ||
-    u.password ||
-    u.pathname !== BUS_ROUTES.approve(userCode) ||
-    u.search ||
-    u.hash
-  ) {
+function checkVerificationUri(uri: string, hub: string): string {
+  if (!verificationUriMatches(uri, hub))
     throw new Error(
-      "bus/device returned a verification_uri that is not on the instance origin",
+      "bus/device returned a verification_uri that is not the instance's approval page",
     );
-  }
-  return u.href;
+  return uri;
 }
 
 function writeMachineFile(home: string, body: string) {
@@ -206,15 +189,13 @@ export async function login(args: LoginArgs): Promise<LoginResult> {
     );
   }
   const device = DeviceCodeResponseSchema.parse(await codeRes.json());
-  const url = checkVerificationUri(
-    device.verification_uri,
-    hub,
-    device.user_code,
-  );
+  const url = checkVerificationUri(device.verification_uri, hub);
 
   const events = args.events;
   if (!events?.code)
-    print(`Open ${url} and approve this machine. Code: ${device.user_code}`);
+    print(
+      `Open ${url} and type this code to approve this machine: ${device.user_code}`,
+    );
   const opened = args.noOpen ? false : await args.openBrowser(url);
   events?.code?.({
     url,
