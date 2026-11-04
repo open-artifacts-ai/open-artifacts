@@ -548,18 +548,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         // `claude --resume` brings the same session back under a new pid; while
         // the current one still runs it stays, so two files never flap.
         if (!livePid(s.ref, prev.pid)) prev.pid = s.pid;
-        // A `/rename` (or a name written after the hello) is proposed again;
-        // the hub reassigns it (open-bus #426, #393). Only the running pid's
-        // file counts, and a generated name never replaces a real one.
-        if (
-          s.pid === prev.pid &&
-          s.named &&
-          s.name !== prev.proposedName &&
-          hub.open
-        ) {
-          prev.proposedName = s.name;
-          announceUp(prev);
-        }
         continue;
       }
       // Closed by a failed delivery and still the same process.
@@ -576,8 +564,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         agents.up({
           ref: s.ref,
           kind: "claude-code",
-          // A restarted session whose file has no name yet keeps its name.
-          proposedName: s.named ? s.name : (prev?.proposedName ?? s.name),
+          proposedName: s.name,
           busName: prev?.busName ?? s.name,
           namespace: ns.namespace,
           global: ns.global,
@@ -1032,17 +1019,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             error: `namespace is not valid on the wire: ${ns.namespace}`,
           };
         attested(pid);
-        // A restarted Claude session whose file has no name yet keeps its name
-        // (open-bus #426): its hello proposes the generated `claude-<pid>`.
-        const unnamed =
-          hello.kind === "claude-code" &&
-          prev !== undefined &&
-          liveClaudeSessions(claudeSessions).some(
-            (x) => x.ref === hello.agent_ref && !x.named,
-          );
-        const proposedName = unnamed
-          ? (prev?.proposedName ?? hello.agent_ref)
-          : (hello.proposed_name ?? hello.agent_ref);
+        const proposedName = hello.proposed_name ?? hello.agent_ref;
         const rec = agents.up({
           ref: hello.agent_ref,
           kind: hello.kind,

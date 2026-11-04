@@ -6,8 +6,6 @@ import { AgentRefSchema } from "@oa/bus-protocol";
 export type LiveClaude = {
   ref: string;
   name: string;
-  /** The file names the session (`/rename`); false when `name` is the generated `claude-<pid>`. */
-  named: boolean;
   pid: number;
   socketPath: string;
   cwd: string;
@@ -50,9 +48,7 @@ function sessionFiles(dir: string): SessionFile[] {
     if (typeof rec.procStart !== "string") continue;
     out.push({
       ref: String(rec.sessionId),
-      name:
-        typeof rec.name === "string" && rec.name ? rec.name : `claude-${pid}`,
-      named: typeof rec.name === "string" && rec.name !== "",
+      name: typeof rec.name === "string" ? rec.name : `claude-${pid}`,
       pid,
       socketPath:
         typeof rec.messagingSocketPath === "string"
