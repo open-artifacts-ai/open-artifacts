@@ -1,3 +1,4 @@
+export * from "./caps.ts";
 export * from "./config.ts";
 export * from "./device.ts";
 export * from "./ids.ts";
@@ -9,5 +10,6 @@ export * from "./namespace.ts";
 export * from "./protocol.ts";
 export * from "./receipts.ts";
 export * from "./refs.ts";
+export * from "./rename.ts";
 export * from "./semver.ts";
 export * from "./status.ts";

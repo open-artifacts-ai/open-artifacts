@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CapsSchema } from "./caps.ts";
 import { newId } from "./ids.ts";
 import { AgentKindSchema, KindTokenSchema } from "./kinds.ts";
 import { LIMITS, utf8Exceeds } from "./limits.ts";
@@ -10,6 +11,7 @@ import {
   receiptShape,
 } from "./receipts.ts";
 import { AgentRefSchema, MachineLabelSchema } from "./refs.ts";
+import { FormerNamesSchema, NameKindSchema } from "./rename.ts";
 import {
   IsoTimeSchema,
   StatusLabelSchema,
@@ -59,6 +61,13 @@ const Hello = z.strictObject({
   type: z.literal("hello"),
   machine_label: MachineLabelSchema,
   client_version: WellFormedText.pipe(z.string().min(1).max(64)),
+  /**
+   * Capability tokens (`BUS_CAPS`, caps.ts): the hub gates new fields on
+   * them, e.g. roster `former_names` on `rename`. Unknown tokens are ignored.
+   * A hub decoder older than this field refuses a hello carrying it (client
+   * frames are strict), so a client sends it only to hubs that accept it.
+   */
+  caps: CapsSchema.optional(),
 });
 
 const AgentUp = z.strictObject({
@@ -69,6 +78,12 @@ const AgentUp = z.strictObject({
   proposed_name: WellFormedText.pipe(z.string().max(256)),
   namespace: WireNamespaceSchema,
   global: z.boolean(),
+  /**
+   * Whose name `proposed_name` is (#393). Absent means `chosen`. A hub
+   * decoder older than this field refuses the unknown key, so a client sends
+   * it only to hubs that accept it.
+   */
+  name_kind: NameKindSchema.optional(),
 });
 
 const AgentDown = z.strictObject({
@@ -160,6 +175,22 @@ const Status = z.strictObject({
   label: StatusLabelSchema.optional(),
 });
 
+/**
+ * Rename a live agent (#393). Answered by `renamed`, or `error`
+ * (`not_registered`, `rate_limited` with RENAME_MESSAGES.rate, `bad_frame`).
+ * The hub names the agent as for `agent_up`, de-collided the same way. A hub
+ * decoder older than this frame refuses it; one that decodes it but lacks the
+ * handler (R393b) sends no reply.
+ */
+const Rename = z.strictObject({
+  ...base,
+  type: z.literal("rename"),
+  agent_ref: AgentRefSchema,
+  proposed_name: WellFormedText.pipe(z.string().min(1).max(256)),
+  /** A tool rename is `chosen`; a harness reverting to its fallback is `default`. Absent means `chosen`. */
+  name_kind: NameKindSchema.optional(),
+});
+
 const HelloOk = z.strictObject({
   ...base,
   type: z.literal("hello_ok"),
@@ -173,6 +204,19 @@ const AgentOk = z.strictObject({
   type: z.literal("agent_ok"),
   agent_ref: AgentRefSchema,
   bus_name: BusNameSchema,
+});
+
+/**
+ * The reply to `rename`. `former` is the name left; absent on a no-op. Names
+ * compare case-insensitively: a case-only change is a rename, and the hub
+ * never sends a `former` equal to `bus_name` ignoring case.
+ */
+const Renamed = z.strictObject({
+  ...base,
+  type: z.literal("renamed"),
+  agent_ref: AgentRefSchema,
+  bus_name: BusNameSchema,
+  former: BusNameSchema.optional(),
 });
 
 /** The reply to `send`: only `pending` or `refused`, never a false `delivered`. */
@@ -201,6 +245,12 @@ const RosterAgent = z.strictObject({
   status: StatusStateSchema.optional(),
   status_label: StatusLabelSchema.optional(),
   status_at: IsoTimeSchema.optional(),
+  /**
+   * Names the agent left that still reach it (#393). Sent only to a socket
+   * whose hello listed `BUS_CAPS.rename`: a decoder older than this field
+   * refuses the row, and with it the whole roster.
+   */
+  former_names: FormerNamesSchema.optional(),
 });
 const Roster = z.strictObject({
   ...base,
@@ -287,6 +337,7 @@ export const CLIENT_FRAMES = [
   "list",
   "fetch",
   "status",
+  "rename",
 ] as const;
 export const SERVER_FRAMES = [
   "hello_ok",
@@ -298,6 +349,7 @@ export const SERVER_FRAMES = [
   "deliver",
   "receipt_update",
   "roster_changed",
+  "renamed",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -311,6 +363,7 @@ export const ClientFrameSchema = z.discriminatedUnion("type", [
   List,
   Fetch,
   Status,
+  Rename,
 ]);
 export const ServerFrameSchema = z.discriminatedUnion("type", [
   HelloOk,
@@ -322,6 +375,7 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   Deliver,
   ReceiptUpdate,
   RosterChanged,
+  Renamed,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -334,6 +388,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   List,
   Fetch,
   Status,
+  Rename,
   HelloOk,
   AgentOk,
   ReceiptFrame,
@@ -343,6 +398,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   Deliver,
   ReceiptUpdate,
   RosterChanged,
+  Renamed,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;
@@ -352,6 +408,9 @@ export type AgentUpFrame = z.infer<typeof AgentUp>;
 export type SendFrame = z.infer<typeof Send>;
 export type DeliverFrame = z.infer<typeof Deliver>;
 export type RefuseFrame = z.infer<typeof Refuse>;
+export type HelloFrame = z.infer<typeof Hello>;
+export type RenameFrame = z.infer<typeof Rename>;
+export type RenamedFrame = z.infer<typeof Renamed>;
 
 /**
  * Serializes a frame with `v` then `id` first, so an oversize id is recoverable.
@@ -387,17 +446,22 @@ export type DecodeResult<F> =
  * `too_large` on the wire even though it is under 1 MB of UTF-8.
  */
 export const MAX_RAW_FRAME_CHARS = 2 * LIMITS.maxMessageBytes + 4096;
-const MAX_DEPTH = 4;
 /**
- * Pre-scan caps (outside strings). `:` plus `,` tokens: a full 1000-agent
- * roster uses about 10 per agent (5 colons, 4 commas, 1 separator) = 10000, so
- * 16384 leaves ~1.6x headroom. Structural characters in total (brackets, quotes
- * of whole strings, colons, commas): about 21 per roster agent = 21000, so
- * 65536 leaves ~3x headroom and bounds floods like `[][][]...` that stay
- * shallow and token-free.
+ * Pre-scan caps (outside strings), per direction. `tokens` counts `:` plus
+ * `,`; `structural` counts brackets, whole strings, colons and commas, and
+ * bounds floods like `[][][]...` that stay shallow and token-free.
+ *
+ * Client frames (hub side, untrusted daemons) nest at most 4 deep and carry
+ * no roster, so they keep the tight caps.
+ *
+ * Server frames (client side) carry the roster. Its worst row (status fields
+ * plus LIMITS.maxFormerNames `former_names` entries, #393) nests 5 deep and
+ * uses about 40 tokens and 90 structural characters, so a full 1000-agent
+ * roster is about 40000 and 90000: 65536 and 131072 leave ~1.6x and ~1.4x.
  */
-const MAX_TOKENS = 16384;
-const MAX_STRUCTURAL = 65536;
+type ScanCaps = { depth: number; tokens: number; structural: number };
+const CLIENT_CAPS: ScanCaps = { depth: 4, tokens: 16384, structural: 65536 };
+const SERVER_CAPS: ScanCaps = { depth: 5, tokens: 65536, structural: 131072 };
 /** `:` plus `,` directly inside one object: frame objects have at most about a dozen keys. */
 const MAX_OBJECT_TOKENS = 64;
 const ID_PREFIX_RE = /^\s*\{"v":1,"id":"([A-Za-z0-9_-]{1,64})"/;
@@ -408,21 +472,21 @@ function recoverId(raw: string): string | undefined {
 
 /**
  * One pass, ignoring string contents: false when nesting is deeper than
- * MAX_DEPTH or there are more than MAX_TOKENS `:` and `,` outside strings.
+ * caps.depth or there are more than caps.tokens `:` and `,` outside strings.
  * Bounds JSON.parse and zod's unknown-key scan on hostile input.
  */
-function structureOk(raw: string): boolean {
+function structureOk(raw: string, caps: ScanCaps): boolean {
   let depth = 0;
   let tokens = 0;
   let matches = 0;
   let nextBs = -2; // cached index of the next backslash at or after the scan point; -1 = none
   // `:`/`,` count inside the current container; an object is capped tightly
-  // (no frame object has more than a dozen keys), an array by MAX_TOKENS.
+  // (no frame object has more than a dozen keys), an array by caps.tokens.
   const inObject: boolean[] = [];
   const counts: number[] = [];
   const re = /["{}[\]:,]/g;
   for (let m = re.exec(raw); m !== null; m = re.exec(raw)) {
-    if (++matches > MAX_STRUCTURAL) return false;
+    if (++matches > caps.structural) return false;
     const c = m[0];
     if (c === '"') {
       // Skip the string, linearly and without regex backtracking. The next
@@ -446,13 +510,13 @@ function structureOk(raw: string): boolean {
       }
       re.lastIndex = j + 1;
     } else if (c === "{" || c === "[") {
-      if (++depth > MAX_DEPTH) return false;
+      if (++depth > caps.depth) return false;
       inObject[depth] = c === "{";
       counts[depth] = 0;
     } else if (c === "}" || c === "]") {
       depth--;
     } else {
-      if (++tokens > MAX_TOKENS) return false;
+      if (++tokens > caps.tokens) return false;
       const n = (counts[depth] ?? 0) + 1;
       counts[depth] = n;
       if (inObject[depth] && n > MAX_OBJECT_TOKENS) return false;
@@ -461,7 +525,11 @@ function structureOk(raw: string): boolean {
   return true;
 }
 
-function decode<F>(raw: unknown, schema: z.ZodType<F>): DecodeResult<F> {
+function decode<F>(
+  raw: unknown,
+  schema: z.ZodType<F>,
+  caps: ScanCaps,
+): DecodeResult<F> {
   if (typeof raw !== "string") return { ok: false, error: "bad_frame" };
   if (raw.length > MAX_RAW_FRAME_CHARS) {
     const id = recoverId(raw);
@@ -469,7 +537,7 @@ function decode<F>(raw: unknown, schema: z.ZodType<F>): DecodeResult<F> {
       ? { ok: false, error: "too_large", id }
       : { ok: false, error: "too_large" };
   }
-  if (!structureOk(raw)) return { ok: false, error: "bad_frame" };
+  if (!structureOk(raw, caps)) return { ok: false, error: "bad_frame" };
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -499,12 +567,12 @@ function decode<F>(raw: unknown, schema: z.ZodType<F>): DecodeResult<F> {
 
 /** Hub side: accepts only daemon-to-hub frames. Never throws. */
 export function decodeClientFrame(raw: unknown): DecodeResult<ClientFrame> {
-  return decode(raw, ClientFrameSchema);
+  return decode(raw, ClientFrameSchema, CLIENT_CAPS);
 }
 
 /** Daemon side: accepts only hub-to-daemon frames. Never throws. */
 export function decodeServerFrame(raw: unknown): DecodeResult<ServerFrame> {
-  return decode(raw, ServerFrameSchema);
+  return decode(raw, ServerFrameSchema, SERVER_CAPS);
 }
 
 export function formatFrameError(

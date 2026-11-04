@@ -77,11 +77,17 @@ describe("receipts", () => {
       "pending",
     );
   });
-  it("has no role fields (design: roles dropped)", () => {
+  it("carries an optional to_name (a former-name hit, #393)", () => {
     const r = { msg_id: "a".repeat(16), state: "pending" };
+    expect(ReceiptSchema.safeParse(r).success).toBe(true);
     expect(ReceiptSchema.safeParse({ ...r, to_name: "code-96" }).success).toBe(
+      true,
+    );
+    expect(ReceiptSchema.safeParse({ ...r, to_name: "openbus" }).success).toBe(
       false,
     );
+  });
+  it("has no role fields (design: roles dropped)", () => {
     expect(
       ReceiptSchema.safeParse({
         msg_id: "a".repeat(16),
