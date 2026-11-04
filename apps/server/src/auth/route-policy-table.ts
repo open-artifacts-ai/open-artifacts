@@ -248,11 +248,13 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /bus/device/token": {
     public: "bus device poll; RL_ANON per IP and per code",
   },
-  "GET /bus/approve/:code": {
-    public: "bus approval page; redirects to sign-in, checks mcp.connect",
+  "GET /bus/approve": {
+    public:
+      "bus code entry (RFC 8628 5.4); redirects to sign-in, checks mcp.connect",
   },
-  "POST /bus/approve/:code": {
-    public: "bus approval decision; checks session, form token, mcp.connect",
+  "POST /bus/approve": {
+    public:
+      "bus code check and decision; session, form token, mcp.connect, RL per member and IP",
   },
   "GET /bus/connect": { signed: "bus machine token (oa_machine_), D1" },
   "GET /api/v1/bus/machines": { user: "the caller's bus machines" },

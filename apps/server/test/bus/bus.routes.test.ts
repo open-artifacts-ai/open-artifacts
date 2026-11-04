@@ -30,22 +30,36 @@ const app = createApp();
 let ipSeq = 0;
 const nextIp = () => `203.0.113.${(++ipSeq % 250) + 1}`;
 
-const post = (path: string, body: unknown, ip = nextIp(), ev: unknown = env) =>
+const post = (
+  path: string,
+  body: unknown,
+  ip = nextIp(),
+  ev: unknown = env,
+  cf?: Record<string, unknown>,
+) =>
   fetchAndWait(
     app,
     new Request(`http://app.localhost${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", "cf-connecting-ip": ip },
       body: JSON.stringify(body),
-    }),
+      ...(cf ? { cf } : {}),
+    } as RequestInit),
     ev,
   );
 
 async function startDevice(
   label = "leo-laptop",
   ip = nextIp(),
+  cf?: Record<string, unknown>,
 ): Promise<DeviceCodeResponse> {
-  const r = await post(BUS_ROUTES.device, { machine_label: label }, ip);
+  const r = await post(
+    BUS_ROUTES.device,
+    { machine_label: label },
+    ip,
+    env,
+    cf,
+  );
   expect(r.status).toBe(201);
   return (await r.json()) as DeviceCodeResponse;
 }
@@ -58,10 +72,12 @@ async function poll(deviceCode: string): Promise<Response> {
   return post(BUS_ROUTES.deviceToken, { device_code: deviceCode });
 }
 
-const page = (path: string, cookie: string | null, host = "app.localhost") =>
+const APPROVE = "/bus/approve";
+
+const page = (cookie: string | null, host = "app.localhost") =>
   fetchAndWait(
     app,
-    new Request(`http://${host}${path}`, {
+    new Request(`http://${host}${APPROVE}`, {
       headers: cookie ? { cookie } : {},
     }),
   );
@@ -69,38 +85,80 @@ const page = (path: string, cookie: string | null, host = "app.localhost") =>
 const csrfOf = (html: string) =>
   /name="csrf" value="([^"]+)"/.exec(html)?.[1] ?? "";
 
-async function decide(
-  path: string,
+/** A form POST to /bus/approve. */
+async function form(
   cookie: string,
   fields: Record<string, string>,
   extra: Record<string, string> = {},
+  host = "app.localhost",
+  ev: unknown = env,
 ) {
   const body = new URLSearchParams(fields).toString();
   return fetchAndWait(
     app,
-    new Request(`http://app.localhost${path}`, {
+    new Request(`http://${host}${APPROVE}`, {
       method: "POST",
       headers: {
         cookie,
         "content-type": "application/x-www-form-urlencoded",
         "content-length": String(body.length),
+        "cf-connecting-ip": nextIp(),
         ...extra,
       },
       body,
     }),
+    ev,
+  );
+}
+
+/** Opens the entry page and types `typed`: the response (confirm, or entry with an error). */
+async function enter(
+  who: Member,
+  typed: string,
+  opts: { host?: string; ev?: unknown; extra?: Record<string, string> } = {},
+) {
+  const entry = await page(who.cookie, opts.host);
+  expect(entry.status).toBe(200);
+  return form(
+    who.cookie,
+    { csrf: csrfOf(await entry.text()), step: "code", code: typed },
+    opts.extra,
+    opts.host,
+    opts.ev,
+  );
+}
+
+/** The confirm screen's HTML for `code` (it must match). */
+async function confirmHtml(who: Member, code: string, host?: string) {
+  const r = await enter(who, code, { host });
+  const html = await r.text();
+  expect(html, "not the confirm screen").toContain(
+    'name="step" value="decide"',
+  );
+  return html;
+}
+
+/** Approve or deny from the confirm screen. */
+async function decide(
+  who: Member,
+  code: string,
+  decision: "approve" | "deny",
+  html?: string,
+  host?: string,
+) {
+  const h = html ?? (await confirmHtml(who, code, host));
+  return form(
+    who.cookie,
+    { csrf: csrfOf(h), step: "decide", code, decision },
+    {},
+    host,
   );
 }
 
 /** The whole flow for `who`: returns the machine token. */
 async function approveMachine(who: Member, label = "leo-laptop") {
   const d = await startDevice(label);
-  const path = new URL(d.verification_uri).pathname;
-  const shown = await page(path, who.cookie);
-  expect(shown.status).toBe(200);
-  const r = await decide(path, who.cookie, {
-    csrf: csrfOf(await shown.text()),
-    decision: "approve",
-  });
+  const r = await decide(who, d.user_code, "approve");
   expect(r.status).toBe(200);
   const t = await poll(d.device_code);
   const j = (await t.json()) as { status: string; machine_token?: string };
@@ -119,13 +177,14 @@ beforeAll(async () => {
 });
 
 describe("device flow", () => {
-  it("POST /bus/device answers the contract: a secret, a code and the approval URL", async () => {
+  it("POST /bus/device answers the contract: a secret, a code, and the plain approval URL", async () => {
     const d = await startDevice();
     expect(d.device_code).toMatch(/^[1-9A-HJ-NP-Za-km-z]{43}$/);
     expect(d.user_code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
-    expect(d.verification_uri).toBe(
-      `http://app.localhost/bus/approve/${d.user_code}`,
-    );
+    // RFC 8628 5.4: the code is never in the URI (#1319's contract).
+    expect(d.verification_uri).toBe("http://app.localhost/bus/approve");
+    expect(d.verification_uri).not.toContain(d.user_code.replace("-", ""));
+    expect(d.verification_uri).not.toContain(d.user_code.slice(0, 4));
     expect(d.expires_in).toBe(600);
     expect(d.interval).toBe(5);
     // Only hashes are stored: the secret is nowhere in D1.
@@ -138,17 +197,29 @@ describe("device flow", () => {
     expect(row?.ip_tag).not.toContain("203.0.113");
   });
 
+  it("the verification URI is the configured origin's, never the Host header's", async () => {
+    const r = await fetchAndWait(
+      app,
+      new Request("http://evil.example/bus/device", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "cf-connecting-ip": nextIp(),
+        },
+        body: "{}",
+      }),
+    );
+    expect(((await r.json()) as DeviceCodeResponse).verification_uri).toBe(
+      "http://app.localhost/bus/approve",
+    );
+  });
+
   it("pending, then approved once with a bus-only token; the next poll is expired", async () => {
     const d = await startDevice();
     expect(await (await poll(d.device_code)).json()).toEqual({
       status: "pending",
     });
-    const path = new URL(d.verification_uri).pathname;
-    const html = await (await page(path, alice.cookie)).text();
-    await decide(path, alice.cookie, {
-      csrf: csrfOf(html),
-      decision: "approve",
-    });
+    await decide(alice, d.user_code, "approve");
     const j = (await (await poll(d.device_code)).json()) as {
       status: string;
       machine_token: string;
@@ -170,12 +241,7 @@ describe("device flow", () => {
 
   it("deny answers denied once, then expired", async () => {
     const d = await startDevice();
-    const path = new URL(d.verification_uri).pathname;
-    const html = await (await page(path, alice.cookie)).text();
-    const r = await decide(path, alice.cookie, {
-      csrf: csrfOf(html),
-      decision: "deny",
-    });
+    const r = await decide(alice, d.user_code, "deny");
     expect(r.status).toBe(200);
     expect(await r.text()).toContain("Machine not connected");
     expect(await (await poll(d.device_code)).json()).toEqual({
@@ -258,12 +324,7 @@ describe("device flow", () => {
   it("an approval by a member removed before the poll redeems nothing", async () => {
     const carol = await member();
     const d = await startDevice();
-    const path = new URL(d.verification_uri).pathname;
-    const html = await (await page(path, carol.cookie)).text();
-    await decide(path, carol.cookie, {
-      csrf: csrfOf(html),
-      decision: "approve",
-    });
+    await decide(carol, d.user_code, "approve");
     await env.DB.prepare("update users set status = 'removed' where id = ?")
       .bind(carol.userId)
       .run();
@@ -279,26 +340,47 @@ describe("device flow", () => {
   });
 });
 
-describe("approval page", () => {
+describe("approval page: the person types the code (RFC 8628 5.4)", () => {
   it("no session redirects to sign-in with the page as next", async () => {
-    const d = await startDevice();
-    const path = new URL(d.verification_uri).pathname;
-    const r = await page(path, null);
+    const r = await page(null);
     expect(r.status).toBe(302);
     expect(r.headers.get("location")).toBe(
-      `/auth/login?next=${encodeURIComponent(path)}`,
+      `/auth/login?next=${encodeURIComponent("/bus/approve")}`,
     );
+  });
+
+  it("the entry screen shows one code field and nothing about any machine", async () => {
+    const d = await startDevice("secret-host-name");
+    const r = await page(alice.cookie);
+    const html = await r.text();
+    expect(html).toContain("Connect a machine");
+    expect(html).toContain(
+      "Type the code shown in the terminal where you started the setup. Only use a code from a setup you started yourself.",
+    );
+    expect(html).toContain("Code from your terminal");
+    expect(html).toContain('placeholder="XXXX-XXXX"');
+    expect(html).toContain('autocomplete="off"');
+    expect(html).toContain('spellcheck="false"');
+    expect(html).toContain('autocapitalize="characters"');
+    expect(html).toContain(">Continue<");
+    expect(html).toContain("Signed in as");
+    expect(html).not.toContain("secret-host-name");
+    expect(html).not.toContain(d.user_code);
+    expect(r.headers.get("content-security-policy")).toContain(
+      "default-src 'none'",
+    );
+    expect(r.headers.get("cache-control")).toBe("no-store");
   });
 
   it("a member who can't connect (a guest) is refused, and nothing is decided", async () => {
     const d = await startDevice();
-    const path = new URL(d.verification_uri).pathname;
-    const r = await page(path, guest.cookie);
-    expect(r.status).toBe(403);
-    // Even with a token minted for another member, POST is refused.
-    const html = await (await page(path, alice.cookie)).text();
-    const p = await decide(path, guest.cookie, {
+    expect((await page(guest.cookie)).status).toBe(403);
+    // A form token minted for another member doesn't help either.
+    const html = await confirmHtml(alice, d.user_code);
+    const p = await form(guest.cookie, {
       csrf: csrfOf(html),
+      step: "decide",
+      code: d.user_code,
       decision: "approve",
     });
     expect(p.status).toBe(403);
@@ -307,32 +389,182 @@ describe("approval page", () => {
     });
   });
 
-  it("shows the machine, the code and the account, with no secret, and the page CSP", async () => {
-    const d = await startDevice("studio-mac");
-    const path = new URL(d.verification_uri).pathname;
-    const r = await page(path, alice.cookie);
-    const html = await r.text();
-    expect(html).toContain("studio-mac");
-    expect(html).toContain(d.user_code);
-    expect(html).toContain("Approve");
-    expect(html).toContain("Deny");
-    expect(html).toContain("No artifacts, no API and no MCP access");
-    expect(html).not.toContain(d.device_code);
-    expect(r.headers.get("content-security-policy")).toContain(
-      "default-src 'none'",
+  it("the code is accepted in lower case and without the dash", async () => {
+    const d = await startDevice("lower");
+    const raw = d.user_code.replace("-", "").toLowerCase();
+    const html = await (await enter(alice, raw)).text();
+    expect(html).toContain('name="step" value="decide"');
+    expect(html).toContain("lower");
+  });
+
+  it("a wrong code reveals nothing, keeps the typed value and shows Design's error", async () => {
+    const d = await startDevice("hidden-box");
+    for (const typed of ["ZZZZ-ZZZZ", "nonsense", ""]) {
+      const r = await enter(alice, typed);
+      expect(r.status).toBe(200);
+      const html = await r.text();
+      expect(html).toContain(
+        "That code doesn&#39;t match a request waiting for you. Check your terminal and type it again.",
+      );
+      expect(html).toContain(`value="${typed}"`);
+      expect(html).not.toContain("hidden-box");
+      expect(html).not.toContain('value="decide"');
+    }
+    expect(await (await poll(d.device_code)).json()).toEqual({
+      status: "pending",
+    });
+  });
+
+  it("an expired code shows the expired error; a decided one is a wrong code", async () => {
+    const old = await startDevice();
+    await env.DB.prepare(
+      "update bus_device_codes set expires_at = 0 where user_code = ?",
+    )
+      .bind(old.user_code)
+      .run();
+    expect(await (await enter(alice, old.user_code)).text()).toContain(
+      "That code has expired. Run the setup on your machine again to get a new one.",
     );
-    expect(r.headers.get("cache-control")).toBe("no-store");
-    // Design: the code and the name never wrap, everywhere they appear.
-    expect(
-      html.match(/<span class="mono nw">[A-Z2-9]{4}-[A-Z2-9]{4}<\/span>/g),
-    ).toHaveLength(2);
-    expect(html.match(/<span class="nw">studio-mac<\/span>/g)).toHaveLength(3);
-    expect(html).toContain(
-      'Connect <span class="nw">studio-mac</span> to Open Artifacts?',
+    const used = await startDevice();
+    await decide(alice, used.user_code, "approve");
+    expect(await (await enter(alice, used.user_code)).text()).toContain(
+      "That code doesn&#39;t match a request waiting for you.",
     );
   });
 
-  it("no word 'bus' reaches a reader on the form, success or deny screens (the /bus URL aside)", async () => {
+  it("code entry is limited per member and per IP", async () => {
+    const l = limiter(1);
+    const ev = { ...env, ...l };
+    const html = await (await page(alice.cookie)).text();
+    const ip = nextIp();
+    const tryOnce = () =>
+      form(
+        alice.cookie,
+        { csrf: csrfOf(html), step: "code", code: "ZZZZ-ZZZZ" },
+        { "cf-connecting-ip": ip },
+        undefined,
+        ev,
+      );
+    expect((await tryOnce()).status).toBe(200);
+    const over = await tryOnce();
+    expect(over.status).toBe(429);
+    expect(await over.text()).toContain(
+      "Too many tries. Wait a few minutes, then type the code again.",
+    );
+    expect(l.counts.get(RL_KEYS.code + alice.userId)).toBe(2);
+    // Another member from the same IP is limited by the IP key too.
+    const l2 = limiter(1);
+    const ev2 = { ...env, ...l2 };
+    const bHtml = await (await page(bob.cookie)).text();
+    await form(
+      alice.cookie,
+      { csrf: csrfOf(html), step: "code", code: "ZZZZ-ZZZZ" },
+      { "cf-connecting-ip": ip },
+      undefined,
+      ev2,
+    );
+    const viaIp = await form(
+      bob.cookie,
+      { csrf: csrfOf(bHtml), step: "code", code: "ZZZZ-ZZZZ" },
+      { "cf-connecting-ip": ip },
+      undefined,
+      ev2,
+    );
+    expect(viaIp.status).toBe(429);
+  });
+
+  it("the code step needs its own form token (CSRF), bound to the member", async () => {
+    const d = await startDevice();
+    const aliceEntry = csrfOf(await (await page(alice.cookie)).text());
+    for (const csrf of ["", "nope", aliceEntry]) {
+      const r = await form(bob.cookie, {
+        csrf,
+        step: "code",
+        code: d.user_code,
+      });
+      expect(r.status).toBe(403);
+      expect(await r.text()).not.toContain("leo-laptop");
+    }
+    // Cross-site is refused before anything else.
+    const bobEntry = csrfOf(await (await page(bob.cookie)).text());
+    const x = await form(
+      bob.cookie,
+      { csrf: bobEntry, step: "code", code: d.user_code },
+      { "sec-fetch-site": "cross-site" },
+    );
+    expect(x.status).toBe(403);
+  });
+
+  it("the confirm screen shows the machine, where the request came from, the code and the new warning", async () => {
+    const d = await startDevice("studio-mac", nextIp(), {
+      country: "DE",
+      asOrganization: "Deutsche Telekom AG",
+    });
+    const r = await enter(alice, d.user_code);
+    const html = await r.text();
+    expect(html).toContain(
+      'Connect <span class="nw">studio-mac</span> to Open Artifacts?',
+    );
+    expect(html).toContain(
+      `Requested just now from Germany, Deutsche Telekom AG · code <span class="mono nw">${d.user_code}</span>`,
+    );
+    expect(html).toContain(
+      "Only approve if you started this setup yourself. If you don't recognise where it came from, choose Deny.",
+    );
+    expect(html).toContain("No artifacts, no API and no MCP access");
+    expect(html).not.toContain(d.device_code);
+    // No IP is stored with the code.
+    const row = await env.DB.prepare(
+      "select origin_country as c, origin_network as n from bus_device_codes where user_code = ?",
+    )
+      .bind(d.user_code)
+      .first<{ c: string; n: string }>();
+    expect(row).toEqual({ c: "DE", n: "Deutsche Telekom AG" });
+  });
+
+  it("an unknown origin, an ASN-only network or Tor show no guess", async () => {
+    for (const cf of [
+      {},
+      { country: "XX" },
+      { country: "T1", asOrganization: "AS13335" },
+    ]) {
+      const d = await startDevice("o", nextIp(), cf);
+      const html = await (await enter(alice, d.user_code)).text();
+      expect(html).toContain(
+        `Requested just now · code <span class="mono nw">${d.user_code}</span>`,
+      );
+    }
+    const d = await startDevice("o2", nextIp(), {
+      country: "FR",
+      asOrganization: "13335",
+    });
+    expect(await (await enter(alice, d.user_code)).text()).toContain(
+      "Requested just now from France · code",
+    );
+  });
+
+  it("the code is nowrap everywhere; the label is nowrap up to 32 characters, then wraps anywhere", async () => {
+    const short = "a".repeat(32);
+    const long = `${"b".repeat(33)}`;
+    const d1 = await startDevice(short);
+    const h1 = await (await enter(alice, d1.user_code)).text();
+    expect(
+      h1.match(/<span class="mono nw">[A-Z2-9]{4}-[A-Z2-9]{4}<\/span>/g),
+    ).toHaveLength(1);
+    expect(
+      h1.match(new RegExp(`<span class="nw">${short}</span>`, "g")),
+    ).toHaveLength(2);
+    expect(h1).not.toContain('class="wrap"');
+    const d2 = await startDevice(long);
+    const h2 = await (await enter(alice, d2.user_code)).text();
+    expect(
+      h2.match(new RegExp(`<span class="wrap">${long}</span>`, "g")),
+    ).toHaveLength(2);
+    expect(h2).not.toContain(`<span class="nw">${long}`);
+    expect(h2).toContain(".wrap{overflow-wrap:anywhere}");
+  });
+
+  it("no word 'bus' reaches a reader on the entry, confirm, success, deny and expired screens (the /bus URL aside)", async () => {
     const visible = (h: string) =>
       h
         .replace(/<style>[\s\S]*?<\/style>/, "")
@@ -340,71 +572,47 @@ describe("approval page", () => {
         .replace(/https?:\/\/\S+\/bus\b/g, "")
         // The test accounts are bus-N-...@x.com.
         .replace(/\S+@\S+/g, "");
+    const noBus = (h: string) =>
+      expect(
+        visible(h).match(/.{0,40}\bbus\b.{0,40}/i)?.[0] ?? null,
+      ).toBeNull();
+    noBus(await (await page(alice.cookie)).text());
+    noBus(await (await enter(alice, "ZZZZ-ZZZZ")).text());
     const d = await startDevice("box");
-    const path = new URL(d.verification_uri).pathname;
-    const form = await (await page(path, alice.cookie)).text();
-    expect(
-      visible(form).match(/.{0,40}\bbus\b.{0,40}/i)?.[0] ?? null,
-    ).toBeNull();
-    const ok = await decide(path, alice.cookie, {
-      csrf: csrfOf(form),
-      decision: "approve",
-    });
-    expect(
-      visible(await ok.text()).match(/.{0,40}\bbus\b.{0,40}/i)?.[0] ?? null,
-    ).toBeNull();
+    const conf = await confirmHtml(alice, d.user_code);
+    noBus(conf);
+    noBus(await (await decide(alice, d.user_code, "approve", conf)).text());
     const d2 = await startDevice("box2");
-    const p2 = new URL(d2.verification_uri).pathname;
-    const f2 = await (await page(p2, alice.cookie)).text();
-    const no = await decide(p2, alice.cookie, {
-      csrf: csrfOf(f2),
-      decision: "deny",
-    });
-    expect(
-      visible(await no.text()).match(/.{0,40}\bbus\b.{0,40}/i)?.[0] ?? null,
-    ).toBeNull();
-    expect(visible(await (await page(p2, alice.cookie)).text())).not.toMatch(
-      /\bbus\b/i,
-    );
+    noBus(await (await decide(alice, d2.user_code, "deny")).text());
+    const d3 = await startDevice("box3");
+    const c3 = await confirmHtml(alice, d3.user_code);
+    await decide(alice, d3.user_code, "approve", c3);
+    noBus(await (await decide(alice, d3.user_code, "approve", c3)).text());
   });
 
-  it("a client-supplied label is escaped on the form and the success screen", async () => {
+  it("a client-supplied label is escaped on the confirm and success screens", async () => {
     const evil = '"><script>alert(1)</script>';
     const d = await startDevice(evil);
-    const path = new URL(d.verification_uri).pathname;
-    const html = await (await page(path, alice.cookie)).text();
+    const html = await confirmHtml(alice, d.user_code);
     expect(html).not.toContain("<script>");
     expect(html).toContain("&quot;&gt;&lt;script&gt;");
-    const r = await decide(path, alice.cookie, {
-      csrf: csrfOf(html),
-      decision: "approve",
-    });
-    const ok = await r.text();
+    const ok = await (await decide(alice, d.user_code, "approve", html)).text();
     expect(ok).not.toContain("<script>");
     expect(ok).toContain("&quot;&gt;&lt;script&gt;");
   });
 
   it("the success screen names the account and the instance's own /bus URL, never the Host header's", async () => {
     const d = await startDevice("work-box");
-    const path = new URL(d.verification_uri).pathname;
-    const html = await (await page(path, alice.cookie, "evil.example")).text();
-    const r = await fetchAndWait(
-      app,
-      new Request(`http://evil.example${path}`, {
-        method: "POST",
-        headers: {
-          cookie: alice.cookie,
-          "content-type": "application/x-www-form-urlencoded",
-          "content-length": String(
-            `csrf=${encodeURIComponent(csrfOf(html))}&decision=approve`.length,
-          ),
-        },
-        body: `csrf=${encodeURIComponent(csrfOf(html))}&decision=approve`,
-      }),
+    const r = await decide(
+      alice,
+      d.user_code,
+      "approve",
+      undefined,
+      "evil.example",
     );
     const ok = await r.text();
     expect(ok).toContain("Machine connected");
-    expect(ok).toContain('<span class="nw">"work-box"</span> is connected to');
+    expect(ok).toContain('"<span class="nw">work-box</span>" is connected to');
     expect(ok).toContain("http://app.localhost/bus");
     expect(ok).not.toContain("evil.example");
     expect(ok).toContain(
@@ -412,30 +620,34 @@ describe("approval page", () => {
     );
   });
 
-  it("POST without the form token, with another code's token, or cross-site is refused", async () => {
+  it("the decision needs the confirm token for that code and member", async () => {
     const d1 = await startDevice();
     const d2 = await startDevice();
-    const p1 = new URL(d1.verification_uri).pathname;
-    const p2 = new URL(d2.verification_uri).pathname;
-    const t2 = csrfOf(await (await page(p2, alice.cookie)).text());
-    expect(
-      (await decide(p1, alice.cookie, { decision: "approve" })).status,
-    ).toBe(403);
-    expect(
-      (await decide(p1, alice.cookie, { csrf: t2, decision: "approve" }))
-        .status,
-    ).toBe(403);
-    // Bob can't use Alice's token for the same code.
-    const t1 = csrfOf(await (await page(p1, alice.cookie)).text());
-    expect(
-      (await decide(p1, bob.cookie, { csrf: t1, decision: "approve" })).status,
-    ).toBe(403);
+    const t2 = csrfOf(await confirmHtml(alice, d2.user_code));
+    const t1 = csrfOf(await confirmHtml(alice, d1.user_code));
+    const entryTok = csrfOf(await (await page(alice.cookie)).text());
+    const tries: [Member, string][] = [
+      [alice, ""],
+      [alice, t2],
+      [alice, entryTok],
+      [bob, t1],
+    ];
+    for (const [who, csrf] of tries)
+      expect(
+        (
+          await form(who.cookie, {
+            csrf,
+            step: "decide",
+            code: d1.user_code,
+            decision: "approve",
+          })
+        ).status,
+      ).toBe(403);
     expect(
       (
-        await decide(
-          p1,
+        await form(
           alice.cookie,
-          { csrf: t1, decision: "approve" },
+          { csrf: t1, step: "decide", code: d1.user_code, decision: "approve" },
           { "sec-fetch-site": "cross-site" },
         )
       ).status,
@@ -445,40 +657,25 @@ describe("approval page", () => {
     });
   });
 
-  it("a used or expired code shows the same expired page", async () => {
-    const used = await startDevice();
-    const usedPath = new URL(used.verification_uri).pathname;
-    const html = await (await page(usedPath, alice.cookie)).text();
-    await decide(usedPath, alice.cookie, {
-      csrf: csrfOf(html),
-      decision: "approve",
-    });
-    const again = await page(usedPath, alice.cookie);
-    expect(again.status).toBe(404);
-    const usedText = await again.text();
-    expect(usedText).toContain("This code expired");
-    // A second decision with the still-valid token is refused the same way.
-    const twice = await decide(usedPath, alice.cookie, {
-      csrf: csrfOf(html),
-      decision: "approve",
-    });
+  it("a second decision on a decided code is the expired page", async () => {
+    const d = await startDevice();
+    const html = await confirmHtml(alice, d.user_code);
+    await decide(alice, d.user_code, "approve", html);
+    const twice = await decide(alice, d.user_code, "deny", html);
     expect(twice.status).toBe(404);
+    expect(await twice.text()).toContain("This code expired");
+  });
 
-    const old = await startDevice();
-    await env.DB.prepare(
-      "update bus_device_codes set expires_at = 0 where user_code = ?",
-    )
-      .bind(old.user_code)
-      .run();
-    const oldPage = await page(
-      new URL(old.verification_uri).pathname,
-      alice.cookie,
+  it("there is no per-code URL any more", async () => {
+    const d = await startDevice();
+    const r = await fetchAndWait(
+      app,
+      new Request(`http://app.localhost/bus/approve/${d.user_code}`, {
+        headers: { cookie: alice.cookie },
+      }),
     );
-    expect(oldPage.status).toBe(404);
-    expect(await oldPage.text()).toBe(usedText);
-    expect((await page("/bus/approve/ZZZZ-ZZZZ", alice.cookie)).status).toBe(
-      404,
-    );
+    expect(r.status).toBe(404);
+    expect(await r.text()).not.toContain("leo-laptop");
   });
 });
 
@@ -601,7 +798,7 @@ describe("the bus is off: unbound, or hosted (until #1299)", () => {
       ).toBe(404);
       const ap = await fetchAndWait(
         app,
-        new Request("http://app.localhost/bus/approve/ABCD-EFGH", {
+        new Request("http://app.localhost/bus/approve", {
           headers: { cookie: alice.cookie },
         }),
         ev,

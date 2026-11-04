@@ -494,6 +494,11 @@ export const busDeviceCodes = sqliteTable(
     userCode: text("user_code").notNull().unique(),
     label: text("label").notNull(),
     ipTag: text("ip_tag").notNull(),
+    // Where the request came from, shown on the confirm screen: the
+    // two-letter country (cf.country) and a readable network name
+    // (cf.asOrganization), never the IP or an ASN number. Null: unknown.
+    originCountry: text("origin_country"),
+    originNetwork: text("origin_network"),
     createdAt: integer("created_at").notNull(),
     expiresAt: integer("expires_at").notNull(),
     lastPollAt: integer("last_poll_at"),

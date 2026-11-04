@@ -93,7 +93,7 @@ const SESSION_PATHS = [
   "/mcp",
   "/mcp/*",
   // #1291 the bus approval page reads the cookie session (no other /bus route).
-  "/bus/approve/*",
+  "/bus/approve",
 ] as const;
 
 // PUT R.upload(id) is authorized by its signature: no session, no CSRF.

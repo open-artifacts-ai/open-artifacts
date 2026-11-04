@@ -1926,8 +1926,8 @@ export const PUBLIC_ROUTES: readonly string[] = [
   // session, canConnect and the form token) and the machine-token socket.
   "POST /bus/device",
   "POST /bus/device/token",
-  "GET /bus/approve/:code",
-  "POST /bus/approve/:code",
+  "GET /bus/approve",
+  "POST /bus/approve",
   "GET /bus/connect",
   "GET /a/:id",
   "GET /a/:id/full",

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "5384034a-7dae-40ab-a3c8-2b9d1a88a15b",
+  "id": "7593285e-1b9b-4614-bbe3-a23d9178d966",
   "prevId": "f99a083e-64ec-4b7d-8c04-8265de9b800e",
   "tables": {
     "agent_grants": {
@@ -469,6 +469,20 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "origin_country": {
+          "name": "origin_country",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "origin_network": {
+          "name": "origin_network",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "created_at": {

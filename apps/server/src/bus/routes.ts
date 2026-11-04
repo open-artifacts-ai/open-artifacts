@@ -14,7 +14,7 @@ import {
   newUserCode,
   normalizeUserCode,
 } from "@oa/bus-protocol";
-import { AUTH, R } from "@oa/shared";
+import { AUTH, type Member, R } from "@oa/shared";
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
 import { requireUser } from "../auth/authz.js";
@@ -43,7 +43,7 @@ import {
 import { getSettings } from "../services/members.js";
 import { getUser } from "../services/users.js";
 import { hmacSign, sha256Hex } from "../util/crypto.js";
-import { renderApprove, renderApproved } from "./approve-page.js";
+import { renderApprove, renderApproved, renderEntry } from "./approve-page.js";
 import {
   AUTHZ_AT_HEADER,
   busHubName,
@@ -64,8 +64,11 @@ export const RL_KEYS = {
   tokenIp: "bus-tok:ip:",
   /** POST /bus/device/token, per device code (its hash). */
   tokenCode: "bus-tok:dc:",
-  /** GET and POST /bus/approve/<code>, per signed-in member. */
+  /** POST /bus/approve step=decide, per signed-in member. */
   approve: "bus-approve:u:",
+  /** POST /bus/approve step=code (typing a code), per member and per IP. */
+  code: "bus-code:u:",
+  codeIp: "bus-code:ip:",
 } as const;
 
 /** Outstanding (unexpired) device codes per install; a new code past it is 429. */
@@ -84,6 +87,37 @@ const MAX_FORM_BYTES = 8 * 1024;
 export const APPROVE_SCOPE = "bus-approve";
 
 const NO_STORE = { "cache-control": "no-store" };
+/** The approval page. #1319 makes BUS_ROUTES.approve this plain string; switch to it then. */
+export const APPROVE_PATH = "/bus/approve";
+
+const COUNTRY = /^[A-Z]{2}$/;
+// Controls, bidi and zero-width characters: they can disguise a name.
+const UNSAFE =
+  /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/gu;
+
+/**
+ * Where a device request came from, for the confirm screen: the country
+ * (cf.country) and a readable network name (cf.asOrganization, cleaned and
+ * capped). Never the IP or an ASN number; null when unknown.
+ */
+export function originOf(req: Request): {
+  country: string | null;
+  network: string | null;
+} {
+  const cf = (req as { cf?: Record<string, unknown> }).cf ?? {};
+  const cc = typeof cf.country === "string" ? cf.country.toUpperCase() : "";
+  const org =
+    typeof cf.asOrganization === "string"
+      ? cf.asOrganization.replace(UNSAFE, "").replace(/\s+/g, " ").trim()
+      : "";
+  return {
+    // T1 is Tor and XX unknown: no country there.
+    country: COUNTRY.test(cc) && cc !== "T1" && cc !== "XX" ? cc : null,
+    // A readable name only: not empty, not just digits or an "AS123" token.
+    network:
+      org.length > 0 && !/^(as)?\d+$/i.test(org) ? org.slice(0, 64) : null,
+  };
+}
 const notFound = () => new ApiError("not_found", "Not found");
 
 const clientIp = (c: Context<AppEnv>) =>
@@ -117,8 +151,9 @@ const PURGE_CODES = `delete from bus_device_codes where id in
 // Under both caps in the same statement, so concurrent requests can't pass
 // together. A subquery counts at most cap + 1 rows.
 const INSERT_CODE = `insert into bus_device_codes
-  (id, device_code_hash, user_code, label, ip_tag, created_at, expires_at)
-  select ?1, ?2, ?3, ?4, ?5, ?6, ?7
+  (id, device_code_hash, user_code, label, ip_tag, created_at, expires_at,
+    origin_country, origin_network)
+  select ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?10, ?11
   where (select count(*) from (select 1 from bus_device_codes
       indexed by bus_device_codes_expires_idx where expires_at > ?6 limit ?8)) < ?8
     and (select count(*) from (select 1 from bus_device_codes
@@ -134,6 +169,7 @@ async function deviceCode(c: Context<AppEnv>): Promise<Response> {
   const label = newMachineLabel(body.machine_label ?? "machine");
   // The IP is never stored: only its HMAC, for the per-IP share of the cap.
   const ipTag = await hmacSign(env.SESSION_SECRET, `bus-device-ip:${ip}`);
+  const origin = originOf(c.req.raw);
   const now = Date.now();
   await stmt(env.DB, PURGE_CODES)
     .bind(now - 3_600_000, PURGE_BATCH)
@@ -153,6 +189,8 @@ async function deviceCode(c: Context<AppEnv>): Promise<Response> {
           now + LIMITS.deviceCodeTtlSec * 1000,
           MAX_PENDING_CODES,
           CODES_PER_IP,
+          origin.country,
+          origin.network,
         )
         .run();
       if (!r.meta.changes) {
@@ -168,7 +206,9 @@ async function deviceCode(c: Context<AppEnv>): Promise<Response> {
       const res: DeviceCodeResponse = {
         device_code: secret,
         user_code: userCode,
-        verification_uri: `${appOrigin(env)}${BUS_ROUTES.approve(userCode)}`,
+        // RFC 8628 5.4: never the code (#1319 refuses one); the person types
+        // it. The configured origin, never the Host header.
+        verification_uri: `${appOrigin(env)}${APPROVE_PATH}`,
         expires_in: LIMITS.deviceCodeTtlSec,
         interval: LIMITS.devicePollIntervalSec,
       };
@@ -270,18 +310,42 @@ async function deviceToken(c: Context<AppEnv>): Promise<Response> {
 }
 
 // ---------------------------------------------------------- approval page
+//
+// RFC 8628 5.4 (#1291 review): the verification URI never carries the code.
+// GET /bus/approve shows one field; the person types the code their terminal
+// printed. POST /bus/approve step=code: only a correct, pending, unexpired
+// code shows the machine and Approve/Deny; a wrong one reveals nothing. The
+// confirm form carries the code with a form token bound to it and to the
+// session (step=decide). Code entry is limited per member and per IP.
 
-const PENDING_CODE = `select label, created_at as createdAt from bus_device_codes
+const PENDING_CODE = `select label, created_at as createdAt,
+    origin_country as country, origin_network as network
+  from bus_device_codes
   where user_code = ?1 and expires_at > ?2 and approved_at is null and denied_at is null`;
+// An undecided code that has run out: its own message (Design), nothing else.
+const EXPIRED_CODE = `select 1 as x from bus_device_codes
+  where user_code = ?1 and expires_at <= ?2 and approved_at is null and denied_at is null`;
 const DECIDE = (column: "approved_at" | "denied_at") => `update bus_device_codes
   set ${column} = ?3, user_id = ?2
   where user_code = ?1 and expires_at > ?3 and approved_at is null and denied_at is null
     and exists (select 1 from users where id = ?2 and status = 'active')
   returning label`;
 
-/** The stored (formatted) code, or null when the path can't be one. */
-const codeOf = (param: string | undefined): string | null => {
-  const raw = param && param.length <= 32 ? normalizeUserCode(param) : null;
+/** The code entry form's CSRF scope and handle (one form per session). */
+const ENTRY_SCOPE = "bus-code";
+const ENTRY_HANDLE = "entry";
+
+export const ENTRY_ERRORS = {
+  wrong:
+    "That code doesn't match a request waiting for you. Check your terminal and type it again.",
+  expired:
+    "That code has expired. Run the setup on your machine again to get a new one.",
+  limited: "Too many tries. Wait a few minutes, then type the code again.",
+} as const;
+
+/** The stored (formatted) code, or null when the input can't be one. */
+const codeOf = (input: string | undefined): string | null => {
+  const raw = input && input.length <= 32 ? normalizeUserCode(input) : null;
   return raw === null ? null : formatUserCode(raw);
 };
 
@@ -300,53 +364,73 @@ const membersOnly = () =>
 const tooMany = () =>
   messagePage("Too many requests", "Wait a minute, then try again.", 429);
 const busOff = () => messagePage("Not found", "There is nothing here.", 404);
+const pageExpired = () =>
+  messagePage(
+    "This page expired",
+    `Open ${APPROVE_PATH} again and type the code from your terminal.`,
+    403,
+  );
 
-async function approveLimited(env: Env, uid: string): Promise<boolean> {
+/** RL_ANON under each key; true when any is over (or unbound outside dev). */
+async function overLimit(env: Env, keys: string[]): Promise<boolean> {
   const rl = env.RL_ANON as RateLimit | undefined;
   if (!rl) return env.ENVIRONMENT !== "dev";
-  return !(await rl.limit({ key: RL_KEYS.approve + uid })).success;
+  for (const key of keys) if (!(await rl.limit({ key })).success) return true;
+  return false;
 }
 
-async function showApprove(c: Context<AppEnv>): Promise<Response> {
-  const env = c.env;
-  if (!busOn(env)) return busOff();
-  const url = new URL(c.req.url);
-  const user = sessionUser(c);
-  if (!user)
-    return new Response(null, {
-      status: 302,
-      headers: {
-        location: `${AUTH.login}?next=${encodeURIComponent(url.pathname)}`,
-        "cache-control": "no-store",
-      },
-    });
-  if (!canConnect(user)) return membersOnly();
-  if (await approveLimited(env, user.id)) return tooMany();
-  const code = codeOf(c.req.param("code"));
-  if (code === null) return gonePage();
-  const now = Date.now();
-  const row = await stmt(env.DB, PENDING_CODE)
-    .bind(code, now)
-    .first<{ label: string; createdAt: number }>();
-  if (!row) return gonePage();
-  const settings = await getSettings(env);
+const loginRedirect = () =>
+  new Response(null, {
+    status: 302,
+    headers: {
+      location: `${AUTH.login}?next=${encodeURIComponent(APPROVE_PATH)}`,
+      "cache-control": "no-store",
+    },
+  });
+const switchUrl = () =>
+  `${AUTH.login}?next=${encodeURIComponent(APPROVE_PATH)}`;
+
+/** A two-letter country as its English name ("DE" -> "Germany"), or null. */
+function countryName(cc: string | null): string | null {
+  if (!cc) return null;
+  try {
+    return new Intl.DisplayNames(["en"], { type: "region" }).of(cc) ?? cc;
+  } catch {
+    return cc;
+  }
+}
+
+async function entryPage(
+  env: Env,
+  user: Member,
+  status: number,
+  typed = "",
+  error?: keyof typeof ENTRY_ERRORS,
+): Promise<Response> {
   return pageResponse(
-    renderApprove({
-      instanceName: settings.name,
+    renderEntry({
       instanceHost: env.APP_HOST,
-      label: row.label,
-      userCode: code,
-      ageMs: now - row.createdAt,
       userEmail: user.email,
-      formAction: BUS_ROUTES.approve(code),
-      csrf: await formCsrf(env, APPROVE_SCOPE, user.id, code),
-      switchUrl: `${AUTH.login}?next=${encodeURIComponent(url.pathname)}`,
+      formAction: APPROVE_PATH,
+      csrf: await formCsrf(env, ENTRY_SCOPE, user.id, ENTRY_HANDLE),
+      switchUrl: switchUrl(),
+      typed: typed.slice(0, 32),
+      ...(error ? { error: ENTRY_ERRORS[error] } : {}),
     }),
-    200,
+    status,
   );
 }
 
-async function decideApprove(c: Context<AppEnv>): Promise<Response> {
+async function showEntry(c: Context<AppEnv>): Promise<Response> {
+  const env = c.env;
+  if (!busOn(env)) return busOff();
+  const user = sessionUser(c);
+  if (!user) return loginRedirect();
+  if (!canConnect(user)) return membersOnly();
+  return entryPage(env, user, 200);
+}
+
+async function postApprove(c: Context<AppEnv>): Promise<Response> {
   const env = c.env;
   if (!busOn(env)) return busOff();
   // The page's no-referrer policy makes browsers send `Origin: null`: the
@@ -361,7 +445,7 @@ async function decideApprove(c: Context<AppEnv>): Promise<Response> {
   if (!user)
     return messagePage(
       "Signed out",
-      "Your session ended. Open the link your machine printed again.",
+      `Your session ended. Sign in, then open ${APPROVE_PATH} again.`,
       401,
     );
   const len = Number(c.req.header("content-length") ?? Number.NaN);
@@ -373,22 +457,73 @@ async function decideApprove(c: Context<AppEnv>): Promise<Response> {
   } catch {
     return messagePage("Can't connect this machine", "Invalid form.", 400);
   }
-  const code = codeOf(c.req.param("code"));
-  const csrf = form.getAll("csrf");
+  const one = (k: string): string | null => {
+    const v = form.getAll(k);
+    return v.length === 1 ? String(v[0]) : null;
+  };
+  const step = one("step");
+  const csrf = one("csrf");
+  if (!canConnect(user)) return membersOnly();
+  if (step === "code") {
+    if (
+      csrf === null ||
+      !(await checkFormCsrf(env, ENTRY_SCOPE, user.id, ENTRY_HANDLE, csrf))
+    )
+      return pageExpired();
+    const typed = one("code") ?? "";
+    if (
+      await overLimit(env, [
+        RL_KEYS.code + user.id,
+        RL_KEYS.codeIp + clientIp(c),
+      ])
+    )
+      return entryPage(env, user, 429, typed, "limited");
+    const code = codeOf(typed);
+    const now = Date.now();
+    const row =
+      code === null
+        ? null
+        : await stmt(env.DB, PENDING_CODE).bind(code, now).first<{
+            label: string;
+            createdAt: number;
+            country: string | null;
+            network: string | null;
+          }>();
+    if (!row || code === null) {
+      const expired =
+        code !== null &&
+        (await stmt(env.DB, EXPIRED_CODE).bind(code, now).first()) !== null;
+      return entryPage(env, user, 200, typed, expired ? "expired" : "wrong");
+    }
+    const settings = await getSettings(env);
+    return pageResponse(
+      renderApprove({
+        instanceName: settings.name,
+        instanceHost: env.APP_HOST,
+        label: row.label,
+        userCode: code,
+        ageMs: now - row.createdAt,
+        country: countryName(row.country),
+        network: row.network,
+        userEmail: user.email,
+        formAction: APPROVE_PATH,
+        csrf: await formCsrf(env, APPROVE_SCOPE, user.id, code),
+        switchUrl: switchUrl(),
+      }),
+      200,
+    );
+  }
+  if (step !== "decide")
+    return messagePage("Can't connect this machine", "Invalid form.", 400);
+  const code = codeOf(one("code") ?? undefined);
   if (
     code === null ||
-    csrf.length !== 1 ||
-    !(await checkFormCsrf(env, APPROVE_SCOPE, user.id, code, String(csrf[0])))
+    csrf === null ||
+    !(await checkFormCsrf(env, APPROVE_SCOPE, user.id, code, csrf))
   )
-    return messagePage(
-      "This page expired",
-      "Open the link your machine printed again.",
-      403,
-    );
-  if (!canConnect(user)) return membersOnly();
-  if (await approveLimited(env, user.id)) return tooMany();
-  const decisions = form.getAll("decision");
-  const decision = decisions.length === 1 ? String(decisions[0]) : "";
+    return pageExpired();
+  if (await overLimit(env, [RL_KEYS.approve + user.id])) return tooMany();
+  const decision = one("decision");
   if (decision !== "approve" && decision !== "deny")
     return messagePage("Can't connect this machine", "Invalid form.", 400);
   const now = Date.now();
@@ -501,8 +636,8 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
 export function mountBus(app: AppType): void {
   app.post(BUS_ROUTES.device, deviceCode);
   app.post(BUS_ROUTES.deviceToken, deviceToken);
-  app.get("/bus/approve/:code", showApprove);
-  app.post("/bus/approve/:code", decideApprove);
+  app.get(APPROVE_PATH, showEntry);
+  app.post(APPROVE_PATH, postApprove);
   app.get(BUS_ROUTES.connect, connect);
 
   app.get(R.busMachines, async (c) => {

@@ -9,11 +9,11 @@ import { html, type SafeHtml } from "../http/pages.js";
 
 const STYLE = `:root{color-scheme:light;
 --bg:#eef0f3;--surface:#fff;--surface-2:#f6f7f9;--divider:#e0e3e8;--border:#bec4cd;--border-strong:#848b95;
---text:#15181c;--text-2:#454c56;--muted:#5f6670;--accent:#2350d0;--warn:#8a5a00;--warn-soft:#fbf0d9;
+--text:#15181c;--text-2:#454c56;--muted:#5f6670;--accent:#2350d0;--warn:#8a5a00;--warn-soft:#fbf0d9;--danger:#b42318;
 --shadow:0 1px 0 rgba(20,24,30,.04),0 0 0 1px var(--border)}
 @media (prefers-color-scheme:dark){:root{color-scheme:dark;
 --bg:#131518;--surface:#1c1f23;--surface-2:#212429;--divider:#2c3037;--border:#3b414a;--border-strong:#676e78;
---text:#e9ebee;--text-2:#b7bdc6;--muted:#9097a1;--accent:#7f9cff;--warn:#e7b44f;--warn-soft:#352914;
+--text:#e9ebee;--text-2:#b7bdc6;--muted:#9097a1;--accent:#7f9cff;--warn:#e7b44f;--warn-soft:#352914;--danger:#f97066;
 --shadow:0 0 0 1px var(--border)}}
 *{box-sizing:border-box}
 html,body{margin:0}
@@ -53,6 +53,12 @@ button.primary{background:var(--text);border-color:var(--text);color:var(--surfa
 .foot{margin:16px 0 0;font-size:12px;color:var(--muted);text-align:center}
 .muted{color:var(--muted);font-size:12px;margin:0}
 .nw{white-space:nowrap}
+.wrap{overflow-wrap:anywhere}
+.field{display:block;font-weight:500;font-size:13px;margin:0 0 6px}
+input.code{display:block;width:100%;height:40px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);font-size:18px;letter-spacing:.08em;text-transform:uppercase;margin:0 0 8px}
+input.code::placeholder{color:var(--muted);letter-spacing:.08em}
+input.code.bad{border-color:var(--danger)}
+.error{color:var(--danger);font-size:12px;margin:0 0 12px}
 @media (max-width:480px){.card{padding:20px}.actions button{flex:1}header span{display:none}}`;
 
 const CHECK = html`<svg viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></svg>`;
@@ -97,6 +103,51 @@ export function requestedAgo(ageMs: number): string {
   return min === 1 ? "Requested 1 minute ago" : `Requested ${min} minutes ago`;
 }
 
+/** Labels up to this many characters never wrap; longer ones wrap anywhere (Design (b)). */
+export const LABEL_NOWRAP_MAX = 32;
+
+/** A client-supplied machine label: nowrap when short, else wrap anywhere. */
+const label = (s: string): SafeHtml =>
+  [...s].length <= LABEL_NOWRAP_MAX
+    ? html`<span class="nw">${s}</span>`
+    : html`<span class="wrap">${s}</span>`;
+/** The user code never wraps: the person compares it with their terminal. */
+const code = (s: string): SafeHtml => html`<span class="mono nw">${s}</span>`;
+
+const WARN = html`<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01"/></svg>`;
+
+export type EntryView = {
+  instanceHost: string;
+  userEmail: string;
+  formAction: string;
+  csrf: string;
+  switchUrl: string;
+  /** What the person typed, shown back after an error. */
+  typed: string;
+  error?: string;
+};
+
+/** The code entry form (Design's copy): one field, nothing about any machine. */
+export function renderEntry(v: EntryView): string {
+  return shell(
+    "Connect a machine",
+    v.instanceHost,
+    html`<form class="card" method="post" action="${v.formAction}">
+    <input type="hidden" name="csrf" value="${v.csrf}">
+    <input type="hidden" name="step" value="code">
+    <h1>Connect a machine</h1>
+    <p>Type the code shown in the terminal where you started the setup. Only use a code from a setup you started yourself.</p>
+    <label class="field" for="code">Code from your terminal</label>
+    <input class="mono code${v.error ? " bad" : ""}" id="code" name="code" type="text" value="${v.typed}" placeholder="XXXX-XXXX" maxlength="32" autocomplete="off" spellcheck="false" autocapitalize="characters" autofocus required${v.error ? html` aria-invalid="true" aria-describedby="code-error"` : ""}>
+    ${v.error ? html`<p class="error" id="code-error" role="alert">${v.error}</p>` : ""}
+    <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
+    <div class="actions">
+      <button type="submit" class="primary">Continue</button>
+    </div>
+  </form>`,
+  );
+}
+
 export type ApproveView = {
   instanceName: string;
   instanceHost: string;
@@ -105,24 +156,38 @@ export type ApproveView = {
   /** Formatted, e.g. "AB2C-D3E4". */
   userCode: string;
   ageMs: number;
+  /** Where the request came from (country name, readable network), or null. */
+  country: string | null;
+  network: string | null;
   userEmail: string;
   formAction: string;
   csrf: string;
   switchUrl: string;
 };
 
-/** The approve / deny form: who is asking, as whom, what it can do. */
+/** "Requested just now from Germany, Deutsche Telekom AG" (no guess when unknown). */
+function requested(v: ApproveView): string {
+  const ago = requestedAgo(v.ageMs);
+  if (!v.country) return ago;
+  return v.network
+    ? `${ago} from ${v.country}, ${v.network}`
+    : `${ago} from ${v.country}`;
+}
+
+/** The confirm form, after a matching code: who is asking, from where, as whom, what it can do. */
 export function renderApprove(v: ApproveView): string {
   return shell(
     `Connect ${v.label}`,
     v.instanceHost,
     html`<form class="card" method="post" action="${v.formAction}">
     <input type="hidden" name="csrf" value="${v.csrf}">
+    <input type="hidden" name="step" value="decide">
+    <input type="hidden" name="code" value="${v.userCode}">
     <div class="client">
       ${MACHINE_ICON}
-      <div><b><span class="nw">${v.label}</span></b><small>Machine · code <span class="mono nw">${v.userCode}</span> · ${requestedAgo(v.ageMs)}</small></div>
+      <div><b>${label(v.label)}</b><small>${requested(v)} · code ${code(v.userCode)}</small></div>
     </div>
-    <h1>Connect <span class="nw">${v.label}</span> to Open Artifacts?</h1>
+    <h1>Connect ${label(v.label)} to Open Artifacts?</h1>
     <p>If you approve, this machine's agents can reach your agents on other machines, as you.</p>
     <ul>
       <li>${CHECK}<div><b>Connect your own agents on this machine</b><small>Its agents can message your agents on your other machines.</small></div></li>
@@ -130,7 +195,7 @@ export function renderApprove(v: ApproveView): string {
       <li class="no">${CROSS}<div><b>Nothing else</b><small>No artifacts, no API and no MCP access. It never reaches anyone else's agents.</small></div></li>
     </ul>
     <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
-    <div class="note" role="note"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01"/></svg><span>Only approve if you just started this on <span class="nw">${v.label}</span> and it shows the code <span class="mono nw">${v.userCode}</span>.</span></div>
+    <div class="note" role="note">${WARN}<span>Only approve if you started this setup yourself. If you don't recognise where it came from, choose Deny.</span></div>
     <div class="actions">
       <button type="submit" name="decision" value="deny">Deny</button>
       <button type="submit" name="decision" value="approve" class="primary">Approve</button>
@@ -154,7 +219,7 @@ export function renderApproved(v: ApprovedView): string {
     v.instanceHost,
     html`<div class="card">
     <h1>Machine connected</h1>
-    <p><span class="nw">"${v.label}"</span> is connected to ${v.userEmail}. Its agents can now reach your agents on other machines.</p>
+    <p>"${label(v.label)}" is connected to ${v.userEmail}. Its agents can now reach your agents on other machines.</p>
     <p>To revoke it, or choose which agents get a note when something is shared with you, go to <a href="${v.busUrl}">${v.busUrl}</a>.</p>
     <p class="muted">You can close this tab and go back to your terminal.</p>
   </div>`,
