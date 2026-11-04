@@ -43,6 +43,7 @@ A screen a role can't reach renders the `edge-pages.html?page=not-found` 404 in 
 | `usage.html` | Usage | `state=not-configured`, `cpu=default\|hits` | Four meters with limits, plus a CPU card (per-request limit, not a quota). `cpu=hits` shows 4 requests over the limit and a 9.6 ms p99. "Not configured" state with setup steps |
 | `edge-pages.html` | Edge pages | `page=no-access\|sign-in\|not-found\|quota`, `name=` (sign-in); `state` is `default\|loading\|error` only | See below |
 | `oauth-consent.html` | OAuth consent | none | No JavaScript; see below |
+| `bus.html`, `bus-revoke.html` | Your machines and agents (`/bus`), revoke confirm | none | No JavaScript; see below |
 
 ### Edge pages
 
@@ -54,3 +55,7 @@ A screen a role can't reach renders the `edge-pages.html?page=not-found` 404 in 
 ### OAuth consent
 
 Server-rendered by Backend from this file. It's self-contained (inlined tokens, system font stack, no external requests, under 8 KB) and works without JavaScript. Dark mode follows `prefers-color-scheme` only, so it has no `theme` param. The `{{placeholder}}` list is in the HTML comment at the top of the file. The form POSTs `decision=approve` or `decision=deny` with `csrf` and `request` hidden fields.
+
+### Your machines and agents (`/bus`)
+
+Server-rendered from `bus.html` (the page) and `bus-revoke.html` (the revoke confirm), like consent: self-contained, no JavaScript, dark mode from `prefers-color-scheme`. Repeated rows and the inline messages come from `bus-snippets/`. Each file's top comment lists its `{{placeholders}}`; `bus.html`'s also lists the `<!-- block:NAME -->` sections each state keeps. `apps/server/scripts/emit-bus-templates.ts` emits all three into `apps/server/src/bus/page-template.ts`, and `test/bus.page.test.ts` fails when that file is stale.

@@ -1,0 +1,68 @@
+<!doctype html>
+<!--
+  Revoke confirm, GET /bus/machines/<id>/revoke (#1300). Server-rendered by Backend; works with no JavaScript.
+  Self-contained: tokens are inlined, no external requests. Theme follows prefers-color-scheme.
+  Placeholders (HTML-escape every value):
+    {{label}}          machine label, e.g. "build-box"
+    {{instance_host}}  app host, e.g. "artifacts.northwind.dev"
+    {{form_action}}    POST target, "/bus/machines/<id>/revoke"
+    {{csrf_token}}     CSRF token for action "revoke", posted as "csrf"
+    {{cancel_url}}     "/bus"
+  The form posts csrf only; the server answers 303 to /bus?done=revoked&m=<id>.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Revoke {{label}}? · Open Artifacts</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#EEF0F3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131518" media="(prefers-color-scheme: dark)">
+<style>
+:root{color-scheme:light;
+--bg:#eef0f3;--surface:#fff;--divider:#e0e3e8;--border:#bec4cd;--border-strong:#848b95;
+--text:#15181c;--text-2:#454c56;--muted:#5f6670;--accent:#2350d0;--danger:#be2f1c;--on-danger:#fff;
+--shadow:0 1px 0 rgba(20,24,30,.04),0 0 0 1px var(--border)}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;
+--bg:#131518;--surface:#1c1f23;--divider:#2c3037;--border:#3b414a;--border-strong:#676e78;
+--text:#e9ebee;--text-2:#b7bdc6;--muted:#9097a1;--accent:#7f9cff;--danger:#ff7f6b;--on-danger:#131518;
+--shadow:0 0 0 1px var(--border)}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:0 16px;background:var(--bg);color:var(--text);
+font:400 13px/1.45 "Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+.mono{font-family:"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace}
+header{width:100%;max-width:960px;height:56px;display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;letter-spacing:-.01em}
+header span{margin-left:auto;font-weight:400;font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+main{flex:1;width:100%;display:flex;align-items:center;justify-content:center;padding:24px 0 64px}
+.card{width:100%;max-width:440px;background:var(--surface);border-radius:8px;box-shadow:var(--shadow);padding:28px}
+h1{margin:0 0 6px;font-size:20px;line-height:1.25;font-weight:600;letter-spacing:-.02em;overflow-wrap:anywhere}
+p{margin:0 0 20px;color:var(--text-2)}
+.actions{display:flex;gap:8px;justify-content:flex-end}
+.btn,button{display:inline-flex;align-items:center;justify-content:center;height:36px;padding:0 16px;border-radius:6px;border:1px solid var(--border);
+background:var(--surface);color:var(--text);font:inherit;font-size:14px;font-weight:500;line-height:1;cursor:pointer;text-decoration:none}
+.btn:hover,button:hover{border-color:var(--border-strong)}
+button.danger{background:var(--danger);border-color:var(--danger);color:var(--on-danger)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:480px){.card{padding:20px}.actions .btn,.actions button{flex:1}header span{display:none}}
+</style>
+</head>
+<body>
+<header>Open Artifacts<span class="mono">{{instance_host}}</span></header>
+<main>
+  <form class="card" method="post" action="{{form_action}}">
+    <input type="hidden" name="csrf" value="{{csrf_token}}">
+    <h1>Revoke "{{label}}"?</h1>
+    <p>Its connection closes at once and its agents leave the list. Messages to them are refused. This can't be undone.</p>
+    <div class="actions">
+      <a class="btn" href="{{cancel_url}}">Cancel</a>
+      <button type="submit" class="danger">Revoke</button>
+    </div>
+  </form>
+</main>
+</body>
+</html>

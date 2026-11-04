@@ -945,6 +945,14 @@ describe("dashboard REST", () => {
     expect((await api(app, R.busAgents, bob.cookie)).status).toBe(200);
   });
 
+  it("GET agents for a member whose machines never connected: no agents, live (the hub's state is known)", async () => {
+    const fay = await member();
+    await machine("never", fay.userId);
+    const r = await api(app, R.busAgents, fay.cookie);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ agents: [], live: true });
+  });
+
   it("no BusHub is created for a member without a machine that connected", async () => {
     const dave = await member();
     await machine("never", dave.userId);
@@ -952,7 +960,9 @@ describe("dashboard REST", () => {
     const j = (await r.json()) as { machines: { connected: unknown }[] };
     expect(j.machines[0]?.connected).toBe(false);
     const agents = await api(app, R.busAgents, dave.cookie);
-    expect(await agents.json()).toEqual({ agents: [], live: false });
+    // Live (#1300 review M1): no machine ever connected, so none can be
+    // connected and nothing is unknown, though no hub was read.
+    expect(await agents.json()).toEqual({ agents: [], live: true });
     // Looking inside builds the DO (schema), so the check is that the routes
     // never reached it: no machines mirror row, no revokedAt.
     const { runInDurableObject } = await import("cloudflare:test");
