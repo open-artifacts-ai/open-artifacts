@@ -13,6 +13,13 @@ export const BUS_CAPS = {
    * hello listed it.
    */
   rename: "rename",
+  /**
+   * Role addresses (#1296): the client decodes the `role_vacant` refusal and
+   * a role hit's receipt `to_name` (the holder's name). The hub sends those
+   * only to a socket whose hello listed it; any other gets `unknown_agent`
+   * for a vacant role and no `to_name`.
+   */
+  roles: "roles",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 
