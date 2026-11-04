@@ -58,7 +58,10 @@ it("debounces the live check to the last slug typed", async () => {
 
 const NOTE =
   "Test install. This session can only create installs with an rl- slug and an owner on the staging test domain, with test hooks on.";
-const signIn = (principal: "admin" | "test-admin") =>
+const signIn = (
+  principal: "admin" | "test-admin",
+  env: "staging" | "prod" = "staging",
+) =>
   use(
     http.get("*/api/v1/me", () =>
       HttpResponse.json(
@@ -67,7 +70,7 @@ const signIn = (principal: "admin" | "test-admin") =>
           role: "admin",
           email: "a@example.com",
           scopes: [],
-          env: "staging",
+          env,
           csrf: "c",
           tokenId: null,
           tokenKind: null,
@@ -89,6 +92,7 @@ it("test admin: the note, no welcome email, and the form sends testHooks", async
   expect(screen.queryByRole("checkbox", { name: /welcome email/ })).toBeNull();
   // No control for it, either.
   expect(screen.queryByText(/test hooks$/i)).toBeNull();
+  expect(hooksBox()).toBeNull();
   type("rl-fresh");
   owner(`o@${STAGING_TEST_DOMAIN}`);
   await screen.findByText(/ is available\./);
@@ -200,6 +204,141 @@ it("a real admin gets no note and no rule, keeps the welcome email, and never se
 });
 
 const release = () => screen.getByRole("combobox", { name: "Release" });
+
+const hooksBox = () => screen.queryByRole("checkbox", { name: "Test hooks" });
+const RELEASES = {
+  items: [
+    {
+      publishedAt: 1,
+      installable: true,
+      version: "2.0.0",
+      variants: ["release"],
+      latest: true,
+    },
+    {
+      publishedAt: 1,
+      installable: true,
+      version: "1.9.0",
+      variants: ["release", "redline"],
+      latest: false,
+    },
+  ],
+};
+
+it("staging admin: Test hooks is off by default and the body omits testHooks", async () => {
+  signIn("admin");
+  renderApp("/installs/new");
+  await screen.findByRole("checkbox", { name: /welcome email/ });
+  const box = hooksBox();
+  expect(box).not.toBeNull();
+  expect(box).not.toBeChecked();
+  expect(box).toHaveAccessibleDescription(
+    "For red-line test installs. Staging only.",
+  );
+  type("fresh-one");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(createBody()).toBeDefined());
+  expect(createBody()).not.toHaveProperty("testHooks");
+});
+
+it("staging admin: checking Test hooks lists redline releases only and sends testHooks: true", async () => {
+  use(http.get("*/api/v1/releases", () => HttpResponse.json(RELEASES)));
+  signIn("admin");
+  renderApp("/installs/new");
+  await screen.findByRole("checkbox", { name: "Test hooks" });
+  await waitFor(() => expect(release()).toHaveTextContent("2.0.0 (latest)"));
+  fireEvent.click(hooksBox() as HTMLElement);
+  expect(hooksBox()).toBeChecked();
+  // 2.0.0 has no redline bundle, so the pick falls back to the newest that does.
+  await waitFor(() => expect(release()).toHaveTextContent("1.9.0"));
+  expect(
+    screen.getByText(
+      "Only redline releases are listed, because test hooks need them.",
+    ),
+  ).toBeVisible();
+  fireEvent.click(release());
+  expect(
+    (await screen.findAllByRole("option")).map((o) => o.textContent),
+  ).toEqual(["1.9.0"]);
+  fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+  type("fresh-one");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(createBody()).toBeDefined());
+  const body = createBody();
+  expect(body).toMatchObject({ testHooks: true, version: "1.9.0" });
+  // What the server's own R4 checks say about this exact body.
+  expect(
+    checkCreateFields(body, "admin", "staging", STAGING_TEST_DOMAIN),
+  ).toBeNull();
+});
+
+it("staging admin: turning Test hooks off again restores the full release list", async () => {
+  use(http.get("*/api/v1/releases", () => HttpResponse.json(RELEASES)));
+  signIn("admin");
+  renderApp("/installs/new");
+  await screen.findByRole("checkbox", { name: "Test hooks" });
+  await waitFor(() => expect(release()).toHaveTextContent("2.0.0 (latest)"));
+  fireEvent.click(hooksBox() as HTMLElement);
+  await waitFor(() => expect(release()).toHaveTextContent("1.9.0"));
+  fireEvent.click(hooksBox() as HTMLElement);
+  await waitFor(() => expect(release()).toHaveTextContent("2.0.0 (latest)"));
+  expect(
+    screen.getByText("Only signed, published releases are listed."),
+  ).toBeVisible();
+});
+
+it("staging admin: toggling Test hooks before a retry takes a new request id", async () => {
+  use(
+    http.get("*/api/v1/releases", () => HttpResponse.json(RELEASES)),
+    http.post("*/api/v1/installs", () => HttpResponse.error()),
+  );
+  signIn("admin");
+  renderApp("/installs/new");
+  await screen.findByRole("checkbox", { name: "Test hooks" });
+  // Pin the release, so only the box differs between the two bodies.
+  await waitFor(() => expect(release()).toHaveTextContent("2.0.0"));
+  fireEvent.click(release());
+  fireEvent.click(await screen.findByRole("option", { name: "1.9.0" }));
+  await waitFor(() => expect(release()).toHaveTextContent("1.9.0"));
+  type("fresh-id");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  const ids = () =>
+    writes().map((w) => (w.body as { requestId: string }).requestId);
+  fireEvent.click(submit());
+  await waitFor(() => expect(writes()).toHaveLength(1));
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(hooksBox() as HTMLElement);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(writes()).toHaveLength(2));
+  expect(writes()[1].body).toMatchObject({ testHooks: true });
+  expect(ids()[1]).not.toBe(ids()[0]);
+});
+
+it("prod admin: no Test hooks control and never sends testHooks", async () => {
+  signIn("admin", "prod");
+  renderApp("/installs/new");
+  await screen.findByRole("checkbox", { name: /welcome email/ });
+  expect(hooksBox()).toBeNull();
+  expect(
+    screen.queryByText("For red-line test installs. Staging only."),
+  ).toBeNull();
+  type("fresh-one");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(createBody()).toBeDefined());
+  expect(createBody()).not.toHaveProperty("testHooks");
+});
 
 it("offers installable releases with the current one marked", async () => {
   renderApp("/installs/new");
