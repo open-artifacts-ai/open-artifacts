@@ -7,8 +7,8 @@
 # fails (exit 1), naming the Worker and what it runs; each match prints one ok
 # line. The token reaches curl on stdin (hosted-cf.sh), never argv.
 # Cloudflare reads lag just after a deploy (#1327): a version read that answers
-# 100146 (version not found) or a newest version tagged with another release
-# is retried, one stderr line per retry, up to PLATFORM_TAGS_ATTEMPTS times
+# 100146 (version not found) or a newest version untagged or tagged with
+# another release is retried, one stderr line per retry, up to PLATFORM_TAGS_ATTEMPTS times
 # (default 6) PLATFORM_TAGS_SLEEP seconds apart (default 10), then fails as
 # above. Every other failure is final at once.
 # Usage: CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=<32 hex> scripts/ci/platform-tags.sh staging|prod vX.Y.Z
@@ -56,7 +56,9 @@ check_once() {
   rc=$?
   [ "$rc" = 0 ] || { [ "$rc" = "$lag" ] && exit "$lag"; exit 1; }
   got="$(jq -r '.result.annotations["workers/tag"] // "" | tostring' <<< "$ver")" || { echo "$w: unparsable version"; exit 1; }
-  [ -n "$got" ] || { echo "$w runs untagged version ${v:0:8}"; exit 1; }
+  # Untagged may be lag too: provisioning's deploy puts an untagged version
+  # (secret put) between two tagged deploys.
+  [ -n "$got" ] || { echo "$w runs untagged version ${v:0:8}"; exit "$lag"; }
   if [ "$got" != "$tag" ]; then
     # Echo only a tag-shaped value: anything else is named, not printed.
     if [[ "$got" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -78,7 +80,7 @@ check() {
     out="$(check_once "$w")" && rc=0 || rc=$?
     [ "$rc" != 0 ] || { printf '%s\n' "$out"; return 0; }
     if [ "$rc" = "$lag" ] && [ "$a" -lt "$attempts" ]; then
-      echo "retry $w: attempt $a of $attempts saw read lag ($out); again in ${pause} s" >&2
+      echo "retry $w: attempt $a of $attempts saw read lag (${out//$'\n'/ }); again in ${pause} s" >&2
       sleep "$pause"
       continue
     fi

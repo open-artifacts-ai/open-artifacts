@@ -138,7 +138,7 @@ describe("platform-tags.sh", () => {
     expect(r.out).toContain("ok oa-p-provisioning runs v0.90.3");
   });
 
-  it("an untagged Worker fails, naming it and its version; the others still report", () => {
+  it("an untagged Worker fails after its retries, naming it and its version; the others still report", () => {
     const fx = allTagged();
     fx["oa-s-auth-broker"] = {
       deployments: deployment([{ version_id: vid(1), percentage: 100 }]),
@@ -333,7 +333,47 @@ describe("platform-tags.sh", () => {
     );
   });
 
-  it("a split deployment, another API error, an untagged version or a non-release tag fails with no retry", () => {
+  // Provisioning's deploy: tagged deploy, secret put (untagged), tagged deploy.
+  it("an untagged newest version and then the tagged one passes", () => {
+    const fx = allTagged();
+    fx["oa-s-provisioning"] = {
+      deployments: [
+        deployment([{ version_id: vid(8), percentage: 100 }]),
+        deployment([{ version_id: vid(7), percentage: 100 }]),
+      ],
+      versions: [
+        [vid(8), version(vid(8))],
+        [vid(7), version(vid(7), TAG)],
+      ],
+    };
+    const r = run(fx);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toContain(
+      `ok oa-s-provisioning runs ${TAG} (version ${vid(7).slice(0, 8)})`,
+    );
+    expect(retries(r.err)).toEqual([
+      expect.stringMatching(
+        /^retry oa-s-provisioning: attempt 1 of 6 .*runs untagged version/,
+      ),
+    ]);
+  });
+
+  it("an untagged newest version on every attempt fails with today's message", () => {
+    const fx = allTagged();
+    fx["oa-s-provisioning"] = {
+      deployments: deployment([{ version_id: vid(8), percentage: 100 }]),
+      versions: [[vid(8), version(vid(8))]],
+    };
+    const r = run(fx, ["staging", TAG], { PLATFORM_TAGS_ATTEMPTS: "3" });
+    expect(r.code).toBe(1);
+    expect(retries(r.err)).toHaveLength(2);
+    expect(r.err).toContain(
+      `oa-s-provisioning runs untagged version ${vid(8).slice(0, 8)}`,
+    );
+    expect(reads(r.log, "oa-s-provisioning")).toBe(6);
+  });
+
+  it("a split deployment, another API error, no deployment, an unexpected version id or a non-release tag fails with no retry", () => {
     const cases: [string, Fx[string]][] = [
       [
         "oa-s-provisioner",
@@ -387,11 +427,13 @@ describe("platform-tags.sh", () => {
           }),
         },
       ],
+      ["oa-s-provisioner", { deployments: ok({ deployments: [] }) }],
       [
         "oa-s-provisioner",
         {
-          deployments: deployment([{ version_id: vid(3), percentage: 100 }]),
-          versions: [[vid(3), version(vid(3))]],
+          deployments: deployment([
+            { version_id: "not-a-version-id", percentage: 100 },
+          ]),
         },
       ],
       [
