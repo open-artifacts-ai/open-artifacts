@@ -558,7 +558,7 @@ Agents sign in to the dashboard of the staging install `rl-agents` as a member, 
 
 ### Which release a create or upgrade gets
 
-Every release is published to both envs as soon as it's cut (`hosted-publish.yml`), before any platform deploy. So a create or upgrade with no `version` gets the platform's own release, the deployed Provisioning API's version tag, the same one the fleet follows. It never gets the newest in the bucket. An explicit `version` still works. With no stable tag, or a release that isn't installable, it refuses `release_not_published`.
+Every release is published to both envs as soon as it's cut (`hosted-publish.yml`), before any platform deploy. So a create or upgrade with no `version` gets the platform's own release, the deployed Provisioning API's version tag, the same one the fleet follows. It never gets the newest in the bucket. An explicit `version` on an upgrade works up to the platform's release: a newer one refuses `release_ahead_of_platform` (#1176), so an install never runs ahead of the platform. With no stable tag, or a release that isn't installable, it refuses `release_not_published`.
 
 ### Migrations that can lose data
 

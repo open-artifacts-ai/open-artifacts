@@ -156,7 +156,7 @@ export const CreateInstallSchema = z.object({
   ownerEmail: z.string().email().max(254).optional(),
   tier: TierSchema.optional(),
   auth: AuthSchema.optional(),
-  /** Default: the platform's own release, the one the fleet follows. */
+  /** Default: the platform's own release, the one the fleet follows; never newer than it (#1176). */
   version: VersionSchema.optional(),
   /** Admin session only; default false. */
   sendWelcome: z.boolean().optional(),

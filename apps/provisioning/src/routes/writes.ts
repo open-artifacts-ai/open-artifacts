@@ -154,6 +154,21 @@ const PLANS: Partial<Record<ApiRouteId, Planner>> = {
     );
     if (compareVersions(to, row.version) <= 0)
       throw new ApiError("downgrade_refused");
+    // #1176: an explicit version has a ceiling, the platform's own release
+    // (the tag the fleet follows), so an install never runs ahead of it.
+    if (body.version !== undefined) {
+      const own = platformRelease(a.env);
+      if (own === null)
+        throw new ApiError(
+          "release_not_published",
+          "the platform has no release tag",
+        );
+      if (compareVersions(to, own) > 0)
+        throw new ApiError(
+          "release_ahead_of_platform",
+          `release ${to} is newer than the platform's release ${own}`,
+        );
+    }
     return {
       kind: "upgrade",
       args: {

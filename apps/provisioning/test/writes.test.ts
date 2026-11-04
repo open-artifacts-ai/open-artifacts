@@ -859,14 +859,48 @@ describe("lifecycle writes (R5-R13)", () => {
       expect(up.body.job.args).toEqual({ from: "1.41.0", to: "1.41.2" });
     });
 
-    it("an explicit version still works, newer than the platform's too", async () => {
+    it("an explicit version newer than the platform's is release_ahead_of_platform, with no job (#1176)", async () => {
       const e = at("v1.41.2");
       const { id } = await seedInstall({ version: "1.41.0" });
       const up = await call(e, ADMIN_P, "R5", {
         params: { id },
         body: { requestId: requestId(), version: "1.42.0" },
       });
-      expect(up.body.job.args).toEqual({ from: "1.41.0", to: "1.42.0" });
+      expect(up.status).toBe(409);
+      expect(up.code).toBe("release_ahead_of_platform");
+      const jobs = await db
+        .prepare("SELECT COUNT(*) AS n FROM jobs WHERE install_id = ?")
+        .bind(id)
+        .first<{ n: number }>();
+      expect(jobs?.n).toBe(0);
+    });
+
+    it("an explicit version at or below the platform's release still works (#1176)", async () => {
+      const equal = await seedInstall({ version: "1.41.0" });
+      const up = await call(at("v1.41.2"), ADMIN_P, "R5", {
+        params: { id: equal.id },
+        body: { requestId: requestId(), version: "1.41.2" },
+      });
+      expect(up.status).toBe(202);
+      expect(up.body.job.args).toEqual({ from: "1.41.0", to: "1.41.2" });
+      const below = await seedInstall({ version: "1.41.0" });
+      const down = await call(at("v1.42.0"), ADMIN_P, "R5", {
+        params: { id: below.id },
+        body: { requestId: requestId(), version: "1.41.2" },
+      });
+      expect(down.status).toBe(202);
+      expect(down.body.job.args).toEqual({ from: "1.41.0", to: "1.41.2" });
+    });
+
+    it("an explicit version with no stable platform tag fails closed (#1176)", async () => {
+      for (const tag of [undefined, "", "main", "v1.42"]) {
+        const { id } = await seedInstall({ version: "1.41.0" });
+        const up = await call(at(tag), ADMIN_P, "R5", {
+          params: { id },
+          body: { requestId: requestId(), version: "1.41.2" },
+        });
+        expect(up.code, String(tag)).toBe("release_not_published");
+      }
     });
 
     it("R4 with no version pins the platform's release on the signup", async () => {
