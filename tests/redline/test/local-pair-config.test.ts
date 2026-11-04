@@ -1,19 +1,23 @@
 // #1252: the local pair's opt-in T19 flag. Off, every generated config is
 // byte for byte what it was before the flag existed (the fixtures were
 // written from the unchanged code), so the red-line suite's own runs can't
-// change. On, it adds only the release's assets block, HOSTED and
-// Cloudflare's always-pass Turnstile test keys.
+// change. On, it adds only the release's assets block, HOSTED, Cloudflare's
+// always-pass Turnstile test keys, and Google and codes only; and the script starts a fake IdP on 127.0.0.1, never with it off.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { connect } from "node:net";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   localT19Of,
   requireT19Assets,
   T19_ASSETS,
+  T19_IDP_CLIENT,
+  T19_IDP_TENANTS,
   TURNSTILE_TEST_SECRET,
   TURNSTILE_TEST_SITE_KEY,
   t19Assets,
+  t19Idp,
   wranglerConfig,
 } from "../src/local-pair.ts";
 
@@ -65,13 +69,15 @@ describe("local pair config, T19 flag on", () => {
     vars: Record<string, string>;
   };
 
-  it("adds only assets, HOSTED and the Turnstile test keys", () => {
+  it("adds only assets, HOSTED, the Turnstile test keys, Google and codes", () => {
     const { assets, vars, ...rest } = on;
     const { vars: offVars, ...offRest } = off;
     expect(rest).toEqual(offRest);
     expect(assets).toEqual(t19Assets());
     expect(vars).toEqual({
       ...offVars,
+      // rl-a has no Access.
+      AUTH_PROVIDERS: "google,email",
       HOSTED: "1",
       TURNSTILE_SITE_KEY: TURNSTILE_TEST_SITE_KEY,
       TURNSTILE_SECRET: TURNSTILE_TEST_SECRET,
@@ -110,6 +116,59 @@ describe("local pair config, T19 flag on", () => {
       expect(() => requireT19Assets(dir)).not.toThrow();
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/** Resolves true if a TCP connect to host:port succeeds, false if refused. */
+const reaches = (host: string, port: number) =>
+  new Promise<boolean>((res) => {
+    const s = connect({ host, port });
+    s.setTimeout(3000, () => {
+      s.destroy();
+      res(false);
+    });
+    s.once("connect", () => {
+      s.destroy();
+      res(true);
+    });
+    s.once("error", () => res(false));
+  });
+
+describe("T19's fake IdP", () => {
+  it("is never started with the flag off", async () => {
+    let calls = 0;
+    const start = (async () => {
+      calls++;
+      throw new Error("started");
+    }) as unknown as Parameters<typeof t19Idp>[1];
+    expect(await t19Idp(false, start)).toBeUndefined();
+    expect(calls).toBe(0);
+  });
+
+  it("with the flag on, feeds the pair and listens on localhost only", async () => {
+    const idp = await t19Idp(true);
+    expect(idp).toBeDefined();
+    if (!idp) return;
+    try {
+      const u = new URL(idp.pair.origin);
+      expect(u.protocol).toBe("http:");
+      expect(u.hostname).toBe("127.0.0.1");
+      const port = Number(u.port);
+      expect(idp.pair.clientId).toBe(T19_IDP_CLIENT);
+      expect(idp.pair.tenants).toEqual(T19_IDP_TENANTS);
+      expect(idp.pair.clientSecret.length).toBeGreaterThanOrEqual(32);
+      expect(await reaches("127.0.0.1", port)).toBe(true);
+      // Every address of this machine that isn't loopback is refused.
+      const others = Object.values(networkInterfaces())
+        .flat()
+        .filter((a) => a && !a.internal)
+        .map((a) => a?.address as string)
+        .filter((a) => !a.startsWith("fe80"));
+      for (const a of others)
+        expect([a, await reaches(a, port)]).toEqual([a, false]);
+    } finally {
+      await idp.stop();
     }
   });
 });

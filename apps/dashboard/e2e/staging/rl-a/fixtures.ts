@@ -11,11 +11,13 @@ import {
 } from "@oa/shared";
 import {
   type Browser,
+  type BrowserContext,
   test as base,
   expect,
   type Page,
 } from "@playwright/test";
 import { gate } from "../gate";
+import { installLocalRoute } from "../local-route";
 import { sendRead } from "../retry";
 import { FETCH_MS, hookKey, rlA } from "../targets";
 
@@ -60,6 +62,13 @@ export type Person = {
   name: string;
 };
 
+/** A browser context on rl-a (on the local pair, with its port rewrite). */
+export async function context(browser: Browser): Promise<BrowserContext> {
+  const ctx = await browser.newContext({ baseURL: A.app });
+  await installLocalRoute(ctx, A);
+  return ctx;
+}
+
 /** A signed-in person with their own browser context, named so the display-name prompt never opens. */
 export async function person(
   browser: Browser,
@@ -73,7 +82,7 @@ export async function person(
     role,
     ...(spaces ? { spaces } : {}),
   } satisfies TestSessionInput);
-  const ctx = await browser.newContext({ baseURL: A.app });
+  const ctx = await context(browser);
   await ctx.addCookies([
     {
       name: COOKIE,

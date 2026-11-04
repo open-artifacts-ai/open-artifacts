@@ -14,6 +14,7 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type FakeIdp, startFakeIdp } from "./fake-idp/server.ts";
 
 // Two local installs under `wrangler dev`, on the redline build
 // (__OA_TEST_HOOKS_ALLOWED__ true), each with its own port, secrets, D1/R2/KV/DO
@@ -367,6 +368,51 @@ export function localT19Of(
   if (v === "1") return true;
   throw new Error('REDLINE_LOCAL_T19 must be "1" or unset');
 }
+/** T19's fake-IdP client: a local stand-in, never a real Google client. */
+export const T19_IDP_CLIENT = "t19-local-broker.apps.googleusercontent.com";
+/** The two installs' Google tenants under T19 (as the rehearsal's). */
+export const T19_IDP_TENANTS: readonly [string, string] = [
+  "oa-redline-a.fyi",
+  "oa-redline-c.fyi",
+];
+
+/** T19's fake IdP and the pair options it feeds (startLocalPair's idp). */
+export interface T19Idp {
+  pair: FakeIdpPair;
+  stop(): Promise<void>;
+}
+
+/**
+ * T19's fake IdP (#1252), started only when the flag is on: with it the pair
+ * boots its local auth broker, so a hosted install has Google (hosted Google
+ * is broker-only). T19 never signs in through it (the session hook stands
+ * in), so it has no users. It listens on 127.0.0.1 only (startFakeIdp).
+ * Off, it returns undefined without calling `start`.
+ */
+export async function t19Idp(
+  t19: boolean,
+  start: typeof startFakeIdp = startFakeIdp,
+): Promise<T19Idp | undefined> {
+  if (!t19) return undefined;
+  const secret = randomBytes(24).toString("base64url");
+  const redirectUris: string[] = [];
+  const idp: FakeIdp = await start({
+    clients: { [T19_IDP_CLIENT]: { secret, redirectUris } },
+    users: [],
+  });
+  return {
+    pair: {
+      origin: idp.origin,
+      publicJwk: idp.publicJwk,
+      clientId: T19_IDP_CLIENT,
+      clientSecret: secret,
+      tenants: T19_IDP_TENANTS,
+      redirectUris,
+    },
+    stop: () => idp.stop(),
+  };
+}
+
 /**
  * The flag needs the dashboard built into apps/server/dist-assets by the
  * release's own step (apps/server `build`: the dashboard, render and runtime
@@ -439,9 +485,11 @@ export function wranglerConfig(
             GOOGLE_CLIENT_ID: idp.pair.clientId,
           }
         : {}),
-      // T19 (#1252): hosted, with Turnstile on Cloudflare's always-pass test keys.
+      // T19 (#1252): hosted, with Turnstile on Cloudflare's always-pass test
+      // keys; Google and codes only (rl-a has no Access).
       ...(t19
         ? {
+            AUTH_PROVIDERS: "google,email",
             HOSTED: "1",
             TURNSTILE_SITE_KEY: TURNSTILE_TEST_SITE_KEY,
             TURNSTILE_SECRET: TURNSTILE_TEST_SECRET,
@@ -557,7 +605,11 @@ export interface StartOpts {
   mode?: LocalMode;
   /** Both installs' OAUTH_STORE (localOAuthStoreOf); default kv, as hosted. */
   oauthStore?: LocalOAuthStore;
-  /** T19's flag (#1252, localT19Of): the dashboard, HOSTED and Turnstile test keys. Default off. */
+  /**
+   * T19's flag (#1252, localT19Of): the dashboard, HOSTED, Turnstile test
+   * keys, Google and codes only. Default off. T19 also
+   * passes `idp` (t19Idp), so hosted Google has its broker.
+   */
   t19?: boolean;
 }
 

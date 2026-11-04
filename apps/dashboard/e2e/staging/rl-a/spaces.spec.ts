@@ -10,6 +10,7 @@ import {
   anon,
   api,
   cleanup,
+  context,
   expect,
   json,
   type Person,
@@ -206,9 +207,7 @@ test("public links off in t19-exec: Public is disabled, and anonymous /full gets
     headers: { "x-oa-request": "1" },
   });
   expect(nobody.status).toBe(404);
-  const stranger = await (
-    await browser.newContext({ baseURL: A.app })
-  ).newPage();
+  const stranger = await (await context(browser)).newPage();
   await stranger.goto(`/a/${id}/full`);
   // Sent to sign in, with the way back kept.
   await expect(stranger).toHaveURL(
