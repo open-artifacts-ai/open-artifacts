@@ -18,8 +18,9 @@
 //   on prod the owner's own canary account), read the share back. The server
 //   mails no existing member, so `emailed` must be false. The target must be
 //   in smoke's domain, checked before any share: a wrong address could
-//   otherwise mail an outsider. Unset, the share is skipped with a note. The
-//   unshare is in the finally, before the delete.
+//   otherwise mail an outsider. With FLEET_SMOKE_SHARE "off", the share is
+//   skipped with a note; "on" with no target is config:share. The unshare is
+//   in the finally, before the delete.
 // - MCP: tools/list names publish_artifact and get_artifact; tools/call
 //   get_artifact returns the smoke artifact's title.
 // - bus: skipped until the hub is bound, with a note in the result.
@@ -38,7 +39,7 @@ export const SMOKE_BUDGET_MS = 10_000;
 /** The bus check's note while the hub is unbound. */
 export const SMOKE_BUS_SKIPPED = "bus: skipped, hub not bound";
 /** The share check's note with no share target set. */
-export const SMOKE_SHARE_SKIPPED = "share: skipped, no FLEET_SMOKE_SHARE_TO";
+export const SMOKE_SHARE_SKIPPED = "share: skipped, FLEET_SMOKE_SHARE off";
 
 export type SmokeCheck =
   /** config: no FLEET_SMOKE_TOKEN. */
@@ -80,8 +81,14 @@ export interface SmokeInput {
   appHost: string;
   /** smoke's PAT (FLEET_SMOKE_TOKEN). */
   token: string | undefined;
-  /** The share target's address (FLEET_SMOKE_SHARE_TO); empty skips the share. */
+  /** The share target's address (FLEET_SMOKE_SHARE_TO). */
   shareTo: string | undefined;
+  /**
+   * FLEET_SMOKE_SHARE, a committed per-env choice: true (the default) runs
+   * the share check and needs a target (else config:share); false skips it
+   * with a note.
+   */
+  share?: boolean;
   /** This env's auth broker origin (AUTH_BROKER_ORIGIN). */
   brokerOrigin: string | undefined;
   /** The release under test, X.Y.Z, for the title. */
@@ -119,7 +126,9 @@ export async function smoke(o: SmokeInput): Promise<SmokeResult> {
   const token = o.token?.trim() ?? "";
   const shareTo = o.shareTo?.trim().toLowerCase() ?? "";
   if (token === "") return { ok: false, kind: "config", check: "token" };
-  if (shareTo !== "" && !SHARE_TO.test(shareTo))
+  const sharing = o.share !== false;
+  // Sharing needs a well-formed target; skipping it is an explicit choice.
+  if (sharing && !SHARE_TO.test(shareTo))
     return { ok: false, kind: "config", check: "share" };
   const origin = `https://${o.appHost}`;
   let broker: string | null = null;
@@ -209,7 +218,7 @@ export async function smoke(o: SmokeInput): Promise<SmokeResult> {
     // Least privilege: a plain member, never an admin or owner.
     if (user?.role !== "member") throw new Fail("config", "smoke_a");
     const mine = String(user.email).toLowerCase();
-    if (shareTo !== "") {
+    if (sharing) {
       if (mine === shareTo) throw new Fail("config", "share");
       // No mail to an outsider: the target must share smoke's domain,
       // checked before any share is made (the server mails a non-member).
@@ -316,15 +325,18 @@ export async function smoke(o: SmokeInput): Promise<SmokeResult> {
 
     // share, with no email: the target is a member, so the server sends
     // none. The unshare is in the finally.
-    if (shareTo === "") notes.push(SMOKE_SHARE_SKIPPED);
+    if (!sharing) notes.push(SMOKE_SHARE_SKIPPED);
     else {
+      // Before the PUT: a share that committed but whose answer was lost
+      // (timeout, network, 5xx) is still unshared in the finally. A 404 there
+      // after a failed run is fine: the run has already failed.
+      shared = true;
       const put = await call("share", `${art}/shares`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email: shareTo, role: "viewer" }),
       });
       expect("share", put.status === 200 || put.status === 201);
-      shared = true;
       const sj = (await json("share", put)) as { emailed?: unknown };
       expect("share", sj?.emailed === false);
       const ls = await call("share", `${art}/shares`);

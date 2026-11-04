@@ -759,6 +759,8 @@ async function smokeCanary(
     appHost: canary.app_host ?? "",
     token: env.FLEET_SMOKE_TOKEN,
     shareTo: env.FLEET_SMOKE_SHARE_TO,
+    // Only "off" skips the share check; unset or anything else runs it.
+    share: env.FLEET_SMOKE_SHARE?.trim() !== "off",
     brokerOrigin: env.AUTH_BROKER_ORIGIN,
     version: target,
   });

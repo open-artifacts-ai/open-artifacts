@@ -533,10 +533,10 @@ describe("the canary smoke", () => {
     expect(c.calls.some((x) => x.path === "/auth/login/google")).toBe(false);
   });
 
-  it("no share target: the share is skipped with a note, and the rest still runs", async () => {
-    for (const shareTo of ["", "  ", undefined]) {
+  it("FLEET_SMOKE_SHARE off: the share is skipped with a note, target or not, and the rest still runs", async () => {
+    for (const shareTo of ["", "  ", undefined, SHARE_TO]) {
       const c = canary();
-      expect(await smoke(input(c, { shareTo }))).toEqual({
+      expect(await smoke(input(c, { shareTo, share: false }))).toEqual({
         ok: true,
         notes: [SMOKE_SHARE_SKIPPED, SMOKE_BUS_SKIPPED],
       });
@@ -545,6 +545,71 @@ describe("the canary smoke", () => {
       expect(live(c)).toEqual([]);
     }
   });
+
+  it("FLEET_SMOKE_SHARE on (the default) with no target: config:share, before any call", async () => {
+    for (const share of [true, undefined])
+      for (const shareTo of ["", "  ", undefined]) {
+        const c = canary();
+        expect(await smoke(input(c, { shareTo, share }))).toEqual({
+          ok: false,
+          kind: "config",
+          check: "share",
+        });
+        expect(c.calls).toEqual([]);
+      }
+  });
+
+  for (const [name, fault] of [
+    ["a timeout", () => "hang" as const],
+    ["a network error", () => "throw" as const],
+    ["a 502", () => new Response("no", { status: 502 })],
+  ] as const)
+    it(`a share PUT whose answer is lost (${name}) is still unshared in the finally`, async () => {
+      const c = canary();
+      // The share commits on the canary, then the answer is lost.
+      const f: SmokeFetch = async (url, init) => {
+        const r = await c.fetch(url, init);
+        if (
+          init.method === "PUT" &&
+          new URL(url).pathname.endsWith("/shares")
+        ) {
+          const x = fault();
+          if (x === "throw") throw new Error("network");
+          if (x === "hang") return new Promise<Response>(() => {});
+          return x;
+        }
+        return r;
+      };
+      expect(await smoke(input(c, { fetch: f }))).toEqual({
+        ok: false,
+        kind: "transport",
+        check: "share",
+      });
+      expect(c.arts[0]?.shares).toEqual([]);
+      expect(live(c)).toEqual([]);
+    });
+
+  for (const [name, fault] of [
+    ["throws", "throw"],
+    ["hangs", "hang"],
+  ] as const)
+    it(`an unshare DELETE that ${name} fails a passing run as transport:share, and the delete still runs`, async () => {
+      const c = canary({
+        fault: (p, m) =>
+          m === "DELETE" && p.includes("/shares/") ? fault : null,
+      });
+      expect(await smoke(input(c))).toEqual({
+        ok: false,
+        kind: "transport",
+        check: "share",
+      });
+      expect(
+        c.calls.some(
+          (x) => x.method === "DELETE" && x.path === "/api/v1/artifacts/a1",
+        ),
+      ).toBe(true);
+      expect(live(c)).toEqual([]);
+    });
 
   it("a failure after the share still unshares, before the delete", async () => {
     const c = canary({

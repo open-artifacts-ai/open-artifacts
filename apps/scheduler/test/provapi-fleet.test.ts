@@ -2532,7 +2532,38 @@ describe("#1343: canary_blocked waits out the off-mode soak", () => {
     const code = async (at: number) =>
       (await fleetConditions(f.env, at)).fleet_halted.rows.map((r) => r.code);
     expect(await code(NOW + FLEET_BLOCKED_MS)).toEqual([]);
+    // The reviewer's case: off with 60, at 50 minutes, no canary_blocked.
+    expect(await code(NOW + 50 * MIN)).toEqual([]);
     expect(await code(NOW + 90 * MIN - 1)).toEqual([]);
     expect(await code(NOW + 90 * MIN)).toEqual(["canary_blocked"]);
   });
+
+  it("off with prod's 60, ticking: the stamp holds through the soak, nothing opens before 90", async () => {
+    const canary = await on(TARGET, { created: 0 });
+    await fleetJob(canary, { finished_at: NOW - MIN });
+    await on("0.92.0", { created: 5 });
+    const f = fakes({ canary });
+    Object.assign(f.env, { FLEET_SMOKE: "off", FLEET_SOAK_MIN: "60" });
+    await ticks(f, NOW, NOW + 50 * MIN);
+    expect(
+      (await fleetConditions(f.env, NOW + 50 * MIN)).fleet_halted.rows,
+    ).toEqual([]);
+  });
+});
+
+describe("#1343: FLEET_SMOKE_SHARE reaches the smoke", () => {
+  for (const [v, share] of [
+    ["on", true],
+    [undefined, true],
+    ["off", false],
+    ["Off", true],
+  ] as const)
+    it(`FLEET_SMOKE_SHARE ${String(v)}: share ${share}`, async () => {
+      const canary = await on(TARGET, { created: 0 });
+      await soaked(canary);
+      const f = fakes({ canary });
+      if (v !== undefined) Object.assign(f.env, { FLEET_SMOKE_SHARE: v });
+      await fleetDue(f.env, NOW, f.opts);
+      expect(f.smokes[0]?.share).toBe(share);
+    });
 });

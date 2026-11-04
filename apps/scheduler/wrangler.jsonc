@@ -54,6 +54,9 @@
         // "required". "off" until the user's one-time smoke setup for this
         // env (docs/ops/hosted.md); "required" is a later one-line PR.
         "FLEET_SMOKE": "off",
+        // The smoke's share check, an explicit choice: "on" needs
+        // FLEET_SMOKE_SHARE_TO (a secret); "off" skips it.
+        "FLEET_SMOKE_SHARE": "on",
         // The passive soak with the smoke off, in minutes.
         "FLEET_SOAK_MIN": "15",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
@@ -133,6 +136,9 @@
         // "required". "off" until the user's one-time smoke setup for this
         // env (docs/ops/hosted.md); "required" is a later one-line PR.
         "FLEET_SMOKE": "off",
+        // The smoke's share check, an explicit choice: "on" needs
+        // FLEET_SMOKE_SHARE_TO (a secret); "off" skips it.
+        "FLEET_SMOKE_SHARE": "on",
         // The passive soak with the smoke off, in minutes.
         "FLEET_SOAK_MIN": "60",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
