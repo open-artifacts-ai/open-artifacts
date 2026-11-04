@@ -11,7 +11,10 @@ import {
   type LocalPair,
   localModeOf,
   localOAuthStoreOf,
+  localT19Of,
   startLocalPair,
+  type T19Idp,
+  t19Idp,
 } from "../src/local-pair.ts";
 
 const argv = process.argv.slice(2);
@@ -29,6 +32,8 @@ const cmd =
 const timeoutMs = Number(process.env.REDLINE_LOCAL_TIMEOUT_MS) || 15 * 60_000;
 
 let pair: LocalPair | null = null;
+/** T19's fake IdP (in this process; started only with REDLINE_LOCAL_T19=1). */
+let idp: T19Idp | undefined;
 let booting: Promise<LocalPair> | null = null;
 let finishing: Promise<never> | null = null;
 /** Every group spawned (for the report). */
@@ -69,6 +74,7 @@ async function teardown(code: number, why?: string): Promise<never> {
     if (groupGone(runPid)) live.delete(runPid);
   }
   const left = pair ? await pair.stop() : [];
+  await idp?.stop().catch(() => {});
   for (const p of [...live]) if (groupGone(p)) live.delete(p);
   const all = [...spawnedPids, ...(runPid ? [runPid] : [])];
   console.log(
@@ -92,11 +98,18 @@ process.on("SIGHUP", () => void finish(129, "SIGHUP"));
 const timer = setTimeout(() => void finish(124, "timed out"), timeoutMs);
 
 try {
+  // REDLINE_LOCAL_T19=1: T19's run (#1252); needs apps/server/dist-assets built.
+  const t19 = localT19Of();
+  // Only with the flag: a fake IdP on 127.0.0.1, so the pair boots its broker
+  // and the hosted installs have Google (t19Idp returns undefined when off).
+  idp = await t19Idp(t19);
   booting = startLocalPair({
     // REDLINE_LOCAL_MODE=google: the sync_frozen / sync_google tiers.
     mode: localModeOf(),
     // REDLINE_OAUTH_STORE=dual|d1: both installs on the D1 OAuth store.
     oauthStore: localOAuthStoreOf(),
+    t19,
+    ...(idp ? { idp: idp.pair } : {}),
     signal: abort.signal,
     onSpawn: (p) => {
       spawnedPids.push(p);

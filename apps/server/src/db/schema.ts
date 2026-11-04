@@ -635,3 +635,47 @@ export const loginCodes = sqliteTable(
   },
   (t) => [primaryKey({ columns: [t.emailKey, t.requestId] })],
 );
+
+// Collaboration suite (#1292): an agent address in the member's bus follows
+// an artifact. Read access is checked at follow time and again per notice; a
+// follow that fails it then is deleted. Soft delete removes an artifact's
+// follows; purge and the user cascade cover the rest. last_notice_at: when
+// the last `changed` notice to this address was due (ms), for the one per
+// minute window.
+export const follows = sqliteTable(
+  "follows",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    namespace: text("namespace").notNull(),
+    agentName: text("agent_name").notNull(),
+    createdAt: integer("created_at").notNull(),
+    lastNoticeAt: integer("last_notice_at"),
+  },
+  (t) => [
+    primaryKey({
+      columns: [t.userId, t.artifactId, t.namespace, t.agentName],
+    }),
+    index("follows_artifact_idx").on(t.artifactId),
+    index("follows_address_idx").on(t.userId, t.namespace, t.agentName),
+  ],
+);
+
+// The member's "agents that get share notices" (#1292): bus addresses, none
+// by default (a `shared` notice with none picked is dropped).
+export const shareNoticeAgents = sqliteTable(
+  "share_notice_agents",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    namespace: text("namespace").notNull(),
+    agentName: text("agent_name").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.namespace, t.agentName] })],
+);

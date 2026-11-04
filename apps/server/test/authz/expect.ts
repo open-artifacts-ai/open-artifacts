@@ -395,6 +395,8 @@ export function orgExpected(
       return yes(t.team);
     case "tokens.create":
     // #1291: bus agents (GET R.busAgents), as canConnect.
+    // #1292 share-notice picks: who may connect agents. PUT also needs a
+    // cookie session (follows.test.ts; the matrix probes writes by cookie).
     case "mcp.connect":
       return yes(t.team && !t.capped);
     case "artifact.create":

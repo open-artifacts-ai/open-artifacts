@@ -166,10 +166,10 @@ const TAKE = `insert into counters (key, n, day) values (?1, 1, ?2)
   where counters.day <> excluded.day or counters.n < ?3
   returning n`;
 
-/** Daily cron: drops email and sign-in-code counters from before today (they reset anyway). */
+/** Daily cron: drops email, sign-in-code and bus notice (#1292) counters from before today (they reset anyway). */
 export async function sweepEmailCounters(env: Env, now = Date.now()) {
   await env.DB.prepare(
-    "delete from counters where (key like 'email:%' or key like 'code:%') and day < ?",
+    "delete from counters where (key like 'email:%' or key like 'code:%' or key like 'notice:%') and day < ?",
   )
     .bind(utcDay(now))
     .run();

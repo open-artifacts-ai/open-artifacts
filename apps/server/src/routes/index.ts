@@ -13,6 +13,7 @@ import { mountMe } from "./me.js";
 import { mountMembers } from "./members.js";
 import { mountSearch } from "./search.js";
 import { mountSettings } from "./settings.js";
+import { mountShareNotices } from "./share-notices.js";
 import { mountShares } from "./shares.js";
 import { mountShell } from "./shell.js";
 import { mountSpaces } from "./spaces.js";
@@ -28,6 +29,7 @@ export function mountRoutes(app: AppType): void {
   mountAuth(app);
   mountCodes(app);
   mountMe(app);
+  mountShareNotices(app);
   mountMembers(app);
   mountSettings(app);
   mountSpaces(app);

@@ -84,6 +84,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   },
   "GET /api/v1/me": { user: "the caller" },
   "PATCH /api/v1/me": { user: "the caller" },
+  // #1292: the caller's own share-notice picks; PUT browser sessions only (handler).
+  "GET /api/v1/bus/share-notices": { org: "mcp.connect" },
+  "PUT /api/v1/bus/share-notices": { org: "mcp.connect" },
   "GET /api/v1/members": { org: "members.manage" },
   "POST /api/v1/members": { org: "members.manage" },
   "PATCH /api/v1/members/:id": { org: "members.manage" },
