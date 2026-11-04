@@ -9,14 +9,20 @@
 [[ "$CLOUDFLARE_API_TOKEN" =~ ^[A-Za-z0-9._~+/=-]+$ ]] || { echo "CLOUDFLARE_API_TOKEN has unexpected characters" >&2; exit 1; }
 CF=https://api.cloudflare.com/client/v4
 
-# cf_ok <path> <what>: the body of GET $CF<path> when .success is true; else
-# names <what> with Cloudflare's errors (never a token) and exits 1.
+# cf_ok <path> <what> [lag code]: the body of GET $CF<path> when .success is
+# true; else names <what> with Cloudflare's errors (never a token) and exits 1.
+# With [lag code] (a number), an answer whose errors all carry that code exits 3
+# instead, after the same message: read-after-write lag a caller may retry.
 cf_ok() {
   local body
   body="$(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN" | curl -sS -K - "$CF$1")" ||
     { echo "$2 failed: network error" >&2; exit 1; }
   if [ "$(jq -r '.success' <<< "$body" 2> /dev/null)" != true ]; then
     echo "$2 failed: $(jq -c '.errors' <<< "$body" 2> /dev/null || echo 'unparsable response')" >&2
+    if [[ "${3:-}" =~ ^[0-9]+$ ]] &&
+      jq -e --argjson c "$3" '(.errors | type == "array" and length > 0) and all(.errors[]; .code == $c)' <<< "$body" > /dev/null 2>&1; then
+      exit 3
+    fi
     exit 1
   fi
   printf '%s' "$body"
