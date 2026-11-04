@@ -1,6 +1,7 @@
-// #1254: the hook budget, shared by the red-line live suite (src/http.ts
-// paceHook) and T19 (apps/dashboard/e2e/staging). No relative imports: T19
-// imports this file from the dashboard too.
+// #1254: the hook budget, shared by T19 (hook-pace.ts) and the red-line live
+// suite (tests/redline/src/http.ts paceHook). It lives on the public side so
+// the private suite imports it (never the other way), and it has no relative
+// imports, so the suite can import it as a plain file.
 //
 // The server charges every /__test/* call to RL_ANON before it reads the
 // hook key (apps/server/src/test-hooks/index.ts), keyed by install and IP,

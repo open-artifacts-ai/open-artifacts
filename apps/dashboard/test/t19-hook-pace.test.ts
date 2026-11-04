@@ -1,5 +1,5 @@
 // #1254: T19's side of the runner's hook budget (e2e/staging/hook-pace.ts).
-// The ledger itself is tested in tests/redline/test/hook-ledger.test.ts.
+// The ledger itself is tested in test/hook-ledger.test.ts.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +12,7 @@ import {
   HookBudgetError,
   hookLedgerDir,
   hookWindowCount,
-} from "../../../tests/redline/src/hook-ledger";
+} from "../e2e/staging/hook-ledger";
 import {
   clearT19HookWindow,
   clearTestStart,

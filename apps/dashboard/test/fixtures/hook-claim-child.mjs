@@ -1,11 +1,14 @@
-// test/hook-ledger.test.ts: one process of the two-process race. Claims a
-// slot for argv app under argv root; after its scan found room it writes
-// <tag>.ready and waits for `go`, so both processes have scanned before
-// either creates. Prints "took <n>" or "refused".
+// test/hook-ledger.test.ts: one process of the two-process race, run with
+// node --experimental-strip-types. Claims a slot for argv app under argv
+// root; after its scan found room it writes <tag>.ready and waits for `go`,
+// so both processes have scanned before either creates. Prints "took <n>"
+// or "refused".
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { claimHookSlot, HookBudgetError } from "../../src/hook-ledger.ts";
 
+const { claimHookSlot, HookBudgetError } = await import(
+  new URL("../../e2e/staging/hook-ledger.ts", import.meta.url).href
+);
 const [root = "", app = "", tag = "", sync = ""] = process.argv.slice(2);
 try {
   const n = await claimHookSlot(app, {

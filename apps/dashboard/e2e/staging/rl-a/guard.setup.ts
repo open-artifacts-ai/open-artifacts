@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { HOOK_WINDOW_MS } from "../../../../../tests/redline/src/hook-ledger";
+import { HOOK_WINDOW_MS } from "../hook-ledger";
 import { clearT19HookWindow } from "../hook-pace";
 import { sendRead } from "../retry";
 import { FETCH_MS, rlA } from "../targets";

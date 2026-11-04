@@ -6,7 +6,7 @@ import {
   hookWindowCount,
   type PaceOpts,
   waitHookWindowClear,
-} from "../../../../tests/redline/src/hook-ledger";
+} from "./hook-ledger";
 
 // #1254: T19's side of the runner's hook budget. Every rl-a /__test/* call
 // takes a slot in the same ledger the red-line live suite uses (keyed by

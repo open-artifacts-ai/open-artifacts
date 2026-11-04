@@ -1,7 +1,6 @@
-// #1254: the runner's hook budget (src/hook-ledger.ts), shared by the live
-// suite (src/http.ts paceHook) and T19 (apps/dashboard/e2e/staging). T19's
-// side is tested in apps/dashboard/test/t19-hook-pace.test.ts (redline never
-// imports dashboard code).
+// #1254: the runner's hook budget (e2e/staging/hook-ledger.ts), shared by
+// T19 and the red-line live suite. T19's side: t19-hook-pace.test.ts; the
+// suite's side: tests/redline/test/hook-budget-suite.test.ts.
 import { spawn } from "node:child_process";
 import {
   existsSync,
@@ -30,10 +29,7 @@ import {
   RL_ANON_PERIOD_S,
   STALE_TMP_MS,
   waitHookWindowClear,
-} from "../src/hook-ledger.ts";
-import { paceHook } from "../src/http.ts";
-import { parseTargets } from "../src/targets.ts";
-import { secretDir } from "./fake.ts";
+} from "../e2e/staging/hook-ledger";
 
 const ROOT = resolve(import.meta.dirname, "..", "..", "..");
 const APP = "https://rl-a.open-artifacts-staging.app";
@@ -99,50 +95,6 @@ describe("the budget is RL_ANON's, less a stated margin", () => {
   });
 });
 
-describe("one ledger per install, the same for the suite and T19", () => {
-  // T19 keys on rl-a's app origin from REDLINE_TARGETS too (rlA().app; its
-  // side: apps/dashboard/test/t19-hook-pace.test.ts). Both use the JSON's
-  // a.app as given, so both derive hookLedgerDir(a.app).
-  it("the suite keys on the target's app origin, exactly as REDLINE_TARGETS gives it", () => {
-    const s = secretDir({ ka: "a".repeat(40), kb: "b".repeat(40) });
-    try {
-      const t = (name: string, f: string) => ({
-        name,
-        installId: `${name}-id`,
-        app: `https://${name}.open-artifacts-staging.app`,
-        content: `https://${name}.open-artifacts-staging.page`,
-        testDomain: `${name}.test`,
-        hookKeyFile: s.path(f),
-      });
-      const env = {
-        REDLINE_TARGETS: JSON.stringify({
-          mode: "staging",
-          a: t("rl-a", "ka"),
-          b: t("rl-b", "kb"),
-        }),
-      };
-      const suite = parseTargets(env);
-      expect(suite.a.app).toBe("https://rl-a.open-artifacts-staging.app");
-      expect(hookLedgerDir(suite.a.app)).toBe(
-        hookLedgerDir("https://rl-a.open-artifacts-staging.app"),
-      );
-      // Another install never shares it.
-      expect(hookLedgerDir(suite.b.app)).not.toBe(hookLedgerDir(suite.a.app));
-    } finally {
-      s.cleanup();
-    }
-  });
-
-  it("a suite call counts in the app's window (where T19's claims count too)", async () => {
-    const root = scratch();
-    const c = clock();
-    await paceHook({ app: APP } as never, { root, now: c.now });
-    await claimHookSlot(APP, { root, now: c.now });
-    expect(hookWindowCount(APP, { root, now: c.now })).toBe(2);
-    expect(hookWindowCount("https://rl-b.x.app", { root, now: c.now })).toBe(0);
-  });
-});
-
 describe("taking a slot is atomic", () => {
   it("two processes can't both take the last slot", async () => {
     const root = scratch();
@@ -155,7 +107,7 @@ describe("taking a slot is atomic", () => {
           [
             "--experimental-strip-types",
             "--no-warnings",
-            join(import.meta.dirname, "fixtures", "hook-claim-child.ts"),
+            join(import.meta.dirname, "fixtures", "hook-claim-child.mjs"),
             root,
             APP,
             tag,
@@ -191,7 +143,7 @@ describe("nothing is held past a call", () => {
     const root = scratch();
     const c = clock();
     const call = async (fail: boolean) => {
-      await paceHook({ app: APP } as never, {
+      await claimHookSlot(APP, {
         root,
         now: c.now,
         sleep: c.sleep,
@@ -284,12 +236,12 @@ describe("a hook 404 isn't the key's while the budget is full", () => {
     expect(hook404IsTheKeys(HOOK_LIMIT)).toBe(false);
   });
 
-  it("guard's probe keeps one call free, so its 404 is the key's", async () => {
+  it("a claim with reserve 1 keeps one call free (guard's probe)", async () => {
     const root = scratch();
     const c = clock();
     for (let i = 0; i < HOOK_LIMIT - 1; i++)
       await claimHookSlot(APP, { root, now: c.now });
-    const n = await paceHook({ app: APP } as never, {
+    const n = await claimHookSlot(APP, {
       root,
       now: c.now,
       sleep: c.sleep,

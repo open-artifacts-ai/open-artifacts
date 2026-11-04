@@ -2,12 +2,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { API_ERROR_CODES } from "@oa/provisioning-contract";
 import { ERROR_CODES } from "@oa/shared";
 import {
+  claimHookSlot,
+  type PaceOpts,
+} from "../../../apps/dashboard/e2e/staging/hook-ledger.ts";
+import {
   InfraError,
   isNetworkError,
   networkCode,
   setupFetch,
 } from "./fetch-timeout.ts";
-import { claimHookSlot, type PaceOpts } from "./hook-ledger.ts";
 import { note } from "./notes.ts";
 import { secretsOf, setPat, type Target } from "./targets.ts";
 
@@ -192,7 +195,7 @@ export class HttpError extends Error {
 
 /**
  * Waits until a hook call to `t` fits the runner's hook budget (#1254,
- * src/hook-ledger.ts, shared with T19), then records it. Any request to a
+ * apps/dashboard/e2e/staging/hook-ledger.ts, shared with T19), then records it. Any request to a
  * /__test/* path counts (the server charges the bucket before the key), so
  * a raw probe there paces through this too. Returns the calls in the window.
  */
