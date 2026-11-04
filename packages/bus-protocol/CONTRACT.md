@@ -61,7 +61,7 @@ opening the URI.
 
 States: `pending | delivered | expired | refused`. Refusal reasons
 (`REFUSAL_REASONS`): `unknown_agent`, `closed`, `inbox_full`, `too_large`,
-`other_namespace`, `revoked`, `ambiguous`. `expired` may carry
+`other_namespace`, `revoked`, `ambiguous`, `agent_gone`. `expired` may carry
 `recipient_closed`. The `receipt` reply to `send` is only `pending` or
 `refused`; `receipt_update` may carry any state.
 
@@ -78,7 +78,7 @@ Client to hub (`CLIENT_FRAMES`):
 - `agent_up {agent_ref, kind, proposed_name, namespace, global, name_kind?}`
 - `agent_down {agent_ref}`
 - `sessions {open[], closed[]}`
-- `send {from_ref, to_name, to_namespace?, body}`
+- `send {from_ref, to_name, to_namespace?, to_id?, body}`: `to_id` (a reply, the answered mail's `from_id`) makes the hub deliver only to that agent; if `to_name` resolves to another agent or none, the send is refused `agent_gone`.
 - `ack {msg_id}`
 - `refuse {msg_id, reason: "closed", detail}`
 - `list {from_ref}`
@@ -94,7 +94,7 @@ Hub to client (`SERVER_FRAMES`):
 - `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?, former_names?}]}`; `kind` is any kind token.
 - `body {msg_id, body}`
 - `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
-- `deliver {msg_id, to_ref, from_name, namespace, body | notice}`
+- `deliver {msg_id, to_ref, from_name, from_id?, namespace, body | notice}`; `from_id` is the sender's agent id.
 - `receipt_update {msg_id, state, reason?}`: the schema shares `to_name?` with `receipt`, but the hub sets it only on `receipt`.
 - `roster_changed {namespace}`
 - `renamed {agent_ref, bus_name, former?}`: reply to `rename`. `former` is the name left, absent on a no-op. Names compare case-insensitively.

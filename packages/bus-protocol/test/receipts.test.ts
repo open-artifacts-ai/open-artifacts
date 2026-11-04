@@ -22,6 +22,7 @@ describe("receipts", () => {
       "other_namespace",
       "revoked",
       "ambiguous",
+      "agent_gone",
     ]);
   });
   it("rejects ambiguous on expired", () => {

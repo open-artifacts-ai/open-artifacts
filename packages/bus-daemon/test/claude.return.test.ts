@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeTransport } from "../src/transports/claude.ts";
+import { ClaudeTransport, RETURN_TTL_MS } from "../src/transports/claude.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "ob-cr-"));
@@ -22,9 +22,18 @@ const agent = {
   cwd: "/",
   live: true,
 } as const;
-const mail = (msg_id = "m1", from_name = "peer") => ({
+/** Agent ids, as the hub names a sender (deliver.from_id). */
+const PEER = "8Zc4mRnA2ySu9QwB";
+const OTHER = "7Yb3kQmZ1xRt9PvA";
+const mail = (
+  msg_id = "m1",
+  from_name = "peer",
+  /** null: a hub that does not name the sender. */
+  from_id: string | null = PEER,
+) => ({
   msg_id,
   from_name,
+  ...(from_id === null ? {} : { from_id }),
   namespace: "n",
   body: "hello",
 });
@@ -73,18 +82,20 @@ const reply = (claudeSock: string, text: string) => ({
   from: `uds:${claudeSock}`,
 });
 
-type Reply = [string, string, string, string];
+type Reply = [string, string, string, string, string?];
 function transport(
   d: string,
   target: () => { socketPath: string; peerToken: string } | null,
   onReply: (...r: Reply) => void,
+  over: Partial<ConstructorParameters<typeof ClaudeTransport>[0]> = {},
 ) {
   const t = new ClaudeTransport({
     socketsDir: join(d, "sinks"),
     returnIndexFile: join(d, "claude-return.json"),
     statusWindowMs: 20,
     target,
-    onReply,
+    onReply: (...r) => onReply(...(r as Reply)),
+    ...over,
   });
   transports.push(t);
   return t;
@@ -110,7 +121,7 @@ describe("stale Claude return sockets (open-bus #426)", () => {
     await second.revive(agent.ref);
     await dial(returnPath, reply(claudeSock, "after the restart"));
     await vi.waitFor(() =>
-      expect(replies).toEqual([["s1", "peer", "after the restart", "n"]]),
+      expect(replies).toEqual([["s1", "peer", "after the restart", "n", PEER]]),
     );
   });
 
@@ -136,7 +147,7 @@ describe("stale Claude return sockets (open-bus #426)", () => {
     await dial(returnPath, reply(newSock, "from the resumed session"));
     await vi.waitFor(() =>
       expect(replies).toEqual([
-        ["s1", "peer", "from the resumed session", "n"],
+        ["s1", "peer", "from the resumed session", "n", PEER],
       ]),
     );
   });
@@ -179,7 +190,7 @@ describe("stale Claude return sockets (open-bus #426)", () => {
     expect(existsSync(carol)).toBe(false);
     await dial(bob, reply(claudeSock, "to bob"));
     await vi.waitFor(() =>
-      expect(replies).toEqual([["s1", "bob", "to bob", "n"]]),
+      expect(replies).toEqual([["s1", "bob", "to bob", "n", PEER]]),
     );
   });
 });
@@ -195,7 +206,13 @@ describe("the daemon revives a live session's return sockets", () => {
     writeFileSync(
       index,
       JSON.stringify({
-        [key]: { agentRef: "s4242", namespace: "ns", peerName: "peer", at: 1 },
+        [key]: {
+          agentRef: "s4242",
+          namespace: "ns",
+          peerName: "peer",
+          fromId: PEER,
+          at: Date.now(),
+        },
       }),
       { mode: 0o600 },
     );
@@ -226,5 +243,77 @@ describe("the daemon revives a live session's return sockets", () => {
     await vi.waitFor(() =>
       expect(existsSync(join(sinks, `${name}.sock`))).toBe(true),
     );
+  });
+});
+
+describe("a reply reaches only the agent that wrote (#1323 follow-up)", () => {
+  async function setup(over = {}) {
+    const d = dir();
+    const claudeSock = join(d, "claude.sock");
+    const froms = await fakeClaude(claudeSock);
+    const replies: Reply[] = [];
+    const refused: [string, string][] = [];
+    const t = transport(
+      d,
+      () => ({ socketPath: claudeSock, peerToken: "tok" }),
+      (...r) => replies.push(r),
+      { onReplyRefused: (ref, name) => refused.push([ref, name]), ...over },
+    );
+    return { d, claudeSock, froms, replies, refused, t };
+  }
+
+  it("the newest mail's agent is the one a reply names", async () => {
+    const { claudeSock, froms, replies, t } = await setup();
+    await t.deliver(agent, mail("m1", "alice", PEER));
+    // Alice left; another agent took the name and wrote.
+    await t.deliver(agent, mail("m2", "alice", OTHER));
+    await dial(froms[1] as string, reply(claudeSock, "hi"));
+    await vi.waitFor(() =>
+      expect(replies).toEqual([["s1", "alice", "hi", "n", OTHER]]),
+    );
+  });
+
+  it("a revived socket that does not know who wrote refuses the reply", async () => {
+    const { d, claudeSock, froms, replies, refused, t } = await setup();
+    await t.deliver(agent, mail("m1", "alice", null));
+    await t.close();
+    transports.splice(transports.indexOf(t), 1);
+    const again: Reply[] = [];
+    const told: [string, string][] = [];
+    const t2 = transport(
+      d,
+      () => ({ socketPath: claudeSock, peerToken: "tok" }),
+      (...r) => again.push(r),
+      { onReplyRefused: (ref, name) => told.push([ref, name]) },
+    );
+    await t2.revive("s1");
+    await dial(froms[0] as string, reply(claudeSock, "hi"));
+    await vi.waitFor(() => expect(told).toEqual([["s1", "alice"]]));
+    expect(again).toEqual([]);
+    expect(replies).toEqual([]);
+    expect(refused).toEqual([]);
+  });
+
+  it("a reply after the mail TTL is refused, and the entry is not revived", async () => {
+    let now = Date.now();
+    const { d, claudeSock, froms, replies, refused, t } = await setup({
+      now: () => now,
+    });
+    await t.deliver(agent, mail("m1", "alice", PEER));
+    now += RETURN_TTL_MS + 1;
+    await dial(froms[0] as string, reply(claudeSock, "late"));
+    await vi.waitFor(() => expect(refused).toEqual([["s1", "alice"]]));
+    expect(replies).toEqual([]);
+    // A restarted daemon past the TTL binds nothing for it.
+    await t.close();
+    transports.splice(transports.indexOf(t), 1);
+    const t2 = transport(
+      d,
+      () => ({ socketPath: claudeSock, peerToken: "tok" }),
+      () => {},
+      { now: () => now },
+    );
+    await t2.revive("s1");
+    expect(existsSync(froms[0] as string)).toBe(false);
   });
 });

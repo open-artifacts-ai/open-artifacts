@@ -133,6 +133,11 @@ const refusals: Record<
       `That name exists in ${n && n > 1 ? `${n} namespaces` : "more than one namespace"}.`,
     "Send again with to_namespace set to one of them.",
   ],
+  // A reply's agent (to_id) no longer holds the name it wrote from.
+  agent_gone: [
+    "The agent you are answering is gone; another may hold its name now.",
+    "Run list_agents and message the agent you mean by name.",
+  ],
 };
 
 /**

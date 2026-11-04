@@ -96,7 +96,7 @@ describe("hello caps", () => {
   });
 
   it("hasCap reads the hello", () => {
-    expect(BUS_CAPS).toEqual({ rename: "rename" });
+    expect(BUS_CAPS).toEqual({ rename: "rename", ids: "ids" });
     expect(hasCap({ caps: ["x", "rename"] }, BUS_CAPS.rename)).toBe(true);
     expect(hasCap({ caps: ["x"] }, BUS_CAPS.rename)).toBe(false);
     expect(hasCap({}, BUS_CAPS.rename)).toBe(false);

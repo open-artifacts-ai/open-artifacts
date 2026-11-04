@@ -17,6 +17,7 @@ export {
   neutralizeBody,
   oversizedText,
   receiptText,
+  replyGoneText,
   rosterLine,
   STATUS_COPY,
   STATUS_STALE_MS,

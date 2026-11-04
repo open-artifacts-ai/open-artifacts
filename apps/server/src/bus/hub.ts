@@ -214,6 +214,19 @@ const renameGated = (ws: WebSocket): boolean => {
 };
 
 /**
+ * Reply ids (BUS_CAPS.ids): `deliver.from_id`, `send.to_id` and the
+ * `agent_gone` refusal go only to a socket whose hello listed it. Fails
+ * closed, like renameGated.
+ */
+const idsGated = (ws: WebSocket | null): boolean => {
+  const caps = ws ? attachmentOf(ws)?.caps : undefined;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.ids);
+};
+
+/** What this hub supports, listed in `hello_ok.caps` to a hello that listed caps. */
+const HUB_CAPS = [BUS_CAPS.rename, BUS_CAPS.ids];
+
+/**
  * A receipt's `to_name`: the resolved agent's current name, only when the
  * send resolved through a former name (it differs from the name sent to,
  * beyond case), and only to a rename-capable socket.
@@ -2348,6 +2361,8 @@ export class BusHub extends DurableObject<Env> {
           machine_id: machine.id,
           machine_label: machine.label,
           server_version: VERSION,
+          // Only to a hello that listed caps: an older client decodes strictly.
+          ...(f.caps === undefined ? {} : { caps: [...HUB_CAPS] }),
         });
         return;
       case "sessions": {
@@ -2766,6 +2781,12 @@ export class BusHub extends DurableObject<Env> {
     }
     if (key.dropped && this.#sendKeys !== null) this.#sendKeys--;
     const res = resolveTarget(sql, sender, f.to_name, f.to_namespace, now);
+    // A reply (`to_id`) goes only to the agent it answers: never to whoever
+    // holds the name now. agent_gone only to a socket that knows it.
+    if (f.to_id !== undefined && (!res.ok || res.agent.id !== f.to_id)) {
+      refuseSend(ws, f.id, idsGated(ws) ? "agent_gone" : "unknown_agent");
+      return;
+    }
     if (!res.ok) {
       refuseSend(ws, f.id, res.reason);
       return;
@@ -2830,6 +2851,7 @@ export class BusHub extends DurableObject<Env> {
       msg_id: msgId,
       to_ref: target.nativeRef,
       from_name: sender.name,
+      ...(idsGated(socket) ? { from_id: sender.id } : {}),
       namespace: sender.namespace,
     } as const;
     if (inline) sendFrame(socket, { ...head, body: f.body });
@@ -3456,6 +3478,7 @@ export class BusHub extends DurableObject<Env> {
         msg_id: r.id,
         to_ref: agent.nativeRef,
         from_name: r.fromName,
+        ...(idsGated(ws) ? { from_id: r.fromAgent } : {}),
         namespace: r.namespace,
       } as const;
       if (r.size > LIMITS.inlineBodyBytes) {

@@ -13,6 +13,13 @@ export const BUS_CAPS = {
    * hello listed it.
    */
   rename: "rename",
+  /**
+   * Agent ids on replies: the client decodes `deliver.from_id` and the
+   * `agent_gone` refusal, and may send `send.to_id`. The hub sends those only
+   * to a socket whose hello listed it, and lists it in `hello_ok.caps`; the
+   * client sends `to_id` only when it did.
+   */
+  ids: "ids",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

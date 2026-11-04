@@ -15,11 +15,13 @@ import {
   isWellFormed,
   lateDeliveredText,
   receiptText,
+  replyGoneText,
   serveDaemon,
   stripTerminalControls,
   unconfirmedText,
 } from "@oa/bus-ipc";
 import {
+  BUS_CAPS,
   BUS_ROUTES,
   type ClientFrame,
   ClientFrameSchema,
@@ -511,7 +513,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     target: (ref) => claudeTarget(ref, claudeSessions),
     // A native reply is a message from the session: the sink names the sender, never the frame.
     // Every reply names the peer's namespace (the deliver's), so a same-named local peer cannot get it.
-    onReply: (agentRef, peerName, text, namespace) => {
+    onReply: (agentRef, peerName, text, namespace, peerId) => {
       // A lone surrogate costs one character, not the reply.
       if (!isWellFormed(text))
         log(
@@ -525,6 +527,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         from_ref: agentRef,
         to_name: peerName,
         to_namespace: namespace,
+        // Only the agent that wrote: never whoever holds the name now.
+        ...(hubIds && peerId ? { to_id: peerId } : {}),
         body,
       };
       if (!ClientFrameSchema.safeParse(f).success) {
@@ -532,6 +536,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         return;
       }
       outbox.push(f);
+    },
+    // A reply the daemon would not send: the session is told, as information.
+    onReplyRefused: (agentRef, peerName) => {
+      const agent = agents.byRef(agentRef);
+      if (agent) void claude.notify(agent, replyGoneText(peerName));
     },
   });
 
@@ -629,6 +638,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
 
   let hubEver = false;
   let hubDroppedAt: number | undefined;
+  /** The hub's last hello_ok listed BUS_CAPS.ids: a reply may carry to_id. */
+  let hubIds = false;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
   let hubVersion: string | undefined;
   const hub = new HubConnection({
@@ -728,6 +739,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         case "hello_ok":
           // The machine id and label are already in machine.json.
           hubVersion = frame.server_version;
+          // A reply names its agent (to_id) only to a hub that said it can.
+          hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
           return;
         // roster_changed has no local consumer yet (C6).
       }
@@ -776,6 +789,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       upIds.clear();
       // The next link's hello_ok says again which hub this is.
       hubVersion = undefined;
+      hubIds = false;
       statusRelay.dropped();
       receipts.release();
       // A send not yet answered waits for the next link; anything else fails now.
