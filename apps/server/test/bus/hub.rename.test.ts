@@ -184,16 +184,40 @@ async function delivered(d: Daemon, msgId: string) {
   }
 }
 
-/** The former names stored for the agent now (or last) named `name`. */
+/**
+ * The former names stored for the agent now (or last) named `name`; OpenBus
+ * #451: not its held names (see `holds`).
+ */
 const formerRows = (name: string) =>
   inHub((_, s) =>
     s.storage.sql
       .exec(
-        "select f.name from former_names f join agents a on a.id = f.agent_id where a.name = ?",
+        "select f.name from former_names f join agents a on a.id = f.agent_id where a.name = ? and f.kind != 'held'",
         name,
       )
       .toArray()
       .map((r) => String(r.name)),
+  );
+
+/**
+ * Runs the alarm until `done` (at most 50 runs): each run purges at most a
+ * batch, and the whole file's rows (every test's clock) share the hub.
+ */
+async function alarmsUntil(done: () => Promise<boolean>): Promise<void> {
+  for (let i = 0; i < 50 && !(await done()); i++)
+    await runDurableObjectAlarm(await hubOf());
+}
+
+/** OpenBus #451: the held (left current-name) rows of `name`, as `namespace/global`. */
+const holds = (name: string) =>
+  inHub((_, st) =>
+    st.storage.sql
+      .exec(
+        "select namespace, global from former_names where lname = ? and kind = 'held' order by rowid",
+        name.toLowerCase(),
+      )
+      .toArray()
+      .map((r) => `${String(r.namespace)}/${Number(r.global)}`),
   );
 
 /**
@@ -519,7 +543,7 @@ describe("rename (R393b)", () => {
     d.close();
   });
 
-  it("close drops former names: the name is free at once (agent_down, sessions, revoke)", async () => {
+  it("close keeps chosen former names reserved and holds the current name (agent_down, sessions, revoke; OpenBus #451)", async () => {
     const d = await at();
     const n = ns("rn");
     await reg(d, "s", uniq("Sender"), n);
@@ -529,16 +553,18 @@ describe("rename (R393b)", () => {
     await renamed(d, "a", a2);
     expect(await formerRows(a2)).toEqual([a]);
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
-    expect(await reg(d, "x", a, n)).toBe(a);
-    expect(await formerRows(a2)).toEqual([]);
+    expect(await reg(d, "x", a, n)).toBe(`${a}-2`);
+    expect(await reg(d, "x2", a2, n)).toBe(`${a2}-2`);
+    expect(await formerRows(a2)).toEqual([a]);
 
     const b = uniq("Sess");
     await reg(d, "b", b, n);
     const b2 = uniq("Sess2");
     await renamed(d, "b", b2);
     d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: ["b"] });
-    expect(await reg(d, "y", b, n)).toBe(b);
-    expect(await formerRows(b2)).toEqual([]);
+    expect(await reg(d, "y", b, n)).toBe(`${b}-2`);
+    expect(await reg(d, "y2", b2, n)).toBe(`${b2}-2`);
+    expect(await formerRows(b2)).toEqual([b]);
 
     const m = await machine("Revokee");
     const v = await daemon(m.token);
@@ -556,8 +582,9 @@ describe("rename (R393b)", () => {
     const c2 = uniq("Revoked2");
     await renamed(v, "rv", c2);
     expect(await (await hubOf()).revokeMachine(m.id)).toBe(true);
-    expect(await reg(d, "z", c, n)).toBe(c);
-    expect(await formerRows(c2)).toEqual([]);
+    expect(await reg(d, "z", c, n)).toBe(`${c}-2`);
+    expect(await reg(d, "z2", c2, n)).toBe(`${c2}-2`);
+    expect(await formerRows(c2)).toEqual([c]);
     d.close();
   });
 
@@ -973,8 +1000,8 @@ describe("review fixes (R393b)", () => {
       );
     expect(await log()).toBe(LIMITS.renamesPerHour);
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
-    // Its former names went with the close: free at once, never resolving.
-    expect(await reg(d, "b", a, n)).toBe(a);
+    // OpenBus #451: its chosen former names stay reserved after the close.
+    expect(await reg(d, "b", a, n)).toBe(`${a}-2`);
     // At the limit a reopen keeps its name (OpenBus #449 N1), counting
     // nothing.
     expect(await reg(d, "a", uniq("Reopened"), n)).toBe(cur);
@@ -984,14 +1011,15 @@ describe("review fixes (R393b)", () => {
       type: "error",
       code: "rate_limited",
     });
-    expect(await formerRows(reopened)).toEqual([]);
+    // Reopened in its scope, its former names in grace resolve again.
+    expect(await formerRows(reopened)).toContain(first);
     expect(await send(d, "s", first)).toMatchObject({
-      state: "refused",
-      reason: "unknown_agent",
+      state: "pending",
+      to_name: reopened,
     });
     // A rolling hour: the alarm purges the log, and renames work again.
     await setClock(t0 + GRACE + 1);
-    await runDurableObjectAlarm(await hubOf());
+    await alarmsUntil(async () => (await log()) === 0);
     expect(await log()).toBe(0);
     await renamed(d, "a", uniq("Later"));
     d.close();
@@ -1314,14 +1342,14 @@ describe("OpenBus #449: review of #446", () => {
     d.close();
   });
 
-  it("an agent_up namespace move at the limit moves, keeping the current name", async () => {
+  it("an agent_up namespace move at the limit is kept in its scope and name (move_kept, OpenBus #451 review)", async () => {
     const d = await at();
     const n1 = ns("rn");
     const n2 = ns("rn");
     await reg(d, "a", uniq("Mover"), n1);
     const cur = await churn(d, "a", LIMITS.renamesPerHour);
     expect(await reg(d, "a", uniq("Elsewhere"), n2)).toBe(cur);
-    // OpenBus #451: its chosen former names stay, reserved in n1.
+    // Nothing moved: its former names are where they were.
     expect(await formerRows(cur)).toHaveLength(2);
     const ns2 = await inHub(
       (_, st) =>
@@ -1332,7 +1360,7 @@ describe("OpenBus #449: review of #446", () => {
           )
           .one().namespace,
     );
-    expect(ns2).toBe(n2);
+    expect(ns2).toBe(n1);
     d.close();
   });
 
@@ -1396,9 +1424,10 @@ describe("OpenBus #449: review of #446", () => {
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
     const b = uniq("Reo2");
     expect(await reg(d, "a", b, n)).toBe(b);
-    // The old name was freed by the close: no former row.
-    expect(await formerRows(b)).toEqual([]);
-    expect(await reg(d, "o", cur, n)).toBe(cur);
+    // OpenBus #451: no former row for the old name; the close holds it.
+    expect(await formerRows(b)).not.toContain(cur);
+    expect(await holds(cur)).toEqual([`${n}/0`]);
+    expect(await reg(d, "o", cur, n)).toBe(`${cur}-2`);
     // That was the 10th change: the next reopen keeps its name.
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
     expect(await reg(d, "a", uniq("Reo3"), n)).toBe(b);
@@ -1586,8 +1615,8 @@ describe("OpenBus #451: a move or global flip keeps chosen former names reserved
     }
     left.pop();
     expect(await reg(d, "a", cur, n2)).toBe(cur);
-    // The move counts nothing (the name did not change)...
-    expect(await log(cur)).toBe(LIMITS.maxFormerNames);
+    // The move counts once (OpenBus #451 review: every scope change counts)...
+    expect(await log(cur)).toBe(LIMITS.maxFormerNames + 1);
     // ...and the five reservations still fill the room.
     expect(await rename(d, "a", uniq("Sixth"))).toMatchObject({
       type: "error",
@@ -1625,19 +1654,25 @@ describe("OpenBus #451: a move or global flip keeps chosen former names reserved
 
 describe("OpenBus #451 nits", () => {
   it("a reopen de-collided from its own name counts nothing (N1)", async () => {
+    const t0 = Date.now() + 65 * GRACE;
+    await setClock(t0);
     const d = await at();
     const n = ns("rn");
     const dup = uniq("Dup");
     await reg(d, "a", dup, n);
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
-    expect(await reg(d, "o", dup, n)).toBe(dup);
-    expect(await reg(d, "a", dup, n)).toBe(`${dup}-2`);
+    // OpenBus #451: the close holds the name for the grace; then another
+    // takes it.
+    expect(await reg(d, "o", dup, n)).toBe(`${dup}-2`);
+    await setClock(t0 + GRACE);
+    expect(await reg(d, "o2", dup, n)).toBe(dup);
+    expect(await reg(d, "a", dup, n)).toBe(`${dup}-3`);
     const log = await inHub(
       (_, st) =>
         st.storage.sql
           .exec(
             "select count(*) as n from rename_rl r join agents a on a.id = r.agent_id where a.name = ?",
-            `${dup}-2`,
+            `${dup}-3`,
           )
           .one().n,
     );
@@ -1777,7 +1812,7 @@ describe("OpenBus #451 review of 8038558", () => {
     await reg(d, "a", mine, n1);
     expect(await reg(d, "c", mine, n2)).toBe(mine);
     expect(await reg(d, "a", mine, n2)).toBe(`${mine}-2`);
-    expect(await formerRows(`${mine}-2`)).toEqual([mine]);
+    expect(await holds(mine)).toEqual([`${n1}/0`]);
     expect(await reg(d, "x", mine, n1)).toBe(`${mine}-2`);
     d.close();
   });
@@ -1853,6 +1888,346 @@ describe("OpenBus #451 review of 35017e2", () => {
     expect(rc.state).toBe("pending");
     expect(rc.to_name).toBeUndefined();
     expect((await delivered(d, rc.msg_id)).to_ref).toBe("c");
+    d.close();
+  });
+});
+
+describe("OpenBus #451: a session leaving a namespace holds its name there for 1 h", () => {
+  for (const how of ["agent_down", "sessions", "revoke"] as const)
+    it(`a close by ${how}: a stranger gets -2 and mail is refused, for the hour; then the name is free`, async () => {
+      const t0 = Date.now() + 100 * GRACE + seq * 1000;
+      await setClock(t0);
+      const d = await at();
+      const n = ns("lv");
+      await reg(d, "s", uniq("Sender"), n);
+      const v = how === "revoke" ? await at() : d;
+      const mine = uniq("Mine");
+      await reg(v, "a", mine, n);
+      if (how === "agent_down")
+        d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+      else if (how === "sessions")
+        d.send({
+          v: 1,
+          id: id("c"),
+          type: "sessions",
+          open: [],
+          closed: ["a"],
+        });
+      else {
+        const mid = await inHub(
+          (_, st) =>
+            st.storage.sql
+              .exec("select machine_id as m from agents where name = ?", mine)
+              .one().m as string,
+        );
+        expect(await (await hubOf()).revokeMachine(mid)).toBe(true);
+      }
+      expect(await reg(d, "x", mine, n)).toBe(`${mine}-2`);
+      // Never delivered to the stranger: the closed name's own refusal.
+      expect(await send(d, "s", mine)).toMatchObject({
+        state: "refused",
+        reason: how === "revoke" ? "revoked" : "closed",
+      });
+      expect(await holds(mine)).toEqual([`${n}/0`]);
+      // The alarm purges the hold at the hour; then the name is free.
+      await setClock(t0 + GRACE);
+      await alarmsUntil(async () => (await holds(mine)).length === 0);
+      expect(await holds(mine)).toEqual([]);
+      expect(await reg(d, "y", mine, n)).toBe(mine);
+      d.close();
+      if (v !== d) v.close();
+    });
+
+  it("a close arms the alarm for the hold's end", async () => {
+    const t0 = Date.now() + 120 * GRACE;
+    await setClock(t0);
+    const d = await at();
+    const n = ns("lv");
+    await reg(d, "a", uniq("Arm"), n);
+    await inHub((_, st) => st.storage.deleteAlarm());
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+    await reg(d, "b", uniq("Other"), n);
+    const t = await inHub((_, st) => st.storage.getAlarm());
+    expect(t).not.toBeNull();
+    expect(t as number).toBeLessThanOrEqual(t0 + GRACE);
+    d.close();
+  });
+
+  it("a reopen in the same scope takes its held name back; its former names in grace stayed reserved and resolve again", async () => {
+    const t0 = Date.now() + 130 * GRACE;
+    await setClock(t0);
+    const d = await at();
+    const n = ns("lv");
+    await reg(d, "s", uniq("Sender"), n);
+    const old = uniq("Old");
+    await reg(d, "a", old, n);
+    const mine = uniq("Mine");
+    await renamed(d, "a", mine);
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+    // The chosen former name stays reserved after the close, resolving to no one.
+    expect(await reg(d, "x", old, n)).toBe(`${old}-2`);
+    expect(await send(d, "s", old)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    expect(await reg(d, "a", mine, n)).toBe(mine);
+    expect(await holds(mine)).toEqual([]);
+    const rc = await send(d, "s", old);
+    expect(rc).toMatchObject({ state: "pending", to_name: mine });
+    expect(
+      row(await list(d, "s"), mine)?.former_names?.map((f) => f.name),
+    ).toEqual([old]);
+    d.close();
+  });
+
+  it("a reopen under another name leaves the old one held, never resolving to it", async () => {
+    const d = await at();
+    const n = ns("lv");
+    await reg(d, "s", uniq("Sender"), n);
+    const mine = uniq("Mine");
+    await reg(d, "a", mine, n);
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+    const next = uniq("Next");
+    expect(await reg(d, "a", next, n)).toBe(next);
+    expect(await reg(d, "x", mine, n)).toBe(`${mine}-2`);
+    expect(await send(d, "s", mine)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    expect(row(await list(d, "s"), next)?.former_names).toBeUndefined();
+    d.close();
+  });
+
+  it("a same-name move: the old namespace holds it and refuses its mail as unknown_agent; moving back takes it back", async () => {
+    const t0 = Date.now() + 140 * GRACE;
+    await setClock(t0);
+    const d = await at();
+    const n1 = ns("lv");
+    const n2 = ns("lv");
+    await reg(d, "s1", uniq("Sender"), n1);
+    await reg(d, "s2", uniq("Sender"), n2);
+    const mine = uniq("Mine");
+    await reg(d, "a", mine, n1);
+    expect(await reg(d, "a", mine, n2)).toBe(mine);
+    expect(await reg(d, "x", mine, n1)).toBe(`${mine}-2`);
+    expect(await send(d, "s1", mine)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    const rc = await send(d, "s2", mine);
+    expect(rc.state).toBe("pending");
+    expect((await delivered(d, rc.msg_id)).to_ref).toBe("a");
+    // Moving back takes it back (and holds it in n2 in turn).
+    expect(await reg(d, "a", mine, n1)).toBe(mine);
+    expect(await holds(mine)).toEqual([`${n2}/0`]);
+    expect(await reg(d, "y", mine, n2)).toBe(`${mine}-2`);
+    await setClock(t0 + GRACE);
+    expect(await reg(d, "z", mine, n2)).toBe(mine);
+    d.close();
+  });
+
+  it("a -2 move holds the old name, and it never resolves, even once the agent is back in that namespace", async () => {
+    const d = await at();
+    const n1 = ns("lv");
+    const n2 = ns("lv");
+    await reg(d, "s1", uniq("Sender"), n1);
+    const mine = uniq("Mine");
+    await reg(d, "a", mine, n1);
+    expect(await reg(d, "c", mine, n2)).toBe(mine);
+    expect(await reg(d, "a", mine, n2)).toBe(`${mine}-2`);
+    expect(await holds(mine)).toEqual([`${n1}/0`]);
+    const back = uniq("Back");
+    expect(await reg(d, "a", back, n1)).toBe(back);
+    expect(await reg(d, "x", mine, n1)).toBe(`${mine}-2`);
+    expect(await send(d, "s1", mine)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    expect(row(await list(d, "s1"), back)?.former_names).toBeUndefined();
+    d.close();
+  });
+
+  it("a -2 move with no room (rename_kept) holds the old name too", async () => {
+    const d = await at();
+    const n1 = ns("lv");
+    const n2 = ns("lv");
+    await reg(d, "s1", uniq("Sender"), n1);
+    await reg(d, "a", uniq("Lim"), n1);
+    let cur = "";
+    for (let i = 0; i < LIMITS.maxFormerNames; i++) {
+      cur = uniq(`R${i}`);
+      await renamed(d, "a", cur);
+    }
+    expect(await reg(d, "c", cur, n2)).toBe(cur);
+    expect(await reg(d, "a", cur, n2)).toBe(`${cur}-2`);
+    expect(await reg(d, "x", cur, n1)).toBe(`${cur}-2`);
+    expect(await send(d, "s1", cur)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    d.close();
+  });
+
+  it("a same-name global flip holds the name in the scope left", async () => {
+    const t0 = Date.now() + 150 * GRACE;
+    await setClock(t0);
+    const d = await at();
+    const n1 = ns("lv");
+    const n2 = ns("lv");
+    await reg(d, "s2", uniq("Sender"), n2);
+    const g = uniq("Glob");
+    await reg(d, "a", g, n1, { global: true });
+    expect(await reg(d, "a", g, n1)).toBe(g);
+    expect(await holds(g)).toEqual([`${n1}/1`]);
+    expect(await reg(d, "x", g, n2)).toBe(`${g}-2`);
+    expect(await send(d, "s2", g)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    // Back to global takes it back.
+    expect(await reg(d, "a", g, n1, { global: true })).toBe(g);
+    expect(await holds(g)).toEqual([`${n1}/0`]);
+    d.close();
+  });
+
+  it("a global's unscoped send is ambiguous across a live name and a closed agent's held one", async () => {
+    const d = await at();
+    const x = ns("lv");
+    const y = ns("lv");
+    const z = ns("lv");
+    const alice = uniq("alice");
+    await reg(d, "a", alice, x);
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+    expect(await reg(d, "c", alice, y)).toBe(alice);
+    await reg(d, "g", uniq("G"), z, { global: true });
+    expect(await send(d, "g", alice)).toMatchObject({
+      state: "refused",
+      reason: "ambiguous",
+    });
+    // Scoped to y it resolves.
+    expect((await send(d, "g", alice, y)).state).toBe("pending");
+    d.close();
+  });
+
+  it("a close drops default former names, as a move does", async () => {
+    const d = await at();
+    const n = ns("lv");
+    await reg(d, "s", uniq("Sender"), n);
+    const minted = await reg(d, "a", uniq("pi"), n, { kind: "default" });
+    const c = uniq("Chosen");
+    await renamed(d, "a", c);
+    expect(await formerRows(c)).toEqual([minted]);
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+    expect(await reg(d, "a", c, n)).toBe(c);
+    expect(await formerRows(c)).toEqual([]);
+    expect(await send(d, "s", minted)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    d.close();
+  });
+
+  it("held rows never crowd out default former names from the per-agent cap", async () => {
+    const d = await at();
+    const [n1, n2, n3] = [ns("lv"), ns("lv"), ns("lv")];
+    const base = uniq("pi");
+    const m0 = await reg(d, "a", base, n1, { kind: "default" });
+    expect(await reg(d, "a", base, n2, { kind: "default" })).toBe(m0);
+    expect(await reg(d, "a", base, n3, { kind: "default" })).toBe(m0);
+    expect(await holds(m0)).toHaveLength(2);
+    let cur = m0;
+    for (let i = 0; i < LIMITS.maxFormerNames; i++)
+      cur = (await renamed(d, "a", uniq("pi"), "default")).bus_name;
+    expect(await formerRows(cur)).toHaveLength(LIMITS.maxFormerNames);
+    d.close();
+  });
+
+  it("no hold is dropped before its hour, and holds never fill the room", async () => {
+    const d = await at();
+    const mine = uniq("Hop");
+    const spaces = Array.from({ length: LIMITS.maxFormerNames + 2 }, () =>
+      ns("lv"),
+    );
+    await reg(d, "a", mine, spaces[0] as string);
+    for (const s of spaces.slice(1))
+      expect(await reg(d, "a", mine, s)).toBe(mine);
+    expect(await holds(mine)).toEqual(spaces.slice(0, -1).map((s) => `${s}/0`));
+    for (const s of spaces.slice(0, -1))
+      expect(await reg(d, id("x"), mine, s)).toBe(`${mine}-2`);
+    // Holds are bounded by the rename limit, not the room: an in-place
+    // rename still works.
+    const next = uniq("Next");
+    expect((await renamed(d, "a", next)).bus_name).toBe(next);
+    d.close();
+  });
+
+  it("the 11th scope change in an hour is kept: the agent stays reachable in its old scope (move_kept)", async () => {
+    const t0 = Date.now() + 160 * GRACE;
+    await setClock(t0);
+    const d = await at();
+    const mine = uniq("Hop");
+    const spaces = Array.from({ length: LIMITS.renamesPerHour + 2 }, () =>
+      ns("lv"),
+    );
+    await reg(d, "a", mine, spaces[0] as string);
+    for (const s of spaces.slice(1, -1))
+      expect(await reg(d, "a", mine, s)).toBe(mine);
+    const last = spaces[spaces.length - 2] as string;
+    const beyond = spaces[spaces.length - 1] as string;
+    await reg(d, "s", uniq("Sender"), last);
+    await reg(d, "t", uniq("Sender"), beyond);
+    // Kept: agent_ok says the name; the agent is still in `last`.
+    expect(await reg(d, "a", mine, beyond)).toBe(mine);
+    expect(await holds(mine)).toHaveLength(LIMITS.renamesPerHour);
+    const rc = await send(d, "s", mine);
+    expect(rc.state).toBe("pending");
+    expect((await delivered(d, rc.msg_id)).to_ref).toBe("a");
+    expect(await send(d, "t", mine)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    // A flip is a scope change too, kept the same way.
+    expect(await reg(d, "a", mine, last, { global: true })).toBe(mine);
+    expect(await send(d, "t", mine)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    // A rolling hour later the move goes through.
+    await setClock(t0 + GRACE + 1);
+    expect(await reg(d, "a", mine, beyond)).toBe(mine);
+    expect((await send(d, "t", mine)).state).toBe("pending");
+    d.close();
+  });
+
+  it("a reopen in another scope counts too, and is kept at the limit", async () => {
+    const d = await at();
+    const n1 = ns("lv");
+    const n2 = ns("lv");
+    await reg(d, "s1", uniq("Sender"), n1);
+    await reg(d, "a", uniq("Reo"), n1);
+    const cur = await churn(d, "a", LIMITS.renamesPerHour);
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+    expect(await reg(d, "a", cur, n2)).toBe(cur);
+    const rc = await send(d, "s1", cur);
+    expect(rc.state).toBe("pending");
+    expect((await delivered(d, rc.msg_id)).to_ref).toBe("a");
+    d.close();
+  });
+
+  it("a close after many moves keeps every hold", async () => {
+    const d = await at();
+    const mine = uniq("Hop");
+    const spaces = Array.from({ length: LIMITS.maxFormerNames + 3 }, () =>
+      ns("lv"),
+    );
+    await reg(d, "a", mine, spaces[0] as string);
+    for (const s of spaces.slice(1))
+      expect(await reg(d, "a", mine, s)).toBe(mine);
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+    await reg(d, "z", uniq("Sync"), spaces[0] as string);
+    expect(await holds(mine)).toEqual(spaces.map((s) => `${s}/0`));
+    for (const s of spaces)
+      expect(await reg(d, id("x"), mine, s)).toBe(`${mine}-2`);
     d.close();
   });
 });

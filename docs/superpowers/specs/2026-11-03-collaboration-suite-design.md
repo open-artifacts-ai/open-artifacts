@@ -274,7 +274,8 @@ say so.
 ### Lasting mailboxes
 
 Today (OB `packages/shared/src/limits.ts`): mail expires after 1 h, 50 per
-inbox, names freed on close, and sends to a closed session are refused.
+inbox, names freed on close (since OpenBus #451, held for 1 h in the scope
+left, with no forwarding), and sends to a closed session are refused.
 
 Fast follow:
 
