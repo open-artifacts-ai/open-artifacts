@@ -15,6 +15,11 @@ const seg = (s: string): string => {
  * to instance). Everything is on the instance origin.
  */
 export const BUS_ROUTES = {
+  /**
+   * The member's bus page (Machines and share notices). The client prints it
+   * after sign-in as where to revoke this machine.
+   */
+  page: "/bus",
   /** `POST`, no auth: starts the device flow. Body `DeviceCodeRequestSchema`. */
   device: "/bus/device",
   /** `POST`, no auth: polls one device code. Body `DeviceTokenRequestSchema`. */
