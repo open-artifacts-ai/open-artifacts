@@ -39,6 +39,8 @@ export const SHAPE = {
   artifacts: 300_000,
   versions: 750_000, // 1 to 4 per artifact, 2.5 on average
   shares: 200_000,
+  follows: 50_000,
+  share_notice_agents: 5_000,
   artifact_search: 300_000, // one per live artifact (rowid = the artifact's)
   reserved_artifacts: 1_000,
   uploads: 100_000,
@@ -377,6 +379,36 @@ export const RULES: Record<string, Rule> = {
         email: c.rand() < 0.8 && u ? u.email : `ext${i}@outside${i % 13}.org`,
         role: c.rand() < 0.7 ? "viewer" : "editor",
         created_by: a.owner,
+        created_at: c.time(),
+      };
+    },
+  },
+  // #1292: an agent address follows an artifact; i keeps the key unique.
+  follows: {
+    rows: (c) => c.count("follows"),
+    row(i, c) {
+      const a = c.artifacts[(i * 13) % c.artifacts.length];
+      const u = c.users[(i * 48271) % c.users.length];
+      if (!a || !u) return null;
+      return {
+        user_id: u.id,
+        artifact_id: a.id,
+        namespace: `github.com/org${i % 17}/repo${i % 5}`,
+        agent_name: `agent-${i}`,
+        created_at: c.time(),
+        last_notice_at: c.rand() < 0.5 ? c.time() : null,
+      };
+    },
+  },
+  share_notice_agents: {
+    rows: (c) => c.count("share_notice_agents"),
+    row(i, c) {
+      const u = c.users[(i * 104729) % c.users.length];
+      if (!u) return null;
+      return {
+        user_id: u.id,
+        namespace: `github.com/org${i % 17}/repo${i % 5}`,
+        agent_name: `agent-${i}`,
         created_at: c.time(),
       };
     },
