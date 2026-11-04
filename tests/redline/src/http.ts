@@ -422,7 +422,10 @@ export async function publishMarker(
   pat: Cred,
   marker: string,
 ): Promise<string> {
-  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra (never retried).
+  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra. retryFresh: a new
+  // private marker artifact with a random title; callers use only its id and
+  // marker, and nothing lists or counts markers on their own install, so one
+  // retry after a reused-socket reset can at worst leave a spare (#1133).
   const { res, text } = await setupFetch(
     t.name,
     new Request(
@@ -437,6 +440,7 @@ export async function publishMarker(
         }),
       }),
     ),
+    { retryFresh: "new-artifact" },
   );
   if (res.status < 200 || res.status > 299)
     throw new HttpError(`${t.name} seed marker`, res, text);

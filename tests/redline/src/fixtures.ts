@@ -40,15 +40,18 @@ export function apiReq(
 /**
  * Sends and reads the body; throws HttpError (status, body hash) unless 2xx.
  * With `setupOn` (the install's name), a setup publish: bounded at
- * SETUP_PUBLISH_MS, and a timeout is an InfraError, never retried.
+ * SETUP_PUBLISH_MS, and a timeout is an InfraError, never retried. With
+ * `retryFresh`, setupFetch's opt-in (a new throwaway artifact only).
  */
 export async function call(
   req: Request,
   what: string,
-  o: { setupOn?: string } = {},
+  o: { setupOn?: string; retryFresh?: "new-artifact" } = {},
 ): Promise<{ res: Response; text: string }> {
   if (o.setupOn !== undefined) {
-    const { res, text } = await setupFetch(o.setupOn, req);
+    const { res, text } = await setupFetch(o.setupOn, req, {
+      ...(o.retryFresh ? { retryFresh: o.retryFresh } : {}),
+    });
     if (res.status < 200 || res.status > 299)
       throw new HttpError(what, res, text);
     return { res, text };
@@ -110,7 +113,10 @@ export async function createThrowaway(
         : {}),
     }),
     `${t.name} create throwaway`,
-    { setupOn: t.name },
+    // retryFresh: a new throwaway with a random marker title; callers use
+    // only its id and marker and never list or count artifacts, so one retry
+    // after a reused-socket reset can at worst leave a spare (#1133).
+    { setupOn: t.name, retryFresh: "new-artifact" },
   );
   const id = (
     parseJson(res, text, `${t.name} create throwaway`) as {

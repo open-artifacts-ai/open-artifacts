@@ -331,7 +331,9 @@ async function share(s: Side, email: string, id = s.markerId) {
 
 /** A private html artifact on `s` that declares the db capability (data API). */
 async function publishDb(s: Side): Promise<string> {
-  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra (never retried).
+  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra. retryFresh: a new
+  // throwaway (random title) used only by its id, so one retry after a
+  // reused-socket reset can at worst leave a spare (#1133).
   const { res, text } = await setupFetch(
     s.t.name,
     new Request(
@@ -347,6 +349,7 @@ async function publishDb(s: Side): Promise<string> {
         }),
       }),
     ),
+    { retryFresh: "new-artifact" },
   );
   if (res.status < 200 || res.status > 299)
     throw new HttpError(`${s.t.name} publish db artifact`, res, text);
