@@ -11,9 +11,11 @@ import {
   type InstallState,
   type JobKind,
   slugError,
+  TEST_MEMBER,
   TierSchema,
   type TransitionActor,
   type TransitionFrom,
+  testMemberOwns,
 } from "@oa/provisioning-contract";
 import { StepRefusal } from "./errors.js";
 import { transient } from "./provisioner.js";
@@ -92,6 +94,12 @@ export function checkOidcScope(
   if (env !== "staging") throw refused("OIDC is staging only");
   if (!install.slug?.startsWith("rl-") || !install.testHooks)
     throw refused("OIDC acts only on rl- test installs");
+  // The staging test member's workflow (authz TEST_MEMBER): one install only.
+  if (
+    job.actor_key.endsWith(TEST_MEMBER.actorSuffix) &&
+    !testMemberOwns({ slug: install.slug, testHooks: install.testHooks })
+  )
+    throw refused("the test member acts only on its own install");
 }
 
 /** The kind is allowed from `from` for the job's actor (TRANSITIONS). */

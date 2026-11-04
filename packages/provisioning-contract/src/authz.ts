@@ -183,9 +183,29 @@ export type AuthzPrincipal = {
   /**
    * OIDC only: which pinned workflow minted the JWT. "test-admin" may call
    * R28 and nothing else; any other OIDC caller never calls R28 (#1053).
+   * "test-member" may call only TEST_MEMBER.routes, on TEST_MEMBER.slug.
    */
-  oidcWorkflow?: "redline" | "test-admin";
+  oidcWorkflow?: OidcWorkflow;
 } | null;
+/** The pinned workflows an OIDC JWT may come from (authorize). */
+export type OidcWorkflow = "redline" | "test-admin" | "test-member";
+
+/**
+ * The staging test member's workflow (staging-test-member.yml): R26 on the
+ * one install `rl-agents` (mint or revoke), R15 to read that job's sealed
+ * result, and R2 to find the install's id by its slug. Every other route is
+ * 403, and reach is that one slug (model.ts reachSql and inReach; the
+ * provisioner's checkOidcScope holds its jobs to it too).
+ */
+export const TEST_MEMBER = {
+  slug: "rl-agents",
+  routes: ["R2", "R15", "R26"] as readonly RouteId[],
+  /** Suffix of its actorKey and rateKey (`oidc:<repository_id>:test-member`). */
+  actorSuffix: ":test-member",
+} as const;
+/** The test member's reach: exactly `rl-agents`, with test hooks. */
+export const testMemberOwns = (i: { slug: string; testHooks: boolean }) =>
+  i.slug === TEST_MEMBER.slug && i.testHooks === true;
 export type AuthzDecision =
   | { ok: true; reach: "all" | "own" }
   | { ok: false; code: "unauthenticated" | "forbidden" };
@@ -209,6 +229,11 @@ export function authorize(
   if (principal?.kind === "oidc") {
     const testAdmin = principal.oidcWorkflow === "test-admin";
     if (testAdmin !== (route === "R28"))
+      return { ok: false, code: "forbidden" };
+    if (
+      principal.oidcWorkflow === "test-member" &&
+      !TEST_MEMBER.routes.includes(route)
+    )
       return { ok: false, code: "forbidden" };
   }
   const rule = AUTHZ[route][principal ? principal.kind : "none"];

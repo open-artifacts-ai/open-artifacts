@@ -608,6 +608,48 @@ describe("suspend, resume, delete, restore (5.5, 5.6)", () => {
     expect(w.status(rl.installId)?.state).toBe("active");
   });
 
+  it("the staging test member's jobs act only on rl-agents (TEST_MEMBER)", async () => {
+    const tm = { actor: "oidc" as const, actorKey: "oidc:42:test-member" };
+    const other = await active({
+      slug: "rl-y",
+      actor: "oidc",
+      testHooks: true,
+    });
+    const r = await manage("suspend", other.installId, {
+      ...tm,
+      args: { reason: "r" },
+    });
+    expect(r.job?.error_code).toBe("invalid_state");
+    expect(logged()).toContain(
+      '"detail":"the test member acts only on its own install"',
+    );
+    expect(w.status(other.installId)?.state).toBe("active");
+    // Red-line's key on the same install is unchanged.
+    expect(
+      (
+        await manage("suspend", other.installId, {
+          actor: "oidc",
+          actorKey: "oidc:42",
+          args: { reason: "r" },
+        })
+      ).error,
+    ).toBeNull();
+    const mine = await active({
+      slug: "rl-agents",
+      actor: "oidc",
+      testHooks: true,
+    });
+    expect(
+      (
+        await manage("suspend", mine.installId, {
+          ...tm,
+          args: { reason: "r" },
+        })
+      ).error,
+    ).toBeNull();
+    expect(w.status(mine.installId)?.state).toBe("suspended");
+  });
+
   it("a token may not run an admin-only kind (TRANSITIONS)", async () => {
     const s = await active({ slug: "tokco" });
     const r = await manage("release_lease", s.installId, { actor: "token" });
