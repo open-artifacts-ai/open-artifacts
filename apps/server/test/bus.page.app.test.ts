@@ -17,14 +17,22 @@ import { fetchAndWait } from "./helpers.js";
 const APP = "http://app.localhost";
 const app = createApp();
 
-const get = (path: string, cookie: string | null) =>
+/** BUS_HUB unbound: the bus is off (services/bus.ts busOn). */
+const UNBOUND = { ...env, BUS_HUB: undefined } as typeof env;
+
+const get = (path: string, cookie: string | null, e: typeof env = env) =>
   fetchAndWait(
     app,
     new Request(`${APP}${path}`, { headers: cookie ? { cookie } : {} }),
-    env,
+    e,
   );
 
-const post = (path: string, cookie: string, fields: [string, string][]) => {
+const post = (
+  path: string,
+  cookie: string,
+  fields: [string, string][],
+  e: typeof env = env,
+) => {
   const body = new URLSearchParams(fields).toString();
   return fetchAndWait(
     app,
@@ -37,7 +45,7 @@ const post = (path: string, cookie: string, fields: [string, string][]) => {
       },
       body,
     }),
-    env,
+    e,
   );
 };
 
@@ -66,6 +74,52 @@ async function revokeThroughPage(cookie: string, id: string) {
 }
 
 describe("/bus on the real app", () => {
+  it("BUS_HUB unbound: every /bus page route is the bus-off 404, and a valid token revokes and saves nothing", async () => {
+    const m = await member();
+    const { id } = await machine("off-box", m.userId);
+    const off = async (r: Response) => {
+      expect(r.status).toBe(404);
+      expect(await r.text()).toContain("There is nothing here.");
+    };
+    // Signed out too: the gate comes before the sign-in redirect, as /bus/approve.
+    await off(await get("/bus", null, UNBOUND));
+    await off(await get("/bus", m.cookie, UNBOUND));
+    await off(await get(`/bus/machines/${id}/revoke`, m.cookie, UNBOUND));
+    const rt = await formCsrf(env, "bus-revoke", m.userId, id);
+    await off(
+      await post(
+        `/bus/machines/${id}/revoke`,
+        m.cookie,
+        [["csrf", rt]],
+        UNBOUND,
+      ),
+    );
+    const st = await formCsrf(
+      env,
+      "bus-share-notices",
+      m.userId,
+      "share-notices",
+    );
+    await off(
+      await post(
+        "/bus/share-notices",
+        m.cookie,
+        [
+          ["csrf", st],
+          [
+            "address",
+            encodeAddress({ namespace: "test.local/off", name: "a" }),
+          ],
+        ],
+        UNBOUND,
+      ),
+    );
+    expect(await revokedAt(id)).toBeNull();
+    expect(await getShareNotices(env, m.userId)).toEqual([]);
+    // The same member and machine with the bus on: the page loads.
+    expect((await get("/bus", m.cookie)).status).toBe(200);
+  });
+
   it("signed out: GET /bus is 302 to sign-in with next", async () => {
     const r = await get("/bus", null);
     expect(r.status).toBe(302);

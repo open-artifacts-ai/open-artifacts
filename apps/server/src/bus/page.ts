@@ -21,12 +21,13 @@ import {
 } from "../http/pages.js";
 import { logError } from "../log.js";
 import type { AppType } from "../routes/index.js";
-import type { BusView } from "../services/bus.js";
+import { type BusView, busOn } from "../services/bus.js";
 import {
   BUS_PAGE_TEMPLATE,
   BUS_REVOKE_TEMPLATE,
   BUS_SNIPPETS,
 } from "./page-template.js";
+import { busOff } from "./routes.js";
 
 // The member's /bus page (#1300): their machines (revoke) and share notices,
 // server-rendered from Design's design/screens/bus*.html. No script runs
@@ -368,9 +369,9 @@ const backError = (code: ErrorCode) => back(`error=${code}`);
 
 type Signed = { user: Member } | { response: Response };
 
-/** A GET's caller: 404 on hosted, 401 for a token, a sign-in redirect without a session. */
+/** A GET's caller: 404 while the bus is off, 401 for a token, a sign-in redirect without a session. */
 function getCaller(c: Context<AppEnv>): Signed {
-  if (c.env.HOSTED === "1") return { response: notFoundPage() };
+  if (!busOn(c.env)) return { response: busOff() };
   if (c.var.tokenId) return { response: tokenRefused() };
   const user = sessionUser(c);
   if (!user) {
@@ -383,13 +384,14 @@ function getCaller(c: Context<AppEnv>): Signed {
 
 type Posted = { user: Member; form: FormData } | { response: Response };
 
-/** A POST's caller and form: hosted, cross-site, token, session, size, then the form's CSRF. */
+/** A POST's caller and form: bus off, cross-site, token, session, size, then the form's CSRF. */
 async function postCaller(
   c: Context<AppEnv>,
   scope: string,
   handle: string,
 ): Promise<Posted> {
-  if (c.env.HOSTED === "1") return { response: notFoundPage() };
+  // As every #1291 bus route: BUS_HUB unbound or a hosted install is 404.
+  if (!busOn(c.env)) return { response: busOff() };
   // No sameOrigin(): the page's no-referrer policy makes browsers send
   // `Origin: null`. The signed token and the SameSite=Lax cookie cover CSRF.
   if (c.req.header("sec-fetch-site") === "cross-site")

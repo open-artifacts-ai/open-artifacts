@@ -263,7 +263,7 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // #1300 the member's server-rendered /bus page (bus/page.ts): the handler
   // reads the cookie session (a token is 401, no session redirects to
   // sign-in), checks canConnect or revoke-only, and every POST checks its
-  // form token. 404 on a hosted install.
+  // form token. 404 while the bus is off (busOn false), as the routes above.
   "GET /bus": {
     public:
       "the member's bus page; redirects to sign-in, checks canConnect or revoke-only",
