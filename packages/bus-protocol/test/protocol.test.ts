@@ -721,6 +721,16 @@ describe("status frames, and no card frames", () => {
         aud: "https://oa.example.com",
         nonce: "short",
       },
+      // A well-formed OpenBus card request, and the bare frame type.
+      {
+        v: 1,
+        id,
+        type: "card_request",
+        from_ref: "s1",
+        aud: "https://oa.example.com",
+        nonce: "n".repeat(16),
+      },
+      { v: 1, id, type: "card_request", from_ref: "s1" },
     ];
     for (const f of bad) expect(okc(JSON.stringify(f))).toBeNull();
     expect(
