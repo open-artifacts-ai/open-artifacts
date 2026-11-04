@@ -4,6 +4,7 @@ import {
   ADMIN_TOOL_NAMES,
   type InstallDetail,
   type Job,
+  JobSchema,
   type Release,
   TOKEN_SCOPES,
 } from "@oa/provisioning-contract";
@@ -96,6 +97,18 @@ const unproven = (reason: string): Outcome => ({
 /** A probe failure: the message is safe for a public report. */
 export class ProbeFail extends Error {
   override name = "ProbeFail";
+}
+
+/** settledMode's timeout: the inventory never read `want`. */
+export class ModeNotSettled extends ProbeFail {
+  override name = "ModeNotSettled";
+  readonly mode: string | null;
+  constructor(what: string, mode: string | null, want: string | null) {
+    super(
+      `${what}: inventory mode is ${mode}, want ${want}, after ${HOSTS_SETTLE_MS / 1000} s`,
+    );
+    this.mode = mode;
+  }
 }
 
 /** Poll cadence and bounds (12.2: paused and resumed pages within 120 s). */
@@ -371,10 +384,7 @@ export class Run {
     for (;;) {
       const { mode } = await this.hostMode(host);
       if (mode === want) return;
-      if (this.io.now() >= end)
-        throw new ProbeFail(
-          `${what}: inventory mode is ${mode}, want ${want}, after ${HOSTS_SETTLE_MS / 1000} s`,
-        );
+      if (this.io.now() >= end) throw new ModeNotSettled(what, mode, want);
       await this.io.wait(POLL_MS);
     }
   }
@@ -445,6 +455,97 @@ function expect(r: Res, status: number, what: string, code?: string): void {
     throw new ProbeFail(
       `${what}: want ${status}${code ? ` ${code}` : ""}, got ${desc(r)}`,
     );
+}
+
+/** Dispatch's HOSTS read cacheTtl (apps/dispatch/src/index.ts: cacheTtl 60). */
+export const DISPATCH_HOSTS_TTL_MS = 60_000;
+export const ISSUE_1326 =
+  "https://github.com/open-artifacts-ai/open-artifacts/issues/1326";
+
+/**
+ * P22 (#1417): the app host served 200 after the restore, but the inventory
+ * kept reading another mode for HOSTS_SETTLE_MS. Two causes look alike: KV
+ * staleness at the inventory's location (its read is cached too, and the
+ * probe's polling keeps that cache hot), or a late "closed" write landing
+ * after the restore's "serving" (the lease race, #1326).
+ *
+ * The app host stands in for both hosts (one write sets both HOSTS keys).
+ * The first re-check runs no earlier than 60 s after the last 200, which in
+ * the probe has already passed (the settle took 120 s), so it reads whatever
+ * dispatch's cache holds now. The second runs DISPATCH_HOSTS_TTL_MS after the
+ * first, so that cache has turned over at least once in between: a "closed"
+ * written before the first re-check shows as a 503 by the second. Infra needs
+ * 200 both times, no delete or suspend job accepted after the restore (R14),
+ * the delete job itself (R15, parsed with JobSchema) with no failed attempt
+ * recorded and finished before the restore was accepted, and the restore job
+ * with no error code (lease_held above all). A job's attempt counter resets
+ * when a step succeeds, so it can't show the delete ran once. Anything else,
+ * or an unreadable R14 or R15, fails linking #1326. No retry; the waits are
+ * bounded (at most two TTLs) and go through run.io.wait.
+ *
+ * O can't read the hosts audit rows (R17 gives it its own api rows only), so
+ * nothing here rules a zombie write out for certain: every message names the
+ * install and job ids for an admin's query_audit.
+ */
+export async function servingLag(
+  run: Run,
+  o: {
+    installId: string;
+    appHost: string;
+    /** When the app host last answered 200 after the restore. */
+    lastOk: number;
+    /** The inventory's last mode. */
+    mode: string | null;
+    deleteJobId: string;
+    restore: Job;
+  },
+): Promise<InfraError | ProbeFail> {
+  const left = o.lastOk + DISPATCH_HOSTS_TTL_MS - run.io.now();
+  if (left > 0) await run.io.wait(Math.min(left, DISPATCH_HOSTS_TTL_MS));
+  const since = Math.round((run.io.now() - o.lastOk) / 1000);
+  const pg1 = (await run.page(o.appHost, "/healthz", true)).status;
+  await run.io.wait(DISPATCH_HOSTS_TTL_MS);
+  const pg2 = (await run.page(o.appHost, "/healthz", true)).status;
+  const values = `inventory mode ${o.mode} after ${HOSTS_SETTLE_MS / 1000} s, app host page ${pg1} ${since} s after its last 200 and ${pg2} ${DISPATCH_HOSTS_TTL_MS / 1000} s later`;
+  const audit = `the hosts audit isn't readable by O: query_audit installId ${o.installId} (restore job ${o.restore.id}, delete job ${o.deleteJobId})`;
+  const fail = (why: string) =>
+    new ProbeFail(
+      `P22: can't rule out a late closed write (#1326 ${ISSUE_1326}): ${values}; ${why}; ${audit}`,
+    );
+  const jobs = await run.v1(`/installs/${o.installId}/jobs`, { read: true });
+  if (jobs.status !== 200) return fail(`R14 jobs unreadable (${desc(jobs)})`);
+  const del = await run.v1(`/jobs/${o.deleteJobId}`, { read: true });
+  if (del.status !== 200)
+    return fail(`R15 delete job unreadable (${desc(del)})`);
+  const parsed = JobSchema.safeParse(del.json);
+  if (!parsed.success)
+    return fail(
+      `R15 delete job doesn't parse (${parsed.error.issues.length} issue(s) at ${parsed.error.issues
+        .slice(0, 3)
+        .map((i) => i.path.join(".") || "(root)")
+        .join(", ")})`,
+    );
+  const d = parsed.data;
+  const items = (jobs.json as { items?: Job[] } | undefined)?.items ?? [];
+  const later = items.filter(
+    (j) =>
+      (j.kind === "delete" || j.kind === "suspend") &&
+      j.createdAt > o.restore.createdAt,
+  ).length;
+  const why: string[] = [];
+  if (pg1 !== 200 || pg2 !== 200) why.push("the page isn't 200 both times");
+  if (later) why.push(`${later} delete or suspend job(s) after the restore`);
+  if (d.attempt > 1) why.push(`the delete job shows attempt ${d.attempt}`);
+  if (d.failure != null || d.lastErrorCode != null)
+    why.push("the delete job recorded a failed attempt");
+  if (o.restore.lastErrorCode != null)
+    why.push(`the restore job recorded ${o.restore.lastErrorCode}`);
+  if (d.finishedAt === null || d.finishedAt > o.restore.createdAt)
+    why.push("the delete job didn't finish before the restore was accepted");
+  if (why.length) return fail(why.join(", "));
+  return new InfraError(
+    `P22: KV propagation at the inventory location, most likely: ${values}; no delete or suspend job after the restore, no failed attempt recorded on the delete job, which finished before it, and no error code on the restore job; ${audit}`,
+  );
 }
 
 const ulidish = () => {
@@ -1677,13 +1778,26 @@ export const PROBES: readonly Probe[] = [
         }),
         "P22 restore",
       );
-      await run.done(r.job.id, "P22 restore");
-      await run.within(
-        PAGE_WITHIN_MS,
-        "P22 serving",
-        async () => (await run.page(p.appHost)).status === 200,
-      );
-      await run.settledMode("P22", p.appHost, "serving");
+      const restore = await run.done(r.job.id, "P22 restore");
+      let lastOk = 0;
+      await run.within(PAGE_WITHIN_MS, "P22 serving", async () => {
+        if ((await run.page(p.appHost)).status !== 200) return false;
+        lastOk = run.io.now();
+        return true;
+      });
+      try {
+        await run.settledMode("P22", p.appHost, "serving");
+      } catch (e) {
+        if (!(e instanceof ModeNotSettled)) throw e;
+        throw await servingLag(run, {
+          installId: p.id,
+          appHost: p.appHost,
+          lastOk,
+          mode: e.mode,
+          deleteJobId: d.job.id,
+          restore,
+        });
+      }
       return pass();
     },
   },
