@@ -225,3 +225,94 @@ export function renderApproved(v: ApprovedView): string {
   </div>`,
   );
 }
+
+// ------------------------------------------------- role proposal confirm
+//
+// #1372: the page an AI agent's role proposal links to (bus/role-confirm.ts),
+// in the same layout. It shows the role, its namespace, the holder it
+// displaces and the new one; the member confirms or rejects it. Agent names
+// and role names are bus names chosen on the member's machines: escaped like
+// every value.
+
+export type RoleConfirmView = {
+  instanceHost: string;
+  action: "set" | "repoint" | "clear";
+  namespace: string;
+  name: string;
+  /** The holder it displaces, by current name (null: none). */
+  priorHolderName: string | null;
+  /** True when the role points at an agent whose row is gone (no name). */
+  priorHolderGone: boolean;
+  /** The new holder's current name (set, repoint). */
+  agentName: string | null;
+  /** Minutes until the link expires (at least 1). */
+  minutesLeft: number;
+  userEmail: string;
+  formAction: string;
+  csrf: string;
+  switchUrl: string;
+};
+
+const ROLE_HEADINGS = {
+  set: "Create this role?",
+  repoint: "Re-point this role?",
+  clear: "Remove this role?",
+} as const;
+
+/** The confirm form: what changes, from whom to whom, as whom; Reject or Confirm. */
+export function renderRoleConfirm(v: RoleConfirmView): string {
+  const now =
+    v.action === "set"
+      ? "No role with this name yet"
+      : v.priorHolderName !== null
+        ? v.priorHolderName
+        : v.priorHolderGone
+          ? "An agent that is gone"
+          : "No holder (vacant)";
+  const after =
+    v.action === "clear"
+      ? "Removed. Its name is free again."
+      : (v.agentName ?? "An agent that is gone");
+  const left =
+    v.minutesLeft <= 1
+      ? "This link expires in about a minute."
+      : `This link expires in ${v.minutesLeft} minutes.`;
+  return shell(
+    "Confirm a role change",
+    v.instanceHost,
+    html`<form class="card" method="post" action="${v.formAction}">
+    <input type="hidden" name="csrf" value="${v.csrf}">
+    <h1>${ROLE_HEADINGS[v.action]}</h1>
+    <p>An AI agent in one of your coding sessions asked for this change. Nothing changes unless you confirm it.</p>
+    <ul>
+      <li>${CHECK}<div><b>Role</b><small><span class="wrap">${v.name}</span> in <span class="mono wrap">${v.namespace}</span></small></div></li>
+      <li class="no">${CROSS}<div><b>Now</b><small class="wrap">${now}</small></div></li>
+      <li>${CHECK}<div><b>After</b><small class="wrap">${after}</small></div></li>
+    </ul>
+    <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
+    <div class="note" role="note">${WARN}<span>Messages sent to this role go to its holder at send time. Only confirm a change you asked for. ${left}</span></div>
+    <div class="actions">
+      <button type="submit" name="decision" value="reject">Reject</button>
+      <button type="submit" name="decision" value="confirm" class="primary">Confirm</button>
+    </div>
+  </form>`,
+  );
+}
+
+/** A role proposal's outcome or refusal: a heading, one line, and the /bus link. */
+export function renderRoleDone(v: {
+  instanceHost: string;
+  title: string;
+  message: string;
+  busUrl: string;
+}): string {
+  return shell(
+    v.title,
+    v.instanceHost,
+    html`<div class="card">
+    <h1>${v.title}</h1>
+    <p>${v.message}</p>
+    <p class="muted">Your bus: <a href="${v.busUrl}">${v.busUrl}</a></p>
+  </div>`,
+  );
+}

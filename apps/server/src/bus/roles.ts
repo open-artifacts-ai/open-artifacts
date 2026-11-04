@@ -126,32 +126,41 @@ export function listRoles(
   ).map(roleDto);
 }
 
+/** A role write's refusal (putRole, and a proposal's dry run of it). */
+export type RoleRefusal = Exclude<PutRoleResult, { ok: true }>;
+
+/** The role (namespace, lname), as stored, or null. */
+const roleRow = (
+  sql: SqlStorage,
+  orgId: string,
+  namespace: string,
+  lname: string,
+) =>
+  one<{ id: string; agentId: string | null }>(
+    sql,
+    "select id, agent_id as agentId from roles where org_id = ? and namespace = ? and lname = ?",
+    orgId,
+    namespace,
+    lname,
+  );
+
 /**
- * Sets role (`namespace`, `name`) to `agentId`, or vacates it (null),
- * creating it if needed (a new random id); re-pointing keeps its id, and the
- * stored display name follows the latest call. Refused (nothing written):
- * - invalid (with the field): not a wire namespace, or not a bus name
- *   (reserved names too);
- * - agent_not_open: the agent isn't open, or is neither in `namespace` nor
- *   global;
- * - name_taken: a live agent visible in `namespace` (in it, or a global) has
- *   the name, or a live agent holds it as a chosen former name still in its
- *   grace reserved there (R393b; OpenBus #451: in the scope the name was left
- *   in, formerReservedSql, as nameTaken), any case; or it was minted for an
- *   agent other than `agentId` (OpenBus #446: a minted name is never handed
- *   on, in any scope, so a default former name needs no reservation);
- * - role_limit: `max` roles exist and this would add one.
+ * putRole's checks, writing nothing: ok with the role as stored (null: it
+ * would be created), or the refusal putRole would answer. A proposal
+ * (#1372) runs the same checks when it is made and again, through putRole,
+ * when it is confirmed.
  */
-export function putRole(
+export function checkRole(
   sql: SqlStorage,
   orgId: string,
   namespace: string,
   name: string,
   agentId: string | null,
   now: number,
-  newId: () => string,
   max: number = BUS_ROLE_MAX,
-): PutRoleResult {
+):
+  | { ok: true; existing: { id: string; agentId: string | null } | null }
+  | RoleRefusal {
   if (!WireNamespaceSchema.safeParse(namespace).success)
     return { ok: false, reason: "invalid", field: "namespace" };
   if (!BusNameSchema.safeParse(name).success)
@@ -182,13 +191,7 @@ export function putRole(
     agentId,
   );
   if (taken?.x === 1) return { ok: false, reason: "name_taken" };
-  const existing = one<{ id: string }>(
-    sql,
-    "select id from roles where org_id = ? and namespace = ? and lname = ?",
-    orgId,
-    namespace,
-    lname,
-  );
+  const existing = roleRow(sql, orgId, namespace, lname);
   if (
     existing === null &&
     (one<{ n: number }>(
@@ -198,7 +201,40 @@ export function putRole(
     )?.n ?? 0) >= max
   )
     return { ok: false, reason: "role_limit" };
-  const id = existing?.id ?? newId();
+  return { ok: true, existing };
+}
+
+/**
+ * Sets role (`namespace`, `name`) to `agentId`, or vacates it (null),
+ * creating it if needed (a new random id); re-pointing keeps its id, and the
+ * stored display name follows the latest call. Refused (nothing written,
+ * checkRole):
+ * - invalid (with the field): not a wire namespace, or not a bus name
+ *   (reserved names too);
+ * - agent_not_open: the agent isn't open, or is neither in `namespace` nor
+ *   global;
+ * - name_taken: a live agent visible in `namespace` (in it, or a global) has
+ *   the name, or a live agent holds it as a chosen former name still in its
+ *   grace reserved there (R393b; OpenBus #451: in the scope the name was left
+ *   in, formerReservedSql, as nameTaken), any case; or it was minted for an
+ *   agent other than `agentId` (OpenBus #446: a minted name is never handed
+ *   on, in any scope, so a default former name needs no reservation);
+ * - role_limit: `max` roles exist and this would add one.
+ */
+export function putRole(
+  sql: SqlStorage,
+  orgId: string,
+  namespace: string,
+  name: string,
+  agentId: string | null,
+  now: number,
+  newId: () => string,
+  max: number = BUS_ROLE_MAX,
+): PutRoleResult {
+  const c = checkRole(sql, orgId, namespace, name, agentId, now, max);
+  if (!c.ok) return c;
+  const lname = name.toLowerCase();
+  const id = c.existing?.id ?? newId();
   sql.exec(
     `insert into roles (id, org_id, namespace, name, lname, agent_id, set_at) values (?, ?, ?, ?, ?, ?, ?)
      on conflict (org_id, namespace, lname) do update set name = excluded.name, agent_id = excluded.agent_id, set_at = excluded.set_at`,

@@ -88,6 +88,10 @@ Only an artifact's creator can share it, change its visibility, or delete it.
 
 `artifact_data_get`, `artifact_data_list`, `artifact_data_query`, `artifact_data_set`, `artifact_data_update`, and `artifact_data_delete` read and write an artifact's live-page data. It's the same store the [runtime API](/docs/runtime-api/) uses, so an agent can seed a tracker or read a poll's results.
 
+## Bus roles
+
+`bus_role_propose`: proposes a change to one of your bus role addresses: point a role at one of your open agents by its bus name, or clear it. It changes nothing by itself. It returns a link; you open it in your browser, signed in, and confirm. The link works once and expires after 15 minutes, and no AI agent can confirm it. Offered only on an instance where the bus is on.
+
 ## REST API
 
 `/api/v1/` mirrors these operations for the dashboard and for scripts, with the same tokens.

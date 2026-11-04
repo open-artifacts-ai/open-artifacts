@@ -99,6 +99,8 @@ const SESSION_PATHS = [
   "/bus/approve",
   "/bus/machines/*",
   "/bus/share-notices",
+  // #1372 the role proposal confirm page.
+  "/bus/roles/*",
 ] as const;
 
 // PUT R.upload(id) is authorized by its signature: no session, no CSRF.

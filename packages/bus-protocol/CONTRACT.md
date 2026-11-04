@@ -196,7 +196,19 @@ A role address is a member-set alias in one namespace (`backend-lead`)
 pointing at one agent, by its id, so it follows a rename. It lives in the
 member's BusHub. Only the member sets, re-points, vacates or removes one, in
 the dashboard (Open Artifacts REST, a browser session); no frame sets or
-claims one, so no AI agent can.
+claims one.
+
+- Proposals (#1372): an AI agent acting for the member may propose a change
+  (set, re-point, clear) with the Open Artifacts `/mcp` tool
+  `bus_role_propose`, offered only while the bus is on. It names the new
+  holder by bus name; the hub checks it as the dashboard write (a live agent
+  of this hub, the name rules below) and binds it to that agent's id, the
+  role and the holder it displaces. It changes nothing. The member confirms
+  it on its one-time link (`/bus/roles/confirm/<secret>`, 15 minutes, the
+  hub keeps only the secret's sha256) in a browser session; the hub then
+  applies it with the dashboard's own write, only while the role is still as
+  proposed. No frame, no `/mcp` tool and no PAT, OAuth grant or machine
+  token can confirm one.
 
 - Resolution: a send to a role resolves at send time to its holder, scoped as
   names are (a non-global sender reaches its own namespace's roles; a global

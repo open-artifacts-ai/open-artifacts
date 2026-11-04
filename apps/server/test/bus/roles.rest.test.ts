@@ -82,7 +82,11 @@ describe("roles REST (#1296)", () => {
 
     const list = await api(app, R.busRoles, who.cookie);
     expect(list.status).toBe(200);
-    expect(await list.json()).toEqual({ roles: [role], live: true });
+    expect(await list.json()).toEqual({
+      roles: [role],
+      proposals: [],
+      live: true,
+    });
 
     const vacated = await putRole(who.cookie, {
       namespace: n,
@@ -108,6 +112,7 @@ describe("roles REST (#1296)", () => {
     ).toBe(204);
     expect(await (await api(app, R.busRoles, who.cookie)).json()).toEqual({
       roles: [],
+      proposals: [],
       live: true,
     });
     d.close();
@@ -175,7 +180,7 @@ describe("roles REST (#1296)", () => {
     const { role } = (await set.json()) as { role: BusRole };
     expect(
       await (await api(app, R.busRoles, mallory.who.cookie)).json(),
-    ).toEqual({ roles: [], live: true });
+    ).toEqual({ roles: [], proposals: [], live: true });
     // The member's agent id means nothing in Mallory's hub.
     const steal = await putRole(mallory.who.cookie, {
       namespace: n,
@@ -278,7 +283,11 @@ describe("roles REST (#1296)", () => {
       );
     const list = await call(R.busRoles);
     expect(list.status).toBe(200);
-    expect(await list.json()).toEqual({ roles: [], live: false });
+    expect(await list.json()).toEqual({
+      roles: [],
+      proposals: [],
+      live: false,
+    });
     const put = await call(R.busRoles, "PUT", {
       namespace: "x/y",
       name: "lead",
