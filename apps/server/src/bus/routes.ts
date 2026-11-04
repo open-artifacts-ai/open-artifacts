@@ -87,8 +87,11 @@ const MAX_FORM_BYTES = 8 * 1024;
 export const APPROVE_SCOPE = "bus-approve";
 
 const NO_STORE = { "cache-control": "no-store" };
-/** The approval page. #1319 makes BUS_ROUTES.approve this plain string; switch to it then. */
-export const APPROVE_PATH = "/bus/approve";
+/**
+ * The approval page, shared with the client (`BUS_ROUTES.approve`): the
+ * person types their code there, and no URL ever carries it (RFC 8628 §5.4).
+ */
+export const APPROVE_PATH = BUS_ROUTES.approve;
 
 const COUNTRY = /^[A-Z]{2}$/;
 // Controls, bidi and zero-width characters: they can disguise a name.

@@ -45,14 +45,17 @@ Keepalive is the bare string `ping` / `pong`, never a frame.
 | --- | --- | --- |
 | `POST /bus/device` | none | `DeviceCodeRequestSchema {machine_label?}` -> `DeviceCodeResponseSchema {device_code, user_code, verification_uri, expires_in: 600, interval: 5}` |
 | `POST /bus/device/token` | none | `DeviceTokenRequestSchema {device_code}` -> `DeviceTokenResponseSchema`: `{status: "pending"}`, `{status: "approved", machine_token}`, `{status: "denied"}` or `{status: "expired"}`. Consumed, expired and unknown codes all read `expired`. Polling faster than `interval` is HTTP 429 with `Retry-After`. |
-| `GET/POST /bus/approve/<user_code>` | Open Artifacts session and `canConnect` | The approval page; `ApprovalBodySchema {decision, label?}` |
+| `GET/POST /bus/approve` | Open Artifacts session and `canConnect` | The approval page. The person types the code their terminal shows (RFC 8628 section 5.4); `ApprovalBodySchema {decision, label?}` |
 | `GET /bus` | Open Artifacts session | The member's bus page: Machines (revoke) and share notices. The client prints `<instance>/bus` after sign-in. |
 | `GET /bus/connect` | `Authorization: Bearer oa_machine_...` | WebSocket upgrade. A revoked token, an unknown one, a PAT or OAuth token, or a member who fails `canConnect`: 401. |
 
-`verification_uri` is https (http only on loopback), has no userinfo, equals its
-parsed `href`, its path is exactly `/bus/approve/<user_code>` and it has no
-query or fragment. The schema cannot know the instance origin, so the client
-also checks `verificationUriMatches(uri, instanceUrl)` before printing it.
+`verification_uri` is exactly `<instance origin>/bus/approve`: https (http only
+on loopback), no userinfo, equal to its parsed `href`, no query or fragment, and
+never the user code, in any form (RFC 8628 section 5.4: a link that carried the
+code would be one click from approving an attacker's machine). There is no
+`verification_uri_complete`. The client shows the code apart, for the person to
+type, and checks `verificationUriMatches(uri, instanceUrl)` before printing or
+opening the URI.
 
 ## Receipts and refusals
 

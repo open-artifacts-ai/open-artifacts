@@ -341,6 +341,15 @@ describe("the npm name: every printed command says npx @open-artifacts/bus (C18)
   });
 });
 
+describe("the approval code (RFC 8628 section 5.4)", () => {
+  it("is shown apart from the URL, for the person to type, and never says bus", () => {
+    const box = plain.codeBox("P4HM-3TWK").join("\n");
+    expect(box).toContain("P4HM-3TWK");
+    expect(box).toContain("Your code. Type it on the approval page.");
+    expect(box).not.toMatch(/bus/i);
+  });
+});
+
 describe("connected: where to manage this machine (suite step 1)", () => {
   it("names the instance and its /bus page, on one line when it fits", () => {
     expect(plain.connected("https://oa.test")).toEqual([
