@@ -14,16 +14,18 @@
 // - sweep: deletes smoke-a's own artifacts titled SMOKE_TITLE_PREFIX, left by
 //   an earlier run. smoke-a lists only what it may see as "mine".
 // - publish a private markdown artifact, read its file back exactly.
-// - share it with smoke-b (FLEET_SMOKE_SHARE_TO, an existing member, so the
-//   server sends no email: `emailed` must be false), list, unshare. smoke-b
-//   must be in smoke-a's domain, checked before any share: a wrong address
-//   could otherwise mail an outsider.
+// - share it with the share target (FLEET_SMOKE_SHARE_TO, an existing member;
+//   on prod the owner's own canary account), read the share back. The server
+//   mails no existing member, so `emailed` must be false. The target must be
+//   in smoke-a's domain, checked before any share: a wrong address could
+//   otherwise mail an outsider. Unset, the share is skipped with a note. The
+//   unshare is in the finally, before the delete.
 // - MCP: tools/list names publish_artifact and get_artifact; tools/call
 //   get_artifact returns the smoke artifact's title.
 // - bus: skipped until the hub is bound, with a note in the result.
-// - delete, in finally, whatever happened: the share and the artifact.
+// - finally, whatever happened: unshare, then delete the artifact.
 //
-// Never logged or stored: the PAT, any response body, smoke-b's address.
+// Never logged or stored: the PAT, any response body, the target's address.
 // Results name a check and a kind only.
 import { within } from "./env.js";
 
@@ -35,6 +37,8 @@ export const SMOKE_CALL_MS = 3_000;
 export const SMOKE_BUDGET_MS = 10_000;
 /** The bus check's note while the hub is unbound. */
 export const SMOKE_BUS_SKIPPED = "bus: skipped, hub not bound";
+/** The share check's note with no share target set. */
+export const SMOKE_SHARE_SKIPPED = "share: skipped, no FLEET_SMOKE_SHARE_TO";
 
 export type SmokeCheck =
   /** config: no FLEET_SMOKE_TOKEN. */
@@ -57,7 +61,7 @@ export type SmokeCheck =
  * - assert: the canary answered wrongly: halts the version at once.
  * - transport: a timeout, a network error, a 5xx or a 429: counts once.
  * - config: the smoke can't run as set up (no token, a token /me refuses,
- *   smoke-a not a plain member, no smoke-b): never a halt, never a pass.
+ *   smoke-a not a plain member, a bad share target): never a halt, never a pass.
  * - budget: the scheduler ran out of time: neither; the next tick reruns.
  */
 export type SmokeResult =
@@ -76,7 +80,7 @@ export interface SmokeInput {
   appHost: string;
   /** smoke-a's PAT (FLEET_SMOKE_TOKEN). */
   token: string | undefined;
-  /** smoke-b's address (FLEET_SMOKE_SHARE_TO). */
+  /** The share target's address (FLEET_SMOKE_SHARE_TO); empty skips the share. */
   shareTo: string | undefined;
   /** This env's auth broker origin (AUTH_BROKER_ORIGIN). */
   brokerOrigin: string | undefined;
@@ -115,7 +119,7 @@ export async function smoke(o: SmokeInput): Promise<SmokeResult> {
   const token = o.token?.trim() ?? "";
   const shareTo = o.shareTo?.trim().toLowerCase() ?? "";
   if (token === "") return { ok: false, kind: "config", check: "token" };
-  if (!SHARE_TO.test(shareTo))
+  if (shareTo !== "" && !SHARE_TO.test(shareTo))
     return { ok: false, kind: "config", check: "share" };
   const origin = `https://${o.appHost}`;
   let broker: string | null = null;
@@ -205,14 +209,16 @@ export async function smoke(o: SmokeInput): Promise<SmokeResult> {
     // Least privilege: a plain member, never an admin or owner.
     if (user?.role !== "member") throw new Fail("config", "smoke_a");
     const mine = String(user.email).toLowerCase();
-    if (mine === shareTo) throw new Fail("config", "share");
-    // No mail to an outsider: smoke-b must share smoke-a's domain, checked
-    // before any share is made (the server mails a share to a non-member).
-    if (
-      mine.slice(mine.lastIndexOf("@")) !==
-      shareTo.slice(shareTo.lastIndexOf("@"))
-    )
-      throw new Fail("config", "share");
+    if (shareTo !== "") {
+      if (mine === shareTo) throw new Fail("config", "share");
+      // No mail to an outsider: the target must share smoke-a's domain,
+      // checked before any share is made (the server mails a non-member).
+      if (
+        mine.slice(mine.lastIndexOf("@")) !==
+        shareTo.slice(shareTo.lastIndexOf("@"))
+      )
+        throw new Fail("config", "share");
+    }
     const prov = await call("signin", "/auth/providers", {}, { auth: false });
     expect("signin", prov.status === 200);
     const providers = (
@@ -308,34 +314,30 @@ export async function smoke(o: SmokeInput): Promise<SmokeResult> {
     expect("read", file.status === 200);
     expect("read", (await file.text()) === content);
 
-    // share, with no email: smoke-b is a member, so the server sends none.
-    const put = await call("share", `${art}/shares`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: shareTo, role: "viewer" }),
-    });
-    expect("share", put.status === 200 || put.status === 201);
-    shared = true;
-    const sj = (await json("share", put)) as { emailed?: unknown };
-    expect("share", sj?.emailed === false);
-    const ls = await call("share", `${art}/shares`);
-    expect("share", ls.status === 200);
-    const lj = (await json("share", ls)) as
-      | { email?: unknown }[]
-      | { items?: { email?: unknown }[]; shares?: { email?: unknown }[] };
-    const rows = Array.isArray(lj) ? lj : (lj?.items ?? lj?.shares ?? []);
-    expect(
-      "share",
-      rows.some((r) => String(r?.email ?? "").toLowerCase() === shareTo),
-    );
-    const un = await call(
-      "share",
-      `${art}/shares/${encodeURIComponent(shareTo)}`,
-      { method: "DELETE" },
-    );
-    await drop(un);
-    expect("share", un.status === 204 || un.status === 200);
-    shared = false;
+    // share, with no email: the target is a member, so the server sends
+    // none. The unshare is in the finally.
+    if (shareTo === "") notes.push(SMOKE_SHARE_SKIPPED);
+    else {
+      const put = await call("share", `${art}/shares`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: shareTo, role: "viewer" }),
+      });
+      expect("share", put.status === 200 || put.status === 201);
+      shared = true;
+      const sj = (await json("share", put)) as { emailed?: unknown };
+      expect("share", sj?.emailed === false);
+      const ls = await call("share", `${art}/shares`);
+      expect("share", ls.status === 200);
+      const lj = (await json("share", ls)) as
+        | { email?: unknown }[]
+        | { items?: { email?: unknown }[]; shares?: { email?: unknown }[] };
+      const rows = Array.isArray(lj) ? lj : (lj?.items ?? lj?.shares ?? []);
+      expect(
+        "share",
+        rows.some((r) => String(r?.email ?? "").toLowerCase() === shareTo),
+      );
+    }
 
     // MCP
     const rpc = async (method: string, params: unknown) => {
@@ -399,14 +401,27 @@ export async function smoke(o: SmokeInput): Promise<SmokeResult> {
     try {
       if (artifactId !== null) {
         const art = `/api/v1/artifacts/${encodeURIComponent(artifactId)}`;
+        // Unshare first, so the target never keeps a share of a deleted
+        // artifact; a failed unshare fails a passing run (share).
         if (shared) {
-          const un = await call(
-            "delete",
-            `${art}/shares/${encodeURIComponent(shareTo)}`,
-            { method: "DELETE" },
-            { noBudget: true },
-          );
-          await drop(un);
+          try {
+            const un = await call(
+              "share",
+              `${art}/shares/${encodeURIComponent(shareTo)}`,
+              { method: "DELETE" },
+              { noBudget: true },
+            );
+            await drop(un);
+            if (result.ok && !(un.status === 204 || un.status === 200))
+              result = { ok: false, kind: "assert", check: "share" };
+          } catch (e) {
+            if (result.ok)
+              result = {
+                ok: false,
+                kind: e instanceof Fail ? e.kind : "transport",
+                check: "share",
+              };
+          }
         }
         const d = await call(
           "delete",

@@ -2177,7 +2177,7 @@ describe("#1343: the canary smoke gates the rollout", () => {
     );
   });
 
-  it("the smoke gets the canary, the env's token, smoke-b and the broker", async () => {
+  it("the smoke gets the canary, the env's token, the share target and the broker", async () => {
     const { canary } = await settled();
     const f = fakes({ canary });
     Object.assign(f.env, {

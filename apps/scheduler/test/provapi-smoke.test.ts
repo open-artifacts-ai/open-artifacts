@@ -2,6 +2,7 @@ import type { GetArtifactResult } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import {
   SMOKE_BUS_SKIPPED,
+  SMOKE_SHARE_SKIPPED,
   SMOKE_TITLE_PREFIX,
   type SmokeFetch,
   type SmokeInput,
@@ -199,9 +200,10 @@ describe("the canary smoke", () => {
       "GET /api/v1/artifacts/a1/versions/1/files/index.md",
       "PUT /api/v1/artifacts/a1/shares",
       "GET /api/v1/artifacts/a1/shares",
+      "POST /mcp",
+      "POST /mcp",
+      // The finally: unshare, then delete.
       `DELETE /api/v1/artifacts/a1/shares/${encodeURIComponent(SHARE_TO)}`,
-      "POST /mcp",
-      "POST /mcp",
       "DELETE /api/v1/artifacts/a1",
     ]);
     // The public sign-in routes go without the token.
@@ -384,7 +386,7 @@ describe("the canary smoke", () => {
       expect(live(c)).toEqual([]);
     });
 
-  it("config: no token, no smoke-b, smoke-b being smoke-a, a refused token, or an admin", async () => {
+  it("config: no token, a bad target, the target being smoke-a, a refused token, or an admin", async () => {
     const run = async (o: {
       over?: Partial<SmokeInput>;
       me?: object;
@@ -400,10 +402,6 @@ describe("the canary smoke", () => {
       check: "token",
     });
     expect((await run({ over: { token: "" } })).calls).toBe(0);
-    expect((await run({ over: { shareTo: "" } })).r).toMatchObject({
-      kind: "config",
-      check: "share",
-    });
     expect(
       (await run({ over: { shareTo: "not-an-address" } })).r,
     ).toMatchObject({ kind: "config", check: "share" });
@@ -533,5 +531,55 @@ describe("the canary smoke", () => {
     });
     expect((await smoke(input(c))).ok).toBe(true);
     expect(c.calls.some((x) => x.path === "/auth/login/google")).toBe(false);
+  });
+
+  it("no share target: the share is skipped with a note, and the rest still runs", async () => {
+    for (const shareTo of ["", "  ", undefined]) {
+      const c = canary();
+      expect(await smoke(input(c, { shareTo }))).toEqual({
+        ok: true,
+        notes: [SMOKE_SHARE_SKIPPED, SMOKE_BUS_SKIPPED],
+      });
+      expect(c.calls.some((x) => x.path.includes("/shares"))).toBe(false);
+      expect(c.calls.filter((x) => x.path === "/mcp")).toHaveLength(2);
+      expect(live(c)).toEqual([]);
+    }
+  });
+
+  it("a failure after the share still unshares, before the delete", async () => {
+    const c = canary({
+      fault: (p) =>
+        p === "/mcp"
+          ? Response.json({ jsonrpc: "2.0", id: 1, error: { code: -32601 } })
+          : null,
+    });
+    expect(await smoke(input(c))).toEqual({
+      ok: false,
+      kind: "assert",
+      check: "mcp",
+    });
+    expect(c.arts[0]?.shares).toEqual([]);
+    const deletes = c.calls
+      .filter((x) => x.method === "DELETE")
+      .map((x) => x.path);
+    expect(deletes).toEqual([
+      `/api/v1/artifacts/a1/shares/${encodeURIComponent(SHARE_TO)}`,
+      "/api/v1/artifacts/a1",
+    ]);
+  });
+
+  it("a failed unshare fails a passing run (share), and the delete still runs", async () => {
+    const c = canary({
+      fault: (p, m) =>
+        m === "DELETE" && p.includes("/shares/")
+          ? Response.json({ error: "nope" }, { status: 403 })
+          : null,
+    });
+    expect(await smoke(input(c))).toEqual({
+      ok: false,
+      kind: "assert",
+      check: "share",
+    });
+    expect(live(c)).toEqual([]);
   });
 });

@@ -547,7 +547,7 @@ case "$target" in
       *) echo "the tag's scheduler config half pins the $env alerts; refusing" >&2; exit 1 ;;
     esac
     signups_committed scheduler
-    # The canary smoke's secrets (#1343): smoke-a's PAT and smoke-b's
+    # The canary smoke's secrets (#1343): smoke-a's PAT and the share target's
     # address, from the Environment, for this Worker only. Checked before any
     # deploy; never echoed (put_secret reads stdin).
     smoke_puts=""

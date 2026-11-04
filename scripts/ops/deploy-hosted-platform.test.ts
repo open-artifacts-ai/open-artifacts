@@ -2395,7 +2395,7 @@ describe("every deployed app has its own wrangler", () => {
   }
 });
 
-// #1343: the canary smoke's secrets, smoke-a's PAT and smoke-b's address,
+// #1343: the canary smoke's secrets, smoke-a's PAT and the share target's address,
 // reach the scheduler only: put on oa-<p>-scheduler when the Environment has
 // them, never printed, never on any other Worker.
 describe("the canary smoke's secrets (#1343)", () => {

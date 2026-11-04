@@ -37,7 +37,7 @@ export interface ProvapiEnv {
   FLEET_SMOKE?: string;
   /** smoke-a's PAT on the canary (secret, #1343 smoke.ts); unset: never smoked. */
   FLEET_SMOKE_TOKEN?: string;
-  /** smoke-b's address on the canary: the smoke shares with it. */
+  /** The smoke's share target, an existing canary member (secret); empty skips the share. */
   FLEET_SMOKE_SHARE_TO?: string;
 }
 
