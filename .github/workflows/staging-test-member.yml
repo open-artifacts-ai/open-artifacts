@@ -103,9 +103,9 @@ jobs:
             s="$(jq -r '.sealed // empty' <<< "$j")"
             [ -z "$s" ] || sealed="$s"
             status="$(jq -r .status <<< "$j")"
-            case "$status" in done|failed) break ;; esac
+            case "$status" in "done" | "failed") break ;; esac
           done
-          [ "$status" = done ] || { echo "job $job: $status $(jq -r '.error.code // empty' <<< "$j")"; exit 1; }
+          [ "$status" = "done" ] || { echo "job $job: $status $(jq -r '.error.code // empty' <<< "$j")"; exit 1; }
           echo "test-member-job: $job"
           if [ "$REVOKE" = true ]; then
             echo "test-member-revoked: $SLUG"
