@@ -78,14 +78,15 @@ The provisioner's Cloudflare token is invalid or expired. Jobs that need it retr
 
 ## fleet_halted
 
-The fleet rollout stopped. No install is upgraded to a halted version, and the fleet never rolls one back. It clears on its own once a new release ships and its canary soaks. A halt on an older version stays on the alert for 6 hours. The email lists a code per problem:
+The fleet rollout stopped. No install is upgraded to a halted version, and the fleet never rolls one back. It clears on its own once a new release ships and its canary settles and passes the smoke. A halt on an older version stays on the alert for 6 hours. The email lists a code per problem:
 
 - `fleet_halt`: upgraded installs failed two health probes of this version on separate ticks. Ship a fix as a new release. Its rollout starts again from the canary.
 - A job code (usually `upgrade_incomplete`): a fleet upgrade failed, and that install stays on the new version. Ship a fix as a new release. `upgrade_rolled_back` shows only on older jobs.
 - `migration_held` (canary only): the release has a migration that can lose data. A person reads the migration. If it is safe, the Manager upgrades the canary with `nonAdditive: true`, with the user's yes. If not, fix the migration in a new release. On any other install, `migration_held` shows in `version_skew` instead.
-- `canary_blocked`: the canary (`FLEET_CANARY`) hasn't soaked on the release by 30 minutes past its soak (`FLEET_SOAK_MIN`: 45 minutes in all on staging, 90 on prod), so nothing else moved. Check the canary on the admin panel. If it is suspended, paused, unhealthy or busy, that is the cause. A bug ships as a new release.
+- `smoke_failed` (canary only): the canary smoke failed on the release, so nothing else moved. The row names the check (signin, sweep, publish, read, share, mcp, delete). Read the canary's logs for that route, and ship a fix as a new release.
+- `smoke_unconfigured`: the canary smoke can't run as set up, so nothing moves. The row names what is missing: `token` (no `FLEET_SMOKE_TOKEN`, a revoked one, or smoke-a not an active plain member) or `share` (no `FLEET_SMOKE_SHARE_TO`, or one that is smoke-a). Do the canary smoke setup in [hosted.md](hosted.md) (Prod release chain).
+- `canary_blocked`: the canary (`FLEET_CANARY`) hasn't settled and passed the smoke on the release after 45 minutes, so nothing else moved. Check the canary on the admin panel. If it is suspended, paused, unhealthy or busy, that is the cause. A bug ships as a new release.
 - `no_target`: the scheduler has no stable release tag, so nothing can move. It was deployed without one. The next release's deploy sets it.
-- `bad_soak`: the scheduler's `FLEET_SOAK_MIN` isn't a whole number of minutes from 1 to 1440, so nothing moves. Fix it in `apps/scheduler/wrangler.jsonc` and ship a release.
 
 ## version_skew
 

@@ -26,6 +26,8 @@
 #   scheduler        PLATFORM_DB_ID EMAIL_ZONE_TAGS EMAIL_DAILY_LIMIT ALERT_TO ALERT_FROM
 #                    SIGNUP_DAILY_CAP SIGNUPS_ENABLED (both brokers,
 #                    oa-<p>-provisioner and the oa-<p>-signups queue must exist)
+#                    [FLEET_SMOKE_TOKEN FLEET_SMOKE_SHARE_TO] (#1343, the canary
+#                    smoke's secrets: put on this Worker only, when given)
 #   inventory        PLATFORM_DB_ID HOSTS_KV_ID GITHUB_REPOSITORY_ID GITHUB_REPOSITORY
 #                    (owner/repo: the OIDC principal, design v7 6.3)
 #   provisioning     PLATFORM_DB_ID BROKER_REGISTRY_ID DIRECTORY_REGISTRY_ID
@@ -545,9 +547,33 @@ case "$target" in
       *) echo "the tag's scheduler config half pins the $env alerts; refusing" >&2; exit 1 ;;
     esac
     signups_committed scheduler
-    PLATFORM_DB_ID="$PLATFORM_DB_ID" EMAIL_ZONE_TAGS="$EMAIL_ZONE_TAGS" EMAIL_DAILY_LIMIT="$EMAIL_DAILY_LIMIT" \
-      ALERT_TO="$ALERT_TO" ALERT_FROM="$ALERT_FROM" SIGNUP_DAILY_CAP="$SIGNUP_DAILY_CAP" SIGNUPS_ENABLED="$SIGNUPS_ENABLED" \
-      deploy scheduler
+    # The canary smoke's secrets (#1343): smoke-a's PAT and smoke-b's
+    # address, from the Environment, for this Worker only. Checked before any
+    # deploy; never echoed (put_secret reads stdin).
+    smoke_puts=""
+    for k in FLEET_SMOKE_TOKEN FLEET_SMOKE_SHARE_TO; do
+      if [ -n "${!k:-}" ]; then smoke_puts="$smoke_puts $k"; fi
+    done
+    if [ -n "${FLEET_SMOKE_TOKEN:-}" ] && ! [[ "$FLEET_SMOKE_TOKEN" =~ ^[A-Za-z0-9._~+/=-]{16,512}$ ]]; then
+      echo "FLEET_SMOKE_TOKEN is malformed; refusing" >&2; exit 1
+    fi
+    if [ -n "${FLEET_SMOKE_SHARE_TO:-}" ] && ! [[ "$FLEET_SMOKE_SHARE_TO" =~ ^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$ ]]; then
+      echo "FLEET_SMOKE_SHARE_TO must be one lowercase address; refusing" >&2; exit 1
+    fi
+    sched_deploy() {
+      PLATFORM_DB_ID="$PLATFORM_DB_ID" EMAIL_ZONE_TAGS="$EMAIL_ZONE_TAGS" EMAIL_DAILY_LIMIT="$EMAIL_DAILY_LIMIT" \
+        ALERT_TO="$ALERT_TO" ALERT_FROM="$ALERT_FROM" SIGNUP_DAILY_CAP="$SIGNUP_DAILY_CAP" SIGNUPS_ENABLED="$SIGNUPS_ENABLED" \
+        deploy scheduler
+    }
+    sched_deploy
+    # Put only when given (a rotation); secrets survive deploys. Then deploy
+    # again so the serving version carries the tag (#1040).
+    if [ -n "$smoke_puts" ]; then
+      for k in $smoke_puts; do
+        printf '%s' "${!k}" | put_secret oa-$P-scheduler scheduler "$k" || exit 1
+      done
+      sched_deploy
+    fi
     S="$(settings oa-$P-scheduler)"
     expect "$S" '.result.bindings[] | select(.name == "PROVISIONER") | .type' service "PROVISIONER type"
     expect "$S" '.result.bindings[] | select(.name == "PROVISIONER") | .service' oa-$P-provisioner "PROVISIONER"
@@ -574,6 +600,13 @@ case "$target" in
       "$ALERT_TO" "ALERT_EMAIL destination"
     crons="$(cf_get /workers/scripts/oa-$P-scheduler/schedules | must "read oa-$P-scheduler schedules" | jq -r '[.result.schedules[].cron] | sort | join(",")')"
     [ "$crons" = "*/2 * * * *,17 3 * * *" ] || { echo "oa-$P-scheduler schedules are '$crons'" >&2; exit 1; }
+    # Only the secrets it may hold: the email-quota token and the smoke's two.
+    for n in $(secret_names oa-$P-scheduler); do
+      case "$n" in
+        EMAIL_QUOTA_TOKEN | FLEET_SMOKE_TOKEN | FLEET_SMOKE_SHARE_TO) ;;
+        *) echo "oa-$P-scheduler has a secret it shouldn't: $n" >&2; exit 1 ;;
+      esac
+    done
     ;;
   inventory)
     need PLATFORM_DB_ID; need HOSTS_KV_ID; need GITHUB_REPOSITORY_ID; need GITHUB_REPOSITORY

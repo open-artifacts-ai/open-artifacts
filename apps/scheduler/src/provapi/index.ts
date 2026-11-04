@@ -24,8 +24,8 @@ export const DUTY_TIMEOUT_MS = {
   sweep: 20_000,
   signups: 5_000,
   purge: 10_000,
-  health: 30_000,
-  fleet: 15_000,
+  health: 20_000,
+  fleet: 25_000,
   alerts: 30_000,
   prune: 5_000,
 } as const satisfies Record<Duty["name"], number>;
@@ -39,7 +39,6 @@ export async function alertsTick(env: ProvapiEnv, now: number): Promise<void> {
     {
       versionMetadata: env.CF_VERSION_METADATA,
       fleetCanary: env.FLEET_CANARY,
-      fleetSoakMin: env.FLEET_SOAK_MIN,
     },
   );
   for (const k of ALERT_KEYS) {

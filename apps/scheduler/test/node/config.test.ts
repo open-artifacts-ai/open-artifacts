@@ -45,10 +45,10 @@ describe("wrangler.jsonc", () => {
         SIGNUPS_ENABLED: `{{SIGNUPS_ENABLED_${env.toUpperCase()}}}`,
         // #955: prod stays empty until a green staging rollout.
         FLEET_CANARY: env === "staging" ? "i33m6mbc3zuz" : "",
-        // #1343: leo goes second on prod; the soak is 15 min on staging,
-        // 60 on prod. Both inert while prod's FLEET_CANARY is empty.
+        // #1343: leo goes second on prod, inert while prod's FLEET_CANARY
+        // is empty. The smoke's token and smoke-b's address are secrets,
+        // never vars: no address is ever committed.
         FLEET_SECOND: env === "staging" ? "" : "i2ab26lvciok",
-        FLEET_SOAK_MIN: env === "staging" ? "15" : "60",
       });
       // The fleet target is this version's tag (provapi/fleet.ts).
       expect(e.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });

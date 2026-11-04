@@ -99,6 +99,10 @@ on:
         required: false
       ADMIN_IDENTITIES:
         required: false
+      FLEET_SMOKE_TOKEN:
+        required: false
+      FLEET_SMOKE_SHARE_TO:
+        required: false
 
 # actions: read lets the release gate read release-please.yml's run and jobs
 # (and the staging-first gate redline-staging.yml's runs); issues: write lets
@@ -340,7 +344,9 @@ jobs:
           bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" plan
           [ -n "$VERIFY_ONLY" ] || bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" apply
       # The scheduler, last (#1343): its tag is the fleet's target, so it moves
-      # only once every other target, the zones included, has succeeded.
+      # only once every other target, the zones included, has succeeded. The
+      # canary smoke's two secrets (#1343) reach this step, and so only the
+      # scheduler: the Environment's, put on oa-<p>-scheduler when set.
       - name: Scheduler, last
         if: ${{ contains(format(',{0},', inputs.targets), ',scheduler,') }}
         env:
@@ -349,6 +355,8 @@ jobs:
           VERIFY_ONLY: ${{ inputs.verify_only && '1' || '' }}
           DEPLOY_TAG: ${{ inputs.tag }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          FLEET_SMOKE_TOKEN: ${{ secrets.FLEET_SMOKE_TOKEN }}
+          FLEET_SMOKE_SHARE_TO: ${{ secrets.FLEET_SMOKE_SHARE_TO }}
         run: bash scripts/ops/deploy-hosted-platform.sh "$DEPLOY_ENV" scheduler
       # One version everywhere (#1040, #1064): read every Worker's
       # "workers/tag" back after a full-list run, on prod as on staging. A

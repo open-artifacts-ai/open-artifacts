@@ -46,9 +46,10 @@
         "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_STAGING}}",
         // The fleet rollout's canary install id (#955); empty: no rollout.
         "FLEET_CANARY": "i33m6mbc3zuz",
-        // #1343: no install goes second on staging; the soak, in minutes.
+        // #1343: no install goes second on staging. The canary smoke's
+        // FLEET_SMOKE_TOKEN and FLEET_SMOKE_SHARE_TO are secrets the deploy
+        // puts from the Environment (docs/ops/hosted.md), never vars here.
         "FLEET_SECOND": "",
-        "FLEET_SOAK_MIN": "15",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app"
       },
@@ -118,11 +119,10 @@
         // a value here switches the prod fleet on. The intended value is the
         // prod canary "ifhx5rpmrhwh", set in its own one-line PR after review.
         "FLEET_CANARY": "",
-        // #1343: leo, upgraded alone right after the canary has soaked, and
-        // the prod soak in minutes. Both are inert while FLEET_CANARY is empty
-        // (fleet.ts: no canary, nothing is queued).
+        // #1343: leo, upgraded alone right after the canary has passed its
+        // smoke. Inert while FLEET_CANARY is empty (fleet.ts: no canary,
+        // nothing is queued). The smoke's secrets: as staging's.
         "FLEET_SECOND": "i2ab26lvciok",
-        "FLEET_SOAK_MIN": "60",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app"
       },
