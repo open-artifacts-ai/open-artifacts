@@ -186,21 +186,40 @@ describe("ci.yml", () => {
   });
   it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
     const job = w.jobs["e2e-shard"];
-    // Four shards on every event: pull requests too, as the merge queue
-    // (#965). No per-event expression anywhere in the shard setup.
-    expect(job.strategy.matrix.shard).toEqual([1, 2, 3, 4]);
+    // Pull requests run two shards (free plan, 20 concurrent jobs; #965);
+    // the merge queue and a dispatch keep four, the full proof before main.
+    // Resolves `<event check> && a || b` for an event (a literal stays as is).
+    const PR = "github.event_name == 'pull_request'";
+    const forEvent = (expr: string, pr: boolean): string => {
+      if (/^\d+$/.test(expr)) return expr;
+      const body = /^\$\{\{ (.*) \}\}$/.exec(expr)?.[1] ?? expr;
+      const m = new RegExp(
+        `^(?:fromJSON)?\\(?${PR} && ('[^']*'|\\d+) \\|\\| ('[^']*'|\\d+)\\)?$`,
+      ).exec(body);
+      if (!m) throw new Error(`unexpected expression: ${expr}`);
+      return ((pr ? m[1] : m[2]) as string).replace(/^'|'$/g, "");
+    };
+    const events = [
+      { pr: true, shards: [1, 2], of: 2, timeout: 25 },
+      { pr: false, shards: [1, 2, 3, 4], of: 4, timeout: 15 },
+    ];
+    for (const e of events) {
+      expect(JSON.parse(forEvent(job.strategy.matrix.shard, e.pr))).toEqual(
+        e.shards,
+      );
+      const env = /^\$\{\{ matrix\.shard \}\}\/(\$\{\{ .* \}\})$/.exec(
+        job.env.E2E_SHARD,
+      );
+      expect(Number(forEvent(env?.[1] as string, e.pr))).toBe(e.of);
+      expect(Number(forEvent(job["timeout-minutes"], e.pr))).toBe(e.timeout);
+    }
     expect(job.strategy["fail-fast"]).toBe(false);
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    expect(job.env.E2E_SHARD).toBe("${{ matrix.shard }}/4");
-    expect(JSON.stringify(job)).not.toContain("github.event_name");
     // Browsers and their OS deps come baked into the image, pinned by digest:
     // no apt step, so a slow Ubuntu mirror can't eat the job's budget (#462).
     expect(job.container.image).toMatch(
       /^mcr\.microsoft\.com\/playwright:v\d+\.\d+\.\d+-noble@sha256:[0-9a-f]{64}$/,
     );
     expect(job.container.options ?? "").toContain("--ipc=host");
-    // 15 min for one shard of four.
-    expect(job["timeout-minutes"]).toBe(15);
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     const steps: any[] = job.steps;
     const runs = steps.map((s) => s.run ?? "");
@@ -237,19 +256,25 @@ describe("ci.yml", () => {
       "apps/dashboard/test-results",
     ]);
     expect(uploads[1].if).toBe("failure()");
-    // The spaces suite (one spec, its own server) runs whole in shard 3 only;
-    // the unsharded ui, landing and provisioning checks in shard 1 only.
-    const shardOf = (name: string) => {
+    // The spaces suite (one spec, its own server) runs whole in exactly one
+    // shard per event: 2 of two on a pull request, 3 of four in the queue.
+    // The unsharded ui, landing and provisioning checks in shard 1 only.
+    const shardsRunning = (name: string, pr: boolean, all: number[]) => {
       const step = steps.find(
         (s) => s.run === `bash scripts/ci/e2e.sh ${name}`,
       );
-      return [...(step.if as string).matchAll(/matrix\.shard == (\d+)/g)].map(
-        (m) => Number(m[1]),
+      const cond = step.if as string;
+      const picks = [...cond.matchAll(/matrix\.shard == (\d+|\([^)]*\))/g)].map(
+        (m) => Number(forEvent(m[1] as string, pr)),
       );
+      expect(picks).toHaveLength(1);
+      return all.filter((n) => picks.includes(n));
     };
-    expect(shardOf("spaces")).toEqual([3]);
-    for (const name of ["ui", "landing", "provisioning"]) {
-      expect(shardOf(name)).toEqual([1]);
+    for (const e of events) {
+      expect(shardsRunning("spaces", e.pr, e.shards)).toEqual([e.pr ? 2 : 3]);
+      for (const name of ["ui", "landing", "provisioning"]) {
+        expect(shardsRunning(name, e.pr, e.shards)).toEqual([1]);
+      }
     }
     // Local wrangler dev only: no secrets, nothing pointing at staging.
     const s = JSON.stringify(job);
@@ -1983,19 +2008,6 @@ describe("W9b: the retired hosted writes stay retired", () => {
     "scripts/ops/redline-deploy.sh",
     "tests/redline/src/prod-clean-cli.ts",
   ];
-  const RETIRED_COMMANDS = [
-    "create",
-    "upgrade",
-    "rollback",
-    "update-vars",
-    "delete",
-    "release-lease",
-    "owner-token",
-    "turnstile-init",
-    "ci-token-sweep",
-    "signup-redrive",
-    "redline-creds",
-  ];
   const workflows = readdirSync(join(root, ".github/workflows")).filter((f) =>
     /\.ya?ml$/.test(f),
   );
@@ -2008,21 +2020,26 @@ describe("W9b: the retired hosted writes stay retired", () => {
   it("no workflow names a retired file, target or secret", () => {
     const banned =
       /hosted-ops|ci-args|redline-creds|redline-deploy|hosted-turnstile-keys|prod-clean-cli|inventory-key|INVENTORY_KEY|secrets\.REDLINE_RL_|CREATE_OWNER_EMAIL|TURNSTILE_KEYS/;
-    for (const f of workflows)
-      expect(read(`.github/workflows/${f}`), f).not.toMatch(banned);
+    // The one allowed match: R26's own API path (ROUTES.R26), called by the
+    // test member's workflow through the Provisioning API, not the retired
+    // CLI command. Only that exact quoted path in that one file.
+    const R26_PATH = '"/v1/installs/$id/redline-creds"';
+    for (const f of workflows) {
+      const text = read(`.github/workflows/${f}`);
+      expect(
+        f === "staging-test-member.yml"
+          ? text.split(R26_PATH).join('"R26"')
+          : text,
+        f,
+      ).not.toMatch(banned);
+    }
+    expect(read(".github/workflows/staging-test-member.yml")).toContain(
+      R26_PATH,
+    );
   });
 
-  it("the CLI has only status and the two publishes, and refuses each retired command", () => {
-    const src = read("scripts/hosted/src/cli.ts");
-    const m = src.match(/export const COMMANDS = \[([^\]]*)\]/);
-    const cmds = [...(m?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map((x) => x[1]);
-    expect(cmds).toEqual(["status", "publish-release", "publish-floor"]);
-    const r = src.match(/export const RETIRED_COMMANDS = \[([^\]]*)\]/);
-    const retired = [...(r?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map(
-      (x) => x[1],
-    );
-    expect(retired).toEqual(RETIRED_COMMANDS);
-  });
+  // The CLI's own command lists are checked in scripts/hosted/test/cli.test.ts,
+  // which moves with the CLI to the hosted repo (#1056).
 
   it("every oa:hosted call in a workflow is a kept command", () => {
     for (const f of workflows)

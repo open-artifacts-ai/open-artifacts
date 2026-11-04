@@ -1,0 +1,116 @@
+# Member sign-in for agents on the staging install rl-agents. The job mints
+# GitHub OIDC JWTs for the staging Provisioning API, finds rl-agents by slug
+# (R2), and calls R26 on it: a mint rotates its TEST_HOOK_KEY, mints a new
+# redline-* PAT and revokes every earlier one, so the previous credentials
+# stop working. The new ones come back from R15 sealed to `recipient_key` (an
+# X25519 public key the caller holds the private half of). Only the sealed
+# value, the app host and the job id are printed: the run log is public, and
+# without the caller's private key the value opens to nothing.
+# `revoke: true` rotates the key to one nobody holds and revokes the PATs.
+# scripts/ops/staging-test-member.ts runs this end to end.
+# This JWT may call only R2, R15 and R26, on rl-agents only (authz
+# TEST_MEMBER). The redline-staging Environment is the OIDC pin
+# (OIDC_ENVIRONMENT); this job reads none of its secrets. Staging only: prod
+# has no OIDC principal.
+name: staging-test-member
+run-name: staging-test-member
+
+on:
+  workflow_dispatch:
+    inputs:
+      recipient_key:
+        description: "X25519 public key, raw 32 bytes, base64url without padding (mint only)"
+        required: false
+        default: ""
+        type: string
+      revoke:
+        description: "Revoke instead: rotate the hook key to one nobody holds and revoke the PATs"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-test-member
+  cancel-in-progress: false
+
+jobs:
+  creds:
+    runs-on: ubuntu-latest
+    environment: redline-staging
+    # The OIDC principal: this job only.
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 15
+    steps:
+      - name: Take the rl-agents credentials
+        env:
+          REF: ${{ github.ref }}
+          RECIPIENT_KEY: ${{ inputs.recipient_key }}
+          REVOKE: ${{ inputs.revoke }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          # apps/provisioning/wrangler.jsonc env.staging OIDC_AUDIENCE.
+          AUDIENCE: https://api.open-artifacts-staging.app
+          SLUG: rl-agents
+          APP_HOST: rl-agents.open-artifacts-staging.app
+        run: |
+          set +x
+          set -euo pipefail
+          [ "$REF" = refs/heads/main ] || { echo "dispatch staging-test-member on main"; exit 1; }
+          case "$REVOKE" in true|false) ;; *) echo "revoke is true or false"; exit 1 ;; esac
+          if [ "$REVOKE" = false ]; then
+            [[ "$RECIPIENT_KEY" =~ ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$ ]] || { echo "recipient_key is not a base64url X25519 public key"; exit 1; }
+          fi
+          # A fresh JWT per call; it reaches curl on stdin, never argv.
+          api() {
+            local jwt
+            jwt="$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -r .value)"
+            if [ -z "$jwt" ] || [ "$jwt" = null ]; then echo "no OIDC token" >&2; return 1; fi
+            if [ "$#" -ge 3 ]; then
+              printf 'header = "Authorization: Bearer %s"\n' "$jwt" |
+                curl -fsS -K - -X "$1" -H "content-type: application/json" \
+                  --data "$3" "$AUDIENCE$2"
+            else
+              printf 'header = "Authorization: Bearer %s"\n' "$jwt" |
+                curl -fsS -K - -X "$1" "$AUDIENCE$2"
+            fi
+          }
+          # R2: exactly one install with this exact slug, on this host.
+          list="$(api GET "/v1/installs?q=$SLUG")"
+          id="$(jq -r --arg s "$SLUG" '[.items[] | select(.slug == $s)] | if length == 1 then .[0].id else empty end' <<< "$list")"
+          host="$(jq -r --arg s "$SLUG" '[.items[] | select(.slug == $s)] | if length == 1 then .[0].appHost else empty end' <<< "$list")"
+          [ -n "$id" ] || { echo "no single $SLUG install"; exit 1; }
+          [ "$host" = "$APP_HOST" ] || { echo "$SLUG is not on $APP_HOST"; exit 1; }
+          rid="test-member-$RUN_ID-$RUN_ATTEMPT"
+          if [ "$REVOKE" = true ]; then
+            body="$(jq -nc --arg r "$rid" '{requestId: $r, revoke: true}')"
+          else
+            body="$(jq -nc --arg r "$rid" --arg k "$RECIPIENT_KEY" '{requestId: $r, recipientKey: $k}')"
+          fi
+          # R26, then R15 until the job ends. R15 hands `sealed` out once.
+          job="$(api POST "/v1/installs/$id/redline-creds" "$body" | jq -r .job.id)"
+          [[ "$job" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "R26 started no job"; exit 1; }
+          sealed=""
+          status=""
+          for _ in $(seq 1 80); do
+            sleep 10
+            j="$(api GET "/v1/jobs/$job")"
+            s="$(jq -r '.sealed // empty' <<< "$j")"
+            [ -z "$s" ] || sealed="$s"
+            status="$(jq -r .status <<< "$j")"
+            case "$status" in "done" | "failed") break ;; esac
+          done
+          [ "$status" = "done" ] || { echo "job $job: $status $(jq -r '.error.code // empty' <<< "$j")"; exit 1; }
+          echo "test-member-job: $job"
+          if [ "$REVOKE" = true ]; then
+            echo "test-member-revoked: $SLUG"
+            exit 0
+          fi
+          [[ "$sealed" =~ ^oa-seal-v1\.[A-Za-z0-9_.-]+$ ]] || { echo "no sealed credentials in the job"; exit 1; }
+          echo "test-member-app-host: $host"
+          echo "test-member-sealed: $sealed"
