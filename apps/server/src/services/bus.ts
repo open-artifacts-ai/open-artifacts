@@ -33,6 +33,11 @@ export type BusCloseKind = "access" | "revoked";
 const ACCESS_REASONS: ReadonlySet<string> = new Set([
   "space role lowered",
   "removed from space",
+  "space mapping lowered",
+  "space mapping removed",
+  "every-space mapping lowered",
+  "every-space mapping removed",
+  "frozen edit undone",
   "artifacts transferred",
   "member restored",
   "member revived",

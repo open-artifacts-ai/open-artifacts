@@ -351,6 +351,41 @@ describe("offline reap (open-bus #422)", () => {
     expect(await liveOf(m.id)).toEqual([]);
   });
 
+  it("the wake arms the reap deadline even when a later alarm is set", async () => {
+    const who = await member();
+    const uid = who.userId;
+    const m = await machine("Late", uid);
+    const d = await connect(m.token);
+    const name = await reg(d, "l", uniq("Late"), ns("late"));
+    await goOffline(d, m.id, uid);
+    await inHub((_, s) => {
+      s.storage.sql.exec(
+        "update machines set disconnected_at = null where id = ?",
+        m.id,
+      );
+    }, uid);
+    const far = Date.now() + 100 * OFFLINE_REAP_MS;
+    await inHub((_, s) => s.storage.setAlarm(far), uid);
+    await inHub((_, s) => {
+      new BusHub(s, e);
+    }, uid);
+    let since: number | null | undefined = null;
+    for (let k = 0; k < 100 && typeof since !== "number"; k++) {
+      since = await disconnectedAt(m.id, uid);
+      if (typeof since !== "number") await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(typeof since).toBe("number");
+    let armed: number | null = far;
+    for (let k = 0; k < 100 && armed === far; k++) {
+      armed = await inHub((_, s) => s.storage.getAlarm(), uid);
+      if (armed === far) await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(armed as number).toBeLessThanOrEqual(
+      (since as number) + OFFLINE_REAP_MS,
+    );
+    expect(await liveOf(m.id, uid)).toEqual([name]);
+  });
+
   it("a due machine that is online after all only has its clock cleared", async () => {
     const t0 = base();
     await setClock(t0);
@@ -506,27 +541,69 @@ describe("closeAll and the offline clock (#1350)", () => {
     expect(await liveOf(m.id, uid)).toEqual([]);
   });
 
-  it("closeAll with no kind follows the reason: transient ones are access, the rest revoked", async () => {
-    expect(busCloseKind("space role lowered")).toBe("access");
-    expect(busCloseKind("removed from space")).toBe("access");
-    expect(busCloseKind("artifacts transferred")).toBe("access");
-    expect(busCloseKind("member restored")).toBe("access");
-    expect(busCloseKind("member revived")).toBe("access");
-    for (const r of [
-      "user suspended",
-      "role changed",
-      "restricted",
-      "member erased",
-      "guest removed",
-      "identity reset",
-      "directory delete",
-      "suspended",
-      "anything new",
-    ])
-      expect(busCloseKind(r)).toBe("revoked");
+  // Every revokeUserLive / revokeUsersLive / closeInstall reason in src.
+  const KINDS: [string, "access" | "revoked"][] = [
+    // Space-only: bus access (canConnect) is per member, never per space.
+    ["space role lowered", "access"],
+    ["removed from space", "access"],
+    ["space mapping lowered", "access"],
+    ["space mapping removed", "access"],
+    ["every-space mapping lowered", "access"],
+    ["every-space mapping removed", "access"],
+    ["frozen edit undone", "access"],
+    ["artifacts transferred", "access"],
+    ["member restored", "access"],
+    ["member revived", "access"],
+    // The member can no longer connect, or may not for long.
+    ["user suspended", "revoked"],
+    ["user deactivated", "revoked"],
+    ["role changed", "revoked"],
+    ["restricted", "revoked"],
+    ["member erased", "revoked"],
+    ["guest removed", "revoked"],
+    ["identity reset", "revoked"],
+    ["directory delete", "revoked"],
+    ["directory tenant changed", "revoked"],
+    ["directory customer_mismatch", "revoked"],
+    ["directory group change", "revoked"],
+    ["directory restriction recomputed", "revoked"],
+    ["suspended", "revoked"],
+    ["anything new", "revoked"],
+  ];
+
+  it("closeAll with no kind follows the reason: space-only ones are access, the rest revoked", async () => {
+    for (const [reason, kind] of KINDS)
+      expect([reason, busCloseKind(reason)]).toEqual([reason, kind]);
     const { uid, t0, m, stub } = await setup("Default");
     await stub.closeAll("suspended");
     expect(await disconnectedAt(m.id, uid)).toBe(t0);
+  });
+
+  it('an "access" closeAll\'s socket close (replaced, no successor) never starts the clock', async () => {
+    const { uid, m, d, stub } = await setup("Closed");
+    expect(await stub.closeAll("space role lowered", "access")).toBe(1);
+    expect((await d.closed).code).toBe(4403);
+    // Miniflare leaves the hub's side CLOSING and never delivers the close
+    // event here; it is delivered as the runtime would.
+    await inHub(async (i, s) => {
+      const ws = s.getWebSockets(m.id)[0];
+      if (!ws) throw new Error("no socket");
+      await i.webSocketClose(ws, 4403);
+    }, uid);
+    expect(await disconnectedAt(m.id, uid)).toBeNull();
+  });
+
+  it('a "revoked" closeAll\'s clock is cleared by a later reconnect; nothing is reaped', async () => {
+    const { uid, t0, m, d, name, stub } = await setup("Unsuspended");
+    await stub.closeAll("user suspended");
+    expect((await d.closed).code).toBe(4403);
+    expect(await disconnectedAt(m.id, uid)).toBe(t0);
+    // Unsuspended: the daemon's next upgrade is authorized after revokedAt.
+    const d2 = await connect(m.token);
+    expect(await disconnectedAt(m.id, uid)).toBeNull();
+    await alarmAtTime(t0 + 2 * OFFLINE_REAP_MS, uid);
+    expect(await liveOf(m.id, uid)).toEqual([name]);
+    d2.close();
   });
 
   it("revokeMachine closes the machine's agents at once, never waiting for the reap", async () => {

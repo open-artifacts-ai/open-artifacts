@@ -1812,7 +1812,8 @@ export class BusHub extends DurableObject<Env> {
 
   /**
    * On wake, when work exists (pending mail, a stored body or an untold
-   * final receipt) but no alarm is set, arm for its earliest deadline. One
+   * final receipt), arm for its earliest deadline unless an earlier alarm is
+   * set. One
    * indexed exists query; covers hubs whose rows never armed (B6-era).
    */
   async #armOnWake(): Promise<void> {
@@ -1839,10 +1840,11 @@ export class BusHub extends DurableObject<Env> {
       CLOSE_END,
     );
     if (!work?.x) return;
-    if ((await this.ctx.storage.getAlarm()) !== null) return;
+    // Arms the earliest deadline even when a later alarm is set (a reap
+    // deadline just started counting can be earlier than it).
     const at = this.#nextDeadline(null);
-    const t = at === null ? null : alarmTime(Math.max(at, this.#now() + 1));
-    if (t !== null) await this.ctx.storage.setAlarm(t);
+    if (at !== null) this.#arm(Math.max(at, this.#now() + 1));
+    await this.#commitArm();
   }
 
   /**
