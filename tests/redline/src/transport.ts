@@ -32,7 +32,12 @@ import {
 /** Methods a server must treat as safe to repeat (RFC 9110 9.2.2). */
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-const marked = new WeakSet<object>();
+// Markers are own symbol properties, not a WeakSet: boundFetch passes on a
+// copy of the init ({ ...init, signal }), and a spread keeps them.
+const IDEMPOTENT = Symbol.for("redline.transport.idempotent");
+const CALLER_RETRIES = Symbol.for("redline.transport.callerRetries");
+type Marks = { [IDEMPOTENT]?: true; [CALLER_RETRIES]?: true };
+const marks = (x: unknown): Marks => (x ?? {}) as Marks;
 
 /**
  * Marks a request (a Request, or the init passed with it) as safe to send
@@ -40,7 +45,17 @@ const marked = new WeakSet<object>();
  * in a comment at the call site.
  */
 export function idempotent<T extends Request | RequestInit>(x: T): T {
-  marked.add(x);
+  (x as Marks)[IDEMPOTENT] = true;
+  return x;
+}
+
+/**
+ * Marks an init whose caller runs its own one retry on a new connection
+ * (src/prod.ts reads): the transport adds none of its own, so a request is
+ * never sent more than twice. A no-response error is still tagged infra.
+ */
+export function callerRetries<T extends RequestInit>(x: T): T {
+  (x as Marks)[CALLER_RETRIES] = true;
   return x;
 }
 
@@ -93,14 +108,11 @@ function notRepeatable(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): string | undefined {
+  if (marks(init)[CALLER_RETRIES]) return "its caller retries";
   // A stream body can't be sent again.
   if (init?.body instanceof ReadableStream) return "a stream body";
   if (SAFE_METHODS.has(method)) return undefined;
-  if (
-    (init && marked.has(init)) ||
-    (input instanceof Request && marked.has(input))
-  )
-    return undefined;
+  if (marks(init)[IDEMPOTENT] || marks(input)[IDEMPOTENT]) return undefined;
   return `${method} is not safe to repeat`;
 }
 

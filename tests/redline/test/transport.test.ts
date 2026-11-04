@@ -1,12 +1,12 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { InfraError } from "../src/fetch-timeout.ts";
+import { boundFetch, InfraError } from "../src/fetch-timeout.ts";
 import { HttpError } from "../src/http.ts";
 import { setCurrentTest, takeFileNotes } from "../src/notes.ts";
 import { levelOf, NO_RESPONSE_KEY } from "../src/report.ts";
 import { watchResets } from "../src/resets.ts";
-import { idempotent, transportFetch } from "../src/transport.ts";
+import { callerRetries, idempotent, transportFetch } from "../src/transport.ts";
 
 // #1133: a local server that resets a socket on its second request (or on
 // every request), driven through transportFetch on the real global fetch.
@@ -69,7 +69,8 @@ async function box(): Promise<Box> {
 }
 
 const watch = watchResets();
-const tf = transportFetch(globalThis.fetch, watch);
+// As live/setup.ts composes it: the bound outside, so markers survive its copy.
+const tf = boundFetch(transportFetch(globalThis.fetch, watch));
 // Every request is bounded: a hung server fails the test, never holds it.
 const bounded = (init: RequestInit = {}): RequestInit => ({
   ...init,
@@ -154,6 +155,17 @@ describe("transportFetch (#1133)", () => {
     expect(res.status).toBe(200);
     expect(b.hits.filter((h) => h.path === "/reset-reused")).toHaveLength(2);
     expect(retried()).toHaveLength(1);
+  });
+
+  it("a GET whose caller runs its own retry gets none here, and still reports infra", async () => {
+    const b = await box();
+    await warm(b);
+    const e = await rejection(
+      tf(`${b.origin}/reset-reused`, callerRetries(bounded())),
+    );
+    expect(b.hits.filter((h) => h.path === "/reset-reused")).toHaveLength(1);
+    expect(retried()).toEqual([]);
+    expect(levelFor(e).level).toBe("infra");
   });
 
   it("a reset on a new socket is not retried, and reports infra", async () => {
