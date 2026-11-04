@@ -141,21 +141,26 @@ const failed = () =>
 type Who = { user: Member } | { response: Response };
 
 /**
- * How recent the sign-in must be to load or post the form: the break-glass
- * window (10 minutes). A Google session must also carry a forced
- * re-authentication (auth_time, P3 T18) that recent, since a plain Google
- * sign-in can be silent SSO.
+ * How recent the forced sign-in must be to load or post the form: the
+ * break-glass window (10 minutes).
  */
 export const ROLE_CONFIRM_FRESH_MS = BREAK_GLASS_MS;
 
-/** Whether this cookie session's sign-in is recent enough (see ROLE_CONFIRM_FRESH_MS). */
+/**
+ * Whether this cookie session is a forced sign-in recent enough (see
+ * ROLE_CONFIRM_FRESH_MS). One marker for every provider, the session's
+ * re-auth time (`a`, set only by a forced flow): Google's auth_time after
+ * max_age=0, an Access sign-in asked for with prompt=login (?reauth=1), or
+ * an email code sign-in (every code is new and typed by the person). A
+ * plain sign-in, such as silent Access or Google SSO, has none, so a fresh
+ * iat alone never passes.
+ */
 function freshSignIn(c: Context<AppEnv>, now: number): boolean {
-  const iat = c.var.sessionIat ?? null;
-  if (iat === null || iat < now - ROLE_CONFIRM_FRESH_MS || iat > now + 60_000)
-    return false;
-  if (c.var.authMethod !== "google") return true;
-  const a = c.var.sessionAuthAt ?? null;
-  return a !== null && a >= now - ROLE_CONFIRM_FRESH_MS && a <= now + 60_000;
+  const recent = (t: number | null) =>
+    t !== null && t >= now - ROLE_CONFIRM_FRESH_MS && t <= now + 60_000;
+  return (
+    recent(c.var.sessionIat ?? null) && recent(c.var.sessionAuthAt ?? null)
+  );
 }
 
 /**

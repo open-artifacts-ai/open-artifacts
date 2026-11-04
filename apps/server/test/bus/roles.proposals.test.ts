@@ -14,7 +14,7 @@ import {
   type BusRoles,
   R,
 } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../../src/auth/session.js";
@@ -23,7 +23,8 @@ import { ROLE_CONFIRM_SCOPE } from "../../src/bus/role-confirm.js";
 import { formCsrf } from "../../src/http/pages.js";
 import { sha256Hex } from "../../src/util/crypto.js";
 import { trial } from "../auth-helpers.js";
-import { api, fetchAndWait } from "../helpers.js";
+import { accessSignIn } from "../fake-access.js";
+import { api, fetchAndWait, login } from "../helpers.js";
 import {
   connect,
   E,
@@ -51,7 +52,14 @@ type Who = { userId: string; cookie: string };
 
 /** A member with a connected machine (a daemon that said hello with the roles cap). */
 async function withBus(who?: Who) {
-  const m = who ?? (await member());
+  const base = who ?? (await member());
+  // A browser that just went through a forced sign-in (the re-auth marker):
+  // what the confirm page needs (#1372).
+  const now = Date.now();
+  const m = {
+    ...base,
+    cookie: await sessionAt(base.userId, now, "access", now),
+  };
   const mach = await machine("MacBook", m.userId);
   const d = await daemon(mach.token);
   d.send({
@@ -995,10 +1003,16 @@ describe("role proposals: a fresh sign-in, bound names (#1372 review)", () => {
     d.close();
   });
 
-  it("a sign-in under 10 minutes old confirms (Access, an email code)", async () => {
+  it("a sign-in under 10 minutes old with its re-auth marker confirms (Access, an email code); without the marker it is refused", async () => {
     for (const provider of ["access", "code"] as const) {
       const { who, d, p } = await pending();
-      const fresh = await sessionAt(who.userId, Date.now() - 9 * MIN, provider);
+      const at = Date.now() - 9 * MIN;
+      const bare = await sessionAt(who.userId, at, provider);
+      expect(
+        (await get(p.secret, { cookie: bare }, envOf(provider))).status,
+        provider,
+      ).toBe(403);
+      const fresh = await sessionAt(who.userId, at, provider, at);
       expect(
         (await confirmInBrowser(fresh, p.secret, "confirm", envOf(provider)))
           .status,
@@ -1137,6 +1151,55 @@ describe("role proposals: a fresh sign-in, bound names (#1372 review)", () => {
     const g = await get(p.secret, { cookie: who.cookie });
     expect(g.headers.get("referrer-policy")).toBe("no-referrer");
     expect(r.headers.get("referrer-policy")).toBe("no-referrer");
+    d.close();
+  });
+});
+
+describe("role proposals: the forced sign-in marker, through the real sign-in (#1372 re-review)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** A member signed in through Access (fake IdP), with a pending proposal. */
+  async function viaAccess(reauth: boolean) {
+    const email = `rp-${uniq("acc")}@x.com`;
+    const who = await login(email);
+    const bus = await withBus(who);
+    const n = ns("rp");
+    const alice = await open(who.userId, bus.d, n);
+    const p = proposed(
+      await propose(bus.pat, {
+        action: "set",
+        namespace: n,
+        name: "lead",
+        agent: alice.name,
+      }),
+    );
+    const cb = await accessSignIn(email, { reauth, next: path(p.secret) });
+    expect(cb.status).toBe(302);
+    const set = cb.headers
+      .getSetCookie()
+      .find((c) => c.startsWith(`${sessionCookieName(env)}=`));
+    if (!set) throw new Error("no session cookie");
+    return { who, d: bus.d, p, cookie: set.split(";")[0] as string };
+  }
+
+  it("a plain Access sign-in (silent SSO, no reauth=1) is refused at confirm", async () => {
+    const { who, d, p, cookie } = await viaAccess(false);
+    const g = await get(p.secret, { cookie });
+    expect(g.status).toBe(403);
+    expect(await g.text()).toContain("reauth=1");
+    const r = await post(p.secret, { cookie }, [
+      ["csrf", await forgedCsrf(who.userId, p.secret)],
+      ["decision", "confirm"],
+    ]);
+    expect(r.status).toBe(403);
+    expect(await roles(who.userId)).toEqual([]);
+    d.close();
+  });
+
+  it("an Access sign-in with reauth=1 confirms", async () => {
+    const { who, d, p, cookie } = await viaAccess(true);
+    expect((await confirmInBrowser(cookie, p.secret)).status).toBe(200);
+    expect(await roles(who.userId)).toHaveLength(1);
     d.close();
   });
 });
