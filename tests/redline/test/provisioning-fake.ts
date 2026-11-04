@@ -414,7 +414,9 @@ export function fakeApi(): FakeApi {
     if (path === "/world") return err(403, "forbidden");
     if (path === "/tokens") return err(403, "forbidden");
     if (path === "/releases")
-      return user ? err(403, "forbidden") : ok({ items: releases });
+      return user
+        ? err(403, "forbidden")
+        : ok({ items: releases, platform: PLATFORM });
     if (path === "/audit") {
       const actor = url.searchParams.get("actor");
       return ok({
