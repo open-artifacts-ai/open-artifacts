@@ -10,7 +10,7 @@ import type { Style } from "../src/term.ts";
 export const TOKEN = `oa_machine_${"a".repeat(28)}7f3a`;
 export const CODE = "K3M7-QW29";
 export const HUB = "https://bus.example.com";
-export const URL_ = `${HUB}/bus/approve/${CODE}`;
+export const URL_ = `${HUB}/bus/approve`;
 export const LABEL = "leo-macbook-pro";
 export const NS = "github.com/open-artifacts-ai/oa-bus";
 export const TAGS: Style = { color: "tags", dark: true, utf8: true };

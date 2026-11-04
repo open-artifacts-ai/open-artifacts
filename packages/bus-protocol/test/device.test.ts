@@ -16,12 +16,24 @@ import {
 const ok = {
   device_code: newDeviceSecret(),
   user_code: "AB2C-D3E4",
-  verification_uri: "https://oa.example.com/bus/approve/AB2C-D3E4",
+  verification_uri: "https://oa.example.com/bus/approve",
   expires_in: 600,
   interval: 5,
 };
 const p = (verification_uri: string) =>
   DeviceCodeResponseSchema.safeParse({ ...ok, verification_uri }).success;
+
+/** Every way a verification URI could carry the user code (RFC 8628 section 5.4). */
+const WITH_CODE = [
+  "https://oa.example.com/bus/approve/AB2C-D3E4",
+  "https://oa.example.com/bus/approve/AB2CD3E4",
+  "https://oa.example.com/bus/approve/ab2c-d3e4",
+  "https://oa.example.com/bus/approve?user_code=AB2C-D3E4",
+  "https://oa.example.com/bus/approve?code=AB2CD3E4",
+  "https://oa.example.com/bus/approve#AB2C-D3E4",
+  "https://oa.example.com/bus/approve/",
+  "https://oa.example.com/AB2C-D3E4/bus/approve",
+];
 
 describe("routes", () => {
   it("pins the instance routes (design: Contracts)", () => {
@@ -29,50 +41,45 @@ describe("routes", () => {
     expect(BUS_ROUTES.device).toBe("/bus/device");
     expect(BUS_ROUTES.deviceToken).toBe("/bus/device/token");
     expect(BUS_ROUTES.connect).toBe("/bus/connect");
-    expect(BUS_ROUTES.approve("AB2C-D3E4")).toBe("/bus/approve/AB2C-D3E4");
-    expect(BUS_ROUTES.approve("AB2CD3E4")).toBe("/bus/approve/AB2CD3E4");
-  });
-  it("approve rejects anything but a user code", () => {
-    for (const x of [
-      "",
-      ".",
-      "..",
-      "AB2C-D3E",
-      "ab2c-d3e4",
-      "AB2C D3E4",
-      "IIII-OOOO",
-      "../x",
-    ])
-      expect(() => BUS_ROUTES.approve(x), x).toThrow();
+    // The approval page takes no code: the person types it there.
+    expect(BUS_ROUTES.approve).toBe("/bus/approve");
   });
 });
 
 describe("device code response", () => {
-  it("accepts the instance's approve page", () => {
+  it("accepts exactly the instance's approval page, with the code apart", () => {
     expect(DeviceCodeResponseSchema.safeParse(ok).success).toBe(true);
-    expect(p("http://localhost:8787/bus/approve/AB2C-D3E4")).toBe(true);
-    expect(p("http://127.0.0.1/bus/approve/AB2C-D3E4")).toBe(true);
-    expect(p("http://[::1]:8787/bus/approve/AB2C-D3E4")).toBe(true);
+    expect(p("http://localhost:8787/bus/approve")).toBe(true);
+    expect(p("http://127.0.0.1/bus/approve")).toBe(true);
+    expect(p("http://[::1]:8787/bus/approve")).toBe(true);
+  });
+  it("refuses a URI that carries the code, in any form", () => {
+    for (const u of WITH_CODE) expect(p(u), u).toBe(false);
+  });
+  it("refuses a verification_uri_complete", () => {
+    expect(
+      DeviceCodeResponseSchema.safeParse({
+        ...ok,
+        verification_uri_complete:
+          "https://oa.example.com/bus/approve?user_code=AB2C-D3E4",
+      }).success,
+    ).toBe(false);
   });
   it("rejects unsafe or wrong verification URIs", () => {
     for (const u of [
       "javascript:alert(1)",
       "file:///etc/passwd",
-      "http://oa.example.com/bus/approve/AB2C-D3E4",
-      "https://oa.example.com/approve/AB2C-D3E4",
-      "https://oa.example.com/bus/approve/ZZZZ-ZZZZ",
-      "https://oa.example.com/bus/approve/AB2C-D3E4/",
-      "https://oa.example.com/bus/approve/ab2c-d3e4",
-      "https://oa.example.com/bus/approve/AB2C-D3E4?x",
-      "https://oa.example.com/bus/approve/AB2C-D3E4#x",
-      "https://oa.example.com/bus/approve/AB2CD3E4",
-      "https://oa.example.com@evil.com/bus/approve/AB2C-D3E4",
-      "https://oa/x/../bus/approve/AB2C-D3E4",
-      "https://oa/bus/approve/AB2C-D3E4\u0007",
-      "https://o\na/bus/approve/AB2C-D3E4",
-      "http://localhost.evil.com/bus/approve/AB2C-D3E4",
-      "http://[::2]/bus/approve/AB2C-D3E4",
-      `https://${"a".repeat(3000)}/bus/approve/AB2C-D3E4`,
+      "http://oa.example.com/bus/approve",
+      "https://oa.example.com/approve",
+      "https://oa.example.com/bus/approve?x",
+      "https://oa.example.com/bus/approve#x",
+      "https://oa.example.com@evil.com/bus/approve",
+      "https://oa/x/../bus/approve",
+      "https://oa/bus/approve\u0007",
+      "https://o\na/bus/approve",
+      "http://localhost.evil.com/bus/approve",
+      "http://[::2]/bus/approve",
+      `https://${"a".repeat(3000)}/bus/approve`,
     ])
       expect(p(u), u).toBe(false);
   });
@@ -103,22 +110,28 @@ describe("device code response", () => {
       ).toBe(false);
     }
   });
-  it("the client checks the URI is on its own instance", () => {
-    expect(
-      verificationUriMatches(ok.verification_uri, "https://oa.example.com"),
-    ).toBe(true);
-    expect(
-      verificationUriMatches(ok.verification_uri, "https://oa.example.com/"),
-    ).toBe(true);
+  it("the client accepts only its own instance's approval page", () => {
+    const origin = "https://oa.example.com";
+    expect(verificationUriMatches(ok.verification_uri, origin)).toBe(true);
+    expect(verificationUriMatches(ok.verification_uri, `${origin}/`)).toBe(
+      true,
+    );
     expect(
       verificationUriMatches(ok.verification_uri, "https://evil.example.com"),
     ).toBe(false);
     expect(
       verificationUriMatches(ok.verification_uri, "http://oa.example.com"),
     ).toBe(false);
-    expect(verificationUriMatches("nope", "https://oa.example.com")).toBe(
-      false,
-    );
+    expect(verificationUriMatches("nope", origin)).toBe(false);
+    for (const u of WITH_CODE)
+      expect(verificationUriMatches(u, origin), u).toBe(false);
+    for (const u of [
+      "https://oa.example.com/bus",
+      "https://oa.example.com/bus/approvex",
+      "https://oa.example.com:8443/bus/approve",
+      "https://user@oa.example.com/bus/approve",
+    ])
+      expect(verificationUriMatches(u, origin), u).toBe(false);
   });
 });
 
