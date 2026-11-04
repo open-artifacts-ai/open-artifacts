@@ -36,6 +36,15 @@ export const CONFIG: ProvConfig = {
   prodInventory: "https://inventory.open-artifacts.app",
 };
 
+/** The platform's release; an explicit version above it is refused (#1176). */
+const PLATFORM = "0.82.0";
+const ahead = (v: string): boolean => {
+  const [a, b] = [v, PLATFORM].map((x) => x.split(".").map(Number));
+  for (let k = 0; k < 3; k++)
+    if ((a?.[k] ?? 0) !== (b?.[k] ?? 0)) return (a?.[k] ?? 0) > (b?.[k] ?? 0);
+  return false;
+};
+
 type Mode = "serving" | "paused" | "closed" | null;
 interface FInstall {
   id: string;
@@ -479,9 +488,10 @@ export function fakeApi(): FakeApi {
         [...installs.values()].some((i) => holdsSlug(i) && i.slug === body.slug)
       )
         return err(409, "slug_taken");
-      const version = (body.version as string | undefined) ?? "0.82.0";
+      const version = (body.version as string | undefined) ?? PLATFORM;
       const rel = releases.find((r) => r.version === version);
       if (!rel) return err(422, "release_not_published");
+      if (ahead(version)) return err(409, "release_ahead_of_platform");
       const tier = typeof body.tier === "string" ? body.tier : "team";
       const i = add({
         slug: String(body.slug),
@@ -552,7 +562,8 @@ export function fakeApi(): FakeApi {
     const confirm = () => body.confirmSlug === i.slug;
     switch (op) {
       case "upgrade": {
-        const to = (body.version as string | undefined) ?? "0.82.0";
+        const to = (body.version as string | undefined) ?? PLATFORM;
+        if (ahead(to)) return err(409, "release_ahead_of_platform");
         if (i.version && to <= i.version) return err(409, "downgrade_refused");
         const j = startJob(i, "upgrade", p, {
           onDone: () => {

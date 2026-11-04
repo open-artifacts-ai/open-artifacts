@@ -23,7 +23,7 @@ export const API_ERROR_STATUS = {
   invalid_state: 409,
   grace_expired: 409,
   downgrade_refused: 409,
-  /** An upgrade's explicit version is newer than the platform's own release (#1176). */
+  /** A create's or upgrade's explicit version is newer than the platform's own release (#1176). */
   release_ahead_of_platform: 409,
   signup_limit: 409,
   token_limit: 409,

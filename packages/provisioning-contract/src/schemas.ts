@@ -170,6 +170,7 @@ export type CreateInstall = z.infer<typeof CreateInstallSchema>;
 const requestId = RequestIdSchema;
 export const UpgradeSchema = z.object({
   requestId,
+  /** Default: the platform's own release, the one the fleet follows; never newer than it (#1176). */
   version: VersionSchema.optional(),
   nonAdditive: z
     .literal(true)

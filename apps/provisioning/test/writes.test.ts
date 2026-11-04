@@ -914,6 +914,38 @@ describe("lifecycle writes (R5-R13)", () => {
       expect(row?.version).toBe("1.41.2");
     });
 
+    it("R4 with an explicit version newer than the platform's is release_ahead_of_platform, with no signup; at or below it pins that version (#1176)", async () => {
+      const ahead = await call(at("v1.41.2"), ADMIN_P, "R4", {
+        body: leo({ slug: "ahead", version: "1.42.0" }),
+      });
+      expect(ahead.status).toBe(409);
+      expect(ahead.code).toBe("release_ahead_of_platform");
+      expect(
+        await db
+          .prepare("SELECT 1 AS x FROM signups WHERE slug = ?")
+          .bind("ahead")
+          .first(),
+      ).toBeNull();
+      for (const [tag, slug] of [
+        ["v1.41.2", "equal"],
+        ["v1.42.0", "below"],
+      ] as const) {
+        const r = await call(at(tag), ADMIN_P, "R4", {
+          body: leo({ slug, version: "1.41.2" }),
+        });
+        expect(r.status, slug).toBe(202);
+        const row = await db
+          .prepare("SELECT version FROM signups WHERE slug = ?")
+          .bind(slug)
+          .first<{ version: string | null }>();
+        expect(row?.version, slug).toBe("1.41.2");
+      }
+      const untagged = await call(at(undefined), ADMIN_P, "R4", {
+        body: leo({ slug: "untagged", version: "1.41.2" }),
+      });
+      expect(untagged.code).toBe("release_not_published");
+    });
+
     it("refuses a platform release that isn't installable, or lacks the variant", async () => {
       const PROVISIONER = fakeProvisionerRpc({
         releases: FAKE_RELEASES.map((r) =>
