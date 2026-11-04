@@ -57,6 +57,7 @@ describe("deploy-hosted-platform.yml", () => {
     const c = named("Check the inputs");
     expect(steps.indexOf(c)).toBe(0);
     expect(c.env).toEqual({
+      DEPLOY_ENV: "${{ inputs.env }}",
       TAG: "${{ inputs.tag }}",
       TARGETS: "${{ inputs.targets }}",
       REASON: "${{ inputs.reason }}",
@@ -67,6 +68,7 @@ describe("deploy-hosted-platform.yml", () => {
       spawnSync("bash", ["-c", c.run], {
         env: {
           PATH: process.env.PATH,
+          DEPLOY_ENV: "prod",
           TAG: "v0.90.3",
           TARGETS,
           REASON,
@@ -134,8 +136,8 @@ describe("deploy-hosted-platform.yml", () => {
       "Reason: dispatch 5xx %s\n\nRun: https://github.com/o/r/actions/runs/1\n\nActor: someone\n",
     );
   });
-  it("runs only on dispatch, read-only, one at a time, in the env's Environment", () => {
-    expect(Object.keys(w.on)).toEqual(["workflow_dispatch"]);
+  it("runs on dispatch or from the release chain, read-only, one at a time, in the env's Environment", () => {
+    expect(Object.keys(w.on)).toEqual(["workflow_dispatch", "workflow_call"]);
     const inputs = w.on.workflow_dispatch.inputs;
     expect(inputs.tag.required).toBe(true);
     expect(inputs.env).toMatchObject({
@@ -411,6 +413,7 @@ describe("deploy-hosted-platform.yml", () => {
       spawnSync("bash", ["-c", check], {
         env: {
           PATH: process.env.PATH,
+          DEPLOY_ENV: "staging",
           TAG,
           TARGETS,
           REASON: "test",
@@ -594,5 +597,59 @@ describe("deploy-hosted-platform.yml", () => {
       CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
       GH_TOKEN: "${{ github.token }}",
     });
+  });
+
+  // #1343: prod-release-chain.yml calls this file. A manual dispatch keeps
+  // every input as it was; the call takes the same inputs, so every gate and
+  // `if:` that reads them resolves the same way.
+  it("workflow_call takes the dispatch's inputs, same defaults; the env is checked in the input step", () => {
+    const d = w.on.workflow_dispatch.inputs;
+    const c = w.on.workflow_call.inputs;
+    expect(Object.keys(c)).toEqual(Object.keys(d));
+    expect(d.env).toEqual({
+      description: "Which env's Workers",
+      required: true,
+      type: "choice",
+      options: ["staging", "prod"],
+    });
+    expect(c.env).toEqual({ type: "string", required: true });
+    expect(c.tag).toEqual({ type: "string", required: true });
+    expect(c.targets).toEqual({
+      type: "string",
+      required: false,
+      default: FULL,
+    });
+    expect(d.targets.default).toBe(FULL);
+    expect(c.reason).toEqual({ type: "string", required: false, default: "" });
+    expect(c.verify_only).toEqual({
+      type: "boolean",
+      required: false,
+      default: false,
+    });
+    // No secrets declared: the job's Environment supplies them.
+    expect(w.on.workflow_call.secrets).toBeUndefined();
+    // The env has no choice type under workflow_call: the first step refuses
+    // anything but staging or prod, before any checkout.
+    const check = named("Check the inputs");
+    const go = (DEPLOY_ENV: string) =>
+      spawnSync("bash", ["-c", check.run], {
+        env: {
+          PATH: process.env.PATH,
+          DEPLOY_ENV,
+          TAG: "v0.90.3",
+          TARGETS: FULL,
+          REASON: "",
+          VERIFY_ONLY: "false",
+          OA_OWNER_EMAIL: "me@test.invalid",
+        },
+        encoding: "utf8",
+      });
+    expect(go("prod").status).toBe(0);
+    expect(go("staging").status).toBe(0);
+    for (const bad of ["", "dev", "prod ", "Prod", "prod\nstaging"]) {
+      const r = go(bad);
+      expect(r.status, bad).toBe(1);
+      expect(r.stdout).toContain("env must be staging or prod");
+    }
   });
 });

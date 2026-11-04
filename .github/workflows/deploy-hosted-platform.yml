@@ -1,5 +1,6 @@
 # Deploys one env's hosted platform Workers (docs/ops/hosted.md) from a stable
-# release tag, by hand only: the platform D1 migrations, the auth and directory
+# release tag, by hand or from prod-release-chain.yml (#1343, workflow_call,
+# always env prod and every target): the platform D1 migrations, the auth and directory
 # brokers, the provision token's read-back, the provisioner, dispatch, the
 # scheduler, the inventory Worker, the Provisioning API and the
 # zone wiring (DNS, routes, settings: planned, then applied in the same run).
@@ -50,6 +51,31 @@ on:
         required: true
         default: false
         type: boolean
+  # The automatic prod release chain (prod-release-chain.yml, #1343). The same
+  # inputs, so every gate below runs unchanged; env has no choice type here,
+  # so the input check refuses anything but staging or prod. A called run
+  # shares this file's concurrency group with a manual one, and github.ref
+  # and github.sha are the caller's (workflow_run: main and main's head).
+  workflow_call:
+    inputs:
+      env:
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+      targets:
+        type: string
+        required: false
+        default: "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones"
+      reason:
+        type: string
+        required: false
+        default: ""
+      verify_only:
+        type: boolean
+        required: false
+        default: false
 
 # actions: read lets the release gate read release-please.yml's run and jobs
 # (and the staging-first gate redline-staging.yml's runs); issues: write lets
@@ -71,6 +97,7 @@ jobs:
     steps:
       - name: Check the inputs
         env:
+          DEPLOY_ENV: ${{ inputs.env }}
           TAG: ${{ inputs.tag }}
           TARGETS: ${{ inputs.targets }}
           REASON: ${{ inputs.reason }}
@@ -78,6 +105,8 @@ jobs:
           OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
         run: |
           set -euo pipefail
+          # workflow_call has no choice type: the env is checked here.
+          case "$DEPLOY_ENV" in staging | prod) ;; *) echo "env must be staging or prod"; exit 1 ;; esac
           # #1084: the scheduler needs the alert address. Refuse here, before
           # any target runs, so a run never stops halfway through the list.
           # Logs print the address normalized, and only the exact stored value

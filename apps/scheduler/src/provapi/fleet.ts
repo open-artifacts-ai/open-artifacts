@@ -4,8 +4,10 @@
 // Worker), so the fleet moves when the platform does: staging on the staging
 // deploy, prod on the prod deploy, which a green staging red-line gates.
 //
-// The canary (FLEET_CANARY) goes first and must soak. Then batches of
-// FLEET_CONCURRENCY, each soaking whole before the next starts. Only serving,
+// The canary (FLEET_CANARY) goes first and must soak. Then FLEET_SECOND
+// (#1343: prod's leo), alone, if it is behind and may move; it soaks too. Then
+// batches of FLEET_CONCURRENCY, oldest first, each soaking whole before the
+// next starts. The soak is FLEET_SOAK_MIN minutes per env (staging 15, prod 60). Only serving,
 // active, idle installs with health ok and test hooks off move: a broken
 // install is skipped (version_skew reports it), so it can't halt a release.
 // The exception is an install on a halted version, or one that halted a
@@ -41,12 +43,19 @@ import { dutyCategory } from "./run.js";
 
 /** A batch: open fleet upgrades at once, the insert's own guard included. */
 export const FLEET_CONCURRENCY = 3;
-/** Unbroken passing probes this long and an install has soaked. */
+/**
+ * Unbroken passing probes this long and an install has soaked: the default,
+ * with FLEET_SOAK_MIN unset (#1343: staging 15, prod 60).
+ */
 export const FLEET_SOAK_MS = 15 * 60_000;
+/** FLEET_SOAK_MIN's bounds, in minutes. */
+export const FLEET_SOAK_MIN_MAX = 24 * 60;
 /** Passes further apart than this aren't unbroken: the clock restarts. */
 export const FLEET_SOAK_GAP_MS = 5 * 60_000;
-/** The canary isn't soaked on the target this long: fleet_halted opens. */
-export const FLEET_BLOCKED_MS = 45 * 60_000;
+/** canary_blocked opens this long after the soak, so never mid-soak. */
+export const FLEET_BLOCKED_EXTRA_MS = 30 * 60_000;
+/** The canary isn't soaked on the target this long: fleet_halted opens (the default soak's). */
+export const FLEET_BLOCKED_MS = FLEET_SOAK_MS + FLEET_BLOCKED_EXTRA_MS;
 /** version_skew: an install off the target this long. */
 export const FLEET_SKEW_MS = 6 * 60 * 60_000;
 /** One /healthz probe; every probe of a tick runs at once. */
@@ -92,6 +101,37 @@ export const fleetCanary = (v: string | undefined): string | null => {
   const id = v?.trim() ?? "";
   return isInstallId(id) ? id : null;
 };
+
+/**
+ * FLEET_SECOND (#1343, prod's leo) when it is an install id other than the
+ * canary, else null. It goes first among the installs still behind, alone,
+ * once the canary has soaked; the batches wait for it to soak.
+ */
+export const fleetSecond = (
+  v: string | undefined,
+  canary: string | null,
+): string | null => {
+  const id = fleetCanary(v);
+  return id !== null && id !== canary ? id : null;
+};
+
+/**
+ * FLEET_SOAK_MIN as milliseconds: unset or empty is the default
+ * (FLEET_SOAK_MS); a whole number of minutes from 1 to FLEET_SOAK_MIN_MAX is
+ * that; anything else is null, and the rollout stops (bad_soak): a typo must
+ * never shorten prod's soak.
+ */
+export function fleetSoakMs(v: string | undefined): number | null {
+  const s = v?.trim() ?? "";
+  if (s === "") return FLEET_SOAK_MS;
+  if (!/^[1-9]\d{0,3}$/.test(s)) return null;
+  const n = Number(s);
+  return n <= FLEET_SOAK_MIN_MAX ? n * 60_000 : null;
+}
+
+/** canary_blocked's window for a soak: the soak plus FLEET_BLOCKED_EXTRA_MS. */
+export const fleetBlockedMs = (soakMs: number): number =>
+  soakMs + FLEET_BLOCKED_EXTRA_MS;
 
 /** A fleet upgrade's request id: one per install and target. */
 export function fleetRequestId(installId: string, to: string): string {
@@ -380,10 +420,17 @@ export async function fleetDue(
   const ms = o.timeoutMs ?? FLEET_PROBE_TIMEOUT_MS;
   const target = fleetTarget(env.CF_VERSION_METADATA);
   const canaryId = fleetCanary(env.FLEET_CANARY);
+  const secondId = fleetSecond(env.FLEET_SECOND, canaryId);
+  const soakMs = fleetSoakMs(env.FLEET_SOAK_MIN);
   const st = await fleetState(db);
 
   await haltFailedJobs(db, now, st, canaryId);
   await prune(db, now, st, target);
+  if (soakMs === null) {
+    // fleet_halted opens with bad_soak while a canary is set.
+    console.log("provapi fleet bad_soak");
+    return;
+  }
   if (target === null) {
     // With a canary set, fleet_halted opens for it (fleetConditions).
     console.log("provapi fleet no_target");
@@ -395,7 +442,7 @@ export async function fleetDue(
       : await d1(db.prepare(CANARY).bind(canaryId).first<CanaryRow>());
   // Runs with or without a canary: switching the rollout off never drops an
   // upgrade already made.
-  const hold = await watch(db, now, st, target, canary, probe, ms);
+  const hold = await watch(db, now, st, target, canary, probe, ms, soakMs);
   if (canaryId === null) {
     console.log("provapi fleet no_canary");
     return;
@@ -432,6 +479,31 @@ export async function fleetDue(
       health: string | null;
     }>(),
   );
+  // FLEET_SECOND first among those behind, and alone: the watch then holds
+  // the batches until it soaks, as it holds them for any batch.
+  const below = (v: string) => {
+    try {
+      return compareVersions(v, target) < 0;
+    } catch {
+      return false;
+    }
+  };
+  const second = results.find(
+    (r) => r.install_id === secondId && below(r.version),
+  );
+  if (second !== undefined) {
+    const broken = second.serving_mode !== "serving" || second.health !== "ok";
+    await upgrade(
+      env,
+      manage,
+      now,
+      second.install_id,
+      second.version,
+      target,
+      broken,
+    );
+    return;
+  }
   let slots = FLEET_CONCURRENCY;
   for (const r of results) {
     if (slots <= 0) break;
@@ -649,6 +721,7 @@ async function watch(
   canary: CanaryRow | null,
   probe: HealthProbe,
   ms: number,
+  soakMs: number,
 ): Promise<boolean> {
   const { results } = await d1(db.prepare(WATCH).bind(target).all<Watched>());
   const all = [...results];
@@ -677,7 +750,7 @@ async function watch(
   for (const [i, r] of all.entries()) {
     try {
       const soaked = verdicts[i]
-        ? await passed(db, now, st, target, r.install_id)
+        ? await passed(db, now, st, target, r.install_id, soakMs)
         : await failed(db, now, st, target, r.install_id);
       if (!soaked) hold = true;
     } catch (e) {
@@ -699,12 +772,13 @@ async function passed(
   st: FleetState,
   target: string,
   id: string,
+  soakMs: number,
 ): Promise<boolean> {
   const key = passKey(target, id);
   const prev = st.rows.get(key);
   const unbroken = prev && now - prev.updated_at <= FLEET_SOAK_GAP_MS;
   const start = unbroken ? prev.value : now;
-  if (now - start < FLEET_SOAK_MS) {
+  if (now - start < soakMs) {
     await d1(db.prepare(SET_PASS).bind(key, start, now).run());
     st.rows.set(key, { key, value: start, updated_at: now });
     return false;
@@ -822,20 +896,25 @@ const isHeld = async (db: D1Database, target: string) =>
 /**
  * fleet_halted and version_skew for this tick.
  * - fleet_halted: halts on the target, any halt on another version in the
- *   last FLEET_HALT_ALERT_MS, a canary not soaked on the target
- *   FLEET_BLOCKED_MS after the duty first saw it (canary_blocked), and a
- *   canary set with no target (no_target).
+ *   last FLEET_HALT_ALERT_MS, a canary not soaked on the target the soak plus
+ *   FLEET_BLOCKED_EXTRA_MS after the duty first saw it (canary_blocked), a
+ *   canary set with no target (no_target), and a canary set with an invalid
+ *   FLEET_SOAK_MIN (bad_soak).
  * - version_skew: installs first seen off FLEET_SKEW_MS ago. Unknown with no
  *   canary or no target, so it never sends a false all-clear.
  */
 export async function fleetConditions(
-  env: Pick<ProvapiEnv, "PLATFORM_DB" | "CF_VERSION_METADATA" | "FLEET_CANARY">,
+  env: Pick<
+    ProvapiEnv,
+    "PLATFORM_DB" | "CF_VERSION_METADATA" | "FLEET_CANARY" | "FLEET_SOAK_MIN"
+  >,
   now: number,
 ): Promise<{ fleet_halted: Condition; version_skew: Condition }> {
   const unknown: Condition = { open: null, rows: [] };
   const db = env.PLATFORM_DB;
   const target = fleetTarget(env.CF_VERSION_METADATA);
   const canary = fleetCanary(env.FLEET_CANARY);
+  const soakMs = fleetSoakMs(env.FLEET_SOAK_MIN);
   let st: FleetState;
   try {
     st = await fleetState(db);
@@ -865,7 +944,11 @@ export async function fleetConditions(
       .filter((r) => r.key.startsWith(FLEET_BLOCKED_PREFIX))
       .map((r) => r.value);
     const since = stamps.length > 0 ? Math.min(...stamps) : null;
-    if (canary !== null && since !== null && now - since >= FLEET_BLOCKED_MS)
+    if (canary !== null && soakMs === null)
+      rows.push(row({ code: "bad_soak", since: now }));
+    // An invalid soak blocks at the default's window: bad_soak says why.
+    const blockedMs = fleetBlockedMs(soakMs ?? FLEET_SOAK_MS);
+    if (canary !== null && since !== null && now - since >= blockedMs)
       rows.push(
         row({
           install_id: canary,

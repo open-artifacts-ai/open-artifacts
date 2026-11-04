@@ -1,0 +1,137 @@
+# The automatic prod release chain (#1343). When a red-line run passes for an
+# exact release tag, the chain deploys that tag to the prod platform with no
+# human step; the scheduler's fleet duty (#955) then upgrades the canary, leo
+# and the rest, each soaking first (apps/scheduler/src/provapi/fleet.ts).
+# Forward only: nothing here rolls back. docs/ops/hosted.md has the halts and
+# how one clears.
+#
+# Off until reviewed: the gate runs only with the repo variable
+# PROD_RELEASE_CHAIN set to "on". The fleet has its own switch, prod's
+# FLEET_CANARY in apps/scheduler/wrangler.jsonc.
+#
+# The only trigger is a completed redline-staging run that concluded success
+# and was dispatched (the nightly calls it, so its runs never count). The tag
+# comes only from that run's display title (redline-staging.yml's run-name),
+# through env, never into a script. Then main's own scripts prove it again:
+# staging-first-gate.sh, tag-passed-checks.sh prod, this event being the
+# newest green run for the tag, and the tag being newer than the release
+# prod's scheduler runs. The deploy is deploy-hosted-platform.yml itself, as
+# a workflow_call with env prod and every target, so all its gates and the
+# platform-tags.sh read-back run unchanged, and its concurrency group
+# serializes the chain against a manual deploy. A red chain run keeps one
+# `blocker` issue open; a green one closes it.
+name: prod-release-chain
+
+on:
+  workflow_run:
+    workflows: [redline-staging]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: prod-release-chain
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: ${{ vars.PROD_RELEASE_CHAIN == 'on' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    # The prod deploy token, for one read: the scheduler's release tag.
+    environment: hosted-prod-deploy
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      # workflow_run runs on the default branch; refuse anything else.
+      - name: On main
+        env:
+          REF: ${{ github.ref }}
+        run: '[ "$REF" = refs/heads/main ] || { echo "the chain runs on main only"; exit 1; }'
+      # main's scripts and constants only.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            scripts/ci
+            .github/hosted
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      # The run's title is the only source of the tag, checked against
+      # redline-staging.yml's run-name before anything uses it.
+      - id: tag
+        name: The tag, from the red-line run's name
+        env:
+          TITLE: ${{ github.event.workflow_run.display_title }}
+        run: node --experimental-strip-types scripts/ci/prod-release-chain.ts tag --title "$TITLE" >> "$GITHUB_OUTPUT"
+      - name: Staging passed this tag
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/staging-first-gate.sh "$TAG"
+      - name: The tag passed every earlier check
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/tag-passed-checks.sh prod "$TAG"
+      - name: This event is the newest green run for the tag
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: node --experimental-strip-types scripts/ci/prod-release-chain.ts fresh --repo "$GITHUB_REPOSITORY" --tag "$TAG" --head-sha "$HEAD_SHA"
+      - name: Load the hosted constants
+        run: bash scripts/ci/hosted-constants.sh prod .github/hosted > /dev/null
+      - name: The tag is newer than prod's
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          current="$(bash scripts/ci/worker-tag.sh prod scheduler)"
+          node --experimental-strip-types scripts/ci/prod-release-chain.ts newer --tag "$TAG" --current "$current"
+  deploy:
+    needs: gate
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    uses: ./.github/workflows/deploy-hosted-platform.yml
+    with:
+      env: prod
+      tag: ${{ needs.gate.outputs.tag }}
+      targets: "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones"
+      reason: ""
+      verify_only: false
+    # No secrets passed: the called job names its Environment
+    # (hosted-prod-deploy), and that Environment's secrets reach it there.
+  report:
+    needs: [gate, deploy]
+    if: ${{ always() && vars.PROD_RELEASE_CHAIN == 'on' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Keep the blocker issue in step
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          # A failed gate is reported too: the chain never fails quietly.
+          RESULT: ${{ needs.gate.result == 'success' && needs.deploy.result || needs.gate.result }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/ci/prod-release-chain.ts report --repo "$GITHUB_REPOSITORY" --tag "$TAG" --result "$RESULT" --run "$RUN"

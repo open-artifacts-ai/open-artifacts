@@ -34,6 +34,7 @@ describe("deploy-hosted-platform.yml refuses before any target runs", () => {
     "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones";
   const run = (TARGETS: string, OA_OWNER_EMAIL: string) =>
     bash(check.run, {
+      DEPLOY_ENV: "prod",
       TAG: "v1.2.3",
       TARGETS,
       REASON: TARGETS === FULL ? "" : "a reason",
