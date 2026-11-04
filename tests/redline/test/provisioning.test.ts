@@ -26,8 +26,11 @@ import {
   BROKER_IP_WAIT_MS,
   bringUpgrade,
   CHAINS,
+  CLEANUP_TIMEOUT_MS,
+  caseTimeoutMs,
   cleanupInstalls,
   failText,
+  JOB_WITHIN_MS,
   mintCreds,
   type Outcome,
   P25_MAX_REQUESTS,
@@ -41,6 +44,7 @@ import {
   Run,
   revokeCreds,
   runProbe,
+  settledTimeoutMs,
   stagedVersion,
   startChains,
   statusCounts,
@@ -1805,7 +1809,7 @@ describe("the chains run at once (startChains)", () => {
       (j) => j.installId === rll?.id && j.kind === "create",
     );
     expect(fail).toBe(
-      `rl-l create at the release under test: job ${create?.id} failed at upload (attempt 1, last error cf_api_error)`,
+      `rl-l create at the release under test: job ${create?.id} failed, step upload (attempt 1, last error cf_api_error)`,
     );
     expect(level(fail)).toBe(`fail: ${fail}`);
     expect(out.get("P22")).toBe(fail);
@@ -2058,6 +2062,59 @@ describe("the chains run at once (startChains)", () => {
     expect(await at("2; drop", "a")).toBe(
       "R15 j1: still running at upload after 6 s (attempt ?, last error a)",
     );
+  });
+
+  it("rl-l's create answered `running` for the whole wait, then one network error on the poll past the bound: still a product fail, judged by the last answer", async () => {
+    const f = fakeApi();
+    f.faults.add("rll_create_stuck");
+    const pat = await bringUp(f);
+    let from: number | undefined;
+    const run = new Run(CONFIG, {
+      ...f.io,
+      rlAPat: () => pat,
+      fetch: (async (u: string, init?: RequestInit) => {
+        const rll = bySlug(f, "rl-l-");
+        const create = [...f.jobs.values()].find(
+          (j) => j.installId === rll?.id && j.kind === "create",
+        );
+        if (create && String(u).endsWith(`/jobs/${create.id}`)) {
+          from ??= f.clock.t;
+          // Every poll answers until the bound; the first one past it drops.
+          if (f.clock.t - from >= JOB_WITHIN_MS)
+            throw new TypeError("fetch failed");
+        }
+        return f.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    });
+    const plan = startChains(run);
+    const p20 = await (plan.outcomes.get("P20") as Promise<Outcome>).then(
+      (o) => o,
+      (e: Error) => e.message,
+    );
+    const rll = bySlug(f, "rl-l-");
+    const create = [...f.jobs.values()].find(
+      (j) => j.installId === rll?.id && j.kind === "create",
+    );
+    expect(p20).toBe(
+      `rl-l create at the release under test: R15 ${create?.id}: still running at upload after 1200 s (attempt 1, last error none)`,
+    );
+    expect(level(p20)).toBe(`fail: ${p20}`);
+    for (const r of plan.outcomes.values()) await r.catch(() => undefined);
+    await plan.settled;
+  });
+
+  it("settledTimeoutMs covers P33's case and the longest chain with its tail and the run's cleanup", () => {
+    const s = settledTimeoutMs();
+    expect(s).toBeGreaterThanOrEqual(caseTimeoutMs("P33"));
+    const rll = CHAINS.find((c) => c.name === "rl-l");
+    const last = rll?.probes[rll.probes.length - 1] as ProbeId;
+    expect(s).toBeGreaterThanOrEqual(caseTimeoutMs(last) + CLEANUP_TIMEOUT_MS);
+    for (const c of CHAINS) {
+      const end = c.probes[c.probes.length - 1] as ProbeId;
+      expect(s).toBeGreaterThanOrEqual(
+        caseTimeoutMs(end) + (c.tail ? CLEANUP_TIMEOUT_MS : 0),
+      );
+    }
   });
 
   it("the after step starts once every chain's probes are done, without waiting for a tail; settled still waits for the tail", async () => {

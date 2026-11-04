@@ -282,7 +282,17 @@ export class Run {
       within?: number;
     } = {},
   ): Promise<Job> {
-    const end = this.io.now() + (o.within ?? JOB_WITHIN_MS);
+    const within = o.within ?? JOB_WITHIN_MS;
+    const end = this.io.now() + within;
+    const still = (j: Job) =>
+      new JobTimedOut(
+        `R15 ${jobId}: still ${j.status} at ${j.step ?? "?"} after ${Math.round(within / 1000)} s (${jobRetries(j)})`,
+        jobId,
+        true,
+      );
+    // The last job R15 answered: a network error on the poll past the bound
+    // still judges the job by it (it was slow, not unanswered).
+    let last: Job | undefined;
     for (;;) {
       let r: Res;
       try {
@@ -290,12 +300,14 @@ export class Run {
       } catch {
         // A dropped connection says nothing about the job: keep polling. Only
         // the network throws here: an answer, however bad, fails below.
-        if (this.io.now() >= end)
+        if (this.io.now() >= end) {
+          if (last) throw still(last);
           throw new JobTimedOut(
-            `R15 ${jobId}: no answer for ${Math.round((o.within ?? JOB_WITHIN_MS) / 1000)} s`,
+            `R15 ${jobId}: no answer for ${Math.round(within / 1000)} s`,
             jobId,
             false,
           );
+        }
         await this.io.wait(POLL_MS);
         continue;
       }
@@ -303,12 +315,8 @@ export class Run {
       const j = r.json as Job;
       if (o.until ? o.until(j) : j.status === "done" || j.status === "failed")
         return j;
-      if (this.io.now() >= end)
-        throw new JobTimedOut(
-          `R15 ${jobId}: still ${j.status} at ${j.step ?? "?"} after ${Math.round((o.within ?? JOB_WITHIN_MS) / 1000)} s (${jobRetries(j)})`,
-          jobId,
-          true,
-        );
+      last = j;
+      if (this.io.now() >= end) throw still(j);
       await this.io.wait(POLL_MS);
     }
   }
@@ -940,7 +948,7 @@ async function makeLifecycle(run: Run): Promise<RlP> {
     try {
       j = await run.waitJob(a.job.id);
     } catch (e) {
-      if (e instanceof JobTimedOut && e.jobId === a.job.id) {
+      if (e instanceof JobTimedOut) {
         run.s.rllCreateTimedOut = a.job.id;
         if (e.answered)
           throw new CreateVerdict(
@@ -951,7 +959,7 @@ async function makeLifecycle(run: Run): Promise<RlP> {
     }
     if (j.status !== "done")
       throw new CreateVerdict(
-        `rl-l create at the release under test: job ${a.job.id} ${j.status} at ${j.step ?? "?"} (${jobRetries(j)})${failText(j)}`,
+        `rl-l create at the release under test: job ${a.job.id} ${j.status}, step ${j.step ?? "?"} (${jobRetries(j)})${failText(j)}`,
       );
     const d = await ownDetail(run, a.install.id);
     expect(d, 200, "rl-l R3");
