@@ -49,7 +49,11 @@ import {
 } from "@oa/provisioning-contract/enum-values";
 import { alertStateKey } from "@oa/provisioning-contract/state";
 import type { ProvapiEnv } from "./env.js";
-import { FLEET_BLOCKED_MS, FLEET_SKEW_MS } from "./fleet.js";
+import {
+  FLEET_BLOCKED_EXTRA_MS,
+  FLEET_BLOCKED_MS,
+  FLEET_SKEW_MS,
+} from "./fleet.js";
 import { claimState, getState, raiseState, unclaimState } from "./state.js";
 
 export type AlertState = "open" | "remind" | "clear";
@@ -482,7 +486,7 @@ const COPY: Record<AlertKey, Copy> = {
   fleet_halted: {
     title: "fleet rollout halted",
     open: (f) =>
-      `The fleet rollout stopped (${plural(f.count, "problem")}; codes: ${f.codes.join(", ") || "none"}). No install is upgraded to a halted version, and the fleet never rolls one back. fleet_halt: upgraded installs failed two health probes of this version on separate ticks. A job code: a fleet upgrade failed, and that install stays on the new version (upgrade_incomplete; upgrade_rolled_back is an older job's, from before upgrades stopped reverting); migration_held on the canary means a migration that can lose data waits for a person to read it. smoke_failed: the canary smoke failed on the canary, so nothing else moved; the row names the check. smoke_unconfigured: the canary smoke can't run as set up, so nothing moves; the row names what: token (no FLEET_SMOKE_TOKEN), token_rejected (the smoke token was rejected: check the token, or a PAT auth regression in this release), smoke_a (smoke isn't an active plain member), share (FLEET_SMOKE_SHARE_TO malformed, smoke's own, or outside smoke's domain). canary_blocked: the canary (FLEET_CANARY) has not settled and passed the smoke on the release after ${FLEET_BLOCKED_MS / 60_000} minutes, for any reason, so nothing else moved. no_target: the scheduler has no release tag, so nothing can move. Do not roll back: fix the cause and ship the next release, which starts a new rollout from the canary.`,
+      `The fleet rollout stopped (${plural(f.count, "problem")}; codes: ${f.codes.join(", ") || "none"}). No install is upgraded to a halted version, and the fleet never rolls one back. fleet_halt: upgraded installs failed two health probes of this version on separate ticks. A job code: a fleet upgrade failed, and that install stays on the new version (upgrade_incomplete; upgrade_rolled_back is an older job's, from before upgrades stopped reverting); migration_held on the canary means a migration that can lose data waits for a person to read it. smoke_failed: the canary smoke failed on the canary, so nothing else moved; the row names the check. smoke_unconfigured: the canary smoke can't run as set up, so nothing moves; the row names what: token (no FLEET_SMOKE_TOKEN), token_rejected (the smoke token was rejected: check the token, or a PAT auth regression in this release), smoke_a (smoke isn't an active plain member), share (FLEET_SMOKE_SHARE_TO malformed, smoke's own, or outside smoke's domain). canary_blocked: the canary (FLEET_CANARY) has not settled and passed the smoke on the release after ${FLEET_BLOCKED_MS / 60_000} minutes (with FLEET_SMOKE off, ${FLEET_BLOCKED_EXTRA_MS / 60_000} minutes past its FLEET_SOAK_MIN soak), for any reason, so nothing else moved. no_target: the scheduler has no release tag, so nothing can move. Do not roll back: fix the cause and ship the next release, which starts a new rollout from the canary.`,
     clear: "No fleet rollout is halted.",
   },
   version_skew: {

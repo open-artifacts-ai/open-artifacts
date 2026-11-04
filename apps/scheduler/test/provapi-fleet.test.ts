@@ -30,6 +30,7 @@ import {
   FLEET_SOAK_MS,
   FLEET_SOAK_OFF_MS,
   FLEET_SOAKED_PREFIX,
+  fleetBlockedMs,
   fleetConditions,
   fleetDue,
   fleetRequestId,
@@ -2505,5 +2506,33 @@ describe("#1343: FLEET_SMOKE off follows the per-env FLEET_SOAK_MIN", () => {
     await fleetDue(f.env, NOW + FLEET_SOAK_MS, f.opts);
     expect(f.smokes).toHaveLength(1);
     expect(await queued()).toEqual([rest]);
+  });
+});
+
+describe("#1343: canary_blocked waits out the off-mode soak", () => {
+  it("the window: 45 min with the smoke required; soak plus 30 with it off", () => {
+    expect(fleetBlockedMs({})).toBe(FLEET_BLOCKED_MS);
+    expect(
+      fleetBlockedMs({ FLEET_SMOKE: "required", FLEET_SOAK_MIN: "60" }),
+    ).toBe(45 * MIN);
+    expect(fleetBlockedMs({ FLEET_SMOKE: "off" })).toBe(45 * MIN);
+    expect(fleetBlockedMs({ FLEET_SMOKE: "off", FLEET_SOAK_MIN: "15" })).toBe(
+      45 * MIN,
+    );
+    expect(fleetBlockedMs({ FLEET_SMOKE: "off", FLEET_SOAK_MIN: "60" })).toBe(
+      90 * MIN,
+    );
+  });
+
+  it("off with prod's 60: no canary_blocked mid-soak, at 90 it opens", async () => {
+    const canary = await on("0.92.0", { serving: "paused" });
+    const f = fakes({ canary });
+    Object.assign(f.env, { FLEET_SMOKE: "off", FLEET_SOAK_MIN: "60" });
+    await fleetDue(f.env, NOW, f.opts);
+    const code = async (at: number) =>
+      (await fleetConditions(f.env, at)).fleet_halted.rows.map((r) => r.code);
+    expect(await code(NOW + FLEET_BLOCKED_MS)).toEqual([]);
+    expect(await code(NOW + 90 * MIN - 1)).toEqual([]);
+    expect(await code(NOW + 90 * MIN)).toEqual(["canary_blocked"]);
   });
 });

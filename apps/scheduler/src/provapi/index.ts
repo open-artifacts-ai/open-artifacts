@@ -40,6 +40,7 @@ export async function alertsTick(env: ProvapiEnv, now: number): Promise<void> {
       versionMetadata: env.CF_VERSION_METADATA,
       fleetCanary: env.FLEET_CANARY,
       fleetSmoke: env.FLEET_SMOKE,
+      fleetSoakMin: env.FLEET_SOAK_MIN,
     },
   );
   for (const k of ALERT_KEYS) {

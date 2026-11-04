@@ -110,6 +110,8 @@ export async function alertConditions(
     fleetCanary?: string;
     /** FLEET_SMOKE: only "required" reports smoke_unconfigured. */
     fleetSmoke?: string;
+    /** FLEET_SOAK_MIN: with the smoke off, canary_blocked's window follows it. */
+    fleetSoakMin?: string;
   } = {},
 ): Promise<Record<AlertKey, Condition>> {
   return {
@@ -121,6 +123,7 @@ export async function alertConditions(
         CF_VERSION_METADATA: o.versionMetadata,
         FLEET_CANARY: o.fleetCanary,
         FLEET_SMOKE: o.fleetSmoke,
+        FLEET_SOAK_MIN: o.fleetSoakMin,
       },
       input.now,
     )),

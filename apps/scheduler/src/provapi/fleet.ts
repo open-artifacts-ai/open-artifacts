@@ -94,6 +94,20 @@ export const fleetSmokeMode = (v: string | undefined): SmokeMode =>
 export const FLEET_SOAK_GAP_MS = 5 * 60_000;
 /** The canary isn't settled and smoked on the target this long: fleet_halted opens. */
 export const FLEET_BLOCKED_MS = 45 * 60_000;
+/** With the smoke off, canary_blocked opens this long after the soak, never mid-soak. */
+export const FLEET_BLOCKED_EXTRA_MS = 30 * 60_000;
+
+/**
+ * canary_blocked's window: FLEET_BLOCKED_MS with the smoke required (a 2-min
+ * settle and the smoke); the env's soak plus FLEET_BLOCKED_EXTRA_MS with it
+ * off (staging 45, prod 90), so it never opens mid-soak.
+ */
+export const fleetBlockedMs = (
+  env: Pick<ProvapiEnv, "FLEET_SMOKE" | "FLEET_SOAK_MIN">,
+): number =>
+  fleetSmokeMode(env.FLEET_SMOKE) === "off"
+    ? fleetSoakOffMs(env.FLEET_SOAK_MIN) + FLEET_BLOCKED_EXTRA_MS
+    : FLEET_BLOCKED_MS;
 /** version_skew: an install off the target this long. */
 export const FLEET_SKEW_MS = 6 * 60 * 60_000;
 /** One /healthz probe; every probe of a tick runs at once. */
@@ -1061,7 +1075,7 @@ const isHeld = async (db: D1Database, target: string) =>
  * fleet_halted and version_skew for this tick.
  * - fleet_halted: halts on the target (smoke_failed when the canary smoke
  *   halted it), any halt on another version in the last FLEET_HALT_ALERT_MS,
- *   a canary not settled and smoked on the target FLEET_BLOCKED_MS after the
+ *   a canary not settled and smoked on the target fleetBlockedMs after the
  *   duty first saw it (canary_blocked), a smoke that can't run as set up
  *   (smoke_unconfigured), and a canary set with no target (no_target).
  * - version_skew: installs first seen off FLEET_SKEW_MS ago. Unknown with no
@@ -1070,7 +1084,11 @@ const isHeld = async (db: D1Database, target: string) =>
 export async function fleetConditions(
   env: Pick<
     ProvapiEnv,
-    "PLATFORM_DB" | "CF_VERSION_METADATA" | "FLEET_CANARY" | "FLEET_SMOKE"
+    | "PLATFORM_DB"
+    | "CF_VERSION_METADATA"
+    | "FLEET_CANARY"
+    | "FLEET_SMOKE"
+    | "FLEET_SOAK_MIN"
   >,
   now: number,
 ): Promise<{ fleet_halted: Condition; version_skew: Condition }> {
@@ -1124,7 +1142,7 @@ export async function fleetConditions(
               ?.value ?? now,
         }),
       );
-    if (canary !== null && since !== null && now - since >= FLEET_BLOCKED_MS)
+    if (canary !== null && since !== null && now - since >= fleetBlockedMs(env))
       rows.push(
         row({
           install_id: canary,
