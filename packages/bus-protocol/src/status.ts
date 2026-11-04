@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { LIMITS } from "./limits.js";
-import { MachineLabelSchema } from "./refs.js";
+import { LIMITS } from "./limits.ts";
+import { MachineLabelSchema } from "./refs.ts";
 
 /** ISO 8601 with offset, as every wire timestamp. */
 export const IsoTimeSchema = z.string().datetime({ offset: true });

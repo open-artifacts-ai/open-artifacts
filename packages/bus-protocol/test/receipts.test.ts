@@ -4,7 +4,7 @@ import {
   REFUSAL_REASONS,
   ReceiptSchema,
   receiptLabel,
-} from "../src/receipts.js";
+} from "../src/receipts.ts";
 
 describe("receipts", () => {
   it("pins states and refusal reasons", () => {

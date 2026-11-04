@@ -11,7 +11,7 @@ import {
   newMsgId,
   newUserCode,
   normalizeUserCode,
-} from "../src/ids.js";
+} from "../src/ids.ts";
 
 describe("ids", () => {
   it("mints 16 base58 chars and validates them", () => {

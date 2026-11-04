@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import * as bus from "../src/index.js";
+import * as bus from "../src/index.ts";
 import {
   AgentRefSchema,
   BUS_ROUTES,
@@ -14,7 +14,7 @@ import {
   REFUSAL_REASONS,
   RESERVED_BUS_NAMES,
   SERVER_FRAMES,
-} from "../src/index.js";
+} from "../src/index.ts";
 
 const doc = readFileSync(new URL("../CONTRACT.md", import.meta.url), "utf8");
 

@@ -3,8 +3,8 @@ import {
   ApprovalBodySchema,
   DeviceCodeRequestSchema,
   newMachineLabel,
-} from "../src/device.js";
-import { MachineLabelSchema } from "../src/refs.js";
+} from "../src/device.ts";
+import { MachineLabelSchema } from "../src/refs.ts";
 
 const BAD = [
   "Mac‮kooB",

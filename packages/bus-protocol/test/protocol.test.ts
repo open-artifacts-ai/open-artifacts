@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { LIMITS } from "../src/limits.js";
+import { LIMITS } from "../src/limits.ts";
 import {
   NamespaceSchema,
   namespaceFrom,
   WireNamespaceSchema,
-} from "../src/namespace.js";
+} from "../src/namespace.ts";
 import {
   CLIENT_FRAMES,
   decodeClientFrame,
@@ -14,7 +14,7 @@ import {
   PING,
   PONG,
   SERVER_FRAMES,
-} from "../src/protocol.js";
+} from "../src/protocol.ts";
 
 const id = "7Yb3kQmZ1xRt9PvA";
 const mid = "aaaaaaaaaaaaaaaa";
@@ -669,7 +669,7 @@ describe("keepalive", () => {
 
 describe("AGENT_CAP_MESSAGES (B11)", () => {
   it("pins the exact agent_up cap refusal messages clients match on", async () => {
-    const { AGENT_CAP_MESSAGES } = await import("../src/protocol.js");
+    const { AGENT_CAP_MESSAGES } = await import("../src/protocol.ts");
     expect(AGENT_CAP_MESSAGES).toEqual({
       machine: "Too many live agents on this machine",
       member: "Too many live agents on this bus",

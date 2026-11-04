@@ -3,8 +3,8 @@ import {
   ApprovalBodySchema,
   DeviceCodeRequestSchema,
   newMachineLabel,
-} from "../src/device.js";
-import { MachineLabelSchema } from "../src/refs.js";
+} from "../src/device.ts";
+import { MachineLabelSchema } from "../src/refs.ts";
 
 const ok = (s: string) => MachineLabelSchema.safeParse(s).success;
 const lone = (s: string) =>
