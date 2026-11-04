@@ -81,8 +81,9 @@ jobs:
           ANALYTICS_OUTCOME: ${{ needs.deploy.outputs.analytics }}
         run: bash scripts/ci/staging-analytics-token.sh outcome
   # #1406: a red smoke on main never goes unseen (#1405). A red run (a failed
-  # deploy counts) opens one `blocker` issue, "Staging smoke red on main", or
-  # comments on it; a green run closes it; a cancelled run does nothing.
+  # deploy counts) opens one `blocker` issue, "Staging smoke red on main",
+  # assigned to vars.OA_ALERT_GITHUB_LOGIN, or comments on it @-mentioning
+  # that login; a green run closes it; a cancelled run does nothing.
   # Prod promotion reads the runs themselves (scripts/ci/staging-smoke-gate.sh).
   report:
     needs: [deploy, smoke]
@@ -106,4 +107,7 @@ jobs:
           RESULT: ${{ needs.deploy.result == 'success' && needs.smoke.result || needs.deploy.result }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
-        run: node --experimental-strip-types scripts/ci/staging-smoke-alert.ts report --repo "$GITHUB_REPOSITORY" --result "$RESULT" --run "$RUN" --sha "$SHA"
+          # The owner's GitHub login, assigned and @-mentioned so GitHub
+          # emails them; empty skips that (logged). Never a login in code.
+          NOTIFY: ${{ vars.OA_ALERT_GITHUB_LOGIN }}
+        run: node --experimental-strip-types scripts/ci/staging-smoke-alert.ts report --repo "$GITHUB_REPOSITORY" --result "$RESULT" --run "$RUN" --sha "$SHA" --notify "$NOTIFY"

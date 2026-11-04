@@ -7,16 +7,19 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { type Exec, ISSUE, report } from "./staging-smoke-alert.ts";
+import { type Exec, ISSUE, LOGIN_RE, report } from "./staging-smoke-alert.ts";
 import { root, script } from "./stubs.ts";
 
 const REPO = "open-artifacts-ai/open-artifacts";
 const RUN = "https://github.com/x/actions/runs/1";
 const SHA = "d".repeat(40);
 
+const LOGIN = "owner-login";
 const world = (
   open: { number: number; title: string }[],
   labels = [{ name: "blocker" }],
+  /** gh issue edit --add-assignee fails. */
+  assignFails = false,
 ) => {
   const calls: string[][] = [];
   const exec: Exec = (_c, args) => {
@@ -28,19 +31,33 @@ const world = (
     });
     if (args[0] === "issue" && args[1] === "list") return out(open);
     if (args[0] === "label" && args[1] === "list") return out(labels);
+    if (args[0] === "issue" && args[1] === "create")
+      return {
+        code: 0,
+        stdout: `https://github.com/${REPO}/issues/12\n`,
+        stderr: "",
+      };
+    if (args[0] === "issue" && args[1] === "edit" && assignFails)
+      return { code: 1, stdout: "", stderr: "could not assign user" };
     return { code: 0, stdout: "", stderr: "" };
   };
   return { exec, calls };
 };
-const red = (w: ReturnType<typeof world>, result = "failure") =>
-  report({ exec: w.exec, repo: REPO, result, run: RUN, sha: SHA });
+const red = (
+  w: ReturnType<typeof world>,
+  result = "failure",
+  notify = "",
+  log: (l: string) => void = () => {},
+) =>
+  report({ exec: w.exec, repo: REPO, result, run: RUN, sha: SHA, notify, log });
+const OPENED = { action: "opened", issue: 12, notified: "none" };
 
 describe("staging-smoke-alert.ts report", () => {
   it("the first red run opens one blocker issue with the stable title, linking the run", () => {
     const w = world([
       { number: 3, title: "Prod release chain failed: v1.0.0" },
     ]);
-    expect(red(w)).toEqual({ action: "opened" });
+    expect(red(w)).toEqual(OPENED);
     const create = w.calls.find((c) => c[0] === "issue" && c[1] === "create");
     expect(create).toBeDefined();
     const at = (f: string) => create?.[(create?.indexOf(f) ?? 0) + 1];
@@ -68,7 +85,7 @@ describe("staging-smoke-alert.ts report", () => {
 
   it("a later red run comments on the open issue (a notification), never opens a second", () => {
     const w = world([{ number: 4, title: ISSUE }]);
-    expect(red(w)).toEqual({ action: "commented", issue: 4 });
+    expect(red(w)).toEqual({ action: "commented", issue: 4, notified: "none" });
     expect(w.calls.some((c) => c[1] === "create")).toBe(false);
     const c = w.calls.find((x) => x[0] === "issue" && x[1] === "comment");
     expect(c?.slice(0, 5)).toEqual(["issue", "comment", "4", "--repo", REPO]);
@@ -77,12 +94,135 @@ describe("staging-smoke-alert.ts report", () => {
 
   it("another issue whose title only starts the same is not its own", () => {
     const w = world([{ number: 5, title: `${ISSUE} (old)` }]);
-    expect(red(w)).toEqual({ action: "opened" });
+    expect(red(w)).toEqual(OPENED);
   });
 
   it("a failed deploy, or an unknown result, is red too", () => {
     for (const result of ["failure", "", "neutral"])
-      expect(red(world([]), result), result).toEqual({ action: "opened" });
+      expect(red(world([]), result), result).toEqual(OPENED);
+  });
+
+  it("OA_ALERT_GITHUB_LOGIN set: the new issue is assigned to it; each repeat red comment @-mentions it", () => {
+    const logs: string[] = [];
+    const w = world([]);
+    expect(red(w, "failure", LOGIN, (l) => logs.push(l))).toEqual({
+      action: "opened",
+      issue: 12,
+      notified: "assigned",
+    });
+    // Assigned after the issue exists, never as part of its creation.
+    expect(w.calls.find((c) => c[1] === "create")?.includes("--assignee")).toBe(
+      false,
+    );
+    expect(w.calls.at(-1)).toEqual([
+      "issue",
+      "edit",
+      "12",
+      "--repo",
+      REPO,
+      "--add-assignee",
+      LOGIN,
+    ]);
+    const v = world([{ number: 4, title: ISSUE }]);
+    expect(red(v, "failure", LOGIN, (l) => logs.push(l))).toEqual({
+      action: "commented",
+      issue: 4,
+      notified: "mentioned",
+    });
+    const c = v.calls.find((x) => x[1] === "comment");
+    expect(c?.[6]).toBe(`@${LOGIN} Still red: \`failure\` on ${SHA} in ${RUN}`);
+    expect(v.calls.some((x) => x[1] === "edit")).toBe(false);
+    expect(logs).toEqual([]);
+  });
+
+  it("OA_ALERT_GITHUB_LOGIN unset: no assignment, no mention, and it says so", () => {
+    for (const notify of ["", "  "]) {
+      const logs: string[] = [];
+      const w = world([]);
+      expect(red(w, "failure", notify, (l) => logs.push(l))).toEqual(OPENED);
+      expect(w.calls.some((c) => c[1] === "edit")).toBe(false);
+      expect(JSON.stringify(w.calls)).not.toContain("@");
+      expect(logs).toEqual([
+        "staging-smoke-alert: OA_ALERT_GITHUB_LOGIN is empty; no assignment or mention",
+      ]);
+      const v = world([{ number: 4, title: ISSUE }]);
+      red(v, "failure", notify, () => {});
+      expect(v.calls.find((x) => x[1] === "comment")?.[6]).toBe(
+        `Still red: \`failure\` on ${SHA} in ${RUN}`,
+      );
+    }
+  });
+
+  it("a value that isn't a GitHub login is treated as unset, never put in a comment", () => {
+    for (const bad of [
+      "@owner",
+      "a b",
+      "-owner",
+      "owner-",
+      "own--er",
+      "x".repeat(40),
+      "owner\n@evil",
+    ]) {
+      expect(LOGIN_RE.test(bad), bad).toBe(false);
+      const logs: string[] = [];
+      const v = world([{ number: 4, title: ISSUE }]);
+      expect(
+        red(v, "failure", bad, (l) => logs.push(l)),
+        bad,
+      ).toEqual({
+        action: "commented",
+        issue: 4,
+        notified: "none",
+      });
+      expect(v.calls.find((x) => x[1] === "comment")?.[6], bad).toBe(
+        `Still red: \`failure\` on ${SHA} in ${RUN}`,
+      );
+      expect(logs[0], bad).toContain("is not a GitHub login");
+    }
+    for (const ok of ["octocat", "a", "a-b-c", "A1", "x".repeat(39)])
+      expect(LOGIN_RE.test(ok), ok).toBe(true);
+  });
+
+  it("an assignment that fails leaves the issue open and @-mentions the login instead", () => {
+    const logs: string[] = [];
+    const w = world([], [{ name: "blocker" }], true);
+    expect(red(w, "failure", LOGIN, (l) => logs.push(l))).toEqual({
+      action: "opened",
+      issue: 12,
+      notified: "mentioned",
+    });
+    expect(w.calls.at(-1)).toEqual([
+      "issue",
+      "comment",
+      "12",
+      "--repo",
+      REPO,
+      "--body",
+      `@${LOGIN} the staging smoke is red on main: ${RUN}`,
+    ]);
+    expect(logs).toEqual([
+      "staging-smoke-alert: assigning issue 12 failed (could not assign user); mentioning instead",
+    ]);
+  });
+
+  it("no login is written in the code or the workflow", () => {
+    for (const f of [
+      "scripts/ci/staging-smoke-alert.ts",
+      ".github/workflows/deploy-staging.yml",
+    ])
+      expect(readFileSync(join(root, f), "utf8"), f).not.toMatch(/leourbina/);
+  });
+
+  it("a green or cancelled run never assigns or mentions", () => {
+    for (const result of ["success", "cancelled"]) {
+      const w = world([{ number: 4, title: ISSUE }]);
+      red(w, result, LOGIN);
+      expect(JSON.stringify(w.calls), result).not.toContain("@");
+      expect(
+        w.calls.some((c) => c[1] === "edit"),
+        result,
+      ).toBe(false);
+    }
   });
 
   it("creates the shared label only when it is missing", () => {
@@ -185,9 +325,11 @@ describe("deploy-staging.yml report job", () => {
         "${{ needs.deploy.result == 'success' && needs.smoke.result || needs.deploy.result }}",
       RUN: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
       SHA: "${{ github.sha }}",
+      // The login comes from a repo variable, never from code.
+      NOTIFY: "${{ vars.OA_ALERT_GITHUB_LOGIN }}",
     });
     expect(step.run).toBe(
-      'node --experimental-strip-types scripts/ci/staging-smoke-alert.ts report --repo "$GITHUB_REPOSITORY" --result "$RESULT" --run "$RUN" --sha "$SHA"',
+      'node --experimental-strip-types scripts/ci/staging-smoke-alert.ts report --repo "$GITHUB_REPOSITORY" --result "$RESULT" --run "$RUN" --sha "$SHA" --notify "$NOTIFY"',
     );
     // No secret reaches it.
     expect(JSON.stringify(job)).not.toContain("secrets.");

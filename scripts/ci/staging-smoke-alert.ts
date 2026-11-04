@@ -6,7 +6,14 @@
 // linking that run. A cancelled run (or a skipped one) does nothing.
 // The prod gate is staging-smoke-gate.sh, which reads the runs themselves,
 // never this issue.
-// Usage: node --experimental-strip-types scripts/ci/staging-smoke-alert.ts report --repo owner/name --result <result> --run <url> --sha <sha>
+// The owner is emailed through GitHub's own notifications: `--notify <login>`
+// (the repo variable OA_ALERT_GITHUB_LOGIN, never a login in code) is
+// assigned the issue when it opens, and @-mentioned in each later red
+// comment. Empty, it skips both and logs that; a value that isn't a GitHub
+// login is treated as empty. If the assignment itself fails (say the login
+// can't be assigned here), the issue stays open and a comment @-mentions the
+// login instead, so the alert never depends on it.
+// Usage: node --experimental-strip-types scripts/ci/staging-smoke-alert.ts report --repo owner/name --result <result> --run <url> --sha <sha> [--notify <login>]
 // Needs GH_TOKEN with issues: write. Every failure throws (exit 1), so the
 // report job goes red too.
 import { spawnSync } from "node:child_process";
@@ -15,6 +22,8 @@ import { pathToFileURL } from "node:url";
 /** The one stable title: repeated failures find it, never open a second. */
 export const ISSUE = "Staging smoke red on main";
 const SHA_RE = /^[0-9a-f]{40}$/;
+/** A GitHub login: 1 to 39 letters, digits or single inner hyphens. */
+export const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
 export type Exec = (cmd: string, args: string[]) => ExecResult;
@@ -31,8 +40,11 @@ function gh(exec: Exec, args: string[]): string {
 export type Report =
   | { action: "none" }
   | { action: "closed"; issues: number[] }
-  | { action: "commented"; issue: number }
-  | { action: "opened" };
+  | { action: "commented"; issue: number; notified: Notified }
+  | { action: "opened"; issue: number; notified: Notified };
+
+/** How the owner was told: assigned, @-mentioned, or not at all (no login). */
+export type Notified = "assigned" | "mentioned" | "none";
 
 /**
  * `result` is the run's: the smoke job's result once deploy succeeded, else
@@ -45,9 +57,15 @@ export function report(o: {
   result: string;
   run: string;
   sha: string;
+  /** The owner's GitHub login (vars.OA_ALERT_GITHUB_LOGIN); "" for none. */
+  notify?: string;
+  log?: (line: string) => void;
 }): Report {
   if (o.result === "cancelled" || o.result === "skipped")
     return { action: "none" };
+  const log = o.log ?? ((l: string) => console.error(l));
+  const raw = (o.notify ?? "").trim();
+  const login = LOGIN_RE.test(raw) ? raw : "";
   if (!o.run) throw new Error("--run is required");
   const sha = SHA_RE.test(o.sha) ? o.sha : "an unknown commit";
   const open = (
@@ -85,8 +103,15 @@ export function report(o: {
       : { action: "none" };
   }
 
+  if (!login)
+    log(
+      raw
+        ? "staging-smoke-alert: OA_ALERT_GITHUB_LOGIN is not a GitHub login; no assignment or mention"
+        : "staging-smoke-alert: OA_ALERT_GITHUB_LOGIN is empty; no assignment or mention",
+    );
   const existing = open[0];
   if (existing) {
+    const to = login ? `@${login} ` : "";
     gh(o.exec, [
       "issue",
       "comment",
@@ -94,9 +119,13 @@ export function report(o: {
       "--repo",
       o.repo,
       "--body",
-      `Still red: \`${o.result}\` on ${sha} in ${o.run}`,
+      `${to}Still red: \`${o.result}\` on ${sha} in ${o.run}`,
     ]);
-    return { action: "commented", issue: existing.number };
+    return {
+      action: "commented",
+      issue: existing.number,
+      notified: login ? "mentioned" : "none",
+    };
   }
   const body = [
     `The post-deploy staging smoke (deploy-staging.yml) ended \`${o.result}\` on main at ${sha}.`,
@@ -130,7 +159,7 @@ export function report(o: {
       "--description",
       "A release or deploy is stuck",
     ]);
-  gh(o.exec, [
+  const url = gh(o.exec, [
     "issue",
     "create",
     "--repo",
@@ -141,8 +170,36 @@ export function report(o: {
     body,
     "--label",
     "blocker",
+  ]).trim();
+  const n = /\/issues\/(\d+)$/.exec(url)?.[1];
+  if (!n) throw new Error(`gh issue create: no issue url in "${url}"`);
+  const issue = Number(n);
+  if (!login) return { action: "opened", issue, notified: "none" };
+  // Assigned after it exists, so a login that can't be assigned never stops
+  // the issue from opening; then a mention tells them instead.
+  const a = o.exec("gh", [
+    "issue",
+    "edit",
+    n,
+    "--repo",
+    o.repo,
+    "--add-assignee",
+    login,
   ]);
-  return { action: "opened" };
+  if (a.code === 0) return { action: "opened", issue, notified: "assigned" };
+  log(
+    `staging-smoke-alert: assigning issue ${n} failed (${a.stderr.trim() || `exit ${a.code}`}); mentioning instead`,
+  );
+  gh(o.exec, [
+    "issue",
+    "comment",
+    n,
+    "--repo",
+    o.repo,
+    "--body",
+    `@${login} the staging smoke is red on main: ${o.run}`,
+  ]);
+  return { action: "opened", issue, notified: "mentioned" };
 }
 
 const realExec: Exec = (cmd, args) => {
@@ -171,6 +228,7 @@ function main(argv: string[]) {
     result: flag(argv, "result"),
     run: flag(argv, "run"),
     sha: flag(argv, "sha"),
+    notify: flag(argv, "notify"),
   });
   console.error(`staging-smoke-alert: ${JSON.stringify(r)}`);
 }
