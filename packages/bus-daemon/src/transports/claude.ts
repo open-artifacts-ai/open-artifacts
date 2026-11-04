@@ -1,5 +1,13 @@
-import { randomUUID } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, rmSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -70,6 +78,56 @@ export function unsafeClaudeSocket(path: string): string | null {
   return null;
 }
 
+/** At most this many return sockets are remembered for revival; the oldest go first. */
+export const RETURN_INDEX_MAX = 500;
+
+type ReturnIndex = Record<
+  string,
+  { agentRef: string; namespace: string; peerName: string; at: number }
+>;
+
+/** The return index, its malformed entries dropped; empty when there is none. */
+function readReturnIndex(file: string): ReturnIndex {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return Object.create(null);
+  }
+  const out: ReturnIndex = Object.create(null);
+  if (!raw || typeof raw !== "object") return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const e = v as Record<string, unknown>;
+    if (
+      e &&
+      typeof e.agentRef === "string" &&
+      typeof e.namespace === "string" &&
+      typeof e.peerName === "string" &&
+      typeof e.at === "number" &&
+      k === `${e.agentRef}\u0000${e.namespace}\u0000${e.peerName}`
+    )
+      out[k] = {
+        agentRef: e.agentRef,
+        namespace: e.namespace,
+        peerName: e.peerName,
+        at: e.at,
+      };
+  }
+  return out;
+}
+
+/**
+ * A return socket's file name: 8 hex of the key's sha256, so the same
+ * (session, namespace, peer) binds the same path after any restart. One
+ * already taken by another key falls back to a random name.
+ */
+function returnName(key: string, taken: Set<string>): string {
+  const name = createHash("sha256").update(key).digest("hex").slice(0, 8);
+  return [...taken].some((p) => p.endsWith(`/${name}.sock`))
+    ? randomUUID().slice(0, 8)
+    : name;
+}
+
 /** The return-socket folder failed its check: refuse, never bind in it. */
 class UnsafeDir extends Error {}
 
@@ -94,6 +152,12 @@ export type ClaudeTransportOptions = {
   prepareDir?: (dir: string) => string | null;
   /** Held msg_ids survive a restart here (0600); a restarted daemon never re-injects them. */
   heldFile?: string;
+  /**
+   * Every (session, namespace, peer) a return socket was bound for (0600).
+   * A restarted daemon, or a session that comes back, binds them again at
+   * the same paths, so a reply to one is routed by bus name (open-bus #426).
+   */
+  returnIndexFile?: string;
   log?: (msg: string) => void;
   /** A native reply from `agentRef`'s session to `peerName` in `namespace`. */
   onReply?: (
@@ -115,6 +179,8 @@ export type ClaudeTransportOptions = {
  */
 export class ClaudeTransport {
   #sinks = new Map<string, Promise<Sink>>();
+  /** Each bound return socket's path, by key: two keys never share one. */
+  #paths = new Map<string, string>();
   #inflight = new Map<string, Promise<DeliverOutcome>>();
   /** msg_id → the sink it was injected from: a status counts only there. */
   #expecting = new Map<string, string>();
@@ -294,8 +360,10 @@ export class ClaudeTransport {
     } catch {
       return;
     }
-    // Any same-uid process can dial a sink; only the session itself is believed.
-    if (frame?.from !== sink.claudeFrom) return;
+    // Any same-uid process can dial a sink; only the session itself is believed:
+    // the socket it was injected from, or, after a restart, its current one.
+    if (frame?.from !== sink.claudeFrom && frame?.from !== this.#current(sink))
+      return;
     if (frame.type === "control" && frame.action === "peer_message_status") {
       this.#onStatus(
         sink,
@@ -317,6 +385,13 @@ export class ClaudeTransport {
       this.opts.onReply?.(sink.agentRef, sink.peerName, body, sink.namespace);
   }
 
+  /** The session's own socket now, from its session file; "" when it has none. */
+  #current(sink: Sink): string {
+    if (sink.notice) return "";
+    const t = this.opts.target(sink.agentRef);
+    return t ? `uds:${t.socketPath}` : "";
+  }
+
   /** A global session hears from alice@ns1 and alice@ns2 on different sockets. */
   #sink(agentRef: string, namespace: string, peerName: string): Promise<Sink> {
     const key = `${agentRef}\u0000${namespace}\u0000${peerName}`;
@@ -336,7 +411,10 @@ export class ClaudeTransport {
     peerName: string,
     notice = false,
   ) {
-    const path = join(this.opts.socketsDir, `${randomUUID().slice(0, 8)}.sock`);
+    const path = join(
+      this.opts.socketsDir,
+      `${notice ? randomUUID().slice(0, 8) : returnName(key, this.#pathsInUse())}.sock`,
+    );
     if (this.opts.prepareDir) {
       const unsafe = this.opts.prepareDir(this.opts.socketsDir);
       if (unsafe) throw new UnsafeDir(unsafe);
@@ -345,6 +423,7 @@ export class ClaudeTransport {
       chmodSync(this.opts.socketsDir, 0o700);
     }
     rmSync(path, { force: true });
+    this.#paths.set(key, path);
     const conns = new Set<Socket>();
     const sink: Sink = {
       key,
@@ -369,7 +448,61 @@ export class ClaudeTransport {
       sink.server.listen(path, () => resolve());
     });
     chmodSync(path, 0o600);
+    if (!notice) this.#index("add", key, { agentRef, namespace, peerName });
     return sink;
+  }
+
+  /** Paths of the sinks bound or binding now, by key. */
+  #pathsInUse(): Set<string> {
+    return new Set(this.#paths.values());
+  }
+
+  /**
+   * A session is live (again): binds every return socket it had, at the same
+   * paths, so a reply Claude sends to one from before a daemon or session
+   * restart reaches its peer by bus name instead of failing with ENOENT.
+   */
+  async revive(agentRef: string): Promise<void> {
+    if (this.#closed || this.#disabled) return;
+    const entries = this.#index("read") ?? {};
+    await Promise.all(
+      Object.values(entries)
+        .filter((e) => e.agentRef === agentRef)
+        .map((e) =>
+          this.#sink(e.agentRef, e.namespace, e.peerName).catch(() => {}),
+        ),
+    );
+  }
+
+  /** The return index on disk: read, add (bounded, newest kept) or nothing without a file. */
+  #index(
+    op: "read" | "add",
+    key?: string,
+    entry?: { agentRef: string; namespace: string; peerName: string },
+  ): ReturnIndex | undefined {
+    const file = this.opts.returnIndexFile;
+    if (!file) return undefined;
+    try {
+      const all = readReturnIndex(file);
+      if (op === "read") return all;
+      if (!key || !entry) return all;
+      all[key] = { ...entry, at: Date.now() };
+      const keep = Object.entries(all)
+        .sort(([, a], [, b]) => b.at - a.at)
+        .slice(0, RETURN_INDEX_MAX);
+      const out: ReturnIndex = Object.create(null);
+      for (const [k, v] of keep) out[k] = v;
+      const tmp = `${file}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(out), { mode: 0o600 });
+      chmodSync(tmp, 0o600);
+      renameSync(tmp, file);
+      return out;
+    } catch (e) {
+      this.opts.log?.(
+        `claude return index ${op} failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return undefined;
+    }
   }
 
   /** Injects an Open Artifacts bus notice into the session, from the notice socket. */
@@ -415,7 +548,10 @@ export class ClaudeTransport {
       k.startsWith(`${agentRef}\u0000`),
     );
     const keys = new Set(mine.map(([k]) => k));
-    for (const k of keys) this.#sinks.delete(k);
+    for (const k of keys) {
+      this.#sinks.delete(k);
+      this.#paths.delete(k);
+    }
     // A held message for a gone session will hear nothing more.
     for (const [msgId, k] of this.#expecting)
       if (keys.has(k)) this.#waiting.get(msgId)?.(STOPPED);
@@ -427,6 +563,7 @@ export class ClaudeTransport {
     for (const w of [...this.#waiting.values()]) w(STOPPED);
     const all = [...this.#sinks.values()];
     this.#sinks.clear();
+    this.#paths.clear();
     await Promise.all(all.map((s) => s.then(shut, () => {})));
   }
 }

@@ -45,6 +45,7 @@ describe("claude liveness", () => {
       {
         ref: "s4242",
         name: "npm-test",
+        named: true,
         pid: 4242,
         socketPath: "/tmp/cc-socks/4242.sock",
         cwd: "/repo",
