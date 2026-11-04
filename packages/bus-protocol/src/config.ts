@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { NamespaceSchema } from "./namespace.js";
+import { NamespaceSchema } from "./namespace.ts";
 
 /**
  * The per-repo bus config. Its own name, not OpenBus's `.openbus.json`, so the

@@ -4,7 +4,7 @@ import {
   namespaceFrom,
   normalizeRemote,
   WireNamespaceSchema,
-} from "../src/namespace.js";
+} from "../src/namespace.ts";
 
 describe("normalizeRemote", () => {
   it("makes the same repo equal across machines", () => {

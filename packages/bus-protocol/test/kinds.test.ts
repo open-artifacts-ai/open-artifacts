@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { AGENT_KINDS, AgentKindSchema, KindTokenSchema } from "../src/kinds.js";
+import { AGENT_KINDS, AgentKindSchema, KindTokenSchema } from "../src/kinds.ts";
 
 it("accepts exactly the known kinds", () => {
   expect(AGENT_KINDS).toEqual([

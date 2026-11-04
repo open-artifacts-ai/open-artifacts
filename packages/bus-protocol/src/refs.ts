@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { LIMITS } from "./limits.js";
-import { BAD_NS_CHARS } from "./namespace.js";
+import { LIMITS } from "./limits.ts";
+import { BAD_NS_CHARS } from "./namespace.ts";
 
 const FORBIDDEN_REFS = new Set(["__proto__", "constructor", "prototype"]);
 

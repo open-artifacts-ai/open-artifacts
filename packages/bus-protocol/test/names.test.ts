@@ -4,7 +4,7 @@ import {
   candidateName,
   isReservedBusName,
   suffixName,
-} from "../src/names.js";
+} from "../src/names.ts";
 
 describe("bus names", () => {
   it("accepts human names with spaces", () => {
