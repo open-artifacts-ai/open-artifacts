@@ -16,8 +16,8 @@ const HOST = "canary.example.test";
 const ID = "icanary00001";
 const BROKER = "https://auth.example.test";
 const TOKEN = "oat_smoke_secret_never_logged";
-const SHARE_TO = "smoke-b@example.test";
-const ME = { id: "u-a", email: "smoke-a@example.test", role: "member" };
+const SHARE_TO = "target@example.test";
+const ME = { id: "u-a", email: "smoke@example.test", role: "member" };
 const VERSION = "0.93.0";
 const NONCE = "n0nce";
 const TITLE = `${SMOKE_TITLE_PREFIX}0_93_0-${NONCE}`;
@@ -213,7 +213,7 @@ describe("the canary smoke", () => {
       );
   });
 
-  it("sweeps only smoke-a's own fleet-smoke-* leftovers", async () => {
+  it("sweeps only smoke's own fleet-smoke-* leftovers", async () => {
     const c = canary({
       arts: [
         {
@@ -325,7 +325,7 @@ describe("the canary smoke", () => {
       "read",
     ],
     [
-      "a share list without smoke-b",
+      "a share list without the target",
       (p, m) =>
         p.endsWith("/shares") && m === "GET" ? Response.json([]) : null,
       "share",
@@ -386,7 +386,7 @@ describe("the canary smoke", () => {
       expect(live(c)).toEqual([]);
     });
 
-  it("config: no token, a bad target, the target being smoke-a, a refused token, or an admin", async () => {
+  it("config: no token, a bad target, the target being smoke, a refused token, or an admin", async () => {
     const run = async (o: {
       over?: Partial<SmokeInput>;
       me?: object;
@@ -423,11 +423,11 @@ describe("the canary smoke", () => {
     );
   });
 
-  it("smoke-b outside smoke-a's domain: config, and no share is ever made", async () => {
+  it("a target outside smoke's domain: config, and no share is ever made", async () => {
     for (const shareTo of [
-      "smoke-b@elsewhere.test",
-      "smoke-b@example.test.evil",
-      "smoke-b@sub.example.test",
+      "target@elsewhere.test",
+      "target@example.test.evil",
+      "target@sub.example.test",
     ]) {
       const c = canary();
       expect(await smoke(input(c, { shareTo }))).toEqual({
@@ -509,7 +509,7 @@ describe("the canary smoke", () => {
     expect(live(d)).toEqual([]);
   });
 
-  it("never puts the token, a body or smoke-b's address in its result", async () => {
+  it("never puts the token, a body or the target address in its result", async () => {
     for (const fault of [
       undefined,
       ((p: string) =>
@@ -583,8 +583,8 @@ describe("the canary smoke", () => {
     expect(live(c)).toEqual([]);
   });
 
-  it("the configured target in smoke-a's own domain passes the guard and is shared", async () => {
-    // On prod: the owner's own canary account, on smoke-a's domain.
+  it("the configured target in smoke's own domain passes the guard and is shared", async () => {
+    // On prod: the owner's own canary account, on smoke's domain.
     const owner = "owner@example.test";
     const c = canary();
     expect((await smoke(input(c, { shareTo: owner }))).ok).toBe(true);

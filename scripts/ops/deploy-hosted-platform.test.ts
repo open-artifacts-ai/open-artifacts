@@ -2395,12 +2395,12 @@ describe("every deployed app has its own wrangler", () => {
   }
 });
 
-// #1343: the canary smoke's secrets, smoke-a's PAT and the share target's address,
+// #1343: the canary smoke's secrets, smoke's PAT and the share target's address,
 // reach the scheduler only: put on oa-<p>-scheduler when the Environment has
 // them, never printed, never on any other Worker.
 describe("the canary smoke's secrets (#1343)", () => {
   const PAT = "oat_smokeA_never_printed_0123456789";
-  const TO = "smoke-b@example.test";
+  const TO = "target@example.test";
   const SMOKE = { FLEET_SMOKE_TOKEN: PAT, FLEET_SMOKE_SHARE_TO: TO };
   const hidden = (r: { out: string; err: string; log: string[] }) => {
     const all = [r.out, r.err, ...r.log].join("\n");
@@ -2454,7 +2454,7 @@ describe("the canary smoke's secrets (#1343)", () => {
     for (const [k, v] of [
       ["FLEET_SMOKE_TOKEN", "short"],
       ["FLEET_SMOKE_TOKEN", `${PAT} x`],
-      ["FLEET_SMOKE_SHARE_TO", "Smoke-B@Example.test"],
+      ["FLEET_SMOKE_SHARE_TO", "Target@Example.test"],
       ["FLEET_SMOKE_SHARE_TO", `${TO},other@example.test`],
       ["FLEET_SMOKE_SHARE_TO", "not-an-address"],
     ] as const) {

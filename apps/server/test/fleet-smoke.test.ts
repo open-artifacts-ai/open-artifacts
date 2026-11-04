@@ -1,6 +1,6 @@
 // #1343: the scheduler's canary smoke (apps/scheduler/src/provapi/smoke.ts)
 // against this real server Worker, so its calls and the shapes it reads can't
-// drift from the routes they test. smoke-a, a plain member with a PAT, and
+// drift from the routes they test. smoke, a plain member with a PAT, and
 // the share target, an existing member of the same domain (on prod, the
 // owner's own canary account).
 import { env } from "cloudflare:workers";
@@ -19,9 +19,9 @@ const INSTALL = "icanary00001";
 const HOST = "app.localhost";
 
 describe("the canary smoke against the real server (#1343)", () => {
-  it("passes, sweeps only smoke-a's leftovers, and leaves nothing behind", async () => {
+  it("passes, sweeps only smoke's leftovers, and leaves nothing behind", async () => {
     const tag = newId().slice(0, 6).toLowerCase();
-    const a = await login(`smoke-a-${tag}@smoke.test`, "member");
+    const a = await login(`smoke-${tag}@smoke.test`, "member");
     const b = await login(`owner-${tag}@smoke.test`, "owner");
     const { token } = await createPat(env, a.userId, "fleet-smoke");
     const { token: tb } = await createPat(env, b.userId, "b");
@@ -54,12 +54,12 @@ describe("the canary smoke against the real server (#1343)", () => {
       ).id;
     const oldMine = await pub(token, `${SMOKE_TITLE_PREFIX}old`);
     const keepMine = await pub(token, "keep me");
-    // The target's own smoke-titled artifact, shared with smoke-a: never swept.
+    // The target's own smoke-titled artifact, shared with smoke: never swept.
     const bOwn = await pub(tb, `${SMOKE_TITLE_PREFIX}b-owned`);
     await call(`/api/v1/artifacts/${bOwn}/shares`, tb, {
       method: "PUT",
       body: JSON.stringify({
-        email: `smoke-a-${tag}@smoke.test`,
+        email: `smoke-${tag}@smoke.test`,
         role: "editor",
       }),
     });

@@ -1,23 +1,23 @@
 // The canary smoke (#1343): once the canary has settled on a release, a short
-// active check against it, as a dedicated smoke member (smoke-a, its PAT in
+// active check against it, as a dedicated smoke member (smoke, its PAT in
 // the scheduler secret FLEET_SMOKE_TOKEN), replaces the passive soak. A pass
 // lets leo and then the fleet move; a failure halts the version (fleet.ts).
 //
 // What it does, in order, every call over the canary's public route with
-// smoke-a's PAT and a short timeout:
+// smoke's PAT and a short timeout:
 // - health: /healthz says ok, this install, the release under test, no test
 //   hooks.
-// - sign-in: /api/v1/me is smoke-a, active, a plain member; /auth/providers
+// - sign-in: /api/v1/me is smoke, active, a plain member; /auth/providers
 //   answers; when Google is offered, /auth/login/google starts at this env's
 //   broker for this install. Not covered: finishing an OAuth round trip, a
 //   session cookie, and email codes (a code would send mail: never asked).
-// - sweep: deletes smoke-a's own artifacts titled SMOKE_TITLE_PREFIX, left by
-//   an earlier run. smoke-a lists only what it may see as "mine".
+// - sweep: deletes smoke's own artifacts titled SMOKE_TITLE_PREFIX, left by
+//   an earlier run. smoke lists only what it may see as "mine".
 // - publish a private markdown artifact, read its file back exactly.
 // - share it with the share target (FLEET_SMOKE_SHARE_TO, an existing member;
 //   on prod the owner's own canary account), read the share back. The server
 //   mails no existing member, so `emailed` must be false. The target must be
-//   in smoke-a's domain, checked before any share: a wrong address could
+//   in smoke's domain, checked before any share: a wrong address could
 //   otherwise mail an outsider. Unset, the share is skipped with a note. The
 //   unshare is in the finally, before the delete.
 // - MCP: tools/list names publish_artifact and get_artifact; tools/call
@@ -45,7 +45,7 @@ export type SmokeCheck =
   | "token"
   /** config: /me refused the token (revoked, or a PAT auth regression). */
   | "token_rejected"
-  /** config: smoke-a isn't an active plain member. */
+  /** config: smoke isn't an active plain member. */
   | "smoke_a"
   | "health"
   | "signin"
@@ -61,7 +61,7 @@ export type SmokeCheck =
  * - assert: the canary answered wrongly: halts the version at once.
  * - transport: a timeout, a network error, a 5xx or a 429: counts once.
  * - config: the smoke can't run as set up (no token, a token /me refuses,
- *   smoke-a not a plain member, a bad share target): never a halt, never a pass.
+ *   smoke not a plain member, a bad share target): never a halt, never a pass.
  * - budget: the scheduler ran out of time: neither; the next tick reruns.
  */
 export type SmokeResult =
@@ -78,7 +78,7 @@ export interface SmokeInput {
   fetch: SmokeFetch;
   installId: string;
   appHost: string;
-  /** smoke-a's PAT (FLEET_SMOKE_TOKEN). */
+  /** smoke's PAT (FLEET_SMOKE_TOKEN). */
   token: string | undefined;
   /** The share target's address (FLEET_SMOKE_SHARE_TO); empty skips the share. */
   shareTo: string | undefined;
@@ -211,7 +211,7 @@ export async function smoke(o: SmokeInput): Promise<SmokeResult> {
     const mine = String(user.email).toLowerCase();
     if (shareTo !== "") {
       if (mine === shareTo) throw new Fail("config", "share");
-      // No mail to an outsider: the target must share smoke-a's domain,
+      // No mail to an outsider: the target must share smoke's domain,
       // checked before any share is made (the server mails a non-member).
       if (
         mine.slice(mine.lastIndexOf("@")) !==
@@ -244,7 +244,7 @@ export async function smoke(o: SmokeInput): Promise<SmokeResult> {
       );
     }
 
-    // sweep: smoke-a's own leftovers only.
+    // sweep: smoke's own leftovers only.
     const list = await call("sweep", "/api/v1/artifacts?scope=mine&limit=100");
     expect("sweep", list.status === 200);
     const items = ((await json("sweep", list)) as { items?: unknown[] })?.items;

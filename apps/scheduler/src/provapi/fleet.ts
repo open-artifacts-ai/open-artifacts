@@ -27,7 +27,7 @@
 // Smoke: once the canary has settled, smoke() runs once per tick until it
 // passes (fleet_smoked). The canary answering wrongly halts the version at
 // once; a timeout, network error or 5xx counts once, and a second on a later
-// tick halts. A smoke that can't run as set up (no token, smoke-a not a plain
+// tick halts. A smoke that can't run as set up (no token, smoke not a plain
 // member, a bad share target) never passes and never halts: fleet_halted names it
 // (smoke_unconfigured). Running out of the tick's time is neither.
 //
