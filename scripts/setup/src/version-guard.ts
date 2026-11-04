@@ -2,10 +2,21 @@ import { join } from "node:path";
 import type { State } from "./state.ts";
 import type { Ctx } from "./step.ts";
 
+/**
+ * The oldest deployed version this checkout upgrades from. 0.109.0 is the
+ * first release with Durable Object tag v4, which adds BusHub unbound; from
+ * #1315 the template binds BUS_HUB. An install below it takes 0.109.0 (or any
+ * later release before the bind) first, so the class never ships in the same
+ * deploy that binds it. Raise this when a release binds a class added since.
+ */
+export const MIN_UPGRADE_FROM = "0.109.0";
+
 export type VersionInfo = {
   repoVersion: string;
   liveVersion?: string;
   downgrade: boolean;
+  /** The deployed version is below MIN_UPGRADE_FROM and this checkout is past it. */
+  belowMinUpgrade: boolean;
 };
 
 /** The repo version: root package.json, else the release-please manifest. */
@@ -60,7 +71,11 @@ export async function versionInfo(
     throw new Error(
       `cannot read this checkout's version (${JSON.stringify(raw)}) from package.json; fix it before deploying`,
     );
-  const out = { repoVersion: a.join("."), downgrade: false };
+  const out = {
+    repoVersion: a.join("."),
+    downgrade: false,
+    belowMinUpgrade: false,
+  };
   const existing =
     ctx.opts.upgrade ||
     state.workerVersion ||
@@ -69,9 +84,23 @@ export async function versionInfo(
   if (!existing) return out;
   const b = await liveVersion(state, ctx);
   if (!b) return out;
-  const i = a.findIndex((x, k) => x !== b[k]);
-  return { ...out, liveVersion: b.join("."), downgrade: i >= 0 && a[i] < b[i] };
+  const min = base(MIN_UPGRADE_FROM) as number[];
+  return {
+    ...out,
+    liveVersion: b.join("."),
+    downgrade: cmp(a, b) < 0,
+    belowMinUpgrade: cmp(b, min) < 0 && cmp(a, min) > 0,
+  };
 }
+
+/** Order of two X.Y.Z triples: negative, zero or positive. */
+function cmp(a: number[], b: number[]): number {
+  const i = a.findIndex((x, k) => x !== b[k]);
+  return i < 0 ? 0 : a[i] - b[i];
+}
+
+export const belowMinUpgradeMessage = (v: VersionInfo) =>
+  `the deployed ${v.liveVersion} is older than ${MIN_UPGRADE_FROM}, the oldest version this release (${v.repoVersion}) upgrades from; upgrade to v${MIN_UPGRADE_FROM} first (git checkout v${MIN_UPGRADE_FROM}, then run the same upgrade), then check out this release and run it again`;
 
 export const downgradeMessage = (v: VersionInfo) =>
   `this checkout is ${v.repoVersion}, older than the deployed ${v.liveVersion}; check out ${v.liveVersion} or newer (git checkout v${v.liveVersion}), or pass --allow-downgrade to deploy an older release on purpose`;

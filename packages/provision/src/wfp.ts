@@ -718,7 +718,7 @@ export function assertDoClassesShipFirst(
   const both = added.filter((c) => bound.includes(c));
   if (both.length > 0)
     throw new Error(
-      `this release adds Durable Object class ${both.join(", ")} and binds it in the same version; a class ships one release before the code that uses it`,
+      `this release adds Durable Object class ${both.join(", ")} and binds it in the same version; a class ships one release before the code that uses it: upgrade first to a release that adds it unbound, then to this one`,
     );
 }
 
