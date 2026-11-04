@@ -2485,6 +2485,14 @@ describe("the canary smoke's secrets (#1343)", () => {
     }
   });
 
+  it("the read-back fails closed: a failed secrets listing fails the run", () => {
+    const r = setup({ exists: SCHED_DEPS("p"), failSecrets: true }).run(
+      "scheduler",
+    );
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("list oa-p-scheduler secrets");
+  });
+
   it("the read-back refuses a secret the scheduler shouldn't hold", () => {
     const ok = setup({
       exists: SCHED_DEPS("p"),

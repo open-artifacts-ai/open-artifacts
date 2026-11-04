@@ -27,11 +27,13 @@ import {
   FLEET_SMOKED_PREFIX,
   FLEET_SOAK_GAP_MS,
   FLEET_SOAK_MS,
+  FLEET_SOAK_OFF_MS,
   FLEET_SOAKED_PREFIX,
   fleetConditions,
   fleetDue,
   fleetRequestId,
   fleetSecond,
+  fleetSmokeMode,
   fleetTarget,
   onTarget,
 } from "../src/provapi/fleet.js";
@@ -2371,5 +2373,71 @@ describe("#1343: the canary smoke gates the rollout", () => {
     const f = fakes({});
     await fleetDue(f.env, NOW, f.opts);
     expect(await stateKeys("fleet_smoke")).toEqual([]);
+  });
+});
+
+describe("#1343: FLEET_SMOKE off keeps the passive soak", () => {
+  it('parses: only "off" is off; anything else is required', () => {
+    expect(fleetSmokeMode("off")).toBe("off");
+    expect(fleetSmokeMode(" off ")).toBe("off");
+    for (const v of [undefined, "", "required", "Off", "of", "none"])
+      expect(fleetSmokeMode(v), String(v)).toBe("required");
+  });
+
+  it("off: no smoke; the canary soaks FLEET_SOAK_OFF_MS, then the rest move", async () => {
+    const canary = await on(TARGET, { created: 0 });
+    await fleetJob(canary, { finished_at: NOW - MIN });
+    const rest = await on("0.92.0", { created: 5 });
+    const f = fakes({
+      canary,
+      smoke: [{ ok: false, kind: "config", check: "token" }],
+    });
+    Object.assign(f.env, { FLEET_SMOKE: "off" });
+    await ticks(f, NOW, NOW + FLEET_SOAK_OFF_MS - 2 * MIN);
+    expect(await queued()).toEqual([]);
+    await fleetDue(f.env, NOW + FLEET_SOAK_OFF_MS, f.opts);
+    expect(await queued()).toEqual([rest]);
+    expect(f.smokes).toEqual([]);
+    // No smoke_unconfigured row while off, and no canary_blocked once ready.
+    expect(
+      (await fleetConditions(f.env, NOW + FLEET_SOAK_OFF_MS)).fleet_halted.rows,
+    ).toEqual([]);
+  });
+
+  it("off: batches soak FLEET_SOAK_OFF_MS too", async () => {
+    const canary = await on(TARGET, { created: 0 });
+    await soaked(canary);
+    const id = await on(TARGET, { created: 5 });
+    await fleetJob(id, { finished_at: NOW - MIN });
+    const f = fakes({ canary });
+    Object.assign(f.env, { FLEET_SMOKE: "off" });
+    await ticks(f, NOW, NOW + FLEET_SOAK_OFF_MS - 2 * MIN);
+    expect(await stateKeys(`${FLEET_SOAKED_PREFIX}${TARGET}:${id}`)).toEqual(
+      [],
+    );
+    await fleetDue(f.env, NOW + FLEET_SOAK_OFF_MS, f.opts);
+    expect(await stateKeys(`${FLEET_SOAKED_PREFIX}${TARGET}:${id}`)).toEqual([
+      `${FLEET_SOAKED_PREFIX}${TARGET}:${id}`,
+    ]);
+  });
+
+  it("required (and unset): a missing token never passes", async () => {
+    for (const mode of ["required", undefined]) {
+      await db.prepare("DELETE FROM platform_state").run();
+      const canary = await on(TARGET, { created: 0 });
+      await soaked(canary);
+      await on("0.92.0", { created: 5 });
+      const f = fakes({
+        canary,
+        smoke: [{ ok: false, kind: "config", check: "token" }],
+      });
+      if (mode) Object.assign(f.env, { FLEET_SMOKE: mode });
+      await ticks(f, NOW, NOW + 30 * MIN);
+      expect(
+        (await fleetJobs()).filter((j) => j.install_id !== canary),
+        String(mode),
+      ).toEqual([]);
+      await db.prepare("DELETE FROM jobs").run();
+    }
   });
 });

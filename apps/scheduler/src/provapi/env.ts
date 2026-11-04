@@ -33,6 +33,8 @@ export interface ProvapiEnv {
   FLEET_CANARY?: string;
   /** The install upgraded alone right after the canary (fleet.ts fleetSecond). */
   FLEET_SECOND?: string;
+  /** The canary smoke: "off" (the passive soak) or "required"; else required. */
+  FLEET_SMOKE?: string;
   /** smoke-a's PAT on the canary (secret, #1343 smoke.ts); unset: never smoked. */
   FLEET_SMOKE_TOKEN?: string;
   /** smoke-b's address on the canary: the smoke shares with it. */

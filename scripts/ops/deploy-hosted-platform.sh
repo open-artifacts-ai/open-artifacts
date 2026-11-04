@@ -601,7 +601,9 @@ case "$target" in
     crons="$(cf_get /workers/scripts/oa-$P-scheduler/schedules | must "read oa-$P-scheduler schedules" | jq -r '[.result.schedules[].cron] | sort | join(",")')"
     [ "$crons" = "*/2 * * * *,17 3 * * *" ] || { echo "oa-$P-scheduler schedules are '$crons'" >&2; exit 1; }
     # Only the secrets it may hold: the email-quota token and the smoke's two.
-    for n in $(secret_names oa-$P-scheduler); do
+    # Read first: a failed listing fails the run, never reads as "none".
+    names="$(secret_names oa-$P-scheduler)" || exit 1
+    for n in $names; do
       case "$n" in
         EMAIL_QUOTA_TOKEN | FLEET_SMOKE_TOKEN | FLEET_SMOKE_SHARE_TO) ;;
         *) echo "oa-$P-scheduler has a secret it shouldn't: $n" >&2; exit 1 ;;

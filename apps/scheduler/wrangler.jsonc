@@ -50,6 +50,10 @@
         // FLEET_SMOKE_TOKEN and FLEET_SMOKE_SHARE_TO are secrets the deploy
         // puts from the Environment (docs/ops/hosted.md), never vars here.
         "FLEET_SECOND": "",
+        // #1343: the canary smoke, "off" (the passive soak, as before) or
+        // "required". "off" until the user's one-time smoke setup for this
+        // env (docs/ops/hosted.md); "required" is a later one-line PR.
+        "FLEET_SMOKE": "off",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app"
       },
@@ -123,6 +127,10 @@
         // smoke. Inert while FLEET_CANARY is empty (fleet.ts: no canary,
         // nothing is queued). The smoke's secrets: as staging's.
         "FLEET_SECOND": "i2ab26lvciok",
+        // #1343: the canary smoke, "off" (the passive soak, as before) or
+        // "required". "off" until the user's one-time smoke setup for this
+        // env (docs/ops/hosted.md); "required" is a later one-line PR.
+        "FLEET_SMOKE": "off",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app"
       },

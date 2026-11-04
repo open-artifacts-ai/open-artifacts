@@ -1,3 +1,4 @@
+import type { GetArtifactResult } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import {
   SMOKE_BUS_SKIPPED,
@@ -53,6 +54,8 @@ function canary(o: { fault?: Fault; arts?: Art[]; me?: object } = {}) {
     const authed = auth === `Bearer ${TOKEN}`;
     const json = (v: unknown, status = 200) => Response.json(v, { status });
     const p = u.pathname;
+    if (p === "/healthz")
+      return json({ ok: true, plan: "free", version: VERSION, installId: ID });
     if (p === "/auth/providers")
       return json({
         mode: "google",
@@ -141,7 +144,16 @@ function canary(o: { fault?: Fault; arts?: Art[]; me?: object } = {}) {
       const a = arts.find(
         (x) => x.id === rpc.params.arguments.id && !x.deleted,
       );
-      return reply({ structuredContent: { id: a?.id, title: a?.title } });
+      // The server's get_artifact shape (mcp/tools/artifacts.ts): the keys
+      // are GetArtifactResult's, so a rename there fails this file's types.
+      const sc: {
+        artifact: Pick<GetArtifactResult["artifact"], "id" | "title">;
+        version: Pick<GetArtifactResult["version"], "version" | "entry">;
+      } = {
+        artifact: { id: a?.id ?? "", title: a?.title ?? "" },
+        version: { version: 1, entry: "index.md" },
+      };
+      return reply({ structuredContent: sc });
     }
     return Response.json({ jsonrpc: "2.0", id: rpc.id, error: { code: -1 } });
   };
@@ -177,6 +189,7 @@ describe("the canary smoke", () => {
     expect(c.arts.map((a) => a.title)).toEqual([TITLE]);
     expect(c.arts[0]?.shares).toEqual([]);
     expect(c.calls.map((x) => `${x.method} ${x.path.split("?")[0]}`)).toEqual([
+      "GET /healthz",
       "GET /api/v1/me",
       "GET /auth/providers",
       "GET /auth/login/google",
@@ -193,7 +206,9 @@ describe("the canary smoke", () => {
     ]);
     // The public sign-in routes go without the token.
     for (const x of c.calls)
-      expect(x.auth, x.path).toBe(!x.path.startsWith("/auth/"));
+      expect(x.auth, x.path).toBe(
+        !x.path.startsWith("/auth/") && x.path !== "/healthz",
+      );
   });
 
   it("sweeps only smoke-a's own fleet-smoke-* leftovers", async () => {
@@ -240,7 +255,10 @@ describe("the canary smoke", () => {
     const f: SmokeFetch = async (url, init) => {
       const r = await c.fetch(url, init);
       if (init.method === "PUT" && new URL(url).pathname.endsWith("/shares"))
-        return Response.json({ ...(await r.json()), emailed: true });
+        return Response.json({
+          ...((await r.json()) as object),
+          emailed: true,
+        });
       return r;
     };
     expect(await smoke(input(c, { fetch: f }))).toEqual({
@@ -394,18 +412,69 @@ describe("the canary smoke", () => {
     ).toMatchObject({ kind: "config", check: "share" });
     expect((await run({ over: { token: "oat_revoked" } })).r).toMatchObject({
       kind: "config",
-      check: "token",
+      check: "token_rejected",
     });
     for (const role of ["admin", "owner", "manager"]) {
       const x = await run({ me: { ...ME, role } });
-      expect(x.r, role).toMatchObject({ kind: "config", check: "token" });
+      expect(x.r, role).toMatchObject({ kind: "config", check: "smoke_a" });
       // Nothing published as an over-privileged identity.
       expect(x.live).toEqual([]);
     }
     expect((await run({ me: { ...ME, status: "suspended" } })).r).toMatchObject(
-      { kind: "config", check: "token" },
+      { kind: "config", check: "smoke_a" },
     );
   });
+
+  it("smoke-b outside smoke-a's domain: config, and no share is ever made", async () => {
+    for (const shareTo of [
+      "smoke-b@elsewhere.test",
+      "smoke-b@example.test.evil",
+      "smoke-b@sub.example.test",
+    ]) {
+      const c = canary();
+      expect(await smoke(input(c, { shareTo }))).toEqual({
+        ok: false,
+        kind: "config",
+        check: "share",
+      });
+      expect(
+        c.calls.some((x) => x.path.includes("/shares")),
+        shareTo,
+      ).toBe(false);
+      expect(
+        c.calls.some((x) => x.method === "POST"),
+        shareTo,
+      ).toBe(false);
+    }
+  });
+
+  for (const [name, body, status] of [
+    ["another version", { version: "0.92.0" }, 200],
+    ["another install", { installId: "iother000001" }, 200],
+    ["test hooks on", { testHooks: true }, 200],
+    ["not ok", { ok: false }, 200],
+    ["a 404", {}, 404],
+  ] as const)
+    it(`health: /healthz with ${name} fails before anything is published`, async () => {
+      const c = canary({
+        fault: (p) =>
+          p === "/healthz"
+            ? Response.json(
+                Object.assign(
+                  { ok: true, plan: "free", version: VERSION, installId: ID },
+                  body,
+                ),
+                { status },
+              )
+            : null,
+      });
+      expect(await smoke(input(c))).toEqual({
+        ok: false,
+        kind: "assert",
+        check: "health",
+      });
+      expect(c.arts).toEqual([]);
+    });
 
   it("the budget: past it, the run stops as budget, and still cleans up", async () => {
     let t = 0;

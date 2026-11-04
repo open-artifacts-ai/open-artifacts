@@ -5,6 +5,8 @@
 //
 // What it does, in order, every call over the canary's public route with
 // smoke-a's PAT and a short timeout:
+// - health: /healthz says ok, this install, the release under test, no test
+//   hooks.
 // - sign-in: /api/v1/me is smoke-a, active, a plain member; /auth/providers
 //   answers; when Google is offered, /auth/login/google starts at this env's
 //   broker for this install. Not covered: finishing an OAuth round trip, a
@@ -13,7 +15,9 @@
 //   an earlier run. smoke-a lists only what it may see as "mine".
 // - publish a private markdown artifact, read its file back exactly.
 // - share it with smoke-b (FLEET_SMOKE_SHARE_TO, an existing member, so the
-//   server sends no email: `emailed` must be false), list, unshare.
+//   server sends no email: `emailed` must be false), list, unshare. smoke-b
+//   must be in smoke-a's domain, checked before any share: a wrong address
+//   could otherwise mail an outsider.
 // - MCP: tools/list names publish_artifact and get_artifact; tools/call
 //   get_artifact returns the smoke artifact's title.
 // - bus: skipped until the hub is bound, with a note in the result.
@@ -33,7 +37,13 @@ export const SMOKE_BUDGET_MS = 10_000;
 export const SMOKE_BUS_SKIPPED = "bus: skipped, hub not bound";
 
 export type SmokeCheck =
+  /** config: no FLEET_SMOKE_TOKEN. */
   | "token"
+  /** config: /me refused the token (revoked, or a PAT auth regression). */
+  | "token_rejected"
+  /** config: smoke-a isn't an active plain member. */
+  | "smoke_a"
+  | "health"
   | "signin"
   | "sweep"
   | "publish"
@@ -163,11 +173,24 @@ export async function smoke(o: SmokeInput): Promise<SmokeResult> {
   const notes: string[] = [];
   let result: SmokeResult = { ok: true, notes };
   try {
+    // The canary runs the release: /healthz, public, as the fleet probes it.
+    const hz = await call("health", "/healthz", {}, { auth: false });
+    expect("health", hz.status === 200);
+    const h = (await json("health", hz)) as Record<string, unknown> | null;
+    expect(
+      "health",
+      h?.ok === true &&
+        h.installId === o.installId &&
+        h.version === o.version &&
+        h.testHooks === undefined,
+    );
+
     // sign-in
     const me = await call("signin", "/api/v1/me");
     if (me.status === 401 || me.status === 403) {
       await drop(me);
-      throw new Fail("config", "token");
+      // A revoked token, or PAT auth broken by this release: never a pass.
+      throw new Fail("config", "token_rejected");
     }
     expect("signin", me.status === 200);
     const user = (
@@ -178,10 +201,17 @@ export async function smoke(o: SmokeInput): Promise<SmokeResult> {
       typeof user?.id === "string" && typeof user.email === "string",
     );
     if (user?.status !== undefined && user.status !== "active")
-      throw new Fail("config", "token");
+      throw new Fail("config", "smoke_a");
     // Least privilege: a plain member, never an admin or owner.
-    if (user?.role !== "member") throw new Fail("config", "token");
-    if (String(user.email).toLowerCase() === shareTo)
+    if (user?.role !== "member") throw new Fail("config", "smoke_a");
+    const mine = String(user.email).toLowerCase();
+    if (mine === shareTo) throw new Fail("config", "share");
+    // No mail to an outsider: smoke-b must share smoke-a's domain, checked
+    // before any share is made (the server mails a share to a non-member).
+    if (
+      mine.slice(mine.lastIndexOf("@")) !==
+      shareTo.slice(shareTo.lastIndexOf("@"))
+    )
       throw new Fail("config", "share");
     const prov = await call("signin", "/auth/providers", {}, { auth: false });
     expect("signin", prov.status === 200);
@@ -346,8 +376,13 @@ export async function smoke(o: SmokeInput): Promise<SmokeResult> {
     expect(
       "mcp",
       got?.isError !== true &&
-        (got?.structuredContent as { title?: unknown } | undefined)?.title ===
-          title,
+        (
+          got?.structuredContent as
+            | { artifact?: { id?: unknown; title?: unknown } }
+            | undefined
+        )?.artifact?.title === title &&
+        (got?.structuredContent as { artifact?: { id?: unknown } })?.artifact
+          ?.id === artifactId,
     );
 
     // bus: not until the hub is bound.

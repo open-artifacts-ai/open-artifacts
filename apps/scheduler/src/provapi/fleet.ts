@@ -61,6 +61,22 @@ export const FLEET_CONCURRENCY = 3;
  * replaces it).
  */
 export const FLEET_SOAK_MS = 2 * 60_000;
+/**
+ * With the smoke off (FLEET_SMOKE "off"): the passive soak as before #1343's
+ * smoke, unbroken passing probes this long, and no smoke.
+ */
+export const FLEET_SOAK_OFF_MS = 15 * 60_000;
+
+/**
+ * FLEET_SMOKE, per env: "off" keeps the passive soak (FLEET_SOAK_OFF_MS) and
+ * runs no smoke; "required" settles (FLEET_SOAK_MS) and must pass the smoke.
+ * Anything else, unset included, is "required": a typo never skips it.
+ */
+export type SmokeMode = "required" | "off";
+export const fleetSmokeMode = (v: string | undefined): SmokeMode =>
+  v?.trim() === "off" ? "off" : "required";
+const soakOf = (m: SmokeMode) =>
+  m === "off" ? FLEET_SOAK_OFF_MS : FLEET_SOAK_MS;
 /** Passes further apart than this aren't unbroken: the clock restarts. */
 export const FLEET_SOAK_GAP_MS = 5 * 60_000;
 /** The canary isn't settled and smoked on the target this long: fleet_halted opens. */
@@ -462,13 +478,23 @@ export async function fleetDue(
       : await d1(db.prepare(CANARY).bind(canaryId).first<CanaryRow>());
   // Runs with or without a canary: switching the rollout off never drops an
   // upgrade already made.
-  const hold = await watch(db, now, st, target, canary, probe, ms);
+  const mode = fleetSmokeMode(env.FLEET_SMOKE);
+  const hold = await watch(
+    db,
+    now,
+    st,
+    target,
+    canary,
+    probe,
+    ms,
+    soakOf(mode),
+  );
   if (canaryId === null) {
     console.log("provapi fleet no_canary");
     return;
   }
   await trackBehind(db, now, st, target);
-  await trackCanary(db, now, st, target, canaryId);
+  await trackCanary(db, now, st, target, canaryId, mode);
   if (isHalted(st, target)) {
     console.log("provapi fleet halted", target);
     return;
@@ -560,11 +586,12 @@ async function trackCanary(
   st: FleetState,
   target: string,
   canaryId: string,
+  mode: SmokeMode,
 ): Promise<void> {
   if (isHalted(st, target)) await clearBlocked(db, st);
   else if (
     !st.rows.has(soakedKey(target, canaryId)) ||
-    !st.rows.has(smokedKey(target, canaryId))
+    (mode === "required" && !st.rows.has(smokedKey(target, canaryId)))
   )
     await stamp(db, now, st, target);
 }
@@ -651,6 +678,8 @@ async function canaryReady(
     return false;
   }
   if (!st.rows.has(soakedKey(target, id))) return false;
+  // FLEET_SMOKE "off": the soak alone, as before the smoke.
+  if (fleetSmokeMode(env.FLEET_SMOKE) === "off") return true;
   if (st.rows.has(smokedKey(target, id))) return true;
   return await smokeCanary(env, now, st, canary, target, o);
 }
@@ -843,6 +872,7 @@ async function watch(
   canary: CanaryRow | null,
   probe: HealthProbe,
   ms: number,
+  soakMs: number,
 ): Promise<boolean> {
   const { results } = await d1(db.prepare(WATCH).bind(target).all<Watched>());
   const all = [...results];
@@ -871,7 +901,7 @@ async function watch(
   for (const [i, r] of all.entries()) {
     try {
       const soaked = verdicts[i]
-        ? await passed(db, now, st, target, r.install_id)
+        ? await passed(db, now, st, target, r.install_id, soakMs)
         : await failed(db, now, st, target, r.install_id);
       if (!soaked) hold = true;
     } catch (e) {
@@ -893,12 +923,13 @@ async function passed(
   st: FleetState,
   target: string,
   id: string,
+  soakMs: number,
 ): Promise<boolean> {
   const key = passKey(target, id);
   const prev = st.rows.get(key);
   const unbroken = prev && now - prev.updated_at <= FLEET_SOAK_GAP_MS;
   const start = unbroken ? prev.value : now;
-  if (now - start < FLEET_SOAK_MS) {
+  if (now - start < soakMs) {
     await d1(db.prepare(SET_PASS).bind(key, start, now).run());
     st.rows.set(key, { key, value: start, updated_at: now });
     return false;
@@ -1024,7 +1055,10 @@ const isHeld = async (db: D1Database, target: string) =>
  *   canary or no target, so it never sends a false all-clear.
  */
 export async function fleetConditions(
-  env: Pick<ProvapiEnv, "PLATFORM_DB" | "CF_VERSION_METADATA" | "FLEET_CANARY">,
+  env: Pick<
+    ProvapiEnv,
+    "PLATFORM_DB" | "CF_VERSION_METADATA" | "FLEET_CANARY" | "FLEET_SMOKE"
+  >,
   now: number,
 ): Promise<{ fleet_halted: Condition; version_skew: Condition }> {
   const unknown: Condition = { open: null, rows: [] };
@@ -1061,7 +1095,9 @@ export async function fleetConditions(
       .map((r) => r.value);
     const since = stamps.length > 0 ? Math.min(...stamps) : null;
     const unconfigured =
-      canary !== null && target !== null
+      canary !== null &&
+      target !== null &&
+      fleetSmokeMode(env.FLEET_SMOKE) === "required"
         ? smokeCheckOf(st, FLEET_SMOKE_CONFIG_PREFIX, target)
         : null;
     if (unconfigured !== null)

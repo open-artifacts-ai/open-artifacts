@@ -49,6 +49,8 @@ describe("wrangler.jsonc", () => {
         // is empty. The smoke's token and smoke-b's address are secrets,
         // never vars: no address is ever committed.
         FLEET_SECOND: env === "staging" ? "" : "i2ab26lvciok",
+        // #1343: the smoke stays off on both until the user's setup.
+        FLEET_SMOKE: "off",
       });
       // The fleet target is this version's tag (provapi/fleet.ts).
       expect(e.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });

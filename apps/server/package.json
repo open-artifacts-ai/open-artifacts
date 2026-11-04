@@ -29,6 +29,7 @@
     "@oa/provisioning-contract": "workspace:*",
     "@oa/render": "workspace:*",
     "@oa/runtime": "workspace:*",
+    "@oa/scheduler": "workspace:*",
     "@types/node": "^20.19.43",
     "drizzle-kit": "^0.31.11",
     "typescript": "^5.9.3",
