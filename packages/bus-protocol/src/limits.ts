@@ -38,7 +38,7 @@ export const LIMITS = {
   maxMachinesListed: 100,
   /** A former name reaches its agent, and is reserved from others, this long after a rename (#393). Equals the mail TTL. */
   formerNameGraceMs: 3_600_000,
-  /** Former names an agent keeps, newest first (stored and shown per roster row); an older one is dropped (OpenBus #446). */
+  /** Former names an agent keeps, newest first (stored and shown per roster row). Past it a default one is dropped; a chosen one in its grace never is, so a rename that would leave one more is refused (OpenBus #446). */
   maxFormerNames: 5,
   /** Name changes per agent per rolling hour, a live agent_up's included; past it `rename` gets `error rate_limited` and an agent_up keeps the current name. A no-op doesn't count. */
   renamesPerHour: 10,
