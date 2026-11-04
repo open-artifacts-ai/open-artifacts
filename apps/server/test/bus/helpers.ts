@@ -62,11 +62,15 @@ export async function machine(
 }
 
 /** The hub stub of `userId` (default: theOwner). */
-export async function hubOf(userId?: string): Promise<DurableObjectStub<BusHub>> {
+export async function hubOf(
+  userId?: string,
+): Promise<DurableObjectStub<BusHub>> {
   const uid = userId ?? (await theOwner()).userId;
   const ns = e.BUS_HUB;
   if (!ns) throw new Error("BUS_HUB unbound in the test pool");
-  return ns.get(ns.idFromName(busHubName(uid))) as unknown as DurableObjectStub<BusHub>;
+  return ns.get(
+    ns.idFromName(busHubName(uid)),
+  ) as unknown as DurableObjectStub<BusHub>;
 }
 
 /** Runs `fn` inside the owner's hub (SQL seeding, revokes). */

@@ -16,7 +16,10 @@ import {
   MACHINE_LABEL_HEADER,
   SKEW_MS,
 } from "../../src/bus/hub.js";
-import { INSTALL_INDEX, type UserPresence } from "../../src/runtime/presence.js";
+import {
+  INSTALL_INDEX,
+  type UserPresence,
+} from "../../src/runtime/presence.js";
 import { revokeUserLive } from "../../src/runtime/revoke.js";
 import {
   eraseMember,
@@ -32,8 +35,8 @@ import {
   e,
   hello,
   hubOf,
-  machine,
   type Member,
+  machine,
   member,
   ns,
   up,
@@ -52,7 +55,10 @@ beforeAll(async () => {
   adminM = m;
 });
 
-async function connected(who: Member, label = "box"): Promise<{
+async function connected(
+  who: Member,
+  label = "box",
+): Promise<{
   d: Daemon;
   id: string;
   token: string;
@@ -66,7 +72,9 @@ async function connected(who: Member, label = "box"): Promise<{
 
 const revokedAt = async (machineId: string) =>
   (
-    await env.DB.prepare("select revoked_at as r from bus_machines where id = ?")
+    await env.DB.prepare(
+      "select revoked_at as r from bus_machines where id = ?",
+    )
       .bind(machineId)
       .first<{ r: number | null }>()
   )?.r ?? null;
@@ -75,7 +83,9 @@ describe("revocation closes bus sockets", () => {
   it("a revoked token's socket closes with 4403, and the token is 401 after", async () => {
     const u = await member();
     const c = await connected(u);
-    const r = await api(app, R.busMachine(c.id), u.cookie, { method: "DELETE" });
+    const r = await api(app, R.busMachine(c.id), u.cookie, {
+      method: "DELETE",
+    });
     expect(r.status).toBe(204);
     expect((await c.d.closed).code).toBe(4403);
     expect((await upgrade(c.token)).status).toBe(401);
@@ -95,7 +105,13 @@ describe("revocation closes bus sockets", () => {
   it("suspension does the same", async () => {
     const u = await member();
     const a = await connected(u);
-    await setUserStatus(env, u.userId, "suspended", "admin_suspend", SYSTEM_ACTOR);
+    await setUserStatus(
+      env,
+      u.userId,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
     expect((await a.d.closed).code).toBe(4403);
     expect(await revokedAt(a.id)).not.toBeNull();
   });
@@ -112,11 +128,33 @@ describe("revocation closes bus sockets", () => {
       .run();
     await eraseMember(env, u.userId, adminM);
     const n = await env.DB.prepare(
-      "select (select count(*) from bus_machines where user_id = ?1) + (select count(*) from bus_device_codes where user_id = ?1) as n",
+      "select count(*) as n from bus_device_codes where user_id = ?1",
     )
       .bind(u.userId)
       .first<{ n: number }>();
     expect(n?.n).toBe(0);
+    // Machines stay as emptied, revoked rows: no label, no token hash.
+    const rows = await env.DB.prepare(
+      "select label, token_hash as h, revoked_at as r from bus_machines where user_id = ?1",
+    )
+      .bind(u.userId)
+      .all<{ label: string; h: string; r: number | null }>();
+    expect(rows.results).toEqual([
+      { label: "", h: `erased:${a.id}`, r: expect.any(Number) },
+    ]);
+  });
+
+  it("erase itself closes bus sockets (belt and braces, as for artifact sockets)", async () => {
+    const u = await member();
+    const a = await connected(u);
+    // Removed behind the hooks' back: only erase's own revokeUserLive runs.
+    await env.DB.prepare(
+      "update users set status = 'removed' where id = ?",
+    )
+      .bind(u.userId)
+      .run();
+    await eraseMember(env, u.userId, adminM);
+    expect((await a.d.closed).code).toBe(4403);
   });
 
   it("a cap (restricted) closes the sockets and refuses the next connect, without revoking the machine", async () => {
@@ -171,17 +209,21 @@ describe("install suspend closes bus sockets (the install index)", () => {
     const idx = pns.get(
       pns.idFromName(INSTALL_INDEX),
     ) as unknown as DurableObjectStub<UserPresence>;
-    const seen = await runInDurableObject(idx, (_i, s: DurableObjectState) =>
-      s.storage.sql
-        .exec<{ n: number }>(
-          "select count(*) as n from seen where artifact_id = ?",
-          `bus:${u.userId}`,
-        )
-        .one().n,
+    const seen = await runInDurableObject(
+      idx,
+      (_i, s: DurableObjectState) =>
+        s.storage.sql
+          .exec<{ n: number }>(
+            "select count(*) as n from seen where artifact_id = ?",
+            `bus:${u.userId}`,
+          )
+          .one().n,
     );
     expect(seen).toBe(1);
     const r = await (
-      idx as unknown as { closeInstall(reason: string): Promise<{ closed: number }> }
+      idx as unknown as {
+        closeInstall(reason: string): Promise<{ closed: number }>;
+      }
     ).closeInstall("suspended");
     expect(r.closed).toBeGreaterThanOrEqual(1);
     expect((await a.d.closed).code).toBe(4403);
@@ -233,5 +275,32 @@ describe("two members: one bus each", () => {
     ).toBe(false);
     a.d.close();
     b.d.close();
+  });
+
+  it("a client-supplied user id or hub name never picks the hub", async () => {
+    const alice = await member();
+    const bob = await member();
+    const m = await machine("spoof", alice.userId);
+    const r = await upgrade(m.token, {
+      "x-oa-bus-user": bob.userId,
+      "x-oa-user-id": bob.userId,
+      "x-oa-bus-machine-id": "AAAAAAAAAAAAAAAA",
+      "x-oa-bus-authz-at": "0",
+    });
+    expect(r.status).toBe(101);
+    const ws = r.webSocket as WebSocket;
+    ws.accept();
+    const ids = async (uid: string) =>
+      runInDurableObject(
+        await hubOf(uid),
+        (_i: BusHub, s: DurableObjectState) =>
+          s.storage.sql
+            .exec<{ id: string }>("select id from machines")
+            .toArray()
+            .map((x) => x.id),
+      );
+    expect(await ids(alice.userId)).toEqual([m.id]);
+    expect(await ids(bob.userId)).toEqual([]);
+    ws.close();
   });
 });

@@ -18,8 +18,8 @@ import { limiter } from "../mcp-helpers.js";
 import {
   e,
   hello,
-  machine,
   type Member,
+  machine,
   member,
   upgrade,
   waitFor,
@@ -30,12 +30,7 @@ const app = createApp();
 let ipSeq = 0;
 const nextIp = () => `203.0.113.${(++ipSeq % 250) + 1}`;
 
-const post = (
-  path: string,
-  body: unknown,
-  ip = nextIp(),
-  ev: unknown = env,
-) =>
+const post = (path: string, body: unknown, ip = nextIp(), ev: unknown = env) =>
   fetchAndWait(
     app,
     new Request(`http://app.localhost${path}`, {
@@ -234,9 +229,18 @@ describe("device flow", () => {
     const l2 = limiter(2);
     const ev2 = { ...env, ...l2 };
     for (let i = 0; i < 2; i++) {
-      await env.DB.prepare("update bus_device_codes set last_poll_at = null").run();
+      await env.DB.prepare(
+        "update bus_device_codes set last_poll_at = null",
+      ).run();
       expect(
-        (await post(BUS_ROUTES.deviceToken, { device_code: d.device_code }, nextIp(), ev2)).status,
+        (
+          await post(
+            BUS_ROUTES.deviceToken,
+            { device_code: d.device_code },
+            nextIp(),
+            ev2,
+          )
+        ).status,
       ).toBe(200);
     }
     const over = await post(
@@ -359,7 +363,9 @@ describe("approval page", () => {
     expect(ok).toContain('"work-box" is connected to');
     expect(ok).toContain("http://app.localhost/bus");
     expect(ok).not.toContain("evil.example");
-    expect(ok).toContain("You can close this tab and go back to your terminal.");
+    expect(ok).toContain(
+      "You can close this tab and go back to your terminal.",
+    );
   });
 
   it("POST without the form token, with another code's token, or cross-site is refused", async () => {
@@ -426,9 +432,9 @@ describe("approval page", () => {
     );
     expect(oldPage.status).toBe(404);
     expect(await oldPage.text()).toBe(usedText);
-    expect(
-      (await page("/bus/approve/ZZZZ-ZZZZ", alice.cookie)).status,
-    ).toBe(404);
+    expect((await page("/bus/approve/ZZZZ-ZZZZ", alice.cookie)).status).toBe(
+      404,
+    );
   });
 });
 
@@ -472,9 +478,7 @@ describe("GET /bus/connect: the machine token and nothing else", () => {
 
   it("a revoked machine, a removed member or a member who can't connect is 401", async () => {
     const m1 = await machine("one", alice.userId);
-    await env.DB.prepare(
-      "update bus_machines set revoked_at = ? where id = ?",
-    )
+    await env.DB.prepare("update bus_machines set revoked_at = ? where id = ?")
       .bind(Date.now(), m1.id)
       .run();
     expect((await upgrade(m1.token)).status).toBe(401);
@@ -624,6 +628,20 @@ describe("dashboard REST", () => {
     expect((await upgrade(other.token)).status).toBe(101);
   });
 
+  it("a capped (restricted) member can still list and revoke their own machines", async () => {
+    const capped = await member();
+    const m = await machine("capped", capped.userId);
+    await env.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(capped.userId)
+      .run();
+    expect((await api(app, R.busMachines, capped.cookie)).status).toBe(200);
+    expect(
+      (await api(app, R.busMachine(m.id), capped.cookie, { method: "DELETE" }))
+        .status,
+    ).toBe(204);
+    expect((await api(app, R.busAgents, capped.cookie)).status).toBe(404);
+  });
+
   it("agents need canConnect (404 for a guest)", async () => {
     expect((await api(app, R.busAgents, guest.cookie)).status).toBe(404);
     expect((await api(app, R.busAgents, bob.cookie)).status).toBe(200);
@@ -659,7 +677,11 @@ describe("dashboard REST", () => {
     const ws = r.webSocket as WebSocket;
     ws.accept();
     const j = (await (await api(app, R.busMachines, erin.cookie)).json()) as {
-      machines: { id: string; connected: boolean | null; lastUsedAt: string | null }[];
+      machines: {
+        id: string;
+        connected: boolean | null;
+        lastUsedAt: string | null;
+      }[];
     };
     expect(j.machines[0]?.connected).toBe(true);
     expect(j.machines[0]?.lastUsedAt).not.toBeNull();

@@ -346,6 +346,7 @@ export const CAPPED_WRITES: readonly string[] = [
   "POST /api/v1/artifacts/:id/data/:col/query",
   "DELETE /api/v1/tokens/:id",
   "DELETE /api/v1/oauth-clients/:grantId",
+  "DELETE /api/v1/bus/machines/:id",
   "POST /api/v1/notices/guest_shares/dismiss",
 ];
 
@@ -393,6 +394,8 @@ export function orgExpected(
     case "notices.own":
       return yes(t.team);
     case "tokens.create":
+    // #1291: bus agents (GET R.busAgents), as canConnect.
+    case "mcp.connect":
       return yes(t.team && !t.capped);
     case "artifact.create":
       return yes(!t.capped);

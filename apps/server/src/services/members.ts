@@ -751,9 +751,13 @@ const ERASE_WIPES = [
     and ${ERASABLE}`,
   `delete from tokens where user_id = ?1 and ${ERASABLE}`,
   `delete from agent_grants where user_id = ?1 and ${ERASABLE}`,
-  // #1291: their bus machines (labels are client-chosen hostnames) and any
-  // device code they decided.
-  `delete from bus_machines where user_id = ?1 and ${ERASABLE}`,
+  // #1291: their bus machines are revoked and emptied (labels are
+  // client-chosen hostnames; the token hash goes too), not deleted: the row
+  // (id, last_used_at) is how revokeUserLive below finds their BusHub to
+  // close its sockets. Any device code they decided goes.
+  `update bus_machines set label = '', token_hash = 'erased:' || id,
+    revoked_at = coalesce(revoked_at, cast(strftime('%s', 'now') as integer) * 1000)
+    where user_id = ?1 and ${ERASABLE}`,
   `delete from bus_device_codes where user_id = ?1 and ${ERASABLE}`,
   `delete from reserved_artifacts where user_id = ?1 and ${ERASABLE}`,
   // The users_personal_space trigger copied their name or address into it.
