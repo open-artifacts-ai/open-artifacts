@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.109.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.108.0...v0.109.0) (2026-11-04)
+
+
+### Features
+
+* **bus:** BusHub, machine tokens, device flow and /bus/connect ([#1291](https://github.com/open-artifacts-ai/open-artifacts/issues/1291) part B) ([#1314](https://github.com/open-artifacts-ai/open-artifacts/issues/1314)) ([3b927ac](https://github.com/open-artifacts-ai/open-artifacts/commit/3b927ac40f5bfd9ba8237981d5e4e29dd506fb91))
+* **server:** changed notices reach every follower, the publisher included ([#1292](https://github.com/open-artifacts-ai/open-artifacts/issues/1292)) ([#1331](https://github.com/open-artifacts-ai/open-artifacts/issues/1331)) ([f0e887e](https://github.com/open-artifacts-ai/open-artifacts/commit/f0e887ee9d6d91d96c75782632390cda15ded98d))
+
+
+### Bug Fixes
+
+* **ci:** retry Cloudflare read lag in the platform tag check ([#1327](https://github.com/open-artifacts-ai/open-artifacts/issues/1327)) ([#1329](https://github.com/open-artifacts-ai/open-artifacts/issues/1329)) ([77b5265](https://github.com/open-artifacts-ai/open-artifacts/commit/77b5265436f49ec062b532715554a1c2e3f02427))
+
 ## [0.108.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.107.0...v0.108.0) (2026-11-04)
 
 
