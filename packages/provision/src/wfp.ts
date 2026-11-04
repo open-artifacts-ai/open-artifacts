@@ -707,6 +707,25 @@ export function assertMigrationOrder(
     );
 }
 
+/**
+ * #1106 on the manual path: a rollback re-uploads old code and never touches
+ * D1, so it is refused when the install has a D1 migration the target release
+ * lacks (its code would run on a newer schema). Forward-fix only.
+ */
+export function assertRollbackSchema(
+  files: readonly string[],
+  done: ReadonlySet<string>,
+  id: string,
+  to: string,
+): void {
+  const ahead = [...done].filter((x) => !files.includes(x)).sort();
+  if (ahead.length > 0)
+    throw new ProvisionRefused(
+      `install ${id}: the D1 has migration ${ahead.join(", ")}, which ${to} does not; rollback is refused (forward-fix only)`,
+      "invalid_state",
+    );
+}
+
 /** M3: another operation holds the install now; this one stopped. */
 /** Another operation took the lease: a rerun may succeed (`lease_held`). */
 export class LostLease extends ProvisionRetry {
@@ -3647,6 +3666,23 @@ export class WfpProvisioner {
       );
     const tok = own ?? (await this.ownerToken(row, m.appHost, true));
     const { d1Id, kvId } = await this.liveInstall(row, m);
+    // #1106: never old code on a newer schema. Read-only, before any write.
+    const doTag = row.do_migration_tag;
+    if (doTag !== null && !tagsOf(rel.template).includes(doTag))
+      throw new ProvisionRefused(
+        `install ${id}: the Durable Object migration tag ${doTag} is not in ${to}; rollback is refused (forward-fix only)`,
+        "invalid_state",
+      );
+    const applied = await this.cf.d1Query(
+      d1Id,
+      "SELECT name FROM d1_migrations",
+    );
+    assertRollbackSchema(
+      rel.migrations.map((f) => f.name),
+      new Set((applied[0]?.results ?? []).map((x) => String(x.name))),
+      id,
+      to,
+    );
     const render = (tag: string | null) =>
       this.metadata(id, m, rel, {
         d1Id,
