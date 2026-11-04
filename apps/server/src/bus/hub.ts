@@ -29,7 +29,7 @@ import {
   suffixName,
   utf8Bytes,
 } from "@oa/bus-protocol";
-import type { BusAgent } from "@oa/shared";
+import { BUS_ROLE_MAX, type BusAgent, type BusRole } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logError, logInfo } from "../log.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
@@ -40,6 +40,15 @@ import {
 } from "../services/bus.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
+import {
+  deleteRole,
+  listRoles,
+  type PutRoleResult,
+  putRole,
+  resolveRoleAnywhere,
+  resolveRoleIn,
+  roleTakenSql,
+} from "./roles.js";
 import {
   AGENT_COLS,
   type AgentRow,
@@ -63,8 +72,9 @@ import {
 // member (idFromName(busHubName(userId))). Dropped from the port: machines'
 // tokens and the device flow (D1 bus_machines and bus_device_codes, bus/*.ts),
 // the OIDC states and session generation (Open Artifacts' sign-in), the
-// dashboard socket feed (the dashboard polls REST), roles, agent cards,
-// linked apps and the client-version gates. org_id stays on every row, always
+// dashboard socket feed (the dashboard polls REST), card roles, agent cards,
+// linked apps and the client-version gates (role addresses came back in
+// #1296, bus/roles.ts). org_id stays on every row, always
 // OWNER_ORG_ID (Product: a constant for now).
 
 /** The one org id every hub row carries. */
@@ -214,12 +224,38 @@ const renameGated = (ws: WebSocket): boolean => {
 };
 
 /**
- * A receipt's `to_name`: the resolved agent's current name, only when the
- * send resolved through a former name (it differs from the name sent to,
- * beyond case), and only to a rename-capable socket.
+ * Role addresses (#1296): `role_vacant` and a role hit's receipt `to_name`
+ * go only to a socket whose hello listed BUS_CAPS.roles. Fails closed, as
+ * renameGated does.
  */
-const viaFormer = (ws: WebSocket, sentTo: string, toName: string): boolean =>
-  renameGated(ws) && sentTo.toLowerCase() !== toName.toLowerCase();
+const rolesGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.roles);
+};
+
+/**
+ * A receipt's `to_name`: the resolved agent's current name, only when the
+ * send resolved through a role address (`viaRole`), to a roles-capable
+ * socket, or through a former name (it differs from the name sent to,
+ * beyond case), to a rename-capable socket.
+ */
+const toNameShown = (
+  ws: WebSocket,
+  sentTo: string,
+  toName: string,
+  viaRole: boolean,
+): boolean =>
+  viaRole
+    ? rolesGated(ws)
+    : renameGated(ws) && sentTo.toLowerCase() !== toName.toLowerCase();
+
+/**
+ * The refusal reason a socket may see: `role_vacant` only on a roles-capable
+ * socket (an older client's strict decoder refuses the reason, failing the
+ * whole frame); any other gets `unknown_agent`, as if the role did not exist.
+ */
+const wireReason = (ws: WebSocket, reason: RefusalReason): RefusalReason =>
+  reason === "role_vacant" && !rolesGated(ws) ? "unknown_agent" : reason;
 
 function machineOf(ws: WebSocket): string | null {
   return attachmentOf(ws)?.machineId ?? null;
@@ -533,12 +569,14 @@ function registeredAgent(
  * non-global's must be free in its namespace and among live globals.
  * R393b: a live agent's chosen former name in that same scope is taken too
  * (reserved for its grace); the agent's own former names are free to it.
+ * #1296: a role address in that scope is taken too (a role in the
+ * namespace; for a global, a role in any namespace), vacant or not.
  * Reservations are per member: each member has its own hub.
  * OpenBus #446: a name minted for ANOTHER agent is taken in every scope, for
  * good (a minted name is never handed to another agent again); its own agent
  * may take it back. Default former names reserve nothing themselves: the
  * minted_names row does. One statement on agents_live_lname,
- * former_names_lname and the minted_names primary key.
+ * former_names_lname, the minted_names primary key and roles.
  */
 function nameTaken(
   sql: SqlStorage,
@@ -550,6 +588,7 @@ function nameTaken(
 ): boolean {
   const lname = name.toLowerCase();
   const scope = global ? "" : "and (a.namespace = ? or a.global = 1)";
+  const role = roleTakenSql(OWNER_ORG_ID, lname, namespace, global);
   return (
     one<{ x: number }>(
       sql,
@@ -557,7 +596,8 @@ function nameTaken(
            or exists (select 1 from former_names f join agents a on a.id = f.agent_id
                        where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind = 'chosen'
                          and f.agent_id != ? and a.live = 1 ${scope})
-           or exists (select 1 from minted_names m where m.org_id = ? and m.lname = ? and m.agent_id != ?)) as x`,
+           or exists (select 1 from minted_names m where m.org_id = ? and m.lname = ? and m.agent_id != ?)
+           or ${role.sql}) as x`,
       OWNER_ORG_ID,
       lname,
       selfId,
@@ -570,6 +610,7 @@ function nameTaken(
       OWNER_ORG_ID,
       lname,
       selfId,
+      ...role.binds,
     )?.x === 1
   );
 }
@@ -1307,8 +1348,9 @@ type Held = {
   expiresAt: number;
 };
 
+/** `viaRole`: the send resolved through a role address (#1296). */
 type Resolution =
-  | { ok: true; agent: AgentRow }
+  | { ok: true; agent: AgentRow; viaRole?: true }
   | { ok: false; reason: RefusalReason };
 
 /** The live agent `lname` names in namespace `ns` (in `ns`, or a global). */
@@ -1419,10 +1461,43 @@ function liveFormer(
 const refused = (reason: RefusalReason): Resolution => ({ ok: false, reason });
 
 /**
- * Within a scope a current live name comes before a live former name (R393b),
- * then goneReason. The sender's own namespace is looked at first; a former
- * name follows the visibility of its agent's current name. Identical for
- * every client: the rename gate only hides wire fields.
+ * #1296: whether a live agent outside namespace `ns`'s scope has `lname` as
+ * its name, or as a live former name. A live agent of that scope never has
+ * a role's name (nameTaken, putRole), so any live name counts; a former name
+ * of a non-global agent in `ns` (a default one) does not. One statement on
+ * agents_live_lname and former_names_lname.
+ */
+function nameOutside(
+  sql: SqlStorage,
+  lname: string,
+  ns: string,
+  now: number,
+): boolean {
+  return (
+    one<{ x: number }>(
+      sql,
+      `select (exists (select 1 from agents where org_id = ? and lower(name) = ? and live = 1)
+           or exists (select 1 from former_names f join agents a on a.id = f.agent_id
+                       where f.org_id = ? and f.lname = ? and f.expires_at > ?
+                         and a.live = 1 and a.global = 0 and a.namespace != ?)) as x`,
+      OWNER_ORG_ID,
+      lname,
+      OWNER_ORG_ID,
+      lname,
+      now,
+      ns,
+    )?.x === 1
+  );
+}
+
+/**
+ * Within a scope a role address comes first (#1296: no live agent can share
+ * its name there), then a current live name, then a live former name
+ * (R393b), then goneReason. The sender's own namespace is looked at first; a
+ * former name follows the visibility of its agent's current name. A role is
+ * reached from its own namespace (or by a global sender); a non-global
+ * sender's explicit other to_namespace never reaches one. Identical for
+ * every client: the rename and roles gates only hide wire fields.
  */
 function resolveTarget(
   sql: SqlStorage,
@@ -1443,6 +1518,8 @@ function resolveTarget(
     return rows.length > 1 ? refused("ambiguous") : { ok: true, agent: hit };
   };
   const visibleIn = (ns: string): Resolution | null => {
+    const role = resolveRoleIn(sql, OWNER_ORG_ID, ns, lname);
+    if (role) return role;
     const hit = liveVisibleIn(sql, ns, lname);
     return hit ? { ok: true, agent: hit } : formerIn({ ns });
   };
@@ -1474,6 +1551,12 @@ function resolveTarget(
   // R393b: the sender's own namespace first, current then former names.
   const own = visibleIn(sender.namespace);
   if (own) return own;
+  // #1296: a role in exactly one other namespace, unless a live agent (or a
+  // live former name) outside that namespace's scope shares the name.
+  const role = resolveRoleAnywhere(sql, OWNER_ORG_ID, lname, (ns) =>
+    nameOutside(sql, lname, ns, now),
+  );
+  if (role) return role;
   // A live global sorts first and is the only live agent with its name.
   const live = liveAnywhere(sql, lname, 2);
   const first = live[0];
@@ -1515,7 +1598,7 @@ function refuseSend(ws: WebSocket, id: string, reason: RefusalReason): void {
     type: "receipt",
     msg_id: newId(),
     state: "refused",
-    reason,
+    reason: wireReason(ws, reason),
   });
 }
 
@@ -1538,10 +1621,15 @@ function payloadHash(f: SendFrame, sender: AgentRow): string {
     .digest("hex");
 }
 
-type SendKey = { payloadHash: string; msgId: string; createdAt: number };
+type SendKey = {
+  payloadHash: string;
+  msgId: string;
+  createdAt: number;
+  viaRole: number;
+};
 type SendKeyCheck =
   | { kind: "new"; hash: string; dropped: boolean }
-  | { kind: "resend"; msgId: string }
+  | { kind: "resend"; msgId: string; viaRole: boolean }
   | { kind: "reused" };
 
 /**
@@ -1563,14 +1651,14 @@ function findSendKey(
   const hash = payloadHash(f, sender);
   const key = one<SendKey>(
     sql,
-    "select payload_hash as payloadHash, msg_id as msgId, created_at as createdAt from send_keys where from_agent = ? and frame_id = ?",
+    "select payload_hash as payloadHash, msg_id as msgId, created_at as createdAt, via_role as viaRole from send_keys where from_agent = ? and frame_id = ?",
     agentId,
     f.id,
   );
   if (!key) return { kind: "new", hash, dropped: false };
   if (key.createdAt >= now - SEND_KEY_RETAIN_MS)
     return key.payloadHash === hash
-      ? { kind: "resend", msgId: key.msgId }
+      ? { kind: "resend", msgId: key.msgId, viaRole: key.viaRole === 1 }
       : { kind: "reused" };
   sql.exec(
     "delete from send_keys where from_agent = ? and frame_id = ?",
@@ -1592,16 +1680,18 @@ function insertSendKey(
   hash: string,
   msgId: string,
   now: number,
+  viaRole: boolean,
 ): void {
   sql.exec(
-    `insert into send_keys (from_agent, frame_id, org_id, payload_hash, msg_id, created_at)
-     values (?, ?, ?, ?, ?, ?) on conflict (from_agent, frame_id) do nothing`,
+    `insert into send_keys (from_agent, frame_id, org_id, payload_hash, msg_id, created_at, via_role)
+     values (?, ?, ?, ?, ?, ?, ?) on conflict (from_agent, frame_id) do nothing`,
     agentId,
     frameId,
     OWNER_ORG_ID,
     hash,
     msgId,
     now,
+    viaRole ? 1 : 0,
   );
 }
 
@@ -2124,6 +2214,52 @@ export class BusHub extends DurableObject<Env> {
       .filter((m) => machineOnline(this.ctx, m.id))
       .map((m) => m.id);
     return { connected, agents: agentList(this.ctx) };
+  }
+
+  // ------------------------------------------------------------------- roles
+
+  /** Tests only (static, not RPC): the role cap (null: BUS_ROLE_MAX). */
+  static setMaxRolesForTests(hub: BusHub, max: number | null): void {
+    hub.#maxRoles = max ?? BUS_ROLE_MAX;
+  }
+
+  #maxRoles = BUS_ROLE_MAX;
+
+  /**
+   * #1296: the member's role addresses, for the dashboard (services/bus.ts).
+   * Called only by the Worker, for the hub's own member: no frame reaches it.
+   */
+  async listRoles(): Promise<BusRole[]> {
+    return listRoles(this.ctx.storage.sql, OWNER_ORG_ID, this.#maxRoles);
+  }
+
+  /**
+   * #1296: sets, re-points or (agentId null) vacates role (namespace, name),
+   * creating it if needed (roles.ts putRole). Mail already sent stays with
+   * the agent it resolved to; only later sends follow. Worker only.
+   */
+  async putRole(
+    namespace: string,
+    name: string,
+    agentId: string | null,
+  ): Promise<PutRoleResult> {
+    const r = putRole(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      namespace,
+      name,
+      agentId,
+      this.#now(),
+      newId,
+      this.#maxRoles,
+    );
+    logEvent("role_set", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /** #1296: removes role `id` (its name is free at once); false when unknown. Worker only. */
+  async deleteRole(id: string): Promise<boolean> {
+    return deleteRole(this.ctx.storage.sql, OWNER_ORG_ID, id);
   }
 
   /** When the last closeAll started (ms), or null. */
@@ -2908,7 +3044,7 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
     if (key.kind === "resend") {
-      this.#resend(ws, f.id, f.to_name, key.msgId);
+      this.#resend(ws, f.id, f.to_name, key.msgId, key.viaRole);
       return;
     }
     if (key.dropped && this.#sendKeys !== null) this.#sendKeys--;
@@ -2949,7 +3085,8 @@ export class BusHub extends DurableObject<Env> {
       expiresAt,
       held ? now : null,
     );
-    insertSendKey(sql, sender.id, f.id, key.hash, msgId, now);
+    const viaRole = res.viaRole === true;
+    insertSendKey(sql, sender.id, f.id, key.hash, msgId, now, viaRole);
     if (this.#sendKeys !== null) this.#sendKeys++;
     this.#arm(now + SEND_KEY_RETAIN_MS + 1);
     // Write-on-miss: an offline machine (agent queued), an oversized body or
@@ -2964,7 +3101,7 @@ export class BusHub extends DurableObject<Env> {
       type: "receipt",
       msg_id: msgId,
       state: "pending",
-      ...(viaFormer(ws, f.to_name, target.name)
+      ...(toNameShown(ws, f.to_name, target.name, viaRole)
         ? { to_name: target.name }
         : {}),
     });
@@ -3027,7 +3164,13 @@ export class BusHub extends DurableObject<Env> {
    * already got), which also marks the sender told. A receipt row missing
    * within the key's window (receipts outlive keys) would read as expired.
    */
-  #resend(ws: WebSocket, id: string, sentTo: string, msgId: string): void {
+  #resend(
+    ws: WebSocket,
+    id: string,
+    sentTo: string,
+    msgId: string,
+    viaRole: boolean,
+  ): void {
     const sql = this.ctx.storage.sql;
     const r = one<{
       state: string;
@@ -3048,9 +3191,9 @@ export class BusHub extends DurableObject<Env> {
       type: "receipt",
       msg_id: msgId,
       state: "pending",
-      // R393b: a resend repeats a former-name hit's to_name (the name the
-      // send resolved to, from the receipt row).
-      ...(r.toName !== null && viaFormer(ws, sentTo, r.toName)
+      // R393b, #1296: a resend repeats a former-name or role hit's to_name
+      // (the name the send resolved to, from the receipt row).
+      ...(r.toName !== null && toNameShown(ws, sentTo, r.toName, viaRole)
         ? { to_name: r.toName }
         : {}),
     });

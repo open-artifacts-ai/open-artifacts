@@ -72,7 +72,15 @@ const mirror = (h: BusHubStub) =>
   );
 
 /** The deliberate RPC surface. Adding a public method means adding it here. */
-const RPC_ALLOWLIST = ["closeAll", "revokeMachine", "snapshot", "wipe"];
+const RPC_ALLOWLIST = [
+  "closeAll",
+  "deleteRole",
+  "listRoles",
+  "putRole",
+  "revokeMachine",
+  "snapshot",
+  "wipe",
+];
 
 /**
  * DurableObject handlers (B5). On the prototype, but workerd reserves these

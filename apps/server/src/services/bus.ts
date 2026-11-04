@@ -1,4 +1,4 @@
-import type { BusAgent, BusMachine } from "@oa/shared";
+import type { BusAgent, BusMachine, BusRole } from "@oa/shared";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
@@ -60,6 +60,20 @@ export type BusHubRpc = {
   closeAll(reason: string, kind?: BusCloseKind): Promise<number>;
   /** Closes every socket and deletes all of the hub's storage (erase). */
   wipe(): Promise<void>;
+  /** #1296: the member's role addresses. */
+  listRoles(): Promise<BusRole[]>;
+  /** #1296: sets, re-points or (null) vacates a role; see bus/roles.ts putRole. */
+  putRole(
+    namespace: string,
+    name: string,
+    agentId: string | null,
+  ): Promise<
+    | { ok: true; role: BusRole }
+    | { ok: false; reason: "invalid"; field: "namespace" | "name" }
+    | { ok: false; reason: "name_taken" | "agent_not_open" | "role_limit" }
+  >;
+  /** #1296: removes a role; false when unknown. */
+  deleteRole(id: string): Promise<boolean>;
 };
 
 /** True when the bus routes answer: BUS_HUB bound, and not a hosted install (until #1299). */
@@ -269,4 +283,95 @@ export async function closeUserBus(
   return (
     (await busHub(env, userId)?.closeAll(reason, busCloseKind(reason))) ?? 0
   );
+}
+
+// ------------------------------------------------------------ role addresses
+
+/** Why a role write was refused (#1296): the 409's details.reason. */
+export type RoleRefusal =
+  | "name_taken"
+  | "agent_not_open"
+  | "role_limit"
+  | "no_bus";
+
+const ROLE_REFUSALS: Record<RoleRefusal, string> = {
+  name_taken: "An agent or a reserved name already uses that name there",
+  agent_not_open: "No open agent with that id in that namespace",
+  role_limit: "Too many role addresses",
+  no_bus: "Connect a machine to the bus first",
+};
+
+/** A hub call for a role write: ApiError internal when it fails or times out (retrying is safe). */
+async function roleCall<T>(p: Promise<T>): Promise<T> {
+  try {
+    const r = await within(p, BUS_HUB_TIMEOUT_MS * 5);
+    if (r === null) throw new Error("bus hub timed out");
+    return r;
+  } catch (e) {
+    logError("bus_role_failed", e);
+    throw new ApiError("internal", "The bus could not be reached. Try again.");
+  }
+}
+
+/**
+ * #1296: the member's role addresses, or [] with live false when the hub
+ * can't be read in BUS_HUB_TIMEOUT_MS (or none can exist yet: no machine
+ * ever connected, Decision 20).
+ */
+export async function listBusRoles(
+  env: Env,
+  userId: string,
+): Promise<{ roles: BusRole[]; live: boolean }> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId)))
+    return { roles: [], live: false };
+  const hub = busHub(env, userId);
+  if (!hub) return { roles: [], live: false };
+  try {
+    const roles = await within(hub.listRoles(), BUS_HUB_TIMEOUT_MS);
+    return roles === null ? { roles: [], live: false } : { roles, live: true };
+  } catch (e) {
+    logError("bus_roles_failed", e);
+    return { roles: [], live: false };
+  }
+}
+
+/**
+ * #1296: sets, re-points or (agentId null) vacates the member's role. The
+ * route validated the body; the hub checks again. 409 conflict with details
+ * { reason } on a refusal; `no_bus` before any machine connected (no BusHub
+ * is created for it). 404 while the bus is off.
+ */
+export async function putBusRole(
+  env: Env,
+  userId: string,
+  namespace: string,
+  name: string,
+  agentId: string | null,
+): Promise<BusRole> {
+  const refuse = (reason: RoleRefusal) =>
+    new ApiError("conflict", ROLE_REFUSALS[reason], { reason });
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  if (!(await hasConnectedMachine(env, userId))) throw refuse("no_bus");
+  const hub = busHub(env, userId);
+  if (!hub) throw refuse("no_bus");
+  const r = await roleCall(hub.putRole(namespace, name, agentId));
+  if (r.ok) return r.role;
+  if (r.reason === "invalid")
+    throw new ApiError("bad_request", `Invalid ${r.field}`, {
+      field: r.field,
+    });
+  throw refuse(r.reason);
+}
+
+/** #1296: removes the member's role `id`. Idempotent: unknown is fine. */
+export async function deleteBusRole(
+  env: Env,
+  userId: string,
+  id: string,
+): Promise<void> {
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  if (!(await hasConnectedMachine(env, userId))) return;
+  const hub = busHub(env, userId);
+  if (!hub) return;
+  await roleCall(hub.deleteRole(id));
 }
