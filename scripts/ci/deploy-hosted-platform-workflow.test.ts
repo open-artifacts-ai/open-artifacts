@@ -4,7 +4,13 @@
 // main-only Environment (no approval step), with main's deploy scripts and the
 // tag's code.
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -24,7 +30,7 @@ const named = (n: string) =>
   steps.find((s) => s.name === n) as Record<string, any>;
 
 const FULL =
-  "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones";
+  "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,inventory,provisioning,zones,scheduler";
 
 describe("deploy-hosted-platform.yml", () => {
   it("one version (#1040): the default is every target, in order; required", () => {
@@ -213,7 +219,7 @@ describe("deploy-hosted-platform.yml", () => {
     );
     // The constants and the id lookup are main's too, never the tag's.
     expect(use).toContain(
-      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh platform-tags.sh; do",
+      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts; do",
     );
     expect(use).toContain(
       'cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"',
@@ -232,7 +238,12 @@ describe("deploy-hosted-platform.yml", () => {
     expect(i("Use main's deploy scripts")).toBeLessThan(
       i("Load the hosted constants"),
     );
+    // The release chain's re-check (#1343) sits between: it needs the
+    // account id, and runs before any lookup or deploy.
     expect(i("Load the hosted constants")).toBe(
+      i("The tag is newer than prod's") - 1,
+    );
+    expect(i("The tag is newer than prod's")).toBe(
       i("Resolve the resource ids") - 1,
     );
     expect(i("Resolve the resource ids")).toBe(i("Deploy and verify") - 1);
@@ -302,9 +313,11 @@ describe("deploy-hosted-platform.yml", () => {
     expect(withSecrets.map((s) => s.name)).toEqual([
       "Check the inputs",
       "Load the hosted constants",
+      "The tag is newer than prod's",
       "Resolve the resource ids",
       "Deploy and verify",
       "Zones",
+      "Scheduler, last",
       "Every platform Worker runs the tag",
       "The deploy token's expiry",
     ]);
@@ -320,6 +333,10 @@ describe("deploy-hosted-platform.yml", () => {
       DEPLOY_ENV: "${{ inputs.env }}",
       OA_OWNER_EMAIL: "${{ secrets.OA_OWNER_EMAIL }}",
     });
+    for (const n of ["The tag is newer than prod's", "Scheduler, last"])
+      expect(JSON.stringify(named(n).env).match(/secrets\.\w+/g), n).toEqual([
+        "secrets.CLOUDFLARE_API_TOKEN",
+      ]);
     expect(named("Zones").env).toEqual({
       DEPLOY_ENV: "${{ inputs.env }}",
       VERIFY_ONLY: "${{ inputs.verify_only && '1' || '' }}",
@@ -430,7 +447,7 @@ describe("deploy-hosted-platform.yml", () => {
     expect(
       go(
         "v0.74.1",
-        "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones",
+        "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,inventory,provisioning,zones,scheduler",
       ),
     ).toBe(0);
     expect(go("v0.74.1", "provisioning,provisioner")).toBe(1);
@@ -460,10 +477,10 @@ describe("deploy-hosted-platform.yml", () => {
       "provision-token",
       "provisioner",
       "dispatch",
-      "scheduler",
       "inventory",
       "provisioning",
       "zones",
+      "scheduler",
     ]);
     // What each app binds, from its committed config (prod block).
     const strip = (src: string) =>
@@ -511,8 +528,17 @@ describe("deploy-hosted-platform.yml", () => {
     expect(bound("provisioner")).toEqual(
       expect.arrayContaining(["platform-db", "provision-token"]),
     );
-    // The zones route to every Worker, so they come last.
-    expect(order.at(-1)).toBe("zones");
+    // The zones route to every Worker that has a route; the scheduler has
+    // none (no fetch handler), and nothing binds it, so it can come last
+    // (#1343): its tag is the fleet's target.
+    for (const app of apps) expect(bound(app), app).not.toContain("scheduler");
+    const sched = JSON.parse(
+      strip(readFileSync(join(root, "apps/scheduler/wrangler.jsonc"), "utf8")),
+    ).env.prod;
+    for (const k of ["route", "routes", "custom_domain", "custom_domains"])
+      expect(sched[k], k).toBeUndefined();
+    expect(order.at(-2)).toBe("zones");
+    expect(order.at(-1)).toBe("scheduler");
   });
 
   it("prod's platform-db, provisioner and provisioning wait for a green staging run of the tag, before anything deploys", () => {
@@ -605,7 +631,13 @@ describe("deploy-hosted-platform.yml", () => {
   it("workflow_call takes the dispatch's inputs, same defaults; the env is checked in the input step", () => {
     const d = w.on.workflow_dispatch.inputs;
     const c = w.on.workflow_call.inputs;
-    expect(Object.keys(c)).toEqual(Object.keys(d));
+    // require_newer is the chain's alone: a manual dispatch never sees it.
+    expect(Object.keys(c)).toEqual([...Object.keys(d), "require_newer"]);
+    expect(c.require_newer).toEqual({
+      type: "boolean",
+      required: false,
+      default: false,
+    });
     expect(d.env).toEqual({
       description: "Which env's Workers",
       required: true,
@@ -626,8 +658,23 @@ describe("deploy-hosted-platform.yml", () => {
       required: false,
       default: false,
     });
-    // No secrets declared: the job's Environment supplies them.
-    expect(w.on.workflow_call.secrets).toBeUndefined();
+    // Every secret the job names is declared, none required: the
+    // Environment supplies all but OA_OWNER_EMAIL, a repo secret.
+    expect(w.on.workflow_call.secrets).toEqual(
+      Object.fromEntries(
+        [
+          "OA_OWNER_EMAIL",
+          "CLOUDFLARE_API_TOKEN",
+          "GOOGLE_CLIENT_SECRET",
+          "GOOGLE_DIRECTORY_CLIENT_SECRET",
+          "ADMIN_IDENTITIES",
+        ].map((k) => [k, { required: false }]),
+      ),
+    );
+    const named_ = new Set(text.match(/secrets\.([A-Z_]+)/g));
+    expect([...named_].map((x) => x.slice(8)).sort()).toEqual(
+      Object.keys(w.on.workflow_call.secrets).sort(),
+    );
     // The env has no choice type under workflow_call: the first step refuses
     // anything but staging or prod, before any checkout.
     const check = named("Check the inputs");
@@ -651,5 +698,108 @@ describe("deploy-hosted-platform.yml", () => {
       expect(r.status, bad).toBe(1);
       expect(r.stdout).toContain("env must be staging or prod");
     }
+  });
+
+  // #1343: the scheduler's tag is the fleet's target, so it deploys last,
+  // after every other target and the zones: a run that stops partway never
+  // moves the fleet.
+  it("the scheduler deploys last, in its own step after the zones", () => {
+    const i = (n: string) => steps.indexOf(named(n));
+    expect(i("Scheduler, last")).toBe(i("Zones") + 1);
+    expect(i("Every platform Worker runs the tag")).toBe(
+      i("Scheduler, last") + 1,
+    );
+    const s = named("Scheduler, last");
+    expect(s.if).toBe(
+      "${{ contains(format(',{0},', inputs.targets), ',scheduler,') }}",
+    );
+    expect(s.env).toEqual({
+      DEPLOY_ENV: "${{ inputs.env }}",
+      DEPLOY_ENVIRONMENT:
+        "${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}",
+      VERIFY_ONLY: "${{ inputs.verify_only && '1' || '' }}",
+      DEPLOY_TAG: "${{ inputs.tag }}",
+      CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+    });
+    expect(s.run).toBe(
+      'bash scripts/ops/deploy-hosted-platform.sh "$DEPLOY_ENV" scheduler',
+    );
+    // The loop deploys everything else, in order, and never the scheduler.
+    const loop = named("Deploy and verify").run as string;
+    expect(loop).toContain('[ "$t" = zones ] && continue');
+    expect(loop).toContain('[ "$t" = scheduler ] && continue');
+    const ran = (TARGETS: string) => {
+      const r = spawnSync(
+        "bash",
+        [
+          "-c",
+          loop.replace(
+            'bash scripts/ops/deploy-hosted-platform.sh "$DEPLOY_ENV" "$t"',
+            'echo "$t"',
+          ),
+        ],
+        {
+          env: { PATH: process.env.PATH, DEPLOY_ENV: "prod", TARGETS },
+          encoding: "utf8",
+        },
+      );
+      return r.stdout
+        .split("\n")
+        .filter((l) => l && !l.startsWith("::"))
+        .join(",");
+    };
+    expect(ran(FULL)).toBe(
+      "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,inventory,provisioning",
+    );
+    expect(ran("scheduler")).toBe("");
+  });
+
+  it("require_newer (the chain's): the tag must be newer than prod's scheduler, before anything deploys", () => {
+    const s = named("The tag is newer than prod's");
+    const i = (n: string) => steps.indexOf(n === "" ? s : named(n));
+    expect(s.if).toBe("${{ inputs.require_newer }}");
+    // After the concurrency group is held (the job runs only then) and the
+    // account id is loaded; before every lookup and deploy.
+    expect(i("")).toBeGreaterThan(i("Load the hosted constants"));
+    for (const n of [
+      "Resolve the resource ids",
+      "Deploy and verify",
+      "Zones",
+      "Scheduler, last",
+    ])
+      expect(i(""), n).toBeLessThan(i(n));
+    expect(s.env).toEqual({
+      DEPLOY_ENV: "${{ inputs.env }}",
+      TAG: "${{ inputs.tag }}",
+      CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+    });
+    // main's copies, never the tag's.
+    expect(s.run).toContain(
+      'current="$(bash "$RUNNER_TEMP/main-ci/worker-tag.sh" prod scheduler)"',
+    );
+    // Run it with worker-tag.sh stubbed to print prod's current tag.
+    const dir = mkdtempSync(join(tmpdir(), "require-newer-"));
+    mkdirSync(join(dir, "main-ci"));
+    copyFileSync(
+      join(root, "scripts/ci/prod-release-chain.ts"),
+      join(dir, "main-ci/prod-release-chain.ts"),
+    );
+    const go = (DEPLOY_ENV: string, TAG: string, current: string) => {
+      writeFileSync(
+        join(dir, "main-ci/worker-tag.sh"),
+        `[ "$*" = "prod scheduler" ] || exit 9\n${current ? `echo ${current}` : "exit 1"}\n`,
+      );
+      return spawnSync("bash", ["-c", s.run], {
+        env: { PATH: process.env.PATH, RUNNER_TEMP: dir, DEPLOY_ENV, TAG },
+        encoding: "utf8",
+      }).status;
+    };
+    expect(go("prod", "v0.99.0", "v0.98.3")).toBe(0);
+    // A manual deploy of the same or a newer tag won the group: refuse.
+    expect(go("prod", "v0.99.0", "v0.99.0")).not.toBe(0);
+    expect(go("prod", "v0.99.0", "v0.100.0")).not.toBe(0);
+    // prod's tag unreadable: refuse.
+    expect(go("prod", "v0.99.0", "")).not.toBe(0);
+    expect(go("staging", "v0.99.0", "v0.98.3")).not.toBe(0);
   });
 });

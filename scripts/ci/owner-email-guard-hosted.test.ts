@@ -31,7 +31,7 @@ describe("deploy-hosted-platform.yml refuses before any target runs", () => {
   const steps = jobSteps("deploy-hosted-platform.yml", "deploy");
   const check = steps[0] as Step;
   const FULL =
-    "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones";
+    "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,inventory,provisioning,zones,scheduler";
   const run = (TARGETS: string, OA_OWNER_EMAIL: string) =>
     bash(check.run, {
       DEPLOY_ENV: "prod",

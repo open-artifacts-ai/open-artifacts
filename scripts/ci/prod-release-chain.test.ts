@@ -38,7 +38,7 @@ const REPO = "open-artifacts-ai/open-artifacts";
 const TAG = "v0.99.0";
 const SHA = "a".repeat(40);
 const FULL =
-  "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones";
+  "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,inventory,provisioning,zones,scheduler";
 const ON =
   "${{ vars.PROD_RELEASE_CHAIN == 'on' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch' }}";
 
@@ -171,6 +171,7 @@ describe("prod-release-chain.yml", () => {
     expect(w.jobs.gate.environment).toBe("hosted-prod-deploy");
     expect(w.jobs.gate.outputs).toEqual({
       tag: "${{ steps.tag.outputs.tag }}",
+      go: "${{ steps.fresh.outputs.go == 'true' && steps.newer.outputs.go == 'true' }}",
     });
     expect(gateSteps[0]).toMatchObject({
       name: "On main",
@@ -202,13 +203,19 @@ describe("prod-release-chain.yml", () => {
       env: { ...tagged, GH_TOKEN: "${{ github.token }}" },
       run: 'bash scripts/ci/tag-passed-checks.sh prod "$TAG"',
     });
-    expect(named("This event is the newest green run for the tag").run).toBe(
-      'node --experimental-strip-types scripts/ci/prod-release-chain.ts fresh --repo "$GITHUB_REPOSITORY" --tag "$TAG" --head-sha "$HEAD_SHA"',
+    const fr = named("fresh");
+    expect(fr.name).toBe("This event is the newest green run for the tag");
+    expect(fr.run).toContain(
+      'go="$(node --experimental-strip-types scripts/ci/prod-release-chain.ts fresh --repo "$GITHUB_REPOSITORY" --tag "$TAG" --head-sha "$HEAD_SHA")"',
     );
-    expect(named("Load the hosted constants").run).toBe(
-      "bash scripts/ci/hosted-constants.sh prod .github/hosted > /dev/null",
-    );
-    const newer = named("The tag is newer than prod's");
+    // A stale event skips what follows, neutrally.
+    expect(named("Load the hosted constants")).toMatchObject({
+      if: "steps.fresh.outputs.go == 'true'",
+      run: "bash scripts/ci/hosted-constants.sh prod .github/hosted > /dev/null",
+    });
+    const newer = named("newer");
+    expect(newer.name).toBe("The tag is newer than prod's");
+    expect(newer.if).toBe("steps.fresh.outputs.go == 'true'");
     expect(newer.env).toEqual({
       ...tagged,
       CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
@@ -217,7 +224,7 @@ describe("prod-release-chain.yml", () => {
       'current="$(bash scripts/ci/worker-tag.sh prod scheduler)"',
     );
     expect(newer.run).toContain(
-      'prod-release-chain.ts newer --tag "$TAG" --current "$current"',
+      'go="$(node --experimental-strip-types scripts/ci/prod-release-chain.ts newer --tag "$TAG" --current "$current")"',
     );
     // Only that step sees a secret.
     expect(
@@ -244,8 +251,17 @@ describe("prod-release-chain.yml", () => {
       targets: FULL,
       reason: "",
       verify_only: false,
+      require_newer: true,
     });
-    expect(d.secrets).toBeUndefined();
+    // Only when the gate says go: a skip deploys nothing.
+    expect(d.if).toBe("needs.gate.outputs.go == 'true'");
+    // Only the repo-level alert address, never `inherit`.
+    expect(d.secrets).toEqual({
+      OA_OWNER_EMAIL: "${{ secrets.OA_OWNER_EMAIL }}",
+    });
+    expect(Object.keys(deploy.on.workflow_call.secrets)).toContain(
+      "OA_OWNER_EMAIL",
+    );
     // The full list is the deploy's own: its read-back and no-break-glass
     // `if:`s compare against it.
     expect(deploy.on.workflow_dispatch.inputs.targets.default).toBe(FULL);
@@ -334,7 +350,7 @@ describe("fresh: this event is the newest green run for the tag", () => {
         tag: TAG,
         headSha: SHA,
       }),
-    ).toEqual({ run: 5 });
+    ).toEqual({ run: 5, go: true });
     expect(calls[0]).toEqual([
       "api",
       "-X",
@@ -349,8 +365,9 @@ describe("fresh: this event is the newest green run for the tag", () => {
       run({ id: 9, head_sha: newer, created_at: "2026-11-03T12:00:00Z" }),
       run({ id: 5 }),
     ];
-    expect(() => go(runs)).toThrow(/stale/);
-    expect(go(runs, newer)).toEqual({ run: 9 });
+    // Stale: no error, a neutral skip.
+    expect(go(runs)).toEqual({ run: 9, go: false });
+    expect(go(runs, newer)).toEqual({ run: 9, go: true });
   });
 
   it("counts only what staging-first-gate.sh counts", () => {
@@ -373,7 +390,7 @@ describe("fresh: this event is the newest green run for the tag", () => {
           run({ id: 5 }),
         ]),
         JSON.stringify(over),
-      ).toEqual({ run: 5 });
+      ).toEqual({ run: 5, go: true });
   });
 
   it("fails closed: no run, an API error, an unparsable answer, a bad sha or tag", () => {
@@ -404,23 +421,32 @@ describe("newer: the tag is above what prod's scheduler runs", () => {
       ["", "v0.98.0"],
     ] as const)
       expect(() => isNewer(t, c), `${t} ${c}`).toThrow();
-    const cli = (current: string) =>
-      spawnSync(
+    const cli = (mode: string, current: string) => {
+      const r = spawnSync(
         "node",
         [
           "--experimental-strip-types",
           script("prod-release-chain.ts"),
-          "newer",
+          mode,
           "--tag",
           TAG,
           "--current",
           current,
         ],
         { encoding: "utf8" },
-      ).status;
-    expect(cli("v0.98.0")).toBe(0);
-    expect(cli(TAG)).not.toBe(0);
-    expect(cli("")).not.toBe(0);
+      );
+      return { status: r.status, out: r.stdout };
+    };
+    // The gate: not newer is a neutral skip (go=false, exit 0).
+    expect(cli("newer", "v0.98.0")).toEqual({ status: 0, out: "go=true\n" });
+    expect(cli("newer", TAG)).toEqual({ status: 0, out: "go=false\n" });
+    expect(cli("newer", "v1.0.0")).toEqual({ status: 0, out: "go=false\n" });
+    expect(cli("newer", "").status).not.toBe(0);
+    // The deploy's re-check: not newer fails.
+    expect(cli("require-newer", "v0.98.0")).toEqual({ status: 0, out: "" });
+    expect(cli("require-newer", TAG).status).not.toBe(0);
+    expect(cli("require-newer", "v1.0.0").status).not.toBe(0);
+    expect(cli("require-newer", "").status).not.toBe(0);
   });
 });
 
@@ -469,6 +495,22 @@ describe("report: one blocker issue while red", () => {
         run: RUN,
       }),
     ).toEqual({ action: "refreshed", issue: 4 });
+  });
+
+  it("a neutral skip (stale event, a release prod has) neither opens, refreshes nor closes it", () => {
+    const a = world([
+      { number: 4, title: "Prod release chain failed: v0.98.0" },
+    ]);
+    expect(
+      report({
+        exec: a.exec,
+        repo: REPO,
+        tag: TAG,
+        result: "skipped",
+        run: RUN,
+      }),
+    ).toEqual({ action: "none" });
+    expect(a.calls).toEqual([]);
   });
 
   it("green closes it", () => {
@@ -609,5 +651,60 @@ cat "$f"`;
       expect(r.code, args.join(" ")).toBe(2);
       expect(r.paths).toBe("");
     }
+  });
+});
+
+// The skip steps, run as the runner would: node stubbed to print go=...
+describe("the gate's neutral skips", () => {
+  const runStep = (name: string, go: string) => {
+    const d = mkdtempSync(join(tmpdir(), "chain-skip-"));
+    const bin = join(d, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "node"), `#!/usr/bin/env bash\necho ${go}\n`, {
+      mode: 0o755,
+    });
+    const out = join(d, "output");
+    writeFileSync(out, "");
+    const run = String(named(name).run).replace(
+      "bash scripts/ci/worker-tag.sh prod scheduler",
+      "echo v0.98.0",
+    );
+    const r = spawnSync("bash", ["-c", run], {
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        GITHUB_OUTPUT: out,
+        TAG,
+        HEAD_SHA: SHA,
+        GITHUB_REPOSITORY: REPO,
+      },
+      encoding: "utf8",
+    });
+    return {
+      status: r.status,
+      out: r.stdout,
+      output: readFileSync(out, "utf8"),
+    };
+  };
+  for (const step of ["fresh", "newer"]) {
+    it(`${step}: go=false is green with a notice, and the output says so`, () => {
+      const r = runStep(step, "go=false");
+      expect(r.status).toBe(0);
+      expect(r.output).toBe("go=false\n");
+      expect(r.out).toContain("::notice title=Release chain skipped::");
+      const ok = runStep(step, "go=true");
+      expect(ok.status).toBe(0);
+      expect(ok.output).toBe("go=true\n");
+      expect(ok.out).not.toContain("::notice");
+    });
+  }
+  it("the report sees a skip as 'skipped': the deploy job doesn't run", () => {
+    const step = w.jobs.report.steps.find(
+      (s: { name?: string }) => s.name === "Keep the blocker issue in step",
+    );
+    // gate success and go false: deploy is skipped, so RESULT is "skipped".
+    expect(step.env.RESULT).toBe(
+      "${{ needs.gate.result == 'success' && needs.deploy.result || needs.gate.result }}",
+    );
+    expect(w.jobs.deploy.if).toBe("needs.gate.outputs.go == 'true'");
   });
 });

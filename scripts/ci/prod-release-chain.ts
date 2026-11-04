@@ -2,15 +2,18 @@
 // redline-staging dispatch for a release tag deploys that tag to the prod
 // platform, and the scheduler's fleet duty (#955) takes it from there.
 // `tag` reads the tag from the run's display title (redline-staging.yml's
-// run-name, the shape staging-first-gate.sh matches); `fresh` proves this
-// event is the newest gated run for the tag; `newer` proves the tag is above
-// what prod's scheduler runs; `report` keeps one `blocker` issue open while
-// the last chain run is red.
+// run-name, the shape staging-first-gate.sh matches); `fresh` says whether
+// this event is the newest gated run for the tag; `newer` whether the tag is
+// above what prod's scheduler runs. Both print `go=true|false`: false is a
+// neutral skip (a stale or repeated event, a release prod already runs), not
+// a failure. `require-newer` is the deploy's re-check, which fails instead.
+// `report` keeps one `blocker` issue open while the last chain run is red.
 // Usage: node --experimental-strip-types scripts/ci/prod-release-chain.ts tag --title "<display_title>"
 //        node --experimental-strip-types scripts/ci/prod-release-chain.ts fresh --repo owner/name --tag vX.Y.Z --head-sha <sha>
 //        node --experimental-strip-types scripts/ci/prod-release-chain.ts newer --tag vX.Y.Z --current vX.Y.Z
+//        node --experimental-strip-types scripts/ci/prod-release-chain.ts require-newer --tag vX.Y.Z --current vX.Y.Z
 //        node --experimental-strip-types scripts/ci/prod-release-chain.ts report --repo owner/name --tag vX.Y.Z --result success --run <url>
-// Every failure throws (exit 1): the chain fails closed. Needs GH_TOKEN for
+// Every other failure throws (exit 1): the chain fails closed. Needs GH_TOKEN for
 // fresh and report.
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -67,17 +70,19 @@ export function isNewer(tag: string, current: string): boolean {
 }
 
 /**
- * The newest run staging-first-gate.sh would accept for `tag` (the same
- * filter: completed, success, dispatched, on main, this repository, titled for
- * the tag) must have `headSha`, so an event for an older run can't act for a
- * newer one. The 7-day window and the artifact are staging-first-gate.sh's.
+ * Whether the newest run staging-first-gate.sh would accept for `tag` (the
+ * same filter: completed, success, dispatched, on main, this repository,
+ * titled for the tag) has `headSha`. If not, this event is stale and an
+ * event for the newer run acts instead: go is false. No such run at all, an
+ * API error or a bad input throws. The 7-day window and the artifact are
+ * staging-first-gate.sh's.
  */
 export function fresh(o: {
   exec: Exec;
   repo: string;
   tag: string;
   headSha: string;
-}): { run: number } {
+}): { run: number; go: boolean } {
   if (!TAG_RE.test(o.tag)) throw new Error(`not a release tag: ${o.tag}`);
   if (!SHA_RE.test(o.headSha)) throw new Error("the event has no head sha");
   const body = JSON.parse(
@@ -104,11 +109,7 @@ export function fresh(o: {
     .sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""))
     .at(-1);
   if (!newest) throw new Error(`no green redline-staging run for ${o.tag}`);
-  if (newest.head_sha !== o.headSha)
-    throw new Error(
-      `a newer green run (${newest.id}) for ${o.tag} has another head sha: this event is stale`,
-    );
-  return { run: newest.id };
+  return { run: newest.id, go: newest.head_sha === o.headSha };
 }
 
 export type Report =
@@ -125,6 +126,9 @@ export function report(o: {
   result: string;
   run: string;
 }): Report {
+  // A neutral skip (a stale event, a release prod already runs) leaves the
+  // issue as it is: it neither opens nor closes it.
+  if (o.result === "skipped") return { action: "none" };
   const tag = TAG_RE.test(o.tag) ? o.tag : "";
   const open = (
     JSON.parse(
@@ -167,7 +171,7 @@ export function report(o: {
     "",
     `Run: ${o.run}`,
     "",
-    "Prod's platform did not take this release, so the fleet did not move (the scheduler's tag is its target). Read the run: a gate refused the tag, or the deploy or its read-back failed. Forward only: fix the cause, cut a new release and red-line it; a green chain run closes this issue (docs/ops/hosted.md).",
+    "The scheduler deploys last and its tag is the fleet's target, so the fleet did not move unless the run failed after the scheduler deployed (then only the read-back failed: check `platform-tags.sh prod`). Read the run: a gate refused the tag, or the deploy or its read-back failed. Forward only: fix the cause, cut a new release and red-line it; a green chain run closes this issue (docs/ops/hosted.md).",
   ].join("\n");
   const existing = open[0];
   if (existing) {
@@ -244,12 +248,16 @@ function main(argv: string[]) {
     console.log(`tag=${tagOf(flag(argv, "title"))}`);
     return;
   }
-  if (mode === "newer") {
+  if (mode === "newer" || mode === "require-newer") {
     const tag = flag(argv, "tag");
     const current = flag(argv, "current");
-    if (!isNewer(tag, current))
-      throw new Error(`${tag} is not newer than prod's ${current}`);
-    console.error(`prod-release-chain: ${tag} is newer than prod's ${current}`);
+    const go = isNewer(tag, current);
+    if (!go && mode === "require-newer")
+      throw new Error(`${tag} is not newer than prod's ${current}: refusing`);
+    console.error(
+      `prod-release-chain: ${tag} is ${go ? "" : "not "}newer than prod's ${current}`,
+    );
+    if (mode === "newer") console.log(`go=${go}`);
     return;
   }
   const repo = flag(argv, "repo");
@@ -261,7 +269,12 @@ function main(argv: string[]) {
       tag: flag(argv, "tag"),
       headSha: flag(argv, "head-sha"),
     });
-    console.error(`prod-release-chain: run ${r.run} is the newest for the tag`);
+    console.error(
+      r.go
+        ? `prod-release-chain: run ${r.run} is the newest for the tag`
+        : `prod-release-chain: a newer green run (${r.run}) for the tag has another head sha: this event is stale`,
+    );
+    console.log(`go=${r.go}`);
     return;
   }
   if (mode === "report") {
@@ -275,7 +288,9 @@ function main(argv: string[]) {
     console.error(`prod-release-chain: ${JSON.stringify(r)}`);
     return;
   }
-  throw new Error("usage: prod-release-chain.ts <tag|fresh|newer|report> ...");
+  throw new Error(
+    "usage: prod-release-chain.ts <tag|fresh|newer|require-newer|report> ...",
+  );
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)
