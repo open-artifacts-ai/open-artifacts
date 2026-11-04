@@ -144,6 +144,22 @@ export function isNetworkError(e: unknown): boolean {
   );
 }
 
+/**
+ * The socket code when `e` is a request that got no HTTP response for a
+ * transport reason (#1133): a code isNetworkError knows (ECONNRESET,
+ * UND_ERR_SOCKET, ...), on the error or its cause. Undefined for an abort or a
+ * timeout (ours or a caller's: they have their own handling), a TLS failure
+ * or an unknown cause (a bad certificate on our host can be a product bug),
+ * and anything that isn't a network error.
+ */
+export function noResponseCode(e: unknown): string | undefined {
+  if (!isNetworkError(e)) return undefined;
+  const name = (e as Error).name;
+  if (name === "AbortError" || name === "TimeoutError") return undefined;
+  const code = networkCode(e);
+  return NET_CODES.has(code) ? code : undefined;
+}
+
 /** A fetch that failed because the host name has no DNS record (ENOTFOUND only). */
 export function notResolved(e: unknown): boolean {
   const cause = (e as { cause?: { code?: unknown } } | null)?.cause;

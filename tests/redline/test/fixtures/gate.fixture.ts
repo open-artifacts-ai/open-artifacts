@@ -1,8 +1,12 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
 import { InfraError, setupTimeout } from "../../src/fetch-timeout.ts";
 import { SetupHookError } from "../../src/http.ts";
 import { NotRefused, tagLeg } from "../../src/refused.ts";
 import { label, type ProofMeta, proof } from "../../src/report.ts";
+import { watchResets } from "../../src/resets.ts";
+import { transportFetch } from "../../src/transport.ts";
 
 // Driven by report.test.ts: FIXTURE_LEVEL picks the second case's level
 // ("setup-fail" fails the top beforeAll; "nested-setup-fail" fails the
@@ -43,7 +47,26 @@ afterAll(() => {
 
 it("fixture: a passing case", () => {});
 
-it("fixture: the case under test", (ctx) => {
+/** The error a GET to a server that resets every socket rejects with. */
+async function noResponse(): Promise<unknown> {
+  const server = createServer((req) => req.socket.resetAndDestroy());
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const { port } = server.address() as AddressInfo;
+  try {
+    await transportFetch(globalThis.fetch, watchResets())(
+      `http://127.0.0.1:${port}/x`,
+      { signal: AbortSignal.timeout(5_000) },
+    );
+  } catch (e) {
+    return e;
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+  throw new Error("fixture: the reset server answered");
+}
+
+it("fixture: the case under test", async (ctx) => {
   if (LEVEL === "fail") throw new Error("fixture failure");
   // A failure whose message carries every kind of secret (redacted in the report).
   if (LEVEL === "secret-fail")
@@ -63,6 +86,14 @@ it("fixture: the case under test", (ctx) => {
       },
     );
   if (LEVEL === "infra") throw new InfraError(setupTimeout("rl-b", 60_000));
+  // #1133: a case-body fetch that got no response (a local server resets
+  // the socket), sent through transportFetch as live/setup.ts does. Thrown
+  // as is: infra. Caught and judged by an assertion instead: fail.
+  if (LEVEL === "no-response" || LEVEL === "no-response-asserted") {
+    const e = await noResponse();
+    if (LEVEL === "no-response") throw e;
+    throw new Error(`expected a response, got ${(e as Error).message}`);
+  }
   if (["staging-only", "not-applicable", "unproven-live"].includes(LEVEL))
     proof(ctx, LEVEL as ProofMeta["level"], "fixture");
 });

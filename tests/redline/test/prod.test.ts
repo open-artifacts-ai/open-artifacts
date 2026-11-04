@@ -1,13 +1,17 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
+import type { Socket } from "node:net";
 import { join } from "node:path";
 import {
   bundleSha256,
+  CfError,
   canonicalJson,
   platformNames,
   TEST_HOOKS_DEFINE,
 } from "@oa/provision";
 import { afterEach, describe, expect, it } from "vitest";
+import { InfraError } from "../src/fetch-timeout.ts";
+import { takeFileNotes } from "../src/notes.ts";
 import {
   guardProdClean,
   HOOK_SQL_MARKERS,
@@ -19,6 +23,7 @@ import {
 import {
   buildReport,
   gatePasses,
+  levelOf,
   PRE_PROD_GUARD,
   PRE_PROD_GUARD_REASON,
 } from "../src/report.ts";
@@ -63,6 +68,8 @@ interface World {
   seen?: string[];
   /** Full URLs requested through the injected fetch, in order. */
   urls?: string[];
+  /** How many /installs reads get no answer at all (held open) first. */
+  inventoryStalls?: number;
 }
 
 function signedRecord(o: {
@@ -142,6 +149,10 @@ const cleanWorld = (): World => ({
 /** A fake Cloudflare API + inventory + /healthz, reached through an injected fetch. */
 async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
   const r2 = `/client/v4/accounts/${ACCT}/r2/buckets/${BUCKET}/objects`;
+  const held: Socket[] = [];
+  dispose.push(() => {
+    for (const s of held) s.destroy();
+  });
   const script = `/client/v4/accounts/${ACCT}/workers/dispatch/namespaces/oa-prod/scripts/oa-p-${ID}`;
   const f = await fakeServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://x");
@@ -166,6 +177,12 @@ async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
       const b = w.objects?.get(key);
       if (!b) return json(res, 404, { success: false });
       return res.writeHead(200, { etag: '"e"' }).end(Buffer.from(b));
+    }
+    if (u.pathname === "/installs" && (w.inventoryStalls ?? 0) > 0) {
+      // No response: the read's bound fires. Held until the test ends.
+      w.inventoryStalls = (w.inventoryStalls ?? 0) - 1;
+      held.push(req.socket);
+      return;
     }
     if (u.pathname === "/installs") {
       w.inventoryAuth = [...(w.inventoryAuth ?? []), req.headers.authorization];
@@ -442,6 +459,111 @@ describe("prodClean (spec 2026-10-26)", () => {
         else expect(await failCode(r)).toBe(want);
       });
     }
+  });
+
+  describe("the guard's reads with no response (#1133, run 41914116734)", () => {
+    // Pass only on a read that answered and shows no hooks. A timeout gets
+    // one retry on a new connection; no response twice is infra. Any HTTP
+    // status or a reply listing hooks stays a fail.
+    const READ_MS = 300;
+    const guard = async (w: World) => {
+      const { fetch } = await serve(w);
+      return guardProdClean({ mode: "staging", prod: probe() }, (x) =>
+        prodClean(x, {
+          fetch,
+          pubkey: PUB,
+          inventoryBearer: JWT,
+          readMs: READ_MS,
+        }),
+      );
+    };
+    const settle = (p: Promise<unknown>) =>
+      p.then(
+        () => null,
+        (x: unknown) => x,
+      );
+    const installsReads = (w: World) =>
+      (w.seen ?? []).filter((p) => p === "/installs").length;
+    const retried = () =>
+      takeFileNotes().filter((n) => n.startsWith("request retried: "));
+    const levelFor = (e: unknown) =>
+      levelOf("failed", undefined, [e as { message?: unknown }]);
+    afterEach(() => {
+      takeFileNotes();
+    });
+
+    it("a timeout, then a clean answer: pass, with a retry note", async () => {
+      const w = cleanWorld();
+      publish(w, { version: "1.2.3" });
+      w.inventoryStalls = 1;
+      expect(await guard(w)).toEqual({
+        level: "pass",
+        releases: 1,
+        installs: 1,
+      });
+      expect(installsReads(w)).toBe(2);
+      const notes = retried();
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toMatch(
+        /^request retried: timeout GET \/installs host [0-9a-f]{8} \(prodClean inventory\); recovered on a new socket$/,
+      );
+    });
+
+    it("a timeout twice: infra, never a pass", async () => {
+      const w = cleanWorld();
+      w.inventoryStalls = 2;
+      const e = await settle(guard(w));
+      expect(e).toBeInstanceOf(InfraError);
+      expect((e as Error).message).toBe(
+        "infra: prodClean inventory got no response twice (timeout, then timeout)",
+      );
+      expect(levelFor(e).level).toBe("infra");
+      expect(installsReads(w)).toBe(2);
+      expect(retried()[0]).toMatch(/; failed again \(timeout\)$/);
+    });
+
+    it("a timeout, then a reply listing hooks: fail (the retry never launders it)", async () => {
+      const w = cleanWorld();
+      (w.installs[0] as { testHooks: boolean }).testHooks = true;
+      w.inventoryStalls = 1;
+      const e = await settle(guard(w));
+      expect(e).toBeInstanceOf(ProdDirty);
+      expect((e as ProdDirty).code).toBe("install_dirty");
+      expect(levelFor(e).level).toBe("fail");
+    });
+
+    it("/healthz listing hooks: fail", async () => {
+      const w = cleanWorld();
+      w.healthz = { ok: true, installId: ID, testHooks: true };
+      const e = await settle(guard(w));
+      expect((e as ProdDirty).code).toBe("install_dirty");
+      expect(levelFor(e).level).toBe("fail");
+    });
+
+    it("a 5xx: fail, not retried", async () => {
+      const w = cleanWorld();
+      w.inventoryAnswer = { status: 500, body: "{}" };
+      const e = await settle(guard(w));
+      expect((e as ProdDirty).code).toBe("inventory_bad");
+      expect(levelFor(e).level).toBe("fail");
+      expect(installsReads(w)).toBe(1);
+      expect(retried()).toEqual([]);
+    });
+
+    it("a Cloudflare read with no response on every try: infra; an HTTP status from it: fail", async () => {
+      const e = await settle(
+        guardProdClean({ mode: "staging", prod: probe() }, () =>
+          Promise.reject(new CfError("GET", "/x", 0, "network: TimeoutError")),
+        ),
+      );
+      expect(levelFor(e).level).toBe("infra");
+      const e5 = await settle(
+        guardProdClean({ mode: "staging", prod: probe() }, () =>
+          Promise.reject(new CfError("GET", "/x", 502, "")),
+        ),
+      );
+      expect(levelFor(e5).level).toBe("fail");
+    });
   });
 
   describe("the red-line guard", () => {
