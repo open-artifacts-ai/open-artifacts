@@ -154,7 +154,17 @@ test("an editor publishes into t19-eng; a manager moves it to t19-exec", async (
   );
   const title = `T19 ${RUN} plan`;
   await d.getByRole("textbox", { name: "Title" }).fill(title);
+  const minted = page.waitForResponse(
+    (r) =>
+      new URL(r.url()).pathname === R.uploads &&
+      r.request().method() === "POST",
+  );
   await d.getByRole("button", { name: "Create" }).click();
+  // The browser PUTs the file to the URL the Worker signs (from APP_HOST), so
+  // it must be the page's own origin, port included: a mismatch is a real
+  // misconfiguration (on the local pair, APP_HOST without the port).
+  const { url } = (await (await minted).json()) as { url: string };
+  expect(new URL(url).origin).toBe(new URL(page.url()).origin);
   await expect(page).toHaveURL(/\/a\/[^/]+/);
   const id = new URL(page.url()).pathname.split("/")[2] ?? "";
   remember(keeper, id);
@@ -268,7 +278,9 @@ test("an admin never sees another person's personal space", async ({
   await expect(
     admin.page.getByRole("heading", { level: 1, name: "Library" }),
   ).toBeVisible();
-  await expect(admin.page.getByText(title)).toHaveCount(0);
+  // Exact: the admin's own page, "<title> (admin)", holds `title` as a
+  // substring and is in this Library, so a substring match is always red.
+  await expect(admin.page.getByText(title, { exact: true })).toHaveCount(0);
 });
 
 // Cut (#1251): 'a space named "Personal" is refused inline'. Covered by

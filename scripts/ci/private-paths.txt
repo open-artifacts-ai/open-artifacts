@@ -63,6 +63,7 @@ scripts/ci/hosted-publish.test.ts
 scripts/ci/hosted-r2-key.sh
 scripts/ci/hosted-release.test.ts
 scripts/ci/hosted-resource-ids.sh
+scripts/ci/owner-email-guard-hosted.test.ts
 scripts/ci/platform-tags.sh
 scripts/ci/platform-tags.test.ts
 scripts/ci/prod-inspect-workflow.test.ts

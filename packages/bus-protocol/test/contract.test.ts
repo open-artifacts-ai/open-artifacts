@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import * as bus from "../src/index.js";
+import * as bus from "../src/index.ts";
 import {
   AgentRefSchema,
   BUS_ROUTES,
@@ -14,7 +14,7 @@ import {
   REFUSAL_REASONS,
   RESERVED_BUS_NAMES,
   SERVER_FRAMES,
-} from "../src/index.js";
+} from "../src/index.ts";
 
 const doc = readFileSync(new URL("../CONTRACT.md", import.meta.url), "utf8");
 
@@ -48,6 +48,7 @@ describe("contract is pinned", () => {
       "list",
       "fetch",
       "status",
+      "rename",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -59,6 +60,7 @@ describe("contract is pinned", () => {
       "deliver",
       "receipt_update",
       "roster_changed",
+      "renamed",
     ]);
   });
 
@@ -112,6 +114,17 @@ describe("contract is pinned", () => {
   });
 });
 
+describe("renames (#393) are pinned", () => {
+  it("pins the limits, the message and the cap, with no version gate", () => {
+    expect(LIMITS.formerNameGraceMs).toBe(3_600_000);
+    expect(LIMITS.maxFormerNames).toBe(5);
+    expect(LIMITS.renamesPerHour).toBe(10);
+    expect(bus.RENAME_MESSAGES.rate).toBe("Too many renames");
+    expect(bus.BUS_CAPS.rename).toBe("rename");
+    expect("RENAME_MIN_CLIENT" in bus).toBe(false);
+  });
+});
+
 describe("CONTRACT.md", () => {
   it("lists every refusal reason as a standalone token", () => {
     for (const t of REFUSAL_REASONS) expect(doc, t).toContain(`\`${t}\``);
@@ -124,10 +137,15 @@ describe("CONTRACT.md", () => {
       "recipient_closed",
       "/bus/device",
       "/bus/device/token",
-      "/bus/approve/",
+      "/bus/approve",
+      "RFC 8628",
       "/bus/connect",
       "oa_machine_",
       ".oa-bus.json",
+      "former_names",
+      "name_kind",
+      "caps",
+      "Too many renames",
     ])
       expect(doc, t).toContain(t);
   });

@@ -9,6 +9,8 @@ CREATE TABLE `bus_device_codes` (
 	`user_code` text NOT NULL,
 	`label` text NOT NULL,
 	`ip_tag` text NOT NULL,
+	`origin_country` text,
+	`origin_network` text,
 	`created_at` integer NOT NULL,
 	`expires_at` integer NOT NULL,
 	`last_poll_at` integer,

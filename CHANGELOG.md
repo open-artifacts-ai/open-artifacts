@@ -1,5 +1,70 @@
 # Changelog
 
+## [0.113.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.112.0...v0.113.0) (2026-11-04)
+
+
+### Features
+
+* **server:** close BusHub agents of a machine offline for over 24 h (port of open-bus [#442](https://github.com/open-artifacts-ai/open-artifacts/issues/442)) ([#1350](https://github.com/open-artifacts-ai/open-artifacts/issues/1350)) ([41ee900](https://github.com/open-artifacts-ai/open-artifacts/commit/41ee900dc78025a5befd3539ba3643bd838dd635))
+
+## [0.112.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.111.0...v0.112.0) (2026-11-04)
+
+
+### Features
+
+* **ci:** automatic prod release chain, off until reviewed ([#1343](https://github.com/open-artifacts-ai/open-artifacts/issues/1343)) ([#1347](https://github.com/open-artifacts-ai/open-artifacts/issues/1347)) ([bb4ad76](https://github.com/open-artifacts-ai/open-artifacts/commit/bb4ad763e91b48d3c8585aa53c2436590466afcd))
+* **server:** BusHub renames, former names and name_kind (OpenBus R393b, [#1325](https://github.com/open-artifacts-ai/open-artifacts/issues/1325)) ([#1337](https://github.com/open-artifacts-ai/open-artifacts/issues/1337)) ([5693bae](https://github.com/open-artifacts-ai/open-artifacts/commit/5693bae221f98da57eed6b8d0f591748a22fbe16))
+
+## [0.111.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.110.0...v0.111.0) (2026-11-04)
+
+
+### Features
+
+* **admin:** Test hooks checkbox on staging Create install ([#1339](https://github.com/open-artifacts-ai/open-artifacts/issues/1339)) ([9fe041c](https://github.com/open-artifacts-ai/open-artifacts/commit/9fe041c044457416b2fb860ef840862f5e55c745))
+* **admin:** Test hooks checkbox on staging Create install ([#1339](https://github.com/open-artifacts-ai/open-artifacts/issues/1339)) ([#1341](https://github.com/open-artifacts-ai/open-artifacts/issues/1341)) ([9fe041c](https://github.com/open-artifacts-ai/open-artifacts/commit/9fe041c044457416b2fb860ef840862f5e55c745))
+* **bus-protocol:** rename frames, former names and name_kind (OpenBus R393a, [#1325](https://github.com/open-artifacts-ai/open-artifacts/issues/1325)) ([#1335](https://github.com/open-artifacts-ai/open-artifacts/issues/1335)) ([c0f2d2f](https://github.com/open-artifacts-ai/open-artifacts/commit/c0f2d2f9a370f83939f77d5f897838992b4349ad))
+
+
+### Bug Fixes
+
+* **bus:** stale Claude return sockets reply by bus name (open-bus [#426](https://github.com/open-artifacts-ai/open-artifacts/issues/426)) ([#1323](https://github.com/open-artifacts-ai/open-artifacts/issues/1323)) ([181074a](https://github.com/open-artifacts-ai/open-artifacts/commit/181074a7e2dfeea5d7ba6ac07190e4b27f51aa2c))
+* **bus:** the approval link never carries the code (RFC 8628 5.4) ([#1291](https://github.com/open-artifacts-ai/open-artifacts/issues/1291)) ([#1319](https://github.com/open-artifacts-ai/open-artifacts/issues/1319)) ([40b68a7](https://github.com/open-artifacts-ai/open-artifacts/commit/40b68a7d12f9dbb2270e7aacd5451e637974fd3c))
+
+## [0.110.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.109.0...v0.110.0) (2026-11-04)
+
+
+### Features
+
+* **skill:** teach multi-agent collaboration habits ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1324](https://github.com/open-artifacts-ai/open-artifacts/issues/1324)) ([1653c79](https://github.com/open-artifacts-ai/open-artifacts/commit/1653c793a1d18c6f9181440c9f4e1fbe2590481d))
+
+## [0.109.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.108.0...v0.109.0) (2026-11-04)
+
+
+### Features
+
+* **bus:** BusHub, machine tokens, device flow and /bus/connect ([#1291](https://github.com/open-artifacts-ai/open-artifacts/issues/1291) part B) ([#1314](https://github.com/open-artifacts-ai/open-artifacts/issues/1314)) ([3b927ac](https://github.com/open-artifacts-ai/open-artifacts/commit/3b927ac40f5bfd9ba8237981d5e4e29dd506fb91))
+* **server:** changed notices reach every follower, the publisher included ([#1292](https://github.com/open-artifacts-ai/open-artifacts/issues/1292)) ([#1331](https://github.com/open-artifacts-ai/open-artifacts/issues/1331)) ([f0e887e](https://github.com/open-artifacts-ai/open-artifacts/commit/f0e887ee9d6d91d96c75782632390cda15ded98d))
+
+
+### Bug Fixes
+
+* **ci:** retry Cloudflare read lag in the platform tag check ([#1327](https://github.com/open-artifacts-ai/open-artifacts/issues/1327)) ([#1329](https://github.com/open-artifacts-ai/open-artifacts/issues/1329)) ([77b5265](https://github.com/open-artifacts-ai/open-artifacts/commit/77b5265436f49ec062b532715554a1c2e3f02427))
+
+## [0.108.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.107.0...v0.108.0) (2026-11-04)
+
+
+### Features
+
+* **bus:** the OpenBus local client under packages/bus-*, on one instance ([#1291](https://github.com/open-artifacts-ai/open-artifacts/issues/1291)) ([#1307](https://github.com/open-artifacts-ai/open-artifacts/issues/1307)) ([4d83883](https://github.com/open-artifacts-ai/open-artifacts/commit/4d8388396090e9b9112ab07af6cfc8d95495bed2))
+
+## [0.107.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.106.0...v0.107.0) (2026-11-04)
+
+
+### Features
+
+* **bus:** @oa/bus-protocol, the bus wire protocol for the instance ([#1291](https://github.com/open-artifacts-ai/open-artifacts/issues/1291)) ([#1304](https://github.com/open-artifacts-ai/open-artifacts/issues/1304)) ([156152f](https://github.com/open-artifacts-ai/open-artifacts/commit/156152ffed2046e8f499552b1b5d49d2a366507e))
+* **provisioning:** agents sign in to rl-agents as a member, through OIDC (test-member scope) ([#1288](https://github.com/open-artifacts-ai/open-artifacts/issues/1288)) ([bb6309e](https://github.com/open-artifacts-ai/open-artifacts/commit/bb6309e75597b0ef6d7cdd1571721bce0928ad47))
+
 ## [0.106.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.105.0...v0.106.0) (2026-11-03)
 
 

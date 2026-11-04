@@ -2,6 +2,11 @@ import { DurableObject } from "cloudflare:workers";
 import { LIMITS } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logError } from "../log.js";
+import {
+  type BusCloseKind,
+  busCloseKind,
+  closeUserBus,
+} from "../services/bus.js";
 
 /** A socket lives at most this long (the ArtifactRuntime TTL, 4408 after it). */
 const SOCKET_TTL_MS = LIMITS.signedUrlTtlSec * 1000;
@@ -57,6 +62,12 @@ export const LATER_PASSES_MS = [120_000, 300_000] as const;
 // check: a deployed DO keeps the check it was created with, so adding a pass
 // later means a new table, not a wider check.
 export const SECOND_PASS_MS = LATER_PASSES_MS[0];
+/**
+ * #1291: install-index rows for a member's BusHub carry this prefix plus the
+ * user id (artifact ids are base58, never with a colon). closeInstall closes
+ * such a hub's sockets (BusHub.closeAll) instead of an artifact's.
+ */
+export const BUS_INDEX_PREFIX = "bus:";
 
 const SCHEMA = `
 create table if not exists state (
@@ -132,6 +143,15 @@ export class UserPresence extends DurableObject<Env> {
     actor: string | null,
     reason: string,
   ) => Promise<number> = (env, artifactId, actor, reason) => {
+    if (artifactId.startsWith(BUS_INDEX_PREFIX)) {
+      // Only the install index records hubs, so `actor` is null here.
+      const bus = env.BUS_HUB;
+      if (!bus || actor !== null) return Promise.resolve(0);
+      const hub = bus.get(bus.idFromName(artifactId)) as unknown as {
+        closeAll(reason: string, kind: BusCloseKind): Promise<number>;
+      };
+      return hub.closeAll(reason, busCloseKind(reason));
+    }
     const ns = env.ARTIFACT_RUNTIME;
     const s = ns.get(ns.idFromName(artifactId)) as unknown as ActorCloser;
     return actor === null
@@ -253,8 +273,17 @@ export class UserPresence extends DurableObject<Env> {
       }
     });
     await this.arm();
+    // #1291: their bus sockets too (BusHub.closeAll; nothing for a member
+    // with no machine that ever connected). Last, after revokedAt and the
+    // artifact closes: a failure throws, so revokeUserLive retries the whole
+    // call (idempotent).
+    closed += await this.busCloser(this.env, actor.slice(2), why);
     return closed;
   }
+
+  /** Closes the member's bus sockets (services/bus.ts); overridable in tests. */
+  busCloser: (env: Env, userId: string, reason: string) => Promise<number> =
+    closeUserBus;
 
   /**
    * Install index only: records that `artifactId`'s DO accepted a socket

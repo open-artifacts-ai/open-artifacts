@@ -69,11 +69,17 @@ test("#764: a space manager who isn't an admin adds people", async ({
   await page.getByRole("option", { name: new RegExp(newbie.name) }).click();
   await d.getByRole("button", { name: "Add 1 person" }).click();
   await expect(d).toHaveCount(0);
-  // Search: earlier runs' people can push this one past the first page.
-  await people
-    .getByRole("searchbox", { name: `Search people in ${eng.name}` })
-    .fill(newbie.email);
-  await expect(people.getByText(newbie.name)).toBeVisible();
+  // The list settles to one of two shapes: a short space shows every row, and
+  // a big one (over SearchPeople's 20, as earlier runs leave staging's) shows
+  // a search box, since the newbie can be past the first page. Wait for
+  // either, search if the box is there, then the newbie row itself must show.
+  const search = people.getByRole("searchbox", {
+    name: `Search people in ${eng.name}`,
+  });
+  const row = people.getByText(newbie.name, { exact: true });
+  await expect(search.or(row).first()).toBeVisible();
+  if (await search.isVisible()) await search.fill(newbie.email);
+  await expect(row).toBeVisible();
 
   const q = new URLSearchParams({ q: newbie.email });
   const rows = await json<SpaceMembersPage>(

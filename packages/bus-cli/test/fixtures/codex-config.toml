@@ -1,0 +1,32 @@
+# Codex config: the shapes from docs/probes/codex.md, redacted.
+model = "gpt-5.5"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+notes = """
+[mcp_servers.oa_bus]
+not a table: inside a string
+"""
+
+[projects."/Users/someone/work/repo"]
+trust_level = "trusted"
+
+# The user's own server; keep this comment.
+[mcp_servers.github]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_TOKEN = "redacted" } # inline table
+
+[mcp_servers.github.tools]
+search = { enabled = true }
+
+[mcp_servers."docs.local"]
+url = "http://127.0.0.1:9000/mcp"
+
+# Written by the desktop app.
+[desktop]
+followUpQueueMode = "queue"
+windowBounds = { x = 0, y = 0, width = 1200, height = 800 }
+
+[[profiles.list]]
+name = "fast"

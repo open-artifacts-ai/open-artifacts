@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { LIMITS } from "./limits.js";
+import { LIMITS } from "./limits.ts";
 
 /** 32-bit FNV-1a over UTF-16 code units, as 8 lowercase hex chars. Pure JS. */
 function fnv8(s: string): string {

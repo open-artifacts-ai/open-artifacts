@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LIMITS, utf8Bytes, utf8Exceeds } from "../src/limits.js";
+import { LIMITS, utf8Bytes, utf8Exceeds } from "../src/limits.ts";
 
 describe("limits", () => {
   it("pins the spec values", () => {

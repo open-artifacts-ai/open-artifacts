@@ -55,7 +55,7 @@ export const methodNotAllowed = () =>
 // reserved for platform internals: a JSON 404, never the SPA, except POST
 // /__oa/oauth-store/copy where it is on (mcp/oauth-copy.ts).
 const WORKER_PREFIX =
-  /^\/(api|auth|oauth|bus|\.well-known|mcp|_oa|__oa|__test)(\/|$)/;
+  /^\/(api|auth|oauth|\.well-known|mcp|_oa|__oa|__test|bus)(\/|$)/;
 
 // Text and Markdown files the Worker doesn't serve (/robots.txt, /skill.md,
 // /upgrade.md and /llms.txt are routes, matched before the fallback): a plain
@@ -90,11 +90,15 @@ const SESSION_PATHS = [
   "/api/*",
   "/auth/*",
   "/oauth/*",
-  // The /bus page (#1300): session cookie only (http/pages.ts sessionUser).
-  "/bus",
-  "/bus/*",
   "/mcp",
   "/mcp/*",
+  // #1291 the bus approval page and the member's /bus page (#1300) read the
+  // cookie session. Not /bus/* as a whole: /bus/device and /bus/connect
+  // carry no session (connect's Bearer is a machine token, not a PAT).
+  "/bus",
+  "/bus/approve",
+  "/bus/machines/*",
+  "/bus/share-notices",
 ] as const;
 
 // PUT R.upload(id) is authorized by its signature: no session, no CSRF.

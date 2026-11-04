@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { LIMITS } from "./limits.js";
-import { FALLBACK_BUS_NAME, INSTANCE_SENDER_NAME } from "./meta.js";
+import { LIMITS } from "./limits.ts";
+import { FALLBACK_BUS_NAME, INSTANCE_SENDER_NAME } from "./meta.ts";
 
 /**
  * A bus name: 1..64 chars, letters/digits/space/._-, starting with a letter or

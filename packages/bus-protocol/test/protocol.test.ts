@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { LIMITS } from "../src/limits.js";
+import { LIMITS } from "../src/limits.ts";
 import {
   NamespaceSchema,
   namespaceFrom,
   WireNamespaceSchema,
-} from "../src/namespace.js";
+} from "../src/namespace.ts";
 import {
   CLIENT_FRAMES,
   decodeClientFrame,
@@ -14,7 +14,7 @@ import {
   PING,
   PONG,
   SERVER_FRAMES,
-} from "../src/protocol.js";
+} from "../src/protocol.ts";
 
 const id = "7Yb3kQmZ1xRt9PvA";
 const mid = "aaaaaaaaaaaaaaaa";
@@ -163,6 +163,7 @@ describe("frames", () => {
       "list",
       "fetch",
       "status",
+      "rename",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -174,6 +175,7 @@ describe("frames", () => {
       "deliver",
       "receipt_update",
       "roster_changed",
+      "renamed",
     ]);
   });
   it("formats a rejection with the frame id when there is one", () => {
@@ -669,7 +671,7 @@ describe("keepalive", () => {
 
 describe("AGENT_CAP_MESSAGES (B11)", () => {
   it("pins the exact agent_up cap refusal messages clients match on", async () => {
-    const { AGENT_CAP_MESSAGES } = await import("../src/protocol.js");
+    const { AGENT_CAP_MESSAGES } = await import("../src/protocol.ts");
     expect(AGENT_CAP_MESSAGES).toEqual({
       machine: "Too many live agents on this machine",
       member: "Too many live agents on this bus",
@@ -721,6 +723,16 @@ describe("status frames, and no card frames", () => {
         aud: "https://oa.example.com",
         nonce: "short",
       },
+      // A well-formed OpenBus card request, and the bare frame type.
+      {
+        v: 1,
+        id,
+        type: "card_request",
+        from_ref: "s1",
+        aud: "https://oa.example.com",
+        nonce: "n".repeat(16),
+      },
+      { v: 1, id, type: "card_request", from_ref: "s1" },
     ];
     for (const f of bad) expect(okc(JSON.stringify(f))).toBeNull();
     expect(
@@ -780,23 +792,22 @@ describe("status frames, and no card frames", () => {
       ),
     ).toBeNull();
   });
-  it("a receipt carries no role fields", () => {
+  it("a receipt carries no role fields, only a former-name to_name (#393)", () => {
     roundTrip(
       { v: 1, id, type: "receipt", msg_id: mid, state: "pending" },
       false,
     );
-    expect(
-      oks(
-        JSON.stringify({
-          v: 1,
-          id,
-          type: "receipt",
-          msg_id: mid,
-          state: "pending",
-          to_name: "code-96",
-        }),
-      ),
-    ).toBeNull();
+    roundTrip(
+      {
+        v: 1,
+        id,
+        type: "receipt",
+        msg_id: mid,
+        state: "pending",
+        to_name: "code-96",
+      },
+      false,
+    );
     expect(
       oks(
         JSON.stringify({

@@ -1,35 +1,33 @@
 import { z } from "zod";
-import { isDeviceSecret, isUserCode, MACHINE_TOKEN_PREFIX } from "./ids.js";
-import { LIMITS } from "./limits.js";
-import { BAD_NS_CHARS } from "./namespace.js";
-import { MachineLabelSchema } from "./refs.js";
-
-const seg = (s: string): string => {
-  if (s === "." || s === "..")
-    throw new RangeError(`Unsafe path segment: ${JSON.stringify(s)}`);
-  return encodeURIComponent(s);
-};
+import { isDeviceSecret, isUserCode, MACHINE_TOKEN_PREFIX } from "./ids.ts";
+import { LIMITS } from "./limits.ts";
+import { BAD_NS_CHARS } from "./namespace.ts";
+import { MachineLabelSchema } from "./refs.ts";
 
 /**
  * The instance routes the local client calls (design: Contracts, Local client
  * to instance). Everything is on the instance origin.
  */
 export const BUS_ROUTES = {
+  /**
+   * The member's bus page (Machines and share notices). The client prints it
+   * after sign-in as where to revoke this machine.
+   */
+  page: "/bus",
   /** `POST`, no auth: starts the device flow. Body `DeviceCodeRequestSchema`. */
   device: "/bus/device",
   /** `POST`, no auth: polls one device code. Body `DeviceTokenRequestSchema`. */
   deviceToken: "/bus/device/token",
-  /** The page a signed-in member opens to approve a machine. */
-  approve: (userCode: string): string => {
-    if (!isUserCode(userCode))
-      throw new RangeError("BUS_ROUTES.approve: invalid user code");
-    return `/bus/approve/${seg(userCode)}`;
-  },
+  /**
+   * The page a signed-in member opens to approve a machine, and types the
+   * code their terminal shows into (RFC 8628 section 5.4). The code is never
+   * in this URL: a link that carried it would be one click from approving
+   * someone else's machine.
+   */
+  approve: "/bus/approve",
   /** `GET` WebSocket upgrade, `Authorization: Bearer oa_machine_...`. */
   connect: "/bus/connect",
 } as const;
-
-const APPROVE_PREFIX = "/bus/approve/";
 
 export const DeviceCodeRequestSchema = z.strictObject({
   machine_label: MachineLabelSchema.optional(),
@@ -40,11 +38,12 @@ const isLoopback = (host: string): boolean =>
   host === "localhost" || host === "127.0.0.1" || host === "[::1]";
 
 /**
- * The schema cannot know the instance origin: the client must also check that
- * the URI's origin equals its configured instance URL before printing or
- * opening it (`verificationUriMatches`).
+ * The approval page, exactly: https (http only on loopback), no userinfo, the
+ * raw string equal to its parsed href, path `BUS_ROUTES.approve`, no query or
+ * fragment. So it can never carry the user code. The schema cannot know the
+ * instance origin: the client also checks it (`verificationUriMatches`).
  */
-const isSafeVerificationUri = (uri: string, userCode: string): boolean => {
+const isSafeVerificationUri = (uri: string): boolean => {
   let u: URL;
   try {
     u = new URL(uri);
@@ -59,7 +58,7 @@ const isSafeVerificationUri = (uri: string, userCode: string): boolean => {
     )
   )
     return false;
-  return u.pathname === `${APPROVE_PREFIX}${userCode}` && !u.search && !u.hash;
+  return u.pathname === BUS_ROUTES.approve && !u.search && !u.hash;
 };
 
 export const DeviceCodeResponseSchema = z
@@ -72,20 +71,38 @@ export const DeviceCodeResponseSchema = z
     expires_in: z.literal(LIMITS.deviceCodeTtlSec),
     interval: z.literal(LIMITS.devicePollIntervalSec),
   })
-  .refine((v) => isSafeVerificationUri(v.verification_uri, v.user_code), {
+  .refine((v) => isSafeVerificationUri(v.verification_uri), {
     path: ["verification_uri"],
     message:
-      "verification_uri must be https (http only for loopback) at /bus/approve/<user_code>",
-  });
+      "verification_uri must be https (http only for loopback) at exactly /bus/approve, with no code in it",
+  })
+  // Belt and braces: the code appears nowhere in the URI, in any case.
+  .refine(
+    (v) =>
+      !v.verification_uri
+        .toUpperCase()
+        .includes(v.user_code.replace("-", "").toUpperCase()) &&
+      !v.verification_uri.toUpperCase().includes(v.user_code.toUpperCase()),
+    {
+      path: ["verification_uri"],
+      message: "verification_uri carries the code",
+    },
+  );
 export type DeviceCodeResponse = z.infer<typeof DeviceCodeResponseSchema>;
 
-/** True when `uri` is on exactly `instanceOrigin` (scheme, host and port). */
+/**
+ * True only when `uri` is exactly the instance's approval page:
+ * `<instanceOrigin>/bus/approve`, nothing more. A URI with a code segment,
+ * a query, a fragment, userinfo or another origin is refused, so the client
+ * never prints or opens a link that would approve with one click.
+ */
 export function verificationUriMatches(
   uri: string,
   instanceOrigin: string,
 ): boolean {
   try {
-    return new URL(uri).origin === new URL(instanceOrigin).origin;
+    const want = `${new URL(instanceOrigin).origin}${BUS_ROUTES.approve}`;
+    return isSafeVerificationUri(uri) && uri === want;
   } catch {
     return false;
   }

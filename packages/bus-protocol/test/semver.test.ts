@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { semverGte } from "../src/semver.js";
+import { semverGte } from "../src/semver.ts";
 
 describe("semverGte", () => {
   it("compares major.minor.patch numerically", () => {

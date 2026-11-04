@@ -87,16 +87,23 @@ export function CreateInstall() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
   // Test-hook creates only: R4 requires it, so there's no control to show.
   const testAdmin = me.data?.principal === "test-admin";
+  // R4 lets an admin ask for test hooks on staging only; prod refuses them.
+  const hooksOption = !testAdmin && me.data?.env === "staging";
+  const [hooksChecked, setHooksChecked] = useState(false);
+  const testHooks = testAdmin || (hooksOption && hooksChecked);
   // release_gate runs a test-hook install's redline bundle.
   const installable = (releases.data?.items ?? []).filter(
-    (r) => r.installable && (!testAdmin || r.variants.includes("redline")),
+    (r) => r.installable && (!testHooks || r.variants.includes("redline")),
   );
   const latest =
-    (installable.find((r) => r.latest) ?? (testAdmin ? installable[0] : null))
+    (installable.find((r) => r.latest) ?? (testHooks ? installable[0] : null))
       ?.version ?? "";
   const [slug, setSlug] = useState("");
   const [picked, setPicked] = useState("");
-  const version = picked || latest;
+  // A pick the list no longer offers (test hooks just turned on) falls back.
+  const version = installable.some((r) => r.version === picked)
+    ? picked
+    : latest;
   const domain = appDomainFor(
     me.data?.env ?? "prod",
     globalThis.location?.hostname ?? "",
@@ -171,12 +178,12 @@ export function CreateInstall() {
           auth: auth.data,
           ...(version ? { version } : {}),
           ...(sendWelcome ? { sendWelcome } : {}),
-          ...(testAdmin ? { testHooks: true } : {}),
+          ...(testHooks ? { testHooks: true } : {}),
         },
       }),
     {
       // A retry after a dropped connection keeps its request id only while the body is the same.
-      key: [slug, ownerEmail, tier, auth.data, version, sendWelcome, testAdmin],
+      key: [slug, ownerEmail, tier, auth.data, version, sendWelcome, testHooks],
       invalidate: [["installs"], ["world"]],
       onSuccess: (r) =>
         void navigate({ to: "/jobs/$id", params: { id: r.job.id } }),
@@ -327,11 +334,27 @@ export function CreateInstall() {
               </SelectContent>
             </Select>
             <small>
-              {testAdmin
+              {testHooks
                 ? "Only redline releases are listed, because test hooks need them."
                 : "Only signed, published releases are listed."}
             </small>
           </div>
+          {hooksOption && (
+            <div>
+              <label className="oa-check" htmlFor="test-hooks">
+                <Checkbox
+                  id="test-hooks"
+                  checked={hooksChecked}
+                  aria-describedby="test-hooks-help"
+                  onCheckedChange={(on) => setHooksChecked(on === true)}
+                />
+                Test hooks
+              </label>
+              <small id="test-hooks-help">
+                For red-line test installs. Staging only.
+              </small>
+            </div>
+          )}
           {/* R4 refuses sendWelcome from the test admin. */}
           {!testAdmin && (
             <label className="oa-check" htmlFor="welcome">
