@@ -626,6 +626,11 @@ export const MeSchema = z.object({
   spaces: z.array(MySpaceSchema).optional(),
   /** Parity 2: one-time notices, org owner only; absent when there are none. */
   notices: MeNoticesSchema.optional(),
+  /**
+   * #1291: whether the caller may connect agents (PATs, OAuth, bus machines):
+   * a member with no cap (server-side canConnect). Optional: older servers omit it.
+   */
+  canConnect: z.boolean().optional(),
 });
 export type Me = z.infer<typeof MeSchema>;
 
@@ -737,6 +742,68 @@ export const OAuthClientSchema = z.object({
   versionsPublished: z.number().int().nonnegative().optional(),
 });
 export type OAuthClient = z.infer<typeof OAuthClientSchema>;
+
+/**
+ * One of the caller's bus machines (#1291), as GET R.busMachines lists it.
+ * Never carries the machine token or its hash. `connected`: whether the
+ * member's bus holds a socket for it now; null when the bus could not be
+ * asked in time (unknown), never true once revoked.
+ */
+export const BusMachineSchema = z.strictObject({
+  id: z.string(),
+  /** Client-supplied at the device step; not editable in v1. */
+  label: z.string(),
+  createdAt: z.string(),
+  lastUsedAt: z.string().nullable(),
+  revokedAt: z.string().nullable(),
+  connected: z.boolean().nullable(),
+});
+export type BusMachine = z.infer<typeof BusMachineSchema>;
+
+/** GET R.busMachines: active newest first, then revoked newest first, at most 100. */
+export const BusMachinesSchema = z.strictObject({
+  machines: z.array(BusMachineSchema).max(100),
+});
+export type BusMachines = z.infer<typeof BusMachinesSchema>;
+
+export const BUS_AGENT_STATES = ["live", "queued"] as const;
+export const BUS_STATUS_STATES = [
+  "working",
+  "idle",
+  "blocked",
+  "waiting_on_owner",
+] as const;
+
+/**
+ * One open agent on the caller's bus (#1291). `state`: live while its
+ * machine is connected, queued otherwise (mail waits up to 1 h). `running`
+ * is true for every listed agent (closed sessions are omitted); it is the
+ * field the share-notice picks match on. `status*`: self-reported by the
+ * agent ("agent says"), absent when none.
+ */
+export const BusAgentSchema = z.strictObject({
+  id: z.string(),
+  namespace: z.string(),
+  name: z.string(),
+  kind: z.string(),
+  machineId: z.string(),
+  machineLabel: z.string(),
+  global: z.boolean(),
+  state: z.enum(BUS_AGENT_STATES),
+  running: z.boolean(),
+  updatedAt: z.string(),
+  status: z.enum(BUS_STATUS_STATES).optional(),
+  statusLabel: z.string().optional(),
+  statusAt: z.string().optional(),
+});
+export type BusAgent = z.infer<typeof BusAgentSchema>;
+
+/** GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then []. */
+export const BusAgentsSchema = z.strictObject({
+  agents: z.array(BusAgentSchema).max(1000),
+  live: z.boolean(),
+});
+export type BusAgents = z.infer<typeof BusAgentsSchema>;
 
 /**
  * PATCH R.oauthClient(grantId) -> OAuthClient. The caller's own grants only

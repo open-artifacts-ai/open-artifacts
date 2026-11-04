@@ -45,7 +45,9 @@
         // P3 T7a (#502): the class ships unbound one release before T7b binds and uses it.
         { "tag": "v2", "new_sqlite_classes": ["UserPresence"] },
         // P3 T13a (#571): the class ships unbound one release before #575 binds and uses it.
-        { "tag": "v3", "new_sqlite_classes": ["DirectorySync"] }
+        { "tag": "v3", "new_sqlite_classes": ["DirectorySync"] },
+        // #1291: the class ships unbound one release before BUS_HUB binds it.
+        { "tag": "v4", "new_sqlite_classes": ["BusHub"] }
       ],
       // Browser Run (server-side thumbnails). Workers edit suffices to deploy.
       "browser": { "binding": "BROWSER" },

@@ -251,3 +251,27 @@ describe("staging UserPresence (P3 T7a #502, T7b #503)", () => {
     });
   });
 });
+
+describe("BusHub (#1291 tag v4): ships unbound one release before BUS_HUB binds it", () => {
+  const template = JSON.parse(
+    readFileSync(join(root, "apps/server/wrangler.template.jsonc"), "utf8"),
+  );
+  for (const [name, c] of [
+    ["staging", env],
+    ["template", template],
+  ] as const) {
+    it(`${name}: tag v4 adds BusHub after v3; nothing binds it yet`, () => {
+      // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+      const tags = c.migrations.map((m: any) => m.tag);
+      expect(tags.slice(0, 4)).toEqual(["v1", "v2", "v3", "v4"]);
+      expect(c.migrations[3]).toEqual({
+        tag: "v4",
+        new_sqlite_classes: ["BusHub"],
+      });
+      expect(
+        // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+        c.durable_objects.bindings.map((b: any) => b.class_name),
+      ).not.toContain("BusHub");
+    });
+  }
+});

@@ -26,7 +26,7 @@ const packages: Record<string, string> = {
   "packages/runtime": "@oa/runtime",
   "packages/render": "@oa/render",
   "scripts/setup": "@oa/setup",
-  "tests/redline": "@oa/redline",
+  // tests/redline is hosted (#1056): its check is tests/redline/test/workspace.test.ts.
 };
 
 describe("workspace", () => {

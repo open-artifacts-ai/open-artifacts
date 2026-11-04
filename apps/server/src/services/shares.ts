@@ -24,6 +24,7 @@ import { logInfo, logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
+import { inBackground, notifyShared } from "./follows.js";
 import { getSettings } from "./members.js";
 import { guestRecipients, shareReach } from "./reach.js";
 
@@ -218,6 +219,9 @@ export async function putShare(
         lapseAudit(env, guest.id, "active", user.id),
       ]);
   }
+  // #1292: a new direct share tells the recipient's picked agents, after
+  // the response; ids and the link only.
+  if (created) await inBackground(ctx, notifyShared(env, user.id, email, id));
   // Review item 37: whether they can sign in at all (an in-domain
   // non-member on an invite-only install can't); the share stands either way.
   const reach = await shareReach(env, email);

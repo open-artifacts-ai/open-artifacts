@@ -299,6 +299,10 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
     "real-only: PUT refuses a restricted_groups row while directory sync is off (409), and the hook-seeded directory group is not that row; A at B is deny-only",
   "POST /api/v1/members/:id/erase":
     "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
+  // #1291: a machine row comes only from the device flow, 404 on a hosted
+  // install until #1299.
+  "DELETE /api/v1/bus/machines/:id":
+    "real-only: no bus machine can be made on a hosted install (the device flow is 404 until #1299); A at B is deny-only",
 };
 
 /**
@@ -432,6 +436,11 @@ export const DROPPED: Readonly<
     ],
   },
   "org DELETE /api/v1/members/:id/identities/google": {
+    why: "real-only",
+    coveredBy: [INSTANCE],
+  },
+  // #1291: the matrix revokes each allowed caller's own D1 machine row.
+  "org DELETE /api/v1/bus/machines/:id": {
     why: "real-only",
     coveredBy: [INSTANCE],
   },
