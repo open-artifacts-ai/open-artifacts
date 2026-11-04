@@ -1,5 +1,9 @@
 import { execFile } from "node:child_process";
-import { deliveredText, messageHeader, stripTerminalControls } from "@oa/bus-ipc";
+import {
+  deliveredText,
+  messageHeader,
+  stripTerminalControls,
+} from "@oa/bus-ipc";
 import type { AgentRecord } from "../agents.ts";
 import type { DeliverOutcome, Mail } from "../deliver.ts";
 

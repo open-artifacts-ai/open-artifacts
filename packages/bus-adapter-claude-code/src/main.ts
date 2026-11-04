@@ -7,10 +7,10 @@ import {
 import { connectDaemon, type DaemonClient } from "@oa/bus-ipc";
 import {
   ancestorChain,
+  busHome,
   claudeProcStartOf,
   claudeSessionsDir,
   findSession,
-  busHome,
   sessionHello,
 } from "./session.ts";
 import { daemonSocketPath, socketDirProblem } from "./socket-path.ts";

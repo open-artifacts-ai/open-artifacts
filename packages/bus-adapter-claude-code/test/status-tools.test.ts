@@ -2,14 +2,13 @@
 import {
   type DaemonClient,
   type DaemonFrame,
-  STATUS_COPY,
   earlierStatusText,
+  STATUS_COPY,
   statusLabelTooLong,
   statusSetText,
 } from "@oa/bus-ipc";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { callTool, TOOLS } from "../src/tools.ts";
-
 
 type Frame = { type: string } & Record<string, unknown>;
 
@@ -63,7 +62,6 @@ describe("set_status: shape", () => {
     });
     expect(t?.description).toMatch(/user sees it labelled as your own report/);
   });
-
 });
 
 describe("set_status: one request", () => {

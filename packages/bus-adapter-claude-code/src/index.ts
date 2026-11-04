@@ -10,13 +10,13 @@ export {
 export { frameOf, type InjectArgs, InjectError, inject } from "./inject.ts";
 export {
   ancestorChain,
+  busHome,
   type ClaudeProcStartDeps,
   type ClaudeSession,
   claudeProcStartOf,
   claudeSessionsDir,
   findSession,
   notASession,
-  busHome,
   peerTokenFor,
   procStartOf,
   readSessionFile,

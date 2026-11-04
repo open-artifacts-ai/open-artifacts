@@ -281,7 +281,9 @@ describe("status: transcript state 7", () => {
   });
 
   it("names machine.json's hub, not OA_BUS_INSTANCE", async () => {
-    const ctx = fakeCtx({ env: { OA_BUS_INSTANCE: "https://other.example.org" } });
+    const ctx = fakeCtx({
+      env: { OA_BUS_INSTANCE: "https://other.example.org" },
+    });
     approve(ctx);
     await statusCmd(ctx);
     expect(ctx.all()[2]).toBe("Hub      bus.example.com");

@@ -40,6 +40,9 @@ describe("namespace resolution", () => {
     writeFileSync(
       join(root, ".oa-bus.json"),
       JSON.stringify({ namespace: "zeta", global: true }),
+      {
+        mode: 0o644,
+      },
     );
     // Its `global` is ignored: only the user's allowlist grants it (C19).
     expect(resolveNamespace(deep, noGit)).toEqual({
@@ -56,10 +59,16 @@ describe("namespace resolution", () => {
     writeFileSync(
       join(root, ".oa-bus.json"),
       JSON.stringify({ namespace: "outer", global: true }),
+      {
+        mode: 0o644,
+      },
     );
     writeFileSync(
       join(deep, ".oa-bus.json"),
       JSON.stringify({ namespace: "inner" }),
+      {
+        mode: 0o644,
+      },
     );
     expect(resolveNamespace(deep, noGit)).toEqual({
       namespace: "inner",
@@ -73,6 +82,9 @@ describe("namespace resolution", () => {
     writeFileSync(
       join(root, ".oa-bus.json"),
       JSON.stringify({ namespace: "git@github.com:Acme/App.git" }),
+      {
+        mode: 0o644,
+      },
     );
     expect(resolveNamespace(root, noGit).namespace).toBe("github.com/acme/app");
   });
@@ -82,6 +94,9 @@ describe("namespace resolution", () => {
     writeFileSync(
       join(root, ".oa-bus.json"),
       JSON.stringify({ namespace: "x", extra: 1 }),
+      {
+        mode: 0o644,
+      },
     );
     const log = vi.fn();
     expect(resolveNamespace(root, { ...noGit, log })).toMatchObject({
@@ -129,6 +144,9 @@ describe("namespace resolution", () => {
     writeFileSync(
       join(repo, ".oa-bus.json"),
       JSON.stringify({ namespace: "zeta" }),
+      {
+        mode: 0o644,
+      },
     );
     symlinkSync(join(repo, "sub"), join(root, "link"));
     expect(resolveNamespace(join(root, "link"), noGit).namespace).toBe("zeta");
@@ -164,6 +182,9 @@ describe("namespace resolution", () => {
     writeFileSync(
       join(shared, ".oa-bus.json"),
       JSON.stringify({ namespace: "attacker", global: true }),
+      {
+        mode: 0o644,
+      },
     );
     const ns = resolveNamespace(shared, {
       ...noGit,

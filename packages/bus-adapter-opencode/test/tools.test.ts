@@ -1,8 +1,8 @@
 import {
-  STATUS_COPY,
   CLIENT_VERSION,
   type DaemonClient,
   type Hello,
+  STATUS_COPY,
   statusSetText,
 } from "@oa/bus-ipc";
 import { describe, expect, it, vi } from "vitest";

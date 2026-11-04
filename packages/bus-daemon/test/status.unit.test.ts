@@ -1,8 +1,8 @@
 // AgentStatusRelay on its own, with a fake hub link and clock.
 import type { ClientFrame } from "@oa/bus-protocol";
 import { describe, expect, it } from "vitest";
-import { AgentStatusRelay } from "../src/status.ts";
 import type { Timer } from "../src/sent.ts";
+import { AgentStatusRelay } from "../src/status.ts";
 
 /** A clock that fires only when told. */
 function manual() {

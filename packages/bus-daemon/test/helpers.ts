@@ -73,8 +73,7 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
   const raw: string[] = [];
   let hubSock: WebSocket | undefined;
   /** The path and Authorization of every upgrade the daemon made, in order. */
-  const upgrades: { path: string | undefined; auth: string | undefined }[] =
-    [];
+  const upgrades: { path: string | undefined; auth: string | undefined }[] = [];
   wss.on("connection", (ws, req) => {
     upgrades.push({ path: req.url, auth: req.headers.authorization });
     hubSock = ws;

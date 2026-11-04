@@ -24,7 +24,8 @@ const none = {
 export const TOOLS = [
   {
     name: "list_agents",
-    description: "List the agents you can message, in your Open Artifacts bus namespace.",
+    description:
+      "List the agents you can message, in your Open Artifacts bus namespace.",
     inputSchema: none,
   },
   {

@@ -91,7 +91,10 @@ describe("set_status", () => {
         await a.request({ type: "set_status", state: "working" }),
       ).toMatchObject({
         type: "status_set",
-        earlier: { code, message: STATUS_COPY[code as keyof typeof STATUS_COPY] },
+        earlier: {
+          code,
+          message: STATUS_COPY[code as keyof typeof STATUS_COPY],
+        },
       });
       // Told once.
       expect(
@@ -184,7 +187,6 @@ describe("set_status", () => {
     expect(h.of("status").every((f) => f.state !== "blocked")).toBe(true);
   });
 });
-
 
 describe("set_status before hello_ok", () => {
   it("open but no hello_ok yet, before or after a drop: hub_unavailable", async () => {

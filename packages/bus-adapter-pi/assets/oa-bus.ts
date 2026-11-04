@@ -399,12 +399,7 @@ function selfText(
   agent: (StatusFields & Record<string, unknown>) | null,
 ): string {
   if (!agent) return JSON.stringify(agent, null, 2);
-  const {
-    status: _s,
-    status_label: _l,
-    status_at: _a,
-    ...rest
-  } = agent;
+  const { status: _s, status_label: _l, status_at: _a, ...rest } = agent;
   const label =
     typeof agent.status_label === "string"
       ? displayLabel(agent.status_label)
@@ -450,7 +445,8 @@ const TOOLS = [
   {
     name: "list_agents",
     label: "Open Artifacts bus: list agents",
-    description: "List the agents you can message, in your Open Artifacts bus namespace.",
+    description:
+      "List the agents you can message, in your Open Artifacts bus namespace.",
     parameters: none,
   },
   {

@@ -13,9 +13,9 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  busHome,
   daemonSocketPath,
   MAX_SOCKET_PATH,
-  busHome,
   shortSocketDir,
 } from "@oa/bus-adapter-claude-code";
 import { connectDaemon } from "@oa/bus-ipc";

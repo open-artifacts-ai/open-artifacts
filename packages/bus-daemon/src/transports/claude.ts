@@ -3,7 +3,11 @@ import { chmodSync, lstatSync, mkdirSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
-import { InjectError, inject, MAX_SOCKET_PATH } from "@oa/bus-adapter-claude-code";
+import {
+  InjectError,
+  inject,
+  MAX_SOCKET_PATH,
+} from "@oa/bus-adapter-claude-code";
 import { newMsgId } from "@oa/bus-protocol";
 import type { AgentRecord } from "../agents.ts";
 import type { DeliverOutcome, Mail } from "../deliver.ts";

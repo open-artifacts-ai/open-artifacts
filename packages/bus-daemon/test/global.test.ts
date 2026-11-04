@@ -35,6 +35,9 @@ describe("C19: the global allowlist", () => {
     writeFileSync(
       join(repo, ".oa-bus.json"),
       JSON.stringify({ namespace: "cloned", global: true }),
+      {
+        mode: 0o644,
+      },
     );
     const log = vi.fn();
     const deps = { ...noGit, log, globalFile: globalFile(homeWith([])) };

@@ -192,13 +192,7 @@ describe("pi extension asset", () => {
     oa_bus(p.pi as never);
     expect([...p.tools.keys()]).toEqual(TOOLS.map((t) => t.name));
     expect([...p.tools.keys()].sort()).toEqual(
-      [
-        "fetch",
-        "list_agents",
-        "self",
-        "send_message",
-        "set_status",
-      ].sort(),
+      ["fetch", "list_agents", "self", "send_message", "set_status"].sort(),
     );
     for (const t of TOOLS) {
       const tool = p.tools.get(t.name);

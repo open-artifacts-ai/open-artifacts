@@ -93,7 +93,6 @@ describe("self with row", () => {
     expect(r).toMatchObject({ type: "agent", agent: { name: "A" } });
     expect(r.type === "agent" && r.agent).not.toHaveProperty("status");
   });
-
 });
 
 /** A raw status request with `marker`, as `oa-bus status` sends it. */

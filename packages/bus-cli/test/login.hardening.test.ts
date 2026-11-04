@@ -14,7 +14,6 @@ import { describe, expect, it, vi } from "vitest";
 import { login } from "../src/commands/login.ts";
 import { browserCommand, openBrowser } from "../src/deps.ts";
 
-const MID = "mmmmmmmmmmmmmmm1";
 const TOKEN = `oa_machine_${"a".repeat(32)}`;
 const DEV = "d".repeat(43);
 const URI = "https://bus.test/bus/approve/ABCD-2345";
@@ -141,9 +140,10 @@ describe("hardening: hostile device/code responses", () => {
     );
     await expect(login(ok)).resolves.toBeDefined();
     const bad = args(
-      hub(okCode({ verification_uri: "http://bus.test/bus/approve/ABCD-2345" }), [
-        approved,
-      ]),
+      hub(
+        okCode({ verification_uri: "http://bus.test/bus/approve/ABCD-2345" }),
+        [approved],
+      ),
       { hub: "http://bus.test" },
     );
     await expect(login(bad)).rejects.toThrow();
@@ -211,7 +211,9 @@ describe("hardening: hub URL", () => {
   it("trailing slash does not produce //bus/device", async () => {
     const h = hub(okCode(), [approved]);
     await login(args(h, { hub: "https://bus.test/" }));
-    expect(h.urls.every((u) => !u.slice("https://".length).includes("//"))).toBe(true);
+    expect(
+      h.urls.every((u) => !u.slice("https://".length).includes("//")),
+    ).toBe(true);
   });
 });
 

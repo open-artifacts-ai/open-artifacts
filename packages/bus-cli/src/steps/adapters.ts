@@ -663,10 +663,7 @@ export type AdapterState = "configured" | "missing" | "absent";
 
 /** Read-only: whether each harness on PATH has Open Artifacts bus registered. Never execs. */
 export function checkAdapters(
-  deps: Pick<
-    AdapterDeps,
-    "home" | "busHome" | "env" | "which" | "codexApp"
-  > & {
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env" | "which" | "codexApp"> & {
     /** The argv entries run, when known without writing: Codex's command is compared too. */
     busBin?: string[];
   },

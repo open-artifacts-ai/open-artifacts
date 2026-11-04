@@ -8,10 +8,10 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import {
+  busHome,
   daemonSocketPath,
   ensureSocketDir,
   MAX_SOCKET_PATH,
-  busHome,
   claudeReturnDir as sharedReturnDir,
   shortSocketDir,
 } from "@oa/bus-adapter-claude-code";

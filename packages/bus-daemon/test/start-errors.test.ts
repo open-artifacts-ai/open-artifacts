@@ -12,7 +12,10 @@ import {
 } from "../src/config.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
-const prev = { home: process.env.OA_BUS_HOME, hub: process.env.OA_BUS_INSTANCE };
+const prev = {
+  home: process.env.OA_BUS_HOME,
+  hub: process.env.OA_BUS_INSTANCE,
+};
 afterEach(async () => {
   for (const [k, v] of [
     ["OA_BUS_HOME", prev.home],

@@ -149,9 +149,7 @@ describe("codex queue transport (C26d)", () => {
     expect(f.runs()[0]?.argv).toEqual([
       "queue",
       "--thread=--help",
-      expect.stringMatching(
-        /^--message=\[oa-bus\] .*\n\n--thread=other\n-x$/s,
-      ),
+      expect.stringMatching(/^--message=\[oa-bus\] .*\n\n--thread=other\n-x$/s),
     ]);
   });
 

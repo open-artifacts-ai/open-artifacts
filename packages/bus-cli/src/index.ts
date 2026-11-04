@@ -77,7 +77,9 @@ export function parse(argv: string[]): Command {
   const takes =
     cmd === "mcp" ? 1 : cmd === "global" ? (rest[0] === "list" ? 1 : 2) : 0;
   if (cmd === "mcp" && rest.length === 0)
-    throw new Error("usage: npx @open-artifacts/bus mcp <claude|opencode|codex|pi>");
+    throw new Error(
+      "usage: npx @open-artifacts/bus mcp <claude|opencode|codex|pi>",
+    );
   if (cmd === "global" && rest.length < takes) throw new Error(GLOBAL_USAGE);
   const extra = rest[takes];
   if (extra !== undefined) throw new Error(`unexpected argument: ${extra}`);

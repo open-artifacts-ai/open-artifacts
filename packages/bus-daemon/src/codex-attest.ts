@@ -25,7 +25,8 @@ export const CODEX_REFUSALS = {
   notLoaded: "Codex does not have this thread loaded.",
   callNotFound:
     "this call is not an open Open Artifacts bus call in the thread. Call the tool again.",
-  subagent: "only the main Codex thread can use Open Artifacts bus, not a subagent.",
+  subagent:
+    "only the main Codex thread can use Open Artifacts bus, not a subagent.",
   /** DRAFT (C27), pending Design. */
   oneExec:
     "this exec already made an Open Artifacts bus call. Make each Open Artifacts bus call in its own exec.",

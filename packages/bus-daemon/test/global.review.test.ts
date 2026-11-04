@@ -93,6 +93,9 @@ describe("I2: one safe reader for .oa-bus.json", () => {
       writeFileSync(
         join(root, ".oa-bus.json"),
         JSON.stringify({ global: true }),
+        {
+          mode: 0o644,
+        },
       );
       mkdirSync(join(root, "repo"));
       make(join(root, "repo", ".oa-bus.json"));
@@ -143,6 +146,9 @@ describe("M5: the ignored-global log", () => {
     writeFileSync(
       join(root, ".oa-bus.json"),
       JSON.stringify({ namespace: "ops", global: true }),
+      {
+        mode: 0o644,
+      },
     );
     const h = tmp("ob-glh-");
     writeGlobalDirs([root], h);

@@ -2,10 +2,10 @@ import { execFileSync, spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import {
+  busHome,
   claudeReturnDir,
   daemonSocketPath,
   NOT_OURS,
-  busHome,
   shortDirInUse,
   shortSocketDir,
   socketDirProblem,

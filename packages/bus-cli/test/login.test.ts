@@ -6,7 +6,6 @@ import { describe, expect, it, vi } from "vitest";
 import { login } from "../src/commands/login.ts";
 
 const home = () => mkdtempSync(join(tmpdir(), "ob-home-"));
-const MID = "mmmmmmmmmmmmmmm1";
 const TOKEN = `oa_machine_${"a".repeat(32)}`;
 const URI = "https://bus.test/bus/approve/ABCD-2345";
 const code = () =>
@@ -66,9 +65,7 @@ describe("device login", () => {
   });
 
   it("prints the URL and user code with noOpen", async () => {
-    const a = base(
-      hub([{ status: "approved", machine_token: TOKEN }]).fetch,
-    );
+    const a = base(hub([{ status: "approved", machine_token: TOKEN }]).fetch);
     await login({ ...a, noOpen: true });
     expect(a.openBrowser).not.toHaveBeenCalled();
     const out = a.print.mock.calls.flat().join("\n");
@@ -90,8 +87,7 @@ describe("device login", () => {
 
   it("rejects a malformed token and stores nothing", async () => {
     const a = base(
-      hub([{ status: "approved", machine_token: "oa_machine_short" }])
-        .fetch,
+      hub([{ status: "approved", machine_token: "oa_machine_short" }]).fetch,
     );
     await expect(login(a)).rejects.toThrow();
     expect(() => statSync(join(a.home, "machine.json"))).toThrow();

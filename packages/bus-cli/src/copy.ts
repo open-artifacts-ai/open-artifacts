@@ -208,7 +208,9 @@ export function copy(style: Style) {
     // `login` saved a new token; the running daemon keeps the old one.
     daemonOldToken: (pid: number) => [
       warn(`The daemon (pid ${pid}) still uses the old token.`),
-      next("Run npx @open-artifacts/bus install to restart it with the new one."),
+      next(
+        "Run npx @open-artifacts/bus install to restart it with the new one.",
+      ),
     ],
     alreadyConnected: (label: string) =>
       done(`Already connected as ${clip(label, 24)}`),
@@ -276,12 +278,16 @@ export function copy(style: Style) {
     // install --no-service: the service step is skipped, nothing is started.
     serviceSkipped: () => [
       warn("Skipped the service, so no daemon is running."),
-      next("Start it with npx @open-artifacts/bus daemon, and again after a reboot."),
+      next(
+        "Start it with npx @open-artifacts/bus daemon, and again after a reboot.",
+      ),
     ],
     // doctor, after the daemon line.
     serviceNodeMissing: (node: string) => [
       fail(`The service runs a Node that is gone: ${clip(node, 42)}.`),
-      next("Run npx @open-artifacts/bus install to point it at your current Node."),
+      next(
+        "Run npx @open-artifacts/bus install to point it at your current Node.",
+      ),
     ],
     lingerOff: () => [
       warn("The daemon stops when you log out (systemd lingering is off)."),
@@ -373,7 +379,10 @@ export function copy(style: Style) {
     lateQuote: (excerpt: string) => `    "${excerpt}"`,
 
     statusHint: () =>
-      p("muted", "Check this machine anytime with npx @open-artifacts/bus status."),
+      p(
+        "muted",
+        "Check this machine anytime with npx @open-artifacts/bus status.",
+      ),
 
     // 3, 4, 6
     denied: () => [
@@ -402,9 +411,7 @@ export function copy(style: Style) {
       const tail = `after ${attempts} attempts.`;
       return [
         `${fail(`Couldn't reach ${clip(host, 21 + len(tail) + len(error))} ${tail}`)}  ${p("muted", error)}`,
-        next(
-          "Check your network or the --instance URL, then try again.",
-        ),
+        next("Check your network or the --instance URL, then try again."),
       ];
     },
 
@@ -484,7 +491,9 @@ export function copy(style: Style) {
       next(
         "Wait a few seconds and run npx @open-artifacts/bus uninstall --purge again.",
       ),
-      next("If it keeps running, run npx @open-artifacts/bus doctor to see why."),
+      next(
+        "If it keeps running, run npx @open-artifacts/bus doctor to see why.",
+      ),
     ],
 
     // 7. status
@@ -498,12 +507,8 @@ export function copy(style: Style) {
     machineRow: (label: string) => `Machine  ${clip(label, 9)}`,
     statusDaemonDown: () => [
       fail("Daemon not running"),
-      next(
-        "Run npx @open-artifacts/bus to restart it,",
-      ),
-      next(
-        "or npx @open-artifacts/bus doctor to see why.",
-      ),
+      next("Run npx @open-artifacts/bus to restart it,"),
+      next("or npx @open-artifacts/bus doctor to see why."),
     ],
     statusDaemonStalled: () => [
       fail("Daemon not responding"),
@@ -565,7 +570,9 @@ export function copy(style: Style) {
     globalUnusable: (path: string, why: string) => [
       warn(`${clip(path, 45)} can't be used, so no directory is global.`),
       next(p("muted", clip(`It ${why}.`, 3))),
-      next("Remove it, then run npx @open-artifacts/bus global add <dir> again."),
+      next(
+        "Remove it, then run npx @open-artifacts/bus global add <dir> again.",
+      ),
     ],
     globalAsked: () => [
       warn("This repo's .oa-bus.json asks for global, which is ignored here."),
@@ -577,7 +584,9 @@ export function copy(style: Style) {
     ],
     daemonNotResponding: () => [
       fail("Daemon is not responding"),
-      next("Try again in a moment, or run npx @open-artifacts/bus to restart it."),
+      next(
+        "Try again in a moment, or run npx @open-artifacts/bus to restart it.",
+      ),
     ],
     hubReachable: (host: string) => done(`Hub reachable at ${clip(host, 20)}`),
     wired: (h: HarnessName, version?: string) =>
@@ -600,7 +609,9 @@ export function copy(style: Style) {
     codexWakes: (bin: string) => done(`Codex wakes with ${clip(bin, 20)}`),
     codexNoWakeCheck: () => [
       warn("No codex binary found, so idle Codex threads are not woken"),
-      next("Install the Codex CLI, then run npx @open-artifacts/bus install again."),
+      next(
+        "Install the Codex CLI, then run npx @open-artifacts/bus install again.",
+      ),
     ],
     codexHomeMismatch: (shell: string, service: string) => {
       // Both paths share the line: the shell's keeps at least 15 columns.
@@ -608,7 +619,9 @@ export function copy(style: Style) {
       const b = clip(shell, 49 + len(a));
       return [
         warn(`The daemon reads Codex from ${a}, this shell from ${b}`),
-        next("Run npx @open-artifacts/bus install from this shell to match it."),
+        next(
+          "Run npx @open-artifacts/bus install from this shell to match it.",
+        ),
       ];
     },
     codexFullAccess: (config: string) => [
@@ -630,7 +643,9 @@ export function copy(style: Style) {
       const rest = ` is too old for the plugin (needs ${min} or newer)`;
       return [
         warn(`OpenCode ${clip(version, 12 + len(rest))}${rest}`),
-        next("Run opencode upgrade, then npx @open-artifacts/bus install again."),
+        next(
+          "Run opencode upgrade, then npx @open-artifacts/bus install again.",
+        ),
       ];
     },
     opencodeUnknown: () => [
@@ -703,7 +718,9 @@ export function copy(style: Style) {
     globalAlready: (dir: string) => done(`${clip(dir, 22)} is already global.`),
     globalNotDir: (dir: string) => [
       fail(`${clip(dir, 23)} is not a directory.`),
-      next("Check the path, then run npx @open-artifacts/bus global add again."),
+      next(
+        "Check the path, then run npx @open-artifacts/bus global add again.",
+      ),
     ],
     globalRemoved: (dir: string) => [
       done(`${clip(dir, 24)} is no longer global.`),
@@ -723,7 +740,9 @@ export function copy(style: Style) {
     // logs, mcp (DRAFT)
     noLog: (path: string) => [
       warn(`No daemon log yet at ${clip(path, 24)}`),
-      next("Run npx @open-artifacts/bus daemon to see its output in this terminal."),
+      next(
+        "Run npx @open-artifacts/bus daemon to see its output in this terminal.",
+      ),
     ],
     mcpPi: () => [
       warn("Pi uses the bus extension, not an MCP server."),

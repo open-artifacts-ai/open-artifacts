@@ -191,7 +191,9 @@ export function codexServer(deps: CodexDeps): Server {
             : e instanceof Error
               ? e.message
               : String(e);
-        return refused(`Open Artifacts bus did not accept this thread: ${reason}`);
+        return refused(
+          `Open Artifacts bus did not accept this thread: ${reason}`,
+        );
       }
       try {
         return await callTool(

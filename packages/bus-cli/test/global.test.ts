@@ -137,6 +137,8 @@ describe("C19: doctor on a repo asking for global", () => {
     writeFileSync(
       join(ctx.cwd, ".oa-bus.json"),
       JSON.stringify({ namespace: "ops", global: true }),
+      // Explicit: a group-writable file (umask 002) is ignored, as it must be.
+      { mode: 0o644 },
     );
     const code = await doctor(ctx);
     expect(ctx.all().join("\n")).toContain(note.join("\n"));

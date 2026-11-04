@@ -1,9 +1,9 @@
-import {
-  type AdapterFrame,
-  type AgentInfo,
-  type DaemonFrame,
-  type Hello,
-  type Unframed,
+import type {
+  AdapterFrame,
+  AgentInfo,
+  DaemonFrame,
+  Hello,
+  Unframed,
 } from "@oa/bus-ipc";
 import {
   AGENT_CAP_MESSAGES,
@@ -14,9 +14,9 @@ import {
 } from "@oa/bus-protocol";
 import type { z } from "zod";
 import type { AgentTable } from "./agents.ts";
-import { STATUS_COPY } from "./status.ts";
 import type { HubConnection } from "./hub.ts";
 import type { Timer } from "./sent.ts";
+import { STATUS_COPY } from "./status.ts";
 
 export type HubReply = Extract<
   ServerFrame,

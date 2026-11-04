@@ -5,8 +5,8 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
-  daemonSocketPath,
   busHome,
+  daemonSocketPath,
   socketDirProblem,
 } from "@oa/bus-adapter-claude-code";
 import { connectDaemon } from "@oa/bus-ipc";

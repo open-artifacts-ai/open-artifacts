@@ -294,7 +294,10 @@ describe("ago: Design's relative time (C17)", () => {
 
 describe("the npm name: every printed command says npx @open-artifacts/bus (C18)", () => {
   const root = new URL("../../", import.meta.url);
-  const md = readFileSync(new URL("bus-cli/design/transcript.md", root), "utf8");
+  const md = readFileSync(
+    new URL("bus-cli/design/transcript.md", root),
+    "utf8",
+  );
 
   it("no rendered transcript line is wider than 80 columns", () => {
     let inFence = false;

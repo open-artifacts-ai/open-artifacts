@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { claudeProcStartOf, busHome } from "../src/session.ts";
+import { busHome, claudeProcStartOf } from "../src/session.ts";
 import { daemonSocketPath, shortSocketDir } from "../src/socket-path.ts";
 
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));

@@ -2,12 +2,12 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+  type BusConfig,
+  BusConfigSchema,
   CONFIG_FILE,
   mergeConfigs,
   namespaceFrom,
   normalizeRemote,
-  type BusConfig,
-  BusConfigSchema,
 } from "@oa/bus-protocol";
 import { globalFile, isGlobalDir, readGlobalDirs } from "./global.ts";
 import { readOwnFile } from "./own-file.ts";

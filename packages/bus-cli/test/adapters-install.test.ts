@@ -209,9 +209,9 @@ describe("installAdapters", () => {
     expect(readJ(join(h, "oc/cli.json")).plugins).toEqual([
       join(h, "obh/integrations/opencode/oa_bus"),
     ]);
-    expect(
-      existsSync(join(h, "obh/integrations/opencode/oa_bus/tui.js")),
-    ).toBe(true);
+    expect(existsSync(join(h, "obh/integrations/opencode/oa_bus/tui.js"))).toBe(
+      true,
+    );
     expect(existsSync(join(h, "pa/extensions/oa-bus.ts"))).toBe(true);
 
     const x = setup(["opencode"]);
@@ -689,7 +689,9 @@ describe("readAssets", () => {
   it("reads the shipped Pi extension and OpenCode TUI plugin", () => {
     const a = readAssets();
     expect(a.pi).toContain("Open Artifacts bus");
-    expect(a.opencodePlugin).toContain("Open Artifacts bus OpenCode TUI plugin");
+    expect(a.opencodePlugin).toContain(
+      "Open Artifacts bus OpenCode TUI plugin",
+    );
   });
 });
 

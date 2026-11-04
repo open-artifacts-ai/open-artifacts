@@ -64,7 +64,9 @@ describe("cli", () => {
       noOpen: true,
       noColor: false,
     });
-    expect(parse(["daemon", "--instance", "https://h", "--home", "/x"])).toEqual({
+    expect(
+      parse(["daemon", "--instance", "https://h", "--home", "/x"]),
+    ).toEqual({
       cmd: "daemon",
       hub: "https://h",
       home: "/x",
@@ -93,9 +95,9 @@ describe("cli", () => {
       noColor: true,
     });
     // Never install: a flag uninstall does not take is refused.
-    expect(() => parse(["--instance", "https://h.example", "uninstall"])).toThrow(
-      /--instance does not apply to oa-bus uninstall/,
-    );
+    expect(() =>
+      parse(["--instance", "https://h.example", "uninstall"]),
+    ).toThrow(/--instance does not apply to oa-bus uninstall/);
     expect(parse(["--instance", "https://h", "login"])).toMatchObject({
       cmd: "login",
       hub: "https://h",
@@ -121,7 +123,9 @@ describe("cli", () => {
     expect(() => parse(["status", "--purge"])).toThrow(
       /--purge does not apply to oa-bus status/,
     );
-    expect(() => parse(["--instance", "https://h", "doctor"])).toThrow(/--instance/);
+    expect(() => parse(["--instance", "https://h", "doctor"])).toThrow(
+      /--instance/,
+    );
     expect(parse(["daemon", "--home", "/x"])).toMatchObject({ home: "/x" });
   });
   it("refuses an empty --home or --instance instead of dropping it", () => {

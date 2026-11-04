@@ -35,7 +35,6 @@ import {
   commOf,
   procStartOf,
 } from "./attest.ts";
-import { AgentStatusRelay, STATUS_COPY } from "./status.ts";
 import {
   type CodexAttestDeps,
   codexAttestor,
@@ -77,6 +76,7 @@ import {
   SentStore,
   type Timer,
 } from "./sent.ts";
+import { AgentStatusRelay, STATUS_COPY } from "./status.ts";
 import { ClaudeTransport } from "./transports/claude.ts";
 import {
   CodexTransport,
@@ -97,7 +97,6 @@ import { PiTransport } from "./transports/pi.ts";
 
 export * from "./agents.ts";
 export * from "./attest.ts";
-export * from "./status.ts";
 export * from "./codex-attest.ts";
 export * from "./config.ts";
 export * from "./dedupe.ts";
@@ -111,6 +110,7 @@ export * from "./presence/opencode.ts";
 export * from "./resend.ts";
 export * from "./routes.ts";
 export * from "./sent.ts";
+export * from "./status.ts";
 export * from "./transports/claude.ts";
 export * from "./transports/codex.ts";
 export * from "./transports/opencode.ts";

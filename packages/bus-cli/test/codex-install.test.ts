@@ -226,10 +226,7 @@ describe("Codex install (C26e)", () => {
       `${OURS.slice(0, 3).join("\n")}\ndefault_tools_approval_mode = "prompt"\n`,
     );
     expect(checkAdapters(s.deps).codex).toBe("missing");
-    writeFileSync(
-      s.config,
-      '[mcp_servers.oa_bus]\ncommand = "x"\nargs = []\n',
-    );
+    writeFileSync(s.config, '[mcp_servers.oa_bus]\ncommand = "x"\nargs = []\n');
     expect(checkAdapters(s.deps).codex).toBe("missing");
   });
 });
@@ -429,9 +426,7 @@ describe("review fixes", () => {
     s.deps.busHome = join(s.h, "moved");
     await installAdapters(s.deps);
     expect(checkAdapters(s.deps).codex).toBe("configured");
-    expect(checkAdapters({ ...s.deps, busBin: BIN }).codex).toBe(
-      "configured",
-    );
+    expect(checkAdapters({ ...s.deps, busBin: BIN }).codex).toBe("configured");
     // A stale home in the entry's env, or none when one is needed.
     s.deps.busHome = join(s.h, "moved again");
     expect(checkAdapters(s.deps).codex).toBe("missing");

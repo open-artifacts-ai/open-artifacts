@@ -6,10 +6,10 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
-  STATUS_COPY,
   CLIENT_VERSION,
   connectDaemon,
   type Hello,
+  STATUS_COPY,
   serveDaemon,
   statusSetText,
 } from "@oa/bus-ipc";
@@ -325,7 +325,9 @@ describe("the codex MCP adapter", () => {
     const { call } = await codex(join(tmpdir(), "ob-codex-none", "d.sock"));
     const r = await call(meta());
     expect(r.isError).toBe(true);
-    expect(r.content[0]?.text).toMatch(/^Open Artifacts bus did not accept this thread: /);
+    expect(r.content[0]?.text).toMatch(
+      /^Open Artifacts bus did not accept this thread: /,
+    );
   });
 
   it("takes a `cwd` key over workspaces, and turn metadata sent as JSON text", () => {

@@ -9,7 +9,9 @@ import { afterAll, expect } from "vitest";
  * ~/.claude or ~/.config without a test's own temp home lands here, and the
  * file fails. A test that brings its own temp home writes there instead.
  */
-export const SENTINEL_HOME = mkdtempSync(join(tmpdir(), "oa-bus-home-sentinel-"));
+export const SENTINEL_HOME = mkdtempSync(
+  join(tmpdir(), "oa-bus-home-sentinel-"),
+);
 process.env.HOME = SENTINEL_HOME;
 process.env.OA_BUS_HOME = join(SENTINEL_HOME, ".oa-bus");
 // As on an installed machine: code that writes into an existing ~/.oa-bus
