@@ -8,11 +8,11 @@ import { describe, expect, it } from "vitest";
 // test-build only. The release
 // bundle (define __OA_TEST_HOOKS_ALLOWED__ false) holds none of its SQL; the
 // redline bundle (define true) does, so the check can't pass vacuously.
-// Needs `pnpm --filter @oa/provision build` and apps/server/dist-assets
+// Needs `pnpm --filter @oa/bundle build` and apps/server/dist-assets
 // (as scripts/ci/build-release-bundle.ts); skipped locally when missing.
 const root = join(import.meta.dirname, "../../../..");
 const ready =
-  existsSync(join(root, "packages/provision/dist/index.js")) &&
+  existsSync(join(root, "packages/bundle/dist/index.js")) &&
   existsSync(join(root, "apps/server/dist-assets"));
 const MARKERS = [
   "substr(fu.email, length(fu.email) - length(?5)) <> '@' || ?5",
