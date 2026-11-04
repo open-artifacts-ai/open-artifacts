@@ -62,6 +62,31 @@ export function roleTakenSql(
       };
 }
 
+/**
+ * The SQL fragment (and its bindings) that is true when a live agent other
+ * than `selfId` (null: none) holds `lname` as a chosen former name still in
+ * its grace, reserved in the scope of an agent in `namespace` (`global`: in
+ * any scope). OpenBus #451: a row reserves in the scope it was left in
+ * (former_names namespace, global), not its agent's current one, so a move
+ * or flip keeps it reserved where it was. One definition for nameTaken
+ * (hub.ts) and putRole, so a role never takes a name an agent couldn't.
+ */
+export function formerReservedSql(
+  orgId: string,
+  lname: string,
+  now: number,
+  namespace: string,
+  global: boolean,
+  selfId: string | null,
+): { sql: string; binds: SqlStorageValue[] } {
+  return {
+    sql: `exists (select 1 from former_names f join agents a on a.id = f.agent_id
+            where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind = 'chosen'
+              and f.agent_id is not ? and a.live = 1${global ? "" : " and (f.namespace = ? or f.global = 1)"})`,
+    binds: [orgId, lname, now, selfId, ...(global ? [] : [namespace])],
+  };
+}
+
 type StoredRole = {
   id: string;
   namespace: string;
@@ -110,8 +135,9 @@ export function listRoles(
  * - agent_not_open: the agent isn't open, or is neither in `namespace` nor
  *   global;
  * - name_taken: a live agent visible in `namespace` (in it, or a global) has
- *   the name, or a live agent there holds it as a chosen former name still
- *   in its grace (R393b reservations), any case; or it was minted for an
+ *   the name, or a live agent holds it as a chosen former name still in its
+ *   grace reserved there (R393b; OpenBus #451: in the scope the name was left
+ *   in, formerReservedSql, as nameTaken), any case; or it was minted for an
  *   agent other than `agentId` (OpenBus #446: a minted name is never handed
  *   on, in any scope, so a default former name needs no reservation);
  * - role_limit: `max` roles exist and this would add one.
@@ -141,20 +167,16 @@ export function putRole(
     if (agent === null || (agent.global !== 1 && agent.namespace !== namespace))
       return { ok: false, reason: "agent_not_open" };
   }
+  const former = formerReservedSql(orgId, lname, now, namespace, false, null);
   const taken = one<{ x: number }>(
     sql,
     `select (exists (select 1 from agents where org_id = ? and lower(name) = ? and live = 1 and (namespace = ? or global = 1))
-         or exists (select 1 from former_names f join agents a on a.id = f.agent_id
-                     where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind = 'chosen'
-                       and a.live = 1 and (a.namespace = ? or a.global = 1))
+         or ${former.sql}
          or exists (select 1 from minted_names where org_id = ? and lname = ? and agent_id is not ?)) as x`,
     orgId,
     lname,
     namespace,
-    orgId,
-    lname,
-    now,
-    namespace,
+    ...former.binds,
     orgId,
     lname,
     agentId,

@@ -141,19 +141,25 @@ create index if not exists send_keys_due on send_keys(created_at);
 -- reach it until expires_at (LIMITS.formerNameGraceMs). kind is the left
 -- name's kind: 'chosen' rows are reserved (nameTaken) while live, 'default'
 -- rows only resolve (their minted_names row keeps the name from anyone
--- else). An agent's rows go when it closes or is revoked, or moves namespace
--- or flips global; expired rows are purged by the alarm. Never equal
--- (case-insensitively) to the agent's current name, distinct per agent
--- (lname), at most LIMITS.maxFormerNames per agent (OpenBus #446: an older
--- one is dropped). New tables, so create-if-not-exists adds them to an
--- existing hub on its next wake; wipe() deletes them with everything else.
+-- else). An agent's rows go when it closes or is revoked; expired rows are
+-- purged by the alarm. Never equal (case-insensitively) to the agent's
+-- current name in its scope, distinct per agent and scope (lname), at most
+-- LIMITS.maxFormerNames per agent (OpenBus #446: an older default one is
+-- dropped). OpenBus #451: namespace and global are the scope the name was
+-- left in (added by migrateHub on an older hub). A row resolves only while
+-- its agent is still in that scope; after a namespace move or global flip a
+-- chosen row stays, reserving the name there for its grace (roles included)
+-- and resolving to no one. New tables, so create-if-not-exists adds them to
+-- an existing hub on its next wake; wipe() deletes them with everything else.
 create table if not exists former_names (
   agent_id text not null,
   org_id text not null,
   name text not null,
   lname text not null,
   kind text not null,
-  expires_at integer not null
+  expires_at integer not null,
+  namespace text not null default '',
+  global integer not null default 0
 );
 create index if not exists former_names_lname on former_names(org_id, lname, expires_at);
 create index if not exists former_names_agent on former_names(agent_id, expires_at);
@@ -364,6 +370,32 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
     );
   sql.exec(HUB_SCHEMA_B14_INDEXES);
   sql.exec(HUB_SCHEMA_PURGE_INDEXES);
+  // OpenBus #451: the scope a former name was left in. Backfilled from its
+  // agent: before #451 a move or close dropped the rows, so every row is in
+  // its agent's current scope.
+  const formerCols = new Set(
+    sql
+      .exec<{ name: string }>(
+        "select name from pragma_table_info('former_names')",
+      )
+      .toArray()
+      .map((r) => r.name),
+  );
+  if (!formerCols.has("namespace") || !formerCols.has("global")) {
+    if (!formerCols.has("namespace"))
+      sql.exec(
+        "alter table former_names add column namespace text not null default ''",
+      );
+    if (!formerCols.has("global"))
+      sql.exec(
+        "alter table former_names add column global integer not null default 0",
+      );
+    sql.exec(
+      `update former_names set
+         namespace = coalesce((select a.namespace from agents a where a.id = former_names.agent_id), ''),
+         global = coalesce((select a.global from agents a where a.id = former_names.agent_id), 0)`,
+    );
+  }
 }
 
 /**

@@ -436,6 +436,57 @@ describe("a global sender's role in one other namespace (#1296 review)", () => {
   });
 });
 
+describe("a global sender's role and left-behind former names (OpenBus #451, #452)", () => {
+  async function renameTo(d: Daemon, ref: string, to: string) {
+    d.send({
+      v: 1,
+      id: id("r"),
+      type: "rename",
+      agent_ref: ref,
+      proposed_name: to,
+    });
+    expect((await waitFor(d, "renamed")).bus_name).toBe(to);
+  }
+
+  it("is ambiguous while another agent's chosen former name is reserved where it was left, even after it moved into the role's namespace", async () => {
+    const uid = await owner();
+    const d = await at(uid, NEW);
+    const [a, b, c] = [ns("ra"), ns("rb"), ns("rc")];
+    const holder = await reg(d, "h", uniq("holder"), b);
+    await reg(d, "g", uniq("global"), c, true);
+    expect(await reg(d, "x", "lead", a)).toBe("lead");
+    const now = uniq("now");
+    await renameTo(d, "x", now);
+    // x moves into b: `lead` stays reserved in a, so b may have the role.
+    expect(await reg(d, "x", now, b)).toBe(now);
+    await setRole(uid, b, "lead", await agentId(uid, holder));
+    expect(await send(d, "g", "lead")).toMatchObject({
+      state: "refused",
+      reason: "ambiguous",
+    });
+    // Named, the role is reachable.
+    expect(await send(d, "g", "lead", b)).toMatchObject({ to_name: holder });
+    d.close();
+  });
+
+  it("a global sender's own left-behind former name never makes its role send ambiguous", async () => {
+    const uid = await owner();
+    const d = await at(uid, NEW);
+    const [a, b] = [ns("ra"), ns("rb")];
+    const holder = await reg(d, "h", uniq("holder"), b);
+    expect(await reg(d, "s", "lead", a)).toBe("lead");
+    const now = uniq("now");
+    await renameTo(d, "s", now);
+    // s flips global: `lead` stays reserved in a only.
+    expect(await reg(d, "s", now, a, true)).toBe(now);
+    await setRole(uid, b, "lead", await agentId(uid, holder));
+    const rc = await send(d, "s", "lead");
+    expect(rc).toMatchObject({ state: "pending", to_name: holder });
+    expect((await delivered(d, rc.msg_id)).to_ref).toBe("h");
+    d.close();
+  });
+});
+
 describe("a vacant role (#1296)", () => {
   it("vacated: role_vacant to a roles socket, unknown_agent to an old one (frozen schema decodes)", async () => {
     const uid = await owner();
@@ -642,6 +693,66 @@ describe("role names share the agent-name space (#1296)", () => {
     });
     await waitFor(d, "renamed");
     expect(await put(uid, n, left, await agentId(uid, alice))).toEqual({
+      ok: false,
+      reason: "name_taken",
+    });
+    d.close();
+  });
+
+  it("a role can't take a chosen former name left behind by a move or flip, in the scope it was left in only (OpenBus #451)", async () => {
+    const uid = await owner();
+    const d = await at(uid, NEW);
+    const [n1, n2] = [ns("ro"), ns("ro")];
+    const rename = async (ref: string, to: string) => {
+      d.send({
+        v: 1,
+        id: id("r"),
+        type: "rename",
+        agent_ref: ref,
+        proposed_name: to,
+      });
+      expect((await waitFor(d, "renamed")).bus_name).toBe(to);
+    };
+    // A move: `left` stays reserved in n1, where it was left, not in n2.
+    const left = uniq("left");
+    await reg(d, "b", left, n1);
+    const right = uniq("right");
+    await rename("b", right);
+    expect(await reg(d, "b", right, n2)).toBe(right);
+    expect(await put(uid, n1, left, null)).toEqual({
+      ok: false,
+      reason: "name_taken",
+    });
+    expect((await put(uid, n2, left, null)).ok).toBe(true);
+    // A flip from global: the name was left in every scope, and stays so.
+    const gleft = uniq("gleft");
+    await reg(d, "c", gleft, n1, true);
+    const gright = uniq("gright");
+    await rename("c", gright);
+    expect(await reg(d, "c", gright, n1)).toBe(gright);
+    expect(await put(uid, n2, gleft, null)).toEqual({
+      ok: false,
+      reason: "name_taken",
+    });
+    d.close();
+  });
+
+  it("a role can't take its own holder's chosen former name (#1388 review)", async () => {
+    const uid = await owner();
+    const d = await at(uid, NEW);
+    const n = ns("ro");
+    const mine = uniq("mine");
+    await reg(d, "a", mine, n);
+    const other = uniq("other");
+    d.send({
+      v: 1,
+      id: id("r"),
+      type: "rename",
+      agent_ref: "a",
+      proposed_name: other,
+    });
+    expect((await waitFor(d, "renamed")).bus_name).toBe(other);
+    expect(await put(uid, n, mine, await agentId(uid, other))).toEqual({
       ok: false,
       reason: "name_taken",
     });
