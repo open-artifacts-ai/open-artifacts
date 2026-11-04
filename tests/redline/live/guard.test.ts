@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { auditCheck } from "../src/audit.ts";
-import { hook404IsTheKeys } from "../src/hook-ledger.ts";
 import {
   type Cred,
   describeRes,
@@ -71,12 +70,15 @@ describe("hooks", () => {
   for (const k of ["a", "b"] as const) {
     it(`${k}: a wrong hook key gets the 404`, async () => {
       const t = T[k];
-      // The rate limit answers the same 404 before the key is read. Paced
-      // with one call of the budget kept free, the 404 here is the key
-      // check's (hook404IsTheKeys); never read it so while the ledger is full.
-      const inWindow = await paceHook(t, { reserve: 1 });
-      if (!hook404IsTheKeys(inWindow))
-        throw new Error(`wrong key: hook budget full (${inWindow})`);
+      // RL_ANON answers the same bare 404 before the key is read, so this
+      // 404 is the key check's only while the runner is under the limit.
+      // What guarantees it is the margin: every /__test/* call this runner
+      // makes is paced to HOOK_LIMIT (25) a minute against RL_ANON's 30, and
+      // this probe keeps one more call free (24 at most, with it). A limited
+      // 404 here would take at least 6 unpaced calls inside the window; none exist
+      // (#1254). The audit row would prove it outright: a key-check 404
+      // writes test_hook.session "denied", a limited one writes nothing.
+      await paceHook(t, { reserve: 1 });
       const res = await fetch(`${t.app}/__test/session`, {
         method: "POST",
         redirect: "manual",

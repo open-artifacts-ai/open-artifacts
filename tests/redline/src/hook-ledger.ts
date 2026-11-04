@@ -9,20 +9,23 @@
 // origin): every process on the runner that calls that install's hooks
 // draws on it, and different installs never share one.
 //
-// The ledger is a directory of slot files. A call takes slot n by creating
-// `s<n>.g<k>` with an exclusive create (O_EXCL): of two processes taking the
-// same free slot, exactly one wins, and nothing is ever read and rewritten.
-// A slot is free again once its newest generation is older than the window.
-// The file holds the call's time. A claim holds nothing open, so there is
-// nothing to release: a call that throws after its claim keeps its slot
+// The ledger is a directory of slot files. A call takes slot n by linking a
+// complete temp file (the call's time) to `s<n>.g<k>`: link fails EEXIST
+// like an exclusive create, so of two processes taking the same free slot
+// exactly one wins, nothing is ever read and rewritten, and a slot file
+// never exists half written. A slot is free again once its newest
+// generation is older than the window. A claim holds nothing open, so there
+// is nothing to release: a call that throws after its claim keeps its slot
 // (the server may well have charged it) and every other slot stays free.
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
+  linkSync,
   lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -88,9 +91,20 @@ interface Slot {
 
 const SLOT = /^s(\d+)\.g(\d+)$/;
 
-/** The ledger directory, created 0700; refused if it isn't ours. */
+/** Ledger directories already announced by this process. */
+const announced = new Set<string>();
+
+/**
+ * The ledger directory, created 0700; refused if it isn't ours. Logged once
+ * per process: two suites sharing a bucket must also share this directory
+ * (the same os.tmpdir()), or their budgets split.
+ */
 function ledgerDir(app: string, root: string): string {
   const dir = hookLedgerDir(app, root);
+  if (!announced.has(dir)) {
+    announced.add(dir);
+    process.stderr.write(`hook budget: ledger ${dir}\n`);
+  }
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const st = lstatSync(dir);
   if (
@@ -100,6 +114,25 @@ function ledgerDir(app: string, root: string): string {
   )
     throw new Error(`hook ledger ${dir}: not a private directory of ours`);
   return dir;
+}
+
+/**
+ * A slot file's call time. Slots are linked in complete, so a time that
+ * isn't a positive number at or before `now` (an empty file from an older
+ * writer or a crash, a corrupt one, a clock that went back) falls back to
+ * the file's mtime, so it still leaves the window a window after it was
+ * made. Never later than `now`; `now` if even the stat fails.
+ */
+function callTime(path: string, now: number): number {
+  try {
+    const v = Number(readFileSync(path, "utf8"));
+    if (Number.isFinite(v) && v > 0 && v <= now) return v;
+  } catch {}
+  try {
+    return Math.min(statSync(path).mtimeMs, now);
+  } catch {
+    return now;
+  }
 }
 
 /** Each slot's newest generation and its call time. */
@@ -112,15 +145,29 @@ function scan(dir: string, now: number): Map<number, Slot> {
     const gen = Number(m[2]);
     const had = slots.get(n);
     if (had && had.gen >= gen) continue;
-    let at = now;
-    try {
-      const v = Number(readFileSync(join(dir, name), "utf8"));
-      // Empty (its creator is still writing) or from the future: fresh.
-      if (Number.isFinite(v) && v > 0 && v <= now) at = v;
-    } catch {}
-    slots.set(n, { n, gen, at });
+    slots.set(n, { n, gen, at: callTime(join(dir, name), now) });
   }
   return slots;
+}
+
+/**
+ * Links a complete temp file holding `t` to `name`: false if `name` exists
+ * (another process took the slot). The temp file is always removed.
+ */
+function takeSlot(dir: string, name: string, t: number): boolean {
+  const tmp = join(dir, `tmp.${process.pid}.${randomBytes(6).toString("hex")}`);
+  writeFileSync(tmp, String(t), { flag: "wx", mode: 0o600 });
+  try {
+    linkSync(tmp, join(dir, name));
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    return false;
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {}
+  }
 }
 
 /** Calls in the window now (the newest generation of each fresh slot). */
@@ -175,14 +222,15 @@ export async function claimHookSlot(
         const s = slots.get(n);
         if (s && t - s.at < HOOK_WINDOW_MS) continue;
         const gen = s ? s.gen + 1 : 0;
-        try {
-          writeFileSync(join(dir, `s${n}.g${gen}`), String(t), {
-            flag: "wx",
-            mode: 0o600,
-          });
-        } catch (e) {
-          if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-          break; // another process took it: scan again
+        const name = `s${n}.g${gen}`;
+        if (!takeSlot(dir, name, t)) break; // another process took it: scan again
+        // A claim that stalled for windows can take a generation older than
+        // the newest (one already unlinked): never counted, so not a call.
+        if ((scan(dir, t).get(n)?.gen ?? -1) !== gen) {
+          try {
+            unlinkSync(join(dir, name));
+          } catch {}
+          break;
         }
         // Older generations of slot n are never read again. The one before
         // stays, so a claim that scanned it long ago still collides.

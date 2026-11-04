@@ -16,7 +16,7 @@ import {
   type Page,
 } from "@playwright/test";
 import { gate } from "../gate";
-import { hookFailure, paceT19Hook } from "../hook-pace";
+import { hookFailure, markTestStart, paceT19Hook } from "../hook-pace";
 import { sendRead } from "../retry";
 import { FETCH_MS, hookKey, rlA } from "../targets";
 
@@ -301,5 +301,18 @@ export async function needs(flow: string, min: string): Promise<void> {
   test.skip(why !== null, why ?? "");
 }
 
-export const test = base;
+/**
+ * T19's test: an auto fixture records each test's start, so a paced hook
+ * call's deadline (hook-pace.ts) is the test's own timeout.
+ */
+export const test = base.extend<{ hookClock: void }>({
+  hookClock: [
+    // biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructured first argument.
+    async ({}, use, testInfo) => {
+      markTestStart(testInfo);
+      await use();
+    },
+    { auto: true },
+  ],
+});
 export { expect };

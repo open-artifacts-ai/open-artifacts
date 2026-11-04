@@ -16,36 +16,62 @@ import {
 /** Kept back from the running test's timeout, for the call itself. */
 export const DEADLINE_MARGIN_MS = 5_000;
 
-const firstSeen = new WeakMap<TestInfo, number>();
+/** When each test began (markTestStart, from an auto fixture in rl-a/fixtures.ts). */
+const started = new WeakMap<TestInfo, number>();
 
-/**
- * When the running test (or hook) must have made its hook call: its own
- * timeout, counted from its first hook call (tests make that call first),
- * less a margin. None outside a test, or with no timeout.
- */
-export function hookDeadline(now = Date.now()): number | undefined {
-  let info: TestInfo;
+/** Records the running test's start: its hook calls' deadline counts from it. */
+export function markTestStart(info: TestInfo, now = Date.now()): void {
+  started.set(info, now);
+}
+
+/** The running test or hook's TestInfo; none outside one (a worker fixture). */
+function currentInfo(): TestInfo | undefined {
   try {
-    info = test.info();
+    return test.info();
   } catch {
     return undefined;
   }
-  if (!info.timeout) return undefined;
-  const start = firstSeen.get(info) ?? now;
-  firstSeen.set(info, start);
+}
+
+/**
+ * When the running test (or hook) must have made its hook call: its own
+ * timeout less a margin, counted from the test's start (markTestStart). A
+ * beforeAll/afterAll hook has no test-scoped fixture, so it counts from its
+ * first hook call: T19's hooks make that call first (a session). None
+ * outside a test or hook, or with no timeout.
+ */
+export function hookDeadline(
+  now: number = Date.now(),
+  info: TestInfo | undefined = currentInfo(),
+): number | undefined {
+  if (!info?.timeout) return undefined;
+  const start = started.get(info) ?? now;
+  started.set(info, start);
   return start + info.timeout - DEADLINE_MARGIN_MS;
 }
 
+type T19PaceOpts = Pick<PaceOpts, "root" | "now" | "sleep"> & {
+  /** The running test (default test.info()). */
+  info?: TestInfo;
+};
+
+const deadlineOf = (o: T19PaceOpts) =>
+  hookDeadline((o.now ?? Date.now)(), "info" in o ? o.info : currentInfo());
+
 /** Waits for a slot for a hook call to `app`; HookBudgetError past the deadline. */
-export const paceT19Hook = (
-  app: string,
-  o: Pick<PaceOpts, "root" | "now" | "sleep" | "deadline"> = {},
-): Promise<number> =>
-  claimHookSlot(app, { spread: true, deadline: hookDeadline(), ...o });
+export function paceT19Hook(app: string, o: T19PaceOpts = {}): Promise<number> {
+  const { info: _, ...rest } = o;
+  return claimHookSlot(app, { ...rest, spread: true, deadline: deadlineOf(o) });
+}
 
 /** Before any rl-a case: wait until the suite's calls have left the window. */
-export const clearT19HookWindow = (app: string): Promise<void> =>
-  waitHookWindowClear(app, { deadline: hookDeadline() });
+export function clearT19HookWindow(
+  app: string,
+  o: T19PaceOpts = {},
+): Promise<void> {
+  const { info: _, ...rest } = o;
+  return waitHookWindowClear(app, { ...rest, deadline: deadlineOf(o) });
+}
 
 /**
  * The error for a failed hook call. A bare 404 is read as the hooks' own
