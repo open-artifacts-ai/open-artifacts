@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.107.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.106.0...v0.107.0) (2026-11-04)
+
+
+### Features
+
+* **bus:** @oa/bus-protocol, the bus wire protocol for the instance ([#1291](https://github.com/open-artifacts-ai/open-artifacts/issues/1291)) ([#1304](https://github.com/open-artifacts-ai/open-artifacts/issues/1304)) ([156152f](https://github.com/open-artifacts-ai/open-artifacts/commit/156152ffed2046e8f499552b1b5d49d2a366507e))
+* **provisioning:** agents sign in to rl-agents as a member, through OIDC (test-member scope) ([#1288](https://github.com/open-artifacts-ai/open-artifacts/issues/1288)) ([bb6309e](https://github.com/open-artifacts-ai/open-artifacts/commit/bb6309e75597b0ef6d7cdd1571721bce0928ad47))
+
 ## [0.106.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.105.0...v0.106.0) (2026-11-03)
 
 
