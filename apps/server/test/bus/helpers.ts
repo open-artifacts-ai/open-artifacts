@@ -90,6 +90,13 @@ export async function workerFetch(
   return r;
 }
 
+/**
+ * How long `next` waits for a frame before failing the test: a ceiling for
+ * a missing frame, never a delay (OpenBus's 2 s timed out under full-suite
+ * load on the flood tests).
+ */
+const FRAME_WAIT_MS = 15_000;
+
 export type Daemon = {
   ws: WebSocket;
   /** Every raw text message received, in order (frames and PONGs). */
@@ -149,7 +156,7 @@ export async function daemon(
     return new Promise<ServerFrame>((resolve, reject) => {
       const t = setTimeout(
         () => reject(new Error("timed out waiting for a frame")),
-        2000,
+        FRAME_WAIT_MS,
       );
       waiting.push((frame) => {
         clearTimeout(t);

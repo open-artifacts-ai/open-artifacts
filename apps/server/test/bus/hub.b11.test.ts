@@ -282,13 +282,14 @@ describe("per-socket frame budget (token bucket)", () => {
   it("a sustained flood well above the refill rate is closed with 1008 rate limited, logged once", async () => {
     const log = vi.spyOn(console, "log");
     const h = freshHub();
+    // A frozen hub clock: no refill, so the burst runs out at a fixed frame
+    // count however slowly a loaded machine sends (OpenBus used the real
+    // clock, which timed out under full-suite load).
+    await clock(h, Date.now() + HOUR);
     const m = await machineOn(h);
     const d = await daemonOn(h, m.id);
-    // Real clock: the flood outruns the 50/s refill until the burst is gone.
-    for (let k = 0; k < 4 * FRAME_BUDGET.burst && !d.isClosed(); k++) {
+    for (let k = 0; k < 4 * FRAME_BUDGET.burst && !d.isClosed(); k++)
       d.send(junkAck());
-      if (k % 500 === 0) await tick(1);
-    }
     expect(await d.closed).toEqual({
       code: LIMITS.rateLimitCloseCode,
       reason: "rate limited",
