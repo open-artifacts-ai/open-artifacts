@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearT19HookWindow,
+  clearTestStart,
   DEADLINE_MARGIN_MS,
   hookDeadline,
   hookFailure,
@@ -35,6 +36,7 @@ import {
   hookWindowCount,
   RL_ANON_LIMIT,
   RL_ANON_PERIOD_S,
+  STALE_TMP_MS,
   waitHookWindowClear,
 } from "../src/hook-ledger.ts";
 import { paceHook } from "../src/http.ts";
@@ -351,6 +353,43 @@ describe("slot times that aren't a plain past time", () => {
     expect(c.waits).toEqual([HOOK_WINDOW_MS - 30_000 + 100]);
   });
 
+  it("a future mtime is capped at now", async () => {
+    const root = scratch();
+    const c = clock();
+    // Corrupt content, so the mtime is used; the mtime is an hour ahead.
+    rawSlot(root, "s0.g0", "x", c.now() + 3_600_000);
+    // The file stays fresh until the clock reaches its mtime; only the first
+    // computed wait is checked: one window from now, not from an hour ahead.
+    const waits: number[] = [];
+    const stop = new Error("first wait seen");
+    await expect(
+      waitHookWindowClear(APP, {
+        root,
+        now: c.now,
+        sleep: async (ms) => {
+          waits.push(ms);
+          throw stop;
+        },
+      }),
+    ).rejects.toBe(stop);
+    expect(waits).toEqual([HOOK_WINDOW_MS + 100]);
+  });
+
+  it("temp files a crash left are swept on first use; a fresh one stays", async () => {
+    const root = scratch();
+    const dir = hookLedgerDir(APP, root);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const old = join(dir, "tmp.1.aaaaaaaaaaaa");
+    const recent = join(dir, "tmp.2.bbbbbbbbbbbb");
+    writeFileSync(old, "1", { mode: 0o600 });
+    writeFileSync(recent, "1", { mode: 0o600 });
+    const t = (Date.now() - STALE_TMP_MS - 60_000) / 1000;
+    utimesSync(old, t, t);
+    hookWindowCount(APP, { root });
+    expect(existsSync(old)).toBe(false);
+    expect(existsSync(recent)).toBe(true);
+  });
+
   it("a slot file is linked in complete: no temp file is left", async () => {
     const root = scratch();
     await claimHookSlot(APP, { root });
@@ -451,6 +490,26 @@ describe("T19's deadline", () => {
     expect(hookDeadline(9_000, h)).toBe(5_000 + 60_000 - DEADLINE_MARGIN_MS);
     expect(hookDeadline(9_000, info(0))).toBeUndefined();
     expect(hookDeadline(9_000, undefined)).toBeUndefined();
+  });
+
+  it("an afterAll call after a long last test isn't refused: the mark is cleared at teardown", async () => {
+    const root = scratch();
+    const c = clock();
+    const i = info(60_000);
+    const t0 = c.now();
+    // The last test: marked at its start, a hook call just before it ends.
+    markTestStart(i, t0);
+    c.set(t0 + 57_000);
+    await paceT19Hook(APP, { root, now: c.now, sleep: c.sleep, info: i });
+    // Its fixtures tear down; afterAll runs with the same TestInfo.
+    clearTestStart(i);
+    c.set(t0 + 58_000);
+    expect(hookDeadline(c.now(), i)).toBe(
+      t0 + 58_000 + 60_000 - DEADLINE_MARGIN_MS,
+    );
+    // Its cleanup call waits out the spread instead of being refused.
+    await paceT19Hook(APP, { root, now: c.now, sleep: c.sleep, info: i });
+    expect(c.waits).toEqual([HOOK_GAP_MS - 1000]);
   });
 
   it("paceT19Hook fails with HookBudgetError rather than wait past the test's timeout", async () => {

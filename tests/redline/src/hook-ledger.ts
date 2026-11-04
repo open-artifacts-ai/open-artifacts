@@ -94,17 +94,17 @@ const SLOT = /^s(\d+)\.g(\d+)$/;
 /** Ledger directories already announced by this process. */
 const announced = new Set<string>();
 
+/** A temp file older than this was left by a crash (takeSlot holds one for microseconds). */
+export const STALE_TMP_MS = 3 * HOOK_WINDOW_MS;
+
 /**
- * The ledger directory, created 0700; refused if it isn't ours. Logged once
- * per process: two suites sharing a bucket must also share this directory
- * (the same os.tmpdir()), or their budgets split.
+ * The ledger directory, created 0700; refused if it isn't ours. Once per
+ * process: logged (two suites sharing a bucket must also share this
+ * directory, the same os.tmpdir(), or their budgets split), and temp files
+ * a crash left behind are removed (litter only: a scan never reads them).
  */
 function ledgerDir(app: string, root: string): string {
   const dir = hookLedgerDir(app, root);
-  if (!announced.has(dir)) {
-    announced.add(dir);
-    process.stderr.write(`hook budget: ledger ${dir}\n`);
-  }
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const st = lstatSync(dir);
   if (
@@ -113,7 +113,23 @@ function ledgerDir(app: string, root: string): string {
     (st.mode & 0o077) !== 0
   )
     throw new Error(`hook ledger ${dir}: not a private directory of ours`);
+  if (!announced.has(dir)) {
+    announced.add(dir);
+    process.stderr.write(`hook budget: ledger ${dir}\n`);
+    sweepTemps(dir, Date.now());
+  }
   return dir;
+}
+
+/** Removes temp files older than STALE_TMP_MS (by mtime). */
+function sweepTemps(dir: string, now: number): void {
+  for (const name of readdirSync(dir)) {
+    if (!name.startsWith("tmp.")) continue;
+    try {
+      const p = join(dir, name);
+      if (now - statSync(p).mtimeMs > STALE_TMP_MS) unlinkSync(p);
+    } catch {}
+  }
 }
 
 /**

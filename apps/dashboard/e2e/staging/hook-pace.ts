@@ -24,6 +24,15 @@ export function markTestStart(info: TestInfo, now = Date.now()): void {
   started.set(info, now);
 }
 
+/**
+ * Forgets the test's start once its fixtures tear down. afterAll hooks run
+ * with the last test's TestInfo but a fresh timeout of their own, so they
+ * must count from their own first hook call, not that test's start.
+ */
+export function clearTestStart(info: TestInfo): void {
+  started.delete(info);
+}
+
 /** The running test or hook's TestInfo; none outside one (a worker fixture). */
 function currentInfo(): TestInfo | undefined {
   try {

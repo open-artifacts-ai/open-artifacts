@@ -16,7 +16,12 @@ import {
   type Page,
 } from "@playwright/test";
 import { gate } from "../gate";
-import { hookFailure, markTestStart, paceT19Hook } from "../hook-pace";
+import {
+  clearTestStart,
+  hookFailure,
+  markTestStart,
+  paceT19Hook,
+} from "../hook-pace";
 import { sendRead } from "../retry";
 import { FETCH_MS, hookKey, rlA } from "../targets";
 
@@ -311,6 +316,8 @@ export const test = base.extend<{ hookClock: void }>({
     async ({}, use, testInfo) => {
       markTestStart(testInfo);
       await use();
+      // afterAll gets this TestInfo but its own timeout (hook-pace.ts).
+      clearTestStart(testInfo);
     },
     { auto: true },
   ],
