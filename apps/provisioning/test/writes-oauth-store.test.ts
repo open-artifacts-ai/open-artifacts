@@ -1,4 +1,4 @@
-import { JOB_STEPS } from "@oa/shared/provisioning";
+import { JOB_STEPS } from "@oa/provisioning-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Principal } from "../src/principal.js";
 import { call } from "./call.js";

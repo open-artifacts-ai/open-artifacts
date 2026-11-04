@@ -1,4 +1,4 @@
-import type { RouteId } from "@oa/shared/provisioning";
+import type { RouteId } from "@oa/provisioning-contract";
 import type { Env } from "./env.js";
 import { factsOf } from "./facts.js";
 import type { Principal } from "./principal.js";

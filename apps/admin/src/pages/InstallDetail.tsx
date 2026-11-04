@@ -4,7 +4,7 @@ import {
   type JobKind,
   type JobListItem,
   type RouteId,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import {
   Button,
   Checkbox,

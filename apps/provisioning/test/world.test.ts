@@ -4,8 +4,8 @@ import {
   alertParams,
   SQL_ALERT_KEYS,
   WorldSchema,
-} from "@oa/shared/provisioning";
-import { fakeProvisionerRpc } from "@oa/shared/provisioning/fakes";
+} from "@oa/provisioning-contract";
+import { fakeProvisionerRpc } from "@oa/provisioning-contract/fakes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { call } from "./call.js";
 import {

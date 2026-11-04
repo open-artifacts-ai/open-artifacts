@@ -2,13 +2,13 @@ import {
   canTransition,
   PURGE_STUCK_FAILURES,
   REQUEST_ID_RE,
-} from "@oa/shared/provisioning";
-import { FakeWorkflow } from "@oa/shared/provisioning/fakes";
+} from "@oa/provisioning-contract";
+import { FakeWorkflow } from "@oa/provisioning-contract/fakes";
 import {
   PURGE_MAX_TRIES,
   purgeRequestId,
   SYSTEM_ACTOR,
-} from "@oa/shared/provisioning/system";
+} from "@oa/provisioning-contract/system";
 import {
   afterEach,
   beforeAll,

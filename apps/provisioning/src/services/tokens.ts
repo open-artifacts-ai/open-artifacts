@@ -5,7 +5,7 @@ import {
   type TokenKind,
   type TokenScope,
   TokenScopeSchema,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { hmac16, sameString, sha256Hex } from "../auth/crypto.js";
 import { isAdminIdentity } from "../auth/identities.js";
 import type { Env } from "../env.js";

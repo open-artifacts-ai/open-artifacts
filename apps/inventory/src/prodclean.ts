@@ -1,4 +1,4 @@
-import { ProdcleanReportSchema } from "@oa/shared/provisioning";
+import { ProdcleanReportSchema } from "@oa/provisioning-contract";
 import type { Authed } from "./auth.ts";
 import { badRequest, type D1Like, notFound } from "./http.ts";
 

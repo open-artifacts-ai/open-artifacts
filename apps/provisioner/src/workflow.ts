@@ -39,8 +39,8 @@ import {
   bodyHash,
   type WorkflowParams,
   WorkflowParamsSchema,
-} from "@oa/shared/provisioning";
-import { createWorkflowInstance } from "@oa/shared/provisioning/workflow";
+} from "@oa/provisioning-contract";
+import { createWorkflowInstance } from "@oa/provisioning-contract/workflow";
 import { codeOf } from "./errors.js";
 import {
   appHostOf,

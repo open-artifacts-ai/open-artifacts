@@ -1,4 +1,4 @@
-import { InventoryInstallsSchema } from "@oa/shared/provisioning";
+import { InventoryInstallsSchema } from "@oa/provisioning-contract";
 import { describe, expect, it } from "vitest";
 // The real platform schema (every migration) in node:sqlite.
 import {

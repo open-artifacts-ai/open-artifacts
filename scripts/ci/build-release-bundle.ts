@@ -1,7 +1,8 @@
-// Writes the release Worker bundle to <outdir> via @oa/provision buildBundle
+// Writes the release Worker bundle to <outdir> via @oa/bundle buildBundle
 // (a `wrangler deploy --dry-run` of the rendered setup template with dummy
 // values: no account, no secrets). Input for check-no-test-hooks.ts.
-// Needs `pnpm --filter @oa/provision build`, `pnpm --filter @oa/server run gen`
+// Needs `pnpm --filter @oa/bundle build` (or `pnpm --filter @oa/provision
+// build`, which builds it), `pnpm --filter @oa/server run gen`
 // and an apps/server/dist-assets directory first.
 // Usage: node --experimental-strip-types scripts/ci/build-release-bundle.ts <outdir> [--variant release|redline]
 // (default release; redline defines the test-hooks guard true, T3b).
@@ -29,7 +30,7 @@ if (
   process.exit(1);
 }
 // The built package (dist), so its .js imports resolve under plain node.
-const dist = pathToFileURL(join(root, "packages/provision/dist/index.js")).href;
+const dist = pathToFileURL(join(root, "packages/bundle/dist/index.js")).href;
 const { buildBundle } = (await import(dist)) as {
   buildBundle(
     root: string,

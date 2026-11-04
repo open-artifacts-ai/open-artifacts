@@ -5,12 +5,12 @@
 // starting probes and gives the gate back, so the next */2 tick checks the
 // rows this round has not (health_at before the round's start).
 import { isInstallId } from "@oa/provision/names";
-import type { Health } from "@oa/shared/provisioning/enum-values";
+import type { Health } from "@oa/provisioning-contract/enum-values";
 import {
   HEALTH_GATE_KEY,
   HEALTH_INTERVAL_MS,
   HEALTH_ROUND_KEY,
-} from "@oa/shared/provisioning/state";
+} from "@oa/provisioning-contract/state";
 import { DutyFailure, d1, lanes, type ProvapiEnv, within } from "./env.js";
 import { claimState, getState, raiseState, unclaimState } from "./state.js";
 

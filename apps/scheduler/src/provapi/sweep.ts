@@ -15,14 +15,14 @@ import {
   SWEEP_CURSOR_KEY,
   SWEEP_TERMINATED_PREFIX,
   sweepTerminatedKey,
-} from "@oa/shared/provisioning/state";
-import { cleanupRequestId } from "@oa/shared/provisioning/system";
+} from "@oa/provisioning-contract/state";
+import { cleanupRequestId } from "@oa/provisioning-contract/system";
 import {
   getWorkflowInstance,
   isWorkflowNotFound,
   type WorkflowInstanceStatus,
   type WorkflowLike,
-} from "@oa/shared/provisioning/workflow";
+} from "@oa/provisioning-contract/workflow";
 import {
   bound,
   DutyFailure,
@@ -48,7 +48,7 @@ export const SWEEP_CONCURRENCY = 3;
 /** The code a dead run settles with (errored, terminated, or complete with the job still open). */
 export const RUN_DEAD: ProvisionErrorCode = "run_dead";
 
-// Grace and keys (C5, @oa/shared/provisioning/state):
+// Grace and keys (C5, @oa/provisioning-contract/state):
 // - JOB_START_GRACE_MS: a queued job with no instance this old is started
 //   by the sweep, so it never races the API's own Workflow.create.
 // - JOB_TERMINATED_GRACE_MS: an errored or terminated instance is settled

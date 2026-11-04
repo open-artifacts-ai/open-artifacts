@@ -6,7 +6,7 @@ import {
   type Job,
   type Release,
   TOKEN_SCOPES,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import {
   InfraError,
   isNetworkError,

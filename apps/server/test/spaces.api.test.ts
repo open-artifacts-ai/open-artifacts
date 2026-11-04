@@ -122,10 +122,14 @@ const revokedAt = (userId: string) =>
   runInDurableObject(presence(userId), (p) => p.revokedAt());
 
 type U = { cookie: string; userId: string };
+// Unique by construction: a per-file counter plus the file's tag. The old
+// 4-char random slice, lowercased (35 symbols), collided in ~1 of 455 file runs
+// across the ~41 staffed() calls (UNIQUE users.email, #1205).
+let seq = 0;
 const mk = (
   p: string,
   role: "member" | "admin" | "guest" | "owner" = "member",
-) => login(`${p}-${newId().slice(0, 4).toLowerCase()}-${tag}@x.com`, role);
+) => login(`${p}-${++seq}-${tag}@x.com`, role);
 
 const level = async (
   e: Env,

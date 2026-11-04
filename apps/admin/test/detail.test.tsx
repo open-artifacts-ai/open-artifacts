@@ -1,5 +1,5 @@
-import type { InstallDetail, InstallState } from "@oa/shared/provisioning";
-import { fixtureMe } from "@oa/shared/provisioning/fixtures";
+import type { InstallDetail, InstallState } from "@oa/provisioning-contract";
+import { fixtureMe } from "@oa/provisioning-contract/fixtures";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import {

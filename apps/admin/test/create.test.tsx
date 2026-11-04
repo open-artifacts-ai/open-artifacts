@@ -1,6 +1,6 @@
-import { checkCreateFields, oidcMayCreate } from "@oa/shared/provisioning";
-import { STAGING_TEST_DOMAIN } from "@oa/shared/provisioning/constants";
-import { fixtureMe } from "@oa/shared/provisioning/fixtures";
+import { checkCreateFields, oidcMayCreate } from "@oa/provisioning-contract";
+import { STAGING_TEST_DOMAIN } from "@oa/provisioning-contract/constants";
+import { fixtureMe } from "@oa/provisioning-contract/fixtures";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse } from "msw";
 import { expect, it } from "vitest";

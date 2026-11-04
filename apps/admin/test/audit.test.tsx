@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { fixtureAudit } from "@oa/shared/provisioning/fixtures";
+import { fixtureAudit } from "@oa/provisioning-contract/fixtures";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { auditEntries, FIXTURE_IDS, tokens } from "../src/mocks/fixtures";

@@ -1,4 +1,4 @@
-import type { ProvisioningMock } from "@oa/shared/provisioning/mocks";
+import type { ProvisioningMock } from "@oa/provisioning-contract/mocks";
 
 /**
  * Dev only: the contract mock never moves a job on by itself. For every job an

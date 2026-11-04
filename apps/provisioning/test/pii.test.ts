@@ -1,4 +1,4 @@
-import type { AuditEntry } from "@oa/shared/provisioning";
+import type { AuditEntry } from "@oa/provisioning-contract";
 import { describe, expect, it } from "vitest";
 import type { Principal } from "../src/principal.js";
 import {

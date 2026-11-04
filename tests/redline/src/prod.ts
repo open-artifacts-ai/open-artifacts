@@ -12,7 +12,7 @@ import {
   r2ReleaseReader,
   TEST_HOOKS_DEFINE,
 } from "@oa/provision";
-import { InventoryInstallsSchema } from "@oa/shared/provisioning";
+import { InventoryInstallsSchema } from "@oa/provisioning-contract";
 // The node-readable copy of RELEASE_PUBKEY (provision keeps its own in
 // src/internal/gates.ts, not exported; a test there pins the two equal).
 import { RELEASE_PUBKEY } from "../../../scripts/ci/release-pubkeys.mjs";

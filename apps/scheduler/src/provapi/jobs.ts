@@ -1,18 +1,18 @@
 // Jobs the scheduler inserts (purge after grace, the sweep's cleanup) and
 // the Workflow calls it makes. Params are exactly { jobId } (design v7 3.6).
-import type { WorkflowParams } from "@oa/shared/provisioning";
+import type { WorkflowParams } from "@oa/provisioning-contract";
 import {
   newJobId,
   SYSTEM_ACTOR,
   type SystemJobArgs,
   type SystemJobKind,
   systemJobBodyHash,
-} from "@oa/shared/provisioning/system";
+} from "@oa/provisioning-contract/system";
 import {
   createWorkflowInstance,
   isWorkflowExists,
   type WorkflowLike,
-} from "@oa/shared/provisioning/workflow";
+} from "@oa/provisioning-contract/workflow";
 import { DutyFailure, Stall, within } from "./env.js";
 
 /** One Workflow call (create, get, status) past this counts as an rpc_error. */

@@ -897,3 +897,69 @@ describe("spaces off: the routes parity 1 ungates", () => {
     expect((await errOf(adm)).code).toBe("restrict_admin");
   });
 });
+
+describe("GET R.members: directoryManaged (#1146), a removal sync can undo", () => {
+  const SYNCED = directEnv();
+  const listed = async (e: Env, status = "active,suspended") => {
+    const r = await call(e, `${R.members}?status=${status}`, admin.cookie);
+    expect(r.status).toBe(200);
+    const list = MemberSchema.array().parse(await r.json());
+    return new Map(list.map((m) => [m.id, m]));
+  };
+  const googleLinked = async () => {
+    const u = await login(uniq("dm-linked", "a.com"), "member");
+    await env.DB.prepare(
+      "insert into identities (provider, subject, tenant, user_id, created_at, directory_bound) values ('google', ?, 'a.com', ?, ?, 1)",
+    )
+      .bind(`g-dm-${newId()}`, u.userId, Date.now())
+      .run();
+    return u;
+  };
+
+  it("sync on and connected: true for a member, admin, guest or suspended row with no Google link at an in-domain address; absent for a Google-linked row, an out-of-domain address, the owner and a removed row; removal unchanged", async () => {
+    await connectWorkspace();
+    const plain = await login(uniq("dm-plain", "a.com"), "member");
+    const plainAdmin = await login(uniq("dm-adm", "a.com"), "admin");
+    const plainGuest = await login(uniq("dm-guest", "a.com"), "guest");
+    const suspended = await login(uniq("dm-susp", "a.com"), "member");
+    await setUserStatus(
+      env,
+      suspended.userId,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
+    const google = await googleLinked();
+    const outside = await login(uniq("dm-out", "x.com"), "guest");
+    const m = await listed(SYNCED);
+    for (const u of [plain, plainAdmin, plainGuest, suspended])
+      expect(m.get(u.userId)?.directoryManaged).toBe(true);
+    for (const u of [google, outside, owner]) {
+      expect(m.get(u.userId)).toBeDefined();
+      expect(m.get(u.userId)?.directoryManaged).toBeUndefined();
+    }
+    // A warning only: the removal goes through as before.
+    expect((await remove(plain.userId, admin.cookie, SYNCED)).status).toBe(204);
+    expect((await row(plain.userId))?.status).toBe("removed");
+    // The Departed list carries none: the warning is for the removal.
+    const gone = await listed(SYNCED, "removed");
+    expect(gone.get(plain.userId)).toBeDefined();
+    expect(gone.get(plain.userId)?.directoryManaged).toBeUndefined();
+  });
+
+  it.each([
+    ["sync off (the default test env)", OFF, true],
+    ["Google sync on, no Workspace connected", SYNCED, false],
+    [
+      "sync frozen, a Workspace connected",
+      directEnv({ FEATURES: "sync_frozen" }),
+      true,
+    ],
+  ] as const)("%s: never set", async (_, e, connect) => {
+    if (connect) await connectWorkspace();
+    const u = await login(uniq("dm-off", "a.com"), "member");
+    const m = await listed(e);
+    expect(m.get(u.userId)).toBeDefined();
+    for (const x of m.values()) expect(x.directoryManaged).toBeUndefined();
+  });
+});

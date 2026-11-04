@@ -1,0 +1,99 @@
+{
+  "name": "@oa/provisioning-contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./slugs": {
+      "types": "./dist/slugs.d.ts",
+      "import": "./dist/slugs.js",
+      "default": "./dist/slugs.js"
+    },
+    "./alerts": {
+      "types": "./dist/alerts.d.ts",
+      "import": "./dist/alerts.js",
+      "default": "./dist/alerts.js"
+    },
+    "./constants": {
+      "types": "./dist/constants.d.ts",
+      "import": "./dist/constants.js",
+      "default": "./dist/constants.js"
+    },
+    "./enum-values": {
+      "types": "./dist/enum-values.d.ts",
+      "import": "./dist/enum-values.js",
+      "default": "./dist/enum-values.js"
+    },
+    "./error-codes": {
+      "types": "./dist/error-codes.d.ts",
+      "import": "./dist/error-codes.js",
+      "default": "./dist/error-codes.js"
+    },
+    "./state": {
+      "types": "./dist/state.d.ts",
+      "import": "./dist/state.js",
+      "default": "./dist/state.js"
+    },
+    "./system": {
+      "types": "./dist/system.d.ts",
+      "import": "./dist/system.js",
+      "default": "./dist/system.js"
+    },
+    "./workflow": {
+      "types": "./dist/workflow.d.ts",
+      "import": "./dist/workflow.js",
+      "default": "./dist/workflow.js"
+    },
+    "./fakes": {
+      "types": "./dist/fakes.d.ts",
+      "import": "./dist/fakes.js",
+      "default": "./dist/fakes.js"
+    },
+    "./fixtures": {
+      "types": "./dist/fixtures.d.ts",
+      "import": "./dist/fixtures.js",
+      "default": "./dist/fixtures.js"
+    },
+    "./mocks": {
+      "types": "./dist/mocks.d.ts",
+      "import": "./dist/mocks.js",
+      "default": "./dist/mocks.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "pnpm --filter @oa/shared build && tsc -b",
+    "test": "pnpm --filter @oa/shared build && vitest run && vitest run -c vitest.workerd.config.ts",
+    "typecheck": "pnpm --filter @oa/shared build && tsc --noEmit -p tsconfig.typecheck.json && tsc --noEmit -p tsconfig.workerd.json"
+  },
+  "dependencies": {
+    "@oa/shared": "workspace:*",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.4.4",
+    "@cloudflare/workers-types": "^5.20261018.1",
+    "msw": "^2.15.0",
+    "wrangler": "^4.151.1"
+  },
+  "peerDependencies": {
+    "msw": "^2.15.0"
+  },
+  "peerDependenciesMeta": {
+    "msw": {
+      "optional": true
+    }
+  }
+}

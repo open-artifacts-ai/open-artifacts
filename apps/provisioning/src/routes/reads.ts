@@ -10,7 +10,7 @@ import {
   PrincipalKindSchema,
   type SlugCheck,
   slugRule,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { z } from "zod";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";

@@ -2,8 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { API_ERROR_CODES } from "@oa/provisioning-contract";
 import { ERROR_CODES } from "@oa/shared";
-import { API_ERROR_CODES } from "@oa/shared/provisioning";
 import {
   InfraError,
   isNetworkError,

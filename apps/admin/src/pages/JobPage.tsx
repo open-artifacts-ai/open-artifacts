@@ -1,4 +1,4 @@
-import type { Job } from "@oa/shared/provisioning";
+import type { Job } from "@oa/provisioning-contract";
 import { Button } from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";

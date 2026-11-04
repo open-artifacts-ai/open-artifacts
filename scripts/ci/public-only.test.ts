@@ -245,6 +245,14 @@ describe("ci.yml public-only job", () => {
       "bash scripts/ci/public-only.sh",
     );
   });
+  it("while advisory, a failing run is a warning and never fails the check", () => {
+    const step = w.jobs["public-only"].steps.find((s: { run?: string }) =>
+      s.run?.includes("bash scripts/ci/public-only.sh"),
+    );
+    expect(step.run).toMatch(
+      /bash scripts\/ci\/public-only\.sh \|\| echo "::warning /,
+    );
+  });
   it("leaves every required job blocking", () => {
     for (const j of [
       "lint",

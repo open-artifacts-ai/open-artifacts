@@ -1,5 +1,5 @@
 import { parseHostsValue } from "@oa/provision/names";
-import { InventoryInstallsSchema } from "@oa/shared/provisioning";
+import { InventoryInstallsSchema } from "@oa/provisioning-contract";
 import { getMany } from "./hosts.ts";
 import { type D1Like, internal, json, type KvReadLike } from "./http.ts";
 

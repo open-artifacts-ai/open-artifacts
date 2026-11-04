@@ -14,7 +14,7 @@ import {
   ROUTES,
   type TokenScope,
   toolInput,
-} from "@oa/shared/provisioning";
+} from "@oa/provisioning-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env.js";
 import worker from "../src/index.js";

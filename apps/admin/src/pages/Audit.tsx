@@ -1,4 +1,4 @@
-import { type AuditEntry, InstallIdSchema } from "@oa/shared/provisioning";
+import { type AuditEntry, InstallIdSchema } from "@oa/provisioning-contract";
 import {
   Input,
   Select,
@@ -214,7 +214,7 @@ const refusalPhrase = (e: AuditEntry) => {
     : REFUSED;
 };
 
-/** System actors by the label the audit records (shared/provisioning/system.ts). */
+/** System actors by the label the audit records (@oa/provisioning-contract/system). */
 const SYSTEM_LABEL: Record<string, string> = {
   "system:scheduler": "Scheduler",
   anonymous: "Anonymous callers",
@@ -229,7 +229,7 @@ export const actorLabel = (a: AuditEntry["actor"]) =>
 
 /** The filters' "any" value (Radix Select has no empty value). */
 const ANY = "__any";
-/** System actors the audit records by label (shared/provisioning/system.ts). */
+/** System actors the audit records by label (provisioning-contract/src/system.ts). */
 const SYSTEM_ACTORS: [string, string][] = [["scheduler", "Scheduler"]];
 const PROVIDER: Record<string, string> = { google: "Google", email: "Email" };
 const text = (v: unknown) =>

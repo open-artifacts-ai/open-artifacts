@@ -6,8 +6,8 @@ import {
   slugRule,
   type Tier,
   TierSchema,
-} from "@oa/shared/provisioning";
-import { STAGING_TEST_DOMAIN } from "@oa/shared/provisioning/constants";
+} from "@oa/provisioning-contract";
+import { STAGING_TEST_DOMAIN } from "@oa/provisioning-contract/constants";
 import {
   Button,
   Checkbox,
