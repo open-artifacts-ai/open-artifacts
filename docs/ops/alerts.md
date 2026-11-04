@@ -83,8 +83,9 @@ The fleet rollout stopped. No install is upgraded to a halted version, and the f
 - `fleet_halt`: upgraded installs failed two health probes of this version on separate ticks. Ship a fix as a new release. Its rollout starts again from the canary.
 - A job code (usually `upgrade_incomplete`): a fleet upgrade failed, and that install stays on the new version. Ship a fix as a new release. `upgrade_rolled_back` shows only on older jobs.
 - `migration_held` (canary only): the release has a migration that can lose data. A person reads the migration. If it is safe, the Manager upgrades the canary with `nonAdditive: true`, with the user's yes. If not, fix the migration in a new release. On any other install, `migration_held` shows in `version_skew` instead.
-- `canary_blocked`: the canary (`FLEET_CANARY`) hasn't soaked on the release after 45 minutes, so nothing else moved. Check the canary on the admin panel. If it is suspended, paused, unhealthy or busy, that is the cause. A bug ships as a new release.
+- `canary_blocked`: the canary (`FLEET_CANARY`) hasn't soaked on the release by 30 minutes past its soak (`FLEET_SOAK_MIN`: 45 minutes in all on staging, 90 on prod), so nothing else moved. Check the canary on the admin panel. If it is suspended, paused, unhealthy or busy, that is the cause. A bug ships as a new release.
 - `no_target`: the scheduler has no stable release tag, so nothing can move. It was deployed without one. The next release's deploy sets it.
+- `bad_soak`: the scheduler's `FLEET_SOAK_MIN` isn't a whole number of minutes from 1 to 1440, so nothing moves. Fix it in `apps/scheduler/wrangler.jsonc` and ship a release.
 
 ## version_skew
 
