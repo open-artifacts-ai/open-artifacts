@@ -1,3 +1,4 @@
+import { compareVersions } from "@oa/provision/versions";
 import {
   canTransition,
   type InstallDetail as Install,
@@ -51,6 +52,11 @@ import {
   TIER_LABEL,
   visibleSteps,
 } from "../components/labels";
+import {
+  aheadOfPlatform,
+  aheadReason,
+  newestVersion,
+} from "../components/platformGate";
 import { useAction } from "../hooks/useAction";
 import { canCall } from "../hooks/useEnv";
 import { LoadError } from "../layout/LoadError";
@@ -67,6 +73,8 @@ type Dialog =
 const GRACE_DAYS = 7;
 /** The upgrade's default value, the platform's release (Radix Select has no empty value). */
 const LATEST = "latest";
+const NO_PLATFORM_UPGRADE =
+  "The platform has no stable release yet, so upgrades are paused.";
 const REAUTH_MS = 10 * 60_000;
 const can = (i: Install, kind: JobKind) => canTransition(i.state, kind, "A");
 
@@ -81,6 +89,67 @@ function Actions({ install }: { install: Install }) {
     ...releasesQuery(),
     enabled: dialog === "upgrade",
   });
+  const platform = releases.data?.platform;
+  const items = releases.data?.items ?? [];
+  // release_gate runs the install's bundle (redline for test hooks, else
+  // release); R5 only checks an explicit release is there, so the job would
+  // fail later without this.
+  const variant = install.testHooks ? "redline" : "release";
+  // R5 refuses a release at or below the install's own (downgrade_refused).
+  const versions = items.filter(
+    (r) =>
+      r.installable &&
+      r.variants.includes(variant) &&
+      (!install.version || compareVersions(r.version, install.version) > 0),
+  );
+  const offered = versions
+    .filter((r) => !aheadOfPlatform(r.version, platform))
+    .map((r) => r.version);
+  // The default (no version) takes the platform's release. Like any release, it
+  // is hidden at or below the install's own (downgrade_refused); with none
+  // (null) it is listed but off.
+  const latestShown = !(
+    platform &&
+    install.version &&
+    compareVersions(platform, install.version) <= 0
+  );
+  // R5 takes it only when published, installable and with the install's
+  // variant (resolveRelease), else release_not_published.
+  const platformRelease = platform
+    ? items.find((r) => r.version === platform)
+    : undefined;
+  const latestWhy = !platform
+    ? null
+    : !platformRelease
+      ? "Not published."
+      : !platformRelease.installable
+        ? "Not installable."
+        : !platformRelease.variants.includes(variant)
+          ? `No ${variant} build.`
+          : null;
+  const latestOk = latestShown && !!platform && latestWhy === null;
+  /** The Select's value: the pick while it is offered, else the first item that is. */
+  const chosen =
+    version && offered.includes(version)
+      ? version
+      : latestOk
+        ? LATEST
+        : (newestVersion(offered) ?? "");
+  const sentVersion = chosen === LATEST ? "" : chosen;
+  /**
+   * Why Upgrade is off; none with no platform release, whose note says it. A
+   * failed refetch keeps the loaded list (react-query keeps `data`), so only a
+   * failed first load blocks. Without data, `chosen` is "" and Upgrade is off.
+   */
+  const upgradeBlocker = releases.isPending
+    ? "Loading releases."
+    : !releases.data
+      ? `Could not load the releases. ${errorCopy(releases.error)}`
+      : platform === null
+        ? undefined
+        : !latestShown && offered.length === 0
+          ? "Already on the platform's release or newer. Nothing newer is deployed."
+          : "No release can be picked yet.";
   const id = install.id;
   // Purge needs a Google sign-in from the last 10 minutes (authz: reauth_required).
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
@@ -109,11 +178,11 @@ function Actions({ install }: { install: Install }) {
         params: { id },
         body: {
           requestId,
-          ...(version ? { version } : {}),
+          ...(sentVersion ? { version: sentVersion } : {}),
           ...(nonAdditive ? { nonAdditive: true as const } : {}),
         },
       }),
-    { ...done, key: `${version}:${nonAdditive}` },
+    { ...done, key: `${sentVersion}:${nonAdditive}` },
   );
   const rollback = useAction(
     (_: void, requestId) =>
@@ -207,9 +276,6 @@ function Actions({ install }: { install: Install }) {
     setNonAdditive(false);
     for (const m of [upgrade, suspend, del, purge, lease, cancel]) m.reset();
   };
-  const versions = (releases.data?.items ?? []).filter(
-    (r) => r.installable && r.version !== install.version,
-  );
   return (
     <section className="oa-actions" aria-label="Actions">
       {may("R5") && can(install, "upgrade") && (
@@ -282,30 +348,64 @@ function Actions({ install }: { install: Install }) {
           submitLabel="Upgrade"
           pending={upgrade.isPending}
           error={upgrade.error}
+          canSubmit={chosen !== ""}
+          blocker={upgradeBlocker}
           onSubmit={() => upgrade.mutate()}
         >
           <div>
             <Label htmlFor="up-version">Version</Label>
             <Select
-              value={version || LATEST}
+              value={chosen}
               onValueChange={(v) => setVersion(v === LATEST ? "" : v)}
             >
-              <SelectTrigger id="up-version" className="oa-select-full">
-                <SelectValue />
+              <SelectTrigger
+                id="up-version"
+                className="oa-select-full"
+                aria-describedby={
+                  platform === null ? "up-version-note" : undefined
+                }
+              >
+                <SelectValue
+                  placeholder={
+                    releases.isPending
+                      ? "Loading releases..."
+                      : "No release available"
+                  }
+                />
               </SelectTrigger>
               <SelectContent position="popper" align="start">
-                <SelectItem value={LATEST}>The platform's release</SelectItem>
-                {versions.map((r) => (
-                  <SelectItem
-                    key={r.version}
-                    value={r.version}
-                    className="oa-mono-item"
-                  >
-                    {r.version}
+                {latestShown && (
+                  <SelectItem value={LATEST} disabled={!latestOk}>
+                    The platform's release
+                    {latestWhy && <span className="oa-note"> {latestWhy}</span>}
                   </SelectItem>
-                ))}
+                )}
+                {versions.map((r) => {
+                  const ahead = aheadOfPlatform(r.version, platform);
+                  return (
+                    <SelectItem
+                      key={r.version}
+                      value={r.version}
+                      disabled={ahead}
+                      className="oa-mono-item"
+                    >
+                      {r.version}
+                      {ahead && platform && (
+                        <span className="oa-note">
+                          {" "}
+                          {aheadReason(platform)}
+                        </span>
+                      )}
+                    </SelectItem>
+                  );
+                })}
               </SelectContent>
             </Select>
+            {platform === null && (
+              <small id="up-version-note" className="oa-note">
+                {NO_PLATFORM_UPGRADE}
+              </small>
+            )}
           </div>
           <div className="oa-check">
             <Checkbox

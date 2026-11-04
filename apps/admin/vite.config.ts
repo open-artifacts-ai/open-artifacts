@@ -38,6 +38,13 @@ export default defineConfig({
         find: /^@oa\/shared\/(.*)$/,
         replacement: `${fileURLToPath(new URL("../../packages/shared/src", import.meta.url))}/$1`,
       },
+      // Release version order (no Node imports), also from source.
+      {
+        find: /^@oa\/provision\/versions$/,
+        replacement: fileURLToPath(
+          new URL("../../packages/provision/src/versions.ts", import.meta.url),
+        ),
+      },
       // The hosted Provisioning API contract, also from source.
       {
         find: /^@oa\/provisioning-contract$/,
