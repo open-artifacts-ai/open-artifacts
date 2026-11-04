@@ -98,14 +98,32 @@ export class ProbeFail extends Error {
   override name = "ProbeFail";
 }
 
-/** waitJob's bound ran out: the job may still be running. */
+/**
+ * waitJob's bound ran out: the job may still be running. `answered`: R15
+ * answered with the job (it was slow); false: no answer at all (network).
+ */
 export class JobTimedOut extends ProbeFail {
   override name = "JobTimedOut";
   readonly jobId: string;
-  constructor(message: string, jobId: string) {
+  readonly answered: boolean;
+  constructor(message: string, jobId: string, answered: boolean) {
     super(message);
     this.jobId = jobId;
+    this.answered = answered;
   }
+}
+
+/** A job's attempt count and last error code, as R15 gave them (public-safe). */
+export function jobRetries(j: Pick<Job, "attempt" | "lastErrorCode">): string {
+  const n = Number.isInteger(j.attempt) ? j.attempt : "?";
+  const c =
+    typeof j.lastErrorCode === "string" &&
+    /^[a-z0-9_]{1,40}$/.test(j.lastErrorCode)
+      ? j.lastErrorCode
+      : j.lastErrorCode == null
+        ? "none"
+        : "other";
+  return `attempt ${n}, last error ${c}`;
 }
 
 /** Poll cadence and bounds (12.2: paused and resumed pages within 120 s). */
@@ -276,6 +294,7 @@ export class Run {
           throw new JobTimedOut(
             `R15 ${jobId}: no answer for ${Math.round((o.within ?? JOB_WITHIN_MS) / 1000)} s`,
             jobId,
+            false,
           );
         await this.io.wait(POLL_MS);
         continue;
@@ -286,8 +305,9 @@ export class Run {
         return j;
       if (this.io.now() >= end)
         throw new JobTimedOut(
-          `R15 ${jobId}: still ${j.status} at ${j.step ?? "?"} after ${Math.round((o.within ?? JOB_WITHIN_MS) / 1000)} s`,
+          `R15 ${jobId}: still ${j.status} at ${j.step ?? "?"} after ${Math.round((o.within ?? JOB_WITHIN_MS) / 1000)} s (${jobRetries(j)})`,
           jobId,
+          true,
         );
       await this.io.wait(POLL_MS);
     }
@@ -882,15 +902,22 @@ function rlp(run: Run): RlP {
  * rl-l-<run>: the install P20 to P22 run on, so suspend, resume and restore
  * run while rl-p goes through its upgrade and rollback. Made as P13 makes
  * rl-p (oidcCreate, testHooks) but at the release under test, and ready as
- * P13 leaves rl-p: done, both hosts set, the redline /healthz served. That create is
- * P13's case, so here it's setup: any failure is infra (never a pass, never
- * a red-line verdict) and P20 to P22 report it. Listed for cleanup before
+ * P13 leaves rl-p: done, both hosts set, the redline /healthz served. It is
+ * the only create at the release under test, so its job is judged: still
+ * running past JOB_WITHIN_MS, or failed, fails P20 and P22 (product), naming
+ * the job, its step, attempts and last error. Any other setup failure (no
+ * answer, the network, the hosts) is infra. Listed for cleanup before
  * its create; the chain's tail removes it (removeLifecycle). Memoized: every
  * caller gets the one install.
  */
 export function lifecycleInstall(run: Run): Promise<RlP> {
   run.s.rll ??= makeLifecycle(run);
   return run.s.rll;
+}
+
+/** rl-l's create judged as a product fail (not setup infra). */
+class CreateVerdict extends ProbeFail {
+  override name = "CreateVerdict";
 }
 
 async function makeLifecycle(run: Run): Promise<RlP> {
@@ -906,13 +933,26 @@ async function makeLifecycle(run: Run): Promise<RlP> {
       }),
       "rl-l create",
     );
+    // The create at the release under test is judged: a job still running
+    // past its bound, or failed, is a product fail on P20 and P22. Only no
+    // answer at all (the network) stays infra.
+    let j: Job;
     try {
-      await run.done(a.job.id, "rl-l create");
+      j = await run.waitJob(a.job.id);
     } catch (e) {
-      if (e instanceof JobTimedOut && e.jobId === a.job.id)
+      if (e instanceof JobTimedOut && e.jobId === a.job.id) {
         run.s.rllCreateTimedOut = a.job.id;
+        if (e.answered)
+          throw new CreateVerdict(
+            `rl-l create at the release under test: ${e.message}`,
+          );
+      }
       throw e;
     }
+    if (j.status !== "done")
+      throw new CreateVerdict(
+        `rl-l create at the release under test: job ${a.job.id} ${j.status} at ${j.step ?? "?"} (${jobRetries(j)})${failText(j)}`,
+      );
     const d = await ownDetail(run, a.install.id);
     expect(d, 200, "rl-l R3");
     const dj = d.json as InstallDetail;
@@ -937,7 +977,7 @@ async function makeLifecycle(run: Run): Promise<RlP> {
       version,
     };
   } catch (e) {
-    if (e instanceof InfraError) throw e;
+    if (e instanceof InfraError || e instanceof CreateVerdict) throw e;
     throw new InfraError(
       `rl-l setup: ${e instanceof ProbeFail ? e.message : `error ${(e as Error)?.name ?? "unknown"}`}`,
       { cause: e },
@@ -1074,7 +1114,7 @@ export async function removeInstall(
     } catch (e) {
       // Name the install: the run's cleanup reports which one it left.
       if (e instanceof JobTimedOut)
-        throw new JobTimedOut(`${what}: ${e.message}`, e.jobId);
+        throw new JobTimedOut(`${what}: ${e.message}`, e.jobId, e.answered);
       throw e;
     }
   }

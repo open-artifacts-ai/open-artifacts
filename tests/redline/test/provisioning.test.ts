@@ -1795,23 +1795,28 @@ describe("the chains run at once (startChains)", () => {
     expect(live(f)).toEqual([]);
   });
 
-  it("rl-l's create failing is infra on P20 and P22 (P21 blocked by P20), never a fail; rl-p's chain still passes; the failed rl-l is removed", async () => {
+  it("rl-l's create failing at the release under test fails P20 and P22 (product), naming the job, step, attempts and code (P21 blocked by P20); rl-p's chain still passes; the failed rl-l is removed", async () => {
     const f = fakeApi();
     f.faults.add("rll_create_failed");
     const { out, run } = await runChains(f);
-    const infra = out.get("P20") as string;
-    expect(infra).toMatch(
-      /^infra: rl-l setup: rl-l create: job failed \(cf_api_error\)/,
+    const fail = out.get("P20") as string;
+    const rll = bySlug(f, "rl-l-");
+    const create = [...f.jobs.values()].find(
+      (j) => j.installId === rll?.id && j.kind === "create",
     );
-    expect(out.get("P22")).toBe(infra);
+    expect(fail).toBe(
+      `rl-l create at the release under test: job ${create?.id} failed at upload (attempt 1, last error cf_api_error)`,
+    );
+    expect(level(fail)).toBe(`fail: ${fail}`);
+    expect(out.get("P22")).toBe(fail);
     expect(out.get("P21")).toEqual({
       level: "blocked",
       reason: "blocked by P20",
     });
-    // No install id or host in the reason (the run log is public).
-    const rll = bySlug(f, "rl-l-");
-    expect(infra).not.toContain(rll?.id);
-    expect(infra).not.toContain("open-artifacts");
+    // No install id, host or email in the reason (the run log is public).
+    expect(fail).not.toContain(rll?.id);
+    expect(fail).not.toContain("open-artifacts");
+    expect(fail).not.toContain("@");
     const rllChain = ["P20", "P21", "P22"];
     expect(without(levels(out), rllChain)).toEqual(without(HAPPY, rllChain));
     expect(rll?.state).toBe("deleted");
@@ -1925,7 +1930,7 @@ describe("the chains run at once (startChains)", () => {
     expect(live(f)).toEqual([]);
   });
 
-  it("rl-l's create that never finishes: P20 and P22 infra at one job wait; the tail doesn't wait on it again; the run's cleanup still removes rl-l, or fails naming it", async () => {
+  it("rl-l's create that never finishes: P20 and P22 fail (product) at one job wait, naming the job, step, attempts and code; the tail doesn't wait on it again; the run's cleanup still removes rl-l, or fails naming it", async () => {
     const f = fakeApi();
     f.faults.add("rll_create_stuck");
     const pat = await bringUp(f);
@@ -1937,14 +1942,19 @@ describe("the chains run at once (startChains)", () => {
         (e: Error) => e.message,
       );
     const p20 = await reason("P20");
-    expect(p20).toMatch(
-      /^infra: rl-l setup: R15 \S+: still running at upload after 1200 s$/,
-    );
-    expect(await reason("P22")).toBe(p20);
     const rll = bySlug(f, "rl-l-");
     const create = [...f.jobs.values()].find(
       (j) => j.installId === rll?.id && j.kind === "create",
     );
+    expect(p20).toBe(
+      `rl-l create at the release under test: R15 ${create?.id}: still running at upload after 1200 s (attempt 1, last error none)`,
+    );
+    expect(level(p20)).toBe(`fail: ${p20}`);
+    expect(await reason("P22")).toBe(p20);
+    // No install id, host or email in the reason (the run log is public).
+    expect(p20).not.toContain(rll?.id);
+    expect(p20).not.toContain("open-artifacts");
+    expect(p20).not.toContain("@");
     expect(create?.status).toBe("running");
     expect(run.s.rllCreateTimedOut).toBe(create?.id);
     const polls = () =>
@@ -1982,6 +1992,72 @@ describe("the chains run at once (startChains)", () => {
     await cleanupInstalls(run);
     expect(run.s.cleanup).toEqual([]);
     expect(live(f)).toEqual([]);
+  });
+
+  it("no answer at all for rl-l's create (the network) stays infra on P20 and P22, not a product fail", async () => {
+    const f = fakeApi();
+    const pat = await bringUp(f);
+    const run = new Run(CONFIG, {
+      ...f.io,
+      rlAPat: () => pat,
+      fetch: (async (u: string, init?: RequestInit) => {
+        const rll = bySlug(f, "rl-l-");
+        const create = [...f.jobs.values()].find(
+          (j) => j.installId === rll?.id && j.kind === "create",
+        );
+        if (create && String(u).endsWith(`/jobs/${create.id}`))
+          throw new TypeError("fetch failed");
+        return f.io.fetch(u, init);
+      }) as unknown as typeof fetch,
+    });
+    const plan = startChains(run);
+    const reason = async (id: ProbeId) =>
+      (plan.outcomes.get(id) as Promise<Outcome>).then(
+        (o) => o,
+        (e: Error) => e.message,
+      );
+    const p20 = await reason("P20");
+    expect(p20).toMatch(/^infra: rl-l setup: R15 \S+: no answer for 1200 s$/);
+    expect(level(p20)).toBe("infra");
+    expect(await reason("P22")).toBe(p20);
+    for (const r of plan.outcomes.values()) await r.catch(() => undefined);
+    await plan.settled;
+  });
+
+  it("every waitJob timeout names the job's step, attempt count and last error code (public-safe)", async () => {
+    const at = (attempt: unknown, lastErrorCode: unknown) => {
+      const f = fakeApi();
+      const run = new Run(CONFIG, {
+        ...f.io,
+        fetch: (async (u: string, init?: RequestInit) =>
+          String(u).includes("/jobs/j1")
+            ? Response.json({
+                id: "j1",
+                status: "running",
+                step: "upload",
+                attempt,
+                lastErrorCode,
+              })
+            : f.io.fetch(u, init)) as unknown as typeof fetch,
+      });
+      return run.waitJob("j1", { within: 6_000 }).then(
+        () => "resolved",
+        (e: Error) => e.message,
+      );
+    };
+    expect(await at(3, "cf_api_error")).toBe(
+      "R15 j1: still running at upload after 6 s (attempt 3, last error cf_api_error)",
+    );
+    expect(await at(0, null)).toBe(
+      "R15 j1: still running at upload after 6 s (attempt 0, last error none)",
+    );
+    // A code that isn't a code is not echoed.
+    expect(await at(2, "x@y.example rl-l.open-artifacts-staging.app")).toBe(
+      "R15 j1: still running at upload after 6 s (attempt 2, last error other)",
+    );
+    expect(await at("2; drop", "a")).toBe(
+      "R15 j1: still running at upload after 6 s (attempt ?, last error a)",
+    );
   });
 
   it("the after step starts once every chain's probes are done, without waiting for a tail; settled still waits for the tail", async () => {
