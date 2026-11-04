@@ -173,6 +173,8 @@ export type DaemonDeps = {
     statusWindowMs?: number;
     injectTimeoutMs?: number;
     heldFile?: string;
+    /** Default: beside heldFile, or ~/.oa-bus/claude-return.json. */
+    returnIndexFile?: string;
     syncMs?: number;
     procStart?: (pid: number) => string | null;
     isRunning?: (pid: number) => boolean;
@@ -498,6 +500,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // A deps.socketsDir is the caller's (tests); ours is re-checked before each bind.
     prepareDir: cl.socketsDir ? undefined : (d) => prepareReturnDir(d),
     heldFile: cl.heldFile ?? join(home(), "claude-held.json"),
+    returnIndexFile:
+      cl.returnIndexFile ??
+      (cl.heldFile
+        ? cl.heldFile.replace(/(\.json)?$/, ".return.json")
+        : join(home(), "claude-return.json")),
     statusWindowMs: cl.statusWindowMs,
     injectTimeoutMs: cl.injectTimeoutMs,
     log,
@@ -566,6 +573,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           live: true,
         }),
       );
+      // Its return sockets from before a restart answer again (open-bus #426).
+      void claude.revive(s.ref);
       tellOwed(s.ref);
     }
     let closed = false;
@@ -1023,6 +1032,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           live: true,
         });
         if (rec.kind === "opencode") ocServiceStart.set(rec.ref, ocStart(pid));
+        if (rec.kind === "claude-code") void claude.revive(rec.ref);
         conns.set(rec.ref, (conns.get(rec.ref) ?? 0) + 1);
         announceUp(rec);
         if (!piLike(hello.kind)) tellOwed(rec.ref);
