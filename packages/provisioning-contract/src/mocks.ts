@@ -34,7 +34,7 @@ import {
   type ApiErrorCode,
   type JobErrorCode,
 } from "./errors.js";
-import { FAKE_RELEASES } from "./fakes.js";
+import { FAKE_PLATFORM_RELEASE, FAKE_RELEASES } from "./fakes.js";
 import {
   emptyWorld,
   fixtureInstall,
@@ -498,7 +498,11 @@ export function createProvisioningMock(
       const j = jobs.get(params.jobId);
       return j ? HttpResponse.json(j) : err("not_found", "No such job.");
     },
-    R16: () => HttpResponse.json({ items: structuredClone(FAKE_RELEASES) }),
+    R16: () =>
+      HttpResponse.json({
+        items: structuredClone(FAKE_RELEASES),
+        platform: FAKE_PLATFORM_RELEASE,
+      }),
     R17: (c) => {
       const q = c.query as {
         installId?: string;

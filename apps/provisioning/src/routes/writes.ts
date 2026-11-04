@@ -27,7 +27,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 import { loadInReach, loadJob, type StatusRow } from "../model.js";
 import type { Principal } from "../principal.js";
-import { releaseOf, releases } from "../services/cache.js";
+import { platformRelease, releaseOf, releases } from "../services/cache.js";
 import {
   accept,
   activeJobId,
@@ -76,19 +76,6 @@ export function compareVersions(a: string, b: string): number {
  * only, reading that version alone (3.5, #1029); floor, revocation and
  * variant are release_gate's (release_unverified, P32).
  */
-/**
- * The platform's own release: this Worker's version tag, which a deploy sets
- * to the release it deployed, the same tag the fleet follows. Null when there
- * isn't a stable one.
- */
-export function platformRelease(
-  env: Pick<Env, "CF_VERSION_METADATA">,
-): string | null {
-  return (
-    /^v(\d+\.\d+\.\d+)$/.exec(env.CF_VERSION_METADATA?.tag ?? "")?.[1] ?? null
-  );
-}
-
 /**
  * The release a create or upgrade runs: the one asked for, or by default the
  * platform's own, as the fleet does, never just the newest published. A

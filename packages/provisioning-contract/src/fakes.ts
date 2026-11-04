@@ -32,6 +32,9 @@ export const FAKE_RELEASES: Release[] = [
   },
 ];
 
+/** The platform's release in mocks: the newest fake, as after a deploy. */
+export const FAKE_PLATFORM_RELEASE = "1.42.0";
+
 export type FakeProvisionerRpc = ProvisionerRpc & {
   calls: { method: keyof ProvisionerRpc; arg?: unknown }[];
 };
