@@ -562,3 +562,64 @@ describe("runbook pointer", () => {
     expect(text).not.toMatch(/rollback|roll back/);
   });
 });
+
+// #1343 (review-1380 G1): alertsTick passes FLEET_SMOKE and FLEET_SOAK_MIN
+// to the fleet conditions. With the smoke off and prod's 60-minute soak,
+// canary_blocked must wait 90 minutes, and a stale smoke_unconfigured mark
+// must not open fleet_halted.
+describe("alertsTick wires FLEET_SMOKE and FLEET_SOAK_MIN (#1343)", () => {
+  const CANARY = "i000000000c1";
+  const fleetEnv = (o: Partial<ProvapiEnv>) => ({
+    CF_VERSION_METADATA: { id: "x", tag: "v0.93.0", timestamp: "" },
+    FLEET_CANARY: CANARY,
+    ...o,
+  });
+  const stamp = (key: string, at: number) =>
+    db
+      .prepare(
+        "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2)",
+      )
+      .bind(key, at)
+      .run();
+  const halted = (m: ReturnType<typeof mail>) =>
+    m.subjects().filter((s) => s.includes("fleet rollout halted"));
+
+  it("off with FLEET_SOAK_MIN 60: no canary_blocked at 50 minutes", async () => {
+    captureLogs(vi.spyOn);
+    await stamp("fleet_blocked:0.93.0", T0 - 50 * 60_000);
+    const m = mail();
+    await alertsTick(
+      m.env(fleetEnv({ FLEET_SMOKE: "off", FLEET_SOAK_MIN: "60" })),
+      T0,
+    );
+    expect(halted(m)).toEqual([]);
+  });
+
+  it("the control: off with the default soak, or the smoke required, opens it at 50", async () => {
+    for (const o of [
+      { FLEET_SMOKE: "off" },
+      { FLEET_SMOKE: "required", FLEET_SOAK_MIN: "60" },
+    ]) {
+      await db.prepare("DELETE FROM platform_state").run();
+      captureLogs(vi.spyOn);
+      await stamp("fleet_blocked:0.93.0", T0 - 50 * 60_000);
+      const m = mail();
+      await alertsTick(m.env(fleetEnv(o)), T0);
+      expect(halted(m), JSON.stringify(o)).toHaveLength(1);
+    }
+  });
+
+  it("off: a smoke_unconfigured mark doesn't open fleet_halted; required does", async () => {
+    for (const [smoke, n] of [
+      ["off", 0],
+      ["required", 1],
+    ] as const) {
+      await db.prepare("DELETE FROM platform_state").run();
+      captureLogs(vi.spyOn);
+      await stamp("fleet_smoke_config:0.93.0:token", T0 - 60_000);
+      const m = mail();
+      await alertsTick(m.env(fleetEnv({ FLEET_SMOKE: smoke })), T0);
+      expect(halted(m), smoke).toHaveLength(n);
+    }
+  });
+});
