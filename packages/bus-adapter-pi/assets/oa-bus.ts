@@ -133,11 +133,6 @@ const refusals: Record<
       `That name exists in ${n && n > 1 ? `${n} namespaces` : "more than one namespace"}.`,
     "Send again with to_namespace set to one of them.",
   ],
-  // A send to a role no one holds; `to` is the role.
-  role_vacant: [
-    (_n, to) => `No one holds ${to ?? "that role"} right now.`,
-    "Ask the user to point it at an agent, or message an agent by name.",
-  ],
 };
 
 /**
@@ -157,21 +152,18 @@ const quoted = (head: string, quote: string, tail: string): string => {
 /**
  * A receipt as an agent reads it: design/cli/transcript.md "Receipts",
  * verbatim, uncoloured (the glyph carries the state). `namespaces` is how many
- * namespaces hold `to`, for `ambiguous`. A `to_name` (a send to a role) shows
- * as "code-96 (lane-6)". `excerpt` (from `excerptOf`) is the
+ * namespaces hold `to`, for `ambiguous`. `excerpt` (from `excerptOf`) is the
  * message an expired or refused notice is about; without it the quote is left
  * out.
  */
 function receiptText(
-  r: { state: string; reason?: string; to_name?: string },
+  r: { state: string; reason?: string },
   sentTo: string,
   namespaces?: number,
   excerpt?: string,
 ): string {
   const quote = excerpt ? `"${excerpt}"` : undefined;
-  // A send to a role names its holder, then the role (AC5c).
-  const holder = r.to_name === undefined ? undefined : displayName(r.to_name);
-  const to = holder && holder !== sentTo ? `${holder} (${sentTo})` : sentTo;
+  const to = sentTo;
   switch (r.state) {
     case "pending":
       return fitLine(
@@ -307,27 +299,15 @@ const deliveredText = (
 const oversizedText = (size: number, msgId: string): string =>
   `[oa-bus] A message of ${size} bytes is too large to deliver inline. Fetch it with the oa_bus fetch tool, msg_id ${msgId}.`;
 
-/** What an agent sees when set_status or card is refused: @oa/bus-ipc CARD_COPY, verbatim. */
-const CARD_COPY = {
-  not_linked:
-    "That app is not linked to the user's bus. Ask the user to link it from the app's settings.",
-  bad_nonce:
-    "That nonce is not valid. Ask the app for a new one and try again.",
-  rate_limited: "You asked for too many cards. Wait a minute and try again.",
-  timeout:
-    "The hub did not answer in time. Ask the app for a new nonce and try again.",
+/** What an agent sees when set_status is refused: @oa/bus-ipc STATUS_COPY, verbatim. */
+const STATUS_COPY = {
+  rate_limited: "You set your status too often. Wait a minute and try again.",
   hub_unavailable:
     "This machine is not connected to the hub right now. Try again in a moment.",
-  hub_busy:
-    "The hub is busy. Ask the app for a new nonce and try again in a moment.",
   not_registered:
     "This session is not registered on the bus yet. Try again in a moment.",
   bad_frame:
     "The hub did not accept that request. Ask the user to run npx @open-artifacts/bus doctor.",
-  hub_outdated:
-    "The user's Open Artifacts bus hub is too old for cards. Ask the user to update it.",
-  unsupported:
-    "Open Artifacts bus on this machine is too old for this. Ask the user to run npx @open-artifacts/bus@latest install.",
 };
 
 /** The `set_status` result, the state as its raw token. Design-approved. */
@@ -357,17 +337,6 @@ const cleanStatusLabel = (raw: string): string =>
 const statusLabelTooLong = (n: number): string =>
   `oa-bus: that label is ${n} characters, and the limit is 64. Your status did not change. Send a shorter one.`;
 
-/** @oa/bus-ipc displayName: a hub-supplied name, like a kind, capped at 64. */
-const displayName = (name: string): string =>
-  [
-    ...stripTerminalControls(String(name))
-      .replace(INVISIBLES, "")
-      .replace(/\s+/g, " ")
-      .trim(),
-  ]
-    .slice(0, 64)
-    .join("");
-
 /** @oa/bus-ipc STATUS_STALE_MS. */
 const STATUS_STALE_MS = 10 * 60_000;
 
@@ -379,17 +348,10 @@ const agoText = (ms: number): string => {
   return `${Math.round(ms / 86_400_000)} d ago`;
 };
 
-type CardFields = {
-  role?: unknown;
+type StatusFields = {
   status?: unknown;
   status_label?: unknown;
   status_at?: unknown;
-};
-
-/** @oa/bus-ipc displayRole. */
-const displayRole = (row: CardFields): string | undefined => {
-  const role = typeof row.role === "string" ? displayName(row.role) : undefined;
-  return role || undefined;
 };
 
 const displayLabel = (label: string): string =>
@@ -399,7 +361,10 @@ const displayLabel = (label: string): string =>
     .replaceAll('"', "'");
 
 /** @oa/bus-ipc statusSaysText: the status as the agent's own report, aged once stale. */
-function statusSaysText(row: CardFields, now = Date.now()): string | undefined {
+function statusSaysText(
+  row: StatusFields,
+  now = Date.now(),
+): string | undefined {
   if (typeof row.status !== "string") return undefined;
   const state = displayKind(row.status);
   const label =
@@ -416,7 +381,7 @@ function statusSaysText(row: CardFields, now = Date.now()): string | undefined {
 
 /** @oa/bus-ipc rosterLine: one list_agents line. */
 function rosterLine(
-  a: CardFields & {
+  a: StatusFields & {
     name: string;
     kind: string;
     namespace: string;
@@ -425,31 +390,27 @@ function rosterLine(
   },
   now = Date.now(),
 ): string {
-  const role = displayRole(a);
   const says = statusSaysText(a, now);
-  return `- ${role ? `${role} → ` : ""}${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
 }
 
-/** @oa/bus-ipc selfText: the agent entry, card fields cleaned, then the role in words. */
+/** @oa/bus-ipc selfText: the agent entry, its status cleaned. */
 function selfText(
-  agent: (CardFields & Record<string, unknown>) | null,
+  agent: (StatusFields & Record<string, unknown>) | null,
 ): string {
   if (!agent) return JSON.stringify(agent, null, 2);
   const {
-    role: _r,
     status: _s,
     status_label: _l,
     status_at: _a,
     ...rest
   } = agent;
-  const role = displayRole(agent);
   const label =
     typeof agent.status_label === "string"
       ? displayLabel(agent.status_label)
       : "";
   const shown = {
     ...rest,
-    ...(role ? { role } : {}),
     ...(typeof agent.status === "string"
       ? { status: displayKind(agent.status) }
       : {}),
@@ -459,41 +420,17 @@ function selfText(
       ? { status_at: agent.status_at }
       : {}),
   };
-  const json = JSON.stringify(shown, null, 2);
-  return role
-    ? `${json}\n\nYou hold the role ${role}: the user pointed it at you, so messages sent to ${role} reach you.`
-    : json;
-}
-
-/** @oa/bus-protocol OriginSchema: an exact https origin (http only on loopback), at most 512. */
-function isOrigin(s: string): boolean {
-  if (s.length > 512) return false;
-  let u: URL;
-  try {
-    u = new URL(s);
-  } catch {
-    return false;
-  }
-  const loopback =
-    u.hostname === "localhost" ||
-    u.hostname === "127.0.0.1" ||
-    u.hostname === "[::1]";
-  return (
-    u.origin === s &&
-    (u.protocol === "https:" || (u.protocol === "http:" && loopback))
-  );
+  return JSON.stringify(shown, null, 2);
 }
 
 /** For the parity test; Pi uses only the default export. */
 export const copy = {
-  CARD_COPY,
-  isOrigin,
+  STATUS_COPY,
   cleanStatusLabel,
   statusLabelTooLong,
   statusSetText,
   earlierStatusText,
   displayKind,
-  displayRole,
   statusSaysText,
   rosterLine,
   selfText,
@@ -575,28 +512,9 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
-  {
-    name: "card",
-    label: "Open Artifacts bus: card",
-    description:
-      "Get a signed card that proves who you are to an app the user linked to their bus, such as Open Artifacts. Use it only for that: give the app's audience and nonce, then hand the card this returns to the app (Open Artifacts' present_card).",
-    parameters: {
-      type: "object",
-      properties: {
-        audience: {
-          type: "string",
-          description: "The app's origin, as the app gives it.",
-        },
-        nonce: { type: "string", description: "The nonce the app gave you." },
-      },
-      required: ["audience", "nonce"],
-      additionalProperties: false,
-    },
-  },
 ] as const;
 
 const STATES = ["working", "idle", "blocked", "waiting_on_owner"];
-const NONCE = /^[A-Za-z0-9_-]{16,128}$/;
 
 // --- The daemon link: one connection per Pi session, held open while it lives.
 
@@ -1103,7 +1021,6 @@ export default function oaBus(pi: Pi): void {
       const receipt = {
         state: String(r.state),
         reason: r.reason as string,
-        ...(typeof r.to_name === "string" ? { to_name: r.to_name } : {}),
       };
       const n =
         receipt.reason === "ambiguous"
@@ -1123,52 +1040,37 @@ export default function oaBus(pi: Pi): void {
       // A peer's text, like a delivered body; the daemon strips it too.
       return stripTerminalControls(String(r.body));
     }
-    if (name === "set_status" || name === "card")
-      return cardTool(name, args, link);
-    const r = await link.request({ type: "self", card: true });
+    if (name === "set_status") return statusTool(args, link);
+    const r = await link.request({ type: "self", row: true });
     if (r.type !== "agent") failed(r);
     return selfText((r.agent ?? null) as Json | null);
   };
 
-  /**
-   * set_status and card (AC5b). Arguments are checked first, so a bad_frame
-   * after that means a daemon from before the frame; one below the gate
-   * answers `unsupported` itself. Refusals are the daemon's copy, as-is.
-   */
-  const cardTool = async (
-    name: "set_status" | "card",
-    args: Json,
-    link: Link,
-  ): Promise<string> => {
-    let frame: Json;
-    if (name === "set_status") {
-      const state = String(args.state ?? "");
-      if (!STATES.includes(state))
-        throw new Error(`oa-bus: state: must be one of ${STATES.join(", ")}`);
-      // Cleaned as a machine label is; empty is no label.
-      const label =
-        typeof args.label === "string"
-          ? cleanStatusLabel(args.label) || undefined
-          : undefined;
-      const chars = label ? [...label].length : 0;
-      if (chars > 64) throw new Error(statusLabelTooLong(chars));
-      frame = { type: "set_status", state, ...(label ? { label } : {}) };
-    } else {
-      const nonce = String(args.nonce ?? "");
-      if (!NONCE.test(nonce)) throw new Error(CARD_COPY.bad_nonce);
-      const aud = String(args.audience ?? "");
-      if (!isOrigin(aud))
-        throw new Error("oa-bus: aud: not an exact https origin");
-      frame = { type: "card", aud, nonce };
-    }
+  /** set_status. Arguments are checked first. Refusals are the daemon's copy, as-is. */
+  const statusTool = async (args: Json, link: Link): Promise<string> => {
+    const state = String(args.state ?? "");
+    if (!STATES.includes(state))
+      throw new Error(`oa-bus: state: must be one of ${STATES.join(", ")}`);
+    // Cleaned as a machine label is; empty is no label.
+    const label =
+      typeof args.label === "string"
+        ? cleanStatusLabel(args.label) || undefined
+        : undefined;
+    const chars = label ? [...label].length : 0;
+    if (chars > 64) throw new Error(statusLabelTooLong(chars));
+    const frame: Json = {
+      type: "set_status",
+      state,
+      ...(label ? { label } : {}),
+    };
     const r = await link.request(frame);
     if (r.type === "error")
       throw new Error(
-        r.code === "bad_frame" && r.message !== CARD_COPY.bad_frame
-          ? CARD_COPY.unsupported
+        r.code === "bad_frame" && r.message !== STATUS_COPY.bad_frame
+          ? STATUS_COPY.bad_frame
           : String(r.message),
       );
-    if (name === "set_status" && r.type === "status_set") {
+    if (r.type === "status_set") {
       const done = statusSetText(
         String(frame.state),
         frame.label as string | undefined,
@@ -1178,7 +1080,6 @@ export default function oaBus(pi: Pi): void {
         ? `${done}\n\n${earlierStatusText(String(earlier.message))}`
         : done;
     }
-    if (name === "card" && r.type === "card") return String(r.jwt);
     return failed(r);
   };
 

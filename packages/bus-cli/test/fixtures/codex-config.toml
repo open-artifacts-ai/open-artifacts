@@ -4,7 +4,7 @@ approval_policy = "on-request"
 sandbox_mode = "workspace-write"
 
 notes = """
-[mcp_servers.oa-bus]
+[mcp_servers.oa_bus]
 not a table: inside a string
 """
 

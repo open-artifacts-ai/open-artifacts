@@ -72,7 +72,11 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
   /** Each frame as written, in order. */
   const raw: string[] = [];
   let hubSock: WebSocket | undefined;
-  wss.on("connection", (ws) => {
+  /** The path and Authorization of every upgrade the daemon made, in order. */
+  const upgrades: { path: string | undefined; auth: string | undefined }[] =
+    [];
+  wss.on("connection", (ws, req) => {
+    upgrades.push({ path: req.url, auth: req.headers.authorization });
     hubSock = ws;
     ws.on("message", (d) => {
       const text = String(d);
@@ -86,6 +90,7 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
   const path = join(mkdtempSync(join(tmpdir(), "ob-d-")), "d.sock");
   const daemon = await runDaemon({
     config: {
+      // The instance origin: the daemon dials its /bus/connect.
       hub: url.replace(/\/hub$/, ""),
       machine_id: "m1",
       label: "laptop",
@@ -155,6 +160,7 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
     toDaemon,
     adapter,
     hubSock: () => hubSock,
+    upgrades,
   };
 }
 

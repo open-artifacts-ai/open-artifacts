@@ -27,7 +27,7 @@ describe("cli", () => {
       noService: false,
       noColor: false,
     });
-    expect(parse(["--hub", "https://h", "--no-open"])).toMatchObject({
+    expect(parse(["--instance", "https://h", "--no-open"])).toMatchObject({
       cmd: "install",
       hub: "https://h",
       noOpen: true,
@@ -58,13 +58,13 @@ describe("cli", () => {
     });
     expect(() => parse(["global", "add"])).toThrow(/usage/);
     expect(() => parse(["global", "list", "x"])).toThrow(/unexpected/);
-    expect(parse(["login", "--no-open", "--hub", "https://h"])).toEqual({
+    expect(parse(["login", "--no-open", "--instance", "https://h"])).toEqual({
       cmd: "login",
       hub: "https://h",
       noOpen: true,
       noColor: false,
     });
-    expect(parse(["daemon", "--hub", "https://h", "--home", "/x"])).toEqual({
+    expect(parse(["daemon", "--instance", "https://h", "--home", "/x"])).toEqual({
       cmd: "daemon",
       hub: "https://h",
       home: "/x",
@@ -93,10 +93,10 @@ describe("cli", () => {
       noColor: true,
     });
     // Never install: a flag uninstall does not take is refused.
-    expect(() => parse(["--hub", "https://h.example", "uninstall"])).toThrow(
-      /--hub does not apply to oa-bus uninstall/,
+    expect(() => parse(["--instance", "https://h.example", "uninstall"])).toThrow(
+      /--instance does not apply to oa-bus uninstall/,
     );
-    expect(parse(["--hub", "https://h", "login"])).toMatchObject({
+    expect(parse(["--instance", "https://h", "login"])).toMatchObject({
       cmd: "login",
       hub: "https://h",
     });
@@ -115,21 +115,21 @@ describe("cli", () => {
       cmd: "status",
       home: "/x",
     });
-    expect(() => parse(["uninstall", "--hub", "https://h"])).toThrow(
-      /--hub does not apply to oa-bus uninstall/,
+    expect(() => parse(["uninstall", "--instance", "https://h"])).toThrow(
+      /--instance does not apply to oa-bus uninstall/,
     );
     expect(() => parse(["status", "--purge"])).toThrow(
       /--purge does not apply to oa-bus status/,
     );
-    expect(() => parse(["--hub", "https://h", "doctor"])).toThrow(/--hub/);
+    expect(() => parse(["--instance", "https://h", "doctor"])).toThrow(/--instance/);
     expect(parse(["daemon", "--home", "/x"])).toMatchObject({ home: "/x" });
   });
-  it("refuses an empty --home or --hub instead of dropping it", () => {
+  it("refuses an empty --home or --instance instead of dropping it", () => {
     for (const argv of [
       ["uninstall", "--purge", "--home="],
       ["uninstall", "--purge", "--home", ""],
-      ["install", "--hub="],
-      ["login", "--hub", ""],
+      ["install", "--instance="],
+      ["login", "--instance", ""],
     ])
       expect(() => parse(argv), argv.join(" ")).toThrow(
         /--(home|hub) needs a value/,

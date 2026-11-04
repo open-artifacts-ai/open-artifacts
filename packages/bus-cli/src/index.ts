@@ -45,9 +45,9 @@ const GLOBAL_USAGE =
 const COMMON = new Set(["no-color", "version", "home"]);
 /** Each command's own flags. */
 const FLAGS: Record<string, string[]> = {
-  install: ["hub", "no-open", "yes", "check", "no-service"],
-  login: ["hub", "no-open"],
-  daemon: ["hub"],
+  install: ["instance", "no-open", "yes", "check", "no-service"],
+  login: ["instance", "no-open"],
+  daemon: ["instance"],
   uninstall: ["purge"],
 };
 
@@ -60,7 +60,7 @@ export function parse(argv: string[]): Command {
     allowPositionals: true,
     tokens: true,
     options: {
-      hub: { type: "string" },
+      instance: { type: "string" },
       home: { type: "string" },
       "no-open": { type: "boolean", default: false },
       yes: { type: "boolean", short: "y", default: false },
@@ -81,8 +81,8 @@ export function parse(argv: string[]): Command {
   if (cmd === "global" && rest.length < takes) throw new Error(GLOBAL_USAGE);
   const extra = rest[takes];
   if (extra !== undefined) throw new Error(`unexpected argument: ${extra}`);
-  // An empty path or URL must not fall back to the default home or hub.
-  for (const name of ["home", "hub"] as const)
+  // An empty path or URL must not fall back to the default home or instance.
+  for (const name of ["home", "instance"] as const)
     if (values[name] === "") throw new Error(`--${name} needs a value`);
   // A flag the command ignores would run it on something the user did not mean.
   for (const t of tokens) {
@@ -99,7 +99,7 @@ export function parse(argv: string[]): Command {
 }
 
 type Values = {
-  hub?: string;
+  instance?: string;
   home?: string;
   "no-open": boolean;
   yes: boolean;
@@ -111,9 +111,9 @@ type Values = {
 function route(cmd: string, values: Values, positionals: string[]) {
   switch (cmd) {
     case "login":
-      return { cmd, hub: values.hub, noOpen: values["no-open"] };
+      return { cmd, hub: values.instance, noOpen: values["no-open"] };
     case "daemon":
-      return { cmd, hub: values.hub };
+      return { cmd, hub: values.instance };
     case "mcp": {
       const harness = positionals[0] ?? "";
       if (!HARNESSES.includes(harness))
@@ -133,7 +133,7 @@ function route(cmd: string, values: Values, positionals: string[]) {
     case "install":
       return {
         cmd,
-        hub: values.hub,
+        hub: values.instance,
         yes: values.yes,
         check: values.check,
         noOpen: values["no-open"],

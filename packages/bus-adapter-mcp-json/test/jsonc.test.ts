@@ -67,7 +67,7 @@ describe("opencode v2 mcp.servers (jsonc)", () => {
     for (const c of ["// global config", "/* block comment */", "// keep me"])
       expect(added).toContain(c);
     expect(parseJsonc(added, "f").mcp).toEqual({
-      servers: { other: { type: "local", command: ["x"] }, oa-bus: server },
+      servers: { other: { type: "local", command: ["x"] }, oa_bus: server },
     });
     expect(removeOpencodeMcp(added, "oa_bus")).toBe(CONFIG);
   });
@@ -83,18 +83,18 @@ describe("opencode v2 mcp.servers (jsonc)", () => {
     const a = upsertOpencodeMcp(CONFIG, "oa_bus", server);
     const b = upsertOpencodeMcp(a, "oa_bus", { ...server, command: ["y"] });
     expect(parseJsonc(b, "f").mcp).toMatchObject({
-      servers: { oa-bus: { command: ["y"] } },
+      servers: { oa_bus: { command: ["y"] } },
     });
     expect(b).toContain("// keep me");
   });
 
   it("creates mcp.servers in an empty or missing file", () => {
     expect(parseJsonc(upsertOpencodeMcp("", "oa_bus", server), "f")).toEqual({
-      mcp: { servers: { oa-bus: server } },
+      mcp: { servers: { oa_bus: server } },
     });
     expect(
       parseJsonc(upsertOpencodeMcp("{}\n", "oa_bus", server), "f"),
-    ).toEqual({ mcp: { servers: { oa-bus: server } } });
+    ).toEqual({ mcp: { servers: { oa_bus: server } } });
   });
 
   it("round-trips an empty servers object, keeping a comment inside it", () => {
@@ -105,7 +105,7 @@ describe("opencode v2 mcp.servers (jsonc)", () => {
     ]) {
       const added = upsertOpencodeMcp(text, "oa_bus", server);
       expect(parseJsonc(added, "f").mcp).toEqual({
-        servers: { oa-bus: server },
+        servers: { oa_bus: server },
       });
       if (text.includes("\r\n")) expect(added).not.toMatch(/[^\r]\n/);
       if (text.includes("// none yet")) expect(added).toContain("// none yet");
@@ -113,11 +113,11 @@ describe("opencode v2 mcp.servers (jsonc)", () => {
     }
   });
 
-  it("drops a legacy top-level mcp.oa-bus entry", () => {
+  it("drops a legacy top-level mcp.oa_bus entry", () => {
     const legacy = '{\n  "mcp": { "oa_bus": { "enabled": true } }\n}\n';
     const after = upsertOpencodeMcp(legacy, "oa_bus", server);
     expect(parseJsonc(after, "f").mcp).toEqual({
-      servers: { oa-bus: server },
+      servers: { oa_bus: server },
     });
     expect(parseJsonc(removeOpencodeMcp(after, "oa_bus"), "f")).toEqual({
       mcp: { servers: {} },
@@ -176,7 +176,7 @@ describe("never corrupts or strips", () => {
     ).toThrow(/mcp/);
   });
 
-  it("dropping a v1 mcp.oa-bus that is first keeps the next entry's comment", () => {
+  it("dropping a v1 mcp.oa_bus that is first keeps the next entry's comment", () => {
     const text =
       '{\n  "mcp": {\n    "oa_bus": { "type": "local", "command": ["x"] },\n    // GitHub server, keep\n    "github": { "type": "remote", "url": "u" }\n  }\n}\n';
     const out = upsertOpencodeMcp(text, "oa_bus", server);

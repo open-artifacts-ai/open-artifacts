@@ -31,7 +31,7 @@ const FIXTURE = readFileSync(
   "utf8",
 );
 const OURS = [
-  "[mcp_servers.oa-bus]",
+  "[mcp_servers.oa_bus]",
   `command = "${BIN[0]}"`,
   `args = ["${BIN[1]}", "mcp", "codex"]`,
   'default_tools_approval_mode = "approve"',
@@ -134,12 +134,12 @@ describe("Codex install (C26e)", () => {
   it("replaces a stale entry in place, its neighbours untouched", async () => {
     const before = [
       "# top",
-      "[mcp_servers.oa-bus]",
+      "[mcp_servers.oa_bus]",
       'command = "/old/oa-bus"',
       'args = ["mcp", "claude"]',
       "startup_timeout_sec = 5 # old",
       "",
-      "[mcp_servers.oa-bus.env]",
+      "[mcp_servers.oa_bus.env]",
       'X = "1"',
       "",
       "# about desktop",
@@ -185,7 +185,7 @@ describe("Codex install (C26e)", () => {
   });
 
   it("leaves a config that is not TOML untouched and says why", async () => {
-    const bad = "[mcp_servers.oa-bus\ncommand = 1\n";
+    const bad = "[mcp_servers.oa_bus\ncommand = 1\n";
     const s = setup({}, bad);
     const out = await installAdapters(s.deps);
     expect(out.installed).toEqual([]);
@@ -228,7 +228,7 @@ describe("Codex install (C26e)", () => {
     expect(checkAdapters(s.deps).codex).toBe("missing");
     writeFileSync(
       s.config,
-      '[mcp_servers.oa-bus]\ncommand = "x"\nargs = []\n',
+      '[mcp_servers.oa_bus]\ncommand = "x"\nargs = []\n',
     );
     expect(checkAdapters(s.deps).codex).toBe("missing");
   });
@@ -340,7 +340,7 @@ describe("the TOML edit", () => {
   };
 
   it("is never fooled by a header inside a multi-line string", () => {
-    const text = `a = '''\n[mcp_servers.oa-bus]\n'''\n`;
+    const text = `a = '''\n[mcp_servers.oa_bus]\n'''\n`;
     const next = upsertCodexEntry("f", text, doc(text), entry);
     expect(next.startsWith(text)).toBe(true);
     expect(removeCodexEntry("f", next, doc(next))).toBe(text);
@@ -349,14 +349,14 @@ describe("the TOML edit", () => {
   it("finds a quoted table name", () => {
     const text = `[mcp_servers."oa_bus"]\ncommand = "old"\n\n[z]\n`;
     expect(upsertCodexEntry("f", text, doc(text), entry)).toBe(
-      `[mcp_servers.oa-bus]\ncommand = "c"\nargs = ["mcp", "codex"]\ndefault_tools_approval_mode = "approve"\n\n[z]\n`,
+      `[mcp_servers.oa_bus]\ncommand = "c"\nargs = ["mcp", "codex"]\ndefault_tools_approval_mode = "approve"\n\n[z]\n`,
     );
   });
 
   it("escapes values as TOML strings", () => {
     const e = { ...entry, command: 'C:\\a "b"' };
     const next = upsertCodexEntry("f", "", {}, e);
-    expect((doc(next).mcp_servers as Record<string, unknown>).oa-bus).toEqual(
+    expect((doc(next).mcp_servers as Record<string, unknown>).oa_bus).toEqual(
       e,
     );
   });
@@ -369,7 +369,7 @@ describe("review fixes", () => {
     args: ["mcp", "codex"],
     default_tools_approval_mode: "approve" as const,
   };
-  const block = `[mcp_servers.oa-bus]\ncommand = "c"\nargs = ["mcp", "codex"]\ndefault_tools_approval_mode = "approve"\n`;
+  const block = `[mcp_servers.oa_bus]\ncommand = "c"\nargs = ["mcp", "codex"]\ndefault_tools_approval_mode = "approve"\n`;
 
   it("I1: ours first, then [projects.*] and [desktop], then another server", () => {
     const text = `model = "o3"\n\n${block}\n[projects."/Users/x/code"]\ntrust_level = "trusted"\n\n[desktop]\nfollowUpQueueMode = "queue"\n\n[mcp_servers.foo]\ncommand = "f"\n`;
@@ -396,7 +396,7 @@ describe("review fixes", () => {
     expect(upsertCodexEntry("f", once, doc(once), entry)).toBe(once);
     expect(removeCodexEntry("f", once, doc(once))).toBe(text);
     // In the middle: replaced in place, its neighbours' endings kept.
-    const mid = `a = 1\r\n[mcp_servers.oa-bus]\r\ncommand = "old"\n\n[desktop]\r\nc = 3\n`;
+    const mid = `a = 1\r\n[mcp_servers.oa_bus]\r\ncommand = "old"\n\n[desktop]\r\nc = 3\n`;
     const set = upsertCodexEntry("f", mid, doc(mid), entry);
     expect(set).toBe(
       `a = 1\r\n${block.trimEnd().replaceAll("\n", "\r\n")}\n\n[desktop]\r\nc = 3\n`,
@@ -415,7 +415,7 @@ describe("review fixes", () => {
   });
 
   it("M5: a subtable set apart from ours is ours too, for install and uninstall", () => {
-    const text = `a = 1\n\n[mcp_servers.oa-bus]\ncommand = "old"\n\n[desktop]\nx = 1\n\n[mcp_servers.oa-bus.env]\nK = "v"\n\n[b]\ny = 2\n`;
+    const text = `a = 1\n\n[mcp_servers.oa_bus]\ncommand = "old"\n\n[desktop]\nx = 1\n\n[mcp_servers.oa_bus.env]\nK = "v"\n\n[b]\ny = 2\n`;
     const once = upsertCodexEntry("f", text, doc(text), entry);
     expect(once).toBe(`a = 1\n\n${block}\n[desktop]\nx = 1\n\n[b]\ny = 2\n`);
     expect(upsertCodexEntry("f", once, doc(once), entry)).toBe(once);
@@ -483,7 +483,7 @@ describe("review fixes", () => {
     expect(removeCodexEntry("f", first, doc(first))).toBe(
       `${bom}[desktop]\nx = 1\n`,
     );
-    const stale = `${bom}[mcp_servers.oa-bus]\ncommand = "old"\n`;
+    const stale = `${bom}[mcp_servers.oa_bus]\ncommand = "old"\n`;
     expect(upsertCodexEntry("f", stale, doc(stale), entry)).toBe(
       `${bom}${block}`,
     );

@@ -51,57 +51,7 @@ describe("omp in the daemon", () => {
   });
 });
 
-describe("a hub that refuses the omp kind", () => {
-  it("gets omp agents as pi, logged once", async () => {
-    const logs: string[] = [];
-    const h = await daemonHarness({ log: (m) => logs.push(m) });
-    await h.adapter("A", { kind: "omp" });
-    await h.adapter("B", { kind: "omp" });
-    const a = await h.next("agent_up");
-    const b = await h.next("agent_up", 2);
-    expect([a.kind, b.kind]).toEqual(["omp", "omp"]);
-    h.toDaemon(badFrame(a.id));
-    h.toDaemon(badFrame(b.id));
-    await h.next("agent_up", 4);
-    expect(
-      h
-        .of("agent_up")
-        .slice(2)
-        .map((f) => [f.agent_ref, f.kind])
-        .sort(),
-    ).toEqual([
-      ["A", "pi"],
-      ["B", "pi"],
-    ]);
-    expect(logs.filter((l) => l === FALLBACK)).toHaveLength(1);
-    expect(logs.some((l) => l.startsWith("the hub refused to register"))).toBe(
-      false,
-    );
-    // A new agent goes straight to pi; the record stays omp.
-    await h.adapter("C", { kind: "omp" });
-    expect(await h.next("agent_up", 5)).toMatchObject({
-      agent_ref: "C",
-      kind: "pi",
-    });
-    expect(h.daemon.agents.byRef("C")?.kind).toBe("omp");
-  });
-
-  it("offers omp again on the next hub link", async () => {
-    const logs: string[] = [];
-    const h = await daemonHarness({ log: (m) => logs.push(m) });
-    await h.adapter("A", { kind: "omp" });
-    h.toDaemon(badFrame((await h.next("agent_up")).id));
-    expect(await h.next("agent_up", 2)).toMatchObject({ kind: "pi" });
-    h.hubSock()?.close();
-    expect(await h.next("agent_up", 3)).toMatchObject({
-      agent_ref: "A",
-      kind: "omp",
-    });
-    h.toDaemon(badFrame(h.of("agent_up")[2]?.id as string));
-    expect(await h.next("agent_up", 4)).toMatchObject({ kind: "pi" });
-    expect(logs.filter((l) => l === FALLBACK)).toHaveLength(1);
-  });
-
+describe("a hub that refuses a kind", () => {
   it("leaves pi and other kinds' bad_frame refusals alone", async () => {
     const logs: string[] = [];
     const h = await daemonHarness({ log: (m) => logs.push(m) });
@@ -112,55 +62,6 @@ describe("a hub that refuses the omp kind", () => {
     );
     expect(h.of("agent_up")).toHaveLength(1);
     expect(logs).not.toContain(FALLBACK);
-  });
-});
-
-describe("a hub that refuses the codex kind (C26a)", () => {
-  const CODEX =
-    "the hub does not know the codex kind; codex agents register there as pi";
-
-  it("gets codex agents as pi, logged once per kind", async () => {
-    const logs: string[] = [];
-    const h = await daemonHarness({ log: (m) => logs.push(m) });
-    await h.adapter("X", { kind: "codex" });
-    await h.adapter("O", { kind: "omp" });
-    const x = await h.next("agent_up");
-    const o = await h.next("agent_up", 2);
-    expect([x.kind, o.kind]).toEqual(["codex", "omp"]);
-    h.toDaemon(badFrame(x.id));
-    expect(await h.next("agent_up", 3)).toMatchObject({
-      agent_ref: "X",
-      kind: "pi",
-    });
-    // omp is offered as itself until the hub refuses it too.
-    h.toDaemon(badFrame(o.id));
-    expect(await h.next("agent_up", 4)).toMatchObject({
-      agent_ref: "O",
-      kind: "pi",
-    });
-    await h.adapter("Y", { kind: "codex" });
-    expect(await h.next("agent_up", 5)).toMatchObject({
-      agent_ref: "Y",
-      kind: "pi",
-    });
-    expect(h.daemon.agents.byRef("Y")?.kind).toBe("codex");
-    expect(logs.filter((l) => l === CODEX)).toHaveLength(1);
-    expect(logs.filter((l) => l === FALLBACK)).toHaveLength(1);
-    expect(logs.some((l) => l.startsWith("the hub refused to register"))).toBe(
-      false,
-    );
-  });
-
-  it("offers codex again on the next hub link", async () => {
-    const h = await daemonHarness();
-    await h.adapter("X", { kind: "codex" });
-    h.toDaemon(badFrame((await h.next("agent_up")).id));
-    expect(await h.next("agent_up", 2)).toMatchObject({ kind: "pi" });
-    h.hubSock()?.close();
-    expect(await h.next("agent_up", 3)).toMatchObject({
-      agent_ref: "X",
-      kind: "codex",
-    });
   });
 });
 

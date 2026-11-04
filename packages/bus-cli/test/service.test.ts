@@ -1024,7 +1024,7 @@ describe("round 3: every terminal daemon", () => {
   it.each([
     "node /usr/local/bin/oa-bus --no-color daemon",
     "node /usr/local/bin/oa-bus --home /tmp/x daemon",
-    "node /usr/local/bin/oa-bus --home=/tmp/x --no-color daemon --hub wss://h",
+    "node /usr/local/bin/oa-bus --home=/tmp/x --no-color daemon --instance wss://h",
     "node /usr/local/bin/oa-bus daemon --home /tmp/x",
     `/opt/node ${entry} --no-color daemon`,
   ])("ours: %s", (args) => expect(isOurDaemon(args, entry)).toBe(true));

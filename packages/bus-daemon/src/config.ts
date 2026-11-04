@@ -204,7 +204,7 @@ export function readConfig(): Config {
     throw notLoggedIn();
   }
   const r = raw as Partial<Config>;
-  // A token with no hub of its own never goes to whatever OA_BUS_HUB names.
+  // A token with no hub of its own never goes to whatever OA_BUS_INSTANCE names.
   if (typeof r.hub !== "string" || !r.hub || r.machine_token === undefined)
     throw notLoggedIn();
   // The hub refused this token; `npx @open-artifacts/bus install` approves it again and clears the marker.
@@ -213,12 +213,12 @@ export function readConfig(): Config {
       "REVOKED",
       "this machine was revoked; run `npx @open-artifacts/bus install`",
     );
-  const hub = process.env.OA_BUS_HUB || r.hub;
+  const hub = process.env.OA_BUS_INSTANCE || r.hub;
   // The token goes only to the hub that issued it.
   if (hub !== r.hub && originOf(hub) !== originOf(r.hub))
     throw new StartError(
       "HUB_MISMATCH",
-      `the hub ${hub} is not the one this machine was approved for (${r.hub}); run \`npx @open-artifacts/bus login --hub ${hub}\` to approve it there`,
+      `the hub ${hub} is not the one this machine was approved for (${r.hub}); run \`npx @open-artifacts/bus login --instance ${hub}\` to approve it there`,
     );
   if (!isMachineToken(r.machine_token)) {
     throw new StartError(

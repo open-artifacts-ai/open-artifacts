@@ -1,6 +1,4 @@
 import {
-  CARD_COPY,
-  CardRequest,
   cleanStatusLabel,
   type DaemonClient,
   earlierStatusText,
@@ -8,6 +6,7 @@ import {
   receiptText,
   rosterLine,
   SetStatus,
+  STATUS_COPY,
   selfText,
   statusLabelTooLong,
   statusSetText,
@@ -83,23 +82,6 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
-  {
-    name: "card",
-    description:
-      "Get a signed card that proves who you are to an app the user linked to their bus, such as Open Artifacts. Use it only for that: give the app's audience and nonce, then hand the card this returns to the app (Open Artifacts' present_card).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        audience: {
-          type: "string",
-          description: "The app's origin, as the app gives it.",
-        },
-        nonce: { type: "string", description: "The nonce the app gave you." },
-      },
-      required: ["audience", "nonce"],
-      additionalProperties: false,
-    },
-  },
 ] as const;
 
 export type ToolResult = {
@@ -159,8 +141,7 @@ async function run(
   request: Request,
 ): Promise<ToolResult> {
   try {
-    if (name === "set_status" || name === "card")
-      return await cardTool(name, args, request);
+    if (name === "set_status") return await statusTool(args, request);
     if (name === "list_agents") {
       const r = await request({ type: "list" });
       if (r.type !== "roster") return failed(r);
@@ -205,7 +186,7 @@ async function run(
       return r.type === "body" ? text(r.body, false) : failed(r);
     }
     if (name === "self") {
-      const r = await request({ type: "self", card: true });
+      const r = await request({ type: "self", row: true });
       if (r.type !== "agent") return failed(r);
       return text(selfText(r.agent));
     }
@@ -217,12 +198,10 @@ async function run(
 }
 
 /**
- * set_status and card (AC5b). Arguments are checked with the daemon's own
- * schemas first, so a bad_frame from a daemon after that means it predates
- * the frame. Refusals are the daemon's copy, as-is.
+ * set_status. Arguments are checked with the daemon's own schema first.
+ * Refusals are the daemon's copy, as-is.
  */
-async function cardTool(
-  name: "set_status" | "card",
+async function statusTool(
   args: Record<string, unknown>,
   request: Request,
 ): Promise<ToolResult> {
@@ -230,29 +209,17 @@ async function cardTool(
   const label =
     typeof args.label === "string" ? cleanStatusLabel(args.label) : args.label;
   const chars = typeof label === "string" ? [...label].length : 0;
-  if (name === "set_status" && chars > MAX_LABEL_CHARS)
-    return text(statusLabelTooLong(chars), true);
-  const frame =
-    name === "set_status"
-      ? SetStatus.safeParse({
-          v: 1,
-          id: "0",
-          type: "set_status",
-          state: args.state,
-          ...(label === undefined || label === "" ? {} : { label }),
-        })
-      : CardRequest.safeParse({
-          v: 1,
-          id: "0",
-          type: "card",
-          aud: args.audience,
-          nonce: args.nonce,
-        });
+  if (chars > MAX_LABEL_CHARS) return text(statusLabelTooLong(chars), true);
+  const frame = SetStatus.safeParse({
+    v: 1,
+    id: "0",
+    type: "set_status",
+    state: args.state,
+    ...(label === undefined || label === "" ? {} : { label }),
+  });
   if (!frame.success) {
     const issue = frame.error.issues[0];
-    if (name === "card" && issue?.path[0] === "nonce")
-      return text(CARD_COPY.bad_nonce, true);
-    if (name === "set_status" && issue?.path[0] === "label")
+    if (issue?.path[0] === "label")
       return text("oa-bus: label: the status label must be text", true);
     return text(
       `oa-bus: ${String(issue?.path[0] ?? "arguments")}: ${issue?.message ?? "invalid"}`,
@@ -261,20 +228,16 @@ async function cardTool(
   }
   const { v: _v, id: _id, ...f } = frame.data;
   const r = await request(f);
-  if (r.type === "status_set" && f.type === "set_status") {
+  if (r.type === "status_set") {
     const done = statusSetText(f.state, f.label);
     return text(
       r.earlier ? `${done}\n\n${earlierStatusText(r.earlier.message)}` : done,
       false,
     );
   }
-  if (r.type === "card" && f.type === "card") return text(r.jwt, false);
   if (r.type !== "error") return failed(r);
-  // The gate: a daemon from before AC5a refuses the unknown frame type itself,
-  // and one below the gate answers `unsupported` (no `self` first: a Codex
-  // connection carries one request).
-  if (r.code === "bad_frame" && r.message !== CARD_COPY.bad_frame)
-    return text(CARD_COPY.unsupported, true);
+  if (r.code === "bad_frame" && r.message !== STATUS_COPY.bad_frame)
+    return text(STATUS_COPY.bad_frame, true);
   return text(r.message, true);
 }
 

@@ -135,7 +135,7 @@ describe("install through the service", () => {
         "utf8",
       ),
     );
-    expect(oc.mcp.servers.oa-bus.command).toEqual([
+    expect(oc.mcp.servers.oa_bus.command).toEqual([
       process.execPath,
       entry,
       "mcp",

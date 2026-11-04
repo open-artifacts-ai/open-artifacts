@@ -42,7 +42,7 @@ describe("removeAt fuzz", () => {
     expect(valid(out)).toBe(true);
     expect(commentsOf(out)).toEqual(commentsOf(text as string));
     const want = parse(text as string);
-    delete want.mcp.servers.oa-bus;
+    delete want.mcp.servers.oa_bus;
     expect(parse(out)).toEqual(want);
   });
 });

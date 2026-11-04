@@ -28,12 +28,12 @@ const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 
 describe("I8: revoke recovery", () => {
   it("a revoke of the token this daemon started with never blocks the newer token `login` saved since", async () => {
-    // `oa-bus login` (or `login --hub new`) wrote a fresh token while the
+    // `oa-bus login` (or `login --instance new`) wrote a fresh token while the
     // daemon kept running on the old one; the user then revoked the old,
     // now duplicate, machine row in the dashboard.
     const home = tmp("ob-i8-rv-");
     vi.stubEnv("OA_BUS_HOME", home);
-    vi.stubEnv("OA_BUS_HUB", "");
+    vi.stubEnv("OA_BUS_INSTANCE", "");
     const onRevoked = vi.fn();
     const h = await daemonHarness({
       revokedFile: join(home, "revoked"),
@@ -83,7 +83,7 @@ describe("I8: revoke recovery", () => {
     }
   });
 
-  it("a machine.json with no hub never sends its token to whatever OA_BUS_HUB names", () => {
+  it("a machine.json with no hub never sends its token to whatever OA_BUS_INSTANCE names", () => {
     const home = tmp("ob-i8-cfg-");
     writeFileSync(
       join(home, "machine.json"),
@@ -95,7 +95,7 @@ describe("I8: revoke recovery", () => {
       { mode: 0o600 },
     );
     vi.stubEnv("OA_BUS_HOME", home);
-    vi.stubEnv("OA_BUS_HUB", "wss://elsewhere.example.net");
+    vi.stubEnv("OA_BUS_INSTANCE", "wss://elsewhere.example.net");
     expect(() => readConfig()).toThrow();
   });
 });

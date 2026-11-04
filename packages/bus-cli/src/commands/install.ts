@@ -5,7 +5,7 @@ import {
   opencodeVersion,
   supportsPromptId,
 } from "@oa/bus-adapter-opencode";
-import { displayRole, type StatusReply } from "@oa/bus-ipc";
+import type { StatusReply } from "@oa/bus-ipc";
 import {
   askDaemon,
   type Ctx,
@@ -68,7 +68,7 @@ export async function loginStep(
 ): Promise<boolean> {
   const c = ctx.copy;
   const machine = readMachine(ctx.home);
-  const asked = opts.hub ?? ctx.env.OA_BUS_HUB;
+  const asked = opts.hub ?? ctx.env.OA_BUS_INSTANCE;
   if (machine.state === "ok" && !machine.revoked && !opts.force) {
     // Never keep the old hub silently when another was asked for.
     if (asked && originOf(asked) !== originOf(machine.hub)) {
@@ -132,6 +132,7 @@ export async function loginStep(
         tilde(ctx, join(ctx.home, "machine.json")),
         result.machineToken,
       ),
+      c.connected(originOf(result.hub)),
       "",
     );
     return true;
@@ -263,17 +264,15 @@ export function rosterBlock(
       a.name.localeCompare(b.name),
   );
   const queued = rows.filter((r) => r.state === "queued").length;
-  // Agent card (AC5c): a role column only when a row has a role, and a row's
-  // status on the line under it. A daemon below the gate sends neither.
+  // A row's status on the line under it.
   const shown = rows.slice(0, ROSTER_ROWS);
-  const roles = shown.some((r) => displayRole(r) !== undefined);
   const now = ctx.now();
   return {
     lines: [
       c.rosterHeader(ns.namespace, rows.length - queued, queued),
       ...shown.flatMap((r) => {
         const says = c.rosterSays(r, now);
-        return [c.rosterRow(r, roles), ...(says ? [says] : [])];
+        return [c.rosterRow(r), ...(says ? [says] : [])];
       }),
       ...(rows.length > ROSTER_ROWS
         ? [c.rosterMore(rows.length - ROSTER_ROWS)]

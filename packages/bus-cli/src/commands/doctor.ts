@@ -162,8 +162,8 @@ export async function doctor(ctx: Ctx): Promise<number> {
   else if (m.revoked) fail(c.revokedCheck());
   else pass(c.credentials(machineFile, m.token));
 
-  // machine.json's hub; OA_BUS_HUB only matters before login.
-  const hub = m.state === "ok" ? m.hub : ctx.env.OA_BUS_HUB;
+  // machine.json's hub; OA_BUS_INSTANCE only matters before login.
+  const hub = m.state === "ok" ? m.hub : ctx.env.OA_BUS_INSTANCE;
   let seen: Promise<Health> | undefined;
   const health = () => {
     seen ??= healthz(ctx, hub ?? "");

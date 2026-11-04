@@ -33,7 +33,7 @@ export const CODEX_REFUSALS = {
 
 /**
  * The tool namespace Codex gives our MCP entry: `mcp__<entry name>`, so the
- * installer must write exactly `[mcp_servers.oa-bus]`.
+ * installer must write exactly `[mcp_servers.oa_bus]`.
  */
 export const OA_BUS_NAMESPACE = "mcp__oa_bus";
 

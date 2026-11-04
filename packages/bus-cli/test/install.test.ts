@@ -274,7 +274,7 @@ describe("install: Codex (C26e)", () => {
     const text = readFileSync(config, "utf8");
     expect(text.startsWith(FIXTURE)).toBe(true);
     expect(text).toContain(
-      '[mcp_servers.oa-bus]\ncommand = "oa-bus"\nargs = ["mcp", "codex"]\ndefault_tools_approval_mode = "approve"\n',
+      '[mcp_servers.oa_bus]\ncommand = "oa-bus"\nargs = ["mcp", "codex"]\ndefault_tools_approval_mode = "approve"\n',
     );
   });
 
@@ -514,7 +514,7 @@ describe("install: transcript states 2 to 6", () => {
     expect(fetch).toHaveBeenCalledTimes(4);
     expect(ctx.err()).toEqual([
       "[[danger]]×[[/danger]]  Couldn't reach bus.example.com after 4 attempts.  [[muted]]HTTP 502[[/muted]]",
-      "   Check your network or the --hub URL, then run npx @open-artifacts/bus again.",
+      "   Check your network or the --instance URL, then run npx @open-artifacts/bus again.",
     ]);
     const [, final] = transcript("## 6. Hub unreachable");
     expect((final as string[])[1]).toBe(ctx.err()[1]);
@@ -558,7 +558,7 @@ describe("install: an approved machine", () => {
     expect(existsSync(join(ctx.home, "revoked"))).toBe(false);
   });
 
-  it("revoked, with no --hub: re-approves on machine.json's hub", async () => {
+  it("revoked, with no --instance: re-approves on machine.json's hub", async () => {
     const ctx = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
     approveFor(ctx);
     writeFileSync(join(ctx.home, "revoked"), "{}\n");
@@ -571,7 +571,7 @@ describe("install: an approved machine", () => {
   it("`npx @open-artifacts/bus login` always runs the device flow", async () => {
     const ctx = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
     approveFor(ctx);
-    expect(await main(["login", "--hub", HUB], () => ctx)).toBe(0);
+    expect(await main(["login", "--instance", HUB], () => ctx)).toBe(0);
     expect(ctx.fetch).toHaveBeenCalled();
     expect(ctx.out().join("\n")).not.toMatch(/Already connected/);
   });
@@ -583,11 +583,11 @@ describe("install: an approved machine", () => {
       status: vi.fn(async () => status({ pid: 48213 })),
     });
     approveFor(ctx);
-    expect(await main(["login", "--hub", HUB], () => ctx)).toBe(0);
+    expect(await main(["login", "--instance", HUB], () => ctx)).toBe(0);
     expect(ctx.out().slice(-2)).toEqual(transcript("## login")[1]);
   });
 
-  it("install --hub <other> refuses instead of keeping the old hub", async () => {
+  it("install --instance <other> refuses instead of keeping the old hub", async () => {
     const ctx = fakeCtx(allHarnesses());
     approveFor(ctx);
     expect(await run(ctx, { hub: "https://other.example.org" })).toBe(1);
@@ -595,7 +595,7 @@ describe("install: an approved machine", () => {
     expect(ctx.all()).toEqual(transcript("## 5. Already registered")[1]);
   });
 
-  it("install --hub with the same hub stays connected", async () => {
+  it("install --instance with the same hub stays connected", async () => {
     const ctx = fakeCtx(allHarnesses());
     approveFor(ctx);
     expect(await run(ctx, { hub: `${HUB}/` })).toBe(0);
@@ -665,17 +665,17 @@ describe("install: no service yet", () => {
 });
 
 describe("install: no hub", () => {
-  it("without --hub or OA_BUS_HUB it says how to pass one and exits 1", async () => {
+  it("without --instance or OA_BUS_INSTANCE it says how to pass one and exits 1", async () => {
     const ctx = fakeCtx(allHarnesses());
     expect(await install({ label: LABEL }, ctx)).toBe(1);
     expect(ctx.all()).toEqual(transcript("## 6. Hub unreachable")[2]);
     expect(ctx.fetch).not.toHaveBeenCalled();
   });
 
-  it("OA_BUS_HUB is enough", async () => {
+  it("OA_BUS_INSTANCE is enough", async () => {
     const ctx = fakeCtx({
       fetch: hub([approved]),
-      env: { OA_BUS_HUB: HUB },
+      env: { OA_BUS_INSTANCE: HUB },
       ...allHarnesses(),
     });
     expect(await install({ label: LABEL }, ctx)).toBe(0);

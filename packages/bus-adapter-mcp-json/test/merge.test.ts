@@ -11,7 +11,7 @@ describe("claude mcpServers", () => {
     expect(after.theme).toBe("dark");
     expect(after.mcpServers).toEqual({
       other: { command: "x" },
-      oa-bus: { command: "oa-bus", args: ["mcp", "claude"] },
+      oa_bus: { command: "oa-bus", args: ["mcp", "claude"] },
     });
     expect(before.mcpServers).toEqual({ other: { command: "x" } });
   });
@@ -19,7 +19,7 @@ describe("claude mcpServers", () => {
   it("replaces our entry instead of duplicating it, and removes it cleanly", () => {
     const once = upsertMcpServer({}, "oa_bus", { command: "a" });
     const twice = upsertMcpServer(once, "oa_bus", { command: "b" });
-    expect(twice.mcpServers).toEqual({ oa-bus: { command: "b" } });
+    expect(twice.mcpServers).toEqual({ oa_bus: { command: "b" } });
     expect(removeMcpServer(twice, "oa_bus").mcpServers).toEqual({});
   });
 

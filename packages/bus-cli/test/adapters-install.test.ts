@@ -102,7 +102,7 @@ describe("installAdapters", () => {
       "mcp",
       "claude",
     ]);
-    expect(readJ(p.oc(h)).mcp.servers.oa-bus.command).toEqual([
+    expect(readJ(p.oc(h)).mcp.servers.oa_bus.command).toEqual([
       ...argv,
       "mcp",
       "opencode",
@@ -110,7 +110,7 @@ describe("installAdapters", () => {
     deps.exec = fakeExec({ "claude mcp add": { code: 1, stderr: "no" } }).exec;
     put(p.claude(h), {});
     await installAdapters(deps);
-    expect(readJ(p.claude(h)).mcpServers.oa-bus).toMatchObject({
+    expect(readJ(p.claude(h)).mcpServers.oa_bus).toMatchObject({
       command: argv[0],
       args: [argv[1], "mcp", "claude"],
     });
@@ -141,7 +141,7 @@ describe("installAdapters", () => {
       mcp: {
         servers: {
           other: { type: "remote", url: "u" },
-          oa-bus: { type: "local", command: [BIN, "mcp", "opencode"] },
+          oa_bus: { type: "local", command: [BIN, "mcp", "opencode"] },
         },
       },
     });
@@ -177,7 +177,7 @@ describe("installAdapters", () => {
     expect(readJ(p.oc(h))).toEqual({
       mcp: {
         servers: {
-          oa-bus: { type: "local", command: [BIN, "mcp", "opencode"] },
+          oa_bus: { type: "local", command: [BIN, "mcp", "opencode"] },
         },
       },
     });
@@ -295,7 +295,7 @@ describe("installAdapters", () => {
       projects: {},
       mcpServers: {
         other: { command: "x" },
-        oa-bus: {
+        oa_bus: {
           type: "stdio",
           command: BIN,
           args: ["mcp", "claude"],
@@ -320,7 +320,7 @@ describe("installAdapters", () => {
     const { chmodSync } = await import("node:fs");
     chmodSync(path, 0o600);
     await installAdapters(deps);
-    expect(readJ(path).mcpServers.oa-bus.command).toBe(BIN);
+    expect(readJ(path).mcpServers.oa_bus.command).toBe(BIN);
     expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
@@ -344,7 +344,7 @@ describe("installAdapters", () => {
     mkdirSync(join(h, ".config/opencode"), { recursive: true });
     symlinkSync(real, p.oc(h));
     await installAdapters(deps);
-    expect(readJ(real).mcp.servers.oa-bus).toBeDefined();
+    expect(readJ(real).mcp.servers.oa_bus).toBeDefined();
     expect(statSync(p.oc(h)).isFile()).toBe(true);
     const { lstatSync } = await import("node:fs");
     expect(lstatSync(p.oc(h)).isSymbolicLink()).toBe(true);
@@ -384,7 +384,7 @@ describe("uninstallAdapters", () => {
     const { h, deps } = setup(["claude"]);
     put(p.claude(h), {
       theme: "dark",
-      mcpServers: { oa-bus: { command: BIN }, other: { command: "x" } },
+      mcpServers: { oa_bus: { command: BIN }, other: { command: "x" } },
     });
     deps.exec = fakeExec({
       "claude mcp remove": { code: 1, stderr: "nope" },
@@ -427,7 +427,7 @@ describe("uninstallAdapters", () => {
       { harness: "opencode", reason: expect.stringContaining("cli.json") },
     ]);
     expect(readFileSync(p.cli(h), "utf8")).toBe("// comment\n{ nope");
-    expect(readJ(p.oc(h)).mcp.servers.oa-bus).toBeDefined();
+    expect(readJ(p.oc(h)).mcp.servers.oa_bus).toBeDefined();
   });
 });
 
@@ -525,7 +525,7 @@ describe("never corrupts or strips a config", () => {
     await installAdapters(deps);
     expect(lstatSync(p.oc(h)).isSymbolicLink()).toBe(true);
     expect(
-      readJ(join(h, "dotfiles/opencode.json")).mcp.servers.oa-bus,
+      readJ(join(h, "dotfiles/opencode.json")).mcp.servers.oa_bus,
     ).toBeDefined();
   });
 

@@ -67,7 +67,7 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
     case "daemon":
       // The daemon reads both from the environment, as the service sets them.
       if (cmd.home) process.env.OA_BUS_HOME = ctx.home;
-      if (cmd.hub) process.env.OA_BUS_HUB = cmd.hub;
+      if (cmd.hub) process.env.OA_BUS_INSTANCE = cmd.hub;
       return daemon(ctx);
     case "mcp":
       // The adapter servers read OA_BUS_HOME themselves.

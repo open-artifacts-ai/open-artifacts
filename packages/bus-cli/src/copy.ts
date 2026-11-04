@@ -1,10 +1,5 @@
-import {
-  type CardFields,
-  displayKind,
-  displayRole,
-  statusSaysText,
-} from "@oa/bus-ipc";
-import type { AgentKind } from "@oa/bus-protocol";
+import { displayKind, type StatusFields, statusSaysText } from "@oa/bus-ipc";
+import { type AgentKind, BUS_ROUTES } from "@oa/bus-protocol";
 import { box, glyph, paint, type Style, type Tone } from "./term.ts";
 
 /**
@@ -38,7 +33,7 @@ export const kindLabel = (kind: string): string =>
     ? KIND_LABEL[kind as AgentKind]
     : displayKind(kind);
 
-export type RosterAgent = CardFields & {
+export type RosterAgent = StatusFields & {
   name: string;
   kind: string;
   machine: string;
@@ -163,11 +158,6 @@ export function copy(style: Style) {
   const clip = (value: string, rest: number) =>
     cutMiddle(value, WIDTH - rest, more);
   const b = box(style);
-  /** `lane-6 →`, the role cut in the middle to fit 14 columns; blank without one. */
-  const roleCell = (a: RosterAgent) => {
-    const role = displayRole(a);
-    return cell(role ? `${cutMiddle(role, 10, more)} →` : "", 14, more);
-  };
 
   const all = {
     header: (version: string) => `oa-bus ${version}`,
@@ -202,6 +192,19 @@ export function copy(style: Style) {
     approved: (label: string) => done(`Approved as ${clip(label, 15)}`),
     tokenSaved: (path: string, token: string) =>
       done(`Token saved to ${path}`, tokenTail(token, more)),
+    /**
+     * After approval: the instance, and its /bus page, where this machine is
+     * revoked and share notices are picked. One line when it fits in 80.
+     */
+    connected: (origin: string) => {
+      const page = `${origin}${BUS_ROUTES.page}`;
+      const one = `Connected to ${origin}. Manage machines: ${page}`;
+      if (len(one) + 3 <= WIDTH) return [done(one)];
+      return [
+        done(`Connected to ${clip(origin, 17)}.`),
+        next(`Manage machines: ${clip(page, 20)}`),
+      ];
+    },
     // `login` saved a new token; the running daemon keeps the old one.
     daemonOldToken: (pid: number) => [
       warn(`The daemon (pid ${pid}) still uses the old token.`),
@@ -306,20 +309,10 @@ export function copy(style: Style) {
       next("Run npx @open-artifacts/bus@latest install."),
     ],
     // Status and doctor, when the hub's `/healthz` names a problem (#294).
-    hubProblem: (problem: string) =>
-      problem === "test_card_key"
-        ? [
-            fail(
-              "The hub uses the public test signing key, so it refuses every request",
-            ),
-            next("From your oa-bus checkout, run:"),
-            next("pnpm -s ob:setup --name <name> --rotate-card-key --force"),
-          ]
-        : [
-            fail(`The hub reports a problem: ${displayKind(problem)}`),
-            next("From your oa-bus checkout, rerun setup:"),
-            next("pnpm -s ob:setup --name <name>"),
-          ],
+    hubProblem: (problem: string) => [
+      fail(`The instance reports a problem: ${displayKind(problem)}`),
+      next("Ask the instance's admin to check it."),
+    ],
     daemonTimeout: () => [
       fail("The daemon did not start within 10 seconds."),
       next("Run npx @open-artifacts/bus doctor to see why."),
@@ -333,12 +326,8 @@ export function copy(style: Style) {
       const lead = `${n} agent${n === 1 ? "" : "s"} in namespace `;
       return `${lead}${p("accent", clip(namespace, len(lead) + 2 + len(meta)))}  ${p("muted", meta)}`;
     },
-    /**
-     * With `roles` (any row has one, AC5c), a 14-column role cell leads
-     * (`lane-6 →`), so `lane-6 → code-96` reads across; the row stays at 79.
-     */
-    rosterRow: (a: RosterAgent, roles = false) =>
-      `  ${roles ? roleCell(a) : ""}${cell(a.name, 20, more)}${cell(kindLabel(a.kind), 13, more)}${cell(a.machine, 22, more)}${
+    rosterRow: (a: RosterAgent) =>
+      `  ${cell(a.name, 20, more)}${cell(kindLabel(a.kind), 13, more)}${cell(a.machine, 22, more)}${
         a.state === "live"
           ? p("success", `${g("live")} live`)
           : p("warning", `${g("queued")} queued`)
@@ -414,7 +403,7 @@ export function copy(style: Style) {
       return [
         `${fail(`Couldn't reach ${clip(host, 21 + len(tail) + len(error))} ${tail}`)}  ${p("muted", error)}`,
         next(
-          "Check your network or the --hub URL, then run npx @open-artifacts/bus again.",
+          "Check your network or the --instance URL, then run npx @open-artifacts/bus again.",
         ),
       ];
     },
@@ -451,7 +440,7 @@ export function copy(style: Style) {
     noHub: () => [
       fail("No hub to connect to."),
       next(
-        "Run npx @open-artifacts/bus --hub https://bus.example.com, or set OA_BUS_HUB.",
+        "Run npx @open-artifacts/bus --instance https://bus.example.com, or set OA_BUS_INSTANCE.",
       ),
     ],
     hubMismatch: (approved: string, asked: string, askedUrl: string) => {
@@ -461,7 +450,7 @@ export function copy(style: Style) {
       return [
         fail(`This machine is approved for ${a}, not ${b}.`),
         next("Run npx @open-artifacts/bus uninstall --purge first, then"),
-        next(`npx @open-artifacts/bus --hub ${clip(askedUrl, 28)}.`),
+        next(`npx @open-artifacts/bus --instance ${clip(askedUrl, 28)}.`),
       ];
     },
     checkOk: (label: string) => done(label),

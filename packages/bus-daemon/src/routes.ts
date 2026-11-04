@@ -3,7 +3,6 @@ import {
   type AgentInfo,
   type DaemonFrame,
   type Hello,
-  seesCard,
   type Unframed,
 } from "@oa/bus-ipc";
 import {
@@ -11,12 +10,11 @@ import {
   type ClientFrame,
   ClientFrameSchema,
   frameId,
-  rosterState,
   type ServerFrame,
 } from "@oa/bus-protocol";
 import type { z } from "zod";
 import type { AgentTable } from "./agents.ts";
-import { CARD_COPY } from "./card.ts";
+import { STATUS_COPY } from "./status.ts";
 import type { HubConnection } from "./hub.ts";
 import type { Timer } from "./sent.ts";
 
@@ -98,7 +96,7 @@ export class Pending {
             ...frame,
             id: w.localId,
             agents: frame.agents.map(({ bus_name, ...a }) => {
-              const state = rosterState(a);
+              const state = a.state;
               return { ...a, name: bus_name, state, live: state === "live" };
             }),
           }
@@ -157,18 +155,18 @@ export class Pending {
 /** Draft copy (Design to confirm): what an agent the hub refused to register sees, per cap. */
 export const MACHINE_CAP_COPY =
   "This machine has too many agents on the bus right now. Close a session you no longer need; this one retries in a few minutes.";
-export const ORG_CAP_COPY =
+export const MEMBER_CAP_COPY =
   "Your bus has too many agents right now. Close a session you no longer need; this one retries in a few minutes.";
 
-export type AgentCap = "machine" | "org";
+export type AgentCap = "machine" | "member";
 export const CAP_COPY: Record<AgentCap, string> = {
   machine: MACHINE_CAP_COPY,
-  org: ORG_CAP_COPY,
+  member: MEMBER_CAP_COPY,
 };
 
 /** Which cap a `rate_limited` agent_up message names; an unknown message counts as the machine's. */
 export function capOf(message: string): AgentCap {
-  return message === AGENT_CAP_MESSAGES.org ? "org" : "machine";
+  return message === AGENT_CAP_MESSAGES.member ? "member" : "machine";
 }
 
 export type RouteCtx = {
@@ -179,32 +177,32 @@ export type RouteCtx = {
   confirm: (msgId: string, ref: string) => boolean;
   /** The cap while the hub refuses to register ref (`rate_limited` agent_up). */
   limited?: (ref: string) => AgentCap | undefined;
-  /** set_status and card (AC5a); without it both are refused `unsupported`. */
-  card?: (
-    frame: Extract<AdapterFrame, { type: "set_status" | "card" }>,
+  /** set_status; without it, refused `hub_unavailable`. */
+  setStatus?: (
+    frame: Extract<AdapterFrame, { type: "set_status" }>,
     ref: string,
     reply: (f: Unframed) => unknown,
   ) => Unframed | undefined;
   /** The daemon's version, reported by `self`. */
   version?: string;
   /**
-   * The agent's own hub roster row (AC5c), for `self` with `card`: its role
-   * and status. Undefined when the hub cannot be asked; resolves undefined
-   * when it does not answer.
+   * The agent's own hub roster row, for `self` with `row`: its status.
+   * Undefined when the hub cannot be asked; resolves undefined when it does
+   * not answer.
    */
-  ownRow?: (ref: string) => Promise<CardRow | undefined> | undefined;
+  ownRow?: (ref: string) => Promise<StatusRow | undefined> | undefined;
 };
 
-/** The agent card fields of a roster row. */
-type CardRow = Pick<
+/** The status fields of a roster row. */
+type StatusRow = Pick<
   z.infer<typeof AgentInfo>,
-  "role" | "status" | "status_label" | "status_at"
+  "status" | "status_label" | "status_at"
 >;
 
-/** Only the card fields a row carries, none undefined. */
-const cardOf = (row: CardRow | undefined): CardRow =>
+/** Only the status fields a row carries, none undefined. */
+const statusOf = (row: StatusRow | undefined): StatusRow =>
   Object.fromEntries(
-    (["role", "status", "status_label", "status_at"] as const).flatMap((k) =>
+    (["status", "status_label", "status_at"] as const).flatMap((k) =>
       row?.[k] === undefined ? [] : [[k, row[k]]],
     ),
   );
@@ -232,18 +230,14 @@ export function routeLocal(
           live: agent.live,
           global: agent.global,
         },
-        ...(ctx.version ? { daemon_version: ctx.version } : {}),
       } as const;
-      // The role and status are the hub's: asked for only by the self tool, at the gate.
-      const own =
-        frame.card && seesCard(hello.client_version)
-          ? ctx.ownRow?.(ref)
-          : undefined;
+      // The status is the hub's: asked for only by the self tool.
+      const own = frame.row ? ctx.ownRow?.(ref) : undefined;
       if (!own) return self;
-      const answer = (row: CardRow | undefined) =>
+      const answer = (row: StatusRow | undefined) =>
         reply({
           ...self,
-          agent: { ...self.agent, ...cardOf(row) },
+          agent: { ...self.agent, ...statusOf(row) },
           v: 1,
           id: frame.id,
         });
@@ -258,18 +252,17 @@ export function routeLocal(
         code: "unauthorized",
         message: "not a delivery to this agent",
       };
-    case "set_status":
-    case "card": {
+    case "set_status": {
       const cap = ctx.limited?.(ref);
       if (cap)
         return { type: "error", code: "rate_limited", message: CAP_COPY[cap] };
-      if (!ctx.card)
+      if (!ctx.setStatus)
         return {
           type: "error",
-          code: "unsupported",
-          message: CARD_COPY.unsupported,
+          code: "hub_unavailable",
+          message: STATUS_COPY.hub_unavailable,
         };
-      return ctx.card(frame, ref, (f) =>
+      return ctx.setStatus(frame, ref, (f) =>
         reply({ ...f, v: 1, id: frame.id } as DaemonFrame),
       );
     }

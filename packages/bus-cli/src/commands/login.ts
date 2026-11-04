@@ -12,18 +12,18 @@ import {
 import { hostname } from "node:os";
 import { join } from "node:path";
 import {
+  BUS_ROUTES,
   DeviceCodeRequestSchema,
   DeviceCodeResponseSchema,
   DeviceTokenRequestSchema,
   DeviceTokenResponseSchema,
   newMachineLabel,
-  R,
 } from "@oa/bus-protocol";
 import { type Deps, realDeps } from "../deps.ts";
 
 /** What install renders as the transcript; without it, login prints plain lines. */
 export type LoginEvents = {
-  /** A /device/code attempt failed and another follows after `waitMs`. */
+  /** A /bus/device attempt failed and another follows after `waitMs`. */
   retrying: (e: {
     attempt: number;
     total: number;
@@ -48,7 +48,7 @@ type LoginArgs = {
   /** Sent as machine_label and stored as the machine's label; defaults to the hostname. */
   label?: string;
   noOpen?: boolean;
-  /** Waits between /device/code attempts (transcript state 6: 2, 4, 8 s). Default: one attempt. */
+  /** Waits between /bus/device attempts (transcript state 6: 2, 4, 8 s). Default: one attempt. */
   codeRetryMs?: number[];
   events?: Partial<LoginEvents>;
 } & Pick<Deps, "fetch" | "openBrowser" | "sleep" | "now"> &
@@ -81,7 +81,6 @@ export function errorTail(e: unknown): string {
 
 export type LoginResult = {
   machineToken: string;
-  machineId: string;
   label: string;
   hub: string;
   home: string;
@@ -93,9 +92,9 @@ const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const normalizeHub = (hub: string) => hub.replace(/\/+$/, "");
 
 /**
- * https (http only for loopback), the hub's own origin, no userinfo and exactly
- * /approve/<user_code>; anything else is never opened or shown. The shared
- * schema checks most of this too; the origin only the client can know.
+ * https (http only for loopback), the instance's own origin, no userinfo and
+ * exactly /bus/approve/<user_code>; anything else is never opened or shown.
+ * The shared schema checks most of this too; the origin only the client can know.
  */
 function checkVerificationUri(
   uri: string,
@@ -111,12 +110,12 @@ function checkVerificationUri(
     u.origin !== new URL(hub).origin ||
     u.username ||
     u.password ||
-    u.pathname !== `/approve/${userCode}` ||
+    u.pathname !== BUS_ROUTES.approve(userCode) ||
     u.search ||
     u.hash
   ) {
     throw new Error(
-      "device/code returned a verification_uri that is not on the hub origin",
+      "bus/device returned a verification_uri that is not on the instance origin",
     );
   }
   return u.href;
@@ -159,7 +158,7 @@ const post = (
     ...(signal ? { signal } : {}),
   });
 
-/** POST /device/code, retried on a network error, a timeout or a 5xx. */
+/** POST /bus/device, retried on a network error, a timeout or a 5xx. */
 async function requestCode(
   args: LoginArgs,
   hub: string,
@@ -174,7 +173,7 @@ async function requestCode(
       const res = await post(
         hub,
         args.fetch,
-        R.deviceCode,
+        BUS_ROUTES.device,
         body,
         AbortSignal.timeout(CODE_TIMEOUT_MS),
       );
@@ -203,7 +202,7 @@ export async function login(args: LoginArgs): Promise<LoginResult> {
   const codeRes = await requestCode(args, hub, label);
   if (!codeRes.ok) {
     throw new Error(
-      `device/code failed: ${codeRes.status} ${(await codeRes.text()).slice(0, 200)}`,
+      `bus/device failed: ${codeRes.status} ${(await codeRes.text()).slice(0, 200)}`,
     );
   }
   const device = DeviceCodeResponseSchema.parse(await codeRes.json());
@@ -237,7 +236,7 @@ export async function login(args: LoginArgs): Promise<LoginResult> {
       res = await post(
         hub,
         args.fetch,
-        R.deviceToken,
+        BUS_ROUTES.deviceToken,
         DeviceTokenRequestSchema.parse({ device_code: device.device_code }),
       );
     } catch {
@@ -256,7 +255,7 @@ export async function login(args: LoginArgs): Promise<LoginResult> {
     waitMs = baseMs;
     if (!res.ok) {
       throw new Error(
-        `device/token failed: ${res.status} ${(await res.text()).slice(0, 200)}`,
+        `bus/device/token failed: ${res.status} ${(await res.text()).slice(0, 200)}`,
       );
     }
     const poll = DeviceTokenResponseSchema.parse(await res.json());
@@ -277,14 +276,13 @@ export async function login(args: LoginArgs): Promise<LoginResult> {
       case "approved": {
         writeMachineFile(
           args.home,
-          `${JSON.stringify({ hub, machine_id: poll.machine_id, label, machine_token: poll.token }, null, 2)}\n`,
+          `${JSON.stringify({ hub, label, machine_token: poll.machine_token }, null, 2)}\n`,
         );
         // Approved again: the daemon's revoked marker no longer holds.
         rmSync(join(args.home, "revoked"), { force: true });
         if (!events?.code) print(`Approved this machine as ${label}.`);
         return {
-          machineToken: poll.token,
-          machineId: poll.machine_id,
+          machineToken: poll.machine_token,
           label,
           hub,
           home: args.home,

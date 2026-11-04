@@ -35,11 +35,11 @@ const saved = {
   HOME: process.env.HOME,
   OA_BUS_CLAUDE_SESSIONS_DIR: process.env.OA_BUS_CLAUDE_SESSIONS_DIR,
   OA_BUS_HOME: process.env.OA_BUS_HOME,
-  OA_BUS_HUB: process.env.OA_BUS_HUB,
+  OA_BUS_INSTANCE: process.env.OA_BUS_INSTANCE,
 };
 const SENTINEL_HOME = mkdtempSync(join(tmpdir(), "obs-"));
 process.env.HOME = SENTINEL_HOME;
-delete process.env.OA_BUS_HUB;
+delete process.env.OA_BUS_INSTANCE;
 delete process.env.OA_BUS_CLAUDE_SESSIONS_DIR;
 
 afterAll(() => {

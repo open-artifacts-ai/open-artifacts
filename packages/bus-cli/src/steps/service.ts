@@ -225,8 +225,8 @@ export function serviceNames(home: string, userHome: string) {
   };
 }
 
-/** The CLI's flags that take a value (index.ts): `--home X`, `--hub X`. */
-const VALUE_FLAGS = new Set(["--home", "--hub"]);
+/** The CLI's flags that take a value (index.ts): `--home X`, `--instance X`. */
+const VALUE_FLAGS = new Set(["--home", "--instance"]);
 
 /**
  * `node <entry> daemon` for this home, or `oa-bus daemon` run in a

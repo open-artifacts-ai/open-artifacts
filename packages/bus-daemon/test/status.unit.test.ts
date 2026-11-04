@@ -1,7 +1,7 @@
-// AC5a: AgentCard on its own, with a fake hub link and clock.
+// AgentStatusRelay on its own, with a fake hub link and clock.
 import type { ClientFrame } from "@oa/bus-protocol";
 import { describe, expect, it } from "vitest";
-import { AgentCard } from "../src/card.ts";
+import { AgentStatusRelay } from "../src/status.ts";
 import type { Timer } from "../src/sent.ts";
 
 /** A clock that fires only when told. */
@@ -21,18 +21,17 @@ function manual() {
   return { after, tick };
 }
 
-describe("AgentCard status (AC5a)", () => {
+describe("AgentStatusRelay", () => {
   it("a status the queue refuses at push, link open, goes again when the window ends", () => {
     const { after, tick } = manual();
     const sent: ClientFrame[] = [];
     let accept = false;
-    const card = new AgentCard({
+    const card = new AgentStatusRelay({
       send: (f) => {
         if (!accept) return false;
         sent.push(f);
         return true;
       },
-      cancel: () => {},
       open: () => true,
       after,
     });
@@ -55,12 +54,11 @@ describe("AgentCard status (AC5a)", () => {
     const { after, tick } = manual();
     const sent: ClientFrame[] = [];
     let accept = false;
-    const card = new AgentCard({
+    const card = new AgentStatusRelay({
       send: (f) => {
         if (accept) sent.push(f);
         return accept;
       },
-      cancel: () => {},
       open: () => true,
       after,
     });
@@ -73,9 +71,8 @@ describe("AgentCard status (AC5a)", () => {
 
   it("refused with the link closed, it is owed: told on the next call", () => {
     const { after } = manual();
-    const card = new AgentCard({
+    const card = new AgentStatusRelay({
       send: () => false,
-      cancel: () => {},
       open: () => false,
       after,
     });

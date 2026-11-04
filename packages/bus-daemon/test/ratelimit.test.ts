@@ -1,6 +1,6 @@
 import { AGENT_CAP_MESSAGES } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MACHINE_CAP_COPY, ORG_CAP_COPY } from "../src/routes.ts";
+import { MACHINE_CAP_COPY, MEMBER_CAP_COPY } from "../src/routes.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
@@ -31,14 +31,14 @@ describe("agent cap copy", () => {
     expect(MACHINE_CAP_COPY).toBe(
       "This machine has too many agents on the bus right now. Close a session you no longer need; this one retries in a few minutes.",
     );
-    expect(ORG_CAP_COPY).toBe(
+    expect(MEMBER_CAP_COPY).toBe(
       "Your bus has too many agents right now. Close a session you no longer need; this one retries in a few minutes.",
     );
   });
 
   it.each([
     ["machine", AGENT_CAP_MESSAGES.machine, MACHINE_CAP_COPY],
-    ["org", AGENT_CAP_MESSAGES.org, ORG_CAP_COPY],
+    ["member", AGENT_CAP_MESSAGES.member, MEMBER_CAP_COPY],
     ["unknown", "something else", MACHINE_CAP_COPY],
   ])("%s message gets its copy", async (_n, message, copy) => {
     const h = await limitHarness();

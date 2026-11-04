@@ -92,7 +92,7 @@ Variants inside state 1:
   `[[warning]]![[/warning]]  No codex binary found, so Open Artifacts bus can't wake an idle Codex thread.`
   then, indented 3, `Install the Codex CLI, then run npx @open-artifacts/bus again.`
   The install still succeeds; messages wait until the thread next runs a turn.
-  Install owns the `[mcp_servers.oa-bus]` table in `config.toml` whole: it
+  Install owns the `[mcp_servers.oa_bus]` table in `config.toml` whole: it
   rewrites that table on every install and uninstall removes it, so keys added
   to it by hand are not kept. Every other byte of the file is.
   A `config.toml` that is not valid TOML is left untouched and reported like
@@ -219,7 +219,7 @@ oa-bus 0.1.0
 
 The roster table, the queued footnote and the status hint follow as in state 1.
 
-Approved for another hub: `--hub` (or `OA_BUS_HUB`) names a hub whose origin
+Approved for another hub: `--instance` (or `OA_BUS_INSTANCE`) names a hub whose origin
 is not the one in `machine.json`. Nothing changes; exit code 1:
 
 ```
@@ -227,7 +227,7 @@ oa-bus 0.1.0
 
 [[danger]]×[[/danger]]  This machine is approved for bus.example.com, not other.example.org.
    Run npx @open-artifacts/bus uninstall --purge first, then
-   npx @open-artifacts/bus --hub https://other.example.org.
+   npx @open-artifacts/bus --instance https://other.example.org.
 ```
 
 The second line is cut after "then" so that every line fits in 80 columns.
@@ -303,21 +303,21 @@ replaced by:
 
 ```
 [[danger]]×[[/danger]]  Couldn't reach bus.example.com after 4 attempts.  [[muted]]ECONNREFUSED[[/muted]]
-   Check your network or the --hub URL, then run npx @open-artifacts/bus again.
+   Check your network or the --instance URL, then run npx @open-artifacts/bus again.
 ```
 
 Exit code 1. The muted tail is the last error: a Node error code, `timeout`, or
 `HTTP 502`. There is no `--verbose` flag; the 2, 4, 8 s schedule is shown by the
 retry line itself.
 
-No hub named: this machine has no `machine.json`, and neither `--hub` nor
-`OA_BUS_HUB` is set. Nothing is requested; exit code 1:
+No hub named: this machine has no `machine.json`, and neither `--instance` nor
+`OA_BUS_INSTANCE` is set. Nothing is requested; exit code 1:
 
 ```
 oa-bus 0.1.0
 
 [[danger]]×[[/danger]]  No hub to connect to.
-   Run npx @open-artifacts/bus --hub https://bus.example.com, or set OA_BUS_HUB.
+   Run npx @open-artifacts/bus --instance https://bus.example.com, or set OA_BUS_INSTANCE.
 ```
 
 ## Receipts

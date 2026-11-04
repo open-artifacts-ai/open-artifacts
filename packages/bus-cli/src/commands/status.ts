@@ -127,7 +127,7 @@ export async function status(ctx: Ctx): Promise<number> {
     sayErr(ctx, c.notRegistered());
     return 1;
   }
-  // machine.json's hub: OA_BUS_HUB only picks one before login.
+  // machine.json's hub: OA_BUS_INSTANCE only picks one before login.
   const host = hostOf(m.hub);
   if (m.revoked) {
     say(ctx, c.hubRow(host), c.machineRow(m.label));

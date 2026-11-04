@@ -111,7 +111,7 @@ describe("checkAdapters", () => {
     });
     writeFileSync(
       join(h, ".claude.json"),
-      JSON.stringify({ mcpServers: { oa-bus: {} } }),
+      JSON.stringify({ mcpServers: { oa_bus: {} } }),
     );
     expect(checkAdapters({ home: h, which: all })).toEqual({
       claude: "configured",

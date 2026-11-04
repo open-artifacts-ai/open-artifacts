@@ -1,258 +1,210 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { createServer } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+// set_status, from the adapter through the daemon to a stub hub.
 import { daemonStatus } from "@oa/bus-ipc";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HubConnection } from "../src/hub.ts";
-import { daemonHarness, opts, stopAll } from "./helpers.ts";
+import type { DaemonDeps } from "../src/index.ts";
+import { STATUS_COPY } from "../src/status.ts";
+import { daemonHarness, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
 
-const resolveNamespace = (cwd: string) => ({
-  namespace: cwd.startsWith("/notes") ? "notes" : "ns",
-  global: false,
-  source: "cwd" as const,
-});
-const row = (
-  bus_name: string,
-  kind: string,
-  namespace: string,
-  state: string,
-) => ({
-  bus_name,
-  kind,
-  namespace,
-  global: false,
-  state,
-});
+/** Any version: nothing gates on it. */
+const GATE = "0.106.0";
 
-describe("daemon status", () => {
-  it("says whether the hub link was ever up and since when it dropped (C20)", async () => {
-    let retries = 0;
-    const h = await daemonHarness({
-      hub: {
-        backoffMs: () => {
-          retries++;
-          return 20;
-        },
-      },
+/** The hub's hello_ok, once the daemon has read it (status reports its version). */
+async function helloOk(
+  h: Awaited<ReturnType<typeof daemonHarness>>,
+  server_version = GATE,
+) {
+  h.toDaemon({
+    id: "w",
+    type: "hello_ok",
+    machine_id: "1".repeat(16),
+    machine_label: "laptop",
+    server_version,
+  });
+  await vi.waitFor(async () =>
+    expect(
+      (await daemonStatus({ path: h.socketPath, timeoutMs: 3000 })).hub_version,
+    ).toBe(server_version),
+  );
+}
+
+/** A daemon, its hub's hello_ok read, with an adapter for agent A. */
+async function bus(over: Partial<DaemonDeps> = {}) {
+  // The stub hub answers no list: status must not wait for one.
+  const h = await daemonHarness({ version: GATE, statusRosterMs: 10, ...over });
+  await helloOk(h);
+  const a = await h.adapter("A", { client_version: GATE });
+  return { h, a };
+}
+/** Pacing that queues: one token, refilled slowly, and room for two frames. */
+const tight = (rate = 4) => ({ pace: { burst: 1, rate, max: 2 } });
+/** Startup's frames are out and the bucket holds its one token again. */
+const drained = async (h: Awaited<ReturnType<typeof bus>>["h"], ms = 300) => {
+  await slow(h, "agent_up");
+  await new Promise((r) => setTimeout(r, ms));
+};
+/** Waits for the n-th frame of a type on a slow queue. */
+const slow = async (
+  h: Awaited<ReturnType<typeof bus>>["h"],
+  type: "list" | "status" | "agent_up",
+  n = 1,
+) =>
+  vi.waitFor(() => expect(h.of(type).length).toBeGreaterThanOrEqual(n), {
+    timeout: 4000,
+  });
+const list = (a: Awaited<ReturnType<typeof bus>>["a"]) =>
+  void a.request({ type: "list" }).catch(() => {});
+
+describe("set_status", () => {
+  it("answers at once and sends the hub a status frame from the attested agent", async () => {
+    const { h, a } = await bus();
+    const reply = await a.request({
+      type: "set_status",
+      state: "working",
+      label: "writing tests",
     });
-    const ask = () => daemonStatus({ path: h.socketPath, timeoutMs: 3000 });
-    const up = await ask();
-    expect(up).toMatchObject({ hub: "connected", hub_ever: true });
-    expect(up.hub_since).toBeUndefined();
-    const before = Date.now();
-    for (const c of h.wss.clients) c.terminate();
-    h.wss.close();
-    await vi.waitFor(async () => expect((await ask()).hub).toBe("connecting"));
-    const down = await ask();
-    expect(down.hub_ever).toBe(true);
-    expect(down.hub_since).toBeGreaterThanOrEqual(before);
-    // Failed retries do not move the drop time.
-    const seen = retries;
-    await vi.waitFor(() => expect(retries).toBeGreaterThanOrEqual(seen + 3));
-    expect((await ask()).hub_since).toBe(down.hub_since);
+    expect(reply).toEqual({ v: 1, id: expect.any(String), type: "status_set" });
+    expect(await h.next("status")).toMatchObject({
+      type: "status",
+      from_ref: "A",
+      state: "working",
+      label: "writing tests",
+    });
   });
 
-  it("reports the hub's version from its hello_ok, none before one (C26h)", async () => {
-    const h = await daemonHarness({ version: "0.46.3" });
-    const ask = () => daemonStatus({ path: h.socketPath, timeoutMs: 3000 });
-    expect((await ask()).hub_version).toBeUndefined();
-    h.toDaemon({
-      id: "w",
-      type: "hello_ok",
-      machine_id: "1".repeat(16),
-      machine_label: "laptop",
-      server_version: "0.47.0",
-    });
-    await vi.waitFor(async () =>
-      expect(await ask()).toMatchObject({
-        version: "0.46.3",
-        hub_version: "0.47.0",
-      }),
+  it.each(["bad_frame", "not_registered"])(
+    "a late %s for that id is logged and told on the next call",
+    async (code) => {
+      const lines: string[] = [];
+      const { h, a } = await bus({
+        log: (m) => lines.push(m),
+        status: { statusEveryMs: 1 },
+      });
+      await a.request({ type: "set_status", state: "idle" });
+      const sent = await h.next("status");
+      h.toDaemon({ id: sent.id, type: "error", code, message: "x" });
+      await vi.waitFor(() =>
+        expect(lines).toContain(`the hub refused a status from A: ${code}`),
+      );
+      expect(
+        await a.request({ type: "set_status", state: "working" }),
+      ).toMatchObject({
+        type: "status_set",
+        earlier: { code, message: STATUS_COPY[code as keyof typeof STATUS_COPY] },
+      });
+      // Told once.
+      expect(
+        await a.request({ type: "set_status", state: "working" }),
+      ).not.toHaveProperty("earlier");
+    },
+  );
+
+  it("refuses an invalid status locally: nothing reaches the hub", async () => {
+    const { h, a } = await bus();
+    for (const bad of [
+      { state: "done" },
+      { state: "idle", label: "x".repeat(65) },
+      { state: "idle", label: "a\u0007b" },
+    ])
+      expect(await a.request({ type: "set_status", ...bad })).toMatchObject({
+        type: "error",
+        code: "bad_frame",
+      });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.of("status")).toHaveLength(0);
+  });
+
+  it("the local guard: one frame per agent per window, the latest kept", async () => {
+    const { h, a } = await bus({ status: { statusEveryMs: 300 } });
+    const states = ["working", "blocked", "idle", "waiting_on_owner"] as const;
+    const replies = states.map((state, i) =>
+      a.request({ type: "set_status", state, label: `step ${i}` }),
+    );
+    // Every call is answered, the superseded ones included.
+    for (const r of await Promise.all(replies))
+      expect(r).toMatchObject({ type: "status_set" });
+    await h.next("status", 2);
+    expect(h.of("status").map((f) => [f.state, f.label])).toEqual([
+      ["working", "step 0"],
+      ["waiting_on_owner", "step 3"],
+    ]);
+    // Nothing else goes once the window closes with nothing queued.
+    await new Promise((r) => setTimeout(r, 400));
+    expect(h.of("status")).toHaveLength(2);
+    // Each agent has its own window.
+    const b = await h.adapter("B", { client_version: GATE });
+    await b.request({ type: "set_status", state: "idle" });
+    await vi.waitFor(() =>
+      expect(h.of("status").at(-1)).toMatchObject({ from_ref: "B" }),
     );
   });
 
-  it("a second outage reports its own drop, not the first (C20)", async () => {
-    const h = await daemonHarness();
-    const ask = () => daemonStatus({ path: h.socketPath, timeoutMs: 3000 });
-    // First outage: the server stays up, so the daemon reconnects.
-    let links = 0;
-    h.wss.on("connection", () => links++);
-    for (const c of h.wss.clients) c.terminate();
-    await vi.waitFor(() => expect(links).toBe(1));
+  it("a status the backed-up queue drops goes again, the latest only", async () => {
+    const lines: string[] = [];
+    const { h, a } = await bus({
+      hub: tight(),
+      status: { statusEveryMs: 200 },
+      log: (m) => lines.push(m),
+    });
+    await drained(h);
+    list(a);
+    await slow(h, "list");
+    await a.request({ type: "set_status", state: "blocked", label: "dropped" });
+    // Two more user frames overflow the queue: the status, oldest, goes.
+    list(a);
+    list(a);
+    await slow(h, "status");
+    expect(lines).toContain(
+      "hub queue full: dropped a queued status frame (max 2)",
+    );
+    expect(h.of("status").map((f) => f.label)).toEqual(["dropped"]);
+    // Re-sent from the guard, then nothing more.
+    await new Promise((r) => setTimeout(r, 600));
+    expect(h.of("status")).toHaveLength(1);
+  });
+
+  it("a status lost with the link is told on the next call", async () => {
+    const { h, a } = await bus({ hub: tight(1) });
+    await drained(h, 1100);
+    list(a);
+    await slow(h, "list");
+    await a.request({ type: "set_status", state: "blocked" });
+    const first = h.hubSock();
+    first?.terminate();
+    await vi.waitFor(() => expect(h.hubSock()).not.toBe(first));
     await vi.waitFor(() => expect(h.daemon.hub.open).toBe(true));
-    expect((await ask()).hub_since).toBeUndefined();
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const second = Date.now() + 3_600_000;
-      vi.setSystemTime(second);
-      for (const c of h.wss.clients) c.terminate();
-      h.wss.close();
-      await vi.waitFor(async () =>
-        expect((await ask()).hub).toBe("connecting"),
-      );
-      const since = (await ask()).hub_since as number;
-      expect(since).toBeGreaterThanOrEqual(second);
-      expect(since).toBeLessThan(second + 60_000);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("one roster per namespace, from the hub, with this machine's label on its own rows", async () => {
-    const h = await daemonHarness({
-      claude: { syncMs: 3_600_000 },
-      version: "9.9.9",
-      resolveNamespace,
+    await helloOk(h);
+    expect(
+      await a.request({ type: "set_status", state: "idle" }),
+    ).toMatchObject({
+      type: "status_set",
+      earlier: { code: "hub_unavailable" },
     });
-    // The stub hub answers list with the namespace's roster across machines.
-    h.hubSock()?.on("message", (d) => {
-      const f = JSON.parse(String(d));
-      if (f.type !== "list") return;
-      const agents =
-        f.from_ref === "ses_n"
-          ? [row("writer", "pi", "notes", "live")]
-          : [
-              row("alpha", "pi", "ns", "live"),
-              row("remote", "claude-code", "ns", "queued"),
-            ];
-      h.hubSock()?.send(
-        JSON.stringify({ v: 1, id: f.id, type: "roster", agents }),
-      );
-    });
-    await h.adapter("ses_a", { kind: "pi", proposed_name: "alpha", cwd: "/w" });
-    await h.adapter("ses_n", {
-      kind: "pi",
-      proposed_name: "writer",
-      cwd: "/notes",
-    });
-    const st = await daemonStatus({ path: h.socketPath, timeoutMs: 3000 });
-    expect(st).toMatchObject({
-      pid: process.pid,
-      version: "9.9.9",
-      label: "laptop",
-      hub: "connected",
-      namespaces: [
-        {
-          namespace: "ns",
-          agents: [
-            { name: "alpha", kind: "pi", machine: "laptop", state: "live" },
-            {
-              name: "remote",
-              kind: "claude-code",
-              machine: "",
-              state: "queued",
-            },
-          ],
-        },
-        {
-          namespace: "notes",
-          agents: [
-            { name: "writer", kind: "pi", machine: "laptop", state: "live" },
-          ],
-        },
-      ],
-    });
-    // With a cwd, only that namespace.
-    const cwd = await daemonStatus({
-      path: h.socketPath,
-      cwd: "/notes/x",
-      timeoutMs: 3000,
-    });
-    expect(cwd.namespace).toBe("notes");
-    expect(cwd.namespaces.map((n) => n.namespace)).toEqual(["notes"]);
-  });
-
-  it("uses the hub's machine_label, else our label for ours and blank", async () => {
-    const h = await daemonHarness({
-      claude: { syncMs: 3_600_000 },
-      resolveNamespace,
-    });
-    h.hubSock()?.on("message", (d) => {
-      const f = JSON.parse(String(d));
-      if (f.type !== "list") return;
-      const agents = [
-        { ...row("alpha", "pi", "ns", "live"), machine_label: "mine-x" },
-        {
-          ...row("remote", "claude-code", "ns", "live"),
-          machine_label: "desktop",
-        },
-        row("older", "claude-code", "ns", "live"),
-      ];
-      h.hubSock()?.send(
-        JSON.stringify({ v: 1, id: f.id, type: "roster", agents }),
-      );
-    });
-    await h.adapter("ses_a", { kind: "pi", proposed_name: "alpha", cwd: "/w" });
-    const st = await daemonStatus({ path: h.socketPath, timeoutMs: 3000 });
-    expect(st.namespaces[0]?.agents.map((a) => a.machine)).toEqual([
-      "mine-x",
-      "desktop",
-      "",
-    ]);
-  });
-
-  it("falls back to this machine's sessions when the hub does not answer", async () => {
-    const h = await daemonHarness({
-      claude: { syncMs: 3_600_000 },
-      resolveNamespace,
-      statusRosterMs: 50,
-    });
-    await h.adapter("ses_a", { kind: "pi", proposed_name: "alpha", cwd: "/w" });
-    const st = await daemonStatus({
-      path: h.socketPath,
-      cwd: "/w",
-      timeoutMs: 3000,
-    });
-    expect(st.namespaces).toEqual([
-      {
-        namespace: "ns",
-        agents: [
-          { name: "alpha", kind: "pi", machine: "laptop", state: "live" },
-        ],
-      },
-    ]);
-    const empty = await daemonStatus({
-      path: h.socketPath,
-      cwd: "/notes",
-      timeoutMs: 3000,
-    });
-    expect(empty).toMatchObject({
-      namespace: "notes",
-      namespaces: [{ namespace: "notes", agents: [] }],
-    });
-  });
-
-  it("writes the revoked marker when the hub revokes this machine", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ob-rv-"));
-    const onRevoked = vi.fn();
-    const h = await daemonHarness({
-      revokedFile: join(dir, "revoked"),
-      onRevoked,
-    });
-    h.hubSock()?.close(4403, "revoked");
-    await vi.waitFor(() => expect(onRevoked).toHaveBeenCalledOnce());
-    expect(JSON.parse(readFileSync(join(dir, "revoked"), "utf8")).at).toMatch(
-      /^\d{4}-/,
-    );
-    expect(existsSync(join(dir, "revoked"))).toBe(true);
-    process.exitCode = 0;
+    expect(h.of("status").every((f) => f.state !== "blocked")).toBe(true);
   });
 });
 
-describe("hub lastError", () => {
-  it("names a refused connection", async () => {
-    const srv = createServer();
-    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
-    const port = (srv.address() as { port: number }).port;
-    await new Promise<void>((r) => srv.close(() => r()));
-    const hub = new HubConnection(
-      opts(`ws://127.0.0.1:${port}/hub`, { backoffMs: () => 3_600_000 }),
-    );
-    hub.start();
-    await vi.waitFor(() => expect(hub.lastError).toBe("ECONNREFUSED"));
-    hub.stop();
+
+describe("set_status before hello_ok", () => {
+  it("open but no hello_ok yet, before or after a drop: hub_unavailable", async () => {
+    const h = await daemonHarness({ version: GATE, statusRosterMs: 10 });
+    const a = await h.adapter("A", { client_version: GATE });
+    const refused = { type: "error", code: "hub_unavailable" };
+    expect(
+      await a.request({ type: "set_status", state: "idle" }),
+    ).toMatchObject(refused);
+    await helloOk(h);
+    expect(
+      await a.request({ type: "set_status", state: "idle" }),
+    ).toMatchObject({ type: "status_set" });
+    // A reconnect forgets the last hub's version until its hello_ok.
+    const first = h.hubSock();
+    first?.terminate();
+    await vi.waitFor(() => expect(h.hubSock()).not.toBe(first));
+    await vi.waitFor(() => expect(h.daemon.hub.open).toBe(true));
+    expect(
+      await a.request({ type: "set_status", state: "idle" }),
+    ).toMatchObject(refused);
   });
 });

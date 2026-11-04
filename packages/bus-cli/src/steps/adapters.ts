@@ -472,7 +472,7 @@ const install: Record<Harness, Step> = {
   async codex(deps, notes) {
     if (!codexHere(deps)) return "absent";
     const p = paths(deps);
-    const entry = codexEntry(deps.busBin, deps.home, p.oa-bus);
+    const entry = codexEntry(deps.busBin, deps.home, p.busDir);
     const dest = target(p.codex);
     const { text, doc } = readToml(p.codex);
     const next = upsertCodexEntry(p.codex, text, doc, entry);
@@ -720,7 +720,7 @@ export function checkAdapters(
           // Unknown: only its place is compared.
           deps.busBin ?? ["oa-bus"],
           deps.home,
-          p.oa-bus,
+          p.busDir,
         ),
         deps.busBin !== undefined,
       ),

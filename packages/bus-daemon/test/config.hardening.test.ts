@@ -14,7 +14,7 @@ function home(body: string, mode = 0o600) {
   writeFileSync(join(d, "machine.json"), body);
   chmodSync(join(d, "machine.json"), mode);
   process.env.OA_BUS_HOME = d;
-  delete process.env.OA_BUS_HUB;
+  delete process.env.OA_BUS_INSTANCE;
 }
 
 describe("readConfig hardening", () => {
@@ -37,14 +37,14 @@ describe("readConfig hardening", () => {
     expect(() => readConfig()).toThrow();
   });
 
-  it("refuses an OA_BUS_HUB override to plain ws:// on a remote host", () => {
+  it("refuses an OA_BUS_INSTANCE override to plain ws:// on a remote host", () => {
     home(
       JSON.stringify({
         hub: "wss://bus.example.com/hub",
         machine_token: TOKEN,
       }),
     );
-    process.env.OA_BUS_HUB = "ws://evil.example.com/hub";
+    process.env.OA_BUS_INSTANCE = "ws://evil.example.com/hub";
     expect(() => readConfig()).toThrow();
   });
 
@@ -89,11 +89,11 @@ describe("readConfig hardening", () => {
     expect(() => readConfig()).toThrow(/chmod 600/);
   });
 
-  it("refuses an OA_BUS_HUB on another origin: the token goes only to the hub that issued it", () => {
+  it("refuses an OA_BUS_INSTANCE on another origin: the token goes only to the hub that issued it", () => {
     home(
       JSON.stringify({ hub: "https://bus.example.com", machine_token: TOKEN }),
     );
-    process.env.OA_BUS_HUB = "https://other.example.org";
+    process.env.OA_BUS_INSTANCE = "https://other.example.org";
     let msg = "";
     try {
       readConfig();
@@ -104,11 +104,11 @@ describe("readConfig hardening", () => {
     expect(msg).not.toContain(TOKEN);
   });
 
-  it("accepts an OA_BUS_HUB on the same origin, ws or http alike", () => {
+  it("accepts an OA_BUS_INSTANCE on the same origin, ws or http alike", () => {
     home(
       JSON.stringify({ hub: "https://bus.example.com", machine_token: TOKEN }),
     );
-    process.env.OA_BUS_HUB = "wss://bus.example.com/";
+    process.env.OA_BUS_INSTANCE = "wss://bus.example.com/";
     expect(readConfig().hub).toBe("wss://bus.example.com/");
   });
 });

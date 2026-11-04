@@ -290,7 +290,7 @@ const ours = (header: string) => {
  * Every run of lines our table or its subtables span, header included,
  * through the last line of content: comments and blanks before the next
  * table belong to that table. Install owns them all, so a subtable set
- * apart from ours (`[mcp_servers.oa-bus.env]` after `[desktop]`) is one too.
+ * apart from ours (`[mcp_servers.oa_bus.env]` after `[desktop]`) is one too.
  */
 function spans(lines: string[]): { from: number; to: number }[] {
   const kinds = scan(lines);

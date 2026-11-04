@@ -12,11 +12,11 @@ import {
 } from "../src/config.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
-const prev = { home: process.env.OA_BUS_HOME, hub: process.env.OA_BUS_HUB };
+const prev = { home: process.env.OA_BUS_HOME, hub: process.env.OA_BUS_INSTANCE };
 afterEach(async () => {
   for (const [k, v] of [
     ["OA_BUS_HOME", prev.home],
-    ["OA_BUS_HUB", prev.hub],
+    ["OA_BUS_INSTANCE", prev.hub],
   ] as const)
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -52,9 +52,9 @@ describe("lasting start failures carry a stable code", () => {
     expect(codeOf(ok, 0o000)).toBe(
       process.getuid?.() === 0 ? undefined : "CREDENTIALS_UNREADABLE",
     );
-    process.env.OA_BUS_HUB = "wss://other.example.com";
+    process.env.OA_BUS_INSTANCE = "wss://other.example.com";
     expect(codeOf(ok)).toBe("HUB_MISMATCH");
-    delete process.env.OA_BUS_HUB;
+    delete process.env.OA_BUS_INSTANCE;
     expect(codeOf(ok)).toBeUndefined();
   });
 
@@ -72,7 +72,7 @@ describe("lasting start failures carry a stable code", () => {
       { mode: 0o600 },
     );
     process.env.OA_BUS_HOME = dir;
-    delete process.env.OA_BUS_HUB;
+    delete process.env.OA_BUS_INSTANCE;
     const revoked = expect.objectContaining({ code: "REVOKED" });
     // An older daemon's marker names no token: it still holds.
     writeFileSync(join(dir, "revoked"), "{}");

@@ -280,8 +280,8 @@ describe("status: transcript state 7", () => {
     expect(ctx.all()).toEqual(blocks[3]);
   });
 
-  it("names machine.json's hub, not OA_BUS_HUB", async () => {
-    const ctx = fakeCtx({ env: { OA_BUS_HUB: "https://other.example.org" } });
+  it("names machine.json's hub, not OA_BUS_INSTANCE", async () => {
+    const ctx = fakeCtx({ env: { OA_BUS_INSTANCE: "https://other.example.org" } });
     approve(ctx);
     await statusCmd(ctx);
     expect(ctx.all()[2]).toBe("Hub      bus.example.com");
@@ -1124,8 +1124,8 @@ describe("uninstall: transcript states 9 and 10", () => {
       service: launchd(),
       which: ALL,
       exec: execWith(),
-      // machine.json's hub is the one to revoke on, whatever OA_BUS_HUB says.
-      env: { OA_BUS_HUB: "https://other.example.org" },
+      // machine.json's hub is the one to revoke on, whatever OA_BUS_INSTANCE says.
+      env: { OA_BUS_INSTANCE: "https://other.example.org" },
     });
     await installed(ctx);
     expect(await uninstall({ purge: true }, ctx)).toBe(0);
