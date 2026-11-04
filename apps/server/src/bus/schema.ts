@@ -136,6 +136,49 @@ create table if not exists send_keys (
 create index if not exists send_keys_agent on send_keys(from_agent);
 create index if not exists send_keys_due on send_keys(created_at);
 
+-- R393b (#1325, OpenBus #393): names an agent left by a rename, which still
+-- reach it until expires_at (LIMITS.formerNameGraceMs). kind is the left
+-- name's kind: 'chosen' rows are reserved (nameTaken) while live, 'default'
+-- rows only resolve. An agent's rows go when it closes or is revoked, or
+-- moves namespace or flips global; expired rows are purged by the alarm.
+-- Never equal (case-insensitively) to the agent's current name, and distinct
+-- per agent (lname). New tables, so create-if-not-exists adds them to an
+-- existing hub on its next wake; wipe() deletes them with everything else.
+create table if not exists former_names (
+  agent_id text not null,
+  org_id text not null,
+  name text not null,
+  lname text not null,
+  kind text not null,
+  expires_at integer not null
+);
+create index if not exists former_names_lname on former_names(org_id, lname, expires_at);
+create index if not exists former_names_agent on former_names(agent_id, expires_at);
+create index if not exists former_names_due on former_names(expires_at);
+
+-- R393b: every name minted for a default name_kind (<base>-<4 hex>). Kept
+-- for good: a minted name is never minted again, for any agent; its own
+-- agent gets it back for the same base while no one else holds it.
+create table if not exists minted_names (
+  org_id text not null,
+  lname text not null,
+  name text not null,
+  agent_id text not null,
+  lbase text not null,
+  created_at integer not null,
+  primary key (org_id, lname)
+);
+create index if not exists minted_names_agent on minted_names(agent_id, lbase, created_at);
+
+-- R393b: the rename rate limit, a sliding log: one row per name change
+-- (no-ops excluded), LIMITS.renamesPerHour per agent per rolling hour.
+create table if not exists rename_rl (
+  agent_id text not null,
+  at integer not null
+);
+create index if not exists rename_rl_agent on rename_rl(agent_id, at);
+create index if not exists rename_rl_at on rename_rl(at);
+
 
 create table if not exists meta (
   org_id text not null,
