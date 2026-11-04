@@ -23,6 +23,7 @@
  */
 import { delay, type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
+import { type BusAddress, ShareNoticeAgentsSchema } from "../bus-notices.js";
 import {
   type ErrorCode,
   QUOTA_MESSAGE,
@@ -42,7 +43,7 @@ import {
   usageLimit,
   VERSIONS_PAGE_SIZE,
 } from "../limits.js";
-import { viewerPath } from "../routes.js";
+import { R, viewerPath } from "../routes.js";
 import {
   AgentViaSchema,
   ArtifactPatchSchema,
@@ -317,6 +318,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const members: Member[] = f.members;
   const tokens = f.tokens;
   const clients = f.oauthClients;
+  let shareNoticeAgents: BusAddress[] = [];
   const data = new Map<string, Map<string, Map<string, DataDoc>>>();
   const storage = new Map<string, Map<string, StorageEntry>>();
   for (const d of f.data) {
@@ -532,7 +534,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       // Signed-URL uploads carry no session; public artifact reads are anonymous-OK.
       const needsAuth = mutating
         ? !/^\/uploads\/[^/]+$/.test(path)
-        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search)\/?$/.test(
+        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search|bus\/share-notices)\/?$/.test(
             path,
           );
       // Runtime routes (data/storage) check access first, as on the server:
@@ -569,6 +571,20 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       me.needsDisplayName = false;
       me.user.name = r.data.displayName;
       return HttpResponse.json(me);
+    }),
+    // #1292: the caller's share-notice picks; none by default.
+    http.get(`*${R.shareNotices}`, () =>
+      HttpResponse.json({ agents: shareNoticeAgents }),
+    ),
+    http.put(`*${R.shareNotices}`, async ({ request }) => {
+      const r = await body(request, ShareNoticeAgentsSchema);
+      if (r.error) return r.error;
+      const seen = new Set<string>();
+      shareNoticeAgents = r.data.agents.filter((a) => {
+        const k = `${a.namespace}\n${a.name}`;
+        return seen.has(k) ? false : (seen.add(k), true);
+      });
+      return HttpResponse.json({ agents: shareNoticeAgents });
     }),
     http.get("*/api/v1/artifacts", ({ request }) => {
       if (isAnon(request))

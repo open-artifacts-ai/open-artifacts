@@ -1340,6 +1340,14 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
+  // #1292: the caller's own picks; a real write sets none (the default).
+  "PUT /api/v1/bus/share-notices": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { agents: [] } }),
+      allow: ok(200),
+    },
+  },
   "POST /api/v1/members": {
     refuse: invalid(),
     real: {
@@ -1783,6 +1791,8 @@ const ADMIN = { user: true, space: "admin" } as const;
 const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["GET /api/v1/me", U, [200]],
   ["PATCH /api/v1/me", U],
+  ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
+  ["PUT /api/v1/bus/share-notices", org("mcp.connect")],
   ["GET /api/v1/members", org("members.manage"), [200]],
   ["POST /api/v1/members", org("members.manage")],
   ["PATCH /api/v1/members/:id", org("members.manage")],
