@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.115.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.114.0...v0.115.0) (2026-11-04)
+
+
+### Features
+
+* **bus:** the /bus page, on the real hub and share notices ([#1300](https://github.com/open-artifacts-ai/open-artifacts/issues/1300)) ([#1379](https://github.com/open-artifacts-ai/open-artifacts/issues/1379)) ([5045db0](https://github.com/open-artifacts-ai/open-artifacts/commit/5045db0360717ac8ecc07be90bafc6f67f6a02a3))
+* **ops:** test-member can sign in as admin and write an MCP config outside the repo ([#1288](https://github.com/open-artifacts-ai/open-artifacts/issues/1288)) ([#1385](https://github.com/open-artifacts-ai/open-artifacts/issues/1385)) ([e96540f](https://github.com/open-artifacts-ai/open-artifacts/commit/e96540ff971169032eb301391a1e8d4a23e6a8e8))
+
+
+### Bug Fixes
+
+* **server:** a move keeps chosen former names reserved; global sends see them (port of open-bus [#451](https://github.com/open-artifacts-ai/open-artifacts/issues/451), [#452](https://github.com/open-artifacts-ai/open-artifacts/issues/452)) ([#1388](https://github.com/open-artifacts-ai/open-artifacts/issues/1388)) ([ee2cded](https://github.com/open-artifacts-ai/open-artifacts/commit/ee2cdedfdb275a7a69ceb9b9a15026e60773a507))
+* **skill,agents:** close the retro review of [#1324](https://github.com/open-artifacts-ai/open-artifacts/issues/1324) and [#1334](https://github.com/open-artifacts-ai/open-artifacts/issues/1334) ([#1366](https://github.com/open-artifacts-ai/open-artifacts/issues/1366)) ([8a2ad1d](https://github.com/open-artifacts-ai/open-artifacts/commit/8a2ad1d93667d98615ee0a87acfc3010de2cc5a9))
+
 ## [0.114.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.113.0...v0.114.0) (2026-11-04)
 
 
