@@ -2441,3 +2441,30 @@ describe("#1343: FLEET_SMOKE off keeps the passive soak", () => {
     }
   });
 });
+
+describe("#1343: the smoke mark is the canary's own", () => {
+  it("a new FLEET_CANARY ignores the old canary's fleet_smoked mark", async () => {
+    const oldCanary = await on(TARGET, { created: 0 });
+    const canary = await on(TARGET, { created: 1 });
+    await soaked(oldCanary);
+    await soaked(canary);
+    await db
+      .prepare(
+        "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2)",
+      )
+      .bind(`${FLEET_SMOKED_PREFIX}${TARGET}:${oldCanary}`, NOW - MIN)
+      .run();
+    await on("0.92.0", { created: 5 });
+    const f = fakes({
+      canary,
+      smoke: [{ ok: false, kind: "config", check: "token" }],
+    });
+    await fleetDue(f.env, NOW, f.opts);
+    // The new canary is smoked itself, and until it passes nothing moves.
+    expect(f.smokes.map((s) => s.installId)).toEqual([canary]);
+    expect(await queued()).toEqual([]);
+    expect(await stateKeys(`${FLEET_BLOCKED_PREFIX}${TARGET}`)).toEqual([
+      `${FLEET_BLOCKED_PREFIX}${TARGET}`,
+    ]);
+  });
+});
