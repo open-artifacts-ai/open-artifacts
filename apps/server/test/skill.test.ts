@@ -407,6 +407,30 @@ describe("skill.md frontmatter (agentskills.io)", () => {
     expect(md).toContain("\n# Open Artifacts (app.localhost)\n");
   });
 
+  it("the description fires on agent collaboration, not only on publishing", async () => {
+    // Eval finding: Claude Code never opened the skill in 24 runs, because the
+    // description only offered publish and share triggers.
+    const { description } = frontmatter(await skill());
+    for (const trigger of [
+      "peer agent",
+      "relayed approval",
+      "artifact id to keep updated",
+      "a live-data write",
+      "choice put to the human",
+      "status page",
+    ])
+      expect(description, trigger).toContain(trigger);
+    for (const publishing of ["publish", "share", "list", "restore"])
+      expect(description, publishing).toContain(publishing);
+    // The collaborative triggers must stay in one clause, so they cannot be
+    // scattered into a sentence about something else.
+    expect(description).toContain(
+      "Also use when agents work together: a peer message, a relayed approval, an artifact id to keep updated",
+    );
+    // Frontmatter rules: a quoted YAML scalar, one line.
+    expect(description).not.toMatch(/["\n]/);
+  });
+
   it("a 253-char host still fits: name ≤64 with a hash, description ≤1024", async () => {
     const host = `${"a".repeat(60)}.${"b".repeat(60)}.${"c".repeat(60)}.${"d".repeat(60)}.example.com`;
     const md = await renderSkill({

@@ -89,20 +89,44 @@ test.describe("lifecycle", () => {
   };
 
   test("upgrade to another release", async ({ page }) => {
-    await page.goto(`/installs/${LEO}`);
+    // Every seeded install is on the platform's release (1.42.0), which R5
+    // would refuse to go below (downgrade_refused). So create one on 1.41.2,
+    // then upgrade it to 1.42.0, a pair the real API accepts.
+    await page.goto("/installs/new");
+    await page.getByLabel("Slug").fill("e2e-upgrade");
+    await page.getByLabel("Owner email").fill("owner@example.com");
+    await expect(
+      page.getByText("e2e-upgrade.open-artifacts-staging.app is available."),
+    ).toBeVisible();
+    const release = page.getByRole("combobox", { name: "Release" });
+    await release.click();
+    await page.getByRole("option", { name: "1.41.2", exact: true }).click();
+    await expect(release).toHaveText("1.41.2");
+    await page.getByRole("button", { name: "Create install" }).click();
+    await jobDone(page);
+    await page.getByRole("link", { name: "e2e-upgrade" }).first().click();
+    await expect(
+      page.getByRole("heading", { name: "e2e-upgrade" }),
+    ).toBeVisible();
+
     await page.getByRole("button", { name: "Upgrade" }).click();
     const dialog = page.getByRole("dialog");
     const version = dialog.getByRole("combobox", { name: "Version" });
+    await expect(version).toHaveText("The platform's release");
     await version.click();
-    await page.getByRole("option", { name: "1.41.2", exact: true }).click();
-    await expect(version).toHaveText("1.41.2");
+    // Only releases above the install's own are offered.
+    await expect(
+      page.getByRole("option", { name: "1.41.2", exact: true }),
+    ).toHaveCount(0);
+    await page.getByRole("option", { name: "1.42.0", exact: true }).click();
+    await expect(version).toHaveText("1.42.0");
     await dialog.getByRole("button", { name: "Upgrade" }).click();
     await expect(
-      page.getByRole("heading", { name: "Upgrading leo" }),
+      page.getByRole("heading", { name: "Upgrading e2e-upgrade" }),
     ).toBeVisible();
     await jobDone(page);
-    await page.getByRole("link", { name: "leo" }).first().click();
-    await expect(page.getByText("1.41.2").first()).toBeVisible();
+    await page.getByRole("link", { name: "e2e-upgrade" }).first().click();
+    await expect(page.getByText("1.42.0").first()).toBeVisible();
   });
 
   test("pause with a reason", async ({ page }) => {

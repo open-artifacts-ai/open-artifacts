@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { skillEtagPattern, spacesOn } from "../smoke-setup/spaces.ts";
 
 const base = process.env.STAGING_URL;
+const pat = process.env.STAGING_OWNER_PAT;
 
 describe.skipIf(!base)("staging smoke: skill.md", () => {
   it("GET /skill.md is this instance's skill, at /healthz's version", async () => {
@@ -17,13 +19,10 @@ describe.skipIf(!base)("staging smoke: skill.md", () => {
       version: string;
     };
     expect(md).toContain(`  version: "${version}"\n`);
-    // Cloudflare weakens the ETag when it compresses the response (W/"…").
+    // "nospaces-" exactly when spaces is off (#829); either without a PAT.
+    const spaces = pat ? await spacesOn(base ?? "", pat) : undefined;
     const etag = r.headers.get("etag") ?? "";
-    expect(etag).toMatch(
-      new RegExp(
-        `^(W/)?"${version.replace(/[.+]/g, "\\$&")}-(free|paid)-[0-9a-f]{8}"$`,
-      ),
-    );
+    expect(etag).toMatch(skillEtagPattern(version, spaces));
     const nm = await fetch(`${base}/skill.md`, {
       headers: { "if-none-match": etag },
     });

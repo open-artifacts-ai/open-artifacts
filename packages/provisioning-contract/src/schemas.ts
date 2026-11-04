@@ -322,7 +322,17 @@ export const ReleaseSchema = z.object({
   latest: z.boolean(),
 });
 export type Release = z.infer<typeof ReleaseSchema>;
-export const ReleasesSchema = z.object({ items: z.array(ReleaseSchema) });
+/**
+ * R16. `platform` is the platform's own release (its deploy tag). An explicit
+ * create or upgrade to a release newer than `platform` is refused with
+ * release_ahead_of_platform; null means the platform has no stable tag, and
+ * then every create and upgrade is refused, so nothing is installable.
+ */
+export const ReleasesSchema = z.object({
+  items: z.array(ReleaseSchema),
+  platform: VersionSchema.nullable(),
+});
+export type Releases = z.infer<typeof ReleasesSchema>;
 
 export const SlugCheckSchema = z.object({
   slug: z.string(),

@@ -26,6 +26,9 @@ importers:
 
   apps/admin:
     dependencies:
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
       '@oa/provisioning-contract':
         specifier: workspace:*
         version: link:../../packages/provisioning-contract
