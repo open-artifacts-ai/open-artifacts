@@ -291,6 +291,14 @@ describe("runDaemon claude session sync", () => {
         resolveNamespace: () => ({ namespace: "own", global, source: "cwd" }),
       });
       await h.next("agent_up");
+      // Replies go once the link's hello_ok is in.
+      h.toDaemon({
+        id: "w",
+        type: "hello_ok",
+        machine_id: "1".repeat(16),
+        machine_label: "laptop",
+        server_version: "1",
+      });
       h.toDaemon({
         ...deliverFrame("mmmmmmmmmmmmmmm1", "s4242"),
         namespace: toNamespace,

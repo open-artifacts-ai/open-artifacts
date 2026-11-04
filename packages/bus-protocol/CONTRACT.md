@@ -63,7 +63,8 @@ opening the URI.
 States: `pending | delivered | expired | refused`. Refusal reasons
 (`REFUSAL_REASONS`): `unknown_agent`, `closed`, `inbox_full`, `too_large`,
 `other_namespace`, `revoked`, `ambiguous`, `role_vacant` (only to a
-`roles`-cap socket, see Role addresses). `expired` may carry
+`roles`-cap socket, see Role addresses), `agent_gone` (only to an `ids`-cap
+socket, see Reply ids). `expired` may carry
 `recipient_closed`. The `receipt` reply to `send` is only `pending` or
 `refused`; `receipt_update` may carry any state.
 
@@ -80,7 +81,7 @@ Client to hub (`CLIENT_FRAMES`):
 - `agent_up {agent_ref, kind, proposed_name, namespace, global, name_kind?}`
 - `agent_down {agent_ref}`
 - `sessions {open[], closed[]}`
-- `send {from_ref, to_name, to_namespace?, body}`
+- `send {from_ref, to_name, to_namespace?, to_id?, body}`: `to_id` (a reply, the answered mail's `from_id`) makes the hub deliver only to that agent; if `to_name` resolves to another agent or none, the send is refused `agent_gone`.
 - `ack {msg_id}`
 - `refuse {msg_id, reason: "closed", detail}`
 - `list {from_ref}`
@@ -96,7 +97,7 @@ Hub to client (`SERVER_FRAMES`):
 - `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?, former_names?}]}`; `kind` is any kind token.
 - `body {msg_id, body}`
 - `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
-- `deliver {msg_id, to_ref, from_name, namespace, body | notice}`
+- `deliver {msg_id, to_ref, from_name, from_id?, namespace, body | notice}`; `from_id` is the sender's agent id.
 - `receipt_update {msg_id, state, reason?}`: the schema shares `to_name?` with `receipt`, but the hub sets it only on `receipt`.
 - `roster_changed {namespace}`
 - `renamed {agent_ref, bus_name, former?}`: reply to `rename`. `former` is the name left, absent on a no-op. Names compare case-insensitively.
@@ -110,6 +111,28 @@ depth <= 4, `:` plus `,` <= 16384, structural characters <= 65536; server
 frames depth <= 5, 65536 and 131072, so a full roster of rows with status
 fields and 5 `former_names` fits. Either way at most 64 `:` plus `,` directly
 in one object.
+
+## Reply ids (`BUS_CAPS.ids`)
+
+A native reply goes to the agent that wrote the message it answers, never to
+whoever holds the name now.
+
+- `ids` in `hello.caps`: the hub sends `deliver.from_id` (the writer's agent
+  id) and the `agent_gone` refusal only to that socket, and answers
+  `hello_ok.caps` (what it supports) only to a hello that listed `ids`. Every
+  other client, a rename-only one included, decodes `hello_ok` strictly.
+- `send.to_id`: the client sends it only when the link's `hello_ok.caps`
+  listed `ids`. The hub refuses `agent_gone` when `to_name` now resolves to
+  another agent or none (an old socket reads `unknown_agent`). A former name
+  still reaching the same agent is delivered. `to_id` is part of the send's
+  idempotency hash.
+- The local client keeps one return socket per (session, namespace, peer
+  name, writer id), refuses a reply more than the mail TTL (1 h) after the
+  mail it answers, and, when the hub lists `ids`, a reply on a socket revived
+  without its writer's id. It tells the session, as information.
+- Compatibility, pre-launch: the local client always sends `hello.caps`, and a
+  hub before v0.111.0 refuses a hello with `caps` (`bad_frame`). There is no
+  shim: installs are upgraded instead (the only instance is the owner's).
 
 ## Renames (#393)
 

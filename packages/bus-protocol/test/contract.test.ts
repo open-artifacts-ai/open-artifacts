@@ -74,6 +74,7 @@ describe("contract is pinned", () => {
       "revoked",
       "ambiguous",
       "role_vacant",
+      "agent_gone",
     ]);
   });
 

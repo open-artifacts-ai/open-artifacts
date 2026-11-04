@@ -224,6 +224,19 @@ const renameGated = (ws: WebSocket): boolean => {
 };
 
 /**
+ * Reply ids (BUS_CAPS.ids): `deliver.from_id`, `send.to_id` and the
+ * `agent_gone` refusal go only to a socket whose hello listed it. Fails
+ * closed, like renameGated.
+ */
+const idsGated = (ws: WebSocket | null): boolean => {
+  const caps = ws ? attachmentOf(ws)?.caps : undefined;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.ids);
+};
+
+/** What this hub supports, listed in `hello_ok.caps` to a hello that listed ids. */
+const HUB_CAPS = [BUS_CAPS.rename, BUS_CAPS.roles, BUS_CAPS.ids];
+
+/**
  * Role addresses (#1296): `role_vacant` and a role hit's receipt `to_name`
  * go only to a socket whose hello listed BUS_CAPS.roles. Fails closed, as
  * renameGated does.
@@ -251,11 +264,15 @@ const toNameShown = (
 
 /**
  * The refusal reason a socket may see: `role_vacant` only on a roles-capable
- * socket (an older client's strict decoder refuses the reason, failing the
- * whole frame); any other gets `unknown_agent`, as if the role did not exist.
+ * socket and `agent_gone` only on an ids-capable one (an older client's
+ * strict decoder refuses the reason, failing the whole frame); any other gets
+ * `unknown_agent`, as if the role or the agent did not exist.
  */
 const wireReason = (ws: WebSocket, reason: RefusalReason): RefusalReason =>
-  reason === "role_vacant" && !rolesGated(ws) ? "unknown_agent" : reason;
+  (reason === "role_vacant" && !rolesGated(ws)) ||
+  (reason === "agent_gone" && !idsGated(ws))
+    ? "unknown_agent"
+    : reason;
 
 function machineOf(ws: WebSocket): string | null {
   return attachmentOf(ws)?.machineId ?? null;
@@ -1616,8 +1633,12 @@ function payloadHash(f: SendFrame, sender: AgentRow): string {
     sender.global !== 1 && f.to_namespace === sender.namespace
       ? ""
       : (f.to_namespace ?? "");
+  // A reply's to_id is part of what was sent: a resend with another one is
+  // a different send, never the earlier receipt. Without one the hash is
+  // unchanged, so keys stored before to_id still match.
+  const to = f.to_id === undefined ? "" : `\n${f.to_id}`;
   return createHash("sha256")
-    .update(`${f.to_name.toLowerCase()}\n${ns}\n${body}`)
+    .update(`${f.to_name.toLowerCase()}\n${ns}\n${body}${to}`)
     .digest("hex");
 }
 
@@ -2669,6 +2690,9 @@ export class BusHub extends DurableObject<Env> {
           machine_id: machine.id,
           machine_label: machine.label,
           server_version: VERSION,
+          // Only to a hello that listed ids: any other client decodes hello_ok
+          // strictly, a rename-only one included.
+          ...(hasCap(f, BUS_CAPS.ids) ? { caps: [...HUB_CAPS] } : {}),
         });
         return;
       case "sessions": {
@@ -3049,6 +3073,13 @@ export class BusHub extends DurableObject<Env> {
     }
     if (key.dropped && this.#sendKeys !== null) this.#sendKeys--;
     const res = resolveTarget(sql, sender, f.to_name, f.to_namespace, now);
+    // A reply (`to_id`) goes only to the agent it answers: never to whoever
+    // holds the name now (wireReason shows agent_gone only to an ids socket).
+    // Role resolution stays inside resolveTarget, before this check.
+    if (f.to_id !== undefined && (!res.ok || res.agent.id !== f.to_id)) {
+      refuseSend(ws, f.id, "agent_gone");
+      return;
+    }
     if (!res.ok) {
       refuseSend(ws, f.id, res.reason);
       return;
@@ -3114,6 +3145,7 @@ export class BusHub extends DurableObject<Env> {
       msg_id: msgId,
       to_ref: target.nativeRef,
       from_name: sender.name,
+      ...(idsGated(socket) ? { from_id: sender.id } : {}),
       namespace: sender.namespace,
     } as const;
     if (inline) sendFrame(socket, { ...head, body: f.body });
@@ -3746,6 +3778,7 @@ export class BusHub extends DurableObject<Env> {
         msg_id: r.id,
         to_ref: agent.nativeRef,
         from_name: r.fromName,
+        ...(idsGated(ws) ? { from_id: r.fromAgent } : {}),
         namespace: r.namespace,
       } as const;
       if (r.size > LIMITS.inlineBodyBytes) {
