@@ -1,0 +1,3 @@
+<!-- Picked address with no running agent. The hidden input joins the Save form so Save keeps it.
+     Fields: {{address}} {{name}} {{namespace}} {{share_action}} {{csrf_token}}. -->
+<li class="row"><input type="hidden" form="share-save" name="address" value="{{address}}"><span><span class="name">{{name}}</span> <span class="ns">· {{namespace}} · not running</span></span><form method="post" action="{{share_action}}"><input type="hidden" name="csrf" value="{{csrf_token}}"><button type="submit" class="link" name="remove" value="{{address}}" aria-label="Remove {{name}} · {{namespace}}">Remove</button></form></li>

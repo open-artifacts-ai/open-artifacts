@@ -1734,6 +1734,25 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
+  // #1296: the caller's own role addresses. A vacant role (agentId null) is
+  // 200 on a member's bus, or the named conflict while they have none.
+  "PUT /api/v1/bus/roles": {
+    refuse: invalid(),
+    real: {
+      req: () => ({
+        path: "",
+        body: { namespace: "probe/ns", name: "probe-role", agentId: null },
+      }),
+      allow: either(ok(200), code("conflict")),
+    },
+  },
+  // Idempotent: an unknown id answers 204 too.
+  "DELETE /api/v1/bus/roles/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/bus/roles/probe-role" }),
+      allow: ok(204),
+    },
+  },
 };
 
 /** A short random tag (space names). */
@@ -1880,6 +1899,10 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["GET /api/v1/bus/machines", U, [200]],
   ["DELETE /api/v1/bus/machines/:id", U],
   ["GET /api/v1/bus/agents", org("mcp.connect"), [200]],
+  // #1296: role addresses; writes also need a cookie session (the handler).
+  ["GET /api/v1/bus/roles", org("mcp.connect"), [200]],
+  ["PUT /api/v1/bus/roles", org("mcp.connect")],
+  ["DELETE /api/v1/bus/roles/:id", org("mcp.connect")],
 ];
 
 /** Every instance route (an org or user policy) not reached through an artifact. */
@@ -1939,6 +1962,12 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /bus/approve",
   "POST /bus/approve",
   "GET /bus/connect",
+  // #1300: the member's /bus page (cookie session and form token, checked
+  // by the handler; bus.page.test.ts covers each).
+  "GET /bus",
+  "GET /bus/machines/:id/revoke",
+  "POST /bus/machines/:id/revoke",
+  "POST /bus/share-notices",
   "GET /a/:id",
   "GET /a/:id/full",
   "GET /a/:id/v/:v",

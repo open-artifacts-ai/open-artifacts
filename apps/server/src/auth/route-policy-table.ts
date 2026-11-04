@@ -260,10 +260,32 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
       "bus code check and decision; session, form token, mcp.connect, RL per member and IP",
   },
   "GET /bus/connect": { signed: "bus machine token (oa_machine_), D1" },
+  // #1300 the member's server-rendered /bus page (bus/page.ts): the handler
+  // reads the cookie session (a token is 401, no session redirects to
+  // sign-in), checks canConnect or revoke-only, and every POST checks its
+  // form token. 404 while the bus is off (busOn false), as the routes above.
+  "GET /bus": {
+    public:
+      "the member's bus page; redirects to sign-in, checks canConnect or revoke-only",
+  },
+  "GET /bus/machines/:id/revoke": {
+    public: "revoke confirm; the caller's own machine only",
+  },
+  // A capped caller can revoke their own machine (as DELETE R.busMachines).
+  "POST /bus/machines/:id/revoke": {
+    public: "revoke; form CSRF, the caller's own machine only",
+  },
+  "POST /bus/share-notices": {
+    public: "share notices; form CSRF, checks canConnect",
+  },
   "GET /api/v1/bus/machines": { user: "the caller's bus machines" },
   // In CAPPED_ALLOWED: a capped caller can always revoke.
   "DELETE /api/v1/bus/machines/:id": { user: "the caller's bus machines" },
   "GET /api/v1/bus/agents": { org: "mcp.connect" },
+  // #1296 role addresses; PUT and DELETE browser sessions only (handler).
+  "GET /api/v1/bus/roles": { org: "mcp.connect" },
+  "PUT /api/v1/bus/roles": { org: "mcp.connect" },
+  "DELETE /api/v1/bus/roles/:id": { org: "mcp.connect" },
   "GET /api/v1/oauth-clients": { user: "the caller's grants" },
   "PATCH /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
   "DELETE /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },

@@ -1,5 +1,6 @@
 import {
   BUS_ROUTES,
+  BusNameSchema,
   DeviceCodeRequestSchema,
   type DeviceCodeResponse,
   DeviceTokenRequestSchema,
@@ -14,10 +15,10 @@ import {
   newUserCode,
   normalizeUserCode,
 } from "@oa/bus-protocol";
-import { AUTH, type Member, R } from "@oa/shared";
+import { AUTH, BusRolePutSchema, type Member, R } from "@oa/shared";
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
-import { requireUser } from "../auth/authz.js";
+import { interactiveSession, requireUser } from "../auth/authz.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { jsonBody } from "../http/body.js";
@@ -35,9 +36,12 @@ import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import {
   busOn,
+  deleteBusRole,
   listBusAgents,
   listBusMachines,
+  listBusRoles,
   MAX_ACTIVE_MACHINES,
+  putBusRole,
   revokeBusMachine,
 } from "../services/bus.js";
 import { getSettings } from "../services/members.js";
@@ -368,7 +372,9 @@ const membersOnly = () =>
   );
 const tooMany = () =>
   messagePage("Too many requests", "Wait a minute, then try again.", 429);
-const busOff = () => messagePage("Not found", "There is nothing here.", 404);
+/** The answer of every bus page while the bus is off (busOn false); the /bus page (#1300) uses it too. */
+export const busOff = () =>
+  messagePage("Not found", "There is nothing here.", 404);
 const pageExpired = () =>
   messagePage(
     "This page expired",
@@ -661,4 +667,48 @@ export function mountBus(app: AppType): void {
     if (!canConnect(user)) throw notFound();
     return c.json(await listBusAgents(c.env, user.id));
   });
+
+  // #1296 role addresses. The gate allows mcp.connect; a write also takes a
+  // person in a browser (never a PAT, an OAuth grant or a machine token), so
+  // no AI agent can set, re-point or claim a role.
+  app.get(R.busRoles, async (c) => {
+    const user = requireUser(c);
+    if (!canConnect(user)) throw notFound();
+    return c.json(await listBusRoles(c.env, user.id));
+  });
+  app.put(R.busRoles, async (c) => {
+    const user = roleWriter(c);
+    const body = await jsonBody(c, BusRolePutSchema);
+    // The bus's own name rules (reserved names) on top of the wire shape.
+    if (!BusNameSchema.safeParse(body.name).success)
+      throw new ApiError("bad_request", "Invalid role", { field: "name" });
+    return c.json({
+      role: await putBusRole(
+        c.env,
+        user.id,
+        body.namespace,
+        body.name,
+        body.agentId,
+      ),
+    });
+  });
+  app.delete(`${R.busRoles}/:id`, async (c) => {
+    const user = roleWriter(c);
+    const id = c.req.param("id") ?? "";
+    // Role ids are bus ids; anything beyond that shape is never one.
+    if (!ROLE_ID.test(id))
+      throw new ApiError("bad_request", "Invalid id", { field: "id" });
+    await deleteBusRole(c.env, user.id, id);
+    return c.body(null, 204);
+  });
+}
+
+/** A role id in a DELETE path: at most 64 id characters. */
+const ROLE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** A role write's caller: canConnect, in an interactive cookie session (else 404). */
+function roleWriter(c: Context<AppEnv>) {
+  const user = requireUser(c);
+  if (!canConnect(user) || !interactiveSession(c)) throw notFound();
+  return user;
 }

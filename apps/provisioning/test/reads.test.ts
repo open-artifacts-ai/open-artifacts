@@ -634,7 +634,7 @@ describe("R16 releases", () => {
   it("via PROVISIONER.releases(), cached 60 s per isolate", async () => {
     const e = fakeEnv();
     const r = await call(e, ADMIN_P, "R16");
-    expect(r.body).toEqual({ items: FAKE_RELEASES });
+    expect(r.body).toEqual({ items: FAKE_RELEASES, platform: "1.42.0" });
     await call(e, ADMIN_P, "R16");
     const n = () =>
       e.provisioner.calls.filter((c) => c.method === "releases").length;
@@ -642,6 +642,35 @@ describe("R16 releases", () => {
     now += 61_000;
     await call(e, ADMIN_P, "R16");
     expect(n()).toBe(2);
+  });
+
+  it("platform is the version tag's release, null without a stable tag (#1384)", async () => {
+    const platform = async (tag?: string) =>
+      (
+        await call(
+          fakeEnv({
+            CF_VERSION_METADATA: tag === undefined ? undefined : { tag },
+          }),
+          ADMIN_P,
+          "R16",
+        )
+      ).body.platform;
+    expect(await platform("v1.41.2")).toBe("1.41.2");
+    expect(await platform(undefined)).toBeNull();
+    expect(await platform("")).toBeNull();
+    expect(await platform("v1.42.0-rc.1")).toBeNull();
+    expect(await platform("1.42.0")).toBeNull();
+  });
+
+  it("platform is read per request, not cached with the list", async () => {
+    const e = fakeEnv();
+    expect((await call(e, ADMIN_P, "R16")).body.platform).toBe("1.42.0");
+    e.env.CF_VERSION_METADATA = { tag: "v1.41.2" };
+    const r = await call(e, ADMIN_P, "R16");
+    expect(r.body.platform).toBe("1.41.2");
+    expect(
+      e.provisioner.calls.filter((c) => c.method === "releases").length,
+    ).toBe(1);
   });
 });
 

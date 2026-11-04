@@ -1,4 +1,5 @@
 import {
+  BUS_CAPS,
   type ClientFrame,
   decodeServerFrame,
   encodeFrame,
@@ -179,6 +180,8 @@ export class HubConnection {
         type: "hello",
         machine_label: this.opts.label,
         client_version: this.opts.version,
+        // Reply ids: the hub then names each sender's agent (deliver.from_id).
+        caps: [BUS_CAPS.ids],
       });
       this.#guard("sessions", () => {
         this.send({

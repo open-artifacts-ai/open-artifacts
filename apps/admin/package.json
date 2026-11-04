@@ -30,6 +30,7 @@
     "vitest": "^4.1.12"
   },
   "dependencies": {
+    "@oa/provision": "workspace:*",
     "@oa/provisioning-contract": "workspace:*",
     "@oa/shared": "workspace:*",
     "@oa/ui": "workspace:*",

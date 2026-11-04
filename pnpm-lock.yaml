@@ -26,6 +26,9 @@ importers:
 
   apps/admin:
     dependencies:
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
       '@oa/provisioning-contract':
         specifier: workspace:*
         version: link:../../packages/provisioning-contract
@@ -1065,6 +1068,9 @@ importers:
       '@oa/auth-core':
         specifier: workspace:*
         version: link:../../packages/auth-core
+      '@oa/dashboard':
+        specifier: workspace:*
+        version: link:../../apps/dashboard
       '@oa/provisioning-contract':
         specifier: workspace:*
         version: link:../../packages/provisioning-contract

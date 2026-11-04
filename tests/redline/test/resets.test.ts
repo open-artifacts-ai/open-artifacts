@@ -103,11 +103,13 @@ describe("resetSummary", () => {
         "reset: ECONNRESET GET /v1/x host aa, reused socket, idle 9 ms, request 2 on it",
         "reset: ECONNRESET PUT /v1/y host bb, new socket",
         "probe PUT retried once",
+        "request retried: ECONNRESET GET /v1/x host aa, reused socket, idle 9 ms, request 2 on it; recovered on a new socket",
+        "request retried: ECONNRESET GET /v1/z host aa, reused socket, idle 1 ms, request 3 on it; failed again (ECONNRESET, new socket)",
         "connections: 90 requests, 10 on new sockets",
         "connections: 10 requests, 5 on new sockets",
       ]),
     ).toBe(
-      "Resets: 2 (1 on reused sockets), of 100 requests (15 on new sockets)",
+      "Resets: 2 (1 on reused sockets), of 100 requests (15 on new sockets); retried 2, recovered 1",
     );
     expect(resetSummary(["something else"])).toBeUndefined();
   });

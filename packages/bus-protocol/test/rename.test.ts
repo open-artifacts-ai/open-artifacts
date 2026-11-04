@@ -45,7 +45,10 @@ describe("limits (R393a)", () => {
     expect(LIMITS.formerNameGraceMs).toBe(LIMITS.mailTtlSec * 1000);
     expect(LIMITS.maxFormerNames).toBe(5);
     expect(LIMITS.renamesPerHour).toBe(10);
-    expect(RENAME_MESSAGES).toEqual({ rate: "Too many renames" });
+    expect(RENAME_MESSAGES).toEqual({
+      rate: "Too many renames",
+      room: "Too many recent names",
+    });
   });
 });
 
@@ -96,7 +99,11 @@ describe("hello caps", () => {
   });
 
   it("hasCap reads the hello", () => {
-    expect(BUS_CAPS).toEqual({ rename: "rename" });
+    expect(BUS_CAPS).toEqual({
+      rename: "rename",
+      roles: "roles",
+      ids: "ids",
+    });
     expect(hasCap({ caps: ["x", "rename"] }, BUS_CAPS.rename)).toBe(true);
     expect(hasCap({ caps: ["x"] }, BUS_CAPS.rename)).toBe(false);
     expect(hasCap({}, BUS_CAPS.rename)).toBe(false);

@@ -514,6 +514,29 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     ]);
   }, 60_000);
 
+  it("no response (#1133): a case-body fetch that got none reports infra, not fail", () => {
+    const r = run("no-response", false);
+    expect(r.status).not.toBe(0);
+    expect(r.report.nonPass).toHaveLength(1);
+    expect(r.report.nonPass[0]).toMatchObject({
+      name: "fixture: the case under test",
+      level: "infra",
+    });
+    expect(r.report.nonPass[0]?.reason).toMatch(
+      /^infra: no_response [A-Z_]+ GET \/x host [0-9a-f]{8}, new socket; not retried: not on a reused socket$/,
+    );
+    expect(r.report.counts.fail).toBe(0);
+  }, 60_000);
+
+  it("no response (#1133) judged by an assertion: still fail", () => {
+    const r = run("no-response-asserted", false);
+    expect(r.report.nonPass).toHaveLength(1);
+    expect(r.report.nonPass[0]).toMatchObject({
+      level: "fail",
+      reason: "expected a response, got fetch failed",
+    });
+  }, 60_000);
+
   it("fail: codes, states, cookies, tokens and emails are redacted from the reason", () => {
     const r = run("secret-fail", false);
     const reason = r.report.nonPass[0]?.reason ?? "";

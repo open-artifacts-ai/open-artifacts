@@ -62,7 +62,7 @@ export const skillEnabled = (env: Pick<Env, "SKILL_MD">): boolean =>
  */
 export const busLine = (on: boolean): string =>
   on
-    ? "- Find peers by bus name with list_agents, and reply by name. Local session lists don't show agents on other machines.\n"
+    ? "- Find peers by bus name with list_agents (it comes from the bus client, not from /mcp), and reply by that name: your harness's own session list does not show agents on other machines.\n"
     : "";
 
 export const skillUrl = (env: SkillEnv): string | undefined =>

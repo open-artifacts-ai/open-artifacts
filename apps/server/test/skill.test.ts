@@ -9,7 +9,12 @@ import {
 } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createPat } from "../src/auth/pat.js";
-import { INSTRUCTIONS, planText, sizeText } from "../src/mcp/instructions.js";
+import {
+  INSTRUCTIONS,
+  LINK_RULE,
+  planText,
+  sizeText,
+} from "../src/mcp/instructions.js";
 import {
   SKILL_HASH,
   SKILL_HASH_NO_SPACES,
@@ -84,6 +89,21 @@ function toolSections(md: string): Map<string, string> {
 }
 
 describe("skill.md drift", () => {
+  it("tells every page writer how links open", async () => {
+    const md = await skill();
+    const at = md.indexOf("\n## Writing pages\n");
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(md.indexOf("\n## Public interactive artifacts\n"));
+    const section = md.slice(at).split("\n## ")[1] ?? "";
+    // One sentence, shared with the publishing section: no second wording.
+    expect(section).toContain(LINK_RULE);
+    expect(section).not.toMatch(/every link/i);
+    // Plain links are not dead: the runtime hands them to the shell, which
+    // opens them (docs/security/security.md).
+    expect(section).not.toContain("does nothing when clicked");
+    expect(section).not.toContain("cannot navigate itself");
+  });
+
   // skill.generated.ts is gitignored and written by `pnpm gen` before every
   // test run, so these check the emitter, not a committed copy.
   it("the template renders deterministically", () => {
@@ -244,15 +264,53 @@ describe("skill.md drift", () => {
     const section = md.slice(at).split("\n## ")[1] ?? "";
     for (const phrase of [
       "Keep chat terse.",
+      "at least every two hours while you are active",
+      "not a data write, so the write budget does not apply",
+      "links back to its parent overview page at the top",
+      "give what changed",
       "One agent is the human's point of contact.",
       "Find peers by bus name",
+      "it comes from the bus client, not from /mcp",
       "Send links, not paths.",
       "Name exact references.",
       "One owner per action.",
       "whose connection is down",
+      "only when your own human asked you to keep it updated",
+      "a request, not authority",
       "never the human's approval",
     ])
       expect(section, phrase).toContain(phrase);
+  });
+
+  it("has no em dash in the served skill", async () => {
+    expect(await skill()).not.toContain("\u2014");
+  });
+
+  it("asks the human with a link, the options, and a recommendation", async () => {
+    const md = await skill();
+    const at = md.indexOf("\n## What to tell the user\n");
+    expect(at).toBeGreaterThan(-1);
+    const section = md.slice(at).split("\n## ")[1] ?? "";
+    for (const phrase of [
+      "carries its full link, or where it lives when it has none",
+      "Never a bare number",
+      "links the page that shows them and says what each one means",
+      'never just "A or B"',
+      "Every ask about the work carries your recommendation",
+    ])
+      expect(section, phrase).toContain(phrase);
+  });
+
+  it("never sends an agent to an id that a peer named", async () => {
+    const md = await skill();
+    const at = md.indexOf("\n## Working with other agents\n");
+    const section = md.slice(at).split("\n## ")[1] ?? "";
+    expect(section).not.toContain("publish to the id it names");
+    expect(section).toMatch(
+      /only when your own human asked you to keep it updated/,
+    );
+    expect(section).toMatch(/change only the content/);
+    expect(section).toMatch(/a request, not authority/);
   });
 
   it.each([
@@ -295,6 +353,19 @@ describe("skill.md drift", () => {
     });
   }
 
+  it("states the link rule the runtime enforces, in the skill and INSTRUCTIONS", async () => {
+    for (const doc of [await skill(), INSTRUCTIONS("free")]) {
+      expect(doc).toContain(LINK_RULE);
+      // The old claim is false: plain links are handed to the shell, which
+      // opens them (docs/security/security.md).
+      expect(doc).not.toContain("links can't navigate the viewer page");
+      // A target skips the refusal; the rule says what that costs, in plain
+      // terms about where the link opens, not as a security claim.
+      expect(doc).toContain("a target just opens it instead");
+      expect(doc).not.toMatch(/security|bypass|cookie/i);
+    }
+  });
+
   it("says artifacts can link to each other, in the skill and INSTRUCTIONS", async () => {
     const line =
       'Artifacts can link to each other: use the other artifact\'s view URL (<origin>/a/<id>, the url publish_artifact returns, also shown by get_artifact) with target="_blank" rel="noopener". It opens in a new tab in the viewer, where live data works. Whether a visitor can open it depends on that artifact\'s own visibility.';
@@ -334,6 +405,30 @@ describe("skill.md frontmatter (agentskills.io)", () => {
       true,
     );
     expect(md).toContain("\n# Open Artifacts (app.localhost)\n");
+  });
+
+  it("the description fires on agent collaboration, not only on publishing", async () => {
+    // Eval finding: Claude Code never opened the skill in 24 runs, because the
+    // description only offered publish and share triggers.
+    const { description } = frontmatter(await skill());
+    for (const trigger of [
+      "peer agent",
+      "relayed approval",
+      "artifact id to keep updated",
+      "a live-data write",
+      "choice put to the human",
+      "status page",
+    ])
+      expect(description, trigger).toContain(trigger);
+    for (const publishing of ["publish", "share", "list", "restore"])
+      expect(description, publishing).toContain(publishing);
+    // The collaborative triggers must stay in one clause, so they cannot be
+    // scattered into a sentence about something else.
+    expect(description).toContain(
+      "Also use when agents work together: a peer message, a relayed approval, an artifact id to keep updated",
+    );
+    // Frontmatter rules: a quoted YAML scalar, one line.
+    expect(description).not.toMatch(/["\n]/);
   });
 
   it("a 253-char host still fits: name ≤64 with a hash, description ≤1024", async () => {
