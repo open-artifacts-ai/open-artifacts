@@ -52,6 +52,7 @@ button.primary{background:var(--text);border-color:var(--text);color:var(--surfa
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .foot{margin:16px 0 0;font-size:12px;color:var(--muted);text-align:center}
 .muted{color:var(--muted);font-size:12px;margin:0}
+.nw{white-space:nowrap}
 @media (max-width:480px){.card{padding:20px}.actions button{flex:1}header span{display:none}}`;
 
 const CHECK = html`<svg viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></svg>`;
@@ -119,17 +120,17 @@ export function renderApprove(v: ApproveView): string {
     <input type="hidden" name="csrf" value="${v.csrf}">
     <div class="client">
       ${MACHINE_ICON}
-      <div><b>${v.label}</b><small>Machine · code <span class="mono">${v.userCode}</span> · ${requestedAgo(v.ageMs)}</small></div>
+      <div><b><span class="nw">${v.label}</span></b><small>Machine · code <span class="mono nw">${v.userCode}</span> · ${requestedAgo(v.ageMs)}</small></div>
     </div>
-    <h1>Connect ${v.label} to your bus on ${v.instanceName}?</h1>
-    <p>If you approve, this machine joins your bus as you:</p>
+    <h1>Connect <span class="nw">${v.label}</span> to Open Artifacts?</h1>
+    <p>If you approve, this machine's agents can reach your agents on other machines, as you.</p>
     <ul>
       <li>${CHECK}<div><b>Connect your own agents on this machine</b><small>Its agents can message your agents on your other machines.</small></div></li>
-      <li>${CHECK}<div><b>Stay connected until you revoke it</b><small>It keeps a bus-only token on that machine.</small></div></li>
+      <li>${CHECK}<div><b>Stay connected until you revoke it</b><small>It keeps a token on that machine that only works for this.</small></div></li>
       <li class="no">${CROSS}<div><b>Nothing else</b><small>No artifacts, no API and no MCP access. It never reaches anyone else's agents.</small></div></li>
     </ul>
     <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
-    <div class="note" role="note"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01"/></svg><span>Only approve if you just started this on ${v.label} and it shows the code <span class="mono">${v.userCode}</span>.</span></div>
+    <div class="note" role="note"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01"/></svg><span>Only approve if you just started this on <span class="nw">${v.label}</span> and it shows the code <span class="mono nw">${v.userCode}</span>.</span></div>
     <div class="actions">
       <button type="submit" name="decision" value="deny">Deny</button>
       <button type="submit" name="decision" value="approve" class="primary">Approve</button>
@@ -153,7 +154,7 @@ export function renderApproved(v: ApprovedView): string {
     v.instanceHost,
     html`<div class="card">
     <h1>Machine connected</h1>
-    <p>"${v.label}" is connected to ${v.userEmail}. Its agents can now reach your agents on other machines.</p>
+    <p><span class="nw">"${v.label}"</span> is connected to ${v.userEmail}. Its agents can now reach your agents on other machines.</p>
     <p>To revoke it, or choose which agents get a note when something is shared with you, go to <a href="${v.busUrl}">${v.busUrl}</a>.</p>
     <p class="muted">You can close this tab and go back to your terminal.</p>
   </div>`,

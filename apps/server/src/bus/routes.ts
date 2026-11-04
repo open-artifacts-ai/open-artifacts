@@ -102,7 +102,7 @@ async function limited(
   if (!rl)
     return env.ENVIRONMENT === "dev"
       ? null
-      : errorJson(503, "internal", "The bus is unavailable");
+      : errorJson(503, "internal", "Connecting machines is unavailable");
   if ((await rl.limit({ key })).success) return null;
   return errorJson(429, "rate_limited", "Too many requests", undefined, {
     "retry-after": String(retryAfterSec),
@@ -288,7 +288,7 @@ const codeOf = (param: string | undefined): string | null => {
 const gonePage = () =>
   messagePage(
     "This code expired",
-    "This code expired or was already used. Run the bus setup on your machine again to get a new code.",
+    "This code expired or was already used. Run the setup on your machine again to get a new code.",
     404,
   );
 const membersOnly = () =>
@@ -403,7 +403,7 @@ async function decideApprove(c: Context<AppEnv>): Promise<Response> {
   if (decision === "deny")
     return messagePage(
       "Machine not connected",
-      `"${row.label}" was not added to your bus. Nothing was connected.`,
+      `"${row.label}" was not connected. Nothing was added.`,
       200,
     );
   return pageResponse(

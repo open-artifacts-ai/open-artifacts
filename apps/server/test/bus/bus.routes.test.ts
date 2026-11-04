@@ -322,6 +322,50 @@ describe("approval page", () => {
       "default-src 'none'",
     );
     expect(r.headers.get("cache-control")).toBe("no-store");
+    // Design: the code and the name never wrap, everywhere they appear.
+    expect(
+      html.match(/<span class="mono nw">[A-Z2-9]{4}-[A-Z2-9]{4}<\/span>/g),
+    ).toHaveLength(2);
+    expect(html.match(/<span class="nw">studio-mac<\/span>/g)).toHaveLength(3);
+    expect(html).toContain(
+      'Connect <span class="nw">studio-mac</span> to Open Artifacts?',
+    );
+  });
+
+  it("no word 'bus' reaches a reader on the form, success or deny screens (the /bus URL aside)", async () => {
+    const visible = (h: string) =>
+      h
+        .replace(/<style>[\s\S]*?<\/style>/, "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/https?:\/\/\S+\/bus\b/g, "")
+        // The test accounts are bus-N-...@x.com.
+        .replace(/\S+@\S+/g, "");
+    const d = await startDevice("box");
+    const path = new URL(d.verification_uri).pathname;
+    const form = await (await page(path, alice.cookie)).text();
+    expect(
+      visible(form).match(/.{0,40}\bbus\b.{0,40}/i)?.[0] ?? null,
+    ).toBeNull();
+    const ok = await decide(path, alice.cookie, {
+      csrf: csrfOf(form),
+      decision: "approve",
+    });
+    expect(
+      visible(await ok.text()).match(/.{0,40}\bbus\b.{0,40}/i)?.[0] ?? null,
+    ).toBeNull();
+    const d2 = await startDevice("box2");
+    const p2 = new URL(d2.verification_uri).pathname;
+    const f2 = await (await page(p2, alice.cookie)).text();
+    const no = await decide(p2, alice.cookie, {
+      csrf: csrfOf(f2),
+      decision: "deny",
+    });
+    expect(
+      visible(await no.text()).match(/.{0,40}\bbus\b.{0,40}/i)?.[0] ?? null,
+    ).toBeNull();
+    expect(visible(await (await page(p2, alice.cookie)).text())).not.toMatch(
+      /\bbus\b/i,
+    );
   });
 
   it("a client-supplied label is escaped on the form and the success screen", async () => {
@@ -360,7 +404,7 @@ describe("approval page", () => {
     );
     const ok = await r.text();
     expect(ok).toContain("Machine connected");
-    expect(ok).toContain('"work-box" is connected to');
+    expect(ok).toContain('<span class="nw">"work-box"</span> is connected to');
     expect(ok).toContain("http://app.localhost/bus");
     expect(ok).not.toContain("evil.example");
     expect(ok).toContain(
