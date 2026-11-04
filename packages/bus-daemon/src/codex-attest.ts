@@ -36,7 +36,7 @@ export const CODEX_REFUSALS = {
  * The tool namespace Codex gives our MCP entry: `mcp__<entry name>`, so the
  * installer must write exactly `[mcp_servers.oa_bus]`.
  */
-export const OA_BUS_NAMESPACE = "mcp__oa_bus";
+export const CODEX_TOOL_NAMESPACE = "mcp__oa_bus";
 
 /** A thread's first scan starts this far from the end: the open call is near it. */
 const TAIL_CAP = 8 * 1024 * 1024;
@@ -518,7 +518,7 @@ function visitLine(st: Seen, text: string): void {
       p.namespace === undefined &&
       typeof p.id === "string" &&
       typeof p.input === "string" &&
-      p.input.includes(`${OA_BUS_NAMESPACE}__`)
+      p.input.includes(`${CODEX_TOOL_NAMESPACE}__`)
     )
       execs.set(p.id, {
         call: p.call_id,
@@ -529,10 +529,10 @@ function visitLine(st: Seen, text: string): void {
   }
   if (line?.type === "response_item" && p.type === "function_call") {
     const ours =
-      p.namespace === OA_BUS_NAMESPACE ||
+      p.namespace === CODEX_TOOL_NAMESPACE ||
       (p.namespace === undefined &&
         typeof p.name === "string" &&
-        p.name.startsWith(`${OA_BUS_NAMESPACE}__`));
+        p.name.startsWith(`${CODEX_TOOL_NAMESPACE}__`));
     // An unparseable timestamp reads as NaN: never at or after a start.
     const turn = record(p.internal_chat_message_metadata_passthrough)?.turn_id;
     if (ours)

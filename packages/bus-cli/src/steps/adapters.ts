@@ -91,7 +91,9 @@ export type UninstallResult = {
   opencodeRestarted: boolean;
 };
 
-const NAME = "oa_bus";
+/** The harness entry (MCP server, OpenCode plugin) name. OpenBus uses `openbus`: both can be installed. */
+export const HARNESS_ENTRY = "oa_bus";
+const NAME = HARNESS_ENTRY;
 const HARNESSES: Harness[] = ["claude", "opencode", "pi", "omp", "codex"];
 
 /** The shipped Pi (and oh-my-pi) extension and OpenCode TUI plugin. */
