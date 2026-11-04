@@ -712,7 +712,7 @@ describe("each probe fails on the behaviour it guards", () => {
         const out = (await runAll(p22Stuck())).get("P22");
         expect(level(out)).toBe("infra");
         expect(out).toMatch(
-          /^infra: P22: KV propagation at the inventory location, most likely: inventory mode closed after 120 s, app host page 200 \d+ s after its last 200 and 200 60 s later; no delete or suspend job after the restore, and the delete job ran once and finished before it; /,
+          /^infra: P22: KV propagation at the inventory location, most likely: inventory mode closed after 120 s, app host page 200 \d+ s after its last 200 and 200 60 s later; no delete or suspend job after the restore, no failed attempt recorded on the delete job, which finished before it, and no error code on the restore job; /,
         );
         expect(out).toMatch(AUDIT_IDS);
       });
@@ -748,19 +748,37 @@ describe("each probe fails on the behaviour it guards", () => {
 
       for (const [what, patch, why] of [
         [
-          "ran a second attempt",
+          "shows a second attempt",
           () => ({ attempt: 2 }),
-          "the delete job ran 2 attempts",
+          "the delete job shows attempt 2",
         ],
         [
-          "recorded a failure",
-          () => ({ lastErrorCode: "cf_api_error" }),
-          "the delete job recorded a failure",
+          "recorded an error code",
+          () => ({ lastErrorCode: "cf_error" }),
+          "the delete job recorded a failed attempt",
+        ],
+        [
+          "recorded a failure point without an error code",
+          () => ({
+            failure: { at: "token_check", status: 500, reason: null },
+            lastErrorCode: null,
+          }),
+          "the delete job recorded a failed attempt",
         ],
         [
           "finished after the restore was accepted",
           (j: Job) => ({ finishedAt: (j.finishedAt ?? 0) + 10 * 60_000 }),
           "the delete job didn't finish before the restore was accepted",
+        ],
+        [
+          "has no finish time",
+          () => ({ finishedAt: null }),
+          "the delete job didn't finish before the restore was accepted",
+        ],
+        [
+          "doesn't parse as a Job",
+          () => ({ attempt: "two" }) as unknown as Partial<Job>,
+          "R15 delete job doesn't parse (1 issue(s) at attempt)",
         ],
       ] as const)
         it(`the delete job ${what} (a zombie attempt R14 can't show): a product failure`, async () => {
@@ -772,6 +790,24 @@ describe("each probe fails on the behaviour it guards", () => {
           );
           expect(out).toContain(why);
         });
+
+      it("the restore job's lease_held: a product failure linking #1326", async () => {
+        const f = p22Stuck();
+        wrap(f, async (u, real) => {
+          if (!/\/v1\/jobs\/[^/]+$/.test(u)) return undefined;
+          const j = (await (await real()).json()) as Job;
+          return Response.json(
+            j.kind === "restore" && j.status === "done"
+              ? { ...j, lastErrorCode: "lease_held" }
+              : j,
+          );
+        });
+        const out = (await runAll(f)).get("P22");
+        expect(level(out)).toMatch(
+          /^fail: P22: can't rule out a late closed write \(#1326 /,
+        );
+        expect(out).toContain("the restore job recorded lease_held");
+      });
 
       it("the inventory answering 500 while serving settles is a fail, never infra", async () => {
         const f = fakeApi();
@@ -788,6 +824,8 @@ describe("each probe fails on the behaviour it guards", () => {
         expect(level(out)).toMatch(/^fail: inventory \/hosts: status 500/);
       });
 
+      const DEL = "01DE1000000000000000000000";
+      const RES = "01RES000000000000000000000";
       /** servingLag alone on a pinned clock: pages, R14 and R15 as given. */
       const direct = (o: { pages?: number[]; jobs?: number; del?: number }) => {
         const f = fakeApi();
@@ -806,19 +844,32 @@ describe("each probe fails on the behaviour it guards", () => {
                   { status: o.jobs },
                 )
               : Response.json({ items: [], nextCursor: null });
-          if (s.endsWith("/jobs/01DEL"))
+          if (s.endsWith(`/jobs/${DEL}`))
             return o.del && o.del !== 200
               ? Response.json(
                   { error: { code: "internal" } },
                   { status: o.del },
                 )
               : Response.json({
-                  id: "01DEL",
+                  id: DEL,
                   kind: "delete",
-                  attempt: 1,
+                  installId: "i00000000001",
+                  status: "done",
+                  step: "done",
+                  steps: ["done"],
+                  stepIndex: 0,
+                  attempt: 0,
                   lastErrorCode: null,
+                  failure: null,
+                  retryAt: null,
+                  actor: { kind: "oidc", label: "x", tokenId: null },
+                  args: {},
+                  error: null,
+                  sealed: null,
+                  createdAt: 1,
+                  startedAt: 1,
                   finishedAt: 4,
-                });
+                } satisfies Job);
           return new Response(null, { status: 404 });
         }) as typeof fetch;
         const start = f.clock.t;
@@ -827,8 +878,8 @@ describe("each probe fails on the behaviour it guards", () => {
           appHost: "rl-l-x.open-artifacts-staging.app",
           lastOk: start - 20_000,
           mode: "closed",
-          deleteJobId: "01DEL",
-          restore: { id: "01RES", createdAt: 5 } as Job,
+          deleteJobId: DEL,
+          restore: { id: RES, createdAt: 5, lastErrorCode: null } as Job,
         });
         return { e, at, start };
       };
@@ -842,7 +893,7 @@ describe("each probe fails on the behaviour it guards", () => {
           "app host page 200 60 s after its last 200 and 200 60 s later",
         );
         expect(err.message).toContain(
-          "the hosts audit isn't readable by O: query_audit installId i00000000001 (restore job 01RES, delete job 01DEL)",
+          `the hosts audit isn't readable by O: query_audit installId i00000000001 (restore job ${RES}, delete job ${DEL})`,
         );
       });
 

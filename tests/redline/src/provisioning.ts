@@ -4,6 +4,7 @@ import {
   ADMIN_TOOL_NAMES,
   type InstallDetail,
   type Job,
+  JobSchema,
   type Release,
   TOKEN_SCOPES,
 } from "@oa/provisioning-contract";
@@ -476,10 +477,12 @@ export const ISSUE_1326 =
  * first, so that cache has turned over at least once in between: a "closed"
  * written before the first re-check shows as a 503 by the second. Infra needs
  * 200 both times, no delete or suspend job accepted after the restore (R14),
- * and the delete job itself (R15) run once, with no failure recorded,
- * finished before the restore was accepted. Anything else, or an unreadable
- * R14 or R15, fails linking #1326. No retry; the waits are bounded (at most
- * two TTLs) and go through run.io.wait.
+ * the delete job itself (R15, parsed with JobSchema) with no failed attempt
+ * recorded and finished before the restore was accepted, and the restore job
+ * with no error code (lease_held above all). A job's attempt counter resets
+ * when a step succeeds, so it can't show the delete ran once. Anything else,
+ * or an unreadable R14 or R15, fails linking #1326. No retry; the waits are
+ * bounded (at most two TTLs) and go through run.io.wait.
  *
  * O can't read the hosts audit rows (R17 gives it its own api rows only), so
  * nothing here rules a zombie write out for certain: every message names the
@@ -515,24 +518,34 @@ export async function servingLag(
   const del = await run.v1(`/jobs/${o.deleteJobId}`, { read: true });
   if (del.status !== 200)
     return fail(`R15 delete job unreadable (${desc(del)})`);
+  const parsed = JobSchema.safeParse(del.json);
+  if (!parsed.success)
+    return fail(
+      `R15 delete job doesn't parse (${parsed.error.issues.length} issue(s) at ${parsed.error.issues
+        .slice(0, 3)
+        .map((i) => i.path.join(".") || "(root)")
+        .join(", ")})`,
+    );
+  const d = parsed.data;
   const items = (jobs.json as { items?: Job[] } | undefined)?.items ?? [];
   const later = items.filter(
     (j) =>
       (j.kind === "delete" || j.kind === "suspend") &&
       j.createdAt > o.restore.createdAt,
   ).length;
-  const d = del.json as Job;
   const why: string[] = [];
   if (pg1 !== 200 || pg2 !== 200) why.push("the page isn't 200 both times");
   if (later) why.push(`${later} delete or suspend job(s) after the restore`);
-  if (d.attempt > 1) why.push(`the delete job ran ${d.attempt} attempts`);
+  if (d.attempt > 1) why.push(`the delete job shows attempt ${d.attempt}`);
   if (d.failure != null || d.lastErrorCode != null)
-    why.push("the delete job recorded a failure");
+    why.push("the delete job recorded a failed attempt");
+  if (o.restore.lastErrorCode != null)
+    why.push(`the restore job recorded ${o.restore.lastErrorCode}`);
   if (d.finishedAt === null || d.finishedAt > o.restore.createdAt)
     why.push("the delete job didn't finish before the restore was accepted");
   if (why.length) return fail(why.join(", "));
   return new InfraError(
-    `P22: KV propagation at the inventory location, most likely: ${values}; no delete or suspend job after the restore, and the delete job ran once and finished before it; ${audit}`,
+    `P22: KV propagation at the inventory location, most likely: ${values}; no delete or suspend job after the restore, no failed attempt recorded on the delete job, which finished before it, and no error code on the restore job; ${audit}`,
   );
 }
 
