@@ -2,7 +2,8 @@
 // byte for byte what it was before the flag existed (the fixtures were
 // written from the unchanged code), so the red-line suite's own runs can't
 // change. On, it adds only the release's assets block, HOSTED, Cloudflare's
-// always-pass Turnstile test keys, and Google and codes only; and the script starts a fake IdP on 127.0.0.1, never with it off.
+// always-pass Turnstile test keys, Google and codes only, and hosts with the
+// port; and the script starts a fake IdP on 127.0.0.1, never with it off.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -69,13 +70,17 @@ describe("local pair config, T19 flag on", () => {
     vars: Record<string, string>;
   };
 
-  it("adds only assets, HOSTED, the Turnstile test keys, Google and codes", () => {
+  it("adds only assets, HOSTED, the Turnstile test keys, Google and codes, hosts with the port", () => {
     const { assets, vars, ...rest } = on;
     const { vars: offVars, ...offRest } = off;
     expect(rest).toEqual(offRest);
     expect(assets).toEqual(t19Assets());
     expect(vars).toEqual({
       ...offVars,
+      // A browser follows URLs the Worker builds from these (the signed
+      // upload URL), so they carry the port the pair serves on.
+      APP_HOST: "rl-a.app.localhost:8787",
+      CONTENT_HOST: "rl-a.content.localhost:8787",
       // rl-a has no Access.
       AUTH_PROVIDERS: "google,email",
       HOSTED: "1",

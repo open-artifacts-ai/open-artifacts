@@ -14,7 +14,6 @@ import {
   A,
   api,
   cleanup,
-  context,
   email,
   expect,
   hook,
@@ -75,7 +74,7 @@ async function readOtp(
 
 /** An anonymous browser on the guest code page, asking for a code for `address`. */
 async function askForCode(browser: Browser, address: string): Promise<Page> {
-  const ctx = await context(browser);
+  const ctx = await browser.newContext({ baseURL: A.app });
   // Cloudflare's dummy token instead of its widget, as the live suite sends it
   // (turnstile.ts): the code request below is still the real one.
   await ctx.addInitScript(stubTurnstile, TURNSTILE_DUMMY_TOKEN);

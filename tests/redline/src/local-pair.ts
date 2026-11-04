@@ -486,9 +486,14 @@ export function wranglerConfig(
           }
         : {}),
       // T19 (#1252): hosted, with Turnstile on Cloudflare's always-pass test
-      // keys; Google and codes only (rl-a has no Access).
+      // keys; Google and codes only (rl-a has no Access); and the hosts carry
+      // the port, since a browser follows the URLs the Worker builds from
+      // them (appOrigin: the signed upload URL, the Origin checks). Host
+      // matching drops the port (normHost).
       ...(t19
         ? {
+            APP_HOST: `${i.name}.app.localhost:${port}`,
+            CONTENT_HOST: `${i.name}.content.localhost:${port}`,
             AUTH_PROVIDERS: "google,email",
             HOSTED: "1",
             TURNSTILE_SITE_KEY: TURNSTILE_TEST_SITE_KEY,
@@ -607,7 +612,7 @@ export interface StartOpts {
   oauthStore?: LocalOAuthStore;
   /**
    * T19's flag (#1252, localT19Of): the dashboard, HOSTED, Turnstile test
-   * keys, Google and codes only. Default off. T19 also
+   * keys, Google and codes only, hosts with the port. Default off. T19 also
    * passes `idp` (t19Idp), so hosted Google has its broker.
    */
   t19?: boolean;

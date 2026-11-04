@@ -87,7 +87,7 @@ const hookKeyFileOf = (
 /** rl-a: the staging install with test hooks, or the local pair's rl-a. */
 export const rlA = (
   env: Env = process.env,
-): Install & { hookKeyFile: string; cookieName: string; local: boolean } => {
+): Install & { hookKeyFile: string; cookieName: string } => {
   const { local, a, secretsDir } = raw(env);
   if (a.name !== "rl-a") fail("REDLINE_TARGETS.a must be rl-a");
   return {
@@ -95,7 +95,6 @@ export const rlA = (
     installId: String(a.installId ?? fail("a.installId is missing")),
     app: local ? localOrigin(a.app, "a.app") : httpsOrigin(a.app, "a.app"),
     cookieName: local ? LOCAL_COOKIE : STAGING_COOKIE,
-    local,
     testDomain: String(
       a.testDomain ?? fail("a.testDomain is missing"),
     ).toLowerCase(),

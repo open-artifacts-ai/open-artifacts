@@ -10,7 +10,6 @@ import {
   anon,
   api,
   cleanup,
-  context,
   expect,
   json,
   type Person,
@@ -155,7 +154,17 @@ test("an editor publishes into t19-eng; a manager moves it to t19-exec", async (
   );
   const title = `T19 ${RUN} plan`;
   await d.getByRole("textbox", { name: "Title" }).fill(title);
+  const minted = page.waitForResponse(
+    (r) =>
+      new URL(r.url()).pathname === R.uploads &&
+      r.request().method() === "POST",
+  );
   await d.getByRole("button", { name: "Create" }).click();
+  // The browser PUTs the file to the URL the Worker signs (from APP_HOST), so
+  // it must be the page's own origin, port included: a mismatch is a real
+  // misconfiguration (on the local pair, APP_HOST without the port).
+  const { url } = (await (await minted).json()) as { url: string };
+  expect(new URL(url).origin).toBe(new URL(page.url()).origin);
   await expect(page).toHaveURL(/\/a\/[^/]+/);
   const id = new URL(page.url()).pathname.split("/")[2] ?? "";
   remember(keeper, id);
@@ -207,7 +216,9 @@ test("public links off in t19-exec: Public is disabled, and anonymous /full gets
     headers: { "x-oa-request": "1" },
   });
   expect(nobody.status).toBe(404);
-  const stranger = await (await context(browser)).newPage();
+  const stranger = await (
+    await browser.newContext({ baseURL: A.app })
+  ).newPage();
   await stranger.goto(`/a/${id}/full`);
   // Sent to sign in, with the way back kept.
   await expect(stranger).toHaveURL(
