@@ -11,6 +11,7 @@ import {
   type LocalPair,
   localModeOf,
   localOAuthStoreOf,
+  localT19Of,
   startLocalPair,
 } from "../src/local-pair.ts";
 
@@ -97,6 +98,8 @@ try {
     mode: localModeOf(),
     // REDLINE_OAUTH_STORE=dual|d1: both installs on the D1 OAuth store.
     oauthStore: localOAuthStoreOf(),
+    // REDLINE_LOCAL_T19=1: T19's run (#1252); needs apps/server/dist-assets built.
+    t19: localT19Of(),
     signal: abort.signal,
     onSpawn: (p) => {
       spawnedPids.push(p);

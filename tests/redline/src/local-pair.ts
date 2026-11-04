@@ -335,12 +335,57 @@ export const localKvNamespaces = <T extends { binding: string }>(
 ): T[] =>
   store === "d1" ? kv.filter((k) => k.binding !== "OAUTH_KV") : [...kv];
 
-function wranglerConfig(
+/**
+ * T19's local run (#1252): the dashboard as the Worker's assets, hosted, and
+ * Turnstile on. Off by default, so the red-line suite's own configs never
+ * change (test/local-pair-config.test.ts pins them byte for byte).
+ */
+export const T19_ASSETS = join(SERVER, "dist-assets");
+/**
+ * Cloudflare's published always-pass Turnstile TEST keys (Turnstile docs,
+ * "Testing": a site key that always passes and a secret that always passes).
+ * Public dummy values, never real keys, and nothing is read from env.
+ */
+export const TURNSTILE_TEST_SITE_KEY = "1x00000000000000000000AA";
+export const TURNSTILE_TEST_SECRET = "1x0000000000000000000000000000000AA";
+/** The release's assets block (apps/server/wrangler.template.jsonc), at the local build. */
+export const t19Assets = () => ({
+  directory: T19_ASSETS,
+  binding: "ASSETS",
+  not_found_handling: "single-page-application",
+  run_worker_first: true,
+});
+/**
+ * REDLINE_LOCAL_T19: "1" turns T19's flag on; unset (or empty) leaves it off;
+ * anything else is refused.
+ */
+export function localT19Of(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const v = env.REDLINE_LOCAL_T19 ?? "";
+  if (v === "") return false;
+  if (v === "1") return true;
+  throw new Error('REDLINE_LOCAL_T19 must be "1" or unset');
+}
+/**
+ * The flag needs the dashboard built into apps/server/dist-assets by the
+ * release's own step (apps/server `build`: the dashboard, render and runtime
+ * builds, then scripts/assemble-assets.mjs). Never builds it here.
+ */
+export function requireT19Assets(dir: string = T19_ASSETS): void {
+  if (!existsSync(join(dir, "index.html")))
+    throw new Error(
+      `local pair T19: ${join(dir, "index.html")} is missing; build the assets first with pnpm --filter @oa/server build (the release's dashboard step)`,
+    );
+}
+
+export function wranglerConfig(
   i: { name: string; testDomain: string; installId: string },
   port: number,
   idp?: InstallIdp,
   mode: LocalMode = "base",
   oauthStore: LocalOAuthStore = "kv",
+  t19 = false,
 ) {
   const base = JSON.parse(
     readFileSync(join(SERVER, "wrangler.test.jsonc"), "utf8"),
@@ -351,6 +396,7 @@ function wranglerConfig(
   base.d1_databases[0].database_name = `oa-redline-${i.name}`;
   return {
     ...base,
+    ...(t19 ? { assets: t19Assets() } : {}),
     kv_namespaces: localKvNamespaces(base.kv_namespaces ?? [], oauthStore),
     name: `oa-redline-local-${i.name}`,
     main: join(SERVER, "src", "index.ts"),
@@ -391,6 +437,14 @@ function wranglerConfig(
             AUTH_BROKER_URL: idp.brokerOrigin,
             AUTH_DOMAINS: idp.tenant,
             GOOGLE_CLIENT_ID: idp.pair.clientId,
+          }
+        : {}),
+      // T19 (#1252): hosted, with Turnstile on Cloudflare's always-pass test keys.
+      ...(t19
+        ? {
+            HOSTED: "1",
+            TURNSTILE_SITE_KEY: TURNSTILE_TEST_SITE_KEY,
+            TURNSTILE_SECRET: TURNSTILE_TEST_SECRET,
           }
         : {}),
     },
@@ -503,6 +557,8 @@ export interface StartOpts {
   mode?: LocalMode;
   /** Both installs' OAUTH_STORE (localOAuthStoreOf); default kv, as hosted. */
   oauthStore?: LocalOAuthStore;
+  /** T19's flag (#1252, localT19Of): the dashboard, HOSTED and Turnstile test keys. Default off. */
+  t19?: boolean;
 }
 
 /** The local auth broker of a fake-IdP pair. */
@@ -537,6 +593,7 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
     throw new Error("wrangler missing: run pnpm install");
   if (!existsSync(join(SERVER, "src", "version.gen.ts")))
     throw new Error("server not generated: run pnpm -F @oa/server run gen");
+  if (o.t19) requireT19Assets();
   const dir = mkdtempSync(join(tmpdir(), "oa-redline-"));
   chmodSync(dir, 0o700);
   const pids: number[] = [];
@@ -703,6 +760,7 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
           : undefined,
         o.mode,
         o.oauthStore,
+        o.t19,
       );
       writeFileSync(config, JSON.stringify(cfg, null, 2), { mode: 0o600 });
       const persistTo = join(sub, "state");
