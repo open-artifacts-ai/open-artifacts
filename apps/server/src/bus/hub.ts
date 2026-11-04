@@ -2288,11 +2288,14 @@ export class BusHub extends DurableObject<Env> {
       case "hello":
         // #1325: the hello's caps gate the rename wire (renameGated). Kept
         // in the attachment so they survive hibernation; a later hello
-        // replaces them.
-        ws.serializeAttachment({
-          machineId,
-          ...(f.caps === undefined ? {} : { caps: [...f.caps] }),
-        } satisfies Attachment);
+        // replaces them. Other attachment fields are kept.
+        {
+          const { caps: _old, ...rest } = attachmentOf(ws) ?? { machineId };
+          ws.serializeAttachment({
+            ...rest,
+            ...(f.caps === undefined ? {} : { caps: [...f.caps] }),
+          } satisfies Attachment);
+        }
         sendFrame(ws, {
           v: 1,
           id: f.id,

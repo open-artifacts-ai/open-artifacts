@@ -622,7 +622,20 @@ describe("the rename gate: BUS_CAPS.rename in hello (#1325)", () => {
     expect(rc).not.toHaveProperty("to_name");
     expect(OldReceipt.safeParse(rawFor(old, rc.id)).success).toBe(true);
     expect((await delivered(d, rc.msg_id)).to_ref).toBe("a");
-    // A resend of it carries none either.
+    // A resend of it (same frame id and payload) carries none either.
+    old.send({
+      v: 1,
+      id: rc.id,
+      type: "send",
+      from_ref: "s",
+      to_name: a,
+      body: "hi",
+    } as ClientFrame);
+    const again = await waitFor(old, "receipt");
+    expect(again.msg_id).toBe(rc.msg_id);
+    expect(again).not.toHaveProperty("to_name");
+    expect(old.raw.filter((t) => t.includes(`"${rc.id}"`)).length).toBe(2);
+    // Nor does a plain send to the current name.
     const plain = await send(old, "s", b);
     expect(plain).not.toHaveProperty("to_name");
 
@@ -644,7 +657,7 @@ describe("the rename gate: BUS_CAPS.rename in hello (#1325)", () => {
     d.close();
   });
 
-  it("a caps socket gets former_names and to_name; the caps survive hibernation in the attachment", async () => {
+  it("a caps socket gets former_names and to_name; the caps are stored in the socket attachment", async () => {
     const d = await at();
     const n = ns("rn");
     const a = uniq("Hib");
@@ -660,6 +673,35 @@ describe("the rename gate: BUS_CAPS.rename in hello (#1325)", () => {
     expect(caps).toContainEqual([BUS_CAPS.rename]);
     expect(await send(d, "s", a)).toMatchObject({ to_name: b });
     expect(row(await list(d, "s"), b)?.former_names).toHaveLength(1);
+    d.close();
+  });
+
+  it("hello keeps the attachment's other fields", async () => {
+    const d = await at();
+    // A field set before hello (as a future one would be) survives it.
+    await inHub((_, s) => {
+      for (const w of s.getWebSockets("daemon")) {
+        const a = w.deserializeAttachment() as Record<string, unknown>;
+        w.serializeAttachment({ ...a, probe: 1 });
+      }
+    });
+    d.send({
+      v: 1,
+      id: id("h"),
+      type: "hello",
+      machine_label: "MacBook",
+      client_version: "0.0.0",
+      caps: [BUS_CAPS.rename],
+    });
+    await waitFor(d, "hello_ok");
+    const atts = await inHub((_, s) =>
+      s
+        .getWebSockets("daemon")
+        .map((w) => w.deserializeAttachment() as Record<string, unknown>),
+    );
+    expect(atts).toContainEqual(
+      expect.objectContaining({ probe: 1, caps: [BUS_CAPS.rename] }),
+    );
     d.close();
   });
 
@@ -705,6 +747,27 @@ describe("the rename gate: BUS_CAPS.rename in hello (#1325)", () => {
 });
 
 describe("review fixes (R393b)", () => {
+  it("a global sender's former-name target held in two other namespaces, none its own, is ambiguous", async () => {
+    const d = await at();
+    const home = ns("rn");
+    const n1 = ns("rn");
+    const n2 = ns("rn");
+    const x = uniq("Dup");
+    await reg(d, "g", uniq("Glob"), home, { global: true });
+    await reg(d, "a", x, n1);
+    await renamed(d, "a", uniq("DupA"));
+    // Not reserved in n2 (another scope): b takes it there, then leaves it.
+    await reg(d, "b", x, n2);
+    await renamed(d, "b", uniq("DupB"));
+    expect(await send(d, "g", x)).toMatchObject({
+      state: "refused",
+      reason: "ambiguous",
+    });
+    // Naming a namespace picks one.
+    expect((await send(d, "g", x, n1)).state).toBe("pending");
+    d.close();
+  });
+
   it("a rename of another machine's live agent_ref is not_registered", async () => {
     const mine = await at();
     const other = await at();
