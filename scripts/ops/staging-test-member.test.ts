@@ -240,6 +240,34 @@ describe("logs", () => {
       parseRevokeLog(echoed + line("test-member-revoked: rl-agents")),
     ).toBe(false);
   });
+  it("a marker must start a word and its value must end at whitespace", () => {
+    const jobAndHost =
+      line("test-member-job: 01JOB") +
+      line(`test-member-app-host: ${APP_HOST}`);
+    expect(
+      parseMintLog(jobAndHost + line("xtest-member-sealed: oa-seal-v1.EVIL")),
+    ).toBeNull();
+    expect(
+      parseRevokeLog(
+        line("test-member-job: 01J") + line('test-member-revoked: rl-agents"'),
+      ),
+    ).toBe(false);
+  });
+  it("a CRLF log parses", () => {
+    const crlf = (s: string) => line(s).replace("\n", "\r\n");
+    expect(
+      parseMintLog(
+        crlf("test-member-job: 01JOB") +
+          crlf(`test-member-app-host: ${APP_HOST}`) +
+          crlf("test-member-sealed: oa-seal-v1.a.b.c"),
+      ),
+    ).toEqual({ sealed: "oa-seal-v1.a.b.c", job: "01JOB" });
+    expect(
+      parseRevokeLog(
+        crlf("test-member-job: 01JOB") + crlf("test-member-revoked: rl-agents"),
+      ),
+    ).toBe(true);
+  });
   it("a revoke log names rl-agents and a job", () => {
     expect(
       parseRevokeLog(
