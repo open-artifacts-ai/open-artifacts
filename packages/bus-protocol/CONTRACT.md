@@ -7,12 +7,15 @@ is the summary. Ported from OpenBus `packages/shared` (open-bus main e6feab9,
 
 What changed from OpenBus: no `org_id` or owner id (one `BusHub` per member
 already isolates); the agent card, `card_request`, `card`, `card_refused`,
-JWKS, `/link`, linked apps, roles (`role`, `to_name`, `role_vacant`) and the
-dashboard REST and feed are dropped; version gates (`AGENT_CARD_MIN_CLIENT`,
+JWKS, `/link`, linked apps, card roles (`role`) and the
+dashboard REST and feed are dropped (receipt `to_name` came back with
+renames and role addresses; `role_vacant` came back with role addresses, see
+Role addresses); version gates (`AGENT_CARD_MIN_CLIENT`,
 `KIND_TOKEN_MIN_CLIENT`) are gone because no old client exists; the machine
 token is `oa_machine_`; the routes live under `/bus/` on the instance origin.
 `follow`, `unfollow`, `following` and the `notice` frame come with step 2 of
-the design.
+the design. Renames (OpenBus R393a, #1325) are gated on a `hello` capability,
+not a version (see Renames).
 
 Anything both the instance (`apps/server/src/bus/`) and the local client
 (`packages/bus-*`) must agree on lives here. Nothing server-only (D1, Workers
@@ -43,20 +46,24 @@ Keepalive is the bare string `ping` / `pong`, never a frame.
 | --- | --- | --- |
 | `POST /bus/device` | none | `DeviceCodeRequestSchema {machine_label?}` -> `DeviceCodeResponseSchema {device_code, user_code, verification_uri, expires_in: 600, interval: 5}` |
 | `POST /bus/device/token` | none | `DeviceTokenRequestSchema {device_code}` -> `DeviceTokenResponseSchema`: `{status: "pending"}`, `{status: "approved", machine_token}`, `{status: "denied"}` or `{status: "expired"}`. Consumed, expired and unknown codes all read `expired`. Polling faster than `interval` is HTTP 429 with `Retry-After`. |
-| `GET/POST /bus/approve/<user_code>` | Open Artifacts session and `canConnect` | The approval page; `ApprovalBodySchema {decision, label?}` |
+| `GET/POST /bus/approve` | Open Artifacts session and `canConnect` | The approval page. The person types the code their terminal shows (RFC 8628 section 5.4); `ApprovalBodySchema {decision, label?}` |
 | `GET /bus` | Open Artifacts session | The member's bus page: Machines (revoke) and share notices. The client prints `<instance>/bus` after sign-in. |
 | `GET /bus/connect` | `Authorization: Bearer oa_machine_...` | WebSocket upgrade. A revoked token, an unknown one, a PAT or OAuth token, or a member who fails `canConnect`: 401. |
 
-`verification_uri` is https (http only on loopback), has no userinfo, equals its
-parsed `href`, its path is exactly `/bus/approve/<user_code>` and it has no
-query or fragment. The schema cannot know the instance origin, so the client
-also checks `verificationUriMatches(uri, instanceUrl)` before printing it.
+`verification_uri` is exactly `<instance origin>/bus/approve`: https (http only
+on loopback), no userinfo, equal to its parsed `href`, no query or fragment, and
+never the user code, in any form (RFC 8628 section 5.4: a link that carried the
+code would be one click from approving an attacker's machine). There is no
+`verification_uri_complete`. The client shows the code apart, for the person to
+type, and checks `verificationUriMatches(uri, instanceUrl)` before printing or
+opening the URI.
 
 ## Receipts and refusals
 
 States: `pending | delivered | expired | refused`. Refusal reasons
 (`REFUSAL_REASONS`): `unknown_agent`, `closed`, `inbox_full`, `too_large`,
-`other_namespace`, `revoked`, `ambiguous`. `expired` may carry
+`other_namespace`, `revoked`, `ambiguous`, `role_vacant` (only to a
+`roles`-cap socket, see Role addresses). `expired` may carry
 `recipient_closed`. The `receipt` reply to `send` is only `pending` or
 `refused`; `receipt_update` may carry any state.
 
@@ -69,8 +76,8 @@ never `__proto__`, `constructor` or `prototype`.
 
 Client to hub (`CLIENT_FRAMES`):
 
-- `hello {machine_label, client_version}`
-- `agent_up {agent_ref, kind, proposed_name, namespace, global}`
+- `hello {machine_label, client_version, caps?}`; `caps` (see Renames)
+- `agent_up {agent_ref, kind, proposed_name, namespace, global, name_kind?}`
 - `agent_down {agent_ref}`
 - `sessions {open[], closed[]}`
 - `send {from_ref, to_name, to_namespace?, body}`
@@ -79,24 +86,95 @@ Client to hub (`CLIENT_FRAMES`):
 - `list {from_ref}`
 - `fetch {from_ref, msg_id}`
 - `status {from_ref, state, label?}`: fire and forget.
+- `rename {agent_ref, proposed_name, name_kind?}`: rename a live agent; `proposed_name` 1..256 chars. Answered by `renamed` or `error`.
 
 Hub to client (`SERVER_FRAMES`):
 
 - `hello_ok {machine_id, machine_label, server_version}`
 - `agent_ok {agent_ref, bus_name}`
-- `receipt {msg_id, state, reason?}`
-- `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?}]}`; `kind` is any kind token.
+- `receipt {msg_id, state, reason?, to_name?}`; `to_name` is the recipient's current name, only on a former-name hit to a `rename`-cap socket, or on a role hit to a `roles`-cap socket
+- `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?, former_names?}]}`; `kind` is any kind token.
 - `body {msg_id, body}`
 - `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
 - `deliver {msg_id, to_ref, from_name, namespace, body | notice}`
-- `receipt_update {msg_id, state, reason?}`
+- `receipt_update {msg_id, state, reason?}`: the schema shares `to_name?` with `receipt`, but the hub sets it only on `receipt`.
 - `roster_changed {namespace}`
+- `renamed {agent_ref, bus_name, former?}`: reply to `rename`. `former` is the name left, absent on a no-op. Names compare case-insensitively.
 
 Targeting, idempotency (a send's `id` is unique per sender for at least 1 h;
 a resend reuses it) and the decoder bounds are unchanged from OpenBus:
 `decodeClientFrame` (hub) and `decodeServerFrame` (client) never throw; the
-raw cap, a linear pre-scan (depth <= 4, bounded tokens), the body byte cap and
-well-formed Unicode on free text are checked in that order.
+raw cap, a linear pre-scan, the body byte cap and well-formed Unicode on free
+text are checked in that order. The pre-scan is per direction: client frames
+depth <= 4, `:` plus `,` <= 16384, structural characters <= 65536; server
+frames depth <= 5, 65536 and 131072, so a full roster of rows with status
+fields and 5 `former_names` fits. Either way at most 64 `:` plus `,` directly
+in one object.
+
+## Renames (#393)
+
+Ported from OpenBus R393a; schemas in `rename.ts` and `caps.ts`. The hub side
+is OpenBus R393b (BusHub, `apps/server/src/bus/hub.ts`). Former-name
+reservations are per member (one hub per member); there is no cross-member
+addressing.
+
+- Gate: a capability, not a version (the client reports 0.0.0 until #1308).
+  `hello.caps` is up to `MAX_CAPS` (16) distinct tokens matching
+  `[a-z][a-z0-9_-]{0,31}`; consumers ignore unknown ones. `BUS_CAPS.rename`
+  (`rename`): the hub sends roster `former_names` and a former-name receipt
+  `to_name` only to a socket whose hello listed it (`hasCap`). A decoder
+  older than these fields refuses them, failing the whole frame.
+- Client frames are strict, so a hub decoder older than this change refuses a
+  `hello` with `caps`, an `agent_up` with `name_kind` and any `rename`. A
+  client sends them only to hubs that accept them.
+- Roster rows gain `former_names?: [{name, expires_at}]`
+  (`FormerNamesSchema`): 1..`LIMITS.maxFormerNames` (5); absent when none. The
+  hub guarantees newest first, distinct, and never the row's `bus_name`, all
+  case-insensitive; the decoder doesn't enforce them, so one bad row can't
+  fail a roster.
+- A former name reaches its agent for `LIMITS.formerNameGraceMs` (1 h, the
+  mail TTL). Name changes per agent are capped at `LIMITS.renamesPerHour` (10)
+  per rolling hour; past it `rename` gets `error rate_limited` with message
+  `RENAME_MESSAGES.rate` = `"Too many renames"`. A no-op doesn't count. A
+  `rename` for an agent that isn't live is `error not_registered`.
+- `name_kind` on `agent_up` and `rename` (`NAME_KINDS`: `default | chosen`):
+  only the client knows whether a name is the harness's fallback or chosen.
+  The hub mints a `default` name as `<base>-<4 hex>`, never reuses it and
+  doesn't reserve it after a rename; a `chosen` former name is reserved for
+  the grace. Absent means `chosen`.
+- Resolution is the same for every client: the sender's own namespace first
+  (current names, then former names), then other namespaces as before. A
+  former name held by two agents in one scope is `ambiguous`. Close, revoke,
+  a namespace move or a global flip drops an agent's former names. A repeat
+  `agent_up` that changes a live agent's name records no former name.
+
+## Role addresses (#1296)
+
+A role address is a member-set alias in one namespace (`backend-lead`)
+pointing at one agent, by its id, so it follows a rename. It lives in the
+member's BusHub. Only the member sets, re-points, vacates or removes one, in
+the dashboard (Open Artifacts REST, a browser session); no frame sets or
+claims one, so no AI agent can.
+
+- Resolution: a send to a role resolves at send time to its holder, scoped as
+  names are (a non-global sender reaches its own namespace's roles; a global
+  sender its own namespace's first, then a `to_namespace`'s, else a role in
+  one namespace only, `ambiguous` otherwise). Re-pointing changes later mail
+  only; mail already sent stays with the agent it resolved to.
+- Vacant: no holder set, or the holder is closed, gone, or no longer in the
+  namespace (a global holder is in every one). Refused `role_vacant`. A
+  reopened session of the holder holds it again. A revoked holder's machine
+  never reconnects, and a new machine's sessions are new agents, so a role
+  whose holder was revoked stays vacant until the member re-points it.
+- Gate: `BUS_CAPS.roles` (`roles`). The hub sends `role_vacant`, and a role
+  hit's receipt `to_name` (the holder's current name), only to a socket whose
+  hello listed it. Any other socket gets `unknown_agent` for a vacant role and
+  no `to_name`; resolution is the same for every client.
+- Names: a role's name is a bus name in the agent-name space of its
+  namespace, case-insensitively. A role can't take a live agent's name there
+  (in the namespace, or a global's) or a live chosen former name; an agent
+  (`agent_up`, `rename`) proposing a role's name gets a `-N` suffix, and a
+  global agent can't take any namespace's role name.
 
 ## Names and namespaces
 

@@ -163,6 +163,7 @@ describe("frames", () => {
       "list",
       "fetch",
       "status",
+      "rename",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -174,6 +175,7 @@ describe("frames", () => {
       "deliver",
       "receipt_update",
       "roster_changed",
+      "renamed",
     ]);
   });
   it("formats a rejection with the frame id when there is one", () => {
@@ -790,9 +792,20 @@ describe("status frames, and no card frames", () => {
       ),
     ).toBeNull();
   });
-  it("a receipt carries no role fields", () => {
+  it("a receipt carries to_name (#393, #1296) and role_vacant (#1296), never a card role field", () => {
     roundTrip(
       { v: 1, id, type: "receipt", msg_id: mid, state: "pending" },
+      false,
+    );
+    roundTrip(
+      {
+        v: 1,
+        id,
+        type: "receipt",
+        msg_id: mid,
+        state: "pending",
+        to_name: "code-96",
+      },
       false,
     );
     expect(
@@ -802,11 +815,11 @@ describe("status frames, and no card frames", () => {
           id,
           type: "receipt",
           msg_id: mid,
-          state: "pending",
-          to_name: "code-96",
+          state: "refused",
+          reason: "role_vacant",
         }),
       ),
-    ).toBeNull();
+    ).not.toBeNull();
     expect(
       oks(
         JSON.stringify({
@@ -814,8 +827,8 @@ describe("status frames, and no card frames", () => {
           id,
           type: "receipt",
           msg_id: mid,
-          state: "refused",
-          reason: "role_vacant",
+          state: "pending",
+          role: "backend-lead",
         }),
       ),
     ).toBeNull();

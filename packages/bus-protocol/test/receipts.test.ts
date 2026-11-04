@@ -22,6 +22,7 @@ describe("receipts", () => {
       "other_namespace",
       "revoked",
       "ambiguous",
+      "role_vacant",
     ]);
   });
   it("rejects ambiguous on expired", () => {
@@ -77,16 +78,29 @@ describe("receipts", () => {
       "pending",
     );
   });
-  it("has no role fields (design: roles dropped)", () => {
+  it("carries an optional to_name (a former-name hit, #393)", () => {
     const r = { msg_id: "a".repeat(16), state: "pending" };
+    expect(ReceiptSchema.safeParse(r).success).toBe(true);
     expect(ReceiptSchema.safeParse({ ...r, to_name: "code-96" }).success).toBe(
+      true,
+    );
+    expect(ReceiptSchema.safeParse({ ...r, to_name: "openbus" }).success).toBe(
       false,
     );
+  });
+  it("role_vacant is a refusal (#1296); a card role field stays dropped", () => {
     expect(
       ReceiptSchema.safeParse({
         msg_id: "a".repeat(16),
         state: "refused",
         reason: "role_vacant",
+      }).success,
+    ).toBe(true);
+    expect(
+      ReceiptSchema.safeParse({
+        msg_id: "a".repeat(16),
+        state: "pending",
+        role: "backend-lead",
       }).success,
     ).toBe(false);
   });

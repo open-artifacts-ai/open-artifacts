@@ -12,6 +12,8 @@ const seg = (s: string): string => {
 export const R = {
   /** GET -> Me; PATCH MePatch (`{ displayName }`) -> Me. Any signed-in user, guests included. */
   me: "/api/v1/me",
+  /** GET -> ShareNoticeAgents; PUT ShareNoticeAgents -> ShareNoticeAgents (replaces the list; 400 bad_request on an invalid address, details { path: "agents[i].name", reason: "invalid" | "reserved" }, or more than SHARE_NOTICE_MAX, details { path: "agents", reason: "too_many" }). The bus addresses that get "shared with you" notices; empty (the default) drops them. Callers who may connect agents (mcp.connect), their own list only; PUT takes an interactive cookie session (a PAT or OAuth grant gets 404) (#1292). */
+  shareNotices: "/api/v1/bus/share-notices",
   /** GET (ListQuery) -> Page<ArtifactSummary>; POST PublishInput (JSON) -> PublishResult. Inline content (content, text files and base64 together) is limited to LIMITS.inlineBytes (128 KB): over it, or a body over twice that plus 64 KB, 413 too_large (INLINE_TOO_LARGE_MESSAGE); larger files go through R.uploads then files: { path: { uploadId } }. Publishing to an uploaded/reserved id with no existing artifact requires title; the server returns 400 without it. Create only: an existing artifact's id is 400 bad_request (details { path: "id", reason: "not_reserved" }); publish a new version with POST R.versions(id). (MCP publish_artifact with an id does publish a new version.) */
   artifacts: A,
   /** GET -> ArtifactSummary; PATCH ArtifactPatch -> ArtifactPatchResult; DELETE soft-delete -> 204 */
@@ -85,6 +87,27 @@ export const R = {
   oauthClients: "/api/v1/oauth-clients",
   /** PATCH OAuthClientPatch -> OAuthClient; DELETE -> 204. Own grants only (else 404). */
   oauthClient: (grantId: string) => `/api/v1/oauth-clients/${seg(grantId)}`,
+  /** GET -> BusMachines: the caller's own bus machines (#1291). Never a token. */
+  busMachines: "/api/v1/bus/machines",
+  /** DELETE -> 204: revoke one of the caller's machines (idempotent; another member's or unknown: 404). */
+  busMachine: (id: string) => `/api/v1/bus/machines/${seg(id)}`,
+  /** GET -> BusAgents: the caller's open bus agents (canConnect; else 404). Empty when the bus is off. */
+  busAgents: "/api/v1/bus/agents",
+  /**
+   * GET -> BusRoles: the caller's role addresses (#1296), with `live` false
+   * when the bus could not be asked. PUT BusRolePut -> `{ role: BusRole }`:
+   * sets, re-points or (agentId null) vacates the role (namespace, name),
+   * creating it if needed; 400 bad_request (invalid body, name or
+   * namespace), 409 conflict with details `{ reason }`: `name_taken` (a live
+   * agent or a reserved former name there), `agent_not_open` (no open agent
+   * with that id visible in the namespace), `role_limit` (BUS_ROLE_MAX), or
+   * `no_bus` (no machine has connected yet). mcp.connect; PUT takes an
+   * interactive cookie session (a PAT or OAuth grant gets 404), so no AI
+   * agent can set or claim a role.
+   */
+  busRoles: "/api/v1/bus/roles",
+  /** DELETE -> 204: removes the caller's role (idempotent: unknown is 204 too). Same rules as PUT R.busRoles. */
+  busRole: (id: string) => `/api/v1/bus/roles/${seg(id)}`,
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
   /**

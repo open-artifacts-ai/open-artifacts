@@ -491,18 +491,43 @@ describe("runNightly", () => {
 
   it("stops dispatching at deadlineMs; the rest is skipped and never called", async () => {
     await seed(ids(10));
-    const f = fakes("staging", () => "ok", 40);
+    const lines = captureLogs();
+    // The first call needs one installs page read, 10 SHA-256 digests
+    // (nightOrder) and a re-check before the deadline: tens of ms, but CI
+    // once stalled ~300 ms there (the lanes-at-deadline test below took
+    // 311 ms with no call made). 311 ms × headroom 3 ≈ 1 s.
+    const deadlineMs = 1_000;
+    // Each call takes 250 ms, so at most 4 can start by the deadline
+    // (5 × 250 ms > 1 s): at least 6 of 10 are left to skip, however fast.
+    const callMs = 250;
+    const t0 = Date.now();
+    const startedAt: number[] = [];
+    const f = fakes(
+      "staging",
+      () => "ok",
+      callMs,
+      () => {
+        startedAt.push(Date.now() - t0);
+      },
+    );
     const r = await runNightly(f.env, NOW, {
       concurrency: 1,
-      deadlineMs: 100,
+      deadlineMs,
       recheckFloorMs: 1,
     });
+    // Dispatch ran before the deadline, so the stop below is the deadline's.
+    expect(startedAt.length).toBeGreaterThanOrEqual(1);
+    expect(startedAt[0]).toBeLessThan(deadlineMs);
     expect(r.failed).toEqual([]);
     expect(r.ok.length).toBeGreaterThanOrEqual(1);
     expect(r.skipped.length).toBeGreaterThanOrEqual(5);
     expect([...r.ok, ...r.skipped]).toEqual(await night(10, NOW));
     expect(f.calls).toHaveLength(r.ok.length);
-  });
+    // Everything not called was skipped for the deadline.
+    expect(lines.filter((l) => l.startsWith("nightly skipped"))).toEqual(
+      r.skipped.map((id) => `nightly skipped deadline ${id}`),
+    );
+  }, 10_000);
 
   it("past the re-check floor, the rest is skipped without recursing through every install", async () => {
     // Skipping each install in its own run() recursed synchronously
@@ -605,15 +630,24 @@ describe("runNightly", () => {
     await seed(ids(6));
     captureLogs();
     const f = fakes("staging", () => "hang");
+    // Both lanes must fill before the deadline. Before the first call the run
+    // does one installs page read, 6 SHA-256 digests (nightOrder) and 2
+    // re-checks: 17 ms idle, at most 58 ms under load on a dev box. CI once
+    // stalled ~300 ms there (the test took 311 ms with no call made; the
+    // deadline counts from the run's start). 311 ms × headroom 3 ≈ 1 s.
+    // timeoutMs is 2 × that, so both calls still hold their lanes, undecided,
+    // when the deadline comes.
     const r = await runNightly(f.env, 0, {
       concurrency: 2,
-      timeoutMs: 1_000,
-      deadlineMs: 100,
+      timeoutMs: 2_000,
+      deadlineMs: 1_000,
       recheckFloorMs: 1,
     });
+    // The scenario held: two calls in their lanes, four waiting on them.
+    expect(f.calls).toHaveLength(2);
     expect(r.capped).toEqual([]);
     expect(r.skipped).toHaveLength(4);
-  });
+  }, 10_000);
 
   it("caps unsettled calls at 2 × a custom concurrency, and resumes when one settles", async () => {
     await seed(ids(10));

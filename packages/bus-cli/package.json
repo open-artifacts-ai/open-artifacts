@@ -1,0 +1,48 @@
+{
+  "name": "@open-artifacts/bus",
+  "type": "module",
+  "version": "0.0.0",
+  "description": "The Open Artifacts bus: your AI agents reach each other across machines.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/open-artifacts-ai/open-artifacts",
+    "directory": "packages/bus-cli"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "oa-bus": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "assets"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "node scripts/bundle.mjs",
+    "prepack": "node scripts/bundle.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@oa/bus-adapter-claude-code": "workspace:*",
+    "@oa/bus-adapter-mcp-json": "workspace:*",
+    "@oa/bus-adapter-opencode": "workspace:*",
+    "@oa/bus-adapter-pi": "workspace:*",
+    "@oa/bus-daemon": "workspace:*",
+    "@oa/bus-ipc": "workspace:*",
+    "@oa/bus-protocol": "workspace:*",
+    "@types/node": "^22.19.0",
+    "esbuild": "0.28.2",
+    "jiti": "2.7.0",
+    "smol-toml": "1.9.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12",
+    "zod": "^4.6.7"
+  },
+  "private": true
+}

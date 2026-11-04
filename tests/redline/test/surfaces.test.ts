@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FOREIGN_CALLERS } from "../../../apps/server/test/authz/expect.ts";
@@ -61,6 +61,7 @@ import {
 } from "../src/surfaces.ts";
 import { loadTargets, type Target } from "../src/targets.ts";
 import { type Fake, fakeServer, json, secretDir } from "./fake.ts";
+import { interactiveRoutes, serverSources } from "./interactive-routes.ts";
 
 const toDispose: (() => unknown)[] = [];
 afterEach(async () => {
@@ -190,7 +191,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     }
   });
 
-  it("deny-only: the six real-only drops and the interactive-only one, each still a recorded drop", () => {
+  it("deny-only: the seven real-only drops and the four interactive-only ones, each still a recorded drop", () => {
     const only = cases.filter((c) => c.denyOnly);
     expect(only.map((c) => c.name).sort()).toEqual(
       Object.entries(DROPPED)
@@ -200,38 +201,84 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         .map(([n]) => `${n} [session]`)
         .sort(),
     );
-    expect(only).toHaveLength(7);
+    expect(only).toHaveLength(11);
     for (const c of only) expect(c.run).toBeDefined();
   });
 
-  it("#1204: every route behind interactiveSession is interactive-only or owner-only, and no other is", () => {
-    // Literal handlers whose body checks interactiveSession(c). Directory
-    // disconnect (R.* paths, a shared handler) is owner-only, dropped above.
-    const dir = join(import.meta.dirname, "../../../apps/server/src/routes");
-    const found: string[] = [];
-    for (const f of readdirSync(dir).filter((n) => n.endsWith(".ts"))) {
-      const src = readFileSync(join(dir, f), "utf8");
-      const handlers = src.split(
-        /\n\s*app\.(?=(?:get|post|put|patch|delete)\()/,
-      );
-      for (const h of handlers.slice(1)) {
-        const m = /^(get|post|put|patch|delete)\(\s*"([^"]+)"/.exec(h);
-        if (m && h.includes("interactiveSession(c)"))
-          found.push(`${m[1]?.toUpperCase()} ${m[2]}`);
-      }
-    }
-    expect(found).toContain("POST /api/v1/members/:id/erase");
-    expect([...INTERACTIVE_ONLY].sort()).toEqual(found.sort());
+  it("#1204/#1313: every route behind interactiveSession, direct or through helpers, is interactive-only or owner-only, and no other is", () => {
+    // Every file under apps/server/src (routes/, bus/, mcp/, ...); a handler
+    // counts when it reaches interactiveSession(c) through any helper chain.
+    const found = interactiveRoutes(serverSources());
+    // The scan's own reach: direct (erase), a function helper
+    // (share-notices' browserUser) and a const arrow on R.* paths
+    // (directory's disconnect).
+    for (const r of [
+      "POST /api/v1/members/:id/erase",
+      "PUT /api/v1/bus/share-notices",
+      "POST /api/v1/directory/disconnect",
+      "DELETE /api/v1/directory",
+    ])
+      expect(found).toContain(r);
+    const ownerOnly = found.filter(
+      (r) => dropped.find((y) => y.routes.includes(r))?.why === "owner-only",
+    );
+    expect(ownerOnly).toEqual([
+      "DELETE /api/v1/directory",
+      "POST /api/v1/directory/disconnect",
+    ]);
+    expect([...INTERACTIVE_ONLY].sort()).toEqual(
+      found.filter((r) => !ownerOnly.includes(r)),
+    );
     for (const r of INTERACTIVE_ONLY) {
       const x = dropped.find((y) => y.routes.includes(r));
       expect(x?.why).toBe("interactive-only");
       expect(cases.find((c) => c.routes.includes(r))?.denyOnly).toBe(true);
     }
-    for (const r of [
-      "POST /api/v1/directory/disconnect",
-      "DELETE /api/v1/directory",
-    ])
-      expect(dropped.find((y) => y.routes.includes(r))?.why).toBe("owner-only");
+  });
+
+  it("#1313: the interactive scan sees every org route the server registers", () => {
+    const all = new Set(interactiveRoutes(serverSources(), { all: true }));
+    expect(all.size).toBeGreaterThan(100);
+    expect(ORG_SURFACES.map((s) => s.route).filter((r) => !all.has(r))).toEqual(
+      [],
+    );
+  });
+
+  it("#1313: the interactive scan follows helpers across functions and files", () => {
+    const files = [
+      {
+        path: "auth.ts",
+        src: 'export function gate(c) {\n  // interactiveSession(c) in a comment is not a call\n  return interactiveSession(c) || "}";\n}\nexport const other = (c) => requireUser(c);\n',
+      },
+      {
+        path: "a.ts",
+        src: [
+          'import { gate, other } from "./auth.js";',
+          "const twice = async (c) => { if (!gate(c)) throw x; };",
+          "export function mountA(app) {",
+          '  app.put(R.shareNotices, async (c) => { const user = await twice(c); return c.json({ re: /[{"]/ }); });',
+          "  app.get(R.shareNotices, async (c) => { const user = other(c); return c.json(user); });",
+          '  app.post("/x/:id", other);',
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: server source text
+          "  app.delete(`${R.busMachines}/:id`, twice);",
+          "  app.patch(SOME_PATH, gate);",
+          "  app.post(P, gate);",
+          '  for (const method of ["put", "delete"] as const)',
+          '    app[method]("/y", async (c) => twice(c));',
+          "}",
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: server source text
+          "const P = `${R.busMachines}/x`;",
+        ].join("\n"),
+      },
+    ];
+    expect(interactiveRoutes(files)).toEqual([
+      "DELETE /api/v1/bus/machines/:id",
+      "DELETE /y",
+      "PATCH ?SOME_PATH",
+      "POST /api/v1/bus/machines/x",
+      "PUT /api/v1/bus/share-notices",
+      "PUT /y",
+    ]);
   });
 
   it("#1137 group B: one live A-at-B smoke per credential kind; the rest are the matrix's", () => {
@@ -245,9 +292,9 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         .filter((c) => !c.denyOnly)
         .map((c) => [c.name, c.variant]),
     ).toEqual([[SMOKES.oauth, "oauth"]]);
-    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(7);
+    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(11);
     // Every other case: B at B only, its kind a matrix foreign caller.
-    expect(by("own")).toHaveLength(cases.length - 2 - 8);
+    expect(by("own")).toHaveLength(cases.length - 2 - 12);
     for (const c of by("own"))
       expect(FOREIGN_CALLERS).toContain(FOREIGN_OF[c.variant]);
   });

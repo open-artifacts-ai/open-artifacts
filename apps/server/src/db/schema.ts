@@ -460,6 +460,59 @@ export const tokens = sqliteTable("tokens", {
   versionsPublished: integer("versions_published").notNull().default(0),
 });
 
+// #1291 the bus: one row per machine a member approved through the device
+// flow. token_hash is the sha256 of its bus-only `oa_machine_...` token (the
+// token itself is never stored). Revoked rows stay (revoked_at) so the
+// Machines list can show them; erase deletes them.
+export const busMachines = sqliteTable(
+  "bus_machines",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    label: text("label").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdAt: integer("created_at").notNull(),
+    lastUsedAt: integer("last_used_at"),
+    revokedAt: integer("revoked_at"),
+  },
+  (t) => [index("bus_machines_user_idx").on(t.userId, t.revokedAt)],
+);
+
+// #1291 pending device-flow codes, 10 minutes each. device_code_hash is the
+// sha256 of the CLI's polling secret; user_code is the short code the person
+// sees on the approval page (useless without a session that can connect).
+// user_id/approved_at or denied_at are set by the approval page; the poll
+// that redeems an approved code deletes the row in the same batch that
+// inserts the machine.
+export const busDeviceCodes = sqliteTable(
+  "bus_device_codes",
+  {
+    id: text("id").primaryKey(),
+    deviceCodeHash: text("device_code_hash").notNull().unique(),
+    userCode: text("user_code").notNull().unique(),
+    label: text("label").notNull(),
+    ipTag: text("ip_tag").notNull(),
+    // Where the request came from, shown on the confirm screen: the
+    // two-letter country (cf.country) and a readable network name
+    // (cf.asOrganization), never the IP or an ASN number. Null: unknown.
+    originCountry: text("origin_country"),
+    originNetwork: text("origin_network"),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    lastPollAt: integer("last_poll_at"),
+    userId: text("user_id").references(() => users.id),
+    approvedAt: integer("approved_at"),
+    deniedAt: integer("denied_at"),
+  },
+  (t) => [
+    index("bus_device_codes_expires_idx").on(t.expiresAt),
+    index("bus_device_codes_ip_idx").on(t.ipTag, t.expiresAt),
+    index("bus_device_codes_user_idx").on(t.userId),
+  ],
+);
+
 // Per OAuth grant, what the grant record (OAUTH_KV) doesn't hold: the owner's
 // label and usage. Created on first use, label or publish (upserts); the KV
 // grant list stays the source of which grants exist.
@@ -581,4 +634,48 @@ export const loginCodes = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (t) => [primaryKey({ columns: [t.emailKey, t.requestId] })],
+);
+
+// Collaboration suite (#1292): an agent address in the member's bus follows
+// an artifact. Read access is checked at follow time and again per notice; a
+// follow that fails it then is deleted. Soft delete removes an artifact's
+// follows; purge and the user cascade cover the rest. last_notice_at: when
+// the last `changed` notice to this address was due (ms), for the one per
+// minute window.
+export const follows = sqliteTable(
+  "follows",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    namespace: text("namespace").notNull(),
+    agentName: text("agent_name").notNull(),
+    createdAt: integer("created_at").notNull(),
+    lastNoticeAt: integer("last_notice_at"),
+  },
+  (t) => [
+    primaryKey({
+      columns: [t.userId, t.artifactId, t.namespace, t.agentName],
+    }),
+    index("follows_artifact_idx").on(t.artifactId),
+    index("follows_address_idx").on(t.userId, t.namespace, t.agentName),
+  ],
+);
+
+// The member's "agents that get share notices" (#1292): bus addresses, none
+// by default (a `shared` notice with none picked is dropped).
+export const shareNoticeAgents = sqliteTable(
+  "share_notice_agents",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    namespace: text("namespace").notNull(),
+    agentName: text("agent_name").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.namespace, t.agentName] })],
 );

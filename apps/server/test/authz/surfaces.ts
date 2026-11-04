@@ -1211,6 +1211,8 @@ export type OrgReal = {
   /** The caller's own live token and OAuth grant. */
   tokenId: string;
   grantId: string;
+  /** #1291: the caller's own bus machine (a D1 row). */
+  busMachineId: string;
   /** An address nobody holds (an invite). */
   email: string;
   /** An active member who may take a departed member's artifacts. */
@@ -1337,6 +1339,14 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     refuse: invalid(),
     real: {
       req: () => ({ path: "", body: { displayName: "Probe" } }),
+      allow: ok(200),
+    },
+  },
+  // #1292: the caller's own picks; a real write sets none (the default).
+  "PUT /api/v1/bus/share-notices": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { agents: [] } }),
       allow: ok(200),
     },
   },
@@ -1716,6 +1726,33 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
+  // #1291: only the caller's own machine answers past the rules: real only.
+  "DELETE /api/v1/bus/machines/:id": {
+    real: {
+      needs: ["busMachineId"],
+      req: (r) => ({ path: `/api/v1/bus/machines/${r.busMachineId}` }),
+      allow: ok(204),
+    },
+  },
+  // #1296: the caller's own role addresses. A vacant role (agentId null) is
+  // 200 on a member's bus, or the named conflict while they have none.
+  "PUT /api/v1/bus/roles": {
+    refuse: invalid(),
+    real: {
+      req: () => ({
+        path: "",
+        body: { namespace: "probe/ns", name: "probe-role", agentId: null },
+      }),
+      allow: either(ok(200), code("conflict")),
+    },
+  },
+  // Idempotent: an unknown id answers 204 too.
+  "DELETE /api/v1/bus/roles/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/bus/roles/probe-role" }),
+      allow: ok(204),
+    },
+  },
 };
 
 /** A short random tag (space names). */
@@ -1783,6 +1820,8 @@ const ADMIN = { user: true, space: "admin" } as const;
 const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["GET /api/v1/me", U, [200]],
   ["PATCH /api/v1/me", U],
+  ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
+  ["PUT /api/v1/bus/share-notices", org("mcp.connect")],
   ["GET /api/v1/members", org("members.manage"), [200]],
   ["POST /api/v1/members", org("members.manage")],
   ["PATCH /api/v1/members/:id", org("members.manage")],
@@ -1855,6 +1894,15 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["GET /api/v1/oauth-clients", U, [200]],
   ["PATCH /api/v1/oauth-clients/:grantId", U],
   ["DELETE /api/v1/oauth-clients/:grantId", U],
+  // #1291: the caller's own bus machines (revoke is open to a capped caller,
+  // CAPPED_ALLOWED); agents need mcp.connect.
+  ["GET /api/v1/bus/machines", U, [200]],
+  ["DELETE /api/v1/bus/machines/:id", U],
+  ["GET /api/v1/bus/agents", org("mcp.connect"), [200]],
+  // #1296: role addresses; writes also need a cookie session (the handler).
+  ["GET /api/v1/bus/roles", org("mcp.connect"), [200]],
+  ["PUT /api/v1/bus/roles", org("mcp.connect")],
+  ["DELETE /api/v1/bus/roles/:id", org("mcp.connect")],
 ];
 
 /** Every instance route (an org or user policy) not reached through an artifact. */
@@ -1907,6 +1955,13 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "PUT /api/v1/uploads/:uploadId",
   "GET /oauth/authorize",
   "POST /oauth/authorize",
+  // #1291: the bus device flow and approval page (the handlers check the
+  // session, canConnect and the form token) and the machine-token socket.
+  "POST /bus/device",
+  "POST /bus/device/token",
+  "GET /bus/approve",
+  "POST /bus/approve",
+  "GET /bus/connect",
   "GET /a/:id",
   "GET /a/:id/full",
   "GET /a/:id/v/:v",

@@ -24,6 +24,8 @@ const READS: Record<string, string> = {
     "fail closed: hosted code sign-in requires Turnstile",
   "routes/me.ts: toMe":
     "reports: Me.instance.hosted; tightens: Me.instance.update is null (no self-host upgrade nudge, review item 39)",
+  "services/bus.ts: busOn":
+    "fail closed: every /bus route is 404 on hosted until #1299",
   "services/notices.ts: meNotices":
     "tightens: no guest share notice on hosted (guests there were always capped)",
   "runtime/routes.ts: gate":

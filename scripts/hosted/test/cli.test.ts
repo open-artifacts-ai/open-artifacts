@@ -123,6 +123,25 @@ describe("refusals before any call", () => {
   it("every documented command is accepted", () => {
     expect(COMMANDS).toEqual(["status", "publish-release", "publish-floor"]);
   });
+
+  // W9b (design 10.1): install writes are the Provisioning API's. Moved here
+  // from scripts/check-ci.test.ts, which can't read this CLI once the hosted
+  // paths leave the public repo (#1056).
+  it("the retired write commands stay retired", () => {
+    expect(RETIRED_COMMANDS).toEqual([
+      "create",
+      "upgrade",
+      "rollback",
+      "update-vars",
+      "delete",
+      "release-lease",
+      "owner-token",
+      "turnstile-init",
+      "ci-token-sweep",
+      "signup-redrive",
+      "redline-creds",
+    ]);
+  });
 });
 
 describe("token source", () => {

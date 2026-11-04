@@ -31,7 +31,8 @@ import { FETCH_MS, hookKey, rlA } from "../targets";
 export const A = rlA();
 const KEY = hookKey(A.hookKeyFile);
 export const RUN = randomBytes(3).toString("hex");
-const COOKIE = "__Host-oa_session";
+/** __Host-oa_session on staging; oa_session on the local pair (a dev Worker). */
+const COOKIE = A.cookieName;
 
 const post = (path: string, body: unknown, headers: Record<string, string>) =>
   fetch(`${A.app}${path}`, {

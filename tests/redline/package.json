@@ -12,6 +12,8 @@
     "provisioning": "node --experimental-strip-types --no-warnings scripts/provisioning.ts",
     "local": "node --experimental-strip-types scripts/local-pair.ts",
     "local:google": "REDLINE_LOCAL_MODE=google node --experimental-strip-types scripts/local-pair.ts",
+    "local:t19": "REDLINE_LOCAL_T19=1 node --experimental-strip-types scripts/local-pair.ts",
+    "t19:assets": "pnpm --filter @oa/server build",
     "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {

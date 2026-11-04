@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { newMsgId } from "./ids.ts";
+import { BusNameSchema } from "./names.ts";
 
 export const RECEIPT_STATES = [
   "pending",
@@ -18,6 +19,12 @@ export const REFUSAL_REASONS = [
   "other_namespace",
   "revoked",
   "ambiguous",
+  /**
+   * A role address (#1296) with no holder: vacated, or its holder closed,
+   * gone or out of the role's namespace. The hub sends it only to a socket
+   * whose hello listed `BUS_CAPS.roles`; any other gets `unknown_agent`.
+   */
+  "role_vacant",
 ] as const;
 export const RefusalReasonSchema = z.enum(REFUSAL_REASONS);
 export type RefusalReason = z.infer<typeof RefusalReasonSchema>;
@@ -53,6 +60,13 @@ export const receiptShape = {
   msg_id: MsgIdSchema,
   state: ReceiptStateSchema,
   reason: ReceiptReasonSchema.optional(),
+  /**
+   * The recipient's current bus name, only when the send resolved through a
+   * former name (#393), to a socket whose hello listed `BUS_CAPS.rename`, or
+   * through a role address (#1296, the role's holder), to a socket whose
+   * hello listed `BUS_CAPS.roles`. An ordinary send never carries it.
+   */
+  to_name: BusNameSchema.optional(),
 } as const;
 
 export const ReceiptSchema = z

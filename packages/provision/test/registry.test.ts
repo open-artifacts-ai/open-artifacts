@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { registryDomains, registryEntry, registryKey } from "../src/names.js";
 
 // The auth broker (apps/auth-broker/src/registry.ts) reads exactly this key
-// and shape; apps/auth-broker/test/registry-contract.test.ts round-trips it.
+// and shape; apps/provisioner/test/broker-registry-contract.test.ts round-trips it.
 describe("install registry format", () => {
   it("keys an entry as install:<id>", () => {
     expect(registryKey("iabc123def45")).toBe("install:iabc123def45");

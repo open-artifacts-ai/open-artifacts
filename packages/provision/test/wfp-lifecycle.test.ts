@@ -51,8 +51,11 @@ import {
   ProvisionRetry,
   provisionErrorCode,
   TURNSTILE_TEST_KEYS,
+  VERIFY_CLEAN_ATTEMPTS,
+  VERIFY_CLEAN_INTERVAL_MS,
   VERIFY_CLEAN_REASON_MAX,
   type VerifyCleanInput,
+  verifyCleanProblems,
   verifyCleanRefusal,
   WFP_STEPS,
   type WfpOptions,
@@ -5652,6 +5655,339 @@ describe("W2 pause and unpause (5.5)", () => {
       .updateVars(inst.id, { AUTH_DOMAINS: "b.example" });
     expect(signinOf(s, inst.id).disabled).toBe(true);
     expect(dirOf(s, inst.id).disabled).toBeUndefined();
+  });
+});
+
+describe("verify_clean retries Cloudflare read lag, nothing else (#1352)", () => {
+  const BROKER = "BROKER_SIGNING_KEY";
+  /** The settings and secret list GETs since `from` in the fake's log. */
+  const reads = (s: S, from: number) => {
+    const gets = s.fake.log.slice(from).filter((e) => e.method === "GET");
+    return {
+      settings: gets.filter((e) => /\/settings(\?|$)/.test(e.path)).length,
+      secrets: gets.filter((e) => /\/secrets(\?|$)/.test(e.path)).length,
+    };
+  };
+  const audited = (s: S, action: string) =>
+    (
+      s
+        .db()
+        .prepare("SELECT detail FROM hosted_audit WHERE action = ? ORDER BY id")
+        .all(action) as { detail: string }[]
+    ).map((r) => JSON.parse(r.detail) as Record<string, unknown>);
+  /**
+   * A provisioner whose secret list and settings GETs pass through `secrets`
+   * and `settings` from the verify_clean step on, counting reads from there
+   * and every sleep.
+   */
+  const lagged = (
+    s: S,
+    edits: {
+      secrets?: (names: string[], read: number) => string[];
+      settings?: (
+        bs: { name: string; type: string; [k: string]: unknown }[],
+        read: number,
+      ) => { name: string; type: string; [k: string]: unknown }[];
+    },
+    over: Partial<WfpOptions> = {},
+  ) => {
+    const t = { on: false, from: 0, secretReads: 0, settingReads: 0 };
+    const waits: number[] = [];
+    /** At each secret list read: how far the lease runs past now. */
+    const leaseLeft: number[] = [];
+    s.fake.secretsEdit = (_sc, names) => {
+      if (!t.on) return names;
+      const r = s.db().prepare("SELECT lease_until FROM installs").get() as {
+        lease_until: number;
+      };
+      leaseLeft.push(r.lease_until - s.clock.now());
+      return edits.secrets ? edits.secrets(names, ++t.secretReads) : names;
+    };
+    s.fake.settingsEdit = (_sc, bs) =>
+      t.on && edits.settings ? edits.settings(bs, ++t.settingReads) : bs;
+    const p = s.mk({
+      onStep: (st) => {
+        if (st !== "verify_clean") return;
+        t.on = true;
+        t.from = s.fake.log.length;
+      },
+      sleep: async (ms) => {
+        if (t.on) waits.push(ms);
+        await s.clock.sleep(ms);
+      },
+      ...over,
+    });
+    return { p, waits, leaseLeft, reads: () => reads(s, t.from) };
+  };
+  const without =
+    (name: string, upTo = Number.POSITIVE_INFINITY) =>
+    (names: string[], read: number) =>
+      read <= upTo ? names.filter((n) => n !== name) : names;
+
+  it("a secret missing on the first read, then present: passes, no prod_dirty", async () => {
+    const s = setup();
+    const l = lagged(s, { secrets: without(BROKER, 1) });
+    const inst = keep(await l.p.create(input()));
+    expect(l.reads()).toEqual({ settings: 2, secrets: 2 });
+    expect(l.waits).toEqual([VERIFY_CLEAN_INTERVAL_MS]);
+    expect(audited(s, "verify_clean.retry")).toEqual([
+      { read: 1, missing: BROKER },
+    ]);
+    expect(s.audit(inst.id)).not.toContain("verify_clean.refused");
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("a binding missing on the first two reads, then present: passes", async () => {
+    const s = setup();
+    const l = lagged(s, {
+      settings: (bs, read) =>
+        read <= 2 ? bs.filter((b) => b.name !== "PLAN") : bs,
+    });
+    keep(await l.p.create(input()));
+    expect(l.reads()).toEqual({ settings: 3, secrets: 3 });
+    expect(audited(s, "verify_clean.retry")).toEqual([
+      { read: 1, missing: "PLAN (plain_text)" },
+      { read: 2, missing: "PLAN (plain_text)" },
+    ]);
+  });
+
+  it("a secret missing on every read: prod_dirty with today's reason, after the bounded reads", async () => {
+    const s = setup();
+    const l = lagged(s, { secrets: without(BROKER) });
+    const e = await fails(l.p.create(input()));
+    expect(provisionErrorCode(e)).toBe("prod_dirty");
+    expect(e.message).toMatch(
+      `verify_clean refused: secret ${BROKER} is missing`,
+    );
+    expect(l.reads()).toEqual({
+      settings: VERIFY_CLEAN_ATTEMPTS,
+      secrets: VERIFY_CLEAN_ATTEMPTS,
+    });
+    expect(VERIFY_CLEAN_ATTEMPTS).toBe(6);
+    expect(VERIFY_CLEAN_INTERVAL_MS).toBe(10_000);
+    expect(l.waits).toEqual(
+      Array(VERIFY_CLEAN_ATTEMPTS - 1).fill(VERIFY_CLEAN_INTERVAL_MS),
+    );
+    // The lease is renewed right before every read, the re-reads included.
+    expect(l.leaseLeft).toEqual(Array(VERIFY_CLEAN_ATTEMPTS).fill(LEASE));
+    // Far below the lease (30 minutes).
+    expect(VERIFY_CLEAN_ATTEMPTS * VERIFY_CLEAN_INTERVAL_MS).toBeLessThan(
+      2 * 60_000,
+    );
+    expect(audited(s, "verify_clean.retry")).toHaveLength(
+      VERIFY_CLEAN_ATTEMPTS - 1,
+    );
+    expect(audited(s, "verify_clean.refused")).toEqual([
+      { reason: `secret ${BROKER} is missing` },
+    ]);
+    expect(s.fake.kvValues(s.hostsId).size).toBe(0);
+  });
+
+  it("the reads and their spacing are options", async () => {
+    const s = setup();
+    const l = lagged(
+      s,
+      { secrets: without(BROKER) },
+      { verifyCleanAttempts: 2, verifyCleanIntervalMs: 7 },
+    );
+    expect(provisionErrorCode(await fails(l.p.create(input())))).toBe(
+      "prod_dirty",
+    );
+    expect(l.reads()).toEqual({ settings: 2, secrets: 2 });
+    expect(l.waits).toEqual([7]);
+  });
+
+  it.each([
+    [
+      "an extra secret",
+      { secrets: (n: string[]) => [...n, "EXTRA_KEY"] },
+      "secret EXTRA_KEY is not expected",
+    ],
+    [
+      "a refused binding type",
+      {
+        settings: (bs: { name: string; type: string }[]) => [
+          ...bs,
+          { name: "PEER", type: "service" },
+        ],
+      },
+      "binding PEER is a service binding",
+    ],
+    [
+      "a hook secret on a non-test install",
+      { secrets: (n: string[]) => [...n, "TEST_HOOK_KEY"] },
+      "TEST_HOOK_KEY is set on a non-test install",
+    ],
+    [
+      "a missing secret plus an extra one",
+      {
+        secrets: (n: string[]) => [
+          ...n.filter((x) => x !== BROKER),
+          "EXTRA_KEY",
+        ],
+      },
+      "secret EXTRA_KEY is not expected",
+    ],
+    [
+      "a missing binding plus an extra one",
+      {
+        settings: (bs: { name: string; type: string; text?: string }[]) =>
+          bs
+            .filter((b) => b.name !== "PLAN")
+            .concat([{ name: "EXTRA", type: "plain_text", text: "x" }]),
+      },
+      "binding EXTRA (plain_text) is not in the render",
+    ],
+    [
+      "a changed plain_text value",
+      {
+        settings: (bs: { name: string; type: string; text?: string }[]) =>
+          bs.map((b) => (b.name === "PLAN" ? { ...b, text: "free" } : b)),
+      },
+      "binding PLAN (plain_text) has another value than the render",
+    ],
+    [
+      "a duplicated secret name",
+      { secrets: (n: string[]) => [...n, BROKER] },
+      "a secret is listed twice",
+    ],
+  ] as const)(
+    "%s: refused on the first read, never retried",
+    async (_n, edits, why) => {
+      const s = setup();
+      const l = lagged(s, edits as never);
+      const e = await fails(l.p.create(input()));
+      expect(provisionErrorCode(e)).toBe("prod_dirty");
+      expect(l.reads()).toEqual({ settings: 1, secrets: 1 });
+      expect(l.waits).toEqual([]);
+      expect(audited(s, "verify_clean.retry")).toEqual([]);
+      expect(audited(s, "verify_clean.refused")).toEqual([{ reason: why }]);
+    },
+  );
+
+  it("an upgrade rides out a lagging secret list; one missing on every read is prodDirty", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const a = lagged(s, { secrets: without(BROKER, 1) });
+    expect(keep(await a.p.upgrade(inst.id, "0.24.0"))).toMatchObject({
+      ok: true,
+    });
+    expect(a.reads()).toEqual({ settings: 2, secrets: 2 });
+    const b = lagged(s, { secrets: without(BROKER) });
+    const r = keep(await b.p.rollback(inst.id));
+    expect(r).toMatchObject({ ok: false, prodDirty: true });
+    expect(r.reason).toMatch(`secret ${BROKER} is missing`);
+    expect(b.reads()).toEqual({
+      settings: VERIFY_CLEAN_ATTEMPTS,
+      secrets: VERIFY_CLEAN_ATTEMPTS,
+    });
+  });
+
+  it("verifyCleanProblems: kinds, and verifyCleanRefusal is the first reason", async () => {
+    const { CREATE_SECRETS } = await import("../src/wfp.js");
+    const v: VerifyCleanInput = {
+      id: W2_ID,
+      sent: { bindings: [{ name: "PLAN", type: "plain_text", text: "paid" }] },
+      rec: { variant: "release" } as unknown as ReleaseRecord,
+      broker: true,
+      codes: false,
+      testHooks: false,
+      lastTag: null,
+      tag: null,
+    };
+    const missingOnly = { bindings: [], secrets: [...CREATE_SECRETS] };
+    expect(verifyCleanProblems(missingOnly, v)).toEqual([
+      {
+        kind: "missing",
+        name: "PLAN (plain_text)",
+        reason: "binding PLAN (plain_text) is missing",
+      },
+      { kind: "missing", name: BROKER, reason: `secret ${BROKER} is missing` },
+    ]);
+    const mixed = { ...missingOnly, secrets: [...CREATE_SECRETS, "X"] };
+    expect(verifyCleanProblems(mixed, v).map((p) => p.kind)).toEqual([
+      "missing",
+      "other",
+      "missing",
+    ]);
+    expect(verifyCleanRefusal(mixed, v)).toBe(
+      "binding PLAN (plain_text) is missing",
+    );
+    // Each of these is `other` (refused on the first read), never `missing`.
+    const clean: {
+      bindings: { name: string; type: string; text?: string }[];
+      secrets: string[];
+    } = {
+      bindings: [{ name: "PLAN", type: "plain_text", text: "paid" }],
+      secrets: [...CREATE_SECRETS, BROKER],
+    };
+    const others: [string, typeof clean, VerifyCleanInput, string][] = [
+      [
+        "wrong variant",
+        clean,
+        { ...v, rec: { variant: "redline" } as unknown as ReleaseRecord },
+        "the release variant is redline",
+      ],
+      [
+        "wrong DO tag",
+        clean,
+        { ...v, tag: "v8" },
+        "the Durable Object tag is v8, not none",
+      ],
+      [
+        "value mismatch",
+        {
+          ...clean,
+          bindings: [{ name: "PLAN", type: "plain_text", text: "free" }],
+        },
+        v,
+        "binding PLAN (plain_text) has another value than the render",
+      ],
+      [
+        "duplicate secret",
+        { ...clean, secrets: [...clean.secrets, BROKER] },
+        v,
+        "a secret is listed twice",
+      ],
+      [
+        "refused binding type",
+        {
+          ...clean,
+          bindings: [...clean.bindings, { name: "PEER", type: "service" }],
+        },
+        v,
+        "binding PEER is a service binding",
+      ],
+      [
+        "hook name on a non-test install",
+        {
+          ...clean,
+          bindings: [
+            ...clean.bindings,
+            { name: "TEST_DOMAIN", type: "plain_text", text: "x" },
+          ],
+        },
+        v,
+        "TEST_DOMAIN is set on a non-test install",
+      ],
+    ];
+    for (const [what, live, input, reason] of others) {
+      const ps = verifyCleanProblems(live, input);
+      expect(ps[0], what).toEqual({ kind: "other", reason });
+      expect(
+        ps.every((p) => p.kind === "other"),
+        what,
+      ).toBe(true);
+    }
+    expect(
+      verifyCleanProblems(
+        {
+          bindings: [{ name: "PLAN", type: "plain_text", text: "paid" }],
+          secrets: [...CREATE_SECRETS, BROKER],
+        },
+        v,
+      ),
+    ).toEqual([]);
   });
 });
 
