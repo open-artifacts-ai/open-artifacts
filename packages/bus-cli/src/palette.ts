@@ -1,6 +1,6 @@
 /**
  * Terminal palette for the `oa-bus` CLI (design/cli/PALETTE.md).
- * Copied from Open Artifacts bus packages/ui (tokens/terminal.ts); the CLI is its only user here.
+ * Copied from OpenBus packages/ui (tokens/terminal.ts); the CLI is its only user here.
  * Measured contrast on bg: ink 17.8 / 15.3, muted 5.8 / 6.2, accent 6.7 / 7.1,
  * success 5.4 / 8.6, warning 5.9 / 9.6, danger 5.8 / 7.4, hairline 1.8 / 1.8.
  */

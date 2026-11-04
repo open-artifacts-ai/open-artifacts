@@ -226,9 +226,9 @@ describe("status: transcript state 7", () => {
       {
         namespace: NS,
         agents: [
-          row("oa-bus-platform", "claude-code", "leo-mac-mini", "queued"),
-          row("oa-bus-design", "claude-code"),
-          row("oa-bus-backend", "claude-code"),
+          row("oa-team-platform", "claude-code", "leo-mac-mini", "queued"),
+          row("oa-team-design", "claude-code"),
+          row("oa-team-backend", "claude-code"),
         ],
       },
       {
@@ -375,12 +375,12 @@ describe("status: transcript state 7", () => {
     it("follows the last table and its footnote, newest first; exit unaffected", async () => {
       const { code, out, base } = await run([
         late(
-          "oa-bus-design",
-          "oa-bus-frontend",
+          "oa-team-design",
+          "oa-team-frontend",
           14 * 60_000,
           "The Machines page empty state is ready f…",
         ),
-        late("oa-bus-backend", "builder-e0", 2 * 60_000),
+        late("oa-team-backend", "oa-team-e0", 2 * 60_000),
       ]);
       expect(code).toBe(0);
       expect(out.slice(0, base.length)).toEqual(base);
@@ -691,11 +691,8 @@ describe("update available without hub_version (C26i)", () => {
 
 describe("hub problem from /healthz (#294)", () => {
   const FAIL =
-    "[[danger]]×[[/danger]]  The hub uses the public test signing key, so it refuses every request";
-  const FIX = [
-    "   From your oa-bus checkout, run:",
-    "   pnpm -s ob:setup --name <name> --rotate-card-key --force",
-  ];
+    "[[danger]]×[[/danger]]  The instance reports a problem: test_card_key";
+  const FIX = ["   Ask the instance's admin to check it."];
   const hz = (body: unknown) =>
     vi.fn(async () => Response.json(body)) as unknown as typeof fetch;
   const run = async (
@@ -725,7 +722,7 @@ describe("hub problem from /healthz (#294)", () => {
       expect(code).toBe(1);
       const i = out.indexOf(FAIL);
       expect(i).toBeGreaterThan(0);
-      expect(out.slice(i + 1, i + 3)).toEqual(FIX);
+      expect(out.slice(i + 1, i + 2)).toEqual(FIX);
       expect(out[i - 1]).toContain("Daemon running");
     });
   }
@@ -735,16 +732,17 @@ describe("hub problem from /healthz (#294)", () => {
     expect(code).toBe(1);
     const i = out.indexOf(FAIL);
     expect(out[i - 1]).toContain("Hub reachable");
-    expect(out.slice(i + 1, i + 3)).toEqual(FIX);
+    expect(out.slice(i + 1, i + 2)).toEqual(FIX);
     expect(out.at(-1)).toContain("1 failed");
   });
 
   it("an unknown problem prints generically", async () => {
     for (const cmd of ["status", "doctor"] as const) {
       const { out } = await run(cmd, hz({ problem: "disk_full" }));
-      expect(out.join("\n")).toContain("The hub reports a problem: disk_full");
-      expect(out.join("\n")).toContain("   pnpm -s ob:setup --name <name>\n");
-      expect(out.join("\n")).not.toContain("rotate-card-key");
+      expect(out.join("\n")).toContain(
+        "The instance reports a problem: disk_full",
+      );
+      expect(out.join("\n")).not.toContain("ob:setup");
     }
   });
 
@@ -1084,7 +1082,7 @@ describe("uninstall: transcript states 9 and 10", () => {
     expect(await uninstall({ purge: false }, ctx)).toBe(0);
     expect(ctx.all().slice(2, 4)).toEqual([
       "[[success]]✓[[/success]]  No service to remove",
-      "[[success]]✓[[/success]]  No harness had Open Artifacts bus wired",
+      "[[success]]✓[[/success]]  No harness had the bus wired",
     ]);
   });
 
@@ -1291,7 +1289,7 @@ describe("logs, mcp, version", () => {
     expect(load.mock.calls).toEqual([["claude"], ["opencode"], ["codex"]]);
     const pi = fakeCtx();
     expect(await mcp("pi", pi, load)).toBe(1);
-    expect(pi.out()[0]).toMatch(/Pi uses the Open Artifacts bus extension/);
+    expect(pi.out()[0]).toMatch(/Pi uses the bus extension/);
     expect(load).toHaveBeenCalledTimes(3);
   });
 

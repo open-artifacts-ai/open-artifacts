@@ -64,7 +64,7 @@ const p = {
   claude: (h: string) => join(h, ".claude.json"),
   oc: (h: string) => join(h, ".config/opencode/opencode.json"),
   cli: (h: string) => join(h, ".config/opencode/cli.json"),
-  plugin: (h: string) => join(h, ".oa-bus/integrations/opencode/busDir"),
+  plugin: (h: string) => join(h, ".oa-bus/integrations/opencode/oa_bus"),
   pi: (h: string) => join(h, ".pi/agent/extensions/oa-bus.ts"),
 };
 const readJ = (path: string) => JSON.parse(readFileSync(path, "utf8"));
@@ -207,10 +207,10 @@ describe("installAdapters", () => {
     deps.busHome = join(h, "obh");
     await installAdapters(deps);
     expect(readJ(join(h, "oc/cli.json")).plugins).toEqual([
-      join(h, "obh/integrations/opencode/busDir"),
+      join(h, "obh/integrations/opencode/oa_bus"),
     ]);
     expect(
-      existsSync(join(h, "obh/integrations/opencode/busDir/tui.js")),
+      existsSync(join(h, "obh/integrations/opencode/oa_bus/tui.js")),
     ).toBe(true);
     expect(existsSync(join(h, "pa/extensions/oa-bus.ts"))).toBe(true);
 
@@ -680,7 +680,7 @@ describe("containers and files the user touched", () => {
     expect(lstatSync(join(oc(h), "opencode.json")).isSymbolicLink()).toBe(true);
     expect(
       jparse(readFileSync(join(h, "dot/opencode.json"), "utf8")).mcp.servers
-        .oa-bus,
+        .oa_bus,
     ).toBeDefined();
   });
 });

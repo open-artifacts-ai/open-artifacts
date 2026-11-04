@@ -30,7 +30,7 @@ function transcriptNotices(): string[] {
 }
 
 describe("receipt copy", () => {
-  const t = (state: string, reason?: string, n?: number, to = "builder-e0") =>
+  const t = (state: string, reason?: string, n?: number, to = "oa-team-e0") =>
     receiptText(
       { state, reason } as Parameters<typeof receiptText>[0],
       to,
@@ -39,11 +39,11 @@ describe("receipt copy", () => {
     );
 
   it("pending and delivered", () => {
-    expect(receiptText({ state: "pending" }, "builder-e0")).toBe(
-      "○  Queued for builder-e0. Not delivered yet; expires in 1 hour.",
+    expect(receiptText({ state: "pending" }, "oa-team-e0")).toBe(
+      "○  Queued for oa-team-e0. Not delivered yet; expires in 1 hour.",
     );
-    expect(receiptText({ state: "delivered" }, "builder-e0")).toBe(
-      "✓  Delivered to builder-e0.",
+    expect(receiptText({ state: "delivered" }, "oa-team-e0")).toBe(
+      "✓  Delivered to oa-team-e0.",
     );
   });
 
@@ -61,18 +61,18 @@ describe("receipt copy", () => {
       t("refused", "other_namespace"),
       t("refused", "revoked"),
       t("refused", "ambiguous", 2, "docs-writer"),
-      lateDeliveredText("builder-e0", Q),
-      unconfirmedText("builder-e0", Q),
+      lateDeliveredText("oa-team-e0", Q),
+      unconfirmedText("oa-team-e0", Q),
     ];
     expect(got).toEqual(want);
   });
 
   it("an expired notice moves the quote down when line 1 would pass 80 columns", () => {
     const long = excerptOf("x".repeat(60)) as string;
-    const s = receiptText({ state: "expired" }, "builder-e0", undefined, long);
+    const s = receiptText({ state: "expired" }, "oa-team-e0", undefined, long);
     // The quote and its tail fit on their own line.
     expect(s).toBe(
-      `×  Expired: your message to builder-e0,\n   "${long}", was not taken within 1 hour.`,
+      `×  Expired: your message to oa-team-e0,\n   "${long}", was not taken within 1 hour.`,
     );
     // Every line after the first is indented three spaces, the quote included.
     expect(
@@ -88,12 +88,12 @@ describe("receipt copy", () => {
     const long = excerptOf("x".repeat(60)) as string;
     const s = receiptText(
       { state: "expired", reason: "recipient_closed" },
-      "builder-e0",
+      "oa-team-e0",
       undefined,
       long,
     );
     expect(s).toBe(
-      `×  Expired: your message to builder-e0,\n   "${long}",\n   was not delivered because builder-e0 closed first.`,
+      `×  Expired: your message to oa-team-e0,\n   "${long}",\n   was not delivered because oa-team-e0 closed first.`,
     );
   });
 
@@ -179,9 +179,9 @@ describe("excerptOf", () => {
 
 describe("late delivery copy (C17)", () => {
   it("has the Expired shape: Design's sample, verbatim", () => {
-    const s = lateDeliveredText("builder-e0", Q);
+    const s = lateDeliveredText("oa-team-e0", Q);
     expect(s).toBe(
-      `✓  Delivered: your message to builder-e0,\n   "${Q}", was delivered after all.`,
+      `✓  Delivered: your message to oa-team-e0,\n   "${Q}", was delivered after all.`,
     );
     // The copy note says 71; the verbatim line is 72, still under 80.
     expect(s.split("\n")[1]).toHaveLength(72);
@@ -207,10 +207,10 @@ describe("late delivery copy (C17)", () => {
 describe("unconfirmed send copy (C16)", () => {
   // The copy note says 62 and 63; the verbatim lines are 61 and 64, all under 80.
   it("is Design's sample, verbatim, at 43, 76, 61 and 64 columns", () => {
-    const s = unconfirmedText("builder-e0", Q);
+    const s = unconfirmedText("oa-team-e0", Q);
     expect(s).toBe(
       [
-        "!  Unconfirmed: your message to builder-e0,",
+        "!  Unconfirmed: your message to oa-team-e0,",
         `   "${Q}", may not have been delivered.`,
         "   The connection to the hub dropped while it was being sent.",
         "   Ask the recipient whether it arrived before sending it again.",

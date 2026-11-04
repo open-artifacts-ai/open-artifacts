@@ -294,12 +294,11 @@ describe("a revoked machine (C14): why the copy says install, not login", () => 
     const w = withService("darwin");
     writeFileSync(join(w.ctx.home, "revoked"), "{}\n");
     w.ctx.fetch = vi.fn(async (url: string | URL | Request) =>
-      String(url).endsWith("/device/code")
+      String(url).endsWith("/bus/device")
         ? deviceCode()
         : Response.json({
             status: "approved",
-            machine_id: "mmmmmmmmmmmmmmm1",
-            token: TOKEN,
+            machine_token: TOKEN,
           }),
     ) as unknown as typeof fetch;
     return w;

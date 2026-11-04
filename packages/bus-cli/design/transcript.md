@@ -17,7 +17,7 @@ working directory's git remote; see `05-client.md` `namespace.ts`).
 oa-bus 0.1.0
 
 →  Opening your browser to approve this machine
-   If it did not open: [[accent]]https://bus.example.com/approve/K3M7-QW29[[/accent]]
+   If it did not open: [[accent]]https://bus.example.com/bus/approve/K3M7-QW29[[/accent]]
 
    [[hairline]]╭─────────────╮[[/hairline]]
    [[hairline]]│[[/hairline]]  [[accent]]K3M7-QW29[[/accent]]  [[hairline]]│[[/hairline]]  Check this code on the approval page.
@@ -32,17 +32,19 @@ hub answers, the line is erased and replaced by:
 ```
 [[success]]✓[[/success]]  Approved as leo-macbook-pro
 [[success]]✓[[/success]]  Token saved to ~/.oa-bus/machine.json  [[muted]]oa_machine_…7f3a[[/muted]]
+[[success]]✓[[/success]]  Connected to https://bus.example.com.
+   Manage machines: https://bus.example.com/bus
 
 [[success]]✓[[/success]]  Configured Claude Code, OpenCode and Pi
 [[success]]✓[[/success]]  Restarted the OpenCode service to load the plugin
 [[success]]✓[[/success]]  Daemon running as a launchd service  [[muted]]pid 48213[[/muted]]
 
 5 agents in namespace [[accent]]github.com/open-artifacts-ai/oa-bus[[/accent]]  [[muted]]4 live · 1 queued[[/muted]]
-  oa-bus-backend     Claude Code  leo-macbook-pro       [[success]]● live[[/success]]
-  oa-bus-design      Claude Code  leo-macbook-pro       [[success]]● live[[/success]]
-  builder-e0          OpenCode     leo-macbook-pro       [[success]]● live[[/success]]
-  oa-bus-frontend    Pi           leo-linux-box         [[success]]● live[[/success]]
-  oa-bus-platform    Claude Code  leo-mac-mini          [[warning]]○ queued[[/warning]]
+  oa-team-backend     Claude Code  leo-macbook-pro       [[success]]● live[[/success]]
+  oa-team-design      Claude Code  leo-macbook-pro       [[success]]● live[[/success]]
+  oa-team-e0          OpenCode     leo-macbook-pro       [[success]]● live[[/success]]
+  oa-team-frontend    Pi           leo-linux-box         [[success]]● live[[/success]]
+  oa-team-platform    Claude Code  leo-mac-mini          [[warning]]○ queued[[/warning]]
 [[muted]]Mail to a queued agent waits up to 1 hour for its machine to reconnect;[[/muted]]
 [[muted]]then the sender is told.[[/muted]]
 
@@ -89,7 +91,7 @@ Variants inside state 1:
 - Codex is found by `codex` on PATH, `${CODEX_HOME:-~/.codex}`, or
   the Codex desktop app. When Codex was configured but no `codex` binary was
   found (PATH, then the app), the configured line is followed by
-  `[[warning]]![[/warning]]  No codex binary found, so Open Artifacts bus can't wake an idle Codex thread.`
+  `[[warning]]![[/warning]]  No codex binary found, so the bus can't wake an idle Codex thread.`
   then, indented 3, `Install the Codex CLI, then run npx @open-artifacts/bus again.`
   The install still succeeds; messages wait until the thread next runs a turn.
   Install owns the `[mcp_servers.oa_bus]` table in `config.toml` whole: it
@@ -130,7 +132,7 @@ it):
 One line per agent after success, sorted live first, then by name:
 
 ```
-  builder-e0          OpenCode     leo-macbook-pro       [[success]]● live[[/success]]
+  oa-team-e0          OpenCode     leo-macbook-pro       [[success]]● live[[/success]]
 ```
 
 - Indent 2. Name padded to 20, kind to 13, machine label to 22, then the status.
@@ -164,7 +166,7 @@ replaced by:
 oa-bus 0.1.0
 
 →  No browser found. Open this URL on any machine:
-   [[accent]]https://bus.example.com/approve/K3M7-QW29[[/accent]]
+   [[accent]]https://bus.example.com/bus/approve/K3M7-QW29[[/accent]]
 
    [[hairline]]╭─────────────╮[[/hairline]]
    [[hairline]]│[[/hairline]]  [[accent]]K3M7-QW29[[/accent]]  [[hairline]]│[[/hairline]]  Check this code on the approval page.
@@ -241,6 +243,8 @@ answers, the spinner line is replaced by:
 ```
 [[success]]✓[[/success]]  Approved as leo-macbook-pro
 [[success]]✓[[/success]]  Token saved to ~/.oa-bus/machine.json  [[muted]]oa_machine_…7f3a[[/muted]]
+[[success]]✓[[/success]]  Connected to https://bus.example.com.
+   Manage machines: https://bus.example.com/bus
 ```
 
 Printed when a daemon is still running with the token login just replaced.
@@ -303,7 +307,7 @@ replaced by:
 
 ```
 [[danger]]×[[/danger]]  Couldn't reach bus.example.com after 4 attempts.  [[muted]]ECONNREFUSED[[/muted]]
-   Check your network or the --instance URL, then run npx @open-artifacts/bus again.
+   Check your network or the --instance URL, then try again.
 ```
 
 Exit code 1. The muted tail is the last error: a Node error code, `timeout`, or
@@ -316,8 +320,9 @@ No hub named: this machine has no `machine.json`, and neither `--instance` nor
 ```
 oa-bus 0.1.0
 
-[[danger]]×[[/danger]]  No hub to connect to.
-   Run npx @open-artifacts/bus --instance https://bus.example.com, or set OA_BUS_INSTANCE.
+[[danger]]×[[/danger]]  No Open Artifacts instance to connect to.
+   Run npx @open-artifacts/bus --instance <your instance URL>,
+   or set OA_BUS_INSTANCE.
 ```
 
 ## Receipts
@@ -332,13 +337,13 @@ Two honesty rules from the spec bind them:
    `other_namespace`, `revoked`, `ambiguous`.
 
 ```
-[[warning]]○[[/warning]]  Queued for builder-e0. Not delivered yet; expires in 1 hour.
-[[success]]✓[[/success]]  Delivered to builder-e0.
-[[danger]]×[[/danger]]  Expired: your message to builder-e0,
+[[warning]]○[[/warning]]  Queued for oa-team-e0. Not delivered yet; expires in 1 hour.
+[[success]]✓[[/success]]  Delivered to oa-team-e0.
+[[danger]]×[[/danger]]  Expired: your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not taken within 1 hour.
-[[danger]]×[[/danger]]  Expired: your message to builder-e0,
+[[danger]]×[[/danger]]  Expired: your message to oa-team-e0,
    "Can you regenerate the API reference pag…",
-   was not delivered because builder-e0 closed first.
+   was not delivered because oa-team-e0 closed first.
 ```
 
 Each expired or refused notice quotes the message it is about: the first 40
@@ -361,22 +366,22 @@ global agent sends to a name that exists in two or more namespaces:
    "Can you regenerate the API reference pag…", was not delivered.
    No agent has that name here.
    Run list_agents to see who is in this namespace.
-[[danger]]×[[/danger]]  Refused (closed): your message to builder-e0,
+[[danger]]×[[/danger]]  Refused (closed): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
    Send it again once the session is open, or message another agent.
-[[danger]]×[[/danger]]  Refused (inbox_full): your message to builder-e0,
+[[danger]]×[[/danger]]  Refused (inbox_full): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
    50 messages are already waiting.
    Send again once some are delivered or expire.
-[[danger]]×[[/danger]]  Refused (too_large): your message to builder-e0,
+[[danger]]×[[/danger]]  Refused (too_large): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
    It is too large to send (the limit is 1 MB).
    Send a shorter message.
-[[danger]]×[[/danger]]  Refused (other_namespace): your message to builder-e0,
+[[danger]]×[[/danger]]  Refused (other_namespace): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
    You can reach only agents in your namespace and global agents.
    Message an agent in this namespace, or a global agent.
-[[danger]]×[[/danger]]  Refused (revoked): your message to builder-e0,
+[[danger]]×[[/danger]]  Refused (revoked): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
    That agent's machine was revoked.
    Message another agent, or run npx @open-artifacts/bus install there.
@@ -394,7 +399,7 @@ separated by a blank line. It has the Expired shape, with the same excerpt and
 wrap rule:
 
 ```
-[[success]]✓[[/success]]  Delivered: your message to builder-e0,
+[[success]]✓[[/success]]  Delivered: your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was delivered after all.
 ```
 
@@ -409,7 +414,7 @@ the message within 60 s, it reads, with the Expired excerpt and wrap rule
 (lines 3 and 4 are fixed text and never wrap):
 
 ```
-[[warning]]![[/warning]]  Unconfirmed: your message to builder-e0,
+[[warning]]![[/warning]]  Unconfirmed: your message to oa-team-e0,
    "Can you regenerate the API reference pag…", may not have been delivered.
    The connection to the hub dropped while it was being sent.
    Ask the recipient whether it arrived before sending it again.
@@ -435,9 +440,9 @@ Machine  leo-macbook-pro
 [[success]]✓[[/success]]  Daemon running as a launchd service  [[muted]]pid 48213[[/muted]]
 
 3 agents in namespace [[accent]]github.com/open-artifacts-ai/oa-bus[[/accent]]  [[muted]]2 live · 1 queued[[/muted]]
-  oa-bus-backend     Claude Code  leo-macbook-pro       [[success]]● live[[/success]]
-  oa-bus-design      Claude Code  leo-macbook-pro       [[success]]● live[[/success]]
-  oa-bus-platform    Claude Code  leo-mac-mini          [[warning]]○ queued[[/warning]]
+  oa-team-backend     Claude Code  leo-macbook-pro       [[success]]● live[[/success]]
+  oa-team-design      Claude Code  leo-macbook-pro       [[success]]● live[[/success]]
+  oa-team-platform    Claude Code  leo-mac-mini          [[warning]]○ queued[[/warning]]
 [[muted]]Mail to a queued agent waits up to 1 hour for its machine to reconnect;[[/muted]]
 [[muted]]then the sender is told.[[/muted]]
 
@@ -463,7 +468,7 @@ Hub      bus.example.com  [[warning]]○ reconnecting[[/warning]]  [[muted]]for 
 Machine  leo-macbook-pro
 [[success]]✓[[/success]]  Daemon running as a launchd service  [[muted]]pid 48213[[/muted]]
 [[danger]]×[[/danger]]  Hub not reachable at bus.example.com  [[muted]]ECONNREFUSED[[/muted]]
-   Check your network or the hub URL, then run npx @open-artifacts/bus status again.
+   Check your network, then run npx @open-artifacts/bus status again.
 ```
 
 Daemon not running (`machine.json` exists, nothing answers on
@@ -475,7 +480,8 @@ oa-bus 0.1.0
 Hub      bus.example.com
 Machine  leo-macbook-pro
 [[danger]]×[[/danger]]  Daemon not running
-   Run npx @open-artifacts/bus to restart it, or npx @open-artifacts/bus doctor to see why.
+   Run npx @open-artifacts/bus to restart it,
+   or npx @open-artifacts/bus doctor to see why.
 ```
 
 Daemon not responding: the socket took the connection but gave no usable status
@@ -524,9 +530,9 @@ unaffected.
 
 ```
 2 messages delivered late  [[muted]]last hour[[/muted]]
-  oa-bus-backend to builder-e0  [[muted]]2 min ago[[/muted]]
+  oa-team-backend to oa-team-e0  [[muted]]2 min ago[[/muted]]
     "Can you regenerate the API reference pag…"
-  oa-bus-design to oa-bus-frontend  [[muted]]14 min ago[[/muted]]
+  oa-team-design to oa-team-frontend  [[muted]]14 min ago[[/muted]]
     "The Machines page empty state is ready f…"
 ```
 
@@ -613,7 +619,7 @@ oa-bus 0.1.0
 [[danger]]×[[/danger]]  Daemon is not running
    Run npx @open-artifacts/bus to restart it.
 [[danger]]×[[/danger]]  Hub not reachable at bus.example.com  [[muted]]ECONNREFUSED[[/muted]]
-   Check your network or the hub URL, then run npx @open-artifacts/bus doctor again.
+   Check your network, then run npx @open-artifacts/bus doctor again.
 [[success]]✓[[/success]]  Claude Code wired
 [[warning]]![[/warning]]  OpenCode 1.4.2 is too old for the plugin (needs 2.0.0 or newer)
    Run opencode upgrade, then npx @open-artifacts/bus install again.
@@ -705,7 +711,7 @@ Exit code 0.
 oa-bus 0.1.0
 
 [[success]]✓[[/success]]  Stopped and removed the launchd service
-[[success]]✓[[/success]]  Removed Open Artifacts bus from Claude Code, OpenCode and Pi
+[[success]]✓[[/success]]  Removed the bus from Claude Code, OpenCode and Pi
 [[success]]✓[[/success]]  Restarted the OpenCode service to unload the plugin
 
 Kept ~/.oa-bus/machine.json. This machine stays approved on the bus;
@@ -714,8 +720,8 @@ run npx @open-artifacts/bus to reconnect it.
 ```
 
 - Linux reads `Stopped and removed the systemd user service`.
-- The removed line lists only the harnesses that had Open Artifacts bus wired, as in
-  state 1. None had it: `[[success]]✓[[/success]]  No harness had Open Artifacts bus wired`.
+- The removed line lists only the harnesses that had the bus wired, as in
+  state 1. None had it: `[[success]]✓[[/success]]  No harness had the bus wired`.
 - The OpenCode restart line prints only when OpenCode was wired. If its service
   is not running: `[[success]]✓[[/success]]  OpenCode service not running; nothing to restart`.
 - No service, but a daemon was running (in a terminal, or the one install
@@ -726,9 +732,9 @@ run npx @open-artifacts/bus to reconnect it.
   `[[warning]]![[/warning]]  The daemon is still running (pid 48213).` then
   `   Stop it with kill 48213.`
 - Second run: `[[success]]✓[[/success]]  No service to remove` and
-  `[[success]]✓[[/success]]  No harness had Open Artifacts bus wired`. Exit code 0.
+  `[[success]]✓[[/success]]  No harness had the bus wired`. Exit code 0.
 - Each line says what actually happened. When the only OpenCode leftover was
-  the plugin folder (its config no longer named Open Artifacts bus), the line is
+  the plugin folder (its config no longer named the bus), the line is
   `[[success]]✓[[/success]]  Removed the OpenCode plugin folder`, and OpenCode is not in the
   removed line.
 
@@ -741,7 +747,7 @@ run npx @open-artifacts/bus to reconnect it.
 oa-bus 0.1.0
 
 [[success]]✓[[/success]]  Stopped and removed the launchd service
-[[success]]✓[[/success]]  Removed Open Artifacts bus from Claude Code, OpenCode and Pi
+[[success]]✓[[/success]]  Removed the bus from Claude Code, OpenCode and Pi
 [[success]]✓[[/success]]  Restarted the OpenCode service to unload the plugin
 [[success]]✓[[/success]]  Deleted ~/.oa-bus, including machine.json
 
@@ -760,7 +766,7 @@ exit code is 1:
 oa-bus 0.1.0
 
 [[success]]✓[[/success]]  Stopped and removed the launchd service
-[[success]]✓[[/success]]  Removed Open Artifacts bus from Claude Code, OpenCode and Pi
+[[success]]✓[[/success]]  Removed the bus from Claude Code, OpenCode and Pi
 [[success]]✓[[/success]]  Restarted the OpenCode service to unload the plugin
 [[danger]]×[[/danger]]  The daemon is still running, so ~/.oa-bus was not deleted.
    Wait a few seconds and run npx @open-artifacts/bus uninstall --purge again.
@@ -775,9 +781,9 @@ path is the real one, cut in the middle if long. Exit code 1:
 oa-bus 0.1.0
 
 [[success]]✓[[/success]]  No service to remove
-[[success]]✓[[/success]]  No harness had Open Artifacts bus wired
-[[danger]]×[[/danger]]  ~/work does not look like an Open Artifacts bus folder, so it was not deleted.
-   Remove the Open Artifacts bus files in it yourself, or unset OA_BUS_HOME.
+[[success]]✓[[/success]]  No harness had the bus wired
+[[danger]]×[[/danger]]  ~/work does not look like a bus folder, so it was not deleted.
+   Remove the bus files in it yourself, or unset OA_BUS_HOME.
 ```
 
 Destroying a hub (`setup --destroy`) does not uninstall any machine: run
@@ -885,8 +891,9 @@ shown as reported, bare, with no message text):
 
 ```
 [[danger]]×[[/danger]]  Unknown command: instal
-   Run npx @open-artifacts/bus with install, login, daemon, status, logs, doctor,
-   global add|rm|list, uninstall, mcp <claude|opencode|pi|codex> or version.
+   Run npx @open-artifacts/bus with install, login, daemon, status, logs,
+   doctor, global add|rm|list, uninstall, mcp <claude|opencode|pi|codex>
+   or version.
    install takes --no-service to skip the launchd or systemd step.
 ```
 

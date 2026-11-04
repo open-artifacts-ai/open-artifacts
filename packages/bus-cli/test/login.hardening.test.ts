@@ -17,7 +17,7 @@ import { browserCommand, openBrowser } from "../src/deps.ts";
 const MID = "mmmmmmmmmmmmmmm1";
 const TOKEN = `oa_machine_${"a".repeat(32)}`;
 const DEV = "d".repeat(43);
-const URI = "https://bus.test/approve/ABCD-2345";
+const URI = "https://bus.test/bus/approve/ABCD-2345";
 const tmp = () => mkdtempSync(join(tmpdir(), "ob-adv-"));
 const okCode = (over: Record<string, unknown> = {}) => ({
   device_code: DEV,
@@ -27,7 +27,7 @@ const okCode = (over: Record<string, unknown> = {}) => ({
   interval: 5,
   ...over,
 });
-const approved = { status: "approved", token: TOKEN, machine_id: MID };
+const approved = { status: "approved", machine_token: TOKEN };
 
 /** Hub mock; throws after `cap` token polls so an infinite loop fails fast. */
 const hub = (
@@ -39,7 +39,7 @@ const hub = (
   let n = 0;
   const fetch = vi.fn(async (url: string | URL | Request) => {
     urls.push(String(url));
-    if (String(url).includes("/device/code")) return Response.json(code);
+    if (String(url).endsWith("/bus/device")) return Response.json(code);
     if (++n > cap) throw new Error(`LOOP: >${cap} polls`);
     const p = polls.length > 1 ? polls.shift() : polls[0];
     if (p instanceof Error) throw p;
@@ -73,12 +73,12 @@ describe("hardening: hostile device/code responses", () => {
   for (const uri of [
     "javascript:alert(1)",
     "file:///etc/passwd",
-    "https://evil.example/approve/ABCD-2345",
-    "https://user:pw@bus.test/approve/ABCD-2345",
-    "https://bus.test@evil.example/approve/ABCD-2345",
-    "https://bus.test/approve/WXYZ-2345",
+    "https://evil.example/bus/approve/ABCD-2345",
+    "https://user:pw@bus.test/bus/approve/ABCD-2345",
+    "https://bus.test@evil.example/bus/approve/ABCD-2345",
+    "https://bus.test/bus/approve/WXYZ-2345",
     "https://bus.test/elsewhere",
-    "https://bus.test/approve/ABCD-2345?next=https://evil.example",
+    "https://bus.test/bus/approve/ABCD-2345?next=https://evil.example",
   ]) {
     it(`rejects verification_uri ${uri} before openBrowser`, async () => {
       const a = args(hub(okCode({ verification_uri: uri }), [approved]));
@@ -133,7 +133,7 @@ describe("hardening: hostile device/code responses", () => {
     const ok = args(
       hub(
         okCode({
-          verification_uri: "http://localhost:8787/approve/ABCD-2345",
+          verification_uri: "http://localhost:8787/bus/approve/ABCD-2345",
         }),
         [approved],
       ),
@@ -141,7 +141,7 @@ describe("hardening: hostile device/code responses", () => {
     );
     await expect(login(ok)).resolves.toBeDefined();
     const bad = args(
-      hub(okCode({ verification_uri: "http://bus.test/approve/ABCD-2345" }), [
+      hub(okCode({ verification_uri: "http://bus.test/bus/approve/ABCD-2345" }), [
         approved,
       ]),
       { hub: "http://bus.test" },
@@ -153,7 +153,7 @@ describe("hardening: hostile device/code responses", () => {
     const a = args(hub(okCode(), [approved]), {
       fetch: vi.fn(async () => new Response("nope", { status: 503 })),
     });
-    await expect(login(a)).rejects.toThrow(/device\/code failed: 503/);
+    await expect(login(a)).rejects.toThrow(/bus\/device failed: 503/);
   });
 });
 
@@ -208,10 +208,10 @@ describe("hardening: polling", () => {
 });
 
 describe("hardening: hub URL", () => {
-  it("trailing slash does not produce //device/code", async () => {
+  it("trailing slash does not produce //bus/device", async () => {
     const h = hub(okCode(), [approved]);
     await login(args(h, { hub: "https://bus.test/" }));
-    expect(h.urls.every((u) => !u.includes("//device"))).toBe(true);
+    expect(h.urls.every((u) => !u.slice("https://".length).includes("//"))).toBe(true);
   });
 });
 
@@ -259,7 +259,7 @@ describe("hardening: machine label", () => {
     const h = hub(okCode(), [approved]);
     const fetch = vi.fn(
       async (u: string | URL | Request, init?: RequestInit) => {
-        if (String(u).endsWith("/device/code"))
+        if (String(u).endsWith("/bus/device"))
           urls.push(JSON.parse(String(init?.body)));
         return h.fetch(u, init);
       },

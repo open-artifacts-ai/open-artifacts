@@ -543,7 +543,7 @@ describe("pi extension asset", () => {
 
 describe("the asset's own copy matches the shared copy", () => {
   const long = `agent-${"x".repeat(90)}`;
-  it.each(["builder-e0", long])("receipts for %s", (to) => {
+  it.each(["oa-team-e0", long])("receipts for %s", (to) => {
     const cases: [Parameters<typeof receiptText>[0], number | undefined][] = [
       [{ state: "pending" }, undefined],
       [{ state: "delivered" }, undefined],

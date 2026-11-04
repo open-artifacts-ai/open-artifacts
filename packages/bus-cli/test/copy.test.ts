@@ -64,7 +64,7 @@ describe("transcript parity: usage errors", () => {
 
 describe("transcript parity: the roster", () => {
   const block = transcript("## 1. First run, browser opens")[1] as string[];
-  const rows = block.filter((l) => l.startsWith("  oa-bus-"));
+  const rows = block.filter((l) => l.startsWith("  oa-team-"));
   const machine = (l: string) => l.slice(35, 57).trim();
 
   it("renders each row of the transcript's table", () => {
@@ -155,7 +155,7 @@ describe("an unknown kind (C26h)", () => {
 
 describe("cutting long values", () => {
   it("cuts the middle, keeping the end, to the transcript's example", () => {
-    const ns = `github.com/very-long-org${"x".repeat(95)}/oa-bus`;
+    const ns = `github.com/very-long-org${"x".repeat(97)}/oa-bus`;
     expect(ns).toHaveLength(128);
     const line = plain.rosterHeader(ns, 4, 1);
     expect([...line].length).toBeLessThanOrEqual(80);
@@ -335,5 +335,26 @@ describe("the npm name: every printed command says npx @open-artifacts/bus (C18)
       expect(text, f).not.toMatch(/npx oa-bus/);
       expect(text, f).not.toMatch(/(run|Run) `?oa-bus /);
     }
+  });
+});
+
+describe("connected: where to manage this machine (suite step 1)", () => {
+  it("names the instance and its /bus page, on one line when it fits", () => {
+    expect(plain.connected("https://oa.test")).toEqual([
+      "✓  Connected to https://oa.test. Manage machines: https://oa.test/bus",
+    ]);
+    // An origin that would pass 80 columns on one line takes two.
+    expect(plain.connected("https://artifacts.leourbina.com")).toEqual([
+      "✓  Connected to https://artifacts.leourbina.com.",
+      "   Manage machines: https://artifacts.leourbina.com/bus",
+    ]);
+  });
+  it("splits a long origin over two lines, each within 80 columns", () => {
+    const origin = `https://${"h".repeat(120)}.example.com`;
+    const lines = plain.connected(origin);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^✓ {2}Connected to https:\/\/h+…/);
+    expect(lines[1]).toMatch(/^ {3}Manage machines: https:\/\/h+….*\/bus$/);
+    for (const l of lines) expect([...l].length).toBeLessThanOrEqual(80);
   });
 });

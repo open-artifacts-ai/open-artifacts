@@ -411,7 +411,7 @@ const install: Record<Harness, Step> = {
         "could not read the OpenCode version from `opencode --version`; skipped OpenCode",
       );
     if ((compareVersions(version, "2.0.0") ?? -1) < 0)
-      throw new Error(`Open Artifacts bus needs OpenCode v2; found ${version}`);
+      throw new Error(`The bus needs OpenCode v2; found ${version}`);
     const p = paths(deps);
     const configPath =
       p.opencodeConfigs.find(present) ?? (p.opencodeConfigs[0] as string);

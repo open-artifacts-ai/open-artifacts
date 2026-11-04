@@ -132,7 +132,7 @@ describe("cli", () => {
       ["login", "--instance", ""],
     ])
       expect(() => parse(argv), argv.join(" ")).toThrow(
-        /--(home|hub) needs a value/,
+        /--(home|instance) needs a value/,
       );
   });
   it("rejects bad input", () => {

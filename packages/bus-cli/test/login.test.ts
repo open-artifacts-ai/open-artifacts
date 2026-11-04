@@ -8,7 +8,7 @@ import { login } from "../src/commands/login.ts";
 const home = () => mkdtempSync(join(tmpdir(), "ob-home-"));
 const MID = "mmmmmmmmmmmmmmm1";
 const TOKEN = `oa_machine_${"a".repeat(32)}`;
-const URI = "https://bus.test/approve/ABCD-2345";
+const URI = "https://bus.test/bus/approve/ABCD-2345";
 const code = () =>
   Response.json({
     device_code: "d".repeat(43),
@@ -22,7 +22,7 @@ const hub = (tokens: unknown[]) => {
   const bodies: unknown[] = [];
   const fetch = vi.fn(
     async (url: string | URL | Request, init?: RequestInit) => {
-      if (String(url).endsWith("/device/code")) {
+      if (String(url).endsWith("/bus/device")) {
         bodies.push(JSON.parse(String(init?.body)));
         return code();
       }
@@ -47,7 +47,7 @@ describe("device login", () => {
   it("polls through pending to approved and stores the token 0600", async () => {
     const h = hub([
       { status: "pending" },
-      { status: "approved", token: TOKEN, machine_id: MID },
+      { status: "approved", machine_token: TOKEN },
     ]);
     const a = base(h.fetch);
     const result = await login(a);
@@ -58,7 +58,6 @@ describe("device login", () => {
     const file = join(result.home, "machine.json");
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       hub: "https://bus.test",
-      machine_id: MID,
       label: "laptop",
       machine_token: TOKEN,
     });
@@ -68,7 +67,7 @@ describe("device login", () => {
 
   it("prints the URL and user code with noOpen", async () => {
     const a = base(
-      hub([{ status: "approved", token: TOKEN, machine_id: MID }]).fetch,
+      hub([{ status: "approved", machine_token: TOKEN }]).fetch,
     );
     await login({ ...a, noOpen: true });
     expect(a.openBrowser).not.toHaveBeenCalled();
@@ -91,7 +90,7 @@ describe("device login", () => {
 
   it("rejects a malformed token and stores nothing", async () => {
     const a = base(
-      hub([{ status: "approved", token: "oa_machine_short", machine_id: MID }])
+      hub([{ status: "approved", machine_token: "oa_machine_short" }])
         .fetch,
     );
     await expect(login(a)).rejects.toThrow();
@@ -115,7 +114,7 @@ describe("device login", () => {
 
 describe("machine label", () => {
   it("defaults to the hostname, as a valid MachineLabelSchema value", async () => {
-    const h = hub([{ status: "approved", token: TOKEN, machine_id: MID }]);
+    const h = hub([{ status: "approved", machine_token: TOKEN }]);
     const { label: _, ...rest } = base(h.fetch);
     const r = await login(rest);
     expect(MachineLabelSchema.safeParse(r.label).success).toBe(true);

@@ -272,7 +272,7 @@ describe("systemService: launchd", () => {
     const other = join(userHome, "elsewhere bus");
     await systemService({ ...d, home: () => other }).ensure();
     const { label } = serviceNames(other, userHome);
-    expect(label).toMatch(/^ai\.oa-bus\.daemon\.[0-9a-f]{8}$/);
+    expect(label).toMatch(/^com\.open-artifacts\.bus\.[0-9a-f]{8}$/);
     const plist = readFileSync(
       join(userHome, "Library/LaunchAgents", `${label}.plist`),
       "utf8",

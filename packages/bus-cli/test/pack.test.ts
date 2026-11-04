@@ -98,14 +98,16 @@ describe("the published oa-bus package", () => {
     );
     expect(shipped.name).toBe("@open-artifacts/bus");
     expect(shipped.publishConfig).toEqual({ access: "public" });
-    expect(shipped.private).toBeUndefined();
+    // Held back until npm moves to this repo (design: engineering note); the
+    // Manager flips it. Everything else is ready for the publish.
+    expect(shipped.private).toBe(true);
     expect(shipped.bin).toEqual({ "oa-bus": "dist/index.js" });
     expect(shipped.files).toEqual(["dist", "assets"]);
     expect(shipped.engines.node).toBe(">=22");
     expect(shipped.repository).toEqual({
       type: "git",
       url: "https://github.com/open-artifacts-ai/open-artifacts",
-      directory: "packages/cli",
+      directory: "packages/bus-cli",
     });
     expect(shipped.scripts.build).toBeTruthy();
     expect(shipped.dependencies ?? {}).toEqual({});
@@ -183,7 +185,7 @@ describe("the published oa-bus package", () => {
       status = err.status;
     }
     expect(status).toBe(1);
-    expect(out).toMatch(/Pi uses the Open Artifacts bus extension/);
+    expect(out).toMatch(/Pi uses the bus extension/);
   });
 
   it.each([

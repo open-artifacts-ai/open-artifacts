@@ -1,4 +1,4 @@
-// AC5c: `oa-bus status` (and install's closing table) with roles and status.
+// `oa-bus status` (and install's closing table) with status. Roles are gone.
 import { describe, expect, it } from "vitest";
 import { rosterBlock, rosters } from "../src/commands/install.ts";
 import { cols, cutCols } from "../src/copy.ts";
@@ -19,18 +19,17 @@ const row = (r: Record<string, unknown>) => ({
   ...r,
 });
 
-describe("status roster with roles and status (AC5c)", () => {
-  it("a role holder: a role column for every row, `lane-6 →` before the name", () => {
+describe("status roster with status", () => {
+  it("a role from the daemon adds no column", () => {
     const c = ctx();
     const { lines } = rosterBlock(c, {
       namespace: "ns",
       agents: [row({ role: "lane-6" }), row({ name: "b" })],
     });
     expect(lines.slice(1)).toEqual([
-      "                b                   Claude Code  mbp                   ● live",
-      "  lane-6 →      code-96             Claude Code  mbp                   ● live",
+      "  b                   Claude Code  mbp                   ● live",
+      "  code-96             Claude Code  mbp                   ● live",
     ]);
-    for (const l of lines) expect(width(l)).toBeLessThanOrEqual(80);
   });
 
   it("a status with and without a label, and a stale one, on the line under the row", () => {
@@ -58,13 +57,12 @@ describe("status roster with roles and status (AC5c)", () => {
     ]);
   });
 
-  it("a hostile or long role and label: stripped, cut, within 80 columns", () => {
+  it("a hostile or long label: stripped, cut, within 80 columns", () => {
     const c = ctx();
     const { lines } = rosterBlock(c, {
       namespace: "ns",
       agents: [
         row({
-          role: `\x1b]52;c;aGk=\x07${"r".repeat(40)}‮`,
           status: "working\x1b[2J",
           status_label: `\x1b[31m${"y".repeat(64)}​`,
           status_at: ago(c, 60 * 24 * 3),
@@ -74,11 +72,11 @@ describe("status roster with roles and status (AC5c)", () => {
     const out = lines.join("\n");
     for (const ch of ["\x1b", "\x07", "‮", "​"]) expect(out).not.toContain(ch);
     for (const l of lines) expect(width(l)).toBeLessThanOrEqual(80);
-    expect(lines[1]).toMatch(/^ {2}r{4}…r{5} → {2}code-96 /);
+    expect(lines[1]).toMatch(/^ {2}code-96 /);
     expect(lines[2]).toMatch(/^ {4}agent says: working · "y+…$/);
   });
 
-  it("below the gate, or with none set, nothing changes", () => {
+  it("with no status set, no status lines", () => {
     const c = ctx();
     const plain = [row({}), row({ name: "b", state: "queued" })];
     expect(rosters(c, [{ namespace: "ns", agents: plain }])).toEqual([
@@ -91,7 +89,7 @@ describe("status roster with roles and status (AC5c)", () => {
   });
 });
 
-describe("CLI cuts by columns, not code points (AC5c M1)", () => {
+describe("CLI cuts by columns, not code points", () => {
   it("counts wide CJK and emoji as 2, marks and joiners as 0", () => {
     expect(cols("abc")).toBe(3);
     expect(cols("書いている")).toBe(10);
@@ -123,7 +121,6 @@ describe("CLI cuts by columns, not code points (AC5c M1)", () => {
           row({
             name: wide.slice(0, 30),
             machine: wide,
-            role: "lane-6",
             status: "working",
             status_label: wide,
             status_at: ago(c, 1),
@@ -134,7 +131,7 @@ describe("CLI cuts by columns, not code points (AC5c M1)", () => {
       expect(lines[2]).toMatch(/^ {4}agent says: working · "/);
       expect(lines[2]?.endsWith("…")).toBe(true);
       // The columns still line up: the state starts where a plain row's does.
-      expect(cols(lines[1]?.slice(0, lines[1].indexOf("●")) ?? "")).toBe(71);
+      expect(cols(lines[1]?.slice(0, lines[1].indexOf("●")) ?? "")).toBe(57);
     },
   );
 });

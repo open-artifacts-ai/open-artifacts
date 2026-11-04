@@ -99,7 +99,7 @@ contains `UTF-8`, or Windows Terminal), the ASCII fallback otherwise.
 - No em dashes. Sentence case. Plain words.
 - In setup output, the machine label and the device code are the only
   identifiers printed in prose. Agent names appear in the roster and in
-  receipts (`Delivered to builder-e0.`).
+  receipts (`Delivered to oa-team-e0.`).
 - A token is never printed beyond its `oa_machine_` prefix and 4 trailing
   characters: `oa_machine_…7f3a`. Never in an error, never in a log line.
   There is no `--verbose` flag.

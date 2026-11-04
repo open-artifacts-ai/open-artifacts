@@ -22,11 +22,11 @@ import {
 } from "./fake.ts";
 
 const AGENTS = [
-  ["oa-bus-backend", "claude-code"],
-  ["oa-bus-design", "claude-code"],
-  ["builder-e0", "opencode"],
-  ["oa-bus-frontend", "pi", "leo-linux-box"],
-  ["oa-bus-platform", "claude-code", "leo-mac-mini", "queued"],
+  ["oa-team-backend", "claude-code"],
+  ["oa-team-design", "claude-code"],
+  ["oa-team-e0", "opencode"],
+  ["oa-team-frontend", "pi", "leo-linux-box"],
+  ["oa-team-platform", "claude-code", "leo-mac-mini", "queued"],
 ].map(([name, kind, machine, state]) => ({
   name: name as string,
   kind: kind as "claude-code" | "opencode" | "pi",
@@ -39,7 +39,7 @@ const withAgents = (agents = AGENTS) =>
 /** A hub that answers /device/code, then each poll in turn. */
 function hub(polls: unknown[], code: () => Response = deviceCode) {
   return vi.fn(async (url: string | URL | Request) => {
-    if (String(url).endsWith("/device/code")) return code();
+    if (String(url).endsWith("/bus/device")) return code();
     const next = polls.shift();
     if (next instanceof Error) throw next;
     return Response.json(next);
@@ -47,8 +47,7 @@ function hub(polls: unknown[], code: () => Response = deviceCode) {
 }
 const approved = {
   status: "approved",
-  machine_id: "mmmmmmmmmmmmmmm1",
-  token: TOKEN,
+  machine_token: TOKEN,
 };
 
 const allHarnesses = (over: Partial<Ctx> = {}) => ({
@@ -267,7 +266,7 @@ describe("install: Codex (C26e)", () => {
     expect(ctx.out()).toEqual(
       expect.arrayContaining([
         "[[success]]✓[[/success]]  Configured Codex",
-        "[[warning]]![[/warning]]  No codex binary found, so Open Artifacts bus can't wake an idle Codex thread.",
+        "[[warning]]![[/warning]]  No codex binary found, so the bus can't wake an idle Codex thread.",
         "   Install the Codex CLI, then run npx @open-artifacts/bus again.",
       ]),
     );
@@ -289,7 +288,7 @@ describe("install: Codex (C26e)", () => {
     expect(await run(ctx)).toBe(0);
     expect(await uninstall({ purge: false }, ctx)).toBe(0);
     expect(ctx.out()).toContain(
-      "[[success]]✓[[/success]]  Removed Open Artifacts bus from Codex",
+      "[[success]]✓[[/success]]  Removed the bus from Codex",
     );
     expect(readFileSync(config, "utf8")).toBe(FIXTURE);
   });
@@ -464,7 +463,7 @@ describe("install: transcript states 2 to 6", () => {
   it("6: retries /device/code at 2, 4 and 8 s, then succeeds", async () => {
     let n = 0;
     const fetch = vi.fn(async (url: string | URL | Request) => {
-      if (String(url).endsWith("/device/code")) {
+      if (String(url).endsWith("/bus/device")) {
         if (++n < 3)
           throw Object.assign(new TypeError("fetch failed"), {
             cause: { code: "ECONNREFUSED" },
@@ -492,7 +491,7 @@ describe("install: transcript states 2 to 6", () => {
   it("6: on a TTY the retry lines are redrawn in place and erased on success", async () => {
     let n = 0;
     const fetch = vi.fn(async (url: string | URL | Request) => {
-      if (String(url).endsWith("/device/code")) {
+      if (String(url).endsWith("/bus/device")) {
         if (++n < 2) return new Response("", { status: 502 });
         return deviceCode();
       }
@@ -514,7 +513,7 @@ describe("install: transcript states 2 to 6", () => {
     expect(fetch).toHaveBeenCalledTimes(4);
     expect(ctx.err()).toEqual([
       "[[danger]]×[[/danger]]  Couldn't reach bus.example.com after 4 attempts.  [[muted]]HTTP 502[[/muted]]",
-      "   Check your network or the --instance URL, then run npx @open-artifacts/bus again.",
+      "   Check your network or the --instance URL, then try again.",
     ]);
     const [, final] = transcript("## 6. Hub unreachable");
     expect((final as string[])[1]).toBe(ctx.err()[1]);
@@ -564,7 +563,7 @@ describe("install: an approved machine", () => {
     writeFileSync(join(ctx.home, "revoked"), "{}\n");
     expect(await loginStep(ctx, { label: LABEL })).toBe(true);
     expect(String(vi.mocked(ctx.fetch).mock.calls[0]?.[0])).toBe(
-      `${HUB}/device/code`,
+      `${HUB}/bus/device`,
     );
   });
 

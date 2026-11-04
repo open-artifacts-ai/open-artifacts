@@ -236,7 +236,7 @@ export function copy(style: Style) {
     // After the configured line, when Codex has no binary to wake with (C26e).
     codexNoWake: () => [
       warn(
-        "No codex binary found, so Open Artifacts bus can't wake an idle Codex thread.",
+        "No codex binary found, so the bus can't wake an idle Codex thread.",
       ),
       next("Install the Codex CLI, then run npx @open-artifacts/bus again."),
     ],
@@ -403,7 +403,7 @@ export function copy(style: Style) {
       return [
         `${fail(`Couldn't reach ${clip(host, 21 + len(tail) + len(error))} ${tail}`)}  ${p("muted", error)}`,
         next(
-          "Check your network or the --instance URL, then run npx @open-artifacts/bus again.",
+          "Check your network or the --instance URL, then try again.",
         ),
       ];
     },
@@ -424,11 +424,12 @@ export function copy(style: Style) {
       // The parser's message, as a sentence.
       fail(clip(message.charAt(0).toUpperCase() + message.slice(1), 3)),
       next(
-        "Run npx @open-artifacts/bus with install, login, daemon, status, logs, doctor,",
+        "Run npx @open-artifacts/bus with install, login, daemon, status, logs,",
       ),
       next(
-        "global add|rm|list, uninstall, mcp <claude|opencode|pi|codex> or version.",
+        "doctor, global add|rm|list, uninstall, mcp <claude|opencode|pi|codex>",
       ),
+      next("or version."),
       next("install takes --no-service to skip the launchd or systemd step."),
     ],
     skipped: (h: HarnessName, reason: string) => [
@@ -438,10 +439,9 @@ export function copy(style: Style) {
       next("Fix it, then run npx @open-artifacts/bus again."),
     ],
     noHub: () => [
-      fail("No hub to connect to."),
-      next(
-        "Run npx @open-artifacts/bus --instance https://bus.example.com, or set OA_BUS_INSTANCE.",
-      ),
+      fail("No Open Artifacts instance to connect to."),
+      next("Run npx @open-artifacts/bus --instance <your instance URL>,"),
+      next("or set OA_BUS_INSTANCE."),
     ],
     hubMismatch: (approved: string, asked: string, askedUrl: string) => {
       // Both hosts share the line: each keeps at least 20 columns.
@@ -450,7 +450,7 @@ export function copy(style: Style) {
       return [
         fail(`This machine is approved for ${a}, not ${b}.`),
         next("Run npx @open-artifacts/bus uninstall --purge first, then"),
-        next(`npx @open-artifacts/bus --instance ${clip(askedUrl, 28)}.`),
+        next(`npx @open-artifacts/bus --instance ${clip(askedUrl, 39)}.`),
       ];
     },
     checkOk: (label: string) => done(label),
@@ -462,20 +462,20 @@ export function copy(style: Style) {
       ),
     couldNotRemove: (h: HarnessName, reason: string) => [
       warn(
-        `Could not remove Open Artifacts bus from ${HARNESS_LABEL[h]}: ${clip(reason, 37 + len(HARNESS_LABEL[h]))}`,
+        `Could not remove the bus from ${HARNESS_LABEL[h]}: ${clip(reason, 37 + len(HARNESS_LABEL[h]))}`,
       ),
       next("Fix it, then run npx @open-artifacts/bus uninstall again."),
     ],
     purgeLeftDir: (home: string) => [
       warn(
-        `Left ${clip(home, 57)} in place: it holds files Open Artifacts bus did not create.`,
+        `Left ${clip(home, 57)} in place: it holds files the bus did not create.`,
       ),
     ],
     purgeRefused: (home: string) => [
       fail(
-        `${clip(home, 64)} does not look like an Open Artifacts bus folder, so it was not deleted.`,
+        `${clip(home, 64)} does not look like a bus folder, so it was not deleted.`,
       ),
-      next("Remove the Open Artifacts bus files in it yourself, or unset OA_BUS_HOME."),
+      next("Remove the bus files in it yourself, or unset OA_BUS_HOME."),
     ],
     purgeDaemonRunning: (home: string) => [
       fail(
@@ -499,7 +499,10 @@ export function copy(style: Style) {
     statusDaemonDown: () => [
       fail("Daemon not running"),
       next(
-        "Run npx @open-artifacts/bus to restart it, or npx @open-artifacts/bus doctor to see why.",
+        "Run npx @open-artifacts/bus to restart it,",
+      ),
+      next(
+        "or npx @open-artifacts/bus doctor to see why.",
       ),
     ],
     statusDaemonStalled: () => [
@@ -517,7 +520,7 @@ export function copy(style: Style) {
         error ? `  ${p("muted", error)}` : ""
       }`,
       next(
-        `Check your network or the hub URL, then run npx @open-artifacts/bus ${again} again.`,
+        `Check your network, then run npx @open-artifacts/bus ${again} again.`,
       ),
     ],
     notRegistered: () => [
@@ -661,12 +664,12 @@ export function copy(style: Style) {
     daemonStopped: () => done("Stopped the daemon"),
     removedFrom: (names: HarnessName[]) =>
       done(
-        `Removed Open Artifacts bus from ${listing(
+        `Removed the bus from ${listing(
           names.map((h) => HARNESS_LABEL[h]),
           "and",
         )}`,
       ),
-    noneWired: () => done("No harness had Open Artifacts bus wired"),
+    noneWired: () => done("No harness had the bus wired"),
     removedPluginFolder: () => done("Removed the OpenCode plugin folder"),
     restartedUnload: () =>
       done("Restarted the OpenCode service to unload the plugin"),
@@ -723,7 +726,7 @@ export function copy(style: Style) {
       next("Run npx @open-artifacts/bus daemon to see its output in this terminal."),
     ],
     mcpPi: () => [
-      warn("Pi uses the Open Artifacts bus extension, not an MCP server."),
+      warn("Pi uses the bus extension, not an MCP server."),
       next("Run npx @open-artifacts/bus to install the extension."),
     ],
   };
