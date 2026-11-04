@@ -74,6 +74,8 @@ const VERB: Record<string, string> = {
   "vars.session_cut_failed": "couldn't sign everyone out",
   "vars.session_cut_dropped": "skipped a sign-out it no longer needed",
   "verify_clean.refused": "failed the clean check",
+  "verify_clean.retry":
+    "waited for Cloudflare to show the install's settings, then checked again",
   "verify_clean.binding_ids":
     "checked that its bindings point at its own resources",
   "prod_dirty.snapshot":
