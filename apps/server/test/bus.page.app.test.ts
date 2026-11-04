@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { NOTICE_SENDER } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { sessionCookieName, signSession } from "../src/auth/session.js";
 import { encodeAddress } from "../src/bus/page.js";
 import { formCsrf } from "../src/http/pages.js";
 import { getShareNotices } from "../src/services/follows.js";
@@ -20,10 +21,17 @@ const app = createApp();
 /** BUS_HUB unbound: the bus is off (services/bus.ts busOn). */
 const UNBOUND = { ...env, BUS_HUB: undefined } as typeof env;
 
-const get = (path: string, cookie: string | null, e: typeof env = env) =>
+const get = (
+  path: string,
+  cookie: string | null,
+  e: typeof env = env,
+  headers: Record<string, string> = {},
+) =>
   fetchAndWait(
     app,
-    new Request(`${APP}${path}`, { headers: cookie ? { cookie } : {} }),
+    new Request(`${APP}${path}`, {
+      headers: { ...(cookie ? { cookie } : {}), ...headers },
+    }),
     e,
   );
 
@@ -32,6 +40,7 @@ const post = (
   cookie: string,
   fields: [string, string][],
   e: typeof env = env,
+  headers: Record<string, string> = {},
 ) => {
   const body = new URLSearchParams(fields).toString();
   return fetchAndWait(
@@ -42,6 +51,7 @@ const post = (
         cookie,
         "content-type": "application/x-www-form-urlencoded",
         "content-length": String(body.length),
+        ...headers,
       },
       body,
     }),
@@ -139,7 +149,12 @@ describe("/bus on the real app", () => {
     expect(body).toContain(mine);
     expect(body).not.toContain(theirs);
     // Seeded, never connected: no hub, so Offline (not Unknown).
-    expect(body).toContain("s-offline");
+    // The row's own status (the page's CSS also names .s-offline), and no
+    // "hub unknown" lines: a machine that never connected is plainly offline.
+    expect(body).toContain('<span class="status s-offline">');
+    expect(body).not.toContain('<span class="status s-unknown">');
+    expect(body).not.toContain("Live status isn't available");
+    expect(body).not.toContain("Running agents can't be listed");
     expect(body).toContain("Share notices");
   });
 
@@ -236,5 +251,79 @@ describe("/bus on the real app", () => {
     expect(loc(many)).toBe("/bus?error=too_many");
     // Neither refused save changed the stored set.
     expect(await getShareNotices(env, m.userId)).toEqual([a]);
+  });
+
+  it("an own machine past the 100 listed rows: its confirm page loads and a capped member can revoke it", async () => {
+    const m = await member();
+    const old = await machine("old-box", m.userId);
+    await env.DB.prepare(
+      "update bus_machines set revoked_at = ?, created_at = 1 where id = ?",
+    )
+      .bind(Date.now(), old.id)
+      .run();
+    // 100 active machines list first (busView's cap), so old-box isn't listed.
+    for (let i = 0; i < 100; i++) await machine(`box-${i}`, m.userId);
+    const page = await (await get("/bus", m.cookie)).text();
+    expect(page).not.toContain("old-box");
+    const confirm = await get(`/bus/machines/${old.id}/revoke`, m.cookie);
+    expect(confirm.status).toBe(200);
+    expect(await confirm.text()).toContain("old-box");
+    await env.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(m.userId)
+      .run();
+    const r = await post(`/bus/machines/${old.id}/revoke`, m.cookie, [
+      ["csrf", await formCsrf(env, "bus-revoke", m.userId, old.id)],
+    ]);
+    expect(loc(r)).toBe(`/bus?done=revoked&m=${old.id}`);
+  });
+
+  it("share notices take an interactive sign-in: a dev session's valid-token save is 404 and stores nothing", async () => {
+    const m = await member();
+    const dev = `${sessionCookieName(env)}=${await signSession(
+      env,
+      m.userId,
+      Date.now(),
+      { provider: "dev", epoch: 0 },
+    )}`;
+    const csrf = await formCsrf(
+      env,
+      "bus-share-notices",
+      m.userId,
+      "share-notices",
+    );
+    const fields: [string, string][] = [
+      ["csrf", csrf],
+      ["address", encodeAddress({ namespace: "test.local/dev", name: "a" })],
+    ];
+    const r = await post("/bus/share-notices", dev, fields);
+    expect(r.status).toBe(404);
+    expect(await getShareNotices(env, m.userId)).toEqual([]);
+    // The same save from the member's interactive session goes through.
+    expect(loc(await post("/bus/share-notices", m.cookie, fields))).toBe(
+      "/bus?done=saved",
+    );
+  });
+
+  it("embed requests are 404 on every page route (no sign-in redirect loop), and revoke nothing", async () => {
+    const m = await member();
+    const { id } = await machine("embed-box", m.userId);
+    const H = { "X-OA-Embed": "1" };
+    for (const r of [
+      await get("/bus?embed=1", null),
+      await get("/bus?embed=1", m.cookie),
+      await get("/bus", m.cookie, env, H),
+      await get(`/bus/machines/${id}/revoke?embed=1`, m.cookie),
+      await post(
+        `/bus/machines/${id}/revoke`,
+        m.cookie,
+        [["csrf", await formCsrf(env, "bus-revoke", m.userId, id)]],
+        env,
+        H,
+      ),
+    ]) {
+      expect(r.status).toBe(404);
+      expect(loc(r)).toBeNull();
+    }
+    expect(await revokedAt(id)).toBeNull();
   });
 });

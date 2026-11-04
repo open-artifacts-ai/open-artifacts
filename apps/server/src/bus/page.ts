@@ -7,7 +7,9 @@ import {
 } from "@oa/shared";
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
+import { interactiveSession } from "../auth/authz.js";
 import type { Env } from "../env.js";
+import { isEmbedRequest } from "../http/embed.js";
 import { ApiError } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import {
@@ -43,6 +45,8 @@ import { busOff } from "./routes.js";
 export type BusPageDeps = {
   /** One hub read. */
   busView(env: Env, userId: string): Promise<BusView>;
+  /** The caller's machine `id` (revoked or not) from D1, or null when unknown or another member's. */
+  busMachine(env: Env, userId: string, id: string): Promise<BusMachine | null>;
   /** False for an unknown or another member's machine; true (idempotent) for the caller's own. Throws ApiError internal when closing its sockets fails after the revoke. */
   revokeBusMachine(env: Env, userId: string, id: string): Promise<boolean>;
   getShareNotices(env: Env, userId: string): Promise<BusAddress[]>;
@@ -263,11 +267,22 @@ function accessOf(user: Member, view: BusView | null): Access | null {
   return view?.machines.some((m) => !m.revokedAt) ? "revoke" : null;
 }
 
-/** One of the caller's own machines, revoked or not. */
+/** One of the caller's own machines, revoked or not (in the listed view). */
 const ownMachine = (view: BusView, id: string | null | undefined) =>
   id && MACHINE_ID.test(id)
     ? view.machines.find((m) => m.id === id)
     : undefined;
+
+/** One of the caller's own machines by id, from D1 (not limited to the listed 100). */
+const lookUpMachine = (
+  deps: BusPageDeps,
+  env: Env,
+  userId: string,
+  id: string,
+): Promise<BusMachine | null> =>
+  MACHINE_ID.test(id)
+    ? deps.busMachine(env, userId, id)
+    : Promise.resolve(null);
 
 async function renderPage(
   c: Context<AppEnv>,
@@ -369,9 +384,14 @@ const backError = (code: ErrorCode) => back(`error=${code}`);
 
 type Signed = { user: Member } | { response: Response };
 
-/** A GET's caller: 404 while the bus is off, 401 for a token, a sign-in redirect without a session. */
+/**
+ * A GET's caller: 404 while the bus is off or for an embed request (embed
+ * mode drops the session, so a sign-in redirect would loop), 401 for a
+ * token, a sign-in redirect without a session.
+ */
 function getCaller(c: Context<AppEnv>): Signed {
   if (!busOn(c.env)) return { response: busOff() };
+  if (isEmbedRequest(c.req.raw)) return { response: notFoundPage() };
   if (c.var.tokenId) return { response: tokenRefused() };
   const user = sessionUser(c);
   if (!user) {
@@ -384,7 +404,7 @@ function getCaller(c: Context<AppEnv>): Signed {
 
 type Posted = { user: Member; form: FormData } | { response: Response };
 
-/** A POST's caller and form: bus off, cross-site, token, session, size, then the form's CSRF. */
+/** A POST's caller and form: bus off, embed, cross-site, token, session, size, then the form's CSRF. */
 async function postCaller(
   c: Context<AppEnv>,
   scope: string,
@@ -392,6 +412,7 @@ async function postCaller(
 ): Promise<Posted> {
   // As every #1291 bus route: BUS_HUB unbound or a hosted install is 404.
   if (!busOn(c.env)) return { response: busOff() };
+  if (isEmbedRequest(c.req.raw)) return { response: notFoundPage() };
   // No sameOrigin(): the page's no-referrer policy makes browsers send
   // `Origin: null`. The signed token and the SameSite=Lax cookie cover CSRF.
   if (c.req.header("sec-fetch-site") === "cross-site")
@@ -463,11 +484,10 @@ export function mountBusPage(app: AppType, deps: BusPageDeps): void {
     if ("response" in who) return who.response;
     const id = c.req.param("id");
     try {
-      const view = await deps.busView(c.env, who.user.id);
       // An own machine that's already revoked still loads: revoke is
       // idempotent, and it's how a partial revoke is retried. A capped
       // caller's access is about the machine: one of theirs, or 404.
-      const m = ownMachine(view, id);
+      const m = await lookUpMachine(deps, c.env, who.user.id, id);
       if (!m)
         return canConnect(who.user) ? backError("not_found") : notFoundPage();
       const page = renderTemplate(BUS_REVOKE_TEMPLATE, {
@@ -491,8 +511,13 @@ export function mountBusPage(app: AppType, deps: BusPageDeps): void {
     if (!canConnect(p.user)) {
       // A capped caller may revoke any machine of their own, revoked or not
       // (the retry after a partial revoke); anything else is 404.
-      const view = await deps.busView(c.env, p.user.id);
-      if (!ownMachine(view, id)) return notFoundPage();
+      try {
+        if (!(await lookUpMachine(deps, c.env, p.user.id, id)))
+          return notFoundPage();
+      } catch (e) {
+        logError("bus_page_failed", e);
+        return failedPage();
+      }
     }
     if (!MACHINE_ID.test(id)) return backError("not_found");
     try {
@@ -510,9 +535,19 @@ export function mountBusPage(app: AppType, deps: BusPageDeps): void {
   app.post(BUS_SHARE_NOTICES, async (c) => {
     const p = await postCaller(c, CSRF_SHARE, SHARE_HANDLE);
     if ("response" in p) return p.response;
+    // As PUT R.shareNotices (#1292): changing it takes a person in a
+    // browser, an interactive sign-in (never a dev or test session).
+    if (!interactiveSession(c)) return notFoundPage();
     if (!canConnect(p.user)) {
-      const view = await deps.busView(c.env, p.user.id);
-      return accessOf(p.user, view) ? backError("not_allowed") : notFoundPage();
+      try {
+        const view = await deps.busView(c.env, p.user.id);
+        return accessOf(p.user, view)
+          ? backError("not_allowed")
+          : notFoundPage();
+      } catch (e) {
+        logError("bus_page_failed", e);
+        return failedPage();
+      }
     }
     const decode = (vs: FormDataEntryValue[]) => {
       const out = new Map<string, BusAddress>();

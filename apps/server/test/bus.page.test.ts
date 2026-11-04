@@ -62,6 +62,7 @@ const agent = (over: Partial<BusAgent> = {}): BusAgent => ({
 
 type Calls = {
   busView: string[];
+  machine: [string, string][];
   revoke: [string, string][];
   get: string[];
   set: [string, unknown][];
@@ -74,13 +75,27 @@ function doubles(
     picked?: BusAddress[];
     revoke?: () => Promise<boolean>;
     set?: (agents: unknown) => Promise<BusAddress[]>;
+    /** busView and busMachine reject (a D1 failure). */
+    readFails?: true;
   } = {},
 ): { deps: BusPageDeps; calls: Calls } {
-  const calls: Calls = { busView: [], revoke: [], get: [], set: [] };
+  const calls: Calls = {
+    busView: [],
+    machine: [],
+    revoke: [],
+    get: [],
+    set: [],
+  };
   const deps: BusPageDeps = {
     busView: async (_e, uid) => {
       calls.busView.push(uid);
+      if (o.readFails) throw new Error("D1 down");
       return { machines: [], agents: [], live: true, ...o.view };
+    },
+    busMachine: async (_e, uid, id) => {
+      calls.machine.push([uid, id]);
+      if (o.readFails) throw new Error("D1 down");
+      return o.view?.machines?.find((m) => m.id === id) ?? null;
     },
     revokeBusMachine: async (_e, uid, id) => {
       calls.revoke.push([uid, id]);
@@ -266,7 +281,13 @@ describe("GET /bus: who loads it", () => {
     expect(
       (await post(deps, SHARE, m.cookie, [["csrf", s]], { env: H })).status,
     ).toBe(404);
-    expect(calls).toEqual({ busView: [], revoke: [], get: [], set: [] });
+    expect(calls).toEqual({
+      busView: [],
+      machine: [],
+      revoke: [],
+      get: [],
+      set: [],
+    });
   });
 });
 
@@ -712,6 +733,29 @@ describe("share notices", () => {
     const none = doubles();
     expect((await post(none.deps, SHARE, g.cookie, fields)).status).toBe(404);
     expect([...has.calls.set, ...none.calls.set]).toEqual([]);
+  });
+
+  it("a read failure on a capped caller's POST answers the HTML failure page, not the JSON API error", async () => {
+    const g = await login(email("sf"), "guest");
+    const { deps, calls } = doubles({ readFails: true });
+    const html = async (r: Response) => {
+      expect(r.status).toBe(500);
+      expect(r.headers.get("content-type")).toMatch(/^text\/html/);
+      expect(await r.text()).toContain("Something went wrong");
+    };
+    await html(
+      await post(deps, SHARE, g.cookie, [
+        ["csrf", await shareToken(g.userId)],
+        ["address", encodeAddress(a1)],
+      ]),
+    );
+    await html(
+      await post(deps, revokeUrl("m1"), g.cookie, [
+        ["csrf", await revokeToken(g.userId, "m1")],
+      ]),
+    );
+    expect(calls.busView.length + calls.machine.length).toBe(2);
+    expect([...calls.set, ...calls.revoke]).toEqual([]);
   });
 });
 
