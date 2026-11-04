@@ -39,6 +39,7 @@
     "@cloudflare/workers-oauth-provider": "1.2.3",
     "@modelcontextprotocol/server": "2.3.1",
     "@oa/auth-core": "workspace:*",
+    "@oa/bus-protocol": "workspace:*",
     "@oa/shared": "workspace:*",
     "agents": "0.28.1",
     "drizzle-orm": "^0.45.4",

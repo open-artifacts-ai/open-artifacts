@@ -33,6 +33,10 @@
       {
         "name": "DIRECTORY_SYNC",
         "class_name": "DirectorySync"
+      },
+      {
+        "name": "BUS_HUB",
+        "class_name": "BusHub"
       }
     ]
   },
@@ -53,6 +57,12 @@
       "tag": "v3",
       "new_sqlite_classes": [
         "DirectorySync"
+      ]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": [
+        "BusHub"
       ]
     }
   ],

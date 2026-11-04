@@ -35,6 +35,7 @@ import {
 } from "../src/mcp/skill-common.js";
 import { renderSkillTemplate } from "../src/mcp/skill-template.js";
 import { TOOL_DEFS } from "../src/mcp/tool-defs.js";
+import { busOn } from "../src/services/bus.js";
 import { VERSION } from "../src/version.gen.js";
 import { login } from "./helpers.js";
 import { APP, callWorker, connect, E } from "./mcp-helpers.js";
@@ -102,8 +103,7 @@ describe("skill.md drift", () => {
     async (_, FEATURES, spaces) => {
       const e = E({ FEATURES }) as Parameters<typeof dataLimits>[0] & {
         APP_HOST: string;
-        BUS?: string;
-      };
+      } & Parameters<typeof busOn>[0];
       const { plan, docBytes } = dataLimits(e);
       const v: Record<string, string> = {
         ...planText(plan, docBytes),
@@ -113,7 +113,7 @@ describe("skill.md drift", () => {
         hostSlug: hostSlug(e.APP_HOST),
         version: VERSION,
         upgradeLine: upgradeLine(e),
-        busPeers: busLine(e),
+        busPeers: busLine(busOn(e)),
       };
       const fresh = renderSkillTemplate(spaces).replace(
         /\{\{(\w+)\}\}/g,
@@ -237,7 +237,7 @@ describe("skill.md drift", () => {
   });
 
   it("has the working-with-other-agents section, before what to tell the user", async () => {
-    const md = await skill(E({ BUS: "on" }));
+    const md = await skill();
     const at = md.indexOf("\n## Working with other agents\n");
     expect(at).toBeGreaterThan(-1);
     expect(at).toBeLessThan(md.indexOf("\n## What to tell the user\n"));
@@ -255,8 +255,11 @@ describe("skill.md drift", () => {
       expect(section, phrase).toContain(phrase);
   });
 
-  it("names no bus tool when the bus is off", async () => {
-    const md = await skill(E());
+  it.each([
+    ["the bus is off (BUS_HUB unbound)", { BUS_HUB: undefined }],
+    ["the install is hosted (until #1299)", { HOSTED: "1" }],
+  ])("names no bus tool when %s", async (_, over) => {
+    const md = await skill(E(over));
     expect(md).not.toContain("Find peers by bus name");
     expect(md).not.toContain("{{");
   });

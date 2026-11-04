@@ -43,6 +43,7 @@ import {
   revokeUserLive,
 } from "../runtime/revoke.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
+import { wipeUserBus } from "./bus.js";
 import { inviteReach } from "./reach.js";
 import {
   IDENTITIES_SQL,
@@ -385,6 +386,12 @@ const REVOKE_PATS = `update tokens set revoked_at = ?2
   and exists (select 1 from users where id = ?1 and status = ?3
     and (role <> 'admin' or ?4 = 1))`;
 const STATUS_OF = "select status from users where id = ?1";
+// #1291: the same rule for bus machines, in the same batch (their tokens stop
+// at the next connect; the open sockets close through revokeUserLive).
+const REVOKE_MACHINES = `update bus_machines set revoked_at = ?2
+  where user_id = ?1 and revoked_at is null and ?3 <> 'active'
+  and exists (select 1 from users where id = ?1 and status = ?3
+    and (role <> 'admin' or ?4 = 1))`;
 
 /**
  * Sets a user's status (P3 T6). The write, the PAT revocation and the
@@ -430,6 +437,8 @@ export async function setUserStatus(
     }),
     stmt(env.DB, REVOKE_PATS).bind(userId, Date.now(), status, admins),
     stmt(env.DB, STATUS_OF).bind(userId),
+    // Last: out[3] above stays the status read.
+    stmt(env.DB, REVOKE_MACHINES).bind(userId, Date.now(), status, admins),
   ]);
   if (!out[0]?.meta.changes) await raceCheck(env, userId, admins);
   const now = (out[3]?.results[0] as { status?: string } | undefined)?.status;
@@ -514,6 +523,12 @@ export async function patchMember(
       .update(tokens)
       .set({ revokedAt: Date.now() })
       .where(and(eq(tokens.userId, id), isNull(tokens.revokedAt)));
+    await stmt(
+      env.DB,
+      "update bus_machines set revoked_at = ?2 where user_id = ?1 and revoked_at is null",
+    )
+      .bind(id, Date.now())
+      .run();
     await revokeAllGrants(env, id);
   }
   return toMember(out);
@@ -737,6 +752,14 @@ const ERASE_WIPES = [
     and ${ERASABLE}`,
   `delete from tokens where user_id = ?1 and ${ERASABLE}`,
   `delete from agent_grants where user_id = ?1 and ${ERASABLE}`,
+  // #1291: their bus machines are revoked and emptied (labels are
+  // client-chosen hostnames; the token hash goes too), not deleted: the row
+  // (id, last_used_at) is how revokeUserLive below finds their BusHub to
+  // close its sockets. Any device code they decided goes.
+  `update bus_machines set label = '', token_hash = 'erased:' || id,
+    revoked_at = coalesce(revoked_at, cast(strftime('%s', 'now') as integer) * 1000)
+    where user_id = ?1 and ${ERASABLE}`,
+  `delete from bus_device_codes where user_id = ?1 and ${ERASABLE}`,
   `delete from reserved_artifacts where user_id = ?1 and ${ERASABLE}`,
   // #1292: their bus agent addresses (an update never fires the users
   // cascade).
@@ -804,7 +827,8 @@ export async function eraseMember(
     (ownerEmail !== "" && normalizeEmail(row.email) === ownerEmail)
   )
     throw active();
-  if (row.erasedAt !== null) return;
+  // Idempotent, and a retry also finishes a hub wipe that failed (#1291).
+  if (row.erasedAt !== null) return wipeUserBus(env, id);
   await checkNothingLeft(env, id);
   const args = [id, admins, ownerEmail, placeholder(id), Date.now()] as const;
   const out = await env.DB.batch([
@@ -833,6 +857,8 @@ export async function eraseMember(
     logWarn("member_erase_revoke_grants", e);
   } finally {
     await revokeUserLive(env, id, "member erased", ctx);
+    // #1291: the member's BusHub storage (hostname labels, agents, mail).
+    await wipeUserBus(env, id);
   }
 }
 

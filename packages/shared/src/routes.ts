@@ -87,6 +87,12 @@ export const R = {
   oauthClients: "/api/v1/oauth-clients",
   /** PATCH OAuthClientPatch -> OAuthClient; DELETE -> 204. Own grants only (else 404). */
   oauthClient: (grantId: string) => `/api/v1/oauth-clients/${seg(grantId)}`,
+  /** GET -> BusMachines: the caller's own bus machines (#1291). Never a token. */
+  busMachines: "/api/v1/bus/machines",
+  /** DELETE -> 204: revoke one of the caller's machines (idempotent; another member's or unknown: 404). */
+  busMachine: (id: string) => `/api/v1/bus/machines/${seg(id)}`,
+  /** GET -> BusAgents: the caller's open bus agents (canConnect; else 404). Empty when the bus is off. */
+  busAgents: "/api/v1/bus/agents",
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
   /**

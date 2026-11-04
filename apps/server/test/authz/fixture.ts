@@ -579,6 +579,19 @@ export async function buildWorld(): Promise<World> {
         : "AAAAAAAAAAAAAAAA",
     grantId: async (who) =>
       TRAITS[who].session ? newGrant(u(who)) : "probe-grant",
+    // #1291: a bus machine row of the caller's (never connected: no hub).
+    busMachineId: async (who) => {
+      if (!TRAITS[who].session) return "AAAAAAAAAAAAAAAA";
+      const id = newId();
+      await run(
+        "insert into bus_machines (id, user_id, label, token_hash, created_at) values (?, ?, 'mx', ?, ?)",
+        id,
+        u(who),
+        `mx-${id}`,
+        Date.now(),
+      );
+      return id;
+    },
     email: async () => uniq("mx-invite"),
     successorId: async () => u("otherMember"),
   };

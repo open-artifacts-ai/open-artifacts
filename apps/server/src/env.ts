@@ -1,3 +1,4 @@
+import type { BusHub } from "./bus/hub.js";
 import type { DirectorySync } from "./directory/sync-do.js";
 import type { ArtifactRuntime } from "./runtime/do.js";
 import type { UserPresence } from "./runtime/presence.js";
@@ -35,6 +36,12 @@ export interface Env {
    * reconcile and queued access jobs. Unbound, directory sync never runs.
    */
   DIRECTORY_SYNC?: DurableObjectNamespace<DirectorySync>;
+  /**
+   * One BusHub DO per member (bus/hub.ts, #1291), named "bus:" + user id.
+   * Unbound, every /bus route answers 404 (the class ships one release
+   * before anything binds it). HOSTED=1 answers 404 too, until #1299.
+   */
+  BUS_HUB?: DurableObjectNamespace<BusHub>;
   ASSETS: Fetcher;
   /**
    * Anonymous limiter, 30 per key per minute (wrangler `ratelimits`): anonymous
@@ -85,12 +92,6 @@ export interface Env {
   PLAN?: string;
   /** "off" (any case) makes /skill.md 404 and drops the skill resource; public otherwise. */
   SKILL_MD?: string;
-  /**
-   * "on" (any case) says this instance has the agent bus (peers by name,
-   * list_agents), so the skill teaches it; unset or anything else leaves those
-   * lines out (issue #1291 turns it on).
-   */
-  BUS?: string;
   /**
    * An artifact id. Signed-out visitors at "/" get a 302 to its chromeless
    * viewer when it is live and public; unset, empty, invalid, private,

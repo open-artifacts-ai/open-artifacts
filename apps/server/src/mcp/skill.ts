@@ -6,6 +6,7 @@ import { dataDocLimit, dataLimits, parseFeatures } from "@oa/shared";
 import type { Context } from "hono";
 import type { Env } from "../env.js";
 import type { AppEnv } from "../http/middleware.js";
+import { busOn } from "../services/bus.js";
 import { VERSION } from "../version.gen.js";
 import { planText } from "./instructions.js";
 import {
@@ -25,7 +26,7 @@ type SkillEnv = Pick<
   | "ENVIRONMENT"
   | "PLAN"
   | "SKILL_MD"
-  | "BUS"
+  | "BUS_HUB"
   | "DATA_DOC_BYTES"
   | "HOSTED"
   | "FEATURES"
@@ -53,17 +54,14 @@ export const upgradeLine = (env: Pick<Env, "APP_HOST" | "HOSTED">): string =>
 export const skillEnabled = (env: Pick<Env, "SKILL_MD">): boolean =>
   env.SKILL_MD?.trim().toLowerCase() !== "off";
 
-/** The install has the agent bus: BUS=on (any case). Off, unset included. */
-export const busEnabled = (env: Pick<Env, "BUS">): boolean =>
-  env.BUS?.trim().toLowerCase() === "on";
-
 /**
- * The skill's line on finding peers by bus name, or "" without the bus: the
- * bus tool (list_agents) ships with #1291, so teaching it now would name a
- * tool this instance doesn't have.
+ * The skill's line on finding peers by bus name, or "" without the bus. The
+ * caller passes busOn (BUS_HUB bound and not hosted, the routes' own switch),
+ * so the skill can never teach the bus with the hub off, or hide it with the
+ * hub on. The tools it names come from the bus client, not from /mcp.
  */
-export const busLine = (env: Pick<Env, "BUS">): string =>
-  busEnabled(env)
+export const busLine = (on: boolean): string =>
+  on
     ? "- Find peers by bus name with list_agents, and reply by name. Local session lists don't show agents on other machines.\n"
     : "";
 
@@ -77,7 +75,7 @@ export function renderSkill(env: SkillEnv): Promise<string> {
   const { plan, docBytes } = dataLimits(env);
   const hosted = env.HOSTED === "1" ? "h" : "";
   const spaces = spacesIn(env);
-  const bus = busEnabled(env);
+  const bus = busOn(env);
   const key = `${env.ENVIRONMENT}|${env.APP_HOST}|${plan}|${docBytes}|${hosted}|${spaces ? "s" : ""}|${bus ? "b" : ""}`;
   let p = memo.get(key);
   if (!p) {
@@ -90,7 +88,7 @@ export function renderSkill(env: SkillEnv): Promise<string> {
         hostSlug: hostSlug(env.APP_HOST),
         version: VERSION,
         upgradeLine: upgradeLine(env),
-        busPeers: busLine(env),
+        busPeers: busLine(bus),
       };
       const tpl = spaces ? SKILL_TEMPLATE : SKILL_TEMPLATE_NO_SPACES;
       return tpl.replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m);

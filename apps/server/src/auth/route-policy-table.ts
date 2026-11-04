@@ -243,6 +243,27 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /oauth/authorize": {
     public: "consent decision; checks session and mcp.connect",
   },
+  // #1291 the bus. Device flow and the approval page: no session needed or
+  // checked by the handler (session, canConnect, the form token); every one
+  // 404s while the bus is off. connect: the handler verifies the bus-only
+  // machine token (a PAT, an OAuth token or a cookie is 401).
+  "POST /bus/device": { public: "bus device flow start; RL_ANON per IP" },
+  "POST /bus/device/token": {
+    public: "bus device poll; RL_ANON per IP and per code",
+  },
+  "GET /bus/approve": {
+    public:
+      "bus code entry (RFC 8628 5.4); redirects to sign-in, checks mcp.connect",
+  },
+  "POST /bus/approve": {
+    public:
+      "bus code check and decision; session, form token, mcp.connect, RL per member and IP",
+  },
+  "GET /bus/connect": { signed: "bus machine token (oa_machine_), D1" },
+  "GET /api/v1/bus/machines": { user: "the caller's bus machines" },
+  // In CAPPED_ALLOWED: a capped caller can always revoke.
+  "DELETE /api/v1/bus/machines/:id": { user: "the caller's bus machines" },
+  "GET /api/v1/bus/agents": { org: "mcp.connect" },
   "GET /api/v1/oauth-clients": { user: "the caller's grants" },
   "PATCH /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
   "DELETE /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
