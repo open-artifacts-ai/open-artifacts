@@ -1,8 +1,8 @@
-// AC5b: set_status and card in the shared MCP tools (Claude Code, OpenCode, Codex).
+// set_status in the shared MCP tools (Claude Code, OpenCode, Codex). The agent card is gone.
 import {
-  CARD_COPY,
   type DaemonClient,
   type DaemonFrame,
+  STATUS_COPY,
   earlierStatusText,
   statusLabelTooLong,
   statusSetText,
@@ -10,9 +10,6 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { callTool, TOOLS } from "../src/tools.ts";
 
-const JWS = "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJlLXNpZ25hdHVyZQ";
-const NONCE = "n0nce-n0nce-n0nce";
-const AUD = "https://artifacts.example.com";
 
 type Frame = { type: string } & Record<string, unknown>;
 
@@ -26,8 +23,7 @@ function daemon(answer: (f: Frame) => Record<string, unknown>) {
   return { frames, client: { request } as unknown as DaemonClient };
 }
 
-const ok = (f: Frame) =>
-  f.type === "set_status" ? { type: "status_set" } : { type: "card", jwt: JWS };
+const ok = (_f: Frame) => ({ type: "status_set" });
 
 const call = (
   name: string,
@@ -35,15 +31,14 @@ const call = (
   d: ReturnType<typeof daemon>,
 ) => callTool(name, args, d.client);
 
-describe("set_status and card: shapes", () => {
-  it("adds both tools after the four, vendor-neutral", () => {
+describe("set_status: shape", () => {
+  it("adds set_status after the four, vendor-neutral, and no card tool", () => {
     expect(TOOLS.map((t) => t.name)).toEqual([
       "list_agents",
       "send_message",
       "fetch",
       "self",
       "set_status",
-      "card",
     ]);
     for (const t of TOOLS) expect(t.description).not.toMatch(/claude/i);
   });
@@ -69,76 +64,25 @@ describe("set_status and card: shapes", () => {
     expect(t?.description).toMatch(/user sees it labelled as your own report/);
   });
 
-  it("card: audience and nonce, only for an app the user linked", () => {
-    const t = TOOLS.find((x) => x.name === "card");
-    expect(t?.inputSchema).toMatchObject({
-      properties: {
-        audience: { type: "string" },
-        nonce: { type: "string" },
-      },
-      required: ["audience", "nonce"],
-      additionalProperties: false,
-    });
-    expect(t?.description).toMatch(/only for that/);
-    expect(t?.description).toMatch(/Open Artifacts/);
-    expect(t?.description).toMatch(/present_card/);
-  });
 });
 
-describe("set_status and card: the gate is the daemon's reply", () => {
-  it.each([
-    ["set_status", { state: "working" }],
-    ["card", { audience: AUD, nonce: NONCE }],
-  ])("%s at the gate is one request, no self", async (name, args) => {
+describe("set_status: one request", () => {
+  it("is one request, no self", async () => {
     const d = daemon(ok);
-    const r = await call(name, args, d);
+    const r = await call("set_status", { state: "working" }, d);
     expect(r.isError).toBe(false);
-    expect(d.frames.map((f) => f.type)).toEqual([name]);
+    expect(d.frames.map((f) => f.type)).toEqual(["set_status"]);
   });
 
-  it.each([
-    ["set_status", { state: "working" }],
-    ["card", { audience: AUD, nonce: NONCE }],
-  ])(
-    "%s below the gate: the daemon's unsupported refusal, as-is",
-    async (name, args) => {
-      const d = daemon(() => ({
-        type: "error",
-        code: "unsupported",
-        message: CARD_COPY.unsupported,
-      }));
-      expect(await call(name, args, d)).toEqual({
-        content: [{ type: "text", text: CARD_COPY.unsupported }],
-        isError: true,
-      });
-    },
-  );
-
-  it("a daemon from before AC5a refuses the unknown type: the unsupported copy", async () => {
+  it("a daemon's bad_frame shows the bad_frame copy", async () => {
     const d = daemon(() => ({
       type: "error",
       code: "bad_frame",
       message: "Invalid input",
     }));
-    for (const [name, args] of [
-      ["set_status", { state: "working" }],
-      ["card", { audience: AUD, nonce: NONCE }],
-    ] as const)
-      expect(await call(name, args, d)).toEqual({
-        content: [{ type: "text", text: CARD_COPY.unsupported }],
-        isError: true,
-      });
-  });
-
-  it("the hub's bad_frame (AC5a's copy) stays as-is", async () => {
-    const d = daemon(() => ({
-      type: "error",
-      code: "bad_frame",
-      message: CARD_COPY.bad_frame,
-    }));
     expect(
-      (await call("card", { audience: AUD, nonce: NONCE }, d)).content[0]?.text,
-    ).toBe(CARD_COPY.bad_frame);
+      (await call("set_status", { state: "working" }, d)).content[0]?.text,
+    ).toBe(STATUS_COPY.bad_frame);
   });
 });
 
@@ -194,12 +138,12 @@ describe("set_status", () => {
   it("shows an earlier refusal after this call's result", async () => {
     const d = daemon(() => ({
       type: "status_set",
-      earlier: { code: "not_registered", message: CARD_COPY.not_registered },
+      earlier: { code: "not_registered", message: STATUS_COPY.not_registered },
     }));
     const r = await call("set_status", { state: "blocked" }, d);
     expect(r.isError).toBe(false);
     expect(r.content[0]?.text).toBe(
-      `${statusSetText("blocked")}\n\n${earlierStatusText(CARD_COPY.not_registered)}`,
+      `${statusSetText("blocked")}\n\n${earlierStatusText(STATUS_COPY.not_registered)}`,
     );
     expect(earlierStatusText("X")).toBe(
       "Your previous status did not reach the user. X",
@@ -209,7 +153,7 @@ describe("set_status", () => {
   it.each(["rate_limited", "not_registered", "bad_frame", "unsupported"])(
     "a %s refusal is the daemon's copy, as-is",
     async (code) => {
-      const message = CARD_COPY[code as keyof typeof CARD_COPY];
+      const message = STATUS_COPY[code as keyof typeof STATUS_COPY];
       const d = daemon(() => ({ type: "error", code, message }));
       expect(await call("set_status", { state: "idle" }, d)).toEqual({
         content: [{ type: "text", text: message }],
@@ -292,94 +236,5 @@ describe("set_status", () => {
       d,
     );
     expect(r.isError).toBe(false);
-  });
-});
-
-describe("card", () => {
-  it("sends audience as aud with the nonce, and returns the JWS alone", async () => {
-    const d = daemon(ok);
-    const r = await call("card", { audience: AUD, nonce: NONCE }, d);
-    expect(d.frames[0]).toEqual({
-      type: "card",
-      aud: AUD,
-      nonce: NONCE,
-      late: true,
-    });
-    expect(r).toEqual({
-      content: [{ type: "text", text: JWS }],
-      isError: false,
-    });
-  });
-
-  it.each(Object.keys(CARD_COPY))(
-    "a %s refusal is the daemon's copy, as-is",
-    async (code) => {
-      const message = CARD_COPY[code as keyof typeof CARD_COPY];
-      const d = daemon(() => ({ type: "error", code, message }));
-      expect(await call("card", { audience: AUD, nonce: NONCE }, d)).toEqual({
-        content: [{ type: "text", text: message }],
-        isError: true,
-      });
-    },
-  );
-
-  it("a nonce that cannot be one is bad_nonce, before the daemon", async () => {
-    const d = daemon(ok);
-    expect(await call("card", { audience: AUD, nonce: "short" }, d)).toEqual({
-      content: [{ type: "text", text: CARD_COPY.bad_nonce }],
-      isError: true,
-    });
-    expect(d.frames).toEqual([]);
-  });
-
-  it.each(["http://artifacts.example.com", "https://a.example.com/path", ""])(
-    "an audience that is not an exact https origin is refused before the daemon: %j",
-    async (audience) => {
-      const d = daemon(ok);
-      const r = await call("card", { audience, nonce: NONCE }, d);
-      expect(r.isError).toBe(true);
-      expect(r.content[0]?.text).toMatch(/^oa-bus: aud: /);
-      expect(d.frames).toEqual([]);
-    },
-  );
-
-  it("a daemon that is down is a tool error, not a throw", async () => {
-    const request = vi.fn(async () => {
-      throw new Error("the daemon connection closed");
-    });
-    const r = await callTool("card", { audience: AUD, nonce: NONCE }, {
-      request,
-    } as unknown as DaemonClient);
-    expect(r).toEqual({
-      content: [
-        { type: "text", text: "oa-bus: the daemon connection closed" },
-      ],
-      isError: true,
-    });
-  });
-});
-
-describe("the card's JWS is never logged", () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  it("nothing the adapter writes to the console or stderr holds it", async () => {
-    const written: string[] = [];
-    const keep = (...a: unknown[]) => {
-      written.push(a.map(String).join(" "));
-    };
-    for (const m of ["log", "error", "warn", "info", "debug"] as const)
-      vi.spyOn(console, m).mockImplementation(keep);
-    vi.spyOn(process.stderr, "write").mockImplementation((c) => {
-      keep(c);
-      return true;
-    });
-    vi.spyOn(process.stdout, "write").mockImplementation((c) => {
-      keep(c);
-      return true;
-    });
-    const r = await call("card", { audience: AUD, nonce: NONCE }, daemon(ok));
-    expect(r.content[0]?.text).toBe(JWS);
-    const parts = JWS.split(".");
-    for (const w of written) for (const p of parts) expect(w).not.toContain(p);
   });
 });

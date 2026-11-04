@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
-  CARD_COPY,
+  STATUS_COPY,
   CLIENT_VERSION,
   connectDaemon,
   type Hello,
@@ -133,7 +133,6 @@ describe("the codex MCP adapter", () => {
       "fetch",
       "self",
       "set_status",
-      "card",
     ]);
     expect(d.hellos).toEqual([]);
   });
@@ -364,13 +363,9 @@ describe("the codex MCP adapter", () => {
   });
 });
 
-describe("set_status and card in codex mode (AC5b)", () => {
-  const JWS = "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl";
-  const NONCE = "n0nce-n0nce-n0nce";
-  const AUD = "https://artifacts.example.com";
-
+describe("set_status in codex mode", () => {
   /** A daemon with Codex's one-request rule, recording each connection's hello and frames. */
-  async function cardDaemon() {
+  async function statusDaemon() {
     const path = join(mkdtempSync(join(tmpdir(), "ob-codex-")), "d.sock");
     const conns: { hello: Hello; frames: { type: string }[] }[] = [];
     const served = await serveDaemon({
@@ -384,9 +379,7 @@ describe("set_status and card in codex mode (AC5b)", () => {
         conns.find((c) => c.hello === h)?.frames.push(f);
         return f.type === "set_status"
           ? { id: f.id, type: "status_set" }
-          : f.type === "card"
-            ? { id: f.id, type: "card", jwt: JWS }
-            : { id: f.id, type: "roster", agents: [] };
+          : { id: f.id, type: "roster", agents: [] };
       },
     });
     closers.push(served.close);
@@ -408,7 +401,7 @@ describe("set_status and card in codex mode (AC5b)", () => {
   };
 
   it("each call is attested by its own call id and is the connection's one request", async () => {
-    const d = await cardDaemon();
+    const d = await statusDaemon();
     const { client } = await codex(d.path);
     const r1 = (await client.callTool({
       name: "set_status",
@@ -416,15 +409,18 @@ describe("set_status and card in codex mode (AC5b)", () => {
       _meta: meta({ call: "call_7" }),
     })) as { content: { text: string }[]; isError?: boolean };
     const r2 = (await client.callTool({
-      name: "card",
-      arguments: { audience: AUD, nonce: NONCE },
+      name: "set_status",
+      arguments: { state: "idle" },
       _meta: meta({ call: "call_8" }),
     })) as { content: { text: string }[]; isError?: boolean };
     expect(r1).toMatchObject({
       isError: false,
       content: [{ text: statusSetText("working", "tests") }],
     });
-    expect(r2).toMatchObject({ isError: false, content: [{ text: JWS }] });
+    expect(r2).toMatchObject({
+      isError: false,
+      content: [{ text: statusSetText("idle") }],
+    });
     expect(d.conns.map((c) => c.hello.codex)).toEqual([
       {
         thread_id: THREAD,
@@ -445,16 +441,16 @@ describe("set_status and card in codex mode (AC5b)", () => {
     ]);
     expect(d.conns.map((c) => c.frames.map((f) => f.type))).toEqual([
       ["set_status"],
-      ["card"],
+      ["set_status"],
     ]);
   });
 
   it("a subagent thread is refused before any hello", async () => {
-    const d = await cardDaemon();
+    const d = await statusDaemon();
     const r = await callWith(
       d.path,
-      "card",
-      { audience: AUD, nonce: NONCE },
+      "set_status",
+      { state: "idle" },
       meta({ turn: { thread_source: "subagent" } }),
     );
     expect(r).toMatchObject({
@@ -464,7 +460,7 @@ describe("set_status and card in codex mode (AC5b)", () => {
     expect(d.conns).toEqual([]);
   });
 
-  it("a daemon from before AC5a answers with the unsupported copy", async () => {
+  it("a daemon's bad_frame answers with the bad_frame copy", async () => {
     const path = join(mkdtempSync(join(tmpdir(), "ob-codex-")), "d.sock");
     // Today's server with an onFrame that cannot know the frame: as an older
     // daemon's AdapterFrame refuses the unknown type.
@@ -480,15 +476,16 @@ describe("set_status and card in codex mode (AC5b)", () => {
       }),
     });
     closers.push(served.close);
-    for (const [name, args] of [
-      ["set_status", { state: "idle" }],
-      ["card", { audience: AUD, nonce: NONCE }],
-    ] as const)
-      expect(
-        await callWith(path, name, args, meta({ call: `call_${name}` })),
-      ).toMatchObject({
-        isError: true,
-        content: [{ text: CARD_COPY.unsupported }],
-      });
+    expect(
+      await callWith(
+        path,
+        "set_status",
+        { state: "idle" },
+        meta({ call: "call_set_status" }),
+      ),
+    ).toMatchObject({
+      isError: true,
+      content: [{ text: STATUS_COPY.bad_frame }],
+    });
   });
 });
