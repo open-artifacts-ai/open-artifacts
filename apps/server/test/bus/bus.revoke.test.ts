@@ -148,9 +148,7 @@ describe("revocation closes bus sockets", () => {
     const u = await member();
     const a = await connected(u);
     // Removed behind the hooks' back: only erase's own revokeUserLive runs.
-    await env.DB.prepare(
-      "update users set status = 'removed' where id = ?",
-    )
+    await env.DB.prepare("update users set status = 'removed' where id = ?")
       .bind(u.userId)
       .run();
     await eraseMember(env, u.userId, adminM);
