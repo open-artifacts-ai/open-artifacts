@@ -13,9 +13,9 @@ const Body = z.strictObject({ agents: z.unknown() });
 
 /**
  * #1292: the caller's own "agents that get share notices". The gate allows
- * callers who may connect agents (mcp.connect); here, a person in a browser
- * only: never a PAT, an OAuth grant or a machine token, so no agent can pick
- * where share notices go.
+ * callers who may connect agents (mcp.connect). Changing it takes a person
+ * in a browser: never a PAT, an OAuth grant or a machine token, so no agent
+ * can pick where share notices go. Reading it is the gate's rule alone.
  */
 function browserUser(c: Context<AppEnv>) {
   const user = requireUser(c);
@@ -25,7 +25,7 @@ function browserUser(c: Context<AppEnv>) {
 
 export function mountShareNotices(app: AppType): void {
   app.get(R.shareNotices, async (c) => {
-    const user = browserUser(c);
+    const user = requireUser(c);
     return c.json({ agents: await getShareNotices(c.env, user.id) });
   });
 

@@ -596,14 +596,14 @@ describe("R.shareNotices", () => {
     expect(await getShareNotices(E, u.userId)).toEqual([]);
   });
 
-  it("a PAT, a guest and anonymous callers can't read or set it", async () => {
+  it("a PAT reads but can't set it; guests and anonymous callers neither", async () => {
     const u = await mk("rt-pat");
     const { token } = await createPat(E, u.userId, "t");
     for (const method of ["GET", "PUT"]) {
       const body = method === "PUT" ? { agents: [agent("a")] } : undefined;
       expect(
         (await api(app, R.shareNotices, token, { method, body })).status,
-      ).toBe(404);
+      ).toBe(method === "GET" ? 200 : 404);
       const g = await mk("rt-guest", "guest");
       expect(
         (await api(app, R.shareNotices, g.cookie, { method, body })).status,
