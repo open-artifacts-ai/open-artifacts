@@ -546,6 +546,10 @@ describe("revoke and mail", () => {
     const s = await agentOn(h, "Sender", "sender", n);
     expect(await h.revokeMachine(v.m.id)).toBe(true);
     await v.d.closed;
+    // OpenBus #451: the revoke holds bob in n for the grace; reused after it.
+    await inHub(h, (i) =>
+      BusHub.setTestClock(i, Date.now() + LIMITS.formerNameGraceMs + 1000),
+    );
     const b2 = await agentOn(h, "New", "bob", n);
     s.d.send(send(s.ref, "bob", "hi"));
     expect((await until(s.d, "receipt")).state).toBe("pending");
@@ -570,6 +574,10 @@ describe("revoke and mail", () => {
     const c = await agentOn(h, "Closer", "dup", n);
     c.d.send({ v: 1, id: "dn", type: "agent_down", agent_ref: c.ref });
     await sync(c.d);
+    // OpenBus #451: the close holds dup in n for the grace; reused after it.
+    await inHub(h, (i) =>
+      BusHub.setTestClock(i, Date.now() + LIMITS.formerNameGraceMs + 1000),
+    );
     const v = await agentOn(h, "Victim", "dup", n);
     const s = await agentOn(h, "Sender", "sender", n);
     expect(await h.revokeMachine(v.m.id)).toBe(true);

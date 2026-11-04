@@ -139,13 +139,18 @@ create index if not exists send_keys_due on send_keys(created_at);
 
 -- R393b (#1325, OpenBus #393): names an agent left by a rename, which still
 -- reach it until expires_at (LIMITS.formerNameGraceMs). kind is the left
--- name's kind: 'chosen' rows are reserved (nameTaken) while live, 'default'
+-- name's kind: 'chosen' rows are reserved (nameTaken, putRole), 'default'
 -- rows only resolve (their minted_names row keeps the name from anyone
--- else). An agent's rows go when it closes or is revoked; expired rows are
--- purged by the alarm. Never equal (case-insensitively) to the agent's
--- current name in its scope, distinct per agent and scope (lname), at most
--- LIMITS.maxFormerNames per agent (OpenBus #446: an older default one is
--- dropped). OpenBus #451: namespace and global are the scope the name was
+-- else). OpenBus #451: 'held' rows are names an agent left a scope under (a
+-- close, revoke, offline reap, namespace move or global flip): reserved
+-- there, never resolving, never on the roster. A close keeps the chosen rows
+-- (reserved, resolving to no one until a reopen in their scope) and drops
+-- the default ones; expired rows are purged by the alarm. Never equal
+-- (case-insensitively) to the agent's current name in its scope, distinct
+-- per agent and scope (lname), at most LIMITS.maxFormerNames non-held rows
+-- per agent (OpenBus #446: an older default one is dropped). Held rows are
+-- never dropped early; every scope change counts in rename_rl, which bounds
+-- them. OpenBus #451: namespace and global are the scope the name was
 -- left in (added by migrateHub on an older hub). A row resolves only while
 -- its agent is still in that scope; after a namespace move or global flip a
 -- chosen row stays, reserving the name there for its grace (roles included)
