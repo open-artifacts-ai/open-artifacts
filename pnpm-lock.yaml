@@ -596,6 +596,185 @@ importers:
         specifier: ^22.20.5
         version: 22.20.5
 
+  packages/bus-adapter-claude-code:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.32.1
+        version: 1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7)
+      '@oa/bus-ipc':
+        specifier: workspace:*
+        version: link:../bus-ipc
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/bus-adapter-mcp-json:
+    dependencies:
+      jsonc-parser:
+        specifier: 3.3.1
+        version: 3.3.1
+    devDependencies:
+      '@oa/bus-ipc':
+        specifier: workspace:*
+        version: link:../bus-ipc
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/bus-adapter-opencode:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.32.1
+        version: 1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7)
+      '@oa/bus-adapter-claude-code':
+        specifier: workspace:*
+        version: link:../bus-adapter-claude-code
+      '@oa/bus-ipc':
+        specifier: workspace:*
+        version: link:../bus-ipc
+      '@oa/bus-protocol':
+        specifier: workspace:*
+        version: link:../bus-protocol
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/bus-adapter-pi:
+    devDependencies:
+      '@oa/bus-adapter-claude-code':
+        specifier: workspace:*
+        version: link:../bus-adapter-claude-code
+      '@oa/bus-ipc':
+        specifier: workspace:*
+        version: link:../bus-ipc
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/bus-cli:
+    devDependencies:
+      '@oa/bus-adapter-claude-code':
+        specifier: workspace:*
+        version: link:../bus-adapter-claude-code
+      '@oa/bus-adapter-mcp-json':
+        specifier: workspace:*
+        version: link:../bus-adapter-mcp-json
+      '@oa/bus-adapter-opencode':
+        specifier: workspace:*
+        version: link:../bus-adapter-opencode
+      '@oa/bus-adapter-pi':
+        specifier: workspace:*
+        version: link:../bus-adapter-pi
+      '@oa/bus-daemon':
+        specifier: workspace:*
+        version: link:../bus-daemon
+      '@oa/bus-ipc':
+        specifier: workspace:*
+        version: link:../bus-ipc
+      '@oa/bus-protocol':
+        specifier: workspace:*
+        version: link:../bus-protocol
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      jiti:
+        specifier: 2.7.0
+        version: 2.7.0
+      smol-toml:
+        specifier: 1.9.1
+        version: 1.9.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+
+  packages/bus-daemon:
+    dependencies:
+      '@oa/bus-adapter-claude-code':
+        specifier: workspace:*
+        version: link:../bus-adapter-claude-code
+      '@oa/bus-adapter-opencode':
+        specifier: workspace:*
+        version: link:../bus-adapter-opencode
+      '@oa/bus-ipc':
+        specifier: workspace:*
+        version: link:../bus-ipc
+      '@oa/bus-protocol':
+        specifier: workspace:*
+        version: link:../bus-protocol
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.0
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      '@types/ws':
+        specifier: ^8.5.14
+        version: 8.18.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/bus-ipc:
+    dependencies:
+      '@oa/bus-protocol':
+        specifier: workspace:*
+        version: link:../bus-protocol
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
   packages/bus-protocol:
     dependencies:
       zod:
