@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.108.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.107.0...v0.108.0) (2026-11-04)
+
+
+### Features
+
+* **bus:** the OpenBus local client under packages/bus-*, on one instance ([#1291](https://github.com/open-artifacts-ai/open-artifacts/issues/1291)) ([#1307](https://github.com/open-artifacts-ai/open-artifacts/issues/1307)) ([4d83883](https://github.com/open-artifacts-ai/open-artifacts/commit/4d8388396090e9b9112ab07af6cfc8d95495bed2))
+
 ## [0.107.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.106.0...v0.107.0) (2026-11-04)
 
 
