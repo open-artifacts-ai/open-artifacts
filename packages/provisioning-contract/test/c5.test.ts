@@ -42,7 +42,6 @@ import {
   HEALTH_ROUND_KEY,
   JOB_START_GRACE_MS,
   JOB_TERMINATED_GRACE_MS,
-  PLATFORM_STATE_0006_KEYS,
   RATE_COUNTER_RETENTION_MS,
   SCHEDULER_STALE_MS,
   SCHEDULER_TICK_KEY,
@@ -103,17 +102,9 @@ describe("platform_state keys (5.8, 0006)", () => {
     expect(() => sweepTerminatedKey("x")).toThrow(/job id/);
   });
 
-  it("PLATFORM_STATE_0006_KEYS is exactly the key list in 0006's comment", () => {
-    const sql = readFileSync(
-      resolve(
-        SRC,
-        "../../../apps/platform-db/migrations/0006_platform_state.sql",
-      ),
-      "utf8",
-    );
-    const listed = [...sql.matchAll(/^--\s{3}(\S+)\s{2,}/gm)].map((m) => m[1]);
-    expect(listed).toEqual([...PLATFORM_STATE_0006_KEYS]);
-  });
+  // The check that PLATFORM_STATE_0006_KEYS matches 0006's comment reads
+  // apps/platform-db (hosted), so it lives in
+  // apps/scheduler/test/node/platform-state-0006.test.ts (#1056).
 
   it("every key the scheduler writes is one 0006 lists or a named gap", () => {
     const in0006 = (k: string) =>

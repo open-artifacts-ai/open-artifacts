@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.110.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.109.0...v0.110.0) (2026-11-04)
+
+
+### Features
+
+* **skill:** teach multi-agent collaboration habits ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1324](https://github.com/open-artifacts-ai/open-artifacts/issues/1324)) ([1653c79](https://github.com/open-artifacts-ai/open-artifacts/commit/1653c793a1d18c6f9181440c9f4e1fbe2590481d))
+
+## [0.109.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.108.0...v0.109.0) (2026-11-04)
+
+
+### Features
+
+* **bus:** BusHub, machine tokens, device flow and /bus/connect ([#1291](https://github.com/open-artifacts-ai/open-artifacts/issues/1291) part B) ([#1314](https://github.com/open-artifacts-ai/open-artifacts/issues/1314)) ([3b927ac](https://github.com/open-artifacts-ai/open-artifacts/commit/3b927ac40f5bfd9ba8237981d5e4e29dd506fb91))
+* **server:** changed notices reach every follower, the publisher included ([#1292](https://github.com/open-artifacts-ai/open-artifacts/issues/1292)) ([#1331](https://github.com/open-artifacts-ai/open-artifacts/issues/1331)) ([f0e887e](https://github.com/open-artifacts-ai/open-artifacts/commit/f0e887ee9d6d91d96c75782632390cda15ded98d))
+
+
+### Bug Fixes
+
+* **ci:** retry Cloudflare read lag in the platform tag check ([#1327](https://github.com/open-artifacts-ai/open-artifacts/issues/1327)) ([#1329](https://github.com/open-artifacts-ai/open-artifacts/issues/1329)) ([77b5265](https://github.com/open-artifacts-ai/open-artifacts/commit/77b5265436f49ec062b532715554a1c2e3f02427))
+
+## [0.108.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.107.0...v0.108.0) (2026-11-04)
+
+
+### Features
+
+* **bus:** the OpenBus local client under packages/bus-*, on one instance ([#1291](https://github.com/open-artifacts-ai/open-artifacts/issues/1291)) ([#1307](https://github.com/open-artifacts-ai/open-artifacts/issues/1307)) ([4d83883](https://github.com/open-artifacts-ai/open-artifacts/commit/4d8388396090e9b9112ab07af6cfc8d95495bed2))
+
+## [0.107.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.106.0...v0.107.0) (2026-11-04)
+
+
+### Features
+
+* **bus:** @oa/bus-protocol, the bus wire protocol for the instance ([#1291](https://github.com/open-artifacts-ai/open-artifacts/issues/1291)) ([#1304](https://github.com/open-artifacts-ai/open-artifacts/issues/1304)) ([156152f](https://github.com/open-artifacts-ai/open-artifacts/commit/156152ffed2046e8f499552b1b5d49d2a366507e))
+* **provisioning:** agents sign in to rl-agents as a member, through OIDC (test-member scope) ([#1288](https://github.com/open-artifacts-ai/open-artifacts/issues/1288)) ([bb6309e](https://github.com/open-artifacts-ai/open-artifacts/commit/bb6309e75597b0ef6d7cdd1571721bce0928ad47))
+
 ## [0.106.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.105.0...v0.106.0) (2026-11-03)
 
 

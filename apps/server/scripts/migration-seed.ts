@@ -39,11 +39,15 @@ export const SHAPE = {
   artifacts: 300_000,
   versions: 750_000, // 1 to 4 per artifact, 2.5 on average
   shares: 200_000,
+  follows: 50_000,
+  share_notice_agents: 5_000,
   artifact_search: 300_000, // one per live artifact (rowid = the artifact's)
   reserved_artifacts: 1_000,
   uploads: 100_000,
   tokens: 30_000,
   agent_grants: 50_000,
+  bus_machines: 20_000,
+  bus_device_codes: 500,
   login_codes: 2_000,
   oauth_kv: 100_000,
   counters: 5_000,
@@ -381,6 +385,36 @@ export const RULES: Record<string, Rule> = {
       };
     },
   },
+  // #1292: an agent address follows an artifact; i keeps the key unique.
+  follows: {
+    rows: (c) => c.count("follows"),
+    row(i, c) {
+      const a = c.artifacts[(i * 13) % c.artifacts.length];
+      const u = c.users[(i * 48271) % c.users.length];
+      if (!a || !u) return null;
+      return {
+        user_id: u.id,
+        artifact_id: a.id,
+        namespace: `github.com/org${i % 17}/repo${i % 5}`,
+        agent_name: `agent-${i}`,
+        created_at: c.time(),
+        last_notice_at: c.rand() < 0.5 ? c.time() : null,
+      };
+    },
+  },
+  share_notice_agents: {
+    rows: (c) => c.count("share_notice_agents"),
+    row(i, c) {
+      const u = c.users[(i * 104729) % c.users.length];
+      if (!u) return null;
+      return {
+        user_id: u.id,
+        namespace: `github.com/org${i % 17}/repo${i % 5}`,
+        agent_name: `agent-${i}`,
+        created_at: c.time(),
+      };
+    },
+  },
   artifact_search: {
     rows: (c) => c.artifacts.length,
     row(i, c) {
@@ -437,6 +471,43 @@ export const RULES: Record<string, Rule> = {
         last_used_at: c.rand() < 0.7 ? c.time() : null,
         revoked_at: c.rand() < 0.2 ? c.time() : null,
         versions_published: c.int(500),
+      };
+    },
+  },
+  // #1291: approved bus machines (token hashes only) and pending device codes.
+  bus_machines: {
+    rows: (c) => c.count("bus_machines"),
+    row(i, c) {
+      const u = c.users[(i * 7) % c.users.length];
+      if (!u) return null;
+      return {
+        id: c.id("bm"),
+        user_id: u.id,
+        label: `machine ${i}`,
+        token_hash: `${c.id("bh")}${i}`,
+        created_at: c.time(),
+        last_used_at: c.rand() < 0.7 ? c.time() : null,
+        revoked_at: c.rand() < 0.2 ? c.time() : null,
+      };
+    },
+  },
+  bus_device_codes: {
+    rows: (c) => c.count("bus_device_codes"),
+    row(i, c) {
+      const u = c.users[(i * 11) % c.users.length];
+      const approved = c.rand() < 0.5;
+      return {
+        id: c.id("dc"),
+        device_code_hash: `${c.id("dh")}${i}`,
+        user_code: `${c.id("uc")}${i}`,
+        label: `machine ${i}`,
+        ip_tag: c.id("ip"),
+        created_at: c.time(),
+        expires_at: c.time(),
+        last_poll_at: c.rand() < 0.5 ? c.time() : null,
+        user_id: approved && u ? u.id : null,
+        approved_at: approved ? c.time() : null,
+        denied_at: null,
       };
     },
   },

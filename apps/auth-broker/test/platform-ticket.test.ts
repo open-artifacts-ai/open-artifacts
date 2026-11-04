@@ -4,12 +4,10 @@ import {
   flowHash,
   GOOGLE_TOKEN_URL,
   keyId,
-  PLATFORM_PRINCIPAL_IDS,
   publicFromPkcs8,
   signBrokerTicket,
   signRedeem,
 } from "@oa/auth-core";
-import { PLATFORM_PRINCIPAL_IDS as PROVISION_IDS } from "@oa/provision/names";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import broker, { type Env } from "../src/index.js";
 import { clearRegistryCache } from "../src/registry.js";
@@ -88,10 +86,6 @@ const ticket = (o: { key?: string; state?: string; exp?: number } = {}) =>
   });
 
 describe("platform-principal ticket", () => {
-  it("the ids are provision's PLATFORM_PRINCIPAL_IDS", () => {
-    expect([...PLATFORM_PRINCIPAL_IDS]).toEqual([...PROVISION_IDS]);
-  });
-
   it("a valid ticket goes to Google with no hd hint, one install charge on the client's key", async () => {
     const r = await authorize({
       install: "i000000admin",

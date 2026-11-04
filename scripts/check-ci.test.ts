@@ -2008,19 +2008,6 @@ describe("W9b: the retired hosted writes stay retired", () => {
     "scripts/ops/redline-deploy.sh",
     "tests/redline/src/prod-clean-cli.ts",
   ];
-  const RETIRED_COMMANDS = [
-    "create",
-    "upgrade",
-    "rollback",
-    "update-vars",
-    "delete",
-    "release-lease",
-    "owner-token",
-    "turnstile-init",
-    "ci-token-sweep",
-    "signup-redrive",
-    "redline-creds",
-  ];
   const workflows = readdirSync(join(root, ".github/workflows")).filter((f) =>
     /\.ya?ml$/.test(f),
   );
@@ -2051,17 +2038,8 @@ describe("W9b: the retired hosted writes stay retired", () => {
     );
   });
 
-  it("the CLI has only status and the two publishes, and refuses each retired command", () => {
-    const src = read("scripts/hosted/src/cli.ts");
-    const m = src.match(/export const COMMANDS = \[([^\]]*)\]/);
-    const cmds = [...(m?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map((x) => x[1]);
-    expect(cmds).toEqual(["status", "publish-release", "publish-floor"]);
-    const r = src.match(/export const RETIRED_COMMANDS = \[([^\]]*)\]/);
-    const retired = [...(r?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map(
-      (x) => x[1],
-    );
-    expect(retired).toEqual(RETIRED_COMMANDS);
-  });
+  // The CLI's own command lists are checked in scripts/hosted/test/cli.test.ts,
+  // which moves with the CLI to the hosted repo (#1056).
 
   it("every oa:hosted call in a workflow is a kept command", () => {
     for (const f of workflows)

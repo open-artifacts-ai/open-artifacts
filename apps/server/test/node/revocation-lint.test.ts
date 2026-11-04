@@ -131,6 +131,12 @@ const WIDENS: Readonly<Record<string, string>> = {
   "services/spaces.ts:deleteSpace": "rows nothing reads for access",
   // P3 T10: the transfer successor predicate reads restricted_* (no write).
   "services/spaces.ts:SUCCESSOR": "a read: the successor predicate",
+  // #1291: an agent's self-reported bus status (working, idle...), a column
+  // of the BusHub's own agents table, never a member's status.
+  "bus/status.ts:set": "a bus agent's self-reported status, not access",
+  // #1291: a machine's first connect reads status, role and restricted_* in
+  // its WHERE (the canConnect floor) and writes only last_used_at.
+  "bus/routes.ts:connect": "a read: the first-use check's canConnect floor",
 };
 
 /** Exempt from the scan: the primitives themselves. */

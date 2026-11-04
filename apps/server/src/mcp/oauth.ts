@@ -23,8 +23,14 @@ import { orgCan } from "../auth/policy.js";
 import type { Env } from "../env.js";
 import { jsonBody, readCappedRequest } from "../http/body.js";
 import { ApiError, errorJson } from "../http/errors.js";
-import { FAVICON_TAGS } from "../http/head.js";
 import type { AppEnv } from "../http/middleware.js";
+import {
+  checkFormCsrf,
+  formCsrf,
+  pageResponse as html,
+  messagePage,
+  sessionUser,
+} from "../http/pages.js";
 import { logError } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
@@ -43,7 +49,6 @@ import {
 } from "../services/agent-usage.js";
 import { getSettings } from "../services/members.js";
 import { getUser, getUserWithEpoch } from "../services/users.js";
-import { hmacSign, hmacVerify } from "../util/crypto.js";
 import { CONSENT_TEMPLATE } from "./consent-template.js";
 import {
   listAllUserGrants,
@@ -93,7 +98,6 @@ const TOKEN_IP_KEY = "tok:ip:";
 /** Consent page renders (beginConsent: a KV write) per user per RL_ANON window. */
 const CONSENT_KEY = "consent:u:";
 const MAX_TOKEN_BODY = 16 * 1024;
-const CSRF_TTL_S = 600;
 const MAX_FORM_BYTES = 8 * 1024;
 const GRANT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -380,31 +384,6 @@ export async function serveAppHost(
 
 // ------------------------------------------------------------------ consent
 
-const PAGE_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'";
-
-function html(body: string, status: number, headers?: Headers): Response {
-  const h = new Headers(headers);
-  h.set("content-type", "text/html; charset=utf-8");
-  h.set("content-security-policy", PAGE_CSP);
-  h.set("cache-control", "no-store");
-  h.set("x-frame-options", "DENY");
-  return new Response(body, { status, headers: h });
-}
-
-/** A small static page; `title` and `message` are escaped. */
-function messagePage(title: string, message: string, status: number) {
-  return html(
-    `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex, nofollow"><title>${escapeHtml(title)} — Open Artifacts</title>
-<style>:root{color-scheme:light dark}body{font:15px/1.5 system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 16px;color:#15181c;background:#eef0f3}@media (prefers-color-scheme:dark){body{color:#e9ebee;background:#131518}}</style>
-${FAVICON_TAGS}
-</head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body></html>`,
-    status,
-  );
-}
-
 const membersOnly = () =>
   messagePage(
     "Only members can connect agents",
@@ -412,31 +391,19 @@ const membersOnly = () =>
     403,
   );
 
-/** The signed-in browser user (session cookie only; Bearer tokens can't consent). */
-const sessionUser = (c: Context<AppEnv>): Member | null =>
-  c.var.tokenId ? null : c.var.user;
-
-const csrfData = (uid: string, handle: string, exp: number) =>
-  `oauth-consent:${uid}:${handle}:${exp}`;
+/** The consent form's CSRF scope (http/pages.ts formCsrf). */
+const CONSENT_SCOPE = "oauth-consent";
 
 /** `{exp}.{hmac}` bound to the session user and the consent handle (itself single-use). */
-async function consentCsrf(env: Env, uid: string, handle: string) {
-  const exp = Math.floor(Date.now() / 1000) + CSRF_TTL_S;
-  return `${exp}.${await hmacSign(env.SESSION_SECRET, csrfData(uid, handle, exp))}`;
-}
+const consentCsrf = (env: Env, uid: string, handle: string) =>
+  formCsrf(env, CONSENT_SCOPE, uid, handle);
 
-async function checkConsentCsrf(
+const checkConsentCsrf = (
   env: Env,
   uid: string,
   handle: string,
   token: string,
-): Promise<boolean> {
-  const m = /^(\d{1,12})\.([A-Za-z0-9_-]{43})$/.exec(token);
-  if (!m) return false;
-  const exp = Number(m[1]);
-  if (exp <= Math.floor(Date.now() / 1000)) return false;
-  return hmacVerify(env.SESSION_SECRET, csrfData(uid, handle, exp), m[2] ?? "");
-}
+): Promise<boolean> => checkFormCsrf(env, CONSENT_SCOPE, uid, handle, token);
 
 /** parseAuthRequest/approve/deny failures: redirect only when the library says it's safe. */
 function authorizeError(e: unknown): Response {
