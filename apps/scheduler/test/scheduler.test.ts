@@ -605,15 +605,24 @@ describe("runNightly", () => {
     await seed(ids(6));
     captureLogs();
     const f = fakes("staging", () => "hang");
+    // Both lanes must fill before the deadline. Before the first call the run
+    // does one installs page read, 6 SHA-256 digests (nightOrder) and 2
+    // re-checks: 17 ms idle, at most 58 ms under load on a dev box. CI once
+    // stalled ~300 ms there (the test took 311 ms with no call made; the
+    // deadline counts from the run's start). 311 ms × headroom 3 ≈ 1 s.
+    // timeoutMs is 2 × that, so both calls still hold their lanes, undecided,
+    // when the deadline comes.
     const r = await runNightly(f.env, 0, {
       concurrency: 2,
-      timeoutMs: 1_000,
-      deadlineMs: 100,
+      timeoutMs: 2_000,
+      deadlineMs: 1_000,
       recheckFloorMs: 1,
     });
+    // The scenario held: two calls in their lanes, four waiting on them.
+    expect(f.calls).toHaveLength(2);
     expect(r.capped).toEqual([]);
     expect(r.skipped).toHaveLength(4);
-  });
+  }, 10_000);
 
   it("caps unsettled calls at 2 × a custom concurrency, and resumes when one settles", async () => {
     await seed(ids(10));
