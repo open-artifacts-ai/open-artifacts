@@ -191,7 +191,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     }
   });
 
-  it("deny-only: the seven real-only drops and the two interactive-only ones, each still a recorded drop", () => {
+  it("deny-only: the seven real-only drops and the four interactive-only ones, each still a recorded drop", () => {
     const only = cases.filter((c) => c.denyOnly);
     expect(only.map((c) => c.name).sort()).toEqual(
       Object.entries(DROPPED)
@@ -201,7 +201,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         .map(([n]) => `${n} [session]`)
         .sort(),
     );
-    expect(only).toHaveLength(9);
+    expect(only).toHaveLength(11);
     for (const c of only) expect(c.run).toBeDefined();
   });
 
@@ -292,9 +292,9 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         .filter((c) => !c.denyOnly)
         .map((c) => [c.name, c.variant]),
     ).toEqual([[SMOKES.oauth, "oauth"]]);
-    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(9);
+    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(11);
     // Every other case: B at B only, its kind a matrix foreign caller.
-    expect(by("own")).toHaveLength(cases.length - 2 - 10);
+    expect(by("own")).toHaveLength(cases.length - 2 - 12);
     for (const c of by("own"))
       expect(FOREIGN_CALLERS).toContain(FOREIGN_OF[c.variant]);
   });

@@ -22,6 +22,7 @@ describe("receipts", () => {
       "other_namespace",
       "revoked",
       "ambiguous",
+      "role_vacant",
       "agent_gone",
     ]);
   });
@@ -88,12 +89,19 @@ describe("receipts", () => {
       false,
     );
   });
-  it("has no role fields (design: roles dropped)", () => {
+  it("role_vacant is a refusal (#1296); a card role field stays dropped", () => {
     expect(
       ReceiptSchema.safeParse({
         msg_id: "a".repeat(16),
         state: "refused",
         reason: "role_vacant",
+      }).success,
+    ).toBe(true);
+    expect(
+      ReceiptSchema.safeParse({
+        msg_id: "a".repeat(16),
+        state: "pending",
+        role: "backend-lead",
       }).success,
     ).toBe(false);
   });

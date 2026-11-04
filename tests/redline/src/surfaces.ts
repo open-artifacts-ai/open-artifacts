@@ -306,6 +306,11 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
   // install until #1299.
   "DELETE /api/v1/bus/machines/:id":
     "real-only: no bus machine can be made on a hosted install (the device flow is 404 until #1299); A at B is deny-only",
+  // #1296: reached through bus/routes.ts roleWriter, not a direct call.
+  "PUT /api/v1/bus/roles":
+    "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
+  "DELETE /api/v1/bus/roles/:id":
+    "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
 };
 
 /**
@@ -319,11 +324,15 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
 export const INTERACTIVE_ONLY: readonly string[] = [
   "POST /api/v1/members/:id/erase",
   "PUT /api/v1/bus/share-notices",
+  "PUT /api/v1/bus/roles",
+  "DELETE /api/v1/bus/roles/:id",
 ];
 
 const ERASE_TESTS = "apps/server/test/members.erase.test.ts";
 const ERASE_AUTHZ = "POST R.memberErase(id): authorization";
 const SHARE_NOTICE_TESTS = "apps/server/test/follows.test.ts";
+const ROLE_TESTS = "apps/server/test/bus/roles.rest.test.ts";
+const ROLE_D = "roles REST (#1296)";
 
 /**
  * The surfaces dropped from the cross-install suite (P5 plan, Task 3b;
@@ -484,6 +493,40 @@ export const DROPPED: Readonly<
         file: SHARE_NOTICE_TESTS,
         describe: "R.shareNotices",
         test: "a PAT reads but can't set it; guests and anonymous callers neither",
+      },
+    ],
+  },
+  // #1296: the matrix sets a vacant role (200, or the named conflict while
+  // the caller has no bus) and removes one (204) in an Access session.
+  "org PUT /api/v1/bus/roles": {
+    why: "interactive-only",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: ROLE_TESTS,
+        describe: ROLE_D,
+        test: "the member sets, lists, re-points, vacates and removes a role",
+      },
+      {
+        file: ROLE_TESTS,
+        describe: ROLE_D,
+        test: "a PAT may read but never set or remove; guests, capped and anonymous callers get nothing",
+      },
+    ],
+  },
+  "org DELETE /api/v1/bus/roles/:id": {
+    why: "interactive-only",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: ROLE_TESTS,
+        describe: ROLE_D,
+        test: "another member reaches only their own hub: they can't see, set or remove the member's role",
+      },
+      {
+        file: ROLE_TESTS,
+        describe: ROLE_D,
+        test: "a PAT may read but never set or remove; guests, capped and anonymous callers get nothing",
       },
     ],
   },
