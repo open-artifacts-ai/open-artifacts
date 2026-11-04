@@ -11,7 +11,6 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -273,7 +272,8 @@ export function assertOutsideGit(base: string): void {
 /**
  * Makes `base` ready for MCP configs, before any mint: refuses it inside a
  * git work tree, makes it (and any parents it makes) 0700, then re-checks
- * the real path, that it is a directory, and sets it 0700. Its real path.
+ * the real path and sets it 0700. Its real path. A base that exists but is
+ * not a directory (or links to one that is not) fails in mkdir: EEXIST.
  */
 export function prepareMcpDir(base: string): string {
   assertOutsideGit(base);
@@ -286,8 +286,6 @@ export function prepareMcpDir(base: string): string {
     throw new Error(`--mcp cannot use ${base}: ${String(code ?? e)}`);
   }
   assertOutsideGit(real);
-  if (!statSync(real).isDirectory())
-    throw new Error(`--mcp cannot use ${base}: not a directory`);
   chmodSync(real, 0o700);
   return real;
 }
