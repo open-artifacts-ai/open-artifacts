@@ -399,7 +399,10 @@ export class ClaudeTransport {
     if (!sink) {
       sink = this.#listen(key, agentRef, namespace, peerName);
       this.#sinks.set(key, sink);
-      sink.catch(() => this.#sinks.delete(key));
+      sink.catch(() => {
+        this.#sinks.delete(key);
+        this.#paths.delete(key);
+      });
     }
     return sink;
   }
