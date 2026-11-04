@@ -1939,6 +1939,12 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /bus/approve",
   "POST /bus/approve",
   "GET /bus/connect",
+  // #1300: the member's /bus page (cookie session and form token, checked
+  // by the handler; bus.page.test.ts covers each).
+  "GET /bus",
+  "GET /bus/machines/:id/revoke",
+  "POST /bus/machines/:id/revoke",
+  "POST /bus/share-notices",
   "GET /a/:id",
   "GET /a/:id/full",
   "GET /a/:id/v/:v",

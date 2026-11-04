@@ -1,16 +1,12 @@
 import { env } from "cloudflare:workers";
+import type { BusAddress, BusAgent, BusMachine } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import designPage from "../../../design/screens/bus.html?raw";
 import designRevoke from "../../../design/screens/bus-revoke.html?raw";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import {
-  BUS_PAGE_POLICY,
-  type BusAddress,
-  type BusAgent,
-  type BusMachine,
   type BusPageDeps,
-  type BusView,
   dayOf,
   decodeAddress,
   encodeAddress,
@@ -27,6 +23,7 @@ import type { Env } from "../src/env.js";
 import { ApiError } from "../src/http/errors.js";
 import { formCsrf, PAGE_CSP } from "../src/http/pages.js";
 import { busSnippetOf, stripTemplateComment } from "../src/mcp/template.js";
+import type { BusView } from "../src/services/bus.js";
 import { fetchAndWait, login } from "./helpers.js";
 
 const designSnippets = import.meta.glob(
@@ -104,7 +101,7 @@ function doubles(
 }
 
 const appWith = (deps: BusPageDeps) =>
-  createApp((app) => mountBusPage(app, deps), BUS_PAGE_POLICY);
+  createApp((app) => mountBusPage(app, deps));
 
 const get = (
   deps: BusPageDeps,

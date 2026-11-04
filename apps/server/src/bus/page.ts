@@ -1,7 +1,12 @@
-import { AUTH, type Member } from "@oa/shared";
+import {
+  AUTH,
+  type BusAddress,
+  type BusAgent,
+  type BusMachine,
+  type Member,
+} from "@oa/shared";
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
-import type { Policy } from "../auth/route-policy.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
@@ -16,6 +21,7 @@ import {
 } from "../http/pages.js";
 import { logError } from "../log.js";
 import type { AppType } from "../routes/index.js";
+import type { BusView } from "../services/bus.js";
 import {
   BUS_PAGE_TEMPLATE,
   BUS_REVOKE_TEMPLATE,
@@ -29,45 +35,10 @@ import {
 // answers 303 to /bus?done=... or /bus?error=... (post-redirect-get).
 
 // ---------------------------------------------------------------- deps
-// TODO(#1291, #1292): replace these local types with the real imports
-// (BusMachine, BusAgent from @oa/shared; BusAddress from services/follows.ts).
+// The page's deps are the real services (services/bus.ts, services/follows.ts);
+// tests inject fakes of the same shape.
 
-export type BusMachine = {
-  id: string;
-  label: string;
-  createdAt: string;
-  lastUsedAt: string | null;
-  revokedAt: string | null;
-  /** Null when the hub didn't say. */
-  connected: boolean | null;
-};
-
-export type BusAgent = {
-  id: string;
-  namespace: string;
-  name: string;
-  kind: string;
-  machineId: string;
-  machineLabel: string;
-  global: boolean;
-  state: "live" | "queued";
-  running: boolean;
-  updatedAt: string;
-  status?: string;
-  statusLabel?: string;
-  statusAt?: string;
-};
-
-export type BusAddress = { namespace: string; name: string };
-
-export type BusView = {
-  machines: BusMachine[];
-  agents: BusAgent[];
-  /** False when the hub couldn't be asked (unbound, timeout): live status is unknown. */
-  live: boolean;
-};
-
-/** What the page calls; the real ones come from #1291 (services/bus.ts) and #1292 (services/follows.ts). */
+/** What the page calls: services/bus.ts and services/follows.ts in the app. */
 export type BusPageDeps = {
   /** One hub read. */
   busView(env: Env, userId: string): Promise<BusView>;
@@ -88,23 +59,6 @@ export const BUS_PAGE = "/bus";
 export const BUS_SHARE_NOTICES = "/bus/share-notices";
 const revokePath = (id: string) =>
   `/bus/machines/${encodeURIComponent(id)}/revoke`;
-
-/** Route rules for the page (merged into ROUTE_POLICY when it is mounted). */
-export const BUS_PAGE_POLICY: Readonly<Record<string, Policy>> = {
-  "GET /bus": {
-    public:
-      "the member's bus page; redirects to sign-in, checks canConnect or revoke-only",
-  },
-  "GET /bus/machines/:id/revoke": {
-    public: "revoke confirm; the caller's own machine only",
-  },
-  "POST /bus/machines/:id/revoke": {
-    public: "revoke; form CSRF, the caller's own machine only",
-  },
-  "POST /bus/share-notices": {
-    public: "share notices; form CSRF, checks canConnect",
-  },
-};
 
 const CSRF_REVOKE = "bus-revoke";
 const CSRF_SHARE = "bus-share-notices";
