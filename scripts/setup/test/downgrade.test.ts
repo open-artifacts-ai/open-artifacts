@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { HELP, run } from "../src/index.ts";
+import { MIN_UPGRADE_FROM } from "../src/version-guard.ts";
 import { ROOT, STATE } from "./fakes.ts";
 import { HOSTS, world } from "./world.ts";
 
@@ -192,6 +193,81 @@ describe("downgrade guard", () => {
       repoVersion: "0.1.0",
       liveVersion: "0.2.0",
       downgrade: true,
+      belowMinUpgrade: false,
+    });
+    expect(w.ops).toEqual([]);
+  });
+});
+
+describe("#1315: the oldest version this release upgrades from", () => {
+  // BusHub shipped unbound (DO tag v4) in 0.109.0; a checkout past it binds
+  // BUS_HUB, so an install below 0.109.0 takes 0.109.0 first.
+  const BIND = "0.116.0";
+  const TOO_OLD = (live: string) =>
+    `the deployed ${live} is older than 0.109.0, the oldest version this release (${BIND}) upgrades from; upgrade to v0.109.0 first (git checkout v0.109.0, then run the same upgrade), then check out this release and run it again`;
+
+  it("is 0.109.0, the first release with BusHub (tag v4) unbound", () => {
+    expect(MIN_UPGRADE_FROM).toBe("0.109.0");
+  });
+
+  it.each(["0.99.0", "0.100.0", "0.108.9"])(
+    "a live %s is refused with exit 2 before any write, naming the step",
+    async (live) => {
+      const o: Opts = {};
+      const w = await installed(BIND, o);
+      o.healthVersion = live;
+      expect(await run(UP, w.deps, ROOT)).toBe(2);
+      expect(line(w, "prereqs")).toMatchObject({
+        status: "action_required",
+        message: TOO_OLD(live),
+      });
+      expect(w.ops).toEqual([]);
+    },
+  );
+
+  it("--allow-downgrade does not bypass it", async () => {
+    const o: Opts = {};
+    const w = await installed(BIND, o);
+    o.healthVersion = "0.100.0";
+    expect(await run([...UP, "--allow-downgrade"], w.deps, ROOT)).toBe(2);
+    expect(line(w, "prereqs").message).toBe(TOO_OLD("0.100.0"));
+    expect(w.ops).toEqual([]);
+  });
+
+  it.each(["0.109.0", "0.110.0", "0.115.0"])(
+    "a live %s proceeds",
+    async (live) => {
+      const o: Opts = {};
+      const w = await installed(BIND, o);
+      o.healthVersion = live;
+      expect(await run(UP, w.deps, ROOT)).toBe(0);
+      expect(w.ops).toContain("deploy");
+    },
+  );
+
+  it("a fresh install is never refused (no live version, nothing to roll back below)", async () => {
+    const w = world({ healthVersion: "0.99.0" });
+    w.files.set(PKG, JSON.stringify({ name: "open-artifacts", version: BIND }));
+    expect(await run(HOSTS, w.deps, ROOT)).toBe(0);
+    expect(w.ops).toContain("deploy");
+  });
+
+  it("the 0.109.0 checkout itself upgrades from below it", async () => {
+    const o: Opts = {};
+    const w = await installed("0.109.0", o);
+    o.healthVersion = "0.100.0";
+    expect(await run(UP, w.deps, ROOT)).toBe(0);
+  });
+
+  it("--check reports it and never blocks", async () => {
+    const o: Opts = {};
+    const w = await installed(BIND, o);
+    o.healthVersion = "0.100.0";
+    expect(await run([...HOSTS, "--check"], w.deps, ROOT)).toBe(0);
+    expect(line(w, "deploy").data).toMatchObject({
+      repoVersion: BIND,
+      liveVersion: "0.100.0",
+      belowMinUpgrade: true,
     });
     expect(w.ops).toEqual([]);
   });
