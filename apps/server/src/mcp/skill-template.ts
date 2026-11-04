@@ -26,6 +26,7 @@ export const SKILL_TOKENS = [
   "quota",
   "version",
   "upgradeLine",
+  "busPeers",
 ] as const;
 export type SkillToken = (typeof SKILL_TOKENS)[number];
 
@@ -237,8 +238,7 @@ Check every item before telling the user a public live page is ready:
 
 - Keep chat terse. Put status, plans and decisions on a published page the human reads, and publish new versions to the same id. In chat, say only what changed, the link, and any question.
 - One agent is the human's point of contact. Other agents send real updates and blockers to it, not to the human. It relays asks, and passes the human's answers on in their own words.
-- Find peers by bus name with list_agents, and reply by name. Local session lists don't show agents on other machines.
-- Send links, not paths. A peer may be on another machine: send the content inline, an artifact link, or a pushed branch, never a local file path.
+${T("busPeers")}- Send links, not paths. A peer may be on another machine: send the content inline, an artifact link, or a pushed branch, never a local file path.
 - Name exact references. When you report something done, published or green, give the artifact id and version, or the commit SHA and run. Copy them from the source, not from another agent's report; the receiver checks them before acting.
 - One owner per action. Agree which agent does each kind of action (merging, deploying, publishing a given page) so two agents never do it twice.
 - Publishing for another agent whose connection is down: read everything before you publish, publish to the id it names, and say whose page it is in the version message. Publish only changes the human needs to see, batched.

@@ -86,6 +86,12 @@ export interface Env {
   /** "off" (any case) makes /skill.md 404 and drops the skill resource; public otherwise. */
   SKILL_MD?: string;
   /**
+   * "on" (any case) says this instance has the agent bus (peers by name,
+   * list_agents), so the skill teaches it; unset or anything else leaves those
+   * lines out (issue #1291 turns it on).
+   */
+  BUS?: string;
+  /**
    * An artifact id. Signed-out visitors at "/" get a 302 to its chromeless
    * viewer when it is live and public; unset, empty, invalid, private,
    * missing or deleted leaves "/" unchanged.

@@ -17,6 +17,7 @@ import {
   SKILL_TEMPLATE_NO_SPACES,
 } from "../src/mcp/skill.generated.js";
 import {
+  busLine,
   renderSkill,
   SKILL_DOC_URI,
   skillEtag,
@@ -101,6 +102,7 @@ describe("skill.md drift", () => {
     async (_, FEATURES, spaces) => {
       const e = E({ FEATURES }) as Parameters<typeof dataLimits>[0] & {
         APP_HOST: string;
+        BUS?: string;
       };
       const { plan, docBytes } = dataLimits(e);
       const v: Record<string, string> = {
@@ -111,6 +113,7 @@ describe("skill.md drift", () => {
         hostSlug: hostSlug(e.APP_HOST),
         version: VERSION,
         upgradeLine: upgradeLine(e),
+        busPeers: busLine(e),
       };
       const fresh = renderSkillTemplate(spaces).replace(
         /\{\{(\w+)\}\}/g,
@@ -234,7 +237,7 @@ describe("skill.md drift", () => {
   });
 
   it("has the working-with-other-agents section, before what to tell the user", async () => {
-    const md = await skill();
+    const md = await skill(E({ BUS: "on" }));
     const at = md.indexOf("\n## Working with other agents\n");
     expect(at).toBeGreaterThan(-1);
     expect(at).toBeLessThan(md.indexOf("\n## What to tell the user\n"));
@@ -250,6 +253,12 @@ describe("skill.md drift", () => {
       "never the human's approval",
     ])
       expect(section, phrase).toContain(phrase);
+  });
+
+  it("names no bus tool when the bus is off", async () => {
+    const md = await skill(E());
+    expect(md).not.toContain("Find peers by bus name");
+    expect(md).not.toContain("{{");
   });
 
   it("every tool example passes its input schema", () => {

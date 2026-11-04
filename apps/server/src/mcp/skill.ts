@@ -25,6 +25,7 @@ type SkillEnv = Pick<
   | "ENVIRONMENT"
   | "PLAN"
   | "SKILL_MD"
+  | "BUS"
   | "DATA_DOC_BYTES"
   | "HOSTED"
   | "FEATURES"
@@ -52,6 +53,20 @@ export const upgradeLine = (env: Pick<Env, "APP_HOST" | "HOSTED">): string =>
 export const skillEnabled = (env: Pick<Env, "SKILL_MD">): boolean =>
   env.SKILL_MD?.trim().toLowerCase() !== "off";
 
+/** The install has the agent bus: BUS=on (any case). Off, unset included. */
+export const busEnabled = (env: Pick<Env, "BUS">): boolean =>
+  env.BUS?.trim().toLowerCase() === "on";
+
+/**
+ * The skill's line on finding peers by bus name, or "" without the bus: the
+ * bus tool (list_agents) ships with #1291, so teaching it now would name a
+ * tool this instance doesn't have.
+ */
+export const busLine = (env: Pick<Env, "BUS">): string =>
+  busEnabled(env)
+    ? "- Find peers by bus name with list_agents, and reply by name. Local session lists don't show agents on other machines.\n"
+    : "";
+
 export const skillUrl = (env: SkillEnv): string | undefined =>
   skillEnabled(env) ? skillOrigin(env.APP_HOST) + SKILL_PATH : undefined;
 
@@ -62,7 +77,8 @@ export function renderSkill(env: SkillEnv): Promise<string> {
   const { plan, docBytes } = dataLimits(env);
   const hosted = env.HOSTED === "1" ? "h" : "";
   const spaces = spacesIn(env);
-  const key = `${env.ENVIRONMENT}|${env.APP_HOST}|${plan}|${docBytes}|${hosted}|${spaces ? "s" : ""}`;
+  const bus = busEnabled(env);
+  const key = `${env.ENVIRONMENT}|${env.APP_HOST}|${plan}|${docBytes}|${hosted}|${spaces ? "s" : ""}|${bus ? "b" : ""}`;
   let p = memo.get(key);
   if (!p) {
     p = skillName(env.APP_HOST).then((name) => {
@@ -74,6 +90,7 @@ export function renderSkill(env: SkillEnv): Promise<string> {
         hostSlug: hostSlug(env.APP_HOST),
         version: VERSION,
         upgradeLine: upgradeLine(env),
+        busPeers: busLine(env),
       };
       const tpl = spaces ? SKILL_TEMPLATE : SKILL_TEMPLATE_NO_SPACES;
       return tpl.replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m);
