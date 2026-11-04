@@ -330,15 +330,17 @@ jobs:
       # Every shard reports, so one failure never hides another.
       fail-fast: false
       matrix:
-        # Every event runs four shards: pull requests, the merge queue and a
-        # dispatch (one shard took 21 min on a PR, a shard of four about 7;
-        # #965). Free plan: 20 concurrent jobs.
-        shard: [1, 2, 3, 4]
+        # The merge queue (and a dispatch) runs four shards: the full proof
+        # before main. Pull requests run two: on the free plan's 20
+        # concurrent jobs, two or three four-shard runs filled the cap and
+        # bursts took 28-34 min (#965). A shard of four is about 7 min.
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[1,2]' || '[1,2,3,4]') }}
     env:
       PLAYWRIGHT_IMAGE_VERSION: 1.64.1
-      E2E_SHARD: ${{ matrix.shard }}/4
-    # One unsharded run took 15 to 21 min; a shard of four, well under 10.
-    timeout-minutes: 15
+      E2E_SHARD: ${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 2 || 4 }}
+    # A shard of four well under 10 min (15 allowed); a pull request's shard of
+    # two does about twice the work (25 allowed).
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 25 || 15 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -391,9 +393,11 @@ jobs:
       - name: Real-server suite (local wrangler dev)
         if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh real
-      # One spec on its own server: whole, in shard 3 (the lightest real share).
+      # One spec on its own server: whole, in exactly one shard per event
+      # (shard 3 of four in the queue, the lightest real share; shard 2 of two
+      # on a pull request, since shard 1 carries ui, landing and provisioning).
       - name: Real-server suite with spaces on (local wrangler dev)
-        if: ${{ !cancelled() && matrix.shard == 3 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == (github.event_name == 'pull_request' && 2 || 3) && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh spaces
       # Not sharded (about a minute together): shard 1 only.
       - name: UI real-browser checks (axe contrast, focus)
