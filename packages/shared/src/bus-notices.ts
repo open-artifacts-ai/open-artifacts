@@ -95,9 +95,70 @@ export const BusRoleSchema = z.strictObject({
 });
 export type BusRole = z.infer<typeof BusRoleSchema>;
 
-/** GET R.busRoles, ordered by namespace then name. `live` false: the bus could not be asked (roles is then []). */
+/** How long a role proposal's confirm link works (#1372). */
+export const BUS_ROLE_PROPOSAL_TTL_MS = 15 * 60_000;
+/** Pending role proposals one member may have at once (#1372). */
+export const BUS_ROLE_PROPOSALS_PENDING_MAX = 20;
+/** The newest role proposals GET R.busRoles lists, pending or decided (#1372). */
+export const BUS_ROLE_PROPOSALS_LISTED = 20;
+
+/**
+ * What a role proposal does once confirmed (#1372): `set` creates the role
+ * and points it at `agentId`, `repoint` points an existing role at
+ * `agentId`, `clear` removes the role (as DELETE R.busRole(id)).
+ */
+export const BusRoleProposalActionSchema = z.enum(["set", "repoint", "clear"]);
+export type BusRoleProposalAction = z.infer<typeof BusRoleProposalActionSchema>;
+
+/**
+ * Where a role proposal stands: `pending` until the member confirms it on
+ * its link (`applied`), turns it down or it can't apply (`refused`, with
+ * `reason`), or its link runs out (`expired`).
+ */
+export const BusRoleProposalStatusSchema = z.enum([
+  "pending",
+  "applied",
+  "refused",
+  "expired",
+]);
+export type BusRoleProposalStatus = z.infer<typeof BusRoleProposalStatusSchema>;
+
+/**
+ * One role change an AI agent proposed for the member over MCP
+ * (bus_role_propose, #1372). Nothing changes until the member confirms it in
+ * a browser. `agentId`/`agentName`: the new holder (null for clear);
+ * `priorAgentId`/`priorHolderName`: the holder it displaces, as of the
+ * proposal (null when none). Names are as they were at the proposal (a
+ * rename since refuses the confirm, `changed`). Never the
+ * confirm link.
+ */
+export const BusRoleProposalSchema = z.strictObject({
+  id: z.string(),
+  action: BusRoleProposalActionSchema,
+  namespace: BusAddressSchema.shape.namespace,
+  name: BusAddressSchema.shape.name,
+  roleId: z.string().nullable(),
+  agentId: z.string().nullable(),
+  agentName: z.string().nullable(),
+  priorAgentId: z.string().nullable(),
+  priorHolderName: z.string().nullable(),
+  status: BusRoleProposalStatusSchema,
+  /** Why it was refused: `rejected` (the member said no), `changed` (the role moved since), or a PUT R.busRoles refusal reason. */
+  reason: z.string().nullable(),
+  createdAt: z.string(),
+  expiresAt: z.string(),
+  decidedAt: z.string().nullable(),
+});
+export type BusRoleProposal = z.infer<typeof BusRoleProposalSchema>;
+
+/**
+ * GET R.busRoles, ordered by namespace then name. `live` false: the bus
+ * could not be asked (roles and proposals are then []). `proposals`: the
+ * newest BUS_ROLE_PROPOSALS_LISTED role proposals, newest first (#1372).
+ */
 export const BusRolesSchema = z.strictObject({
   roles: z.array(BusRoleSchema).max(BUS_ROLE_MAX),
+  proposals: z.array(BusRoleProposalSchema).max(BUS_ROLE_PROPOSALS_LISTED),
   live: z.boolean(),
 });
 export type BusRoles = z.infer<typeof BusRolesSchema>;
@@ -109,3 +170,20 @@ export const BusRolePutSchema = z.strictObject({
   agentId: z.string().min(1).max(64).nullable(),
 });
 export type BusRolePut = z.infer<typeof BusRolePutSchema>;
+
+/**
+ * MCP bus_role_propose (#1372): propose pointing the role (namespace, name)
+ * at the open agent named `agent` (action "set": creates the role, or
+ * re-points it), or removing the role ("clear", no agent). `agent` is a bus
+ * name, as agents see each other on the bus; the hub binds the proposal to
+ * that agent's id. One object, not a union, so every MCP client takes the
+ * schema; the tool refuses a "set" without `agent` or a "clear" with one.
+ * Nothing changes until the member confirms it on the returned link.
+ */
+export const BusRoleProposeInputSchema = z.strictObject({
+  action: z.enum(["set", "clear"]),
+  namespace: BusAddressSchema.shape.namespace,
+  name: BusAddressSchema.shape.name,
+  agent: BusAddressSchema.shape.name.optional(),
+});
+export type BusRoleProposeInput = z.infer<typeof BusRoleProposeInputSchema>;

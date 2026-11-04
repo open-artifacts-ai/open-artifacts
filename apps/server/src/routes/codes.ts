@@ -385,11 +385,15 @@ export function mountCodes(app: AppType): void {
     const guest = elig.kind === "guest";
     const domain = email.slice(email.lastIndexOf("@") + 1);
     const maxAgeS = guest ? GUEST_MAX_AGE_S : undefined;
-    const sess = await signSession(c.env, user.id, Date.now(), {
+    const signedAt = Date.now();
+    const sess = await signSession(c.env, user.id, signedAt, {
       provider: "code",
       tenant: guest ? undefined : domain,
       epoch: row.sessionEpoch,
       maxAgeS,
+      // The forced re-auth marker (#1372): a code sign-in is itself one, since
+      // every code is new, emailed and typed by the person; no silent path.
+      authAt: signedAt,
     });
     // The sign-in and its auth.signin audit row commit together; the last
     // statement reads the member's hosted fields (restriction included).
