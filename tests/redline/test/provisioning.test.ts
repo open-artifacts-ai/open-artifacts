@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Job } from "@oa/provisioning-contract";
 import { afterEach, describe, expect, it } from "vitest";
 import { InfraError } from "../src/fetch-timeout.ts";
 import { takeFileNotes } from "../src/notes.ts";
@@ -41,6 +42,7 @@ import {
   Run,
   revokeCreds,
   runProbe,
+  servingLag,
   stagedVersion,
   startChains,
   statusCounts,
@@ -617,7 +619,6 @@ describe("each probe fails on the behaviour it guards", () => {
     for (const [id, fresh, stale, msg] of [
       ["P20", "paused", "serving", "serving, want paused"],
       ["P22", "closed", "serving", "serving, want closed"],
-      ["P22", "serving", "closed", "closed, want serving"],
       ["P23", null, "closed", "closed, want null"],
     ] as const)
       it(`${id}: a mode that never reaches ${fresh} fails, naming the last one`, async () => {
@@ -627,6 +628,131 @@ describe("each probe fails on the behaviour it guards", () => {
           `fail: ${id}: inventory mode is ${msg}, after 120 s`,
         );
       });
+
+    describe("P22 after the restore: inventory KV lag or a late closed write (#1417)", () => {
+      /** After the restore, rl-l's /healthz is 200 once, then `status`. */
+      const pageAfterFirstOk = (
+        f: ReturnType<typeof fakeApi>,
+        status: number,
+      ) => {
+        const real = f.io.fetch;
+        let restored = false;
+        let pages = 0;
+        f.io.fetch = (async (u: string, i?: RequestInit) => {
+          const s = String(u);
+          if (s.endsWith("/restore")) restored = true;
+          if (restored && s.includes("://rl-l-") && s.endsWith("/healthz"))
+            if (pages++ > 0) return new Response(null, { status });
+          return real(u, i);
+        }) as typeof fetch;
+      };
+      /** R14 for rl-l lists one more delete job, accepted after the restore. */
+      const laterDelete = (f: ReturnType<typeof fakeApi>) => {
+        const real = f.io.fetch;
+        f.io.fetch = (async (u: string, i?: RequestInit) => {
+          const r = await real(u, i);
+          if (!/\/v1\/installs\/[^/]+\/jobs$/.test(String(u))) return r;
+          const b = (await r.clone().json()) as {
+            items: { kind: string; createdAt: number }[];
+          };
+          const restore = b.items.find((j) => j.kind === "restore");
+          if (!restore) return r;
+          b.items.push({
+            ...restore,
+            id: "01LATEDELETE0000000000000",
+            kind: "delete",
+            createdAt: restore.createdAt + 1,
+          } as (typeof b.items)[number]);
+          return Response.json(b);
+        }) as typeof fetch;
+      };
+
+      it("page still 200 and no later delete job: infra, naming both values", async () => {
+        const f = fakeApi();
+        staleFor(f, "serving", "closed", Number.POSITIVE_INFINITY);
+        const out = (await runAll(f)).get("P22");
+        expect(level(out)).toBe("infra");
+        expect(out).toMatch(
+          /^infra: P22: KV propagation at the inventory location: inventory mode closed after 120 s, app host page 200 \d+ s after its first 200; no delete or suspend job after the restore$/,
+        );
+      });
+
+      it("a delete job after the restore: a product failure linking #1326", async () => {
+        const f = fakeApi();
+        staleFor(f, "serving", "closed", Number.POSITIVE_INFINITY);
+        laterDelete(f);
+        const out = (await runAll(f)).get("P22");
+        expect(level(out)).toMatch(/^fail: /);
+        expect(out).toContain(
+          "P22: a late closed write (#1326 https://github.com/open-artifacts-ai/open-artifacts/issues/1326)",
+        );
+        expect(out).toContain("app host page 200");
+        expect(out).toContain("1 delete or suspend job(s) after the restore");
+      });
+
+      it("the page 503 on the re-check: a product failure linking #1326", async () => {
+        const f = fakeApi();
+        staleFor(f, "serving", "closed", Number.POSITIVE_INFINITY);
+        pageAfterFirstOk(f, 503);
+        const out = (await runAll(f)).get("P22");
+        expect(level(out)).toMatch(/^fail: P22: a late closed write \(#1326 /);
+        expect(out).toContain("inventory mode closed after 120 s");
+        expect(out).toContain("app host page 503");
+        expect(out).toContain("0 delete or suspend job(s) after the restore");
+      });
+
+      it("re-checks the page only once dispatch's 60 s cache has turned over since the first 200", async () => {
+        const f = fakeApi();
+        const run = new Run(CONFIG, f.io);
+        const start = f.clock.t;
+        const at: number[] = [];
+        const real = f.io.fetch;
+        f.io.fetch = (async (u: string, i?: RequestInit) => {
+          if (String(u).endsWith("/healthz")) {
+            at.push(f.clock.t);
+            return new Response(null, { status: 200 });
+          }
+          if (String(u).includes("/jobs"))
+            return Response.json({ items: [], nextCursor: null });
+          return real(u, i);
+        }) as typeof fetch;
+        const e = await servingLag(run, {
+          installId: "i00000000001",
+          appHost: "rl-l-x.open-artifacts-staging.app",
+          firstOk: start - 20_000,
+          mode: "closed",
+          deleteJobId: "01DEL",
+          restore: { createdAt: 5 } as Job,
+        });
+        expect(at).toEqual([start + 40_000]);
+        expect(e).toBeInstanceOf(InfraError);
+        expect(e.message).toContain(
+          "app host page 200 60 s after its first 200",
+        );
+      });
+
+      it("R14 unreadable: never infra", async () => {
+        const f = fakeApi();
+        const run = new Run(CONFIG, f.io);
+        f.io.fetch = (async (u: string) =>
+          String(u).includes("/jobs")
+            ? Response.json(
+                { error: { code: "internal", message: "x" } },
+                { status: 500 },
+              )
+            : new Response(null, { status: 200 })) as typeof fetch;
+        const e = await servingLag(run, {
+          installId: "i00000000001",
+          appHost: "rl-l-x.open-artifacts-staging.app",
+          firstOk: f.clock.t - 120_000,
+          mode: "closed",
+          deleteJobId: "01DEL",
+          restore: { createdAt: 5 } as Job,
+        });
+        expect(e).toBeInstanceOf(ProbeFail);
+        expect(e.message).toMatch(/R14 jobs unreadable .*#1326/);
+      });
+    });
   });
 
   describe("bring-up survives a dropped connection and a busy install", () => {
