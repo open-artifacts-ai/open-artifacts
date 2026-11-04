@@ -1326,6 +1326,21 @@ describe("OpenBus #449: review of #446", () => {
     d.close();
   });
 
+  it("an agent_up namespace move with maxFormerNames chosen names in grace takes the new name: a move leaves no former name", async () => {
+    const d = await at();
+    const n1 = ns("rn");
+    const n2 = ns("rn");
+    await reg(d, "a", uniq("Full"), n1);
+    let cur = "";
+    for (let i = 0; i < LIMITS.maxFormerNames; i++)
+      cur = (await renamed(d, "a", uniq(`F${i}`))).bus_name;
+    expect(await formerRows(cur)).toHaveLength(LIMITS.maxFormerNames);
+    const moved = uniq("Moved");
+    expect(await reg(d, "a", moved, n2)).toBe(moved);
+    expect(await formerRows(moved)).toEqual([]);
+    d.close();
+  });
+
   it("a chosen name in another non-global namespace never takes a minted one", async () => {
     const d = await at();
     const n1 = ns("rn");
