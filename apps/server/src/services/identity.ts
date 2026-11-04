@@ -347,6 +347,11 @@ export async function resetIdentity(
       `delete from identities where provider = 'google'
        and user_id = (select u.id from users u where u.id = ?1 and ${TARGET_OK}) returning 1`,
     ).bind(userId, null, owner),
+    // #1291: bus machines go with the PATs (after results[3], read below).
+    stmt(
+      env.DB,
+      `update bus_machines set revoked_at = ?2 where user_id = ?1 and revoked_at is null and ${RESETTABLE}`,
+    ).bind(userId, Date.now(), owner),
   ]);
   if (!results[3]?.results.length) await refuse();
   // Sessions and tokens are gone: their live sockets close now (P3 T7).

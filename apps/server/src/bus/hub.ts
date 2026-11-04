@@ -10,7 +10,7 @@ import {
   encodeFrame,
   FALLBACK_BUS_NAME,
   frameId,
-  isMachineId,
+  isId,
   LIMITS,
   MachineLabelSchema,
   newId,
@@ -22,11 +22,11 @@ import {
   type ServerFrame,
   suffixName,
   utf8Bytes,
-  WireNamespaceSchema,
 } from "@oa/bus-protocol";
 import type { BusAgent } from "@oa/shared";
 import type { Env } from "../env.js";
-import { logInfo } from "../log.js";
+import { logError, logInfo } from "../log.js";
+import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
@@ -34,6 +34,8 @@ import {
   type AgentRow,
   MACHINE_COLS,
   type MachineRow,
+  RECEIPT_COLS,
+  type ReceiptRow,
 } from "./rows.js";
 import { HUB_SCHEMA, migrateHub } from "./schema.js";
 import {
@@ -142,10 +144,7 @@ function withLiveness(ctx: DurableObjectState, m: StoredMachine): MachineRow {
 }
 
 /** An unrevoked machine this hub has accepted, or null. */
-function activeMachine(
-  ctx: DurableObjectState,
-  id: string,
-): MachineRow | null {
+function activeMachine(ctx: DurableObjectState, id: string): MachineRow | null {
   const m = one<StoredMachine>(
     ctx.storage.sql,
     `select ${MACHINE_COLS} from machines where id = ? and org_id = ? and revoked_at is null`,
@@ -154,7 +153,6 @@ function activeMachine(
   );
   return m && withLiveness(ctx, m);
 }
-
 
 // ------------------------------------------------------------------ sockets
 //
@@ -175,13 +173,10 @@ type ErrorCode = Extract<ServerFrame, { type: "error" }>["code"];
 /**
  * `replaced`: a newer socket took over this machine; `revoked`: the machine
  * was revoked (B9). Either way the socket is dead: nothing it sends is
- * processed and its close runs no bookkeeping. `clientVersion` is the last
- * `hello.client_version` (at most 64 chars), kept here so version gates
- * survive hibernation.
+ * processed and its close runs no bookkeeping.
  */
 type Attachment = {
   machineId: string;
-  clientVersion?: string;
   replaced?: true;
   revoked?: true;
 };
@@ -202,29 +197,6 @@ const isReplaced = (ws: WebSocket): boolean => {
 
 const isRevokedSocket = (ws: WebSocket): boolean =>
   attachmentOf(ws)?.revoked === true;
-
-/**
- * Daemons below KIND_TOKEN_MIN_CLIENT decode `kind` with a closed enum and
- * refuse a roster with any other kind. Fails closed: no hello or a malformed
- * version gets only PRE_TOKEN_KINDS.
- */
-const preTokenKinds = (ws: WebSocket): boolean =>
-  !semverGte(attachmentOf(ws)?.clientVersion ?? "", KIND_TOKEN_MIN_CLIENT);
-
-/**
- * The agent card wire (roster `role`, receipt `to_name`, `role_vacant`) goes
- * only to daemons at or above AGENT_CARD_MIN_CLIENT; their decoders are
- * strict. Fails closed, as preTokenKinds does.
- */
-const gated = (ws: WebSocket): boolean =>
-  semverGte(attachmentOf(ws)?.clientVersion ?? "", AGENT_CARD_MIN_CLIENT);
-
-/** A refusal reason as `ws` can decode it: role_vacant is unknown_agent below the gate. */
-const refusalFor = (ws: WebSocket, reason: RefusalReason): RefusalReason =>
-  reason === "role_vacant" && !gated(ws) ? "unknown_agent" : reason;
-
-/** The SQL allow-list for a pre-token daemon (constants, never input). */
-const PRE_TOKEN_KIND_SQL = ` and kind in (${PRE_TOKEN_KINDS.map((k) => `'${k}'`).join(", ")})`;
 
 function sendFrame(ws: WebSocket, frame: ServerFrame): void {
   try {
@@ -255,7 +227,7 @@ function closeSocket(ws: WebSocket, code: number, reason: string): void {
  * Daemon frame budget (B11): a token bucket per MACHINE, counted before
  * decode. It refills at `refillPerSec` and holds at most `burst` tokens; a
  * frame with no token left closes the socket with LIMITS.rateLimitCloseCode
- * (4429) "rate limited", and that machine's /hub upgrades get 429 for
+ * (4429) "rate limited", and that machine's /bus/connect upgrades get 429 for
  * LIMITS.rateLimitCooldownMs.
  *
  * Manager ruling (M3): burst 512 at 50/s. Client paces at 40 frames/s, below
@@ -270,9 +242,6 @@ function closeSocket(ws: WebSocket, code: number, reason: string): void {
  * count.
  */
 export const FRAME_BUDGET = { refillPerSec: 50, burst: 512 } as const;
-
-/** Dashboard sockets (L3): they only send pings, which never count. Per socket. */
-export const DASHBOARD_FRAME_BUDGET = { refillPerSec: 1, burst: 16 } as const;
 
 type Budget = { tokens: number; at: number; cooldownUntil: number };
 
@@ -307,15 +276,15 @@ function reject(
 
 /**
  * Why a new live agent on `machineId` is refused, or null: past
- * maxAgentsPerMachine live agents on the machine, or maxRosterAgents in the
- * org. A re-up of an agent already live adds none and always passes. Bounded
+ * maxAgentsPerMachine live agents on the machine, or maxRosterAgents on the
+ * member's bus. A re-up of an agent already live adds none and always passes. Bounded
  * counts on agents_machine and the live-only agents_live_lname.
  */
 function capRefusal(
   sql: SqlStorage,
   machineId: string,
   ref: string,
-): "machine" | "org" | null {
+): "machine" | "member" | null {
   if (registeredAgent(sql, machineId, ref)) return null;
   const n = (q: string, ...b: SqlStorageValue[]) =>
     one<{ n: number }>(sql, q, ...b)?.n ?? 0;
@@ -334,7 +303,7 @@ function capRefusal(
       LIMITS.maxRosterAgents,
     ) >= LIMITS.maxRosterAgents
   )
-    return "org";
+    return "member";
   return null;
 }
 
@@ -508,40 +477,6 @@ function machineChange(sql: SqlStorage, machineId: string): RosterChange {
   };
 }
 
-/**
- * A role change: the role's namespace plus the namespaces of `agentIds` (its
- * old and new holders), whose roster rows carry the role.
- */
-function roleChange(
-  sql: SqlStorage,
-  ns: string,
-  agentIds: (string | null)[],
-): RosterChange {
-  const rows = all<{ namespace: string }>(
-    sql,
-    "select namespace from agents where id in (select value from json_each(?))",
-    JSON.stringify(agentIds.filter((a) => a !== null)),
-  );
-  return { namespaces: [ns, ...rows.map((r) => r.namespace)], global: false };
-}
-
-/** The agent id role `role` (any case) in `ns` points at, or null. */
-function roleHolderId(
-  sql: SqlStorage,
-  ns: string,
-  role: string,
-): string | null {
-  return (
-    one<{ a: string | null }>(
-      sql,
-      "select agent_id as a from roles where org_id = ? and namespace = ? and lrole = ?",
-      OWNER_ORG_ID,
-      ns,
-      role.toLowerCase(),
-    )?.a ?? null
-  );
-}
-
 /** The open agent `ref` on this machine, or null: the from_ref identity check. */
 function registeredAgent(
   sql: SqlStorage,
@@ -558,8 +493,7 @@ function registeredAgent(
 }
 
 /**
- * Names compare case-insensitively (bus names are ASCII), against agents and
- * roles (roleTaken). A global agent's
+ * Names compare case-insensitively (bus names are ASCII). A global agent's
  * name must be free among ALL live agents (it is visible everywhere); a
  * non-global's must be free in its namespace and among live globals.
  * One query on agents_live_lname.
@@ -572,8 +506,6 @@ function nameTaken(
   selfId: string,
 ): boolean {
   const lname = name.toLowerCase();
-  // AC2a: a role reserves its name (hub/roles.ts).
-  if (roleTaken(sql, namespace, lname, global)) return true;
   return global
     ? one(
         sql,
@@ -673,15 +605,6 @@ function agentUp(
       now,
     );
   const wasLive = existing?.live === 1;
-  // AC2a (review I1): a holder that reopens, moves namespace or changes
-  // global loses its role, so a role never silently follows it back.
-  if (
-    existing &&
-    (!wasLive ||
-      existing.namespace !== f.namespace ||
-      existing.global !== (f.global ? 1 : 0))
-  )
-    vacateRoles(sql, [id]);
   // AC3: a reopened session starts with no status (a live move keeps it).
   if (existing && !wasLive) clearStatus(sql, [id]);
   const changed = [f.namespace];
@@ -718,7 +641,7 @@ function agentDown(
   now: number,
 ): { id: string; namespace: string; global: number } | null {
   // One statement (B11): the close is the hot path of sessions{closed}.
-  const a = one<{ id: string; namespace: string; global: number }>(
+  return one<{ id: string; namespace: string; global: number }>(
     sql,
     `update agents set live = 0, last_name = name, updated_at = ?, ${STATUS_CLEAR} where machine_id = ? and native_ref = ? and live = 1 and org_id = ? returning id, namespace, global`,
     now,
@@ -726,34 +649,27 @@ function agentDown(
     ref,
     OWNER_ORG_ID,
   );
-  if (a) vacateRoles(sql, [a.id]);
-  return a;
 }
 
 /**
  * A non-global agent sees its namespace plus every global agent; a global
  * agent sees every open agent. `state` is always sent: live while the
  * agent's machine holds an open, current socket (machineOnline, as the
- * dashboard and the send path decide it), queued otherwise. `preToken`
- * keeps only PRE_TOKEN_KINDS rows, for daemons too old to decode any other
- * kind (preTokenKinds). `gatedFields` (gated) adds each row's role, as the
- * viewer can resolve it (rolesOf), and its status (AC3).
+ * dashboard and the send path decide it), queued otherwise. Each row
+ * carries its self-reported status (AC3).
  */
 function roster(
   ctx: DurableObjectState,
   agent: AgentRow,
   id: string,
-  preToken: boolean,
-  gatedFields: boolean,
 ): ServerFrame {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
-  const kinds = preToken ? PRE_TOKEN_KIND_SQL : "";
   let rows: AgentRow[];
   if (agent.global === 1) {
     rows = all<AgentRow>(
       sql,
-      `select ${AGENT_COLS} from agents where org_id = ? and live = 1${kinds} order by namespace, name limit ?`,
+      `select ${AGENT_COLS} from agents where org_id = ? and live = 1 order by namespace, name limit ?`,
       OWNER_ORG_ID,
       cap,
     );
@@ -761,14 +677,14 @@ function roster(
     // Two indexed queries (agents_live_name, agents_global_name), merged here.
     const local = all<AgentRow>(
       sql,
-      `select ${AGENT_COLS} from agents where org_id = ? and namespace = ? and live = 1${kinds} order by name limit ?`,
+      `select ${AGENT_COLS} from agents where org_id = ? and namespace = ? and live = 1 order by name limit ?`,
       OWNER_ORG_ID,
       agent.namespace,
       cap,
     );
     const globals = all<AgentRow>(
       sql,
-      `select ${AGENT_COLS} from agents where org_id = ? and live = 1 and global = 1${kinds} order by name limit ?`,
+      `select ${AGENT_COLS} from agents where org_id = ? and live = 1 and global = 1 order by name limit ?`,
       OWNER_ORG_ID,
       cap,
     );
@@ -798,13 +714,6 @@ function roster(
     return on ? "live" : "queued";
   };
   const labels = machineLabels(sql, rows);
-  const roles = gatedFields
-    ? rolesOf(
-        sql,
-        rows.map((r) => r.id),
-        agent.global === 1 ? null : agent.namespace,
-      )
-    : new Map<string, string>();
   return {
     v: 1,
     id,
@@ -819,8 +728,7 @@ function roster(
         state: stateOf(r.machineId),
         // The key is omitted, never null, if a row's machine has no label.
         ...(label === undefined ? {} : { machine_label: label }),
-        ...(roles.has(r.id) ? { role: roles.get(r.id) } : {}),
-        ...(gatedFields ? statusWire(r) : {}),
+        ...statusWire(r),
       };
     }),
   };
@@ -843,89 +751,27 @@ function machineLabels(sql: SqlStorage, rows: AgentRow[]): Map<string, string> {
   return new Map(found.map((m) => [m.id, m.label]));
 }
 
-// --------------------------------------------------------------- dashboards
-//
-// Dashboard sockets (B10-ws, manager ruling: a hibernatable WebSocket replaces
-// SSE). They arrive on the hub's internal GET /events (EVENTS_DO_PATH), tagged
-// only "dashboard" (never DAEMON_TAG or a machine id). Their attachment has no
-// machineId, so attachmentOf/machineOf see null and no daemon path treats one
-// as a machine; daemon paths only ever list DAEMON_TAG or machine-id sockets.
-// Hibernation-safe: the list is always getWebSockets(DASHBOARD_TAG), never an
-// in-memory one.
-
-const DASHBOARD_TAG = "dashboard";
-/** Dashboard sockets per hub; a newcomer past it evicts the oldest open one. */
-export const MAX_DASHBOARDS = 16;
-/** "Try again later": the dashboard was evicted to make room. */
-const EVICT_CODE = 1013;
-/** "Internal error": a send to the dashboard failed. */
-const SEND_FAILED_CODE = 1011;
-/** The session ended (bump or expiry): the dashboard must sign in again. */
-const SESSION_CLOSE = LIMITS.dashboardSessionClose;
-
 /**
- * `seq` is the connect order (max existing + 1), for evicting the oldest.
- * `exp` is the session's expiry (epoch ms) from SESSION_EXP_HEADER, `gen` its
- * generation from SESSION_GEN_HEADER (equal to the hub's at accept).
- */
-type DashboardAttachment = {
-  dashboard: true;
-  seq: number;
-  exp: number;
-  gen: number;
-};
-
-/** Latest accepted session expiry past now: B1's max age plus 1 min of clock skew. */
-const SESSION_EXP_CAP_MS = MAX_AGE_S * 1000 + 60_000;
-
-function dashboardAttachment(ws: WebSocket): DashboardAttachment | null {
-  try {
-    const a = ws.deserializeAttachment() as DashboardAttachment | null;
-    return a?.dashboard === true ? a : null;
-  } catch {
-    return null;
-  }
-}
-
-function dashboardSeq(ws: WebSocket): number {
-  const seq = dashboardAttachment(ws)?.seq;
-  return typeof seq === "number" ? seq : 0;
-}
-
-/** The socket's session expiry; a socket without a valid one counts as expired. */
-function dashboardExp(ws: WebSocket): number {
-  const exp = dashboardAttachment(ws)?.exp;
-  return typeof exp === "number" && Number.isSafeInteger(exp) ? exp : 0;
-}
-
-/**
- * True when a socket event must skip the daemon paths: a dashboard socket, or
- * a socket this DO never accepted (getTags throws; seen when a test or the
- * runtime closes a socket before acceptWebSocket), which has nothing to clean up.
+ * True when a socket event must skip the daemon paths: a socket this DO never
+ * accepted (getTags throws; seen when a test or the runtime closes a socket
+ * before acceptWebSocket), which has nothing to clean up.
  */
 const notDaemon = (ctx: DurableObjectState, ws: WebSocket): boolean => {
   try {
-    return ctx.getTags(ws).includes(DASHBOARD_TAG);
+    return !ctx.getTags(ws).includes(DAEMON_TAG);
   } catch {
     return true;
   }
 };
 
 /**
- * A forwarded header as a plain decimal integer of at most 16 digits (a safe
- * integer), else null. Number() alone would accept "", " ", "0x10", "1e15".
+ * A stored decimal as a safe integer of at most 16 digits, else null.
+ * Number() alone would accept "", " ", "0x10", "1e15".
  */
 function parseDecimal(v: string | null): number | null {
   if (v === null || !/^[0-9]{1,16}$/.test(v)) return null;
   const n = Number(v);
   return Number.isSafeInteger(n) ? n : null;
-}
-
-/** SESSION_EXP_HEADER: in (now, now + SESSION_EXP_CAP_MS], else null. */
-function parseSessionExp(v: string | null, now: number): number | null {
-  const exp = parseDecimal(v);
-  if (exp === null || exp <= now || exp > now + SESSION_EXP_CAP_MS) return null;
-  return exp;
 }
 
 /** Ordered like the SQL: namespace, then lower(name), then name. */
@@ -946,13 +792,13 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
   a.status_label as statusLabel, a.status_at as statusAt`;
 
 /**
- * The dashboard's agent list (listAgents and the dashboard feed). Open agents
+ * The dashboard's agent list (snapshot, GET /api/v1/bus/agents). Open agents
  * of unrevoked machines, joined to machines (primary key) for the label. All
  * agents: one ordered scan of agents_live_ns_lname, stopping at the cap. One
  * namespace: that namespace on agents_live_ns_lname plus the globals on
  * agents_global_name, merged here (as roster() does).
  */
-function agentList(ctx: DurableObjectState, namespace?: string): Agent[] {
+function agentList(ctx: DurableObjectState, namespace?: string): BusAgent[] {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
   const from = "from agents a join machines m on m.id = a.machine_id";
@@ -986,63 +832,16 @@ function agentList(ctx: DurableObjectState, namespace?: string): Agent[] {
       .slice(0, cap);
   }
   const online = new Map<string, boolean>();
-  // The owner sees every role its holder still holds (HOLDER_SQL), in any
-  // namespace; an agent holds at most one.
-  const roles = rolesOf(
-    sql,
-    rows.map((r) => r.id),
-    null,
-  );
   const dtos = rows.map((r) => {
     let on = online.get(r.machineId);
     if (on === undefined) {
       on = machineOnline(ctx, r.machineId);
       online.set(r.machineId, on);
     }
-    return agentDto(r, on, roles.get(r.id));
+    return agentDto(r, on);
   });
   // A bad stored row is skipped, never allowed to break the whole list.
   return validAgents(dtos);
-}
-
-const machineList = (ctx: DurableObjectState): Machine[] =>
-  machineDtos(machineRows(ctx));
-
-function readPushDue(sql: SqlStorage): number | null {
-  const row = one<{ value: string }>(
-    sql,
-    "select value from meta where org_id = ? and key = ?",
-    OWNER_ORG_ID,
-    PUSH_DUE_KEY,
-  );
-  const n = row ? Number(row.value) : Number.NaN;
-  return Number.isSafeInteger(n) ? n : null;
-}
-
-function writePushDue(sql: SqlStorage, due: number): void {
-  sql.exec(
-    "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
-    OWNER_ORG_ID,
-    PUSH_DUE_KEY,
-    String(due),
-  );
-}
-
-function clearPushDue(sql: SqlStorage): void {
-  sql.exec(
-    "delete from meta where org_id = ? and key = ?",
-    OWNER_ORG_ID,
-    PUSH_DUE_KEY,
-  );
-}
-
-/** Best effort: a failed send closes the dashboard (1011) to free its slot. */
-function sendDashboard(ws: WebSocket, payload: string): void {
-  try {
-    ws.send(payload);
-  } catch {
-    closeSocket(ws, SEND_FAILED_CODE, "send failed");
-  }
 }
 
 // --------------------------------------------------------------------- mail
@@ -1072,6 +871,10 @@ type Held = {
   createdAt: number;
   expiresAt: number;
 };
+
+type Resolution =
+  | { ok: true; agent: AgentRow }
+  | { ok: false; reason: RefusalReason };
 
 /** The live agent `lname` names in namespace `ns` (in `ns`, or a global). */
 function liveVisibleIn(
@@ -1153,10 +956,6 @@ function resolveTarget(
   toNamespace: string | undefined,
 ): Resolution {
   const lname = toName.toLowerCase();
-  // AC2a: a role the sender can reach wins (a role never equals a visible
-  // open agent's name, so this shadows nothing reachable).
-  const role = resolveRole(sql, sender, lname, toNamespace);
-  if (role) return role;
   if (sender.global !== 1) {
     if (toNamespace !== undefined && toNamespace !== sender.namespace) {
       // Only a live global homed in X is reachable. Everything else is the
@@ -1216,7 +1015,7 @@ function refuseSend(ws: WebSocket, id: string, reason: RefusalReason): void {
     type: "receipt",
     msg_id: newId(),
     state: "refused",
-    reason: refusalFor(ws, reason),
+    reason,
   });
 }
 
@@ -1597,8 +1396,6 @@ const IDLE_AGENT_SQL = `(not exists (select 1 from receipts r indexed by receipt
   and not exists (select 1 from mail m indexed by mail_to where m.to_agent = a.id)
   and not exists (select 1 from send_keys k indexed by send_keys_agent where k.from_agent = a.id and k.created_at >= ?)
   and not exists (select 1 from receipts r indexed by receipts_unnotified where r.from_agent = a.id and r.notified_at is null and r.state != 'pending'))`;
-/** Device codes are purged this long past expiry. */
-const DEVICE_CODE_GRACE_MS = 24 * HOUR_MS;
 
 const isRefusalReason = (r: string | null): r is RefusalReason =>
   (REFUSAL_REASONS as readonly (string | null)[]).includes(r);
@@ -1642,20 +1439,19 @@ function senderRef(f: ClientFrame): string | null {
   return f.type === "send" ||
     f.type === "list" ||
     f.type === "fetch" ||
-    f.type === "status" ||
-    f.type === "card_request"
+    f.type === "status"
     ? f.from_ref
     : null;
 }
 
 /**
- * The hub: one SQLite Durable Object per owner. B3 holds machines and the
- * auth storage B1/B1b call; later tasks add the socket, mail and alarm paths.
- *
- * Every method on this class is on the RPC surface; the test allowlist in
- * hub.machines.test.ts pins it. Helpers live outside the class.
+ * The bus hub: one SQLite Durable Object per member (#1291). Reached only
+ * through the Worker: GET /bus/connect forwards a verified daemon upgrade,
+ * and the Worker calls the RPC methods below (snapshot, revokeMachine,
+ * closeAll). Every method on this class is on the RPC surface (a test pins
+ * the list). Helpers live outside the class.
  */
-export class Hub extends DurableObject<Env> {
+export class BusHub extends DurableObject<Env> {
   /** A frozen clock for tests; null in production. Never on the RPC surface. */
   #clock: number | null = null;
 
@@ -1663,34 +1459,14 @@ export class Hub extends DurableObject<Env> {
    * Tests only, inside `runInDurableObject`. Static, so it is not on the
    * prototype and a stub cannot call it over RPC.
    */
-  static setTestClock(hub: Hub, ms: number | null): void {
+  static setTestClock(hub: BusHub, ms: number | null): void {
     hub.#clock = ms;
-  }
-
-  /** Card secrets over this.env, for tests (AC4c); null in production. */
-  #testCardEnv: Partial<Env> | null = null;
-  /** Tests: card signing waits for this before re-checking the socket. */
-  #cardHold: Promise<void> | null = null;
-  /** Card replies being signed (awaited by webSocketMessage). */
-  #cardsInFlight = new Set<Promise<void>>();
-
-  static setCardEnvForTests(hub: Hub, env: Partial<Env> | null): void {
-    hub.#testCardEnv = env;
-  }
-
-  static holdCardsForTests(hub: Hub, p: Promise<void> | null): void {
-    hub.#cardHold = p;
-  }
-
-  static cardsSettledForTests(hub: Hub): Promise<void> {
-    return Promise.all(hub.#cardsInFlight).then(() => undefined);
   }
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    // Every socket (daemon and dashboard) gets "pong" for "ping" from the
-    // runtime, without waking the hub; set here so a fresh hub with no
-    // daemon still answers a dashboard's keepalive.
+    // Every daemon socket gets "pong" for "ping" from the runtime, without
+    // waking the hub.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG));
     void ctx.blockConcurrencyWhile(async () => {
       ctx.storage.sql.exec(HUB_SCHEMA);
@@ -1751,8 +1527,6 @@ export class Hub extends DurableObject<Env> {
   #replayQueue = new Set<string>();
   /** FRAME_BUDGET buckets by machine id (in memory; a wake clears them). */
   #machineBudgets = new Map<string, Budget>();
-  /** DASHBOARD_FRAME_BUDGET buckets per dashboard socket. */
-  #dashboardBudgets = new WeakMap<WebSocket, Budget>();
   /** Sockets already closed (and logged) for their budget. */
   #rateClosed = new WeakSet<WebSocket>();
 
@@ -1765,7 +1539,7 @@ export class Hub extends DurableObject<Env> {
   #sendKeys: number | null = null;
 
   /** Tests only: static, so not on the RPC surface. */
-  static heldStats(hub: Hub): { bytes: number; ids: string[] } {
+  static heldStats(hub: BusHub): { bytes: number; ids: string[] } {
     return { bytes: hub.#heldBytes, ids: [...hub.#held.keys()] };
   }
 
@@ -1773,11 +1547,18 @@ export class Hub extends DurableObject<Env> {
    * Tests only (static, not RPC): sets a socket's FRAME_BUDGET tokens, so a
    * test can start near empty instead of sending a whole burst first.
    */
-  static setFrameTokensForTests(hub: Hub, ws: WebSocket, tokens: number): void {
-    const b = { tokens, at: hub.#now(), cooldownUntil: 0 };
+  static setFrameTokensForTests(
+    hub: BusHub,
+    ws: WebSocket,
+    tokens: number,
+  ): void {
     const machineId = machineOf(ws);
-    if (machineId === null) hub.#dashboardBudgets.set(ws, b);
-    else hub.#machineBudgets.set(machineId, b);
+    if (machineId !== null)
+      hub.#machineBudgets.set(machineId, {
+        tokens,
+        at: hub.#now(),
+        cooldownUntil: 0,
+      });
   }
 
   /**
@@ -1785,14 +1566,14 @@ export class Hub extends DurableObject<Env> {
    * SEND_KEYS_TOTAL); also drops the cached count, so a test may edit
    * send_keys directly.
    */
-  static setSendKeysTotalForTests(hub: Hub, cap: number | null): void {
+  static setSendKeysTotalForTests(hub: BusHub, cap: number | null): void {
     hub.#sendKeysCap = cap ?? SEND_KEYS_TOTAL;
     hub.#sendKeys = null;
   }
 
   /** Tests only (static, not RPC): the closed-agent cap check (#roomForClosed). */
   static roomForClosedForTests(
-    hub: Hub,
+    hub: BusHub,
     machineId: string,
     ref: string,
   ): boolean {
@@ -1800,7 +1581,7 @@ export class Hub extends DurableObject<Env> {
   }
 
   /** Tests only (static, not RPC): an eviction drops every held body. */
-  static dropHeldForTests(hub: Hub): void {
+  static dropHeldForTests(hub: BusHub): void {
     hub.#held.clear();
     hub.#heldBytes = 0;
   }
@@ -1808,155 +1589,69 @@ export class Hub extends DurableObject<Env> {
   // ---------------------------------------------------------------- machines
 
   /**
-   * Called by the device flow once a user code is approved. The label must
-   * already pass MachineLabelSchema (callers sanitize with newMachineLabel);
-   * an invalid label or id throws (a programmer error). At MAX_ACTIVE_MACHINES
-   * active machines it returns `{ ok: false, code: "machine_limit" }`.
-   * Stores only the token's SHA-256 and returns the token once.
+   * The dashboard's one read (services/bus.ts busView): the machines with a
+   * live socket now, and the open agents of unrevoked machines (agentList).
    */
-  async createMachine(
-    label: string,
-    id: string = newId(),
-  ): Promise<CreateMachineResult> {
-    if (!MachineLabelSchema.safeParse(label).success)
-      throw new Error("invalid machine label");
-    if (!isId(id)) throw new Error("invalid machine id");
-    const token = newMachineToken();
-    // The only await is here, before the cap check: the check and the insert
-    // below are one synchronous step, so concurrent creates cannot both pass.
-    const tokenHash = await sha256Hex(token);
-    const sql = this.ctx.storage.sql;
-    const active = one<{ n: number }>(
-      sql,
-      "select count(*) as n from machines where org_id = ? and (revoked_at is null) = 1",
+  async snapshot(): Promise<{ connected: string[]; agents: BusAgent[] }> {
+    const connected = all<StoredMachine>(
+      this.ctx.storage.sql,
+      `select ${MACHINE_COLS} from machines where org_id = ? and revoked_at is null`,
       OWNER_ORG_ID,
-    );
-    if ((active?.n ?? 0) >= MAX_ACTIVE_MACHINES)
-      return { ok: false, code: "machine_limit" };
-    sql.exec(
-      "insert into machines (id, org_id, label, token_hash, created_at) values (?, ?, ?, ?, ?)",
-      id,
-      OWNER_ORG_ID,
-      label,
-      tokenHash,
-      this.#now(),
-    );
-    this.#notifyDashboards();
-    await this.#commitArm();
-    return { ok: true, id, label, token };
+    )
+      .filter((m) => machineOnline(this.ctx, m.id))
+      .map((m) => m.id);
+    return { connected, agents: agentList(this.ctx) };
   }
 
-  /** One lookup per WebSocket upgrade; last_used is throttled to once an hour. */
-  async verifyToken(
-    tokenHash: string,
-  ): Promise<{ id: string; label: string } | null> {
-    const sql = this.ctx.storage.sql;
-    const row = one<{
-      id: string;
-      label: string;
-      revokedAt: number | null;
-      lastUsedAt: number | null;
-    }>(
-      sql,
-      "select id, label, revoked_at as revokedAt, last_used as lastUsedAt from machines where token_hash = ? and org_id = ? limit 1",
-      tokenHash,
+  /** When the last closeAll started (ms), or null. */
+  #revokedAt(): number | null {
+    const v = one<{ value: string }>(
+      this.ctx.storage.sql,
+      "select value from meta where org_id = ? and key = ?",
       OWNER_ORG_ID,
-    );
-    if (!row || row.revokedAt !== null) return null;
+      REVOKED_AT_KEY,
+    )?.value;
+    const n = v === undefined ? Number.NaN : Number(v);
+    return Number.isSafeInteger(n) ? n : null;
+  }
+
+  /**
+   * The member's access was cut somewhere (runtime/presence.ts closeAll ->
+   * services/bus.ts closeUserBus): revokedAt = now is written first, then
+   * every daemon socket closes with 4403. A connect the Worker authorized at
+   * or before revokedAt + SKEW_MS is refused (fetch), so no upgrade racing
+   * this survives it; the daemon reconnects and the Worker checks again
+   * (status, canConnect, the token). Machines are not revoked here: D1 does
+   * that where the status changes. Returns the sockets closed.
+   */
+  async closeAll(reason: string): Promise<number> {
     const now = this.#now();
-    if (row.lastUsedAt === null || row.lastUsedAt < now - HOUR_MS)
-      sql.exec("update machines set last_used = ? where id = ?", now, row.id);
-    return { id: row.id, label: row.label };
-  }
-
-  /**
-   * Active machines newest first, then revoked newest first, at most
-   * maxMachinesListed. Active machines are capped at the same number, so every
-   * active machine is always listed.
-   */
-  async listMachines(): Promise<MachineRow[]> {
-    return machineRows(this.ctx);
-  }
-
-  /** Every role (AC2b), with its holder while it holds it (hub/roles.ts). */
-  async listRoles(): Promise<RoleRow[]> {
-    return roleRows(this.ctx.storage.sql);
-  }
-
-  /**
-   * Points role `role` in `ns` at `agentId` (setRole; the caller validates
-   * the values). On "ok", roster_changed reaches the role's namespace and
-   * the old and new holders', and the dashboards are told.
-   */
-  async putRole(
-    ns: string,
-    role: string,
-    agentId: string,
-  ): Promise<SetRoleResult> {
-    const sql = this.ctx.storage.sql;
-    const before = roleHolderId(sql, ns, role);
-    const r = setRole(sql, ns, role, agentId, this.#now());
-    if (r === "ok")
-      await this.#rolesChanged(roleChange(sql, ns, [before, agentId]));
-    return r;
-  }
-
-  /** Removes role `role` (any case) from `ns`; false when there was none. */
-  async deleteRole(ns: string, role: string): Promise<boolean> {
-    const sql = this.ctx.storage.sql;
-    const before = roleHolderId(sql, ns, role);
-    if (!dropRole(sql, ns, role)) return false;
-    await this.#rolesChanged(roleChange(sql, ns, [before]));
-    return true;
-  }
-
-  async #rolesChanged(change: RosterChange): Promise<void> {
-    notifyRoster(this.ctx, change);
-    this.#notifyDashboards();
-    await this.#commitArm();
-  }
-
-  /**
-   * The dashboard's agents (B10): open agents of unrevoked machines, live
-   * while the machine's daemon is connected, queued otherwise. With a
-   * namespace, that namespace's agents plus every global; without, all.
-   * Ordered by namespace, then name case-insensitively; at most
-   * maxRosterAgents. An invalid namespace returns [] (never throws).
-   *
-   * `undefined` (or no argument) means all agents. Over RPC `null` is not
-   * `undefined`: `null`, `""` and any other non-namespace return [].
-   * Rows that fail AgentSchema are skipped (logged, without contents).
-   */
-  async listAgents(namespace?: string): Promise<Agent[]> {
-    if (namespace === undefined) return agentList(this.ctx);
-    if (!WireNamespaceSchema.safeParse(namespace).success) return [];
-    return agentList(this.ctx, namespace);
-  }
-
-  /**
-   * Linked apps (AC4b). `aud` must be a canonical origin (parseOrigin);
-   * anything else is false with no side effects. linkApp: true when linked
-   * afterwards (a relink keeps its first linked_at), false for a new app at
-   * MAX_LINKED_APPS. unlinkApp: true when it removed a link.
-   */
-  async linkApp(aud: string): Promise<boolean> {
-    return (
-      this.#canonical(aud) &&
-      linked.linkApp(this.ctx.storage.sql, aud, this.#now())
+    this.ctx.storage.sql.exec(
+      `insert into meta (org_id, key, value) values (?, ?, ?)
+       on conflict(org_id, key) do update set value = max(cast(value as integer), cast(excluded.value as integer))`,
+      OWNER_ORG_ID,
+      REVOKED_AT_KEY,
+      String(now),
     );
-  }
-
-  /** Newest first, at most MAX_LINKED_APPS; linkedAt in epoch ms. */
-  async listLinkedApps(): Promise<linked.LinkedAppRow[]> {
-    return linked.listLinkedApps(this.ctx.storage.sql);
-  }
-
-  async unlinkApp(aud: string): Promise<boolean> {
-    return this.#canonical(aud) && linked.unlinkApp(this.ctx.storage.sql, aud);
-  }
-
-  #canonical(aud: unknown): aud is string {
-    return typeof aud === "string" && parseOrigin(aud, this.env) === aud;
+    let n = 0;
+    for (const ws of this.ctx.getWebSockets(DAEMON_TAG)) {
+      const m = machineOf(ws);
+      if (m === null) continue;
+      try {
+        ws.serializeAttachment({
+          machineId: m,
+          replaced: true,
+        } satisfies Attachment);
+      } catch {
+        // Already closed.
+      }
+      closeSocket(ws, LIMITS.revokeCloseCode, "access changed");
+      n++;
+    }
+    // `reason` is a fixed string from the caller; not logged (ids and counts only).
+    void reason;
+    logEvent("close_all", { closed: n });
+    return n;
   }
 
   /**
@@ -1974,7 +1669,7 @@ export class Hub extends DurableObject<Env> {
    * leaves an inbox to the TTL sweep.
    */
   async revokeMachine(id: string): Promise<boolean> {
-    if (typeof id !== "string" || !isMachineId(id)) return false;
+    if (typeof id !== "string" || !isId(id)) return false;
     const sql = this.ctx.storage.sql;
     const now = this.#now();
     const res = sql.exec(
@@ -2013,7 +1708,6 @@ export class Hub extends DurableObject<Env> {
       )
       .toArray()
       .map((r) => String(r.id));
-    vacateRoles(sql, ids);
     sql.exec(
       "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do nothing",
       OWNER_ORG_ID,
@@ -2026,7 +1720,6 @@ export class Hub extends DurableObject<Env> {
     if (this.#drainRevoked()) this.#arm(now + 1);
 
     notifyRoster(this.ctx, change);
-    this.#notifyDashboards();
     await this.#commitArm();
     return true;
   }
@@ -2036,16 +1729,48 @@ export class Hub extends DurableObject<Env> {
   // them over RPC (DurableObjectStub omits them).
 
   /**
-   * The Worker's /hub route forwards a verified upgrade here with only
-   * `Upgrade` and `X-Ob-Machine-Id` (never the client's headers).
+   * GET /bus/connect (bus/connect.ts) forwards a verified upgrade here, to
+   * CONNECT_DO_PATH, with only Upgrade, MACHINE_ID_HEADER,
+   * MACHINE_LABEL_HEADER and AUTHZ_AT_HEADER (never the client's headers).
+   * The Worker checked the token in D1 (unrevoked), the member (active,
+   * canConnect) and that this is their hub. Here: an upgrade authorized at
+   * or before the last closeAll (+ SKEW_MS) is refused 429 (the daemon
+   * retries and the Worker checks again), and a machine this hub already
+   * saw revoked is refused 401.
    */
   override async fetch(req: Request): Promise<Response> {
     const path = new URL(req.url).pathname;
-    if (path === EVENTS_DO_PATH) return this.#acceptDashboard(req);
-    if (path !== "/hub") return new Response("Not found", { status: 404 });
+    if (path !== CONNECT_DO_PATH)
+      return new Response("Not found", { status: 404 });
     if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket")
       return new Response("Expected WebSocket upgrade", { status: 426 });
-    const machineId = req.headers.get("X-Ob-Machine-Id") ?? "";
+    const machineId = req.headers.get(MACHINE_ID_HEADER) ?? "";
+    const label = req.headers.get(MACHINE_LABEL_HEADER) ?? "";
+    const authzAt = Number(req.headers.get(AUTHZ_AT_HEADER) ?? "");
+    if (
+      !isId(machineId) ||
+      !MachineLabelSchema.safeParse(label).success ||
+      !Number.isSafeInteger(authzAt)
+    )
+      return new Response("Bad upgrade", { status: 400 });
+    const revokedAt = this.#revokedAt();
+    if (revokedAt !== null && authzAt <= revokedAt + SKEW_MS) {
+      logEvent("hub_reject", { code: "revoked_race", machineId });
+      return new Response("retry", {
+        status: 429,
+        headers: { "Retry-After": String(Math.ceil(SKEW_MS / 1000) + 1) },
+      });
+    }
+    // The hub's mirror of the D1 row: created on first accept, label kept
+    // current; a row this hub already revoked stays revoked.
+    this.ctx.storage.sql.exec(
+      `insert into machines (id, org_id, label, created_at) values (?, ?, ?, ?)
+       on conflict(id) do update set label = excluded.label where revoked_at is null`,
+      machineId,
+      OWNER_ORG_ID,
+      label,
+      this.#now(),
+    );
     if (!activeMachine(this.ctx, machineId)) {
       logEvent("hub_reject", { code: "unauthorized", machineId });
       return new Response("Unknown machine", { status: 401 });
@@ -2083,65 +1808,69 @@ export class Hub extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server, [DAEMON_TAG, machineId]);
     server.serializeAttachment({ machineId } satisfies Attachment);
     // The machine's open agents flip from queued to live.
-    if (!wasOnline) {
+    if (!wasOnline)
       notifyRoster(
         this.ctx,
         machineChange(this.ctx.storage.sql, machineId),
         server,
       );
-      this.#notifyDashboards();
-    }
     await this.#commitArm();
+    // After the accept: a closeInstall that runs meanwhile finds this hub in
+    // the index, and one that missed this report gets it on its later pass.
+    await this.#reportToIndex();
     return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+
+  /** When this instance last reported to the socket index (ms; memory only). */
+  #indexedAt = Number.NEGATIVE_INFINITY;
+
+  /**
+   * Tells the install's socket index (presence.ts INSTALL_INDEX) that this
+   * hub holds a live socket, under its own DO name ("bus:" + user id), at
+   * most once per INDEX_REPORT_MS per instance, so the platform's suspend
+   * (closeInstall) closes bus sockets too. Fails open, as ArtifactRuntime's.
+   */
+  async #reportToIndex(): Promise<void> {
+    const now = this.#now();
+    if (now - this.#indexedAt < INDEX_REPORT_MS) return;
+    const name = this.ctx.id.name;
+    const idx = socketIndexStub(this.env);
+    if (!idx || !name) return;
+    try {
+      await idx.seen(name);
+      this.#indexedAt = now;
+    } catch (e) {
+      logError("socket_index_failed", e);
+    }
   }
 
   override async webSocketMessage(
     ws: WebSocket,
     message: string | ArrayBuffer,
   ): Promise<void> {
-    if (this.#overBudget(ws)) return;
-    // Dashboards only listen: whatever they send is dropped, never decoded
-    // ("ping" is answered by the auto-response before the hub wakes).
     if (notDaemon(this.ctx, ws)) return;
-    const card = this.#onMessage(ws, message);
+    if (this.#overBudget(ws)) return;
+    this.#onMessage(ws, message);
     await this.#commitArm();
-    if (card) await card;
   }
 
   /**
-   * Takes one token from the frame's bucket (the machine's FRAME_BUDGET, or
-   * the dashboard socket's DASHBOARD_FRAME_BUDGET); with none left, closes
+   * Takes one token from the machine's FRAME_BUDGET; with none left, closes
    * the socket (4429 "rate limited", logged once per socket), starts the
    * machine's reconnect cooldown and returns true.
    */
   #overBudget(ws: WebSocket): boolean {
     const now = this.#now();
     const machineId = machineOf(ws);
-    let ok: boolean;
-    if (machineId === null) {
-      let b = this.#dashboardBudgets.get(ws);
-      if (!b) {
-        b = { tokens: DASHBOARD_FRAME_BUDGET.burst, at: now, cooldownUntil: 0 };
-        this.#dashboardBudgets.set(ws, b);
-      }
-      ok =
-        !this.#rateClosed.has(ws) && takeToken(b, now, DASHBOARD_FRAME_BUDGET);
-    } else {
-      const b = this.#machineBudget(machineId, now);
-      ok = !this.#rateClosed.has(ws) && takeToken(b, now, FRAME_BUDGET);
-      // The cooldown starts when this socket trips, not on its late frames.
-      if (!ok && !this.#rateClosed.has(ws))
-        b.cooldownUntil = now + LIMITS.rateLimitCooldownMs;
-    }
+    if (machineId === null) return false;
+    const b = this.#machineBudget(machineId, now);
+    const ok = !this.#rateClosed.has(ws) && takeToken(b, now, FRAME_BUDGET);
     if (ok) return false;
+    // The cooldown starts when this socket trips, not on its late frames.
     if (!this.#rateClosed.has(ws)) {
+      b.cooldownUntil = now + LIMITS.rateLimitCooldownMs;
       this.#rateClosed.add(ws);
-      logEvent(
-        "rate_limited",
-        machineId === null
-          ? { kind: "dashboard_frames" }
-          : { kind: "frames", machineId },
-      );
+      logEvent("rate_limited", { kind: "frames", machineId });
     }
     closeSocket(ws, LIMITS.rateLimitCloseCode, "rate limited");
     return true;
@@ -2156,11 +1885,7 @@ export class Hub extends DurableObject<Env> {
     return b;
   }
 
-  /** Returns the pending card reply (AC4c), if any; it never rejects. */
-  #onMessage(
-    ws: WebSocket,
-    message: string | ArrayBuffer,
-  ): Promise<void> | undefined {
+  #onMessage(ws: WebSocket, message: string | ArrayBuffer): void {
     // A replaced socket is dead: nothing it sends is processed.
     if (isRevokedSocket(ws)) {
       closeSocket(ws, LIMITS.revokeCloseCode, "machine revoked");
@@ -2192,33 +1917,12 @@ export class Hub extends DurableObject<Env> {
       return;
     }
     const res = decodeClientFrame(message);
-    // A card_request the strict schema refused only for its nonce or aud is
-    // still answered card_refused (hub/card.ts).
-    const lax =
-      !res.ok && res.error === "bad_frame" && res.id !== undefined
-        ? laxCardRequest(message)
-        : null;
-    if (!res.ok && !lax) {
+    if (!res.ok) {
       reject(ws, machineId, res.id, res.error, "Unreadable frame");
       return;
     }
-    const f: ClientFrame | CardRequest = res.ok
-      ? res.frame
-      : (lax as CardRequest);
+    const f = res.frame;
     const sql = this.ctx.storage.sql;
-
-    // AC4c, check 1, before the attestation: below the gate a daemon cannot
-    // decode `card` or `card_refused`.
-    if (f.type === "card_request" && !gated(ws)) {
-      reject(
-        ws,
-        machineId,
-        f.id,
-        "bad_frame",
-        "card_request needs a newer client",
-      );
-      return;
-    }
 
     // Review Focus 1: a socket acts only for agents it registered itself.
     const ref = senderRef(f);
@@ -2236,21 +1940,13 @@ export class Hub extends DurableObject<Env> {
 
     switch (f.type) {
       case "hello":
-        try {
-          ws.serializeAttachment({
-            machineId,
-            clientVersion: f.client_version,
-          } satisfies Attachment);
-        } catch {
-          // Closing; without a version the roster gate fails closed.
-        }
         sendFrame(ws, {
           v: 1,
           id: f.id,
           type: "hello_ok",
           machine_id: machine.id,
           machine_label: machine.label,
-          server_version: version(this.env),
+          server_version: VERSION,
         });
         return;
       case "sessions": {
@@ -2274,13 +1970,8 @@ export class Hub extends DurableObject<Env> {
           change.namespaces.push(a.namespace);
           if (a.global === 1) change.global = true;
         }
-        vacateRoles(
-          sql,
-          downed.map((a) => a.id),
-        );
         this.#closeSessions(downed.map((a) => a.id));
         notifyRoster(this.ctx, change, ws);
-        if (change.namespaces.length > 0) this.#notifyDashboards();
         return;
       }
       case "agent_up": {
@@ -2295,15 +1986,9 @@ export class Hub extends DurableObject<Env> {
           sendError(ws, f.id, "rate_limited", AGENT_CAP_MESSAGES.machine);
           return;
         }
-        const { reply, change, rowChanged } = agentUp(
-          sql,
-          machineId,
-          f,
-          this.#now(),
-        );
+        const { reply, change } = agentUp(sql, machineId, f, this.#now());
         sendFrame(ws, reply);
         notifyRoster(this.ctx, change, ws);
-        if (rowChanged) this.#notifyDashboards();
         const a = registeredAgent(sql, machineId, f.agent_ref);
         if (a) {
           // Its queued mail, then what it missed as a sender.
@@ -2324,15 +2009,10 @@ export class Hub extends DurableObject<Env> {
           { namespaces: [a.namespace], global: a.global === 1 },
           ws,
         );
-        this.#notifyDashboards();
         return;
       }
       case "list":
-        if (sender)
-          sendFrame(
-            ws,
-            roster(this.ctx, sender, f.id, preTokenKinds(ws), gated(ws)),
-          );
+        if (sender) sendFrame(ws, roster(this.ctx, sender, f.id));
         return;
       case "send":
         if (sender) this.#send(ws, f, sender);
@@ -2353,78 +2033,12 @@ export class Hub extends DurableObject<Env> {
       case "status":
         if (sender) this.#status(ws, f, sender);
         return;
-      case "card_request":
-        return sender
-          ? this.#card(ws, machineId, machine.label, f, sender)
-          : undefined;
     }
   }
 
   /**
-   * `card_request` (AC4c), past the gate and the attestation: card_refused
-   * now, or the card once signed. After the await the reply goes out only
-   * if `ws` is still the machine's live socket (not replaced or revoked).
-   */
-  #card(
-    ws: WebSocket,
-    machineId: string,
-    machineLabel: string,
-    f: CardRequest,
-    sender: AgentRow,
-  ): Promise<void> | undefined {
-    const env = this.#testCardEnv
-      ? { ...this.env, ...this.#testCardEnv }
-      : this.env;
-    const r = issueCard(
-      this.ctx.storage.sql,
-      env,
-      sender,
-      machineLabel,
-      f,
-      this.#now(),
-    );
-    if ("code" in r) {
-      sendFrame(ws, { v: 1, id: f.id, type: "card_refused", code: r.code });
-      return undefined;
-    }
-    const hold = this.#cardHold;
-    const done = (async () => {
-      const jwt = await r.jwt;
-      if (hold) await hold;
-      // Still this machine's live socket, still gated, the agent still open
-      // and saying what the card says; else nothing (it has no session to
-      // answer). An aud unlinked meanwhile is refused as a new request is.
-      const sql = this.ctx.storage.sql;
-      if (
-        liveSocket(this.ctx, machineId) !== ws ||
-        !activeMachine(this.ctx, machineId) ||
-        !gated(ws)
-      )
-        return;
-      const agent = registeredAgent(sql, machineId, f.from_ref);
-      if (agent?.id !== sender.id || !stillTrue(sql, agent, r.snap)) return;
-      if (!linked.isLinked(sql, f.aud))
-        sendFrame(ws, {
-          v: 1,
-          id: f.id,
-          type: "card_refused",
-          code: "not_linked",
-        });
-      else if (jwt === null)
-        sendError(ws, f.id, "internal", "Cannot sign a card");
-      else sendFrame(ws, { v: 1, id: f.id, type: "card", jwt });
-    })()
-      .catch(() => {
-        // Never unhandled: the daemon's request times out.
-      })
-      .finally(() => this.#cardsInFlight.delete(done));
-    this.#cardsInFlight.add(done);
-    return done;
-  }
-
-  /**
-   * A `status` frame (AC3). No reply on success. Applied now: roster_changed
-   * and a dashboard push. Coalesced: the alarm applies it when due.
+   * A `status` frame (AC3). No reply on success. Applied now: roster_changed.
+   * Coalesced: the alarm applies it when due.
    */
   #status(
     ws: WebSocket,
@@ -2441,7 +2055,7 @@ export class Hub extends DurableObject<Env> {
     else if (r.due !== null) this.#arm(r.due);
   }
 
-  /** Applied status changes: one roster_changed per namespace, one dashboard push. */
+  /** Applied status changes: one roster_changed per namespace. */
   #statusChanged(
     changed: Pick<StatusChange, "namespace" | "global">[],
     except?: WebSocket,
@@ -2455,13 +2069,12 @@ export class Hub extends DurableObject<Env> {
       },
       except,
     );
-    this.#notifyDashboards();
   }
 
   override async webSocketClose(ws: WebSocket, code: number): Promise<void> {
     // 1005/1006 are never sent on the wire.
     closeSocket(ws, code === 1005 || code === 1006 ? 1000 : code, "closed");
-    // A dashboard's close runs no daemon or machine bookkeeping.
+    // A socket this DO never accepted has no bookkeeping.
     if (notDaemon(this.ctx, ws)) return;
     this.#socketGone(ws);
     await this.#commitArm();
@@ -2488,172 +2101,6 @@ export class Hub extends DurableObject<Env> {
     if (!machineId || isReplaced(ws)) return;
     if (machineOnline(this.ctx, machineId, ws)) return;
     notifyRoster(this.ctx, machineChange(this.ctx.storage.sql, machineId), ws);
-    this.#notifyDashboards();
-  }
-
-  // -------------------------------------------------------------- dashboards
-
-  /** True while a push is queued for this turn's microtask (coalescing). */
-  #dashboardPushPending = false;
-  /**
-   * When the last push went out. In memory: after an eviction the next push
-   * goes out at once (one extra push at most).
-   */
-  #lastPushAt: number | null = null;
-  /** Mirror of the persisted PUSH_DUE_KEY this instance wrote; null if none. */
-  #pushDue: number | null = null;
-
-  /**
-   * GET /events (B10-ws): the dashboard's WebSocket feed. No session check
-   * here: the hub is reachable only through the Worker (stub.fetch), and the
-   * Worker's /api/v1/events route checks the session and Origin, then sets
-   * SESSION_EXP_HEADER and SESSION_GEN_HEADER. 426 without an upgrade; 400
-   * when the expiry is missing, not a decimal of at most 16 digits, past, or
-   * beyond now + max age + 1 min, or the generation is missing, malformed or
-   * not the hub's current one.
-   */
-  async #acceptDashboard(req: Request): Promise<Response> {
-    if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket")
-      return new Response("Expected WebSocket upgrade", { status: 426 });
-    // Everything is checked before acceptWebSocket: a refusal leaves no socket.
-    const exp = parseSessionExp(
-      req.headers.get(SESSION_EXP_HEADER),
-      this.#now(),
-    );
-    if (exp === null)
-      return new Response(`Missing or bad ${SESSION_EXP_HEADER}`, {
-        status: 400,
-      });
-    // Read in this DO turn, so a bump that landed after the Worker's session
-    // check (logout in another tab) is seen here: the socket is refused.
-    const gen = parseDecimal(req.headers.get(SESSION_GEN_HEADER));
-    if (gen === null || gen !== readSessionGeneration(this.ctx.storage.sql))
-      return new Response(`Missing or stale ${SESSION_GEN_HEADER}`, {
-        status: 400,
-      });
-    const existing = this.ctx.getWebSockets(DASHBOARD_TAG);
-    if (existing.length >= MAX_DASHBOARDS) {
-      // Non-open dashboards first (they free a slot without evicting anyone),
-      // then the oldest open ones until there is room for this one.
-      for (const w of existing)
-        if (w.readyState !== OPEN) closeSocket(w, EVICT_CODE, "evicted");
-      const open = existing
-        .filter((w) => w.readyState === OPEN)
-        .sort((a, b) => dashboardSeq(a) - dashboardSeq(b));
-      for (const w of open.slice(
-        0,
-        Math.max(0, open.length - MAX_DASHBOARDS + 1),
-      ))
-        closeSocket(w, EVICT_CODE, "too many dashboards");
-    }
-    const seq = existing.reduce((n, w) => Math.max(n, dashboardSeq(w)), 0) + 1;
-    const pair = new WebSocketPair();
-    const server = pair[1];
-    this.ctx.acceptWebSocket(server, [DASHBOARD_TAG]);
-    server.serializeAttachment({
-      dashboard: true,
-      seq,
-      exp,
-      gen,
-    } satisfies DashboardAttachment);
-    // hello tells the dashboard to refetch; the full lists seed its caches.
-    sendDashboard(server, JSON.stringify({ type: "hello" }));
-    sendDashboard(
-      server,
-      JSON.stringify({ type: "machines", machines: machineList(this.ctx) }),
-    );
-    sendDashboard(
-      server,
-      JSON.stringify({ type: "agents", agents: agentList(this.ctx) }),
-    );
-    // The alarm closes it with 4401 at its expiry.
-    this.#arm(exp);
-    await this.#commitArm();
-    return new Response(null, { status: 101, webSocket: pair[0] });
-  }
-
-  /**
-   * Closes every dashboard socket whose session expiry has come (4401); with
-   * `all`, every dashboard socket (the session generation was bumped).
-   * Returns the open sockets left.
-   */
-  #closeEndedDashboards(all = false): WebSocket[] {
-    const now = this.#now();
-    const left: WebSocket[] = [];
-    for (const ws of this.ctx.getWebSockets(DASHBOARD_TAG)) {
-      if (all || dashboardExp(ws) <= now)
-        closeSocket(ws, SESSION_CLOSE, "session ended");
-      else if (ws.readyState === OPEN) left.push(ws);
-    }
-    return left;
-  }
-
-  /** The earliest session expiry among dashboard sockets (at most 16); null if none. */
-  #nextDashboardExp(): number | null {
-    let next: number | null = null;
-    for (const ws of this.ctx.getWebSockets(DASHBOARD_TAG)) {
-      if (ws.readyState !== OPEN) continue;
-      const exp = dashboardExp(ws);
-      if (next === null || exp < next) next = exp;
-    }
-    return next;
-  }
-
-  /**
-   * Called only on a real change. Full machines and agents frames to every
-   * dashboard, coalesced and throttled:
-   * - at most once per turn: the first call queues a microtask, later ones in
-   *   the same turn join it;
-   * - at most once per DASHBOARD_PUSH_INTERVAL_MS: inside the window the due
-   *   time is persisted (meta) and the multiplexed alarm armed for it (the
-   *   caller commits the arm), so an eviction cannot lose the trailing push.
-   * With no dashboards it runs no query at all.
-   */
-  #notifyDashboards(): void {
-    if (this.#dashboardPushPending) return;
-    if (this.ctx.getWebSockets(DASHBOARD_TAG).length === 0) return;
-    const last = this.#lastPushAt;
-    if (last !== null && this.#now() - last < DASHBOARD_PUSH_INTERVAL_MS) {
-      const due = last + DASHBOARD_PUSH_INTERVAL_MS;
-      if (this.#pushDue !== due) {
-        writePushDue(this.ctx.storage.sql, due);
-        this.#pushDue = due;
-      }
-      this.#arm(due);
-      return;
-    }
-    this.#dashboardPushPending = true;
-    queueMicrotask(() => {
-      this.#dashboardPushPending = false;
-      this.#pushDashboards();
-    });
-  }
-
-  /**
-   * Sends the push now (best effort) and clears any pending due time. A
-   * socket past its session expiry is closed with 4401, never sent to.
-   */
-  #pushDashboards(): void {
-    try {
-      const sockets = this.#closeEndedDashboards();
-      if (sockets.length === 0) return;
-      this.#lastPushAt = this.#now();
-      if (this.#pushDue !== null) {
-        clearPushDue(this.ctx.storage.sql);
-        this.#pushDue = null;
-      }
-      const payloads = [
-        JSON.stringify({ type: "machines", machines: machineList(this.ctx) }),
-        JSON.stringify({ type: "agents", agents: agentList(this.ctx) }),
-      ];
-      for (const ws of sockets)
-        for (const p of payloads) {
-          if (ws.readyState !== OPEN) break;
-          sendDashboard(ws, p);
-        }
-    } catch {
-      // Best effort: the next change pushes full lists again.
-    }
   }
 
   // -------------------------------------------------------------------- mail
@@ -2730,7 +2177,6 @@ export class Hub extends DurableObject<Env> {
       type: "receipt",
       msg_id: msgId,
       state: "pending",
-      ...(gated(ws) ? { to_name: target.name } : {}),
     });
     if (!socket) return;
 
@@ -2796,19 +2242,16 @@ export class Hub extends DurableObject<Env> {
     const r = one<{
       state: string;
       reason: string | null;
-      toName: string | null;
-    }>(
-      sql,
-      "select state, reason, to_name as toName from receipts where id = ?",
-      msgId,
-    ) ?? { state: "expired", reason: null, toName: null };
+    }>(sql, "select state, reason from receipts where id = ?", msgId) ?? {
+      state: "expired",
+      reason: null,
+    };
     sendFrame(ws, {
       v: 1,
       id,
       type: "receipt",
       msg_id: msgId,
       state: "pending",
-      ...(gated(ws) && r.toName !== null ? { to_name: r.toName } : {}),
     });
     const update = updateFrame(msgId, r.state, r.reason);
     if (!update) return;
@@ -3453,8 +2896,8 @@ export class Hub extends DurableObject<Env> {
   /**
    * The one alarm (a DurableObject handler: workerd reserves the name, so it
    * is not callable over RPC). In order: ack timeout, lost bodies, revoke
-   * drain, TTL, expired mail bodies, replay continuation, housekeeping, the
-   * dashboard push and dashboard session expiry; then re-arm for
+   * drain, TTL, expired mail bodies, replay continuation, status, then
+   * housekeeping; then re-arm for
    * the earliest remaining deadline, or now + 1 if any batch was full.
    */
   override async alarm(): Promise<void> {
@@ -3529,18 +2972,10 @@ export class Hub extends DurableObject<Env> {
     if (statuses.length >= BATCH) more = true;
     this.#statusChanged(statuses);
 
-    // 6. Housekeeping: consumed OIDC states, old device codes, B14 send keys
+    // 6. Housekeeping: B14 send keys
     // past SEND_KEY_RETAIN_MS, and final receipts told over 24 h ago (or never told, final over 24 h ago: keyed
     // on final_at, so a receipt finalized in this run is never deleted in it).
     for (const [q, t] of [
-      [
-        "delete from oidc_states where rowid in (select rowid from oidc_states where expires_at < ? limit ?) returning rowid",
-        now - STATE_GRACE_MS,
-      ],
-      [
-        "delete from device_codes where rowid in (select rowid from device_codes where expires_at < ? limit ?) returning rowid",
-        now - DEVICE_CODE_GRACE_MS,
-      ],
       [
         // Never the newest receipt (B11 L1): max(rowid) must never go back,
         // since session and close boundaries are receipts rowids.
@@ -3562,22 +2997,9 @@ export class Hub extends DurableObject<Env> {
     ).length;
     if (swept >= BATCH) more = true;
     if (this.#sendKeys !== null) this.#sendKeys -= swept;
-    // AC4c: card rate-limit windows that have ended.
-    if (purge(sql, CARD_RL_PURGE_SQL, now - CARD_WINDOW_MS)) more = true;
     // M1: closed agents idle past CLOSED_AGENT_RETAIN_MS (after the sweeps
     // above, so work they just cleared counts).
     if (this.#purgeClosedAgents(now)) more = true;
-
-    // 7. The throttled dashboard push (B10), once its due time has come.
-    const pushDue = readPushDue(sql);
-    if (pushDue !== null && pushDue <= now) {
-      clearPushDue(sql);
-      this.#pushDue = null;
-      this.#pushDashboards();
-    }
-
-    // 8. Dashboard sockets whose session expired close with 4401 (B10-ws).
-    this.#closeEndedDashboards();
 
     const want = this.#armWant;
     this.#armWant = null;
@@ -3600,8 +3022,6 @@ export class Hub extends DurableObject<Env> {
       if (heldNext === null || h.at < heldNext) heldNext = h.at;
     const ts = [
       want,
-      readPushDue(sql),
-      this.#nextDashboardExp(),
       heldNext === null ? null : heldNext + LIMITS.ackTimeoutMs,
       min(
         "select min(held_at) as t from receipts where state = 'pending' and held_at is not null",
@@ -3623,386 +3043,4 @@ export class Hub extends DurableObject<Env> {
     ].filter((t): t is number => t !== null);
     return ts.length === 0 ? null : Math.min(...ts);
   }
-
-  // ------------------------------------------------------------- device flow
-
-  /**
-   * Registers a pending device code (B4). The label is sanitized here too
-   * (newMachineLabel) so a stored label always passes MachineLabelSchema.
-   * Stores only the SHA-256 of the device secret, which is returned once.
-   * Purges a bounded batch of long-expired rows, then refuses with
-   * `rate_limited` at MAX_DEVICE_CODES outstanding codes, or when `ipTag`
-   * (the Worker's HMAC of the client IP) already holds DEVICE_CODES_PER_IP
-   * live codes. Never evicts.
-   */
-  async createDeviceCode(
-    label: string,
-    ipTag: string,
-  ): Promise<CreateDeviceCodeResult> {
-    if (typeof ipTag !== "string" || !IP_TAG_RE.test(ipTag))
-      throw new Error("invalid ip tag");
-    const clean = MachineLabelSchema.safeParse(label).success
-      ? label
-      : newMachineLabel(typeof label === "string" ? label : "");
-    const deviceCode = newDeviceSecret();
-    // The only await: the cap check and the insert below are one synchronous step.
-    const codeHash = await sha256Hex(deviceCode);
-    const sql = this.ctx.storage.sql;
-    const now = this.#now();
-    sql.exec(
-      "delete from device_codes where rowid in (select rowid from device_codes indexed by device_codes_due where expires_at < ? limit ?)",
-      now - DEVICE_CODE_GRACE_MS,
-      BATCH,
-    );
-    const live =
-      one<{ n: number }>(
-        sql,
-        "select count(*) as n from (select 1 from device_codes indexed by device_codes_due where expires_at > ? limit ?)",
-        now,
-        MAX_DEVICE_CODES,
-      )?.n ?? 0;
-    if (live >= MAX_DEVICE_CODES) {
-      logEvent("rate_limited", { kind: "device_code_cap" });
-      return { ok: false, code: "rate_limited" };
-    }
-    const mine =
-      one<{ n: number }>(
-        sql,
-        `select count(*) as n from (select 1 from device_codes indexed by device_codes_ip
-           where ip_tag = ? and expires_at > ? and consumed_at is null limit ?)`,
-        ipTag,
-        now,
-        DEVICE_CODES_PER_IP,
-      )?.n ?? 0;
-    if (mine >= DEVICE_CODES_PER_IP) {
-      logEvent("rate_limited", { kind: "device_code_ip" });
-      return { ok: false, code: "rate_limited" };
-    }
-    // 32^8 codes: a collision (with a row kept for the grace period) is
-    // vanishingly rare; retry a few times rather than fail.
-    for (let i = 0; i < 4; i++) {
-      const userCode = formatUserCode(newUserCode());
-      const cur = sql.exec(
-        `insert into device_codes (user_code, org_id, code_hash, label, created_at, expires_at, ip_tag)
-         values (?, ?, ?, ?, ?, ?, ?) on conflict do nothing`,
-        userCode,
-        OWNER_ORG_ID,
-        codeHash,
-        clean,
-        now,
-        now + LIMITS.deviceCodeTtlSec * 1000,
-        ipTag,
-      );
-      if (cur.rowsWritten > 0) return { ok: true, deviceCode, userCode };
-    }
-    throw new Error("could not allocate a user code");
-  }
-
-  /**
-   * One /device/token poll, looked up by the secret's hash (unique index).
-   * Pending until approved; slow_down when the same row was polled less than
-   * the interval (less 1 s of slack) ago; denied after a deny; expired past
-   * expires_at, once redeemed, and for an unknown code. An approved row is
-   * claimed (consumed_at) before the machine is minted, so concurrent polls
-   * mint at most one machine and a token is never issued twice; at the
-   * machine limit the claim is released and `machine_limit` returned.
-   */
-  async pollDevice(deviceCode: string): Promise<DevicePoll> {
-    if (!isDeviceSecret(deviceCode)) return { status: "expired" };
-    const codeHash = await sha256Hex(deviceCode);
-    const sql = this.ctx.storage.sql;
-    const now = this.#now();
-    const row = one<DeviceCodeRow>(
-      sql,
-      `select ${DEVICE_CODE_COLS} from device_codes where code_hash = ? and org_id = ?`,
-      codeHash,
-      OWNER_ORG_ID,
-    );
-    if (!row || row.consumedAt !== null || row.expiresAt <= now)
-      return { status: "expired" };
-    if (row.deniedAt !== null) return { status: "denied" };
-    const tooFast =
-      row.lastPolledAt !== null && now - row.lastPolledAt < POLL_MIN_MS;
-    sql.exec(
-      "update device_codes set last_polled_at = ? where user_code = ?",
-      now,
-      row.userCode,
-    );
-    if (tooFast) return { status: "slow_down" };
-    if (row.approvedAt === null) return { status: "pending" };
-    // The claim carries the machine id minted for it, so a failure after
-    // createMachine's insert is told apart from one before it (adv-B4 L3).
-    const machineId = newId();
-    sql.exec(
-      "update device_codes set consumed_at = ?, machine_id = ? where user_code = ? and consumed_at is null",
-      now,
-      machineId,
-      row.userCode,
-    );
-    const release = () => {
-      // Only when no machine row with this id exists: otherwise the approval
-      // already minted one (its token is lost) and must never mint another.
-      if (one(sql, "select 1 as x from machines where id = ?", machineId))
-        return;
-      sql.exec(
-        "update device_codes set consumed_at = null, machine_id = null where user_code = ?",
-        row.userCode,
-      );
-    };
-    let made: CreateMachineResult;
-    try {
-      made = await this.createMachine(row.label, machineId);
-    } catch (err) {
-      release();
-      throw err;
-    }
-    if (!made.ok) {
-      release();
-      logEvent("device_machine_limit");
-      return { status: "machine_limit" };
-    }
-    logEvent("device_redeemed", { machine: made.id });
-    return { status: "approved", token: made.token, machineId: made.id };
-  }
-
-  /**
-   * The approval page's lookup: the pending code's label and age, or `gone`
-   * for any other code (unknown, expired, decided or redeemed alike). `gen`
-   * is the session's generation: `limited` once its POST misses reached
-   * APPROVE_FAIL_CAP. A GET miss never counts (adv-B4 L1: a cross-site
-   * navigation carries the Lax cookie, and reloads of decided pages are not
-   * guesses); only approveDevice / denyDevice misses do.
-   */
-  async deviceForApproval(
-    userCode: string,
-    gen: number,
-  ): Promise<DeviceForApproval> {
-    const now = this.#now();
-    if (this.#approveFailures(gen, now) >= APPROVE_FAIL_CAP)
-      return { ok: false, reason: "limited" };
-    const key = userCodeKey(userCode);
-    const row =
-      key === null
-        ? null
-        : one<{ userCode: string; label: string; createdAt: number }>(
-            this.ctx.storage.sql,
-            `select user_code as userCode, label, created_at as createdAt from device_codes
-             where user_code = ? and org_id = ? and approved_at is null and denied_at is null
-               and consumed_at is null and expires_at > ?`,
-            key,
-            OWNER_ORG_ID,
-            now,
-          );
-    if (!row) return { ok: false, reason: "gone" };
-    return {
-      ok: true,
-      userCode: row.userCode,
-      label: row.label,
-      ageMs: Math.max(0, now - row.createdAt),
-    };
-  }
-
-  /**
-   * Approves a pending code (one conditional update, so a code is decided at
-   * most once). `label`, when given, must pass MachineLabelSchema and renames
-   * the machine to be minted. The next poll redeems it.
-   */
-  async approveDevice(
-    userCode: string,
-    gen: number,
-    label?: string,
-  ): Promise<DeviceApproval> {
-    if (label !== undefined && !MachineLabelSchema.safeParse(label).success)
-      throw new Error("invalid machine label");
-    return this.#decide(userCode, gen, "approved_at", label ?? null);
-  }
-
-  /** Denies a pending code; its next poll answers `denied`. */
-  async denyDevice(userCode: string, gen: number): Promise<DeviceApproval> {
-    return this.#decide(userCode, gen, "denied_at", null);
-  }
-
-  #decide(
-    userCode: string,
-    gen: number,
-    column: "approved_at" | "denied_at",
-    label: string | null,
-  ): DeviceApproval {
-    const now = this.#now();
-    if (this.#approveFailures(gen, now) >= APPROVE_FAIL_CAP)
-      return { ok: false, reason: "limited" };
-    const key = userCodeKey(userCode);
-    const rows =
-      key === null
-        ? []
-        : all<{ userCode: string; label: string }>(
-            this.ctx.storage.sql,
-            // `column` is one of two fixed literals, never input.
-            `update device_codes set ${column} = ?, label = coalesce(?, label)
-             where user_code = ? and org_id = ? and approved_at is null and denied_at is null
-               and consumed_at is null and expires_at > ?
-             returning user_code as userCode, label`,
-            now,
-            label,
-            key,
-            OWNER_ORG_ID,
-            now,
-          );
-    const row = rows[0];
-    if (!row) {
-      this.#approveFailed(gen, now);
-      return { ok: false, reason: "gone" };
-    }
-    logEvent(column === "approved_at" ? "device_approved" : "device_denied");
-    return { ok: true, userCode: row.userCode, label: row.label };
-  }
-
-  /** Failures in the current window for this session generation. */
-  #approveFailures(gen: number, now: number): number {
-    if (!Number.isSafeInteger(gen))
-      throw new Error("invalid session generation");
-    const w = readApproveFailures(this.ctx.storage.sql);
-    if (!w || w.gen !== gen || now - w.start >= APPROVE_FAIL_WINDOW_MS)
-      return 0;
-    return w.n;
-  }
-
-  #approveFailed(gen: number, now: number): void {
-    const sql = this.ctx.storage.sql;
-    const w = readApproveFailures(sql);
-    const fresh =
-      !w || w.gen !== gen || now - w.start >= APPROVE_FAIL_WINDOW_MS;
-    const next = fresh ? { gen, start: now, n: 1 } : { ...w, n: w.n + 1 };
-    sql.exec(
-      "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
-      OWNER_ORG_ID,
-      APPROVE_FAIL_KEY,
-      `${next.gen}:${next.start}:${next.n}`,
-    );
-    if (next.n === APPROVE_FAIL_CAP)
-      logEvent("rate_limited", { kind: "approve_guess" });
-  }
-
-  // ------------------------------------------------------------ auth storage
-
-  /**
-   * Marks an OIDC state as used: true the first time, false on any reuse.
-   * Also false, storing nothing, when the state is empty or over 256 chars, or
-   * expiresAt is not an integer in (now, now + 1 h] (so a replay after the
-   * purge fails). Atomic: the DO is single-threaded and the insert is one
-   * statement. Also purges a bounded batch of states expired over an hour ago.
-   * Also false (storing nothing, logged rate_limited) when MAX_OIDC_STATES
-   * are stored and the state is new (B11): the callback is refused, so the
-   * flow fails closed. Always a boolean: callers treat any truthy result as
-   * consumed.
-   */
-  async consumeState(state: string, expiresAt: number): Promise<boolean> {
-    const sql = this.ctx.storage.sql;
-    const now = this.#now();
-    sql.exec(
-      "delete from oidc_states where rowid in (select rowid from oidc_states where expires_at < ? limit ?)",
-      now - STATE_GRACE_MS,
-      STATE_PURGE_BATCH,
-    );
-    if (
-      typeof state !== "string" ||
-      state.length === 0 ||
-      state.length > MAX_STATE_CHARS
-    )
-      return false;
-    if (
-      !Number.isSafeInteger(expiresAt) ||
-      expiresAt <= now ||
-      expiresAt > now + MAX_STATE_TTL_MS
-    )
-      return false;
-    const known = one(
-      sql,
-      "select 1 as x from oidc_states where org_id = ? and state = ?",
-      OWNER_ORG_ID,
-      state,
-    );
-    if (known) return false;
-    const stored =
-      one<{ n: number }>(
-        sql,
-        // Unexpired only (M1), on oidc_states_due: an expired state needs no
-        // guard (expiresAt <= now is refused before the insert).
-        "select count(*) as n from (select 1 from oidc_states indexed by oidc_states_due where expires_at > ? limit ?)",
-        now,
-        MAX_OIDC_STATES,
-      )?.n ?? 0;
-    // Never evict a stored state (it is the replay guard): at the cap the
-    // new login is refused until states expire and are purged.
-    if (stored >= MAX_OIDC_STATES) {
-      logEvent("rate_limited", { kind: "oidc_state" });
-      return false;
-    }
-    const cur = sql.exec(
-      "insert into oidc_states (org_id, state, expires_at) values (?, ?, ?) on conflict(org_id, state) do nothing",
-      OWNER_ORG_ID,
-      state,
-      expiresAt,
-    );
-    return cur.rowsWritten > 0;
-  }
-
-  /**
-   * The current session generation: 0 before the first bump.
-   *
-   * Callers must compare a session's generation with `!==` only, never `<`:
-   * -1 means the stored value is corrupt, and since no session carries -1,
-   * `!==` then refuses every session (fails closed).
-   */
-  async sessionGeneration(): Promise<number> {
-    return readSessionGeneration(this.ctx.storage.sql);
-  }
-
-  /**
-   * Invalidates every session (logout, revoke-all) and returns the new
-   * generation. A corrupt stored value restarts at 1. Every dashboard socket
-   * closes with 4401 (B10-ws): its session is no longer valid.
-   */
-  async bumpSessionGeneration(): Promise<number> {
-    const sql = this.ctx.storage.sql;
-    const cur = readSessionGeneration(sql);
-    const next = cur < 0 ? 1 : cur + 1;
-    sql.exec(
-      "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
-      OWNER_ORG_ID,
-      SESSION_GEN_KEY,
-      String(next),
-    );
-    this.#closeEndedDashboards(true);
-    return next;
-  }
-}
-
-/**
- * The type the Worker and tests hold. Every method on `Hub.prototype` is
- * callable over RPC; helpers are module-level functions, which are not.
- */
-export type HubStub = Hub;
-
-/** A user code as stored (formatted), or null when it cannot be one. */
-function userCodeKey(input: unknown): string | null {
-  if (typeof input !== "string" || input.length > 32) return null;
-  const raw = normalizeUserCode(input);
-  return raw === null ? null : formatUserCode(raw);
-}
-
-/** The approval guess window; null when absent or corrupt (a fresh window). */
-function readApproveFailures(
-  sql: SqlStorage,
-): { gen: number; start: number; n: number } | null {
-  const v = one<{ value: string }>(
-    sql,
-    "select value from meta where org_id = ? and key = ?",
-    OWNER_ORG_ID,
-    APPROVE_FAIL_KEY,
-  )?.value;
-  const m =
-    v === undefined ? null : /^(\d{1,15}):(\d{1,16}):(\d{1,9})$/.exec(v);
-  if (!m) return null;
-  return { gen: Number(m[1]), start: Number(m[2]), n: Number(m[3]) };
 }

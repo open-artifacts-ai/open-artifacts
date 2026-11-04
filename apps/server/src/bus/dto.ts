@@ -26,7 +26,10 @@ export type AgentWithMachine = Omit<AgentRow, "sessionStartRowid"> & {
  * (BusAgentSchema). `connected`: its machine holds a daemon socket (live),
  * else queued. Callers omit closed agents and agents of revoked machines.
  */
-export const agentDto = (a: AgentWithMachine, connected: boolean): BusAgent => ({
+export const agentDto = (
+  a: AgentWithMachine,
+  connected: boolean,
+): BusAgent => ({
   id: a.id,
   namespace: a.namespace,
   name: a.name,

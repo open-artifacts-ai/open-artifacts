@@ -38,3 +38,20 @@ export const MACHINE_COLS =
   "id, label, created_at as createdAt, revoked_at as revokedAt";
 export const AGENT_COLS =
   "id, namespace, name, last_name as lastName, kind, machine_id as machineId, native_ref as nativeRef, global, live, updated_at as updatedAt, session_start_rowid as sessionStartRowid, status, status_label as statusLabel, status_at as statusAt";
+
+export type ReceiptRow = {
+  id: string;
+  namespace: string;
+  toAgent: string | null;
+  toName: string;
+  fromAgent: string;
+  fromName: string;
+  state: string;
+  reason: string | null;
+  size: number;
+  createdAt: number;
+  expiresAt: number;
+};
+
+export const RECEIPT_COLS =
+  "id, namespace, to_agent as toAgent, to_name as toName, from_agent as fromAgent, from_name as fromName, state, reason, size, created_at as createdAt, expires_at as expiresAt";

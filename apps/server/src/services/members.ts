@@ -385,6 +385,12 @@ const REVOKE_PATS = `update tokens set revoked_at = ?2
   and exists (select 1 from users where id = ?1 and status = ?3
     and (role <> 'admin' or ?4 = 1))`;
 const STATUS_OF = "select status from users where id = ?1";
+// #1291: the same rule for bus machines, in the same batch (their tokens stop
+// at the next connect; the open sockets close through revokeUserLive).
+const REVOKE_MACHINES = `update bus_machines set revoked_at = ?2
+  where user_id = ?1 and revoked_at is null and ?3 <> 'active'
+  and exists (select 1 from users where id = ?1 and status = ?3
+    and (role <> 'admin' or ?4 = 1))`;
 
 /**
  * Sets a user's status (P3 T6). The write, the PAT revocation and the
@@ -430,6 +436,8 @@ export async function setUserStatus(
     }),
     stmt(env.DB, REVOKE_PATS).bind(userId, Date.now(), status, admins),
     stmt(env.DB, STATUS_OF).bind(userId),
+    // Last: out[3] above stays the status read.
+    stmt(env.DB, REVOKE_MACHINES).bind(userId, Date.now(), status, admins),
   ]);
   if (!out[0]?.meta.changes) await raceCheck(env, userId, admins);
   const now = (out[3]?.results[0] as { status?: string } | undefined)?.status;
@@ -514,6 +522,12 @@ export async function patchMember(
       .update(tokens)
       .set({ revokedAt: Date.now() })
       .where(and(eq(tokens.userId, id), isNull(tokens.revokedAt)));
+    await stmt(
+      env.DB,
+      "update bus_machines set revoked_at = ?2 where user_id = ?1 and revoked_at is null",
+    )
+      .bind(id, Date.now())
+      .run();
     await revokeAllGrants(env, id);
   }
   return toMember(out);
@@ -737,6 +751,10 @@ const ERASE_WIPES = [
     and ${ERASABLE}`,
   `delete from tokens where user_id = ?1 and ${ERASABLE}`,
   `delete from agent_grants where user_id = ?1 and ${ERASABLE}`,
+  // #1291: their bus machines (labels are client-chosen hostnames) and any
+  // device code they decided.
+  `delete from bus_machines where user_id = ?1 and ${ERASABLE}`,
+  `delete from bus_device_codes where user_id = ?1 and ${ERASABLE}`,
   `delete from reserved_artifacts where user_id = ?1 and ${ERASABLE}`,
   // The users_personal_space trigger copied their name or address into it.
   `update spaces set name = '' where id = ?1 and kind = 'personal'
