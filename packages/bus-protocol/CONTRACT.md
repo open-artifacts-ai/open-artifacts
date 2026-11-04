@@ -7,12 +7,14 @@ is the summary. Ported from OpenBus `packages/shared` (open-bus main e6feab9,
 
 What changed from OpenBus: no `org_id` or owner id (one `BusHub` per member
 already isolates); the agent card, `card_request`, `card`, `card_refused`,
-JWKS, `/link`, linked apps, roles (`role`, `to_name`, `role_vacant`) and the
-dashboard REST and feed are dropped; version gates (`AGENT_CARD_MIN_CLIENT`,
+JWKS, `/link`, linked apps, roles (`role`, `role_vacant`) and the
+dashboard REST and feed are dropped (receipt `to_name` came back with
+renames, for a former-name hit only); version gates (`AGENT_CARD_MIN_CLIENT`,
 `KIND_TOKEN_MIN_CLIENT`) are gone because no old client exists; the machine
 token is `oa_machine_`; the routes live under `/bus/` on the instance origin.
 `follow`, `unfollow`, `following` and the `notice` frame come with step 2 of
-the design.
+the design. Renames (OpenBus R393a, #1325) are gated on a `hello` capability,
+not a version (see Renames).
 
 Anything both the instance (`apps/server/src/bus/`) and the local client
 (`packages/bus-*`) must agree on lives here. Nothing server-only (D1, Workers
@@ -72,8 +74,8 @@ never `__proto__`, `constructor` or `prototype`.
 
 Client to hub (`CLIENT_FRAMES`):
 
-- `hello {machine_label, client_version}`
-- `agent_up {agent_ref, kind, proposed_name, namespace, global}`
+- `hello {machine_label, client_version, caps?}`; `caps` (see Renames)
+- `agent_up {agent_ref, kind, proposed_name, namespace, global, name_kind?}`
 - `agent_down {agent_ref}`
 - `sessions {open[], closed[]}`
 - `send {from_ref, to_name, to_namespace?, body}`
@@ -82,24 +84,61 @@ Client to hub (`CLIENT_FRAMES`):
 - `list {from_ref}`
 - `fetch {from_ref, msg_id}`
 - `status {from_ref, state, label?}`: fire and forget.
+- `rename {agent_ref, proposed_name, name_kind?}`: rename a live agent; `proposed_name` 1..256 chars. Answered by `renamed` or `error`.
 
 Hub to client (`SERVER_FRAMES`):
 
 - `hello_ok {machine_id, machine_label, server_version}`
 - `agent_ok {agent_ref, bus_name}`
-- `receipt {msg_id, state, reason?}`
-- `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?}]}`; `kind` is any kind token.
+- `receipt {msg_id, state, reason?, to_name?}`; `to_name` (also on `receipt_update`) is the recipient's current name, only on a former-name hit and only to a `rename`-cap socket
+- `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?, former_names?}]}`; `kind` is any kind token.
 - `body {msg_id, body}`
 - `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
 - `deliver {msg_id, to_ref, from_name, namespace, body | notice}`
-- `receipt_update {msg_id, state, reason?}`
+- `receipt_update {msg_id, state, reason?}`: the schema shares `to_name?` with `receipt`, but the hub sets it only on `receipt`.
 - `roster_changed {namespace}`
+- `renamed {agent_ref, bus_name, former?}`: reply to `rename`. `former` is the name left, absent on a no-op. Names compare case-insensitively.
 
 Targeting, idempotency (a send's `id` is unique per sender for at least 1 h;
 a resend reuses it) and the decoder bounds are unchanged from OpenBus:
 `decodeClientFrame` (hub) and `decodeServerFrame` (client) never throw; the
-raw cap, a linear pre-scan (depth <= 4, bounded tokens), the body byte cap and
-well-formed Unicode on free text are checked in that order.
+raw cap, a linear pre-scan, the body byte cap and well-formed Unicode on free
+text are checked in that order. The pre-scan is per direction: client frames
+depth <= 4, `:` plus `,` <= 16384, structural characters <= 65536; server
+frames depth <= 5, 65536 and 131072, so a full roster of rows with status
+fields and 5 `former_names` fits. Either way at most 64 `:` plus `,` directly
+in one object.
+
+## Renames (#393)
+
+Ported from OpenBus R393a; schemas in `rename.ts` and `caps.ts`. The hub side
+(R393b) comes separately; until then the hub answers `rename` with
+`error bad_frame` ("rename is not supported yet"), so a client can fall back.
+
+- Gate: a capability, not a version (the client reports 0.0.0 until #1308).
+  `hello.caps` is up to `MAX_CAPS` (16) distinct tokens matching
+  `[a-z][a-z0-9_-]{0,31}`; consumers ignore unknown ones. `BUS_CAPS.rename`
+  (`rename`): the hub sends roster `former_names` and a former-name receipt
+  `to_name` only to a socket whose hello listed it (`hasCap`). A decoder
+  older than these fields refuses them, failing the whole frame.
+- Client frames are strict, so a hub decoder older than this change refuses a
+  `hello` with `caps`, an `agent_up` with `name_kind` and any `rename`. A
+  client sends them only to hubs that accept them.
+- Roster rows gain `former_names?: [{name, expires_at}]`
+  (`FormerNamesSchema`): 1..`LIMITS.maxFormerNames` (5); absent when none. The
+  hub guarantees newest first, distinct, and never the row's `bus_name`, all
+  case-insensitive; the decoder doesn't enforce them, so one bad row can't
+  fail a roster.
+- A former name reaches its agent for `LIMITS.formerNameGraceMs` (1 h, the
+  mail TTL). Name changes per agent are capped at `LIMITS.renamesPerHour` (10)
+  per rolling hour; past it `rename` gets `error rate_limited` with message
+  `RENAME_MESSAGES.rate` = `"Too many renames"`. A no-op doesn't count. A
+  `rename` for an agent that isn't live is `error not_registered`.
+- `name_kind` on `agent_up` and `rename` (`NAME_KINDS`: `default | chosen`):
+  only the client knows whether a name is the harness's fallback or chosen.
+  The hub mints a `default` name as `<base>-<4 hex>`, never reuses it and
+  doesn't reserve it after a rename; a `chosen` former name is reserved for
+  the grace. Absent means `chosen`.
 
 ## Names and namespaces
 

@@ -2066,6 +2066,11 @@ export class BusHub extends DurableObject<Env> {
       case "status":
         if (sender) this.#status(ws, f, sender);
         return;
+      case "rename":
+        // Decoded since R393a (#1325), handled from R393b. Answer, never drop:
+        // a client waits on `renamed` and falls back on an error.
+        reject(ws, machineId, f.id, "bad_frame", "rename is not supported yet");
+        return;
     }
   }
 

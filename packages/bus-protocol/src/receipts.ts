@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { newMsgId } from "./ids.ts";
+import { BusNameSchema } from "./names.ts";
 
 export const RECEIPT_STATES = [
   "pending",
@@ -53,6 +54,12 @@ export const receiptShape = {
   msg_id: MsgIdSchema,
   state: ReceiptStateSchema,
   reason: ReceiptReasonSchema.optional(),
+  /**
+   * The recipient's current bus name, only when the send resolved through a
+   * former name (#393), and only to a socket whose hello listed
+   * `BUS_CAPS.rename`. An ordinary send never carries it.
+   */
+  to_name: BusNameSchema.optional(),
 } as const;
 
 export const ReceiptSchema = z
