@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.113.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.112.0...v0.113.0) (2026-11-04)
+
+
+### Features
+
+* **server:** close BusHub agents of a machine offline for over 24 h (port of open-bus [#442](https://github.com/open-artifacts-ai/open-artifacts/issues/442)) ([#1350](https://github.com/open-artifacts-ai/open-artifacts/issues/1350)) ([41ee900](https://github.com/open-artifacts-ai/open-artifacts/commit/41ee900dc78025a5befd3539ba3643bd838dd635))
+
 ## [0.112.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.111.0...v0.112.0) (2026-11-04)
 
 
