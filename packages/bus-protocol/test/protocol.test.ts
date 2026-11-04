@@ -792,7 +792,7 @@ describe("status frames, and no card frames", () => {
       ),
     ).toBeNull();
   });
-  it("a receipt carries no role fields, only a former-name to_name (#393)", () => {
+  it("a receipt carries to_name (#393, #1296) and role_vacant (#1296), never a card role field", () => {
     roundTrip(
       { v: 1, id, type: "receipt", msg_id: mid, state: "pending" },
       false,
@@ -817,6 +817,18 @@ describe("status frames, and no card frames", () => {
           msg_id: mid,
           state: "refused",
           reason: "role_vacant",
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      oks(
+        JSON.stringify({
+          v: 1,
+          id,
+          type: "receipt",
+          msg_id: mid,
+          state: "pending",
+          role: "backend-lead",
         }),
       ),
     ).toBeNull();

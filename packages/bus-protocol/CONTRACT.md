@@ -7,9 +7,10 @@ is the summary. Ported from OpenBus `packages/shared` (open-bus main e6feab9,
 
 What changed from OpenBus: no `org_id` or owner id (one `BusHub` per member
 already isolates); the agent card, `card_request`, `card`, `card_refused`,
-JWKS, `/link`, linked apps, roles (`role`, `role_vacant`) and the
+JWKS, `/link`, linked apps, card roles (`role`) and the
 dashboard REST and feed are dropped (receipt `to_name` came back with
-renames, for a former-name hit only); version gates (`AGENT_CARD_MIN_CLIENT`,
+renames and role addresses; `role_vacant` came back with role addresses, see
+Role addresses); version gates (`AGENT_CARD_MIN_CLIENT`,
 `KIND_TOKEN_MIN_CLIENT`) are gone because no old client exists; the machine
 token is `oa_machine_`; the routes live under `/bus/` on the instance origin.
 `follow`, `unfollow`, `following` and the `notice` frame come with step 2 of
@@ -61,7 +62,8 @@ opening the URI.
 
 States: `pending | delivered | expired | refused`. Refusal reasons
 (`REFUSAL_REASONS`): `unknown_agent`, `closed`, `inbox_full`, `too_large`,
-`other_namespace`, `revoked`, `ambiguous`. `expired` may carry
+`other_namespace`, `revoked`, `ambiguous`, `role_vacant` (only to a
+`roles`-cap socket, see Role addresses). `expired` may carry
 `recipient_closed`. The `receipt` reply to `send` is only `pending` or
 `refused`; `receipt_update` may carry any state.
 
@@ -90,7 +92,7 @@ Hub to client (`SERVER_FRAMES`):
 
 - `hello_ok {machine_id, machine_label, server_version}`
 - `agent_ok {agent_ref, bus_name}`
-- `receipt {msg_id, state, reason?, to_name?}`; `to_name` is the recipient's current name, only on a former-name hit and only to a `rename`-cap socket
+- `receipt {msg_id, state, reason?, to_name?}`; `to_name` is the recipient's current name, only on a former-name hit to a `rename`-cap socket, or on a role hit to a `roles`-cap socket
 - `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?, former_names?}]}`; `kind` is any kind token.
 - `body {msg_id, body}`
 - `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
@@ -145,6 +147,34 @@ addressing.
   former name held by two agents in one scope is `ambiguous`. Close, revoke,
   a namespace move or a global flip drops an agent's former names. A repeat
   `agent_up` that changes a live agent's name records no former name.
+
+## Role addresses (#1296)
+
+A role address is a member-set alias in one namespace (`backend-lead`)
+pointing at one agent, by its id, so it follows a rename. It lives in the
+member's BusHub. Only the member sets, re-points, vacates or removes one, in
+the dashboard (Open Artifacts REST, a browser session); no frame sets or
+claims one, so no AI agent can.
+
+- Resolution: a send to a role resolves at send time to its holder, scoped as
+  names are (a non-global sender reaches its own namespace's roles; a global
+  sender its own namespace's first, then a `to_namespace`'s, else a role in
+  one namespace only, `ambiguous` otherwise). Re-pointing changes later mail
+  only; mail already sent stays with the agent it resolved to.
+- Vacant: no holder set, or the holder is closed, gone, or no longer in the
+  namespace (a global holder is in every one). Refused `role_vacant`. A
+  reopened session of the holder holds it again. A revoked holder's machine
+  never reconnects, and a new machine's sessions are new agents, so a role
+  whose holder was revoked stays vacant until the member re-points it.
+- Gate: `BUS_CAPS.roles` (`roles`). The hub sends `role_vacant`, and a role
+  hit's receipt `to_name` (the holder's current name), only to a socket whose
+  hello listed it. Any other socket gets `unknown_agent` for a vacant role and
+  no `to_name`; resolution is the same for every client.
+- Names: a role's name is a bus name in the agent-name space of its
+  namespace, case-insensitively. A role can't take a live agent's name there
+  (in the namespace, or a global's) or a live chosen former name; an agent
+  (`agent_up`, `rename`) proposing a role's name gets a `-N` suffix, and a
+  global agent can't take any namespace's role name.
 
 ## Names and namespaces
 
