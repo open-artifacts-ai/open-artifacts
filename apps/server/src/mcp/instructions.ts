@@ -13,6 +13,15 @@ import {
 export const RUNTIME_DOC_URI = "openartifacts://docs/runtime";
 
 /**
+ * The one statement of how links open: which get a target, which stay in the
+ * frame, and which URLs the viewer will not open. The publishing section here
+ * and the skill's "Writing pages" section both use it, so the two cannot
+ * drift.
+ */
+export const LINK_RULE =
+  'Links that go to another site, or to another artifact by its /a/<id> page, carry `target="_blank" rel="noopener"` and open in a new tab; the artifact\'s own files and `#anchors` stay in the frame and take no target. Never link the dashboard or settings pages, or another artifact\'s or version\'s /p/ or /c/ URL: the viewer refuses a plain one, and a target just opens it instead, which is the wrong page to land on.';
+
+/**
  * The plan-dependent words a section uses. INSTRUCTIONS fills them from the
  * plan; the skill template keeps them as {{tokens}} filled at request time.
  */
@@ -84,7 +93,7 @@ export const SECTIONS = {
     body: (p) => `- One file: publish_artifact { title, format, content }.
 - Several files: publish_artifact { title, entry: "index.html", files: { "index.html": "...", "app.js": "...", "img/logo.png": { "base64": "..." } } }.
 - Paths are relative, use "/" and are case-sensitive; link between files with relative URLs.
-- Open outbound links with target="_blank" rel="noopener"; links can't navigate the viewer page.
+- ${LINK_RULE}
 - Artifacts can link to each other: use the other artifact's view URL (<origin>/a/<id>, the url publish_artifact returns, also shown by get_artifact) with target="_blank" rel="noopener". It opens in a new tab in the viewer, where live data works. Whether a visitor can open it depends on that artifact's own visibility.
 - Text files are plain strings; binary files are { "base64": "..." }.
 - To publish a new version, pass the artifact's id; every publish creates a version and the URL stays the same.
