@@ -160,9 +160,6 @@ export const AUDIT_ACTIONS = [
   ...Object.keys(REFUSAL_REASON).map((b) => `${b}.refused`),
   "rate_limited",
 ];
-/**
- * The actions `own` reach writes: its rows are its API calls. A create and an
-
 /** Design's sentence verb for a known action; the raw action name otherwise. */
 export const actionPhrase = (action: string) =>
   Object.hasOwn(VERB, action) ? VERB[action] : action;

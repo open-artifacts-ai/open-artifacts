@@ -32,7 +32,8 @@ import {
   REFUSED,
 } from "./audit-actions";
 
-// Re-exported: admin tests and the root audit-actions test read them here.
+// Re-exported: admin's own tests read these from this page; the root
+// audit-actions check imports ./audit-actions directly.
 export { AUDIT_ACTIONS, actionPhrase };
 
 /**
