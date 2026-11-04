@@ -99,8 +99,15 @@ function Actions({ install }: { install: Install }) {
   const offered = versions
     .filter((r) => !aheadOfPlatform(r.version, platform))
     .map((r) => r.version);
-  // The default (no version) takes the platform's release: none, none to take.
-  const latestOk = platform !== null;
+  // The default (no version) takes the platform's release. Like any release, it
+  // is hidden at or below the install's own (downgrade_refused); with none
+  // (null) it is listed but off.
+  const latestShown = !(
+    platform &&
+    install.version &&
+    compareVersions(platform, install.version) <= 0
+  );
+  const latestOk = latestShown && platform !== null;
   /** The Select's value: the pick while it is offered, else the first item that is. */
   const chosen =
     version && offered.includes(version)
@@ -327,9 +334,11 @@ function Actions({ install }: { install: Install }) {
                 <SelectValue placeholder="No release available" />
               </SelectTrigger>
               <SelectContent position="popper" align="start">
-                <SelectItem value={LATEST} disabled={!latestOk}>
-                  The platform's release
-                </SelectItem>
+                {latestShown && (
+                  <SelectItem value={LATEST} disabled={!latestOk}>
+                    The platform's release
+                  </SelectItem>
+                )}
                 {versions.map((r) => {
                   const ahead = aheadOfPlatform(r.version, platform);
                   return (

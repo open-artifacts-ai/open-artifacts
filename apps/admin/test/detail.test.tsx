@@ -347,8 +347,29 @@ it("upgrade with the platform's release: no note and no reasons", async () => {
   expect(screen.queryByText(/Newer than the platform/)).toBeNull();
 });
 
+it("upgrade hides the platform's release when the install is already on it or newer", async () => {
+  // R5's default takes the platform's release: at or below the install's own, downgrade_refused.
+  serveReleases("1.42.0", ["1.43.0", "1.42.0"]);
+  const i = { ...installsByState.active, version: "1.42.0" };
+  const { dialog, version, submit } = await openUpgrade(i);
+  // 1.43.0 is ahead of the platform, so nothing is left to pick.
+  await waitFor(() =>
+    expect(version).toHaveTextContent("No release available"),
+  );
+  expect(submit).toBeDisabled();
+  expect(within(dialog).getByTestId("dialog-blocker")).toHaveTextContent(
+    "No release can be picked yet.",
+  );
+  fireEvent.click(version);
+  expect(
+    (await screen.findAllByRole("option")).map((o) => o.textContent),
+  ).toEqual([`1.43.0 ${AHEAD}`]);
+  expect(writes()).toEqual([]);
+});
+
 it("sends nonAdditive only when the restore point box is ticked (MIG-2)", async () => {
-  const i = installsByState.active;
+  // Below the platform's release, so the default is offered.
+  const i = { ...installsByState.active, version: "1.40.0" };
   await open(i);
   fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
   let dialog = await screen.findByRole("dialog");
@@ -367,7 +388,8 @@ it("sends nonAdditive only when the restore point box is ticked (MIG-2)", async 
 });
 
 it("explains downgrade_refused", async () => {
-  const i = installsByState.active;
+  // Below the platform's release, so the default is offered.
+  const i = { ...installsByState.active, version: "1.40.0" };
   use(
     http.post(`*/api/v1/installs/${i.id}/upgrade`, () =>
       apiErr("downgrade_refused", 409),
