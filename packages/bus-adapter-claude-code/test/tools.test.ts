@@ -18,14 +18,13 @@ const client = (request: DaemonClient["request"]) =>
   ({ request }) as unknown as DaemonClient;
 
 describe("claude mcp tools", () => {
-  it("exposes the six vendor-neutral tools", () => {
+  it("exposes the five vendor-neutral tools, and no card", () => {
     expect(TOOLS.map((t) => t.name)).toEqual([
       "list_agents",
       "send_message",
       "fetch",
       "self",
       "set_status",
-      "card",
     ]);
     for (const t of TOOLS) expect(t.description).not.toMatch(/claude/i);
   });
@@ -418,11 +417,5 @@ describe("an unknown kind over the socket (C26h)", () => {
     const c = await connected(true);
     expect(await say(c, "list_agents")).toBe("- alpha (zz, ns)\n- b (omp, ns)");
     expect(JSON.parse((await say(c, "self")) ?? "").kind).toBe("zz");
-  });
-
-  it("a pre-marker client still sees pi", async () => {
-    const c = await connected(false);
-    expect(await say(c, "list_agents")).toBe("- alpha (pi, ns)\n- b (pi, ns)");
-    expect(JSON.parse((await say(c, "self")) ?? "").kind).toBe("pi");
   });
 });

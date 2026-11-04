@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { stampPi } from "../scripts/stamp.mjs";
 
 const pi = readFileSync(
-  new URL("../../adapters/pi/assets/oa-bus.ts", import.meta.url),
+  new URL("../../bus-adapter-pi/assets/oa-bus.ts", import.meta.url),
   "utf8",
 );
 

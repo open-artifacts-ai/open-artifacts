@@ -1,5 +1,5 @@
 import {
-  CARD_COPY,
+  STATUS_COPY,
   CLIENT_VERSION,
   type DaemonClient,
   type Hello,
@@ -51,14 +51,13 @@ const call = (
   });
 
 describe("opencode mcp tools", () => {
-  it("exposes the six vendor-neutral tools", () => {
+  it("exposes the five vendor-neutral tools, and no card", () => {
     expect(TOOLS.map((t) => t.name)).toEqual([
       "list_agents",
       "send_message",
       "fetch",
       "self",
       "set_status",
-      "card",
     ]);
   });
 
@@ -169,7 +168,7 @@ describe("opencode mcp tools", () => {
 
   it("slugs any title into a valid bus name", () => {
     expect(nameOf("Refactor: the API / v2")).toBe("refactor-the-api-v2");
-    expect(nameOf("Open Artifacts bus")).toBe("opencode"); // reserved
+    expect(nameOf("Open Artifacts")).toBe("opencode"); // reserved
     expect(nameOf("10.0.0.1")).toBe("10-0-0-1");
     expect(nameOf("ünïcode ✓ only")).toBe("n-code-only");
     expect(nameOf("x".repeat(100))).toHaveLength(64);
@@ -222,36 +221,25 @@ describe("a cancelled OpenCode tool call (C17)", () => {
   });
 });
 
-describe("set_status and card in OpenCode (AC5b)", () => {
-  const JWS = "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl";
-  const args = {
-    set_status: { state: "working", label: "tests" },
-    card: {
-      audience: "https://artifacts.example.com",
-      nonce: "n0nce-n0nce-n0nce",
-    },
-  };
-
-  /** One session; its daemon is at the gate, or `old` (from before AC5a). */
-  function daemonAt(old = false) {
+describe("set_status in OpenCode", () => {
+  /** One session; its daemon answers status_set, or `bad` a bad_frame. */
+  function daemonAt(bad = false) {
     const frames: { type: string }[] = [];
     const closed: number[] = [];
     const connect = vi.fn(async () => ({
       request: vi.fn(async (f: { type: string; id?: string }) => {
         frames.push(f);
-        const out = old
+        const out = bad
           ? { type: "error", code: "bad_frame", message: "Invalid input" }
-          : f.type === "set_status"
-            ? { type: "status_set" }
-            : { type: "card", jwt: JWS };
+          : { type: "status_set" };
         return { v: 1, id: f.id ?? "1", ...out };
       }),
       close: () => closed.push(1),
     })) as unknown as (h: Hello) => Promise<DaemonClient>;
-    const run = (name: "set_status" | "card") =>
+    const run = () =>
       handleToolCall({
-        name,
-        args: args[name],
+        name: "set_status",
+        args: { state: "working", label: "tests" },
         meta: { [SESSION_META]: "ses_a" },
         connect,
         resolve: async () => ({
@@ -263,37 +251,26 @@ describe("set_status and card in OpenCode (AC5b)", () => {
     return { frames, closed, run };
   }
 
-  it("lists both tools: the shared service has no session, so no daemon version, at tools/list", () => {
-    expect(TOOLS.map((t) => t.name)).toEqual(
-      expect.arrayContaining(["set_status", "card"]),
-    );
-  });
-
-  it("at the gate: one request on the session's connection", async () => {
+  it("one request on the session's connection", async () => {
     const d = daemonAt();
-    expect(await d.run("set_status")).toMatchObject({
+    expect(await d.run()).toMatchObject({
       isError: false,
       content: [{ text: statusSetText("working", "tests") }],
     });
-    expect(await d.run("card")).toMatchObject({
-      isError: false,
-      content: [{ text: JWS }],
-    });
-    expect(d.frames.map((f) => f.type)).toEqual(["set_status", "card"]);
-    expect(d.closed).toHaveLength(2);
+    expect(d.frames.map((f) => f.type)).toEqual(["set_status"]);
+    expect(d.closed).toHaveLength(1);
   });
 
-  it("a daemon from before AC5a: the unsupported copy", async () => {
+  it("a daemon's bad_frame: the bad_frame copy", async () => {
     const d = daemonAt(true);
-    for (const name of ["set_status", "card"] as const)
-      expect(await d.run(name)).toEqual({
-        content: [{ type: "text", text: CARD_COPY.unsupported }],
-        isError: true,
-      });
+    expect(await d.run()).toEqual({
+      content: [{ type: "text", text: STATUS_COPY.bad_frame }],
+      isError: true,
+    });
   });
 });
 
-describe("roles and status in OpenCode (AC5c)", () => {
+describe("status in OpenCode", () => {
   const at = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
   const row = (r: Record<string, unknown>) => ({
     name: "code-96",
@@ -326,62 +303,39 @@ describe("roles and status in OpenCode (AC5c)", () => {
     }).then((r) => ({ text: r.content[0]?.text, frames, r }));
   };
 
-  it("list_agents: role holder, statuses, stale, hostile; nothing new below the gate", async () => {
+  it("list_agents: statuses, stale, hostile; no role", async () => {
     const { text } = await run("list_agents", {}, () => ({
       type: "roster",
       agents: [
         row({
-          role: "lane-6",
           status: "working",
           status_label: "writing tests",
           status_at: at(1),
         }),
         row({ name: "b", status: "idle" }),
         row({ name: "c", status: "blocked", status_at: at(180) }),
-        row({ name: "d", role: "x‮\x1b[2J", status_label: "\x1b]0;t\x07" }),
+        row({ name: "d", status_label: "\x1b]0;t\x07" }),
         row({ name: "e" }),
       ],
     }));
     expect(text).toBe(
       [
-        '- lane-6 → code-96 (opencode, ns)  agent says: working · "writing tests"',
+        '- code-96 (opencode, ns)  agent says: working · "writing tests"',
         "- b (opencode, ns)  agent says: idle",
         "- c (opencode, ns)  agent says: blocked · 3 h ago",
-        "- x → d (opencode, ns)",
+        "- d (opencode, ns)",
         "- e (opencode, ns)",
       ].join("\n"),
     );
   });
 
-  it("self names the role; a receipt names the holder; role_vacant has its copy", async () => {
+  it("self asks for its own row and names no role", async () => {
     const self = await run("self", {}, () => ({
       type: "agent",
-      agent: row({ role: "lane-6" }),
+      agent: row({ role: "lane-6", status: "idle" }),
     }));
-    expect(self.frames[0]).toMatchObject({ type: "self", card: true });
-    expect(self.text).toMatch(/You hold the role lane-6: /);
-    const sent = await run(
-      "send_message",
-      { to: "lane-6", text: "hi" },
-      () => ({
-        type: "receipt",
-        msg_id: "m",
-        state: "delivered",
-        to_name: "code-96",
-      }),
-    );
-    expect(sent.text).toBe("✓  Delivered to code-96 (lane-6).");
-    const vacant = await run(
-      "send_message",
-      { to: "lane-6", text: "hi" },
-      () => ({
-        type: "receipt",
-        msg_id: "m",
-        state: "refused",
-        reason: "role_vacant",
-      }),
-    );
-    expect(vacant.r.isError).toBe(true);
-    expect(vacant.text).toContain("No one holds lane-6 right now.");
+    expect(self.frames[0]).toMatchObject({ type: "self", row: true });
+    expect(self.text).toContain('"status": "idle"');
+    expect(self.text).not.toMatch(/You hold the role/);
   });
 });

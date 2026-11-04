@@ -19,7 +19,7 @@ const block = (url: URL) => {
 describe("pi extension socket path", () => {
   it("is a byte-identical copy of the shared one", () => {
     expect(block(new URL("../assets/oa-bus.ts", import.meta.url))).toBe(
-      block(new URL("../../claude-code/src/socket-path.ts", import.meta.url)),
+      block(new URL("../../bus-adapter-claude-code/src/socket-path.ts", import.meta.url)),
     );
   });
 
