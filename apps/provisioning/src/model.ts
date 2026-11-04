@@ -13,7 +13,9 @@ import {
   type JobKind,
   jobStepsFor,
   type ServingMode,
+  TEST_MEMBER,
   type Tier,
+  testMemberOwns,
   VersionSchema,
 } from "@oa/provisioning-contract";
 import { TEST_HOOK_REFUSALS, type TestHookRefusal } from "@oa/shared";
@@ -68,11 +70,19 @@ LEFT JOIN signups s ON s.signup_id = st.signup_id`;
  * test installs, U the installs it owns.
  */
 const rlReach = (p: Principal) => p.kind === "oidc" || p.kind === "test-admin";
+/** The staging test member's workflow: the one install `rl-agents` only. */
+const testMemberReach = (p: Principal) =>
+  p.kind === "oidc" && p.oidcWorkflow === "test-member";
 export function reachSql(
   p: Principal,
   reach: "all" | "own",
 ): { sql: string; binds: unknown[] } {
   if (reach === "all") return { sql: "1 = 1", binds: [] };
+  if (testMemberReach(p))
+    return {
+      sql: "st.slug = ? AND st.test_hooks = 1",
+      binds: [TEST_MEMBER.slug],
+    };
   if (rlReach(p))
     return { sql: "st.slug LIKE 'rl-%' AND st.test_hooks = 1", binds: [] };
   // U, and any other "own" reach: the owner's sub, never null-equal.
@@ -88,6 +98,8 @@ export function inReach(
   reach: "all" | "own",
 ): boolean {
   if (reach === "all") return true;
+  if (testMemberReach(p))
+    return testMemberOwns({ slug: row.slug, testHooks: row.test_hooks === 1 });
   if (rlReach(p)) return row.slug.startsWith("rl-") && row.test_hooks === 1;
   return row.owner_sub !== null && row.owner_sub === p.sub;
 }
