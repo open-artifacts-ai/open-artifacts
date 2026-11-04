@@ -3,7 +3,6 @@ import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOSTED_DOMAINS, platformNames } from "@oa/provision";
 import { describe, expect, it } from "vitest";
 
 const app = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -22,6 +21,14 @@ const ENVS = ["staging", "prod"] as const;
 /** Keys that would attach the Worker to a hostname from the repo config. */
 const ROUTING = ["route", "routes", "custom_domain", "custom_domains"];
 
+// Pinned, not imported: the broker is public and @oa/provision is hosted
+// (#1056). packages/provision/test/broker-config.test.ts checks these against
+// provision's platformNames and HOSTED_DOMAINS.
+const NAME = { staging: "oa-s-auth-broker", prod: "oa-p-auth-broker" };
+const ORIGIN = {
+  staging: "https://auth.open-artifacts-staging.app",
+  prod: "https://auth.open-artifacts.app",
+};
 const NS = {
   staging: { ip: "1101", install: "1102" },
   prod: { ip: "1111", install: "1112" },
@@ -37,7 +44,7 @@ describe("wrangler.jsonc", () => {
     expect(Object.keys(cfg.env).sort()).toEqual(["prod", "staging"]);
     for (const env of ENVS) {
       const e = cfg.env[env];
-      expect(e.name).toBe(platformNames(env).broker);
+      expect(e.name).toBe(NAME[env]);
       expect(e.main).toBe("src/index.ts");
       // One placeholder per env, so filling one env can't bind the other's KV.
       expect(e.kv_namespaces).toEqual([
@@ -60,7 +67,7 @@ describe("wrangler.jsonc", () => {
       ]);
       expect(e.vars).toEqual({
         GOOGLE_CLIENT_ID: CLIENT_ID[env],
-        BROKER_ORIGIN: `https://auth.${HOSTED_DOMAINS[env].app}`,
+        BROKER_ORIGIN: ORIGIN[env],
       });
       // The broker never reads the Directory client, so it isn't on the broker.
       expect(Object.keys(e.vars).sort()).toEqual([
@@ -70,10 +77,6 @@ describe("wrangler.jsonc", () => {
       // Workers Logs would record callback URLs carrying the code and state.
       expect(e.observability).toEqual({ enabled: false });
     }
-    expect(platformNames("staging").broker).toBe("oa-s-auth-broker");
-    expect(platformNames("prod").broker).toBe("oa-p-auth-broker");
-    expect(platformNames("staging").registry).toBe("oa-s-broker-registry");
-    expect(platformNames("prod").registry).toBe("oa-p-broker-registry");
   });
 
   it("uses distinct ratelimit namespace ids across envs", () => {
@@ -121,9 +124,9 @@ describe("bundle", () => {
 
   it("wrangler deploy --name without --env is refused too (no top-level main)", () => {
     const out = mkdtempSync(join(tmpdir(), "oa-broker-"));
-    expect(() =>
-      wrangler(["--name", platformNames("prod").broker, "--outdir", out]),
-    ).toThrow(/entry-point/);
+    expect(() => wrangler(["--name", NAME.prod, "--outdir", out])).toThrow(
+      /entry-point/,
+    );
   });
 
   it("wrangler deploy --dry-run bundles per env", () => {

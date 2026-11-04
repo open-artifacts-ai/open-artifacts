@@ -3,7 +3,6 @@ import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOSTED_DOMAINS, platformNames } from "@oa/provision";
 import { describe, expect, it } from "vitest";
 
 const app = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -22,10 +21,14 @@ const ENVS = ["staging", "prod"] as const;
 /** Keys that would attach the Worker to a hostname from the repo config. */
 const ROUTING = ["route", "routes", "custom_domain", "custom_domains"];
 
-// TODO: platformNames has no `directory` or `directoryRegistry` yet (it comes
-// with the registry provisioning PR #563); until then pin the literals and
-// check the prefix against an existing name.
+// Pinned, not imported: the broker is public and @oa/provision is hosted
+// (#1056). packages/provision/test/broker-config.test.ts checks the prefix
+// and origin against provision's platformNames and HOSTED_DOMAINS.
 const P = { staging: "oa-s-", prod: "oa-p-" } as const;
+const ORIGIN = {
+  staging: "https://directory.open-artifacts-staging.app",
+  prod: "https://directory.open-artifacts.app",
+};
 const NS = {
   staging: { ip: "1121", install: "1122" },
   prod: { ip: "1131", install: "1132" },
@@ -52,8 +55,6 @@ describe("wrangler.jsonc", () => {
     expect(Object.keys(cfg.env).sort()).toEqual(["prod", "staging"]);
     for (const env of ENVS) {
       const e = cfg.env[env];
-      // The prefix is the one provisioning uses for this env.
-      expect(platformNames(env).broker).toBe(`${P[env]}auth-broker`);
       expect(e.name).toBe(`${P[env]}directory-broker`);
       expect(e.main).toBe("src/index.ts");
       // One placeholder per env, so filling one env can't bind the other's KV.
@@ -77,7 +78,7 @@ describe("wrangler.jsonc", () => {
       ]);
       expect(e.vars).toEqual({
         GOOGLE_DIRECTORY_CLIENT_ID: CLIENT_ID[env],
-        DIRECTORY_ORIGIN: `https://directory.${HOSTED_DOMAINS[env].app}`,
+        DIRECTORY_ORIGIN: ORIGIN[env],
       });
       // Workers Logs would record callback URLs carrying the code and state.
       expect(e.observability).toEqual({ enabled: false });
