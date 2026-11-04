@@ -1,3 +1,4 @@
+import type { BusHub } from "./bus/hub.js";
 import type { DirectorySync } from "./directory/sync-do.js";
 import type { ArtifactRuntime } from "./runtime/do.js";
 import type { UserPresence } from "./runtime/presence.js";
@@ -35,6 +36,12 @@ export interface Env {
    * reconcile and queued access jobs. Unbound, directory sync never runs.
    */
   DIRECTORY_SYNC?: DurableObjectNamespace<DirectorySync>;
+  /**
+   * One BusHub DO per member (bus/hub.ts, #1291), named "bus:" + user id.
+   * Unbound, every /bus route answers 404 (the class ships one release
+   * before anything binds it). HOSTED=1 answers 404 too, until #1299.
+   */
+  BUS_HUB?: DurableObjectNamespace<BusHub>;
   ASSETS: Fetcher;
   /**
    * Anonymous limiter, 30 per key per minute (wrangler `ratelimits`): anonymous

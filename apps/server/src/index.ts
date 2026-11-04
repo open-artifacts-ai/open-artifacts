@@ -19,6 +19,7 @@ import {
 import type { AgentAttr } from "./services/agent-usage.js";
 import { getUserWithEpoch } from "./services/users.js";
 
+export { BusHub } from "./bus/hub.js";
 export { DirectorySync } from "./directory/sync-do.js";
 export type { Env } from "./env.js";
 export { ArtifactRuntime } from "./runtime/do.js";
