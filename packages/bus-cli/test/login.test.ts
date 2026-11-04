@@ -7,7 +7,7 @@ import { login } from "../src/commands/login.ts";
 
 const home = () => mkdtempSync(join(tmpdir(), "ob-home-"));
 const TOKEN = `oa_machine_${"a".repeat(32)}`;
-const URI = "https://bus.test/bus/approve/ABCD-2345";
+const URI = "https://bus.test/bus/approve";
 const code = () =>
   Response.json({
     device_code: "d".repeat(43),

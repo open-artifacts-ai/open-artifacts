@@ -16,7 +16,7 @@ import { browserCommand, openBrowser } from "../src/deps.ts";
 
 const TOKEN = `oa_machine_${"a".repeat(32)}`;
 const DEV = "d".repeat(43);
-const URI = "https://bus.test/bus/approve/ABCD-2345";
+const URI = "https://bus.test/bus/approve";
 const tmp = () => mkdtempSync(join(tmpdir(), "ob-adv-"));
 const okCode = (over: Record<string, unknown> = {}) => ({
   device_code: DEV,
@@ -72,12 +72,16 @@ describe("hardening: hostile device/code responses", () => {
   for (const uri of [
     "javascript:alert(1)",
     "file:///etc/passwd",
-    "https://evil.example/bus/approve/ABCD-2345",
-    "https://user:pw@bus.test/bus/approve/ABCD-2345",
-    "https://bus.test@evil.example/bus/approve/ABCD-2345",
-    "https://bus.test/bus/approve/WXYZ-2345",
+    "https://evil.example/bus/approve",
+    "https://user:pw@bus.test/bus/approve",
+    "https://bus.test@evil.example/bus/approve",
     "https://bus.test/elsewhere",
-    "https://bus.test/bus/approve/ABCD-2345?next=https://evil.example",
+    "https://bus.test/bus/approve?next=https://evil.example",
+    // RFC 8628 section 5.4: never a link that carries the code.
+    "https://bus.test/bus/approve/ABCD-2345",
+    "https://bus.test/bus/approve/WXYZ-2345",
+    "https://bus.test/bus/approve?user_code=ABCD-2345",
+    "https://bus.test/bus/approve#ABCD2345",
   ]) {
     it(`rejects verification_uri ${uri} before openBrowser`, async () => {
       const a = args(hub(okCode({ verification_uri: uri }), [approved]));
@@ -128,11 +132,21 @@ describe("hardening: hostile device/code responses", () => {
     expect(out).toContain("ABCD-2345");
   });
 
+  it("opens the plain approval page: the code is never in the URL", async () => {
+    const a = args(hub(okCode(), [approved]));
+    await login(a);
+    expect(a.openBrowser).toHaveBeenCalledWith("https://bus.test/bus/approve");
+    for (const u of a.openBrowser.mock.calls.flat() as unknown[]) {
+      expect(String(u)).not.toContain("ABCD");
+      expect(String(u)).not.toContain("2345");
+    }
+  });
+
   it("accepts http only for loopback hubs", async () => {
     const ok = args(
       hub(
         okCode({
-          verification_uri: "http://localhost:8787/bus/approve/ABCD-2345",
+          verification_uri: "http://localhost:8787/bus/approve",
         }),
         [approved],
       ),
@@ -140,10 +154,9 @@ describe("hardening: hostile device/code responses", () => {
     );
     await expect(login(ok)).resolves.toBeDefined();
     const bad = args(
-      hub(
-        okCode({ verification_uri: "http://bus.test/bus/approve/ABCD-2345" }),
-        [approved],
-      ),
+      hub(okCode({ verification_uri: "http://bus.test/bus/approve" }), [
+        approved,
+      ]),
       { hub: "http://bus.test" },
     );
     await expect(login(bad)).rejects.toThrow();

@@ -151,8 +151,8 @@ describe("shouldNotifyFollower (the one rule for `changed`)", () => {
   it("a different member: yes", () => {
     expect(shouldNotifyFollower("a", "b")).toBe(true);
   });
-  it("the publisher themself: no", () => {
-    expect(shouldNotifyFollower("a", "a")).toBe(false);
+  it("the publishing member too: yes (#1292, the user's decision)", () => {
+    expect(shouldNotifyFollower("a", "a")).toBe(true);
   });
 });
 
@@ -468,7 +468,7 @@ describe("the fan-out budget", () => {
 });
 
 describe("changed", () => {
-  it("never to the publisher's own agents; to every other follower", async () => {
+  it("goes to every follower, the publishing member's own agents included", async () => {
     const owner = await mk("c-owner");
     const b = await mk("c-b");
     const id = await create(owner);
@@ -477,17 +477,55 @@ describe("changed", () => {
     await follow(E, b.userId, agent("b1"), id);
     await follow(E, b.userId, agent("b2", "other/ns"), id);
     const v = (await republish(owner, id)).version;
-    expect(bus.to(owner.userId)).toEqual([]);
+    // The publisher's own follower hears its own member's publish.
+    const own = bus.to(owner.userId);
+    expect(own.map((n) => [n.to.name, n.kind, n.version])).toEqual([
+      ["mine", "changed", v],
+    ]);
     const got = bus.to(b.userId);
     expect(got.map((n) => n.to.name).sort()).toEqual(["b1", "b2"]);
     expect(got.every((n) => n.kind === "changed" && n.version === v)).toBe(
       true,
     );
     bus.clear();
-    // B publishes: the owner hears it, B doesn't.
+    // B publishes: both members hear it, B's own agents included.
     await republish(b, id);
-    expect(bus.to(b.userId)).toEqual([]);
     expect(bus.to(owner.userId).map((n) => n.to.name)).toEqual(["mine"]);
+    expect(
+      bus
+        .to(b.userId)
+        .map((n) => n.to.name)
+        .sort(),
+    ).toEqual(["b1", "b2"]);
+  });
+
+  it("a one-person instance: the only member's agents hear each other's publishes", async () => {
+    const solo = await mk("c-solo");
+    const id = await create(solo);
+    await follow(E, solo.userId, agent("laptop"), id);
+    await follow(E, solo.userId, agent("workstation", "other/ns"), id);
+    await republish(solo, id);
+    expect(
+      bus
+        .to(solo.userId)
+        .map((n) => n.to.name)
+        .sort(),
+    ).toEqual(["laptop", "workstation"]);
+  });
+
+  it("the publisher's own follow still needs read access at send time", async () => {
+    const owner = await mk("c-own-owner");
+    const b = await mk("c-own-b");
+    const id = await create(owner);
+    await putShare(E, owner.member, id, { email: b.email, role: "editor" });
+    await follow(E, b.userId, agent("b"), id);
+    // B publishes, then loses the share before the notice is sent.
+    const v = (await republish(b, id)).version;
+    bus.clear();
+    await deleteShare(E, owner.member, id, b.email);
+    await notifyChanged(E, id, v, b.userId, Date.now() + 10 * 60_000);
+    expect(bus.to(b.userId)).toEqual([]);
+    expect(await followRows(id)).toBe(0);
   });
 
   it("restore fires changed with the new version", async () => {

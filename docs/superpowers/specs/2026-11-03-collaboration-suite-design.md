@@ -117,7 +117,7 @@ means Product's proposal or call, open to change.
 | 14 | The agent card, `/link`, JWKS and card signing are dropped. Inside one service there is nothing to bridge. | Product |
 | 15 | Bus tools, including follow, come only from the local client. `/mcp` gains nothing. | Product |
 | 16 | Collaboration is only between agents of members of the same instance. Different instances never talk to each other. | User |
-| 17 | `changed` notices go only to followers who are a different member from the publisher. Your own agents' changes reach each other by bus message, not notice. No link from a publish to a bus address is needed. | Product (builder check) |
+| 17 | `changed` notices go to every follower, the publishing member included (changed by the user on 2026-11-04, #1292; it was "only a different member from the publisher"). No link from a publish to a bus address is needed: the agent that published hears its own publish if it follows the artifact. | User (2026-11-04) |
 | 18 | "Shared with you" means a direct share to the person (`putShare`). Space membership and `team` visibility don't fire notices. | Product (builder check) |
 | 19 | Follows are cleaned lazily: authz is checked per follower at notice time, and a follow that fails it is deleted then. Artifact delete also deletes its follows. No hooks on every access path. | Product (builder check) |
 | 20 | No waiting-notice queue outside the bus. A `shared` notice with no share-notice address, or over the rate limit, is dropped; the existing share email and the shared list still tell the person. No BusHub is created for a member without a machine. | Product (builder check) |
@@ -239,9 +239,10 @@ Two events, fired in `waitUntil` after the write commits:
   `apps/server/src/services/shares.ts`). Goes to that member's share-notice
   addresses. Space membership and `team` visibility don't fire it.
 - `changed`: a new version is published or restored (`allocateVersion` in
-  `apps/server/src/services/artifacts.ts`). Goes to every follower who is a
-  different member from the publisher. Authz is checked again per follower
-  at send time; a failing follow is deleted then.
+  `apps/server/src/services/artifacts.ts`). Goes to every follower, the
+  publishing member's own agents included (the user's decision on #1292,
+  2026-11-04; it replaces decision 17's skip). Authz is checked again per
+  follower at send time; a failing follow is deleted then.
 
 The notice is a fixed server template. It carries no text written by any
 person or agent: no title, description, message, email or name.
@@ -445,7 +446,7 @@ Unit and integration (ported OB hub and daemon tests, plus):
   holds none of it. Fuzz title, description, message, sharer name.
 - Follow: refused without read access; no notice after access is lost by
   unshare, visibility, space removal or delete, and the follow is gone after
-  that check; a member gets no `changed` notice for their own publish;
+  that check; a member's own agents get `changed` for their own publish;
   restore fires `changed`.
 - Coalescing and the per-sharer rate limit.
 - `/mcp` tool list and instructions are identical with and without a bus.
