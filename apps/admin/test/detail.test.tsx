@@ -226,22 +226,125 @@ it("suspend needs a reason of 1 to 200 characters", async () => {
   expect(writes()[0].body).toMatchObject({ reason: "Unpaid invoice" });
 });
 
-it("upgrade offers other installable releases and sends the choice", async () => {
-  const i = installsByState.active;
+const rel = (version: string) => ({
+  version,
+  publishedAt: 1,
+  variants: ["release"],
+  installable: true,
+  latest: false,
+});
+const serveReleases = (platform: string | null, versions: string[]) =>
+  use(
+    http.get("*/api/v1/releases", () =>
+      json({ items: versions.map(rel), platform }),
+    ),
+  );
+const openUpgrade = async (i: InstallDetail) => {
   await open(i);
   fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
   const dialog = await screen.findByRole("dialog");
-  const version = within(dialog).getByRole("combobox", { name: "Version" });
-  expect(version).toHaveTextContent("The platform's release");
-  // 1.42.0 is installed, so only 1.41.2 is offered besides "latest".
+  return {
+    dialog,
+    version: within(dialog).getByRole("combobox", { name: "Version" }),
+    submit: within(dialog).getByRole("button", { name: "Upgrade" }),
+  };
+};
+const AHEAD = "Newer than the platform (1.42.0). Not deployed yet.";
+const PAUSED =
+  "The platform has no stable release yet, so upgrades are paused.";
+
+it("upgrade lists only releases newer than the install and sends the choice", async () => {
+  // The API refuses one at or below the install's own (downgrade_refused).
+  serveReleases("1.42.0", ["1.42.0", "1.41.2", "1.40.0", "1.39.0"]);
+  const i = { ...installsByState.active, version: "1.40.0" };
+  const { dialog, version, submit } = await openUpgrade(i);
+  await waitFor(() =>
+    expect(version).toHaveTextContent("The platform's release"),
+  );
   fireEvent.click(version);
   await screen.findByRole("option", { name: "1.41.2" });
-  expect(screen.queryByRole("option", { name: "1.42.0" })).toBeNull();
+  expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+    "The platform's release",
+    "1.42.0",
+    "1.41.2",
+  ]);
   fireEvent.click(screen.getByRole("option", { name: "1.41.2" }));
-  fireEvent.click(within(dialog).getByRole("button", { name: "Upgrade" }));
+  await waitFor(() => expect(version).toHaveTextContent("1.41.2"));
+  expect(within(dialog).queryByTestId("dialog-blocker")).toBeNull();
+  fireEvent.click(submit);
   await waitFor(() => expect(writes()).toHaveLength(1));
   expect(writes()[0].path).toBe(`/api/v1/installs/${i.id}/upgrade`);
   expect(writes()[0].body).toMatchObject({ version: "1.41.2" });
+});
+
+it("upgrade disables releases newer than the platform, with the reason", async () => {
+  serveReleases("1.42.0", ["1.44.0", "1.43.1", "1.42.0", "1.41.2"]);
+  const i = { ...installsByState.active, version: "1.41.2" };
+  const { version, submit } = await openUpgrade(i);
+  await waitFor(() =>
+    expect(version).toHaveTextContent("The platform's release"),
+  );
+  fireEvent.click(version);
+  await screen.findByRole("option", { name: "1.42.0" });
+  // Each item's text: the version, then the reason when it has one.
+  const byText = (t: string) => {
+    const o = screen.getAllByRole("option").find((x) => x.textContent === t);
+    if (!o) throw new Error(`no option "${t}"`);
+    return o;
+  };
+  const newer = byText(`1.44.0 ${AHEAD}`);
+  expect(newer).toHaveAttribute("aria-disabled", "true");
+  expect(byText(`1.43.1 ${AHEAD}`)).toHaveAttribute("aria-disabled", "true");
+  // At the platform's release: allowed, and no reason beside it.
+  const same = screen.getByRole("option", { name: "1.42.0" });
+  expect(same).not.toHaveAttribute("aria-disabled");
+  expect(
+    screen.getByRole("option", { name: "The platform's release" }),
+  ).not.toHaveAttribute("aria-disabled");
+  // A click on a disabled item picks nothing.
+  fireEvent.click(newer);
+  expect(version).toHaveTextContent("The platform's release");
+  fireEvent.click(same);
+  await waitFor(() => expect(version).toHaveTextContent("1.42.0"));
+  fireEvent.click(submit);
+  await waitFor(() => expect(writes()).toHaveLength(1));
+  expect(writes()[0].body).toMatchObject({ version: "1.42.0" });
+});
+
+it("upgrade with no platform release: everything disabled, one note, no submit", async () => {
+  serveReleases(null, ["1.42.0", "1.41.2"]);
+  const i = { ...installsByState.active, version: "1.40.0" };
+  const { dialog, version, submit } = await openUpgrade(i);
+  expect(await within(dialog).findByText(PAUSED)).toBeVisible();
+  expect(version).toHaveAccessibleDescription(PAUSED);
+  // The default would be the platform's release, which is off too: none is picked.
+  expect(version).toHaveTextContent("No release available");
+  expect(submit).toBeDisabled();
+  fireEvent.click(version);
+  const options = await screen.findAllByRole("option");
+  expect(options.map((o) => o.textContent)).toEqual([
+    "The platform's release",
+    "1.42.0",
+    "1.41.2",
+  ]);
+  for (const o of options) expect(o).toHaveAttribute("aria-disabled", "true");
+  // One note in the dialog, not one per item.
+  expect(within(dialog).getAllByText(PAUSED)).toHaveLength(1);
+  expect(writes()).toEqual([]);
+});
+
+it("upgrade with the platform's release: no note and no reasons", async () => {
+  serveReleases("1.42.0", ["1.42.0", "1.41.2"]);
+  const i = { ...installsByState.active, version: "1.40.0" };
+  const { dialog, version } = await openUpgrade(i);
+  await waitFor(() =>
+    expect(version).toHaveTextContent("The platform's release"),
+  );
+  expect(within(dialog).queryByText(PAUSED)).toBeNull();
+  fireEvent.click(version);
+  for (const o of await screen.findAllByRole("option"))
+    expect(o).not.toHaveAttribute("aria-disabled");
+  expect(screen.queryByText(/Newer than the platform/)).toBeNull();
 });
 
 it("sends nonAdditive only when the restore point box is ticked (MIG-2)", async () => {

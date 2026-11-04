@@ -600,3 +600,155 @@ it("says why Create install is off until the form is complete", async () => {
   );
   expect(submit()).toBeEnabled();
 });
+
+const relOf = (version: string, variants: string[], latest = false) => ({
+  version,
+  publishedAt: 1,
+  installable: true,
+  variants,
+  latest,
+});
+const optionTexts = async () =>
+  (await screen.findAllByRole("option")).map((o) => [
+    o.textContent,
+    o.getAttribute("aria-disabled") === "true",
+  ]);
+const AHEAD_19 = "Newer than the platform (1.9.0). Not deployed yet.";
+const PAUSED_CREATE =
+  "The platform has no stable release yet, so new installs are paused.";
+
+it("disables releases newer than the platform and defaults to the newest allowed", async () => {
+  use(
+    http.get("*/api/v1/releases", () =>
+      HttpResponse.json({
+        items: [
+          relOf("2.0.0", ["release"], true),
+          relOf("1.9.0", ["release"]),
+          relOf("1.8.0", ["release"]),
+        ],
+        platform: "1.9.0",
+      }),
+    ),
+  );
+  signIn("admin");
+  renderApp("/installs/new");
+  await screen.findByLabelText("Slug");
+  // 2.0.0 is flagged latest but not deployed, so the default skips it.
+  await waitFor(() => expect(release()).toHaveTextContent("1.9.0"));
+  fireEvent.click(release());
+  expect(await optionTexts()).toEqual([
+    [`2.0.0 (latest) ${AHEAD_19}`, true],
+    ["1.9.0", false],
+    ["1.8.0", false],
+  ]);
+  fireEvent.click(screen.getByRole("option", { name: "1.8.0" }));
+  await waitFor(() => expect(release()).toHaveTextContent("1.8.0"));
+  type("fresh-one");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(createBody()).toBeDefined());
+  expect(createBody()).toMatchObject({ version: "1.8.0" });
+});
+
+it("with no platform release, every release is disabled and Create install says why", async () => {
+  use(
+    http.get("*/api/v1/releases", () =>
+      HttpResponse.json({
+        items: [relOf("2.0.0", ["release"], true), relOf("1.9.0", ["release"])],
+        platform: null,
+      }),
+    ),
+  );
+  signIn("admin");
+  renderApp("/installs/new");
+  await screen.findByLabelText("Slug");
+  type("fresh-one");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() =>
+    expect(screen.getByTestId("create-blocker")).toHaveTextContent(
+      PAUSED_CREATE,
+    ),
+  );
+  expect(submit()).toBeDisabled();
+  // The note under the release list, in place of the usual hint.
+  expect(screen.getAllByText(PAUSED_CREATE)).toHaveLength(2);
+  expect(
+    screen.queryByText("Only signed, published releases are listed."),
+  ).toBeNull();
+  fireEvent.click(release());
+  expect(await optionTexts()).toEqual([
+    ["2.0.0 (latest)", true],
+    ["1.9.0", true],
+  ]);
+  expect(writes()).toEqual([]);
+});
+
+it("test hooks: the redline filter and the platform rule apply together", async () => {
+  use(
+    http.get("*/api/v1/releases", () =>
+      HttpResponse.json({
+        items: [
+          relOf("2.0.0", ["release", "redline"], true),
+          relOf("1.9.0", ["release"]),
+          relOf("1.8.0", ["redline"]),
+        ],
+        platform: "1.9.0",
+      }),
+    ),
+  );
+  signIn("admin");
+  renderApp("/installs/new");
+  await screen.findByRole("checkbox", { name: "Test hooks" });
+  await waitFor(() => expect(release()).toHaveTextContent("1.9.0"));
+  fireEvent.click(hooksBox() as HTMLElement);
+  // 1.9.0 has no redline bundle and 2.0.0 is ahead of the platform.
+  await waitFor(() => expect(release()).toHaveTextContent("1.8.0"));
+  fireEvent.click(release());
+  expect(await optionTexts()).toEqual([
+    [`2.0.0 (latest) ${AHEAD_19}`, true],
+    ["1.8.0", false],
+  ]);
+  fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+  type("fresh-one");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(createBody()).toBeDefined());
+  expect(createBody()).toMatchObject({ version: "1.8.0", testHooks: true });
+});
+
+it("a pick that test hooks rule out falls back to an allowed release", async () => {
+  use(
+    http.get("*/api/v1/releases", () =>
+      HttpResponse.json({
+        items: [
+          relOf("2.0.0", ["release", "redline"], true),
+          relOf("1.9.0", ["release"]),
+          relOf("1.8.0", ["redline"]),
+        ],
+        platform: "2.0.0",
+      }),
+    ),
+  );
+  signIn("admin");
+  renderApp("/installs/new");
+  await screen.findByRole("checkbox", { name: "Test hooks" });
+  await waitFor(() => expect(release()).toHaveTextContent("2.0.0"));
+  fireEvent.click(release());
+  fireEvent.click(await screen.findByRole("option", { name: "1.9.0" }));
+  await waitFor(() => expect(release()).toHaveTextContent("1.9.0"));
+  // 1.9.0 has no redline bundle: the form must not keep sending it.
+  fireEvent.click(hooksBox() as HTMLElement);
+  await waitFor(() => expect(release()).toHaveTextContent("2.0.0"));
+  type("fresh-one");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(createBody()).toBeDefined());
+  expect(createBody()).toMatchObject({ version: "2.0.0", testHooks: true });
+});

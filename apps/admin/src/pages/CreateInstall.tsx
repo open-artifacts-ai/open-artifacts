@@ -26,6 +26,11 @@ import { api } from "../api/client";
 import { releasesQuery, slugQuery } from "../api/queries";
 import { ErrorLine } from "../components/Bits";
 import { providerLabel, TIER_LABEL, visibleSteps } from "../components/labels";
+import {
+  aheadOfPlatform,
+  aheadReason,
+  newestVersion,
+} from "../components/platformGate";
 import { useAction } from "../hooks/useAction";
 
 const DEBOUNCE_MS = 300;
@@ -39,6 +44,8 @@ const SLUG_COPY = {
 const TEST_SLUG = `Use an ${OIDC_LIMITS.slugPrefix} slug. This session can only create those.`;
 const TEST_OWNER = `Use an owner at ${STAGING_TEST_DOMAIN}, the staging test domain.`;
 /** Slug answers shown as an error (red help, red border). */
+const NO_PLATFORM_CREATE =
+  "The platform has no stable release yet, so new installs are paused.";
 const BAD_SLUG = new Set(["invalid", "reserved", "taken", "test_rule"]);
 const APP_DOMAIN = {
   prod: "open-artifacts.app",
@@ -95,15 +102,19 @@ export function CreateInstall() {
   const installable = (releases.data?.items ?? []).filter(
     (r) => r.installable && (!testHooks || r.variants.includes("redline")),
   );
+  // R4 refuses a release newer than the platform's, and any while it has none.
+  const platform = releases.data?.platform;
+  const offered = installable
+    .filter((r) => !aheadOfPlatform(r.version, platform))
+    .map((r) => r.version);
+  const flagged = installable.find((r) => r.latest)?.version;
   const latest =
-    (installable.find((r) => r.latest) ?? (testHooks ? installable[0] : null))
-      ?.version ?? "";
+    (flagged && offered.includes(flagged) ? flagged : newestVersion(offered)) ??
+    "";
   const [slug, setSlug] = useState("");
   const [picked, setPicked] = useState("");
   // A pick the list no longer offers (test hooks just turned on) falls back.
-  const version = installable.some((r) => r.version === picked)
-    ? picked
-    : latest;
+  const version = offered.includes(picked) ? picked : latest;
   const domain = appDomainFor(
     me.data?.env ?? "prod",
     globalThis.location?.hostname ?? "",
@@ -165,7 +176,9 @@ export function CreateInstall() {
                 : !domainsOk
                   ? "Fix the allowed domains."
                   : !version
-                    ? "Pick a release."
+                    ? platform === null
+                      ? NO_PLATFORM_CREATE
+                      : "Pick a release."
                     : null;
   const create = useAction(
     (_: void, requestId) =>
@@ -320,23 +333,38 @@ export function CreateInstall() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent position="popper" align="start">
-                {installable.map((r) => (
-                  <SelectItem key={r.version} value={r.version}>
-                    <span className="oa-mono">{r.version}</span>
-                    {r.latest && (
-                      <>
-                        {" "}
-                        <span className="oa-latest">(latest)</span>
-                      </>
-                    )}
-                  </SelectItem>
-                ))}
+                {installable.map((r) => {
+                  const ahead = aheadOfPlatform(r.version, platform);
+                  return (
+                    <SelectItem
+                      key={r.version}
+                      value={r.version}
+                      disabled={ahead}
+                    >
+                      <span className="oa-mono">{r.version}</span>
+                      {r.latest && (
+                        <>
+                          {" "}
+                          <span className="oa-latest">(latest)</span>
+                        </>
+                      )}
+                      {ahead && platform && (
+                        <span className="oa-note">
+                          {" "}
+                          {aheadReason(platform)}
+                        </span>
+                      )}
+                    </SelectItem>
+                  );
+                })}
               </SelectContent>
             </Select>
             <small>
-              {testHooks
-                ? "Only redline releases are listed, because test hooks need them."
-                : "Only signed, published releases are listed."}
+              {platform === null
+                ? NO_PLATFORM_CREATE
+                : testHooks
+                  ? "Only redline releases are listed, because test hooks need them."
+                  : "Only signed, published releases are listed."}
             </small>
           </div>
           {hooksOption && (

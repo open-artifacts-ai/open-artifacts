@@ -5,6 +5,7 @@
     "jsx": "react-jsx",
     "types": ["vite/client"],
     "paths": {
+      "@oa/provision/versions": ["../../packages/provision/src/versions.ts"],
       "@oa/shared": ["../../packages/shared/src/index.ts"],
       "@oa/shared/*": ["../../packages/shared/src/*"],
       "@oa/provisioning-contract": [
