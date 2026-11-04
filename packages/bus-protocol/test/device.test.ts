@@ -25,6 +25,7 @@ const p = (verification_uri: string) =>
 
 describe("routes", () => {
   it("pins the instance routes (design: Contracts)", () => {
+    expect(BUS_ROUTES.page).toBe("/bus");
     expect(BUS_ROUTES.device).toBe("/bus/device");
     expect(BUS_ROUTES.deviceToken).toBe("/bus/device/token");
     expect(BUS_ROUTES.connect).toBe("/bus/connect");

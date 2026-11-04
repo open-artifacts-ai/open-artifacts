@@ -44,6 +44,7 @@ Keepalive is the bare string `ping` / `pong`, never a frame.
 | `POST /bus/device` | none | `DeviceCodeRequestSchema {machine_label?}` -> `DeviceCodeResponseSchema {device_code, user_code, verification_uri, expires_in: 600, interval: 5}` |
 | `POST /bus/device/token` | none | `DeviceTokenRequestSchema {device_code}` -> `DeviceTokenResponseSchema`: `{status: "pending"}`, `{status: "approved", machine_token}`, `{status: "denied"}` or `{status: "expired"}`. Consumed, expired and unknown codes all read `expired`. Polling faster than `interval` is HTTP 429 with `Retry-After`. |
 | `GET/POST /bus/approve/<user_code>` | Open Artifacts session and `canConnect` | The approval page; `ApprovalBodySchema {decision, label?}` |
+| `GET /bus` | Open Artifacts session | The member's bus page: Machines (revoke) and share notices. The client prints `<instance>/bus` after sign-in. |
 | `GET /bus/connect` | `Authorization: Bearer oa_machine_...` | WebSocket upgrade. A revoked token, an unknown one, a PAT or OAuth token, or a member who fails `canConnect`: 401. |
 
 `verification_uri` is https (http only on loopback), has no userinfo, equals its
