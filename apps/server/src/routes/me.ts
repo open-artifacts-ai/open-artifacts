@@ -10,6 +10,7 @@ import {
   type Tier,
 } from "@oa/shared";
 import type { Context } from "hono";
+import { canConnect } from "../auth/agents.js";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import { instanceFeatures, instanceSignIn } from "../auth/sign-in.js";
@@ -101,6 +102,8 @@ async function toMe(
     c.env,
     orgCan(user, "signin.problems", { cap }),
   );
+  // #1291: the dashboard's bus tab follows the server's rule, never its own.
+  me.canConnect = canConnect(user);
   return me;
 }
 

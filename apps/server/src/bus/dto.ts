@@ -35,6 +35,7 @@ export const agentDto = (a: AgentWithMachine, connected: boolean): BusAgent => (
   machineLabel: a.machineLabel,
   global: a.global === 1,
   state: connected ? "live" : "queued",
+  running: true,
   updatedAt: iso(a.updatedAt),
   ...statusFields(a),
 });
