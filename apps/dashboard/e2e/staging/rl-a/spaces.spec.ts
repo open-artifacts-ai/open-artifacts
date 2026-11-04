@@ -268,7 +268,9 @@ test("an admin never sees another person's personal space", async ({
   await expect(
     admin.page.getByRole("heading", { level: 1, name: "Library" }),
   ).toBeVisible();
-  await expect(admin.page.getByText(title)).toHaveCount(0);
+  // Exact: the admin's own page, "<title> (admin)", holds `title` as a
+  // substring and is in this Library, so a substring match is always red.
+  await expect(admin.page.getByText(title, { exact: true })).toHaveCount(0);
 });
 
 // Cut (#1251): 'a space named "Personal" is refused inline'. Covered by
