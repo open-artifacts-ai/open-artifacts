@@ -423,6 +423,21 @@ const MACHINE_BY_HASH = `select id, user_id as userId, label, revoked_at as revo
     last_used_at as lastUsedAt from bus_machines where token_hash = ?1`;
 const TOUCH_MACHINE = `update bus_machines set last_used_at = ?2
   where id = ?1 and revoked_at is null and (last_used_at is null or last_used_at <= ?3)`;
+/**
+ * A machine's first connect: last_used_at is what services/bus.ts finds a
+ * member's hub by, so a revocation that commits after this request read the
+ * row, but before this write, would skip the hub (no connected machine yet)
+ * and the hub would then accept. The write is therefore the check: it lands
+ * only while the row is unrevoked and the member still passes canConnect's
+ * SQL floor (active, a team role, no restriction); 0 rows is 401. A
+ * revocation after it finds the hub, and the hub refuses this upgrade
+ * (authzAt <= its revokedAt).
+ */
+const FIRST_TOUCH = `update bus_machines set last_used_at = ?2
+  where id = ?1 and revoked_at is null and last_used_at is null
+    and exists (select 1 from users u where u.id = bus_machines.user_id
+      and u.status = 'active' and u.role in ('owner', 'admin', 'member')
+      and u.restricted_manual = 0 and u.restricted_sync = 0)`;
 const BEARER = /^\s*Bearer\s+(\S+)\s*$/i;
 
 const unauthorized = () =>
@@ -457,14 +472,16 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
   const user = await getUser(env, m.userId);
   if (!user || !canConnect(user)) return unauthorized();
   const now = Date.now();
-  if (m.lastUsedAt === null || m.lastUsedAt <= now - LAST_USED_MS) {
-    const touch = stmt(env.DB, TOUCH_MACHINE)
-      .bind(m.id, now, now - LAST_USED_MS)
-      .run();
-    // The first use is awaited: services/bus.ts finds a member's hub by it.
-    if (m.lastUsedAt === null) await touch;
-    else c.executionCtx.waitUntil(touch.then(() => undefined));
-  }
+  if (m.lastUsedAt === null) {
+    const first = await stmt(env.DB, FIRST_TOUCH).bind(m.id, now).run();
+    if (first.meta.changes !== 1) return unauthorized();
+  } else if (m.lastUsedAt <= now - LAST_USED_MS)
+    c.executionCtx.waitUntil(
+      stmt(env.DB, TOUCH_MACHINE)
+        .bind(m.id, now, now - LAST_USED_MS)
+        .run()
+        .then(() => undefined),
+    );
   const ns = env.BUS_HUB;
   const hub = ns.get(ns.idFromName(busHubName(user.id)));
   return hub.fetch(

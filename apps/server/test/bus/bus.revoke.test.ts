@@ -198,6 +198,78 @@ describe("revocation closes bus sockets", () => {
   });
 });
 
+/**
+ * env whose D1 runs `between` right before /bus/connect's last_used_at write:
+ * the request has already read the machine row and the member (both fine),
+ * and the revocation commits before the write. Deterministic, no timing.
+ */
+function racingEnv(between: () => Promise<void>): unknown {
+  const real = env.DB;
+  const db = new Proxy(real, {
+    get(t, k) {
+      if (k === "prepare")
+        return (sql: string) => {
+          const st = t.prepare(sql);
+          if (!sql.includes("set last_used_at")) return st;
+          return {
+            bind: (...a: unknown[]) => {
+              const b = st.bind(...a);
+              return {
+                run: async () => {
+                  await between();
+                  return b.run();
+                },
+              };
+            },
+          };
+        };
+      const v = Reflect.get(t, k);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  return { ...env, DB: db };
+}
+
+describe("a revocation racing a machine's first connect", () => {
+  it("removal between the reads and the first-use write: 401, and no socket", async () => {
+    const u = await member();
+    const m = await machine("first", u.userId);
+    const r = await upgrade(
+      m.token,
+      {},
+      racingEnv(() =>
+        setUserStatus(env, u.userId, "removed", "admin_remove", SYSTEM_ACTOR),
+      ),
+    );
+    expect(r.status).toBe(401);
+    expect(r.webSocket).toBeNull();
+    // The hub never saw the machine.
+    expect(
+      await runInDurableObject(
+        await hubOf(u.userId),
+        (_i: BusHub, s: DurableObjectState) =>
+          s.storage.sql
+            .exec<{ n: number }>("select count(*) as n from machines")
+            .one().n,
+      ),
+    ).toBe(0);
+  });
+
+  it("a cap between the reads and the first-use write: 401 (the machine is not revoked)", async () => {
+    const u = await member();
+    const m = await machine("first-cap", u.userId);
+    const r = await upgrade(
+      m.token,
+      {},
+      racingEnv(async () => {
+        await setMemberRestricted(env, adminM, u.userId, true);
+      }),
+    );
+    expect(r.status).toBe(401);
+    expect(await revokedAt(m.id)).toBeNull();
+  });
+});
+
 describe("install suspend closes bus sockets (the install index)", () => {
   it("a hub reports on accept, and closeInstall closes its sockets", async () => {
     const u = await member();
