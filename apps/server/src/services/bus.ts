@@ -34,10 +34,8 @@ export type BusHubRpc = {
     agentId: string | null,
   ): Promise<
     | { ok: true; role: BusRole }
-    | {
-        ok: false;
-        reason: "invalid" | "name_taken" | "agent_not_open" | "role_limit";
-      }
+    | { ok: false; reason: "invalid"; field: "namespace" | "name" }
+    | { ok: false; reason: "name_taken" | "agent_not_open" | "role_limit" }
   >;
   /** #1296: removes a role; false when unknown. */
   deleteRole(id: string): Promise<boolean>;
@@ -322,7 +320,9 @@ export async function putBusRole(
   const r = await roleCall(hub.putRole(namespace, name, agentId));
   if (r.ok) return r.role;
   if (r.reason === "invalid")
-    throw new ApiError("bad_request", "Invalid role", { field: "name" });
+    throw new ApiError("bad_request", `Invalid ${r.field}`, {
+      field: r.field,
+    });
   throw refuse(r.reason);
 }
 

@@ -374,6 +374,66 @@ describe("sending to a role (#1296)", () => {
   });
 });
 
+describe("a global sender's role in one other namespace (#1296 review)", () => {
+  /** A global sender in C, role `lead` held in B; returns the pieces. */
+  async function setup() {
+    const uid = await owner();
+    const d = await at(uid, NEW);
+    const [a, b, c] = [ns("ra"), ns("rb"), ns("rc")];
+    const holder = await reg(d, "h", uniq("holder"), b);
+    await reg(d, "g", uniq("global"), c, true);
+    return { uid, d, a, b, holder };
+  }
+
+  it("is ambiguous while a live non-global agent in another namespace has the name", async () => {
+    const { uid, d, a, b, holder } = await setup();
+    expect(await reg(d, "x", "lead", a)).toBe("lead");
+    await setRole(uid, b, "lead", await agentId(uid, holder));
+    expect(await send(d, "g", "lead")).toMatchObject({
+      state: "refused",
+      reason: "ambiguous",
+    });
+    // Named, each is reachable; once the agent closes the role is the target.
+    expect(await send(d, "g", "lead", b)).toMatchObject({ to_name: holder });
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "x" });
+    d.send({ v: 1, id: id("l"), type: "list", from_ref: "g" });
+    await waitFor(d, "roster");
+    expect(await send(d, "g", "lead")).toMatchObject({
+      state: "pending",
+      to_name: holder,
+    });
+    d.close();
+  });
+
+  it("is ambiguous while an agent in another namespace holds the name as a live former name", async () => {
+    const { uid, d, a, b, holder } = await setup();
+    expect(await reg(d, "x", "lead", a)).toBe("lead");
+    const now = uniq("now");
+    d.send({
+      v: 1,
+      id: id("r"),
+      type: "rename",
+      agent_ref: "x",
+      proposed_name: now,
+    });
+    expect((await waitFor(d, "renamed")).bus_name).toBe(now);
+    await setRole(uid, b, "lead", await agentId(uid, holder));
+    expect(await send(d, "g", "lead")).toMatchObject({
+      state: "refused",
+      reason: "ambiguous",
+    });
+    // Without the former name (the agent closes, dropping it), the role wins.
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "x" });
+    d.send({ v: 1, id: id("l"), type: "list", from_ref: "g" });
+    await waitFor(d, "roster");
+    expect(await send(d, "g", "lead")).toMatchObject({
+      state: "pending",
+      to_name: holder,
+    });
+    d.close();
+  });
+});
+
 describe("a vacant role (#1296)", () => {
   it("vacated: role_vacant to a roles socket, unknown_agent to an old one (frozen schema decodes)", async () => {
     const uid = await owner();
@@ -630,15 +690,17 @@ describe("role names share the agent-name space (#1296)", () => {
 
   it("refuses an invalid or reserved role name and an invalid namespace", async () => {
     const uid = await owner();
-    for (const [nsx, name] of [
-      ["ok/ns", "open-artifacts"],
-      ["ok/ns", "bad@name"],
-      ["ok/ns", ""],
-      ["Not Canonical", "lead"],
+    for (const [nsx, name, field] of [
+      ["ok/ns", "open-artifacts", "name"],
+      ["ok/ns", "bad@name", "name"],
+      ["ok/ns", "", "name"],
+      ["Not Canonical", "lead", "namespace"],
+      ["Not Canonical", "bad@name", "namespace"],
     ] as const)
       expect(await put(uid, nsx, name, null)).toEqual({
         ok: false,
         reason: "invalid",
+        field,
       });
   });
 });

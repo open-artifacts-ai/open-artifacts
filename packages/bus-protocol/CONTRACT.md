@@ -163,7 +163,9 @@ claims one, so no AI agent can.
   only; mail already sent stays with the agent it resolved to.
 - Vacant: no holder set, or the holder is closed, gone, or no longer in the
   namespace (a global holder is in every one). Refused `role_vacant`. A
-  reopened session of the holder holds it again.
+  reopened session of the holder holds it again. A revoked holder's machine
+  never reconnects, and a new machine's sessions are new agents, so a role
+  whose holder was revoked stays vacant until the member re-points it.
 - Gate: `BUS_CAPS.roles` (`roles`). The hub sends `role_vacant`, and a role
   hit's receipt `to_name` (the holder's current name), only to a socket whose
   hello listed it. Any other socket gets `unknown_agent` for a vacant role and

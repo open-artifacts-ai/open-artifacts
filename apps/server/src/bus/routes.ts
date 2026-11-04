@@ -99,10 +99,8 @@ export const APPROVE_PATH = BUS_ROUTES.approve;
 
 const COUNTRY = /^[A-Z]{2}$/;
 // Controls, bidi and zero-width characters: they can disguise a name.
-const UNSAFE = new RegExp(
-  "[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2069\\ufeff]",
-  "gu",
-);
+const UNSAFE =
+  /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/gu;
 
 /**
  * Where a device request came from, for the confirm screen: the country
@@ -692,10 +690,17 @@ export function mountBus(app: AppType): void {
   });
   app.delete(`${R.busRoles}/:id`, async (c) => {
     const user = roleWriter(c);
-    await deleteBusRole(c.env, user.id, c.req.param("id") ?? "");
+    const id = c.req.param("id") ?? "";
+    // Role ids are bus ids; anything beyond that shape is never one.
+    if (!ROLE_ID.test(id))
+      throw new ApiError("bad_request", "Invalid id", { field: "id" });
+    await deleteBusRole(c.env, user.id, id);
     return c.body(null, 204);
   });
 }
+
+/** A role id in a DELETE path: at most 64 id characters. */
+const ROLE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** A role write's caller: canConnect, in an interactive cookie session (else 404). */
 function roleWriter(c: Context<AppEnv>) {

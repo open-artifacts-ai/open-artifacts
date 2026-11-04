@@ -24,10 +24,8 @@ export type RoleResolution =
 
 export type PutRoleResult =
   | { ok: true; role: BusRole }
-  | {
-      ok: false;
-      reason: "invalid" | "name_taken" | "agent_not_open" | "role_limit";
-    };
+  | { ok: false; reason: "invalid"; field: "namespace" | "name" }
+  | { ok: false; reason: "name_taken" | "agent_not_open" | "role_limit" };
 
 type Row = Record<string, SqlStorageValue>;
 const all = <T extends Row>(
@@ -107,7 +105,8 @@ export function listRoles(
  * Sets role (`namespace`, `name`) to `agentId`, or vacates it (null),
  * creating it if needed (a new random id); re-pointing keeps its id, and the
  * stored display name follows the latest call. Refused (nothing written):
- * - invalid: not a bus name (reserved names too) or not a wire namespace;
+ * - invalid (with the field): not a wire namespace, or not a bus name
+ *   (reserved names too);
  * - agent_not_open: the agent isn't open, or is neither in `namespace` nor
  *   global;
  * - name_taken: a live agent visible in `namespace` (in it, or a global) has
@@ -128,11 +127,10 @@ export function putRole(
   newId: () => string,
   max: number = BUS_ROLE_MAX,
 ): PutRoleResult {
-  if (
-    !WireNamespaceSchema.safeParse(namespace).success ||
-    !BusNameSchema.safeParse(name).success
-  )
-    return { ok: false, reason: "invalid" };
+  if (!WireNamespaceSchema.safeParse(namespace).success)
+    return { ok: false, reason: "invalid", field: "namespace" };
+  if (!BusNameSchema.safeParse(name).success)
+    return { ok: false, reason: "invalid", field: "name" };
   const lname = name.toLowerCase();
   if (agentId !== null) {
     const agent = one<{ namespace: string; global: number }>(

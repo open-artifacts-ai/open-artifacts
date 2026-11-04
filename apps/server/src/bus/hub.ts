@@ -1271,6 +1271,36 @@ function liveFormer(
 const refused = (reason: RefusalReason): Resolution => ({ ok: false, reason });
 
 /**
+ * #1296: whether a live agent outside namespace `ns`'s scope has `lname` as
+ * its name, or as a live former name. A live agent of that scope never has
+ * a role's name (nameTaken, putRole), so any live name counts; a former name
+ * of a non-global agent in `ns` (a default one) does not. One statement on
+ * agents_live_lname and former_names_lname.
+ */
+function nameOutside(
+  sql: SqlStorage,
+  lname: string,
+  ns: string,
+  now: number,
+): boolean {
+  return (
+    one<{ x: number }>(
+      sql,
+      `select (exists (select 1 from agents where org_id = ? and lower(name) = ? and live = 1)
+           or exists (select 1 from former_names f join agents a on a.id = f.agent_id
+                       where f.org_id = ? and f.lname = ? and f.expires_at > ?
+                         and a.live = 1 and a.global = 0 and a.namespace != ?)) as x`,
+      OWNER_ORG_ID,
+      lname,
+      OWNER_ORG_ID,
+      lname,
+      now,
+      ns,
+    )?.x === 1
+  );
+}
+
+/**
  * Within a scope a role address comes first (#1296: no live agent can share
  * its name there), then a current live name, then a live former name
  * (R393b), then goneReason. The sender's own namespace is looked at first; a
@@ -1333,15 +1363,8 @@ function resolveTarget(
   if (own) return own;
   // #1296: a role in exactly one other namespace, unless a live agent (or a
   // live former name) outside that namespace's scope shares the name.
-  const role = resolveRoleAnywhere(
-    sql,
-    OWNER_ORG_ID,
-    lname,
-    (ns) =>
-      liveAnywhere(sql, lname, 1).length > 0 ||
-      liveFormer(sql, lname, now, null, 1000).some(
-        (a) => a.global !== 1 && a.namespace !== ns,
-      ),
+  const role = resolveRoleAnywhere(sql, OWNER_ORG_ID, lname, (ns) =>
+    nameOutside(sql, lname, ns, now),
   );
   if (role) return role;
   // A live global sorts first and is the only live agent with its name.

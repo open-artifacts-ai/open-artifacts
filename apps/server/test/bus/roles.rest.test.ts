@@ -147,6 +147,22 @@ describe("roles REST (#1296)", () => {
     d.close();
   });
 
+  it("DELETE takes an id of at most 64 id characters (400 otherwise); a guest gets 404 first", async () => {
+    const n = ns("rr");
+    const { who, d } = await withAgent(n);
+    const del = (id: string, cookie = who.cookie) =>
+      api(app, `${R.busRoles}/${id}`, cookie, { method: "DELETE" });
+    expect((await del("a".repeat(64))).status).toBe(204);
+    for (const bad of ["a".repeat(65), "a%20b", "a.b", "%E2%9C%93"]) {
+      const r = await del(bad);
+      expect(r.status, bad).toBe(400);
+      expect((await errOf(r)).details).toEqual({ field: "id" });
+    }
+    const guest = await member("guest");
+    expect((await del("a".repeat(65), guest.cookie)).status).toBe(404);
+    d.close();
+  });
+
   it("another member reaches only their own hub: they can't see, set or remove the member's role", async () => {
     const n = ns("rr");
     const { who, d, agentId } = await withAgent(n);
