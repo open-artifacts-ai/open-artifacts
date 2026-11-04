@@ -92,7 +92,7 @@ Hub to client (`SERVER_FRAMES`):
 - `body {msg_id, body}`
 - `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
 - `deliver {msg_id, to_ref, from_name, namespace, body | notice}`
-- `receipt_update {msg_id, state, reason?, to_name?}`
+- `receipt_update {msg_id, state, reason?}`: the schema shares `to_name?` with `receipt`, but the hub sets it only on `receipt`.
 - `roster_changed {namespace}`
 - `renamed {agent_ref, bus_name, former?}`: reply to `rename`. `former` is the name left, absent on a no-op. Names compare case-insensitively.
 

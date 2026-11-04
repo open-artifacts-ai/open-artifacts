@@ -180,7 +180,7 @@ const Status = z.strictObject({
  * (`not_registered`, `rate_limited` with RENAME_MESSAGES.rate, `bad_frame`).
  * The hub names the agent as for `agent_up`, de-collided the same way. A hub
  * decoder older than this frame refuses it; one that decodes it but lacks the
- * handler (R393b) sends no reply.
+ * handler (R393b) answers `error bad_frame`.
  */
 const Rename = z.strictObject({
   ...base,
