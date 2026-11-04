@@ -54,6 +54,8 @@ const VERB: Record<string, string> = {
   "vars.session_cut_failed": "couldn't sign everyone out",
   "vars.session_cut_dropped": "skipped a sign-out it no longer needed",
   "verify_clean.refused": "failed the clean check",
+  "verify_clean.retry":
+    "waited for Cloudflare to show the install's settings, then checked again",
   "verify_clean.binding_ids":
     "checked that its bindings point at its own resources",
   "prod_dirty.snapshot":
@@ -160,6 +162,7 @@ export const AUDIT_ACTIONS = [
   ...Object.keys(REFUSAL_REASON).map((b) => `${b}.refused`),
   "rate_limited",
 ];
+
 /** Design's sentence verb for a known action; the raw action name otherwise. */
 export const actionPhrase = (action: string) =>
   Object.hasOwn(VERB, action) ? VERB[action] : action;

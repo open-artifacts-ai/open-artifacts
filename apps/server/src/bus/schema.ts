@@ -22,7 +22,8 @@
  * machines mirrors the D1 bus_machines rows this hub accepted a socket for
  * (id, label, revoked_at): the token and its hash live only in D1. Open
  * Artifacts owns sign-in and the device flow, so OpenBus's device_codes,
- * oidc_states, roles, linked_apps and card_rl tables are not here. meta holds
+ * oidc_states, linked_apps and card_rl tables are not here (roles came back
+ * as role addresses, #1296). meta holds
  * the drain queues and the revocation time (BusHub.closeAll).
  */
 export const HUB_SCHEMA = `
@@ -179,6 +180,23 @@ create table if not exists rename_rl (
 create index if not exists rename_rl_agent on rename_rl(agent_id, at);
 create index if not exists rename_rl_at on rename_rl(at);
 
+-- #1296 role addresses: a member-set alias (name, lname = lower(name)) in one
+-- namespace pointing at one agent by id (agent_id, null: vacated), so it
+-- follows a rename. A close leaves agent_id: the role reads vacant while its
+-- holder isn't open in the namespace (bus/roles.ts). Role names share the
+-- agent-name space of their namespace (nameTaken, putRole). A new table, so
+-- create-if-not-exists adds it on the next wake; wipe() deletes it.
+create table if not exists roles (
+  id text primary key,
+  org_id text not null,
+  namespace text not null,
+  name text not null,
+  lname text not null,
+  agent_id text,
+  set_at integer not null,
+  unique (org_id, namespace, lname)
+);
+create index if not exists roles_lname on roles(org_id, lname);
 
 create table if not exists meta (
   org_id text not null,
@@ -332,6 +350,13 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
          (select 1 from receipts r where r.id = send_keys.msg_id and r.state = 'pending')`,
     );
   }
+  // #1296: send_keys.via_role is 1 when the send resolved through a role
+  // address, so a resend repeats the role hit's to_name only to a socket
+  // with BUS_CAPS.roles. Backfilled 0: no key predates roles.
+  if (!keyCols.has("via_role"))
+    sql.exec(
+      "alter table send_keys add column via_role integer not null default 0",
+    );
   sql.exec(HUB_SCHEMA_B14_INDEXES);
   sql.exec(HUB_SCHEMA_PURGE_INDEXES);
 }

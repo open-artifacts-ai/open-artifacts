@@ -73,3 +73,39 @@ export const ShareNoticeAgentsSchema = z.strictObject({
   agents: z.array(BusAddressSchema).max(SHARE_NOTICE_MAX),
 });
 export type ShareNoticeAgents = z.infer<typeof ShareNoticeAgentsSchema>;
+
+/** Role addresses one member may hold (#1296). */
+export const BUS_ROLE_MAX = 100;
+
+/**
+ * One of the caller's role addresses (#1296): an alias in one namespace
+ * pointing at one agent, by its stable id (it follows renames). `holderName`
+ * is that agent's current name (its last one if it closed), null when no
+ * holder is set or its row is gone. `vacant`: a send to the role is refused
+ * now (no holder, or the holder is closed, gone or out of the namespace).
+ */
+export const BusRoleSchema = z.strictObject({
+  id: z.string(),
+  namespace: BusAddressSchema.shape.namespace,
+  name: BusAddressSchema.shape.name,
+  agentId: z.string().nullable(),
+  holderName: z.string().nullable(),
+  vacant: z.boolean(),
+  setAt: z.string(),
+});
+export type BusRole = z.infer<typeof BusRoleSchema>;
+
+/** GET R.busRoles, ordered by namespace then name. `live` false: the bus could not be asked (roles is then []). */
+export const BusRolesSchema = z.strictObject({
+  roles: z.array(BusRoleSchema).max(BUS_ROLE_MAX),
+  live: z.boolean(),
+});
+export type BusRoles = z.infer<typeof BusRolesSchema>;
+
+/** PUT R.busRoles: point the role (namespace, name) at `agentId`, or vacate it (null). */
+export const BusRolePutSchema = z.strictObject({
+  namespace: BusAddressSchema.shape.namespace,
+  name: BusAddressSchema.shape.name,
+  agentId: z.string().min(1).max(64).nullable(),
+});
+export type BusRolePut = z.infer<typeof BusRolePutSchema>;

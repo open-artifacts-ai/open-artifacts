@@ -68,19 +68,38 @@ export type MintLog = { sealed: string; job: string };
  * host in the log must be APP_HOST: the hook key goes nowhere else.
  */
 export function parseMintLog(log: string): MintLog | null {
-  const sealed = /test-member-sealed: (oa-seal-v1\.[A-Za-z0-9_.-]+)/.exec(
-    log,
-  )?.[1];
-  const job = /test-member-job: ([A-Za-z0-9_-]+)/.exec(log)?.[1];
-  const host = /test-member-app-host: (\S+)/.exec(log)?.[1];
+  const sealed = markerValue(log, "sealed", "oa-seal-v1\\.[A-Za-z0-9_.-]+");
+  const job = markerValue(log, "job", JOB);
+  const host = markerValue(log, "app-host", "[a-z0-9.-]+");
   if (!sealed || !job || host !== APP_HOST) return null;
   return { sealed, job };
 }
 
 /** True when a revoke run's log says it revoked rl-agents. */
 export const parseRevokeLog = (log: string): boolean =>
-  /test-member-revoked: rl-agents(\s|$)/.test(log) &&
-  /test-member-job: [A-Za-z0-9_-]+/.test(log);
+  markerValue(log, "revoked", "[a-z0-9-]+") === "rl-agents" &&
+  markerValue(log, "job", JOB) !== null;
+
+const JOB = "[A-Za-z0-9_-]+";
+
+/**
+ * The value printed after `test-member-<marker>: `, or null. gh's log also
+ * holds the step's script, where each marker is followed by a shell variable
+ * (`echo "test-member-app-host: $host"`); only a marker at the start of a
+ * word whose whole value matches `value` counts. Two different values: null.
+ */
+function markerValue(
+  log: string,
+  marker: string,
+  value: string,
+): string | null {
+  const re = new RegExp(
+    `(?:^|\\s)test-member-${marker}: (${value})(?=\\s|$)`,
+    "gm",
+  );
+  const found = new Set(Array.from(log.matchAll(re), (m) => m[1]));
+  return found.size === 1 ? [...found][0] : null;
+}
 
 /** R26's opened payload: only the hook key is used. */
 export function hookKeyOf(plain: string): string {

@@ -22,7 +22,6 @@ import { fmtDayClock, shortId } from "../components/labels";
 import { useCan, useMe } from "../hooks/useEnv";
 import { usePaging } from "../hooks/usePaging";
 import { LoadError } from "../layout/LoadError";
-
 import {
   AUDIT_ACTIONS,
   actionPhrase,
@@ -48,7 +47,6 @@ const OWN_ACTIONS = [
   "authz.refused",
   "session.logout",
 ];
-
 /** A HOSTS row reads by the mode it set; any other mode, the plain change. */
 const hostsPhrase = (e: AuditEntry) => {
   const mode = typeof e.detail?.mode === "string" ? e.detail.mode : "";

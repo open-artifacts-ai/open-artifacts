@@ -211,6 +211,11 @@ export class FakeCf {
     s: FakeScript,
     bindings: { name: string; type: string; [k: string]: unknown }[],
   ) => { name: string; type: string; [k: string]: unknown }[];
+  /**
+   * Edits the names a secret list GET answers with (verify_clean tests:
+   * Cloudflare's read lag after an upload, #1352).
+   */
+  secretsEdit?: (s: FakeScript, names: string[]) => string[];
   /** Every request served through dispatcher(), by script name. */
   readonly dispatched: { script: string; path: string }[] = [];
   /**
@@ -795,7 +800,10 @@ export class FakeCf {
       return env({ bindings: this.settingsOf(s) });
     if (sub === "/secrets" && req.method === "GET")
       return env(
-        [...s.secrets.keys()].map((n) => ({ name: n, type: "secret_text" })),
+        (this.secretsEdit
+          ? this.secretsEdit(s, [...s.secrets.keys()])
+          : [...s.secrets.keys()]
+        ).map((n) => ({ name: n, type: "secret_text" })),
       );
     if (sub === "/secrets" && req.method === "PUT") {
       const { name: n, text, type } = JSON.parse(body);
