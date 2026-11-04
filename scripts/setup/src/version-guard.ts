@@ -17,6 +17,8 @@ export type VersionInfo = {
   downgrade: boolean;
   /** The deployed version is below MIN_UPGRADE_FROM and this checkout is past it. */
   belowMinUpgrade: boolean;
+  /** #1427: --upgrade can't tell the deployed version and this checkout is past MIN_UPGRADE_FROM. */
+  unknownLive: boolean;
 };
 
 /** The repo version: root package.json, else the release-please manifest. */
@@ -39,7 +41,7 @@ function base(v: unknown): number[] | undefined {
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
 }
 
-/** The deployed version: live /healthz `version`, else the saved one; a failed or odd answer is unknown. */
+/** The deployed version: live /healthz `version`, else the saved one, else --deployed-version; a failed or odd answer is unknown. */
 async function liveVersion(state: State, ctx: Ctx) {
   try {
     const r = await ctx.deps.fetch(`https://${ctx.opts.appHost}/healthz`, {
@@ -50,7 +52,7 @@ async function liveVersion(state: State, ctx: Ctx) {
       : undefined;
     if (base(v)) return base(v);
   } catch {}
-  return base(state.deployedVersion);
+  return base(state.deployedVersion) ?? base(ctx.opts.deployedVersion);
 }
 
 /**
@@ -75,6 +77,7 @@ export async function versionInfo(
     repoVersion: a.join("."),
     downgrade: false,
     belowMinUpgrade: false,
+    unknownLive: false,
   };
   const existing =
     ctx.opts.upgrade ||
@@ -83,8 +86,10 @@ export async function versionInfo(
     state.accessAppId;
   if (!existing) return out;
   const b = await liveVersion(state, ctx);
-  if (!b) return out;
   const min = base(MIN_UPGRADE_FROM) as number[];
+  // #1427: unknown is not "old enough". Only a checkout past MIN_UPGRADE_FROM
+  // needs to know, as for belowMinUpgrade.
+  if (!b) return { ...out, unknownLive: ctx.opts.upgrade && cmp(a, min) > 0 };
   return {
     ...out,
     liveVersion: b.join("."),
@@ -101,6 +106,9 @@ function cmp(a: number[], b: number[]): number {
 
 export const belowMinUpgradeMessage = (v: VersionInfo) =>
   `the deployed ${v.liveVersion} is older than ${MIN_UPGRADE_FROM}, the oldest version this release (${v.repoVersion}) upgrades from; upgrade to v${MIN_UPGRADE_FROM} first (git checkout v${MIN_UPGRADE_FROM}, then run the same upgrade), then check out this release and run it again`;
+
+export const unknownLiveMessage = (v: VersionInfo, appHost: string) =>
+  `cannot tell which version is deployed (https://${appHost}/healthz gave none and the state file has none), and this release (${v.repoVersion}) upgrades only from ${MIN_UPGRADE_FROM} or later; make /healthz reachable from here, or pass --deployed-version X.Y.Z with the version the install runs, then run the same upgrade again`;
 
 export const downgradeMessage = (v: VersionInfo) =>
   `this checkout is ${v.repoVersion}, older than the deployed ${v.liveVersion}; check out ${v.liveVersion} or newer (git checkout v${v.liveVersion}), or pass --allow-downgrade to deploy an older release on purpose`;

@@ -15,6 +15,7 @@ import {
 import {
   belowMinUpgradeMessage,
   downgradeMessage,
+  unknownLiveMessage,
   versionInfo,
 } from "../version-guard.ts";
 import { reusesDeployToken } from "./secrets.ts";
@@ -209,6 +210,9 @@ export const prereqs: Step = {
     // #1315: too old to upgrade from straight to this release; nothing bypasses it.
     if (ctx.version.belowMinUpgrade && !ctx.opts.check)
       throw new NeedInput(belowMinUpgradeMessage(ctx.version));
+    // #1427: an unknown deployed version could be below it.
+    if (ctx.version.unknownLive && !ctx.opts.check)
+      throw new NeedInput(unknownLiveMessage(ctx.version, ctx.opts.appHost));
     if (ctx.version.downgrade && !ctx.opts.allowDowngrade && !ctx.opts.check)
       throw new NeedInput(downgradeMessage(ctx.version));
     const who = JSON.parse(await ctx.wrangler(["whoami", "--json"])) as {

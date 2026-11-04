@@ -19,6 +19,8 @@ export type Opts = {
   newOwnerToken: boolean;
   /** --allow-downgrade: deploy a checkout older than the deployed version. */
   allowDowngrade: boolean;
+  /** --deployed-version (X.Y.Z, --upgrade only): the deployed version when /healthz and state can't say. */
+  deployedVersion?: string;
   /** Render BROWSER + SERVER_THUMBNAILS (Paid only): decided by prereqs from browserFlag, the plan, then state. */
   browser: boolean;
   /** --browser (true) or --no-browser (false). */
