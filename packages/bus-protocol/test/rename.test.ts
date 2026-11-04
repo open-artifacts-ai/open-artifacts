@@ -45,7 +45,10 @@ describe("limits (R393a)", () => {
     expect(LIMITS.formerNameGraceMs).toBe(LIMITS.mailTtlSec * 1000);
     expect(LIMITS.maxFormerNames).toBe(5);
     expect(LIMITS.renamesPerHour).toBe(10);
-    expect(RENAME_MESSAGES).toEqual({ rate: "Too many renames" });
+    expect(RENAME_MESSAGES).toEqual({
+      rate: "Too many renames",
+      room: "Too many recent names",
+    });
   });
 });
 

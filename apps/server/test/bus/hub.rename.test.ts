@@ -27,6 +27,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { BusHub } from "../../src/bus/hub.js";
+import { migrateHub } from "../../src/bus/schema.js";
 import {
   type Daemon,
   daemon,
@@ -427,7 +428,7 @@ describe("rename (R393b)", () => {
     expect(await rename(d, "a", uniq("Sixth"))).toMatchObject({
       type: "error",
       code: "rate_limited",
-      message: RENAME_MESSAGES.rate,
+      message: RENAME_MESSAGES.room,
     });
     expect(await reg(d, "x", mine, n)).toBe(`${mine}-2`);
     const rc = await send(d, "s", mine);
@@ -897,8 +898,8 @@ describe("review fixes (R393b)", () => {
     // Seeded: commitName and the reservation keep this from happening.
     await inHub((_, st) =>
       st.storage.sql.exec(
-        `insert into former_names (agent_id, org_id, name, lname, kind, expires_at)
-         select id, org_id, ?, ?, 'chosen', ? from agents where name = ?`,
+        `insert into former_names (agent_id, org_id, name, lname, kind, expires_at, namespace, global)
+         select id, org_id, ?, ?, 'chosen', ?, namespace, global from agents where name = ?`,
         a,
         a.toLowerCase(),
         Date.now() + GRACE,
@@ -912,7 +913,7 @@ describe("review fixes (R393b)", () => {
     d.close();
   });
 
-  it("a namespace move or global flip drops the agent's former names", async () => {
+  it("a namespace move or global flip keeps chosen former names in the old scope, resolving to no one (OpenBus #451)", async () => {
     const d = await at();
     const n1 = ns("rn");
     const n2 = ns("rn");
@@ -924,19 +925,27 @@ describe("review fixes (R393b)", () => {
     const y2 = uniq("Y2");
     await renamed(d, "y", y2);
     await reg(d, "s", uniq("Sender"), n2);
-    // X flips global: its former `foo` would otherwise be visible in n2.
+    // X flips global: its former `foo` stays reserved in n1 only, so it is
+    // neither visible nor delivered in n2.
     expect(await reg(d, "x", x2, n1, { global: true })).toBe(x2);
-    expect(await formerRows(x2)).toEqual([]);
+    expect(await formerRows(x2)).toEqual([foo]);
     expect(await send(d, "s", foo)).toMatchObject({
       state: "pending",
       to_name: y2,
     });
-    // A namespace move drops them too.
+    // A namespace move keeps them too (default ones go).
     const y3 = uniq("Y3");
     await renamed(d, "y", y3);
     expect(await formerRows(y3)).toHaveLength(2);
     expect(await reg(d, "y", y3, n1)).toBe(y3);
-    expect(await formerRows(y3)).toEqual([]);
+    expect((await formerRows(y3)).sort()).toEqual([foo, y2].sort());
+    const minted = await reg(d, "p", uniq("pi"), n1, { kind: "default" });
+    await renamed(d, "p", uniq("Pc"));
+    const pc = uniq("Pc2");
+    await renamed(d, "p", pc);
+    expect(await reg(d, "p", pc, n2)).toBe(pc);
+    expect(await formerRows(pc)).toHaveLength(1);
+    expect(await reg(d, "q", minted, n1)).toBe(`${minted}-2`);
     d.close();
   });
 
@@ -1312,7 +1321,8 @@ describe("OpenBus #449: review of #446", () => {
     await reg(d, "a", uniq("Mover"), n1);
     const cur = await churn(d, "a", LIMITS.renamesPerHour);
     expect(await reg(d, "a", uniq("Elsewhere"), n2)).toBe(cur);
-    expect(await formerRows(cur)).toEqual([]);
+    // OpenBus #451: its chosen former names stay, reserved in n1.
+    expect(await formerRows(cur)).toHaveLength(2);
     const ns2 = await inHub(
       (_, st) =>
         st.storage.sql
@@ -1326,18 +1336,20 @@ describe("OpenBus #449: review of #446", () => {
     d.close();
   });
 
-  it("an agent_up namespace move with maxFormerNames chosen names in grace takes the new name: a move leaves no former name", async () => {
+  it("an agent_up namespace move with maxFormerNames chosen names in grace moves under its current name; the names stay reserved in the old namespace (OpenBus #451)", async () => {
     const d = await at();
     const n1 = ns("rn");
     const n2 = ns("rn");
-    await reg(d, "a", uniq("Full"), n1);
+    const full = uniq("Full");
+    await reg(d, "a", full, n1);
     let cur = "";
     for (let i = 0; i < LIMITS.maxFormerNames; i++)
       cur = (await renamed(d, "a", uniq(`F${i}`))).bus_name;
     expect(await formerRows(cur)).toHaveLength(LIMITS.maxFormerNames);
-    const moved = uniq("Moved");
-    expect(await reg(d, "a", moved, n2)).toBe(moved);
-    expect(await formerRows(moved)).toEqual([]);
+    // The move would leave a sixth chosen name: no room, so the name is kept.
+    expect(await reg(d, "a", uniq("Moved"), n2)).toBe(cur);
+    expect(await formerRows(cur)).toHaveLength(LIMITS.maxFormerNames);
+    expect(await reg(d, "x", full, n1)).toBe(`${full}-2`);
     d.close();
   });
 
@@ -1444,5 +1456,403 @@ describe("wipe (erase) and the R393b tables", () => {
     await renamed(d2, "q", uniq("Again2"));
     expect((await counts())[0]).toBe(1);
     d2.close();
+  });
+});
+
+describe("OpenBus #451: a move or global flip keeps chosen former names reserved", () => {
+  /** rename_rl rows of the live agent `ref` on any machine named `name`. */
+  const log = (name: string) =>
+    inHub(
+      (_, st) =>
+        st.storage.sql
+          .exec(
+            "select count(*) as n from rename_rl r join agents a on a.id = r.agent_id where a.name = ?",
+            name,
+          )
+          .one().n,
+    );
+
+  it("a namespace move: a stranger in the old namespace gets -2 and its mail is refused, until the grace ends", async () => {
+    const t0 = Date.now() + 80 * GRACE;
+    await setClock(t0);
+    const d = await at();
+    const n1 = ns("rn");
+    const n2 = ns("rn");
+    const n3 = ns("rn");
+    await reg(d, "s1", uniq("Sender"), n1);
+    await reg(d, "s2", uniq("Sender"), n2);
+    const mine = uniq("Mine");
+    await reg(d, "a", mine, n1);
+    const other = uniq("Other");
+    await renamed(d, "a", other);
+    expect(await reg(d, "a", other, n2)).toBe(other);
+    // Still reserved in n1, and for a global; free in another namespace.
+    expect(await reg(d, "x", mine, n1)).toBe(`${mine}-2`);
+    expect(await reg(d, "g", mine, n3, { global: true })).toBe(`${mine}-3`);
+    // It resolves to no one: not delivered to the moved agent.
+    expect(await send(d, "s1", mine)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    // Nor in its new namespace, where it was never its name.
+    expect(await send(d, "s2", mine)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    // The roster shows no former name the agent cannot be reached by.
+    expect(row(await list(d, "s2"), other)?.former_names).toBeUndefined();
+    // Taking the name back in n2 keeps the n1 reservation.
+    await renamed(d, "a", mine);
+    expect(await reg(d, "y", mine, n1)).toBe(`${mine}-4`);
+    expect(await send(d, "s1", mine)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    // After the grace the name is free in n1.
+    await setClock(t0 + GRACE);
+    expect(await reg(d, "z", mine, n1)).toBe(mine);
+    d.close();
+  });
+
+  it("a global flip, both ways: the old scope keeps the reservation and refuses its mail", async () => {
+    const t0 = Date.now() + 90 * GRACE;
+    await setClock(t0);
+    const d = await at();
+    const n1 = ns("rn");
+    const n2 = ns("rn");
+    await reg(d, "s1", uniq("Sender"), n1);
+    await reg(d, "s2", uniq("Sender"), n2);
+    // Non-global to global.
+    const mine = uniq("Mine");
+    await reg(d, "a", mine, n1);
+    const other = uniq("Other");
+    await renamed(d, "a", other);
+    expect(await reg(d, "a", other, n1, { global: true })).toBe(other);
+    expect(await reg(d, "x", mine, n1)).toBe(`${mine}-2`);
+    expect(await send(d, "s1", mine)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    expect(await send(d, "s1", mine, n1)).toMatchObject({
+      state: "refused",
+    });
+    // Global to non-global: the reservation was everywhere, and stays so.
+    const gmine = uniq("GMine");
+    await reg(d, "b", gmine, n1, { global: true });
+    const gother = uniq("GOther");
+    await renamed(d, "b", gother);
+    expect(await reg(d, "b", gother, n1)).toBe(gother);
+    expect(await reg(d, "y", gmine, n2)).toBe(`${gmine}-2`);
+    expect(await send(d, "s1", gmine)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    await setClock(t0 + GRACE);
+    expect(await reg(d, "z", mine, n1)).toBe(mine);
+    expect(await reg(d, "w", gmine, n2)).toBe(gmine);
+    d.close();
+  });
+
+  it("a move that also changes the name reserves the old one in the old namespace", async () => {
+    const d = await at();
+    const n1 = ns("rn");
+    const n2 = ns("rn");
+    await reg(d, "s1", uniq("Sender"), n1);
+    const mine = uniq("Mine");
+    await reg(d, "a", mine, n1);
+    const other = uniq("Other");
+    expect(await reg(d, "a", other, n2)).toBe(other);
+    expect(await log(other)).toBe(1);
+    expect(await reg(d, "x", mine, n1)).toBe(`${mine}-2`);
+    expect(await send(d, "s1", mine)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    d.close();
+  });
+
+  it("a same-name move with maxFormerNames chosen names in grace cannot escape the room check", async () => {
+    const d = await at();
+    const n1 = ns("rn");
+    const n2 = ns("rn");
+    const mine = uniq("Mine");
+    await reg(d, "a", mine, n1);
+    const left = [mine];
+    let cur = mine;
+    for (let i = 0; i < LIMITS.maxFormerNames; i++) {
+      cur = uniq(`M${i}`);
+      await renamed(d, "a", cur);
+      left.push(cur);
+    }
+    left.pop();
+    expect(await reg(d, "a", cur, n2)).toBe(cur);
+    // The move counts nothing (the name did not change)...
+    expect(await log(cur)).toBe(LIMITS.maxFormerNames);
+    // ...and the five reservations still fill the room.
+    expect(await rename(d, "a", uniq("Sixth"))).toMatchObject({
+      type: "error",
+      code: "rate_limited",
+      message: RENAME_MESSAGES.room,
+    });
+    expect(await reg(d, "a", uniq("Sixth"), n2)).toBe(cur);
+    for (const f of left) expect(await reg(d, id("x"), f, n1)).toBe(`${f}-2`);
+    d.close();
+  });
+
+  it("taking back a name left in the old namespace still needs room: that row is in another scope", async () => {
+    const d = await at();
+    const n1 = ns("rn");
+    const n2 = ns("rn");
+    const mine = uniq("Mine");
+    await reg(d, "a", mine, n1);
+    let cur = mine;
+    for (let i = 0; i < LIMITS.maxFormerNames; i++) {
+      cur = uniq(`T${i}`);
+      await renamed(d, "a", cur);
+    }
+    expect(await reg(d, "a", cur, n2)).toBe(cur);
+    // `mine` in n2 would leave `cur` there while the n1 row of `mine` stays:
+    // a sixth chosen reservation.
+    expect(await rename(d, "a", mine)).toMatchObject({
+      type: "error",
+      code: "rate_limited",
+      message: RENAME_MESSAGES.room,
+    });
+    expect(await formerRows(cur)).toHaveLength(LIMITS.maxFormerNames);
+    d.close();
+  });
+});
+
+describe("OpenBus #451 nits", () => {
+  it("a reopen de-collided from its own name counts nothing (N1)", async () => {
+    const d = await at();
+    const n = ns("rn");
+    const dup = uniq("Dup");
+    await reg(d, "a", dup, n);
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+    expect(await reg(d, "o", dup, n)).toBe(dup);
+    expect(await reg(d, "a", dup, n)).toBe(`${dup}-2`);
+    const log = await inHub(
+      (_, st) =>
+        st.storage.sql
+          .exec(
+            "select count(*) as n from rename_rl r join agents a on a.id = r.agent_id where a.name = ?",
+            `${dup}-2`,
+          )
+          .one().n,
+    );
+    expect(log).toBe(0);
+    d.close();
+  });
+
+  it("10 fresh renames in an hour, 5 of them minted: the defaults are dropped first at the limit (N3)", async () => {
+    const t0 = Date.now() + 100 * GRACE;
+    await setClock(t0);
+    const d = await at();
+    const n = ns("rn");
+    await reg(d, "s", uniq("Sender"), n);
+    const c0 = uniq("C0");
+    await reg(d, "a", c0, n);
+    const minted: string[] = [];
+    for (let i = 0; i < 5; i++)
+      minted.push((await renamed(d, "a", uniq(`pd${i}`), "default")).bus_name);
+    const chosen = [c0];
+    let cur = "";
+    for (let i = 1; i <= 5; i++) {
+      cur = uniq(`C${i}`);
+      await renamed(d, "a", cur);
+      chosen.push(cur);
+    }
+    chosen.pop();
+    // Every default row went first; the five chosen ones are all kept.
+    expect((await formerRows(cur)).sort()).toEqual([...chosen].sort());
+    expect(await rename(d, "a", uniq("Over"))).toMatchObject({
+      type: "error",
+      code: "rate_limited",
+      message: RENAME_MESSAGES.rate,
+    });
+    for (const m of minted) {
+      expect(await send(d, "s", m)).toMatchObject({
+        state: "refused",
+        reason: "unknown_agent",
+      });
+      expect(await reg(d, id("x"), m, n)).toBe(`${m}-2`);
+    }
+    for (const c of chosen) {
+      expect(await send(d, "s", c)).toMatchObject({
+        state: "pending",
+        to_name: cur,
+      });
+      expect(await reg(d, id("y"), c, n)).toBe(`${c}-2`);
+    }
+    d.close();
+  });
+});
+
+it("OpenBus #451: migrateHub anchors existing former names to their agent's scope", async () => {
+  const d = await at();
+  const n = ns("rn");
+  const a = uniq("Mig");
+  await reg(d, "a", a, n, { global: true });
+  const b = uniq("Mig2");
+  await renamed(d, "a", b);
+  const got = await inHub((_, st) => {
+    const sql = st.storage.sql;
+    sql.exec("alter table former_names drop column namespace");
+    sql.exec("alter table former_names drop column global");
+    migrateHub(sql);
+    migrateHub(sql);
+    return sql
+      .exec(
+        "select namespace, global from former_names where lname = ?",
+        a.toLowerCase(),
+      )
+      .one();
+  });
+  expect(got).toEqual({ namespace: n, global: 1 });
+  d.close();
+});
+
+it("OpenBus #452: a global's unscoped send is ambiguous across a current name and a former name in other namespaces", async () => {
+  const d = await at();
+  const x = ns("rn");
+  const y = ns("rn");
+  const z = ns("rn");
+  const alice = uniq("alice");
+  await reg(d, "a", alice, x);
+  const bob = uniq("bob");
+  await renamed(d, "a", bob);
+  expect(await reg(d, "c", alice, y)).toBe(alice);
+  await reg(d, "g", uniq("G"), z, { global: true });
+  expect(await send(d, "g", alice)).toMatchObject({
+    state: "refused",
+    reason: "ambiguous",
+  });
+  // A namespace given picks one.
+  const toC = await send(d, "g", alice, y);
+  expect(toC.state).toBe("pending");
+  expect(toC.to_name).toBeUndefined();
+  expect((await delivered(d, toC.msg_id)).to_ref).toBe("c");
+  // The global sender's own namespace still comes first.
+  await reg(d, "h", uniq("H"), x, { global: true });
+  expect(await send(d, "h", alice)).toMatchObject({
+    state: "pending",
+    to_name: bob,
+  });
+  d.close();
+});
+
+describe("OpenBus #451 review of 8038558", () => {
+  for (const how of ["move", "flip"] as const)
+    it(`OpenBus #452 stays ambiguous after the renamed agent's ${how}`, async () => {
+      const d = await at();
+      const x = ns("rn");
+      const y = ns("rn");
+      const z = ns("rn");
+      const w = ns("rn");
+      const alice = uniq("alice");
+      await reg(d, "a", alice, x);
+      const bob = uniq("bob");
+      await renamed(d, "a", bob);
+      expect(await reg(d, "c", alice, y)).toBe(alice);
+      await reg(d, "g", uniq("G"), z, { global: true });
+      expect(await send(d, "g", alice)).toMatchObject({
+        state: "refused",
+        reason: "ambiguous",
+      });
+      if (how === "move") expect(await reg(d, "a", bob, w)).toBe(bob);
+      else expect(await reg(d, "a", bob, x, { global: true })).toBe(bob);
+      expect(await send(d, "g", alice)).toMatchObject({
+        state: "refused",
+        reason: "ambiguous",
+      });
+      d.close();
+    });
+
+  it("a live move whose name gets a suffix reserves the old name in the old namespace", async () => {
+    const d = await at();
+    const n1 = ns("rn");
+    const n2 = ns("rn");
+    const mine = uniq("Mine");
+    await reg(d, "a", mine, n1);
+    expect(await reg(d, "c", mine, n2)).toBe(mine);
+    expect(await reg(d, "a", mine, n2)).toBe(`${mine}-2`);
+    expect(await formerRows(`${mine}-2`)).toEqual([mine]);
+    expect(await reg(d, "x", mine, n1)).toBe(`${mine}-2`);
+    d.close();
+  });
+
+  it("a global moving its home namespace keeps its former names resolving", async () => {
+    const d = await at();
+    const n1 = ns("rn");
+    const n2 = ns("rn");
+    const n3 = ns("rn");
+    await reg(d, "s", uniq("Sender"), n3);
+    const g = uniq("Glob");
+    await reg(d, "a", g, n1, { global: true });
+    const g2 = uniq("Glob2");
+    await renamed(d, "a", g2);
+    expect(await reg(d, "a", g2, n2, { global: true })).toBe(g2);
+    expect(await send(d, "s", g)).toMatchObject({
+      state: "pending",
+      to_name: g2,
+    });
+    expect(
+      row(await list(d, "s"), g2)?.former_names?.map((f) => f.name),
+    ).toEqual([g]);
+    expect(await reg(d, "x", g, n3)).toBe(`${g}-2`);
+    // A default former name stays too: the scope did not change.
+    const minted = await reg(d, "b", uniq("gpi"), n1, {
+      global: true,
+      kind: "default",
+    });
+    const b2 = uniq("GlobB");
+    await renamed(d, "b", b2);
+    expect(await reg(d, "b", b2, n2, { global: true })).toBe(b2);
+    expect(await send(d, "s", minted)).toMatchObject({
+      state: "pending",
+      to_name: b2,
+    });
+    d.close();
+  });
+});
+
+describe("OpenBus #451 review of 35017e2", () => {
+  it("a former name elsewhere is ambiguous against another agent's left-behind reservation (F1)", async () => {
+    const d = await at();
+    const x = ns("rn");
+    const y = ns("rn");
+    const z = ns("rn");
+    const w = ns("rn");
+    const alice = uniq("alice");
+    await reg(d, "a", alice, x);
+    const bob = uniq("bob");
+    await renamed(d, "a", bob);
+    expect(await reg(d, "a", bob, w)).toBe(bob);
+    expect(await reg(d, "e", alice, y)).toBe(alice);
+    await renamed(d, "e", uniq("eve"));
+    await reg(d, "g", uniq("G"), z, { global: true });
+    expect(await send(d, "g", alice)).toMatchObject({
+      state: "refused",
+      reason: "ambiguous",
+    });
+    d.close();
+  });
+
+  it("a global sender's own left-behind reservation never makes its send ambiguous (F2)", async () => {
+    const d = await at();
+    const x = ns("rn");
+    const y = ns("rn");
+    const alice = uniq("alice");
+    await reg(d, "a", alice, x);
+    const bob = uniq("bob");
+    await renamed(d, "a", bob);
+    expect(await reg(d, "a", bob, x, { global: true })).toBe(bob);
+    expect(await reg(d, "c", alice, y)).toBe(alice);
+    const rc = await send(d, "a", alice);
+    expect(rc.state).toBe("pending");
+    expect(rc.to_name).toBeUndefined();
+    expect((await delivered(d, rc.msg_id)).to_ref).toBe("c");
+    d.close();
   });
 });

@@ -121,6 +121,7 @@ describe("renames (#393) are pinned", () => {
     expect(LIMITS.maxFormerNames).toBe(5);
     expect(LIMITS.renamesPerHour).toBe(10);
     expect(bus.RENAME_MESSAGES.rate).toBe("Too many renames");
+    expect(bus.RENAME_MESSAGES.room).toBe("Too many recent names");
     expect(bus.BUS_CAPS.rename).toBe("rename");
     expect("RENAME_MIN_CLIENT" in bus).toBe(false);
   });
@@ -167,6 +168,7 @@ describe("CONTRACT.md", () => {
       "name_kind",
       "caps",
       "Too many renames",
+      "Too many recent names",
     ])
       expect(doc, t).toContain(t);
   });

@@ -12,8 +12,14 @@ import { IsoTimeSchema } from "./status.ts";
 
 /** Pinned `error` messages for `rename` refusals. Clients may match on them. */
 export const RENAME_MESSAGES = {
-  /** `rate_limited`: past LIMITS.renamesPerHour name changes in a rolling hour, or LIMITS.maxFormerNames chosen former names in their grace (OpenBus #446). */
+  /** `rate_limited`: past LIMITS.renamesPerHour name changes in a rolling hour. */
   rate: "Too many renames",
+  /**
+   * `rate_limited`: LIMITS.maxFormerNames chosen former names are still in
+   * their grace (each stays reserved for it), so a change that would leave
+   * another is refused until one ends (OpenBus #451).
+   */
+  room: "Too many recent names",
 } as const;
 
 /**
