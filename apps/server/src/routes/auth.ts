@@ -128,6 +128,9 @@ export function mountAuth(app: AppType): void {
       {
         retry: c.req.query("retry") === "1",
         cookieHeader: c.req.header("cookie"),
+        // A forced sign-in (#1372): the role proposal confirm page's
+        // "Sign in again" (prompt=login, max_age=0 at Access).
+        reauth: c.req.query("reauth") === "1",
       },
     );
     return redirect(location, [...evict, stateCookie]);

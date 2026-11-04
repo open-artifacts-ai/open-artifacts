@@ -22,6 +22,7 @@ import type { BusHub } from "../../src/bus/hub.js";
 import { ROLE_CONFIRM_SCOPE } from "../../src/bus/role-confirm.js";
 import { formCsrf } from "../../src/http/pages.js";
 import { sha256Hex } from "../../src/util/crypto.js";
+import { trial } from "../auth-helpers.js";
 import { api, fetchAndWait } from "../helpers.js";
 import {
   connect,
@@ -119,13 +120,17 @@ const proposed = (r: ToolResult): Proposed & { secret: string } => {
 
 const path = (secret: string) => `/bus/roles/confirm/${secret}`;
 
-const get = (secret: string, headers: Record<string, string>) =>
-  fetchAndWait(app, new Request(`${APP}${path(secret)}`, { headers }));
+const get = (
+  secret: string,
+  headers: Record<string, string>,
+  e: unknown = env,
+) => fetchAndWait(app, new Request(`${APP}${path(secret)}`, { headers }), e);
 
 const post = (
   secret: string,
   headers: Record<string, string>,
   fields: [string, string][],
+  e: unknown = env,
 ) => {
   const body = new URLSearchParams(fields).toString();
   return fetchAndWait(
@@ -139,6 +144,7 @@ const post = (
       },
       body,
     }),
+    e,
   );
 };
 
@@ -153,13 +159,19 @@ async function confirmInBrowser(
   cookie: string,
   secret: string,
   decision: "confirm" | "reject" = "confirm",
+  e: unknown = env,
 ) {
-  const page = await get(secret, { cookie });
+  const page = await get(secret, { cookie }, e);
   expect(page.status).toBe(200);
-  return post(secret, { cookie }, [
-    ["csrf", csrfOf(await page.text())],
-    ["decision", decision],
-  ]);
+  return post(
+    secret,
+    { cookie },
+    [
+      ["csrf", csrfOf(await page.text())],
+      ["decision", decision],
+    ],
+    e,
+  );
 }
 
 /** A valid form token for `uid` and link `secret`, minted directly (as if the page had been loaded). */
@@ -884,5 +896,247 @@ describe("role proposals over MCP (#1372)", () => {
       );
       expect(page.status).toBe(404);
     }
+  });
+});
+
+/** A session cookie for `uid` signed at `iat` (ms), as `provider`, with Google's forced-reauth time. */
+async function sessionAt(
+  uid: string,
+  iat: number,
+  provider: "access" | "google" | "code",
+  authAt?: number,
+): Promise<string> {
+  const row = await env.DB.prepare(
+    "select session_epoch e from users where id = ?",
+  )
+    .bind(uid)
+    .first<{ e: number }>();
+  return `${sessionCookieName(env)}=${await signSession(env, uid, iat, {
+    provider,
+    epoch: row?.e ?? 0,
+    // A code session in the verified domains (outside them it is capped).
+    ...(provider === "code" ? { tenant: "x.com" } : {}),
+    ...(authAt !== undefined ? { authAt } : {}),
+  })}`;
+}
+
+const MIN = 60_000;
+/** Email codes on (and no Google), so a code session in x.com is a session at all. */
+const CODES = trial({ AUTH_DOMAINS: "x.com" });
+const envOf = (provider: string) => (provider === "code" ? CODES : env);
+
+describe("role proposals: a fresh sign-in, bound names (#1372 review)", () => {
+  async function pending() {
+    const { who, d, pat } = await withBus();
+    const n = ns("rp");
+    const alice = await open(who.userId, d, n);
+    const p = proposed(
+      await propose(pat, {
+        action: "set",
+        namespace: n,
+        name: "lead",
+        agent: alice.name,
+      }),
+    );
+    return { who, d, pat, n, alice, p };
+  }
+
+  it("a sign-in older than 10 minutes can neither load nor post the form; the page asks for a forced sign-in", async () => {
+    const { who, d, p } = await pending();
+    const csrf = await forgedCsrf(who.userId, p.secret);
+    const next = encodeURIComponent(path(p.secret));
+    for (const [provider, link] of [
+      ["access", `/auth/login?via=access&amp;reauth=1&amp;next=${next}`],
+      ["code", `/sign-in?next=${next}`],
+      ["google", `/auth/login/google?reauth=1&amp;next=${next}`],
+    ] as const) {
+      const old = await sessionAt(
+        who.userId,
+        Date.now() - 11 * MIN,
+        provider,
+        Date.now() - 11 * MIN,
+      );
+      const g = await get(p.secret, { cookie: old }, envOf(provider));
+      expect(g.status, provider).toBe(403);
+      const body = await g.text();
+      expect(body, provider).not.toContain('name="csrf"');
+      expect(body, provider).toContain(link);
+      const r = await post(
+        p.secret,
+        { cookie: old },
+        [
+          ["csrf", csrf],
+          ["decision", "confirm"],
+        ],
+        envOf(provider),
+      );
+      expect(r.status, provider).toBe(403);
+    }
+    expect(await roles(who.userId)).toEqual([]);
+    expect((await proposals(who.userId))[0]?.status).toBe("pending");
+    d.close();
+  });
+
+  it("Google: a fresh session also needs a forced re-authentication (auth_time) under 10 minutes", async () => {
+    const { who, d, p } = await pending();
+    const now = Date.now();
+    const silent = await sessionAt(who.userId, now - MIN, "google");
+    expect((await get(p.secret, { cookie: silent })).status).toBe(403);
+    const stale = await sessionAt(
+      who.userId,
+      now - MIN,
+      "google",
+      now - 11 * MIN,
+    );
+    expect((await get(p.secret, { cookie: stale })).status).toBe(403);
+    const forced = await sessionAt(who.userId, now - MIN, "google", now - MIN);
+    expect((await confirmInBrowser(forced, p.secret)).status).toBe(200);
+    expect(await roles(who.userId)).toHaveLength(1);
+    d.close();
+  });
+
+  it("a sign-in under 10 minutes old confirms (Access, an email code)", async () => {
+    for (const provider of ["access", "code"] as const) {
+      const { who, d, p } = await pending();
+      const fresh = await sessionAt(who.userId, Date.now() - 9 * MIN, provider);
+      expect(
+        (await confirmInBrowser(fresh, p.secret, "confirm", envOf(provider)))
+          .status,
+        provider,
+      ).toBe(200);
+      expect(await roles(who.userId), provider).toHaveLength(1);
+      d.close();
+    }
+  });
+
+  it("the forced sign-in: Access is asked for prompt=login and max_age=0; a plain sign-in isn't", async () => {
+    const at = async (q: string) =>
+      new URL(
+        (
+          await fetchAndWait(app, new Request(`${APP}/auth/login?${q}`))
+        ).headers.get("location") ?? "",
+      ).searchParams;
+    const forced = await at("reauth=1&next=%2Fbus");
+    expect(forced.get("prompt")).toBe("login");
+    expect(forced.get("max_age")).toBe("0");
+    const plain = await at("next=%2Fbus");
+    expect(plain.get("prompt")).toBeNull();
+    expect(plain.get("max_age")).toBeNull();
+  });
+
+  it("shows the names as proposed, and refuses `changed` when either agent was renamed before the confirm", async () => {
+    // The new holder renames itself after proposing.
+    {
+      const { who, d, alice, p } = await pending();
+      const page = await (await get(p.secret, { cookie: who.cookie })).text();
+      d.send({
+        v: 1,
+        id: "rn-a",
+        type: "rename",
+        agent_ref: alice.ref,
+        proposed_name: uniq("owner-contact"),
+      });
+      await waitFor(d, "renamed");
+      // The page and the list keep the name the proposal was made with.
+      expect((await proposals(who.userId))[0]?.agentName).toBe(alice.name);
+      const view = await get(p.secret, { cookie: who.cookie });
+      expect(view.status).toBe(409);
+      const r = await post(p.secret, { cookie: who.cookie }, [
+        ["csrf", csrfOf(page)],
+        ["decision", "confirm"],
+      ]);
+      expect(r.status).toBe(409);
+      expect(await r.text()).toContain("The role changed");
+      expect(await roles(who.userId)).toEqual([]);
+      expect((await proposals(who.userId))[0]).toMatchObject({
+        status: "refused",
+        reason: "changed",
+      });
+      d.close();
+    }
+    // The displaced holder renames itself after proposing.
+    {
+      const { who, d, pat, n, alice } = await pending();
+      const bob = await open(who.userId, d, n);
+      expect(
+        (await (await hubOf(who.userId)).putRole(n, "boss", alice.id)).ok,
+      ).toBe(true);
+      const re = proposed(
+        await propose(pat, {
+          action: "set",
+          namespace: n,
+          name: "boss",
+          agent: bob.name,
+        }),
+      );
+      expect(re.proposal.priorHolderName).toBe(alice.name);
+      d.send({
+        v: 1,
+        id: "rn-b",
+        type: "rename",
+        agent_ref: alice.ref,
+        proposed_name: uniq("moved"),
+      });
+      await waitFor(d, "renamed");
+      const r = await post(re.secret, { cookie: who.cookie }, [
+        ["csrf", await forgedCsrf(who.userId, re.secret)],
+        ["decision", "confirm"],
+      ]);
+      expect(r.status).toBe(409);
+      expect(
+        (await roles(who.userId)).find((x) => x.name === "boss")?.agentId,
+      ).toBe(alice.id);
+      d.close();
+    }
+  });
+
+  it("a re-point bound to its holder: re-pointed elsewhere after the proposal, the confirm is refused `changed`", async () => {
+    const { who, d, pat, n, alice } = await pending();
+    const bob = await open(who.userId, d, n);
+    const carol = await open(who.userId, d, n);
+    const hub = await hubOf(who.userId);
+    expect((await hub.putRole(n, "boss", alice.id)).ok).toBe(true);
+    const re = proposed(
+      await propose(pat, {
+        action: "set",
+        namespace: n,
+        name: "boss",
+        agent: bob.name,
+      }),
+    );
+    expect(re.proposal.action).toBe("repoint");
+    // The member re-points it to Carol on the dashboard meanwhile.
+    expect((await hub.putRole(n, "boss", carol.id)).ok).toBe(true);
+    const r = await post(re.secret, { cookie: who.cookie }, [
+      ["csrf", await forgedCsrf(who.userId, re.secret)],
+      ["decision", "confirm"],
+    ]);
+    expect(r.status).toBe(409);
+    expect(
+      (await roles(who.userId)).find((x) => x.name === "boss")?.agentId,
+    ).toBe(carol.id);
+    expect(
+      (await proposals(who.userId)).find((x) => x.id === re.proposal.id),
+    ).toMatchObject({ status: "refused", reason: "changed" });
+    d.close();
+  });
+
+  it("a cross-site POST is refused before anything is read; the page sends no referrer", async () => {
+    const { who, d, p } = await pending();
+    const r = await post(
+      p.secret,
+      { cookie: who.cookie, "sec-fetch-site": "cross-site" },
+      [
+        ["csrf", await forgedCsrf(who.userId, p.secret)],
+        ["decision", "confirm"],
+      ],
+    );
+    expect(r.status).toBe(403);
+    expect(await r.text()).toContain("Cross-site request");
+    expect(await roles(who.userId)).toEqual([]);
+    const g = await get(p.secret, { cookie: who.cookie });
+    expect(g.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(r.headers.get("referrer-policy")).toBe("no-referrer");
+    d.close();
   });
 });

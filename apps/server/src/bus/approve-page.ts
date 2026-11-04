@@ -49,6 +49,7 @@ button{height:36px;padding:0 16px;border-radius:6px;border:1px solid var(--borde
 font:inherit;font-size:14px;font-weight:500;line-height:1;cursor:pointer}
 button:hover{border-color:var(--border-strong)}
 button.primary{background:var(--text);border-color:var(--text);color:var(--surface)}
+a.primary{display:inline-flex;align-items:center;height:36px;padding:0 16px;border-radius:6px;background:var(--text);color:var(--surface);font-size:14px;font-weight:500;text-decoration:none}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .foot{margin:16px 0 0;font-size:12px;color:var(--muted);text-align:center}
 .muted{color:var(--muted);font-size:12px;margin:0}
@@ -313,6 +314,24 @@ export function renderRoleDone(v: {
     <h1>${v.title}</h1>
     <p>${v.message}</p>
     <p class="muted">Your bus: <a href="${v.busUrl}">${v.busUrl}</a></p>
+  </div>`,
+  );
+}
+
+/** A sign-in too old to confirm a role change (#1372): one link to a forced sign-in. */
+export function renderRoleReauth(v: {
+  instanceHost: string;
+  userEmail: string;
+  reauthUrl: string;
+}): string {
+  return shell(
+    "Sign in again",
+    v.instanceHost,
+    html`<div class="card">
+    <h1>Sign in again</h1>
+    <p>To confirm a role change, sign in again first. Your last sign-in is more than 10 minutes old.</p>
+    <div class="who">Signed in as <b>${v.userEmail}</b></div>
+    <div class="actions"><a class="primary" href="${v.reauthUrl}">Sign in again</a></div>
   </div>`,
   );
 }

@@ -190,7 +190,7 @@ export const TOOL_DEFS = [
       name: "backend-lead",
       agent: "alice",
     },
-    description: `Propose a change to one of your bus role addresses: \`set\` points the role (\`namespace\`, \`name\`) at your open agent named \`agent\` there (creating the role, or re-pointing it), \`clear\` removes the role. Nothing changes until you confirm it: this returns a link to open in your browser, signed in, within ${BUS_ROLE_PROPOSAL_TTL_MS / 60_000} minutes; it works once. Give the link to the person; no AI agent can confirm it. Only on an instance with the bus, for your own agents.`,
+    description: `Propose a change to one of your bus role addresses: \`set\` points the role (\`namespace\`, \`name\`) at your open agent named \`agent\` there (creating the role, or re-pointing it), \`clear\` removes the role. Nothing changes until you confirm it: this returns a link to open in your browser, signed in, within ${BUS_ROLE_PROPOSAL_TTL_MS / 60_000} minutes; it works once. Give the link to the person, who confirms it after a fresh sign-in; no agent credential can. Only on an instance with the bus, for your own agents.`,
   },
 ] as const;
 

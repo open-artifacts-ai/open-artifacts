@@ -219,7 +219,9 @@ create index if not exists roles_lname on roles(org_id, lname);
 -- browser on its link; token_hash is the sha256 of that link's secret (the
 -- secret is never stored). action: set | repoint | clear; role_id: the role
 -- it re-points or clears (null for set); agent_id: the new holder (null for
--- clear); prior_agent_id: the holder it displaces, as of the proposal. The
+-- clear); prior_agent_id: the holder it displaces, as of the proposal;
+-- agent_name, prior_holder_name: their names then (what the member is
+-- shown; a rename since refuses the confirm as changed). The
 -- confirm applies only while the role is still as it was (bus/roles.ts
 -- confirmProposal). status: pending | applied | refused | expired, decided
 -- once. A new table: create-if-not-exists adds it; wipe() deletes it.
@@ -233,7 +235,9 @@ create table if not exists role_proposals (
   lname text not null,
   role_id text,
   agent_id text,
+  agent_name text,
   prior_agent_id text,
+  prior_holder_name text,
   created_at integer not null,
   expires_at integer not null,
   status text not null default 'pending',

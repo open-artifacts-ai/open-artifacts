@@ -128,7 +128,8 @@ export type BusRoleProposalStatus = z.infer<typeof BusRoleProposalStatusSchema>;
  * (bus_role_propose, #1372). Nothing changes until the member confirms it in
  * a browser. `agentId`/`agentName`: the new holder (null for clear);
  * `priorAgentId`/`priorHolderName`: the holder it displaces, as of the
- * proposal (null when none). Names are the agents' current ones. Never the
+ * proposal (null when none). Names are as they were at the proposal (a
+ * rename since refuses the confirm, `changed`). Never the
  * confirm link.
  */
 export const BusRoleProposalSchema = z.strictObject({

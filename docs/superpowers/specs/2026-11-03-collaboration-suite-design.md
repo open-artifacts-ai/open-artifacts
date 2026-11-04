@@ -318,22 +318,34 @@ Sketch; the full design lands with the fast follow.
   the `/mcp` tool `bus_role_propose` (set, which creates or re-points, and
   clear), offered only while the bus is on. The proposal is checked as the
   dashboard write is (a live agent of the member's own hub, the name rules,
-  minted and chosen former names) and changes nothing. The tool returns a
-  one-time link, `/bus/roles/confirm/<secret>` (256 random bits; the hub
-  stores only its sha256), that expires after 15 minutes. The member opens
-  it signed in, in a browser, sees the role, its namespace, the holder it
-  displaces and the new one, and confirms or rejects. Only an interactive
-  cookie session of the hub's own member, with the page's form token,
-  decides it; any Authorization header (a PAT, an OAuth grant, a machine
-  token) is refused, no `/mcp` tool and no frame confirms, and another
-  member's session finds nothing. The confirm applies through the
-  dashboard's own `putRole`/`deleteRole`, only while the role is still as
-  proposed (else refused `changed`), once. Every proposal, confirm, refusal
-  and expiry is an audit row (ids and enums only), and GET
-  `R.busRoles` lists the newest proposals for the dashboard.
+  minted, chosen and held former names) and changes nothing. It stores the
+  role, namespace, both agents' ids and their names as proposed. The tool
+  returns a one-time link, `/bus/roles/confirm/<secret>` (256 random bits;
+  the hub stores only its sha256), that expires after 15 minutes. The
+  member opens it in a browser and sees the role, its namespace, the holder
+  it displaces and the new one, by the names stored at proposal time, then
+  confirms or rejects. Only an interactive cookie session of the hub's own
+  member decides it, signed in within the last 10 minutes (a Google session
+  also needs a forced re-authentication, auth_time, that recent); an older
+  one gets "Sign in again", a forced sign-in (Google max_age=0, Access
+  prompt=login and max_age=0, an email code). The form token and the POST
+  need that fresh session too. Any Authorization header (a PAT, an OAuth
+  grant, a machine token) is refused, no `/mcp` tool and no frame confirms,
+  and another member's session finds nothing. The confirm applies through
+  the dashboard's own `putRole`/`deleteRole`, only while the role, its
+  holder and both agents' names are as proposed (else refused `changed`),
+  once. Every proposal, confirm, refusal and expiry is an audit row (ids and
+  enums only), and GET `R.busRoles` lists the newest proposals.
 - The risk this guards: a prompt-injected agent re-pointing a role (such as
-  the owner contact) to itself to receive the member's asks. It can ask;
-  only the member, reading the confirm page, can make it so.
+  the owner contact) to itself to receive the member's asks. No agent
+  credential can confirm a proposal. The remaining risk is an agent driving
+  the member's own browser while it holds a sign-in under 10 minutes old (or
+  reading that cookie): the 10-minute re-auth bounds it; nothing on the
+  server can tell that browser from the person. With Access, the forced
+  sign-in relies on Access honoring prompt=login; the server can't check an
+  Access auth_time.
+- The link carries its secret in the path: the page sends no referrer, and
+  invocation logs (which record URLs) are off on staging as in the template.
 - It is bus-side only. OB #394 removes today's roles together with the card
   `role` claim; role addresses don't need the card, which is dropped anyway.
 - Sending to a role resolves at send time to its holder. This is the only
@@ -398,8 +410,10 @@ Prompt injection across owners is the main reason for Decision 4.
 - Within one owner: as today. Messages from other agents are not the owner's
   consent. Same-uid local processes are trusted.
 - Role changes from an agent (#1372): proposals only. They apply when the
-  member confirms the one-time link in a browser session; no agent
-  credential or frame can confirm one.
+  member confirms the one-time link in a browser session signed in within 10
+  minutes; no agent credential or frame can confirm one. An agent driving
+  the member's recently signed-in browser remains the residual risk, bounded
+  by that re-auth window.
 - Machine tokens: bus-only, hashed, revocable, revoked with the member.
 - Follows: need read access at follow time and at every notice. Losing
   access deletes the follow. A notice never reveals an artifact the member

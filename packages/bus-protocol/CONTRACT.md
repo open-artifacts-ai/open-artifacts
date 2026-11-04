@@ -229,9 +229,11 @@ claims one.
   role and the holder it displaces. It changes nothing. The member confirms
   it on its one-time link (`/bus/roles/confirm/<secret>`, 15 minutes, the
   hub keeps only the secret's sha256) in a browser session; the hub then
-  applies it with the dashboard's own write, only while the role is still as
-  proposed. No frame, no `/mcp` tool and no PAT, OAuth grant or machine
-  token can confirm one.
+  applies it with the dashboard's own write, only while the role and both
+  agents' names are still as proposed. The session must be a sign-in under
+  10 minutes old. No frame, no `/mcp` tool and no PAT, OAuth grant or
+  machine token can confirm one; an agent driving the member's recently
+  signed-in browser is the remaining risk, bounded by that window.
 
 - Resolution: a send to a role resolves at send time to its holder, scoped as
   names are (a non-global sender reaches its own namespace's roles; a global

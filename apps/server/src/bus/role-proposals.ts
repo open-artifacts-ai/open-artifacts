@@ -127,14 +127,26 @@ type StoredProposal = {
   decidedAt: number | null;
 };
 
+// The names are the ones stored when the proposal was made: what the member
+// is asked about. An agent renamed since makes the confirm refuse `changed`
+// (blocker), so a proposer can't rename itself after the fact.
 const PROPOSAL_SELECT = `select p.id, p.token_hash as tokenHash, p.action, p.namespace, p.name, p.lname,
-    p.role_id as roleId, p.agent_id as agentId, a.name as agentName,
-    p.prior_agent_id as priorAgentId, h.name as priorHolderName,
+    p.role_id as roleId, p.agent_id as agentId, p.agent_name as agentName,
+    p.prior_agent_id as priorAgentId, p.prior_holder_name as priorHolderName,
     p.created_at as createdAt, p.expires_at as expiresAt, p.status, p.reason,
     p.decided_at as decidedAt
-  from role_proposals p
-  left join agents a on a.id = p.agent_id
-  left join agents h on h.id = p.prior_agent_id`;
+  from role_proposals p`;
+
+/** Agent `id`'s current name (open or not), or null when it has no row. */
+const nameOf = (sql: SqlStorage, orgId: string, id: string | null) =>
+  id === null
+    ? null
+    : (one<{ name: string }>(
+        sql,
+        "select name from agents where org_id = ? and id = ?",
+        orgId,
+        id,
+      )?.name ?? null);
 
 const proposalDto = (p: StoredProposal): BusRoleProposal => ({
   id: p.id,
@@ -301,8 +313,8 @@ export function propose(
   const id = newId();
   sql.exec(
     `insert into role_proposals (id, org_id, token_hash, action, namespace, name, lname,
-       role_id, agent_id, prior_agent_id, created_at, expires_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       role_id, agent_id, agent_name, prior_agent_id, prior_holder_name, created_at, expires_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id,
     orgId,
     tokenHash,
@@ -312,7 +324,9 @@ export function propose(
     lname,
     roleId,
     agentId,
+    nameOf(sql, orgId, agentId),
     priorAgentId,
+    nameOf(sql, orgId, priorAgentId),
     now,
     now + BUS_ROLE_PROPOSAL_TTL_MS,
   );
@@ -348,6 +362,12 @@ function blocker(
         role.id === p.roleId &&
         role.agentId === p.priorAgentId;
   if (!same) return "changed";
+  // The member is shown the names as proposed: a rename since is a change.
+  if (
+    nameOf(sql, orgId, p.agentId) !== p.agentName ||
+    nameOf(sql, orgId, p.priorAgentId) !== p.priorHolderName
+  )
+    return "changed";
   if (p.action === "clear") return null;
   const c = checkRole(
     sql,

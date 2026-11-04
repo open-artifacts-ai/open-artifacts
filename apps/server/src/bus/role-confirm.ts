@@ -1,11 +1,11 @@
 import { BUS_ROUTES } from "@oa/bus-protocol";
-import { AUTH, type Member } from "@oa/shared";
+import { AUTH, type Member, SIGN_IN_PAGE } from "@oa/shared";
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
 import { interactiveSession } from "../auth/authz.js";
 import { isEmbedRequest } from "../http/embed.js";
 import { appOrigin } from "../http/errors.js";
-import type { AppEnv } from "../http/middleware.js";
+import { type AppEnv, BREAK_GLASS_MS } from "../http/middleware.js";
 import {
   checkFormCsrf,
   formCsrf,
@@ -23,7 +23,11 @@ import {
   viewBusRoleProposal,
 } from "../services/bus.js";
 import { sha256Hex } from "../util/crypto.js";
-import { renderRoleConfirm, renderRoleDone } from "./approve-page.js";
+import {
+  renderRoleConfirm,
+  renderRoleDone,
+  renderRoleReauth,
+} from "./approve-page.js";
 import type { ProposalRefusalReason } from "./role-proposals.js";
 import { busOff } from "./routes.js";
 
@@ -137,6 +141,38 @@ const failed = () =>
 type Who = { user: Member } | { response: Response };
 
 /**
+ * How recent the sign-in must be to load or post the form: the break-glass
+ * window (10 minutes). A Google session must also carry a forced
+ * re-authentication (auth_time, P3 T18) that recent, since a plain Google
+ * sign-in can be silent SSO.
+ */
+export const ROLE_CONFIRM_FRESH_MS = BREAK_GLASS_MS;
+
+/** Whether this cookie session's sign-in is recent enough (see ROLE_CONFIRM_FRESH_MS). */
+function freshSignIn(c: Context<AppEnv>, now: number): boolean {
+  const iat = c.var.sessionIat ?? null;
+  if (iat === null || iat < now - ROLE_CONFIRM_FRESH_MS || iat > now + 60_000)
+    return false;
+  if (c.var.authMethod !== "google") return true;
+  const a = c.var.sessionAuthAt ?? null;
+  return a !== null && a >= now - ROLE_CONFIRM_FRESH_MS && a <= now + 60_000;
+}
+
+/**
+ * The forced sign-in that brings the member back to this link: Google with
+ * max_age=0 (?reauth=1), Access with prompt=login and max_age=0, an email
+ * code through the sign-in page (every code sign-in is a new code).
+ */
+function reauthUrl(c: Context<AppEnv>, secret: string): string {
+  const next = encodeURIComponent(pathOf(secret));
+  if (c.var.authMethod === "google")
+    return `${AUTH.loginGoogle}?reauth=1&next=${next}`;
+  if (c.var.authMethod === "access")
+    return `${AUTH.login}?via=access&reauth=1&next=${next}`;
+  return `${SIGN_IN_PAGE}?next=${next}`;
+}
+
+/**
  * The caller, or the page that refuses them: bus off, embed, any
  * Authorization header (a PAT, an OAuth grant, a machine token), signed out
  * (GET: to sign-in and back; POST: 401), not allowed to connect agents, or
@@ -149,7 +185,7 @@ function caller(c: Context<AppEnv>, secret: string, post: boolean): Who {
     return {
       response: messagePage(
         "Use your browser",
-        "Only you can confirm this, signed in in your browser. No token or AI agent can.",
+        "Only you can confirm this, signed in in your browser. No token can.",
         401,
       ),
     };
@@ -179,6 +215,20 @@ function caller(c: Context<AppEnv>, secret: string, post: boolean): Who {
       response: messagePage(
         "Sign in again",
         "Confirming a role change takes a browser sign-in. Sign in again, then open the link.",
+        403,
+      ),
+    };
+  // Fresh: the form is minted (GET) and decided (POST) only within 10
+  // minutes of a real sign-in, so a cookie lifted from the browser can't
+  // confirm long after.
+  if (!freshSignIn(c, Date.now()))
+    return {
+      response: pageResponse(
+        renderRoleReauth({
+          instanceHost: c.env.APP_HOST,
+          userEmail: user.email,
+          reauthUrl: reauthUrl(c, secret),
+        }),
         403,
       ),
     };
