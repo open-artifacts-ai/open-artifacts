@@ -486,11 +486,13 @@ export function mountBusPage(app: AppType, deps: BusPageDeps): void {
       const view = await deps.busView(c.env, who.user.id);
       const url = new URL(c.req.url);
       // A capped caller whose last machine is revoked has nothing to revoke,
-      // except right after a partial revoke of one of theirs: then the page
-      // shows its retry line.
+      // except right after a revoke of one of theirs: a partial one shows its
+      // retry line, a successful one (the retry) its "revoked" line.
+      const after =
+        url.searchParams.get("error") === REVOKE_FAILED ||
+        url.searchParams.get("done") === "revoked";
       const retry =
-        url.searchParams.get("error") === REVOKE_FAILED &&
-        ownMachine(view, url.searchParams.get("m")) !== undefined;
+        after && ownMachine(view, url.searchParams.get("m")) !== undefined;
       const access = accessOf(who.user, view) ?? (retry ? "revoke" : null);
       if (!access) return notFoundPage();
       return await renderPage(c, deps, who.user, view, access);

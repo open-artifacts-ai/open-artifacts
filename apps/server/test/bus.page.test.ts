@@ -588,6 +588,33 @@ describe("revoke", () => {
       (await get(internal.deps, "/bus?error=failed&m=mine", g.cookie)).status,
     ).toBe(404);
   });
+
+  it("a capped caller's successful retry shows the revoked line, not 404; another id or no params is 404", async () => {
+    const g = await login(email("capdone"), "guest");
+    const mine = machine({
+      id: "mine",
+      label: "old-laptop",
+      revokedAt: "2026-11-04T09:00:00Z",
+    });
+    const { deps } = doubles({ view: { machines: [mine] } });
+    const t = await revokeToken(g.userId, "mine");
+    const r = await post(deps, revokeUrl("mine"), g.cookie, [["csrf", t]]);
+    expect(loc(r)).toBe("/bus?done=revoked&m=mine");
+    const page = await get(deps, loc(r) ?? "", g.cookie);
+    expect(page.status).toBe(200);
+    const body = await page.text();
+    expect(body).toContain("old-laptop revoked.");
+    expect(body).toContain(
+      "You can't connect new machines. You can revoke these.",
+    );
+    expect(body).not.toContain("Share notices");
+    for (const q of [
+      "/bus?done=revoked&m=theirs",
+      "/bus?done=saved&m=mine",
+      "/bus",
+    ])
+      expect((await get(deps, q, g.cookie)).status).toBe(404);
+  });
 });
 
 describe("share notices", () => {
