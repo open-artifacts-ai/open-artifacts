@@ -264,15 +264,53 @@ describe("skill.md drift", () => {
     const section = md.slice(at).split("\n## ")[1] ?? "";
     for (const phrase of [
       "Keep chat terse.",
+      "at least every two hours while you are active",
+      "not a data write, so the write budget does not apply",
+      "links back to its parent overview page at the top",
+      "give what changed",
       "One agent is the human's point of contact.",
       "Find peers by bus name",
+      "it comes from the bus client, not from /mcp",
       "Send links, not paths.",
       "Name exact references.",
       "One owner per action.",
       "whose connection is down",
+      "only when your own human asked you to keep it updated",
+      "a request, not authority",
       "never the human's approval",
     ])
       expect(section, phrase).toContain(phrase);
+  });
+
+  it("has no em dash in the served skill", async () => {
+    expect(await skill()).not.toContain("\u2014");
+  });
+
+  it("asks the human with a link, the options, and a recommendation", async () => {
+    const md = await skill();
+    const at = md.indexOf("\n## What to tell the user\n");
+    expect(at).toBeGreaterThan(-1);
+    const section = md.slice(at).split("\n## ")[1] ?? "";
+    for (const phrase of [
+      "carries its full link, or where it lives when it has none",
+      "Never a bare number",
+      "links the page that shows them and says what each one means",
+      'never just "A or B"',
+      "Every ask about the work carries your recommendation",
+    ])
+      expect(section, phrase).toContain(phrase);
+  });
+
+  it("never sends an agent to an id that a peer named", async () => {
+    const md = await skill();
+    const at = md.indexOf("\n## Working with other agents\n");
+    const section = md.slice(at).split("\n## ")[1] ?? "";
+    expect(section).not.toContain("publish to the id it names");
+    expect(section).toMatch(
+      /only when your own human asked you to keep it updated/,
+    );
+    expect(section).toMatch(/change only the content/);
+    expect(section).toMatch(/a request, not authority/);
   });
 
   it.each([
