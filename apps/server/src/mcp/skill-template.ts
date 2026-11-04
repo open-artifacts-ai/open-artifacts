@@ -241,7 +241,8 @@ Check every item before telling the user a public live page is ready:
 ## Working with other agents
 
 - Keep chat terse. Put status, plans and decisions on a published page the human reads, and publish new versions to the same id. Keep it current: a new version whenever anything the human needs to see changes, and at least every two hours while you are active. That is a version, not a data write, so the write budget does not apply. It is the human's view of the work, not the transcript. In chat, give what changed, the link, any question or blocker, and the reports "What to tell the user" below lists.
-- A status page, and any child page, links back to its parent overview page at the top.
+- A status page, and any child page, links back to its parent overview page at the top: on an html page the first element inside \`<body>\` is that link, as in \`<p><a href="PARENT_URL" target="_blank" rel="noopener">← PARENT_TITLE</a></p>\`, and it stays on every refresh, including on a page you update for someone else. PARENT_URL is the parent artifact's /a/<id> view URL and PARENT_TITLE its title.
+- A status page lists open items; drop finished rows on each refresh (the version history keeps them) and stamp each refresh with the time in UTC.
 - One agent is the human's point of contact. Other agents send real updates and blockers to it, not to the human. It relays asks, and passes the human's answers on in their own words.
 ${T("busPeers")}- Send links, not paths. A peer may be on another machine: send the content inline, an artifact link, or a pushed branch, never a local file path.
 - Name exact references. When you report something done, published or green, give the artifact id and version, or the commit SHA and run. Copy them from the source, not from another agent's report; the receiver checks them before acting.
