@@ -445,6 +445,93 @@ it("test-hooks install: only redline releases, and the default needs a redline b
   expect(writes()[0].body).toMatchObject({ version: "1.41.2" });
 });
 
+it("ordinary install: redline-only releases are not offered", async () => {
+  // release_gate runs the release bundle for an ordinary install.
+  use(
+    http.get("*/api/v1/releases", () =>
+      json({
+        items: [
+          rel("1.42.0", ["release", "redline"]),
+          rel("1.41.2", ["redline"]),
+          rel("1.41.0", ["release"]),
+        ],
+        platform: "1.42.0",
+      }),
+    ),
+  );
+  const i = { ...installsByState.active, version: "1.40.0" };
+  const { version } = await openUpgrade(i);
+  await waitFor(() =>
+    expect(version).toHaveTextContent("The platform's release"),
+  );
+  fireEvent.click(version);
+  expect(
+    (await screen.findAllByRole("option")).map((o) => o.textContent),
+  ).toEqual(["The platform's release", "1.42.0", "1.41.0"]);
+});
+
+it("upgrade: the default is off when the platform's release isn't installable", async () => {
+  use(
+    http.get("*/api/v1/releases", () =>
+      json({
+        items: [{ ...rel("1.42.0"), installable: false }, rel("1.41.2")],
+        platform: "1.42.0",
+      }),
+    ),
+  );
+  const i = { ...installsByState.active, version: "1.40.0" };
+  const { version } = await openUpgrade(i);
+  await waitFor(() => expect(version).toHaveTextContent("1.41.2"));
+  fireEvent.click(version);
+  expect(
+    (await screen.findAllByRole("option")).map((o) => [
+      o.textContent,
+      o.getAttribute("aria-disabled"),
+    ]),
+  ).toEqual([
+    ["The platform's release Not installable.", "true"],
+    ["1.41.2", null],
+  ]);
+});
+
+it("upgrade: with the default off and nothing else, says no release can be picked", async () => {
+  // Not "already on the platform's release": the install (1.41.2) is below it.
+  serveReleases("1.42.0", []);
+  const i = { ...installsByState.active, version: "1.41.2" };
+  const { dialog, submit } = await openUpgrade(i);
+  await waitFor(() =>
+    expect(within(dialog).getByTestId("dialog-blocker")).toHaveTextContent(
+      "No release can be picked yet.",
+    ),
+  );
+  expect(submit).toBeDisabled();
+});
+
+it("upgrade: a failed background refetch keeps the loaded list usable", async () => {
+  let fail = false;
+  use(
+    http.get("*/api/v1/releases", () =>
+      fail
+        ? apiErr("internal", 500)
+        : json({ items: [rel("1.42.0"), rel("1.41.2")], platform: "1.42.0" }),
+    ),
+  );
+  const i = { ...installsByState.active, version: "1.40.0" };
+  const { view, dialog, version, submit } = await openUpgrade(i);
+  await waitFor(() => expect(submit).toBeEnabled());
+  fail = true;
+  await view.qc.refetchQueries({ queryKey: ["releases"] });
+  await waitFor(() =>
+    expect(view.qc.getQueryState(["releases"])?.status).toBe("error"),
+  );
+  expect(version).toHaveTextContent("The platform's release");
+  expect(within(dialog).queryByTestId("dialog-blocker")).toBeNull();
+  expect(submit).toBeEnabled();
+  fireEvent.click(submit);
+  await waitFor(() => expect(writes()).toHaveLength(1));
+  expect(writes()[0].body).not.toHaveProperty("version");
+});
+
 it("upgrade: the default is off when the platform's release isn't published", async () => {
   serveReleases("1.42.0", ["1.41.2"]);
   const i = { ...installsByState.active, version: "1.40.0" };

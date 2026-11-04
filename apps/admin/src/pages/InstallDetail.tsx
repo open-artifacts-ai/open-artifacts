@@ -91,14 +91,15 @@ function Actions({ install }: { install: Install }) {
   });
   const platform = releases.data?.platform;
   const items = releases.data?.items ?? [];
-  // release_gate runs a test-hook install's redline bundle; R5 only checks an
-  // explicit release is there, so the job would fail later without this.
+  // release_gate runs the install's bundle (redline for test hooks, else
+  // release); R5 only checks an explicit release is there, so the job would
+  // fail later without this.
   const variant = install.testHooks ? "redline" : "release";
   // R5 refuses a release at or below the install's own (downgrade_refused).
   const versions = items.filter(
     (r) =>
       r.installable &&
-      (!install.testHooks || r.variants.includes("redline")) &&
+      r.variants.includes(variant) &&
       (!install.version || compareVersions(r.version, install.version) > 0),
   );
   const offered = versions
@@ -115,15 +116,17 @@ function Actions({ install }: { install: Install }) {
   // R5 takes it only when published, installable and with the install's
   // variant (resolveRelease), else release_not_published.
   const platformRelease = platform
-    ? items.find((r) => r.version === platform && r.installable)
+    ? items.find((r) => r.version === platform)
     : undefined;
   const latestWhy = !platform
     ? null
     : !platformRelease
       ? "Not published."
-      : !platformRelease.variants.includes(variant)
-        ? `No ${variant} build.`
-        : null;
+      : !platformRelease.installable
+        ? "Not installable."
+        : !platformRelease.variants.includes(variant)
+          ? `No ${variant} build.`
+          : null;
   const latestOk = latestShown && !!platform && latestWhy === null;
   /** The Select's value: the pick while it is offered, else the first item that is. */
   const chosen =
@@ -133,10 +136,14 @@ function Actions({ install }: { install: Install }) {
         ? LATEST
         : (newestVersion(offered) ?? "");
   const sentVersion = chosen === LATEST ? "" : chosen;
-  /** Why Upgrade is off; none with no platform release, whose note says it. */
+  /**
+   * Why Upgrade is off; none with no platform release, whose note says it. A
+   * failed refetch keeps the loaded list (react-query keeps `data`), so only a
+   * failed first load blocks. Without data, `chosen` is "" and Upgrade is off.
+   */
   const upgradeBlocker = releases.isPending
     ? "Loading releases."
-    : releases.isError
+    : !releases.data
       ? `Could not load the releases. ${errorCopy(releases.error)}`
       : platform === null
         ? undefined
@@ -341,7 +348,7 @@ function Actions({ install }: { install: Install }) {
           submitLabel="Upgrade"
           pending={upgrade.isPending}
           error={upgrade.error}
-          canSubmit={releases.isSuccess && chosen !== ""}
+          canSubmit={chosen !== ""}
           blocker={upgradeBlocker}
           onSubmit={() => upgrade.mutate()}
         >
