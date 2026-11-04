@@ -25,9 +25,11 @@
 # ops-staging-access.yml and ops-staging-token-id.yml) has no green smoke, so
 # it blocks until the next deploy-staging.yml run on main passes. That fails
 # safe; the refusal says to re-run deploy-staging.yml.
-# Limit: only the newest 100 runs are listed (one page). The newest run is
-# always on the first page, so this only matters if a page of 100 holds no
-# push run on main of this repository, which then refuses ("no run").
+# Limit: only the newest 100 runs are listed (one page; the API orders them
+# by creation, newest first). A re-run of a run older than those 100 is then
+# missed: the gate reads the newest of the 100 instead, which can pass while
+# staging runs the re-run's older code. If the page holds no push run on main
+# of this repository, it refuses ("no run").
 # Usage: scripts/ci/staging-smoke-gate.sh vX.Y.Z
 set -euo pipefail
 

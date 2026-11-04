@@ -153,34 +153,92 @@ describe("staging-smoke-alert.ts report", () => {
     }
   });
 
-  it("a value that isn't a GitHub login is treated as unset, never put in a comment", () => {
+  it("one leading @ is dropped: @login works like login", () => {
+    const w = world([{ number: 4, title: ISSUE }]);
+    expect(red(w, "failure", ` @${LOGIN} `)).toEqual({
+      action: "commented",
+      issue: 4,
+      notified: "mentioned",
+    });
+    expect(w.calls.find((x) => x[1] === "comment")?.[6]).toBe(
+      `@${LOGIN} Still red: \`failure\` on ${SHA} in ${RUN}`,
+    );
+    const v = world([]);
+    red(v, "failure", `@${LOGIN}`);
+    expect(v.calls.at(-1)?.slice(-2)).toEqual(["--add-assignee", LOGIN]);
+  });
+
+  it("set but not a GitHub login: the issue is still kept in step, with no mention, then the job fails", () => {
     for (const bad of [
-      "@owner",
+      "@@owner",
       "a b",
       "-owner",
       "owner-",
       "own--er",
       "x".repeat(40),
       "owner\n@evil",
+      "@",
     ]) {
-      expect(LOGIN_RE.test(bad), bad).toBe(false);
+      expect(LOGIN_RE.test(bad.replace(/^@/, "")), bad).toBe(false);
+      // A repeat red run: commented, no mention, then it throws.
       const logs: string[] = [];
       const v = world([{ number: 4, title: ISSUE }]);
-      expect(
-        red(v, "failure", bad, (l) => logs.push(l)),
-        bad,
-      ).toEqual({
-        action: "commented",
-        issue: 4,
-        notified: "none",
-      });
+      expect(() => red(v, "failure", bad, (l) => logs.push(l)), bad).toThrow(
+        /OA_ALERT_GITHUB_LOGIN is set but is not a GitHub login/,
+      );
       expect(v.calls.find((x) => x[1] === "comment")?.[6], bad).toBe(
         `Still red: \`failure\` on ${SHA} in ${RUN}`,
       );
       expect(logs[0], bad).toContain("is not a GitHub login");
+      // A first red run: opened, never assigned, then it throws.
+      const w = world([]);
+      expect(() => red(w, "failure", bad), bad).toThrow(/not a GitHub login/);
+      expect(
+        w.calls.some((c) => c[1] === "create"),
+        bad,
+      ).toBe(true);
+      expect(
+        w.calls.some((c) => c[1] === "edit"),
+        bad,
+      ).toBe(false);
+      // A green run still closes the issue, and still fails the job.
+      const g = world([{ number: 4, title: ISSUE }]);
+      expect(() => red(g, "success", bad), bad).toThrow(/not a GitHub login/);
+      expect(
+        g.calls.some((c) => c[1] === "close"),
+        bad,
+      ).toBe(true);
     }
+    // A cancelled run does nothing at all, a bad value included.
+    const c = world([{ number: 4, title: ISSUE }]);
+    expect(red(c, "cancelled", "a b")).toEqual({ action: "none" });
+    expect(c.calls).toEqual([]);
     for (const ok of ["octocat", "a", "a-b-c", "A1", "x".repeat(39)])
       expect(LOGIN_RE.test(ok), ok).toBe(true);
+  });
+
+  it("gh issue create output that isn't an issue URL throws", () => {
+    for (const stdout of [
+      "",
+      "created",
+      `https://github.com/${REPO}/pull/12`,
+    ]) {
+      const exec: Exec = (_c, args) => {
+        if (args[1] === "list")
+          return {
+            code: 0,
+            stdout: args[0] === "label" ? '[{"name":"blocker"}]' : "[]",
+            stderr: "",
+          };
+        if (args[1] === "create") return { code: 0, stdout, stderr: "" };
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      expect(
+        () =>
+          report({ exec, repo: REPO, result: "failure", run: RUN, sha: SHA }),
+        stdout,
+      ).toThrow(/gh issue create: no issue url/);
+    }
   });
 
   it("an assignment that fails leaves the issue open and @-mentions the login instead", () => {

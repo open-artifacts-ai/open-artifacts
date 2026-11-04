@@ -9,8 +9,10 @@
 // The owner is emailed through GitHub's own notifications: `--notify <login>`
 // (the repo variable OA_ALERT_GITHUB_LOGIN, never a login in code) is
 // assigned the issue when it opens, and @-mentioned in each later red
-// comment. Empty, it skips both and logs that; a value that isn't a GitHub
-// login is treated as empty. If the assignment itself fails (say the login
+// comment. One leading "@" is dropped. Empty, it skips both and logs that.
+// Set but not a GitHub login, the issue is still opened, commented or closed
+// (with no mention), and then the report throws, so a misconfigured alert
+// turns the job red rather than going quiet. If the assignment itself fails (say the login
 // can't be assigned here), the issue stays open and a comment @-mentions the
 // login instead, so the alert never depends on it.
 // Usage: node --experimental-strip-types scripts/ci/staging-smoke-alert.ts report --repo owner/name --result <result> --run <url> --sha <sha> [--notify <login>]
@@ -51,7 +53,25 @@ export type Notified = "assigned" | "mentioned" | "none";
  * the deploy job's. success closes, cancelled or skipped does nothing, and
  * anything else (failure, or a value this does not know) is red.
  */
-export function report(o: {
+export function report(o: Parameters<typeof reportIssue>[0]): Report {
+  if (o.result === "cancelled" || o.result === "skipped")
+    return { action: "none" };
+  const set = (o.notify ?? "").trim();
+  const raw = set.replace(/^@/, "");
+  const valid = LOGIN_RE.test(raw);
+  const r = reportIssue({
+    ...o,
+    notify: valid ? raw : "",
+    badLogin: !valid && set !== "",
+  });
+  if (!valid && set !== "")
+    throw new Error(
+      `OA_ALERT_GITHUB_LOGIN is set but is not a GitHub login (${JSON.stringify(raw.slice(0, 64))}); fix the repo variable. The issue was still updated: ${JSON.stringify(r)}`,
+    );
+  return r;
+}
+
+function reportIssue(o: {
   exec: Exec;
   repo: string;
   result: string;
@@ -60,12 +80,13 @@ export function report(o: {
   /** The owner's GitHub login (vars.OA_ALERT_GITHUB_LOGIN); "" for none. */
   notify?: string;
   log?: (line: string) => void;
+  /** Set by report: notify was set but invalid (already blanked). */
+  badLogin?: boolean;
 }): Report {
   if (o.result === "cancelled" || o.result === "skipped")
     return { action: "none" };
   const log = o.log ?? ((l: string) => console.error(l));
-  const raw = (o.notify ?? "").trim();
-  const login = LOGIN_RE.test(raw) ? raw : "";
+  const login = o.notify ?? "";
   if (!o.run) throw new Error("--run is required");
   const sha = SHA_RE.test(o.sha) ? o.sha : "an unknown commit";
   const open = (
@@ -105,7 +126,7 @@ export function report(o: {
 
   if (!login)
     log(
-      raw
+      o.badLogin
         ? "staging-smoke-alert: OA_ALERT_GITHUB_LOGIN is not a GitHub login; no assignment or mention"
         : "staging-smoke-alert: OA_ALERT_GITHUB_LOGIN is empty; no assignment or mention",
     );
