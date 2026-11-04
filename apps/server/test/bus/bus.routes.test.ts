@@ -6,7 +6,9 @@ import { env } from "cloudflare:workers";
 import {
   BUS_ROUTES,
   type DeviceCodeResponse,
+  DeviceCodeResponseSchema,
   isMachineToken,
+  verificationUriMatches,
 } from "@oa/bus-protocol";
 import { R } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -185,6 +187,21 @@ describe("device flow", () => {
     expect(d.verification_uri).toBe("http://app.localhost/bus/approve");
     expect(d.verification_uri).not.toContain(d.user_code.replace("-", ""));
     expect(d.verification_uri).not.toContain(d.user_code.slice(0, 4));
+    // The client's own checks (@oa/bus-protocol) take it as is. The test
+    // origin is http on app.localhost, which the client allows only on a real
+    // loopback name, so they see the same answer on an https origin.
+    expect(new URL(d.verification_uri).pathname).toBe(BUS_ROUTES.approve);
+    const onHttps = {
+      ...d,
+      verification_uri: d.verification_uri.replace(
+        "http://app.localhost",
+        "https://app.example",
+      ),
+    };
+    expect(DeviceCodeResponseSchema.safeParse(onHttps).success).toBe(true);
+    expect(
+      verificationUriMatches(onHttps.verification_uri, "https://app.example"),
+    ).toBe(true);
     expect(d.expires_in).toBe(600);
     expect(d.interval).toBe(5);
     // Only hashes are stored: the secret is nowhere in D1.

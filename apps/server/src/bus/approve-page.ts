@@ -1,7 +1,7 @@
 import { FAVICON_TAGS } from "../http/head.js";
 import { html, type SafeHtml } from "../http/pages.js";
 
-// The bus approval page (#1291): GET /bus/approve/<code> renders the form,
+// The bus approval page (#1291): GET /bus/approve takes the typed code,
 // POST decides, and the success screen follows. Server-rendered with no
 // JavaScript, in the OAuth consent page's layout and tokens
 // (design/screens/oauth-consent.html). Every value goes through the escaping
