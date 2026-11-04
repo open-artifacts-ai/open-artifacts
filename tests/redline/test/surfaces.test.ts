@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FOREIGN_CALLERS } from "../../../apps/server/test/authz/expect.ts";
 import {
   ORG_SURFACES,
+  PUBLIC_ROUTES,
   SPACE_SURFACES,
   SURFACES,
 } from "../../../apps/server/test/authz/surfaces.ts";
@@ -230,10 +231,22 @@ describe("probe cases (derived from Backend's surfaces)", () => {
       found.filter((r) => !ownerOnly.includes(r)),
     );
     for (const r of INTERACTIVE_ONLY) {
+      // A public-policy page route (#1300's POST /bus/share-notices): the
+      // suite probes scoped routes only, so it has no case and no drop; the
+      // handler's own checks are the server tests'.
+      if (PUBLIC_ROUTES.includes(r)) {
+        expect(cases.find((c) => c.routes.includes(r))).toBeUndefined();
+        expect(dropped.find((y) => y.routes.includes(r))).toBeUndefined();
+        continue;
+      }
       const x = dropped.find((y) => y.routes.includes(r));
       expect(x?.why).toBe("interactive-only");
       expect(cases.find((c) => c.routes.includes(r))?.denyOnly).toBe(true);
     }
+    // The public exception is exactly the page's form, not a way out.
+    expect(INTERACTIVE_ONLY.filter((r) => PUBLIC_ROUTES.includes(r))).toEqual([
+      "POST /bus/share-notices",
+    ]);
   });
 
   it("#1313: the interactive scan sees every org route the server registers", () => {

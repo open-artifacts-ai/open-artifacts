@@ -10,23 +10,29 @@ import {
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import {
+  ADMIN_EMAIL,
   APP_HOST,
   COOKIE,
   type Deps,
   EMAIL,
   HELP,
+  MCP_BASE,
+  MCP_URL,
   main,
   parseArgs,
   parseMintLog,
@@ -35,6 +41,7 @@ import {
   SESSION_MAX_AGE_MS,
   storageState,
   WORKFLOW,
+  writeMcpConfig,
 } from "./staging-test-member.ts";
 
 // The agent's side of the rl-agents member sign-in, and the workflow that
@@ -164,24 +171,114 @@ describe("staging-test-member.yml", () => {
 });
 
 describe("parseArgs", () => {
-  it("member only: --revoke and --help, nothing else", () => {
-    expect(parseArgs([])).toEqual({ revoke: false, help: false });
+  it("member by default; --role member|admin, --mcp, --revoke and --help, nothing else", () => {
+    expect(parseArgs([])).toEqual({
+      revoke: false,
+      help: false,
+      role: "member",
+      mcp: false,
+    });
     expect(parseArgs(["--revoke"])).toMatchObject({ revoke: true });
     expect(parseArgs(["--help"])).toMatchObject({ help: true });
+    expect(parseArgs(["--role", "admin"])).toMatchObject({ role: "admin" });
+    expect(parseArgs(["--role=admin"])).toMatchObject({ role: "admin" });
+    expect(parseArgs(["--role", "member"])).toMatchObject({ role: "member" });
+    expect(parseArgs(["--mcp", "--role", "admin"])).toMatchObject({
+      role: "admin",
+      mcp: true,
+    });
     for (const a of [
-      ["--role", "admin"],
+      ["--role", "owner"],
       ["--role=owner"],
-      ["--role", "member"],
+      ["--role", "Owner"],
+      ["--role", "ADMIN"],
+      ["--role", "viewer"],
+      ["--role", ""],
+      ["--role=", "admin"],
+      ["--role"],
+      ["--role", "admin", "--role", "member"],
+      ["--revoke", "--mcp"],
+      ["--mcp"],
+      ["--mcp", "--role", "member"],
+      ["--role=member", "--mcp"],
+      ["--revoke", "--role", "member"],
       ["--slug", "rl-a"],
       ["extra"],
     ])
       expect(parseArgs(a), a.join(" ")).toBeInstanceOf(Error);
   });
 
-  it("the help says a mint cuts off earlier credentials, and how to revoke", () => {
+  it("the help says a mint cuts off earlier credentials and MCP agents, how to revoke, and to delete the files", () => {
     expect(HELP).toContain("cuts off");
     expect(HELP).toContain("--revoke");
+    expect(HELP).toContain("--role member|admin");
+    expect(HELP).toContain("--role admin --mcp");
+    expect(HELP).toContain("--git-dir ~/.dotfiles) is not detected");
+    expect(HELP).toContain("disconnects an MCP agent");
+    expect(HELP).toContain("is not cut off");
+    expect(HELP).toContain("Delete the storage-state files and\nMCP configs");
     expect(HELP).not.toContain("—");
+  });
+});
+
+describe("writeMcpConfig", () => {
+  const repoTmp = () => mkdtempSync(join(root, "scripts/ops/.oa-tm-mcp-"));
+  it("refuses a base inside this repo, writing nothing", () => {
+    const inRepo = repoTmp();
+    try {
+      for (const base of [inRepo, join(inRepo, "a/b")]) {
+        expect(() => writeMcpConfig({ x: 1 }, base, "m.json")).toThrow(
+          /inside the git work tree/,
+        );
+      }
+      expect(readdirSync(inRepo)).toEqual([]);
+    } finally {
+      rmSync(inRepo, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a symlink outside that points into the repo", () => {
+    const out = mkdtempSync(join(tmpdir(), "oa-tm-link-"));
+    const inRepo = repoTmp();
+    try {
+      symlinkSync(inRepo, join(out, "link"));
+      expect(() =>
+        writeMcpConfig({ x: 1 }, join(out, "link", "rl"), "m.json"),
+      ).toThrow(/inside the git work tree/);
+      expect(readdirSync(inRepo)).toEqual([]);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+      rmSync(inRepo, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses inside any work tree, a worktree's .git file included", () => {
+    const out = mkdtempSync(join(tmpdir(), "oa-tm-wt-"));
+    try {
+      writeFileSync(join(out, ".git"), "gitdir: /elsewhere\n");
+      expect(() =>
+        writeMcpConfig({ x: 1 }, join(out, "deep"), "m.json"),
+      ).toThrow(/inside the git work tree/);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("never overwrites", () => {
+    const out = mkdtempSync(join(tmpdir(), "oa-tm-ow-"));
+    try {
+      writeMcpConfig({ x: 1 }, join(out, "rl"), "m.json");
+      expect(() => writeMcpConfig({ x: 2 }, join(out, "rl"), "m.json")).toThrow(
+        /EEXIST/,
+      );
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("the default base is under the home directory, outside this repo", () => {
+    expect(MCP_BASE).toBe(join(homedir(), ".oa-redline", "rl-agents"));
+    expect(MCP_BASE.startsWith(root)).toBe(false);
   });
 });
 
@@ -341,12 +438,17 @@ describe("main, with gh and fetch mocked", () => {
   const FAKE_HOOK = "fake-hook-key-not-real";
   const NOW = 1_793_600_000_000;
   let tmp: string;
+  let home: string;
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "oa-tm-main-"));
+    home = mkdtempSync(join(tmpdir(), "oa-tm-home-"));
   });
-  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  });
 
-  function deps(o: { host?: string; revoke?: boolean } = {}) {
+  function deps(o: { host?: string; revoke?: boolean; noPat?: boolean } = {}) {
     const lines: string[] = [];
     const ghCalls: string[][] = [];
     const fetchCalls: { url: string; init: RequestInit }[] = [];
@@ -365,7 +467,11 @@ describe("main, with gh and fetch mocked", () => {
           return "x test-member-job: 01JOB\nx test-member-revoked: rl-agents\n";
         const sealed = sealTo(
           key,
-          JSON.stringify({ pat: FAKE_PAT, hookKey: FAKE_HOOK }),
+          JSON.stringify(
+            o.noPat
+              ? { hookKey: FAKE_HOOK }
+              : { pat: FAKE_PAT, hookKey: FAKE_HOOK },
+          ),
         );
         return `x test-member-job: 01JOB\nx test-member-app-host: ${o.host ?? APP_HOST}\nx test-member-sealed: ${sealed}\n`;
       }
@@ -385,6 +491,7 @@ describe("main, with gh and fetch mocked", () => {
       now: () => NOW,
       sleep: async () => {},
       tmp,
+      mcpBase: join(home, ".oa-redline", "rl-agents"),
       log: (l) => lines.push(l),
     };
     return { d, lines, ghCalls, fetchCalls };
@@ -470,9 +577,177 @@ describe("main, with gh and fetch mocked", () => {
   });
 
   it("bad arguments: exit 2, the help, no dispatch", async () => {
-    const { d, lines, ghCalls } = deps();
-    expect(await main(["--role", "admin"], d)).toBe(2);
-    expect(lines[0]).toContain("unknown argument: --role");
+    for (const a of [
+      ["--role", "owner"],
+      ["--role=superadmin"],
+      ["--x"],
+      ["--mcp"],
+      ["--mcp", "--role", "member"],
+    ]) {
+      const { d, lines, ghCalls } = deps();
+      expect(await main(a, d), a.join(" ")).toBe(2);
+      expect(lines[0]).toContain("Usage:");
+      expect(ghCalls).toHaveLength(0);
+    }
+  });
+
+  it("--role admin asks rl-agents for an admin session as the admin address, not the member's", async () => {
+    const { d, lines, fetchCalls } = deps();
+    expect(await main(["--role", "admin"], d)).toBe(0);
+    expect(JSON.parse(String(fetchCalls[0]?.init.body))).toEqual({
+      email: ADMIN_EMAIL,
+      role: "admin",
+    });
+    expect(ADMIN_EMAIL).not.toBe(EMAIL);
+    const out = JSON.parse(lines[0] as string);
+    expect(statSync(out.storageState).mode & 0o777).toBe(0o600);
+    expect(out.mcpConfig).toBeUndefined();
+    expect(existsSync(join(home, ".oa-redline"))).toBe(false);
+  });
+
+  it("--mcp writes the PAT to a 0600 config in a 0700 directory outside the repo; stdout and stderr never hold it", async () => {
+    const { d, lines } = deps();
+    const out$ = vi.spyOn(process.stdout, "write");
+    const err$ = vi.spyOn(process.stderr, "write");
+    const con = (["log", "error", "warn", "info", "debug"] as const).map((m) =>
+      vi.spyOn(console, m),
+    );
+    try {
+      expect(await main(["--mcp", "--role", "admin"], d)).toBe(0);
+      const printed = [
+        ...lines,
+        ...out$.mock.calls.map((c) => String(c[0])),
+        ...err$.mock.calls.map((c) => String(c[0])),
+        ...con.flatMap((s) => s.mock.calls.map((c) => c.join(" "))),
+      ].join("\n");
+      expect(printed).not.toContain(FAKE_PAT);
+      expect(printed).not.toContain(FAKE_HOOK);
+    } finally {
+      for (const s of [out$, err$, ...con]) s.mockRestore();
+    }
+    expect(lines).toHaveLength(1);
+    const out = JSON.parse(lines[0] as string);
+    expect(Object.keys(out).sort()).toEqual(
+      ["expiresAt", "mcpConfig", "run", "storageState"].sort(),
+    );
+    const base = realpathSync(join(home, ".oa-redline", "rl-agents"));
+    expect(dirname(out.mcpConfig)).toBe(base);
+    expect(out.mcpConfig.startsWith(realpathSync(root))).toBe(false);
+    expect(statSync(out.mcpConfig).mode & 0o777).toBe(0o600);
+    expect(statSync(base).mode & 0o777).toBe(0o700);
+    expect(statSync(dirname(base)).mode & 0o777).toBe(0o700);
+    expect(JSON.parse(readFileSync(out.mcpConfig, "utf8"))).toEqual({
+      mcpServers: {
+        "oa-rl-agents": {
+          type: "http",
+          url: MCP_URL,
+          headers: { Authorization: `Bearer ${FAKE_PAT}` },
+        },
+      },
+    });
+    expect(MCP_URL).toBe("https://rl-agents.open-artifacts-staging.app/mcp");
+    // The storage state still holds neither secret.
+    const state = readFileSync(out.storageState, "utf8");
+    expect(state).not.toContain(FAKE_PAT);
+    expect(state).not.toContain(FAKE_HOOK);
+  });
+
+  it("--mcp with a base inside the repo: refused before any dispatch, nothing written", async () => {
+    const { d, ghCalls, fetchCalls } = deps();
+    const inRepo = mkdtempSync(join(root, "scripts/ops/.oa-tm-mcp-"));
+    try {
+      d.mcpBase = join(inRepo, "rl-agents");
+      await expect(main(["--mcp", "--role", "admin"], d)).rejects.toThrow(
+        /inside the git work tree/,
+      );
+      expect(ghCalls).toHaveLength(0);
+      expect(fetchCalls).toHaveLength(0);
+      expect(readdirSync(inRepo)).toEqual([]);
+      expect(readdirSync(tmp)).toEqual([]);
+    } finally {
+      rmSync(inRepo, { recursive: true, force: true });
+    }
+  });
+
+  const ADMIN_MCP = ["--role", "admin", "--mcp"];
+  const oaRedline = () => join(home, ".oa-redline");
+
+  it("--mcp with ~/.oa-redline a dangling symlink: refused before any gh call", async () => {
+    const { d, ghCalls, fetchCalls } = deps();
+    symlinkSync(join(home, "nowhere"), oaRedline());
+    await expect(main(ADMIN_MCP, d)).rejects.toThrow(/--mcp cannot use/);
     expect(ghCalls).toHaveLength(0);
+    expect(fetchCalls).toHaveLength(0);
+    expect(existsSync(join(home, "nowhere"))).toBe(false);
+    expect(readdirSync(tmp)).toEqual([]);
+  });
+
+  it("--mcp with ~/.oa-redline a regular file: refused before any gh call", async () => {
+    const { d, ghCalls } = deps();
+    writeFileSync(oaRedline(), "not a directory");
+    await expect(main(ADMIN_MCP, d)).rejects.toThrow(/--mcp cannot use/);
+    expect(ghCalls).toHaveLength(0);
+    expect(readFileSync(oaRedline(), "utf8")).toBe("not a directory");
+  });
+
+  it("--mcp with the base a regular file: refused before any gh call", async () => {
+    const { d, ghCalls } = deps();
+    mkdirSync(oaRedline(), { mode: 0o700 });
+    writeFileSync(d.mcpBase, "x");
+    await expect(main(ADMIN_MCP, d)).rejects.toThrow(/--mcp cannot use/);
+    expect(ghCalls).toHaveLength(0);
+  });
+
+  it("--mcp with the base already there as 0755: it ends up 0700", async () => {
+    const { d, lines } = deps();
+    mkdirSync(d.mcpBase, { recursive: true });
+    chmodSync(d.mcpBase, 0o755);
+    expect(await main(ADMIN_MCP, d)).toBe(0);
+    expect(statSync(d.mcpBase).mode & 0o777).toBe(0o700);
+    const out = JSON.parse(lines[0] as string);
+    expect(statSync(out.mcpConfig).mode & 0o777).toBe(0o600);
+  });
+
+  it("a run id that is not a number: no watch, no fetch, no file", async () => {
+    const { d, ghCalls, fetchCalls } = deps();
+    const gh = d.gh;
+    d.gh = async (...a: string[]) =>
+      a[0] === "run" && a[1] === "list" ? "../evil\n" : gh(...a);
+    await expect(main(ADMIN_MCP, d)).rejects.toThrow(/not a number/);
+    expect(ghCalls.some((a) => a[1] === "watch" || a[1] === "view")).toBe(
+      false,
+    );
+    expect(fetchCalls).toHaveLength(0);
+    expect(readdirSync(tmp)).toEqual([]);
+    expect(readdirSync(d.mcpBase)).toEqual([]);
+  });
+
+  it("a config write that fails after the mint deletes the storage state and names no secret", async () => {
+    const { d } = deps();
+    mkdirSync(d.mcpBase, { recursive: true, mode: 0o700 });
+    // The name this mint will use, already taken: the wx write fails.
+    writeFileSync(join(d.mcpBase, `mcp-4242-${NOW}.json`), "taken");
+    const err = await main(ADMIN_MCP, d).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(err?.message).toMatch(/EEXIST.*storage state was deleted/);
+    expect(err?.message).not.toContain(FAKE_PAT);
+    expect(err?.message).not.toContain(FAKE_HOOK);
+    expect(readdirSync(tmp)).toEqual([]);
+    expect(readFileSync(join(d.mcpBase, `mcp-4242-${NOW}.json`), "utf8")).toBe(
+      "taken",
+    );
+  });
+
+  it("--mcp with no PAT in the seal: an error naming no secret, no file", async () => {
+    const { d, fetchCalls } = deps({ noPat: true });
+    await expect(main(["--mcp", "--role", "admin"], d)).rejects.toThrow(
+      /^the sealed credentials have no PAT$/,
+    );
+    expect(fetchCalls).toHaveLength(0);
+    expect(readdirSync(tmp)).toEqual([]);
+    // The directory was set up before the mint; no config went in it.
+    expect(readdirSync(d.mcpBase)).toEqual([]);
   });
 });

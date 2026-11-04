@@ -138,7 +138,13 @@ async function hubSnapshot(
 export type BusView = {
   machines: BusMachine[];
   agents: BusAgent[];
-  /** False when the hub could not be read: `connected` is then null and agents []. */
+  /**
+   * Whether the hub's state is known. True when the hub was read, or when no
+   * unrevoked machine ever connected (none can be connected: agents [] and
+   * every `connected` false). False when the bus is off (unbound or hosted),
+   * or when a machine has connected but the hub read failed or timed out
+   * (`connected` then null for it).
+   */
   live: boolean;
 };
 
@@ -157,24 +163,54 @@ export async function busView(env: Env, userId: string): Promise<BusView> {
     userId,
     results.some((m) => m.lastUsedAt !== null),
   );
-  const machines = results.map(
-    (m): BusMachine => ({
-      id: m.id,
-      label: m.label,
-      createdAt: iso(m.createdAt),
-      lastUsedAt: m.lastUsedAt === null ? null : iso(m.lastUsedAt),
-      revokedAt: m.revokedAt === null ? null : iso(m.revokedAt),
-      connected:
-        m.revokedAt !== null
-          ? false
-          : snap === null
-            ? m.lastUsedAt === null
-              ? false
-              : null
-            : snap.connected.has(m.id),
-    }),
+  const machines = results.map((m) => machineOf(m, snap?.connected ?? null));
+  // Every active machine is listed (MAX_ACTIVE_MACHINES == MAX_LISTED).
+  const mayBeLive = results.some(
+    (m) => m.revokedAt === null && m.lastUsedAt !== null,
   );
-  return { machines, agents: snap?.agents ?? [], live: snap !== null };
+  return {
+    machines,
+    agents: snap?.agents ?? [],
+    live: snap !== null || (busOn(env) && !mayBeLive),
+  };
+}
+
+/** A D1 row as the API shape; `connected` null when the hub wasn't read (or couldn't be) and it may be connected. */
+function machineOf(m: MachineDbRow, connected: Set<string> | null): BusMachine {
+  return {
+    id: m.id,
+    label: m.label,
+    createdAt: iso(m.createdAt),
+    lastUsedAt: m.lastUsedAt === null ? null : iso(m.lastUsedAt),
+    revokedAt: m.revokedAt === null ? null : iso(m.revokedAt),
+    connected:
+      m.revokedAt !== null
+        ? false
+        : connected === null
+          ? m.lastUsedAt === null
+            ? false
+            : null
+          : connected.has(m.id),
+  };
+}
+
+const MACHINE_OF = `select id, label, created_at as createdAt, last_used_at as lastUsedAt,
+    revoked_at as revokedAt from bus_machines where id = ?1 and user_id = ?2`;
+
+/**
+ * The member's machine `id` (revoked or not) from D1 alone, or null when it
+ * is unknown or another member's. No hub read: `connected` is false when it
+ * can't be connected, else null.
+ */
+export async function busMachine(
+  env: Env,
+  userId: string,
+  id: string,
+): Promise<BusMachine | null> {
+  const m = await stmt(env.DB, MACHINE_OF)
+    .bind(id, userId)
+    .first<MachineDbRow>();
+  return m ? machineOf(m, null) : null;
 }
 
 /** The member's machines, newest active first, then revoked (at most 100). */

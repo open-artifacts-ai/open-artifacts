@@ -183,7 +183,7 @@ const Status = z.strictObject({
 
 /**
  * Rename a live agent (#393). Answered by `renamed`, or `error`
- * (`not_registered`, `rate_limited` with RENAME_MESSAGES.rate, `bad_frame`).
+ * (`not_registered`, `rate_limited` with RENAME_MESSAGES.rate or .room, `bad_frame`).
  * The hub names the agent as for `agent_up`, de-collided the same way. A hub
  * decoder older than this frame refuses it.
  */

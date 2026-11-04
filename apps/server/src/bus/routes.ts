@@ -372,7 +372,9 @@ const membersOnly = () =>
   );
 const tooMany = () =>
   messagePage("Too many requests", "Wait a minute, then try again.", 429);
-const busOff = () => messagePage("Not found", "There is nothing here.", 404);
+/** The answer of every bus page while the bus is off (busOn false); the /bus page (#1300) uses it too. */
+export const busOff = () =>
+  messagePage("Not found", "There is nothing here.", 404);
 const pageExpired = () =>
   messagePage(
     "This page expired",

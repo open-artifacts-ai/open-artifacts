@@ -158,8 +158,13 @@ addressing.
 - A former name reaches its agent for `LIMITS.formerNameGraceMs` (1 h, the
   mail TTL). Name changes per agent are capped at `LIMITS.renamesPerHour` (10)
   per rolling hour; past it `rename` gets `error rate_limited` with message
-  `RENAME_MESSAGES.rate` = `"Too many renames"`. A no-op doesn't count. A
-  `rename` for an agent that isn't live is `error not_registered`.
+  `RENAME_MESSAGES.rate` = `"Too many renames"`. A chosen former name stays
+  reserved for its grace and is never dropped early, so with
+  `LIMITS.maxFormerNames` (5) chosen former names in grace a `rename` that
+  would leave another gets `error rate_limited` with message
+  `RENAME_MESSAGES.room` = `"Too many recent names"` (OpenBus #451). A no-op
+  doesn't count. A `rename` for an agent that isn't live is
+  `error not_registered`.
 - `name_kind` on `agent_up` and `rename` (`NAME_KINDS`: `default | chosen`):
   only the client knows whether a name is the harness's fallback or chosen.
   The hub mints a `default` name as `<base>-<4 hex>`, never reuses it and
@@ -167,9 +172,46 @@ addressing.
   the grace. Absent means `chosen`.
 - Resolution is the same for every client: the sender's own namespace first
   (current names, then former names), then other namespaces as before. A
-  former name held by two agents in one scope is `ambiguous`. Close, revoke,
-  a namespace move or a global flip drops an agent's former names. A repeat
-  `agent_up` that changes a live agent's name records no former name.
+  former name held by two agents in one scope is `ambiguous`. A global
+  sender without `to_namespace`, past its own namespace: a live name in one
+  namespace and another agent's former name in its grace (a chosen one left
+  behind by a move or flip included) count as two, `ambiguous` (OpenBus
+  #452); so does a role in one namespace and such a former name outside it.
+  The sender's own former names never count, and a name held after its
+  agent left the scope counts too (below).
+- A namespace move or global flip (`agent_up` with a new `namespace` or
+  `global`) keeps the agent's chosen former names reserved in the scope they
+  were left in, until their grace ends, roles included (a role can't take
+  one there); there they resolve to no one, so a send to one answers
+  `unknown_agent` and never reaches the moved agent. Default former names go
+  on a move. A move that also changes the name, a `-2` suffix included,
+  leaves the old one the same way (OpenBus #451). A global agent moving its
+  home namespace while staying global has not changed scope: its former
+  names keep resolving. A repeat `agent_up` that changes a live agent's name
+  in its scope is a rename and leaves a former name as `rename` does.
+- A session leaving a scope holds its current name there for
+  `LIMITS.formerNameGraceMs` (1 h), with no forwarding (OpenBus #451).
+  Leaving is a close (`agent_down`, `sessions` closed, the 24 h offline reap
+  of a machine, a machine revoke) or a namespace move or global flip, whether
+  the name stays, changes or gets a `-2` in the new scope (a `rename_kept`
+  move included). Within the hour another agent proposing the name there
+  gets a `-N` suffix and a role can't take it; a send to it from there
+  reaches no one: `closed` (or `revoked`) for a closed agent,
+  `unknown_agent` for a moved one, never revealing where it went. A held name
+  counts as a reservation for a global sender's ambiguity (for a role too),
+  not toward the `RENAME_MESSAGES.room` cap, never appears in
+  `former_names`, and is never dropped before its hour. The agent itself
+  takes it back by reopening or moving back under it. A close also keeps the
+  agent's chosen former names reserved for their grace; they resolve to no
+  one until the agent reopens in their scope, when they resolve to it again.
+  Default former names go on a close, as on a move. A role whose holder
+  closes reads vacant (`role_vacant`), as before.
+- Every scope change (a namespace move or global flip, same name or not,
+  live or on a reopen) counts in the `LIMITS.renamesPerHour` limit, which
+  bounds holds. Past the limit the `agent_up` still succeeds but keeps the
+  agent in its current scope under its current name (the hub logs
+  `move_kept`). Known limitation: `agent_ok` carries no namespace, so a
+  client cannot see that a move was kept (open-bus #455 adds a signal).
 
 ## Role addresses (#1296)
 
@@ -195,7 +237,8 @@ claims one, so no AI agent can.
   no `to_name`; resolution is the same for every client.
 - Names: a role's name is a bus name in the agent-name space of its
   namespace, case-insensitively. A role can't take a live agent's name there
-  (in the namespace, or a global's) or a live chosen former name; an agent
+  (in the namespace, or a global's), a chosen former name reserved there, or
+  a name held there (OpenBus #451); an agent
   (`agent_up`, `rename`) proposing a role's name gets a `-N` suffix, and a
   global agent can't take any namespace's role name.
 
