@@ -824,6 +824,15 @@ importers:
         specifier: 1.0.20
         version: 1.0.20
     devDependencies:
+      '@oa/auth-broker':
+        specifier: workspace:*
+        version: link:../../apps/auth-broker
+      '@oa/directory-broker':
+        specifier: workspace:*
+        version: link:../../apps/directory-broker
+      '@oa/server':
+        specifier: workspace:*
+        version: link:../../apps/server
       '@types/node':
         specifier: ^22.20.5
         version: 22.20.5

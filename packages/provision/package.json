@@ -42,6 +42,9 @@
     "typecheck": "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provisioning-contract --filter @oa/bundle build && tsc --noEmit -p tsconfig.typecheck.json"
   },
   "devDependencies": {
+    "@oa/auth-broker": "workspace:*",
+    "@oa/directory-broker": "workspace:*",
+    "@oa/server": "workspace:*",
     "@types/node": "^22.20.5"
   },
   "dependencies": {
