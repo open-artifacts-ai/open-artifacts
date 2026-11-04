@@ -19,7 +19,7 @@ import { iso } from "./dto.js";
 import { AGENT_COLS, type AgentRow } from "./rows.js";
 
 export type RoleResolution =
-  | { ok: true; agent: AgentRow; role: true }
+  | { ok: true; agent: AgentRow; viaRole: true }
   | { ok: false; reason: RefusalReason };
 
 export type PutRoleResult =
@@ -230,7 +230,7 @@ function holderOf(
     ns,
   );
   return agent
-    ? { ok: true, agent, role: true }
+    ? { ok: true, agent, viaRole: true }
     : { ok: false, reason: "role_vacant" };
 }
 

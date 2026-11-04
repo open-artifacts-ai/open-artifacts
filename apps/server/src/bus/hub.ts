@@ -1158,9 +1158,9 @@ type Held = {
   expiresAt: number;
 };
 
-/** `role`: the send resolved through a role address (#1296). */
+/** `viaRole`: the send resolved through a role address (#1296). */
 type Resolution =
-  | { ok: true; agent: AgentRow; role?: true }
+  | { ok: true; agent: AgentRow; viaRole?: true }
   | { ok: false; reason: RefusalReason };
 
 /** The live agent `lname` names in namespace `ns` (in `ns`, or a global). */
@@ -2754,7 +2754,7 @@ export class BusHub extends DurableObject<Env> {
       expiresAt,
       held ? now : null,
     );
-    const viaRole = res.role === true;
+    const viaRole = res.viaRole === true;
     insertSendKey(sql, sender.id, f.id, key.hash, msgId, now, viaRole);
     if (this.#sendKeys !== null) this.#sendKeys++;
     this.#arm(now + SEND_KEY_RETAIN_MS + 1);
