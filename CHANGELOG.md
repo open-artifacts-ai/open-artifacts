@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.110.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.109.0...v0.110.0) (2026-11-04)
+
+
+### Features
+
+* **skill:** teach multi-agent collaboration habits ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1324](https://github.com/open-artifacts-ai/open-artifacts/issues/1324)) ([1653c79](https://github.com/open-artifacts-ai/open-artifacts/commit/1653c793a1d18c6f9181440c9f4e1fbe2590481d))
+
 ## [0.109.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.108.0...v0.109.0) (2026-11-04)
 
 
