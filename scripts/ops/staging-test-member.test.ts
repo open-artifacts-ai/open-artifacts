@@ -202,6 +202,44 @@ describe("logs", () => {
     ).toBeNull();
     expect(parseMintLog("nothing here")).toBeNull();
   });
+  // gh run view --log prints the step's script (in ANSI color) before its
+  // output, so every marker first appears with a shell variable after it.
+  const script = (s: string) => line(`\x1b[36;1m${s}\x1b[0m`);
+  const echoed =
+    script('echo "test-member-job: $job"') +
+    script('if [ "$REVOKE" = "true" ]; then') +
+    script('  echo "test-member-revoked: $SLUG"') +
+    script("fi") +
+    script('echo "test-member-app-host: $host"') +
+    script('echo "test-member-sealed: $sealed"');
+  it("a real mint log: the echoed script comes first, the output wins", () => {
+    const log =
+      echoed +
+      line("test-member-job: 01M6KQ1W6RZNKFJT1JTJFB9RWK") +
+      line(`test-member-app-host: ${APP_HOST}`) +
+      line("test-member-sealed: oa-seal-v1.aGVsbG8.d29ybGQ.c2VhbGVk");
+    expect(parseMintLog(log)).toEqual({
+      sealed: "oa-seal-v1.aGVsbG8.d29ybGQ.c2VhbGVk",
+      job: "01M6KQ1W6RZNKFJT1JTJFB9RWK",
+    });
+    expect(parseMintLog(echoed)).toBeNull();
+    // Two different real values for one marker: trust neither.
+    expect(
+      parseMintLog(log + line("test-member-app-host: evil.example")),
+    ).toBeNull();
+    expect(parseMintLog(log + line("test-member-job: 01OTHER"))).toBeNull();
+  });
+  it("a real revoke log: the echoed script comes first, the output wins", () => {
+    const log =
+      echoed +
+      line("test-member-job: 01M6KQ1W6RZNKFJT1JTJFB9RWK") +
+      line("test-member-revoked: rl-agents");
+    expect(parseRevokeLog(log)).toBe(true);
+    expect(parseRevokeLog(echoed)).toBe(false);
+    expect(
+      parseRevokeLog(echoed + line("test-member-revoked: rl-agents")),
+    ).toBe(false);
+  });
   it("a revoke log names rl-agents and a job", () => {
     expect(
       parseRevokeLog(
