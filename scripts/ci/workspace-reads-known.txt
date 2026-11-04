@@ -17,9 +17,6 @@ apps/landing/src/lib/tools.ts @oa/server
 apps/landing/test/llms.test.ts @oa/server
 apps/landing/test/markers.test.ts @oa/server
 apps/landing/test/tools-manifest.test.ts @oa/server
-apps/provisioner/test/node/oauth-store-real.test.ts @oa/server
-apps/provisioner/test/node/world.ts @oa/server
-apps/provisioning/test/node/seal-copy.test.ts @oa/provisioner
 apps/server/test/node/test-hooks-strip.test.ts @oa/bundle
 packages/bundle/src/bundle.ts @oa/server
 packages/bundle/test/imports.test.ts @oa/admin  # forbidden-path list it must not import from, not a read (#1056)
