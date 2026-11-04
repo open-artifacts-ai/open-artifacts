@@ -293,6 +293,7 @@ describe("summaries", () => {
           latest: true,
         },
       ],
+      platform: "1.41.2",
     },
     query_audit: { items: [fixtureAudit()], nextCursor: "abc" },
     check_slug: { slug: "acme", status: "ok" },
@@ -313,6 +314,15 @@ describe("summaries", () => {
     expect(byName("check_slug").summary(BODY.check_slug as never)).toBe(
       "acme: ok",
     );
+    expect(byName("list_releases").summary(BODY.list_releases as never)).toBe(
+      "1 release; latest 1.42.0 installable; platform 1.41.2",
+    );
+    expect(
+      byName("list_releases").summary({
+        ...(BODY.list_releases as object),
+        platform: null,
+      } as never),
+    ).toContain("platform none, nothing installable");
   });
 
   it("free text never reaches a content line", () => {

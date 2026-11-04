@@ -35,7 +35,7 @@ import {
   summaryOf,
 } from "../model.js";
 import type { Principal } from "../principal.js";
-import { releases, tokenStatus } from "../services/cache.js";
+import { platformRelease, releases, tokenStatus } from "../services/cache.js";
 import { ipKeyOf } from "../services/counters.js";
 import { redactAuditEntry } from "../services/pii.js";
 import type { HandlerArgs } from "./handlers.js";
@@ -229,8 +229,12 @@ export async function getJob(a: HandlerArgs): Promise<RouteResult> {
   return ok(job);
 }
 
+/**
+ * R16. `platform` is read from env on every request, never cached with the
+ * list: it changes with a deploy, not with a publish.
+ */
 export async function listReleases(a: HandlerArgs): Promise<RouteResult> {
-  return ok({ items: await releases(a.env) });
+  return ok({ items: await releases(a.env), platform: platformRelease(a.env) });
 }
 
 /**

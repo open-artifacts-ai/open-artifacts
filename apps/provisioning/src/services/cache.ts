@@ -35,6 +35,19 @@ async function cached<T>(
   }
 }
 
+/**
+ * The platform's own release: this Worker's version tag, which a deploy sets
+ * to the release it deployed, the same tag the fleet follows. Null when there
+ * isn't a stable one. Read from env, never cached.
+ */
+export function platformRelease(
+  env: Pick<Env, "CF_VERSION_METADATA">,
+): string | null {
+  return (
+    /^v(\d+\.\d+\.\d+)$/.exec(env.CF_VERSION_METADATA?.tag ?? "")?.[1] ?? null
+  );
+}
+
 /** GET /releases (R16), and the version checks of create and upgrade. */
 export async function releases(env: Env): Promise<Release[]> {
   try {
