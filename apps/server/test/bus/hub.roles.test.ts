@@ -14,6 +14,7 @@ import {
   BUS_CAPS,
   CLIENT_FRAMES,
   type ClientFrame,
+  LIMITS,
   MsgIdSchema,
   ReceiptStateSchema,
   type ServerFrame,
@@ -34,6 +35,7 @@ import {
 
 let seq = 0;
 const id = (t: string) => `${t}${++seq}`;
+const GRACE = LIMITS.formerNameGraceMs;
 const uniq = (t: string) => `${t}-${++seq}x${Date.now() % 1e8}`;
 
 type Receipt = Extract<ServerFrame, { type: "receipt" }>;
@@ -47,6 +49,10 @@ const inHub = async <R>(
   uid: string,
   fn: (i: BusHub, s: DurableObjectState) => R,
 ) => runInDurableObject(await hubOf(uid), fn);
+
+/** Sets `uid`'s hub clock (each test has its own hub, so none is reset). */
+const setClock = (uid: string, ms: number | null) =>
+  inHub(uid, (i) => BusHub.setTestClock(i, ms));
 
 /** A daemon of `uid` that said hello, with the given caps (none: an old client). */
 async function at(uid: string, caps: string[] = []): Promise<Daemon> {
@@ -387,19 +393,29 @@ describe("a global sender's role in one other namespace (#1296 review)", () => {
     return { uid, d, a, b, holder };
   }
 
-  it("is ambiguous while a live non-global agent in another namespace has the name", async () => {
+  it("is ambiguous while a live non-global agent in another namespace has the name, and for the hour its close holds it", async () => {
     const { uid, d, a, b, holder } = await setup();
+    const t0 = Date.now() + 10 * GRACE;
+    await setClock(uid, t0);
     expect(await reg(d, "x", "lead", a)).toBe("lead");
     await setRole(uid, b, "lead", await agentId(uid, holder));
     expect(await send(d, "g", "lead")).toMatchObject({
       state: "refused",
       reason: "ambiguous",
     });
-    // Named, each is reachable; once the agent closes the role is the target.
+    // Named, each is reachable.
     expect(await send(d, "g", "lead", b)).toMatchObject({ to_name: holder });
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "x" });
     d.send({ v: 1, id: id("l"), type: "list", from_ref: "g" });
     await waitFor(d, "roster");
+    // OpenBus #451: the close holds `lead` in A for the hour (nameOutside
+    // counts it, as heldElsewhere does), so the send stays ambiguous...
+    expect(await send(d, "g", "lead")).toMatchObject({
+      state: "refused",
+      reason: "ambiguous",
+    });
+    // ...and once the hold ends the role is the target.
+    await setClock(uid, t0 + GRACE);
     expect(await send(d, "g", "lead")).toMatchObject({
       state: "pending",
       to_name: holder,
@@ -407,8 +423,10 @@ describe("a global sender's role in one other namespace (#1296 review)", () => {
     d.close();
   });
 
-  it("is ambiguous while an agent in another namespace holds the name as a live former name", async () => {
+  it("is ambiguous while an agent in another namespace holds the name as a former name, closed or not", async () => {
     const { uid, d, a, b, holder } = await setup();
+    const t0 = Date.now() + 10 * GRACE;
+    await setClock(uid, t0);
     expect(await reg(d, "x", "lead", a)).toBe("lead");
     const now = uniq("now");
     d.send({
@@ -424,10 +442,16 @@ describe("a global sender's role in one other namespace (#1296 review)", () => {
       state: "refused",
       reason: "ambiguous",
     });
-    // Without the former name (the agent closes, dropping it), the role wins.
+    // OpenBus #451: a close keeps the chosen former name reserved for its
+    // grace, so the send stays ambiguous; after it the role wins.
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "x" });
     d.send({ v: 1, id: id("l"), type: "list", from_ref: "g" });
     await waitFor(d, "roster");
+    expect(await send(d, "g", "lead")).toMatchObject({
+      state: "refused",
+      reason: "ambiguous",
+    });
+    await setClock(uid, t0 + GRACE);
     expect(await send(d, "g", "lead")).toMatchObject({
       state: "pending",
       to_name: holder,
@@ -553,6 +577,57 @@ describe("a vacant role (#1296)", () => {
     old.close();
   });
 
+  it("the holder closes: the role reads vacant while the holder's held name blocks other agents and roles (OpenBus #451)", async () => {
+    const uid = await owner();
+    const d = await at(uid, NEW);
+    const n = ns("ro");
+    const alice = await reg(d, "a", uniq("alice"), n);
+    await reg(d, "s", uniq("sender"), n);
+    await setRole(uid, n, "lead", await agentId(uid, alice));
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+    d.send({ v: 1, id: id("l"), type: "list", from_ref: "s" });
+    await waitFor(d, "roster");
+    // The role still resolves, to vacant: the hold never forwards.
+    expect(await send(d, "s", "lead")).toMatchObject({
+      state: "refused",
+      reason: "role_vacant",
+    });
+    // The held name: another agent gets -2, and no role takes it.
+    expect(await reg(d, "x", alice, n)).toBe(`${alice}-2`);
+    expect(await put(uid, n, alice, null)).toEqual({
+      ok: false,
+      reason: "name_taken",
+    });
+    expect(await send(d, "s", alice)).toMatchObject({
+      state: "refused",
+      reason: "closed",
+    });
+    d.close();
+  });
+
+  it("a role can't be created on a name a move held, until the hour ends (OpenBus #451)", async () => {
+    const uid = await owner();
+    const t0 = Date.now() + 10 * GRACE;
+    await setClock(uid, t0);
+    const d = await at(uid, NEW);
+    const [n1, n2] = [ns("ro"), ns("ro")];
+    const mover = await reg(d, "m", uniq("mover"), n1);
+    const bob = await reg(d, "b", uniq("bob"), n1);
+    // A same-name move holds `mover` in n1.
+    expect(await reg(d, "m", mover, n2)).toBe(mover);
+    expect(await put(uid, n1, mover, await agentId(uid, bob))).toEqual({
+      ok: false,
+      reason: "name_taken",
+    });
+    expect(await put(uid, n1, mover, null)).toEqual({
+      ok: false,
+      reason: "name_taken",
+    });
+    await setClock(uid, t0 + GRACE);
+    expect((await put(uid, n1, mover, null)).ok).toBe(true);
+    d.close();
+  });
+
   it("a holder that moved out of the namespace leaves it vacant", async () => {
     const uid = await owner();
     const d = await at(uid, NEW);
@@ -651,8 +726,10 @@ describe("role names share the agent-name space (#1296)", () => {
     d.close();
   });
 
-  it("a role can't take a live agent's name (in the namespace, or a global's), any case", async () => {
+  it("a role can't take a live agent's name (in the namespace, or a global's), any case, nor for the hour after it closes", async () => {
     const uid = await owner();
+    const t0 = Date.now() + 10 * GRACE;
+    await setClock(uid, t0);
     const d = await at(uid, NEW);
     const n = ns("ro");
     const alice = await reg(d, "a", uniq("alice"), n);
@@ -669,10 +746,16 @@ describe("role names share the agent-name space (#1296)", () => {
     // Another namespace's agent name is fine.
     const other = await reg(d, "o", uniq("other"), ns("x"));
     expect((await put(uid, n, other, aid)).ok).toBe(true);
-    // A closed agent's name is not reserved.
+    // OpenBus #451: a closed agent's name is held for the hour (a global's
+    // in every namespace), then free.
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "g" });
     d.send({ v: 1, id: id("l"), type: "list", from_ref: "a" });
     await waitFor(d, "roster");
+    expect(await put(uid, n, g, aid)).toEqual({
+      ok: false,
+      reason: "name_taken",
+    });
+    await setClock(uid, t0 + GRACE);
     expect((await put(uid, n, g, aid)).ok).toBe(true);
     d.close();
   });

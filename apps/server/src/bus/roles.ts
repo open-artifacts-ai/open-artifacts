@@ -63,13 +63,16 @@ export function roleTakenSql(
 }
 
 /**
- * The SQL fragment (and its bindings) that is true when a live agent other
- * than `selfId` (null: none) holds `lname` as a chosen former name still in
- * its grace, reserved in the scope of an agent in `namespace` (`global`: in
- * any scope). OpenBus #451: a row reserves in the scope it was left in
+ * The SQL fragment (and its bindings) that is true when an agent other than
+ * `selfId` (null: none) holds `lname` as a chosen or held former name still
+ * in its grace, reserved in the scope of an agent in `namespace` (`global`:
+ * in any scope). OpenBus #451: a row reserves in the scope it was left in
  * (former_names namespace, global), not its agent's current one, so a move
- * or flip keeps it reserved where it was. One definition for nameTaken
- * (hub.ts) and putRole, so a role never takes a name an agent couldn't.
+ * or flip keeps it reserved where it was; a `held` row (a name an agent left
+ * a scope under: a close, revoke, move or flip) reserves the same way, and
+ * both reserve whether or not the agent is live. One definition for
+ * nameTaken (hub.ts) and putRole, so a role never takes a name an agent
+ * couldn't.
  */
 export function formerReservedSql(
   orgId: string,
@@ -80,9 +83,9 @@ export function formerReservedSql(
   selfId: string | null,
 ): { sql: string; binds: SqlStorageValue[] } {
   return {
-    sql: `exists (select 1 from former_names f join agents a on a.id = f.agent_id
-            where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind = 'chosen'
-              and f.agent_id is not ? and a.live = 1${global ? "" : " and (f.namespace = ? or f.global = 1)"})`,
+    sql: `exists (select 1 from former_names f
+            where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind in ('chosen', 'held')
+              and f.agent_id is not ?${global ? "" : " and (f.namespace = ? or f.global = 1)"})`,
     binds: [orgId, lname, now, selfId, ...(global ? [] : [namespace])],
   };
 }
@@ -135,9 +138,10 @@ export function listRoles(
  * - agent_not_open: the agent isn't open, or is neither in `namespace` nor
  *   global;
  * - name_taken: a live agent visible in `namespace` (in it, or a global) has
- *   the name, or a live agent holds it as a chosen former name still in its
- *   grace reserved there (R393b; OpenBus #451: in the scope the name was left
- *   in, formerReservedSql, as nameTaken), any case; or it was minted for an
+ *   the name, or an agent holds it as a chosen or held former name still in
+ *   its grace reserved there (R393b; OpenBus #451: in the scope the name was
+ *   left in, live or not, formerReservedSql, as nameTaken), any case; or it
+ *   was minted for an
  *   agent other than `agentId` (OpenBus #446: a minted name is never handed
  *   on, in any scope, so a default former name needs no reservation);
  * - role_limit: `max` roles exist and this would add one.

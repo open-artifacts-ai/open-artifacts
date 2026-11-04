@@ -164,6 +164,7 @@ it("test admin: only releases with the redline bundle, defaulting to the newest"
           },
           { ...r, version: "1.8.0", variants: ["redline"], latest: false },
         ],
+        platform: "2.0.0",
       }),
     ),
   );
@@ -223,6 +224,7 @@ const RELEASES = {
       latest: false,
     },
   ],
+  platform: "2.0.0",
 };
 
 it("staging admin: Test hooks is off by default and the body omits testHooks", async () => {

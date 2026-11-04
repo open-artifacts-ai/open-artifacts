@@ -218,14 +218,14 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     summary: (j) =>
       `${j.kind} ${j.id}: ${j.status}${j.step ? `, step ${j.step} (${j.stepIndex + 1} of ${j.steps.length})` : ""}, attempt ${j.attempt}${j.lastErrorCode ? `, last error ${j.lastErrorCode}` : ""}`,
   }),
-  tool<{ items: Release[] }>({
+  tool<{ items: Release[]; platform: string | null }>({
     name: "list_releases",
     route: "R16",
     description:
-      "Published releases, with which are installable and which is latest.",
+      "Published releases, with which are installable and which is latest, and `platform`, the platform's own release. A create or upgrade to a release newer than `platform` is refused (release_ahead_of_platform); a null `platform` refuses them all.",
     summary: (r) => {
       const l = r.items.find((x) => x.latest);
-      return `${plural(r.items.length, "release")}${l ? `; latest ${l.version} ${l.installable ? "installable" : "not installable"}` : ""}`;
+      return `${plural(r.items.length, "release")}${l ? `; latest ${l.version} ${l.installable ? "installable" : "not installable"}` : ""}; platform ${r.platform ?? "none, nothing installable"}`;
     },
   }),
   tool<{ items: AuditEntry[]; nextCursor: string | null }>({
