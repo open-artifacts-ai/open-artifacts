@@ -11,8 +11,10 @@ import {
   type BusMachine,
   type BusPageDeps,
   type BusView,
+  dayOf,
   decodeAddress,
   encodeAddress,
+  lastUsedOf,
   mountBusPage,
   renderTemplate,
 } from "../src/bus/page.js";
@@ -173,6 +175,19 @@ describe("bus page templates", () => {
     expect(() => renderTemplate(t, { a: "" }, ["nope"])).toThrow(/nope/);
   });
 
+  it("times carry UTC and 'today' is the UTC day; dates are bare", () => {
+    const now = new Date("2026-11-04T23:30:00Z");
+    expect(lastUsedOf("2026-11-04T00:10:00Z", now)).toBe(
+      "today at 12:10 AM UTC",
+    );
+    expect(lastUsedOf("2026-11-03T23:59:00Z", now)).toBe(
+      "Nov 3 at 11:59 PM UTC",
+    );
+    expect(lastUsedOf(null, now)).toBe("Never");
+    expect(dayOf("2026-10-21T23:59:00Z", now)).toBe("Oct 21");
+    expect(dayOf("2025-10-21T12:00:00Z", now)).toBe("Oct 21, 2025");
+  });
+
   it("addresses round trip and anything else decodes to null", () => {
     const a = { namespace: "leo-work", name: "clé" };
     expect(decodeAddress(encodeAddress(a))).toEqual(a);
@@ -313,7 +328,7 @@ describe("GET /bus: the page", () => {
     expect(body).toContain("Revoked Oct 30");
     expect(body).toContain("Added </span>Oct 25");
     expect(body).toContain("Last used </span>Never");
-    expect(body).toContain("Last used </span>Nov 2 at 6:10 PM");
+    expect(body).toContain("Last used </span>Nov 2 at 6:10 PM UTC");
     // Revoked rows have no Revoke link.
     expect(body.match(/class="pill"/g)?.length).toBe(3);
     expect(body).not.toContain("Live status isn't available");
@@ -452,7 +467,7 @@ describe("revoke", () => {
     const r1 = await post(internal.deps, revokeUrl("m1"), m.cookie, [
       ["csrf", t],
     ]);
-    expect(loc(r1)).toBe("/bus?error=revoke_partial&m=m1");
+    expect(loc(r1)).toBe("/bus?error=revoke_failed&m=m1");
     const body = await (
       await get(internal.deps, loc(r1) ?? "", m.cookie)
     ).text();
@@ -463,7 +478,7 @@ describe("revoke", () => {
     // Without a machine of the caller's own to name, it's the generic line.
     const gone = await get(
       internal.deps,
-      "/bus?error=revoke_partial&m=zz",
+      "/bus?error=revoke_failed&m=zz",
       m.cookie,
     );
     const goneBody = await gone.text();
@@ -510,6 +525,68 @@ describe("revoke", () => {
     const r2 = await post(none.deps, revokeUrl("m1"), g.cookie, [["csrf", t]]);
     expect(r2.status).toBe(404);
     expect(none.calls.revoke).toEqual([]);
+  });
+
+  it("a capped caller whose only machine is revoked: confirm and POST work for theirs, 404 for another id", async () => {
+    const g = await login(email("capret"), "guest");
+    const mine = machine({
+      id: "mine",
+      label: "old-laptop",
+      revokedAt: "2026-11-04T09:00:00Z",
+    });
+    const { deps, calls } = doubles({ view: { machines: [mine] } });
+    // /bus itself hides with nothing to revoke...
+    expect((await get(deps, "/bus", g.cookie)).status).toBe(404);
+    // ...but the confirm page and its POST work for their own machine.
+    const page = await get(deps, revokeUrl("mine"), g.cookie);
+    expect(page.status).toBe(200);
+    const csrf =
+      /name="csrf" value="([^"]+)"/.exec(await page.text())?.[1] ?? "";
+    const r = await post(deps, revokeUrl("mine"), g.cookie, [["csrf", csrf]]);
+    expect(loc(r)).toBe("/bus?done=revoked&m=mine");
+    expect(calls.revoke).toEqual([[g.userId, "mine"]]);
+    // Another member's (or an unknown) id: 404 on both, no revoke.
+    expect((await get(deps, revokeUrl("theirs"), g.cookie)).status).toBe(404);
+    const t = await revokeToken(g.userId, "theirs");
+    const r2 = await post(deps, revokeUrl("theirs"), g.cookie, [["csrf", t]]);
+    expect(r2.status).toBe(404);
+    expect(calls.revoke).toEqual([[g.userId, "mine"]]);
+  });
+
+  it("a capped caller after a partial revoke of their last machine sees the retry line, not 404", async () => {
+    const g = await login(email("capline"), "guest");
+    const mine = machine({
+      id: "mine",
+      label: "old-laptop",
+      revokedAt: "2026-11-04T09:00:00Z",
+    });
+    const internal = doubles({
+      view: { machines: [mine] },
+      revoke: async () => {
+        throw new ApiError("internal", "close failed");
+      },
+    });
+    const t = await revokeToken(g.userId, "mine");
+    const r = await post(internal.deps, revokeUrl("mine"), g.cookie, [
+      ["csrf", t],
+    ]);
+    expect(loc(r)).toBe("/bus?error=revoke_failed&m=mine");
+    const page = await get(internal.deps, loc(r) ?? "", g.cookie);
+    expect(page.status).toBe(200);
+    const body = await page.text();
+    expect(body).toContain('<a href="/bus/machines/mine/revoke">Try again</a>');
+    expect(body).toContain(
+      "You can't connect new machines. You can revoke these.",
+    );
+    expect(body).not.toContain("Share notices");
+    // Not for another machine's id, nor without the error.
+    expect(
+      (await get(internal.deps, "/bus?error=revoke_failed&m=theirs", g.cookie))
+        .status,
+    ).toBe(404);
+    expect(
+      (await get(internal.deps, "/bus?error=failed&m=mine", g.cookie)).status,
+    ).toBe(404);
   });
 });
 
@@ -679,6 +756,28 @@ describe("every POST: cross-site, size, CSRF", () => {
         ).status,
       ).toBe(401);
       expect((await post(deps, path, null, f)).status).toBe(401);
+      // A chunked body (no content-length) fails closed before it's read.
+      const chunked = await fetchAndWait(
+        appWith(deps),
+        new Request(`${APP}${path}`, {
+          method: "POST",
+          headers: {
+            cookie: m.cookie,
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: new ReadableStream({
+            start(ctl) {
+              ctl.enqueue(
+                new TextEncoder().encode(`csrf=${encodeURIComponent(good)}`),
+              );
+              ctl.close();
+            },
+          }),
+          duplex: "half",
+        } as RequestInit),
+        env,
+      );
+      expect(chunked.status).toBe(400);
       expect(calls.revoke).toEqual([]);
       expect(calls.set).toEqual([]);
     });

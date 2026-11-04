@@ -127,7 +127,7 @@ const ERRORS = {
 } as const;
 type ErrorCode = keyof typeof ERRORS;
 /** Revoked in D1, but its open connection didn't close (shown with `m`, the machine). */
-const REVOKE_PARTIAL = "revoke_partial";
+const REVOKE_FAILED = "revoke_failed";
 
 // ---------------------------------------------------------------- rendering
 
@@ -203,13 +203,13 @@ export function dayOf(iso: string, now = new Date()): string {
     : DAY_YEAR.format(d);
 }
 
-/** "Never", "today at 9:41 AM" or "Nov 2 at 6:10 PM" (UTC). */
+/** "Never", "today at 9:41 AM UTC" or "Nov 2 at 6:10 PM UTC"; "today" is the UTC day. */
 export function lastUsedOf(iso: string | null, now = new Date()): string {
   if (!iso) return "Never";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "Never";
   const day = ymd(d) === ymd(now) ? "today" : dayOf(iso, now);
-  return `${day} at ${TIME.format(d)}`;
+  return `${day} at ${TIME.format(d)} UTC`;
 }
 
 /** An address as a form value: base64url of JSON [namespace, name]. */
@@ -285,7 +285,7 @@ function messageOf(url: URL, view: BusView): SafeHtml | "" {
     });
   }
   const err = url.searchParams.get("error");
-  if (err === REVOKE_PARTIAL) {
+  if (err === REVOKE_FAILED) {
     const id = url.searchParams.get("m");
     const m = view.machines.find((x) => x.id === id);
     return m
@@ -307,6 +307,12 @@ function accessOf(user: Member, view: BusView | null): Access | null {
   if (canConnect(user)) return "full";
   return view?.machines.some((m) => !m.revokedAt) ? "revoke" : null;
 }
+
+/** One of the caller's own machines, revoked or not. */
+const ownMachine = (view: BusView, id: string | null | undefined) =>
+  id && MACHINE_ID.test(id)
+    ? view.machines.find((m) => m.id === id)
+    : undefined;
 
 async function renderPage(
   c: Context<AppEnv>,
@@ -446,8 +452,10 @@ async function postCaller(
         401,
       ),
     };
-  const len = Number(c.req.header("content-length") ?? Number.NaN);
-  if (!(len <= MAX_FORM_BYTES))
+  // Fails closed: no content-length (a chunked body), or anything but plain
+  // digits, is refused before the body is read.
+  const cl = c.req.header("content-length") ?? "";
+  if (!/^\d{1,9}$/.test(cl) || Number(cl) > MAX_FORM_BYTES)
     return { response: messagePage("Not saved", "Invalid form.", 400) };
   let form: FormData;
   try {
@@ -476,7 +484,14 @@ export function mountBusPage(app: AppType, deps: BusPageDeps): void {
     if ("response" in who) return who.response;
     try {
       const view = await deps.busView(c.env, who.user.id);
-      const access = accessOf(who.user, view);
+      const url = new URL(c.req.url);
+      // A capped caller whose last machine is revoked has nothing to revoke,
+      // except right after a partial revoke of one of theirs: then the page
+      // shows its retry line.
+      const retry =
+        url.searchParams.get("error") === REVOKE_FAILED &&
+        ownMachine(view, url.searchParams.get("m")) !== undefined;
+      const access = accessOf(who.user, view) ?? (retry ? "revoke" : null);
       if (!access) return notFoundPage();
       return await renderPage(c, deps, who.user, view, access);
     } catch (e) {
@@ -491,13 +506,12 @@ export function mountBusPage(app: AppType, deps: BusPageDeps): void {
     const id = c.req.param("id");
     try {
       const view = await deps.busView(c.env, who.user.id);
-      if (!accessOf(who.user, view)) return notFoundPage();
-      const m = MACHINE_ID.test(id)
-        ? view.machines.find((x) => x.id === id)
-        : undefined;
       // An own machine that's already revoked still loads: revoke is
-      // idempotent, and it's how a partial revoke is retried.
-      if (!m) return backError("not_found");
+      // idempotent, and it's how a partial revoke is retried. A capped
+      // caller's access is about the machine: one of theirs, or 404.
+      const m = ownMachine(view, id);
+      if (!m)
+        return canConnect(who.user) ? backError("not_found") : notFoundPage();
       const page = renderTemplate(BUS_REVOKE_TEMPLATE, {
         label: m.label,
         instance_host: c.env.APP_HOST,
@@ -517,9 +531,10 @@ export function mountBusPage(app: AppType, deps: BusPageDeps): void {
     const p = await postCaller(c, CSRF_REVOKE, id);
     if ("response" in p) return p.response;
     if (!canConnect(p.user)) {
-      // Revoke-only: still needs an unrevoked machine, as GET does.
+      // A capped caller may revoke any machine of their own, revoked or not
+      // (the retry after a partial revoke); anything else is 404.
       const view = await deps.busView(c.env, p.user.id);
-      if (!accessOf(p.user, view)) return notFoundPage();
+      if (!ownMachine(view, id)) return notFoundPage();
     }
     if (!MACHINE_ID.test(id)) return backError("not_found");
     try {
@@ -528,7 +543,7 @@ export function mountBusPage(app: AppType, deps: BusPageDeps): void {
     } catch (e) {
       logError("bus_revoke_failed", e);
       return e instanceof ApiError && e.code === "internal"
-        ? back(`error=${REVOKE_PARTIAL}&m=${encodeURIComponent(id)}`)
+        ? back(`error=${REVOKE_FAILED}&m=${encodeURIComponent(id)}`)
         : backError("failed");
     }
     return back(`done=revoked&m=${encodeURIComponent(id)}`);
