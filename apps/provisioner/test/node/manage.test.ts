@@ -2,7 +2,12 @@
 // rechecks and purge preconditions, replays, upgrade outcome mapping, the
 // fail and cleanup compensation, redline_creds sealing. Each install is made
 // by ProvisionInstall first, as in production.
-import { FLOOR_KEY, HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
+import {
+  FLOOR_KEY,
+  HOSTED_DOMAINS,
+  leaseJobPart,
+  NAMESPACES,
+} from "@oa/provision";
 import { REDLINE_SCOPE_FIXTURE } from "@oa/provisioning-contract/fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -17,6 +22,7 @@ import {
   CLOSE_SOCKETS_JOB,
   closeInstallSockets,
 } from "../../src/ops.js";
+import { jobHolder } from "../../src/provisioner.js";
 import { KEY_LIVE_WAITS_MS, REDLINE_STEP } from "../../src/redline.js";
 import { openSealed } from "../../src/seal.js";
 import { runCreate } from "../../src/workflow.js";
@@ -24,6 +30,7 @@ import {
   type CreateSeed,
   ENV,
   event,
+  Failed,
   HELD,
   seedCreate,
   seedJob,
@@ -392,7 +399,8 @@ describe("upgrade and rollback (5.4)", () => {
     const r = stepRunner(w.clock);
     await runManage(w.ctx, event(id), r.step).catch(() => {});
     db.prepare = prepare;
-    expect(mine).toMatch(/^[0-9a-f]{32}$/);
+    // A job's token: its job part, then this attempt's random part (#1326).
+    expect(mine).toMatch(/^[0-9a-f]{16}\.[0-9a-f]{32}$/);
     expect(w.job(id)?.status).toBe("failed");
     // The stolen lease was claimed after the job started, so the started_at
     // rule alone would release it; the run's own claim says it is not ours.
@@ -2279,5 +2287,89 @@ describe("recheck: actor and restore edges (2.5, 5.6)", () => {
       error_code: "invalid_state",
     });
     expect(w.lifecycle(s.installId)?.purge_at).toBeGreaterThan(w.clock.t);
+  });
+});
+
+describe("a create's lease across its attempts (#1326)", () => {
+  /**
+   * Attempt 1 of create claims the install's lease, then its isolate dies
+   * at the first script upload (the fetch never answers): no catch runs, so
+   * the lease stays, as in red-line run 41804046654 (lease_held, attempt 4).
+   */
+  async function deadFirstAttempt(slug: string) {
+    const s = seedCreate(w, { slug });
+    let hung: () => void = () => {};
+    const atUpload = new Promise<void>((r) => {
+      hung = r;
+    });
+    const ctx = {
+      ...w.ctx,
+      io: {
+        ...w.ctx.io,
+        fetch: (async (u: string | URL | Request, init?: RequestInit) => {
+          if (
+            init?.method === "PUT" &&
+            /\/scripts\/[^/]+$/.test(new URL(String(u)).pathname)
+          ) {
+            hung();
+            return new Promise<never>(() => {});
+          }
+          return w.ctx.io.fetch(u, init);
+        }) as typeof fetch,
+      },
+    };
+    const results = new Map<string, unknown>();
+    void runCreate(ctx, event(s.jobId), stepRunner(w.clock, { results }).step);
+    await atUpload;
+    const held = w.install(s.installId) as {
+      lease: string | null;
+      lease_until: number;
+    };
+    expect(held.lease?.startsWith(leaseJobPart(jobHolder(s.jobId)))).toBe(true);
+    expect(held.lease_until).toBeGreaterThan(w.clock.t);
+    return { s, results, held };
+  }
+
+  it("a retry of the same job re-enters the lease its dead attempt left, and the create reaches done", async () => {
+    const { s, results, held } = await deadFirstAttempt("leaseco");
+    w.clock.t += 60_000;
+    // The engine's next attempt of the create step, in a new isolate.
+    const again = stepRunner(w.clock, { results });
+    const error = await runCreate(w.ctx, event(s.jobId), again.step).then(
+      () => null,
+      (x: unknown) => x as Error,
+    );
+    expect(error).toBeNull();
+    expect(again.log.filter((l) => l.name === "create" && l.error)).toEqual([]);
+    expect(w.clock.t).toBeLessThan(held.lease_until);
+    expect(w.job(s.jobId)).toMatchObject({ status: "done" });
+    expect(w.install(s.installId)).toMatchObject({
+      state: "active",
+      lease: null,
+    });
+  });
+
+  it("a failed create keeps its lease until it expires (no early release); the purge after it retries lease_held, then succeeds once it expires", async () => {
+    const { s, results, held } = await deadFirstAttempt("purgeleaseco");
+    // The engine gave up on the create step (its last attempt died too).
+    results.set("create", new Failed({ name: "Error", message: "internal" }));
+    const again = stepRunner(w.clock, { results });
+    await runCreate(w.ctx, event(s.jobId), again.step).catch(() => {});
+    expect(w.job(s.jobId)?.status).toBe("failed");
+    // Platform's call (#1326): the fail step frees nothing; the lease runs
+    // out at its last renew + LEASE_MS.
+    expect(w.install(s.installId)).toMatchObject({
+      lease: held.lease,
+      lease_until: held.lease_until,
+      state: "creating",
+    });
+    expect(w.clock.t).toBeLessThan(held.lease_until);
+    const r = await manage("purge", s.installId);
+    expect(r.error).toBeNull();
+    const refused = r.log.filter((l) => l.error);
+    expect(refused.length).toBeGreaterThan(0);
+    for (const l of refused) expect(l.error?.message).toMatch(/lease_held/);
+    expect(w.clock.t).toBeGreaterThanOrEqual(held.lease_until);
+    expect(w.status(s.installId)?.state).toBe("deleted");
   });
 });

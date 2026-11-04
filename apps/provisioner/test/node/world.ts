@@ -94,7 +94,7 @@ export type StepLog = {
  * then never settles; `evicted` resolves.
  */
 /** A step's stored failure (the engine replays its error). */
-class Failed {
+export class Failed {
   constructor(readonly error: { name: string; message: string }) {}
 }
 

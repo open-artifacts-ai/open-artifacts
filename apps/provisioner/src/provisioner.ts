@@ -30,6 +30,9 @@ export interface ProvisionerIo {
   sleep: (ms: number) => Promise<void>;
 }
 
+/** The lease holder of a job (WfpOptions.leaseHolder, holderLease). */
+export const jobHolder = (jobId: string): string => `job:${jobId}`;
+
 /** The env, from OA_ENV; never guessed. */
 export function deployEnv(v: string): DeployEnv {
   if (v !== "staging" && v !== "prod") throw new NonRetryableError("internal");
@@ -81,6 +84,9 @@ export async function provisionerOptions(
     sleep: io.sleep,
     // 4.9: provision's own hosted_audit rows, as the job (auditAs).
     auditActor: `job:${jobId}`,
+    // The job holds its leases: a retry of it re-enters one an earlier
+    // attempt left (holderLease); any other job is still refused.
+    leaseHolder: jobHolder(jobId),
   };
 }
 
