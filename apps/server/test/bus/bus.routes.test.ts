@@ -522,6 +522,28 @@ describe("approval page: the person types the code (RFC 8628 5.4)", () => {
     expect(row).toEqual({ c: "DE", n: "Deutsche Telekom AG" });
   });
 
+  it("the network is only ever cf.asOrganization: with colo but no organization, the country alone", async () => {
+    const d = await startDevice("colo-only", nextIp(), {
+      country: "DE",
+      colo: "FRA",
+      city: "Frankfurt",
+      asn: 3320,
+    });
+    const html = await (await enter(alice, d.user_code)).text();
+    expect(html).toContain(
+      `Requested just now from Germany · code <span class="mono nw">${d.user_code}</span>`,
+    );
+    expect(html).not.toContain("FRA");
+    expect(html).not.toContain("Frankfurt");
+    expect(html).not.toContain("3320");
+    const row = await env.DB.prepare(
+      "select origin_network as n from bus_device_codes where user_code = ?",
+    )
+      .bind(d.user_code)
+      .first<{ n: string | null }>();
+    expect(row?.n).toBeNull();
+  });
+
   it("an unknown origin, an ASN-only network or Tor show no guess", async () => {
     for (const cf of [
       {},
