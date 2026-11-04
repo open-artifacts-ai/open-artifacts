@@ -259,6 +259,18 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
     );
   }
   sql.exec(HUB_SCHEMA_B7_INDEXES);
+  // open-bus #422: when the machine's last daemon socket went (epoch ms);
+  // null while it is connected, or not yet seen offline. The alarm closes the
+  // live agents of a machine offline past OFFLINE_REAP_MS. No backfill here:
+  // a machine already offline starts counting at the hub's next wake.
+  const machineCols = new Set(
+    sql
+      .exec<{ name: string }>("select name from pragma_table_info('machines')")
+      .toArray()
+      .map((r) => r.name),
+  );
+  if (!machineCols.has("disconnected_at"))
+    sql.exec("alter table machines add column disconnected_at integer");
   // B14: send_keys.final (1 once the key's receipt left pending), set
   // wherever a receipt is finalized (settle, #expire). Backfilled from
   // receipts in the step that adds it (a missing receipt counts as final).
