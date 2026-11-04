@@ -213,7 +213,7 @@ const WHY: Record<DropWhy, string> = {
   "real-only":
     "real-only (#839): past the access rules the route either writes or answers a 404 that looks like a refusal, and the row it needs can't be made on the red-line installs, so crossCheck has no success leg. Live, a deny-only case still proves A's session is a 401 at B; that an admin is allowed is covered by the matrix only",
   "interactive-only":
-    "interactive-only (#1204): the route answers only a person signed in in a browser (Google, an email code or Access) and hides itself from every other credential with a 404, the same as a refusal. The suite's sessions come from the session hook (provider test), which is not an interactive sign-in, and no red-line install has one for its admin, so crossCheck has no success leg. Live, a deny-only case still proves A's session is a 401 at B; that an admin erases a removed person who owns nothing (204) is covered by the matrix and the route's own tests",
+    "interactive-only (#1204): the route answers only a person signed in in a browser (Google, an email code or Access) and hides itself from every other credential with a 404, the same as a refusal. The suite's sessions come from the session hook (provider test), which is not an interactive sign-in, and no red-line install has one for its admin, so crossCheck has no success leg. Live, a deny-only case still proves A's session is a 401 at B; the allowed side (an admin erases a removed person who owns nothing, 204; a member saves their own share-notice agents, 200) is covered by the matrix and each route's own tests",
   "owner-only":
     "owner-only: hooks never mint the owner and no owner credential is stored in CI, so crossCheck has no success leg",
   nobody:
@@ -299,6 +299,9 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
     "real-only: PUT refuses a restricted_groups row while directory sync is off (409), and the hook-seeded directory group is not that row; A at B is deny-only",
   "POST /api/v1/members/:id/erase":
     "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
+  // #1292: reached through share-notices.ts browserUser, not a direct call.
+  "PUT /api/v1/bus/share-notices":
+    "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
   // #1291: a machine row comes only from the device flow, 404 on a hosted
   // install until #1299.
   "DELETE /api/v1/bus/machines/:id":
@@ -307,16 +310,20 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
 
 /**
  * #1204: instance routes that answer only an interactive sign-in
- * (apps/server/src/auth/authz.ts interactiveSession) and are not already
- * dropped as owner-only. The suite's hook sessions never pass that check,
- * so each is a recorded drop with a deny-only case.
+ * (apps/server/src/auth/authz.ts interactiveSession, called directly or
+ * through a helper) and are not already dropped as owner-only. The suite's
+ * hook sessions never pass that check, so each is a recorded drop with a
+ * deny-only case. test/surfaces.test.ts reads apps/server/src and fails
+ * unless this list is exactly the routes it finds (#1313).
  */
 export const INTERACTIVE_ONLY: readonly string[] = [
   "POST /api/v1/members/:id/erase",
+  "PUT /api/v1/bus/share-notices",
 ];
 
 const ERASE_TESTS = "apps/server/test/members.erase.test.ts";
 const ERASE_AUTHZ = "POST R.memberErase(id): authorization";
+const SHARE_NOTICE_TESTS = "apps/server/test/follows.test.ts";
 
 /**
  * The surfaces dropped from the cross-install suite (P5 plan, Task 3b;
@@ -459,6 +466,24 @@ export const DROPPED: Readonly<
         file: ERASE_TESTS,
         describe: "POST R.memberErase(id): what goes and what stays",
         test: "audited once as user.erased by the admin, with no address or name in the row",
+      },
+    ],
+  },
+  // #1313: the matrix saves each allowed caller's own (empty) list in an
+  // Access session: 200 or the cell fails.
+  "org PUT /api/v1/bus/share-notices": {
+    why: "interactive-only",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: SHARE_NOTICE_TESTS,
+        describe: "R.shareNotices",
+        test: "a member's own list: empty by default, replaced by PUT, deduplicated",
+      },
+      {
+        file: SHARE_NOTICE_TESTS,
+        describe: "R.shareNotices",
+        test: "a PAT reads but can't set it; guests and anonymous callers neither",
       },
     ],
   },
