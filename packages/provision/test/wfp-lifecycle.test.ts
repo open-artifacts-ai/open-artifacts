@@ -5693,8 +5693,16 @@ describe("verify_clean retries Cloudflare read lag, nothing else (#1352)", () =>
   ) => {
     const t = { on: false, from: 0, secretReads: 0, settingReads: 0 };
     const waits: number[] = [];
-    s.fake.secretsEdit = (_sc, names) =>
-      t.on && edits.secrets ? edits.secrets(names, ++t.secretReads) : names;
+    /** At each secret list read: how far the lease runs past now. */
+    const leaseLeft: number[] = [];
+    s.fake.secretsEdit = (_sc, names) => {
+      if (!t.on) return names;
+      const r = s.db().prepare("SELECT lease_until FROM installs").get() as {
+        lease_until: number;
+      };
+      leaseLeft.push(r.lease_until - s.clock.now());
+      return edits.secrets ? edits.secrets(names, ++t.secretReads) : names;
+    };
     s.fake.settingsEdit = (_sc, bs) =>
       t.on && edits.settings ? edits.settings(bs, ++t.settingReads) : bs;
     const p = s.mk({
@@ -5709,7 +5717,7 @@ describe("verify_clean retries Cloudflare read lag, nothing else (#1352)", () =>
       },
       ...over,
     });
-    return { p, waits, reads: () => reads(s, t.from) };
+    return { p, waits, leaseLeft, reads: () => reads(s, t.from) };
   };
   const without =
     (name: string, upTo = Number.POSITIVE_INFINITY) =>
@@ -5760,6 +5768,8 @@ describe("verify_clean retries Cloudflare read lag, nothing else (#1352)", () =>
     expect(l.waits).toEqual(
       Array(VERIFY_CLEAN_ATTEMPTS - 1).fill(VERIFY_CLEAN_INTERVAL_MS),
     );
+    // The lease is renewed right before every read, the re-reads included.
+    expect(l.leaseLeft).toEqual(Array(VERIFY_CLEAN_ATTEMPTS).fill(LEASE));
     // Far below the lease (30 minutes).
     expect(VERIFY_CLEAN_ATTEMPTS * VERIFY_CLEAN_INTERVAL_MS).toBeLessThan(
       2 * 60_000,
@@ -5828,6 +5838,19 @@ describe("verify_clean retries Cloudflare read lag, nothing else (#1352)", () =>
       },
       "binding EXTRA (plain_text) is not in the render",
     ],
+    [
+      "a changed plain_text value",
+      {
+        settings: (bs: { name: string; type: string; text?: string }[]) =>
+          bs.map((b) => (b.name === "PLAN" ? { ...b, text: "free" } : b)),
+      },
+      "binding PLAN (plain_text) has another value than the render",
+    ],
+    [
+      "a duplicated secret name",
+      { secrets: (n: string[]) => [...n, BROKER] },
+      "a secret is listed twice",
+    ],
   ] as const)(
     "%s: refused on the first read, never retried",
     async (_n, edits, why) => {
@@ -5890,6 +5913,72 @@ describe("verify_clean retries Cloudflare read lag, nothing else (#1352)", () =>
     expect(verifyCleanRefusal(mixed, v)).toBe(
       "binding PLAN (plain_text) is missing",
     );
+    // Each of these is `other` (refused on the first read), never `missing`.
+    const clean: {
+      bindings: { name: string; type: string; text?: string }[];
+      secrets: string[];
+    } = {
+      bindings: [{ name: "PLAN", type: "plain_text", text: "paid" }],
+      secrets: [...CREATE_SECRETS, BROKER],
+    };
+    const others: [string, typeof clean, VerifyCleanInput, string][] = [
+      [
+        "wrong variant",
+        clean,
+        { ...v, rec: { variant: "redline" } as unknown as ReleaseRecord },
+        "the release variant is redline",
+      ],
+      [
+        "wrong DO tag",
+        clean,
+        { ...v, tag: "v8" },
+        "the Durable Object tag is v8, not none",
+      ],
+      [
+        "value mismatch",
+        {
+          ...clean,
+          bindings: [{ name: "PLAN", type: "plain_text", text: "free" }],
+        },
+        v,
+        "binding PLAN (plain_text) has another value than the render",
+      ],
+      [
+        "duplicate secret",
+        { ...clean, secrets: [...clean.secrets, BROKER] },
+        v,
+        "a secret is listed twice",
+      ],
+      [
+        "refused binding type",
+        {
+          ...clean,
+          bindings: [...clean.bindings, { name: "PEER", type: "service" }],
+        },
+        v,
+        "binding PEER is a service binding",
+      ],
+      [
+        "hook name on a non-test install",
+        {
+          ...clean,
+          bindings: [
+            ...clean.bindings,
+            { name: "TEST_DOMAIN", type: "plain_text", text: "x" },
+          ],
+        },
+        v,
+        "TEST_DOMAIN is set on a non-test install",
+      ],
+    ];
+    for (const [what, live, input, reason] of others) {
+      const ps = verifyCleanProblems(live, input);
+      expect(ps[0], what).toEqual({ kind: "other", reason });
+      expect(
+        ps.every((p) => p.kind === "other"),
+        what,
+      ).toBe(true);
+    }
     expect(
       verifyCleanProblems(
         {
