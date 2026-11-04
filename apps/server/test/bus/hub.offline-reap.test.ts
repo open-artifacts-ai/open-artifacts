@@ -8,11 +8,7 @@
 // next wake, so a deploy never reaps at once. Time is BusHub.setTestClock,
 // always set ahead of real time and reset after each test.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import {
-  BUS_CAPS,
-  type ClientFrame,
-  type ServerFrame,
-} from "@oa/bus-protocol";
+import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { BusHub, OFFLINE_REAP_MS, SWEEP_BATCH } from "../../src/bus/hub.js";
 import { busCloseKind } from "../../src/services/bus.js";
@@ -54,11 +50,8 @@ type Receipt = Extract<ServerFrame, { type: "receipt" }>;
 
 async function connect(token: string, renames = false): Promise<Daemon> {
   const d = await daemon(token);
-  d.send(
-    renames
-      ? { ...hello(id("h")), caps: [BUS_CAPS.rename] }
-      : hello(id("h")),
-  );
+  const h = hello(id("h"));
+  d.send(renames && h.type === "hello" ? { ...h, caps: [BUS_CAPS.rename] } : h);
   await waitFor(d, "hello_ok");
   return d;
 }
