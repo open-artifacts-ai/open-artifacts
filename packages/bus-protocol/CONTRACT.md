@@ -109,8 +109,8 @@ in one object.
 ## Renames (#393)
 
 Ported from OpenBus R393a; schemas in `rename.ts` and `caps.ts`. The hub side
-(R393b) comes separately; until then the hub decodes `rename` but sends no
-reply, so a client must not send it before R393b.
+(R393b) comes separately; until then the hub answers `rename` with
+`error bad_frame` ("rename is not supported yet"), so a client can fall back.
 
 - Gate: a capability, not a version (the client reports 0.0.0 until #1308).
   `hello.caps` is up to `MAX_CAPS` (16) distinct tokens matching
