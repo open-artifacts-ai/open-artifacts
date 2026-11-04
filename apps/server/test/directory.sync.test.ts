@@ -23,6 +23,7 @@ import {
   FAST_MS,
   RECONCILE_MS,
   SyncEngine,
+  USER_EVENTS_PER_PAGE,
 } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
@@ -49,6 +50,17 @@ import usersPage from "./fixtures/google/users-page.json";
 import { errOf, fetchAndWait, login } from "./helpers.js";
 
 const MIN = 60_000;
+// This file's tests are real work, never waits: alarms run on an explicit
+// clock, the beforeEach is a flat ~50 ms (no state grows across tests), and
+// each drain is a full run of D1 and DO calls. Under suite load every test
+// slows alike: the whole file took up to 309 s against 74 s alone at a
+// 1-minute load of 8.7, so LOAD_SLOWDOWN = 309 / 74, rounded up. A budget is
+// a test's cost measured alone at low load (4-11), times that slowdown,
+// times the usual 3x headroom (#1249, #1266). Only a test that has timed
+// out takes one; the rest keep the pool's default, which catches hangs fast.
+const LOAD_SLOWDOWN = 4.2;
+const HEADROOM = 3;
+const budget = (lowLoadMs: number) => lowLoadMs * LOAD_SLOWDOWN * HEADROOM;
 let g: FakeDirectory;
 let e: Env;
 let sent: SentMail[];
@@ -765,8 +777,15 @@ describe("review fixes (P3 T13)", () => {
     expect((await status()).state).toBe("customer_mismatch");
   });
 
-  it("suspension events past the first 100 on a page carry over", async () => {
-    const us = dirUsers(130, "many");
+  // Each suspended user is one D1 batch, a grant listing and an awaited
+  // UserPresence.closeAll on a fresh DO (about 23 ms of the user's ~35 ms).
+  // Measured 4078-4644 ms for 130 users alone at load 4-6: 36 ms per user.
+  const CARRY_USERS = USER_EVENTS_PER_PAGE + 30;
+  const CARRY_USER_MS = 36;
+  it("suspension events past the first 100 on a page carry over", {
+    timeout: budget(CARRY_USERS * CARRY_USER_MS),
+  }, async () => {
+    const us = dirUsers(CARRY_USERS, "many");
     const t0 = Date.now();
     await connected(t0);
     for (const u of us) {
@@ -774,7 +793,9 @@ describe("review fixes (P3 T13)", () => {
       g.activity("admin", "SUSPEND_USER", { USER_EMAIL: u.primaryEmail });
     }
     await drain(t0 + 2 * MIN);
-    for (const u of [us[0], us[99], us[100], us[129]])
+    const last = CARRY_USERS - 1;
+    const first = USER_EVENTS_PER_PAGE - 1;
+    for (const u of [us[0], us[first], us[first + 1], us[last]])
       expect(await statusOf(await uidOf(u?.id as string))).toBe("suspended");
   });
 
