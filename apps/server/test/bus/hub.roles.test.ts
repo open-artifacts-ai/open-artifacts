@@ -737,6 +737,28 @@ describe("role names share the agent-name space (#1296)", () => {
     d.close();
   });
 
+  it("a role can't take its own holder's chosen former name (#1388 review)", async () => {
+    const uid = await owner();
+    const d = await at(uid, NEW);
+    const n = ns("ro");
+    const mine = uniq("mine");
+    await reg(d, "a", mine, n);
+    const other = uniq("other");
+    d.send({
+      v: 1,
+      id: id("r"),
+      type: "rename",
+      agent_ref: "a",
+      proposed_name: other,
+    });
+    expect((await waitFor(d, "renamed")).bus_name).toBe(other);
+    expect(await put(uid, n, mine, await agentId(uid, other))).toEqual({
+      ok: false,
+      reason: "name_taken",
+    });
+    d.close();
+  });
+
   it("a role can't take another agent's minted name: live, former, or after a close; the agent gets it back on reopen", async () => {
     const uid = await owner();
     const d = await at(uid, NEW);
