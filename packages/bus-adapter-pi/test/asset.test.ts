@@ -31,7 +31,7 @@ const src = readFileSync(PI_EXTENSION, "utf8");
 const ID = "mmmmmmmmmmmmmmm1";
 
 /** Pi's name for an MCP tool: Pi refuses to start on a name two extensions register (#1448). */
-const piName = (mcpName: string) => `oa_bus_${mcpName}`;
+const piName = (mcpName: string) => `oabus_${mcpName}`;
 /** The names the OpenBus Pi/omp extension registers, installed alongside during the migration. */
 const OPENBUS_TOOLS = [
   "list_agents",
@@ -205,11 +205,11 @@ describe("pi extension asset", () => {
     expect([...p.tools.keys()]).toEqual(TOOLS.map((t) => piName(t.name)));
     expect([...p.tools.keys()].sort()).toEqual(
       [
-        "oa_bus_fetch",
-        "oa_bus_list_agents",
-        "oa_bus_self",
-        "oa_bus_send_message",
-        "oa_bus_set_status",
+        "oabus_fetch",
+        "oabus_list_agents",
+        "oabus_self",
+        "oabus_send_message",
+        "oabus_set_status",
       ].sort(),
     );
     for (const t of TOOLS) {
@@ -226,6 +226,14 @@ describe("pi extension asset", () => {
     expect(p.tools.size).toBe(5);
     for (const name of p.tools.keys())
       expect(OPENBUS_TOOLS).not.toContain(name);
+  });
+
+  it("registers no name Pi's fallback MCP client gives the oa_bus server's tools (oa_bus_<tool>)", () => {
+    const p = fakePi();
+    oa_bus(p.pi as never);
+    const imported = TOOLS.map((t) => `oa_bus_${t.name}`);
+    for (const name of p.tools.keys()) expect(imported).not.toContain(name);
+    for (const t of TOOLS) expect(piName(t.name)).not.toBe(`oa_bus_${t.name}`);
   });
 
   it("says hello at session start as the Pi session, with its UTC process start", async () => {
@@ -721,10 +729,10 @@ describe("one file for Pi and oh-my-pi (C23b)", () => {
     for (const t of p.tools.values()) expect(t).not.toHaveProperty("loadMode");
     const o = ompHost();
     expect(o.tools.size).toBe(5);
-    expect(o.tools.get("oa_bus_send_message")).toMatchObject({
+    expect(o.tools.get("oabus_send_message")).toMatchObject({
       loadMode: "essential",
     });
-    expect(o.tools.get("oa_bus_set_status")).toMatchObject({
+    expect(o.tools.get("oabus_set_status")).toMatchObject({
       loadMode: "essential",
     });
     for (const t of o.tools.values())
@@ -793,8 +801,8 @@ describe("set_status", () => {
   it("Pi registers set_status before any session, and no card tool", async () => {
     const p = fakePi();
     oa_bus(p.pi as never);
-    expect(p.tools.has("oa_bus_set_status")).toBe(true);
-    expect(p.tools.has("oa_bus_card")).toBe(false);
+    expect(p.tools.has("oabus_set_status")).toBe(true);
+    expect(p.tools.has("oabus_card")).toBe(false);
   });
 
   it("one request; the result says what the user sees", async () => {
