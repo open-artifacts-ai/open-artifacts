@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.119.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.118.1...v0.119.0) (2026-11-05)
+
+
+### Features
+
+* **dashboard:** Agents page and Settings › Machines, from Design's option 1 ([#1293](https://github.com/open-artifacts-ai/open-artifacts/issues/1293)) ([#1449](https://github.com/open-artifacts-ai/open-artifacts/issues/1449)) ([ce253cf](https://github.com/open-artifacts-ai/open-artifacts/commit/ce253cfaec838efee4ca2d49a946cd96f836be07))
+
 ## [0.118.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.118.0...v0.118.1) (2026-11-05)
 
 
