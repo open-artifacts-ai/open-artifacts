@@ -498,12 +498,12 @@ describe.each(["solo", "readOnly"] as const)(
     it("an admin passes the cap; a member is 404", async () => {
       const a = await send(props, R.directoryGroups, cred("admin"));
       expect(a.status).toBe(409);
-      expect(
-        ((await a.json()) as { error: { code: string } }).error.code,
-      ).toBe("directory_sync_off");
-      expect((await send(props, R.directoryGroups, cred("member"))).status).toBe(
-        404,
+      expect(((await a.json()) as { error: { code: string } }).error.code).toBe(
+        "directory_sync_off",
       );
+      expect(
+        (await send(props, R.directoryGroups, cred("member"))).status,
+      ).toBe(404);
     });
   },
 );

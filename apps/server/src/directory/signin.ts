@@ -3,8 +3,8 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
 import type { AuditActor } from "../services/audit.js";
-import { SYSTEM_ACTOR, setUserStatus } from "../services/members.js";
 import { syncModeFor } from "../services/directory.js";
+import { SYSTEM_ACTOR, setUserStatus } from "../services/members.js";
 import { applyGroupDiff } from "./apply.js";
 import { directoryClient } from "./client.js";
 import {

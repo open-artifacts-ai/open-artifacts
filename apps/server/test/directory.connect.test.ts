@@ -366,13 +366,11 @@ describe("hosted", () => {
       ).bind(gid, gemail),
     ]);
     const inGroup = async () =>
-      (
-        await env.DB.prepare(
-          "select 1 from directory_members where group_id = ? and user_id = ?",
-        )
-          .bind(gid, uid)
-          .first()
-      ) !== null;
+      (await env.DB.prepare(
+        "select 1 from directory_members where group_id = ? and user_id = ?",
+      )
+        .bind(gid, uid)
+        .first()) !== null;
     const member = async () => (await getUser(h, uid)) as Member;
     const signIn = () =>
       withBrokerProps({ props: hostedProps() }, () =>
@@ -382,7 +380,9 @@ describe("hosted", () => {
         }),
       );
     // A lapse keeps Business's features (sync_google) but locks the plan.
-    await env.DB.prepare("delete from settings where key like 'billing.%'").run();
+    await env.DB.prepare(
+      "delete from settings where key like 'billing.%'",
+    ).run();
     await storePlan(
       h,
       {
@@ -398,7 +398,9 @@ describe("hosted", () => {
     await signIn();
     expect(await inGroup()).toBe(false);
     // Unlocked (control): the same sign-in applies the mapping.
-    await env.DB.prepare("delete from settings where key like 'billing.%'").run();
+    await env.DB.prepare(
+      "delete from settings where key like 'billing.%'",
+    ).run();
     await signIn();
     expect(await inGroup()).toBe(true);
   });
