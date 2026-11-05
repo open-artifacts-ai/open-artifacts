@@ -5,10 +5,13 @@ import {
   ArtifactEventSchema,
   ArtifactPatchSchema,
   ArtifactSummarySchema,
+  anchorInputSchema,
   CommentListSchema,
   CommentSchema,
   CommentThreadSchema,
+  NewThreadBodySchema,
   R,
+  ReplyBodySchema,
 } from "../src/index.js";
 import { createArtifactEvents } from "../src/mocks/events.js";
 import { fixtures } from "../src/mocks/fixtures.js";
@@ -122,7 +125,107 @@ describe("comment schemas", () => {
   });
 });
 
+describe("comment request bodies", () => {
+  const text = { kind: "text", exact: "a", prefix: "", suffix: "" };
+  const pin = { kind: "pin", x: 0.5, y: 0.25, contentHash: "h" };
+
+  it("accepts an anchor with or without version; note needs none", () => {
+    for (const a of [
+      { kind: "note" },
+      text,
+      { ...text, version: 3 },
+      pin,
+      { ...pin, version: 2, page: 4 },
+    ])
+      expect(anchorInputSchema.safeParse(a).success).toBe(true);
+  });
+
+  it("rejects unknown kinds, oversize exact, bad pin x/y, bad versions, extra keys", () => {
+    for (const a of [
+      { kind: "region" },
+      { kind: "note", extra: 1 },
+      { ...text, exact: "" },
+      { ...text, exact: "x".repeat(1001) },
+      { ...text, prefix: "x".repeat(65) },
+      { ...text, version: 0 },
+      { ...text, version: "2" },
+      { ...pin, x: 1.1 },
+      { ...pin, y: -0.1 },
+      { ...pin, x: Number.NaN },
+      { ...pin, contentHash: "" },
+    ])
+      expect(anchorInputSchema.safeParse(a).success).toBe(false);
+  });
+
+  it("NewThreadBody trims the body and bounds it and guestName", () => {
+    const ok = NewThreadBodySchema.parse({
+      anchor: { kind: "note" },
+      body: "  hi ",
+    });
+    expect(ok.body).toBe("hi");
+    for (const body of ["  ", "x".repeat(2001)])
+      expect(
+        NewThreadBodySchema.safeParse({ anchor: { kind: "note" }, body })
+          .success,
+      ).toBe(false);
+    expect(
+      NewThreadBodySchema.safeParse({
+        anchor: { kind: "note" },
+        body: "a",
+        guestName: "g".repeat(51),
+      }).success,
+    ).toBe(false);
+    expect(
+      NewThreadBodySchema.safeParse({
+        anchor: { kind: "note" },
+        body: "a",
+        guestName: "g".repeat(50),
+      }).success,
+    ).toBe(true);
+    expect(NewThreadBodySchema.safeParse({ body: "a" }).success).toBe(false);
+  });
+
+  it("ReplyBody is the same without an anchor", () => {
+    expect(ReplyBodySchema.parse({ body: " ok " })).toEqual({ body: "ok" });
+    expect(ReplyBodySchema.safeParse({ body: "" }).success).toBe(false);
+    expect(
+      ReplyBodySchema.safeParse({ body: "a", guestName: "g".repeat(51) })
+        .success,
+    ).toBe(false);
+  });
+});
+
 describe("comments mock", () => {
+  it("fills the current version when a text anchor has none, keeps an explicit one", async () => {
+    use();
+    const text = { kind: "text", exact: "a", prefix: "", suffix: "" };
+    const t1 = CommentThreadSchema.parse(
+      await (await send("POST", base, { anchor: text, body: "x" })).json(),
+    );
+    expect(t1.version).toBe(art.currentVersion);
+    const t2 = CommentThreadSchema.parse(
+      await (
+        await send("POST", base, { anchor: { ...text, version: 1 }, body: "x" })
+      ).json(),
+    );
+    expect(t2.version).toBe(1);
+  });
+
+  it("400 invalid_anchor for a bad anchor", async () => {
+    use();
+    for (const anchor of [
+      { kind: "region" },
+      { kind: "pin", version: 1, x: 2, y: 0, contentHash: "h" },
+      undefined,
+    ]) {
+      const r = await send("POST", base, { anchor, body: "x" });
+      expect(r.status).toBe(400);
+      expect(ApiErrorSchema.parse(await r.json()).error.code).toBe(
+        "invalid_anchor",
+      );
+    }
+  });
+
   it("lists, creates, replies, resolves, edits and deletes", async () => {
     use();
     const first = await list();

@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { anchorSchema } from "./anchor.js";
+import {
+  anchorSchema,
+  noteAnchorSchema,
+  pinAnchorSchema,
+  textAnchorSchema,
+} from "./anchor.js";
 
 // Comments REST contract (#682): /api/v1/artifacts/:id/comments. The shell and
 // the MSW mocks build against these; the Backend implements the same shapes.
@@ -49,10 +54,27 @@ export type CommentList = z.infer<typeof CommentListSchema>;
 
 export type CommentStatusFilter = "open" | "resolved" | "all";
 
-/** POST body; `anchor.version` is optional (the current version). */
-export type NewThreadBody = {
-  anchor: unknown;
-  body: string;
-  guestName?: string;
-};
-export type ReplyBody = { body: string; guestName?: string };
+/** An anchor as a client sends it: `version` is optional on text and pin (the current version). */
+export const anchorInputSchema = z.discriminatedUnion("kind", [
+  noteAnchorSchema,
+  textAnchorSchema.extend({
+    version: textAnchorSchema.shape.version.optional(),
+  }),
+  pinAnchorSchema.extend({ version: pinAnchorSchema.shape.version.optional() }),
+]);
+export type AnchorInput = z.infer<typeof anchorInputSchema>;
+
+const commentBody = z.string().trim().min(1).max(COMMENT_BODY_MAX);
+const guestName = z.string().max(COMMENT_GUEST_NAME_MAX).optional();
+
+/** POST R.comments body. */
+export const NewThreadBodySchema = z.object({
+  anchor: anchorInputSchema,
+  body: commentBody,
+  guestName,
+});
+export type NewThreadBody = z.infer<typeof NewThreadBodySchema>;
+
+/** POST R.commentReplies body. */
+export const ReplyBodySchema = z.object({ body: commentBody, guestName });
+export type ReplyBody = z.infer<typeof ReplyBodySchema>;

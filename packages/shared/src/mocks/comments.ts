@@ -4,12 +4,12 @@
  * fixture, so a test or the mock app has something to show.
  */
 import { delay, type HttpHandler, HttpResponse, http } from "msw";
-import { anchorSchema } from "../anchor.js";
 import {
-  COMMENT_BODY_MAX,
+  anchorInputSchema,
   type Comment,
   type CommentAuthor,
   type CommentThread,
+  ReplyBodySchema,
 } from "../comments.js";
 import type { ErrorCode } from "../errors.js";
 import { newId } from "../ids.js";
@@ -119,15 +119,13 @@ export function createCommentHandlers({
       );
     return null;
   };
+  /** The body fields (ReplyBodySchema); null is invalid_body. The raw JSON rides along for the anchor. */
   const parseBody = async (req: Request) => {
-    const j = (await req.json().catch(() => null)) as {
-      body?: unknown;
+    const raw = (await req.json().catch(() => null)) as {
       anchor?: unknown;
     } | null;
-    const b = typeof j?.body === "string" ? j.body.trim() : "";
-    return !j || !b || b.length > COMMENT_BODY_MAX
-      ? null
-      : { anchor: j.anchor, body: b };
+    const r = ReplyBodySchema.safeParse(raw);
+    return r.success ? { body: r.data.body, anchor: raw?.anchor } : null;
   };
   const A = "*/api/v1/artifacts/:id/comments";
   const base = A;
@@ -153,21 +151,20 @@ export function createCommentHandlers({
       const j = await parseBody(request);
       if (!j) return err("invalid_body", "Invalid comment");
       const a = art(params.id) as ArtifactSummary;
-      const raw = j.anchor as { version?: number } | undefined;
-      const parsed = anchorSchema.safeParse(
-        raw &&
-          raw.version === undefined &&
-          (raw as { kind?: string }).kind !== "note"
-          ? { ...raw, version: a.currentVersion }
-          : raw,
-      );
+      const parsed = anchorInputSchema.safeParse(j.anchor);
       if (!parsed.success) return err("invalid_anchor", "Invalid anchor");
+      const anchor =
+        parsed.data.kind === "note"
+          ? parsed.data
+          : {
+              ...parsed.data,
+              version: parsed.data.version ?? a.currentVersion,
+            };
       const c = comment(j.body, mine());
       const t: CommentThread = {
         id: newId(),
-        anchor: parsed.data,
-        version:
-          "version" in parsed.data ? parsed.data.version : a.currentVersion,
+        anchor,
+        version: "version" in anchor ? anchor.version : a.currentVersion,
         status: "open",
         resolvedBy: null,
         resolvedAt: null,
