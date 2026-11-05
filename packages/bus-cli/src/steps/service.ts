@@ -498,6 +498,26 @@ export function systemService(d: ServiceDeps): Service {
       return { unit: manager };
     },
 
+    async checkNode() {
+      // Intl needs ICU: a node missing its libraries dies here, not at 3 a.m. under launchd.
+      const probe =
+        "new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York'}).format(new Date())";
+      try {
+        const r = await d.exec(d.execPath, ["-e", probe]);
+        if (r.code === 0) return undefined;
+        return {
+          node: d.execPath,
+          reason:
+            r.stderr.trim().split("\n")[0]?.slice(0, 160) || `exit ${r.code}`,
+        };
+      } catch (e) {
+        return {
+          node: d.execPath,
+          reason: e instanceof Error ? e.message.slice(0, 160) : String(e),
+        };
+      }
+    },
+
     cli() {
       const argv = [d.execPath, installCli(home(), d.source())];
       // The harness entries run this argv, with or without a service

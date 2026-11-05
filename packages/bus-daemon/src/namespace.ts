@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+  BUS_CMD,
   type BusConfig,
   BusConfigSchema,
   CONFIG_FILE,
@@ -70,7 +71,7 @@ export function resolveNamespace(
       once(
         deps,
         `global:${file}`,
-        `ignoring global in ${file}: only \`npx @open-artifacts/bus global add\` makes a directory global`,
+        `ignoring global in ${file}: only \`${BUS_CMD} global add\` makes a directory global`,
       );
   if (cfg.namespace)
     return { namespace: cfg.namespace, global, source: "config" };
