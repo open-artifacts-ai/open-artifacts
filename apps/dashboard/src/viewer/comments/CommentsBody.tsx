@@ -167,23 +167,25 @@ function Who({
   edited: boolean;
 }) {
   return (
-    <p className={`flex min-w-0 items-baseline gap-x-1 ${TXT}`}>
-      <b className="min-w-0 truncate" title={a.name}>
-        {a.name}
-      </b>
-      {a.agent && (
-        <span className={`${MUTED} min-w-0 truncate`}>
-          {a.agent.startsWith("via ") ? a.agent : `via ${a.agent}`}
+    <div className="min-w-0">
+      <p className={`flex min-w-0 items-baseline gap-x-1 ${TXT}`}>
+        <b className="min-w-0 truncate" title={a.name}>
+          {a.name}
+        </b>
+        <span
+          className={`${MUTED} shrink-0 whitespace-nowrap`}
+          title={exactDate(at)}
+        >
+          {versionDate(at)}
+          {edited && " · edited"}
         </span>
+      </p>
+      {a.agent && (
+        <p className={`${TXT} ${MUTED}`}>
+          {a.agent.startsWith("via ") ? a.agent : `via ${a.agent}`}
+        </p>
       )}
-      <span
-        className={`${MUTED} shrink-0 whitespace-nowrap`}
-        title={exactDate(at)}
-      >
-        {versionDate(at)}
-        {edited && " · edited"}
-      </span>
-    </p>
+    </div>
   );
 }
 

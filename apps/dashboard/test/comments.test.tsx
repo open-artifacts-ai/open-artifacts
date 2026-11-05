@@ -1182,6 +1182,9 @@ describe("comments: review round 1", () => {
     expect(when.className).toMatch(/whitespace-nowrap/);
     expect(when.className).toMatch(/shrink-0/);
     expect(line.querySelector("b")?.className).toMatch(/truncate/);
+    // "via <agent>" is its own line under the name, not beside the time.
+    expect(line.contains(within(c).getByText("via Claude Code"))).toBe(false);
+    expect(line.nextElementSibling?.textContent).toBe("via Claude Code");
   });
 
   const art = (over: object) =>
