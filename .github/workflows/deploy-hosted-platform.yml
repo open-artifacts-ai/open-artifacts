@@ -285,7 +285,7 @@ jobs:
         env:
           DEPLOY_ENV: ${{ inputs.env }}
           OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
-        run: bash "$RUNNER_TEMP/main-ci/hosted-constants.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"
+        run: bash "$RUNNER_TEMP/main-ci/hosted-constants.sh" "$DEPLOY_ENV" .github/hosted
       # Before any Cloudflare read or write: the token must be the one pinned
       # as deploy_token_id in <env>.json (the Environment's, not a repo-level
       # fallback), and active.
