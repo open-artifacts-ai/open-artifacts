@@ -11,6 +11,7 @@ import {
   decodeServerFrame,
   encodeFrame,
   LIMITS,
+  MAILBOX_RETAIN_MS,
   newId,
   PONG,
   type ServerFrame,
@@ -170,7 +171,7 @@ const seedReceipts = (
 ) =>
   inHub(h, (_, s) => {
     const ids: string[] = [];
-    const exp = opts.now + LIMITS.mailTtlSec * 1000;
+    const exp = opts.now + MAILBOX_RETAIN_MS;
     for (let i = 0; i < n; i++) {
       const id = newId();
       ids.push(id);
@@ -465,7 +466,7 @@ describe("closed-session work drains from the alarm", () => {
     expect(CLOSE_INLINE_BATCH).toBe(10);
   });
 
-  it("sessions{closed} with 10,000 pending: one batch inline, the rest one batch per alarm run, every sender told once", async () => {
+  it("sessions{closed} with 10,000 pending (#1295): nothing expires at the close; at +7 d the TTL sweep expires one batch per alarm run, every sender told once", async () => {
     const h = freshHub();
     const t0 = Date.now() + HOUR;
     await clock(h, t0);
@@ -516,8 +517,12 @@ describe("closed-session work drains from the alarm", () => {
         m.id,
       ),
     ).toBe(0);
+    // The close keeps pending mail (and its bodies) for the away reservation.
     let left = await pendingCount(h);
-    expect(left).toBe(total - CLOSE_INLINE_BATCH);
+    expect(left).toBe(total);
+    expect(await count(h, "select count(*) as n from mail")).toBe(total);
+    // The TTL sweep at +7 d, one batch per alarm run.
+    await clock(h, t0 + MAILBOX_RETAIN_MS + 1000);
     let runs = 0;
     while (left > 0 && runs < 1000) {
       await alarmOnce(h);
@@ -531,24 +536,22 @@ describe("closed-session work drains from the alarm", () => {
     expect(
       await count(
         h,
-        "select count(*) as n from receipts where state = 'expired' and reason = 'recipient_closed' and notified_at is not null",
+        "select count(*) as n from receipts where state = 'expired' and reason is null and notified_at is not null",
       ),
     ).toBe(total);
     await sync(s.d);
     const told = new Map<string, number>();
     for (const f of s.d.seen)
       if (f.type === "receipt_update") {
-        expect(f).toMatchObject({
-          state: "expired",
-          reason: "recipient_closed",
-        });
+        expect(f.state).toBe("expired");
+        expect(f.reason).not.toBe("recipient_closed");
         told.set(f.msg_id, (told.get(f.msg_id) ?? 0) + 1);
       }
     expect(told.size).toBe(total);
     for (const id of msgIds) expect(told.get(id)).toBe(1);
   }, 120_000);
 
-  it("a reopen mid-drain gets none of the old mail; the drain still expires it; new mail is untouched", async () => {
+  it("a reopen with the same ref (#1295) gets the old pending mail and the new; the rest expires at +7 d, every sender told once", async () => {
     const h = freshHub();
     const t0 = Date.now() + HOUR;
     await clock(h, t0);
@@ -565,10 +568,10 @@ describe("closed-session work drains from the alarm", () => {
       now: t0 - 10,
       from: s.id,
     });
-    // agent_down takes the same path as sessions{closed}.
+    // agent_down takes the same path as sessions{closed}: nothing expires.
     d.send({ v: 1, id: "dn", type: "agent_down", agent_ref: "victim" });
     await sync(d);
-    expect(await pendingCount(h)).toBe(120 - CLOSE_INLINE_BATCH);
+    expect(await pendingCount(h)).toBe(120);
 
     await clock(h, t0 + 10);
     d.seen.length = 0;
@@ -576,13 +579,23 @@ describe("closed-session work drains from the alarm", () => {
     await until(d, "agent_ok");
     await sync(d);
     const oldSet = new Set(old);
-    expect(
-      d.seen.filter((f) => f.type === "deliver" && oldSet.has(f.msg_id)),
-    ).toEqual([]);
-    // Acks for old mail from the reopened session are ignored.
-    for (const id of old)
-      d.send({ v: 1, id: `a-${id}`, type: "ack", msg_id: id });
+    // The reopen keeps the session boundary: the flush serves the oldest
+    // batch of the old mail (one batch per agent_up).
+    const flushed = d.seen.filter(
+      (f) => f.type === "deliver" && oldSet.has(f.msg_id),
+    );
+    expect(flushed.length).toBeGreaterThanOrEqual(SWEEP_BATCH);
+    for (const f of flushed)
+      if (f.type === "deliver")
+        d.send({ v: 1, id: `a-${f.msg_id}`, type: "ack", msg_id: f.msg_id });
     await sync(d);
+    expect(
+      await count(
+        h,
+        "select count(*) as n from receipts where state = 'delivered' and to_agent = ?",
+        victim,
+      ),
+    ).toBe(flushed.length);
 
     s.d.send({
       v: 1,
@@ -596,16 +609,19 @@ describe("closed-session work drains from the alarm", () => {
     expect(fresh.state).toBe("pending");
     expect((await until(d, "deliver")).msg_id).toBe(fresh.msg_id);
 
+    // At +7 d the unacked old mail expires; the fresh one (sent at t0 + 10)
+    // is still pending until its own TTL, past this clock.
+    await clock(h, t0 + MAILBOX_RETAIN_MS - 5);
     for (let k = 0; k < 20 && (await pendingCount(h)) > 1; k++)
       await alarmOnce(h);
-    for (const id of old)
-      expect(
-        await count(
-          h,
-          "select count(*) as n from receipts where id = ? and state = 'expired' and reason = 'recipient_closed'",
-          id,
-        ),
-      ).toBe(1);
+    const unacked = old.length - flushed.length;
+    expect(
+      await count(
+        h,
+        "select count(*) as n from receipts where state = 'expired' and to_agent = ?",
+        victim,
+      ),
+    ).toBe(unacked);
     expect(
       await count(
         h,
@@ -615,14 +631,18 @@ describe("closed-session work drains from the alarm", () => {
     ).toBe(1);
     await sync(s.d);
     const told = s.d.seen.filter((f) => f.type === "receipt_update");
-    expect(told.length).toBe(old.length);
+    const expiredTold = told.filter(
+      (f) => f.type === "receipt_update" && f.state === "expired",
+    );
+    expect(expiredTold.length).toBe(unacked);
     expect(
-      new Set(told.map((f) => (f.type === "receipt_update" ? f.msg_id : "")))
-        .size,
-    ).toBe(old.length);
+      new Set(
+        expiredTold.map((f) => (f.type === "receipt_update" ? f.msg_id : "")),
+      ).size,
+    ).toBe(unacked);
   }, 60_000);
 
-  it("acked notices past one batch: a reopened session fetches none (not_found); the drain deletes the bodies", async () => {
+  it("acked notices past one batch: the drain deletes the bodies; a reopened session fetches none (not_found)", async () => {
     const h = freshHub();
     const t0 = Date.now() + HOUR;
     await clock(h, t0);
@@ -642,6 +662,9 @@ describe("closed-session work drains from the alarm", () => {
     await sync(d);
     const leftover = notices.length - CLOSE_INLINE_BATCH;
     expect(await count(h, "select count(*) as n from mail")).toBe(leftover);
+    // The drain, one batch per alarm run, deletes the rest.
+    for (let k = 0; k < 5; k++) await alarmOnce(h);
+    expect(await count(h, "select count(*) as n from mail")).toBe(0);
 
     await clock(h, t0 + 10);
     d.send(up("u2", "victim", "Victim", n));
@@ -659,10 +682,6 @@ describe("closed-session work drains from the alarm", () => {
         code: "not_found",
       });
     }
-    // The leftover window: the rows still exist, yet none was served.
-    expect(await count(h, "select count(*) as n from mail")).toBe(leftover);
-    for (let k = 0; k < 5; k++) await alarmOnce(h);
-    expect(await count(h, "select count(*) as n from mail")).toBe(0);
   });
 });
 

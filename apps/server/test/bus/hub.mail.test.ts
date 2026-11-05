@@ -6,10 +6,11 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import {
   type ClientFrame,
   LIMITS,
+  MAILBOX_PENDING_CAP,
   type RefusalReason,
   type ServerFrame,
 } from "@oa/bus-protocol";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { BusHub, HELD_BYTES_CAP } from "../../src/bus/hub.js";
 import {
   type Daemon,
@@ -27,6 +28,26 @@ import {
 /** The hub's in-memory held bodies (test-only static accessor). */
 const heldStats = async () =>
   runInDurableObject(await hubOf(), (i: BusHub) => BusHub.heldStats(i));
+
+// #1295: a close no longer releases held mail (it stays pending for the
+// reopen), so a test's leftovers must not fill the shared held cap.
+afterEach(async () => {
+  await runInDurableObject(await hubOf(), (i: BusHub) =>
+    BusHub.dropHeldForTests(i),
+  );
+});
+
+/**
+ * #1295: a closed agent keeps its name (`away`) and mail is accepted for it
+ * until the reservation ends; this ends every reservation, so the name
+ * reads as closed.
+ */
+const endAway = async () =>
+  inOwnerHub((st) => {
+    st.storage.sql.exec(
+      "update former_names set expires_at = 1 where kind = 'away'",
+    );
+  });
 
 type Receipt = Extract<ServerFrame, { type: "receipt" }>;
 type Deliver = Extract<ServerFrame, { type: "deliver" }>;
@@ -341,7 +362,7 @@ describe("mail: refusals", () => {
     t.close();
     await t.closed;
 
-    for (let i = 0; i < LIMITS.inboxCap; i++)
+    for (let i = 0; i < MAILBOX_PENDING_CAP; i++)
       expect(
         (await sendAndReceipt(s, send(`q${i}`, "sref", receiver, `m${i}`)))
           .state,
@@ -493,6 +514,7 @@ describe("mail: target resolution", () => {
       await agent(t, "gref", g, ns("other"), true);
       await down(t, "lref");
       await down(t, "gref");
+      await endAway();
       expect((await outcome(s, t, "sref", local)).outcome).toBe("closed");
       expect((await outcome(s, t, "sref", g)).outcome).toBe("closed");
       close();
@@ -510,6 +532,7 @@ describe("mail: target resolution", () => {
       await agent(t, "b1", both, mine);
       await down(t, "b1");
       await agent(t, "b2", both, other);
+      await endAway();
       expect((await outcome(s, t, "sref", both)).outcome).toBe("closed");
       close();
     });
@@ -595,6 +618,7 @@ describe("mail: target resolution", () => {
       await agent(t, "lref", live, x);
       await agent(t, "cref", gone, x);
       await down(t, "cref");
+      await endAway();
       const a = await outcome(s, t, "gs", live, x);
       expect(a.outcome).toBe("deliver");
       expect(a.deliver?.to_ref).toBe("lref");
@@ -642,6 +666,7 @@ describe("mail: target resolution", () => {
       await agent(s, "gs", uniq("GSender"), ns("home"), true);
       await agent(t, "cref", gone, ns("a"));
       await down(t, "cref");
+      await endAway();
       expect((await outcome(s, t, "gs", gone)).outcome).toBe("closed");
       expect((await outcome(s, t, "gs", uniq("Ghost"))).outcome).toBe(
         "unknown_agent",
@@ -715,13 +740,11 @@ describe("mail: held memory", () => {
     );
     for (const id of ids) expect(held.has(id) || stored.has(id)).toBe(true);
 
-    // B7: recipients going down expire their mail (recipient_closed) and
-    // drop every body, held or stored.
+    // #1295: recipients going down keep their mail pending (away); the
+    // close drain only drops delivered notice bodies, so nothing is lost.
     for (const ref of refs)
       t.send({ v: 1, id: "dn", type: "agent_down", agent_ref: ref });
     await barrier(t);
-    // Each close spends CLOSE_INLINE_BATCH inline; the alarm drains the rest
-    // (B11). It may also fire on its own, so run it until nothing is queued.
     for (let k = 0; k < 100; k++) {
       const queued = await inOwnerHub(
         (st) =>
@@ -733,8 +756,7 @@ describe("mail: held memory", () => {
       await runDurableObjectAlarm(await hubOf());
       await new Promise((r) => setTimeout(r, 5));
     }
-    const after = await heldStats();
-    for (const id of ids) expect(after.ids).not.toContain(id);
+    const after = new Set((await heldStats()).ids);
     const stored2 = await inOwnerHub(
       (st) =>
         new Set(
@@ -744,16 +766,13 @@ describe("mail: held memory", () => {
             .map((r) => r.id),
         ),
     );
-    for (const id of ids) expect(stored2.has(id)).toBe(false);
+    for (const id of ids) expect(after.has(id) || stored2.has(id)).toBe(true);
     for (const id of ids.slice(0, 3))
-      expect(await receiptRow(id)).toMatchObject({
-        state: "expired",
-        reason: "recipient_closed",
-      });
+      expect(await receiptRow(id)).toMatchObject({ state: "pending" });
     close();
   });
 
-  it("sessions{closed} expires a closed agent's held mail and drops the body (B7)", async () => {
+  it("sessions{closed} keeps a closed agent's held mail pending (#1295); a late inline ack from its machine still settles it", async () => {
     const { s, t, close } = await pair();
     const n = ns();
     const receiver = uniq("Receiver");
@@ -764,17 +783,14 @@ describe("mail: held memory", () => {
     expect((await heldStats()).ids).toContain(r.msg_id);
     expect(await mailRow(r.msg_id)).toBeNull();
     t.send({ v: 1, id: "c1", type: "sessions", open: [], closed: ["rref"] });
+    await barrier(t);
+    expect(await receiptRow(r.msg_id)).toMatchObject({ state: "pending" });
+    expect((await heldStats()).ids).toContain(r.msg_id);
+    t.send(ack("a1", r.msg_id));
     expect(await waitFor(s, "receipt_update")).toMatchObject({
       msg_id: r.msg_id,
-      state: "expired",
-      reason: "recipient_closed",
+      state: "delivered",
     });
-    expect((await heldStats()).ids).not.toContain(r.msg_id);
-    expect(await mailRow(r.msg_id)).toBeNull();
-    // A late inline ack cannot resurrect it.
-    t.send(ack("a1", r.msg_id));
-    await barrier(t);
-    expect(await receiptRow(r.msg_id)).toMatchObject({ state: "expired" });
     close();
   });
 });

@@ -497,7 +497,7 @@ describe("H1 (P3): close cleanup cost does not grow with delivered history", () 
 });
 
 describe("L1 (P5): rowid session bounds", () => {
-  it("a same-millisecond close and reopen: the new session's mail is not drained", async () => {
+  it("a same-millisecond close and reopen (#1295): the old mail stays pending and the drain expires nothing", async () => {
     const h = freshHub();
     const t0 = Date.now() + HOUR;
     await clock(h, t0);
@@ -538,23 +538,23 @@ describe("L1 (P5): rowid session bounds", () => {
         .one(),
     );
     expect(st.state).toBe("pending");
+    // The close no longer expires pending mail (the agent is away, then back
+    // under the same ref): the old mail waits for the reopened session.
     for (const id of old)
       expect(
         await count(
           h,
-          "select count(*) as n from receipts where id = ? and state = 'expired'",
+          "select count(*) as n from receipts where id = ? and state = 'pending'",
           id,
         ),
       ).toBe(1);
-    // The reopened session can fetch its own new mail but none of the old.
-    d.send({
-      v: 1,
-      id: "f-old",
-      type: "fetch",
-      from_ref: "victim",
-      msg_id: old[0] as string,
-    });
-    expect(await until(d, "error")).toMatchObject({ code: "not_found" });
+    expect(
+      await count(
+        h,
+        "select count(*) as n from receipts where state = 'expired' and to_agent = ?",
+        victim,
+      ),
+    ).toBe(0);
   }, 60_000);
 
   it("the retention purge never deletes the newest receipt, so max(rowid) never goes back", async () => {

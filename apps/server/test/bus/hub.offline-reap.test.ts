@@ -8,7 +8,12 @@
 // next wake, so a deploy never reaps at once. Time is BusHub.setTestClock,
 // always set ahead of real time and reset after each test.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
+import {
+  BUS_CAPS,
+  type ClientFrame,
+  MAILBOX_RETAIN_MS,
+  type ServerFrame,
+} from "@oa/bus-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { BusHub, OFFLINE_REAP_MS, SWEEP_BATCH } from "../../src/bus/hub.js";
 import { busCloseKind } from "../../src/services/bus.js";
@@ -174,18 +179,26 @@ describe("offline reap (open-bus #422)", () => {
     await alarmAtTime(t0 + OFFLINE_REAP_MS);
     expect(await liveOf(away.id)).toEqual([]);
     expect(stateOf(await list(w, "wa"), gone)).toBeUndefined();
-    expect(await send(w, "wa", gone)).toMatchObject({
-      state: "refused",
-      reason: "closed",
-    });
+    // #1295: the reaped agent is away: its mailbox takes mail until its
+    // reservation ends 7 d after it went offline.
+    expect((await send(w, "wa", gone)).state).toBe("pending");
     // The other offline machine's agent is still open (queued).
     expect(await liveOf(other.id)).toEqual([stay]);
     expect(await disconnectedAt(other.id)).toBe(
       t0 + OFFLINE_REAP_MS - 3_600_000,
     );
     // No hot loop: nothing re-arms at now + 1 for the reaped machine.
+    // The reap's own wake (capped mail expiries) runs once, then settles.
+    await runAlarm();
     const next = await alarmAt();
     expect(next === null || next > t0 + OFFLINE_REAP_MS + 1).toBe(true);
+    // At away_since + 7 d the reservation ends and the idle row (past its
+    // 24 h) is purged: the name is unknown.
+    await alarmAtTime(t0 + MAILBOX_RETAIN_MS);
+    expect(await send(w, "wa", gone)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
     w.close();
   });
 
@@ -300,10 +313,8 @@ describe("offline reap (open-bus #422)", () => {
     await reg(v, "s", uniq("Sender"), n);
     expect(await reg(v, "x", now, n)).toBe(`${now}-2`);
     expect(await reg(v, "y", old, n)).toBe(`${old}-2`);
-    expect(await send(v, "s", now)).toMatchObject({
-      state: "refused",
-      reason: "closed",
-    });
+    // #1295: the away agent's mailbox takes mail.
+    expect((await send(v, "s", now)).state).toBe("pending");
     v.close();
     // A close keeps the rename log (OpenBus #446): the rolling hour purges it.
     expect(await count("rename_rl")).toBeGreaterThan(0);
@@ -438,12 +449,14 @@ describe("offline reap (open-bus #422)", () => {
     expect(await alarmAt()).toBe(t + 1);
     await runAlarm();
     expect(await liveOf(m.id)).toHaveLength(0);
-    // Done: no further now + 1 continuation for it.
+    // Done: no further now + 1 continuation for it (the close's own wake
+    // runs once and settles on the real deadlines).
+    await runAlarm();
     const next = await alarmAt();
     expect(next === null || next > t + 1).toBe(true);
   });
 
-  it("a sender's pending mail to a reaped agent expires as recipient_closed", async () => {
+  it("a sender's pending mail to a reaped agent stays pending, then expires with its reservation (away_since + 7 d)", async () => {
     const t0 = base();
     await setClock(t0);
     const away = await machine("Inbox");
@@ -457,13 +470,14 @@ describe("offline reap (open-bus #422)", () => {
     const r = await send(s, "x", to);
     expect(r.state).toBe("pending");
     await alarmAtTime(t0 + OFFLINE_REAP_MS);
+    // The reap no longer expires it (#1295).
+    expect(await liveOf(away.id)).toEqual([]);
+    await alarmAtTime(t0 + MAILBOX_RETAIN_MS);
     for (;;) {
       const f = await s.next();
       if (f.type === "receipt_update" && f.msg_id === r.msg_id) {
-        expect(f).toMatchObject({
-          state: "expired",
-          reason: "recipient_closed",
-        });
+        expect(f.state).toBe("expired");
+        expect(f.reason).not.toBe("recipient_closed");
         break;
       }
     }

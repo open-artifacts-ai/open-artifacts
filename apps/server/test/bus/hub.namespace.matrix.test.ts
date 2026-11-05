@@ -8,6 +8,7 @@ import {
   type ClientFrame,
   decodeServerFrame,
   LIMITS,
+  MAILBOX_RETAIN_MS,
   newId,
   PONG,
   type ServerFrame,
@@ -289,6 +290,13 @@ describe("namespaces and globals", () => {
     await agent(a, "c", gone, own);
     a.send({ v: 1, id: "d1", type: "agent_down", agent_ref: "c" });
     await barrier(a);
+    // #1295: a closed agent's name is reserved (away) and takes mail for 7 d;
+    // it reads as closed once the reservation ends.
+    await inOwnerHub((st) =>
+      st.storage.sql.exec(
+        "update former_names set expires_at = 1 where kind = 'away'",
+      ),
+    );
     expect(await sendAndReceipt(a, send("t3", "s", gone))).toMatchObject({
       state: "refused",
       reason: "closed",
@@ -488,7 +496,7 @@ describe("fetch", () => {
     const exp = (await sendAndReceipt(s, send("s4", "a", receiver, BIG)))
       .msg_id;
     await waitFor(t, "deliver");
-    await setClock(Date.now() + LIMITS.mailTtlSec * 1000 + 1000);
+    await setClock(Date.now() + MAILBOX_RETAIN_MS + 1000);
     await runAlarm();
     expect(await receiptRow(exp)).toMatchObject({ state: "expired" });
     errors.push(await fetchReply(t, fetchF("f4", "b", exp)));
@@ -572,7 +580,7 @@ describe("fetch: closed sessions and TTL (adv-B8)", () => {
       send("s1", "a", receiver, BIG),
     );
     await waitFor(t, "deliver");
-    await setClock(Date.now() + LIMITS.mailTtlSec * 1000 + 5000);
+    await setClock(Date.now() + MAILBOX_RETAIN_MS + 5000);
     expectNotFound(await fetchReply(t, fetchF("f1", "b", id)));
     // Left for the alarm: still pending, body still stored, sender not told.
     expect(await receiptRow(id)).toMatchObject({ state: "pending" });
@@ -598,7 +606,7 @@ describe("fetch: closed sessions and TTL (adv-B8)", () => {
     await waitFor(t, "deliver");
     t.send(ack("k1", id));
     await barrier(t);
-    await setClock(Date.now() + LIMITS.mailTtlSec * 1000 + 5000);
+    await setClock(Date.now() + MAILBOX_RETAIN_MS + 5000);
     expectNotFound(await fetchReply(t, fetchF("f1", "b", id)));
     await runAlarm();
     expect(await mailRow(id)).toBeNull();

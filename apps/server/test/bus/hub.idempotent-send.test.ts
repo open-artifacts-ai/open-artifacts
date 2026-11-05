@@ -11,6 +11,8 @@ import {
   type ClientFrame,
   decodeServerFrame,
   LIMITS,
+  MAILBOX_PENDING_CAP,
+  MAILBOX_RETAIN_MS,
   type ServerFrame,
 } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it } from "vitest";
@@ -58,7 +60,7 @@ afterEach(async () => {
   await setClock(null);
 });
 
-const TTL = LIMITS.mailTtlSec * 1000;
+const TTL = MAILBOX_RETAIN_MS;
 
 type Receipt = Extract<ServerFrame, { type: "receipt" }>;
 type Update = Extract<ServerFrame, { type: "receipt_update" }>;
@@ -267,7 +269,7 @@ describe("B14 idempotent send", () => {
     close();
   });
 
-  it("a resend after expiry reports expired and delivers nothing", async () => {
+  it("a resend after expiry and the alarm sweep (key final and past its window) sends fresh", async () => {
     const { s, t, sm, receiver, close } = await setup();
     await offline(t);
     const r1 = await sendAndReceipt(s, send("k1", "sref", receiver));
@@ -278,13 +280,13 @@ describe("B14 idempotent send", () => {
       state: "expired",
     });
     const r2 = await sendAndReceipt(s, send("k1", "sref", receiver));
-    expect(r2).toMatchObject({ msg_id: r1.msg_id, state: "pending" });
-    expect(await waitFor(s, "receipt_update")).toMatchObject({
-      msg_id: r1.msg_id,
-      state: "expired",
-    });
+    // #1295: the mail lived MAILBOX_RETAIN_MS, so its final key is older than
+    // SEND_KEY_RETAIN_MS and the same alarm swept it: the id is evaluated
+    // fresh (not the old receipt). The offline receiver's reservation is over
+    // too, so the fresh send is refused and nothing is delivered twice.
+    expect(r2).toMatchObject({ state: "refused", reason: "closed" });
+    expect(r2.msg_id).not.toBe(r1.msg_id);
     expect(await receiptsFrom(await agentId("sref", sm.id))).toBe(1);
-    expect(await mailCount()).toBe(0);
     allParse(s);
     close();
   });
@@ -313,27 +315,29 @@ describe("B14 idempotent send", () => {
     const { s, t, tm, sm, n, receiver, close } = await setup();
     const me = await agentId("sref", sm.id);
     await offline(t);
-    for (let k = 0; k < LIMITS.inboxCap; k++)
+    for (let k = 0; k < MAILBOX_PENDING_CAP; k++)
       expect(
         (await sendAndReceipt(s, send(`fill${k}`, "sref", receiver))).state,
       ).toBe("pending");
     const r1 = await sendAndReceipt(s, send("k1", "sref", receiver, "later"));
     expect(r1).toMatchObject({ state: "refused", reason: "inbox_full" });
-    expect(await keysOf(me)).toBe(LIMITS.inboxCap);
+    expect(await keysOf(me)).toBe(MAILBOX_PENDING_CAP);
     // The inbox drains: the queued mail expires.
     await setClock(Date.now() + TTL + 1000);
     await runAlarm();
+    // The recipient comes back (its reservation ended with the TTL).
+    const t2 = await ready(tm.token);
+    t2.send({ v: 1, id: "se", type: "sessions", open: ["rref"], closed: [] });
+    await agent(t2, "rref", receiver, n);
     const r2 = await sendAndReceipt(s, send("k1", "sref", receiver, "later"));
     expect(r2.state).toBe("pending");
     expect(r2.msg_id).not.toBe(r1.msg_id);
     expect(
       (await sendAndReceipt(s, send("k1", "sref", receiver, "later"))).msg_id,
     ).toBe(r2.msg_id);
-    expect(await keysOf(me)).toBe(LIMITS.inboxCap + 1);
-    // The recipient comes back: exactly one deliver of it.
-    const t2 = await ready(tm.token);
-    t2.send({ v: 1, id: "se", type: "sessions", open: ["rref"], closed: [] });
-    await agent(t2, "rref", receiver, n);
+    // The expired fillers' final keys were swept with them (past the window).
+    expect(await keysOf(me)).toBe(1);
+    // Exactly one deliver of it.
     expect((await waitFor(t2, "deliver")).msg_id).toBe(r2.msg_id);
     await barrier(t2);
     expect(delivers(t2)).toHaveLength(1);
@@ -433,12 +437,19 @@ describe("B14 idempotent send", () => {
 
   it("after the retention window and the alarm sweep the key is gone and the id sends fresh", async () => {
     const { s, t, sm, receiver, close } = await setup();
-    expect(SEND_KEY_RETAIN_MS).toBeGreaterThanOrEqual(TTL);
+    expect(SEND_KEY_RETAIN_MS).toBeGreaterThanOrEqual(LIMITS.mailTtlSec * 1000);
     const r1 = await sendAndReceipt(s, send("k1", "sref", receiver));
     const me = await agentId("sref", sm.id);
     expect(await keysOf(me)).toBe(1);
-    // The alarm is armed for the key's expiry (no other work keeps it).
+    // #1295: a key of mail still pending is never dropped by age.
     await setClock(Date.now() + SEND_KEY_RETAIN_MS + 60_000);
+    await runAlarm();
+    expect(await keysOf(me)).toBe(1);
+    expect((await sendAndReceipt(s, send("k1", "sref", receiver))).msg_id).toBe(
+      r1.msg_id,
+    );
+    // Once the mail expired, its final key is past the window and goes.
+    await setClock(Date.now() + TTL + 1000);
     await runAlarm();
     expect(await keysOf(me)).toBe(0);
     const r2 = await sendAndReceipt(s, send("k1", "sref", receiver));
@@ -463,7 +474,8 @@ describe("B14 idempotent send", () => {
   });
 
   it("a flood of unique ids keeps at most SEND_KEYS_PER_AGENT keys for the agent; other agents are unaffected", async () => {
-    expect(SEND_KEYS_PER_AGENT).toBe(LIMITS.inboxCap * 4);
+    expect(SEND_KEYS_PER_AGENT).toBe(800);
+    expect(SEND_KEYS_PER_AGENT).toBe(MAILBOX_PENDING_CAP * 4);
     const { s, t, sm, tm, n, sender, close } = await setup();
     // The other agent keeps its own keys.
     for (let k = 0; k < 3; k++)
@@ -474,7 +486,7 @@ describe("B14 idempotent send", () => {
     // sink that acks every message, in waves under its inbox cap.
     const sink = uniq("Sink");
     await agent(t, "sink", sink, n);
-    const N = SEND_KEYS_PER_AGENT * 5;
+    const N = SEND_KEYS_PER_AGENT * 2;
     const WAVE = LIMITS.inboxCap - 10;
 
     // Lift the frame budgets so the flood is not rate limited (a frozen

@@ -382,6 +382,12 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   );
   if (!machineCols.has("disconnected_at"))
     sql.exec("alter table machines add column disconnected_at integer");
+  // #1295: when the agent's session closed into `away` (epoch ms; a reaped
+  // agent uses its machine's disconnected_at), null while open or after a
+  // revoke. Its pending mail expires at away_since + MAILBOX_RETAIN_MS at
+  // the latest. Add-only.
+  if (!agentCols.has("away_since"))
+    sql.exec("alter table agents add column away_since integer");
   // B14: send_keys.final (1 once the key's receipt left pending), set
   // wherever a receipt is finalized (settle, #expire). Backfilled from
   // receipts in the step that adds it (a missing receipt counts as final).
