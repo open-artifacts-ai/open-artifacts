@@ -7,6 +7,7 @@ import {
   BusAgentsSchema,
   type BusMachine,
   BusMachinesSchema,
+  BusRolesSchema,
   ContentUrlSchema,
   DataDocSchema,
   INLINE_TOO_LARGE_MESSAGE,
@@ -320,6 +321,11 @@ describe("bus option (#1293)", () => {
   it("fixtures parse with their schemas", () => {
     BusMachinesSchema.parse({ machines: fixtures.busMachines });
     BusAgentsSchema.parse({ agents: fixtures.busAgents, live: true });
+    BusRolesSchema.parse({
+      roles: fixtures.busRoles,
+      proposals: fixtures.busRoleProposals,
+      live: true,
+    });
     expect(revoked.revokedAt).not.toBeNull();
     expect(never.lastUsedAt).toBeNull();
   });
@@ -373,9 +379,38 @@ describe("bus option (#1293)", () => {
     );
     expect(as.agents.filter((a) => a.machineId === live.id)).toEqual([]);
   });
+  it("roles: GET lists roles and proposals; PUT sets a holder open there, else 409; DELETE is idempotent", async () => {
+    fresh({ bus: true });
+    const got = BusRolesSchema.parse(await json(await call("GET", R.busRoles)));
+    expect(got.live).toBe(true);
+    expect(got.roles).toHaveLength(fixtures.busRoles.length);
+    expect(got.proposals).toHaveLength(fixtures.busRoleProposals.length);
+    const a = fixtures.busAgents[0] as (typeof fixtures.busAgents)[number];
+    const put = await call("PUT", R.busRoles, {
+      namespace: a.namespace,
+      name: "lead",
+      agentId: a.id,
+    });
+    expect(put.status).toBe(200);
+    const { role } = await json(put);
+    expect(role).toMatchObject({ holderName: a.name, vacant: false });
+    const elsewhere = await call("PUT", R.busRoles, {
+      namespace: "notes",
+      name: "lead",
+      agentId: a.id,
+    });
+    expect(elsewhere.status).toBe(409);
+    expect((await json(elsewhere)).error.details.reason).toBe("agent_not_open");
+    expect((await call("DELETE", R.busRole(role.id))).status).toBe(204);
+    expect((await call("DELETE", R.busRole(role.id))).status).toBe(204);
+    const after = BusRolesSchema.parse(
+      await json(await call("GET", R.busRoles)),
+    );
+    expect(after.roles.some((x) => x.id === role.id)).toBe(false);
+  });
   it("unauthenticated: 401 on the bus routes", async () => {
     fresh({ bus: true });
-    for (const p of [R.busMachines, R.busAgents, R.shareNotices])
+    for (const p of [R.busMachines, R.busAgents, R.busRoles, R.shareNotices])
       expect((await call("GET", p, undefined, {})).status).toBe(401);
   });
 });

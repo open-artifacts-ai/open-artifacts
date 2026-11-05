@@ -87,7 +87,7 @@ describe("Agents settings", () => {
       value: { writeText },
       configurable: true,
     });
-    mount("/settings/agents");
+    mount("/settings/connections");
     const copy = await screen.findByRole("button", {
       name: /copy command|copy config/i,
     });
@@ -98,13 +98,13 @@ describe("Agents settings", () => {
   });
 
   it("toggles to the Token variant", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     fireEvent.click(await screen.findByRole("radio", { name: "Token" }));
     expect((await screen.findAllByText(/headersHelper/))[0]).toBeTruthy();
   });
 
   it("keeps the Cursor tab in the Token variant with an OAuth note", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     fireEvent.click(await screen.findByRole("radio", { name: "Token" }));
     const tabs = screen.getAllByRole("tab").map((t) => t.textContent);
     expect(tabs).toEqual([
@@ -130,7 +130,7 @@ describe("Agents settings", () => {
       if (request.method === "DELETE")
         deletes.push(new URL(request.url).pathname);
     });
-    mount("/settings/agents");
+    mount("/settings/connections");
     await startRevoke("Example MCP client");
     expect(deletes).toEqual([]);
     const dlg = await screen.findByRole("alertdialog");
@@ -148,7 +148,7 @@ describe("Agents settings", () => {
       if (request.method === "DELETE")
         deletes.push(new URL(request.url).pathname);
     });
-    mount("/settings/agents");
+    mount("/settings/connections");
     await screen.findByText("laptop");
     expect(screen.getAllByText("Last used Never").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "Revoke laptop" }));
@@ -201,7 +201,7 @@ describe("Agents settings", () => {
         return HttpResponse.json(created, { status: 201 });
       }),
     );
-    mount("/settings/agents");
+    mount("/settings/connections");
     const dlg = await openCreate();
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
     const shown = await screen.findByRole("dialog");
@@ -241,7 +241,7 @@ describe("Agents settings", () => {
 
   it("keeps the page snippets on the token file after a token is created", async () => {
     serveCreate();
-    mount("/settings/agents");
+    mount("/settings/connections");
     const dlg = await openCreate();
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
     await screen.findAllByText(SECRET);
@@ -263,7 +263,7 @@ describe("Agents settings", () => {
         return HttpResponse.json(created, { status: 201 });
       }),
     );
-    mount("/settings/agents");
+    mount("/settings/connections");
     const dlg = await openCreate();
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
     fireEvent.keyDown(dlg, { key: "Escape" });
@@ -283,7 +283,7 @@ describe("Agents settings", () => {
         return HttpResponse.json(created, { status: 201 });
       }),
     );
-    mount("/settings/agents");
+    mount("/settings/connections");
     const dlg = await openCreate();
     const form = within(dlg).getByLabelText("Label").closest("form");
     if (!form) throw new Error("no form");
@@ -307,7 +307,7 @@ describe("Agents settings", () => {
           ),
         ),
       );
-      mount("/settings/agents");
+      mount("/settings/connections");
       await screen.findByText("laptop");
       await startRevoke(button);
       fireEvent.click(

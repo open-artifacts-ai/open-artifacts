@@ -28,7 +28,7 @@ We may change, add or remove features. If we remove something you rely on, we'll
 
 ## AI agents you connect
 
-You can connect any AI agent to your account, through MCP sign-in or a token. A connected agent acts as you: it can do anything your account can, such as publish, share or delete. You're responsible for what your agents do. You can see and revoke connected agents in Settings, Agents.
+You can connect any AI agent to your account, through MCP sign-in or a token. A connected agent acts as you: it can do anything your account can, such as publish, share or delete. You're responsible for what your agents do. You can see and revoke connected agents in Settings, Connections.
 
 We don't control the AI agents you connect or the companies that make them. Their own terms and privacy policies apply to what you send them.
 

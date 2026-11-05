@@ -4,14 +4,16 @@ import {
   createRoute,
   createRouter,
   type RouterHistory,
+  redirect,
   useParams,
   useSearch,
 } from "@tanstack/react-router";
 import { hasFeature } from "./api/contract";
 import { useMe } from "./auth/useMe";
+import { AgentsPage } from "./bus/AgentsPage";
 import { useCanUseBus } from "./bus/access";
-import { LiveAgents } from "./bus/LiveAgents";
 import { Machines } from "./bus/Machines";
+import type { AgentsTab } from "./bus/nav";
 import { AppLayout } from "./layout/AppLayout";
 import { useDocumentTitle } from "./layout/useDocumentTitle";
 import { Library } from "./library/Library";
@@ -22,7 +24,7 @@ import { NotFound } from "./pages/NotFound";
 import { RenderError } from "./pages/RenderError";
 import { SignIn } from "./pages/SignIn";
 import { useNoAgentsPage } from "./settings/AgentSetupCard";
-import { Agents } from "./settings/Agents";
+import { Connections } from "./settings/Agents";
 import { Directory } from "./settings/Directory";
 import { Instance } from "./settings/Instance";
 import { Members } from "./settings/Members";
@@ -150,6 +152,25 @@ function BusRoute({ children }: { children: React.ReactNode }) {
   return ok ? children : <NotFound />;
 }
 
+/** #1293: the Agents sidebar page's tabs; `?in=` scopes the roster, `?ns=` opens a namespace. */
+const agents = (path: AgentsTab) =>
+  createRoute({
+    getParentRoute: () => root,
+    path,
+    validateSearch: (s: Record<string, unknown>) => ({
+      ...(str(s.in) && { in: str(s.in) }),
+      ...(str(s.ns) && { ns: str(s.ns) }),
+    }),
+    component: function AgentsRoute() {
+      const q = useSearch({ strict: false }) as { in?: string; ns?: string };
+      return (
+        <BusRoute>
+          <AgentsPage tab={path} scope={q.in} ns={q.ns} />
+        </BusRoute>
+      );
+    },
+  });
+
 const ADMINS: Role[] = ["owner", "admin"];
 /** Guests go to /shared; a member is sent to the page they may see. */
 const gated = (
@@ -178,17 +199,17 @@ function SpacesRoute() {
       allow={ok ? [role] : []}
       redirects={{
         guest: "/shared",
-        member: "/settings/agents",
-        owner: "/settings/agents",
-        admin: "/settings/agents",
+        member: "/settings/connections",
+        owner: "/settings/connections",
+        admin: "/settings/connections",
       }}
     >
       <Spaces />
     </Gate>
   );
 }
-/** Revoke-only with nothing to revoke: no Agents page, so Profile, the first tab. */
-function AgentsRoute() {
+/** Revoke-only with nothing to revoke: no Connections page, so Profile, the first tab. */
+function ConnectionsRoute() {
   const none = useNoAgentsPage();
   const to = "/settings/profile";
   return (
@@ -196,7 +217,7 @@ function AgentsRoute() {
       allow={none ? [] : [...ADMINS, "member"]}
       redirects={{ guest: "/shared", member: to, owner: to, admin: to }}
     >
-      <Agents />
+      <Connections />
     </Gate>
   );
 }
@@ -240,30 +261,42 @@ const routeTree = root.addChildren([
   library("/team", "team"),
   search,
   trash,
-  route("/agents", () => (
-    <BusRoute>
-      <LiveAgents />
-    </BusRoute>
-  )),
+  agents("/agents"),
+  agents("/agents/namespaces"),
+  agents("/agents/roles"),
+  agents("/agents/share-notices"),
   route("/a/$id", ViewerRoute),
   route("/a/$id/v/$v", ViewerRoute),
   route("/a/$id/full", FullRoute),
   route("/a/$id/diff/$from/$to", DiffRoute),
   settings.addChildren([
     gated("/settings/profile", [...ADMINS, "member"], "/", Profile),
-    gated("/settings/members", ADMINS, "/settings/agents", Members),
+    gated("/settings/members", ADMINS, "/settings/connections", Members),
     createRoute({
       getParentRoute: () => settings,
       path: "/settings/spaces",
       component: SpacesRoute,
     }),
-    gated("/settings/directory", ADMINS, "/settings/agents", Directory),
+    gated("/settings/directory", ADMINS, "/settings/connections", Directory),
+    createRoute({
+      getParentRoute: () => settings,
+      path: "/settings/connections",
+      component: ConnectionsRoute,
+    }),
+    // #1293: Settings › Agents is now Connections; old links keep working.
     createRoute({
       getParentRoute: () => settings,
       path: "/settings/agents",
-      component: AgentsRoute,
+      beforeLoad: ({ location }) => {
+        throw redirect({
+          to: "/settings/connections",
+          search: location.search,
+          hash: location.hash,
+          replace: true,
+        } as never);
+      },
     }),
-    gated("/settings/instance", ADMINS, "/settings/agents", Instance),
+    gated("/settings/instance", ADMINS, "/settings/connections", Instance),
     createRoute({
       getParentRoute: () => settings,
       path: "/settings/machines",

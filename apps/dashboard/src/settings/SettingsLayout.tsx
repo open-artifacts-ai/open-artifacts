@@ -47,8 +47,8 @@ const TABS: {
     directory: true,
   },
   {
-    to: "/settings/agents",
-    label: "Agents",
+    to: "/settings/connections",
+    label: "Connections",
     roles: ["owner", "admin", "member"],
   },
   {
@@ -94,7 +94,7 @@ export function SettingsLayout() {
             (!t.directory || directory) &&
             (!t.spaces || canAdminSpaces(me)) &&
             (!t.bus || canUseBus(me)) &&
-            (t.to !== "/settings/agents" || !noAgents),
+            (t.to !== "/settings/connections" || !noAgents),
         ).map((t) => (
           <AppLink
             key={t.to}

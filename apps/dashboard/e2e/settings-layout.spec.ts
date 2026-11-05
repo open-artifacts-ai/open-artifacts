@@ -126,7 +126,7 @@ test("hosted: the Spaces tab sits after Members", async ({ page }) => {
     "Members",
     "Spaces",
     "Directory",
-    "Agents",
+    "Connections",
     "Instance",
   ]);
 });
@@ -140,7 +140,7 @@ test("hosted tab strip at 375 scrolls without clipping", async ({ page }) => {
     "Members",
     "Spaces",
     /^Directory/,
-    "Agents",
+    "Connections",
     "Instance",
   ]);
   const g = await nav.evaluate((el) => ({

@@ -4,6 +4,9 @@ import {
   type BusAddress,
   BusAgentsSchema,
   BusMachinesSchema,
+  type BusRolePut,
+  BusRoleSchema,
+  BusRolesSchema,
   type ListQueryInput,
   ListQuerySchema,
   type Me,
@@ -97,6 +100,7 @@ export const qk = {
   busMachines: ["bus", "machines"] as const,
   busAgents: ["bus", "agents"] as const,
   shareNotices: ["bus", "share-notices"] as const,
+  busRoles: ["bus", "roles"] as const,
   settings: ["settings"] as const,
   usage: ["usage"] as const,
   spaces: (q?: SpacesQueryInput) => ["spaces", q ?? {}] as const,
@@ -246,13 +250,23 @@ export const useBusMachines = (enabled = true) =>
     queryFn: ({ signal }) => api.get(R.busMachines, BusMachinesSchema, signal),
     refetchInterval: BUS_POLL_MS,
   });
-/** Revoke a machine: 204, idempotent; its agents leave, so both lists reload. */
-export const useRevokeBusMachine = () =>
-  useInvalidating(
-    (id: string) => api.send("DELETE", R.busMachine(id), undefined),
-    () => [qk.busMachines, qk.busAgents],
-    "Couldn't revoke the machine.",
-  );
+/**
+ * Revoke a machine: 204, idempotent; its agents leave, so both lists reload,
+ * failed or not (a 500 can mean revoked but its connection didn't close).
+ * The page shows the outcome.
+ */
+export const useRevokeBusMachine = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.send("DELETE", R.busMachine(id), undefined),
+    onSettled: () =>
+      Promise.all(
+        [qk.busMachines, qk.busAgents].map((queryKey) =>
+          qc.invalidateQueries({ queryKey }),
+        ),
+      ),
+  });
+};
 /** The caller's open agents (GET R.busAgents, canConnect only); polled while visible. */
 export const useBusAgents = (enabled = true) =>
   useQuery({
@@ -280,6 +294,30 @@ export const useSetShareNotices = () => {
     onSettled: () => qc.invalidateQueries({ queryKey: qk.shareNotices }),
   });
 };
+/** The caller's role addresses and the newest proposals (GET R.busRoles); polled while visible. */
+export const useBusRoles = (enabled = true) =>
+  useQuery({
+    enabled,
+    queryKey: qk.busRoles,
+    queryFn: ({ signal }) => api.get(R.busRoles, BusRolesSchema, signal),
+    refetchInterval: BUS_POLL_MS,
+  });
+/** Set, re-point or vacate a role (PUT R.busRoles). Refusals (409) are the dialog's to show. */
+export const usePutBusRole = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: BusRolePut) =>
+      api.send("PUT", R.busRoles, v, z.object({ role: BusRoleSchema })),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.busRoles }),
+  });
+};
+/** Remove a role (DELETE R.busRole(id), idempotent). */
+export const useDeleteBusRole = () =>
+  useInvalidating(
+    (id: string) => api.send("DELETE", R.busRole(id), undefined),
+    () => [qk.busRoles],
+    "Couldn't remove the role.",
+  );
 export const useSettings = () =>
   useQuery({
     queryKey: qk.settings,

@@ -6,7 +6,7 @@ test("a token created in Settings works with /mcp tools/list", async ({
   member: _,
 }) => {
   const label = `ci-${uniq()}`;
-  await page.goto("/settings/agents");
+  await page.goto("/settings/connections");
   await page.getByRole("button", { name: "Create token" }).click();
   const dialog = page.getByRole("dialog", { name: "Create token" });
   await dialog.getByRole("textbox", { name: "Label" }).fill(label);

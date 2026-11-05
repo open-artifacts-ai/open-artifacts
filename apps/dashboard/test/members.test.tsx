@@ -548,30 +548,30 @@ describe("settings guards", () => {
   };
   it("guest: /settings/members -> /shared", () =>
     at({ ...guest, id: "g" }, "/settings/members", "/shared"));
-  it("guest: /settings/agents -> /shared", () =>
-    at(guest, "/settings/agents", "/shared"));
+  it("guest: /settings/connections -> /shared", () =>
+    at(guest, "/settings/connections", "/shared"));
   it("guest: /settings/usage -> /shared", () =>
     at(guest, "/settings/usage", "/shared"));
-  it("member: /settings/members -> /settings/agents", () =>
-    at(other, "/settings/members", "/settings/agents"));
-  it("member: /settings/instance -> /settings/agents", () =>
-    at(other, "/settings/instance", "/settings/agents"));
+  it("member: /settings/members -> /settings/connections", () =>
+    at(other, "/settings/members", "/settings/connections"));
+  it("member: /settings/instance -> /settings/connections", () =>
+    at(other, "/settings/instance", "/settings/connections"));
   it("member: /settings/usage -> /", () => at(other, "/settings/usage", "/"));
-  it("member keeps /settings/agents", () =>
-    at(other, "/settings/agents", "/settings/agents"));
+  it("member keeps /settings/connections", () =>
+    at(other, "/settings/connections", "/settings/connections"));
   it("admin keeps /settings/instance and /settings/usage", async () => {
     await at(admin, "/settings/instance", "/settings/instance");
     await at(admin, "/settings/usage", "/settings/usage");
     expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
   });
-  it("member sees only the Profile and Agents tabs", async () => {
+  it("member sees only the Profile and Connections tabs", async () => {
     as(other);
-    mount("/settings/agents");
+    mount("/settings/connections");
     const nav = await screen.findByRole("navigation", {
       name: "Settings sections",
     });
     expect(
       (await within(nav).findAllByRole("link")).map((a) => a.textContent),
-    ).toEqual(["Profile", "Agents"]);
+    ).toEqual(["Profile", "Connections"]);
   });
 });

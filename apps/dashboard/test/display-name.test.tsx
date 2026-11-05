@@ -256,7 +256,7 @@ describe("Settings → Profile", () => {
         }),
       ),
     );
-    mount("/settings/agents");
+    mount("/settings/connections");
     expect(
       await screen.findByRole("link", { name: "Profile" }),
     ).toHaveAttribute("href", "/settings/profile");

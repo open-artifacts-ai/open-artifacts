@@ -37,15 +37,15 @@ describe("?mock=restricted", () => {
   });
 
   it("restricted: both cards empty, so no tab, and Profile", async () => {
-    const router = go("/settings/agents", false);
+    const router = go("/settings/connections", false);
     await waitFor(() =>
       expect(router.state.location.pathname).toBe("/settings/profile"),
     );
-    await waitFor(() => expect(tab("Agents")).toBeNull());
+    await waitFor(() => expect(tab("Connections")).toBeNull());
   });
 
   it("restricted-rows: both cards, revoke-only, and the tab", async () => {
-    go("/settings/agents", true);
+    go("/settings/connections", true);
     expect(
       await screen.findByText(
         "You can't connect new agents. You can revoke these.",
@@ -57,6 +57,6 @@ describe("?mock=restricted", () => {
       ),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Create token" })).toBeNull();
-    expect(tab("Agents")).not.toBeNull();
+    expect(tab("Connections")).not.toBeNull();
   });
 });

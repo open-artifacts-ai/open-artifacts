@@ -259,7 +259,7 @@ describe("#2: rotation keeps the old token valid until the new file is saved", (
     const l = line(w, "owner-token");
     const orphan = w.db.tokens.at(-1)?.id as string;
     expect(l.message).toContain(orphan);
-    expect(l.message).toContain("Settings → Agents");
+    expect(l.message).toContain("Settings → Connections");
     expect(w.lines.join("\n")).not.toMatch(/oa_pat_/);
   });
   it("#2: --upgrade with a live row and no file adds the note", async () => {
@@ -361,7 +361,7 @@ describe("realFs.writeSecret", () => {
   });
 });
 
-describe("#2: the dashboard tab is Settings → Agents", () => {
+describe("#2: the dashboard tab is Settings → Connections", () => {
   const dash = readFileSync(
     join(
       import.meta.dirname,
@@ -370,7 +370,7 @@ describe("#2: the dashboard tab is Settings → Agents", () => {
     "utf8",
   );
   it("matches the dashboard's tab label", () => {
-    expect(dash).toMatch(/Agents/);
+    expect(dash).toMatch(/label: "Connections"/);
   });
   it("no setup source or doc says Settings → Tokens", () => {
     for (const f of [

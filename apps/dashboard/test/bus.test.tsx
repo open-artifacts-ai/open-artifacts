@@ -1,45 +1,67 @@
-// #1293: the bus data layer, its gate, and the placeholder pages.
-import { type Me, R } from "@oa/shared";
+// #1293: the bus pages: data layer, gate, Agents (sidebar), Settings ›
+// Machines and the Settings › Connections rename.
+import { type BusAgent, type Me, R } from "@oa/shared";
 import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
+import { ApiClientError } from "../src/api/client";
 import { BUS_POLL_MS, qk } from "../src/api/queries";
 import { canUseBus } from "../src/bus/access";
-import { addressesOf, togglePick } from "../src/bus/LiveAgents";
-import { machineStatus } from "../src/bus/Machines";
-import { calls, installHarness, lastClient, mount, server } from "./harness";
+import { dayTime, shortDate } from "../src/bus/format";
+import { liveOn, machineStatus, machinesSummary } from "../src/bus/Machines";
+import {
+  buildRail,
+  inScope,
+  listOf,
+  parseNamespace,
+  parseScope,
+  scopeParam,
+  shortName,
+} from "../src/bus/namespaces";
+import { pending, roleError } from "../src/bus/Roles";
+import { addressesOf, togglePick } from "../src/bus/ShareNotices";
+import { CONNECTIONS_INTRO } from "../src/settings/Agents";
+import {
+  calls,
+  findVisibleToast,
+  installHarness,
+  lastClient,
+  mount,
+  server,
+} from "./harness";
 
 installHarness();
 
-const [live, never, revoked] = fixtures.busMachines as [
-  (typeof fixtures.busMachines)[number],
-  (typeof fixtures.busMachines)[number],
-  (typeof fixtures.busMachines)[number],
+const M = fixtures.busMachines;
+const [work, home, old] = M as [
+  (typeof M)[number],
+  (typeof M)[number],
+  (typeof M)[number],
 ];
-const [claude, pi] = fixtures.busAgents as [
-  (typeof fixtures.busAgents)[number],
-  (typeof fixtures.busAgents)[number],
-];
+const A = fixtures.busAgents;
+const OA = "github.com/open-artifacts-ai/open-artifacts";
+const agentNamed = (n: string) => A.find((a) => a.name === n) as BusAgent;
 
 /** The bus mocks, with `me` rewriting their /me. */
 const withBus = (me?: (m: Me) => Me) => {
-  const hs = createHandlers({ bus: true });
-  server.use(...hs);
-  if (me) {
-    const base = {
-      ...fixtures.me,
-      canConnect: true,
-      busOn: true,
-    } satisfies Me;
-    server.use(http.get("*/api/v1/me", () => HttpResponse.json(me(base))));
-  }
+  server.use(...createHandlers({ bus: true }));
+  if (me)
+    server.use(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json(
+          me({ ...fixtures.me, canConnect: true, busOn: true } satisfies Me),
+        ),
+      ),
+    );
 };
-
 const primary = () => screen.findByRole("navigation", { name: "Primary" });
+const settingsTabs = () =>
+  screen.findByRole("navigation", { name: "Settings sections" });
+
+// ---------------------------------------------------------------- units
 
 describe("canUseBus", () => {
-  const me = fixtures.me;
   it.each([
     [{ canConnect: true, busOn: true }, true],
     [{ canConnect: true, busOn: false }, false],
@@ -48,7 +70,7 @@ describe("canUseBus", () => {
     [{ busOn: true }, false],
     [{}, false],
   ])("%j -> %s", (extra, want) => {
-    expect(canUseBus({ ...me, ...extra })).toBe(want);
+    expect(canUseBus({ ...fixtures.me, ...extra })).toBe(want);
   });
   it("null or undefined -> false", () => {
     expect(canUseBus(null)).toBe(false);
@@ -56,32 +78,144 @@ describe("canUseBus", () => {
   });
 });
 
-describe("helpers", () => {
-  it("machineStatus: Revoked wins, then Unknown, Live, Offline", () => {
-    expect(machineStatus(live)).toBe("Live");
-    expect(machineStatus(never)).toBe("Offline");
-    expect(machineStatus(revoked)).toBe("Revoked");
-    expect(machineStatus({ ...live, connected: null })).toBe("Unknown");
-    expect(machineStatus({ ...live, revokedAt: live.createdAt })).toBe(
-      "Revoked",
-    );
+describe("namespaces", () => {
+  it("parseNamespace: github drops its host, another host keeps it, one segment is a folder", () => {
+    expect(parseNamespace(OA)).toEqual({
+      kind: "repo",
+      ns: OA,
+      owner: "open-artifacts-ai",
+      repo: "open-artifacts",
+    });
+    expect(parseNamespace("gitlab.com/acme/tools/cli")).toMatchObject({
+      owner: "gitlab.com/acme",
+      repo: "tools/cli",
+    });
+    expect(parseNamespace("notes")).toEqual({ kind: "folder", ns: "notes" });
   });
-  it("addressesOf: one per (namespace, name), in order", () => {
-    expect(addressesOf([claude, pi, { ...claude, id: "other" }])).toEqual([
-      { namespace: claude.namespace, name: claude.name },
-      { namespace: pi.namespace, name: pi.name },
+  it("shortName: the repo, or owner/repo when another owner has that repo name", () => {
+    const a = "github.com/acme/web";
+    const b = "github.com/beta/web";
+    expect(shortName(a, [a])).toBe("web");
+    expect(shortName(a, [a, b])).toBe("acme/web");
+    expect(shortName("notes", [a, "notes"])).toBe("notes");
+  });
+  it("buildRail: orgs A to Z with live counts, folders with their machines, global agents", () => {
+    const r = buildRail(A);
+    expect(r.all).toEqual({ total: A.length, live: 6 });
+    expect(r.orgs.map((o) => [o.owner, o.total])).toEqual([
+      ["leourbina", 1],
+      ["open-artifacts-ai", 4],
+    ]);
+    expect(
+      r.orgs[1]?.namespaces.map((n) => [n.label, n.total, n.live]),
+    ).toEqual([
+      ["open-artifacts", 3, 2],
+      ["open-bus", 1, 1],
+    ]);
+    const notes = r.folders.namespaces.find((n) => n.ns === "notes");
+    expect(notes?.machines).toEqual(["home-desktop", "leo-work"]);
+    expect(r.global.total).toBe(1);
+  });
+  it("scopes round-trip through ?in= and filter agents", () => {
+    for (const s of ["org:leourbina", `ns:${OA}`, "folders", "global"])
+      expect(scopeParam(parseScope(s))).toBe(s);
+    expect(parseScope("org:")).toEqual({ kind: "all" });
+    expect(parseScope(undefined)).toEqual({ kind: "all" });
+    const pi = agentNamed("pi-2");
+    expect(inScope(pi, { kind: "folders" })).toBe(true);
+    expect(inScope(pi, { kind: "org", owner: "leourbina" })).toBe(false);
+    expect(inScope(agentNamed("memory"), { kind: "global" })).toBe(true);
+  });
+  it("listOf joins with and", () => {
+    expect(listOf(["a"])).toBe("a");
+    expect(listOf(["a", "b"])).toBe("a and b");
+    expect(listOf(["a", "b", "c"])).toBe("a, b and c");
+  });
+});
+
+describe("format", () => {
+  const now = Date.parse("2026-11-05T15:00:00");
+  it("dayTime: today at a time, else a short date at a time", () => {
+    expect(dayTime("2026-11-05T09:41:00", now)).toBe("today at 9:41 AM");
+    expect(dayTime("2026-11-02T18:10:00", now)).toBe("Nov 2 at 6:10 PM");
+  });
+  it("shortDate: the year only when it isn't this one", () => {
+    expect(shortDate("2026-10-21T10:00:00", now)).toBe("Oct 21");
+    expect(shortDate("2025-10-21T10:00:00", now)).toBe("Oct 21, 2025");
+  });
+});
+
+describe("machines helpers", () => {
+  it("machineStatus: Revoked wins, then Unknown, Live, Offline", () => {
+    expect(machineStatus(work)).toBe("Live");
+    expect(machineStatus(home)).toBe("Offline");
+    expect(machineStatus(old)).toBe("Revoked");
+    expect(machineStatus({ ...work, connected: null })).toBe("Unknown");
+  });
+  it("liveOn: live agents on the machine; unknown is null; revoked is 0", () => {
+    expect(liveOn(work, A)).toBe(
+      A.filter((a) => a.machineId === work.id && a.state === "live").length,
+    );
+    expect(liveOn(home, A)).toBe(0);
+    expect(liveOn(work, undefined)).toBeNull();
+    expect(liveOn({ ...work, connected: null }, A)).toBeNull();
+    expect(liveOn(old, A)).toBe(0);
+  });
+  it("machinesSummary counts live machines only", () => {
+    expect(machinesSummary(M)).toBe("1 live");
+  });
+});
+
+describe("share-notice helpers", () => {
+  it("addressesOf: one per address, with every machine it runs on", () => {
+    const a = agentNamed("planner");
+    const twin = { ...a, id: "x", machineLabel: "home-desktop" };
+    expect(addressesOf([a, twin])).toEqual([
+      {
+        namespace: a.namespace,
+        name: a.name,
+        machines: ["leo-work", "home-desktop"],
+      },
     ]);
   });
-  it("togglePick: adds once, removes by address", () => {
+  it("togglePick: adds once (the address only), removes by address", () => {
     const a = { namespace: "n", name: "a" };
     const b = { namespace: "n", name: "b" };
     expect(togglePick([a], a, true)).toEqual([a]);
-    expect(togglePick([a], b, true)).toEqual([a, b]);
+    expect(togglePick([a], { ...b, machines: ["m"] } as never, true)).toEqual([
+      a,
+      b,
+    ]);
     expect(togglePick([a, b], { ...a }, false)).toEqual([b]);
   });
 });
 
-describe("gate: no nav links and Not found unless canConnect and busOn", () => {
+describe("roles helpers", () => {
+  it("roleError maps each 409 reason, a 400, and anything else", () => {
+    const e = (reason: string) =>
+      new ApiClientError("conflict", "x", 409, { reason });
+    expect(roleError(e("name_taken"))).toMatch(/taken/);
+    expect(roleError(e("agent_not_open"))).toMatch(/isn't open/);
+    expect(roleError(e("role_limit"))).toMatch(/most roles/);
+    expect(roleError(e("no_bus"))).toBe("Connect a machine first.");
+    expect(roleError(new ApiClientError("bad_request", "x", 400))).toMatch(
+      /lowercase/,
+    );
+    expect(roleError(new Error("boom"))).toBe("That didn't save. Try again.");
+  });
+  it("pending: only pending proposals whose link still works", () => {
+    const p = fixtures
+      .busRoleProposals[0] as (typeof fixtures.busRoleProposals)[number];
+    const now = Date.parse(p.createdAt);
+    expect(pending([p], now)).toHaveLength(1);
+    expect(pending([p], Date.parse(p.expiresAt) + 1)).toHaveLength(0);
+    expect(pending([{ ...p, status: "applied" }], now)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------- gate
+
+describe("gate: nothing unless canConnect and busOn", () => {
   const denied: [string, ((m: Me) => Me) | null][] = [
     ["bus off (default mocks)", null],
     ["busOn false", (m) => ({ ...m, busOn: false })],
@@ -95,8 +229,8 @@ describe("gate: no nav links and Not found unless canConnect and busOn", () => {
     ],
   ];
   for (const [name, me] of denied) {
-    for (const path of ["/settings/machines", "/agents"])
-      it(`${name}: ${path} is Not found`, async () => {
+    for (const path of ["/agents", "/agents/roles", "/settings/machines"])
+      it(`${name}: ${path} is Not found and asks nothing of the bus`, async () => {
         if (me) withBus(me);
         const seen = calls("GET");
         mount(path);
@@ -106,7 +240,6 @@ describe("gate: no nav links and Not found unless canConnect and busOn", () => {
         const nav = await primary();
         expect(within(nav).queryByRole("link", { name: "Agents" })).toBeNull();
         expect(screen.queryByRole("link", { name: "Machines" })).toBeNull();
-        // The page asks nothing of the bus.
         expect(seen.filter((c) => c.path.startsWith("/api/v1/bus/"))).toEqual(
           [],
         );
@@ -114,9 +247,7 @@ describe("gate: no nav links and Not found unless canConnect and busOn", () => {
     it(`${name}: no Machines tab in Settings`, async () => {
       if (me) withBus(me);
       mount("/settings/profile");
-      const tabs = await screen.findByRole("navigation", {
-        name: "Settings sections",
-      });
+      const tabs = await settingsTabs();
       expect(
         await within(tabs).findByRole("link", { name: "Profile" }),
       ).toBeInTheDocument();
@@ -124,7 +255,7 @@ describe("gate: no nav links and Not found unless canConnect and busOn", () => {
     });
   }
 
-  it("allowed: an Agents sidebar link and a Machines tab in Settings", async () => {
+  it("allowed: an Agents sidebar link, and Machines right after Connections in Settings", async () => {
     withBus();
     mount("/settings/profile");
     const nav = await primary();
@@ -132,97 +263,198 @@ describe("gate: no nav links and Not found unless canConnect and busOn", () => {
       await within(nav).findByRole("link", { name: "Agents" }),
     ).toHaveAttribute("href", "/agents");
     expect(within(nav).queryByRole("link", { name: "Machines" })).toBeNull();
-    const tabs = await screen.findByRole("navigation", {
-      name: "Settings sections",
-    });
+    const tabs = await settingsTabs();
+    await within(tabs).findByRole("link", { name: "Machines" });
+    const names = within(tabs)
+      .getAllByRole("link")
+      .map((l) => l.textContent);
+    expect(names.indexOf("Machines")).toBe(names.indexOf("Connections") + 1);
     expect(
-      await within(tabs).findByRole("link", { name: "Machines" }),
+      within(tabs).getByRole("link", { name: "Machines" }),
     ).toHaveAttribute("href", "/settings/machines");
   });
+});
 
-  it("allowed: the old top-level /machines is Not found", async () => {
-    withBus();
-    mount("/machines");
+// ---------------------------------------------------------------- Connections
+
+describe("Settings › Connections (formerly Agents)", () => {
+  it("is the tab's name, with Design's intro line", async () => {
+    mount("/settings/connections");
+    const tabs = await settingsTabs();
     expect(
-      await screen.findByRole("heading", { name: "Page not found" }),
+      await within(tabs).findByRole("link", { name: "Connections" }),
+    ).toHaveAttribute("aria-current", "page");
+    expect(within(tabs).queryByRole("link", { name: "Agents" })).toBeNull();
+    expect(await screen.findByText(CONNECTIONS_INTRO)).toBeInTheDocument();
+    expect(CONNECTIONS_INTRO).toBe(
+      "Connect an agent, and see the apps and tokens that act as you. Revoke any you don't recognize.",
+    );
+  });
+  it("the old /settings/agents redirects, keeping its hash", async () => {
+    const router = mount("/settings/agents#created-token");
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/settings/connections"),
+    );
+    expect(router.state.location.hash).toBe("created-token");
+    expect(
+      await screen.findByRole("heading", { name: "Personal access tokens" }),
     ).toBeInTheDocument();
   });
 });
 
-describe("/settings/machines", () => {
-  it("lists every machine with its status and Last used (Never when unused); revoked rows have no Revoke", async () => {
+// ---------------------------------------------------------------- Machines
+
+describe("Settings › Machines", () => {
+  const table = () => screen.findByRole("table", { name: "Your machines" });
+  const n = liveOn(work, A) as number;
+
+  it("lists machines: status, live agents, Last used (Never), revoked rows with a date and no Revoke", async () => {
     withBus();
     mount("/settings/machines");
-    const list = await screen.findByRole("list", { name: "Your machines" });
-    const rows = within(list).getAllByRole("listitem");
-    expect(rows.map((r) => r.textContent)).toEqual([
-      expect.stringContaining(`${live.label} · Live`),
-      expect.stringContaining(`${never.label} · Offline · Last used Never`),
-      expect.stringContaining(`${revoked.label} · Revoked`),
-    ]);
+    const rows = () =>
+      within(screen.getByRole("table", { name: "Your machines" }))
+        .getAllByRole("row")
+        .slice(1);
+    await table();
+    await waitFor(() =>
+      expect(rows()[0]).toHaveTextContent(`${work.label}Live${n}`),
+    );
+    expect(rows()[1]).toHaveTextContent(`${home.label}OfflineNoneNever`);
+    expect(rows()[2]).toHaveTextContent(/old-laptopRevoked \w+ \d+/);
     expect(
-      screen.queryByRole("button", { name: `Revoke ${revoked.label}` }),
+      screen.queryByRole("button", { name: `Revoke ${old.label}` }),
     ).toBeNull();
+    expect(screen.getByText("1 live")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Connect a machine" }),
+    ).toHaveAttribute("href", "/bus/approve");
   });
 
   it("polls every BUS_POLL_MS", async () => {
     withBus();
     mount("/settings/machines");
-    await screen.findByRole("list", { name: "Your machines" });
+    await table();
     const q = lastClient.getQueryCache().find({ queryKey: qk.busMachines });
     expect(BUS_POLL_MS).toBe(10_000);
     const opts = q?.options as { refetchInterval?: unknown } | undefined;
     expect(opts?.refetchInterval).toBe(BUS_POLL_MS);
   });
 
-  it("Revoke confirms, sends DELETE, and the row reloads as Revoked", async () => {
+  it("Revoke: the dialog names its live agents; Revoke sends DELETE, toasts, and the row reloads revoked", async () => {
     withBus();
     const sent = calls("DELETE");
     mount("/settings/machines");
+    const t = await table();
+    await waitFor(() =>
+      expect(within(t).getAllByRole("row")[1]).toHaveTextContent(
+        `${work.label}Live${n}`,
+      ),
+    );
     fireEvent.click(
-      await screen.findByRole("button", { name: `Revoke ${live.label}` }),
+      screen.getByRole("button", { name: `Revoke ${work.label}` }),
     );
     const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent(`Revoke "${live.label}"?`);
+    expect(dialog).toHaveTextContent(`Revoke "${work.label}"?`);
+    expect(dialog).toHaveTextContent(
+      `Its connection closes at once and its ${n} live agents leave the list. Messages to them are refused. This can't be undone.`,
+    );
+    expect(
+      within(dialog).getByRole("button", { name: "Cancel" }),
+    ).toHaveFocus();
     fireEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
     await waitFor(() =>
-      expect(sent.map((c) => c.path)).toEqual([R.busMachine(live.id)]),
+      expect(sent.map((c) => c.path)).toEqual([R.busMachine(work.id)]),
     );
+    await findVisibleToast(`${work.label} revoked.`);
     await waitFor(() =>
       expect(
-        screen.queryByRole("button", { name: `Revoke ${live.label}` }),
+        screen.queryByRole("button", { name: `Revoke ${work.label}` }),
       ).toBeNull(),
     );
   });
 
-  it("Cancel sends nothing", async () => {
+  it("a revoke whose connection didn't close: the red alert, and Try again reopens the dialog", async () => {
     withBus();
-    const sent = calls("DELETE");
-    mount("/settings/machines");
-    fireEvent.click(
-      await screen.findByRole("button", { name: `Revoke ${live.label}` }),
+    server.use(
+      http.delete(`*${R.busMachines}/:id`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "internal",
+              message:
+                "The machine is revoked, but its connection could not be closed yet. Try again.",
+            },
+          },
+          { status: 500 },
+        ),
+      ),
     );
-    const dialog = await screen.findByRole("alertdialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(sent).toEqual([]);
+    mount("/settings/machines");
+    await table();
+    fireEvent.click(
+      await screen.findByRole("button", { name: `Revoke ${work.label}` }),
+    );
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Revoke",
+      }),
+    );
+    expect(
+      await screen.findByText(
+        `${work.label} is revoked and can't reconnect, but its open connection didn't close. Try again to close it.`,
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent(
+      `Revoke "${work.label}"?`,
+    );
   });
 
-  it("empty: No machines yet", async () => {
+  it("live status unknown: the warning, Unknown, and a dash for live agents", async () => {
+    withBus();
+    server.use(
+      http.get(`*${R.busMachines}`, () =>
+        HttpResponse.json({ machines: [{ ...work, connected: null }] }),
+      ),
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({ agents: [], live: false }),
+      ),
+    );
+    mount("/settings/machines");
+    expect(
+      await screen.findByText(
+        "Live status isn't available right now. Reload to try again.",
+      ),
+    ).toBeInTheDocument();
+    const row = within(await table()).getAllByRole("row")[1] as HTMLElement;
+    expect(row).toHaveTextContent(`${work.label}Unknown—`);
+  });
+
+  it("empty: No machines yet, with the connect steps", async () => {
     withBus();
     server.use(
       http.get(`*${R.busMachines}`, () => HttpResponse.json({ machines: [] })),
     );
     mount("/settings/machines");
     expect(await screen.findByText("No machines yet")).toBeInTheDocument();
+    expect(
+      screen.getByText(/ask any AI agent to set up Open Artifacts/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Enter a code" })).toHaveAttribute(
+      "href",
+      "/bus/approve",
+    );
+    expect(
+      screen.queryByRole("link", { name: "Connect a machine" }),
+    ).toBeNull();
   });
 
-  it("a failed load says so, and Retry asks again", async () => {
+  it("a failed load: the error with Retry, which asks again", async () => {
     withBus();
-    let n = 0;
+    let calls = 0;
     server.use(
       http.get(`*${R.busMachines}`, () => {
-        n++;
+        calls++;
         return HttpResponse.json(
           { error: { code: "internal", message: "boom" } },
           { status: 500 },
@@ -230,78 +462,112 @@ describe("/settings/machines", () => {
       }),
     );
     mount("/settings/machines");
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
-    expect(screen.getByText(/Couldn't load your machines/)).toBeInTheDocument();
-    await waitFor(() => expect(n).toBeGreaterThan(1));
+    expect(
+      await screen.findByText("Couldn't load your machines."),
+    ).toBeInTheDocument();
+    const before = calls;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(calls).toBeGreaterThan(before));
   });
 });
 
-describe("/agents", () => {
-  it("lists live agents with namespace, machine and state", async () => {
-    withBus();
-    mount("/agents");
-    const list = await screen.findByRole("list", { name: "Live agents" });
-    expect(
-      within(list)
-        .getAllByRole("listitem")
-        .map((r) => r.textContent),
-    ).toEqual([
-      `${claude.name} · ${claude.namespace} · ${claude.machineLabel} · Live`,
-      `${pi.name} · ${pi.namespace} · ${pi.machineLabel} · Live`,
-    ]);
-  });
+// ---------------------------------------------------------------- Agents
 
-  it("share notices: none picked by default; checking one PUTs that address", async () => {
+describe("Agents › Agents (the roster)", () => {
+  const roster = () => screen.findByRole("table", { name: "Agents" });
+  const rail = () => screen.findByRole("complementary", { name: "Namespaces" });
+
+  it("the rail groups by org A to Z, then Other folders (with machines), then global", async () => {
     withBus();
-    const sent = calls("PUT");
     mount("/agents");
-    const box = await screen.findByRole("checkbox", {
-      name: `${claude.name} · ${claude.namespace}`,
-    });
-    expect(box).not.toBeChecked();
-    fireEvent.click(box);
-    await waitFor(() =>
-      expect(sent.map((c) => [c.path, c.body])).toEqual([
-        [
-          R.shareNotices,
-          { agents: [{ namespace: claude.namespace, name: claude.name }] },
-        ],
-      ]),
+    const r = await rail();
+    const links = within(r)
+      .getAllByRole("link")
+      .map((l) => l.textContent ?? "");
+    expect(links[0]).toBe(`All agents${A.length}`);
+    expect(links.indexOf("leourbina1")).toBeGreaterThan(0);
+    expect(links.indexOf("leourbina1")).toBeLessThan(
+      links.indexOf("open-artifacts-ai4"),
     );
-    await waitFor(() => expect(box).toBeChecked());
+    expect(links.indexOf("open-artifacts-ai4")).toBeLessThan(
+      links.findIndex((t) => t.startsWith("Other folders")),
+    );
+    expect(links.at(-1)).toBe("global1");
+    const notes = within(r).getByRole("link", { name: /^notes/ });
+    expect(notes).toHaveTextContent("2 machines");
+    expect(notes).toHaveTextContent("on home-desktop and leo-work");
   });
 
-  it("a picked address with no running agent shows not running, with Remove", async () => {
+  it("all agents: name with its short namespace, badge, what the agent says, machine", async () => {
     withBus();
-    const gone = { namespace: "notes", name: "old" };
-    const kept = { namespace: claude.namespace, name: claude.name };
-    server.use(
-      http.get(`*${R.shareNotices}`, () =>
-        HttpResponse.json({ agents: [kept, gone] }),
+    mount("/agents");
+    const rows = within(await roster())
+      .getAllByRole("row")
+      .slice(1);
+    expect(rows).toHaveLength(A.length);
+    const m = agentNamed("oa-manager");
+    expect(rows[0]).toHaveTextContent(
+      `${m.name} · open-artifactsLive${m.statusLabel}${m.machineLabel}`,
+    );
+    expect(
+      screen.getByText("Live agents receive at once.", { exact: false }),
+    ).toBeInTheDocument();
+  });
+
+  it("an org in the rail scopes the roster and its summary", async () => {
+    withBus();
+    mount("/agents");
+    fireEvent.click(
+      within(await rail()).getByRole("link", { name: "open-artifacts-ai4" }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "open-artifacts-ai" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("2 namespaces · 3 live, 1 queued"),
+    ).toBeInTheDocument();
+    expect(
+      within(await roster())
+        .getAllByRole("row")
+        .slice(1),
+    ).toHaveLength(4);
+  });
+
+  it("Live and Queued filter the rows", async () => {
+    withBus();
+    mount("/agents");
+    await roster();
+    fireEvent.click(screen.getByRole("radio", { name: /^Queued/ }));
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("table", { name: "Agents" }))
+          .getAllByRole("row")
+          .slice(1)
+          .map((r) => r.textContent),
+      ).toEqual(
+        A.filter((a) => a.state === "queued").map((a) =>
+          expect.stringContaining(a.name),
+        ),
       ),
     );
-    const sent = calls("PUT");
-    mount("/agents");
-    expect(
-      await screen.findByText(/old · notes · not running/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("Notes to agents that aren't running are dropped."),
-    ).toBeInTheDocument();
-    // The running pick shows checked in the picker, not repeated.
-    expect(
-      screen.getByRole("checkbox", {
-        name: `${claude.name} · ${claude.namespace}`,
-      }),
-    ).toBeChecked();
-    expect(screen.queryByText(/claude · .* · not running/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Remove old · notes" }));
-    await waitFor(() =>
-      expect(sent.map((c) => c.body)).toEqual([{ agents: [kept] }]),
-    );
   });
 
-  it("the bus couldn't be asked (live false): says so", async () => {
+  it("Find a namespace filters the rail", async () => {
+    withBus();
+    mount("/agents");
+    const r = await rail();
+    fireEvent.change(
+      within(r).getByRole("searchbox", { name: "Find a namespace" }),
+      { target: { value: "bus" } },
+    );
+    expect(
+      within(r).getByRole("link", { name: "open-bus1" }),
+    ).toBeInTheDocument();
+    expect(within(r).queryByRole("link", { name: "jobs-paris1" })).toBeNull();
+    expect(within(r).queryByRole("link", { name: /^notes/ })).toBeNull();
+  });
+
+  it("live status down: the warning, nothing listed", async () => {
     withBus();
     server.use(
       http.get(`*${R.busAgents}`, () =>
@@ -310,8 +576,263 @@ describe("/agents", () => {
     );
     mount("/agents");
     expect(
-      await screen.findByText("Couldn't reach your bus just now."),
+      await screen.findByText(
+        "Live status isn't available right now. Reload to try again.",
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByText("No agents running")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Agents" })).toBeNull();
+  });
+
+  it("no machine yet: Connect a machine first, with a link to Machines", async () => {
+    withBus();
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({ agents: [], live: true }),
+      ),
+      http.get(`*${R.busMachines}`, () => HttpResponse.json({ machines: [] })),
+    );
+    mount("/agents");
+    expect(
+      await screen.findByText("Connect a machine first."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Go to Machines" }),
+    ).toHaveAttribute("href", "/settings/machines");
+  });
+
+  it("machines but nothing running: No agents running", async () => {
+    withBus();
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({ agents: [], live: true }),
+      ),
+    );
+    mount("/agents");
+    expect(await screen.findByText("No agents running")).toBeInTheDocument();
+  });
+});
+
+describe("Agents › Namespaces", () => {
+  it("lists each namespace with its org or its folder's machines", async () => {
+    withBus();
+    mount("/agents/namespaces");
+    const t = await screen.findByRole("table", { name: "Namespaces" });
+    expect(
+      within(t).getByRole("link", { name: "open-artifacts" }),
+    ).toHaveAttribute(
+      "href",
+      `/agents/namespaces?ns=${encodeURIComponent(OA)}`,
+    );
+    expect(t).toHaveTextContent("notesFolder on home-desktop and leo-work");
+  });
+
+  it("a repo namespace: full path, and its roles as sentences", async () => {
+    withBus();
+    mount(`/agents/namespaces?ns=${encodeURIComponent(OA)}`);
+    expect(await screen.findByText(OA)).toBeInTheDocument();
+    expect(
+      screen.getByText("in open-artifacts-ai · 3 agents, 2 live"),
+    ).toBeInTheDocument();
+    const roles = screen.getByRole("region", {
+      name: "Roles in this namespace",
+    });
+    await waitFor(() =>
+      expect(roles).toHaveTextContent("manager points at oa-manager."),
+    );
+  });
+
+  it("a folder name on two machines: the shared-namespace warning, no rename command", async () => {
+    withBus();
+    mount("/agents/namespaces?ns=notes");
+    expect(
+      await screen.findByText(
+        /on 2 machines share this namespace, so their agents can see each other/,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("on home-desktop and leo-work"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Give this folder its own name/)).toBeNull();
+  });
+});
+
+describe("Agents › Roles and access", () => {
+  it("a pending proposal waits, pointing at the agent's link (no confirm here yet)", async () => {
+    withBus();
+    mount("/agents/roles");
+    const w = await screen.findByRole("region", { name: "Waiting for you" });
+    expect(w).toHaveTextContent(
+      "Point manager in open-artifacts at oa-design (now oa-manager).",
+    );
+    expect(w).toHaveTextContent(
+      "Open the link the agent gave you to confirm it.",
+    );
+    expect(within(w).queryByRole("button")).toBeNull();
+  });
+
+  it("roles show holder or Vacant; Remove confirms, then DELETEs", async () => {
+    withBus();
+    const sent = calls("DELETE");
+    mount("/agents/roles");
+    const t = await screen.findByRole("table", { name: "Roles" });
+    expect(t).toHaveTextContent("manageroa-manageropen-artifacts");
+    expect(t).toHaveTextContent("reviewerVacantopen-bus");
+    fireEvent.click(screen.getByRole("button", { name: "Remove reviewer" }));
+    const d = await screen.findByRole("alertdialog");
+    fireEvent.click(within(d).getByRole("button", { name: "Remove" }));
+    const id = fixtures.busRoles[1]?.id as string;
+    await waitFor(() =>
+      expect(sent.map((c) => c.path)).toEqual([R.busRole(id)]),
+    );
+  });
+
+  it("Change holder PUTs the role at an agent open there", async () => {
+    withBus();
+    const sent = calls("PUT");
+    mount("/agents/roles");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Change holder of manager" }),
+    );
+    const d = await screen.findByRole("dialog", {
+      name: "Change holder of manager",
+    });
+    fireEvent.click(within(d).getByRole("combobox", { name: "Held by" }));
+    fireEvent.click(
+      await screen.findByRole("option", { name: "oa-design on leo-work" }),
+    );
+    fireEvent.click(within(d).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(sent.map((c) => c.body)).toEqual([
+        {
+          namespace: OA,
+          name: "manager",
+          agentId: agentNamed("oa-design").id,
+        },
+      ]),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("a refused PUT shows its plain line and keeps the dialog open", async () => {
+    withBus();
+    server.use(
+      http.put(`*${R.busRoles}`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "conflict",
+              message: "x",
+              details: { reason: "name_taken" },
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    mount("/agents/roles");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Change holder of manager" }),
+    );
+    const d = await screen.findByRole("dialog");
+    fireEvent.click(within(d).getByRole("combobox", { name: "Held by" }));
+    fireEvent.click(
+      await screen.findByRole("option", { name: "oa-design on leo-work" }),
+    );
+    fireEvent.click(within(d).getByRole("button", { name: "Save" }));
+    expect(await within(d).findByRole("alert")).toHaveTextContent(
+      "That name is taken in this namespace. Pick another.",
+    );
+  });
+});
+
+describe("Agents › Share notices", () => {
+  const card = () => screen.findByRole("region", { name: "Share notices" });
+
+  it("none picked by default; ticking then Save PUTs the address, and the count follows", async () => {
+    withBus();
+    const sent = calls("PUT");
+    mount("/agents/share-notices");
+    const c = await card();
+    expect(c).toHaveTextContent("0 of 10 picked");
+    const save = within(c).getByRole("button", { name: "Save" });
+    expect(save).toBeDisabled();
+    const m = agentNamed("oa-manager");
+    fireEvent.click(
+      within(c).getByRole("checkbox", { name: `${m.name} · open-artifacts` }),
+    );
+    expect(c).toHaveTextContent("1 of 10 picked");
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(sent.map((x) => [x.path, x.body])).toEqual([
+        [
+          R.shareNotices,
+          { agents: [{ namespace: m.namespace, name: m.name }] },
+        ],
+      ]),
+    );
+    await findVisibleToast("Share notices saved.");
+  });
+
+  it("a picked address not running: not running, Remove, and the dropped line", async () => {
+    withBus();
+    server.use(
+      http.get(`*${R.shareNotices}`, () =>
+        HttpResponse.json({ agents: [{ namespace: "notes", name: "old" }] }),
+      ),
+    );
+    mount("/agents/share-notices");
+    const c = await card();
+    expect(await within(c).findByText(/old · notes/)).toBeInTheDocument();
+    expect(c).toHaveTextContent(
+      "Notes to agents that aren't running are dropped.",
+    );
+    fireEvent.click(
+      within(c).getByRole("button", { name: "Remove old · notes" }),
+    );
+    expect(c).toHaveTextContent("0 of 10 picked");
+    expect(within(c).getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("at 10 picked the other boxes disable", async () => {
+    withBus();
+    const ten = Array.from({ length: 10 }, (_, i) => ({
+      namespace: "notes",
+      name: `p${i}`,
+    }));
+    server.use(
+      http.get(`*${R.shareNotices}`, () => HttpResponse.json({ agents: ten })),
+    );
+    mount("/agents/share-notices");
+    const c = await card();
+    await waitFor(() =>
+      expect(c).toHaveTextContent(
+        "10 of 10 picked. Remove one to pick another.",
+      ),
+    );
+    for (const box of within(c).getAllByRole("checkbox"))
+      expect(box).toBeDisabled();
+  });
+
+  it("live status down: remove-only, with the line", async () => {
+    withBus();
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({ agents: [], live: false }),
+      ),
+      http.get(`*${R.shareNotices}`, () =>
+        HttpResponse.json({
+          agents: [{ namespace: "notes", name: "planner" }],
+        }),
+      ),
+    );
+    mount("/agents/share-notices");
+    const c = await card();
+    expect(
+      await within(c).findByText("Running agents can't be listed right now."),
+    ).toBeInTheDocument();
+    expect(within(c).queryByRole("checkbox")).toBeNull();
+    expect(
+      within(c).getByRole("button", { name: "Remove planner · notes" }),
+    ).toBeInTheDocument();
   });
 });

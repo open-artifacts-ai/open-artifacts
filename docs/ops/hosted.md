@@ -425,7 +425,7 @@ To switch on: do the prod canary smoke setup below, set `PROD_RELEASE_CHAIN` to 
 1. Create one Cloud Identity Free user (smoke) on the canary's sign-in domain, so it can sign in with Google like the canary's members.
 2. On the canary's dashboard, as its owner, invite smoke as a plain member (Members, Invite, role member). This is the admin write: it sends one invite email, to smoke only.
 3. Sign in once as smoke, so it is an active member.
-4. As smoke, create one personal access token (Settings, Agents), labelled `fleet-smoke`.
+4. As smoke, create one personal access token (Settings, Connections), labelled `fleet-smoke`.
 5. In the GitHub Environment (`hosted-staging-deploy` or `hosted-prod-deploy`), add two secrets: `FLEET_SMOKE_TOKEN` (that token) and `FLEET_SMOKE_SHARE_TO` (the share target's address, lowercase: an existing member in smoke's domain; on prod, the owner's own canary account). These are the secret writes. With `FLEET_SMOKE_SHARE` `on` (both envs), `FLEET_SMOKE_SHARE_TO` is required: the share check never skips silently. Skipping it is a one-line PR setting `FLEET_SMOKE_SHARE` to `off`.
 6. The next deploy of the scheduler target puts both on `oa-<s|p>-scheduler`, and only there (`deploy-hosted-platform.sh` refuses a malformed value without printing it, and the read-back refuses any other secret on the scheduler).
 7. Merge a one-line PR setting that env's `FLEET_SMOKE` to `required`. From the release that contains it, the canary must pass the smoke.

@@ -86,7 +86,7 @@ describe("--ci", () => {
     expect(await run(CI, w.deps, ROOT)).toBe(0);
     const d = line(w, "agent-config");
     expect(d.data.snippets.json).toContain("<YOUR_TOKEN>");
-    expect(JSON.stringify(d)).toContain("Settings → Agents");
+    expect(JSON.stringify(d)).toContain("Settings → Connections");
     expect(JSON.stringify(d)).not.toContain("owner-token step");
   });
 

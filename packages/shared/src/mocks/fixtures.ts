@@ -1,3 +1,4 @@
+import type { BusRole, BusRoleProposal } from "../bus-notices.js";
 import type {
   ArtifactSummary,
   BusAgent,
@@ -105,6 +106,9 @@ const members: Member[] = [
   { ...bob, role: "member", lastSeenAt: null },
 ];
 
+/** The moment the bus fixtures describe; the mocks serve them shifted to now. */
+export const BUS_FIXTURE_NOW = "2026-01-03T10:00:00.000Z";
+
 export const fixtures: {
   me: Me;
   artifacts: ArtifactSummary[];
@@ -123,6 +127,10 @@ export const fixtures: {
   busMachines: BusMachine[];
   /** #1293: open agents on busMachines (served with `bus: true`). */
   busAgents: BusAgent[];
+  /** #1293: role addresses (served with `bus: true`): one held, one vacant. */
+  busRoles: BusRole[];
+  /** #1293: one pending role proposal (served with `bus: true`). */
+  busRoleProposals: BusRoleProposal[];
 } = {
   me: {
     user: members[0] as Member,
@@ -274,8 +282,8 @@ export const fixtures: {
   busAgents: [
     {
       id: "BaA1nPqRsTu4vWxY",
-      namespace: "open-artifacts-ai/open-artifacts",
-      name: "claude",
+      namespace: "github.com/open-artifacts-ai/open-artifacts",
+      name: "oa-manager",
       kind: "claude-code",
       machineId: "BmA1nPqRsTu4vWxY",
       machineLabel: "leo-work",
@@ -284,20 +292,139 @@ export const fixtures: {
       running: true,
       updatedAt: "2026-01-03T10:00:00.000Z",
       status: "working",
-      statusLabel: "Building #1293",
+      statusLabel: "Reviewing the release candidate",
       statusAt: "2026-01-03T10:00:00.000Z",
     },
     {
       id: "BaB2nPqRsTu4vWxY",
-      namespace: "notes",
-      name: "pi-2",
+      namespace: "github.com/open-artifacts-ai/open-artifacts",
+      name: "oa-design",
+      kind: "claude-code",
+      machineId: "BmA1nPqRsTu4vWxY",
+      machineLabel: "leo-work",
+      global: false,
+      state: "live",
+      running: true,
+      updatedAt: "2026-01-03T09:58:00.000Z",
+      status: "working",
+      statusLabel: "Writing the bus pages spec",
+      statusAt: "2026-01-03T09:58:00.000Z",
+    },
+    {
+      id: "BaC3nPqRsTu4vWxY",
+      namespace: "github.com/open-artifacts-ai/open-artifacts",
+      name: "oa-product",
+      kind: "pi",
+      machineId: "BmB2nPqRsTu4vWxY",
+      machineLabel: "home-desktop",
+      global: false,
+      state: "queued",
+      running: true,
+      updatedAt: "2026-01-03T09:38:00.000Z",
+      status: "idle",
+      statusLabel: "Idle",
+      statusAt: "2026-01-03T09:38:00.000Z",
+    },
+    {
+      id: "BaD4nPqRsTu4vWxY",
+      namespace: "github.com/open-artifacts-ai/open-bus",
+      name: "bus-lead",
       kind: "pi",
       machineId: "BmA1nPqRsTu4vWxY",
       machineLabel: "leo-work",
       global: false,
       state: "live",
       running: true,
+      updatedAt: "2026-01-03T09:59:00.000Z",
+      status: "working",
+      statusLabel: "Moving the bus into the instance",
+      statusAt: "2026-01-03T09:59:00.000Z",
+    },
+    {
+      id: "BaE5nPqRsTu4vWxY",
+      namespace: "github.com/leourbina/jobs-paris",
+      name: "claude",
+      kind: "claude-code",
+      machineId: "BmA1nPqRsTu4vWxY",
+      machineLabel: "leo-work",
+      global: false,
+      state: "live",
+      running: true,
+      updatedAt: "2026-01-03T09:30:00.000Z",
+    },
+    {
+      id: "BaF6nPqRsTu4vWxY",
+      namespace: "notes",
+      name: "planner",
+      kind: "claude-code",
+      machineId: "BmA1nPqRsTu4vWxY",
+      machineLabel: "leo-work",
+      global: false,
+      state: "live",
+      running: true,
+      updatedAt: "2026-01-03T09:20:00.000Z",
+    },
+    {
+      id: "BaG7nPqRsTu4vWxY",
+      namespace: "notes",
+      name: "pi-2",
+      kind: "pi",
+      machineId: "BmB2nPqRsTu4vWxY",
+      machineLabel: "home-desktop",
+      global: false,
+      state: "queued",
+      running: true,
+      updatedAt: "2026-01-03T08:00:00.000Z",
+    },
+    {
+      id: "BaH8nPqRsTu4vWxY",
+      namespace: "memory",
+      name: "memory",
+      kind: "pi",
+      machineId: "BmA1nPqRsTu4vWxY",
+      machineLabel: "leo-work",
+      global: true,
+      state: "live",
+      running: true,
       updatedAt: "2026-01-03T09:00:00.000Z",
+    },
+  ],
+  busRoles: [
+    {
+      id: "BrA1nPqRsTu4vWxY",
+      namespace: "github.com/open-artifacts-ai/open-artifacts",
+      name: "manager",
+      agentId: "BaA1nPqRsTu4vWxY",
+      holderName: "oa-manager",
+      vacant: false,
+      setAt: "2026-01-02T10:00:00.000Z",
+    },
+    {
+      id: "BrB2nPqRsTu4vWxY",
+      namespace: "github.com/open-artifacts-ai/open-bus",
+      name: "reviewer",
+      agentId: null,
+      holderName: null,
+      vacant: true,
+      setAt: "2026-01-01T10:00:00.000Z",
+    },
+  ],
+  busRoleProposals: [
+    {
+      id: "BpA1nPqRsTu4vWxY",
+      action: "repoint",
+      namespace: "github.com/open-artifacts-ai/open-artifacts",
+      name: "manager",
+      roleId: "BrA1nPqRsTu4vWxY",
+      agentId: "BaB2nPqRsTu4vWxY",
+      agentName: "oa-design",
+      priorAgentId: "BaA1nPqRsTu4vWxY",
+      priorHolderName: "oa-manager",
+      status: "pending",
+      reason: null,
+      createdAt: "2026-01-03T09:56:00.000Z",
+      expiresAt: "2026-01-03T10:11:00.000Z",
+      decidedAt: null,
     },
   ],
 };

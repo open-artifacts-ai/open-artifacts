@@ -23,7 +23,12 @@
  */
 import { delay, type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
-import { type BusAddress, ShareNoticeAgentsSchema } from "../bus-notices.js";
+import {
+  type BusAddress,
+  type BusRole,
+  BusRolePutSchema,
+  ShareNoticeAgentsSchema,
+} from "../bus-notices.js";
 import {
   type ErrorCode,
   QUOTA_MESSAGE,
@@ -86,7 +91,7 @@ import {
   textHead,
 } from "../sniff.js";
 import type { ArtifactEventsMock } from "./events.js";
-import { fixtures } from "./fixtures.js";
+import { BUS_FIXTURE_NOW, fixtures } from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
 
 export type MockOptions = {
@@ -106,7 +111,8 @@ export type MockOptions = {
   hosted?: boolean | HostedMockOptions;
   /**
    * #1293: the bus is on and the caller may connect (Me.busOn and
-   * Me.canConnect true), with fixtures.busMachines and busAgents. Off by
+   * Me.canConnect true), with fixtures.busMachines, busAgents, busRoles and
+   * busRoleProposals. Off by
    * default: no machines, and GET R.busAgents answers `live: false`.
    */
   bus?: boolean;
@@ -331,8 +337,22 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     me.canConnect = true;
     me.busOn = true;
   }
-  const busMachines: BusMachine[] = opts.bus ? f.busMachines : [];
-  let busAgents: BusAgent[] = opts.bus ? f.busAgents : [];
+  // The bus fixtures are written as of BUS_FIXTURE_NOW; served as of now, so
+  // "just now", Live and an unexpired proposal stay true on any day.
+  const shift = Date.now() - Date.parse(BUS_FIXTURE_NOW);
+  const at = <T extends object>(o: T): T =>
+    Object.fromEntries(
+      Object.entries(o).map(([k, v]) => [
+        k,
+        typeof v === "string" && /At$/.test(k)
+          ? new Date(Date.parse(v) + shift).toISOString()
+          : v,
+      ]),
+    ) as T;
+  const busMachines: BusMachine[] = opts.bus ? f.busMachines.map(at) : [];
+  let busAgents: BusAgent[] = opts.bus ? f.busAgents.map(at) : [];
+  let busRoles: BusRole[] = opts.bus ? f.busRoles.map(at) : [];
+  const busRoleProposals = opts.bus ? f.busRoleProposals.map(at) : [];
   const data = new Map<string, Map<string, Map<string, DataDoc>>>();
   const storage = new Map<string, Map<string, StorageEntry>>();
   for (const d of f.data) {
@@ -548,7 +568,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       // Signed-URL uploads carry no session; public artifact reads are anonymous-OK.
       const needsAuth = mutating
         ? !/^\/uploads\/[^/]+$/.test(path)
-        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search|bus\/(share-notices|machines|agents))\/?$/.test(
+        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search|bus\/(share-notices|machines|agents|roles))\/?$/.test(
             path,
           );
       // Runtime routes (data/storage) check access first, as on the server:
@@ -627,6 +647,51 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     http.get(`*${R.busAgents}`, () =>
       HttpResponse.json({ agents: busAgents, live: opts.bus === true }),
     ),
+    // #1296: role addresses, ordered by namespace then name.
+    http.get(`*${R.busRoles}`, () =>
+      HttpResponse.json({
+        roles: [...busRoles].sort(
+          (a, b) =>
+            a.namespace.localeCompare(b.namespace) ||
+            a.name.localeCompare(b.name),
+        ),
+        proposals: busRoleProposals,
+        live: opts.bus === true,
+      }),
+    ),
+    // Set, re-point or vacate; the holder must be an open agent there (else 409 agent_not_open).
+    http.put(`*${R.busRoles}`, async ({ request }) => {
+      const r = await body(request, BusRolePutSchema);
+      if (r.error) return r.error;
+      const { namespace, name, agentId } = r.data;
+      const holder =
+        agentId === null
+          ? null
+          : busAgents.find(
+              (a) =>
+                a.id === agentId && (a.namespace === namespace || a.global),
+            );
+      if (holder === undefined)
+        return err("conflict", "Agent not open", { reason: "agent_not_open" });
+      const was = busRoles.find(
+        (x) => x.namespace === namespace && x.name === name,
+      );
+      const role: BusRole = {
+        id: was?.id ?? newId(),
+        namespace,
+        name,
+        agentId,
+        holderName: holder?.name ?? null,
+        vacant: holder === null,
+        setAt: iso(),
+      };
+      busRoles = [...busRoles.filter((x) => x !== was), role];
+      return HttpResponse.json({ role });
+    }),
+    http.delete(`*${R.busRoles}/:id`, ({ params: p }) => {
+      busRoles = busRoles.filter((x) => x.id !== p.id);
+      return noContent();
+    }),
     http.get("*/api/v1/artifacts", ({ request }) => {
       if (isAnon(request))
         return err("unauthorized", "Authentication required");
