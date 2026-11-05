@@ -296,6 +296,31 @@ describe("effectivePlan", () => {
     });
   });
 
+  it("missing dates fail closed: past_due with no graceUntil locks 7 days after asOf; a trial with no end counts as ended", () => {
+    const pd = (asOf: number, now: number) =>
+      effectivePlan(
+        at({ tier: "team", status: "past_due", graceUntil: null, asOf }, now),
+        null,
+        undefined,
+        now,
+        // No outage clock: only the grace rule is under test.
+        { clock: false },
+      );
+    expect(pd(mid, mid + 7 * DAY).lock).toBeNull();
+    expect(pd(mid, mid + 7 * DAY + 1)).toMatchObject({
+      readOnly: true,
+      reason: "payment_failed",
+    });
+    expect(
+      effectivePlan(
+        at({ tier: "trial", trialEndsAt: null }, mid),
+        null,
+        undefined,
+        mid,
+      ),
+    ).toMatchObject({ readOnly: true, reason: "trial_ended" });
+  });
+
   it("OUR outage: the last good tier holds for 7 days, then read-only; never upward", () => {
     const edge = mid - PLAN_STALE_MS;
     expect(effectivePlan(at({}, edge), null, undefined, mid).lock).toBeNull();
