@@ -1044,6 +1044,11 @@ async function refusedRollback(
     throw new ProbeFail(
       `P31: the tag adds ${ahead.join(", ")}, so the rollback must be refused invalid_state, got job ${j.status} (${code ?? "no code"})`,
     );
+  // Several guards raise invalid_state; only the schema guards are forward-fix.
+  if (!(j.error?.message ?? "").includes("forward-fix only"))
+    throw new ProbeFail(
+      `P31: the rollback was refused invalid_state, but not as forward-fix only (${failText(j).trim() || "no detail"})`,
+    );
   const now = (await ownDetail(run, p.id)).json as InstallDetail;
   if (
     now.state !== "active" ||

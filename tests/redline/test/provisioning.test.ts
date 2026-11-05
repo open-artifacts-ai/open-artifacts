@@ -1138,6 +1138,30 @@ describe("each probe fails on the behaviour it guards", () => {
       );
     });
 
+    it("an invalid_state that is not forward-fix only fails the case", async () => {
+      const f = setup(D1);
+      f.faults.add("refusal_other_reason");
+      expect((await runAll(f)).get("P31")).toMatch(
+        /refused invalid_state, but not as forward-fix only/,
+      );
+    });
+
+    it("an install unhealthy after the refusal fails the case", async () => {
+      const f = setup(D1);
+      f.faults.add("refusal_unhealthy");
+      expect((await runAll(f)).get("P31")).toMatch(
+        /after the refusal \/healthz is not ok on 0\.82\.0/,
+      );
+    });
+
+    it("an install that serves the previous release after the refusal fails the case", async () => {
+      const f = setup(D1);
+      f.faults.add("refusal_old_healthz");
+      expect((await runAll(f)).get("P31")).toMatch(
+        /after the refusal \/healthz is not ok on 0\.82\.0/,
+      );
+    });
+
     it("a refusal without its job.failed audit row fails the case", async () => {
       const f = setup(D1);
       f.faults.add("no_failed_audit");

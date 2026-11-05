@@ -80,7 +80,7 @@ interface FJob {
   stepIndex: number;
   owner: string;
   args: Record<string, unknown>;
-  failAt?: { step: string; code: string };
+  failAt?: { step: string; code: string; message?: string };
   sealed: string | null;
   sealedRead: boolean;
   onStep?: (step: string) => void;
@@ -134,7 +134,13 @@ export type Fault =
   /** The refused rollback writes no job.failed row. */
   | "no_failed_audit"
   /** The refused rollback leaves the install failed, not active. */
-  | "refusal_breaks_install";
+  | "refusal_breaks_install"
+  /** After a refused rollback /healthz says ok: false. */
+  | "refusal_unhealthy"
+  /** After a refused rollback /healthz names the previous release. */
+  | "refusal_old_healthz"
+  /** The rollback is refused invalid_state for a reason that is not forward-fix. */
+  | "refusal_other_reason";
 
 export interface FakeApi {
   fetch: typeof fetch;
@@ -323,7 +329,9 @@ export function fakeApi(): FakeApi {
         : { kind: "user", label: j.owner, tokenId: null },
     args: j.args,
     error:
-      j.status === "failed" ? { code: j.failAt?.code, message: "x" } : null,
+      j.status === "failed"
+        ? { code: j.failAt?.code, message: j.failAt?.message ?? "x" }
+        : null,
     sealed: withSealed ? j.sealed : null,
     createdAt: j.createdAt,
     startedAt: j.createdAt,
@@ -626,7 +634,13 @@ export function fakeApi(): FakeApi {
         const j = startJob(i, "rollback", p, {
           failAt:
             ahead.length > 0 || faults.has("rollback_refused")
-              ? { step: "recheck", code: "invalid_state" }
+              ? {
+                  step: "recheck",
+                  code: "invalid_state",
+                  message: faults.has("refusal_other_reason")
+                    ? "install has no previous version to roll back to"
+                    : "the D1 has migration 0002_b.sql, which 0.81.0 does not; rollback is refused (forward-fix only)",
+                }
               : undefined,
           onDone: () => {
             i.version = i.previousVersion;
@@ -829,10 +843,17 @@ export function fakeApi(): FakeApi {
       return new Response("closed", {
         status: faults.has("p22_closed_404") ? 404 : 503,
       });
+    const refused = [...jobs.values()].some(
+      (j) =>
+        j.installId === i.id && j.kind === "rollback" && j.status === "failed",
+    );
     return path === "/healthz"
       ? ok({
-          ok: true,
-          version: i.version,
+          ok: !(refused && faults.has("refusal_unhealthy")),
+          version:
+            refused && faults.has("refusal_old_healthz")
+              ? (i.previousVersion ?? i.version)
+              : i.version,
           testHooks: i.testHooks,
           installId: i.id,
         })
