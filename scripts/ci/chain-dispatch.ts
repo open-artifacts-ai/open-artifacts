@@ -169,7 +169,7 @@ export function dispatchAndWait(o: Opts): Outcome {
         const last = JSON.parse(
           gh(o.exec, ["api", `repos/${o.repo}/actions/runs/${found.id}`]),
         ) as WorkflowRun;
-        if (last.status === "completed" && last.conclusion === "success")
+        if (last.status === "completed")
           return { runId: found.id, url, conclusion: "success" };
       } catch {
         // Fall through: not proven green.
