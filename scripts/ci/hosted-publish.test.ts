@@ -109,7 +109,31 @@ esac`;
       prod: "true",
     });
   });
-  it("no release at that commit (most pushes), a failed run or another branch: nothing", () => {
+  it("a failed release-please run (v0.122.0, npm only) still resolves the release; the gate decides", () => {
+    for (const CONCLUSION of ["failure", "timed_out", ""]) {
+      const r = resolve(
+        { ...run, CONCLUSION },
+        {
+          releases: [release("v0.80.0")],
+          commits: { "v0.80.0": SHA },
+        },
+      );
+      expect(r.code, r.err).toBe(0);
+      expect(r.o.kind, CONCLUSION).toBe("release");
+      expect(r.o.tag).toBe("v0.80.0");
+      expect(r.o.staging).toBe("true");
+      expect(r.o.prod).toBe("true");
+    }
+  });
+  it("a failed run with no release at the commit: nothing", () => {
+    const r = resolve(
+      { ...run, CONCLUSION: "failure" },
+      { releases: [release("v0.80.0")], commits: { "v0.80.0": OTHER } },
+    );
+    expect(r.code, r.err).toBe(0);
+    expect(r.o.kind).toBe("none");
+  });
+  it("no release at that commit (most pushes), a cancelled run or another branch: nothing", () => {
     for (const [label, env, state] of [
       [
         "no release",
@@ -132,7 +156,7 @@ esac`;
           commits: { "v0.80.0-rc.1": SHA },
         },
       ],
-      ["failed", { ...run, CONCLUSION: "failure" }, {}],
+      ["cancelled", { ...run, CONCLUSION: "cancelled" }, {}],
       ["branch", { ...run, HEAD_BRANCH: "feature" }, {}],
     ] as [string, Record<string, string>, Parameters<typeof resolve>[1]][]) {
       const r = resolve(env, state);
