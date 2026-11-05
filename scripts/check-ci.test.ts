@@ -1218,7 +1218,10 @@ describe("prod and staging tokens never cross", () => {
       // Exception: hosted prod's Environment, hosted-prod-deploy, names its
       // one token CLOUDFLARE_API_TOKEN; a job there may use it, never the
       // PROD secret too.
-      if (isProd && r.has("CLOUDFLARE_API_TOKEN")) {
+      if (
+        isProd &&
+        (r.has("CLOUDFLARE_API_TOKEN") || r.has("PROD_CLOUDFLARE_API_TOKEN"))
+      ) {
         const doc = parse(readFileSync(join(base, f), "utf8")) as Record<
           string,
           unknown
