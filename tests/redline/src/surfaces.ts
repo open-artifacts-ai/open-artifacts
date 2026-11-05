@@ -333,11 +333,11 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
   // billing (a Stripe session or a usage report), so no success leg runs
   // live. A at B is deny-only.
   "POST /api/v1/billing/checkout":
-    "real-only: an allowed request opens a Stripe Checkout session through billing; A at B is deny-only",
+    "interactive-only: an allowed request opens a Stripe Checkout session through billing, for a browser session only; A at B is deny-only",
   "POST /api/v1/billing/portal":
-    "real-only: an allowed request opens a Stripe Customer Portal session through billing; A at B is deny-only",
+    "interactive-only: an allowed request opens a Stripe Customer Portal session through billing, for a browser session only; A at B is deny-only",
   "POST /api/v1/billing/usage":
-    "real-only: an allowed request sends this month's usage report to billing; A at B is deny-only",
+    "interactive-only: an allowed request sends this month's usage report to billing, for a browser session only; A at B is deny-only",
 };
 
 /**
@@ -360,6 +360,12 @@ export const INTERACTIVE_ONLY: readonly string[] = [
   // #1372: the role proposal confirm page, the same kind (PUBLIC_ROUTES).
   "GET /bus/roles/confirm/:token",
   "POST /bus/roles/confirm/:token",
+  // Hosted billing: Checkout, Portal and the usage report open Stripe or
+  // reach billing only for a person in a browser session (billing.ts
+  // requireBillingManager), so a hook-minted session is 404 here.
+  "POST /api/v1/billing/checkout",
+  "POST /api/v1/billing/portal",
+  "POST /api/v1/billing/usage",
 ];
 
 const ERASE_TESTS = "apps/server/test/members.erase.test.ts";
@@ -567,15 +573,15 @@ export const DROPPED: Readonly<
     ],
   },
   "org POST /api/v1/billing/checkout": {
-    why: "real-only",
+    why: "interactive-only",
     coveredBy: [INSTANCE, BILLING_AUTHZ],
   },
   "org POST /api/v1/billing/portal": {
-    why: "real-only",
+    why: "interactive-only",
     coveredBy: [INSTANCE, BILLING_AUTHZ],
   },
   "org POST /api/v1/billing/usage": {
-    why: "real-only",
+    why: "interactive-only",
     coveredBy: [INSTANCE, BILLING_AUTHZ],
   },
   "org DELETE /api/v1/spaces/:id/mappings/:groupId": {
