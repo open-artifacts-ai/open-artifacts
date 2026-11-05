@@ -360,6 +360,36 @@ describe("skill.md drift", () => {
     expect(md).not.toContain("{{");
   });
 
+  it("renders one harness's bus tool names, and only when asked", async () => {
+    const plain = await skill();
+    expect(plain).not.toContain("This copy was rendered for one harness");
+
+    const claude = await get(`${APP}/skill.md?harness=claude`);
+    expect(claude.status).toBe(200);
+    const claudeMd = await claude.text();
+    expect(claudeMd).toContain("mcp__oa_bus__list_agents");
+    expect(claudeMd).toContain("~/.claude/skills/open-artifacts/SKILL.md");
+    // Inserted before Connect, so the note reads before the setup steps.
+    expect(
+      claudeMd.indexOf("This copy was rendered for one harness"),
+    ).toBeLessThan(claudeMd.indexOf("## Connect"));
+    // The ETag differs, or a cache would serve one harness's copy to another.
+    expect(claude.headers.get("etag")).not.toBe(
+      (await get(`${APP}/skill.md`)).headers.get("etag"),
+    );
+
+    // Codex's naming is unconfirmed: it keeps the generic line.
+    const codex = await (await get(`${APP}/skill.md?harness=codex`)).text();
+    expect(codex).toContain(
+      "its bus tools keep the names the harness gives them",
+    );
+    expect(codex).not.toContain("mcp__oa_bus__");
+
+    // An unknown harness is the plain skill, byte for byte.
+    const bogus = await (await get(`${APP}/skill.md?harness=bogus`)).text();
+    expect(bogus).toBe(plain);
+  });
+
   it("every tool example passes its input schema", () => {
     for (const t of TOOL_DEFS) {
       const r = t.inputSchema.safeParse(t.example);

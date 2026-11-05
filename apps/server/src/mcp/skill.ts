@@ -2,7 +2,14 @@
 // pre-rendered template (skill.generated.ts) with its tokens filled in. One
 // regex pass, memoized per isolate (APP_HOST, PLAN and VERSION are constant
 // per deploy): no D1, no session, no Zod or Markdown work per request.
-import { dataDocLimit, dataLimits, parseFeatures } from "@oa/shared";
+import {
+  dataDocLimit,
+  dataLimits,
+  type Harness,
+  harnessSkills,
+  parseFeatures,
+  parseHarness,
+} from "@oa/shared";
 import type { Context } from "hono";
 import type { Env } from "../env.js";
 import type { AppEnv } from "../http/middleware.js";
@@ -69,15 +76,34 @@ export const busLine = (on: boolean): string =>
 export const skillUrl = (env: SkillEnv): string | undefined =>
   skillEnabled(env) ? skillOrigin(env.APP_HOST) + SKILL_PATH : undefined;
 
+/**
+ * The per-harness line for `/skill.md?harness=`, or "" without a known
+ * harness: an install renders the tool names that install gives the agent, and
+ * every other fetch gets exactly the bytes it got before the parameter
+ * existed. No harness names here: the served text stays vendor-neutral, so it
+ * names tool names and the skill path, not products (`#1456` step 3).
+ */
+export const harnessNote = (harness: Harness | undefined): string => {
+  if (!harness) return "";
+  const { skillPath, busToolName } = harnessSkills[harness];
+  const tools = busToolName
+    ? `its bus tools are named \`${busToolName("list_agents")}\` and \`${busToolName("send_message")}\` (list_agents, send_message)`
+    : "its bus tools keep the names the harness gives them";
+  return `This copy was rendered for one harness: ${tools}, and the skill file lives at \`${skillPath}\`.\n\n`;
+};
+
 const memo = new Map<string, Promise<string>>();
 
-/** The skill for this instance. */
-export function renderSkill(env: SkillEnv): Promise<string> {
+/** The skill for this instance, optionally rendered for one harness. */
+export function renderSkill(
+  env: SkillEnv,
+  harness?: Harness | undefined,
+): Promise<string> {
   const { plan, docBytes } = dataLimits(env);
   const hosted = env.HOSTED === "1" ? "h" : "";
   const spaces = spacesIn(env);
   const bus = busOn(env);
-  const key = `${env.ENVIRONMENT}|${env.APP_HOST}|${plan}|${docBytes}|${hosted}|${spaces ? "s" : ""}|${bus ? "b" : ""}`;
+  const key = `${env.ENVIRONMENT}|${env.APP_HOST}|${plan}|${docBytes}|${hosted}|${spaces ? "s" : ""}|${bus ? "b" : ""}|${harness ?? ""}`;
   let p = memo.get(key);
   if (!p) {
     p = skillName(env.APP_HOST).then((name) => {
@@ -92,7 +118,11 @@ export function renderSkill(env: SkillEnv): Promise<string> {
         busPeers: busLine(bus),
       };
       const tpl = spaces ? SKILL_TEMPLATE : SKILL_TEMPLATE_NO_SPACES;
-      return tpl.replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m);
+      const md = tpl.replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m);
+      // The harness note is inserted at render time, before "## Connect", so
+      // the template (and every absent-harness byte) stays exactly as it was.
+      const note = harnessNote(harness);
+      return note ? md.replace("\n## Connect", `\n${note}## Connect`) : md;
     });
     // A failure is not memoized: the next request tries again.
     p = p.catch((e: unknown) => {
@@ -112,17 +142,19 @@ export function renderSkill(env: SkillEnv): Promise<string> {
  */
 export const skillEtag = (
   env: Pick<Env, "PLAN" | "DATA_DOC_BYTES" | "HOSTED" | "FEATURES">,
+  harness?: Harness | undefined,
 ): string => {
   const { plan, docBytes } = dataLimits(env);
   const doc = docBytes === dataDocLimit(plan) ? "" : `-${docBytes}`;
   const hosted = env.HOSTED === "1" ? "-hosted" : "";
   const tpl = spacesIn(env) ? SKILL_HASH : `nospaces-${SKILL_HASH_NO_SPACES}`;
-  return `"${VERSION}-${plan}${doc}${hosted}-${tpl}"`;
+  return `"${VERSION}-${plan}${doc}${hosted}-${tpl}${harness ? `-${harness}` : ""}"`;
 };
 
 export async function serveSkill(c: Context<AppEnv>) {
   if (!skillEnabled(c.env)) return c.notFound();
-  const etag = skillEtag(c.env);
+  const harness = parseHarness(c.req.query("harness"));
+  const etag = skillEtag(c.env, harness);
   const headers = {
     "Content-Type": "text/markdown; charset=utf-8",
     "Cache-Control": "public, max-age=300",
@@ -136,5 +168,5 @@ export async function serveSkill(c: Context<AppEnv>) {
       .some((t) => t === etag || t === `W/${etag}` || t === "*")
   )
     return c.body(null, 304, headers);
-  return c.body(await renderSkill(c.env), 200, headers);
+  return c.body(await renderSkill(c.env, harness), 200, headers);
 }
