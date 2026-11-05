@@ -138,9 +138,7 @@ export type Fault =
   /** After a refused rollback /healthz says ok: false. */
   | "refusal_unhealthy"
   /** After a refused rollback /healthz names the previous release. */
-  | "refusal_old_healthz"
-  /** The rollback is refused invalid_state for a reason that is not forward-fix. */
-  | "refusal_other_reason";
+  | "refusal_old_healthz";
 
 export interface FakeApi {
   fetch: typeof fetch;
@@ -637,9 +635,9 @@ export function fakeApi(): FakeApi {
               ? {
                   step: "recheck",
                   code: "invalid_state",
-                  message: faults.has("refusal_other_reason")
-                    ? "install has no previous version to roll back to"
-                    : "the D1 has migration 0002_b.sql, which 0.81.0 does not; rollback is refused (forward-fix only)",
+                  // The job API's fixed text for the code (errors.ts).
+                  message:
+                    "The install is not in a state that allows this job.",
                 }
               : undefined,
           onDone: () => {

@@ -1138,14 +1138,6 @@ describe("each probe fails on the behaviour it guards", () => {
       );
     });
 
-    it("an invalid_state that is not forward-fix only fails the case", async () => {
-      const f = setup(D1);
-      f.faults.add("refusal_other_reason");
-      expect((await runAll(f)).get("P31")).toMatch(
-        /refused invalid_state, but not as forward-fix only/,
-      );
-    });
-
     it("an install unhealthy after the refusal fails the case", async () => {
       const f = setup(D1);
       f.faults.add("refusal_unhealthy");
