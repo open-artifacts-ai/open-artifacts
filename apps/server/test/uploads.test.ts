@@ -498,6 +498,37 @@ describe("create_upload without a size (#1540)", () => {
     expect(await env.FILES.head(r?.r2_key ?? "")).toBeNull();
   });
 
+  it("an object over the cap after storing is refused and removed", async () => {
+    const up = await create(alice.cookie, { path: "liar.bin" });
+    const u = new URL(up.url);
+    const big = {
+      ...env,
+      FILES: {
+        put: async (k: string, b: ReadableStream) => {
+          await env.FILES.put(k, b);
+          return { size: 25 * 1024 * 1024 + 1 };
+        },
+        delete: env.FILES.delete.bind(env.FILES),
+      },
+    } as unknown as typeof env;
+    await expect(
+      putUpload(
+        big,
+        up.uploadId,
+        u.searchParams.get("exp") ?? "",
+        u.searchParams.get("sig") ?? "",
+        new Request("http://x/", {
+          method: "PUT",
+          body: "abc",
+          headers: { "content-length": "3" },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "too_large" });
+    const r = await row(up.uploadId);
+    expect(r?.received_at).toBeNull();
+    expect(await env.FILES.head(r?.r2_key ?? "")).toBeNull();
+  });
+
   it("a given size that mismatches is still refused", async () => {
     const up = await create(alice.cookie, { path: "m.txt", size: 3 });
     const res = await put(up.url, "abcd");

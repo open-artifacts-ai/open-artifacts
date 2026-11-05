@@ -199,6 +199,8 @@ export async function putUpload(
     if (Number(len) > LIMITS.fileBytes)
       throw new ApiError("too_large", OVER_CAP, { reason: "too_large" });
   }
+  // Unsized: refuse an over-cap instance before storing anything (re-checked on the measured bytes below).
+  if (measure) await requireFreeStorage(env, Number(len));
   // Write-once: claim the slot atomically (received_at = -1 while in flight).
   const claim = await env.DB.prepare(
     "update uploads set received_at = -1 where id = ? and received_at is null and consumed = 0",
