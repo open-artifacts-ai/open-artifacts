@@ -189,9 +189,8 @@ export function dispatchAndWait(o: Opts): Outcome {
  */
 export function outputLine(key: string, value: string, max = 300): string {
   const one = [...value]
-    .map((c) => (c.charCodeAt(0) < 32 || c === "\x7f" ? " " : c))
+    .map((c) => c)
     .join("")
-    .replace(/\s+/g, " ")
     .trim()
     .slice(0, max);
   return `${key}=${one}\n`;
