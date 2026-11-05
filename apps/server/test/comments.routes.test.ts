@@ -976,6 +976,19 @@ describe("review fixes (#682)", () => {
     expect((await errOf(pin)).code).toBe("invalid_anchor");
   });
 
+  it("the body limit counts UTF-16 units after trim, on REST and in bodyOk", async () => {
+    const id = await pub({ visibility: "team" });
+    // 1,000 emoji are 2,000 units: allowed; one more is 2,002: refused.
+    expect((await post(id, viewer, "😀".repeat(1000))).status).toBe(201);
+    const over = await post(id, viewer, "😀".repeat(1001));
+    expect(over.status).toBe(400);
+    expect((await errOf(over)).code).toBe("invalid_body");
+    const { bodyOk } = await import("../src/runtime/comments-store.js");
+    expect(bodyOk("😀".repeat(1000))).toBe(true);
+    expect(bodyOk("😀".repeat(1001))).toBe(false);
+    expect(bodyOk(` ${"x".repeat(2000)} `)).toBe(true);
+  });
+
   it("a markdown text anchor keeps its block hint", async () => {
     const id = await pub({
       visibility: "team",

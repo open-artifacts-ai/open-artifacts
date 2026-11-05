@@ -204,10 +204,11 @@ export function getThread(sql: SqlStorage, id: string): StoredThread | null {
   return toThread(row, cs.map(toComment));
 }
 
+/** 1 to COMMENT_BODY_MAX UTF-16 units after trim: the unit the shared body schema counts (z.string().max). */
 export const bodyOk = (body: unknown): body is string =>
   typeof body === "string" &&
   body.trim().length > 0 &&
-  [...body.trim()].length <= COMMENT_BODY_MAX;
+  body.trim().length <= COMMENT_BODY_MAX;
 
 export function insertThread(
   sql: SqlStorage,
