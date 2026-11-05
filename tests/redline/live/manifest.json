@@ -1178,7 +1178,7 @@
     },
     {
       "file": "live/provisioning.test.ts",
-      "name": "provisioning > P44: /oauth/register: foreign redirect URIs 400 invalid_redirect_uri; the 11th registration refused"
+      "name": "provisioning > P44: /oauth/register: foreign redirect URIs 400 invalid_redirect_uri; the listed one 201 with a client_id"
     },
     {
       "file": "live/provisioning.test.ts",

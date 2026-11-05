@@ -80,8 +80,14 @@
         }
       ],
       "triggers": { "crons": ["17 3 * * *"] },
-      // Workers Logs: keep every request (email_sent / email_failed lines).
-      "observability": { "enabled": true, "head_sampling_rate": 1 },
+      // Workers Logs: keep every app line (email_sent / email_failed), but no
+      // invocation logs: they record each request URL, and a role proposal's
+      // confirm link carries its secret in the path (#1372). As the template.
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": { "enabled": true, "invocation_logs": false }
+      },
       // Secrets are NOT configured here. Deploys overwrite vars, so
       // ACCESS_CLIENT_ID lives here. It is a public OIDC client id (not a
       // secret), set by the ops-staging-access workflow on 2026-10-18.

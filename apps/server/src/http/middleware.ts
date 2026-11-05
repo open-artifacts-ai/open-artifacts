@@ -47,6 +47,10 @@ export type AppVariables = {
   authMethod: AuthMethod | null;
   /** Session expiry (ms) for a cookie session; null otherwise. */
   sessionExp: number | null;
+  /** When the cookie session was signed in (ms); null otherwise (#1372 freshness). */
+  sessionIat?: number | null;
+  /** A Google session's forced re-authentication time (ms, P3 T18); null otherwise. */
+  sessionAuthAt?: number | null;
   /** The user's session_epoch, read with the user row (content-url binds it, P3 T11); null when anonymous. */
   sessionEpoch: number | null;
   /**
@@ -85,6 +89,11 @@ export const NO_REFERRER: ReadonlySet<string> = new Set([
   AUTH.callbackGoogle,
   R.directoryCallback,
 ]);
+/**
+ * Path prefixes that also send no referrer: a role proposal's confirm link
+ * carries its secret in the path (#1372, bus/role-confirm.ts).
+ */
+export const NO_REFERRER_PREFIXES: readonly string[] = ["/bus/roles/confirm/"];
 
 /**
  * `frameAncestors` (a pre-validated source list from frameOpts) replaces
@@ -114,7 +123,9 @@ export const appHostOpts = (
 ): SecurityOpts => ({
   ...frameOpts(env, method, pathname),
   coop: !COOP_EXEMPT.has(pathname),
-  noReferrer: NO_REFERRER.has(pathname),
+  noReferrer:
+    NO_REFERRER.has(pathname) ||
+    NO_REFERRER_PREFIXES.some((p) => pathname.startsWith(p)),
 });
 
 /** `res` with the standard security headers; a copy when its headers are immutable. */
@@ -209,6 +220,8 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
   c.set("tokenId", null);
   c.set("authMethod", null);
   c.set("sessionExp", null);
+  c.set("sessionIat", null);
+  c.set("sessionAuthAt", null);
   c.set("sessionEpoch", null);
   // Embed mode: anonymous regardless of cookie or Bearer (a downgrade only).
   if (isEmbedRequest(c.req.raw)) return;
@@ -261,6 +274,8 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
       c.set("authMethod", s.p);
       setCred({ kind: "session", id: sessionCredId(s) });
       c.set("sessionExp", s.exp);
+      c.set("sessionIat", s.iat);
+      c.set("sessionAuthAt", s.a ?? null);
       c.set("sessionEpoch", row.sessionEpoch);
     }
   }
@@ -426,6 +441,8 @@ function setCookieUser(c: Context<AppEnv>, s: Session, row: UserWithEpoch) {
   c.set("authMethod", s.p);
   setCred({ kind: "session", id: sessionCredId(s) });
   c.set("sessionExp", s.exp);
+  c.set("sessionIat", s.iat);
+  c.set("sessionAuthAt", s.a ?? null);
   c.set("sessionEpoch", row.sessionEpoch);
 }
 

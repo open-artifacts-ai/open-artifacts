@@ -40,6 +40,8 @@ jobs:
           mkdir "$RUNNER_TEMP/actionlint"
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/actionlint" actionlint
           "$RUNNER_TEMP/actionlint/actionlint" -color .github/workflows/*.yml
+      - run: node --experimental-strip-types --no-warnings scripts/ci/workspace-reads.ts check --warn
+      - run: node --experimental-strip-types --no-warnings scripts/ci/workspace-imports.ts cycles
   typecheck:
     runs-on: ubuntu-latest
     steps:

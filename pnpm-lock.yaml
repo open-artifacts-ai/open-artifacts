@@ -337,6 +337,12 @@ importers:
       '@astrojs/check':
         specifier: ^0.9.10
         version: 0.9.10(@emnapi/runtime@1.11.1)(prettier@3.9.10)(typescript@5.9.3)
+      '@oa/dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
+      '@oa/server':
+        specifier: workspace:*
+        version: link:../server
       '@oa/setup':
         specifier: workspace:*
         version: link:../../scripts/setup
@@ -1016,6 +1022,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/provision
     devDependencies:
+      '@oa/server':
+        specifier: workspace:*
+        version: link:../../apps/server
       '@types/node':
         specifier: ^22.19.0
         version: 22.20.5
@@ -1031,6 +1040,9 @@ importers:
       '@oa/auth-core':
         specifier: workspace:*
         version: link:../../packages/auth-core
+      '@oa/dashboard':
+        specifier: workspace:*
+        version: link:../../apps/dashboard
       '@oa/server':
         specifier: workspace:*
         version: link:../../apps/server
@@ -1068,6 +1080,12 @@ importers:
       '@oa/dashboard':
         specifier: workspace:*
         version: link:../../apps/dashboard
+      '@oa/provisioner':
+        specifier: workspace:*
+        version: link:../../apps/provisioner
+      '@oa/provisioning':
+        specifier: workspace:*
+        version: link:../../apps/provisioning
       '@oa/provisioning-contract':
         specifier: workspace:*
         version: link:../../packages/provisioning-contract

@@ -15,13 +15,18 @@ import { transportFetch } from "../../src/transport.ts";
 // "setup-infra" throw a setup-publish timeout from the case or the top
 // beforeAll; "setup-hook" refuses the top beforeAll's session hook with a
 // reason, as the seeding's hook did in staging run 6; "setup-hook-more" also
-// fails the afterAll on a second infra error).
+// fails the afterAll on a second infra error; "setup-no-response" throws a
+// transport-tagged no-response error, not an InfraError, from the top
+// beforeAll, as a setup fetch's reset did in run 41919316028 (#1133)).
 const LEVEL = process.env.FIXTURE_LEVEL ?? "pass";
 
-beforeAll(() => {
+beforeAll(async () => {
   if (LEVEL === "setup-fail") throw new Error("fixture setup");
   if (LEVEL === "setup-infra")
     throw new InfraError(setupTimeout("rl-b", 60_000));
+  // Thrown as fetch threw it: only its tag (a property) says infra, so this
+  // proves the tag survives vitest's serialization of a module error.
+  if (LEVEL === "setup-no-response") throw await noResponse();
   if (LEVEL === "setup-hook" || LEVEL === "setup-hook-more") {
     // The body also carries text that must never reach the report.
     const body = JSON.stringify({

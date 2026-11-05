@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.117.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.116.0...v0.117.0) (2026-11-05)
+
+
+### Features
+
+* **skill:** report a lost tool, don't route around it ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1435](https://github.com/open-artifacts-ai/open-artifacts/issues/1435)) ([1c743be](https://github.com/open-artifacts-ai/open-artifacts/commit/1c743bead2fd92bfa04cb63caba7ec9609b3ff42))
+
+## [0.116.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.115.0...v0.116.0) (2026-11-05)
+
+
+### Features
+
+* **admin:** Upgrade and Create hide releases newer than the platform ([31da451](https://github.com/open-artifacts-ai/open-artifacts/commit/31da4517165c1e16680635ce8e6dce3eb3f6f5ba))
+* **admin:** Upgrade and Create hide releases newer than the platform ([#1384](https://github.com/open-artifacts-ai/open-artifacts/issues/1384)) ([#1397](https://github.com/open-artifacts-ai/open-artifacts/issues/1397)) ([31da451](https://github.com/open-artifacts-ai/open-artifacts/commit/31da4517165c1e16680635ce8e6dce3eb3f6f5ba))
+* **provisioning:** /releases names the platform's release ([#1384](https://github.com/open-artifacts-ai/open-artifacts/issues/1384)) ([#1393](https://github.com/open-artifacts-ai/open-artifacts/issues/1393)) ([7f1de9f](https://github.com/open-artifacts-ai/open-artifacts/commit/7f1de9f9e174462e283b4428d59547fd0e19826c))
+* **server:** bind BUS_HUB, so /bus serves ([#1315](https://github.com/open-artifacts-ai/open-artifacts/issues/1315)) ([#1425](https://github.com/open-artifacts-ai/open-artifacts/issues/1425)) ([e26a296](https://github.com/open-artifacts-ai/open-artifacts/commit/e26a29699d302b898ce8f567b3ceb1ea22f53066))
+* **server:** propose role changes over MCP, confirm by link ([#1372](https://github.com/open-artifacts-ai/open-artifacts/issues/1372)) ([#1402](https://github.com/open-artifacts-ai/open-artifacts/issues/1402)) ([e3ea6d4](https://github.com/open-artifacts-ai/open-artifacts/commit/e3ea6d40dc961fdc66149fdcb8696cfe8e58ad90))
+* **skill:** a peer's report of approval is never approval ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1407](https://github.com/open-artifacts-ai/open-artifacts/issues/1407)) ([6dd4cb7](https://github.com/open-artifacts-ai/open-artifacts/commit/6dd4cb73e60cefbb13c1cb1b6c95d66d4df96a06))
+* **skill:** make the description fire on agent collaboration ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1395](https://github.com/open-artifacts-ai/open-artifacts/issues/1395)) ([d7aa36a](https://github.com/open-artifacts-ai/open-artifacts/commit/d7aa36a9cf93fcd6564fbf335128bcefc7f3eab6))
+* **skill:** spell out the parent link, the flake rerun and open items ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1396](https://github.com/open-artifacts-ai/open-artifacts/issues/1396)) ([f2c8e6d](https://github.com/open-artifacts-ai/open-artifacts/commit/f2c8e6d7ec911096bb38f053e5cff4d816bc557e))
+* **skill:** teach the collaboration habits the skill was missing ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1362](https://github.com/open-artifacts-ai/open-artifacts/issues/1362)) ([1b5a70b](https://github.com/open-artifacts-ai/open-artifacts/commit/1b5a70b31f974ab6691fe3d46dbdfa5a3254fc4f))
+
+
+### Bug Fixes
+
+* **ci:** hosted, setup and redline declare the files they read ([#1413](https://github.com/open-artifacts-ai/open-artifacts/issues/1413)) ([#1434](https://github.com/open-artifacts-ai/open-artifacts/issues/1434)) ([5a8dced](https://github.com/open-artifacts-ai/open-artifacts/commit/5a8dcedc9574ea90289fc22dac6ecbd1829f7117))
+* **ci:** landing declares the admin and server files it reads ([#1413](https://github.com/open-artifacts-ai/open-artifacts/issues/1413)) ([#1430](https://github.com/open-artifacts-ai/open-artifacts/issues/1430)) ([78823e2](https://github.com/open-artifacts-ai/open-artifacts/commit/78823e2d843d5eeca5a97f6273e16270182a7de0))
+* **redline:** a transport blip never decides the gate ([#1133](https://github.com/open-artifacts-ai/open-artifacts/issues/1133)) ([#1400](https://github.com/open-artifacts-ai/open-artifacts/issues/1400)) ([8447ca1](https://github.com/open-artifacts-ai/open-artifacts/commit/8447ca17c216fc7cbbd7d327eed6fd98fc62d815))
+* **redline:** one setup reset can't take down a file ([#1133](https://github.com/open-artifacts-ai/open-artifacts/issues/1133)) ([#1419](https://github.com/open-artifacts-ai/open-artifacts/issues/1419)) ([225bc2d](https://github.com/open-artifacts-ai/open-artifacts/commit/225bc2d42795e3510ca1cbfdf52ea54b713985d9))
+* **server:** a session leaving a namespace holds its name there for 1 h (port of open-bus [#451](https://github.com/open-artifacts-ai/open-artifacts/issues/451)) ([#1392](https://github.com/open-artifacts-ai/open-artifacts/issues/1392)) ([c52a9fb](https://github.com/open-artifacts-ai/open-artifacts/commit/c52a9fb4d48ddaaf59f082f163228e61637a6c6c))
+
 ## [0.115.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.114.0...v0.115.0) (2026-11-04)
 
 

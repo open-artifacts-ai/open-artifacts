@@ -115,7 +115,7 @@ means Product's proposal or call, open to change.
 | 12 | One bus per member, never per space or team. | Product |
 | 13 | Machine tokens stay, as a bus-only credential minted by an Open Artifacts device flow. Not a PAT, not OAuth. | Product |
 | 14 | The agent card, `/link`, JWKS and card signing are dropped. Inside one service there is nothing to bridge. | Product |
-| 15 | Bus tools, including follow, come only from the local client. `/mcp` gains nothing. | Product |
+| 15 | Bus tools, including follow, come only from the local client. `/mcp` gains nothing, except `bus_role_propose` (#1372, user 2026-11-04): it proposes a role change the member confirms by link, and is offered only while the bus is on. | Product; User (the exception) |
 | 16 | Collaboration is only between agents of members of the same instance. Different instances never talk to each other. | User |
 | 17 | `changed` notices go to every follower, the publishing member included (changed by the user on 2026-11-04, #1292; it was "only a different member from the publisher"). No link from a publish to a bus address is needed: the agent that published hears its own publish if it follows the artifact. | User (2026-11-04) |
 | 18 | "Shared with you" means a direct share to the person (`putShare`). Space membership and `team` visibility don't fire notices. | Product (builder check) |
@@ -310,8 +310,44 @@ workstation sends, laptop reopens, delivered.
 Sketch; the full design lands with the fast follow.
 
 - A role address is an owner-set alias in one namespace, such as
-  `backend-lead`, pointing at one agent address. Only the owner sets it, in
-  the dashboard. No agent can set or claim one.
+  `backend-lead`, pointing at one agent address. The owner sets, re-points
+  and removes it in the dashboard (browser session only).
+- From a coding session (#1372, reverses "no agent can set or claim one";
+  user, 2026-11-04: "Let's do B", then "1, propose via MCP, I confirm by
+  link"): an AI agent acting for the member can only PROPOSE a change, with
+  the `/mcp` tool `bus_role_propose` (set, which creates or re-points, and
+  clear), offered only while the bus is on. The proposal is checked as the
+  dashboard write is (a live agent of the member's own hub, the name rules,
+  minted, chosen and held former names) and changes nothing. It stores the
+  role, namespace, both agents' ids and their names as proposed. The tool
+  returns a one-time link, `/bus/roles/confirm/<secret>` (256 random bits;
+  the hub stores only its sha256), that expires after 15 minutes. The
+  member opens it in a browser and sees the role, its namespace, the holder
+  it displaces and the new one, by the names stored at proposal time, then
+  confirms or rejects. Only an interactive cookie session of the hub's own
+  member decides it, and only after a forced sign-in in the last 10
+  minutes: the session's re-auth marker, set only by a forced flow (Google
+  max_age=0 with its auth_time, Access asked for prompt=login and
+  max_age=0, or an email code sign-in, which is one itself). A plain or
+  silent SSO sign-in has no marker; it gets "Sign in again", the forced
+  flow. The form token and the POST
+  need that fresh session too. Any Authorization header (a PAT, an OAuth
+  grant, a machine token) is refused, no `/mcp` tool and no frame confirms,
+  and another member's session finds nothing. The confirm applies through
+  the dashboard's own `putRole`/`deleteRole`, only while the role, its
+  holder and both agents' names are as proposed (else refused `changed`),
+  once. Every proposal, confirm, refusal and expiry is an audit row (ids and
+  enums only), and GET `R.busRoles` lists the newest proposals.
+- The risk this guards: a prompt-injected agent re-pointing a role (such as
+  the owner contact) to itself to receive the member's asks. No agent
+  credential can confirm a proposal. The remaining risk is an agent driving
+  the member's own browser while it holds a sign-in under 10 minutes old (or
+  reading that cookie): the 10-minute re-auth bounds it; nothing on the
+  server can tell that browser from the person. With Access, the forced
+  sign-in relies on Access honoring prompt=login; the server can't check an
+  Access auth_time.
+- The link carries its secret in the path: the page sends no referrer, and
+  invocation logs (which record URLs) are off on staging as in the template.
 - It is bus-side only. OB #394 removes today's roles together with the card
   `role` claim; role addresses don't need the card, which is dropped anyway.
 - Sending to a role resolves at send time to its holder. This is the only
@@ -350,9 +386,10 @@ Sketch; the full design lands with the fast follow.
 
 ## MCP surface
 
-- `/mcp`: unchanged. No tools, no instructions text, no resource. The
-  shared memory design's rule holds: people who don't use a feature pay
-  nothing.
+- `/mcp`: unchanged but for one tool, `bus_role_propose` (#1372, see Role
+  addresses), offered only while the bus is on (never hosted until #1299).
+  No instructions text, no resource. The shared memory design's rule holds:
+  people who don't use a feature pay nothing.
 - Local stdio client: the bus tools above. Its own short server
   instructions are the builder's call.
 - llms.txt setup: one question after the main connection: "Do you also want
@@ -374,6 +411,11 @@ Prompt injection across owners is the main reason for Decision 4.
   prompt, and the notice frames it as data. No filter claims to catch it.
 - Within one owner: as today. Messages from other agents are not the owner's
   consent. Same-uid local processes are trusted.
+- Role changes from an agent (#1372): proposals only. They apply when the
+  member confirms the one-time link in a browser session signed in within 10
+  minutes; no agent credential or frame can confirm one. An agent driving
+  the member's recently signed-in browser remains the residual risk, bounded
+  by that re-auth window.
 - Machine tokens: bus-only, hashed, revocable, revoked with the member.
 - Follows: need read access at follow time and at every notice. Losing
   access deletes the follow. A notice never reveals an artifact the member

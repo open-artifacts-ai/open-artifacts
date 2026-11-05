@@ -109,10 +109,11 @@ describe("wrangler.staging.jsonc env.staging", () => {
     );
     expect(tpl.vars.SERVER_THUMBNAILS).toBe("on");
   });
-  it("logs every staging request to Workers Logs; the template logs only the app's lines", () => {
+  it("keeps every app log line on staging, but no invocation logs (they record URLs: role confirm links, #1372); the template the same", () => {
     expect(env.observability).toEqual({
       enabled: true,
       head_sampling_rate: 1,
+      logs: { enabled: true, invocation_logs: false },
     });
     const tpl = JSON.parse(
       readFileSync(join(root, "apps/server/wrangler.template.jsonc"), "utf8"),

@@ -594,6 +594,14 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     expect(skipped.length).toBeGreaterThanOrEqual(2);
     for (const c of skipped)
       expect(c.reason).toBe("setup failed: fixture setup");
+    // An assertion-style error outside a test stays a FAIL (#1133).
+    expect(
+      r.report.cases.find((c) => c.name.endsWith(": module error")),
+    ).toMatchObject({
+      file: "test/fixtures/gate.fixture.ts",
+      level: "fail",
+      reason: "error outside a test: fixture setup",
+    });
   }, 60_000);
 
   it("nested setup failure: a test under a failed outer beforeAll is fail", () => {
@@ -683,6 +691,36 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     expect(r.report.counts.infra).toBeGreaterThanOrEqual(2);
     for (const c of r.report.cases.filter((x) => x.level === "infra"))
       expect(c.reason).toBe("infra: setup publish timed out after 60s on rl-b");
+    // The file's module error is infra too, never a "not in the manifest"
+    // FAIL: red means a product bug (#1133, run 41919316028).
+    expect(r.report.counts.fail).toBe(0);
+    expect(
+      r.report.cases.find((c) => c.name.endsWith(": module error")),
+    ).toMatchObject({
+      file: "test/fixtures/gate.fixture.ts",
+      level: "infra",
+      reason: "infra: setup publish timed out after 60s on rl-b",
+    });
+  }, 60_000);
+
+  it("setup no response (#1133): a tagged fetch error in the top beforeAll is infra, module error included", () => {
+    const r = run("setup-no-response", true);
+    expect(r.status).not.toBe(0);
+    expect(r.report.gate.passed).toBe(false);
+    expect(r.report.counts.fail).toBe(0);
+    expect(r.report.counts["not-applicable"]).toBe(0);
+    // The tag is a property on the error: it survived vitest's serialization.
+    const tagged =
+      /^infra: no_response [A-Z_]+ GET \/x host [0-9a-f]{8}, new socket; not retried: not on a reused socket$/;
+    const mod = r.report.cases.find((c) => c.name.endsWith(": module error"));
+    expect(mod).toMatchObject({ level: "infra" });
+    expect(mod?.reason).toMatch(tagged);
+    const skipped = r.report.cases.filter((c) => c.name.includes("fixture: "));
+    expect(skipped).toHaveLength(3);
+    for (const c of skipped) {
+      expect(c.level).toBe("infra");
+      expect(c.reason).toMatch(tagged);
+    }
   }, 60_000);
 
   it("setup hook refused: one infra result for the whole file, not one per case", () => {

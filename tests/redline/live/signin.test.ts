@@ -331,7 +331,8 @@ async function share(s: Side, email: string, id = s.markerId) {
 
 /** A private html artifact on `s` that declares the db capability (data API). */
 async function publishDb(s: Side): Promise<string> {
-  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra (never retried).
+  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra (never retried: a
+  // spare from a retry would be a db-enabled artifact nobody deletes, #1133).
   const { res, text } = await setupFetch(
     s.t.name,
     new Request(

@@ -1136,6 +1136,23 @@ export const SURFACES: readonly Surface[] = [
     "reach",
     tool("list_spaces", () => ({})),
   ),
+  // #1372, not artifact-scoped: proposes a role change in the caller's own
+  // bus (it never applies one). Past the gate it answers a named conflict
+  // (no machine connected, or no such open agent), so it writes nothing.
+  mcp(
+    "bus_role_propose",
+    "reach",
+    tool(
+      "bus_role_propose",
+      () => ({
+        action: "set",
+        namespace: "probe/ns",
+        name: "probe-role",
+        agent: "probe-agent",
+      }),
+      (o) => !o.isError || /^conflict\b/.test(o.text),
+    ),
+  ),
 ];
 
 /**
@@ -1968,6 +1985,11 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /bus/machines/:id/revoke",
   "POST /bus/machines/:id/revoke",
   "POST /bus/share-notices",
+  // #1372: the role proposal confirm page (an interactive cookie session of
+  // the hub's member and a form token, checked by the handler;
+  // bus/roles.proposals.test.ts covers each).
+  "GET /bus/roles/confirm/:token",
+  "POST /bus/roles/confirm/:token",
   "GET /a/:id",
   "GET /a/:id/full",
   "GET /a/:id/v/:v",

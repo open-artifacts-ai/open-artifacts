@@ -669,8 +669,10 @@ export function mountBus(app: AppType): void {
   });
 
   // #1296 role addresses. The gate allows mcp.connect; a write also takes a
-  // person in a browser (never a PAT, an OAuth grant or a machine token), so
-  // no AI agent can set, re-point or claim a role.
+  // person in a browser (never a PAT, an OAuth grant or a machine token). An
+  // AI agent can only propose a change (#1372, MCP bus_role_propose), which
+  // the member confirms on its link (bus/role-confirm.ts). GET also lists
+  // the newest proposals.
   app.get(R.busRoles, async (c) => {
     const user = requireUser(c);
     if (!canConnect(user)) throw notFound();

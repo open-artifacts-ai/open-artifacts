@@ -15,6 +15,7 @@
     "@oa/provision": "workspace:*"
   },
   "devDependencies": {
+    "@oa/server": "workspace:*",
     "@types/node": "^22.19.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"

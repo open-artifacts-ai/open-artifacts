@@ -103,7 +103,9 @@ export const R = {
    * with that id visible in the namespace), `role_limit` (BUS_ROLE_MAX), or
    * `no_bus` (no machine has connected yet). mcp.connect; PUT takes an
    * interactive cookie session (a PAT or OAuth grant gets 404), so no AI
-   * agent can set or claim a role.
+   * agent can set or claim a role. An agent can only propose a change (MCP
+   * bus_role_propose, #1372), which the member confirms on its link; GET's
+   * `proposals` lists the newest (BusRoleProposal, no link).
    */
   busRoles: "/api/v1/bus/roles",
   /** DELETE -> 204: removes the caller's role (idempotent: unknown is 204 too). Same rules as PUT R.busRoles. */

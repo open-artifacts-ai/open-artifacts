@@ -44,7 +44,11 @@ export async function signSession(
     epoch: number;
     tenant?: string;
     maxAgeS?: number;
-    /** Google auth_time (ms) of a forced re-authentication (P3 T18 break-glass). */
+    /**
+     * When a forced re-authentication happened (ms): Google's auth_time after
+     * max_age=0 (P3 T18 break-glass), an Access sign-in asked for with
+     * prompt=login, or an email code sign-in (#1372). Absent otherwise.
+     */
     authAt?: number;
   },
 ): Promise<string> {

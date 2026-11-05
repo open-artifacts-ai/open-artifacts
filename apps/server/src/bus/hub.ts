@@ -29,7 +29,12 @@ import {
   suffixName,
   utf8Bytes,
 } from "@oa/bus-protocol";
-import { BUS_ROLE_MAX, type BusAgent, type BusRole } from "@oa/shared";
+import {
+  BUS_ROLE_MAX,
+  type BusAgent,
+  type BusRole,
+  type BusRoleProposal,
+} from "@oa/shared";
 import type { Env } from "../env.js";
 import { logError, logInfo } from "../log.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
@@ -40,6 +45,18 @@ import {
 } from "../services/bus.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
+import {
+  type DecideResult,
+  decideProposal,
+  expireProposals,
+  listProposals,
+  type ProposalAudit,
+  type ProposeInput,
+  type ProposeResult,
+  propose,
+  type ViewResult,
+  viewProposal,
+} from "./role-proposals.js";
 import {
   deleteRole,
   formerReservedSql,
@@ -2485,6 +2502,72 @@ export class BusHub extends DurableObject<Env> {
   /** #1296: removes role `id` (its name is free at once); false when unknown. Worker only. */
   async deleteRole(id: string): Promise<boolean> {
     return deleteRole(this.ctx.storage.sql, OWNER_ORG_ID, id);
+  }
+
+  /**
+   * #1372: records an AI agent's role proposal under `tokenHash` (the
+   * sha256 of its confirm link's secret, minted by the Worker). Changes no
+   * role. Worker only (services/bus.ts proposeBusRole, from MCP).
+   */
+  async proposeRole(
+    input: ProposeInput,
+    tokenHash: string,
+  ): Promise<ProposeResult> {
+    const r = propose(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      input,
+      tokenHash,
+      this.#now(),
+      newId,
+      this.#maxRoles,
+    );
+    logEvent("role_proposed", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /** #1372: the proposal behind `tokenHash`, for the confirm page; decides nothing but expiry. Worker only. */
+  async viewRoleProposal(tokenHash: string): Promise<ViewResult> {
+    return viewProposal(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      tokenHash,
+      this.#now(),
+      this.#maxRoles,
+    );
+  }
+
+  /**
+   * #1372: confirms (applies, through putRole or deleteRole) or rejects the
+   * proposal behind `tokenHash`, once. Worker only, and only from the
+   * confirm page's POST (bus/role-confirm.ts: a browser session and its
+   * form token); no frame and no MCP tool reaches it.
+   */
+  async decideRoleProposal(
+    tokenHash: string,
+    decision: "confirm" | "reject",
+  ): Promise<DecideResult> {
+    const r = decideProposal(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      tokenHash,
+      decision,
+      this.#now(),
+      newId,
+      this.#maxRoles,
+    );
+    logEvent("role_decided", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /** #1372: the newest role proposals, for GET R.busRoles; expires the overdue ones first. Worker only. */
+  async listRoleProposals(): Promise<{
+    proposals: BusRoleProposal[];
+    expired: ProposalAudit[];
+  }> {
+    const sql = this.ctx.storage.sql;
+    const expired = expireProposals(sql, OWNER_ORG_ID, this.#now());
+    return { proposals: listProposals(sql, OWNER_ORG_ID), expired };
   }
 
   /** When the last closeAll started (ms), or null. */

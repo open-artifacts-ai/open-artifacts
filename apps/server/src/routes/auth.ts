@@ -128,6 +128,9 @@ export function mountAuth(app: AppType): void {
       {
         retry: c.req.query("retry") === "1",
         cookieHeader: c.req.header("cookie"),
+        // A forced sign-in (#1372): the role proposal confirm page's
+        // "Sign in again" (prompt=login, max_age=0 at Access).
+        reauth: c.req.query("reauth") === "1",
       },
     );
     return redirect(location, [...evict, stateCookie]);
@@ -153,7 +156,7 @@ export function mountAuth(app: AppType): void {
         ? toSignIn("no_access", next, clear, "access")
         : redirect(PAGES.noAccess, clear);
     try {
-      const { email, name, next } = await handleCallback(
+      const { email, name, next, reauth } = await handleCallback(
         c.env,
         accessProvider,
         c.req.raw,
@@ -176,10 +179,15 @@ export function mountAuth(app: AppType): void {
         logAuth({ provider: "access", outcome: "refused", stage: "no_access" });
         return refuse(next);
       }
+      const now = Date.now();
       const sess = sessionCookie(
-        await signSession(c.env, user.id, Date.now(), {
+        await signSession(c.env, user.id, now, {
           provider: "access",
           epoch: row.sessionEpoch,
+          // The forced sign-in's marker (#1372), only when it was asked for
+          // (?reauth=1: prompt=login, max_age=0). Access issues no auth_time
+          // to check, so this trusts Access to honor prompt=login.
+          ...(reauth ? { authAt: now } : {}),
         }),
         c.env,
       );

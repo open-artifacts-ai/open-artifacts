@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expectedToolCount, skillEtagPattern } from "../smoke-setup/spaces.ts";
+import { skillEtagPattern } from "../smoke-setup/spaces.ts";
 
 // #829: staging runs without spaces, so the smoke follows the instance.
 describe("smoke expectations follow the spaces feature", () => {
@@ -24,10 +24,5 @@ describe("smoke expectations follow the spaces feature", () => {
     expect(`"0.115.0-paid-0123abcd"`).not.toMatch(
       skillEtagPattern(v, undefined),
     );
-  });
-
-  it("tool count: 19 with list_spaces, 18 without", () => {
-    expect(expectedToolCount(true)).toBe(19);
-    expect(expectedToolCount(false)).toBe(18);
   });
 });

@@ -13,7 +13,9 @@
 # and was dispatched (the nightly calls it, so its runs never count). The tag
 # comes only from that run's display title (redline-staging.yml's run-name),
 # through env, never into a script. Then main's own scripts prove it again:
-# staging-first-gate.sh and tag-passed-checks.sh prod (a failure is red).
+# staging-first-gate.sh, staging-smoke-gate.sh (#1406: staging's post-deploy
+# smoke is green at or after the tag) and tag-passed-checks.sh prod (a
+# failure is red).
 # Then two checks that skip, green with a notice, without touching the
 # blocker issue: this event is the newest green run for the tag (else it is
 # stale), and the tag is newer than the release prod's scheduler runs (else
@@ -81,6 +83,12 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci/staging-first-gate.sh "$TAG"
+      # #1406: and staging's post-deploy smoke is green at or after the tag.
+      - name: Staging's smoke is green at or after this tag
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/staging-smoke-gate.sh "$TAG"
       - name: The tag passed every earlier check
         env:
           TAG: ${{ steps.tag.outputs.tag }}
