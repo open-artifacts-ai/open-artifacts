@@ -27,7 +27,7 @@ import {
 import { managesAdmins, planOfMember } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
-import { planError } from "../billing/plan.js";
+import { planError, requireTeamPlan } from "../billing/plan.js";
 import { startTrial } from "../billing/store.js";
 import { getDb } from "../db/client.js";
 import { shares, tokens, users } from "../db/schema.js";
@@ -668,6 +668,8 @@ export async function restoreMember(
   actor: Member,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<Member> {
+  // Hosted billing: bringing someone back adds a person, a team feature.
+  requireTeamPlan(planOfMember(actor));
   const row = await getRow(env, id);
   const admins = adminsOk(actor);
   checkTarget(row.role, admins);

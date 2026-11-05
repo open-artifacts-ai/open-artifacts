@@ -328,6 +328,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
 export const TEAM_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/v1/members",
   "POST /api/v1/members/:id/transfer",
+  // Bringing a removed member back adds a person: a team feature (also
+  // checked in restoreMember for callers outside the route). Lifting a
+  // manual restriction widens access.
+  "POST /api/v1/members/:id/restore",
+  "DELETE /api/v1/members/:id/restricted",
   "POST /api/v1/spaces",
   `PATCH ${SPACES}`,
   `POST ${SPACES}/members/self`,

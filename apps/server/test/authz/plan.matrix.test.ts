@@ -183,6 +183,31 @@ const SURFACES: Surface[] = [
     },
   },
   {
+    name: "restore a removed member",
+    base: ["owner", "admin"],
+    team: true,
+    run: async (w) => {
+      const gone = await login(`rs-${uniq()}@a.com`, "member");
+      await env.DB.prepare("update users set status = 'removed' where id = ?")
+        .bind(gone.userId)
+        .run();
+      return send(props, R.memberRestore(gone.userId), cred(w), {
+        method: "POST",
+      });
+    },
+  },
+  {
+    name: "lift a manual restriction",
+    base: ["owner", "admin"],
+    team: true,
+    run: async (w) => {
+      const m = await login(`rx-${uniq()}@a.com`, "member");
+      return send(props, R.memberRestricted(m.userId), cred(w), {
+        method: "DELETE",
+      });
+    },
+  },
+  {
     name: "create a shared space",
     base: ["owner", "admin"],
     team: true,
