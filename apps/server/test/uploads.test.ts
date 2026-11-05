@@ -415,3 +415,103 @@ describe("per-purpose keys from CONTENT_SIGNING_KEY", () => {
     ).toEqual({ mode: "frame", viewer: null });
   });
 });
+
+describe("create_upload without a size (#1540)", () => {
+  const row = (id: string) =>
+    env.DB.prepare(
+      "select size, r2_key, received_at, consumed from uploads where id = ?",
+    )
+      .bind(id)
+      .first<{
+        size: number;
+        r2_key: string;
+        received_at: number | null;
+        consumed: number;
+      }>();
+
+  it("a small body with no size is measured, stored and published", async () => {
+    const up = await create(alice.cookie, { path: "n.txt" });
+    expect((await put(up.url, "hello")).status).toBe(204);
+    const r = await row(up.uploadId);
+    expect(r?.size).toBe(5);
+    expect(r?.received_at).toBeGreaterThan(0);
+    const pub = await api(app, R.artifacts, alice.cookie, {
+      method: "POST",
+      body: {
+        id: up.artifactId,
+        title: "t",
+        files: { "n.txt": { uploadId: up.uploadId } },
+      },
+    });
+    expect(pub.status).toBe(201);
+    const v = await env.DB.prepare(
+      "select manifest from versions where artifact_id = ? and version = 1",
+    )
+      .bind(up.artifactId)
+      .first<{ manifest: string }>();
+    expect(JSON.parse(v?.manifest ?? "[]")[0]).toMatchObject({
+      path: "n.txt",
+      size: 5,
+    });
+  });
+
+  it("a body over the cap is refused and nothing is stored", async () => {
+    const up = await create(alice.cookie, { path: "big.bin" });
+    const over = new Uint8Array(25 * 1024 * 1024 + 1);
+    const res = await put(up.url, over);
+    expect(res.status).toBe(413);
+    expect(
+      ((await res.json()) as { error: { message: string } }).error.message,
+    ).toBe("The file is over 25 MB; Open Artifacts takes files up to 25 MB.");
+    const r = await row(up.uploadId);
+    expect(r?.received_at).toBeNull();
+    expect(await env.FILES.head(r?.r2_key ?? "")).toBeNull();
+  });
+
+  it("a streamed body with no Content-Length over the cap is refused, nothing stored", async () => {
+    const up = await create(alice.cookie, { path: "chunked.bin" });
+    const u = new URL(up.url);
+    const chunk = new Uint8Array(1024 * 1024);
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (sent++ > 26) return c.close();
+        c.enqueue(chunk);
+      },
+    });
+    await expect(
+      putUpload(
+        env,
+        up.uploadId,
+        u.searchParams.get("exp") ?? "",
+        u.searchParams.get("sig") ?? "",
+        new Request("http://x/", {
+          method: "PUT",
+          body,
+          duplex: "half",
+        } as RequestInit),
+      ),
+    ).rejects.toMatchObject({ code: "too_large" });
+    const r = await row(up.uploadId);
+    expect(r?.received_at).toBeNull();
+    expect(await env.FILES.head(r?.r2_key ?? "")).toBeNull();
+  });
+
+  it("a given size that mismatches is still refused", async () => {
+    const up = await create(alice.cookie, { path: "m.txt", size: 3 });
+    const res = await put(up.url, "abcd");
+    expect(res.status).toBe(400);
+    expect((await row(up.uploadId))?.received_at).toBeNull();
+  });
+
+  it("the signed URL can't be reused", async () => {
+    const up = await create(alice.cookie, { path: "once.txt" });
+    expect((await put(up.url, "abc")).status).toBe(204);
+    expect((await put(up.url, "xyz")).status).toBe(409);
+    expect(
+      await (
+        await env.FILES.get((await row(up.uploadId))?.r2_key ?? "")
+      )?.text(),
+    ).toBe("abc");
+  });
+});

@@ -19,6 +19,7 @@ import { hmacSign, hmacVerify } from "../util/crypto.js";
 
 const CONTENT_TYPE =
   /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(\s*;\s*[a-z0-9_.+-]+=("[^"\\\r\n]*"|[a-z0-9_.+-]+))*$/i;
+const OVER_CAP = `The file is over ${LIMITS.fileBytes / 1024 / 1024} MB; Open Artifacts takes files up to ${LIMITS.fileBytes / 1024 / 1024} MB.`;
 const notFound = () => new ApiError("not_found", "Not found");
 
 /** Upload URLs: the "oa:upload" subkey (never the content-token one). */
@@ -52,20 +53,22 @@ export async function createUpload(
         reason: p.error,
       },
     );
-  if (!Number.isSafeInteger(input.size) || input.size <= 0)
-    throw new ApiError("bad_request", "Invalid size", {
-      path: input.path,
-      reason: "invalid_size",
-    });
-  if (input.size > LIMITS.fileBytes)
+  // No size: the server measures the bytes at PUT (stored as 0 until then).
+  const declared = input.size;
+  if (
+    declared !== undefined &&
+    (!Number.isSafeInteger(declared) || declared <= 0)
+  )
     throw new ApiError(
-      "too_large",
-      `Files are limited to ${LIMITS.fileBytes} bytes`,
-      {
-        path: input.path,
-        reason: "too_large",
-      },
+      "bad_request",
+      "size must be a positive whole number of bytes. Fix it, or omit size and the server measures the file.",
+      { path: input.path, reason: "invalid_size" },
     );
+  if (declared !== undefined && declared > LIMITS.fileBytes)
+    throw new ApiError("too_large", OVER_CAP, {
+      path: input.path,
+      reason: "too_large",
+    });
   const contentType = input.contentType ?? contentTypeFor(p.path);
   if (contentType.length > 200 || !CONTENT_TYPE.test(contentType))
     throw new ApiError("bad_request", "Invalid contentType", {
@@ -111,7 +114,8 @@ export async function createUpload(
     }
   }
   // Hosted billing: a free instance's storage cap (off until set).
-  await requireFreeStorage(env, input.size);
+  // (Without a size it is checked at PUT, against the measured bytes.)
+  if (declared !== undefined) await requireFreeStorage(env, declared);
   const uploadId = newId();
   stmts.push(
     db
@@ -124,7 +128,7 @@ export async function createUpload(
         artifactId,
         user.id,
         `files/${artifactId}/${newId()}`,
-        input.size,
+        declared ?? 0,
         contentType,
         p.path,
         now,
@@ -167,19 +171,28 @@ export async function putUpload(
     .first<{ r2_key: string; size: number; content_type: string }>();
   if (!row) throw notFound();
   const len = req.headers.get("content-length");
-  if (
-    len === null ||
-    !/^\d+$/.test(len) ||
-    Number(len) !== row.size ||
-    !req.body
-  )
-    throw new ApiError(
-      "bad_request",
-      "Content-Length must equal the declared size",
-      {
-        expected: row.size,
-      },
-    );
+  const measure = row.size === 0; // created without a size
+  if (!measure) {
+    if (
+      len === null ||
+      !/^\d+$/.test(len) ||
+      Number(len) !== row.size ||
+      !req.body
+    )
+      throw new ApiError(
+        "bad_request",
+        "Content-Length must equal the declared size. Send exactly the declared bytes, or create a new upload without a size.",
+        { expected: row.size },
+      );
+  } else {
+    if (!req.body)
+      throw new ApiError(
+        "bad_request",
+        "The PUT has no body. Send the file's bytes.",
+      );
+    if (len !== null && (!/^\d+$/.test(len) || Number(len) > LIMITS.fileBytes))
+      throw new ApiError("too_large", OVER_CAP, { reason: "too_large" });
+  }
   // Write-once: claim the slot atomically (received_at = -1 while in flight).
   const claim = await env.DB.prepare(
     "update uploads set received_at = -1 where id = ? and received_at is null and consumed = 0",
@@ -198,18 +211,45 @@ export async function putUpload(
   };
   let obj: R2Object | null;
   try {
-    obj = await env.FILES.put(row.r2_key, req.body, {
+    let body: ReadableStream | ArrayBuffer | null = req.body;
+    // No Content-Length: read at most the cap (R2 needs a known length).
+    if (measure && len === null)
+      body = await readCapped(req.body, LIMITS.fileBytes);
+    obj = await env.FILES.put(row.r2_key, body, {
       httpMetadata: { contentType: row.content_type },
     });
   } catch (e) {
     await release();
     throw e;
   }
+  if (measure) {
+    if (!obj || obj.size <= 0 || obj.size > LIMITS.fileBytes) {
+      await release();
+      throw obj && obj.size > LIMITS.fileBytes
+        ? new ApiError("too_large", OVER_CAP, { reason: "too_large" })
+        : new ApiError(
+            "bad_request",
+            "The body is empty. Send the file's bytes.",
+          );
+    }
+    try {
+      await requireFreeStorage(env, obj.size);
+    } catch (e) {
+      await release();
+      throw e;
+    }
+    await env.DB.prepare(
+      "update uploads set size = ?, received_at = ? where id = ? and received_at = -1",
+    )
+      .bind(obj.size, now, uploadId)
+      .run();
+    return;
+  }
   if (!obj || obj.size !== row.size) {
     await release();
     throw new ApiError(
       "bad_request",
-      "Body size must equal the declared size",
+      "Body size must equal the declared size. Send exactly the declared bytes, or create a new upload without a size.",
       {
         expected: row.size,
       },
@@ -220,6 +260,33 @@ export async function putUpload(
   )
     .bind(now, uploadId)
     .run();
+}
+
+/** Reads a body into memory, refusing (too_large) as soon as it passes `cap`. */
+async function readCapped(
+  body: ReadableStream<Uint8Array>,
+  cap: number,
+): Promise<ArrayBuffer> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > cap) {
+      await reader.cancel().catch(() => {});
+      throw new ApiError("too_large", OVER_CAP, { reason: "too_large" });
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out.buffer;
 }
 
 const SWEEP_BATCH = 500;

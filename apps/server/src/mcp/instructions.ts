@@ -107,7 +107,7 @@ export const SECTIONS = {
   largeFiles: {
     title: "Large files",
     body: () => `- Inline content (content, text files and base64 together) is limited to ${INLINE} per call; over it, publish_artifact fails with too_large. For anything larger (up to ${FILE_MB} per file), upload each large file:
-  1. create_upload { path, size, contentType, artifactId? } returns { uploadId, artifactId, url }. Omit artifactId for a new artifact and reuse the returned artifactId for every other file.
+  1. create_upload { path, size?, contentType, artifactId? } returns { uploadId, artifactId, url }. Omit artifactId for a new artifact and reuse the returned artifactId for every other file.
   2. PUT the raw bytes to url (valid 1 hour).
   3. publish_artifact { id: artifactId, title, entry, files: { "<path>": { "uploadId": "<uploadId>" }, ... } }; small files can stay inline next to uploaded ones.`,
   },
