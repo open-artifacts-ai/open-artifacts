@@ -124,7 +124,7 @@ export function verifySignature(
     throw new Error("the signature is not 86 base64url characters");
   const k = pinnedOf(env, pinned);
   if (k === null) throw notPinned(env);
-  const accepted = [k, ...Object.values(retired).flat()];
+  const accepted = [k, ...(retired[env] ?? [])];
   if (!accepted.every((x) => typeof x === "string" && PUBKEY_RE.test(x)))
     throw new Error(`RELEASE_RETIRED_PUBKEYS.${env} is malformed`);
   const sig = Buffer.from(signature, "base64url");
