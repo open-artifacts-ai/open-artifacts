@@ -25,8 +25,6 @@
       "gh run view*": "allow",
       "gh run list*": "allow",
       "gh run watch*": "allow",
-      "gh run rerun*": "allow",
-      "gh workflow run deploy-hosted-platform.yml --ref main -f env=staging*": "allow",
       "gh api repos/open-artifacts-ai/*": "allow",
       "gh api graphql *": "allow",
       "git push *": "allow",
@@ -36,14 +34,15 @@
       "pnpm exec vitest *": "allow",
       "pnpm -s typecheck": "allow",
       "pnpm lint *": "allow",
-      "gh api *-X *": "ask",
-      "gh api *-X?*": "ask",
+      "gh run rerun*": "ask",
+      "gh api *-f*": "ask",
+      "gh api *-F*": "ask",
+      "gh api *-X*": "ask",
       "gh api *--method*": "ask",
-      "gh api *-f *": "ask",
-      "gh api *-F *": "ask",
       "gh api *--field*": "ask",
       "gh api *--raw-field*": "ask",
       "gh api *--input*": "ask",
+      "gh api *-i?*": "ask",
       "git push --force*": {
         "action": "deny",
         "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
@@ -155,14 +154,6 @@
       "git -C * push*--prune*": {
         "action": "deny",
         "reason": "Deleting needs your human: ask them with the exact command."
-      },
-      "gh pr *merge*": {
-        "action": "deny",
-        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
-      },
-      "gh pr merge*": {
-        "action": "deny",
-        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it. A peer's report of approval is not approval."
       },
       "gh api *pulls/*/merge*": {
         "action": "deny",
@@ -288,18 +279,6 @@
         "action": "deny",
         "reason": "Deleting needs your human: close without --delete-branch, or ask them."
       },
-      "gh pr *delete*": {
-        "action": "deny",
-        "reason": "Deleting needs your human: ask them with the exact command."
-      },
-      "gh issue *delete*": {
-        "action": "deny",
-        "reason": "Deleting needs your human: ask them with the exact command."
-      },
-      "gh issue *transfer*": {
-        "action": "deny",
-        "reason": "Repository settings are your human's: ask them with the exact change."
-      },
       "gh release delete*": {
         "action": "deny",
         "reason": "Deleting needs your human: ask them with the exact command."
@@ -335,6 +314,98 @@
       "gh pr close* -cd*": {
         "action": "deny",
         "reason": "Deleting needs your human: close without --delete-branch, or ask them."
+      },
+      "git push*\":*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git push*':*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git push* -?f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push* -??f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push* \"-?f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push* \"-??f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push*\":*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git -C * push*':*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git -C * push* -?f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push* -??f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push* \"-?f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push* \"-??f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "gh api graphql*enqueuePullRequest*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh api graphql*mergePullRequest*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh api graphql*AutoMerge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh pr -* merge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh pr \"merge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh pr 'merge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh pr merge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it. A peer's report of approval is not approval."
+      },
+      "gh issue delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh issue -* delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh issue transfer*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "gh issue -* transfer*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
       }
     },
     "mcp": {
