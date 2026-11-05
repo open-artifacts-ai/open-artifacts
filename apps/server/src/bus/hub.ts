@@ -698,24 +698,42 @@ function leaveNames(
  * every scope. A re-approved machine, or anyone, then gets the plain names;
  * agents of other machines keep theirs. Minted names stay minted (OpenBus
  * #446: never handed to another agent). The rename log of the agents the
- * revoke closed (`closedIds`) goes too. Bounded: agents_machine walks at
- * most CLOSED_AGENTS_PER_MACHINE plus maxAgentsPerMachine agents, each with
- * a bounded set of former_names rows.
+ * revoke closed (`closedIds`) goes too.
+ *
+ * Bounded (M2): never walks the machine's closed history. The agents the
+ * revoke closed lose every row by former_names_agent (at most
+ * maxAgentsPerMachine agents). Agents closed before it can block a name
+ * only through a held or chosen row still in its grace, so those are found
+ * from former_names_due (rows unexpired now: bounded by the last hour's
+ * renames and closes, not by history), each checked against its agent by
+ * primary key. Expired rows reserve nothing; the alarm purges them.
  */
 function releaseMachineNames(
   sql: SqlStorage,
   machineId: string,
   closedIds: string[],
+  now: number,
 ): void {
-  sql.exec(
-    "delete from former_names where agent_id in (select id from agents indexed by agents_machine where machine_id = ?)",
-    machineId,
-  );
-  if (closedIds.length > 0)
+  if (closedIds.length > 0) {
+    const ids = JSON.stringify(closedIds);
+    sql.exec(
+      "delete from former_names where agent_id in (select value from json_each(?))",
+      ids,
+    );
     sql.exec(
       "delete from rename_rl where agent_id in (select value from json_each(?))",
-      JSON.stringify(closedIds),
+      ids,
     );
+  }
+  sql.exec(
+    `delete from former_names where rowid in
+       (select f.rowid from former_names f indexed by former_names_due
+          join agents a on a.id = f.agent_id
+         where f.expires_at > ? and f.kind in ('chosen', 'held')
+           and a.machine_id = ?)`,
+    now,
+    machineId,
+  );
 }
 
 /**
@@ -2745,7 +2763,7 @@ export class BusHub extends DurableObject<Env> {
       .toArray()
       .map((r) => String(r.id));
     // #1448: nothing is held; every name its agents held or reserved is free.
-    releaseMachineNames(sql, id, ids);
+    releaseMachineNames(sql, id, ids, now);
     sql.exec(
       "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do nothing",
       OWNER_ORG_ID,

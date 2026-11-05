@@ -143,8 +143,8 @@ create index if not exists send_keys_due on send_keys(created_at);
 -- rows only resolve (their minted_names row keeps the name from anyone
 -- else). OpenBus #451: 'held' rows are names an agent left a scope under (a
 -- close, offline reap, namespace move or global flip): reserved there,
--- never resolving, never on the roster. #1448: a revoke deletes every row
--- of the machine's agents, so their names are free. A close keeps the chosen rows
+-- never resolving, never on the roster. #1448: a revoke deletes the rows
+-- of the machine's agents that still reserve, so their names are free. A close keeps the chosen rows
 -- (reserved, resolving to no one until a reopen in their scope) and drops
 -- the default ones; expired rows are purged by the alarm. Never equal
 -- (case-insensitively) to the agent's current name in its scope, distinct
