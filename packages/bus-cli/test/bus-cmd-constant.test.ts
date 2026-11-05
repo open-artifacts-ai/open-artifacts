@@ -22,5 +22,13 @@ it("#1448 item 5: no bus package hard-codes the npx command; BUS_CMD is the one 
         )
           hits.push(`${f}: ${line.trim()}`);
   expect(hits).toEqual([]);
+  // The pi asset is self-contained (it imports nothing): its copies must match BUS_CMD.
+  const assets = join(root, "bus-adapter-pi/assets");
+  const found: string[] = [];
+  for (const f of walk(assets))
+    for (const m of readFileSync(f, "utf8").matchAll(/npx @[\w.-]+\/[\w.-]+/g))
+      found.push(`${f}: ${m[0]}`);
+  expect(found.length).toBeGreaterThan(0);
+  expect(found.filter((x) => !x.endsWith(`: ${BUS_CMD}`))).toEqual([]);
   expect(BUS_CMD).toBe("npx @open-artifacts/bus");
 });

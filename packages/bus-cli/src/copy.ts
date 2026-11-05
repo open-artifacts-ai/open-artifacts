@@ -281,11 +281,13 @@ export function copy(style: Style) {
       fail(`The service runs a Node that is gone: ${clip(node, 42)}.`),
       next(`Run ${BUS_CMD} install to point it at your current Node.`),
     ],
-    // install, before anything is written.
+    // doctor, after the service-node line.
     badNode: (node: string, reason: string) => [
-      fail(`Cannot use this Node to run the service: ${clip(node, 42)}.`),
+      fail(`The service runs a Node that cannot start: ${clip(node, 42)}.`),
       `   ${reason}`,
-      next("Run install again with a working Node first on your PATH."),
+      next(
+        `Run ${BUS_CMD} install again with a working Node first on your PATH.`,
+      ),
     ],
     lingerOff: () => [
       warn("The daemon stops when you log out (systemd lingering is off)."),

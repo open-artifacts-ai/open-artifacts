@@ -18,7 +18,6 @@ import {
 import type { RosterAgent } from "../copy.ts";
 import { spinner } from "../live.ts";
 import { readMachine } from "../machine.ts";
-import { defaultMachineLabel } from "../machine-label.ts";
 import {
   checkAdapters,
   type Harness,
@@ -93,7 +92,8 @@ export async function loginStep(
     const result = await login({
       hub,
       home: ctx.home,
-      label: opts.label ?? (await defaultMachineLabel({ exec: ctx.exec })),
+      label: opts.label,
+      exec: ctx.exec,
       noOpen: opts.noOpen,
       codeRetryMs: CODE_RETRY_MS,
       fetch: ctx.fetch,
@@ -359,14 +359,6 @@ export async function install(
   const c = ctx.copy;
   say(ctx, c.header(ctx.version), "");
   const steps = installSteps(opts);
-  if (!opts.check) {
-    // The service and every harness entry pin this node: refuse a broken one first.
-    const bad = await ctx.service.checkNode?.();
-    if (bad) {
-      sayErr(ctx, c.badNode(bad.node, bad.reason));
-      return 1;
-    }
-  }
   if (opts.check) {
     const results = await checkSteps(steps, ctx);
     for (const { step, state } of results) {

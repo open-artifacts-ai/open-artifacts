@@ -499,20 +499,24 @@ export function systemService(d: ServiceDeps): Service {
     },
 
     async checkNode() {
-      // Intl needs ICU: a node missing its libraries dies here, not at 3 a.m. under launchd.
+      // The node the installed service pins, which may have broken since install
+      // (brew upgrade of icu4c). Intl needs ICU: a node missing it dies here.
+      if (!installed()) return undefined;
+      const node = record().node;
+      if (typeof node !== "string") return undefined;
       const probe =
         "new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York'}).format(new Date())";
       try {
-        const r = await d.exec(d.execPath, ["-e", probe]);
+        const r = await d.exec(node, ["-e", probe]);
         if (r.code === 0) return undefined;
         return {
-          node: d.execPath,
+          node,
           reason:
             r.stderr.trim().split("\n")[0]?.slice(0, 160) || `exit ${r.code}`,
         };
       } catch (e) {
         return {
-          node: d.execPath,
+          node,
           reason: e instanceof Error ? e.message.slice(0, 160) : String(e),
         };
       }
