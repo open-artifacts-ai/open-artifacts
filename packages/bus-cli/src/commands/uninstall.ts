@@ -43,12 +43,9 @@ export async function uninstall(
   });
   if (r.removed.length > 0) say(ctx, c.removedFrom(r.removed));
   // The skill files go with the wiring: only the ones carrying our header.
-  const skills = uninstallSkill(
-    { home: ctx.userHome },
-    r.removed.length + r.folderOnly.length > 0
-      ? [...r.removed, ...r.folderOnly]
-      : [],
-  );
+  // Every harness, not only the ones unwired now: an install may have written
+  // a skill for a harness this run did not touch.
+  const skills = uninstallSkill({ home: ctx.userHome, env: ctx.env });
   for (const n of skills.notes) say(ctx, [n]);
   // Quiet on success: the wiring lines above already say what was removed.
   if (r.folderOnly.includes("opencode")) say(ctx, c.removedPluginFolder());

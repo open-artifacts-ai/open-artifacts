@@ -42,7 +42,13 @@ function hub(polls: unknown[], code: () => Response = deviceCode) {
     if (String(url).endsWith("/bus/device")) return code();
     // The instance also serves the skill; that fetch never consumes a poll.
     if (String(url).includes("/skill.md"))
-      return new Response("# Open Artifacts skill\n", { status: 200 });
+      return new Response(
+        "---\nname: open-artifacts-oa-test\n---\n\n# skill\n",
+        {
+          status: 200,
+          headers: { "content-type": "text/markdown" },
+        },
+      );
     const next = polls.shift();
     if (next instanceof Error) throw next;
     return Response.json(next);
@@ -476,6 +482,11 @@ describe("install: transcript states 2 to 6", () => {
           });
         return deviceCode();
       }
+      if (String(url).includes("/skill.md"))
+        return new Response(
+          "---\nname: open-artifacts-oa-test\n---\n\n# skill\n",
+          { status: 200, headers: { "content-type": "text/markdown" } },
+        );
       return Response.json(approved);
     }) as unknown as typeof globalThis.fetch;
     const ctx = fakeCtx({ fetch, ...allHarnesses() });
@@ -779,6 +790,28 @@ describe("install: steps and install.json", () => {
       "[[success]]✓[[/success]]  Harnesses configured",
       "[[success]]✓[[/success]]  Daemon answering",
     ]);
+  });
+});
+
+describe("skill fetch failure", () => {
+  it("keeps going, then exits non-zero and names the URL and the rerun", async () => {
+    const base = hub([{ status: "pending" }, approved]);
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      // The instance answers, but not with a skill: wrong content type.
+      if (String(url).includes("/skill.md"))
+        return new Response("<html>nope</html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        });
+      return base(url);
+    }) as unknown as typeof globalThis.fetch;
+    const ctx = fakeCtx({ fetch, ...allHarnesses() });
+    expect(await run(ctx)).toBe(1);
+    // The steps after harnesses still ran: the run reached the daemon line.
+    expect(ctx.out().join("\n")).toMatch(/Daemon running/);
+    expect(ctx.err().join("\n")).toContain("Could not fetch the skill from");
+    expect(ctx.err().join("\n")).toContain("/skill.md?harness=");
+    expect(ctx.err().join("\n")).toContain("install to write the skill");
   });
 });
 

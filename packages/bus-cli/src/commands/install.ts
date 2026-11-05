@@ -24,7 +24,11 @@ import {
   installAdapters,
   readAssets,
 } from "../steps/adapters.ts";
-import { installSkill, RERUN, uninstallSkill } from "../steps/skill.ts";
+import {
+  installSkill,
+  MAX_SKILL_BYTES,
+  uninstallSkill,
+} from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
 import { LoginFailed, login } from "./login.ts";
 
@@ -186,8 +190,8 @@ async function harnessesStep(
     say(ctx, out.opencodeRestarted ? c.restarted() : c.opencodeNotRunning());
 
   // The skill goes next to the tools, fetched from the instance, never vendored.
-  // A fetch failure keeps the wiring above and fails the step: the user gets the
-  // URL and the rerun command.
+  // A fetch failure does not stop later steps: it is recorded and the run exits
+  // non-zero at the end, after the daemon (or whatever follows) has had its turn.
   const skill = await installSkill(
     {
       home: ctx.userHome,
@@ -195,24 +199,41 @@ async function harnessesStep(
       fetchSkill: async (url) => {
         const r = await ctx.fetch(url, {
           headers: { accept: "text/markdown" },
+          redirect: "error",
         });
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-        return r.text();
+        const type = r.headers.get("content-type") ?? "";
+        if (!type.toLowerCase().startsWith("text/markdown"))
+          throw new Error(`unexpected content-type: ${type || "none"}`);
+        const text = await r.text();
+        if (new TextEncoder().encode(text).length > MAX_SKILL_BYTES)
+          throw new Error("skill too large");
+        if (!text.startsWith("---\nname: "))
+          throw new Error("not a skill: no frontmatter");
+        return text;
       },
     },
     hub ? originOf(hub) : machineOrigin(ctx),
     out.installed,
   );
   for (const n of skill.notes) say(ctx, [n]);
-  if (skill.failedUrl) {
-    sayErr(ctx, [
-      `Could not fetch the skill from ${skill.failedUrl}.`,
-      `The bus tools are wired. Rerun ${RERUN} to write the skill.`,
-    ]);
-    return false;
-  }
+  if (skill.failedUrl) skillFailure.set(ctx, skill.failedUrl);
   // Written quietly: the harnesses line above is the user-visible outcome, and
   // a run that writes nothing has nothing to say.
+  return true;
+}
+
+/** A skill fetch that failed, reported once the remaining steps have run. */
+const skillFailure = new WeakMap<Ctx, string>();
+
+/** Prints the skill failure and its rerun line, when the harnesses step recorded one. */
+function reportSkillFailure(ctx: Ctx): boolean {
+  const url = skillFailure.get(ctx);
+  if (!url) return false;
+  sayErr(ctx, [
+    `Could not fetch the skill from ${url}.`,
+    `The bus tools are wired. Rerun ${BUS_CMD} install to write the skill.`,
+  ]);
   return true;
 }
 
@@ -410,5 +431,6 @@ export async function install(
     path: join(ctx.home, "install.json"),
     now: ctx.now,
   });
-  return ok ? 0 : 1;
+  const skillFailed = reportSkillFailure(ctx);
+  return ok && !skillFailed ? 0 : 1;
 }
