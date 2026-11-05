@@ -30,7 +30,16 @@ describe("B16 setup docs adversarial", () => {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const lines = r.stdout.split("\n").filter((l) => l.trim());
+    // pnpm 11 prints its own "[ELIFECYCLE] Command failed with exit code N."
+    // trailer on stdout even under -s (pnpm 10 was silent). The exit code
+    // carries the same fact, so that one line is the only non-JSON allowed.
+    const lines = r.stdout
+      .split("\n")
+      .filter(
+        (l) =>
+          l.trim() &&
+          !/^\[ELIFECYCLE\] Command failed with exit code \d+\.$/.test(l),
+      );
     expect(lines.length).toBeGreaterThan(0);
     for (const l of lines) expect(() => JSON.parse(l), l).not.toThrow();
   }, 60_000);

@@ -51,7 +51,9 @@ describe("workspace", () => {
     for (const s of ["build", "test", "lint", "typecheck", "dev"]) {
       expect(typeof rootPkg.scripts[s]).toBe("string");
     }
-    expect(rootPkg.scripts["oa:setup"]).toBe("pnpm --filter @oa/setup start");
+    expect(rootPkg.scripts["oa:setup"]).toBe(
+      "pnpm --reporter=silent --filter @oa/setup start",
+    );
   });
 
   // #1158: packages' own typecheck scripts each build @oa/provision first, and
