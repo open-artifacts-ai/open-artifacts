@@ -390,6 +390,27 @@ describe("skill.md drift", () => {
     expect(bogus).toBe(plain);
   });
 
+  it.each([
+    ["spaces off", ""],
+    ["spaces on", "spaces"],
+  ])(
+    "inserts the harness note in both template variants (%s)",
+    async (_, FEATURES) => {
+      // The note is spliced in before "## Connect"; if either template ever
+      // loses that heading the note would vanish silently, so both are checked.
+      for (const tpl of [SKILL_TEMPLATE, SKILL_TEMPLATE_NO_SPACES])
+        expect(tpl).toContain("\n## Connect");
+      const e = E({ FEATURES, harness: undefined });
+      const md = await (
+        await get(`${APP}/skill.md?harness=claude`, {}, e)
+      ).text();
+      expect(md).toContain("This copy was rendered for one harness");
+      expect(md.indexOf("This copy was rendered for one harness")).toBeLessThan(
+        md.indexOf("## Connect"),
+      );
+    },
+  );
+
   it("every tool example passes its input schema", () => {
     for (const t of TOOL_DEFS) {
       const r = t.inputSchema.safeParse(t.example);
