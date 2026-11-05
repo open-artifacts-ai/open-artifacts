@@ -120,6 +120,18 @@ describe("claude session hardening", () => {
     );
     expect(claudeSessionsDir({})).toBe(join(homedir(), ".claude", "sessions"));
   });
+
+  it("honours CLAUDE_CONFIG_DIR, with the override still first", () => {
+    expect(claudeSessionsDir({ CLAUDE_CONFIG_DIR: "/cc" })).toBe(
+      join("/cc", "sessions"),
+    );
+    expect(
+      claudeSessionsDir({
+        CLAUDE_CONFIG_DIR: "/cc",
+        OA_BUS_CLAUDE_SESSIONS_DIR: "/x/s",
+      }),
+    ).toBe("/x/s");
+  });
 });
 
 describe("claude ancestor (#1448 item 6)", () => {

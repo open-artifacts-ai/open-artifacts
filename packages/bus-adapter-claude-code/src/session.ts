@@ -25,7 +25,8 @@ export type SessionDeps = {
 export const claudeSessionsDir = (
   env: Record<string, string | undefined> = process.env,
 ): string =>
-  env.OA_BUS_CLAUDE_SESSIONS_DIR || join(homedir(), ".claude", "sessions");
+  env.OA_BUS_CLAUDE_SESSIONS_DIR ||
+  join(env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "sessions");
 
 /** OA_BUS_HOME, absolute; empty means unset. Daemon, CLI and MCP servers all read it here. */
 export const busHome = (

@@ -425,4 +425,4 @@ export function selfText(
  * Information only, from the local client; it quotes no peer text.
  */
 export const replyGoneText = (name: string): string =>
-  `[oa-bus] Information: your reply to ${name} was not sent. The agent that wrote to you as ${name} is gone, or wrote over an hour ago, and another agent may hold that name now. Use list_agents and send_message to reach the agent you mean.`;
+  `[oa-bus] Information: your reply to ${name} was not sent. The agent that wrote to you as ${name} is gone, or wrote over an hour ago, and another agent may hold that name now. Use the oa_bus list_agents and send_message tools to reach the agent you mean.`;

@@ -248,9 +248,8 @@ describe("the published oa-bus package", () => {
       const listed = (await call(3, "tools/list", {})) as {
         result: { tools: { name: string }[] };
       };
-      // Under another harness importing Claude's MCP config, it offers no tools.
-      if (harness === "claude") expect(listed.result.tools).toEqual([]);
-      else expect(listed.result.tools.length).toBeGreaterThan(0);
+      // Always listed: the Claude ancestor is checked at call time, not at startup.
+      expect(listed.result.tools.length).toBeGreaterThan(0);
       const res = (await call(2, "tools/call", {
         name: "list_agents",
         arguments: {},

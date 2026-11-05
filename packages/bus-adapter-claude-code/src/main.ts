@@ -45,7 +45,7 @@ const server = new Server(
   { name: "oa_bus", version: "0.1.0" },
   { capabilities: { tools: {} } },
 );
-/** Under another harness (one that imports Claude's MCP config), this server offers nothing. */
+/** Checked at call time, never at startup: Claude may write its session file after spawning this server. */
 const underClaude = (): boolean => {
   try {
     return hasClaudeAncestor(process.pid, {
@@ -58,7 +58,7 @@ const underClaude = (): boolean => {
 };
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: underClaude() ? [...TOOLS] : [],
+  tools: [...TOOLS],
 }));
 server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const client = await connect();
