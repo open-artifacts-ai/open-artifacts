@@ -53,7 +53,10 @@ function Composer({
   autoFocus = false,
   alwaysOpen = true,
   failure,
+  onDirty,
 }: {
+  /** Called when the box gains or loses text the reader typed. */
+  onDirty?: (dirty: boolean) => void;
   placeholder: string;
   label: string;
   submit: string;
@@ -76,6 +79,12 @@ function Composer({
     if (autoFocus) ref.current?.focus();
   }, [autoFocus]);
   const body = text.trim();
+  // Words in the box, or an edit in progress: a live swap must not drop them.
+  const composing = body !== "" || initial !== "";
+  useEffect(() => {
+    onDirty?.(body !== "");
+    return () => onDirty?.(false);
+  }, [body, onDirty]);
   const go = async () => {
     if (!body || once.current) return;
     once.current = true;
@@ -99,7 +108,10 @@ function Composer({
     onCancel?.();
   };
   return (
-    <div className="flex flex-col gap-2">
+    <div
+      className="flex flex-col gap-2"
+      data-oa-composing={composing ? "" : undefined}
+    >
       <Textarea
         ref={ref}
         aria-label={label}
@@ -462,7 +474,10 @@ function NewThread({ api }: { api: CommentsApi }) {
   if (!draft) return null;
   const guest = api.guest ? { guestName: api.guestName.trim() } : {};
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-ring bg-background p-3">
+    <div
+      className="flex flex-col gap-2 rounded-lg border border-ring bg-background p-3"
+      data-oa-composing=""
+    >
       {api.older && (
         <p className={`${TXT} ${MUTED}`}>
           You're commenting on version {api.version}.
@@ -479,6 +494,7 @@ function NewThread({ api }: { api: CommentsApi }) {
         placeholder="Add a comment"
         submit="Comment"
         autoFocus
+        onDirty={api.setDraftDirty}
         onCancel={api.cancelDraft}
         onSubmit={async (body) => {
           last.current = body;
@@ -520,11 +536,6 @@ function NoteComposer({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
   return (
     <div className="flex flex-col gap-2">
-      {api.older && (
-        <p className={`${TXT} ${MUTED}`}>
-          You're commenting on version {api.version}.
-        </p>
-      )}
       {api.guest && <GuestName api={api} />}
       <Composer
         label="Comment on the whole page"
@@ -571,11 +582,13 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
           </Button>
         )}
       </div>
-      {api.draft && api.canComment && <NewThread api={api} />}
+      {api.draft && api.canComment && (
+        <NewThread key={JSON.stringify(api.draft.anchor)} api={api} />
+      )}
       {api.canComment ? (
         <NoteComposer api={api} />
       ) : (
-        <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
+        api.guest && <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
       )}
       {api.error != null && !api.threads.length ? (
         <div role="alert" className={`flex flex-col gap-2 ${TXT}`}>

@@ -840,3 +840,244 @@ describe("comments: guests and Retry-After", () => {
     expect(await within(c).findByText(copy)).toBeInTheDocument();
   });
 });
+
+describe("comments: review round 1", () => {
+  const sel = (exact: string) => ({
+    kind: "text",
+    exact,
+    prefix: "",
+    suffix: "",
+  });
+  const view = () => screen.queryByRole("button", { name: /View version/ });
+
+  it("B1: a live swap never drops a comment being written: the chip shows instead", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    const box = within(c).getByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: "half written" } });
+    await act(async () => {
+      events.emitVersion(OWNED, { version: 99 });
+    });
+    expect(
+      await screen.findByRole("button", { name: "View version 99" }),
+    ).toBeInTheDocument();
+    expect(
+      within(await col()).getByRole("textbox", {
+        name: "Comment on the whole page",
+      }),
+    ).toHaveValue("half written");
+  });
+
+  it("B1 control: with nothing being written the same version swaps in quietly", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await hello();
+    await act(async () => {
+      events.emitVersion(OWNED, { version: 99 });
+    });
+    await waitFor(() =>
+      expect(document.querySelectorAll("iframe").length).toBeGreaterThan(1),
+    );
+    expect(view()).toBeNull();
+  });
+
+  it("B1: an edit in progress and a pending draft count as writing too", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    const mine = (
+      await within(c).findByText("Agreed, shorter is better.")
+    ).closest("li") as HTMLElement;
+    expect(document.querySelector("[data-oa-composing]")).toBeNull();
+    fireEvent.click(
+      within(mine).getByRole("button", { name: "Comment actions" }),
+    );
+    fireEvent.click(within(mine).getByRole("button", { name: "Edit" }));
+    expect(document.querySelector("[data-oa-composing]")).not.toBeNull();
+    fireEvent.click(within(mine).getByRole("button", { name: "Cancel" }));
+    expect(document.querySelector("[data-oa-composing]")).toBeNull();
+    await act(async () => opts.at(-1)?.onCommentSelect(sel("q")));
+    expect(document.querySelector("[data-oa-composing]")).not.toBeNull();
+  });
+
+  it("M1: a second comment.select does not replace the quote under typed words", async () => {
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    await col();
+    await act(async () => opts.at(-1)?.onCommentSelect(sel("first-quote")));
+    await act(async () => opts.at(-1)?.onCommentSelect(sel("second-quote")));
+    // Nothing typed yet: replacing is fine.
+    expect(await screen.findByText("second-quote")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "Add a comment" }), {
+      target: { value: "my words" },
+    });
+    await act(async () => opts.at(-1)?.onCommentSelect(sel("forged-quote")));
+    expect(screen.queryByText("forged-quote")).toBeNull();
+    expect(screen.getByRole("textbox", { name: "Add a comment" })).toHaveValue(
+      "my words",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    const sent = posts[0]?.body as { anchor: { exact: string } } | undefined;
+    expect(sent?.anchor.exact).toBe("second-quote");
+  });
+
+  it("M1: a replaced anchor never keeps the old text (keyed on the anchor)", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await act(async () => opts.at(-1)?.onCommentSelect(sel("a-quote")));
+    // Cleared box, new anchor.
+    await act(async () => opts.at(-1)?.onCommentSelect(sel("b-quote")));
+    expect(screen.getByRole("textbox", { name: "Add a comment" })).toHaveValue(
+      "",
+    );
+    expect(screen.queryByText("a-quote")).toBeNull();
+  });
+
+  const threadAt = (
+    id: string,
+    kind: "note" | "text",
+    v: number,
+    body: string,
+  ) => ({
+    id,
+    anchor:
+      kind === "note"
+        ? { kind: "note" }
+        : {
+            kind: "text",
+            version: v,
+            exact: `q-${id}`,
+            prefix: "",
+            suffix: "",
+          },
+    version: v,
+    status: "open",
+    resolvedBy: null,
+    resolvedAt: null,
+    createdAt: "2026-11-05T10:00:00Z",
+    comments: [
+      {
+        id: `c-${id}`,
+        body,
+        author: { kind: "user", name: "Sam", me: false },
+        createdAt: "2026-11-05T10:00:00Z",
+        editedAt: null,
+        can: { edit: false, delete: false },
+      },
+    ],
+  });
+
+  it("M2: on an older version, whole-page notes still show, text threads are that version's, and the note composer doesn't claim a version", async () => {
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json({
+          threads: [
+            threadAt("n2", "note", 2, "note made on current"),
+            threadAt("t2", "text", 2, "text made on current"),
+            threadAt("t1", "text", 1, "text made on one"),
+          ],
+          open: 3,
+          truncated: false,
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED, 1));
+    const c = await col();
+    expect(
+      await within(c).findByText("note made on current"),
+    ).toBeInTheDocument();
+    expect(within(c).getByText("text made on one")).toBeInTheDocument();
+    expect(within(c).queryByText("text made on current")).toBeNull();
+    expect(within(c).queryByText(/You're commenting on version/)).toBeNull();
+    // A text draft is version-bound and says so.
+    await act(async () => opts.at(-1)?.onCommentSelect(sel("zz")));
+    expect(
+      await within(c).findByText("You're commenting on version 1."),
+    ).toBeInTheDocument();
+  });
+
+  const art = (over: object) =>
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({
+          ...fixtures.artifacts.find((a) => a.id === OWNED),
+          ...over,
+        }),
+      ),
+    );
+  it.each([
+    [
+      { visibility: "public", dataWriters: "viewers" },
+      /Anyone with the link can comment/,
+    ],
+    [
+      { visibility: "public", dataWriters: "editors" },
+      /People who can open this can comment on it\./,
+    ],
+    [
+      { visibility: "team", dataWriters: "viewers" },
+      /People who can open this can comment on it\./,
+    ],
+  ])("M3: the Share hint for %j", async (over, hint) => {
+    art(over);
+    mount(`${viewerPath(OWNED)}?panel=open&tab=share`);
+    await screen.findByRole("checkbox", { name: "Comments" });
+    expect(await screen.findByText(hint)).toBeInTheDocument();
+  });
+
+  it("M5: a token-less guest read takes the mint lock too", async () => {
+    // Fresh modules: an earlier test's in-memory token would skip the lock.
+    vi.resetModules();
+    const { withAnon } = await import("../src/api/comments");
+    const { MINT_LOCK, loadAnonToken } = await import("../src/viewer/anonId");
+    localStorage.clear();
+    const request = vi.fn(
+      (_n: string, _o: unknown, cb: () => Promise<unknown>) => cb(),
+    );
+    Object.defineProperty(navigator, "locks", {
+      value: { request },
+      configurable: true,
+    });
+    try {
+      expect(loadAnonToken()).toBeNull();
+      await withAnon(true, async () => "read");
+      expect(request.mock.calls[0]?.[0]).toBe(MINT_LOCK);
+      // Signed in: never.
+      request.mockClear();
+      await withAnon(false, async () => "read");
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      Reflect.deleteProperty(navigator, "locks");
+    }
+  });
+
+  const cannot = () =>
+    art({
+      can: {
+        edit: true,
+        share: true,
+        setVisibility: true,
+        delete: true,
+        transfer: false,
+        move: false,
+        dataWrite: true,
+        comment: false,
+      },
+    });
+  it("M6: a signed-in viewer who can't comment sees no sign-in line, no composer, and no draft from the frame", async () => {
+    cannot();
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Can we tighten this headline?");
+    expect(within(c).queryByText("Sign in to comment.")).toBeNull();
+    expect(within(c).queryByRole("textbox")).toBeNull();
+    expect(within(c).queryByRole("button", { name: "Resolve" })).toBeNull();
+    await act(async () => opts.at(-1)?.onCommentSelect(sel("nope")));
+    expect(screen.queryByRole("textbox", { name: "Add a comment" })).toBeNull();
+  });
+});

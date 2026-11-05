@@ -53,6 +53,8 @@ export type CommentsApi = {
   select: (id: string | null, frame?: boolean) => void;
   draft: Draft;
   cancelDraft: () => void;
+  /** The draft's composer has (or no longer has) text the reader typed. */
+  setDraftDirty: (dirty: boolean) => void;
   showResolved: boolean;
   setShowResolved: (v: boolean) => void;
   guestName: string;
@@ -75,10 +77,12 @@ export function useCommentsApi(): CommentsApi {
   return c;
 }
 
-/** A guest can comment where the artifact lets signed-out visitors write. */
+/** Signed-out visitors may comment where the artifact is public and lets them write (as the server decides). */
+export const guestsMayComment = (a: ArtifactSummary) =>
+  a.visibility === "public" && a.dataWriters === "viewers";
+
 export const canComment = (a: ArtifactSummary, authed: boolean) =>
-  a.can?.comment ??
-  (authed || (a.visibility === "public" && a.dataWriters === "viewers"));
+  a.can?.comment ?? (authed || guestsMayComment(a));
 
 export function useCommentsController({
   artifact,
@@ -101,7 +105,12 @@ export function useCommentsController({
   const older = version !== artifact.currentVersion;
   const threads = useMemo(
     () =>
-      older ? (all ?? []).filter((t) => t.version === version) : (all ?? []),
+      older
+        ? (all ?? []).filter(
+            // A whole-page note isn't tied to a version: it shows on every one.
+            (t) => t.version === version || t.anchor.kind === "note",
+          )
+        : (all ?? []),
     [all, older, version],
   );
   const [positions, setPositions] = useState<Positions>(new Map());
@@ -128,6 +137,12 @@ export function useCommentsController({
     positions: createGate(20, 1000),
     open: createGate(5, 1000),
   });
+  const dirty = useRef(false);
+  const mayComment = canComment(artifact, authed);
+  const mayRef = useRef(mayComment);
+  mayRef.current = mayComment;
+  const draftRef = useRef<Draft>(null);
+  draftRef.current = draft;
   const surface = useRef(openSurface);
   surface.current = openSurface;
 
@@ -141,6 +156,11 @@ export function useCommentsController({
   const onSelect = useCallback((anchor: SelectionAnchor) => {
     // A pre-filled draft the reader must submit; page code can send this any time.
     if (!gates.current.select()) return;
+    // The runtime has no read-only mode: a reader who can't comment gets no draft.
+    if (!mayRef.current) return;
+    // Never swap the quote under words the reader is typing.
+    if (draftRef.current && dirty.current) return;
+    dirty.current = false;
     setDraft({ anchor });
     surface.current();
   }, []);
@@ -174,7 +194,7 @@ export function useCommentsController({
   return useMemo(
     () => ({
       enabled,
-      canComment: canComment(artifact, authed),
+      canComment: mayComment,
       guest: !authed,
       artifactId: id,
       version,
@@ -190,7 +210,13 @@ export function useCommentsController({
       active,
       select,
       draft,
-      cancelDraft: () => setDraft(null),
+      cancelDraft: () => {
+        dirty.current = false;
+        setDraft(null);
+      },
+      setDraftDirty: (d) => {
+        dirty.current = d;
+      },
       showResolved,
       setShowResolved,
       guestName,
@@ -202,7 +228,7 @@ export function useCommentsController({
     }),
     [
       enabled,
-      artifact,
+      mayComment,
       authed,
       id,
       version,

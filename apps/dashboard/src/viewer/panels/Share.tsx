@@ -46,6 +46,7 @@ import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { isOrgAdmin } from "../../settings/spaces/access";
 import { visibilityHint } from "../../spaces/SpaceMarker";
+import { guestsMayComment } from "../comments/useComments";
 
 const VIS: { value: Visibility; label: string }[] = [
   { value: "private", label: "Private" },
@@ -609,7 +610,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             onCheckedChange={(on) => save({ comments: on })}
           />
           <small id="oa-comments-hint" className="oa-muted">
-            {artifact.visibility === "public"
+            {guestsMayComment(artifact)
               ? "Anyone with the link can comment. Signed-out visitors pick a display name."
               : "People who can open this can comment on it."}
           </small>

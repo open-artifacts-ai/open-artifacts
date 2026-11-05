@@ -647,10 +647,10 @@ export function Shell(props: { id: string; v?: number; chromeless?: boolean }) {
   return <ArtifactShell key={props.id} {...props} />;
 }
 
-/** A menu or dialog is open (the side panel doesn't count: it sits beside the frame). */
+/** A menu or dialog is open, or a comment is being written or edited (the side panel doesn't count: it sits beside the frame). */
 const chromeOpen = () =>
   document.querySelector(
-    '[role="menu"],[role="dialog"],[role="alertdialog"]',
+    '[role="menu"],[role="dialog"],[role="alertdialog"],[data-oa-composing]',
   ) !== null;
 
 function ArtifactShell({

@@ -5,7 +5,9 @@ import {
   CommentListSchema,
   CommentSchema,
   CommentThreadSchema,
+  type NewThreadBody,
   R,
+  type ReplyBody,
 } from "@oa/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -27,7 +29,6 @@ export const commentsKey = (id: string) => ["comments", id] as const;
  */
 export async function withAnon<T>(
   guest: boolean,
-  write: boolean,
   go: (x?: RequestExtra) => Promise<T>,
 ): Promise<T> {
   if (!guest) return go();
@@ -39,7 +40,9 @@ export async function withAnon<T>(
         if (isAnonToken(t)) saveAnonToken(t);
       },
     });
-  if (!write || loadAnonToken()) return send(loadAnonToken());
+  // The server mints on any comments request that has no token, reads
+  // included: so a token-less call of any kind takes the lock.
+  if (loadAnonToken()) return send(loadAnonToken());
   return withMintLock(() => send(loadAnonToken()));
 }
 
@@ -49,12 +52,10 @@ export const useThreads = (id: string, enabled: boolean, guest = false) =>
     enabled,
     queryKey: commentsKey(id),
     queryFn: ({ signal }) =>
-      withAnon(guest, false, (x) =>
+      withAnon(guest, (x) =>
         api.get(`${R.comments(id)}?status=all`, CommentListSchema, signal, x),
       ),
   });
-
-type NewThread = { anchor: unknown; body: string; guestName?: string };
 
 const useRefetching = <V, T>(
   id: string,
@@ -63,29 +64,26 @@ const useRefetching = <V, T>(
 ) => {
   const qc = useQueryClient();
   return useMutation<T, ApiClientError, V>({
-    mutationFn: (v: V) => withAnon(guest, true, (x) => fn(v, x)),
+    mutationFn: (v: V) => withAnon(guest, (x) => fn(v, x)),
     // Settled, not success: a 404 or 403 means the list is stale too.
     onSettled: () => qc.invalidateQueries({ queryKey: commentsKey(id) }),
   });
 };
 
 export const useCreateThread = (id: string, guest = false) =>
-  useRefetching(id, guest, (b: NewThread, x) =>
+  useRefetching(id, guest, (b: NewThreadBody, x) =>
     api.send("POST", R.comments(id), b, CommentThreadSchema, undefined, x),
   );
 export const useReply = (id: string, guest = false) =>
-  useRefetching(
-    id,
-    guest,
-    (v: { thread: string; body: string; guestName?: string }, x) =>
-      api.send(
-        "POST",
-        R.commentReplies(id, v.thread),
-        { body: v.body, ...(v.guestName ? { guestName: v.guestName } : {}) },
-        CommentSchema,
-        undefined,
-        x,
-      ),
+  useRefetching(id, guest, (v: ReplyBody & { thread: string }, x) =>
+    api.send(
+      "POST",
+      R.commentReplies(id, v.thread),
+      { body: v.body, ...(v.guestName ? { guestName: v.guestName } : {}) },
+      CommentSchema,
+      undefined,
+      x,
+    ),
   );
 export const useSetThreadStatus = (id: string, guest = false) =>
   useRefetching(
