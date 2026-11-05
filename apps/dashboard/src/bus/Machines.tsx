@@ -11,6 +11,7 @@ import {
   useIsMobile,
 } from "@oa/ui/shadcn";
 import { useState } from "react";
+import { ApiClientError } from "../api/client";
 import {
   useBusAgents,
   useBusMachines,
@@ -154,6 +155,10 @@ function Row({
   );
 }
 
+/** Design's copy for a revoke that answered 5xx. */
+export const revokeFailedLine = (label: string) =>
+  `${label} may not be revoked yet, and its connection may still be open. Try again.`;
+
 /** The capped line, as Settings › Connections says it. */
 export const REVOKE_ONLY_LINE =
   "You can't connect new machines. You can revoke these.";
@@ -166,8 +171,8 @@ export function Machines({ revokeOnly = false }: { revokeOnly?: boolean }) {
   const revoke = useRevokeBusMachine();
   const stacked = useIsMobile();
   const [pick, setPick] = useState<BusMachine | null>(null);
-  /** Revoked, but its open connection didn't close: Try again reopens the dialog. */
-  const [partial, setPartial] = useState<BusMachine | null>(null);
+  /** A 5xx revoke: maybe revoked, maybe still connected. Try again reopens the dialog. */
+  const [failed, setFailed] = useState<BusMachine | null>(null);
   const agentList = agents.data?.live ? agents.data.agents : undefined;
   const liveFor = (m: BusMachine) =>
     revokeOnly ? undefined : liveOn(m, agentList);
@@ -180,16 +185,14 @@ export function Machines({ revokeOnly = false }: { revokeOnly?: boolean }) {
 
   const doRevoke = async (m: BusMachine) => {
     setPick(null);
-    setPartial(null);
+    setFailed(null);
     try {
       await revoke.mutateAsync(m.id);
       toast({ title: `${m.label} revoked.`, tone: "success" });
-    } catch {
-      // A failure says nothing about whether it was revoked: the reloaded
-      // list does. Revoked means its connection didn't close (#1449 M2).
-      const after = await q.refetch();
-      const row = after.data?.machines.find((x) => x.id === m.id);
-      if (row && row.revokedAt !== null) setPartial(m);
+    } catch (e) {
+      // A 5xx says nothing sure about the revoke; the reloaded list (the
+      // mutation refetches it) shows the real state (#1449 M2, Design).
+      if (e instanceof ApiClientError && e.status >= 500) setFailed(m);
       else
         toast({
           title: `Couldn't revoke ${m.label}. Try again.`,
@@ -201,21 +204,16 @@ export function Machines({ revokeOnly = false }: { revokeOnly?: boolean }) {
   const pickLive = pick ? liveOn(pick, agentList) : null;
   return (
     <div className={STACK}>
-      {partial && (
+      {failed && (
         <Notice
           tone="danger"
           action={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPick(partial)}
-            >
+            <Button variant="outline" size="sm" onClick={() => setPick(failed)}>
               Try again
             </Button>
           }
         >
-          {partial.label} is revoked and can't reconnect, but its open
-          connection didn't close. Try again to close it.
+          {revokeFailedLine(failed.label)}
         </Notice>
       )}
       {unknown && <Notice tone="warning">{LIVE_DOWN}</Notice>}

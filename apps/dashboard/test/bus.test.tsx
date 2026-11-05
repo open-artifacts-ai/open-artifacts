@@ -14,6 +14,7 @@ import {
   machineStatus,
   machinesSummary,
   REVOKE_ONLY_LINE,
+  revokeFailedLine,
 } from "../src/bus/Machines";
 import {
   buildRail,
@@ -340,9 +341,12 @@ describe("gate: nothing unless canConnect and busOn (capped: revoke-only Machine
     withBus();
     mount("/settings/profile");
     const nav = await primary();
-    expect(
-      await within(nav).findByRole("link", { name: "Agents" }),
-    ).toHaveAttribute("href", "/agents");
+    const agentsLink = await within(nav).findByRole("link", { name: "Agents" });
+    expect(agentsLink).toHaveAttribute("href", "/agents");
+    // Design's icon: Lucide "radio" at 16px with a 1.5px stroke.
+    const svg = agentsLink.querySelector("svg.lucide-radio");
+    expect(svg).not.toBeNull();
+    expect(svg).toHaveAttribute("width", "16");
     expect(within(nav).queryByRole("link", { name: "Machines" })).toBeNull();
     const tabs = await settingsTabs();
     await within(tabs).findByRole("link", { name: "Machines" });
@@ -493,30 +497,59 @@ describe("Settings › Machines", () => {
     );
   };
 
-  it("a 500 after the revoke landed (the list shows it revoked): the red alert, and Try again reopens the dialog", async () => {
+  const MAYBE = `${work.label} may not be revoked yet, and its connection may still be open. Try again.`;
+
+  it("Design's copy for a 5xx revoke", () => {
+    expect(revokeFailedLine("leo-work")).toBe(
+      "leo-work may not be revoked yet, and its connection may still be open. Try again.",
+    );
+  });
+
+  it("a 500 after the revoke landed: the notice, and the reloaded list shows it revoked; Try again reopens the dialog", async () => {
     withBus();
     failingRevoke(true);
     await revokeWork();
-    expect(
-      await screen.findByText(
-        `${work.label} is revoked and can't reconnect, but its open connection didn't close. Try again to close it.`,
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(MAYBE)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: `Revoke ${work.label}` }),
+      ).toBeNull(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("alertdialog")).toHaveTextContent(
       `Revoke "${work.label}"?`,
     );
   });
 
-  it("a 500 that revoked nothing: Couldn't revoke, never 'is revoked'", async () => {
+  it("a 500 that revoked nothing: the same notice, and the reloaded list still offers Revoke", async () => {
     withBus();
     failingRevoke(false);
     await revokeWork();
-    await findVisibleToast(`Couldn't revoke ${work.label}. Try again.`);
+    expect(await screen.findByText(MAYBE)).toBeInTheDocument();
     expect(screen.queryByText(/is revoked and can't reconnect/)).toBeNull();
     expect(
       screen.getByRole("button", { name: `Revoke ${work.label}` }),
     ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("table", { name: "Your machines" })).getAllByRole(
+        "row",
+      )[1],
+    ).toHaveTextContent(`${work.label}Live`);
+  });
+
+  it("a 4xx revoke: a Couldn't revoke toast, no notice", async () => {
+    withBus();
+    server.use(
+      http.delete(`*${R.busMachines}/:id`, () =>
+        HttpResponse.json(
+          { error: { code: "not_found", message: "Not found" } },
+          { status: 404 },
+        ),
+      ),
+    );
+    await revokeWork();
+    await findVisibleToast(`Couldn't revoke ${work.label}. Try again.`);
+    expect(screen.queryByText(MAYBE)).toBeNull();
   });
 
   it("a capped member: revoke-only, with the capped line, no Connect, no live agents, and no agents request", async () => {
