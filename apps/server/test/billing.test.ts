@@ -546,6 +546,38 @@ describe("plan enforcement", () => {
     });
   });
 
+  it("free: an invite passes only if the trial starts; billing down is 503 billing_unavailable and no user is left", async () => {
+    row = {
+      tier: "free",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      version: 0,
+    };
+    await cache({});
+    down = true;
+    const email = `inv-down-${tag}@a.com`;
+    const r = await send(R.members, owner.cookie, {
+      method: "POST",
+      body: { email, role: "member" },
+    });
+    expect(r.status).toBe(503);
+    expect(await errOf(r)).toMatchObject({ code: "billing_unavailable" });
+    expect(
+      await env.DB.prepare("select 1 from users where email = ?")
+        .bind(email)
+        .first(),
+    ).toBeNull();
+    // Billing back: the same invite passes and starts the trial.
+    down = false;
+    const ok = await send(R.members, owner.cookie, {
+      method: "POST",
+      body: { email, role: "member" },
+    });
+    expect(ok.status).toBe(201);
+    expect(calls.some((c) => c.path === "/trial/start")).toBe(true);
+  });
+
   it("free after the trial: invites are 403 plan_required; nothing is created", async () => {
     await cache({ tier: "free", trialEndsAt: mid - DAY, version: 2 });
     const email = `inv2-${tag}@a.com`;

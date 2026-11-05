@@ -261,6 +261,20 @@ export async function inviteMember(
       details,
     );
   }
+  // Hosted billing: the first invite on a free instance passes only if the
+  // 14-day trial starts (signed POST /trial/start, idempotent). Billing
+  // unreachable, no gate or a non-2xx: 503 billing_unavailable and no user
+  // is created. An address that already exists is the usual conflict, and
+  // starts nothing.
+  if (planOfMember(inviter)?.trialEligible) {
+    if (await stmt(env.DB, EXISTING).bind(email).first())
+      return existingConflict(env, email);
+    if (!(await startTrial(env, Date.now())))
+      throw new ApiError(
+        "billing_unavailable",
+        "Billing is unavailable; try again",
+      );
+  }
   const [row] = await insertUser(env, {
     email,
     name: "",
@@ -270,10 +284,6 @@ export async function inviteMember(
     .onConflictDoNothing({ target: users.email })
     .returning();
   if (!row) return existingConflict(env, email);
-  // Hosted billing: the first successful invite on a free instance starts
-  // the 14-day trial (signed POST /trial/start, idempotent). A failed call
-  // is retried by the scheduler tick (billing/store.ts billingTick).
-  if (planOfMember(inviter)?.trialEligible) await startTrial(env, Date.now());
   // What the email names, and the result reports: uncertain Google is still
   // the only way in, so it is named.
   const signInMethods: SignInProvider[] = reach.methods.length
