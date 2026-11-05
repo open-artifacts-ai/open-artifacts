@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.117.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.116.0...v0.117.0) (2026-11-05)
+
+
+### Features
+
+* **skill:** report a lost tool, don't route around it ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1435](https://github.com/open-artifacts-ai/open-artifacts/issues/1435)) ([1c743be](https://github.com/open-artifacts-ai/open-artifacts/commit/1c743bead2fd92bfa04cb63caba7ec9609b3ff42))
+
 ## [0.116.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.115.0...v0.116.0) (2026-11-05)
 
 
