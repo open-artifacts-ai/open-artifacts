@@ -1,10 +1,8 @@
 import type {
   ArtifactSummary,
   CommentThread,
-  Me,
   SelectionAnchor,
 } from "@oa/shared";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
   useCallback,
@@ -15,7 +13,6 @@ import {
   useState,
 } from "react";
 import { useThreads } from "../../api/comments";
-import { qk } from "../../api/queries";
 import { isEmbed } from "../../embed";
 import type { createBridge } from "../bridge";
 import {
@@ -86,14 +83,18 @@ export function useCommentsApi(): CommentsApi {
 export const guestsMayComment = (a: ArtifactSummary) =>
   a.visibility === "public";
 
-export const canComment = (a: ArtifactSummary, authed: boolean) =>
-  a.can?.comment ?? (authed || guestsMayComment(a));
+export const canComment = (
+  a: ArtifactSummary,
+  authed: boolean,
+  readOnly = false,
+) => !readOnly && (a.can?.comment ?? (authed || guestsMayComment(a)));
 
 export function useCommentsController({
   artifact,
   version,
   pinned,
   authed,
+  readOnly = false,
   getBridge,
   openSurface,
 }: {
@@ -102,14 +103,14 @@ export function useCommentsController({
   artifact: ArtifactSummary;
   version: number;
   authed: boolean;
+  /** The caller is capped (Me.auth.readOnly): no comment writes. */
+  readOnly?: boolean;
   getBridge: () => Bridge | null;
   /** A frame event that needs the list in view (the panel or sheet, if folded). */
   openSurface: () => void;
 }): CommentsApi {
   const id = artifact.id;
   const enabled = artifact.comments !== false && !isEmbed();
-  // Read, not subscribed: the shell has loaded /me before it mounts a viewer.
-  const capped = useQueryClient().getQueryData<Me>(qk.me)?.auth?.cap != null;
   const q = useThreads(id, enabled, !authed);
   const all = q.data?.threads;
   // Pinned to an older version by the address: not merely "behind" a current
@@ -150,7 +151,7 @@ export function useCommentsController({
     open: createGate(5, 1000),
   });
   const dirty = useRef(false);
-  const mayComment = canComment(artifact, authed);
+  const mayComment = canComment(artifact, authed, readOnly);
   const mayRef = useRef(mayComment);
   mayRef.current = mayComment;
   const draftRef = useRef<Draft>(null);
@@ -207,7 +208,7 @@ export function useCommentsController({
     () => ({
       enabled,
       canComment: mayComment,
-      capped,
+      capped: readOnly,
       guest: !authed,
       artifactId: id,
       version,
@@ -242,7 +243,7 @@ export function useCommentsController({
     [
       enabled,
       mayComment,
-      capped,
+      readOnly,
       authed,
       id,
       version,

@@ -1250,17 +1250,47 @@ describe("comments: capped members", () => {
     return c;
   };
 
-  it("a capped member whose write is refused as read-only (404) is told they can only view", async () => {
+  it("a capped member sees the threads but gets no composer, no Resolve, no draft and no sign-in line", async () => {
     capped("guest");
-    refused();
     mount(viewerPath(OWNED));
-    const c = await write();
+    const c = await col();
     expect(
-      await within(c).findByText(
-        "Your account can only view, so you can't comment.",
-      ),
+      await within(c).findByText("Can we tighten this headline?"),
     ).toBeInTheDocument();
-    expect(within(c).queryByText("That comment is gone.")).toBeNull();
+    expect(within(c).queryByRole("textbox")).toBeNull();
+    expect(within(c).queryByRole("button", { name: "Resolve" })).toBeNull();
+    expect(within(c).queryByRole("button", { name: "Reopen" })).toBeNull();
+    expect(within(c).queryByText("Sign in to comment.")).toBeNull();
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "nope",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    expect(screen.queryByRole("textbox", { name: "Add a comment" })).toBeNull();
+  });
+
+  it("an uncapped member in the same setup does get the composer", async () => {
+    capped(null);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(
+      await within(c).findByRole("textbox", {
+        name: "Comment on the whole page",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("a refused write from a capped member still reads as read-only (fallback copy)", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    const e = new ApiClientError("not_found", "Not found", 404);
+    expect(commentError(e, true)).toBe(
+      "Your account can only view, so you can't comment.",
+    );
+    expect(commentError(e, false)).toBe("That comment is gone.");
   });
 
   it("an uncapped 404 still says the comment is gone", async () => {

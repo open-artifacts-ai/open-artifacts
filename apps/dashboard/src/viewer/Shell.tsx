@@ -132,6 +132,7 @@ function Viewer({
   version,
   explicitVersion,
   authed,
+  readOnly = false,
   viewer,
   role,
   plan,
@@ -172,6 +173,8 @@ function Viewer({
   version: number;
   explicitVersion: boolean;
   authed: boolean;
+  /** A capped (guest or restricted) member: the server refuses their comment writes. */
+  readOnly?: boolean;
   viewer: { email: string; name: string | null } | null;
 }) {
   const content = useContentUrl(artifact.id, version, gone !== null);
@@ -226,6 +229,7 @@ function Viewer({
     version,
     pinned: explicitVersion,
     authed,
+    readOnly,
     getBridge,
     openSurface: () => openSurface.current(),
   });
@@ -786,6 +790,7 @@ function ArtifactShell({
               explicitVersion={v !== undefined}
               chromeless={chromeless}
               authed={authed}
+              readOnly={authed && me.me.auth?.readOnly === true}
               role={authed ? me.me.user.role : undefined}
               plan={authed ? me.me.instance.plan : undefined}
               viewer={
