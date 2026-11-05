@@ -230,7 +230,11 @@ export const planGate = (): MiddlewareHandler<AppEnv> =>
     const user = c.var.user;
     if (user && TEAM_ROUTES.has(route))
       requireTeamPlan(planOfMember(user), {
-        invite: route === "POST /api/v1/members",
+        // A restore adds a person like an invite does (the service starts
+        // the trial for a free instance that never had one).
+        invite:
+          route === "POST /api/v1/members" ||
+          route === "POST /api/v1/members/:id/restore",
       });
     await next();
   });

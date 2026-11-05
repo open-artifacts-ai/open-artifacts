@@ -163,18 +163,27 @@ export async function startTrial(
   now: number,
   ctx?: Ctx,
 ): Promise<boolean> {
-  if (!billingOn(env)) return false;
+  return (await startTrialAnswer(env, now, ctx))?.tier === "trial";
+}
+
+/** startTrial's answer (cached), or null when billing couldn't be reached or answered badly. */
+export async function startTrialAnswer(
+  env: Env,
+  now: number,
+  ctx?: Ctx,
+): Promise<StoredPlan | null> {
+  if (!billingOn(env)) return null;
   try {
     const raw = await billingCall(env, TRIAL_PATH, {}, now);
     const r = TierAnswerSchema.safeParse(raw);
     if (!r.success) throw new BillingUnavailableError("bad_answer");
     await storePlan(env, r.data, now, ctx);
     logInfo("billing_trial", { tier: r.data.tier });
-    return r.data.tier === "trial";
+    return r.data;
   } catch (e) {
     const why = e instanceof BillingUnavailableError ? e.why : "error";
     logWarn("billing_trial_failed", undefined, { why });
-    return false;
+    return null;
   }
 }
 

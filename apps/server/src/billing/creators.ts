@@ -142,7 +142,8 @@ const USAGE_CATCH_UP_MAX = 24;
  * The scheduler tick's monthly report: every month after the last accepted
  * one (USAGE_SENT_KEY) up to the previous month, oldest first, each one's
  * final list, stopping at the first billing refuses (the next tick retries
- * from there). With nothing sent yet, the previous month only. Never throws.
+ * from there). With nothing sent yet, from the oldest month with creators.
+ * Never throws.
  */
 export async function usageTick(env: Env, now: number): Promise<void> {
   if (!billingOn(env)) return;
@@ -153,15 +154,25 @@ export async function usageTick(env: Env, now: number): Promise<void> {
     )
       .bind(USAGE_SENT_KEY)
       .first<{ value: string }>();
-    const months: string[] = [];
-    if (!sent) months.push(prev);
-    else
-      for (
-        let m = nextMonth(sent.value);
-        m <= prev && months.length < USAGE_CATCH_UP_MAX;
-        m = nextMonth(m)
+    // After the last accepted month; with nothing ever sent, from the oldest
+    // month that has creators (or just the previous month when none does).
+    let from: string;
+    if (sent) from = nextMonth(sent.value);
+    else {
+      const oldest = await env.DB.prepare(
+        "select min(month) as m from creator_months where month <= ?1",
       )
-        months.push(m);
+        .bind(prev)
+        .first<{ m: string | null }>();
+      from = oldest?.m ?? prev;
+    }
+    const months: string[] = [];
+    for (
+      let m = from;
+      m <= prev && months.length < USAGE_CATCH_UP_MAX;
+      m = nextMonth(m)
+    )
+      months.push(m);
     for (const month of months) {
       await sendUsage(env, month, now);
       await env.DB.prepare(

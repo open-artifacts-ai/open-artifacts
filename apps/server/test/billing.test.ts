@@ -55,7 +55,7 @@ import type { Env } from "../src/env.js";
 import { billingRetry } from "../src/routes/billing.js";
 import { TEST_BROKER_KEY } from "./auth-helpers.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
-import { connect, textOf, tool } from "./mcp-helpers.js";
+import { connect, oauthToken, textOf, tool } from "./mcp-helpers.js";
 import { pinMiddayUtc } from "./midday.js";
 
 const app = createApp();
@@ -89,6 +89,8 @@ type Call = { path: string; body: Record<string, unknown> | null };
 let row: Row;
 let calls: Call[];
 let down: boolean;
+/** When set, POST /trial/start answers this row (billing says the trial was used). */
+let trialAnswer: Row | null;
 let x: string;
 
 /** The gate plus billing: GET /tier, the signed POSTs, as #849 answers them. */
@@ -114,6 +116,8 @@ const gate = {
         { status: 403, headers: { "x-oa-gate": "1" } },
       );
     if (path === "/trial/start") {
+      if (trialAnswer)
+        return Response.json({ ...trialAnswer, asOf: Date.now() });
       if (row.tier === "free" && row.trialEndsAt === null)
         row = {
           ...row,
@@ -199,6 +203,7 @@ beforeEach(async () => {
   };
   calls = [];
   down = false;
+  trialAnswer = null;
   await clear();
 });
 afterEach(async () => {
@@ -311,6 +316,33 @@ describe("effectivePlan", () => {
       readOnly: true,
       reason: "payment_failed",
     });
+    expect(
+      effectivePlan(
+        at({ tier: "trial", trialEndsAt: null }, mid),
+        null,
+        undefined,
+        mid,
+      ),
+    ).toMatchObject({ readOnly: true, reason: "trial_ended" });
+  });
+
+  it("a provisioned TIER=trial with no billing answer is not locked (gate, no gate, no-row default); a billing answer with no trial end is", async () => {
+    const T = { ...H, TIER: "trial" } as Env;
+    for (const gate of [true, false])
+      expect(planOfRaw(T, null, null, mid, { gate })?.lock).toBeNull();
+    row = {
+      tier: "free",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      version: 0,
+    };
+    expect(
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(T, mid)),
+    ).toBe("unchanged");
+    expect(
+      (await withBrokerProps({ props: PROPS }, () => readPlan(T, mid)))?.lock,
+    ).toBeNull();
     expect(
       effectivePlan(
         at({ tier: "trial", trialEndsAt: null }, mid),
@@ -643,6 +675,75 @@ describe("plan enforcement", () => {
       body: { role: "member" },
     });
     expect(d.status).toBe(200);
+  });
+
+  it("free: when /trial/start says the trial was already used, the invite is 403 plan_required with the plan details, not 503; no user", async () => {
+    row = {
+      tier: "free",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      version: 0,
+    };
+    await cache({});
+    // Billing's own row says the trial ran (the install's cache is stale).
+    trialAnswer = { ...row, trialEndsAt: 1, version: 5 };
+    const email = `inv-used-${tag}@a.com`;
+    const r = await send(R.members, owner.cookie, {
+      method: "POST",
+      body: { email, role: "member" },
+    });
+    expect(r.status).toBe(403);
+    expect(await errOf(r)).toMatchObject({
+      code: "plan_required",
+      details: { tier: "free", reason: "solo" },
+    });
+    expect(
+      await env.DB.prepare("select 1 from users where email = ?")
+        .bind(email)
+        .first(),
+    ).toBeNull();
+  });
+
+  it("free, trial never ran: restoring a removed member takes the invite's path (409 on invite, restore starts the trial; billing down is 503)", async () => {
+    row = {
+      tier: "free",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      version: 0,
+    };
+    await cache({});
+    const gone = await login(`restore-${tag}@a.com`, "member");
+    await env.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(gone.userId)
+      .run();
+    const inv = await send(R.members, owner.cookie, {
+      method: "POST",
+      body: { email: `restore-${tag}@a.com`, role: "member" },
+    });
+    expect(inv.status).toBe(409);
+    expect(await errOf(inv)).toMatchObject({ code: "member_removed" });
+    expect(calls.some((c) => c.path === "/trial/start")).toBe(false);
+    down = true;
+    const bad = await send(R.memberRestore(gone.userId), owner.cookie, {
+      method: "POST",
+    });
+    expect(bad.status).toBe(503);
+    expect(await errOf(bad)).toMatchObject({ code: "billing_unavailable" });
+    expect(
+      (
+        await env.DB.prepare("select status from users where id = ?")
+          .bind(gone.userId)
+          .first<{ status: string }>()
+      )?.status,
+    ).toBe("removed");
+    down = false;
+    const ok = await send(R.memberRestore(gone.userId), owner.cookie, {
+      method: "POST",
+    });
+    expect(ok.status).toBe(200);
+    expect(calls.some((c) => c.path === "/trial/start")).toBe(true);
   });
 
   it("free after the trial: invites are 403 plan_required; nothing is created", async () => {
@@ -1035,6 +1136,21 @@ describe("creator count", () => {
     expect(previousMonth("2026-01")).toBe("2025-12");
   });
 
+  it("the monthly report with nothing ever sent starts at the oldest month with creators, oldest first", async () => {
+    const prev = previousMonth(monthOf(mid));
+    const mid1 = previousMonth(prev);
+    const oldest = previousMonth(mid1);
+    await env.DB.prepare(
+      "insert into creator_months (month, user_id, source, first_at) values (?, 'uA', 'version', 1), (?, 'uB', 'version', 2)",
+    )
+      .bind(oldest, prev)
+      .run();
+    await withBrokerProps({ props: PROPS }, () => usageTick(H, mid));
+    expect(
+      calls.filter((c) => c.path === "/usage").map((c) => c.body?.month),
+    ).toEqual([oldest, mid1, prev]);
+  });
+
   it("the monthly report sends every unsent month after the last sent one, oldest first", async () => {
     const prev = previousMonth(monthOf(mid));
     const skipped = previousMonth(prev);
@@ -1096,9 +1212,48 @@ describe("Me.instance.billing and the billing routes", () => {
     expect(MeSchema.parse(await self.json()).instance.billing).toBeUndefined();
   });
 
-  it("the billing routes need an interactive cookie session: a PAT is refused, even the owner's", async () => {
+  it("the billing routes need an interactive cookie session: a PAT, an OAuth grant and an MCP agent are refused, even the owner's", async () => {
     await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 2 });
     const { token } = await createPat(env, owner.userId, "billing pat");
+    const { accessToken } = await oauthToken(
+      `owner-${tag}@a.com`,
+      "Billing Agent",
+      owner,
+    );
+    const bearer = (path: string, t: string, body: unknown) =>
+      fetchAndWait(
+        app,
+        new Request(`http://app.localhost${path}`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${t}`,
+            "content-type": "application/json",
+            "x-oa-request": "1",
+          },
+          body: JSON.stringify(body),
+        }),
+        H,
+        PROPS,
+      );
+    // An MCP agent (the owner's PAT over /mcp) has no billing tool at all.
+    const client = await connect(token, { env: H, props: PROPS });
+    const tools = (await client.listTools()).tools.map((t) => t.name);
+    expect(tools.some((n) => /billing|checkout|portal|usage/.test(n))).toBe(
+      false,
+    );
+    await client.close();
+    for (const [path, body] of [
+      [R.billingCheckout, { tier: "team" }],
+      [R.billingPortal, {}],
+      [R.billingUsage, {}],
+    ] as const) {
+      expect([401, 404]).toContain(
+        (await bearer(path, accessToken, body)).status,
+      );
+    }
+    expect(
+      calls.some((c) => ["/checkout", "/portal", "/usage"].includes(c.path)),
+    ).toBe(false);
     for (const [path, body] of [
       [R.billingCheckout, { tier: "team" }],
       [R.billingPortal, {}],

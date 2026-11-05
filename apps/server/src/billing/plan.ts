@@ -161,15 +161,19 @@ export function effectivePlan(
       return out(base.tier === "trial" ? "trial_ended" : "lapsed", "readOnly");
     case "past_due":
       // Grace runs until graceUntil; billing sets it with past_due. Fail
-      // closed on a missing date: the grace is 7 days from the answer.
+      // closed on a missing date: the grace is 7 days from the answer (past_due
+      // only ever comes from a billing answer).
       if (now > (base.graceUntil ?? (last?.asOf ?? now) + PLAN_STALE_MS))
         return out("payment_failed", "readOnly");
       break;
   }
-  // A trial with no end date counts as ended (fail closed).
+  // A billing answer for a trial with no end date counts as ended (fail
+  // closed). Not the provisioned TIER fallback (`last` null): a trial
+  // install provisioned before billing answered has no dates at all.
   if (
     base.tier === "trial" &&
-    (base.trialEndsAt === null || now > base.trialEndsAt)
+    ((last !== null && base.trialEndsAt === null) ||
+      (base.trialEndsAt !== null && now > base.trialEndsAt))
   )
     return out("trial_ended", "readOnly");
   if (base.tier === "free") return out("solo", "solo");
