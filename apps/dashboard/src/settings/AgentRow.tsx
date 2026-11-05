@@ -267,6 +267,7 @@ export function AgentRow({
             variant="link"
             size="sm"
             className="h-auto px-0 text-[length:var(--oa-text-sm)] underline underline-offset-3"
+            disabled={frozen}
             onClick={edit}
           >
             Add label
@@ -298,7 +299,9 @@ export function AgentRow({
             className="text-[length:var(--oa-text-sm)]"
           >
             {canLabel && c.label && (
-              <DropdownMenuItem onSelect={edit}>Rename label</DropdownMenuItem>
+              <DropdownMenuItem disabled={frozen} onSelect={edit}>
+                Rename label
+              </DropdownMenuItem>
             )}
             {versions > 0 && (
               <DropdownMenuItem asChild>

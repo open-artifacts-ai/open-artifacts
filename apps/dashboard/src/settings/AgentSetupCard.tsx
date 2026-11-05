@@ -16,9 +16,11 @@ Sign in through the browser. Never ask me to paste a token into this chat.`;
 
 /** Whoever the server lets connect an agent (its canConnect): not a guest,
     not capped. The role covers an older server, whose /me has no auth.
-    Consent answers 403 for anyone else, so agent prompts would only fail them. */
+    Consent answers 403 for anyone else, so agent prompts would only fail them.
+    The plan cap is a billing state, not an access limit (Design, #863): a
+    locked admin still sees these surfaces, their writes disabled. */
 export const canConnectAgents = (me: Me) =>
-  me.user.role !== "guest" && me.auth?.cap == null;
+  me.user.role !== "guest" && (me.auth?.cap == null || me.auth.cap === "plan");
 
 export function useCanSetUpAgent() {
   const state = useMe();
