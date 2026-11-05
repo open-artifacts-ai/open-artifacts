@@ -106,4 +106,19 @@ describe("text-range", () => {
     expect(nodeAtIndex(idx, 7)?.data).toBe("brave");
     expect(nodeAtIndex(idx, idx.text.length)).toBeNull();
   });
+
+  it("skips style and script built in the SVG namespace", () => {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    for (const name of ["style", "script"]) {
+      const el = document.createElementNS(ns, name);
+      el.textContent = `svg ${name} body`;
+      svg.append(el);
+    }
+    const g = document.createElementNS(ns, "text");
+    g.textContent = "visible";
+    svg.append(g);
+    root.append(svg);
+    expect(flatText(root)).toBe("Hello brave newworld \u{1F600} endvisible");
+  });
 });

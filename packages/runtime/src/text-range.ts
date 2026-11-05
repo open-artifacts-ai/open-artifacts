@@ -5,16 +5,17 @@
 
 // Text that is never page content: code, templates and form values.
 const SKIPPED = new Set([
-  "SCRIPT",
-  "STYLE",
-  "NOSCRIPT",
-  "TEMPLATE",
-  "TEXTAREA",
+  "script",
+  "style",
+  "noscript",
+  "template",
+  "textarea",
 ]);
 
 function skipped(node: Node): boolean {
   for (let p = node.parentNode; p; p = p.parentNode) {
-    if (SKIPPED.has(p.nodeName.toUpperCase())) return true;
+    // localName: lowercase for HTML and SVG elements alike.
+    if (SKIPPED.has((p as Element).localName)) return true;
   }
   return false;
 }
