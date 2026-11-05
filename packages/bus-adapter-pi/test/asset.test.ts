@@ -10,6 +10,7 @@ import {
   earlierStatusText,
   excerptOf,
   messageHeader,
+  movedName,
   neutralizeBody,
   oversizedText,
   REFUSAL,
@@ -594,6 +595,12 @@ describe("the asset's own copy matches the shared copy", () => {
         excerptOf("w".repeat(60)),
       ])
         expect(copy.receiptText(r, to, n, ex)).toBe(receiptText(r, to, n, ex));
+    const revoked = { state: "refused", reason: "revoked" } as const;
+    expect(copy.receiptText(revoked, to, undefined, "hi", `${to}-2`)).toBe(
+      receiptText(revoked, to, undefined, "hi", `${to}-2`),
+    );
+    const roster = [`${to}-3`, `${to}-2`, `${to}-2x`, "other"];
+    expect(copy.movedName(to, roster)).toBe(movedName(to, roster));
   });
   it("excerpts", () => {
     for (const body of [

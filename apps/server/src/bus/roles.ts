@@ -69,7 +69,7 @@ export function roleTakenSql(
  * in any scope). OpenBus #451: a row reserves in the scope it was left in
  * (former_names namespace, global), not its agent's current one, so a move
  * or flip keeps it reserved where it was; a `held` row (a name an agent left
- * a scope under: a close, revoke, move or flip) reserves the same way, and
+ * a scope under: a close, move or flip; #1448: a revoke frees them) reserves the same way, and
  * both reserve whether or not the agent is live. One definition for
  * nameTaken (hub.ts) and putRole, so a role never takes a name an agent
  * couldn't.
