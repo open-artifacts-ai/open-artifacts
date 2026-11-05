@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.122.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.121.1...v0.122.0) (2026-11-05)
+
+
+### Features
+
+* **billing:** hosted plan enforcement, creator count and billing routes (server) ([#1493](https://github.com/open-artifacts-ai/open-artifacts/issues/1493)) ([a172ddd](https://github.com/open-artifacts-ai/open-artifacts/commit/a172ddd6920ca3abbb8d14368772f19c36822450))
+* **dashboard:** comments panel in the viewer shell ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#1497](https://github.com/open-artifacts-ai/open-artifacts/issues/1497)) ([9bee74e](https://github.com/open-artifacts-ai/open-artifacts/commit/9bee74e67ec31ab8252be01edaeb252207541235))
+* **provision:** release key rotation support ([#1056](https://github.com/open-artifacts-ai/open-artifacts/issues/1056)) ([#1483](https://github.com/open-artifacts-ai/open-artifacts/issues/1483)) ([d7d1dcc](https://github.com/open-artifacts-ai/open-artifacts/commit/d7d1dcca9002eabcb29ee5377034babd0fe6d277))
+* **scheduler:** prod's fleet on: canary set, smoke required ([#1454](https://github.com/open-artifacts-ai/open-artifacts/issues/1454)) ([6bfcf04](https://github.com/open-artifacts-ai/open-artifacts/commit/6bfcf047f8f675325829d6a1c7932e3abd51098d))
+* **shared:** comments contract: schemas, routes, errors, events frame, mocks ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#1489](https://github.com/open-artifacts-ai/open-artifacts/issues/1489)) ([e94b147](https://github.com/open-artifacts-ai/open-artifacts/commit/e94b1476454b79dfb129619f4720928f457f3cb3))
+* viewer presence contract and roster builder ([#539](https://github.com/open-artifacts-ai/open-artifacts/issues/539) Tasks 1-2) ([#1510](https://github.com/open-artifacts-ai/open-artifacts/issues/1510)) ([107e3d7](https://github.com/open-artifacts-ai/open-artifacts/commit/107e3d7c41e8c74e62d7cb85f1f227b6600abd3e))
+
+
+### Bug Fixes
+
+* **bus:** carry OA_BUS_HOME into harness entries for a non-default home ([#1443](https://github.com/open-artifacts-ai/open-artifacts/issues/1443)) ([#1475](https://github.com/open-artifacts-ai/open-artifacts/issues/1475)) ([971b42d](https://github.com/open-artifacts-ai/open-artifacts/commit/971b42d9145d6a8b42221df68cb4ed57353ad9c3))
+* **bus:** prefix Pi tool names; Claude's MCP server offers nothing elsewhere ([#1448](https://github.com/open-artifacts-ai/open-artifacts/issues/1448)) ([#1464](https://github.com/open-artifacts-ai/open-artifacts/issues/1464)) ([518e27f](https://github.com/open-artifacts-ai/open-artifacts/commit/518e27f0da8a258d1294b79883841364fa62f3c0))
+* **bus:** revoking a machine frees the names its agents held ([#1448](https://github.com/open-artifacts-ai/open-artifacts/issues/1448)) ([#1450](https://github.com/open-artifacts-ai/open-artifacts/issues/1450)) ([7d1922b](https://github.com/open-artifacts-ai/open-artifacts/commit/7d1922bef5bda0e9d0e6827441b692fec6f8fd6d))
+* **directory:** audit a blocked sync revive and document the way back ([#1145](https://github.com/open-artifacts-ai/open-artifacts/issues/1145)) ([#1463](https://github.com/open-artifacts-ai/open-artifacts/issues/1463)) ([fd22a67](https://github.com/open-artifacts-ai/open-artifacts/commit/fd22a67d297b5de2a136e9549960f8374c1dfb48))
+* **provapi:** prod_dirty clears after a later done upgrade or rollback ([#1506](https://github.com/open-artifacts-ai/open-artifacts/issues/1506)) ([c0ac03e](https://github.com/open-artifacts-ai/open-artifacts/commit/c0ac03eb529d78e328c4cb8e2e3f206dece7f2e3))
+* **provision:** a retry re-takes its lease; stale attempts fenced before Cloudflare writes ([#1326](https://github.com/open-artifacts-ai/open-artifacts/issues/1326)) ([#1498](https://github.com/open-artifacts-ai/open-artifacts/issues/1498)) ([38cbb99](https://github.com/open-artifacts-ai/open-artifacts/commit/38cbb99d784c43c3437fb5ea0c1f9cc0620052cd))
+* **server:** publicName catches a full-width @ ([#1505](https://github.com/open-artifacts-ai/open-artifacts/issues/1505)) ([#1508](https://github.com/open-artifacts-ai/open-artifacts/issues/1508)) ([d12d929](https://github.com/open-artifacts-ai/open-artifacts/commit/d12d9290249376b9add72990bd645a297332053b))
+* **users:** anonymous readers never get a name containing @ ([#1107](https://github.com/open-artifacts-ai/open-artifacts/issues/1107)) ([#1460](https://github.com/open-artifacts-ai/open-artifacts/issues/1460)) ([3d00024](https://github.com/open-artifacts-ai/open-artifacts/commit/3d00024baef5248d8f85f24d8493331bf902b23c))
+
 ## [0.121.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.121.0...v0.121.1) (2026-11-05)
 
 
