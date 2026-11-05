@@ -765,42 +765,44 @@ describe("comments: guests and Retry-After", () => {
           allowAnonymousWrites: true,
         }),
       ),
+      // A GET never mints: it reads the token if one is sent, else as a guest.
       http.get(`*${R.comments(PUBLIC)}`, ({ request }) => {
         seenTokens.push(request.headers.get(ANON_ID_HEADER));
-        // The server mints a token and returns it in the header.
-        return HttpResponse.json(
-          { threads: [], open: 0, truncated: false },
-          { headers: { [ANON_ID_HEADER]: TOKEN } },
-        );
+        return HttpResponse.json({ threads: [], open: 0, truncated: false });
       }),
     );
     return seenTokens;
   };
 
-  it("a guest stores the token the server mints and sends it on later comment requests", async () => {
+  it("a guest reads without a token, and the POST that mints returns it: stored, then sent on later requests", async () => {
     const seenTokens = guestMocks();
     const writes: (string | null)[] = [];
     server.use(
       http.post(`*${R.comments(PUBLIC)}`, ({ request }) => {
         writes.push(request.headers.get(ANON_ID_HEADER));
-        return HttpResponse.json(
-          { error: { code: "internal", message: "x" } },
-          { status: 500 },
-        );
+        return HttpResponse.json(oneThread, {
+          status: 201,
+          headers: { [ANON_ID_HEADER]: TOKEN },
+        });
       }),
     );
     mount(viewerPath(PUBLIC));
     fireEvent.click(await screen.findByRole("button", { name: "Comments" }));
     const c = await col();
-    await waitFor(() => expect(localStorage.getItem("oa.anonId")).toBe(TOKEN));
-    expect(seenTokens.length).toBeGreaterThan(0);
+    await waitFor(() => expect(seenTokens.length).toBeGreaterThan(0));
+    // The read sent no token and minted none.
+    expect(seenTokens).toEqual([null]);
+    expect(localStorage.getItem("oa.anonId")).toBeNull();
     const box = within(c).getByRole("textbox", {
       name: "Comment on the whole page",
     });
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: "hi" } });
     fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
-    await waitFor(() => expect(writes).toEqual([TOKEN]));
+    await waitFor(() => expect(writes).toEqual([null]));
+    await waitFor(() => expect(localStorage.getItem("oa.anonId")).toBe(TOKEN));
+    // The refetch after the post carries the stored token.
+    await waitFor(() => expect(seenTokens.at(-1)).toBe(TOKEN));
   });
 
   it("a signed-in viewer never sends the anon token", async () => {
@@ -1074,7 +1076,7 @@ describe("comments: review round 1", () => {
     expect(await screen.findByText(hint)).toBeInTheDocument();
   });
 
-  it("M5: a token-less guest read takes the mint lock too", async () => {
+  it("M5: only a minting write takes the mint lock; reads and other writes never do", async () => {
     // Fresh modules: an earlier test's in-memory token would skip the lock.
     vi.resetModules();
     const { withAnon } = await import("../src/api/comments");
@@ -1089,14 +1091,13 @@ describe("comments: review round 1", () => {
     });
     try {
       expect(loadAnonToken()).toBeNull();
-      const ac = new AbortController();
-      await withAnon(true, async () => "read", ac.signal);
+      await withAnon(true, false, async () => "read");
+      expect(request).not.toHaveBeenCalled();
+      await withAnon(true, true, async () => "post");
       expect(request.mock.calls[0]?.[0]).toBe(MINT_LOCK);
-      // The query's abort signal reaches the lock, so a cancelled read stops waiting.
-      expect(request.mock.calls[0]?.[1]).toEqual({ signal: ac.signal });
       // Signed in: never.
       request.mockClear();
-      await withAnon(false, async () => "read");
+      await withAnon(false, true, async () => "post");
       expect(request).not.toHaveBeenCalled();
     } finally {
       Reflect.deleteProperty(navigator, "locks");
