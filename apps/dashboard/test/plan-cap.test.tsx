@@ -399,7 +399,7 @@ it("departed: a locked admin's Transfer all to me and Transfer to someone else a
   lockedAdmin("/settings/members");
   const d = await departedRegion();
   const toMe = await within(d).findByRole("button", {
-    name: "Transfer all to me",
+    name: "Transfer all to me…",
   });
   expect(toMe).toBeDisabled();
   fireEvent.pointerDown(within(d).getByRole("button", { name: /^More for / }), {
@@ -431,7 +431,7 @@ it("departed: a restricted caller still gets no Transfer all to me", async () =>
     await within(d).findByRole("button", { name: /^Transfer .*'s artifacts$/ }),
   ).toBeVisible();
   expect(
-    within(d).queryByRole("button", { name: "Transfer all to me" }),
+    within(d).queryByRole("button", { name: "Transfer all to me…" }),
   ).toBeNull();
 });
 
