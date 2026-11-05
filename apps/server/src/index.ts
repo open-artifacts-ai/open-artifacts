@@ -4,6 +4,7 @@ import { canConnect } from "./auth/agents.js";
 import { withBrokerProps } from "./auth/broker-transport.js";
 import { withCred } from "./auth/cred.js";
 import { verifyPat } from "./auth/pat.js";
+import { withPlanScope } from "./billing/features.js";
 import { contentApp } from "./content/app.js";
 import { scheduled } from "./cron.js";
 import { withReadBudget, withRetries } from "./db/retry.js";
@@ -90,8 +91,11 @@ async function mcpWithPat(
 export default {
   fetch(req, env, ctx) {
     const e = withRetries(env);
-    // The platform's broker capabilities (ctx.props) for this invocation.
-    return withReadBudget(() => withBrokerProps(ctx, () => serve(req, e, ctx)));
+    // The platform's broker capabilities (ctx.props) for this invocation,
+    // then (hosted) the billing plan, read once for every features check.
+    return withReadBudget(() =>
+      withBrokerProps(ctx, () => withPlanScope(e, () => serve(req, e, ctx))),
+    );
   },
   scheduled(event, env, ctx) {
     const e = withRetries(env);

@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import type { SyncStatus } from "@oa/shared";
+import type { DirectoryMode, SyncStatus } from "@oa/shared";
 import { withoutCred } from "../auth/cred.js";
 import { withRetries } from "../db/retry.js";
 import type { Env } from "../env.js";
@@ -35,8 +35,15 @@ export class DirectorySync extends DurableObject<Env> {
     this.engine = new SyncEngine(this.env, ctx.storage, ctx, this.box);
   }
 
-  kick(reason: KickReason): Promise<SyncStatus> {
-    return withoutCred(() => this.engine.kick(reason));
+  // `mode` on every call: the caller's directory mode (services/directory.ts
+  // syncModeFor: hosted, the billing tier's), which the alarms then follow.
+
+  kick(
+    reason: KickReason,
+    mode?: DirectoryMode,
+    paused?: boolean,
+  ): Promise<SyncStatus> {
+    return withoutCred(() => this.engine.kick(reason, undefined, mode, paused));
   }
 
   status(): Promise<SyncStatus> {
@@ -44,21 +51,32 @@ export class DirectorySync extends DurableObject<Env> {
   }
 
   /** A run is due and no token is in hand (services/directory.ts feedSync). */
-  wantsToken(): Promise<boolean> {
-    return withoutCred(() => this.engine.wantsToken());
+  wantsToken(mode?: DirectoryMode, paused?: boolean): Promise<boolean> {
+    return withoutCred(() => this.engine.wantsToken(undefined, mode, paused));
   }
 
   /** The caller's freshly minted token (never its capability), or why it failed. */
   handToken(
     forKey: string,
     h: { token: string } | { error: MintFault },
+    mode?: DirectoryMode,
+    paused?: boolean,
   ): Promise<void> {
-    return withoutCred(() => this.engine.handToken(forKey, h));
+    return withoutCred(() =>
+      this.engine.handToken(forKey, h, undefined, mode, paused),
+    );
   }
 
   /** Null: nothing confirmable (no hold, or an unreadable group). */
-  confirmHeld(groupId: string, by?: AuditActor): Promise<SyncStatus | null> {
-    return withoutCred(() => this.engine.confirmHeld(groupId, by));
+  confirmHeld(
+    groupId: string,
+    by?: AuditActor,
+    mode?: DirectoryMode,
+    paused?: boolean,
+  ): Promise<SyncStatus | null> {
+    return withoutCred(() =>
+      this.engine.confirmHeld(groupId, by, undefined, mode, paused),
+    );
   }
 
   /** Null: nothing snoozable (no sweep hold, or not yet re-read since #412). */
