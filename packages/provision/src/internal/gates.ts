@@ -23,10 +23,12 @@ export const ALLOW_ACCOUNT_TARGET: boolean = false;
  */
 export const RELEASE_PUBKEY: Readonly<Record<"staging" | "prod", string>> =
   Object.freeze({
-    // Key ceremony 2026-10-24: the private halves live only in the GitHub
-    // Environment secrets hosted-staging / hosted-prod RELEASE_SIGNING_KEY.
-    staging: "octk3ysmW5j0Fw8hPs1ex3POLXmYH8l6nLoms8Rrb8c",
-    prod: "tfSgv1PLRZlYQfVNpy9Vp1ohxdfZihz2WgPCYcCQyJg",
+    // Key ceremony 2026-11-05 (rotated from the 2026-10-24 keys, now retired
+    // below): the private halves live in the cloud repo's
+    // (open-artifacts-ai/open-artifacts-cloud) GitHub Environment secrets
+    // hosted-staging / hosted-prod RELEASE_SIGNING_KEY.
+    staging: "80JGjYyektdP4iLrqDgxkFqJjvbfhTaE6eLC63AcbvM",
+    prod: "ECUxXdoLuxGq8KOcHPmpvGgmfFitNjel5Lw3JtwEVGA",
   });
 
 /**
@@ -38,8 +40,8 @@ export const RELEASE_PUBKEY: Readonly<Record<"staging" | "prod", string>> =
 export const RELEASE_RETIRED_PUBKEYS: Readonly<
   Record<"staging" | "prod", readonly string[]>
 > = Object.freeze({
-  staging: Object.freeze([] as string[]),
-  prod: Object.freeze([] as string[]),
+  staging: Object.freeze(["octk3ysmW5j0Fw8hPs1ex3POLXmYH8l6nLoms8Rrb8c"]),
+  prod: Object.freeze(["tfSgv1PLRZlYQfVNpy9Vp1ohxdfZihz2WgPCYcCQyJg"]),
 });
 
 /**
