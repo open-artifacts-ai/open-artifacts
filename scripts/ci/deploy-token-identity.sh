@@ -28,7 +28,7 @@ tok="${CLOUDFLARE_API_TOKEN:-}"
 
 auth() { printf 'header = "Authorization: Bearer %s"\n' "$tok"; }
 
-if out="$(curl -sS -w $'\n%{http_code}' https://api.cloudflare.com/client/v4/user/tokens/verify 2> /dev/null)"; then
+if out="$(curl -sS --max-time 30 -K <(auth) -w $'\n%{http_code}' https://api.cloudflare.com/client/v4/user/tokens/verify 2> /dev/null)"; then
   http="${out##*$'\n'}"
   body="${out%$'\n'*}"
 else
