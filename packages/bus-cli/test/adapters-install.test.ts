@@ -916,3 +916,37 @@ describe("a non-default bus home reaches every harness entry (#1443)", () => {
     expect(readJ(p.oc(h)).mcp?.servers?.oa_bus).toBeUndefined();
   });
 });
+
+describe("doctor and --check catch a missing or wrong home (#1443)", () => {
+  it("an old Claude entry with env {} is missing under a moved home, and a rerun repairs it", async () => {
+    const { h, deps } = setup(["claude"]);
+    const fb = fakeExec({ "claude mcp add": { code: 1, stderr: "no" } });
+    deps.exec = fb.exec;
+    put(p.claude(h), {});
+    await installAdapters(deps);
+    expect(checkAdapters(deps).claude).toBe("configured");
+    deps.busHome = join(h, "elsewhere");
+    expect(checkAdapters(deps).claude).toBe("missing");
+    await installAdapters(deps);
+    expect(checkAdapters(deps).claude).toBe("configured");
+    // And a stale home is wrong under the default again.
+    deps.busHome = undefined;
+    expect(checkAdapters(deps).claude).toBe("missing");
+  });
+
+  it("an old OpenCode entry and plugin are missing under a moved home, and a rerun repairs them", async () => {
+    const { h, deps } = setup(["opencode"]);
+    await installAdapters(deps);
+    expect(checkAdapters(deps).opencode).toBe("configured");
+    deps.busHome = join(h, "elsewhere");
+    expect(checkAdapters(deps).opencode).toBe("missing");
+    await installAdapters(deps);
+    expect(checkAdapters(deps).opencode).toBe("configured");
+    // Entry right, plugin file without the line: still missing.
+    writeFileSync(
+      join(h, "elsewhere/integrations/opencode/oa_bus/tui.js"),
+      "PLUGIN_JS",
+    );
+    expect(checkAdapters(deps).opencode).toBe("missing");
+  });
+});

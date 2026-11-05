@@ -114,6 +114,8 @@ const movedHome = (deps: Pick<AdapterDeps, "home" | "busHome">) => {
  * has no env to set: a moved home is set in the file's own first line, never
  * over an OA_BUS_HOME the user exported (#1443).
  */
+// The `||=` line sets OA_BUS_HOME for the whole harness process; its children
+// inherit it on purpose, so they find the same bus.
 const homeLine = (ob: string) =>
   `process.env.OA_BUS_HOME ||= ${JSON.stringify(ob)};`;
 const withHome = (text: string, ob: string | undefined) =>
@@ -710,6 +712,10 @@ export function checkAdapters(
     }
   };
   // The extension must set the home it was installed for, and only that.
+  const homeOf = (env: unknown): string | undefined =>
+    typeof env === "object" && env !== null
+      ? ((env as Doc).OA_BUS_HOME as string | undefined)
+      : undefined;
   const homed = (file: string) => {
     if (!existsSync(file)) return false;
     const first = readFileSync(file, "utf8").split("\n", 1)[0] ?? "";
@@ -729,26 +735,26 @@ export function checkAdapters(
         ? "configured"
         : "missing";
   return {
-    claude: state(
-      "claude",
-      () =>
-        (readDoc(p.claude).mcpServers as Doc | undefined)?.[NAME] !== undefined,
-    ),
+    claude: state("claude", () => {
+      const e = (readDoc(p.claude).mcpServers as Doc | undefined)?.[NAME] as
+        | Doc
+        | undefined;
+      return e !== undefined && homeOf(e.env) === movedHome(deps);
+    }),
     opencode: state(
       "opencode",
       () =>
         p.opencodeConfigs.filter(present).some((f) => {
           const d = parseJsonc(readFileSync(f, "utf8"), f);
-          return (
-            servers(d)?.[NAME] !== undefined ||
-            (d.mcp as Doc | undefined)?.[NAME] !== undefined
-          );
+          const e = (servers(d)?.[NAME] ??
+            (d.mcp as Doc | undefined)?.[NAME]) as Doc | undefined;
+          return e !== undefined && homeOf(e.environment) === movedHome(deps);
         }) &&
         listed(
           parseJsonc(readFileSync(p.opencodeCli, "utf8"), p.opencodeCli),
           p.opencodePlugin,
         ) &&
-        existsSync(join(p.opencodePlugin, "tui.js")),
+        homed(join(p.opencodePlugin, "tui.js")),
     ),
     pi: state("pi", () => homed(p.pi)),
     omp: state("omp", () => homed(p.omp)),
