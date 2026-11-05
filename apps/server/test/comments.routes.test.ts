@@ -473,6 +473,26 @@ describe("who can", () => {
     expect((await call(id, viewer, "")).status).toBe(200);
   });
 
+  it("every summary carries comments: true by default, false when off, signed out or in", async () => {
+    const id = await pub({ visibility: "public" });
+    const get = async (who: U | null) =>
+      (await (await api(app, R.artifact(id), who?.cookie ?? null)).json()) as {
+        comments?: boolean;
+      };
+    expect((await get(null)).comments).toBe(true);
+    expect((await get(viewer)).comments).toBe(true);
+    await api(app, R.artifact(id), owner.cookie, {
+      method: "PATCH",
+      body: { comments: false },
+    });
+    expect((await get(null)).comments).toBe(false);
+    expect((await get(viewer)).comments).toBe(false);
+    const list = (await (await api(app, R.artifacts, owner.cookie)).json()) as {
+      items: { id: string; comments?: boolean }[];
+    };
+    expect(list.items.find((a) => a.id === id)?.comments).toBe(false);
+  });
+
   it("comments: false at publish creates the artifact with comments off", async () => {
     const id = await pub({ comments: false });
     expect((await call(id, owner, "")).status).toBe(403);
