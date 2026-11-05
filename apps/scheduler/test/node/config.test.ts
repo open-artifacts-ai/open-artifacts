@@ -43,14 +43,13 @@ describe("wrangler.jsonc", () => {
         ALERT_FROM: `{{ALERT_FROM_${env.toUpperCase()}}}`,
         SIGNUP_DAILY_CAP: `{{SIGNUP_DAILY_CAP_${env.toUpperCase()}}}`,
         SIGNUPS_ENABLED: `{{SIGNUPS_ENABLED_${env.toUpperCase()}}}`,
-        // #955: prod stays empty until a green staging rollout.
-        FLEET_CANARY: env === "staging" ? "i33m6mbc3zuz" : "",
-        // #1343: leo goes second on prod, inert while prod's FLEET_CANARY
-        // is empty. The smoke's token and share target are secrets,
-        // never vars: no address is ever committed.
+        // #1343: prod's fleet is on, its canary first.
+        FLEET_CANARY: env === "staging" ? "i33m6mbc3zuz" : "ifhx5rpmrhwh",
+        // #1343: leo goes second on prod. The smoke's token and share
+        // target are secrets, never vars: no address is ever committed.
         FLEET_SECOND: env === "staging" ? "" : "i2ab26lvciok",
-        // #1343: required on prod once its smoke secrets were set (inert
-        // while its FLEET_CANARY is empty); off on staging until its setup.
+        // #1343: required on prod, its smoke secrets set; off on staging
+        // until its setup.
         FLEET_SMOKE: env === "staging" ? "off" : "required",
         // The share check is on in both: an explicit, committed choice.
         FLEET_SMOKE_SHARE: "on",

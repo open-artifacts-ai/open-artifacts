@@ -124,18 +124,16 @@
         "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}",
         "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_PROD}}",
         // The fleet rollout's canary install id (#955); empty: no rollout.
-        // OFF on purpose (#1343): this config ships with the next release, so
-        // a value here switches the prod fleet on. The intended value is the
-        // prod canary "ifhx5rpmrhwh", set in its own one-line PR after review.
-        "FLEET_CANARY": "",
+        // ON (#1343): the prod canary. From the first release that contains
+        // this, the scheduler upgrades prod's fleet to its own release, canary
+        // first. Empty it in a release to switch the fleet off.
+        "FLEET_CANARY": "ifhx5rpmrhwh",
         // #1343: leo, upgraded alone right after the canary has passed its
-        // smoke. Inert while FLEET_CANARY is empty (fleet.ts: no canary,
-        // nothing is queued). The smoke's secrets: as staging's.
+        // smoke. The smoke's secrets: as staging's.
         "FLEET_SECOND": "i2ab26lvciok",
         // #1343: the canary smoke, "off" (the passive soak, as before) or
-        // "required". Required now that prod's smoke secrets are set
-        // (docs/ops/hosted.md). Inert while FLEET_CANARY is empty: no canary,
-        // no smoke, and no smoke_unconfigured or canary_blocked alert.
+        // "required". Required: prod's smoke secrets are set
+        // (docs/ops/hosted.md), and the canary must pass it before leo moves.
         "FLEET_SMOKE": "required",
         // The smoke's share check, an explicit choice: "on" needs
         // FLEET_SMOKE_SHARE_TO (a secret); "off" skips it.
