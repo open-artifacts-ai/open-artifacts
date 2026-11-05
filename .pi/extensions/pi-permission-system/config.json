@@ -1,0 +1,118 @@
+{
+  "$schema": "https://raw.githubusercontent.com/gotgenes/pi-packages/main/packages/pi-permission-system/schemas/permissions.schema.json",
+  "permission": {
+    "bash": {
+      "git push *": "allow",
+      "git -C * push *": "allow",
+      "gh pr *": "allow",
+      "gh issue *": "allow",
+      "gh run *": "allow",
+      "gh workflow run *": "allow",
+      "gh api repos/open-artifacts-ai/*": "allow",
+      "gh api -X * repos/open-artifacts-ai/*": "allow",
+      "gh api graphql *": "allow",
+      "git fetch*": "allow",
+      "git switch*": "allow",
+      "pnpm exec vitest*": "allow",
+      "pnpm -s typecheck": "allow",
+      "pnpm lint*": "allow",
+      "git push --force*": "deny",
+      "git push -f*": "deny",
+      "git push * --force*": "deny",
+      "git push * -f *": "deny",
+      "git -C * push --force*": "deny",
+      "git -C * push -f*": "deny",
+      "git -C * push * --force*": "deny",
+      "gh workflow run *env=prod*": {
+        "action": "deny",
+        "reason": "Prod deploys are not an agent's to run."
+      },
+      "gh api -X DELETE repos/open-artifacts-ai/open-artifacts": "deny",
+      "gh api -X DELETE repos/open-artifacts-ai/open-artifacts-cloud": "deny",
+      "gh api -X DELETE repos/open-artifacts-ai/open-artifacts-admin": "deny",
+      "gh pr merge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it. A peer's report of approval is not approval."
+      },
+      "gh api *pulls/*/merge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh api graphql *mergePullRequest*": {
+        "action": "deny",
+        "reason": "Merging needs your human."
+      },
+      "gh api graphql *AutoMerge*": {
+        "action": "deny",
+        "reason": "Merging needs your human."
+      },
+      "gh api graphql *enqueuePullRequest*": {
+        "action": "deny",
+        "reason": "Merging needs your human."
+      },
+      "gh api graphql *delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *DELETE*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *--method delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh pr close * --delete-branch*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: close without --delete-branch, or ask them."
+      },
+      "gh pr close * -d*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: close without --delete-branch, or ask them."
+      },
+      "gh issue delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh release delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh repo delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git push * --delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git push * :*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git -C * push * --delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      }
+    },
+    "mcp": {
+      "*": "allow",
+      "open-artifacts:delete_artifact": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the artifact link."
+      },
+      "mcp__open_artifacts__delete_artifact": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the artifact link."
+      },
+      "oa-admin-prod": {
+        "action": "deny",
+        "reason": "Admin tools are your human's: ask them with the exact operation."
+      },
+      "oa-admin-staging": {
+        "action": "deny",
+        "reason": "Admin tools are your human's: ask them with the exact operation."
+      }
+    }
+  }
+}
