@@ -13,7 +13,14 @@ import { LoadError } from "../layout/LoadError";
 import { Notice } from "../layout/Notice";
 import { muted, SettingsCard, STACK } from "../settings/ui";
 import { shortDate } from "./format";
-import { buildRail, listOf, parseNamespace, shortName } from "./namespaces";
+import {
+  buildRail,
+  globalsFrom,
+  globalsLine,
+  listOf,
+  parseNamespace,
+  shortName,
+} from "./namespaces";
 import { BusLink, LINK } from "./nav";
 import { LIVE_DOWN } from "./ui";
 
@@ -40,7 +47,8 @@ function NamespacePage({
   roles: BusRole[] | undefined;
 }) {
   const all = [...new Set(agents.map((a) => a.namespace))];
-  const here = agents.filter((a) => a.namespace === ns);
+  const here = agents.filter((a) => a.namespace === ns && !a.global);
+  const globals = globalsLine(globalsFrom(agents, ns));
   const live = here.filter((a) => a.state === "live").length;
   const p = parseNamespace(ns);
   const machines = [...new Set(here.map((a) => a.machineLabel))].sort();
@@ -79,6 +87,7 @@ function NamespacePage({
             {p.kind === "repo" ? ns : `on ${listOf(machines)}`}
           </dd>
         </dl>
+        {globals && <p className={`m-0 ${muted}`}>{globals}</p>}
         <p className="m-0 text-[length:var(--oa-text-sm)]">
           <BusLink to="/agents" search={{ in: `ns:${ns}` }} className={LINK}>
             See its agents

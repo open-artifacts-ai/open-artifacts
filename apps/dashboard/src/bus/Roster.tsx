@@ -23,6 +23,8 @@ import { muted } from "../settings/ui";
 import {
   buildRail,
   type Count,
+  globalsFrom,
+  globalsLine,
   inScope,
   listOf,
   parseNamespace,
@@ -370,6 +372,11 @@ export function Roster({ scope: raw }: { scope?: string }) {
           <p className={`m-0 ${muted}`}>No agents here.</p>
         ) : (
           <RosterTable agents={shown} all={all} />
+        )}
+        {scope.kind === "ns" && globalsFrom(list, scope.ns) > 0 && (
+          <p className={`m-0 ${muted}`}>
+            {globalsLine(globalsFrom(list, scope.ns))}
+          </p>
         )}
         <p className={`m-0 ${muted}`}>{QUEUE_LEGEND}</p>
       </section>

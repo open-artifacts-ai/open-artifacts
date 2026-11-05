@@ -12,6 +12,8 @@ import { dayTime, shortDate } from "../src/bus/format";
 import { liveOn, machineStatus, machinesSummary } from "../src/bus/Machines";
 import {
   buildRail,
+  globalsFrom,
+  globalsLine,
   inScope,
   listOf,
   parseNamespace,
@@ -99,7 +101,7 @@ describe("namespaces", () => {
     expect(shortName(a, [a, b])).toBe("acme/web");
     expect(shortName("notes", [a, "notes"])).toBe("notes");
   });
-  it("buildRail: orgs A to Z with live counts, folders with their machines, global agents", () => {
+  it("buildRail: orgs A to Z with live counts, folders with their machines, global agents once under Everywhere", () => {
     const r = buildRail(A);
     expect(r.all).toEqual({ total: A.length, live: 6 });
     expect(r.orgs.map((o) => [o.owner, o.total])).toEqual([
@@ -114,7 +116,15 @@ describe("namespaces", () => {
     ]);
     const notes = r.folders.namespaces.find((n) => n.ns === "notes");
     expect(notes?.machines).toEqual(["home-desktop", "leo-work"]);
+    expect(r.folders.namespaces.map((n) => n.ns)).toEqual(["notes"]);
     expect(r.global.total).toBe(1);
+    // The global agent's home (open-artifacts) doesn't count it.
+    expect(agentNamed("memory")).toMatchObject({ global: true, namespace: OA });
+    const counted = [
+      ...r.orgs.flatMap((o) => o.namespaces),
+      ...r.folders.namespaces,
+    ].reduce((n, x) => n + x.total, 0);
+    expect(counted).toBe(A.length - 1);
   });
   it("scopes round-trip through ?in= and filter agents", () => {
     for (const s of ["org:leourbina", `ns:${OA}`, "folders", "global"])
@@ -124,7 +134,24 @@ describe("namespaces", () => {
     const pi = agentNamed("pi-2");
     expect(inScope(pi, { kind: "folders" })).toBe(true);
     expect(inScope(pi, { kind: "org", owner: "leourbina" })).toBe(false);
-    expect(inScope(agentNamed("memory"), { kind: "global" })).toBe(true);
+    const mem = agentNamed("memory");
+    expect(inScope(mem, { kind: "global" })).toBe(true);
+    expect(inScope(mem, { kind: "all" })).toBe(true);
+    expect(inScope(mem, { kind: "ns", ns: OA })).toBe(false);
+    expect(inScope(mem, { kind: "org", owner: "open-artifacts-ai" })).toBe(
+      false,
+    );
+  });
+  it("globalsLine: exact copy, singular and plural; none is empty", () => {
+    expect(globalsLine(0)).toBe("");
+    expect(globalsLine(1)).toBe(
+      "1 global agent started here is listed under Everywhere.",
+    );
+    expect(globalsLine(3)).toBe(
+      "3 global agents started here are listed under Everywhere.",
+    );
+    expect(globalsFrom(A, OA)).toBe(1);
+    expect(globalsFrom(A, "notes")).toBe(0);
   });
   it("listOf joins with and", () => {
     expect(listOf(["a"])).toBe("a");
@@ -493,6 +520,8 @@ describe("Agents › Agents (the roster)", () => {
       links.findIndex((t) => t.startsWith("Other folders")),
     );
     expect(links.at(-1)).toBe("global1");
+    // Listed once, under Everywhere: no rail row of its own elsewhere.
+    expect(links.filter((t) => t.startsWith("memory"))).toEqual([]);
     const notes = within(r).getByRole("link", { name: /^notes/ });
     expect(notes).toHaveTextContent("2 machines");
     expect(notes).toHaveTextContent("on home-desktop and leo-work");
@@ -531,6 +560,46 @@ describe("Agents › Agents (the roster)", () => {
         .getAllByRole("row")
         .slice(1),
     ).toHaveLength(4);
+  });
+
+  it("a global agent's home namespace leaves it out and says where it is", async () => {
+    withBus();
+    mount(`/agents?in=${encodeURIComponent(`ns:${OA}`)}`);
+    const rows = within(await roster())
+      .getAllByRole("row")
+      .slice(1);
+    expect(rows.map((r) => r.textContent)).not.toContainEqual(
+      expect.stringContaining("memory"),
+    );
+    expect(rows).toHaveLength(3);
+    expect(
+      screen.getByText(
+        "1 global agent started here is listed under Everywhere.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("two global agents from one namespace: the plural line", async () => {
+    withBus();
+    const mem = agentNamed("memory");
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({
+          agents: [...A, { ...mem, id: "BaZ9nPqRsTu4vWxY", name: "memory-2" }],
+          live: true,
+        }),
+      ),
+    );
+    mount(`/agents?in=${encodeURIComponent(`ns:${OA}`)}`);
+    expect(
+      await screen.findByText(
+        "2 global agents started here are listed under Everywhere.",
+      ),
+    ).toBeInTheDocument();
+    const r = await rail();
+    expect(
+      within(r).getByRole("link", { name: "global2" }),
+    ).toBeInTheDocument();
   });
 
   it("Live and Queued filter the rows", async () => {
@@ -633,6 +702,11 @@ describe("Agents › Namespaces", () => {
     expect(
       screen.getByText("in open-artifacts-ai · 3 agents, 2 live"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "1 global agent started here is listed under Everywhere.",
+      ),
+    ).toBeInTheDocument();
     const roles = screen.getByRole("region", {
       name: "Roles in this namespace",
     });
@@ -653,6 +727,7 @@ describe("Agents › Namespaces", () => {
       screen.getByText("on home-desktop and leo-work"),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Give this folder its own name/)).toBeNull();
+    expect(screen.queryByText(/listed under Everywhere/)).toBeNull();
   });
 });
 

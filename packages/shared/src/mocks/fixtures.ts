@@ -378,7 +378,7 @@ export const fixtures: {
     },
     {
       id: "BaH8nPqRsTu4vWxY",
-      namespace: "memory",
+      namespace: "github.com/open-artifacts-ai/open-artifacts",
       name: "memory",
       kind: "pi",
       machineId: "BmA1nPqRsTu4vWxY",

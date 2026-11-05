@@ -64,11 +64,14 @@ const count = (agents: readonly BusAgent[]): Count => ({
   live: agents.filter((a) => a.state === "live").length,
 });
 
-/** The rail: orgs A to Z, then Other folders, then Everywhere (global agents). */
+/**
+ * The rail: orgs A to Z, then Other folders, then Everywhere. A global agent
+ * is listed once, under Everywhere, and never counts in its home namespace.
+ */
 export function buildRail(agents: readonly BusAgent[]): Rail {
   const byNs = new Map<string, BusAgent[]>();
   for (const a of agents)
-    byNs.set(a.namespace, [...(byNs.get(a.namespace) ?? []), a]);
+    if (!a.global) byNs.set(a.namespace, [...(byNs.get(a.namespace) ?? []), a]);
   const names = [...byNs.keys()];
   const item = (ns: string): RailNamespace => {
     const list = byNs.get(ns) ?? [];
@@ -137,20 +140,32 @@ export function scopeParam(s: Scope): string | undefined {
   }
 }
 
+/** Whether the roster shows `a` in `s`. Global agents show only in all and global. */
 export function inScope(a: BusAgent, s: Scope): boolean {
+  if (s.kind === "all") return true;
+  if (s.kind === "global") return a.global;
+  if (a.global) return false;
   const p = parseNamespace(a.namespace);
   switch (s.kind) {
-    case "all":
-      return true;
     case "org":
       return p.kind === "repo" && p.owner === s.owner;
     case "ns":
       return a.namespace === s.ns;
     case "folders":
       return p.kind === "folder";
-    case "global":
-      return a.global;
   }
+}
+
+/** Global agents whose home namespace is `ns` (listed under Everywhere). */
+export const globalsFrom = (agents: readonly BusAgent[], ns: string) =>
+  agents.filter((a) => a.global && a.namespace === ns).length;
+
+/** The muted line in a global agent's home namespace; "" for none. */
+export function globalsLine(n: number): string {
+  if (n === 0) return "";
+  return n === 1
+    ? "1 global agent started here is listed under Everywhere."
+    : `${n} global agents started here are listed under Everywhere.`;
 }
 
 /** "a", "a and b", "a, b and c". */
