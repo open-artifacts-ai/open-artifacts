@@ -143,6 +143,7 @@ jobs:
     outputs:
       run: ${{ steps.dispatch.outputs.deploy_run }}
       url: ${{ steps.dispatch.outputs.deploy_url }}
+      note: ${{ steps.dispatch.outputs.deploy_note }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -186,4 +187,6 @@ jobs:
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           # The dispatched deploy run (empty when it never started).
           DEPLOY_RUN: ${{ needs.deploy.outputs.url }}
-        run: node --experimental-strip-types scripts/ci/prod-release-chain.ts report --repo "$GITHUB_REPOSITORY" --tag "$TAG" --result "$RESULT" --run "$RUN" --deploy-run "$DEPLOY_RUN"
+          # Why the dispatch step failed, e.g. that it cancelled the run.
+          DEPLOY_NOTE: ${{ needs.deploy.outputs.note }}
+        run: node --experimental-strip-types scripts/ci/prod-release-chain.ts report --repo "$GITHUB_REPOSITORY" --tag "$TAG" --result "$RESULT" --run "$RUN" --deploy-run "$DEPLOY_RUN" --deploy-note "$DEPLOY_NOTE"

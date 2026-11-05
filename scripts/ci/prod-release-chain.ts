@@ -127,6 +127,8 @@ export function report(o: {
   run: string;
   /** The dispatched deploy run's link, when it started. */
   deployRun?: string;
+  /** What the dispatch step said when it failed (one line). */
+  deployNote?: string;
 }): Report {
   // A neutral skip (a stale event, a release prod already runs) leaves the
   // issue as it is: it neither opens nor closes it.
@@ -174,6 +176,7 @@ export function report(o: {
     `Run: ${o.run}`,
     "",
     ...(o.deployRun ? [`Deploy run: ${o.deployRun}`, ""] : []),
+    ...(o.deployNote ? [`Deploy step: ${o.deployNote}`, ""] : []),
     "The scheduler deploys last and its tag is the fleet's target, so the fleet did not move unless the run failed after the scheduler deployed (then only the read-back failed: check `platform-tags.sh prod`). Read the run: a gate refused the tag, or the deploy or its read-back failed. Forward only: fix the cause, cut a new release and red-line it; a green chain run closes this issue (docs/ops/hosted.md).",
   ].join("\n");
   const existing = open[0];
@@ -288,6 +291,7 @@ function main(argv: string[]) {
       result: flag(argv, "result"),
       run: flag(argv, "run"),
       deployRun: flag(argv, "deploy-run"),
+      deployNote: flag(argv, "deploy-note"),
     });
     console.error(`prod-release-chain: ${JSON.stringify(r)}`);
     return;

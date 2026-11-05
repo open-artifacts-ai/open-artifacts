@@ -11,8 +11,9 @@
 //
 // The run is matched by event workflow_dispatch, actor github-actions[bot],
 // branch main, created no earlier than the dispatch (minus a little clock
-// skew) and a display title holding the chain id, `[<chain id>]`, which the
-// workflow's run-name puts there from its chain_id input. Zero matches by the
+// skew) and a display title that is exactly
+// `deploy-hosted-platform prod <tag> [<chain id>]`, which the workflow's
+// run-name builds from its inputs. Zero matches by the
 // find deadline, or more than one, fails.
 import { spawnSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
@@ -100,7 +101,9 @@ export function dispatchAndWait(o: Opts): Outcome {
   ]);
 
   const since = o.now() - skew;
-  const mark = `[${o.chainId}]`;
+  // The run-name is exactly this (deploy-hosted-platform.yml): a wrong env or
+  // tag in the title is not our run.
+  const title = `deploy-hosted-platform prod ${o.tag} [${o.chainId}]`;
   const matches = (): WorkflowRun[] => {
     const out = JSON.parse(
       gh(o.exec, [
@@ -114,7 +117,7 @@ export function dispatchAndWait(o: Opts): Outcome {
         r.actor?.login === BOT &&
         r.head_branch === "main" &&
         Date.parse(r.created_at ?? "") >= since &&
-        (r.display_title ?? "").includes(mark),
+        r.display_title === title,
     );
   };
 
@@ -146,10 +149,24 @@ export function dispatchAndWait(o: Opts): Outcome {
         );
       return { runId: found.id, url, conclusion: "success" };
     }
-    if (o.now() - start >= waitFor)
+    if (o.now() - start >= waitFor) {
+      // Never leave a prod deploy running unwatched: cancel it, then fail.
+      let did: string;
+      try {
+        gh(o.exec, [
+          "api",
+          "-X",
+          "POST",
+          `repos/${o.repo}/actions/runs/${found.id}/cancel`,
+        ]);
+        did = `cancelled the dispatched run ${url}`;
+      } catch (e) {
+        did = `could not cancel the dispatched run ${url} (${(e as Error).message})`;
+      }
       throw new Error(
-        `deploy run ${found.id} did not finish within ${waitFor} ms: ${url}`,
+        `deploy run ${found.id} did not finish within ${waitFor} ms; ${did}`,
       );
+    }
     o.sleep(poll);
   }
 }
@@ -189,7 +206,9 @@ function main(argv: string[]) {
     });
     emit(`deploy_conclusion=${r.conclusion}`);
   } catch (e) {
-    console.error(`chain-dispatch: ${(e as Error).message}`);
+    const msg = (e as Error).message.replace(/\s+/g, " ").slice(0, 300);
+    console.error(`chain-dispatch: ${msg}`);
+    if (out) appendFileSync(out, `deploy_note=${msg}\n`);
     process.exit(1);
   }
 }

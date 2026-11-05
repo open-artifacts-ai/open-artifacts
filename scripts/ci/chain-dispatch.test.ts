@@ -26,6 +26,7 @@ function harness(o: {
   list: () => Run[];
   poll?: (n: number) => Run;
   dispatchFails?: boolean;
+  cancelFails?: boolean;
 }) {
   let now = T0;
   const calls: string[][] = [];
@@ -36,6 +37,10 @@ function harness(o: {
       return o.dispatchFails
         ? { code: 1, stdout: "", stderr: "HTTP 403" }
         : { code: 0, stdout: "", stderr: "" };
+    if (a.includes("POST"))
+      return o.cancelFails
+        ? { code: 1, stdout: "", stderr: "HTTP 409" }
+        : { code: 0, stdout: "{}", stderr: "" };
     if (a[1]?.includes("/workflows/"))
       return {
         code: 0,
@@ -115,6 +120,11 @@ describe("chain-dispatch", () => {
       { head_branch: "feature" },
       { display_title: "deploy-hosted-platform prod v1.2.3 [c555-10]" },
       { display_title: "deploy-hosted-platform prod v1.2.3" },
+      // The title is exact: another env or tag is not our run.
+      { display_title: `deploy-hosted-platform staging v1.2.3 [${CHAIN}]` },
+      { display_title: `deploy-hosted-platform prod v1.2.4 [${CHAIN}]` },
+      { display_title: `x deploy-hosted-platform prod v1.2.3 [${CHAIN}]` },
+      { display_title: `deploy-hosted-platform prod v1.2.3 [${CHAIN}] extra` },
     ]) {
       const h = harness({ list: () => [run(over)] });
       expect(
@@ -140,9 +150,40 @@ describe("chain-dispatch", () => {
       expect(() => h.go(), String(c)).toThrow(/concluded/);
     }
   });
-  it("fails when the run does not finish in time", () => {
+  it("on the wait timeout, cancels the dispatched run, then fails saying so", () => {
     const h = harness({ list: () => [run()], poll: () => run() });
-    expect(() => h.go({ waitTimeoutMs: 120_000 })).toThrow(/did not finish/);
+    expect(() => h.go({ waitTimeoutMs: 120_000 })).toThrow(
+      /did not finish.*cancelled the dispatched run https:\/\/github.com\/o\/r\/actions\/runs\/900/,
+    );
+    const c = h.calls.at(-1) as string[];
+    expect(c).toEqual([
+      "api",
+      "-X",
+      "POST",
+      "repos/o/r/actions/runs/900/cancel",
+    ]);
+  });
+  it("on the wait timeout, still fails (and says so) when the cancel is refused", () => {
+    const h = harness({
+      list: () => [run()],
+      poll: () => run(),
+      cancelFails: true,
+    });
+    expect(() => h.go({ waitTimeoutMs: 120_000 })).toThrow(
+      /could not cancel the dispatched run/,
+    );
+  });
+  it("never cancels a run that completed, failed or succeeded", () => {
+    for (const c of ["success", "failure"]) {
+      const h = harness({
+        list: () => [run()],
+        poll: () => run({ status: "completed", conclusion: c }),
+      });
+      try {
+        h.go();
+      } catch {}
+      expect(h.calls.some((a) => a.join(" ").includes("/cancel"))).toBe(false);
+    }
   });
   it("fails when the dispatch is refused, and finds nothing", () => {
     const h = harness({ list: () => [run()], dispatchFails: true });

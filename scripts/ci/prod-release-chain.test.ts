@@ -296,6 +296,7 @@ describe("prod-release-chain.yml", () => {
     expect(d.outputs).toEqual({
       run: "${{ steps.dispatch.outputs.deploy_run }}",
       url: "${{ steps.dispatch.outputs.deploy_url }}",
+      note: "${{ steps.dispatch.outputs.deploy_note }}",
     });
     expect(d["timeout-minutes"]).toBeGreaterThan(50);
   });
@@ -313,9 +314,10 @@ describe("prod-release-chain.yml", () => {
         "${{ needs.gate.result == 'success' && needs.deploy.result || needs.gate.result }}",
       RUN: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
       DEPLOY_RUN: "${{ needs.deploy.outputs.url }}",
+      DEPLOY_NOTE: "${{ needs.deploy.outputs.note }}",
     });
     expect(step.run).toBe(
-      'node --experimental-strip-types scripts/ci/prod-release-chain.ts report --repo "$GITHUB_REPOSITORY" --tag "$TAG" --result "$RESULT" --run "$RUN" --deploy-run "$DEPLOY_RUN"',
+      'node --experimental-strip-types scripts/ci/prod-release-chain.ts report --repo "$GITHUB_REPOSITORY" --tag "$TAG" --result "$RESULT" --run "$RUN" --deploy-run "$DEPLOY_RUN" --deploy-note "$DEPLOY_NOTE"',
     );
   });
 });
@@ -747,6 +749,7 @@ describe("the gate's neutral skips", () => {
       result: "failure",
       run: "https://x/chain",
       deployRun: "https://x/deploy",
+      deployNote: "cancelled the dispatched run https://x/deploy",
     });
     const body =
       (() => {
@@ -754,5 +757,6 @@ describe("the gate's neutral skips", () => {
         return c[c.indexOf("--body") + 1];
       })() ?? "";
     expect(body).toContain("Deploy run: https://x/deploy");
+    expect(body).toContain("cancelled the dispatched run https://x/deploy");
   });
 });
