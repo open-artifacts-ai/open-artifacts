@@ -303,7 +303,7 @@ export const ShellToArtifactSchema = z.union([
   z.strictObject({
     oa: z.literal(1),
     type: z.literal("comments.mode"),
-    mode: z.enum(["off", "select", "pin"]),
+    mode: z.enum(["off", "view", "select", "pin"]),
   }),
   /**
    * The threads to draw: anchors and opaque ids only. `n` is a pin's number;

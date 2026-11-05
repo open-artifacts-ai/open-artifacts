@@ -43,6 +43,8 @@ export type CommentsApi = {
   older: boolean;
   /** Open threads of the whole artifact (the toolbar count). */
   open: number;
+  /** Open threads in the list shown here (differs from `open` on a pinned older version). */
+  listedOpen: number;
   loading: boolean;
   error: unknown;
   refetch: () => void;
@@ -143,15 +145,16 @@ export function useCommentsController({
   const [guestName, setGuestName] = useState("");
   const [hello, setHello] = useState(0);
 
+  const mayComment = canComment(artifact, authed, readOnly);
   // The frame's own copy of what to draw: ids and anchors only.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `hello` re-sends after the frame reloads
   useEffect(() => {
     const b = getBridge();
     if (!b) return;
     // `?.`: older test doubles of the bridge have no comment methods.
-    b.setCommentsMode?.(enabled ? "select" : "off");
+    b.setCommentsMode?.(enabled ? (mayComment ? "select" : "view") : "off");
     if (enabled) b.setComments?.(frameThreads(threads, active));
-  }, [enabled, threads, active, hello, getBridge]);
+  }, [enabled, mayComment, threads, active, hello, getBridge]);
 
   const ids = useRef(new Set<string>());
   ids.current = new Set((all ?? []).map((t) => t.id));
@@ -161,7 +164,6 @@ export function useCommentsController({
     open: createGate(5, 1000),
   });
   const dirty = useRef(false);
-  const mayComment = canComment(artifact, authed, readOnly);
   const mayRef = useRef(mayComment);
   mayRef.current = mayComment;
   const draftRef = useRef<Draft>(null);
@@ -179,7 +181,7 @@ export function useCommentsController({
   const onSelect = useCallback((anchor: SelectionAnchor) => {
     // A pre-filled draft the reader must submit; page code can send this any time.
     if (!gates.current.select()) return;
-    // The runtime has no read-only mode: a reader who can't comment gets no draft.
+    // A reader who can't comment is in the runtime's "view" mode and sends none; page code could still forge one.
     if (!mayRef.current) return;
     // Never swap the quote under words the reader is typing.
     if (draftRef.current && dirty.current) return;
@@ -224,6 +226,9 @@ export function useCommentsController({
       version,
       older,
       open: q.data?.open ?? 0,
+      listedOpen: older
+        ? threads.filter((t) => t.status === "open").length
+        : (q.data?.open ?? 0),
       loading: q.isPending && enabled,
       error: q.error,
       refetch: () => void refetch(),

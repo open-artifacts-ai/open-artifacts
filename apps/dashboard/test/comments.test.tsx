@@ -1131,6 +1131,49 @@ describe("comments: review round 1", () => {
     ).toBeInTheDocument();
   });
 
+  it("#1529: relative times carry the full date, the agent reads 'via', and the column count follows the version", async () => {
+    const t = (id: string, v: number, agent?: string) => ({
+      ...threadAt(id, "text", v, `body ${id}`),
+      comments: [
+        {
+          ...threadAt(id, "text", v, `body ${id}`).comments[0],
+          author: {
+            kind: "user",
+            name: "Sam",
+            me: false,
+            ...(agent ? { agent } : {}),
+          },
+        },
+      ],
+    });
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json({
+          threads: [
+            t("a", 1, "Claude Code"),
+            t("b", 1, "via Cursor"),
+            t("c", 2),
+          ],
+          open: 3,
+          truncated: false,
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED, 1));
+    const c = await col();
+    await within(c).findByText("body a");
+    expect(within(c).getByText("via Claude Code")).toBeInTheDocument();
+    expect(within(c).getByText("via Cursor")).toBeInTheDocument();
+    expect(within(c).queryByText("via via Cursor")).toBeNull();
+    // Two threads were made on version 1; the artifact has three.
+    expect(within(c).getByText("2 open")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Comments, 3 open/ }),
+    ).toBeInTheDocument();
+    const when = within(c).getAllByTitle(/ at \d/);
+    expect(when.length).toBeGreaterThan(0);
+  });
+
   const art = (over: object) =>
     server.use(
       http.get(`*${R.artifact(OWNED)}`, () =>
@@ -1212,6 +1255,23 @@ describe("comments: review round 1", () => {
     expect(within(c).queryByRole("button", { name: "Resolve" })).toBeNull();
     await act(async () => opts.at(-1)?.onCommentSelect(sel("nope")));
     expect(screen.queryByRole("textbox", { name: "Add a comment" })).toBeNull();
+  });
+
+  it("#1491: a viewer who can't comment puts the frame in view mode, and gets the plain empty state", async () => {
+    cannot();
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    await hello();
+    await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("view"));
+    expect(setMode).not.toHaveBeenCalledWith("select");
+    fireEvent.click(await screen.findByRole("button", { name: "Comments" }));
+    const c = await col();
+    expect(await within(c).findByText("No comments yet.")).toBeInTheDocument();
+    expect(within(c).queryByText(/Select text to add one/)).toBeNull();
   });
 });
 

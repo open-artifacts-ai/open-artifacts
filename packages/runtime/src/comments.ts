@@ -45,7 +45,7 @@ type Slot = {
   /** The highlight range (exact/partial), or the char beside a collapsed spot. */
   range: Range | null;
 };
-type Mode = "off" | "select" | "pin";
+type Mode = "off" | "view" | "select" | "pin";
 type Pos = {
   id: string;
   state: "exact" | "partial" | "collapsed" | "orphan" | "pin";

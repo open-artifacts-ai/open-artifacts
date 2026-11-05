@@ -19,7 +19,7 @@ import {
   useSetThreadStatus,
 } from "../../api/comments";
 import { TXT } from "../ui";
-import { versionDate } from "../versionDate";
+import { exactDate, versionDate } from "../versionDate";
 import { numbering } from "./model";
 import { type CommentsApi, useCommentsApi } from "./useComments";
 
@@ -169,8 +169,12 @@ function Who({
   return (
     <p className={`flex flex-wrap items-baseline gap-x-1 ${TXT}`}>
       <b>{a.name}</b>
-      {a.agent && <span className={MUTED}>{a.agent}</span>}
-      <span className={MUTED}>
+      {a.agent && (
+        <span className={MUTED}>
+          {a.agent.startsWith("via ") ? a.agent : `via ${a.agent}`}
+        </span>
+      )}
+      <span className={MUTED} title={exactDate(at)}>
         {versionDate(at)}
         {edited && " · edited"}
       </span>
@@ -569,7 +573,7 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
       <div className={`flex items-center justify-between gap-2 ${TXT}`}>
-        <span>{api.open} open</span>
+        <span>{api.listedOpen} open</span>
         {resolvedCount > 0 && (
           <Button
             size="xs"
@@ -609,7 +613,7 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
         </p>
       ) : none ? (
         <p className={`${TXT} ${MUTED}`}>
-          {textFormat
+          {textFormat && api.canComment
             ? "No comments yet. Select text to add one."
             : "No comments yet."}
         </p>
