@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Job } from "@oa/provisioning-contract";
 import { afterEach, describe, expect, it } from "vitest";
 import { InfraError } from "../src/fetch-timeout.ts";
 import { takeFileNotes } from "../src/notes.ts";
@@ -41,6 +42,7 @@ import {
   Run,
   revokeCreds,
   runProbe,
+  servingLag,
   stagedVersion,
   startChains,
   statusCounts,
@@ -612,7 +614,6 @@ describe("each probe fails on the behaviour it guards", () => {
     for (const [id, fresh, stale, msg] of [
       ["P20", "paused", "serving", "serving, want paused"],
       ["P22", "closed", "serving", "serving, want closed"],
-      ["P22", "serving", "closed", "closed, want serving"],
       ["P23", null, "closed", "closed, want null"],
     ] as const)
       it(`${id}: a mode that never reaches ${fresh} fails, naming the last one`, async () => {
@@ -622,6 +623,286 @@ describe("each probe fails on the behaviour it guards", () => {
           `fail: ${id}: inventory mode is ${msg}, after 120 s`,
         );
       });
+
+    describe("P22 after the restore: inventory KV lag or a late closed write (#1417)", () => {
+      const AUDIT_IDS =
+        /; the hosts audit isn't readable by O: query_audit installId i\w+ \(restore job \w+, delete job \w+\)$/;
+      const LATE = "P22: can't rule out a late closed write (#1326 ";
+      /** Wraps the fake's fetch: `over` answers first; undefined falls through. */
+      const wrap = (
+        f: ReturnType<typeof fakeApi>,
+        over: (
+          url: string,
+          real: () => Promise<Response>,
+        ) => Promise<Response | undefined> | Response | undefined,
+      ) => {
+        const real = f.io.fetch;
+        f.io.fetch = (async (u: string, i?: RequestInit) =>
+          (await over(String(u), () => real(u, i))) ??
+          real(u, i)) as typeof fetch;
+      };
+      /** Notes when rl-l's restore was sent; `restored()` is true from then on. */
+      const restoreSeen = (f: ReturnType<typeof fakeApi>) => {
+        let seen = false;
+        wrap(f, (u) => {
+          if (u.endsWith("/restore")) seen = true;
+          return undefined;
+        });
+        return () => seen;
+      };
+      /** After the restore, rl-l's /healthz: the first real, then `statuses` in turn. */
+      const pagesAfterFirstOk = (
+        f: ReturnType<typeof fakeApi>,
+        statuses: number[],
+      ) => {
+        const restored = restoreSeen(f);
+        let n = 0;
+        wrap(f, (u) => {
+          if (!restored() || !u.includes("://rl-l-") || !u.endsWith("/healthz"))
+            return undefined;
+          if (n++ === 0) return undefined;
+          const s = statuses[n - 2];
+          return s === undefined
+            ? undefined
+            : new Response(null, { status: s });
+        });
+      };
+      /** R14 for rl-l lists one more delete job, accepted after the restore. */
+      const laterDelete = (f: ReturnType<typeof fakeApi>) =>
+        wrap(f, async (u, real) => {
+          if (!/\/v1\/installs\/[^/]+\/jobs$/.test(u)) return undefined;
+          const r = await real();
+          const b = (await r.json()) as {
+            items: { kind: string; createdAt: number }[];
+          };
+          const restore = b.items.find((j) => j.kind === "restore");
+          if (restore)
+            b.items.push({
+              ...restore,
+              id: "01LATEDELETE0000000000000",
+              kind: "delete",
+              createdAt: restore.createdAt + 1,
+            } as (typeof b.items)[number]);
+          return Response.json(b);
+        });
+      /** Once the restore was sent, R15 shows every delete job with `patch`. */
+      const deleteJobAs = (
+        f: ReturnType<typeof fakeApi>,
+        patch: (j: Job) => Partial<Job>,
+      ) => {
+        const restored = restoreSeen(f);
+        wrap(f, async (u, real) => {
+          if (!restored() || !/\/v1\/jobs\/[^/]+$/.test(u)) return undefined;
+          const j = (await (await real()).json()) as Job;
+          return Response.json(j.kind === "delete" ? { ...j, ...patch(j) } : j);
+        });
+      };
+      const p22Stuck = () => {
+        const f = fakeApi();
+        staleFor(f, "serving", "closed", Number.POSITIVE_INFINITY);
+        return f;
+      };
+
+      it("page 200 twice, no later job, a clean delete job: infra, naming both values and the ids", async () => {
+        const out = (await runAll(p22Stuck())).get("P22");
+        expect(level(out)).toBe("infra");
+        expect(out).toMatch(
+          /^infra: P22: KV propagation at the inventory location, most likely: inventory mode closed after 120 s, app host page 200 \d+ s after its last 200 and 200 60 s later; no delete or suspend job after the restore, no failed attempt recorded on the delete job, which finished before it, and no error code on the restore job; /,
+        );
+        expect(out).toMatch(AUDIT_IDS);
+      });
+
+      it("a delete job after the restore: a product failure linking #1326", async () => {
+        const f = p22Stuck();
+        laterDelete(f);
+        const out = (await runAll(f)).get("P22");
+        expect(level(out)).toMatch(/^fail: /);
+        expect(out).toContain(
+          `${LATE}https://github.com/open-artifacts-ai/open-artifacts/issues/1326)`,
+        );
+        expect(out).toContain("1 delete or suspend job(s) after the restore");
+        expect(out).toMatch(AUDIT_IDS);
+      });
+
+      for (const [pages, shown] of [
+        [[503], "app host page 503"],
+        [[200, 503], "and 503 60 s later"],
+      ] as const)
+        it(`the page ${pages.join(" then ")} on the re-checks: a product failure linking #1326`, async () => {
+          const f = p22Stuck();
+          pagesAfterFirstOk(f, [...pages]);
+          const out = (await runAll(f)).get("P22");
+          expect(level(out)).toMatch(
+            /^fail: P22: can't rule out a late closed write \(#1326 /,
+          );
+          expect(out).toContain("inventory mode closed after 120 s");
+          expect(out).toContain(shown);
+          expect(out).toContain("the page isn't 200 both times");
+          expect(out).toMatch(AUDIT_IDS);
+        });
+
+      for (const [what, patch, why] of [
+        [
+          "shows a second attempt",
+          () => ({ attempt: 2 }),
+          "the delete job shows attempt 2",
+        ],
+        [
+          "recorded an error code",
+          () => ({ lastErrorCode: "cf_error" }),
+          "the delete job recorded a failed attempt",
+        ],
+        [
+          "recorded a failure point without an error code",
+          () => ({
+            failure: { at: "token_check", status: 500, reason: null },
+            lastErrorCode: null,
+          }),
+          "the delete job recorded a failed attempt",
+        ],
+        [
+          "finished after the restore was accepted",
+          (j: Job) => ({ finishedAt: (j.finishedAt ?? 0) + 10 * 60_000 }),
+          "the delete job didn't finish before the restore was accepted",
+        ],
+        [
+          "has no finish time",
+          () => ({ finishedAt: null }),
+          "the delete job didn't finish before the restore was accepted",
+        ],
+        [
+          "doesn't parse as a Job",
+          () => ({ attempt: "two" }) as unknown as Partial<Job>,
+          "R15 delete job doesn't parse (1 issue(s) at attempt)",
+        ],
+      ] as const)
+        it(`the delete job ${what} (a zombie attempt R14 can't show): a product failure`, async () => {
+          const f = p22Stuck();
+          deleteJobAs(f, patch as (j: Job) => Partial<Job>);
+          const out = (await runAll(f)).get("P22");
+          expect(level(out)).toMatch(
+            /^fail: P22: can't rule out a late closed write \(#1326 /,
+          );
+          expect(out).toContain(why);
+        });
+
+      it("the restore job's lease_held: a product failure linking #1326", async () => {
+        const f = p22Stuck();
+        wrap(f, async (u, real) => {
+          if (!/\/v1\/jobs\/[^/]+$/.test(u)) return undefined;
+          const j = (await (await real()).json()) as Job;
+          return Response.json(
+            j.kind === "restore" && j.status === "done"
+              ? { ...j, lastErrorCode: "lease_held" }
+              : j,
+          );
+        });
+        const out = (await runAll(f)).get("P22");
+        expect(level(out)).toMatch(
+          /^fail: P22: can't rule out a late closed write \(#1326 /,
+        );
+        expect(out).toContain("the restore job recorded lease_held");
+      });
+
+      it("the inventory answering 500 while serving settles is a fail, never infra", async () => {
+        const f = fakeApi();
+        const restored = restoreSeen(f);
+        wrap(f, (u) =>
+          restored() && u.includes("/hosts?host=rl-l-")
+            ? Response.json(
+                { error: { code: "internal", message: "x" } },
+                { status: 500 },
+              )
+            : undefined,
+        );
+        const out = (await runAll(f)).get("P22");
+        expect(level(out)).toMatch(/^fail: inventory \/hosts: status 500/);
+      });
+
+      const DEL = "01DE1000000000000000000000";
+      const RES = "01RES000000000000000000000";
+      /** servingLag alone on a pinned clock: pages, R14 and R15 as given. */
+      const direct = (o: { pages?: number[]; jobs?: number; del?: number }) => {
+        const f = fakeApi();
+        const at: number[] = [];
+        const pages = [...(o.pages ?? [200, 200])];
+        f.io.fetch = (async (u: string) => {
+          const s = String(u);
+          if (s.endsWith("/healthz")) {
+            at.push(f.clock.t);
+            return new Response(null, { status: pages.shift() ?? 200 });
+          }
+          if (s.endsWith("/jobs"))
+            return o.jobs && o.jobs !== 200
+              ? Response.json(
+                  { error: { code: "internal" } },
+                  { status: o.jobs },
+                )
+              : Response.json({ items: [], nextCursor: null });
+          if (s.endsWith(`/jobs/${DEL}`))
+            return o.del && o.del !== 200
+              ? Response.json(
+                  { error: { code: "internal" } },
+                  { status: o.del },
+                )
+              : Response.json({
+                  id: DEL,
+                  kind: "delete",
+                  installId: "i00000000001",
+                  status: "done",
+                  step: "done",
+                  steps: ["done"],
+                  stepIndex: 0,
+                  attempt: 0,
+                  lastErrorCode: null,
+                  failure: null,
+                  retryAt: null,
+                  actor: { kind: "oidc", label: "x", tokenId: null },
+                  args: {},
+                  error: null,
+                  sealed: null,
+                  createdAt: 1,
+                  startedAt: 1,
+                  finishedAt: 4,
+                } satisfies Job);
+          return new Response(null, { status: 404 });
+        }) as typeof fetch;
+        const start = f.clock.t;
+        const e = servingLag(new Run(CONFIG, f.io), {
+          installId: "i00000000001",
+          appHost: "rl-l-x.open-artifacts-staging.app",
+          lastOk: start - 20_000,
+          mode: "closed",
+          deleteJobId: DEL,
+          restore: { id: RES, createdAt: 5, lastErrorCode: null } as Job,
+        });
+        return { e, at, start };
+      };
+
+      it("re-checks once 60 s after the last 200, then again 60 s later, through run.io.wait", async () => {
+        const { e, at, start } = direct({});
+        const err = await e;
+        expect(at).toEqual([start + 40_000, start + 100_000]);
+        expect(err).toBeInstanceOf(InfraError);
+        expect(err.message).toContain(
+          "app host page 200 60 s after its last 200 and 200 60 s later",
+        );
+        expect(err.message).toContain(
+          `the hosts audit isn't readable by O: query_audit installId i00000000001 (restore job ${RES}, delete job ${DEL})`,
+        );
+      });
+
+      for (const [what, o, msg] of [
+        ["R14", { jobs: 500 }, /R14 jobs unreadable /],
+        ["R15", { del: 500 }, /R15 delete job unreadable /],
+      ] as const)
+        it(`${what} unreadable: never infra`, async () => {
+          const err = await direct(o).e;
+          expect(err).toBeInstanceOf(ProbeFail);
+          expect(err.message).toMatch(msg);
+          expect(err.message).toContain("#1326");
+        });
+    });
   });
 
   describe("bring-up survives a dropped connection and a busy install", () => {

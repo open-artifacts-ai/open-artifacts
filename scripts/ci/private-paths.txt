@@ -42,6 +42,7 @@ docs/ops/redline-signin.md
 .github/workflows/hosted-floor.yml
 .github/workflows/hosted-publish.yml
 .github/workflows/prod-inspect.yml
+.github/workflows/prod-release-chain.yml
 .github/workflows/prodclean-monitor.yml
 .github/workflows/provapi-staging-spikes.yml
 .github/workflows/redline-nightly.yml
@@ -72,6 +73,8 @@ scripts/ci/platform-tags.test.ts
 scripts/ci/prod-inspect-workflow.test.ts
 scripts/ci/prod-inspect.sh
 scripts/ci/prod-inspect.test.ts
+scripts/ci/prod-release-chain.test.ts
+scripts/ci/prod-release-chain.ts
 scripts/ci/provapi-spikes.sh
 scripts/ci/provapi-spikes.test.ts
 scripts/ci/provapi-token-verify.sh
@@ -84,6 +87,8 @@ scripts/ci/sign-floor.mjs
 scripts/ci/sign-release.mjs
 scripts/ci/staging-first-gate.sh
 scripts/ci/staging-first-gate.test.ts
+scripts/ci/staging-smoke-gate.sh
+scripts/ci/staging-smoke-gate.test.ts
 scripts/ci/tag-passed-checks.sh
 scripts/ci/tag-passed-checks.test.ts
 

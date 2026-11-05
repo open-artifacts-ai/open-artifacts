@@ -11,12 +11,6 @@
 # line that matches no current read fails the check as stale.
 apps/admin/vite.config.ts @oa/provisioning
 apps/dashboard/e2e/real/fixtures.ts @oa/server
-apps/landing/src/lib/release.ts @oa/dashboard
-apps/landing/src/lib/release.ts @oa/server
-apps/landing/src/lib/tools.ts @oa/server
-apps/landing/test/llms.test.ts @oa/server
-apps/landing/test/markers.test.ts @oa/server
-apps/landing/test/tools-manifest.test.ts @oa/server
 apps/provisioner/test/node/oauth-store-real.test.ts @oa/server
 apps/provisioner/test/node/world.ts @oa/server
 apps/provisioning/test/node/seal-copy.test.ts @oa/provisioner
@@ -54,9 +48,5 @@ packages/provision/test/wfp-create.test.ts @oa/server
 packages/provision/test/wfp-lifecycle.test.ts @oa/auth-broker
 packages/provision/test/wfp-lifecycle.test.ts @oa/server
 packages/ui/test/brand.test.ts @oa/landing
-scripts/hosted/test/world.ts @oa/server
 scripts/setup/test/access-msg.test.ts @oa/landing
-scripts/setup/test/pat-file.test.ts @oa/dashboard
 scripts/setup/test/pat-file.test.ts @oa/landing
-tests/redline/test/provisioner-seal.ts @oa/provisioner
-tests/redline/test/provisioning.test.ts @oa/provisioning

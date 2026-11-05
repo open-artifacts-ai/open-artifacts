@@ -184,6 +184,7 @@ describe("prod-release-chain.yml", () => {
       gateSteps[2]?.uses,
       "The tag, from the red-line run's name",
       "Staging passed this tag",
+      "Staging's smoke is green at or after this tag",
       "The tag passed every earlier check",
       "This event is the newest green run for the tag",
       "Load the hosted constants",
@@ -198,6 +199,12 @@ describe("prod-release-chain.yml", () => {
     expect(named("Staging passed this tag")).toMatchObject({
       env: { ...tagged, GH_TOKEN: "${{ github.token }}" },
       run: 'bash scripts/ci/staging-first-gate.sh "$TAG"',
+    });
+    expect(
+      named("Staging's smoke is green at or after this tag"),
+    ).toMatchObject({
+      env: { ...tagged, GH_TOKEN: "${{ github.token }}" },
+      run: 'bash scripts/ci/staging-smoke-gate.sh "$TAG"',
     });
     expect(named("The tag passed every earlier check")).toMatchObject({
       env: { ...tagged, GH_TOKEN: "${{ github.token }}" },
@@ -235,6 +242,9 @@ describe("prod-release-chain.yml", () => {
       /^# Usage: (.*)$/m.exec(read(`scripts/ci/${f}`))?.[1] ?? "";
     expect(usage("staging-first-gate.sh")).toBe(
       "scripts/ci/staging-first-gate.sh vX.Y.Z",
+    );
+    expect(usage("staging-smoke-gate.sh")).toBe(
+      "scripts/ci/staging-smoke-gate.sh vX.Y.Z",
     );
     expect(usage("tag-passed-checks.sh")).toBe(
       "scripts/ci/tag-passed-checks.sh staging|prod vX.Y.Z",
