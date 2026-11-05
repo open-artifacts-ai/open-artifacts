@@ -1,4 +1,5 @@
 export * from "./agent-clients.js";
+export * from "./anchor.js";
 export * from "./bus-notices.js";
 export * from "./errors.js";
 export * from "./formats.js";
@@ -16,4 +17,5 @@ export * from "./sandbox.js";
 export * from "./schemas.js";
 export * from "./secrets.js";
 export * from "./sniff.js";
+export * from "./text-anchor.js";
 export * from "./tunables.js";

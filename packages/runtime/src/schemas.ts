@@ -8,3 +8,4 @@ export {
   RUNTIME_RESULTS,
   sendToShell,
 } from "@oa/shared";
+export { createComments } from "./comments.js";

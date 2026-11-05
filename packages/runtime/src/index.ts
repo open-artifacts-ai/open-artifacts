@@ -233,9 +233,8 @@ function restoreScroll(
 
 /** Builds the SDK over a fresh bridge and announces it with `hello` (html pages). */
 export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
-  const bridge: Bridge = createBridge(
-    opts.loadSchemas ?? lazy<Schemas>(SCHEMAS),
-  );
+  const loadSchemas = opts.loadSchemas ?? lazy<Schemas>(SCHEMAS);
+  const bridge: Bridge = createBridge(loadSchemas);
   const kind = pageKind();
   const themeCbs = new Set<(t: Theme) => void>();
   const subs = new Map<string, Set<(e: ChangeEvent) => void>>();
@@ -579,6 +578,11 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
     document.removeEventListener("click", onClick, true);
     bridge.dispose();
   });
+  // Comments (#682) live in the schemas chunk; inert until the shell sends a mode.
+  if (!bridge.raw)
+    void loadSchemas()
+      .then((s) => s.createComments?.(bridge, opts.signal))
+      .catch(() => {});
   if (bridge.raw) welcomed();
   // Renderer pages (markdown/code/pdf) send their own hello.
   else if (kind === "html") bridge.hello(kind);
