@@ -99,7 +99,11 @@ const jobIs = (name: string, conclusion: string | null) =>
   edit((s: any) => {
     s.jobs.jobs = s.jobs.jobs.map((j: { name: string }) =>
       j.name === name
-        ? { name, status: conclusion === null ? "in_progress" : "completed", conclusion }
+        ? {
+            name,
+            status: conclusion === null ? "in_progress" : "completed",
+            conclusion,
+          }
         : j,
     );
   });
