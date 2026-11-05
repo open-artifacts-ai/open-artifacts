@@ -51,9 +51,10 @@ const refusals: Record<
     "You can reach only agents in your namespace and global agents.",
     "Message an agent in this namespace, or a global agent.",
   ],
+  // #1448: the sender cannot reinstall someone else's machine; no install hint.
   revoked: [
     "That agent's machine was revoked.",
-    "Message another agent, or run npx @open-artifacts/bus install there.",
+    "Run list_agents to see who is in this namespace.",
   ],
   ambiguous: [
     (n) =>
@@ -86,13 +87,15 @@ const quoted = (head: string, quote: string, tail: string): string => {
  * verbatim, uncoloured (the glyph carries the state). `namespaces` is how many
  * namespaces hold `to`, for `ambiguous`. `excerpt` (from `excerptOf`) is the
  * message an expired or refused notice is about; without it the quote is left
- * out.
+ * out. `movedTo` (from `movedName`, #1448) is the live agent a `revoked` name
+ * most likely moved to: the refusal then says to try it.
  */
 export function receiptText(
   r: { state: ReceiptState; reason?: ReceiptReason },
   sentTo: string,
   namespaces?: number,
   excerpt?: string,
+  movedTo?: string,
 ): string {
   const quote = excerpt ? `"${excerpt}"` : undefined;
   const to = sentTo;
@@ -116,9 +119,16 @@ export function receiptText(
     case "refused": {
       const copy = r.reason ? refusals[r.reason] : undefined;
       const label = r.reason ? `Refused (${r.reason})` : "Refused";
-      const [detail, hint] = copy ?? [null, "Message another agent."];
+      const moved = r.reason === "revoked" ? movedTo : undefined;
+      const [detail, hint] = moved
+        ? [null, null]
+        : (copy ?? [null, "Message another agent."]);
       const said = (v: string) =>
-        typeof detail === "function" ? detail(namespaces, v) : detail;
+        moved
+          ? `${v} moved; try ${moved}.`
+          : typeof detail === "function"
+            ? detail(namespaces, v)
+            : detail;
       const lines = (v: string) =>
         [
           quote
@@ -129,11 +139,36 @@ export function receiptText(
               )
             : `×  ${label}: your message to ${v} was not delivered.`,
           ...(said(v) ? [`   ${said(v)}`] : []),
-          `   ${hint}`,
+          ...(hint ? [`   ${hint}`] : []),
         ].join("\n");
       return fitLine(lines, to);
     }
   }
+}
+
+/**
+ * #1448: for a send refused `revoked`, the live name `to` most likely moved
+ * to: `<to>-N` among `names` (the sender's roster), the lowest N, ignoring
+ * case; undefined when none.
+ */
+export function movedName(
+  to: string,
+  names: readonly string[],
+): string | undefined {
+  const base = `${to.toLowerCase()}-`;
+  let best: string | undefined;
+  let bestN = Number.POSITIVE_INFINITY;
+  for (const name of names) {
+    const l = name.toLowerCase();
+    if (!l.startsWith(base)) continue;
+    const tail = l.slice(base.length);
+    if (!/^[0-9]+$/.test(tail)) continue;
+    if (Number(tail) < bestN) {
+      bestN = Number(tail);
+      best = name;
+    }
+  }
+  return best;
 }
 
 /**

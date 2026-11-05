@@ -14,6 +14,7 @@ export {
   fitName,
   lateDeliveredText,
   messageHeader,
+  movedName,
   neutralizeBody,
   oversizedText,
   receiptText,

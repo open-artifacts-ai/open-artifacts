@@ -3,6 +3,7 @@ import {
   type DaemonClient,
   earlierStatusText,
   excerptOf,
+  movedName,
   receiptText,
   rosterLine,
   SetStatus,
@@ -174,8 +175,12 @@ async function run(
       if (r.text) return text(r.text, false);
       const n =
         r.reason === "ambiguous" ? await namespacesOf(to, request) : undefined;
+      const moved =
+        r.reason === "revoked"
+          ? await movedTo(to, namespace, request)
+          : undefined;
       return text(
-        receiptText(r, to, n, excerptOf(body)),
+        receiptText(r, to, n, excerptOf(body), moved),
         r.state === "refused" || r.state === "expired",
       );
     }
@@ -253,6 +258,29 @@ async function namespacesOf(
     return new Set(
       r.agents.filter((a) => a.name === name).map((a) => a.namespace),
     ).size;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * #1448: the live `<name>-N` a revoked name moved to, in `namespace` when the
+ * send named one; undefined when none or the roster is unavailable.
+ */
+async function movedTo(
+  name: string,
+  namespace: string | undefined,
+  request: Request,
+): Promise<string | undefined> {
+  try {
+    const r = await request({ type: "list" });
+    if (r.type !== "roster") return undefined;
+    return movedName(
+      name,
+      r.agents
+        .filter((a) => namespace === undefined || a.namespace === namespace)
+        .map((a) => a.name),
+    );
   } catch {
     return undefined;
   }

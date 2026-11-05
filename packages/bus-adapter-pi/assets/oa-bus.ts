@@ -124,9 +124,10 @@ const refusals: Record<
     "You can reach only agents in your namespace and global agents.",
     "Message an agent in this namespace, or a global agent.",
   ],
+  // #1448: the sender cannot reinstall someone else's machine; no install hint.
   revoked: [
     "That agent's machine was revoked.",
-    "Message another agent, or run npx @open-artifacts/bus install there.",
+    "Run list_agents to see who is in this namespace.",
   ],
   ambiguous: [
     (n) =>
@@ -166,6 +167,7 @@ function receiptText(
   sentTo: string,
   namespaces?: number,
   excerpt?: string,
+  movedTo?: string,
 ): string {
   const quote = excerpt ? `"${excerpt}"` : undefined;
   const to = sentTo;
@@ -189,9 +191,16 @@ function receiptText(
     default: {
       const copy = r.reason ? refusals[r.reason] : undefined;
       const label = r.reason ? `Refused (${r.reason})` : "Refused";
-      const [detail, hint] = copy ?? [null, "Message another agent."];
+      const moved = r.reason === "revoked" ? movedTo : undefined;
+      const [detail, hint] = moved
+        ? [null, null]
+        : (copy ?? [null, "Message another agent."]);
       const said = (v: string) =>
-        typeof detail === "function" ? detail(namespaces, v) : detail;
+        moved
+          ? `${v} moved; try ${moved}.`
+          : typeof detail === "function"
+            ? detail(namespaces, v)
+            : detail;
       const lines = (v: string) =>
         [
           quote
@@ -202,11 +211,33 @@ function receiptText(
               )
             : `×  ${label}: your message to ${v} was not delivered.`,
           ...(said(v) ? [`   ${said(v)}`] : []),
-          `   ${hint}`,
+          ...(hint ? [`   ${hint}`] : []),
         ].join("\n");
       return fitLine(lines, to);
     }
   }
+}
+
+/**
+ * #1448: for a send refused `revoked`, the live name `to` most likely moved
+ * to: `<to>-N` among `names` (the sender's roster), the lowest N, ignoring
+ * case; undefined when none.
+ */
+function movedName(to: string, names: readonly string[]): string | undefined {
+  const base = `${to.toLowerCase()}-`;
+  let best: string | undefined;
+  let bestN = Number.POSITIVE_INFINITY;
+  for (const name of names) {
+    const l = name.toLowerCase();
+    if (!l.startsWith(base)) continue;
+    const tail = l.slice(base.length);
+    if (!/^[0-9]+$/.test(tail)) continue;
+    if (Number(tail) < bestN) {
+      bestN = Number(tail);
+      best = name;
+    }
+  }
+  return best;
 }
 
 const TERMINAL_CONTROLS = new RegExp(
@@ -435,6 +466,7 @@ export const copy = {
   rosterLine,
   selfText,
   receiptText,
+  movedName,
   excerptOf,
   stripTerminalControls,
   neutralizeBody,
@@ -1027,7 +1059,11 @@ export default function oaBus(pi: Pi): void {
         receipt.reason === "ambiguous"
           ? await namespacesOf(to, link)
           : undefined;
-      const out = receiptText(receipt, to, n, excerptOf(body));
+      const moved =
+        receipt.reason === "revoked"
+          ? await movedTo(to, namespace, link)
+          : undefined;
+      const out = receiptText(receipt, to, n, excerptOf(body), moved);
       if (receipt.state === "refused" || receipt.state === "expired")
         throw new Error(out);
       return out;
@@ -1119,6 +1155,30 @@ export default function oaBus(pi: Pi): void {
         }
       },
     });
+}
+
+/**
+ * #1448: the live `<name>-N` a revoked name moved to, in `namespace` when the
+ * send named one; undefined when none or the roster is unavailable.
+ */
+async function movedTo(
+  name: string,
+  namespace: string | undefined,
+  link: Link,
+): Promise<string | undefined> {
+  try {
+    const r = await link.request({ type: "list" });
+    if (r.type !== "roster") return undefined;
+    const agents = (r.agents ?? []) as Json[];
+    return movedName(
+      name,
+      agents
+        .filter((a) => namespace === undefined || a.namespace === namespace)
+        .map((a) => String(a.name)),
+    );
+  } catch {
+    return undefined;
+  }
 }
 
 /** How many namespaces hold `name`; undefined when the roster is unavailable. */
