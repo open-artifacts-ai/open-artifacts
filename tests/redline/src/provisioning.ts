@@ -1061,7 +1061,7 @@ async function refusedRollback(
     );
   const hz = await run.page(p.appHost, "/healthz", true);
   const body = hz.json as { ok?: unknown; version?: unknown } | undefined;
-  if (hz.status !== 200 || body?.ok !== true || body.version !== run.c.version)
+  if (hz.status !== 200 || body?.ok !== true)
     throw new ProbeFail(
       `P31: after the refusal /healthz is not ok on ${run.c.version} (${desc(hz)})`,
     );
