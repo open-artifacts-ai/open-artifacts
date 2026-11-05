@@ -103,11 +103,14 @@ const inv = (o: Record<string, unknown> = {}) => ({
   subscription: "sub_Test1",
   ...o,
 });
-/** The row already holds the test subscription (invoices apply only to it). */
+/**
+ * The row is on the paid team tier and holds the test subscription (invoices
+ * apply only to it, and only a paid row goes past_due or lapsed).
+ */
 const ownSub = (install: string) =>
   db
     .prepare(
-      "UPDATE tiers SET stripe_subscription_id = 'sub_Test1' WHERE install_id = ?",
+      "UPDATE tiers SET tier = 'team', stripe_subscription_id = 'sub_Test1' WHERE install_id = ?",
     )
     .bind(install)
     .run();
@@ -390,7 +393,7 @@ describe("handleStripeWebhook", () => {
     await deliver(event("invoice.paid", inv()));
     expect(await row(A)).toMatchObject({ status: "active", grace_until: null });
     await deliver(event("customer.subscription.deleted", sub()));
-    expect(await row(A)).toMatchObject({ tier: "trial", status: "lapsed" });
+    expect(await row(A)).toMatchObject({ tier: "team", status: "lapsed" });
     // An old invoice paid never revives a lapsed row.
     await deliver(event("invoice.paid", inv()));
     expect((await row(A)).status).toBe("lapsed");
@@ -471,11 +474,11 @@ describe("handleStripeWebhook", () => {
       status: "active",
       stripe_subscription_id: null,
     });
-    // A canceled subscription lapses but never sets a tier.
+    // A canceled subscription never lapses a row that is not on a paid tier.
     await deliver(
       event("customer.subscription.updated", sub({ status: "canceled" })),
     );
-    expect(await row(A)).toMatchObject({ tier: "trial", status: "lapsed" });
+    expect(await row(A)).toMatchObject({ tier: "trial", status: "active" });
     expect(before.tier).toBe("trial");
     // incomplete_expired clears the row's id only when it is the event's.
     await db
@@ -497,6 +500,7 @@ describe("handleStripeWebhook", () => {
   });
 
   it("a resubscribe's checkout in the second its old subscription ended still applies (N6)", async () => {
+    await ownSub(A);
     await deliver(
       event(
         "checkout.session.completed",
@@ -552,6 +556,80 @@ describe("handleStripeWebhook", () => {
       grace_until: null,
       stripe_subscription_id: null,
     });
+  });
+
+  it("an unpaid checkout, its failed payment and its expiry leave a trial row on trial/active, no grace (N9c, async path)", async () => {
+    await db
+      .prepare("UPDATE tiers SET tier = 'trial' WHERE install_id = ?")
+      .bind(A)
+      .run();
+    await deliver(
+      event("checkout.session.completed", {
+        customer: CUS_A,
+        subscription: "sub_Test1",
+        payment_status: "unpaid",
+        metadata: { tier: "team" },
+      }),
+    );
+    await deliver(event("invoice.payment_failed", inv()));
+    expect(await row(A)).toMatchObject({
+      tier: "trial",
+      status: "active",
+      grace_until: null,
+    });
+    await deliver(
+      event(
+        "customer.subscription.updated",
+        sub({ status: "incomplete_expired" }),
+      ),
+    );
+    expect(await row(A)).toMatchObject({
+      tier: "trial",
+      status: "active",
+      grace_until: null,
+      stripe_subscription_id: null,
+    });
+  });
+
+  it("on a free or trial row no non-activating event, in any order, changes tier or status or sets grace (invariant)", async () => {
+    const events = () => [
+      event("customer.subscription.created", sub({ status: "incomplete" })),
+      event("invoice.payment_failed", inv()),
+      event("invoice.paid", inv()),
+      event("customer.subscription.updated", sub({ status: "past_due" })),
+      event("customer.subscription.updated", sub({ status: "canceled" })),
+      event("customer.subscription.deleted", sub()),
+      event(
+        "customer.subscription.updated",
+        sub({ status: "incomplete_expired" }),
+      ),
+      event("invoice.payment_failed", { customer: CUS_A }),
+      event("invoice.paid", { customer: CUS_A }),
+    ];
+    const orders: ((i: number) => number)[] = [
+      (i) => i,
+      (i) => 8 - i,
+      (i) => (i * 4) % 9,
+    ];
+    for (const tier of ["trial", "free"])
+      for (const order of orders) {
+        await db
+          .prepare(
+            "UPDATE tiers SET tier = ?, status = 'active', grace_until = NULL, stripe_subscription_id = NULL WHERE install_id = ?",
+          )
+          .bind(tier, A)
+          .run();
+        const evs = events();
+        for (let i = 0; i < evs.length; i++) {
+          const e = evs[order(i)];
+          await deliver(e);
+          expect(await row(A), `${tier} after ${e?.type}`).toMatchObject({
+            tier,
+            status: "active",
+            grace_until: null,
+          });
+        }
+      }
   });
 
   it("with price ids configured, a subscription whose price matches none logs unknown_price once", async () => {
@@ -812,6 +890,8 @@ describe("handleStripeWebhook", () => {
 
   describe("event ordering (stale events)", () => {
     const at = (created: number) => ({ created });
+    // The ordering tests run on a paid row (only those go past_due or lapse).
+    beforeEach(() => ownSub(A).then(() => undefined));
 
     it("deleted, then a delayed older updated: stays lapsed", async () => {
       await deliver(event("customer.subscription.deleted", sub(), at(T + 100)));

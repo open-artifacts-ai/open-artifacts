@@ -191,6 +191,9 @@ export function statusFromSubscription(s: unknown): TierStatus | null {
   }
 }
 
+const PAID = "tier IN ('team', 'business')";
+const NOT_PAID = "coalesce(tier, '') NOT IN ('team', 'business')";
+
 /** One column assignment in the row update: SQL and its binds. */
 type Set = { sql: string; args: unknown[] };
 
@@ -210,17 +213,20 @@ export function changeFor(
   const graceEnd = ev.created * 1000 + GRACE_MS;
   /**
    * `col = CASE WHEN <keep> THEN col ELSE <value> END`: a suspended row is
-   * kept. `stale`: a subscription event older than the last invoice applied
-   * leaves status and grace to that invoice (it still moves tier and id).
+   * kept. `paid`: the one invariant of the row: past_due, lapsed and grace
+   * apply only to a row on a paid tier (a free or trial row changes only
+   * when a subscription goes live, which sets the tier). `stale`: a
+   * subscription event older than the last invoice applied leaves status
+   * and grace to that invoice (it still moves tier and id).
    */
   const guarded = (
     col: string,
     value: string,
     args: unknown[] = [],
-    stale = false,
+    o: { paid?: boolean; stale?: boolean } = {},
   ): Set => ({
-    sql: `${col} = CASE WHEN status = 'suspended'${stale ? " OR ? < coalesce(last_invoice_created, 0)" : ""} THEN ${col} ELSE ${value} END`,
-    args: stale ? [ev.created, ...args] : args,
+    sql: `${col} = CASE WHEN status = 'suspended'${o.paid ? ` OR ${NOT_PAID}` : ""}${o.stale ? " OR ? < coalesce(last_invoice_created, 0)" : ""} THEN ${col} ELSE ${value} END`,
+    args: o.stale ? [ev.created, ...args] : args,
   });
   switch (ev.type) {
     case "checkout.session.completed": {
@@ -263,27 +269,26 @@ export function changeFor(
             ]
           : null;
       }
-      // Only a live subscription (active or past_due) sets the tier; an
-      // incomplete, canceled or paused one never does.
-      const tier =
-        status === "active" || status === "past_due"
-          ? tierFromSubscription(o, prices)
-          : null;
+      // Only a subscription going live (active) sets the tier.
+      const tier = status === "active" ? tierFromSubscription(o, prices) : null;
       if (tier) sets.push({ sql: "tier = ?", args: [tier] });
       if (status === "active")
         sets.push(
-          guarded("status", "'active'", [], true),
-          guarded("grace_until", "NULL", [], true),
+          guarded("status", "'active'", [], { stale: true }),
+          guarded("grace_until", "NULL", [], { stale: true }),
         );
       else if (status === "past_due")
         sets.push(
-          guarded("status", "'past_due'", [], true),
-          guarded("grace_until", "coalesce(grace_until, ?)", [graceEnd], true),
+          guarded("status", "'past_due'", [], { paid: true, stale: true }),
+          guarded("grace_until", "coalesce(grace_until, ?)", [graceEnd], {
+            paid: true,
+            stale: true,
+          }),
         );
       else if (status === "lapsed")
         sets.push(
-          guarded("status", "'lapsed'", [], true),
-          guarded("grace_until", "NULL", [], true),
+          guarded("status", "'lapsed'", [], { paid: true, stale: true }),
+          guarded("grace_until", "NULL", [], { paid: true, stale: true }),
         );
       // Stripe's own trial (trialing), when one runs: its end.
       if (o.status === "trialing" && typeof o.trial_end === "number")
@@ -295,16 +300,19 @@ export function changeFor(
     }
     case "customer.subscription.deleted":
       // Ended: read-only on the install at once; nothing is deleted.
-      return [guarded("status", "'lapsed'"), guarded("grace_until", "NULL")];
+      return [
+        guarded("status", "'lapsed'", [], { paid: true }),
+        guarded("grace_until", "NULL", [], { paid: true }),
+      ];
     case "invoice.payment_failed":
       // Grace from the first failure; a suspended or lapsed row stays so.
       return [
         {
-          sql: "status = CASE WHEN status IN ('active', 'past_due') THEN 'past_due' ELSE status END",
+          sql: `status = CASE WHEN status IN ('active', 'past_due') AND ${PAID} THEN 'past_due' ELSE status END`,
           args: [],
         },
         {
-          sql: "grace_until = CASE WHEN status IN ('active', 'past_due') THEN coalesce(grace_until, ?) ELSE grace_until END",
+          sql: `grace_until = CASE WHEN status IN ('active', 'past_due') AND ${PAID} THEN coalesce(grace_until, ?) ELSE grace_until END`,
           args: [graceEnd],
         },
       ];
@@ -313,11 +321,11 @@ export function changeFor(
       // lapsed or suspended one.
       return [
         {
-          sql: "status = CASE WHEN status = 'past_due' THEN 'active' ELSE status END",
+          sql: `status = CASE WHEN status = 'past_due' AND ${PAID} THEN 'active' ELSE status END`,
           args: [],
         },
         {
-          sql: "grace_until = CASE WHEN status = 'past_due' THEN NULL ELSE grace_until END",
+          sql: `grace_until = CASE WHEN status = 'past_due' AND ${PAID} THEN NULL ELSE grace_until END`,
           args: [],
         },
       ];
