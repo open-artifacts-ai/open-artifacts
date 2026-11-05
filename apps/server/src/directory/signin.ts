@@ -4,7 +4,7 @@ import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
 import type { AuditActor } from "../services/audit.js";
 import { SYSTEM_ACTOR, setUserStatus } from "../services/members.js";
-import { directoryMode } from "../services/spaces.js";
+import { syncModeFor } from "../services/directory.js";
 import { applyGroupDiff } from "./apply.js";
 import { directoryClient } from "./client.js";
 import {
@@ -95,7 +95,10 @@ export async function directorySignIn(
   user: Member,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
-  const mode = directoryMode(env);
+  // syncModeFor, not directoryMode: hosted, a locked plan (free, read-only)
+  // is frozen, so sign-in changes no group membership; the suspension and
+  // customer checks below still run.
+  const mode = syncModeFor(env);
   if (mode === "off") return;
   const client = directoryClient(env);
   if (!client) return;
