@@ -6,6 +6,7 @@ import { type Deps, makeApi, makeWrangler, realDeps, realFs } from "./cf.ts";
 import { hostPairProblem } from "./hosts.ts";
 import { readOnlyDeps } from "./readonly.ts";
 import { rollbackCommand } from "./rollback.ts";
+import { parseSigninFlags } from "./signin.ts";
 import { readState, type State, statePath, writeState } from "./state.ts";
 import { type Ctx, NeedInput, type Opts, type Step } from "./step.ts";
 import { access } from "./steps/access.ts";
@@ -98,6 +99,7 @@ async function resolve(
       upgrade: { type: "boolean", default: false },
       check: { type: "boolean", default: false },
       "allow-downgrade": { type: "boolean", default: false },
+      "deployed-version": { type: "string" },
       strict: { type: "boolean", default: false },
       "new-owner-token": { type: "boolean", default: false },
       "print-token": { type: "boolean", default: false },
@@ -117,6 +119,14 @@ async function resolve(
       "yes-paid": { type: "boolean", default: false },
       plan: { type: "string" },
       var: { type: "string", multiple: true },
+      // Direct sign-in vars (src/signin.ts SIGNIN).
+      "auth-providers": { type: "string" },
+      "auth-domains": { type: "string" },
+      "auth-domain-join": { type: "string" },
+      "google-client-id": { type: "string" },
+      "turnstile-site-key": { type: "string" },
+      "email-code-domain": { type: "string" },
+      "code-emails-per-day": { type: "string" },
       // Handled before resolve() by tokenCommand (src/token-page.ts).
       "token-links": { type: "boolean", default: false },
       "token-page": { type: "boolean", default: false },
@@ -152,6 +162,10 @@ async function resolve(
   if (v["revoke-ci-tokens"] && !v.ci)
     throw new Error("--revoke-ci-tokens needs --ci");
   if (v.strict && !v.check) throw new Error("--strict needs --check");
+  if (v["deployed-version"] !== undefined) {
+    if (!v.upgrade) throw new Error("--deployed-version needs --upgrade");
+    valid("--deployed-version", v["deployed-version"], /^\d+\.\d+\.\d+$/);
+  }
   if (v.repo !== undefined || v["no-open"])
     throw new Error(
       "--repo and --no-open only go with --token-links or --token-page",
@@ -212,7 +226,14 @@ async function resolve(
       deployed?.accountId ??
       deps.env.CLOUDFLARE_ACCOUNT_ID,
     // Flag, then saved state; undefined is decided (asked) in prereqs once the plan is known.
-    teamChoice: v.team ? true : v.solo ? false : state.team,
+    // --upgrade from saved state: v0.1.0-v0.2.1 has no `team`, and absent means solo.
+    teamChoice: v.team
+      ? true
+      : v.solo
+        ? false
+        : v.upgrade && state.name
+          ? (state.team ?? false)
+          : state.team,
     teamFlag: v.team,
     emailDomainFlag: v["email-domain"] !== undefined,
     team: false,
@@ -222,6 +243,7 @@ async function resolve(
     yesPaid: v["yes-paid"],
     planFlag: v.plan,
     varFlags: parseVarFlags(v.var),
+    signinFlags: parseSigninFlags(v),
     planVar: "free",
     yes: v.yes || v.ci,
     upgrade: v.upgrade,
@@ -230,6 +252,7 @@ async function resolve(
     newOwnerToken: v["new-owner-token"],
     printToken: v["print-token"],
     allowDowngrade: v["allow-downgrade"],
+    deployedVersion: v["deployed-version"],
     // Decided in prereqs: flag, then the plan (Paid only), then saved state.
     browser: false,
     browserFlag: v.browser ? true : v["no-browser"] ? false : undefined,
@@ -336,13 +359,16 @@ export const HELP = `Usage: pnpm oa:setup [options]
   --name <n>  --app-host <h>  --content-host <h>  --owner-email <e>  --account-id <id>
   --yes  --upgrade  --check [--strict]  --json  --ci [--revoke-ci-tokens]  --new-owner-token  --print-token
   --print-token  Also report the minted owner token as data.token (and in human output).
-                Without it setup saves the token to ~/.open-artifacts/<app-host>-pat-token
+                Without it setup saves the token to ~/.open-artifacts/<host-slug>-pat-token
                 (0600) and reports only data.tokenFile. Not used with --ci, whose token
                 is revoked at the end of the run.
   --allow-downgrade  Deploy a checkout older than the deployed version (from /healthz
                 version, else saved state). Without it setup stops with action_required
                 before the D1 migrations. D1 is not rolled back. --check reports
                 {repoVersion, liveVersion, downgrade} on the deploy line.
+  --deployed-version <X.Y.Z>  With --upgrade: the version the install runs, used only
+                when /healthz and saved state can't say. Without one, an upgrade that
+                can't tell the deployed version stops with action_required.
   --upgrade     With no saved state it needs only --name (plus --account-id when the
                 login has several accounts): hosts, owner, plan, team, email domain and
                 thumbnails are read from the deployed Worker's plain-text vars and
@@ -390,6 +416,25 @@ export const HELP = `Usage: pnpm oa:setup [options]
                 saved in state wins over a dashboard edit; the dashboard value is kept
                 (noted "kept live") only when setup has none. Invalid saved or live
                 values are ignored with a note. --check/--json report data.vars.
+  --auth-providers <list>  --auth-domains <list>  --auth-domain-join invite|member
+  --google-client-id <id>  --turnstile-site-key <key>  --email-code-domain on
+  --code-emails-per-day <n>
+                Direct sign-in (docs/self-hosting/direct-sign-in.md): the Worker vars
+                AUTH_PROVIDERS (access, google, email), AUTH_DOMAINS, AUTH_DOMAIN_JOIN,
+                GOOGLE_CLIENT_ID, TURNSTILE_SITE_KEY, EMAIL_CODE_DOMAIN and
+                CODE_EMAILS_PER_DAY (1-10000). Without a flag a deploy keeps
+                the live Worker's value (an --upgrade in CI included); a flag replaces
+                it, and an empty value (--auth-domains "") clears it, so the server
+                default applies. --auth-providers access switches back to Access only.
+                Refused before deploying: an unknown provider, a malformed domain, a
+                join other than invite or member, or google without both
+                GOOGLE_CLIENT_ID and AUTH_DOMAINS. A missing GOOGLE_CLIENT_SECRET
+                secret only warns. Flags are trimmed (and lowercased, except ids);
+                a live value is carried byte for byte, and one the server would read
+                differently (padded, wrong case, empty list items, a secret or json
+                binding) is refused: fix it with its flag. A Worker whose settings
+                can't be read (or come back with no bindings) is never deployed
+                (action_required). --check reports data.signin.
   --token-links [--json]  Print each Cloudflare token setup needs (deploy, access,
                 analytics) with its permissions and a link that pre-fills the
                 dashboard form; account and zone come from --account-id/--app-host
@@ -409,6 +454,8 @@ export const HELP = `Usage: pnpm oa:setup [options]
                 version: exit 2 (roll back in the dashboard: Workers → <name> →
                 Deployments). Never touches D1: migrations are additive, so the code
                 rolls back and the data stays. Not with --upgrade, --check or --ci.
+                Reads the deploy token like setup (env, --token-file, then the
+                saved file).
   -h, --help`;
 
 /** Runs setup; resolves to the exit code (0 ok, 2 action_required, 1 error). */

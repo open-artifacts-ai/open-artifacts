@@ -1,12 +1,26 @@
-import type {
-  AccessLevel,
-  CapReason,
-  Member,
-  Role,
-  SpaceKind,
-  SpaceRole,
-  Visibility,
+import {
+  type AccessLevel,
+  type Capabilities,
+  CapabilitiesSchema,
+  type CapReason,
+  type DataWriters,
+  type Member,
+  type Role,
+  type SpaceKind,
+  type SpaceRole,
+  type Visibility,
 } from "@oa/shared";
+
+const NO_CAPS: Capabilities = { db: false, viewer: false, storage: false };
+/** Declared capabilities; malformed JSON means none (capability_denied, never 500). */
+export function capsOf(json: string): Capabilities {
+  try {
+    const r = CapabilitiesSchema.safeParse(JSON.parse(json));
+    return r.success ? r.data : NO_CAPS;
+  } catch {
+    return NO_CAPS;
+  }
+}
 
 /**
  * The hosted access policy (P3): pure functions, no I/O. authz.ts gathers a
@@ -47,6 +61,10 @@ export type OrgAction =
   | "space.create"
   | "space.delete"
   | "space.mappings"
+  /** Per-space mappings on a shared space: org admins any role, its managers viewer or editor (the handler applies the ceiling). */
+  | "space.mappings.manage"
+  /** "Every space" org mappings (R.orgMappings). */
+  | "org.mappings"
   | "space.allMembers"
   | "space.members"
   | "space.rename"
@@ -58,6 +76,16 @@ export type OrgAction =
   | "artifact.create"
   | "transfer.departed"
   | "directory.manage"
+  /** Disconnect the directory (R.directoryDisconnect): the org owner, in a cookie session (the handler refuses bearer auth). */
+  | "directory.disconnect"
+  /** Probe the auth and directory brokers (R.adminBrokerCheck): the org owner. */
+  | "broker.check"
+  /** See why configured sign-in is off (Me.instance.signIn.problems): the org owner. */
+  | "signin.problems"
+  /** See and dismiss the install-wide guest summary (Me.notices.guestSummary): the org owner. */
+  | "notices.manage"
+  /** See and dismiss one's own guest-share notice (Me.notices.guestShares): any non-guest member. */
+  | "notices.own"
   | "audit.read"
   | "members.manage"
   | "members.manageAdmins"
@@ -93,7 +121,12 @@ export type CanCtx = {
   /** The artifact is in a personal space. */
   personal: boolean;
   anonymous?: boolean;
-  allowAnonymousWrites?: boolean;
+  /**
+   * #681: who may change live data. Only an explicit "viewers" lets viewers
+   * (and anonymous visitors) write; "editors" or undefined limits data.write
+   * to editor level and up (fail closed).
+   */
+  dataWriters?: DataWriters;
   /** Viewer-only first thumbnail: via a share or team access, and none stored yet. */
   firstThumbnail?: boolean;
 };
@@ -132,7 +165,8 @@ const maxRole = (
 
 /**
  * The caller's cap: restricted (manual flag or a restricted group) or a guest
- * while P2's authConfig.guestsReadOnly is on. Null when uncapped.
+ * (authConfig.guestsReadOnly, on for every install since parity 2). Null when
+ * uncapped.
  */
 export function capOf(
   m: Pick<Member, "role"> & {
@@ -249,10 +283,13 @@ export function can(
   if (READ.has(action)) return true;
   switch (action) {
     case "anonId":
-      return ctx.anonymous === true && ctx.allowAnonymousWrites === true;
+      return ctx.anonymous === true && ctx.dataWriters === "viewers";
     case "data.write":
       if (capped) return false;
-      return ctx.anonymous ? ctx.allowAnonymousWrites === true : true;
+      if (ctx.dataWriters !== "viewers")
+        return !ctx.anonymous && level !== "viewer";
+      // Anonymous callers only reach a level on a public artifact.
+      return true;
     case "storage":
       return !capped && !ctx.anonymous;
     case "thumbnail.write":
@@ -270,7 +307,46 @@ export function can(
   return false;
 }
 
+/**
+ * #681: a data.write refusal caused by dataWriters "editors" alone (the
+ * caller could write if viewers could): 403 data_editors_only, for anonymous
+ * and signed-in viewers alike. Any other refusal keeps its code.
+ */
+export const editorsOnlyRefusal = (
+  level: AccessLevel | null,
+  ctx: CanCtx,
+): boolean =>
+  ctx.dataWriters !== "viewers" &&
+  !can(level, "data.write", ctx) &&
+  can(level, "data.write", { ...ctx, dataWriters: "viewers" });
+
+/**
+ * #681: a row's effective dataWriters. "viewers" only when data_writers is
+ * "viewers" and allow_anonymous_writes is 1 (new code keeps them in step);
+ * anything else is "editors" (fail closed). A row written by the previous
+ * release during a rollback (the toggle switched off, or created with it off)
+ * so reads as "editors" after the roll forward, with no release step.
+ */
+export const dataWritersOf = (a: {
+  dataWriters: string;
+  allowAnonymousWrites: number;
+}): DataWriters =>
+  a.dataWriters === "viewers" && a.allowAnonymousWrites === 1
+    ? "viewers"
+    : "editors";
+
 const ORG_ADMINS: readonly Role[] = ["owner", "admin"];
+
+/** Org owners and admins can't be restricted (400 restrict_admin; sync skips them). */
+export const canBeRestricted = (role: Role): boolean =>
+  !ORG_ADMINS.includes(role);
+
+/**
+ * An org owner or admin target: changing their role, removing or suspending
+ * them, or resetting their Google link needs members.manageAdmins (#475).
+ */
+export const isOrgAdmin = (role: string): boolean =>
+  (ORG_ADMINS as readonly string[]).includes(role);
 
 /** Instance and space administration (no artifact involved). */
 export function orgCan(
@@ -286,6 +362,7 @@ export function orgCan(
     case "space.members":
     case "space.rename":
     case "space.publicLinks":
+    case "space.mappings.manage":
       return !capped && (admin || opts.spaceRole === "manager");
     case "space.publish":
       return (
@@ -296,9 +373,21 @@ export function orgCan(
     case "artifact.create":
       return !capped;
     case "settings.read":
+    // One's own guest-share notice (parity 2): a restricted member still
+    // owns the artifacts it lists.
+    case "notices.own":
       return TEAM_ROLES.includes(m.role);
     case "directory.manage":
-    // Acting on a peer admin (e.g. resetting their Google link): owner only.
+    // Disconnect: owner only too (the route also needs a cookie session).
+    case "directory.disconnect":
+    // The broker check: owner only (it spends broker rate limit).
+    case "broker.check":
+    // Sign-in config problems: the owner, who can fix them (review item 35).
+    case "signin.problems":
+    // The install-wide guest summary and its dismissal (parity 2).
+    case "notices.manage":
+    // Acting on an org owner or admin (role, removal, suspension, Google
+    // link reset): owner only (#475).
     case "members.manageAdmins":
       return m.role === "owner" && !capped;
     case "tokens.create":

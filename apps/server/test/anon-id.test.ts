@@ -94,9 +94,31 @@ const shortOn = async (artifactId: string, token: string | null) => {
   };
 };
 
+/** GET anon-id from one IP with a limiter that counts and denies everything. */
+const viaDeny = async (id: string, token: string | null) => {
+  const keys: string[] = [];
+  const deny = {
+    async limit({ key }: { key: string }) {
+      keys.push(key);
+      return { success: false };
+    },
+  };
+  const r = await app.fetch(
+    new Request(`http://app.localhost${R.anonId(id)}`, {
+      headers: {
+        "cf-connecting-ip": "192.0.2.10",
+        ...(token ? { [ANON_ID_HEADER]: token } : {}),
+      },
+    }),
+    { ...env, RL_ANON: deny },
+    { waitUntil() {}, passThroughOnException() {} } as never,
+  );
+  return { r, keys };
+};
+
 describe("anonId issuance", () => {
-  it("is never issued on an artifact without allowAnonymousWrites", async () => {
-    const id = await pub({ visibility: "public" });
+  it('is never issued on an artifact with dataWriters "editors"', async () => {
+    const id = await pub({ visibility: "public", dataWriters: "editors" });
     const r = await anon(R.dataCollection(id, "c"), null);
     expect(r.status).toBe(200);
     expect(r.headers.get(ANON_ID_HEADER)).toBeNull();
@@ -262,6 +284,40 @@ describe("anonId issuance", () => {
     expect(keys).toEqual(["anonid:ip:192.0.2.9"]);
   });
 
+  it("GET anon-id with a valid token never spends the per-IP limit", async () => {
+    const id = await optIn();
+    const token = await mintToken(id);
+    const { short } = await shortOn(id, token);
+    // Well past 30 a minute from one IP, with the limiter refusing everything.
+    for (let i = 0; i < 40; i++) {
+      const { r, keys } = await viaDeny(id, token);
+      expect(r.status).toBe(200);
+      expect(AnonViewerSchema.parse(await r.json()).anonId).toBe(short);
+      expect(r.headers.get(ANON_ID_HEADER)).toBeNull();
+      expect(keys).toEqual([]);
+    }
+  });
+
+  it("GET anon-id with a forged or expired token still counts against the limit", async () => {
+    const id = await optIn();
+    const good = await mintToken(id);
+    const [gid = "", giat = "", gsig = ""] = good.split(".");
+    // Flip the first character: all 6 of its bits count, so the forgery can
+    // never equal the real signature (the last ones carry padding bits).
+    const forged = `${gid}.${giat}.${gsig[0] === "A" ? "B" : "A"}${gsig.slice(1)}`;
+    const expired = await issueAnonToken(
+      env,
+      gid,
+      Math.floor(Date.now() / 1000) - ANON_TOKEN_MAX_AGE_S - 60,
+    );
+    for (const t of [forged, expired]) {
+      const { r, keys } = await viaDeny(id, t);
+      expect(r.status).toBe(429);
+      expect(r.headers.get(ANON_ID_HEADER)).toBeNull();
+      expect(keys).toEqual(["anonid:ip:192.0.2.10"]);
+    }
+  });
+
   it("embed mode (X-OA-Embed: 1) with a cookie runs anonymously and mints", async () => {
     const id = await optIn();
     const r = await api(app, R.anonId(id), owner.cookie, {
@@ -385,6 +441,13 @@ describe("anonId token expiry", () => {
     expect(idOf(w.headers.get(ANON_ID_HEADER))).not.toBe(bid);
   });
 
+  it("GET anon-id with a v1 token counts against the limit (it re-mints)", async () => {
+    const id = await optIn();
+    const { r, keys } = await viaDeny(id, await v1Token(freshId()));
+    expect(r.status).toBe(429);
+    expect(keys).toEqual(["anonid:ip:192.0.2.10"]);
+  });
+
   it("a future iat (beyond 5 min of skew) is rejected: a new id is minted", async () => {
     const id = await optIn();
     const bid = freshId();
@@ -422,6 +485,68 @@ describe("ANON_WRITES_PER_MIN", () => {
     expect(anonWritesPerMin(" 45 ")).toBe(45);
     expect(anonWritesPerMin("600")).toBe(600);
     expect(anonWritesPerMin("100000")).toBe(600);
+  });
+
+  /** One anonymous write from a fixed IP with stubbed limiters; returns the keys each was asked for. */
+  const writeVia = async (id: string, extra: Record<string, unknown>) => {
+    const calls: string[] = [];
+    const lim = (name: string, ok: boolean) => ({
+      async limit({ key }: { key: string }) {
+        calls.push(`${name}:${key}`);
+        return { success: ok };
+      },
+    });
+    const e: Record<string, unknown> = { ...env, RL_ANON: lim("anon", true) };
+    for (const [k, v] of Object.entries(extra))
+      e[k] =
+        typeof v === "object" && v && "ok" in v
+          ? lim(k, (v as { ok: boolean }).ok)
+          : v;
+    const r = await app.fetch(
+      new Request(`http://app.localhost${R.dataDoc(id, "c", "d")}`, {
+        method: "PUT",
+        body: "1",
+        headers: {
+          "cf-connecting-ip": "192.0.2.44",
+          "content-type": "application/json",
+        },
+      }),
+      e,
+      { waitUntil() {}, passThroughOnException() {} } as never,
+    );
+    return { r, calls };
+  };
+
+  it("by default anonymous writes still spend RL_ANON per IP (review item 38)", async () => {
+    const id = await optIn();
+    const { r, calls } = await writeVia(id, {});
+    expect(r.status).toBe(200);
+    expect(calls).toEqual(["anon:ip:192.0.2.44"]);
+  });
+
+  it("RL_ANON_WRITES, when bound, replaces RL_ANON for writes so a raised ANON_WRITES_PER_MIN works", async () => {
+    const id = await optIn();
+    const ok = await writeVia(id, {
+      RL_ANON_WRITES: { ok: true },
+      RL_ANON: undefined,
+    });
+    expect(ok.r.status).toBe(200);
+    expect(ok.calls).toEqual(["RL_ANON_WRITES:ip:192.0.2.44"]);
+    const denied = await writeVia(id, { RL_ANON_WRITES: { ok: false } });
+    expect(denied.r.status).toBe(429);
+    expect(denied.calls).toEqual(["RL_ANON_WRITES:ip:192.0.2.44"]);
+  });
+
+  it("with HOSTED=1 both limiters apply (hosted only tightens)", async () => {
+    const id = await optIn();
+    const { calls } = await writeVia(id, {
+      RL_ANON_WRITES: { ok: true },
+      HOSTED: "1",
+    });
+    expect(calls).toEqual([
+      "anon:ip:192.0.2.44",
+      "RL_ANON_WRITES:ip:192.0.2.44",
+    ]);
   });
 
   it("the DO applies it per IP, across anonIds", async () => {

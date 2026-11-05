@@ -1,7 +1,12 @@
 // Live versions: the R.events client (one socket, never sends, reconnects)
 // and Design's safe-swap decision table (option B).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { connectArtifactEvents } from "../src/viewer/liveEvents";
+import {
+  clampRetryHint,
+  connectArtifactEvents,
+  onWake,
+  RETRY_HINT_MAX_MS,
+} from "../src/viewer/liveEvents";
 import { isSafeSwap } from "../src/viewer/useLiveVersions";
 
 class FakeWS {
@@ -122,10 +127,35 @@ describe("events socket", () => {
     expect(FakeWS.all).toHaveLength(1);
     vi.advanceTimersByTime(1);
     expect(FakeWS.all).toHaveLength(2);
-    // That reconnect fails: no storm, wait for focus.
+  });
+
+  it("a reconnect that fails before hello keeps backing off, capped", () => {
+    const { onDown } = mk();
+    last().frame({ type: "hello", version: 1 });
     last().closed(1006);
-    vi.advanceTimersByTime(120_000);
+    vi.advanceTimersByTime(1_000);
     expect(FakeWS.all).toHaveLength(2);
+    // That reconnect fails before its hello: retry after 2s, then 4s.
+    last().closed(1006);
+    vi.advanceTimersByTime(1_999);
+    expect(FakeWS.all).toHaveLength(2);
+    vi.advanceTimersByTime(1);
+    expect(FakeWS.all).toHaveLength(3);
+    last().closed(1006);
+    vi.advanceTimersByTime(4_000);
+    expect(FakeWS.all).toHaveLength(4);
+    // Keep failing: the delay stops growing at 30s.
+    for (let i = 0; i < 6; i++) {
+      last().closed(1006);
+      vi.advanceTimersByTime(30_000);
+    }
+    expect(FakeWS.all).toHaveLength(10);
+    expect(onDown).toHaveBeenCalledTimes(9);
+    // A hello resets the backoff to 1s.
+    last().frame({ type: "hello", version: 2 });
+    last().closed(1006);
+    vi.advanceTimersByTime(1_000);
+    expect(FakeWS.all).toHaveLength(11);
   });
 
   it.each(["deleted", "changed"] as const)(
@@ -145,6 +175,54 @@ describe("events socket", () => {
       expect(FakeWS.all).toHaveLength(2);
     },
   );
+
+  // #816: a socket opened just as access changed gets retryAfterMs; resume
+  // waits that long instead of reconnecting into another gone (the ~2 s loop).
+  it("gone with retryAfterMs: resume reconnects only after the wait", () => {
+    const { c } = mk();
+    const w = last();
+    w.frame({ type: "gone", reason: "changed", retryAfterMs: 2_000 });
+    w.closed(4403);
+    c.resume();
+    expect(FakeWS.all).toHaveLength(1);
+    vi.advanceTimersByTime(1_999);
+    expect(FakeWS.all).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(FakeWS.all).toHaveLength(2);
+  });
+
+  // The Manager's condition: a bad hint can't stall reconnects forever.
+  it("clampRetryHint: 0 to 5 minutes; NaN, negative or absent is 0", () => {
+    expect(clampRetryHint(2_000)).toBe(2_000);
+    expect(clampRetryHint(RETRY_HINT_MAX_MS + 1)).toBe(RETRY_HINT_MAX_MS);
+    expect(clampRetryHint(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(clampRetryHint(Number.NaN)).toBe(0);
+    expect(clampRetryHint(-5)).toBe(0);
+    expect(clampRetryHint(null)).toBe(0);
+    expect(clampRetryHint(undefined)).toBe(0);
+  });
+
+  it("a huge retryAfterMs still reconnects after 5 minutes", () => {
+    const { c } = mk();
+    const w = last();
+    w.frame({ type: "gone", reason: "changed", retryAfterMs: 10 * 3_600_000 });
+    w.closed(4403);
+    c.resume();
+    vi.advanceTimersByTime(RETRY_HINT_MAX_MS - 1);
+    expect(FakeWS.all).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(FakeWS.all).toHaveLength(2);
+  });
+
+  it("a resume after the wait has passed reconnects at once", () => {
+    const { c } = mk();
+    const w = last();
+    w.frame({ type: "gone", reason: "changed", retryAfterMs: 500 });
+    w.closed(4403);
+    vi.advanceTimersByTime(600);
+    c.resume();
+    expect(FakeWS.all).toHaveLength(2);
+  });
 
   it("a bare 4403 close reads as changed", () => {
     const { onGone } = mk();
@@ -170,6 +248,7 @@ describe("safe swap (Design's Spec for B)", () => {
     following: true,
     hello: true,
     touched: false,
+    engaged: false,
     chromeOpen: false,
   };
   it.each([
@@ -178,9 +257,36 @@ describe("safe swap (Design's Spec for B)", () => {
     [{ hello: false }, false],
     [{ touched: true }, false],
     [{ chromeOpen: true }, false],
+    [{ engaged: true }, false],
     [{ hello: false, touched: true }, false],
     [{ following: false, chromeOpen: true }, false],
   ])("%o → swap %s", (patch, swap) => {
     expect(isSafeSwap({ ...all, ...patch })).toBe(swap);
+  });
+});
+
+describe("onWake (the viewer's retry trigger)", () => {
+  it("fires on focus, online and visibilitychange to visible; stops after off", () => {
+    const win = new EventTarget();
+    const doc = Object.assign(new EventTarget(), {
+      visibilityState: "visible",
+    });
+    vi.stubGlobal("window", win);
+    vi.stubGlobal("document", doc);
+    const cb = vi.fn();
+    const off = onWake(cb);
+    win.dispatchEvent(new Event("focus"));
+    win.dispatchEvent(new Event("online"));
+    doc.dispatchEvent(new Event("visibilitychange"));
+    expect(cb).toHaveBeenCalledTimes(3);
+    doc.visibilityState = "hidden";
+    doc.dispatchEvent(new Event("visibilitychange"));
+    expect(cb).toHaveBeenCalledTimes(3);
+    off();
+    win.dispatchEvent(new Event("focus"));
+    win.dispatchEvent(new Event("online"));
+    doc.visibilityState = "visible";
+    doc.dispatchEvent(new Event("visibilitychange"));
+    expect(cb).toHaveBeenCalledTimes(3);
   });
 });

@@ -12,6 +12,37 @@ const RETRY_MS = 15_000;
 
 type Control = { load: () => Promise<string | null>; stale: () => boolean };
 
+/** How long an early fetch stays usable; the viewer normally takes it within a second. */
+const EARLY_MS = 10_000;
+let early: {
+  id: string;
+  at: number;
+  p: Promise<ContentUrl | null>;
+} | null = null;
+
+/**
+ * Starts an artifact's content-url fetch alongside its info (#693), before the
+ * version to show is known: `v` when the address names one, else the current
+ * version. The viewer adopts it when the served version is the one it shows.
+ */
+export function prefetchContentUrl(id: string, v?: number) {
+  early = {
+    id,
+    at: Date.now(),
+    p: api.get(R.contentUrl(id, v), ContentUrlSchema).catch(() => null),
+  };
+}
+
+/** The early fetch for this artifact, once. */
+function takeEarly(id: string, v: number): Promise<ContentUrl | null> | null {
+  const e = early;
+  if (!e || e.id !== id) return null;
+  early = null;
+  if (Date.now() - e.at > EARLY_MS) return null;
+  // Not the version shown (it changed meanwhile) or failed: fetch as usual.
+  return e.p.then((c) => (c?.version === v ? c : null));
+}
+
 /**
  * Signed content URL, refetched 60 s before it expires (null expiry: never), and
  * again on focus or visibility change once the local clock says it is past that
@@ -50,9 +81,13 @@ export function useContentUrl(id: string, v: number, stopped = false) {
     };
     // Relative to local fetch time, so client clock skew can't matter.
     const stale = () => Date.now() > fetchedAt + lifetime;
+    const fetchUrl = () => api.get(R.contentUrl(id, v), ContentUrlSchema);
     const load = (): Promise<string | null> => {
       if (halt.current) return Promise.resolve(null);
-      pending ??= api.get(R.contentUrl(id, v), ContentUrlSchema).then(
+      const first = takeEarly(id, v);
+      pending ??= (
+        first ? first.then((c) => c ?? fetchUrl()) : fetchUrl()
+      ).then(
         (c) => {
           pending = null;
           if (dead) return null;

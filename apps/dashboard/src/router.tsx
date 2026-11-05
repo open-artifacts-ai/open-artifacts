@@ -1,4 +1,4 @@
-import { FormatSchema, type Role } from "@oa/shared";
+import { AgentViaSchema, FormatSchema, type Role } from "@oa/shared";
 import {
   createRootRoute,
   createRoute,
@@ -16,7 +16,9 @@ import { SearchPage } from "./library/Search";
 import type { Scope } from "./library/useLibraryQuery";
 import { NoAccess } from "./pages/NoAccess";
 import { NotFound } from "./pages/NotFound";
+import { RenderError } from "./pages/RenderError";
 import { SignIn } from "./pages/SignIn";
+import { useNoAgentsPage } from "./settings/AgentSetupCard";
 import { Agents } from "./settings/Agents";
 import { Directory } from "./settings/Directory";
 import { Instance } from "./settings/Instance";
@@ -26,6 +28,7 @@ import { Gate, SettingsLayout } from "./settings/SettingsLayout";
 import { canAdminSpaces } from "./settings/spaces/access";
 import { Spaces } from "./settings/spaces/Spaces";
 import { Usage } from "./settings/Usage";
+import { Trash } from "./trash/Trash";
 import { Diff } from "./viewer/Diff";
 import { Shell } from "./viewer/Shell";
 
@@ -62,9 +65,11 @@ const library = (path: string, scope: Scope) =>
     validateSearch: (s: Record<string, unknown>) => {
       const format = FormatSchema.safeParse(s.format);
       const view = s.view === "grid" || s.view === "list" ? s.view : undefined;
+      const via = AgentViaSchema.safeParse(s.agentVia);
       return {
         ...(format.success && { format: format.data }),
         ...(str(s.agent) && { agent: str(s.agent) }),
+        ...(via.success && { agentVia: via.data }),
         ...(str(s.space) && { space: str(s.space) }),
         ...(view && { view }),
       };
@@ -87,12 +92,13 @@ function FullRoute() {
 
 /** `/sign-in`: the SPA owns the chooser and the code forms. */
 function SignInRoute() {
-  const { error, next, method } = useSearch({ strict: false }) as {
+  const { error, next, method, via } = useSearch({ strict: false }) as {
     error?: string;
     next?: string;
     method?: string;
+    via?: "access" | "google";
   };
-  return <SignIn error={error} next={next} method={method} />;
+  return <SignIn error={error} next={next} method={method} via={via} />;
 }
 
 function DiffRoute() {
@@ -116,6 +122,22 @@ const search = createRoute({
     ...(str(s.space) && { space: str(s.space) }),
   }),
   component: SearchPage,
+});
+
+/** Every install; guests delete nothing. */
+function TrashRoute() {
+  const state = useMe();
+  if (state.status !== "authed") return null;
+  if (state.me.user.role === "guest") return <NotFound />;
+  return <Trash />;
+}
+const trash = createRoute({
+  getParentRoute: () => root,
+  path: "/trash",
+  validateSearch: (s: Record<string, unknown>) => ({
+    ...(str(s.spaceId) && { spaceId: str(s.spaceId) }),
+  }),
+  component: TrashRoute,
 });
 
 const ADMINS: Role[] = ["owner", "admin"];
@@ -152,6 +174,19 @@ function SpacesRoute() {
       }}
     >
       <Spaces />
+    </Gate>
+  );
+}
+/** Revoke-only with nothing to revoke: no Agents page, so Profile, the first tab. */
+function AgentsRoute() {
+  const none = useNoAgentsPage();
+  const to = "/settings/profile";
+  return (
+    <Gate
+      allow={none ? [] : [...ADMINS, "member"]}
+      redirects={{ guest: "/shared", member: to, owner: to, admin: to }}
+    >
+      <Agents />
     </Gate>
   );
 }
@@ -194,6 +229,7 @@ const routeTree = root.addChildren([
   library("/shared", "shared"),
   library("/team", "team"),
   search,
+  trash,
   route("/a/$id", ViewerRoute),
   route("/a/$id/v/$v", ViewerRoute),
   route("/a/$id/full", FullRoute),
@@ -207,7 +243,11 @@ const routeTree = root.addChildren([
       component: SpacesRoute,
     }),
     gated("/settings/directory", ADMINS, "/settings/agents", Directory),
-    gated("/settings/agents", [...ADMINS, "member"], "/", Agents),
+    createRoute({
+      getParentRoute: () => settings,
+      path: "/settings/agents",
+      component: AgentsRoute,
+    }),
     gated("/settings/instance", ADMINS, "/settings/agents", Instance),
   ]),
   usage,
@@ -222,10 +262,13 @@ const routeTree = root.addChildren([
       const error = typeof s.error === "string" ? s.error : undefined;
       const next = str(s.next);
       const method = s.method === "code" ? "code" : undefined;
+      // Which sign-in refused a no_access (#799); anything else is dropped.
+      const via = s.via === "access" || s.via === "google" ? s.via : undefined;
       return {
         ...(error !== undefined && { error }),
         ...(next && { next }),
         ...(method && { method }),
+        ...(via && { via }),
       };
     },
     component: SignInRoute,
@@ -234,7 +277,14 @@ const routeTree = root.addChildren([
 ]);
 
 export const createAppRouter = (history?: RouterHistory) =>
-  createRouter({ routeTree, history, parseSearch, stringifySearch });
+  createRouter({
+    routeTree,
+    history,
+    parseSearch,
+    stringifySearch,
+    // A page that throws renders this in the layout's outlet, never a blank app.
+    defaultErrorComponent: RenderError,
+  });
 
 export const router = createAppRouter();
 

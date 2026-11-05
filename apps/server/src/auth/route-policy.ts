@@ -11,7 +11,21 @@ import {
   capOfCaller,
   withAccessCache,
 } from "./authz.js";
-import { type OrgAction, orgCan, type PolicyAction } from "./policy.js";
+import { authConfig } from "./config.js";
+import { orgCan } from "./policy.js";
+import {
+  CONTENT_POLICY,
+  type Policy,
+  ROUTE_POLICY,
+} from "./route-policy-table.js";
+
+export {
+  CONTENT_POLICY,
+  OAUTH_PROVIDER_ROUTES,
+  type Policy,
+  ROUTE_POLICY,
+  TOOL_POLICY,
+} from "./route-policy-table.js";
 
 /**
  * Real middleware, tagged at registration (`mw`). The gate skips exactly
@@ -25,190 +39,6 @@ export function mw<T extends object>(handler: T): T {
 }
 export const isMiddleware = (handler: object): boolean =>
   MIDDLEWARE.has(handler);
-
-/**
- * Every route's access rule, enforced by `enforcePolicy` before its handler
- * runs (P3 T5). A route with no entry answers 404, so a new route can't ship
- * unguarded. Handlers keep their finer checks (thumbnail first-write, runtime
- * gate kinds, anonymous writes); the gate is the floor they can't skip.
- *
- * - `artifact`: authorize(caller, :id, action) (404 otherwise); `signedIn`
- *   answers 401 first for anonymous callers, as the handler would.
- * - `org`: a signed-in user (401) allowed `orgCan(user, org)` (404).
- * - `user`: any signed-in user (401); the handler scopes to the caller's own rows.
- * - `public` / `signed`: no session needed (signed: verified by the handler).
- */
-export type Policy =
-  | {
-      artifact: PolicyAction;
-      signedIn?: true;
-      allowDeleted?: true;
-      /** Anonymous callers who can view get this 401 instead of 404 (the handler's order). */
-      anon401?: string;
-      /** Floor context for viewer thumbnails (the handler applies the exact rule). */
-      ctx?: { firstThumbnail?: boolean };
-    }
-  | { org: OrgAction }
-  | { user: string }
-  | { public: string }
-  | { signed: string };
-
-const art = (
-  action: PolicyAction,
-  extra: {
-    signedIn?: true;
-    allowDeleted?: true;
-    anon401?: string;
-    ctx?: { firstThumbnail?: boolean };
-  } = {},
-): Policy => ({ artifact: action, ...extra });
-const SAVE = "Sign in to save changes";
-const ARTS = "/api/v1/artifacts/:id";
-const signedIn = { signedIn: true } as const;
-
-/** App host routes, keyed `${method} ${path}` as Hono registers them. */
-export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
-  "GET /healthz": { public: "health probe" },
-  "GET /robots.txt": { public: "robots" },
-  "GET /skill.md": { public: "agent skill" },
-  "GET /upgrade.md": { public: "upgrade guide" },
-  "ALL /healthz": { public: "405" },
-  "ALL /robots.txt": { public: "405" },
-  "ALL /skill.md": { public: "405" },
-  "ALL /upgrade.md": { public: "405" },
-  "GET /auth/providers": {
-    public: "sign-in offering; config only, never D1",
-  },
-  "GET /auth/login": { public: "sign-in start" },
-  "GET /auth/callback": { public: "sign-in callback" },
-  "GET /auth/login/google": { public: "sign-in start (Google)" },
-  "GET /auth/callback/google": { public: "sign-in callback (Google)" },
-  // Emailed codes: no session yet; the login guard (X-OA-Request, JSON,
-  // same-origin) and the pending code cookie carry the protection.
-  "POST /auth/code/request": { public: "code request; login guard, Turnstile" },
-  "POST /auth/code/verify": { public: "code verify; login guard" },
-  "POST /auth/logout": { public: "sign-out (same-origin, CSRF)" },
-  "GET /auth/dev-login": { public: "dev only; refused outside dev" },
-  // P2 test hooks: 404 unless TEST_HOOKS is on (test-hooks/index.ts decides).
-  "ALL /__test/*": { public: "test hooks; 404 unless TEST_HOOKS is on" },
-  "GET /api/v1/me": { user: "the caller" },
-  "PATCH /api/v1/me": { user: "the caller" },
-  "GET /api/v1/members": { org: "members.manage" },
-  "POST /api/v1/members": { org: "members.manage" },
-  "PATCH /api/v1/members/:id": { org: "members.manage" },
-  "DELETE /api/v1/members/:id": { org: "members.manage" },
-  // The handler requires a manager and 404s for the owner's own link.
-  "DELETE /api/v1/members/:id/identities/google": { org: "members.manage" },
-  "GET /api/v1/settings": { org: "settings.read" },
-  "PATCH /api/v1/settings": { org: "settings.manage" },
-  "GET /api/v1/artifacts": { user: "list, filtered by listFilterSql" },
-  "POST /api/v1/artifacts": {
-    org: "artifact.create",
-  },
-  [`GET ${ARTS}`]: art("view"),
-  [`PATCH ${ARTS}`]: art("publish", signedIn),
-  [`DELETE ${ARTS}`]: art("delete", signedIn),
-  [`POST ${ARTS}/undelete`]: art("undelete", {
-    signedIn: true,
-    allowDeleted: true,
-  }),
-  [`GET ${ARTS}/content-url`]: art("content.mint"),
-  [`GET ${ARTS}/versions`]: art("versions"),
-  [`POST ${ARTS}/versions`]: art("publish", signedIn),
-  [`GET ${ARTS}/versions/:v/files/*`]: art("version.file"),
-  [`POST ${ARTS}/versions/:v/restore`]: art("restore", signedIn),
-  [`PUT ${ARTS}/versions/:v/text`]: art("version.text", signedIn),
-  [`GET ${ARTS}/thumbnail`]: art("thumbnail.read"),
-  // Viewers may set only the first thumbnail: the floor lets an eligible
-  // viewer through and putThumbnail applies the exact rule.
-  [`PUT ${ARTS}/thumbnail`]: art("thumbnail.write", {
-    signedIn: true,
-    ctx: { firstThumbnail: true },
-  }),
-  [`GET ${ARTS}/shares`]: art("share", signedIn),
-  [`PUT ${ARTS}/shares`]: art("share", signedIn),
-  [`DELETE ${ARTS}/shares/:email`]: art("unshare", signedIn),
-  "POST /api/v1/uploads": { user: "authorizes the target artifact itself" },
-  "PUT /api/v1/uploads/:uploadId": { signed: "upload URL signature" },
-  "GET /api/v1/search": { user: "search, filtered by listFilterSql" },
-  // Runtime: the floor is read access; gate() applies the write, storage and
-  // anonymous rules (401s and capability_denied) on top.
-  [`GET ${ARTS}/anon-id`]: art("view"),
-  [`GET ${ARTS}/data/:col`]: art("data.read"),
-  [`GET ${ARTS}/data-count/:col`]: art("data.read"),
-  [`POST ${ARTS}/data/:col/query`]: art("data.read"),
-  [`GET ${ARTS}/data/:col/:doc`]: art("data.read"),
-  [`PUT ${ARTS}/data/:col/:doc`]: art("data.write", { anon401: SAVE }),
-  [`PATCH ${ARTS}/data/:col/:doc`]: art("data.write", { anon401: SAVE }),
-  [`DELETE ${ARTS}/data/:col/:doc`]: art("data.write", { anon401: SAVE }),
-  [`PUT ${ARTS}/data`]: art("data.reset"),
-  [`GET ${ARTS}/data-subscribe`]: art("subscribe"),
-  [`GET ${ARTS}/events`]: art("events"),
-  [`GET ${ARTS}/storage`]: art("storage", { anon401: SAVE }),
-  [`GET ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
-  [`PUT ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
-  [`DELETE ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
-  "GET /api/v1/tokens": { user: "the caller's tokens" },
-  "POST /api/v1/tokens": { org: "tokens.create" },
-  "DELETE /api/v1/tokens/:id": { user: "the caller's tokens" },
-  "GET /api/v1/usage": { org: "usage.read" },
-  "GET /api/v1/audit": { org: "audit.read" },
-  "GET /api/v1/audit/export": { org: "audit.read" },
-  "GET /oauth/authorize": {
-    public: "consent page; redirects to sign-in, checks mcp.connect",
-  },
-  "POST /oauth/authorize": {
-    public: "consent decision; checks session and mcp.connect",
-  },
-  "GET /api/v1/oauth-clients": { user: "the caller's grants" },
-  "DELETE /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
-  "GET /a/:id": { public: "SPA shell; OG metadata only for public artifacts" },
-  "GET /a/:id/full": { public: "SPA shell" },
-  "GET /a/:id/v/:v": { public: "SPA shell" },
-  "GET /*": { public: "SPA and assets" },
-  "HEAD /*": { public: "SPA and assets" },
-};
-
-/** Content host routes: the handlers verify signed tokens or public visibility. */
-export const CONTENT_POLICY: Readonly<Record<string, Policy>> = {
-  "GET /robots.txt": { public: "robots" },
-  "ALL /robots.txt": { public: "405" },
-  "GET /_oa/*": { public: "render bundles" },
-  "GET /*": { signed: "/c/ signed token or /p/ public visibility" },
-};
-
-/**
- * Served by the OAuth provider before the app sees the request (index.ts
- * serveAppHost): listed for the record, public by protocol.
- */
-export const OAUTH_PROVIDER_ROUTES: readonly string[] = [
-  "POST /oauth/token",
-  "POST /oauth/register",
-  "GET /.well-known/oauth-authorization-server",
-  "GET /.well-known/oauth-protected-resource",
-  "POST /mcp",
-];
-
-/** MCP tools: `artifact` policies check the tool's `id` input first. */
-export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
-  publish_artifact: { org: "artifact.create" },
-  create_upload: { user: "authorizes the target artifact itself" },
-  get_artifact: art("view"),
-  list_artifacts: { user: "filtered by listFilterSql" },
-  search_artifacts: { user: "filtered by listFilterSql" },
-  list_versions: art("versions"),
-  restore_version: art("restore"),
-  share_artifact: art("share"),
-  unshare_artifact: art("unshare"),
-  set_visibility: art("visibility"),
-  delete_artifact: art("delete"),
-  artifact_data_get: art("data.read"),
-  artifact_data_list: art("data.read"),
-  artifact_data_query: art("data.read"),
-  artifact_data_set: art("data.write"),
-  artifact_data_update: art("data.write"),
-  artifact_data_delete: art("data.write"),
-};
 
 type Target = { method: string; path: string; index: number };
 
@@ -262,6 +92,8 @@ export async function enforce(
       });
     } catch (e) {
       // Keep the handler's order: an anonymous caller who may view gets 401.
+      // A data write refused by dataWriters "editors" already threw 403
+      // data_editors_only (authorize, #681).
       if (
         p.anon401 &&
         who.kind !== "user" &&
@@ -274,6 +106,9 @@ export async function enforce(
     }
     return;
   }
+  // A switched-off feature is absent for everyone, signed in or not.
+  if ("org" in p && p.offWhen && authConfig(env).features.includes(p.offWhen))
+    throw notFound();
   if (who.kind !== "user")
     throw new ApiError("unauthorized", "Sign in required");
   if ("org" in p && !orgCan(who.user, p.org, { cap: capOfCaller(who) })) {
@@ -301,6 +136,8 @@ export const enforcePolicy = (
   table: Readonly<Record<string, Policy>> = ROUTE_POLICY,
 ): MiddlewareHandler<AppEnv> =>
   mw(async (c, next) => {
+    // Before any session or access read (live socket revocation).
+    c.set("authzAt", Date.now());
     const t = targetRoute(c);
     // No answering route: the app's notFound handler answers 404.
     if (!t) return next();

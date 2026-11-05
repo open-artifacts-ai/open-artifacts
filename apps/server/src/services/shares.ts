@@ -2,15 +2,19 @@ import { normalizeEmail } from "@oa/auth-core";
 import {
   type Format,
   type Member,
+  type Role,
   type Share,
+  type ShareRecipient,
   type ShareResult,
   type ShareRole,
   viewerPath,
 } from "@oa/shared";
 import { asc, eq } from "drizzle-orm";
 import { authorize, callerOf } from "../auth/authz.js";
+import { authConfig, type SignInProvider } from "../auth/config.js";
+import { capOf } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
-import { shares } from "../db/schema.js";
+import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import { emailEnabled, sendEmail } from "../email/send.js";
 import { senderName, shareEmail } from "../email/templates.js";
@@ -18,11 +22,22 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logInfo, logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
-import { closeRuntimeSockets } from "../runtime/revoke.js";
+import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
+import { inBackground, notifyShared } from "./follows.js";
 import { getSettings } from "./members.js";
+import { guestRecipients, shareReach } from "./reach.js";
 
 export const MAX_SHARES = 200;
+
+/**
+ * What a guest's share comes to, in words. Copy only: access is decided in
+ * src/auth. A stored editor gets edit back if they become a member.
+ */
+export const guestShareLine = (s: { role: ShareRole }): string =>
+  s.role === "viewer"
+    ? "They're a guest, so they can only view."
+    : "They're a guest, so they can only view for now.";
 
 const toShare = (r: {
   email: string;
@@ -48,12 +63,41 @@ export async function listShares(
 ): Promise<Share[]> {
   await ownerOnly(env, user, id);
   const rows = await getDb(env)
-    .select()
+    .select({
+      email: shares.email,
+      role: shares.role,
+      createdAt: shares.createdAt,
+      orgRole: users.role,
+      rm: users.restrictedManual,
+      rs: users.restrictedSync,
+    })
     .from(shares)
+    .leftJoin(users, eq(users.email, shares.email))
     .where(eq(shares.artifactId, id))
     .orderBy(asc(shares.createdAt), asc(shares.email))
     .limit(MAX_SHARES);
-  return rows.map(toShare);
+  const isGuest = guestRecipients(env);
+  const cfg = authConfig(env);
+  // Access's own cap (capOf), so a member who can only view says so. Never
+  // why: a row has no user, or no cap, and the field is absent.
+  const viewOnly = (r: (typeof rows)[number]) =>
+    r.orgRole !== null &&
+    capOf(
+      {
+        role: r.orgRole as Role,
+        // Fail closed, as getUser reads them: any non-zero flag restricts.
+        restrictedManual: (r.rm ?? 0) !== 0,
+        restrictedSync: (r.rs ?? 0) !== 0,
+      },
+      cfg,
+    ) !== null;
+  return Promise.all(
+    rows.map(async (r) => ({
+      ...toShare(r),
+      ...((await isGuest(r.email, r.orgRole)) ? { guest: true } : {}),
+      ...(viewOnly(r) ? { viewOnly: true } : {}),
+    })),
+  );
 }
 
 /**
@@ -83,8 +127,27 @@ const shareAudit = (
 const SAME_SHARE =
   "SELECT email, role, created_at AS createdAt FROM shares WHERE artifact_id = ? AND email = ? AND role = ?";
 const IS_USER = "select 1 as x from users where email = ? limit 1";
+// Only a lapsed guest (removed by the last-share cleanup): an admin or
+// directory removal clears guest_lapsed and stays removed (P3 T6).
 const REACTIVATE_GUEST =
-  "update users set status = 'active' where email = ? and role = 'guest' and status = 'removed'";
+  "update users set status = 'active', guest_lapsed = 0, status_changed_at = ?2 where email = ?1 and role = 'guest' and status = 'removed' and guest_lapsed = 1";
+
+/**
+ * user.status for a guest lapsing (last share gone) or coming back (a new
+ * share), right after that statement in its batch: written only when the
+ * statement changed the row. The actor is the member whose share change
+ * caused it. No reason (AuditReason has none for shares); ids only.
+ */
+const lapseAudit = (
+  env: Env,
+  guestId: string,
+  status: "removed" | "active",
+  actorId: string,
+) =>
+  audit(env, "user.status", { type: "user", id: guestId }, userActor(actorId), {
+    detail: { status, cause: status === "removed" ? "last_share" : "share" },
+    when: { sql: "changes() > 0", args: [] },
+  });
 
 /**
  * Upsert (owner-only). Sharing only ever adds access; see accessLevel.
@@ -95,6 +158,7 @@ export async function putShare(
   user: Member,
   id: string,
   s: { email: string; role: ShareRole },
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<ShareResult> {
   const artifact = await ownerOnly(env, user, id);
   const email = normalizeEmail(s.email);
@@ -136,13 +200,40 @@ export async function putShare(
     );
   // An update keeps the original created_at, so this is a new share.
   const created = row.createdAt === now;
+  // A changed share at viewer is a downgrade from editor: the sockets opened
+  // as editor close, and the artifact's DO refuses accepts authorized before
+  // it (P3 T7). Not the person's presence: their other artifacts are unaffected.
+  if (res?.results[0] && !created && s.role === "viewer")
+    await closeRuntimeSockets(env, [id], "share narrowed", ctx);
   // A guest deactivated when their last share went comes back on a new one
   // (same row: their history and name are intact). After the insert, so a
   // concurrent cleanup either sees this share or is undone here.
-  if (created) await stmt(env.DB, REACTIVATE_GUEST).bind(email).run();
+  // Audited (user.status, active) in the same batch, only when it happened.
+  if (created) {
+    const guest = await stmt(env.DB, GUEST_ID)
+      .bind(email)
+      .first<{ id: string }>();
+    if (guest)
+      await env.DB.batch([
+        stmt(env.DB, REACTIVATE_GUEST).bind(email, Date.now()),
+        lapseAudit(env, guest.id, "active", user.id),
+      ]);
+  }
+  // #1292: a new direct share tells the recipient's picked agents, after
+  // the response; ids and the link only.
+  if (created) await inBackground(ctx, notifyShared(env, user.id, email, id));
+  // Review item 37: whether they can sign in at all (an in-domain
+  // non-member on an invite-only install can't); the share stands either way.
+  const reach = await shareReach(env, email);
+  const guest = await guestRecipients(env)(email, reach.role);
   return {
     ...toShare(row),
-    emailed: created && (await emailShare(env, user, artifact, email, s.role)),
+    ...(guest ? { guest: true } : {}),
+    emailed:
+      created && (await emailShare(env, user, artifact, email, s.role, reach)),
+    ...(reach.recipient ? { recipient: reach.recipient } : {}),
+    // The list the share email names (reach.ts), so the UI and email agree.
+    signInMethods: reach.methods,
   };
 }
 
@@ -152,6 +243,8 @@ async function emailShare(
   artifact: { id: string; title: string; format: string },
   email: string,
   role: ShareRole,
+  /** The methods that admit the recipient and, with none, why (shareReach). */
+  reach: { methods: SignInProvider[]; recipient?: ShareRecipient },
 ): Promise<boolean> {
   if (!emailEnabled(env)) return false;
   try {
@@ -160,6 +253,8 @@ async function emailShare(
       getSettings(env),
     ]);
     if (member) return false;
+    // No user row here: the level they'll have, as the share rows show it.
+    const viewOnly = await guestRecipients(env)(email, null);
     return await sendEmail(
       env,
       user.id,
@@ -173,11 +268,14 @@ async function emailShare(
           title: artifact.title,
           path: viewerPath(artifact.id),
           format: artifact.format as Format,
-          role,
+          role: viewOnly ? "viewer" : role,
+          signIn: reach.methods,
+          cantSignIn: reach.recipient?.reason,
         }),
       {
         kind: "share",
         artifactId: artifact.id,
+        instance: settings.name,
         replyTo: normalizeEmail(user.email) ?? undefined,
       },
     );
@@ -204,12 +302,14 @@ export async function deleteShare(
     shareAudit(env, "artifact.unshare", user, artifact, {}),
   ]);
   if (!out?.results.length) throw new ApiError("not_found", "Not found");
+  // Closes the artifact's sockets and records the change in its DO, so a
+  // socket authorized before it is refused on accept (P3 T7). Not the
+  // person's presence: their sockets on other artifacts are unaffected.
   await closeRuntimeSockets(env, [id], "share revoked", ctx);
   // Best effort: the share is already gone, and that is what the caller asked.
-  // The deleted share's sockets were closed above; with no share left there
-  // are no other share-opened sockets to close (team ones: removeMember's ceiling).
+  // A guest left with no share is deactivated, which revokes their presence.
   const log = { artifactId: id, actorId: user.id };
-  await removeGuestIfUnshared(env, e, log).catch((err) =>
+  await removeGuestIfUnshared(env, e, log, ctx).catch((err) =>
     logWarn("guest_cleanup_failed", err, {
       ...log,
       reason: err instanceof ApiError ? err.code : "error",
@@ -217,11 +317,16 @@ export async function deleteShare(
   );
 }
 
-// Every statement re-checks "still a guest, still no share" itself, so the
-// batch is atomic against a concurrent promotion or putShare.
+// Every statement re-checks "still a guest, still no share, still in no
+// space" itself, so the batch is atomic against a concurrent promotion,
+// putShare or space grant. A guest who holds a space role (the API or
+// directory sync added them) keeps their account when their last share goes
+// (review item 18).
 const UNSHARED_GUEST =
-  "email = ?1 AND role = 'guest' AND NOT EXISTS (SELECT 1 FROM shares WHERE email = ?1)";
-const DEACTIVATE_GUEST = `UPDATE users SET status = 'removed', session_epoch = session_epoch + 1
+  "email = ?1 AND role = 'guest' AND NOT EXISTS (SELECT 1 FROM shares WHERE email = ?1) AND NOT EXISTS (SELECT 1 FROM space_members sm WHERE sm.user_id = users.id)";
+const GUEST_ID = "select id from users where email = ? and role = 'guest'";
+const DEACTIVATE_GUEST = `UPDATE users SET status = 'removed', guest_lapsed = 1, status_changed_at = ?2,
+   session_epoch = session_epoch + 1
    WHERE ${UNSHARED_GUEST} AND status = 'active' RETURNING id`;
 const DELETE_GUEST_TOKENS = `DELETE FROM tokens WHERE user_id IN
    (SELECT id FROM users WHERE ${UNSHARED_GUEST} AND status = 'removed')`;
@@ -239,13 +344,22 @@ export async function removeGuestIfUnshared(
   env: Env,
   email: string,
   log: { artifactId: string; actorId: string },
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
+  const guest = await stmt(env.DB, GUEST_ID)
+    .bind(email)
+    .first<{ id: string }>();
+  if (!guest) return;
   const [deactivated] = await env.DB.batch<{ id: string }>([
-    stmt(env.DB, DEACTIVATE_GUEST).bind(email),
+    stmt(env.DB, DEACTIVATE_GUEST).bind(email, Date.now()),
+    // Directly after the deactivation: audited only when it happened.
+    lapseAudit(env, guest.id, "removed", log.actorId),
     stmt(env.DB, DELETE_GUEST_TOKENS).bind(email),
   ]);
   const id = deactivated?.results[0]?.id;
   if (!id) return;
+  // Their live sockets close now (P3 T7); never throws.
+  await revokeUserLive(env, id, "guest removed", ctx);
   // OAuth grants live in KV, outside the batch.
   await revokeAllGrants(env, id);
   logInfo("guest_removed", log);

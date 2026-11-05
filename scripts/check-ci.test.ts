@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -48,11 +48,17 @@ const cmp = (a: string, b: string) => {
     if (x[i] !== y[i]) return (x[i] as number) - (y[i] as number);
   return 0;
 };
+// Tags this checkout contains: worktrees share .git, so a plain list would
+// hold a branch behind a release that was tagged after it forked.
 const latestTag = (): string | undefined => {
-  const tags = execFileSync("git", ["tag", "--list", "v*"], {
-    cwd: root,
-    encoding: "utf8",
-  })
+  const tags = execFileSync(
+    "git",
+    ["tag", "--merged", "HEAD", "--list", "v*"],
+    {
+      cwd: root,
+      encoding: "utf8",
+    },
+  )
     .split("\n")
     .filter((t) => /^v\d+\.\d+\.\d+$/.test(t))
     .map((t) => t.slice(1))
@@ -66,12 +72,59 @@ const RETRY_FLAGS = /--retry \d+ --retry-delay \d+ --retry-max-time \d+/;
 
 describe("ci.yml", () => {
   const w = wf("ci.yml");
-  it("triggers on pull_request and push to main", () => {
+  it("triggers on pull_request and dispatch, never on push (#965)", () => {
     expect(triggers(w)).toEqual(
-      expect.arrayContaining(["pull_request", "push", "workflow_dispatch"]),
+      expect.arrayContaining(["pull_request", "workflow_dispatch"]),
     );
-    expect(w.on.push.branches).toContain("main");
-    expect("workflow_dispatch" in w.on).toBe(true);
+    // Main moves only through the merge queue, which already ran CI on the
+    // same commit; a push run would only retest it and take runners.
+    expect("push" in w.on).toBe(false);
+  });
+  it("no workflow waits on a push-to-main CI run (#965)", () => {
+    const dir = join(root, ".github/workflows");
+    const onCi: string[] = [];
+    for (const f of readdirSync(dir).filter((n) => /\.ya?ml$/.test(n))) {
+      const x = wf(f);
+      const wr = x.on?.workflow_run;
+      if (wr && (wr.workflows ?? []).includes("CI")) {
+        onCi.push(f);
+        // No branch filter: it still fires on pull request and merge-queue
+        // CI runs (the release PR's own checks are what it reads).
+        expect(wr.branches).toBeUndefined();
+        expect(wr["branches-ignore"]).toBeUndefined();
+      }
+    }
+    expect(onCi).toEqual(["release-cadence.yml"]);
+    // release-cadence reads the release PR's check rollup and the merge
+    // queue, never a check on main's commit.
+    const cadence = ci("release-cadence.ts");
+    expect(cadence).toContain("statusCheckRollup");
+    expect(cadence).toContain("mergeQueue(branch: $branch)");
+  });
+  it("test: three shards (server, rest, cpu); pull requests run the affected packages, everything else the whole shard (#965)", () => {
+    const job = w.jobs["test-shard"];
+    expect(job.strategy.matrix.shard).toEqual(["server", "rest", "cpu"]);
+    expect(job.strategy["fail-fast"]).toBe(false);
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = job.steps;
+    const suite = steps.find((s) => s.id === "suite");
+    expect(suite.run).toBe("bash scripts/ci/test-affected.sh");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(suite.env.BASE_SHA).toBe(
+      "${{ github.event.pull_request.base.sha }}",
+    );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(suite.env.TEST_SHARD).toBe("${{ matrix.shard }}");
+    expect(suite.if).toContain("steps.ro.outputs.release_only != 'true'");
+    expect(steps.some((s) => s.run === "pnpm test")).toBe(false);
+    // test:cpu runs only in its own shard, never after another suite.
+    expect(JSON.stringify(steps)).not.toContain("test:cpu");
+    const sh = ci("test-affected.sh");
+    expect(sh).toContain(
+      '[ "${GITHUB_EVENT_NAME:-}" = pull_request ] || everything',
+    );
+    expect(sh).toContain('--filter "...[$BASE_SHA]"');
+    expect(sh).toContain("pnpm --filter @oa/server test:cpu");
   });
   it("runs on merge_group so the merge queue gets its required checks", () => {
     expect(triggers(w)).toContain("merge_group");
@@ -80,6 +133,43 @@ describe("ci.yml", () => {
     expect(Object.keys(w.jobs)).toEqual(
       expect.arrayContaining(["build", "e2e", "lint", "test", "typecheck"]),
     );
+  });
+  // #1213: the migration timing job filters by path inside the job, so it
+  // always reports (a filtered-out workflow would leave a required check
+  // pending, a skipped job would pass one); any diff error means run.
+  it("migration-timing always runs and decides its path filter inside", () => {
+    const job = w.jobs["migration-timing"];
+    expect(job).toBeDefined();
+    expect(job.if).toBeUndefined();
+    expect(job.needs).toBeUndefined();
+    expect(w.on.pull_request?.paths).toBeUndefined();
+    expect(w.on.merge_group?.paths).toBeUndefined();
+    expect(JSON.stringify(job)).not.toContain("continue-on-error");
+    expect(JSON.stringify(job)).not.toContain("secrets.");
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = job.steps;
+    const changed = steps.find((s) => s.id === "changed");
+    expect(changed.run).toMatch(/^run=true\n/);
+    expect(changed.run).toContain("apps/server/migrations/");
+    const time = steps.find((s) =>
+      (s.run ?? "").includes("migration-timing.ts --seed-file"),
+    );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(time.if).toBe("${{ steps.changed.outputs.run == 'true' }}");
+  });
+  // P3 T16 (#605): the authz matrix runs in its own job, in parallel, so the
+  // main test job's wall time drops. Required check (repo setting).
+  it("authz-matrix job runs the server authz matrix, gated and unskippable", () => {
+    const job = w.jobs["authz-matrix"];
+    expect(job).toBeDefined();
+    expect(job.if).toBeUndefined();
+    expect(job.needs).toBeUndefined();
+    expect(JSON.stringify(job)).not.toContain("continue-on-error");
+    expect(JSON.stringify(job)).not.toContain("secrets.");
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const runs = job.steps.map((s: any) => s.run ?? "");
+    expect(runs).toContain("pnpm install --frozen-lockfile");
+    expect(runs).toContain("pnpm --filter @oa/server test:authz");
   });
   it("lint job runs actionlint at a pinned version with checksum", () => {
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
@@ -94,16 +184,42 @@ describe("ci.yml", () => {
     expect(step.run).toContain("command -v shellcheck");
     expect(step.run).toContain(".github/workflows/*.yml");
   });
-  it("e2e job runs both Playwright suites locally, in the pinned Playwright image", () => {
-    const job = w.jobs.e2e;
+  it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
+    const job = w.jobs["e2e-shard"];
+    // Pull requests run two shards (free plan, 20 concurrent jobs; #965);
+    // the merge queue and a dispatch keep four, the full proof before main.
+    // Resolves `<event check> && a || b` for an event (a literal stays as is).
+    const PR = "github.event_name == 'pull_request'";
+    const forEvent = (expr: string, pr: boolean): string => {
+      if (/^\d+$/.test(expr)) return expr;
+      const body = /^\$\{\{ (.*) \}\}$/.exec(expr)?.[1] ?? expr;
+      const m = new RegExp(
+        `^(?:fromJSON)?\\(?${PR} && ('[^']*'|\\d+) \\|\\| ('[^']*'|\\d+)\\)?$`,
+      ).exec(body);
+      if (!m) throw new Error(`unexpected expression: ${expr}`);
+      return ((pr ? m[1] : m[2]) as string).replace(/^'|'$/g, "");
+    };
+    const events = [
+      { pr: true, shards: [1, 2], of: 2, timeout: 25 },
+      { pr: false, shards: [1, 2, 3, 4], of: 4, timeout: 15 },
+    ];
+    for (const e of events) {
+      expect(JSON.parse(forEvent(job.strategy.matrix.shard, e.pr))).toEqual(
+        e.shards,
+      );
+      const env = /^\$\{\{ matrix\.shard \}\}\/(\$\{\{ .* \}\})$/.exec(
+        job.env.E2E_SHARD,
+      );
+      expect(Number(forEvent(env?.[1] as string, e.pr))).toBe(e.of);
+      expect(Number(forEvent(job["timeout-minutes"], e.pr))).toBe(e.timeout);
+    }
+    expect(job.strategy["fail-fast"]).toBe(false);
     // Browsers and their OS deps come baked into the image, pinned by digest:
     // no apt step, so a slow Ubuntu mirror can't eat the job's budget (#462).
     expect(job.container.image).toMatch(
       /^mcr\.microsoft\.com\/playwright:v\d+\.\d+\.\d+-noble@sha256:[0-9a-f]{64}$/,
     );
     expect(job.container.options ?? "").toContain("--ipc=host");
-    expect(job["timeout-minutes"]).toBeGreaterThan(0);
-    expect(job["timeout-minutes"]).toBeLessThanOrEqual(25);
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     const steps: any[] = job.steps;
     const runs = steps.map((s) => s.run ?? "");
@@ -131,11 +247,35 @@ describe("ci.yml", () => {
     const img = /playwright:v(\d+\.\d+\.\d+)-noble/.exec(job.container.image);
     const pkg = JSON.parse(read("apps/dashboard/package.json"));
     expect(img?.[1]).toBe(pkg.devDependencies["@playwright/test"]);
-    const upload = steps.find((s) =>
+    const uploads = steps.filter((s) =>
       (s.uses ?? "").startsWith("actions/upload-artifact@"),
     );
-    expect(upload.if).toBe("failure()");
-    expect(upload.with.path).toContain("apps/dashboard/playwright-report");
+    // Each shard's blob report (merged by `e2e`), and its traces on failure.
+    expect(uploads.map((u) => u.with.path)).toEqual([
+      "apps/dashboard/blob-report",
+      "apps/dashboard/test-results",
+    ]);
+    expect(uploads[1].if).toBe("failure()");
+    // The spaces suite (one spec, its own server) runs whole in exactly one
+    // shard per event: 2 of two on a pull request, 3 of four in the queue.
+    // The unsharded ui, landing and provisioning checks in shard 1 only.
+    const shardsRunning = (name: string, pr: boolean, all: number[]) => {
+      const step = steps.find(
+        (s) => s.run === `bash scripts/ci/e2e.sh ${name}`,
+      );
+      const cond = step.if as string;
+      const picks = [...cond.matchAll(/matrix\.shard == (\d+|\([^)]*\))/g)].map(
+        (m) => Number(forEvent(m[1] as string, pr)),
+      );
+      expect(picks).toHaveLength(1);
+      return all.filter((n) => picks.includes(n));
+    };
+    for (const e of events) {
+      expect(shardsRunning("spaces", e.pr, e.shards)).toEqual([e.pr ? 2 : 3]);
+      for (const name of ["ui", "landing", "provisioning"]) {
+        expect(shardsRunning(name, e.pr, e.shards)).toEqual([1]);
+      }
+    }
     // Local wrangler dev only: no secrets, nothing pointing at staging.
     const s = JSON.stringify(job);
     expect(s).not.toContain("secrets.");
@@ -144,8 +284,23 @@ describe("ci.yml", () => {
     expect(ci("e2e.sh")).toContain("PLAYWRIGHT_IMAGE_VERSION");
   });
   describe("release-only fast path", () => {
-    const REQUIRED = ["lint", "typecheck", "test", "build", "e2e"];
-    const HEAVY = ["typecheck", "test", "build", "e2e"];
+    const REQUIRED = [
+      "lint",
+      "typecheck",
+      "test",
+      "build",
+      "e2e",
+      "authz-matrix",
+    ];
+    // `e2e` and `test` are aggregates (below); their shards do the heavy work.
+    const HEAVY = [
+      "typecheck",
+      "test-shard",
+      "build",
+      "e2e-shard",
+      "e2e-admin",
+      "authz-matrix",
+    ];
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     type Step = any;
     const raw = read(".github/workflows/ci.yml");
@@ -157,11 +312,53 @@ describe("ci.yml", () => {
       expect(Object.keys(w.jobs)).toEqual(expect.arrayContaining(REQUIRED));
     });
     it("no required job has a job-level if or needs (a skipped job counts as passing)", () => {
-      for (const j of REQUIRED) {
+      for (const j of REQUIRED.filter((j) => j !== "e2e" && j !== "test")) {
         expect(w.jobs[j].if, `${j} if`).toBeUndefined();
         expect(w.jobs[j].needs, `${j} needs`).toBeUndefined();
       }
+      expect(w.jobs["test-shard"].if).toBeUndefined();
+      expect(w.jobs["test-shard"].needs).toBeUndefined();
+      expect(w.jobs["e2e-shard"].if).toBeUndefined();
+      expect(w.jobs["e2e-shard"].needs).toBeUndefined();
+      expect(w.jobs["e2e-admin"].if).toBeUndefined();
+      expect(w.jobs["e2e-admin"].needs).toBeUndefined();
       expect(w.jobs.changes).toBeUndefined();
+    });
+    // The one exception, and why it can't pass by being skipped: `e2e` always
+    // runs (never skipped), and its first, ungated step fails unless every
+    // shard succeeded, so a skipped, cancelled or failed shard fails it.
+    it("e2e is the aggregate of the shards and the admin job: always runs, passes only when all passed", () => {
+      const job = w.jobs.e2e;
+      expect(job.needs).toEqual(["e2e-shard", "e2e-admin"]);
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(job.if).toBe("${{ always() }}");
+      const [gate] = steps("e2e");
+      expect(gate.if).toBeUndefined();
+      expect(gate["continue-on-error"]).toBeUndefined();
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.SHARDS).toBe("${{ needs.e2e-shard.result }}");
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.ADMIN).toBe("${{ needs.e2e-admin.result }}");
+      expect(gate.run).toMatch(
+        /^\[ "\$SHARDS" = success \] && \[ "\$ADMIN" = success \]$/m,
+      );
+      expect(JSON.stringify(job)).not.toContain("secrets.");
+    });
+    // Same for `test` (#965): it always runs, and its first, ungated step
+    // fails unless every test shard succeeded.
+    it("test is the aggregate of its shards: always runs, passes only when all passed", () => {
+      const job = w.jobs.test;
+      expect(job.needs).toEqual(["test-shard"]);
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(job.if).toBe("${{ always() }}");
+      expect(steps("test")).toHaveLength(1);
+      const [gate] = steps("test");
+      expect(gate.if).toBeUndefined();
+      expect(gate["continue-on-error"]).toBeUndefined();
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.SHARDS).toBe("${{ needs.test-shard.result }}");
+      expect(gate.run).toMatch(/^\[ "\$SHARDS" = success \]$/m);
+      expect(JSON.stringify(job)).not.toContain("secrets.");
     });
     it("each heavy job checks out full history, then runs the release-only step first", () => {
       for (const j of HEAVY) {
@@ -253,6 +450,37 @@ describe("ci.yml", () => {
       expect(raw).not.toMatch(/contains\(.*labels/);
     });
   });
+  // H-RD: provision's src and dist import @oa/auth-core/domains, which node
+  // resolves to auth-core's dist. A job that runs provision code must build it
+  // first (`pnpm --filter @oa/provision build` does, or build auth-core).
+  it("every job that runs provision tests or its dist builds @oa/auth-core first", () => {
+    const usesProvision =
+      /@oa\/provision (?:exec vitest|test)\b|scripts\/ci\/build-(?:release-bundle|hosted-release)\.ts/;
+    const builds =
+      /--filter @oa\/(?:provision|auth-core) build\b|--filter @oa\/auth-core\b[^\n]*\bbuild\b/;
+    const seen: string[] = [];
+    for (const name of readdirSync(join(root, ".github/workflows")).filter(
+      (f) => f.endsWith(".yml"),
+    ))
+      for (const [job, j] of Object.entries(wf(name).jobs ?? {}))
+        for (const [i, st] of (
+          (j as { steps?: { run?: string }[] }).steps ?? []
+        ).entries()) {
+          const run = st.run ?? "";
+          const at = run.search(usesProvision);
+          if (at < 0) continue;
+          seen.push(`${name}:${job}`);
+          const before = [
+            ...(j as { steps: { run?: string }[] }).steps
+              .slice(0, i)
+              .map((x) => x.run ?? ""),
+            run.slice(0, at),
+          ].join("\n");
+          expect(builds.test(before), `${name}:${job}`).toBe(true);
+        }
+    expect(seen.length).toBeGreaterThan(0);
+  });
+
   it("uses node from .nvmrc with pnpm cache", () => {
     const raw = read(".github/workflows/ci.yml");
     expect(raw).toContain("node-version-file: .nvmrc");
@@ -323,7 +551,8 @@ describe("deploy-staging.yml", () => {
     expect(step).toContain(
       'wrangler secret delete "$name" -c wrangler.staging.jsonc --env staging',
     );
-    expect(step).toContain("echo y |");
+    expect(step).toContain("--env staging <<< y");
+    expect(step).not.toContain("echo y |");
   });
   it("ensures dashboard dist exists before wrangler deploy", () => {
     const e = idx("deploy", "ensure-dashboard-dist.sh");
@@ -561,6 +790,195 @@ describe("release-please", () => {
     expect(rp.with.token).toBe("${{ steps.app.outputs.token }}");
     expect(steps.indexOf(app)).toBeLessThan(steps.indexOf(rp));
   });
+  describe("only the release commit's own run creates GitHub releases", () => {
+    // 2026-11-03: a non-release push queued behind the concurrency group ran
+    // after release PR #1256 merged and created v0.105.0 (the action reads
+    // main's head), so the tag commit's own run skipped every downstream job.
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const rpSteps = (): any[] =>
+      wf("release-please.yml").jobs["release-please"].steps;
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const kind = () => rpSteps().find((s: any) => s.id === "kind");
+    const SHA = "a".repeat(40);
+    const OTHER = "b".repeat(40);
+    // A gh that answers the three reads from env; any other call exits 2.
+    const GH_STUB = `#!/usr/bin/env bash
+echo "$*" >> "$STUB_LOG"
+[ "$1" = api ] || exit 2
+path=$2; q=
+if [ "$#" -eq 4 ] && [ "$3" = -q ]; then q=$4; elif [ "$#" -ne 2 ]; then exit 2; fi
+case "$path" in
+  "repos/o/r/issues?state=closed&labels=autorelease:%20pending&per_page=100")
+    [ -z "\${STUB_FAIL:-}" ] || [ "$STUB_FAIL" != issues ] || exit 1; body=$STUB_ISSUES ;;
+  repos/o/r/pulls/*)
+    [ "\${STUB_FAIL:-}" != pull ] || exit 1
+    body=$(jq -n --arg s "$STUB_MERGE" '{merge_commit_sha: $s}') ;;
+  "repos/o/r/compare/$SHA...$STUB_MERGE")
+    [ "\${STUB_FAIL:-}" != compare ] || exit 1
+    body=$(jq -n --arg s "$STUB_COMPARE" '{status: $s}') ;;
+  *) exit 3 ;;
+esac
+if [ -n "$q" ]; then jq -r "$q" <<< "$body"; else printf '%s\\n' "$body"; fi
+`;
+    const pr = (number: number, merged = true) => ({
+      number,
+      pull_request: { merged_at: merged ? "2026-11-03T00:00:00Z" : null },
+    });
+    const runKind = (stub: {
+      issues?: readonly unknown[];
+      merge?: string;
+      compare?: string;
+      fail?: "issues" | "pull" | "compare";
+    }) => {
+      const dir = mkdtempSync(join(tmpdir(), "rp-kind-"));
+      const out = join(dir, "out");
+      writeFileSync(out, "");
+      writeFileSync(join(dir, "gh"), GH_STUB, { mode: 0o755 });
+      const r = spawnSync("bash", ["-c", kind().run], {
+        encoding: "utf8",
+        env: {
+          PATH: `${dir}:${process.env.PATH}`,
+          GITHUB_OUTPUT: out,
+          GH_TOKEN: "t",
+          REPO: "o/r",
+          SHA,
+          STUB_LOG: join(dir, "log"),
+          STUB_ISSUES: JSON.stringify(stub.issues ?? []),
+          STUB_MERGE: stub.merge ?? "",
+          STUB_COMPARE: stub.compare ?? "",
+          STUB_FAIL: stub.fail ?? "",
+        },
+      });
+      return {
+        code: r.status,
+        output: readFileSync(out, "utf8"),
+        log: r.stdout + r.stderr,
+      };
+    };
+    const NO_OWN_RUN = `release commit ${OTHER} (#1256) has no own run: see docs/ops/hosted.md, Release recovery`;
+
+    it("skip-github-release is wired to the kind step, which runs before the action", () => {
+      const steps = rpSteps();
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const rp = steps.find((s: any) => s.id === "rp");
+      expect(rp.with["skip-github-release"]).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ steps.kind.outputs.is_release != 'true' }}",
+      );
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const k = steps.findIndex((s: any) => s.id === "kind");
+      expect(k).toBeGreaterThan(
+        // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+        steps.findIndex((s: any) => s.id === "app"),
+      );
+      expect(k).toBeLessThan(steps.indexOf(rp));
+    });
+    it("the kind step reads with the App token and takes every value from env", () => {
+      const k = kind();
+      expect(k.env).toEqual({
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        GH_TOKEN: "${{ steps.app.outputs.token }}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        REPO: "${{ github.repository }}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        SHA: "${{ github.sha }}",
+      });
+      expect(k.run).not.toContain("${{");
+      // Reads only: no method override, no fields.
+      expect(k.run).not.toMatch(
+        /gh api[^\n]*(\s-X|--method|\s-f|\s-F|--field|--input)/,
+      );
+    });
+    it("the pending release PR merged as this commit gives true", () => {
+      expect(runKind({ issues: [pr(1256)], merge: SHA })).toMatchObject({
+        code: 0,
+        output: "is_release=true\n",
+      });
+    });
+    it("no merged pending release PR gives false (the PR step runs)", () => {
+      for (const issues of [[], [pr(1250, false)]])
+        expect(runKind({ issues })).toMatchObject({
+          code: 0,
+          output: "is_release=false\n",
+        });
+    });
+    it("a pending release PR merged after this commit gives false: its own run is queued", () => {
+      expect(
+        runKind({ issues: [pr(1256)], merge: OTHER, compare: "ahead" }),
+      ).toMatchObject({ code: 0, output: "is_release=false\n" });
+    });
+    it("a pending release PR merged before this commit (batched or cancelled) fails loudly", () => {
+      for (const compare of ["behind", "diverged", ""]) {
+        const r = runKind({ issues: [pr(1256)], merge: OTHER, compare });
+        expect(r.code, compare).toBe(1);
+        expect(r.output).toBe("");
+        expect(r.log).toContain(`::error::${NO_OWN_RUN}`);
+      }
+    });
+    it("a full page of pending-labelled items fails: a later page could hold another", () => {
+      const closed = (k: number) =>
+        Array.from({ length: k }, (_, i) => pr(1000 + i, false));
+      const full = runKind({ issues: [pr(1256), ...closed(99)], merge: SHA });
+      expect(full.code).toBe(1);
+      expect(full.output).toBe("");
+      expect(full.log).toContain(
+        "::error::pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery\n",
+      );
+      expect(
+        runKind({ issues: [pr(1256), ...closed(98)], merge: SHA }),
+      ).toMatchObject({ code: 0, output: "is_release=true\n" });
+    });
+    it("two merged pending release PRs fail", () => {
+      const r = runKind({ issues: [pr(1256), pr(1260)], merge: SHA });
+      expect(r.code).toBe(1);
+      expect(r.output).toBe("");
+      expect(r.log).toContain(
+        "more than one merged release PR is pending (1256 1260)",
+      );
+    });
+    it("any gh error or bad answer fails closed", () => {
+      for (const [stub, error] of [
+        [{ fail: "issues" as const }, "could not list pending release PRs"],
+        [
+          { issues: [pr(1256)], merge: SHA, fail: "pull" as const },
+          "could not read #1256",
+        ],
+        [
+          { issues: [pr(1256)], merge: OTHER, fail: "compare" as const },
+          `could not compare ${SHA} with ${OTHER}`,
+        ],
+        [
+          { issues: [pr(1256)], merge: "null" },
+          "could not read #1256's merge commit",
+        ],
+        [
+          { issues: [pr(1256)], merge: "" },
+          "could not read #1256's merge commit",
+        ],
+      ] as const) {
+        const r = runKind(stub);
+        expect(r.code, JSON.stringify(stub)).toBe(1);
+        expect(r.output).toBe("");
+        expect(r.log).toContain(`::error::${error}\n`);
+      }
+      const dir = mkdtempSync(join(tmpdir(), "rp-kind-"));
+      const out = join(dir, "out");
+      writeFileSync(out, "");
+      writeFileSync(join(dir, "gh"), "#!/usr/bin/env bash\necho not-json\n", {
+        mode: 0o755,
+      });
+      const r = spawnSync("bash", ["-c", kind().run], {
+        env: {
+          PATH: `${dir}:${process.env.PATH}`,
+          GITHUB_OUTPUT: out,
+          REPO: "o/r",
+          SHA,
+        },
+      });
+      expect(r.status).toBe(1);
+      expect(readFileSync(out, "utf8")).toBe("");
+    });
+  });
   it("has no dispatch workaround for the release PR", () => {
     const raw = read(".github/workflows/release-please.yml");
     expect(raw).not.toContain("release-pr-dispatch");
@@ -745,8 +1163,39 @@ describe("prod and staging tokens never cross", () => {
           }
         }
       }
-      if (isProd && r.has("CLOUDFLARE_API_TOKEN"))
-        bad.push(`${f}: prod workflow uses CLOUDFLARE_API_TOKEN`);
+      // Exception: hosted prod's Environment, hosted-prod-deploy, names its
+      // one token CLOUDFLARE_API_TOKEN; a job there may use it, never the
+      // PROD secret too.
+      if (isProd && r.has("CLOUDFLARE_API_TOKEN")) {
+        const doc = parse(readFileSync(join(base, f), "utf8")) as Record<
+          string,
+          unknown
+        >;
+        const { jobs: rawJobs, ...outside } = doc;
+        // Any secret outside a job (top-level env, defaults): the old blanket rule.
+        if (
+          /secrets\.(PROD_)?CLOUDFLARE_API_TOKEN/.test(JSON.stringify(outside))
+        )
+          bad.push(
+            `${f}: prod workflow uses CLOUDFLARE_API_TOKEN outside a job`,
+          );
+        const jobs = (rawJobs ?? {}) as Record<
+          string,
+          { environment?: unknown }
+        >;
+        for (const [name, job] of Object.entries(jobs)) {
+          const s = JSON.stringify(job);
+          if (!/secrets\.CLOUDFLARE_API_TOKEN/.test(s)) continue;
+          const env =
+            typeof job.environment === "object" && job.environment !== null
+              ? (job.environment as { name?: unknown }).name
+              : job.environment;
+          if (env !== "hosted-prod-deploy")
+            bad.push(`${f}: prod workflow uses CLOUDFLARE_API_TOKEN`);
+          else if (s.includes("secrets.PROD_CLOUDFLARE_API_TOKEN"))
+            bad.push(`${f}: job ${name} mixes PROD and hosted tokens`);
+        }
+      }
     }
     return bad;
   };
@@ -798,8 +1247,9 @@ describe("prod and staging tokens never cross", () => {
       );
     });
     it("scopes tokens to the setup step and uses --ci", () => {
+      // The owner-address guard's step holds that secret and no token.
       const withTok = steps.filter((s) =>
-        JSON.stringify(s.env ?? {}).includes("secrets."),
+        /secrets\.\w*(TOKEN|ACCOUNT_ID)/.test(JSON.stringify(s.env ?? {})),
       );
       expect(withTok).toHaveLength(2);
       expect(withTok[0]?.env).toHaveProperty("OA_ACCESS_TOKEN");
@@ -809,6 +1259,7 @@ describe("prod and staging tokens never cross", () => {
       expect([...refs(f)].sort()).toEqual([
         "ANALYTICS_TOKEN",
         "CLOUDFLARE_ACCOUNT_ID",
+        "OA_OWNER_EMAIL",
         "PROD_CLOUDFLARE_API_TOKEN",
       ]);
     });
@@ -828,7 +1279,10 @@ describe("prod and staging tokens never cross", () => {
     const job = w.jobs["deploy-prod"];
     const steps = job.steps as {
       id?: string;
+      name?: string;
       if?: string;
+      uses?: string;
+      with?: Record<string, unknown>;
       env?: Record<string, string>;
       run?: string;
     }[];
@@ -872,13 +1326,29 @@ describe("prod and staging tokens never cross", () => {
       expect(steps[pre]?.if ?? "").not.toContain("always()");
       expect(steps[up]?.if ?? "").not.toContain("always()");
       const withTok = steps.filter((s) =>
-        JSON.stringify(s.env ?? {}).includes("secrets."),
+        /secrets\.\w*(TOKEN|ACCOUNT_ID)/.test(JSON.stringify(s.env ?? {})),
       );
-      expect(withTok).toHaveLength(3);
-      for (const s of withTok) {
+      // setup's three steps carry both tokens; the migration guard's record,
+      // verify and restore steps carry the Cloudflare token only.
+      const setup = withTok.filter((s) => s.run?.includes("prod-setup.sh"));
+      expect(setup).toHaveLength(3);
+      for (const s of setup) {
         expect(s.env?.CLOUDFLARE_API_TOKEN).toBe(tok);
         expect(s.env?.OA_ACCESS_TOKEN).toBe(tok);
       }
+      const guard = withTok.filter((s) =>
+        s.run?.includes("prod-migration-guard.sh"),
+      );
+      expect(guard.map((s) => s.run)).toEqual([
+        "bash scripts/ci/prod-migration-guard.sh record",
+        "bash scripts/ci/prod-migration-guard.sh verify",
+        "bash scripts/ci/prod-migration-guard.sh restore",
+      ]);
+      for (const s of guard) {
+        expect(s.env?.CLOUDFLARE_API_TOKEN).toBe(tok);
+        expect(s.env).not.toHaveProperty("OA_ACCESS_TOKEN");
+      }
+      expect(withTok).toHaveLength(setup.length + guard.length);
       const sh = readFileSync(join(root, "scripts/ci/prod-setup.sh"), "utf8");
       expect(sh).toContain(
         'upgrade) mode_args=(--ci --upgrade "${EMAIL_SWITCH[@]}" --browser --plan paid)',
@@ -893,6 +1363,59 @@ describe("prod and staging tokens never cross", () => {
         "EMAIL_SWITCH=(--team --yes-paid --email-domain mail.leourbina.com)",
       );
       expect(sh).toContain("--ci --revoke-ci-tokens");
+    });
+    // A release that adds a `-- oa:non-additive` migration (a table rebuild)
+    // is held from the automatic deploy; a manual run deploys it guarded.
+    it("non-additive migration guard: held unless manual; record, upgrade, verify, then restore only when allowed", () => {
+      const at = (m: string) => steps.findIndex((s) => s.run?.includes(m));
+      const idx = (id: string) => steps.findIndex((s) => s.id === id);
+      const checkout = steps.find((s) =>
+        String(s.uses).startsWith("actions/checkout@"),
+      );
+      expect(checkout?.with?.["fetch-depth"]).toBe(0);
+      const det = idx("migration");
+      // It compares with the version prod runs (/healthz), never the prior tag.
+      expect(steps[det]?.run).toContain(
+        'PROD_VERSION="$(curl -fsS -m 20 "https://$PROD_APP_HOST/healthz" | jq -r \'.version // empty\')" || PROD_VERSION=""',
+      );
+      expect(steps[det]?.run).toMatch(
+        /export PROD_VERSION\nbash scripts\/ci\/prod-migration-guard\.sh detect\n?$/,
+      );
+      expect(det).toBeGreaterThan(at("pnpm install --frozen-lockfile"));
+      // Every step after the guard needs an explicit hold == 'false' (a guard
+      // that didn't run deploys nothing).
+      for (const s of steps
+        .slice(det + 1)
+        .filter((s) => s.run && !s.if?.startsWith("failure()")))
+        expect(s.if, s.name ?? s.run).toContain(
+          "steps.migration.outputs.hold == 'false'",
+        );
+      const [rec, up, ver] = [
+        idx("record"),
+        at("prod-setup.sh upgrade"),
+        idx("verify"),
+      ];
+      expect(rec).toBeGreaterThan(at("prod-setup.sh preflight"));
+      expect(up).toBeGreaterThan(rec);
+      expect(ver).toBeGreaterThan(up);
+      for (const i of [rec, ver])
+        expect(steps[i]?.if).toContain(
+          "steps.migration.outputs.guarded == 'true'",
+        );
+      const restore = steps[at("prod-migration-guard.sh restore")];
+      const page = steps.find((s) => s.name?.startsWith("Page"));
+      expect(at("prod-migration-guard.sh restore")).toBeGreaterThan(ver);
+      expect(restore?.if).toBe(
+        "failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure == true",
+      );
+      expect(page?.if).toBe(
+        "failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure != true",
+      );
+      expect(JSON.stringify(page?.env ?? {})).not.toContain("secrets.");
+      expect(w.on.workflow_dispatch.inputs.restore_on_failure).toMatchObject({
+        type: "boolean",
+        default: false,
+      });
     });
     it("passes ANALYTICS_TOKEN to the upgrade step only", () => {
       const withA = steps.filter((s) =>
@@ -949,6 +1472,44 @@ describe("prod and staging tokens never cross", () => {
     );
     expect(violations(tmp)).toHaveLength(2);
   });
+  it("lets a prod workflow use CLOUDFLARE_API_TOKEN only in hosted-prod-deploy, alone", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "wf-"));
+    const job = (envName: string, extra = "") =>
+      `on: push\njobs:\n  j:\n    runs-on: x\n${envName ? `    environment: ${envName}\n` : ""}    steps:\n      - run: x\n        env:\n          A: \${{ secrets.CLOUDFLARE_API_TOKEN }}\n${extra}`;
+    writeFileSync(join(tmp, "prod-ok.yml"), job("hosted-prod-deploy"));
+    expect(violations(tmp)).toEqual([]);
+    writeFileSync(join(tmp, "prod-staging.yml"), job("hosted-staging-deploy"));
+    writeFileSync(
+      join(tmp, "prod-mixed.yml"),
+      job(
+        "hosted-prod-deploy",
+        "          B: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}\n",
+      ),
+    );
+    expect(violations(tmp).sort()).toEqual([
+      "prod-mixed.yml: job j mixes PROD and hosted tokens",
+      "prod-staging.yml: prod workflow uses CLOUDFLARE_API_TOKEN",
+    ]);
+  });
+  it("a prod workflow's token outside a job still fails; the object environment form is allowed", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "wf-"));
+    writeFileSync(
+      join(tmp, "prod-top.yml"),
+      "on: push\nenv:\n  X: ${{ secrets.CLOUDFLARE_API_TOKEN }}\njobs:\n  j:\n    runs-on: x\n    environment: hosted-prod-deploy\n    steps:\n      - run: x\n",
+    );
+    writeFileSync(
+      join(tmp, "prod-topmix.yml"),
+      "on: push\nenv:\n  P: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}\njobs:\n  j:\n    runs-on: x\n    environment: hosted-prod-deploy\n    steps:\n      - run: x\n        env:\n          A: ${{ secrets.CLOUDFLARE_API_TOKEN }}\n",
+    );
+    writeFileSync(
+      join(tmp, "prod-obj.yml"),
+      "on: push\njobs:\n  j:\n    runs-on: x\n    environment:\n      name: hosted-prod-deploy\n    steps:\n      - run: x\n        env:\n          A: ${{ secrets.CLOUDFLARE_API_TOKEN }}\n",
+    );
+    expect(violations(tmp).sort()).toEqual([
+      "prod-top.yml: prod workflow uses CLOUDFLARE_API_TOKEN outside a job",
+      "prod-topmix.yml: prod workflow uses CLOUDFLARE_API_TOKEN outside a job",
+    ]);
+  });
 });
 
 describe("workflow jobs that use repo files have a checkout", () => {
@@ -980,6 +1541,29 @@ describe("workflow jobs that use repo files have a checkout", () => {
       });
     }
   }
+});
+
+describe("cache-seed.yml (#965)", () => {
+  const w = wf("cache-seed.yml");
+  it("seeds main's pnpm cache when the lockfile changes; no tests, no secrets", () => {
+    expect(triggers(w).sort()).toEqual(["push", "workflow_dispatch"]);
+    expect(w.on.push.branches).toEqual(["main"]);
+    expect(w.on.push.paths).toEqual(
+      expect.arrayContaining(["pnpm-lock.yaml", ".nvmrc"]),
+    );
+    expect(w.permissions).toEqual({ contents: "read" });
+    const text = read(".github/workflows/cache-seed.yml");
+    expect(text).not.toContain("secrets.");
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = w.jobs.seed.steps;
+    const node = steps.find((s) =>
+      String(s.uses).startsWith("actions/setup-node@"),
+    );
+    expect(node.with.cache).toBe("pnpm");
+    expect(steps.at(-1).run).toBe(
+      "pnpm install --frozen-lockfile --ignore-scripts",
+    );
+  });
 });
 
 describe("release cadence", () => {
@@ -1085,6 +1669,15 @@ describe("release cadence", () => {
         "needs.release-please.outputs.release_created == 'true'",
       );
       expect(String(v.if)).toContain("always()");
+      // And after a dispatch whose prod deploy succeeded (a held release's
+      // guarded deploy), on the dispatched tag.
+      expect(String(v.if)).toContain(
+        "github.event_name == 'workflow_dispatch' && inputs.tag != '' && !contains(inputs.tag, '-') && (needs.deploy-prod.result == 'success' || needs.deploy-prod.result == 'failure')",
+      );
+      expect(v.env.TAG).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ needs.release-please.outputs.tag_name || inputs.tag }}",
+      );
     });
     it("can only write issues, and runs the tested script on the new tag", () => {
       expect(v.permissions).toEqual({ contents: "read", issues: "write" });
@@ -1101,6 +1694,16 @@ describe("release cadence", () => {
         /!contains\(needs\.release-please\.outputs\.tag_name, '-'\)/,
       );
     });
+    it("skips prod when deploy-prod skipped itself or the migration guard held the release", () => {
+      expect(rp.jobs["deploy-prod"].outputs.held).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ steps.migration.outputs.hold }}",
+      );
+      expect(v.env.SKIP_PROD).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ (needs.deploy-prod.outputs.installed == 'false' || needs.deploy-prod.outputs.held == 'true') && '--skip-prod' || '' }}",
+      );
+    });
   });
 });
 
@@ -1109,7 +1712,7 @@ describe("demo instance workflows", () => {
   const CF = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"];
   // Per file: staging-scoped Cloudflare credentials plus that file's own demo secret; never PROD.
   const ALLOWED: Record<string, string[]> = {
-    "ops-demo-install.yml": [...CF, "DEMO_OA_ACCESS_TOKEN"],
+    "ops-demo-install.yml": [...CF, "DEMO_OA_ACCESS_TOKEN", "OA_OWNER_EMAIL"],
     "ops-demo-ops-deploy.yml": [...CF, "DEMO_OA_TOKEN"],
     "demo-reset.yml": ["DEMO_OA_TOKEN"],
     "demo-publish.yml": ["DEMO_OA_TOKEN"],
@@ -1214,8 +1817,10 @@ describe("demo instance workflows", () => {
         DEMO_NAME: "open-artifacts-demo",
         DEMO_APP_HOST: "demo.open-artifacts.com",
         DEMO_CONTENT_HOST: "demo-content.open-artifacts.com",
-        DEMO_OWNER_EMAIL: "me@leourbina.com",
       });
+      // #1084: the owner's address is a secret, on the step that needs it.
+      expect(w.env).not.toHaveProperty("DEMO_OWNER_EMAIL");
+      expect(step.env.DEMO_OWNER_EMAIL).toBe("${{ secrets.OA_OWNER_EMAIL }}");
     });
     it("never calls oa:setup directly", () => {
       expect(JSON.stringify(w)).not.toContain("pnpm -s oa:setup");
@@ -1359,5 +1964,91 @@ describe("demo instance workflows", () => {
       for (const f of readdirSync(dir).filter((n) => /^ops-prod-/.test(n)))
         for (const m of modesIn(f)) expect(prod.has(m), `${f} ${m}`).toBe(true);
     });
+  });
+});
+
+// GitHub evaluates workflow- and job-level env before a runner exists: the
+// runner and steps contexts are not available there, and a dispatch fails
+// with "Unrecognized named-value". actionlint (ci.yml lint job) also catches
+// this; this keeps it in the test suite.
+describe("workflow and job env use only contexts available there", () => {
+  const dir = join(root, ".github/workflows");
+  for (const file of readdirSync(dir).filter((f) => /\.ya?ml$/.test(f))) {
+    it(file, () => {
+      const w = wf(file);
+      const bad: string[] = [];
+      const check = (where: string, env: unknown) => {
+        for (const [k, v] of Object.entries(
+          (env ?? {}) as Record<string, unknown>,
+        ))
+          if (/\$\{\{[^}]*\b(runner|steps)\./.test(String(v)))
+            bad.push(`${where}.env.${k}`);
+      };
+      check("workflow", w.env);
+      for (const [job, def] of Object.entries(
+        // biome-ignore lint/suspicious/noExplicitAny: workflow YAML is untyped
+        (w.jobs ?? {}) as Record<string, any>,
+      ))
+        check(`jobs.${job}`, def.env);
+      expect(bad).toEqual([]);
+    });
+  }
+});
+
+// W9b (design 10.1): install writes are the Provisioning API's. The
+// hosted-ops workflow, the CLI's write commands and the laptop red-line
+// scripts stay gone, and no workflow names their secrets again.
+describe("W9b: the retired hosted writes stay retired", () => {
+  const RETIRED_FILES = [
+    ".github/workflows/hosted-ops.yml",
+    "scripts/ci/hosted-ops-workflow.test.ts",
+    "scripts/ci/hosted-turnstile-keys.sh",
+    "scripts/hosted/src/ci-args.ts",
+    "scripts/hosted/src/redline-creds.ts",
+    "scripts/ops/redline-deploy.sh",
+    "tests/redline/src/prod-clean-cli.ts",
+  ];
+  const workflows = readdirSync(join(root, ".github/workflows")).filter((f) =>
+    /\.ya?ml$/.test(f),
+  );
+
+  it("the retired files do not exist", () => {
+    for (const f of RETIRED_FILES)
+      expect(existsSync(join(root, f)), f).toBe(false);
+  });
+
+  it("no workflow names a retired file, target or secret", () => {
+    const banned =
+      /hosted-ops|ci-args|redline-creds|redline-deploy|hosted-turnstile-keys|prod-clean-cli|inventory-key|INVENTORY_KEY|secrets\.REDLINE_RL_|CREATE_OWNER_EMAIL|TURNSTILE_KEYS/;
+    // The one allowed match: R26's own API path (ROUTES.R26), called by the
+    // test member's workflow through the Provisioning API, not the retired
+    // CLI command. Only that exact quoted path in that one file.
+    const R26_PATH = '"/v1/installs/$id/redline-creds"';
+    for (const f of workflows) {
+      const text = read(`.github/workflows/${f}`);
+      expect(
+        f === "staging-test-member.yml"
+          ? text.split(R26_PATH).join('"R26"')
+          : text,
+        f,
+      ).not.toMatch(banned);
+    }
+    expect(read(".github/workflows/staging-test-member.yml")).toContain(
+      R26_PATH,
+    );
+  });
+
+  // The CLI's own command lists are checked in scripts/hosted/test/cli.test.ts,
+  // which moves with the CLI to the hosted repo (#1056).
+
+  it("every oa:hosted call in a workflow is a kept command", () => {
+    for (const f of workflows)
+      for (const [, cmd] of read(`.github/workflows/${f}`).matchAll(
+        /oa:hosted\s+(?:"\$\{[^}]*\}"|([a-z-]+))/g,
+      ))
+        expect(
+          ["status", "publish-release", "publish-floor"],
+          `${f}: ${cmd}`,
+        ).toContain(cmd ?? "(argv)");
   });
 });

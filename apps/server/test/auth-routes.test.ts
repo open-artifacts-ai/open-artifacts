@@ -8,6 +8,7 @@ import {
 } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { authConfig, NO_BOT_CHECK } from "../src/auth/config.js";
 import { createPat } from "../src/auth/pat.js";
 import { readSession, sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
@@ -101,12 +102,25 @@ const clearsState = (r: Response) =>
     .some((c) => /^oa_oidc_[^=]*=;/.test(c) && /Max-Age=0/i.test(c));
 
 describe("GET /auth/providers", () => {
+  it("email without email sending: no email provider listed, and never the problems", async () => {
+    const off = direct({ EMAIL: undefined, EMAIL_FROM: undefined });
+    const ids = (
+      (await (await get(AUTH.providers, off)).json()) as {
+        providers: { id: string }[];
+      }
+    ).providers.map((p) => p.id);
+    expect(ids).toEqual(["google"]);
+    expect(
+      JSON.stringify(await (await get(AUTH.providers, off)).json()),
+    ).not.toContain("problems");
+  });
   it("access-only: just access, and /auth/login still goes to Access", async () => {
     const r = await get(AUTH.providers);
     expect(r.headers.get("cache-control")).toBe("no-store");
     expect(await r.json()).toEqual({
       mode: "access",
       providers: [{ id: "access", start: AUTH.login }],
+      hosted: false,
     });
     expect(new URL(loc(await get(`${AUTH.login}?next=/`))).hostname).toBe(
       env.ACCESS_TEAM_DOMAIN,
@@ -123,7 +137,28 @@ describe("GET /auth/providers", () => {
         { id: "google", start: AUTH.loginGoogle, domains: ["a.com"] },
         { id: "email", domainCodes: false, guests: true },
       ],
+      hosted: false,
     });
+  });
+
+  // Review item 36c: only HOSTED=1 says "Hosted by Open Artifacts".
+  it("hosted: true only on HOSTED=1; false on self-hosted direct and access installs", async () => {
+    const hostedOf = async (e: Env) =>
+      AuthProvidersSchema.parse(await (await get(AUTH.providers, e)).json())
+        .hosted;
+    expect(await hostedOf(env)).toBe(false);
+    expect(await hostedOf(direct())).toBe(false);
+    expect(await hostedOf(direct({ HOSTED: "0" }))).toBe(false);
+    expect(
+      await hostedOf(
+        direct({
+          HOSTED: "1",
+          AUTH_BROKER_URL: "https://auth.h.test",
+          BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+          GOOGLE_CLIENT_SECRET: "",
+        }),
+      ),
+    ).toBe(true);
   });
 
   it("trial: domain codes on and the Turnstile site key", async () => {
@@ -132,6 +167,7 @@ describe("GET /auth/providers", () => {
       providers: [
         { id: "email", domainCodes: true, guests: true, turnstileSiteKey: "k" },
       ],
+      hosted: false,
     });
   });
 
@@ -248,7 +284,7 @@ describe("direct-mode sign-in routes", () => {
           sub: `s-${c}`,
         }),
       ),
-    ).toBe(`${SIGN_IN_PAGE}?error=no_access&next=%2Fa%2Fx`);
+    ).toBe(`${SIGN_IN_PAGE}?error=no_access&next=%2Fa%2Fx&via=google`);
   });
 
   it("a stale state retries once, then expired on the sign-in page", async () => {
@@ -296,6 +332,27 @@ describe("direct-mode sign-in routes", () => {
     expect(
       loc(await googleRoundTrip(direct(), { email: e2, sub: `d-${e2}` })),
     ).toBe("/a/x");
+  });
+
+  it("a late return from the hosted broker (error=expired) says it took too long; other errors stay failed", async () => {
+    for (const [error, want] of [
+      ["expired", "expired"],
+      ["access_denied", "failed"],
+    ]) {
+      const start = await get(`${AUTH.loginGoogle}?next=%2Fa%2Fx`, direct());
+      const state = new URL(loc(start)).searchParams.get("state");
+      const cookie = (
+        start.headers.getSetCookie().find((c) => /oa_oidc_/.test(c)) ?? ""
+      ).split(";")[0];
+      const r = await get(
+        `${AUTH.callbackGoogle}?error=${error}&state=${state}`,
+        direct(),
+        cookie,
+      );
+      expect(loc(r)).toBe(`${SIGN_IN_PAGE}?error=${want}&next=%2Fa%2Fx`);
+      expect(clearsState(r)).toBe(true);
+      expect(cookieVal(r, SESSION)).toBeUndefined();
+    }
   });
 
   it("a non-ApiError in the callback lands on failed and clears the state cookie", async () => {
@@ -395,12 +452,29 @@ describe("Me sign-in fields", () => {
     );
   };
 
-  it("access-only installs omit them (shape unchanged)", async () => {
+  it("access-only installs carry them too: one shape (parity 1, A7)", async () => {
     const { cookie } = await login(uniq("plain"));
     const m = await me(env, cookie);
-    expect(m.auth).toBeUndefined();
-    expect(m.instance.hosted).toBeUndefined();
-    expect(m.instance.signIn).toBeUndefined();
+    expect(m.instance.features).toContain("guests_read_only");
+    expect(m.auth).toEqual({
+      method: "access",
+      readOnly: false,
+      cap: null,
+      expiresAt: expect.any(String),
+    });
+    expect(m.instance.hosted).toBe(false);
+    expect(m.instance.tier).toBeNull();
+    expect(m.instance.signIn).toEqual({
+      mode: "access",
+      providers: ["access"],
+    });
+  });
+
+  it("an access-only guest is told they are read-only (parity 2)", async () => {
+    const { cookie } = await login(uniq("guest", "x.com"), "guest");
+    const m = await me(env, cookie);
+    expect(m.instance.features).toContain("guests_read_only");
+    expect(m.auth).toMatchObject({ readOnly: true, cap: "guest" });
   });
 
   it("direct: auth for a session and a PAT, signIn, features, hosted", async () => {
@@ -432,6 +506,94 @@ describe("Me sign-in fields", () => {
     });
   });
 
+  // Review item 35: owners see why configured sign-in is off; nobody else does.
+  it("signIn.problems: owners only, verbatim; empty when nothing is wrong", async () => {
+    const owner = await login(uniq("own"), "owner");
+    const member = await login(uniq("mem"));
+    const off = direct({ EMAIL: undefined, EMAIL_FROM: undefined });
+    const o = await me(off, owner.cookie);
+    expect(o.instance.signIn?.problems).toEqual(authConfig(off).problems);
+    expect(o.instance.signIn?.problems?.[0]).toMatch(
+      /^Email sign-in is on, but sending email isn't set up/,
+    );
+    // Codes aren't offered when the install can't send email.
+    expect(o.instance.signIn?.providers).toEqual(["google"]);
+    expect((await me(off, member.cookie)).instance.signIn).not.toHaveProperty(
+      "problems",
+    );
+    expect(
+      (
+        await me(
+          direct({ TURNSTILE_SITE_KEY: "k", TURNSTILE_SECRET: "s" }),
+          owner.cookie,
+        )
+      ).instance.signIn?.problems,
+    ).toEqual([]);
+  });
+
+  // A4: codes with no Turnstile keys stay on (self-host) and warn the owner.
+  it("signIn.problems: codes without Turnstile warn the owner only; codes still offered; hosted unchanged", async () => {
+    const owner = await login(uniq("own"), "owner");
+    const admin = await login(uniq("adm"), "admin");
+    const member = await login(uniq("mem"));
+    const o = await me(direct(), owner.cookie);
+    expect(o.instance.signIn?.problems).toEqual([NO_BOT_CHECK]);
+    expect(o.instance.signIn?.providers).toEqual(["google", "email"]);
+    expect(MeSchema.safeParse(o).success).toBe(true);
+    for (const u of [admin, member])
+      expect((await me(direct(), u.cookie)).instance.signIn).not.toHaveProperty(
+        "problems",
+      );
+    const hosted = direct({
+      HOSTED: "1",
+      AUTH_BROKER_URL: "https://auth.h.test",
+      BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+      GOOGLE_CLIENT_SECRET: undefined,
+    });
+    expect(
+      (await me(hosted, owner.cookie)).instance.signIn?.problems,
+    ).not.toContain(NO_BOT_CHECK);
+  });
+
+  it("tier: the hosted install's TIER; null off hosted (access-only too), or for an unknown value", async () => {
+    const { cookie } = await login(uniq("tier"));
+    const hosted = (TIER?: string) =>
+      direct({
+        HOSTED: "1",
+        AUTH_BROKER_URL: "https://auth.h.test",
+        BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+        ...(TIER === undefined ? {} : { TIER }),
+      });
+    for (const t of ["trial", "team", "business"] as const)
+      expect((await me(hosted(t), cookie)).instance.tier).toBe(t);
+    expect((await me(hosted(), cookie)).instance.tier).toBeNull();
+    // An unknown value is null and logged (the value is ours, never secret,
+    // but the line carries only the event).
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await me(hosted("enterprise"), cookie)).instance.tier).toBeNull();
+      expect(warn.mock.calls.map((c) => JSON.parse(String(c[0])))).toEqual([
+        { evt: "tier_unknown" },
+      ]);
+      warn.mockClear();
+      // Unset is not a misconfiguration: no line.
+      await me(hosted(), cookie);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+    // Self-hosted direct sign-in: never a tier, whatever TIER says.
+    expect(
+      (await me(direct({ TIER: "team" }), cookie)).instance.tier,
+    ).toBeNull();
+    // Reported only: features still follow FEATURES (provisioning derives them).
+    expect((await me(hosted("team"), cookie)).instance.features).not.toContain(
+      "sync_frozen",
+    );
+    // Access-only installs: null, as every self-host (parity 1).
+    expect((await me(env, cookie)).instance.tier).toBeNull();
+  });
+
   it("a guest under direct sign-in is read-only with cap guest", async () => {
     const { cookie } = await login(uniq("guest", "x.com"), "guest");
     expect((await me(direct(), cookie)).auth).toMatchObject({
@@ -440,7 +602,9 @@ describe("Me sign-in fields", () => {
     });
   });
 
-  it("a guest's PAT is capped too", async () => {
+  // #792 (A): item 34 refuses restricted members' PATs only; a guest's PAT
+  // keeps main's REST behaviour (capped, read-only) until #609 decides.
+  it("a guest's PAT is capped too (REST behaviour unchanged by item 34)", async () => {
     const e = direct();
     const { userId } = await login(uniq("gpat", "x.com"), "guest");
     const pat = await createPat(e, userId, "t");
@@ -473,9 +637,10 @@ describe("DELETE R.memberIdentity", () => {
     const owner = await seedUser(uniq("own"), "owner", {
       googleSub: `o-${crypto.randomUUID()}`,
     });
+    // An admin acting on the owner: 403 owner_only (#475).
     expect(
       (await del(R.memberIdentity(owner, "google"), e, admin.cookie)).status,
-    ).toBe(404);
+    ).toBe(403);
   });
 
   it("ends the target's sessions (epoch bump) and revokes their PATs and OAuth grants", async () => {

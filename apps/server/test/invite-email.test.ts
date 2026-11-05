@@ -20,6 +20,7 @@ import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
 import { login } from "./helpers.js";
 import { connect, E, textOf, tool } from "./mcp-helpers.js";
+import { pinMiddayUtc } from "./midday.js";
 
 const app = createApp();
 const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
@@ -81,7 +82,13 @@ async function newOwner() {
 }
 
 beforeEach(async () => {
+  // Seeds use today(); the server reads its own Date.now(): pin both to
+  // midday UTC so a run across 00:00 UTC can't split them.
+  pinMiddayUtc();
   await env.DB.prepare("delete from counters where key like 'email:%'").run();
+});
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("Me.instance.emailEnabled", () => {
@@ -302,6 +309,45 @@ describe("share email", () => {
     expect(m.sent).toHaveLength(0);
   });
 
+  it("share_artifact says a guest can only view; a member keeps their role", async () => {
+    const { o, id } = await setup();
+    const pat = (await createPat(env, o.userId, "agent")).token;
+    const client = await connect(pat, { env: E({}) });
+    const email = fresh();
+    const r = await tool(client, "share_artifact", {
+      id,
+      email,
+      role: "editor",
+    });
+    const url = `http://app.localhost/a/${id}`;
+    expect(textOf(r)).toBe(
+      `Shared ${id} with ${email}. They're a guest, so they can only view for now. ${url}. No email sent.`,
+    );
+    expect(r.structuredContent).toMatchObject({ role: "editor", guest: true });
+    const viewer = fresh();
+    expect(
+      textOf(
+        await tool(client, "share_artifact", {
+          id,
+          email: viewer,
+          role: "viewer",
+        }),
+      ),
+    ).toBe(
+      `Shared ${id} with ${viewer}. They're a guest, so they can only view. ${url}. No email sent.`,
+    );
+    const m = await login(fresh(), "member");
+    const memberEmail = (await getUser(env, m.userId))?.email;
+    const r2 = await tool(client, "share_artifact", {
+      id,
+      email: memberEmail,
+      role: "editor",
+    });
+    expect(textOf(r2)).toContain(`with ${memberEmail} as editor`);
+    expect(r2.structuredContent).not.toHaveProperty("guest");
+    await client.close();
+  });
+
   it("share_artifact says whether it emailed", async () => {
     const { o, id } = await setup();
     const pat = (await createPat(env, o.userId, "agent")).token;
@@ -441,13 +487,17 @@ describe("one recipient per send", () => {
     const content = () => ({ subject: "s", text: "t", html: "h" });
     for (const addr of SPECIAL)
       expect(
-        await sendEmail(e, "u-special", addr, content, { kind: "invite" }),
+        await sendEmail(e, "u-special", addr, content, {
+          kind: "invite",
+          instance: null,
+        }),
         addr,
       ).toBe(false);
     expect(m.sent).toHaveLength(0);
     expect(
       await sendEmail(e, "u-special", "a+b@x.com", content, {
         kind: "invite",
+        instance: null,
       }),
     ).toBe(true);
     expect(m.sent.map((s) => s.to)).toEqual(["a+b@x.com"]);
@@ -486,7 +536,10 @@ describe("email logs", () => {
       EMAIL: { send: async () => ({ messageId: "msg-123abc" }) },
     } as never;
     const lines = await captured(() =>
-      sendEmail(e, "u-log1", "victim@example.com", content, { kind: "share" }),
+      sendEmail(e, "u-log1", "victim@example.com", content, {
+        kind: "share",
+        instance: null,
+      }),
     );
     const sent = lines.find((l) => l.includes('"email_sent"'));
     expect(sent).toBeDefined();
@@ -513,7 +566,10 @@ describe("email logs", () => {
       },
     } as never;
     const lines = await captured(() =>
-      sendEmail(e, "u-log2", "victim@example.com", content, { kind: "invite" }),
+      sendEmail(e, "u-log2", "victim@example.com", content, {
+        kind: "invite",
+        instance: null,
+      }),
     );
     const failed = lines.find((l) => l.includes('"email_failed"'));
     expect(JSON.parse(failed as string)).toEqual({
@@ -535,6 +591,7 @@ describe("email logs", () => {
     const lines2 = await captured(() =>
       sendEmail(e2, "u-log3", "victim@example.com", content, {
         kind: "invite",
+        instance: null,
       }),
     );
     expect(lines2.some((l) => l.includes('"reason":"send_error"'))).toBe(true);
@@ -645,10 +702,12 @@ describe("deliverability headers (#213)", () => {
     const content = () => ({ subject: "s", text: "t", html: "h" });
     await sendEmail(e, "u-rt1", "a@x.com", content, {
       kind: "invite",
+      instance: null,
       replyTo: "x@y.com, evil@z.com",
     });
     await sendEmail(e, "u-rt2", "b@x.com", content, {
       kind: "invite",
+      instance: null,
       replyTo: "ok@y.com",
     });
     expect(m.sent.map((s) => s.replyTo)).toEqual([undefined, "ok@y.com"]);
@@ -666,6 +725,7 @@ describe("deliverability headers (#213)", () => {
       () => ({ subject: "s", text: "t", html: "h" }),
       {
         kind: "invite",
+        instance: null,
       },
     );
     expect(m.sent[0]?.from).toBe(from);

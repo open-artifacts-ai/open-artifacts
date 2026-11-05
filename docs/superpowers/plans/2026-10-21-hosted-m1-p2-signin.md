@@ -135,7 +135,7 @@ Payload `{ uid, exp, iat, p, t?, e }` (P3 reads `iat` and `p`): `iat` issue time
 |---|---|---|---|
 | `AUTH_PROVIDERS` | var | comma list of `access`, `google`, `email` | unset = `access` |
 | `AUTH_DOMAINS` | var | comma list of verified domains (IDNA A-labels, `xn--` allowed) | empty |
-| `AUTH_DOMAIN_JOIN` | var | `member` or `invite` | `invite` (self-host); P1 sets `member` for hosted |
+| `AUTH_DOMAIN_JOIN` | var | `member` or `invite` | `invite`. Hosted is always `invite` in M1: provision renders it and refuses `member`, and the server refuses anything else under `HOSTED=1` (#572) |
 | `EMAIL_CODE_DOMAIN` | var | `on` or `off`; honored only while `google` is not enabled | `off` |
 | `FEATURES` | var | #359 `parseFeatures` (snake_case: `spaces`, `sync_google`, `sync_frozen`, `guests_read_only`, `content_revocation`, `usage_off`) | empty. **`FEATURES` does not set the guest cap.** The cap is `authConfig.guestsReadOnly`, computed true whenever `google` or `email` is in `AUTH_PROVIDERS` (so `access,email` is capped), false on access-only installs (unchanged), and not configurable. P2 only *reports* it as `guests_read_only` in `Me.instance.features`; a `guests_read_only` entry in the `FEATURES` var is ignored. Code sessions outside the domains are capped regardless. There is no `GUEST_ACCESS` var. |
 | `GOOGLE_CLIENT_ID` | var | Google client id | none |
@@ -239,6 +239,7 @@ Ineligible requests get the same 202 and no email.
 
 - **Self-hosted:** the operator sets `AUTH_DOMAINS`; recommend an "Internal" Google client.
 - **Hosted, every claim:** admin proof by DNS: a TXT record `_oa-verify.<domain>` = `oa-verify=<token>` (token per install and domain), checked over DNS-over-HTTPS by the control plane, **plus** a Google sign-in through the broker whose `hd` equals the domain. A domain binds to one install. Consumer domains refused.
+- **Hosted join (M1, Manager ruling 2026-10-24):** `AUTH_DOMAIN_JOIN` is forced to `invite` until a domain's ownership is proven, by the TXT check above or by a confirmed directory connection (super-admin consent with `hd` pinned and `customerId` bound). Follow-up: #572.
 - **FinQore (M1):** FinQore's IT admin adds the TXT record (**needs user**: arrange with FinQore); we verify by hand and set the vars.
 
 ## Budgets

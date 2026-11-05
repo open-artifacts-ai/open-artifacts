@@ -1,6 +1,17 @@
+// The hosted contract on the MSW mock: the schema cases here, and every
+// request case (hosted-contract.ts) with the mock as the driver. The same
+// request cases run against the real server in
+// apps/server/test/hosted.contract.test.ts.
 import { setupServer } from "msw/node";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { z } from "zod";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   ApiErrorSchema,
   ArtifactSummarySchema,
@@ -9,56 +20,59 @@ import {
   AuthProvidersSchema,
   artifactCan,
   CodeRateLimitedDetailsSchema,
-  CodeRequestedSchema,
   CodeRequestSchema,
-  CodeVerifiedSchema,
   CodeVerifyFailureDetailsSchema,
-  DirectoryGroupSchema,
+  directoryModeOf,
+  ENV_FEATURE_FLAGS,
   ERROR_CODES,
-  GroupMappingSchema,
+  GUEST_SHARES_NOTICE_LIMIT,
+  HELD_SNOOZE_MS,
+  HELD_SNOOZE_REASON_MAX,
   HealthzSchema,
-  HostedPublishInputSchema,
+  INVITE_UNREACHABLE_MESSAGE,
+  InviteUnreachableDetailsSchema,
   ListQuerySchema,
+  MemberInviteResultSchema,
+  MemberOwnsArtifactsDetailsSchema,
   MemberSchema,
   MembersQuerySchema,
   MeSchema,
   normalizeCode,
-  PageSchema,
   PublishInputSchema,
   parseFeatures,
+  parseTier,
   R,
-  RestrictedGroupSchema,
-  SearchHitSchema,
   SearchQuerySchema,
   SettingsPatchSchema,
   SettingsSchema,
+  ShareResultSchema,
   SPACE_MANAGER_MAPPING_ROLES,
+  SPACE_NAME_RESERVED_MESSAGE,
   SpaceCanSchema,
+  SpaceCreateSchema,
   SpaceForbiddenDetailsSchema,
   SpaceMemberGroupSchema,
   SpaceMemberSchema,
   SpaceMembersPageSchema,
   SpaceMembersQuerySchema,
+  SpaceNameSchema,
   SpacePatchSchema,
-  SpaceSchema,
   STATUS_FOR,
-  SyncStatusSchema,
+  spaceNameReserved,
   TEST_HOOKS_ALLOWED,
   TestSessionInputSchema,
+  TIER_FEATURES,
   TransferInputSchema,
-  TransferResultSchema,
-  TransferSummarySchema,
 } from "../src/index.js";
 import { fixtures } from "../src/mocks/fixtures.js";
 import { createHandlers } from "../src/mocks/handlers.js";
 import { HOSTED_MOCK_CODE } from "../src/mocks/hosted.js";
+import { type ContractDriver, hostedContract } from "./hosted-contract.js";
 
 const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
-const fresh = (o?: Parameters<typeof createHandlers>[0]) =>
-  server.use(...createHandlers(o));
 
 const O = "http://localhost";
 const H: Record<string, string> = {
@@ -66,35 +80,646 @@ const H: Record<string, string> = {
   "x-oa-request": "1",
   cookie: "s=1",
 };
-const call = (method: string, path: string, body?: unknown, headers = H) =>
+const call = (method: string, path: string, body?: unknown) =>
   fetch(`${O}${path}`, {
     method,
-    headers,
+    headers: H,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-const json = async (r: Response) => (await r.json()) as any;
-const errCode = async (r: Response) =>
-  ApiErrorSchema.parse(await r.json()).error;
 
-/** Response schemas made strict: an unexpected key fails the mock tests. */
-const Strict = {
-  Me: MeSchema.strict(),
-  ArtifactSummary: ArtifactSummarySchema.strict(),
-  SearchHit: SearchHitSchema.strict(),
-  Space: SpaceSchema.strict(),
-  SpaceMember: SpaceMemberSchema.strict(),
-  GroupMapping: GroupMappingSchema.strict(),
-  SyncStatus: SyncStatusSchema.strict(),
-  TransferSummary: TransferSummarySchema.strict(),
-  TransferResult: TransferResultSchema.strict(),
-  CodeVerified: CodeVerifiedSchema.strict(),
-  CodeRequested: CodeRequestedSchema.strict(),
-  AuthProviders: AuthProvidersSchema.strict(),
-  Member: MemberSchema.strict(),
-  RestrictedGroup: RestrictedGroupSchema.strict(),
-  DirectoryGroup: DirectoryGroupSchema.strict(),
-  AuditEvent: AuditEventSchema.strict(),
+const msw: ContractDriver = {
+  mock: true,
+  fresh: async (o) => {
+    server.resetHandlers();
+    server.use(...createHandlers(o));
+  },
+  call,
+  // Google when it is on (a domain member gets no code then), else a code.
+  signIn: async (email) => {
+    const g = await fetch(
+      `${O}${AUTH.callbackGoogle}?mock_email=${encodeURIComponent(email)}`,
+      { headers: H, redirect: "manual" },
+    );
+    if (g.headers.get("location") === "/") return;
+    await call("POST", AUTH.codeRequest, { email });
+    await call("POST", AUTH.codeVerify, { code: HOSTED_MOCK_CODE });
+  },
+  code: async () => HOSTED_MOCK_CODE,
 };
+
+hostedContract(msw);
+
+// #1077 item 3: the held-snooze handlers as the server answers
+// (apps/server/src/routes/directory.ts, directory/sync.ts, health.ts heldAt).
+describe("mock held snooze matches the server (#1077)", () => {
+  const SALES = "gSales03";
+  const CON = "gCon04";
+  type Held = {
+    groupId: string;
+    snoozedUntil: string | null;
+    snoozeReason: string | null;
+  };
+  const fresh = (o: Record<string, unknown> = {}) => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: { ...o } }));
+  };
+  const snooze = (g: string, body?: unknown) =>
+    call("POST", R.directoryHeldSnooze(g), body);
+  const heldOf = async (r: Response) =>
+    ((await r.json()) as { held: Held[] }).held;
+  const code = async (r: Response) =>
+    ((await r.json()) as { error: { code: string; message: string } }).error;
+  afterEach(() => vi.useRealTimers());
+
+  it("refusals: unreadable or missing hold 409 conflict; admin 404", async () => {
+    fresh({ heldUnreadable: true });
+    const s = await snooze(CON);
+    expect(s.status).toBe(409);
+    expect(await code(s)).toEqual({
+      code: "conflict",
+      message:
+        "This group has no held sweep to snooze, or it is being re-checked; try again after the next sync",
+    });
+    expect((await snooze("gNone")).status).toBe(409);
+    const c = await call("POST", R.directoryHeldConfirm(CON));
+    expect(c.status).toBe(409);
+    expect(await code(c)).toEqual({
+      code: "conflict",
+      message:
+        "This group has no held sweep to confirm; it can't be read from Google",
+    });
+    expect((await call("POST", R.directoryHeldConfirm("gNone"))).status).toBe(
+      409,
+    );
+    // Body errors come before the hold check, as on the server.
+    const bad = await snooze("gNone", { reason: 1 });
+    expect(bad.status).toBe(400);
+    expect((await code(bad)).message).toBe("Invalid request body");
+    fresh({ actAs: "admin" });
+    expect((await snooze(SALES)).status).toBe(404);
+    expect((await call("DELETE", R.directoryHeldSnooze(SALES))).status).toBe(
+      404,
+    );
+    expect((await call("POST", R.directoryHeldConfirm(SALES))).status).toBe(
+      404,
+    );
+  });
+
+  it("reason: cleaned, then capped by code points with an ellipsis", async () => {
+    fresh();
+    // Astral chars are 2 UTF-16 units each: a .slice cap would cut at 100.
+    const astral = "\u{1F600}".repeat(HELD_SNOOZE_REASON_MAX);
+    let [h] = await heldOf(await snooze(SALES, { reason: astral }));
+    expect(h?.snoozeReason).toBe(astral);
+    [h] = await heldOf(await snooze(SALES, { reason: `${astral}x` }));
+    expect(Array.from(h?.snoozeReason ?? "")).toHaveLength(
+      HELD_SNOOZE_REASON_MAX,
+    );
+    expect(h?.snoozeReason).toBe(
+      `${"\u{1F600}".repeat(HELD_SNOOZE_REASON_MAX - 1)}…`,
+    );
+    // Unsafe chars become spaces, runs collapse, then trim.
+    [h] = await heldOf(
+      await snooze(SALES, { reason: "  a\n\u200Bb\u202E  c\t " }),
+    );
+    expect(h?.snoozeReason).toBe("a b c");
+    [h] = await heldOf(await snooze(SALES, { reason: " \u0000\u2028 " }));
+    expect(h?.snoozeReason).toBeNull();
+  });
+
+  it.each(["off", "frozen"] as const)(
+    "directory %s: snooze and confirm 409 directory_sync_off; DELETE works",
+    async (directory) => {
+      fresh({ directory });
+      for (const r of [
+        await snooze(SALES),
+        await call("POST", R.directoryHeldConfirm(SALES)),
+      ]) {
+        expect(r.status).toBe(409);
+        expect(await code(r)).toEqual({
+          code: "directory_sync_off",
+          message: "Directory sync is off or frozen",
+        });
+      }
+      expect((await call("DELETE", R.directoryHeldSnooze(SALES))).status).toBe(
+        200,
+      );
+    },
+  );
+
+  it("an expired snooze reads as none (GET, /me heldSweeps, snooze replies)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.parse("2026-11-02T00:00:00.000Z");
+    vi.setSystemTime(t0);
+    fresh();
+    const [h] = await heldOf(await snooze(SALES, { reason: "later" }));
+    expect(h?.snoozedUntil).toBe(new Date(t0 + HELD_SNOOZE_MS).toISOString());
+    const dir = async () => heldOf(await call("GET", R.directory));
+    const dot = async () =>
+      (
+        (await (await call("GET", R.me)).json()) as {
+          instance: { directory: { heldSweeps: number } };
+        }
+      ).instance.directory.heldSweeps;
+    vi.setSystemTime(t0 + HELD_SNOOZE_MS - 1);
+    expect((await dir())[0]?.snoozeReason).toBe("later");
+    expect(await dot()).toBe(0);
+    // until <= now: no longer snoozed.
+    vi.setSystemTime(t0 + HELD_SNOOZE_MS);
+    expect((await dir())[0]).toMatchObject({
+      snoozedUntil: null,
+      snoozeReason: null,
+    });
+    expect(await dot()).toBe(1);
+    expect(
+      (await heldOf(await call("POST", R.directorySync)))[0],
+    ).toMatchObject({ snoozedUntil: null });
+    // A snooze of the expired one is a renewal (the row is still there).
+    await snooze(SALES);
+    const audit = (await (await call("GET", R.audit)).json()) as {
+      items: { action: string; detail: Record<string, unknown> | null }[];
+    };
+    const snoozed = audit.items.filter(
+      (e) => e.action === "directory.sweep.snoozed",
+    );
+    expect(snoozed.map((e) => e.detail?.renewed)).toEqual([true, false]);
+  });
+});
+
+describe("mock move after losing the space role (review of #792)", () => {
+  it("a stale manager level can't move the artifact out", async () => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: true }));
+    const me = (await (await call("GET", R.me)).json()) as {
+      user: { id: string };
+      spaces: { id: string; name: string }[];
+    };
+    const eng = me.spaces.find((s) => s.name === "Engineering")?.id as string;
+    const notes = fixtures.artifacts.find((a) => a.title === "Meeting notes")
+      ?.id as string;
+    const to = (await (
+      await call("POST", R.spaces, { name: "Sales" })
+    ).json()) as { id: string };
+    // Still a manager of Engineering: the move works, and back again.
+    expect(
+      (await call("POST", R.moveArtifact(notes), { spaceId: to.id })).status,
+    ).toBe(200);
+    expect(
+      (await call("POST", R.moveArtifact(notes), { spaceId: eng })).status,
+    ).toBe(200);
+    // Removed from Engineering (allMembersRole viewer remains): 404.
+    expect((await call("DELETE", R.spaceMember(eng, me.user.id))).status).toBe(
+      204,
+    );
+    const r = await call("POST", R.moveArtifact(notes), { spaceId: to.id });
+    expect(r.status).toBe(404);
+  });
+
+  // refresh() leaves a hidden artifact's last level (and so its can) as it
+  // was: only the handlers' own checks refuse it.
+  it("a hidden artifact (no role, share or visibility left) can't move", async () => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: true }));
+    const me = (await (await call("GET", R.me)).json()) as {
+      user: { id: string };
+      spaces: { id: string; name: string }[];
+    };
+    const eng = me.spaces.find((s) => s.name === "Engineering")?.id as string;
+    const sales = (await (
+      await call("POST", R.spaces, { name: "Sales" })
+    ).json()) as { id: string };
+    const pub = await call("POST", R.artifacts, {
+      title: "Plan",
+      format: "html",
+      content: "x",
+      visibility: "private",
+      spaceId: sales.id,
+    });
+    expect(pub.status).toBe(201);
+    const { id } = (await pub.json()) as { id: string };
+    expect(
+      (await call("DELETE", R.spaceMember(sales.id, me.user.id))).status,
+    ).toBe(204);
+    const r = await call("POST", R.moveArtifact(id), { spaceId: eng });
+    expect(r.status).toBe(404);
+  });
+
+  // A personal level isn't recomputed per caller: after signing in as Bob,
+  // Ada's personal artifact still says owner (can.move, can.transfer).
+  const asBob = async () => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: true }));
+    await msw.signIn("bob@example.com");
+    const me = (await (await call("GET", R.me)).json()) as {
+      user: { email: string };
+      spaces: { id: string; name: string }[];
+    };
+    expect(me.user.email).toBe("bob@example.com");
+    const adas = fixtures.artifacts.find(
+      (a) => a.access === "owner" && a.owner.id === fixtures.members[0]?.id,
+    )?.id as string;
+    return { me, adas };
+  };
+
+  it("someone else's personal artifact can't move, whatever its last can", async () => {
+    const { me, adas } = await asBob();
+    const eng = me.spaces.find((s) => s.name === "Engineering")?.id as string;
+    const r = await call("POST", R.moveArtifact(adas), { spaceId: eng });
+    expect(r.status).toBe(404);
+  });
+
+  it("someone else's personal artifact can't be transferred, whatever its last can", async () => {
+    const { adas } = await asBob();
+    const r = await call("POST", R.transferArtifact(adas), {
+      userId: fixtures.members[0]?.id as string,
+    });
+    expect(r.status).toBe(404);
+  });
+});
+
+describe("mock ShareResult.recipient (review item 37)", () => {
+  const share = async (email: string, providers?: ("google" | "email")[]) => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: providers ? { providers } : {} }));
+    const id = fixtures.artifacts.find((a) => a.access === "owner")?.id;
+    const r = await call("PUT", R.shares(id ?? ""), {
+      email,
+      role: "viewer",
+    });
+    expect(r.status).toBe(200);
+    return ShareResultSchema.parse(await r.json());
+  };
+
+  it("in-domain non-member: needs_invite; a member or an outside guest: none", async () => {
+    expect((await share("new@example.com")).recipient).toEqual({
+      canSignIn: false,
+      reason: "needs_invite",
+    });
+    expect((await share("guest@elsewhere.com")).recipient).toBeUndefined();
+    expect((await share("guest@elsewhere.com", ["google"])).recipient).toEqual({
+      canSignIn: false,
+      reason: "outside_domains",
+    });
+  });
+});
+
+describe("mock signInMethods (#799)", () => {
+  const use = (providers?: ("google" | "email")[]) => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: providers ? { providers } : {} }));
+  };
+  const shareTo = async (email: string) => {
+    const id = fixtures.artifacts.find((a) => a.access === "owner")?.id;
+    const r = await call("PUT", R.shares(id ?? ""), { email, role: "viewer" });
+    return ShareResultSchema.parse(await r.json()).signInMethods;
+  };
+  const inviteTo = async (email: string) => {
+    const r = await call("POST", R.members, { email, role: "member" });
+    return MemberInviteResultSchema.parse(await r.json()).signInMethods;
+  };
+
+  it("matches the server's reach for each case, in SIGN_IN_METHOD_ORDER", async () => {
+    use();
+    expect(await shareTo("new@example.com")).toEqual([]);
+    expect(await shareTo("guest@elsewhere.com")).toEqual(["email"]);
+    expect(await inviteTo("in@example.com")).toEqual(["google"]);
+    expect(await inviteTo("sec@secondary.com")).toEqual(["google"]);
+    use(["email"]);
+    expect(await inviteTo("in2@example.com")).toEqual(["email"]);
+    use(["google"]);
+    expect(await shareTo("guest@elsewhere.com")).toEqual([]);
+  });
+});
+
+describe("mock invite reachability (review item 11)", () => {
+  const use = (providers: ("google" | "email")[]) => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: { providers } }));
+  };
+  const invite = (email: string) =>
+    call("POST", R.members, { email, role: "member" });
+
+  it("email only, outside the domain: 400 invite_unreachable", async () => {
+    use(["email"]);
+    const r = await invite("out@elsewhere.com");
+    expect(r.status).toBe(400);
+    const { error } = ApiErrorSchema.parse(await r.json());
+    expect(error.code).toBe("invite_unreachable");
+    expect(InviteUnreachableDetailsSchema.parse(error.details)).toEqual({
+      field: "email",
+      reason: "outside_domains",
+    });
+    expect(error.message).toBe(INVITE_UNREACHABLE_MESSAGE.outside_domains);
+  });
+
+  it("Google on, outside the domain: 201 with signIn uncertain", async () => {
+    use(["google", "email"]);
+    const r = await invite("sec@secondary.com");
+    expect(r.status).toBe(201);
+    expect(MemberInviteResultSchema.parse(await r.json()).signIn).toEqual({
+      status: "uncertain",
+      reason: "outside_domains",
+    });
+  });
+
+  it("in the domain: 201, no flag", async () => {
+    use(["email"]);
+    const r = await invite("new@example.com");
+    expect(r.status).toBe(201);
+    expect(
+      MemberInviteResultSchema.parse(await r.json()).signIn,
+    ).toBeUndefined();
+  });
+});
+
+describe("mock lapsed guests (#829 review item 3)", () => {
+  const LAPSED = "gone@elsewhere.com";
+  const use = (providers: ("google" | "email")[]) => {
+    server.resetHandlers();
+    server.use(
+      ...createHandlers({ hosted: { providers, lapsedGuests: [LAPSED] } }),
+    );
+  };
+
+  it.each([[["google", "email"]], [["email"]]] as const)(
+    "%j: inviting a lapsed guest is 409 guest_lapsed, never member_removed; nothing created",
+    async (providers) => {
+      use([...providers]);
+      const r = await call("POST", R.members, {
+        email: LAPSED,
+        role: "member",
+      });
+      expect(r.status).toBe(409);
+      const { error } = ApiErrorSchema.parse(await r.json());
+      expect(error.code).toBe("guest_lapsed");
+      expect(error.details).toBeUndefined();
+      const all = MemberSchema.array().parse(
+        await (await call("GET", `${R.members}?status=removed`)).json(),
+      );
+      expect(all.filter((m) => m.email === LAPSED)).toHaveLength(1);
+    },
+  );
+
+  it("restoring a lapsed guest is 409 guest_lapsed; they stay a removed guest", async () => {
+    use(["google", "email"]);
+    const all = MemberSchema.array().parse(
+      await (await call("GET", `${R.members}?status=removed`)).json(),
+    );
+    const g = all.find((m) => m.email === LAPSED);
+    expect(g).toMatchObject({ role: "guest", status: "removed" });
+    const r = await call("POST", R.memberRestore(g?.id ?? ""));
+    expect(r.status).toBe(409);
+    expect(ApiErrorSchema.parse(await r.json()).error.code).toBe(
+      "guest_lapsed",
+    );
+  });
+
+  it("#1204 erase: a removed person with nothing left is erased and leaves the list; idempotent; restore is member_erased", async () => {
+    use(["google", "email"]);
+    const removed = async () =>
+      MemberSchema.array().parse(
+        await (await call("GET", `${R.members}?status=removed`)).json(),
+      );
+    const g = (await removed()).find((m) => m.email === LAPSED);
+    const id = g?.id ?? "";
+    expect((await call("POST", R.memberErase(id))).status).toBe(204);
+    expect((await call("POST", R.memberErase(id))).status).toBe(204);
+    expect((await removed()).map((m) => m.id)).not.toContain(id);
+    const r = await call("POST", R.memberRestore(id));
+    expect(r.status).toBe(409);
+    expect(ApiErrorSchema.parse(await r.json()).error.code).toBe(
+      "member_erased",
+    );
+    // The address is free: an invite makes a new person.
+    const inv = await call("POST", R.members, {
+      email: LAPSED,
+      role: "member",
+    });
+    expect(inv.status).toBe(201);
+    expect(MemberSchema.parse(await inv.json()).id).not.toBe(id);
+  });
+
+  it("#1204 erase refusals: member_active for an active or suspended person, 404 unknown", async () => {
+    use(["google", "email"]);
+    // Dan is active; Carol is suspended (not removed).
+    for (const id of ["Dn8uPqRsTu9vWxYz", "Cr7tNpQrSt8uVwXy"]) {
+      const r = await call("POST", R.memberErase(id));
+      expect(r.status).toBe(409);
+      expect(ApiErrorSchema.parse(await r.json()).error.code).toBe(
+        "member_active",
+      );
+    }
+    expect((await call("POST", R.memberErase("Nobody0000000000"))).status).toBe(
+      404,
+    );
+    // The details schema the server sends with member_owns_artifacts.
+    expect(
+      MemberOwnsArtifactsDetailsSchema.safeParse({ live: 2, deleted: -1 })
+        .success,
+    ).toBe(false);
+  });
+});
+
+describe("mock Member.directoryManaged (#1146)", () => {
+  const members = async () =>
+    MemberSchema.array().parse(
+      await (await call("GET", `${R.members}?status=active,suspended`)).json(),
+    );
+
+  it("Google sync connected: only the in-domain member with no Google link (Dan); never the owner or a linked member; removal unchanged", async () => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: {} }));
+    const all = await members();
+    expect(all.filter((m) => m.directoryManaged).map((m) => m.email)).toEqual([
+      "dan@example.com",
+    ]);
+    const dan = all.find((m) => m.email === "dan@example.com");
+    expect((await call("DELETE", R.member(dan?.id ?? ""))).status).toBe(204);
+  });
+
+  it.each(["off", "frozen"] as const)(
+    "directory %s: never set",
+    async (directory) => {
+      server.resetHandlers();
+      server.use(...createHandlers({ hosted: { directory } }));
+      expect((await members()).some((m) => m.directoryManaged)).toBe(false);
+    },
+  );
+
+  it("disconnected: never set", async () => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: {} }));
+    expect((await call("DELETE", R.directory)).status).toBe(204);
+    expect((await members()).some((m) => m.directoryManaged)).toBe(false);
+  });
+});
+
+describe("mock guest share notices (parity 2)", () => {
+  const notices = async () =>
+    MeSchema.parse(await (await call("GET", R.me)).json()).notices;
+  const dismiss = (id: "guest_shares" | "guest_summary") =>
+    call("POST", R.noticeDismiss(id));
+
+  it("Access-only self-host: the caller's shares, capped at the limit with more, until dismissed (per user)", async () => {
+    server.use(
+      ...createHandlers({
+        hosted: {
+          selfHosted: true,
+          guestShares: GUEST_SHARES_NOTICE_LIMIT + 1,
+        },
+      }),
+    );
+    const n = (await notices())?.guestShares;
+    expect(n?.items).toHaveLength(GUEST_SHARES_NOTICE_LIMIT);
+    expect(n?.more).toBe(true);
+    expect(n?.items[0]).toMatchObject({
+      title: "Landing page",
+      guestEmail: `guest${GUEST_SHARES_NOTICE_LIMIT + 1}@outside.example`,
+      role: "editor",
+    });
+    expect((await dismiss("guest_shares")).status).toBe(204);
+    const after = await notices();
+    expect(after?.guestShares).toBeUndefined();
+    // The owner's summary is separate: counts only, no titles.
+    expect(after?.guestSummary).toEqual({
+      shares: GUEST_SHARES_NOTICE_LIMIT + 1,
+      owners: 1,
+      guestOwners: [],
+      more: false,
+    });
+    expect((await dismiss("guest_shares")).status).toBe(204);
+  });
+
+  it("guestOwners: the owner's summary lists guests who own artifacts, until dismissed; transfer takes a guest", async () => {
+    server.use(
+      ...createHandlers({ hosted: { selfHosted: true, guestOwners: 2 } }),
+    );
+    const n = await notices();
+    expect(n?.guestShares).toBeUndefined();
+    expect(n?.guestSummary).toEqual({
+      shares: 0,
+      owners: 0,
+      guestOwners: [
+        {
+          userId: "Go0001AbCdEfGhIj",
+          email: "owner1@outside.example",
+          artifacts: 1,
+          status: "active",
+        },
+        {
+          userId: "Go0002AbCdEfGhIj",
+          email: "owner2@outside.example",
+          artifacts: 1,
+          status: "active",
+        },
+      ],
+      more: false,
+    });
+    // An active guest: no suspension needed.
+    const sum = await call("GET", R.memberTransfer("Go0001AbCdEfGhIj"));
+    expect(sum.status).toBe(200);
+    expect(await sum.json()).toEqual({ live: 1, deleted: 0 });
+    const t = await call("POST", R.memberTransfer("Go0001AbCdEfGhIj"), {
+      to: { kind: "user", userId: "Bc4eFgHjKm5nPqRs" },
+    });
+    expect(t.status).toBe(200);
+    expect((await notices())?.guestSummary?.guestOwners).toHaveLength(1);
+    expect((await dismiss("guest_summary")).status).toBe(204);
+    expect(await notices()).toBeUndefined();
+  });
+
+  it("spaces off: to user works; to space is 404 for a real, unknown or personal id; spaces routes are 404", async () => {
+    const spaceOn = createHandlers({
+      hosted: { selfHosted: true, guestOwners: 3, spaces: true },
+    });
+    server.use(...spaceOn);
+    const ENG = "SpEngNpQrSt2uVwX";
+    const go = (to: object, id = "Go0001AbCdEfGhIj") =>
+      call("POST", R.memberTransfer(id), { to });
+    expect((await go({ kind: "space", spaceId: ENG })).status).toBe(200);
+    server.resetHandlers();
+    server.use(
+      ...createHandlers({ hosted: { selfHosted: true, guestOwners: 3 } }),
+    );
+    const me = MeSchema.parse(await (await call("GET", R.me)).json());
+    expect(me.instance.features).not.toContain("spaces");
+    expect(me.spaces).toBeUndefined();
+    expect((await call("GET", R.spaces)).status).toBe(404);
+    for (const spaceId of [ENG, "SpNoSuchSpaceXyz", "Ab3dEfGhJk4mNpQr"]) {
+      const r = await go({ kind: "space", spaceId });
+      expect(r.status).toBe(404);
+      expect(await r.json()).toMatchObject({ error: { code: "not_found" } });
+    }
+    expect(
+      (await go({ kind: "user", userId: "Bc4eFgHjKm5nPqRs" })).status,
+    ).toBe(200);
+    // An active non-guest isn't a source.
+    expect(
+      (await call("GET", R.memberTransfer("Bc4eFgHjKm5nPqRs"))).status,
+    ).toBe(409);
+  });
+
+  it("absent with no guest shares, on hosted, and on direct sign-in; admins get no summary (dismiss 404)", async () => {
+    server.use(...createHandlers({ hosted: { selfHosted: true } }));
+    expect(await notices()).toBeUndefined();
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: { guestShares: 2 } }));
+    expect(await notices()).toBeUndefined();
+    server.resetHandlers();
+    server.use(
+      ...createHandlers({
+        hosted: { selfHosted: true, guestShares: 2, mode: "direct" },
+      }),
+    );
+    expect(await notices()).toBeUndefined();
+    server.resetHandlers();
+    server.use(
+      ...createHandlers({
+        hosted: { selfHosted: true, guestShares: 2, actAs: "admin" },
+      }),
+    );
+    const n = await notices();
+    // The admin owns "Landing page" here, so they see their own shares.
+    expect(n?.guestShares?.items).toHaveLength(2);
+    expect(n?.guestSummary).toBeUndefined();
+    expect((await dismiss("guest_summary")).status).toBe(404);
+    expect((await dismiss("guest_shares")).status).toBe(204);
+    expect((await call("POST", "/api/v1/notices/nope/dismiss")).status).toBe(
+      404,
+    );
+  });
+
+  it("transfer: an active member is 409 member_active; an admin on an admin source is 403 owner_only", async () => {
+    server.use(...createHandlers({ hosted: { selfHosted: true } }));
+    const dan = await call("GET", R.memberTransfer("Dn8uPqRsTu9vWxYz"));
+    expect(dan.status).toBe(409);
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: { actAs: "admin" } }));
+    const erin = await call("GET", R.memberTransfer("Er9vQrStUv0wXyZa"));
+    expect(erin.status).toBe(403);
+    expect(ApiErrorSchema.parse(await erin.json()).error.code).toBe(
+      "owner_only",
+    );
+  });
+});
+
+describe("mock AuthProviders.hosted (review item 36c)", () => {
+  it("true by default; false with selfHosted, and Me agrees", async () => {
+    for (const [selfHosted, hosted] of [
+      [false, true],
+      [true, false],
+    ] as const) {
+      server.resetHandlers();
+      server.use(...createHandlers({ hosted: { selfHosted } }));
+      const p = AuthProvidersSchema.parse(
+        await (await call("GET", AUTH.providers)).json(),
+      );
+      expect(p.hosted).toBe(hosted);
+      const me = MeSchema.parse(await (await call("GET", R.me)).json());
+      expect(me.instance.hosted).toBe(hosted);
+    }
+  });
+});
 
 describe("hosted contract schemas", () => {
   it("every new error code has a status", () => {
@@ -127,6 +752,7 @@ describe("hosted contract schemas", () => {
           turnstileSiteKey: "k",
         },
       ],
+      hosted: true,
     };
     expect(AuthProvidersSchema.parse(providers)).toEqual(providers);
     expect(
@@ -144,6 +770,54 @@ describe("hosted contract schemas", () => {
       CodeRateLimitedDetailsSchema.parse({ retryAfter: 60, scope: "ip" }),
     ).toEqual({ retryAfter: 60, scope: "ip" });
     expect(SpacePatchSchema.safeParse({ kind: "shared" }).success).toBe(false);
+    // Space names: C0, DEL and bidi controls stripped, then trimmed.
+    expect(
+      SpaceCreateSchema.parse({
+        name: " \u202EEng\u0000\u0007ineer\u2066ing\u200F\u007F\u061C ",
+      }).name,
+    ).toBe("Engineering");
+    expect(SpacePatchSchema.parse({ name: "A\u0009B\u2069" }).name).toBe("AB");
+    expect(
+      SpacePatchSchema.safeParse({ name: "\u202A\u0000 \u200E" }).success,
+    ).toBe(false);
+    // Zero-width characters too: ZWSP, ZWNJ, ZWJ and BOM.
+    expect(
+      SpaceCreateSchema.parse({ name: "\uFEFFEn\u200Bg\u200Cin\u200Deering" })
+        .name,
+    ).toBe("Engineering");
+    expect(
+      SpacePatchSchema.safeParse({ name: "\u200B\uFEFF\u200D" }).success,
+    ).toBe(false);
+    expect(SpaceCreateSchema.parse({ name: "Café 東京" }).name).toBe(
+      "Café 東京",
+    );
+    // "Personal" is reserved for the personal space: trimmed, any case, and
+    // after controls are stripped; only the whole name.
+    for (const name of [
+      "Personal",
+      " personal ",
+      "PERSONAL",
+      "Pers\u200Bonal",
+    ]) {
+      const r = SpaceCreateSchema.safeParse({ name });
+      expect(r.success).toBe(false);
+      expect(r.error?.issues.map((i) => i.message)).toEqual([
+        SPACE_NAME_RESERVED_MESSAGE,
+      ]);
+      expect(spaceNameReserved(r.error?.issues ?? [])).toBe(true);
+      expect(
+        spaceNameReserved(
+          SpacePatchSchema.safeParse({ name }).error?.issues ?? [],
+        ),
+      ).toBe(true);
+    }
+    expect(SpaceNameSchema.parse("Personal finance")).toBe("Personal finance");
+    expect(SPACE_NAME_RESERVED_MESSAGE).not.toMatch(/\u2014/);
+    expect(
+      spaceNameReserved(
+        SpaceCreateSchema.safeParse({ name: "" }).error?.issues ?? [],
+      ),
+    ).toBe(false);
     expect(
       TransferInputSchema.parse({
         to: { kind: "space", spaceId: "s" },
@@ -178,24 +852,47 @@ describe("hosted contract schemas", () => {
     expect(TEST_HOOKS_ALLOWED).toBe(false);
   });
 
-  it("publish: spaceId is hosted-only and keeps the publish rules", () => {
+  it("parseTier: the three tiers (trimmed), else null", () => {
+    for (const t of ["trial", "team", "business"] as const)
+      expect(parseTier(t)).toBe(t);
+    expect(parseTier(" team ")).toBe("team");
+    for (const v of [undefined, "", "Team", "enterprise", "team,business"])
+      expect(parseTier(v)).toBeNull();
+  });
+
+  it("TIER_FEATURES: settable flags only; Team swaps sync_google for sync_frozen; directoryModeOf", () => {
+    for (const fs of Object.values(TIER_FEATURES))
+      for (const f of fs) expect(ENV_FEATURE_FLAGS).toContain(f);
+    expect(TIER_FEATURES.trial).toEqual(TIER_FEATURES.business);
+    const team = new Set(TIER_FEATURES.team);
+    const business = new Set(TIER_FEATURES.business);
+    expect([...business].filter((f) => !team.has(f))).toEqual(["sync_google"]);
+    expect([...team].filter((f) => !business.has(f))).toEqual(["sync_frozen"]);
+    expect(parseFeatures(TIER_FEATURES.team.join(","))).toEqual([
+      ...TIER_FEATURES.team,
+    ]);
+    expect(directoryModeOf(TIER_FEATURES.business)).toBe("google");
+    expect(directoryModeOf(TIER_FEATURES.team)).toBe("frozen");
+    expect(directoryModeOf(["sync_frozen", "sync_google"])).toBe("google");
+    expect(directoryModeOf([])).toBe("off");
+  });
+
+  it("publish: spaceId is folded into PublishInputSchema and keeps the publish rules", () => {
     const base = { title: "t", format: "html", content: "x" };
-    expect(
-      PublishInputSchema.safeParse({ ...base, spaceId: "s" }).success,
-    ).toBe(false);
-    expect(
-      HostedPublishInputSchema.parse({ ...base, spaceId: "s" }),
-    ).toMatchObject({
+    expect(PublishInputSchema.parse({ ...base, spaceId: "s" })).toMatchObject({
       spaceId: "s",
       title: "t",
     });
-    expect(HostedPublishInputSchema.safeParse({ spaceId: "s" }).success).toBe(
+    expect(PublishInputSchema.safeParse({ spaceId: "s" }).success).toBe(false);
+    expect(PublishInputSchema.safeParse({ ...base, spaceId: 1 }).success).toBe(
       false,
     );
   });
 
   it("artifactCan follows the action table", () => {
-    expect(artifactCan("viewer", { personal: false })).toEqual({
+    expect(
+      artifactCan("viewer", { personal: false, dataWriters: "viewers" }),
+    ).toEqual({
       edit: false,
       share: false,
       setVisibility: false,
@@ -219,572 +916,26 @@ describe("hosted contract schemas", () => {
     expect(
       artifactCan("viewer", { personal: false, cap: "restricted" }).dataWrite,
     ).toBe(false);
-  });
-});
-
-describe("hosted off: responses are byte-identical", () => {
-  it("me, list, members, search carry no hosted fields", async () => {
-    fresh();
-    expect(await (await call("GET", R.me)).text()).toBe(
-      JSON.stringify(fixtures.me),
-    );
-    expect(await (await call("GET", R.members)).text()).toBe(
-      JSON.stringify(fixtures.members),
-    );
-    const list = await (await call("GET", `${R.artifacts}?limit=100`)).text();
-    expect(list).toBe(
-      JSON.stringify({ items: fixtures.artifacts, nextCursor: null }),
-    );
-    for (const k of ['"space"', '"can"', '"status"', '"hosted"', '"auth"'])
-      expect(list).not.toContain(k);
-  });
-});
-
-describe("hosted mocks", () => {
-  it("providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal", async () => {
-    fresh({ hosted: true });
-    const p = Strict.AuthProviders.parse(
-      await json(await call("GET", AUTH.providers)),
-    );
-    expect(p.mode).toBe("direct");
-    expect(p.providers.map((x) => x.id)).toEqual(["google", "email"]);
-
-    const rq = await call("POST", AUTH.codeRequest, {
-      email: "Ada@example.com",
-      next: "/a/x",
-    });
-    expect(rq.status).toBe(202);
-    expect(Strict.CodeRequested.parse(await rq.json())).toEqual({
-      maskedEmail: "a***@example.com",
-      expiresIn: 600,
-      resendAfter: 60,
-      codeLength: 8,
-    });
-    const bad = await call("POST", AUTH.codeVerify, { code: "0000 0000" });
-    expect(bad.status).toBe(401);
-    expect((await errCode(bad)).details).toEqual({
-      reason: "invalid_code",
-      attemptsLeft: 4,
-    });
-    const ok = await call("POST", AUTH.codeVerify, {
-      code: `${HOSTED_MOCK_CODE.slice(0, 4)} ${HOSTED_MOCK_CODE.slice(4)}`,
-    });
-    expect(ok.status).toBe(200);
-    const v = Strict.CodeVerified.parse(await ok.json());
-    expect(v).toMatchObject({ next: "/a/x", readOnly: false });
-    expect(v.user.email).toBe("ada@example.com");
-
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    expect(me.instance.hosted).toBe(true);
-    expect(me.instance.tier).toBe("business");
-    expect(me.instance.features).toContain("usage_off");
-    expect(me.instance.directory).toMatchObject({
-      mode: "google",
-      healthy: true,
-      banner: false,
-    });
-    expect(me.auth).toMatchObject({
-      method: "code",
-      readOnly: false,
-      cap: null,
-    });
-    expect(me.personalSpaceId).toBe(me.user.id);
-    expect(me.spaces?.map((s) => [s.name, s.myRole])).toEqual([
-      ["Engineering", "manager"],
-      ["Exec", "viewer"],
-    ]);
-
-    const list = PageSchema(Strict.ArtifactSummary).parse(
-      await json(await call("GET", `${R.artifacts}?limit=100`)),
-    );
-    const notes = list.items.find((a) => a.title === "Meeting notes");
-    expect(notes?.access).toBe("manager");
-    expect(notes?.space).toMatchObject({ kind: "shared", name: "Engineering" });
-    expect(notes?.can).toMatchObject({ move: true, transfer: false });
-    const mine = list.items.find((a) => a.title === "Landing page");
-    expect(mine?.space).toMatchObject({ kind: "personal", id: me.user.id });
-    expect(mine?.can?.transfer).toBe(true);
-    const viewer = list.items.find((a) => a.access === "viewer");
-    expect(viewer?.can).toMatchObject({ edit: false, dataWrite: true });
-    const hits = PageSchema(Strict.SearchHit).parse(
-      await json(await call("GET", `${R.search}?q=notes`)),
-    );
-    expect(hits.items[0]?.space?.name).toBe("Engineering");
-
-    // Move: a personal target is refused; a viewer-role space is forbidden; Engineering works.
-    const bob = fixtures.members[1]?.id as string;
-    const toPersonal = await call("POST", R.moveArtifact(mine?.id as string), {
-      spaceId: bob,
-    });
-    expect(toPersonal.status).toBe(400);
-    expect((await errCode(toPersonal)).code).toBe("space_personal");
-    const exec = me.spaces?.find((s) => s.name === "Exec")?.id as string;
-    const forbidden = await call("POST", R.moveArtifact(mine?.id as string), {
-      spaceId: exec,
-    });
-    expect(forbidden.status).toBe(403);
-    expect((await errCode(forbidden)).code).toBe("space_forbidden");
-    const eng = me.spaces?.find((s) => s.name === "Engineering")?.id as string;
-    const moved = Strict.ArtifactSummary.parse(
-      await json(
-        await call("POST", R.moveArtifact(mine?.id as string), {
-          spaceId: eng,
-        }),
-      ),
-    );
-    expect(moved).toMatchObject({ access: "manager", space: { id: eng } });
-  });
-
-  it("code flow: no_pending, expiry after 5 tries, turnstile, rate limits", async () => {
-    fresh({ hosted: { turnstile: true } });
-    const none = await call("POST", AUTH.codeVerify, { code: "1" });
-    expect((await errCode(none)).details).toEqual({ reason: "no_pending" });
-    const missing = await call("POST", AUTH.codeRequest, {
-      email: "x@example.com",
-    });
-    expect(missing.status).toBe(400);
-    expect(await errCode(missing)).toMatchObject({
-      code: "turnstile_required",
-      details: { field: "turnstile", required: true },
-    });
-    const rejected = await call("POST", AUTH.codeRequest, {
-      email: "x@example.com",
-      turnstileToken: "fail",
-    });
-    expect((await errCode(rejected)).code).toBe("turnstile_failed");
-    const req = { email: "g@outside.org", turnstileToken: "ok" };
-    expect((await call("POST", AUTH.codeRequest, req)).status).toBe(202);
-    for (let i = 0; i < 4; i++)
-      await call("POST", AUTH.codeVerify, { code: "11111111" });
-    const dead = await call("POST", AUTH.codeVerify, { code: "11111111" });
-    expect((await errCode(dead)).details).toEqual({ reason: "expired" });
-    for (let i = 0; i < 4; i++) await call("POST", AUTH.codeRequest, req);
-    const limited = await call("POST", AUTH.codeRequest, req);
-    expect(limited.status).toBe(429);
+    // #681: dataWriters "editors" takes data writes from viewers only.
+    const dw = (
+      level: "viewer" | "editor" | "owner",
+      d?: "editors" | "viewers",
+    ) => artifactCan(level, { personal: true, dataWriters: d }).dataWrite;
+    expect(dw("viewer", "editors")).toBe(false);
+    expect(dw("viewer", "viewers")).toBe(true);
+    // Left out: "editors" (fail closed), as the server's can().
+    expect(dw("viewer")).toBe(false);
+    expect(dw("editor")).toBe(true);
+    expect(dw("editor", "editors")).toBe(true);
+    expect(dw("owner", "editors")).toBe(true);
     expect(
-      CodeRateLimitedDetailsSchema.parse((await errCode(limited)).details)
-        .scope,
-    ).toBe("email");
+      artifactCan("owner", {
+        personal: true,
+        cap: "guest",
+        dataWriters: "viewers",
+      }).dataWrite,
+    ).toBe(false);
   });
-
-  it("guest sign-in is read-only and can't publish", async () => {
-    fresh({ hosted: true });
-    await call("POST", AUTH.codeRequest, { email: "guest@outside.org" });
-    const v = Strict.CodeVerified.parse(
-      await json(
-        await call("POST", AUTH.codeVerify, { code: HOSTED_MOCK_CODE }),
-      ),
-    );
-    expect(v.user.role).toBe("guest");
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    expect(me.auth).toMatchObject({ readOnly: true, cap: "guest" });
-    const list = await json(await call("GET", R.artifacts));
-    expect(list.items[0].can.dataWrite).toBe(false);
-    const pub = await call("POST", R.artifacts, {
-      title: "t",
-      format: "html",
-      content: "x",
-    });
-    expect((await errCode(pub)).code).toBe("space_forbidden");
-  });
-
-  it("spaces, members, mappings, directory, transfer", async () => {
-    fresh({ hosted: true });
-    const spaces = PageSchema(Strict.Space).parse(
-      await json(await call("GET", R.spaces)),
-    );
-    expect(spaces.items[0]?.kind).toBe("personal");
-    const clients = spaces.items.find((s) => s.name === "Clients");
-    expect(clients?.myRole).toBeNull();
-    const created = Strict.Space.parse(
-      await json(await call("POST", R.spaces, { name: "Sales" })),
-    );
-    expect(created).toMatchObject({
-      kind: "shared",
-      publicLinks: true,
-      myRole: null,
-    });
-    const bob = fixtures.members[1]?.id as string;
-    const m = Strict.SpaceMember.parse(
-      await json(
-        await call("PUT", R.spaceMember(created.id, bob), { role: "editor" }),
-      ),
-    );
-    expect(m).toMatchObject({ userId: bob, role: "editor", source: "manual" });
-    expect(
-      Strict.GroupMapping.parse(
-        await json(
-          await call("PUT", R.spaceMapping(created.id, "gSales03"), {
-            role: "viewer",
-          }),
-        ),
-      ).name,
-    ).toBe("Sales");
-    const patched = Strict.Space.parse(
-      await json(
-        await call("PATCH", R.space(created.id), { publicLinks: false }),
-      ),
-    );
-    expect(patched.publicLinks).toBe(false);
-    expect((await call("DELETE", R.space(created.id))).status).toBe(204);
-    const personal = await call(
-      "PATCH",
-      R.space(fixtures.members[0]?.id as string),
-      { name: "x" },
-    );
-    expect((await errCode(personal)).code).toBe("space_personal");
-
-    const st = Strict.SyncStatus.parse(
-      await json(await call("GET", R.directory)),
-    );
-    expect(st).toMatchObject({
-      mode: "google",
-      healthy: true,
-      customerMismatch: null,
-    });
-    expect(st.held).toHaveLength(1);
-    expect(
-      (await call("POST", R.directoryHeldConfirm("gSales03"))).status,
-    ).toBe(202);
-    expect((await call("POST", R.directorySync)).status).toBe(202);
-
-    const departed = await json(
-      await call("GET", `${R.members}?status=suspended,removed`),
-    );
-    expect(departed.map((x: { status: string }) => x.status)).toEqual([
-      "suspended",
-    ]);
-    const carol = departed[0].id as string;
-    expect(
-      Strict.TransferSummary.parse(
-        await json(await call("GET", R.memberTransfer(carol))),
-      ),
-    ).toEqual({
-      live: 2,
-      deleted: 1,
-    });
-    const toPersonal = await call("POST", R.memberTransfer(carol), {
-      to: { kind: "space", spaceId: bob },
-    });
-    expect((await errCode(toPersonal)).code).toBe("space_personal");
-    const toCarol = await call("POST", R.memberTransfer(carol), {
-      to: { kind: "user", userId: carol },
-    });
-    expect((await errCode(toCarol)).code).toBe("invalid_successor");
-    expect(
-      Strict.TransferResult.parse(
-        await json(
-          await call("POST", R.memberTransfer(carol), {
-            to: { kind: "user", userId: bob },
-          }),
-        ),
-      ),
-    ).toEqual({ moved: 3, remaining: 0, nextCursor: null });
-    const active = await call("POST", R.memberTransfer(bob), {
-      to: { kind: "user", userId: bob },
-    });
-    expect((await errCode(active)).code).toBe("member_active");
-    expect((await call("GET", R.usage)).status).toBe(404);
-  });
-
-  it("frozen sync refuses mapping changes; unhealthy shows the banner", async () => {
-    fresh({ hosted: { directory: "frozen", unhealthy: true } });
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    expect(me.instance.directory).toMatchObject({
-      mode: "frozen",
-      healthy: false,
-      banner: true,
-      tokensUnverified: true,
-    });
-    const eng = me.spaces?.find((s) => s.name === "Engineering")?.id as string;
-    const r = await call("PUT", R.spaceMapping(eng, "x@example.com"), {
-      role: "viewer",
-    });
-    expect(r.status).toBe(409);
-    expect((await errCode(r)).code).toBe("directory_sync_off");
-  });
-
-  it("transfer of a personal artifact and spaceId on publish", async () => {
-    fresh({ hosted: true });
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    const eng = me.spaces?.find((s) => s.name === "Engineering")?.id as string;
-    const exec = me.spaces?.find((s) => s.name === "Exec")?.id as string;
-    const base = { title: "n", format: "html", content: "x" };
-    expect(
-      (await call("POST", R.artifacts, { ...base, spaceId: eng })).status,
-    ).toBe(201);
-    const forbidden = await call("POST", R.artifacts, {
-      ...base,
-      spaceId: exec,
-    });
-    expect((await errCode(forbidden)).code).toBe("space_forbidden");
-    const id = fixtures.artifacts[0]?.id as string;
-    const useMove = await call("POST", R.artifacts, {
-      ...base,
-      id,
-      spaceId: eng,
-    });
-    expect((await errCode(useMove)).code).toBe("use_move");
-    const bob = fixtures.members[1]?.id as string;
-    const t = Strict.ArtifactSummary.parse(
-      await json(await call("POST", R.transferArtifact(id), { userId: bob })),
-    );
-    expect(t).toMatchObject({
-      access: "editor",
-      space: { id: bob },
-      owner: { id: bob },
-    });
-    expect(
-      z.array(Strict.Member).parse(await json(await call("GET", R.members)))[0]
-        ?.status,
-    ).toBe("active");
-  });
-});
-
-describe("hosted mocks: restriction, public links, admin self-add, audit", () => {
-  const signIn = async (email: string) => {
-    await call("POST", AUTH.codeRequest, { email });
-    return Strict.CodeVerified.parse(
-      await json(
-        await call("POST", AUTH.codeVerify, { code: HOSTED_MOCK_CODE }),
-      ),
-    );
-  };
-
-  it("a restricted-group member is capped and gets no allMembersRole", async () => {
-    fresh({ hosted: true });
-    const v = await signIn("dan@example.com");
-    expect(v.readOnly).toBe(true);
-    expect(v.user.restriction?.groups.map((g) => g.groupId)).toEqual([
-      "gCon04",
-    ]);
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    expect(me.auth).toMatchObject({ readOnly: true, cap: "restricted" });
-    // Engineering has allMembersRole viewer, which never reaches Dan.
-    expect(me.spaces).toEqual([]);
-    const pub = await call("POST", R.artifacts, {
-      title: "t",
-      format: "html",
-      content: "x",
-    });
-    expect((await errCode(pub)).code).toBe("space_forbidden");
-  });
-
-  it("manual restricted flag: cap on space members, no successor, audited", async () => {
-    fresh({ hosted: { directory: "frozen" } });
-    const bob = fixtures.members[1]?.id as string;
-    const set = Strict.Member.parse(
-      await json(await call("PUT", R.memberRestricted(bob))),
-    );
-    expect(set.restriction).toEqual({ manual: true, groups: [] });
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    const eng = me.spaces?.find((s) => s.name === "Engineering")?.id as string;
-    const ms = PageSchema(Strict.SpaceMember).parse(
-      await json(await call("GET", R.spaceMembers(eng))),
-    );
-    expect(ms.items.find((m) => m.userId === bob)?.cap).toBe("restricted");
-    const id = fixtures.artifacts[0]?.id as string;
-    const t = await call("POST", R.transferArtifact(id), { userId: bob });
-    expect((await errCode(t)).code).toBe("invalid_successor");
-    const cleared = Strict.Member.parse(
-      await json(await call("DELETE", R.memberRestricted(bob))),
-    );
-    expect(cleared.restriction).toBeNull();
-    const audit = PageSchema(Strict.AuditEvent).parse(
-      await json(await call("GET", R.audit)),
-    );
-    expect(audit.items.map((e) => e.action)).toEqual([
-      "restricted.remove",
-      "restricted.set",
-    ]);
-  });
-
-  it("restricted groups by groupId: PUT 409 when frozen, DELETE allowed", async () => {
-    fresh({ hosted: { directory: "frozen" } });
-    const list = z
-      .array(Strict.RestrictedGroup)
-      .parse(await json(await call("GET", R.restrictedGroups)));
-    expect(list.map((g) => g.groupId)).toEqual(["gCon04"]);
-    const put = await call("PUT", R.restrictedGroup("gSales03"));
-    expect((await errCode(put)).code).toBe("directory_sync_off");
-    expect((await call("DELETE", R.restrictedGroup("gCon04"))).status).toBe(
-      204,
-    );
-  });
-
-  it("restricted groups and the group picker with sync on", async () => {
-    fresh({ hosted: true });
-    const g = Strict.RestrictedGroup.parse(
-      await json(await call("PUT", R.restrictedGroup("gSales03"))),
-    );
-    expect(g).toMatchObject({
-      groupId: "gSales03",
-      email: "sales@example.com",
-    });
-    expect((await call("PUT", R.restrictedGroup("nope"))).status).toBe(404);
-    const picker = PageSchema(Strict.DirectoryGroup).parse(
-      await json(await call("GET", `${R.directoryGroups}?q=eng`)),
-    );
-    expect(picker.items.map((x) => x.groupId)).toEqual(["gEng01"]);
-  });
-
-  it("public in a space with publicLinks off is 403 public_links_off", async () => {
-    fresh({ hosted: true });
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    expect(me.spaces?.find((s) => s.name === "Exec")?.publicLinks).toBe(false);
-    // The caller manages Engineering ("Meeting notes"); turn its public links off.
-    const eng = me.spaces?.find((s) => s.name === "Engineering")?.id as string;
-    expect(
-      (await call("PATCH", R.space(eng), { publicLinks: false })).status,
-    ).toBe(200);
-    const notes = fixtures.artifacts.find((a) => a.title === "Meeting notes")
-      ?.id as string;
-    const r = await call("PATCH", R.artifact(notes), { visibility: "public" });
-    expect(r.status).toBe(403);
-    expect((await errCode(r)).code).toBe("public_links_off");
-    const create = await call("POST", R.artifacts, {
-      title: "t",
-      format: "html",
-      content: "x",
-      spaceId: eng,
-      visibility: "public",
-    });
-    expect((await errCode(create)).code).toBe("public_links_off");
-  });
-
-  it("admin self-add to a shared space only, audited", async () => {
-    fresh({ hosted: true });
-    const spaces = PageSchema(Strict.Space).parse(
-      await json(await call("GET", R.spaces)),
-    );
-    const clients = spaces.items.find((s) => s.name === "Clients")
-      ?.id as string;
-    const r = await call("POST", R.spaceMemberSelf(clients), {
-      role: "viewer",
-    });
-    expect(r.status).toBe(201);
-    expect(Strict.SpaceMember.parse(await r.json())).toMatchObject({
-      role: "viewer",
-    });
-    const personal = await call(
-      "POST",
-      R.spaceMemberSelf(fixtures.members[0]?.id as string),
-      { role: "viewer" },
-    );
-    expect((await errCode(personal)).code).toBe("space_personal");
-    const audit = PageSchema(Strict.AuditEvent).parse(
-      await json(await call("GET", R.audit)),
-    );
-    expect(audit.items[0]).toMatchObject({
-      action: "space.admin_self_add",
-      spaceId: clients,
-    });
-  });
-
-  it("guests_read_only is reported from sign-in config, never from FEATURES", async () => {
-    fresh({ hosted: { mode: "access", features: ["guests_read_only"] } });
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    expect(me.instance.features).not.toContain("guests_read_only");
-    server.resetHandlers();
-    fresh({ hosted: true });
-    const me2 = Strict.Me.parse(await json(await call("GET", R.me)));
-    expect(me2.instance.features).toContain("guests_read_only");
-  });
-});
-
-describe("hosted mocks: move and public links", () => {
-  it("moving a public artifact into a space with publicLinks off makes it team", async () => {
-    fresh({ hosted: true });
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    const eng = me.spaces?.find((s) => s.name === "Engineering")?.id as string;
-    expect(
-      (await call("PATCH", R.space(eng), { publicLinks: false })).status,
-    ).toBe(200);
-    const report = fixtures.artifacts.find((a) => a.title === "Q4 report");
-    expect(report?.visibility).toBe("public");
-    const moved = Strict.ArtifactSummary.parse(
-      await json(
-        await call("POST", R.moveArtifact(report?.id as string), {
-          spaceId: eng,
-        }),
-      ),
-    );
-    expect(moved).toMatchObject({
-      visibility: "team",
-      space: { id: eng, publicLinks: false },
-    });
-  });
-});
-
-describe("hosted mocks: owners and admins can't be restricted", () => {
-  it("PUT memberRestricted on the owner or an admin is 400 restrict_admin", async () => {
-    fresh({ hosted: true });
-    const owner = fixtures.members[0]?.id as string;
-    const r = await call("PUT", R.memberRestricted(owner));
-    expect(r.status).toBe(400);
-    expect((await errCode(r)).code).toBe("restrict_admin");
-    const bob = fixtures.members[1]?.id as string;
-    expect((await call("PATCH", R.member(bob), { role: "admin" })).status).toBe(
-      200,
-    );
-    const admin = await call("PUT", R.memberRestricted(bob));
-    expect((await errCode(admin)).code).toBe("restrict_admin");
-    const ms = z
-      .array(Strict.Member)
-      .parse(await json(await call("GET", R.members)));
-    expect(ms.find((m) => m.id === bob)?.restriction).toBeNull();
-  });
-});
-
-describe("hosted mocks: sync banner fields", () => {
-  it("admins see state, staleAt and held sweeps", async () => {
-    fresh({ hosted: { unhealthy: true, unhealthyState: "scope_missing" } });
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    const d = me.instance.directory;
-    expect(d).toMatchObject({
-      state: "scope_missing",
-      heldSweeps: 1,
-      banner: true,
-    });
-    const st = Strict.SyncStatus.parse(
-      await json(await call("GET", R.directory)),
-    );
-    expect(st.state).toBe("scope_missing");
-    expect(d?.staleAt).toBe(st.staleAt);
-    expect(
-      Date.parse(d?.staleAt as string) - Date.parse(st.lastSuccessAt as string),
-    ).toBe(7 * 24 * 3600_000);
-  });
-
-  it("members can't read health", async () => {
-    fresh({ hosted: { unhealthy: true } });
-    await call("POST", AUTH.codeRequest, { email: "bob@example.com" });
-    await call("POST", AUTH.codeVerify, { code: HOSTED_MOCK_CODE });
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    expect(me.instance.directory).toMatchObject({
-      state: null,
-      staleAt: null,
-      heldSweeps: 0,
-      banner: false,
-      tokensUnverified: false,
-    });
-  });
-});
-
-describe("hosted contract: space-manager and Every-space mappings", () => {
-  const signIn = async (email: string) => {
-    await call("POST", AUTH.codeRequest, { email });
-    await call("POST", AUTH.codeVerify, { code: HOSTED_MOCK_CODE });
-  };
-  const ENG = "SpEngNpQrSt2uVwX";
-  const CLIENTS = "SpCliNpQrSt4uVwX";
-  const ada = fixtures.members[0]?.id as string;
-  const bob = fixtures.members[1]?.id as string;
-  /** As Ada (owner): make Bob a manager of Engineering, then sign in as Bob. */
-  const bobManagesEng = async () => {
-    await call("PUT", R.spaceMember(ENG, bob), { role: "manager" });
-    await signIn("bob@example.com");
-  };
 
   it("schemas: settings flag, Space.can, org mappings, audit action", () => {
     expect(
@@ -811,205 +962,6 @@ describe("hosted contract: space-manager and Every-space mappings", () => {
     expect(R.orgMapping("g/1")).toBe("/api/v1/directory/org-mappings/g%2F1");
   });
 
-  it("settings: spaceManagerMappings defaults on; PATCH is admin-only and audited", async () => {
-    fresh({ hosted: true });
-    const s = SettingsSchema.strict().parse(
-      await json(await call("GET", R.settings)),
-    );
-    expect(s.spaceManagerMappings).toBe(true);
-    const off = SettingsSchema.strict().parse(
-      await json(
-        await call("PATCH", R.settings, { spaceManagerMappings: false }),
-      ),
-    );
-    expect(off.spaceManagerMappings).toBe(false);
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    expect(me.instance).not.toHaveProperty("spaceManagerMappings");
-    const audit = PageSchema(AuditEventSchema).parse(
-      await json(await call("GET", R.audit)),
-    );
-    expect(audit.items[0]).toMatchObject({
-      action: "settings.space_manager_mappings",
-      detail: { spaceManagerMappings: false },
-    });
-    await signIn("bob@example.com");
-    expect(
-      (await call("PATCH", R.settings, { spaceManagerMappings: true })).status,
-    ).toBe(404);
-  });
-
-  it("hosted off: settings carry no spaceManagerMappings", async () => {
-    fresh();
-    expect(await (await call("GET", R.settings)).text()).not.toContain(
-      "spaceManagerMappings",
-    );
-  });
-
-  it("a space manager maps viewer/editor; manager is space_forbidden", async () => {
-    fresh({ hosted: true });
-    await bobManagesEng();
-    const sp = Strict.Space.parse(await json(await call("GET", R.space(ENG))));
-    expect(sp.can).toEqual({ manageMappings: true });
-    expect(
-      z
-        .array(Strict.GroupMapping)
-        .parse(await json(await call("GET", R.spaceMappings(ENG)))),
-    ).toHaveLength(1);
-    const ok = Strict.GroupMapping.parse(
-      await json(
-        await call("PUT", R.spaceMapping(ENG, "gSales03"), { role: "viewer" }),
-      ),
-    );
-    expect(ok).toMatchObject({ groupId: "gSales03", role: "viewer" });
-    const mgr = await call("PUT", R.spaceMapping(ENG, "gSales03"), {
-      role: "manager",
-    });
-    expect(mgr.status).toBe(403);
-    expect((await errCode(mgr)).code).toBe("space_forbidden");
-    // Exec: Bob has no role there, so mapping routes stay 404.
-    expect(
-      (
-        await call("PUT", R.spaceMapping("SpExcNpQrSt3uVwX", "gSales03"), {
-          role: "viewer",
-        })
-      ).status,
-    ).toBe(404);
-    expect((await call("DELETE", R.spaceMapping(ENG, "gSales03"))).status).toBe(
-      204,
-    );
-    // Bob's own personal space: mappings don't exist there.
-    const personal = await call("GET", R.spaceMappings(bob));
-    expect(personal.status).toBe(400);
-    expect((await errCode(personal)).code).toBe("space_personal");
-  });
-
-  it("a space manager can't change or remove a manager-role row an admin set", async () => {
-    fresh({ hosted: true });
-    await call("PUT", R.spaceMapping(ENG, "gSales03"), { role: "manager" });
-    await bobManagesEng();
-    const demote = await call("PUT", R.spaceMapping(ENG, "gSales03"), {
-      role: "viewer",
-    });
-    expect(demote.status).toBe(403);
-    expect((await errCode(demote)).code).toBe("space_forbidden");
-    const del = await call("DELETE", R.spaceMapping(ENG, "gSales03"));
-    expect((await errCode(del)).code).toBe("space_forbidden");
-  });
-
-  it("setting off: a manager's PUT is 403 directory_mapping_off; list and remove still work", async () => {
-    fresh({ hosted: true });
-    await call("PATCH", R.settings, { spaceManagerMappings: false });
-    const eng = Strict.Space.parse(await json(await call("GET", R.space(ENG))));
-    expect(eng.can).toEqual({ manageMappings: true });
-    await bobManagesEng();
-    const sp = Strict.Space.parse(await json(await call("GET", R.space(ENG))));
-    expect(sp.can).toEqual({ manageMappings: false });
-    const r = await call("PUT", R.spaceMapping(ENG, "gSales03"), {
-      role: "viewer",
-    });
-    expect(r.status).toBe(403);
-    expect((await errCode(r)).code).toBe("directory_mapping_off");
-    expect(
-      z
-        .array(Strict.GroupMapping)
-        .parse(await json(await call("GET", R.spaceMappings(ENG)))),
-    ).toEqual([expect.objectContaining({ groupId: "gEng01" })]);
-    expect((await call("DELETE", R.spaceMapping(ENG, "gEng01"))).status).toBe(
-      204,
-    );
-  });
-
-  it("an Every-space mapping is an effective role in every shared space, never Personal", async () => {
-    fresh({ hosted: true });
-    expect(
-      PageSchema(Strict.GroupMapping).parse(
-        await json(await call("GET", R.orgMappings)),
-      ),
-    ).toEqual({ items: [], nextCursor: null });
-    const m = Strict.GroupMapping.parse(
-      await json(await call("PUT", R.orgMapping("gEng01"), { role: "editor" })),
-    );
-    expect(m).toMatchObject({ groupId: "gEng01", role: "editor" });
-    // One row per group: a second PUT updates it.
-    await call("PUT", R.orgMapping("gEng01"), { role: "editor" });
-    expect(
-      PageSchema(Strict.GroupMapping).parse(
-        await json(await call("GET", `${R.orgMappings}?limit=1`)),
-      ).items,
-    ).toHaveLength(1);
-    // Not expanded into per-space mapping rows.
-    expect(await json(await call("GET", R.spaceMappings(CLIENTS)))).toEqual([]);
-    const members = PageSchema(Strict.SpaceMember).parse(
-      await json(await call("GET", R.spaceMembers(CLIENTS))),
-    );
-    expect(members.items).toEqual([
-      expect.objectContaining({
-        userId: bob,
-        role: "editor",
-        source: "sync",
-        syncRole: "editor",
-      }),
-    ]);
-    await signIn("bob@example.com");
-    const clients = Strict.Space.parse(
-      await json(await call("GET", R.space(CLIENTS))),
-    );
-    expect(clients.myRole).toBe("editor");
-    expect(clients.can).toEqual({ manageMappings: false });
-    // Personal spaces: Bob's own stays manager; Ada's stays invisible.
-    expect(
-      Strict.Space.parse(await json(await call("GET", R.space(bob)))).myRole,
-    ).toBe("manager");
-    expect((await call("GET", R.space(ada))).status).toBe(404);
-    expect((await call("GET", R.orgMappings)).status).toBe(404);
-  });
-
-  it("org mappings: DELETE, sync off, audit", async () => {
-    fresh({ hosted: true });
-    await call("PUT", R.orgMapping("gEng01"), { role: "viewer" });
-    expect((await call("DELETE", R.orgMapping("gEng01"))).status).toBe(204);
-    expect((await call("DELETE", R.orgMapping("gEng01"))).status).toBe(404);
-    const audit = PageSchema(AuditEventSchema).parse(
-      await json(await call("GET", R.audit)),
-    );
-    expect(audit.items.slice(0, 2)).toEqual([
-      expect.objectContaining({ action: "mapping.remove", spaceId: null }),
-      expect.objectContaining({ action: "mapping.set", spaceId: null }),
-    ]);
-    fresh({ hosted: { directory: "frozen" } });
-    const r = await call("PUT", R.orgMapping("gEng01"), { role: "viewer" });
-    expect((await errCode(r)).code).toBe("directory_sync_off");
-  });
-});
-
-describe("hosted contract: space People", () => {
-  const signIn = async (email: string) => {
-    await call("POST", AUTH.codeRequest, { email });
-    await call("POST", AUTH.codeVerify, { code: HOSTED_MOCK_CODE });
-  };
-  const ENG = "SpEngNpQrSt2uVwX";
-  const EXEC = "SpExcNpQrSt3uVwX";
-  const ada = fixtures.members[0]?.id as string;
-  const bob = fixtures.members[1]?.id as string;
-  const carol = "Cr7tNpQrSt8uVwXy";
-  const dan = "Dn8uPqRsTu9vWxYz";
-  const StrictMember = SpaceMemberSchema.extend({
-    groups: z.array(SpaceMemberGroupSchema.strict()),
-  }).strict();
-  const StrictPage = SpaceMembersPageSchema.extend({
-    items: z.array(StrictMember),
-  }).strict();
-  const list = async (space: string, qs = "") =>
-    StrictPage.parse(
-      await json(await call("GET", `${R.spaceMembers(space)}${qs}`)),
-    );
-  const forbidden = async (r: Response) => {
-    expect(r.status).toBe(403);
-    const e = await errCode(r);
-    expect(e.code).toBe("space_forbidden");
-    return SpaceForbiddenDetailsSchema.strict().parse(e.details).target;
-  };
-
   it("schemas: query, page total, groups role/via, details, member_synced", () => {
     expect(SpaceMembersQuerySchema.parse({})).toEqual({ limit: 50 });
     expect(
@@ -1033,246 +985,10 @@ describe("hosted contract: space People", () => {
     });
     expect(ERROR_CODES).toContain("member_synced");
     expect(STATUS_FOR.member_synced).toBe(409);
-    expect(Object.keys(SpaceMemberSchema.shape).at(-1)).toBe("allMembers");
+    expect(Object.keys(SpaceMemberSchema.shape).slice(-2)).toEqual([
+      "allMembers",
+      "restriction",
+    ]);
     expect(Object.keys(SpaceMemberSchema.shape)).not.toContain("lastSeenAt");
-  });
-
-  it("members: groups role/via, allMembers, total, q and group filters", async () => {
-    fresh({ hosted: true });
-    // Dan is restricted: no allMembers.
-    await call("PUT", R.spaceMember(ENG, dan), { role: "editor" });
-    const all = await list(ENG);
-    expect(all.total).toBe(3);
-    const by = (id: string) => all.items.find((m) => m.userId === id);
-    expect(by(bob)).toMatchObject({
-      syncRole: "editor",
-      groups: [
-        {
-          groupId: "gEng01",
-          email: "eng@example.com",
-          role: "editor",
-          via: "space",
-        },
-      ],
-      allMembers: "viewer",
-    });
-    expect(by(ada)).toMatchObject({
-      manualRole: "manager",
-      allMembers: "viewer",
-    });
-    expect(by(dan)).toMatchObject({ cap: "restricted", allMembers: null });
-    // Paging keeps the filtered total.
-    const p1 = await list(ENG, "?limit=1");
-    expect(p1.items).toHaveLength(1);
-    expect(p1.total).toBe(3);
-    expect(p1.nextCursor).not.toBeNull();
-    // q: name or email prefix, case-insensitive.
-    expect((await list(ENG, "?q=BO")).items.map((m) => m.userId)).toEqual([
-      bob,
-    ]);
-    expect((await list(ENG, "?q=ada%40")).items.map((m) => m.userId)).toEqual([
-      ada,
-    ]);
-    // Any word of the name: "build" finds Bob Builder; mid-word doesn't.
-    expect((await list(ENG, "?q=build")).items.map((m) => m.userId)).toEqual([
-      bob,
-    ]);
-    expect((await list(ENG, "?q=uilder")).total).toBe(0);
-    const eng = await list(ENG, "?group=gEng01");
-    expect(eng.items.map((m) => m.userId)).toEqual([bob]);
-    expect(eng.total).toBe(1);
-    expect((await call("GET", `${R.spaceMembers(ENG)}?bogus=1`)).status).toBe(
-      400,
-    );
-    // An Every-space mapping shows as via "every".
-    await call("PUT", R.orgMapping("gEng01"), { role: "viewer" });
-    expect((await list(ENG, "?group=gEng01")).items[0]?.groups).toEqual([
-      expect.objectContaining({
-        groupId: "gEng01",
-        role: "editor",
-        via: "space",
-      }),
-      expect.objectContaining({
-        groupId: "gEng01",
-        role: "viewer",
-        via: "every",
-      }),
-    ]);
-  });
-
-  it("a space manager can't grant or change Manager on a member (target member); mappings say target mapping", async () => {
-    fresh({ hosted: true });
-    await call("PUT", R.spaceMember(ENG, bob), { role: "manager" });
-    await signIn("bob@example.com");
-    expect(
-      await forbidden(
-        await call("PUT", R.spaceMember(ENG, carol), { role: "manager" }),
-      ),
-    ).toBe("member");
-    // Ada is a manager by hand: demoting her is changing the Manager role.
-    expect(
-      await forbidden(
-        await call("PUT", R.spaceMember(ENG, ada), { role: "viewer" }),
-      ),
-    ).toBe("member");
-    expect(
-      StrictMember.parse(
-        await json(
-          await call("PUT", R.spaceMember(ENG, carol), { role: "editor" }),
-        ),
-      ),
-    ).toMatchObject({ userId: carol, manualRole: "editor" });
-    expect(
-      await forbidden(
-        await call("PUT", R.spaceMapping(ENG, "gSales03"), { role: "manager" }),
-      ),
-    ).toBe("mapping");
-  });
-
-  it("live sync: DELETE on a synced-only row is 409 member_synced", async () => {
-    fresh({ hosted: true });
-    const r = await call("DELETE", R.spaceMember(ENG, bob));
-    expect(r.status).toBe(409);
-    expect((await errCode(r)).code).toBe("member_synced");
-    expect((await list(ENG)).items.map((m) => m.userId)).toContain(bob);
-  });
-
-  it("frozen sync: raising a synced row is a manual grant (managers up to editor, admins any)", async () => {
-    fresh({ hosted: { directory: "frozen" } });
-    // Admin raises Bob's synced editor (Engineering) to manager.
-    expect(
-      StrictMember.parse(
-        await json(
-          await call("PUT", R.spaceMember(ENG, bob), { role: "manager" }),
-        ),
-      ),
-    ).toMatchObject({
-      role: "manager",
-      source: "manual",
-      manualRole: "manager",
-      syncRole: null,
-      groups: [],
-    });
-    // Bob, now a manager, works on Ada's synced viewer row in Exec.
-    await call("PUT", R.spaceMember(EXEC, bob), { role: "manager" });
-    await signIn("bob@example.com");
-    expect(
-      await forbidden(
-        await call("PUT", R.spaceMember(EXEC, ada), { role: "manager" }),
-      ),
-    ).toBe("member");
-    expect(
-      StrictMember.parse(
-        await json(
-          await call("PUT", R.spaceMember(EXEC, ada), { role: "editor" }),
-        ),
-      ),
-    ).toMatchObject({
-      role: "editor",
-      source: "manual",
-      manualRole: "editor",
-      syncRole: null,
-    });
-  });
-
-  it("frozen sync: DELETE removes a synced row; PUT may lower (manual override); audited", async () => {
-    fresh({ hosted: { directory: "frozen" } });
-    const low = StrictMember.parse(
-      await json(
-        await call("PUT", R.spaceMember(ENG, bob), { role: "viewer" }),
-      ),
-    );
-    expect(low).toMatchObject({
-      role: "viewer",
-      source: "manual",
-      manualRole: "viewer",
-      syncRole: null,
-      groups: [],
-    });
-    expect((await call("DELETE", R.spaceMember(EXEC, ada))).status).toBe(204);
-    expect((await list(EXEC)).items).toEqual([]);
-    const audit = PageSchema(AuditEventSchema).parse(
-      await json(await call("GET", R.audit)),
-    );
-    expect(audit.items.slice(0, 2)).toEqual([
-      expect.objectContaining({
-        action: "space.member.remove",
-        spaceId: EXEC,
-        detail: { syncFrozen: true },
-      }),
-      expect.objectContaining({
-        action: "space.member.role",
-        spaceId: ENG,
-        detail: { syncFrozen: true, role: "viewer" },
-      }),
-    ]);
-  });
-});
-
-describe("hosted mocks: list by space", () => {
-  it("scope=space lists one space; scope=spaces lists shared spaces; scope=space without spaceId is 400", async () => {
-    fresh({ hosted: true });
-    const me = Strict.Me.parse(await json(await call("GET", R.me)));
-    const eng = me.spaces?.find((s) => s.name === "Engineering")?.id as string;
-    const pub = await call("POST", R.artifacts, {
-      title: "in eng",
-      format: "html",
-      content: "x",
-      spaceId: eng,
-    });
-    expect(pub.status).toBe(201);
-    const inEng = (await json(
-      await call("GET", `${R.artifacts}?scope=space&spaceId=${eng}&limit=100`),
-    )) as { items: { title: string; space?: { id: string } }[] };
-    expect(inEng.items.map((a) => a.title)).toContain("in eng");
-    expect(inEng.items.every((a) => a.space?.id === eng)).toBe(true);
-    const shared = (await json(
-      await call("GET", `${R.artifacts}?scope=spaces&limit=100`),
-    )) as { items: { space?: { kind: string } }[] };
-    expect(shared.items.every((a) => a.space?.kind === "shared")).toBe(true);
-    expect((await call("GET", `${R.artifacts}?scope=space`)).status).toBe(400);
-  });
-});
-
-describe("hosted mocks: reset a Google link", () => {
-  const byEmail = async (email: string) =>
-    (
-      (await json(await call("GET", R.members))) as {
-        id: string;
-        email: string;
-        identities?: string[];
-      }[]
-    ).find((m) => m.email === email);
-
-  it("the owner resets an active member's and an admin's link", async () => {
-    fresh({ hosted: true });
-    const bob = await byEmail("bob@example.com");
-    const erin = await byEmail("erin@example.com");
-    expect(bob?.identities).toEqual(["google"]);
-    expect(erin?.identities).toEqual(["google"]);
-    expect(
-      (await call("DELETE", R.memberIdentity(bob?.id as string, "google")))
-        .status,
-    ).toBe(204);
-    expect(
-      (await call("DELETE", R.memberIdentity(erin?.id as string, "google")))
-        .status,
-    ).toBe(204);
-  });
-
-  it("an admin can't reset a peer admin (owner_only) but can reset a member", async () => {
-    fresh({ hosted: { actAs: "admin" } });
-    const bob = await byEmail("bob@example.com");
-    const erin = await byEmail("erin@example.com");
-    const r = await call(
-      "DELETE",
-      R.memberIdentity(erin?.id as string, "google"),
-    );
-    expect(r.status).toBe(403);
-    expect((await errCode(r)).code).toBe("owner_only");
-    expect(
-      (await call("DELETE", R.memberIdentity(bob?.id as string, "google")))
-        .status,
-    ).toBe(204);
   });
 });

@@ -13,7 +13,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { codeEligibility } from "../services/identity.js";
 import { getSettings } from "../services/members.js";
-import { recordTestOtp } from "../test-hooks/index.js";
+import { noteTestOtp } from "../test-hooks/index.js";
 import { b64urlDecode, hmacSign } from "../util/crypto.js";
 import { logAuth } from "./audit.js";
 import type { AuthConfig } from "./config.js";
@@ -56,10 +56,10 @@ export const CODE_LIMITS = {
 } as const;
 
 // `false` in release builds (build-flags.d.ts): no reference to test-hooks/.
-const recordOtp =
+const noteOtp =
   typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
   __OA_TEST_HOOKS_ALLOWED__ === true &&
-  recordTestOtp;
+  noteTestOtp;
 
 const TTL_MS = CODE_POLICY.ttlSec * 1000;
 const MAX_U32_UNBIASED = 4_200_000_000; // largest multiple of 10^8 below 2^32
@@ -261,7 +261,46 @@ export async function takeRequestSlot(
   return { ok: true };
 }
 
-/** Stores a new code for (ek, rid) and returns it. `gen` is for tests only. */
+type CodeRow = {
+  code_hash: string;
+  expires_at: number;
+  attempts: number;
+  created_at: number;
+};
+
+const UPSERT_CODE = `insert into login_codes (email_key, request_id, code_hash, expires_at, created_at)
+  values (?1, ?2, ?3, ?4, ?5)
+  on conflict (email_key, request_id) do update set
+    code_hash = excluded.code_hash, expires_at = excluded.expires_at,
+    attempts = 0, created_at = excluded.created_at`;
+
+/**
+ * Stores a new code for (ek, rid). A row already under that id (a resend for
+ * the same pending request, review item 13) is replaced: new hash, expiry
+ * and attempts. The row it replaced is read in the same batch (one
+ * transaction), so nothing lands between the read and the write. Returns
+ * the code, its hash and that earlier row.
+ */
+async function storeCode(
+  env: Env,
+  ek: string,
+  rid: string,
+  now: number,
+  gen: () => string,
+): Promise<{ code: string; hash: string; before: CodeRow | null }> {
+  const code = gen();
+  const hash = await codeHash(env, ek, rid, code);
+  const [prev] = await env.DB.batch<CodeRow>([
+    stmt(
+      env.DB,
+      "select code_hash, expires_at, attempts, created_at from login_codes where email_key = ?1 and request_id = ?2",
+    ).bind(ek, rid),
+    stmt(env.DB, UPSERT_CODE).bind(ek, rid, hash, now + TTL_MS, now),
+  ]);
+  return { code, hash, before: prev?.results[0] ?? null };
+}
+
+/** Stores a new code for (ek, rid) (storeCode) and returns it. `gen` is for tests only. */
 export async function createCode(
   env: Env,
   ek: string,
@@ -269,21 +308,37 @@ export async function createCode(
   now = Date.now(),
   gen: () => string = randomCode,
 ): Promise<string> {
-  const code = gen();
-  await stmt(
-    env.DB,
-    "insert into login_codes (email_key, request_id, code_hash, expires_at, created_at) values (?1, ?2, ?3, ?4, ?5)",
-  )
-    .bind(ek, rid, await codeHash(env, ek, rid, code), now + TTL_MS, now)
-    .run();
-  return code;
+  return (await storeCode(env, ek, rid, now, gen)).code;
 }
 
-/** Logs why nothing (or something) was sent; null for "nothing sent". */
-const logSend = (outcome: string): null => {
-  console.log(JSON.stringify({ evt: "code_send", outcome }));
-  return null;
-};
+/** Every way one deliverCode call ends; "error" is it throwing (the route logs that). */
+export type CodeSendOutcome =
+  | "sent"
+  | "email_off"
+  | "ineligible"
+  | "pool_full"
+  | "capped"
+  | "resend_wait"
+  | "send_failed"
+  | "error";
+
+const CLASS_NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+/** An exception's class name only (never its message), or "unknown". */
+export function errorClass(e: unknown): string {
+  const name =
+    typeof e === "object" && e !== null
+      ? (e as { constructor?: { name?: unknown } }).constructor?.name
+      : undefined;
+  return typeof name === "string" && CLASS_NAME.test(name) ? name : "unknown";
+}
+
+/**
+ * The one code_send line per deliverCode call: the outcome, and for "error"
+ * the exception's class. Never the address, its key or the code.
+ */
+export function logCodeSend(outcome: CodeSendOutcome, error?: string): void {
+  console.log(JSON.stringify({ evt: "code_send", outcome, error }));
+}
 
 // One real send per (address, network) per resendSec, sliding: n holds the last send's
 // time (ms); day is the UTC day, so the daily sweep drops old rows.
@@ -300,7 +355,8 @@ const RESEND = `insert into counters (key, n, day) values (?1, ?2, ?3)
  * one address across networks are soft: counted, code_abuse at the alert
  * count, never refused, so no stranger can stop the victim's own network
  * getting codes. Null when nothing was sent; the route answers the same 202
- * either way. A failed send deletes its row.
+ * either way. A failed send deletes its row, or puts back the code a
+ * resend replaced.
  */
 export async function deliverCode(
   env: Env,
@@ -311,11 +367,17 @@ export async function deliverCode(
   ip: string,
   now = Date.now(),
 ): Promise<{ requestId: string } | null> {
-  if (!emailEnabled(env)) return logSend("email_off");
+  /** Logs (and, in test builds, records) why nothing was sent. */
+  const none = async (outcome: CodeSendOutcome): Promise<null> => {
+    logCodeSend(outcome);
+    if (noteOtp) await noteOtp(env, email, ek, outcome);
+    return null;
+  };
+  if (!emailEnabled(env)) return none("email_off");
   const to = normalizeEmail(email);
-  if (!to) return logSend("ineligible");
+  if (!to) return none("ineligible");
   if ((await codeEligibility(env, cfg, to)).kind === "none")
-    return logSend("ineligible");
+    return none("ineligible");
   const day = counterBucket("day", now);
   const nk = await netKey(env, ip);
   const caps: Cap[] = [
@@ -328,23 +390,28 @@ export async function deliverCode(
     ["code:*", cfg.codeEmailsPerDay, day],
   ];
   const refused = await takeAll(env, caps);
-  if (refused === caps.length - 1) return logSend("pool_full");
-  if (refused !== -1) return logSend("capped");
+  if (refused === caps.length - 1) return none("pool_full");
+  if (refused !== -1) return none("capped");
   const gate = await stmt(env.DB, RESEND)
     .bind(`code:rs:${ek}:${nk}`, now, day, CODE_LIMITS.resendSec * 1000)
     .first();
   if (!gate) {
     await refundAll(env, caps);
-    return logSend("resend_wait");
+    return none("resend_wait");
   }
   if (
     (await bump(env, `code:sentd:${ek}`, day)) ===
     CODE_LIMITS.sendsPerEmailPerDayAlert
   )
     logAuth({ evt: "code_abuse", scope: "send" });
-  const code = await createCode(env, ek, requestId, now);
-  const instance =
-    (await getSettings(env).catch(() => null))?.name ?? "Open Artifacts";
+  // The code a resend replaces (same pending request id), put back if this
+  // send fails: the earlier email's code stays usable.
+  const {
+    code,
+    hash: mine,
+    before,
+  } = await storeCode(env, ek, requestId, now, randomCode);
+  const instance = (await getSettings(env).catch(() => null))?.name ?? null;
   const sent = await sendEmail(
     env,
     null,
@@ -352,22 +419,41 @@ export async function deliverCode(
     () =>
       loginCodeEmail({
         code,
-        instance,
+        instance: instance ?? "Open Artifacts",
         appHost: env.APP_HOST,
         minutes: CODE_POLICY.ttlSec / 60,
       }),
-    { kind: "code", now, caps: [] },
+    { kind: "code", now, caps: [], instance },
   );
-  if (recordOtp && sent) await recordOtp(env, to, ek, code);
   if (!sent) {
-    await stmt(
-      env.DB,
-      "delete from login_codes where email_key = ?1 and request_id = ?2",
-    )
-      .bind(ek, requestId)
-      .run();
-    return logSend("send_failed");
+    // Only while the row still holds the code this call wrote (its hash): a
+    // consumed or replaced row is never revived. Guesses made against it
+    // since stay counted (the higher attempts wins).
+    await (before
+      ? stmt(
+          env.DB,
+          `update login_codes set code_hash = ?3, expires_at = ?4,
+             attempts = max(attempts, ?5), created_at = ?6
+           where email_key = ?1 and request_id = ?2 and code_hash = ?7`,
+        ).bind(
+          ek,
+          requestId,
+          before.code_hash,
+          before.expires_at,
+          before.attempts,
+          before.created_at,
+          mine,
+        )
+      : stmt(
+          env.DB,
+          "delete from login_codes where email_key = ?1 and request_id = ?2 and code_hash = ?3",
+        ).bind(ek, requestId, mine)
+    ).run();
+    return none("send_failed");
   }
+  logCodeSend("sent");
+  // Test builds: the plaintext copy exists only once the email went out.
+  if (noteOtp) await noteOtp(env, to, ek, "sent", code);
   return { requestId };
 }
 

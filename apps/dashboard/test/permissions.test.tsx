@@ -3,13 +3,21 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
 import { accessLabel, canPublishTo } from "../src/auth/permissions";
-import { arts, installHarness, mount, mountHosted, server } from "./harness";
+import {
+  arts,
+  findVisibleToast,
+  installHarness,
+  mount,
+  mountHosted,
+  server,
+} from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
     dispose: vi.fn(),
     requestThumbnail: vi.fn(),
     setTheme: vi.fn(),
+    setArtifact: vi.fn(),
   }),
 }));
 
@@ -120,16 +128,43 @@ it("hosted guest on an artifact without live data gets no chip", async () => {
   expect(screen.queryByText("View only")).toBeNull();
 });
 
-it("self-hosted guest-shaped viewer gets no chip", async () => {
+// Review item 28: the chip follows can.dataWrite on every install, so a
+// viewer of an editors-only artifact sees "View only" instead of failing writes.
+it("self-hosted viewer of an editors-only live artifact sees View only", async () => {
   serve({
     access: "viewer",
-    can: guestCan,
+    can: undefined,
     space: undefined,
     capabilities: live,
+    dataWriters: "editors",
+  });
+  mount(`/a/${arts[0].id}`);
+  expect(await screen.findByText("View only")).toBeVisible();
+});
+
+it("self-hosted viewer of a viewers-writable live artifact gets no chip", async () => {
+  serve({
+    access: "viewer",
+    can: undefined,
+    space: undefined,
+    capabilities: live,
+    dataWriters: "viewers",
   });
   mount(`/a/${arts[0].id}`);
   await screen.findByRole("heading", { name: arts[0].title });
   expect(screen.queryByText("View only")).toBeNull();
+});
+
+it("hosted viewer whose can says no data writes (editors-only) sees View only", async () => {
+  mountHosted(`/a/${arts[0].id}`, true, undefined, [
+    handler({
+      access: "viewer",
+      can: guestCan,
+      capabilities: live,
+      dataWriters: "editors",
+    }),
+  ]);
+  expect(await screen.findByText("View only")).toBeVisible();
 });
 
 it("self-hosted viewer share (no can, no space): no notice, no access label", async () => {
@@ -230,7 +265,7 @@ it("404 on rename toasts the server message and keeps the title", async () => {
   const box = screen.getByRole("textbox", { name: "Title" });
   fireEvent.change(box, { target: { value: "New" } });
   fireEvent.keyDown(box, { key: "Enter" });
-  expect(await screen.findByText("Not found")).toBeVisible();
+  await findVisibleToast("Not found");
   expect(screen.getByRole("heading", { name: arts[0].title })).toBeVisible();
 });
 

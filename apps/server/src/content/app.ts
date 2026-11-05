@@ -1,4 +1,11 @@
-import { type Format, isId, normalizePath, viewerPath } from "@oa/shared";
+import {
+  type Format,
+  IMAGE_CONTENT_TYPES,
+  imageKind,
+  isId,
+  normalizePath,
+  viewerPath,
+} from "@oa/shared";
 import { type Context, Hono } from "hono";
 import { methodNotAllowed, ROBOTS } from "../app.js";
 import { isPubliclyServable } from "../auth/policy.js";
@@ -7,9 +14,11 @@ import type { Env } from "../env.js";
 import { contentFrameAncestors } from "../http/embed.js";
 import { ApiError, appOrigin, toErrorResponse } from "../http/errors.js";
 import { CONTENT_CSP } from "../http/middleware.js";
+import { cancelUnreadOnRefusal } from "../http/unread-body.js";
 import { injectRuntime } from "./inject.js";
 import {
   CAPTURE_HEADER,
+  type ContentViewer,
   type SignMode,
   verifyCapture,
   verifyContentToken,
@@ -40,6 +49,14 @@ const CACHE_SIGNED = "private, max-age=300";
 const CACHE_PUBLIC = "public, max-age=0, must-revalidate";
 const IMMUTABLE = "public, max-age=31536000, immutable";
 const JS = "text/javascript; charset=utf-8";
+/**
+ * An image artifact's file: nothing but the image itself. `sandbox` (no
+ * allow-* tokens) and `default-src 'none'` keep any script in a raw SVG from
+ * running, even opened in a frame of its own; the viewer shows images only
+ * through <img>, where SVG never runs script.
+ */
+export const IMAGE_CSP =
+  "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox";
 
 // ------------------------------------------------------------ /_oa via ASSETS
 
@@ -162,38 +179,56 @@ type Row = {
   current_version: number;
   visibility: string;
   deleted_at: number | null;
+  /** The token's bound viewer (P3 T11); null without a uid or a user row. */
+  viewer_status: string | null;
+  viewer_epoch: number | null;
   entry?: string;
   manifest?: string;
   language?: string | null;
   vformat?: Format | null;
 };
 
+// The bound viewer's row by primary key, in the same statement (P3 T11):
+// with no uid (?2 null) the join matches nothing. No KV deny list, and the
+// space's public-links toggle is deliberately absent (it only blocks new
+// public links). A synced viewer matches nothing while the directory is in
+// customer_mismatch (P3 T18, as getUser): one directory_state PK probe.
+// Staleness is not checked.
+const VIEWER_COLS =
+  "u.status as viewer_status, u.session_epoch as viewer_epoch";
+const VIEWER_JOIN = `left join users u on u.id = ?2 and not (
+    coalesce((select ds.value from directory_state ds where ds.key = 'sync.state'), '') = 'customer_mismatch'
+    and exists (select 1 from identities i where i.user_id = u.id and i.provider = 'google' and i.directory_bound = 1))`;
+
 /**
- * One D1 read: the artifact's live state, plus the version's manifest on an
- * LRU miss. Null when the artifact or version doesn't exist.
+ * One D1 read: the artifact's live state, the token's viewer (status and
+ * epoch), plus the version's manifest on an LRU miss. Null when the artifact
+ * or version doesn't exist.
  */
 async function load(
   env: Env,
   id: string,
   v: number,
+  uid: string | null,
 ): Promise<{ row: Row; data: VersionData } | null> {
   const key = `${id}:${v}`;
   const cached = lruGet(key);
   if (cached) {
     const row = await env.DB.prepare(
-      "select format, current_version, visibility, deleted_at from artifacts where id = ?",
+      `select a.format, a.current_version, a.visibility, a.deleted_at, ${VIEWER_COLS}
+       from artifacts a ${VIEWER_JOIN} where a.id = ?1`,
     )
-      .bind(id)
+      .bind(id, uid)
       .first<Row>();
     return row ? { row, data: cached } : null;
   }
   const row = await env.DB.prepare(
     `select a.format, a.current_version, a.visibility, a.deleted_at, v.entry, v.manifest, v.language,
-       v.format as vformat
-     from artifacts a join versions v on v.artifact_id = a.id
-     where a.id = ? and v.version = ?`,
+       v.format as vformat, ${VIEWER_COLS}
+     from artifacts a join versions v on v.artifact_id = a.id ${VIEWER_JOIN}
+     where a.id = ?1 and v.version = ?3`,
   )
-    .bind(id, v)
+    .bind(id, uid, v)
     .first<Row>();
   if (!row || row.entry == null || row.manifest == null) return null;
   const entries = JSON.parse(row.manifest) as ManifestEntry[];
@@ -227,7 +262,9 @@ const esc = (s: string) =>
     .replace(/'/g, "&#39;");
 
 /**
- * Static renderer page for markdown/code/pdf; only escaped metadata inline.
+ * Static renderer page for markdown/code/pdf/image; only escaped metadata
+ * inline. An image page also carries oa-content-type (the entry's served
+ * type); the renderer shows the entry through <img src="{entry}">.
  * The runtime follows the oa-format meta: it reads it at startup and leaves
  * hello and thumb.request to the renderer on these pages.
  */
@@ -237,6 +274,11 @@ function renderPage(
   format: Format,
   language: string | null,
 ) {
+  // An image page names the served type of its one file (the entry).
+  const kind = format === "image" ? imageKind(entry) : null;
+  const imageMeta = kind
+    ? `<meta name="oa-content-type" content="${esc(IMAGE_CONTENT_TYPES[kind])}">\n`
+    : "";
   const r = oa.render;
   if (!r) return null;
   const css = r.css
@@ -248,7 +290,7 @@ function renderPage(
 <meta name="oa-entry" content="${esc(entry)}">
 <meta name="oa-format" content="${esc(format)}">
 <meta name="oa-language" content="${esc(language ?? "")}">
-${oa.runtimeTag ?? ""}${css}<script type="module" src="/_oa/${esc(r.js)}"></script>
+${imageMeta}${oa.runtimeTag ?? ""}${css}<script type="module" src="/_oa/${esc(r.js)}"></script>
 </head><body></body></html>
 `;
 }
@@ -315,13 +357,17 @@ async function serveFile(
   cache: string,
   contentType = e.contentType,
   download = false,
+  image = false,
 ): Promise<Response> {
-  const html = !download && isHtml(contentType);
+  const html = !image && !download && isHtml(contentType);
   const headers = new Headers({
-    "Content-Type": withCharset(contentType),
+    // An image's type is exact: the one its extension and signature agree on.
+    "Content-Type": image ? contentType : withCharset(contentType),
     "Cache-Control": cache,
   });
   if (download) headers.set("Content-Disposition", attachment(e.path));
+  else if (image) headers.set("Content-Disposition", "inline");
+  if (image) headers.set("Content-Security-Policy", IMAGE_CSP);
   if (html) {
     const obj = await c.env.FILES.get(e.key);
     if (!obj) throw notFound();
@@ -364,16 +410,26 @@ async function serve(
   const dl = dls.length === 1;
   // Downloads are signed only: an unsigned /p/ URL can't ask for one.
   let mode: SignMode | null = "frame";
-  if (signed !== null)
-    mode = await verifyContentToken(c.env, signed, id, v, dl);
-  else if (dl) mode = null;
+  let viewer: ContentViewer | null = null;
+  if (signed !== null) {
+    const t = await verifyContentToken(c.env, signed, id, v, dl);
+    mode = t?.mode ?? null;
+    viewer = t?.viewer ?? null;
+  } else if (dl) mode = null;
   if (mode === null) throw notFound();
   const path = rest === "__view" ? "__view" : filePath(rest);
   if (path === null || (mode === "dl" && path === "__view")) throw notFound();
-  const got = await load(c.env, id, v);
+  const got = await load(c.env, id, v, viewer?.uid ?? null);
   if (!got) throw notFound();
   const { row, data } = got;
   if (row.deleted_at != null) throw notFound();
+  // A uid-bound token serves only while its user is active and still at the
+  // epoch it was minted under (any status change bumps it).
+  if (
+    viewer &&
+    (row.viewer_status !== "active" || row.viewer_epoch !== viewer.epoch)
+  )
+    throw notFound();
   if (
     signed === null &&
     !isPubliclyServable({
@@ -397,12 +453,25 @@ async function serve(
       ? CACHE_PUBLIC
       : CACHE_SIGNED;
 
+  const format = data.format ?? row.format;
   if (path !== "__view") {
     const e = data.files.get(path);
     if (!e) throw notFound();
+    // An image artifact's file: its real type, inline, under IMAGE_CSP.
+    if (format === "image") {
+      const kind = imageKind(e.path);
+      if (!kind) throw notFound();
+      return serveFile(
+        c,
+        e,
+        cache,
+        IMAGE_CONTENT_TYPES[kind],
+        mode === "dl",
+        true,
+      );
+    }
     return serveFile(c, e, cache, e.contentType, mode === "dl");
   }
-  const format = data.format ?? row.format;
   if (format !== "html") {
     const oa = await loadOa(c.env);
     const page = renderPage(oa, data.entry, format, data.language);
@@ -452,6 +521,9 @@ const entryLocation = (entry: string) =>
 /** Content host: untrusted artifact files only. No session, no cookies. */
 export const contentApp = new Hono<CEnv>();
 
+// Outermost: an early refusal cancels the request body nothing read.
+contentApp.use(mw(cancelUnreadOnRefusal()));
+
 // On every response, errors included (onError/notFound run inside compose).
 contentApp.use(
   mw(async (c, next) => {
@@ -464,9 +536,12 @@ contentApp.use(
       c.res.ok &&
       PUBLIC.test(new URL(c.req.url).pathname);
     h.delete("Set-Cookie");
+    // An image artifact's file keeps IMAGE_CSP (serveFile); everything else
+    // gets the artifact sandbox. frame-ancestors on both.
+    const own = c.res.ok && h.get("Content-Security-Policy") === IMAGE_CSP;
     h.set(
       "Content-Security-Policy",
-      `${CONTENT_CSP}; frame-ancestors ${contentFrameAncestors(c.env, appOrigin(c.env), publicOk)}`,
+      `${own ? IMAGE_CSP : CONTENT_CSP}; frame-ancestors ${contentFrameAncestors(c.env, appOrigin(c.env), publicOk)}`,
     );
     h.set("Cross-Origin-Resource-Policy", "cross-origin");
     // Sandboxed (opaque-origin) frames send `Origin: null`: allow any origin,

@@ -1,17 +1,26 @@
 import type { Hono } from "hono";
+import { mountBusPage } from "../bus/page.js";
+import { mountRoleConfirm } from "../bus/role-confirm.js";
+import { mountBus } from "../bus/routes.js";
 import type { AppEnv } from "../http/middleware.js";
 import { mountOAuth } from "../mcp/oauth.js";
 import { mountRuntime } from "../runtime/routes.js";
+import { busMachine, busView, revokeBusMachine } from "../services/bus.js";
+import { getShareNotices, setShareNotices } from "../services/follows.js";
+import { mountAdmin } from "./admin.js";
 import { mountArtifacts } from "./artifacts.js";
 import { mountAudit } from "./audit.js";
 import { mountAuth } from "./auth.js";
 import { mountCodes } from "./codes.js";
+import { mountDirectory } from "./directory.js";
 import { mountMe } from "./me.js";
 import { mountMembers } from "./members.js";
 import { mountSearch } from "./search.js";
 import { mountSettings } from "./settings.js";
+import { mountShareNotices } from "./share-notices.js";
 import { mountShares } from "./shares.js";
 import { mountShell } from "./shell.js";
+import { mountSpaces } from "./spaces.js";
 import { mountTokens } from "./tokens.js";
 import { mountUploads } from "./uploads.js";
 import { mountUsage } from "./usage.js";
@@ -24,8 +33,11 @@ export function mountRoutes(app: AppType): void {
   mountAuth(app);
   mountCodes(app);
   mountMe(app);
+  mountShareNotices(app);
   mountMembers(app);
   mountSettings(app);
+  mountSpaces(app);
+  mountDirectory(app);
   mountArtifacts(app);
   mountUploads(app);
   mountShares(app);
@@ -34,7 +46,17 @@ export function mountRoutes(app: AppType): void {
   mountTokens(app);
   mountUsage(app);
   mountAudit(app);
+  mountAdmin(app);
   mountOAuth(app);
+  mountBus(app);
+  mountRoleConfirm(app);
+  mountBusPage(app, {
+    busView,
+    busMachine,
+    revokeBusMachine,
+    getShareNotices,
+    setShareNotices,
+  });
   // /a/:id(/v/:v) OG shells; other /a/* paths fall to the SPA fallback.
   mountShell(app);
 }

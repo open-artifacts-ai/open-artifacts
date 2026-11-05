@@ -1,12 +1,13 @@
 import {
   type ArtifactPatch,
   type ArtifactSummary,
+  type DataWriters,
   type ShareRole,
   ShareSchema,
   type Visibility,
   viewerPath,
 } from "@oa/shared";
-import { Banner, Checkbox, displayName, VisibilityBadge } from "@oa/ui";
+import { VisibilityBadge } from "@oa/ui";
 import {
   Button,
   Input,
@@ -20,6 +21,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useState } from "react";
 import { ApiClientError } from "../../api/client";
+import type { ShareRecipient } from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
 import {
   useDeleteShare,
@@ -30,11 +32,19 @@ import {
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { emailEnabled } from "../../auth/emailEnabled";
 import { useCan } from "../../auth/permissions";
+import { signInWith, useSignInDomains } from "../../auth/reach";
 import { useMe } from "../../auth/useMe";
+import { ConflictNote, isConflict } from "../../layout/ConflictNote";
 import { CopyLink } from "../../layout/CopyLink";
+import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
+import { LoadError } from "../../layout/LoadError";
 import { Modal } from "../../layout/Modal";
+import { Notice } from "../../layout/Notice";
+import { personName } from "../../layout/person";
 import { toast } from "../../layout/toast";
 import { UserAvatar } from "../../layout/UserAvatar";
+import { AppLink } from "../../library/AppLink";
+import { isOrgAdmin } from "../../settings/spaces/access";
 import { visibilityHint } from "../../spaces/SpaceMarker";
 
 const VIS: { value: Visibility; label: string }[] = [
@@ -51,6 +61,18 @@ const NOTE: Record<Visibility, string> = {
   team: "Everyone in the workspace can open it.",
   public: "Anyone with the link can view. It won't appear in search engines.",
 };
+/** #681: who may change the page's live data. */
+const WRITERS: { value: DataWriters; label: string }[] = [
+  { value: "viewers", label: "Everyone who can see it" },
+  { value: "editors", label: "Only editors" },
+];
+const writersHint = (w: DataWriters, v: Visibility) =>
+  w === "editors"
+    ? "Only you and people who can edit it."
+    : v === "public"
+      ? "Anyone with the link, signed in or not."
+      : "Anyone who can view it.";
+
 const CAPS = [
   ["db", "Database", "Lets the page store shared data."],
   ["viewer", "Viewer identity", "Lets the page see who is viewing."],
@@ -87,6 +109,43 @@ const H3 = "mb-[6px] text-[length:var(--oa-text-sm)] font-semibold";
 const MUTED = "text-muted-foreground";
 const PERSON = "flex items-center gap-[var(--oa-space-2)]";
 const NAME = "min-w-0 flex-1 truncate";
+
+const MEMBERS_PAGE = "/settings/members";
+
+/**
+ * ShareResult.recipient (review item 37): the share applies, but the person
+ * can't sign in to open it yet. The line under "Shared with <email>." in the
+ * share box, which turns warning (Design, #800).
+ */
+function RecipientLine({
+  email,
+  reason,
+  admin,
+  domains,
+}: {
+  email: string;
+  reason: ShareRecipient["reason"];
+  /** The caller is an org owner or admin, so may invite members. */
+  admin: boolean;
+  domains: string;
+}) {
+  return reason === "needs_invite" ? (
+    admin ? (
+      <>
+        {email} can't sign in until they're a member.{" "}
+        <AppLink href={MEMBERS_PAGE} className="underline">
+          Invite them
+        </AppLink>
+      </>
+    ) : (
+      `${email} can't sign in until they're a member. Ask an admin to invite them.`
+    )
+  ) : reason === "outside_domains" ? (
+    `${email} can't sign in here, so they can't open this. Share with an address at ${domains} instead.`
+  ) : (
+    `No sign-in method here fits ${email}, so they can't open this. Share with another address.`
+  );
+}
 
 function RoleSelect({
   label,
@@ -127,19 +186,23 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const space = artifact.space;
   const publicOff =
     space?.publicLinks === false && artifact.visibility !== "public";
-  const shares = useShares(id);
+  const shares = useShares(id, people);
   const patch = usePatchArtifact(id);
   const put = usePutShare(id);
   const del = useDeleteShare(id);
   const [confirmPublic, setConfirmPublic] = useState(false);
+  // A 409 on a visibility change: the choice reverts to the server's value.
+  const [conflict, setConflict] = useState(false);
   // The control only stages a choice; Save visibility commits it.
   // Tagged with the visibility it was staged from, so a server change drops it.
   const [stage, setStage] = useState<{
     from: Visibility;
     to: Visibility;
   } | null>(null);
-  const setPending = (to: Visibility | null) =>
+  const setPending = (to: Visibility | null) => {
     setStage(to && { from: artifact.visibility, to });
+    if (to) setConflict(false);
+  };
   const staged =
     stage?.from === artifact.visibility ? stage.to : artifact.visibility;
   const changed = staged !== artifact.visibility;
@@ -149,10 +212,18 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const [shared, setShared] = useState<{
     email: string;
     emailed: boolean;
+    /** Set when they can't sign in yet: the box warns instead. */
+    recipient?: ShareRecipient;
+    /** How they sign in, from the server (older servers omit it). */
+    with: string | null;
+    /** The role picked: a guest's row corrects Editor, once, just after. */
+    role: ShareRole;
   } | null>(null);
+  const domains = useSignInDomains();
   const state = useMe();
-  const install = state.status === "authed" ? state.me.instance.name : "";
-  const sends = emailEnabled(state.status === "authed" ? state.me : null);
+  const me = state.status === "authed" ? state.me : null;
+  const install = me?.instance.name ?? "";
+  const sends = emailEnabled(me);
 
   const save = (p: ArtifactPatch) =>
     patch.mutate(p, { onError: (e) => fail(e, "Couldn't save") });
@@ -163,28 +234,21 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const commitVisibility = (v: Visibility) =>
     visOnce((done) =>
       patch.mutate(
-        {
-          visibility: v,
-          // Anonymous writes need public links: turn them off only when leaving public.
-          ...(v !== "public" &&
-            artifact.allowAnonymousWrites && { allowAnonymousWrites: false }),
-        },
+        { visibility: v },
         {
           onSettled: done,
+          onSuccess: () => setConflict(false),
           onError: (e) => {
             setPending(null);
+            if (isConflict(e)) return setConflict(true);
             failVisibility(e);
           },
         },
       ),
     );
+  // Turning db off keeps dataWriters as set: it shows again when db is back.
   const setCap = (k: (typeof CAPS)[number][0], on: boolean) =>
-    save({
-      capabilities: { [k]: on },
-      ...(k === "db" && !on && artifact.allowAnonymousWrites
-        ? { allowAnonymousWrites: false }
-        : {}),
-    });
+    save({ capabilities: { [k]: on } });
   const invite = () => {
     const e = parseEmail(email);
     setInvalid(!e);
@@ -196,7 +260,13 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           onSettled: done,
           onSuccess: (r) => {
             setEmail("");
-            setShared({ email: e, emailed: r.emailed });
+            setShared({
+              email: e,
+              emailed: r.emailed,
+              recipient: r.recipient,
+              with: signInWith(r.signInMethods),
+              role,
+            });
           },
           onError: (x) => fail(x, "Couldn't share"),
         },
@@ -265,6 +335,11 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           {/* Hosted: the help text names the space or the org (D6 section 9). */}
           {visibilityHint(staged, artifact.space, install) ?? NOTE[staged]}
         </p>
+        {conflict && (
+          <div className="mt-[var(--oa-space-2)]">
+            <ConflictNote />
+          </div>
+        )}
         {space?.publicLinks === false && (
           <p
             id="oa-share-public-off"
@@ -354,34 +429,49 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
       )}
 
       <section>
-        {shared && (
-          <div className="mb-[var(--oa-space-4)] [&_p]:mb-[var(--oa-space-2)]">
-            <Banner
-              tone="success"
-              title={`Shared with ${shared.email}`}
-              action={
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  aria-label="Dismiss"
-                  onClick={() => setShared(null)}
-                >
-                  {"\u00d7"}
-                </Button>
-              }
+        {shared?.recipient ? (
+          // They can't sign in yet: one warning box, and no link that won't work for them.
+          <div className="mb-[var(--oa-space-4)]">
+            <Notice
+              tone="warning"
+              title={`Shared with ${shared.email}.`}
+              onDismiss={() => setShared(null)}
             >
               <p>
-                {shared.emailed
-                  ? "We emailed them a link. They'll sign in with a one-time code."
-                  : artifact.visibility === "public"
-                    ? "Send them this link. They can open it without signing in."
-                    : "Send them this link. They'll sign in with a one-time code sent to that address, then see the artifact."}
+                <RecipientLine
+                  email={shared.email}
+                  reason={shared.recipient.reason}
+                  admin={isOrgAdmin(me)}
+                  domains={domains}
+                />
               </p>
-              {/* emailed:false with email on is not a failure here: members and
-                  re-shares are never emailed, so there's no "didn't send" line. */}
-              <CopyLink link={link} label="Artifact link" />
-            </Banner>
+            </Notice>
           </div>
+        ) : (
+          shared && (
+            <div className="mb-[var(--oa-space-4)] [&_p]:mb-[var(--oa-space-2)]">
+              <Notice
+                tone="success"
+                title={`Shared with ${shared.email}`}
+                onDismiss={() => setShared(null)}
+              >
+                <p>
+                  {shared.emailed
+                    ? shared.with
+                      ? `We emailed them a link. They'll sign in with ${shared.with}.`
+                      : "We emailed them a link. They'll sign in with a one-time code."
+                    : artifact.visibility === "public"
+                      ? "Send them this link. They can open it without signing in."
+                      : shared.with
+                        ? `Send them this link. They'll sign in with ${shared.with}.`
+                        : "Send them this link. They'll sign in with a one-time code sent to that address, then see the artifact."}
+                </p>
+                {/* emailed:false with email on is not a failure here: members and
+                  re-shares are never emailed, so there's no "didn't send" line. */}
+                <CopyLink link={link} label="Artifact link" />
+              </Notice>
+            </div>
+          )
         )}
         <h3 className={H3}>People</h3>
         <ul className="flex flex-col gap-[var(--oa-space-2)] p-0">
@@ -390,83 +480,181 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               name={artifact.owner.name}
               email={artifact.owner.email}
             />
-            <span className={NAME} title={displayName(artifact.owner)}>
-              {displayName(artifact.owner)}
+            <span className={NAME} title={personName(artifact.owner)}>
+              {personName(artifact.owner)}
             </span>
             <span className="text-muted-foreground">Owner</span>
           </li>
-          {(shares.data ?? []).map((s) => (
-            <li key={s.email} className={PERSON}>
-              <UserAvatar name={null} email={s.email} />
-              <span className={NAME} title={s.email}>
-                {s.email}
-              </span>
-              {people ? (
-                <>
-                  <RoleSelect
-                    label={`Role for ${s.email}`}
-                    value={s.role}
-                    onChange={(r) =>
-                      put.mutate(
-                        { email: s.email, role: r },
-                        { onError: (x) => fail(x, "Couldn't change role") },
-                      )
-                    }
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="size-[30px] flex-none p-0"
-                    aria-label={`Remove ${s.email}`}
-                    onClick={() =>
-                      removeOnce((done) =>
-                        del.mutate(s.email, {
-                          onSettled: done,
-                          onError: (x) => fail(x, "Couldn't remove"),
-                        }),
-                      )
-                    }
-                  >
-                    ×
-                  </Button>
-                </>
-              ) : (
-                <span className="text-muted-foreground">{s.role}</span>
-              )}
-            </li>
-          ))}
+          {(people ? (shares.data ?? []) : []).map((s) => {
+            // s.email is always a real address: a directory deletion drops
+            // the shares on an address (DROP_SHARES) in the same batch, before
+            // it writes the removed+<id>@invalid placeholder (directory/apply.ts).
+            const controls = people ? (
+              <>
+                <RoleSelect
+                  label={`Role for ${s.email}`}
+                  value={s.role}
+                  onChange={(r) =>
+                    put.mutate(
+                      { email: s.email, role: r },
+                      { onError: (x) => fail(x, "Couldn't change role") },
+                    )
+                  }
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="size-[30px] flex-none p-0"
+                  aria-label={`Remove ${s.email}`}
+                  onClick={() =>
+                    removeOnce((done) =>
+                      del.mutate(s.email, {
+                        onSettled: done,
+                        onSuccess: () =>
+                          setShared((x) => (x?.email === s.email ? null : x)),
+                        onError: (x) => fail(x, "Couldn't remove"),
+                      }),
+                    )
+                  }
+                >
+                  ×
+                </Button>
+              </>
+            ) : (
+              <span className="text-muted-foreground">{s.role}</span>
+            );
+            // Guests first; then a member who can only view (never why),
+            // flagged only where the stored role says more than they get.
+            const caption = s.guest
+              ? s.role === "editor"
+                ? "Guest · can only view for now"
+                : "Guest · can only view"
+              : s.viewOnly && s.role === "editor"
+                ? "Can only view for now"
+                : null;
+            const justShared =
+              shared?.email === s.email && shared.role === "editor";
+            // The guest note adds what happens next; a viewOnly member's
+            // caption already says all there is.
+            const note =
+              justShared && s.guest
+                ? "Guests can only view. If they become a member, they'll be able to edit."
+                : null;
+            return (
+              <li
+                key={s.email}
+                className="flex flex-col gap-[var(--oa-space-2)]"
+              >
+                <div className={PERSON}>
+                  <UserAvatar name={null} email={s.email} />
+                  {caption ? (
+                    <span
+                      className="min-w-0 flex-1 [overflow-wrap:anywhere]"
+                      title={s.email}
+                    >
+                      {s.email}
+                    </span>
+                  ) : (
+                    <>
+                      <span className={NAME} title={s.email}>
+                        {s.email}
+                      </span>
+                      {controls}
+                    </>
+                  )}
+                </div>
+                {caption && (
+                  // Wraps only where the line can't hold them, under about 340px.
+                  <div className="flex flex-wrap items-center justify-between gap-x-[var(--oa-space-2)] gap-y-[var(--oa-space-1)]">
+                    <span className={`whitespace-nowrap ${MUTED}`}>
+                      {caption}
+                    </span>
+                    <div className="ml-auto flex items-center gap-[var(--oa-space-2)]">
+                      {controls}
+                    </div>
+                  </div>
+                )}
+                {note && (
+                  <p role="status" className="m-0 text-muted-foreground">
+                    {note}
+                  </p>
+                )}
+              </li>
+            );
+          })}
         </ul>
+        {shares.isError && (
+          <LoadError
+            title="Couldn't load who it's shared with."
+            error={shares.error}
+            onRetry={() => void shares.refetch()}
+          />
+        )}
+        {!people && (
+          <p className="oa-muted">
+            Only people who can share this artifact see who else has access.
+          </p>
+        )}
       </section>
 
       <section>
         <h3 className={H3}>Live data</h3>
         {CAPS.map(([k, label, hint]) => (
           <div className="oa-cap" key={k}>
-            <Checkbox
+            <LabelledCheckbox
+              id={`oa-cap-${k}`}
+              describedBy={`oa-cap-${k}-hint`}
               label={label}
               checked={artifact.capabilities[k]}
               disabled={!vis || patch.isPending}
-              onCheckedChange={(on) => setCap(k, on === true)}
+              onCheckedChange={(on) => setCap(k, on)}
             />
-            <small className="oa-muted">{hint}</small>
+            <small id={`oa-cap-${k}-hint`} className="oa-muted">
+              {hint}
+            </small>
           </div>
         ))}
-        <div className="oa-cap">
-          <Checkbox
-            label="Allow anonymous writes"
-            checked={artifact.allowAnonymousWrites}
-            disabled={
-              !vis ||
-              patch.isPending ||
-              artifact.visibility !== "public" ||
-              !artifact.capabilities.db
-            }
-            onCheckedChange={(on) =>
-              save({ allowAnonymousWrites: on === true })
-            }
-          />
-          <small className="oa-muted">Public and database only.</small>
-        </div>
+        {artifact.capabilities.db && (
+          <div className="oa-cap">
+            <p id="oa-share-writers" className="font-medium">
+              Who can change the live data
+            </p>
+            {vis ? (
+              <ToggleGroup
+                type="single"
+                variant="outline"
+                size="sm"
+                aria-labelledby="oa-share-writers"
+                aria-describedby="oa-share-writers-hint"
+                value={artifact.dataWriters}
+                onValueChange={(w) =>
+                  w &&
+                  w !== artifact.dataWriters &&
+                  !patch.isPending &&
+                  save({ dataWriters: w as DataWriters })
+                }
+              >
+                {WRITERS.map((o) => (
+                  <ToggleGroupItem
+                    key={o.value}
+                    value={o.value}
+                    disabled={patch.isPending}
+                    className={`px-[var(--oa-space-3)] ${CONTROL}`}
+                  >
+                    {o.label}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+            ) : (
+              <p>
+                {WRITERS.find((o) => o.value === artifact.dataWriters)?.label}
+              </p>
+            )}
+            <small id="oa-share-writers-hint" className="oa-muted">
+              {writersHint(artifact.dataWriters, artifact.visibility)}
+            </small>
+          </div>
+        )}
       </section>
 
       <Button

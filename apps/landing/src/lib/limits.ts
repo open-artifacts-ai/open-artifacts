@@ -36,6 +36,7 @@ export const LIMIT_PLACEHOLDERS: Record<string, string> = {
   "{LIMIT_MCP_BODY_FREE}": formatBytes(LIMITS.mcpBodyBytesFree),
   "{LIMIT_MCP_BODY_PAID}": formatBytes(LIMITS.mcpBodyBytesPaid),
   "{LIMIT_ARTIFACT_DATA}": formatBytes(LIMITS.artifactDataBytes),
+  "{LIMIT_QUERY_COLLECTION}": formatBytes(LIMITS.queryCollectionBytes),
   "{LIMIT_VIEWER_WRITES}": `${LIMITS.viewerWritesPerMin} per minute`,
   "{LIMIT_ANON_WRITES}": `${LIMITS.anonWritesPerMinPerIp} per minute`,
   "{LIMIT_SIGNED_URL_TTL}": formatSeconds(LIMITS.signedUrlTtlSec),

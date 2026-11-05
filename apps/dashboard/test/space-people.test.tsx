@@ -6,7 +6,13 @@ import type { Me } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { type HttpHandler, HttpResponse, http } from "msw";
 import { expect, it } from "vitest";
-import { calls, installHarness, mount, mountHosted } from "./harness";
+import {
+  type Call,
+  calls,
+  installHarness,
+  mount,
+  mountHosted,
+} from "./harness";
 
 installHarness();
 
@@ -45,6 +51,10 @@ const serve = (
     HttpResponse.json({ items, nextCursor: next, total }),
   );
 const people = () => screen.findByRole("region", { name: "People" });
+/** GET R.members for active people (no status, or one including active). */
+const activeLookup = (c: Call) =>
+  c.path === "/api/v1/members" &&
+  (c.search.get("status") ?? "active").split(",").includes("active");
 const row = async (name: string) => {
   const el = (await within(await people()).findByText(name)).closest("li");
   if (!el) throw new Error(`no row for ${name}`);
@@ -199,7 +209,7 @@ it("removing a manually added person asks, names All members, then DELETEs", asy
     }),
   ).toBeVisible();
   expect(d).toHaveTextContent(
-    "Lee keeps Viewer through All members. Artifacts Lee made here stay in the space.",
+    "Lee keeps Viewer through All members. Artifacts they made here stay in the space.",
   );
   fireEvent.click(within(d).getByRole("button", { name: "Remove" }));
   await waitFor(() =>
@@ -232,7 +242,7 @@ it("removing a combined row's manual role says what they keep", async () => {
     }),
   ).toBeVisible();
   expect(d).toHaveTextContent(
-    "Rina goes from Manager to Editor, the role eng@ gives. To take Rina out of the space, change eng@ in Google or under Who gets access.",
+    "Rina goes from Manager to Editor, the role eng@ gives. To take them out of the space, change eng@ in Google or under Who gets access.",
   );
   expect(within(d).getByRole("button", { name: "Remove role" })).toBeVisible();
 });
@@ -289,6 +299,36 @@ it("restricted and guest rows show Viewer as text with their chip and reason", a
     "gia@partner.io · Guest · can only view · via eng@",
   );
   expect(within(gia).queryByRole("combobox")).toBeNull();
+});
+
+it("a restricted row's reason comes from the row itself, with no member lookup", async () => {
+  const gets = calls("GET");
+  mountWith([
+    serve([
+      person({
+        userId: "d1",
+        user: { id: "d1", name: "Dan Contractor", email: "dan@example.com" },
+        role: "editor",
+        manualRole: "editor",
+        cap: "restricted",
+        restriction: {
+          manual: false,
+          groups: [
+            {
+              groupId: "gCon09",
+              email: "contractors@example.com",
+              name: "Contractors",
+            },
+          ],
+        },
+      }),
+    ]),
+  ]);
+  expect(await row("Dan Contractor")).toHaveTextContent(
+    "Can only view · restricted via Contractors",
+  );
+  // No active-member lookup (Departed's suspended,removed list is admin-only and separate).
+  expect(gets.some(activeLookup)).toBe(false);
 });
 
 it("suspended and removed people sort last, say No access, and show the role as text", async () => {
@@ -670,6 +710,43 @@ it("Add people with nobody picked says so", async () => {
   expect(await within(d).findByText("Pick at least one person.")).toBeVisible();
 });
 
+// Review item 3: GET /members is admin-only, so a manager's search can't use it.
+it("a space manager who isn't an org admin finds and adds people (R.spaceCandidates)", async () => {
+  const seen = calls("PUT");
+  const gets = calls("GET");
+  mountHosted(ENG, true, asManager);
+  fireEvent.click(
+    within(await people()).getByRole("button", { name: "Add people" }),
+  );
+  const d = await screen.findByRole("dialog", {
+    name: "Add people to Engineering",
+  });
+  fireEvent.change(within(d).getByRole("combobox", { name: "People" }), {
+    target: { value: "da" },
+  });
+  fireEvent.click(
+    await screen.findByRole("option", { name: /Dan Contractor/ }),
+  );
+  fireEvent.click(within(d).getByRole("button", { name: "Add 1 person" }));
+  await waitFor(() =>
+    expect(seen.at(-1)).toEqual(
+      expect.objectContaining({
+        path: `/api/v1/spaces/${ID}/members/Dn8uPqRsTu9vWxYz`,
+        body: { role: "viewer" },
+      }),
+    ),
+  );
+  expect(
+    gets.some(
+      (c) =>
+        c.path === `/api/v1/spaces/${ID}/candidates` &&
+        c.search.get("q") === "da",
+    ),
+  ).toBe(true);
+  // No active-member lookup (Departed's suspended,removed list is admin-only and separate).
+  expect(gets.some(activeLookup)).toBe(false);
+});
+
 it("a space manager's Add people has no Manager role", async () => {
   mountHosted(ENG, true, asManager);
   fireEvent.click(
@@ -751,7 +828,7 @@ it("frozen: the note, kept rows say kept from, any role, and Remove from the spa
   mountHosted(ENG, { directory: "frozen" });
   const card = await people();
   expect(card).toHaveTextContent(
-    "Group sync is off. Everyone below was kept as of the last sync and is edited manually.",
+    "Group sync is paused. Everyone below was kept as of the last sync. Add and remove people by hand.",
   );
   const bob = await row("Bob Builder");
   expect(bob).toHaveTextContent("bob@example.com · kept from eng@");
@@ -768,7 +845,7 @@ it("frozen: the note, kept rows say kept from, any role, and Remove from the spa
     }),
   );
   expect(screen.getByRole("alertdialog")).toHaveTextContent(
-    "Bob loses access to Engineering within a minute. If sync comes back and eng@ still includes Bob, Bob gets Editor again.",
+    "Bob loses access to Engineering within a minute. If sync comes back and eng@ still includes them, they get Editor again.",
   );
 });
 
@@ -853,4 +930,114 @@ it("as an admin the same row offers Viewer, Editor and Manager", async () => {
   expect(
     (await screen.findAllByRole("option")).map((o) => o.textContent),
   ).toEqual(["Viewer", "Editor", "Manager"]);
+});
+
+// -- review item 19: people here only through an Every space group
+
+const everyOnly = person({
+  userId: "e1",
+  user: { id: "e1", name: "Eve Park", email: "eve@example.com" },
+  role: "editor",
+  source: "sync",
+  syncRole: "editor",
+  groups: [{ ...exec, role: "editor", via: "every" }],
+});
+
+it("an org admin: no Remove, no role below the Every space group's, and a link to Every space", async () => {
+  mountWith([serve([everyOnly])]);
+  const r = await row("Eve Park");
+  expect(
+    within(r).queryByRole("button", { name: "More for Eve Park" }),
+  ).toBeNull();
+  expect(r).toHaveTextContent(
+    "Set by an Every space group. Change it in Settings › Spaces › Every space.",
+  );
+  expect(
+    within(r).getByRole("link", { name: "Settings › Spaces › Every space" }),
+  ).toHaveAttribute("href", "/settings/spaces#oa-every-space");
+  fireEvent.click(
+    within(r).getByRole("combobox", { name: "Role for Eve Park" }),
+  );
+  const roles = (await screen.findAllByRole("option")).map(
+    (o) => o.textContent,
+  );
+  expect(roles.some((t) => t?.startsWith("Viewer"))).toBe(false);
+  expect(roles.some((t) => t?.startsWith("Manager"))).toBe(true);
+});
+
+it("a space manager who isn't an admin: asked to go to an admin, no link", async () => {
+  mountWith([serve([everyOnly])], asManager);
+  const r = await row("Eve Park");
+  expect(r).toHaveTextContent(
+    "Set by an Every space group. Ask an admin to change it.",
+  );
+  expect(within(r).queryByRole("link")).toBeNull();
+});
+
+it("a frozen install keeps the floor and still offers no Remove", async () => {
+  mountHosted(ENG, { directory: "frozen" }, undefined, [serve([everyOnly])]);
+  const r = await row("Eve Park");
+  expect(
+    within(r).queryByRole("button", { name: "More for Eve Park" }),
+  ).toBeNull();
+  fireEvent.click(
+    within(r).getByRole("combobox", { name: "Role for Eve Park" }),
+  );
+  const roles = (await screen.findAllByRole("option")).map(
+    (o) => o.textContent,
+  );
+  expect(roles.some((t) => t?.startsWith("Viewer"))).toBe(false);
+});
+
+it("a manual role on top of an Every space group: Remove takes the manual part, and says what stays", async () => {
+  mountWith([
+    serve([
+      person({
+        userId: "e2",
+        user: { id: "e2", name: "Kai Moss", email: "kai@example.com" },
+        role: "manager",
+        manualRole: "manager",
+        syncRole: "viewer",
+        groups: [{ ...exec, role: "viewer", via: "every" }],
+      }),
+    ]),
+  ]);
+  const menu = await openMenu("Kai Moss");
+  fireEvent.click(
+    within(menu).getByRole("menuitem", { name: /Remove manually added role/ }),
+  );
+  const d = await screen.findByRole("alertdialog");
+  expect(d).toHaveTextContent(
+    "Kai goes from Manager to Viewer. They keep Viewer from an Every space group.",
+  );
+  expect(screen.queryByText(/Change it in Google/)).toBeNull();
+});
+
+it("409 managed_by_org_mapping shows the Every space line by the row", async () => {
+  mountWith([
+    serve([everyOnly]),
+    http.put(`*/api/v1/spaces/${ID}/members/e1`, () =>
+      HttpResponse.json(
+        {
+          error: {
+            code: "managed_by_org_mapping",
+            message: "server text",
+            details: { userId: "e1" },
+          },
+        },
+        { status: 409 },
+      ),
+    ),
+  ]);
+  const r = await row("Eve Park");
+  fireEvent.click(
+    within(r).getByRole("combobox", { name: "Role for Eve Park" }),
+  );
+  fireEvent.click(await screen.findByRole("option", { name: /^Manager/ }));
+  expect(
+    await within(r).findByText(
+      "Set by an Every space group. Change it in Settings › Spaces › Every space.",
+    ),
+  ).toBeVisible();
+  expect(screen.queryByText("server text")).toBeNull();
 });

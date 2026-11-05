@@ -73,7 +73,9 @@ describe("google provider (direct)", () => {
       email: "bob@a.com",
       name: "Bob",
       tenant: "a.com",
+      authTime: null,
       next: "/a/x",
+      reauth: false,
     });
     const sent = g.tokenCalls[0];
     expect(sent?.get("client_secret")).toBe("s");

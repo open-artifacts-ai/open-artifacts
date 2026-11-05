@@ -1,0 +1,820 @@
+import { compareVersions } from "@oa/provision/versions";
+import {
+  canTransition,
+  type InstallDetail as Install,
+  type JobKind,
+  type JobListItem,
+  type RouteId,
+} from "@oa/provisioning-contract";
+import {
+  Button,
+  Checkbox,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@oa/ui/shadcn";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { ApiError, api } from "../api/client";
+import { errorCopy } from "../api/errorCopy";
+import {
+  installJobsQuery,
+  installQuery,
+  jobIsTerminal,
+  jobQuery,
+  releasesQuery,
+} from "../api/queries";
+import { reauthHref } from "../api/reauth";
+import { ActionDialog } from "../components/ActionDialog";
+import { ErrorLine, StateBadge, StatusBadge } from "../components/Bits";
+import { fmtTime } from "../components/format";
+import {
+  fmtClock,
+  fmtDay,
+  HEALTH_LABEL,
+  HEALTH_TONE,
+  JOB_VERB,
+  jobTarget,
+  providerLabel,
+  SERVING_LABEL,
+  stepCount,
+  TIER_LABEL,
+  visibleSteps,
+} from "../components/labels";
+import {
+  aheadOfPlatform,
+  aheadReason,
+  newestVersion,
+} from "../components/platformGate";
+import { useAction } from "../hooks/useAction";
+import { canCall } from "../hooks/useEnv";
+import { LoadError } from "../layout/LoadError";
+
+type Dialog =
+  | "upgrade"
+  | "suspend"
+  | "delete"
+  | "purge"
+  | "release-lease"
+  | "cancel"
+  | null;
+
+const GRACE_DAYS = 7;
+/** The upgrade's default value, the platform's release (Radix Select has no empty value). */
+const LATEST = "latest";
+const NO_PLATFORM_UPGRADE =
+  "The platform has no stable release yet, so upgrades are paused.";
+const REAUTH_MS = 10 * 60_000;
+const can = (i: Install, kind: JobKind) => canTransition(i.state, kind, "A");
+
+function Actions({ install }: { install: Install }) {
+  const navigate = useNavigate();
+  const [dialog, setDialog] = useState<Dialog>(null);
+  const [reason, setReason] = useState("");
+  const [version, setVersion] = useState("");
+  const [force, setForce] = useState(false);
+  const [nonAdditive, setNonAdditive] = useState(false);
+  const releases = useQuery({
+    ...releasesQuery(),
+    enabled: dialog === "upgrade",
+  });
+  const platform = releases.data?.platform;
+  const items = releases.data?.items ?? [];
+  // release_gate runs the install's bundle (redline for test hooks, else
+  // release); R5 only checks an explicit release is there, so the job would
+  // fail later without this.
+  const variant = install.testHooks ? "redline" : "release";
+  // R5 refuses a release at or below the install's own (downgrade_refused).
+  const versions = items.filter(
+    (r) =>
+      r.installable &&
+      r.variants.includes(variant) &&
+      (!install.version || compareVersions(r.version, install.version) > 0),
+  );
+  const offered = versions
+    .filter((r) => !aheadOfPlatform(r.version, platform))
+    .map((r) => r.version);
+  // The default (no version) takes the platform's release. Like any release, it
+  // is hidden at or below the install's own (downgrade_refused); with none
+  // (null) it is listed but off.
+  const latestShown = !(
+    platform &&
+    install.version &&
+    compareVersions(platform, install.version) <= 0
+  );
+  // R5 takes it only when published, installable and with the install's
+  // variant (resolveRelease), else release_not_published.
+  const platformRelease = platform
+    ? items.find((r) => r.version === platform)
+    : undefined;
+  const latestWhy = !platform
+    ? null
+    : !platformRelease
+      ? "Not published."
+      : !platformRelease.installable
+        ? "Not installable."
+        : !platformRelease.variants.includes(variant)
+          ? `No ${variant} build.`
+          : null;
+  const latestOk = latestShown && !!platform && latestWhy === null;
+  /** The Select's value: the pick while it is offered, else the first item that is. */
+  const chosen =
+    version && offered.includes(version)
+      ? version
+      : latestOk
+        ? LATEST
+        : (newestVersion(offered) ?? "");
+  const sentVersion = chosen === LATEST ? "" : chosen;
+  /**
+   * Why Upgrade is off; none with no platform release, whose note says it. A
+   * failed refetch keeps the loaded list (react-query keeps `data`), so only a
+   * failed first load blocks. Without data, `chosen` is "" and Upgrade is off.
+   */
+  const upgradeBlocker = releases.isPending
+    ? "Loading releases."
+    : !releases.data
+      ? `Could not load the releases. ${errorCopy(releases.error)}`
+      : platform === null
+        ? undefined
+        : !latestShown && offered.length === 0
+          ? "Already on the platform's release or newer. Nothing newer is deployed."
+          : "No release can be picked yet.";
+  const id = install.id;
+  // Purge needs a Google sign-in from the last 10 minutes (authz: reauth_required).
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  // Only a deleting install's purge needs it (authz R11); a failed create does not.
+  const fresh =
+    install.state !== "deleting" ||
+    (!!me.data?.authAt && Date.now() - me.data.authAt < REAUTH_MS);
+  const busy = install.activeJobId !== null;
+  // Each button's route, from the shared authz table (#1074).
+  const may = (route: RouteId) => canCall(route, me.data);
+  const done = {
+    invalidate: [
+      ["install", id],
+      ["install-jobs", id],
+      ["installs"],
+      ["world"],
+    ],
+    onSuccess: (r: { job: { id: string } }) => {
+      setDialog(null);
+      void navigate({ to: "/jobs/$id", params: { id: r.job.id } });
+    },
+  };
+  const upgrade = useAction(
+    (_: void, requestId) =>
+      api.call("R5", {
+        params: { id },
+        body: {
+          requestId,
+          ...(sentVersion ? { version: sentVersion } : {}),
+          ...(nonAdditive ? { nonAdditive: true as const } : {}),
+        },
+      }),
+    { ...done, key: `${sentVersion}:${nonAdditive}` },
+  );
+  const rollback = useAction(
+    (_: void, requestId) =>
+      api.call("R6", { params: { id }, body: { requestId } }),
+    done,
+  );
+  const suspend = useAction(
+    (_: void, requestId) =>
+      api.call("R7", {
+        params: { id },
+        body: { requestId, reason: reason.trim() },
+      }),
+    { ...done, key: reason.trim() },
+  );
+  const resume = useAction(
+    (_: void, requestId) =>
+      api.call("R8", { params: { id }, body: { requestId } }),
+    done,
+  );
+  const del = useAction(
+    (_: void, requestId) =>
+      api.call("R9", {
+        params: { id },
+        body: { requestId, confirmSlug: install.slug },
+      }),
+    done,
+  );
+  const restore = useAction(
+    (_: void, requestId) =>
+      api.call("R10", { params: { id }, body: { requestId } }),
+    done,
+  );
+  const purge = useAction(
+    (_: void, requestId) =>
+      api.call("R11", {
+        params: { id },
+        body: { requestId, confirmSlug: install.slug },
+      }),
+    done,
+  );
+  const retry = useAction(
+    (_: void, requestId) =>
+      api.call("R12", { params: { id }, body: { requestId } }),
+    done,
+  );
+  const lease = useAction(
+    (_: void, requestId) =>
+      api.call("R13", {
+        params: { id },
+        body: {
+          requestId,
+          confirmSlug: install.slug,
+          ...(force ? { force: true } : {}),
+        },
+      }),
+    { ...done, key: force },
+  );
+  const cancel = useAction(
+    (_: void, requestId) =>
+      api.call("R25", {
+        params: { jobId: install.activeJobId ?? "" },
+        body: { requestId, confirmSlug: install.slug },
+      }),
+    done,
+  );
+  const quick = [
+    {
+      label: "Roll back",
+      show:
+        may("R6") &&
+        can(install, "rollback") &&
+        install.previousVersion !== null,
+      run: rollback,
+    },
+    {
+      label: "Resume",
+      show: may("R8") && can(install, "resume"),
+      run: resume,
+    },
+    {
+      label: "Restore",
+      show: may("R10") && can(install, "restore") && install.restorable,
+      run: restore,
+    },
+    { label: "Retry", show: may("R12") && can(install, "retry"), run: retry },
+  ];
+  const live = !!install.lease.until && install.lease.until > Date.now();
+  const close = () => {
+    setDialog(null);
+    setForce(false);
+    setNonAdditive(false);
+    for (const m of [upgrade, suspend, del, purge, lease, cancel]) m.reset();
+  };
+  return (
+    <section className="oa-actions" aria-label="Actions">
+      {may("R5") && can(install, "upgrade") && (
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => setDialog("upgrade")}
+        >
+          Upgrade
+        </Button>
+      )}
+      {quick
+        .filter((q) => q.show)
+        .map((q) => (
+          <span key={q.label}>
+            <Button
+              variant="outline"
+              disabled={busy || q.run.isPending}
+              onClick={() => q.run.mutate()}
+            >
+              {q.label}
+            </Button>
+            <ErrorLine error={q.run.error} />
+          </span>
+        ))}
+      {may("R7") && can(install, "suspend") && (
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => setDialog("suspend")}
+        >
+          Pause
+        </Button>
+      )}
+      {may("R9") && can(install, "delete") && (
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => setDialog("delete")}
+        >
+          Delete
+        </Button>
+      )}
+      {may("R11") && can(install, "purge") && (
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => setDialog("purge")}
+        >
+          Purge
+        </Button>
+      )}
+      {may("R13") && install.lease.held && install.state !== "deleted" && (
+        <Button variant="outline" onClick={() => setDialog("release-lease")}>
+          Release lease
+        </Button>
+      )}
+      {may("R25") && busy && (
+        <Button variant="outline" onClick={() => setDialog("cancel")}>
+          Cancel job
+        </Button>
+      )}
+
+      {dialog === "upgrade" && (
+        <ActionDialog
+          open
+          onClose={close}
+          title="Upgrade"
+          description={`Currently ${install.version ?? "none"}. Leave it on the default to take the release the platform runs.`}
+          submitLabel="Upgrade"
+          pending={upgrade.isPending}
+          error={upgrade.error}
+          canSubmit={chosen !== ""}
+          blocker={upgradeBlocker}
+          onSubmit={() => upgrade.mutate()}
+        >
+          <div>
+            <Label htmlFor="up-version">Version</Label>
+            <Select
+              value={chosen}
+              onValueChange={(v) => setVersion(v === LATEST ? "" : v)}
+            >
+              <SelectTrigger
+                id="up-version"
+                className="oa-select-full"
+                aria-describedby={
+                  platform === null ? "up-version-note" : undefined
+                }
+              >
+                <SelectValue
+                  placeholder={
+                    releases.isPending
+                      ? "Loading releases..."
+                      : "No release available"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent position="popper" align="start">
+                {latestShown && (
+                  <SelectItem value={LATEST} disabled={!latestOk}>
+                    The platform's release
+                    {latestWhy && <span className="oa-note"> {latestWhy}</span>}
+                  </SelectItem>
+                )}
+                {versions.map((r) => {
+                  const ahead = aheadOfPlatform(r.version, platform);
+                  return (
+                    <SelectItem
+                      key={r.version}
+                      value={r.version}
+                      disabled={ahead}
+                      className="oa-mono-item"
+                    >
+                      {r.version}
+                      {ahead && platform && (
+                        <span className="oa-note">
+                          {" "}
+                          {aheadReason(platform)}
+                        </span>
+                      )}
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+            {platform === null && (
+              <small id="up-version-note" className="oa-note">
+                {NO_PLATFORM_UPGRADE}
+              </small>
+            )}
+          </div>
+          <div className="oa-check">
+            <Checkbox
+              id="up-non-additive"
+              checked={nonAdditive}
+              onCheckedChange={(c) => setNonAdditive(c === true)}
+            />
+            <label htmlFor="up-non-additive" className="oa-check">
+              Cross a migration that can lose data, if there is one. A restore
+              point is taken first, and only a person can restore it. Without
+              this, such an upgrade is held and nothing changes.
+            </label>
+          </div>
+        </ActionDialog>
+      )}
+      {dialog === "suspend" && (
+        <ActionDialog
+          open
+          onClose={close}
+          title={`Pause ${install.slug}?`}
+          description="Visitors see the paused page. Nothing is deleted, and you can resume it at any time."
+          submitLabel={`Pause ${install.slug}`}
+          canSubmit={reason.trim().length >= 1 && reason.trim().length <= 200}
+          blocker="Add a reason."
+          pending={suspend.isPending}
+          error={suspend.error}
+          onSubmit={() => suspend.mutate()}
+        >
+          <div>
+            <Label htmlFor="reason">Reason</Label>
+            <Input
+              id="reason"
+              className="oa-reason"
+              autoComplete="off"
+              value={reason}
+              maxLength={200}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <small className="oa-hint">
+              Only admins and their agents see this.
+            </small>
+          </div>
+        </ActionDialog>
+      )}
+      {dialog === "delete" && (
+        <ActionDialog
+          open
+          onClose={close}
+          title={`Delete ${install.slug}?`}
+          description={`${install.appHost} closes now and shows a closed page. You can restore it within ${GRACE_DAYS} days. After that it's deleted for good.`}
+          expected={install.slug}
+          submitLabel={`Delete ${install.slug}`}
+          destructive
+          pending={del.isPending}
+          error={del.error}
+          onSubmit={() => del.mutate()}
+        />
+      )}
+      {dialog === "purge" && (
+        <ActionDialog
+          open
+          onClose={close}
+          title={`Delete ${install.slug} for good?`}
+          description={
+            <>
+              This can't be undone. Its artifacts, data and files are erased,
+              and its people lose access.
+              {!fresh && (
+                <span className="oa-banner oa-banner-warn oa-dialog-banner">
+                  {" "}
+                  Sign in again to continue.
+                </span>
+              )}
+            </>
+          }
+          expected={fresh ? install.slug : undefined}
+          submitLabel={
+            fresh ? `Delete ${install.slug} for good` : "Sign in again"
+          }
+          destructive={fresh}
+          pending={purge.isPending}
+          error={purge.error}
+          onSubmit={() =>
+            fresh
+              ? purge.mutate()
+              : api.redirect(
+                  reauthHref(
+                    `${window.location.pathname}${window.location.search}`,
+                  ),
+                )
+          }
+        />
+      )}
+      {dialog === "release-lease" && (
+        <ActionDialog
+          open
+          onClose={close}
+          title="Release lease"
+          description="Only do this when no job is really running."
+          expected={install.slug}
+          submitLabel="Release lease"
+          destructive
+          pending={lease.isPending}
+          error={lease.error}
+          onSubmit={() => lease.mutate()}
+        >
+          {live && (
+            <div className="oa-check">
+              <Checkbox
+                id="lease-force"
+                checked={force}
+                onCheckedChange={(c) => setForce(c === true)}
+              />
+              <label htmlFor="lease-force" className="oa-check">
+                Force (the lease is held until {fmtTime(install.lease.until)})
+              </label>
+            </div>
+          )}
+        </ActionDialog>
+      )}
+      {dialog === "cancel" && (
+        <ActionDialog
+          open
+          onClose={close}
+          title="Cancel job"
+          description="The job stops and cleanup runs."
+          expected={install.slug}
+          submitLabel="Cancel job"
+          destructive
+          pending={cancel.isPending}
+          error={cancel.error}
+          onSubmit={() => cancel.mutate()}
+        />
+      )}
+    </section>
+  );
+}
+
+/** The Step cell: where the job is ("Health check · 5/5"), or all steps once done. */
+function jobStep(j: JobListItem) {
+  const { n, of } = stepCount(j);
+  if (j.status === "done") return `${of}/${of}`;
+  const at = visibleSteps(j.steps).find((s) => s.index === j.stepIndex);
+  return at ? `${at.label} · ${n}/${of}` : `${n}/${of}`;
+}
+
+/** "Upgrading to 0.77.1, step 3 of 11, Reserve slug and hosts. Open job" */
+function ActiveJob({ jobId, installId }: { jobId: string; installId: string }) {
+  const q = useQuery(jobQuery(jobId));
+  const qc = useQueryClient();
+  const job = q.data;
+  const settled = !!job && jobIsTerminal(job.status);
+  // The job is over: refetch the install so its actions unlock.
+  useEffect(() => {
+    if (settled) {
+      void qc.invalidateQueries({ queryKey: ["install", installId] });
+      void qc.invalidateQueries({ queryKey: ["install-jobs", installId] });
+    }
+  }, [settled, qc, installId]);
+  const { n, of } = job ? stepCount(job) : { n: 0, of: 0 };
+  const at = job
+    ? visibleSteps(job.steps).find((s) => s.index === job.stepIndex)
+    : undefined;
+  return (
+    <p className="oa-banner oa-banner-info" data-testid="active-job">
+      {job ? (
+        <>
+          {JOB_VERB[job.kind].ing}
+          {jobTarget(job.args) ? ` to ${jobTarget(job.args)}` : ""}, step {n} of{" "}
+          {of}
+          {at ? `, ${at.label}` : ""}.{" "}
+        </>
+      ) : (
+        "A job is running. "
+      )}
+      <Link to="/jobs/$id" params={{ id: jobId }}>
+        Open job
+      </Link>
+    </p>
+  );
+}
+
+export function InstallDetail({ id }: { id: string }) {
+  const q = useQuery(installQuery(id));
+  const jobs = useQuery(installJobsQuery(id));
+  if (q.isError)
+    return q.error instanceof ApiError && q.error.status === 404 ? (
+      <>
+        <h1>Install not found</h1>
+        <p>{errorCopy(q.error)}</p>
+        <Link to="/installs">Back to installs</Link>
+      </>
+    ) : (
+      <LoadError
+        title="Couldn't load the install"
+        error={q.error}
+        onRetry={() => void q.refetch()}
+      />
+    );
+  const i = q.data;
+  if (!i) return null;
+  const last = jobs.data?.items[0];
+  const rolledBack =
+    last?.kind === "upgrade" && last.lastErrorCode === "upgrade_rolled_back";
+  // A failed install: the job that stopped, the step it stopped at and why.
+  const failed =
+    i.state === "failed"
+      ? (jobs.data?.items.find((j) => j.status === "failed") ?? last)
+      : undefined;
+  const failedStep = failed
+    ? visibleSteps(failed.steps).find((s) => s.index === failed.stepIndex)
+        ?.label
+    : undefined;
+  const failedCode = failed
+    ? (failed.error?.code ?? failed.lastErrorCode ?? null)
+    : null;
+  return (
+    <>
+      <p className="oa-crumbs">
+        <Link to="/installs">Installs</Link>
+      </p>
+      <div className="oa-head">
+        <div>
+          <div className="oa-title-row">
+            <h1>{i.slug}</h1>
+            <StateBadge state={i.state} chip />
+            {i.state === "failed" && failedCode && (
+              <span className="oa-chip oa-chip-danger oa-code">
+                {failedCode}
+              </span>
+            )}
+          </div>
+          <p className="oa-sub oa-host">{i.appHost}</p>
+        </div>
+        <Actions install={i} />
+      </div>
+      {i.activeJobId && <ActiveJob jobId={i.activeJobId} installId={i.id} />}
+      {i.mismatch && (
+        <p
+          className="oa-banner oa-banner-warn"
+          role="alert"
+          data-testid="mismatch"
+        >
+          <strong>Routing doesn't match.</strong> {i.slug} ({i.mismatch}).
+        </p>
+      )}
+      {rolledBack && last && (
+        <p
+          className="oa-banner oa-banner-info"
+          role="alert"
+          data-testid="rolled-back"
+        >
+          <strong>
+            Serving {i.version ?? "an older version"}
+            {jobTarget(last.args) ? `, not ${jobTarget(last.args)}` : ""}.
+          </strong>{" "}
+          The last upgrade rolled back.{" "}
+          <Link to="/jobs/$id" params={{ id: last.id }}>
+            The job says why.
+          </Link>
+        </p>
+      )}
+      {i.state === "failed" && (
+        <p className="oa-banner oa-banner-danger" role="alert">
+          {failed && (
+            <>
+              <strong>
+                {JOB_VERB[failed.kind].noun} stopped
+                {failedStep ? ` at "${failedStep}"` : ""}
+                {failedCode ? ": " : ""}
+                {failedCode && <code>{failedCode}</code>}.
+              </strong>{" "}
+            </>
+          )}
+          The last job failed. Retry it or purge the install.
+        </p>
+      )}
+      {i.state === "suspended" && (
+        <p className="oa-banner oa-banner-warn">
+          Paused {fmtDay(i.suspendedAt ?? i.createdAt)}. Reason:{" "}
+          {i.suspendReason}
+        </p>
+      )}
+      {i.state === "deleting" && (
+        <p className="oa-banner">
+          Deleted {fmtDay(i.deletedAt ?? i.createdAt)}.{" "}
+          {i.restorable
+            ? `You can restore it until ${fmtDay(i.purgeAt ?? 0)}.`
+            : "It can no longer be restored."}
+        </p>
+      )}
+      {i.lease.held && (
+        <p className="oa-banner" data-testid="lease">
+          A job holds the lease until {fmtTime(i.lease.until)}.
+        </p>
+      )}
+      <div className="oa-detail">
+        <section className="oa-card" aria-label="Facts">
+          <dl className="oa-fields">
+            <div>
+              <dt>Health</dt>
+              <dd>
+                <span className="oa-st" data-tone={HEALTH_TONE[i.health]}>
+                  {HEALTH_LABEL[i.health]}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>Serving</dt>
+              <dd>
+                {i.version ? (
+                  <span className="oa-mono">{i.version}</span>
+                ) : (
+                  "nothing"
+                )}
+                {i.previousVersion && (
+                  <>
+                    {" "}
+                    (previous{" "}
+                    <span className="oa-mono">{i.previousVersion}</span>)
+                  </>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Routing</dt>
+              <dd>{SERVING_LABEL[i.servingMode]}</dd>
+            </div>
+            <div>
+              <dt>Tier · Sign-in</dt>
+              <dd>
+                {i.tier ? (
+                  TIER_LABEL[i.tier]
+                ) : (
+                  <span className="oa-note">–</span>
+                )}{" "}
+                · {i.auth.providers.map(providerLabel).join(", ")}
+                {i.auth.domains.length > 0 &&
+                  ` · ${i.auth.domains.length} ${i.auth.domains.length === 1 ? "domain" : "domains"}`}
+              </dd>
+            </div>
+            {/* A caller without pii gets no ownerEmail: no row (Design). */}
+            {i.ownerEmail && (
+              <div>
+                <dt>Owner</dt>
+                <dd>{i.ownerEmail}</dd>
+              </div>
+            )}
+            <div>
+              <dt>Created</dt>
+              <dd>{fmtDay(i.createdAt)}</dd>
+            </div>
+            <div>
+              <dt>Domains</dt>
+              <dd>{i.auth.domains.join(", ") || "none"}</dd>
+            </div>
+            <div>
+              <dt>Install id</dt>
+              <dd className="oa-mono">{i.id}</dd>
+            </div>
+          </dl>
+        </section>
+        <h2>Recent jobs</h2>
+        {jobs.data && jobs.data.items.length === 0 ? (
+          <div className="oa-card oa-empty">
+            <p>No jobs yet.</p>
+          </div>
+        ) : jobs.data ? (
+          <div className="oa-tablewrap oa-recent-jobs">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Job</TableHead>
+                  <TableHead>Step</TableHead>
+                  <TableHead>State</TableHead>
+                  <TableHead>Started</TableHead>
+                  <TableHead>By</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {jobs.data.items.map((j) => (
+                  <TableRow key={j.id}>
+                    <TableCell>
+                      <Link to="/jobs/$id" params={{ id: j.id }}>
+                        {JOB_VERB[j.kind].noun}
+                      </Link>
+                      {jobTarget(j.args) && (
+                        <span className="oa-mut">{jobTarget(j.args)}</span>
+                      )}
+                    </TableCell>
+                    <TableCell>{jobStep(j)}</TableCell>
+                    <TableCell>
+                      <StatusBadge status={j.status} />
+                    </TableCell>
+                    <TableCell
+                      className="oa-mono"
+                      title={fmtTime(j.startedAt ?? j.createdAt)}
+                    >
+                      {fmtDay(j.startedAt ?? j.createdAt)}{" "}
+                      {fmtClock(j.startedAt ?? j.createdAt)}
+                    </TableCell>
+                    <TableCell className="oa-note">{j.actor.label}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ) : null}
+      </div>
+    </>
+  );
+}

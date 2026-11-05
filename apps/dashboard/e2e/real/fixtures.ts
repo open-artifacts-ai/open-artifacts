@@ -98,6 +98,11 @@ export function devConfig(): Record<string, unknown> {
     // A test-only page that frames /a/<id>/full (artifact-links.spec, embed mode).
     EMBED_ORIGINS: EMBEDDER,
     EMBED_ALLOW_SAME_SITE: "1",
+    // The spaces suite (playwright.spaces.config.ts): a direct-sign-in install
+    // (only those report features in Me) with hosted features on.
+    ...(process.env.OA_E2E_FEATURES
+      ? { FEATURES: process.env.OA_E2E_FEATURES, AUTH_PROVIDERS: "email" }
+      : {}),
     ACCESS_CLIENT_SECRET: secret(),
     SESSION_SECRET: secret(),
     CONTENT_SIGNING_KEY: secret(),
@@ -113,23 +118,27 @@ async function healthy(): Promise<boolean> {
   }
 }
 
-/** Whether anything accepts connections on 127.0.0.1:PORT. */
-const portBusy = () =>
+/** Whether anything accepts connections on `port`, on 127.0.0.1 or ::1. */
+const busyOn = (host: string, port: number) =>
   new Promise<boolean>((resolve) => {
-    const sock = connect({ host: "127.0.0.1", port: PORT });
+    const sock = connect({ host, port });
     sock.once("connect", () => {
       sock.destroy();
       resolve(true);
     });
     sock.once("error", () => resolve(false));
   });
+export const portBusy = async (port: number) =>
+  (await busyOn("127.0.0.1", port)) || (await busyOn("::1", port));
+
+export const inUse = (port: number) =>
+  new Error(
+    `fixtures: port ${port} is already in use (a leftover wrangler dev, or a sibling worktree's?). Stop it, or set OA_E2E_PORT to a free port.`,
+  );
 
 /** Builds, migrates and starts the server; resolves to its teardown once /healthz answers. */
 export async function startServer(): Promise<() => Promise<void>> {
-  if (await portBusy())
-    throw new Error(
-      `fixtures: port ${PORT} is already in use (a leftover wrangler dev?). Stop it, or set OA_E2E_PORT to a free port.`,
-    );
+  if (await portBusy(PORT)) throw inUse(PORT);
   if (!process.env.OA_E2E_SKIP_BUILD) {
     run("pnpm", ["--filter", "@oa/shared", "build"]);
     run("pnpm", ["--filter", "@oa/server", "build"]);
@@ -171,7 +180,11 @@ export async function startServer(): Promise<() => Promise<void>> {
       ],
       { cwd: SERVER, stdio: "inherit", env: { ...devEnv(), CI: "1" } },
     );
-    const log = openSync(join(dir, "wrangler.log"), "a");
+    // Again right before spawn: the build above takes minutes, and a sibling
+    // worktree's server may have taken the port meanwhile.
+    if (await portBusy(PORT)) throw inUse(PORT);
+    const logPath = join(dir, "wrangler.log");
+    const log = openSync(logPath, "a");
     child = spawn(
       WRANGLER,
       [
@@ -197,12 +210,19 @@ export async function startServer(): Promise<() => Promise<void>> {
     proc.on("exit", () => {
       exited = true;
     });
+    // Ours, not whatever else answers on PORT: our wrangler is alive and has
+    // logged that it bound the port, and only then does /healthz count.
+    const ready = () =>
+      readFileSync(logPath, "utf8").includes(
+        `Ready on http://127.0.0.1:${PORT}`,
+      );
     const deadline = Date.now() + 120_000;
-    while (!(await healthy())) {
+    for (;;) {
       if (exited || Date.now() > deadline) {
-        const out = readFileSync(join(dir, "wrangler.log"), "utf8");
+        const out = readFileSync(logPath, "utf8");
         throw new Error(`fixtures: wrangler dev did not start\n${out}`);
       }
+      if (ready() && (await healthy()) && !exited) break;
       await new Promise((r) => setTimeout(r, 250));
     }
     return async () => {

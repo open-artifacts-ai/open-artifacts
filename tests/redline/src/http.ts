@@ -1,0 +1,460 @@
+import { createHash, randomBytes } from "node:crypto";
+import { API_ERROR_CODES } from "@oa/provisioning-contract";
+import { ERROR_CODES } from "@oa/shared";
+import {
+  claimHookSlot,
+  type PaceOpts,
+} from "../../../apps/dashboard/e2e/staging/hook-ledger.ts";
+import {
+  InfraError,
+  isNetworkError,
+  networkCode,
+  setupFetch,
+} from "./fetch-timeout.ts";
+import { note } from "./notes.ts";
+import { secretsOf, setPat, type Target } from "./targets.ts";
+
+// Fetch helpers. Every request uses redirect: "manual" (a 3xx is judged, never
+// followed). Failure text is status plus a body hash, never the body: bodies
+// can carry tokens, cookies or B's data.
+
+export type Cred =
+  | { kind: "pat"; token: string }
+  | { kind: "oauth"; token: string }
+  | { kind: "cookie"; name: string; value: string }
+  | { kind: "none" };
+
+const KNOWN_CODES: ReadonlySet<string> = new Set([
+  ...ERROR_CODES,
+  ...API_ERROR_CODES,
+  // RFC 6749's and the provider's OAuth errors.
+  "invalid_client",
+  "invalid_grant",
+  "invalid_redirect_uri",
+  "invalid_request",
+  "invalid_scope",
+  "invalid_token",
+  "unauthorized_client",
+  "unsupported_grant_type",
+]);
+
+/**
+ * A code a public log may show: one from shared's closed lists, else "other".
+ * The body's own string never reaches a log. Undefined when it names none.
+ */
+export function safeCode(code: unknown): string | undefined {
+  if (typeof code !== "string") return undefined;
+  return KNOWN_CODES.has(code) ? code : "other";
+}
+
+function bodyCode(body: string): string | undefined {
+  try {
+    const j = JSON.parse(body) as { error?: unknown } | null;
+    const e = j?.error;
+    return safeCode(
+      typeof e === "string" ? e : (e as { code?: unknown })?.code,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** Status, body hash, length and safe code: what a failure message may show. */
+export function describeRes(res: Response, body: string): string {
+  const h = createHash("sha256").update(body).digest("hex").slice(0, 16);
+  const code = bodyCode(body);
+  return `status ${res.status}, body sha256:${h} (${Buffer.byteLength(body)} bytes)${code ? `, code ${code}` : ""}`;
+}
+
+/** Reads the body as text, at most once; "" when there is none. */
+export async function readBody(res: Response): Promise<string> {
+  try {
+    return await res.text();
+  } catch {
+    return "";
+  }
+}
+
+/** fetch init carrying `cred`, always with redirect: "manual". */
+export function withCred(cred: Cred, init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers);
+  if (cred.kind === "pat" || cred.kind === "oauth")
+    headers.set("authorization", `Bearer ${cred.token}`);
+  else if (cred.kind === "cookie")
+    headers.set("cookie", `${cred.name}=${cred.value}`);
+  return { ...init, headers, redirect: "manual" };
+}
+
+/** asA/asB: init builders bound to one side's credential. */
+export function asPair(credA: Cred, credB: Cred) {
+  return {
+    asA: (init?: RequestInit) => withCred(credA, init),
+    asB: (init?: RequestInit) => withCred(credB, init),
+  };
+}
+
+/** fetch with redirect: "manual", whatever the Request says. */
+export const send = (req: Request): Promise<Response> =>
+  fetch(req, { redirect: "manual" });
+
+const IDEMPOTENT = new Set(["GET", "HEAD", "PUT"]);
+/** Backoff before try n+1 (n from 1): 250 ms, then 1 s. */
+export const RETRY_BACKOFF_MS = [250, 1000] as const;
+const where = (r: Request) => `${r.method} ${new URL(r.url).pathname}`;
+
+/**
+ * Sends an idempotent (GET, HEAD, PUT) request with up to 3 tries, retrying
+ * only what never got a usable answer: a network error (TypeError, reset,
+ * abort, timeout) or a 5xx. A 4xx, a 2xx and anything not idempotent are
+ * returned (or thrown) at once. Each retry is noted on the case (src/notes.ts).
+ * `sendFn` defaults to `send` (redirect: "manual").
+ */
+export async function retryIdempotent(
+  req: Request,
+  o: {
+    send?: (r: Request) => Promise<Response>;
+    backoff?: readonly number[];
+  } = {},
+): Promise<Response> {
+  const go = o.send ?? send;
+  if (!IDEMPOTENT.has(req.method.toUpperCase())) return go(req);
+  const backoff = o.backoff ?? RETRY_BACKOFF_MS;
+  const tries = backoff.length + 1;
+  for (let i = 1; ; i++) {
+    // A spare copy for the next try (a PUT body is single-use).
+    const spare = i < tries ? req.clone() : null;
+    let why: string;
+    try {
+      const res = await go(req);
+      if (res.status < 500 || !spare) return res;
+      await res.body?.cancel();
+      why = `status ${res.status}`;
+    } catch (e) {
+      if (!spare || !isNetworkError(e) || req.signal.aborted) throw e;
+      why = networkCode(e);
+    }
+    note(`${where(req)} retried (try ${i + 1} of ${tries}; ${why})`);
+    await new Promise((r) => setTimeout(r, backoff[i - 1]));
+    req = spare;
+  }
+}
+
+/**
+ * A probe's send: a request that got no response at all (it never reached a
+ * Worker) is sent once more; no response again is infra, never a verdict. A
+ * probe that didn't run proves nothing. Any response, whatever its status, is
+ * returned as is.
+ */
+export async function sendProbe(
+  req: Request,
+  go: (r: Request) => Promise<Response> = send,
+): Promise<Response> {
+  // Only an idempotent probe is sent again: a POST B wrongly accepted whose
+  // answer was lost could be refused on the retry (a refresh token now
+  // spent) and read as a pass. Anything else with no response is infra.
+  const idempotent = IDEMPOTENT.has(req.method.toUpperCase());
+  const spare = idempotent ? req.clone() : null;
+  try {
+    return await go(req);
+  } catch (e) {
+    if (!isNetworkError(e) || req.signal.aborted) throw e;
+    if (!spare)
+      throw new InfraError(
+        `probe ${where(req)} on ${new URL(req.url).host} got no response (${networkCode(e)}; not idempotent, not retried)`,
+        { cause: e },
+      );
+    note(`probe ${where(req)} retried once (no response: ${networkCode(e)})`);
+    try {
+      return await go(spare);
+    } catch (e2) {
+      if (!isNetworkError(e2) || spare.signal.aborted) throw e2;
+      throw new InfraError(
+        `probe ${where(req)} on ${new URL(req.url).host} got no response twice (${networkCode(e2)})`,
+        { cause: e2 },
+      );
+    }
+  }
+}
+
+/** JSON.parse that never puts body text in an error: status and hash only. */
+export function parseJson(res: Response, text: string, what: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new HttpError(`${what}: not JSON`, res, text);
+  }
+}
+
+export class HttpError extends Error {
+  readonly status: number;
+  constructor(what: string, res: Response, body: string) {
+    super(`${what}: ${describeRes(res, body)}`);
+    this.status = res.status;
+  }
+}
+
+/**
+ * Waits until a hook call to `t` fits the runner's hook budget (#1254,
+ * apps/dashboard/e2e/staging/hook-ledger.ts, shared with T19), then records it. Any request to a
+ * /__test/* path counts (the server charges the bucket before the key), so
+ * a raw probe there paces through this too. Returns the calls in the window.
+ */
+export const paceHook = (t: Target, o: PaceOpts = {}): Promise<number> =>
+  claimHookSlot(t.app, o);
+
+// Why a hook refused after its key verified: the 404 body's
+// error.details.reason, a fixed enum (keep in sync with @oa/shared
+// TEST_HOOK_REFUSALS; test/surfaces.test.ts asserts they match). Only these
+// words are ever read from a hook body.
+export const HOOK_REFUSALS = [
+  "bad_route",
+  "bad_input",
+  "spaces_blocked",
+  "user_refused",
+  "grant_refused",
+  "no_code",
+] as const;
+export type HookRefusal = (typeof HOOK_REFUSALS)[number];
+
+// otp/latest's no_code 404 also carries error.details.outcome, the last
+// code-send outcome for that address (keep in sync with @oa/shared
+// TEST_OTP_OUTCOMES; test/surfaces.test.ts asserts they match). Only
+// "pending" means "no code yet".
+export const HOOK_OTP_OUTCOMES = [
+  "pending",
+  "sent",
+  "used",
+  "expired",
+  "none",
+  "email_off",
+  "ineligible",
+  "pool_full",
+  "capped",
+  "resend_wait",
+  "send_failed",
+  "error",
+] as const;
+export type HookOtpOutcome = (typeof HOOK_OTP_OUTCOMES)[number];
+
+/** The otp outcome in a hook's 404 body, when it is one of HOOK_OTP_OUTCOMES. */
+export function hookOutcome(text: string): HookOtpOutcome | undefined {
+  let o: unknown;
+  try {
+    o = (JSON.parse(text) as { error?: { details?: { outcome?: unknown } } })
+      ?.error?.details?.outcome;
+  } catch {
+    return undefined;
+  }
+  return HOOK_OTP_OUTCOMES.find((x) => x === o);
+}
+
+/**
+ * The refusal reason in a hook's body, when it is one of HOOK_REFUSALS;
+ * "no_reason" otherwise (a refusal before the key, an older server, not JSON).
+ * Never returns any other body text.
+ */
+export function hookReason(text: string): HookRefusal | "no_reason" {
+  let r: unknown;
+  try {
+    r = (JSON.parse(text) as { error?: { details?: { reason?: unknown } } })
+      ?.error?.details?.reason;
+  } catch {
+    return "no_reason";
+  }
+  return HOOK_REFUSALS.find((x) => x === r) ?? "no_reason";
+}
+
+/**
+ * A setup hook (the world's seeding, the admin's session) answered an
+ * unexpected status: no red-line verdict, so infra. Its message is
+ * "infra: setup <hook> <reason> on <install> (<status, body sha256>)"; the
+ * reporter folds every case it blocked into one infra result (SETUP_HOOK_RE
+ * in report.ts).
+ */
+export class SetupHookError extends InfraError {
+  readonly status: number;
+  constructor(t: Target, path: string, res: Response, text: string) {
+    super(
+      `setup ${path} ${hookReason(text)} on ${t.name} (${describeRes(res, text)})`,
+    );
+    this.name = "SetupHookError";
+    this.status = res.status;
+  }
+}
+
+/**
+ * A hook's non-2xx answer: an HttpError (status, body hash) plus the refusal
+ * reason read from the body (hookReason: the enum word or "no_reason").
+ */
+export class HookError extends HttpError {
+  readonly reason: HookRefusal | "no_reason";
+  /** otp/latest's no_code only: the last code-send outcome. */
+  readonly outcome: HookOtpOutcome | undefined;
+  constructor(t: Target, path: string, res: Response, text: string) {
+    const reason = hookReason(text);
+    super(`${t.name} hook ${path} (${reason})`, res, text);
+    this.reason = reason;
+    this.outcome = hookOutcome(text);
+  }
+}
+
+/**
+ * POST a /__test/* hook with the target's key. Throws HookError unless 2xx;
+ * with `setup`, a SetupHookError (infra) instead.
+ */
+export async function hook(
+  t: Target,
+  path: string,
+  body?: unknown,
+  o: { setup?: boolean } = {},
+): Promise<unknown> {
+  if (!path.startsWith("/__test/"))
+    throw new Error("hook paths start with /__test/");
+  await paceHook(t);
+  let res: Response;
+  try {
+    res = await fetch(`${t.app}${path}`, {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        authorization: `Bearer ${secretsOf(t).hookKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body ?? {}),
+    });
+  } catch (e) {
+    // A setup hook (a POST: never retried) that got no answer is infra.
+    if (o.setup && isNetworkError(e))
+      throw new InfraError(
+        `setup ${path} no_response on ${t.name} (${networkCode(e)})`,
+        { cause: e },
+      );
+    throw e;
+  }
+  const text = await readBody(res);
+  if (res.status < 200 || res.status > 299)
+    throw o.setup
+      ? new SetupHookError(t, path, res, text)
+      : new HookError(t, path, res, text);
+  return parseJson(res, text, `${t.name} hook ${path}`);
+}
+
+/** The suite's admin test user: hooks never act on the owner. */
+export const adminEmail = (t: Target) => `redline-admin@${t.testDomain}`;
+
+/** A session cookie for a TEST_DOMAIN user via POST /__test/session. */
+export async function sessionCred(
+  t: Target,
+  email: string = adminEmail(t),
+  role: "admin" | "member" | "guest" = "admin",
+  o: { setup?: boolean } = {},
+): Promise<Cred> {
+  const out = (await hook(t, "/__test/session", { email, role }, o)) as {
+    cookie?: unknown;
+  };
+  if (typeof out.cookie !== "string" || !out.cookie)
+    throw new Error(`${t.name} session hook: no cookie`);
+  return { kind: "cookie", name: t.cookieName, value: out.cookie };
+}
+
+/** POST /api/v1/tokens with a session cookie: 201 { token }. */
+export async function mintPat(t: Target, cookie: Cred): Promise<Cred> {
+  const res = await fetch(
+    `${t.app}/api/v1/tokens`,
+    withCred(cookie, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-oa-request": "1" },
+      body: JSON.stringify({ label: "redline" }),
+    }),
+  );
+  const text = await readBody(res);
+  if (res.status !== 201) throw new HttpError(`${t.name} mint PAT`, res, text);
+  const token = (
+    parseJson(res, text, `${t.name} mint PAT`) as { token?: unknown }
+  ).token;
+  if (typeof token !== "string" || !token)
+    throw new Error(`${t.name} mint PAT: no token`);
+  return { kind: "pat", token };
+}
+
+export interface AdminCreds {
+  cookie: Cred;
+  pat: Cred;
+}
+
+/**
+ * The per-install credential: the admin test user's cookie, and its PAT (the
+ * CI secret when given, else minted). The PAT must belong to that user.
+ */
+export async function adminCreds(t: Target): Promise<AdminCreds> {
+  // Setup: a refused admin session is infra, not a verdict.
+  const cookie = await sessionCred(t, adminEmail(t), "admin", { setup: true });
+  const s = secretsOf(t);
+  let pat: Cred;
+  if (s.pat) pat = { kind: "pat", token: s.pat };
+  else {
+    pat = await mintPat(t, cookie);
+    if (pat.kind === "pat") setPat(t, pat.token);
+  }
+  const res = await retryIdempotent(
+    new Request(`${t.app}/api/v1/me`, withCred(pat)),
+  );
+  const text = await readBody(res);
+  if (res.status !== 200)
+    throw new HttpError(`${t.name} PAT /api/v1/me`, res, text);
+  const email = (
+    parseJson(res, text, `${t.name} /api/v1/me`) as {
+      user?: { email?: unknown };
+    }
+  ).user?.email;
+  if (email !== adminEmail(t))
+    throw new Error(`${t.name}: the PAT is not the admin test user's`);
+  return { cookie, pat };
+}
+
+/** A fresh marker: REDLINE-<install>-<random>. */
+export const newMarker = (t: Target) =>
+  `REDLINE-${t.name}-${randomBytes(9).toString("base64url")}`;
+
+/** Publishes a private markdown artifact whose title and content carry the marker. */
+export async function publishMarker(
+  t: Target,
+  pat: Cred,
+  marker: string,
+): Promise<string> {
+  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra. retryFresh: a new
+  // private marker artifact with a random title; callers use only its id and
+  // marker, and nothing lists or counts markers on their own install, so one
+  // retry after a reused-socket reset can at worst leave a spare (#1133).
+  const { res, text } = await setupFetch(
+    t.name,
+    new Request(
+      `${t.app}/api/v1/artifacts`,
+      withCred(pat, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: marker,
+          format: "markdown",
+          content: `# ${marker}\n\nRed-line marker. Never visible outside ${t.name}.\n`,
+        }),
+      }),
+    ),
+    { retryFresh: "new-artifact" },
+  );
+  if (res.status < 200 || res.status > 299)
+    throw new HttpError(`${t.name} seed marker`, res, text);
+  const id = (parseJson(res, text, `${t.name} seed marker`) as { id?: unknown })
+    .id;
+  if (typeof id !== "string") throw new Error(`${t.name} seed marker: no id`);
+  return id;
+}
+
+/**
+ * True when a response came from the content app: it alone sets
+ * Cross-Origin-Resource-Policy: cross-origin with Access-Control-Allow-Origin: *
+ * on every response (apps/server/src/content/app.ts).
+ */
+export const fromContentApp = (res: Response): boolean =>
+  res.headers.get("cross-origin-resource-policy") === "cross-origin" &&
+  res.headers.get("access-control-allow-origin") === "*";

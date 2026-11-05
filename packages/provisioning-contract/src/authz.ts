@@ -1,0 +1,588 @@
+import type {
+  InstallState,
+  JobKind,
+  PrincipalKind,
+  ProvisioningEnv,
+  TokenKind,
+  TokenScope,
+} from "./enums.js";
+import type { RouteId } from "./routes.js";
+
+// The authz table (design v7 4.2): one data table, one enforcement function.
+// An MCP tool has no row of its own: it uses its route's row.
+
+export const AUTHZ_COLUMNS = [
+  "admin",
+  "token",
+  "oidc",
+  "user",
+  "test-admin",
+  "none",
+] as const;
+export type AuthzColumn = (typeof AUTHZ_COLUMNS)[number];
+
+/**
+ * allow: `reach` "all" or "own" (the handler scopes to the principal's
+ * installs: O own `rl-` test installs, U its own; outside it is 404), and for
+ * tokens the one `scope` the row needs and, where set, the one `tokenKind`
+ * that may use it (anything else, unset included, is forbidden). `note` is the
+ * business rule the handler adds after authz.
+ */
+export type AuthzRule =
+  | { allow: false; code: "unauthenticated" | "forbidden" }
+  | {
+      allow: true;
+      reach: "all" | "own";
+      scope?: TokenScope;
+      tokenKind?: TokenKind;
+      note?: string;
+    };
+
+const all = { allow: true, reach: "all" } as const;
+const own = { allow: true, reach: "own" } as const;
+const no = { allow: false, code: "forbidden" } as const;
+const unauth = { allow: false, code: "unauthenticated" } as const;
+const tok = (scope: TokenScope, note?: string): AuthzRule => ({
+  allow: true,
+  reach: "all",
+  scope,
+  ...(note ? { note } : {}),
+});
+const row = (
+  admin: AuthzRule,
+  token: AuthzRule,
+  oidc: AuthzRule,
+  user: AuthzRule,
+  noAuth: AuthzRule = unauth,
+  // Staging's test admin (#1053): refused unless its row says otherwise.
+  testAdmin: AuthzRule = no,
+): Record<AuthzColumn, AuthzRule> => ({
+  admin,
+  token,
+  oidc,
+  user,
+  "test-admin": testAdmin,
+  none: noAuth,
+});
+/** A row with the test admin's own rule (#1053: reads, create, upgrade). */
+const withTestAdmin = (
+  r: Record<AuthzColumn, AuthzRule>,
+  testAdmin: AuthzRule,
+): Record<AuthzColumn, AuthzRule> => ({ ...r, "test-admin": testAdmin });
+/** The test admin's reach: the `rl-` test installs, as O's (oidcOwns). */
+const taOwn = { ...own, note: "rl- and testHooks (oidcOwns)" } as const;
+
+const opRow = row(all, tok("installs:write"), own, no);
+const adminOnly = row(all, no, no, no);
+/**
+ * Admin MCP only (#1008): an OAuth grant with installs:write, which /mcp alone
+ * authenticates (authenticate() answers it 401 on /v1). Not the admin session,
+ * not an `oat_` token. It stays this one rule: tested, and on these routes only.
+ */
+const adminMcpOnly = row(
+  no,
+  { allow: true, reach: "all", scope: "installs:write", tokenKind: "oauth" },
+  no,
+  no,
+);
+
+export const AUTHZ: Readonly<Record<RouteId, Record<AuthzColumn, AuthzRule>>> =
+  {
+    R1: row(all, all, all, all, unauth, all),
+    R2: row(all, tok("installs:read"), own, own, unauth, taOwn),
+    R3: row(
+      all,
+      tok("installs:read", "ownerEmail needs installs:pii"),
+      own,
+      own,
+      unauth,
+      taOwn,
+    ),
+    R4: row(
+      { ...all, note: "3.3 field rules (checkCreateFields)" },
+      tok("installs:write", "3.3 field rules (checkCreateFields)"),
+      {
+        ...own,
+        note: "rl- slug, testHooks: true, @STAGING_TEST_DOMAIN owner (checkCreateFields)",
+      },
+      { ...own, note: "self-serve policy (4.2)" },
+      unauth,
+      { ...taOwn, note: "O's field rules (checkCreateFields)" },
+    ),
+    R5: withTestAdmin(opRow, taOwn),
+    R6: opRow,
+    R7: opRow,
+    R8: opRow,
+    R9: row(all, tok("installs:delete"), own, {
+      ...own,
+      note: "not while suspended",
+    }),
+    R10: row(all, tok("installs:delete"), own, own),
+    R11: row(
+      { ...all, note: "deleting needs authAt within 10 min (reauth_required)" },
+      tok(
+        "installs:delete",
+        "failed creates only (TRANSITIONS actor T); deleting: 403 forbidden with details.needs admin_session; skipDirectoryRevoke: PURGE_FIELD_RULES",
+      ),
+      { ...own, note: "skipDirectoryRevoke: PURGE_FIELD_RULES" },
+      no,
+    ),
+    R12: opRow,
+    R13: {
+      ...adminOnly,
+      admin: { ...all, note: "force needs a live lease, audited" },
+    },
+    R14: row(all, tok("installs:read"), own, own, unauth, taOwn),
+    R15: row(
+      all,
+      tok("installs:read"),
+      { ...own, note: "sealed only to the creating OIDC caller, once" },
+      own,
+      unauth,
+      taOwn,
+    ),
+    R16: row(all, tok("installs:read"), all, no, unauth, all),
+    R17: row(
+      all,
+      tok("audit:read", "email detail fields need installs:pii"),
+      { ...own, note: "own actor rows" },
+      no,
+      unauth,
+      { ...own, note: "own actor rows" },
+    ),
+    R18: row(
+      all,
+      tok("installs:read"),
+      all,
+      { ...all, note: "RL_PV_SLUG_IP" },
+      unauth,
+      all,
+    ),
+    R19: adminOnly,
+    R20: adminOnly,
+    R21: adminOnly,
+    // Browser hosts; a bearer there is 401 (host policy).
+    R22: row(all, all, all, all, all, all),
+    R23: row(all, all, all, all, all, all),
+    R24: row(all, unauth, unauth, all, unauth, all),
+    R25: { ...adminOnly, admin: { ...all, note: "typed slug, audited" } },
+    R26: row(no, no, { ...own, note: "staging, rl- and testHooks" }, no),
+    R27: row(all, tok("installs:read"), no, no),
+    // Only the pinned staging-test-admin.yml caller (authorize, oidcWorkflow).
+    R28: row(no, no, { ...own, note: "staging-test-admin.yml only" }, no),
+    // #1008: each flip is one person's yes for that install and env.
+    R29: adminMcpOnly,
+    R30: adminMcpOnly,
+  };
+
+export type AuthzPrincipal = {
+  kind: PrincipalKind;
+  scopes?: readonly TokenScope[];
+  /** Tokens: "oat" or "oauth", from the row (AuthzRule.tokenKind). */
+  tokenKind?: TokenKind;
+  /**
+   * OIDC only: which pinned workflow minted the JWT. "test-admin" may call
+   * R28 and nothing else; any other OIDC caller never calls R28 (#1053).
+   * "test-member" may call only TEST_MEMBER.routes, on TEST_MEMBER.slug.
+   */
+  oidcWorkflow?: OidcWorkflow;
+} | null;
+/** The pinned workflows an OIDC JWT may come from (authorize). */
+export type OidcWorkflow = "redline" | "test-admin" | "test-member";
+
+/**
+ * The staging test member's workflow (staging-test-member.yml): R26 on the
+ * one install `rl-agents` (mint or revoke), R15 to read that job's sealed
+ * result, and R2 to find the install's id by its slug. Every other route is
+ * 403, and reach is that one slug (model.ts reachSql and inReach; the
+ * provisioner's checkOidcScope holds its jobs to it too).
+ */
+export const TEST_MEMBER = {
+  slug: "rl-agents",
+  routes: ["R2", "R15", "R26"] as readonly RouteId[],
+  /** Suffix of its actorKey and rateKey (`oidc:<repository_id>:test-member`). */
+  actorSuffix: ":test-member",
+} as const;
+/** The test member's reach: exactly `rl-agents`, with test hooks. */
+export const testMemberOwns = (i: { slug: string; testHooks: boolean }) =>
+  i.slug === TEST_MEMBER.slug && i.testHooks === true;
+export type AuthzDecision =
+  | { ok: true; reach: "all" | "own" }
+  | { ok: false; code: "unauthenticated" | "forbidden" };
+
+/**
+ * The enforcement function (the authz step of the 4.2 check order). `null` is
+ * no credential. Prod refuses OIDC outright (Q1); system principals never
+ * call a route.
+ */
+export function authorize(
+  route: RouteId,
+  principal: AuthzPrincipal,
+  env: ProvisioningEnv,
+): AuthzDecision {
+  if (principal?.kind === "system") return { ok: false, code: "forbidden" };
+  if (
+    (principal?.kind === "oidc" || principal?.kind === "test-admin") &&
+    !OIDC_LIMITS.envs.includes(env)
+  )
+    return { ok: false, code: "unauthenticated" };
+  if (principal?.kind === "oidc") {
+    const testAdmin = principal.oidcWorkflow === "test-admin";
+    if (testAdmin !== (route === "R28"))
+      return { ok: false, code: "forbidden" };
+    if (
+      principal.oidcWorkflow === "test-member" &&
+      !TEST_MEMBER.routes.includes(route)
+    )
+      return { ok: false, code: "forbidden" };
+  }
+  const rule = AUTHZ[route][principal ? principal.kind : "none"];
+  if (!rule.allow) return { ok: false, code: rule.code };
+  if (rule.scope && !principal?.scopes?.includes(rule.scope))
+    return { ok: false, code: "forbidden" };
+  if (rule.tokenKind && principal?.tokenKind !== rule.tokenKind)
+    return { ok: false, code: "forbidden" };
+  return { ok: true, reach: rule.reach };
+}
+
+const emailDomain = (e: string | undefined) =>
+  e?.includes("@") ? e.slice(e.lastIndexOf("@") + 1).toLowerCase() : null;
+
+/** The GitHub OIDC principal (4.4, Q1): staging only, own `rl-` test installs. */
+export const OIDC_LIMITS = {
+  envs: ["staging"] as readonly ProvisioningEnv[],
+  slugPrefix: "rl-",
+  testHooks: true,
+} as const;
+
+/**
+ * O's own R4 limits (3.3): `rl-` slug, testHooks true, owner
+ * @STAGING_TEST_DOMAIN. checkCreateFields enforces the same (and staging
+ * only) with every other field rule, so the policy step needs only that call.
+ */
+export const oidcMayCreate = (
+  b: { slug: string; testHooks?: boolean; ownerEmail?: string },
+  stagingTestDomain: string,
+) =>
+  b.slug.startsWith(OIDC_LIMITS.slugPrefix) &&
+  b.testHooks === true &&
+  emailDomain(b.ownerEmail) === stagingTestDomain.toLowerCase();
+export const oidcOwns = (i: { slug: string; testHooks: boolean }) =>
+  i.slug.startsWith(OIDC_LIMITS.slugPrefix) && i.testHooks;
+
+/** Protocol routes' rows (4.2): transport and consent, not API routes. */
+export const PROTOCOL_AUTHZ = {
+  "/mcp": {
+    admin: "admin host 404",
+    token: "yes; each tool uses its route's row",
+    oidc: "staging only; each tool uses its route's O row",
+    user: "401",
+    "test-admin": "401 (an admin-host session, no bearer)",
+    none: "401",
+  },
+  "/oauth/authorize": {
+    admin: "yes (session required)",
+    token: "api host 404",
+    oidc: "n/a",
+    user: "403",
+    "test-admin": "403 (no OAuth grant: a grant is a token)",
+    none: "bounce page, then 302 to /auth/start",
+  },
+} as const satisfies Record<string, Record<AuthzColumn, string>>;
+
+/**
+ * Field rules for R4 per principal (3.3), enforced by checkCreateFields in
+ * the policy step:
+ * - `forbidden`: 403 forbidden if present.
+ * - `server_set`: 403 forbidden if present; the server then sets it.
+ * - `ignored`: accepted and dropped.
+ * - `required`: missing is 400 invalid_input.
+ * - `required_true`: missing is 400; anything but true is 403.
+ * - `required_in_auth_domains`: required, and the email's domain must be in
+ *   `auth.domains` (403).
+ * - `required_staging_test_domain`: required, and the email must be
+ *   `@<STAGING_TEST_DOMAIN>` (403).
+ * - `required_test_prefix`: required, and must start `rl-` (403).
+ * - `any`: no field rule (the body schema and slug rules still apply).
+ * - `{ staging, prod }`: the rule differs by environment.
+ */
+export type FieldRule =
+  | "required"
+  | "required_true"
+  | "required_in_auth_domains"
+  | "required_staging_test_domain"
+  | "required_test_prefix"
+  | "any"
+  | "optional"
+  | "forbidden"
+  | "ignored"
+  | "server_set";
+export type EnvFieldRule =
+  | FieldRule
+  | Readonly<Record<ProvisioningEnv, FieldRule>>;
+export const CREATE_FIELDS = [
+  "slug",
+  "ownerEmail",
+  "tier",
+  "auth",
+  "version",
+  "sendWelcome",
+  "testHooks",
+  "turnstile",
+] as const;
+export type CreateField = (typeof CREATE_FIELDS)[number];
+export type CreatePrincipal = "admin" | "token" | "oidc" | "user";
+/**
+ * Whose field rules a principal kind follows: the test admin (#1053) takes
+ * O's (rl- slug, testHooks, a test-domain owner); system none.
+ */
+export const fieldRulesOf = (kind: PrincipalKind): CreatePrincipal | null =>
+  kind === "system" ? null : kind === "test-admin" ? "oidc" : kind;
+
+export const CREATE_FIELD_RULES: Readonly<
+  Record<CreateField, Record<CreatePrincipal, EnvFieldRule>>
+> = {
+  // O squats nothing: `rl-` only, and nothing at all outside staging (4.4).
+  slug: {
+    admin: "any",
+    token: "any",
+    oidc: { staging: "required_test_prefix", prod: "forbidden" },
+    user: "any",
+  },
+  ownerEmail: {
+    admin: "required",
+    token: "required_in_auth_domains",
+    oidc: "required_staging_test_domain",
+    user: "server_set",
+  },
+  tier: {
+    admin: "required",
+    token: "required",
+    oidc: "required",
+    user: "server_set",
+  },
+  auth: {
+    admin: "required",
+    token: "required",
+    oidc: "required",
+    user: "server_set",
+  },
+  version: {
+    admin: "optional",
+    token: "optional",
+    oidc: "optional",
+    user: "forbidden",
+  },
+  sendWelcome: {
+    admin: "optional",
+    token: "forbidden",
+    oidc: "forbidden",
+    // Always true for self-serve.
+    user: "server_set",
+  },
+  // Prod refuses TEST_DOMAIN in the API too, not only in wfp.ts.
+  testHooks: {
+    admin: { staging: "optional", prod: "forbidden" },
+    token: "forbidden",
+    oidc: { staging: "required_true", prod: "forbidden" },
+    user: "forbidden",
+  },
+  // U's token is checked in its own step (turnstile_failed, 4.2).
+  turnstile: {
+    admin: "ignored",
+    token: "ignored",
+    oidc: "ignored",
+    user: "required",
+  },
+};
+
+/** The rule for one field, principal and environment. */
+export function createFieldRule(
+  field: CreateField,
+  principal: CreatePrincipal,
+  env: ProvisioningEnv,
+): FieldRule {
+  const r = CREATE_FIELD_RULES[field][principal];
+  return typeof r === "string" ? r : r[env];
+}
+
+export type CreateFieldRefusal = {
+  field: CreateField;
+  code: "forbidden" | "invalid_input";
+};
+
+/**
+ * The 3.3 field rules on a parsed R4 body, in the 4.2 order: any present
+ * forbidden or server-set field first (403), then missing required fields
+ * (400), then value rules (403). U's turnstile is left to its own step. O
+ * is held to `rl-` slugs on staging and refused on prod here too, so this one
+ * call enforces every 3.3 rule. auth.domainCodes adds one value rule for every
+ * principal: code sign-in only admits auth.domains, so the owner's domain must
+ * be one (#1088). Null when the body passes.
+ */
+export function checkCreateFields(
+  body: Readonly<Partial<Record<CreateField, unknown>>> & {
+    auth?: { domains: readonly string[]; domainCodes?: boolean };
+  },
+  principal: CreatePrincipal,
+  env: ProvisioningEnv,
+  stagingTestDomain: string,
+): CreateFieldRefusal | null {
+  const rules = CREATE_FIELDS.map(
+    (f) => [f, createFieldRule(f, principal, env)] as const,
+  );
+  const has = (f: CreateField) => body[f] !== undefined;
+  for (const [f, r] of rules)
+    if ((r === "forbidden" || r === "server_set") && has(f))
+      return { field: f, code: "forbidden" };
+  for (const [f, r] of rules)
+    if (r.startsWith("required") && !has(f) && f !== "turnstile")
+      return { field: f, code: "invalid_input" };
+  for (const [f, r] of rules) {
+    const v = body[f];
+    if (r === "required_true" && v !== true)
+      return { field: f, code: "forbidden" };
+    if (
+      r === "required_test_prefix" &&
+      !(typeof v === "string" && v.startsWith(OIDC_LIMITS.slugPrefix))
+    )
+      return { field: f, code: "forbidden" };
+    if (
+      r === "required_in_auth_domains" &&
+      !(body.auth?.domains ?? [])
+        .map((d) => d.toLowerCase())
+        .includes(emailDomain(v as string) ?? "")
+    )
+      return { field: f, code: "forbidden" };
+    if (
+      r === "required_staging_test_domain" &&
+      emailDomain(v as string) !== stagingTestDomain.toLowerCase()
+    )
+      return { field: f, code: "forbidden" };
+  }
+  if (
+    body.auth?.domainCodes === true &&
+    !body.auth.domains
+      .map((d) => d.toLowerCase())
+      .includes(emailDomain(body.ownerEmail as string) ?? "")
+  )
+    return { field: "ownerEmail", code: "forbidden" };
+  return null;
+}
+
+/**
+ * Field rules for R11 per principal (3.4, 4.2): `skipDirectoryRevoke` is
+ * admin session only; any other principal sending it is 403 forbidden. The
+ * purge_install tool leaves it out of its input (9A.5), so on /mcp it is
+ * -32602 before policy runs.
+ */
+export const PURGE_FIELDS = ["skipDirectoryRevoke"] as const;
+export type PurgeField = (typeof PURGE_FIELDS)[number];
+export const PURGE_FIELD_RULES: Readonly<
+  Record<PurgeField, Record<CreatePrincipal, "optional" | "forbidden">>
+> = {
+  skipDirectoryRevoke: {
+    admin: "optional",
+    token: "forbidden",
+    oidc: "forbidden",
+    user: "forbidden",
+  },
+};
+
+/** The R11 field rules on a parsed body. Null when the body passes. */
+export function checkPurgeFields(
+  body: Readonly<Partial<Record<PurgeField, unknown>>>,
+  principal: CreatePrincipal,
+): { field: PurgeField; code: "forbidden" } | null {
+  for (const f of PURGE_FIELDS)
+    if (
+      PURGE_FIELD_RULES[f][principal] === "forbidden" &&
+      body[f] !== undefined
+    )
+      return { field: f, code: "forbidden" };
+  return null;
+}
+
+// TRANSITIONS (5.1): used by the API, re-checked by the provisioner. A =
+// admin session or OIDC within its scope; T = agent token (4.1: A's rows
+// except purging a soft-deleted install, and the admin-only R13 and R26 rows
+// its authz row already refuses); U = self-serve owner; S = scheduler.
+// `cleanup` is compensation inserted by R25 and the sweep, never checked here.
+export type TransitionActor = "A" | "T" | "U" | "S";
+export type Transition = {
+  actors: readonly TransitionActor[];
+  to: readonly InstallState[];
+};
+export type TransitionFrom = InstallState | "none";
+
+const t = (actors: TransitionActor[], ...to: InstallState[]): Transition => ({
+  actors,
+  to,
+});
+// Beyond the 5.1 table, which lists state changes only: R13 release-lease
+// (any non-deleted state, no change) and R26 redline_creds (active, no
+// change). Without these rows both routes would always be invalid_state.
+const lease = (s: InstallState) => ({ release_lease: t(["A"], s) });
+
+export const TRANSITIONS: Readonly<
+  Record<TransitionFrom, Partial<Record<JobKind, Transition>>>
+> = {
+  none: { create: t(["A", "T", "U"], "provisioning") },
+  provisioning: { ...lease("provisioning") },
+  failed: {
+    retry: t(["A", "T"], "provisioning"),
+    purge: t(["A", "T"], "deleted"),
+    discard: t(["A", "T"], "deleted"),
+    ...lease("failed"),
+  },
+  active: {
+    // S: the scheduler's fleet rollout (#955); never from suspended.
+    upgrade: t(["A", "T", "S"], "active"),
+    rollback: t(["A", "T"], "active"),
+    suspend: t(["A", "T"], "suspended"),
+    delete: t(["A", "T", "U"], "deleting"),
+    redline_creds: t(["A"], "active"),
+    // R29, R30 (#1008): no state change. T: an OAuth grant, by their authz
+    // rows; the provisioner's recheck reads the grant again.
+    update: t(["T"], "active"),
+    ...lease("active"),
+  },
+  suspended: {
+    resume: t(["A", "T"], "active"),
+    upgrade: t(["A", "T"], "suspended"),
+    rollback: t(["A", "T"], "suspended"),
+    delete: t(["A", "T"], "deleting"),
+    ...lease("suspended"),
+  },
+  // Grace: restore goes back to active, or to suspended if it was. The
+  // scheduler purges at purge_at unless suspended_at is set. A token may not
+  // purge here (4.1): the API answers 403 forbidden with
+  // details.needs admin_session (TOKEN_DELETING_PURGE), not invalid_state.
+  deleting: {
+    restore: t(["A", "T", "U"], "active", "suspended"),
+    purge: t(["A", "S"], "deleted"),
+    ...lease("deleting"),
+  },
+  deleted: {},
+};
+
+/**
+ * R11 by a token on a `deleting` install (4.1, 4.2): 403 forbidden with these
+ * details instead of 409 invalid_state, on /v1 and /mcp alike.
+ */
+export const TOKEN_DELETING_PURGE = {
+  code: "forbidden",
+  details: (adminOrigin: string, installId: string) => ({
+    needs: "admin_session" as const,
+    url: `${adminOrigin}/installs/${installId}`,
+  }),
+} as const;
+
+/** Anything not in TRANSITIONS is 409 invalid_state. */
+export function canTransition(
+  from: TransitionFrom,
+  kind: JobKind,
+  actor: TransitionActor,
+): boolean {
+  return TRANSITIONS[from][kind]?.actors.includes(actor) ?? false;
+}

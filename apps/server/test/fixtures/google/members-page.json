@@ -1,0 +1,11 @@
+{
+  "members": [
+    {
+      "id": "100000000000000000001",
+      "email": "ada@example.com",
+      "type": "USER"
+    },
+    { "id": "group-sub-1", "email": "Eng-Sub@example.com", "type": "GROUP" },
+    { "id": "C0123", "type": "CUSTOMER" }
+  ]
+}

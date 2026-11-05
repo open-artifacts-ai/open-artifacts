@@ -1,5 +1,6 @@
 import { type Api, makeApi } from "../cf.ts";
 import { decide, detectPlan, warnings } from "../plan.ts";
+import { providersOf, type Signin } from "../signin.ts";
 import type { State } from "../state.ts";
 import { type Ctx, NeedInput, type Step } from "../step.ts";
 import {
@@ -11,7 +12,12 @@ import {
   type ZoneScope,
   zoneScopeFor,
 } from "../tokens.ts";
-import { downgradeMessage, versionInfo } from "../version-guard.ts";
+import {
+  belowMinUpgradeMessage,
+  downgradeMessage,
+  unknownLiveMessage,
+  versionInfo,
+} from "../version-guard.ts";
 import { reusesDeployToken } from "./secrets.ts";
 
 /** Hosts lacking a zone, found by check and reported by apply. */
@@ -110,7 +116,15 @@ export async function tokenIssues(
 ): Promise<TokenIssue[]> {
   const quiet = ctx.opts.ci || ctx.opts.strict;
   const out: TokenIssue[] = [];
+  // --auth-providers without access: the Access token is neither needed nor
+  // probed. (Only the flag: prereqs reads nothing from the Worker; a missing
+  // or failing token is a note here, never a refusal.)
+  const flag = ctx.opts.signinFlags.AUTH_PROVIDERS;
+  const accessOff =
+    flag !== undefined &&
+    !providersOf({ AUTH_PROVIDERS: flag } as Signin).includes("access");
   for (const t of tokens({ name: ctx.opts.name })) {
+    if (t.id === "access" && accessOff) continue;
     const zoneScope = zoneScopeFor(t, ids.zones);
     const base = {
       id: t.id,
@@ -193,6 +207,12 @@ export const prereqs: Step = {
       throw new Error("pnpm not found on PATH");
     // First, so an older checkout stops before any step has a side effect (--check only reports).
     ctx.version = await versionInfo(state, ctx);
+    // #1315: too old to upgrade from straight to this release; nothing bypasses it.
+    if (ctx.version.belowMinUpgrade && !ctx.opts.check)
+      throw new NeedInput(belowMinUpgradeMessage(ctx.version));
+    // #1427: an unknown deployed version could be below it.
+    if (ctx.version.unknownLive && !ctx.opts.check)
+      throw new NeedInput(unknownLiveMessage(ctx.version, ctx.opts.appHost));
     if (ctx.version.downgrade && !ctx.opts.allowDowngrade && !ctx.opts.check)
       throw new NeedInput(downgradeMessage(ctx.version));
     const who = JSON.parse(await ctx.wrangler(["whoami", "--json"])) as {

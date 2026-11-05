@@ -2,7 +2,13 @@
 // by scripts/emit-email-templates.ts). Every value is untrusted: stripped of
 // control characters (CR/LF included) and length-capped everywhere, then
 // HTML-escaped for the .html part, so nothing can inject headers or markup.
-import type { Format, ShareRole } from "@oa/shared";
+import {
+  type Format,
+  orderSignInMethods,
+  type ShareRecipient,
+  type ShareRole,
+} from "@oa/shared";
+import type { SignInProvider } from "../auth/config.js";
 import { escapeHtml } from "../mcp/template.js";
 import { effectiveName } from "../services/users.js";
 import {
@@ -94,11 +100,42 @@ const FORMAT_LABEL: Record<Format, string> = {
   markdown: "Markdown doc",
   code: "Code",
   pdf: "PDF",
+  image: "Image",
 };
 const ROLE_LABEL: Record<ShareRole, string> = {
   viewer: "Viewer",
   editor: "Editor",
 };
+
+const METHOD_PHRASE: Record<SignInProvider, (to: string) => string> = {
+  google: () => "your Google account",
+  access: () => "your organization's single sign-on",
+  email: (to) => `a one-time code sent to ${to}`,
+};
+
+/**
+ * How `to` signs in, from the sign-in methods that can admit that address
+ * (services/reach.ts), never a method this install doesn't offer it. Empty:
+ * they can't sign in yet and need an invite.
+ */
+export function signInSentence(
+  methods: readonly SignInProvider[],
+  to: string,
+  p: {
+    instance: string;
+    inviter: string;
+    /** Why they can't sign in (ShareResult.recipient.reason), when no method admits them. */
+    cantSignIn?: ShareRecipient["reason"];
+  },
+): string {
+  const parts = orderSignInMethods(methods).map((m) => METHOD_PHRASE[m](to));
+  if (parts.length > 0) return `You'll sign in with ${parts.join(" or ")}.`;
+  const instance = oneLine(p.instance, NAME_MAX);
+  // Design's final copy (review #799).
+  return p.cantSignIn === "needs_invite"
+    ? `You can't sign in to ${instance} yet. Ask an admin there to invite you, then open this link again.`
+    : `This address can't sign in to ${instance}. Ask ${oneLine(p.inviter, NAME_MAX)} to share it with an address that can.`;
+}
 
 type Common = {
   inviter: string;
@@ -139,26 +176,39 @@ function render(
   };
 }
 
+/** How the recipient can sign in: the methods that admit their address. */
+type SignIn = {
+  signIn: readonly SignInProvider[];
+  /** With no method: why (ShareResult.recipient.reason), for the share copy. */
+  cantSignIn?: ShareRecipient["reason"];
+};
+
 /** A member invite, linking to the instance's sign-in page. */
-export function inviteEmail(p: Common): EmailContent {
+export function inviteEmail(p: Common & SignIn): EmailContent {
   const { origin, values } = common(p);
   return render(
     INVITE_HTML,
     INVITE_TXT,
     "{{inviterName}} added you to {{instanceName}}",
-    { ...values, signInUrl: linkOn(origin, "/sign-in") },
+    {
+      ...values,
+      signInUrl: linkOn(origin, "/sign-in"),
+      signInLine: `There's no password to set up. ${signInSentence(p.signIn, values.recipientEmail, p)}`,
+      signInPreheader: signInSentence(p.signIn, "this address", p),
+    },
   );
 }
 
 /** An artifact shared with a non-member, linking to its viewer URL. */
 export function shareEmail(
-  p: Common & {
-    title: string;
-    /** Viewer path on the app host, e.g. `/a/<id>`. */
-    path: string;
-    format: Format;
-    role: ShareRole;
-  },
+  p: Common &
+    SignIn & {
+      title: string;
+      /** Viewer path on the app host, e.g. `/a/<id>`. */
+      path: string;
+      format: Format;
+      role: ShareRole;
+    },
 ): EmailContent {
   const { origin, values } = common(p);
   return render(
@@ -171,6 +221,7 @@ export function shareEmail(
       artifactUrl: linkOn(origin, p.path),
       artifactFormat: FORMAT_LABEL[p.format],
       role: ROLE_LABEL[p.role],
+      signInLine: signInSentence(p.signIn, values.recipientEmail, p),
     },
   );
 }
@@ -219,5 +270,120 @@ export function loginCodeEmail(p: {
     CODE_TXT,
     "Your {{instanceName}} sign-in code",
     values,
+  );
+}
+
+const SPACE_ROLE_LABEL: Record<"viewer" | "editor" | "manager", string> = {
+  viewer: "Viewer",
+  editor: "Editor",
+  manager: "Manager",
+};
+
+const SELF_ADD_TXT = `{{adminName}} added themselves to {{spaceName}} on {{instanceName}} as {{role}}.
+
+You get this email because you manage this space. Org admins can join any shared space, and when they do, its managers hear about it.
+
+Review the space's members: {{membersUrl}}
+
+{{appHost}}
+`;
+
+const SELF_ADD_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Admin joined a space</title></head>
+<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<p><strong>{{adminName}}</strong> added themselves to <strong>{{spaceName}}</strong> on {{instanceName}} as {{role}}.</p>
+<p>You get this email because you manage this space. Org admins can join any shared space, and when they do, its managers hear about it.</p>
+<p><a href="{{membersUrl}}">Review the space's members</a></p>
+<p style="color:#5d636e">{{appHost}}</p>
+</body></html>
+`;
+
+/**
+ * To a space's managers when an org admin adds themselves to it (P3 T9,
+ * space.admin_self_add). Names only; the link points to the app host.
+ */
+export function spaceSelfAddEmail(p: {
+  admin: string;
+  instance: string;
+  recipient: string;
+  appHost: string;
+  space: string;
+  role: "viewer" | "editor" | "manager";
+}): EmailContent {
+  const { origin, values } = common({ ...p, inviter: p.admin });
+  return render(
+    SELF_ADD_HTML,
+    SELF_ADD_TXT,
+    "{{adminName}} joined {{spaceName}}",
+    {
+      ...values,
+      adminName: oneLine(p.admin, NAME_MAX),
+      spaceName: oneLine(p.space, NAME_MAX),
+      role: SPACE_ROLE_LABEL[p.role],
+      membersUrl: linkOn(origin, "/settings/spaces"),
+    },
+  );
+}
+
+/** Why the directory alert went out (P3 T13). */
+export type DirectoryAlert =
+  | "unhealthy"
+  | "customer_mismatch"
+  | "scope_missing"
+  | "break_glass"
+  | "disconnected"
+  | "lifts_paused";
+
+const DIRECTORY_ALERT_LINE: Record<DirectoryAlert, string> = {
+  unhealthy:
+    "Google directory sync has been failing for 24 hours. People keep the access they had at the last successful sync until it recovers.",
+  customer_mismatch:
+    "Directory sync is paused and people synced from Google can't sign in: the connected Google account belongs to a different Google Workspace than the one this instance was connected to. Sign in with Google and reconnect the directory to restore their access.",
+  scope_missing:
+    "Google directory sync stopped: a permission it needs was removed. Reconnect the directory and grant every permission.",
+  break_glass:
+    "Your owner account just opened the directory settings while sync is blocked by a Google Workspace mismatch. Only the directory status, connect and sync pages are open to it until the directory is reconnected. If this wasn't you, secure your Google account and check the audit log.",
+  lifts_paused:
+    "Directory sync has been unable to lift restrictions for 24 hours: a restricted group can't be fully read from Google. New restrictions still apply, but people who left a restricted group stay restricted until it can be read. Check the restricted groups in the directory settings.",
+  disconnected:
+    "Google Workspace was disconnected from this instance, and directory sync has stopped. People synced from Google keep the access they have now. If sync was blocked by a Google Workspace mismatch, they stay blocked until an owner reconnects the directory. If this wasn't expected, check the audit log.",
+};
+
+const DIRECTORY_TXT = `{{alertLine}}
+
+You get this email because you own {{instanceName}}.
+
+Open directory settings: {{settingsUrl}}
+
+{{appHost}}
+`;
+
+const DIRECTORY_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Directory sync needs attention</title></head>
+<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<p>{{alertLine}}</p>
+<p>You get this email because you own {{instanceName}}.</p>
+<p><a href="{{settingsUrl}}">Open directory settings</a></p>
+<p style="color:#5d636e">{{appHost}}</p>
+</body></html>
+`;
+
+/** To the org owners when directory sync needs them (P3 T13). */
+export function directoryAlertEmail(p: {
+  instance: string;
+  recipient: string;
+  appHost: string;
+  why: DirectoryAlert;
+}): EmailContent {
+  const { origin, values } = common({ ...p, inviter: p.instance });
+  return render(
+    DIRECTORY_HTML,
+    DIRECTORY_TXT,
+    "Directory sync needs attention on {{instanceName}}",
+    {
+      ...values,
+      alertLine: DIRECTORY_ALERT_LINE[p.why],
+      settingsUrl: linkOn(origin, "/settings/directory"),
+    },
   );
 }

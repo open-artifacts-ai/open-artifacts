@@ -10,6 +10,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useId } from "react";
 import { canPublishTo, useHosted } from "../auth/permissions";
+import { sharedSpaceName } from "./label";
 
 export function SpacePicker({
   value,
@@ -29,7 +30,7 @@ export function SpacePicker({
     ...spaces
       .filter((s) => canPublishTo(s, cap))
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((s) => ({ value: s.id, label: s.name })),
+      .map((s) => ({ value: s.id, label: sharedSpaceName(s.name) })),
   ];
   return (
     <div>
@@ -58,7 +59,7 @@ export function SpacePicker({
       </Select>
       <small id={`${id}-help`} className="up-help">
         {value && value === personalSpaceId
-          ? "Only you, and anyone you share it with."
+          ? "Only you can see it until you share it or move it to a space."
           : "People in this space get access by their role."}
       </small>
     </div>

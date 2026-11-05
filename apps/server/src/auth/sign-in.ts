@@ -46,30 +46,33 @@ export function authProviders(env: Env): AuthProviders {
       start: AUTH.loginGoogle,
       domains: [...cfg.domains],
     });
-  if (cfg.providers.has("email"))
+  // Only when codes can be sent (cfg.emailCodes): email on without email
+  // sending is a problem the owner sees, not a code that never arrives.
+  if (cfg.emailCodes)
     providers.push({
       id: "email",
       domainCodes: cfg.domainCodes,
       guests: true,
       ...(cfg.turnstile ? { turnstileSiteKey: cfg.turnstile.siteKey } : {}),
     });
-  return { mode, providers };
+  return { mode, providers, hosted: env.HOSTED === "1" };
 }
 
-/** Me.instance.signIn. */
-export function instanceSignIn(env: Env): InstanceSignIn {
+/** Me.instance.signIn; with `owner`, also why configured sign-in is off (problems). */
+export function instanceSignIn(env: Env, owner = false): InstanceSignIn {
   const p = authProviders(env);
-  return { mode: p.mode, providers: p.providers.map((x) => x.id) };
+  const out: InstanceSignIn = {
+    mode: p.mode,
+    providers: p.providers.map((x) => x.id),
+  };
+  if (owner) out.problems = [...authConfig(env).problems];
+  return out;
 }
 
-/** Me.instance.features: FEATURES plus guests_read_only when the guest cap is on (reported only). */
+/** Me.instance.features: FEATURES plus guests_read_only (reported only; on for every install since parity 2). */
 export function instanceFeatures(env: Env): FeatureFlag[] {
   const cfg = authConfig(env);
   return cfg.guestsReadOnly
     ? [...cfg.features, "guests_read_only"]
     : [...cfg.features];
 }
-
-/** Hosted sign-in fields appear in Me only on hosted or direct-sign-in installs. */
-export const showsSignInFields = (env: Env): boolean =>
-  env.HOSTED === "1" || signInMode(authConfig(env)) === "direct";

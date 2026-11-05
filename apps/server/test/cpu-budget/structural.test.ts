@@ -4,13 +4,18 @@
 // proxy; see scripts/bench.ts). DO-side bounds (≤ 200 sockets, 16 KB inline
 // broadcast, 2 MiB query cap) are asserted in runtime.adv.test.ts.
 import { env } from "cloudflare:workers";
-import { LIMITS } from "@oa/shared";
+import { AUDIT_RETENTION_MS, LIMITS } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createPat } from "../../src/auth/pat.js";
 import { injectRuntime } from "../../src/content/inject.js";
 import type { Env } from "../../src/env.js";
 import worker from "../../src/index.js";
 import { purgeDeleted } from "../../src/services/artifacts.js";
+import {
+  AUDIT_SWEEP_BATCH,
+  AUDIT_SWEEP_STATEMENTS,
+  sweepAuditEvents,
+} from "../../src/services/audit.js";
 import { fetchAndWait, login } from "../helpers.js";
 
 /** Binding calls by kind, i.e. the subrequests a request makes. */
@@ -291,5 +296,22 @@ describe("cron purge", () => {
     expect(n.do).toBe(50);
     expect(n.d1).toBe(51);
     expect(n.d1 + n.r2 + n.do).toBeLessThan(1000);
+  }, 30_000);
+
+  it("the audit retention sweep over a backlog is AUDIT_SWEEP_STATEMENTS D1 calls", async () => {
+    const now = Date.now();
+    const cap = AUDIT_SWEEP_STATEMENTS * AUDIT_SWEEP_BATCH;
+    await env.DB.prepare(
+      `with recursive s(i) as (select 0 union all select i + 1 from s where i + 1 < ?)
+       insert into audit_events (id, at, actor_kind, action, target_type)
+       select lower(hex(randomblob(10))), ? + i, 'system', 'test.cpu', 'artifact' from s`,
+    )
+      .bind(cap + 10, now - AUDIT_RETENTION_MS - 86400_000 - cap - 10)
+      .run();
+    const { env: e, n } = counted();
+    expect(await sweepAuditEvents(e, now)).toBe(cap);
+    expect(n.d1).toBe(AUDIT_SWEEP_STATEMENTS);
+    expect(n.r2 + n.do).toBe(0);
+    expect(await sweepAuditEvents(env, now)).toBe(10);
   }, 30_000);
 });

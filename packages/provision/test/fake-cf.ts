@@ -1,10 +1,16 @@
 // An in-memory Cloudflare for the provisioner tests: the REST routes cf.ts
 // calls, plus a dispatch emulation (Host -> HOSTS KV -> user Worker) that
-// answers /healthz and a minimal /mcp. Nothing here talks to the network.
+// answers /healthz and a minimal /mcp, and R2's S3 endpoint for the releases
+// bucket (SigV4 checked, conditionals enforced). Nothing here talks to the
+// network.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { AwsV4Signer } from "aws4fetch";
 
 const API = "https://api.cloudflare.com/client/v4";
+/** provision's poll of one install's revoke state (PlatformDb.revokeState). */
+const REVOKE_POLL_SQL_PREFIX =
+  "SELECT directory_revoke, directory_revoke_attempts, directory_revoked_at, directory_revoke_requested_at FROM installs WHERE id";
 
 export interface LogEntry {
   method: string;
@@ -104,13 +110,16 @@ export class FakeCf {
   readonly raw: { method: string; path: string; body: string }[] = [];
   readonly d1 = new Map<string, { name: string; db: DatabaseSync }>();
   readonly r2 = new Set<string>();
+  /** A token that can't read a D1 bookmark. */
+  bookmarkFails = false;
   /** R2 objects by bucket, then key (the releases bucket; T3b). */
   readonly r2Objects = new Map<
     string,
     Map<string, { bytes: Uint8Array; etag: string }>
   >();
-  /** Every R2 object call, with its conditional headers. */
+  /** Every R2 object call, with its conditional headers and API (REST or S3). */
   readonly r2Log: {
+    api: "rest" | "s3";
     method: string;
     bucket: string;
     key: string;
@@ -124,6 +133,10 @@ export class FakeCf {
   r2Serve?: (key: string, bytes: Uint8Array) => Uint8Array;
   /** An R2 that ignores If-None-Match / If-Match (M2: the probe must catch it). */
   r2IgnoreConditionals = false;
+  /** R2 API tokens (S3 credentials) by Access Key ID: the secret and the buckets it may touch. */
+  readonly r2Tokens = new Map<string, { secret: string; buckets: string[] }>();
+  /** Every S3 request's Authorization header was a valid SigV4 for its token (else 403). */
+  s3SignatureChecks = 0;
   /** The first PUT of each key stores the object, then answers 500 (a lost reply). */
   r2PutLandsThen500 = false;
   private r2Landed = new Set<string>();
@@ -147,14 +160,38 @@ export class FakeCf {
       secret?: string;
     }
   >();
+  /**
+   * The scheduler's 2-minute revoke cron, emulated: runs on a D1 right before
+   * provision polls an install's revoke state. Default: a pending revoke on
+   * a deleting row is done at once. null: never (a stuck scheduler).
+   */
+  revoker: ((db: DatabaseSync, id: string) => void) | null = (db, id) => {
+    db.prepare(
+      "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = directory_revoke_requested_at WHERE id = ? AND state = 'deleting' AND directory_revoke = 'pending'",
+    ).run(id);
+  };
+  /** The next N widget creates store the widget, then answer 500 (a lost reply). */
+  turnstileCreateLandsThen500 = 0;
+  /** Edits a widget as it is created (e.g. Cloudflare normalizing it). */
+  onTurnstileCreate?: (w: { domains: string[]; mode: string }) => void;
   /** D1 list knobs: clamp per_page, or omit result_info. */
   d1PerPageCap?: number;
   d1ResultInfo = true;
   private sessions = new Map<
     string,
-    { buckets: string[][]; done: number; completion: string }
+    {
+      buckets: string[][];
+      done: number;
+      completion: string;
+      /** Manifest path per hash, as Cloudflare knows it from the session. */
+      paths: Map<string, string>;
+    }
   >();
+  /** The Content-Type each uploaded asset will be served with, by path. */
+  readonly assetTypes = new Map<string, string>();
   private bucketJwts = new Map<string, string>();
+  /** How many missing files the assets session puts in each bucket. */
+  assetsPerBucket = 1;
   private completions = new Set<string>();
   readonly artifacts = new Map<string, { title: string; content: string }>();
   private faults: Fault[] = [];
@@ -166,6 +203,37 @@ export class FakeCf {
   ignoreMigrationTag = false;
   /** /healthz override for a script (e.g. to simulate a slow start). */
   health?: (s: FakeScript) => unknown;
+  /**
+   * Edits the bindings a settings GET answers with (verify_clean tests: a
+   * binding the upload never sent, a changed value). Secrets included.
+   */
+  settingsEdit?: (
+    s: FakeScript,
+    bindings: { name: string; type: string; [k: string]: unknown }[],
+  ) => { name: string; type: string; [k: string]: unknown }[];
+  /**
+   * Edits the names a secret list GET answers with (verify_clean tests:
+   * Cloudflare's read lag after an upload, #1352).
+   */
+  secretsEdit?: (s: FakeScript, names: string[]) => string[];
+  /** Every request served through dispatcher(), by script name. */
+  readonly dispatched: { script: string; path: string }[] = [];
+  /**
+   * Every scheduled() call through dispatcher(), in order, with the HOSTS
+   * value of the script's install at the time of the call (so a test can
+   * see what was paused first).
+   */
+  readonly scheduledCalls: {
+    script: string;
+    cron: string | undefined;
+    hosts: (string | null)[];
+  }[] = [];
+  /**
+   * What a scheduled() call does: resolve (the default, undefined, as
+   * measured through a dispatch namespace), or this, which may throw or
+   * never settle.
+   */
+  onScheduled?: (script: string, cron: string | undefined) => Promise<unknown>;
 
   constructor(o: { token?: string; now?: number } = {}) {
     this.token = o.token ?? `cf-token-${randomBytes(12).toString("hex")}`;
@@ -218,6 +286,16 @@ export class FakeCf {
       this.r2Objects.set(bucket, b);
     }
     b.set(key, { bytes: bytes.slice(), etag: randomBytes(16).toString("hex") });
+  }
+  /** Mint an R2 API token (Object Read & Write) scoped to `buckets`. */
+  r2Token(...buckets: string[]): {
+    accessKeyId: string;
+    secretAccessKey: string;
+  } {
+    const accessKeyId = randomBytes(16).toString("hex");
+    const secretAccessKey = randomBytes(32).toString("hex");
+    this.r2Tokens.set(accessKeyId, { secret: secretAccessKey, buckets });
+    return { accessKeyId, secretAccessKey };
   }
   r2Object(bucket: string, key: string) {
     return this.r2Objects.get(bucket)?.get(key);
@@ -272,6 +350,8 @@ export class FakeCf {
   };
 
   private async route(req: Request, url: URL, body: string): Promise<Response> {
+    if (url.host === `${this.accountId}.r2.cloudflarestorage.com`)
+      return this.s3(req, url);
     if (url.origin !== new URL(API).origin) return this.serve(req, url, body);
     const p = url.pathname.replace(/^\/client\/v4/, "");
     for (const f of this.faults) {
@@ -369,12 +449,52 @@ export class FakeCf {
       );
     }
 
-    // Turnstile widgets (read-only here; Task 8 creates the one per env)
+    // Turnstile widgets (create reads; turnstile-init lists and creates)
+    if (r === "/challenges/widgets" && req.method === "GET") {
+      const q = url.searchParams;
+      const per = Number(q.get("per_page") ?? 25);
+      const page = Number(q.get("page") ?? 1);
+      const all = [...this.turnstile.values()].map(({ secret: _s, ...w }) => w);
+      return new Response(
+        JSON.stringify({
+          success: true,
+          errors: [],
+          messages: [],
+          result: all.slice((page - 1) * per, page * per),
+          result_info: {
+            page,
+            per_page: per,
+            total_pages: Math.max(1, Math.ceil(all.length / per)),
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (r === "/challenges/widgets" && req.method === "POST") {
+      const { name, domains, mode } = json();
+      const sitekey = `0x4AAAAAAA${randomBytes(8).toString("hex")}`;
+      const secret = `0x4AAAAAAA-secret-${randomBytes(16).toString("hex")}`;
+      const w = { sitekey, name, domains, mode, secret };
+      this.onTurnstileCreate?.(w);
+      this.turnstile.set(sitekey, w);
+      if (this.turnstileCreateLandsThen500 > 0) {
+        this.turnstileCreateLandsThen500--;
+        return fail(500, "internal error");
+      }
+      return env({ sitekey, secret, name, domains, mode });
+    }
     m = r.match(/^\/challenges\/widgets\/([^/]+)$/);
     if (m && req.method === "GET") {
       const w = this.turnstile.get(decodeURIComponent(m[1] as string));
       if (!w) return fail(404, "widget not found", 10404);
       return env({ ...w, created_on: "2026-10-01T00:00:00Z" });
+    }
+    m = r.match(/^\/d1\/database\/([^/]+)\/time_travel\/bookmark$/);
+    if (m && req.method === "GET") {
+      if (this.bookmarkFails) return fail(403, "Authentication error", 10000);
+      return env({
+        bookmark: `bookmark-${decodeURIComponent(m[1] as string)}`,
+      });
     }
     m = r.match(/^\/d1\/database\/([^/]+)\/query$/);
     if (m) {
@@ -397,6 +517,12 @@ export class FakeCf {
             throw e;
           }
         }
+        if (
+          typeof sql === "string" &&
+          sql.startsWith(REVOKE_POLL_SQL_PREFIX) &&
+          this.revoker
+        )
+          this.revoker(d.db, String((params ?? [])[0]));
         return env(this.exec(d.db, sql, params ?? []));
       } catch (e) {
         return fail(400, `${(e as Error).message}: SQLITE_ERROR`, 7500);
@@ -459,6 +585,7 @@ export class FakeCf {
       const ifMatch = req.headers.get("if-match") ?? undefined;
       const log = (status: number) => {
         this.r2Log.push({
+          api: "rest",
           method: req.method,
           bucket,
           key,
@@ -604,10 +731,16 @@ export class FakeCf {
     const stmts = splitSql(sql);
     return stmts.map((s) => {
       const st = db.prepare(s);
+      const total = () =>
+        Number(
+          (db.prepare("SELECT total_changes() AS c").get() as { c: number }).c,
+        );
+      const before = total();
       const rows = st.all(...(stmts.length === 1 ? params : []));
-      const changes = Number(
-        (db.prepare("SELECT changes() AS c").get() as { c: number }).c,
-      );
+      // Real D1 counts rows a trigger writes too (measured on staging: a
+      // one-row UPDATE of installs reports 2, from installs_row_version), so
+      // the fake reports total_changes(), not SQLite's changes().
+      const changes = total() - before;
       return {
         results: rows,
         success: true,
@@ -652,23 +785,36 @@ export class FakeCf {
         this.completions.add(jwt);
         return env({ jwt, buckets: [] });
       }
-      const buckets = missing.map((h) => [h]);
-      this.sessions.set(jwt, { buckets, done: 0, completion });
+      const buckets: string[][] = [];
+      for (let i = 0; i < missing.length; i += this.assetsPerBucket)
+        buckets.push(missing.slice(i, i + this.assetsPerBucket));
+      const paths = new Map(
+        Object.entries(manifest).map(([p, v]) => [v.hash, p] as const),
+      );
+      this.sessions.set(jwt, { buckets, done: 0, completion, paths });
       return env({ jwt, buckets });
     }
     if (!s)
       return fail(404, "This Worker does not exist on your account.", 10007);
     if (sub === "/settings" && req.method === "GET")
-      return env({ bindings: [], migration_tag: null });
+      return env({ bindings: this.settingsOf(s) });
     if (sub === "/secrets" && req.method === "GET")
       return env(
-        [...s.secrets.keys()].map((n) => ({ name: n, type: "secret_text" })),
+        (this.secretsEdit
+          ? this.secretsEdit(s, [...s.secrets.keys()])
+          : [...s.secrets.keys()]
+        ).map((n) => ({ name: n, type: "secret_text" })),
       );
     if (sub === "/secrets" && req.method === "PUT") {
       const { name: n, text, type } = JSON.parse(body);
       if (type !== "secret_text") return fail(400, "bad secret type");
       s.secrets.set(n, text);
       return env({ name: n, type });
+    }
+    if (sub.startsWith("/secrets/") && req.method === "DELETE") {
+      const n = decodeURIComponent(sub.slice("/secrets/".length));
+      if (!s.secrets.delete(n)) return fail(404, "secret not found", 10056);
+      return env(null);
     }
     if (sub === "/subdomain" && req.method === "POST") {
       if (ns !== null) return fail(405, "Method Not Allowed", 10405);
@@ -753,12 +899,21 @@ export class FakeCf {
     if (!s || !sessJwt) return fail(401, "invalid assets session");
     const form = await req.formData();
     for (const [hash, v] of formEntries(form)) {
-      if (typeof v !== "string")
-        return fail(400, "parts must be base64 strings");
-      const bytes = Buffer.from(v, "base64");
-      const h = createHash("sha256").update(bytes).digest("hex").slice(0, 32);
+      // Cloudflare serves each asset with its part's Content-Type, so an
+      // untyped part (a plain string field) would be served with none.
+      if (typeof v === "string" || !v.type)
+        return fail(400, "each part needs its Content-Type");
+      const b64 = await v.text();
+      const path = s.paths.get(hash);
+      if (!path) return fail(400, "part not in the session manifest");
+      const ext = path.includes(".") ? (path.split(".").pop() as string) : "";
+      const h = createHash("sha256")
+        .update(b64 + ext)
+        .digest("hex")
+        .slice(0, 32);
       if (h !== hash) return fail(400, "hash mismatch");
       this.assetHashes.add(hash);
+      this.assetTypes.set(path, v.type);
     }
     s.done++;
     if (s.done < s.buckets.length) {
@@ -768,6 +923,69 @@ export class FakeCf {
     }
     this.completions.add(s.completion);
     return env({ jwt: s.completion }, 201);
+  }
+
+  /**
+   * The settings GET's bindings, as Cloudflare answers them (the shape of
+   * tests/redline/src/prod.ts's read): every binding the script runs with,
+   * plain_text and json with their values, secret_text by name only.
+   * TODO(S8): replace this hand-built shape with S8's captured rl-b settings
+   * GET fixture once the spikes run lands.
+   */
+  private settingsOf(
+    s: FakeScript,
+  ): { name: string; type: string; [k: string]: unknown }[] {
+    const out: { name: string; type: string; [k: string]: unknown }[] = (
+      s.metadata.bindings as { name: string; type: string }[]
+    )
+      .filter((b) => !b.type.startsWith("secret"))
+      .map((b) => ({ ...b }));
+    for (const n of s.secrets.keys())
+      out.push({ name: n, type: "secret_text" });
+    return this.settingsEdit ? this.settingsEdit(s, out) : out;
+  }
+
+  /**
+   * The dispatch namespace binding (env.DISPATCHER) of the provisioner
+   * Worker: get(script) reaches that script whether or not HOSTS maps it.
+   */
+  dispatcher(ns: string | null): {
+    get(name: string): {
+      fetch(req: Request): Promise<Response>;
+      scheduled(o: { cron?: string; scheduledTime?: Date }): Promise<unknown>;
+    };
+  } {
+    return {
+      get: (name) => ({
+        scheduled: async (o) => {
+          const kv = this.dispatch
+            ? this.kv.get(this.dispatch.hostsKvId)?.values
+            : undefined;
+          // A script is named <prefix><install id>; a HOSTS value is
+          // [<mode>:]<install id>.
+          this.scheduledCalls.push({
+            script: name,
+            cron: o.cron,
+            hosts: kv
+              ? [...kv.values()]
+                  .filter((v) => name.endsWith(v.replace(/^[a-z]+:/, "")))
+                  .sort()
+              : [],
+          });
+          if (this.onScheduled) return this.onScheduled(name, o.cron);
+          return undefined;
+        },
+        fetch: async (req) => {
+          const s = this.scripts.get(`${ns ?? ""}/${name}`);
+          this.dispatched.push({
+            script: name,
+            path: new URL(req.url).pathname,
+          });
+          if (!s) return new Response("Not found", { status: 404 });
+          return this.answer(s, req, await req.text());
+        },
+      }),
+    };
   }
 
   // ----- dispatch emulation (Task 6's job in production) -----
@@ -788,9 +1006,135 @@ export class FakeCf {
     )?.text;
   }
 
+  /** R2's S3 API on <account>.r2.cloudflarestorage.com: SigV4 (region auto) and conditional PutObject. */
+  private async s3(req: Request, url: URL): Promise<Response> {
+    const xml = (status: number, code: string, headers: HeadersInit = {}) =>
+      new Response(
+        `<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code><Message>${code}</Message></Error>`,
+        { status, headers: { "content-type": "application/xml", ...headers } },
+      );
+    const m = url.pathname.match(/^\/([^/]+)\/(.+)$/);
+    if (!m) return xml(400, "InvalidRequest");
+    const bucket = decodeURIComponent(m[1] as string);
+    const key = m[2]
+      ?.split("/")
+      .map((x) => decodeURIComponent(x))
+      .join("/") as string;
+    for (const f of this.faults) {
+      if (f.times > 0 && f.when(req.method, `/r2s3/${bucket}/${key}`)) {
+        if (f.skip > 0) {
+          f.skip--;
+          continue;
+        }
+        f.times--;
+        return xml(f.status, "InjectedFailure");
+      }
+    }
+    // SigV4: recompute the signature with the token's secret and compare.
+    const auth = req.headers.get("authorization") ?? "";
+    const cred =
+      /Credential=([^/]+)\/(\d{8})\/([^/]+)\/([^/]+)\/aws4_request/.exec(auth);
+    const tok = cred ? this.r2Tokens.get(cred[1] as string) : undefined;
+    if (!cred || !tok || cred[3] !== "auto" || cred[4] !== "s3")
+      return xml(403, "InvalidAccessKeyId");
+    const bytes = new Uint8Array(await req.clone().arrayBuffer());
+    const headers = new Headers(req.headers);
+    headers.delete("authorization");
+    const want = await new AwsV4Signer({
+      method: req.method,
+      url: req.url,
+      headers,
+      accessKeyId: cred[1] as string,
+      secretAccessKey: tok.secret,
+      service: "s3",
+      region: "auto",
+      datetime: req.headers.get("x-amz-date") ?? "",
+    }).authHeader();
+    if (want !== auth) return xml(403, "SignatureDoesNotMatch");
+    if (
+      req.headers.get("x-amz-content-sha256") !==
+      createHash("sha256").update(bytes).digest("hex")
+    )
+      return xml(400, "XAmzContentSHA256Mismatch");
+    this.s3SignatureChecks++;
+    if (!tok.buckets.includes(bucket)) return xml(403, "AccessDenied");
+    if (!this.r2.has(bucket)) return xml(404, "NoSuchBucket");
+    const objs =
+      this.r2Objects.get(bucket) ??
+      this.r2Objects.set(bucket, new Map()).get(bucket);
+    if (!objs) throw new Error("unreachable");
+    const cur = objs.get(key);
+    const ifNoneMatch = req.headers.get("if-none-match") ?? undefined;
+    const ifMatch = req.headers.get("if-match") ?? undefined;
+    const log = (status: number) => {
+      this.r2Log.push({
+        api: "s3",
+        method: req.method,
+        bucket,
+        key,
+        ifNoneMatch,
+        ifMatch,
+        status,
+      });
+    };
+    if (req.method === "PUT") {
+      if (
+        !this.r2IgnoreConditionals &&
+        ((ifNoneMatch === "*" && cur) ||
+          (ifMatch !== undefined &&
+            cur?.etag !== ifMatch.replace(/^"(.*)"$/, "$1")))
+      ) {
+        log(412);
+        return xml(412, "PreconditionFailed");
+      }
+      const etag = randomBytes(16).toString("hex");
+      objs.set(key, { bytes, etag });
+      this.r2OnPut?.(key);
+      if (this.r2PutLandsThen500 && !this.r2Landed.has(`${bucket}/${key}`)) {
+        this.r2Landed.add(`${bucket}/${key}`);
+        log(500);
+        return xml(500, "InternalError");
+      }
+      log(200);
+      return new Response(null, {
+        status: 200,
+        headers: { etag: `"${etag}"` },
+      });
+    }
+    if (req.method === "DELETE") {
+      objs.delete(key);
+      log(204);
+      return new Response(null, { status: 204 });
+    }
+    if (req.method === "GET" || req.method === "HEAD") {
+      if (!cur) {
+        log(404);
+        return req.method === "HEAD"
+          ? new Response(null, { status: 404 })
+          : xml(404, "NoSuchKey");
+      }
+      log(200);
+      const out = this.r2Serve?.(key, cur.bytes) ?? cur.bytes;
+      return new Response(req.method === "HEAD" ? null : (out as BodyInit), {
+        status: 200,
+        headers: {
+          etag: `"${cur.etag}"`,
+          "content-length": String(cur.bytes.length),
+        },
+      });
+    }
+    return xml(405, "MethodNotAllowed");
+  }
+
   private async serve(req: Request, url: URL, body: string): Promise<Response> {
     const s = this.findScript(url.hostname);
     if (!s) return new Response("Not found", { status: 404 });
+    return this.answer(s, req, body);
+  }
+
+  /** What the user Worker `s` answers: /healthz and a minimal /mcp. */
+  private answer(s: FakeScript, req: Request, body: string): Response {
+    const url = new URL(req.url);
     if (url.pathname === "/healthz") {
       const custom = this.health?.(s);
       if (custom instanceof Response) return custom;
@@ -798,7 +1142,20 @@ export class FakeCf {
         .find((t) => /^v\d/.test(t))
         ?.slice(1);
       return Response.json(
-        custom ?? { ok: true, plan: this.plain(s, "PLAN"), version },
+        // installId as the real server reports it (from INSTALL_ID).
+        custom ?? {
+          ok: true,
+          plan: this.plain(s, "PLAN"),
+          version,
+          // As the server: only where hooks are on.
+          ...(this.plain(s, "TEST_HOOKS") === "1" ? { testHooks: true } : {}),
+          installId: this.plain(s, "INSTALL_ID"),
+          oauthStore: {
+            mode: this.plain(s, "OAUTH_STORE") ?? "kv",
+            backfilled: false,
+            kvWritesOffSince: null,
+          },
+        },
       );
     }
     if (url.pathname === "/mcp" && req.method === "POST") {

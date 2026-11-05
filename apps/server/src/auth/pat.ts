@@ -1,12 +1,15 @@
 import { isPat, newId, newPat } from "@oa/shared";
-import { and, eq, isNull, lt, or } from "drizzle-orm";
+import { and, eq, isNull, lte, or } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import { tokens } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
+import { ApiError } from "../http/errors.js";
+import { USE_WRITE_MS } from "../services/agent-usage.js";
 import { sha256Hex } from "../util/crypto.js";
 
-const HOUR = 3600 * 1000;
+/** last_used_at is written at most this often (USE_WRITE_MS). */
+const MINUTE = USE_WRITE_MS;
 
 type TokenRow = {
   id: string;
@@ -18,6 +21,10 @@ type TokenRow = {
 const TOKEN_BY_HASH =
   "select id, user_id as userId, label, revoked_at as revokedAt, last_used_at as lastUsedAt from tokens where token_hash = ? limit 1";
 
+const CREATE_PAT = `insert into tokens (id, user_id, label, token_hash, created_at)
+  select ?1, ?2, ?3, ?4, ?5
+  where exists (select 1 from users where id = ?2 and status = 'active')`;
+
 export async function createPat(
   env: Env,
   userId: string,
@@ -25,15 +32,13 @@ export async function createPat(
 ): Promise<{ id: string; token: string }> {
   const id = newId();
   const token = newPat();
-  await getDb(env)
-    .insert(tokens)
-    .values({
-      id,
-      userId,
-      label,
-      tokenHash: await sha256Hex(token),
-      createdAt: Date.now(),
-    });
+  // Only for an active user, in the same statement: a PAT inserted after a
+  // suspension revoked the others would come back on unsuspend (P3 T6).
+  const res = await stmt(env.DB, CREATE_PAT)
+    .bind(id, userId, label, await sha256Hex(token), Date.now())
+    .run();
+  if (res.meta.changes === 0)
+    throw new ApiError("unauthorized", "Sign in again");
   return { id, token };
 }
 
@@ -48,14 +53,14 @@ export async function verifyPat(
     .first<TokenRow>();
   if (!row || row.revokedAt != null) return null;
   const now = Date.now();
-  if (row.lastUsedAt == null || row.lastUsedAt < now - HOUR) {
+  if (row.lastUsedAt == null || row.lastUsedAt <= now - MINUTE) {
     const upd = getDb(env)
       .update(tokens)
       .set({ lastUsedAt: now })
       .where(
         and(
           eq(tokens.id, row.id),
-          or(isNull(tokens.lastUsedAt), lt(tokens.lastUsedAt, now - HOUR)),
+          or(isNull(tokens.lastUsedAt), lte(tokens.lastUsedAt, now - MINUTE)),
         ),
       )
       .then(() => undefined);

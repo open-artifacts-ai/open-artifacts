@@ -28,10 +28,11 @@ import {
   useRouterState,
   useSearch,
 } from "@tanstack/react-router";
-import { type MouseEvent, type ReactNode, useEffect } from "react";
+import { type MouseEvent, type ReactNode, useEffect, useRef } from "react";
 import { ApiClientError } from "../api/client";
 import { hasFeature } from "../api/contract";
 import { qk } from "../api/queries";
+import { BreakGlass } from "../auth/BreakGlass";
 import { useRedirect } from "../auth/redirect";
 import { useSignOut } from "../auth/signOut";
 import { useMe } from "../auth/useMe";
@@ -45,6 +46,7 @@ import { SpaceSwitcher } from "../spaces/SpaceSwitcher";
 import { ATTENTION, AttentionDot } from "./AttentionDot";
 import { CpuBanner } from "./CpuBanner";
 import { DisplayNamePrompt } from "./DisplayNamePrompt";
+import { GuestSharesBanner } from "./GuestSharesBanner";
 import { QuotaBanner } from "./QuotaBanner";
 import { SyncBanner, SyncDot, syncDot } from "./SyncBanner";
 import { Toaster } from "./toast";
@@ -74,6 +76,7 @@ const I = {
     "M6 3.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM1.5 13.5c.5-2.5 2.3-3.8 4.5-3.8s4 1.3 4.5 3.8",
   ),
   usage: icon("M2.5 11a5.5 5.5 0 1 1 11 0M8 11l2.5-3"),
+  trash: icon("M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.5 7v4M9.5 7v4"),
   gear: icon(
     "M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7",
   ),
@@ -107,6 +110,11 @@ function Layout() {
     useRouterState({ select: (s) => s.matches.at(-1)?.pathname }) ??
     loc.pathname;
   const embed = isEmbed();
+  // Break-glass outlives a /me refetch (pending, with no data), so the card
+  // isn't swapped for the shell while /me is asked again.
+  const breakGlass = useRef<boolean | null>(null);
+  if (state.status === "breakGlass") breakGlass.current = state.fresh;
+  else if (state.status !== "loading") breakGlass.current = null;
   const anonymous =
     !embed && state.status === "anonymous" && !publicRoute(path);
 
@@ -127,6 +135,17 @@ function Layout() {
   }, [guestHome, navigate]);
 
   if (anonymous || guestHome) return null;
+  // The owner locked out by a directory mismatch: the card, with no app shell.
+  if (!embed && breakGlass.current !== null)
+    return (
+      <main id="oa-main">
+        <BreakGlass
+          fresh={breakGlass.current}
+          path={path}
+          search={loc.searchStr}
+        />
+      </main>
+    );
   // Framed: /a/<id>/full alone, with no app chrome or banners.
   if (embed)
     return (
@@ -188,6 +207,10 @@ function Layout() {
                 className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
               />
             )}
+            <GuestSharesBanner
+              me={me}
+              className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
+            />
             <CpuBanner
               role={me?.user.role}
               plan={me?.instance.plan}
@@ -210,7 +233,7 @@ function MenuTrigger({ me }: { me: Me | null }) {
   const { isMobile } = useSidebar();
   const update = instanceUpdate(me);
   const sync = syncDot(me);
-  const departed = useDeparted(me).length > 0;
+  const departed = useDeparted(me).people.length > 0;
   const dot = isMobile && shouldNudge(update);
   // A sync tone wins; departed people alone get the accent.
   const settingsTone =
@@ -351,8 +374,8 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
   const { space } = useSearch({ strict: false }) as { space?: string };
   const inSpace = Boolean(space) && hasFeature(me, "spaces");
   const update = instanceUpdate(me);
-  // Departed people with artifacts to transfer (org admins, hosted).
-  const departed = useDeparted(me);
+  // Departed people with artifacts to transfer (org admins, every install).
+  const departed = useDeparted(me).people;
   const usageOff = hasFeature(me, "usage_off");
   const sync = syncDot(me);
   return (
@@ -433,6 +456,23 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
           </SidebarGroup>
         </nav>
         <SpaceSwitcher path={path} />
+        {/* Its own group under Spaces (Design's Trash A), on every install. */}
+        {me && !guest && (
+          <nav aria-label="Trash">
+            <SidebarGroup>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  <Link
+                    to="/trash"
+                    active={on("/trash")}
+                    icon={I.trash}
+                    label="Trash"
+                  />
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          </nav>
+        )}
       </SidebarContent>
       {/* On phones the chip takes the nav rows' inset: 8px (content) + 8px (group). */}
       {shouldNudge(update) && (

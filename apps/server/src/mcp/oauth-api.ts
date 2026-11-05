@@ -1,4 +1,5 @@
 import {
+  type GrantSummary,
   getOAuthApi,
   OAuthError,
   type OAuthHelpers,
@@ -6,6 +7,8 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 import { MCP_PATH } from "@oa/shared";
 import type { Env } from "../env.js";
+import { logWarn } from "../log.js";
+import { oauthEnv } from "./oauth-store.js";
 import { mcpResource } from "./server.js";
 
 // The provider's configuration and its helpers, without the MCP handler, so
@@ -55,6 +58,14 @@ export function providerOptions(
         headers: { "retry-after": "60", "cache-control": "no-store" },
       });
     },
+    // #769: a refresh with a token that is neither the grant's current nor
+    // its previous one (refresh_token_mismatch: a client replaying an old
+    // token, or two refreshing at once). The event only: never the token,
+    // the client secret or who it was.
+    onError: ({ internal }) => {
+      if (internal?.reason === "refresh_token_mismatch")
+        logWarn("oauth_refresh_mismatch");
+    },
     resourceMetadata: {
       resource,
       authorization_servers: [new URL(resource).origin],
@@ -66,18 +77,63 @@ export function providerOptions(
 
 const NO_HANDLER = { fetch: () => new Response(null, { status: 404 }) };
 
-/** OAuth helpers (parse/consent/complete, grants) outside the provider's fetch. */
+/**
+ * OAuth helpers (parse/consent/complete, grants) outside the provider's
+ * fetch, on this install's store (oauthEnv). Calls on one helpers object
+ * share the store's per-request cache.
+ */
 export const oauthApi = (env: Env): OAuthHelpers =>
-  getOAuthApi(providerOptions(env, NO_HANDLER, NO_HANDLER), env);
+  getOAuthApi(providerOptions(env, NO_HANDLER, NO_HANDLER), oauthEnv(env));
 
 /** Upper bound on grant pages walked per revocation (100 grants per page). */
 const MAX_GRANT_PAGES = 10;
+
+/**
+ * Every grant the user holds, page by page (100 per page, at most
+ * MAX_GRANT_PAGES). `complete` is false when pages were left unread, so a
+ * caller never prunes against a partial list (review item 40).
+ */
+export async function listAllUserGrants(
+  env: Env,
+  userId: string,
+): Promise<{ items: GrantSummary[]; complete: boolean }> {
+  const oauth = oauthApi(env);
+  const items: GrantSummary[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_GRANT_PAGES; page++) {
+    const r = await oauth.listUserGrants(userId, { limit: 100, cursor });
+    items.push(...r.items);
+    cursor = r.cursor;
+    if (!cursor) return { items, complete: true };
+  }
+  return { items, complete: false };
+}
+
+/**
+ * One of the user's grants by id: a direct read of the provider's grant
+ * record (`grant:<userId>:<grantId>`, the key listUserGrants lists), so no
+ * listing page or KV list lag decides whether it exists. Null when absent
+ * or not this user's. The caller checked grantId's shape (no ':').
+ */
+export async function lookupUserGrant(
+  env: Env,
+  userId: string,
+  grantId: string,
+): Promise<GrantSummary | null> {
+  const g = await oauthEnv(env).OAUTH_KV.get<GrantSummary>(
+    `grant:${userId}:${grantId}`,
+    "json",
+  );
+  return g && g.id === grantId && g.userId === userId ? g : null;
+}
 
 /**
  * Revokes every OAuth grant (and its tokens) the user holds. Re-lists from the
  * start each round, since revoked grants drop out of the listing.
  */
 export async function revokeAllGrants(env: Env, userId: string): Promise<void> {
+  // One store for every page: its cache and batched deletes keep a large
+  // revocation within D1's per-invocation query limit.
   const oauth = oauthApi(env);
   for (let page = 0; page < MAX_GRANT_PAGES; page++) {
     const { items } = await oauth.listUserGrants(userId, { limit: 100 });

@@ -390,7 +390,13 @@
     renderCount();
   }
 
+  const PAUSED = "Live updates paused. Reload to retry.";
+  let paused = false; // the live feed is down (subscribe's offline), until a resync
+
   function onChange(e) {
+    // Never silently deaf: say so while the live feed is down; a resync clears it.
+    if (e.offline) { paused = true; showError(""); return; }
+    if (e.resync && paused) { paused = false; showError(""); }
     if (e.resync) { loadAll().catch(() => {}); return; }
     for (const d of e.docs) applyRow(d);
     for (const id of e.deleted) clearRow(id);
@@ -463,7 +469,7 @@
       el.board.dataset.off = "true";
       showError("Canvas is full for today. A fresh one opens at 00:00 UTC.");
     } else if (code === "rate_limited") showError(`${where} Too many pixels from your network. Try again in a minute.`);
-    else if (code === "unauthorized") { readOnly = true; showError("This demo isn't accepting pixels from signed-out visitors right now."); }
+    else if (code === "unauthorized" || code === "data_editors_only") { readOnly = true; showError("This demo isn't accepting pixels right now."); }
     else if (code === "capability_denied") { readOnly = true; showError("This canvas can't save pixels."); }
     else showError(`${where} Try again.`);
     if (readOnly) el.board.dataset.off = "true";
@@ -473,7 +479,8 @@
   /* ---------- boot ---------- */
 
   function say(m) { el.announce.textContent = ""; requestAnimationFrame(() => { el.announce.textContent = m; }); }
-  function showError(m) { el.error.textContent = m; }
+  /** An empty message falls back to the paused notice while the live feed is down. */
+  function showError(m) { el.error.textContent = m || (paused ? PAUSED : ""); }
   function fail(msg = "Could not reach the canvas. Reload to try again.") {
     failText = msg;
     el.cool.textContent = msg;

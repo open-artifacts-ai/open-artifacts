@@ -97,7 +97,7 @@ test("keyboard: sign in with an emailed code, no mouse", async ({ page }) => {
   await page.goto("/sign-in?hosted=1&method=code&next=%2Fshared");
   await page.waitForLoadState("networkidle");
   await page.getByRole("textbox", { name: "Email" }).focus();
-  await page.keyboard.type("bob@example.com");
+  await page.keyboard.type("guest@outside.org");
   await page.keyboard.press("Enter");
   await expect(
     page.getByRole("textbox", { name: "Code", exact: true }),

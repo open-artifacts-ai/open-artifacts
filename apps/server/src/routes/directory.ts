@@ -1,0 +1,258 @@
+import {
+  DirectoryGroupsQuerySchema,
+  HELD_SNOOZE_REASON_MAX,
+  HeldSnoozeInputSchema,
+  R,
+} from "@oa/shared";
+import type { Context } from "hono";
+import { getCookie } from "hono/cookie";
+import {
+  caller,
+  capOfCaller,
+  interactiveSession,
+  requireUser,
+} from "../auth/authz.js";
+import { orgCan } from "../auth/policy.js";
+import {
+  afterConsent,
+  cancelConnect,
+  clearDirCookie,
+  connectClient,
+  dirCookieName,
+  directoryStatus,
+  disconnectDirectory,
+  finishConnect,
+  refuseConnect,
+  startConnect,
+} from "../directory/connect.js";
+import { lookupGroups } from "../directory/groups.js";
+import { oneLine } from "../email/templates.js";
+import type { Env } from "../env.js";
+import { readCapped } from "../http/body.js";
+import { ApiError } from "../http/errors.js";
+import { type AppEnv, execCtx } from "../http/middleware.js";
+import { logWarn } from "../log.js";
+import { userActor, withRequestCred } from "../services/audit.js";
+import { feedSync, SYNC_DO_NAME } from "../services/directory.js";
+import { directoryMode } from "../services/spaces.js";
+import { utf8Decoder } from "../util/text.js";
+import type { AppType } from "./index.js";
+
+// Directory connection routes (P3 T12). T13 adds sync, groups and held
+// sweeps, and serves R.directory from DirectorySync.
+
+const notFound = () => new ApiError("not_found", "Not found");
+
+const redirect = (location: string, cookie?: string) =>
+  new Response(null, {
+    status: 302,
+    headers: {
+      location,
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+      ...(cookie ? { "set-cookie": cookie } : {}),
+    },
+  });
+
+/** The org owner may manage the directory (a cap drops it). */
+const manages = (c: Context<AppEnv>) =>
+  orgCan(requireUser(c), "directory.manage", { cap: capOfCaller(caller(c)) });
+
+export function mountDirectory(app: AppType): void {
+  app.get(R.directory, async (c) => {
+    const user = requireUser(c);
+    if (!orgCan(user, "members.manage", { cap: capOfCaller(caller(c)) }))
+      throw notFound();
+    return c.json(await directoryStatus(c.env, { showProblem: manages(c) }));
+  });
+
+  // 404 without a transport (HOSTED=1 with direct config, or none) or with
+  // directory sync off.
+  app.get(R.directoryConnect, async (c) => {
+    const client = connectClient(c.env);
+    if (!client || !manages(c)) throw notFound();
+    const { location, cookie } = await startConnect(
+      c.env,
+      client,
+      requireUser(c),
+    );
+    return redirect(location, cookie);
+  });
+
+  app.get(R.directoryCallback, async (c) => {
+    const client = connectClient(c.env);
+    if (!client) throw notFound();
+    const user = requireUser(c);
+    const clear = clearDirCookie(c.env);
+    if (!manages(c))
+      return redirect(
+        await refuseConnect(c.env, user, "failed", "not_owner"),
+        clear,
+      );
+    const q = c.req.query();
+    return redirect(
+      await finishConnect(
+        c.env,
+        client,
+        user,
+        {
+          code: q.code,
+          state: q.state,
+          error: q.error,
+          bstate: q.bstate,
+        },
+        getCookie(c, dirCookieName(c.env)),
+      ),
+      clear,
+    );
+  });
+
+  // Only the owner who connected, still the org owner (the route policy and
+  // manages): anyone else 404. Expired: 409 conflict (afterConsent).
+  app.post(R.directoryConfirm, async (c) => {
+    const client = connectClient(c.env);
+    if (!client || !manages(c)) throw notFound();
+    return c.json(
+      await afterConsent(c.env, client, requireUser(c), execCtx(c)),
+    );
+  });
+
+  app.post(R.directoryCancel, async (c) => {
+    if (!manages(c)) throw notFound();
+    await cancelConnect(c.env, requireUser(c));
+    return c.body(null, 204);
+  });
+
+  // Disconnect: the org owner in an interactive cookie session (CSRF-guarded
+  // by csrf()); a PAT or any bearer token is refused (404), whoever holds it.
+  // Revoke, wipe, stop sync; memberships stay frozen. Idempotent. The
+  // platform's install delete uses cron.ts DIRECTORY_DISCONNECT_CRON instead.
+  const disconnect = (c: Context<AppEnv>) => {
+    const user = requireUser(c);
+    if (
+      !interactiveSession(c) ||
+      !orgCan(user, "directory.disconnect", { cap: capOfCaller(caller(c)) })
+    )
+      throw notFound();
+    return disconnectDirectory(c.env, userActor(user.id), {
+      showProblem: manages(c),
+    });
+  };
+  app.post(R.directoryDisconnect, async (c) => c.json(await disconnect(c)));
+  app.delete(R.directory, async (c) => {
+    await disconnect(c);
+    return c.body(null, 204);
+  });
+
+  // P3 T13. Live group lookup for the mapping pickers (org owner, admin),
+  // RL_DIRECTORY per caller (unbound: unlimited, as in the test pool).
+  app.get(R.directoryGroups, async (c) => {
+    const user = requireUser(c);
+    if (!orgCan(user, "org.mappings", { cap: capOfCaller(caller(c)) }))
+      throw notFound();
+    const rl = c.env.RL_DIRECTORY;
+    if (rl && !(await rl.limit({ key: `dir:${user.id}` })).success)
+      throw new ApiError(
+        "rate_limited",
+        "Too many group lookups; wait a minute",
+      );
+    const q = DirectoryGroupsQuerySchema.safeParse(c.req.query());
+    if (!q.success) throw new ApiError("bad_request", "Invalid query");
+    return c.json(await lookupGroups(c.env, q.data));
+  });
+
+  // "Sync now" and a held sweep's confirmation (org owner): 202 SyncStatus.
+  app.post(R.directorySync, async (c) => {
+    if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
+    const status = await syncStub(c.env).kick("manual");
+    await feedAfter(c);
+    return c.json(status, 202);
+  });
+
+  app.post("/api/v1/directory/held/:groupId/confirm", async (c) => {
+    if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
+    // Frozen (or off): group sync is stopped, so a confirm can't apply.
+    if (directoryMode(c.env) !== "google")
+      throw new ApiError(
+        "directory_sync_off",
+        "Directory sync is off or frozen",
+      );
+    const status = await syncStub(c.env).confirmHeld(
+      c.req.param("groupId"),
+      withRequestCred(userActor(requireUser(c).id)),
+    );
+    if (!status)
+      throw new ApiError(
+        "conflict",
+        "This group has no held sweep to confirm; it can't be read from Google",
+      );
+    await feedAfter(c);
+    return c.json(status, 202);
+  });
+
+  // #412: snooze a held sweep (org owner): visibility only, for
+  // HELD_SNOOZE_MS. Frozen or off: 409, as for a confirm. No snoozable hold:
+  // 409 conflict. DELETE cancels it (any mode; none: no change).
+  app.post("/api/v1/directory/held/:groupId/snooze", async (c) => {
+    if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
+    if (directoryMode(c.env) !== "google")
+      throw new ApiError(
+        "directory_sync_off",
+        "Directory sync is off or frozen",
+      );
+    const raw = await readCapped(c, SNOOZE_BODY_MAX);
+    let body: unknown = {};
+    if (raw.byteLength) {
+      try {
+        body = JSON.parse(utf8Decoder.decode(raw));
+      } catch {
+        throw new ApiError("bad_request", "Invalid JSON body");
+      }
+    }
+    const input = HeldSnoozeInputSchema.safeParse(body);
+    if (!input.success)
+      throw new ApiError(
+        "bad_request",
+        "Invalid request body",
+        input.error.issues,
+      );
+    const reason = oneLine(input.data.reason ?? "", HELD_SNOOZE_REASON_MAX);
+    const status = await syncStub(c.env).snoozeHeld(
+      c.req.param("groupId"),
+      withRequestCred(userActor(requireUser(c).id)),
+      reason || null,
+    );
+    if (!status)
+      throw new ApiError(
+        "conflict",
+        "This group has no held sweep to snooze, or it is being re-checked; try again after the next sync",
+      );
+    return c.json(status);
+  });
+
+  app.delete("/api/v1/directory/held/:groupId/snooze", async (c) => {
+    if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
+    return c.json(
+      await syncStub(c.env).unsnoozeHeld(
+        c.req.param("groupId"),
+        withRequestCred(userActor(requireUser(c).id)),
+      ),
+    );
+  });
+}
+
+/** A snooze body: an optional short reason (HeldSnoozeInputSchema). */
+const SNOOZE_BODY_MAX = 4096;
+
+/** After a kick: hands DirectorySync a token minted with this request's props. */
+const feedAfter = async (c: Context<AppEnv>) => {
+  const run = feedSync(c.env).catch((e) => logWarn("directory_feed", e));
+  const ctx = execCtx(c);
+  if (ctx) ctx.waitUntil(run);
+  else await run;
+};
+
+const syncStub = (env: Env) => {
+  const ns = env.DIRECTORY_SYNC as NonNullable<Env["DIRECTORY_SYNC"]>;
+  return ns.get(ns.idFromName(SYNC_DO_NAME));
+};

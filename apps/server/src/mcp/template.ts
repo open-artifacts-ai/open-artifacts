@@ -6,6 +6,11 @@ export function stripTemplateComment(html: string): string {
   return html.replace(/^(<!doctype html>\s*)<!--[\s\S]*?-->\s*/i, "$1");
 }
 
+/** A row snippet without its leading documentation comment or trailing newline. */
+export function busSnippetOf(html: string): string {
+  return html.replace(/^\s*<!--[\s\S]*?-->\s*/, "").trimEnd();
+}
+
 const ESC: Record<string, string> = {
   "&": "&amp;",
   "<": "&lt;",

@@ -1,0 +1,313 @@
+# The red-line suite (P5) and the provisioning probes (design v7 12.2) against
+# staging, on demand, for one release tag. The job mints GitHub OIDC JWTs (the
+# staging Provisioning API's and both inventories' audiences, 4.4 and 6.3)
+# into 0600 files under RUNNER_TEMP, upgrades rl-a and rl-b to the tag through
+# the staging API (R5) and takes this run's rl-a and rl-b credentials from it
+# (R26, sealed to a key that lives only in this run). Every file reaches the
+# suite by path (REDLINE_TARGETS.secretsDir), never as env, and is scanned for
+# in the reports before upload. The job ends with the R26 revoke for both
+# installs and the removal of every file, whatever happened before. Cases
+# that need prod credentials report not-applicable, never a pass. T19 (the M1
+# gate's dashboard suite) runs in this job after the red-line suite, never
+# beside it: it needs this run's rl-a hook key, which only this job holds.
+# Deviation from 4.4 ("id-token on the redline job only, not t19"): T19 is a
+# step of the id-token job, so before it runs every JWT and prod token file
+# is deleted, and its shell unsets the OIDC request variables and fails if
+# they survive, so no process it starts can mint.
+# The suite is the tag's, never main's (#1137), so suite and release always
+# match: this file, the platform-tags job and the constants are main's, and
+# everything the redline job runs comes from the tag's checkout. So the
+# commands below (provisioning mint-oidc, bringup, staged-version and revoke,
+# live, the T19 config) are a contract with every tag still in use; a rename
+# fails redline-staging.test.ts. A suite fix reaches a candidate only in a new
+# release. Release tags can't be moved, and platform-tags passes only for a
+# tag a gated deploy put on every staging Worker.
+name: redline-staging
+# scripts/ci/staging-first-gate.sh finds this run by the tag in its name.
+run-name: redline-staging ${{ inputs.tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The release under test (vX.Y.Z): rl-a and rl-b are upgraded to it"
+        required: true
+  # The nightly (redline-nightly.yml). Not a prod gate: the gate reads this
+  # file's own runs, event workflow_dispatch, and a called run is neither.
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redline
+  cancel-in-progress: false
+
+jobs:
+  # One version everywhere (#1040): the red-line suite refuses to start unless
+  # every staging platform Worker runs the tag (its "workers/tag" annotation,
+  # scripts/ci/platform-tags.sh). Read-only, with main's script and constants
+  # and the staging deploy Environment's token; no other job sees it.
+  platform-tags:
+    runs-on: ubuntu-latest
+    environment: hosted-staging-deploy
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      # main's scripts and constants only (the Environment also allows main only).
+      - name: On main
+        env:
+          REF: ${{ github.ref }}
+        run: '[ "$REF" = refs/heads/main ] || { echo "dispatch redline-staging on main"; exit 1; }'
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            scripts/ci
+            .github/hosted
+          persist-credentials: false
+      - name: Load the hosted constants
+        run: bash scripts/ci/hosted-constants.sh staging .github/hosted > /dev/null
+      - name: Every staging platform Worker runs the tag
+        env:
+          TAG: ${{ inputs.tag }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash scripts/ci/platform-tags.sh staging "$TAG"
+  redline:
+    needs: platform-tags
+    runs-on: ubuntu-latest
+    environment: redline-staging
+    # The OIDC principal (4.4): this job only, never the workflow.
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 150
+    steps:
+      # Before the checkout: the input picks the code this job runs.
+      - name: On main, for a release tag
+        env:
+          TAG: ${{ inputs.tag }}
+          # staging-first-gate.sh only counts runs of main's workflow.
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [ "$REF" = refs/heads/main ] || { echo "dispatch redline-staging on main"; exit 1; }
+          [[ "$TAG" =~ ^v[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]] || { echo "tag must be vX.Y.Z"; exit 1; }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - name: The checkout is exactly the tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$(git describe --tags --exact-match)" = "$TAG"
+          test -z "$(git status --porcelain)"
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      # No lifecycle scripts: every step of this job can reach the OIDC
+      # request token (id-token: write is job-wide), and an install script
+      # could mint as O. pnpm 10 already skips dependency scripts.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      # Before any secret file exists: only the probes and suites run while they do.
+      # Chromium installs (apt and a download, about 20 s) beside the two
+      # builds (about 8 s). Both exit codes are read, so either failing fails
+      # the step; the builds' failure still waits for the install to end.
+      - id: prep
+        name: Build provision and shared, install Chromium alongside
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/playwright-install.log"
+          pnpm --filter @oa/dashboard exec playwright install --with-deps chromium > "$log" 2>&1 &
+          pw=$!
+          b=0
+          { pnpm --filter @oa/provision build && pnpm --filter @oa/shared build; } || b=$?
+          p=0
+          wait "$pw" || p=$?
+          echo "::group::playwright install"
+          cat "$log"
+          echo "::endgroup::"
+          rm -f "$log"
+          [ "$b" -eq 0 ] || { echo "build failed: $b"; exit 1; }
+          [ "$p" -eq 0 ] || { echo "playwright install failed: $p"; exit 1; }
+      - name: Write the suite's secrets as 0600 files
+        env:
+          # The "prod is clean" probe: read-only tokens, both or none (its
+          # inventory bearer is the OIDC JWT minted below).
+          PROD_R2_TOKEN: ${{ secrets.REDLINE_PROD_R2_TOKEN }}
+          PROD_SCRIPTS_TOKEN: ${{ secrets.REDLINE_PROD_SCRIPTS_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          d="$RUNNER_TEMP/redline-secrets"
+          mkdir -p "$d"
+          if [ -n "${PROD_R2_TOKEN:-}${PROD_SCRIPTS_TOKEN:-}" ]; then
+            printf '%s' "$PROD_R2_TOKEN" > "$d/REDLINE_PROD_R2_TOKEN"
+            printf '%s' "$PROD_SCRIPTS_TOKEN" > "$d/REDLINE_PROD_SCRIPTS_TOKEN"
+          fi
+          for f in "$d"/*; do
+            [ -e "$f" ] || continue
+            test -s "$f" || { echo "empty secret file: ${f##*/}"; exit 1; }
+          done
+      - name: Set the targets
+        env:
+          TAG: ${{ inputs.tag }}
+          REDLINE_TARGETS_BASE: ${{ vars.REDLINE_TARGETS }}
+          REDLINE_PROD_INVENTORY_URL: ${{ vars.REDLINE_PROD_INVENTORY_URL }}
+          RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]{1,20}-[0-9]{1,3}$ ]] || { echo "bad run id"; exit 1; }
+          umask 077
+          d="$RUNNER_TEMP/redline-secrets"
+          mkdir -p "$d"
+          # Cloudflare's dummy Turnstile token, which the always-pass test
+          # secret on rl-a and rl-b accepts (#676, #677). Public, not a secret.
+          t="$RUNNER_TEMP/redline-turnstile-token"
+          printf '%s' 'XXXX.DUMMY.TOKEN.XXXX' > "$t"
+          targets=$(jq -c --arg d "$d" --arg t "$t" '. + {secretsDir: $d} | .a.turnstileFile = $t | .b.turnstileFile = $t' <<< "$REDLINE_TARGETS_BASE")
+          # The prod probe reads its files from secretsDir; the inventory
+          # origin is the only prod field it needs from here. Only with its
+          # tokens: a .prod without them fails loadTargets for the whole suite.
+          if [ -n "${REDLINE_PROD_INVENTORY_URL:-}" ] && [ -s "$d/REDLINE_PROD_R2_TOKEN" ]; then
+            targets=$(jq -c --arg u "$REDLINE_PROD_INVENTORY_URL" '.prod = {inventoryUrl: $u}' <<< "$targets")
+          fi
+          {
+            echo "REDLINE_TARGETS=$targets"
+            echo "REDLINE_RELEASE=${TAG#v}"
+            echo "REDLINE_RUN_ID=$RUN_ID"
+          } >> "$GITHUB_ENV"
+      # Each JWT is masked before it is written, never echoed; the suite
+      # re-mints one into the same file when it nears expiry (600 s at most).
+      - id: mint
+        name: Mint the OIDC JWTs as 0600 files
+        run: pnpm --filter @oa/redline provisioning mint-oidc provisioning stagingInventory
+      - id: bringup
+        name: Upgrade rl-a and rl-b to the tag (R5) and take this run's credentials (R26)
+        run: pnpm --filter @oa/redline provisioning bringup
+      # The staging-first record (scripts/ci/staging-first-gate.sh): version.txt
+      # = X.Y.Z, written only once rl-a's and rl-b's /healthz both report it.
+      # The prod deploy gate also requires this run to succeed as a whole.
+      - id: staged
+        name: Check rl-a and rl-b report the tag
+        run: pnpm --filter @oa/redline provisioning staged-version "$RUNNER_TEMP/redline-staged/version.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.staged.outcome == 'success'
+        with:
+          name: redline-staged-version
+          path: ${{ runner.temp }}/redline-staged/version.txt
+          if-no-files-found: error
+      # After bring-up (up to 4 jobs of 20 min), only with the prod tokens;
+      # the suite re-mints it near expiry (600 s at most) like the others.
+      - name: Mint the prod inventory OIDC JWT
+        run: |
+          set -euo pipefail
+          if [ -s "$RUNNER_TEMP/redline-secrets/REDLINE_PROD_R2_TOKEN" ]; then
+            pnpm --filter @oa/redline provisioning mint-oidc prodInventory
+          fi
+      - name: Run the suite
+        env:
+          REDLINE_STG_INVENTORY_URL: ${{ vars.REDLINE_STG_INVENTORY_URL }}
+          REDLINE_DELETED_HOSTS: ${{ vars.REDLINE_DELETED_HOSTS }}
+          REDLINE_PROD_ACCOUNT_ID: ${{ vars.REDLINE_PROD_ACCOUNT_ID }}
+          REDLINE_PROD_INVENTORY_URL: ${{ vars.REDLINE_PROD_INVENTORY_URL }}
+          REDLINE_DISPATCH: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+          # The gate, enforced: the run fails unless every case passes or is
+          # one the report accepts by name. staging-first-gate.sh reads only
+          # the run's conclusion, so without this the rule was only printed.
+          REDLINE_GATE: "1"
+        run: |
+          set -euo pipefail
+          export REDLINE_REPORT="$RUNNER_TEMP/redline-report/report.json"
+          mkdir -p "$RUNNER_TEMP/redline-report"
+          pnpm --filter @oa/redline live
+      # The red-line report is scanned now, while every file still exists:
+      # the next step deletes the JWT and prod files before T19 runs.
+      - id: scan-suite
+        name: No secret in the red-line report
+        if: always()
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/redline-secrets"
+          r="$RUNNER_TEMP/redline-report"
+          [ -d "$d" ] && [ -d "$r" ] || exit 0
+          for f in "$d"/*; do
+            [ -s "$f" ] || continue
+            # -f reads the pattern from the file: the key never reaches argv.
+            if grep -rqF -f "$f" "$r"; then echo "secret in report: ${f##*/}"; exit 1; fi
+          done
+      # T19 needs only rl-a's hook key. The revoke re-mints the provisioning
+      # JWT itself (the file is missing, so jwtSource mints a new one).
+      - name: Delete the JWT and prod files before T19
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/redline-secrets/REDLINE_*_OIDC "$RUNNER_TEMP"/redline-secrets/REDLINE_PROD_*
+      # T19: the dashboard against rl-a (apps/dashboard/e2e/staging), after
+      # the red-line suite, never beside it: both write to rl-a through its
+      # hooks (per-IP code caps, the hook audit log the red-line cases read).
+      # The step env blanks the OIDC request variables; the shell then unsets
+      # them and fails if either survives, before Playwright starts.
+      - id: t19
+        name: Run T19
+        if: ${{ !cancelled() && steps.bringup.outcome == 'success' }}
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+          T19_EXPECT_TIER: team
+        run: |
+          set -euo pipefail
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL+x}${ACTIONS_ID_TOKEN_REQUEST_TOKEN+x}" ]; then echo "T19 can reach the OIDC request variables"; exit 1; fi
+          # The pin (#1251): the version the staged step saw on rl-a's and rl-b's
+          # /healthz (version.txt, X.Y.Z). A gated skip then fails, and
+          # guard.setup checks rl-a; leo has its own pin, unset until #955.
+          # No file means staging didn't take the tag.
+          T19_EXPECT_VERSION="$(cat "$RUNNER_TEMP/redline-staged/version.txt")"
+          if [ -z "$T19_EXPECT_VERSION" ]; then echo "T19: no staged version to pin"; exit 1; fi
+          export T19_EXPECT_VERSION
+          pnpm --filter @oa/dashboard exec playwright test -c playwright.staging.config.ts
+      # Artifacts are not masked: a secret echoed into a report stops the upload.
+      - id: scan
+        name: No secret in the report
+        if: always()
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/redline-secrets"
+          [ -d "$d" ] || exit 0
+          dirs=()
+          for r in "$RUNNER_TEMP/redline-report" apps/dashboard/playwright-report apps/dashboard/test-results; do
+            [ -d "$r" ] && dirs+=("$r")
+          done
+          [ "${#dirs[@]}" -gt 0 ] || exit 0
+          for f in "$d"/*; do
+            [ -s "$f" ] || continue
+            # -f reads the pattern from the file: the key never reaches argv.
+            if grep -rqF -f "$f" "${dirs[@]}"; then echo "secret in report: ${f##*/}"; exit 1; fi
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.scan-suite.outcome == 'success' && steps.scan.outcome == 'success'
+        with:
+          name: redline-report
+          path: ${{ runner.temp }}/redline-report
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.scan.outcome == 'success' && steps.t19.outcome != 'skipped'
+        with:
+          name: t19-report
+          path: apps/dashboard/playwright-report
+          if-no-files-found: warn
+      # R26 revoke (10.1): this run's PATs on rl-a and rl-b, then each must be
+      # 401 (P36's second half). Runs whatever happened above.
+      - name: Revoke this run's R26 credentials
+        if: always() && steps.mint.outcome == 'success'
+        run: pnpm --filter @oa/redline provisioning revoke
+      - name: Remove the secret files
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/redline-secrets" "$RUNNER_TEMP/redline-turnstile-token"

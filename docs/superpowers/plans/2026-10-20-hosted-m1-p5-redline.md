@@ -77,9 +77,50 @@
 
 Backend's ruling (2026-10-21): P5 runs P2's `SIGNIN_NEGATIVE_CASES` catalog and its fake-Google fixture live, instead of a separate issuer. Real-tenant cases are added once the user creates the two test Workspace tenants (P2's user item 6).
 
+**Test tenants (fixtures, 2026-10-24; tenant B moved to `oa-redline-c.fyi` on 2026-10-25, replacing the stuck `oa-redline-b.fyi`).** Two Cloud Identity Free tenants on domains the user bought in the same Cloudflare account. Real-tenant cases use exactly these names:
+
+| | Tenant A | Tenant B |
+|---|---|---|
+| Domain (`hd`) | `oa-redline-a.fyi` | `oa-redline-c.fyi` |
+| Super admin | `admin@oa-redline-a.fyi` | `admin@oa-redline-c.fyi` |
+| Users | `alice@`, `bob@`, `carol@oa-redline-a.fyi` | `dave@`, `erin@`, `frank@oa-redline-c.fyi` |
+| Groups | `eng@` (alice, bob), `restricted@` (carol) | `eng@` (dave, erin), `restricted@` (frank) |
+
+Mail for both domains is routed (Cloudflare Email Routing catch-all) to the user's inbox, which is the readable inbox for code sign-in. These domains are never under `open-artifacts-staging.app`. Credentials for these users stay in the user's password manager; CI reads them only from the 0600 files the xt suite already requires.
+
 ### Task 3b: Reuse Backend's surface probes
 
 P3 ships `apps/server/test/authz/surfaces.ts` (every HTTP surface as a probe) and `scripts/authz-probe.ts`. Tasks 4 and 5 drive those probes with A's credentials against B and expect `expectRefused` on every surface, so a surface Backend adds is covered without a P5 change. A test fails if the probe list is shorter than the server's `ROUTE_POLICY` manifest.
+
+Built as `tests/redline/live/surfaces.test.ts`, with the case list derived in `src/surfaces.ts`:
+- Read-only probes run through `crossProbe` on a seeded world.
+- Mutating probes run through `crossWrite`. Each install's own admin writes to a throwaway on its own install. A's write at B is refused, and B's throwaway reads back unchanged. Every throwaway is deleted, even on failure.
+- Coverage of `ROUTE_POLICY`, `TOOL_POLICY` and `CONTENT_POLICY` is derived. A dropped surface counts only through `DROPPED`, an explicit list that the coverage check holds to the drop rules. A route no case reaches must be in `EXCLUDED_ROUTES` and backed by a recorded drop; a drop never counts as coverage.
+- The world is reused on every run:
+  - two fixed hook spaces per TEST_DOMAIN, `test-redline-space-<tag>` and `test-redline-guard-<tag>` (tag: the first 8 hex of sha256(testDomain), so a domain move starts clean). "space delete (S)" targets the guard space, never the world's.
+  - one fixed artifact in each space;
+  - fixed member users.
+- Throwaways are deleted, and every cleanup status is checked. No API purges the trash; the nightly `purgeDeleted` hard-deletes it after `LIMITS.softDeleteDays`, so the trash stays bounded.
+- Follow-up: `expectRefused` accepts a 403 whose body holds B data other than the markers (inherited from Task 2; unchanged here).
+
+**Dropped (2026-10-26, #655):** 19 surfaces have no possible success leg cross-install, so they are dropped. Each is in `DROPPED` (`tests/redline/src/surfaces.ts`) with its covering tests. The coverage check holds that list to the drop rules, and `citationGaps` checks that every cited file, describe and test exists. Short names below: M = `apps/server/test/authz.surface-matrix.test.ts`; F = `apps/server/test/redline.foreign-credential.test.ts` ("red line: another install's credential on the dropped directory surfaces").
+- **Owner-only (7).** Hooks never mint the owner, and no owner credential is stored in CI.
+  - Routes: `GET /api/v1/directory/connect`; `POST /api/v1/directory/confirm`, `/cancel`, `/sync`, `/held/:groupId/confirm`, `/disconnect`; `DELETE /api/v1/directory`.
+  - Covered by M "instance routes". `/disconnect` and `DELETE /api/v1/directory` are also covered by M "directory disconnect: cookie sessions only, plus the platform system job".
+- **Nobody allowed (6).** The personal-space rule allows no caller.
+  - The `(personal)` space probes: patch {}, delete, member put, member delete, mapping put, mapping delete.
+  - Covered by M "space writes (the service rules behind { user })" and M "attack seeds: another member's personal space".
+- **anon id (1).** Anonymous writes only, and no fixture opts in.
+  - Covered by M "artifact surfaces (sync stale 8 days)".
+- **content /p/ (1).** Credential-free (public artifacts to anyone), so no tenant credential crosses.
+  - Covered by M "artifact surfaces (sync stale 8 days)".
+- **Off on hosted (1): `GET /api/v1/usage`.** Its `offWhen: usage_off` flag is in the FEATURES provision always sets, so it answers 404 for everyone. It stays dropped while hosted sets `usage_off`.
+  - Covered by `apps/server/test/usage.test.ts` "usage_off → GET /api/v1/usage 404 for the owner", and M "instance routes".
+- **Needs a connected Google directory (3).** The red-line installs have none.
+  - `GET /api/v1/directory/callback`, which answers 404 without the connector. Covered by M "instance routes", and F "GET directory/callback: another install's session or PAT is refused with no audit row; this install's owner reaches the handler".
+  - The mutating mapping deletes, "mapping delete viewer" and "mapping delete a manager mapping". Only a connected directory creates a mapping row. Covered by M "space writes (the service rules behind { user })", and F "DELETE a space viewer mapping: …" and "DELETE a space manager mapping: …".
+  - #655 tracks running these on staging tenants with a connected directory.
+- F models another install's credential two ways: a session for this install's own user id signed with another `SESSION_SECRET`, and a well-formed PAT this install never issued. Each F case first proves this install's own credential succeeds on the same request.
 
 ### Task 4: Credential cases (available now)
 
@@ -89,14 +130,14 @@ P3 ships `apps/server/test/authz/surfaces.ts` (every HTTP surface as a probe) an
 Every case goes through `crossCheck` (B's credential succeeds at B, A's at A, then A's is refused at B).
 - [ ] **Step 1: Write the tests**
   - `A's owner PAT at B: /api/v1/me, /api/v1/artifacts, /mcp (tools/list)`.
-  - `A's session cookie at B`: the cookie value replayed on B's host (and with `Domain` stripped) is refused, because the two installs sign sessions with different `SESSION_SECRET`s, so B cannot verify A's signature. Same for A's cookie on B's content host, and a tampered cookie signed with a guessed key. The mechanism is pinned where it can be read: P1 Task 4 asserts that two creates generate different `SESSION_SECRET`s (secrets are write-only, so P5 proves the effect, not the value).
-  - `A's MCP OAuth access token at B /mcp`; `A's OAuth client_id in B's /authorize` (B must not know it: 400 or consent for an unknown client, never an auto-grant).
+  - `A's session cookie at B`: the cookie value replayed on B's host (also under the alternate cookie name) is refused, because the two installs sign sessions with different `SESSION_SECRET`s, so B cannot verify A's signature. B's content host ignores cookies, A's included: this is an invariant, not a crossCheck, since the content host reads no cookie and so has no same-request B baseline. **Dropped (2026-10-26):** a tampered cookie signed with a guessed key; covered by "A's real session cookie replayed at B" (B refuses any session not signed with its own key, and A's key is such a key). The mechanism is pinned where it can be read: P1 Task 4 asserts that two creates generate different `SESSION_SECRET`s (secrets are write-only, so P5 proves the effect, not the value).
+  - `A's MCP OAuth access token at B /mcp`; `A's OAuth client_id in B's /authorize` (B must not know it: a 400 (401/403/404 also ok) with no consent form, never a redirect with a code. A consent page would mean B resolved A's client, so it fails).
   - `A's signed content URL path (/c/<exp>.<sig>/<A artifact>/v1/) at B's content host`, and `A's signature with B's artifact id`.
-  - `A's capture token (X-OA-Capture) at B's content host`.
+  - **Dropped (2026-10-26):** `A's capture token (X-OA-Capture) at B's content host`. No route issues one (only the Worker's own thumbnail capture mints it), so it can't cross installs; covered by the server's content tests.
   - `A's signed upload URL at B`.
   - `B's private artifact id fetched with A's credentials at A` (404: ids don't cross installs).
   - `A's OAuth refresh token and an unredeemed A authorization code at B's /token` → `invalid_grant`, no token issued.
-  - `A's invite link and share email link opened at B` (signed in to B as a B member) → no membership or share created on B.
+  - `A's invite link and share email link opened at B` (signed in to B as a B member) → no membership or share created on B. Both links carry no secret (the invite links to `/sign-in`, the share to `/a/<id>`), so these cases prove only that A's ids and members don't resolve at B and that B's members and shares are unchanged.
 - [ ] **Step 2:** Run against `rl-a`/`rl-b`; expect PASS. Any FAIL is a red-line bug: stop, file it with the Manager as a blocker, don't weaken the test.
 - [ ] **Step 3:** Commit `test(redline): tokens, sessions, OAuth and signed URLs don't cross installs`.
 
@@ -110,11 +151,11 @@ Every case goes through `crossCheck` (B's credential succeeds at B, A's at A, th
   - `WebSocket at B with Origin = A's app or content origin, using B's own valid session` → refused (Origin check).
   - `data API (GET/PUT/PATCH/DELETE data/:col/:doc, POST query, PUT data reset, storage/:key) at B with A's PAT`.
   - `anonymous writes`: a public artifact on B with anonymous writes allowed accepts an anonymous write, and A's PAT sent along doesn't change the actor to A's user (the stored doc has no A identity).
-  - Mapping integrity (replaces the Host-to-IP case, which proves nothing behind one anycast edge): A's app and content hosts both resolve in the platform `HOSTS` to A's `installs.id`, and so do B's; each host's `/healthz.installId` equals that id; no host maps to two ids. `X-Forwarded-Host: <B>` on A is ignored; an unmapped host → generic 404; a host that is neither the install's `APP_HOST` nor `CONTENT_HOST` (reached through a test mapping on stg only) → 404 from the server itself.
-  - Unmapped host, no fallthrough (the dispatch Worker answers, never a default install): for a typo of A's host, A's host in the other case, with a trailing dot, with `:443`, the bare `<env>.app` and `<env>.page` apexes, `www.<env>.app`, an arbitrary `deadbeef.<env>.app`, and the old host of a deleted install (deleted first, then requested) the response is a **generic 404** (no `Location`, no `Set-Cookie`, no install header, and a body containing no marker string from any install), never a 5xx. `Host`/`X-Forwarded-Host` set to B on A's unmapped name still gives that 404. Both tenant zones per env are exercised.
+  - Mapping integrity (replaces the Host-to-IP case, which proves nothing behind one anycast edge): A's app and content hosts both resolve in the platform `HOSTS` to A's `installs.id`, and so do B's; each host's `/healthz.installId` equals that id; no host maps to two ids. `X-Forwarded-Host: <B>` on A is ignored; an unmapped host → generic 404; a host that is neither the install's `APP_HOST` nor `CONTENT_HOST` (reached through a test mapping on stg only) → 404 from the server itself. Inputs (Platform, 2026-10-26): the staging inventory Worker (`REDLINE_STG_INVENTORY_URL`, key `REDLINE_STG_INVENTORY_KEY`; `GET /hosts` with `complete`, `GET /hosts?host=`, `GET /installs`). Checked as: the `/hosts` listing is complete (else FAIL); no host in `/hosts` is claimed by two installs in `/installs`; every rl-a and rl-b host is in `/hosts` with its own install id. `unproven-live` until the inventory is configured.
+  - Unmapped host, no fallthrough (the dispatch Worker answers, never a default install): for a typo of A's host, the bare `<env>.app` and `<env>.page` apexes, `www.<env>.app`, an arbitrary `deadbeef.<env>.app`, and the old host of a deleted install (`REDLINE_DELETED_HOSTS`, a JSON list Platform sets once `rl-del` is deleted; each must also show `installId: null` in `/hosts?host=`; `unproven-live` while unset) the response is a **generic 404** (no `Location`, no `Set-Cookie`, no install header, and a body containing no marker string from any install), never a 5xx. `Host`/`X-Forwarded-Host` set to B on A's unmapped name still gives that 404. Both tenant zones per env are exercised. Ruling (2026-10-26): the dispatch Worker normalizes case, a trailing dot and `:443` (`hostOf` in `apps/dispatch`), so A's host spelled those ways is A's own host: the case passes when A answers or the generic 404 comes back, and fails on B or a 5xx.
   - `content host never serves app routes and ignores cookies`: `/api/v1/me` on A's content host with A's session → not 200; a `Cookie` header on content requests doesn't change the response.
-  - `cross-site cookies`: on staging (`open-artifacts-staging.app` / `.page`) and in the prod probe (`open-artifacts.app` / `.page`): the app and content domains are different registrable domains, **and** `rl-a.<app>` and `rl-b.<app>` (and their content hosts) are different sites per the PSL snapshot `tldts` ships. Until all four PSL entries are published (P1 Task 10), this case reports `unproven` and blocks only a second prod tenant's go-live.
-  - Scheduler: `/__oa/nightly` (only if P1 Task 7 took the fallback): a signature made for A's host replayed at B → refused; a 6-minute-old signature → refused; the same signature replayed a second time at A → refused (nonce, once per day).
+  - Cross-site isolation that holds today (ruling 2026-10-26; replaces the PSL case in the gate): (a) artifact content is served on the separate `.page` registrable domain, cross-site to every app host (eTLD+1 via `tldts`, PSL as-is, plus the issued content URL is on that host); (b) every app-host `Set-Cookie` is `__Host-` (Secure, `Path=/`, no `Domain`), on a session-hook sign-in and the code flow; (c) state-changing app requests with a valid cookie and no `X-OA-Request` are refused (403 `csrf`, state unchanged) and accepted with it, on a sample of write routes. "`rl-a.<app>` and `rl-b.<app>` are different sites per the PSL" moves out of the gate to a post-M1 check, `scripts/psl-listed.ts` (exit 2 until all four entries are published, P1 Task 10); it still blocks a second prod tenant's go-live.
+  - Scheduler: P1 Task 7 took no fallback (`scheduled()` through the dispatch namespace; signed `/__oa/nightly` parked for M2), so the replay case is dropped (ruling 2026-10-26) and covered by "no /__oa/nightly route on either install" (404 on both app hosts).
 - [ ] **Step 2:** Run; expect PASS (same stop rule as Task 4).
 - [ ] **Step 3:** Commit `test(redline): live data, sockets and the dispatch edge`.
 
@@ -126,11 +167,11 @@ Every case goes through `crossCheck` (B's credential succeeds at B, A's at A, th
 Installs are configured (by Backend's P2 settings) with `rl-a` and `rl-b` bound to different domains. The cases come from P2's `SIGNIN_NEGATIVE_CASES`, run live against both installs and against the staging auth broker (`auth.<staging-hosted>`), whose cases are the riskiest.
 - [ ] **Step 1: Write the tests** (drive P2's catalog live)
   - `an ID token with hd=a… at B's callback` → no session.
-  - `an ID token with B's email domain but hd=a…` → no session (domain from the token, not the email).
-  - `an ID token with no hd claim and a B-domain email` → no session.
-  - `an ID token minted for A's client (aud) replayed at B` → no session.
+  - **Dropped (2026-10-26):** `an ID token with B's email domain but hd=a…` → no session (domain from the token, not the email). Google can't issue it even for real tenants (`oa-redline-c.fyi` is verified to tenant B, so no tenant-A account carries a B address); covered by `apps/server/test/xt-google.local.test.ts` ("an ID token with a B email domain but hd of A").
+  - **Dropped (2026-10-26):** `an ID token with no hd claim and a B-domain email` → no session. No consumer (no `hd`) Google account can use a Workspace-verified domain; covered by `apps/server/test/xt-google.local.test.ts` ("an ID token with no hd and a B email").
+  - `A's code and broker state at B` → no session (was `an ID token minted for A's client (aud) replayed at B`). Hosted installs share one Google client through the broker, so A's and B's tokens carry the same `aud` by design; the per-install binding is the broker state (it names the install and binds H(nonce || challenge)) and the install-derived nonce. The real-tenant case proves B won't redeem A's real code and broker state (`error=failed`, never `tenant`), and the same capture still signs in at A. A distinct `aud` (direct transport) is covered by `apps/server/test/xt-google.local.test.ts`.
   - `A's OIDC state/nonce replayed at B` → no session.
-  - Broker: `A's `BROKER_SIGNING_KEY` (its kid derived from A's public key) redeeming as B`, `B's assertion at A`, `a tampered install id at the broker callback` → refused.
+  - Broker: `a tampered install id at the broker callback` → refused (staging only: a real broker state from a sign-in start, its install id swapped, signature kept). **Dropped (2026-10-26):** `A's BROKER_SIGNING_KEY (its kid derived from A's public key) redeeming as B` and `B's assertion at A`. The redeem assertion is Ed25519-signed by the install server-side and never leaves the install-broker channel, so there is no real value to replay, and signing one would be forging; covered by `apps/auth-broker/test/broker.test.ts` ("A's key signing a redeem for install B is refused, with no Google call", "redeem verifies the broker state's flow hash") and, with real values, by the real-tenant case `A's code and broker state at B`.
   - One-time codes: `a code issued by A for x@b.redline.test, entered at B` → refused; `a code requested at B for an address not invited to B` → no code sent (hook shows none) and a generic response; `a guest of A who is invited to B gets read-only on B only` (guest can't publish via MCP or data API on B).
 - [ ] **Step 2:** Run; expect PASS (same stop rule).
 - [ ] **Step 3:** Mark proof levels. Until the user creates the two real test Workspace tenants, a *validly signed* Google token with the wrong `hd` or `aud` can't be produced live; those cases run only against P2's fake-Google fixture. The suite reports them as `unproven-live`, the Platform status page shows them so, and FinQore's go-live is gated on them turning `proven`.
@@ -181,6 +222,7 @@ The migration skill itself is Backend's scope C and isn't on main yet. This task
 
 - [ ] **Step 1:** Ask the Manager to get the user to export their claude.ai data to a local folder and give the path. The export never leaves their machine.
 - [ ] **Step 2:** On `rl-a` (spaces from P3 created: `Engineering`, `Personal`), have an agent run the migration skill as the user, then run `checkImport` twice (after the first run and after a rerun).
+- [ ] **Step 2b: Second-PAT sweep.** `checkImport` sees only what the owner's PAT can see, so a copy leaked into another member's private space is invisible to it. Before the first run and after the rerun, snapshot `rl-a` with a second test member's PAT; that member's snapshot must gain no artifact carrying an import key. Run on a quiet `rl-a` (no other writers), since `unexpected` counts any new artifact the owner can see.
 - [ ] **Step 3:** Record counts and problems (no titles or content) in `docs/ops/hosted.md` and on the status page; file each problem with Backend.
 - [ ] **Step 4:** Delete the imported artifacts from `rl-a` with the owner's PAT.
 

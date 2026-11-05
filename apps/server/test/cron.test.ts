@@ -1,7 +1,6 @@
 import { env } from "cloudflare:workers";
 import { newId } from "@oa/shared";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { scheduled } from "../src/cron.js";
 import worker from "../src/index.js";
 import { publish, purgeDeleted } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
@@ -90,12 +89,13 @@ describe("purgeDeleted", () => {
       waitUntil: (p: Promise<unknown>) => waits.push(p),
       passThroughOnException() {},
     } as unknown as ExecutionContext;
-    expect(worker.scheduled).toBe(scheduled);
     // B3's release check: no real network from tests.
     const f = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(async () => new Response("", { status: 429 }));
-    await scheduled({} as ScheduledController, env, ctx);
+    // Through index's entry, which wraps env for read retries (db/retry.ts)
+    // and calls cron's scheduled.
+    await worker.scheduled?.({} as ScheduledController, env, ctx);
     expect(waits).toHaveLength(1);
     const settled = (await waits[0]) as PromiseSettledResult<unknown>[];
     f.mockRestore();
@@ -103,10 +103,15 @@ describe("purgeDeleted", () => {
       "fulfilled",
       "fulfilled",
       "fulfilled",
+      "fulfilled", // sweepOAuthStore (expired rows, old tombstones)
       "fulfilled", // C3: reindexStale
       "fulfilled", // sweepEmailCounters
       "fulfilled", // sweepLoginCodes (P2)
       "fulfilled", // checkLatestRelease (B3)
+      "fulfilled", // expirePending (P3 T12 directory confirm)
+      "fulfilled", // sweepAuditEvents (400-day audit retention)
+      "fulfilled", // kickSync (P3 T13; a no-op with sync off)
+      "fulfilled", // marks the day for RECOVERY_CRON's daily slot (O1)
     ]);
     expect(
       await count("select count(*) n from artifacts where id = ?", gone),

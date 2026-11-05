@@ -9,3 +9,12 @@ it("admin acts as an admin instead of the owner", () => {
 it("absent means self-hosted", () => {
   expect(parseHostedParam(null)).toBeUndefined();
 });
+
+it("workspace-change starts the confirm step for a different Google Workspace", () => {
+  expect(parseHostedParam("workspace-change")).toEqual({
+    pendingCustomerChange: {
+      previous: { customerId: "C01abc", domain: "old.example" },
+      next: { customerId: "C09xyz", domain: "example.com" },
+    },
+  });
+});

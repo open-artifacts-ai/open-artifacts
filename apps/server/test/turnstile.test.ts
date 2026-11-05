@@ -24,7 +24,13 @@ describe("verifyTurnstile", () => {
   it("passes the secret, token and IP; true on success with our hostname and action", async () => {
     const calls = siteverify(() => Response.json(ok));
     expect(
-      await verifyTurnstile(authConfig(trial()), "tok", "203.0.113.1", HOST),
+      await verifyTurnstile(
+        authConfig(trial()),
+        "tok",
+        "203.0.113.1",
+        HOST,
+        trial(),
+      ),
     ).toBe(true);
     expect(Object.fromEntries(calls[0] ?? [])).toEqual({
       secret: "s",
@@ -35,39 +41,41 @@ describe("verifyTurnstile", () => {
 
   it("refuses a token solved for another hostname", async () => {
     siteverify(() => Response.json({ ...ok, hostname: "evil.example.com" }));
-    expect(await verifyTurnstile(authConfig(trial()), "tok", null, HOST)).toBe(
-      false,
-    );
+    expect(
+      await verifyTurnstile(authConfig(trial()), "tok", null, HOST, trial()),
+    ).toBe(false);
   });
 
   it("refuses a token solved for another action (or none)", async () => {
     siteverify(() => Response.json({ ...ok, action: "login" }));
-    expect(await verifyTurnstile(authConfig(trial()), "tok", null, HOST)).toBe(
-      false,
-    );
+    expect(
+      await verifyTurnstile(authConfig(trial()), "tok", null, HOST, trial()),
+    ).toBe(false);
     vi.restoreAllMocks();
     siteverify(() => Response.json({ success: true, hostname: HOST }));
-    expect(await verifyTurnstile(authConfig(trial()), "tok", null, HOST)).toBe(
-      false,
-    );
+    expect(
+      await verifyTurnstile(authConfig(trial()), "tok", null, HOST, trial()),
+    ).toBe(false);
   });
 
   it("fails closed: refusal, HTTP error, network error, no token, not configured", async () => {
     const cfg = authConfig(trial());
     siteverify(() => Response.json({ ...ok, success: false }));
-    expect(await verifyTurnstile(cfg, "tok", null, HOST)).toBe(false);
+    expect(await verifyTurnstile(cfg, "tok", null, HOST, trial())).toBe(false);
     vi.restoreAllMocks();
     siteverify(() => new Response("x", { status: 500 }));
-    expect(await verifyTurnstile(cfg, "tok", null, HOST)).toBe(false);
+    expect(await verifyTurnstile(cfg, "tok", null, HOST, trial())).toBe(false);
     vi.restoreAllMocks();
     siteverify(() => {
       throw new Error("down");
     });
-    expect(await verifyTurnstile(cfg, "tok", null, HOST)).toBe(false);
-    expect(await verifyTurnstile(cfg, undefined, null, HOST)).toBe(false);
-    expect(await verifyTurnstile(authConfig(direct()), "tok", null, HOST)).toBe(
+    expect(await verifyTurnstile(cfg, "tok", null, HOST, trial())).toBe(false);
+    expect(await verifyTurnstile(cfg, undefined, null, HOST, trial())).toBe(
       false,
     );
+    expect(
+      await verifyTurnstile(authConfig(direct()), "tok", null, HOST, trial()),
+    ).toBe(false);
   });
 });
 
@@ -76,12 +84,18 @@ describe("requireTurnstile", () => {
     const calls = siteverify(() => Response.json(ok));
     for (let i = 0; i < 3; i++) {
       await expect(
-        requireTurnstile(authConfig(trial()), undefined, null, HOST),
+        requireTurnstile(authConfig(trial()), undefined, null, HOST, trial()),
       ).rejects.toMatchObject({
         code: "turnstile_required",
         details: { field: "turnstile", required: true },
       });
-      await requireTurnstile(authConfig(trial()), `tok${i}`, null, HOST);
+      await requireTurnstile(
+        authConfig(trial()),
+        `tok${i}`,
+        null,
+        HOST,
+        trial(),
+      );
     }
     expect(calls).toHaveLength(3);
   });
@@ -89,13 +103,19 @@ describe("requireTurnstile", () => {
   it("a refused token is turnstile_failed", async () => {
     siteverify(() => Response.json({ ...ok, action: "other" }));
     await expect(
-      requireTurnstile(authConfig(trial()), "tok", null, HOST),
+      requireTurnstile(authConfig(trial()), "tok", null, HOST, trial()),
     ).rejects.toMatchObject({ code: "turnstile_failed" });
   });
 
   it("not configured: no check", async () => {
     const calls = siteverify(() => Response.json(ok));
-    await requireTurnstile(authConfig(direct()), undefined, null, HOST);
+    await requireTurnstile(
+      authConfig(direct()),
+      undefined,
+      null,
+      HOST,
+      trial(),
+    );
     expect(calls).toHaveLength(0);
   });
 });

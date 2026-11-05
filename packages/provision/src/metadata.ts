@@ -3,41 +3,13 @@
 // Bindings: https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/bindings/
 // The same metadata works for `/workers/scripts/{name}` (account) and the
 // dispatch-namespace endpoint; only the target URL differs (not decided here).
-import { normalizeVar, TUNABLES } from "@oa/shared";
+import type { Template } from "@oa/bundle";
+import { normalizeVar, parseTier, TIER_FEATURES, TUNABLES } from "@oa/shared";
 import { assertOwnResource, isInstallId, names } from "./names.js";
 import type { InstallId } from "./types.js";
 
-/** Remove // and /* *\/ comments and trailing commas, leaving strings intact. */
-export function stripJsonc(text: string): string {
-  let out = "";
-  let i = 0;
-  while (i < text.length) {
-    const c = text[i] as string;
-    const n = text[i + 1];
-    if (c === '"') {
-      let j = i + 1;
-      while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
-      out += text.slice(i, j + 1);
-      i = j + 1;
-    } else if (c === "/" && n === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-    } else if (c === "/" && n === "*") {
-      const end = text.indexOf("*/", i + 2);
-      i = end < 0 ? text.length : end + 2;
-    } else {
-      out += c;
-      i++;
-    }
-  }
-  return out.replace(/,(\s*[}\]])/g, "$1");
-}
-
-// biome-ignore lint/suspicious/noExplicitAny: the template is arbitrary JSON
-export type Template = Record<string, any>;
-
-export function parseTemplate(text: string): Template {
-  return JSON.parse(stripJsonc(text)) as Template;
-}
+// Moved to the public @oa/bundle (#1056); re-exported for provision's callers.
+export { parseTemplate, stripJsonc, type Template } from "@oa/bundle";
 
 /** Template entries hosted does not upload as bindings, each with a reason. */
 export const TEMPLATE_BINDINGS_EXCLUDED: Record<string, string> = {
@@ -75,11 +47,15 @@ export const HOSTED_ADDED = [
   "HOSTED",
   "INSTALL_ID",
   "FEATURES",
+  "TIER",
   "EMAIL_DAILY_CAP",
   "CODE_EMAILS_PER_DAY",
   "AUTH_PROVIDERS",
   "AUTH_DOMAINS",
+  "AUTH_DOMAIN_JOIN",
   "AUTH_BROKER_URL",
+  "DIRECTORY_BROKER_URL",
+  "GOOGLE_CLIENT_ID",
   "NIGHTLY_PUBKEY",
   "TEST_HOOKS",
   "TEST_HOOK_KEY",
@@ -104,11 +80,39 @@ const EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
 export const HOSTED_VARS: Record<string, (v: string) => string | undefined> = {
   INSTALL_ID: (v) => (isInstallId(v) ? undefined : "bad install id"),
   FEATURES: list(/^[a-z][a-z0-9_]*$/),
+  // The hosted billing tier: FEATURES is derived from it (TIER_FEATURES), so
+  // the two are never passed together (userWorkerMetadata refuses).
+  TIER: (v) =>
+    parseTier(v) === v ? undefined : 'expected "trial", "team" or "business"',
   EMAIL_DAILY_CAP: posInt,
   CODE_EMAILS_PER_DAY: posInt,
   AUTH_PROVIDERS: list(/^[a-z][a-z0-9_-]*$/),
   AUTH_DOMAINS: list(/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i),
+  // Hosted AUTH_DOMAINS isn't verified as owned, so a hosted install never
+  // admits by domain: always "invite" until ownership is proven (#572).
+  AUTH_DOMAIN_JOIN: (v) =>
+    v === "invite"
+      ? undefined
+      : 'hosted installs must use "invite" until domain ownership is proven (#572)',
+  // The OAuth store (#1008): set by the provisioner's update job, on the
+  // install's vars, so upgrades and rollbacks keep it.
+  OAUTH_STORE: (v) =>
+    v === "kv" || v === "dual" || v === "d1"
+      ? undefined
+      : 'expected "kv", "dual" or "d1"',
+  // Hosted: only the env's broker sign-in client (wfp.ts brokerVars checks
+  // the exact value). Public; GOOGLE_CLIENT_SECRET is never a hosted var.
+  GOOGLE_CLIENT_ID: (v) =>
+    /^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/.test(v)
+      ? undefined
+      : "expected a Google OAuth client id",
   AUTH_BROKER_URL: (v) =>
+    /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?(?:\/\S*)?$/i.test(v)
+      ? undefined
+      : "expected an https URL",
+  // Hosted: the env's directory broker (wfp.ts brokerVars checks the exact
+  // value). The server's directory transport needs it on HOSTED=1.
+  DIRECTORY_BROKER_URL: (v) =>
     /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?(?:\/\S*)?$/i.test(v)
       ? undefined
       : "expected an https URL",
@@ -128,13 +132,33 @@ export const HOSTED_VARS: Record<string, (v: string) => string | undefined> = {
       : "expected base64url of exactly 32 bytes",
 };
 
+/**
+ * Why a caller var is refused (unknown name, or a value its check rejects),
+ * or undefined: the allowlist userWorkerMetadata applies, for callers (the
+ * oa:hosted CLI) that refuse before any call.
+ */
+export function hostedVarProblem(k: string, v: string): string | undefined {
+  const check = Object.hasOwn(HOSTED_VARS, k)
+    ? HOSTED_VARS[k]
+    : Object.hasOwn(TUNABLES, k)
+      ? (x: string) => (x === "" ? undefined : TUNABLES[k]?.check(x))
+      : undefined;
+  if (!check) return `unknown var ${JSON.stringify(k)}`;
+  const why = check(v);
+  return why ? `invalid var ${k}: ${why}` : undefined;
+}
+
 const PASSTHROUGH = [
+  "TIER",
+  "GOOGLE_CLIENT_ID",
   "EMAIL_DAILY_CAP",
   "CODE_EMAILS_PER_DAY",
   "AUTH_PROVIDERS",
   "AUTH_DOMAINS",
   "AUTH_BROKER_URL",
+  "DIRECTORY_BROKER_URL",
   "NIGHTLY_PUBKEY",
+  "OAUTH_STORE",
 ];
 
 export type Vars = Record<string, string>;
@@ -331,20 +355,15 @@ export function userWorkerMetadata(
         `template has more than one ${k} entry; hosted provisions one`,
       );
 
-  // EMAIL_FROM is always noreply@<slug>.mail.<app-domain>
-  const dot = i.appHost.indexOf(".");
-  const emailFrom = `noreply@${i.appHost.slice(0, dot)}.mail.${i.appHost.slice(dot + 1)}`;
+  // EMAIL_FROM is the env's one sender, noreply@mail.<app-domain>, for every
+  // install: Email Sending onboards each (sub)domain by hand and allows 30
+  // per zone. The server names each install in the From display name.
+  const emailFrom = `noreply@mail.${i.appHost.slice(i.appHost.indexOf(".") + 1)}`;
 
   // vars: allowlist first
   for (const [k, v] of Object.entries(i.vars)) {
-    const check = Object.hasOwn(HOSTED_VARS, k)
-      ? HOSTED_VARS[k]
-      : Object.hasOwn(TUNABLES, k)
-        ? (x: string) => (x === "" ? undefined : TUNABLES[k]?.check(x))
-        : undefined;
-    if (!check) throw new Error(`unknown var ${JSON.stringify(k)}`);
-    const why = check(v);
-    if (why) throw new Error(`invalid var ${k}: ${why}`);
+    const why = hostedVarProblem(k, v);
+    if (why) throw new Error(why);
   }
   if (i.vars.TEST_DOMAIN !== undefined && (!i.testHooks || r.env === "prod"))
     throw new Error(
@@ -355,13 +374,22 @@ export function userWorkerMetadata(
   if (i.vars.EMAIL_FROM !== undefined && i.vars.EMAIL_FROM !== emailFrom)
     throw new Error(`EMAIL_FROM must be ${emailFrom}`);
 
+  // A tier sets the features (the single source: a caller can't widen past
+  // it), on every install, test installs included: a test install behaves
+  // exactly like the tier it reports. Without TIER, the explicit FEATURES.
+  const tier = parseTier(i.vars.TIER);
+  if (tier && i.vars.FEATURES !== undefined)
+    throw new Error(
+      "FEATURES is derived from TIER: pass one or the other, never both",
+    );
   const features = [
     ...new Set(
-      (i.vars.FEATURES ?? "")
+      (tier ? TIER_FEATURES[tier].join(",") : (i.vars.FEATURES ?? ""))
         .split(",")
         .map((x) => x.trim())
         .filter(Boolean)
-        .concat("usage_off"),
+        // Hosted M1 is the spaces product (Manager ruling 2026-10-26): always on.
+        .concat("spaces", "usage_off"),
     ),
   ].join(",");
 
@@ -410,6 +438,7 @@ export function userWorkerMetadata(
     HOSTED: "1",
     INSTALL_ID: i.id,
     FEATURES: features,
+    AUTH_DOMAIN_JOIN: "invite",
   });
   for (const k of PASSTHROUGH) {
     const v = i.vars[k];

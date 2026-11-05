@@ -191,7 +191,7 @@ code,
   line-height: 1.06;
   letter-spacing: -0.03em;
 }
-/* Three fixed lines at every width. */
+/* Two fixed lines at every width. */
 .hero h1 span {
   display: block;
 }
@@ -203,6 +203,18 @@ code,
 }
 .hero .lede a:hover {
   text-decoration-color: var(--oa-accent);
+}
+/* Hosted sign-up and self-host, left-aligned under the subcopy. */
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+.btn.lg {
+  min-height: 46px;
+  padding: 0 20px;
+  font-size: var(--oa-text-lg);
 }
 .lede {
   max-width: 60ch;
@@ -593,4 +605,15 @@ code,
     color: var(--shiki-dark) !important;
     background-color: var(--shiki-dark-bg) !important;
   }
+}
+
+/* Privacy Policy and Terms */
+.legal .prose {
+  max-width: 72ch;
+  margin: 0 auto;
+  padding: 48px 0 72px;
+}
+.legal-updated {
+  color: var(--oa-text-muted);
+  font-size: var(--oa-text-md);
 }

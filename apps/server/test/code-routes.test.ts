@@ -5,6 +5,7 @@ import {
   CodeRequestedSchema,
   CodeVerifiedSchema,
   CodeVerifyFailureDetailsSchema,
+  R,
   TurnstileRequiredDetailsSchema,
 } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +21,7 @@ import {
   trial,
   uniq,
 } from "./auth-helpers.js";
+import { fetchAndWait, login } from "./helpers.js";
 import { callWorker, nextIp } from "./mcp-helpers.js";
 
 // P2 Task 8: code sign-in routes.
@@ -323,6 +325,23 @@ describe("POST AUTH.codeVerify", () => {
     expect(setCookieLine(r, CODE_COOKIE)).toContain("Max-Age=0");
   });
 
+  it("#803: a sign-in sent with another user's valid cookie records no credential", async () => {
+    const alice = await login(uniq("alice"));
+    const guest = uniq("g", "x.com");
+    await seedUser(guest, "guest");
+    const s = await start(direct(), guest);
+    const r = await verify(s.e, s.code(), `${s.cookie}; ${alice.cookie}`);
+    expect(r.status).toBe(200);
+    const rows = await env.DB.prepare(
+      `select e.actor_cred_kind kind, e.actor_cred_id id from audit_events e
+        join users u on u.id = e.target_id
+        where e.action = 'auth.signin' and u.email = ?`,
+    )
+      .bind(guest)
+      .all();
+    expect(rows.results).toEqual([{ kind: null, id: null }]);
+  });
+
   it("a shared address with no row becomes a guest on verify", async () => {
     const addr = uniq("s", "x.com");
     await seedShare(addr);
@@ -349,12 +368,74 @@ describe("POST AUTH.codeVerify", () => {
       user: { role: "owner" },
     });
     expect(setCookieLine(r, SESSION)).toContain("Max-Age=604800");
-    expect(
-      await readSession(e, cookieOf(r, SESSION)?.split("=")[1]),
-    ).toMatchObject({
-      p: "code",
-      t: "a.com",
-    });
+    const sess = await readSession(e, cookieOf(r, SESSION)?.split("=")[1]);
+    expect(sess).toMatchObject({ p: "code", t: "a.com" });
+    // #1372: a code sign-in is itself a forced re-authentication (a fresh
+    // emailed code), so it carries the marker the role confirm page needs.
+    expect(sess?.a).toBeGreaterThanOrEqual(Date.now() - 60_000);
+  });
+
+  it("a restricted domain member is readOnly (the member's cap, as GET /me says), with restriction", async () => {
+    // A fresh siteverify answer per request (a Response body reads once).
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json(TURNSTILE_OK),
+    );
+    for (const how of ["manual", "group"] as const) {
+      const who = uniq(`rst-${how}`);
+      const id = await seedUser(who, "member");
+      const gid = `g-rst-${crypto.randomUUID()}`;
+      if (how === "manual")
+        await env.DB.prepare(
+          "update users set restricted_manual = 1 where id = ?",
+        )
+          .bind(id)
+          .run();
+      else
+        await env.DB.batch([
+          env.DB.prepare(
+            "insert into directory_groups (group_id, email) values (?, ?)",
+          ).bind(gid, `${gid}@a.com`),
+          env.DB.prepare(
+            "insert into restricted_groups (group_id, group_email) values (?, ?)",
+          ).bind(gid, `${gid}@a.com`),
+          env.DB.prepare(
+            "insert into directory_members (group_id, user_id) values (?, ?)",
+          ).bind(gid, id),
+          env.DB.prepare(
+            "update users set restricted_sync = 1 where id = ?",
+          ).bind(id),
+        ]);
+      const m = mailer();
+      const e = withMail(trial(), m);
+      const r1 = await request(e, who, { token: "ok" });
+      const r = await verify(e, m.codeFor(who), cookieOf(r1, CODE_COOKIE));
+      expect(r.status).toBe(200);
+      const body = CodeVerifiedSchema.parse(await r.json());
+      expect(body.readOnly, how).toBe(true);
+      expect(body.user.restriction, how).toEqual(
+        how === "manual"
+          ? { manual: true, groups: [] }
+          : {
+              manual: false,
+              groups: [{ groupId: gid, email: `${gid}@a.com`, name: null }],
+            },
+      );
+      // The domain session itself isn't a guest one (t = domain).
+      expect(
+        await readSession(e, cookieOf(r, SESSION)?.split("=")[1]),
+      ).toMatchObject({ p: "code", t: "a.com" });
+      const me = await fetchAndWait(
+        app,
+        new Request(`${APP}${R.me}`, {
+          headers: { cookie: cookieOf(r, SESSION) as string },
+        }),
+        e,
+      );
+      expect(((await me.json()) as { auth: unknown }).auth).toMatchObject({
+        readOnly: true,
+        cap: "restricted",
+      });
+    }
   });
 
   it("reasons come from the cookie: invalid_code 4..1, then expired", async () => {
@@ -732,5 +813,241 @@ describe("code routes: review fixes", () => {
     expect(
       ((await t.json()) as { access_token?: string }).access_token,
     ).toBeTruthy();
+  });
+});
+
+// Review item 13: a re-request that sends nothing (resend_wait, capped,
+// pool_full, send_failed) must not orphan the code already in the inbox.
+describe("a code re-request keeps the pending request id", () => {
+  const ridOf = (cookie: string | undefined) => {
+    const v = (cookie ?? "").split("=")[1]?.split(".")[0] ?? "";
+    return (
+      JSON.parse(atob(v.replace(/-/g, "+").replace(/_/g, "/"))) as {
+        rid: string;
+      }
+    ).rid;
+  };
+
+  it("a re-request inside the resend wait leaves the first code usable", async () => {
+    const guest = uniq("rs", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const e = withMail(direct(), m);
+    const ip = "198.51.100.201";
+    const r1 = await request(e, guest, { ip });
+    const first = m.codeFor(guest);
+    const r2 = await request(e, guest, {
+      ip,
+      cookie: cookieOf(r1, CODE_COOKIE),
+    });
+    expect(m.sent).toHaveLength(1);
+    // The 202 is the same either way: nothing says whether a code went out.
+    expect(await r2.json()).toEqual(await r1.json());
+    expect(ridOf(cookieOf(r2, CODE_COOKIE))).toBe(
+      ridOf(cookieOf(r1, CODE_COOKIE)),
+    );
+    const v = await verify(e, first, cookieOf(r2, CODE_COOKIE), { ip });
+    expect(v.status).toBe(200);
+  });
+
+  it("a resend after the wait replaces the code under the same id", async () => {
+    const guest = uniq("rs2", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const e = withMail(direct(), m);
+    const ip = "198.51.100.202";
+    const r1 = await request(e, guest, { ip });
+    const first = m.codeFor(guest);
+    const later = Date.now() + 61_000;
+    vi.spyOn(Date, "now").mockImplementation(() => later);
+    const r2 = await request(e, guest, {
+      ip,
+      cookie: cookieOf(r1, CODE_COOKIE),
+    });
+    expect(m.sent).toHaveLength(2);
+    const second = m.codeFor(guest);
+    expect(second).not.toBe(first);
+    const c2 = cookieOf(r2, CODE_COOKIE);
+    const bad = await verify(e, first, c2, { ip });
+    expect(bad.status).toBe(401);
+    const ok = await verify(e, second, cookieOf(bad, CODE_COOKIE) ?? c2, {
+      ip,
+    });
+    expect(ok.status).toBe(200);
+  });
+
+  it("a resend whose email fails leaves the earlier code usable", async () => {
+    const guest = uniq("rs3", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const ip = "198.51.100.203";
+    const r1 = await request(withMail(direct(), m), guest, { ip });
+    const first = m.codeFor(guest);
+    const later = Date.now() + 61_000;
+    vi.spyOn(Date, "now").mockImplementation(() => later);
+    const r2 = await request(withMail(direct(), mailer(true)), guest, {
+      ip,
+      cookie: cookieOf(r1, CODE_COOKIE),
+    });
+    expect(r2.status).toBe(202);
+    const v = await verify(
+      withMail(direct(), m),
+      first,
+      cookieOf(r2, CODE_COOKIE),
+      { ip },
+    );
+    expect(v.status).toBe(200);
+  });
+
+  it("a cookie for another address, or none, gets a new id", async () => {
+    const a = uniq("rsa", "x.com");
+    const b = uniq("rsb", "x.com");
+    const e = withMail(direct());
+    const r1 = await request(e, a);
+    const r2 = await request(e, b, { cookie: cookieOf(r1, CODE_COOKIE) });
+    const r3 = await request(e, a);
+    const rid1 = ridOf(cookieOf(r1, CODE_COOKIE));
+    expect(ridOf(cookieOf(r2, CODE_COOKIE))).not.toBe(rid1);
+    expect(ridOf(cookieOf(r3, CODE_COOKIE))).not.toBe(rid1);
+  });
+});
+
+// Review item 36b: next (up to 512 bytes) plus a long address could push the
+// pending cookie past its own 1024-byte read limit, so verify said no_pending.
+describe("the pending cookie fits its read limit", () => {
+  it("a 60-character address with a 512-byte next signs in, next falls back to /", async () => {
+    const base = uniq("l", "x.com");
+    const at = base.indexOf("@");
+    const guest = `${base.slice(0, at)}${"z".repeat(60 - base.length)}${base.slice(at)}`;
+    expect(guest).toHaveLength(60);
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const e = withMail(direct(), m);
+    const next = `/a/${"n".repeat(509)}`;
+    expect(next).toHaveLength(512);
+    const r1 = await request(e, guest, { next });
+    const raw = cookieOf(r1, CODE_COOKIE)?.slice(CODE_COOKIE.length + 1) ?? "";
+    expect(raw.length).toBeLessThanOrEqual(1024);
+    const r = await verify(e, m.codeFor(guest), cookieOf(r1, CODE_COOKIE));
+    expect(r.status).toBe(200);
+    expect(CodeVerifiedSchema.parse(await r.json()).next).toBe("/");
+  });
+});
+
+// #813 review: a resend whose email fails puts the earlier code back. That
+// restore must never revive a code consumed while the resend ran, nor erase
+// guesses made against the row meanwhile.
+describe("a failed resend's restore", () => {
+  const SELECT = "select code_hash, expires_at";
+  /**
+   * A DB whose read of the replaced row is followed (old shape: a separate
+   * read) or preceded (one batch) by `consume` deleting that row, as a
+   * verify landing in the resend's window would.
+   */
+  function racingDb(consume: (ek: string, rid: string) => Promise<unknown>) {
+    const reads = new WeakMap<object, [string, string]>();
+    return new Proxy(env.DB, {
+      get(t, k) {
+        if (k === "prepare")
+          return (sql: string) => {
+            const s = t.prepare(sql);
+            if (!sql.startsWith(SELECT)) return s;
+            const bind = s.bind.bind(s);
+            s.bind = (...a: unknown[]) => {
+              const b = bind(...a);
+              reads.set(b, [String(a[0]), String(a[1])]);
+              const first = b.first.bind(b);
+              b.first = (async (...x: unknown[]) => {
+                const r = await first(...(x as []));
+                await consume(String(a[0]), String(a[1]));
+                return r;
+              }) as typeof b.first;
+              return b;
+            };
+            return s;
+          };
+        if (k === "batch")
+          return async (stmts: D1PreparedStatement[]) => {
+            const read = stmts.map((x) => reads.get(x)).find(Boolean);
+            if (read) await consume(read[0], read[1]);
+            return t.batch(stmts);
+          };
+        const v = Reflect.get(t, k, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+  }
+
+  it("never revives a code consumed during the resend", async () => {
+    const guest = uniq("rv", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const ip = "198.51.100.211";
+    const r1 = await request(withMail(direct(), m), guest, { ip });
+    const first = m.codeFor(guest);
+    const later = Date.now() + 61_000;
+    vi.spyOn(Date, "now").mockImplementation(() => later);
+    const DB = racingDb((ek, rid) =>
+      env.DB.prepare(
+        "delete from login_codes where email_key = ? and request_id = ?",
+      )
+        .bind(ek, rid)
+        .run(),
+    );
+    const r2 = await request(
+      { ...withMail(direct(), mailer(true)), DB } as Env,
+      guest,
+      { ip, cookie: cookieOf(r1, CODE_COOKIE) },
+    );
+    expect(r2.status).toBe(202);
+    const v = await verify(
+      withMail(direct(), m),
+      first,
+      cookieOf(r2, CODE_COOKIE),
+      { ip },
+    );
+    expect(v.status).toBe(401);
+  });
+
+  it("keeps guesses made against the new code while the send failed", async () => {
+    const guest = uniq("rg", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const ip = "198.51.100.212";
+    const e = withMail(direct(), m);
+    const r1 = await request(e, guest, { ip });
+    const first = m.codeFor(guest);
+    const wrong = first === "00000000" ? "11111111" : "00000000";
+    const g1 = await verify(e, wrong, cookieOf(r1, CODE_COOKIE), { ip });
+    expect(g1.status).toBe(401);
+    const later = Date.now() + 61_000;
+    vi.spyOn(Date, "now").mockImplementation(() => later);
+    // Three guesses land on the new row before the send gives up.
+    const ek = await emailKey(direct(), guest);
+    const failing = {
+      ...withMail(direct()),
+      EMAIL: {
+        async send() {
+          await env.DB.prepare(
+            "update login_codes set attempts = attempts + 3 where email_key = ?",
+          )
+            .bind(ek)
+            .run();
+          throw new Error("E_SEND_FAILED");
+        },
+      } as unknown as SendEmail,
+    } as Env;
+    const r2 = await request(failing, guest, {
+      ip,
+      cookie: cookieOf(g1, CODE_COOKIE),
+    });
+    let cookie = cookieOf(r2, CODE_COOKIE);
+    for (let i = 0; i < 2; i++) {
+      const g = await verify(e, wrong, cookie, { ip });
+      expect(g.status).toBe(401);
+      cookie = cookieOf(g, CODE_COOKIE) ?? cookie;
+    }
+    // 1 + 3 + 2 tries: the earlier code's five are spent.
+    expect((await verify(e, first, cookie, { ip })).status).toBe(401);
   });
 });

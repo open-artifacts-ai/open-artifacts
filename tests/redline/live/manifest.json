@@ -1,0 +1,1215 @@
+{
+  "cases": [
+    {
+      "file": "live/guard.test.ts",
+      "name": "guard > both targets report ok, testHooks: true and their own installId"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "guard > prod is clean (no test hooks on any prod install)"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > a: a wrong hook key gets the 404"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > a: the content host is served by the content app"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > a: the content host has no hooks"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > a: a hook call is audited"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > b: a wrong hook key gets the 404"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > b: the content host is served by the content app"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > b: the content host has no hooks"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > b: a hook call is audited"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "credentials (harness smoke) > A's admin PAT at B: /api/v1/me"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "credentials (harness smoke) > A's session cookie at B: /api/v1/me"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "credentials (harness smoke) > A's admin PAT at B: the host's own marker artifact"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's admin PAT at B: /mcp tools/list"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's session cookie at B: replayed under the alternate cookie name"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > B's content host ignores cookies, A's included"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's MCP OAuth access token at B: /mcp tools/list"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > A's OAuth client_id in B's /authorize: no auto-grant"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > A's OAuth refresh token at B's /token (A's client_id): no token"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > An unredeemed A authorization code at B's /token (A's client_id): no token"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > A's OAuth refresh token at B's /token (B's client_id): no token"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > An unredeemed A authorization code at B's /token (B's client_id): no token"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > An OAuth refresh straight after the redeem: a new token, on A and on B (#769)"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > A revoked OAuth refresh token is refused within KV's cache window, on A and on B"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's signed content URL at B's content host"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's content signature with B's artifact id at B's content host"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's signed upload URL at B"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > B's private artifact id fetched with A's credentials at A: 404"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > links > A's invite link opened at B by a B member: no membership on B"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > links > A's share email link opened at B by a B member: no share on B"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: OIDC state and nonce > A's OIDC state and state cookie (with its nonce) replayed at B: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: OIDC state and nonce > A's OIDC state with B's own state cookie at B: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: ID tokens > an ID token with hd of A at B's callback: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: ID tokens > A's code and broker state at B: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: broker > a tampered install id at the broker callback is refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: Turnstile > a code request with no Turnstile token is refused at each install (400 turnstile_required)"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: one-time codes > a code issued by A, entered at B with B's pending cookie: refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: one-time codes > a code issued by A, entered at B with A's pending cookie: refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: one-time codes > a code requested at B for an address not invited to B: no code sent, generic response"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: guests > a guest of A invited to B reads on B but can't publish via MCP or the data API there"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: guests > the guest's B session is refused at A"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > every ROUTE_POLICY route, MCP tool and content route has a case"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest get [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest get [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest patch [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest patch [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest publish version [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest publish version [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest restore_version [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest list_versions [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest list_versions [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest version file [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest version file [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest version text PUT [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest thumbnail GET [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest thumbnail GET [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest thumbnail PUT [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest thumbnail PUT [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest uploads [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest uploads [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest share (list) [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest share (list) [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest share (put) [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest unshare [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest visibility [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest visibility [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest delete [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest undelete [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest move [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest transfer [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest list [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest list [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest search [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest search [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest trash [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest trash [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data GET list [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data GET list [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data GET doc [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data GET doc [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data count [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data count [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data query [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data query [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data PUT [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data PUT [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data PATCH [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data PATCH [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data DELETE [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data DELETE [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact data reset [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact storage list [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact storage list [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact storage GET [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact storage GET [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact storage PUT [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact storage PUT [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact storage DELETE [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact storage DELETE [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact content mint [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact content mint [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact content /c/ frame [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact content /c/ frame [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact content /c/?dl=1 [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact ws subscribe [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact ws subscribe [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact ws events [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact ws events [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp get_artifact [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp get_artifact [oauth]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp list_artifacts [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp search_artifacts [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp list_versions [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp restore_version [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp share_artifact [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp unshare_artifact [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp set_visibility [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp delete_artifact [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp undelete_artifact [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp artifact_data_get [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp artifact_data_list [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp artifact_data_query [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp artifact_data_set [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp artifact_data_update [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp artifact_data_delete [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp publish_artifact (settings only) [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp publish_artifact (settings only, description) [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp publish_artifact [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp create_upload [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp list_spaces [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/me [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/me [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PATCH /api/v1/me [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/members [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/members [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org POST /api/v1/members [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PATCH /api/v1/members/:id [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org DELETE /api/v1/members/:id [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org POST /api/v1/members/:id/restore [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org POST /api/v1/members/:id/erase [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/members/:id/transfer [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/members/:id/transfer [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org POST /api/v1/members/:id/transfer [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org DELETE /api/v1/members/:id/identities/google [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PUT /api/v1/members/:id/restricted [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org DELETE /api/v1/members/:id/restricted [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/settings [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/settings [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PATCH /api/v1/settings [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org POST /api/v1/notices/guest_shares/dismiss [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/spaces [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/spaces [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org POST /api/v1/spaces [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/spaces/:id [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/spaces/:id [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PATCH /api/v1/spaces/:id [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org DELETE /api/v1/spaces/:id [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/spaces/:id/members [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/spaces/:id/members [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/spaces/:id/candidates [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/spaces/:id/candidates [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org POST /api/v1/spaces/:id/members/self [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PUT /api/v1/spaces/:id/members/:userId [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org DELETE /api/v1/spaces/:id/members/:userId [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/spaces/:id/mappings [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/spaces/:id/mappings [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PUT /api/v1/spaces/:id/mappings/:groupId [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org DELETE /api/v1/spaces/:id/mappings/:groupId [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/directory/org-mappings [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/directory/org-mappings [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PUT /api/v1/directory/org-mappings/:groupId [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org DELETE /api/v1/directory/org-mappings/:groupId [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/directory/restricted-groups [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/directory/restricted-groups [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PUT /api/v1/directory/restricted-groups/:groupId [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org DELETE /api/v1/directory/restricted-groups/:groupId [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/directory [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/directory [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/directory/groups [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/directory/groups [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org POST /api/v1/artifacts [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/tokens [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/tokens [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org POST /api/v1/tokens [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PATCH /api/v1/tokens/:id [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org DELETE /api/v1/tokens/:id [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/audit [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/audit [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/bus/share-notices [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/bus/share-notices [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PUT /api/v1/bus/share-notices [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/audit/export [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/audit/export [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/oauth-clients [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/oauth-clients [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PATCH /api/v1/oauth-clients/:grantId [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org DELETE /api/v1/oauth-clients/:grantId [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/bus/machines [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/bus/machines [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org DELETE /api/v1/bus/machines/:id [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/bus/agents [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/bus/agents [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/bus/roles [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/bus/roles [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org PUT /api/v1/bus/roles [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org DELETE /api/v1/bus/roles/:id [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space patch {} (S) [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space patch {} (S) [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space patch name [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space patch name [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space patch allMembersRole [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space patch allMembersRole [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space delete (S) [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space delete (S) [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space member put viewer [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space member put viewer [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space member put manager (ceiling) [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space member put manager (ceiling) [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space member put on a peer manager [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space member put on a peer manager [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space member delete editor [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space member delete editor [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space member delete a peer manager [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space member delete a peer manager [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space mapping put viewer [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space mapping put viewer [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space mapping put manager (ceiling) [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space mapping put manager (ceiling) [pat]"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "content host > a: never serves app routes, with the install's own session or PAT"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "content host > a: ignores cookies"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "content host > b: never serves app routes, with the install's own session or PAT"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "content host > b: ignores cookies"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "mapping integrity > X-Forwarded-Host set to the other install is ignored"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "mapping integrity > a host that is neither APP_HOST nor CONTENT_HOST gets the server's own 404"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "mapping integrity > HOSTS maps each install's hosts to its own id, and no host to two"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "unmapped host > unmapped names get the generic 404, never an install"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "unmapped host > A's host spelled differently (case, trailing dot, :443) never reaches another install"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "unmapped host > a deleted install's old host gets the generic 404"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with A's credential: no 101 > data-subscribe with A's PAT"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with A's credential: no 101 > data-subscribe with A's session"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with A's credential: no 101 > events with A's PAT"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with A's credential: no 101 > events with A's session"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with B's own session and A's Origin: refused > data-subscribe with Origin = A's app origin"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with B's own session and A's Origin: refused > data-subscribe with Origin = A's content origin"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with B's own session and A's Origin: refused > events with Origin = A's app origin"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with B's own session and A's Origin: refused > events with Origin = A's content origin"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "anonymous writes on a B public artifact > the fixture accepts an anonymous write"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "a public link on B > serves while public, and is refused as soon as the artifact is private"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "anonymous writes on a B public artifact > A's PAT sent along does not change the actor to A's user"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "cross-site isolation > artifact content is served on a registrable domain cross-site to every app host"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "cross-site isolation > every app-host Set-Cookie is __Host- (Secure, Path=/, no Domain), on hook and code sign-in"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "cross-site isolation > state-changing app requests without X-OA-Request are refused, and accepted with it"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P1: GET /api/v1/me on the admin host, no cookie: 401"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P2: a forged __Host-oa-admin: 401"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P3: the api host with only a Cookie: 401"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P4: the admin host with an OIDC bearer: 401"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P5: POST /api/v1/installs with Origin https://evil.example: 403 csrf_failed"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P6: OIDC with a wrong aud, tampered, alg none: 401 each"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P7: staging OIDC against prod /v1/me: 401"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P8: test user a: list shows its own only; GET rl-a is 404"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P9: test user a: create with ownerEmail or tier: 403"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P10: OIDC: GET and upgrade of an install without rl-: 404"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P11: test user a: upgrade rl-a: 403"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P12: OIDC: R13, R19, R25: 403 each"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P13: create rl-p-<run> twice with one requestId: one job, one install, done (redline variant)"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P49: R2 q as O never matches by owner email: rl-p's email and its local part find nothing; its slug still finds rl-p (#1033)"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P14: a second create of that slug with a new requestId: 409 slug_taken"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P15: during the create: inventory mode null and public /healthz 404 until route"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P16: upgrade while its create runs: 409 job_in_progress"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P17: create with version 0.0.1: 422 release_not_published"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P18: upgrade to its current version: 409 downgrade_refused"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P19: delete with a wrong confirmSlug: 400; unchanged"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P45: OIDC on /mcp: tools/list, get_world, get_install, delete_install refusal, upgrade_install"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P31: rollback of the rl-p install after an upgrade: the previous version"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P20: suspend: 503 paused page on both hosts within 120 s; inventory paused"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P21: resume: 200 within 120 s"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P22: delete, then restore: 503 closed page on both hosts, then serving"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P23: delete, then purge: 404; inventory deleted; no HOSTS key; the slug stays taken"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P24: rl-a and rl-b run the release under test (upgraded by the workflow, R5)"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P26: GET /auth/test-signin: 404 (staging; prod when applicable)"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P27: inventory: no token, wrong audience, staging token on prod: 404 each; correct 200"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P28: GET /releases: the release under test is installable"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P29: SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete leaves it deleting"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P30: dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P32: create rl-q-<run> below the floor: failed release_unverified, retry the same, R11 discards; slug free"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P33: R17 for this run's actor: this run's job.accepted rows"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P34: 400 unsigned broker authorize for i000000admin: 404s (429 past the IP limit); /auth/start still reaches Google"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P36: R26 for rl-a: the sealed PAT works on /api/v1/me (revoked at the run's end)"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P37: POST /mcp, no Authorization: 401 with invalid_token and resource_metadata"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P38: both metadata documents: resource, authorization_endpoint, five scopes, S256"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P39: /mcp with a forged oat_, a forged opaque bearer, only a Cookie: 401 each"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P40: POST admin /mcp; GET api /oauth/authorize: 404 each"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P41: /mcp with Origin https://evil.example and a valid OIDC bearer: 403"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P42: /mcp with a 40 KiB body: 413"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P44: /oauth/register: foreign redirect URIs 400 invalid_redirect_uri; the listed one 201 with a client_id"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P43: GET /oauth/authorize, no cookie, cross-site: 200 bounce page; with b=1: 200 sign-in page linking /auth/start back to this request, no auto-redirect"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P46: staging OIDC on prod /mcp: 401"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P47: /v1/me with an OAuth-shaped bearer: 401 unauthenticated"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P48: R2 q finds rl-a by its slug, install id, app host and content host (#1033)"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P25: GET /auth/start one at a time (up to 30): a 303 to /sign-in?error=rate_limited, with no flow cookie"
+    }
+  ],
+  "notes": [
+    "live/surfaces.test.ts drops GET /api/v1/usage (org GET /api/v1/usage) while every hosted install sets FEATURES usage_off; DROPPED and EXCLUDED_ROUTES in src/surfaces.ts record it (P5 plan Task 3b, #655).",
+    "live/surfaces.test.ts drops POST /api/v1/admin/broker-check (org POST /api/v1/admin/broker-check): owner-only, and no owner credential is stored in CI, so it has no live success leg. DROPPED and EXCLUDED_ROUTES in src/surfaces.ts record it; apps/server/test/redline.foreign-credential.test.ts proves another install's owner session and PAT are refused (#730).",
+    "live/surfaces.test.ts runs A's credential at B live only for one smoke per credential kind (SMOKES in src/surfaces.ts: session, PAT, OAuth) and the eleven deny-only cases; every other case's A at B is the in-server matrix's foreign callers (MATRIX_AT_B), which coverageGaps checks (#1137 group B).",
+    "live/surfaces.test.ts keeps org POST /api/v1/members/:id/erase deny-only: the route answers only an interactive sign-in and the suite's sessions are hook-minted (provider test), which it hides with a 404 like a PAT. DROPPED (interactive-only) and EXCLUDED_ROUTES in src/surfaces.ts record it; the in-server matrix erases a real removed, artifact-less person as the admin (#1204).",
+    "live/surfaces.test.ts keeps org PUT /api/v1/bus/roles and org DELETE /api/v1/bus/roles/:id deny-only for the same reason (#1296): role writes take only an interactive sign-in (through bus/routes.ts roleWriter), so no AI agent can set or claim a role. DROPPED (interactive-only), INTERACTIVE_ONLY and EXCLUDED_ROUTES in src/surfaces.ts record them; the in-server matrix writes each allowed caller's own roles in an Access session, and apps/server/test/bus/roles.rest.test.ts proves a cookie session writes and a PAT is refused.",
+    "live/surfaces.test.ts keeps org PUT /api/v1/bus/share-notices deny-only for the same reason: the route takes only an interactive sign-in (through share-notices.ts browserUser), so B's hook-minted session gets a 404. DROPPED (interactive-only), INTERACTIVE_ONLY and EXCLUDED_ROUTES in src/surfaces.ts record it; the in-server matrix saves each allowed caller's own list in an Access session, and apps/server/test/follows.test.ts proves a cookie session saves and a PAT is refused (#1313). test/surfaces.test.ts now finds interactive-only routes through helpers and in every file under apps/server/src.",
+    "#1235: live/surfaces.test.ts runs A's credential at A only on the session and PAT smokes (SMOKES), as the positive control for their A-at-B leg; every other case runs B's own credential at B, and A_AT_A in src/surfaces.ts names what replaces its A at A. The 17 live cases retired in #1235 are listed with the failure each guarded and their replacements in src/retired.ts, which the fake suite holds to this manifest.",
+    "live/provisioning.test.ts no longer runs P35 (a routeless Worker fetches rl-a /healthz): the runner can't stand in for that Worker, so it could only ever be unproven. The gap is #1260; REMOVED_PROBES in src/provisioning.ts records it.",
+    "live/provisioning.test.ts no longer runs P50 (the held-sweep snooze owner path on rl-snz): proved live once, and covered by apps/server/test/directory.snooze.test.ts and the authz surface list (apps/server/test/authz/surfaces.ts) (#1078); REMOVED_PROBES in src/provisioning.ts records it."
+  ]
+}

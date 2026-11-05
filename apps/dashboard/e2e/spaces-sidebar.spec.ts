@@ -131,10 +131,7 @@ test("keyboard: reach a space from the sidebar, then search everywhere", async (
   await expect(box).toHaveAccessibleName("Search in Engineering");
   await box.focus();
   await page.keyboard.press("Backspace");
-  await expect(box).toHaveAttribute(
-    "placeholder",
-    "Search titles, content, and agents",
-  );
+  await expect(box).toHaveAttribute("placeholder", "Search titles and content");
   await expect(box).toHaveAccessibleName("Search artifacts");
 });
 

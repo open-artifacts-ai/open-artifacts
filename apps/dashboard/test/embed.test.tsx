@@ -180,7 +180,11 @@ describe("bridge, framed", () => {
   });
 
   it("viewer.anonId works for anonymous-write artifacts, anonymously", async () => {
-    mk({ ...ART, allowAnonymousWrites: true } as ArtifactSummary);
+    mk({
+      ...ART,
+      visibility: "public",
+      dataWriters: "viewers",
+    } as ArtifactSummary);
     const token = `${"a".repeat(22)}.${"b".repeat(43)}`;
     fetchMock.mockImplementation(
       async () =>

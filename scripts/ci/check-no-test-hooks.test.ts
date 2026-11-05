@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,7 +38,7 @@ describe("check-no-test-hooks.ts", () => {
         return new Response("nf", { status: 404 });`),
     );
     expect(r.lines).toEqual([
-      "check-no-test-hooks: ok: 8 /__test/* requests all 404 with TEST_HOOKS=1",
+      "check-no-test-hooks: ok: 16 /__test/* requests all 404 with TEST_HOOKS=1",
     ]);
     expect(r.code).toBe(0);
   }, 60_000);
@@ -51,6 +51,18 @@ describe("check-no-test-hooks.ts", () => {
     );
     expect(r.lines).toEqual([
       "check-no-test-hooks: FAIL: POST /__test/session -> 200 (want 404)",
+    ]);
+    expect(r.code).toBe(1);
+  }, 60_000);
+
+  it("a 404 carrying a hook refusal reason: exit 1 naming it", () => {
+    const r = run(
+      bundle(`${healthy}
+        if (req.method === "GET" && p === "/__test/audit") return Response.json({ error: { code: "not_found", message: "Not found", details: { reason: "bad_route" } } }, { status: 404 });
+        return Response.json({ error: { code: "not_found", message: "Not found" } }, { status: 404 });`),
+    );
+    expect(r.lines).toEqual([
+      "check-no-test-hooks: FAIL: GET /__test/audit -> 404 with a hook refusal reason",
     ]);
     expect(r.code).toBe(1);
   }, 60_000);
@@ -71,6 +83,21 @@ describe("check-no-test-hooks.ts", () => {
     ]);
     expect(dead.code).toBe(1);
   }, 60_000);
+
+  it("checks every @oa/shared TEST_HOOKS path", () => {
+    const shared = readFileSync(
+      join(root, "packages/shared/src/hosted/test-hooks.ts"),
+      "utf8",
+    );
+    const block = /export const TEST_HOOKS = \{([^}]*)\}/.exec(shared)?.[1];
+    const paths = [...(block ?? "").matchAll(/"(\/__test\/[^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    expect(paths.length).toBeGreaterThan(4);
+    expect(paths).toContain("/__test/code-caps/reset");
+    const src = readFileSync(script, "utf8");
+    for (const p of paths) expect(src).toContain(`"${p}"`);
+  });
 
   it("no bundle: exit 1", () => {
     const r = run(join(tmpdir(), "oa-cnth-missing"));

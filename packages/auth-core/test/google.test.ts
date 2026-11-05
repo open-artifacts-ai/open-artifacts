@@ -79,7 +79,17 @@ describe("verifyGoogleIdToken", () => {
       email: "bob@a.com",
       name: "Bob",
       hd: "a.com",
+      authTime: null,
     });
+  });
+
+  test("auth_time (s) is returned in ms; a non-number is null", async () => {
+    expect((await verify(await mint({ auth_time: NOW - 30 }))).authTime).toBe(
+      (NOW - 30) * 1000,
+    );
+    expect(
+      (await verify(await mint({ auth_time: "soon" }))).authTime,
+    ).toBeNull();
   });
 
   test("the email is normalized (trimmed, lowercased); non-ASCII is refused", async () => {

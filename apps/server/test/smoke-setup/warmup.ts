@@ -12,8 +12,26 @@ async function attempt(fn: () => Promise<void>): Promise<void> {
   }
 }
 
+/**
+ * In CI the smoke run needs both: without STAGING_URL every suite skips, and
+ * without STAGING_OWNER_PAT the seven authenticated suites skip, and the run
+ * still goes green on curl checks alone (review item 25). Locally they stay
+ * optional. Names the missing variables, never a value.
+ */
+export function missingSmokeEnv(
+  env: Record<string, string | undefined>,
+): string[] {
+  if (env.CI !== "true") return [];
+  return ["STAGING_URL", "STAGING_OWNER_PAT"].filter((k) => !env[k]?.trim());
+}
+
 /** Warms a just-deployed Worker (healthz, then one publish) before the smoke suite. */
 export default async function warmup(): Promise<void> {
+  const missing = missingSmokeEnv(process.env);
+  if (missing.length)
+    throw new Error(
+      `smoke: ${missing.join(" and ")} must be set in CI (the authenticated suites would skip and the run would pass)`,
+    );
   if (!base) return;
   await attempt(async () => {
     const r = await fetch(`${base}/healthz`, {

@@ -93,8 +93,8 @@ const get = (e: Env, path: string, cookie?: string) =>
 const loc = (r: Response) => r.headers.get("location") ?? "";
 
 /** Install login → broker authorize; returns the Google authorize params and the state cookie. */
-async function begin(e: Env) {
-  const start = await get(e, `${AUTH.loginGoogle}?next=/a/x`);
+async function begin(e: Env, extra = "") {
+  const start = await get(e, `${AUTH.loginGoogle}?next=/a/x${extra}`);
   const cookie =
     start.headers
       .getSetCookie()
@@ -115,6 +115,8 @@ async function begin(e: Env) {
     /** The install-derived nonce Google sees. */
     nonce: gq.get("nonce") as string,
     challenge: gq.get("code_challenge") as string,
+    toBroker,
+    google: gq,
   };
 }
 
@@ -158,6 +160,42 @@ describe("Google through the broker", () => {
     });
     // Google saw the broker's secret, never the install's.
     expect(g.tokenCalls.at(-1)?.get("client_secret")).toBe("broker-secret");
+  });
+
+  it("break-glass reauth (P3 T18) through the broker: max_age=0 at Google; a recent auth_time marks the session", async () => {
+    const e = installEnv();
+    const plain = await begin(e);
+    expect(plain.toBroker.searchParams.get("reauth")).toBeNull();
+    expect(plain.google.get("max_age")).toBeNull();
+    const b = await begin(e, "&reauth=1");
+    expect(b.toBroker.searchParams.get("reauth")).toBe("1");
+    expect(b.google.get("max_age")).toBe("0");
+    const email = uniq("bg");
+    const authTime = Math.floor(Date.now() / 1000) - 30;
+    const code = g.issueCode(
+      { nonce: b.nonce, email, sub: `bg-${email}`, auth_time: authTime },
+      b.challenge,
+    );
+    const back = await broker.fetch(
+      new Request(
+        `${BROKER}/google/callback?code=${code}&state=${encodeURIComponent(b.bstate)}`,
+      ) as never,
+      brokerEnv,
+    );
+    const r = await get(
+      e,
+      `${AUTH.callbackGoogle}${new URL(loc(back)).search}`,
+      b.cookie,
+    );
+    const sess = r.headers
+      .getSetCookie()
+      .find((c) => c.startsWith(`${SESSION}=`))
+      ?.split(";")[0]
+      ?.split("=")[1];
+    expect(await readSession(e, sess)).toMatchObject({
+      p: "google",
+      a: authTime * 1000,
+    });
   });
 
   /** The broker answers with `idToken`, whatever it was asked: a compromised broker. */
@@ -378,5 +416,129 @@ describe("Google through the broker", () => {
       ),
     ).toBe(`${SIGN_IN_PAGE}?error=failed&next=%2Fa%2Fx`);
     expect(g.tokenCalls.length).toBe(calls);
+  });
+});
+
+describe("hosted: the redeem through the dispatch props (AUTH_BROKER)", () => {
+  /** A hosted install: no BROKER binding, no client secret. */
+  const hosted = () => {
+    const e = installEnv(undefined, { HOSTED: "1" });
+    delete (e as Partial<Env>).BROKER;
+    delete (e as Partial<Env>).GOOGLE_CLIENT_SECRET;
+    return e;
+  };
+  const callback = (
+    e: Env,
+    b: Awaited<ReturnType<typeof begin>>,
+    search: string,
+    props?: Record<string, unknown>,
+  ) =>
+    app.fetch(
+      new Request(`${APP}${AUTH.callbackGoogle}${search}`, {
+        headers: { cookie: b.cookie },
+      }),
+      e,
+      { waitUntil() {}, passThroughOnException() {}, props } as never,
+    );
+  const toInstall = async (b: Awaited<ReturnType<typeof begin>>) => {
+    const email = uniq("hp");
+    const code = g.issueCode(
+      { nonce: b.nonce, email, sub: `hp-${email}` },
+      b.challenge,
+    );
+    const back = await broker.fetch(
+      new Request(
+        `${BROKER}/google/callback?code=${code}&state=${encodeURIComponent(b.bstate)}`,
+      ) as never,
+      brokerEnv,
+    );
+    return new URL(loc(back)).search;
+  };
+  const capture = () => {
+    const lines: string[] = [];
+    const spies = (["log", "warn", "error"] as const).map((k) =>
+      vi.spyOn(console, k).mockImplementation((...a: unknown[]) => {
+        lines.push(a.map(String).join(" "));
+      }),
+    );
+    return {
+      stages: () =>
+        lines
+          .filter((l) => l.startsWith("{"))
+          .map((l) => JSON.parse(l) as Record<string, unknown>)
+          .filter((l) => l.evt === "auth")
+          .map((l) => l.stage),
+      done: () => {
+        for (const s of spies) s.mockRestore();
+      },
+    };
+  };
+  const brokerUrls = (from: number) =>
+    vi
+      .mocked(globalThis.fetch)
+      .mock.calls.slice(from)
+      .map((c) => new Request(c[0] as RequestInfo, c[1]).url)
+      .filter((u) => u.startsWith(BROKER));
+
+  it("signs in with only POST /google/redeem through the capability, never HTTPS", async () => {
+    const e = hosted();
+    const b = await begin(e);
+    const search = await toInstall(b);
+    const calls: string[] = [];
+    const n = vi.mocked(globalThis.fetch).mock.calls.length;
+    const r = await callback(e, b, search, {
+      AUTH_BROKER: {
+        fetch: (req: Request) => {
+          calls.push(`${req.method} ${new URL(req.url).pathname}`);
+          return broker.fetch(req as never, brokerEnv);
+        },
+      },
+    });
+    // Redeemed and verified; a hosted install then admits by invite only.
+    expect(loc(r)).toBe(
+      `${SIGN_IN_PAGE}?error=no_access&next=%2Fa%2Fx&via=google`,
+    );
+    expect(calls).toEqual(["POST /google/redeem"]);
+    expect(brokerUrls(n)).toEqual([]);
+  });
+
+  it("without props a hosted install fails closed: stage broker_unavailable, no HTTPS", async () => {
+    const e = hosted();
+    const b = await begin(e);
+    const search = await toInstall(b);
+    const n = vi.mocked(globalThis.fetch).mock.calls.length;
+    const cap = capture();
+    const r = await callback(e, b, search);
+    cap.done();
+    expect(loc(r)).toBe(`${SIGN_IN_PAGE}?error=failed&next=%2Fa%2Fx`);
+    expect(cap.stages()).toEqual(["broker_unavailable"]);
+    expect(brokerUrls(n)).toEqual([]);
+  });
+
+  it("a gate refusal is stage broker_gate_refused; the broker's own 401 is not", async () => {
+    const e = hosted();
+    for (const [status, error, stage] of [
+      [403, "install_mismatch", "broker_gate_refused"],
+      [500, "gate_misconfigured", "broker_gate_refused"],
+      [401, "unauthorized", "failed"],
+    ] as const) {
+      const b = await begin(e);
+      const search = await toInstall(b);
+      const cap = capture();
+      await callback(e, b, search, {
+        AUTH_BROKER: {
+          fetch: async () =>
+            Response.json(
+              { error },
+              {
+                status,
+                headers: status === 401 ? {} : { "x-oa-gate": "1" },
+              },
+            ),
+        },
+      });
+      cap.done();
+      expect(cap.stages()).toEqual([stage]);
+    }
   });
 });

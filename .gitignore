@@ -6,7 +6,10 @@ dist-assets/
 .superpowers/
 logs/
 apps/server/wrangler.jsonc
+apps/auth-broker/wrangler.deploy.jsonc
+apps/directory-broker/wrangler.deploy.jsonc
 apps/dispatch/wrangler.deploy.jsonc
+apps/scheduler/wrangler.deploy.jsonc
 apps/server/src/version.gen.ts
 apps/server/src/mcp/skill.generated.ts
 apps/server/src/mcp/upgrade.generated.ts
@@ -21,3 +24,8 @@ coverage/
 .astro/
 test-results/
 playwright-report/
+blob-report/
+.dist-node-*/
+
+# Provisioning API staging spikes: configs rendered in CI
+spikes/provapi-staging/*.rendered.jsonc

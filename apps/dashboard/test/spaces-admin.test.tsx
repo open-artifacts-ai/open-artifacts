@@ -9,6 +9,13 @@ import { calls, installHarness, mount, mountHosted } from "./harness";
 
 installHarness();
 
+// Radix Checkbox measures itself; jsdom has no ResizeObserver.
+globalThis.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+} as unknown as typeof ResizeObserver;
+
 const ENG = "SpEngNpQrSt2uVwX";
 const CLIENTS = "SpCliNpQrSt4uVwX";
 
@@ -137,7 +144,54 @@ it("create trims the name and sends the defaults", async () => {
       name: "Design",
       allMembersRole: null,
       publicLinks: true,
+      addMe: true,
     }),
+  );
+});
+
+// #806: the creator manages the new space unless they untick it, so it shows
+// in their own sidebar.
+it("New space: Add me as a manager is on by default; unticked, it sends addMe false", async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/spaces");
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  const box = within(d).getByRole("checkbox", { name: "Add me as a manager" });
+  expect(box).toBeChecked();
+  fireEvent.click(box);
+  expect(box).not.toBeChecked();
+  fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
+    target: { value: "Ops" },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  await waitFor(() =>
+    expect(seen.find((c) => c.path === "/api/v1/spaces")?.body).toEqual(
+      expect.objectContaining({ name: "Ops", addMe: false }),
+    ),
+  );
+});
+
+it("a space created with Add me shows in the creator's sidebar (shared mock)", async () => {
+  mountHosted("/settings/spaces");
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
+    target: { value: "Launch crew" },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  const spaces = await screen.findByRole("navigation", { name: "Spaces" });
+  expect(
+    await within(spaces).findByRole("link", { name: "Launch crew" }),
+  ).toBeVisible();
+});
+
+it("a fresh New space form shows no error until the field is left or a submit is tried", async () => {
+  mountHosted("/settings/spaces");
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  expect(within(d).queryByRole("alert")).toBeNull();
+  expect(within(d).getByRole("textbox", { name: "Name" })).not.toHaveAttribute(
+    "aria-invalid",
   );
 });
 
@@ -150,8 +204,176 @@ it("create refuses an empty name before sending", async () => {
     target: { value: "   " },
   });
   fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
-  expect(await within(d).findByText("Give the space a name.")).toBeVisible();
+  expect(await within(d).findByText("Enter a space name.")).toBeVisible();
   expect(seen.some((c) => c.path === "/api/v1/spaces")).toBe(false);
+});
+
+const RESERVED =
+  "Everyone already has a space called Personal. Use another name.";
+
+it('create refuses "Personal" in any case before sending', async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/spaces");
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
+    target: { value: "  personal " },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  expect(await within(d).findByText(RESERVED)).toBeVisible();
+  expect(seen.some((c) => c.path === "/api/v1/spaces")).toBe(false);
+});
+
+it("a server 400 space_name_reserved shows the reserved copy under the field", async () => {
+  mountHosted("/settings/spaces", true, undefined, [
+    http.post("*/api/v1/spaces", () =>
+      HttpResponse.json(
+        {
+          error: {
+            code: "space_name_reserved",
+            message: "server text",
+            details: { field: "name" },
+          },
+        },
+        { status: 400 },
+      ),
+    ),
+  ]);
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
+    target: { value: "Design" },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  expect(await within(d).findByText(RESERVED)).toBeVisible();
+  expect(screen.queryByText("server text")).toBeNull();
+  expect(screen.queryByText("Couldn't create the space.")).toBeNull();
+});
+
+it('rename to "Personal" shows the reserved copy and sends nothing', async () => {
+  const seen = calls("PATCH");
+  mountHosted(`/settings/spaces?space=${ENG}`);
+  const field = await screen.findByRole("textbox", { name: "Name" });
+  fireEvent.change(field, { target: { value: "PERSONAL" } });
+  fireEvent.blur(field);
+  expect(await screen.findByText(RESERVED)).toBeVisible();
+  fireEvent.submit(field.closest("form") as HTMLFormElement);
+  expect(seen).toHaveLength(0);
+});
+
+const CTRL = "\u202e\u0007";
+
+it("create sends the cleaned name: controls and bidi stripped, trimmed", async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/spaces");
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
+    target: { value: `${CTRL} Design${CTRL} ` },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  await waitFor(() =>
+    expect(seen.find((c) => c.path === "/api/v1/spaces")?.body).toEqual(
+      expect.objectContaining({ name: "Design" }),
+    ),
+  );
+});
+
+it("a name that is only controls is empty: the error shows before submit and nothing is sent", async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/spaces");
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  const field = within(d).getByRole("textbox", { name: "Name" });
+  expect(within(d).queryByText("Enter a space name.")).toBeNull();
+  expect(field).not.toHaveAttribute("aria-invalid");
+  fireEvent.change(field, { target: { value: CTRL } });
+  // Typing alone says nothing: the error waits for blur or a submit.
+  expect(within(d).queryByText("Enter a space name.")).toBeNull();
+  fireEvent.blur(field);
+  const msg = await within(d).findByText("Enter a space name.");
+  expect(msg).toBeVisible();
+  expect(field).toHaveAttribute("aria-invalid", "true");
+  expect(field.getAttribute("aria-describedby")).toBe(msg.id);
+  expect(d.textContent).not.toMatch(/control|character was|removed/i);
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  expect(seen.some((c) => c.path === "/api/v1/spaces")).toBe(false);
+});
+
+it("81 characters says to use 80 or fewer; 80 is fine", async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/spaces");
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  const field = within(d).getByRole("textbox", { name: "Name" });
+  fireEvent.change(field, { target: { value: "x".repeat(81) } });
+  fireEvent.blur(field);
+  expect(
+    await within(d).findByText("Use 80 characters or fewer."),
+  ).toBeVisible();
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  expect(seen.some((c) => c.path === "/api/v1/spaces")).toBe(false);
+  fireEvent.change(field, { target: { value: "x".repeat(80) } });
+  await waitFor(() =>
+    expect(within(d).queryByText("Use 80 characters or fewer.")).toBeNull(),
+  );
+});
+
+it("a server 400 on create shows the same error under the field, with no toast", async () => {
+  mountHosted("/settings/spaces", true, undefined, [
+    http.post("*/api/v1/spaces", () =>
+      HttpResponse.json(
+        { error: { code: "bad_request", message: "server text" } },
+        { status: 400 },
+      ),
+    ),
+  ]);
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
+    target: { value: "Design" },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  expect(await within(d).findByText("Enter a space name.")).toBeVisible();
+  expect(screen.queryByText("server text")).toBeNull();
+  expect(screen.queryByText("Couldn't create the space.")).toBeNull();
+});
+
+it("rename shows the error before submit, disables Save, and shows the cleaned saved name", async () => {
+  mountHosted(`/settings/spaces?space=${ENG}`);
+  const field = await screen.findByRole("textbox", { name: "Name" });
+  fireEvent.change(field, { target: { value: "" } });
+  expect(screen.queryByText("Enter a space name.")).toBeNull();
+  fireEvent.blur(field);
+  const msg = await screen.findByText("Enter a space name.");
+  expect(msg).toBeVisible();
+  expect(field).toHaveAttribute("aria-invalid", "true");
+  expect(field.getAttribute("aria-describedby")).toBe(msg.id);
+  expect(screen.getByRole("button", { name: "Save name" })).toBeDisabled();
+  fireEvent.change(field, { target: { value: `${CTRL}  Platform ${CTRL}` } });
+  expect(screen.queryByText("Enter a space name.")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Save name" }));
+  await waitFor(() =>
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue(
+      "Platform",
+    ),
+  );
+});
+
+it("a server 400 on rename shows the error under the field", async () => {
+  mountHosted(`/settings/spaces?space=${ENG}`, true, undefined, [
+    http.patch(`*/api/v1/spaces/${ENG}`, () =>
+      HttpResponse.json(
+        { error: { code: "bad_request", message: "server text" } },
+        { status: 400 },
+      ),
+    ),
+  ]);
+  const field = await screen.findByRole("textbox", { name: "Name" });
+  fireEvent.change(field, { target: { value: "Platform" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save name" }));
+  expect(await screen.findByText("Enter a space name.")).toBeVisible();
+  expect(screen.queryByText("server text")).toBeNull();
 });
 
 it("the detail has a back link, the name and your role", async () => {
@@ -251,12 +473,12 @@ it("a space with artifacts can't be deleted: the button is disabled, with the re
   const del = await screen.findByRole("button", { name: "Delete space" });
   expect(del).toBeDisabled();
   expect(
-    screen.getByText("Move or delete its 1 artifact first (trash included)."),
+    screen.getByText("Move or delete its 1 artifact first."),
   ).toBeVisible();
   expect(del).toHaveAttribute("aria-describedby");
   expect(
     document.getElementById(del.getAttribute("aria-describedby") as string),
-  ).toHaveTextContent("Move or delete its 1 artifact first (trash included).");
+  ).toHaveTextContent("Move or delete its 1 artifact first.");
 });
 
 it("the reason pluralizes", async () => {
@@ -282,9 +504,7 @@ it("the reason pluralizes", async () => {
     ),
   ]);
   expect(
-    await screen.findByText(
-      "Move or delete its 3 artifacts first (trash included).",
-    ),
+    await screen.findByText("Move or delete its 3 artifacts first."),
   ).toBeVisible();
 });
 
@@ -304,11 +524,11 @@ it("an empty space whose trash still holds artifacts: the 409 shows inline, once
     }),
   );
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "This space still has artifacts. Move or delete them first. Artifacts in the trash count too.",
+    "This space still has artifacts. Move or delete them first. Deleted ones stay in Trash for 30 days.",
   );
   expect(
     screen.getAllByText(
-      "This space still has artifacts. Move or delete them first. Artifacts in the trash count too.",
+      "This space still has artifacts. Move or delete them first. Deleted ones stay in Trash for 30 days.",
     ),
   ).toHaveLength(1);
 });

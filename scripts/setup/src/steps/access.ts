@@ -1,4 +1,5 @@
 import { makeApi } from "../cf.ts";
+import { providersOf, type Signin } from "../signin.ts";
 import { type State, writeState } from "../state.ts";
 import {
   type ActionRequired,
@@ -433,9 +434,31 @@ async function create(
   }
 }
 
+/**
+ * Whether sign-in uses Access: AUTH_PROVIDERS from the flag, else the live
+ * Worker's. Unset, or unreadable, counts as access (the server's default).
+ */
+export async function accessInUse(
+  ctx: Ctx,
+  accountId: string,
+): Promise<boolean> {
+  const live = async () =>
+    (await deployedVars(ctx, accountId).catch(() => undefined))?.get(
+      "AUTH_PROVIDERS",
+    );
+  const v = ctx.opts.signinFlags.AUTH_PROVIDERS ?? (await live()) ?? "";
+  return providersOf({ AUTH_PROVIDERS: v } as Signin).includes("access");
+}
+const NOT_NEEDED = "not needed: access isn't in AUTH_PROVIDERS";
+
 export const access: Step = {
   name: "access",
   async check(state, ctx) {
+    // Google or email only: never look up, create or require an Access app.
+    if (!(await accessInUse(ctx, state.accountId ?? ""))) {
+      ctx.notes.push(NOT_NEEDED);
+      return "done";
+    }
     // From state alone under --upgrade, or when no OA_ACCESS_TOKEN can re-check.
     const noToken = !ctx.deps.env.OA_ACCESS_TOKEN;
     // Only for the same install: a changed host or account needs the full path.
@@ -501,6 +524,10 @@ export const access: Step = {
     return "done";
   },
   async apply(state, ctx) {
+    if (!(await accessInUse(ctx, state.accountId ?? ""))) {
+      ctx.notes.push(NOT_NEEDED);
+      return undefined;
+    }
     // Preflight: nothing is written until every check below has passed.
     let l: Awaited<ReturnType<typeof lookupWithToken>>;
     try {

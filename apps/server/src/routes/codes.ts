@@ -11,10 +11,13 @@ import type { Context } from "hono";
 import { getCookie } from "hono/cookie";
 import { HTTPException } from "hono/http-exception";
 import { logAuth } from "../auth/audit.js";
+import { callerOf, capOfCaller } from "../auth/authz.js";
 import {
   codesKey,
   deliverCode,
   emailKey,
+  errorClass,
+  logCodeSend,
   takeRequestSlot,
   verifyCode,
 } from "../auth/codes.js";
@@ -27,8 +30,9 @@ import { ApiError, appOrigin, errorJson } from "../http/errors.js";
 import { type AppEnv, CSRF_HEADER, execCtx } from "../http/middleware.js";
 import { signInAudit } from "../services/audit.js";
 import { codeEligibility } from "../services/identity.js";
+import { HOSTED_FIELDS, hostedFields } from "../services/members.js";
 import { getUserWithEpoch, insertUser } from "../services/users.js";
-import { forgetTestOtp } from "../test-hooks/index.js";
+import { forgetTestOtp, noteTestOtp } from "../test-hooks/index.js";
 import {
   b64urlDecode,
   b64urlEncode,
@@ -46,10 +50,14 @@ const forgetOtp =
   typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
   __OA_TEST_HOOKS_ALLOWED__ === true &&
   forgetTestOtp;
+const noteOtp =
+  typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
+  __OA_TEST_HOOKS_ALLOWED__ === true &&
+  noteTestOtp;
 
 const GUEST_MAX_AGE_S = 86_400;
 const MAX_COOKIE_LEN = 1024;
-/** A longer `next` becomes "/", so the pending cookie stays under MAX_COOKIE_LEN. */
+/** A longer `next` becomes "/" (and a shorter one too when the cookie would pass MAX_COOKIE_LEN). */
 const MAX_PENDING_NEXT = 512;
 
 /**
@@ -116,9 +124,16 @@ const cookieAttrs = (c: Context<AppEnv>) =>
     ? "HttpOnly; SameSite=Lax; Path=/"
     : "HttpOnly; Secure; SameSite=Lax; Path=/";
 
+/**
+ * The Set-Cookie line. A value past MAX_COOKIE_LEN (readPending refuses it)
+ * drops `next` to "/" instead (review item 36b: a 512-byte next plus a long
+ * address).
+ */
 async function pendingCookie(c: Context<AppEnv>, p: Pending): Promise<string> {
   const v = b64urlEncode(utf8Encoder.encode(JSON.stringify(p)));
   const sig = await hmacSign(await codesKey(c.env, "oa:code-cookie"), v);
+  if (v.length + 1 + sig.length > MAX_COOKIE_LEN && p.next !== "/")
+    return pendingCookie(c, { ...p, next: "/" });
   const maxAge = Math.max(0, Math.ceil((p.exp - Date.now()) / 1000));
   return `${cookieName(c)}=${v}.${sig}; ${cookieAttrs(c)}; Max-Age=${maxAge}`;
 }
@@ -172,7 +187,8 @@ function guard(c: Context<AppEnv>): void {
 /** Codes are a sign-in method only where `email` is enabled. */
 function requireCodes(c: Context<AppEnv>) {
   const cfg = authConfig(c.env);
-  if (!cfg.providers.has("email")) throw new ApiError("not_found", "Not found");
+  // Not offered when the install can't send email (AuthConfig.emailCodes).
+  if (!cfg.emailCodes) throw new ApiError("not_found", "Not found");
   return cfg;
 }
 
@@ -258,13 +274,23 @@ export function mountCodes(app: AppType): void {
       parsed.data.turnstileToken,
       ip,
       c.env.APP_HOST ?? new URL(c.req.url).hostname,
+      c.env,
     );
     if (!(await authLimit(c, cfg.installKey, ip))) return rateLimited(60, "ip");
     const ek = await emailKey(c.env, email);
     const slot = await takeRequestSlot(c.env, cfg, ek, ip);
     if (!slot.ok) return rateLimited(slot.retryAfter, slot.scope);
 
-    const rid = b64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
+    // Review item 13: a pending request for this same address keeps its id,
+    // so a re-request that sends nothing (resend_wait, capped, pool_full,
+    // send_failed) leaves the code already in the inbox usable; a resend
+    // replaces that code under the same id (createCode). Decided from this
+    // browser's own cookie only, never from delivery, so the 202 says nothing.
+    const prior = await readPending(c);
+    const rid =
+      prior && prior.ek === ek && Date.now() <= prior.exp
+        ? prior.rid
+        : b64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
     const next = safeNext(c.env, parsed.data.next);
     const pending: Pending = {
       ek,
@@ -274,9 +300,19 @@ export function mountCodes(app: AppType): void {
       exp: Date.now() + CODE_POLICY.ttlSec * 1000,
       f: 0,
     };
+    // Test builds, TEST_DOMAIN only: "pending" before the 202, so the
+    // otp/latest hook never reads an older request's outcome for this one.
+    if (noteOtp) await noteOtp(c.env, email, ek, "pending");
     // Eligibility, the row and the email happen after the response, so its
-    // timing says nothing about the address.
-    const work = deliverCode(c.env, cfg, email, ek, rid, ip).catch(() => null);
+    // timing says nothing about the address. A throw is the "error" outcome:
+    // its class only, never the message (it may carry the address).
+    const work = deliverCode(c.env, cfg, email, ek, rid, ip).catch(
+      async (e: unknown) => {
+        logCodeSend("error", errorClass(e));
+        if (noteOtp) await noteOtp(c.env, email, ek, "error");
+        return null;
+      },
+    );
     const ctx = execCtx(c);
     if (ctx) ctx.waitUntil(work);
     else await work;
@@ -349,19 +385,25 @@ export function mountCodes(app: AppType): void {
     const guest = elig.kind === "guest";
     const domain = email.slice(email.lastIndexOf("@") + 1);
     const maxAgeS = guest ? GUEST_MAX_AGE_S : undefined;
-    const sess = await signSession(c.env, user.id, Date.now(), {
+    const signedAt = Date.now();
+    const sess = await signSession(c.env, user.id, signedAt, {
       provider: "code",
       tenant: guest ? undefined : domain,
       epoch: row.sessionEpoch,
       maxAgeS,
+      // The forced re-auth marker (#1372): a code sign-in is itself one, since
+      // every code is new, emailed and typed by the person; no silent path.
+      authAt: signedAt,
     });
-    // The sign-in and its auth.signin audit row commit together.
-    await c.env.DB.batch([
+    // The sign-in and its auth.signin audit row commit together; the last
+    // statement reads the member's hosted fields (restriction included).
+    const out = await c.env.DB.batch([
       stmt(c.env.DB, "update users set last_seen_at = ?1 where id = ?2").bind(
         Date.now(),
         user.id,
       ),
       signInAudit(c.env, user.id, "code", guest ? undefined : domain),
+      stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
     ]);
     logAuth({
       provider: "code",
@@ -369,13 +411,20 @@ export function mountCodes(app: AppType): void {
       uid: user.id,
       tenant: guest ? undefined : domain,
     });
+    // As the session's next request will see it (middleware; GET /me's
+    // auth.cap): the member's own cap (guest, or restricted by the manual
+    // flag or a restricted group), and a guest code session is capped too.
+    const cap = capOfCaller(callerOf(user)) ?? (guest ? "guest" : null);
     const res = c.json({
       next: p.next,
-      user,
-      readOnly: guest,
+      user: hostedFields(
+        user,
+        out[2]?.results[0] as Parameters<typeof hostedFields>[1],
+      ),
+      readOnly: cap !== null,
     });
     res.headers.append("set-cookie", clearPending(c));
-    if (forgetOtp) await forgetOtp(c.env, p.ek);
+    if (forgetOtp) await forgetOtp(c.env, email, p.ek);
     res.headers.append("set-cookie", sessionCookie(sess, c.env, maxAgeS));
     res.headers.set("cache-control", "no-store");
     return res;

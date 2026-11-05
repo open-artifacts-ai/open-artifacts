@@ -2,14 +2,31 @@
 // against the in-memory Cloudflare (fake-cf.ts). Harness pieces mirror
 // wfp-create.test.ts (gates mocked, every generated secret captured).
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cfClient, type Target } from "../src/cf.js";
+import { directFetch } from "../src/direct-fetch.js";
 import { epochBumpSql, type Template } from "../src/metadata.js";
-import { ENV_PREFIX, type Env, platformNames } from "../src/names.js";
+import {
+  ENV_PREFIX,
+  type Env,
+  isPurgedEmail,
+  ownerEmailOf,
+  PURGED_EMAIL,
+  platformNames,
+  registryKey,
+} from "../src/names.js";
 import { canonicalJson } from "../src/platform.js";
 import {
   assetEntries,
@@ -21,14 +38,29 @@ import {
   type ReleaseRecord,
   TEST_HOOKS_DEFINE,
 } from "../src/release.js";
+import { REVOKE_MIN_VERSION } from "../src/versions.js";
 import {
+  BROKER_GOOGLE_CLIENT_ID,
+  DIRECTORY_REVOKE_SKIPPED_NOTE,
   HOSTED_DOMAINS,
   hostsKvTitle,
+  LostLease,
   NAMESPACES,
   ProdLocked,
   ProvisionRefused,
+  ProvisionRetry,
+  provisionErrorCode,
+  TURNSTILE_TEST_KEYS,
+  VERIFY_CLEAN_ATTEMPTS,
+  VERIFY_CLEAN_INTERVAL_MS,
+  VERIFY_CLEAN_REASON_MAX,
+  type VerifyCleanInput,
+  verifyCleanProblems,
+  verifyCleanRefusal,
+  WFP_STEPS,
   type WfpOptions,
   WfpProvisioner,
+  type WfpStep,
 } from "../src/wfp.js";
 import { type FakeCf as Fake, FakeCf } from "./fake-cf.js";
 
@@ -39,6 +71,29 @@ const G = vi.hoisted(() => ({
   RELEASE_PUBKEY: { staging: "", prod: "" } as Record<string, string>,
   FLOOR_MIN_SEQ: { staging: 1, prod: 1 } as Record<string, number>,
 }));
+// Every node:fs call that writes, with its path: a run with no patDir must make none.
+const FSW = vi.hoisted(() => {
+  const WRITES: string[] = [];
+  // biome-ignore lint/suspicious/noExplicitAny: wraps overloaded fs functions
+  const recordWrites = (m: any) => {
+    // biome-ignore lint/suspicious/noExplicitAny: overloaded
+    const out: Record<string, any> = {};
+    for (const f of [
+      "mkdirSync",
+      "openSync",
+      "writeFileSync",
+      "writeSync",
+      "rmSync",
+    ])
+      out[f] = (p: unknown, ...a: unknown[]) => {
+        WRITES.push(`${f} ${String(p)}`);
+        return m[f](p, ...a);
+      };
+    return { ...m, ...out, default: { ...m, ...out } };
+  };
+  return { WRITES, recordWrites };
+});
+vi.mock("node:fs", async (orig) => FSW.recordWrites(await orig()));
 vi.mock("../src/internal/gates.js", async (orig) => {
   const m = await orig<typeof import("../src/internal/gates.js")>();
   return {
@@ -106,12 +161,13 @@ const PRINTABLE: string[] = [];
 const FAKES: Fake[] = [];
 const PROVS: WfpProvisioner[] = [];
 
-async function fails(p: Promise<unknown>): Promise<Error> {
+/** The rejection; `code` is a ProvisionRefused's job error code. */
+async function fails(p: Promise<unknown>): Promise<Error & { code?: unknown }> {
   try {
     await p;
   } catch (e) {
     THROWN.push(String((e as Error).message), String(e), JSON.stringify(e));
-    return e as Error;
+    return e as Error & { code?: unknown };
   }
   throw new Error("expected a failure");
 }
@@ -163,6 +219,18 @@ const MIGRATION_FILES: ReleaseFile[] = SERVER_MIGRATIONS.map((name) => ({
 const NEW_MIGRATION: ReleaseFile = {
   name: "9001_t5_lifecycle.sql",
   bytes: enc("CREATE TABLE t5_probe (id INTEGER PRIMARY KEY);"),
+};
+const DROPPING: ReleaseFile = {
+  name: "9002_rebuild.sql",
+  bytes: enc("DROP TABLE t5_gone;"),
+};
+const MARKED: ReleaseFile = {
+  name: "9003_marked.sql",
+  bytes: enc("-- oa:non-additive\nCREATE TABLE t5_marked (id INTEGER);"),
+};
+const AFTER_MARKED: ReleaseFile = {
+  name: "9004_after.sql",
+  bytes: enc("CREATE TABLE t5_after (id INTEGER);"),
 };
 const ASSETS: ReleaseAsset[] = [
   { path: "index.html", bytes: enc("<!doctype html><p>hi</p>") },
@@ -253,11 +321,12 @@ function makeReleases(env: Env, specs: Record<string, Spec> = {}) {
       const b = bundleOf(variant, version);
       return { mainModule: b.mainModule, modules: b.modules };
     },
-    assets: async (version) =>
-      (spec(version).assets ?? ASSETS).map((a) => ({
-        ...a,
-        bytes: a.bytes.slice(),
-      })),
+    assets: async (version) => assetEntries(spec(version).assets ?? ASSETS),
+    assetBytes: async (version, _variant, path) => {
+      const a = (spec(version).assets ?? ASSETS).find((x) => x.path === path);
+      if (!a) throw new Error(`no asset ${path}`);
+      return a.bytes.slice();
+    },
     template: async (version) => tplBytes(spec(version).template).slice(),
     migrations: async (version) =>
       (spec(version).migrations ?? MIGRATION_FILES).map((f) => ({
@@ -270,8 +339,10 @@ function makeReleases(env: Env, specs: Record<string, Spec> = {}) {
   return { st, reader };
 }
 
-/** 0.24.0 adds one D1 migration and new assets; same DO tag as 0.23.0. */
-const V24: Spec = {
+/** 0.24.0 has new code and assets only: same D1 schema and DO tag as 0.23.0. */
+const V24: Spec = { assets: ASSETS_24 };
+/** 0.24.2 adds one D1 migration and new assets; same DO tag as 0.23.0. */
+const V24_MIG: Spec = {
   migrations: [...MIGRATION_FILES, NEW_MIGRATION],
   assets: ASSETS_24,
 };
@@ -332,6 +403,7 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
   const pdb = fake.seedD1(platformNames(env).db, PLATFORM_SQL);
   const hostsId = fake.seedKv(hostsKvTitle(env));
   const regId = fake.seedKv(platformNames(env).registry);
+  const dirId = fake.seedKv(platformNames(env).directoryRegistry);
   fake.turnstile.set(TS.sitekey, {
     sitekey: TS.sitekey,
     name: platformNames(env).turnstile,
@@ -350,11 +422,16 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
   };
   const rel = makeReleases(env, {
     "0.24.0": V24,
+    "0.24.2": V24_MIG,
     "0.25.0": V25_TAG,
     "0.26.0": V26_BOUND,
+    // A rebuild with no marker: MIG-2 reads the SQL too.
+    "0.24.5": { migrations: [...MIGRATION_FILES, DROPPING] },
+    "0.24.6": { migrations: [...MIGRATION_FILES, MARKED] },
+    "0.24.7": { migrations: [...MIGRATION_FILES, MARKED, AFTER_MARKED] },
     "0.21.0": V21_NAME_CLASH,
     // 0.25.0's DO step on top of 0.24.0's migrations.
-    "0.28.0": { ...V25_TAG, migrations: V24.migrations },
+    "0.28.0": { ...V25_TAG, migrations: V24_MIG.migrations },
     "0.27.0": {
       migrations: [
         ...MIGRATION_FILES,
@@ -382,6 +459,9 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
     sleep: clock.sleep,
     healthTimeoutMs: 10_000,
     turnstile: TS,
+    // T8 M1: google needs the broker, so the lifecycle suite runs with it on
+    // (staging only: prod has no broker Google client yet).
+    brokerEnabled: env === "staging",
     ...over,
   });
   const mk = (over: Partial<WfpOptions> = {}) => {
@@ -423,9 +503,11 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
     mk,
     cfWith,
     opts,
+    patDir,
     pdb,
     hostsId,
     regId,
+    dirId,
     rel,
     target,
     db,
@@ -576,11 +658,11 @@ describe("upgrade", () => {
     const before = s.scriptOf(inst.id);
     const secretsBefore = new Map(before?.secrets);
     const from = s.fake.log.length;
-    const r = keep(await s.p.upgrade(inst.id, "0.24.0"));
+    const r = keep(await s.p.upgrade(inst.id, "0.24.2"));
     expect(r).toEqual({
       id: inst.id,
       from: "0.23.0",
-      to: "0.24.0",
+      to: "0.24.2",
       ok: true,
       rolledBack: false,
     });
@@ -605,50 +687,79 @@ describe("upgrade", () => {
       meta.bindings.filter((b: { type: string }) => b.type === "secret_text"),
     ).toEqual([]);
     expect(meta.migrations).toBeUndefined();
-    expect(meta.tags).toEqual([inst.id, "v0.24.0"]);
+    expect(meta.tags).toEqual([inst.id, "v0.24.2"]);
     expect(s.scriptOf(inst.id)?.secrets).toEqual(secretsBefore);
-    expect(modulesText(s, inst.id)).toContain("0.24.0");
+    expect(modulesText(s, inst.id)).toContain("0.24.2");
     expect(s.row(inst.id)).toMatchObject({
       state: "active",
-      version: "0.24.0",
+      version: "0.24.2",
       previous_version: "0.23.0",
       do_migration_tag: BASE_TAG,
       lease: null,
     });
-    expect(s.stored(inst.id, "0.24.0")).toBeDefined();
+    expect(s.stored(inst.id, "0.24.2")).toBeDefined();
     expect(s.audit(inst.id)).toEqual(
       expect.arrayContaining(["upgrade.start", "upgrade.done"]),
     );
   });
 
-  it("a failed healthcheck after upgrade rolls back to the previous bundle and reports it, leaving other installs alone", async () => {
+  it("a failed healthcheck after upgrade stays on the new version and reports forward-fix, leaving other installs alone (#1106)", async () => {
     const s = setup();
     const a = keep(await s.p.create(input("alpha")));
     const b = keep(await s.p.create(input("beta")));
     const bUploads = s.scriptOf(b.id)?.uploads;
-    unhealthyAt(s, "0.24.0");
-    const r = keep(await s.p.upgrade(a.id, "0.24.0"));
+    unhealthyAt(s, "0.24.2");
+    const aUploads = s.scriptOf(a.id)?.uploads ?? 0;
+    const r = keep(await s.p.upgrade(a.id, "0.24.2"));
     expect(r).toMatchObject({
       id: a.id,
       from: "0.23.0",
-      to: "0.24.0",
+      to: "0.24.2",
       ok: false,
-      rolledBack: true,
+      rolledBack: false,
+      forwardFix: true,
     });
     expect(r.reason).toMatch(/healthz/);
-    expect(modulesText(s, a.id)).toContain("0.23.0");
-    expect(s.scriptOf(a.id)?.metadata.tags).toEqual([a.id, "v0.23.0"]);
+    // Only the upgrade's own upload: the old code is never put back.
+    expect(s.scriptOf(a.id)?.uploads).toBe(aUploads + 1);
+    expect(modulesText(s, a.id)).toContain("0.24.2");
     expect(s.row(a.id)).toMatchObject({
       state: "active",
-      version: "0.23.0",
-      previous_version: "0.24.0",
-      do_migration_tag: BASE_TAG,
+      version: "0.24.2",
+      previous_version: "0.23.0",
     });
     expect(s.audit(a.id)).toEqual(
-      expect.arrayContaining(["upgrade.failed", "rollback.done"]),
+      expect.arrayContaining(["upgrade.failed", "upgrade.forward_fix"]),
     );
+    expect(s.audit(a.id)).not.toContain("rollback.done");
+    // 0.24.2 carries a D1 migration: code and schema still match.
+    expect(
+      s
+        .installDb(a.id)
+        .prepare("SELECT name FROM d1_migrations WHERE name = ?")
+        .get(NEW_MIGRATION.name),
+    ).toBeDefined();
     expect(s.scriptOf(b.id)?.uploads).toBe(bUploads);
     expect(s.row(b.id)).toMatchObject({ version: "0.23.0", state: "active" });
+  });
+
+  it("H-DR: upgrade and rollback keep the broker and directory registry entries equal", async () => {
+    const s = setup();
+    const p = s.mk({ brokerEnabled: true });
+    const inst = keep(await p.create(input()));
+    const raw = s.fake.kvValues(s.regId).get(registryKey(inst.id)) as string;
+    expect(raw).toBeTruthy();
+    const up = keep(
+      await s.mk({ brokerEnabled: true }).upgrade(inst.id, "0.24.0"),
+    );
+    expect(up).toMatchObject({ ok: true });
+    expect(s.fake.kvValues(s.regId).get(registryKey(inst.id))).toBe(raw);
+    expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(raw);
+    keep(await s.mk({ brokerEnabled: true }).rollback(inst.id));
+    expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(
+      s.fake.kvValues(s.regId).get(registryKey(inst.id)),
+    );
+    expect((await s.p.status(inst.id)).registryDrift).toBeNull();
   });
 
   it("upgrade to an older version, or to the installed one, is refused before any write", async () => {
@@ -658,6 +769,7 @@ describe("upgrade", () => {
     const older = await fails(s.p.upgrade(inst.id, "0.22.0"));
     expect(older).toBeInstanceOf(ProvisionRefused);
     expect(older.message).toMatch(/downgrade/);
+    expect(provisionErrorCode(older)).toBe("downgrade_refused");
     const same = await fails(s.p.upgrade(inst.id, "0.23.0"));
     expect(same.message).toMatch(/already at 0\.23\.0/);
     expect(s.fake.writes().length).toBe(w);
@@ -677,6 +789,33 @@ describe("upgrade", () => {
     const r = keep(await s.p.upgrade(inst.id, "0.25.0"));
     expect(r.ok).toBe(true);
     expect(s.row(inst.id).do_migration_tag).toBe(LEDGER_TAG);
+  });
+
+  it("#1427: an install on v3 upgrading to the real template (binds BusHub, adds it at v4) is refused before any write", async () => {
+    // The real template adds BusHub at v4 and binds BUS_HUB (#1315). An
+    // install still on v3 (below 0.109.0) would add and bind it in one upload.
+    const bus = (
+      BASE_TEMPLATE.durable_objects.bindings as { class_name: string }[]
+    ).some((b) => b.class_name === "BusHub");
+    expect(bus).toBe(true);
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.db()
+      .prepare("UPDATE installs SET do_migration_tag = 'v3' WHERE id = ?")
+      .run(inst.id);
+    const script = s.scriptOf(inst.id);
+    if (script) script.migrationTag = "v3";
+    const w = s.fake.writes().length;
+    const from = s.fake.log.length;
+    const e = await fails(s.p.upgrade(inst.id, "0.24.0"));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.code).toBe("invalid_state");
+    expect(e.message).toMatch(
+      /adds Durable Object class BusHub and binds it.*upgrade first to a release that adds it unbound/,
+    );
+    expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(s.fake.writes().length).toBe(w);
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
   });
 
   it("sends migrations only when the target tag differs from the live one", async () => {
@@ -701,9 +840,30 @@ describe("upgrade", () => {
     s.rel.st.floor = signFloor("staging", { seq: 2, minVersion: "0.25.0" });
     const low = await fails(s.p.upgrade(inst.id, "0.24.0"));
     expect(low.message).toMatch(/below the release floor/);
+    expect(provisionErrorCode(low)).toBe("release_unverified");
     s.rel.st.floor = signFloor("staging", { seq: 2, revoked: ["0.24.0"] });
     const rev = await fails(s.p.upgrade(inst.id, "0.24.0"));
     expect(rev.message).toMatch(/revoked/);
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("upgrade to a version with no release record is release_not_published; a bad signature on it is release_unverified", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const w = s.fake.writes().length;
+    const good = s.rel.reader.record;
+    s.rel.reader.record = async (v, variant) =>
+      v === "0.24.0" ? null : good(v, variant);
+    const none = await fails(s.p.upgrade(inst.id, "0.24.0"));
+    expect(none.message).toMatch(/no release record/);
+    expect(provisionErrorCode(none)).toBe("release_not_published");
+    s.rel.reader.record = async (v, variant) => {
+      const r = await good(v, variant);
+      return v === "0.24.0" && r ? { ...r, signature: "" } : r;
+    };
+    const bad = await fails(s.p.upgrade(inst.id, "0.24.0"));
+    expect(bad.message).toMatch(/signature/);
+    expect(provisionErrorCode(bad)).toBe("release_unverified");
     expect(s.fake.writes().length).toBe(w);
   });
 
@@ -807,6 +967,132 @@ describe("rollback", () => {
     expect(uploads(s.fake, from)).toHaveLength(0);
   });
 
+  it("#1106: after an upgrade applied a D1 migration, a rollback to a release without it is refused with nothing uploaded", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    unhealthyAt(s, "0.24.2");
+    const r = keep(await s.p.upgrade(inst.id, "0.24.2"));
+    expect(r).toMatchObject({ ok: false, forwardFix: true });
+    // The upgrade applied the migration 0.23.0 does not know.
+    expect(
+      s
+        .installDb(inst.id)
+        .prepare("SELECT name FROM d1_migrations WHERE name = ?")
+        .get(NEW_MIGRATION.name),
+    ).toBeDefined();
+    s.fake.health = undefined;
+    const from = s.fake.log.length;
+    const w = s.fake.writes().length;
+    const uploadsBefore = s.scriptOf(inst.id)?.uploads;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.code).toBe("invalid_state");
+    expect(e.message).toContain(NEW_MIGRATION.name);
+    expect(e.message).toMatch(
+      /which 0\.23\.0 does not; rollback is refused \(forward-fix only\)/,
+    );
+    expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(s.scriptOf(inst.id)?.uploads).toBe(uploadsBefore);
+    expect(s.fake.writes().length).toBe(w);
+    expect(modulesText(s, inst.id)).toContain("0.24.2");
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.24.2",
+      previous_version: "0.23.0",
+      lease: null,
+    });
+    expect(s.audit(inst.id)).not.toContain("rollback.start");
+  });
+
+  it("#1106: a rollback with no migration applied since the previous version runs as before", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    const from = s.fake.log.length;
+    expect(keep(await s.p.rollback(inst.id))).toMatchObject({
+      from: "0.24.0",
+      to: "0.23.0",
+      ok: true,
+      rolledBack: true,
+    });
+    expect(uploads(s.fake, from)).toHaveLength(1);
+    expect(modulesText(s, inst.id)).toContain("0.23.0");
+  });
+
+  it("#1106: an upgrade that applied its migration but left the row on its from version: the rollback is still refused", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    let armed = true;
+    const p = s.mk({
+      cf: s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+        const req = new Request(u, init);
+        const body = req.method === "POST" ? await req.clone().text() : "";
+        if (armed && body.includes("INSERT INTO install_versions")) {
+          armed = false;
+          return Response.json(
+            { success: false, errors: [{ code: 7500, message: "boom" }] },
+            { status: 400 },
+          );
+        }
+        return s.fake.fetch(u, init);
+      }) as typeof fetch),
+    });
+    const r = keep(await p.upgrade(inst.id, "0.24.2"));
+    expect(r).toMatchObject({ ok: false, forwardFix: true });
+    expect(s.audit(inst.id)).toContain("upgrade.incomplete");
+    // The migration ran and 0.24.2 is live, but the row still says 0.24.0.
+    expect(s.row(inst.id)).toMatchObject({
+      version: "0.24.0",
+      previous_version: "0.23.0",
+      lease: null,
+    });
+    expect(
+      s
+        .installDb(inst.id)
+        .prepare("SELECT name FROM d1_migrations WHERE name = ?")
+        .get(NEW_MIGRATION.name),
+    ).toBeDefined();
+    const from = s.fake.log.length;
+    const uploadsBefore = s.scriptOf(inst.id)?.uploads;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.code).toBe("invalid_state");
+    expect(e.message).toContain(NEW_MIGRATION.name);
+    expect(e.message).toMatch(/which 0\.23\.0 does not; rollback is refused/);
+    expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(probes(s.fake, from)).toHaveLength(0);
+    expect(s.scriptOf(inst.id)?.uploads).toBe(uploadsBefore);
+    expect(modulesText(s, inst.id)).toContain("0.24.2");
+  });
+
+  it("#1106: a Durable Object tag the target release does not have refuses the rollback, even when the stored tag agrees", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    // Journal and stored tag agree, on a tag 0.23.0's template lacks.
+    s.db()
+      .prepare("UPDATE installs SET do_migration_tag = ? WHERE id = ?")
+      .run(FOREIGN_TAG, inst.id);
+    s.db()
+      .prepare(
+        "UPDATE install_versions SET do_migration_tag = ? WHERE install_id = ? AND version = ?",
+      )
+      .run(FOREIGN_TAG, inst.id, "0.23.0");
+    const from = s.fake.log.length;
+    const w = s.fake.writes().length;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.code).toBe("invalid_state");
+    expect(e.message).toContain(
+      `migration tag ${FOREIGN_TAG} is not in 0.23.0; rollback is refused (forward-fix only)`,
+    );
+    expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(probes(s.fake, from)).toHaveLength(0);
+    expect(s.fake.writes().length).toBe(w);
+    expect(s.audit(inst.id)).not.toContain("rollback.start");
+  });
+
   it("rollback uploads exactly the stored metadata of the previous version", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
@@ -844,12 +1130,6 @@ describe("rollback", () => {
     // The previous release's verified bytes, and no D1 rollback.
     expect(modulesText(s, inst.id)).toContain("0.23.0");
     expect(
-      s
-        .installDb(inst.id)
-        .prepare("SELECT name FROM d1_migrations WHERE name = ?")
-        .get(NEW_MIGRATION.name),
-    ).toBeDefined();
-    expect(
       s.fake.raw
         .slice(from)
         .some((x) => /DROP|DELETE FROM d1_migrations/i.test(x.body)),
@@ -859,6 +1139,45 @@ describe("rollback", () => {
       previous_version: "0.24.0",
       state: "active",
     });
+  });
+
+  it("rollback refuses an asset changed between plan and its bucket read before the script upload", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    // Cloudflare asks for app.js again, so the apply reads it for its bucket.
+    s.fake.assetHashes.clear();
+    const good = s.rel.reader.assetBytes;
+    let reads = 0;
+    // The plan's pre-flight read is good; the bucket read is not.
+    s.rel.reader.assetBytes = async (version, variant, path) =>
+      path === "app.js" && ++reads >= 2
+        ? enc("console.log(2)")
+        : good(version, variant, path);
+    const from = s.fake.log.length;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/assets do not match the signed record/);
+    expect(provisionErrorCode(e)).toBe("release_unverified");
+    expect(reads).toBe(2);
+    expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(s.audit(inst.id)).not.toContain("rollback.incomplete");
+  });
+
+  it("#882: rollback reads each asset once (the plan's verify), not again at apply", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    const good = s.rel.reader.assetBytes;
+    const reads = new Map<string, number>();
+    s.rel.reader.assetBytes = async (version, variant, path) => {
+      reads.set(path, (reads.get(path) ?? 0) + 1);
+      return good(version, variant, path);
+    };
+    const r = keep(await s.p.rollback(inst.id));
+    expect(r).toMatchObject({ ok: true, rolledBack: true, to: "0.23.0" });
+    // Cloudflare still has 0.23.0's files: no bucket read either.
+    expect(Object.fromEntries(reads)).toEqual({ "index.html": 1, "app.js": 1 });
   });
 
   it("rollback refuses a previous version below the floor or revoked", async () => {
@@ -886,11 +1205,60 @@ describe("rollback", () => {
     unhealthyAt(s, "0.24.0");
     const r = keep(await s.p.upgrade(inst.id, "0.24.0"));
     expect(r).toMatchObject({ ok: false, rolledBack: false, forwardFix: true });
-    expect(r.reason).toMatch(/revoked/);
+    expect(r.reason).toMatch(/healthz/);
     expect(s.row(inst.id)).toMatchObject({
       version: "0.24.0",
       state: "active",
     });
+  });
+});
+
+describe("EMAIL_CODE_DOMAIN across versions (#1088)", () => {
+  const DOMAIN_CODES = {
+    EMAIL_CODE_DOMAIN: "on",
+    AUTH_PROVIDERS: "email",
+    AUTH_DOMAINS: "finqore.test",
+  };
+  const onIn = (fake: Fake, from: number) => {
+    const b = metaOf(uploads(fake, from)[0]?.body as string).bindings as {
+      name: string;
+      text?: string;
+    }[];
+    return b.find((x) => x.name === "EMAIL_CODE_DOMAIN")?.text;
+  };
+
+  it("an upgrade renders it, and a rollback's upload still has it", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(input("finqore", { vars: DOMAIN_CODES })),
+    );
+    expect(onIn(s.fake, 0)).toBe("on");
+    let from = s.fake.log.length;
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    expect(onIn(s.fake, from)).toBe("on");
+    expect(JSON.parse(s.row(inst.id).vars as string)).toMatchObject({
+      EMAIL_CODE_DOMAIN: "on",
+    });
+    from = s.fake.log.length;
+    expect(keep(await s.p.rollback(inst.id))).toMatchObject({
+      rolledBack: true,
+      to: "0.23.0",
+    });
+    expect(onIn(s.fake, from)).toBe("on");
+    expect(JSON.parse(s.row(inst.id).vars as string)).toMatchObject({
+      EMAIL_CODE_DOMAIN: "on",
+    });
+  });
+
+  it("a refusal on upgrade carries the codes' own job code", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(input("finqore", { vars: DOMAIN_CODES })),
+    );
+    const e = await fails(
+      s.mk({ turnstile: undefined }).upgrade(inst.id, "0.24.0"),
+    );
+    expect((e as ProvisionRefused).code).toBe("turnstile_missing");
   });
 });
 
@@ -899,7 +1267,11 @@ describe("fix round 1: rollback keeps the current vars", () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     await s.p.upgrade(inst.id, "0.24.0");
-    const next = { AUTH_PROVIDERS: "email,google", EMAIL_DAILY_CAP: "50" };
+    const next = {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+      EMAIL_DAILY_CAP: "50",
+    };
     await s.p.updateVars(inst.id, next);
     const epoch = () =>
       (
@@ -925,9 +1297,12 @@ describe("fix round 1: rollback keeps the current vars", () => {
       assets: { config: m.assets.config },
       bindings: m.bindings.filter(
         (b: { name: string }) =>
-          !["AUTH_PROVIDERS", "EMAIL_DAILY_CAP", "OWNER_EMAIL"].includes(
-            b.name,
-          ),
+          ![
+            "AUTH_PROVIDERS",
+            "AUTH_DOMAINS",
+            "EMAIL_DAILY_CAP",
+            "OWNER_EMAIL",
+          ].includes(b.name),
       ),
     });
     expect(notVars(meta)).toEqual(notVars(stored));
@@ -1096,6 +1471,7 @@ describe("concurrency", () => {
     expect(second).toHaveLength(2);
     for (const e of second) expect(e).toBeInstanceOf(ProvisionRefused);
     expect(second[0]?.message).toMatch(/busy/);
+    expect((second[0] as ProvisionRefused).code).toBe("lease_held");
     expect(s.row(inst.id).state).toBe("deleted");
   });
 });
@@ -1140,6 +1516,127 @@ describe("updateVars and the session cut", () => {
     expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
   });
 
+  describe("H-RD: the registry copies follow AUTH_DOMAINS and google on/off", () => {
+    const entries = (s: S, id: string) => {
+      const reg = s.fake.kvValues(s.regId).get(registryKey(id)) as string;
+      const dir = s.fake.kvValues(s.dirId).get(registryKey(id)) as string;
+      return { reg, dir, entry: JSON.parse(reg) };
+    };
+    const brokered = async () => {
+      const s = setup();
+      const p = s.mk({ brokerEnabled: true });
+      const inst = keep(
+        await p.create(
+          input("finqore", { vars: { AUTH_DOMAINS: "a.example" } }),
+        ),
+      );
+      return { s, p, inst };
+    };
+
+    it("updateVars rewrites both copies with the new domains, same keys, in the op's lease", async () => {
+      const { s, p, inst } = await brokered();
+      const keys = entries(s, inst.id).entry.keys;
+      const r = await p.updateVars(inst.id, {
+        AUTH_DOMAINS: "c.example,B.example",
+      });
+      expect(r).toMatchObject({ ok: true });
+      const { reg, dir, entry } = entries(s, inst.id);
+      expect(entry.domains).toEqual(["b.example", "c.example"]);
+      expect(entry.keys).toEqual(keys);
+      expect(dir).toBe(reg);
+      expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+      expect((await p.status(inst.id)).registryDrift).toBeNull();
+    });
+
+    it("google on, then off: both copies follow the domains each time", async () => {
+      const { s, p, inst } = await brokered();
+      await p.updateVars(inst.id, {
+        AUTH_PROVIDERS: "email,google",
+        AUTH_DOMAINS: "g.example",
+      });
+      let e = entries(s, inst.id);
+      expect(e.entry.domains).toEqual(["g.example"]);
+      expect(e.dir).toBe(e.reg);
+      await p.updateVars(inst.id, { AUTH_PROVIDERS: "email" });
+      e = entries(s, inst.id);
+      expect(e.entry.domains).toEqual([]);
+      expect(e.dir).toBe(e.reg);
+    });
+
+    it("updateVars refuses more than 50 domains before any write", async () => {
+      const { s, p, inst } = await brokered();
+      const w = s.fake.writes().length;
+      const e = await fails(
+        p.updateVars(inst.id, {
+          AUTH_DOMAINS: Array.from(
+            { length: 51 },
+            (_, i) => `d${i}.example`,
+          ).join(","),
+        }),
+      );
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(/more than 50 domains/);
+      expect(s.fake.writes().length).toBe(w);
+    });
+
+    it("a failed directory write in updateVars is reported, and a rerun makes both equal", async () => {
+      const { s, p, inst } = await brokered();
+      s.fake.inject(
+        (m, q) => m === "PUT" && q.includes(`/namespaces/${s.dirId}/values/`),
+        { status: 400 },
+      );
+      const next = { AUTH_DOMAINS: "n.example" };
+      const r = await p.updateVars(inst.id, next);
+      expect(r).toMatchObject({ ok: false });
+      expect((await p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "mismatch",
+      });
+      expect(await p.updateVars(inst.id, next)).toMatchObject({ ok: true });
+      const e = entries(s, inst.id);
+      expect(e.entry.domains).toEqual(["n.example"]);
+      expect(e.dir).toBe(e.reg);
+    });
+
+    it("upgrade and rollback never refuse on the registry domain check (they never write the registry)", async () => {
+      const { s, p, inst } = await brokered();
+      const before = entries(s, inst.id).reg;
+      // Passes HOSTED_VARS, fails the registry check (more than 50).
+      const bad = {
+        AUTH_DOMAINS: Array.from(
+          { length: 51 },
+          (_, i) => `d${i}.example`,
+        ).join(","),
+      };
+      s.db()
+        .prepare("UPDATE installs SET vars = ? WHERE id = ?")
+        .run(canonicalJson(bad), inst.id);
+      expect(keep(await p.upgrade(inst.id, "0.24.0"))).toMatchObject({
+        ok: true,
+      });
+      expect(keep(await p.rollback(inst.id))).toMatchObject({
+        ok: true,
+        rolledBack: true,
+      });
+      expect(entries(s, inst.id).reg).toBe(before);
+      expect(entries(s, inst.id).dir).toBe(before);
+      // updateVars does write the registry, so it still refuses.
+      expect((await fails(p.updateVars(inst.id, bad))).message).toMatch(
+        /more than 50 domains/,
+      );
+    });
+
+    it("upgrade and rollback keep the domains (they reuse the current vars)", async () => {
+      const { s, p, inst } = await brokered();
+      const before = entries(s, inst.id).reg;
+      keep(await p.upgrade(inst.id, "0.24.0"));
+      keep(await p.rollback(inst.id));
+      const e = entries(s, inst.id);
+      expect(e.reg).toBe(before);
+      expect(e.dir).toBe(before);
+    });
+  });
+
   it("turning google on bumps the epoch in the install's own D1 after the new vars are live, once per enablement", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
@@ -1151,7 +1648,10 @@ describe("updateVars and the session cut", () => {
           .get(OWNER) as { session_epoch: number }
       ).session_epoch;
     expect(epoch()).toBe(0);
-    const next = { AUTH_PROVIDERS: "email,google" };
+    const next = {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+    };
     const from = s.fake.log.length;
     keep(await s.p.updateVars(inst.id, next));
     expect(epoch()).toBe(1);
@@ -1209,7 +1709,10 @@ describe("updateVars and the session cut", () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     const epoch = epochOf(s, inst.id);
-    const next = { AUTH_PROVIDERS: "email,google" };
+    const next = {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+    };
     s.fake.health = () => ({ ok: false });
     const r = keep(await s.p.updateVars(inst.id, next));
     expect(r).toMatchObject({ ok: false, sessionCut: true });
@@ -1232,7 +1735,10 @@ describe("updateVars and the session cut", () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     const epoch = epochOf(s, inst.id);
-    const next = { AUTH_PROVIDERS: "email,google" };
+    const next = {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+    };
     s.fake.inject((m, p) => m === "PUT" && /\/scripts\/oa-s-/.test(p));
     await fails(s.p.updateVars(inst.id, next));
     expect(epoch()).toBe(0);
@@ -1251,7 +1757,12 @@ describe("updateVars and the session cut", () => {
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     const epoch = epochOf(s, inst.id);
     s.fake.inject((m, p) => m === "PUT" && /\/scripts\/oa-s-/.test(p));
-    await fails(s.p.updateVars(inst.id, { AUTH_PROVIDERS: "email,google" }));
+    await fails(
+      s.p.updateVars(inst.id, {
+        AUTH_PROVIDERS: "email,google",
+        AUTH_DOMAINS: "finqore.test",
+      }),
+    );
     expect(s.row(inst.id).session_cut).not.toBeNull();
     const r = keep(
       await s.p.updateVars(inst.id, { ...CODES, FEATURES: "beta" }),
@@ -1266,7 +1777,10 @@ describe("updateVars and the session cut", () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     const epoch = epochOf(s, inst.id);
-    const next = { AUTH_PROVIDERS: "email,google" };
+    const next = {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+    };
     await s.p.updateVars(inst.id, next);
     expect(epoch()).toBe(1);
     // A cut owed for vars that are live (a crash after the upload).
@@ -1400,19 +1914,22 @@ describe("delete", () => {
       .map((p) =>
         p.includes(`/namespaces/${s.regId}/values/`)
           ? "registry"
-          : /\/scripts\//.test(p)
-            ? "script"
-            : /\/storage\/kv\/namespaces\/[^/]+$/.test(p)
-              ? "kv"
-              : /\/r2\/buckets\/[^/]+\/objects\//.test(p)
-                ? "r2-object"
-                : /\/r2\/buckets\/[^/]+$/.test(p)
-                  ? "r2"
-                  : /\/d1\/database\/[^/]+$/.test(p)
-                    ? "d1"
-                    : p,
+          : p.includes(`/namespaces/${s.dirId}/values/`)
+            ? "directory"
+            : /\/scripts\//.test(p)
+              ? "script"
+              : /\/storage\/kv\/namespaces\/[^/]+$/.test(p)
+                ? "kv"
+                : /\/r2\/buckets\/[^/]+\/objects\//.test(p)
+                  ? "r2-object"
+                  : /\/r2\/buckets\/[^/]+$/.test(p)
+                    ? "r2"
+                    : /\/d1\/database\/[^/]+$/.test(p)
+                      ? "d1"
+                      : p,
       );
     expect(seq).toEqual([
+      "directory",
       "registry",
       "script",
       "kv",
@@ -1439,19 +1956,28 @@ describe("delete", () => {
     expect(again.message).toMatch(/deleted|taken/);
   });
 
-  it("delete is idempotent after a partial failure at any step", async () => {
-    const steps: [string, (m: string, p: string) => boolean][] = [
-      ["hosts", (m, p) => m === "DELETE" && p.includes("/values/")],
-      ["script", (m, p) => m === "DELETE" && /\/scripts\/oa-s-/.test(p)],
-      [
-        "kv",
-        (m, p) => m === "DELETE" && /\/storage\/kv\/namespaces\/[^/]+$/.test(p),
-      ],
-      ["r2-object", (m, p) => m === "DELETE" && /\/objects\//.test(p)],
-      ["r2", (m, p) => m === "DELETE" && /\/r2\/buckets\/[^/]+$/.test(p)],
-      ["d1", (m, p) => m === "DELETE" && /\/d1\/database\/[^/]+$/.test(p)],
-    ];
-    for (const [name, when] of steps) {
+  const DELETE_STEPS: [string, (m: string, p: string) => boolean][] = [
+    ["hosts", (m, p) => m === "DELETE" && p.includes("/values/")],
+    ["script", (m, p) => m === "DELETE" && /\/scripts\/oa-s-/.test(p)],
+    [
+      "kv",
+      (m, p) => m === "DELETE" && /\/storage\/kv\/namespaces\/[^/]+$/.test(p),
+    ],
+    ["r2-object", (m, p) => m === "DELETE" && /\/objects\//.test(p)],
+    ["r2", (m, p) => m === "DELETE" && /\/r2\/buckets\/[^/]+$/.test(p)],
+    ["d1", (m, p) => m === "DELETE" && /\/d1\/database\/[^/]+$/.test(p)],
+  ];
+  // Each step is real work, not waits (the clock and every sleep are
+  // injected): a full create, then three deletes against the fake. The
+  // slowest measured step: 5123 ms / 6 steps on a CI runner (queue run
+  // 41640977874), so 900 ms per step, with 3x headroom. The budget grows
+  // with the steps instead of hitting the 5 s default as the list grows.
+  const PARTIAL_STEP_MS = 900;
+  const PARTIAL_HEADROOM = 3;
+  it("delete is idempotent after a partial failure at any step", {
+    timeout: DELETE_STEPS.length * PARTIAL_STEP_MS * PARTIAL_HEADROOM,
+  }, async () => {
+    for (const [name, when] of DELETE_STEPS) {
       const s = setup();
       const inst = keep(await s.p.create(input()));
       s.fake.r2Seed(`oa-s-${inst.id}`, "files/a", enc("x"));
@@ -1473,6 +1999,49 @@ describe("delete", () => {
       expect(r3, name).toEqual({ id: inst.id, ok: true, state: "deleted" });
       expect(s.fake.writes().length, name).toBe(n);
     }
+  });
+
+  it("H-DR: delete removes the directory copy, then the broker entry, and resumes after a failure between them", async () => {
+    const s = setup();
+    const p = s.mk({ brokerEnabled: true });
+    const inst = keep(await p.create(input()));
+    const key = registryKey(inst.id);
+    expect(s.fake.kvValues(s.regId).has(key)).toBe(true);
+    expect(s.fake.kvValues(s.dirId).get(key)).toBe(
+      s.fake.kvValues(s.regId).get(key),
+    );
+    s.fake.inject(
+      (m, q) => m === "DELETE" && q.includes(`/namespaces/${s.regId}/values/`),
+      { status: 400, message: "boom broker" },
+    );
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).delete(inst.id, inst.id),
+    );
+    expect(e.message).toMatch(/boom broker/);
+    expect(s.row(inst.id)).toMatchObject({ state: "deleting", lease: null });
+    // L1: the directory is never ahead of sign-in.
+    expect(s.fake.kvValues(s.dirId).has(key)).toBe(false);
+    expect(s.fake.kvValues(s.regId).has(key)).toBe(true);
+    expect(await s.p.status(inst.id)).toMatchObject({
+      registryDrift: { id: inst.id, kind: "missing_directory" },
+    });
+    const r = keep(
+      await s.mk({ brokerEnabled: true }).delete(inst.id, inst.id),
+    );
+    expect(r).toEqual({ id: inst.id, ok: true, state: "deleted" });
+    expect(s.fake.kvValues(s.regId).has(key)).toBe(false);
+    expect(s.fake.kvValues(s.dirId).has(key)).toBe(false);
+    expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+  });
+
+  it("delete removes the registry entry under install:<id>, the key the broker reads", async () => {
+    const s = setup();
+    const inst = keep(await s.mk({ brokerEnabled: true }).create(input()));
+    expect([...s.fake.kvValues(s.regId).keys()]).toEqual([
+      registryKey(inst.id),
+    ]);
+    keep(await s.mk({ brokerEnabled: true }).delete(inst.id, inst.id));
+    expect(s.fake.kvValues(s.regId).size).toBe(0);
   });
 
   it("refuses to delete anything whose name isn't names(id)", async () => {
@@ -1702,9 +2271,8 @@ describe("fix round 2", () => {
   it("L3: a rollback that would move forward is refused (use upgrade)", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));
-    unhealthyAt(s, "0.24.0");
-    expect((await s.p.upgrade(inst.id, "0.24.0")).rolledBack).toBe(true);
-    s.fake.health = undefined;
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    expect(keep(await s.p.rollback(inst.id))).toMatchObject({ ok: true });
     const from = s.fake.log.length;
     const e = await fails(s.p.rollback(inst.id));
     expect(e.message).toMatch(/newer than 0\.23\.0; use upgrade/);
@@ -1778,7 +2346,7 @@ describe("fix round 2", () => {
         input("redqa", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
       ),
     );
-    const dir = s.opts().patDir;
+    const dir = s.patDir;
     const files = [`${inst.appHost}-pat-token`, `${inst.appHost}-hook-key`];
     for (const f of files) expect(existsSync(join(dir, f))).toBe(true);
     await s.p.delete(inst.id, inst.id);
@@ -1795,27 +2363,12 @@ describe("fix round 2", () => {
     expect(out).toEqual([{ id: off.id, ok: true, rotated: false }]);
   });
 
-  it("N3: rollback runs checkFloorSeq, and so does the auto-rollback", async () => {
+  it("N3: rollback runs checkFloorSeq", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));
     await s.p.upgrade(inst.id, "0.24.0");
     s.db().prepare("UPDATE release_floor SET floor_seq = 5").run();
     expect((await fails(s.p.rollback(inst.id))).message).toMatch(/below 5/);
-    // Auto-rollback: the floor read for the rollback is below the cache the
-    // upgrade raised, so it is refused and the upgrade reports forward-fix.
-    const t = setup();
-    const b = keep(await t.p.create(input()));
-    t.rel.st.floor = signFloor("staging", { seq: 3 });
-    t.fake.health = (sc) => {
-      if ((sc.metadata.tags as string[]).includes("v0.24.0")) {
-        t.rel.st.floor = signFloor("staging", { seq: 2 });
-        return { ok: false };
-      }
-      return undefined;
-    };
-    const r = keep(await t.p.upgrade(b.id, "0.24.0"));
-    expect(r).toMatchObject({ ok: false, rolledBack: false, forwardFix: true });
-    expect(r.reason).toMatch(/below 3/);
   });
 
   it("N4: stored metadata holds no email", async () => {
@@ -1900,9 +2453,9 @@ describe("fix round 3", () => {
     s.db()
       .prepare("UPDATE installs SET lease = 'c', lease_until = ? WHERE id = ?")
       .run(s.clock.now() + 60_000, id);
-    expect((await fails(s.p.delete(id, id))).message).toMatch(
-      /create still holds the lease/,
-    );
+    const held = await fails(s.p.delete(id, id));
+    expect(held.message).toMatch(/create still holds the lease/);
+    expect(held.code).toBe("lease_held");
     s.db()
       .prepare("UPDATE installs SET lease_until = ? WHERE id = ?")
       .run(s.clock.now() - 1, id);
@@ -1968,7 +2521,10 @@ describe("fix round 3", () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     const epoch = epochOf(s, inst.id);
-    await s.p.updateVars(inst.id, { AUTH_PROVIDERS: "email,google" });
+    await s.p.updateVars(inst.id, {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+    });
     s.db()
       .prepare(
         "UPDATE installs SET session_cut = ?, session_cut_base = ? WHERE id = ?",
@@ -1998,9 +2554,13 @@ describe("fix round 3", () => {
     expect(s.audit(inst.id)).toContain("vars.session_cut_failed");
     expect((await s.p.status(inst.id)).sessionCut).toEqual({
       pending: true,
+      armed: false,
       owedRelativeToRecordedVars: true,
     });
-    await s.p.updateVars(inst.id, { AUTH_PROVIDERS: "email,google" });
+    await s.p.updateVars(inst.id, {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+    });
     expect(epoch()).toBe(2);
   });
 
@@ -2027,6 +2587,9 @@ describe("fix round 3", () => {
       lease_until: null,
       leaseLive: false,
       sessionCut: null,
+      registryDrift: null,
+      directoryRevoke: { state: null, attempts: 0, revokedAt: null },
+      owner: "(set)",
     });
     s.db()
       .prepare(
@@ -2044,7 +2607,7 @@ describe("fix round 3", () => {
 
 describe("fix round 4", () => {
   const patOf = (s: S, appHost: string) =>
-    readFileSync(join(s.opts().patDir, `${appHost}-pat-token`), "utf8").trim();
+    readFileSync(join(s.patDir, `${appHost}-pat-token`), "utf8").trim();
 
   it("R2-L1: status() during a running op leaves its lease and redaction intact; a later error from the op is still scrubbed", async () => {
     const s = setup();
@@ -2126,6 +2689,7 @@ describe("fix round 4", () => {
       .run("aa".repeat(16), canonicalJson(CODES), inst.id);
     expect((await s.p.status(inst.id)).sessionCut).toEqual({
       pending: true,
+      armed: false,
       owedRelativeToRecordedVars: false,
     });
   });
@@ -2175,15 +2739,28 @@ describe("fix round 5 (security review)", () => {
     const inst = keep(await s.p.create(input()));
     await s.p.upgrade(inst.id, "0.24.0");
     const from = s.fake.log.length;
-    for (const bad of [canonicalJson({ NOPE: "1" }), "{not json", "[]"]) {
+    const notStrings = /installs\.vars is not an object of strings/;
+    for (const [bad, onUpgrade, onRollback] of [
+      // A var that fails the render: the upgrade's is a plain Error (it
+      // reaches the render; 0.24.0 used to carry a migration 0.25.0 lacks,
+      // which refused it first), the rollback wraps it as a refusal.
+      [
+        canonicalJson({ NOPE: "1" }),
+        /unknown var "NOPE"/,
+        /current vars do not fit 0\.23\.0: unknown var "NOPE"/,
+      ],
+      ["{not json", notStrings, notStrings],
+      ["[]", notStrings, notStrings],
+    ] as const) {
       s.db()
         .prepare("UPDATE installs SET vars = ? WHERE id = ?")
         .run(bad, inst.id);
-      for (const op of [
-        () => s.p.upgrade(inst.id, "0.25.0"),
-        () => s.p.rollback(inst.id),
-      ])
-        expect(await fails(op())).toBeInstanceOf(ProvisionRefused);
+      expect((await fails(s.p.upgrade(inst.id, "0.25.0"))).message).toMatch(
+        onUpgrade,
+      );
+      const e = await fails(s.p.rollback(inst.id));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(onRollback);
     }
     expect(uploads(s.fake, from)).toHaveLength(0);
     expect(probes(s.fake, from)).toHaveLength(0);
@@ -2249,7 +2826,10 @@ describe("fix round 5 (security review)", () => {
       cf: failOnce(s, (body) => body.includes("UPDATE installs SET vars")),
     });
     const r = keep(
-      await p.updateVars(inst.id, { AUTH_PROVIDERS: "email,google" }),
+      await p.updateVars(inst.id, {
+        AUTH_PROVIDERS: "email,google",
+        AUTH_DOMAINS: "finqore.test",
+      }),
     );
     expect(r.ok).toBe(false);
     expect(s.row(inst.id).session_cut).not.toBeNull();
@@ -2275,7 +2855,12 @@ describe("fix round 5 (security review)", () => {
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     const epoch = epochOf(s, inst.id);
     s.fake.inject((m, p) => m === "PUT" && /\/scripts\/oa-s-/.test(p));
-    await fails(s.p.updateVars(inst.id, { AUTH_PROVIDERS: "email,google" }));
+    await fails(
+      s.p.updateVars(inst.id, {
+        AUTH_PROVIDERS: "email,google",
+        AUTH_DOMAINS: "finqore.test",
+      }),
+    );
     expect(s.row(inst.id)).toMatchObject({ session_cut_armed: 0 });
     expect(s.row(inst.id).session_cut).not.toBeNull();
     const r = keep(
@@ -2314,4 +2899,3627 @@ afterAll(() => {
     throw new Error(
       `${leaks.length + rowLeaks.length} sensitive value(s) leaked into errors, logs, notes or platform rows`,
     );
+});
+
+describe("no per-install cron (T7: the central scheduler is the only nightly caller)", () => {
+  it("create, upgrade and rollback upload no triggers and never call a schedules API", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore")));
+    await s.p.upgrade(inst.id, "0.24.0");
+    keep(await s.p.rollback(inst.id));
+    const up = uploads(s.fake);
+    // create, upgrade and rollback each upload once.
+    expect(up.length).toBeGreaterThanOrEqual(3);
+    for (const u of up) {
+      const m = metaOf(u.body);
+      expect(m).not.toHaveProperty("triggers");
+      expect(m).not.toHaveProperty("schedules");
+      expect(JSON.stringify(m)).not.toMatch(/cron|trigger|schedul|17 3/i);
+    }
+    expect(s.fake.log.some((e) => /schedules/i.test(e.path))).toBe(false);
+  });
+});
+
+// Manager ruling 2026-10-24: within 5 days of expiry, forward changes are
+// refused, but an incident rollback (or a delete) never waits on a token
+// roll: it runs with a loud note naming the date. An expired token still fails.
+describe("token within 5 days of expiry", () => {
+  const soon = () => new Date(NOW + 2 * 86_400_000).toISOString();
+
+  it("refuses upgrade and var changes before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.tokenInfo.expires_on = soon();
+    const from = s.fake.log.length;
+    for (const op of [
+      () => s.p.upgrade(inst.id, "0.24.0"),
+      () => s.p.updateVars(inst.id, { EMAIL_DAILY_CAP: "50" }),
+    ]) {
+      const e = await fails(op());
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toContain(soon().slice(0, 10));
+      expect(e.message).toMatch(/roll it/);
+    }
+    expect(s.fake.log.slice(from).filter((e) => e.method !== "GET")).toEqual(
+      [],
+    );
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.23.0",
+    });
+  });
+
+  it("lets a rollback run, with a warning that names the date", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    s.fake.tokenInfo.expires_on = soon();
+    const r = keep(await s.p.rollback(inst.id));
+    expect(r).toMatchObject({ ok: true, rolledBack: true, to: "0.23.0" });
+    expect(s.p.notes.join("\n")).toContain(
+      `WARNING: the Cloudflare token expires on ${soon().slice(0, 10)}`,
+    );
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.23.0",
+    });
+  });
+
+  it("lets a delete run, with the same warning", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.tokenInfo.expires_on = soon();
+    const r = keep(await s.p.delete(inst.id, inst.id));
+    expect(r).toMatchObject({ ok: true, state: "deleted" });
+    expect(s.p.notes.join("\n")).toContain(soon().slice(0, 10));
+  });
+
+  it("an expired token still refuses a rollback", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    s.fake.tokenInfo.expires_on = new Date(NOW - 1000).toISOString();
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e.message).toMatch(/expired/);
+    expect(e).toBeInstanceOf(ProvisionRetry);
+    expect(e.code).toBe("token_invalid");
+    expect(s.row(inst.id)).toMatchObject({ version: "0.24.0" });
+  });
+});
+
+describe("P1 Task 8 follow-ups", () => {
+  it("status reports sessionCut.armed as well as pending", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
+    s.db()
+      .prepare(
+        "UPDATE installs SET session_cut = ?, session_cut_base = ?, session_cut_armed = 1 WHERE id = ?",
+      )
+      .run("ab".repeat(16), canonicalJson(CODES), inst.id);
+    expect((await s.p.status(inst.id)).sessionCut).toEqual({
+      pending: true,
+      armed: true,
+      owedRelativeToRecordedVars: false,
+    });
+    s.db()
+      .prepare("UPDATE installs SET session_cut_armed = 0 WHERE id = ?")
+      .run(inst.id);
+    expect((await s.p.status(inst.id)).sessionCut).toMatchObject({
+      pending: true,
+      armed: false,
+    });
+  });
+
+  it("refuses a rollback whose stored metadata is not a render of that release, before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    // The stored 0.23.0 render names a bundle the signed 0.23.0 release does not have.
+    const st = s.stored(inst.id, "0.23.0");
+    const meta = JSON.parse(st?.metadata as string);
+    s.db()
+      .prepare(
+        "UPDATE install_versions SET metadata = ? WHERE install_id = ? AND version = ?",
+      )
+      .run(
+        JSON.stringify({ ...meta, main_module: "other.js" }),
+        inst.id,
+        "0.23.0",
+      );
+    const w = s.fake.writes().length;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/is not a render of that release/);
+    expect(s.fake.writes().length).toBe(w);
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.24.0",
+      lease: null,
+    });
+  });
+
+  it("verifyToken runs the token checks with no write; near expiry refuses or warns", async () => {
+    const s = setup();
+    const w = s.fake.writes().length;
+    await s.p.verifyToken("refuse");
+    expect(s.fake.writes().length).toBe(w);
+    s.fake.tokenInfo.expires_on = new Date(NOW + 2 * 86_400_000).toISOString();
+    const p = s.mk();
+    const near = await fails(p.verifyToken("refuse"));
+    expect(near.message).toMatch(/within 5 days/);
+    // #882: terminal (3.5, 5.7), not a retryable token_invalid.
+    expect(near).not.toBeInstanceOf(ProvisionRetry);
+    expect(provisionErrorCode(near)).toBe("invalid_state");
+    const q = s.mk();
+    await q.verifyToken("warn");
+    expect(q.notes.join("\n")).toMatch(/WARNING/);
+    s.fake.tokenInfo.status = "disabled";
+    const inactive = await fails(s.mk().verifyToken("warn"));
+    expect(inactive.message).toMatch(/not active/);
+    expect(inactive).toBeInstanceOf(ProvisionRetry);
+    expect(inactive.code).toBe("token_invalid");
+  });
+
+  it("an actor audit row lands in hosted_audit.actor, and the table refuses UPDATE and DELETE", async () => {
+    const s = setup();
+    const { PlatformDb } = await import("../src/platform.js");
+    const pdb = new PlatformDb(
+      s.cfWith(),
+      { id: s.pdb, name: platformNames("staging").db },
+      "staging",
+      () => NOW,
+    );
+    await pdb.auditAs("ops@example.com", "-", "cli.status.start", {
+      cmd: "status",
+    });
+    const rows = s
+      .db()
+      .prepare("SELECT actor, install_id, action FROM hosted_audit")
+      .all();
+    expect(rows).toEqual([
+      { actor: "ops@example.com", install_id: "-", action: "cli.status.start" },
+    ]);
+    expect(() =>
+      s.db().prepare("UPDATE hosted_audit SET action = 'x'").run(),
+    ).toThrow(/append-only/);
+    expect(() => s.db().prepare("DELETE FROM hosted_audit").run()).toThrow(
+      /append-only/,
+    );
+  });
+});
+
+describe("P1 Task 8: domains", () => {
+  it("DOMAINS[env] equals the decided suffixes", () => {
+    expect(HOSTED_DOMAINS).toEqual({
+      staging: {
+        app: "open-artifacts-staging.app",
+        content: "open-artifacts-staging.page",
+      },
+      prod: { app: "open-artifacts.app", content: "open-artifacts.page" },
+    });
+  });
+});
+
+describe("fix round 2 (T8 review M1, M2): the broker URL and google", () => {
+  const GOOGLE = { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test" };
+  const brokerUrlOf = (s: S, id: string) =>
+    (
+      (s.scriptOf(id)?.metadata.bindings ?? []) as {
+        name: string;
+        text?: string;
+      }[]
+    ).find((b) => b.name === "AUTH_BROKER_URL")?.text;
+
+  it.each([["staging", "https://auth.open-artifacts-staging.app"]] as const)(
+    "with the broker on, %s create renders AUTH_BROKER_URL as %s",
+    async (env, want) => {
+      const s = setup({ env });
+      const p = s.mk({ brokerEnabled: true });
+      const inst = keep(await p.create(input("finqore", { vars: GOOGLE })));
+      expect(brokerUrlOf(s, inst.id)).toBe(want);
+      // The same value from the caller is accepted.
+      const q = s.mk({ brokerEnabled: true });
+      const b = keep(
+        await q.create(
+          input("acme", { vars: { ...GOOGLE, AUTH_BROKER_URL: want } }),
+        ),
+      );
+      expect(brokerUrlOf(s, b.id)).toBe(want);
+    },
+  );
+
+  it.each([
+    ["the other env's broker", "https://auth.open-artifacts.app"],
+    ["a lookalike host", "https://auth.open-artifacts-staging.app.evil.test"],
+    ["a path", "https://auth.open-artifacts-staging.app/x"],
+  ])(
+    "a caller AUTH_BROKER_URL of %s is refused before any write, naming the expected value",
+    async (_n, url) => {
+      const s = setup();
+      const w = s.fake.writes().length;
+      const e = await fails(
+        s
+          .mk({ brokerEnabled: true })
+          .create(
+            input("finqore", { vars: { ...GOOGLE, AUTH_BROKER_URL: url } }),
+          ),
+      );
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toContain("https://auth.open-artifacts-staging.app");
+      expect(s.fake.writes().length).toBe(w);
+    },
+  );
+
+  it("a google create with the broker off is refused before any write", async () => {
+    const s = setup();
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.mk({ brokerEnabled: false }).create(input("finqore", { vars: GOOGLE })),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/broker/);
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("update-vars refuses a mismatching AUTH_BROKER_URL before any write", async () => {
+    const s = setup();
+    const p = s.mk({ brokerEnabled: true });
+    const inst = keep(await p.create(input("finqore", { vars: GOOGLE })));
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).updateVars(inst.id, {
+        ...GOOGLE,
+        AUTH_BROKER_URL: "https://auth.open-artifacts.app",
+      }),
+    );
+    expect(e.message).toContain("https://auth.open-artifacts-staging.app");
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("turning google on for an install with no broker key is refused before any write, and no session is cut", async () => {
+    const s = setup();
+    const inst = keep(
+      await s
+        .mk({ brokerEnabled: false })
+        .create(input("finqore", { vars: CODES })),
+    );
+    expect(s.row(inst.id).broker_kid).toBeNull();
+    const epoch = epochOf(s, inst.id);
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).updateVars(inst.id, {
+        ...CODES,
+        AUTH_PROVIDERS: "email,google",
+        AUTH_DOMAINS: "finqore.test",
+      }),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/broker key is only issued at create/);
+    expect(s.fake.writes().length).toBe(w);
+    expect(epoch()).toBe(0);
+    expect(s.row(inst.id)).toMatchObject({ session_cut: null, lease: null });
+  });
+});
+
+describe("fix round 3 (T8): the env's broker Google client id", () => {
+  const GOOGLE = { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test" };
+  const BROKER_WRANGLER = readFileSync(
+    new URL("apps/auth-broker/wrangler.jsonc", ROOT),
+    "utf8",
+  );
+  // The broker's own staging client, read from its config so the two can't drift.
+  const STAGING_CLIENT = JSON.parse(
+    BROKER_WRANGLER.replace(/^\s*\/\/.*$/gm, "").replace(/,(\s*[}\]])/g, "$1"),
+  ).env.staging.vars.GOOGLE_CLIENT_ID as string;
+  const plainOf = (s: S, id: string, name: string) =>
+    (
+      (s.scriptOf(id)?.metadata.bindings ?? []) as {
+        name: string;
+        type: string;
+        text?: string;
+      }[]
+    ).find((b) => b.name === name);
+
+  it("the pinned staging client is the broker's", () => {
+    expect(STAGING_CLIENT).toBe(
+      "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
+    );
+    expect(BROKER_GOOGLE_CLIENT_ID.staging).toBe(STAGING_CLIENT);
+    expect(BROKER_GOOGLE_CLIENT_ID.prod).toBe(
+      "206295999771-ntbp6nlf5ospa45ovc73aur4f05fpp5s.apps.googleusercontent.com",
+    );
+  });
+
+  it("with the broker on, a staging create renders GOOGLE_CLIENT_ID as the broker's client; the same caller value is accepted", async () => {
+    const s = setup();
+    const a = keep(
+      await s
+        .mk({ brokerEnabled: true })
+        .create(input("finqore", { vars: GOOGLE })),
+    );
+    expect(plainOf(s, a.id, "GOOGLE_CLIENT_ID")).toMatchObject({
+      type: "plain_text",
+      text: STAGING_CLIENT,
+    });
+    const b = keep(
+      await s.mk({ brokerEnabled: true }).create(
+        input("acme", {
+          vars: { ...GOOGLE, GOOGLE_CLIENT_ID: STAGING_CLIENT },
+        }),
+      ),
+    );
+    expect(plainOf(s, b.id, "GOOGLE_CLIENT_ID")?.text).toBe(STAGING_CLIENT);
+  });
+
+  it("a caller GOOGLE_CLIENT_ID that differs is refused before any write, at create and updateVars", async () => {
+    const s = setup();
+    const other = "999-other.apps.googleusercontent.com";
+    let w = s.fake.writes().length;
+    const e = await fails(
+      s
+        .mk({ brokerEnabled: true })
+        .create(
+          input("finqore", { vars: { ...GOOGLE, GOOGLE_CLIENT_ID: other } }),
+        ),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toContain(STAGING_CLIENT);
+    expect(s.fake.writes().length).toBe(w);
+    const inst = keep(
+      await s
+        .mk({ brokerEnabled: true })
+        .create(input("acme", { vars: GOOGLE })),
+    );
+    w = s.fake.writes().length;
+    const u = await fails(
+      s
+        .mk({ brokerEnabled: true })
+        .updateVars(inst.id, { ...GOOGLE, GOOGLE_CLIENT_ID: other }),
+    );
+    expect(u.message).toContain(STAGING_CLIENT);
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("with the broker on, a prod create renders GOOGLE_CLIENT_ID as prod's broker client, never staging's", async () => {
+    const s = setup({ env: "prod" });
+    const inst = keep(
+      await s
+        .mk({ brokerEnabled: true })
+        .create(input("leo", { vars: GOOGLE })),
+    );
+    expect(plainOf(s, inst.id, "GOOGLE_CLIENT_ID")).toMatchObject({
+      type: "plain_text",
+      text: BROKER_GOOGLE_CLIENT_ID.prod,
+    });
+    expect(plainOf(s, inst.id, "AUTH_BROKER_URL")?.text).toBe(
+      "https://auth.open-artifacts.app",
+    );
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).create(
+        input("acme", {
+          vars: { ...GOOGLE, GOOGLE_CLIENT_ID: STAGING_CLIENT },
+        }),
+      ),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toContain(BROKER_GOOGLE_CLIENT_ID.prod as string);
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("GOOGLE_CLIENT_SECRET is never rendered, and a caller one is refused before any write", async () => {
+    const s = setup();
+    const inst = keep(
+      await s
+        .mk({ brokerEnabled: true })
+        .create(input("finqore", { vars: GOOGLE })),
+    );
+    expect(plainOf(s, inst.id, "GOOGLE_CLIENT_SECRET")).toBeUndefined();
+    expect(s.scriptOf(inst.id)?.secrets.has("GOOGLE_CLIENT_SECRET")).toBe(
+      false,
+    );
+    for (const p of [
+      s.mk({ brokerEnabled: true }),
+      s.mk({ brokerEnabled: false }),
+    ]) {
+      const w = s.fake.writes().length;
+      const e = await fails(
+        p.create(
+          input("acme", { vars: { GOOGLE_CLIENT_SECRET: "GOCSPX-shh" } }),
+        ),
+      );
+      expect(e.message).toMatch(/GOOGLE_CLIENT_SECRET/);
+      expect(s.fake.writes().length).toBe(w);
+    }
+  });
+});
+
+describe("fix round 4 (T8): every server precondition for hosted google", () => {
+  const GOOGLE = { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test" };
+  const STAGING_CLIENT = BROKER_GOOGLE_CLIENT_ID.staging as string;
+  const regEntry = (s: S, id: string) =>
+    s.fake.kvValues(s.regId).get(registryKey(id));
+
+  // An empty or separator-only AUTH_DOMAINS was already refused by its
+  // HOSTED_VARS list check; an absent one reached the server until M3.
+  it.each([
+    [
+      "no AUTH_DOMAINS",
+      { AUTH_PROVIDERS: "google" },
+      /google needs AUTH_DOMAINS/,
+    ],
+    [
+      "no AUTH_DOMAINS (email, google)",
+      { AUTH_PROVIDERS: "email, google" },
+      /google needs AUTH_DOMAINS/,
+    ],
+    [
+      "an empty AUTH_DOMAINS",
+      { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "" },
+      /AUTH_DOMAINS/,
+    ],
+    [
+      "only separators",
+      { AUTH_PROVIDERS: "google", AUTH_DOMAINS: " , ," },
+      /AUTH_DOMAINS/,
+    ],
+  ])(
+    "M3: a google create with %s is refused before any write (no entry, no key)",
+    async (_n, vars, why) => {
+      const s = setup();
+      const w = s.fake.writes().length;
+      const e = await fails(s.p.create(input("finqore", { vars })));
+      expect(e.message).toMatch(why);
+      expect(s.fake.writes().length).toBe(w);
+      expect([...s.fake.kvValues(s.regId).keys()]).toEqual([]);
+      expect(s.fake.scripts.size).toBe(0);
+    },
+  );
+
+  it.each([
+    [
+      "keeps google and drops AUTH_DOMAINS",
+      { AUTH_PROVIDERS: "google" },
+      /google needs AUTH_DOMAINS/,
+    ],
+    [
+      "keeps google and empties AUTH_DOMAINS",
+      { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "" },
+      /AUTH_DOMAINS/,
+    ],
+  ])(
+    "M3: an update-vars that %s is refused before any write, with no session cut",
+    async (_n, next, why) => {
+      const s = setup();
+      const inst = keep(await s.p.create(input("finqore", { vars: GOOGLE })));
+      const before = regEntry(s, inst.id);
+      const epoch = epochOf(s, inst.id);
+      const w = s.fake.writes().length;
+      const e = await fails(s.p.updateVars(inst.id, next));
+      expect(e.message).toMatch(why);
+      expect(s.fake.writes().length).toBe(w);
+      expect(regEntry(s, inst.id)).toBe(before);
+      expect(epoch()).toBe(0);
+      expect(s.row(inst.id)).toMatchObject({ session_cut: null, lease: null });
+    },
+  );
+
+  it("M3: an update-vars that adds google with no AUTH_DOMAINS is refused before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.p.updateVars(inst.id, { ...CODES, AUTH_PROVIDERS: "email,google" }),
+    );
+    expect(e.message).toMatch(/google needs AUTH_DOMAINS/);
+    expect(s.fake.writes().length).toBe(w);
+    expect(s.row(inst.id).session_cut).toBeNull();
+  });
+
+  // apps/server/src/auth/config.ts googleConfig, precondition by precondition:
+  // each is either rendered by provision (removing it from the rendered env
+  // makes the server refuse google) or refused by provision before any write.
+  type Server = {
+    authConfig(env: Record<string, unknown>): {
+      google: {
+        clientId: string;
+        transport: { kind: string; url?: string };
+      } | null;
+      problems: string[];
+    };
+  };
+  const server = async (): Promise<Server> =>
+    (await import(
+      /* @vite-ignore */ new URL("apps/server/src/auth/config.ts", ROOT).href
+    )) as Server;
+  const renderedEnv = (s: S, id: string) => {
+    const sc = s.scriptOf(id);
+    const env: Record<string, unknown> = {};
+    for (const b of (sc?.metadata.bindings ?? []) as {
+      name: string;
+      type: string;
+      text?: string;
+    }[])
+      if (b.type === "plain_text") env[b.name] = b.text;
+    for (const [k, v] of sc?.secrets ?? []) env[k] = v;
+    return env;
+  };
+
+  const RENDERED: [string, string, RegExp][] = [
+    ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID", /GOOGLE_CLIENT_ID isn't set/],
+    [
+      "HOSTED=1 needs the broker transport",
+      "AUTH_BROKER_URL",
+      /needs the broker transport/,
+    ],
+    ["INSTALL_ID", "INSTALL_ID", /INSTALL_ID isn't set/],
+    [
+      "BROKER_SIGNING_KEY (PKCS#8 Ed25519)",
+      "BROKER_SIGNING_KEY",
+      /BROKER_SIGNING_KEY isn't/,
+    ],
+    ["AUTH_DOMAINS non-empty", "AUTH_DOMAINS", /AUTH_DOMAINS is empty/],
+  ];
+  it.each(RENDERED)(
+    "rendered by provision: %s (without %s the server refuses google)",
+    async (_n, key, why) => {
+      const s = setup();
+      const inst = keep(await s.p.create(input("finqore", { vars: GOOGLE })));
+      const { authConfig } = await server();
+      const env = renderedEnv(s, inst.id);
+      const ok = authConfig({ ...env });
+      expect(ok.problems).toEqual([]);
+      expect(ok.google).toEqual({
+        clientId: STAGING_CLIENT,
+        transport: expect.objectContaining({
+          kind: "broker",
+          url: "https://auth.open-artifacts-staging.app",
+        }),
+      });
+      expect(env.HOSTED).toBe("1");
+      expect(env.GOOGLE_CLIENT_SECRET).toBeUndefined();
+      const { [key]: _gone, ...without } = env;
+      const bad = authConfig(without);
+      expect(bad.google).toBeNull();
+      expect(bad.problems.join("\n")).toMatch(why);
+    },
+  );
+
+  // Review item 6: on HOSTED=1 the server's directory transport is "none"
+  // unless DIRECTORY_BROKER_URL is set. Provision renders it with the broker,
+  // so a hosted google install resolves to the broker transport.
+  it("the rendered env resolves the server's directory transport to the env's directory broker", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: GOOGLE })));
+    const env = renderedEnv(s, inst.id);
+    expect(env.DIRECTORY_BROKER_URL).toBe(
+      "https://directory.open-artifacts-staging.app",
+    );
+    const { directoryTransport, HOSTED_NEEDS_BROKER } = (await import(
+      /* @vite-ignore */ new URL("apps/server/src/directory/transport.ts", ROOT)
+        .href
+    )) as {
+      directoryTransport(env: Record<string, unknown>): {
+        kind: string;
+        brokerUrl?: string;
+        installId?: string;
+        problem?: string;
+      };
+      HOSTED_NEEDS_BROKER: string;
+    };
+    expect(directoryTransport({ ...env })).toMatchObject({
+      kind: "broker",
+      brokerUrl: "https://directory.open-artifacts-staging.app",
+      installId: inst.id,
+    });
+    // Without it (every hosted install before this fix): none, by design.
+    const { DIRECTORY_BROKER_URL: _gone, ...without } = env;
+    expect(directoryTransport(without)).toEqual({
+      kind: "none",
+      problem: HOSTED_NEEDS_BROKER,
+    });
+  });
+
+  it.each([
+    [
+      "the other env's directory broker",
+      "https://directory.open-artifacts.app",
+    ],
+    ["the sign-in broker", "https://auth.open-artifacts-staging.app"],
+    [
+      "a lookalike host",
+      "https://directory.open-artifacts-staging.app.evil.test",
+    ],
+  ])(
+    "a caller DIRECTORY_BROKER_URL of %s is refused before any write, naming the expected value",
+    async (_n, url) => {
+      const s = setup();
+      const w = s.fake.writes().length;
+      const e = await fails(
+        s.mk({ brokerEnabled: true }).create(
+          input("finqore", {
+            vars: { ...GOOGLE, DIRECTORY_BROKER_URL: url },
+          }),
+        ),
+      );
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toContain(
+        "https://directory.open-artifacts-staging.app",
+      );
+      expect(s.fake.writes().length).toBe(w);
+    },
+  );
+
+  it("upgrade adds DIRECTORY_BROKER_URL to an install created before it (re-render, no refusal)", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: GOOGLE })));
+    s.db()
+      .prepare("UPDATE installs SET vars = ? WHERE id = ?")
+      .run(canonicalJson(GOOGLE), inst.id);
+    const up = keep(await s.mk().upgrade(inst.id, "0.24.0"));
+    expect(up.ok).toBe(true);
+    expect(renderedEnv(s, inst.id).DIRECTORY_BROKER_URL).toBe(
+      "https://directory.open-artifacts-staging.app",
+    );
+  });
+
+  const REFUSED: [string, Record<string, string>, RegExp][] = [
+    [
+      "AUTH_DOMAINS empty",
+      { AUTH_PROVIDERS: "google" },
+      /google needs AUTH_DOMAINS/,
+    ],
+    [
+      "an invalid AUTH_DOMAINS entry",
+      { ...GOOGLE, AUTH_DOMAINS: "finqore.test,not a domain" },
+      /AUTH_DOMAINS/,
+    ],
+    [
+      "AUTH_BROKER_URL not the env's broker",
+      { ...GOOGLE, AUTH_BROKER_URL: "http://auth.open-artifacts-staging.app" },
+      /AUTH_BROKER_URL/,
+    ],
+    [
+      "GOOGLE_CLIENT_ID not the broker's",
+      { ...GOOGLE, GOOGLE_CLIENT_ID: "1-x.apps.googleusercontent.com" },
+      /GOOGLE_CLIENT_ID must be/,
+    ],
+    [
+      "the direct transport (GOOGLE_CLIENT_SECRET)",
+      { ...GOOGLE, GOOGLE_CLIENT_SECRET: "GOCSPX-x" },
+      /GOOGLE_CLIENT_SECRET/,
+    ],
+    [
+      "AUTH_DOMAIN_JOIN=member",
+      { ...GOOGLE, AUTH_DOMAIN_JOIN: "member" },
+      /invite/,
+    ],
+  ];
+  it.each(REFUSED)(
+    "refused by provision before any write: %s",
+    async (_n, vars, why) => {
+      const s = setup();
+      const w = s.fake.writes().length;
+      const e = await fails(s.p.create(input("finqore", { vars })));
+      expect(e.message).toMatch(why);
+      expect(s.fake.writes().length).toBe(w);
+    },
+  );
+
+  it("L7: upgrade and rollback re-render a stale stored broker URL or client id, never refuse on it", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: GOOGLE })));
+    const stale = {
+      ...GOOGLE,
+      AUTH_BROKER_URL: "https://auth.old.example",
+      GOOGLE_CLIENT_ID: "1-old.apps.googleusercontent.com",
+    };
+    s.db()
+      .prepare("UPDATE installs SET vars = ? WHERE id = ?")
+      .run(canonicalJson(stale), inst.id);
+    const up = keep(await s.mk().upgrade(inst.id, "0.24.0"));
+    expect(up.ok).toBe(true);
+    const env = renderedEnv(s, inst.id);
+    expect(env.AUTH_BROKER_URL).toBe("https://auth.open-artifacts-staging.app");
+    expect(env.GOOGLE_CLIENT_ID).toBe(STAGING_CLIENT);
+    const p = s.mk();
+    const rb = keep(await p.rollback(inst.id));
+    expect(rb).toMatchObject({ ok: true, rolledBack: true });
+    expect(renderedEnv(s, inst.id).GOOGLE_CLIENT_ID).toBe(STAGING_CLIENT);
+  });
+});
+
+// A done is fresh: confirmed at this attempt's start (M1b).
+const setRevoke = (s: S, id: string, v: string) =>
+  s
+    .db()
+    .prepare(
+      "UPDATE installs SET directory_revoke = ?1, directory_revoked_at = CASE WHEN ?1 = 'done' THEN directory_revoke_requested_at ELSE directory_revoked_at END WHERE id = ?2",
+    )
+    .run(v, id);
+
+describe("H-DV: delete revokes the directory grant first", () => {
+  const POLL_MS = 15_000;
+  const revokeRow = (s: S, id: string) =>
+    s
+      .db()
+      .prepare(
+        "SELECT state, directory_revoke, directory_revoked_at, directory_revoke_attempts, directory_revoke_requested_at, lease FROM installs WHERE id = ?",
+      )
+      .get(id) as {
+      state: string;
+      directory_revoke: string | null;
+      directory_revoked_at: number | null;
+      directory_revoke_attempts: number;
+      directory_revoke_requested_at: number | null;
+      lease: string | null;
+    };
+
+  it("phase 1 marks the row deleting + pending, unmaps the hosts and drops the lease; phase 2 waits, then tears down", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const seen: unknown[] = [];
+    s.fake.revoker = (_db, id) => {
+      seen.push({
+        ...revokeRow(s, id),
+        mapped: [inst.appHost, inst.contentHost].filter((h) =>
+          s.fake.kvValues(s.hostsId).has(h),
+        ),
+        script: s.scriptOf(id) !== undefined,
+      });
+      if (seen.length === 3) setRevoke(s, id, "done");
+    };
+    const t0 = s.clock.now();
+    const r = keep(await s.p.delete(inst.id, inst.id));
+    expect(r).toEqual({ id: inst.id, ok: true, state: "deleted" });
+    expect(seen[0]).toEqual({
+      state: "deleting",
+      directory_revoke: "pending",
+      directory_revoked_at: null,
+      directory_revoke_attempts: 0,
+      directory_revoke_requested_at: expect.any(Number),
+      lease: null,
+      // M1a: unmapped before any revoke resolves (the job needs no HOSTS).
+      mapped: [],
+      script: true,
+    });
+    expect(seen).toHaveLength(3);
+    // Polled every 15 s on the injected clock.
+    expect(s.clock.now() - t0).toBeGreaterThanOrEqual(2 * POLL_MS);
+    expect(s.fake.kvValues(s.hostsId).has(inst.appHost)).toBe(false);
+    expect(s.scriptOf(inst.id)).toBeUndefined();
+    const a = s.audit(inst.id);
+    expect(a.indexOf("delete.revoke_pending")).toBeLessThan(
+      a.indexOf("delete.done"),
+    );
+  });
+
+  it("M2: an unsupported revoke refuses (it never tears down) and names the skip flag", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "unsupported");
+    const e = await fails(s.p.delete(inst.id, inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toBe(
+      `install ${inst.id} is below ${REVOKE_MIN_VERSION} and can't confirm the Google revoke; upgrade it or pass --skip-directory-revoke <reason>`,
+    );
+    expect(revokeRow(s, inst.id).state).toBe("deleting");
+    expect(s.scriptOf(inst.id)).toBeDefined();
+    expect(s.audit(inst.id)).not.toContain("delete.done");
+  });
+
+  it("times out after 10 minutes with the row left deleting, then a rerun resumes at phase 2", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let polls = 0;
+    s.fake.revoker = () => {
+      polls++;
+    };
+    const t0 = s.clock.now();
+    const e = await fails(s.p.delete(inst.id, inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(
+      /still pending after 10 minutes; rerun delete to resume/,
+    );
+    expect(e).toBeInstanceOf(ProvisionRetry);
+    expect(e.code).toBe("revoke_pending");
+    expect(s.clock.now() - t0).toBeGreaterThanOrEqual(10 * 60_000);
+    expect(polls).toBe(41);
+    expect(revokeRow(s, inst.id)).toMatchObject({
+      state: "deleting",
+      directory_revoke: "pending",
+      lease: null,
+    });
+    expect(s.scriptOf(inst.id)).toBeDefined();
+    expect(s.fake.kvValues(s.hostsId).has(inst.appHost)).toBe(false);
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "done");
+    expect(keep(await s.mk().delete(inst.id, inst.id)).state).toBe("deleted");
+    // M1b: each attempt records its own start.
+    expect(
+      s.audit(inst.id).filter((x) => x === "delete.revoke_pending"),
+    ).toHaveLength(2);
+  });
+
+  it("a failed revoke refuses, leaving the row deleting and everything in place", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "failed");
+    const e = await fails(s.p.delete(inst.id, inst.id));
+    expect(e.message).toMatch(/directory revoke failed/);
+    expect(e.message).toMatch(/--skip-directory-revoke/);
+    // 5.6: a failed revoke needs an admin; never an automatic retry.
+    expect(provisionErrorCode(e)).toBe("invalid_state");
+    expect(revokeRow(s, inst.id).state).toBe("deleting");
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("skipDirectoryRevoke needs a reason, records it, says the grant stays live, and tears down without waiting", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let polls = 0;
+    s.fake.revoker = () => {
+      polls++;
+    };
+    for (const bad of ["", "   ", "mail ops@example.com", "x".repeat(201)]) {
+      const w = s.fake.writes().length;
+      const e = await fails(
+        s.mk().delete(inst.id, inst.id, { skipDirectoryRevoke: bad }),
+      );
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(s.fake.writes().length).toBe(w);
+    }
+    const p = s.mk();
+    const r = keep(
+      await p.delete(inst.id, inst.id, {
+        skipDirectoryRevoke: "customer Google tenant closed",
+      }),
+    );
+    expect(r.state).toBe("deleted");
+    expect(polls).toBe(0);
+    expect(revokeRow(s, inst.id).directory_revoke).toBe("skipped");
+    expect(p.notes).toContain(DIRECTORY_REVOKE_SKIPPED_NOTE);
+    expect(DIRECTORY_REVOKE_SKIPPED_NOTE).toMatch(
+      /^the Google grant stays live; revoke it in the customer's Google Admin console: Security > Access and data control > API controls > /,
+    );
+    const row = s
+      .db()
+      .prepare(
+        "SELECT detail FROM hosted_audit WHERE install_id = ? AND action = 'delete.revoke_skipped'",
+      )
+      .get(inst.id) as { detail: string };
+    expect(JSON.parse(row.detail)).toEqual({
+      reason: "customer Google tenant closed",
+    });
+  });
+
+  it("a rerun with skipDirectoryRevoke while pending skips and tears down", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = null;
+    await fails(s.p.delete(inst.id, inst.id));
+    const r = keep(
+      await s
+        .mk()
+        .delete(inst.id, inst.id, { skipDirectoryRevoke: "broker down" }),
+    );
+    expect(r.state).toBe("deleted");
+    expect(revokeRow(s, inst.id).directory_revoke).toBe("skipped");
+  });
+
+  it("onPoll reports each poll; status shows the revoke state", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let n = 0;
+    s.fake.revoker = (_db, id) => {
+      if (++n === 2) {
+        s.db()
+          .prepare(
+            "UPDATE installs SET directory_revoke_attempts = 1 WHERE id = ?",
+          )
+          .run(id);
+      }
+      if (n === 3) setRevoke(s, id, "done");
+    };
+    const polls: {
+      state: string | null;
+      attempts: number;
+      waitedMs: number;
+    }[] = [];
+    let mid: unknown;
+    await s.p.delete(inst.id, inst.id, {
+      onPoll: async (p) => {
+        polls.push(p);
+        if (polls.length === 2)
+          mid = (await s.mk().status(inst.id)).directoryRevoke;
+      },
+    });
+    expect(polls.map((p) => p.state)).toEqual(["pending", "pending", "done"]);
+    expect(polls.map((p) => p.waitedMs)).toEqual([0, POLL_MS, 2 * POLL_MS]);
+    expect(polls[1]?.attempts).toBe(1);
+    expect(mid).toEqual({ state: "pending", attempts: 1, revokedAt: null });
+  });
+});
+
+describe("H-DV fix 2: delete unmaps first and needs a fresh confirmed revoke", () => {
+  const row = (s: S, id: string) =>
+    s
+      .db()
+      .prepare(
+        "SELECT state, directory_revoke, directory_revoked_at, directory_revoke_requested_at, directory_revoke_attempts FROM installs WHERE id = ?",
+      )
+      .get(id) as {
+      state: string;
+      directory_revoke: string | null;
+      directory_revoked_at: number | null;
+      directory_revoke_requested_at: number | null;
+      directory_revoke_attempts: number;
+    };
+  const mapped = (s: S, i: { appHost: string; contentHost: string }) =>
+    [i.appHost, i.contentHost].filter((h) => s.fake.kvValues(s.hostsId).has(h));
+  const pendingAudits = (s: S, id: string) =>
+    s.audit(id).filter((x) => x === "delete.revoke_pending").length;
+
+  it("M1a: after phase 1, before any revoke resolves, no HOSTS key maps to the install", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    expect(mapped(s, inst)).toHaveLength(2);
+    const seen: string[][] = [];
+    s.fake.revoker = () => {
+      seen.push(mapped(s, inst));
+    };
+    await fails(s.p.delete(inst.id, inst.id));
+    expect(seen.length).toBeGreaterThan(0);
+    for (const m of seen) expect(m).toEqual([]);
+    expect(row(s, inst.id).directory_revoke).toBe("pending");
+  });
+
+  it("ordering: the DIRECTORY_REGISTRY entry stays until the revoke is done, and goes only after", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const inDir = () => s.fake.kvValues(s.dirId).has(registryKey(inst.id));
+    expect(inDir()).toBe(true);
+    const seen: boolean[] = [];
+    let n = 0;
+    s.fake.revoker = (_db, id) => {
+      // The broker's /revoke resolves the install through this entry.
+      seen.push(inDir());
+      if (++n === 3) setRevoke(s, id, "done");
+    };
+    expect(keep(await s.p.delete(inst.id, inst.id)).state).toBe("deleted");
+    expect(seen).toEqual([true, true, true]);
+    expect(inDir()).toBe(false);
+  });
+
+  it("ordering: a failed or still-pending revoke never removes the DIRECTORY_REGISTRY entry", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const inDir = () => s.fake.kvValues(s.dirId).has(registryKey(inst.id));
+    s.fake.revoker = null;
+    await fails(s.p.delete(inst.id, inst.id));
+    expect(row(s, inst.id).directory_revoke).toBe("pending");
+    expect(inDir()).toBe(true);
+    setRevoke(s, inst.id, "failed");
+    await fails(s.mk().delete(inst.id, inst.id));
+    expect(inDir()).toBe(true);
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("M1b: a stale done from an earlier attempt does not unlock teardown", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'deleting', directory_revoke = 'done', directory_revoke_requested_at = 1000, directory_revoked_at = 500 WHERE id = ?",
+      )
+      .run(inst.id);
+    s.fake.revoker = null;
+    const e = await fails(s.mk().delete(inst.id, inst.id));
+    expect(e.message).toMatch(/still pending/);
+    const r = row(s, inst.id);
+    expect(r.directory_revoke).toBe("pending");
+    expect(r.directory_revoke_requested_at).toBeGreaterThan(1000);
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("M1b: a done newer than the attempt's start unlocks teardown, with no new attempt", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'deleting', directory_revoke = 'done', directory_revoke_requested_at = 1000, directory_revoked_at = 1001 WHERE id = ?",
+      )
+      .run(inst.id);
+    s.fake.revoker = null;
+    expect(keep(await s.mk().delete(inst.id, inst.id)).state).toBe("deleted");
+    expect(pendingAudits(s, inst.id)).toBe(0);
+  });
+
+  it("M1b: a stale done seen on a poll re-dispatches (pending) and waits for a fresh one", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const states: (string | null)[] = [];
+    let n = 0;
+    s.fake.revoker = (db, id) => {
+      states.push(row(s, id).directory_revoke);
+      n++;
+      if (n === 1)
+        db.prepare(
+          "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = directory_revoke_requested_at - 1 WHERE id = ?",
+        ).run(id);
+      if (n === 3) setRevoke(s, id, "done");
+    };
+    expect(keep(await s.p.delete(inst.id, inst.id)).state).toBe("deleted");
+    // The poll after the stale done finds it re-dispatched.
+    expect(states).toEqual(["pending", "pending", "pending"]);
+  });
+
+  it("M1b: teardown refuses and re-dispatches when the done is stale at its re-read", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "done");
+    let armed = true;
+    const p = s.mk({
+      cf: s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+        const res = await s.fake.fetch(u, init);
+        const body = init?.body ? String(init.body) : "";
+        if (armed && body.includes("SELECT directory_revoke")) {
+          armed = false;
+          s.db()
+            .prepare(
+              "UPDATE installs SET directory_revoked_at = directory_revoke_requested_at - 1 WHERE id = ?",
+            )
+            .run(inst.id);
+        }
+        return res;
+      }) as typeof fetch),
+    });
+    const e = await fails(p.delete(inst.id, inst.id));
+    expect(e.message).toMatch(/not confirmed for this attempt/);
+    expect(e).toBeInstanceOf(ProvisionRetry);
+    expect(provisionErrorCode(e)).toBe("revoke_pending");
+    expect(row(s, inst.id).directory_revoke).toBe("pending");
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("M2: a rerun after failed starts a fresh attempt (attempts reset, pending)", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (_db, id) => {
+      s.db()
+        .prepare(
+          "UPDATE installs SET directory_revoke = 'failed', directory_revoke_attempts = 5 WHERE id = ?",
+        )
+        .run(id);
+    };
+    const e = await fails(s.p.delete(inst.id, inst.id));
+    expect(e.message).toMatch(/directory revoke failed after 5 attempts/);
+    expect(provisionErrorCode(e)).toBe("invalid_state");
+    expect(e.message).toMatch(/--skip-directory-revoke/);
+    s.fake.revoker = null;
+    await fails(s.mk().delete(inst.id, inst.id));
+    expect(row(s, inst.id)).toMatchObject({
+      directory_revoke: "pending",
+      directory_revoke_attempts: 0,
+    });
+  });
+});
+
+describe("H-DV: a purged owner email ('') is never used as an address", () => {
+  const purge = (s: S, id: string) =>
+    s.db().prepare("UPDATE installs SET owner_email = '' WHERE id = ?").run(id);
+
+  it("isPurgedEmail and ownerEmailOf", () => {
+    expect(PURGED_EMAIL).toBe("");
+    expect(isPurgedEmail("")).toBe(true);
+    for (const v of ["o@x.test", null, undefined, " "])
+      expect(isPurgedEmail(v)).toBe(false);
+    expect(ownerEmailOf({ owner_email: "o@x.test" })).toBe("o@x.test");
+    expect(ownerEmailOf({ owner_email: "" })).toBeNull();
+    expect(ownerEmailOf({ owner_email: null })).toBeNull();
+  });
+
+  it.each([
+    ["upgrade", (p: WfpProvisioner, id: string) => p.upgrade(id, "0.24.0")],
+    [
+      "updateVars",
+      (p: WfpProvisioner, id: string) =>
+        p.updateVars(id, { EMAIL_DAILY_CAP: "5" }),
+    ],
+  ] as const)(
+    "%s on an install whose owner email is purged refuses before any write, and never renders it",
+    async (_n, op) => {
+      const s = setup();
+      const inst = keep(await s.p.create(input()));
+      purge(s, inst.id);
+      const ups = uploads(s.fake).length;
+      const w = s.fake.writes().length;
+      const e = await fails(op(s.mk(), inst.id));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(
+        new RegExp(`install ${inst.id}: the owner email is purged`),
+      );
+      expect(s.fake.writes().length).toBe(w);
+      expect(uploads(s.fake).length).toBe(ups);
+    },
+  );
+
+  it("a purged email never enters the redaction set (an error message stays readable)", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    purge(s, inst.id);
+    const e = await fails(s.mk().upgrade(inst.id, "0.24.0"));
+    expect(e.message).not.toContain("[redacted]");
+    expect(e.message).toContain("purged");
+  });
+
+  it("status says owner (purged) or (set), never the address", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const st = await s.p.status(inst.id);
+    expect(st.owner).toBe("(set)");
+    expect(JSON.stringify(st)).not.toContain(OWNER);
+    purge(s, inst.id);
+    expect((await s.mk().status(inst.id)).owner).toBe("(purged)");
+  });
+
+  it("delete of an install whose email is purged still tears down (it needs no address)", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    purge(s, inst.id);
+    expect(keep(await s.mk().delete(inst.id, inst.id)).state).toBe("deleted");
+  });
+});
+
+describe("H-DV review fixes", () => {
+  const failNext = (s: S, match: (body: string) => boolean) => {
+    let armed = true;
+    return s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(u, init);
+      const body = req.method === "POST" ? await req.clone().text() : "";
+      if (armed && match(body)) {
+        armed = false;
+        return Response.json(
+          { success: false, errors: [{ code: 7500, message: "boom" }] },
+          { status: 400 },
+        );
+      }
+      return s.fake.fetch(u, init);
+    }) as typeof fetch);
+  };
+  const revokeOf = (s: S, id: string) =>
+    (
+      s
+        .db()
+        .prepare("SELECT directory_revoke FROM installs WHERE id = ?")
+        .get(id) as {
+        directory_revoke: string | null;
+      }
+    ).directory_revoke;
+
+  it("M1: the skip reason is audited before the row says skipped; a failed audit leaves no skipped row, and a plain rerun never tears down", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = null;
+    const p = s.mk({
+      cf: failNext(s, (b) => b.includes("delete.revoke_skipped")),
+    });
+    await fails(
+      p.delete(inst.id, inst.id, { skipDirectoryRevoke: "tenant closed" }),
+    );
+    expect(revokeOf(s, inst.id)).not.toBe("skipped");
+    expect(s.audit(inst.id)).not.toContain("delete.revoke_skipped");
+    // A rerun without the flag waits for the revoke: it never tears down.
+    const e = await fails(s.mk().delete(inst.id, inst.id));
+    expect(e.message).toMatch(/still pending/);
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("M1: a skipped row with no recorded reason refuses until the flag is given again", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'deleting', directory_revoke = 'skipped' WHERE id = ?",
+      )
+      .run(inst.id);
+    const e = await fails(s.mk().delete(inst.id, inst.id));
+    expect(e.message).toMatch(
+      /skipped with no recorded reason; rerun with --skip-directory-revoke/,
+    );
+    expect(s.scriptOf(inst.id)).toBeDefined();
+    const r = keep(
+      await s
+        .mk()
+        .delete(inst.id, inst.id, { skipDirectoryRevoke: "tenant closed" }),
+    );
+    expect(r.state).toBe("deleted");
+    expect(s.audit(inst.id)).toContain("delete.revoke_skipped");
+  });
+
+  it("L6: skip from failed tears down; skip on an install already revoked prints no note and audits no reason", async () => {
+    const s = setup();
+    const a = keep(await s.p.create(input("alpha")));
+    s.fake.revoker = (db, id) => {
+      db.prepare(
+        "UPDATE installs SET directory_revoke = 'failed' WHERE id = ?",
+      ).run(id);
+    };
+    await fails(s.mk().delete(a.id, a.id));
+    const p = s.mk();
+    expect(
+      keep(
+        await p.delete(a.id, a.id, {
+          skipDirectoryRevoke: "grant revoked by hand",
+        }),
+      ).state,
+    ).toBe("deleted");
+    expect(p.notes).toContain(DIRECTORY_REVOKE_SKIPPED_NOTE);
+    const b = keep(await s.mk().create(input("beta")));
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "done");
+    // A done with no attempt start is stale: phase 1 runs (pending), the
+    // revoke lands, so the skip is moot.
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'deleting', directory_revoke = 'done' WHERE id = ?",
+      )
+      .run(b.id);
+    const q = s.mk();
+    expect(
+      keep(await q.delete(b.id, b.id, { skipDirectoryRevoke: "not needed" }))
+        .state,
+    ).toBe("deleted");
+    expect(q.notes).not.toContain(DIRECTORY_REVOKE_SKIPPED_NOTE);
+    expect(s.audit(b.id)).not.toContain("delete.revoke_skipped");
+  });
+
+  it("M2: unsupported, then skip with a reason, tears down with the audited note", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "unsupported");
+    await fails(s.p.delete(inst.id, inst.id));
+    const p = s.mk();
+    expect(
+      keep(
+        await p.delete(inst.id, inst.id, {
+          skipDirectoryRevoke: "old release",
+        }),
+      ).state,
+    ).toBe("deleted");
+    expect(s.audit(inst.id)).toContain("delete.revoke_skipped");
+    expect(p.notes).toContain(DIRECTORY_REVOKE_SKIPPED_NOTE);
+  });
+
+  it("nit: teardown rechecks that the revoke is settled", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    // The poll sees done, then the row flips back before the teardown re-read.
+    let n = 0;
+    s.fake.revoker = (_db, id) => {
+      if (++n === 1) setRevoke(s, id, "done");
+    };
+    const p = s.mk({
+      cf: s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+        const res = await s.fake.fetch(u, init);
+        const body = init?.body ? String(init.body) : "";
+        if (body.includes("SELECT directory_revoke"))
+          s.db()
+            .prepare(
+              "UPDATE installs SET directory_revoke = 'pending' WHERE id = ?",
+            )
+            .run(inst.id);
+        return res;
+      }) as typeof fetch),
+    });
+    const e = await fails(p.delete(inst.id, inst.id));
+    expect(e.message).toMatch(/no longer settled/);
+    expect(e).toBeInstanceOf(ProvisionRetry);
+    expect(provisionErrorCode(e)).toBe("revoke_pending");
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("L6: rollback on an install whose owner email is purged refuses before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    s.db()
+      .prepare("UPDATE installs SET owner_email = '' WHERE id = ?")
+      .run(inst.id);
+    const w = s.fake.writes().length;
+    const e = await fails(s.mk().rollback(inst.id));
+    expect(e.message).toMatch(/owner email is purged/);
+    expect(s.fake.writes().length).toBe(w);
+  });
+});
+
+describe("H-DV: the stored row a create writes (the scheduler's purge fixture)", () => {
+  // apps/scheduler/test/revoke.test.ts seeds install_versions and
+  // inputs_hash from this file, so its "nothing holds the email" check runs
+  // on what create really stores. Regenerate with UPDATE_FIXTURES=1.
+  const FIXTURE = new URL("./fixtures/stored-install.json", import.meta.url);
+  it("matches a fresh google create (ids normalized)", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(
+        input("finqore", {
+          vars: { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test" },
+        }),
+      ),
+    );
+    const row = s.row(inst.id);
+    const st = s.stored(inst.id, "0.23.0") as {
+      metadata: string;
+      vars: string;
+    };
+    const norm = (t: string) =>
+      t
+        .split(inst.id)
+        .join("{{INSTALL_ID}}")
+        .split(String(row.d1_id))
+        .join("{{D1_ID}}")
+        .split(String(row.kv_id))
+        .join("{{KV_ID}}");
+    const got = {
+      ownerEmail: OWNER,
+      inputsHash: row.inputs_hash,
+      version: "0.23.0",
+      vars: JSON.parse(norm(st.vars)),
+      metadata: JSON.parse(norm(st.metadata)),
+    };
+    // The stored copy holds no email, by construction.
+    expect(st.metadata + st.vars).not.toContain(OWNER);
+    if (process.env.UPDATE_FIXTURES === "1")
+      writeFileSync(FIXTURE, `${JSON.stringify(got, null, 2)}\n`);
+    expect(JSON.parse(readFileSync(FIXTURE, "utf8"))).toEqual(got);
+  });
+});
+
+describe("Turnstile test keys (red-line installs only)", () => {
+  const RL_VARS = { ...HOOK_VARS, ...CODES };
+  const siteKeyOf = (meta: { bindings: { name: string; text?: string }[] }) =>
+    meta.bindings.find((b) => b.name === "TURNSTILE_SITE_KEY")?.text;
+
+  it("are Cloudflare's always-pass pair", () => {
+    expect(TURNSTILE_TEST_KEYS).toEqual({
+      sitekey: "1x00000000000000000000AA",
+      secret: "1x0000000000000000000000000000000AA",
+    });
+  });
+
+  it("a test-hooks install with codes on gets the test pair, never the env widget", async () => {
+    const s = setup();
+    const from = s.fake.log.length;
+    const inst = keep(
+      await s.p.create(
+        input("rl-a", { testHooks: true, bundle: "redline", vars: RL_VARS }),
+      ),
+    );
+    const meta = metaOf(uploads(s.fake, from)[0]?.body as string);
+    expect(siteKeyOf(meta)).toBe(TURNSTILE_TEST_KEYS.sitekey);
+    expect(s.scriptOf(inst.id)?.secrets.get("TURNSTILE_SECRET")).toBe(
+      TURNSTILE_TEST_KEYS.secret,
+    );
+    expect(JSON.stringify(s.fake.raw)).not.toContain(TS.secret);
+    // No widget lookup: the test sitekey is not an account widget.
+    expect(
+      s.fake.log
+        .slice(from)
+        .some((l) => String(l.path).includes("/challenges/widgets/")),
+    ).toBe(false);
+  });
+
+  it("an install without test hooks refuses a test key as the env's widget, before any write", async () => {
+    for (const k of [
+      TURNSTILE_TEST_KEYS,
+      { sitekey: "2x00000000000000000000AB", secret: TS.secret },
+      { sitekey: TS.sitekey, secret: "3x0000000000000000000000000000000AA" },
+    ]) {
+      const s = setup();
+      const p = s.mk({ turnstile: k });
+      const n = s.fake.writes().length;
+      const e = await fails(p.create(input("acme", { vars: CODES })));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(/test Turnstile key/);
+      expect(s.fake.writes().length).toBe(n);
+    }
+  });
+
+  it("prod refuses a test key as its widget", async () => {
+    const s = setup({ env: "prod" });
+    const p = s.mk({ turnstile: TURNSTILE_TEST_KEYS });
+    const e = await fails(p.create(input("acme", { vars: CODES })));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/test Turnstile key/);
+  });
+
+  it("updateVars on a test-hooks install re-sends the test secret even when one is set, and renders the test sitekey", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(
+        input("rl-a", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
+      ),
+    );
+    // As on staging today: the env's real secret is already on the install.
+    s.scriptOf(inst.id)?.secrets.set("TURNSTILE_SECRET", TS.secret);
+    const from = s.fake.log.length;
+    keep(await s.p.updateVars(inst.id, RL_VARS));
+    const meta = metaOf(uploads(s.fake, from)[0]?.body as string);
+    expect(siteKeyOf(meta)).toBe(TURNSTILE_TEST_KEYS.sitekey);
+    expect(s.scriptOf(inst.id)?.secrets.get("TURNSTILE_SECRET")).toBe(
+      TURNSTILE_TEST_KEYS.secret,
+    );
+  });
+
+  it("rotation never touches a test-hooks install", async () => {
+    const s = setup();
+    const rl = keep(
+      await s.p.create(
+        input("rl-a", { testHooks: true, bundle: "redline", vars: RL_VARS }),
+      ),
+    );
+    const a = keep(await s.p.create(input("alpha", { vars: CODES })));
+    const p = s.mk({ turnstile: { sitekey: TS.sitekey, secret: TS_NEXT } });
+    const out = keep(await p.rotateTurnstileSecret("staging"));
+    const byId = Object.fromEntries(out.map((x) => [x.id, x]));
+    expect(byId[rl.id]).toMatchObject({ ok: true, rotated: false });
+    expect(byId[a.id]).toMatchObject({ ok: true, rotated: true });
+    expect(s.scriptOf(rl.id)?.secrets.get("TURNSTILE_SECRET")).toBe(
+      TURNSTILE_TEST_KEYS.secret,
+    );
+  });
+});
+
+describe("reissueOwnerToken", () => {
+  const patPath = (s: ReturnType<typeof setup>, appHost: string) =>
+    join(s.patDir, `${appHost}-pat-token`);
+
+  it("mints a fresh provision PAT under the lease, writes it 0600, and retires the earlier provision ones only", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const idb = s.installDb(inst.id);
+    // A token the owner made by hand stays; the revoked provision one is the old state.
+    idb
+      .prepare(
+        "INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT 'tmine', id, 'my laptop', 'h', 1 FROM users WHERE role = 'owner'",
+      )
+      .run();
+    idb
+      .prepare("UPDATE tokens SET revoked_at = 1 WHERE label = 'provision'")
+      .run();
+    rmSync(patPath(s, inst.appHost));
+    const r = keep(await s.p.reissueOwnerToken(inst.id, inst.id));
+    expect(r).toEqual({ id: inst.id, patFile: patPath(s, inst.appHost) });
+    expect(statSync(r.patFile).mode & 0o777).toBe(0o600);
+    const live = idb
+      .prepare(
+        "SELECT label FROM tokens WHERE revoked_at IS NULL ORDER BY label",
+      )
+      .all() as { label: string }[];
+    expect(live.map((t) => t.label)).toEqual(["my laptop", "provision"]);
+    expect(s.audit(inst.id)).toContain("owner_token.reissue");
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    // The install is upgradable again (the pre-flight uses the new token).
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    const pat = readFileSync(r.patFile, "utf8").trim();
+    expect(JSON.stringify(s.p.notes)).not.toContain(pat);
+    expect(
+      JSON.stringify(s.db().prepare("SELECT * FROM hosted_audit").all()),
+    ).not.toContain(pat);
+  });
+
+  it("a second reissue retires the first", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.reissueOwnerToken(inst.id, inst.id));
+    keep(await s.p.reissueOwnerToken(inst.id, inst.id));
+    const n = s
+      .installDb(inst.id)
+      .prepare(
+        "SELECT count(*) AS n FROM tokens WHERE label = 'provision' AND revoked_at IS NULL",
+      )
+      .get() as { n: number };
+    expect(n.n).toBe(1);
+  });
+
+  it("refuses a wrong confirm or an install that is not active with no write, and a held lease with no token minted", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const w = s.fake.writes().length;
+    expect(
+      (await fails(s.p.reissueOwnerToken(inst.id, "ibbbbbbbbbbb"))).message,
+    ).toMatch(/confirm/);
+    s.db()
+      .prepare("UPDATE installs SET state = 'upgrading' WHERE id = ?")
+      .run(inst.id);
+    expect(await fails(s.p.reissueOwnerToken(inst.id, inst.id))).toBeInstanceOf(
+      ProvisionRefused,
+    );
+    expect(s.fake.writes().length).toBe(w);
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'active', lease = 'x', lease_until = ? WHERE id = ?",
+      )
+      .run(Date.now() + 1e12, inst.id);
+    const tokens = () =>
+      s.installDb(inst.id).prepare("SELECT id, revoked_at FROM tokens").all();
+    const before = tokens();
+    // Busy is the claim's compare-and-swap losing: it changes nothing.
+    expect(
+      (await fails(s.p.reissueOwnerToken(inst.id, inst.id))).message,
+    ).toMatch(/busy/);
+    expect(tokens()).toEqual(before);
+    expect(s.row(inst.id).lease).toBe("x");
+  });
+});
+
+describe("OPS-B: the CI owner token (ciOwnerToken)", () => {
+  const CI = { ciOwnerToken: { label: "ci-42" } };
+  const tokens = (s: S, id: string) =>
+    s
+      .installDb(id)
+      .prepare("SELECT id, label, revoked_at FROM tokens ORDER BY created_at")
+      .all() as { id: string; label: string; revoked_at: number | null }[];
+  const ciTokens = (s: S, id: string) =>
+    tokens(s, id).filter((t) => t.label === "ci-42");
+  const patFiles = (s: S) =>
+    readdirSync(s.patDir).filter((f) => f.endsWith("-pat-token"));
+  /** Raw request index of the first body matching `re`, from `from`. */
+  const at = (s: S, re: RegExp, from = 0) =>
+    s.fake.raw.findIndex((r, i) => i >= from && re.test(r.body));
+  const MINT = /INSERT INTO tokens/;
+  const REVOKE = /UPDATE tokens SET revoked_at = \?1 WHERE id = \?2/;
+  const CLAIM = /UPDATE installs SET state = \?1, lease = \?2/;
+  const FINISH = /lease = NULL, lease_until = NULL/;
+  /** Mint after the claim, revoke before the lease is dropped. */
+  const underLease = (s: S, from: number) => {
+    const claim = at(s, CLAIM, from);
+    const mint = at(s, MINT, from);
+    const revoke = at(s, REVOKE, from);
+    const finish = at(s, FINISH, from);
+    expect(claim).toBeGreaterThanOrEqual(0);
+    expect(mint).toBeGreaterThan(claim);
+    expect(revoke).toBeGreaterThan(mint);
+    expect(finish).toBeGreaterThan(revoke);
+  };
+  /** MCP never answers: the process "crashes" between mint and revoke. */
+  const hangMcp =
+    (s: S): typeof fetch =>
+    (u, init) =>
+      String(u).endsWith("/mcp")
+        ? new Promise<Response>(() => {})
+        : s.fake.fetch(u, init);
+
+  it("create: the selftest runs on a ci-<run> PAT minted under the lease and revoked before it is released; no PAT file, no provision token", async () => {
+    const s = setup();
+    const from = s.fake.raw.length;
+    const inst = keep(await s.mk(CI).create(input()));
+    expect(inst.patFile).toBeUndefined();
+    expect(patFiles(s)).toEqual([]);
+    const ts = tokens(s, inst.id);
+    expect(ts.map((t) => t.label)).toEqual(["ci-42"]);
+    expect(ts[0]?.revoked_at).not.toBeNull();
+    // The selftest published the welcome artifact with it.
+    expect(s.fake.artifacts.size).toBe(1);
+    underLease(s, from);
+    expect(s.audit(inst.id)).toEqual(
+      expect.arrayContaining([
+        "ci_token.mint",
+        "ci_token.revoke",
+        "create.active",
+      ]),
+    );
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("upgrade, rollback and updateVars: no PAT file is read; each mints its own ci token under the lease and revokes it", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    // The laptop PAT file is gone: CI never has one.
+    rmSync(join(s.patDir, `${inst.appHost}-pat-token`));
+    let from = s.fake.raw.length;
+    expect(keep(await s.mk(CI).upgrade(inst.id, "0.24.0"))).toMatchObject({
+      ok: true,
+    });
+    underLease(s, from);
+    from = s.fake.raw.length;
+    const back = keep(await s.mk(CI).rollback(inst.id));
+    expect(back).toMatchObject({ ok: true, rolledBack: true });
+    // The selftest ran (not skipped as with a refused PAT).
+    expect(back.note).toBeUndefined();
+    underLease(s, from);
+    from = s.fake.raw.length;
+    expect(
+      keep(await s.mk(CI).updateVars(inst.id, { FEATURES: "beta" })),
+    ).toMatchObject({ ok: true });
+    underLease(s, from);
+    const ci = ciTokens(s, inst.id);
+    expect(ci).toHaveLength(3);
+    expect(ci.every((t) => t.revoked_at !== null)).toBe(true);
+    // The owner's provision token from the laptop create is untouched.
+    expect(
+      tokens(s, inst.id).filter(
+        (t) => t.label === "provision" && t.revoked_at === null,
+      ),
+    ).toHaveLength(1);
+    // Without the flag, the same upgrade still needs the PAT file.
+    expect((await fails(s.p.upgrade(inst.id, "0.24.0"))).message).toMatch(
+      /owner token file .* is missing/,
+    );
+  });
+
+  it("a failed upgrade still revokes its ci token", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    unhealthyAt(s, "0.24.0");
+    const r = keep(await s.mk(CI).upgrade(inst.id, "0.24.0"));
+    expect(r).toMatchObject({ ok: false, rolledBack: false, forwardFix: true });
+    const ci = ciTokens(s, inst.id);
+    expect(ci).toHaveLength(1);
+    expect(ci[0]?.revoked_at).not.toBeNull();
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("an upgrade that fails after the mint still revokes the ci token before the lease is dropped", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const from = s.fake.raw.length;
+    // The script upload is refused: the upgrade aborts after the mint.
+    s.fake.inject((m, p) => m === "PUT" && /\/scripts\/oa-s-[^/]+$/.test(p));
+    await fails(s.mk(CI).upgrade(inst.id, "0.24.0"));
+    const ci = ciTokens(s, inst.id);
+    expect(ci).toHaveLength(1);
+    expect(ci[0]?.revoked_at).not.toBeNull();
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    underLease(s, from);
+  });
+
+  it("a revoke that fails is a note naming the sweep, never the token; the sweep then revokes and verifies it", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const flaky: typeof fetch = async (u, init) => {
+      if (REVOKE.test(String(init?.body ?? "")))
+        return Response.json(
+          { success: false, errors: [{ code: 7500, message: "boom" }] },
+          { status: 400 },
+        );
+      return s.fake.fetch(u, init);
+    };
+    const p = s.mk({ ...CI, cf: s.cfWith(flaky) });
+    expect(keep(await p.upgrade(inst.id, "0.24.0"))).toMatchObject({
+      ok: true,
+    });
+    expect(p.notes.join("\n")).toMatch(
+      /CI owner token was not revoked .*ci-token-sweep revokes it/,
+    );
+    expect(
+      ciTokens(s, inst.id).filter((t) => t.revoked_at === null),
+    ).toHaveLength(1);
+    expect(keep(await s.mk().ciTokenSweep(inst.id, "ci-42"))).toEqual({
+      id: inst.id,
+      label: "ci-42",
+      revoked: 1,
+      active: 0,
+    });
+    expect(ciTokens(s, inst.id).every((t) => t.revoked_at !== null)).toBe(true);
+  });
+
+  it("a crash between mint and revoke leaves the token live; ci-token-sweep revokes it, and a second sweep finds none", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    void s.mk({ ...CI, fetch: hangMcp(s) }).upgrade(inst.id, "0.24.0");
+    // Wait until the upgrade is past the mint and stuck (the hang is at
+    // the pre-upload MCP-free path's end: the health check or selftest).
+    for (let i = 0; i < 5000 && s.row(inst.id).version !== "0.24.0"; i++)
+      await new Promise((r) => setImmediate(r));
+    expect(s.row(inst.id).version).toBe("0.24.0");
+    const live = ciTokens(s, inst.id).filter((t) => t.revoked_at === null);
+    expect(live).toHaveLength(1);
+    // Another run's ci token and the owner's own tokens are left alone.
+    s.installDb(inst.id)
+      .prepare(
+        "INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT 'tother', id, 'ci-7', 'h7', 1 FROM users WHERE role = 'owner'",
+      )
+      .run();
+    const r = keep(await s.mk().ciTokenSweep(inst.id, "ci-42"));
+    expect(r).toEqual({ id: inst.id, label: "ci-42", revoked: 1, active: 0 });
+    expect(
+      ciTokens(s, inst.id).filter((t) => t.revoked_at === null),
+    ).toHaveLength(0);
+    const rest = tokens(s, inst.id).filter((t) => t.label !== "ci-42");
+    expect(rest.every((t) => t.revoked_at === null)).toBe(true);
+    expect(rest.map((t) => t.label).sort()).toEqual(["ci-7", "provision"]);
+    expect(s.audit(inst.id)).toContain("ci_token.sweep");
+    expect(keep(await s.mk().ciTokenSweep(inst.id, "ci-42")).revoked).toBe(0);
+  });
+
+  it("the sweep verifies by reading again: a revoke that silently did nothing fails the sweep", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.installDb(inst.id)
+      .prepare(
+        "INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT 'tleft', id, 'ci-42', 'h42', 1 FROM users WHERE role = 'owner'",
+      )
+      .run();
+    // The label UPDATE "succeeds" but changes nothing.
+    const lossy: typeof fetch = async (u, init) => {
+      const body = String(init?.body ?? "");
+      if (/UPDATE tokens SET revoked_at = \?1 WHERE label = \?2/.test(body))
+        return s.fake.fetch(u, {
+          ...init,
+          body: JSON.stringify({ sql: "SELECT 1", params: [] }),
+        });
+      return s.fake.fetch(u, init);
+    };
+    const e = await fails(
+      s.mk({ cf: s.cfWith(lossy) }).ciTokenSweep(inst.id, "ci-42"),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(
+      /1 owner token\(s\) labelled ci-42 are still active after the sweep/,
+    );
+  });
+
+  it("the sweep refuses a malformed label or id, and a deleted install has nothing to sweep", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    for (const bad of ["ci-", "ci-0", "provision", "ci-42 OR 1=1", "ci-4x"])
+      expect((await fails(s.p.ciTokenSweep(inst.id, bad))).message).toMatch(
+        /ci-<run id>/,
+      );
+    expect(await fails(s.p.ciTokenSweep("not-an-id", "ci-42"))).toBeInstanceOf(
+      ProvisionRefused,
+    );
+    keep(await s.p.delete(inst.id, inst.id, { skipDirectoryRevoke: "test" }));
+    expect(keep(await s.p.ciTokenSweep(inst.id, "ci-42"))).toEqual({
+      id: inst.id,
+      label: "ci-42",
+      revoked: 0,
+      active: 0,
+    });
+  });
+
+  it("a malformed ciOwnerToken label is refused before any call", async () => {
+    const s = setup();
+    for (const label of ["ci-", "provision", "ci-1;DROP", ""]) {
+      const n = s.fake.log.length;
+      const e = await fails(s.mk({ ciOwnerToken: { label } }).create(input()));
+      expect(e.message).toMatch(/ci-<run id>/);
+      expect(s.fake.log.length).toBe(n);
+    }
+  });
+
+  // SS3: the hosted provisioner's label (ss-<signup ULID>) and no patDir.
+  const SS_A = "ss-01JBQ4ZKXW5V9R3M2N8P6T7Y0A";
+  const SS_B = "ss-01JBQ4ZKXW5V9R3M2N8P6T7Y0B";
+  /** The options with no patDir at all (the provisioner Worker has no disk). */
+  const noPatDir = (s: S, over: Partial<WfpOptions> = {}) => {
+    const o = s.opts(over);
+    delete (o as { patDir?: string }).patDir;
+    const p = new WfpProvisioner(o);
+    PROVS.push(p);
+    return p;
+  };
+
+  it("no patDir with ciOwnerToken: create succeeds and nothing is written under any directory", async () => {
+    const s = setup();
+    const before = readdirSync(s.patDir);
+    FSW.WRITES.length = 0;
+    const inst = keep(
+      await noPatDir(s, { ciOwnerToken: { label: SS_A } }).create(input()),
+    );
+    expect(inst.patFile).toBeUndefined();
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    // A delete with no patDir has no file to remove.
+    expect(
+      keep(
+        await noPatDir(s).delete(inst.id, inst.id, {
+          skipDirectoryRevoke: "test",
+        }),
+      ),
+    ).toMatchObject({ ok: true, state: "deleted" });
+    // No node:fs write at all (no mkdir, open, write or rm), anywhere.
+    expect(FSW.WRITES).toEqual([]);
+    expect(readdirSync(s.patDir)).toEqual(before);
+  });
+
+  it("the file hook sees a laptop create's PAT write (the hook is live)", async () => {
+    const s = setup();
+    FSW.WRITES.length = 0;
+    const inst = keep(await s.p.create(input()));
+    expect(FSW.WRITES).toContain(
+      `openSync ${join(s.patDir, `${inst.appHost}-pat-token`)}`,
+    );
+  });
+
+  it("reissueOwnerToken with no patDir is refused before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const rows = tokens(s, inst.id);
+    const n = s.fake.log.length;
+    const e = await fails(noPatDir(s).reissueOwnerToken(inst.id, inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/patDir is required/);
+    expect(s.fake.log.length).toBe(n);
+    expect(tokens(s, inst.id)).toEqual(rows);
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("upgrade, rollback and updateVars of a test-hook install with ciOwnerToken need no patDir and write no file", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(
+        input("redqa", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
+      ),
+    );
+    FSW.WRITES.length = 0;
+    const ci = { ciOwnerToken: { label: SS_A } };
+    expect(
+      keep(await noPatDir(s, ci).upgrade(inst.id, "0.24.0")),
+    ).toMatchObject({ ok: true });
+    expect(keep(await noPatDir(s, ci).rollback(inst.id))).toMatchObject({
+      ok: true,
+      rolledBack: true,
+    });
+    expect(
+      keep(
+        await noPatDir(s, ci).updateVars(inst.id, {
+          ...HOOK_VARS,
+          FEATURES: "beta",
+        }),
+      ),
+    ).toMatchObject({ ok: true });
+    expect(FSW.WRITES).toEqual([]);
+  });
+
+  it("no patDir and no ciOwnerToken is refused before any call", async () => {
+    const s = setup();
+    const n = s.fake.log.length;
+    const e = await fails(noPatDir(s).create(input()));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/patDir is required/);
+    expect(s.fake.log.length).toBe(n);
+  });
+
+  it("a ciOwnerToken redline create with no patDir succeeds and writes no file", async () => {
+    const s = setup();
+    const before = readdirSync(s.patDir);
+    FSW.WRITES.length = 0;
+    const inst = keep(
+      await noPatDir(s, { ciOwnerToken: { label: SS_A } }).create(
+        input("redqa", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
+      ),
+    );
+    expect(inst.patFile).toBeUndefined();
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    expect(FSW.WRITES).toEqual([]);
+    expect(readdirSync(s.patDir)).toEqual(before);
+  });
+
+  it("ss-<ULID> labels mint and sweep; other labels are refused", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.mk({ ciOwnerToken: { label: SS_A } }).create(input()),
+    );
+    const ss = tokens(s, inst.id).filter((t) => t.label === SS_A);
+    expect(ss).toHaveLength(1);
+    expect(ss[0]?.revoked_at).not.toBeNull();
+    s.installDb(inst.id)
+      .prepare(
+        `INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT 'tss', id, '${SS_A}', 'hss', 1 FROM users WHERE role = 'owner'`,
+      )
+      .run();
+    expect(keep(await s.p.ciTokenSweep(inst.id, SS_A))).toEqual({
+      id: inst.id,
+      label: SS_A,
+      revoked: 1,
+      active: 0,
+    });
+    for (const bad of [
+      "ss-short",
+      `ss-${"a".repeat(26)}`,
+      "ci-abc",
+      `ss-${"0".repeat(25)}I`,
+      `${SS_A}0`,
+    ]) {
+      const n = s.fake.log.length;
+      const e = await fails(
+        s.mk({ ciOwnerToken: { label: bad } }).create(input("other")),
+      );
+      expect(e.message, bad).toMatch(/ci-<run id> or ss-<ULID>/);
+      expect(s.fake.log.length).toBe(n);
+      expect(
+        (await fails(s.p.ciTokenSweep(inst.id, bad))).message,
+        bad,
+      ).toMatch(/ci-<run id> or ss-<ULID>/);
+    }
+  });
+
+  it("a sweep revokes only its own exact label", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    for (const [id, label] of [
+      ["t1", "ci-123"],
+      ["t2", "ci-1234"],
+      ["t3", SS_A],
+      ["t4", SS_B],
+    ])
+      s.installDb(inst.id)
+        .prepare(
+          `INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT '${id}', id, '${label}', 'h${id}', 1 FROM users WHERE role = 'owner'`,
+        )
+        .run();
+    const live = () =>
+      tokens(s, inst.id)
+        .filter((t) => t.revoked_at === null)
+        .map((t) => t.label)
+        .sort();
+    expect(keep(await s.p.ciTokenSweep(inst.id, "ci-123")).revoked).toBe(1);
+    expect(live()).toEqual(["ci-1234", "provision", SS_A, SS_B].sort());
+    expect(keep(await s.p.ciTokenSweep(inst.id, SS_A)).revoked).toBe(1);
+    expect(live()).toEqual(["ci-1234", "provision", SS_B].sort());
+  });
+});
+
+// C3's surface, W2's bodies: argument checks first, before any call.
+describe("pause, unpause and the W2 options (5.4, 5.5)", () => {
+  const ID = "iabcdefghjkm";
+
+  it("pause refuses a bad id or a mode other than paused or closed", async () => {
+    const s = setup();
+    const n = s.fake.log.length;
+    const kind = { kind: "suspend" } as const;
+    expect((await fails(s.p.pause("nope", "paused", kind))).message).toMatch(
+      /not an install id/,
+    );
+    for (const mode of ["serving", "unmapped", ""])
+      expect(
+        (await fails(s.p.pause(ID, mode as "paused", kind))).message,
+      ).toMatch(/mode must be paused or closed/);
+    expect(
+      (await fails(s.p.unpause("nope", { kind: "resume" }))).message,
+    ).toMatch(/not an install id/);
+    for (const bad of [undefined, {}, { kind: "nope" }]) {
+      expect(
+        (await fails(s.p.pause(ID, "paused", bad as never))).message,
+      ).toMatch(/unknown job kind/);
+      expect((await fails(s.p.unpause(ID, bad as never))).message).toMatch(
+        /unknown job kind/,
+      );
+    }
+    expect(s.fake.log.length).toBe(n);
+  });
+
+  it("onStep must be a function and registryDisabled a boolean, checked before any call", async () => {
+    const s = setup();
+    const n = s.fake.log.length;
+    for (const over of [
+      { onStep: "upload" },
+      { onStep: 1 },
+      { registryDisabled: "yes" },
+      { registryDisabled: 1 },
+    ]) {
+      const e = await fails(
+        s.mk(over as unknown as Partial<WfpOptions>).create(input()),
+      );
+      expect(e.message).toMatch(/onStep|registryDisabled/);
+    }
+    expect(s.fake.log.length).toBe(n);
+  });
+
+  it("a create with registryDisabled: false still succeeds", async () => {
+    const s = setup();
+    expect(
+      keep(await s.mk({ registryDisabled: false }).create(input())),
+    ).toMatchObject({ slug: "finqore" });
+  });
+});
+
+// ---------- W2: create order and lifecycle (design v7 5.2 to 5.5, 5.7) ----------
+
+const W2_ID = "iw2createaaa";
+const appOf = (s: S, slug = "finqore") =>
+  `${slug}.${HOSTED_DOMAINS[s.env].app}`;
+const scriptName = (s: S, id: string) => `${ENV_PREFIX[s.env]}${id}`;
+const directOf = (s: S, id = W2_ID, slug = "finqore") =>
+  directFetch(s.fake.dispatcher(s.target.ns), {
+    appHost: appOf(s, slug),
+    script: scriptName(s, id),
+  });
+const signinOf = (s: S, id: string) => {
+  const raw = s.fake.kvValues(s.regId).get(registryKey(id));
+  return raw === undefined ? undefined : JSON.parse(raw);
+};
+const dirOf = (s: S, id: string) => {
+  const raw = s.fake.kvValues(s.dirId).get(registryKey(id));
+  return raw === undefined ? undefined : JSON.parse(raw);
+};
+const hostsOfInstall = (s: S, slug = "finqore") => [
+  s.fake.kvValues(s.hostsId).get(appOf(s, slug)),
+  s.fake.kvValues(s.hostsId).get(`${slug}.${HOSTED_DOMAINS[s.env].content}`),
+];
+const kvPuts = (s: S, from = 0) =>
+  s.fake.log
+    .slice(from)
+    .filter((e) => e.method === "PUT" && e.path.includes("/values/"));
+
+describe("W2 directFetch (5.2 f)", () => {
+  it("reaches the install's script for its own app host and throws for anything else", async () => {
+    const seen: { name: string; url: string }[] = [];
+    const f = directFetch(
+      {
+        get: (name) => ({
+          fetch: async (req) => {
+            seen.push({ name, url: req.url });
+            return new Response("ok");
+          },
+        }),
+      },
+      {
+        appHost: "finqore.open-artifacts-staging.app",
+        script: "oa-s-iw2createaaa",
+      },
+    );
+    expect(
+      await (
+        await f("https://finqore.open-artifacts-staging.app/healthz")
+      ).text(),
+    ).toBe("ok");
+    expect(seen).toEqual([
+      {
+        name: "oa-s-iw2createaaa",
+        url: "https://finqore.open-artifacts-staging.app/healthz",
+      },
+    ]);
+    for (const bad of [
+      "https://other.open-artifacts-staging.app/healthz",
+      "http://finqore.open-artifacts-staging.app/healthz",
+      "https://finqore.open-artifacts-staging.app:8443/healthz",
+      "https://api.cloudflare.com/client/v4/user",
+    ])
+      await expect(f(bad)).rejects.toThrow(/reaches finqore/);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("refuses a missing binding, a bad host or a script that is not an install's", () => {
+    const d = { get: () => ({ fetch: async () => new Response() }) };
+    const app = "finqore.open-artifacts-staging.app";
+    expect(() =>
+      directFetch(undefined as never, {
+        appHost: app,
+        script: "oa-s-iw2createaaa",
+      }),
+    ).toThrow(/binding/);
+    expect(() =>
+      directFetch(d, { appHost: "x", script: "oa-s-iw2createaaa" }),
+    ).toThrow(/app host/);
+    expect(() =>
+      directFetch(d, { appHost: app, script: "oa-provisioner" }),
+    ).toThrow(/script/);
+  });
+});
+
+describe("W2 directFetch on upgrade and rollback (5.2 f, 5.4)", () => {
+  it("a directFetch for another install's script is refused before any write or fetch", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    const other = directOf(s, "iw2otheraaaa");
+    for (const run of [
+      () => s.mk({ fetch: other }).upgrade(inst.id, "0.25.0"),
+      () => s.mk({ fetch: other }).rollback(inst.id),
+    ]) {
+      const w = s.fake.writes().length;
+      const e = await fails(run());
+      expect(provisionErrorCode(e)).toBe("invalid_state");
+      expect(e.message).toMatch(/directFetch/);
+      expect(s.fake.writes().length).toBe(w);
+    }
+  });
+});
+
+describe("W2 create order (5.2)", () => {
+  it("with directFetch: health and the selftest reach the script before HOSTS; sign-in is disabled until enable_signin", async () => {
+    const s = setup();
+    const seen: WfpStep[] = [];
+    // biome-ignore lint/suspicious/noExplicitAny: per-step snapshots
+    const at: Record<string, any> = {};
+    const p = s.mk({
+      fetch: directOf(s),
+      requireInstallId: true,
+      onStep: (st) => {
+        seen.push(st);
+        at[st] = {
+          hosts: hostsOfInstall(s),
+          signin: signinOf(s, W2_ID),
+          dir: dirOf(s, W2_ID),
+          dispatched: s.fake.dispatched.map((d) => d.path),
+        };
+      },
+    });
+    const inst = keep(await p.create(input("finqore", { installId: W2_ID })));
+    expect(inst.id).toBe(W2_ID);
+    expect(seen).toEqual([...WFP_STEPS]);
+    // Before route: unrouted, sign-in off, the directory copy on, and the
+    // health check and selftest already answered through the dispatcher.
+    expect(at.route.hosts).toEqual([undefined, undefined]);
+    expect(at.route.signin.disabled).toBe(true);
+    expect(at.route.dir.disabled).toBeUndefined();
+    expect(at.route.dispatched).toContain("/healthz");
+    expect(at.route.dispatched).toContain("/mcp");
+    expect(at.verify_clean.dispatched).toEqual([]);
+    expect(at.enable_signin.hosts).toEqual([W2_ID, W2_ID]);
+    expect(at.enable_signin.signin.disabled).toBe(true);
+    expect(at.active.signin.disabled).toBeUndefined();
+    expect(at.active.signin).toEqual(at.active.dir);
+    expect(s.row(W2_ID)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("with the public route (the CLI): verify_clean, then HOSTS, then health", async () => {
+    const s = setup();
+    const seen: WfpStep[] = [];
+    await s.mk({ onStep: (st) => void seen.push(st) }).create(input());
+    expect(seen).toEqual([
+      "upload",
+      "verify_clean",
+      "route",
+      "health",
+      "enable_signin",
+      "active",
+    ]);
+  });
+
+  it("a throwing onStep fails the create, unrouted, lease released", async () => {
+    const s = setup();
+    const e = await fails(
+      s
+        .mk({
+          onStep: (st) => {
+            if (st === "verify_clean") throw new Error("step store down");
+          },
+        })
+        .create(input()),
+    );
+    expect(e.message).toMatch(/step store down/);
+    const [r] = s.db().prepare("SELECT state, lease FROM installs").all();
+    expect(r).toEqual({ state: "creating", lease: null });
+    expect(s.fake.kvValues(s.hostsId).size).toBe(0);
+  });
+
+  it("a directFetch for another install, or with no fixed installId, is refused before any write", async () => {
+    const s = setup();
+    const w = s.fake.writes().length;
+    for (const [fetch, i] of [
+      [directOf(s, "iw2otheraaaa"), input("finqore", { installId: W2_ID })],
+      [directOf(s, W2_ID, "other"), input("finqore", { installId: W2_ID })],
+      [directOf(s), input("finqore")],
+    ] as const) {
+      const e = await fails(s.mk({ fetch }).create(i));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(provisionErrorCode(e)).toBe("invalid_state");
+      expect(e.message).toMatch(/directFetch/);
+    }
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("with directFetch, /healthz must report this install's testHooks", async () => {
+    const s = setup();
+    s.fake.health = (sc) => ({
+      ok: true,
+      plan: "paid",
+      version: "0.23.0",
+      installId: sc.name.slice(ENV_PREFIX[s.env].length),
+      testHooks: true,
+    });
+    const e = await fails(
+      s
+        .mk({ fetch: directOf(s) })
+        .create(input("finqore", { installId: W2_ID })),
+    );
+    expect(e.message).toMatch(/testHooks is not false/);
+    expect(s.fake.kvValues(s.hostsId).size).toBe(0);
+  });
+
+  describe("verify_clean refuses prod_dirty: terminal, never routed, sign-in off", () => {
+    const add =
+      (b: { name: string; type: string; [k: string]: unknown }) =>
+      (_s: unknown, bs: { name: string; type: string }[]) => [...bs, b];
+    it.each([
+      [
+        "a service binding",
+        add({ name: "PEER", type: "service", service: "x" }),
+        /PEER is a service binding/,
+      ],
+      [
+        "a secrets_store_secret binding",
+        add({ name: "STORE", type: "secrets_store_secret" }),
+        /secrets_store_secret/,
+      ],
+      [
+        "a dispatch_namespace binding",
+        add({ name: "NS", type: "dispatch_namespace" }),
+        /dispatch_namespace/,
+      ],
+      [
+        "a binding the render never sent",
+        add({ name: "EXTRA", type: "plain_text", text: "x" }),
+        /EXTRA \(plain_text\) is not in the render/,
+      ],
+      [
+        "TEST_HOOKS on a non-test install",
+        add({ name: "TEST_HOOKS", type: "plain_text", text: "1" }),
+        /TEST_HOOKS is set on a non-test install/,
+      ],
+      [
+        "a plain_text value changed",
+        (_s: unknown, bs: { name: string; type: string; text?: string }[]) =>
+          bs.map((b) => (b.name === "PLAN" ? { ...b, text: "free" } : b)),
+        /PLAN \(plain_text\) has another value/,
+      ],
+      [
+        "a binding missing",
+        (_s: unknown, bs: { name: string; type: string }[]) =>
+          bs.filter((b) => b.name !== "PLAN"),
+        /PLAN \(plain_text\) is missing/,
+      ],
+    ] as const)("%s", async (_n, edit, why) => {
+      const s = setup();
+      s.fake.settingsEdit = edit as never;
+      const e = await fails(s.p.create(input()));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e).not.toBeInstanceOf(ProvisionRetry);
+      expect(provisionErrorCode(e)).toBe("prod_dirty");
+      expect(e.message).toMatch(why);
+      const [r] = s
+        .db()
+        .prepare("SELECT id, state, lease FROM installs")
+        .all() as {
+        id: string;
+        state: string;
+        lease: string | null;
+      }[];
+      expect(r).toMatchObject({ state: "creating", lease: null });
+      expect(s.fake.kvValues(s.hostsId).size).toBe(0);
+      expect(signinOf(s, r?.id as string).disabled).toBe(true);
+      expect(s.audit(r?.id as string)).toContain("verify_clean.refused");
+    });
+
+    it.each([
+      [
+        "an extra secret",
+        (sc: { secrets: Map<string, string> }) =>
+          sc.secrets.set("EXTRA_KEY", "x"),
+        /secret EXTRA_KEY is not expected/,
+      ],
+      [
+        "a missing secret",
+        (sc: { secrets: Map<string, string> }) =>
+          sc.secrets.delete("SESSION_SECRET"),
+        /secret SESSION_SECRET is missing/,
+      ],
+    ])("%s", async (_n, edit, why) => {
+      const s = setup();
+      const p = s.mk({
+        onStep: (st) => {
+          if (st !== "verify_clean") return;
+          const sc = [...s.fake.scripts.values()][0];
+          if (sc) edit(sc);
+        },
+      });
+      const e = await fails(p.create(input()));
+      expect(provisionErrorCode(e)).toBe("prod_dirty");
+      expect(e.message).toMatch(why);
+      expect(s.fake.kvValues(s.hostsId).size).toBe(0);
+    });
+
+    // #1060: the audit row says why, with binding and secret names only.
+    const refusedDetail = (s: ReturnType<typeof setup>) => {
+      const rows = s
+        .db()
+        .prepare(
+          "SELECT detail FROM hosted_audit WHERE action = 'verify_clean.refused'",
+        )
+        .all() as { detail: string }[];
+      expect(rows).toHaveLength(1);
+      return rows[0]?.detail as string;
+    };
+
+    it("verify_clean.refused audits the reason, never a binding value", async () => {
+      const s = setup();
+      const value = "plain-value-must-not-leak-7f3a";
+      s.fake.settingsEdit = ((
+        _s: unknown,
+        bs: { name: string; type: string; text?: string }[],
+      ) =>
+        bs.map((b) =>
+          b.name === "PLAN" ? { ...b, text: value } : b,
+        )) as never;
+      const e = await fails(s.p.create(input()));
+      expect(provisionErrorCode(e)).toBe("prod_dirty");
+      const d = refusedDetail(s);
+      expect(JSON.parse(d)).toEqual({
+        reason: "binding PLAN (plain_text) has another value than the render",
+      });
+      expect(d).not.toContain(value);
+    });
+
+    it("verify_clean.refused audits the reason, never a secret value", async () => {
+      const s = setup();
+      const value = "secret-value-must-not-leak-9c1e";
+      const p = s.mk({
+        onStep: (st) => {
+          if (st !== "verify_clean") return;
+          [...s.fake.scripts.values()][0]?.secrets.set("EXTRA_KEY", value);
+        },
+      });
+      const e = await fails(p.create(input()));
+      expect(provisionErrorCode(e)).toBe("prod_dirty");
+      const d = refusedDetail(s);
+      expect(JSON.parse(d)).toEqual({
+        reason: "secret EXTRA_KEY is not expected",
+      });
+      expect(d).not.toContain(value);
+    });
+
+    it("verify_clean.refused caps the audited reason", async () => {
+      const s = setup();
+      const long = `B${"X".repeat(VERIFY_CLEAN_REASON_MAX)}`;
+      s.fake.settingsEdit = add({
+        name: long,
+        type: "plain_text",
+        text: "x",
+      }) as never;
+      await fails(s.p.create(input()));
+      const r = JSON.parse(refusedDetail(s)) as { reason: string };
+      expect(r.reason).toHaveLength(VERIFY_CLEAN_REASON_MAX);
+      expect(r.reason.startsWith(`binding ${long.slice(0, 20)}`)).toBe(true);
+    });
+
+    it("a resumed attempt compares with the stored render of the version", async () => {
+      const s = setup();
+      // Unhealthy once (CLI order: verify, route, health): the rerun skips the upload.
+      s.fake.health = () => ({ ok: false });
+      await fails(s.p.create(input()));
+      s.fake.health = undefined;
+      const uploadsBefore = uploads(s.fake).length;
+      s.fake.settingsEdit = add({ name: "PEER", type: "service" }) as never;
+      const e = await fails(s.mk().create(input()));
+      expect(uploads(s.fake)).toHaveLength(uploadsBefore);
+      expect(provisionErrorCode(e)).toBe("prod_dirty");
+      s.fake.settingsEdit = undefined;
+      expect(keep(await s.mk().create(input()))).toMatchObject({
+        slug: "finqore",
+      });
+    });
+  });
+
+  describe("route (5.2 g) and parseHostsValue at create", () => {
+    it("a value that does not parse is slug_taken before any write, with no row yet", async () => {
+      for (const v of ["garbage", "i000000admin", "paused:i00000signup"]) {
+        const s = setup();
+        s.fake.kvValues(s.hostsId).set(appOf(s), v);
+        const e = await fails(s.p.create(input()));
+        expect(provisionErrorCode(e), v).toBe("slug_taken");
+        expect(s.fake.writes(), v).toEqual([]);
+      }
+    });
+
+    it("a host held by another id in any mode is slug_taken before any write", async () => {
+      for (const v of [
+        "iw2otheraaaa",
+        "paused:iw2otheraaaa",
+        "closed:iw2otheraaaa",
+      ]) {
+        const s = setup();
+        s.fake.kvValues(s.hostsId).set(appOf(s), v);
+        const e = await fails(s.p.create(input()));
+        expect(provisionErrorCode(e), v).toBe("slug_taken");
+        expect(s.fake.writes(), v).toEqual([]);
+      }
+    });
+
+    it("this install's own paused: value is its own: a resume passes and route leaves it", async () => {
+      const s = setup();
+      s.fake.health = () => ({ ok: false });
+      await fails(s.p.create(input()));
+      s.fake.health = undefined;
+      const [r] = s.db().prepare("SELECT id FROM installs").all() as {
+        id: string;
+      }[];
+      const id = r?.id as string;
+      s.fake.kvValues(s.hostsId).set(appOf(s), `paused:${id}`);
+      const inst = await s
+        .mk({
+          fetch: directFetch(s.fake.dispatcher(s.target.ns), {
+            appHost: appOf(s),
+            script: scriptName(s, id),
+          }),
+        })
+        .create(input("finqore", { installId: id }));
+      expect(inst.id).toBe(id);
+      expect(hostsOfInstall(s)).toEqual([`paused:${id}`, id]);
+    });
+  });
+
+  describe("#882 replay (5.7)", () => {
+    it("a replay after the release is pulled returns the finished install, reading no release", async () => {
+      const s = setup();
+      const inst = keep(
+        await s.mk().create(input("finqore", { installId: W2_ID })),
+      );
+      const records = s.rel.st.records.length;
+      const writes = s.fake.writes().length;
+      s.rel.reader.record = async () => null as never;
+      s.rel.reader.assetBytes = async () => {
+        throw new Error("no asset read on a replay");
+      };
+      const again = keep(
+        await s.mk().create(input("finqore", { installId: W2_ID })),
+      );
+      expect(again).toEqual({
+        id: inst.id,
+        slug: inst.slug,
+        appHost: inst.appHost,
+        contentHost: inst.contentHost,
+        version: inst.version,
+      });
+      expect(s.rel.st.records.length).toBe(records);
+      expect(s.fake.writes().length).toBe(writes);
+    });
+
+    it("a replay with another version is refused (the replay check compares installs.version)", async () => {
+      const s = setup();
+      await s.mk().create(input("finqore", { installId: W2_ID }));
+      const e = await fails(
+        s
+          .mk()
+          .create(input("finqore", { installId: W2_ID, version: "0.24.0" })),
+      );
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(provisionErrorCode(e)).toBe("invalid_state");
+      expect(e.message).toMatch(/inputs differ.*version/);
+    });
+
+    it("a replay with other vars is refused", async () => {
+      const s = setup();
+      await s.mk().create(input("finqore", { installId: W2_ID }));
+      const e = await fails(
+        s.mk().create(
+          input("finqore", {
+            installId: W2_ID,
+            vars: { AUTH_DOMAINS: "x.example" },
+          }),
+        ),
+      );
+      expect(provisionErrorCode(e)).toBe("invalid_state");
+    });
+  });
+
+  it("ProvisionRetry at the retryable token sites; near expiry is terminal", async () => {
+    const cases: [string, (s: S) => void, boolean][] = [
+      [
+        "inactive",
+        (s) => {
+          s.fake.tokenInfo.status = "disabled";
+        },
+        true,
+      ],
+      [
+        "not yet valid",
+        (s) => {
+          s.fake.tokenInfo.not_before = new Date(
+            NOW + 86_400_000,
+          ).toISOString();
+        },
+        true,
+      ],
+      [
+        "expired",
+        (s) => {
+          s.fake.tokenInfo.expires_on = new Date(NOW - 1000).toISOString();
+        },
+        true,
+      ],
+      [
+        "near expiry",
+        (s) => {
+          s.fake.tokenInfo.expires_on = new Date(
+            NOW + 86_400_000,
+          ).toISOString();
+        },
+        false,
+      ],
+    ];
+    for (const [n, edit, retry] of cases) {
+      const s = setup();
+      edit(s);
+      const e = await fails(s.p.create(input("finqore", { installId: W2_ID })));
+      expect(e instanceof ProvisionRetry, n).toBe(retry);
+      expect(provisionErrorCode(e), n).toBe(
+        retry ? "token_invalid" : "invalid_state",
+      );
+    }
+  });
+
+  it("registryDisabled: true skips enable_signin, so the sign-in copy stays off", async () => {
+    const s = setup();
+    const inst = await s.mk({ registryDisabled: true }).create(input());
+    expect(signinOf(s, inst.id).disabled).toBe(true);
+    expect(dirOf(s, inst.id).disabled).toBeUndefined();
+    expect(await s.p.status(inst.id)).toMatchObject({ registryDrift: null });
+  });
+});
+
+describe("verifyCleanRefusal (5.2 e, pure)", () => {
+  const rec = { variant: "release" } as unknown as ReleaseRecord;
+  const base = (o: Partial<VerifyCleanInput> = {}): VerifyCleanInput => ({
+    id: W2_ID,
+    sent: {
+      bindings: [
+        { name: "PLAN", type: "plain_text", text: "paid" },
+        { name: "OWNER_EMAIL", type: "plain_text", text: OWNER },
+        { name: "CFG", type: "json", json: { a: 1, b: [2] } },
+        { name: "DB", type: "d1" },
+        { name: "SESSION_SECRET", type: "secret_text" },
+      ],
+    },
+    rec,
+    broker: false,
+    codes: false,
+    testHooks: false,
+    lastTag: "v9",
+    tag: "v9",
+    ...o,
+  });
+  const live = (
+    bindings: { name: string; type: string; [k: string]: unknown }[],
+  ) => ({
+    bindings,
+    secrets: [] as string[],
+  });
+  const clean = [
+    { name: "PLAN", type: "plain_text", text: "paid" },
+    { name: "CFG", type: "json", json: { b: [2], a: 1 } },
+    { name: "DB", type: "d1", id: "x" },
+    { name: "SESSION_SECRET", type: "secret_text" },
+  ];
+
+  it("is null for a clean script; OWNER_EMAIL is skipped on both sides; json compares canonically", async () => {
+    const { CREATE_SECRETS } = await import("../src/wfp.js");
+    const l = { ...live(clean), secrets: [...CREATE_SECRETS] };
+    expect(verifyCleanRefusal(l, base())).toBeNull();
+    expect(
+      verifyCleanRefusal(
+        {
+          ...l,
+          bindings: [
+            ...clean,
+            {
+              name: "OWNER_EMAIL",
+              type: "plain_text",
+              text: "someone@else.test",
+            },
+          ],
+        },
+        base(),
+      ),
+    ).toBeNull();
+  });
+
+  it("no refusal ever carries a var or secret value, only names (every branch; #1060 audits it)", async () => {
+    const { CREATE_SECRETS } = await import("../src/wfp.js");
+    const V = "value-must-not-leak";
+    const sentB = [
+      { name: "PLAN", type: "plain_text", text: `${V}-plan` },
+      { name: "CFG", type: "json", json: { k: `${V}-json` } },
+      { name: "DB", type: "d1" },
+    ];
+    const liveB = [
+      { name: "PLAN", type: "plain_text", text: `${V}-plan` },
+      { name: "CFG", type: "json", json: { k: `${V}-json` } },
+      { name: "DB", type: "d1", id: `${V}-id` },
+    ];
+    const ok = { bindings: liveB, secrets: [...CREATE_SECRETS] };
+    const b = base({ sent: { bindings: sentB } });
+    const cases: [
+      string,
+      Parameters<typeof verifyCleanRefusal>[0],
+      VerifyCleanInput,
+    ][] = [
+      [
+        "refused type",
+        {
+          ...ok,
+          bindings: [
+            ...liveB,
+            { name: "S", type: "service", service: `${V}-svc` },
+          ],
+        },
+        b,
+      ],
+      [
+        "hook on non-test",
+        {
+          ...ok,
+          bindings: [
+            ...liveB,
+            { name: "TEST_DOMAIN", type: "plain_text", text: `${V}-dom` },
+          ],
+        },
+        b,
+      ],
+      [
+        "not in render",
+        {
+          ...ok,
+          bindings: [
+            ...liveB,
+            { name: "EXTRA", type: "plain_text", text: `${V}-extra` },
+          ],
+        },
+        b,
+      ],
+      [
+        "missing",
+        { ...ok, bindings: liveB.filter((x) => x.name !== "PLAN") },
+        b,
+      ],
+      [
+        "plain_text value",
+        {
+          ...ok,
+          bindings: liveB.map((x) =>
+            x.name === "PLAN" ? { ...x, text: `${V}-other` } : x,
+          ),
+        },
+        b,
+      ],
+      [
+        "json value",
+        {
+          ...ok,
+          bindings: liveB.map((x) =>
+            x.name === "CFG" ? { ...x, json: { k: `${V}-other` } } : x,
+          ),
+        },
+        b,
+      ],
+      [
+        "secret not expected",
+        { ...ok, secrets: [...CREATE_SECRETS, "LEAKY"] },
+        b,
+      ],
+      ["secret missing", { ...ok, secrets: CREATE_SECRETS.slice(1) }, b],
+      [
+        "secret twice",
+        { ...ok, secrets: [...CREATE_SECRETS, CREATE_SECRETS[0] as string] },
+        b,
+      ],
+    ];
+    for (const [what, live, input] of cases) {
+      const why = verifyCleanRefusal(live, input);
+      expect(why, what).not.toBeNull();
+      expect(why, what).not.toContain(V);
+    }
+  });
+
+  it("refuses another variant or a tag that is not the template's last (rule 6)", async () => {
+    const { CREATE_SECRETS } = await import("../src/wfp.js");
+    const l = { ...live(clean), secrets: [...CREATE_SECRETS] };
+    expect(
+      verifyCleanRefusal(l, base({ rec: { variant: "redline" } as never })),
+    ).toMatch(/variant is redline/);
+    expect(verifyCleanRefusal(l, base({ tag: "v8" }))).toMatch(
+      /tag is v8, not v9/,
+    );
+    expect(verifyCleanRefusal(l, base({ tag: null }))).toMatch(/tag is none/);
+    // A test-hook install runs the redline variant, with TEST_HOOK_KEY.
+    expect(
+      verifyCleanRefusal(
+        { ...l, secrets: [...CREATE_SECRETS, "TEST_HOOK_KEY"] },
+        base({ testHooks: true, rec: { variant: "redline" } as never }),
+      ),
+    ).toBeNull();
+  });
+
+  it("refuses a json value change, a duplicate binding and a duplicate secret", async () => {
+    const { CREATE_SECRETS } = await import("../src/wfp.js");
+    const l = { ...live(clean), secrets: [...CREATE_SECRETS] };
+    expect(
+      verifyCleanRefusal(
+        {
+          ...l,
+          bindings: clean.map((b) =>
+            b.name === "CFG" ? { ...b, json: { a: 2, b: [2] } } : b,
+          ),
+        },
+        base(),
+      ),
+    ).toMatch(/CFG \(json\) has another value/);
+    expect(
+      verifyCleanRefusal(
+        { ...l, bindings: [...clean, { name: "DB", type: "d1" }] },
+        base(),
+      ),
+    ).toMatch(/DB \(d1\) is not in the render/);
+    expect(
+      verifyCleanRefusal(
+        { ...l, secrets: [...CREATE_SECRETS, "SESSION_SECRET"] },
+        base(),
+      ),
+    ).toMatch(/listed twice/);
+    // Hook names are refused as secrets too, keyed on testHooks.
+    expect(
+      verifyCleanRefusal(
+        { ...l, secrets: [...CREATE_SECRETS, "TEST_HOOK_KEY"] },
+        base(),
+      ),
+    ).toMatch(/TEST_HOOK_KEY is set on a non-test install/);
+  });
+
+  it("names bindings and secrets only, never a value", async () => {
+    const { CREATE_SECRETS } = await import("../src/wfp.js");
+    const l = {
+      ...live(
+        clean.map((b) =>
+          b.name === "PLAN" ? { ...b, text: "s3cr3t-value" } : b,
+        ),
+      ),
+      secrets: [...CREATE_SECRETS],
+    };
+    const why = verifyCleanRefusal(l, base()) as string;
+    expect(why).toMatch(/PLAN/);
+    expect(why).not.toMatch(/s3cr3t|paid/);
+  });
+});
+
+describe("W2 pause and unpause (5.5)", () => {
+  it("pause: both HOSTS keys to paused:<id>, sign-in copy off, directory copy on; idempotent; unpause restores", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const dirBefore = dirOf(s, inst.id);
+    expect(
+      keep(await s.mk().pause(inst.id, "paused", { kind: "suspend" })),
+    ).toEqual({
+      id: inst.id,
+      mode: "paused",
+    });
+    expect(hostsOfInstall(s)).toEqual([
+      `paused:${inst.id}`,
+      `paused:${inst.id}`,
+    ]);
+    expect(signinOf(s, inst.id).disabled).toBe(true);
+    expect(dirOf(s, inst.id)).toEqual(dirBefore);
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    expect(s.audit(inst.id)).toContain("suspend.hosts");
+    // The paused page, not the install, answers on the public route.
+    expect((await s.fake.fetch(`https://${inst.appHost}/healthz`)).status).toBe(
+      404,
+    );
+    // Again: no KV write.
+    const n = s.fake.log.length;
+    await s.mk().pause(inst.id, "paused", { kind: "suspend" });
+    expect(kvPuts(s, n)).toEqual([]);
+    // closed from paused: the same install's value in another mode.
+    await s.mk().pause(inst.id, "closed", { kind: "delete" });
+    expect(hostsOfInstall(s)).toEqual([
+      `closed:${inst.id}`,
+      `closed:${inst.id}`,
+    ]);
+    expect(keep(await s.mk().unpause(inst.id, { kind: "restore" }))).toEqual({
+      id: inst.id,
+      mode: "serving",
+    });
+    expect(hostsOfInstall(s)).toEqual([inst.id, inst.id]);
+    expect(signinOf(s, inst.id)).toEqual(dirOf(s, inst.id));
+    expect(signinOf(s, inst.id).disabled).toBeUndefined();
+    expect((await s.fake.fetch(`https://${inst.appHost}/healthz`)).status).toBe(
+      200,
+    );
+    expect(await s.p.status(inst.id)).toMatchObject({ registryDrift: null });
+  });
+
+  it("writes HOSTS before the sign-in copy (exposure drops first)", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const n = s.fake.log.length;
+    await s.mk().pause(inst.id, "paused", { kind: "suspend" });
+    const puts = kvPuts(s, n).map((e) =>
+      e.path.includes(s.hostsId)
+        ? "hosts"
+        : e.path.includes(s.regId)
+          ? "signin"
+          : "other",
+    );
+    expect(puts).toEqual(["hosts", "hosts", "signin"]);
+  });
+
+  it("a host held by another id is refused (slug_taken), the sign-in copy untouched, the lease released", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.kvValues(s.hostsId).set(inst.contentHost, "paused:iw2otheraaaa");
+    const e = await fails(s.mk().pause(inst.id, "paused", { kind: "suspend" }));
+    expect(provisionErrorCode(e)).toBe("slug_taken");
+    expect(signinOf(s, inst.id).disabled).toBeUndefined();
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("near expiry: suspend warns and goes on; resume refuses before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.tokenInfo.expires_on = new Date(NOW + 86_400_000).toISOString();
+    const p = s.mk();
+    await p.pause(inst.id, "paused", { kind: "suspend" });
+    expect(p.notes.join("\n")).toMatch(/WARNING/);
+    const n = s.fake.log.length;
+    const e = await fails(s.mk().unpause(inst.id, { kind: "resume" }));
+    expect(e).not.toBeInstanceOf(ProvisionRetry);
+    expect(provisionErrorCode(e)).toBe("invalid_state");
+    expect(kvPuts(s, n)).toEqual([]);
+    expect(hostsOfInstall(s)).toEqual([
+      `paused:${inst.id}`,
+      `paused:${inst.id}`,
+    ]);
+  });
+
+  it("an install with no broker entry pauses its hosts only", async () => {
+    const s = setup();
+    const inst = keep(await s.mk({ brokerEnabled: false }).create(input()));
+    expect(signinOf(s, inst.id)).toBeUndefined();
+    await s
+      .mk({ brokerEnabled: false })
+      .pause(inst.id, "paused", { kind: "suspend" });
+    expect(hostsOfInstall(s)).toEqual([
+      `paused:${inst.id}`,
+      `paused:${inst.id}`,
+    ]);
+    expect(signinOf(s, inst.id)).toBeUndefined();
+  });
+
+  it("a purge after pause(closed) deletes both HOSTS keys; the deleted sweep clears a stale paused: value", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.mk().pause(inst.id, "closed", { kind: "delete" });
+    const r = keep(await s.mk().delete(inst.id, inst.id));
+    expect(r).toMatchObject({ ok: true, state: "deleted" });
+    expect(hostsOfInstall(s)).toEqual([undefined, undefined]);
+    s.fake.kvValues(s.hostsId).set(inst.appHost, `paused:${inst.id}`);
+    await s.mk().delete(inst.id, inst.id);
+    expect(hostsOfInstall(s)).toEqual([undefined, undefined]);
+    expect(s.audit(inst.id)).toContain("delete.unmap_stale");
+  });
+
+  it("updateVars with registryDisabled keeps a paused install's sign-in copy off; the directory copy follows the domains", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(
+        input("finqore", { vars: { AUTH_DOMAINS: "a.example" } }),
+      ),
+    );
+    await s.mk().pause(inst.id, "paused", { kind: "suspend" });
+    await s
+      .mk({ registryDisabled: true })
+      .updateVars(inst.id, { AUTH_DOMAINS: "b.example" });
+    expect(signinOf(s, inst.id)).toMatchObject({
+      disabled: true,
+      domains: ["b.example"],
+    });
+    expect(dirOf(s, inst.id)).toMatchObject({ domains: ["b.example"] });
+    expect(dirOf(s, inst.id).disabled).toBeUndefined();
+  });
+
+  it("registryDisabled on a serving install's updateVars turns the sign-in copy off", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(
+        input("finqore", { vars: { AUTH_DOMAINS: "a.example" } }),
+      ),
+    );
+    await s
+      .mk({ registryDisabled: true })
+      .updateVars(inst.id, { AUTH_DOMAINS: "b.example" });
+    expect(signinOf(s, inst.id).disabled).toBe(true);
+    expect(dirOf(s, inst.id).disabled).toBeUndefined();
+  });
+});
+
+describe("verify_clean retries Cloudflare read lag, nothing else (#1352)", () => {
+  const BROKER = "BROKER_SIGNING_KEY";
+  /** The settings and secret list GETs since `from` in the fake's log. */
+  const reads = (s: S, from: number) => {
+    const gets = s.fake.log.slice(from).filter((e) => e.method === "GET");
+    return {
+      settings: gets.filter((e) => /\/settings(\?|$)/.test(e.path)).length,
+      secrets: gets.filter((e) => /\/secrets(\?|$)/.test(e.path)).length,
+    };
+  };
+  const audited = (s: S, action: string) =>
+    (
+      s
+        .db()
+        .prepare("SELECT detail FROM hosted_audit WHERE action = ? ORDER BY id")
+        .all(action) as { detail: string }[]
+    ).map((r) => JSON.parse(r.detail) as Record<string, unknown>);
+  /**
+   * A provisioner whose secret list and settings GETs pass through `secrets`
+   * and `settings` from the verify_clean step on, counting reads from there
+   * and every sleep.
+   */
+  const lagged = (
+    s: S,
+    edits: {
+      secrets?: (names: string[], read: number) => string[];
+      settings?: (
+        bs: { name: string; type: string; [k: string]: unknown }[],
+        read: number,
+      ) => { name: string; type: string; [k: string]: unknown }[];
+    },
+    over: Partial<WfpOptions> = {},
+  ) => {
+    const t = { on: false, from: 0, secretReads: 0, settingReads: 0 };
+    const waits: number[] = [];
+    /** At each secret list read: how far the lease runs past now. */
+    const leaseLeft: number[] = [];
+    s.fake.secretsEdit = (_sc, names) => {
+      if (!t.on) return names;
+      const r = s.db().prepare("SELECT lease_until FROM installs").get() as {
+        lease_until: number;
+      };
+      leaseLeft.push(r.lease_until - s.clock.now());
+      return edits.secrets ? edits.secrets(names, ++t.secretReads) : names;
+    };
+    s.fake.settingsEdit = (_sc, bs) =>
+      t.on && edits.settings ? edits.settings(bs, ++t.settingReads) : bs;
+    const p = s.mk({
+      onStep: (st) => {
+        if (st !== "verify_clean") return;
+        t.on = true;
+        t.from = s.fake.log.length;
+      },
+      sleep: async (ms) => {
+        if (t.on) waits.push(ms);
+        await s.clock.sleep(ms);
+      },
+      ...over,
+    });
+    return { p, waits, leaseLeft, reads: () => reads(s, t.from) };
+  };
+  const without =
+    (name: string, upTo = Number.POSITIVE_INFINITY) =>
+    (names: string[], read: number) =>
+      read <= upTo ? names.filter((n) => n !== name) : names;
+
+  it("a secret missing on the first read, then present: passes, no prod_dirty", async () => {
+    const s = setup();
+    const l = lagged(s, { secrets: without(BROKER, 1) });
+    const inst = keep(await l.p.create(input()));
+    expect(l.reads()).toEqual({ settings: 2, secrets: 2 });
+    expect(l.waits).toEqual([VERIFY_CLEAN_INTERVAL_MS]);
+    expect(audited(s, "verify_clean.retry")).toEqual([
+      { read: 1, missing: BROKER },
+    ]);
+    expect(s.audit(inst.id)).not.toContain("verify_clean.refused");
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("a binding missing on the first two reads, then present: passes", async () => {
+    const s = setup();
+    const l = lagged(s, {
+      settings: (bs, read) =>
+        read <= 2 ? bs.filter((b) => b.name !== "PLAN") : bs,
+    });
+    keep(await l.p.create(input()));
+    expect(l.reads()).toEqual({ settings: 3, secrets: 3 });
+    expect(audited(s, "verify_clean.retry")).toEqual([
+      { read: 1, missing: "PLAN (plain_text)" },
+      { read: 2, missing: "PLAN (plain_text)" },
+    ]);
+  });
+
+  it("a secret missing on every read: prod_dirty with today's reason, after the bounded reads", async () => {
+    const s = setup();
+    const l = lagged(s, { secrets: without(BROKER) });
+    const e = await fails(l.p.create(input()));
+    expect(provisionErrorCode(e)).toBe("prod_dirty");
+    expect(e.message).toMatch(
+      `verify_clean refused: secret ${BROKER} is missing`,
+    );
+    expect(l.reads()).toEqual({
+      settings: VERIFY_CLEAN_ATTEMPTS,
+      secrets: VERIFY_CLEAN_ATTEMPTS,
+    });
+    expect(VERIFY_CLEAN_ATTEMPTS).toBe(6);
+    expect(VERIFY_CLEAN_INTERVAL_MS).toBe(10_000);
+    expect(l.waits).toEqual(
+      Array(VERIFY_CLEAN_ATTEMPTS - 1).fill(VERIFY_CLEAN_INTERVAL_MS),
+    );
+    // The lease is renewed right before every read, the re-reads included.
+    expect(l.leaseLeft).toEqual(Array(VERIFY_CLEAN_ATTEMPTS).fill(LEASE));
+    // Far below the lease (30 minutes).
+    expect(VERIFY_CLEAN_ATTEMPTS * VERIFY_CLEAN_INTERVAL_MS).toBeLessThan(
+      2 * 60_000,
+    );
+    expect(audited(s, "verify_clean.retry")).toHaveLength(
+      VERIFY_CLEAN_ATTEMPTS - 1,
+    );
+    expect(audited(s, "verify_clean.refused")).toEqual([
+      { reason: `secret ${BROKER} is missing` },
+    ]);
+    expect(s.fake.kvValues(s.hostsId).size).toBe(0);
+  });
+
+  it("the reads and their spacing are options", async () => {
+    const s = setup();
+    const l = lagged(
+      s,
+      { secrets: without(BROKER) },
+      { verifyCleanAttempts: 2, verifyCleanIntervalMs: 7 },
+    );
+    expect(provisionErrorCode(await fails(l.p.create(input())))).toBe(
+      "prod_dirty",
+    );
+    expect(l.reads()).toEqual({ settings: 2, secrets: 2 });
+    expect(l.waits).toEqual([7]);
+  });
+
+  it.each([
+    [
+      "an extra secret",
+      { secrets: (n: string[]) => [...n, "EXTRA_KEY"] },
+      "secret EXTRA_KEY is not expected",
+    ],
+    [
+      "a refused binding type",
+      {
+        settings: (bs: { name: string; type: string }[]) => [
+          ...bs,
+          { name: "PEER", type: "service" },
+        ],
+      },
+      "binding PEER is a service binding",
+    ],
+    [
+      "a hook secret on a non-test install",
+      { secrets: (n: string[]) => [...n, "TEST_HOOK_KEY"] },
+      "TEST_HOOK_KEY is set on a non-test install",
+    ],
+    [
+      "a missing secret plus an extra one",
+      {
+        secrets: (n: string[]) => [
+          ...n.filter((x) => x !== BROKER),
+          "EXTRA_KEY",
+        ],
+      },
+      "secret EXTRA_KEY is not expected",
+    ],
+    [
+      "a missing binding plus an extra one",
+      {
+        settings: (bs: { name: string; type: string; text?: string }[]) =>
+          bs
+            .filter((b) => b.name !== "PLAN")
+            .concat([{ name: "EXTRA", type: "plain_text", text: "x" }]),
+      },
+      "binding EXTRA (plain_text) is not in the render",
+    ],
+    [
+      "a changed plain_text value",
+      {
+        settings: (bs: { name: string; type: string; text?: string }[]) =>
+          bs.map((b) => (b.name === "PLAN" ? { ...b, text: "free" } : b)),
+      },
+      "binding PLAN (plain_text) has another value than the render",
+    ],
+    [
+      "a duplicated secret name",
+      { secrets: (n: string[]) => [...n, BROKER] },
+      "a secret is listed twice",
+    ],
+  ] as const)(
+    "%s: refused on the first read, never retried",
+    async (_n, edits, why) => {
+      const s = setup();
+      const l = lagged(s, edits as never);
+      const e = await fails(l.p.create(input()));
+      expect(provisionErrorCode(e)).toBe("prod_dirty");
+      expect(l.reads()).toEqual({ settings: 1, secrets: 1 });
+      expect(l.waits).toEqual([]);
+      expect(audited(s, "verify_clean.retry")).toEqual([]);
+      expect(audited(s, "verify_clean.refused")).toEqual([{ reason: why }]);
+    },
+  );
+
+  it("an upgrade rides out a lagging secret list; one missing on every read is prodDirty", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const a = lagged(s, { secrets: without(BROKER, 1) });
+    expect(keep(await a.p.upgrade(inst.id, "0.24.0"))).toMatchObject({
+      ok: true,
+    });
+    expect(a.reads()).toEqual({ settings: 2, secrets: 2 });
+    const b = lagged(s, { secrets: without(BROKER) });
+    const r = keep(await b.p.rollback(inst.id));
+    expect(r).toMatchObject({ ok: false, prodDirty: true });
+    expect(r.reason).toMatch(`secret ${BROKER} is missing`);
+    expect(b.reads()).toEqual({
+      settings: VERIFY_CLEAN_ATTEMPTS,
+      secrets: VERIFY_CLEAN_ATTEMPTS,
+    });
+  });
+
+  it("verifyCleanProblems: kinds, and verifyCleanRefusal is the first reason", async () => {
+    const { CREATE_SECRETS } = await import("../src/wfp.js");
+    const v: VerifyCleanInput = {
+      id: W2_ID,
+      sent: { bindings: [{ name: "PLAN", type: "plain_text", text: "paid" }] },
+      rec: { variant: "release" } as unknown as ReleaseRecord,
+      broker: true,
+      codes: false,
+      testHooks: false,
+      lastTag: null,
+      tag: null,
+    };
+    const missingOnly = { bindings: [], secrets: [...CREATE_SECRETS] };
+    expect(verifyCleanProblems(missingOnly, v)).toEqual([
+      {
+        kind: "missing",
+        name: "PLAN (plain_text)",
+        reason: "binding PLAN (plain_text) is missing",
+      },
+      { kind: "missing", name: BROKER, reason: `secret ${BROKER} is missing` },
+    ]);
+    const mixed = { ...missingOnly, secrets: [...CREATE_SECRETS, "X"] };
+    expect(verifyCleanProblems(mixed, v).map((p) => p.kind)).toEqual([
+      "missing",
+      "other",
+      "missing",
+    ]);
+    expect(verifyCleanRefusal(mixed, v)).toBe(
+      "binding PLAN (plain_text) is missing",
+    );
+    // Each of these is `other` (refused on the first read), never `missing`.
+    const clean: {
+      bindings: { name: string; type: string; text?: string }[];
+      secrets: string[];
+    } = {
+      bindings: [{ name: "PLAN", type: "plain_text", text: "paid" }],
+      secrets: [...CREATE_SECRETS, BROKER],
+    };
+    const others: [string, typeof clean, VerifyCleanInput, string][] = [
+      [
+        "wrong variant",
+        clean,
+        { ...v, rec: { variant: "redline" } as unknown as ReleaseRecord },
+        "the release variant is redline",
+      ],
+      [
+        "wrong DO tag",
+        clean,
+        { ...v, tag: "v8" },
+        "the Durable Object tag is v8, not none",
+      ],
+      [
+        "value mismatch",
+        {
+          ...clean,
+          bindings: [{ name: "PLAN", type: "plain_text", text: "free" }],
+        },
+        v,
+        "binding PLAN (plain_text) has another value than the render",
+      ],
+      [
+        "duplicate secret",
+        { ...clean, secrets: [...clean.secrets, BROKER] },
+        v,
+        "a secret is listed twice",
+      ],
+      [
+        "refused binding type",
+        {
+          ...clean,
+          bindings: [...clean.bindings, { name: "PEER", type: "service" }],
+        },
+        v,
+        "binding PEER is a service binding",
+      ],
+      [
+        "hook name on a non-test install",
+        {
+          ...clean,
+          bindings: [
+            ...clean.bindings,
+            { name: "TEST_DOMAIN", type: "plain_text", text: "x" },
+          ],
+        },
+        v,
+        "TEST_DOMAIN is set on a non-test install",
+      ],
+    ];
+    for (const [what, live, input, reason] of others) {
+      const ps = verifyCleanProblems(live, input);
+      expect(ps[0], what).toEqual({ kind: "other", reason });
+      expect(
+        ps.every((p) => p.kind === "other"),
+        what,
+      ).toBe(true);
+    }
+    expect(
+      verifyCleanProblems(
+        {
+          bindings: [{ name: "PLAN", type: "plain_text", text: "paid" }],
+          secrets: [...CREATE_SECRETS, BROKER],
+        },
+        v,
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("W2 upgrade and rollback: verify_clean and onStep (5.4)", () => {
+  const dirtyAt = (s: S, version?: string) => {
+    s.fake.settingsEdit = (sc, bs) =>
+      version === undefined ||
+      (sc.metadata.tags as string[]).includes(`v${version}`)
+        ? [...bs, { name: "PEER", type: "service" }]
+        : bs;
+  };
+
+  it("upgrade reports upload, verify_clean and health", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const seen: WfpStep[] = [];
+    const r = keep(
+      await s
+        .mk({ onStep: (st) => void seen.push(st) })
+        .upgrade(inst.id, "0.24.0"),
+    );
+    expect(r).toMatchObject({ ok: true });
+    expect(seen).toEqual(["upload", "verify_clean", "health"]);
+  });
+
+  it("a dirty upgrade stays on the new version and is prodDirty (#1106)", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    dirtyAt(s, "0.24.0");
+    const r = keep(await s.mk().upgrade(inst.id, "0.24.0"));
+    expect(r).toMatchObject({
+      ok: false,
+      rolledBack: false,
+      forwardFix: true,
+      prodDirty: true,
+    });
+    expect(r.reason).toMatch(/verify_clean refused/);
+    expect(s.row(inst.id)).toMatchObject({
+      version: "0.24.0",
+      state: "active",
+      lease: null,
+    });
+    expect(s.audit(inst.id)).toContain("verify_clean.refused");
+  });
+
+  it("a dirty upgrade with no rollback (previous version revoked) is prodDirty", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.rel.st.floor = signFloor("staging", { seq: 2, revoked: ["0.23.0"] });
+    dirtyAt(s, "0.24.0");
+    const r = keep(await s.mk().upgrade(inst.id, "0.24.0"));
+    expect(r).toMatchObject({
+      ok: false,
+      rolledBack: false,
+      forwardFix: true,
+      prodDirty: true,
+    });
+  });
+
+  it("rollback reports upload, verify_clean and health, and a dirty rollback is prodDirty", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    const seen: WfpStep[] = [];
+    const ok = keep(
+      await s.mk({ onStep: (st) => void seen.push(st) }).rollback(inst.id),
+    );
+    expect(ok).toMatchObject({ ok: true, rolledBack: true });
+    expect(seen).toEqual(["upload", "verify_clean", "health"]);
+    await s.mk().upgrade(inst.id, "0.24.0");
+    dirtyAt(s, "0.23.0");
+    const r = keep(await s.mk().rollback(inst.id));
+    expect(r).toMatchObject({ ok: false, rolledBack: true, prodDirty: true });
+    expect(r.reason).toMatch(/verify_clean refused/);
+  });
+
+  it("an upgrade through directFetch checks health on the script, with testHooks", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.mk().create(input("finqore", { installId: W2_ID })),
+    );
+    const n = s.fake.dispatched.length;
+    const r = keep(
+      await s.mk({ fetch: directOf(s) }).upgrade(inst.id, "0.24.0"),
+    );
+    expect(r).toMatchObject({ ok: true });
+    expect(s.fake.dispatched.slice(n).map((d) => d.path)).toContain("/healthz");
+  });
+});
+
+describe("the binding id audit, stage 1 (#1137)", () => {
+  const AUDIT = "verify_clean.binding_ids";
+  const lines = (s: S, id: string) =>
+    (
+      s
+        .db()
+        .prepare(
+          "SELECT detail FROM hosted_audit WHERE install_id = ? AND action = ? ORDER BY id",
+        )
+        .all(id, AUDIT) as { detail: string }[]
+    ).map(
+      (r) =>
+        JSON.parse(r.detail) as {
+          problems: number;
+          detail: string;
+          shape: string;
+          bookmark: string;
+        },
+    );
+  /** A provisioner whose Cloudflare client misbehaves during verify_clean. */
+  const faulty = (
+    s: S,
+    edit: (cf: ReturnType<S["cfWith"]>, during: () => boolean) => object,
+  ) => {
+    const cf = s.cfWith();
+    let step = "";
+    return s.mk({
+      cf: { ...cf, ...edit(cf, () => step === "verify_clean") },
+      onStep: (x: string) => {
+        step = x;
+      },
+      bindingIdAuditMs: 5,
+    });
+  };
+
+  it("writes a clean line at create, upgrade, rollback and a var change", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    expect(lines(s, inst.id)).toHaveLength(1);
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    expect(lines(s, inst.id)).toHaveLength(2);
+    await s.p.rollback(inst.id);
+    expect(lines(s, inst.id)).toHaveLength(3);
+    await s.p.updateVars(inst.id, {});
+    expect(lines(s, inst.id)).toHaveLength(4);
+    for (const l of lines(s, inst.id)) {
+      expect(l).toMatchObject({ problems: 0, detail: "", bookmark: "ok" });
+      expect(l.shape).toContain("d1:");
+    }
+  });
+
+  it("reports a foreign binding and refuses nothing", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.settingsEdit = (_s, bindings) =>
+      bindings.map((b) =>
+        b.type === "d1" ? { ...b, id: "another-install" } : b,
+      );
+    expect(keep(await s.p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    const last = lines(s, inst.id).at(-1);
+    expect(last?.problems).toBe(1);
+    expect(last?.detail).toBe("DB:d1_foreign");
+    expect(JSON.stringify(last)).not.toContain("another-install");
+  });
+
+  it("a token that can't read a bookmark is reported, and refuses nothing", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.bookmarkFails = true;
+    expect(keep(await s.p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    const last = lines(s, inst.id).at(-1);
+    expect(last?.bookmark).not.toBe("ok");
+    expect(last?.problems).toBe(0);
+  });
+
+  it("a bookmark call that throws is in the line, and the job carries on", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) =>
+        during() ? Promise.reject(new TypeError("down")) : cf.d1Bookmark(id),
+    }));
+    expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    expect(lines(s, inst.id).at(-1)?.bookmark).toBe("TypeError");
+  });
+
+  it("fails open when the settings read throws in a var change", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let reads = 0;
+    const p = s.mk({
+      cf: {
+        ...s.cfWith(),
+        scriptSettings: () => {
+          reads++;
+          return Promise.reject(new TypeError("down"));
+        },
+      },
+    });
+    await p.updateVars(inst.id, {});
+    expect(reads).toBe(1);
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("gives up on a bookmark call that never answers, and writes no line", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) =>
+        during() ? new Promise(() => {}) : cf.d1Bookmark(id),
+    }));
+    expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("gives up on an audit write that never answers", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const cf = s.cfWith();
+    const p = s.mk({
+      cf: {
+        ...cf,
+        d1Query: (id, sql, params) =>
+          (params ?? []).includes("verify_clean.binding_ids")
+            ? new Promise(() => {})
+            : cf.d1Query(id, sql, params),
+      },
+      bindingIdAuditMs: 5,
+    });
+    expect(keep(await p.upgrade(inst.id, "0.24.0")).ok).toBe(true);
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it("a timed-out check that answers late writes nothing", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let late: ((v: string) => void) | undefined;
+    const p = faulty(s, (cf, during) => ({
+      d1Bookmark: (id: string) =>
+        during()
+          ? new Promise<string>((r) => {
+              late = r;
+            })
+          : cf.d1Bookmark(id),
+    }));
+    keep(await p.upgrade(inst.id, "0.24.0"));
+    late?.("x");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(lines(s, inst.id)).toHaveLength(1);
+  });
+
+  it.each(["secretList", "d1Bookmark"] as const)(
+    "a lease lost at %s, before or in the audit, still stops the job",
+    async (call) => {
+      const s = setup();
+      const inst = keep(await s.p.create(input()));
+      const p = faulty(s, (cf, during) => ({
+        [call]: (...a: [never, never]) => {
+          if (during())
+            s.db()
+              .prepare(
+                "UPDATE installs SET lease = 'someone-else' WHERE id = ?",
+              )
+              .run(inst.id);
+          return (cf[call] as (...x: [never, never]) => unknown)(...a);
+        },
+      }));
+      const e = await fails(p.upgrade(inst.id, "0.24.0"));
+      expect(e).toBeInstanceOf(LostLease);
+      expect(s.row(inst.id).lease).toBe("someone-else");
+    },
+  );
+});
+
+describe("MIG-2: a migration that can lose data is held (#1137)", () => {
+  const applied = (s: S, id: string) =>
+    s
+      .installDb(id)
+      .prepare("SELECT name FROM d1_migrations ORDER BY id")
+      .all()
+      .map((x) => (x as { name: string }).name);
+  const detail = (s: S, id: string, action: string) =>
+    (
+      s
+        .db()
+        .prepare(
+          "SELECT detail FROM hosted_audit WHERE install_id = ? AND action = ?",
+        )
+        .all(id, action) as { detail: string }[]
+    ).map((r) => JSON.parse(r.detail));
+
+  it.each([
+    ["0.24.5", "9002_rebuild.sql (drop_table)"],
+    ["0.24.6", "9003_marked.sql (marker)"],
+  ])("%s without the flag: held, nothing touched", async (to, files) => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const before = applied(s, inst.id);
+    const w = uploads(s.fake, 0).length;
+    const e = await fails(s.p.upgrade(inst.id, to));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.code).toBe("migration_held");
+    expect(applied(s, inst.id)).toEqual(before);
+    expect(uploads(s.fake, 0)).toHaveLength(w);
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.23.0",
+      lease: null,
+    });
+    expect(detail(s, inst.id, "upgrade.held")).toEqual([
+      { to, migrations: files },
+    ]);
+  });
+
+  it("with the flag: a restore point first, then the upgrade", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const r = keep(await s.p.upgrade(inst.id, "0.24.6", { nonAdditive: true }));
+    expect(r).toMatchObject({ ok: true, to: "0.24.6" });
+    expect(applied(s, inst.id)).toContain("9003_marked.sql");
+    expect(detail(s, inst.id, "upgrade.restore_point")).toEqual([
+      {
+        bookmark: `bookmark-${s.row(inst.id).d1_id}`,
+        migrations: "9003_marked.sql (marker)",
+      },
+    ]);
+    // The bookmark, then the audit row that keeps it, then the migration.
+    const at = (re: RegExp) =>
+      s.fake.raw.findIndex((x) => re.test(x.path + x.body));
+    const bookmark = at(/time_travel\/bookmark/);
+    const audit = at(/upgrade\.restore_point/);
+    const migrated = at(/INSERT INTO d1_migrations[\s\S]*9003_marked/);
+    expect(bookmark).toBeGreaterThanOrEqual(0);
+    expect(audit).toBeGreaterThan(bookmark);
+    expect(migrated).toBeGreaterThan(audit);
+  });
+
+  it("with the flag but no bookmark: refused, nothing touched", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const before = applied(s, inst.id);
+    s.fake.bookmarkFails = true;
+    const e = await fails(
+      s.p.upgrade(inst.id, "0.24.6", { nonAdditive: true }),
+    );
+    expect(e.code).toBe("restore_point_failed");
+    expect(applied(s, inst.id)).toEqual(before);
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    expect(detail(s, inst.id, "upgrade.held")).toEqual([
+      {
+        to: "0.24.6",
+        migrations: "9003_marked.sql (marker)",
+        reason: "no_restore_point",
+      },
+    ]);
+  });
+
+  it("an additive upgrade needs no flag and no restore point", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.bookmarkFails = true;
+    keep(await s.p.upgrade(inst.id, "0.24.0", { nonAdditive: true }));
+    expect(s.audit(inst.id)).not.toContain("upgrade.restore_point");
+  });
+
+  it("a held file this install already ran isn't pending", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.upgrade(inst.id, "0.24.6", { nonAdditive: true }));
+    const r = keep(await s.p.upgrade(inst.id, "0.24.7"));
+    expect(r.ok).toBe(true);
+    expect(s.audit(inst.id)).not.toContain("upgrade.held");
+  });
+
+  it("create runs a held file: there's no data to lose", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(input("finqore", { version: "0.24.6" })),
+    );
+    expect(applied(s, inst.id)).toContain("9003_marked.sql");
+  });
 });

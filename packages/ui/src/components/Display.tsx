@@ -145,6 +145,14 @@ const formatPaths: Record<Format, ReactNode> = {
     <path d="M6 2.5c-1.5 0-2 .6-2 2v1.6c0 1-.5 1.6-1.5 1.9 1 .3 1.5.9 1.5 1.9v1.6c0 1.4.5 2 2 2M10 2.5c1.5 0 2 .6 2 2v1.6c0 1 .5 1.6 1.5 1.9-1 .3-1.5.9-1.5 1.9v1.6c0 1.4-.5 2-2 2" />
   ),
   pdf: <path d={`${page}M6 9h5M6 11.5h3.5`} />,
+  // A framed landscape: a sun and a hill.
+  image: (
+    <>
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
+      <circle cx="5.5" cy="6" r="1.25" />
+      <path d="m1.5 12 4-4 3 3 2-2 4 4" />
+    </>
+  ),
 };
 
 const formatLabels: Record<Format, string> = {
@@ -152,6 +160,7 @@ const formatLabels: Record<Format, string> = {
   markdown: "Markdown",
   code: "Code",
   pdf: "PDF",
+  image: "Image",
 };
 
 export const FormatIcon = ({

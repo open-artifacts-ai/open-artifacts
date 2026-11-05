@@ -1,21 +1,40 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   AUTH,
   HealthzSchema,
+  type HeldSweep,
   MeSchema,
   OAuthClientHookResultSchema,
   R,
+  SyncStatusSchema,
   TEST_HOOKS,
   TEST_HOOKS_ALLOWED,
   TestSessionResultSchema,
 } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { emailKey } from "../src/auth/codes.js";
+import { emailKey, ipKey } from "../src/auth/codes.js";
 import { sessionCookieName } from "../src/auth/session.js";
+import { directoryStatus } from "../src/directory/connect.js";
+import {
+  HEALTH_CAS,
+  HK,
+  instanceDirectory,
+  readHealth,
+  readHealthRaw,
+} from "../src/directory/health.js";
+import { readBinding } from "../src/directory/store.js";
+import { SyncEngine } from "../src/directory/sync.js";
+import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import worker from "../src/index.js";
 import { revokeAllGrants } from "../src/mcp/oauth-api.js";
+import { BACKFILLED_KEY, KV_WRITES_OFF_KEY } from "../src/mcp/oauth-store.js";
+import { userActor } from "../src/services/audit.js";
+import { SYNC_DO_NAME } from "../src/services/directory.js";
+import { type TestHoldIo, testHold } from "../src/test-hooks/held.js";
 import { direct, mailer, seedUser, uniq } from "./auth-helpers.js";
+import { login } from "./helpers.js";
 
 // P2 Task 14: test hooks for P5's cross-tenant suite.
 const KEY = "k".repeat(32);
@@ -35,6 +54,17 @@ const ON = {
   RL_ANON: passRl,
 };
 const tu = (local: string) => uniq(local, TD);
+/**
+ * A start time past the current millisecond: an earlier test's last audit
+ * row may share it. Waits on the clock moving (a D1 round trip advances
+ * workerd's clock), not on a sleep.
+ */
+async function freshSince(): Promise<number> {
+  const t = Date.now();
+  while (Date.now() <= t) await env.DB.prepare("select 1").first();
+  return Date.now();
+}
+
 const auditRows = async (since: number) =>
   (
     await env.DB.prepare(
@@ -55,6 +85,20 @@ async function same404(r: Response) {
   expect(r.status).toBe(404);
   expect(await r.text()).toBe(await ref.text());
   expect(r.headers.get("content-type")).toBe(ref.headers.get("content-type"));
+}
+/** A refusal after the key: the same 404, plus error.details.reason (and any extra details). */
+async function refused404(
+  r: Response,
+  reason: string,
+  extra: Record<string, string> = {},
+) {
+  const ref = await call(env, TEST_HOOKS.session, { body: {} });
+  expect(r.status).toBe(404);
+  expect(r.headers.get("content-type")).toBe(ref.headers.get("content-type"));
+  const { error } = (await ref.json()) as { error: object };
+  expect(await r.json()).toEqual({
+    error: { ...error, details: { reason, ...extra } },
+  });
 }
 afterEach(() => vi.restoreAllMocks());
 
@@ -94,7 +138,28 @@ async function call(
   await Promise.all(waits);
   return r;
 }
+/** test_otps rows holding `code` (0 when the table doesn't exist). */
+const otpRows = async (code: string) =>
+  (
+    await env.DB.prepare("select count(*) n from test_otps where code = ?")
+      .bind(code)
+      .first<{ n: number }>()
+      .catch(() => null)
+  )?.n ?? 0;
 const on = (over: Partial<Env> = {}) => ({ ...env, ...ON, ...over }) as Env;
+/** A counters row at n = 7 for today's bucket (any bucket: the reset ignores it). */
+const seedCounter = (key: string) =>
+  env.DB.prepare(
+    "insert into counters (key, n, day) values (?1, 7, 'd') on conflict (key) do update set n = 7",
+  )
+    .bind(key)
+    .run();
+const counter = async (key: string) =>
+  (
+    await env.DB.prepare("select n from counters where key = ?")
+      .bind(key)
+      .first<{ n: number }>()
+  )?.n ?? null;
 const hook = (e: Env, path: string, body?: unknown, key = KEY) =>
   call(e, path, { body: body ?? {}, key });
 
@@ -249,7 +314,7 @@ describe("audit", () => {
     vi.spyOn(console, "log").mockImplementation((s: unknown) => {
       lines.push(String(s));
     });
-    const since = Date.now();
+    const since = await freshSince();
     const email = tu("log");
     const r = await hook(on(), TEST_HOOKS.session, { email, role: "member" });
     const { cookie } = TestSessionResultSchema.parse(await r.json());
@@ -315,15 +380,16 @@ describe("audit", () => {
 });
 
 describe("TEST_DOMAIN and refusals", () => {
-  it("session: only an exact TEST_DOMAIN address; everything else the identical 404", async () => {
+  it("session: only an exact TEST_DOMAIN address; everything else the 404 (user_refused)", async () => {
     for (const email of [
       uniq("x", "a.com"),
       uniq("x", `sub.${TD}`),
       uniq("x", `${TD}.evil.com`),
       uniq("x", `evil${TD}`),
     ])
-      await same404(
+      await refused404(
         await hook(on(), TEST_HOOKS.session, { email, role: "member" }),
+        "user_refused",
       );
     expect(
       (
@@ -337,11 +403,12 @@ describe("TEST_DOMAIN and refusals", () => {
 
   it("session: the owner email is refused", async () => {
     const owner = tu("owner");
-    await same404(
+    await refused404(
       await hook(on({ OWNER_EMAIL: owner }), TEST_HOOKS.session, {
         email: owner.toUpperCase(),
         role: "owner",
       }),
+      "user_refused",
     );
     expect(
       await env.DB.prepare("select id from users where email = ?")
@@ -353,8 +420,9 @@ describe("TEST_DOMAIN and refusals", () => {
   it("session: an existing user's role is never changed; the same role is fine", async () => {
     const email = tu("exist");
     await seedUser(email, "member");
-    await same404(
+    await refused404(
       await hook(on(), TEST_HOOKS.session, { email, role: "admin" }),
+      "user_refused",
     );
     expect(
       await env.DB.prepare("select role from users where email = ?")
@@ -368,8 +436,9 @@ describe("TEST_DOMAIN and refusals", () => {
 
   it("session: role owner is refused outright (new users cap at admin)", async () => {
     const email = tu("own");
-    await same404(
+    await refused404(
       await hook(on(), TEST_HOOKS.session, { email, role: "owner" }),
+      "user_refused",
     );
     expect(
       await env.DB.prepare("select id from users where email = ?")
@@ -389,7 +458,8 @@ describe("TEST_DOMAIN and refusals", () => {
     );
     const ok = rs.flatMap((r, i) => (r.status === 200 ? [roles[i]] : []));
     expect(ok).toHaveLength(1);
-    for (const r of rs) if (r.status !== 200) await same404(r);
+    for (const r of rs)
+      if (r.status !== 200) await refused404(r, "user_refused");
     expect(
       await env.DB.prepare("select role from users where email = ?")
         .bind(email)
@@ -400,31 +470,52 @@ describe("TEST_DOMAIN and refusals", () => {
   it("session: a suspended user is refused, not revived", async () => {
     const email = tu("susp");
     await seedUser(email, "member", { status: "suspended" });
-    await same404(
+    await refused404(
       await hook(on(), TEST_HOOKS.session, { email, role: "member" }),
+      "user_refused",
     );
   });
 
-  it("session: bad input and spaces are the identical 404", async () => {
-    await same404(
+  it("session: bad input is the 404 with bad_input; a bad route says bad_route", async () => {
+    await refused404(
       await hook(on(), TEST_HOOKS.session, { email: "nope", role: "member" }),
+      "bad_input",
     );
-    await same404(
-      await hook(on(), TEST_HOOKS.session, {
-        email: tu("sp"),
-        role: "member",
-        spaces: [{ spaceId: "s", role: "viewer" }],
-      }),
+    await refused404(
+      await call(on(), "/__test/x", { body: {}, key: KEY }),
+      "bad_route",
     );
-    await same404(await call(on(), "/__test/x", { body: {}, key: KEY }));
-    await same404(
+    await refused404(
       await call(on(), TEST_HOOKS.session, { method: "GET", key: KEY }),
+      "bad_route",
     );
   });
 
-  it("otp/latest: an address outside TEST_DOMAIN is the identical 404", async () => {
-    await same404(
+  it("before the key verifies, a refusal has no reason (the uniform 404)", async () => {
+    // Wrong key, missing key, rate limited, limiter unbound, hooks off: the
+    // body is exactly the standard 404, with no details.
+    const noRl = {
+      limit: async () => ({ success: false }),
+    } as unknown as RateLimit;
+    const rs = [
+      await call(on(), "/__test/x", { body: {}, key: "x".repeat(32) }),
+      await call(on(), TEST_HOOKS.session, { body: { email: "nope" } }),
+      await hook(on({ RL_ANON: noRl }), TEST_HOOKS.session, { email: "nope" }),
+      await hook(on({ RL_ANON: undefined }), TEST_HOOKS.session, {}),
+      await hook(env, TEST_HOOKS.session, { email: "nope" }),
+    ];
+    for (const r of rs) {
+      expect(r.status).toBe(404);
+      expect(await r.json()).toEqual({
+        error: { code: "not_found", message: "Not found" },
+      });
+    }
+  });
+
+  it("otp/latest: an address outside TEST_DOMAIN is the 404 with bad_input", async () => {
+    await refused404(
       await hook(on(), TEST_HOOKS.otpLatest, { email: uniq("o", "a.com") }),
+      "bad_input",
     );
   });
 });
@@ -488,8 +579,10 @@ describe("hooks", () => {
       },
     });
     expect(v.status).toBe(200);
-    expect((await hook(e, TEST_HOOKS.otpLatest, { email: guest })).status).toBe(
-      404,
+    await refused404(
+      await hook(e, TEST_HOOKS.otpLatest, { email: guest }),
+      "no_code",
+      { outcome: "used" },
     );
   });
 
@@ -503,10 +596,10 @@ describe("hooks", () => {
       body: { email: guest },
       headers: { "x-oa-request": "1", "sec-fetch-site": "same-origin" },
     });
-    expect(m.codeFor(guest)).toBeTruthy();
-    expect(puts.mock.calls.map((c) => c[0])).not.toContainEqual(
-      expect.stringMatching(/^test:otp:/),
-    );
+    const code = m.codeFor(guest);
+    expect(code).toBeTruthy();
+    expect(JSON.stringify(puts.mock.calls)).not.toContain(code);
+    expect(await otpRows(code)).toBe(0);
   });
 
   it("off: a full code flow writes no plaintext anywhere", async () => {
@@ -520,7 +613,8 @@ describe("hooks", () => {
       headers: { "x-oa-request": "1", "sec-fetch-site": "same-origin" },
     });
     const code = m.codeFor(guest);
-    expect(puts).not.toHaveBeenCalled();
+    expect(JSON.stringify(puts.mock.calls)).not.toContain(code);
+    expect(await otpRows(code)).toBe(0);
     const rows = JSON.stringify(
       (
         await env.DB.prepare("select * from login_codes where email_key = ?")
@@ -559,6 +653,520 @@ describe("hooks", () => {
     expect((await mcp(accessToken)).status).toBe(401);
   });
 
+  it("oauth-client with OAUTH_STORE=d1 and no OAUTH_KV binding: the grant lives in D1", async () => {
+    const raw = on({ OAUTH_STORE: "d1" }) as unknown as Record<string, unknown>;
+    delete raw.OAUTH_KV;
+    const e = raw as unknown as Env;
+    // d1 serves only after a completed KV -> D1 copy.
+    await env.DB.prepare(
+      "insert into settings (key, value) values (?, '1') on conflict(key) do nothing",
+    )
+      .bind(BACKFILLED_KEY)
+      .run();
+    const r = await hook(e, TEST_HOOKS.oauthClient);
+    expect(r.status).toBe(200);
+    const { accessToken } = OAuthClientHookResultSchema.parse(await r.json());
+    const mcp = (t: string) =>
+      call(e, "/mcp", {
+        scheme: "https",
+        body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+        headers: {
+          authorization: `Bearer ${t}`,
+          accept: "application/json, text/event-stream",
+        },
+      });
+    expect((await mcp(accessToken)).status).toBe(200);
+    const uid = (
+      await env.DB.prepare("select id from users where email = ?")
+        .bind(`p5-oauth@${TD}`)
+        .first<{ id: string }>()
+    )?.id as string;
+    const live = await env.DB.prepare(
+      "select count(*) n from oauth_kv where key like ? and (expires_at is null or expires_at > ?)",
+    )
+      .bind(`grant:${uid}:%`, Math.floor(Date.now() / 1000))
+      .first<{ n: number }>();
+    expect(live?.n).toBeGreaterThan(0);
+    await revokeAllGrants(e, uid);
+    expect((await mcp(accessToken)).status).toBe(401);
+    // Serving in d1 stamped KV_WRITES_OFF; the later tests serve in kv,
+    // which is refused while it is set (leaving d1).
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(KV_WRITES_OFF_KEY)
+      .run();
+  });
+
+  it("code-caps/reset: before the key, the uniform 404 and nothing deleted", async () => {
+    const ik = await ipKey(env, "198.51.100.200");
+    await seedCounter(`code:ip:${ik}`);
+    for (const r of [
+      await call(on(), TEST_HOOKS.codeCapsReset, {
+        body: {},
+        key: "x".repeat(32),
+      }),
+      await call(on(), TEST_HOOKS.codeCapsReset, { body: {} }),
+      await hook(env, TEST_HOOKS.codeCapsReset, {}),
+    ])
+      await same404(r);
+    expect(await counter(`code:ip:${ik}`)).toBe(7);
+  });
+
+  it("code-caps/reset: deletes only the caller's code:ip and code:fail buckets", async () => {
+    const mine = await ipKey(env, "198.51.100.200");
+    const other = await ipKey(env, "203.0.113.9");
+    const keep = [
+      `code:ip:${other}`,
+      `code:fail:${other}`,
+      `code:eip:ek1:${mine}`,
+      `code:en:ek1:${mine}`,
+      "code:e:ek1",
+      "email:pool",
+    ];
+    for (const k of [`code:ip:${mine}`, `code:fail:${mine}`, ...keep])
+      await seedCounter(k);
+    const r = await hook(on(), TEST_HOOKS.codeCapsReset, {});
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ reset: 2 });
+    expect(await counter(`code:ip:${mine}`)).toBeNull();
+    expect(await counter(`code:fail:${mine}`)).toBeNull();
+    for (const k of keep) expect(await counter(k)).toBe(7);
+    // Again: nothing left to reset.
+    expect(
+      await (await hook(on(), TEST_HOOKS.codeCapsReset, {})).json(),
+    ).toEqual({ reset: 0 });
+  });
+
+  it("code-caps/reset: the body must be exactly {} (no IP or key to aim it)", async () => {
+    const since = await freshSince();
+    for (const body of [{ ip: "203.0.113.9" }, { key: "code:ip:x" }, []])
+      await refused404(
+        await hook(on(), TEST_HOOKS.codeCapsReset, body),
+        "bad_input",
+      );
+    const rows = await auditRows(since);
+    expect(rows.map((r) => [r.action, r.detail.outcome])).toEqual([
+      ["test_hook.code_caps_reset", "refused"],
+      ["test_hook.code_caps_reset", "refused"],
+      ["test_hook.code_caps_reset", "refused"],
+    ]);
+  });
+
+  it("code-caps/reset: audited and rate-limited like every hook", async () => {
+    const since = await freshSince();
+    rlCalls.length = 0;
+    await hook(on(), TEST_HOOKS.codeCapsReset, {});
+    expect(rlCalls).toHaveLength(1);
+    const rows = await auditRows(since);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.action).toBe("test_hook.code_caps_reset");
+    expect(rows[0]?.detail).toEqual({
+      hook: "code_caps_reset",
+      ip: "198.51.100.200",
+      outcome: "ok",
+    });
+    const noRl = {
+      limit: async () => ({ success: false }),
+    } as unknown as RateLimit;
+    await same404(
+      await hook(on({ RL_ANON: noRl }), TEST_HOOKS.codeCapsReset, {}),
+    );
+  });
+
+  const groupEmail = async (id: string) =>
+    (
+      await env.DB.prepare(
+        "select email from directory_groups where group_id = ?",
+      )
+        .bind(id)
+        .first<{ email: string }>()
+    )?.email ?? null;
+
+  it("directory-groups: before the key, the uniform 404 and nothing written", async () => {
+    const id = `test-g-${crypto.randomUUID().slice(0, 8)}`;
+    const body = { groups: [{ groupId: id, email: `g@${TD}` }] };
+    for (const r of [
+      await call(on(), TEST_HOOKS.directoryGroups, {
+        body,
+        key: "x".repeat(32),
+      }),
+      await call(on(), TEST_HOOKS.directoryGroups, { body }),
+      await hook(env, TEST_HOOKS.directoryGroups, body),
+    ])
+      await same404(r);
+    expect(await groupEmail(id)).toBeNull();
+  });
+
+  it("directory-groups: seeds test- ids at TEST_DOMAIN emails, idempotently", async () => {
+    const a = `test-g-${crypto.randomUUID().slice(0, 8)}`;
+    const b = `test-g-${crypto.randomUUID().slice(0, 8)}`;
+    const body = {
+      groups: [
+        { groupId: a, email: `${a}@${TD}` },
+        { groupId: b, email: `${b}@${TD}` },
+      ],
+    };
+    const r = await hook(on(), TEST_HOOKS.directoryGroups, body);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ seeded: 2 });
+    expect(await groupEmail(a)).toBe(`${a}@${TD}`);
+    expect((await hook(on(), TEST_HOOKS.directoryGroups, body)).status).toBe(
+      200,
+    );
+    expect(await groupEmail(b)).toBe(`${b}@${TD}`);
+  });
+
+  it("directory-groups: never a non-test id or an email outside TEST_DOMAIN; a real group is untouched", async () => {
+    const real = `g-${crypto.randomUUID().slice(0, 8)}`;
+    await env.DB.prepare(
+      "insert into directory_groups (group_id, email) values (?, 'real@corp.example')",
+    )
+      .bind(real)
+      .run();
+    const since = await freshSince();
+    for (const groups of [
+      [{ groupId: real, email: `x@${TD}` }],
+      [{ groupId: "TEST-x", email: `x@${TD}` }],
+      [{ groupId: "test-ok", email: "x@corp.example" }],
+      [{ groupId: "test-ok", email: `x@sub.${TD}` }],
+      [
+        { groupId: "test-dup", email: `x@${TD}` },
+        { groupId: "test-dup", email: `y@${TD}` },
+      ],
+      [],
+    ])
+      await refused404(
+        await hook(on(), TEST_HOOKS.directoryGroups, { groups }),
+        "bad_input",
+      );
+    await refused404(
+      await hook(on(), TEST_HOOKS.directoryGroups, {
+        groups: [{ groupId: "test-ok", email: `x@${TD}` }],
+        extra: 1,
+      }),
+      "bad_input",
+    );
+    expect(await groupEmail(real)).toBe("real@corp.example");
+    expect(await groupEmail("test-ok")).toBeNull();
+    const rows = await auditRows(since);
+    expect(rows).toHaveLength(7);
+    expect(
+      rows.every(
+        (r) =>
+          r.action === "test_hook.directory_groups" &&
+          r.detail.outcome === "refused",
+      ),
+    ).toBe(true);
+  });
+
+  // #1078: a held sweep on a suite group, for the red-line's snooze case.
+  const syncStub = () => {
+    const ns = env.DIRECTORY_SYNC;
+    if (!ns) throw new Error("DIRECTORY_SYNC unbound");
+    return ns.get(
+      ns.idFromName(SYNC_DO_NAME),
+    ) as unknown as DurableObjectStub<DirectorySync>;
+  };
+  const inSync = <T>(f: (s: DurableObjectState) => T | Promise<T>) =>
+    runInDurableObject(syncStub(), (_i, s) => f(s));
+  const heldRow = (gid: string) =>
+    inSync(
+      (s) =>
+        new SyncEngine(env, s.storage) &&
+        (s.storage.sql
+          .exec("select kind, would, hash from held where group_id = ?", gid)
+          .toArray()[0] ??
+          null),
+    );
+  const snoozedRow = (gid: string) =>
+    inSync(
+      (s) =>
+        new SyncEngine(env, s.storage) &&
+        (s.storage.sql
+          .exec("select group_id from snoozed where group_id = ?", gid)
+          .toArray()[0] ??
+          null),
+    );
+  /** The group in Me's held list (D1 health), and whether it lights the dot. */
+  const inHealth = async (gid: string) => {
+    const h = await readHealth(env);
+    const x = h.held.find((y) => y.groupId === gid);
+    const dot = instanceDirectory(
+      "google",
+      { ...h, held: h.held.filter((y) => y.groupId === gid) },
+      true,
+      Date.now(),
+    ).heldSweeps;
+    return x ? { dot, snoozed: x.snoozedUntil !== null } : null;
+  };
+  /** A suite group seeded through the directory-groups hook. */
+  async function suiteGroup() {
+    const gid = `test-held-${crypto.randomUUID().slice(0, 8)}`;
+    const email = `${gid}@${TD}`;
+    const r = await hook(on(), TEST_HOOKS.directoryGroups, {
+      groups: [{ groupId: gid, email }],
+    });
+    expect(r.status).toBe(200);
+    return { gid, email };
+  }
+
+  it("directory-held: before the key (or hooks off), the uniform 404 and nothing held", async () => {
+    const { gid, email } = await suiteGroup();
+    const body = { groupId: gid, email, held: true };
+    for (const r of [
+      await call(on(), TEST_HOOKS.directoryHeld, {
+        body,
+        key: "x".repeat(32),
+      }),
+      await call(on(), TEST_HOOKS.directoryHeld, { body }),
+      await hook(env, TEST_HOOKS.directoryHeld, body),
+      await hook(on({ TEST_HOOKS: "0" }), TEST_HOOKS.directoryHeld, body),
+    ])
+      await same404(r);
+    expect(await heldRow(gid)).toBeNull();
+    expect(await inHealth(gid)).toBeNull();
+  });
+
+  it("directory-held: holds a suite group where sync keeps holds; the owner's snooze and cancel act on it; off releases it", async () => {
+    const { gid, email } = await suiteGroup();
+    const since = await freshSince();
+    const r = await hook(on(), TEST_HOOKS.directoryHeld, {
+      groupId: gid,
+      email,
+      held: true,
+    });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ held: true });
+    // The DO's hold, hashed like a sweep's, so a snooze can take it.
+    expect(await heldRow(gid)).toMatchObject({ kind: "sweep", would: 1 });
+    expect(typeof (await heldRow(gid))?.hash).toBe("string");
+    expect(await inHealth(gid)).toEqual({ dot: 1, snoozed: false });
+    // Idempotent.
+    expect(
+      (
+        await hook(on(), TEST_HOOKS.directoryHeld, {
+          groupId: gid,
+          email,
+          held: true,
+        })
+      ).status,
+    ).toBe(200);
+    // The real snooze path (the route's RPC) takes it off the dot.
+    const actor = userActor("u-owner");
+    expect(await syncStub().snoozeHeld(gid, actor, "test")).not.toBeNull();
+    expect(await inHealth(gid)).toEqual({ dot: 0, snoozed: true });
+    await syncStub().unsnoozeHeld(gid, actor);
+    expect(await inHealth(gid)).toEqual({ dot: 1, snoozed: false });
+    // Snoozed again, then released by the hook: the snooze ends "released".
+    expect(await syncStub().snoozeHeld(gid, actor, null)).not.toBeNull();
+    const off = await hook(on(), TEST_HOOKS.directoryHeld, {
+      groupId: gid,
+      email,
+      held: false,
+    });
+    expect(off.status).toBe(200);
+    expect(await off.json()).toEqual({ held: false });
+    expect(await heldRow(gid)).toBeNull();
+    expect(await snoozedRow(gid)).toBeNull();
+    expect(await inHealth(gid)).toBeNull();
+    const rows = (
+      await env.DB.prepare(
+        `select action, json_extract(detail, '$.why') why from audit_events
+          where target_id = ? and at >= ? order by at, action`,
+      )
+        .bind(gid, since)
+        .all<{ action: string; why: string | null }>()
+    ).results;
+    expect(rows).toEqual([
+      { action: "directory.sweep.snoozed", why: null },
+      { action: "directory.sweep.unsnoozed", why: "owner_cancel" },
+      { action: "directory.sweep.snoozed", why: null },
+      { action: "directory.sweep.unsnoozed", why: "released" },
+    ]);
+    const hooks = await auditRows(since);
+    expect(
+      hooks
+        .filter((x) => x.action === "test_hook.directory_held")
+        .map((x) => x.detail),
+    ).toEqual([
+      {
+        hook: "directory_held",
+        ip: "198.51.100.200",
+        outcome: "ok",
+        domain: TD,
+      },
+      {
+        hook: "directory_held",
+        ip: "198.51.100.200",
+        outcome: "ok",
+        domain: TD,
+      },
+      {
+        hook: "directory_held",
+        ip: "198.51.100.200",
+        outcome: "ok",
+        domain: TD,
+      },
+    ]);
+  });
+
+  it("directory-held: only a suite group at its own TEST_DOMAIN email; anything else is the 404 with bad_input and nothing held", async () => {
+    const { gid, email } = await suiteGroup();
+    const other = await suiteGroup();
+    const unseeded = `test-held-${crypto.randomUUID().slice(0, 8)}`;
+    const since = await freshSince();
+    for (const body of [
+      // Outside TEST_DOMAIN, or a subdomain of it.
+      { groupId: gid, email: `${gid}@corp.example`, held: true },
+      { groupId: gid, email: `${gid}@sub.${TD}`, held: true },
+      // Another suite group's email, or a group the hook never seeded.
+      { groupId: gid, email: other.email, held: true },
+      { groupId: unseeded, email: `${unseeded}@${TD}`, held: true },
+      // Not a test- id.
+      { groupId: "TEST-x", email, held: true },
+      { groupId: "g-real", email, held: true },
+      // Bad bodies.
+      { groupId: gid, email, held: "yes" },
+      { groupId: gid, email },
+      { groupId: gid, email, held: true, extra: 1 },
+      {},
+    ])
+      await refused404(
+        await hook(on(), TEST_HOOKS.directoryHeld, body),
+        "bad_input",
+      );
+    for (const g of [gid, other.gid, unseeded, "g-real"]) {
+      expect(await heldRow(g)).toBeNull();
+      expect(await inHealth(g)).toBeNull();
+    }
+    const rows = (await auditRows(since)).filter(
+      (r) => r.action === "test_hook.directory_held",
+    );
+    expect(rows).toHaveLength(10);
+    expect(rows.every((r) => r.detail.outcome === "refused")).toBe(true);
+  });
+
+  it("directory-held: DIRECTORY_SYNC unbound is the 404 with bad_input", async () => {
+    const { gid, email } = await suiteGroup();
+    await refused404(
+      await hook(on({ DIRECTORY_SYNC: undefined }), TEST_HOOKS.directoryHeld, {
+        groupId: gid,
+        email,
+        held: true,
+      }),
+      "bad_input",
+    );
+    expect(await heldRow(gid)).toBeNull();
+  });
+
+  it("directory-held: the engine never holds or releases an unprefixed group (a real hold stays)", async () => {
+    const real = `g-${crypto.randomUUID().slice(0, 8)}`;
+    await inSync((s) => {
+      new SyncEngine(env, s.storage);
+      s.storage.sql.exec(
+        "insert into held (group_id, since, kind, would, hash) values (?, 1, 'sweep', 3, 'h')",
+        real,
+      );
+    });
+    for (const on of [true, false])
+      expect(
+        await inSync((s) =>
+          new SyncEngine(env, s.storage).testHold(real, `x@${TD}`, on).then(
+            () => "held",
+            (e: Error) => e.message,
+          ),
+        ),
+      ).toBe("not a test group");
+    expect(await heldRow(real)).toEqual({ kind: "sweep", would: 3, hash: "h" });
+    await inSync((s) =>
+      s.storage.sql.exec("delete from held where group_id = ?", real),
+    );
+  });
+
+  // P50 (v0.101.0): a red-line install has no binding, and the status shows
+  // holds only with one. The test-hold seam (connect.ts testHeldFn) shows a
+  // `test-` hold there while hooks are live; nothing else changes.
+  it("directory-held, no binding: hooks on, the snooze's status and the status GET show the test- hold with its snoozedUntil; hooks off or a real group, as before", async () => {
+    expect((await readBinding(env)).binding).toBeNull();
+    const { gid, email } = await suiteGroup();
+    expect(
+      (
+        await hook(on(), TEST_HOOKS.directoryHeld, {
+          groupId: gid,
+          email,
+          held: true,
+        })
+      ).status,
+    ).toBe(200);
+    // A real group's entry in the same held list (sync never writes one
+    // without a binding; the seam must not show it either).
+    const real = `g-real-${crypto.randomUUID().slice(0, 8)}`;
+    const editHeld = async (f: (h: HeldSweep[]) => HeldSweep[]) => {
+      const { raw } = await readHealthRaw(env);
+      if (raw === null) throw new Error("no health row");
+      const v = JSON.parse(raw) as { held: HeldSweep[] };
+      await env.DB.prepare(HEALTH_CAS)
+        .bind(JSON.stringify({ ...v, held: f(v.held) }), HK.health, raw)
+        .run();
+    };
+    await editHeld((h) => [
+      ...h,
+      { ...(h.find((x) => x.groupId === gid) as HeldSweep), groupId: real },
+    ]);
+    const ids = (s: { held: HeldSweep[] }) => s.held.map((x) => x.groupId);
+    try {
+      // Before the snooze: hooks on shows the test hold, unsnoozed.
+      const before = await directoryStatus(on(), { showProblem: true });
+      expect(before.binding).toBeNull();
+      expect(before.held.find((x) => x.groupId === gid)).toMatchObject({
+        snoozedUntil: null,
+      });
+      // The owner's snooze (the route's engine call), on a hooks-on env.
+      const actor = userActor("u-owner");
+      const snoozed = await inSync((s) =>
+        new SyncEngine(on(), s.storage).snoozeHeld(gid, actor, "why"),
+      );
+      if (!snoozed) throw new Error("snooze refused");
+      const mine = snoozed.held.find((x) => x.groupId === gid);
+      expect(Date.parse(mine?.snoozedUntil ?? "")).toBeGreaterThan(Date.now());
+      expect(mine?.snoozeReason).toBe("why");
+      expect(ids(snoozed)).not.toContain(real);
+      // The status GET, as the owner.
+      const { cookie } = await login(tu("own"), "owner");
+      const get = async (e: Env) => {
+        const r = await call(e, R.directory, {
+          method: "GET",
+          headers: { cookie },
+        });
+        expect(r.status).toBe(200);
+        return SyncStatusSchema.parse(await r.json());
+      };
+      const shown = await get(on());
+      expect(shown.held.find((x) => x.groupId === gid)?.snoozedUntil).toBe(
+        mine?.snoozedUntil,
+      );
+      expect(ids(shown)).not.toContain(real);
+      expect(ids(shown).every((x) => x.startsWith("test-"))).toBe(true);
+      // Hooks off (unset, or TEST_HOOKS 0): the status as today, no holds.
+      for (const e of [env, on({ TEST_HOOKS: "0" })]) {
+        expect((await get(e)).held).toEqual([]);
+        expect((await directoryStatus(e, { showProblem: true })).held).toEqual(
+          [],
+        );
+        const z = await inSync((s) =>
+          new SyncEngine(e, s.storage).snoozeHeld(gid, actor, null),
+        );
+        expect(z?.held).toEqual([]);
+      }
+    } finally {
+      await editHeld((h) => h.filter((x) => x.groupId !== real));
+      await hook(on(), TEST_HOOKS.directoryHeld, {
+        groupId: gid,
+        email,
+        held: false,
+      });
+    }
+  });
+
   it("/healthz reports testHooks", async () => {
     const h = HealthzSchema.parse(
       await (await call(env, "/healthz", { method: "GET" })).json(),
@@ -569,5 +1177,81 @@ describe("hooks", () => {
         await (await call(on(), "/healthz", { method: "GET" })).json(),
       ).testHooks,
     ).toBe(true);
+  });
+});
+
+describe("testHold's held-list confirm (#1078)", () => {
+  const gid = "test-confirm";
+  const NOW = Date.UTC(2026, 10, 2, 12);
+  /**
+   * A DO side with no prior hold or snooze and a D1 held list in `d1`.
+   * `writes` answers each health write (false: every CAS try lost);
+   * `clobber` wipes the list after a write (an alarm's blind write landing).
+   */
+  function io(o: { writes?: boolean[]; clobber?: boolean[] } = {}) {
+    let d1: HealthLike = { held: [] };
+    const st = { writes: 0, reads: 0 };
+    const sql = {
+      exec: () => ({ toArray: () => [] }),
+    } as unknown as SqlStorage;
+    const x: TestHoldIo = {
+      sql,
+      transactionSync: (f) => f(),
+      hash: async () => "h",
+      endSnooze: async () => {},
+      health: async (f) => {
+        const i = st.writes++;
+        if (o.writes?.[i] === false) return false;
+        d1 = f(d1 as never) as HealthLike;
+        if (o.clobber?.[i]) d1 = { held: [] };
+        return true;
+      },
+      heldIds: async () => {
+        st.reads++;
+        return d1.held.map((h) => h.groupId);
+      },
+    };
+    return { x, st, list: () => d1.held.map((h) => h.groupId) };
+  }
+  type HealthLike = { held: { groupId: string }[] };
+
+  it("on: a write the re-read shows answers held", async () => {
+    const f = io();
+    expect(await testHold(f.x, gid, `${gid}@t`, true, NOW)).toBe(true);
+    expect(f.list()).toEqual([gid]);
+    expect(f.st).toEqual({ writes: 1, reads: 1 });
+  });
+
+  it("on: an alarm write over the first round is redone, then confirmed", async () => {
+    const f = io({ clobber: [true] });
+    expect(await testHold(f.x, gid, `${gid}@t`, true, NOW)).toBe(true);
+    expect(f.list()).toEqual([gid]);
+    expect(f.st).toEqual({ writes: 2, reads: 2 });
+  });
+
+  it("on: every CAS try lost, or every round overwritten, throws (never held:true with nothing in D1)", async () => {
+    const lost = io({ writes: [false, false, false] });
+    await expect(testHold(lost.x, gid, `${gid}@t`, true, NOW)).rejects.toThrow(
+      "held list write lost",
+    );
+    expect(lost.list()).toEqual([]);
+    const clobbered = io({ clobber: [true, true, true] });
+    await expect(
+      testHold(clobbered.x, gid, `${gid}@t`, true, NOW),
+    ).rejects.toThrow("held list write lost");
+    expect(clobbered.st.writes).toBe(3);
+  });
+
+  it("off: a release whose entry stays in D1 throws (never held:false with the hold still counted)", async () => {
+    const f = io({ writes: [true, false, false, false] });
+    await testHold(f.x, gid, `${gid}@t`, true, NOW);
+    await expect(testHold(f.x, gid, `${gid}@t`, false, NOW)).rejects.toThrow(
+      "held list write lost",
+    );
+    expect(f.list()).toEqual([gid]);
+    const g = io({ writes: [true, false] });
+    await testHold(g.x, gid, `${gid}@t`, true, NOW);
+    expect(await testHold(g.x, gid, `${gid}@t`, false, NOW)).toBe(false);
+    expect(g.list()).toEqual([]);
   });
 });

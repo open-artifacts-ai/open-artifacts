@@ -27,10 +27,19 @@ export interface ArtifactEventsOptions {
   onGone: (reason: GoneReason) => void;
   /**
    * The socket couldn't connect (a 429, a refusal) or dropped: refetch on
-   * focus. A failed connect isn't retried until `retry`, so no storm.
+   * focus. A first connect that never got a hello isn't retried until
+   * `retry`, so no storm; once one hello came, reconnects back off instead.
    */
   onDown: () => void;
 }
+
+/** A server retry hint is honoured up to this long: a bad one never stalls reconnects. */
+export const RETRY_HINT_MAX_MS = 5 * 60_000;
+/** A server retry hint in ms, clamped to 0..RETRY_HINT_MAX_MS; NaN, negative or absent is 0. */
+export const clampRetryHint = (ms: number | null | undefined): number =>
+  typeof ms === "number" && Number.isFinite(ms) && ms > 0
+    ? Math.min(ms, RETRY_HINT_MAX_MS)
+    : 0;
 
 export const eventsUrl = (id: string, embed: boolean) => {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -38,10 +47,29 @@ export const eventsUrl = (id: string, embed: boolean) => {
 };
 
 /**
+ * The page may be reachable again: window focus, the tab turning visible, or
+ * the network coming back. Calls `cb` on each; returns the unsubscribe.
+ */
+export function onWake(cb: () => void) {
+  const onVisible = () => {
+    if (document.visibilityState === "visible") cb();
+  };
+  window.addEventListener("focus", cb);
+  window.addEventListener("online", cb);
+  document.addEventListener("visibilitychange", onVisible);
+  return () => {
+    window.removeEventListener("focus", cb);
+    window.removeEventListener("online", cb);
+    document.removeEventListener("visibilitychange", onVisible);
+  };
+}
+
+/**
  * One R.events socket per viewer. Server to client only: this never sends a
  * frame (the server closes with 1008 if it gets one). Reconnects on 4408 at
- * once, and with backoff after a connection that worked drops; each
- * connect's hello carries the current version, so missed ones catch up.
+ * once, and with capped backoff once any connect has said hello (a failed
+ * reconnect keeps backing off); each connect's hello carries the current
+ * version, so missed ones catch up.
  */
 export function connectArtifactEvents(opts: ArtifactEventsOptions) {
   let ws: WebSocket | null = null;
@@ -51,6 +79,10 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
   let paused = false;
   /** A connect failed: wait for `retry` (a window focus) instead. */
   let idle = false;
+  /** Some connect in this life got a hello: the server takes us, so keep trying. */
+  let everHello = false;
+  /** A gone's retryAfterMs (#816): no reconnect before this time. */
+  let notBefore = 0;
 
   const open = () => {
     if (stopped || paused) return;
@@ -69,11 +101,12 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
       const f = ArtifactEventSchema.safeParse(raw);
       if (!f.success) return;
       if (f.data.type === "gone") {
-        gone(sock, f.data.reason);
+        gone(sock, f.data.reason, f.data.retryAfterMs);
         return;
       }
       if (f.data.type === "hello") {
         hello = true;
+        everHello = true;
         attempt = 0;
       }
       opts.onEvent(f.data);
@@ -91,7 +124,7 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
         return;
       }
       opts.onDown();
-      if (!hello) {
+      if (!hello && !everHello) {
         idle = true;
         return;
       }
@@ -100,9 +133,10 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
     };
   };
 
-  const gone = (sock: WebSocket, reason: GoneReason) => {
+  const gone = (sock: WebSocket, reason: GoneReason, retryAfterMs?: number) => {
     if (paused) return;
     paused = true;
+    notBefore = Date.now() + clampRetryHint(retryAfterMs);
     if (ws === sock) ws = null;
     sock.close();
     opts.onGone(reason);
@@ -116,9 +150,14 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
       if (stopped || !paused) return;
       paused = false;
       attempt = 0;
-      open();
+      // The server asked for a pause (a socket opened just as access
+      // changed): wait it out instead of looping on gone.
+      const wait = notBefore - Date.now();
+      clearTimeout(timer);
+      if (wait > 0) timer = setTimeout(open, wait);
+      else open();
     },
-    /** After a failed connect: one more try (on window focus). */
+    /** After a failed first connect: one more try (focus, visible, online). */
     retry() {
       if (stopped || paused || !idle) return;
       open();

@@ -1,9 +1,12 @@
 import { MCP_PATH, normalizeHost as normHost } from "@oa/shared";
 import { app } from "./app.js";
+import { canConnect } from "./auth/agents.js";
+import { withBrokerProps } from "./auth/broker-transport.js";
+import { withCred } from "./auth/cred.js";
 import { verifyPat } from "./auth/pat.js";
-import { orgCan } from "./auth/policy.js";
 import { contentApp } from "./content/app.js";
 import { scheduled } from "./cron.js";
+import { withReadBudget, withRetries } from "./db/retry.js";
 import type { Env } from "./env.js";
 import { appHostOpts, withSecurityHeaders } from "./http/middleware.js";
 import { serveAppHost } from "./mcp/oauth.js";
@@ -13,8 +16,11 @@ import {
   mcpHandler,
   mcpUnauthorized,
 } from "./mcp/server.js";
-import { getUser } from "./services/users.js";
+import type { AgentAttr } from "./services/agent-usage.js";
+import { getUserWithEpoch } from "./services/users.js";
 
+export { BusHub } from "./bus/hub.js";
+export { DirectorySync } from "./directory/sync-do.js";
 export type { Env } from "./env.js";
 export { ArtifactRuntime } from "./runtime/do.js";
 export { UserPresence } from "./runtime/presence.js";
@@ -52,43 +58,68 @@ async function mcpWithPat(
   token: string,
 ): Promise<Response> {
   const pat = await verifyPat(env, token, ctx);
-  const user = pat ? await getUser(env, pat.userId) : null;
-  if (!pat || !user) return mcpUnauthorized(env);
-  // Guests can't connect agents (they only see what's shared with them).
-  if (!orgCan(user, "mcp.connect"))
+  const row = pat ? await getUserWithEpoch(env, pat.userId) : null;
+  if (!pat || !row) return mcpUnauthorized(env);
+  const { user, sessionEpoch } = row;
+  // Members only, never a capped caller (a guest, a restricted member): the
+  // same rule as an OAuth grant (canConnect).
+  if (!canConnect(user))
     return mcpUnauthorized(env, "Only members can connect agents");
   const capped = await capMcpBody(req, env);
   if (capped instanceof Response) return capped;
-  const agent = { name: pat.label, version: null };
-  return mcpHandler(env, () =>
-    createServer({ env, user, agent, exec: ctx }),
-  ).fetch(capped, {
-    // token is deliberately empty: tools never need it, and the SDK must not
-    // be able to log or echo the PAT. clientId names the token row instead.
-    authInfo: { token: "", clientId: `pat:${pat.tokenId}`, scopes: [] },
-  });
+  const agent: AgentAttr = {
+    name: pat.label,
+    version: null,
+    via: { kind: "token", id: pat.tokenId },
+  };
+  // Audit rows from these tools name the PAT (by id, never its text).
+  return withCred({ kind: "pat", id: pat.tokenId }, () =>
+    mcpHandler(env, () =>
+      createServer({ env, user, sessionEpoch, agent, exec: ctx }),
+    ).fetch(capped, {
+      // token is deliberately empty: tools never need it, and the SDK must not
+      // be able to log or echo the PAT. clientId names the token row instead.
+      authInfo: { token: "", clientId: `pat:${pat.tokenId}`, scopes: [] },
+    }),
+  );
 }
 
+// Every entry point reads D1 and KV through withRetries (db/retry.ts): one
+// wrapper per env, never per request, with one waiting budget per
+// invocation (withReadBudget).
 export default {
-  async fetch(req, env, ctx) {
-    // URL.hostname only: port stripped; X-Forwarded-Host is ignored.
-    const url = new URL(req.url);
-    if (normHost(url.hostname) === normHost(env.CONTENT_HOST ?? ""))
-      return contentApp.fetch(req, env, ctx);
-    // Another install's hostname (WfP wildcard) or a stray alias: 404 before
-    // auth, OAuth, the route policy or D1. Plain body, no other headers.
-    if (isForeignHost(env, url.hostname))
-      return new Response("Not found", { status: 404 });
-    const pat =
-      url.pathname === MCP_PATH
-        ? PAT_BEARER.exec(req.headers.get("authorization") ?? "")
-        : null;
-    // PATs at /mcp; everything else through the OAuth provider: OAuth bearer
-    // at /mcp, its token/register/metadata endpoints, then the app.
-    const res = pat?.[1]
-      ? await mcpWithPat(req, env, ctx, pat[1])
-      : await serveAppHost(req, env, ctx, app);
-    return withSecurityHeaders(res, appHostOpts(env, req.method, url.pathname));
+  fetch(req, env, ctx) {
+    const e = withRetries(env);
+    // The platform's broker capabilities (ctx.props) for this invocation.
+    return withReadBudget(() => withBrokerProps(ctx, () => serve(req, e, ctx)));
   },
-  scheduled,
+  scheduled(event, env, ctx) {
+    const e = withRetries(env);
+    return withReadBudget(() => scheduled(event, e, ctx));
+  },
 } satisfies ExportedHandler<Env>;
+
+async function serve(
+  req: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  // URL.hostname only: port stripped; X-Forwarded-Host is ignored.
+  const url = new URL(req.url);
+  if (normHost(url.hostname) === normHost(env.CONTENT_HOST ?? ""))
+    return contentApp.fetch(req, env, ctx);
+  // Another install's hostname (WfP wildcard) or a stray alias: 404 before
+  // auth, OAuth, the route policy or D1. Plain body, no other headers.
+  if (isForeignHost(env, url.hostname))
+    return new Response("Not found", { status: 404 });
+  const pat =
+    url.pathname === MCP_PATH
+      ? PAT_BEARER.exec(req.headers.get("authorization") ?? "")
+      : null;
+  // PATs at /mcp; everything else through the OAuth provider: OAuth bearer
+  // at /mcp, its token/register/metadata endpoints, then the app.
+  const res = pat?.[1]
+    ? await mcpWithPat(req, env, ctx, pat[1])
+    : await serveAppHost(req, env, ctx, app);
+  return withSecurityHeaders(res, appHostOpts(env, req.method, url.pathname));
+}

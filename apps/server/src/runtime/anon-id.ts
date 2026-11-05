@@ -4,7 +4,7 @@ import { b64urlDecode, b64urlEncode } from "../util/crypto.js";
 
 /**
  * Signed per-browser anonymous id, for anonymous viewers of artifacts with
- * allowAnonymousWrites. One global token per browser per app origin:
+ * dataWriters "viewers". One global token per browser per app origin:
  * "<id>.<iat>.<sig>", id = base64url(16 random bytes) (22 chars),
  * iat = issued-at in unix seconds, base36,
  * sig = base64url(HMAC-SHA256(k2, "anon:" + id + ":" + iat)) (43 chars), where

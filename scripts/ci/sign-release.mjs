@@ -1,6 +1,6 @@
 // @ts-check
 // hosted-sign (T3b): signs the hosted release artifact for one env. Plain
-// .mjs run by the runner's own node (no setup-node, no strip-types); node:*
+// .mjs run on Node 22 (setup-node from .nvmrc, no strip-types); node:*
 // imports only (and the local .mjs it imports, likewise): the job installs
 // nothing. The Ed25519 key (PKCS8 PEM) arrives on stdin only, never in argv,
 // a file or a log:
@@ -28,7 +28,7 @@ import {
   runMain,
   sigJson,
 } from "./release-artifact.mjs";
-import { checkSigningKey, SKIPPED, skipUnsigned } from "./release-pubkeys.mjs";
+import { checkSigningKey, skipUnsigned } from "./release-pubkeys.mjs";
 
 const NAME = "sign-release";
 const ARGS = [
@@ -71,11 +71,9 @@ async function main() {
   if (key.asymmetricKeyType !== "ed25519")
     throw new Error("the signing key is not Ed25519");
   const pub = createPublicKey(key);
-  // L11: a wrong or swapped Environment secret is refused here, not at publish.
-  if (
-    checkSigningKey(env, String(pub.export({ format: "jwk" }).x)) === "skipped"
-  )
-    process.stderr.write(SKIPPED(env, "signing key"));
+  // L11: a wrong or swapped Environment secret is refused here, not at
+  // publish, and so is any key while this env's pin is still the placeholder.
+  checkSigningKey(env, String(pub.export({ format: "jwk" }).x));
   const art = await readArtifact(resolve(String(a.dir)));
   const prepared = prepare(art, {
     env,

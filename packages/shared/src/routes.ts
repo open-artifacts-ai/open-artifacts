@@ -1,3 +1,5 @@
+import type { NoticeId } from "./hosted/core.js";
+
 const A = "/api/v1/artifacts";
 // "." and ".." segments (even percent-encoded) are collapsed by URL parsers, so they cannot be
 // represented safely; refuse them rather than emit a URL that resolves elsewhere.
@@ -10,12 +12,24 @@ const seg = (s: string): string => {
 export const R = {
   /** GET -> Me; PATCH MePatch (`{ displayName }`) -> Me. Any signed-in user, guests included. */
   me: "/api/v1/me",
-  /** GET (ListQuery) -> Page<ArtifactSummary>; POST PublishInput (JSON) -> PublishResult. Inline content (content, text files and base64 together) is limited to LIMITS.inlineBytes (128 KB): over it, or a body over twice that plus 64 KB, 413 too_large (INLINE_TOO_LARGE_MESSAGE); larger files go through R.uploads then files: { path: { uploadId } }. Publishing to an uploaded/reserved id with no existing artifact requires title; the server returns 400 without it. */
+  /** GET -> ShareNoticeAgents; PUT ShareNoticeAgents -> ShareNoticeAgents (replaces the list; 400 bad_request on an invalid address, details { path: "agents[i].name", reason: "invalid" | "reserved" }, or more than SHARE_NOTICE_MAX, details { path: "agents", reason: "too_many" }). The bus addresses that get "shared with you" notices; empty (the default) drops them. Callers who may connect agents (mcp.connect), their own list only; PUT takes an interactive cookie session (a PAT or OAuth grant gets 404) (#1292). */
+  shareNotices: "/api/v1/bus/share-notices",
+  /** GET (ListQuery) -> Page<ArtifactSummary>; POST PublishInput (JSON) -> PublishResult. Inline content (content, text files and base64 together) is limited to LIMITS.inlineBytes (128 KB): over it, or a body over twice that plus 64 KB, 413 too_large (INLINE_TOO_LARGE_MESSAGE); larger files go through R.uploads then files: { path: { uploadId } }. Publishing to an uploaded/reserved id with no existing artifact requires title; the server returns 400 without it. Create only: an existing artifact's id is 400 bad_request (details { path: "id", reason: "not_reserved" }); publish a new version with POST R.versions(id). (MCP publish_artifact with an id does publish a new version.) */
   artifacts: A,
-  /** GET -> ArtifactSummary; PATCH ArtifactPatch -> ArtifactSummary; DELETE soft-delete -> 204 */
+  /** GET -> ArtifactSummary; PATCH ArtifactPatch -> ArtifactPatchResult; DELETE soft-delete -> 204 */
   artifact: (id: string) => `${A}/${seg(id)}`,
-  /** POST -> ArtifactSummary */
+  /** POST -> ArtifactSummary. The personal owner, or (shared space) an uncapped manager of that space by space role (an org admin only after self-adding as manager), within LIMITS.softDeleteDays. A shared space's trash restores only while the space is live and spaces are on. Anyone else, or otherwise, 404. */
   restoreDeleted: (id: string) => `${A}/${seg(id)}/undelete`,
+  /**
+   * GET TrashQuery (?spaceId=&cursor=&limit=) -> Page<TrashItem>, newest
+   * deletedAt first. The caller's personal trash plus, with spaces on, the
+   * trash of every shared space where their space role is manager (uncapped;
+   * no org-admin shortcut). spaceId narrows it: a shared space the caller doesn't manage,
+   * or can't see, is 404; another person's personal space is 404. With
+   * spaces off, any spaceId but the caller's own id is 400. Capped callers
+   * get an empty page (they can't restore).
+   */
+  trash: "/api/v1/trash",
   /**
    * GET -> VersionInfo[]: newest first with version < `before` (all versions when omitted).
    * A page holds at most VERSIONS_PAGE_SIZE (20) and stops early once its manifests pass
@@ -61,18 +75,41 @@ export const R = {
    * document's entry file is indexed: text past that never matches.
    */
   search: "/api/v1/search",
-  /** GET -> Member[]; POST MemberInvite -> Member */
+  /** GET -> Member[]; POST MemberInvite -> Member. Uncapped org owner or admin only (anyone else 404); space managers use spaceCandidates. */
   members: "/api/v1/members",
   /** PATCH MemberPatch -> Member; DELETE -> 204 */
   member: (id: string) => `/api/v1/members/${seg(id)}`,
   /** GET -> Token[]; POST TokenCreateInput -> TokenCreated */
   tokens: "/api/v1/tokens",
-  /** DELETE -> 204 */
+  /** PATCH TokenPatch -> Token; DELETE -> 204. Own tokens only (else 404). */
   token: (id: string) => `/api/v1/tokens/${seg(id)}`,
   /** GET -> OAuthClient[] */
   oauthClients: "/api/v1/oauth-clients",
-  /** DELETE -> 204 */
+  /** PATCH OAuthClientPatch -> OAuthClient; DELETE -> 204. Own grants only (else 404). */
   oauthClient: (grantId: string) => `/api/v1/oauth-clients/${seg(grantId)}`,
+  /** GET -> BusMachines: the caller's own bus machines (#1291). Never a token. */
+  busMachines: "/api/v1/bus/machines",
+  /** DELETE -> 204: revoke one of the caller's machines (idempotent; another member's or unknown: 404). */
+  busMachine: (id: string) => `/api/v1/bus/machines/${seg(id)}`,
+  /** GET -> BusAgents: the caller's open bus agents (canConnect; else 404). Empty when the bus is off. */
+  busAgents: "/api/v1/bus/agents",
+  /**
+   * GET -> BusRoles: the caller's role addresses (#1296), with `live` false
+   * when the bus could not be asked. PUT BusRolePut -> `{ role: BusRole }`:
+   * sets, re-points or (agentId null) vacates the role (namespace, name),
+   * creating it if needed; 400 bad_request (invalid body, name or
+   * namespace), 409 conflict with details `{ reason }`: `name_taken` (a live
+   * agent or a reserved former name there), `agent_not_open` (no open agent
+   * with that id visible in the namespace), `role_limit` (BUS_ROLE_MAX), or
+   * `no_bus` (no machine has connected yet). mcp.connect; PUT takes an
+   * interactive cookie session (a PAT or OAuth grant gets 404), so no AI
+   * agent can set or claim a role. An agent can only propose a change (MCP
+   * bus_role_propose, #1372), which the member confirms on its link; GET's
+   * `proposals` lists the newest (BusRoleProposal, no link).
+   */
+  busRoles: "/api/v1/bus/roles",
+  /** DELETE -> 204: removes the caller's role (idempotent: unknown is 204 too). Same rules as PUT R.busRoles. */
+  busRole: (id: string) => `/api/v1/bus/roles/${seg(id)}`,
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
   /**
@@ -124,7 +161,7 @@ export const R = {
   /** GET Upgrade: websocket; frames are DataChange */
   dataSubscribe: (id: string, col: string) =>
     `${A}/${seg(id)}/data-subscribe?collection=${seg(col)}`,
-  /** GET -> AnonViewer ({ anonId }): an anonymous viewer's public id (runtime viewer.anonId()); artifacts with allowAnonymousWrites and the viewer capability only (401 signed in or otherwise). Verifies the ANON_ID_HEADER token or mints one (returned in that header), like anonymous writes; RL_ANON per IP. The id is per artifact. */
+  /** GET -> AnonViewer ({ anonId }): an anonymous viewer's public id (runtime viewer.anonId()); artifacts with dataWriters "viewers" and the viewer capability only (401 signed in or otherwise). Verifies the ANON_ID_HEADER token or mints one (returned in that header), like anonymous writes; RL_ANON per IP. The id is per artifact. */
   anonId: (id: string) => `${A}/${seg(id)}/anon-id`,
   /** GET -> Page<StorageKey> */
   storage: (id: string) => `${A}/${seg(id)}/storage`,
@@ -152,6 +189,13 @@ export const R = {
    * the space's managers are notified.
    */
   spaceMemberSelf: (id: string) => `/api/v1/spaces/${seg(id)}/members/self`,
+  /**
+   * GET SpaceCandidatesQuery -> Page<SpaceCandidate>: the people a caller
+   * who can manage this space may add (active org members, never guests).
+   * Uncapped org admin or uncapped space manager; anyone else 404.
+   * Personal: 400 space_personal.
+   */
+  spaceCandidates: (id: string) => `/api/v1/spaces/${seg(id)}/candidates`,
   /** GET -> GroupMapping[] (org admin, space manager; personal: 400 space_personal). Manager access pending server implementation (P3 T9/T14). */
   spaceMappings: (id: string) => `/api/v1/spaces/${seg(id)}/mappings`,
   /** PUT GroupMappingPut -> GroupMapping; DELETE -> 204. 409 directory_sync_off when sync is off or frozen. Keyed by Google group id. Org admin: any role; space manager: viewer|editor rows only (a manager role in the body or the existing row: 403 space_forbidden); manager PUT while Settings.spaceManagerMappings is off: 403 directory_mapping_off (DELETE always allowed). Manager access pending server implementation (P3 T9/T14). */
@@ -171,21 +215,85 @@ export const R = {
   /** PUT GroupMappingPut -> GroupMapping (upsert); DELETE -> 204 (org admin). 409 directory_sync_off when sync is off or frozen. Keyed by Google group id. Never applies to personal spaces. */
   orgMapping: (groupId: string) =>
     `/api/v1/directory/org-mappings/${seg(groupId)}`,
-  /** GET -> SyncStatus (org owner, admin); DELETE -> 204 disconnect (org owner; memberships freeze). */
+  /** GET -> SyncStatus (org owner, admin); DELETE -> 204, the same disconnect as directoryDisconnect (org owner, cookie session). */
   directory: "/api/v1/directory",
+  /**
+   * POST -> 200 SyncStatus (state never; customer_mismatch when disconnected
+   * during one): revokes the Google grant (best effort), deletes the binding,
+   * tokens and any pending consent, and stops sync. Synced memberships stay
+   * as they are (frozen). Nothing connected: 200, no change. The org owner
+   * in a cookie session only (a PAT or grant: 404). Every owner is emailed.
+   * Audited directory.disconnect.
+   */
+  directoryDisconnect: "/api/v1/directory/disconnect",
   /** GET DirectoryGroupsQuery -> Page<DirectoryGroup> (org admin; group picker). */
   directoryGroups: "/api/v1/directory/groups",
   /** GET -> 302 to Google consent (org owner). */
   directoryConnect: "/api/v1/directory/connect",
-  /** GET (OAuth) -> 302 /settings/directory?connected=1 or ?error=DirectoryConnectError. */
+  /**
+   * GET (OAuth) -> 302 /settings/directory (consent stored, SyncStatus.state
+   * pending_confirm) or /settings/directory?error=DirectoryConnectError.
+   */
   directoryCallback: "/api/v1/directory/callback",
+  /**
+   * POST -> 200 SyncStatus: runs the binding pass for the pending connection.
+   * Only the owner who connected (still the org owner); anyone else 404; no
+   * pending connection 404; expired (24 h) 409 conflict, and it is dropped.
+   * A tenant change (SyncStatus.pendingCustomerChange) confirms the same
+   * way; directory.connect records customerId and previousCustomerId.
+   */
+  directoryConfirm: "/api/v1/directory/confirm",
+  /** POST -> 204: drops the pending connection (token and binding). Same callers as directoryConfirm. */
+  directoryCancel: "/api/v1/directory/cancel",
   /** POST -> 202 SyncStatus (org owner; "Sync now"). */
   directorySync: "/api/v1/directory/sync",
   /** POST -> 202 SyncStatus (org owner; apply a held sweep). */
   directoryHeldConfirm: (groupId: string) =>
     `/api/v1/directory/held/${seg(groupId)}/confirm`,
-  /** GET -> TransferSummary; POST TransferInput -> TransferResult (409 member_active). Org owner, admin. */
+  /**
+   * POST HeldSnoozeInput -> 200 SyncStatus: snooze a held sweep for
+   * HELD_SNOOZE_MS (visibility only; nothing is applied or reverted). DELETE
+   * -> 200 SyncStatus: cancel the snooze (none: no change). Org owner (a cap
+   * drops it), anyone else 404; frozen or off 409 directory_sync_off; no
+   * snoozable hold for the group 409 conflict.
+   */
+  directoryHeldSnooze: (groupId: string) =>
+    `/api/v1/directory/held/${seg(groupId)}/snooze`,
+  /** GET -> TransferSummary; POST TransferInput -> TransferResult (409 member_active). Org owner, admin, on every install; a space target needs the spaces feature (404 without it). */
   memberTransfer: (id: string) => `/api/v1/members/${seg(id)}/transfer`,
+  /**
+   * POST (no body) -> 200 Member: a removed member or admin comes back
+   * active as a member (never an admin), a removed guest as a guest (manual
+   * restriction kept). Org owner, admin; an admin
+   * target needs the owner (403 owner_only). Their old PATs and agent
+   * connections stay revoked; they sign in again. Audited user.status
+   * (reason admin_restore). 404 unknown; 409 member_active (not removed),
+   * directory_managed (removed by directory sync while Google sync is on and
+   * a Workspace is connected), conflict (their Workspace account was deleted,
+   * so their address is gone), guest_lapsed (a lapsed guest: a new share
+   * brings them back). Their space roles come back with them. Directory
+   * sync revives a member it removed by itself (reason sync_revive) when
+   * Google lists the same directory user active again. An erased person:
+   * 409 member_erased (invite them instead).
+   */
+  memberRestore: (id: string) => `/api/v1/members/${seg(id)}/restore`,
+  /**
+   * POST (no body) -> 204: erase a removed person (#1204). Their address
+   * becomes the placeholder, their names, last seen and personal space name
+   * are cleared, and their sessions, PATs, agent connections, shares to
+   * their address, space roles and directory rows are deleted. The row id
+   * (authorship) and their Google link stay, so the same Google account is
+   * blocked on sync and Google sign-in until an admin resets the Google link
+   * (R.memberIdentity); then it comes back as a new, empty person. The
+   * erased row stays erased. Org owner, admin, from a
+   * signed-in browser session only (a PAT or an agent's token: 404); an
+   * admin target needs the owner (403 owner_only). 404 unknown; 409
+   * member_active (not removed, the owner, or the owner's address); 409
+   * member_owns_artifacts (details MemberOwnsArtifactsDetails: transfer
+   * them first). Idempotent: an erased row is 204 again, audited once
+   * (user.erased). Erased rows leave GET R.members?status=removed.
+   */
+  memberErase: (id: string) => `/api/v1/members/${seg(id)}/erase`,
   /**
    * PUT (no body) -> Member; DELETE -> Member: set or clear the MANUAL
    * restricted flag (org owner, admin; any sync mode). Audited
@@ -196,6 +304,22 @@ export const R = {
   /** DELETE -> 204: reset a member's Google link (owner, admin; never the owner's link). */
   memberIdentity: (id: string, provider: "google") =>
     `/api/v1/members/${seg(id)}/identities/${seg(provider)}`,
+  /**
+   * POST -> 200 { auth, directory }, each { ok, reached, status, ms,
+   * transport, skipped?, error?, cached? }: the install's transport reached
+   * broker-core and was refused as expected (a signed junk request; the
+   * 401 doesn't prove the signing key is registered). The org owner only
+   * (anyone else 404). Within 30 s of the last check its result again
+   * (cached); else 2 a minute (429). Audited auth.broker_check.
+   */
+  adminBrokerCheck: "/api/v1/admin/broker-check",
+  /**
+   * POST (no body) -> 204: dismiss a notice (Me.notices) for good, by any
+   * /api/v1 credential. Idempotent. "guest_shares": the caller's own list,
+   * per user, any non-guest member. "guest_summary": install-wide, the
+   * uncapped org owner only. Anyone else, and an unknown notice, 404.
+   */
+  noticeDismiss: (notice: NoticeId) => `/api/v1/notices/${seg(notice)}/dismiss`,
   /** GET ?cursor&limit -> Page<AuditEvent> (org owner, admin). */
   audit: "/api/v1/audit",
   /**
@@ -211,6 +335,7 @@ export const AUDIT_NEXT_CURSOR_HEADER = "X-OA-Next-Cursor";
 
 export const AUTH = {
   login: "/auth/login",
+  /** GET (Access OIDC) -> 302 next; a refusal goes to PAGES.noAccess on Access-only installs, else (direct mode) SIGN_IN_PAGE?error=no_access&next&via=access. */
   callback: "/auth/callback",
   logout: "/auth/logout",
   devLogin: "/auth/dev-login",
@@ -219,7 +344,7 @@ export const AUTH = {
   providers: "/auth/providers",
   /** GET ?next -> 302 to Google (404 when Google is off). */
   loginGoogle: "/auth/login/google",
-  /** GET (OAuth) -> 302 next, or (any refusal, no_access included) SIGN_IN_PAGE?error=SignInError&next. */
+  /** GET (OAuth) -> 302 next, or (any refusal) SIGN_IN_PAGE?error=SignInError&next; no_access adds &via=google (SignInVia). */
   callbackGoogle: "/auth/callback/google",
   /** POST CodeRequest -> 202 CodeRequested. */
   codeRequest: "/auth/code/request",

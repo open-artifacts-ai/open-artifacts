@@ -52,6 +52,20 @@ case "$mode" in
     ;;
 esac
 
+# Prod only: direct sign-in from the repository variables (PROD_AUTH_PROVIDERS,
+# PROD_AUTH_DOMAINS, PROD_AUTH_DOMAIN_JOIN, PROD_GOOGLE_CLIENT_ID, in env). An
+# unset or empty one passes no flag, so setup keeps the live Worker's value.
+# Each value is one argv element (--flag=value); setup validates it.
+case "$mode" in
+  install | preflight | upgrade)
+    for pair in auth-providers=PROD_AUTH_PROVIDERS auth-domains=PROD_AUTH_DOMAINS \
+      auth-domain-join=PROD_AUTH_DOMAIN_JOIN google-client-id=PROD_GOOGLE_CLIENT_ID; do
+      var="${pair#*=}"
+      if [[ -n "${!var:-}" ]]; then mode_args+=("--${pair%%=*}=${!var}"); fi
+    done
+    ;;
+esac
+
 run_setup() {
   if pnpm -s oa:setup "${mode_args[@]}" --name "$PROD_NAME" --app-host "$PROD_APP_HOST" \
     --content-host "$PROD_CONTENT_HOST" --owner-email "$PROD_OWNER_EMAIL" 2>&1; then

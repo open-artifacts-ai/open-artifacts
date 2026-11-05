@@ -9,6 +9,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./tokens.css": "./src/tokens/tokens.css",
+    "./fonts.css": "./src/tokens/fonts.css",
     "./shadcn": "./src/shadcn/index.ts",
     "./shadcn.css": "./src/shadcn/shadcn.css",
     "./shadcn-utilities.css": "./src/shadcn/shadcn-utilities.css",
@@ -43,6 +44,8 @@
     "vitest": "^4.1.12"
   },
   "dependencies": {
+    "@fontsource/geist": "5.3.0",
+    "@fontsource/geist-mono": "5.3.0",
     "class-variance-authority": "0.7.1",
     "cn": "0.4.0",
     "lucide-react": "1.59.0",

@@ -151,12 +151,65 @@ it.each([
     "removed",
     "Your access to Acme Artifacts was removed. Ask your admin if this is a mistake.",
   ],
-  ["no_access", "You don't have access yet. Ask your admin to invite you."],
+  // An older server sends no via: the line that's true either way.
+  [
+    "no_access",
+    "You don't have access here yet. Ask an admin to invite you, then try again.",
+  ],
   ["expired", "Sign-in took too long. Try again."],
   ["failed", "Sign-in didn't work. Try again."],
 ])("error=%s", async (error, copy) => {
   mountHosted(`/sign-in?error=${error}`);
   expect(await screen.findByRole("alert")).toHaveTextContent(copy); // Design D8, 2026-10-21
+});
+
+const providersWith = (providers: unknown[]) =>
+  http.get("*/auth/providers", () =>
+    HttpResponse.json({ mode: "direct", providers }),
+  );
+const ACCESS = { id: "access", start: "/auth/login?via=access" };
+
+it("direct with Access and Google: an Access button keeps via and adds next", async () => {
+  mountHosted("/sign-in?next=%2Fmine", true, undefined, [
+    providersWith([
+      { id: "google", start: "/auth/login/google", domains: ["example.com"] },
+      ACCESS,
+    ]),
+  ]);
+  expect(
+    await screen.findByRole("link", {
+      name: "Continue with Cloudflare Access",
+    }),
+  ).toHaveAttribute("href", "/auth/login?via=access&next=%2Fmine");
+  expect(
+    screen.getByRole("link", { name: "Continue with Google" }),
+  ).toHaveAttribute("href", "/auth/login/google?next=%2Fmine");
+});
+
+it("direct with Access and an unusable Google: Access, not 'isn't set up'", async () => {
+  mountHosted("/sign-in?next=%2Fmine", true, undefined, [
+    providersWith([
+      { id: "google", start: "https://evil.example/login", domains: [] },
+      ACCESS,
+    ]),
+  ]);
+  expect(
+    await screen.findByRole("link", {
+      name: "Continue with Cloudflare Access",
+    }),
+  ).toHaveAttribute("href", "/auth/login?via=access&next=%2Fmine");
+  expect(screen.queryByText(/isn't set up yet/)).toBeNull();
+  expect(screen.queryByText("Continue with Google")).toBeNull();
+});
+
+it("direct with a hostile Access start: dropped", async () => {
+  mountHosted("/sign-in", true, undefined, [
+    providersWith([{ id: "access", start: "//evil.example/login?via=access" }]),
+  ]);
+  expect(
+    await screen.findByText("Sign-in isn't set up yet. Ask your admin."),
+  ).toBeVisible();
+  expect(screen.queryByText(/Cloudflare Access/)).toBeNull();
 });
 
 it("empty providers says sign-in is not set up", async () => {
@@ -348,7 +401,7 @@ it.each(["2468-1357", "2468 1357", " 24681357 "])(
   async (typed) => {
     const assign = vi.fn();
     vi.stubGlobal("location", { ...location, assign });
-    mountHosted("/sign-in?method=code&next=%2Fmine");
+    mountHosted("/sign-in?method=code&next=%2Fmine", { providers: ["email"] });
     await requestThroughUi("bob@example.com");
     await typeCode(typed);
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/mine"));
@@ -366,7 +419,7 @@ it("a short code is refused before sending", async () => {
 });
 
 it("invalid_code says so, with no try count, and clears the code", async () => {
-  mountHosted("/sign-in?method=code");
+  mountHosted("/sign-in?method=code", { providers: ["email"] });
   await requestThroughUi("bob@example.com");
   await typeCode("11111111");
   expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -380,7 +433,7 @@ it("invalid_code says so, with no try count, and clears the code", async () => {
 });
 
 it("the fifth wrong code expires it", async () => {
-  mountHosted("/sign-in?method=code");
+  mountHosted("/sign-in?method=code", { providers: ["email"] });
   await requestThroughUi("bob@example.com");
   for (let i = 0; i < 5; i++) await typeCode("11111111");
   expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -723,8 +776,10 @@ it("code_unavailable on verify: back to the email step, email kept, Google live"
     "bob@example.com",
   );
   expect(screen.queryByRole("textbox", { name: "Code" })).toBeNull();
+  // The page shows Google again once CodeSignIn's onStep effect reports the
+  // email step, a render after the alert commits: wait for it.
   expect(
-    screen.getByRole("link", { name: "Continue with Google" }),
+    await screen.findByRole("link", { name: "Continue with Google" }),
   ).toHaveAttribute("href", "/auth/login/google?next=%2F");
 });
 

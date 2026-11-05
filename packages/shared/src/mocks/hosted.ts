@@ -21,9 +21,8 @@
  */
 import { type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
-import type { ErrorCode } from "../errors.js";
+import { type ErrorCode, INVITE_UNREACHABLE_MESSAGE } from "../errors.js";
 import {
-  HostedPublishInputSchema,
   MembersQuerySchema,
   MoveArtifactInputSchema,
   TRANSFER_PAGE,
@@ -43,24 +42,37 @@ import {
   type DirectoryMode,
   type FeatureFlag,
   type GroupRef,
+  GUEST_OWNERS_NOTICE_LIMIT,
+  GUEST_SHARES_NOTICE_LIMIT,
+  type GuestSharesNotice,
+  type GuestSummaryNotice,
   type MySpace,
+  orderSignInMethods,
+  type SignInProviderId,
   type SpaceRef,
   type SpaceRole,
   type Tier,
 } from "../hosted/core.js";
-import type {
-  AuditAction,
-  AuditEvent,
-  DirectoryGroup,
-  SyncStatus,
+import {
+  type AuditAction,
+  type AuditEvent,
+  type DirectoryGroup,
+  HELD_SNOOZE_MS,
+  HELD_SNOOZE_REASON_MAX,
+  HeldSnoozeInputSchema,
+  type HeldSweep,
+  type SyncStatus,
 } from "../hosted/directory.js";
 import {
   type GroupMapping,
   GroupMappingPutSchema,
+  MANAGED_BY_ORG_MAPPING_MESSAGE,
   type RestrictedGroup,
   SPACE_MANAGER_FIELDS,
   SPACE_MANAGER_MAPPING_ROLES,
   type Space,
+  type SpaceCandidate,
+  SpaceCandidatesQuerySchema,
   SpaceCreateSchema,
   type SpaceMember,
   type SpaceMemberGroup,
@@ -77,8 +89,9 @@ import type {
   Member,
   PublishInput,
   Share,
+  ShareRecipient,
 } from "../schemas.js";
-import { SettingsPatchSchema } from "../schemas.js";
+import { MemberInviteSchema, SettingsPatchSchema } from "../schemas.js";
 
 /** The code the mock accepts (any address). */
 export const HOSTED_MOCK_CODE = "24681357";
@@ -88,6 +101,8 @@ export const MOCK_DOMAIN = "example.com";
 export type HostedMockOptions = {
   /** Sign-in mode (default "direct"). "access" lists only Access. */
   mode?: "access" | "direct";
+  /** A self-hosted install (AuthProviders.hosted and Me.instance.hosted false); default false (hosted). */
+  selfHosted?: boolean;
   /** Direct-mode providers (default both). */
   providers?: ("google" | "email")[];
   /** Code requests need a Turnstile token (default false). Token "fail" is refused. */
@@ -103,9 +118,67 @@ export type HostedMockOptions = {
     | "scope_missing";
   /** Sync unhealthy for 2 h: banner and tokensUnverified (default false). */
   unhealthy?: boolean;
+  /**
+   * With unhealthy: the outage began, and the last success was, 8 d ago, so
+   * staleAt (lastSuccessAt + 7 d) has passed and is reported (default false).
+   */
+  stale?: boolean;
+  /**
+   * The caller is the org owner refused by a customer_mismatch: GET R.me
+   * answers 401 break_glass_required with details { fresh } ("fresh": the
+   * session meets break-glass; "stale": sign in again with reauth=1).
+   */
+  breakGlass?: "fresh" | "stale";
   /** Act as the owner (default) or as an admin, e.g. to test owner-only actions. */
   actAs?: "owner" | "admin";
-  /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on when google or email is enabled). */
+  /**
+   * Start in pending_confirm with SyncStatus.pendingCustomerChange set: a
+   * consent for another Google Workspace than the one a disconnect during
+   * customer_mismatch removed.
+   */
+  pendingCustomerChange?: NonNullable<SyncStatus["pendingCustomerChange"]>;
+  /**
+   * Seed these emails as lapsed guests (removed when their last share went):
+   * inviting or restoring one answers 409 guest_lapsed (default none).
+   */
+  lapsedGuests?: string[];
+  /** Carol, who still has artifacts, is removed rather than suspended (#1222's erase refusal). */
+  carolRemoved?: boolean;
+  /**
+   * Also hold an unreadable group (Contractors): a held entry that removes
+   * nobody (wouldRemove 0), which can't be confirmed or snoozed.
+   */
+  heldUnreadable?: boolean;
+  /**
+   * Parity 2: seed this many guests, each holding an editor share on the
+   * caller's "Landing page" (default 0). With selfHosted on an Access-only
+   * install (`mode` defaults to "access" when this or guestOwners is set),
+   * the caller (any non-guest) sees Me.notices.guestShares for artifacts they
+   * own (at most 50 items, `more` past that) until POST
+   * R.noticeDismiss("guest_shares") (per user), and the uncapped owner sees
+   * Me.notices.guestSummary (counts only) until R.noticeDismiss("guest_summary").
+   */
+  guestShares?: number;
+  /**
+   * Parity 2: seed this many guests, each owning one live artifact in their
+   * personal space (default 0). The uncapped owner sees them in
+   * Me.notices.guestSummary.guestOwners (same conditions as guestShares), and
+   * R.memberTransfer(guest id) moves them (a guest needs no suspension).
+   */
+  guestOwners?: number;
+  /** With guestOwners: the last of them has left (status removed). */
+  departedGuestOwner?: boolean;
+  /**
+   * The spaces feature. Default: on, off with selfHosted (an Access-only
+   * install's default). Off, spaces routes are 404, as is R.memberTransfer's
+   * `to: space` for any id; `to: user` still works.
+   */
+  spaces?: boolean;
+  /** No shared spaces at all: an install that hasn't set any up (#1190). */
+  noSharedSpaces?: boolean;
+  /** The caller is also an editor in Clients, so Engineering's artifact can move there (#1190). */
+  moveTarget?: boolean;
+  /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on for every install). */
   features?: FeatureFlag[];
 };
 
@@ -141,8 +214,6 @@ type MemberRow = {
   manualRole: SpaceRole | null;
   syncRole: SpaceRole | null;
   groups: GroupRef[];
-  /** Frozen-sync override (lowered or removed by hand): org mappings no longer merge in until the next reconcile. */
-  detached?: boolean;
 };
 
 const T0 = "2026-01-01T00:00:00.000Z";
@@ -170,11 +241,31 @@ const mask = (email: string) => {
 
 export type HostedMock = ReturnType<typeof createHostedMock>;
 
+/** A snooze body's cap (server routes/directory.ts SNOOZE_BODY_MAX). */
+const SNOOZE_BODY_MAX = 4096;
+
+// server email/templates.ts UNSAFE
+const UNSAFE =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+  /[\u0000-\u001F\u007F-\u009F\u2028\u2029\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]+/g;
+
+/**
+ * One plain line, at most `max` code points (server email/templates.ts
+ * oneLine): unsafe characters become a space, runs of spaces collapse, then
+ * trim, then a longer line is cut to max - 1 code points plus "…".
+ */
+function oneLine(s: string, max: number): string {
+  const t = s.replace(UNSAFE, " ").replace(/ {2,}/g, " ").trim();
+  const cps = Array.from(t);
+  return cps.length <= max ? t : `${cps.slice(0, max - 1).join("")}…`;
+}
+
 export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   const { me, members, artifacts, shares, err } = c;
   const notFound = () => err("not_found", "Not found");
   const directoryMode: DirectoryMode = o.directory ?? "google";
-  const mode = o.mode ?? "direct";
+  // Parity 2: guest notices exist only on Access-only installs.
+  const mode = o.mode ?? (o.guestShares || o.guestOwners ? "access" : "direct");
   const providerIds = o.providers ?? ["google", "email"];
 
   // ---- members: status, identities, a departed member --------------------
@@ -201,7 +292,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     name: "Carol Departed",
     role: "member",
     lastSeenAt: "2025-12-01T10:00:00.000Z",
-    status: "suspended",
+    status: o.carolRemoved ? "removed" : "suspended",
     identities: ["google"],
   };
   const dan: Member = {
@@ -214,9 +305,70 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     identities: [],
   };
   members.push(carol, dan, erin);
+  /** Lapsed guests' ids: removed when their last share went (a share revives them). */
+  const lapsed = new Set<string>();
+  /** Erased people's ids (R.memberErase): never listed or restored again. */
+  const erased = new Set<string>();
+  for (const email of o.lapsedGuests ?? []) {
+    const g: Member = {
+      id: newId(),
+      email: email.toLowerCase(),
+      name: null,
+      role: "guest",
+      lastSeenAt: null,
+      status: "removed",
+      identities: [],
+    };
+    members.push(g);
+    lapsed.add(g.id);
+  }
+  // Parity 2: guests holding editor shares (the owner notice's source).
+  const landing = artifacts.find((a) => a.title === "Landing page");
+  for (let i = 1; landing && i <= (o.guestShares ?? 0); i++) {
+    const email = `guest${i}@outside.example`;
+    members.push({
+      id: `Gs${String(i).padStart(4, "0")}AbCdEfGhIj`,
+      email,
+      name: email,
+      role: "guest",
+      lastSeenAt: null,
+      status: "active",
+      identities: [],
+    });
+    const list = shares[landing.id] ?? [];
+    shares[landing.id] = list;
+    list.push({
+      email,
+      role: "editor",
+      createdAt: new Date(Date.parse(T0) + i * 60_000).toISOString(),
+    });
+  }
+  /** Users who dismissed guest_shares (R.noticeDismiss, per user). */
+  const sharesDismissed = new Set<string>();
+  /** guest_summary dismissed for the install. */
+  let summaryDismissed = false;
   if (o.actAs === "admin") me.user.role = "admin";
-  /** Departed members' personal artifacts, counts only (admins never see titles). */
+  /**
+   * Departed members' and guests' personal artifacts, counts only (admins
+   * never see titles).
+   */
   const departed = new Map([[carol.id, { live: 2, deleted: 1 }]]);
+  // Parity 2: guests who own artifacts (the owner summary's guestOwners).
+  for (let i = 1; i <= (o.guestOwners ?? 0); i++) {
+    const email = `owner${i}@outside.example`;
+    const id = `Go${String(i).padStart(4, "0")}AbCdEfGhIj`;
+    members.push({
+      id,
+      email,
+      name: email,
+      role: "guest",
+      lastSeenAt: null,
+      status:
+        o.departedGuestOwner && i === o.guestOwners ? "removed" : "active",
+      identities: [],
+    });
+    departed.set(id, { live: 1, deleted: 0 });
+  }
 
   // ---- spaces --------------------------------------------------------------
   const spaces: SpaceRow[] = members.map((m) => ({
@@ -245,6 +397,12 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   shared(ENG, "Engineering", { allMembersRole: "viewer" });
   shared(EXEC, "Exec", { publicLinks: false });
   shared(CLIENTS, "Clients");
+  if (o.noSharedSpaces)
+    spaces.splice(
+      0,
+      spaces.length,
+      ...spaces.filter((s) => s.kind !== "shared"),
+    );
   const ada = members[0] as Member;
   const bob = members[1] as Member;
   const G = {
@@ -290,7 +448,12 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         },
       ],
     ],
-    [CLIENTS, []],
+    [
+      CLIENTS,
+      o.moveTarget
+        ? [{ userId: ada.id, manualRole: "editor", syncRole: null, groups: [] }]
+        : [],
+    ],
   ]);
   const mappings = new Map<string, GroupMapping[]>([
     [
@@ -348,7 +511,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     });
 
   const unhealthySince = o.unhealthy
-    ? new Date(Date.now() - 2 * 3600_000).toISOString()
+    ? new Date(Date.now() - (o.stale ? 8 * 24 : 2) * 3600_000).toISOString()
     : null;
   const sync: SyncStatus = {
     mode: directoryMode,
@@ -378,6 +541,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     staleAt: null,
     alertedAt: null,
     customerMismatch: null,
+    pendingCount: null,
+    pendingCountCapped: false,
+    pendingExpiresAt: null,
+    pendingCustomerChange: null,
+    liftsPaused: [],
     held:
       directoryMode === "google"
         ? [
@@ -386,22 +554,99 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
               wouldRemove: 4,
               members: 4,
               since: T0,
+              snoozedUntil: null,
+              snoozeReason: null,
             },
+            ...(o.heldUnreadable
+              ? [
+                  {
+                    ...G.contractors,
+                    wouldRemove: 0,
+                    members: 3,
+                    since: T0,
+                    snoozedUntil: null,
+                    snoozeReason: null,
+                  },
+                ]
+              : []),
           ]
         : [],
   };
 
-  if (sync.lastSuccessAt)
-    sync.staleAt = new Date(
-      Date.parse(sync.lastSuccessAt) + 7 * 24 * 3600_000,
-    ).toISOString();
+  // A consent for another Workspace, after a disconnect during a mismatch:
+  // the confirm step's "different Google Workspace" notice.
+  if (o.pendingCustomerChange) {
+    Object.assign(sync, {
+      binding: null,
+      healthy: false,
+      state: "pending_confirm",
+      lastSuccessAt: null,
+      held: [],
+      pendingCount: 12,
+      pendingExpiresAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
+      pendingCustomerChange: o.pendingCustomerChange,
+    } satisfies Partial<SyncStatus>);
+  }
+
+  // staleAt: lastSuccessAt + 7 d once that has passed, else null.
+  if (sync.lastSuccessAt) {
+    const at = Date.parse(sync.lastSuccessAt) + 7 * 24 * 3600_000;
+    if (at <= Date.now()) sync.staleAt = new Date(at).toISOString();
+  }
 
   // ---- derived views --------------------------------------------------------
   const isAdmin = () => me.user.role === "owner" || me.user.role === "admin";
+  /** Snoozed now (#412): until is still ahead (server health.ts snoozedAt). */
+  const snoozedNow = (h: HeldSweep) =>
+    !!h.snoozedUntil && Date.parse(h.snoozedUntil) > Date.now();
+  /**
+   * SyncStatus as readers see it (server health.ts heldAt): a snooze whose
+   * until passed shows as none, even before the server's alarm ends it.
+   */
+  const syncView = (): SyncStatus => ({
+    ...sync,
+    held: sync.held.map((h) =>
+      snoozedNow(h) ? h : { ...h, snoozedUntil: null, snoozeReason: null },
+    ),
+  });
+  /**
+   * R.directoryDisconnect / DELETE R.directory: the binding and health go,
+   * memberships stay (frozen). Nothing connected: no change, no audit row.
+   */
+  const disconnect = () => {
+    if (!sync.binding && sync.state !== "pending_confirm") return;
+    Object.assign(sync, {
+      binding: null,
+      healthy: sync.mode === "off" ? null : false,
+      // Disconnected during a mismatch: synced users stay denied.
+      state: sync.state === "customer_mismatch" ? "customer_mismatch" : "never",
+      unhealthySince: null,
+      lastSuccessAt: null,
+      lastError: null,
+      nextRunAt: null,
+      staleAt: null,
+      alertedAt: null,
+      customerMismatch: null,
+      held: [],
+      liftsPaused: [],
+      pendingCount: null,
+      pendingCountCapped: false,
+      pendingExpiresAt: null,
+      pendingCustomerChange: null,
+    } satisfies Partial<SyncStatus>);
+    log("directory.disconnect", { type: "directory", id: "google" });
+  };
+  /**
+   * Changing an owner's or admin's role, removing them or resetting their
+   * Google link needs the uncapped owner (#475): 403 owner_only otherwise.
+   */
+  const needsOwner = (m: Member) =>
+    (m.role === "owner" || m.role === "admin") &&
+    (me.user.role !== "owner" || cap() !== null);
   const findSpace = (id: unknown) => spaces.find((s) => s.id === id);
   const memberOf = (id: string) => members.find((m) => m.id === id);
-  /** guests_read_only: P2's authConfig.guestsReadOnly, true whenever google or email sign-in is on. */
-  const guestsReadOnly = () => mode === "direct" && providerIds.length > 0;
+  /** guests_read_only: authConfig.guestsReadOnly, true on every install (parity 2). */
+  const guestsReadOnly = () => true;
   const restrictionOf = (userId: string) => {
     const gs = restricted
       .filter((g) => groupMembers.get(g.groupId)?.includes(userId))
@@ -429,7 +674,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     );
     for (const m of orgMappings)
       for (const userId of groupMembers.get(m.groupId) ?? []) {
-        if (out.get(userId)?.detached) continue;
+        // Every space roles are resolved at read time, as the server's
+        // authz: no change to a space's rows (frozen included) drops them.
         const r = out.get(userId) ?? {
           userId,
           manualRole: null,
@@ -454,13 +700,25 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     }
     return row;
   };
-  /** Frozen sync: drop the synced part of a row (org mappings included) by hand. */
+  /** Frozen sync: drop the space's own rows (manual and synced) by hand; Every space roles stay. */
   const detach = (row: MemberRow) => {
     row.manualRole = null;
     row.syncRole = null;
     row.groups = [];
-    row.detached = true;
   };
+  /** Their Every space role: the best org mapping role over their groups. */
+  const everyRoleOf = (userId: string): SpaceRole | null =>
+    maxRole(
+      ...orgMappings
+        .filter((m) => groupMembers.get(m.groupId)?.includes(userId))
+        .map((m) => m.role),
+    );
+  /** 409 managed_by_org_mapping: an Every space group gives them everyRole here. */
+  const managedByOrgMapping = (userId: string, everyRole: SpaceRole) =>
+    err("managed_by_org_mapping", MANAGED_BY_ORG_MAPPING_MESSAGE, {
+      userId,
+      everyRole,
+    });
   const roleIn = (s: SpaceRow, userId = me.user.id): SpaceRole | null => {
     if (s.kind === "personal") return s.ownerId === userId ? "manager" : null;
     const u = memberOf(userId);
@@ -469,6 +727,37 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     const all =
       u && u.role !== "guest" && !restrictionOf(u.id) ? s.allMembersRole : null;
     return maxRole(r?.manualRole, r?.syncRole, all);
+  };
+  /** Shared-space artifacts the signed-in caller has no level on (refresh). */
+  const hidden = new Set<string>();
+  /**
+   * decide() for a live artifact in shared space `s`, as the caller: a
+   * manager role; else the better of their space role and share; else team
+   * visibility for uncapped members; else public; else none. A cap lowers any
+   * level to viewer.
+   */
+  const sharedLevel = (a: ArtifactSummary, s: SpaceRow): AccessLevel | null => {
+    const capped = cap() !== null;
+    const member = me.user.role !== "guest";
+    const role = roleIn(s);
+    const share =
+      c.shares[a.id]?.find(
+        (x) => x.email.toLowerCase() === me.user.email.toLowerCase(),
+      )?.role ?? null;
+    let l: AccessLevel | null;
+    if (role === "manager") l = "manager";
+    else {
+      const best = maxRole(role, share);
+      l =
+        best === "editor" || best === "viewer"
+          ? best
+          : a.visibility === "team" && member && !capped
+            ? "viewer"
+            : a.visibility === "public"
+              ? "viewer"
+              : null;
+    }
+    return l && capped ? "viewer" : l;
   };
   const ref = (s: SpaceRow): SpaceRef => ({
     id: s.id,
@@ -527,6 +816,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         s.kind === "shared" && u.role !== "guest" && !restrictionOf(u.id)
           ? s.allMembersRole
           : null,
+      // The detail only for a caller who can manage the space (cap still says restricted).
+      restriction:
+        cap() === null && (isAdmin() || roleIn(s) === "manager")
+          ? restrictionOf(u.id)
+          : null,
     };
   };
   /** Can the caller see this shared space (member or org admin)? */
@@ -538,9 +832,22 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     return r === "manager" ? "manager" : r;
   };
 
+  /**
+   * The server's move source rule: the caller's own personal space, or a
+   * shared space where they are an uncapped manager now (so an artifact they
+   * lost their role on can't move, whatever its last can said).
+   */
+  const mayLeave = (a: ArtifactSummary) => {
+    const s = findSpace(a.space?.id);
+    if (!s) return false;
+    if (s.kind === "personal") return s.id === me.user.id;
+    return cap() === null && roleIn(s) === "manager";
+  };
+
+  const spacesOn = o.spaces ?? !o.selfHosted;
   const features = (): FeatureFlag[] => [
     ...new Set<FeatureFlag>([
-      "spaces",
+      ...(spacesOn ? (["spaces"] as const) : []),
       ...(guestsReadOnly() ? (["guests_read_only"] as const) : []),
       "content_revocation",
       "usage_off",
@@ -555,9 +862,14 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   ];
   const providers = (): AuthProviders =>
     mode === "access"
-      ? { mode, providers: [{ id: "access", start: "/auth/login" }] }
+      ? {
+          mode,
+          providers: [{ id: "access", start: "/auth/login" }],
+          hosted: !o.selfHosted,
+        }
       : {
           mode,
+          hosted: !o.selfHosted,
           providers: [
             ...(providerIds.includes("google")
               ? [
@@ -584,8 +896,63 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         };
 
   /** Refresh Me's hosted fields and every artifact's space/can. Runs before each request. */
+  /**
+   * Shares above viewer on live artifacts to an active guest, or to an
+   * address with no member yet (a guest at first Access sign-in), newest first.
+   */
+  const guestShareRows = () =>
+    artifacts
+      .filter((a) => a.deletedAt === null)
+      .flatMap((a) =>
+        (shares[a.id] ?? [])
+          .filter((s) => {
+            if (s.role !== "editor") return false;
+            const m = members.find((x) => x.email === s.email);
+            return (
+              !m || (m.role === "guest" && (m.status ?? "active") === "active")
+            );
+          })
+          .map((s) => ({ a, s })),
+      )
+      .sort((x, y) => y.s.createdAt.localeCompare(x.s.createdAt));
+  /** The caller's own artifacts only. */
+  const guestSharesNotice = (): GuestSharesNotice | null => {
+    const rows = guestShareRows().filter(({ a }) => a.owner.id === me.user.id);
+    if (rows.length === 0) return null;
+    return {
+      items: rows.slice(0, GUEST_SHARES_NOTICE_LIMIT).map(({ a, s }) => ({
+        artifactId: a.id,
+        title: a.title,
+        guestEmail: s.email,
+        role: "editor" as const,
+      })),
+      more: rows.length > GUEST_SHARES_NOTICE_LIMIT,
+    };
+  };
+  /** The owner's install-wide summary: counts only, plus guest owners. */
+  const guestSummaryNotice = (): GuestSummaryNotice | null => {
+    const rows = guestShareRows();
+    const owners = members
+      .filter((m) => m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0)
+      .map((m) => ({
+        userId: m.id,
+        email: m.email,
+        artifacts: departed.get(m.id)?.live ?? 0,
+        status: m.status ?? "active",
+      }))
+      .sort(
+        (x, y) => y.artifacts - x.artifacts || x.email.localeCompare(y.email),
+      );
+    if (rows.length === 0 && owners.length === 0) return null;
+    return {
+      shares: rows.length,
+      owners: new Set(rows.map(({ a }) => a.owner.id)).size,
+      guestOwners: owners.slice(0, GUEST_OWNERS_NOTICE_LIMIT),
+      more: owners.length > GUEST_OWNERS_NOTICE_LIMIT,
+    };
+  };
   const refresh = () => {
-    me.instance.hosted = true;
+    me.instance.hosted = !o.selfHosted;
     me.instance.tier = o.tier === undefined ? "business" : o.tier;
     me.instance.signIn = {
       mode,
@@ -601,7 +968,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       tokensUnverified: unhealthy && isAdmin(),
       state: isAdmin() ? sync.state : null,
       staleAt: isAdmin() ? sync.staleAt : null,
-      heldSweeps: isAdmin() ? sync.held.length : 0,
+      heldSweeps: isAdmin()
+        ? sync.held.filter((h) => !snoozedNow(h)).length
+        : 0,
     };
     for (const m of members) m.restriction = restrictionOf(m.id);
     const myCap = cap();
@@ -611,30 +980,65 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       cap: myCap,
       expiresAt: me.auth?.expiresAt ?? "2026-12-31T00:00:00.000Z",
     };
-    me.personalSpaceId = me.user.id;
-    me.spaces = spaces
-      .filter((s) => s.kind === "shared" && roleIn(s))
-      .map((s): MySpace => ({ ...ref(s), myRole: roleIn(s) as SpaceRole }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    // Parity 2: guest notices, Access-only self-host installs, computed live.
+    const accessOnly = !!o.selfHosted && mode === "access";
+    const guestShares =
+      accessOnly && me.user.role !== "guest" && !sharesDismissed.has(me.user.id)
+        ? guestSharesNotice()
+        : null;
+    const guestSummary =
+      accessOnly &&
+      me.user.role === "owner" &&
+      myCap === null &&
+      !summaryDismissed
+        ? guestSummaryNotice()
+        : null;
+    if (guestShares || guestSummary)
+      me.notices = {
+        ...(guestShares ? { guestShares } : {}),
+        ...(guestSummary ? { guestSummary } : {}),
+      };
+    else delete me.notices;
+    if (spacesOn) {
+      me.personalSpaceId = me.user.id;
+      me.spaces = spaces
+        .filter((s) => s.kind === "shared" && roleIn(s))
+        .map((s): MySpace => ({ ...ref(s), myRole: roleIn(s) as SpaceRole }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
     for (const a of artifacts) {
       const s =
         findSpace(a.space?.id) ??
         findSpace(a.owner.id) ??
         (spaces[0] as SpaceRow);
       a.space = ref(s);
+      // A shared space's live artifact: the caller's level, decide()'s order
+      // (never a stale access); none hides it (404, unlisted).
+      if (s.kind === "shared" && a.deletedAt === null) {
+        const l = sharedLevel(a, s);
+        if (l) {
+          a.access = l;
+          hidden.delete(a.id);
+        } else hidden.add(a.id);
+      }
       a.can = artifactCan(a.access, {
         personal: s.kind === "personal",
         cap: cap(),
+        dataWriters: a.dataWriters,
       });
     }
   };
 
   // Seed: "Meeting notes" in Engineering, where the caller is manager.
+  // (refresh recomputes every shared-space level per caller: sharedLevel.)
   const notes = artifacts.find((a) => a.title === "Meeting notes");
-  if (notes) {
+  if (notes && findSpace(ENG)) {
     notes.space = ref(findSpace(ENG) as SpaceRow);
     notes.access = "manager";
   }
+  // Bob's "Onboarding guide" (the caller is a viewer): data writes are editors-only.
+  const guide = artifacts.find((a) => a.title === "Onboarding guide");
+  if (guide) guide.dataWriters = "editors";
   refresh();
 
   // ---- code flow state -----------------------------------------------------
@@ -643,7 +1047,6 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   const fails = new Map<string, number>();
 
   // ---- publish hook (used by POST R.artifacts) -----------------------------
-  const publishSchema = HostedPublishInputSchema;
   /** Checks spaceId; returns a refusal, or the space to place a new artifact in. */
   const checkPublish = (
     input: PublishInput & { spaceId?: string },
@@ -673,12 +1076,20 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     a.access = levelIn(sp) ?? "owner";
     refresh();
   };
-  /** Making an artifact public in a space whose publicLinks is off: 403 public_links_off. */
+  /**
+   * Making an artifact public in a space whose publicLinks is off: 403
+   * public_links_off. Echoing "public" on an artifact that already is public
+   * passes, as on the server.
+   */
   const refusePublic = (
     space: { publicLinks: boolean } | null | undefined,
     visibility: string | undefined,
+    current?: string,
   ) =>
-    visibility === "public" && space && !space.publicLinks
+    visibility === "public" &&
+    current !== "public" &&
+    space &&
+    !space.publicLinks
       ? err("public_links_off", "Public links are off in this space")
       : null;
   /** A create by a capped caller (no spaceId) is refused too. */
@@ -743,6 +1154,18 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     spaceManagerMappings,
   });
   const sp = "*/api/v1/spaces/:id";
+  /**
+   * R.memberTransfer's source rules: an owner or admin needs the owner
+   * (#475, 403 owner_only); a departed member or any guest (parity 2)
+   * qualifies; any other active member is 409 member_active.
+   */
+  const transferSourceError = (m: Member) => {
+    if (needsOwner(m))
+      return err("owner_only", "Only the owner can manage an owner or admin");
+    if ((m.status ?? "active") === "active" && m.role !== "guest")
+      return err("member_active", "Suspend or remove the member first");
+    return null;
+  };
   const validSuccessor = (u: Member | undefined): u is Member =>
     !!u &&
     u.role !== "guest" &&
@@ -754,6 +1177,25 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       refresh();
       return undefined;
     }),
+    // -- spaces off: requireSpaces, before any other rule
+    ...(spacesOn
+      ? []
+      : [
+          http.all("*/api/v1/spaces", () => notFound()),
+          http.all("*/api/v1/spaces/*", () => notFound()),
+        ]),
+    // -- break-glass (P3 T18): the mismatch owner's Me
+    ...(o.breakGlass
+      ? [
+          http.get("*/api/v1/me", () =>
+            c.err(
+              "break_glass_required",
+              "Directory sync is blocked by a Google Workspace mismatch",
+              { fresh: o.breakGlass === "fresh" },
+            ),
+          ),
+        ]
+      : []),
     // -- sign-in
     http.get("*/auth/providers", () => HttpResponse.json(providers())),
     http.get("*/auth/login/google", ({ request }) => {
@@ -765,6 +1207,35 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         headers: {
           location: `https://accounts.google.com/o/oauth2/v2/auth?mock=1&next=${encodeURIComponent(next)}`,
         },
+      });
+    }),
+    // Mock only: the Google round trip, done. ?mock_email signs that active
+    // member in (method google) and 302s to /; anyone else to SIGN_IN_PAGE.
+    http.get("*/auth/callback/google", ({ request }) => {
+      if (mode !== "direct" || !providerIds.includes("google"))
+        return notFound();
+      const email = new URL(request.url).searchParams
+        .get("mock_email")
+        ?.toLowerCase();
+      const u = members.find(
+        (m) => m.email === email && m.status === "active" && m.role !== "guest",
+      );
+      if (!u)
+        return new HttpResponse(null, {
+          status: 302,
+          headers: { location: "/sign-in?error=no_access&via=google" },
+        });
+      me.user = u;
+      me.auth = {
+        method: "google",
+        readOnly: false,
+        cap: null,
+        expiresAt: new Date(Date.now() + 168 * 3600_000).toISOString(),
+      };
+      refresh();
+      return new HttpResponse(null, {
+        status: 302,
+        headers: { location: "/" },
       });
     }),
     http.post("*/auth/code/request", async ({ request }) => {
@@ -787,7 +1258,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           retryAfter: 3600,
           scope: "email",
         });
-      pending = { email, attempts: 0, next: r.data.next ?? "/" };
+      // A domain member with domainCodes off signs in with Google: the same
+      // 202, but no code is sent (as the server).
+      const domainCodes = !providerIds.includes("google");
+      pending =
+        !domainCodes && email.endsWith(`@${MOCK_DOMAIN}`)
+          ? null
+          : { email, attempts: 0, next: r.data.next ?? "/" };
       return HttpResponse.json(
         {
           maskedEmail: mask(email),
@@ -876,6 +1353,73 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     http.get("*/api/v1/usage", () =>
       features().includes("usage_off") ? notFound() : undefined,
     ),
+    // -- members: acting on an owner or admin is owner-only (#475); anything
+    // else falls through to the base handlers.
+    ...(["patch", "delete"] as const).map((method) =>
+      http[method]("*/api/v1/members/:id", ({ request, params }) => {
+        const m = memberOf(params.id as string);
+        if (c.isAnon(request) || !m || !isAdmin() || !needsOwner(m))
+          return undefined;
+        return err("owner_only", "Only the owner can manage an owner or admin");
+      }),
+    ),
+    // -- invite reachability (review item 11), the server's rules for the
+    // mock's providers: Google admits MOCK_DOMAIN (outside it, only maybe: a
+    // Workspace secondary domain, so signIn "uncertain"); codes admit
+    // MOCK_DOMAIN only while Google is off (domainCodes). Reachable invites
+    // fall through to the base handler.
+    http.post("*/api/v1/members", async ({ request }) => {
+      if (mode === "access" || c.isAnon(request)) return undefined;
+      const r = await c.body(request.clone(), MemberInviteSchema);
+      if (r.error) return undefined;
+      const email = r.data.email.toLowerCase();
+      // An existing removed row is a 409 before reachability (as the server).
+      const removed = members.find(
+        (m) => m.email === email && m.status === "removed",
+      );
+      if (removed && lapsed.has(removed.id))
+        return err(
+          "guest_lapsed",
+          "This guest left when their last share went; share an artifact with them to bring them back",
+        );
+      if (removed)
+        return err(
+          "member_removed",
+          "This person was removed. Restore them instead.",
+          { userId: removed.id },
+        );
+      const inDomain = email.endsWith(`@${MOCK_DOMAIN}`);
+      const google = providerIds.includes("google");
+      if (inDomain && (google || providerIds.includes("email")))
+        return undefined;
+      if (!google) {
+        const reason = inDomain ? "no_sign_in_method" : "outside_domains";
+        return err("invite_unreachable", INVITE_UNREACHABLE_MESSAGE[reason], {
+          field: "email",
+          reason,
+        });
+      }
+      if (members.some((m) => m.email === email))
+        return err("conflict", "Already a member");
+      const m: Member = {
+        id: newId(),
+        email,
+        name: null,
+        role: r.data.role,
+        lastSeenAt: null,
+        status: "active",
+      };
+      members.push(m);
+      return HttpResponse.json(
+        {
+          ...m,
+          emailed: false,
+          signIn: { status: "uncertain", reason: "outside_domains" },
+          signInMethods: ["google"],
+        },
+        { status: 201 },
+      );
+    }),
     // -- members (status filter), departed transfer, identity reset
     http.get(
       "*/api/v1/members",
@@ -886,10 +1430,33 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         );
         if (!r.success)
           return err("bad_request", "Invalid query", r.error.issues);
-        if (!r.data.status.every((s) => s === "active") && !isAdmin())
-          return notFound();
+        // Org owners and admins only, as the server (members.manage): space
+        // managers search R.spaceCandidates instead.
+        if (!isAdmin()) return notFound();
+        // directoryManaged (#1146), as the server: Google sync on and
+        // connected, no Google link, an address in MOCK_DOMAIN, not the
+        // owner, not removed (Dan by default).
+        const managed = (m: Member) =>
+          directoryMode === "google" &&
+          !!sync.binding &&
+          m.role !== "owner" &&
+          (m.status ?? "active") !== "removed" &&
+          m.email.endsWith(`@${MOCK_DOMAIN}`) &&
+          !(m.identities ?? []).includes("google");
         return HttpResponse.json(
-          members.filter((m) => r.data.status.includes(m.status ?? "active")),
+          members
+            .filter(
+              (m) =>
+                r.data.status.includes(m.status ?? "active") &&
+                !erased.has(m.id),
+            )
+            .map((m) => ({
+              ...m,
+              ...(m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0
+                ? { personalArtifacts: true }
+                : {}),
+              ...(managed(m) ? { directoryManaged: true } : {}),
+            })),
         );
       }),
     ),
@@ -898,6 +1465,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       authed(({ params }) => {
         const m = memberOf(params.id as string);
         if (!m || !isAdmin()) return notFound();
+        const bad = transferSourceError(m);
+        if (bad) return bad;
         return HttpResponse.json(departed.get(m.id) ?? { live: 0, deleted: 0 });
       }),
     ),
@@ -908,14 +1477,15 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         if (!m || !isAdmin()) return notFound();
         const r = await c.body(request, TransferInputSchema);
         if (r.error) return r.error;
-        if ((m.status ?? "active") === "active")
-          return err("member_active", "Suspend or remove the member first");
+        const bad = transferSourceError(m);
+        if (bad) return bad;
         const to = r.data.to;
         if (to.kind === "user") {
           const u = memberOf(to.userId);
           if (!validSuccessor(u))
             return err("invalid_successor", "Pick an active member");
         } else {
+          if (!spacesOn) return notFound();
           const s = findSpace(to.spaceId);
           if (!s) return notFound();
           if (s.kind === "personal")
@@ -937,6 +1507,73 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           remaining,
           nextCursor: remaining > 0 ? btoa(String(moved)) : null,
         });
+      }),
+    ),
+    // Parity 1: a removed member or admin comes back active as a member, a
+    // removed guest as a guest, the manual restriction kept. A lapsed guest
+    // is 409 guest_lapsed; directory removals aren't modelled here.
+    http.post(
+      "*/api/v1/members/:id/restore",
+      authed(({ params }) => {
+        const m = memberOf(params.id as string);
+        if (!m || !isAdmin()) return notFound();
+        if (needsOwner(m))
+          return err(
+            "owner_only",
+            "Only the owner can manage an owner or admin",
+          );
+        if (m.status !== "removed")
+          return err("member_active", "This member isn't removed");
+        if (erased.has(m.id))
+          return err(
+            "member_erased",
+            "This person was erased. Invite them instead.",
+          );
+        if (lapsed.has(m.id))
+          return err(
+            "guest_lapsed",
+            "This guest left when their last share went; share an artifact with them to bring them back",
+          );
+        m.status = "active";
+        if (m.role !== "guest") m.role = "member";
+        log("user.status", { type: "user", id: m.id }, null, {
+          status: "active",
+          reason: "admin_restore",
+        });
+        return HttpResponse.json(m);
+      }),
+    ),
+    // #1204: erase a removed person with nothing left in their personal
+    // space. The address becomes the placeholder and the names go; the row
+    // leaves the Departed list. Idempotent. The server's cookie-session-only
+    // rule isn't modelled (the mock has no PATs on REST).
+    http.post(
+      "*/api/v1/members/:id/erase",
+      authed(({ params }) => {
+        const m = memberOf(params.id as string);
+        if (!m || !isAdmin()) return notFound();
+        if (needsOwner(m))
+          return err(
+            "owner_only",
+            "Only the owner can manage an owner or admin",
+          );
+        if (m.status !== "removed" || m.role === "owner")
+          return err("member_active", "This member isn't removed");
+        if (erased.has(m.id)) return noContent();
+        const left = departed.get(m.id) ?? { live: 0, deleted: 0 };
+        if (left.live + left.deleted > 0)
+          return err(
+            "member_owns_artifacts",
+            "Transfer their artifacts first",
+            { live: left.live, deleted: left.deleted },
+          );
+        erased.add(m.id);
+        lapsed.delete(m.id);
+        m.email = `removed+${m.id}@invalid`;
+        m.name = null;
+        m.lastSeenAt = null;
+        log("user.erased", { type: "user", id: m.id });
+        return noContent();
       }),
     ),
     ...(["put", "delete"] as const).map((method) =>
@@ -968,18 +1605,14 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       "*/api/v1/members/:id/identities/:provider",
       authed(({ params }) => {
         const m = memberOf(params.id as string);
-        if (
-          !m ||
-          !isAdmin() ||
-          m.role === "owner" ||
-          params.provider !== "google" ||
-          !m.identities?.includes("google")
-        )
-          return notFound();
-        // Resetting an admin's link signs a peer admin out: owner only.
-        if (m.role === "admin" && me.user.role !== "owner")
+        if (!m || !isAdmin() || params.provider !== "google") return notFound();
+        // Resetting an admin's link signs a peer admin out: owner only. By
+        // role, before the link, so a refusal never reveals one (#475).
+        if (needsOwner(m))
           return err("owner_only", "Only the owner can reset an admin's link");
-        m.identities = m.identities.filter((x) => x !== "google");
+        if (m.role === "owner" || !m.identities?.includes("google"))
+          return notFound();
+        m.identities = (m.identities ?? []).filter((x) => x !== "google");
         log("identity.reset", { type: "user", id: m.id });
         return noContent();
       }),
@@ -991,11 +1624,16 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         const a = artifacts.find(
           (x) => x.id === params.id && x.deletedAt === null,
         );
-        if (!a?.can?.move) return notFound();
+        // As the server: never a stale can (an artifact the caller no longer
+        // reaches): a shared source needs the caller's manager role there now.
+        if (!a?.can?.move || !mayLeave(a)) return notFound();
         const r = await c.body(request, MoveArtifactInputSchema);
         if (r.error) return r.error;
         const s = findSpace(r.data.spaceId);
         if (!s) return notFound();
+        // Someone else's personal space is 404 (no user-id oracle); one's
+        // own is 400 space_personal.
+        if (s.kind === "personal" && s.id !== me.user.id) return notFound();
         if (s.kind === "personal")
           return err(
             "space_personal",
@@ -1021,7 +1659,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         const a = artifacts.find(
           (x) => x.id === params.id && x.deletedAt === null,
         );
-        if (!a?.can?.transfer) return notFound();
+        // As the server: only the caller's own personal artifact, now.
+        if (!a?.can?.transfer || a.space?.id !== me.user.id) return notFound();
         const r = await c.body(request, TransferArtifactInputSchema);
         if (r.error) return r.error;
         const u = memberOf(r.data.userId);
@@ -1065,16 +1704,34 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         if (!isAdmin()) return notFound();
         const r = await c.body(request, SpaceCreateSchema);
         if (r.error) return r.error;
+        const { addMe, ...data } = r.data;
         const s: SpaceRow = {
           id: newId(),
           kind: "shared",
           ownerId: null,
           createdAt: iso(),
-          ...r.data,
+          ...data,
         };
         spaces.push(s);
-        rows.set(s.id, []);
+        // addMe (the default): the creator is a manual manager; false: no row.
+        rows.set(
+          s.id,
+          addMe
+            ? [
+                {
+                  userId: me.user.id,
+                  manualRole: "manager",
+                  syncRole: null,
+                  groups: [],
+                },
+              ]
+            : [],
+        );
         log("space.create", { type: "space", id: s.id }, s.id);
+        if (addMe)
+          log("space.member.add", { type: "user", id: me.user.id }, s.id, {
+            role: "manager",
+          });
         refresh();
         return HttpResponse.json(view(s), { status: 201 });
       }),
@@ -1108,16 +1765,31 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           r.data.publicLinks !== undefined &&
           r.data.publicLinks !== s.publicLinks
         ) {
+          // Off refuses NEW public links only (decided): existing public
+          // artifacts, their links and sockets keep working; nothing is rewritten.
           log("space.public_links", { type: "space", id: s.id }, s.id, {
             publicLinks: r.data.publicLinks,
           });
-          if (!r.data.publicLinks)
-            for (const a of artifacts)
-              if (a.space?.id === s.id && a.visibility === "public")
-                a.visibility = "team";
         }
+        // As the server: space.update only when name or allMembersRole
+        // actually changes (publicLinks has its own space.public_links).
+        const fields = [
+          ...(r.data.name !== undefined && r.data.name !== s.name
+            ? ["name"]
+            : []),
+          ...(r.data.allMembersRole !== undefined &&
+          r.data.allMembersRole !== s.allMembersRole
+            ? ["allMembersRole"]
+            : []),
+        ];
         Object.assign(s, r.data);
-        log("space.update", { type: "space", id: s.id }, s.id, { keys });
+        if (fields.length)
+          log("space.update", { type: "space", id: s.id }, s.id, {
+            fields,
+            ...(r.data.allMembersRole !== undefined
+              ? { allMembersRole: r.data.allMembersRole }
+              : {}),
+          });
         refresh();
         return HttpResponse.json(view(s));
       }),
@@ -1131,7 +1803,10 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           return err("space_personal", "Personal spaces can't be deleted");
         if (!isAdmin()) return notFound();
         if (artifacts.some((a) => a.space?.id === s.id))
-          return err("space_not_empty", "Move or delete its artifacts first");
+          return err(
+            "space_not_empty",
+            "Move or delete its artifacts first. Deleted artifacts count until the trash clears them, 30 days after deletion.",
+          );
         spaces.splice(spaces.indexOf(s), 1);
         log("space.delete", { type: "space", id: s.id }, s.id);
         return noContent();
@@ -1142,6 +1817,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       authed(async ({ request, params }) => {
         const s = sharedSpace(params.id);
         if (s instanceof Response) return s;
+        if (s.kind === "personal")
+          return err("space_personal", "Personal spaces have no members");
         const qs = new URL(request.url).searchParams;
         const raw: Record<string, string> = {};
         qs.forEach((v, k) => {
@@ -1168,6 +1845,61 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         const res = page(list, qs);
         // Page<SpaceMember> plus the filtered total.
         return HttpResponse.json({ ...(await res.json()), total: list.length });
+      }),
+    ),
+    http.get(
+      `${sp}/candidates`,
+      authed(({ request, params }) => {
+        const s = sharedSpace(params.id);
+        if (s instanceof Response) return s;
+        if (s.kind === "personal")
+          return err("space_personal", "Personal spaces have no members");
+        // An uncapped org admin or an uncapped manager of this space.
+        if (!isAdmin() && (roleIn(s) !== "manager" || cap() !== null))
+          return notFound();
+        const qs = new URL(request.url).searchParams;
+        const raw: Record<string, string> = {};
+        qs.forEach((v, k) => {
+          raw[k] = v;
+        });
+        const q = SpaceCandidatesQuerySchema.safeParse(raw);
+        if (!q.success)
+          return err("bad_request", "Invalid query", q.error.issues);
+        const needle = q.data.q?.toLowerCase();
+        const here = rowsOf(s);
+        const list = members
+          .filter(
+            (m) =>
+              m.role !== "guest" &&
+              (m.status ?? "active") === "active" &&
+              (!needle ||
+                m.email.toLowerCase().startsWith(needle) ||
+                (m.name ?? "")
+                  .toLowerCase()
+                  .split(/\s+/)
+                  .some((w) => w.startsWith(needle))),
+          )
+          .sort((a, b) =>
+            a.email === b.email
+              ? a.id < b.id
+                ? -1
+                : 1
+              : a.email < b.email
+                ? -1
+                : 1,
+          )
+          .map((m): SpaceCandidate => {
+            const r = here.find((x) => x.userId === m.id);
+            return {
+              id: m.id,
+              email: m.email,
+              name: m.name,
+              role: m.role,
+              restriction: restrictionOf(m.id),
+              spaceRole: r ? maxRole(r.manualRole, r.syncRole) : null,
+            };
+          });
+        return page(list, qs, 20);
       }),
     ),
     http.post(
@@ -1211,23 +1943,36 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         if (s.kind === "personal")
           return err("space_personal", "Personal spaces have no members");
         if (!isAdmin() && roleIn(s) !== "manager") return notFound();
-        const u = memberOf(params.userId as string);
-        if (!u) return notFound();
+        // The body first, then an existing, active member (as the server): else 404.
         const r = await c.body(request, SpaceMemberPutSchema);
         if (r.error) return r.error;
+        const u = memberOf(params.userId as string);
+        if (!u || (u.status ?? "active") !== "active") return notFound();
         const cur = rowsOf(s).find((x) => x.userId === u.id);
-        // Only an org admin grants or changes the Manager role on a member.
+        // Only an org admin grants Manager or changes a peer manager (a
+        // manager row by hand or synced; the frozen override included).
         if (
           !isAdmin() &&
-          (r.data.role === "manager" || cur?.manualRole === "manager")
+          (r.data.role === "manager" ||
+            cur?.manualRole === "manager" ||
+            cur?.syncRole === "manager")
         )
           return err(
             "space_forbidden",
             "Only an admin can grant or change the Manager role",
             { target: "member" },
           );
+        // The space's own rows (manual, synced), without Every space roles.
+        const own = rows.get(s.id)?.find((x) => x.userId === u.id);
+        // An Every space group's role is a floor (sync live or frozen):
+        // below it 409; equal to it with no row here, a no-op.
+        const every = everyRoleOf(u.id);
+        if (every && RANK[r.data.role] < RANK[every])
+          return managedByOrgMapping(u.id, every);
+        if (cur && r.data.role === every && !own?.manualRole && !own?.syncRole)
+          return HttpResponse.json(memberView(s, cur));
         // Frozen, synced row: any role (raise or lower, manual rules above) is a manual override.
-        const frozenSynced = directoryMode === "frozen" && !!cur?.syncRole;
+        const frozenSynced = directoryMode === "frozen" && !!own?.syncRole;
         const row = baseRow(s, u.id);
         if (frozenSynced) {
           // Manual override; the next reconcile after unfreezing replaces it.
@@ -1259,17 +2004,37 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         const userId = params.userId as string;
         const cur = rowsOf(s).find((x) => x.userId === userId);
         if (!cur) return notFound();
-        if (directoryMode === "frozen" && cur.syncRole) {
+        // A peer manager (by hand or synced) is an org admin's to remove.
+        if (
+          !isAdmin() &&
+          (cur.manualRole === "manager" || cur.syncRole === "manager")
+        )
+          return err("space_forbidden", "Only an admin can remove a manager", {
+            target: "member",
+          });
+        // The space's own rows (manual, synced), without Every space roles.
+        const own = rows.get(s.id)?.find((x) => x.userId === userId);
+        const every = everyRoleOf(userId);
+        // Only an Every space group puts them here: nothing to remove.
+        if (every && !own?.manualRole && !own?.syncRole)
+          return managedByOrgMapping(userId, every);
+        // Still here after the removal (Every space, or a live synced row):
+        // 200 with the role they keep; else 204.
+        const kept = () => {
+          const k = rowsOf(s).find((x) => x.userId === userId);
+          return k ? HttpResponse.json(memberView(s, k)) : noContent();
+        };
+        if (directoryMode === "frozen" && own?.syncRole) {
           // Removing access is always allowed, synced rows included.
           detach(baseRow(s, userId));
           log("space.member.remove", { type: "user", id: userId }, s.id, {
             syncFrozen: true,
           });
           refresh();
-          return noContent();
+          return kept();
         }
-        if (!cur.manualRole)
-          return cur.syncRole && directoryMode === "google"
+        if (!own?.manualRole)
+          return own?.syncRole && directoryMode === "google"
             ? err(
                 "member_synced",
                 "This person comes from a Google group. Remove them from the group in Google, or change their role here.",
@@ -1279,7 +2044,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         row.manualRole = null;
         log("space.member.remove", { type: "user", id: userId }, s.id);
         refresh();
-        return noContent();
+        return kept();
       }),
     ),
     http.get(
@@ -1526,30 +2291,239 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         if (directoryMode !== "google")
           return err("directory_sync_off", "Directory sync is off or frozen");
         sync.nextRunAt = iso();
-        return HttpResponse.json(sync, { status: 202 });
+        return HttpResponse.json(syncView(), { status: 202 });
       }),
     ),
+    http.post(
+      "*/api/v1/directory/confirm",
+      authed(() => {
+        if (me.user.role !== "owner" || sync.state !== "pending_confirm")
+          return notFound();
+        Object.assign(sync, {
+          state: "never",
+          pendingCount: null,
+          pendingCountCapped: false,
+          pendingExpiresAt: null,
+          pendingCustomerChange: null,
+        });
+        log("directory.connect", { type: "directory", id: "google" });
+        return HttpResponse.json(syncView());
+      }),
+    ),
+    http.post(
+      "*/api/v1/directory/cancel",
+      authed(() => {
+        if (me.user.role !== "owner" || sync.state !== "pending_confirm")
+          return notFound();
+        Object.assign(sync, {
+          state: "never",
+          binding: null,
+          pendingCount: null,
+          pendingCountCapped: false,
+          pendingExpiresAt: null,
+          pendingCustomerChange: null,
+        });
+        log("directory.disconnect", { type: "directory", id: "google" });
+        return noContent();
+      }),
+    ),
+    // Server: routes/directory.ts (held/:groupId/confirm), sync.ts confirmHeld.
     http.post(
       "*/api/v1/directory/held/:groupId/confirm",
       authed(({ params }) => {
         if (me.user.role !== "owner") return notFound();
-        const i = sync.held.findIndex((h) => h.groupId === params.groupId);
-        if (i < 0) return notFound();
-        sync.held.splice(i, 1);
+        const off = syncOff();
+        if (off) return off;
+        // Only a 'sweep' hold (an unreadable one removes nobody) confirms.
+        const i = sync.held.findIndex(
+          (h) => h.groupId === params.groupId && h.wouldRemove > 0,
+        );
+        if (i < 0)
+          return err(
+            "conflict",
+            "This group has no held sweep to confirm; it can't be read from Google",
+          );
+        // The server applies it on the confirm's sweep; the mock at once.
+        const [h] = sync.held.splice(i, 1);
+        // The snooze row stays until the alarm ends it, expired or not.
+        if (h?.snoozedUntil)
+          log(
+            "directory.sweep.unsnoozed",
+            { type: "group", id: params.groupId as string },
+            null,
+            { why: "applied" },
+          );
         log("directory.sweep.confirmed", {
           type: "group",
           id: params.groupId as string,
         });
-        return HttpResponse.json(sync, { status: 202 });
+        return HttpResponse.json(syncView(), { status: 202 });
+      }),
+    ),
+    // Server: routes/directory.ts (held/:groupId/snooze), sync.ts snoozeHeld.
+    http.post(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(async ({ params, request }) => {
+        if (me.user.role !== "owner") return notFound();
+        const off = syncOff();
+        if (off) return off;
+        // The body is optional: none means no reason.
+        const raw = await request.clone().text();
+        if (new TextEncoder().encode(raw).byteLength > SNOOZE_BODY_MAX)
+          return err(
+            "too_large",
+            `Request body exceeds ${SNOOZE_BODY_MAX} bytes`,
+          );
+        let body: unknown = {};
+        if (raw) {
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            return err("bad_request", "Invalid JSON body");
+          }
+        }
+        const input = HeldSnoozeInputSchema.safeParse(body);
+        if (!input.success)
+          return err("bad_request", "Invalid request body", input.error.issues);
+        const reason =
+          oneLine(input.data.reason ?? "", HELD_SNOOZE_REASON_MAX) || null;
+        // Only a 'sweep' hold (an unreadable one removes nobody) snoozes.
+        const h = sync.held.find(
+          (x) => x.groupId === params.groupId && x.wouldRemove > 0,
+        );
+        if (!h)
+          return err(
+            "conflict",
+            "This group has no held sweep to snooze, or it is being re-checked; try again after the next sync",
+          );
+        // A snooze row (expired or not) is renewed.
+        const renewed = h.snoozedUntil !== null;
+        h.snoozedUntil = new Date(Date.now() + HELD_SNOOZE_MS).toISOString();
+        h.snoozeReason = reason;
+        log(
+          "directory.sweep.snoozed",
+          { type: "group", id: params.groupId as string },
+          null,
+          { until: h.snoozedUntil, renewed },
+        );
+        return HttpResponse.json(syncView());
+      }),
+    ),
+    // Server: sync.ts unsnoozeHeld. Any mode; no snooze row: no change.
+    http.delete(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(({ params }) => {
+        if (me.user.role !== "owner") return notFound();
+        const h = sync.held.find((x) => x.groupId === params.groupId);
+        if (h?.snoozedUntil) {
+          h.snoozedUntil = null;
+          h.snoozeReason = null;
+          log(
+            "directory.sweep.unsnoozed",
+            { type: "group", id: params.groupId as string },
+            null,
+            { why: "owner_cancel" },
+          );
+        }
+        return HttpResponse.json(syncView());
+      }),
+    ),
+    http.post(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(async ({ params, request }) => {
+        if (me.user.role !== "owner") return notFound();
+        const h = sync.held.find((x) => x.groupId === params.groupId);
+        if (!h || h.wouldRemove === 0)
+          return err("conflict", "This group has no held sweep to snooze");
+        // The body is optional: none means no reason.
+        const empty = !(await request.clone().text());
+        let reason: string | null = null;
+        if (!empty) {
+          const r = await c.body(request, HeldSnoozeInputSchema);
+          if (r.error) return r.error;
+          reason = r.data.reason?.trim().slice(0, 200) || null;
+        }
+        h.snoozedUntil = new Date(Date.now() + HELD_SNOOZE_MS).toISOString();
+        h.snoozeReason = reason;
+        log(
+          "directory.sweep.snoozed",
+          { type: "group", id: params.groupId as string },
+          null,
+          { until: h.snoozedUntil },
+        );
+        return HttpResponse.json(sync);
+      }),
+    ),
+    http.delete(
+      "*/api/v1/directory/held/:groupId/snooze",
+      authed(({ params }) => {
+        if (me.user.role !== "owner") return notFound();
+        const h = sync.held.find((x) => x.groupId === params.groupId);
+        if (h?.snoozedUntil) {
+          h.snoozedUntil = null;
+          h.snoozeReason = null;
+          log(
+            "directory.sweep.unsnoozed",
+            { type: "group", id: params.groupId as string },
+            null,
+            { why: "owner_cancel" },
+          );
+        }
+        return HttpResponse.json(sync);
       }),
     ),
     http.get(
       "*/api/v1/directory",
-      authed(() => (isAdmin() ? HttpResponse.json(sync) : notFound())),
+      authed(() =>
+        !isAdmin()
+          ? notFound()
+          : // A snooze's note is the owner's (#412).
+            HttpResponse.json(
+              me.user.role === "owner"
+                ? syncView()
+                : {
+                    ...syncView(),
+                    held: syncView().held.map((h) => ({
+                      ...h,
+                      snoozeReason: null,
+                    })),
+                  },
+            ),
+      ),
+    ),
+    http.post(
+      "*/api/v1/directory/disconnect",
+      authed(() => {
+        if (me.user.role !== "owner") return notFound();
+        disconnect();
+        return HttpResponse.json(syncView());
+      }),
     ),
     http.delete(
       "*/api/v1/directory",
-      authed(() => (me.user.role === "owner" ? noContent() : notFound())),
+      authed(() => {
+        if (me.user.role !== "owner") return notFound();
+        disconnect();
+        return noContent();
+      }),
+    ),
+    // Parity 2: dismiss a notice. guest_shares: per user, any non-guest;
+    // guest_summary: install-wide, the uncapped owner. Else 404.
+    http.post(
+      "*/api/v1/notices/:notice/dismiss",
+      authed(({ params }) => {
+        if (params.notice === "guest_shares" && me.user.role !== "guest")
+          sharesDismissed.add(me.user.id);
+        else if (
+          params.notice === "guest_summary" &&
+          me.user.role === "owner" &&
+          cap() === null
+        )
+          summaryDismissed = true;
+        else return notFound();
+        refresh();
+        return noContent();
+      }),
     ),
     http.get(
       "*/api/v1/audit",
@@ -1573,6 +2547,20 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     | ((space: { id: string; kind: string } | null | undefined) => boolean)
     | null => {
     if (scope === "spaces") return (sp) => sp?.kind === "shared";
+    if (scope === "mine" && spaceId !== undefined) {
+      const sp = findSpace(spaceId);
+      if (!sp) return notFound();
+      if (sp.kind === "personal" && sp.id !== me.user.id)
+        return err("space_personal", "Pick a shared space");
+      if (sp.kind === "shared" && !roleIn(sp)) return notFound();
+      if (sp.id !== me.user.id)
+        return err(
+          "bad_request",
+          'scope "mine" is the personal space; use owner=me',
+          { path: "spaceId", reason: "invalid" },
+        );
+      return null;
+    }
     if (scope !== "space") return null;
     const sp = findSpace(spaceId);
     if (!sp) return notFound();
@@ -1583,10 +2571,98 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     return (a) => a?.id === spaceId;
   };
 
+  /**
+   * R.trash's shared part: a refusal for `spaceId`, or which artifacts'
+   * spaces the caller manages (uncapped manager or org admin), as the row's
+   * `space` (null: not a managed shared space; the caller's personal trash is
+   * the core handler's).
+   */
+  const trashScope = (
+    spaceId: string | undefined,
+  ):
+    | Response
+    | ((a: ArtifactSummary) => {
+        id: string;
+        name: string;
+        personal: false;
+      } | null) => {
+    const manages = (s: SpaceRow | undefined) =>
+      !!s && s.kind === "shared" && cap() === null && roleIn(s) === "manager";
+    if (spaceId !== undefined && spaceId !== me.user.id) {
+      if (!manages(findSpace(spaceId))) return notFound();
+    }
+    return (a) => {
+      const s = findSpace(a.space?.id);
+      if (!s || !manages(s)) return null;
+      if (spaceId !== undefined && s.id !== spaceId) return null;
+      return { id: s.id, name: s.name, personal: false };
+    };
+  };
+
+  /**
+   * ShareResult.recipient (review item 37), the server's rules for the mock's
+   * providers (invite-only): an in-domain non-member needs an invite; outside
+   * the domain, guests sign in with codes, so only a Google-only mock flags.
+   */
+  const shareRecipient = (email: string): ShareRecipient | undefined => {
+    if (mode === "access") return undefined;
+    if (members.some((m) => m.email === email)) return undefined;
+    if (email.endsWith(`@${MOCK_DOMAIN}`))
+      return { canSignIn: false, reason: "needs_invite" };
+    return providerIds.includes("email")
+      ? undefined
+      : { canSignIn: false, reason: "outside_domains" };
+  };
+
+  /** Share.guest (GET R.shares): the server's guestRecipients for the mock's providers. */
+  const shareGuest = (email: string): boolean => {
+    const row = members.find((m) => m.email === email);
+    if (row) return row.role === "guest";
+    if (mode === "access") return true;
+    return !email.endsWith(`@${MOCK_DOMAIN}`) && providerIds.includes("email");
+  };
+
+  /** Share.viewOnly (GET R.shares): a user row with a cap, as the server's capOf. */
+  const shareViewOnly = (email: string): boolean => {
+    const row = members.find((m) => m.email === email);
+    return !!row && capOf(row) !== null;
+  };
+
+  /**
+   * signInMethods (#799) for an invite (a member row about to exist) or a
+   * share, the server's reach rules for the mock's providers, in
+   * SIGN_IN_METHOD_ORDER; [] when they can't sign in. An uncertain Google
+   * invite (outside the domain) names Google.
+   */
+  const signInMethods = (
+    email: string,
+    kind: "invite" | "share",
+  ): SignInProviderId[] => {
+    if (mode === "access") return ["access"];
+    const google = providerIds.includes("google");
+    const codes = providerIds.includes("email");
+    const inDomain = email.endsWith(`@${MOCK_DOMAIN}`);
+    const member =
+      kind === "invite" ||
+      members.some((m) => m.email === email && m.role !== "guest");
+    const guest = !member;
+    const out: SignInProviderId[] = [];
+    if (google && (inDomain ? member : kind === "invite")) out.push("google");
+    // Codes: domain codes (Google off) in the domain; guests outside it.
+    if (codes && (inDomain ? !google && member : guest)) out.push("email");
+    return orderSignInMethods(out);
+  };
+
   return {
     handlers,
     refresh,
-    publishSchema,
+    trashScope,
+    /** No level for the signed-in caller: 404 and unlisted (sharedLevel). */
+    hidden: (id: string) => hidden.has(id),
+    shareRecipient,
+    shareGuest,
+    shareViewOnly,
+    signInMethods,
     checkPublish,
     placeNew,
     refuseCappedCreate,

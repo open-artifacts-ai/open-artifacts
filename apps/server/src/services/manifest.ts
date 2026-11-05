@@ -1,14 +1,22 @@
 import {
+  bytesHead,
+  checkEntry,
   contentTypeFor,
+  type EntryRefusal,
   type Format,
   findCaseCollision,
+  HEIC_MESSAGE,
   INLINE_TOO_LARGE_MESSAGE,
   inferFormat,
   inferLanguage,
+  isHeic,
   LIMITS,
   newId,
   normalizePath,
   type PublishInput,
+  SNIFF_BYTES,
+  textHead,
+  UNSUPPORTED_FORMAT_MESSAGE,
 } from "@oa/shared";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
@@ -27,6 +35,7 @@ export type ManifestEntry = {
  * Well-formed text stays a string (R2 encodes it natively; `size` is its UTF-8
  * length): no 2× copy of the content in an encoded buffer per publish.
  */
+type InlineSource = { bytes: Uint8Array } | { text: string; size: number };
 export type PlannedSource =
   | { bytes: Uint8Array }
   | { text: string; size: number }
@@ -36,6 +45,12 @@ export type Plan = {
   entry: string;
   format: Format;
   language: string | null;
+  /**
+   * No `format` and the entry's name implies none: the bytes decide. Text is
+   * `code` (language "text"); anything else is unsupported_format. An
+   * uploaded entry is checked in materialize.
+   */
+  byBytes?: true;
 };
 
 const bad = (path: string, reason: string, message?: string) =>
@@ -54,6 +69,38 @@ const inlineTooLarge = (path: string) =>
     path,
     reason: "too_large",
   });
+/** No `format`, the entry's name implies none and its bytes aren't text: 400 unsupported_format. */
+const noViewer = (path: string) =>
+  new ApiError("unsupported_format", UNSUPPORTED_FORMAT_MESSAGE, {
+    path,
+    reason: "no_viewer",
+  });
+
+/** A HEIC/HEIF entry, by name or bytes, whatever the format: 400 unsupported_format. */
+const heic = (path: string) =>
+  new ApiError("unsupported_format", HEIC_MESSAGE, { path, reason: "heic" });
+
+/** The entry's content doesn't fit its format: 400 binary_entry. */
+const refuse = (path: string, r: EntryRefusal) =>
+  new ApiError("binary_entry", r.message, { path, reason: r.reason });
+
+/**
+ * Checks an inline entry's first SNIFF_BYTES against its format. With
+ * `byBytes` (format inferred from the bytes as code), a refusal is
+ * unsupported_format rather than binary_entry.
+ */
+function checkInline(
+  path: string,
+  format: Format,
+  s: InlineSource,
+  byBytes: boolean,
+): void {
+  const { head, truncated } =
+    "text" in s ? textHead(s.text) : bytesHead(s.bytes);
+  if (isHeic(path, head)) throw heic(path);
+  const r = checkEntry(path, format, head, truncated);
+  if (r) throw byBytes ? noViewer(path) : refuse(path, r);
+}
 
 function norm(p: unknown): string {
   if (typeof p !== "string") throw bad(String(p), "invalid");
@@ -124,6 +171,8 @@ function defaultEntry(format: Format, language: string | null): string {
   if (format === "html") return "index.html";
   if (format === "markdown") return "README.md";
   if (format === "pdf") return "document.pdf";
+  // Inline `content` is text: of the image types, only SVG.
+  if (format === "image") return "image.svg";
   return `main.${EXT.get((language ?? "").toLowerCase()) ?? "txt"}`;
 }
 
@@ -139,7 +188,7 @@ export function planFiles(input: PublishInput): Plan {
     budget -= size;
   };
   /** Text as TextEncoder would store it: lone surrogates become U+FFFD bytes. */
-  const textSource = (path: string, v: string): PlannedSource => {
+  const textSource = (path: string, v: string): InlineSource => {
     if (!isWellFormed(v)) {
       const bytes = utf8Encoder.encode(v);
       take(path, bytes.length);
@@ -156,17 +205,22 @@ export function planFiles(input: PublishInput): Plan {
     if (files !== undefined)
       throw bad("files", "content_and_files", "Provide content or files");
     const entryIn = input.entry === undefined ? undefined : norm(input.entry);
-    const format = input.format ?? (entryIn && inferFormat(entryIn));
-    if (!format)
+    if (!input.format && entryIn === undefined)
       throw bad("format", "missing", "content requires format or entry");
+    const inferred = input.format ?? inferFormat(entryIn as string);
+    const byBytes = !inferred;
+    const format = inferred ?? "code";
+    // inferLanguage is "text" for a name that implies no format.
     const language =
       input.language ??
       (format === "code" ? (entryIn ? inferLanguage(entryIn) : "text") : null);
     const entry = entryIn ?? defaultEntry(format, language);
     // UTF-8 is ≥ 1 byte per UTF-16 unit: reject before encoding when obviously too big.
     if (content.length > budget) throw inlineTooLarge(entry);
+    const source = textSource(entry, content);
+    checkInline(entry, format, source, byBytes);
     return {
-      files: [{ path: entry, source: textSource(entry, content) }],
+      files: [{ path: entry, source }],
       entry,
       format,
       language,
@@ -248,10 +302,29 @@ export function planFiles(input: PublishInput): Plan {
       });
     } else throw bad(key, "invalid");
   }
-  const format = input.format ?? inferFormat(entry);
+  // By name now; by bytes in checkInline or, for an upload, materialize.
+  if (isHeic(entry)) throw heic(entry);
+  const inferred = input.format ?? inferFormat(entry);
+  const byBytes = !inferred;
+  const format = inferred ?? "code";
+  if (format === "image" && out.length > 1)
+    throw bad(
+      "files",
+      "image_single_file",
+      "An image artifact has one file, the image. Publish it alone, or publish an HTML page that shows it.",
+    );
+  const head = out.find((f) => f.path === entry)?.source;
+  // An uploaded entry is checked in materialize (one R2 range read).
+  if (head && !("uploadId" in head)) checkInline(entry, format, head, byBytes);
   const language =
     input.language ?? (format === "code" ? inferLanguage(entry) : null);
-  return { files: out, entry, format, language };
+  return {
+    files: out,
+    entry,
+    format,
+    language,
+    ...(byBytes ? { byBytes: true as const } : {}),
+  };
 }
 
 const inlineSize = (
@@ -269,6 +342,35 @@ type UploadRow = {
   consumed: number;
   received_at: number | null;
 };
+
+/**
+ * An uploaded entry's first SNIFF_BYTES (one R2 range read, the entry only)
+ * against the plan's format: 400 binary_entry (unsupported_format when the
+ * format came from the bytes). Runs before anything is written or consumed.
+ */
+async function checkUploadedEntry(
+  env: Env,
+  plan: Plan,
+  rows: Map<string, UploadRow>,
+): Promise<void> {
+  const f = plan.files.find((x) => x.path === plan.entry);
+  if (!f || !("uploadId" in f.source)) return;
+  const row = rows.get(f.source.uploadId) as UploadRow;
+  const obj = await env.FILES.get(row.r2_key, {
+    range: { offset: 0, length: SNIFF_BYTES },
+  });
+  if (!obj) throw bad(f.path, "upload_incomplete");
+  const head = new Uint8Array(await obj.arrayBuffer());
+  if (isHeic(f.path, head)) throw heic(f.path);
+  const r = checkEntry(
+    f.path,
+    plan.format,
+    head,
+    row.size > head.length,
+    row.content_type,
+  );
+  if (r) throw plan.byBytes ? noViewer(f.path) : refuse(f.path, r);
+}
 
 /**
  * Resolves uploads (must belong to (artifactId, userId), be unconsumed, match the
@@ -319,6 +421,7 @@ export async function materialize(
     total += row.size;
   }
   if (total > LIMITS.publishBytes) throw tooLarge("files", LIMITS.publishBytes);
+  await checkUploadedEntry(env, plan, rows);
 
   const written: string[] = [];
   const manifest: ManifestEntry[] = [];

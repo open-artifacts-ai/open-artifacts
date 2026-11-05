@@ -7,7 +7,12 @@ import { Badge, Button, Input, Label } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useId, useState } from "react";
 import { ApiClientError } from "../../api/client";
-import { hasFeature, type Space, type SpaceRole } from "../../api/contract";
+import {
+  directoryMode,
+  type GroupMapping,
+  type Space,
+  type SpaceRole,
+} from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
 import {
   useAddSelfToSpace,
@@ -22,6 +27,8 @@ import {
   useUpdateSettings,
 } from "../../api/queries";
 import { useMe } from "../../auth/useMe";
+import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
+import { LoadError } from "../../layout/LoadError";
 import { Modal } from "../../layout/Modal";
 import { useDocumentTitle } from "../../layout/useDocumentTitle";
 import { AppLink } from "../../library/AppLink";
@@ -29,12 +36,14 @@ import { ConfirmDialog } from "../ConfirmDialog";
 import { GroupPicker } from "../GroupPicker";
 import { errorText, muted, SettingsCard, STACK } from "../ui";
 import { isOrgAdmin } from "./access";
+import { checkName, nameRefusal } from "./name";
 import {
   AccessRow,
   ALL_ROLES,
   mappingProblem,
   Problem,
   people,
+  RemoveMapping,
   ROLE_LABEL,
   RoleSelect,
   SpaceAccess,
@@ -66,15 +75,27 @@ function NewSpace({
   const [name, setName] = useState("");
   const [allMembersRole, setAll] = useState<SpaceRole | null>(null);
   const [publicLinks, setPublic] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // The creator manages it unless they say otherwise, so it's in their sidebar (#806).
+  const [addMe, setAddMe] = useState(true);
+  const addMeId = useId();
+  const [touched, setTouched] = useState(false);
+  const [refused, setRefused] = useState<string | null>(null);
   const hint = useId();
+  const nameId = useId();
+  const checked = checkName(name);
+  // After the field was left or a submit was tried, never on a fresh form.
+  const error = (touched ? checked.error : null) ?? refused;
   const submit = () => {
-    const trimmed = name.trim();
-    if (!trimmed) return setError("Give the space a name.");
-    setError(null);
+    setTouched(true);
+    const clean = checked.name;
+    if (clean === null) return;
+    setRefused(null);
     create.mutate(
-      { name: trimmed, allMembersRole, publicLinks },
-      { onSuccess: onClose },
+      { name: clean, allMembersRole, publicLinks, addMe },
+      {
+        onSuccess: onClose,
+        onError: (e) => setRefused(nameRefusal(e, name)),
+      },
     );
   };
   return (
@@ -84,7 +105,7 @@ function NewSpace({
       description="Choose a name and who gets access."
       footer={
         <>
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
           <Button disabled={create.isPending} onClick={submit}>
@@ -105,9 +126,19 @@ function NewSpace({
           <Input
             id="oa-new-space-name"
             value={name}
-            maxLength={80}
-            onChange={(e) => setName(e.target.value)}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? nameId : undefined}
+            onBlur={() => setTouched(true)}
+            onChange={(e) => {
+              setName(e.target.value);
+              setRefused(null);
+            }}
           />
+          {error && (
+            <p id={nameId} role="alert" className={`m-0 ${errorText}`}>
+              {error}
+            </p>
+          )}
         </div>
         <div className="grid gap-[6px]">
           <span className="text-[length:var(--oa-text-sm)] font-medium">
@@ -135,11 +166,12 @@ function NewSpace({
             onChange={setPublic}
           />
         </div>
-        {error && (
-          <p role="alert" className={errorText}>
-            {error}
-          </p>
-        )}
+        <LabelledCheckbox
+          id={addMeId}
+          label="Add me as a manager"
+          checked={addMe}
+          onCheckedChange={setAddMe}
+        />
       </form>
     </Modal>
   );
@@ -178,6 +210,7 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
   const put = usePutOrgMapping();
   const remove = useDeleteOrgMapping();
   const [pending, setPending] = useState<Record<string, SpaceRole>>({});
+  const [removing, setRemoving] = useState<GroupMapping | null>(null);
   const [problem, setProblem] = useState<ReturnType<
     typeof mappingProblem
   > | null>(null);
@@ -199,6 +232,13 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
         Groups here get their role in every shared space, including ones created
         later. Never in anyone's Personal space.
       </p>
+      {org.isError && (
+        <LoadError
+          title="Couldn't load the groups for every space."
+          error={org.error}
+          onRetry={() => void org.refetch()}
+        />
+      )}
       {rows.length > 0 && (
         <table
           aria-label="Every space groups"
@@ -231,9 +271,7 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
                         aria-label={`Remove ${g.email}`}
                         onClick={() => {
                           setProblem(null);
-                          remove.mutate(g.groupId, {
-                            onError: (e) => setProblem(mappingProblem(e)),
-                          });
+                          setRemoving(g);
                         }}
                       >
                         Remove
@@ -249,6 +287,20 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
             ))}
           </tbody>
         </table>
+      )}
+      {removing && (
+        <RemoveMapping
+          mapping={removing}
+          space={null}
+          onClose={() => setRemoving(null)}
+          onConfirm={() => {
+            const g = removing;
+            setRemoving(null);
+            remove.mutate(g.groupId, {
+              onError: (e) => setProblem(mappingProblem(e)),
+            });
+          }}
+        />
       )}
       {syncOn && (
         <GroupPicker
@@ -273,10 +325,15 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
 function SpaceList({
   spaces,
   admin,
+  error,
+  onRetry,
   onNew,
 }: {
   spaces: Space[];
   admin: boolean;
+  /** The list failed to load: said instead of the count and rows. */
+  error: unknown;
+  onRetry: () => void;
   onNew: () => void;
 }) {
   return (
@@ -295,11 +352,19 @@ function SpaceList({
         )
       }
     >
-      {admin && (
-        <p className={muted}>
-          {spaces.length} shared {spaces.length === 1 ? "space" : "spaces"}.
-          Personal spaces aren't listed.
-        </p>
+      {error ? (
+        <LoadError
+          title="Couldn't load spaces."
+          error={error}
+          onRetry={onRetry}
+        />
+      ) : (
+        admin && (
+          <p className={muted}>
+            {spaces.length} shared {spaces.length === 1 ? "space" : "spaces"}.
+            Personal spaces aren't listed.
+          </p>
+        )
       )}
       <ul aria-label="Spaces" className="grid p-0">
         {spaces.map((s) => (
@@ -355,15 +420,29 @@ function General({ space }: { space: Space }) {
   const [name, setName] = useState(space.name);
   const [asking, setAsking] = useState(false);
   useEffect(() => setName(space.name), [space.name]);
-  const trimmed = name.trim();
+  const nameId = useId();
+  const [refused, setRefused] = useState<string | null>(null);
+  const [touched, setTouched] = useState(false);
+  const checked = checkName(name);
+  const error = (touched ? checked.error : null) ?? refused;
+  const same = checked.name === space.name;
   return (
     <SettingsCard id="oa-space-general" title="General">
       <form
         className="grid gap-[6px]"
         onSubmit={(e) => {
           e.preventDefault();
-          if (trimmed && trimmed !== space.name)
-            patch.mutate({ name: trimmed });
+          setTouched(true);
+          if (!checked.name || same) return;
+          setRefused(null);
+          patch.mutate(
+            { name: checked.name },
+            {
+              // The saved name, cleaned, is what the field shows.
+              onSuccess: (s) => setName(s.name),
+              onError: (e) => setRefused(nameRefusal(e, name)),
+            },
+          );
         }}
       >
         <Label htmlFor="oa-space-name">Name</Label>
@@ -371,19 +450,29 @@ function General({ space }: { space: Space }) {
           <Input
             id="oa-space-name"
             value={name}
-            maxLength={80}
-            onChange={(e) => setName(e.target.value)}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? nameId : undefined}
+            onBlur={() => setTouched(true)}
+            onChange={(e) => {
+              setName(e.target.value);
+              setRefused(null);
+            }}
           />
           <Button
             type="submit"
             size="sm"
             variant="outline"
             className="h-auto text-[length:var(--oa-text-sm)]"
-            disabled={!trimmed || trimmed === space.name || patch.isPending}
+            disabled={!checked.name || same || patch.isPending}
           >
             Save name
           </Button>
         </div>
+        {error && (
+          <p id={nameId} role="alert" className={`m-0 ${errorText}`}>
+            {error}
+          </p>
+        )}
       </form>
       <div className="flex items-start justify-between gap-[var(--oa-space-3)]">
         <div>
@@ -494,7 +583,8 @@ function DeleteSpace({
   return (
     <SettingsCard id="oa-space-delete" title="Delete space">
       <p className={muted}>
-        Only an empty space can be deleted, trash included.
+        Only an empty space can be deleted. Deleted artifacts still count until
+        they're permanently removed, 30 days after deletion.
       </p>
       <div className="flex flex-wrap items-center gap-[var(--oa-space-3)]">
         <Button
@@ -509,8 +599,7 @@ function DeleteSpace({
         </Button>
         {n > 0 && (
           <small id={reason} className={muted}>
-            Move or delete its {n} {n === 1 ? "artifact" : "artifacts"} first
-            (trash included).
+            Move or delete its {n} {n === 1 ? "artifact" : "artifacts"} first.
           </small>
         )}
       </div>
@@ -553,7 +642,7 @@ function SpaceDetail({
   useDocumentTitle(space.name);
   const state = useMe();
   const frozen =
-    state.status === "authed" && hasFeature(state.me, "sync_frozen");
+    state.status === "authed" && directoryMode(state.me) === "frozen";
   // A kept group's "Edit people" narrows People to it.
   const [group, setGroup] = useState("");
   return (
@@ -605,7 +694,7 @@ export function Spaces() {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const admin = isOrgAdmin(me);
-  const syncOn = !!me && hasFeature(me, "sync_google");
+  const syncOn = !!me && directoryMode(me) === "google";
   const orgName = me?.instance.name ?? "your organization";
   const { space: spaceId } = useSearch({ strict: false }) as { space?: string };
   const navigate = useNavigate();
@@ -627,7 +716,9 @@ export function Spaces() {
     if (refused) toList();
   });
   useEffect(() => {
-    if (list.hasNextPage && !list.isFetchingNextPage) void list.fetchNextPage();
+    // A failed page stops here: Retry refetches.
+    if (list.hasNextPage && !list.isFetching && !list.isError)
+      void list.fetchNextPage();
   }, [list]);
 
   if (space)
@@ -643,7 +734,13 @@ export function Spaces() {
   return (
     <div className={STACK}>
       {admin && <EverySpace syncOn={syncOn} />}
-      <SpaceList spaces={all} admin={admin} onNew={() => setCreating(true)} />
+      <SpaceList
+        spaces={all}
+        admin={admin}
+        error={list.isError ? list.error : null}
+        onRetry={() => void list.refetch()}
+        onNew={() => setCreating(true)}
+      />
       {admin && <AccessSwitch />}
       {creating && (
         <NewSpace orgName={orgName} onClose={() => setCreating(false)} />

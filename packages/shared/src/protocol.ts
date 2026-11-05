@@ -45,7 +45,7 @@ const THUMB_RE = /^data:image\/webp;base64,[A-Za-z0-9+/]*={0,2}$/;
 const Theme = ThemeSchema;
 
 /**
- * Anonymous id (artifacts with allowAnonymousWrites): the shell sends its
+ * Anonymous id (artifacts with dataWriters "viewers"): the shell sends its
  * signed token "<id>.<iat>.<sig>" (legacy v1: "<id>.<sig>") in this request
  * header on anonymous runtime calls, and the server returns a new one in the
  * same response header whenever it mints one (anonymous writes and R.anonId
@@ -118,6 +118,28 @@ export const ArtifactToShellSchema = z.union([
    * auto-swaps versions, and nothing security-relevant may depend on it.
    */
   z.strictObject({ oa: z.literal(1), nonce, type: z.literal("interacted") }),
+  /**
+   * The reader is mid-task in the frame (text selected, or an input, textarea
+   * or contenteditable focused), or no longer: a live swap waits meanwhile.
+   * A hint only, like `interacted`.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("engaged"),
+    engaged: z.boolean(),
+  }),
+  /**
+   * The document's scroll position (throttled): the shell carries it over to
+   * the next version's frame after a live swap. A hint only.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("scroll"),
+    top: z.number().finite().min(0).max(10_000_000),
+    max: z.number().finite().min(0).max(10_000_000),
+  }),
   /**
    * A click on a same-instance viewer link (NAVIGATE_PATH_RE on the welcome's
    * appOrigin). Artifact content can forge this, so the shell must validate
@@ -192,8 +214,25 @@ export const ShellToArtifactSchema = z.union([
     event: z.literal("db.resync"),
     collection: DataNameSchema,
   }),
+  /**
+   * The shell's socket for `collection` is down (refused, or failing to
+   * reconnect): live changes are paused until a db.resync. Once per outage.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    type: z.literal("event"),
+    event: z.literal("db.offline"),
+    collection: DataNameSchema,
+  }),
   z.strictObject({ oa: z.literal(1), type: z.literal("thumb.request") }),
   z.strictObject({ oa: z.literal(1), type: z.literal("theme"), theme: Theme }),
+  /** After a live swap: scroll to where the previous version's frame was. */
+  z.strictObject({
+    oa: z.literal(1),
+    type: z.literal("scroll.to"),
+    top: z.number().finite().min(0).max(10_000_000),
+    max: z.number().finite().min(0).max(10_000_000),
+  }),
 ]);
 export type ShellToArtifact = z.infer<typeof ShellToArtifactSchema>;
 

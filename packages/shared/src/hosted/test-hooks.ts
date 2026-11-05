@@ -22,7 +22,59 @@ export const TEST_HOOKS = {
   session: "/__test/session",
   otpLatest: "/__test/otp/latest",
   oauthClient: "/__test/oauth-client",
+  audit: "/__test/audit",
+  codeCapsReset: "/__test/code-caps/reset",
+  directoryGroups: "/__test/directory-groups",
+  directoryHeld: "/__test/directory-held",
 } as const;
+
+/**
+ * Why a hook refused, AFTER the key verified: the 404 body's
+ * error.details.reason. Refusals before the key (hooks off, rate limit,
+ * wrong key) stay the uniform 404 with no reason.
+ */
+export const TEST_HOOK_REFUSALS = [
+  /** Not a POST, or not a known hook path. */
+  "bad_route",
+  /** The body failed its schema, or a bad email or spaces list. */
+  "bad_input",
+  /** A granted space is unprefixed, personal, deleted, or has a member outside TEST_DOMAIN. */
+  "spaces_blocked",
+  /** The user can't be acted on (owner, outside TEST_DOMAIN, another role, suspended). */
+  "user_refused",
+  /** A grant row didn't write (the space changed after the check). */
+  "grant_refused",
+  /** otp/latest: no code to read for that address (details.outcome says why). */
+  "no_code",
+] as const;
+export type TestHookRefusal = (typeof TEST_HOOK_REFUSALS)[number];
+
+/**
+ * otp/latest's no_code 404 (after the key) carries error.details.outcome: the
+ * last code-send outcome recorded for that TEST_DOMAIN address. Only "pending"
+ * means "not yet, ask again"; every other value is final for that request.
+ */
+export const TEST_OTP_OUTCOMES = [
+  /** Requested; the send hasn't finished. */
+  "pending",
+  /** Sent (the 200 carries the code; never in a no_code 404). */
+  "sent",
+  /** The sent code was redeemed. */
+  "used",
+  /** The sent code is past its TTL. */
+  "expired",
+  /** Nothing recorded for that address. */
+  "none",
+  // deliverCode's own outcomes (its code_send log), plus "error" (it threw).
+  "email_off",
+  "ineligible",
+  "pool_full",
+  "capped",
+  "resend_wait",
+  "send_failed",
+  "error",
+] as const;
+export type TestOtpOutcome = (typeof TEST_OTP_OUTCOMES)[number];
 
 /** POST TEST_HOOKS.session -> TestSessionResult (a real __Host-oa_session value, p: "test"). */
 export const TestSessionInputSchema = z.strictObject({
@@ -54,6 +106,98 @@ export const OAuthClientHookResultSchema = z.object({
   accessToken: z.string(),
 });
 export type OAuthClientHookResult = z.infer<typeof OAuthClientHookResultSchema>;
+
+/**
+ * POST TEST_HOOKS.codeCapsReset with exactly `{}`: deletes the CALLER's own
+ * per-IP code buckets (code:ip and code:fail for its IP), nothing else.
+ */
+export const TestCodeCapsResetInputSchema = z.strictObject({});
+export type TestCodeCapsResetInput = z.infer<
+  typeof TestCodeCapsResetInputSchema
+>;
+export const TestCodeCapsResetResultSchema = z.object({
+  reset: z.number().int().nonnegative(),
+});
+export type TestCodeCapsResetResult = z.infer<
+  typeof TestCodeCapsResetResultSchema
+>;
+
+/** Hook group ids: the hook spaces' `test-` rule (checked again in SQL). */
+export const TEST_GROUP_ID = /^test-[A-Za-z0-9_-]{1,59}$/;
+/** Most groups one TEST_HOOKS.directoryGroups call seeds. */
+export const TEST_DIRECTORY_GROUPS_MAX = 20;
+/**
+ * POST TEST_HOOKS.directoryGroups: upserts directory_groups rows (id and
+ * email) for `test-` ids with emails under TEST_DOMAIN only, so a space
+ * mapping can name a group on an install with no directory binding. Never
+ * touches any other row.
+ */
+export const TestDirectoryGroupsInputSchema = z.strictObject({
+  groups: z
+    .array(
+      z.strictObject({
+        groupId: z.string().regex(TEST_GROUP_ID),
+        email: z.email(),
+      }),
+    )
+    .min(1)
+    .max(TEST_DIRECTORY_GROUPS_MAX),
+});
+export type TestDirectoryGroupsInput = z.infer<
+  typeof TestDirectoryGroupsInputSchema
+>;
+export const TestDirectoryGroupsResultSchema = z.object({
+  seeded: z.number().int().nonnegative(),
+});
+export type TestDirectoryGroupsResult = z.infer<
+  typeof TestDirectoryGroupsResultSchema
+>;
+
+/**
+ * POST TEST_HOOKS.directoryHeld (#1078): `held: true` puts a held sweep
+ * (kind 'sweep', one removal waiting) on a suite group: a `test-` id whose
+ * directory_groups row (TEST_HOOKS.directoryGroups) carries exactly this
+ * TEST_DOMAIN email. `held: false` takes it off again (a snooze of it ends,
+ * audited "released", as for a real release). Written where real sync keeps
+ * holds (the DirectorySync DO and the D1 health row), so the owner's snooze
+ * routes act on it unchanged. Never touches any other group's hold.
+ */
+export const TestDirectoryHeldInputSchema = z.strictObject({
+  groupId: z.string().regex(TEST_GROUP_ID),
+  email: z.email(),
+  held: z.boolean(),
+});
+export type TestDirectoryHeldInput = z.infer<
+  typeof TestDirectoryHeldInputSchema
+>;
+/** `held`: whether the group is held now. */
+export const TestDirectoryHeldResultSchema = z.object({ held: z.boolean() });
+export type TestDirectoryHeldResult = z.infer<
+  typeof TestDirectoryHeldResultSchema
+>;
+
+/** Most rows POST TEST_HOOKS.audit returns. */
+export const TEST_AUDIT_LIMIT = 200;
+
+/** POST TEST_HOOKS.audit: `since` is ms since the epoch (rows with at >= since). */
+export const TestAuditInputSchema = z.strictObject({
+  since: z.number().int().nonnegative(),
+});
+export type TestAuditInput = z.infer<typeof TestAuditInputSchema>;
+/** One `test_hook.*` audit row. Never any other event. */
+export const TestAuditEventSchema = z.object({
+  action: z.string().startsWith("test_hook."),
+  at: z.number(),
+  actorId: z.string().nullable(),
+  targetId: z.string().nullable(),
+  detail: z.record(z.string(), z.unknown()),
+});
+export type TestAuditEvent = z.infer<typeof TestAuditEventSchema>;
+/** Newest first, at most TEST_AUDIT_LIMIT. */
+export const TestAuditResultSchema = z.object({
+  events: z.array(TestAuditEventSchema),
+});
+export type TestAuditResult = z.infer<typeof TestAuditResultSchema>;
 
 /**
  * GET /healthz. testHooks: true only on staging installs (hooks mounted);

@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
+import { oauthEnv } from "../mcp/oauth-store.js";
 import {
   b64urlDecode,
   b64urlEncode,
@@ -75,6 +76,8 @@ type OidcState = {
   retry?: boolean;
   /** Provider; absent (cookies from before P2) reads as "access". */
   p?: ProviderId;
+  /** A forced re-authentication was asked for (break-glass, P3 T18). */
+  ra?: true;
 };
 
 type StateKeys = { key: string; legacy: string | null };
@@ -175,10 +178,16 @@ export async function buildAuthorizeRedirect(
   env: Env,
   provider: OidcProvider,
   next: string,
-  opts: { retry?: boolean; cookieHeader?: string | null } = {},
+  opts: {
+    retry?: boolean;
+    cookieHeader?: string | null;
+    /** Ask the provider to re-authenticate (P3 T18 break-glass). */
+    reauth?: boolean;
+  } = {},
 ): Promise<{ location: string; stateCookie: string; evict: string[] }> {
   const keys = await stateKeys(env);
   const retry = opts.retry === true;
+  const reauth = opts.reauth === true;
   const st: OidcState = {
     state: `${retry ? RETRY_MARK : ""}${randomB64(32)}`,
     nonce: randomB64(32),
@@ -187,6 +196,7 @@ export async function buildAuthorizeRedirect(
     exp: Date.now() + OIDC_MAX_AGE_S * 1000,
     ...(retry ? { retry: true } : {}),
     p: provider.id,
+    ...(reauth ? { ra: true as const } : {}),
   };
   const name = await stateCookieName(env, st.state);
   const sign = async () => {
@@ -210,6 +220,7 @@ export async function buildAuthorizeRedirect(
       state: st.state,
       nonce: st.nonce,
       challenge: await s256(st.verifier),
+      ...(reauth ? { reauth } : {}),
     }),
     stateCookie,
     evict: await evictions(env, keys, opts.cookieHeader),
@@ -339,7 +350,8 @@ const KV_MIN_TTL_S = 60;
 /**
  * Single use server-side: the browser clears the state cookie, but a captured
  * cookie plus a fresh code must not sign in again. Marks this state consumed
- * in OAUTH_KV until it expires; a second use fails (stage state_replay).
+ * in the OAuth store (oauthEnv: KV or D1) until it expires; a second use
+ * fails (stage state_replay).
  * Best effort against two concurrent uses (KV has no compare-and-set); the
  * IdP's single-use code and the nonce still bind each sign-in.
  */
@@ -349,9 +361,10 @@ async function consumeState(
   st: OidcState,
 ): Promise<void> {
   const id = USED_STATE + (await hmacSign(key, `used:${st.nonce}`));
-  if ((await env.OAUTH_KV.get(id)) !== null) fail("state_replay");
+  const kv = oauthEnv(env).OAUTH_KV;
+  if ((await kv.get(id)) !== null) fail("state_replay");
   const ttl = Math.max(KV_MIN_TTL_S, Math.ceil((st.exp - Date.now()) / 1000));
-  await env.OAUTH_KV.put(id, "1", { expirationTtl: ttl });
+  await kv.put(id, "1", { expirationTtl: ttl });
 }
 
 /** Constant-time string equality via HMAC verify. */
@@ -368,7 +381,7 @@ export async function handleCallback(
   env: Env,
   provider: OidcProvider,
   req: Request,
-): Promise<VerifiedIdentity & { next: string }> {
+): Promise<VerifiedIdentity & { next: string; reauth: boolean }> {
   const keys = await stateKeys(env);
   const q = new URL(req.url).searchParams;
   const state = q.get("state") ?? "";
@@ -395,8 +408,13 @@ export async function handleCallback(
   const next = safeNext(env, st.next);
   try {
     await consumeState(env, keys.key, st);
+    // "expired": the hosted sign-in broker's own state ran out while the
+    // user sat on Google (a late return), which is a took-too-long, not a
+    // failure.
     if (q.has("error"))
-      return fail("idp_error", { error: tag(q.get("error")) });
+      return fail(q.get("error") === "expired" ? "expired" : "idp_error", {
+        error: tag(q.get("error")),
+      });
     const code = q.get("code");
     if (!code) return fail("no_code");
     const id = await provider.redeem(env, {
@@ -405,7 +423,7 @@ export async function handleCallback(
       nonce: st.nonce,
       bstate: q.get("bstate") ?? undefined,
     });
-    return { ...id, next };
+    return { ...id, next, reauth: st.ra === true };
   } catch (e) {
     if (e instanceof ApiError)
       throw new OidcRedeemError(

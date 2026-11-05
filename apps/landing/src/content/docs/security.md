@@ -19,6 +19,8 @@ The viewer shell loads each artifact from the content host in an iframe with `sa
 
 Every content-host response also sends `Content-Security-Policy: sandbox` with the same flags, so opening a content URL directly is just as isolated.
 
+An image artifact's file is stricter still: it's served with its real type (`image/png`, `image/jpeg`, `image/gif`, `image/webp` or `image/svg+xml`), `X-Content-Type-Options: nosniff`, `Content-Disposition: inline` and `Content-Security-Policy: default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox`, with no `allow-scripts`. A script inside an SVG never runs, even when the SVG is opened on its own, and the viewer shows images only through `<img>`. An image's thumbnail is the image itself only for a PNG, JPEG, GIF or WebP of at most 200 KB and 4096 pixels a side; an SVG never becomes a thumbnail.
+
 Private content URLs carry a signed token that expires after {LIMIT_SIGNED_URL_TTL}, because the content host has no session. Public artifacts need no token. Revoking a share, unsharing, or deleting an artifact refuses new content URLs immediately, but a URL that was already issued keeps working until it expires, up to {LIMIT_SIGNED_URL_TTL} later.
 
 ## Live pages without credentials
@@ -38,6 +40,7 @@ Cloudflare Access is the identity provider, using a one-time PIN by email, or Gi
 | `public` | Anyone with the link, without signing in |
 
 - **Roles:** the owner and admins manage members and settings. Members publish. Guests see only what's shared with them.
+- **Removed members:** someone an admin removes and later restores gets their space roles back, but not their old tokens or agent connections. They have to sign in again, and a former admin comes back as a member.
 - **Shares** give a person `viewer` or `editor` access by email. Editors can publish new versions, edit the title and description, and restore versions.
 - **Only the creator** can share an artifact, change its visibility, or delete it. Admins can't see other people's private artifacts.
 - **No access looks like no artifact.** Anything you can't see returns `404`, never `403`.
@@ -46,9 +49,15 @@ Cloudflare Access is the identity provider, using a one-time PIN by email, or Gi
 
 Personal access tokens look like `oa_pat_` followed by 32 characters. Only a SHA-256 hash is stored. Tokens belong to one user and can be revoked from **Settings → Agents**.
 
+## Audit log
+
+Admin actions, such as changes to members, roles, spaces and the Google directory, are recorded in an audit log. The owner and admins can read and export it. Each event records who did what using account ids, and emails are looked up only when the log is read.
+
+Events are kept for 400 days. A daily job then deletes older ones; a large backlog can take a few extra days to clear.
+
 ## Never indexed
 
-Public links are for sharing, not search. Both hosts send `X-Robots-Tag: noindex, nofollow` on every response, and their `robots.txt` disallows everything. Only public artifacts get their real title in link previews; private links show a generic title.
+Public links are for sharing, not search. Both hosts send `X-Robots-Tag: noindex, nofollow` on every response, and their `robots.txt` disallows everything except the app host's agent guides. Only public artifacts get their real title in link previews; private links show a generic title.
 
 ## No telemetry
 
@@ -56,4 +65,4 @@ A deployed instance sends nothing to the Open Artifacts project or anyone else.
 
 ## Fonts
 
-The dashboard and the Markdown renderer load the Geist fonts from Google Fonts, on both hosts. Each viewer's browser fetches them from `fonts.googleapis.com` and `fonts.gstatic.com`, so Google sees the viewer's IP address. To avoid this, block those two hosts in your network or browser; pages then fall back to system fonts and work the same.
+The dashboard and the Markdown renderer serve their Geist fonts from your own hosts: the app host and the content host. Nothing is fetched from a third party, so no outside service sees a viewer's IP address.

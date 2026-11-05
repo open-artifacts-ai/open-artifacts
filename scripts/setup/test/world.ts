@@ -105,7 +105,7 @@ type World = {
   shortResult?: boolean;
   /** Preloaded users and tokens (token user_id refers to a seeded user id). */
   seed?: {
-    users?: { id: string; email: string; role: string }[];
+    users?: { id: string; email: string; role: string; status?: string }[];
     tokens?: Obj[];
   };
   /** The signed content URL serves this body instead of the published content. */
@@ -140,6 +140,8 @@ type World = {
   settingsForbidden?: boolean;
   /** GET worker settings answers 500. */
   settingsFail?: boolean;
+  /** GET worker settings answers 200 with no bindings (a partial response). */
+  settingsPartial?: boolean;
   /** Process env handed to the setup run. */
   env?: Record<string, string>;
   /** The live Worker's current version id before any deploy in this world. */
@@ -154,6 +156,8 @@ type World = {
   dryRunFails?: boolean;
   /** scripts/ci/check-no-test-hooks.ts fails on the bundle (OA_CHECK_NO_TEST_HOOKS=1). */
   checkHooksFails?: boolean;
+  /** scripts/ci/check-no-fake-idp.ts fails on the bundle (OA_CHECK_NO_TEST_HOOKS=1). */
+  checkFakeIdpFails?: boolean;
   /** `wrangler rollback` fails with this stderr. */
   rollbackFails?: string;
   /** /healthz reports this `version` (absent: an install without it). */
@@ -280,6 +284,8 @@ export function world(w: World = {}) {
       id: string;
       email: string;
       role: string;
+      /** Absent means 'active' (the column default). */
+      status?: string;
     }[],
     tokens: [...(w.seed?.tokens ?? [])] as Obj[],
   };
@@ -287,6 +293,12 @@ export function world(w: World = {}) {
   let discoveryFails = w.discoveryFails ?? 0;
   const sha = (s: string) => createHash("sha256").update(s).digest("hex");
   const unq = (x: string) => x.replaceAll("''", "'");
+  const isActive = (u?: { status?: string }) =>
+    !!u && (u.status ?? "active") === "active";
+  /** demoteStatements' guard: the target is an active owner. */
+  const ready = (st: string, me: string) =>
+    !st.includes(" AND EXISTS (") ||
+    db.users.some((u) => u.email === me && u.role === "owner" && isActive(u));
   /** Runs each statement in order (a failure keeps earlier effects, as D1 does without a transaction). */
   const d1 = (sql: string) => {
     sqls.push(sql);
@@ -318,9 +330,11 @@ export function world(w: World = {}) {
         )
       ) {
         const me = unq(m[1]).toLowerCase();
-        results = db.users
-          .filter((u) => u.role === "owner" && u.email !== me)
-          .map((u) => ({ email: u.email }));
+        results = ready(st, me)
+          ? db.users
+              .filter((u) => u.role === "owner" && u.email !== me)
+              .map((u) => ({ email: u.email }))
+          : [];
       } else if (
         is(
           /^SELECT email FROM users WHERE role = 'owner' AND email = '((?:[^']|'')*)'$/,
@@ -335,7 +349,7 @@ export function world(w: World = {}) {
       ) {
         const me = unq(m[1]).toLowerCase();
         for (const u of db.users)
-          if (u.role === "owner" && u.email !== me) {
+          if (u.role === "owner" && u.email !== me && ready(st, me)) {
             u.role = "admin";
             changes++;
           }
@@ -352,8 +366,16 @@ export function world(w: World = {}) {
         } else {
           const user = existing ?? { id: m[1], email, role: "owner" };
           if (!db.users.includes(user)) db.users.push(user);
-          user.role = "owner";
+          // DO UPDATE ... WHERE users.status = 'active'
+          if (isActive(user)) user.role = "owner";
         }
+      } else if (
+        is(/^SELECT status FROM users WHERE email = '((?:[^']|'')*)'$/)
+      ) {
+        const email = unq(m[1]).toLowerCase();
+        results = db.users
+          .filter((u) => u.email === email)
+          .map((u) => ({ status: u.status ?? "active" }));
       } else if (is(/^SELECT id FROM users WHERE email = '((?:[^']|'')*)'$/)) {
         const email = unq(m[1]).toLowerCase();
         results = db.users.filter((u) => u.email === email);
@@ -400,11 +422,12 @@ export function world(w: World = {}) {
           }
       } else if (
         is(
-          /^INSERT INTO tokens \(id, user_id, label, token_hash, created_at\) SELECT '(\w+)', id, '(setup(?:-ci)?)', '([0-9a-f]{64})', \d+ FROM users WHERE email = '((?:[^']|'')*)' AND \(SELECT count\(\*\) FROM tokens WHERE user_id = users\.id AND revoked_at IS NULL\) < (\d+)$/,
+          /^INSERT INTO tokens \(id, user_id, label, token_hash, created_at\) SELECT '(\w+)', id, '(setup(?:-ci)?)', '([0-9a-f]{64})', \d+ FROM users WHERE email = '((?:[^']|'')*)'( AND status = 'active')? AND \(SELECT count\(\*\) FROM tokens WHERE user_id = users\.id AND revoked_at IS NULL\) < (\d+)$/,
         )
       ) {
-        const [, id, label, hash, em, cap] = m;
-        const user = db.users.find((x) => x.email === unq(em).toLowerCase());
+        const [, id, label, hash, em, onlyActive, cap] = m;
+        const found = db.users.find((x) => x.email === unq(em).toLowerCase());
+        const user = !onlyActive || isActive(found) ? found : undefined;
         const active = db.tokens.filter(
           (x) => x.user_id === user?.id && !x.revoked_at,
         ).length;
@@ -463,6 +486,24 @@ export function world(w: World = {}) {
               code: 0,
               stdout:
                 "check-no-test-hooks: ok: 8 /__test/* requests all 404 with TEST_HOOKS=1\n",
+              stderr: "",
+            };
+      }
+      if (
+        cmd === "node" &&
+        args.some((x) => x.endsWith("check-no-fake-idp.ts"))
+      ) {
+        ops.push(`check-no-fake-idp ${args.at(-1)}`);
+        return w.checkFakeIdpFails
+          ? {
+              code: 1,
+              stdout:
+                "check-no-fake-idp: FAIL: index.js holds the shim's file name\n",
+              stderr: "",
+            }
+          : {
+              code: 0,
+              stdout: "check-no-fake-idp: ok: no fake IdP in 1 file\n",
               stderr: "",
             };
       }
@@ -874,6 +915,7 @@ export function world(w: World = {}) {
         return envelope(null, 403, [{ message: "Authentication error" }]);
       if (settings && m === "GET" && w.settingsFail)
         return envelope(null, 500, [{ message: "internal error" }]);
+      if (settings && m === "GET" && w.settingsPartial) return envelope({});
       if (settings && m === "GET") {
         const full = deployedConfig
           ? JSON.parse(stripComments(deployedConfig))

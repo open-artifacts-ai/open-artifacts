@@ -8,6 +8,7 @@ import {
   publicFromPkcs8,
   signRedeem,
 } from "@oa/auth-core";
+import { readState, signState } from "@oa/broker-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import broker, { type Env } from "../src/index.js";
 import { clearRegistryCache } from "../src/registry.js";
@@ -170,6 +171,17 @@ describe("authorize", () => {
     });
     expect(u.searchParams.get("nonce")).not.toBe("n1");
     expect(u.searchParams.get("state")).not.toBe("s1");
+    expect(u.searchParams.get("max_age")).toBeNull();
+  });
+
+  it("reauth=1 (an install's break-glass sign-in) asks Google for max_age=0", async () => {
+    const r = await call(
+      `/google/authorize?install=inst-a&state=s1&nonce=n1&code_challenge=${CH}&reauth=1`,
+    );
+    expect(r.status).toBe(302);
+    const u = new URL(r.headers.get("location") ?? "");
+    expect(u.searchParams.get("max_age")).toBe("0");
+    expect(u.searchParams.get("prompt")).toBe("select_account");
   });
 
   it("redirect_uri comes from BROKER_ORIGIN, never from the request Host", async () => {
@@ -258,6 +270,38 @@ describe("callback", () => {
       ).toBe(404);
   });
 
+  it("a late return (expired but authentic state) goes back to the install as expired, never with the code", async () => {
+    const late = await signState(env.BROKER_STATE_KEY, {
+      i: "inst-a",
+      s: "s1",
+      h: "h",
+      exp: Date.now() - 1,
+    });
+    const r = await call(
+      `/google/callback?code=abc&state=${encodeURIComponent(late)}`,
+    );
+    expect(r.status).toBe(302);
+    expect(r.headers.get("location")).toBe(
+      "https://a.hosted.test/auth/callback/google?error=expired&state=s1",
+    );
+    expect(r.headers.get("cache-control")).toBe("no-store");
+    // An expired state is still never redeemable.
+    expect(await readState(env.BROKER_STATE_KEY, late, Date.now())).toBeNull();
+    // Tampered or foreign-keyed expired states stay a 404.
+    const [p, sig] = late.split(".");
+    const forged = await signState("another-key-of-32-bytes-or-more!!", {
+      i: "inst-a",
+      s: "s1",
+      h: "h",
+      exp: Date.now() - 1,
+    });
+    for (const s of [`${p}.${sig}x`, forged])
+      expect(
+        (await call(`/google/callback?code=abc&state=${encodeURIComponent(s)}`))
+          .status,
+      ).toBe(404);
+  });
+
   it("a Google error goes back to the install as an error, still to the registry origin", async () => {
     const bs = await bstate();
     const r = await call(
@@ -301,6 +345,36 @@ describe("redeem", () => {
       await call("/google/redeem", { method: "POST", body: "{" }),
     ])
       expect(r.status).toBe(401);
+    expect(tokenCalls).toHaveLength(0);
+  });
+
+  it("refusal bodies: unauthorized before the signature verifies, stale or bad_flow after (broker-check)", async () => {
+    const body = async (r: Response) => ({
+      status: r.status,
+      ...((await r.json()) as object),
+    });
+    const unauth = { status: 401, error: "unauthorized" };
+    // Before verification: one body for everything, so nothing leaks.
+    for (const r of [
+      await redeem(KEY_A, {}, { kid: "nope" }),
+      await redeem(KEY_A, {}, { tamper: true }),
+      await redeem(KEY_A, { install: "inst-off" }),
+      await redeem(KEY_A, { install: "inst-b" }),
+      await call("/google/redeem", { method: "POST", body: "{" }),
+    ])
+      expect(await body(r)).toEqual(unauth);
+    // After verification: stale, and a flow that doesn't bind.
+    expect(
+      await body(await redeem(KEY_A, { ts: Date.now() - 61_000 })),
+    ).toEqual({ status: 401, error: "stale" });
+    expect(await body(await redeem(KEY_A, { bstate: "junk" }))).toEqual({
+      status: 401,
+      error: "bad_flow",
+    });
+    expect(await body(await redeem(KEY_A, { h: "junk" }))).toEqual({
+      status: 401,
+      error: "bad_flow",
+    });
     expect(tokenCalls).toHaveLength(0);
   });
 
@@ -370,7 +444,7 @@ describe("redeem", () => {
   it("redeem charges the IP and install buckets, before any Google call", async () => {
     await redeem(KEY_A, {}, { ip: "203.0.113.9" });
     expect(ipLimit.keys).toEqual(["ip:203.0.113.9"]);
-    expect(installLimit.keys).toEqual(["install:inst-a"]);
+    expect(installLimit.keys).toEqual(["redeem:install:inst-a"]);
   });
 
   it("a deny in either bucket is 429 and no Google call", async () => {
@@ -406,6 +480,44 @@ describe("redeem", () => {
 });
 
 describe("rate limits", () => {
+  const AUTHZ = `/google/authorize?install=inst-a&state=s&nonce=n&code_challenge=${CH}`;
+  it("gate traffic (no cf-connecting-ip) is charged per install, never one shared bucket", async () => {
+    await call(AUTHZ, { headers: { "x-oa-gate-install": "iabc123def45" } });
+    await call(AUTHZ, { headers: { "x-oa-gate-install": "izzz999yyy88" } });
+    expect(ipLimit.keys).toEqual(["gate:iabc123def45", "gate:izzz999yyy88"]);
+  });
+
+  it("a public caller can't pick its bucket: with cf-connecting-ip the gate header is ignored", async () => {
+    await call(AUTHZ, {
+      headers: {
+        "cf-connecting-ip": "203.0.113.9",
+        "x-oa-gate-install": "iabc123def45",
+      },
+    });
+    expect(ipLimit.keys).toEqual(["ip:203.0.113.9"]);
+  });
+
+  it("IPv6 callers are keyed by their /64 (ipKey, design v7 4.7)", async () => {
+    for (const ip of ["2001:db8:1:2::1", "2001:db8:1:2:ffff::9"])
+      await call(AUTHZ, { headers: { "cf-connecting-ip": ip } });
+    expect(ipLimit.keys).toEqual([
+      "ip:2001:db8:1:2::/64",
+      "ip:2001:db8:1:2::/64",
+    ]);
+  });
+
+  it("an unparseable cf-connecting-ip keeps its own bucket, not the shared unknown", async () => {
+    for (const ip of ["not-an-ip", "also-bad"])
+      await call(AUTHZ, { headers: { "cf-connecting-ip": ip } });
+    expect(ipLimit.keys).toEqual(["ip:not-an-ip", "ip:also-bad"]);
+  });
+
+  it("no cf-connecting-ip and no valid gate header is the shared unknown bucket", async () => {
+    await call(AUTHZ, {});
+    await call(AUTHZ, { headers: { "x-oa-gate-install": "../evil" } });
+    expect(ipLimit.keys).toEqual(["ip:unknown", "ip:unknown"]);
+  });
+
   it("authorize charges the IP and install buckets", async () => {
     const r = await call(
       `/google/authorize?install=inst-a&state=s&nonce=n&code_challenge=${CH}`,
@@ -413,7 +525,7 @@ describe("rate limits", () => {
     );
     expect(r.status).toBe(302);
     expect(ipLimit.keys).toEqual(["ip:203.0.113.9"]);
-    expect(installLimit.keys).toEqual(["install:inst-a"]);
+    expect(installLimit.keys).toEqual(["authorize:install:inst-a"]);
   });
 
   it("a deny in either bucket is 429", async () => {
@@ -439,7 +551,28 @@ describe("install buckets are charged only after auth", () => {
     expect(installLimit.keys).toEqual([]);
     expect(ipLimit.keys).toHaveLength(100);
     expect((await redeem(KEY_B, { install: "inst-b" })).status).toBe(200);
-    expect(installLimit.keys).toEqual(["install:inst-b"]);
+    expect(installLimit.keys).toEqual(["redeem:install:inst-b"]);
+  });
+
+  it("authorize and redeem have separate per-install buckets: draining authorize doesn't block a signed redeem (review item 24)", async () => {
+    // One charge allowed per key: authorize spends only its own bucket.
+    const keys: string[] = [];
+    installLimit = {
+      keys,
+      limit: async ({ key }: { key: string }) => {
+        keys.push(key);
+        return { success: keys.filter((k) => k === key).length <= 1 };
+      },
+    };
+    const AUTHZ = `/google/authorize?install=inst-a&state=s&nonce=n&code_challenge=${CH}`;
+    expect((await call(AUTHZ)).status).toBe(302);
+    expect((await call(AUTHZ)).status).toBe(429);
+    expect((await redeem(KEY_A, {})).status).toBe(200);
+    expect(installLimit.keys).toEqual([
+      "authorize:install:inst-a",
+      "authorize:install:inst-a",
+      "redeem:install:inst-a",
+    ]);
   });
 
   it("unknown-install authorizes don't touch any install bucket", async () => {
@@ -457,7 +590,7 @@ describe("install buckets are charged only after auth", () => {
       `/google/authorize?install=inst-b&state=s&nonce=n&code_challenge=${CH}`,
     );
     expect(r.status).toBe(302);
-    expect(installLimit.keys).toEqual(["install:inst-b"]);
+    expect(installLimit.keys).toEqual(["authorize:install:inst-b"]);
   });
 });
 

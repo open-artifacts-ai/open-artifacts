@@ -6,9 +6,9 @@ import { root, sandbox } from "../ci/stubs.ts";
 
 // T3b R-N2 and fix round 5: the key ceremony uploads an env's signing key
 // only when its GitHub Environment allows deployments from main only (the
-// real control against a dispatch from another ref), has a required
-// reviewer and no admin bypass, and a ruleset limits v* tags to the release
-// App (no update, no delete).
+// real control against a dispatch from another ref) with no admin bypass,
+// and a ruleset limits v* tags to the release App (no update, no delete).
+// A required reviewer is neither needed nor checked.
 const SCRIPT = join(root, "scripts/ops/hosted-set-signing-key.sh");
 const KEY =
   "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIfake0000000000000000000000000000000000\n-----END PRIVATE KEY-----\n";
@@ -162,6 +162,24 @@ describe("hosted-set-signing-key.sh", () => {
     expect(r.out + r.err).not.toContain("PRIVATE KEY");
   });
 
+  // No approval step on either env (still main only, no admin bypass): the
+  // checks before signing and deploying are the gate.
+  it.each(["staging", "prod"] as const)(
+    "%s needs no required reviewer",
+    (e) => {
+      const r = run({
+        env: e,
+        envJson: env(MAIN_ONLY, [{ type: "branch_policy" }]),
+      });
+      expect(r.code, r.err).toBe(0);
+      expect(r.calls).toContain(
+        `gh secret set RELEASE_SIGNING_KEY --env hosted-${e} --repo o/r`,
+      );
+      expect(r.out).toContain("no approval step");
+      expect(r.out).not.toMatch(/required reviewer/);
+    },
+  );
+
   it("checks the prod environment for prod", () => {
     const r = run({ env: "prod" });
     expect(r.code, r.err).toBe(0);
@@ -199,10 +217,6 @@ describe("hosted-set-signing-key.sh", () => {
     ],
     ["a tag named main", { polJson: pol([{ name: "main", type: "tag" }]) }],
     ["no policies at all", { polJson: pol([]) }],
-    [
-      "no required reviewer",
-      { envJson: env(MAIN_ONLY, [{ type: "branch_policy" }]) },
-    ],
     ["an environment read that is not JSON", { envJson: "not json" }],
     // Fix round 5 (1): admin bypass must be off.
     [

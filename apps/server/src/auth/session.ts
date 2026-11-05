@@ -44,6 +44,12 @@ export async function signSession(
     epoch: number;
     tenant?: string;
     maxAgeS?: number;
+    /**
+     * When a forced re-authentication happened (ms): Google's auth_time after
+     * max_age=0 (P3 T18 break-glass), an Access sign-in asked for with
+     * prompt=login, or an email code sign-in (#1372). Absent otherwise.
+     */
+    authAt?: number;
   },
 ): Promise<string> {
   if (!isId(uid)) throw new Error("invalid uid");
@@ -55,6 +61,7 @@ export async function signSession(
     p: opts.provider,
     ...(opts.tenant ? { t: opts.tenant } : {}),
     e: opts.epoch,
+    ...(opts.authAt !== undefined ? { a: opts.authAt } : {}),
   };
   const p = b64urlEncode(utf8Encoder.encode(JSON.stringify(payload)));
   return `${p}.${await hmacSign(key, p)}`;
@@ -97,6 +104,7 @@ export async function readSession(
       typeof s.iat === "number" && Number.isFinite(s.iat)
         ? s.iat
         : s.exp - MAX_AGE_S * 1000;
+    const a = typeof s.a === "number" && Number.isFinite(s.a) ? s.a : undefined;
     return {
       uid: s.uid,
       exp: s.exp,
@@ -104,6 +112,7 @@ export async function readSession(
       p: prov,
       ...(s.t !== undefined ? { t: s.t } : {}),
       e,
+      ...(a !== undefined ? { a } : {}),
     };
   } catch {
     return null;

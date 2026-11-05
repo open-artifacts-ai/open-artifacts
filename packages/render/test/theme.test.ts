@@ -112,12 +112,14 @@ describe("theme.css", () => {
     expect([...used].filter((name) => !defined.has(name))).toEqual([]);
   });
 
-  it("loads no url() other than Google Fonts", () => {
-    const urls = [...css.matchAll(/url\(\s*["']?([^"')]+)/g)].map((m) => m[1]);
-    expect(urls.length).toBeGreaterThan(0);
-    for (const url of urls) {
-      expect(url).toMatch(/^https:\/\/fonts\.googleapis\.com\//);
-    }
+  it("loads nothing from a third party: no url(), no remote @import", () => {
+    expect([...css.matchAll(/url\(\s*["']?([^"')]+)/g)]).toEqual([]);
+    const imports = [
+      ...css.matchAll(/@import\s+(?:url\()?\s*["']([^"']+)/g),
+    ].map((m) => m[1]);
+    // Only the self-hosted font faces, resolved and bundled by Vite.
+    expect(imports).toEqual(["@oa/ui/fonts.css"]);
+    expect(css).not.toMatch(/https?:\/\//);
   });
 
   it("sets a base font size of at least 16px", () => {

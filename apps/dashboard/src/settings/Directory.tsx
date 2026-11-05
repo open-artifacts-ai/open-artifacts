@@ -3,7 +3,7 @@
 // access and offers the one fix; below it, held sweeps, restricted groups,
 // then the connection with Disconnect last. Copy: build spec t6cjQuskQ6zrZaJd
 // v5. Losing sync never cuts access, so `staleAt` is never shown.
-import { R } from "@oa/shared";
+import { HELD_SNOOZE_REASON_MAX, R } from "@oa/shared";
 import { displayName } from "@oa/ui";
 import {
   AlertDialog,
@@ -14,10 +14,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
+  DialogFooter,
+  Input,
+  Label,
 } from "@oa/ui/shadcn";
 import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { TriangleAlertIcon } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useAuthProviders } from "../api/auth";
 import { ApiClientError } from "../api/client";
 import {
   DirectoryConnectErrorSchema,
@@ -28,6 +33,8 @@ import {
 import { errorCopy } from "../api/errorCopy";
 import {
   qk,
+  useCancelDirectory,
+  useConfirmDirectory,
   useConfirmHeld,
   useDeleteRestrictedGroup,
   useDirectory,
@@ -36,10 +43,14 @@ import {
   useMembers,
   usePutRestrictedGroup,
   useRestrictedGroups,
+  useSnoozeHeld,
+  useUnsnoozeHeld,
 } from "../api/queries";
 import { useMe } from "../auth/useMe";
+import { LoadError } from "../layout/LoadError";
+import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
-import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { useDocumentTitle, useInstanceName } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
 import { GroupPicker } from "./GroupPicker";
 import { errorText, muted, SettingsCard, STACK } from "./ui";
@@ -50,7 +61,7 @@ const REAUTH = `/auth/login/google?next=${encodeURIComponent(PAGE)}`;
 const SYNC_POLL_MS = 5_000;
 const SYNC_WINDOW_MS = 120_000;
 
-const people = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
+export const people = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
 
 // -- times: relative on screen, exact on hover and for screen readers
 
@@ -65,22 +76,31 @@ const timeFmt = new Intl.DateTimeFormat("en-US", {
   hour: "numeric",
   minute: "2-digit",
 });
-const dayTimeFmt = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-});
 const dayFmt = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
 });
+const dayYearFmt = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
 
 const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
-/** "2:04 PM" today, else "Oct 20, 3:12 PM". */
+const isToday = (iso: string) => sameDay(new Date(iso), new Date());
+/**
+ * Every time on this page carries its day (Design, #1189): "today at 2:04
+ * PM", "Oct 20 at 3:12 PM", and "Oct 20, 2025 at 3:12 PM" in another year.
+ */
 const when = (iso: string) => {
   const d = new Date(iso);
-  return sameDay(d, new Date()) ? timeFmt.format(d) : dayTimeFmt.format(d);
+  const time = timeFmt.format(d);
+  if (isToday(iso)) return `today at ${time}`;
+  const day =
+    d.getFullYear() === new Date().getFullYear()
+      ? dayFmt.format(d)
+      : dayYearFmt.format(d);
+  return `${day} at ${time}`;
 };
 /** "3 h", "25 min", "2 days". */
 const span = (iso: string) => {
@@ -103,12 +123,18 @@ function When({ iso, text }: { iso: string; text: string }) {
 const Rel = ({ iso }: { iso: string }) => (
   <When iso={iso} text={relativeTime(iso)} />
 );
-const At = ({ iso }: { iso: string }) => <When iso={iso} text={when(iso)} />;
+/** `on`: "on Oct 20 at 3:12 PM", but "today at 11:55 AM" (no "on") today. */
+const At = ({ iso, on }: { iso: string; on?: boolean }) => (
+  <When iso={iso} text={on && !isToday(iso) ? `on ${when(iso)}` : when(iso)} />
+);
 
 // -- connect errors (`?error=` after Google)
 
 /** The reason Google gave, or null when there is none to show. */
-const connectCopy = (raw: string, domain: string | null): string | null => {
+export const connectCopy = (
+  raw: string,
+  domain: string | null,
+): string | null => {
   const parsed = DirectoryConnectErrorSchema.safeParse(raw);
   switch (parsed.success ? parsed.data : "failed") {
     case "not_super_admin":
@@ -159,6 +185,153 @@ function ConnectLink({ label }: { label: string }) {
   );
 }
 
+// -- the connect confirm step (#564)
+
+/** After a pending connection ends without Confirm. */
+type Outcome = "cancelled" | "expired" | null;
+
+const listFmt = new Intl.ListFormat("en", { type: "conjunction" });
+/** The viewer's zone, as Design asks; no year when it's this year (the row date rule). */
+export const expiry = (iso: string) => {
+  const d = new Date(iso);
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(d.getFullYear() === new Date().getFullYear()
+      ? {}
+      : { year: "numeric" }),
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(d);
+};
+
+/** The Google domains: the binding's once consented, else the sign-in config's. */
+function useGoogleDomains(sync: SyncStatus): string {
+  const google = useAuthProviders().data?.providers.find(
+    (p) => p.id === "google",
+  ) as { domains?: string[] } | undefined;
+  const list = sync.binding?.domain
+    ? [sync.binding.domain]
+    : (google?.domains ?? []);
+  return list.length ? listFmt.format(list) : "";
+}
+
+/** Connect: first says what connecting does (no count yet), then Google. */
+function ConnectButton({ domains }: { domains: string }) {
+  const name = useInstanceName();
+  const [open, setOpen] = useState(false);
+  const [opening, setOpening] = useState(false);
+  // Back from Google's consent page restores this page from the bfcache: reset.
+  useEffect(() => {
+    const reset = () => setOpening(false);
+    window.addEventListener("pageshow", reset);
+    return () => window.removeEventListener("pageshow", reset);
+  }, []);
+  return (
+    <>
+      <Button
+        size="sm"
+        className="text-[length:var(--oa-text-sm)]"
+        onClick={() => setOpen(true)}
+      >
+        Connect Google Workspace
+      </Button>
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Connect Google Workspace"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button asChild>
+              <a href={R.directoryConnect} onClick={() => setOpening(true)}>
+                {opening ? "Opening Google…" : "Continue to Google"}
+              </a>
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-[var(--oa-space-2)] text-[length:var(--oa-text-sm)]">
+          <p className="m-0">
+            Connecting adds everyone active in your Google directory
+            {domains ? ` in ${domains}` : ""} as a member of {name}.
+          </p>
+          <p className={`m-0 ${muted}`}>
+            You'll see how many people before anything changes.
+          </p>
+        </div>
+      </Modal>
+    </>
+  );
+}
+
+/** pending_confirm, for the owner who connected: nobody is added until Confirm. */
+function PendingConfirm({
+  sync,
+  domains,
+  confirm,
+  cancel,
+}: {
+  sync: SyncStatus;
+  domains: string;
+  confirm: ReturnType<typeof useConfirmDirectory>;
+  cancel: ReturnType<typeof useCancelDirectory>;
+}) {
+  const busy = confirm.isPending || cancel.isPending;
+  const capped = sync.pendingCountCapped;
+  const n = sync.pendingCount ?? 0;
+  const change = sync.pendingCustomerChange;
+  return (
+    <Header
+      tone="info"
+      label={capped ? "Add 500+ people?" : `Add ${people(n)}?`}
+    >
+      {/* Consent for a different Google customer (#616): who won't carry over. */}
+      {change && (
+        <Notice
+          tone="warning"
+          title="This is a different Google Workspace than before."
+          icon={<TriangleAlertIcon aria-hidden="true" />}
+        >
+          People who signed in through{" "}
+          {change.previous.domain ?? "the previous Workspace"} won't carry over
+          and stay signed out. People in {change.next.domain} are linked when
+          you confirm.
+        </Notice>
+      )}
+      <p>
+        This adds {capped ? "more than 500 people" : people(n)}
+        {domains ? ` from ${domains}` : ""} as{" "}
+        {!capped && n === 1 ? "a member" : "members"}. They can sign in with
+        Google right away.
+      </p>
+      {sync.pendingExpiresAt && (
+        <p className={muted}>
+          Confirm by {expiry(sync.pendingExpiresAt)}, or connect again.
+        </p>
+      )}
+      <DialogFooter className="mt-[var(--oa-space-2)]">
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => cancel.mutate()}
+        >
+          Cancel
+        </Button>
+        <Button
+          disabled={busy}
+          aria-busy={confirm.isPending || undefined}
+          onClick={() => confirm.mutate()}
+        >
+          {capped ? "Add people" : `Add ${people(n)}`}
+        </Button>
+      </DialogFooter>
+    </Header>
+  );
+}
+
 function Header({
   tone,
   label,
@@ -198,7 +371,13 @@ function StatusHeader({
   syncing,
   onSync,
   refusal,
+  outcome,
+  confirm,
+  cancel,
 }: {
+  outcome: Outcome;
+  confirm: ReturnType<typeof useConfirmDirectory>;
+  cancel: ReturnType<typeof useCancelDirectory>;
   sync: SyncStatus;
   owner: boolean;
   ownerName: string | null;
@@ -208,9 +387,17 @@ function StatusHeader({
   refusal: string | null;
 }) {
   const domain = sync.binding?.domain ?? "";
+  const domains = useGoogleDomains(sync);
   const only = (what: string) => (
     <p className={muted}>
       Only the owner{ownerName ? `, ${ownerName},` : ""} can {what}.
+    </p>
+  );
+  // Where the owner's fix is Reconnect (or Disconnect), admins pass it on.
+  const askOwner = !owner && (
+    <p className={muted}>
+      Ask the owner{ownerName ? `, ${ownerName},` : ""} to reconnect or
+      disconnect.
     </p>
   );
   const syncNow = owner && (
@@ -240,13 +427,42 @@ function StatusHeader({
   const adminNote =
     !owner && only("run a sync, apply held changes or disconnect");
 
-  if (sync.mode === "off")
+  if (sync.state === "pending_confirm")
+    return owner ? (
+      <PendingConfirm
+        sync={sync}
+        domains={domains}
+        confirm={confirm}
+        cancel={cancel}
+      />
+    ) : (
+      <Header tone="info" label="Waiting for the owner to confirm">
+        <p>
+          {ownerName ?? "The owner"} needs to confirm who to add. Nobody is
+          added until then.
+        </p>
+        {sync.pendingExpiresAt && (
+          // Not "Confirm by": a non-owner can't act on it.
+          <p className={muted}>Expires {expiry(sync.pendingExpiresAt)}.</p>
+        )}
+      </Header>
+    );
+
+  // Off, or a pending connection that was cancelled or expired (no binding).
+  if (sync.mode === "off" || (sync.state === "never" && !sync.binding))
     return (
       <Header
         tone="neutral"
         label="Not connected"
-        action={owner && <ConnectLink label="Connect Google Workspace" />}
+        action={owner && <ConnectButton domains={domains} />}
       >
+        {outcome === "cancelled" && <p>Not connected. Nobody was added.</p>}
+        {outcome === "expired" && (
+          <p className="text-[var(--oa-warning)]">
+            This confirmation expired after 24 hours. Connect again to see the
+            current count.
+          </p>
+        )}
         <p>
           Connect your Google Workspace so space access follows your Google
           groups.
@@ -371,14 +587,14 @@ function StatusHeader({
             {sync.unhealthySince ? (
               <>
                 {" "}
-                on <At iso={sync.unhealthySince} />
+                <At on iso={sync.unhealthySince} />
               </>
             ) : null}
             .
           </p>
           {owner && <p>Reconnect with a Google super admin account.</p>}
           {frozenUntilReconnect}
-          {!owner && only("reconnect")}
+          {askOwner}
         </Header>
       );
     case "scope_missing":
@@ -389,7 +605,7 @@ function StatusHeader({
             {sync.unhealthySince ? (
               <>
                 {" "}
-                on <At iso={sync.unhealthySince} />
+                <At on iso={sync.unhealthySince} />
               </>
             ) : null}
             .
@@ -398,7 +614,7 @@ function StatusHeader({
             <p>Reconnect and allow every permission Google asks for.</p>
           )}
           {frozenUntilReconnect}
-          {!owner && only("reconnect")}
+          {askOwner}
         </Header>
       );
     case "customer_mismatch":
@@ -419,7 +635,7 @@ function StatusHeader({
             <p>Nothing was changed.</p>
           )}
           {frozenUntilReconnect}
-          {!owner && only("reconnect")}
+          {askOwner}
         </Header>
       );
   }
@@ -433,6 +649,7 @@ function Confirm({
   title,
   body,
   confirm,
+  danger,
   onConfirm,
 }: {
   open: boolean;
@@ -440,6 +657,8 @@ function Confirm({
   title: string;
   body: ReactNode;
   confirm: string;
+  /** The action can't be undone from here: the danger button. */
+  danger?: boolean;
   onConfirm: () => void;
 }) {
   const opener = useRef<HTMLElement | null>(null);
@@ -469,6 +688,7 @@ function Confirm({
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <Button
+            variant={danger ? "destructive" : "default"}
             onClick={() => {
               onClose();
               onConfirm();
@@ -494,10 +714,18 @@ function HeldRow({
   restricted: boolean;
 }) {
   const [asking, setAsking] = useState(false);
+  const [snoozing, setSnoozing] = useState(false);
+  const [reason, setReason] = useState("");
   const confirm = useConfirmHeld();
+  const snooze = useSnoozeHeld();
+  const unsnooze = useUnsnoozeHeld();
   const empty = h.wouldRemove >= h.members;
   return (
-    <li className="flex flex-wrap items-center justify-between gap-[var(--oa-space-3)] border-0 border-t border-border py-[var(--oa-space-3)] first:border-t-0">
+    // Layout per the directory spec's held row: text left, actions right; one
+    // column under 520px. A held row is tinted until it's snoozed.
+    <li
+      className={`grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-0 border-t border-border px-3 py-2.5 first:border-t-0 max-[520px]:grid-cols-1 ${h.snoozedUntil ? "" : "bg-[var(--oa-warning-soft)]"}`}
+    >
       <div className="min-w-0">
         <b className="block font-medium">
           {h.name} ({h.email})
@@ -509,17 +737,98 @@ function HeldRow({
             : "more than half the group"}{" "}
           · since <At iso={h.since} />
         </small>
+        {h.snoozedUntil && (
+          <small className={`block ${muted}`}>
+            Snoozed until{" "}
+            <When
+              iso={h.snoozedUntil}
+              text={dayFmt.format(new Date(h.snoozedUntil))}
+            />{" "}
+            or the group changes
+          </small>
+        )}
+        {h.snoozedUntil && h.snoozeReason && (
+          <small className={`block ${muted}`}>
+            {"\u201c"}
+            {h.snoozeReason}
+            {"\u201d"}
+          </small>
+        )}
       </div>
       {owner && (
-        <Button
-          size="sm"
-          variant="outline"
-          className="text-[length:var(--oa-text-sm)]"
-          onClick={() => setAsking(true)}
-        >
-          Apply
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-1.5 max-[520px]:justify-start">
+          {h.snoozedUntil ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-[length:var(--oa-text-sm)]"
+              disabled={unsnooze.isPending}
+              aria-label={`Unsnooze ${h.name}`}
+              onClick={() => unsnooze.mutate(h.groupId)}
+            >
+              Unsnooze
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-[length:var(--oa-text-sm)]"
+              aria-label={`Snooze ${h.name}`}
+              onClick={() => setSnoozing(true)}
+            >
+              Snooze
+            </Button>
+          )}
+          <Button
+            size="sm"
+            // Primary while held; a snoozed row's Apply is quiet (Design).
+            variant={h.snoozedUntil ? "outline" : "default"}
+            className="text-[length:var(--oa-text-sm)]"
+            aria-label={`Apply ${h.name}`}
+            onClick={() => setAsking(true)}
+          >
+            Apply
+          </Button>
+        </div>
       )}
+      <Confirm
+        open={snoozing}
+        onClose={() => {
+          setSnoozing(false);
+          setReason("");
+        }}
+        title={`Snooze changes to ${h.name}?`}
+        body={
+          <>
+            <p>
+              Nobody loses access while it's snoozed. It comes back when
+              Google's list for this group changes, or in 30 days.
+            </p>
+            <div className="grid gap-1.5 text-left">
+              <Label htmlFor={`oa-held-reason-${h.groupId}`}>
+                Reason (optional)
+              </Label>
+              <Input
+                id={`oa-held-reason-${h.groupId}`}
+                aria-describedby={`oa-held-reason-help-${h.groupId}`}
+                autoComplete="off"
+                maxLength={HELD_SNOOZE_REASON_MAX}
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
+              <p id={`oa-held-reason-help-${h.groupId}`} className={muted}>
+                Admins see this on the row.
+              </p>
+            </div>
+          </>
+        }
+        confirm="Snooze"
+        onConfirm={() => {
+          const r = reason.trim();
+          snooze.mutate({ groupId: h.groupId, ...(r ? { reason: r } : {}) });
+          setReason("");
+        }}
+      />
       <Confirm
         open={asking}
         onClose={() => setAsking(false)}
@@ -562,7 +871,12 @@ function HeldSweeps({
         These changes from Google would remove a lot of people at once, so we
         held them. Nobody loses access until you apply one.
       </p>
-      <ul>
+      {held.every((h) => h.snoozedUntil) && (
+        <p className={muted}>
+          Everything here is snoozed, so Settings shows no dot.
+        </p>
+      )}
+      <ul className="overflow-hidden rounded-lg border border-border">
         {held.map((h) => (
           <HeldRow
             key={h.groupId}
@@ -624,9 +938,14 @@ function RestrictedRow({ g }: { g: RestrictedGroup }) {
 function RestrictedGroups({
   groups,
   mode,
+  error,
+  onRetry,
 }: {
   groups: RestrictedGroup[];
   mode: SyncStatus["mode"];
+  /** The list failed to load: said instead of the rows. */
+  error: unknown;
+  onRetry: () => void;
 }) {
   const add = usePutRestrictedGroup();
   const refusal =
@@ -640,6 +959,13 @@ function RestrictedGroups({
         People in these groups can only view, everywhere: no publishing, editing
         or live-data writes.
       </p>
+      {!!error && (
+        <LoadError
+          title="Couldn't load restricted groups."
+          error={error}
+          onRetry={onRetry}
+        />
+      )}
       {groups.length > 0 && (
         <table className="w-full border-collapse">
           <tbody>
@@ -675,6 +1001,24 @@ function RestrictedGroups({
 
 // -- connection
 
+/**
+ * The Disconnect confirm (#939): option A, with Design's sentence on leavers
+ * and restricted groups. A mismatched directory drops both of A's access
+ * lines for `mismatch`.
+ */
+export const DISCONNECT_COPY = {
+  title: "Disconnect Google Workspace?",
+  stops: "Open Artifacts stops syncing with Google and deletes its connection.",
+  access:
+    "Everyone keeps the access they have now, and you manage members here from now on.",
+  mismatch:
+    "Your directory reports a different Google organization, so people who sign in through it stay signed out until you connect again.",
+  again: "You can connect again later.",
+  leaving:
+    "People who leave in Google keep their access until you remove them in Members, and restricted groups stay in force until you lift them.",
+} as const;
+const D = DISCONNECT_COPY;
+
 function Connection({ sync, owner }: { sync: SyncStatus; owner: boolean }) {
   const [asking, setAsking] = useState(false);
   const disconnect = useDisconnectDirectory();
@@ -709,21 +1053,19 @@ function Connection({ sync, owner }: { sync: SyncStatus; owner: boolean }) {
       <Confirm
         open={asking}
         onClose={() => setAsking(false)}
-        title="Disconnect Google Workspace?"
+        title={D.title}
         body={
           <>
             <p>
-              Sync stops. Space memberships stay as they are and are managed
-              manually. Nobody loses access.
+              {D.stops}{" "}
+              {sync.state === "customer_mismatch" ? D.mismatch : D.access}
             </p>
-            <p>
-              People who leave in Google keep their access here until you remove
-              them in Members. Restricted groups stay in force until you lift
-              them.
-            </p>
+            {sync.state !== "customer_mismatch" && <p>{D.leaving}</p>}
+            <p className={muted}>{D.again}</p>
           </>
         }
         confirm="Disconnect"
+        danger
         onConfirm={() => disconnect.mutate()}
       />
     </SettingsCard>
@@ -757,7 +1099,8 @@ export function Directory() {
   useDocumentTitle("Directory");
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
-  const owner = me?.user.role === "owner";
+  // The server's rule (directory.manage, directory.disconnect): the owner, uncapped.
+  const owner = me?.user.role === "owner" && me.auth?.cap == null;
   const search = useSearch({ strict: false }) as {
     connected?: string;
     error?: string;
@@ -781,6 +1124,16 @@ export function Directory() {
     until: number;
   } | null>(null);
   const data = status.data;
+  // Here, not on the confirm screen: the outcome must outlive it (the status
+  // can move to "off" and unmount that screen before the 409 lands).
+  const [outcome, setOutcome] = useState<Outcome>(null);
+  const confirmDir = useConfirmDirectory({
+    expired: () => setOutcome("expired"),
+  });
+  const cancelDir = useCancelDirectory({
+    done: () => setOutcome("cancelled"),
+    expired: () => setOutcome("expired"),
+  });
   useEffect(() => {
     if (!syncing || !data) return;
     if (
@@ -855,6 +1208,9 @@ export function Directory() {
             tokensUnverified={me?.instance.directory?.tokensUnverified === true}
             syncing={syncing !== null}
             refusal={refusal}
+            outcome={outcome}
+            confirm={confirmDir}
+            cancel={cancelDir}
             onSync={() =>
               sync.mutate(undefined, {
                 onSuccess: () =>
@@ -873,10 +1229,20 @@ export function Directory() {
               restricted={restricted.data ?? []}
             />
           )}
-          {(data.mode !== "off" || (restricted.data?.length ?? 0) > 0) && (
-            <RestrictedGroups groups={restricted.data ?? []} mode={data.mode} />
+          {(data.mode !== "off" ||
+            restricted.isError ||
+            (restricted.data?.length ?? 0) > 0) && (
+            <RestrictedGroups
+              groups={restricted.data ?? []}
+              mode={data.mode}
+              error={restricted.isError ? restricted.error : null}
+              onRetry={() => void restricted.refetch()}
+            />
           )}
-          <Connection sync={data} owner={owner} />
+          {/* Pending, Cancel is the way out: no Disconnect yet. */}
+          {data.state !== "pending_confirm" && (
+            <Connection sync={data} owner={owner} />
+          )}
         </>
       )}
     </div>

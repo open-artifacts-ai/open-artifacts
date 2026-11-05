@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {
+      "file": "test/fixtures/gate.fixture.ts",
+      "name": "fixture: a passing case"
+    },
+    {
+      "file": "test/fixtures/gate.fixture.ts",
+      "name": "fixture: the case under test"
+    },
+    {
+      "file": "test/fixtures/gate.fixture.ts",
+      "name": "outer > inner > fixture: a nested case"
+    }
+  ]
+}

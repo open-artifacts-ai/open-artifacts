@@ -1,0 +1,2775 @@
+import { createHash, randomBytes } from "node:crypto";
+import { STAGING_TEST_DOMAIN } from "@oa/provision/names";
+import {
+  ADMIN_TOOL_NAMES,
+  type InstallDetail,
+  type Job,
+  JobSchema,
+  type Release,
+  TOKEN_SCOPES,
+} from "@oa/provisioning-contract";
+import {
+  InfraError,
+  isNetworkError,
+  networkCode,
+  notResolved,
+} from "./fetch-timeout.ts";
+import { RETRY_BACKOFF_MS, safeCode } from "./http.ts";
+import { note } from "./notes.ts";
+import { PROD_ADMIN_ORIGIN } from "./prod.ts";
+import { NIGHTLY_NA_REASON, PRE_PROD_REASON } from "./report.ts";
+
+// The red-line provisioning probes (design v7 12.2, P1-P50 but
+// REMOVED_PROBES) against the staging Provisioning API, as the GitHub OIDC principal "O" (4.4): `rl-`
+// slugs and testHooks only, plus the `x-oa-test-user` self-serve test users
+// (P8, P9, P11, P29). Every request goes through ProvIo, so test/
+// provisioning.test.ts runs each probe on a fake API with a pinned clock.
+// Failure text is a status, an error code and a body hash, never a body.
+
+export type ProbeId = `P${number}`;
+
+/**
+ * Probes of design 12.2 no longer in red-line, each with the issue that
+ * records why and where its ground is covered now. P1-P50 is PROBES plus
+ * these, exactly once (test/provisioning.test.ts).
+ */
+export const REMOVED_PROBES: Readonly<Partial<Record<ProbeId, string>>> =
+  Object.freeze({
+    P35: "#1260: a routeless Worker fetching rl-a /healthz; the runner can't stand in for it, so the case could only ever be unproven",
+    P50: "#1078: the held-sweep snooze owner path, proved live once; covered by apps/server/test/directory.snooze.test.ts and the authz surface list (apps/server/test/authz/surfaces.ts)",
+  });
+
+export interface ProvConfig {
+  /** https://api.open-artifacts-staging.app (paths under /v1). */
+  api: string;
+  /** https://admin.open-artifacts-staging.app (paths under /api/v1). */
+  admin: string;
+  /** The staging auth broker, https://auth.open-artifacts-staging.app. */
+  broker: string;
+  prodApi: string;
+  prodAdmin: string;
+  /** This run's id (slugs rl-p-<run>, rl-q-<run>, request ids). */
+  runId: string;
+  /** The release under test (the workflow's tag input), x.y.z. */
+  version: string;
+  /** A workflow_dispatch run (P30 runs only then). */
+  dispatch: boolean;
+  rlA: { id: string; app: string };
+  rlB: { id: string; app: string };
+  /** The one MCP_REDIRECT_URIS entry the API accepts (P44's valid client). */
+  mcpRedirectUri: string;
+  /** The staging inventory origin (P15, P20-P23, P27). */
+  inventory?: string;
+  /** The prod inventory origin (P27's staging-token-on-prod leg). */
+  prodInventory?: string;
+}
+
+export interface ProvIo {
+  fetch: typeof fetch;
+  /** Milliseconds since the epoch. */
+  now: () => number;
+  /** Waits `ms` between polls (tests advance a pinned clock). */
+  wait: (ms: number) => Promise<void>;
+  /** The provisioning-audience OIDC JWT. */
+  jwt: () => Promise<string>;
+  /** The staging inventory OIDC JWT (P6's wrong audience, P27). */
+  stgInventoryJwt?: () => Promise<string>;
+  /** The prod inventory OIDC JWT (unused by probes: never sent to staging). */
+  prodInventoryJwt?: () => Promise<string>;
+  /** The rl-a admin PAT R26 sealed for this run (P36). */
+  rlAPat?: () => string;
+  /** Hides a secret the run learns from the public log (CI: ::add-mask::). */
+  mask?: (v: string) => void;
+}
+
+export type Outcome =
+  | { level: "pass"; note?: string }
+  | { level: "not-applicable" | "unproven-live" | "blocked"; reason: string };
+
+const pass = (note?: string): Outcome =>
+  note ? { level: "pass", note } : { level: "pass" };
+const na = (reason: string): Outcome => ({ level: "not-applicable", reason });
+const unproven = (reason: string): Outcome => ({
+  level: "unproven-live",
+  reason,
+});
+
+/** A probe failure: the message is safe for a public report. */
+export class ProbeFail extends Error {
+  override name = "ProbeFail";
+}
+
+/** settledMode's timeout: the inventory never read `want`. */
+export class ModeNotSettled extends ProbeFail {
+  override name = "ModeNotSettled";
+  readonly mode: string | null;
+  constructor(what: string, mode: string | null, want: string | null) {
+    super(
+      `${what}: inventory mode is ${mode}, want ${want}, after ${HOSTS_SETTLE_MS / 1000} s`,
+    );
+    this.mode = mode;
+  }
+}
+
+/** Poll cadence and bounds (12.2: paused and resumed pages within 120 s). */
+export const POLL_MS = 3_000;
+export const PAGE_WITHIN_MS = 120_000;
+/** HOSTS is KV: a write takes up to 60 s to show everywhere. Two periods. */
+export const HOSTS_SETTLE_MS = 120_000;
+export const JOB_WITHIN_MS = 20 * 60_000;
+/** A case's vitest timeout: its slowest wait plus margin. */
+export const PROBE_TIMEOUT_MS = JOB_WITHIN_MS + 5 * 60_000;
+/** The run's cleanup: one install can wait on a live job, a delete and a purge. */
+export const CLEANUP_TIMEOUT_MS = 3 * JOB_WITHIN_MS + 5 * 60_000;
+export const P34_REQUESTS = 400;
+/** RL_BROKER_IP's period (apps/auth-broker/wrangler.jsonc: limit 60 per 60 s). */
+export const BROKER_IP_PERIOD_MS = 60_000;
+/** P34's bound for its hop to get past the broker IP window: two periods (counts sync late). */
+export const BROKER_IP_WAIT_MS = 2 * BROKER_IP_PERIOD_MS;
+/** RL_PV_SIGNIN_IP's limit per IP per 60 s (apps/provisioning/wrangler.jsonc). */
+export const SIGNIN_IP_LIMIT = 10;
+/**
+ * P25's cap: 3x the limit, sent one at a time. The binding counts per isolate
+ * and syncs in the background, so a parallel burst slips through.
+ */
+export const P25_MAX_REQUESTS = 3 * SIGNIN_IP_LIMIT;
+export const P42_BYTES = 40 * 1024;
+/** P48's bound on R2 pages per q (O reaches only rl- installs). */
+export const P48_MAX_PAGES = 10;
+export const DUMMY_TURNSTILE = "XXXX.DUMMY.TOKEN.XXXX";
+export const EVIL = "https://evil.example";
+/** P29's unproven reason after a done create and delete (fixed: no run-specific text). */
+export const P29_UNPROVEN =
+  "self-serve purge doesn't free signup_accounts (#1046); signups off on prod";
+
+// --- HTTP ----------------------------------------------------------------
+
+export interface Res {
+  status: number;
+  headers: Headers;
+  text: string;
+  json: unknown;
+}
+
+type Auth = "oidc" | "none" | { bearer: string };
+type Host = "api" | "admin" | "prodApi" | "prodAdmin";
+
+export interface CallOpts {
+  method?: string;
+  host?: Host;
+  body?: unknown;
+  auth?: Auth;
+  testUser?: "a" | "b" | "c";
+  headers?: Record<string, string>;
+  /**
+   * An allow-side GET: no response is tried again, twice, with a note. Never
+   * set it on a request whose expected answer is a refusal.
+   */
+  read?: boolean;
+}
+
+export class Run {
+  readonly c: ProvConfig;
+  readonly io: ProvIo;
+  /** Shared state between ordered probes. */
+  readonly s: RunState = { jobIds: [], cleanup: [] };
+  constructor(c: ProvConfig, io: ProvIo) {
+    this.c = c;
+    this.io = io;
+  }
+
+  origin(h: Host): string {
+    return {
+      api: this.c.api,
+      admin: this.c.admin,
+      prodApi: this.c.prodApi,
+      prodAdmin: this.c.prodAdmin,
+    }[h];
+  }
+
+  /** `path` is under the route base: /v1 on api hosts, /api/v1 on admin hosts. */
+  async v1(path: string, o: CallOpts = {}): Promise<Res> {
+    const host = o.host ?? "api";
+    const base = host === "api" || host === "prodApi" ? "/v1" : "/api/v1";
+    return this.raw(`${this.origin(host)}${base}${path}`, o);
+  }
+
+  async raw(url: string, o: CallOpts = {}): Promise<Res> {
+    const headers = new Headers(o.headers);
+    const auth = o.auth ?? "oidc";
+    if (auth === "oidc")
+      headers.set("authorization", `Bearer ${await this.io.jwt()}`);
+    else if (auth !== "none")
+      headers.set("authorization", `Bearer ${auth.bearer}`);
+    if (o.testUser) headers.set("x-oa-test-user", o.testUser);
+    let body: string | undefined;
+    if (o.body !== undefined) {
+      body = typeof o.body === "string" ? o.body : JSON.stringify(o.body);
+      if (!headers.has("content-type"))
+        headers.set("content-type", "application/json");
+    }
+    const method = o.method ?? (o.body === undefined ? "GET" : "POST");
+    const backoff = o.read && method === "GET" ? RETRY_BACKOFF_MS : [];
+    let res: Response;
+    for (let i = 0; ; i++) {
+      try {
+        res = await this.io.fetch(url, {
+          method,
+          headers,
+          body,
+          redirect: "manual",
+        });
+        break;
+      } catch (e) {
+        const wait = backoff[i];
+        if (wait === undefined || !isNetworkError(e)) throw e;
+        const at = new URL(url).pathname.split("/").slice(0, 3).join("/");
+        note(`GET ${at} retried (no response: ${networkCode(e)})`);
+        await this.io.wait(wait);
+      }
+    }
+    let text = "";
+    try {
+      text = await res.text();
+    } catch {}
+    let json: unknown;
+    try {
+      json = text ? JSON.parse(text) : undefined;
+    } catch {
+      json = undefined;
+    }
+    return { status: res.status, headers: res.headers, text, json };
+  }
+
+  /** A request id unique to this run and purpose (idempotent on a rerun). */
+  rid(tag: string): string {
+    return `rl${this.c.runId}-${tag}`
+      .replace(/[^A-Za-z0-9_-]/g, "-")
+      .slice(0, 64)
+      .padEnd(16, "0");
+  }
+
+  slug(letter: string): string {
+    return `rl-${letter}-${this.c.runId}`
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "")
+      .slice(0, 32)
+      .replace(/-+$/, "");
+  }
+
+  /** Polls R15 until the job is done or failed (or `until` holds). */
+  async waitJob(
+    jobId: string,
+    o: {
+      testUser?: "a" | "b" | "c";
+      until?: (j: Job) => boolean;
+      within?: number;
+    } = {},
+  ): Promise<Job> {
+    const end = this.io.now() + (o.within ?? JOB_WITHIN_MS);
+    for (;;) {
+      let r: Res;
+      try {
+        r = await this.v1(`/jobs/${jobId}`, { testUser: o.testUser });
+      } catch {
+        // A dropped connection says nothing about the job: keep polling. Only
+        // the network throws here: an answer, however bad, fails below.
+        if (this.io.now() >= end)
+          throw new ProbeFail(
+            `R15 ${jobId}: no answer for ${Math.round((o.within ?? JOB_WITHIN_MS) / 1000)} s`,
+          );
+        await this.io.wait(POLL_MS);
+        continue;
+      }
+      if (r.status !== 200) throw new ProbeFail(`R15 ${jobId}: ${desc(r)}`);
+      const j = r.json as Job;
+      if (o.until ? o.until(j) : j.status === "done" || j.status === "failed")
+        return j;
+      if (this.io.now() >= end)
+        throw new ProbeFail(
+          `R15 ${jobId}: still ${j.status} at ${j.step ?? "?"} after ${Math.round((o.within ?? JOB_WITHIN_MS) / 1000)} s`,
+        );
+      await this.io.wait(POLL_MS);
+    }
+  }
+
+  /** Waits for a job and requires `done`. */
+  async done(
+    jobId: string,
+    what: string,
+    testUser?: "a" | "b" | "c",
+  ): Promise<Job> {
+    const j = await this.waitJob(jobId, { testUser });
+    if (j.status !== "done")
+      throw new ProbeFail(
+        `${what}: job ${j.status} (${j.lastErrorCode ?? j.error?.code ?? "no code"})${failText(j)}`,
+      );
+    return j;
+  }
+
+  /** Polls `check` until it returns true, within `ms`. */
+  async within(
+    ms: number,
+    what: string,
+    check: () => Promise<boolean>,
+  ): Promise<void> {
+    const end = this.io.now() + ms;
+    for (;;) {
+      if (await check()) return;
+      if (this.io.now() >= end)
+        throw new ProbeFail(`${what}: not within ${Math.round(ms / 1000)} s`);
+      await this.io.wait(POLL_MS);
+    }
+  }
+
+  /** A 202 Accepted's job; an OIDC caller's is recorded for P33. */
+  accepted(
+    r: Res,
+    what: string,
+    o: { asTestUser?: boolean } = {},
+  ): {
+    job: Job;
+    install: { id: string; slug: string; appHost: string; contentHost: string };
+  } {
+    if (r.status !== 202) throw new ProbeFail(`${what}: ${desc(r)}`);
+    const a = r.json as {
+      job: Job;
+      install: {
+        id: string;
+        slug: string;
+        appHost: string;
+        contentHost: string;
+      };
+    };
+    if (!a?.job?.id) throw new ProbeFail(`${what}: no job in the answer`);
+    if (o.asTestUser) return a;
+    if (!this.s.jobIds.includes(a.job.id)) this.s.jobIds.push(a.job.id);
+    if (!this.s.actor) this.s.actor = a.job.actor.label;
+    return a;
+  }
+
+  /** GET <inventory><path> with the staging inventory JWT. */
+  async inventory(path: string): Promise<unknown> {
+    if (!this.c.inventory || !this.io.stgInventoryJwt)
+      throw new ProbeFail("no staging inventory configured");
+    const r = await this.raw(`${this.c.inventory}${path}`, {
+      auth: { bearer: await this.io.stgInventoryJwt() },
+      read: true,
+    });
+    if (r.status !== 200)
+      throw new ProbeFail(`inventory ${path.split("?")[0]}: ${desc(r)}`);
+    return r.json;
+  }
+
+  async hostMode(
+    host: string,
+  ): Promise<{ installId: string | null; mode: string | null }> {
+    const v = (await this.inventory(
+      `/hosts?host=${encodeURIComponent(host)}`,
+    )) as { installId?: string | null; mode?: string | null };
+    return { installId: v?.installId ?? null, mode: v?.mode ?? null };
+  }
+
+  /**
+   * Polls the inventory until the host's mode is `want` (null: unmapped). The
+   * inventory reads HOSTS from another colo than dispatch, so one read after
+   * a page changed can be stale. A value that never settles fails, naming it.
+   */
+  async settledMode(
+    what: string,
+    host: string,
+    want: string | null,
+  ): Promise<void> {
+    const end = this.io.now() + HOSTS_SETTLE_MS;
+    for (;;) {
+      const { mode } = await this.hostMode(host);
+      if (mode === want) return;
+      if (this.io.now() >= end) throw new ModeNotSettled(what, mode, want);
+      await this.io.wait(POLL_MS);
+    }
+  }
+
+  /** A public GET on a tenant host (no credential). */
+  async page(host: string, path = "/healthz", read = false): Promise<Res> {
+    return this.raw(`https://${bare(host)}${path}`, { auth: "none", read });
+  }
+}
+
+export interface RlP {
+  id: string;
+  slug: string;
+  appHost: string;
+  contentHost: string;
+  /** The version it was created at. */
+  createdAt: string;
+  /** The version it runs now (P16's late upgrade, P45 move it). */
+  version: string;
+}
+
+export interface RunState {
+  jobIds: string[];
+  /**
+   * This run's installs, listed before their create: a probe that stops
+   * anywhere still leaves them for the run's end (cleanupInstalls). rl-s isn't
+   * here: no principal can purge a test user's install within a run, and the
+   * scheduler does at purge_at (P29).
+   */
+  cleanup: { slug: string }[];
+  /** The OIDC actor label (Job.actor.label). */
+  actor?: string;
+  rlp?: RlP;
+  createJobId?: string;
+  /** P15: what was seen before the route step ran. */
+  p15?: { checked: number; violations: string[] };
+  /** P16: the upgrade sent while the create ran ("late": it was accepted). */
+  p16?: Res | "late";
+  /** A non-rl install id from inventory (P10, P45). */
+  panelInstall?: string | null;
+  releases?: Release[];
+  /** P44's first registered client, for P43. */
+  clientId?: string;
+  /** rl-l-<run>, the install P20 to P22 run on (lifecycleInstall). */
+  rll?: Promise<RlP>;
+}
+
+const bare = (h: string) => h.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+
+/** status, error code and body hash: what a failure may say. */
+export function desc(r: Res): string {
+  const code = safeCode(errCode(r));
+  const h = createHash("sha256").update(r.text).digest("hex").slice(0, 16);
+  return `status ${r.status}, body sha256:${h} (${Buffer.byteLength(r.text)} bytes)${code ? `, code ${code}` : ""}`;
+}
+
+/** The API envelope's error.code, or an OAuth error string. */
+export function errCode(r: Pick<Res, "json">): string | undefined {
+  const j = r.json as { error?: unknown } | undefined;
+  if (!j || typeof j !== "object") return undefined;
+  if (typeof j.error === "string") return j.error;
+  const c = (j.error as { code?: unknown } | undefined)?.code;
+  return typeof c === "string" ? c : undefined;
+}
+
+function expect(r: Res, status: number, what: string, code?: string): void {
+  if (r.status !== status || (code !== undefined && errCode(r) !== code))
+    throw new ProbeFail(
+      `${what}: want ${status}${code ? ` ${code}` : ""}, got ${desc(r)}`,
+    );
+}
+
+/** Dispatch's HOSTS read cacheTtl (apps/dispatch/src/index.ts: cacheTtl 60). */
+export const DISPATCH_HOSTS_TTL_MS = 60_000;
+export const ISSUE_1326 =
+  "https://github.com/open-artifacts-ai/open-artifacts/issues/1326";
+
+/**
+ * P22 (#1417): the app host served 200 after the restore, but the inventory
+ * kept reading another mode for HOSTS_SETTLE_MS. Two causes look alike: KV
+ * staleness at the inventory's location (its read is cached too, and the
+ * probe's polling keeps that cache hot), or a late "closed" write landing
+ * after the restore's "serving" (the lease race, #1326).
+ *
+ * The app host stands in for both hosts (one write sets both HOSTS keys).
+ * The first re-check runs no earlier than 60 s after the last 200, which in
+ * the probe has already passed (the settle took 120 s), so it reads whatever
+ * dispatch's cache holds now. The second runs DISPATCH_HOSTS_TTL_MS after the
+ * first, so that cache has turned over at least once in between: a "closed"
+ * written before the first re-check shows as a 503 by the second. Infra needs
+ * 200 both times, no delete or suspend job accepted after the restore (R14),
+ * the delete job itself (R15, parsed with JobSchema) with no failed attempt
+ * recorded and finished before the restore was accepted, and the restore job
+ * with no error code (lease_held above all). A job's attempt counter resets
+ * when a step succeeds, so it can't show the delete ran once. Anything else,
+ * or an unreadable R14 or R15, fails linking #1326. No retry; the waits are
+ * bounded (at most two TTLs) and go through run.io.wait.
+ *
+ * O can't read the hosts audit rows (R17 gives it its own api rows only), so
+ * nothing here rules a zombie write out for certain: every message names the
+ * install and job ids for an admin's query_audit.
+ */
+export async function servingLag(
+  run: Run,
+  o: {
+    installId: string;
+    appHost: string;
+    /** When the app host last answered 200 after the restore. */
+    lastOk: number;
+    /** The inventory's last mode. */
+    mode: string | null;
+    deleteJobId: string;
+    restore: Job;
+  },
+): Promise<InfraError | ProbeFail> {
+  const left = o.lastOk + DISPATCH_HOSTS_TTL_MS - run.io.now();
+  if (left > 0) await run.io.wait(Math.min(left, DISPATCH_HOSTS_TTL_MS));
+  const since = Math.round((run.io.now() - o.lastOk) / 1000);
+  const pg1 = (await run.page(o.appHost, "/healthz", true)).status;
+  await run.io.wait(DISPATCH_HOSTS_TTL_MS);
+  const pg2 = (await run.page(o.appHost, "/healthz", true)).status;
+  const values = `inventory mode ${o.mode} after ${HOSTS_SETTLE_MS / 1000} s, app host page ${pg1} ${since} s after its last 200 and ${pg2} ${DISPATCH_HOSTS_TTL_MS / 1000} s later`;
+  const audit = `the hosts audit isn't readable by O: query_audit installId ${o.installId} (restore job ${o.restore.id}, delete job ${o.deleteJobId})`;
+  const fail = (why: string) =>
+    new ProbeFail(
+      `P22: can't rule out a late closed write (#1326 ${ISSUE_1326}): ${values}; ${why}; ${audit}`,
+    );
+  const jobs = await run.v1(`/installs/${o.installId}/jobs`, { read: true });
+  if (jobs.status !== 200) return fail(`R14 jobs unreadable (${desc(jobs)})`);
+  const del = await run.v1(`/jobs/${o.deleteJobId}`, { read: true });
+  if (del.status !== 200)
+    return fail(`R15 delete job unreadable (${desc(del)})`);
+  const parsed = JobSchema.safeParse(del.json);
+  if (!parsed.success)
+    return fail(
+      `R15 delete job doesn't parse (${parsed.error.issues.length} issue(s) at ${parsed.error.issues
+        .slice(0, 3)
+        .map((i) => i.path.join(".") || "(root)")
+        .join(", ")})`,
+    );
+  const d = parsed.data;
+  const items = (jobs.json as { items?: Job[] } | undefined)?.items ?? [];
+  const later = items.filter(
+    (j) =>
+      (j.kind === "delete" || j.kind === "suspend") &&
+      j.createdAt > o.restore.createdAt,
+  ).length;
+  const why: string[] = [];
+  if (pg1 !== 200 || pg2 !== 200) why.push("the page isn't 200 both times");
+  if (later) why.push(`${later} delete or suspend job(s) after the restore`);
+  if (d.attempt > 1) why.push(`the delete job shows attempt ${d.attempt}`);
+  if (d.failure != null || d.lastErrorCode != null)
+    why.push("the delete job recorded a failed attempt");
+  if (o.restore.lastErrorCode != null)
+    why.push(`the restore job recorded ${o.restore.lastErrorCode}`);
+  if (d.finishedAt === null || d.finishedAt > o.restore.createdAt)
+    why.push("the delete job didn't finish before the restore was accepted");
+  if (why.length) return fail(why.join(", "));
+  return new InfraError(
+    `P22: KV propagation at the inventory location, most likely: ${values}; no delete or suspend job after the restore, no failed attempt recorded on the delete job, which finished before it, and no error code on the restore job; ${audit}`,
+  );
+}
+
+const ulidish = () => {
+  const A = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  const b = randomBytes(25);
+  return `0${[...b].map((x) => A[x % 32]).join("")}`;
+};
+const b64u = (s: string) => Buffer.from(s).toString("base64url");
+
+// --- MCP -----------------------------------------------------------------
+
+/** One JSON-RPC call on api /mcp; a JSON or SSE answer. */
+export async function mcp(
+  run: Run,
+  method: string,
+  params: unknown,
+  o: {
+    auth?: Auth;
+    host?: Host;
+    headers?: Record<string, string>;
+    id?: number;
+  } = {},
+): Promise<
+  Res & {
+    rpc?: { result?: unknown; error?: { code: number; message: string } };
+  }
+> {
+  const r = await run.raw(`${run.origin(o.host ?? "api")}/mcp`, {
+    method: "POST",
+    auth: o.auth ?? "oidc",
+    body: { jsonrpc: "2.0", id: o.id ?? 1, method, params },
+    headers: {
+      accept: "application/json, text/event-stream",
+      "mcp-protocol-version": "2025-06-18",
+      ...o.headers,
+    },
+  });
+  let rpc: unknown = r.json;
+  if (rpc === undefined && r.text.includes("data:")) {
+    for (const line of r.text.split(/\r?\n/))
+      if (line.startsWith("data:")) {
+        try {
+          rpc = JSON.parse(line.slice(5).trim());
+        } catch {}
+      }
+  }
+  return {
+    ...r,
+    rpc: rpc as { result?: unknown; error?: { code: number; message: string } },
+  };
+}
+
+interface ToolResult {
+  isError?: boolean;
+  structuredContent?: Record<string, unknown>;
+}
+
+async function tool(
+  run: Run,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  const r = await mcp(run, "tools/call", { name, arguments: args });
+  if (r.status !== 200 || !r.rpc?.result)
+    throw new ProbeFail(
+      `tools/call ${name}: ${desc(r)}${r.rpc?.error ? `, rpc ${r.rpc.error.code}` : ""}`,
+    );
+  return r.rpc.result as ToolResult;
+}
+
+const toolCode = (t: ToolResult) =>
+  (t.structuredContent?.error as { code?: string } | undefined)?.code;
+
+// --- Probes ----------------------------------------------------------------
+
+export interface Probe {
+  /**
+   * Cases this one can't mean anything without: they make the install or
+   * state it reads. If one didn't pass, this reports `blocked` instead of
+   * running. Mapped by hand from what each case uses.
+   */
+  needs?: readonly ProbeId[];
+  id: ProbeId;
+  title: string;
+  run: (r: Run) => Promise<Outcome>;
+  /** Its vitest timeout when longer than PROBE_TIMEOUT_MS. */
+  timeoutMs?: number;
+}
+
+/**
+ * Runs `p`, or reports it blocked by the first of `needs` in `failed`. A thrown
+ * failure or a blocked result goes in `failed`, so a chain stops once and each
+ * case below it names the root. An unproven or not-applicable case isn't a
+ * failure: its dependants still run.
+ */
+export async function runProbe(
+  p: Probe,
+  run: Run,
+  failed: Set<string>,
+): Promise<Outcome> {
+  const root = p.needs?.find((n) => failed.has(n));
+  if (root) {
+    failed.add(p.id);
+    return { level: "blocked", reason: `blocked by ${root}` };
+  }
+  try {
+    return await p.run(run);
+  } catch (e) {
+    failed.add(p.id);
+    throw e;
+  }
+}
+
+/**
+ * One sequence of probes that share state; the chains run at once. A probe
+ * is in a chain with what it reads: every `needs` is earlier in its own
+ * chain, so a failure blocks only its own chain. `tail` runs once the
+ * chain's last probe settles, pass or not.
+ */
+export interface Chain {
+  name: string;
+  probes: readonly ProbeId[];
+  tail?: (run: Run) => Promise<void>;
+}
+
+/**
+ * The provisioning chains (dependency graph in the PR for #1137's split):
+ * - rl-p: create (with P15, P16 riding on it), the reads on it, MCP's
+ *   upgrade (P45) and the rollback of it (P31), then delete and purge (P23).
+ * - rl-l: its own install (lifecycleInstall), suspend, resume, delete and
+ *   restore; the tail deletes and purges it.
+ * - api: everything else, in the old order: no install of the run's but
+ *   rl-q (P32, made and discarded inside it). P25 stays last: it spends
+ *   RL_PV_SIGNIN_IP, which P30 and P34 share, and no other chain signs in.
+ * P33 runs after every chain: it checks the job.accepted row of every job
+ * the run's OIDC actor started.
+ */
+export const CHAINS: readonly Chain[] = [
+  {
+    name: "rl-p",
+    probes: [
+      "P13",
+      "P49",
+      "P14",
+      "P15",
+      "P16",
+      "P18",
+      "P19",
+      "P45",
+      "P31",
+      "P23",
+    ],
+  },
+  { name: "rl-l", probes: ["P20", "P21", "P22"], tail: removeLifecycle },
+  {
+    name: "api",
+    probes: [
+      "P1",
+      "P2",
+      "P3",
+      "P4",
+      "P5",
+      "P6",
+      "P7",
+      "P8",
+      "P9",
+      "P10",
+      "P11",
+      "P12",
+      "P17",
+      "P24",
+      "P26",
+      "P27",
+      "P28",
+      "P29",
+      "P30",
+      "P32",
+      "P34",
+      "P36",
+      "P37",
+      "P38",
+      "P39",
+      "P40",
+      "P41",
+      "P42",
+      "P44",
+      "P43",
+      "P46",
+      "P47",
+      "P48",
+      "P25",
+    ],
+  },
+];
+/** After every chain and its tail. */
+export const AFTER_CHAINS: readonly ProbeId[] = ["P33"];
+
+/** A probe's own bound: its vitest timeout before the split. */
+export const probeBoundMs = (p: Probe): number =>
+  p.timeoutMs ?? PROBE_TIMEOUT_MS;
+
+/**
+ * Starts every chain at once and returns each probe's outcome; `settled`
+ * resolves once every probe and tail is done (the run's cleanup waits on it,
+ * so it never races a chain). A probe past its bound fails naming the bound
+ * and counts as failed for its dependants, as a vitest timeout did. Errors
+ * pass through unchanged: a ProbeFail fails, an InfraError is infra.
+ */
+export function startChains(
+  run: Run,
+  o: {
+    chains?: readonly Chain[];
+    after?: readonly ProbeId[];
+    probes?: readonly Probe[];
+    boundMs?: (p: Probe) => number;
+  } = {},
+): { outcomes: Map<ProbeId, Promise<Outcome>>; settled: Promise<void> } {
+  const probes = new Map((o.probes ?? PROBES).map((p) => [p.id, p]));
+  const bound = o.boundMs ?? probeBoundMs;
+  const failed = new Set<string>();
+  const outcomes = new Map<ProbeId, Promise<Outcome>>();
+  const one = (id: ProbeId): Promise<Outcome> => {
+    const p = probes.get(id);
+    if (!p) return Promise.reject(new Error(`no probe ${id}`));
+    const ms = bound(p);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        failed.add(id);
+        reject(
+          new ProbeFail(`${id}: no result within ${Math.round(ms / 1000)} s`),
+        );
+      }, ms);
+    });
+    return Promise.race([runProbe(p, run, failed), late]).finally(() =>
+      clearTimeout(timer),
+    );
+  };
+  const sequence = (
+    ids: readonly ProbeId[],
+    start: Promise<unknown>,
+  ): Promise<void> => {
+    let prev: Promise<unknown> = start;
+    for (const id of ids) {
+      const r = prev.then(() => one(id));
+      // Handled here; each case still awaits (and reports) its own.
+      r.catch(() => undefined);
+      outcomes.set(id, r);
+      prev = r.catch(() => undefined);
+    }
+    return prev.then(() => undefined);
+  };
+  const ends = (o.chains ?? CHAINS).map((c) =>
+    sequence(c.probes, Promise.resolve()).then(() =>
+      c.tail?.(run).catch(() => undefined),
+    ),
+  );
+  const settled = sequence(o.after ?? AFTER_CHAINS, Promise.all(ends));
+  return { outcomes, settled };
+}
+
+/**
+ * A case's vitest timeout once the chains run at once: the case waits on
+ * every probe before it in its chain (P33 on the longest chain), each up to
+ * its own bound, plus a margin. Above the probe's own bound, so the probe's
+ * bound always fires first.
+ */
+export function caseTimeoutMs(
+  id: ProbeId,
+  o: {
+    chains?: readonly Chain[];
+    after?: readonly ProbeId[];
+    probes?: readonly Probe[];
+  } = {},
+): number {
+  const probes = new Map((o.probes ?? PROBES).map((p) => [p.id, p]));
+  const sum = (ids: readonly ProbeId[]) =>
+    ids.reduce((t, x) => {
+      const p = probes.get(x);
+      return t + (p ? probeBoundMs(p) : 0);
+    }, 0);
+  const margin = 60_000;
+  const chains = o.chains ?? CHAINS;
+  for (const c of chains) {
+    const at = c.probes.indexOf(id);
+    if (at >= 0) return sum(c.probes.slice(0, at + 1)) + margin;
+  }
+  const after = o.after ?? AFTER_CHAINS;
+  const at = after.indexOf(id);
+  if (at < 0) return PROBE_TIMEOUT_MS;
+  const longest = Math.max(
+    ...chains.map((c) => sum(c.probes) + (c.tail ? CLEANUP_TIMEOUT_MS : 0)),
+  );
+  return longest + sum(after.slice(0, at + 1)) + margin;
+}
+
+/**
+ * Prod probes wait until the prod admin host answers 401 (12.2). Not live
+ * means only one thing (#1012): the name does not resolve, as before the
+ * prod platform deploy. A host that resolves must answer 401; anything else
+ * (another status, TLS, a timeout) fails the probe.
+ */
+export async function prodLive(run: Run): Promise<boolean> {
+  let r: Res;
+  try {
+    r = await run.v1("/me", { host: "prodAdmin", auth: "none" });
+  } catch (e) {
+    if (notResolved(e)) return false;
+    throw e;
+  }
+  if (r.status !== 401)
+    throw new ProbeFail(
+      `prod admin /api/v1/me resolves but is ${desc(r)}, want 401`,
+    );
+  return true;
+}
+
+/**
+ * #1012: what a batch of answers was, as "429 rate_limited x340, 404 x60":
+ * statuses and fixed error codes only (the run log is public), most first.
+ */
+export function statusCounts(
+  rs: readonly Pick<Res, "status" | "json">[],
+): string {
+  const n = new Map<string, number>();
+  for (const r of rs) {
+    const c = errCode(r as Res);
+    const k = `${r.status}${typeof c === "string" && /^[a-z_]{1,40}$/.test(c) ? ` ${c}` : ""}`;
+    n.set(k, (n.get(k) ?? 0) + 1);
+  }
+  return [...n]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([k, v]) => `${k} x${v}`)
+    .join(", ");
+}
+
+/** The admin sign-in flow cookie /auth/start sets (apps/provisioning/src/auth/flow.ts). */
+export const ADMIN_FLOW_COOKIE = "__Host-oa-admin-flow";
+
+/**
+ * Whether one Set-Cookie sets a live admin flow cookie: the flow name, a
+ * non-empty value, and neither Max-Age<=0 nor an Expires before `now`. The
+ * limited 303 sends clearFlowCookie() (apps/provisioning/src/auth/flow.ts),
+ * "__Host-oa-admin-flow=; Max-Age=0; ...", which clears and does not count.
+ */
+export function setsLiveFlowCookie(c: string, now: number): boolean {
+  const [pair = "", ...attrs] = c.split(";").map((x) => x.trim());
+  const eq = pair.indexOf("=");
+  if (eq < 0 || pair.slice(0, eq) !== ADMIN_FLOW_COOKIE) return false;
+  if (pair.slice(eq + 1) === "") return false;
+  // RFC 6265 5.3: a valid Max-Age decides alone; Expires only without one.
+  let maxAge: number | undefined;
+  let expires: number | undefined;
+  for (const a of attrs) {
+    const i = a.indexOf("=");
+    const k = (i < 0 ? a : a.slice(0, i)).trim().toLowerCase();
+    const v = i < 0 ? "" : a.slice(i + 1).trim();
+    if (k === "max-age" && /^-?\d+$/.test(v)) maxAge = Number(v);
+    if (k === "expires") {
+      const t = Date.parse(v);
+      if (!Number.isNaN(t)) expires = t;
+    }
+  }
+  if (maxAge !== undefined) return maxAge > 0;
+  return expires === undefined || expires > now;
+}
+
+/** Every Set-Cookie on an answer. */
+const setCookies = (r: Pick<Res, "headers">): string[] =>
+  r.headers.getSetCookie?.() ??
+  [r.headers.get("set-cookie") ?? ""].filter(Boolean);
+
+// The not-resolved test lives in fetch-timeout.ts (the red-line guard shares it).
+export { notResolved };
+
+function rlp(run: Run): RlP {
+  if (!run.s.rlp) throw new ProbeFail("no rl-p install (P13 failed)");
+  return run.s.rlp;
+}
+
+/**
+ * rl-l-<run>: the install P20 to P22 run on, so suspend, resume and restore
+ * run while rl-p goes through its upgrade and rollback. Made as P13 makes
+ * rl-p (oidcCreate, testHooks) but at the release under test, and ready as
+ * P13 leaves rl-p: done, both hosts set, the redline /healthz served. That create is
+ * P13's case, so here it's setup: any failure is infra (never a pass, never
+ * a red-line verdict) and P20 to P22 report it. Listed for cleanup before
+ * its create; the chain's tail removes it (removeLifecycle). Memoized: every
+ * caller gets the one install.
+ */
+export function lifecycleInstall(run: Run): Promise<RlP> {
+  run.s.rll ??= makeLifecycle(run);
+  return run.s.rll;
+}
+
+async function makeLifecycle(run: Run): Promise<RlP> {
+  const slug = run.slug("l");
+  run.s.cleanup.push({ slug });
+  try {
+    // The release under test, so a green P20-P22 proves suspend, resume and
+    // restore on what ships (P28 holds it installable).
+    const version = run.c.version;
+    const a = run.accepted(
+      await run.v1("/installs", {
+        body: oidcCreate(run, slug, run.rid("rll"), version),
+      }),
+      "rl-l create",
+    );
+    await run.done(a.job.id, "rl-l create");
+    const d = await ownDetail(run, a.install.id);
+    expect(d, 200, "rl-l R3");
+    const dj = d.json as InstallDetail;
+    if (dj.testHooks !== true)
+      throw new ProbeFail("rl-l: testHooks is not true");
+    if (!dj.appHost || !dj.contentHost)
+      throw new ProbeFail(
+        "rl-l: the finished install has no app or content host",
+      );
+    // Dispatch's HOSTS cache (60 s) can still miss the new host: poll.
+    await run.within(PAGE_WITHIN_MS, "rl-l redline /healthz", async () => {
+      const h = await run.page(dj.appHost);
+      const hz = h.json as { testHooks?: unknown } | undefined;
+      return h.status === 200 && hz?.testHooks === true;
+    });
+    return {
+      id: a.install.id,
+      slug,
+      appHost: dj.appHost,
+      contentHost: dj.contentHost,
+      createdAt: version,
+      version,
+    };
+  } catch (e) {
+    if (e instanceof InfraError) throw e;
+    throw new InfraError(
+      `rl-l setup: ${e instanceof ProbeFail ? e.message : `error ${(e as Error)?.name ?? "unknown"}`}`,
+      { cause: e },
+    );
+  }
+}
+
+/**
+ * The rl-l chain's tail: deletes and purges rl-l once P22 is done, so the
+ * run's cleanup has nothing left of it. A failure leaves it listed: the
+ * run's cleanup tries again, and fails the run naming it.
+ */
+export async function removeLifecycle(run: Run): Promise<void> {
+  const slug = run.slug("l");
+  const at = run.s.cleanup.findIndex((e) => e.slug === slug);
+  if (at < 0) return;
+  try {
+    await removeInstall(run, slug, "rl-l cleanup");
+    run.s.cleanup.splice(
+      run.s.cleanup.findIndex((e) => e.slug === slug),
+      1,
+    );
+  } catch {
+    // Left on run.s.cleanup for cleanupInstalls.
+  }
+}
+
+async function releases(run: Run): Promise<Release[]> {
+  if (run.s.releases) return run.s.releases;
+  const r = await run.v1("/releases", { read: true });
+  expect(r, 200, "R16");
+  run.s.releases = (r.json as { items: Release[] }).items;
+  return run.s.releases;
+}
+
+const cmpVer = (a: string, b: string) => {
+  const x = a.split(".").map(Number);
+  const y = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++)
+    if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) - (y[i] ?? 0);
+  return 0;
+};
+
+/** The newest installable release below the one under test, if any. */
+async function previous(run: Run): Promise<string | undefined> {
+  return (await releases(run))
+    .filter(
+      (r) =>
+        r.installable &&
+        r.variants.includes("redline") &&
+        cmpVer(r.version, run.c.version) < 0,
+    )
+    .map((r) => r.version)
+    .sort(cmpVer)
+    .pop();
+}
+
+async function detail(
+  run: Run,
+  id: string,
+  testUser?: "a" | "b" | "c",
+): Promise<Res> {
+  return run.v1(`/installs/${id}`, { testUser });
+}
+
+/** The run's own install, expected to answer: `detail` stays one try for refusals. */
+const ownDetail = (run: Run, id: string): Promise<Res> =>
+  run.v1(`/installs/${id}`, { read: true });
+
+async function panelInstall(run: Run): Promise<string | null> {
+  if (run.s.panelInstall !== undefined) return run.s.panelInstall;
+  const v = (await run.inventory("/installs")) as {
+    installs?: { id: string; appHost: string | null; state?: string }[];
+  };
+  // A live one only: a deleted or purged install's 404 proves no scoping.
+  const live = (v?.installs ?? []).filter(
+    (x) =>
+      x.appHost &&
+      !bare(x.appHost).startsWith("rl-") &&
+      x.state !== undefined &&
+      !["deleted", "deleting"].includes(x.state),
+  );
+  const i = live.find((x) => x.state === "active") ?? live[0];
+  run.s.panelInstall = i?.id ?? null;
+  return run.s.panelInstall;
+}
+
+/** The owner of every install O creates (rl-p, rl-q, ...); P49 searches it. */
+const OIDC_OWNER_EMAIL = `redline-owner@${STAGING_TEST_DOMAIN}`;
+
+const oidcCreate = (
+  run: Run,
+  slug: string,
+  requestId: string,
+  version?: string,
+) => ({
+  requestId,
+  slug,
+  ownerEmail: OIDC_OWNER_EMAIL,
+  tier: "team",
+  auth: { providers: ["email"], domains: [] },
+  testHooks: true,
+  ...(version ? { version } : {}),
+});
+
+/**
+ * Deletes and purges one install this run created, found by its slug: the
+ * create may have failed before its answer. Done when no live row is left, so
+ * it's a no-op after P23. Waits out a live job; a row already `deleting` or
+ * `failed` goes straight to purge.
+ */
+export async function removeInstall(
+  run: Run,
+  slug: string,
+  what: string,
+): Promise<void> {
+  const l = await run.v1(`/installs?${new URLSearchParams({ q: slug })}`, {
+    read: true,
+  });
+  expect(l, 200, `${what} R2`);
+  const row = (
+    l.json as { items: { id: string; slug: string; state: string }[] }
+  ).items.find((i) => i.slug === slug && i.state !== "deleted");
+  if (!row) return;
+  let d = await ownDetail(run, row.id);
+  expect(d, 200, `${what} R3`);
+  let i = d.json as InstallDetail;
+  if (i.activeJobId) await run.waitJob(i.activeJobId);
+  d = await ownDetail(run, row.id);
+  expect(d, 200, `${what} R3`);
+  i = d.json as InstallDetail;
+  if (i.state === "deleted") return;
+  if (i.state !== "failed" && i.state !== "deleting") {
+    const del = run.accepted(
+      await run.v1(`/installs/${row.id}/delete`, {
+        body: { requestId: run.rid(`${slug}-del`), confirmSlug: slug },
+      }),
+      `${what} delete`,
+    );
+    await run.done(del.job.id, `${what} delete`);
+  }
+  const g = run.accepted(
+    await run.v1(`/installs/${row.id}/purge`, {
+      body: { requestId: run.rid(`${slug}-purge`), confirmSlug: slug },
+    }),
+    `${what} purge`,
+  );
+  await run.done(g.job.id, `${what} purge`);
+}
+
+/**
+ * The run's end: removes every install left on run.s.cleanup. Tries them all,
+ * then fails naming the ones it couldn't: a run that strands an install stays
+ * red. Only slugs this run listed, so another run's install can't be touched.
+ */
+export async function cleanupInstalls(run: Run): Promise<void> {
+  const failed: string[] = [];
+  for (const e of [...run.s.cleanup]) {
+    try {
+      await removeInstall(run, e.slug, `cleanup ${e.slug}`);
+      run.s.cleanup.splice(run.s.cleanup.indexOf(e), 1);
+    } catch (x) {
+      failed.push(x instanceof ProbeFail ? x.message : `${e.slug}: error`);
+    }
+  }
+  if (failed.length) throw new ProbeFail(failed.join("; "));
+}
+
+export const PROBES: readonly Probe[] = [
+  {
+    id: "P1",
+    title: "GET /api/v1/me on the admin host, no cookie: 401",
+    run: async (run) => {
+      expect(await run.v1("/me", { host: "admin", auth: "none" }), 401, "P1");
+      return pass();
+    },
+  },
+  {
+    id: "P2",
+    title: "a forged __Host-oa-admin: 401",
+    run: async (run) => {
+      const r = await run.v1("/me", {
+        host: "admin",
+        auth: "none",
+        headers: {
+          cookie: `__Host-oa-admin=${randomBytes(32).toString("base64url")}`,
+        },
+      });
+      expect(r, 401, "P2");
+      return pass();
+    },
+  },
+  {
+    id: "P3",
+    title: "the api host with only a Cookie: 401",
+    run: async (run) => {
+      const r = await run.v1("/me", {
+        auth: "none",
+        headers: {
+          cookie: `__Host-oa-admin=${randomBytes(32).toString("base64url")}`,
+        },
+      });
+      expect(r, 401, "P3");
+      return pass();
+    },
+  },
+  {
+    id: "P4",
+    title: "the admin host with an OIDC bearer: 401",
+    run: async (run) => {
+      expect(await run.v1("/me", { host: "admin" }), 401, "P4");
+      return pass();
+    },
+  },
+  {
+    id: "P5",
+    title:
+      "POST /api/v1/installs with Origin https://evil.example: 403 csrf_failed",
+    run: async (run) => {
+      const r = await run.v1("/installs", {
+        host: "admin",
+        auth: "none",
+        body: { requestId: run.rid("p5") },
+        headers: { origin: EVIL },
+      });
+      expect(r, 403, "P5", "csrf_failed");
+      return pass();
+    },
+  },
+  {
+    id: "P6",
+    title: "OIDC with a wrong aud, tampered, alg none: 401 each",
+    run: async (run) => {
+      if (!run.io.stgInventoryJwt)
+        throw new ProbeFail("P6: no second-audience JWT to send");
+      const wrongAud = await run.io.stgInventoryJwt();
+      const good = await run.io.jwt();
+      const [h, p, sig] = good.split(".");
+      const claims = JSON.parse(
+        Buffer.from(p ?? "", "base64url").toString("utf8"),
+      );
+      const tampered = `${h}.${b64u(JSON.stringify({ ...claims, ref: "refs/heads/evil" }))}.${sig}`;
+      const none = `${b64u(JSON.stringify({ alg: "none", typ: "JWT" }))}.${p}.`;
+      for (const [what, bearer] of [
+        ["wrong aud", wrongAud],
+        ["tampered", tampered],
+        ["alg none", none],
+      ] as const)
+        expect(await run.v1("/me", { auth: { bearer } }), 401, `P6 ${what}`);
+      return pass();
+    },
+  },
+  {
+    id: "P7",
+    title: "staging OIDC against prod /v1/me: 401",
+    run: async (run) => {
+      if (!(await prodLive(run))) return na(PRE_PROD_REASON);
+      expect(await run.v1("/me", { host: "prodApi" }), 401, "P7");
+      return pass();
+    },
+  },
+  {
+    id: "P8",
+    title: "test user a: list shows its own only; GET rl-a is 404",
+    run: async (run) => {
+      const l = await run.v1("/installs", { testUser: "a" });
+      expect(l, 200, "P8 list");
+      const items = (l.json as { items: { slug: string; source: string }[] })
+        .items;
+      const foreign = items.filter(
+        (i) => i.source !== "self-serve" || /^rl-(a|b|p-|q-)/.test(i.slug),
+      );
+      if (foreign.length)
+        throw new ProbeFail(
+          `P8: the list holds ${foreign.length} install(s) not test user a's`,
+        );
+      expect(await detail(run, run.c.rlA.id, "a"), 404, "P8 GET rl-a");
+      return pass();
+    },
+  },
+  {
+    id: "P9",
+    title: "test user a: create with ownerEmail or tier: 403",
+    run: async (run) => {
+      const base = {
+        requestId: run.rid("p9-owner"),
+        slug: run.slug("u"),
+        turnstile: DUMMY_TURNSTILE,
+      };
+      expect(
+        await run.v1("/installs", {
+          testUser: "a",
+          body: { ...base, ownerEmail: `x@${STAGING_TEST_DOMAIN}` },
+        }),
+        403,
+        "P9 ownerEmail",
+      );
+      expect(
+        await run.v1("/installs", {
+          testUser: "a",
+          body: { ...base, requestId: run.rid("p9-tier"), tier: "team" },
+        }),
+        403,
+        "P9 tier",
+      );
+      return pass();
+    },
+  },
+  {
+    id: "P10",
+    title: "OIDC: GET and upgrade of an install without rl-: 404",
+    run: async (run) => {
+      const id = await panelInstall(run);
+      if (!id) return na("no panel-made (non rl-) install on staging");
+      expect(await detail(run, id), 404, "P10 GET");
+      expect(
+        await run.v1(`/installs/${id}/upgrade`, {
+          body: { requestId: run.rid("p10") },
+        }),
+        404,
+        "P10 upgrade",
+      );
+      return pass();
+    },
+  },
+  {
+    id: "P11",
+    title: "test user a: upgrade rl-a: 403",
+    run: async (run) => {
+      const r = await run.v1(`/installs/${run.c.rlA.id}/upgrade`, {
+        testUser: "a",
+        body: { requestId: run.rid("p11") },
+      });
+      expect(r, 403, "P11");
+      return pass();
+    },
+  },
+  {
+    id: "P12",
+    title: "OIDC: R13, R19, R25: 403 each",
+    run: async (run) => {
+      expect(
+        await run.v1(`/installs/${run.c.rlA.id}/release-lease`, {
+          body: { requestId: run.rid("p12-r13"), confirmSlug: "rl-a" },
+        }),
+        403,
+        "P12 R13",
+      );
+      expect(
+        await run.v1("/tokens", {
+          body: {
+            requestId: run.rid("p12-r19"),
+            label: "redline",
+            scopes: ["installs:read"],
+          },
+        }),
+        403,
+        "P12 R19",
+      );
+      const jobs = await run.v1(`/installs/${run.c.rlA.id}/jobs?limit=1`, {
+        read: true,
+      });
+      const jobId =
+        (jobs.json as { items?: { id: string }[] } | undefined)?.items?.[0]
+          ?.id ?? ulidish();
+      expect(
+        await run.v1(`/jobs/${jobId}/cancel`, {
+          body: { requestId: run.rid("p12-r25"), confirmSlug: "rl-a" },
+        }),
+        403,
+        "P12 R25",
+      );
+      return pass();
+    },
+  },
+  {
+    id: "P13",
+    title:
+      "create rl-p-<run> twice with one requestId: one job, one install, done (redline variant)",
+    run: async (run) => {
+      const slug = run.slug("p");
+      run.s.cleanup.push({ slug });
+      const before = await run.v1(`/installs?q=${slug}`, { read: true });
+      expect(before, 200, "P13 list before");
+      const n0 = (before.json as { items: { slug: string }[] }).items.filter(
+        (i) => i.slug === slug,
+      ).length;
+      const version = (await previous(run)) ?? run.c.version;
+      const body = oidcCreate(run, slug, run.rid("p13"), version);
+      const a = run.accepted(await run.v1("/installs", { body }), "P13 create");
+      run.s.rlp = {
+        id: a.install.id,
+        slug,
+        appHost: a.install.appHost,
+        contentHost: a.install.contentHost,
+        createdAt: version,
+        version,
+      };
+      run.s.createJobId = a.job.id;
+      // P16 rides on the running create.
+      const up = await run.v1(`/installs/${a.install.id}/upgrade`, {
+        body: { requestId: run.rid("p16"), version: run.c.version },
+      });
+      // A 202 means the create had already finished: P16 is then unproven,
+      // and the upgrade runs to done below before the later probes.
+      let lateJob: string | undefined;
+      if (up.status === 202) {
+        lateJob = run.accepted(up, "P16 upgrade").job.id;
+        run.s.p16 = "late";
+      } else run.s.p16 = up;
+      const again = await run.v1("/installs", { body });
+      if (again.status < 200 || again.status > 202)
+        throw new ProbeFail(`P13 replay: ${desc(again)}`);
+      if ((again.json as { job?: { id?: string } })?.job?.id !== a.job.id)
+        throw new ProbeFail("P13: the replay answered another job id");
+      // P15: before `route`, inventory says mode null and /healthz is 404.
+      const p15 = { checked: 0, violations: [] as string[] };
+      run.s.p15 = p15;
+      const routeAt = a.job.steps.indexOf("route");
+      if (routeAt >= 0) {
+        const end = run.io.now() + JOB_WITHIN_MS;
+        while ((await p15Check(run, a.job.id, routeAt)) === "before") {
+          if (run.io.now() >= end)
+            throw new ProbeFail("P13: the create never reached route");
+          await run.io.wait(POLL_MS);
+        }
+      }
+      const final = await run.done(a.job.id, "P13 create");
+      if (lateJob) {
+        await run.done(lateJob, "P16 late upgrade");
+        run.s.rlp.version = run.c.version;
+      }
+      const after = await run.v1(`/installs?q=${slug}`, { read: true });
+      const n1 = (after.json as { items: { slug: string }[] }).items.filter(
+        (i) => i.slug === slug,
+      ).length;
+      if (n1 - n0 !== 1)
+        throw new ProbeFail(`P13: installs +${n1 - n0}, want +1`);
+      const d = await ownDetail(run, a.install.id);
+      expect(d, 200, "P13 R3");
+      const dj = d.json as InstallDetail;
+      if (dj.testHooks !== true)
+        throw new ProbeFail("P13: testHooks is not true");
+      // #1012: the 202's contentHost is "" until reserve writes the row, so
+      // later probes take both hosts from the finished install.
+      if (!dj.appHost || !dj.contentHost)
+        throw new ProbeFail(
+          "P13: the finished install has no app or content host",
+        );
+      run.s.rlp.appHost = dj.appHost;
+      run.s.rlp.contentHost = dj.contentHost;
+      // Dispatch's HOSTS cache (60 s) can still miss the new host: poll.
+      let h: Res | undefined;
+      try {
+        await run.within(PAGE_WITHIN_MS, "P13 redline /healthz", async () => {
+          h = await run.page(dj.appHost);
+          const hz = h.json as { testHooks?: unknown } | undefined;
+          return h.status === 200 && hz?.testHooks === true;
+        });
+      } catch (e) {
+        if (!(e instanceof ProbeFail) || !h) throw e;
+        throw new ProbeFail(
+          `P13: /healthz is not the redline variant within ${PAGE_WITHIN_MS / 1000} s (${desc(h)})`,
+        );
+      }
+      return pass(`job ${final.id} at ${version}`);
+    },
+  },
+  {
+    id: "P49",
+    needs: ["P13"],
+    title:
+      "R2 q as O never matches by owner email: rl-p's email and its local part find nothing; its slug still finds rl-p (#1033)",
+    // The privacy half of #1033. O is not a pii principal, so an owner-email
+    // q must match nothing, even with rl-p (owned by oidcCreate's email) live.
+    // Failures name the q kind only, never its value (the run log is public).
+    run: async (run) => {
+      const p = rlp(run);
+      const email = OIDC_OWNER_EMAIL;
+      const local = email.slice(0, email.indexOf("@"));
+      type Row = {
+        id: string;
+        slug: string;
+        appHost: string;
+        contentHost: string;
+      };
+      // A row whose own slug, id or host holds q is a fair match, not a leak.
+      const fair = (r: Row, q: string) =>
+        [r.slug, r.id, r.appHost, r.contentHost].some((c) =>
+          String(c ?? "")
+            .toLowerCase()
+            .includes(q.toLowerCase()),
+        );
+      if (fair(p, local))
+        throw new ProbeFail(
+          "P49 setup: the owner email's local part is in rl-p's slug, id or a host",
+        );
+      const rows = async (q: string, what: string) => {
+        const l = await run.v1(`/installs?${new URLSearchParams({ q })}`);
+        expect(l, 200, `P49 R2 q=${what}`);
+        return (l.json as { items: Row[] }).items;
+      };
+      if (!(await rows(p.slug, "rl-p slug")).some((x) => x.id === p.id))
+        throw new ProbeFail("P49 R2 q=rl-p slug: rl-p is not in the results");
+      for (const [q, what] of [
+        [email, "owner email"],
+        [local, "owner email local part"],
+      ] as const) {
+        const n = (await rows(q, what)).filter((r) => !fair(r, q)).length;
+        if (n !== 0)
+          throw new ProbeFail(
+            `P49 R2 q=${what}: ${n} items match by owner email only, want 0`,
+          );
+      }
+      return pass();
+    },
+  },
+  {
+    id: "P14",
+    needs: ["P13"],
+    title: "a second create of that slug with a new requestId: 409 slug_taken",
+    run: async (run) => {
+      const p = rlp(run);
+      expect(
+        await run.v1("/installs", {
+          body: oidcCreate(run, p.slug, run.rid("p14")),
+        }),
+        409,
+        "P14",
+        "slug_taken",
+      );
+      return pass();
+    },
+  },
+  {
+    id: "P15",
+    needs: ["P13"],
+    title:
+      "during the create: inventory mode null and public /healthz 404 until route",
+    run: async (run) => {
+      // Without the inventory, p15Check reads mode as null: /healthz alone
+      // would pass the probe.
+      if (!run.c.inventory || !run.io.stgInventoryJwt)
+        throw new ProbeFail("P15: no staging inventory configured");
+      const p = run.s.p15;
+      if (!p) throw new ProbeFail("P15: P13 never ran its create");
+      if (p.violations.length)
+        throw new ProbeFail(`P15: ${p.violations.join("; ")}`);
+      if (p.checked === 0)
+        return unproven("the create reached route before a check could run");
+      return pass(`${p.checked} check(s) before route`);
+    },
+  },
+  {
+    id: "P16",
+    needs: ["P13"],
+    title: "upgrade while its create runs: 409 job_in_progress",
+    run: async (run) => {
+      const r = run.s.p16;
+      if (!r) throw new ProbeFail("P16: P13 never sent it");
+      if (r === "late") return unproven("the create had finished first");
+      expect(r, 409, "P16", "job_in_progress");
+      return pass();
+    },
+  },
+  {
+    id: "P17",
+    title: "create with version 0.0.1: 422 release_not_published",
+    run: async (run) => {
+      const r = await run.v1("/installs", {
+        body: oidcCreate(run, run.slug("v"), run.rid("p17"), "0.0.1"),
+      });
+      expect(r, 422, "P17", "release_not_published");
+      return pass();
+    },
+  },
+  {
+    id: "P18",
+    needs: ["P13"],
+    title: "upgrade to its current version: 409 downgrade_refused",
+    run: async (run) => {
+      const p = rlp(run);
+      const r = await run.v1(`/installs/${p.id}/upgrade`, {
+        body: { requestId: run.rid("p18"), version: p.version },
+      });
+      expect(r, 409, "P18", "downgrade_refused");
+      return pass();
+    },
+  },
+  {
+    id: "P19",
+    needs: ["P13"],
+    title: "delete with a wrong confirmSlug: 400; unchanged",
+    run: async (run) => {
+      const p = rlp(run);
+      const r = await run.v1(`/installs/${p.id}/delete`, {
+        body: { requestId: run.rid("p19"), confirmSlug: "rl-wrong" },
+      });
+      if (r.status !== 400)
+        throw new ProbeFail(`P19: want 400, got ${desc(r)}`);
+      const d = await ownDetail(run, p.id);
+      if ((d.json as InstallDetail | undefined)?.state !== "active")
+        throw new ProbeFail("P19: the install is no longer active");
+      return pass();
+    },
+  },
+  {
+    id: "P45",
+    needs: ["P13"],
+    title:
+      "OIDC on /mcp: tools/list, get_world, get_install, delete_install refusal, upgrade_install",
+    run: async (run) => {
+      const p = rlp(run);
+      const init = await mcp(run, "initialize", {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "oa-redline", version: "1" },
+      });
+      if (init.status !== 200 || !init.rpc?.result)
+        throw new ProbeFail(`P45 initialize: ${desc(init)}`);
+      const list = await mcp(run, "tools/list", {});
+      const names = (
+        (list.rpc?.result as { tools?: { name: string }[] })?.tools ?? []
+      )
+        .map((t) => t.name)
+        .sort();
+      if (
+        JSON.stringify(names) !== JSON.stringify([...ADMIN_TOOL_NAMES].sort())
+      )
+        throw new ProbeFail("P45: tools/list names differ from ADMIN_TOOLS");
+      // get_world equals REST R27 for this principal (O is 403 on R27: 4.2).
+      const world = await tool(run, "get_world", {});
+      const rest = await run.v1("/world", { read: true });
+      if (rest.status === 200) {
+        if (world.isError)
+          throw new ProbeFail(`P45 get_world: ${toolCode(world)}`);
+      } else if (!world.isError || toolCode(world) !== errCode(rest))
+        throw new ProbeFail(
+          `P45 get_world: ${toolCode(world) ?? "ok"} on /mcp, ${desc(rest)} on /v1`,
+        );
+      const gi = await tool(run, "get_install", { id: p.id });
+      const gr = await ownDetail(run, p.id);
+      if (
+        gi.isError ||
+        JSON.stringify(gi.structuredContent) !== JSON.stringify(gr.json)
+      )
+        throw new ProbeFail(
+          "P45: get_install differs from GET /v1/installs/:id",
+        );
+      const other = await panelInstall(run);
+      if (other) {
+        const o = await tool(run, "get_install", { id: other });
+        if (!o.isError || toolCode(o) !== "not_found")
+          throw new ProbeFail(
+            "P45: get_install of a non-rl install is not not_found",
+          );
+      }
+      const del = await tool(run, "delete_install", {
+        id: p.id,
+        requestId: run.rid("p45-del"),
+        confirmSlug: "rl-wrong",
+      });
+      if (!del.isError || toolCode(del) !== "confirm_mismatch")
+        throw new ProbeFail(`P45 delete_install: ${toolCode(del) ?? "ok"}`);
+      if (
+        ((await ownDetail(run, p.id)).json as InstallDetail).state !== "active"
+      )
+        throw new ProbeFail("P45: delete_install changed the install");
+      if (p.version === run.c.version)
+        return unproven(
+          p.createdAt === run.c.version
+            ? "no older installable release: upgrade_install has nothing to upgrade to"
+            : "P16's upgrade was accepted (the create had finished): upgrade_install has nothing to upgrade to",
+        );
+      const up = await tool(run, "upgrade_install", {
+        id: p.id,
+        requestId: run.rid("p45-up"),
+        version: run.c.version,
+      });
+      if (up.isError)
+        throw new ProbeFail(`P45 upgrade_install: ${toolCode(up)}`);
+      const job = (up.structuredContent as { job?: Job })?.job;
+      if (!job?.id) throw new ProbeFail("P45 upgrade_install: no job");
+      run.s.jobIds.push(job.id);
+      if (job.actor.kind !== "oidc" || job.actor.label !== run.s.actor)
+        throw new ProbeFail("P45: the job's actor is not the OIDC actor");
+      await run.done(job.id, "P45 upgrade_install");
+      p.version = run.c.version;
+      return pass(
+        other ? undefined : "no non-rl install for the not_found leg",
+      );
+    },
+  },
+  {
+    id: "P31",
+    needs: ["P13"],
+    title:
+      "rollback of the rl-p install after an upgrade: the previous version",
+    run: async (run) => {
+      const p = rlp(run);
+      if (p.createdAt === run.c.version)
+        return na("no older installable release, so no upgrade to roll back");
+      if (p.version === p.createdAt)
+        return unproven("no upgrade reached done, so none to roll back");
+      const a = run.accepted(
+        await run.v1(`/installs/${p.id}/rollback`, {
+          body: { requestId: run.rid("p31") },
+        }),
+        "P31",
+      );
+      await run.done(a.job.id, "P31 rollback");
+      const v = ((await ownDetail(run, p.id)).json as InstallDetail).version;
+      if (v !== p.createdAt)
+        throw new ProbeFail(`P31: version ${v}, want ${p.createdAt}`);
+      p.version = v;
+      return pass();
+    },
+  },
+  {
+    id: "P20",
+    title:
+      "suspend: 503 paused page on both hosts within 120 s; inventory paused",
+    // On rl-l (lifecycleInstall): a serving install at the release under
+    // test, so a pass here and in P21 and P22 is about what ships.
+    run: async (run) => {
+      const p = await lifecycleInstall(run);
+      const v = (await ownDetail(run, p.id)).json as InstallDetail | undefined;
+      if (v?.version !== run.c.version)
+        throw new ProbeFail(
+          `P20: rl-l runs ${typeof v?.version === "string" ? v.version.slice(0, 20) : "no version"}, want the release under test ${run.c.version}`,
+        );
+      const a = run.accepted(
+        await run.v1(`/installs/${p.id}/suspend`, {
+          body: { requestId: run.rid("p20"), reason: "red-line P20" },
+        }),
+        "P20",
+      );
+      await run.done(a.job.id, "P20 suspend");
+      await run.within(
+        PAGE_WITHIN_MS,
+        "P20 paused page",
+        async () =>
+          (await run.page(p.appHost, "/")).status === 503 &&
+          (await run.page(p.contentHost, "/")).status === 503,
+      );
+      await run.settledMode("P20", p.appHost, "paused");
+      return pass();
+    },
+  },
+  {
+    id: "P21",
+    needs: ["P20"],
+    title: "resume: 200 within 120 s",
+    // On rl-l, which P20 suspended.
+    run: async (run) => {
+      const p = await lifecycleInstall(run);
+      const a = run.accepted(
+        await run.v1(`/installs/${p.id}/resume`, {
+          body: { requestId: run.rid("p21") },
+        }),
+        "P21",
+      );
+      await run.done(a.job.id, "P21 resume");
+      await run.within(
+        PAGE_WITHIN_MS,
+        "P21 /healthz 200",
+        async () => (await run.page(p.appHost)).status === 200,
+      );
+      return pass();
+    },
+  },
+  {
+    id: "P22",
+    title: "delete, then restore: 503 closed page on both hosts, then serving",
+    // On rl-l, serving again after P21.
+    run: async (run) => {
+      const p = await lifecycleInstall(run);
+      const d = run.accepted(
+        await run.v1(`/installs/${p.id}/delete`, {
+          body: { requestId: run.rid("p22-del"), confirmSlug: p.slug },
+        }),
+        "P22 delete",
+      );
+      await run.done(d.job.id, "P22 delete");
+      await run.within(
+        PAGE_WITHIN_MS,
+        "P22 closed page",
+        async () =>
+          (await run.page(p.appHost, "/")).status === 503 &&
+          (await run.page(p.contentHost, "/")).status === 503,
+      );
+      await run.settledMode("P22", p.appHost, "closed");
+      const r = run.accepted(
+        await run.v1(`/installs/${p.id}/restore`, {
+          body: { requestId: run.rid("p22-res") },
+        }),
+        "P22 restore",
+      );
+      const restore = await run.done(r.job.id, "P22 restore");
+      let lastOk = 0;
+      await run.within(PAGE_WITHIN_MS, "P22 serving", async () => {
+        if ((await run.page(p.appHost)).status !== 200) return false;
+        lastOk = run.io.now();
+        return true;
+      });
+      try {
+        await run.settledMode("P22", p.appHost, "serving");
+      } catch (e) {
+        if (!(e instanceof ModeNotSettled)) throw e;
+        throw await servingLag(run, {
+          installId: p.id,
+          appHost: p.appHost,
+          lastOk,
+          mode: e.mode,
+          deleteJobId: d.job.id,
+          restore,
+        });
+      }
+      return pass();
+    },
+  },
+  {
+    id: "P23",
+    needs: ["P13"],
+    title:
+      "delete, then purge: 404; inventory deleted; no HOSTS key; the slug stays taken",
+    // Last on rl-p (after P31): it ends the install, so rl-p's chain cleans
+    // up after itself.
+    run: async (run) => {
+      const p = rlp(run);
+      const d = run.accepted(
+        await run.v1(`/installs/${p.id}/delete`, {
+          body: { requestId: run.rid("p23-del"), confirmSlug: p.slug },
+        }),
+        "P23 delete",
+      );
+      await run.done(d.job.id, "P23 delete");
+      const g = run.accepted(
+        await run.v1(`/installs/${p.id}/purge`, {
+          body: { requestId: run.rid("p23-purge"), confirmSlug: p.slug },
+        }),
+        "P23 purge",
+      );
+      await run.done(g.job.id, "P23 purge");
+      await run.within(
+        PAGE_WITHIN_MS,
+        "P23 404",
+        async () => (await run.page(p.appHost)).status === 404,
+      );
+      const inv = (await run.inventory("/installs")) as {
+        installs?: { id: string; state: string }[];
+      };
+      const row = inv?.installs?.find((i) => i.id === p.id);
+      if (!row) throw new ProbeFail("P23: inventory has no row for it");
+      if (row.state !== "deleted")
+        throw new ProbeFail(`P23: inventory state ${row.state}`);
+      await run.settledMode("P23", p.appHost, null);
+      if ((await run.hostMode(p.appHost)).installId !== null)
+        throw new ProbeFail("P23: HOSTS still maps the app host");
+      // A purged install keeps its row, and installs.slug is UNIQUE: a new
+      // customer can never take this slug, and with it old links and agent
+      // configs. P32 is the other side: a discarded create frees its slug.
+      const s = await run.v1(`/slugs/${p.slug}`, { read: true });
+      if ((s.json as { status?: string })?.status !== "taken")
+        throw new ProbeFail(`P23: R18 after purge: ${desc(s)}, want taken`);
+      return pass();
+    },
+  },
+  {
+    id: "P24",
+    title:
+      "rl-a and rl-b run the release under test (upgraded by the workflow, R5)",
+    run: async (run) => {
+      for (const t of [run.c.rlA, run.c.rlB]) {
+        const d = await ownDetail(run, t.id);
+        expect(d, 200, `P24 R3 ${t.id}`);
+        const v = (d.json as InstallDetail).version;
+        if (v !== run.c.version)
+          throw new ProbeFail(
+            `P24: ${(d.json as InstallDetail).slug} runs ${v}, want ${run.c.version}`,
+          );
+      }
+      return pass();
+    },
+  },
+  {
+    id: "P26",
+    title: "GET /auth/test-signin: 404 (staging; prod when applicable)",
+    run: async (run) => {
+      expect(
+        await run.raw(`${run.c.admin}/auth/test-signin`, { auth: "none" }),
+        404,
+        "P26 staging",
+      );
+      if (!(await prodLive(run)))
+        return pass(`prod half gated: ${PRE_PROD_REASON}`);
+      expect(
+        await run.raw(`${run.c.prodAdmin}/auth/test-signin`, { auth: "none" }),
+        404,
+        "P26 prod",
+      );
+      return pass();
+    },
+  },
+  {
+    id: "P27",
+    title:
+      "inventory: no token, wrong audience, staging token on prod: 404 each; correct 200",
+    run: async (run) => {
+      if (!run.c.inventory || !run.io.stgInventoryJwt)
+        throw new ProbeFail("P27: no staging inventory configured");
+      const u = `${run.c.inventory}/installs`;
+      expect(await run.raw(u, { auth: "none" }), 404, "P27 no token");
+      expect(
+        await run.raw(u, { auth: { bearer: await run.io.jwt() } }),
+        404,
+        "P27 wrong audience",
+      );
+      expect(
+        await run.raw(u, { auth: { bearer: await run.io.stgInventoryJwt() } }),
+        200,
+        "P27 correct",
+      );
+      if (!run.c.prodInventory)
+        return unproven(
+          "no prod inventory URL: the staging-token-on-prod leg did not run",
+        );
+      expect(
+        await run.raw(`${run.c.prodInventory}/installs`, {
+          auth: { bearer: await run.io.stgInventoryJwt() },
+        }),
+        404,
+        "P27 staging on prod",
+      );
+      return pass();
+    },
+  },
+  {
+    id: "P28",
+    title: "GET /releases: the release under test is installable",
+    run: async (run) => {
+      run.s.releases = undefined;
+      const r = (await releases(run)).find((x) => x.version === run.c.version);
+      if (!r?.installable)
+        throw new ProbeFail(
+          `P28: ${run.c.version} is ${r ? "not installable" : "not listed"}`,
+        );
+      return pass();
+    },
+  },
+  {
+    id: "P29",
+    title:
+      "SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete leaves it deleting",
+    run: async (run) => {
+      const slug = run.slug("s");
+      const c = await run.v1("/installs", {
+        testUser: "b",
+        body: { requestId: run.rid("p29"), slug, turnstile: DUMMY_TURNSTILE },
+      });
+      // 7 and 12.2: staging runs SIGNUPS_ENABLED=test-users; closed is drift.
+      if (c.status === 503 && errCode(c) === "signups_closed")
+        throw new ProbeFail(
+          "P29: 503 signups_closed: staging's SIGNUPS_ENABLED must be test-users (7)",
+        );
+      // Design gap: no principal can purge a test user's install within a
+      // run (U's R11 is 403, O cannot reach a self-serve install, the
+      // scheduler purges at purge_at), so an earlier run's claim holds.
+      if (c.status === 409 && errCode(c) === "signup_limit") {
+        // The explanation goes to a note: the reason stays one fixed string.
+        note(
+          "P29: test user b still holds signup_accounts from an earlier run: no principal can purge a self-serve install within a run",
+        );
+        return unproven(P29_UNPROVEN);
+      }
+      const a = run.accepted(c, "P29 create", { asTestUser: true });
+      const j = await run.done(a.job.id, "P29 create", "b");
+      const d = await detail(run, a.install.id, "b");
+      expect(d, 200, "P29 R3");
+      const di = d.json as InstallDetail;
+      if (di.testHooks !== false || di.source !== "self-serve")
+        throw new ProbeFail("P29: not a self-serve release-variant install");
+      const del = run.accepted(
+        await run.v1(`/installs/${a.install.id}/delete`, {
+          testUser: "b",
+          body: { requestId: run.rid("p29-del"), confirmSlug: slug },
+        }),
+        "P29 delete",
+        { asTestUser: true },
+      );
+      await run.done(del.job.id, "P29 delete", "b");
+      const after = await detail(run, a.install.id, "b");
+      expect(after, 200, "P29 R3 after delete");
+      const st = (after.json as InstallDetail).state;
+      if (st !== "deleting")
+        throw new ProbeFail(`P29: after delete, state is ${st}, want deleting`);
+      expect(
+        await run.v1(`/installs/${a.install.id}/purge`, {
+          testUser: "b",
+          body: { requestId: run.rid("p29-purge"), confirmSlug: slug },
+        }),
+        403,
+        "P29 R11 as the user",
+      );
+      // The job id goes to a note: the reason stays one fixed string.
+      note(`P29: create job ${j.id} done and deleted`);
+      return unproven(P29_UNPROVEN);
+    },
+  },
+  {
+    id: "P30",
+    title:
+      "dispatch only: 5 callbacks with a forged flow cookie are refused; signin_refused_burst opens",
+    run: async (run) => {
+      if (!run.c.dispatch) return na(NIGHTLY_NA_REASON);
+      for (let i = 0; i < 5; i++) {
+        const r = await run.raw(
+          `${run.c.admin}/auth/callback/google?code=redline&state=${randomBytes(16).toString("base64url")}`,
+          {
+            auth: "none",
+            headers: {
+              cookie: `__Host-oa-admin-flow=${randomBytes(32).toString("base64url")}`,
+            },
+          },
+        );
+        if (r.headers.get("set-cookie")?.includes("__Host-oa-admin="))
+          throw new ProbeFail("P30: a forged flow cookie got a session");
+        if (r.status === 200)
+          throw new ProbeFail(`P30: callback ${i + 1} answered 200`);
+      }
+      return unproven(
+        "5 forged callbacks refused; the alert is not readable by O (R27 and other actors' R17 rows are 403)",
+      );
+    },
+  },
+  {
+    id: "P32",
+    title:
+      "create rl-q-<run> below the floor: failed release_unverified, retry the same, R11 discards; slug free",
+    run: async (run) => {
+      const below = (await releases(run))
+        .filter(
+          (r) =>
+            !r.installable &&
+            r.publishedAt !== null &&
+            r.variants.includes("redline"),
+        )
+        .map((r) => r.version)
+        .sort(cmpVer)
+        .pop();
+      if (!below) return na("no published release below the floor");
+      const slug = run.slug("q");
+      run.s.cleanup.push({ slug });
+      const a = run.accepted(
+        await run.v1("/installs", {
+          body: oidcCreate(run, slug, run.rid("p32"), below),
+        }),
+        "P32 create",
+      );
+      const code = (j: Job) => j.lastErrorCode ?? j.error?.code;
+      const j1 = await run.waitJob(a.job.id);
+      if (j1.status !== "failed" || code(j1) !== "release_unverified")
+        throw new ProbeFail(`P32 create: ${j1.status} ${code(j1)}`);
+      const r = run.accepted(
+        await run.v1(`/installs/${a.install.id}/retry`, {
+          body: { requestId: run.rid("p32-retry") },
+        }),
+        "P32 retry",
+      );
+      const j2 = await run.waitJob(r.job.id);
+      if (j2.status !== "failed" || code(j2) !== "release_unverified")
+        throw new ProbeFail(`P32 retry: ${j2.status} ${code(j2)}`);
+      const p = run.accepted(
+        await run.v1(`/installs/${a.install.id}/purge`, {
+          body: { requestId: run.rid("p32-purge"), confirmSlug: slug },
+        }),
+        "P32 purge",
+      );
+      if (p.job.kind !== "discard")
+        throw new ProbeFail(`P32: R11 ran ${p.job.kind}, want discard`);
+      await run.done(p.job.id, "P32 discard");
+      // Design 3.4 row 1: R3 still reads a discarded row, as deleted.
+      const gone = await ownDetail(run, a.install.id);
+      expect(gone, 200, "P32 R3");
+      const gi = gone.json as InstallDetail;
+      if (gi.state !== "deleted" || gi.deletedAt == null)
+        throw new ProbeFail(
+          `P32 R3: state ${gi.state}, deletedAt ${gi.deletedAt == null ? "null" : "set"}; want deleted with deletedAt`,
+        );
+      const s = await run.v1(`/slugs/${slug}`);
+      if ((s.json as { status?: string })?.status !== "ok")
+        throw new ProbeFail(`P32: slug ${desc(s)}`);
+      return pass();
+    },
+  },
+  {
+    id: "P33",
+    title: "R17 for this run's actor: this run's job.accepted rows",
+    run: async (run) => {
+      if (!run.s.actor || run.s.jobIds.length === 0)
+        throw new ProbeFail("P33: no job was accepted this run");
+      const seen = new Set<string>();
+      let cursor: string | null = null;
+      for (let page = 0; page < 20; page++) {
+        const q = new URLSearchParams({
+          actor: run.s.actor,
+          action: "job.accepted",
+          limit: "100",
+        });
+        if (cursor) q.set("cursor", cursor);
+        const r = await run.v1(`/audit?${q}`, { read: true });
+        expect(r, 200, "P33 R17");
+        const b = r.json as {
+          items: { jobId: string | null }[];
+          nextCursor: string | null;
+        };
+        for (const i of b.items) if (i.jobId) seen.add(i.jobId);
+        cursor = b.nextCursor;
+        if (!cursor || run.s.jobIds.every((id) => seen.has(id))) break;
+      }
+      const missing = run.s.jobIds.filter((id) => !seen.has(id));
+      if (missing.length)
+        throw new ProbeFail(
+          `P33: ${missing.length} of this run's jobs have no job.accepted row`,
+        );
+      return pass(`${run.s.jobIds.length} job(s)`);
+    },
+  },
+  {
+    id: "P34",
+    title:
+      "400 unsigned broker authorize for i000000admin: 404s (429 past the IP limit); /auth/start still reaches Google",
+    run: async (run) => {
+      const authorize = () =>
+        run.raw(
+          `${run.c.broker}/google/authorize?install=i000000admin&state=${randomBytes(12).toString("base64url")}&nonce=${randomBytes(12).toString("base64url")}&code_challenge=${randomBytes(32).toString("base64url")}`,
+          { auth: "none" },
+        );
+      // Design 4.3: RL_BROKER_IP runs before the ticket check, so past its
+      // limit an unsigned authorize is 429 rate_limited; any other answer
+      // (a redirect toward Google above all) or any cookie fails.
+      const allowed = (r: Res) =>
+        (r.status === 404 || r.status === 429) && setCookies(r).length === 0;
+      let bad = 0;
+      let notFound = 0;
+      const seen: Res[] = [];
+      for (let i = 0; i < P34_REQUESTS; i += 10) {
+        const batch = await Promise.all(
+          Array.from({ length: Math.min(10, P34_REQUESTS - i) }, authorize),
+        );
+        bad += batch.filter((r) => !allowed(r)).length;
+        notFound += batch.filter((r) => r.status === 404).length;
+        seen.push(...batch);
+      }
+      if (bad)
+        throw new ProbeFail(
+          `P34: ${bad} of ${P34_REQUESTS} unsigned authorize requests were not 404 or 429 without a cookie (${statusCounts(seen)})`,
+        );
+      if (!notFound)
+        throw new ProbeFail(
+          `P34: none of ${P34_REQUESTS} unsigned authorize requests was 404 (${statusCounts(seen)})`,
+        );
+      // The hop shares this IP's RL_BROKER_IP bucket, which the flood spent
+      // (it never charges RL_BROKER_INSTALL: an unsigned authorize stops at
+      // the ticket). An unsigned 404 doesn't show the bucket reopened, since
+      // counts sync late, so wait on the hop itself. Only 429 rate_limited
+      // waits; the bound keeps a limiter that never reopens a failure. One
+      // /auth/start: its ticket outlives the wait, and more would spend
+      // RL_PV_SIGNIN_IP.
+      const start = await run.raw(`${run.c.admin}/auth/start`, {
+        auth: "none",
+      });
+      const loc = start.headers.get("location");
+      if (start.status !== 302 || !loc)
+        throw new ProbeFail(`P34 /auth/start: ${desc(start)}`);
+      const end = run.io.now() + BROKER_IP_WAIT_MS;
+      for (;;) {
+        const hop = await run.raw(new URL(loc, run.c.admin).toString(), {
+          auth: "none",
+        });
+        const g = hop.headers.get("location");
+        if (
+          hop.status >= 300 &&
+          hop.status <= 303 &&
+          g &&
+          new URL(g).hostname === "accounts.google.com"
+        )
+          break;
+        if (hop.status !== 429 || errCode(hop) !== "rate_limited")
+          throw new ProbeFail(
+            `P34: the broker did not send /auth/start on to Google (${desc(hop)})`,
+          );
+        if (run.io.now() >= end)
+          throw new ProbeFail(
+            `P34: the broker hop was still 429 after ${BROKER_IP_WAIT_MS / 1000} s; RL_BROKER_IP's window is ${BROKER_IP_PERIOD_MS / 1000} s, so a limiter did not reopen (${desc(hop)})`,
+          );
+        await run.io.wait(POLL_MS);
+      }
+      return pass();
+    },
+  },
+  {
+    id: "P36",
+    title:
+      "R26 for rl-a: the sealed PAT works on /api/v1/me (revoked at the run's end)",
+    run: async (run) => {
+      if (!run.io.rlAPat)
+        throw new ProbeFail("P36: no R26 PAT for rl-a in this run");
+      const r = await run.raw(`${run.c.rlA.app}/api/v1/me`, {
+        auth: { bearer: run.io.rlAPat() },
+      });
+      expect(r, 200, "P36");
+      return pass(
+        "the 401 after revoke is checked by the workflow's revoke step",
+      );
+    },
+  },
+  {
+    id: "P37",
+    title:
+      "POST /mcp, no Authorization: 401 with invalid_token and resource_metadata",
+    run: async (run) => {
+      const r = await mcp(run, "tools/list", {}, { auth: "none" });
+      if (r.status !== 401) throw new ProbeFail(`P37: ${desc(r)}`);
+      const w = r.headers.get("www-authenticate") ?? "";
+      const meta = `${run.c.api}/.well-known/oauth-protected-resource/mcp`;
+      if (
+        !w.includes('error="invalid_token"') ||
+        !w.includes(`resource_metadata="${meta}"`)
+      )
+        throw new ProbeFail(
+          "P37: WWW-Authenticate lacks invalid_token or resource_metadata",
+        );
+      return pass();
+    },
+  },
+  {
+    id: "P38",
+    title:
+      "both metadata documents: resource, authorization_endpoint, five scopes, S256",
+    run: async (run) => {
+      const prm = await run.raw(
+        `${run.c.api}/.well-known/oauth-protected-resource/mcp`,
+        { auth: "none" },
+      );
+      expect(prm, 200, "P38 protected resource");
+      const as = await run.raw(
+        `${run.c.api}/.well-known/oauth-authorization-server`,
+        { auth: "none" },
+      );
+      expect(as, 200, "P38 authorization server");
+      const p = prm.json as Record<string, unknown>;
+      const a = as.json as Record<string, unknown>;
+      if (p.resource !== `${run.c.api}/mcp`)
+        throw new ProbeFail("P38: resource is not api /mcp");
+      const ae =
+        typeof a.authorization_endpoint === "string"
+          ? new URL(a.authorization_endpoint).origin
+          : "";
+      if (ae !== run.c.admin)
+        throw new ProbeFail(
+          "P38: authorization_endpoint is not on the admin host",
+        );
+      const five = JSON.stringify([...TOKEN_SCOPES].sort());
+      for (const [n, d] of [
+        ["authorization server", a],
+        ["protected resource", p],
+      ] as const)
+        if (
+          !Array.isArray(d.scopes_supported) ||
+          JSON.stringify([...(d.scopes_supported as string[])].sort()) !== five
+        )
+          throw new ProbeFail(
+            `P38: ${n} scopes_supported is not exactly the five`,
+          );
+      if (JSON.stringify(a.code_challenge_methods_supported) !== '["S256"]')
+        throw new ProbeFail(
+          "P38: code_challenge_methods_supported is not [S256]",
+        );
+      return pass();
+    },
+  },
+  {
+    id: "P39",
+    title:
+      "/mcp with a forged oat_, a forged opaque bearer, only a Cookie: 401 each",
+    run: async (run) => {
+      const forged: [string, Auth, Record<string, string>][] = [
+        [
+          "oat_",
+          { bearer: `oat_${randomBytes(32).toString("base64url")}` },
+          {},
+        ],
+        ["opaque", { bearer: randomBytes(32).toString("base64url") }, {}],
+        [
+          "cookie",
+          "none",
+          {
+            cookie: `__Host-oa-admin=${randomBytes(32).toString("base64url")}`,
+          },
+        ],
+      ];
+      for (const [what, auth, headers] of forged) {
+        const r = await mcp(run, "tools/list", {}, { auth, headers });
+        if (r.status !== 401) throw new ProbeFail(`P39 ${what}: ${desc(r)}`);
+      }
+      return pass();
+    },
+  },
+  {
+    id: "P40",
+    title: "POST admin /mcp; GET api /oauth/authorize: 404 each",
+    run: async (run) => {
+      const a = await mcp(
+        run,
+        "tools/list",
+        {},
+        { auth: "none", host: "admin" },
+      );
+      if (a.status !== 404) throw new ProbeFail(`P40 admin /mcp: ${desc(a)}`);
+      expect(
+        await run.raw(`${run.c.api}/oauth/authorize`, { auth: "none" }),
+        404,
+        "P40 api /oauth/authorize",
+      );
+      return pass();
+    },
+  },
+  {
+    id: "P41",
+    title: "/mcp with Origin https://evil.example and a valid OIDC bearer: 403",
+    run: async (run) => {
+      const r = await mcp(run, "tools/list", {}, { headers: { origin: EVIL } });
+      if (r.status !== 403) throw new ProbeFail(`P41: ${desc(r)}`);
+      return pass();
+    },
+  },
+  {
+    id: "P42",
+    title: "/mcp with a 40 KiB body: 413",
+    run: async (run) => {
+      const r = await mcp(run, "tools/call", {
+        name: "whoami",
+        arguments: { pad: "x".repeat(P42_BYTES) },
+      });
+      if (r.status !== 413) throw new ProbeFail(`P42: ${desc(r)}`);
+      return pass();
+    },
+  },
+  {
+    id: "P44",
+    title:
+      "/oauth/register: foreign redirect URIs 400 invalid_redirect_uri; the listed one 201 with a client_id",
+    run: async (run) => {
+      const reg = (uris: string[]) =>
+        run.raw(`${run.c.api}/oauth/register`, {
+          auth: "none",
+          body: {
+            client_name: "oa-redline",
+            redirect_uris: uris,
+            token_endpoint_auth_method: "none",
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+          },
+        });
+      expect(
+        await reg([`${EVIL}/cb`]),
+        400,
+        "P44 evil",
+        "invalid_redirect_uri",
+      );
+      expect(
+        await reg(["https://claude.ai/api/mcp/redline_not_listed"]),
+        400,
+        "P44 unlisted claude.ai",
+        "invalid_redirect_uri",
+      );
+      // One listed registration, for P43's client. The 10 per ipKey per UTC
+      // day cap (9A.7) is not burst live: a runner's egress IP can move
+      // mid-burst (run 41923001970), so a live 11th 201 proves nothing.
+      // apps/provisioning/test/oauth.test.ts covers the cap, the concurrent
+      // burst and the refund. A 429 here means this IP's day was spent
+      // earlier: unproven. OAuth errors are RFC 6749 (3.5): 429 is
+      // temporarily_unavailable.
+      const r = await reg([run.c.mcpRedirectUri]);
+      if (r.status === 429) {
+        expect(r, 429, "P44 registration", "temporarily_unavailable");
+        return unproven(
+          "the registration got 429: this IP's daily cap was spent earlier",
+        );
+      }
+      const id = (r.json as { client_id?: unknown } | undefined)?.client_id;
+      if (r.status !== 201 || typeof id !== "string" || !id)
+        throw new ProbeFail(
+          `P44: registration want 201 with a client_id or 429, got ${desc(r)}`,
+        );
+      run.s.clientId = id;
+      return pass();
+    },
+  },
+  {
+    id: "P43",
+    needs: ["P44"],
+    title:
+      "GET /oauth/authorize, no cookie, cross-site: 200 bounce page; with b=1: 200 sign-in page linking /auth/start back to this request, no auto-redirect",
+    run: async (run) => {
+      const q = new URLSearchParams({
+        response_type: "code",
+        client_id: run.s.clientId ?? "redline-unregistered",
+        redirect_uri: run.c.mcpRedirectUri,
+        code_challenge: randomBytes(32).toString("base64url"),
+        code_challenge_method: "S256",
+        state: randomBytes(16).toString("base64url"),
+        scope: "installs:read",
+        resource: `${run.c.api}/mcp`,
+      });
+      const original = `/oauth/authorize?${q}`;
+      const u = `${run.c.admin}${original}`;
+      const h = { "sec-fetch-site": "cross-site" };
+      expect(await run.raw(u, { auth: "none", headers: h }), 200, "P43 bounce");
+      q.set("b", "1");
+      const r = await run.raw(`${run.c.admin}/oauth/authorize?${q}`, {
+        auth: "none",
+        headers: h,
+      });
+      // Design 5.8 (#1012): a page, not a redirect. Its only way on is the
+      // button, to this host's /auth/start, returning to this very request.
+      if (r.status !== 200 || r.headers.get("location"))
+        throw new ProbeFail(`P43 b=1: ${desc(r)}`);
+      if (/<meta[^>]*http-equiv\s*=\s*["']?refresh/i.test(r.text))
+        throw new ProbeFail("P43 b=1: the sign-in page refreshes itself");
+      if (/<script/i.test(r.text))
+        throw new ProbeFail("P43 b=1: the sign-in page carries a script");
+      const hrefs = [...r.text.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);
+      const want = `/auth/start?return=${encodeURIComponent(original)}`;
+      if (!hrefs.includes(want))
+        throw new ProbeFail(
+          "P43 b=1: no button to /auth/start for this request",
+        );
+      for (const x of hrefs.filter((x) => x?.includes("/auth/start")))
+        if (x !== want)
+          throw new ProbeFail("P43 b=1: a sign-in link returns somewhere else");
+      return pass(run.s.clientId ? undefined : "no client from P44");
+    },
+  },
+  {
+    id: "P46",
+    title: "staging OIDC on prod /mcp: 401",
+    run: async (run) => {
+      if (!(await prodLive(run))) return na(PRE_PROD_REASON);
+      const r = await mcp(run, "tools/list", {}, { host: "prodApi" });
+      if (r.status !== 401) throw new ProbeFail(`P46: ${desc(r)}`);
+      return pass();
+    },
+  },
+  {
+    id: "P47",
+    title: "/v1/me with an OAuth-shaped bearer: 401 unauthenticated",
+    run: async (run) => {
+      const bearer = `${randomBytes(8).toString("hex")}:${randomBytes(8).toString("hex")}:${randomBytes(24).toString("base64url")}`;
+      expect(
+        await run.v1("/me", { auth: { bearer } }),
+        401,
+        "P47",
+        "unauthenticated",
+      );
+      return pass();
+    },
+  },
+  {
+    id: "P48",
+    title:
+      "R2 q finds rl-a by its slug, install id, app host and content host (#1033)",
+    // Read-only. Each q comes from rl-a's own R3 record; a failure names the
+    // field only, never its value (the run log is public). The owner-email
+    // leg is not here: O is not a pii principal, so R3 hides the email and an
+    // email-only q is a no-match for it (apps/provisioning/test/reads.test.ts).
+    run: async (run) => {
+      const d = await ownDetail(run, run.c.rlA.id);
+      expect(d, 200, "P48 R3 rl-a");
+      const i = d.json as InstallDetail;
+      const fields: [string, unknown][] = [
+        ["slug", i.slug],
+        ["install id", i.id],
+        ["app host", i.appHost],
+        ["content host", i.contentHost],
+      ];
+      for (const [field, v] of fields) {
+        if (typeof v !== "string" || v === "")
+          throw new ProbeFail(`P48: rl-a's R3 record has no ${field}`);
+        let found = false;
+        let cursor: string | null = null;
+        for (let page = 0; !found && page < P48_MAX_PAGES; page++) {
+          const qs = new URLSearchParams({ q: v });
+          if (cursor) qs.set("cursor", cursor);
+          const l = await run.v1(`/installs?${qs}`, { read: true });
+          expect(l, 200, `P48 R2 q=${field}`);
+          const b = l.json as {
+            items: { id: string }[];
+            nextCursor: string | null;
+          };
+          found = b.items.some((x) => x.id === run.c.rlA.id);
+          cursor = b.nextCursor;
+          if (!cursor) break;
+        }
+        if (!found)
+          throw new ProbeFail(`P48 R2 q=${field}: rl-a is not in the results`);
+      }
+      return pass();
+    },
+  },
+  {
+    id: "P25",
+    title:
+      "GET /auth/start one at a time (up to 30): a 303 to /sign-in?error=rate_limited, with no flow cookie",
+    // Last: it spends RL_PV_SIGNIN_IP (10 per 60 s), which P30's callbacks
+    // and P34's /auth/start share; nothing after it signs in.
+    run: async (run) => {
+      const start = () =>
+        run.raw(`${run.c.admin}/auth/start`, { auth: "none" });
+      // Design 5.8 (#1012): a limited start lands on the sign-in screen's
+      // rate_limited error; it must not start a flow (no Google, no cookie).
+      const limited = (r: Res) => {
+        const loc = r.headers.get("location");
+        if (r.status !== 303 || !loc) return false;
+        const u = new URL(loc, run.c.admin);
+        return (
+          u.origin === new URL(run.c.admin).origin &&
+          u.pathname === "/sign-in" &&
+          u.searchParams.get("error") === "rate_limited"
+        );
+      };
+      // Only a cookie that sets a live flow counts: the limited 303 clears it.
+      const flowCookie = (r: Res) =>
+        setCookies(r).some((c) => setsLiveFlowCookie(c, run.io.now()));
+      const out: Res[] = [];
+      let last: Res | undefined;
+      while (out.length < P25_MAX_REQUESTS && !(last && limited(last))) {
+        last = await start();
+        out.push(last);
+      }
+      const k = out.length;
+      if (!last || !limited(last))
+        throw new ProbeFail(
+          `P25: no 303 to /sign-in?error=rate_limited in ${k} sequential requests (${statusCounts(out)})`,
+        );
+      if (flowCookie(last))
+        throw new ProbeFail("P25: a limited /auth/start set the flow cookie");
+      // No follow-up request: the binding counts per isolate, so the next start
+      // may land on one that has not synced yet and rightly answer 302.
+      return pass(`limited on request ${k} of up to ${P25_MAX_REQUESTS}`);
+    },
+  },
+];
+
+/**
+ * P15's check, run by P13's poll: called with the job as polled; reads
+ * inventory and /healthz, then the job again, and keeps the reading only if
+ * the job was still before `route` on both sides.
+ */
+export async function p15Check(
+  run: Run,
+  jobId: string,
+  routeAt: number,
+): Promise<"before" | "after"> {
+  const p = run.s.rlp;
+  const rec = run.s.p15;
+  if (!p || !rec) return "after";
+  const mode = run.c.inventory ? (await run.hostMode(p.appHost)).mode : null;
+  const hz = (await run.page(p.appHost, "/healthz", true)).status;
+  const j = await run.v1(`/jobs/${jobId}`, { read: true });
+  const job = j.json as Job | undefined;
+  if (
+    !job ||
+    job.stepIndex >= routeAt ||
+    (job.status !== "running" && job.status !== "queued")
+  )
+    return "after";
+  rec.checked++;
+  if (mode !== null) rec.violations.push(`inventory mode ${mode} before route`);
+  if (hz !== 404) rec.violations.push(`public /healthz ${hz} before route`);
+  return "before";
+}
+
+// --- Bring-up and teardown (the workflow's R5 and R26 steps) ---------------
+
+export interface CredsOut {
+  pat: string;
+  hookKey: string;
+}
+
+/**
+ * R5 for one red-line install (P24): upgrade to `version` unless it already
+ * runs it; a newer version is refused (a downgrade is never the bring-up).
+ */
+export async function bringUpgrade(
+  run: Run,
+  id: string,
+  slug: string,
+): Promise<"upgraded" | "current"> {
+  const d = await ownDetail(run, id);
+  expect(d, 200, `R3 ${slug}`);
+  const i = d.json as InstallDetail;
+  if (i.slug !== slug) throw new ProbeFail(`${id} is ${i.slug}, not ${slug}`);
+  if (i.version === run.c.version) return "current";
+  if (i.version && cmpVer(i.version, run.c.version) > 0)
+    throw new ProbeFail(
+      `${slug} runs ${i.version}, newer than ${run.c.version}`,
+    );
+  const a = run.accepted(
+    await run.v1(`/installs/${id}/upgrade`, {
+      // rl-a and rl-b cross a held migration here, so a release that has one
+      // meets red-line before prod (MIG-2).
+      body: {
+        requestId: run.rid(`up-${slug}`),
+        version: run.c.version,
+        nonAdditive: true,
+      },
+    }),
+    `R5 ${slug}`,
+  );
+  await run.done(a.job.id, `R5 ${slug}`);
+  return "upgraded";
+}
+
+/**
+ * The staging-first record (W9a's scripts/ci/staging-first-gate.sh): after
+ * bring-up, rl-a's and rl-b's public /healthz must both report the release
+ * under test; returns it (X.Y.Z) for version.txt. Any other answer fails.
+ * The host checked is the one R3 returns for the install id, never the
+ * REDLINE_TARGETS variable alone: the variable's host must equal R3's
+ * appHost, and /healthz there must name the same installId, so a wrong
+ * variable cannot make the record vouch for another host.
+ */
+export async function stagedVersion(run: Run): Promise<string> {
+  for (const [slug, t] of [
+    ["rl-a", run.c.rlA],
+    ["rl-b", run.c.rlB],
+  ] as const) {
+    const d = await ownDetail(run, t.id);
+    expect(d, 200, `R3 ${slug}`);
+    const appHost = (d.json as { appHost?: unknown } | undefined)?.appHost;
+    if (typeof appHost !== "string" || !appHost)
+      throw new ProbeFail(`R3 ${slug}: no appHost for ${t.id}`);
+    const want = bare(appHost).toLowerCase();
+    const got = bare(t.app).toLowerCase();
+    if (got !== want)
+      throw new ProbeFail(
+        `${slug}: REDLINE_TARGETS host ${got.slice(0, 80)} is not R3's appHost ${want.slice(0, 80)} for ${t.id}`,
+      );
+    const r = await run.page(want);
+    const b = r.json as { version?: unknown; installId?: unknown } | undefined;
+    const v = b?.version;
+    if (r.status !== 200 || v !== run.c.version)
+      throw new ProbeFail(
+        `${slug} /healthz: want 200 version ${run.c.version}, got ${r.status === 200 ? `version ${typeof v === "string" ? v.slice(0, 20) : "none"}` : desc(r)}`,
+      );
+    if (b?.installId !== t.id)
+      throw new ProbeFail(
+        `${slug} /healthz: want installId ${t.id}, got ${typeof b?.installId === "string" ? b.installId.slice(0, 40) : "none"}`,
+      );
+  }
+  return run.c.version;
+}
+
+/** R26 mint for one install: the sealed {pat, hookKey}, opened with this run's key. */
+export async function mintCreds(
+  run: Run,
+  id: string,
+  slug: string,
+  recipient: { publicKey: string; open: (sealed: string) => Promise<CredsOut> },
+): Promise<CredsOut> {
+  const a = run.accepted(
+    await run.v1(`/installs/${id}/redline-creds`, {
+      body: {
+        requestId: run.rid(`creds-${slug}`),
+        recipientKey: recipient.publicKey,
+      },
+    }),
+    `R26 ${slug}`,
+  );
+  // R15 hands `sealed` out once, on the first read after the seal step, and
+  // the job is still `running` then (done is a later step): keep it from
+  // whichever read carries it, then require done.
+  let sealed: string | null = null;
+  const first = await run.waitJob(a.job.id, {
+    until: (j) => {
+      if (sealed === null) sealed = j.sealed ?? null;
+      return sealed !== null || j.status === "done" || j.status === "failed";
+    },
+  });
+  if (first.status !== "done" && first.status !== "failed")
+    await run.done(a.job.id, `R26 ${slug}`);
+  else if (first.status !== "done")
+    throw new ProbeFail(
+      `R26 ${slug}: job failed (${first.lastErrorCode ?? first.error?.code ?? "no code"})${failText(first)}`,
+    );
+  if (!sealed) throw new ProbeFail(`R26 ${slug}: no sealed creds on the job`);
+  return recipient.open(sealed);
+}
+
+/**
+ * #995: the job's fail point, as " at <point> (HTTP <status>, <reason>)":
+ * fixed values only, so the public run log can carry it. "" without one.
+ */
+export function failText(j: Pick<Job, "failure">): string {
+  const f = j.failure;
+  if (!f) return "";
+  const parts = [
+    ...(f.status === null ? [] : [`HTTP ${f.status}`]),
+    ...(f.reason === null ? [] : [f.reason]),
+  ];
+  return ` at ${f.at}${parts.length ? ` (${parts.join(", ")})` : ""}`;
+}
+
+/** R26 revoke for one install; then, when the run's PAT is known, it must be 401. */
+export async function revokeCreds(
+  run: Run,
+  id: string,
+  slug: string,
+  app: string,
+  pat?: string,
+): Promise<void> {
+  // The run's last step, and it runs always: a job a failed bring-up left on
+  // the install is still going. Its refusal stores nothing, so the same
+  // request id is safe.
+  const end = run.io.now() + JOB_WITHIN_MS;
+  const ask = () =>
+    run.v1(`/installs/${id}/redline-creds`, {
+      body: { requestId: run.rid(`revoke-${slug}`), revoke: true },
+    });
+  let r = await ask();
+  while (errCode(r) === "job_in_progress" && run.io.now() < end) {
+    await run.io.wait(POLL_MS);
+    r = await ask();
+  }
+  const a = run.accepted(r, `R26 revoke ${slug}`);
+  await run.done(a.job.id, `R26 revoke ${slug}`);
+  if (pat) {
+    const r = await run.raw(`${app}/api/v1/me`, { auth: { bearer: pat } });
+    if (r.status !== 401)
+      throw new ProbeFail(
+        `R26 revoke ${slug}: the run's PAT is ${desc(r)}, want 401`,
+      );
+  }
+}
+
+/** The run's probe config from the environment (CI sets these; see redline-staging.yml). */
+export function provConfig(
+  env: Record<string, string | undefined>,
+  targets: {
+    a: { installId: string; app: string };
+    b: { installId: string; app: string };
+  },
+): ProvConfig {
+  const need = (k: string) => {
+    const v = env[k];
+    if (!v) throw new Error(`${k} is not set`);
+    return v;
+  };
+  const version = need("REDLINE_RELEASE").replace(/^v/, "");
+  if (!/^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(version))
+    throw new Error("REDLINE_RELEASE is not a version (x.y.z or vx.y.z)");
+  const runId = need("REDLINE_RUN_ID");
+  if (!/^[A-Za-z0-9-]{1,24}$/.test(runId))
+    throw new Error("REDLINE_RUN_ID must be 1-24 letters, digits or dashes");
+  const o = (k: string, d: string) => {
+    const v = env[k] || d;
+    const u = new URL(v);
+    if (u.protocol !== "https:" || u.pathname !== "/" || u.search)
+      throw new Error(`${k} must be a bare https origin`);
+    return u.origin;
+  };
+  const c: ProvConfig = {
+    api: o("REDLINE_PROV_API", "https://api.open-artifacts-staging.app"),
+    admin: o("REDLINE_PROV_ADMIN", "https://admin.open-artifacts-staging.app"),
+    broker: o("REDLINE_BROKER", "https://auth.open-artifacts-staging.app"),
+    prodApi: o("REDLINE_PROD_PROV_API", "https://api.open-artifacts.app"),
+    prodAdmin: o("REDLINE_PROD_PROV_ADMIN", PROD_ADMIN_ORIGIN),
+    runId,
+    version,
+    dispatch: env.REDLINE_DISPATCH === "1",
+    rlA: { id: targets.a.installId, app: targets.a.app },
+    rlB: { id: targets.b.installId, app: targets.b.app },
+    mcpRedirectUri:
+      env.REDLINE_MCP_REDIRECT_URI || "https://claude.ai/api/mcp/auth_callback",
+  };
+  if (env.REDLINE_STG_INVENTORY_URL)
+    c.inventory = o("REDLINE_STG_INVENTORY_URL", "");
+  if (env.REDLINE_PROD_INVENTORY_URL)
+    c.prodInventory = o("REDLINE_PROD_INVENTORY_URL", "");
+  return c;
+}

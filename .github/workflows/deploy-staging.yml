@@ -16,6 +16,14 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
+      # #1084: refuse first. Setup prints the address normalized, and only the
+      # exact stored value is masked, so it must already be in that form.
+      - name: The owner address is set and normalized
+        env:
+          OWNER: ${{ secrets.OA_OWNER_EMAIL }}
+        run: |
+          [ -n "$OWNER" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
+          [[ ! "$OWNER" =~ [[:upper:][:space:]] ]] || { echo "::error::OA_OWNER_EMAIL must be trimmed and lowercase"; exit 1; }
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -32,7 +40,13 @@ jobs:
         working-directory: apps/server
         run: bash ../../scripts/ci/staging-clear-conflicts.sh
       - run: pnpm --filter @oa/server exec wrangler d1 migrations apply open-artifacts-staging --remote -c wrangler.staging.jsonc --env staging
-      - run: pnpm --filter @oa/server exec wrangler deploy -c wrangler.staging.jsonc --env staging
+      # OWNER_EMAIL is the owner's address: never committed (#1084), from the
+      # OA_OWNER_EMAIL secret (masked in the log).
+      - name: deploy
+        env:
+          OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
+        run: |
+          pnpm --filter @oa/server exec wrangler deploy -c wrangler.staging.jsonc --env staging --var "OWNER_EMAIL:$OA_OWNER_EMAIL"
       - name: set ANALYTICS_TOKEN (dedicated read-only token; skipped when unset)
         id: analytics
         working-directory: apps/server
@@ -66,3 +80,34 @@ jobs:
         env:
           ANALYTICS_OUTCOME: ${{ needs.deploy.outputs.analytics }}
         run: bash scripts/ci/staging-analytics-token.sh outcome
+  # #1406: a red smoke on main never goes unseen (#1405). A red run (a failed
+  # deploy counts) opens one `blocker` issue, "Staging smoke red on main",
+  # assigned to vars.OA_ALERT_GITHUB_LOGIN, or comments on it @-mentioning
+  # that login; a green run closes it; a cancelled run does nothing.
+  # Prod promotion reads the runs themselves (scripts/ci/staging-smoke-gate.sh).
+  report:
+    needs: [deploy, smoke]
+    if: ${{ always() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Keep the blocker issue in step
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.deploy.result == 'success' && needs.smoke.result || needs.deploy.result }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          # The owner's GitHub login, assigned and @-mentioned so GitHub
+          # emails them; empty skips that (logged). Never a login in code.
+          NOTIFY: ${{ vars.OA_ALERT_GITHUB_LOGIN }}
+        run: node --experimental-strip-types scripts/ci/staging-smoke-alert.ts report --repo "$GITHUB_REPOSITORY" --result "$RESULT" --run "$RUN" --sha "$SHA" --notify "$NOTIFY"

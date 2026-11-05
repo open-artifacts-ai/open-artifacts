@@ -2,11 +2,18 @@
 // No access is 404 (never 403), except the explicit space_forbidden on
 // publish/move. Personal spaces are never targets of these routes (space_personal).
 import { z } from "zod";
-import { PageSchema, UserRefSchema } from "../schemas.js";
+import {
+  PageSchema,
+  RoleSchema,
+  stripNameControls,
+  UserRefSchema,
+} from "../schemas.js";
 import {
   CapReasonSchema,
   GroupRefSchema,
   MemberStatusSchema,
+  MySpaceSchema,
+  RestrictionSchema,
   SpaceKindSchema,
   SpaceRefSchema,
   SpaceRoleSchema,
@@ -36,6 +43,22 @@ export const SpaceSchema = SpaceRefSchema.extend({
 });
 export type Space = z.infer<typeof SpaceSchema>;
 
+/** MCP list_spaces input: no arguments. */
+export const ListSpacesInputSchema = z.strictObject({});
+export type ListSpacesInput = z.infer<typeof ListSpacesInputSchema>;
+
+/**
+ * MCP list_spaces result: the spaces the caller can publish into
+ * (publish_artifact spaceId). Their personal space first (myRole
+ * "manager"), then shared spaces where they are editor or manager, by name;
+ * at most LIST_SPACES_MAX. Empty for a capped caller.
+ */
+export const ListSpacesResultSchema = z.object({
+  items: z.array(MySpaceSchema),
+});
+export type ListSpacesResult = z.infer<typeof ListSpacesResultSchema>;
+export const LIST_SPACES_MAX = 200;
+
 /** GET R.spaces query. Response: Page<Space>, by name. */
 export const SpacesQuerySchema = z.strictObject({
   kind: SpaceKindSchema.optional(),
@@ -44,11 +67,57 @@ export const SpacesQuerySchema = z.strictObject({
 });
 export type SpacesQuery = z.infer<typeof SpacesQuerySchema>;
 
-/** POST R.spaces (org owner, admin) -> 201 Space. */
+/** 400 space_name_reserved message: a shared space can't be named "Personal". */
+export const SPACE_NAME_RESERVED_MESSAGE =
+  "That name is reserved for your personal space.";
+
+/** "Personal", trimmed and case-insensitive: refused on create and rename. */
+export const isReservedSpaceName = (name: string): boolean =>
+  name.trim().toLowerCase() === "personal";
+
+/**
+ * A space name: control and bidi characters stripped, then trimmed, 1-80
+ * characters (a name of only such characters is 400), and not "Personal"
+ * (trimmed, any case; SPACE_NAME_RESERVED_MESSAGE).
+ */
+export const SpaceNameSchema = z
+  .string()
+  .transform(stripNameControls)
+  .pipe(
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(80)
+      .refine((n) => !isReservedSpaceName(n), {
+        message: SPACE_NAME_RESERVED_MESSAGE,
+      }),
+  );
+
+/**
+ * A SpaceCreate/SpacePatch parse failed on the reserved name: answer 400
+ * space_name_reserved (details { field: "name" }), not bad_request.
+ */
+export const spaceNameReserved = (issues: readonly unknown[]): boolean =>
+  issues.some((i) => {
+    const x = i as { message?: unknown; path?: unknown };
+    return (
+      x.message === SPACE_NAME_RESERVED_MESSAGE &&
+      Array.isArray(x.path) &&
+      x.path[0] === "name"
+    );
+  });
+
+/**
+ * POST R.spaces (org owner, admin) -> 201 Space. addMe (default true): the
+ * creator becomes a manual manager of the new space; false adds no row (an
+ * admin is never implicitly in a space).
+ */
 export const SpaceCreateSchema = z.strictObject({
-  name: z.string().trim().min(1).max(80),
+  name: SpaceNameSchema,
   allMembersRole: SpaceRoleSchema.nullable().default(null),
   publicLinks: z.boolean().default(true),
+  addMe: z.boolean().default(true),
 });
 export type SpaceCreate = z.infer<typeof SpaceCreateSchema>;
 export type SpaceCreateInput = z.input<typeof SpaceCreateSchema>;
@@ -63,7 +132,7 @@ export type SpaceCreateInput = z.input<typeof SpaceCreateSchema>;
  */
 export const SpacePatchSchema = z
   .strictObject({
-    name: z.string().trim().min(1).max(80),
+    name: SpaceNameSchema,
     allMembersRole: SpaceRoleSchema.nullable(),
     publicLinks: z.boolean(),
   })
@@ -87,7 +156,8 @@ export const SpaceMemberGroupSchema = GroupRefSchema.extend({
 export type SpaceMemberGroup = z.infer<typeof SpaceMemberGroupSchema>;
 
 /**
- * GET R.spaceMembers(id) -> SpaceMembersPage. Keyed by user id. The UI's
+ * GET R.spaceMembers(id) -> SpaceMembersPage (personal: 400 space_personal).
+ * Keyed by user id. The UI's
  * per-row reason line comes from manualRole, groups[].role/via and
  * allMembers (e.g. "Manager by hand, Editor via eng@", "Viewer via All
  * members").
@@ -108,6 +178,13 @@ export const SpaceMemberSchema = z.object({
   cap: CapReasonSchema.nullable(),
   /** The space's allMembersRole when it applies to this person; null for guests, capped users, or when none is set. */
   allMembers: SpaceRoleSchema.nullable(),
+  /**
+   * As Member.restriction (the manual flag and/or restricted groups), only
+   * for a caller who can manage the space (uncapped manager, org admin);
+   * null for everyone else (cap still says restricted) and when
+   * unrestricted. Optional: older servers omit it.
+   */
+  restriction: RestrictionSchema.nullable().optional(),
 });
 export type SpaceMember = z.infer<typeof SpaceMemberSchema>;
 
@@ -130,6 +207,49 @@ export const SpaceMembersPageSchema = PageSchema(SpaceMemberSchema).extend({
 });
 export type SpaceMembersPage = z.infer<typeof SpaceMembersPageSchema>;
 
+/** The largest page R.spaceCandidates returns. */
+export const SPACE_CANDIDATES_MAX = 50;
+
+/**
+ * GET R.spaceCandidates(id) query: the "Add people" search. q, as
+ * SpaceMembersQuery's: a case-insensitive prefix of the email or of any word
+ * of the name; absent lists every candidate (paged).
+ */
+export const SpaceCandidatesQuerySchema = z.strictObject({
+  q: z.string().trim().min(1).max(200).optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(SPACE_CANDIDATES_MAX).default(20),
+});
+export type SpaceCandidatesQuery = z.infer<typeof SpaceCandidatesQuerySchema>;
+export type SpaceCandidatesQueryInput = z.input<
+  typeof SpaceCandidatesQuerySchema
+>;
+
+/**
+ * GET R.spaceCandidates(id) -> Page<SpaceCandidate>, by email then id: the
+ * people a caller who can manage the space may add to it. Active org
+ * members (owner, admin, member; never a guest, who comes in by link) of the
+ * whole org, those already in the space included (`spaceRole` says so). For
+ * an uncapped org admin, or an uncapped manager of that space; anyone else
+ * 404, as for a space they can't see. Personal: 400 space_personal.
+ */
+export const SpaceCandidateSchema = z.object({
+  id: z.string(),
+  email: z.string().email(),
+  name: z.string().nullable(),
+  /** Org role (owner, admin or member). */
+  role: RoleSchema,
+  /** As Member.restriction; null when unrestricted. A restricted person is viewer whatever role they get. */
+  restriction: RestrictionSchema.nullable(),
+  /**
+   * Their role in this space now (by hand, synced, or Every space: the
+   * SpaceMember.role they'd show in R.spaceMembers); null when they aren't
+   * in it. allMembersRole doesn't count.
+   */
+  spaceRole: SpaceRoleSchema.nullable(),
+});
+export type SpaceCandidate = z.infer<typeof SpaceCandidateSchema>;
+
 /** What a 403 space_forbidden on a member or mapping route refused (the UI picks its copy). */
 export const SpaceForbiddenTargetSchema = z.enum(["member", "mapping"]);
 export type SpaceForbiddenTarget = z.infer<typeof SpaceForbiddenTargetSchema>;
@@ -139,18 +259,42 @@ export const SpaceForbiddenDetailsSchema = z.object({
 });
 export type SpaceForbiddenDetails = z.infer<typeof SpaceForbiddenDetailsSchema>;
 
+/**
+ * 409 managed_by_org_mapping details on R.spaceMember: the member's role
+ * here comes from an Every space group (an org mapping) at `everyRole`.
+ */
+export const ManagedByOrgMappingDetailsSchema = z.object({
+  userId: z.string(),
+  everyRole: SpaceRoleSchema,
+});
+export type ManagedByOrgMappingDetails = z.infer<
+  typeof ManagedByOrgMappingDetailsSchema
+>;
+/** 409 managed_by_org_mapping message. */
+export const MANAGED_BY_ORG_MAPPING_MESSAGE =
+  "This role comes from an Every space group. Change it in Settings › Spaces › Every space.";
+
 /*
  * PUT R.spaceMember(id, userId) (space manager, org admin) -> SpaceMember.
+ * The target must be an existing, active member, else 404.
  * Sets the manual row. A space manager (not an org admin) granting manager,
- * or changing a member whose manualRole is manager: 403 space_forbidden
- * { target: "member" }. While sync is frozen, on a row with a syncRole: any
+ * or changing a peer manager (a manager row by hand or synced, the frozen
+ * override included): 403 space_forbidden { target: "member" }. While sync is frozen, on a row with a syncRole: any
  * role (raise or lower) is a manual grant under those rules and replaces the
  * synced row with a manual override (the next reconcile after unfreezing
  * replaces it). Audited space.member.add/role
  * (frozen override: detail { syncFrozen: true, role }).
+ * An Every space group's role (everyRole) is a floor, sync live or frozen:
+ * below it, 409 managed_by_org_mapping { userId, everyRole }; equal to it
+ * with no row of the space's own, a no-op; above it, a manual grant.
  *
- * DELETE R.spaceMember(id, userId) -> 204: removes the manual row. A
- * synced-only row while sync is live: 409 member_synced. While frozen it
+ * DELETE R.spaceMember(id, userId) -> 204, or 200 SpaceMember when they keep
+ * a role here (an Every space group's, or a synced row while sync is live):
+ * removes the manual row. Only an org admin removes a peer manager (a
+ * manager row by hand or synced, or an Every space group's Manager; frozen
+ * included): else 403 space_forbidden { target: "member" }, before
+ * member_synced. Only an Every space group's role (no row of the space's
+ * own): 409 managed_by_org_mapping { userId, everyRole }. A synced-only row while sync is live: 409 member_synced. While frozen it
  * removes the synced row too (removing access is always allowed); audited
  * space.member.remove (frozen: detail { syncFrozen: true }).
  */

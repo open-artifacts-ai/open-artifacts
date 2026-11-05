@@ -10,6 +10,7 @@ import {
 } from "@oa/shared";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { withCap } from "../src/auth/authz.js";
 import { authConfig } from "../src/auth/config.js";
 import type { Env } from "../src/env.js";
 import {
@@ -400,7 +401,7 @@ describe("sign-in and identity", () => {
     const uid = await seedUser(uniq("linked"), "member", {
       googleSub: `sub-${crypto.randomUUID()}`,
     });
-    const actor = { id: admin.userId, role: "admin" } as Member;
+    const actor = withCap({ id: admin.userId, role: "admin" } as Member, null);
     await resetIdentity(env, actor, uid);
     expect(await lastAudit(uid)).toMatchObject({
       action: "identity.reset",
@@ -412,7 +413,7 @@ describe("sign-in and identity", () => {
     const uid = await seedUser(uniq("linkedadmin"), "admin", {
       googleSub: `sub-${crypto.randomUUID()}`,
     });
-    const actor = { id: owner.userId, role: "owner" } as Member;
+    const actor = withCap({ id: owner.userId, role: "owner" } as Member, null);
     await resetIdentity(env, actor, uid);
     const rows = (await rowsFor(uid)).filter(
       (r) => r.action === "identity.reset",
@@ -426,7 +427,7 @@ describe("sign-in and identity", () => {
       googleSub: `sub-${crypto.randomUUID()}`,
     });
     await failAudit();
-    const actor = { id: admin.userId, role: "admin" } as Member;
+    const actor = withCap({ id: admin.userId, role: "admin" } as Member, null);
     await expect(resetIdentity(env, actor, uid)).rejects.toThrow();
     const l = await env.DB.prepare(
       "select count(*) n from identities where user_id = ?",

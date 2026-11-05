@@ -63,8 +63,11 @@ export async function fetchAndWait(
   app: Fetcher,
   req: Request,
   e: unknown = env,
+  /** The invocation's ctx.props (the platform's broker capabilities). */
+  props?: Record<string, unknown>,
 ): Promise<Response> {
   const ctx = createExecutionContext();
+  if (props) Object.defineProperty(ctx, "props", { value: props });
   const r = await app.fetch(req, e as typeof env, ctx as never);
   await waitOnExecutionContext(ctx);
   return r;

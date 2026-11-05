@@ -197,6 +197,40 @@ describe("bridge", () => {
     });
   });
 
+  // #681 E: one console.warn per page load on the first data_editors_only.
+  it("warns once on data_editors_only, never for other errors", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const oa = start();
+      await flush();
+      const fail = async (code: string) => {
+        const p = oa.db.collection("c").set("a", 1);
+        await flush();
+        const c = calls("db.set").at(-1);
+        fromShell({
+          oa: 1,
+          type: "result",
+          id: c?.id,
+          ok: false,
+          error: { code, message: "x" },
+        });
+        await expect(p).rejects.toMatchObject({ code });
+      };
+      await fail("rate_limited");
+      await fail("capability_denied");
+      await fail("unauthorized");
+      expect(warn).not.toHaveBeenCalled();
+      await fail("data_editors_only");
+      await fail("data_editors_only");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.join(" "))).toContain(
+        "this artifact only lets its editors change data",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("rejects a call with no reply after 15 s", async () => {
     vi.useFakeTimers();
     const oa = start();
@@ -371,6 +405,83 @@ describe("subscribe", () => {
     expect(calls("db.unsubscribe")[0]?.params).toEqual({ collection: "votes" });
   });
 
+  it("db.query restarts once from the first page on cursor_stale, then surfaces it (#816 F2)", async () => {
+    const oa = start();
+    const col = oa.db.collection("c");
+    const fail = (id: string, code: string) =>
+      fromShell({
+        oa: 1,
+        type: "result",
+        id,
+        ok: false,
+        error: { code, message: code },
+      });
+    const q = calls.bind(null, "db.query");
+
+    const p1 = col.query({ orderBy: "n", cursor: "c1" });
+    await flush();
+    expect(q()).toHaveLength(1);
+    fail(q()[0]?.id ?? "", "cursor_stale");
+    await flush();
+    // Restarted from the first page: the same query without the cursor.
+    expect(q()).toHaveLength(2);
+    const again = q()[1]?.params as { collection: string; query: object };
+    expect(again).toMatchObject({ collection: "c", query: { orderBy: "n" } });
+    expect(again.query).not.toHaveProperty("cursor");
+    reply(q()[1]?.id ?? "", { items: [doc("a", { n: 1 })], nextCursor: "c2" });
+    expect(await p1).toEqual({
+      items: [doc("a", { n: 1 })],
+      nextCursor: "c2",
+      restarted: true,
+    });
+
+    // Stale again in the restarted chain: surfaced, no second restart.
+    const p2 = col.query({ orderBy: "n", cursor: "c2" });
+    const r2 = p2.catch((e: unknown) => e);
+    await flush();
+    expect(q()).toHaveLength(3);
+    fail(q()[2]?.id ?? "", "cursor_stale");
+    const e2 = await r2;
+    expect(e2).toBeInstanceOf(RuntimeError);
+    expect((e2 as RuntimeError).code).toBe("cursor_stale");
+    await flush();
+    expect(q()).toHaveLength(3);
+
+    // Other errors are never retried.
+    const p3 = col.query({ orderBy: "n", cursor: "c9" }).catch((e) => e);
+    await flush();
+    fail(q()[3]?.id ?? "", "bad_request");
+    expect(((await p3) as RuntimeError).code).toBe("bad_request");
+    await flush();
+    expect(q()).toHaveLength(4);
+  });
+
+  it("a failed refetch delivers resync, never data: null (review item 38)", async () => {
+    const oa = start();
+    const cb = vi.fn();
+    oa.db.collection("c").subscribe(cb);
+    await flush();
+    fromShell({
+      oa: 1,
+      type: "event",
+      event: "db.change",
+      collection: "c",
+      docs: [doc("small", { n: 1 }), doc("big", null)],
+      deleted: [],
+    });
+    await flush();
+    fromShell({
+      oa: 1,
+      type: "result",
+      id: calls("db.get")[0]?.id ?? "",
+      ok: false,
+      error: { code: "internal", message: "boom" },
+    });
+    await flush();
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(cb).toHaveBeenCalledWith({ docs: [], deleted: [], resync: true });
+  });
+
   it("a refetched doc that is gone is reported as deleted", async () => {
     const oa = start();
     const cb = vi.fn();
@@ -477,6 +588,42 @@ describe("subscribe", () => {
     col.subscribe(() => {});
     await flush();
     expect(calls("db.subscribe")).toHaveLength(2);
+  });
+});
+
+describe("db.offline", () => {
+  it("calls the collection's callbacks with { docs: [], deleted: [], offline: true }, then resync on recovery", async () => {
+    const oa = start();
+    const cb = vi.fn();
+    const other = vi.fn();
+    oa.db.collection("votes").subscribe(cb);
+    oa.db.collection("other").subscribe(other);
+    await flush();
+    fromShell({
+      oa: 1,
+      type: "event",
+      event: "db.offline",
+      collection: "votes",
+    });
+    await flush();
+    expect(cb).toHaveBeenLastCalledWith({
+      docs: [],
+      deleted: [],
+      offline: true,
+    });
+    expect(other).not.toHaveBeenCalled();
+    fromShell({
+      oa: 1,
+      type: "event",
+      event: "db.resync",
+      collection: "votes",
+    });
+    await flush();
+    expect(cb).toHaveBeenLastCalledWith({
+      docs: [],
+      deleted: [],
+      resync: true,
+    });
   });
 });
 

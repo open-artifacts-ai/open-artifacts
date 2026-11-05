@@ -1,35 +1,9 @@
-// Hosted M1 artifact additions (P3): space-aware list/search/publish, move,
-// transfer, departed-person bulk transfer, member status filter.
-//
-// The list and search scopes are folded into ListQuerySchema and
-// SearchQuerySchema (P3 T4). The publish extension is still separate here:
-// PublishInputSchema also defines the MCP tool input and the generated skill,
-// so P3 folds it in (and regenerates the skill) in the PR that implements it.
+// Hosted M1 artifact additions (P3): move, transfer, departed-person bulk
+// transfer, member status filter. The list, search and publish extensions
+// are folded into ListQuerySchema, SearchQuerySchema and PublishInputSchema
+// (P3 T4, T10), so the MCP inputs and the generated skill carry them too.
 import { z } from "zod";
-import { PublishInputSchema } from "../schemas.js";
 import { MemberStatusSchema } from "./core.js";
-
-/** The field PublishInput gains: create only; default the caller's personal space. */
-export const PublishSpaceFieldSchema = z.strictObject({
-  spaceId: z.string().optional(),
-});
-/**
- * POST R.artifacts with spaces on. spaceId is valid only when creating: with
- * the id of an existing artifact it is 400 use_move. A space the caller can't
- * publish to is 403 space_forbidden; so is any create by a capped caller.
- */
-export const HostedPublishInputSchema = z
-  .looseObject({ spaceId: z.string().optional() })
-  .transform((v, ctx) => {
-    const { spaceId, ...rest } = v;
-    const r = PublishInputSchema.safeParse(rest);
-    if (!r.success) {
-      for (const i of r.error.issues) ctx.addIssue({ ...i, code: "custom" });
-      return z.NEVER;
-    }
-    return { ...r.data, ...(spaceId === undefined ? {} : { spaceId }) };
-  });
-export type HostedPublishInput = z.infer<typeof HostedPublishInputSchema>;
 
 /**
  * POST R.moveArtifact(id) -> ArtifactSummary. A public artifact moved into a

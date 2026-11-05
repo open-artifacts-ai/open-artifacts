@@ -73,18 +73,19 @@ export function fakeAssets(files: Files = DEFAULT_FILES) {
 
 export const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
 
-/** Calls the Worker on the content host with the given (or default) ASSETS. */
+/** Calls the Worker on the content host with the given (or default) ASSETS and env overrides. */
 export function contentCall(
   path: string,
   init?: RequestInit,
   assets: { fetch: unknown } = fakeAssets().fetcher,
+  over: object = {},
 ) {
   return worker.fetch(
     new Request(`http://content.localhost${path}`, init) as Request<
       unknown,
       IncomingRequestCfProperties
     >,
-    { ...(env as object), ASSETS: assets } as never,
+    { ...(env as object), ASSETS: assets, ...over } as never,
     ctx,
   );
 }

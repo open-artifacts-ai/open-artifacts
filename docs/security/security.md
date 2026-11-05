@@ -11,11 +11,47 @@ The content host sends `Content-Security-Policy: sandbox allow-scripts allow-for
 
 ## Live sockets and access revocation
 
-Open live sockets (data subscribe and the `R.events` version feed) are authorized when they connect. Deletes, visibility and capability changes, and revoked shares close them at once (`gone`, then 4403 on `R.events`). Removing a member closes only their sockets on artifacts shared with them by email. Their sockets on team-visible artifacts stay open until the next TTL rotation (4408), and the reconnect is refused. So **access revocation reaches open live sockets within at most 10 minutes (`LIMITS.signedUrlTtlSec`); deletes and visibility changes are immediate.** Closing by actor on every team artifact's DO would cost one RPC per artifact for each removal.
+Open live sockets (data subscribe and the `R.events` version feed) are authorized when they connect. The policy gate stamps `authzAt` before it reads the session, and the route passes it to the artifact's DO. A revocation closes open sockets, and a guard on accept refuses any socket whose access check ran at or before the revocation (plus a 2 second clock-skew margin), so a socket can't slip in between the access change and the close. Closed sockets get 4403 (`gone` first on `R.events`); clients reconnect through the shell, which checks access again.
+
+Two guards, by the scope of the change:
+
+- **One person, every artifact (`UserPresence`, one DO per user).** Every signed-in socket accept awaits `touch(artifactId, authzAt)`, which records the artifact; if `touch` fails, the socket is closed. `revokeUserLive` calls `closeAll`, which writes `revokedAt` first, then closes that person's sockets (tag `a:u:{id}`) on each artifact they touched in the last 10 minutes.
+  - Closes **within about a second**: removing or suspending a member (team artifacts included), changing a member's role, deactivating a guest when their last share is removed, and resetting a member's Google link.
+  - A failed close is queued in the DO and retried by alarm with backoff (1 s up to 60 s) until it is 11 minutes old.
+  - If `closeAll` itself fails after 3 retries, `presence_revoke_failed` is logged at alert level, and `revokedAt` alone is written when the DO is reachable. New accepts are then refused, but open sockets wait for the TTL.
+- **One artifact, every actor (`closeRuntimeSockets`).** The artifact's DO records the change time, then closes every socket on it, anonymous ones included. Accepts authorized before the change are refused.
+  - Closes **at once**: delete, visibility and capability changes (in a patch or a publish), removing a share, and changing a share from editor to viewer.
+  - A share removal doesn't revoke the person's presence: that would close their sockets on unrelated artifacts, and the artifact guard already covers this one.
+
+Still bounded only by the socket TTL (`LIMITS.signedUrlTtlSec`, 10 minutes, then 4408 and a re-checked reconnect):
+
+- An install without the `USER_PRESENCE` binding (logged as `presence_unbound`).
+- A `closeAll` that keeps failing (above).
+- Clock skew over 2 seconds between the Worker and a DO, for a socket that races a revocation.
+- A rolling deploy. For a short time a new Worker can reach a DO still running the old code, which neither calls `touch` nor checks the access-change time. A socket accepted there is not recorded, so a revocation in that window misses it. (An old Worker reaching a new DO sends no `authzAt`: signed-in sockets are refused with 400, and anonymous ones skip the guard.)
+- A space-wide narrowing past the fan-out cap. Space role and mapping narrowing (a member removed or demoted, a per-space or Every-space mapping removed or lowered, `allMembersRole` lowered or removed, the restricted flag or a restricted group set) revokes the affected users in the same request (`revokeUsersLive`, in `waitUntil`, pages of 50). One invocation's subrequest limit bounds it, so it signals at most 20 users on Workers Free and 450 on Paid, most recently seen first. Past that, `revoke_fanout_truncated` is logged at alert level, and the remaining users' open sockets end at the TTL. Their next request and any reconnect are already refused by the D1 change. P3 T13's `DirectorySync` queue removes the cap. The cap is accepted for M1 (manager decision); the SQL reads at most cap + 1 ids, so the alert's `total` is then a lower bound.
+- Changes that don't call `revokeUserLive` yet: directory sync, transfers and a customer mismatch land with later P3 tasks. A test (`test/node/revocation-lint.test.ts`) fails any access-shrinking function or class method (nested functions count toward the one that contains them; comments are ignored) that is not listed with its guard.
 
 `R.events` sockets have their own per-DO budgets, apart from data sockets: 200 for signed-in viewers, 100 for anonymous viewers, and 3 per anonymous actor (an IPv4 address or an IPv6 /56). Anonymous sockets can't starve live data or members.
 
 Data-subscribe sockets split the same way: 200 per DO for signed-in viewers (20 per user), 100 for anonymous viewers (8 per anonymous actor, an IPv4 address or an IPv6 /56, also the `sub:ip:` RL_ANON key). Anonymous floods from many addresses fill only the anonymous pool, so members keep live data. A data socket with no actor is refused (400).
+
+## User status (P3 T6)
+
+Suspending or removing a user (`setUserStatus`) writes the status, ends every session (`session_epoch`), revokes their PATs and audits `user.status` in one D1 batch, then revokes their OAuth grants and closes their live sockets. Only `active` rows resolve to a user, on every credential.
+
+- **OAuth grants.** Each grant records when consent was approved, and each user row when its status last changed. A grant approved at or before that change is refused at `/mcp`. A grant minted while a suspension commits, or missed by KV's eventually consistent grant listing, is refused even after an unsuspend. Consent re-checks that the user is active just before the grant is written.
+- **Revoking an OAuth token.** On an install whose OAuth store is KV, a revoked refresh token can still be accepted for up to KV's read-cache TTL (60 s) wherever the grant was cached. Red-line proves refusal within that window, not at once. With the store on D1 there is no such window.
+- **PATs.** A PAT is inserted only while its user is active (one statement), so none minted during a suspension comes back on unsuspend. Unsuspending never revives revoked PATs or sessions.
+- **Guests.** A guest whose last share went comes back on a new share. A guest removed by an admin or by the directory stays removed.
+- **Removal and shares.**
+  - On every install (spaces or not, parity 1), removing a member or guest sets the row's status to `removed`; nothing is hard-deleted. Authorship, sign-in identities, the audit target and personal artifacts stay. PATs are revoked (rows kept), OAuth grants revoked, `session_epoch` bumped and live sockets closed.
+  - The removed row is refused at every sign-in (Access, email and domain codes, Google), and its shares are kept with the row. A new share never revives a removed row; only a guest who lapsed because their last share went comes back on a new share. A directory deletion still drops the address's shares.
+  - An admin can restore a removed member (`POST R.memberRestore(id)`): a member or admin comes back as a member (never an admin) and a guest as a guest, their old PATs and OAuth grants stay refused (the grant check compares against `status_changed_at`, which the restore moves), and sessions minted before end (`session_epoch`). The group restriction is recomputed for the role they come back with, and their space roles come back with them: a removal leaves `space_members` in place (accepted). A directory removal (`users.removed_by_sync`, so audit retention never unlocks it) can't be restored while Google sync is on and a Workspace is connected; with nothing connected nothing syncs, so an admin can. A row whose address a directory deletion released can't be restored (409 `conflict`), and a lapsed guest isn't restorable (a share revives them).
+- **Still serving after a removal:**
+  - Public `/p/` links on the removed user's artifacts keep serving. The artifacts belong to the organization (shared spaces) or to whoever they are transferred to, and only a visibility change or a delete ends a public link.
+- **Signed content URLs (P3 T11, every install since parity 1).** Every `/c/` URL minted for a signed-in user (the viewer's content-url, an agent's download URL) is `{exp}.{uid}.{epoch}.{sig}`, with the user id and their `session_epoch` in the MAC; the `content_revocation` flag is accepted but no longer needed. The content host's one artifact statement joins that user's row by primary key and serves only while the user is active and still at that epoch, so a suspension or removal refuses the next file, and an unsuspend or restore never revives a URL minted before it. No KV deny list. Two-part `{exp}.{sig}` tokens (thumbnail capture, anonymous callers) are unchanged. A browser may still show a file it already cached (`private, max-age=300`). Shares and space roles are not re-checked per file: a lost share, without a status change, keeps an already minted URL until it expires (accepted for M1). Minting for a signed-in user without an epoch throws rather than issuing an unbound token.
+- **Per-purpose content keys.** `CONTENT_SIGNING_KEY` never signs anything directly: content tokens and capture headers use its HKDF subkey `oa:content-url`, upload URLs its subkey `oa:upload` (`auth/keys.ts` `contentKey`), so neither verifies as the other. Signed URLs issued before this change (600 s or less) stop working at deploy.
 
 ## Direct sign-in (hosted M1, P2)
 
@@ -32,7 +68,7 @@ Direct sign-in replaces Cloudflare Access with Google (one multi-tenant client) 
 | Address enumeration | The same 202 for every address. Delivery runs after the response. Verify runs the same statements with or without a code, and its wording comes from the browser's own cookie. | None known. |
 | Email quota exhaustion | The code pool is separate from invites and is spent only on real sends. There is a per-IP daily cap and Turnstile. | Requests for guests count against the per-IP quota. |
 | Login CSRF | `__Host-` Lax cookies, `X-OA-Request`, and `Sec-Fetch-Site: same-origin` or an exact `Origin`. | None known. |
-| Guests writing | A capped caller (a guest under direct sign-in, or any code session outside the domains) is read-only on the whole API, refused before any route. | None known. |
+| Guests writing | A capped caller (a guest on every install, Access-only ones included, or any code session outside the domains) is read-only on the whole API, refused before any route, whatever share role they hold. Share rows keep their role; on Access-only installs each member gets a one-time notice of guest shares on artifacts they own, and the org owner a summary with counts only. | None known. |
 | Test hooks in production | Hooks require a build flag release builds never set, plus `TEST_HOOKS=1` and a 32+ character key. Otherwise every path is a 404. | Operator error on a staging install. |
 | Stale sessions | Sessions carry the user's epoch (a role change or link reset ends them) and their tenant. | Suspension in the Workspace takes effect with P3's directory sync. |
 

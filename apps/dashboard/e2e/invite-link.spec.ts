@@ -249,8 +249,12 @@ for (const scheme of ["light", "dark"] as const)
         path: info.outputPath(`departed-${scheme}-${width}.png`),
         fullPage: true,
       });
+      // #1125: "Transfer all to me" opens this dialog with you chosen; More opens it with nobody.
       await card
-        .getByRole("button", { name: "Transfer Carol Departed's artifacts" })
+        .getByRole("button", { name: "More for Carol Departed" })
+        .click();
+      await page
+        .getByRole("menuitem", { name: "Transfer to someone else…" })
         .click();
       const d = page.getByRole("dialog");
       await expect(d).toContainText(

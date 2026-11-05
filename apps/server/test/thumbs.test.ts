@@ -47,6 +47,9 @@ const withBrowser = {
   BROWSER: {} as Fetcher,
   SERVER_THUMBNAILS: "on",
 } as Env;
+/** vi.waitFor bound: a generous deadline under the 20 s testTimeout. */
+const WAIT = { timeout: 10_000, interval: 20 };
+
 const key = (id: string) => `thumbs/${id}.webp`;
 
 const webp = (n: number) => {
@@ -721,7 +724,7 @@ describe("captureThumbnail", () => {
 
     const id2 = await pub();
     const never = fake({ sizes: Array(10).fill(big) });
-    expect(await capture(id2, 1, never)).toBe("failed");
+    expect(await capture(id2, 1, never)).toBe("too_large");
     expect(never.shots.length).toBe(THUMB.qualities.length);
     expect(await env.FILES.head(key(id2))).toBeNull();
   });
@@ -900,7 +903,7 @@ describe("thumbnail job on the artifact DO", () => {
     expect(
       await inDo(id, (i) => i.pendingThumbnail(), withBrowser),
     ).toMatchObject({ artifactId: id, version: 3, attempts: 0 });
-    // Index-only enqueues (undelete, reindexStale) never add one.
+    // An index-only enqueue never adds one.
     const other = await pub();
     await inDo(other, (i) => i.scheduleIndex(other, 1), withBrowser);
     expect(await inDo(other, (i) => i.pendingThumbnail())).toBeNull();
@@ -1027,8 +1030,8 @@ describe("thumbnail job on the artifact DO", () => {
           return new Promise<never>(() => {});
         };
         void i.alarm();
-        await new Promise((r) => setTimeout(r, 20));
-        expect(seen).toEqual([1]);
+        // The alarm awaits setAlarm and storage.sync() before launching.
+        await vi.waitFor(() => expect(seen).toEqual([1]), WAIT);
         expect(i.pendingThumbnail()).toMatchObject({ attempts: 1 });
         // Armed before launching, so the runtime comes back after a kill.
         const armed = await storage.getAlarm();
@@ -1036,8 +1039,7 @@ describe("thumbnail job on the artifact DO", () => {
         // Its retry alarm comes THUMB_RETRY_MS later.
         i.now = () => Date.now() + THUMB_RETRY_MS;
         void i.alarm();
-        await new Promise((r) => setTimeout(r, 20));
-        expect(seen).toEqual([1, 2]);
+        await vi.waitFor(() => expect(seen).toEqual([1, 2]), WAIT);
         i.now = () => Date.now() + 2 * THUMB_RETRY_MS;
         await i.alarm();
         expect(seen).toEqual([1, 2]);
@@ -1053,6 +1055,23 @@ describe("thumbnail job on the artifact DO", () => {
   it("a failed capture is not retried; a deferral uses the one retry", async () => {
     const id = await pub();
     const results: ThumbResult[] = ["failed"];
+    const err = vi.spyOn(console, "error");
+    const noThumb = () =>
+      err.mock.calls
+        .map((c) => {
+          try {
+            return JSON.parse(String(c[0])) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .filter((e) => e?.evt === "thumbnail_no_thumb");
+    const failed = (v: number) =>
+      env.DB.prepare(
+        "select thumb_failed f from versions where artifact_id = ? and version = ?",
+      )
+        .bind(id, v)
+        .first("f");
     await inDo(
       id,
       async (i) => {
@@ -1067,6 +1086,16 @@ describe("thumbnail job on the artifact DO", () => {
         await i.alarm();
         expect(calls).toBe(1);
         expect(i.thumbnailJob()).toMatchObject({ state: "no_thumb" });
+        expect(noThumb()).toEqual([
+          {
+            evt: "thumbnail_no_thumb",
+            artifactId: id,
+            version: 1,
+            result: "failed",
+            attempts: 1,
+          },
+        ]);
+        expect(await failed(1)).toBe(1);
 
         await i.scheduleIndex(id, 2, true);
         await i.alarm(); // indexes v2
@@ -1081,9 +1110,15 @@ describe("thumbnail job on the artifact DO", () => {
           state: "no_thumb",
           attempts: 2,
         });
+        expect(noThumb()[1]).toMatchObject({
+          version: 2,
+          result: "deferred",
+          attempts: 2,
+        });
       },
       withBrowser,
     );
+    err.mockRestore();
   });
 
   it("a non-quota launch error backs off an hour, retries once, then gives up", async () => {

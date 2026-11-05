@@ -54,12 +54,19 @@ export function ownerStatements(
   const upsert =
     mode === "upgrade"
       ? undefined
-      : `INSERT INTO users (id, email, name, role, created_at) VALUES (${lit(base58(16))}, ${e}, ${lit(name)}, 'owner', ${now}) ON CONFLICT(email) DO UPDATE SET role = 'owner'`;
+      : `INSERT INTO users (id, email, name, role, created_at) VALUES (${lit(base58(16))}, ${e}, ${lit(name)}, 'owner', ${now}) ON CONFLICT(email) DO UPDATE SET role = 'owner' WHERE users.status = 'active'`;
+  // A suspended or removed row keeps its role and gets no token (the server
+  // signs in active users only); the status read lets apply() refuse.
+  const active = upsert ? " AND status = 'active'" : "";
   const rest = [
-    `INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT ${lit(tokenId)}, id, ${lit(label)}, ${lit(hash)}, ${now} FROM users WHERE email = ${e} AND (SELECT count(*) FROM tokens WHERE user_id = users.id AND revoked_at IS NULL) < ${MAX_ACTIVE}`,
+    `INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT ${lit(tokenId)}, id, ${lit(label)}, ${lit(hash)}, ${now} FROM users WHERE email = ${e}${active} AND (SELECT count(*) FROM tokens WHERE user_id = users.id AND revoked_at IS NULL) < ${MAX_ACTIVE}`,
     `SELECT id FROM tokens WHERE id = ${lit(tokenId)} AND revoked_at IS NULL`,
   ];
-  return [...(upsert ? [upsert] : []), ...stale, ...rest] as string[];
+  return [
+    ...(upsert ? [upsert, `SELECT status FROM users WHERE email = ${e}`] : []),
+    ...stale,
+    ...rest,
+  ] as string[];
 }
 
 /**
@@ -102,9 +109,11 @@ export const ownerSql = (...a: Parameters<typeof ownerStatements>) =>
 /** Command 2, only after the insert succeeded: select, demote, verify. */
 export function demoteStatements(email: string) {
   const e = lit(email);
+  // Only once the target is an active owner, so no one is left without one.
+  const ready = `EXISTS (SELECT 1 FROM users WHERE email = ${e} AND role = 'owner' AND status = 'active')`;
   return [
-    `SELECT email FROM users WHERE role = 'owner' AND email <> ${e}`,
-    `UPDATE users SET role = 'admin' WHERE role = 'owner' AND email <> ${e}`,
+    `SELECT email FROM users WHERE role = 'owner' AND email <> ${e} AND ${ready}`,
+    `UPDATE users SET role = 'admin' WHERE role = 'owner' AND email <> ${e} AND ${ready}`,
     `SELECT email FROM users WHERE role = 'owner' AND email = ${e}`,
   ];
 }
@@ -264,6 +273,15 @@ export const ownerToken: Step = {
       return uncertain();
     }
     if (res.length < stmts.length) return uncertain();
+    const status = (res[1]?.results?.[0] as { status?: string } | undefined)
+      ?.status;
+    if (!ctx.opts.upgrade && status !== "active") {
+      untrack();
+      notMinted();
+      throw new Error(
+        `setup won't make a ${status ?? "missing"} user the owner: nothing was changed. Reactivate that user, or pass a different --owner-email`,
+      );
+    }
     const [insert, verify] = [res[res.length - 2], res[res.length - 1]];
     if (!insert?.meta?.changes) {
       untrack();

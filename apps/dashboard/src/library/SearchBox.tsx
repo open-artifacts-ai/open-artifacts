@@ -109,7 +109,7 @@ export function SearchBox() {
             ? phone
               ? "Search"
               : `Search ${scopeName}`
-            : "Search titles, content, and agents"
+            : "Search titles and content"
         }
         style={scopeName && inset ? { paddingLeft: inset } : undefined}
         className="h-[30px] min-w-0 flex-1 text-[length:var(--oa-text-sm)] md:text-[length:var(--oa-text-sm)]"

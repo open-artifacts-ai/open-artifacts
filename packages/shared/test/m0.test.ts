@@ -21,6 +21,7 @@ const summary = {
   thumbnailVersion: null,
   access: "owner",
   capabilities: { db: false, viewer: false, storage: false },
+  dataWriters: "editors",
   allowAnonymousWrites: false,
 };
 

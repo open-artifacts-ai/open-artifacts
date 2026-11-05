@@ -23,11 +23,21 @@ import { renderPdf } from "../src/pdf";
 afterEach(() => {
   sent.length = 0;
   vi.unstubAllGlobals();
+  // No pdf state carries into the next test.
+  releaseDoc = () => {};
+  getDocument.mockReset();
 });
+
+/** Until renderPdf has asked pdf.js for the document (so releaseDoc is its). */
+const loading = () =>
+  vi.waitFor(() => expect(getDocument).toHaveBeenCalledTimes(1));
 
 describe("B11 adversarial: shiki on hostile code", () => {
   // Measured: one 20 KB line takes ~26 s (quadratic); a 500 KB line (under the 512 KB cap) hangs for hours.
   it("renderCode on a 8 KB single line finishes quickly", async () => {
+    // Warm up first: the budget is for the line, not the cold highlighter
+    // build and grammar import.
+    await renderCode("a", "ts");
     const t = performance.now();
     await renderCode("a".repeat(8_000), "ts");
     expect(performance.now() - t).toBeLessThan(1000);
@@ -79,7 +89,7 @@ describe("B11 adversarial: pdf", () => {
   it("answers a thumb.request that arrives while the PDF is still loading", async () => {
     setup();
     const p = renderPdf("/a/v1/x.pdf", document.body);
-    await new Promise((r) => setTimeout(r, 0));
+    await loading();
     window.dispatchEvent(
       new MessageEvent("message", {
         source: window.parent,
@@ -88,16 +98,17 @@ describe("B11 adversarial: pdf", () => {
     );
     releaseDoc();
     await p;
-    await new Promise((r) => setTimeout(r, 10));
-    expect(
-      sent.some((m) => (m as { type: string }).type === "thumb.ready"),
-    ).toBe(true);
+    await vi.waitFor(() =>
+      expect(
+        sent.some((m) => (m as { type: string }).type === "thumb.ready"),
+      ).toBe(true),
+    );
   });
 
   it("disables eval in pdf.js (defense in depth; CSP has no script-src)", async () => {
     setup();
     const p = renderPdf("/a/v1/x.pdf", document.body);
-    await new Promise((r) => setTimeout(r, 0));
+    await loading();
     releaseDoc();
     await p;
     expect(getDocument.mock.calls[0]?.[0]).toMatchObject({

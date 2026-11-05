@@ -2,6 +2,7 @@ import { R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import {
   act,
+  cleanup,
   fireEvent,
   screen,
   waitFor,
@@ -9,13 +10,21 @@ import {
 } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
-import { installHarness, mount, seen, server, wait } from "./harness";
+import {
+  installHarness,
+  mount,
+  mountHosted,
+  seen,
+  server,
+  wait,
+} from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
     dispose: vi.fn(),
     requestThumbnail: vi.fn(),
     setTheme: vi.fn(),
+    setArtifact: vi.fn(),
   }),
 }));
 
@@ -117,6 +126,172 @@ describe("share panel", () => {
     );
   });
 
+  it.each([
+    ["editor", "Editor", "Guest · can only view for now"],
+    ["viewer", "Viewer", "Guest · can only view"],
+  ])(
+    "a guest's row with stored %s: email, caption, then the select and Remove",
+    async (role, shown, caption) => {
+      const guest = "gus@elsewhere.test";
+      server.use(
+        http.get("*/api/v1/artifacts/:id/shares", () =>
+          HttpResponse.json([
+            {
+              email: guest,
+              role,
+              createdAt: "2026-10-01T00:00:00.000Z",
+              guest: true,
+            },
+          ]),
+        ),
+      );
+      mount(panel(OWNED));
+      const email = await screen.findByTitle(guest);
+      const label = screen.getByText(caption);
+      // Two lines: the email alone, then the caption with the controls.
+      expect(email).not.toHaveClass("truncate");
+      expect(email.nextElementSibling).toBeNull();
+      expect(label).toHaveClass("whitespace-nowrap");
+      const select = screen.getByRole("combobox", {
+        name: `Role for ${guest}`,
+      });
+      expect(select).toHaveTextContent(shown);
+      const remove = screen.getByRole("button", { name: `Remove ${guest}` });
+      const follows = (a: Element, b: Element) =>
+        a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+      expect(follows(label, select)).toBeTruthy();
+      expect(follows(select, remove)).toBeTruthy();
+      expect(label.parentElement).not.toBe(email.parentElement);
+      expect(label.parentElement).toContainElement(select);
+      expect(label.parentElement).toContainElement(remove);
+    },
+  );
+
+  describe("a member who can only view (viewOnly)", () => {
+    const rows = (list: object[]) =>
+      server.use(
+        http.get("*/api/v1/artifacts/:id/shares", () =>
+          HttpResponse.json(
+            list.map((r) => ({ createdAt: "2026-10-01T00:00:00.000Z", ...r })),
+          ),
+        ),
+      );
+    const NOW = "Can only view for now";
+
+    it("an editor share: the stored role, and the caption line with the controls", async () => {
+      rows([{ email: "dan@example.com", role: "editor", viewOnly: true }]);
+      mount(panel(OWNED));
+      const email = await screen.findByTitle("dan@example.com");
+      const caption = screen.getByText(NOW);
+      expect(email.nextElementSibling).toBeNull();
+      const select = screen.getByRole("combobox", {
+        name: "Role for dan@example.com",
+      });
+      expect(select).toHaveTextContent("Editor");
+      expect(caption.parentElement).toContainElement(select);
+      expect(caption.parentElement).toContainElement(
+        screen.getByRole("button", { name: "Remove dan@example.com" }),
+      );
+      expect(document.body).not.toHaveTextContent(/restrict/i);
+    });
+
+    it("a viewer share: no line", async () => {
+      rows([{ email: "dan@example.com", role: "viewer", viewOnly: true }]);
+      mount(panel(OWNED));
+      await screen.findByTitle("dan@example.com");
+      expect(screen.queryByText(NOW)).toBeNull();
+    });
+
+    it("a guest stays a guest when both are set", async () => {
+      rows([
+        {
+          email: "gus@elsewhere.test",
+          role: "editor",
+          guest: true,
+          viewOnly: true,
+        },
+      ]);
+      mount(panel(OWNED));
+      expect(
+        await screen.findByText("Guest · can only view for now"),
+      ).toBeTruthy();
+      expect(screen.queryByText(NOW)).toBeNull();
+    });
+
+    it("right after sharing as Editor: the caption, and no status note", async () => {
+      let list: object[] = [];
+      server.use(
+        http.get("*/api/v1/artifacts/:id/shares", () =>
+          HttpResponse.json(list),
+        ),
+        http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
+          const b = (await request.json()) as { email: string; role: string };
+          const row = { ...b, createdAt: "2026-10-01T00:00:00.000Z" };
+          list = [{ ...row, viewOnly: true }];
+          return HttpResponse.json({ ...row, emailed: false });
+        }),
+      );
+      mount(panel(OWNED));
+      fireEvent.keyDown(
+        await screen.findByRole("combobox", { name: "Invite role" }),
+        { key: "Enter" },
+      );
+      fireEvent.click(await screen.findByRole("option", { name: "Editor" }));
+      fireEvent.change(screen.getByLabelText("Email"), {
+        target: { value: "dan@example.com" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Add" }));
+      expect(await screen.findByText(NOW)).toBeVisible();
+      expect(screen.queryByText("They can only view for now.")).toBeNull();
+      const row = (await screen.findByTitle("dan@example.com")).closest(
+        "li",
+      ) as HTMLElement;
+      expect(within(row).queryByRole("status")).toBeNull();
+    });
+  });
+
+  describe("a guest invited as Editor", () => {
+    const LINE =
+      "Guests can only view. If they become a member, they'll be able to edit.";
+    const invite = async (email: string, role: "Editor" | "Viewer") => {
+      fireEvent.keyDown(
+        await screen.findByRole("combobox", { name: "Invite role" }),
+        { key: "Enter" },
+      );
+      fireEvent.click(await screen.findByRole("option", { name: role }));
+      fireEvent.change(screen.getByLabelText("Email"), {
+        target: { value: email },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Add" }));
+      await screen.findByTitle(email);
+    };
+
+    it("gets the status line just after inviting, and not on a later open", async () => {
+      const guest = "gia@elsewhere.test";
+      mountHosted(panel(OWNED));
+      await invite(guest, "Editor");
+      const line = await screen.findByText(LINE);
+      expect(line).toHaveAttribute("role", "status");
+      expect(screen.getByTitle(guest).closest("li")).toContainElement(line);
+      cleanup();
+      mount(panel(OWNED));
+      await screen.findByTitle(guest);
+      expect(
+        await screen.findByText("Guest · can only view for now"),
+      ).toBeTruthy();
+      expect(screen.queryByText(LINE)).toBeNull();
+    });
+
+    it("no line for a guest invited as Viewer, or a member as Editor", async () => {
+      mountHosted(panel(OWNED));
+      await invite("gus@elsewhere.test", "Viewer");
+      await screen.findByText("Guest · can only view");
+      expect(screen.queryByText(LINE)).toBeNull();
+      await invite("carol@example.com", "Editor");
+      expect(screen.queryByText(LINE)).toBeNull();
+    });
+  });
+
   it("changes a share role and removes it", async () => {
     mount(panel(OWNED));
     const trigger = await screen.findByRole("combobox", {
@@ -137,29 +312,72 @@ describe("share panel", () => {
     );
   });
 
-  it("allowAnonymousWrites is disabled unless public and db", async () => {
+  it("each Live data checkbox has its hint as its accessible description", async () => {
     mount(panel(OWNED));
-    expect(
-      await screen.findByRole("checkbox", { name: "Allow anonymous writes" }),
-    ).toBeDisabled();
+    await screen.findByRole("checkbox", { name: "Database" });
+    for (const [name, hint] of [
+      ["Database", "Lets the page store shared data."],
+      ["Viewer identity", "Lets the page see who is viewing."],
+      ["File storage", "Lets the page keep uploaded files."],
+    ] as const) {
+      expect(
+        screen.getByRole("checkbox", { name }),
+      ).toHaveAccessibleDescription(hint);
+    }
   });
 
-  it("turning db off also unsets allowAnonymousWrites in the same PATCH", async () => {
+  it("who can change the live data: shown only with db, and says who", async () => {
+    mount(panel(OWNED));
+    await screen.findByRole("checkbox", { name: "Database" });
+    expect(
+      screen.queryByRole("radiogroup", {
+        name: "Who can change the live data",
+      }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("checkbox", { name: "Database" }),
+    ).toHaveAccessibleDescription(/./);
+  });
+
+  it("choosing Only editors sends dataWriters, never allowAnonymousWrites", async () => {
     const bodies = patches();
     mount(panel(POLL));
-    const anon = await screen.findByRole("checkbox", {
-      name: "Allow anonymous writes",
+    const group = await screen.findByRole("radiogroup", {
+      name: "Who can change the live data",
     });
-    await waitFor(() => expect(anon).toBeEnabled());
-    expect(anon).toBeChecked();
+    const everyone = within(group).getByRole("radio", {
+      name: "Everyone who can see it",
+    });
+    await waitFor(() => expect(everyone).toBeChecked());
+    expect(group).toHaveAccessibleDescription(
+      "Anyone with the link, signed in or not.",
+    );
+    fireEvent.click(within(group).getByRole("radio", { name: "Only editors" }));
+    await waitFor(() => expect(bodies).toEqual([{ dataWriters: "editors" }]));
+    await waitFor(() =>
+      expect(group).toHaveAccessibleDescription(
+        "Only you and people who can edit it.",
+      ),
+    );
+  });
+
+  it("turning db off leaves dataWriters as set", async () => {
+    const bodies = patches();
+    mount(panel(POLL));
+    await screen.findByRole("radiogroup", {
+      name: "Who can change the live data",
+    });
     fireEvent.click(screen.getByRole("checkbox", { name: "Database" }));
     await waitFor(() =>
-      expect(bodies).toEqual([
-        { capabilities: { db: false }, allowAnonymousWrites: false },
-      ]),
+      expect(bodies).toEqual([{ capabilities: { db: false } }]),
     );
-    await waitFor(() => expect(anon).toBeDisabled());
-    expect(anon).not.toBeChecked();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("radiogroup", {
+          name: "Who can change the live data",
+        }),
+      ).toBeNull(),
+    );
   });
 
   it("a failed save toasts and leaves the UI as the server has it", async () => {
@@ -200,6 +418,61 @@ describe("share panel", () => {
         `${location.origin}${viewerPath(aid)}`,
       ),
     );
+  });
+});
+
+const CONFLICT_COPY = "This artifact just changed. Check it and try again.";
+const conflictPatch = http.patch("*/api/v1/artifacts/:id", () =>
+  HttpResponse.json(
+    { error: { code: "conflict", message: "server text" } },
+    { status: 409 },
+  ),
+);
+
+describe("409 conflict", () => {
+  it("details: the edits stay, a status says so, Save is the retry, and the artifact reloads", async () => {
+    server.use(conflictPatch);
+    const gets = () =>
+      seen.filter((u) => u.pathname === R.artifact(EDITOR) && u.search === "")
+        .length;
+    mount(panel(EDITOR, "details"));
+    const title = await screen.findByRole("textbox", { name: "Title" });
+    const before = gets();
+    fireEvent.change(title, { target: { value: "Mine" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const note = await screen.findByText(CONFLICT_COPY);
+    expect(note).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("server text")).toBeNull();
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Mine");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    await waitFor(() => expect(gets()).toBeGreaterThan(before));
+    // The next edit clears it.
+    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), {
+      target: { value: "Mine again" },
+    });
+    expect(screen.queryByText(CONFLICT_COPY)).toBeNull();
+  });
+
+  it("visibility: the choice reverts to the server's value, with the status under it", async () => {
+    server.use(conflictPatch);
+    mount(panel(OWNED));
+    const group = await screen.findByRole("radiogroup", { name: "Visibility" });
+    fireEvent.click(within(group).getByRole("radio", { name: "Team" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
+    const note = await screen.findByText(CONFLICT_COPY);
+    expect(note).toHaveAttribute("role", "status");
+    await waitFor(() =>
+      expect(
+        within(group).getByRole("radio", { name: "Private" }),
+      ).toBeChecked(),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Save visibility" }),
+    ).toBeNull();
+    // Choosing again clears it.
+    fireEvent.click(within(group).getByRole("radio", { name: "Team" }));
+    expect(screen.queryByText(CONFLICT_COPY)).toBeNull();
   });
 });
 
@@ -278,7 +551,7 @@ describe("share panel review fixes", () => {
     const owned = fixtures.artifacts.find((a) => a.id === OWNED);
     server.use(
       http.get(`*${R.artifact(OWNED)}`, () =>
-        HttpResponse.json({ ...owned, allowAnonymousWrites: true }),
+        HttpResponse.json({ ...owned, dataWriters: "viewers" }),
       ),
     );
     const bodies = patches();
@@ -290,22 +563,13 @@ describe("share panel review fixes", () => {
     await waitFor(() => expect(bodies).toEqual([{ visibility: "public" }]));
   });
 
-  it("leaving public still turns anonymous writes off", async () => {
+  it("leaving public sends only the visibility (#681)", async () => {
     const bodies = patches();
     mount(panel(POLL));
     const group = await screen.findByRole("radiogroup", { name: "Visibility" });
-    await waitFor(() =>
-      expect(
-        screen.getByRole("checkbox", { name: "Allow anonymous writes" }),
-      ).toBeChecked(),
-    );
     fireEvent.click(within(group).getByRole("radio", { name: "Team" }));
     fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
-    await waitFor(() =>
-      expect(bodies).toEqual([
-        { visibility: "team", allowAnonymousWrites: false },
-      ]),
-    );
+    await waitFor(() => expect(bodies).toEqual([{ visibility: "team" }]));
   });
 
   it("a denied or missing clipboard toasts Couldn't copy with the link", async () => {
@@ -322,6 +586,24 @@ describe("share panel review fixes", () => {
   it("shows the owner by display name", async () => {
     mount(panel(EDITOR));
     await screen.findByText("Bob Builder");
+  });
+
+  it("someone who can't share sees the owner and why, and never asks for the list", async () => {
+    mount(panel(EDITOR));
+    await screen.findByText("Bob Builder");
+    expect(
+      screen.getByText(
+        "Only people who can share this artifact see who else has access.",
+      ),
+    ).toBeVisible();
+    await wait(50);
+    expect(seen.some((u) => u.pathname === R.shares(EDITOR))).toBe(false);
+  });
+
+  it("someone who can share sees no such note", async () => {
+    mount(panel(OWNED));
+    await screen.findByRole("heading", { name: "People" });
+    expect(screen.queryByText(/see who else has access/)).toBeNull();
   });
 });
 

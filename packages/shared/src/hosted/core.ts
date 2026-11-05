@@ -60,6 +60,11 @@ export type CapReason = z.infer<typeof CapReasonSchema>;
 /** Hosted billing tier (the UI's tier copy). Null when self-hosted. */
 export const TierSchema = z.enum(["trial", "team", "business"]);
 export type Tier = z.infer<typeof TierSchema>;
+/** Parse a TIER env value: a Tier, or null (unset, empty or unknown). The only parser: import it from here. */
+export const parseTier = (raw: string | undefined): Tier | null => {
+  const r = TierSchema.safeParse((raw ?? "").trim());
+  return r.success ? r.data : null;
+};
 
 /** Directory binding mode: off (none), google (syncing), frozen (Team: kept, edited by hand). */
 export const DirectoryModeSchema = z.enum(["off", "google", "frozen"]);
@@ -77,9 +82,9 @@ export type DirectoryMode = z.infer<typeof DirectoryModeSchema>;
  *
  * All but guests_read_only come from the FEATURES env (comma list, set per
  * tier by provisioning; self-hosted default empty = today's behaviour).
- * guests_read_only has ONE source, P2's authConfig.guestsReadOnly: true
- * whenever the google or email sign-in provider is enabled, not configurable;
- * Access-only installs keep today's guest behaviour. FEATURES can't set it.
+ * guests_read_only has ONE source, authConfig.guestsReadOnly: true on every
+ * install (parity 2: Access-only installs too), not configurable. FEATURES
+ * can't set it.
  */
 export const FEATURE_FLAGS = [
   "spaces",
@@ -93,10 +98,11 @@ export const FeatureFlagSchema = z.enum(FEATURE_FLAGS);
 export type FeatureFlag = z.infer<typeof FeatureFlagSchema>;
 export const FeaturesSchema = z.array(FeatureFlagSchema);
 export type Features = z.infer<typeof FeaturesSchema>;
+/** A flag the FEATURES env may set. */
+export type EnvFeatureFlag = Exclude<FeatureFlag, "guests_read_only">;
 /** Flags the FEATURES env may set (every flag except guests_read_only). */
 export const ENV_FEATURE_FLAGS = FEATURE_FLAGS.filter(
-  (f): f is Exclude<FeatureFlag, "guests_read_only"> =>
-    f !== "guests_read_only",
+  (f): f is EnvFeatureFlag => f !== "guests_read_only",
 );
 /** Parse a FEATURES env value. Unknown entries and guests_read_only are dropped. The only parser: import it from here. */
 export const parseFeatures = (raw: string | undefined): FeatureFlag[] => [
@@ -111,11 +117,35 @@ export const parseFeatures = (raw: string | undefined): FeatureFlag[] => [
 ];
 
 /**
+ * The FEATURES each hosted tier sets (provisioning writes them; hosted adds
+ * usage_off on every tier). The trial is Business. Team freezes sync: a
+ * downgrade swaps sync_google for sync_frozen and keeps every other flag, so
+ * it never widens access (spec 4.5).
+ */
+export const TIER_FEATURES: Readonly<Record<Tier, readonly EnvFeatureFlag[]>> =
+  {
+    trial: ["spaces", "sync_google", "content_revocation"],
+    team: ["spaces", "sync_frozen", "content_revocation"],
+    business: ["spaces", "sync_google", "content_revocation"],
+  };
+
+/** Me.instance.directory.mode from the flags: sync_google wins, then sync_frozen, else off. */
+export const directoryModeOf = (
+  features: readonly FeatureFlag[],
+): DirectoryMode =>
+  features.includes("sync_google")
+    ? "google"
+    : features.includes("sync_frozen")
+      ? "frozen"
+      : "off";
+
+/**
  * Directory sync state (SyncStatus.state, Me.instance.directory.state).
  * ok; backoff (429/5xx); auth_failed (401/invalid_grant); customer_mismatch;
  * scope_missing (a granted scope was revoked: Admin SDK 403
  * insufficientPermissions; fix copy "reconnect and grant all scopes");
- * never (no success yet).
+ * never (no success yet); pending_confirm (consent stored, waiting for
+ * the connecting owner to confirm or cancel; nothing synced yet).
  */
 export const SyncStateSchema = z.enum([
   "ok",
@@ -124,6 +154,7 @@ export const SyncStateSchema = z.enum([
   "customer_mismatch",
   "scope_missing",
   "never",
+  "pending_confirm",
 ]);
 export type SyncState = z.infer<typeof SyncStateSchema>;
 
@@ -140,9 +171,9 @@ export const InstanceDirectorySchema = z.object({
   tokensUnverified: z.boolean(),
   /** Sync state for the banner. Org owner and admins only; null for others (members can't read health). */
   state: SyncStateSchema.nullable(),
-  /** lastSuccessAt + 7 days, when synced users fail closed. Org owner and admins only; null for others. */
+  /** lastSuccessAt + 7 days once that has passed, else null. Informational: access is unchanged when stale. Org owner and admins only; null for others. */
   staleAt: z.string().nullable(),
-  /** Held sweeps waiting for the owner. 0 for non-admins. */
+  /** Held sweeps waiting for the owner, snoozed ones not counted (#412). 0 for non-admins. */
   heldSweeps: z.number().int(),
 });
 export type InstanceDirectory = z.infer<typeof InstanceDirectorySchema>;
@@ -152,9 +183,28 @@ export type SignInMode = z.infer<typeof SignInModeSchema>;
 export const SignInProviderIdSchema = z.enum(["access", "google", "email"]);
 export type SignInProviderId = z.infer<typeof SignInProviderIdSchema>;
 
+/** The order sign-in methods are named in (emails and UI copy). */
+export const SIGN_IN_METHOD_ORDER: readonly SignInProviderId[] = [
+  "google",
+  "access",
+  "email",
+];
+
+/** `methods` deduplicated, in SIGN_IN_METHOD_ORDER. */
+export const orderSignInMethods = (
+  methods: readonly SignInProviderId[],
+): SignInProviderId[] =>
+  SIGN_IN_METHOD_ORDER.filter((m) => methods.includes(m));
+
 export const InstanceSignInSchema = z.object({
   mode: SignInModeSchema,
   providers: z.array(SignInProviderIdSchema),
+  /**
+   * Owners only: why a configured sign-in method is off, as full sentences
+   * saying what to do (shown verbatim). Absent for everyone else; empty when
+   * nothing is wrong. Optional: older servers omit it.
+   */
+  problems: z.array(z.string()).optional(),
 });
 export type InstanceSignIn = z.infer<typeof InstanceSignInSchema>;
 
@@ -182,6 +232,83 @@ export const MeAuthSchema = z.object({
 export type MeAuth = z.infer<typeof MeAuthSchema>;
 
 /**
+ * Notices R.noticeDismiss can dismiss (parity 2). guest_shares: per user
+ * (each member's own list); guest_summary: install-wide (the org owner's).
+ */
+export const NoticeIdSchema = z.enum(["guest_shares", "guest_summary"]);
+export type NoticeId = z.infer<typeof NoticeIdSchema>;
+
+/** At most this many Me.notices.guestShares items; `more` says there are others. */
+export const GUEST_SHARES_NOTICE_LIMIT = 50;
+
+/** At most this many Me.notices.guestSummary.guestOwners; `more` says there are others. */
+export const GUEST_OWNERS_NOTICE_LIMIT = 50;
+
+/**
+ * One share a guest holds above viewer on an artifact the caller owns, which
+ * the guest cap (on for every install since parity 2) now reads as viewer.
+ * The share row keeps its role. guestEmail is the share's address, which may
+ * not have signed in yet (it becomes a guest at its first Access sign-in).
+ */
+export const GuestShareNoticeItemSchema = z.object({
+  artifactId: z.string(),
+  /** The artifact's title (the caller owns the artifact). */
+  title: z.string(),
+  guestEmail: z.string(),
+  /** The share's stored role (above viewer). */
+  role: z.enum(["editor"]),
+});
+export type GuestShareNoticeItem = z.infer<typeof GuestShareNoticeItemSchema>;
+
+/** Me.notices.guestShares: newest share first, at most GUEST_SHARES_NOTICE_LIMIT. */
+export const GuestSharesNoticeSchema = z.object({
+  items: z.array(GuestShareNoticeItemSchema).max(GUEST_SHARES_NOTICE_LIMIT),
+  /** More shares than items. */
+  more: z.boolean(),
+});
+export type GuestSharesNotice = z.infer<typeof GuestSharesNoticeSchema>;
+
+/** A guest who owns live artifacts (R.memberTransfer moves them). */
+export const GuestOwnerSchema = z.object({
+  userId: z.string(),
+  email: z.string(),
+  /** Live artifacts in their personal space. */
+  artifacts: z.number().int().positive(),
+  /** Any status: a guest who left still owns what they made. */
+  status: MemberStatusSchema,
+});
+export type GuestOwner = z.infer<typeof GuestOwnerSchema>;
+
+/**
+ * Me.notices.guestSummary, the org owner's install-wide view: counts only for
+ * shares (no titles, no guest emails), plus the guests who own artifacts.
+ */
+export const GuestSummaryNoticeSchema = z.object({
+  /** Guest shares above viewer on live artifacts, install-wide. */
+  shares: z.number().int().nonnegative(),
+  /** Distinct artifact owners those shares are on. */
+  owners: z.number().int().nonnegative(),
+  /** Most live artifacts first, at most GUEST_OWNERS_NOTICE_LIMIT. */
+  guestOwners: z.array(GuestOwnerSchema).max(GUEST_OWNERS_NOTICE_LIMIT),
+  /** More guest owners than listed. */
+  more: z.boolean(),
+});
+export type GuestSummaryNotice = z.infer<typeof GuestSummaryNoticeSchema>;
+
+/**
+ * Me.notices: one-time notices, on Access-only installs only. Each is absent
+ * when empty or dismissed (R.noticeDismiss), and Me.notices is absent when
+ * none is present.
+ */
+export const MeNoticesSchema = z.object({
+  /** Any non-guest member, for artifacts they own. Dismissed per user. */
+  guestShares: GuestSharesNoticeSchema.optional(),
+  /** The uncapped org owner only. Dismissed install-wide. */
+  guestSummary: GuestSummaryNoticeSchema.optional(),
+});
+export type MeNotices = z.infer<typeof MeNoticesSchema>;
+
+/**
  * Actions the caller may take on one artifact (ArtifactSummary.can). P3's
  * internal superset is PolicyAction, so ArtifactAction doesn't clash.
  */
@@ -206,7 +333,7 @@ export const ArtifactCanSchema = z.object({
   transfer: z.boolean(),
   /** Move into a shared space. */
   move: z.boolean(),
-  /** Live-data and storage writes, role-wise (the artifact still needs the capability). False for guests and restricted members; ordinary viewers keep it. */
+  /** Live-data and storage writes, role-wise (the artifact still needs the capability). False for guests and restricted members, and for viewers when the artifact's dataWriters is "editors"; other viewers keep it. */
   dataWrite: z.boolean(),
 });
 export type ArtifactCan = z.infer<typeof ArtifactCanSchema>;
@@ -217,10 +344,16 @@ export type HostedAccessLevel = "viewer" | "editor" | "manager" | "owner";
  * The action table (P3 "Actions per level") as one pure function, shared by
  * the server and the mocks. `personal`: the artifact is in a personal space.
  * `cap`: the caller's cap; a capped caller gets viewer actions minus data writes.
+ * `dataWriters`: the artifact's (#681); "editors" takes data writes from
+ * viewers, and so does leaving it out (fail closed).
  */
 export function artifactCan(
   level: HostedAccessLevel,
-  opts: { personal: boolean; cap?: CapReason | null },
+  opts: {
+    personal: boolean;
+    cap?: CapReason | null;
+    dataWriters?: "editors" | "viewers";
+  },
 ): ArtifactCan {
   const capped = opts.cap != null;
   const write = !capped && level !== "viewer";
@@ -232,6 +365,10 @@ export function artifactCan(
     delete: full,
     transfer: full && level === "owner" && opts.personal,
     move: full,
-    dataWrite: !capped,
+    // Undefined dataWriters reads as "editors" (fail closed), as the
+    // server's can() does.
+    dataWrite:
+      !capped &&
+      ((opts.dataWriters ?? "editors") === "viewers" || level !== "viewer"),
   };
 }

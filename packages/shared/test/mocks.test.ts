@@ -175,6 +175,14 @@ const rows: Row[] = [
   ["tokens", "POST", R.tokens, { label: "ci" }, 201, TokenCreatedSchema],
   [
     "token",
+    "PATCH",
+    R.token(fixtures.tokens[0]?.id as string),
+    { label: "work laptop" },
+    200,
+    TokenSchema,
+  ],
+  [
+    "token",
     "DELETE",
     R.token(fixtures.tokens[0]?.id as string),
     undefined,
@@ -188,6 +196,14 @@ const rows: Row[] = [
     undefined,
     200,
     z.array(OAuthClientSchema),
+  ],
+  [
+    "oauthClient",
+    "PATCH",
+    R.oauthClient(fixtures.oauthClients[0]?.grantId as string),
+    { label: "Claude on my laptop" },
+    200,
+    OAuthClientSchema,
   ],
   [
     "oauthClient",
@@ -391,6 +407,18 @@ describe("validation", () => {
     ["POST", R.members, { email: "a@b.co", role: "owner" }],
     ["PATCH", R.member(member), { role: "guest" }],
     ["POST", R.tokens, { label: "" }],
+    ["PATCH", R.token(fixtures.tokens[0]?.id as string), { label: null }],
+    ["PATCH", R.token(fixtures.tokens[0]?.id as string), { label: "\u202e" }],
+    [
+      "PATCH",
+      R.oauthClient(fixtures.oauthClients[0]?.grantId as string),
+      { label: "x".repeat(61) },
+    ],
+    [
+      "PATCH",
+      R.oauthClient(fixtures.oauthClients[0]?.grantId as string),
+      { label: "ok", clientName: "spoof" },
+    ],
     ["POST", R.versions(ID), {}],
   ])("%s %s bad body -> 400", async (m, p, b) => {
     fresh();
@@ -413,14 +441,46 @@ describe("not found", () => {
     ["PATCH", R.member(bad)],
     ["DELETE", R.member(bad)],
     ["DELETE", R.token(bad)],
+    ["PATCH", R.token(bad)],
     ["DELETE", R.oauthClient(bad)],
+    ["PATCH", R.oauthClient(bad)],
     ["DELETE", R.share(ID, "nobody@example.com")],
     ["GET", R.versions(bad)],
   ])("%s %s -> 404 not_found", async (m, p) => {
     fresh();
-    const r = await call(m, p, m === "PATCH" ? { role: "admin" } : undefined);
+    const patch = p.startsWith(R.members) ? { role: "admin" } : { label: "x" };
+    const r = await call(m, p, m === "PATCH" ? patch : undefined);
     expect(r.status).toBe(404);
     expect(Err.parse(await r.json()).error.code).toBe("not_found");
+  });
+});
+
+describe("agent labels", () => {
+  const grant = fixtures.oauthClients[0]?.grantId as string;
+  it("PATCH oauthClient strips controls, trims, lists it, and null clears it", async () => {
+    fresh();
+    const set = await json(
+      await call("PATCH", R.oauthClient(grant), {
+        label: " \u202eMy\u200b box ",
+      }),
+    );
+    expect(set.label).toBe("My box");
+    const listed = await json(await call("GET", R.oauthClients));
+    expect(listed[0].label).toBe("My box");
+    const cleared = await json(
+      await call("PATCH", R.oauthClient(grant), { label: null }),
+    );
+    expect(cleared).not.toHaveProperty("label");
+    expect(OAuthClientSchema.parse(cleared).clientName).toBe(
+      "Example MCP client",
+    );
+  });
+  it("PATCH token sets its label", async () => {
+    fresh();
+    const id = fixtures.tokens[0]?.id as string;
+    await call("PATCH", R.token(id), { label: "ci" });
+    const listed = await json(await call("GET", R.tokens));
+    expect(listed[0].label).toBe("ci");
   });
 });
 
@@ -524,6 +584,62 @@ describe("list query", () => {
     expect(await ids("?agent=nobody")).toEqual([]);
     expect(await ids("?q=Q4", R.search)).toEqual([pdf.id]);
   });
+  describe("agentVia", () => {
+    const GRANT = `g:${fixtures.oauthClients[0]?.grantId}`;
+    const TOKEN = `t:${fixtures.tokens[0]?.id}`;
+    const FOREIGN = ["g:SomeoneElses123", "t:SomeoneElses123"];
+    const from = (via: string) =>
+      fixtures.artifacts
+        .filter((a) => fixtures.agentVias[a.id]?.includes(via))
+        .map((a) => a.id);
+    const search = (via: string) => ids(`?q=e&agentVia=${via}`, R.search);
+
+    it("lists one connection, grant or token; anyone else's is an empty page", async () => {
+      fresh();
+      expect(await ids(`?agentVia=${GRANT}`)).toEqual(from(GRANT));
+      expect(from(GRANT)).toHaveLength(3);
+      expect(await ids(`?agentVia=${TOKEN}`)).toEqual(from(TOKEN));
+      expect(from(TOKEN)).toHaveLength(1);
+      for (const via of FOREIGN)
+        expect(await ids(`?agentVia=${via}`)).toEqual([]);
+    });
+
+    it("search narrows the same way", async () => {
+      fresh();
+      const all = await ids("?q=e", R.search);
+      const got = await search(GRANT);
+      expect(got.length).toBeGreaterThan(0);
+      expect(got.length).toBeLessThan(all.length);
+      expect(got.every((id: string) => from(GRANT).includes(id))).toBe(true);
+      for (const via of FOREIGN) expect(await search(via)).toEqual([]);
+    });
+
+    it("combines with the other filters", async () => {
+      fresh();
+      expect(await ids(`?agentVia=${GRANT}&format=pdf`)).toEqual([pdf.id]);
+      expect(await ids(`?agentVia=${TOKEN}&format=pdf`)).toEqual([]);
+    });
+
+    it("a malformed via, or a scrubbed row's marker, is 400 on list and search", async () => {
+      fresh();
+      for (const via of ["nope", "r:"]) {
+        for (const url of [
+          `${R.artifacts}?agentVia=${via}`,
+          `${R.search}?q=e&agentVia=${via}`,
+        ])
+          expect((await call("GET", url)).status).toBe(400);
+      }
+    });
+
+    it("a revoked grant matches nothing; a revoked token still matches", async () => {
+      fresh();
+      await call("DELETE", R.oauthClient(GRANT.slice(2)));
+      expect(await ids(`?agentVia=${GRANT}`)).toEqual([]);
+      await call("DELETE", R.token(TOKEN.slice(2)));
+      expect(await ids(`?agentVia=${TOKEN}`)).toEqual(from(TOKEN));
+    });
+  });
+
   it("limit + cursor", async () => {
     fresh();
     const p1 = await json(await call("GET", `${R.artifacts}?limit=2`));
@@ -588,6 +704,29 @@ describe("round 3", () => {
     });
     expect(r.status).toBe(400);
     expect(Err.parse(await r.json()).error.code).toBe("bad_request");
+  });
+});
+
+describe("REST create with an id (#792 E)", () => {
+  it("an unknown, unreserved id is 400 not_reserved; an id R.uploads reserved creates", async () => {
+    fresh();
+    const id = "Zq3nPqRsTu5vWxYz";
+    const base = { title: "t", format: "html", content: "x" };
+    const r = await call("POST", R.artifacts, { ...base, id });
+    expect(r.status).toBe(400);
+    expect(Err.parse(await r.json()).error).toMatchObject({
+      code: "bad_request",
+      details: { path: "id", reason: "not_reserved" },
+    });
+    const up = (await (
+      await call("POST", R.uploads, {
+        path: "a.png",
+        size: 10,
+        contentType: "image/png",
+      })
+    ).json()) as { artifactId: string };
+    const ok = await call("POST", R.artifacts, { ...base, id: up.artifactId });
+    expect(ok.status).toBe(201);
   });
 });
 

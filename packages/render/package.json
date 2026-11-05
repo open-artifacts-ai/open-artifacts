@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@oa/shared": "workspace:*",
+    "@oa/ui": "workspace:*",
     "@shikijs/langs": "4.5.0",
     "markdown-it": "^14.3.3",
     "markdown-it-footnote": "^4.0.0",

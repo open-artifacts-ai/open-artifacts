@@ -53,6 +53,42 @@ export const users = sqliteTable(
      */
     restrictedManual: integer("restricted_manual").notNull().default(0),
     restrictedSync: integer("restricted_sync").notNull().default(0),
+    /**
+     * 1 only for a guest deactivated because their last share went (status
+     * 'removed'): the one removal a new share undoes (putShare). An admin or
+     * directory removal clears it, so that removal sticks (P3 T6). Its
+     * CHECK (0 or 1) is inline in the ADD COLUMN (hand-edited migration): a
+     * table-level check here would make drizzle-kit rebuild the table.
+     */
+    guestLapsed: integer("guest_lapsed").notNull().default(0),
+    /**
+     * When status last changed (ms; null = never). An OAuth grant issued at
+     * or before it is refused, so a grant minted during a suspension, or
+     * missed by the KV revocation, never survives an unsuspend (P3 T6).
+     */
+    statusChangedAt: integer("status_changed_at"),
+    /**
+     * 1 after an admin reset the user's Google link (resetIdentity): the next
+     * directory users page that lists a Google user at this address relinks
+     * this same row (applyUsers) instead of treating the address as recycled.
+     * Cleared by whichever links the row first: that relink, or the user's
+     * own Google sign-in (googleLinkStmts). Only read while the row has no
+     * Google identity.
+     */
+    googleRelink: integer("google_relink").notNull().default(0),
+    /**
+     * 1 while the row is removed because directory sync removed it (a
+     * directory_* reason in setUserStatus). Any other status change and a
+     * restore clear it. Restore refuses it (409 directory_managed) while
+     * Google sync is on: the next sync would remove them again.
+     */
+    removedBySync: integer("removed_by_sync").notNull().default(0),
+    /**
+     * When an admin erased this removed person (ms; null = never, #1204).
+     * The row stays (its id is authorship), under the placeholder address
+     * with no name. Never cleared: an erased row is never restored.
+     */
+    erasedAt: integer("erased_at"),
   },
   () => [check("users_role_check", inList("role", RoleSchema.options))],
 );
@@ -85,6 +121,11 @@ export const spaces = sqliteTable(
     deletedAt: integer("deleted_at"),
   },
   (t) => [
+    // GET R.spaces: shared spaces by name, without walking personal ones.
+    // Partial, so a user insert (its personal space) writes no index entry.
+    index("spaces_kind_name_idx")
+      .on(t.kind, t.name, t.id)
+      .where(sql`${t.kind} = 'shared'`),
     check("spaces_kind_check", inList("kind", SpaceKindSchema.options)),
     check(
       "spaces_all_members_role_check",
@@ -158,10 +199,46 @@ export const orgGroupMappings = sqliteTable(
   ],
 );
 
+// A space member an admin edited by hand while sync was frozen (Team), first
+// edit wins. kind: override (a synced row changed; manual_role is the manual
+// row from before it, null: none, and the thaw puts it back), delete (an
+// explicit removal: final, the manual row stays as it is), manual (a manual
+// row on a pair with no synced row: kept). The first reconcile after sync
+// returns derives the synced role again, audits the outcome and deletes the
+// row (P3 T15).
+export const frozenEdits = sqliteTable(
+  "frozen_edits",
+  {
+    spaceId: text("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    at: integer("at").notNull(),
+    /** override: the pair's manual role before the first frozen edit; null: none. */
+    manualRole: text("manual_role"),
+    kind: text("kind").notNull().default("override"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.spaceId, t.userId] }),
+    check(
+      "frozen_edits_manual_role_check",
+      sql`${t.manualRole} is null or ${t.manualRole} in ('viewer', 'editor', 'manager')`,
+    ),
+    check(
+      "frozen_edits_kind_check",
+      sql`${t.kind} in ('override', 'delete', 'manual')`,
+    ),
+  ],
+);
+
 // Groups whose members are capped at viewer on every surface (P3 T14).
 export const restrictedGroups = sqliteTable("restricted_groups", {
   groupId: text("group_id").primaryKey(),
   groupEmail: text("group_email").notNull(),
+  /** When the group was restricted (ms); null for rows written before P3 T9. */
+  createdAt: integer("created_at"),
 });
 
 // Raw directory rows from the last successful read: a parent_ids list resolves
@@ -212,6 +289,11 @@ export const auditEvents = sqliteTable(
     targetId: text("target_id"),
     spaceId: text("space_id"),
     detail: text("detail").notNull().default("{}"),
+    // The credential behind a user's action (#803): its kind (session, pat,
+    // oauth_grant, system) and id (session issue key, PAT id, grant id),
+    // never the token. Null outside a request (cron, sync, alarms).
+    actorCredKind: text("actor_cred_kind"),
+    actorCredId: text("actor_cred_id"),
   },
   (t) => [index("audit_events_at_idx").on(t.at)],
 );
@@ -242,6 +324,13 @@ export const artifacts = sqliteTable(
     allowAnonymousWrites: integer("allow_anonymous_writes")
       .notNull()
       .default(0),
+    /**
+     * #681: who may change live data, "viewers" (anyone who can view) or
+     * "editors" (editor level and up). The CHECK is inline in 0014's ADD
+     * COLUMN. allow_anonymous_writes is kept in step (viewers 1, editors 0)
+     * for one release, so a rollback keeps public pages as they were.
+     */
+    dataWriters: text("data_writers").notNull().default("viewers"),
     hasThumbnail: integer("has_thumbnail").notNull().default(0),
     /** The version thumbs/{id}.webp depicts; null = unknown (pre-0005) or none. */
     thumbnailVersion: integer("thumbnail_version"),
@@ -275,6 +364,10 @@ export const artifacts = sqliteTable(
     index("artifacts_space_live_idx")
       .on(t.spaceId)
       .where(sql`${t.deletedAt} is null`),
+    // A shared space's trash (R.trash), newest deleted first.
+    index("artifacts_space_deleted_idx")
+      .on(t.spaceId, t.deletedAt)
+      .where(sql`${t.deletedAt} is not null`),
     check(
       "artifacts_allow_anon_check",
       sql`${t.allowAnonymousWrites} in (0, 1)`,
@@ -306,11 +399,22 @@ export const versions = sqliteTable(
     message: text("message"),
     agentName: text("agent_name"),
     agentVersion: text("agent_version"),
+    // The grant or token that published this version: `g:<grantId>` or
+    // `t:<tokenId>` (NULL: a session, or written before 0012; `r:`: a private
+    // label scrubbed when its publisher's row was deleted, SCRUBBED_VIA).
+    agentVia: text("agent_via"),
     createdBy: text("created_by")
       .notNull()
       .references(() => users.id),
     createdAt: integer("created_at").notNull(),
     textIndexed: integer("text_indexed").notNull().default(0),
+    /**
+     * 1: the DO dropped this version's index job after INDEX_MAX_ATTEMPTS
+     * (index_failed), so the lost-job sweep skips it. Undelete resets it.
+     */
+    indexFailed: integer("index_failed").notNull().default(0),
+    /** 1: this version's server thumbnail job ended no_thumb; the pdf sweep skips it. */
+    thumbFailed: integer("thumb_failed").notNull().default(0),
     // NULL only on rows written before 0002 (or by pre-0002 code): readers fall
     // back to artifacts.format.
     format: text("format"),
@@ -352,7 +456,82 @@ export const tokens = sqliteTable("tokens", {
   createdAt: integer("created_at").notNull(),
   lastUsedAt: integer("last_used_at"),
   revokedAt: integer("revoked_at"),
+  // Versions published with this token (+1 in the publish batch).
+  versionsPublished: integer("versions_published").notNull().default(0),
 });
+
+// #1291 the bus: one row per machine a member approved through the device
+// flow. token_hash is the sha256 of its bus-only `oa_machine_...` token (the
+// token itself is never stored). Revoked rows stay (revoked_at) so the
+// Machines list can show them; erase deletes them.
+export const busMachines = sqliteTable(
+  "bus_machines",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    label: text("label").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdAt: integer("created_at").notNull(),
+    lastUsedAt: integer("last_used_at"),
+    revokedAt: integer("revoked_at"),
+  },
+  (t) => [index("bus_machines_user_idx").on(t.userId, t.revokedAt)],
+);
+
+// #1291 pending device-flow codes, 10 minutes each. device_code_hash is the
+// sha256 of the CLI's polling secret; user_code is the short code the person
+// sees on the approval page (useless without a session that can connect).
+// user_id/approved_at or denied_at are set by the approval page; the poll
+// that redeems an approved code deletes the row in the same batch that
+// inserts the machine.
+export const busDeviceCodes = sqliteTable(
+  "bus_device_codes",
+  {
+    id: text("id").primaryKey(),
+    deviceCodeHash: text("device_code_hash").notNull().unique(),
+    userCode: text("user_code").notNull().unique(),
+    label: text("label").notNull(),
+    ipTag: text("ip_tag").notNull(),
+    // Where the request came from, shown on the confirm screen: the
+    // two-letter country (cf.country) and a readable network name
+    // (cf.asOrganization), never the IP or an ASN number. Null: unknown.
+    originCountry: text("origin_country"),
+    originNetwork: text("origin_network"),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    lastPollAt: integer("last_poll_at"),
+    userId: text("user_id").references(() => users.id),
+    approvedAt: integer("approved_at"),
+    deniedAt: integer("denied_at"),
+  },
+  (t) => [
+    index("bus_device_codes_expires_idx").on(t.expiresAt),
+    index("bus_device_codes_ip_idx").on(t.ipTag, t.expiresAt),
+    index("bus_device_codes_user_idx").on(t.userId),
+  ],
+);
+
+// Per OAuth grant, what the grant record (OAUTH_KV) doesn't hold: the owner's
+// label and usage. Created on first use, label or publish (upserts); the KV
+// grant list stays the source of which grants exist.
+export const agentGrants = sqliteTable(
+  "agent_grants",
+  {
+    grantId: text("grant_id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    label: text("label"),
+    // Written at most once a minute (conditional upsert, waitUntil).
+    lastUsedAt: integer("last_used_at"),
+    clientVersion: text("client_version"),
+    versionsPublished: integer("versions_published").notNull().default(0),
+  },
+  // Member removal deletes by user_id.
+  (t) => [index("agent_grants_user_idx").on(t.userId)],
+);
 
 export const uploads = sqliteTable("uploads", {
   id: text("id").primaryKey(),
@@ -383,6 +562,28 @@ export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
 });
+
+// The OAuth provider's key-value records (grants, tokens, clients, consent
+// transactions, OIDC replay markers) when OAUTH_STORE is dual or d1
+// (mcp/oauth-store.ts): KV's shape in the install's own D1. `key` uses the
+// BINARY collation, so listing by prefix walks KV's byte order. WITHOUT ROWID
+// (hand-edited into 0020): one b-tree, one row written per put. expires_at is
+// unix seconds (null: never); a read treats a row past it as missing, and the
+// nightly cron deletes such rows. metadata is the KV key metadata (JSON).
+export const oauthKv = sqliteTable(
+  "oauth_kv",
+  {
+    key: text("key").primaryKey(),
+    value: text("value").notNull(),
+    expiresAt: integer("expires_at"),
+    metadata: text("metadata"),
+  },
+  (t) => [
+    index("oauth_kv_exp")
+      .on(t.expiresAt)
+      .where(sql`${t.expiresAt} is not null`),
+  ],
+);
 
 // Small D1 counters and markers (e.g. daily OAuth client registrations), kept
 // out of KV because KV writes are the scarcer Free-plan quota.
@@ -433,4 +634,48 @@ export const loginCodes = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (t) => [primaryKey({ columns: [t.emailKey, t.requestId] })],
+);
+
+// Collaboration suite (#1292): an agent address in the member's bus follows
+// an artifact. Read access is checked at follow time and again per notice; a
+// follow that fails it then is deleted. Soft delete removes an artifact's
+// follows; purge and the user cascade cover the rest. last_notice_at: when
+// the last `changed` notice to this address was due (ms), for the one per
+// minute window.
+export const follows = sqliteTable(
+  "follows",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    namespace: text("namespace").notNull(),
+    agentName: text("agent_name").notNull(),
+    createdAt: integer("created_at").notNull(),
+    lastNoticeAt: integer("last_notice_at"),
+  },
+  (t) => [
+    primaryKey({
+      columns: [t.userId, t.artifactId, t.namespace, t.agentName],
+    }),
+    index("follows_artifact_idx").on(t.artifactId),
+    index("follows_address_idx").on(t.userId, t.namespace, t.agentName),
+  ],
+);
+
+// The member's "agents that get share notices" (#1292): bus addresses, none
+// by default (a `shared` notice with none picked is dropped).
+export const shareNoticeAgents = sqliteTable(
+  "share_notice_agents",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    namespace: text("namespace").notNull(),
+    agentName: text("agent_name").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.namespace, t.agentName] })],
 );

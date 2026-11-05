@@ -234,6 +234,14 @@ describe("async search indexing (C3)", () => {
       attempts: INDEX_MAX_ATTEMPTS,
     });
     expect(await found(`retryword${tag}`)).toEqual([]);
+    // Marked, so the lost-job sweep skips it.
+    expect(
+      await env.DB.prepare(
+        "select index_failed f from versions where artifact_id = ? and version = 1",
+      )
+        .bind(a.id)
+        .first("f"),
+    ).toBe(1);
 
     // A retry that succeeds indexes.
     fail = false;

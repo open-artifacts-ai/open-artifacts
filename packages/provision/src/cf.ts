@@ -3,6 +3,7 @@
 // from an install id. Errors carry method, route, status and Cloudflare's own
 // error text, never a request body, header or token.
 import { createHash } from "node:crypto";
+import { CfError } from "./jobs.js";
 import type { UploadMetadata } from "./metadata.js";
 import { assertAssetPath } from "./release.js";
 
@@ -11,20 +12,7 @@ const TRIES = 3;
 
 export type Target = { kind: "account" } | { kind: "namespace"; ns: string };
 
-export class CfError extends Error {
-  override name = "CfError";
-  constructor(
-    readonly method: string,
-    readonly route: string,
-    readonly status: number,
-    /** Cloudflare's error codes and messages (never the request body). */
-    readonly cfMessage: string,
-  ) {
-    super(
-      `Cloudflare ${method} ${route}: HTTP ${status}${cfMessage ? ` (${cfMessage})` : ""}`,
-    );
-  }
-}
+export { CfError } from "./jobs.js";
 
 export interface Module {
   name: string;
@@ -58,6 +46,8 @@ export interface TurnstileWidget {
   name: string;
   domains: string[];
   mode?: string;
+  /** Only on a single-widget GET; never printed. */
+  secret?: string;
 }
 
 export interface Cf {
@@ -68,6 +58,8 @@ export interface Cf {
   d1Create(name: string): Promise<string>;
   d1Get(name: string): Promise<string | null>;
   d1Query(id: string, sql: string, params?: unknown[]): Promise<D1Result[]>;
+  /** GET .../time_travel/bookmark: where the database is now. Read-only. */
+  d1Bookmark(id: string): Promise<string>;
   /** REST batch: the statements run as one transaction (all or none). */
   d1Batch(
     id: string,
@@ -101,7 +93,14 @@ export interface Cf {
     name: string,
     text: string,
   ): Promise<void>;
+  secretDelete(t: Target, script: string, name: string): Promise<void>;
   secretList(t: Target, script: string): Promise<string[]>;
+  /**
+   * GET the script's settings (read-only): the bindings it runs with,
+   * plain_text and json with their values, secrets by name and type only.
+   * verify_clean reads it (design v7 5.2 e).
+   */
+  scriptSettings(t: Target, script: string): Promise<ScriptSettings>;
   scriptSubdomain(
     t: Target,
     script: string,
@@ -110,40 +109,39 @@ export interface Cf {
   /**
    * Upload session on the target's route, buckets on the account route;
    * returns the completion jwt. Paths are relative; a dotfile, dot-directory
-   * or other unsafe path is refused before any call.
+   * or other unsafe path is refused before any call. The manifest is built
+   * from each file's hash; a file is read only for the bucket Cloudflare asks
+   * for it in, so at most one bucket is held.
    */
   assetsUpload(
     t: Target,
     script: string,
-    files: readonly { path: string; bytes: Uint8Array }[],
+    files: readonly AssetFile[],
   ): Promise<{ jwt: string }>;
   /** GET a Turnstile widget by sitekey (read-only); null when there is none. */
   turnstileWidget(sitekey: string): Promise<TurnstileWidget | null>;
+  /** Every Turnstile widget on the account (no secrets), paginated. */
+  turnstileList(): Promise<TurnstileWidget[]>;
   /**
-   * R2 objects in an env's releases bucket (platformNames(env).releases),
+   * POST a widget (turnstile-init only), one try: a lost reply may still have
+   * created it, so the caller lists by name before any retry.
+   */
+  turnstileCreate(w: {
+    name: string;
+    domains: string[];
+    mode: "managed";
+  }): Promise<{ sitekey: string; secret: string }>;
+  /**
+   * Reads of an env's releases bucket (platformNames(env).releases),
    * account-scoped REST routes only. null when the object does not exist.
+   * H-S3: there is no REST write here; publish writes go through R2's S3 API
+   * (r2s3.ts), the only endpoint that enforces conditional PutObject.
    */
   r2ObjectGet(
     bucket: string,
     key: string,
     opts?: { maxBytes?: number },
   ): Promise<{ bytes: Uint8Array; etag: string } | null>;
-  /** Deletes a probe/<32 hex> key only (probeR2Conditionals); any other key is refused. */
-  r2ObjectDelete(bucket: string, key: string): Promise<void>;
-  r2ObjectHead(
-    bucket: string,
-    key: string,
-  ): Promise<{ size: number; etag: string } | null>;
-  /**
-   * A conditional PUT; a failed condition is a CfError with status 412. A
-   * 412 on a retry is accepted only when the object holds exactly `bytes`.
-   */
-  r2ObjectPut(
-    bucket: string,
-    key: string,
-    bytes: Uint8Array,
-    cond: R2PutCondition,
-  ): Promise<void>;
   /** One page of keys under `prefix`; pass `cursor` back for the next page. */
   r2ObjectList(
     bucket: string,
@@ -155,9 +153,6 @@ export interface Cf {
   /** Deletes one object from an install's own bucket; any other bucket is refused. */
   r2InstallDeleteObject(bucket: string, key: string): Promise<void>;
 }
-
-/** The only keys r2ObjectDelete may delete: probeR2Conditionals' throwaway keys. */
-const PROBE_KEY = /^probe\/[0-9a-f]{32}$/;
 
 /** The only buckets the R2 object calls touch: the releases bucket of an env. */
 const RELEASES_BUCKET = /^oa-[sp]-releases$/;
@@ -173,8 +168,75 @@ const installBucket = (bucket: string) => {
 };
 
 /** Manifest hash: the first 32 hex characters of SHA-256 (64 is rejected). */
-export function assetHash(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex").slice(0, 32);
+/**
+ * The Content-Type an asset is served with: Cloudflare serves each asset with
+ * the type its upload part carried, so an untyped upload is served with none
+ * (and the browser, under nosniff, shows the HTML as text). These are the
+ * types Wrangler gives prod (measured 2026-10-26).
+ */
+const ASSET_TYPES: Record<string, string> = {
+  html: "text/html",
+  js: "text/javascript",
+  mjs: "text/javascript",
+  css: "text/css",
+  svg: "image/svg+xml",
+  ico: "image/vnd.microsoft.icon",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  woff2: "font/woff2",
+  woff: "font/woff",
+  json: "application/json",
+  webmanifest: "application/manifest+json",
+  txt: "text/plain",
+  xml: "application/xml",
+};
+
+const extOf = (path: string) => {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const i = name.lastIndexOf(".");
+  return i > 0 ? name.slice(i + 1).toLowerCase() : "";
+};
+
+export function assetContentType(path: string): string {
+  return ASSET_TYPES[extOf(path)] ?? "application/octet-stream";
+}
+
+/** A live binding as the settings GET reports it (other fields kept as given). */
+export interface SettingsBinding {
+  name: string;
+  type: string;
+  text?: string;
+  json?: unknown;
+  [k: string]: unknown;
+}
+
+export interface ScriptSettings {
+  bindings: SettingsBinding[];
+}
+
+/**
+ * One asset to upload: its size and assetHash, from the caller's verify
+ * read, and its bytes, read only if Cloudflare asks for the file in a bucket.
+ */
+export interface AssetFile {
+  path: string;
+  size: number;
+  hash: string;
+  bytes: () => Promise<Uint8Array>;
+}
+
+/**
+ * Over the base64 bytes and the extension, as Wrangler hashes: the same bytes
+ * under another type are another asset, so a type fix re-uploads the file.
+ */
+export function assetHash(bytes: Uint8Array, path: string): string {
+  return createHash("sha256")
+    .update(Buffer.from(bytes).toString("base64") + extOf(path))
+    .digest("hex")
+    .slice(0, 32);
 }
 
 const seg = (s: string) => encodeURIComponent(s);
@@ -205,10 +267,12 @@ type CallInit = {
   binary?: boolean;
   /** With binary: abort (no retry) once the body exceeds this many bytes. */
   maxBytes?: number;
+  /** One try only: a create that is not idempotent (the caller re-lists first). */
+  once?: boolean;
 };
 
 /** The body, refused as soon as it passes `max` bytes (content-length or streamed). */
-async function readCapped(
+export async function readCapped(
   res: Response,
   max: number,
   route: string,
@@ -281,7 +345,7 @@ export function cfClient(o: {
       body = JSON.stringify(init.json);
     }
     let last: CfError | undefined;
-    for (let i = 0; i < TRIES; i++) {
+    for (let i = 0; i < (init.once ? 1 : TRIES); i++) {
       if (i > 0) await sleep(500 * 2 ** (i - 1));
       let res: Response;
       try {
@@ -375,6 +439,15 @@ export function cfClient(o: {
         } else if (r.length < per) return null;
       }
       throw new Error("D1 database listing did not end after 100 pages");
+    },
+    async d1Bookmark(id) {
+      const r = await result<{ bookmark?: unknown }>(
+        "GET",
+        `${acct}/d1/database/${seg(id)}/time_travel/bookmark`,
+      );
+      if (typeof r?.bookmark !== "string" || r.bookmark === "")
+        throw new Error("D1 answered no bookmark");
+      return r.bookmark;
     },
     d1Query: (id, sql, params = []) =>
       result<D1Result[]>("POST", `${acct}/d1/database/${seg(id)}/query`, {
@@ -489,6 +562,12 @@ export function cfClient(o: {
         json: { name, text, type: "secret_text" },
       });
     },
+    async secretDelete(t, script, name) {
+      await call(
+        "DELETE",
+        `${acct}${scriptBase(t, script)}/secrets/${seg(name)}`,
+      );
+    },
     async secretList(t, script) {
       const r = await result<{ name: string }[]>(
         "GET",
@@ -496,23 +575,40 @@ export function cfClient(o: {
       );
       return r.map((s) => s.name);
     },
+    async scriptSettings(t, script) {
+      const r = await result<{ bindings?: unknown }>(
+        "GET",
+        `${acct}${scriptBase(t, script)}/settings`,
+      );
+      const b = r?.bindings;
+      if (
+        !Array.isArray(b) ||
+        b.some(
+          (x) => typeof x?.name !== "string" || typeof x?.type !== "string",
+        )
+      )
+        throw new Error(`the settings of ${script} have no bindings list`);
+      return { bindings: b as SettingsBinding[] };
+    },
     async scriptSubdomain(t, script, body) {
       await call("POST", `${acct}${scriptBase(t, script)}/subdomain`, {
         json: body,
       });
     },
     async assetsUpload(t, script, list) {
-      const files = new Map<string, Uint8Array>();
+      const files = new Map<string, AssetFile>();
       const manifest: Record<string, { hash: string; size: number }> = {};
       for (const f of list) {
         assertAssetPath(f?.path);
         const key = `/${f.path}`;
         if (Object.hasOwn(manifest, key))
           throw new Error(`asset path ${f.path} appears twice`);
-        const bytes = f.bytes;
-        const hash = assetHash(bytes);
-        manifest[key] = { hash, size: bytes.byteLength };
-        files.set(hash, bytes);
+        if (!/^[0-9a-f]{32}$/.test(String(f.hash)))
+          throw new Error(`asset ${f.path} has no valid hash`);
+        if (!Number.isSafeInteger(f.size) || f.size < 0)
+          throw new Error(`asset ${f.path} has no valid size`);
+        manifest[key] = { hash: f.hash, size: f.size };
+        files.set(f.hash, f);
       }
       const sess = await result<{ jwt: string; buckets?: string[][] }>(
         "POST",
@@ -527,10 +623,23 @@ export function cfClient(o: {
       for (const [i, bucket] of buckets.entries()) {
         const form = new FormData();
         for (const h of bucket) {
-          const bytes = files.get(h);
-          if (!bytes)
+          const file = files.get(h);
+          if (!file)
             throw new Error("assets session asked for an unknown file");
-          form.append(h, Buffer.from(bytes).toString("base64"));
+          const bytes = await file.bytes();
+          if (
+            bytes.byteLength !== file.size ||
+            assetHash(bytes, file.path) !== h
+          )
+            throw new Error(`asset ${file.path} changed since its hash`);
+          // The part's Content-Type is what Cloudflare serves the asset with.
+          form.append(
+            h,
+            new Blob([Buffer.from(bytes).toString("base64")], {
+              type: assetContentType(file.path),
+            }),
+            h,
+          );
         }
         // Always the account route, even for a namespace script.
         const r = await call(
@@ -561,68 +670,6 @@ export function cfClient(o: {
       );
       if (r.status === 404) return null;
       return { bytes: r.bytes ?? new Uint8Array(), etag: etagOf(r.headers) };
-    },
-    async r2ObjectDelete(bucket, key) {
-      // R-N1: only probeR2Conditionals' throwaway keys; a release object or
-      // floor.json is never deleted through this client.
-      if (typeof key !== "string" || !PROBE_KEY.test(key))
-        throw new Error(
-          "r2ObjectDelete only deletes the R2 probe's throwaway keys (probe/<32 hex>)",
-        );
-      await call("DELETE", r2Path(bucket, key), {}, [404]);
-    },
-    async r2ObjectHead(bucket, key) {
-      const r = await call("HEAD", r2Path(bucket, key), {}, [404]);
-      if (r.status === 404) return null;
-      const size = Number(r.headers.get("content-length"));
-      if (!Number.isSafeInteger(size) || size < 0)
-        throw new CfError("HEAD", r2Path(bucket, key), r.status, "no size");
-      return { size, etag: etagOf(r.headers) };
-    },
-    async r2ObjectPut(bucket, key, bytes, cond) {
-      const headers: Record<string, string> =
-        "ifNoneMatch" in cond && cond.ifNoneMatch === "*"
-          ? { "if-none-match": "*" }
-          : "ifMatch" in cond &&
-              typeof cond.ifMatch === "string" &&
-              cond.ifMatch !== ""
-            ? { "if-match": `"${cond.ifMatch}"` }
-            : (() => {
-                throw new Error("an R2 put needs If-None-Match: * or If-Match");
-              })();
-      const path = r2Path(bucket, key);
-      const r = await call(
-        "PUT",
-        path,
-        {
-          body: bytes as BodyInit,
-          headers: { ...headers, "content-type": "application/octet-stream" },
-        },
-        [412],
-      );
-      if (r.status !== 412) return;
-      // M2: a 412 on a retry may be our own lost write. Accept it only when
-      // the object now holds exactly these bytes; a first-try 412 never is.
-      if (r.attempt > 0) {
-        const cur = await call(
-          "GET",
-          path,
-          { binary: true, maxBytes: bytes.length },
-          [404],
-        ).catch(() => null);
-        if (
-          cur?.status === 200 &&
-          cur.bytes &&
-          Buffer.from(cur.bytes).equals(Buffer.from(bytes))
-        )
-          return;
-      }
-      throw new CfError(
-        "PUT",
-        path.split("?")[0] as string,
-        412,
-        "precondition failed",
-      );
     },
     async r2ObjectList(bucket, prefix, cursor) {
       if (!RELEASES_BUCKET.test(bucket))
@@ -695,6 +742,43 @@ export function cfClient(o: {
       if (r.status === 404) return null;
       return ((r.body as { result?: TurnstileWidget })?.result ??
         null) as TurnstileWidget | null;
+    },
+    async turnstileList() {
+      const out: TurnstileWidget[] = [];
+      for (let page = 1; page <= 50; page++) {
+        const { body } = await call(
+          "GET",
+          `${acct}/challenges/widgets?per_page=50&page=${page}`,
+        );
+        const b = body as {
+          result?: TurnstileWidget[];
+          result_info?: { total_pages?: unknown };
+        };
+        for (const w of b?.result ?? []) {
+          if (typeof w?.sitekey !== "string" || typeof w?.name !== "string")
+            throw new Error("Turnstile listing has a malformed entry");
+          out.push({
+            sitekey: w.sitekey,
+            name: w.name,
+            domains: Array.isArray(w.domains) ? w.domains.map(String) : [],
+            ...(typeof w.mode === "string" ? { mode: w.mode } : {}),
+          });
+        }
+        const pages = Number(b?.result_info?.total_pages ?? 1);
+        if (!Number.isFinite(pages) || page >= pages) return out;
+      }
+      throw new Error("Turnstile listing did not end");
+    },
+    async turnstileCreate(w) {
+      const { body } = await call("POST", `${acct}/challenges/widgets`, {
+        json: { name: w.name, domains: w.domains, mode: w.mode },
+        once: true,
+      });
+      const r = (body as { result?: { sitekey?: unknown; secret?: unknown } })
+        ?.result;
+      if (typeof r?.sitekey !== "string" || typeof r?.secret !== "string")
+        throw new Error("Turnstile create returned no sitekey or secret");
+      return { sitekey: r.sitekey, secret: r.secret };
     },
   };
 }

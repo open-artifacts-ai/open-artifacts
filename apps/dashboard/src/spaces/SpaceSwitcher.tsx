@@ -15,6 +15,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { type MouseEvent, useState } from "react";
 import { hasFeature } from "../api/contract";
 import { useMe } from "../auth/useMe";
+import { sharedSpaceName } from "./label";
 
 const VISIBLE = 8;
 
@@ -83,7 +84,7 @@ export function SpaceSwitcher({ path }: { path: string }) {
               <SpaceLink
                 key={s.id}
                 id={s.id}
-                label={s.name}
+                label={sharedSpaceName(s.name)}
                 active={here(s.id)}
               />
             ))}

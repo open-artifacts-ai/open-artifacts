@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { NAMESPACES, platformNames } from "@oa/provision";
+import { HOSTED_DOMAINS, NAMESPACES, platformNames } from "@oa/provision";
 import { describe, expect, it } from "vitest";
 
 const app = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -28,7 +28,21 @@ describe("wrangler.jsonc", () => {
     for (const env of ENVS) {
       const e = cfg.env[env];
       expect(e.name).toBe(platformNames(env).dispatch);
-      expect(e.vars).toEqual({ OA_ENV: env });
+      expect(e.main).toBe("src/index.ts");
+      const zone = HOSTED_DOMAINS[env].app;
+      expect(e.vars).toEqual({
+        OA_ENV: env,
+        AUTH_BROKER_ORIGIN: `https://auth.${zone}`,
+        DIRECTORY_BROKER_ORIGIN: `https://directory.${zone}`,
+      });
+      // The gate's bindings: this env's two brokers, never the other env's.
+      expect(e.services).toEqual([
+        { binding: "AUTH_BROKER", service: platformNames(env).broker },
+        {
+          binding: "DIRECTORY_BROKER",
+          service: platformNames(env).directoryBroker,
+        },
+      ]);
       expect(e.dispatch_namespaces).toEqual([
         { binding: "DISPATCHER", namespace: NAMESPACES[env] },
       ]);
@@ -55,6 +69,7 @@ describe("wrangler.jsonc", () => {
   it("has no top-level name, bindings or vars (a deploy without --env can't run)", () => {
     for (const k of [
       "name",
+      "main",
       "vars",
       "kv_namespaces",
       "dispatch_namespaces",
@@ -84,7 +99,16 @@ const wrangler = (args: string[]) =>
 describe("bundle", () => {
   it("wrangler deploy without --env is refused", () => {
     const out = mkdtempSync(join(tmpdir(), "oa-dispatch-"));
-    expect(() => wrangler(["--outdir", out])).toThrow(/name of your worker/);
+    expect(() => wrangler(["--outdir", out])).toThrow(
+      /name of your worker|entry-point/,
+    );
+  });
+
+  it("wrangler deploy --name without --env is refused too (no top-level main)", () => {
+    const out = mkdtempSync(join(tmpdir(), "oa-dispatch-"));
+    expect(() =>
+      wrangler(["--name", platformNames("prod").dispatch, "--outdir", out]),
+    ).toThrow(/entry-point/);
   });
 
   it("wrangler deploy --dry-run is under 50 KB per env", () => {

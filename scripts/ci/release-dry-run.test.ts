@@ -131,6 +131,17 @@ describe("ci.yml no-test-hooks job", () => {
       /pnpm check-no-test-hooks "\$RUNNER_TEMP\/release-bundle"/,
     );
   });
+  it("runs check-no-fake-idp on the same bundle, after the hooks check, behind the same gate", () => {
+    const i = steps.findIndex((st) =>
+      (st.run ?? "").includes("pnpm check-no-test-hooks"),
+    );
+    const j = steps.findIndex(
+      (st) => st.run === 'pnpm check-no-fake-idp "$RUNNER_TEMP/release-bundle"',
+    );
+    expect(i).toBeGreaterThan(-1);
+    expect(j).toBeGreaterThan(i);
+    expect(steps[j]?.if).toBe(steps[i]?.if);
+  });
   it("cannot be skipped: no continue-on-error, job-level if or needs", () => {
     expect(job).toBeDefined();
     expect(job["continue-on-error"]).toBeUndefined();
@@ -164,6 +175,26 @@ describe("ci.yml no-test-hooks job", () => {
           /exit 0/.test(st.run ?? ""),
       ),
     ).toBe(true);
+  });
+  // P3 T17 (#602): the test-hook strip test builds both variants and must
+  // run here, where the builds work, and never skip.
+  it("runs the test-hook strip test after the real-build pin, required and gated", () => {
+    expect(job).toBeDefined();
+    const names = steps.map((st) => (st as { name?: string }).name ?? "");
+    const pin = names.indexOf("Real-build pin test");
+    const strip = names.indexOf("Test-hook strip test");
+    expect(pin).toBeGreaterThan(-1);
+    expect(strip).toBeGreaterThan(pin);
+    const st = steps[strip] as {
+      run?: string;
+      if?: string;
+      env?: Record<string, string>;
+    };
+    expect(st.run).toBe(
+      "pnpm --filter @oa/server exec vitest run -c vitest.node.config.ts test/node/test-hooks-strip.test.ts",
+    );
+    expect(st.env).toEqual({ OA_REQUIRE_REAL_BUILD: "1" });
+    expect(st.if).toContain("steps.ro.outputs.release_only != 'true'");
   });
   it("uses the same checkout, pnpm and node setup as the other jobs", () => {
     expect(job).toBeDefined();

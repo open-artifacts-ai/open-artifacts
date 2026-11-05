@@ -26,6 +26,7 @@ vi.mock("../src/viewer/bridge", async () => {
         dispose: () => {},
         requestThumbnail: () => {},
         setTheme: () => {},
+        setArtifact: () => {},
       };
     },
   };
@@ -122,6 +123,7 @@ describe("viewer shell review", () => {
       http.get("*/api/v1/artifacts/:id/content-url", () =>
         HttpResponse.json({
           url: `${location.origin}/api/v1/me`,
+          version: 1,
           expiresAt: null,
         }),
       ),

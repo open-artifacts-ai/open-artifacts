@@ -23,8 +23,18 @@
  */
 import { delay, type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
-import { type ErrorCode, QUOTA_MESSAGE, STATUS_FOR } from "../errors.js";
-import type { Format } from "../formats.js";
+import { type BusAddress, ShareNoticeAgentsSchema } from "../bus-notices.js";
+import {
+  type ErrorCode,
+  QUOTA_MESSAGE,
+  STATUS_FOR,
+  UNSUPPORTED_FORMAT_MESSAGE,
+} from "../errors.js";
+import { type Format, inferFormat } from "../formats.js";
+import {
+  SPACE_NAME_RESERVED_MESSAGE,
+  spaceNameReserved,
+} from "../hosted/spaces.js";
 import { newId, newPat } from "../ids.js";
 import {
   INLINE_TOO_LARGE_MESSAGE,
@@ -33,8 +43,9 @@ import {
   usageLimit,
   VERSIONS_PAGE_SIZE,
 } from "../limits.js";
-import { viewerPath } from "../routes.js";
+import { R, viewerPath } from "../routes.js";
 import {
+  AgentViaSchema,
   ArtifactPatchSchema,
   type ArtifactSummary,
   type DataDoc,
@@ -49,7 +60,9 @@ import {
   MemberInviteSchema,
   MemberPatchSchema,
   MePatchSchema,
+  OAuthClientPatchSchema,
   PublishInputSchema,
+  resolveDataWriters,
   SettingsPatchSchema,
   type Share,
   ShareInputSchema,
@@ -57,9 +70,19 @@ import {
   type StorageEntry,
   StorageSetBodySchema,
   TokenCreateInputSchema,
+  TokenPatchSchema,
+  type TrashItem,
+  TrashQuerySchema,
   UploadCreateInputSchema,
   type UserRef,
 } from "../schemas.js";
+import {
+  bytesHead,
+  checkEntry,
+  HEIC_MESSAGE,
+  isHeic,
+  textHead,
+} from "../sniff.js";
 import type { ArtifactEventsMock } from "./events.js";
 import { fixtures } from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
@@ -104,6 +127,11 @@ const TYPES: Record<string, string> = {
   md: "text/markdown",
   pdf: "application/pdf",
   png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
 };
 const typeOf = (path: string) =>
   TYPES[path.split(".").pop()?.toLowerCase() ?? ""] ?? "text/plain";
@@ -112,7 +140,72 @@ const DEFAULT_ENTRY = {
   markdown: "document.md",
   code: "file.txt",
   pdf: "document.pdf",
+  image: "image.svg",
 } as const;
+
+/**
+ * The server's format guard (manifest.ts): with no `format` and a name that
+ * implies none, inline text publishes as code and anything else is 400
+ * unsupported_format; an inline entry whose content doesn't fit its format is
+ * 400 binary_entry. A HEIC/HEIF entry (name or bytes) is unsupported_format
+ * (reason heic) whatever the format; an image publish has one file. Uploaded
+ * entries pass the byte checks (the mock keeps no upload bytes).
+ * Null when the publish may go ahead.
+ */
+function formatRefusal(
+  input: z.infer<typeof PublishInputSchema>,
+): Response | null {
+  let entry: string;
+  let src: string | { base64: string } | { uploadId: string } | undefined;
+  if (input.content !== undefined) {
+    if (!input.format && input.entry === undefined) return null;
+    entry =
+      input.entry ??
+      DEFAULT_ENTRY[input.format as keyof typeof DEFAULT_ENTRY] ??
+      "index.html";
+    src = input.content;
+  } else if (input.files) {
+    const keys = Object.keys(input.files);
+    entry =
+      input.entry ??
+      (keys.includes("index.html")
+        ? "index.html"
+        : keys.includes("README.md")
+          ? "README.md"
+          : (keys[0] ?? ""));
+    src = input.files[entry];
+  } else return null;
+  const heic = () =>
+    err("unsupported_format", HEIC_MESSAGE, { path: entry, reason: "heic" });
+  if (isHeic(entry)) return heic();
+  const inferred = input.format ?? inferFormat(entry);
+  if (
+    (inferred ?? "code") === "image" &&
+    input.files &&
+    Object.keys(input.files).length > 1
+  )
+    return err(
+      "bad_request",
+      "An image artifact has one file, the image. Publish it alone, or publish an HTML page that shows it.",
+      { path: "files", reason: "image_single_file" },
+    );
+  if (src === undefined || (typeof src === "object" && "uploadId" in src))
+    return null;
+  const { head, truncated } =
+    typeof src === "string"
+      ? textHead(src)
+      : bytesHead(Uint8Array.from(atob(src.base64), (c) => c.charCodeAt(0)));
+  if (isHeic(entry, head)) return heic();
+  // No format implied by the name: the bytes decide (text is code).
+  const r = checkEntry(entry, inferred ?? "code", head, truncated);
+  if (!r) return null;
+  return inferred
+    ? err("binary_entry", r.message, { path: entry, reason: r.reason })
+    : err("unsupported_format", UNSUPPORTED_FORMAT_MESSAGE, {
+        path: entry,
+        reason: "no_viewer",
+      });
+}
 
 /**
  * Anonymous = no cookie and no Bearer token, or the embed-mode hint
@@ -136,13 +229,20 @@ const userRef = (u: UserRef): UserRef => ({
   name: u.name,
 });
 
-async function body<T extends z.ZodType>(req: Request, schema: T) {
+async function body<T extends z.ZodType>(
+  req: Request,
+  schema: T,
+  /** Fields set from the path, over the body's (the server's publishInput id). */
+  fromPath?: Record<string, unknown>,
+) {
   let raw: unknown;
   try {
     raw = await req.json();
   } catch {
     return { error: badRequest("Body must be valid JSON") };
   }
+  if (fromPath && raw && typeof raw === "object" && !Array.isArray(raw))
+    raw = { ...raw, ...fromPath };
   const r = schema.safeParse(raw);
   // Oversize inline content is 413, as on the server.
   if (
@@ -150,6 +250,13 @@ async function body<T extends z.ZodType>(req: Request, schema: T) {
     r.error.issues.some((i) => i.message === INLINE_TOO_LARGE_MESSAGE)
   )
     return { error: err("too_large", INLINE_TOO_LARGE_MESSAGE) };
+  // A space named "Personal" (create or rename), as on the server.
+  if (!r.success && spaceNameReserved(r.error.issues))
+    return {
+      error: err("space_name_reserved", SPACE_NAME_RESERVED_MESSAGE, {
+        field: "name",
+      }),
+    };
   if (!r.success)
     return {
       error: err("bad_request", "Invalid request body", r.error.issues),
@@ -211,6 +318,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const members: Member[] = f.members;
   const tokens = f.tokens;
   const clients = f.oauthClients;
+  let shareNoticeAgents: BusAddress[] = [];
   const data = new Map<string, Map<string, Map<string, DataDoc>>>();
   const storage = new Map<string, Map<string, StorageEntry>>();
   for (const d of f.data) {
@@ -241,6 +349,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     files.get(`${id}/${v}/${path}`) ?? `mock ${path} (v${v})`;
 
   /** Owner-level actions; a hosted space manager has them too (not transfer). */
+  /** Ids R.uploads reserved for a create (the server's reserved_artifacts). */
+  const reserved = new Set<string>();
   const full = (a: ArtifactSummary) =>
     a.access === "owner" || a.access === "manager";
   /** Resolve a live artifact the caller may use at the given level, else 404. */
@@ -251,7 +361,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     ) =>
     (ctx: Ctx) => {
       const a = artifacts.find((x) => x.id === ctx.params.id);
-      if (!a || a.deletedAt !== null) return notFound();
+      if (!a || a.deletedAt !== null || h?.hidden(a.id)) return notFound();
       // Anonymous callers see only public artifacts; anything else is 404.
       if (a.visibility !== "public" && isAnon(ctx.request)) return notFound();
       if (need === "owner" && !full(a)) return notFound();
@@ -327,7 +437,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     }
     if (input.title) a.title = input.title;
     if (input.description !== undefined) a.description = input.description;
-    if (input.format) a.format = input.format;
+    // As the server: the given format, else the entry's (formatRefusal ran).
+    a.format = input.format ?? inferFormat(entry) ?? "code";
     a.lastAgent = null;
     return addVersion(a, {
       message: input.message ?? null,
@@ -348,10 +459,19 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     c.set("scope", scope);
     return c;
   };
+  /**
+   * The server's agentViaSql. Every seeded via is the caller's, so anyone
+   * else's or an unknown one matches nothing. A revoked grant loses its usage
+   * row and stops matching; a revoked token keeps its row and still matches.
+   */
+  const fromConnection = (a: ArtifactSummary, via: string) =>
+    f.agentVias[a.id]?.includes(via) === true &&
+    (via.startsWith("t:") || clients.some((c) => `g:${c.grantId}` === via));
   const matches = (a: ArtifactSummary, q: URLSearchParams) => {
     const needle = (q.get("q") ?? "").toLowerCase();
     const scope = q.get("scope") ?? "all";
     const owner = q.get("owner");
+    const via = q.get("agentVia");
     return (
       (q.get("includeDeleted") === "true" || a.deletedAt === null) &&
       (scope === "all" ||
@@ -360,8 +480,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         (scope === "team" && a.visibility === "team")) &&
       (!q.get("format") || a.format === q.get("format")) &&
       (!q.get("visibility") || a.visibility === q.get("visibility")) &&
-      (!owner || a.owner.id === owner || a.owner.email === owner) &&
+      (!owner ||
+        (owner.trim().toLowerCase() === "me"
+          ? a.owner.id === me.user.id
+          : a.owner.id === owner || a.owner.email === owner)) &&
       (!q.get("agent") || a.lastAgent?.name === q.get("agent")) &&
+      (!via || fromConnection(a, via)) &&
       (!needle ||
         a.title.toLowerCase().includes(needle) ||
         (a.description ?? "").toLowerCase().includes(needle))
@@ -410,7 +534,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       // Signed-URL uploads carry no session; public artifact reads are anonymous-OK.
       const needsAuth = mutating
         ? !/^\/uploads\/[^/]+$/.test(path)
-        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search)\/?$/.test(
+        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search|bus\/share-notices)\/?$/.test(
             path,
           );
       // Runtime routes (data/storage) check access first, as on the server:
@@ -448,6 +572,20 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       me.user.name = r.data.displayName;
       return HttpResponse.json(me);
     }),
+    // #1292: the caller's share-notice picks; none by default.
+    http.get(`*${R.shareNotices}`, () =>
+      HttpResponse.json({ agents: shareNoticeAgents }),
+    ),
+    http.put(`*${R.shareNotices}`, async ({ request }) => {
+      const r = await body(request, ShareNoticeAgentsSchema);
+      if (r.error) return r.error;
+      const seen = new Set<string>();
+      shareNoticeAgents = r.data.agents.filter((a) => {
+        const k = `${a.namespace}\n${a.name}`;
+        return seen.has(k) ? false : (seen.add(k), true);
+      });
+      return HttpResponse.json({ agents: shareNoticeAgents });
+    }),
     http.get("*/api/v1/artifacts", ({ request }) => {
       if (isAnon(request))
         return err("unauthorized", "Authentication required");
@@ -460,6 +598,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       if (inSpace instanceof Response) return inSpace;
       return paginate(
         artifacts
+          .filter((a) => !h?.hidden(a.id))
           .filter((a) => (inSpace ? inSpace(a.space) : matches(a, q)))
           .filter((a) => !inSpace || matches(a, withScope(q, "all")))
           .map((a) => redactArt(a, request)),
@@ -467,8 +606,10 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       );
     }),
     http.post("*/api/v1/artifacts", async ({ request }) => {
-      const r = await body(request, h?.publishSchema ?? PublishInputSchema);
+      const r = await body(request, PublishInputSchema);
       if (r.error) return r.error;
+      const refused = formatRefusal(r.data);
+      if (refused) return refused;
       const existing = r.data.id
         ? artifacts.find((a) => a.id === r.data.id)
         : undefined;
@@ -481,14 +622,27 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       const noPublic = h?.refusePublic(
         existing ? existing.space : placed?.space,
         r.data.visibility,
+        existing?.visibility,
       );
       if (noPublic) return noPublic;
+      // An id that is neither an artifact nor reserved by R.uploads: 400
+      // not_reserved, as on the server (a new version is POST /versions).
+      if (!existing && r.data.id && !reserved.has(r.data.id))
+        return err(
+          "bad_request",
+          "use POST /versions to publish a new version",
+          { path: "id", reason: "not_reserved" },
+        );
       if (!existing && r.data.id && r.data.title === undefined)
         return badRequest("title is required when creating an artifact");
+      // REST create never upserts, as on the server: a new version is
+      // POST /versions.
       if (existing)
-        return existing.deletedAt !== null || existing.access === "viewer"
-          ? notFound()
-          : publishTo(existing, r.data);
+        return err(
+          "bad_request",
+          "use POST /versions to publish a new version",
+          { path: "id", reason: "not_reserved" },
+        );
       const now = iso();
       const a: ArtifactSummary = {
         id: r.data.id ?? newId(),
@@ -512,8 +666,14 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           ...r.data.capabilities,
         },
         allowAnonymousWrites: r.data.allowAnonymousWrites ?? false,
+        dataWriters:
+          resolveDataWriters(
+            r.data,
+            r.data.visibility ?? me.instance.defaultVisibility,
+          ) ?? "viewers",
       };
       artifacts.unshift(a);
+      reserved.delete(a.id);
       h?.placeNew(a, placed?.space ?? null);
       versions[a.id] = [];
       return publishTo(a, r.data);
@@ -527,13 +687,22 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         const r = await body(ctx.request, ArtifactPatchSchema);
         if (r.error) return r.error;
         if (r.data.visibility !== undefined && !full(a)) return notFound();
-        const noPublic = h?.refusePublic(a.space, r.data.visibility);
+        const noPublic = h?.refusePublic(
+          a.space,
+          r.data.visibility,
+          a.visibility,
+        );
         if (noPublic) return noPublic;
         const { capabilities, ...rest } = r.data;
         const gone =
           (rest.visibility !== undefined && rest.visibility !== a.visibility) ||
           capabilities !== undefined;
+        const dataWriters = resolveDataWriters(
+          rest,
+          rest.visibility ?? a.visibility,
+        );
         Object.assign(a, rest, { updatedAt: iso() });
+        if (dataWriters) a.dataWriters = dataWriters;
         if (capabilities) Object.assign(a.capabilities, capabilities);
         if (gone) opts.events?.emitGone(a.id, "changed");
         return HttpResponse.json(a);
@@ -547,9 +716,64 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         return noContent();
       }, "owner"),
     ),
+    // R.trash: what the caller may restore, newest deletedAt first.
+    http.get("*/api/v1/trash", ({ request }) => {
+      if (isAnon(request))
+        return err("unauthorized", "Authentication required");
+      const q = new URL(request.url).searchParams;
+      const p = TrashQuerySchema.safeParse(params(q));
+      if (!p.success)
+        return err("bad_request", "Invalid query", p.error.issues);
+      const spaceId = p.data.spaceId;
+      const personalId = me.user.id;
+      // Hosted: managed shared spaces too; else personal only.
+      const scope = h?.trashScope(spaceId);
+      if (scope instanceof Response) return scope;
+      if (!h && spaceId !== undefined && spaceId !== personalId)
+        return err("bad_request", "Spaces are off: only your own trash", {
+          path: "spaceId",
+          reason: "invalid",
+        });
+      const cutoff = Date.now() - LIMITS.softDeleteDays * 86_400_000;
+      const items = artifacts
+        .filter(
+          (a) => a.deletedAt !== null && Date.parse(a.deletedAt) >= cutoff,
+        )
+        .map((a): TrashItem | null => {
+          const sp = scope ? scope(a) : null;
+          const own =
+            !sp &&
+            a.owner.id === me.user.id &&
+            (a.space === undefined || a.space.id === personalId) &&
+            (spaceId === undefined || spaceId === personalId);
+          if (!own && !sp) return null;
+          const deletedAt = a.deletedAt as string;
+          const { can: _can, ...summary } = redactArt(a, request);
+          return {
+            ...summary,
+            access: own ? "owner" : "manager",
+            deletedAt,
+            purgeAt: new Date(
+              Date.parse(deletedAt) + LIMITS.softDeleteDays * 86_400_000,
+            ).toISOString(),
+            space: sp ?? { id: personalId, name: "Personal", personal: true },
+          };
+        })
+        .filter((x): x is TrashItem => x !== null)
+        .sort(
+          (x, y) =>
+            y.deletedAt.localeCompare(x.deletedAt) || y.id.localeCompare(x.id),
+        );
+      return paginate(items, q);
+    }),
     http.post(`${A}/undelete`, ({ params }) => {
       const a = artifacts.find((x) => x.id === params.id);
-      if (!a || !full(a)) return notFound();
+      if (!a) return notFound();
+      // Hosted: a shared space's trash is its managers' by space role (R.trash's rule).
+      const scope = h?.trashScope(undefined);
+      const managed = typeof scope === "function" ? scope(a) : null;
+      const sharedSpace = a.space !== undefined && a.space.kind === "shared";
+      if (h && sharedSpace ? !managed : !full(a)) return notFound();
       a.deletedAt = null;
       return HttpResponse.json(a);
     }),
@@ -575,8 +799,18 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     http.post(
       `${A}/versions`,
       withArt(async (a, { request }) => {
-        const r = await body(request, PublishInputSchema);
-        return r.error ?? publishTo(a, r.data);
+        const r = await body(request, PublishInputSchema, { id: a.id });
+        if (r.error) return r.error;
+        const badFormat = formatRefusal(r.data);
+        if (badFormat) return badFormat;
+        const placed = h?.checkPublish(r.data, a);
+        if (placed instanceof Response) return placed;
+        const noPublic = h?.refusePublic(
+          a.space,
+          r.data.visibility,
+          a.visibility,
+        );
+        return noPublic ?? publishTo(a, r.data);
       }, "write"),
     ),
     http.get(
@@ -644,9 +878,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     ),
     http.get(
       `${A}/content-url`,
-      withArt((a) =>
+      withArt((a, { request }) =>
         HttpResponse.json({
           url: `https://content.example.com/c/${a.id}/index.html?sig=mock`,
+          version:
+            Number(new URL(request.url).searchParams.get("v")) ||
+            a.currentVersion,
           expiresAt:
             a.visibility === "public"
               ? null
@@ -658,7 +895,19 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     ),
     http.get(
       `${A}/shares`,
-      withArt((a) => HttpResponse.json(shares[a.id] ?? [])),
+      withArt((a) =>
+        HttpResponse.json(
+          (shares[a.id] ?? []).map((s) =>
+            h
+              ? {
+                  ...s,
+                  ...(h.shareGuest(s.email) ? { guest: true } : {}),
+                  ...(h.shareViewOnly(s.email) ? { viewOnly: true } : {}),
+                }
+              : s,
+          ),
+        ),
+      ),
     ),
     http.put(
       `${A}/shares`,
@@ -678,7 +927,14 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         };
         if (i >= 0) list[i] = share;
         else list.push(share);
-        return HttpResponse.json({ ...share, emailed: false });
+        const recipient = h?.shareRecipient(email);
+        return HttpResponse.json({
+          ...share,
+          ...(h?.shareGuest(email) ? { guest: true } : {}),
+          emailed: false,
+          ...(recipient ? { recipient } : {}),
+          ...(h ? { signInMethods: h.signInMethods(email, "share") } : {}),
+        });
       }, "owner"),
     ),
     http.delete(
@@ -699,10 +955,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       const r = await body(request, UploadCreateInputSchema);
       if (r.error) return r.error;
       const uploadId = newId();
+      const artifactId = r.data.artifactId ?? newId();
+      // A new artifact's id is reserved for a later create, as on the server.
+      if (!artifacts.some((a) => a.id === artifactId)) reserved.add(artifactId);
       return HttpResponse.json(
         {
           uploadId,
-          artifactId: r.data.artifactId ?? newId(),
+          artifactId,
           url: `${me.instance.appUrl}/api/v1/uploads/${uploadId}?sig=mock&exp=0`,
           expiresAt: new Date(
             Date.now() + LIMITS.uploadUrlTtlSec * 1000,
@@ -718,6 +977,9 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       const q = new URL(request.url).searchParams;
       const needle = (q.get("q") ?? "").trim();
       if (!needle) return badRequest("q is required");
+      const via = q.get("agentVia");
+      if (via !== null && !AgentViaSchema.safeParse(via).success)
+        return badRequest("Invalid agentVia");
       // spaceId narrows the hits as the list's scope "space" does.
       const spaceId = q.get("spaceId") ?? undefined;
       const inSpace = spaceId ? h?.listScope("space", spaceId) : null;
@@ -726,8 +988,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         .filter(
           (a) =>
             a.deletedAt === null &&
+            !h?.hidden(a.id) &&
             (!inSpace || inSpace(a.space)) &&
-            matches(a, new URLSearchParams({ q: needle })),
+            matches(
+              a,
+              new URLSearchParams({ q: needle, ...(via && { agentVia: via }) }),
+            ),
         )
         .map((a) => ({
           ...redactArt(a, request),
@@ -753,7 +1019,14 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         lastSeenAt: null,
       };
       members.push(m);
-      return HttpResponse.json({ ...m, emailed: false }, { status: 201 });
+      return HttpResponse.json(
+        {
+          ...m,
+          emailed: false,
+          ...(h ? { signInMethods: h.signInMethods(email, "invite") } : {}),
+        },
+        { status: 201 },
+      );
     }),
     http.patch("*/api/v1/members/:id", async ({ request, params }) => {
       const m = members.find((x) => x.id === params.id);
@@ -781,9 +1054,18 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         label: r.data.label,
         createdAt: iso(),
         lastUsedAt: null,
+        versionsPublished: 0,
       };
       tokens.push(t);
       return HttpResponse.json({ ...t, token: newPat() }, { status: 201 });
+    }),
+    http.patch("*/api/v1/tokens/:id", async ({ request, params }) => {
+      const t = tokens.find((x) => x.id === params.id);
+      if (!t) return notFound();
+      const r = await body(request, TokenPatchSchema);
+      if (r.error) return r.error;
+      t.label = r.data.label;
+      return HttpResponse.json(t);
     }),
     http.delete("*/api/v1/tokens/:id", ({ params }) => {
       const i = byId(tokens, (t) => t.id, params.id);
@@ -792,6 +1074,18 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       return noContent();
     }),
     http.get("*/api/v1/oauth-clients", () => HttpResponse.json(clients)),
+    http.patch(
+      "*/api/v1/oauth-clients/:grantId",
+      async ({ request, params }) => {
+        const c = clients.find((x) => x.grantId === params.grantId);
+        if (!c) return notFound();
+        const r = await body(request, OAuthClientPatchSchema);
+        if (r.error) return r.error;
+        if (r.data.label === null) delete c.label;
+        else c.label = r.data.label;
+        return HttpResponse.json(c);
+      },
+    ),
     http.delete("*/api/v1/oauth-clients/:grantId", ({ params }) => {
       const i = byId(clients, (c) => c.grantId, params.grantId);
       if (i < 0) return notFound();

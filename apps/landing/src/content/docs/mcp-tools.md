@@ -8,26 +8,28 @@ Tool inputs are JSON Schema. Each tool returns plain text plus structured output
 
 ## Publishing
 
-`publish_artifact` creates an artifact, or publishes a new version when you pass `id`. Pass exactly one of `content` or `files`.
+`publish_artifact` creates an artifact, or publishes a new version when you pass `id`. Pass exactly one of `content` or `files`. To change only settings (`title`, `description`, `visibility`, `capabilities`, or `dataWriters`), pass `id` with neither: the artifact updates in place, no version is created, and `message` is ignored.
 
 | Field | Notes |
 |---|---|
-| `id` | The artifact to publish a new version of. Leave it out to create one, or pass an id reserved by `create_upload`. |
+| `id` | The artifact to publish a new version of, or to change settings on. Leave it out to create one, or pass an id reserved by `create_upload`. |
 | `title` | Required when creating (no `id`). Up to 200 characters. |
 | `description` | Optional. Up to 2,000 characters. |
-| `format` | `html`, `markdown`, `code`, or `pdf`. With `content`, pass `format` or `entry`; when it's left out, it's taken from the entry file's extension (`.html`, `.md`, and `.pdf`; anything else is `code`). |
+| `format` | `html`, `markdown`, `code`, `pdf`, or `image`. With `content`, pass `format` or `entry`; when it's left out, it's taken from the entry file's extension (`.html`, `.md` and `.pdf`; `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` and `.svg` are `image`; a known text file such as source code, `.txt`, `.csv`, `.tsv`, `.log`, `.env`, `.conf` or `.cfg` is `code`). Any other file publishes as `code` when it is UTF-8 text (a `LICENSE` or `.gitignore`), and otherwise, such as an archive, fails with the error code `"unsupported_format"`; so does a HEIC photo (save it as JPEG first). An `image` artifact is one file, the image. The entry's content must fit its format: `code`, `markdown` and `html` are UTF-8 text, a `pdf` starts with `%PDF`, an image starts with its extension's signature (an `.svg` is UTF-8 text with an `<svg>` root), and an uploaded image's `contentType` matches its extension; otherwise the publish fails with the error code `"binary_entry"`. |
 | `content` | A single file as a string. Needs `format` or `entry`. |
 | `files` | Instead of `content`: a map of path to file, for an HTML page with its CSS, JS, and images. Each file is a string, `{ "base64": "…" }` for binary, or `{ "uploadId": "…" }` from `create_upload`. |
 | `entry` | The file to open first. With `files`, it defaults to `index.html`, then `README.md`, then the first file. |
 | `language` | Optional, for `code`. Taken from the entry file's extension when it's left out. |
 | `message` | Optional change note for this version. Up to 500 characters. |
+| `spaceId` | Optional, new artifacts only. Publishes into a shared space where you're an editor or manager. Leave it out to publish to your personal space. On an existing artifact it fails with use_move; move it instead. |
 | `visibility` | `private`, `team`, or `public`. A new artifact without it gets the instance's default visibility, which is `private` unless an admin changed it. |
 | `capabilities` | The [runtime API](/docs/runtime-api/) features the page may use: `{ "db": true, "viewer": true, "storage": true }`. Each defaults to `false`. |
-| `allowAnonymousWrites` | Let anonymous viewers of a public artifact write shared data. Defaults to `false`. |
+| `dataWriters` | Who can change the page's live data: `viewers` (anyone who can view it) or `editors`. Defaults to `viewers`. |
+| `allowAnonymousWrites` | Deprecated; use `dataWriters`. `true` sets `viewers`; `false` on a public artifact sets `editors`. |
 
-Only the artifact's creator can change `visibility`, `capabilities`, or `allowAnonymousWrites` when publishing a new version; editors can publish the rest.
+Only the artifact's creator can change `visibility`, `capabilities`, or `dataWriters` when publishing a new version; editors can publish the rest.
 
-It returns the artifact's `id`, the new `version`, and its view URL.
+It returns the artifact's `id`, the new `version` (the current one for a settings-only update), and its view URL.
 
 ## Large files
 
@@ -62,7 +64,8 @@ Search indexes each publish asynchronously, so a new version becomes searchable 
 
 - `get_artifact`: metadata plus the content of a version, the latest by default.
 - `list_artifacts`: filter by owner, format, visibility, agent, or updated-since. Paginated.
-- `search_artifacts`: full-text search over title, description, and extracted text. A PDF is searchable by its text once it has been viewed in the dashboard; before that, only by title and description.
+- `search_artifacts`: full-text search over title, description, and extracted text. A PDF is searchable by its text once someone who can edit it has opened it in the dashboard; before that, only by title and description. An image is searchable by its title and description only.
+- `list_spaces`: lists the spaces you can publish into: your personal space first, then shared spaces where you're an editor or manager. Takes no input.
 
 ## Versions
 
@@ -79,11 +82,15 @@ Only an artifact's creator can share it, change its visibility, or delete it.
 
 ## Deleting
 
-`delete_artifact` moves an artifact to the trash. It can be recovered for {LIMIT_SOFT_DELETE}, then it's purged.
+`delete_artifact` moves an artifact to the trash. It can be recovered for {LIMIT_SOFT_DELETE}, then it's purged. Restore it from Trash in the dashboard, or with `undelete_artifact`, within that time. In a shared space, its managers can restore it too.
 
 ## Live-page data
 
 `artifact_data_get`, `artifact_data_list`, `artifact_data_query`, `artifact_data_set`, `artifact_data_update`, and `artifact_data_delete` read and write an artifact's live-page data. It's the same store the [runtime API](/docs/runtime-api/) uses, so an agent can seed a tracker or read a poll's results.
+
+## Bus roles
+
+`bus_role_propose`: proposes a change to one of your bus role addresses: point a role at one of your open agents by its bus name, or clear it. It changes nothing by itself. It returns a link; you open it in your browser and confirm it, after signing in again if your last sign-in isn't recent. The link works once and expires after 15 minutes. No agent credential (a token or an OAuth connection) can confirm it. Offered only on an instance where the bus is on.
 
 ## REST API
 

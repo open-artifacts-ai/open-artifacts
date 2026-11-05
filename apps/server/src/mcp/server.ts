@@ -1,6 +1,5 @@
 import { type CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import {
-  type AgentRef,
   dataLimits,
   MCP_PATH,
   type Member,
@@ -17,21 +16,30 @@ import {
   appOrigin,
   errorJson,
   isD1QuotaError,
+  isStorageFailure,
 } from "../http/errors.js";
 import { logError } from "../log.js";
 import { toRuntimeApiError } from "../runtime/do.js";
+import { type AgentAttr, clientVersionOf } from "../services/agent-usage.js";
+import { spacesOn } from "../services/spaces.js";
 import { cpuNudge } from "../services/usage.js";
 import { VERSION } from "../version.gen.js";
 import { INSTRUCTIONS, RUNTIME_DOC_URI } from "./instructions.js";
 import { renderSkill, SKILL_DOC_URI, skillUrl } from "./skill.js";
 import { registerArtifactTools } from "./tools/artifacts.js";
+import { registerBusTools } from "./tools/bus.js";
 import { registerDataTools } from "./tools/data.js";
 
 export type McpContext = {
   env: Env;
   user: Member;
-  /** PAT: { label, null }. OAuth: { clientName, null } plus `clientVersion`. */
-  agent: AgentRef | null;
+  /** The user's session_epoch, read with the user row: download URLs bind it (P3 T11). */
+  sessionEpoch: number;
+  /**
+   * PAT: { label, null }. OAuth: { clientName, null } plus `clientVersion`.
+   * `via` names the token or grant (publish attribution).
+   */
+  agent: AgentAttr | null;
   /** For waitUntil work (search indexing after publish). */
   exec?: Pick<ExecutionContext, "waitUntil">;
   /** Fill agent.version from the MCP clientInfo.version (OAuth clients). */
@@ -41,7 +49,7 @@ export type McpContext = {
 /** What the tool modules get: the context plus the per-call agent ref. */
 export type ToolEnv = McpContext & {
   caller: Caller;
-  agentNow: () => AgentRef | null;
+  agentNow: () => AgentAttr | null;
 };
 
 /** `{ content: [one-line summary], structuredContent }`. */
@@ -69,6 +77,12 @@ export function errorResult(e: unknown): CallToolResult {
   }
   if (isD1QuotaError(e)) return text("quota_exceeded", QUOTA_MESSAGE);
   logError("mcp_tool_error", e);
+  // The same answer the API gives, so any AI agent knows to try again.
+  if (isStorageFailure(e))
+    return text(
+      "storage_unavailable",
+      "Temporarily unavailable. Try again shortly.",
+    );
   return text("internal", "Internal error");
 }
 
@@ -93,17 +107,21 @@ export async function guard(
 
 export function createServer(ctx: McpContext): McpServer {
   const { plan, docBytes } = dataLimits(ctx.env);
-  const instructions = INSTRUCTIONS(plan, skillUrl(ctx.env), docBytes);
+  const instructions = INSTRUCTIONS(
+    plan,
+    skillUrl(ctx.env),
+    docBytes,
+    spacesOn(ctx.env),
+  );
   const server = new McpServer(
     { name: "open-artifacts", version: VERSION },
     { instructions },
   );
-  const agentNow = (): AgentRef | null => {
+  const agentNow = (): AgentAttr | null => {
     if (!ctx.agent || !ctx.clientVersion) return ctx.agent;
-    const v = server.server.getClientVersion()?.version;
     return {
-      name: ctx.agent.name,
-      version: typeof v === "string" && v ? v.slice(0, 100) : null,
+      ...ctx.agent,
+      version: clientVersionOf(server.server.getClientVersion()?.version),
     };
   };
   const t: ToolEnv = {
@@ -114,6 +132,7 @@ export function createServer(ctx: McpContext): McpServer {
   enforceToolPolicy(server, t);
   registerArtifactTools(server, t);
   registerDataTools(server, t);
+  registerBusTools(server, t);
   server.registerResource(
     "runtime-docs",
     RUNTIME_DOC_URI,

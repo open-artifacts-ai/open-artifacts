@@ -1,8 +1,8 @@
 // @ts-check
 // The hosted release artifact (T3b): what hosted-build writes, hosted-check
 // verifies and hosted-sign signs. Plain .mjs on purpose (JSDoc types, checked
-// by tsc via checkJs): the signing jobs install nothing and run the runner's
-// own node (20), so no strip-types. node:* imports only: this file is its own
+// by tsc via checkJs): the signing jobs install nothing and run Node 22 from
+// .nvmrc, so no strip-types. node:* imports only: this file is its own
 // copy of the hardened reader, canonicalJson and the record builder of
 // @oa/provision (a test pins identical bytes). Never import a package here.
 //

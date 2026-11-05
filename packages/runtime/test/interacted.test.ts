@@ -66,26 +66,16 @@ describe("oa:interacted", () => {
     expect(interacted()).toHaveLength(1);
   });
 
-  it("scroll counts only past 24px cumulatively", async () => {
+  it("scrolling never counts: live versions keep swapping while you read", async () => {
     start();
     scrollTo(10);
-    scrollTo(20);
-    await flush();
-    expect(interacted()).toHaveLength(0);
-    scrollTo(30);
-    await flush();
-    expect(interacted()).toHaveLength(1);
-  });
-
-  it("counts element scrolls via capture", async () => {
-    start();
+    scrollTo(500);
     const el = document.createElement("div");
     document.body.append(el);
-    el.scrollTop = 0;
-    Object.defineProperty(el, "scrollTop", { value: 40, configurable: true });
+    Object.defineProperty(el, "scrollTop", { value: 400, configurable: true });
     el.dispatchEvent(new Event("scroll"));
     await flush();
-    expect(interacted()).toHaveLength(1);
+    expect(interacted()).toHaveLength(0);
     el.remove();
   });
 

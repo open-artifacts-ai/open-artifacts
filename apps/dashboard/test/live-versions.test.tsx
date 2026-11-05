@@ -1,8 +1,14 @@
 // Live version updates through the real router, Shell and bridge, with the
 // R.events mock: swap when provably safe, otherwise the chip; restore; gone;
 // a hello that is ahead of the shown version; embeds never show names.
-import { R, viewerPath } from "@oa/shared";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { type ArtifactSummary, R, viewerPath } from "@oa/shared";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setEmbedForTests } from "../src/embed";
@@ -15,6 +21,7 @@ afterEach(() => setEmbedForTests(false));
 const idOf = (t: string) =>
   (arts.find((a) => a.title === t) as { id: string }).id;
 const OWNED = idOf("Landing page"); // v2 current
+const SCRIPT = idOf("Parser script");
 const POLL = idOf("Team poll"); // public
 
 const frames = () => [...document.querySelectorAll("iframe")];
@@ -87,12 +94,16 @@ describe("live versions: the safe swap", () => {
     expect(nonceOf(next)).not.toBe(nonceOf(first));
     fireEvent.load(next);
     expect(await screen.findByText("Updated to v3")).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Undo, go back to version 2" }),
-    ).toBeTruthy();
+    // Design (option C): a brief note, no Undo.
+    expect(screen.queryByRole("button", { name: /^Undo/ })).toBeNull();
     expect(
       screen.getByRole("button", { name: "Version: v3 · Current" }),
     ).toBeTruthy();
+    // About 3 s, then the chip is back to normal.
+    await waitFor(
+      () => expect(screen.queryByText("Updated to v3")).toBeNull(),
+      { timeout: 5_000 },
+    );
     await waitFor(() => expect(frames()).toEqual([next]));
     await waitFor(() =>
       expect(document.querySelector('[aria-live="polite"]')?.textContent).toBe(
@@ -149,12 +160,103 @@ describe("live versions: the safe swap", () => {
     ).toBeTruthy();
   });
 
-  it("an open side panel: the chip", async () => {
-    await open(`${viewerPath(OWNED)}?panel=open&tab=versions`);
+  it("the swapped-in frame scrolls to where the old one was", async () => {
+    const first = await open(viewerPath(OWNED));
+    // The shown frame reports its scroll position; scrolling isn't touching.
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            oa: 1,
+            type: "scroll",
+            top: 600,
+            max: 2000,
+            nonce: nonceOf(first),
+          },
+          origin: "null",
+          source: first.contentWindow,
+        }),
+      );
+    });
+    await publish();
+    const next = await frame(first);
+    fireEvent.load(next);
+    const sent = post(next, "hello");
+    await waitFor(() =>
+      expect(sent).toHaveBeenCalledWith(
+        { oa: 1, type: "scroll.to", top: 600, max: 2000 },
+        "*",
+      ),
+    );
+    expect(await screen.findByText("Updated to v3")).toBeTruthy();
+  });
+
+  it("text selected or a field focused in the frame: the chip", async () => {
+    const first = await open(viewerPath(OWNED));
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            oa: 1,
+            type: "engaged",
+            engaged: true,
+            nonce: nonceOf(first),
+          },
+          origin: "null",
+          source: first.contentWindow,
+        }),
+      );
+    });
     await publish();
     expect(
       await screen.findByRole("button", { name: "View version 3" }, LONG),
     ).toBeTruthy();
+    expect(frames()).toEqual([first]);
+  });
+
+  it("a first load never gets scroll.to, even after another artifact scrolled and swapped", async () => {
+    const first = await open(viewerPath(OWNED));
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            oa: 1,
+            type: "scroll",
+            top: 1900,
+            max: 2000,
+            nonce: nonceOf(first),
+          },
+          origin: "null",
+          source: first.contentWindow,
+        }),
+      );
+    });
+    await publish();
+    const next = await frame(first);
+    fireEvent.load(next);
+    post(next, "hello");
+    expect(await screen.findByText("Updated to v3")).toBeTruthy();
+    // Another artifact, first load: its frame says hello and gets no scroll.to.
+    const router = mount(viewerPath(SCRIPT));
+    void router;
+    const other = await frame(next);
+    fireEvent.load(other);
+    const sent = post(other, "hello");
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(
+      sent.mock.calls.filter(
+        (c) => (c[0] as { type: string }).type === "scroll.to",
+      ),
+    ).toEqual([]);
+  });
+
+  it("an open side panel doesn't block it: swaps", async () => {
+    const first = await open(`${viewerPath(OWNED)}?panel=open&tab=versions`);
+    await publish();
+    const next = await frame(first);
+    fireEvent.load(next);
+    expect(await screen.findByText("Updated to v3")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /View version/ })).toBeNull();
   });
 
   it("focus inside the frame (window blur): touched", async () => {
@@ -215,15 +317,12 @@ describe("live versions: restore", () => {
     await api("POST", R.restoreVersion(OWNED, 1));
     const next = await frame(first);
     fireEvent.load(next);
-    // Design: the pill says "Restored v1 · Undo"; the announcement says more.
+    // Design: the note says "Restored v1" (no Undo); the announcement says more.
     const pill = await screen.findAllByText("Restored v1");
-    expect(pill[0]?.closest(".oa-lchip")?.textContent).toContain("Undo");
+    expect(pill[0]?.closest(".oa-lchip")?.textContent).not.toContain("Undo");
     expect(screen.queryByText("Updated", { exact: true })).toBeNull();
     expect(
       screen.getByRole("button", { name: "Version: v3 · Current" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Undo, go back to version 2" }),
     ).toBeTruthy();
     await waitFor(() =>
       expect(document.querySelector('[aria-live="polite"]')?.textContent).toBe(
@@ -233,48 +332,26 @@ describe("live versions: restore", () => {
   });
 });
 
-describe("live versions: a chip stays until View", () => {
-  it("held while the side panel was open; closing it never auto-swaps that version", async () => {
-    const router = mount(`${viewerPath(OWNED)}?panel=open&tab=versions`);
-    const first = await frame();
-    fireEvent.load(first);
-    post(first, "hello");
-    await waitFor(() => expect(events.connections(OWNED)).toBe(1));
-    await publish();
-    await screen.findByRole("button", { name: "View version 3" }, LONG);
-    await act(() =>
-      router.navigate({
-        to: viewerPath(OWNED) as string,
-        search: { panel: "closed" } as never,
-      }),
-    );
-    await act(() => new Promise((r) => setTimeout(r, 1_200)));
-    expect(screen.getByRole("button", { name: "View version 3" })).toBeTruthy();
-    expect(frames()).toEqual([first]);
-    // A later version, now safe: it swaps (and the chip goes).
-    await publish();
-    const next = await frame(first);
-    fireEvent.load(next);
-    expect(await screen.findByText("Updated to v4")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /View version/ })).toBeNull();
-  });
-});
-
 const GUIDE = idOf("Onboarding guide"); // team, viewer access
 const NEUTRAL = "This artifact is no longer available to you.";
 /** The banner's copy, not the announcer's. */
 const BANNER = { selector: ".oa-lgone span" };
+/** The deleted banner's note; its text runs across the Trash link. */
+const DELETED = (_: string, el: Element | null) =>
+  el?.textContent === "Deleted. It stays in Trash for 30 days.";
 /** No call for `id` after `from` (artifact, versions, content URL, data). */
 const callsFor = (id: string, from: number) =>
   seen.slice(from).filter((u) => u.pathname.includes(`/artifacts/${id}`));
 
 describe("live versions: gone", () => {
-  it("deleted, the owner: You deleted this artifact, frame kept, nothing fetched", async () => {
+  it("deleted, the owner: the Trash note with its link, frame kept, nothing fetched", async () => {
     const first = await open(viewerPath(OWNED));
     await api("DELETE", R.artifact(OWNED));
-    expect(
-      await screen.findByText("You deleted this artifact.", BANNER),
-    ).toBeTruthy();
+    const banner = await screen.findByText(DELETED, BANNER);
+    expect(within(banner).getByRole("link", { name: "Trash" })).toHaveAttribute(
+      "href",
+      "/trash",
+    );
     const after = seen.length;
     expect(frames()).toEqual([first]);
     expect(screen.queryByText("Page not found")).toBeNull();
@@ -319,11 +396,7 @@ describe("live versions: gone", () => {
     const before = nonceOf(first);
     await api("DELETE", R.artifact(OWNED));
     fireEvent.click(await screen.findByRole("button", { name: "Restore" }));
-    await waitFor(() =>
-      expect(
-        screen.queryByText("You deleted this artifact.", BANNER),
-      ).toBeNull(),
-    );
+    await waitFor(() => expect(screen.queryByText(DELETED, BANNER)).toBeNull());
     await waitFor(() => expect(events.connections(OWNED)).toBe(1));
     // A fresh load of the frame, with a fresh nonce.
     await waitFor(() =>
@@ -338,7 +411,61 @@ describe("live versions: gone", () => {
     });
     expect(await screen.findByText(NEUTRAL, BANNER)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
-    expect(screen.queryByText("You deleted this artifact.", BANNER)).toBeNull();
+    expect(screen.queryByText(DELETED, BANNER)).toBeNull();
+  });
+
+  it("deleted, a space manager (can.delete, not the owner): Restore", async () => {
+    const guide = arts.find((a) => a.id === GUIDE) as ArtifactSummary;
+    server.use(
+      http.get(`*${R.artifact(GUIDE)}`, () =>
+        HttpResponse.json({
+          ...guide,
+          access: "editor",
+          can: {
+            edit: true,
+            share: true,
+            setVisibility: true,
+            delete: true,
+            transfer: false,
+            move: true,
+            dataWrite: true,
+          },
+        }),
+      ),
+    );
+    await open(viewerPath(GUIDE), GUIDE);
+    act(() => {
+      events.emitGone(GUIDE, "deleted");
+    });
+    expect(await screen.findByText(DELETED, BANNER)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restore" })).toBeTruthy();
+  });
+
+  it("deleted, the owner with can.delete false: no Restore", async () => {
+    const guide = arts.find((a) => a.id === OWNED) as ArtifactSummary;
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({
+          ...guide,
+          access: "owner",
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: false,
+          },
+        }),
+      ),
+    );
+    await open(viewerPath(OWNED));
+    act(() => {
+      events.emitGone(OWNED, "deleted");
+    });
+    expect(await screen.findByText(NEUTRAL, BANNER)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
   });
 
   it("changed, then 404: the neutral copy", async () => {
@@ -367,7 +494,7 @@ describe("live versions: gone", () => {
     await waitFor(() => expect(events.connections(OWNED)).toBe(1));
     await act(() => new Promise((r) => setTimeout(r, 50)));
     expect(screen.queryByText(NEUTRAL, BANNER)).toBeNull();
-    expect(screen.queryByText("You deleted this artifact.", BANNER)).toBeNull();
+    expect(screen.queryByText(DELETED, BANNER)).toBeNull();
     // Still the same frame, and its bridge still answers.
     expect(frames()).toEqual([first]);
     expect(post(first, "hello")).toHaveBeenCalled();

@@ -1,6 +1,5 @@
 import { normalizePath, viewerPath } from "@oa/shared";
-import { Textarea } from "@oa/ui";
-import { Button, Input } from "@oa/ui/shadcn";
+import { Button, Input, Textarea } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";

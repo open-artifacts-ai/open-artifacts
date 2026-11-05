@@ -8,6 +8,14 @@ on:
         description: Existing release tag whose landing site to (re)deploy
         required: true
         type: string
+      restore_on_failure:
+        description: >-
+          Prod, a release with a non-additive migration only: if the upgrade or
+          its verification fails, roll the Worker back and restore D1 to the
+          pre-migration bookmark (needs the user's yes for that release)
+        required: false
+        type: boolean
+        default: false
 # No workflow-wide grant: every job sets its own permissions (T3b). Only
 # hosted-attach may write contents; no job has actions: write.
 permissions: {}
@@ -34,9 +42,50 @@ jobs:
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      # Only the release commit's own run creates GitHub releases. The action
+      # reads main's head, not this run's sha, so a run queued behind the
+      # concurrency group could otherwise create a release whose tag is not
+      # its head_sha, and tag-passed-checks.sh would refuse that tag. The
+      # release commit is the merge commit of the one merged release PR still
+      # labelled "autorelease: pending". A pending release PR merged before
+      # this commit never got its own run (batched by the merge queue, or
+      # cancelled while pending): fail loudly rather than stall with no tag.
+      # Reads only, with the App token (this job's GITHUB_TOKEN has no scope).
+      - id: kind
+        name: Is this push the release commit?
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          issues=$(gh api "repos/$REPO/issues?state=closed&labels=autorelease:%20pending&per_page=100") || fail "could not list pending release PRs"
+          # One page, no pagination: a full page could hide the pending PR.
+          count=$(jq -r 'length' <<< "$issues") || fail "could not read pending release PRs"
+          [ "$count" -lt 100 ] || fail "pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery"
+          nums=$(jq -r '[.[] | select(.pull_request.merged_at != null) | .number] | join(" ")' <<< "$issues") || fail "could not read pending release PRs"
+          read -ra pending <<< "$nums"
+          if [ "${#pending[@]}" -eq 0 ]; then
+            echo "is_release=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          [ "${#pending[@]}" -eq 1 ] || fail "more than one merged release PR is pending (${pending[*]}): see docs/ops/hosted.md, Release recovery"
+          n=${pending[0]}
+          merge=$(gh api "repos/$REPO/pulls/$n" -q .merge_commit_sha) || fail "could not read #$n"
+          [[ "$merge" =~ ^[0-9a-f]{40}$ ]] || fail "could not read #$n's merge commit"
+          if [ "$merge" = "$SHA" ]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Merged after this commit: its own run is queued behind this one.
+          status=$(gh api "repos/$REPO/compare/$SHA...$merge" -q .status) || fail "could not compare $SHA with $merge"
+          if [ "$status" = ahead ]; then
+            echo "Release commit $merge (#$n) is newer; its own run creates the release."
+            echo "is_release=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          fail "release commit $merge (#$n) has no own run: see docs/ops/hosted.md, Release recovery"
       - id: rp
         uses: googleapis/release-please-action@v4
         with:
+          skip-github-release: ${{ steps.kind.outputs.is_release != 'true' }}
           token: ${{ steps.app.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -83,6 +132,8 @@ jobs:
     needs: [release-please]
     outputs:
       installed: ${{ steps.preflight.outputs.installed }}
+      # 'true' when the migration guard held the deploy (prod stays on the old version).
+      held: ${{ steps.migration.outputs.hold }}
     if: ${{ always() && github.ref == 'refs/heads/main' && (needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')) }}
     runs-on: ubuntu-latest
     permissions:
@@ -94,7 +145,12 @@ jobs:
       PROD_NAME: open-artifacts-prod
       PROD_APP_HOST: artifacts.leourbina.com
       PROD_CONTENT_HOST: artifacts-content.leourbina.com
-      PROD_OWNER_EMAIL: me@leourbina.com
+      # Direct sign-in (docs/self-hosting/direct-sign-in.md): repository
+      # variables, read by prod-setup.sh from env. Unset keeps the live value.
+      PROD_AUTH_PROVIDERS: ${{ vars.PROD_AUTH_PROVIDERS }}
+      PROD_AUTH_DOMAINS: ${{ vars.PROD_AUTH_DOMAINS }}
+      PROD_AUTH_DOMAIN_JOIN: ${{ vars.PROD_AUTH_DOMAIN_JOIN }}
+      PROD_GOOGLE_CLIENT_ID: ${{ vars.PROD_GOOGLE_CLIENT_ID }}
       TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
     steps:
       - id: guard
@@ -114,10 +170,22 @@ jobs:
             [ "$latest" = "$TAG" ] || { echo "$TAG is not the latest stable release ($latest)"; exit 1; }
           fi
           echo "deploy=true" >> "$GITHUB_OUTPUT"
+      # #1084: refuse first. Setup prints the address normalized, and only the
+      # exact stored value is masked, so it must already be in that form.
+      - name: The owner address is set and normalized
+        if: steps.guard.outputs.deploy == 'true'
+        env:
+          OWNER: ${{ secrets.OA_OWNER_EMAIL }}
+        run: |
+          [ -n "$OWNER" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
+          [[ ! "$OWNER" =~ [[:upper:][:space:]] ]] || { echo "::error::OA_OWNER_EMAIL must be trimmed and lowercase"; exit 1; }
       - if: steps.guard.outputs.deploy == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
+          # Tags and history: the migration guard compares TAG with the
+          # previous stable release.
+          fetch-depth: 0
       - if: steps.guard.outputs.deploy == 'true'
         uses: pnpm/action-setup@v4
       - if: steps.guard.outputs.deploy == 'true'
@@ -127,28 +195,55 @@ jobs:
           cache: pnpm
       - if: steps.guard.outputs.deploy == 'true'
         run: pnpm install --frozen-lockfile
+      # A release that adds a non-additive migration (first line
+      # `-- oa:non-additive`, e.g. a table rebuild) is held: only a manual run
+      # deploys it, guarded (record, upgrade, verify, restore on failure). Any
+      # doubt holds; every later step needs hold == 'false', so a guard that
+      # didn't run deploys nothing.
+      - id: migration
+        name: Non-additive migration guard
+        if: steps.guard.outputs.deploy == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+        # The guard compares with the version prod runs; unreadable holds.
+        run: |
+          PROD_VERSION="$(curl -fsS -m 20 "https://$PROD_APP_HOST/healthz" | jq -r '.version // empty')" || PROD_VERSION=""
+          export PROD_VERSION
+          bash scripts/ci/prod-migration-guard.sh detect
       # The release bundle must hold no /__test/* hooks; a failure stops the deploy.
       - name: Build the release bundle (buildBundle, dry run)
-        if: steps.guard.outputs.deploy == 'true'
+        if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false'
         run: |
           pnpm --filter @oa/provision build
           pnpm --filter @oa/server run gen
           mkdir -p apps/server/dist-assets
           node --experimental-strip-types scripts/ci/build-release-bundle.ts "$RUNNER_TEMP/release-bundle" --variant release
       - name: No test hooks in the release bundle
-        if: steps.guard.outputs.deploy == 'true'
+        if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false'
         run: pnpm check-no-test-hooks "$RUNNER_TEMP/release-bundle"
+      - name: No red-line fake IdP in the release bundle
+        if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false'
+        run: pnpm check-no-fake-idp "$RUNNER_TEMP/release-bundle"
       - id: preflight
         name: Preflight (read-only; skips if not installed, fails if drifted or partial)
-        if: steps.guard.outputs.deploy == 'true'
+        if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false'
         env:
+          PROD_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           OA_ACCESS_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bash scripts/ci/prod-setup.sh preflight
-      - name: Upgrade prod (deploy + selftest, CI token)
-        if: steps.guard.outputs.deploy == 'true' && steps.preflight.outputs.installed == 'true'
+      - id: record
+        name: Record the Worker version and a D1 Time Travel bookmark; capture the database
+        if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed == 'true' && steps.migration.outputs.guarded == 'true'
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bash scripts/ci/prod-migration-guard.sh record
+      - name: Upgrade prod (deploy + selftest, CI token)
+        if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed == 'true'
+        env:
+          PROD_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           OA_ACCESS_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -157,10 +252,38 @@ jobs:
           # build of the config it deploys, right before `wrangler deploy`.
           OA_CHECK_NO_TEST_HOOKS: "1"
         run: bash scripts/ci/prod-setup.sh upgrade
+      - id: verify
+        name: Verify the migrated database against the capture
+        if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed == 'true' && steps.migration.outputs.guarded == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bash scripts/ci/prod-migration-guard.sh verify
+      # The upgrade or its verification failed after the bookmark: roll the
+      # Worker back (new code can't run on the old schema), then restore D1,
+      # then compare it with the capture. Only when this run allows it (the
+      # user's yes for that release); otherwise page with what to restore.
+      - name: Roll the Worker back and restore D1 to the bookmark
+        if: failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure == true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_VERSION: ${{ steps.record.outputs.worker_version }}
+          BOOKMARK: ${{ steps.record.outputs.bookmark }}
+        run: bash scripts/ci/prod-migration-guard.sh restore
+      - name: Page (verification failed; no restore authorized for this run)
+        if: failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure != true
+        env:
+          WORKER_VERSION: ${{ steps.record.outputs.worker_version }}
+          BOOKMARK: ${{ steps.record.outputs.bookmark }}
+        run: |
+          echo "::error title=Prod migration failed::not restored (not authorized for this run). Worker before: $WORKER_VERSION; D1 bookmark: $BOOKMARK"
+          echo "**Not restored.** Worker before: \`$WORKER_VERSION\`; D1 bookmark: \`$BOOKMARK\`." >> "$GITHUB_STEP_SUMMARY"
       - name: Revoke leaked setup-ci tokens
-        if: always() && steps.guard.outputs.deploy == 'true' && steps.preflight.outputs.installed != 'false'
+        if: always() && steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed != 'false'
         timeout-minutes: 3
         env:
+          PROD_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           OA_ACCESS_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -180,7 +303,6 @@ jobs:
       DEMO_NAME: open-artifacts-demo
       DEMO_APP_HOST: demo.open-artifacts.com
       DEMO_CONTENT_HOST: demo-content.open-artifacts.com
-      DEMO_OWNER_EMAIL: me@leourbina.com
       TAG: ${{ needs.release-please.outputs.tag_name }}
     steps:
       - id: guard
@@ -195,6 +317,15 @@ jobs:
             echo "deploy=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           echo "deploy=true" >> "$GITHUB_OUTPUT"
+      # #1084: refuse first. Setup prints the address normalized, and only the
+      # exact stored value is masked, so it must already be in that form.
+      - name: The owner address is set and normalized
+        if: steps.guard.outputs.deploy == 'true'
+        env:
+          OWNER: ${{ secrets.OA_OWNER_EMAIL }}
+        run: |
+          [ -n "$OWNER" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
+          [[ ! "$OWNER" =~ [[:upper:][:space:]] ]] || { echo "::error::OA_OWNER_EMAIL must be trimmed and lowercase"; exit 1; }
       - if: steps.guard.outputs.deploy == 'true'
         uses: actions/checkout@v4
         with:
@@ -212,6 +343,7 @@ jobs:
       - name: Upgrade the demo
         if: steps.guard.outputs.deploy == 'true'
         env:
+          DEMO_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           OA_ACCESS_TOKEN: ${{ secrets.DEMO_OA_ACCESS_TOKEN }}
@@ -221,6 +353,7 @@ jobs:
         if: always() && steps.guard.outputs.deploy == 'true'
         timeout-minutes: 3
         env:
+          DEMO_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           OA_ACCESS_TOKEN: ${{ secrets.DEMO_OA_ACCESS_TOKEN }}
@@ -230,20 +363,24 @@ jobs:
   # `blocker` issue is opened and this job fails. Skipped for pre-release tags.
   verify-release:
     needs: [release-please, deploy-prod, deploy-landing, deploy-demo]
-    if: ${{ always() && needs.release-please.outputs.release_created == 'true' && !contains(needs.release-please.outputs.tag_name, '-') }}
+    # A new stable release, or a dispatch whose prod deploy ran (the guarded deploy
+    # of a held release). A failed or restored dispatch leaves prod on the old
+    # version, so the check opens the "Release vX not live" blocker: the alert.
+    if: ${{ always() && ((needs.release-please.outputs.release_created == 'true' && !contains(needs.release-please.outputs.tag_name, '-')) || (github.event_name == 'workflow_dispatch' && inputs.tag != '' && !contains(inputs.tag, '-') && (needs.deploy-prod.result == 'success' || needs.deploy-prod.result == 'failure'))) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
     env:
-      TAG: ${{ needs.release-please.outputs.tag_name }}
+      TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
       GH_TOKEN: ${{ github.token }}
-      # deploy-prod skipped itself because prod is not installed: do not verify prod.
-      SKIP_PROD: ${{ needs.deploy-prod.outputs.installed == 'false' && '--skip-prod' || '' }}
+      # deploy-prod skipped itself (prod not installed) or the migration guard held
+      # the release for a guarded dispatch: prod is not on this tag, so don't verify it.
+      SKIP_PROD: ${{ (needs.deploy-prod.outputs.installed == 'false' || needs.deploy-prod.outputs.held == 'true') && '--skip-prod' || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -256,7 +393,7 @@ jobs:
   # ---------- hosted release files (T3b) ----------
   # Stable releases only. CI signs and never uploads to Cloudflare: the signed
   # tars and .sig.json files are attached to the GitHub release, and
-  # publishRelease (on a laptop, provisioning token) verifies them and copies
+  # publishRelease (on a laptop, the env's R2 API token) verifies them and copies
   # them to R2. The signing key never shares a job with installed code.
   hosted-guard:
     needs: [release-please]
@@ -332,6 +469,16 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: pnpm install --frozen-lockfile
+      # The server reports <version> only when v<version> points at HEAD, and a
+      # checkout by SHA has no tags: fetch this one and check it is this commit.
+      - name: Fetch the release tag
+        env:
+          TAG: ${{ needs.hosted-guard.outputs.tag }}
+          GUARD_SHA: ${{ needs.hosted-guard.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git rev-parse "$TAG^{commit}")" = "$GUARD_SHA"
       - name: Build both variants and the release files, with manifest.json
         env:
           GUARD_SHA: ${{ needs.hosted-guard.outputs.sha }}
@@ -339,6 +486,10 @@ jobs:
           pnpm --filter @oa/provision build
           pnpm --filter @oa/server build
           node --experimental-strip-types scripts/ci/build-hosted-release.ts "$RUNNER_TEMP/hosted" --commit "$GUARD_SHA"
+      - name: The built server reports exactly the release version
+        env:
+          VERSION: ${{ needs.hosted-guard.outputs.version }}
+        run: grep -Fqx "export const VERSION = \"$VERSION\";" apps/server/src/version.gen.ts
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hosted-release
@@ -377,6 +528,7 @@ jobs:
           set -euo pipefail
           before=$(node --experimental-strip-types --no-warnings scripts/ci/check-hosted-release.ts "$RUNNER_TEMP/hosted")
           pnpm check-no-test-hooks "$RUNNER_TEMP/hosted/release"
+          pnpm check-no-fake-idp "$RUNNER_TEMP/hosted/release"
           after=$(node --experimental-strip-types --no-warnings scripts/ci/check-hosted-release.ts "$RUNNER_TEMP/hosted")
           [ "$before" = "$after" ] || { echo "the artifact changed during the check"; exit 1; }
           echo "$after" >> "$GITHUB_OUTPUT"
@@ -384,7 +536,7 @@ jobs:
     needs: [hosted-guard, hosted-build, hosted-check]
     if: ${{ !cancelled() && needs.hosted-guard.result == 'success' && needs.hosted-build.result == 'success' && needs.hosted-check.result == 'success' }}
     runs-on: ubuntu-latest
-    # The staging key lives only in this GitHub Environment (main only, required reviewer).
+    # The staging key lives only in this GitHub Environment (main only, no admin bypass, no approval step).
     environment: hosted-staging
     permissions:
       contents: read
@@ -405,8 +557,14 @@ jobs:
         with:
           ref: ${{ needs.hosted-guard.outputs.sha }}
           persist-credentials: false
-      # Decision 4 (Manager review): checkout and download-artifact only, and
-      # the runner's own node (20) on plain .mjs: no setup-node, no strip-types.
+      # Decision 4 (Manager review), H-N22: Node 22 from .nvmrc via setup-node
+      # pinned by SHA, no cache; plain .mjs, no strip-types. The key is only in
+      # the sign step's env.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Assert Node 22
+        run: v=$(node --version); case "$v" in v22.*) ;; *) echo "expected Node 22, got $v" >&2; exit 1;; esac
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: hosted-release
@@ -427,7 +585,7 @@ jobs:
     needs: [hosted-guard, hosted-build, hosted-check]
     if: ${{ !cancelled() && needs.hosted-guard.result == 'success' && needs.hosted-build.result == 'success' && needs.hosted-check.result == 'success' }}
     runs-on: ubuntu-latest
-    # The prod key lives only in this GitHub Environment (main only, required reviewer).
+    # The prod key lives only in this GitHub Environment (main only, no admin bypass, no approval step: the checks before it are the gate).
     environment: hosted-prod
     permissions:
       contents: read
@@ -445,8 +603,14 @@ jobs:
         with:
           ref: ${{ needs.hosted-guard.outputs.sha }}
           persist-credentials: false
-      # Decision 4 (Manager review): checkout and download-artifact only, and
-      # the runner's own node (20) on plain .mjs: no setup-node, no strip-types.
+      # Decision 4 (Manager review), H-N22: Node 22 from .nvmrc via setup-node
+      # pinned by SHA, no cache; plain .mjs, no strip-types. The key is only in
+      # the sign step's env.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Assert Node 22
+        run: v=$(node --version); case "$v" in v22.*) ;; *) echo "expected Node 22, got $v" >&2; exit 1;; esac
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: hosted-release

@@ -2,8 +2,8 @@
 // audit trail. Schema: apps/platform-db/migrations/0001_installs.sql. Holds no
 // customer data and no secret; every write checks the env prefix first.
 import { createHash } from "node:crypto";
-import type { Cf } from "./cf.js";
-import { assertOwnResource, type Env } from "./names.js";
+import type { Cf, D1Result } from "./cf.js";
+import { assertOwnResource, type Env, isPlatformPrincipalId } from "./names.js";
 import type { InstallId } from "./types.js";
 
 export interface InstallRow {
@@ -37,7 +37,21 @@ export interface InstallRow {
   session_cut_base: string | null;
   /** 1 once an upload turning google on may have gone live (0003). */
   session_cut_armed: number;
+  /** H-DV (0005): the Google directory revoke a delete waits for. */
+  directory_revoke: DirectoryRevoke | null;
+  directory_revoked_at: number | null;
+  directory_revoke_attempts: number;
+  /** When this delete attempt began; a done older than it is stale (0005). */
+  directory_revoke_requested_at: number | null;
 }
+
+/** pending: the scheduler's revoke tick owns it; the rest are final for delete. */
+export type DirectoryRevoke =
+  | "pending"
+  | "done"
+  | "unsupported"
+  | "skipped"
+  | "failed";
 
 export type InstallState =
   | "creating"
@@ -67,7 +81,11 @@ export function canonicalJson(v: unknown): string {
   return JSON.stringify(v);
 }
 
-/** sha256 of the canonical JSON of what a resume must not change. */
+/**
+ * sha256 of the canonical JSON of what a resume or a replay must not change:
+ * owner, vars and testHooks. Not the version: a `creating` resume may move up
+ * (never down, F2/I1), and a replay compares installs.version itself (5.7).
+ */
 export function inputsHash(o: {
   ownerEmail: string;
   vars?: Record<string, string>;
@@ -90,6 +108,13 @@ export const RL_BASE: Record<Env, number> = {
   prod: 2_000_000,
 };
 
+/**
+ * A CAS write won when its `RETURNING id` gave back exactly one row. Not
+ * meta.changes: D1 counts rows a trigger writes too, so a one-row UPDATE of
+ * installs reports 2 (installs_row_version, 0003_lifecycle.sql).
+ */
+const one = (r: D1Result[]): boolean => r[0]?.results?.length === 1;
+
 const UPDATABLE = new Set([
   "d1_id",
   "kv_id",
@@ -102,6 +127,10 @@ const UPDATABLE = new Set([
   "vars",
   "session_cut_base",
   "session_cut_armed",
+  "directory_revoke",
+  "directory_revoke_attempts",
+  "directory_revoked_at",
+  "directory_revoke_requested_at",
 ]);
 
 export class PlatformDb {
@@ -110,7 +139,16 @@ export class PlatformDb {
     private readonly db: { id: string; name: string },
     private readonly env: Env,
     private readonly now: () => number,
-  ) {}
+    /**
+     * Who the operation's own hosted_audit rows are written as (design v7
+     * 4.9: the provisioner's `job:<jobId>`, through auditAs); none for the
+     * CLI, which writes its before and after rows with auditAs itself.
+     */
+    private readonly actor: string | null = null,
+  ) {
+    if (actor !== null && (actor === "" || actor.length > 300))
+      throw new Error("an audit actor is one to 300 characters");
+  }
 
   private async read(sql: string, params: unknown[]): Promise<InstallRow[]> {
     const r = await this.cf.d1Query(this.db.id, sql, params);
@@ -156,6 +194,9 @@ export class PlatformDb {
     testHooks: boolean;
     inputsHash: string;
   }): Promise<InstallRow> {
+    // 4.1: a platform principal's id is never an install.
+    if (isPlatformPrincipalId(r.id))
+      throw new Error(`${r.id} is a platform principal id, never an install`);
     const base = RL_BASE[this.env];
     const now = this.now();
     assertOwnResource(this.db.name, this.env);
@@ -186,8 +227,8 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
         params: [r.contentHost, r.id],
       },
       {
-        sql: "INSERT INTO hosted_audit (at, install_id, action, detail) VALUES (?1, ?2, 'create.start', ?3)",
-        params: [now, r.id, canonicalJson({ slug: r.slug })],
+        sql: "INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, ?4, ?2, 'create.start', ?3)",
+        params: [now, r.id, canonicalJson({ slug: r.slug }), this.actor],
       },
     ]);
     const row = await this.byId(r.id);
@@ -214,7 +255,7 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
     if (keys.length === 0) return true;
     const set = keys.map((k, i) => `${k} = ?${i + 1}`).join(", ");
     const r = await this.write(
-      `UPDATE installs SET ${set}, updated_at = ?${keys.length + 1} WHERE id = ?${keys.length + 2}${lease === undefined ? "" : ` AND lease = ?${keys.length + 3}`}`,
+      `UPDATE installs SET ${set}, updated_at = ?${keys.length + 1} WHERE id = ?${keys.length + 2}${lease === undefined ? "" : ` AND lease = ?${keys.length + 3}`} RETURNING id`,
       [
         ...keys.map((k) => (fields as Record<string, unknown>)[k] ?? null),
         this.now(),
@@ -222,7 +263,7 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
         ...(lease === undefined ? [] : [lease]),
       ],
     );
-    return lease === undefined || r[0]?.meta?.changes === 1;
+    return lease === undefined || one(r);
   }
 
   /** Hosts rows held by another install (any state). */
@@ -257,8 +298,8 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
         params: [r.contentHost, r.id],
       },
       {
-        sql: "INSERT INTO hosted_audit (at, install_id, action, detail) VALUES (?1, ?2, 'create.resume', ?3)",
-        params: [now, r.id, canonicalJson({ slug: r.slug })],
+        sql: "INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, ?4, ?2, 'create.resume', ?3)",
+        params: [now, r.id, canonicalJson({ slug: r.slug }), this.actor],
       },
     ]);
   }
@@ -286,19 +327,19 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
   ): Promise<boolean> {
     const now = this.now();
     const r = await this.write(
-      `UPDATE installs SET state = ?1, lease = ?2, lease_until = ?3, updated_at = ?4 WHERE id = ?5 AND row_version = ?6 AND state IN (${from.map((_, i) => `?${i + 7}`).join(", ")}) AND (lease_until IS NULL OR lease_until <= ?4)`,
+      `UPDATE installs SET state = ?1, lease = ?2, lease_until = ?3, updated_at = ?4 WHERE id = ?5 AND row_version = ?6 AND state IN (${from.map((_, i) => `?${i + 7}`).join(", ")}) AND (lease_until IS NULL OR lease_until <= ?4) RETURNING id`,
       [to, lease, until, now, id, rowVersion, ...from],
     );
-    return r[0]?.meta?.changes === 1;
+    return one(r);
   }
 
   /** Renews the lock, a CAS on its value; false when another holds the row now. */
   async renew(id: InstallId, lease: string, until: number): Promise<boolean> {
     const r = await this.write(
-      "UPDATE installs SET lease_until = ?1 WHERE id = ?2 AND lease = ?3",
+      "UPDATE installs SET lease_until = ?1 WHERE id = ?2 AND lease = ?3 RETURNING id",
       [until, id, lease],
     );
-    return r[0]?.meta?.changes === 1;
+    return one(r);
   }
 
   /** Sets the final state and drops the lock, if this lease still holds it. */
@@ -308,10 +349,10 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
     state: InstallState,
   ): Promise<boolean> {
     const r = await this.write(
-      "UPDATE installs SET state = ?1, lease = NULL, lease_until = NULL, updated_at = ?2 WHERE id = ?3 AND lease = ?4",
+      "UPDATE installs SET state = ?1, lease = NULL, lease_until = NULL, updated_at = ?2 WHERE id = ?3 AND lease = ?4 RETURNING id",
       [state, this.now(), id, lease],
     );
-    return r[0]?.meta?.changes === 1;
+    return one(r);
   }
 
   /** The stored render of one version, or undefined. */
@@ -385,12 +426,87 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
     );
   }
 
-  /** Appends an audit row; `detail` must never carry a secret or an email. */
+  /**
+   * Appends an audit row with its actor (the operator's git email, or the CI
+   * run URL): the oa:hosted CLI's before and after rows. `detail` must never
+   * carry a secret or an email.
+   */
+  async auditAs(
+    actor: string,
+    id: InstallId | "-",
+    action: string,
+    detail: Record<string, string | number> = {},
+  ): Promise<void> {
+    if (typeof actor !== "string" || actor === "" || actor.length > 300)
+      throw new Error("an audit actor is required");
+    await this.write(
+      "INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+      [this.now(), actor, id, action, canonicalJson(detail)],
+    );
+  }
+
+  /** H-DV: one install's revoke state, read only (delete's phase-2 poll). */
+  async revokeState(id: InstallId): Promise<{
+    state: DirectoryRevoke | null;
+    attempts: number;
+    revokedAt: number | null;
+    requestedAt: number | null;
+  } | null> {
+    const r = (
+      await this.cf.d1Query(
+        this.db.id,
+        "SELECT directory_revoke, directory_revoke_attempts, directory_revoked_at, directory_revoke_requested_at FROM installs WHERE id = ?1",
+        [id],
+      )
+    )[0]?.results?.[0];
+    if (!r) return null;
+    return {
+      state: (r.directory_revoke ?? null) as DirectoryRevoke | null,
+      attempts: Number(r.directory_revoke_attempts ?? 0),
+      revokedAt:
+        r.directory_revoked_at === null || r.directory_revoked_at === undefined
+          ? null
+          : Number(r.directory_revoked_at),
+      requestedAt:
+        r.directory_revoke_requested_at === null ||
+        r.directory_revoke_requested_at === undefined
+          ? null
+          : Number(r.directory_revoke_requested_at),
+    };
+  }
+
+  /**
+   * M1b: a stale done goes back to pending so the scheduler revokes afresh.
+   * Only a still-deleting row whose done predates this attempt's start.
+   */
+  async redispatchRevoke(id: InstallId): Promise<void> {
+    await this.write(
+      "UPDATE installs SET directory_revoke = 'pending', directory_revoke_attempts = 0 WHERE id = ?1 AND state = 'deleting' AND directory_revoke = 'done' AND (directory_revoked_at IS NULL OR directory_revoke_requested_at IS NULL OR directory_revoked_at < directory_revoke_requested_at)",
+      [id],
+    );
+  }
+
+  /** H-DV M1: whether a delete recorded its skip reason for this install. */
+  async hasSkipAudit(id: InstallId): Promise<boolean> {
+    const r = await this.cf.d1Query(
+      this.db.id,
+      "SELECT 1 AS ok FROM hosted_audit WHERE install_id = ?1 AND action = 'delete.revoke_skipped' LIMIT 1",
+      [id],
+    );
+    return (r[0]?.results ?? []).length > 0;
+  }
+
+  /**
+   * Appends an audit row, as the operation's actor when it has one (auditAs);
+   * `detail` must never carry a secret or an email.
+   */
   async audit(
     id: InstallId,
     action: string,
     detail: Record<string, string | number> = {},
   ): Promise<void> {
+    if (this.actor !== null)
+      return this.auditAs(this.actor, id, action, detail);
     await this.write(
       "INSERT INTO hosted_audit (at, install_id, action, detail) VALUES (?1, ?2, ?3, ?4)",
       [this.now(), id, action, canonicalJson(detail)],

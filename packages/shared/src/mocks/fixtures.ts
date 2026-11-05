@@ -59,6 +59,11 @@ const art = (
   access: "owner",
   capabilities: caps(),
   allowAnonymousWrites: false,
+  // #681: as the 0014 backfill maps rows.
+  dataWriters:
+    o.visibility === "public" && !o.allowAnonymousWrites
+      ? "editors"
+      : "viewers",
   ...o,
 });
 
@@ -108,6 +113,8 @@ export const fixtures: {
   shares: Record<string, Share[]>;
   tokens: Token[];
   oauthClients: OAuthClient[];
+  /** The connections (`g:<grantId>`, `t:<tokenId>`) that published each artifact; all the caller's. */
+  agentVias: Record<string, string[]>;
   data: { artifactId: string; collection: string; doc: DataDoc }[];
   storage: { artifactId: string; entry: StorageEntry }[];
 } = {
@@ -189,6 +196,7 @@ export const fixtures: {
       label: "laptop",
       createdAt: "2026-01-02T10:00:00.000Z",
       lastUsedAt: null,
+      versionsPublished: 1,
     },
   ],
   oauthClients: [
@@ -196,8 +204,19 @@ export const fixtures: {
       grantId: "Km3nPqRsTu4vWxYz",
       clientName: "Example MCP client",
       createdAt: "2026-01-02T10:00:00.000Z",
+      redirectKind: "computer",
+      approvedFrom: { browser: "chrome", os: "macos" },
+      lastUsedAt: "2026-01-02T12:00:00.000Z",
+      clientVersion: "1.2.0",
+      versionsPublished: 3,
     },
   ],
+  agentVias: {
+    [ID.landing]: ["g:Km3nPqRsTu4vWxYz"],
+    [ID.notes]: ["g:Km3nPqRsTu4vWxYz"],
+    [ID.report]: ["g:Km3nPqRsTu4vWxYz"],
+    [ID.script]: ["t:Jk2mNpQrSt3uVwXy"],
+  },
   data: [
     {
       artifactId: ID.poll,

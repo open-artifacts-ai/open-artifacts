@@ -6,6 +6,7 @@ import { direct, mailer } from "./auth-helpers.js";
 import { type FakeGoogle, fakeGoogle } from "./fixtures/fake-google.js";
 import {
   type Install,
+  resetCodeCaps,
   SIGNIN_NEGATIVE_CASES,
   XT_DOMAIN,
 } from "./xt/signin-negative.js";
@@ -86,6 +87,11 @@ describe("sign-in negative catalog (local)", () => {
     const t = c.liveOnly ? it.skip : it;
     t(c.name, () => c.run(A, B));
   }
+
+  it("resetCodeCaps (the live beforeAll's reset) answers 200 with a count", async () => {
+    expect(await resetCodeCaps(A)).toBeGreaterThanOrEqual(0);
+    expect(await resetCodeCaps(B)).toBeGreaterThanOrEqual(0);
+  });
 
   it("a failing case's message holds no key, code or cookie", async () => {
     const leak =

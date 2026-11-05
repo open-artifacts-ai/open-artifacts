@@ -1,11 +1,13 @@
 // Hosted P4 Task 6: spaces in the sidebar and the space marker (Design D1 to
 // D3: Spaces A, G68RE4oKC9pH3cgr v7, plus Design's answers of 2026-10-22).
 import type { Me, MySpace } from "@oa/shared";
+import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it } from "vitest";
+import { sharedSpaceName } from "../src/spaces/label";
 import { visibilityHint } from "../src/spaces/SpaceMarker";
-import { installHarness, mount, mountHosted } from "./harness";
+import { calls, installHarness, mount, mountHosted } from "./harness";
 
 installHarness();
 
@@ -161,7 +163,7 @@ it("inside a space: its name and your role; tabs and format filter stay; no chip
     await screen.findByRole("heading", { level: 1, name: "Engineering" }),
   ).toBeVisible();
   expect(screen.getByText("You're a manager")).toBeVisible();
-  expect(screen.getByRole("tab", { name: "Mine" })).toBeVisible();
+  expect(screen.getByRole("tab", { name: "Shared with me" })).toBeVisible();
   const c = await card("Meeting notes");
   expect(within(c).queryByText("Engineering")).toBeNull();
   // Task 7: a manager can publish here, so the Upload pair shows.
@@ -239,10 +241,7 @@ it("inside a space the search reads Search Engineering with a chip; removing it 
     expect(router.state.location.search).toEqual({ q: "notes" }),
   );
   expect(screen.queryByText("in Engineering")).toBeNull();
-  expect(box).toHaveAttribute(
-    "placeholder",
-    "Search titles, content, and agents",
-  );
+  expect(box).toHaveAttribute("placeholder", "Search titles and content");
   expect(box).toHaveAccessibleName("Search artifacts");
 });
 
@@ -254,10 +253,7 @@ it("Backspace on an empty scoped search removes the chip", async () => {
   await screen.findByText("in Engineering");
   fireEvent.keyDown(box, { key: "Backspace" });
   expect(screen.queryByText("in Engineering")).toBeNull();
-  expect(box).toHaveAttribute(
-    "placeholder",
-    "Search titles, content, and agents",
-  );
+  expect(box).toHaveAttribute("placeholder", "Search titles and content");
   expect(box).toHaveAccessibleName("Search artifacts");
 });
 
@@ -266,10 +262,7 @@ it("across spaces there is no chip", async () => {
   const box = await screen.findByRole("searchbox", {
     name: "Search artifacts",
   });
-  expect(box).toHaveAttribute(
-    "placeholder",
-    "Search titles, content, and agents",
-  );
+  expect(box).toHaveAttribute("placeholder", "Search titles and content");
   expect(
     screen.queryByRole("button", { name: "Search everywhere" }),
   ).toBeNull();
@@ -308,13 +301,81 @@ it("inside a space, the tabs keep the space; there is no Team tab", async () => 
   const router = mountHosted(`/?space=${ENG}`);
   await screen.findByRole("heading", { level: 1, name: "Engineering" });
   expect(screen.queryByRole("tab", { name: "Team" })).toBeNull();
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "Mine" }));
-  fireEvent.click(screen.getByRole("tab", { name: "Mine" }));
-  await waitFor(() => expect(router.state.location.pathname).toBe("/mine"));
+  const tab = screen.getByRole("tab", { name: "Shared with me" });
+  fireEvent.mouseDown(tab);
+  fireEvent.click(tab);
+  await waitFor(() => expect(router.state.location.pathname).toBe("/shared"));
   expect(router.state.location.search).toEqual({ space: ENG });
   expect(
     screen.getByRole("heading", { level: 1, name: "Engineering" }),
   ).toBeVisible();
+});
+
+// Review item 20: the server's scope=mine is the personal space, so Mine in a
+// shared space is scope=space&spaceId=<id>&owner=me (P3).
+it("a shared space's Mine tab lists the caller's artifacts there (scope=space, owner=me)", async () => {
+  const list = calls("GET");
+  mountHosted(`/?space=${ENG}`);
+  await screen.findByRole("heading", { level: 1, name: "Engineering" });
+  const tab = screen.getByRole("tab", { name: "Mine" });
+  fireEvent.mouseDown(tab);
+  fireEvent.click(tab);
+  await waitFor(() =>
+    expect(
+      list.some(
+        (c) =>
+          c.path === "/api/v1/artifacts" &&
+          c.search.get("scope") === "space" &&
+          c.search.get("spaceId") === ENG &&
+          c.search.get("owner") === "me",
+      ),
+    ).toBe(true),
+  );
+  // Never scope=mine with a shared spaceId: P3 refuses it (400).
+  expect(
+    list.some(
+      (c) =>
+        c.path === "/api/v1/artifacts" &&
+        c.search.get("scope") === "mine" &&
+        c.search.get("spaceId") === ENG,
+    ),
+  ).toBe(false);
+});
+
+// With #792's owner=me, the shared mock answers it: Mine in Engineering is
+// exactly the caller's artifacts among All of Engineering's.
+it("Mine in Engineering lists only the caller's artifacts there", async () => {
+  const titles = async (q: string) => {
+    const r = await fetch(`http://localhost/api/v1/artifacts?${q}`);
+    const body = (await r.json()) as {
+      items: { title: string; owner: { id: string } }[];
+    };
+    return body.items;
+  };
+  const router = mountHosted(`/?space=${ENG}`);
+  await screen.findByRole("heading", { level: 1, name: "Engineering" });
+  const all = await titles(`scope=space&spaceId=${ENG}`);
+  const mine = await titles(`scope=space&spaceId=${ENG}&owner=me`);
+  const meId = fixtures.me.user.id;
+  expect(mine.length).toBeGreaterThan(0);
+  expect(mine.map((a) => a.title).sort()).toEqual(
+    all
+      .filter((a) => a.owner.id === meId)
+      .map((a) => a.title)
+      .sort(),
+  );
+  const tab = screen.getByRole("tab", { name: "Mine" });
+  fireEvent.mouseDown(tab);
+  fireEvent.click(tab);
+  await waitFor(() => expect(router.state.location.pathname).toBe("/mine"));
+  for (const a of mine) expect(await card(a.title)).toBeVisible();
+  for (const a of all.filter((x) => !mine.some((m) => m.title === x.title)))
+    expect(screen.queryByText(a.title, { selector: "a" })).toBeNull();
+});
+
+it("the personal space keeps its Mine tab", async () => {
+  mountHosted(`/?space=${PERSONAL}`);
+  expect(await screen.findByRole("tab", { name: "Mine" })).toBeVisible();
 });
 
 it("below 640px the chip drops 'in' and the placeholder is just Search", async () => {
@@ -337,4 +398,45 @@ it("below 640px the chip drops 'in' and the placeholder is just Search", async (
   } finally {
     window.matchMedia = real;
   }
+});
+
+// A shared space named "Personal" (made before #770 reserved the name) stays
+// listed and reachable, labelled so it isn't the built-in Personal.
+it("a shared space named Personal reads Personal (shared), next to the built-in Personal", async () => {
+  const legacy: MySpace = {
+    id: "SpOldPersonal0001",
+    kind: "shared",
+    name: " personal ",
+    publicLinks: true,
+    myRole: "manager",
+  };
+  mountHosted(
+    "/",
+    true,
+    (m: Me): Me => ({
+      ...m,
+      spaces: [...(m.spaces ?? []), legacy],
+    }),
+  );
+  const spaces = await nav();
+  expect(within(spaces).getByRole("link", { name: "Personal" })).toBeVisible();
+  const shared = within(spaces).getByRole("link", {
+    name: "personal (shared)",
+  });
+  expect(shared).toHaveAttribute(
+    "href",
+    expect.stringContaining(`space=${legacy.id}`),
+  );
+});
+
+it("sharedSpaceName labels only the reserved name", () => {
+  expect(sharedSpaceName("Personal")).toBe("Personal (shared)");
+  expect(sharedSpaceName(" PERSONAL ")).toBe("PERSONAL (shared)");
+  expect(sharedSpaceName("Personal stuff")).toBe("Personal stuff");
+  expect(sharedSpaceName("Engineering")).toBe("Engineering");
+});
+
+it("an install with no shared spaces (the mock's noSharedSpaces): No spaces yet", async () => {
+  mountHosted("/", { noSharedSpaces: true });
+  expect(await screen.findByText("No spaces yet")).toBeVisible();
 });

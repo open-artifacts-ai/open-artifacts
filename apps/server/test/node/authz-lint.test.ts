@@ -11,9 +11,13 @@ import { describe, expect, it } from "vitest";
 
 const SRC = join(import.meta.dirname, "../../src");
 
-/** Target-row rules, not caller checks: "the owner cannot be demoted/removed". */
+/**
+ * Target-row rules, not caller checks: "the owner cannot be demoted/removed",
+ * and "a share written at viewer" (a downgrade closes the artifact's sockets).
+ */
 const ALLOWED: readonly string[] = [
   'services/members.ts: row.role === "owner"',
+  'services/shares.ts: s.role === "viewer"',
 ];
 
 function files(dir: string): string[] {

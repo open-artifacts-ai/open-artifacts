@@ -4,7 +4,7 @@
 Format: {{artifactFormat}}
 Your role: {{role}}
 
-It lives on {{instanceName}}, where any AI agent publishes pages, docs, code and PDFs for your team. You'll sign in with a one-time code sent to {{recipientEmail}}.
+It lives on {{instanceName}}, where any AI agent publishes pages, docs, code and PDFs for your team. {{signInLine}}
 
 Open the artifact:
 {{artifactUrl}}

@@ -1,0 +1,927 @@
+import { generateKeyPairSync, sign } from "node:crypto";
+import { readFileSync } from "node:fs";
+import type { Socket } from "node:net";
+import { join } from "node:path";
+import {
+  bundleSha256,
+  CfError,
+  canonicalJson,
+  platformNames,
+  TEST_HOOKS_DEFINE,
+} from "@oa/provision";
+import { afterEach, describe, expect, it } from "vitest";
+import { InfraError } from "../src/fetch-timeout.ts";
+import { takeFileNotes } from "../src/notes.ts";
+import {
+  guardProdClean,
+  HOOK_SQL_MARKERS,
+  PROD_CLEAN_CODES,
+  PROD_CLEAN_LINE_RE,
+  ProdDirty,
+  prodClean,
+} from "../src/prod.ts";
+import {
+  buildReport,
+  gatePasses,
+  levelOf,
+  PRE_PROD_GUARD,
+  PRE_PROD_GUARD_REASON,
+} from "../src/report.ts";
+import { parseTargets } from "../src/targets.ts";
+import { type Fake, fakeServer, json, secretDir } from "./fake.ts";
+
+const ROOT = join(import.meta.dirname, "..", "..", "..");
+const ACCT = "0123456789abcdef0123456789abcdef";
+const BUCKET = platformNames("prod").releases;
+const TEMPLATE = readFileSync(
+  join(ROOT, "apps/server/wrangler.template.jsonc"),
+);
+const H64 = "a".repeat(64);
+const ID = "iabcdefghijk";
+
+const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+const PUB = publicKey.export({ format: "jwk" }).x as string;
+
+const dispose: (() => unknown)[] = [];
+afterEach(async () => {
+  for (const d of dispose.splice(0)) await d();
+});
+
+interface World {
+  /** Bucket objects by key; null = the bucket doesn't exist. */
+  objects: Map<string, Uint8Array> | null;
+  installs: Record<string, unknown>[];
+  healthz: Record<string, unknown>;
+  secretNames: string[];
+  bindings: string[];
+  /** The authorization header of each /installs read. */
+  inventoryAuth?: (string | undefined)[];
+  /** Inventory refuses the bearer: its unknown-route plain 404 (#1016). */
+  inventoryRefuses?: boolean;
+  /** Inventory's raw answer to /installs (e.g. #1043's 503 schema_missing). */
+  inventoryAnswer?: { status: number; body: string; type?: string };
+  /** /healthz status (a paused or closed host answers 503). */
+  healthzStatus?: number;
+  /** The dispatch script is gone (purged): its routes answer 404. */
+  scriptMissing?: boolean;
+  /** Paths requested, in order. */
+  seen?: string[];
+  /** Full URLs requested through the injected fetch, in order. */
+  urls?: string[];
+  /** How many /installs reads get no answer at all (held open) first. */
+  inventoryStalls?: number;
+}
+
+function signedRecord(o: {
+  version: string;
+  variant?: string;
+  define?: boolean;
+  sha256: string;
+  key?: typeof privateKey;
+}) {
+  const record = canonicalJson({
+    assets: [],
+    defines: { [TEST_HOOKS_DEFINE]: o.define ?? false },
+    env: "prod",
+    migrationsSha256: H64,
+    sha256: o.sha256,
+    templateSha256: H64,
+    variant: o.variant ?? "release",
+    version: o.version,
+    welcomeSha256: H64,
+  });
+  const signature = sign(
+    null,
+    Buffer.from(`oa-release-v1\nprod\n${record}`),
+    o.key ?? privateKey,
+  ).toString("base64url");
+  return new TextEncoder().encode(JSON.stringify({ record, signature }));
+}
+
+/** One published release: modules/index.js, the template, the signed record. */
+function publish(
+  w: World,
+  o: {
+    version: string;
+    variant?: string;
+    js?: string;
+    shaOf?: string;
+    key?: typeof privateKey;
+  },
+) {
+  const variant = o.variant ?? "release";
+  const js = new TextEncoder().encode(o.js ?? "export default {};");
+  const signedJs = new TextEncoder().encode(
+    o.shaOf ?? o.js ?? "export default {};",
+  );
+  const sha = bundleSha256({
+    mainModule: "index.js",
+    modules: [{ name: "index.js", type: "esm", bytes: signedJs }],
+  });
+  const base = `releases/${o.version}/${variant}/`;
+  const objs = w.objects ?? new Map();
+  objs.set(`${base}modules/index.js`, js);
+  objs.set(`${base}template/wrangler.template.jsonc`, TEMPLATE);
+  objs.set(
+    `${base}record.sig.json`,
+    signedRecord({ version: o.version, variant, sha256: sha, key: o.key }),
+  );
+  w.objects = objs;
+}
+
+const cleanWorld = (): World => ({
+  objects: new Map(),
+  installs: [
+    {
+      id: ID,
+      appHost: "acme.open-artifacts.app",
+      contentHost: "c",
+      state: "active",
+      testHooks: false,
+      mode: "serving",
+    },
+  ],
+  healthz: { ok: true, installId: ID },
+  secretNames: ["SESSION_SECRET"],
+  bindings: ["DB"],
+});
+
+/** A fake Cloudflare API + inventory + /healthz, reached through an injected fetch. */
+async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
+  const r2 = `/client/v4/accounts/${ACCT}/r2/buckets/${BUCKET}/objects`;
+  const held: Socket[] = [];
+  dispose.push(() => {
+    for (const s of held) s.destroy();
+  });
+  const script = `/client/v4/accounts/${ACCT}/workers/dispatch/namespaces/oa-prod/scripts/oa-p-${ID}`;
+  const f = await fakeServer((req, res) => {
+    const u = new URL(req.url ?? "/", "http://x");
+    w.seen = [...(w.seen ?? []), u.pathname];
+    if (w.scriptMissing && u.pathname.startsWith(`${script}/`))
+      return json(res, 404, { success: false, errors: [{ code: 10007 }] });
+    if (u.pathname === r2) {
+      if (!w.objects)
+        return json(res, 404, { success: false, errors: [{ code: 10006 }] });
+      const prefix = u.searchParams.get("prefix") ?? "";
+      const result = [...w.objects]
+        .filter(([k]) => k.startsWith(prefix))
+        .map(([key, b]) => ({ key, size: b.length, etag: "e" }));
+      return json(res, 200, {
+        success: true,
+        result,
+        result_info: { is_truncated: false },
+      });
+    }
+    if (u.pathname.startsWith(`${r2}/`)) {
+      const key = decodeURIComponent(u.pathname.slice(r2.length + 1));
+      const b = w.objects?.get(key);
+      if (!b) return json(res, 404, { success: false });
+      return res.writeHead(200, { etag: '"e"' }).end(Buffer.from(b));
+    }
+    if (u.pathname === "/installs" && (w.inventoryStalls ?? 0) > 0) {
+      // No response: the read's bound fires. Held until the test ends.
+      w.inventoryStalls = (w.inventoryStalls ?? 0) - 1;
+      held.push(req.socket);
+      return;
+    }
+    if (u.pathname === "/installs") {
+      w.inventoryAuth = [...(w.inventoryAuth ?? []), req.headers.authorization];
+      if (w.inventoryRefuses)
+        return res
+          .writeHead(404, { "cache-control": "no-store" })
+          .end("Not found");
+      if (w.inventoryAnswer)
+        return res
+          .writeHead(w.inventoryAnswer.status, {
+            "content-type": w.inventoryAnswer.type ?? "application/json",
+          })
+          .end(w.inventoryAnswer.body);
+      return json(res, 200, { installs: w.installs });
+    }
+    if (u.pathname === "/healthz")
+      return json(res, w.healthzStatus ?? 200, w.healthz);
+    if (u.pathname === `${script}/secrets`)
+      return json(res, 200, {
+        success: true,
+        result: w.secretNames.map((name) => ({ name, type: "secret_text" })),
+      });
+    if (u.pathname === `${script}/settings`)
+      return json(res, 200, {
+        success: true,
+        result: { bindings: w.bindings.map((name) => ({ name })) },
+      });
+    json(res, 404, {});
+  });
+  dispose.push(() => f.close());
+  const routed: typeof fetch = (input, init) => {
+    const raw = input instanceof Request ? input.url : String(input);
+    w.urls = [...(w.urls ?? []), raw];
+    const u = new URL(raw);
+    return fetch(`${f.origin}${u.pathname}${u.search}`, init);
+  };
+  return { f, fetch: routed };
+}
+
+/** A staging REDLINE_TARGETS with the CI layout for prod. */
+function probe(o: { inventory?: boolean; jwtFile?: string } = {}) {
+  const s = secretDir({
+    REDLINE_RL_A_HOOK_KEY: "a".repeat(40),
+    REDLINE_RL_B_HOOK_KEY: "b".repeat(40),
+    REDLINE_PROD_R2_TOKEN: "r2-token",
+    REDLINE_PROD_SCRIPTS_TOKEN: "scripts-token",
+    ...(o.jwtFile === undefined
+      ? {}
+      : { REDLINE_PROD_INVENTORY_OIDC: o.jwtFile }),
+  });
+  dispose.push(s.cleanup);
+  const t = (n: string, d: string) => ({
+    name: n,
+    installId: n,
+    app: `https://${n}.open-artifacts-staging.app`,
+    content: `https://${n}.open-artifacts-staging.page`,
+    testDomain: d,
+  });
+  const T = parseTargets({
+    REDLINE_PROD_ACCOUNT_ID: ACCT,
+    REDLINE_TARGETS: JSON.stringify({
+      secretsDir: s.dir,
+      a: t("rl-a", "oa-redline-a.fyi"),
+      b: t("rl-b", "oa-redline-c.fyi"),
+      ...(o.inventory === false
+        ? {}
+        : { prod: { inventoryUrl: "https://inventory.example" } }),
+    }),
+  });
+  if (!T.prod) throw new Error("no prod probe");
+  return T.prod;
+}
+
+/** The minted GitHub OIDC JWT a configured caller passes (never a stored key). */
+const JWT = "jwt.x.y";
+const bearerOf = (o: { inventory?: boolean }) =>
+  o.inventory === false ? {} : { inventoryBearer: JWT };
+
+async function check(w: World, o: { inventory?: boolean } = {}) {
+  const { fetch } = await serve(w);
+  return prodClean(probe(o), { fetch, pubkey: PUB, ...bearerOf(o) });
+}
+
+/** The ProdDirty code a rejected promise carries. */
+async function failCode(p: Promise<unknown>): Promise<string> {
+  const e = await p.then(
+    () => null,
+    (x: unknown) => x,
+  );
+  if (!(e instanceof ProdDirty)) throw new Error(`not ProdDirty: ${String(e)}`);
+  return e.code;
+}
+
+describe("prodClean (spec 2026-10-26)", () => {
+  it("reads the CI layout: REDLINE_PROD_R2_TOKEN, _SCRIPTS_TOKEN and REDLINE_PROD_ACCOUNT_ID", () => {
+    const p = probe();
+    expect(p.accountId).toBe(ACCT);
+    expect(p.r2TokenFile.endsWith("REDLINE_PROD_R2_TOKEN")).toBe(true);
+    expect(p.scriptsTokenFile.endsWith("REDLINE_PROD_SCRIPTS_TOKEN")).toBe(
+      true,
+    );
+    expect(JSON.stringify(p)).not.toContain("r2-token");
+  });
+
+  it("an inventory URL needs no REDLINE_PROD_INVENTORY_KEY file (OIDC only)", () => {
+    const p = probe();
+    expect(p.inventoryUrl).toBe("https://inventory.example");
+    expect(Object.keys(p).sort()).toEqual([
+      "accountId",
+      "inventoryUrl",
+      "r2TokenFile",
+      "scriptsTokenFile",
+    ]);
+  });
+
+  it("a clean prod (signed release, clean install) passes", async () => {
+    const w = cleanWorld();
+    publish(w, { version: "1.2.3" });
+    expect(await check(w)).toEqual({ level: "pass", releases: 1, installs: 1 });
+  });
+
+  it("a missing bucket fails bucket_missing, never pass", async () => {
+    const w = cleanWorld();
+    w.objects = null;
+    expect(await failCode(check(w))).toBe("bucket_missing");
+  });
+
+  it("configured with an empty bucket and 0 rows passes", async () => {
+    const w = cleanWorld();
+    w.installs = [];
+    expect(await check(w)).toEqual({ level: "pass", releases: 0, installs: 0 });
+  });
+
+  it("an inventory that is not the installs schema fails inventory_bad", async () => {
+    const w = cleanWorld();
+    w.installs = [{ id: ID, appHost: "a", testHooks: false }];
+    expect(await failCode(check(w))).toBe("inventory_bad");
+  });
+
+  it("an inventory refusing the bearer (its plain 404) fails inventory_bad, never a pass", async () => {
+    const w = cleanWorld();
+    w.inventoryRefuses = true;
+    expect(await failCode(check(w))).toBe("inventory_bad");
+    w.installs = [];
+    expect(await failCode(check(w))).toBe("inventory_bad");
+  });
+
+  it("a bearer function is called after the release scan, right before /installs", async () => {
+    const w = cleanWorld();
+    const { fetch } = await serve(w);
+    const seen: string[] = [];
+    const counted: typeof fetch = (i, init) => {
+      seen.push(new URL(String(i instanceof Request ? i.url : i)).host);
+      return fetch(i, init);
+    };
+    let mintedAfter = -1;
+    await prodClean(probe(), {
+      fetch: counted,
+      pubkey: PUB,
+      inventoryBearer: async () => {
+        mintedAfter = seen.length;
+        return JWT;
+      },
+    });
+    expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+    // Every Cloudflare (release scan) call came before the mint.
+    expect(mintedAfter).toBeGreaterThan(0);
+    expect(
+      seen.slice(0, mintedAfter).every((h) => h === "api.cloudflare.com"),
+    ).toBe(true);
+    expect(
+      seen.slice(mintedAfter).some((h) => h !== "api.cloudflare.com"),
+    ).toBe(true);
+  });
+
+  it("the inventory bearer is only opts.inventoryBearer (OIDC), never the stored key", async () => {
+    const w = cleanWorld();
+    const { fetch } = await serve(w);
+    await prodClean(probe(), { fetch, pubkey: PUB, inventoryBearer: JWT });
+    expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+    // A probe with an inventory URL but no OIDC bearer is
+    // unconfigured: it fails before any request and never sends the key.
+    let calls = 0;
+    const counted: typeof fetch = (i, init) => {
+      calls++;
+      return fetch(i, init);
+    };
+    expect(
+      await failCode(prodClean(probe(), { fetch: counted, pubkey: PUB })),
+    ).toBe("inventory_unconfigured");
+    expect(calls).toBe(0);
+    expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+  });
+
+  it("an unconfigured probe fails before any request", async () => {
+    let calls = 0;
+    const f = (async () => {
+      calls++;
+      throw new Error("no");
+    }) as unknown as typeof fetch;
+    expect(await failCode(prodClean(undefined, { fetch: f }))).toBe(
+      "not_configured",
+    );
+    expect(
+      await failCode(prodClean(probe({ inventory: false }), { fetch: f })),
+    ).toBe("inventory_unconfigured");
+    expect(calls).toBe(0);
+  });
+
+  it("a dirty install carries its code, id and a detail of at most 200", async () => {
+    const w = cleanWorld();
+    w.secretNames = ["TEST_HOOK_KEY"];
+    const e = await check(w).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(ProdDirty);
+    expect((e as ProdDirty).code).toBe("install_dirty");
+    expect((e as ProdDirty).installId).toBe(ID);
+    expect(new ProdDirty("unreachable", "x".repeat(300)).message).toHaveLength(
+      200,
+    );
+    for (const c of PROD_CLEAN_CODES)
+      expect(c).toMatch(/^[a-z][a-z0-9_]{0,39}$/);
+  });
+
+  describe("truth table (2026-10-30: configured + zero = pass, unconfigured = fail)", () => {
+    type Bucket = "404" | "empty" | "releases";
+    const cases: {
+      r2: boolean;
+      bucket: Bucket;
+      inv: boolean;
+      rows: number;
+      dirty: boolean;
+    }[] = [];
+    // Dirty needs something to be dirty: a release or a row.
+    for (const r2 of [true, false])
+      for (const bucket of ["404", "empty", "releases"] as Bucket[])
+        for (const inv of [true, false])
+          for (const rows of [0, 1])
+            for (const dirty of [false, true])
+              if (!dirty || bucket === "releases" || rows > 0)
+                cases.push({ r2, bucket, inv, rows, dirty });
+    const expected = (c: (typeof cases)[number]) => {
+      if (!c.r2) return "not_configured";
+      if (!c.inv) return "inventory_unconfigured";
+      if (c.bucket === "404") return "bucket_missing";
+      if (c.dirty)
+        return c.bucket === "releases" ? "release_dirty" : "install_dirty";
+      return "pass";
+    };
+    for (const c of cases) {
+      const want = expected(c);
+      it(`R2 ${c.r2 ? "yes" : "no"}, bucket ${c.bucket}, inventory ${c.inv ? "yes" : "no"}, rows ${c.rows}, dirty ${c.dirty ? "yes" : "no"} -> ${want}`, async () => {
+        const w = cleanWorld();
+        if (c.bucket === "404") w.objects = null;
+        if (c.bucket === "releases")
+          publish(w, {
+            version: "1.2.3",
+            ...(c.dirty ? { js: `const q = "${HOOK_SQL_MARKERS[0]}";` } : {}),
+          });
+        if (c.rows === 0) w.installs = [];
+        if (c.dirty && c.bucket !== "releases") w.bindings = ["TEST_HOOKS"];
+        const { fetch } = await serve(w);
+        const p = c.r2 ? probe({ inventory: c.inv }) : undefined;
+        const r = prodClean(p, {
+          fetch,
+          pubkey: PUB,
+          ...bearerOf({ inventory: c.inv }),
+        });
+        if (want === "pass")
+          expect(await r).toEqual({
+            level: "pass",
+            releases: c.bucket === "releases" ? 1 : 0,
+            installs: c.rows,
+          });
+        else expect(await failCode(r)).toBe(want);
+      });
+    }
+  });
+
+  describe("the guard's reads with no response (#1133, run 41914116734)", () => {
+    // Pass only on a read that answered and shows no hooks. A timeout gets
+    // one retry on a new connection; no response twice is infra. Any HTTP
+    // status or a reply listing hooks stays a fail.
+    const READ_MS = 300;
+    const guard = async (w: World) => {
+      const { fetch } = await serve(w);
+      return guardProdClean({ mode: "staging", prod: probe() }, (x) =>
+        prodClean(x, {
+          fetch,
+          pubkey: PUB,
+          inventoryBearer: JWT,
+          readMs: READ_MS,
+        }),
+      );
+    };
+    const settle = (p: Promise<unknown>) =>
+      p.then(
+        () => null,
+        (x: unknown) => x,
+      );
+    const installsReads = (w: World) =>
+      (w.seen ?? []).filter((p) => p === "/installs").length;
+    const retried = () =>
+      takeFileNotes().filter((n) => n.startsWith("request retried: "));
+    const levelFor = (e: unknown) =>
+      levelOf("failed", undefined, [e as { message?: unknown }]);
+    afterEach(() => {
+      takeFileNotes();
+    });
+
+    it("a timeout, then a clean answer: pass, with a retry note", async () => {
+      const w = cleanWorld();
+      publish(w, { version: "1.2.3" });
+      w.inventoryStalls = 1;
+      expect(await guard(w)).toEqual({
+        level: "pass",
+        releases: 1,
+        installs: 1,
+      });
+      expect(installsReads(w)).toBe(2);
+      const notes = retried();
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toMatch(
+        /^request retried: timeout GET \/installs host [0-9a-f]{8} \(prodClean inventory\); recovered on a new socket$/,
+      );
+    });
+
+    it("a timeout twice: infra, never a pass", async () => {
+      const w = cleanWorld();
+      w.inventoryStalls = 2;
+      const e = await settle(guard(w));
+      expect(e).toBeInstanceOf(InfraError);
+      expect((e as Error).message).toBe(
+        "infra: prodClean inventory got no response twice (timeout, then timeout)",
+      );
+      expect(levelFor(e).level).toBe("infra");
+      expect(installsReads(w)).toBe(2);
+      expect(retried()[0]).toMatch(/; failed again \(timeout\)$/);
+    });
+
+    it("a timeout, then a reply listing hooks: fail (the retry never launders it)", async () => {
+      const w = cleanWorld();
+      (w.installs[0] as { testHooks: boolean }).testHooks = true;
+      w.inventoryStalls = 1;
+      const e = await settle(guard(w));
+      expect(e).toBeInstanceOf(ProdDirty);
+      expect((e as ProdDirty).code).toBe("install_dirty");
+      expect(levelFor(e).level).toBe("fail");
+    });
+
+    it("/healthz listing hooks: fail", async () => {
+      const w = cleanWorld();
+      w.healthz = { ok: true, installId: ID, testHooks: true };
+      const e = await settle(guard(w));
+      expect((e as ProdDirty).code).toBe("install_dirty");
+      expect(levelFor(e).level).toBe("fail");
+    });
+
+    it("a 5xx: fail, not retried", async () => {
+      const w = cleanWorld();
+      w.inventoryAnswer = { status: 500, body: "{}" };
+      const e = await settle(guard(w));
+      expect((e as ProdDirty).code).toBe("inventory_bad");
+      expect(levelFor(e).level).toBe("fail");
+      expect(installsReads(w)).toBe(1);
+      expect(retried()).toEqual([]);
+    });
+
+    it("a Cloudflare read with no response on every try: infra; an HTTP status from it: fail", async () => {
+      const e = await settle(
+        guardProdClean({ mode: "staging", prod: probe() }, () =>
+          Promise.reject(new CfError("GET", "/x", 0, "network: TimeoutError")),
+        ),
+      );
+      expect(levelFor(e).level).toBe("infra");
+      const e5 = await settle(
+        guardProdClean({ mode: "staging", prod: probe() }, () =>
+          Promise.reject(new CfError("GET", "/x", 502, "")),
+        ),
+      );
+      expect(levelFor(e5).level).toBe("fail");
+    });
+  });
+
+  describe("the red-line guard", () => {
+    const pass = { level: "pass", releases: 0, installs: 0 } as const;
+    it("local mode is not-applicable and never probes", async () => {
+      let n = 0;
+      const r = await guardProdClean({ mode: "local" }, async () => {
+        n++;
+        return pass;
+      });
+      expect(r).toBe("not-applicable");
+      expect(n).toBe(0);
+    });
+    it("staging with no prod probe fails: prod probe not configured", async () => {
+      await expect(guardProdClean({ mode: "staging" })).rejects.toThrow(
+        "prod probe not configured",
+      );
+    });
+    it("staging with a probe but no OIDC bearer fails inventory_unconfigured", async () => {
+      expect(
+        await failCode(guardProdClean({ mode: "staging", prod: probe() })),
+      ).toBe("inventory_unconfigured");
+    });
+    it("staging reads the minted OIDC JWT from the secrets dir (REDLINE_PROD_INVENTORY_OIDC)", async () => {
+      const w = cleanWorld();
+      publish(w, { version: "1.2.3" });
+      const { fetch } = await serve(w);
+      const p = probe({ jwtFile: `${JWT}\n` });
+      expect(JSON.stringify(p)).not.toContain(JWT);
+      const r = await guardProdClean({ mode: "staging", prod: p }, (x) =>
+        prodClean(x, { fetch, pubkey: PUB }),
+      );
+      expect(r).toEqual({ level: "pass", releases: 1, installs: 1 });
+      expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+    });
+    it("an explicit opts.inventoryBearer wins over the secrets-dir JWT", async () => {
+      const w = cleanWorld();
+      const { fetch } = await serve(w);
+      await prodClean(probe({ jwtFile: "file.jwt.z" }), {
+        fetch,
+        pubkey: PUB,
+        inventoryBearer: JWT,
+      });
+      expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+    });
+    // Pre-prod (#1043 before #1014): the prod inventory answers a verified
+    // caller 503 {"error":"schema_missing"}. Only that answer, and only with
+    // the prod admin host not resolving (ENOTFOUND), is not-applicable.
+    describe("pre-prod: 503 schema_missing", () => {
+      const SCHEMA_MISSING = JSON.stringify({ error: "schema_missing" });
+      const ADMIN = "https://admin.prod.example";
+      const dnsErr = (code: string) =>
+        new TypeError("fetch failed", { cause: { code } });
+      /** The admin DNS probe: throws `code`, or answers `status`. */
+      const admin = (a: { code: string } | { status: number }) => {
+        const urls: string[] = [];
+        const fetch: typeof globalThis.fetch = async (input) => {
+          urls.push(String(input));
+          if ("code" in a) throw dnsErr(a.code);
+          return new Response("{}", { status: a.status });
+        };
+        return { urls, fetch };
+      };
+      async function guard(
+        answer: World["inventoryAnswer"] | "refuses" | undefined,
+        a: ReturnType<typeof admin>,
+      ) {
+        const w = cleanWorld();
+        if (answer === "refuses") w.inventoryRefuses = true;
+        else if (answer) w.inventoryAnswer = answer;
+        const { fetch } = await serve(w);
+        return guardProdClean(
+          { mode: "staging", prod: probe() },
+          (x) => prodClean(x, { fetch, pubkey: PUB, inventoryBearer: JWT }),
+          { fetch: a.fetch, adminOrigin: ADMIN },
+        );
+      }
+      const missing = { status: 503, body: SCHEMA_MISSING };
+
+      it("NXDOMAIN admin + schema_missing: not-applicable, fixed reason, gate accepts, report lists it", async () => {
+        const a = admin({ code: "ENOTFOUND" });
+        const r = await guard(missing, a);
+        expect(r).toEqual({
+          level: "not-applicable",
+          reason: PRE_PROD_GUARD_REASON,
+        });
+        expect(a.urls).toEqual([`${ADMIN}/api/v1/me`]);
+        if (r === "not-applicable" || r.level !== "not-applicable")
+          throw new Error("want pre-prod n/a");
+        const kase = { ...PRE_PROD_GUARD, level: r.level, reason: r.reason };
+        expect(gatePasses([kase])).toBe(true);
+        const rep = buildReport([kase], "staging");
+        expect(rep.gate.passed).toBe(true);
+        expect(rep.nonPass).toEqual([kase]);
+      });
+
+      it("prodClean alone still fails schema_missing inventory_bad (the hosted-ops precheck)", async () => {
+        const w = cleanWorld();
+        w.inventoryAnswer = missing;
+        expect(await failCode(check(w))).toBe("inventory_bad");
+      });
+
+      it("after the prod deploy (#1014): a resolving admin host + schema_missing fails", async () => {
+        for (const status of [401, 200, 404, 503]) {
+          const a = admin({ status });
+          expect(await failCode(guard(missing, a)), String(status)).toBe(
+            "inventory_bad",
+          );
+          expect(a.urls).toHaveLength(1);
+        }
+      });
+
+      it("after the prod deploy (#1014): a clean inventory runs for real and passes, no DNS probe", async () => {
+        const a = admin({ code: "ENOTFOUND" });
+        expect(await guard(undefined, a)).toEqual({
+          level: "pass",
+          releases: 0,
+          installs: 1,
+        });
+        expect(a.urls).toEqual([]);
+      });
+
+      it("schema_missing with any non-ENOTFOUND DNS or network error fails", async () => {
+        for (const code of ["EAI_AGAIN", "ECONNREFUSED", "ETIMEDOUT"])
+          expect(await failCode(guard(missing, admin({ code }))), code).toBe(
+            "inventory_bad",
+          );
+      });
+
+      it("NXDOMAIN admin + any other inventory answer fails, without a DNS probe", async () => {
+        for (const answer of [
+          "refuses" as const,
+          { status: 404, body: SCHEMA_MISSING },
+          { status: 500, body: SCHEMA_MISSING },
+          { status: 500, body: "{}" },
+          { status: 503, body: JSON.stringify({ error: "unavailable" }) },
+          {
+            status: 503,
+            body: JSON.stringify({ error: "schema_missing", x: 1 }),
+          },
+          { status: 503, body: JSON.stringify(["schema_missing"]) },
+          { status: 503, body: "schema_missing", type: "text/plain" },
+          { status: 503, body: "" },
+          { status: 200, body: SCHEMA_MISSING },
+        ]) {
+          const a = admin({ code: "ENOTFOUND" });
+          expect(await failCode(guard(answer, a)), JSON.stringify(answer)).toBe(
+            "inventory_bad",
+          );
+          expect(a.urls).toEqual([]);
+        }
+      });
+    });
+
+    it("staging with a probe runs prodClean on it", async () => {
+      const p = probe();
+      const seen: unknown[] = [];
+      const r = await guardProdClean(
+        { mode: "staging", prod: p },
+        async (x) => {
+          seen.push(x);
+          return pass;
+        },
+      );
+      expect(r).toEqual(pass);
+      expect(seen).toEqual([p]);
+    });
+  });
+
+  it("a redline (or any non-release) variant in prod fails", async () => {
+    const w = cleanWorld();
+    publish(w, { version: "1.2.3" });
+    publish(w, { version: "1.2.3", variant: "redline" });
+    await expect(check(w)).rejects.toThrow(/variant redline in prod/);
+    const w2 = cleanWorld();
+    publish(w2, { version: "1.2.4", variant: "debug" });
+    await expect(check(w2)).rejects.toThrow(ProdDirty);
+  });
+
+  it("a record signed by another key fails verification", async () => {
+    const w = cleanWorld();
+    publish(w, {
+      version: "1.2.3",
+      key: generateKeyPairSync("ed25519").privateKey,
+    });
+    await expect(check(w)).rejects.toThrow(/does not verify/);
+  });
+
+  it("bundle bytes that don't match the signed sha fail before any scan", async () => {
+    const w = cleanWorld();
+    publish(w, {
+      version: "1.2.3",
+      js: "export default 1;",
+      shaOf: "export default 2;",
+    });
+    await expect(check(w)).rejects.toThrow(/sha does not match/);
+  });
+
+  it("a module holding hook SQL fails", async () => {
+    for (const m of HOOK_SQL_MARKERS) {
+      const w = cleanWorld();
+      publish(w, { version: "1.2.3", js: `const q = "${m}";` });
+      await expect(check(w)).rejects.toThrow(/holds hook SQL/);
+    }
+  });
+
+  it("an install whose script lists TEST_HOOK_KEY or binds TEST_HOOKS fails", async () => {
+    const w = cleanWorld();
+    publish(w, { version: "1.2.3" });
+    w.secretNames = ["SESSION_SECRET", "TEST_HOOK_KEY"];
+    await expect(check(w)).rejects.toThrow(/lists TEST_HOOK_KEY/);
+    w.secretNames = ["SESSION_SECRET"];
+    w.bindings = ["DB", "TEST_HOOKS"];
+    await expect(check(w)).rejects.toThrow(/lists TEST_HOOKS/);
+  });
+
+  it("an install with /healthz testHooks: true, or another installId, fails", async () => {
+    const w = cleanWorld();
+    publish(w, { version: "1.2.3" });
+    w.healthz = { ok: true, installId: ID, testHooks: true };
+    await expect(check(w)).rejects.toThrow(/testHooks is true/);
+    w.healthz = { ok: true, installId: "iother000000" };
+    await expect(check(w)).rejects.toThrow(/installId differs/);
+  });
+
+  describe("rows that do not serve (suspended, deleting, deleted, failed, unmapped)", () => {
+    const row = (state: string, mode: string | null) => ({
+      ...cleanWorld().installs[0],
+      state,
+      mode,
+    });
+    const notServing: [string, string | null][] = [
+      ["suspended", "paused"],
+      ["deleting", "closed"],
+      ["deleted", null],
+      ["failed", null],
+      ["active", null],
+    ];
+    for (const [state, mode] of notServing) {
+      it(`${state}/${mode ?? "unmapped"}: no /healthz probe; a 503 page or a purged script passes`, async () => {
+        const w = cleanWorld();
+        w.installs = [row(state, mode)];
+        w.healthzStatus = 503;
+        w.scriptMissing = true;
+        expect(await check(w)).toEqual({
+          level: "pass",
+          releases: 0,
+          installs: 1,
+        });
+        expect(w.seen).not.toContain("/healthz");
+      });
+      it(`${state}/${mode ?? "unmapped"}: a script that still lists a hook fails`, async () => {
+        const w = cleanWorld();
+        w.installs = [row(state, mode)];
+        w.healthzStatus = 503;
+        w.secretNames = ["TEST_HOOK_KEY"];
+        expect(await failCode(check(w))).toBe("install_dirty");
+      });
+      it(`${state}/${mode ?? "unmapped"}: testHooks not false fails`, async () => {
+        const w = cleanWorld();
+        w.installs = [{ ...row(state, mode), testHooks: true }];
+        w.scriptMissing = true;
+        expect(await failCode(check(w))).toBe("install_dirty");
+      });
+    }
+    it("a serving row still needs /healthz 200 and its script", async () => {
+      const w = cleanWorld();
+      w.healthzStatus = 503;
+      expect(await failCode(check(w))).toBe("unreachable");
+      const w2 = cleanWorld();
+      w2.scriptMissing = true;
+      await expect(check(w2)).rejects.toThrow();
+    });
+  });
+
+  describe("a hostless install (a signup before its installs row): no route", () => {
+    const hostless = () => ({
+      ...cleanWorld().installs[0],
+      state: "provisioning",
+      appHost: null,
+      contentHost: null,
+      mode: null,
+    });
+    const noHealthz = (w: World) => {
+      expect(w.seen).not.toContain("/healthz");
+      expect(
+        (w.urls ?? []).filter((u) => /healthz|\/\/null\b/.test(u)),
+      ).toEqual([]);
+    };
+    it("clean data passes with no /healthz request, but its script is still read", async () => {
+      const w = cleanWorld();
+      w.installs = [hostless()];
+      expect(await check(w)).toEqual({
+        level: "pass",
+        releases: 0,
+        installs: 1,
+      });
+      noHealthz(w);
+      expect(w.seen?.some((x) => x.endsWith(`oa-p-${ID}/secrets`))).toBe(true);
+      expect(w.seen?.some((x) => x.endsWith(`oa-p-${ID}/settings`))).toBe(true);
+    });
+    it("no script yet passes with no /healthz request", async () => {
+      const w = cleanWorld();
+      w.installs = [hostless()];
+      w.scriptMissing = true;
+      expect((await check(w)).level).toBe("pass");
+      noHealthz(w);
+    });
+    it("testHooks not false fails install_dirty", async () => {
+      const w = cleanWorld();
+      w.installs = [{ ...hostless(), testHooks: true }];
+      expect(await failCode(check(w))).toBe("install_dirty");
+      noHealthz(w);
+    });
+    it("a script that lists a hook secret or binds TEST_HOOKS fails install_dirty", async () => {
+      const w = cleanWorld();
+      w.installs = [hostless()];
+      w.secretNames = ["TEST_HOOK_KEY"];
+      expect(await failCode(check(w))).toBe("install_dirty");
+      noHealthz(w);
+      const w2 = cleanWorld();
+      w2.installs = [hostless()];
+      w2.bindings = ["DB", "TEST_HOOKS"];
+      expect(await failCode(check(w2))).toBe("install_dirty");
+      noHealthz(w2);
+    });
+    it("one host null and the other set is inventory_bad, never probed", async () => {
+      for (const hosts of [
+        { appHost: "a.test", contentHost: null },
+        { appHost: null, contentHost: "c.test" },
+      ]) {
+        const w = cleanWorld();
+        w.installs = [{ ...hostless(), ...hosts }];
+        expect(await failCode(check(w))).toBe("inventory_bad");
+        noHealthz(w);
+      }
+    });
+    it("a hostless row with a serving mode is inventory_bad (the schema), never https://null", async () => {
+      const w = cleanWorld();
+      w.installs = [{ ...hostless(), mode: "serving" }];
+      expect(await failCode(check(w))).toBe("inventory_bad");
+      noHealthz(w);
+    });
+  });
+
+  it("a release with no inventory configured fails inventory_unconfigured", async () => {
+    const w = cleanWorld();
+    publish(w, { version: "1.2.3" });
+    expect(await failCode(check(w, { inventory: false }))).toBe(
+      "inventory_unconfigured",
+    );
+  });
+
+  it("the hook SQL markers equal the server's strip test", () => {
+    const src = readFileSync(
+      join(ROOT, "apps/server/test/node/test-hooks-strip.test.ts"),
+      "utf8",
+    );
+    for (const m of HOOK_SQL_MARKERS) expect(src).toContain(JSON.stringify(m));
+  });
+});

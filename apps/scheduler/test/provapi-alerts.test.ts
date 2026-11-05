@@ -1,0 +1,625 @@
+import {
+  ALERT_KEYS,
+  type AlertRow,
+  SIGNIN_BURST_WINDOW_MS,
+} from "@oa/provisioning-contract";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import {
+  ALERT_POLICY,
+  ALERT_REMIND_MS,
+  ALERT_SEND_TIMEOUT_MS,
+  alertFor,
+  BURST_EMAIL_INTERVAL_MS,
+  cleanDetail,
+  factsOf,
+  IDS_SHOWN,
+  stepAlert,
+} from "../src/provapi/alerts.js";
+import type { ProvapiEnv } from "../src/provapi/env.js";
+import { alertsTick } from "../src/provapi/index.js";
+import {
+  captureLogs,
+  db,
+  insert,
+  jobId,
+  migrate,
+  reset,
+} from "./provapi/db.js";
+
+// The alert machine (ported from #859's alerts.test.ts): open, no repeat,
+// the reminder, clear, a failed send retried, no destination, and the burst
+// key's one email per hour across reopens. Every clock is pinned (each step
+// takes `now`).
+
+beforeAll(migrate);
+beforeEach(reset);
+afterEach(() => vi.restoreAllMocks());
+
+const T0 = Date.UTC(2026, 9, 29, 12, 0);
+const TICK = 2 * 60_000;
+const H = 60 * 60_000;
+const DAY = ALERT_REMIND_MS;
+const TO = "ops@example.test";
+const FROM = "alerts@example.test";
+const KEY = "job_failed" as const;
+const ALERT = alertFor(KEY, "staging");
+
+type Mode = "ok" | "fail" | "hang";
+type Sent = { from: string; to: string; subject: string; text: string };
+
+function mail() {
+  let mode: Mode = "ok";
+  const sent: Sent[] = [];
+  const binding = {
+    send: async (m: Sent) => {
+      if (mode === "hang") return new Promise(() => {});
+      if (mode === "fail")
+        throw Object.assign(new Error(`rejected for ${TO}`), {
+          code: "E_RATE_LIMIT",
+        });
+      sent.push(m);
+      return { messageId: "m1" };
+    },
+  } as unknown as SendEmail;
+  return {
+    env: (o: Partial<ProvapiEnv> = {}): ProvapiEnv =>
+      ({
+        PLATFORM_DB: db,
+        OA_ENV: "staging",
+        ALERT_EMAIL: binding,
+        ALERT_TO: TO,
+        ALERT_FROM: FROM,
+        ...o,
+      }) as ProvapiEnv,
+    set: (m: Mode) => {
+      mode = m;
+    },
+    sent,
+    subjects: () => sent.map((s) => s.subject),
+  };
+}
+
+const state = async (suffix: string, key: string = KEY) =>
+  (
+    await db
+      .prepare("SELECT value FROM platform_state WHERE key = ?1")
+      .bind(`${key}_${suffix}`)
+      .first<{ value: number }>()
+  )?.value ?? null;
+
+const OPEN = "Open Artifacts staging: jobs failed";
+const REMIND = "Open Artifacts staging: still open, jobs failed";
+const CLEAR = "Open Artifacts staging: cleared, jobs failed";
+const P = "provapi alert";
+
+describe("stepAlert", () => {
+  it("opens: one email to ALERT_TO from ALERT_FROM, one log line per change", async () => {
+    const m = mail();
+    const lines = captureLogs(vi.spyOn);
+    await stepAlert(m.env(), ALERT, true, T0);
+    expect(m.sent).toEqual([
+      {
+        from: FROM,
+        to: TO,
+        subject: OPEN,
+        text: expect.stringContaining(new Date(T0).toISOString()),
+      },
+    ]);
+    expect(await state("opened_at")).toBe(T0);
+    expect(await state("notified_at")).toBe(T0);
+    expect(lines).toEqual([`${P} ${KEY} opened`, `${P} ${KEY} sent open`]);
+  });
+
+  it("no repeat before the reminder is due, whether the condition holds or is unknown", async () => {
+    const m = mail();
+    await stepAlert(m.env(), ALERT, true, T0);
+    for (const t of [T0 + TICK, T0 + H, T0 + DAY - 1]) {
+      await stepAlert(m.env(), ALERT, true, t);
+      await stepAlert(m.env(), ALERT, null, t);
+    }
+    expect(m.subjects()).toEqual([OPEN]);
+    expect(await state("opened_at")).toBe(T0);
+  });
+
+  it("reminds once per ALERT_REMIND_MS while open, from the last email", async () => {
+    const m = mail();
+    await stepAlert(m.env(), ALERT, true, T0);
+    await stepAlert(m.env(), ALERT, true, T0 + DAY);
+    await stepAlert(m.env(), ALERT, null, T0 + DAY + H);
+    await stepAlert(m.env(), ALERT, null, T0 + 2 * DAY - 1);
+    await stepAlert(m.env(), ALERT, null, T0 + 2 * DAY);
+    expect(m.subjects()).toEqual([OPEN, REMIND, REMIND]);
+    expect(m.sent[1]?.text).toContain(new Date(T0).toISOString());
+    expect(await state("notified_at")).toBe(T0 + 2 * DAY);
+  });
+
+  it("clears: one email and the open row is gone; another clear is quiet; a reopen sends a fresh open", async () => {
+    const m = mail();
+    const lines = captureLogs(vi.spyOn);
+    await stepAlert(m.env(), ALERT, true, T0);
+    await stepAlert(m.env(), ALERT, false, T0 + H);
+    await stepAlert(m.env(), ALERT, false, T0 + 2 * H);
+    expect(m.subjects()).toEqual([OPEN, CLEAR]);
+    expect(m.sent[1]?.text).toContain(new Date(T0 + H).toISOString());
+    expect(await state("opened_at")).toBeNull();
+    expect(await state("cleared_at")).toBeNull();
+    expect(lines).toEqual([
+      `${P} ${KEY} opened`,
+      `${P} ${KEY} sent open`,
+      `${P} ${KEY} cleared`,
+      `${P} ${KEY} sent clear`,
+    ]);
+    await stepAlert(m.env(), ALERT, true, T0 + 3 * H);
+    expect(m.subjects()).toEqual([OPEN, CLEAR, OPEN]);
+  });
+
+  it("a clear before the open email ever went out sends nothing", async () => {
+    const m = mail();
+    m.set("fail");
+    await stepAlert(m.env(), ALERT, true, T0);
+    m.set("ok");
+    await stepAlert(m.env(), ALERT, false, T0 + H);
+    expect(m.sent).toEqual([]);
+    expect(await state("opened_at")).toBeNull();
+    expect(await state("cleared_at")).toBeNull();
+  });
+
+  it("a failed open email gives its claim back: logged by category, retried next tick", async () => {
+    const m = mail();
+    const lines = captureLogs(vi.spyOn);
+    m.set("fail");
+    await stepAlert(m.env(), ALERT, true, T0);
+    expect(await state("notified_at")).toBeNull();
+    m.set("ok");
+    await stepAlert(m.env(), ALERT, null, T0 + TICK);
+    expect(m.subjects()).toEqual([OPEN]);
+    expect(lines).toEqual([
+      `${P} ${KEY} opened`,
+      `${P} ${KEY} send_failed E_RATE_LIMIT`,
+      `${P} ${KEY} sent open`,
+    ]);
+    expect(lines.join("\n")).not.toContain(TO);
+  });
+
+  it("a failed reminder gives its claim back and is retried next tick", async () => {
+    const m = mail();
+    await stepAlert(m.env(), ALERT, true, T0);
+    m.set("fail");
+    await stepAlert(m.env(), ALERT, true, T0 + DAY);
+    expect(await state("notified_at")).toBe(T0);
+    m.set("ok");
+    await stepAlert(m.env(), ALERT, null, T0 + DAY + TICK);
+    expect(m.subjects()).toEqual([OPEN, REMIND]);
+    expect(await state("notified_at")).toBe(T0 + DAY + TICK);
+  });
+
+  it("a failed clear email is retried on the next tick", async () => {
+    const m = mail();
+    await stepAlert(m.env(), ALERT, true, T0);
+    m.set("fail");
+    await stepAlert(m.env(), ALERT, false, T0 + H);
+    expect(await state("cleared_at")).toBe(T0 + H);
+    m.set("ok");
+    await stepAlert(m.env(), ALERT, null, T0 + H + TICK);
+    expect(m.subjects()).toEqual([OPEN, CLEAR]);
+    expect(await state("cleared_at")).toBeNull();
+  });
+
+  it("a send that never settles times out, and is retried", async () => {
+    const m = mail();
+    const lines = captureLogs(vi.spyOn);
+    m.set("hang");
+    await stepAlert(m.env(), ALERT, true, T0, { timeoutMs: 10 });
+    expect(lines).toContain(`${P} ${KEY} send_failed timeout`);
+    expect(await state("notified_at")).toBeNull();
+    expect(ALERT_SEND_TIMEOUT_MS).toBe(5_000);
+  });
+
+  it("a tick that ends between the claim and the send (duty budget, eviction) never loses the open email", async () => {
+    const m = mail();
+    captureLogs(vi.spyOn);
+    m.set("hang");
+    // Abandoned mid-send, as the duty's budget abandons it.
+    void stepAlert(m.env(), ALERT, true, T0, { timeoutMs: 10 * DAY });
+    await vi.waitFor(async () => expect(await state("opened_at")).toBe(T0));
+    await vi.waitFor(async () =>
+      expect(await state("sending_at")).not.toBeNull(),
+    );
+    m.set("ok");
+    // Inside the send timeout the claim holds: no second send.
+    await stepAlert(m.env(), ALERT, true, T0 + 1);
+    expect(m.sent).toEqual([]);
+    await stepAlert(m.env(), ALERT, true, T0 + TICK);
+    expect(m.subjects()).toEqual([OPEN]);
+    expect(await state("notified_at")).toBe(T0 + TICK);
+    expect(await state("sending_at")).toBeNull();
+  });
+
+  it("no destination: logged each tick, nothing claimed, so no clear is owed", async () => {
+    for (const o of [
+      { ALERT_TO: "" },
+      { ALERT_TO: undefined },
+      { ALERT_TO: "{{OPS_ALERT_EMAIL_STAGING}}" },
+      { ALERT_TO: "a@b.test, c@d.test" },
+      { ALERT_FROM: "" },
+      { ALERT_EMAIL: undefined },
+    ] as Partial<ProvapiEnv>[]) {
+      await reset();
+      const m = mail();
+      const lines = captureLogs(vi.spyOn);
+      await stepAlert(m.env(o), ALERT, true, T0);
+      await stepAlert(m.env(o), ALERT, null, T0 + H);
+      await stepAlert(m.env(o), ALERT, null, T0 + DAY);
+      await stepAlert(m.env(o), ALERT, false, T0 + DAY + H);
+      expect(m.sent).toEqual([]);
+      expect(lines).toEqual([
+        `${P} ${KEY} opened`,
+        `${P} ${KEY} skipped no_destination`,
+        `${P} ${KEY} skipped no_destination`,
+        `${P} ${KEY} skipped no_destination`,
+        `${P} ${KEY} cleared`,
+      ]);
+      expect(await state("opened_at")).toBeNull();
+      expect(await state("notified_at")).toBeNull();
+      expect(await state("cleared_at")).toBeNull();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("an alert that opened before the destination was set emails once it is", async () => {
+    const m = mail();
+    captureLogs(vi.spyOn);
+    await stepAlert(m.env({ ALERT_TO: undefined }), ALERT, true, T0);
+    await stepAlert(m.env({ ALERT_TO: undefined }), ALERT, true, T0 + TICK);
+    expect(m.sent).toEqual([]);
+    await stepAlert(m.env(), ALERT, true, T0 + 2 * TICK);
+    await stepAlert(m.env(), ALERT, true, T0 + 3 * TICK);
+    expect(m.subjects()).toEqual([OPEN]);
+    expect(await state("notified_at")).toBe(T0 + 2 * TICK);
+  });
+
+  it("overlapping ticks open, remind and clear once", async () => {
+    const m = mail();
+    const many = (c: boolean | null, t: number) =>
+      Promise.all(
+        Array.from({ length: 4 }, () => stepAlert(m.env(), ALERT, c, t)),
+      );
+    await many(true, T0);
+    await many(true, T0 + DAY);
+    await many(false, T0 + DAY + H);
+    expect(m.subjects()).toEqual([OPEN, REMIND, CLEAR]);
+  });
+
+  it("a platform D1 error is one fixed line and never throws", async () => {
+    const m = mail();
+    const lines = captureLogs(vi.spyOn);
+    const broken = m.env({
+      PLATFORM_DB: {
+        prepare: () => {
+          throw new Error("D1_ERROR: secret detail");
+        },
+      } as unknown as D1Database,
+    });
+    for (const c of [true, false, null])
+      await expect(stepAlert(broken, ALERT, c, T0)).resolves.toBeUndefined();
+    expect(lines).toEqual([
+      `${P} ${KEY} db_error`,
+      `${P} ${KEY} db_error`,
+      `${P} ${KEY} db_error`,
+    ]);
+    expect(m.sent).toEqual([]);
+  });
+});
+
+describe("signin_refused_burst: at most one email per hour, count and window only", () => {
+  const B = "signin_refused_burst" as const;
+  const BURST = alertFor(B, "prod");
+
+  it("the policy is one email per hour, no reminder, no clear email", () => {
+    expect(BURST_EMAIL_INTERVAL_MS).toBe(60 * 60_000);
+    expect(ALERT_POLICY[B]).toEqual({
+      minIntervalMs: BURST_EMAIL_INTERVAL_MS,
+      remindMs: null,
+      clearEmail: false,
+    });
+  });
+
+  it("reopens inside the hour send nothing; the first tick past it sends one", async () => {
+    const m = mail();
+    // A burst lasts one refusal window; it then clears and reopens every
+    // window, ticking every 2 minutes. The ticks run from T0 through the
+    // first whole open window that starts at or after the hour, so the
+    // hour's first open tick is in range wherever the hour falls in the
+    // open/closed cycle. No more: each tick is several D1 round trips.
+    const window = SIGNIN_BURST_WINDOW_MS / TICK;
+    const ticks = Math.ceil(BURST_EMAIL_INTERVAL_MS / TICK) + 2 * window;
+    const holds = (i: number) => Math.floor(i / window) % 2 === 0;
+    // Expected: the first open tick, then the first open tick at least an
+    // hour after the last email; every other tick sends nothing.
+    const want: number[] = [];
+    for (let i = 0; i <= ticks; i++) {
+      const t = T0 + i * TICK;
+      const last = want.at(-1);
+      if (
+        holds(i) &&
+        (last === undefined || t - last >= BURST_EMAIL_INTERVAL_MS)
+      )
+        want.push(t);
+    }
+    const sentAt: number[] = [];
+    for (let i = 0; i <= ticks; i++) {
+      const t = T0 + i * TICK;
+      const before = m.sent.length;
+      await stepAlert(m.env(), BURST, holds(i), t);
+      if (m.sent.length > before) sentAt.push(t);
+    }
+    expect(want).toHaveLength(2);
+    expect(sentAt).toEqual(want);
+    expect(new Set(m.subjects())).toEqual(new Set([BURST.subject.open]));
+    expect(await state("notified_at", B)).toBe(sentAt.at(-1));
+  });
+
+  it("a burst open across the hour never reminds", async () => {
+    const m = mail();
+    // Through the first tick past the hour: the earliest a reminder or a
+    // second open email could go out.
+    for (let t = T0; t <= T0 + BURST_EMAIL_INTERVAL_MS + TICK; t += TICK)
+      await stepAlert(m.env(), BURST, true, t);
+    expect(m.subjects()).toEqual([BURST.subject.open]);
+  });
+
+  it("the text names the count threshold and the window, nothing else", () => {
+    const text = BURST.text("open", T0);
+    expect(text).toContain(`${SIGNIN_BURST_WINDOW_MS / 60_000} minutes`);
+    expect(text).not.toMatch(/\n[a-z0-9]{12}\n/);
+  });
+});
+
+describe("email text", () => {
+  const MESSAGE = "boom owner@customer.test https://x.test — secret";
+  const rows: AlertRow[] = Array.from({ length: IDS_SHOWN + 3 }, (_, i) => ({
+    install_id: `i${String(i).padStart(11, "0")}`,
+    job_id: jobId(1000 + i),
+    job_kind: i === 0 ? "not a kind" : "create",
+    code: i === 1 ? "Bad Code owner@customer.test" : "cf_error",
+    message: MESSAGE,
+    since: T0,
+  }));
+
+  it("facts keep valid ids and enum codes only, never the message", () => {
+    const f = factsOf(rows);
+    expect(f.count).toBe(rows.length);
+    expect(f.installIds).toHaveLength(rows.length);
+    expect(f.jobs[0]?.kind).toBeNull();
+    expect(f.jobs[1]?.code).toBe("other");
+    expect(JSON.stringify(f)).not.toContain("owner@");
+    const bad = factsOf([
+      { ...rows[0], install_id: "x@y", job_id: "nope" } as AlertRow,
+    ]);
+    expect(bad.installIds).toEqual([]);
+    expect(bad.jobs).toEqual([]);
+  });
+
+  it("every key, every state: no '@', no em dash, no URL, no message; three subjects", () => {
+    for (const k of ALERT_KEYS) {
+      const a = alertFor(k, "prod", { ...factsOf(rows), daysLeft: 12 });
+      expect(new Set(Object.values(a.subject)).size, k).toBe(3);
+      for (const s of ["open", "remind", "clear"] as const) {
+        const all = `${a.subject[s]}\n${a.text(s, T0)}`;
+        expect(all, `${k} ${s}`).not.toMatch(/@|—|https?:|www\.|\{\{/);
+        expect(all).not.toContain("boom");
+        expect(a.subject[s]).toMatch(/^Open Artifacts prod: /);
+      }
+    }
+  });
+
+  it("lists at most IDS_SHOWN ids, then a count of the rest", () => {
+    const text = alertFor(KEY, "prod", factsOf(rows)).text("open", T0);
+    expect(text).toContain("and 3 more");
+    expect(text.split("\n").filter((l) => l.startsWith("i0"))).toHaveLength(
+      IDS_SHOWN,
+    );
+  });
+});
+
+describe("prodclean_failed", () => {
+  it("the email carries the latest report's install id and detail, sanitized", async () => {
+    const m = mail();
+    captureLogs(vi.spyOn);
+    await insert("prodclean_reports", {
+      at: T0 - H,
+      ok: 0,
+      code: "dirty",
+      install_id: "i00000000077",
+      detail: "older",
+    });
+    await insert("prodclean_reports", {
+      at: T0,
+      ok: 0,
+      code: "dirty",
+      install_id: "i00000000042",
+      detail: `binding KV_EXTRA on owner@customer.test, see https://x.test/a\u0007\n${"y".repeat(1000)}`,
+    });
+    await alertsTick(m.env(), T0);
+    const open = m.sent.filter((x) => x.subject.includes("prod-clean"));
+    expect(open).toHaveLength(1);
+    const text = open[0]?.text ?? "";
+    // Manager (design owner): code, install id and detail of the latest failed report.
+    expect(text).toContain("Codes: dirty");
+    expect(text).toContain("i00000000042");
+    expect(text).not.toContain("i00000000077");
+    expect(text).toContain("binding KV_EXTRA on (redacted)");
+    expect(text).not.toContain("customer");
+    expect(text).not.toMatch(/@|:\/\/|\u2014/);
+    expect(text).not.toContain(String.fromCharCode(7));
+    expect(text.length).toBeLessThan(1000);
+  });
+
+  it("cleanDetail redacts email addresses, IPv4 and IPv6 addresses and URLs", () => {
+    expect(
+      cleanDetail(
+        "seen alice@example.com from 1.2.3.4 and 2001:db8::1 via http://h.test/x ok",
+      ),
+    ).toBe("seen (redacted) from (redacted) and (redacted) via (redacted) ok");
+    expect(cleanDetail("binding KV_EXTRA v1.2 key=a.b")).toBe(
+      "binding KV_EXTRA v1.2 key=a.b",
+    );
+  });
+
+  it("a report with a malformed install id leaves it out", async () => {
+    const m = mail();
+    captureLogs(vi.spyOn);
+    await insert("prodclean_reports", {
+      at: T0,
+      ok: 0,
+      code: "dirty",
+      install_id: "owner@customer.test",
+      detail: null,
+    });
+    await alertsTick(m.env(), T0);
+    const text = m.sent.find((x) => x.subject.includes("prod-clean"))?.text;
+    expect(text).toBeDefined();
+    expect(text).not.toContain("customer");
+  });
+});
+
+describe("fleet_halted names the version (#1110)", () => {
+  const row = {
+    install_id: "i00000000abc",
+    job_id: null,
+    job_kind: null,
+    code: "fleet_halt",
+    message: null,
+    since: 1,
+  };
+  it("carries it into the email", () => {
+    const f = factsOf([{ ...row, version: "0.93.0" }]);
+    expect(f.versions).toEqual(["0.93.0"]);
+    expect(alertFor("fleet_halted", "staging", f).text("open", 1)).toContain(
+      "Versions: 0.93.0",
+    );
+  });
+  it("leaves out anything that isn't a version", () => {
+    expect(factsOf([{ ...row, version: "<script>" }]).versions).toBeUndefined();
+    expect(factsOf([row]).versions).toBeUndefined();
+  });
+});
+
+describe("fleet_halted copy (#1083 re-review N5)", () => {
+  it("names the codes and explains each cause, not only a failed upgrade", () => {
+    const row = (code: string): AlertRow => ({
+      install_id: null,
+      job_id: null,
+      job_kind: null,
+      code,
+      message: null,
+      since: 1,
+    });
+    const a = alertFor(
+      "fleet_halted",
+      "staging",
+      factsOf([row("no_target"), row("fleet_halt")]),
+    );
+    const text = a.text("open", 1);
+    expect(text).toContain("no_target");
+    expect(text).toContain("fleet_halt");
+    expect(text).toMatch(/no release tag/);
+    expect(text).toMatch(/two health probes of this version on separate ticks/);
+    expect(text).toMatch(/the fleet never rolls one back/);
+    expect(text).toMatch(/canary_blocked/);
+  });
+  it("never suggests a revert (forward only, #1106)", () => {
+    const text = alertFor("fleet_halted", "staging").text("open", 1);
+    expect(text).not.toMatch(/reverted|someone has to decide/);
+    expect(text).toMatch(/Do not roll back/);
+    expect(text).toMatch(/stays on the new version/);
+    expect(text).toMatch(/upgrade_rolled_back is an older job's/);
+  });
+});
+
+describe("runbook pointer", () => {
+  it("every open and reminder email names its runbook section; a clear doesn't", () => {
+    for (const k of ALERT_KEYS) {
+      const a = alertFor(k, "prod");
+      for (const s of ["open", "remind"] as const)
+        expect(a.text(s, T0), `${k} ${s}`).toContain(
+          `docs/ops/alerts.md, section ${k}.`,
+        );
+      expect(a.text("clear", T0)).not.toContain("docs/ops/alerts.md");
+    }
+  });
+  it("upgrade_incomplete asks for a fix forward and never names a rollback", () => {
+    const text = alertFor("upgrade_incomplete", "prod").text("open", T0);
+    expect(text).toMatch(/fix forward/);
+    expect(text).not.toMatch(/rollback|roll back/);
+  });
+});
+
+// #1343 (review-1380 G1): alertsTick passes FLEET_SMOKE and FLEET_SOAK_MIN
+// to the fleet conditions. With the smoke off and prod's 60-minute soak,
+// canary_blocked must wait 90 minutes, and a stale smoke_unconfigured mark
+// must not open fleet_halted.
+describe("alertsTick wires FLEET_SMOKE and FLEET_SOAK_MIN (#1343)", () => {
+  const CANARY = "i000000000c1";
+  const fleetEnv = (o: Partial<ProvapiEnv>) => ({
+    CF_VERSION_METADATA: { id: "x", tag: "v0.93.0", timestamp: "" },
+    FLEET_CANARY: CANARY,
+    ...o,
+  });
+  const stamp = (key: string, at: number) =>
+    db
+      .prepare(
+        "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2)",
+      )
+      .bind(key, at)
+      .run();
+  const halted = (m: ReturnType<typeof mail>) =>
+    m.subjects().filter((s) => s.includes("fleet rollout halted"));
+
+  it("off with FLEET_SOAK_MIN 60: no canary_blocked at 50 minutes", async () => {
+    captureLogs(vi.spyOn);
+    await stamp("fleet_blocked:0.93.0", T0 - 50 * 60_000);
+    const m = mail();
+    await alertsTick(
+      m.env(fleetEnv({ FLEET_SMOKE: "off", FLEET_SOAK_MIN: "60" })),
+      T0,
+    );
+    expect(halted(m)).toEqual([]);
+  });
+
+  it("the control: off with the default soak, or the smoke required, opens it at 50", async () => {
+    for (const o of [
+      { FLEET_SMOKE: "off" },
+      { FLEET_SMOKE: "required", FLEET_SOAK_MIN: "60" },
+    ]) {
+      await db.prepare("DELETE FROM platform_state").run();
+      captureLogs(vi.spyOn);
+      await stamp("fleet_blocked:0.93.0", T0 - 50 * 60_000);
+      const m = mail();
+      await alertsTick(m.env(fleetEnv(o)), T0);
+      expect(halted(m), JSON.stringify(o)).toHaveLength(1);
+    }
+  });
+
+  it("off: a smoke_unconfigured mark doesn't open fleet_halted; required does", async () => {
+    for (const [smoke, n] of [
+      ["off", 0],
+      ["required", 1],
+    ] as const) {
+      await db.prepare("DELETE FROM platform_state").run();
+      captureLogs(vi.spyOn);
+      await stamp("fleet_smoke_config:0.93.0:token", T0 - 60_000);
+      const m = mail();
+      await alertsTick(m.env(fleetEnv({ FLEET_SMOKE: smoke })), T0);
+      expect(halted(m), smoke).toHaveLength(n);
+    }
+  });
+});

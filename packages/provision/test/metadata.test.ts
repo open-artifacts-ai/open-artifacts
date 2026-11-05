@@ -163,7 +163,7 @@ describe("userWorkerMetadata", () => {
     const m = userWorkerMetadata(
       inst({
         vars: {
-          EMAIL_FROM: "noreply@a.mail.app.test",
+          EMAIL_FROM: "noreply@mail.app.test",
           FEATURES: "spaces,directory_sync",
           EMAIL_DAILY_CAP: "50",
           CODE_EMAILS_PER_DAY: "200",
@@ -186,39 +186,79 @@ describe("userWorkerMetadata", () => {
     );
   });
 
-  it("FEATURES gets usage_off", () => {
+  // Manager ruling 2026-10-26: hosted M1 is the spaces product, so every
+  // hosted install gets spaces, whatever the caller passes.
+  it("FEATURES always gets spaces and usage_off", () => {
     expect(text(userWorkerMetadata(inst(), res()).bindings, "FEATURES")).toBe(
-      "usage_off",
+      "spaces,usage_off",
     );
+    for (const f of ["x", "directory_sync", "usage_off"])
+      expect(
+        String(
+          text(
+            userWorkerMetadata(inst({ vars: { FEATURES: f } }), res()).bindings,
+            "FEATURES",
+          ),
+        ).split(","),
+      ).toEqual(expect.arrayContaining(["spaces", "usage_off", f]));
     const m = userWorkerMetadata(
       inst({
         vars: {
-          EMAIL_FROM: "noreply@a.mail.app.test",
+          EMAIL_FROM: "noreply@mail.app.test",
           FEATURES: "usage_off,x",
         },
       }),
       res(),
     );
-    expect(text(m.bindings, "FEATURES")).toBe("usage_off,x");
+    expect(text(m.bindings, "FEATURES")).toBe("usage_off,x,spaces");
+  });
+
+  // TIER is the single source of an install's features: FEATURES is derived
+  // (plus spaces and usage_off), the tier is passed through for Me, and the
+  // two are never passed together, on any install (Manager ruling).
+  it("TIER derives FEATURES; TIER with FEATURES, or an unknown tier, is refused", () => {
+    const expected = {
+      trial: "spaces,sync_google,content_revocation,usage_off",
+      team: "spaces,sync_frozen,content_revocation,usage_off",
+      business: "spaces,sync_google,content_revocation,usage_off",
+    };
+    for (const [tier, f] of Object.entries(expected)) {
+      const m = userWorkerMetadata(inst({ vars: { TIER: tier } }), res());
+      expect(text(m.bindings, "FEATURES"), tier).toBe(f);
+      expect(text(m.bindings, "TIER"), tier).toBe(tier);
+    }
+    expect(() =>
+      userWorkerMetadata(
+        inst({ vars: { TIER: "team", FEATURES: "sync_google" } }),
+        res(),
+      ),
+    ).toThrow(/derived from TIER/);
+    for (const bad of ["Team", "enterprise", " team", ""])
+      expect(() =>
+        userWorkerMetadata(inst({ vars: { TIER: bad } }), res()),
+      ).toThrow(/invalid var TIER/);
+    // No TIER: no TIER binding, and today's explicit FEATURES.
+    const none = userWorkerMetadata(inst(), res());
+    expect(text(none.bindings, "TIER")).toBeUndefined();
   });
 
   it("unknown or invalid var throws", () => {
     expect(() =>
       userWorkerMetadata(
-        inst({ vars: { EMAIL_FROM: "noreply@a.mail.app.test", NOPE: "1" } }),
+        inst({ vars: { EMAIL_FROM: "noreply@mail.app.test", NOPE: "1" } }),
         res(),
       ),
     ).toThrow(/unknown var/);
     expect(() =>
       userWorkerMetadata(
-        inst({ vars: { EMAIL_FROM: "noreply@a.mail.app.test", HOSTED: "0" } }),
+        inst({ vars: { EMAIL_FROM: "noreply@mail.app.test", HOSTED: "0" } }),
         res(),
       ),
     ).toThrow(/unknown var/);
     expect(() =>
       userWorkerMetadata(
         inst({
-          vars: { EMAIL_FROM: "noreply@a.mail.app.test", EMAIL_DAILY_CAP: "x" },
+          vars: { EMAIL_FROM: "noreply@mail.app.test", EMAIL_DAILY_CAP: "x" },
         }),
         res(),
       ),
@@ -227,7 +267,7 @@ describe("userWorkerMetadata", () => {
       userWorkerMetadata(
         inst({
           vars: {
-            EMAIL_FROM: "noreply@a.mail.app.test",
+            EMAIL_FROM: "noreply@mail.app.test",
             INSTALL_ID: "iaaaaaaaaaaa",
           },
         }),
@@ -419,6 +459,17 @@ describe("userWorkerMetadata", () => {
     });
   });
 
+  it("no per-install cron: the central scheduler (apps/scheduler) is the only nightly caller", () => {
+    // The template keeps its cron for self-hosted installs; a hosted upload
+    // carrying it too would run the nightly job twice (or be ignored).
+    expect(tpl.triggers?.crons).toEqual(["17 3 * * *"]);
+    for (const m of [
+      userWorkerMetadata(inst(), res()),
+      userWorkerMetadata(inst(), res({ mode: "update", secrets: {} })),
+    ])
+      expect(JSON.stringify(m)).not.toMatch(/cron|trigger|schedul|17 3/i);
+  });
+
   it("no secret names appear as plain bindings", () => {
     const m = userWorkerMetadata(inst(), res());
     for (const n of [
@@ -532,15 +583,24 @@ describe("round 1", () => {
     );
   });
 
-  it("EMAIL_FROM is tied to the install", () => {
-    const m = userWorkerMetadata(inst(), res());
-    expect(text(m.bindings, "EMAIL_FROM")).toBe("noreply@a.mail.app.test");
-    expect(() =>
-      userWorkerMetadata(
-        inst({ vars: { EMAIL_FROM: "noreply@b.mail.app.test" } }),
-        res(),
-      ),
-    ).toThrow(/EMAIL_FROM/);
+  it("EMAIL_FROM is the env's one sender, noreply@mail.<app-zone>, for every install", () => {
+    // Cloudflare Email Sending onboards each (sub)domain separately and allows
+    // 30 per zone, so a per-install sender subdomain can't scale.
+    const a = userWorkerMetadata(inst(), res());
+    expect(text(a.bindings, "EMAIL_FROM")).toBe("noreply@mail.app.test");
+    const b = userWorkerMetadata(
+      inst({ appHost: "b.app.test", contentHost: "b.page.test" }),
+      res(),
+    );
+    expect(text(b.bindings, "EMAIL_FROM")).toBe("noreply@mail.app.test");
+    for (const other of [
+      "noreply@a.mail.app.test",
+      "noreply@b.mail.app.test",
+      "owner@mail.app.test",
+    ])
+      expect(() =>
+        userWorkerMetadata(inst({ vars: { EMAIL_FROM: other } }), res()),
+      ).toThrow(/EMAIL_FROM/);
   });
 
   it("asserts values for AUTH_* and CODE_EMAILS_PER_DAY", () => {
@@ -558,6 +618,28 @@ describe("round 1", () => {
     expect(text(m.bindings, "AUTH_PROVIDERS")).toBe("google,email");
     expect(text(m.bindings, "AUTH_DOMAINS")).toBe("finqore.com");
   });
+
+  // Manager ruling 2026-10-24 (#572): hosted AUTH_DOMAINS isn't verified as
+  // owned, so a hosted install never admits by domain until it is.
+  it("always renders AUTH_DOMAIN_JOIN=invite", () => {
+    const cases: Record<string, string>[] = [
+      {},
+      { AUTH_DOMAIN_JOIN: "invite" },
+    ];
+    for (const vars of cases) {
+      const m = userWorkerMetadata(inst({ vars }), res());
+      expect(text(m.bindings, "AUTH_DOMAIN_JOIN")).toBe("invite");
+    }
+  });
+
+  it.each(["member", "Member", "", " invite"])(
+    "refuses AUTH_DOMAIN_JOIN=%j",
+    (v) => {
+      expect(() =>
+        userWorkerMetadata(inst({ vars: { AUTH_DOMAIN_JOIN: v } }), res()),
+      ).toThrow(/AUTH_DOMAIN_JOIN.*invite/);
+    },
+  );
 
   it("two installs share no resource, host or ratelimit id", () => {
     const a = userWorkerMetadata(inst(), res({ rlNs: 2_000_000 }));

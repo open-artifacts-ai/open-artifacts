@@ -3,8 +3,9 @@ on:
   pull_request:
   # Merge queue: the required checks run on the queue's merge commit.
   merge_group:
-  push:
-    branches: [main]
+  # No push to main (#965): only the merge queue updates main, so every main
+  # commit is a merge-group commit CI already passed. cache-seed.yml keeps the
+  # install cache warm on main instead.
   workflow_dispatch:
 permissions:
   contents: read
@@ -39,6 +40,8 @@ jobs:
           mkdir "$RUNNER_TEMP/actionlint"
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/actionlint" actionlint
           "$RUNNER_TEMP/actionlint/actionlint" -color .github/workflows/*.yml
+      - run: node --experimental-strip-types --no-warnings scripts/ci/workspace-reads.ts check --warn
+      - run: node --experimental-strip-types --no-warnings scripts/ci/workspace-imports.ts cycles
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -80,8 +83,17 @@ jobs:
         if: ${{ steps.ro.outputs.release_only != 'true' }}
       - run: pnpm typecheck
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-  test:
+  # Three shards (one runner each, #965): the server suite, everything else
+  # (with the root scripts suite), and the server's CPU budgets alone, so they
+  # never run under another suite's load. The `test` job below is the required
+  # check.
+  test-shard:
     runs-on: ubuntu-latest
+    strategy:
+      # Every shard reports, so one failure never hides another.
+      fail-fast: false
+      matrix:
+        shard: [server, rest, cpu]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -119,10 +131,78 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - run: pnpm test
+      # The server's B11/B13 dist integration tests serve the real render and
+      # runtime builds; without them they skip (review item 45).
+      - name: Build render and runtime for the dist integration tests
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-      # Wall-clock CPU budgets, serial (not under the parallel suite's load).
-      - run: pnpm --filter @oa/server test:cpu
+        # @oa/shared first: both bundle it from its dist (`pnpm test` builds
+        # it too, but only after this step).
+        run: pnpm --filter @oa/shared build && pnpm --filter @oa/render --filter @oa/runtime build
+      # This shard's share. Pull requests: only the packages the diff can
+      # affect (pnpm --filter ...[base]; complete because every cross-package
+      # import is declared, which the root suite checks). The script is the PR
+      # head's copy: it can narrow only this PR's check. The merge queue (and a
+      # dispatch) always runs every shard whole.
+      - id: suite
+        name: Tests (this shard; pull requests, affected packages only)
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          TEST_SHARD: ${{ matrix.shard }}
+        run: bash scripts/ci/test-affected.sh
+  # The required check (its name is branch protection's). Always runs, and
+  # passes only when every shard passed: a skipped, cancelled or failed shard
+  # fails it.
+  test:
+    needs: [test-shard]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          SHARDS: ${{ needs.test-shard.result }}
+        run: |
+          echo "test-shard: $SHARDS"
+          [ "$SHARDS" = success ]
+  # P3 T16 (#605): the server authz matrix, in parallel with `test` so total
+  # wall time drops. A required check; same release-only pattern as `test`.
+  authz-matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - id: ro
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          rel=false
+          if [ -n "${BASE_SHA:-}" ] && [ -n "${HEAD_SHA:-}" ] \
+            && git show "$BASE_SHA:scripts/ci/release-only.ts" > "$RUNNER_TEMP/release-only.ts" 2> /dev/null \
+            && out=$(node --experimental-strip-types --no-warnings "$RUNNER_TEMP/release-only.ts" "$BASE_SHA" "$HEAD_SHA" 2> /dev/null) \
+            && [ "$out" = "release-only" ]; then
+            rel=true
+          fi
+          echo "release_only=$rel" >> "$GITHUB_OUTPUT"
+      - name: release-only change
+        if: ${{ steps.ro.outputs.release_only == 'true' }}
+        run: |
+          echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
+      - uses: pnpm/action-setup@v4
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+      - uses: actions/setup-node@v4
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+      - run: pnpm --filter @oa/server test:authz
         if: ${{ steps.ro.outputs.release_only != 'true' }}
   build:
     runs-on: ubuntu-latest
@@ -219,6 +299,9 @@ jobs:
       - name: No test hooks in the release bundle
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         run: pnpm check-no-test-hooks "$RUNNER_TEMP/release-bundle"
+      - name: No red-line fake IdP in the release bundle
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        run: pnpm check-no-fake-idp "$RUNNER_TEMP/release-bundle"
       # T3b N5: the real-build pin (the variants' bundles differ; release holds
       # no hook route). Required here, so it never skips.
       - name: Real-build pin test
@@ -226,38 +309,18 @@ jobs:
         env:
           OA_REQUIRE_REAL_BUILD: "1"
         run: pnpm --filter @oa/provision exec vitest run test/release-t3b.test.ts -t "real build"
-  # T3b R-L1: the key jobs sign on the runner's own node (20); this runs the
-  # signer scripts under an exact Node 20 so a change there fails CI, not a
-  # release. Not a required check (that is the user's call). No secrets.
-  signer-node20:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "20.20.2"
-      - name: Record the Node 20 binary
-        run: echo "OA_NODE20=$(command -v node)" >> "$GITHUB_ENV"
-      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-      - run: pnpm install --frozen-lockfile
-      - name: Signer tests under Node 20
+      # P3 T17 (#602): builds the release and redline bundles itself and checks
+      # the test-hook seeding is absent from release. OA_REQUIRE_REAL_BUILD
+      # makes a missing build fail, never skip.
+      - name: Test-hook strip test
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
         env:
-          OA_REQUIRE_NODE20: "1"
-        run: |
-          "$OA_NODE20" --version
-          pnpm --filter @oa/shared build
-          pnpm --filter @oa/provision exec vitest run test/sign-release.test.ts -t "Node 20"
+          OA_REQUIRE_REAL_BUILD: "1"
+        run: pnpm --filter @oa/server exec vitest run -c vitest.node.config.ts test/node/test-hooks-strip.test.ts
   # No secrets: the real suite runs a local `wrangler dev` (ENVIRONMENT=dev in a
-  # generated temp config), never staging.
-  e2e:
+  # generated temp config), never staging. Four shards (one runner each, by spec
+  # file); the `e2e` job below is the required check and merges their reports.
+  e2e-shard:
     runs-on: ubuntu-latest
     # Browsers and their OS deps are baked into the image (no apt step: a slow
     # Ubuntu mirror cost three queue runs, #462). The tag must match
@@ -265,10 +328,21 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
       options: --ipc=host
+    strategy:
+      # Every shard reports, so one failure never hides another.
+      fail-fast: false
+      matrix:
+        # The merge queue (and a dispatch) runs four shards: the full proof
+        # before main. Pull requests run two: on the free plan's 20
+        # concurrent jobs, two or three four-shard runs filled the cap and
+        # bursts took 28-34 min (#965). A shard of four is about 7 min.
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[1,2]' || '[1,2,3,4]') }}
     env:
       PLAYWRIGHT_IMAGE_VERSION: 1.64.1
-    # Queue runs take 10.5 to 13.5 min, and 15 cancelled passing suites. Sharding is the real fix.
-    timeout-minutes: 25
+      E2E_SHARD: ${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 2 || 4 }}
+    # A shard of four well under 10 min (15 allowed); a pull request's shard of
+    # two does about twice the work (25 allowed).
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 25 || 15 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -321,20 +395,215 @@ jobs:
       - name: Real-server suite (local wrangler dev)
         if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh real
+      # One spec on its own server: whole, in exactly one shard per event
+      # (shard 3 of four in the queue, the lightest real share; shard 2 of two
+      # on a pull request, since shard 1 carries ui, landing and provisioning).
+      - name: Real-server suite with spaces on (local wrangler dev)
+        if: ${{ !cancelled() && matrix.shard == (github.event_name == 'pull_request' && 2 || 3) && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        run: bash scripts/ci/e2e.sh spaces
+      # Not sharded (about a minute together): shard 1 only.
       - name: UI real-browser checks (axe contrast, focus)
-        if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh ui
       - name: Landing real-browser checks (no horizontal overflow)
-        if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh landing
+      # Design v7 9A.3.2 step 3: the Strict admin cookie survives a cross-site
+      # arrival at /oauth/authorize (its own Miniflare, about a minute).
+      - name: Provisioning consent checks (cross-site, Strict cookie)
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        run: bash scripts/ci/e2e.sh provisioning
+      - if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: apps/dashboard/blob-report
+          if-no-files-found: ignore
+          retention-days: 3
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
-          path: |
-            apps/dashboard/playwright-report
-            apps/dashboard/test-results
+          name: test-results-${{ matrix.shard }}
+          path: apps/dashboard/test-results
+          if-no-files-found: ignore
           retention-days: 14
+  # @oa/admin's Playwright tests (MSW mocks, no server, no secrets). One runner.
+  # Counted by the `e2e` check below. The image tag must match @oa/admin's
+  # @playwright/test; the digest pins the exact image (same as e2e-shard).
+  e2e-admin:
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
+      options: --ipc=host
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      # Fast path for release-only PRs, as in e2e-shard (decided inside the job:
+      # a skipped job would count as failing the `e2e` aggregate).
+      - id: ro
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          rel=false
+          if [ -n "${BASE_SHA:-}" ] && [ -n "${HEAD_SHA:-}" ] \
+            && git show "$BASE_SHA:scripts/ci/release-only.ts" > "$RUNNER_TEMP/release-only.ts" 2> /dev/null \
+            && out=$(node --experimental-strip-types --no-warnings "$RUNNER_TEMP/release-only.ts" "$BASE_SHA" "$HEAD_SHA" 2> /dev/null) \
+            && [ "$out" = "release-only" ]; then
+            rel=true
+          fi
+          echo "release_only=$rel" >> "$GITHUB_OUTPUT"
+      - name: release-only change
+        if: ${{ steps.ro.outputs.release_only == 'true' }}
+        run: |
+          echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
+      - uses: pnpm/action-setup@v4
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+      - uses: actions/setup-node@v4
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter @oa/admin...
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+      - name: Playwright matches the image
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        run: |
+          v="$(node -p "require('./apps/admin/node_modules/@playwright/test/package.json').version")"
+          if [ "$v" != "1.64.1" ]; then
+            echo "@playwright/test is $v but the CI image is 1.64.1; bump the e2e-admin image in ci.yml" >&2
+            exit 1
+          fi
+      - run: pnpm --filter @oa/admin test:e2e
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-test-results
+          path: apps/admin/test-results
+          if-no-files-found: ignore
+          retention-days: 14
+  # The required check (its name is branch protection's). Always runs, and passes
+  # only when every shard and the admin job passed: a skipped, cancelled or failed shard fails it.
+  e2e:
+    needs: [e2e-shard, e2e-admin]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Every shard passed
+        env:
+          SHARDS: ${{ needs.e2e-shard.result }}
+          ADMIN: ${{ needs.e2e-admin.result }}
+        run: |
+          echo "e2e-shard: $SHARDS"
+          echo "e2e-admin: $ADMIN"
+          [ "$SHARDS" = success ] && [ "$ADMIN" = success ]
+      # The merged html report, also when a shard failed (that's when it's read).
+      - uses: actions/checkout@v4
+        if: ${{ !cancelled() }}
+      - uses: actions/download-artifact@v4
+        if: ${{ !cancelled() }}
+        id: blobs
+        continue-on-error: true
+        with:
+          pattern: blob-report-*
+          path: apps/dashboard/blob-report
+          merge-multiple: true
+      - id: any
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -n "$(find apps/dashboard/blob-report -name '*.zip' 2> /dev/null)" ]; then
+            echo "blobs=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: pnpm/action-setup@v4
+        if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
+      - uses: actions/setup-node@v4
+        if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
+        run: pnpm install --frozen-lockfile --filter @oa/dashboard...
+      - name: Merge the shards' reports
+        if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
+        run: bash scripts/ci/e2e.sh merge
+      - if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/dashboard/playwright-report
+          retention-days: 14
+  # #1213: times every migration newer than the last release against a large
+  # synthetic database (100k users, 1M audit rows) and fails at 3 s or more
+  # for any one (D1 stops a query at 30 s). Not a required check. The path
+  # filter is decided inside the job, never by a workflow `paths:` filter or
+  # a job `if:` (a filtered-out workflow leaves a required check pending
+  # forever), so the job always reports and could be made required as is:
+  # with no migration or seeder change it passes in seconds. Any error in the
+  # diff means run. No pnpm install: node:sqlite and git only.
+  migration-timing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: changed
+        name: Did a migration or the seeder change?
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          run=true
+          if [ "$EVENT" != workflow_dispatch ] && [ -n "${BASE_SHA:-}" ] \
+            && files="$(git diff --name-only "$BASE_SHA"...HEAD)" \
+            && ! grep -qE '^(apps/server/migrations/|apps/server/scripts/migration-(seed|timing)\.ts$|apps/server/test/node/migration-seed\.test\.ts$|\.github/workflows/ci\.yml$)' <<< "$files"; then
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          if [ "$run" = false ]; then
+            echo "no migration or seeder change: nothing to time"
+          fi
+      - uses: actions/setup-node@v4
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        with:
+          node-version-file: .nvmrc
+      - id: key
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        run: |
+          key="$(node --experimental-strip-types --no-warnings apps/server/scripts/migration-timing.ts --key)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      # Keyed on the release's migration blobs and the seeder's hash; main's
+      # copy comes from migration-seed.yml.
+      - id: restore
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/oa-migration-seed
+          key: ${{ steps.key.outputs.key }}
+      - name: Time the new migrations
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        run: node --experimental-strip-types --no-warnings apps/server/scripts/migration-timing.ts --seed-file "$HOME/.cache/oa-migration-seed/seed.sqlite"
+      # Saved even when a migration was too slow: the key file is written only
+      # after a complete seed.
+      - id: seeded
+        if: ${{ !cancelled() && steps.changed.outputs.run == 'true' && steps.restore.outputs.cache-hit != 'true' }}
+        run: |
+          if [ -f "$HOME/.cache/oa-migration-seed/seed.sqlite.key" ]; then
+            echo "save=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: ${{ !cancelled() && steps.seeded.outputs.save == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/oa-migration-seed
+          key: ${{ steps.key.outputs.key }}
   # Not a required check: skipped unless a release-config file changed.
   release-dry-run:
     if: ${{ github.event_name == 'pull_request' }}
@@ -368,3 +637,27 @@ jobs:
         run: |
           npm install --no-save --prefix "$RUNNER_TEMP/rp" release-please@17.3.0
           RELEASE_PLEASE="$RUNNER_TEMP/rp/node_modules/.bin/release-please" bash scripts/ci/release-dry-run.sh
+  # #1056 untangle D: the public code installs, builds, typechecks and tests
+  # with every private path (scripts/ci/private-paths.txt) removed.
+  # Advisory for now: it becomes required (drop continue-on-error, add it to
+  # the ruleset) once untangle A (bundle builder), B (@oa/shared/mocks) and C
+  # (the @oa/shared/provisioning contract) have merged.
+  public-only:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      # Advisory: the breaks show as a warning and the check stays green, since
+      # release-cadence and other "all checks green" readers count a failed
+      # check even with continue-on-error. Back to a plain failing run when it
+      # becomes required.
+      - run: |
+          bash scripts/ci/public-only.sh || echo "::warning title=public-only (advisory)::public code doesn't yet build alone without the private paths; see this job's log (#1056)"

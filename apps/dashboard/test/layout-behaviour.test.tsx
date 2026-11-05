@@ -71,6 +71,8 @@ describe("layout behaviour", () => {
   // the anonymous exemption is a case-sensitive startsWith("/a/").
   it("anonymous at /A/x (renders the viewer route) is not redirected", async () => {
     const { redirect } = mount(async () => unauth(), "/A/x");
+    // Wait for the viewer's redirect, then a beat for any extra one.
+    await waitFor(() => expect(redirect).toHaveBeenCalled());
     await settle();
     // Only the viewer's own login redirect (to the lowercase path); the layout adds none.
     expect(redirect.mock.calls).toEqual([["/auth/login?next=%2Fa%2Fx"]]);

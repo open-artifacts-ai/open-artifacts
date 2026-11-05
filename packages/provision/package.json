@@ -14,25 +14,41 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./jobs": {
+      "types": "./dist/jobs.d.ts",
+      "workerd": "./src/jobs.ts",
+      "import": "./dist/jobs.js",
+      "default": "./dist/jobs.js"
+    },
     "./names": {
       "types": "./dist/names.d.ts",
       "workerd": "./src/names.ts",
       "import": "./dist/names.js",
       "default": "./dist/names.js"
+    },
+    "./versions": {
+      "types": "./dist/versions.d.ts",
+      "workerd": "./src/versions.ts",
+      "import": "./dist/versions.js",
+      "default": "./dist/versions.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "pnpm --filter @oa/shared build && tsc -b",
-    "test": "pnpm --filter @oa/shared build && vitest run",
-    "typecheck": "pnpm --filter @oa/shared build && tsc --noEmit -p tsconfig.typecheck.json"
+    "build": "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provisioning-contract --filter @oa/bundle build && tsc -b",
+    "test": "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provisioning-contract --filter @oa/bundle build && vitest run",
+    "typecheck": "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provisioning-contract --filter @oa/bundle build && tsc --noEmit -p tsconfig.typecheck.json"
   },
   "devDependencies": {
     "@types/node": "^22.20.5"
   },
   "dependencies": {
-    "@oa/shared": "workspace:*"
+    "@oa/auth-core": "workspace:*",
+    "@oa/bundle": "workspace:*",
+    "@oa/provisioning-contract": "workspace:*",
+    "@oa/shared": "workspace:*",
+    "aws4fetch": "1.0.20"
   }
 }

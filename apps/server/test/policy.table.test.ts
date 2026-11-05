@@ -14,6 +14,7 @@ import {
   capOf,
   type DecisionInput,
   decide,
+  editorsOnlyRefusal,
   namedEvents,
   type OrgAction,
   orgCan,
@@ -58,6 +59,26 @@ describe("decide: decision table rows", () => {
     [
       "3 deleted shared, manager, allowDeleted",
       with_({
+        artifact: { ...base.artifact, deleted: true },
+        spaceRole: "manager",
+        allowDeleted: true,
+      }),
+      "manager",
+    ],
+    [
+      "4 deleted shared, org admin without a manager role, allowDeleted",
+      with_({
+        caller: { id: ME, orgRole: "admin" },
+        artifact: { ...base.artifact, deleted: true },
+        spaceRole: "viewer",
+        allowDeleted: true,
+      }),
+      null,
+    ],
+    [
+      "3 deleted shared, org admin self-added as manager, allowDeleted",
+      with_({
+        caller: { id: ME, orgRole: "admin" },
         artifact: { ...base.artifact, deleted: true },
         spaceRole: "manager",
         allowDeleted: true,
@@ -254,7 +275,18 @@ describe("decide: decision table rows", () => {
 });
 
 describe("can", () => {
-  const ctx: CanCtx = { cap: null, personal: false };
+  // The default dataWriters; "editors" and undefined are covered below.
+  const ctx: CanCtx = { cap: null, personal: false, dataWriters: "viewers" };
+  it("data.write with dataWriters undefined fails closed for everyone", () => {
+    const none: CanCtx = { cap: null, personal: false };
+    expect(can("viewer", "data.write", none)).toBe(false);
+    expect(can("viewer", "data.write", { ...none, anonymous: true })).toBe(
+      false,
+    );
+    expect(can("viewer", "anonId", { ...none, anonymous: true })).toBe(false);
+    for (const l of ["editor", "manager", "owner"] as const)
+      expect(can(l, "data.write", none), l).toBe(true);
+  });
   const LEVELS: AccessLevel[] = ["viewer", "editor", "manager", "owner"];
   // [action, viewer, editor, manager, owner]
   const table: [PolicyAction, boolean, boolean, boolean, boolean][] = [
@@ -337,21 +369,78 @@ describe("can", () => {
       }),
     ).toBe(false);
   });
-  it("anonymous: data writes only with allowAnonymousWrites; never storage", () => {
-    const anon = { ...ctx, anonymous: true };
+  it("anonymous: data writes only with dataWriters viewers; never storage", () => {
+    const anon = { ...ctx, anonymous: true, dataWriters: undefined };
+    // Fail closed: an anonymous write needs the row's explicit "viewers".
     expect(can("viewer", "data.write", anon)).toBe(false);
-    expect(
-      can("viewer", "data.write", { ...anon, allowAnonymousWrites: true }),
-    ).toBe(true);
-    expect(
-      can("viewer", "storage", { ...anon, allowAnonymousWrites: true }),
-    ).toBe(false);
-    expect(
-      can("viewer", "anonId", { ...anon, allowAnonymousWrites: true }),
-    ).toBe(true);
-    expect(
-      can("viewer", "anonId", { ...ctx, allowAnonymousWrites: true }),
-    ).toBe(false);
+    const viewers = { ...anon, dataWriters: "viewers" as const };
+    expect(can("viewer", "data.write", viewers)).toBe(true);
+    expect(can("viewer", "storage", viewers)).toBe(false);
+    expect(can("viewer", "anonId", viewers)).toBe(true);
+    expect(can("viewer", "anonId", { ...ctx, dataWriters: "viewers" })).toBe(
+      false,
+    );
+  });
+
+  // #681: level x dataWriters x visibility, for data.write and anonId. An
+  // anonymous caller reaches a level only on a public artifact (decide()).
+  describe("dataWriters (#681)", () => {
+    type Who = "anonymous" | "capped" | AccessLevel;
+    const WHO: readonly Who[] = [
+      "anonymous",
+      "capped",
+      "viewer",
+      "editor",
+      "manager",
+      "owner",
+    ];
+    const VIS = ["private", "team", "public"] as const;
+    for (const who of WHO)
+      for (const dataWriters of ["viewers", "editors"] as const)
+        for (const vis of VIS) {
+          const level: AccessLevel | null =
+            who === "anonymous"
+              ? vis === "public"
+                ? "viewer"
+                : null
+              : who === "capped"
+                ? "viewer"
+                : who;
+          const c: CanCtx = {
+            cap: who === "capped" ? "restricted" : null,
+            personal: true,
+            anonymous: who === "anonymous",
+            dataWriters,
+          };
+          const editorUp =
+            who === "editor" || who === "manager" || who === "owner";
+          const write =
+            level !== null &&
+            who !== "capped" &&
+            (dataWriters === "viewers" || editorUp);
+          const anonId =
+            who === "anonymous" && level !== null && dataWriters === "viewers";
+          it(`${who} ${dataWriters} ${vis}: data.write ${write}, anonId ${anonId}`, () => {
+            expect(can(level, "data.write", c)).toBe(write);
+            expect(can(level, "anonId", c)).toBe(anonId);
+            // A refusal caused by "editors" alone is data_editors_only.
+            expect(editorsOnlyRefusal(level, c)).toBe(
+              !write &&
+                dataWriters === "editors" &&
+                level !== null &&
+                who !== "capped",
+            );
+          });
+        }
+    it("a capped caller's refusal is never data_editors_only", () => {
+      expect(
+        editorsOnlyRefusal("viewer", {
+          cap: "guest",
+          personal: true,
+          dataWriters: "editors",
+        }),
+      ).toBe(false);
+    });
   });
 
   const SEVEN: Record<ArtifactAction, PolicyAction> = {
@@ -365,19 +454,26 @@ describe("can", () => {
   };
   it("agrees with the contract's artifactCan on its seven actions", () => {
     const caps: (CapReason | null)[] = [null, "guest", "restricted"];
+    // Undefined dataWriters: "editors" on both sides (fail closed).
     for (const level of LEVELS)
       for (const personal of [true, false])
-        for (const cap of caps) {
-          const mine = Object.fromEntries(
-            ARTIFACT_ACTIONS.map((a) => [
-              a,
-              can(level, SEVEN[a], { cap, personal }),
-            ]),
-          );
-          expect(mine, `${level} personal=${personal} cap=${cap}`).toEqual(
-            artifactCan(level, { personal, cap }),
-          );
-        }
+        for (const cap of caps)
+          for (const dataWriters of [
+            "viewers",
+            "editors",
+            undefined,
+          ] as const) {
+            const mine = Object.fromEntries(
+              ARTIFACT_ACTIONS.map((a) => [
+                a,
+                can(level, SEVEN[a], { cap, personal, dataWriters }),
+              ]),
+            );
+            expect(
+              mine,
+              `${level} personal=${personal} cap=${cap} dataWriters=${dataWriters}`,
+            ).toEqual(artifactCan(level, { personal, cap, dataWriters }));
+          }
   });
 });
 
@@ -411,6 +507,7 @@ describe("orgCan", () => {
     "space.create",
     "space.delete",
     "space.mappings",
+    "org.mappings",
     "space.allMembers",
     "space.adminSelfAdd",
     "restricted.groups",
@@ -432,10 +529,18 @@ describe("orgCan", () => {
     "space.members",
     "space.rename",
     "space.publicLinks",
+    "space.mappings.manage",
   ] as OrgAction[])("%s: admins or the space manager", (action) => {
     expect(orgCan(member("member"), action, { spaceRole: "manager" })).toBe(
       true,
     );
+    // A cap drops it, manager or not.
+    expect(
+      orgCan(member("member"), action, {
+        spaceRole: "manager",
+        cap: "restricted",
+      }),
+    ).toBe(false);
     expect(orgCan(member("member"), action, { spaceRole: "editor" })).toBe(
       false,
     );
@@ -464,16 +569,18 @@ describe("orgCan", () => {
     ).toBe(false);
     expect(orgCan(member("member"), "artifact.create")).toBe(true);
   });
-  it.each(["directory.manage", "members.manageAdmins"] as OrgAction[])(
-    "%s: the org owner only",
-    (action) => {
-      expect(
-        (["owner", "admin", "member", "guest"] as Role[]).map((r) =>
-          orgCan(member(r), action),
-        ),
-      ).toEqual([true, false, false, false]);
-    },
-  );
+  it.each([
+    "directory.manage",
+    "members.manageAdmins",
+    "broker.check",
+    "signin.problems",
+  ] as OrgAction[])("%s: the org owner only", (action) => {
+    expect(
+      (["owner", "admin", "member", "guest"] as Role[]).map((r) =>
+        orgCan(member(r), action),
+      ),
+    ).toEqual([true, false, false, false]);
+  });
   it("tokens and MCP: non-guest, uncapped", () => {
     expect(orgCan(member("member"), "tokens.create")).toBe(true);
     expect(orgCan(member("guest"), "mcp.connect")).toBe(false);

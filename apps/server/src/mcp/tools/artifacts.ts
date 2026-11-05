@@ -4,21 +4,33 @@ import {
   type GetArtifactResult,
   viewerPath,
 } from "@oa/shared";
-import { signDownload } from "../../content/signing.js";
+import {
+  type ContentViewer,
+  contentViewer,
+  signDownload,
+} from "../../content/signing.js";
 import type { Env } from "../../env.js";
 import { ApiError, appOrigin, contentOrigin } from "../../http/errors.js";
 import {
   getSummary,
+  isSettingsOnly,
   list,
   listVersions,
   patch,
   publish,
+  publishSettings,
   readVersionFile,
   restoreVersion,
   softDelete,
+  undelete,
 } from "../../services/artifacts.js";
 import { search } from "../../services/search.js";
-import { deleteShare, putShare } from "../../services/shares.js";
+import {
+  deleteShare,
+  guestShareLine,
+  putShare,
+} from "../../services/shares.js";
+import { publishableSpaces, spacesOn } from "../../services/spaces.js";
 import { createUpload } from "../../services/uploads.js";
 import { guard, ok, type ToolEnv } from "../server.js";
 import { toolConfig } from "../tool-defs.js";
@@ -38,44 +50,63 @@ const more = (cursor: string | null) => (cursor ? " (more: pass cursor)" : "");
 /**
  * Content-host download URL for one file, signed for 10 minutes: an explicit
  * download (attachment), so a browser that opens it saves the file rather
- * than rendering it.
+ * than rendering it. Bound to `viewer` (P3 T11; every install, parity 1).
  */
 async function downloadUrl(
   env: Env,
   a: ArtifactSummary,
   v: number,
   path: string,
+  viewer: ContentViewer | null,
 ): Promise<string> {
-  return `${contentOrigin(env)}${(await signDownload(env, a.id, v, path)).path}`;
+  const { path: p } = await signDownload(
+    env,
+    a.id,
+    v,
+    path,
+    Date.now(),
+    viewer,
+  );
+  return `${contentOrigin(env)}${p}`;
 }
 
 export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
   const { env, user, caller } = t;
+  // Without the spaces feature no description names spaces, and
+  // list_spaces isn't offered (parity 1, B12).
+  const sp = spacesOn(env);
 
   server.registerTool(
     "publish_artifact",
-    toolConfig("publish_artifact"),
+    toolConfig("publish_artifact", sp),
     (input) =>
       guard(async () => {
+        // An id with neither content nor files: settings only, no version (#681 D).
+        if (isSettingsOnly(input)) {
+          const r = await publishSettings(env, user, input, t.exec);
+          const line = `Updated the settings of ${r.id} in place (still v${r.version}, no new version): ${r.url}`;
+          return ok(r.warning ? `${line} Warning: ${r.warning}` : line, r);
+        }
         const r = await publish(env, user, input, t.agentNow(), t.exec, "any");
+        const line = `Published ${input.title ? `"${input.title}" ` : ""}${r.id} v${r.version}: ${r.url}`;
+        return ok(r.warning ? `${line} Warning: ${r.warning}` : line, r);
+      }),
+  );
+
+  server.registerTool(
+    "create_upload",
+    toolConfig("create_upload", sp),
+    (input) =>
+      guard(async () => {
+        const r = await createUpload(env, user, input);
         return ok(
-          `Published ${input.title ? `"${input.title}" ` : ""}${r.id} v${r.version}: ${r.url}`,
+          `Upload ${r.uploadId} reserved for artifact ${r.artifactId}: PUT the bytes to ${r.url} before ${r.expiresAt}`,
           r,
         );
       }),
   );
 
-  server.registerTool("create_upload", toolConfig("create_upload"), (input) =>
-    guard(async () => {
-      const r = await createUpload(env, user, input);
-      return ok(
-        `Upload ${r.uploadId} reserved for artifact ${r.artifactId}: PUT the bytes to ${r.url} before ${r.expiresAt}`,
-        r,
-      );
-    }),
-  );
-
-  server.registerTool("get_artifact", toolConfig("get_artifact"), (input) =>
+  server.registerTool("get_artifact", toolConfig("get_artifact", sp), (input) =>
     guard(async () => {
       const artifact = await getSummary(env, caller, input.id);
       const v = input.version ?? artifact.currentVersion;
@@ -93,7 +124,13 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
         const { body } = await readVersionFile(env, caller, input.id, v, path);
         out.content = await body.text();
       } else {
-        out.downloadUrl = await downloadUrl(env, artifact, v, path);
+        out.downloadUrl = await downloadUrl(
+          env,
+          artifact,
+          v,
+          path,
+          contentViewer(env, user.id, t.sessionEpoch),
+        );
       }
       const what =
         out.content !== undefined
@@ -106,19 +143,22 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
     }),
   );
 
-  server.registerTool("list_artifacts", toolConfig("list_artifacts"), (input) =>
-    guard(async () => {
-      const page = await list(env, caller, input);
-      return ok(
-        `${plural(page.items.length, "artifact")}${more(page.nextCursor)}: ${appOrigin(env)}/`,
-        page,
-      );
-    }),
+  server.registerTool(
+    "list_artifacts",
+    toolConfig("list_artifacts", sp),
+    (input) =>
+      guard(async () => {
+        const page = await list(env, caller, input);
+        return ok(
+          `${plural(page.items.length, "artifact")}${more(page.nextCursor)}: ${appOrigin(env)}/`,
+          page,
+        );
+      }),
   );
 
   server.registerTool(
     "search_artifacts",
-    toolConfig("search_artifacts"),
+    toolConfig("search_artifacts", sp),
     (input) =>
       guard(async () => {
         const page = await search(
@@ -128,6 +168,7 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
           input.cursor,
           input.limit,
           input.spaceId,
+          input.agentVia,
         );
         return ok(
           `${plural(page.items.length, "match")}${more(page.nextCursor)}: ${appOrigin(env)}/search?q=${encodeURIComponent(input.q)}`,
@@ -136,19 +177,34 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       }),
   );
 
-  server.registerTool("list_versions", toolConfig("list_versions"), (input) =>
-    guard(async () => {
-      const items = await listVersions(env, caller, input.id);
-      return ok(
-        `${plural(items.length, "version")} of ${input.id}: ${viewUrl(env, input.id)}`,
-        { items },
-      );
-    }),
+  server.registerTool(
+    "list_versions",
+    toolConfig("list_versions", sp),
+    (input) =>
+      guard(async () => {
+        const items = await listVersions(
+          env,
+          caller,
+          input.id,
+          input.cursor === undefined ? undefined : Number(input.cursor),
+        );
+        // The REST cursor: page on with before = the last version. A page may stop
+        // short of 20 on manifest bytes, so only version 1 (or nothing) ends it.
+        const last = items[items.length - 1];
+        const nextCursor =
+          last && last.version > 1 ? String(last.version) : null;
+        return ok(
+          `${plural(items.length, "version")} of ${input.id}${
+            nextCursor ? " (more versions: pass nextCursor as cursor)" : ""
+          }: ${viewUrl(env, input.id)}`,
+          { items, nextCursor },
+        );
+      }),
   );
 
   server.registerTool(
     "restore_version",
-    toolConfig("restore_version"),
+    toolConfig("restore_version", sp),
     (input) =>
       guard(async () => {
         const r = await restoreVersion(
@@ -166,21 +222,32 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       }),
   );
 
-  server.registerTool("share_artifact", toolConfig("share_artifact"), (input) =>
-    guard(async () => {
-      const s = await putShare(env, user, input.id, input);
-      return ok(
-        `Shared ${input.id} with ${s.email} as ${s.role}: ${viewUrl(env, input.id)}. ${
-          s.emailed ? `Emailed ${s.email} a link.` : "No email sent."
-        }`,
-        s,
-      );
-    }),
+  server.registerTool(
+    "share_artifact",
+    toolConfig("share_artifact", sp),
+    (input) =>
+      guard(async () => {
+        const s = await putShare(env, user, input.id, input, t.exec);
+        return ok(
+          `${
+            s.guest
+              ? `Shared ${input.id} with ${s.email}. ${guestShareLine(s)} ${viewUrl(env, input.id)}.`
+              : `Shared ${input.id} with ${s.email} as ${s.role}: ${viewUrl(env, input.id)}.`
+          } ${s.emailed ? `Emailed ${s.email} a link.` : "No email sent."}${
+            s.recipient
+              ? s.recipient.reason === "needs_invite"
+                ? ` ${s.email} can't sign in until an admin invites them as a member.`
+                : ` ${s.email} can't sign in to this instance with the sign-in methods it offers.`
+              : ""
+          }`,
+          s,
+        );
+      }),
   );
 
   server.registerTool(
     "unshare_artifact",
-    toolConfig("unshare_artifact"),
+    toolConfig("unshare_artifact", sp),
     (input) =>
       guard(async () => {
         await deleteShare(env, user, input.id, input.email);
@@ -191,25 +258,49 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       }),
   );
 
-  server.registerTool("set_visibility", toolConfig("set_visibility"), (input) =>
-    guard(async () => {
-      const a = await patch(env, user, input.id, {
-        visibility: input.visibility,
-      });
-      return ok(`${a.id} is now ${a.visibility}: ${viewUrl(env, a.id)}`, a);
-    }),
+  server.registerTool(
+    "set_visibility",
+    toolConfig("set_visibility", sp),
+    (input) =>
+      guard(async () => {
+        const { id: _, ...p } = input;
+        const a = await patch(env, user, input.id, p);
+        const line = `${a.id} is now ${a.visibility}: ${viewUrl(env, a.id)}`;
+        return ok(a.warning ? `${line} Warning: ${a.warning}` : line, a);
+      }),
   );
+
+  if (sp)
+    server.registerTool("list_spaces", toolConfig("list_spaces", sp), () =>
+      guard(async () => {
+        const items = await publishableSpaces(env, caller);
+        return ok(
+          `${plural(items.length, "space")} you can publish into: ${appOrigin(env)}/`,
+          { items },
+        );
+      }),
+    );
 
   server.registerTool(
     "delete_artifact",
-    toolConfig("delete_artifact"),
+    toolConfig("delete_artifact", sp),
     (input) =>
       guard(async () => {
         await softDelete(env, user, input.id);
         return ok(
-          `Deleted ${input.id}; restore it from the dashboard within 30 days: ${appOrigin(env)}/`,
+          `Deleted ${input.id}. Restore it from Trash in the dashboard, or with undelete_artifact, within 30 days: ${appOrigin(env)}/`,
           { id: input.id, deleted: true },
         );
+      }),
+  );
+
+  server.registerTool(
+    "undelete_artifact",
+    toolConfig("undelete_artifact", sp),
+    (input) =>
+      guard(async () => {
+        const a = await undelete(env, user, input.id);
+        return ok(`Restored "${a.title}" (${a.id}): ${viewUrl(env, a.id)}`, a);
       }),
   );
 }

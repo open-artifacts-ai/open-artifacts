@@ -2,10 +2,23 @@ import { join } from "node:path";
 import type { State } from "./state.ts";
 import type { Ctx } from "./step.ts";
 
+/**
+ * The oldest deployed version this checkout upgrades from. 0.109.0 is the
+ * first release with Durable Object tag v4, which adds BusHub unbound; from
+ * #1315 the template binds BUS_HUB. An install below it takes 0.109.0 (or any
+ * later release before the bind) first, so the class never ships in the same
+ * deploy that binds it. Raise this when a release binds a class added since.
+ */
+export const MIN_UPGRADE_FROM = "0.109.0";
+
 export type VersionInfo = {
   repoVersion: string;
   liveVersion?: string;
   downgrade: boolean;
+  /** The deployed version is below MIN_UPGRADE_FROM and this checkout is past it. */
+  belowMinUpgrade: boolean;
+  /** #1427: --upgrade can't tell the deployed version and this checkout is past MIN_UPGRADE_FROM. */
+  unknownLive: boolean;
 };
 
 /** The repo version: root package.json, else the release-please manifest. */
@@ -28,7 +41,7 @@ function base(v: unknown): number[] | undefined {
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
 }
 
-/** The deployed version: live /healthz `version`, else the saved one; a failed or odd answer is unknown. */
+/** The deployed version: live /healthz `version`, else the saved one, else --deployed-version; a failed or odd answer is unknown. */
 async function liveVersion(state: State, ctx: Ctx) {
   try {
     const r = await ctx.deps.fetch(`https://${ctx.opts.appHost}/healthz`, {
@@ -39,7 +52,7 @@ async function liveVersion(state: State, ctx: Ctx) {
       : undefined;
     if (base(v)) return base(v);
   } catch {}
-  return base(state.deployedVersion);
+  return base(state.deployedVersion) ?? base(ctx.opts.deployedVersion);
 }
 
 /**
@@ -60,7 +73,12 @@ export async function versionInfo(
     throw new Error(
       `cannot read this checkout's version (${JSON.stringify(raw)}) from package.json; fix it before deploying`,
     );
-  const out = { repoVersion: a.join("."), downgrade: false };
+  const out = {
+    repoVersion: a.join("."),
+    downgrade: false,
+    belowMinUpgrade: false,
+    unknownLive: false,
+  };
   const existing =
     ctx.opts.upgrade ||
     state.workerVersion ||
@@ -68,10 +86,29 @@ export async function versionInfo(
     state.accessAppId;
   if (!existing) return out;
   const b = await liveVersion(state, ctx);
-  if (!b) return out;
-  const i = a.findIndex((x, k) => x !== b[k]);
-  return { ...out, liveVersion: b.join("."), downgrade: i >= 0 && a[i] < b[i] };
+  const min = base(MIN_UPGRADE_FROM) as number[];
+  // #1427: unknown is not "old enough". Only a checkout past MIN_UPGRADE_FROM
+  // needs to know, as for belowMinUpgrade.
+  if (!b) return { ...out, unknownLive: ctx.opts.upgrade && cmp(a, min) > 0 };
+  return {
+    ...out,
+    liveVersion: b.join("."),
+    downgrade: cmp(a, b) < 0,
+    belowMinUpgrade: cmp(b, min) < 0 && cmp(a, min) > 0,
+  };
 }
+
+/** Order of two X.Y.Z triples: negative, zero or positive. */
+function cmp(a: number[], b: number[]): number {
+  const i = a.findIndex((x, k) => x !== b[k]);
+  return i < 0 ? 0 : a[i] - b[i];
+}
+
+export const belowMinUpgradeMessage = (v: VersionInfo) =>
+  `the deployed ${v.liveVersion} is older than ${MIN_UPGRADE_FROM}, the oldest version this release (${v.repoVersion}) upgrades from; upgrade to v${MIN_UPGRADE_FROM} first (git checkout v${MIN_UPGRADE_FROM}, then run the same upgrade), then check out this release and run it again`;
+
+export const unknownLiveMessage = (v: VersionInfo, appHost: string) =>
+  `cannot tell which version is deployed (https://${appHost}/healthz gave none and the state file has none), and this release (${v.repoVersion}) upgrades only from ${MIN_UPGRADE_FROM} or later; make /healthz reachable from here, or pass --deployed-version X.Y.Z with the version the install runs, then run the same upgrade again`;
 
 export const downgradeMessage = (v: VersionInfo) =>
   `this checkout is ${v.repoVersion}, older than the deployed ${v.liveVersion}; check out ${v.liveVersion} or newer (git checkout v${v.liveVersion}), or pass --allow-downgrade to deploy an older release on purpose`;

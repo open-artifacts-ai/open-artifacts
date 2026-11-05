@@ -11,6 +11,8 @@ import {
   MemberSchema,
   type MePatch,
   MeSchema,
+  type NoticeId,
+  type OAuthClient,
   OAuthClientSchema,
   PageSchema,
   type PublishInput,
@@ -27,6 +29,7 @@ import {
   VersionInfoSchema,
 } from "@oa/shared";
 import {
+  keepPreviousData,
   type QueryClient,
   useInfiniteQuery,
   useMutation,
@@ -40,6 +43,7 @@ import {
   DirectoryGroupSchema,
   GroupMappingSchema,
   RestrictedGroupSchema,
+  SpaceCandidateSchema,
   type SpaceCreateInput,
   SpaceMemberSchema,
   SpaceMembersPageSchema,
@@ -51,6 +55,8 @@ import {
   type TransferInput,
   TransferResultSchema,
   TransferSummarySchema,
+  type TrashItem,
+  TrashItemSchema,
 } from "./contract";
 import {
   DIRECTORY_SETTINGS,
@@ -75,6 +81,8 @@ export const qk = {
   versions: (id: string) => ["artifact", id, "versions"] as const,
   shares: (id: string) => ["artifact", id, "shares"] as const,
   search: (q: SearchQuery) => ["search", q] as const,
+  /** Every Trash list (any space filter) starts with ["trash"]. */
+  trash: (spaceId?: string) => ["trash", spaceId ?? ""] as const,
   /** Every member query: the lists below and per-member data. */
   members: ["members"] as const,
   memberList: (status?: string) => ["members", status ?? "active"] as const,
@@ -89,6 +97,9 @@ export const qk = {
   spaceMembers: (id: string) => ["spaces", id, "members"] as const,
   spaceMemberList: (id: string, q: string, group: string) =>
     ["spaces", id, "members", { q, group }] as const,
+  /** Under spaceMembers, so a role change refreshes who's already here. */
+  spaceCandidates: (id: string, q: string) =>
+    ["spaces", id, "members", "candidates", q] as const,
   spaceMappings: (id: string) => ["spaces", id, "mappings"] as const,
   directory: ["directory"] as const,
   restrictedGroups: ["directory", "restricted"] as const,
@@ -108,6 +119,7 @@ const withQuery = (path: string, q: object) => {
 
 const ArtifactPage = PageSchema(ArtifactSummarySchema);
 const SearchPage = PageSchema(SearchHitSchema);
+const TrashPage = PageSchema(TrashItemSchema);
 
 export const useArtifacts = (q: ListQueryInput) =>
   useQuery({
@@ -150,11 +162,13 @@ export const useVersionInfo = (id: string, v: number, enabled = true) =>
         await api.get(R.versions(id, v + 1), z.array(VersionInfoSchema), signal)
       ).find((x) => x.version === v) ?? null,
   });
-export const useShares = (id: string) =>
+/** `enabled` false for anyone who can't share: the server answers them 404. */
+export const useShares = (id: string, enabled = true) =>
   useQuery({
     queryKey: qk.shares(id),
     queryFn: ({ signal }) =>
       api.get(R.shares(id), z.array(ShareSchema), signal),
+    enabled,
   });
 export const useSearch = (q: SearchQuery) =>
   useQuery({
@@ -163,7 +177,7 @@ export const useSearch = (q: SearchQuery) =>
       api.get(withQuery(R.search, q), SearchPage, signal),
     enabled: q.q.length > 0,
   });
-/** Active members by default; `status` (a comma list) is hosted, so the default sends none. */
+/** Active members by default; `status` is a comma list (every install, parity 1). */
 export const useMembers = (status?: string, enabled = true) =>
   useQuery({
     enabled,
@@ -171,13 +185,15 @@ export const useMembers = (status?: string, enabled = true) =>
     queryFn: ({ signal }) =>
       api.get(withQuery(R.members, { status }), z.array(MemberSchema), signal),
   });
-export const useTokens = () =>
+export const useTokens = (enabled = true) =>
   useQuery({
+    enabled,
     queryKey: qk.tokens,
     queryFn: ({ signal }) => api.get(R.tokens, z.array(TokenSchema), signal),
   });
-export const useOAuthClients = () =>
+export const useOAuthClients = (enabled = true) =>
   useQuery({
+    enabled,
     queryKey: qk.oauthClients,
     queryFn: ({ signal }) =>
       api.get(R.oauthClients, z.array(OAuthClientSchema), signal),
@@ -188,6 +204,24 @@ export const useRevokeToken = () =>
     () => [qk.tokens],
     "Couldn't revoke the token.",
   );
+/** PATCH a grant's label (null clears it); the list shows the answer. */
+export const useLabelOAuthClient = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { grantId: string; label: string | null }) =>
+      api.send(
+        "PATCH",
+        R.oauthClient(v.grantId),
+        { label: v.label },
+        OAuthClientSchema,
+      ),
+    onSuccess: (c) =>
+      qc.setQueryData<OAuthClient[]>(qk.oauthClients, (list) =>
+        list?.map((x) => (x.grantId === c.grantId ? c : x)),
+      ),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.oauthClients }),
+  });
+};
 export const useRevokeOAuthClient = () =>
   useInvalidating(
     (grantId: string) => api.send("DELETE", R.oauthClient(grantId), undefined),
@@ -260,21 +294,29 @@ const useInvalidating = <V, T>(
   keys: () => (readonly unknown[])[],
   failure?: string,
   inline?: (e: ApiClientError) => boolean,
+  /** A success toast, shown at once: the component may be gone by the refetch. */
+  success?: string,
 ) => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: fn,
     // Here, not at the call site: the row (and its component) may be gone by now.
-    ...(failure
-      ? {
-          onError: (e: unknown) => {
-            if (e instanceof ApiClientError && inline?.(e)) return;
-            failureToast(qc, failure, e);
-          },
-        }
-      : {}),
-    onSuccess: () =>
-      Promise.all(keys().map((queryKey) => qc.invalidateQueries({ queryKey }))),
+    onError: (e: unknown) => {
+      // A 409 conflict means what we read is stale: reload it.
+      if (e instanceof ApiClientError && e.code === "conflict")
+        void Promise.all(
+          keys().map((queryKey) => qc.invalidateQueries({ queryKey })),
+        );
+      if (!failure) return;
+      if (e instanceof ApiClientError && inline?.(e)) return;
+      failureToast(qc, failure, e);
+    },
+    onSuccess: () => {
+      if (success) toast({ title: success, tone: "success" });
+      return Promise.all(
+        keys().map((queryKey) => qc.invalidateQueries({ queryKey })),
+      );
+    },
   });
 };
 
@@ -322,7 +364,19 @@ export const useInviteMember = () => {
     mutationFn: (input: MemberInvite) =>
       api.send("POST", R.members, input, MemberInviteResultSchema),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.members }),
-    onError: (e) => failToast(e, "Couldn't send the invite."),
+    // invite_unreachable: the dialog says why under the email field.
+    // member_removed: the dialog offers Restore; guest_lapsed: it says to share (parity 1).
+    onError: (e) => {
+      if (
+        e instanceof ApiClientError &&
+        (e.code === "invite_unreachable" ||
+          e.code === "member_removed" ||
+          e.code === "guest_lapsed" ||
+          e.code === "directory_managed")
+      )
+        return;
+      failToast(e, "Couldn't send the invite.");
+    },
   });
 };
 
@@ -331,6 +385,8 @@ const useOptimisticMembers = <V>(
   fn: (v: V) => Promise<unknown>,
   apply: (list: Member[], v: V) => Member[],
   failure: string,
+  /** A 403 owner_only: the caller says so on the row (no toast). */
+  onOwnerOnly?: (v: V) => void,
 ) => {
   const qc = useQueryClient();
   return useMutation({
@@ -347,26 +403,66 @@ const useOptimisticMembers = <V>(
       return { prev };
     },
     // Here, not at the call site: the row (and its component) may be gone by now.
-    onError: (e, _v, ctx) => {
-      failToast(e, failure);
+    onError: (e, v, ctx) => {
       for (const [key, list] of ctx?.prev ?? []) qc.setQueryData(key, list);
+      if (e instanceof ApiClientError && e.code === "owner_only") {
+        // Your role changed under the page: refetch it, and say so on the row.
+        void qc.invalidateQueries({ queryKey: qk.me });
+        if (onOwnerOnly) return onOwnerOnly(v);
+      }
+      failToast(e, failure);
     },
     onSettled: () => qc.invalidateQueries({ queryKey: qk.members }),
   });
 };
-export const usePatchMember = () =>
+export const usePatchMember = (onOwnerOnly?: (id: string) => void) =>
   useOptimisticMembers(
     (v: { id: string } & MemberPatch) =>
       api.send("PATCH", R.member(v.id), { role: v.role }, MemberSchema),
     (list, v) => list.map((m) => (m.id === v.id ? { ...m, role: v.role } : m)),
     "Couldn't change the role.",
+    onOwnerOnly && ((v) => onOwnerOnly(v.id)),
   );
-export const useRemoveMember = () =>
+export const useRemoveMember = (onOwnerOnly?: (id: string) => void) =>
   useOptimisticMembers(
     (id: string) => api.send("DELETE", R.member(id), undefined),
     (list, id) => list.filter((m) => m.id !== id),
     "Couldn't remove the member.",
+    onOwnerOnly,
   );
+
+/**
+ * POST R.noticeDismiss (parity 2): the owner's one-time notice goes for good.
+ * Hidden at once; /me refetches to confirm. A failure toasts and it returns.
+ */
+/** Which Me.notices field each dismissable notice is. */
+const NOTICE_FIELD = {
+  guest_shares: "guestShares",
+  guest_summary: "guestSummary",
+} as const satisfies Record<NoticeId, keyof NonNullable<Me["notices"]>>;
+
+export const useDismissNotice = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (notice: NoticeId) =>
+      api.send("POST", R.noticeDismiss(notice), undefined),
+    onMutate: (notice) => {
+      const before = qc.getQueryData<Me>(qk.me);
+      const key = NOTICE_FIELD[notice];
+      if (before?.notices)
+        qc.setQueryData<Me>(qk.me, {
+          ...before,
+          notices: { ...before.notices, [key]: undefined },
+        });
+      return { before };
+    },
+    onError: (e, _n, ctx) => {
+      if (ctx?.before) qc.setQueryData(qk.me, ctx.before);
+      failToast(e, "Couldn't dismiss the notice.");
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.me }),
+  });
+};
 
 /** PATCH /me; the response is the new Me, so it replaces the cache. Errors are the caller's to show. */
 export const useUpdateMe = () => {
@@ -423,7 +519,52 @@ export const useCreateSpace = () =>
     (input: SpaceCreateInput) => api.send("POST", R.spaces, input, SpaceSchema),
     () => [["spaces"], qk.me],
     "Couldn't create the space.",
+    // A refused name shows under the field.
+    (e) => e.status === 400,
   );
+/** Trash: the caller's deleted artifacts and those in spaces they manage, newest first. */
+export const useTrash = (spaceId?: string) =>
+  useInfiniteQuery({
+    queryKey: qk.trash(spaceId),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam, signal }) =>
+      api.get(
+        withQuery(R.trash, { spaceId, cursor: pageParam }),
+        TrashPage,
+        signal,
+      ),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+/** Undelete from Trash: the row leaves at once, then Trash and the lists refetch. */
+export const useRestoreDeleted = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (item: TrashItem) =>
+      api.send(
+        "POST",
+        R.restoreDeleted(item.id),
+        undefined,
+        ArtifactSummarySchema,
+      ),
+    onSuccess: (_a, item) => {
+      qc.setQueriesData<{ pages: { items: TrashItem[] }[] }>(
+        { queryKey: ["trash"] },
+        (d) =>
+          d && {
+            ...d,
+            pages: d.pages.map((p) => ({
+              ...p,
+              items: p.items.filter((x) => x.id !== item.id),
+            })),
+          },
+      );
+      // Not awaited: the toast shouldn't wait for the refetches.
+      void qc.invalidateQueries({ queryKey: ["trash"] });
+      void qc.invalidateQueries({ queryKey: ["artifacts"] });
+      void qc.invalidateQueries({ queryKey: qk.artifact(item.id) });
+    },
+  });
+};
 /** Turning public links off rewrites public artifacts to team, so the library refreshes. */
 export const usePatchSpace = (id: string) =>
   useInvalidating(
@@ -431,6 +572,7 @@ export const usePatchSpace = (id: string) =>
       api.send("PATCH", R.space(id), patch, SpaceSchema),
     () => [["spaces"], qk.me, ["artifacts"]],
     "Couldn't save the space.",
+    (e) => e.status === 400,
   );
 /** The page shows space_not_empty itself (the server is the authority for delete). */
 export const useDeleteSpace = () =>
@@ -463,10 +605,24 @@ export const useSpaceMembers = (
       ),
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
+/** Add people's search: org members a manager of the space may add (first page; typing narrows it). */
+export const useSpaceCandidates = (id: string, q: string, enabled = true) =>
+  useQuery({
+    enabled: enabled && q.trim().length > 0,
+    queryKey: qk.spaceCandidates(id, q.trim()),
+    queryFn: ({ signal }) =>
+      api.get(
+        withQuery(R.spaceCandidates(id), { q: q.trim(), limit: 20 }),
+        PageSchema(SpaceCandidateSchema),
+        signal,
+      ),
+    placeholderData: keepPreviousData,
+  });
 /** The People card shows member refusals by the row, and snaps the role back. */
 const memberInline = (e: ApiClientError) =>
   e.code === "space_forbidden" ||
   e.code === "member_synced" ||
+  e.code === "managed_by_org_mapping" ||
   e.code === "not_found";
 const spaceMemberKeys = (id: string) => () => [
   qk.spaceMembers(id),
@@ -639,6 +795,52 @@ export const useDirectorySync = () =>
     "Couldn't start a sync.",
     directoryInline,
   );
+/**
+ * The connect confirm step (#564): Confirm runs the binding and answers the
+ * new status; Cancel drops the pending connection. 404 (nothing pending) and
+ * 409 (expired) are the caller's to show: both refetch the status.
+ */
+const usePendingDirectory = <T>(
+  fn: () => Promise<T>,
+  failure: string,
+  /** Hook-level, so they run even if the confirm screen is gone by then. */
+  on: { done?: () => void; expired?: () => void } = {},
+) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: (s) => {
+      if (s) qc.setQueryData(qk.directory, s);
+      on.done?.();
+    },
+    onError: (e) => {
+      if (e instanceof ApiClientError && e.status === 409)
+        return on.expired?.();
+      if (e instanceof ApiClientError && e.status === 404) return;
+      failureToast(qc, failure, e);
+    },
+    onSettled: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: qk.directory }),
+        qc.invalidateQueries({ queryKey: qk.me }),
+      ]),
+  });
+};
+export const useConfirmDirectory = (on?: { expired?: () => void }) =>
+  usePendingDirectory(
+    () => api.send("POST", R.directoryConfirm, undefined, SyncStatusSchema),
+    "Couldn't add the people.",
+    on,
+  );
+export const useCancelDirectory = (on?: {
+  done?: () => void;
+  expired?: () => void;
+}) =>
+  usePendingDirectory(
+    () => api.send("POST", R.directoryCancel, undefined).then(() => null),
+    "Couldn't cancel the connection.",
+    on,
+  );
 export const useConfirmHeld = () =>
   useInvalidating(
     (groupId: string) =>
@@ -652,12 +854,72 @@ export const useConfirmHeld = () =>
     "Couldn't apply the change.",
     directoryInline,
   );
+/** Someone else got there first. */
+export const ALREADY_HANDLED =
+  "Someone already handled this. The list is up to date.";
+/**
+ * Snooze / unsnooze a held sweep (#412). A 404 means the caller lost the owner
+ * role: refetch /me (the page then shows the owner-only line) and skip the toast.
+ */
+const useHeldSnooze = <V>(fn: (v: V) => Promise<unknown>, failure: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onError: (e: unknown) => {
+      if (e instanceof ApiClientError && e.status === 404) {
+        void qc.invalidateQueries({ queryKey: qk.me });
+        void qc.invalidateQueries({ queryKey: qk.directory });
+        return;
+      }
+      // 409: the hold or the sync moved on; reload so the page shows it.
+      if (e instanceof ApiClientError && e.status === 409) {
+        void qc.invalidateQueries({ queryKey: qk.me });
+        void qc.invalidateQueries({ queryKey: qk.directory });
+        if (e.code === "conflict")
+          return toast({
+            title: ALREADY_HANDLED,
+            tone: "info",
+          });
+      }
+      failureToast(qc, failure, e);
+    },
+    onSuccess: () =>
+      Promise.all(
+        [qk.directory, qk.me].map((queryKey) =>
+          qc.invalidateQueries({ queryKey }),
+        ),
+      ),
+  });
+};
+export const useSnoozeHeld = () =>
+  useHeldSnooze(
+    (v: { groupId: string; reason?: string }) =>
+      api.send(
+        "POST",
+        R.directoryHeldSnooze(v.groupId),
+        v.reason ? { reason: v.reason } : undefined,
+        SyncStatusSchema,
+      ),
+    "Couldn't snooze the change.",
+  );
+export const useUnsnoozeHeld = () =>
+  useHeldSnooze(
+    (groupId: string) =>
+      api.send(
+        "DELETE",
+        R.directoryHeldSnooze(groupId),
+        undefined,
+        SyncStatusSchema,
+      ),
+    "Couldn't cancel the snooze.",
+  );
 export const useDisconnectDirectory = () =>
   useInvalidating(
     () => api.send("DELETE", R.directory, undefined),
     () => [qk.directory, qk.me],
     "Couldn't disconnect.",
     directoryInline,
+    "Directory disconnected. Members are now managed here.",
   );
 /** Refreshes on failure too: a refused move may mean the page is stale. */
 /** `quiet`: the caller shows failures itself (the Move dialog does, inline). */
@@ -690,11 +952,34 @@ export const useRunTransfer = (memberId: string) =>
   useInvalidating(
     (input: TransferInput) =>
       api.send("POST", R.memberTransfer(memberId), input, TransferResultSchema),
-    () => [qk.memberTransfer(memberId)],
+    () => [qk.memberTransfer(memberId), qk.members],
     "Couldn't transfer the artifacts.",
     // The transfer dialog reports every failure inline, with Retry.
     () => true,
   );
+/**
+ * POST R.memberRestore: a removed member comes back active, as a member, a
+ * guest as a guest (parity 1). Errors are the caller's to show inline (403
+ * owner_only, 409 directory_managed, guest_lapsed, member_active).
+ */
+export const useRestoreMember = () =>
+  useInvalidating(
+    (memberId: string) =>
+      api.send("POST", R.memberRestore(memberId), undefined, MemberSchema),
+    () => [qk.members],
+    "Couldn't restore them.",
+    () => true,
+  );
+
+/** POST R.memberErase (#1204): 204; every refusal is shown in the dialog. */
+export const useEraseMember = () =>
+  useInvalidating(
+    (memberId: string) => api.send("POST", R.memberErase(memberId), undefined),
+    () => [qk.members],
+    "Couldn't erase them.",
+    () => true,
+  );
+
 export const useResetIdentity = () => {
   const qc = useQueryClient();
   const refresh = () =>

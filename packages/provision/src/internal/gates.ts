@@ -7,10 +7,11 @@ export const RELEASE_PUBKEY_PLACEHOLDER =
   "PLACEHOLDER-not-a-key-T3b-sets-the-release-signing-public-key";
 
 /**
- * Prod creates stay refused (ProdLocked) until the T3b release-record writer
- * exists. TODO(T3b): flip to true in the same change that ships the writer.
+ * Prod creates were refused (ProdLocked) until the T3b release-record writer
+ * existed and the red-line suite passed on staging. Both hold (hosted prod
+ * bring-up, 2026-10-28), so prod is open.
  */
-export const PROD_UNLOCKED: boolean = false;
+export const PROD_UNLOCKED: boolean = true;
 
 /** Live envs always use the dispatch namespace; the account target is tests only. */
 export const ALLOW_ACCOUNT_TARGET: boolean = false;
@@ -22,8 +23,10 @@ export const ALLOW_ACCOUNT_TARGET: boolean = false;
  */
 export const RELEASE_PUBKEY: Readonly<Record<"staging" | "prod", string>> =
   Object.freeze({
-    staging: RELEASE_PUBKEY_PLACEHOLDER,
-    prod: RELEASE_PUBKEY_PLACEHOLDER,
+    // Key ceremony 2026-10-24: the private halves live only in the GitHub
+    // Environment secrets hosted-staging / hosted-prod RELEASE_SIGNING_KEY.
+    staging: "octk3ysmW5j0Fw8hPs1ex3POLXmYH8l6nLoms8Rrb8c",
+    prod: "tfSgv1PLRZlYQfVNpy9Vp1ohxdfZihz2WgPCYcCQyJg",
   });
 
 /**

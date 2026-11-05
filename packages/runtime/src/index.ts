@@ -13,6 +13,9 @@ import {
   type Schemas,
 } from "./bridge.js";
 
+/** A db.query page; `restarted` is set when it is the first page again after cursor_stale. */
+export type QueryPage = Page<DataDoc> & { restarted?: true };
+
 export { RuntimeError, type RuntimeErrorCode } from "./bridge.js";
 
 export type Theme = "light" | "dark";
@@ -20,22 +23,26 @@ export type Viewer = { email: string; name: string | null };
 /**
  * A subscribe() delivery. `resync: true` (with empty docs/deleted) means the
  * live connection was re-established and changes may have been missed:
- * refetch your data when resync is true.
+ * refetch your data when resync is true. `offline: true` (with empty
+ * docs/deleted) means live changes are paused (the connection was refused or
+ * keeps failing); tell the viewer, and expect a resync when it recovers.
  */
 export type ChangeEvent = {
   docs: DataDoc[];
   deleted: string[];
   resync?: true;
+  offline?: true;
 };
 
 export interface Collection {
   get(id: string): Promise<DataDoc | null>;
   list(opts?: { cursor?: string; limit?: number }): Promise<Page<DataDoc>>;
-  query(q: DataQueryInput): Promise<Page<DataDoc>>;
+  query(q: DataQueryInput): Promise<QueryPage>;
   set(id: string, data: unknown): Promise<DataDoc>;
   update(id: string, patch: Record<string, unknown>): Promise<DataDoc>;
   delete(id: string): Promise<void>;
-  /** Live changes; refetch your data when `e.resync` is true (after a reconnect).
+  /** Live changes; refetch your data when `e.resync` is true (after a reconnect);
+   *  `e.offline` means live changes are paused until the next resync.
    *  `onReady` runs once the shell has acknowledged the subscription, so callers
    *  can wait for live delivery to be armed before depending on it. */
   subscribe(
@@ -147,37 +154,81 @@ const ignore = (e: unknown) => {
 };
 
 /** Cumulative scroll (px) that counts as an interaction. */
-export const SCROLL_INTERACT_PX = 24;
 const INTERACT_EVENTS = ["pointerdown", "keydown", "input", "change"];
 
 /**
- * Calls `fire` once, on the first pointerdown, keydown, input or change, or
- * once scrolling (the window or any element) adds up to over
- * SCROLL_INTERACT_PX; then removes every listener. Returns the remover.
+ * Calls `fire` once, on the first pointerdown, keydown, input or change; then
+ * removes every listener. Scrolling doesn't count: reading a long page must
+ * not stop live versions from swapping in. Returns the remover.
  */
 function onFirstInteraction(fire: () => void): () => void {
   const opts = { capture: true, passive: true };
-  const last = new WeakMap<object, number[]>();
-  let moved = 0;
   const done = () => {
     for (const t of INTERACT_EVENTS) removeEventListener(t, hit, opts);
-    removeEventListener("scroll", scroll, opts);
   };
   function hit() {
     done();
     fire();
   }
-  function scroll(e: Event) {
-    const el = e.target instanceof Element ? e.target : null;
-    const pos = el ? [el.scrollLeft, el.scrollTop] : [scrollX, scrollY];
-    const [x = 0, y = 0] = last.get(el ?? window) ?? [];
-    last.set(el ?? window, pos);
-    moved += Math.abs((pos[0] ?? 0) - x) + Math.abs((pos[1] ?? 0) - y);
-    if (moved > SCROLL_INTERACT_PX) hit();
-  }
   for (const t of INTERACT_EVENTS) addEventListener(t, hit, opts);
-  addEventListener("scroll", scroll, opts);
   return done;
+}
+
+/** Text selected, or a field (input, textarea, contenteditable) focused. */
+function isEngaged(): boolean {
+  const sel = getSelection();
+  if (sel && !sel.isCollapsed && sel.toString().trim() !== "") return true;
+  const el = document.activeElement;
+  return (
+    el instanceof HTMLTextAreaElement ||
+    (el instanceof HTMLInputElement &&
+      ![
+        "button",
+        "submit",
+        "reset",
+        "checkbox",
+        "radio",
+        "range",
+        "color",
+        "file",
+        "image",
+      ].includes(el.type)) ||
+    (el instanceof HTMLElement &&
+      (el.isContentEditable ||
+        el.closest('[contenteditable]:not([contenteditable="false"])') !==
+          null))
+  );
+}
+
+/** How far the document can scroll. */
+const maxScroll = () =>
+  Math.max(0, document.documentElement.scrollHeight - innerHeight);
+const SCROLL_REPORT_MS = 150;
+const RESTORE_TRIES = 30;
+const RESTORE_EVERY_MS = 100;
+
+/**
+ * Scrolls to where the previous version was: the same offset whenever the page
+ * can scroll that far (a longer version or a reflow doesn't move the reader),
+ * else the same fraction. A page not laid out yet (shorter than the offset) is
+ * retried every 100 ms for up to 3 s first. Calls `done` once scrolled.
+ */
+function restoreScroll(
+  top: number,
+  max: number,
+  done: () => void,
+  tries = RESTORE_TRIES,
+) {
+  const now = maxScroll();
+  if (now < top && tries > 0) {
+    setTimeout(
+      () => restoreScroll(top, max, done, tries - 1),
+      RESTORE_EVERY_MS,
+    );
+    return;
+  }
+  scrollTo(0, now >= top ? top : max > 0 ? (top / max) * now : 0);
+  done();
 }
 
 /** Builds the SDK over a fresh bridge and announces it with `hello` (html pages). */
@@ -208,7 +259,11 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
     }
   };
 
-  /** Docs broadcast with data:null (over 16 KB) are refetched before delivery. */
+  /**
+   * Docs broadcast with data:null (over 16 KB) are refetched before delivery.
+   * A failed refetch delivers `resync` instead, so the page reloads its data
+   * rather than taking a doc with no data as the new value.
+   */
   async function deliver(
     m: Extract<ShellToArtifact, { event: "db.change" }>,
   ): Promise<void> {
@@ -219,9 +274,16 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
         docs.push(d);
         continue;
       }
-      const fresh = await bridge
-        .call("db.get", { collection: m.collection, id: d.id })
-        .catch(() => d);
+      let fresh: DataDoc | null;
+      try {
+        fresh = await bridge.call("db.get", {
+          collection: m.collection,
+          id: d.id,
+        });
+      } catch {
+        emit(m.collection, { docs: [], deleted: [], resync: true });
+        return;
+      }
       if (fresh) docs.push(fresh);
       else deleted.push(d.id);
     }
@@ -311,6 +373,7 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
       setTheme(m.theme);
       welcomed();
     } else if (m.type === "theme") setTheme(m.theme);
+    else if (m.type === "scroll.to") restoreScroll(m.top, m.max, onScroll);
     else if (m.type === "thumb.request") {
       if (kind === "html") void snapshot();
     } else if (m.type === "event") {
@@ -320,15 +383,55 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
       const next =
         m.event === "db.resync"
           ? () => emit(m.collection, { docs: [], deleted: [], resync: true })
-          : () => deliver(m);
+          : m.event === "db.offline"
+            ? () => emit(m.collection, { docs: [], deleted: [], offline: true })
+            : () => deliver(m);
       queues.set(m.collection, prev.then(next).catch(ignore));
     }
   });
 
+  /**
+   * Cursors of a query chain that already restarted once after
+   * cursor_stale: a second cursor_stale in that chain is surfaced.
+   */
+  const restarted = new Set<string>();
+  /**
+   * db.query. On 409 cursor_stale (the doc a page ended on changed while
+   * paging) it restarts once from the first page and marks that page
+   * `restarted: true`, so a caller collecting pages starts over instead of
+   * appending duplicates. A second cursor_stale in the same chain is thrown.
+   */
+  async function query(name: string, q: DataQueryInput): Promise<QueryPage> {
+    const cursor = q?.cursor;
+    const again = cursor !== undefined && restarted.delete(cursor);
+    let page: Page<DataDoc>;
+    const restart = again;
+    try {
+      page = await bridge.call("db.query", { collection: name, query: q });
+    } catch (e) {
+      if (
+        again ||
+        cursor === undefined ||
+        !(e instanceof RuntimeError) ||
+        e.code !== "cursor_stale"
+      )
+        throw e;
+      const { cursor: _drop, ...first } = q;
+      page = await bridge.call("db.query", {
+        collection: name,
+        query: first,
+      });
+      if (page.nextCursor) restarted.add(page.nextCursor);
+      return { ...page, restarted: true };
+    }
+    if (restart && page.nextCursor) restarted.add(page.nextCursor);
+    return page;
+  }
+
   const collection = (name: string): Collection => ({
     get: (id) => bridge.call("db.get", { collection: name, id }),
     list: (o = {}) => bridge.call("db.list", { collection: name, ...o }),
-    query: (query) => bridge.call("db.query", { collection: name, query }),
+    query: (q) => query(name, q),
     set: (id, data) => bridge.call("db.set", { collection: name, id, data }),
     update: (id, patch) =>
       bridge.call("db.update", { collection: name, id, patch }),
@@ -435,8 +538,44 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
   const stopInteract = bridge.raw
     ? () => {}
     : onFirstInteraction(() => bridge.send({ oa: 1, type: "interacted" }));
+  // Mid-task (a selection, a focused field): the shell holds a live swap.
+  let wasEngaged = false;
+  const onEngage = () => {
+    const now = isEngaged();
+    if (now === wasEngaged) return;
+    wasEngaged = now;
+    bridge.send({ oa: 1, type: "engaged", engaged: now });
+  };
+  // focusout fires before focus lands elsewhere: look once it has.
+  const onFocusOut = () => setTimeout(onEngage, 0);
+  if (!bridge.raw) {
+    document.addEventListener("selectionchange", onEngage);
+    addEventListener("focusin", onEngage, true);
+    addEventListener("focusout", onFocusOut, true);
+  }
+  // Where the document is scrolled, for the shell to carry over a live swap.
+  let reportTimer: ReturnType<typeof setTimeout> | undefined;
+  const onScroll = () => {
+    if (reportTimer) return;
+    reportTimer = setTimeout(() => {
+      reportTimer = undefined;
+      bridge.send({ oa: 1, type: "scroll", top: scrollY, max: maxScroll() });
+    }, SCROLL_REPORT_MS);
+  };
+  if (!bridge.raw) {
+    addEventListener("scroll", onScroll, { passive: true });
+    // A resize (the side panel opening narrows the frame) reflows the page:
+    // report the new max, so the next swap compares like with like.
+    addEventListener("resize", onScroll, { passive: true });
+  }
   opts.signal?.addEventListener("abort", () => {
     stopInteract();
+    removeEventListener("scroll", onScroll);
+    removeEventListener("resize", onScroll);
+    document.removeEventListener("selectionchange", onEngage);
+    removeEventListener("focusin", onEngage, true);
+    removeEventListener("focusout", onFocusOut, true);
+    clearTimeout(reportTimer);
     document.removeEventListener("click", onClick, true);
     bridge.dispose();
   });

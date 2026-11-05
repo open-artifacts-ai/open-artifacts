@@ -16,9 +16,15 @@ const LABEL: Record<Format, string> = {
   markdown: "Markdown",
   code: "Code",
   pdf: "PDF",
+  image: "Image",
 };
 // Radix items can't hold "", so "All" travels as a sentinel.
 const ALL = "__all";
+// The one-connection filter (agentVia) as the Agent select's value.
+const VIA = "__via";
+// Agent names are self-reported, so a name's value carries a prefix no
+// sentinel has: an agent called "__via" or "__all" is still that agent.
+const AGENT = "agent:";
 const FORMATS = [
   { value: ALL, label: "All formats" },
   ...FormatSchema.options.map((value) => ({ value, label: LABEL[value] })),
@@ -30,8 +36,11 @@ export type FilterProps = {
   format: Format | undefined;
   agent: string | undefined;
   agents: string[];
+  /** The agentVia filter (#589) and its connection's name, shown in the Agent select. */
+  via?: { label: string };
   view: "grid" | "list";
   onFormat: (f: Format | undefined) => void;
+  /** An agent name, or undefined for All agents; either replaces `via`. */
   onAgent: (a: string | undefined) => void;
   onClear: () => void;
   onView: (v: "grid" | "list") => void;
@@ -43,11 +52,13 @@ function Choice<T extends string>({
   value,
   options,
   onChange,
+  className,
 }: {
   label: string;
   value: T;
   options: { value: T; label: string }[];
   onChange: (v: T) => void;
+  className?: string;
 }) {
   return (
     <ToggleGroup
@@ -55,6 +66,7 @@ function Choice<T extends string>({
       variant="outline"
       size="sm"
       aria-label={label}
+      className={className}
       value={value}
       onValueChange={(v) => v && onChange(v as T)}
     >
@@ -72,35 +84,70 @@ export function Filters(p: FilterProps) {
     p.agent && !p.agents.includes(p.agent) ? [...p.agents, p.agent] : p.agents;
   return (
     <div className={BAR}>
+      {/* Six formats don't fit a phone as toggles: a select there, like Agent. */}
       <Choice
         label="Format"
         options={FORMATS}
         value={p.format ?? ALL}
         onChange={(v) => p.onFormat(v === ALL ? undefined : (v as Format))}
+        className="max-[600px]:hidden"
       />
       <Select
-        value={p.agent ?? ALL}
-        onValueChange={(v) => p.onAgent(v === ALL ? undefined : v)}
+        value={p.format ?? ALL}
+        onValueChange={(v) => p.onFormat(v === ALL ? undefined : (v as Format))}
+      >
+        <SelectTrigger
+          aria-label="Format"
+          size="sm"
+          className={`min-w-[140px] min-[601px]:hidden ${TEXT}`}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent position="popper">
+          {FORMATS.map((f) => (
+            <SelectItem key={f.value} value={f.value} className={TEXT}>
+              {f.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select
+        value={p.via ? VIA : p.agent ? `${AGENT}${p.agent}` : ALL}
+        onValueChange={(v) => {
+          if (v === ALL) p.onAgent(undefined);
+          else if (v !== VIA) p.onAgent(v.slice(AGENT.length));
+        }}
       >
         <SelectTrigger
           aria-label="Agent"
           size="sm"
-          className={`min-w-[140px] ${TEXT}`}
+          className={`max-w-full min-w-[140px] ${TEXT}`}
         >
-          <SelectValue />
+          {/* A connection's label can run long. The value is a flex box, where
+              text-overflow does nothing, so the text truncates in its own span. */}
+          <SelectValue>
+            <span className="block min-w-0 truncate">
+              {p.via?.label ?? p.agent ?? "All agents"}
+            </span>
+          </SelectValue>
         </SelectTrigger>
         <SelectContent position="popper">
           <SelectItem value={ALL} className={TEXT}>
             All agents
           </SelectItem>
+          {p.via && (
+            <SelectItem value={VIA} className={TEXT}>
+              {p.via.label}
+            </SelectItem>
+          )}
           {agents.map((a) => (
-            <SelectItem key={a} value={a} className={TEXT}>
+            <SelectItem key={a} value={`${AGENT}${a}`} className={TEXT}>
               {a}
             </SelectItem>
           ))}
         </SelectContent>
       </Select>
-      {(p.format || p.agent) && (
+      {(p.format || p.agent || p.via) && (
         <Button variant="ghost" size="sm" className={TEXT} onClick={p.onClear}>
           Clear filters
         </Button>

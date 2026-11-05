@@ -2,6 +2,7 @@
 // shared sections of the skill (scripts/emit-skill.ts). Vendor-neutral. Plain
 // Node-loadable: imports only @oa/shared.
 import {
+  DATA_WRITERS_NOTE,
   dataDocLimit,
   formatKb,
   LIMITS,
@@ -12,10 +13,19 @@ import {
 export const RUNTIME_DOC_URI = "openartifacts://docs/runtime";
 
 /**
+ * The one statement of how links open: which get a target, which stay in the
+ * frame, and which URLs the viewer will not open. The publishing section here
+ * and the skill's "Writing pages" section both use it, so the two cannot
+ * drift.
+ */
+export const LINK_RULE =
+  'Links that go to another site, or to another artifact by its /a/<id> page, carry `target="_blank" rel="noopener"` and open in a new tab; the artifact\'s own files and `#anchors` stay in the frame and take no target. Never link the dashboard or settings pages, or another artifact\'s or version\'s /p/ or /c/ URL: the viewer refuses a plain one, and a target just opens it instead, which is the wrong page to land on.';
+
+/**
  * The plan-dependent words a section uses. INSTRUCTIONS fills them from the
  * plan; the skill template keeps them as {{tokens}} filled at request time.
  */
-export type PlanText = {
+export type PlanWords = {
   plan: string;
   dataDoc: string;
   /** After "(<plan> plan": the Paid limit on Free, nothing on Paid. */
@@ -23,6 +33,16 @@ export type PlanText = {
   mcpBody: string;
   /** What quota_exceeded means the instance hit. */
   quota: string;
+};
+
+/** PlanWords plus what the sections branch on (never a skill token). */
+export type PlanText = PlanWords & {
+  /**
+   * False on an install without the spaces feature: the text names no
+   * spaces, list_spaces or spaceId (parity 1, B12). The skill (built once
+   * for every install) leaves it unset and keeps the spaces lines.
+   */
+  spaces?: boolean;
 };
 
 /** Bytes as "N MB" when a whole MB, else as formatKb ("N KB", or exact bytes). */
@@ -38,7 +58,7 @@ export const sizeText = (b: number): string =>
 export const planText = (
   plan: Plan,
   docBytes: number = dataDocLimit(plan),
-): PlanText => ({
+): PlanWords => ({
   plan,
   dataDoc: sizeText(docBytes),
   dataDocNote:
@@ -63,18 +83,26 @@ export const SECTIONS = {
 - markdown: rendered with code highlighting and mermaid diagrams.
 - code: one source file shown with syntax highlighting; set language (for example "python").
 - pdf: an uploaded PDF document.
-- If format is omitted it is inferred from the entry file's extension.`,
+- image: one PNG, JPEG, GIF, WebP or SVG image, shown as is. An image artifact is that one file; to combine images with text, publish html.
+- If format is omitted it is inferred from the entry file's extension: .html, .md, .pdf, .png, .jpg, .jpeg, .gif, .webp, .svg, or a known text file (source code, .txt, .csv, .log, config) as code. Any other name (LICENSE, .gitignore) publishes as code when the file is UTF-8 text; anything else (an archive) is refused with unsupported_format. HEIC photos are refused with unsupported_format: save them as JPEG first.
+- The entry's content must fit its format: code, markdown and html are UTF-8 text, a pdf starts with %PDF, an image starts with its extension's signature (an .svg is UTF-8 text with an <svg> root), and an upload's contentType must match the image's extension. A mismatch is refused with binary_entry.
+- Search matches an image by its title and description, never its content.`,
   },
   publishing: {
     title: "Publishing",
-    body: () => `- One file: publish_artifact { title, format, content }.
+    body: (p) => `- One file: publish_artifact { title, format, content }.
 - Several files: publish_artifact { title, entry: "index.html", files: { "index.html": "...", "app.js": "...", "img/logo.png": { "base64": "..." } } }.
 - Paths are relative, use "/" and are case-sensitive; link between files with relative URLs.
-- Open outbound links with target="_blank" rel="noopener"; links can't navigate the viewer page.
+- ${LINK_RULE}
 - Artifacts can link to each other: use the other artifact's view URL (<origin>/a/<id>, the url publish_artifact returns, also shown by get_artifact) with target="_blank" rel="noopener". It opens in a new tab in the viewer, where live data works. Whether a visitor can open it depends on that artifact's own visibility.
 - Text files are plain strings; binary files are { "base64": "..." }.
 - To publish a new version, pass the artifact's id; every publish creates a version and the URL stays the same.
-- Add a short message describing the change. New artifacts get the instance's default visibility (private unless an admin chose team).`,
+- To change only settings (title, description, visibility, capabilities, dataWriters), pass the id with those and no content or files: they update in place and no version is created.
+- Add a short message describing the change. New artifacts get the instance's default visibility (private unless an admin chose team).${
+      p.spaces === false
+        ? ""
+        : "\n- New artifacts go in your personal space. To publish into a shared space, call list_spaces and pass its id as spaceId (new artifacts only)."
+    }`,
   },
   largeFiles: {
     title: "Large files",
@@ -90,9 +118,11 @@ export const SECTIONS = {
   },
   sharing: {
     title: "Sharing and visibility",
-    body: () => `- private: you and the people you share with. team: every member of this instance. public: anyone with the link, no sign-in.
+    body: (
+      p,
+    ) => `- private: you and the people you share with. team: every member of this instance. public: anyone with the link, no sign-in.
 - share_artifact { id, email, role: "viewer" | "editor" } adds a person; unshare_artifact removes them. Editors can publish new versions.
-- set_visibility { id, visibility } changes who can open it. Sharing, visibility and delete are owner only.
+- set_visibility { id, visibility } changes who can open it. Sharing, visibility and delete are for the owner${p.spaces === false ? "" : " or space manager"} only.
 - Make an artifact public only when the user asks for it.`,
   },
   liveData: {
@@ -103,8 +133,9 @@ export const SECTIONS = {
   - db: a shared document store every viewer sees, updated live.
   - viewer: the signed-in viewer's email and name.
   - storage: private per-viewer key/value storage.
-- Undeclared calls fail with capability_denied. allowAnonymousWrites: true lets anonymous viewers of public artifacts write (rate-limited).
+- Undeclared calls fail with capability_denied. ${DATA_WRITERS_NOTE} Anonymous writes are rate-limited.
 - Limits: ${p.dataDoc} per document on this instance (${p.plan} plan${p.dataDocNote}), ${LIMITS.artifactDataBytes / 1024 / 1024} MB per artifact, ${LIMITS.viewerWritesPerMin} writes per minute per viewer.
+- query() with where or orderBy (and artifact_data_query) reads the whole collection, so it works only up to ${LIMITS.queryCollectionBytes / 1024 / 1024} MB per collection; past that it fails with query_too_large. Plan for it: list() and filter in the page, or keep collections small (for example, one per day).
 - The artifact_data_* tools read and write the same db collections; documents are JSON objects. They need the db capability, except for the artifact's owner, who may seed data before declaring it (viewers' pages still need db).`,
   },
   runtimeApi: {
@@ -114,7 +145,9 @@ export const SECTIONS = {
 - openArtifacts.db.collection(name): get(id), list({ cursor, limit }), query({ where, orderBy, order, limit }),
   set(id, data), update(id, patch), delete(id), subscribe(cb) → unsubscribe
   subscribe(cb) gets { docs, deleted, resync? }: after a reconnect it gets { docs: [], deleted: [], resync: true };
-  refetch your data when resync is true.
+  refetch your data when resync is true. If the live connection is refused or keeps failing it gets
+  { docs: [], deleted: [], offline: true }, once per outage: show the viewer that live updates are paused
+  (for example, "Live updates paused. Reload to retry.") until the next resync.
 - openArtifacts.storage: get(key), set(key, value), delete(key), list()
 - openArtifacts.theme ("light" | "dark") and onTheme(cb)
 
@@ -172,19 +205,21 @@ const memo = new Map<string, string>();
 
 /**
  * The server instructions for `plan`. With `skillUrl` (the instance's
- * /skill.md, when served) they end by pointing at it.
+ * /skill.md, when served) they end by pointing at it. `spaces` false (an
+ * install without the spaces feature) leaves every spaces line out.
  */
 export function INSTRUCTIONS(
   plan: Plan,
   skillUrl?: string,
   docBytes: number = dataDocLimit(plan),
+  spaces = true,
 ): string {
-  const key = `${plan}|${docBytes}|${skillUrl ?? ""}`;
+  const key = `${plan}|${docBytes}|${spaces ? 1 : 0}|${skillUrl ?? ""}`;
   let s = memo.get(key);
   if (s === undefined) {
     s = `Open Artifacts hosts the pages, documents and code you publish, with versions, sharing and live data.
 
-${renderSections(planText(plan, docBytes), (t) => t)}
+${renderSections({ ...planText(plan, docBytes), spaces }, (t) => t)}
 ${skillUrl ? `\nFull guide: ${skillUrl}\n` : ""}`;
     memo.set(key, s);
   }

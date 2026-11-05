@@ -71,6 +71,111 @@
       "when": 1792594694169,
       "tag": "0009_spaces",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1792841361198,
+      "tag": "0010_guest_lapsed",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1792845571763,
+      "tag": "0011_restricted_created_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1792864757463,
+      "tag": "0012_agent_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1792895958641,
+      "tag": "0013_frozen_edits",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1793054481758,
+      "tag": "0014_data_writers",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1793107312952,
+      "tag": "0015_sweep_failures",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1793140238157,
+      "tag": "0016_google_relink",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1793150608718,
+      "tag": "0017_image_format",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1793179852759,
+      "tag": "0018_trash_space",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1793193178136,
+      "tag": "0019_audit_cred",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1793202072757,
+      "tag": "0020_oauth_kv",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1793209245569,
+      "tag": "0021_removed_by_sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1793706065972,
+      "tag": "0022_user_erased",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1793782892704,
+      "tag": "0023_follows",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1793791729382,
+      "tag": "0024_bus",
+      "breakpoints": true
     }
   ]
 }

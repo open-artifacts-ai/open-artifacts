@@ -24,11 +24,90 @@ importers:
         specifier: ^2.9.1
         version: 2.9.1
 
+  apps/admin:
+    dependencies:
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
+      '@oa/provisioning-contract':
+        specifier: workspace:*
+        version: link:../../packages/provisioning-contract
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@oa/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
+      '@tanstack/react-query':
+        specifier: ^5.104.4
+        version: 5.104.4(@types/react@19.3.0)(react@19.3.1)
+      '@tanstack/react-router':
+        specifier: ^1.170.45
+        version: 1.170.45(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      lucide-react:
+        specifier: 1.59.0
+        version: 1.59.0(@types/react@19.3.0)(react@19.3.1)
+      react:
+        specifier: ^19.3.1
+        version: 19.3.1
+      react-dom:
+        specifier: ^19.3.1
+        version: 19.3.1(react@19.3.1)
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@playwright/test':
+        specifier: 1.64.1
+        version: 1.64.1
+      '@tailwindcss/vite':
+        specifier: 4.3.3
+        version: 4.3.3(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      '@testing-library/dom':
+        specifier: ^10.4.2
+        version: 10.4.2
+      '@testing-library/jest-dom':
+        specifier: ^7.0.1
+        version: 7.0.1(@testing-library/dom@10.4.2)(vitest@4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
+      '@testing-library/react':
+        specifier: ^16.3.3
+        version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@types/react':
+        specifier: ^19.3.0
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19.3.0
+        version: 19.3.0(@types/react@19.3.0)
+      '@vitejs/plugin-react':
+        specifier: ^6.1.2
+        version: 6.1.2(@rolldown/plugin-babel@0.2.4(@babel/core@7.29.7)(@babel/runtime@7.29.10)(rolldown@1.2.14)(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      jsdom:
+        specifier: ^30.1.3
+        version: 30.1.3
+      msw:
+        specifier: ^2.15.0
+        version: 2.15.0(@types/node@22.20.5)(typescript@5.9.3)
+      tailwindcss:
+        specifier: 4.3.3
+        version: 4.3.3
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vite:
+        specifier: ^8.3.4
+        version: 8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
   apps/auth-broker:
     dependencies:
       '@oa/auth-core':
         specifier: workspace:*
         version: link:../../packages/auth-core
+      '@oa/broker-core':
+        specifier: workspace:*
+        version: link:../../packages/broker-core
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: ^1.4.4
@@ -144,11 +223,14 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
-  apps/dispatch:
+  apps/directory-broker:
     dependencies:
-      '@oa/provision':
+      '@oa/auth-core':
         specifier: workspace:*
-        version: link:../../packages/provision
+        version: link:../../packages/auth-core
+      '@oa/broker-core':
+        specifier: workspace:*
+        version: link:../../packages/broker-core
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: ^1.4.4
@@ -169,14 +251,76 @@ importers:
         specifier: ^4.151.1
         version: 4.151.1(@cloudflare/workers-types@5.20261018.1)(@types/node@20.19.43)
 
-  apps/inventory:
+  apps/dispatch:
+    dependencies:
+      '@oa/broker-core':
+        specifier: workspace:*
+        version: link:../../packages/broker-core
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
     devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: ^1.4.4
+        version: 1.4.4(@cloudflare/workers-types@5.20261018.1)(@types/node@20.19.43)(vitest@4.1.12(@types/node@20.19.43)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@20.19.43)(typescript@5.9.3))(vite@8.3.4(@types/node@20.19.43)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
+      '@cloudflare/workers-types':
+        specifier: ^5.20261018.1
+        version: 5.20261018.1
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@20.19.43)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@20.19.43)(typescript@5.9.3))(vite@8.3.4(@types/node@20.19.43)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      wrangler:
+        specifier: ^4.151.1
+        version: 4.151.1(@cloudflare/workers-types@5.20261018.1)(@types/node@20.19.43)
+
+  apps/inventory:
+    dependencies:
+      '@oa/gh-oidc':
+        specifier: workspace:*
+        version: link:../../packages/gh-oidc
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
+      '@oa/provisioning-contract':
+        specifier: workspace:*
+        version: link:../../packages/provisioning-contract
+      '@oa/redline':
+        specifier: workspace:*
+        version: link:../../tests/redline
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.5
+        version: 22.20.5
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
       vitest:
         specifier: ^4.1.12
         version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      wrangler:
+        specifier: ^4.151.1
+        version: 4.151.1(@cloudflare/workers-types@5.20261018.1)(@types/node@22.20.5)
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
 
   apps/landing:
     dependencies:
@@ -188,11 +332,20 @@ importers:
         version: link:../../packages/ui
       astro:
         specifier: ^7.4.0
-        version: 7.4.0(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 7.4.0(@types/node@22.20.5)(aws4fetch@1.0.20)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)
     devDependencies:
       '@astrojs/check':
         specifier: ^0.9.10
         version: 0.9.10(@emnapi/runtime@1.11.1)(prettier@3.9.10)(typescript@5.9.3)
+      '@oa/dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
+      '@oa/server':
+        specifier: workspace:*
+        version: link:../server
+      '@oa/setup':
+        specifier: workspace:*
+        version: link:../../scripts/setup
       playwright:
         specifier: 1.64.1
         version: 1.64.1
@@ -206,6 +359,144 @@ importers:
         specifier: ^4.151.1
         version: 4.151.1(@cloudflare/workers-types@5.20261018.1)(@types/node@22.20.5)
 
+  apps/provisioner:
+    dependencies:
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
+      '@oa/provisioning-contract':
+        specifier: workspace:*
+        version: link:../../packages/provisioning-contract
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+    devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: ^1.4.4
+        version: 1.4.4(@cloudflare/workers-types@5.20261018.1)(@types/node@22.20.5)(vitest@4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
+      '@cloudflare/workers-types':
+        specifier: ^5.20261018.1
+        version: 5.20261018.1
+      '@oa/auth-broker':
+        specifier: workspace:*
+        version: link:../auth-broker
+      '@oa/auth-core':
+        specifier: workspace:*
+        version: link:../../packages/auth-core
+      '@types/node':
+        specifier: ^22.20.5
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      wrangler:
+        specifier: ^4.151.1
+        version: 4.151.1(@cloudflare/workers-types@5.20261018.1)(@types/node@22.20.5)
+
+  apps/provisioning:
+    dependencies:
+      '@cloudflare/workers-oauth-provider':
+        specifier: 1.2.3
+        version: 1.2.3
+      '@modelcontextprotocol/server':
+        specifier: 2.3.1
+        version: 2.3.1
+      '@oa/auth-core':
+        specifier: workspace:*
+        version: link:../../packages/auth-core
+      '@oa/gh-oidc':
+        specifier: workspace:*
+        version: link:../../packages/gh-oidc
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
+      '@oa/provisioning-contract':
+        specifier: workspace:*
+        version: link:../../packages/provisioning-contract
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      agents:
+        specifier: 0.28.1
+        version: 0.28.1(@babel/core@7.29.7)(@babel/runtime@7.29.10)(@modelcontextprotocol/client@2.3.1)(@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7))(@modelcontextprotocol/server@2.3.1)(react@19.3.1)(rolldown@1.2.14)(vite@8.3.4(@types/node@20.19.43)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))(zod@4.6.7)
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: ^1.4.4
+        version: 1.4.4(@cloudflare/workers-types@5.20261018.1)(@types/node@20.19.43)(vitest@4.1.12(@types/node@20.19.43)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@20.19.43)(typescript@5.9.3))(vite@8.3.4(@types/node@20.19.43)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
+      '@cloudflare/workers-types':
+        specifier: ^5.20261018.1
+        version: 5.20261018.1
+      '@modelcontextprotocol/client':
+        specifier: 2.3.1
+        version: 2.3.1
+      '@oa/admin':
+        specifier: workspace:*
+        version: link:../admin
+      '@playwright/test':
+        specifier: 1.64.1
+        version: 1.64.1
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      jose:
+        specifier: ^6.2.12
+        version: 6.2.12
+      miniflare:
+        specifier: 5.20261012.1-beta
+        version: 5.20261012.1-beta(@types/node@20.19.43)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@20.19.43)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@20.19.43)(typescript@5.9.3))(vite@8.3.4(@types/node@20.19.43)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      wrangler:
+        specifier: ^4.151.1
+        version: 4.151.1(@cloudflare/workers-types@5.20261018.1)(@types/node@20.19.43)
+
+  apps/scheduler:
+    dependencies:
+      '@oa/broker-core':
+        specifier: workspace:*
+        version: link:../../packages/broker-core
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
+      '@oa/provisioning-contract':
+        specifier: workspace:*
+        version: link:../../packages/provisioning-contract
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+    devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: ^1.4.4
+        version: 1.4.4(@cloudflare/workers-types@5.20261018.1)(@types/node@20.19.43)(vitest@4.1.12(@types/node@20.19.43)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@20.19.43)(typescript@5.9.3))(vite@8.3.4(@types/node@20.19.43)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
+      '@cloudflare/workers-types':
+        specifier: ^5.20261018.1
+        version: 5.20261018.1
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@20.19.43)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@20.19.43)(typescript@5.9.3))(vite@8.3.4(@types/node@20.19.43)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      wrangler:
+        specifier: ^4.151.1
+        version: 4.151.1(@cloudflare/workers-types@5.20261018.1)(@types/node@20.19.43)
+
   apps/server:
     dependencies:
       '@cloudflare/workers-oauth-provider':
@@ -217,6 +508,9 @@ importers:
       '@oa/auth-core':
         specifier: workspace:*
         version: link:../../packages/auth-core
+      '@oa/bus-protocol':
+        specifier: workspace:*
+        version: link:../../packages/bus-protocol
       '@oa/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -245,15 +539,30 @@ importers:
       '@modelcontextprotocol/client':
         specifier: 2.3.1
         version: 2.3.1
+      '@oa/auth-broker':
+        specifier: workspace:*
+        version: link:../auth-broker
+      '@oa/broker-core':
+        specifier: workspace:*
+        version: link:../../packages/broker-core
       '@oa/dashboard':
         specifier: workspace:*
         version: link:../dashboard
+      '@oa/directory-broker':
+        specifier: workspace:*
+        version: link:../directory-broker
+      '@oa/provisioning-contract':
+        specifier: workspace:*
+        version: link:../../packages/provisioning-contract
       '@oa/render':
         specifier: workspace:*
         version: link:../../packages/render
       '@oa/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@oa/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
       '@types/node':
         specifier: ^20.19.43
         version: 20.19.43
@@ -283,21 +592,281 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
-  packages/provision:
+  packages/broker-core:
     dependencies:
-      '@oa/shared':
+      '@oa/auth-core':
         specifier: workspace:*
-        version: link:../shared
+        version: link:../auth-core
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20261018.1
+        version: 5.20261018.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/bundle:
     devDependencies:
       '@types/node':
         specifier: ^22.20.5
         version: 22.20.5
+
+  packages/bus-adapter-claude-code:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.32.1
+        version: 1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7)
+      '@oa/bus-ipc':
+        specifier: workspace:*
+        version: link:../bus-ipc
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/bus-adapter-mcp-json:
+    dependencies:
+      jsonc-parser:
+        specifier: 3.3.1
+        version: 3.3.1
+    devDependencies:
+      '@oa/bus-ipc':
+        specifier: workspace:*
+        version: link:../bus-ipc
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/bus-adapter-opencode:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.32.1
+        version: 1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7)
+      '@oa/bus-adapter-claude-code':
+        specifier: workspace:*
+        version: link:../bus-adapter-claude-code
+      '@oa/bus-ipc':
+        specifier: workspace:*
+        version: link:../bus-ipc
+      '@oa/bus-protocol':
+        specifier: workspace:*
+        version: link:../bus-protocol
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/bus-adapter-pi:
+    devDependencies:
+      '@oa/bus-adapter-claude-code':
+        specifier: workspace:*
+        version: link:../bus-adapter-claude-code
+      '@oa/bus-ipc':
+        specifier: workspace:*
+        version: link:../bus-ipc
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/bus-cli:
+    devDependencies:
+      '@oa/bus-adapter-claude-code':
+        specifier: workspace:*
+        version: link:../bus-adapter-claude-code
+      '@oa/bus-adapter-mcp-json':
+        specifier: workspace:*
+        version: link:../bus-adapter-mcp-json
+      '@oa/bus-adapter-opencode':
+        specifier: workspace:*
+        version: link:../bus-adapter-opencode
+      '@oa/bus-adapter-pi':
+        specifier: workspace:*
+        version: link:../bus-adapter-pi
+      '@oa/bus-daemon':
+        specifier: workspace:*
+        version: link:../bus-daemon
+      '@oa/bus-ipc':
+        specifier: workspace:*
+        version: link:../bus-ipc
+      '@oa/bus-protocol':
+        specifier: workspace:*
+        version: link:../bus-protocol
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      jiti:
+        specifier: 2.7.0
+        version: 2.7.0
+      smol-toml:
+        specifier: 1.9.1
+        version: 1.9.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+
+  packages/bus-daemon:
+    dependencies:
+      '@oa/bus-adapter-claude-code':
+        specifier: workspace:*
+        version: link:../bus-adapter-claude-code
+      '@oa/bus-adapter-opencode':
+        specifier: workspace:*
+        version: link:../bus-adapter-opencode
+      '@oa/bus-ipc':
+        specifier: workspace:*
+        version: link:../bus-ipc
+      '@oa/bus-protocol':
+        specifier: workspace:*
+        version: link:../bus-protocol
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.0
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      '@types/ws':
+        specifier: ^8.5.14
+        version: 8.18.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/bus-ipc:
+    dependencies:
+      '@oa/bus-protocol':
+        specifier: workspace:*
+        version: link:../bus-protocol
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/bus-protocol:
+    dependencies:
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/gh-oidc:
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/provision:
+    dependencies:
+      '@oa/auth-core':
+        specifier: workspace:*
+        version: link:../auth-core
+      '@oa/bundle':
+        specifier: workspace:*
+        version: link:../bundle
+      '@oa/provisioning-contract':
+        specifier: workspace:*
+        version: link:../provisioning-contract
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../shared
+      aws4fetch:
+        specifier: 1.0.20
+        version: 1.0.20
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.5
+        version: 22.20.5
+
+  packages/provisioning-contract:
+    dependencies:
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../shared
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: ^1.4.4
+        version: 1.4.4(@cloudflare/workers-types@5.20261018.1)(@types/node@22.20.5)(vitest@4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
+      '@cloudflare/workers-types':
+        specifier: ^5.20261018.1
+        version: 5.20261018.1
+      msw:
+        specifier: ^2.15.0
+        version: 2.15.0(@types/node@22.20.5)(typescript@5.9.3)
+      wrangler:
+        specifier: ^4.151.1
+        version: 4.151.1(@cloudflare/workers-types@5.20261018.1)(@types/node@22.20.5)
 
   packages/render:
     dependencies:
       '@oa/shared':
         specifier: workspace:*
         version: link:../shared
+      '@oa/ui':
+        specifier: workspace:*
+        version: link:../ui
       '@shikijs/langs':
         specifier: 4.5.0
         version: 4.5.0
@@ -379,6 +948,12 @@ importers:
 
   packages/ui:
     dependencies:
+      '@fontsource/geist':
+        specifier: 5.3.0
+        version: 5.3.0
+      '@fontsource/geist-mono':
+        specifier: 5.3.0
+        version: 5.3.0
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -444,11 +1019,94 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12(@types/node@20.19.43)(happy-dom@20.14.6)(jsdom@29.1.1)(msw@2.15.0(@types/node@20.19.43)(typescript@5.9.3))(vite@6.4.4(@types/node@20.19.43)(jiti@2.7.0)(lightningcss@1.33.0)(tsx@4.23.15)(yaml@2.9.1))
 
-  scripts/setup:
+  scripts/hosted:
+    dependencies:
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
     devDependencies:
+      '@oa/server':
+        specifier: workspace:*
+        version: link:../../apps/server
       '@types/node':
         specifier: ^22.19.0
         version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  scripts/setup:
+    devDependencies:
+      '@oa/auth-core':
+        specifier: workspace:*
+        version: link:../../packages/auth-core
+      '@oa/dashboard':
+        specifier: workspace:*
+        version: link:../../apps/dashboard
+      '@oa/server':
+        specifier: workspace:*
+        version: link:../../apps/server
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.20.5
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  tests/import:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.5
+        version: 22.20.5
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  tests/redline:
+    dependencies:
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
+    devDependencies:
+      '@oa/auth-core':
+        specifier: workspace:*
+        version: link:../../packages/auth-core
+      '@oa/dashboard':
+        specifier: workspace:*
+        version: link:../../apps/dashboard
+      '@oa/provisioner':
+        specifier: workspace:*
+        version: link:../../apps/provisioner
+      '@oa/provisioning':
+        specifier: workspace:*
+        version: link:../../apps/provisioning
+      '@oa/provisioning-contract':
+        specifier: workspace:*
+        version: link:../../packages/provisioning-contract
+      '@oa/server':
+        specifier: workspace:*
+        version: link:../../apps/server
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@types/node':
+        specifier: ^22.20.5
+        version: 22.20.5
+      tldts:
+        specifier: 7.4.18
+        version: 7.4.18
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
       vitest:
         specifier: ^4.1.12
         version: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
@@ -1498,6 +2156,12 @@ packages:
 
   '@floating-ui/utils@0.2.12':
     resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
+
+  '@fontsource/geist-mono@5.3.0':
+    resolution: {integrity: sha512-UtJ1BBBCVpMYdIcW7nEB45UAoAw5M53ZXs2t0ciPW+IokuAAIc56M8+kW5tXbRJCTpDw4XTtU7proT6NdQAHTg==}
+
+  '@fontsource/geist@5.3.0':
+    resolution: {integrity: sha512-u03ftlfVwb05uijq2jGDJ03/HKGqMKaNFk7KOhkpBUex8+BhrAOfMs/XciJ2UUNUX9fEsZbZQld/RWMA2oFU7g==}
 
   '@hono/node-server@2.1.5':
     resolution: {integrity: sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q==}
@@ -3562,6 +4226,9 @@ packages:
     peerDependenciesMeta:
       '@astrojs/markdown-remark':
         optional: true
+
+  aws4fetch@1.0.20:
+    resolution: {integrity: sha512-/djoAN709iY65ETD6LKCtyyEI04XIBP5xVvfmNxsEP0uJB5tyaGBztSryRr4HqMStr9R06PisQE7m9zDTXKu6g==}
 
   axe-core@4.14.0:
     resolution: {integrity: sha512-9WTZxEjsZ7b13TH8JPmbV2z8CHbl80/2hm3XPEG4JgNdQLK81IBRXmSxHfMAOkSqQeRxT/0dwNDz2GOm3zzpcQ==}
@@ -7183,6 +7850,20 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
+  '@cloudflare/vitest-plugin@1.4.4(@cloudflare/workers-types@5.20261018.1)(@types/node@22.20.5)(vitest@4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))':
+    dependencies:
+      cjs-module-lexer: 1.2.3
+      esbuild: 0.28.2
+      miniflare: 5.20261012.1-beta(@types/node@22.20.5)
+      vitest: 4.1.12(@types/node@22.20.5)(happy-dom@20.14.6)(jsdom@30.1.3)(msw@2.15.0(@types/node@22.20.5)(typescript@5.9.3))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      wrangler: 4.151.1(@cloudflare/workers-types@5.20261018.1)(@types/node@22.20.5)
+      zod: 4.6.5
+    transitivePeerDependencies:
+      - '@cloudflare/workers-types'
+      - '@types/node'
+      - bufferutil
+      - utf-8-validate
+
   '@cloudflare/workerd-darwin-64@1.20261012.1':
     optional: true
 
@@ -7534,6 +8215,10 @@ snapshots:
       react-dom: 19.3.1(react@19.3.1)
 
   '@floating-ui/utils@0.2.12': {}
+
+  '@fontsource/geist-mono@5.3.0': {}
+
+  '@fontsource/geist@5.3.0': {}
 
   '@hono/node-server@2.1.5(hono@4.13.13)':
     dependencies:
@@ -9635,7 +10320,7 @@ snapshots:
 
   astring@1.9.0: {}
 
-  astro@7.4.0(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1):
+  astro@7.4.0(@types/node@22.20.5)(aws4fetch@1.0.20)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1):
     dependencies:
       '@astrojs/compiler-rs': 0.5.2
       '@astrojs/internal-helpers': 0.13.0
@@ -9682,7 +10367,7 @@ snapshots:
       tinyps: 0.5.0
       ultrahtml: 1.7.0
       unifont: 1.0.3
-      unstorage: 1.17.6
+      unstorage: 1.17.6(aws4fetch@1.0.20)
       verkit: 0.5.0
       vite: 8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)
       vitefu: 1.1.3(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
@@ -9723,6 +10408,8 @@ snapshots:
       - tsx
       - uploadthing
       - yaml
+
+  aws4fetch@1.0.20: {}
 
   axe-core@4.14.0: {}
 
@@ -12816,7 +13503,7 @@ snapshots:
 
   unpipe@1.0.0: {}
 
-  unstorage@1.17.6:
+  unstorage@1.17.6(aws4fetch@1.0.20):
     dependencies:
       anymatch: 3.1.3
       chokidar: 5.0.0
@@ -12826,6 +13513,8 @@ snapshots:
       node-fetch-native: 1.6.7
       ofetch: 1.5.1
       ufo: 1.6.4
+    optionalDependencies:
+      aws4fetch: 1.0.20
 
   until-async@3.0.2: {}
 

@@ -2,13 +2,19 @@
 // pre-rendered template (skill.generated.ts) with its tokens filled in. One
 // regex pass, memoized per isolate (APP_HOST, PLAN and VERSION are constant
 // per deploy): no D1, no session, no Zod or Markdown work per request.
-import { dataDocLimit, dataLimits } from "@oa/shared";
+import { dataDocLimit, dataLimits, parseFeatures } from "@oa/shared";
 import type { Context } from "hono";
 import type { Env } from "../env.js";
 import type { AppEnv } from "../http/middleware.js";
+import { busOn } from "../services/bus.js";
 import { VERSION } from "../version.gen.js";
 import { planText } from "./instructions.js";
-import { SKILL_HASH, SKILL_TEMPLATE } from "./skill.generated.js";
+import {
+  SKILL_HASH,
+  SKILL_HASH_NO_SPACES,
+  SKILL_TEMPLATE,
+  SKILL_TEMPLATE_NO_SPACES,
+} from "./skill.generated.js";
 import { hostSlug, skillName, skillOrigin } from "./skill-common.js";
 
 export const SKILL_PATH = "/skill.md";
@@ -16,12 +22,48 @@ export const SKILL_DOC_URI = "openartifacts://docs/skill";
 
 type SkillEnv = Pick<
   Env,
-  "APP_HOST" | "ENVIRONMENT" | "PLAN" | "SKILL_MD" | "DATA_DOC_BYTES"
+  | "APP_HOST"
+  | "ENVIRONMENT"
+  | "PLAN"
+  | "SKILL_MD"
+  | "BUS_HUB"
+  | "DATA_DOC_BYTES"
+  | "HOSTED"
+  | "FEATURES"
 >;
+
+/**
+ * The install has the spaces feature: the skill keeps its spaces lines
+ * (list_spaces, the shared-space wording). Without it they are left out, as
+ * tools/list and the server instructions leave them out (parity 1).
+ */
+const spacesIn = (env: Pick<Env, "FEATURES">): boolean =>
+  parseFeatures(env.FEATURES).includes("spaces");
+
+/**
+ * The skill's upgrade line (with its paragraph break), or "" on HOSTED=1:
+ * a hosted tenant can't run the self-host upgrade, and /upgrade.md is 404
+ * there (review item 39).
+ */
+export const upgradeLine = (env: Pick<Env, "APP_HOST" | "HOSTED">): string =>
+  env.HOSTED === "1"
+    ? ""
+    : `To upgrade this instance to the latest release: ${skillOrigin(env.APP_HOST)}/upgrade.md.\n\n`;
 
 /** Public by default; SKILL_MD=off (any case) turns the route and resource off. */
 export const skillEnabled = (env: Pick<Env, "SKILL_MD">): boolean =>
   env.SKILL_MD?.trim().toLowerCase() !== "off";
+
+/**
+ * The skill's line on finding peers by bus name, or "" without the bus. The
+ * caller passes busOn (BUS_HUB bound and not hosted, the routes' own switch),
+ * so the skill can never teach the bus with the hub off, or hide it with the
+ * hub on. The tools it names come from the bus client, not from /mcp.
+ */
+export const busLine = (on: boolean): string =>
+  on
+    ? "- Find peers by bus name with list_agents (it comes from the bus client, not from /mcp), and reply by that name: your harness's own session list does not show agents on other machines.\n"
+    : "";
 
 export const skillUrl = (env: SkillEnv): string | undefined =>
   skillEnabled(env) ? skillOrigin(env.APP_HOST) + SKILL_PATH : undefined;
@@ -31,7 +73,10 @@ const memo = new Map<string, Promise<string>>();
 /** The skill for this instance. */
 export function renderSkill(env: SkillEnv): Promise<string> {
   const { plan, docBytes } = dataLimits(env);
-  const key = `${env.ENVIRONMENT}|${env.APP_HOST}|${plan}|${docBytes}`;
+  const hosted = env.HOSTED === "1" ? "h" : "";
+  const spaces = spacesIn(env);
+  const bus = busOn(env);
+  const key = `${env.ENVIRONMENT}|${env.APP_HOST}|${plan}|${docBytes}|${hosted}|${spaces ? "s" : ""}|${bus ? "b" : ""}`;
   let p = memo.get(key);
   if (!p) {
     p = skillName(env.APP_HOST).then((name) => {
@@ -42,11 +87,11 @@ export function renderSkill(env: SkillEnv): Promise<string> {
         name,
         hostSlug: hostSlug(env.APP_HOST),
         version: VERSION,
+        upgradeLine: upgradeLine(env),
+        busPeers: busLine(bus),
       };
-      return SKILL_TEMPLATE.replace(
-        /\{\{(\w+)\}\}/g,
-        (m, k: string) => v[k] ?? m,
-      );
+      const tpl = spaces ? SKILL_TEMPLATE : SKILL_TEMPLATE_NO_SPACES;
+      return tpl.replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m);
     });
     // A failure is not memoized: the next request tries again.
     p = p.catch((e: unknown) => {
@@ -61,14 +106,17 @@ export function renderSkill(env: SkillEnv): Promise<string> {
 /**
  * ETag: version, plan and the template's hash (a git-less build keeps one
  * VERSION across template changes), plus the data-doc limit when
- * DATA_DOC_BYTES overrides the plan's. The host is fixed per deploy.
+ * DATA_DOC_BYTES overrides the plan's, and "nospaces-" (with that
+ * template's hash) without the spaces feature. The host is fixed per deploy.
  */
 export const skillEtag = (
-  env: Pick<Env, "PLAN" | "DATA_DOC_BYTES">,
+  env: Pick<Env, "PLAN" | "DATA_DOC_BYTES" | "HOSTED" | "FEATURES">,
 ): string => {
   const { plan, docBytes } = dataLimits(env);
   const doc = docBytes === dataDocLimit(plan) ? "" : `-${docBytes}`;
-  return `"${VERSION}-${plan}${doc}-${SKILL_HASH}"`;
+  const hosted = env.HOSTED === "1" ? "-hosted" : "";
+  const tpl = spacesIn(env) ? SKILL_HASH : `nospaces-${SKILL_HASH_NO_SPACES}`;
+  return `"${VERSION}-${plan}${doc}${hosted}-${tpl}"`;
 };
 
 export async function serveSkill(c: Context<AppEnv>) {

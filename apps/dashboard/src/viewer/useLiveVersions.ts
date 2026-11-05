@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiClientError, api } from "../api/client";
 import { qk } from "../api/queries";
-import { connectArtifactEvents, type GoneReason } from "./liveEvents";
+import { connectArtifactEvents, type GoneReason, onWake } from "./liveEvents";
 
 /** Design's "Spec for B": act this long after the last event of a burst. */
 export const DEBOUNCE_MS = 1_000;
@@ -18,20 +18,37 @@ export type Swapped = LiveUpdate & { prev: number };
 /** Deleted (final), or no longer readable by this viewer. */
 export type Gone = "deleted" | "unavailable";
 /** What the shell knows about the frame it shows, since that frame's load. */
-export type FrameState = { hello: boolean; touched: boolean };
+export type FrameState = {
+  hello: boolean;
+  touched: boolean;
+  /** Text selected or a field focused in the frame, right now. */
+  engaged: boolean;
+};
 
 /**
- * Design's safe-swap rule (option B): swap only when the viewer follows
- * Current, the frame's runtime said hello, the viewer hasn't touched the
- * frame since it loaded, and no menu, panel or dialog is open. Anything
- * unknown is unsafe, which shows the chip instead.
+ * Design's safe-swap rule (option B, revised by C): swap only when the viewer
+ * follows Current, the frame's runtime said hello, the viewer hasn't touched
+ * the frame since it loaded (a click, key or input; scrolling doesn't count),
+ * nothing is selected or focused for typing in it right now, and no menu or
+ * dialog is open (the side panel doesn't count). Anything
+ * unknown is unsafe, which shows the chip instead. A swap keeps the scroll
+ * position.
  */
 export const isSafeSwap = (s: {
   following: boolean;
   hello: boolean;
   touched: boolean;
+  engaged: boolean;
   chromeOpen: boolean;
-}) => s.following && s.hello && !s.touched && !s.chromeOpen;
+}) => s.following && s.hello && !s.touched && !s.engaged && !s.chromeOpen;
+
+/**
+ * The swapped note for `version` expired. A newer swap may have replaced it
+ * before the old note's timer fired (the timer runs before React unmounts
+ * it), so only that version's note is cleared.
+ */
+export const expireSwapped = (s: Swapped | null, version: number) =>
+  s?.version === version ? null : s;
 
 /** Design's announcements (one polite status region in the top document). */
 export const say = {
@@ -109,7 +126,7 @@ export function useLiveVersions(o: {
   embed: boolean;
   /** The shown frame's state, read when a decision is made. */
   frame: () => FrameState;
-  /** A menu, the side panel or a dialog is open. */
+  /** A menu or dialog is open (not the side panel). */
   chromeOpen: () => boolean;
 }) {
   const { id, embed } = o;
@@ -305,9 +322,9 @@ export function useLiveVersions(o: {
       void check();
       s.retry();
     };
-    window.addEventListener("focus", onFocus);
+    const offWake = onWake(onFocus);
     return () => {
-      window.removeEventListener("focus", onFocus);
+      offWake();
       s.close();
       sock.current = null;
       clearTimeout(debounce.current);
@@ -381,6 +398,10 @@ export function useLiveVersions(o: {
     touched,
     check,
     undelete,
-    clearSwapped: useCallback(() => setSwapped(null), []),
+    /** A note expired: clears it only if it is still the one shown. */
+    clearSwapped: useCallback(
+      (version: number) => setSwapped((s) => expireSwapped(s, version)),
+      [],
+    ),
   };
 }

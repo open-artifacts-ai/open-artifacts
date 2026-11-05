@@ -97,8 +97,26 @@ for (const scheme of ["light", "dark"] as const)
         await expect(
           page.getByRole("img", { name: "bob@example.com" }),
         ).toHaveText("BO");
+        // Live data: shadcn Checkboxes named by their Labels.
+        await expect(
+          page.getByRole("checkbox", { name: "Database" }),
+        ).toBeVisible();
         await clean(page);
         await shot(page, "share", (n) => info.outputPath(n));
+        // The success Notice (shadcn Alert), and its Dismiss.
+        await page
+          .getByRole("textbox", { name: "Email" })
+          .fill("eve@example.com");
+        await page.getByRole("button", { name: "Add", exact: true }).click();
+        await expect(
+          page.getByText("Shared with eve@example.com"),
+        ).toBeVisible();
+        await clean(page);
+        await shot(page, "share-notice", (n) => info.outputPath(n));
+        await page.getByRole("button", { name: "Dismiss" }).first().click();
+        await expect(page.getByText("Shared with eve@example.com")).toHaveCount(
+          0,
+        );
 
         await page.goto(`/a/${ID}/v/1?panel=open&tab=versions`);
         const restore = page.getByRole("button", { name: "Restore" });

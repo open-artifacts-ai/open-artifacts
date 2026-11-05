@@ -1,17 +1,19 @@
-import { R, viewerPath } from "@oa/shared";
+import { type Me, R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordCpuLimit } from "../src/api/client";
+import { qk } from "../src/api/queries";
 import { loadArtifactFrame } from "../src/viewer/frame";
-import { installHarness, mount, server } from "./harness";
+import { installHarness, lastClient, mount, server } from "./harness";
 
 type Opts = { onHello?: () => void; iframe: HTMLIFrameElement; url: string };
 const createBridge = vi.fn((_: Opts) => ({
   dispose: vi.fn(),
   requestThumbnail: vi.fn(),
   setTheme: vi.fn(),
+  setArtifact: vi.fn(),
 }));
 /** When set, the mock bridge doesn't load the frame (it stays at about:blank). */
 const hold = { load: false };
@@ -70,6 +72,9 @@ const usage = (hits: number, plan?: "free" | "paid") =>
       }),
     ),
   );
+/** The usage query has its answer (fake timers would stall msw's response). */
+const usageLanded = () =>
+  waitFor(() => expect(lastClient.getQueryData(qk.usage)).toBeDefined());
 const asMember = () =>
   server.use(
     http.get(`*${R.me}`, () =>
@@ -190,10 +195,7 @@ describe("viewer slow notice", () => {
     mount(viewerPath(ID));
     const f = await frame();
     // Let the owner's usage request land before faking timers.
-    await waitFor(() =>
-      expect(document.querySelector(".oa-vbody")).toBeTruthy(),
-    );
-    await act(() => new Promise((r) => setTimeout(r, 50)));
+    await usageLanded();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     fireEvent.load(f);
     await advance(8_000);
@@ -270,7 +272,10 @@ describe("viewer slow notice", () => {
     usage(1, "paid");
     mount(viewerPath(ID));
     const f = await frame();
-    await act(() => new Promise((r) => setTimeout(r, 50)));
+    await usageLanded();
+    await waitFor(() =>
+      expect(lastClient.getQueryData<Me>(qk.me)?.instance.plan).toBe("paid"),
+    );
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     fireEvent.load(f);
     await advance(8_000);
@@ -288,7 +293,7 @@ describe("viewer slow notice", () => {
     usage(1, "free");
     mount(viewerPath(ID));
     const f = await frame();
-    await act(() => new Promise((r) => setTimeout(r, 50)));
+    await usageLanded();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     fireEvent.load(f);
     await advance(8_000);

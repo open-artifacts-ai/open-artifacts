@@ -9,11 +9,16 @@ import {
   ArtifactDataQueryInputSchema,
   ArtifactDataSetInputSchema,
   ArtifactDataUpdateInputSchema,
+  BUS_ROLE_PROPOSAL_TTL_MS,
+  BusRoleProposeInputSchema,
   CreateUploadInputSchema,
+  DATA_WRITERS_NOTE,
   GetArtifactInputSchema,
   IdInputSchema,
   LIMITS,
   ListQuerySchema,
+  ListSpacesInputSchema,
+  ListVersionsInputSchema,
   PublishToolInputSchema,
   RestoreVersionInputSchema,
   SearchQuerySchema,
@@ -36,7 +41,7 @@ export const TOOL_DEFS = [
       content: "# Q3\n\nRevenue is up.",
       message: "First draft",
     },
-    description: `Publish an artifact, or a new version when \`id\` is given. Pass \`content\` (one file, with \`format\`) or \`files\` (path → text, or { base64 } for binary, or { uploadId } from create_upload) plus \`entry\`. Inline content (content, text and base64 together) is limited to ${INLINE}; for more, call create_upload, PUT the bytes to its url, then pass { uploadId } in \`files\`. Returns id, version and view URL.`,
+    description: `Publish an artifact, or a new version when \`id\` is given. Pass \`content\` (one file, with \`format\`) or \`files\` (path → text, or { base64 } for binary, or { uploadId } from create_upload) plus \`entry\`. The entry decides the format: html, markdown, code (known text files), pdf or image (.png, .jpg, .jpeg, .gif, .webp or .svg; one file, the image); a name that implies none publishes as code when its bytes are UTF-8 text and is otherwise refused with unsupported_format, as is a HEIC photo; an entry whose bytes don't fit its format (binary as code, a pdf without %PDF, an image without its extension's signature or uploaded with another contentType) is refused with binary_entry. Inline content (content, text and base64 together) is limited to ${INLINE}; for more, call create_upload, PUT the bytes to its url, then pass { uploadId } in \`files\`. To create it in a shared space, pass \`spaceId\` from list_spaces (new artifacts only). To change only settings (title, description, visibility, capabilities, dataWriters), pass \`id\` with those and no content or files: they update in place and no version is created. ${DATA_WRITERS_NOTE} Returns id, version and view URL.`,
   },
   {
     name: "create_upload",
@@ -49,14 +54,14 @@ export const TOOL_DEFS = [
     inputSchema: GetArtifactInputSchema,
     example: { id: ID, path: "index.html" },
     description:
-      "Read an artifact's metadata and one version (latest by default). Returns a file's text inline when it is text and at most 1 MB; otherwise a short-lived downloadUrl. Download URLs expire after 10 minutes; call get_artifact again for a fresh one.",
+      "Read an artifact's metadata (with its space and what you may do, when spaces are on) and one version (latest by default). Returns a file's text inline when it is text and at most 1 MB; otherwise a short-lived downloadUrl. Download URLs expire after 10 minutes; call get_artifact again for a fresh one.",
   },
   {
     name: "list_artifacts",
     inputSchema: ListQuerySchema,
     example: { scope: "mine", format: "html", limit: 10 },
     description:
-      "List artifacts you can see, newest first. Filter by scope, format, visibility, owner, agent or updatedSince; page with cursor.",
+      "List artifacts you can see, newest first. Filter by scope, format, visibility, owner, agent, agentVia (one of your own connections, g:<grantId> or t:<tokenId>) or updatedSince; page with cursor.",
   },
   {
     name: "search_artifacts",
@@ -67,9 +72,10 @@ export const TOOL_DEFS = [
   },
   {
     name: "list_versions",
-    inputSchema: IdInputSchema,
+    inputSchema: ListVersionsInputSchema,
     example: { id: ID },
-    description: "List an artifact's versions, newest first.",
+    description:
+      "List an artifact's versions, newest first, up to 20 per page. When the result has a nextCursor, pass it as `cursor` for older versions.",
   },
   {
     name: "restore_version",
@@ -83,27 +89,34 @@ export const TOOL_DEFS = [
     inputSchema: ShareArtifactInputSchema,
     example: { id: ID, email: "sam@example.com", role: "viewer" },
     description:
-      "Share an artifact with an email address as viewer or editor. Owner only.",
+      "Share an artifact with an email address as viewer or editor. Owner or space manager only.",
   },
   {
     name: "unshare_artifact",
     inputSchema: UnshareInputSchema,
     example: { id: ID, email: "sam@example.com" },
-    description: "Remove an email address's share. Owner only.",
+    description:
+      "Remove an email address's share. Owner or space manager only.",
   },
   {
     name: "set_visibility",
     inputSchema: SetVisibilityInputSchema,
     example: { id: ID, visibility: "team" },
-    description:
-      "Set who can open an artifact: private (you and shares), team (all members) or public (anyone with the link). Owner only.",
+    description: `Set who can open an artifact: private (you and shares), team (all members) or public (anyone with the link). Owner or space manager only. ${DATA_WRITERS_NOTE}`,
   },
   {
     name: "delete_artifact",
     inputSchema: IdInputSchema,
     example: { id: ID },
     description:
-      "Delete an artifact. It can be restored from the dashboard for 30 days. Owner only.",
+      "Delete an artifact. Restore it from Trash in the dashboard, or with undelete_artifact, within 30 days. Owner or space manager only.",
+  },
+  {
+    name: "undelete_artifact",
+    inputSchema: IdInputSchema,
+    example: { id: ID },
+    description:
+      "Restore a deleted artifact from the trash, within 30 days of its deletion. Its personal owner, or in a shared space that space's manager.",
   },
   {
     name: "artifact_data_get",
@@ -161,6 +174,24 @@ export const TOOL_DEFS = [
     description:
       "Delete a document from an artifact's live-page data collection. Anyone who can view the artifact may write (as on the page itself).",
   },
+  {
+    name: "list_spaces",
+    inputSchema: ListSpacesInputSchema,
+    example: {},
+    description:
+      "List the spaces you can publish into: your personal space first, then shared spaces where you are an editor or manager. Pass a space's id as publish_artifact's spaceId.",
+  },
+  {
+    name: "bus_role_propose",
+    inputSchema: BusRoleProposeInputSchema,
+    example: {
+      action: "set",
+      namespace: "github.com/acme/web",
+      name: "backend-lead",
+      agent: "alice",
+    },
+    description: `Propose a change to one of your bus role addresses: \`set\` points the role (\`namespace\`, \`name\`) at your open agent named \`agent\` there (creating the role, or re-pointing it), \`clear\` removes the role. Nothing changes until you confirm it: this returns a link to open in your browser, signed in, within ${BUS_ROLE_PROPOSAL_TTL_MS / 60_000} minutes; it works once. Give the link to the person, who confirms it after a fresh sign-in; no agent credential can. Only on an instance with the bus, for your own agents.`,
+  },
 ] as const;
 
 export type ToolName = (typeof TOOL_DEFS)[number]["name"];
@@ -175,11 +206,58 @@ const defOf = <N extends ToolName>(name: N): Extract<ToolDef, { name: N }> => {
 
 export const describeTool = (name: ToolName): string => defOf(name).description;
 
-/** registerTool's config for `name`: its description and input schema. */
-export const toolConfig = <N extends ToolName>(name: N) => {
+/**
+ * The spaces wording in the descriptions and what an install without the
+ * spaces feature says instead (parity 1, B12): no spaces, list_spaces or
+ * spaceId there. Each `from` must occur in its tool's description (tested).
+ */
+export const NO_SPACES_TEXT: Readonly<
+  Partial<Record<ToolName, readonly { from: string; to: string }[]>>
+> = {
+  publish_artifact: [
+    {
+      from: " To create it in a shared space, pass `spaceId` from list_spaces (new artifacts only).",
+      to: "",
+    },
+  ],
+  get_artifact: [
+    {
+      from: "(with its space and what you may do, when spaces are on)",
+      to: "(with what you may do)",
+    },
+  ],
+  share_artifact: [{ from: "Owner or space manager only.", to: "Owner only." }],
+  unshare_artifact: [
+    { from: "Owner or space manager only.", to: "Owner only." },
+  ],
+  set_visibility: [{ from: "Owner or space manager only.", to: "Owner only." }],
+  delete_artifact: [
+    { from: "Owner or space manager only.", to: "Owner only." },
+  ],
+  undelete_artifact: [
+    {
+      from: "Its personal owner, or in a shared space that space's manager.",
+      to: "Its owner.",
+    },
+  ],
+};
+
+/** `name`'s description; `spaces` false drops the spaces wording (NO_SPACES_TEXT). */
+export const descriptionFor = (name: ToolName, spaces = true): string => {
+  let d: string = defOf(name).description;
+  if (!spaces)
+    for (const r of NO_SPACES_TEXT[name] ?? []) d = d.replace(r.from, r.to);
+  return d;
+};
+
+/**
+ * registerTool's config for `name`: its description and input schema.
+ * `spaces` false: the description without the spaces wording.
+ */
+export const toolConfig = <N extends ToolName>(name: N, spaces = true) => {
   const d = defOf(name);
   return {
-    description: d.description as string,
+    description: descriptionFor(name, spaces),
     inputSchema: d.inputSchema as Extract<ToolDef, { name: N }>["inputSchema"],
   };
 };

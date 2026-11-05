@@ -7,7 +7,12 @@ import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it } from "vitest";
-import { calls, installHarness, mountHosted } from "./harness";
+import {
+  calls,
+  findVisibleToast,
+  installHarness,
+  mountHosted,
+} from "./harness";
 
 installHarness();
 
@@ -79,11 +84,9 @@ it("offered on a member linked to Google: confirm, then DELETE, then the toast",
       `/api/v1/members/${CAROL}/identities/google`,
     ),
   );
-  expect(
-    await screen.findByText(
-      "Google link reset for Carol Departed. They're signed out and link again at their next Google sign-in.",
-    ),
-  ).toBeVisible();
+  await findVisibleToast(
+    "Google link reset for Carol Departed. They're signed out and link again at their next Google sign-in.",
+  );
 });
 
 it("not offered without a Google link, on the owner, or on yourself", async () => {
@@ -102,8 +105,11 @@ it("not offered without a Google link, on the owner, or on yourself", async () =
 
 it("an admin can't reset another admin (only the owner can)", async () => {
   mountHosted("/settings/members", true, asAdmin, [withAdminBob]);
-  const menu = await openMenu("Bob Builder");
-  expect(within(menu).queryByRole("menuitem", { name: ITEM })).toBeNull();
+  // Another admin's row is read-only for an admin (#475): no menu at all.
+  const r = await row("Bob Builder");
+  expect(
+    within(r).queryByRole("button", { name: "More for Bob Builder" }),
+  ).toBeNull();
 });
 
 it("the owner can reset an admin's link", async () => {
@@ -134,11 +140,9 @@ it("404: nothing to reset, named", async () => {
       name: "Reset link",
     }),
   );
-  expect(
-    await screen.findByText(
-      "No Google sign-in is linked to Bob Builder, so there's nothing to reset.",
-    ),
-  ).toBeVisible();
+  await findVisibleToast(
+    "No Google sign-in is linked to Bob Builder, so there's nothing to reset.",
+  );
   expect(screen.queryByText("Not found")).toBeNull();
 });
 
@@ -162,6 +166,7 @@ it("owner_only: only the owner can reset another admin's link", async () => {
       name: "Reset link",
     }),
   );
+  // An inline refusal on the row since #558, not a toast.
   expect(
     await screen.findByText(
       "Only the owner can reset another admin's Google link.",
@@ -196,11 +201,14 @@ it("after owner_only, members and you refetch, so Reset leaves that row", async 
   await screen.findByText(
     "Only the owner can reset another admin's Google link.",
   );
-  await waitFor(async () => {
-    const menu = await openMenu("Bob Builder");
-    expect(within(menu).queryByRole("menuitem", { name: ITEM })).toBeNull();
-    fireEvent.keyDown(menu, { key: "Escape" });
-  });
+  // Now an admin: Bob's admin row turns read-only (no menu, so no Reset).
+  await waitFor(async () =>
+    expect(
+      within(await row("Bob Builder")).queryByRole("button", {
+        name: "More for Bob Builder",
+      }),
+    ).toBeNull(),
+  );
 });
 
 it("any other 403 falls back to the owner copy", async () => {
@@ -223,10 +231,19 @@ it("any other 403 falls back to the owner copy", async () => {
       name: "Reset link",
     }),
   );
+  await findVisibleToast(
+    "Only the owner can reset another admin's Google link.",
+  );
+  expect(screen.queryByText("server text")).toBeNull();
+});
+
+it("Remove says artifacts stay; transfer or restore under Departed", async () => {
+  mountHosted("/settings/members", true, undefined, [withAdminBob]);
+  const menu = await openMenu(fixtures.members[1]?.name as string);
+  fireEvent.click(within(menu).getByRole("menuitem", { name: "Remove…" }));
   expect(
     await screen.findByText(
-      "Only the owner can reset another admin's Google link.",
+      "They lose access, including to anything shared with them. Their artifacts stay where they are. You can transfer them later under Departed, or restore this person.",
     ),
-  ).toBeVisible();
-  expect(screen.queryByText("server text")).toBeNull();
+  ).toBeTruthy();
 });

@@ -1,46 +1,241 @@
 import { normalizeEmail } from "@oa/auth-core";
-import type {
-  Member,
-  MemberInvite,
-  MemberInviteResult,
-  MemberPatch,
-  Settings,
-  SettingsPatch,
-} from "@oa/shared";
-import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import { getDb } from "../db/client.js";
 import {
-  artifacts,
-  identities,
-  reservedArtifacts,
-  settings,
-  shares,
-  spaces,
-  tokens,
-  uploads,
-  users,
-  versions,
-} from "../db/schema.js";
+  type AuditReason,
+  INVITE_UNREACHABLE_MESSAGE,
+  type InviteUnreachableDetails,
+  type Member,
+  type MemberInvite,
+  type MemberInviteResult,
+  type MemberOwnsArtifactsDetails,
+  type MemberPatch,
+  type MemberRemovedDetails,
+  type MemberStatus,
+  type Settings,
+  type SettingsPatch,
+} from "@oa/shared";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNull,
+  notInArray,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
+import { managesAdmins } from "../auth/authz.js";
+import { authConfig, type SignInProvider } from "../auth/config.js";
+import { isOrgAdmin } from "../auth/policy.js";
+import { getDb } from "../db/client.js";
+import { shares, tokens, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
+import { readBinding } from "../directory/store.js";
 import { emailEnabled, sendEmail } from "../email/send.js";
 import { inviteEmail, senderName } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
+import { logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
-import { closeRuntimeSockets, MAX_CLOSE } from "../runtime/revoke.js";
+import {
+  closeRuntimeSockets,
+  MAX_CLOSE,
+  revokeUserLive,
+} from "../runtime/revoke.js";
+import { type AuditActor, audit, userActor } from "./audit.js";
+import { wipeUserBus } from "./bus.js";
+import { inviteReach } from "./reach.js";
+import {
+  IDENTITIES_SQL,
+  identitiesOf,
+  MEMBER_EXTRAS_COLS,
+  type MemberExtrasRow,
+  RESTRICTED_GROUPS_SQL,
+  RESTRICTED_SYNC_FOR_USER,
+  restrictionOf,
+} from "./restriction.js";
+import { directoryMode } from "./spaces.js";
 import { insertUser, toMember } from "./users.js";
 
-export async function listMembers(env: Env): Promise<Member[]> {
+/** A guest with a live artifact in their personal space (notices' guestOwners). */
+const GUEST_OWNS_SQL = `(users.role = 'guest' and exists (select 1 from artifacts a
+  where a.space_id = users.id and a.owner_id = users.id and a.deleted_at is null))`;
+
+const STATUSES: readonly MemberStatus[] = ["active", "suspended", "removed"];
+/** A stored status; anything unknown reads as suspended (fail closed). */
+export const statusOf = (v: unknown): MemberStatus =>
+  STATUSES.includes(v as MemberStatus) ? (v as MemberStatus) : "suspended";
+
+/**
+ * GET R.members?status= : members whose status (as statusOf reads it) is one
+ * of `statuses`, default active. On every install (any sign-in mode) every
+ * row carries status, identities and restriction, read in the same query
+ * (no per-member round trip).
+ */
+export async function listMembers(
+  env: Env,
+  statuses: readonly MemberStatus[] = ["active"],
+): Promise<Member[]> {
+  if (!statuses.length) return [];
+  const conds: SQL[] = [inArray(users.status, [...statuses])];
+  // An unknown stored value reads as suspended (statusOf).
+  if (statuses.includes("suspended"))
+    conds.push(notInArray(users.status, [...STATUSES]));
+  // An erased person (#1204) is listed nowhere: the audit log is the record.
+  const where = and(or(...conds), isNull(users.erasedAt));
+  const order = [asc(users.createdAt), asc(users.id)] as const;
+  // In the list's own query: a row needs no request of its own.
+  const owns = sql<number>`${sql.raw(GUEST_OWNS_SQL)}`;
+  const flag = (r: { owns: number }) =>
+    r.owns ? { personalArtifacts: true } : {};
+  const managed = await directoryManagedOf(env);
   const rows = await getDb(env)
-    .select()
+    .select({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      displayName: users.displayName,
+      role: users.role,
+      lastSeenAt: users.lastSeenAt,
+      status: users.status,
+      rm: users.restrictedManual,
+      groups: sql<string | null>`${sql.raw(RESTRICTED_GROUPS_SQL)}`,
+      idents: sql<string | null>`${sql.raw(IDENTITIES_SQL)}`,
+      owns,
+      // A target-row fact for directoryManaged (the owner is never synced
+      // away), read in SQL: role checks stay in src/auth (authz-lint).
+      isOwner: sql<number>`(users.role = 'owner')`,
+    })
     .from(users)
-    .orderBy(asc(users.createdAt), asc(users.id));
-  return rows.map(toMember);
+    .where(where)
+    .orderBy(...order);
+  return rows.map((r) => ({
+    ...toMember(r),
+    status: statusOf(r.status),
+    identities: identitiesOf(r),
+    restriction: restrictionOf(r),
+    ...flag(r),
+    ...(managed(r) ? { directoryManaged: true } : {}),
+  }));
+}
+
+/**
+ * Member.directoryManaged (#1146): whether removing this row can be undone
+ * by directory sync. While sync manages the install (syncManages), a listing
+ * that finds a Workspace account at the address of a row with no Google
+ * identity gives that row the deletion treatment and creates a new, active
+ * row there (directory/apply.ts applyUsers), audited user.readmitted_by_sync.
+ * Only for an address in AUTH_DOMAINS (applyUsers skips the rest), never the
+ * owner (skipped too) and never a row already removed. A Google-linked row
+ * stays removed: sync matches it by id and revives only its own removals.
+ * Whether Workspace lists the address is Google's to say; this is the
+ * install's side of it.
+ */
+async function directoryManagedOf(env: Env) {
+  if (!(await syncManages(env))) return () => false;
+  const domains = new Set(authConfig(env).domains);
+  return (
+    r: MemberExtrasRow & { email: string; status: string; isOwner: number },
+  ) =>
+    !r.isOwner &&
+    statusOf(r.status) !== "removed" &&
+    domains.has(r.email.slice(r.email.lastIndexOf("@") + 1)) &&
+    !identitiesOf(r).includes("google");
+}
+
+/** One user's hosted Member fields by id (?1): read back with hostedFields. */
+export const HOSTED_FIELDS = `select users.status, ${MEMBER_EXTRAS_COLS} from users where users.id = ?1`;
+
+/** `m` with status, identities and restriction from a HOSTED_FIELDS row (as GET R.members rows carry them). */
+export function hostedFields(
+  m: Member,
+  r: ({ status: string } & MemberExtrasRow) | undefined,
+): Member {
+  if (!r) return m;
+  return {
+    ...m,
+    status: statusOf(r.status),
+    identities: identitiesOf(r),
+    restriction: restrictionOf(r),
+  };
+}
+
+const EXISTING =
+  "select id, status, guest_lapsed as guestLapsed, removed_by_sync as removedBySync from users where email = ?1 limit 1";
+
+/**
+ * Directory sync decides this install's removals: Google sync is on and a
+ * Workspace is connected (the live binding and token, what sync itself needs).
+ * Without them nothing syncs, so a directory removal is an admin's to undo.
+ */
+async function syncManages(env: Env): Promise<boolean> {
+  if (directoryMode(env) !== "google") return false;
+  const { binding, sealed } = await readBinding(env);
+  return !!binding && !!sealed;
+}
+
+const directoryManaged = () =>
+  new ApiError(
+    "directory_managed",
+    "Directory sync removed this member; restore them in Google Workspace",
+  );
+/** users.email once the directory's deletion treatment released the address. */
+export const placeholder = (id: string) => `removed+${id}@invalid`;
+const addressReleased = () =>
+  new ApiError(
+    "conflict",
+    "This person's Google Workspace account was deleted, so they can't be restored. Invite them instead.",
+  );
+/** An erased person (#1204): never restored. */
+const erasedMember = () =>
+  new ApiError("member_erased", "This person was erased. Invite them instead.");
+
+const guestLapsed = () =>
+  new ApiError(
+    "guest_lapsed",
+    "This guest left when their last share went; share an artifact with them to bring them back",
+  );
+
+/**
+ * The 409 for an address that already has a row: guest_lapsed for a lapsed
+ * guest (a new share brings them back; restore would refuse),
+ * directory_managed for a directory removal while sync manages this install
+ * (syncManages; sync revives them when their Workspace account is restored),
+ * member_removed
+ * (details { userId }, so the caller can offer R.memberRestore) when that
+ * row is otherwise removed, else conflict "Already a member".
+ */
+async function existingConflict(env: Env, email: string): Promise<never> {
+  const r = await stmt(env.DB, EXISTING).bind(email).first<{
+    id: string;
+    status: string;
+    guestLapsed: number;
+    removedBySync: number;
+  }>();
+  if (r && statusOf(r.status) === "removed") {
+    if (r.guestLapsed !== 0) throw guestLapsed();
+    // Restore would refuse it too: Google Workspace brings them back.
+    if (r.removedBySync && (await syncManages(env))) throw directoryManaged();
+    const details: MemberRemovedDetails = { userId: r.id };
+    throw new ApiError(
+      "member_removed",
+      "This person was removed. Restore them instead.",
+      details,
+    );
+  }
+  throw new ApiError("conflict", "Already a member");
 }
 
 /**
  * Pre-creates the user row, then emails the invitee (best effort).
- * 400 on an invalid (non-ASCII) email, 409 if it exists.
+ * 400 on an invalid (non-ASCII) email, 409 if it exists (guest_lapsed for
+ * a lapsed guest, member_removed with { userId } when that member was
+ * otherwise removed, else conflict), 400
+ * invite_unreachable (nothing created) when no sign-in method this install
+ * offers could ever admit the address (review item 11). When only Google
+ * might (an address outside AUTH_DOMAINS), the invite stands and the result
+ * carries signIn { status: "uncertain" }. The email names only the methods
+ * that admit the address.
  */
 export async function inviteMember(
   env: Env,
@@ -49,6 +244,21 @@ export async function inviteMember(
 ): Promise<MemberInviteResult> {
   const email = normalizeEmail(input.email);
   if (!email) throw new ApiError("bad_request", "Invalid email");
+  const reach = await inviteReach(env, email, input.role);
+  if (reach.methods.length === 0 && !reach.googleUncertain) {
+    // An existing row is still a 409 (member_removed or conflict), not a 400.
+    if (await stmt(env.DB, EXISTING).bind(email).first())
+      await existingConflict(env, email);
+    const details: InviteUnreachableDetails = {
+      field: "email",
+      reason: reach.inDomain ? "no_sign_in_method" : "outside_domains",
+    };
+    throw new ApiError(
+      "invite_unreachable",
+      INVITE_UNREACHABLE_MESSAGE[details.reason],
+      details,
+    );
+  }
   const [row] = await insertUser(env, {
     email,
     name: "",
@@ -57,7 +267,12 @@ export async function inviteMember(
   })
     .onConflictDoNothing({ target: users.email })
     .returning();
-  if (!row) throw new ApiError("conflict", "Already a member");
+  if (!row) return existingConflict(env, email);
+  // What the email names, and the result reports: uncertain Google is still
+  // the only way in, so it is named.
+  const signInMethods: SignInProvider[] = reach.methods.length
+    ? reach.methods
+    : ["google"];
   let emailed = false;
   if (emailEnabled(env)) {
     const instance = (await getSettings(env).catch(() => DEFAULT_SETTINGS))
@@ -72,11 +287,23 @@ export async function inviteMember(
           instance,
           recipient: email,
           appHost: env.APP_HOST,
+          signIn: signInMethods,
         }),
-      { kind: "invite", replyTo: normalizeEmail(inviter.email) ?? undefined },
+      {
+        kind: "invite",
+        replyTo: normalizeEmail(inviter.email) ?? undefined,
+        instance,
+      },
     );
   }
-  return { ...toMember(row), emailed };
+  return {
+    ...toMember(row),
+    emailed,
+    signInMethods,
+    ...(reach.methods.length === 0
+      ? { signIn: { status: "uncertain", reason: "outside_domains" } as const }
+      : {}),
+  };
 }
 
 async function getRow(env: Env, id: string) {
@@ -87,22 +314,207 @@ async function getRow(env: Env, id: string) {
   return row;
 }
 
+const SYSTEM: AuditActor = { kind: "system", id: null };
+
+/**
+ * The actor of a system or directory-sync member change: may act on an org
+ * owner or admin. Always passed explicitly (#475): the actor is a required
+ * argument, so a forgotten one is a type error, never a fail-open default.
+ */
+export const SYSTEM_ACTOR: unique symbol = Symbol("oa.system-actor");
+/** Who changes a member: the signed-in member (routes) or SYSTEM_ACTOR. */
+export type MemberActor = Member | typeof SYSTEM_ACTOR;
+
+/**
+ * 1 when `actor` may act on an org owner or admin (#475), else 0: the flag
+ * every guarded write binds. SYSTEM_ACTOR (system, directory sync) may.
+ */
+const adminsOk = (actor: MemberActor): 0 | 1 =>
+  actor === SYSTEM_ACTOR || managesAdmins(actor) ? 1 : 0;
+
+/** The audit actor: the member, else system (sync for directory reasons). */
+const auditActor = (actor: MemberActor, why?: AuditReason): AuditActor =>
+  actor === SYSTEM_ACTOR ? (why ? actorFor(why) : SYSTEM) : userActor(actor.id);
+
+const ownerOnly = () =>
+  new ApiError("owner_only", "Only the owner can manage an owner or admin");
+
+/** Precheck: an org owner or admin target needs the owner (403 owner_only). */
+function checkTarget(role: string, admins: 0 | 1): void {
+  if (!admins && isOrgAdmin(role)) throw ownerOnly();
+}
+
+const GUARDED_TARGET =
+  "select 1 from users where id = ?1 and role in ('owner', 'admin')";
+
+/**
+ * After a guarded write changed nothing: 403 owner_only when the target is
+ * (now) an owner or admin the actor may not act on, e.g. promoted between the
+ * precheck and the batch.
+ */
+async function raceCheck(env: Env, id: string, admins: 0 | 1): Promise<void> {
+  if (admins) return;
+  if (await stmt(env.DB, GUARDED_TARGET).bind(id).first()) throw ownerOnly();
+}
+
+/** A system change's audit actor: sync for directory reasons. */
+function actorFor(why: AuditReason): AuditActor {
+  return why.startsWith("directory_") || why.startsWith("sync_")
+    ? { kind: "sync", id: null }
+    : SYSTEM;
+}
+
+// One statement per status change. A removed row stays removed, and the
+// instance owner is never deactivated. Any change ends every session
+// (session_epoch), so a cookie minted before a suspension never comes back.
+// A lapsed guest (removed because their last share went, guest_lapsed = 1)
+// can still be removed for good: that clears guest_lapsed, so a later share
+// no longer revives them (putShare).
+// An admin row only when ?4 = 1 (the actor may act on admins, #475).
+// removed_by_sync (?5) is 1 only for a directory_* removal; every other
+// change clears it, so an admin removal stays restorable.
+const SET_STATUS = `update users set status = ?2, guest_lapsed = 0, status_changed_at = ?3,
+  session_epoch = session_epoch + 1, removed_by_sync = ?5
+  where id = ?1 and role <> 'owner' and (role <> 'admin' or ?4 = 1)
+  and ((status <> ?2 and status <> 'removed')
+    or (?2 = 'removed' and status = 'removed' and guest_lapsed = 1))`;
+// Only for a deactivation, and only while the row now has that status (never
+// on an unsuspend or a no-op, never the owner's PATs, an admin's only when
+// ?4 = 1).
+const REVOKE_PATS = `update tokens set revoked_at = ?2
+  where user_id = ?1 and revoked_at is null and ?3 <> 'active'
+  and exists (select 1 from users where id = ?1 and status = ?3
+    and (role <> 'admin' or ?4 = 1))`;
+const STATUS_OF = "select status from users where id = ?1";
+// #1291: the same rule for bus machines, in the same batch (their tokens stop
+// at the next connect; the open sockets close through revokeUserLive).
+const REVOKE_MACHINES = `update bus_machines set revoked_at = ?2
+  where user_id = ?1 and revoked_at is null and ?3 <> 'active'
+  and exists (select 1 from users where id = ?1 and status = ?3
+    and (role <> 'admin' or ?4 = 1))`;
+
+/**
+ * Sets a user's status (P3 T6). The write, the PAT revocation and the
+ * user.status audit row (only when the status changed) commit in one D1
+ * batch. When the user is now suspended or removed, their OAuth grants are
+ * revoked (KV, after the gated batch, so a refused target keeps them) and
+ * then their live sockets close
+ * (revokeUserLive). Unsuspending sets the status back to active; the PATs
+ * and sessions the suspension revoked stay revoked. A removed row stays
+ * removed. getUser resolves only active rows, so every credential stops at
+ * the next request. A removal keeps the shares addressed to their email:
+ * the removed row refuses every sign-in, so none re-admits them, and they
+ * stay with the row should a removal ever be restored.
+ *
+ * `actor` is the member acting (routes; audited as them) or SYSTEM_ACTOR
+ * (system and directory sync). An admin may not suspend or remove an owner
+ * or admin, 403 owner_only, enforced in the write so a promotion racing the
+ * call changes nothing (#475).
+ */
+export async function setUserStatus(
+  env: Env,
+  userId: string,
+  status: MemberStatus,
+  why: AuditReason,
+  actor: MemberActor,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<void> {
+  const admins = adminsOk(actor);
+  const by = auditActor(actor, why);
+  const out = await env.DB.batch([
+    stmt(env.DB, SET_STATUS).bind(
+      userId,
+      status,
+      Date.now(),
+      admins,
+      status === "removed" && why.startsWith("directory_") ? 1 : 0,
+    ),
+    // Directly after the update: audited only when it changed the row.
+    audit(env, "user.status", { type: "user", id: userId }, by, {
+      reason: why,
+      detail: { status },
+      when: { sql: "changes() > 0", args: [] },
+    }),
+    stmt(env.DB, REVOKE_PATS).bind(userId, Date.now(), status, admins),
+    stmt(env.DB, STATUS_OF).bind(userId),
+    // Last: out[3] above stays the status read.
+    stmt(env.DB, REVOKE_MACHINES).bind(userId, Date.now(), status, admins),
+  ]);
+  if (!out[0]?.meta.changes) await raceCheck(env, userId, admins);
+  const now = (out[3]?.results[0] as { status?: string } | undefined)?.status;
+  if (status === "active" || now !== status) return;
+  try {
+    // A grant this misses (KV listing lag) is still refused: it was issued
+    // before status_changed_at (oauth.ts apiHandler).
+    await revokeAllGrants(env, userId);
+  } finally {
+    // Sessions and PATs are gone: their live sockets close now (P3 T7), even
+    // when the grant revocation failed.
+    await revokeUserLive(env, userId, `user ${status}`, ctx);
+  }
+}
+
+// The target predicate both role statements share: never the owner, an admin
+// only when ?3 = 1 (the actor may act on admins, #475).
+const ROLE_TARGET = "role <> 'owner' and (role <> 'admin' or ?3 = 1)";
+
+// A role change ends the member's sessions (they re-sign-in with the new role).
+const SET_ROLE = `update users set role = ?2, session_epoch = session_epoch + 1
+  where id = ?1 and ${ROLE_TARGET}
+  returning id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt`;
+
+// Runs before SET_ROLE, on its new role (?2), so both share one target check.
+const CLEAR_MANUAL_RESTRICTION = `update users set restricted_manual = 0
+  where id = ?1 and ?2 = 'admin' and restricted_manual <> 0 and ${ROLE_TARGET}`;
+
+/**
+ * Changes a member's role. `actor` is the member acting (routes; audited as
+ * them) or SYSTEM_ACTOR. An admin may not change an owner's or admin's role,
+ * 403 owner_only, enforced in the write so a promotion racing the call
+ * changes nothing (#475).
+ */
 export async function patchMember(
   env: Env,
   id: string,
   patch: MemberPatch,
+  actor: MemberActor,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<Member> {
   const row = await getRow(env, id);
+  const admins = adminsOk(actor);
+  const by = auditActor(actor);
+  checkTarget(row.role, admins);
   if (row.role === "owner")
     throw new ApiError("bad_request", "The owner cannot be demoted");
   const db = getDb(env);
-  const [out] = await db
-    .update(users)
-    // A role change ends the member's sessions (they re-sign-in with the new role).
-    .set({ role: patch.role, sessionEpoch: sql`${users.sessionEpoch} + 1` })
-    .where(eq(users.id, id))
-    .returning();
-  if (!out) throw new ApiError("not_found", "Not found");
+  const results = await env.DB.batch([
+    // Owners and admins can't be restricted (ruling c): a promotion to admin
+    // clears the manual flag too, audited restricted.remove when it was set.
+    stmt(env.DB, CLEAR_MANUAL_RESTRICTION).bind(id, patch.role, admins),
+    audit(env, "restricted.remove", { type: "user", id }, by, {
+      when: { sql: "changes() > 0", args: [] },
+    }),
+    // Audited as user.role in the same batch, only when the role changes.
+    stmt(env.DB, SET_ROLE).bind(id, patch.role, admins),
+    audit(env, "user.role", { type: "user", id }, by, {
+      detail: { from: row.role, to: patch.role },
+      when: { sql: "changes() > 0 and ? <> ?", args: [row.role, patch.role] },
+    }),
+    // The group restriction depends on the role (never owners or admins):
+    // a demoted admin in a restricted group is capped now, a promoted
+    // member no longer is (P3 T9).
+    stmt(env.DB, RESTRICTED_SYNC_FOR_USER).bind(id),
+  ]);
+  const out = results[2]?.results[0] as
+    | Parameters<typeof toMember>[0]
+    | undefined;
+  if (!out) {
+    await raceCheck(env, id, admins);
+    throw new ApiError("not_found", "Not found");
+  }
+  // Sessions ended above; live sockets were authorized under the old role
+  // (and a raised restriction cap): close them too (P3 T7).
+  await revokeUserLive(env, id, "role changed", ctx);
   // Guests can't connect agents: a demotion revokes their PATs and OAuth grants.
   // (MemberPatch allows only admin|member today; this guards a wider contract.)
   const role: string = patch.role;
@@ -111,83 +523,66 @@ export async function patchMember(
       .update(tokens)
       .set({ revokedAt: Date.now() })
       .where(and(eq(tokens.userId, id), isNull(tokens.revokedAt)));
+    await stmt(
+      env.DB,
+      "update bus_machines set revoked_at = ?2 where user_id = ?1 and revoked_at is null",
+    )
+      .bind(id, Date.now())
+      .run();
     await revokeAllGrants(env, id);
   }
   return toMember(out);
 }
 
 /**
- * Removes the user row in one D1 batch. Their artifacts (and every other row
- * that references them) are reassigned to the instance owner; their tokens are
- * deleted (tokens.user_id has no cascade, so revoked rows would block the
- * delete). Shares addressed to their email are kept.
+ * The member's status becomes `removed` (setUserStatus, audited
+ * admin_remove), on every install. The row stays, with its authorship,
+ * identities and personal space: personal artifacts wait for an admin
+ * transfer (R.memberTransfer), and shared-space artifacts stay in their
+ * spaces. PATs and OAuth grants are revoked and sessions end. The removed
+ * row refuses every sign-in, so the shares addressed to their email are
+ * kept with it and never re-admit them. Removing a lapsed guest clears
+ * guest_lapsed, so a later share no longer revives them. A member directory
+ * sync removed stays as they are, still 204, while sync manages the install:
+ * Workspace decides, and user.sync_managed records that the admin tried.
+ *
+ * `actor` is the member acting (routes; audited as them) or SYSTEM_ACTOR. An
+ * admin may not remove an owner or admin, 403 owner_only, enforced in the
+ * write too (#475).
  */
 export async function removeMember(
   env: Env,
   id: string,
+  actor: MemberActor,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
   const row = await getRow(env, id);
+  checkTarget(row.role, adminsOk(actor));
   if (row.role === "owner")
     throw new ApiError("bad_request", "The owner cannot be removed");
-  const db = getDb(env);
-  const owner = (
-    await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.role, "owner"))
-      .orderBy(asc(users.createdAt), asc(users.id))
-      .limit(1)
-  )[0];
-  if (!owner) throw new ApiError("bad_request", "No owner to reassign to");
-  // OAuth grants live in KV, outside the batch: revoke them first.
-  await revokeAllGrants(env, id);
-  const to = owner.id;
-  await db.batch([
-    // Split live/deleted: owner_id is only indexed by the two partial indexes (#248).
-    // space_id moves with owner_id (P3 T1): the artifacts now live in the
-    // instance owner's personal space. (With the spaces flag on, T6 keeps the
-    // row instead of deleting it, and the spaces stay put.)
-    db
-      .update(artifacts)
-      .set({ ownerId: to, spaceId: to })
-      .where(and(eq(artifacts.ownerId, id), isNull(artifacts.deletedAt))),
-    db
-      .update(artifacts)
-      .set({ ownerId: to, spaceId: to })
-      .where(and(eq(artifacts.ownerId, id), isNotNull(artifacts.deletedAt))),
-    // The personal space's id IS its owner's user id, so re-pointing it would
-    // leave a row named after the removed user and owned by the instance owner.
-    // It is empty by now (the artifacts above moved), so drop it; ownership is
-    // the id, never owner_user_id.
-    db
-      .delete(spaces)
-      .where(and(eq(spaces.id, id), eq(spaces.kind, "personal"))),
-    db
-      .update(versions)
-      .set({ createdBy: to })
-      .where(eq(versions.createdBy, id)),
-    db.update(shares).set({ createdBy: to }).where(eq(shares.createdBy, id)),
-    db.update(uploads).set({ userId: to }).where(eq(uploads.userId, id)),
-    db
-      .update(reservedArtifacts)
-      .set({ userId: to })
-      .where(eq(reservedArtifacts.userId, id)),
-    db.delete(tokens).where(eq(tokens.userId, id)),
-    db.delete(identities).where(eq(identities.userId, id)),
-    db.delete(users).where(eq(users.id, id)),
-  ]);
-  // Live sockets the member opened via shares stay open otherwise (best effort, capped).
-  // Accepted ceiling: their sockets on TEAM artifacts (data-subscribe and
-  // R.events, which may carry publisher names) are not closed here, since that
-  // would be one DO RPC per team artifact. They close at the socket TTL
-  // rotation (4408, at most LIMITS.signedUrlTtlSec = 10 min), and the
-  // reconnect is refused. See docs/security/security.md.
-  const shared = await db
+  // Belt and braces for the artifacts shared with them (best effort, capped).
+  const shared = await getDb(env)
     .select({ id: shares.artifactId })
     .from(shares)
     .where(eq(shares.email, row.email))
     .limit(MAX_CLOSE);
+  if (statusOf(row.status) === "removed" && row.removedBySync) {
+    if (await syncManages(env))
+      await audit(
+        env,
+        "user.sync_managed",
+        { type: "user", id },
+        auditActor(actor),
+        {
+          detail: { status: "removed" },
+          when: {
+            sql: "exists (select 1 from users where id = ? and status = 'removed' and removed_by_sync = 1)",
+            args: [id],
+          },
+        },
+      ).run();
+  }
+  await setUserStatus(env, id, "removed", "admin_remove", actor, ctx);
   await closeRuntimeSockets(
     env,
     shared.map((r) => r.id),
@@ -196,16 +591,290 @@ export async function removeMember(
   );
 }
 
+// removed -> active, the restore rules (an admin's restore and directory
+// sync's revive): a member or admin comes back as a member (never an
+// admin), a guest as a guest (restricted_manual kept; RESTRICTED_SYNC_FOR_USER
+// follows in the batch: an admin in a restricted group was never flagged).
+// Never the owner, an admin only when ?3 = 1 (#475), never a lapsed guest (a
+// share revives those). Ends every session minted before (session_epoch) and
+// moves status_changed_at, so OAuth grants issued before the removal stay
+// refused; their PATs were revoked at the removal and stay revoked.
+const RESTORE_SET = `update users set status = 'active',
+  role = case when role = 'guest' then 'guest' else 'member' end,
+  guest_lapsed = 0, removed_by_sync = 0,
+  status_changed_at = ?2, session_epoch = session_epoch + 1`;
+const RESTORE_TARGET = `id = ?1 and status = 'removed' and guest_lapsed = 0
+  and role <> 'owner' and (role <> 'admin' or ?3 = 1)`;
+// An admin's restore: never a directory removal while sync manages the
+// install (?4 = 1), never a row whose address was released (?5, placeholder).
+const RESTORE = `${RESTORE_SET}
+  where ${RESTORE_TARGET} and (removed_by_sync = 0 or ?4 = 0) and email <> ?5`;
+// Directory sync's revive: only a directory removal (removed_by_sync = 1),
+// only while the row still holds Google subject ?5 (the same person, never a
+// new account at a reused address), taking back its address ?4 only while no
+// other row holds it.
+const SYNC_REVIVE = `${RESTORE_SET}, email = ?4
+  where ${RESTORE_TARGET} and removed_by_sync = 1
+  and exists (select 1 from identities
+    where provider = 'google' and subject = ?5 and user_id = ?1)
+  and not exists (select 1 from users x where x.email = ?4 and x.id <> ?1)`;
+const RESTORED = `select id, email, name, display_name as displayName, role,
+  last_seen_at as lastSeenAt, users.status, ${MEMBER_EXTRAS_COLS}
+  from users where users.id = ?1`;
+
+/**
+ * POST R.memberRestore(id): a removed member or admin comes back active as a
+ * member (never an admin), a removed guest as a guest, keeping a manual
+ * restriction and their space roles (a removal leaves space_members alone);
+ * the group restriction is recomputed for the role they come back with.
+ * Audited user.status (admin_restore)
+ * in the same batch, only when the row changed. 404 unknown; 403 owner_only
+ * for an admin target unless the actor is the owner (#475); 409
+ * member_active when not removed; 409 guest_lapsed for a lapsed guest; 409
+ * directory_managed when directory sync removed them (users.removed_by_sync)
+ * and sync manages the install (syncManages: the next sync would remove them
+ * again); 409 conflict when the deletion treatment released their address;
+ * 409 member_erased for an erased person (#1204: invite them instead).
+ * Their old credentials stay dead: they sign in again (a kept Google identity
+ * relinks the same subject).
+ */
+export async function restoreMember(
+  env: Env,
+  id: string,
+  actor: Member,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<Member> {
+  const row = await getRow(env, id);
+  const admins = adminsOk(actor);
+  checkTarget(row.role, admins);
+  if (statusOf(row.status) !== "removed" || row.role === "owner")
+    throw new ApiError("member_active", "This member isn't removed");
+  if (row.erasedAt !== null) throw erasedMember();
+  if (row.guestLapsed) throw guestLapsed();
+  const synced = (await syncManages(env)) ? 1 : 0;
+  if (synced && row.removedBySync) throw directoryManaged();
+  if (row.email === placeholder(id)) throw addressReleased();
+  const out = await env.DB.batch([
+    stmt(env.DB, RESTORE).bind(id, Date.now(), admins, synced, placeholder(id)),
+    audit(env, "user.status", { type: "user", id }, userActor(actor.id), {
+      reason: "admin_restore",
+      detail: { status: "active" },
+      when: { sql: "changes() > 0", args: [] },
+    }),
+    stmt(env.DB, RESTRICTED_SYNC_FOR_USER).bind(id),
+    stmt(env.DB, RESTORED).bind(id),
+  ]);
+  const r = out[3]?.results[0] as
+    | (Parameters<typeof toMember>[0] & { status: string } & MemberExtrasRow)
+    | undefined;
+  if (!out[0]?.meta.changes) {
+    await raceCheck(env, id, admins);
+    if (!r) throw new ApiError("not_found", "Not found");
+    // A directory removal that raced the read above.
+    const now = await getRow(env, id);
+    if (synced && statusOf(now.status) === "removed" && now.removedBySync)
+      throw directoryManaged();
+    if (now.erasedAt !== null) throw erasedMember();
+    if (now.email === placeholder(id)) throw addressReleased();
+    throw new ApiError("member_active", "This member isn't removed");
+  }
+  if (!r) throw new ApiError("not_found", "Not found");
+  // Belt and braces: nothing they held before survives the epoch bump.
+  await revokeUserLive(env, id, "member restored", ctx);
+  return hostedFields(toMember(r), r);
+}
+
+/**
+ * Directory sync revives a row it removed (users.removed_by_sync): Google
+ * lists the same directory user (subject `sub`) active again. The restore
+ * rules (SYNC_REVIVE, the same target and SET as RESTORE): never admin,
+ * restricted_manual kept, the group restriction recomputed for the role they
+ * come back with, sessions minted before end, old PATs and grants stay
+ * refused, and the row takes back its address. Audited user.status
+ * (sync_revive, actor sync) in the same batch, only when the row changed.
+ * Resolves to whether it did.
+ */
+export async function reviveFromSync(
+  env: Env,
+  id: string,
+  sub: string,
+  email: string,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<boolean> {
+  // Never onto OWNER_EMAIL, as moveUserEmail (#1160): the SQL only checks that
+  // no other row holds the address, which an install with no owner row passes.
+  if (normalizeEmail(email) === normalizeEmail(env.OWNER_EMAIL ?? "")) {
+    logWarn("directory_revive_owner_address");
+    return false;
+  }
+  const out = await env.DB.batch([
+    stmt(env.DB, SYNC_REVIVE).bind(id, Date.now(), 1, email, sub),
+    audit(env, "user.status", { type: "user", id }, actorFor("sync_revive"), {
+      reason: "sync_revive",
+      detail: { status: "active" },
+      when: { sql: "changes() > 0", args: [] },
+    }),
+    stmt(env.DB, RESTRICTED_SYNC_FOR_USER).bind(id),
+  ]);
+  if (!out[0]?.meta.changes) return false;
+  // Belt and braces: nothing they held before survives the epoch bump.
+  await revokeUserLive(env, id, "member revived", ctx);
+  return true;
+}
+
+// #1204 erase. ERASABLE is every rule erase keeps, re-checked inside each
+// statement of the one batch, so a revive, restore, promotion, invite or a
+// late artifact that commits between the precheck and the batch makes the
+// whole batch a no-op: a removed row (never the owner), an admin only when
+// ?2 = 1 (#475), not yet erased, not at the owner's configured address (?3),
+// and nothing left in the personal space, live or trash (one partial index
+// each: artifacts_space_live_idx, artifacts_space_deleted_idx).
+const ERASABLE_ROW = `status = 'removed' and role <> 'owner'
+  and (role <> 'admin' or ?2 = 1) and erased_at is null and email <> ?3`;
+const NOTHING_LEFT = `not exists (select 1 from artifacts
+    where space_id = ?1 and deleted_at is null)
+  and not exists (select 1 from artifacts
+    where space_id = ?1 and deleted_at is not null)`;
+const ERASABLE = `exists (select 1 from users where id = ?1 and ${ERASABLE_ROW})
+  and ${NOTHING_LEFT}`;
+// Shares are keyed by address only (email-move.ts): the shares a person
+// holds are those on their current address, read before it changes.
+const ERASE_WIPES = [
+  `delete from shares where email = (select email from users where id = ?1)
+    and ${ERASABLE}`,
+  `delete from space_members where user_id = ?1 and ${ERASABLE}`,
+  `delete from frozen_edits where user_id = ?1 and ${ERASABLE}`,
+  `delete from directory_members where user_id = ?1 and ${ERASABLE}`,
+  // The Google identity stays: it blocks that Google account on sync
+  // (CREATE_USERS skips a known subject) and on Google sign-in until an admin
+  // resets the Google link; then it comes back as a new, empty person.
+  `delete from identities where user_id = ?1 and provider <> 'google'
+    and ${ERASABLE}`,
+  `delete from tokens where user_id = ?1 and ${ERASABLE}`,
+  `delete from agent_grants where user_id = ?1 and ${ERASABLE}`,
+  // #1291: their bus machines are revoked and emptied (labels are
+  // client-chosen hostnames; the token hash goes too), not deleted: the row
+  // (id, last_used_at) is how revokeUserLive below finds their BusHub to
+  // close its sockets. Any device code they decided goes.
+  `update bus_machines set label = '', token_hash = 'erased:' || id,
+    revoked_at = coalesce(revoked_at, cast(strftime('%s', 'now') as integer) * 1000)
+    where user_id = ?1 and ${ERASABLE}`,
+  `delete from bus_device_codes where user_id = ?1 and ${ERASABLE}`,
+  `delete from reserved_artifacts where user_id = ?1 and ${ERASABLE}`,
+  // #1292: their bus agent addresses (an update never fires the users
+  // cascade).
+  `delete from follows where user_id = ?1 and ${ERASABLE}`,
+  `delete from share_notice_agents where user_id = ?1 and ${ERASABLE}`,
+  // The users_personal_space trigger copied their name or address into it.
+  `update spaces set name = '' where id = ?1 and kind = 'personal'
+    and ${ERASABLE}`,
+];
+// Last: it makes ERASABLE false (erased_at). Clearing removed_by_sync,
+// guest_lapsed and google_relink means no revive, share or relink can take
+// the row back; restricted_manual has nothing left to cap.
+const ERASE_USER = `update users set email = ?4, name = '', display_name = null,
+  last_seen_at = null, removed_by_sync = 0, guest_lapsed = 0, google_relink = 0,
+  restricted_manual = 0, session_epoch = session_epoch + 1,
+  status_changed_at = ?5, erased_at = ?5
+  where id = ?1 and ${ERASABLE_ROW} and ${NOTHING_LEFT}`;
+const ERASE_COUNTS = `select
+    (select count(*) from artifacts where space_id = ?1 and deleted_at is null) as live,
+    (select count(*) from artifacts where space_id = ?1 and deleted_at is not null) as deleted`;
+
+/** 409 member_owns_artifacts while their personal space holds anything. */
+async function checkNothingLeft(env: Env, id: string): Promise<void> {
+  const c = await stmt(env.DB, ERASE_COUNTS)
+    .bind(id)
+    .first<MemberOwnsArtifactsDetails>();
+  const details: MemberOwnsArtifactsDetails = {
+    live: c?.live ?? 0,
+    deleted: c?.deleted ?? 0,
+  };
+  if (details.live + details.deleted > 0)
+    throw new ApiError(
+      "member_owns_artifacts",
+      "Transfer their artifacts first",
+      details,
+    );
+}
+
+/**
+ * POST R.memberErase(id) (#1204): erases a removed person with nothing left
+ * in their personal space, in one guarded D1 batch (ERASE_WIPES, then
+ * ERASE_USER, then the user.erased audit row only when the row changed).
+ * The row id stays (authorship), with its Google identity. 404 unknown; 403
+ * owner_only for an admin target unless the actor is the owner; 409
+ * member_active when not removed, the owner, or the owner's configured
+ * address; 409 member_owns_artifacts { live, deleted }. Idempotent: an
+ * erased row resolves with nothing written. The route allows only an
+ * interactive cookie session.
+ */
+export async function eraseMember(
+  env: Env,
+  id: string,
+  actor: Member,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<void> {
+  const row = await getRow(env, id);
+  const admins = adminsOk(actor);
+  checkTarget(row.role, admins);
+  const ownerEmail = normalizeEmail(env.OWNER_EMAIL ?? "") ?? "";
+  const active = () =>
+    new ApiError("member_active", "This member isn't removed");
+  if (
+    statusOf(row.status) !== "removed" ||
+    row.role === "owner" ||
+    (ownerEmail !== "" && normalizeEmail(row.email) === ownerEmail)
+  )
+    throw active();
+  // Idempotent, and a retry also finishes a hub wipe that failed (#1291).
+  if (row.erasedAt !== null) return wipeUserBus(env, id);
+  await checkNothingLeft(env, id);
+  const args = [id, admins, ownerEmail, placeholder(id), Date.now()] as const;
+  const out = await env.DB.batch([
+    ...ERASE_WIPES.map((q) => stmt(env.DB, q).bind(...args.slice(0, 3))),
+    stmt(env.DB, ERASE_USER).bind(...args),
+    // Directly after the users update: audited only when it changed the row.
+    // No detail: audit rows hold ids and enums only.
+    audit(env, "user.erased", { type: "user", id }, userActor(actor.id), {
+      when: { sql: "changes() > 0", args: [] },
+    }),
+  ]);
+  if (!out[ERASE_WIPES.length]?.meta.changes) {
+    // Something committed between the precheck and the batch.
+    await raceCheck(env, id, admins);
+    const now = await getRow(env, id);
+    if (now.erasedAt !== null) return;
+    if (statusOf(now.status) !== "removed") throw active();
+    await checkNothingLeft(env, id);
+    throw active();
+  }
+  try {
+    // Belt and braces: the removal already revoked them, and the row is
+    // refused everywhere; a KV grant this misses is still refused.
+    await revokeAllGrants(env, id);
+  } catch (e) {
+    logWarn("member_erase_revoke_grants", e);
+  } finally {
+    await revokeUserLive(env, id, "member erased", ctx);
+    // #1291: the member's BusHub storage (hostname labels, agents, mail).
+    await wipeUserBus(env, id);
+  }
+}
+
 const DEFAULT_SETTINGS: Settings = {
   name: "Open Artifacts",
   defaultVisibility: "private",
 };
 const KEY = { name: "name", defaultVisibility: "default_visibility" } as const;
 
-const SETTINGS_ALL = "select key, value from settings";
+// Per-user notice dismissals (services/notices.ts USER_NOTICE_PREFIX, one
+// row per member who dismissed) stay out: notices.ts reads the caller's own.
+const SETTINGS_ALL =
+  "select key, value from settings where substr(key, 1, 12) <> 'notice_user:'";
 
-/** Every settings row (one prepared D1 statement); /me also reads the
- * latest-release row from it, so that costs no extra query. */
+/** Every install-wide settings row (one prepared D1 statement); /me also
+ * reads the latest-release row from it, so that costs no extra query. */
 export async function getSettingsKv(env: Env): Promise<Map<string, string>> {
   const { results: rows } = await stmt(env.DB, SETTINGS_ALL).all<{
     key: string;
@@ -231,23 +900,65 @@ export async function getSettings(env: Env): Promise<Settings> {
   return toSettings(await getSettingsKv(env));
 }
 
+/** Settings row for the hosted spaceManagerMappings flag (absent = true). */
+export const SPACE_MANAGER_MAPPINGS_KEY = "space_manager_mappings";
+
+/**
+ * GET R.settings: the instance settings, plus spaceManagerMappings (default
+ * true) when the spaces feature is on; absent otherwise, so self-hosted
+ * installs keep today's shape.
+ */
+export async function settingsView(
+  env: Env,
+  spaces: boolean,
+): Promise<Settings> {
+  const kv = await getSettingsKv(env);
+  const s = toSettings(kv);
+  return spaces
+    ? {
+        ...s,
+        spaceManagerMappings: kv.get(SPACE_MANAGER_MAPPINGS_KEY) !== "false",
+      }
+    : s;
+}
+
+const UPSERT_SETTING = `insert into settings (key, value) values (?1, ?2)
+  on conflict (key) do update set value = excluded.value`;
+
+/**
+ * Writes the patch in one batch. spaceManagerMappings is written only with
+ * the spaces feature on, audited settings.space_manager_mappings in the same
+ * batch and only when it changes.
+ */
 export async function patchSettings(
   env: Env,
   patch: SettingsPatch,
+  opts: { spaces?: boolean; by?: AuditActor } = {},
 ): Promise<Settings> {
-  const db = getDb(env);
   const writes = (Object.keys(KEY) as (keyof typeof KEY)[])
     .filter((k) => patch[k] !== undefined)
-    .map((k) =>
-      db
-        .insert(settings)
-        .values({ key: KEY[k], value: String(patch[k]) })
-        .onConflictDoUpdate({
-          target: settings.key,
-          set: { value: String(patch[k]) },
-        }),
+    .map((k) => stmt(env.DB, UPSERT_SETTING).bind(KEY[k], String(patch[k])));
+  const smm = patch.spaceManagerMappings;
+  if (opts.spaces && smm !== undefined)
+    writes.push(
+      audit(
+        env,
+        "settings.space_manager_mappings",
+        { type: "directory", id: "settings" },
+        opts.by ?? SYSTEM,
+        {
+          detail: { spaceManagerMappings: smm },
+          when: {
+            sql: "coalesce((select value from settings where key = ?), 'true') <> ?",
+            args: [SPACE_MANAGER_MAPPINGS_KEY, String(smm)],
+          },
+        },
+      ),
+      stmt(env.DB, UPSERT_SETTING).bind(
+        SPACE_MANAGER_MAPPINGS_KEY,
+        String(smm),
+      ),
     );
-  const [first, ...rest] = writes;
-  if (first) await db.batch([first, ...rest]);
-  return getSettings(env);
+  if (writes.length) await env.DB.batch(writes);
+  return settingsView(env, opts.spaces === true);
 }

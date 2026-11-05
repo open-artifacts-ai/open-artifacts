@@ -14,13 +14,20 @@ import {
   UploadValidationError,
   uploadArtifact,
 } from "../src/upload/uploadPipeline";
-import { installHarness, mount, seen, server } from "./harness";
+import {
+  findVisibleToast,
+  installHarness,
+  mount,
+  seen,
+  server,
+} from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
     dispose: vi.fn(),
     requestThumbnail: vi.fn(),
     setTheme: vi.fn(),
+    setArtifact: vi.fn(),
   }),
 }));
 
@@ -205,9 +212,7 @@ describe("drag over the viewer", () => {
       });
       window.dispatchEvent(e);
     });
-    expect(
-      await screen.findByText("Finish the current upload first"),
-    ).toBeVisible();
+    await findVisibleToast("Finish the current upload first");
     expect(screen.getByText("1 file selected")).toBeVisible();
   });
 
@@ -225,7 +230,7 @@ describe("drag over the viewer", () => {
       });
       window.dispatchEvent(e);
     });
-    expect(await screen.findByText("No files to upload")).toBeVisible();
+    await findVisibleToast("No files to upload");
   });
 
   it("clears a stuck overlay after 400 ms without dragover, or on pointer activity", async () => {

@@ -1,0 +1,28 @@
+{
+  "items": [
+    {
+      "id": { "time": "2026-10-24T10:00:00.000Z", "applicationName": "admin" },
+      "events": [
+        {
+          "type": "USER_SETTINGS",
+          "name": "SUSPEND_USER",
+          "parameters": [{ "name": "USER_EMAIL", "value": "grace@example.com" }]
+        }
+      ]
+    },
+    {
+      "id": { "time": "2026-10-24T10:01:00.000Z", "applicationName": "admin" },
+      "events": [
+        {
+          "type": "GROUP_SETTINGS",
+          "name": "REMOVE_GROUP_MEMBER",
+          "parameters": [
+            { "name": "USER_EMAIL", "value": "ada@example.com" },
+            { "name": "GROUP_EMAIL", "value": "eng@example.com" }
+          ]
+        }
+      ]
+    }
+  ],
+  "nextPageToken": "next"
+}

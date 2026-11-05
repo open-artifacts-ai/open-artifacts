@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { newId, type OAuthClient, OAuthClientSchema, R } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import designConsent from "../../../design/screens/oauth-consent.html?raw";
 import { createApp } from "../src/app.js";
 import { createPat, verifyPat } from "../src/auth/pat.js";
@@ -8,24 +8,38 @@ import { sessionCookieName, signSession } from "../src/auth/session.js";
 import { FAVICON_TAGS } from "../src/http/head.js";
 import { CONSENT_TEMPLATE } from "../src/mcp/consent-template.js";
 import { clientNameOf, oauthApi, oauthProvider } from "../src/mcp/oauth.js";
+import * as oauthApiModule from "../src/mcp/oauth-api.js";
 import { oauthApi as helpers } from "../src/mcp/oauth-api.js";
 import {
   MAX_REGISTRATIONS_PER_DAY,
   sweepUngrantedClients,
 } from "../src/mcp/registrations.js";
 import { stripTemplateComment } from "../src/mcp/template.js";
-import { patchMember, removeMember } from "../src/services/members.js";
+import {
+  patchMember,
+  removeMember,
+  SYSTEM_ACTOR,
+  setUserStatus,
+} from "../src/services/members.js";
 import { api, login } from "./helpers.js";
 import {
   APP,
+  authorizeUrl,
   callWorker,
   connect,
+  consentPage,
+  decide,
   E,
   limiter,
   MCP_URL,
   nextIp,
+  oauthToken,
+  pkce,
+  REDIRECT,
+  register,
   tool,
 } from "./mcp-helpers.js";
+import { pinMiddayUtc } from "./midday.js";
 
 const app = createApp();
 
@@ -49,7 +63,8 @@ describe("MCP auth: PAT", () => {
     const u = await login(`auth-rev-${tag}@x.com`);
     const { id, token } = await createPat(env, u.userId, "rev");
     const c = await connect(token);
-    expect((await c.listTools()).tools.length).toBe(17);
+    // 18 plus the bus's bus_role_propose: the test pool binds BUS_HUB (#1372).
+    expect((await c.listTools()).tools.length).toBe(19);
     await c.close();
     await env.DB.prepare("update tokens set revoked_at = ? where id = ?")
       .bind(Date.now(), id)
@@ -97,137 +112,6 @@ describe("MCP auth: PAT", () => {
 });
 
 // ------------------------------------------------------------------- OAuth
-
-const REDIRECT = "http://localhost:3333/cb";
-const b64url = (b: ArrayBuffer | Uint8Array) =>
-  btoa(String.fromCharCode(...new Uint8Array(b)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-
-async function register(name = "Test Agent"): Promise<string> {
-  const r = await callWorker(
-    new Request(`${APP}/oauth/register`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "cf-connecting-ip": nextIp(),
-      },
-      body: JSON.stringify({
-        client_name: name,
-        redirect_uris: [REDIRECT],
-        token_endpoint_auth_method: "none",
-        grant_types: ["authorization_code", "refresh_token"],
-        response_types: ["code"],
-      }),
-    }),
-  );
-  expect(r.status).toBe(201);
-  expect(r.headers.get("x-robots-tag")).toBe("noindex, nofollow");
-  return ((await r.json()) as { client_id: string }).client_id;
-}
-
-async function pkce() {
-  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
-  const challenge = b64url(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
-  );
-  return { verifier, challenge };
-}
-
-const authorizeUrl = (clientId: string, challenge: string) =>
-  `${APP}/oauth/authorize?${new URLSearchParams({
-    response_type: "code",
-    client_id: clientId,
-    redirect_uri: REDIRECT,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    state: "st4te",
-    resource: `${APP}/mcp`,
-  })}`;
-
-const cookiePairs = (r: Response) =>
-  r.headers.getSetCookie().map((c) => c.split(";")[0] ?? "");
-
-/** GET the consent page as `cookie`; returns its form fields and binding cookies. */
-async function consentPage(url: string, cookie: string) {
-  const r = await callWorker(new Request(url, { headers: { cookie } }));
-  const body = await r.text();
-  const field = (n: string) =>
-    new RegExp(`name="${n}" value="([^"]*)"`).exec(body)?.[1] ?? "";
-  return {
-    r,
-    body,
-    csrf: field("csrf"),
-    request: field("request"),
-    cookies: cookiePairs(r),
-  };
-}
-
-const decide = (
-  cookie: string,
-  fields: Record<string, string>,
-  headers: Record<string, string> = {},
-) => {
-  const body = new URLSearchParams(fields).toString();
-  return callWorker(
-    new Request(`${APP}/oauth/authorize`, {
-      method: "POST",
-      headers: {
-        cookie,
-        "content-type": "application/x-www-form-urlencoded",
-        "content-length": String(body.length),
-        ...headers,
-      },
-      body,
-    }),
-  );
-};
-
-/** Full flow for `email` (member): register → consent approve → token. */
-async function oauthToken(email: string, clientName = "Test Agent") {
-  const member = await login(email);
-  const clientId = await register(clientName);
-  const { verifier, challenge } = await pkce();
-  const page = await consentPage(
-    authorizeUrl(clientId, challenge),
-    member.cookie,
-  );
-  expect(page.r.status).toBe(200);
-  expect(page.body).toContain(clientName);
-  expect(page.body).toContain(email);
-  const r = await decide([member.cookie, ...page.cookies].join("; "), {
-    csrf: page.csrf,
-    request: page.request,
-    decision: "approve",
-  });
-  expect(r.status).toBe(302);
-  const loc = new URL(r.headers.get("location") ?? "");
-  expect(`${loc.origin}${loc.pathname}`).toBe(REDIRECT);
-  expect(loc.searchParams.get("state")).toBe("st4te");
-  const code = loc.searchParams.get("code") ?? "";
-  const t = await callWorker(
-    new Request(`${APP}/oauth/token`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        "cf-connecting-ip": nextIp(),
-      },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: REDIRECT,
-        client_id: clientId,
-        code_verifier: verifier,
-        resource: `${APP}/mcp`,
-      }).toString(),
-    }),
-  );
-  expect(t.status).toBe(200);
-  expect(t.headers.get("x-robots-tag")).toBe("noindex, nofollow");
-  const { access_token } = (await t.json()) as { access_token: string };
-  return { member, accessToken: access_token, clientId };
-}
 
 describe("MCP auth: OAuth", () => {
   it("no auth → 401 with WWW-Authenticate pointing at the resource metadata", async () => {
@@ -293,6 +177,138 @@ describe("MCP auth: OAuth", () => {
       const { accessToken } = await oauthToken(`oauth-401-${tag}@x.com`);
       expect((await listTools(`Bearer ${accessToken}`)).status).toBe(200);
     });
+
+    it("suspended user → 401 via OAuth (P3 T6)", async () => {
+      const { member, accessToken } = await oauthToken(
+        `oauth-susp-${tag}@x.com`,
+      );
+      expect((await listTools(`Bearer ${accessToken}`)).status).toBe(200);
+      await setUserStatus(
+        env,
+        member.userId,
+        "suspended",
+        "admin_suspend",
+        SYSTEM_ACTOR,
+      );
+      expect((await listTools(`Bearer ${accessToken}`)).status).toBe(401);
+    });
+
+    /** A fresh session cookie at the user's current epoch. */
+    const freshCookie = async (userId: string) => {
+      const row = await env.DB.prepare(
+        "select session_epoch e from users where id = ?",
+      )
+        .bind(userId)
+        .first<{ e: number }>();
+      return `${sessionCookieName(env)}=${await signSession(env, userId, Date.now(), { provider: "access", epoch: row?.e ?? 0 })}`;
+    };
+
+    it("a grant the KV revocation missed is refused after an unsuspend; a new one works", async () => {
+      const email = `oauth-miss-${tag}@x.com`;
+      const { member, accessToken } = await oauthToken(email);
+      expect((await listTools(`Bearer ${accessToken}`)).status).toBe(200);
+      // listUserGrants lagged: setUserStatus's D1 writes landed (a suspend,
+      // then an unsuspend), the KV revocation missed this grant.
+      await new Promise((r) => setTimeout(r, 5));
+      await env.DB.prepare(
+        "update users set status = 'active', status_changed_at = ? where id = ?",
+      )
+        .bind(Date.now(), member.userId)
+        .run();
+      expect(
+        (await helpers(env).listUserGrants(member.userId)).items,
+      ).toHaveLength(1);
+      expect((await listTools(`Bearer ${accessToken}`)).status).toBe(401);
+      // Past the status change: a grant approved now is honoured.
+      await new Promise((r) => setTimeout(r, 5));
+      const again = await oauthToken(email, "Again", {
+        userId: member.userId,
+        cookie: await freshCookie(member.userId),
+      });
+      expect((await listTools(`Bearer ${again.accessToken}`)).status).toBe(200);
+    });
+
+    it("a legacy grant (no issuedAt) keeps working while status never changed", async () => {
+      // A grant written before P3 T6: its props carry no issuedAt.
+      const real = oauthApiModule.oauthApi;
+      const spy = vi
+        .spyOn(oauthApiModule, "oauthApi")
+        .mockImplementation((e) => {
+          const api = real(e);
+          return new Proxy(api, {
+            get(t, k) {
+              if (k === "completeAuthorization")
+                return (o: Parameters<typeof api.completeAuthorization>[0]) => {
+                  const { issuedAt: _, ...legacy } = o.props as {
+                    issuedAt?: number;
+                  };
+                  return t.completeAuthorization({ ...o, props: legacy });
+                };
+              const v = Reflect.get(t, k);
+              return typeof v === "function" ? v.bind(t) : v;
+            },
+          });
+        });
+      let token: { member: { userId: string }; accessToken: string };
+      try {
+        token = await oauthToken(`oauth-legacy-${tag}@x.com`, "Legacy");
+      } finally {
+        spy.mockRestore();
+      }
+      const row = await env.DB.prepare(
+        "select status_changed_at s from users where id = ?",
+      )
+        .bind(token.member.userId)
+        .first<{ s: number | null }>();
+      expect(row?.s).toBeNull();
+      expect((await listTools(`Bearer ${token.accessToken}`)).status).toBe(200);
+    });
+
+    it("consent approved while the user is suspended writes no grant", async () => {
+      const email = `oauth-late-${tag}@x.com`;
+      const m = await login(email);
+      // The suspension commits after the session read, before the grant.
+      const real = oauthApiModule.oauthApi;
+      const spy = vi
+        .spyOn(oauthApiModule, "oauthApi")
+        .mockImplementation((e) => {
+          const api = real(e);
+          return new Proxy(api, {
+            get(t, k) {
+              if (k === "approveConsent")
+                return async (...a: Parameters<typeof api.approveConsent>) => {
+                  await setUserStatus(
+                    env,
+                    m.userId,
+                    "suspended",
+                    "admin_suspend",
+                    SYSTEM_ACTOR,
+                  );
+                  return t.approveConsent(...a);
+                };
+              const v = Reflect.get(t, k);
+              return typeof v === "function" ? v.bind(t) : v;
+            },
+          });
+        });
+      try {
+        const clientId = await register("Late");
+        const page = await consentPage(
+          authorizeUrl(clientId, (await pkce()).challenge),
+          m.cookie,
+        );
+        expect(page.r.status).toBe(200);
+        const r = await decide([m.cookie, ...page.cookies].join("; "), {
+          csrf: page.csrf,
+          request: page.request,
+          decision: "approve",
+        });
+        expect(r.status).toBe(401);
+      } finally {
+        spy.mockRestore();
+      }
+      expect((await helpers(env).listUserGrants(m.userId)).items).toEqual([]);
+    });
   });
 
   it("metadata endpoints are served with the security headers", async () => {
@@ -321,7 +337,7 @@ describe("MCP auth: OAuth", () => {
       modern: true,
       clientInfo: { name: "self-reported", version: "4.5.6" },
     });
-    expect((await c.listTools()).tools).toHaveLength(17);
+    expect((await c.listTools()).tools).toHaveLength(19);
     const pub = (
       await tool(c, "publish_artifact", {
         title: "oauth",
@@ -390,6 +406,63 @@ describe("MCP auth: OAuth", () => {
     expect(
       (await (await api(app, R.oauthClients, member.cookie)).json()) as [],
     ).toEqual([]);
+  });
+
+  // Red-line's grant existence read (src/surfaces.ts) depends on this order:
+  // ownGrant runs before the body is validated, so an invalid body answers
+  // 400 for a live grant of the caller's and 404 for any other.
+  it("PATCH oauth-clients checks the grant before the body", async () => {
+    const { member } = await oauthToken(`oauth-order-${tag}@x.com`, "Order");
+    const list = await api(app, R.oauthClients, member.cookie);
+    const [client] = (await list.json()) as OAuthClient[];
+    const grantId = client?.grantId ?? "";
+    const invalid = (cookie: string) =>
+      api(app, R.oauthClient(grantId), cookie, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label: 5 }),
+      });
+    expect((await invalid(member.cookie)).status).toBe(400);
+    const other = await login(`oauth-order-other-${tag}@x.com`);
+    expect((await invalid(other.cookie)).status).toBe(404);
+    const d = await api(app, R.oauthClient(grantId), member.cookie, {
+      method: "DELETE",
+    });
+    expect(d.status).toBe(204);
+    expect((await invalid(member.cookie)).status).toBe(404);
+  });
+
+  it("a grant is its owner's: another member can't label or revoke it, or see it", async () => {
+    const email = `oauth-own-${tag}@x.com`;
+    const { member, accessToken } = await oauthToken(email, "Owned");
+    const clients = (await (
+      await api(app, R.oauthClients, member.cookie)
+    ).json()) as OAuthClient[];
+    const grantId = clients[0]?.grantId ?? "";
+    expect(grantId).not.toBe("");
+
+    const other = await login(`oauth-own-other-${tag}@x.com`);
+    expect(
+      (await (await api(app, R.oauthClients, other.cookie)).json()) as [],
+    ).toEqual([]);
+    const label = await api(app, R.oauthClient(grantId), other.cookie, {
+      method: "PATCH",
+      body: { label: "taken" },
+    });
+    expect(label.status).toBe(404);
+    const revoke = await api(app, R.oauthClient(grantId), other.cookie, {
+      method: "DELETE",
+    });
+    expect(revoke.status).toBe(404);
+
+    // Untouched: the same label, and the token still works.
+    const after = (await (
+      await api(app, R.oauthClients, member.cookie)
+    ).json()) as OAuthClient[];
+    expect(after.map((c) => [c.grantId, c.label])).toEqual([
+      [grantId, undefined],
+    ]);
+    expect((await listTools(`Bearer ${accessToken}`)).status).toBe(200);
   });
 
   it("deny → redirect with access_denied", async () => {
@@ -500,6 +573,23 @@ describe("MCP auth: OAuth", () => {
     );
   });
 
+  // Review item 40: the grant is full access, so the page names the
+  // destructive part too, not only publish and data.
+  it("consent page lists delete, public visibility and sharing", async () => {
+    const m = await login(`oauth-destr-${tag}@x.com`);
+    const clientId = await register("Destr Agent");
+    const page = await consentPage(
+      authorizeUrl(clientId, (await pkce()).challenge),
+      m.cookie,
+    );
+    expect(page.r.status).toBe(200);
+    expect(page.body).toContain("<b>Delete and share as you</b>");
+    expect(page.body).toContain(
+      "<small>Delete artifacts, make them public, and share them with others.</small>",
+    );
+    expect(page.body).not.toContain("\u2014");
+  });
+
   it("the consent template is Design's file, comment stripped", () => {
     expect(CONSENT_TEMPLATE).toBe(stripTemplateComment(designConsent));
   });
@@ -568,12 +658,108 @@ describe("MCP auth: fix round 1", () => {
     ).toBe("Only members can connect agents");
   });
 
+  it("a restricted member's PAT is refused at /mcp, like an OAuth grant", async () => {
+    const m = await login(`pat-restricted-${tag}@x.com`);
+    const { token } = await createPat(env, m.userId, "r");
+    await env.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(m.userId)
+      .run();
+    const r = await listTools(`Bearer ${token}`);
+    expect(r.status).toBe(401);
+    expect(
+      ((await r.json()) as { error: { message: string } }).error.message,
+    ).toBe("Only members can connect agents");
+  });
+
+  it("a restricted member's PAT is refused on REST too, the same rule as /mcp (item 34)", async () => {
+    const m = await login(`pat-rest-restricted-${tag}@x.com`);
+    const { token } = await createPat(env, m.userId, "r");
+    expect((await api(app, R.me, token)).status).toBe(200);
+    await env.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(m.userId)
+      .run();
+    // A refused bearer is no one (no cookie fallback): 401 on REST.
+    expect((await api(app, R.me, token)).status).toBe(401);
+    expect((await api(app, R.artifacts, token)).status).toBe(401);
+    // Lifted, the same PAT works again (restriction never revoked it).
+    await env.DB.prepare("update users set restricted_manual = 0 where id = ?")
+      .bind(m.userId)
+      .run();
+    expect((await api(app, R.me, token)).status).toBe(200);
+  });
+
+  it("a refresh with a stale refresh token logs oauth_refresh_mismatch, and nothing secret (#769)", async () => {
+    const { refreshToken, clientId } = await oauthToken(
+      `oauth-rtm-${tag}@x.com`,
+    );
+    // Same grant, wrong secret: the provider's refresh_token_mismatch.
+    const [userId, grantId] = refreshToken.split(":");
+    const stale = `${userId}:${grantId}:${"x".repeat(32)}`;
+    const lines: string[] = [];
+    const spies = (["log", "warn", "error"] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation((...a: unknown[]) => {
+        lines.push(a.map(String).join(" "));
+      }),
+    );
+    try {
+      const refresh = (token: string) =>
+        callWorker(
+          new Request(`${APP}/oauth/token`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/x-www-form-urlencoded",
+              "cf-connecting-ip": "203.0.113.77",
+            },
+            body: new URLSearchParams({
+              grant_type: "refresh_token",
+              refresh_token: token,
+              client_id: clientId,
+            }).toString(),
+          }),
+        );
+      const r = await refresh(stale);
+      expect(r.status).toBe(400);
+      expect(await r.json()).toMatchObject({
+        error: "invalid_grant",
+        error_description: "Invalid refresh token",
+      });
+      const evts = lines.flatMap((l) => {
+        try {
+          return [JSON.parse(l) as Record<string, unknown>];
+        } catch {
+          return [];
+        }
+      });
+      expect(evts.filter((x) => x.evt === "oauth_refresh_mismatch")).toEqual([
+        { evt: "oauth_refresh_mismatch" },
+      ]);
+      for (const l of lines) {
+        expect(l).not.toContain(grantId);
+        expect(l).not.toContain(userId);
+        expect(l).not.toContain(clientId);
+      }
+      // A good refresh logs no mismatch.
+      lines.length = 0;
+      expect((await refresh(refreshToken)).status).toBe(200);
+      expect(lines.some((l) => l.includes("oauth_refresh_mismatch"))).toBe(
+        false,
+      );
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
+  });
+
   it("demotion to guest revokes the user's OAuth grants and PATs", async () => {
     const { member, accessToken } = await oauthToken(`oauth-dem-${tag}@x.com`);
     const { token } = await createPat(env, member.userId, "p");
     expect(await grantsOf(member.userId)).toHaveLength(1);
     // MemberPatch allows admin|member only; exercise the guard directly.
-    await patchMember(env, member.userId, { role: "guest" } as never);
+    await patchMember(
+      env,
+      member.userId,
+      { role: "guest" } as never,
+      SYSTEM_ACTOR,
+    );
     expect(await grantsOf(member.userId)).toEqual([]);
     expect(await verifyPat(env, token)).toBeNull();
     expect((await listTools(`Bearer ${accessToken}`)).status).toBe(401);
@@ -583,7 +769,7 @@ describe("MCP auth: fix round 1", () => {
     await login(`oauth-rmv-owner-${tag}@x.com`, "owner");
     const { member } = await oauthToken(`oauth-rmv-${tag}@x.com`);
     expect(await grantsOf(member.userId)).toHaveLength(1);
-    await removeMember(env, member.userId);
+    await removeMember(env, member.userId, SYSTEM_ACTOR);
     expect(await grantsOf(member.userId)).toEqual([]);
   });
 
@@ -639,7 +825,11 @@ describe("MCP auth: fix round 1", () => {
   });
 
   it("instance-wide daily cap: over it → 429 'registration limit reached; try tomorrow'", async () => {
-    const today = new Date().toISOString().slice(0, 10);
+    // The seed's day and the server's own Date.now() must agree.
+    const today = new Date(pinMiddayUtc()).toISOString().slice(0, 10);
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     await env.DB.prepare(
       "insert into counters (key, n, day) values ('oauth_register', ?, ?) on conflict (key) do update set n = excluded.n, day = excluded.day",
     )

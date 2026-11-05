@@ -82,7 +82,7 @@ describe("UserPresence (class)", () => {
   it("closeAll closes as the DO's user (u:{name})", async () => {
     const uid = `pc-actor-${newId()}`;
     const actors = await inPresence(uid, async (p) => {
-      const got: string[] = [];
+      const got: (string | null)[] = [];
       p.touch("art-a", Date.now());
       p.closer = async (_e, _id, actor) => {
         got.push(actor);

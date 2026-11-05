@@ -14,9 +14,29 @@ import {
   flowHash,
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_TOKEN_URL,
-  keyId,
-  verifyRedeem,
+  isPlatformPrincipalId,
+  verifyBrokerTicket,
 } from "@oa/auth-core";
+import {
+  ASSERTION_SKEW_MS,
+  type BrokerState,
+  badFlow,
+  json,
+  installLimited as limitInstall,
+  ipLimited as limitIp,
+  logger,
+  MAX_BODY,
+  notFound,
+  fixedOrigin as originOf,
+  rateKeyOf,
+  readState as readSigned,
+  refused,
+  same,
+  signState as signSigned,
+  staleAssertion,
+  verifyAssertion,
+  verifyState as verifySigned,
+} from "@oa/broker-core";
 import { lookupInstall } from "./registry.js";
 
 export interface Env {
@@ -36,144 +56,44 @@ export interface Env {
   RL_BROKER_INSTALL?: RateLimit;
 }
 
+// Responses, logging, the signed state, rate limits and the install
+// assertion are @oa/broker-core's, shared with the directory broker.
 const STATE_TTL_MS = 10 * 60_000;
-const REDEEM_SKEW_MS = 60_000;
-const MAX_BODY = 4096;
+const REDEEM_PATH = "/google/redeem";
 /** S256 of 32 bytes, base64url: exactly what the installs generate. */
 const CHALLENGE_RE = /^[A-Za-z0-9_-]{43}$/;
 const enc = new TextEncoder();
-
-const b64 = (bytes: Uint8Array) => {
-  let s = "";
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-};
-const unb64 = (s: string): string | null => {
-  try {
-    return atob(s.replace(/-/g, "+").replace(/_/g, "/"));
-  } catch {
-    return null;
-  }
-};
-
-const json = (body: unknown, status = 200) =>
-  Response.json(body, {
-    status,
-    headers: { "cache-control": "no-store", "x-robots-tag": "noindex" },
-  });
-const notFound = () => json({ error: "not_found" }, 404);
-const refused = () => json({ error: "unauthorized" }, 401);
-
-/** One line per outcome; never a code, verifier, token, email or key. */
-const log = (route: string, outcome: string) =>
-  console.log(JSON.stringify({ evt: "broker", route, outcome }));
-
-async function hmac(key: string, data: string): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(key),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return new Uint8Array(await crypto.subtle.sign("HMAC", k, enc.encode(data)));
-}
-
-function same(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let d = 0;
-  for (let i = 0; i < a.length; i++) d |= (a[i] as number) ^ (b[i] as number);
-  return d === 0;
-}
+const log = logger("broker");
 
 /**
  * The broker state binds the exact flow: install, the install's client state,
  * H(client nonce || code challenge), and a short expiry. A state minted for
- * one nonce/challenge pair can't be replayed for another.
+ * one nonce/challenge pair can't be replayed for another. Sign-in states are
+ * MACed over the payload alone (no domain), as in P2.
  */
-type BrokerState = { i: string; s: string; h: string; exp: number };
-
-async function signState(env: Env, st: BrokerState): Promise<string> {
-  const p = b64(enc.encode(JSON.stringify(st)));
-  return `${p}.${b64(await hmac(env.BROKER_STATE_KEY, p))}`;
-}
-
-async function readState(
-  env: Env,
-  v: string,
-  now: number,
-): Promise<BrokerState | null> {
-  const [p, sig, extra] = v.split(".");
-  if (!p || !sig || extra !== undefined) return null;
-  const want = await hmac(env.BROKER_STATE_KEY, p);
-  const got = unb64(sig);
-  if (
-    got === null ||
-    !same(
-      want,
-      Uint8Array.from(got, (c) => c.charCodeAt(0)),
-    )
-  )
-    return null;
-  try {
-    const raw = unb64(p);
-    const st = raw ? (JSON.parse(raw) as BrokerState) : null;
-    if (
-      !st ||
-      typeof st.i !== "string" ||
-      typeof st.s !== "string" ||
-      typeof st.h !== "string"
-    )
-      return null;
-    return typeof st.exp === "number" && st.exp > now ? st : null;
-  } catch {
-    return null;
-  }
-}
+const signState = (env: Env, st: BrokerState) =>
+  signSigned(env.BROKER_STATE_KEY, st);
+const readState = (env: Env, v: string, now: number) =>
+  readSigned(env.BROKER_STATE_KEY, v, now);
 
 /** The fixed public origin, or null when BROKER_ORIGIN is missing/invalid. */
-function fixedOrigin(env: Env): string | null {
-  try {
-    const u = new URL(env.BROKER_ORIGIN);
-    return u.protocol === "https:" ? u.origin : null;
-  } catch {
-    return null;
-  }
-}
+const fixedOrigin = (env: Env) => originOf(env.BROKER_ORIGIN);
 
 const callbackUrl = (origin: string) => `${origin}/google/callback`;
 
-const ipOf = (req: Request) =>
-  req.headers.get("cf-connecting-ip")?.trim() || "unknown";
-
+const limits = (env: Env) => ({
+  ip: env.RL_BROKER_IP,
+  install: env.RL_BROKER_INSTALL,
+});
+const ipLimited = (env: Env, req: Request) => limitIp(limits(env), req, log);
 /**
- * Charges the per-IP bucket before any Google or registry work. A missing
- * binding (either one) fails closed (503) rather than unlimited.
+ * Per-install buckets, one per route (review item 24): the unauthenticated
+ * authorize can't drain the signed redeem's bucket, so a few IPs naming an
+ * install (its id is public in /healthz) can't block its sign-ins. The
+ * directory broker scopes its routes the same way.
  */
-async function ipLimited(env: Env, req: Request): Promise<Response | null> {
-  if (!env.RL_BROKER_IP || !env.RL_BROKER_INSTALL)
-    return log("rate_limit", "unbound"), json({ error: "unavailable" }, 503);
-  if (!(await env.RL_BROKER_IP.limit({ key: `ip:${ipOf(req)}` })).success)
-    return log("rate_limit", "ip"), json({ error: "rate_limited" }, 429);
-  return null;
-}
-
-/**
- * Charges the per-install bucket only once the request is tied to a real
- * install (authorize) or authenticated as it (redeem): junk requests naming
- * install B must not drain B's sign-in.
- */
-async function installLimited(
-  env: Env,
-  install: string,
-): Promise<Response | null> {
-  const byInstall = env.RL_BROKER_INSTALL;
-  if (!byInstall)
-    return log("rate_limit", "unbound"), json({ error: "unavailable" }, 503);
-  if (!(await byInstall.limit({ key: `install:${install}` })).success)
-    return log("rate_limit", "install"), json({ error: "rate_limited" }, 429);
-  return null;
-}
+const installLimited = (env: Env, install: string, scope: string) =>
+  limitInstall(limits(env), install, log, scope);
 
 async function authorize(
   req: Request,
@@ -202,7 +122,29 @@ async function authorize(
   if (limited) return limited;
   const entry = await lookupInstall(env.BROKER_REGISTRY, install, now);
   if (!entry) return log("authorize", "unknown_install"), notFound();
-  const busy = await installLimited(env, install);
+  // Platform principals (the Provisioning API's admin sign-in, design v7
+  // 4.3): a ticket signed by the entry's key over this flow, checked before
+  // the install bucket, so nobody can drain it and lock the admin out.
+  const platform = isPlatformPrincipalId(install);
+  if (
+    platform &&
+    !(await verifyBrokerTicket(
+      entry.keys,
+      q.get("ticket") ?? "",
+      { install, state, challenge },
+      now,
+    ))
+  )
+    return log("authorize", "bad_ticket"), notFound();
+  // A ticket is still anonymous (anyone may start a sign-in) and replayable
+  // until exp, so a platform principal's authorize bucket is per client
+  // (rateKeyOf, IPv6 by /64), never one shared bucket: replays drain only
+  // the replayer's own key and the admin's sign-in stays open.
+  const busy = await installLimited(
+    env,
+    install,
+    platform ? `authorize:${rateKeyOf(req)}` : "authorize",
+  );
   if (busy) return busy;
   const u = new URL(GOOGLE_AUTHORIZE_URL);
   u.search = new URLSearchParams({
@@ -224,6 +166,9 @@ async function authorize(
     code_challenge_method: "S256",
     prompt: "select_account",
     ...(entry.domains?.[0] ? { hd: entry.domains[0] } : {}),
+    // The install's break-glass sign-in (P3 T18): Google must
+    // re-authenticate; the install checks auth_time.
+    ...(q.get("reauth") === "1" ? { max_age: "0" } : {}),
   }).toString();
   log("authorize", "ok");
   return Response.redirect(u.toString(), 302);
@@ -235,24 +180,31 @@ async function callback(
   now: number,
 ): Promise<Response> {
   const q = new URL(req.url).searchParams;
-  const st = await readState(env, q.get("state") ?? "", now);
-  if (!st) return log("callback", "bad_state"), notFound();
-  const entry = await lookupInstall(env.BROKER_REGISTRY, st.i, now);
+  const raw = q.get("state") ?? "";
+  const st = await readState(env, raw, now);
+  // A late return (Google sat open past STATE_TTL_MS) carries a state this
+  // broker signed: send the user back to their install's sign-in, not a raw
+  // 404. Forgeries still 404, and an expired state never carries a code on.
+  const late = st ? null : await verifySigned(env.BROKER_STATE_KEY, raw);
+  const flow = st ?? late;
+  if (!flow) return log("callback", "bad_state"), notFound();
+  const entry = await lookupInstall(env.BROKER_REGISTRY, flow.i, now);
   if (!entry) return log("callback", "unknown_install"), notFound();
   // Only the registry decides where the user goes next.
   const to = new URL("/auth/callback/google", entry.origin);
-  const code = q.get("code");
+  const code = late ? null : q.get("code");
   const error = q.get("error");
-  if (code) to.searchParams.set("code", code);
+  if (late) to.searchParams.set("error", "expired");
+  else if (code) to.searchParams.set("code", code);
   else
     to.searchParams.set(
       "error",
       error && /^[a-z_]{1,64}$/.test(error) ? error : "access_denied",
     );
-  to.searchParams.set("state", st.s);
+  to.searchParams.set("state", flow.s);
   // Back at redeem, with the install's H(nonce || challenge) to match.
-  to.searchParams.set("bstate", q.get("state") ?? "");
-  log("callback", code ? "ok" : "idp_error");
+  if (!late) to.searchParams.set("bstate", raw);
+  log("callback", late ? "expired" : code ? "ok" : "idp_error");
   return new Response(null, {
     status: 302,
     headers: {
@@ -297,31 +249,50 @@ async function redeem(req: Request, env: Env, now: number): Promise<Response> {
   const origin = fixedOrigin(env);
   if (!origin)
     return log("redeem", "misconfigured"), json({ error: "server_error" }, 500);
-  const limited = await ipLimited(env, req);
-  if (limited) return limited;
+  // A platform principal's redeem arrives over the gate (no
+  // cf-connecting-ip), so its IP key is the one shared `gate:<id>` bucket,
+  // and the Provisioning API signs anyone's callback (4.3): charging it
+  // before the flow check would let junk bstates lock the admin out. That
+  // redeem is charged per flow below instead; every other caller (a public
+  // one naming a platform id included) pays its IP bucket first.
+  const platform = isPlatformPrincipalId(body.install);
+  const gated = platform && rateKeyOf(req).startsWith("gate:");
+  if (gated) {
+    if (!env.RL_BROKER_IP || !env.RL_BROKER_INSTALL)
+      return log("rate_limit", "unbound"), json({ error: "unavailable" }, 503);
+  } else {
+    const limited = await ipLimited(env, req);
+    if (limited) return limited;
+  }
   const entry = await lookupInstall(env.BROKER_REGISTRY, body.install, now);
   if (!entry) return log("redeem", "unknown_install"), refused();
-  // The kid must be one of this install's keys AND derive from its x.
-  let x: string | null = null;
-  for (const k of entry.keys)
-    if (k.kid === kid && (await keyId(k.x)) === kid) x = k.x;
-  // The signature covers method, path, kid and body: a valid redeem can't be
+  // The kid must be one of this install's keys AND derive from its x. The
+  // signature covers method, path, kid and body: a valid redeem can't be
   // transplanted to another route or replayed under another key id.
-  if (!x || !(await verifyRedeem(x, kid, text, sig)))
+  if (!(await verifyAssertion(entry, REDEEM_PATH, kid, text, sig)))
     return log("redeem", "bad_signature"), refused();
-  if (Math.abs(now - body.ts) > REDEEM_SKEW_MS)
-    return log("redeem", "stale"), refused();
-  const busy = await installLimited(env, body.install);
-  if (busy) return busy;
+  if (Math.abs(now - body.ts) > ASSERTION_SKEW_MS)
+    return log("redeem", "stale"), staleAssertion();
   // The broker state must be this install's, unexpired, and bind the flow
   // the install holds: H(client nonce || challenge), compared in constant time.
+  // Checked before the install bucket, so a bad flow charges nothing.
   const st = await readState(env, body.bstate, now);
   if (
     !st ||
     st.i !== body.install ||
     !same(enc.encode(st.h), enc.encode(body.h))
   )
-    return log("redeem", "bad_flow"), refused();
+    return log("redeem", "bad_flow"), badFlow();
+  // A platform principal's redeem is signed by the Provisioning API for
+  // anyone's callback (design v7 4.3), so its bucket is per flow: replaying
+  // one flow (anyone may start one) never drains the admin's. The flow is
+  // its state, which the ticket binds (authorize).
+  const busy = await installLimited(
+    env,
+    body.install,
+    platform ? `redeem:${st.s}` : "redeem",
+  );
+  if (busy) return busy;
 
   const res = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
@@ -364,7 +335,7 @@ export default {
       return authorize(req, env, now);
     if (req.method === "GET" && pathname === "/google/callback")
       return callback(req, env, now);
-    if (req.method === "POST" && pathname === "/google/redeem")
+    if (req.method === "POST" && pathname === REDEEM_PATH)
       return redeem(req, env, now);
     return notFound();
   },

@@ -1,10 +1,29 @@
+import type { BusHub } from "./bus/hub.js";
+import type { DirectorySync } from "./directory/sync-do.js";
 import type { ArtifactRuntime } from "./runtime/do.js";
 import type { UserPresence } from "./runtime/presence.js";
 
 export interface Env {
   DB: D1Database;
   FILES: R2Bucket;
-  OAUTH_KV: KVNamespace;
+  /**
+   * The OAuth provider's KV namespace. Required while OAUTH_STORE is kv
+   * (the default) or dual; unbound is fine with d1 (mcp/oauth-store.ts).
+   * Reach it only through oauthEnv(env).OAUTH_KV.
+   */
+  OAUTH_KV?: KVNamespace;
+  /**
+   * Where the OAuth provider's records live (mcp/oauth-store.ts): "kv"
+   * (unset: today's behaviour), "dual" (D1 and KV, reads D1 first) or "d1"
+   * (the install's D1 only). Anything else fails clearly (503).
+   */
+  OAUTH_STORE?: string;
+  /**
+   * "1": kv or dual may serve after this install served in d1 mode
+   * (otherwise 503 oauth_store_misconfigured). Only after the OAuth keys
+   * were emptied from KV (every agent reconnects); see mcp/oauth-store.ts.
+   */
+  OAUTH_STORE_ROLLBACK?: string;
   ARTIFACT_RUNTIME: DurableObjectNamespace<ArtifactRuntime>;
   /**
    * One UserPresence DO per user (runtime/presence.ts): closes a revoked
@@ -12,13 +31,50 @@ export interface Env {
    * TTL ceiling (logged as presence_unbound).
    */
   USER_PRESENCE?: DurableObjectNamespace<UserPresence>;
+  /**
+   * One DirectorySync DO per install (directory/sync-do.ts): Google polling,
+   * reconcile and queued access jobs. Unbound, directory sync never runs.
+   */
+  DIRECTORY_SYNC?: DurableObjectNamespace<DirectorySync>;
+  /**
+   * One BusHub DO per member (bus/hub.ts, #1291), named "bus:" + user id.
+   * Bound in every config since #1315 (the class shipped unbound in 0.109.0,
+   * tag v4). Unbound, every /bus route answers 404; HOSTED=1 answers 404
+   * too, until #1299.
+   */
+  BUS_HUB?: DurableObjectNamespace<BusHub>;
   ASSETS: Fetcher;
-  /** Anonymous-write limiter (per IP); unbound in the test pool. */
+  /**
+   * Anonymous limiter, 30 per key per minute (wrangler `ratelimits`): anonymous
+   * data writes per IP, subscriptions, anonId mints and the OAuth endpoints.
+   * Bound in deployed Workers and in the test pool; unbound outside
+   * ENVIRONMENT=dev, anonymous access fails closed (503).
+   */
   RL_ANON?: RateLimit;
+  /**
+   * Optional limiter for anonymous data writes only, keyed per IP. Bound, it
+   * replaces RL_ANON for those writes (except with HOSTED=1, where both
+   * apply), so ANON_WRITES_PER_MIN above RL_ANON's 30 can take effect.
+   * Unbound (the default), RL_ANON applies as before. Setup's wrangler
+   * template doesn't carry it yet, and setup regenerates wrangler.jsonc, so a
+   * hand-added binding is dropped on the next deploy (the safe direction).
+   */
+  RL_ANON_WRITES?: RateLimit;
   /** Sign-in code limiter, keyed `${installKey}:${ip}`; unbound in the test pool. */
   RL_AUTH?: RateLimit;
-  /** Optional service binding to the hosted auth broker (else AUTH_BROKER_URL over HTTPS). */
+  /** GET R.directoryGroups limiter, keyed per caller (P3 T13); unbound: unlimited. */
+  RL_DIRECTORY?: RateLimit;
+  /**
+   * Optional service binding to the auth broker (self-host on the broker's
+   * account). Else the invocation's ctx.props.AUTH_BROKER (hosted), else
+   * AUTH_BROKER_URL over HTTPS (never on HOSTED=1); auth/broker-transport.ts.
+   */
   BROKER?: Fetcher;
+  /**
+   * Optional service binding to the directory broker; the same precedence as
+   * BROKER, with ctx.props.DIRECTORY_BROKER and DIRECTORY_BROKER_URL.
+   */
+  DIRECTORY_BROKER?: Fetcher;
   /** Browser Run, for server-side thumbnails (services/thumbs.ts); optional. */
   BROWSER?: Fetcher;
   /** Optional Email Service send binding; invite/share emails are off without it. */
@@ -46,7 +102,9 @@ export interface Env {
   /**
    * Anonymous writes per IP per artifact per minute, enforced in the DO
    * (anonWritesPerMin: 1..600, default LIMITS.anonWritesPerMinPerIp). The
-   * RL_ANON binding's own per-IP limit (wrangler `ratelimits`) applies first.
+   * RL_ANON binding's own per-IP limit (wrangler `ratelimits`, 30) applies
+   * first, so a higher value has no effect until setup supports the
+   * RL_ANON_WRITES binding.
    */
   ANON_WRITES_PER_MIN?: string;
   /**
@@ -110,17 +168,52 @@ export interface Env {
   EMAIL_DAILY_CAP?: string;
   /** "1" on hosted installs (Me.instance.hosted). */
   HOSTED?: string;
-  /** Comma list of FeatureFlag (@oa/shared parseFeatures). */
+  /**
+   * Comma list of FeatureFlag (@oa/shared parseFeatures). Unset (self-host
+   * default): today's behaviour. usage_off: R.usage is 404 (hosted, P3 T19).
+   */
   FEATURES?: string;
+  /**
+   * Hosted billing tier (trial | team | business; @oa/shared parseTier), set
+   * by provisioning, which derives FEATURES from it. Reported only
+   * (Me.instance.tier, hosted installs): behaviour always follows FEATURES.
+   */
+  TIER?: string;
   // secrets
   ACCESS_CLIENT_SECRET: string;
   /** Google client secret (direct transport only). */
   GOOGLE_CLIENT_SECRET?: string;
   /** Ed25519 private key, PKCS#8 DER base64url (broker transport). */
   BROKER_SIGNING_KEY?: string;
+  /**
+   * P3 directory sync (directory/transport.ts). The AES-GCM key sealing the
+   * Google refresh token at rest (32+ chars; HKDF "oa:directory-token").
+   * Hosted: P1 provisioning; self-host: setup generates it when the
+   * directory client is set. Unset: directory sync is off.
+   */
+  DIRECTORY_TOKEN_KEY?: string;
+  /**
+   * Hosted directory broker origin (https://directory.<app domain>); set, it
+   * selects the broker transport for directory sync. Never AUTH_BROKER_URL:
+   * the sign-in and directory brokers are separate Workers.
+   */
+  DIRECTORY_BROKER_URL?: string;
+  /** The sealing key's version, in the AD (install:version); default "1". */
+  DIRECTORY_TOKEN_KEY_VERSION?: string;
+  /**
+   * Self-host direct transport only: the install's own Google app for
+   * directory consent. HOSTED=1 with either set resolves to no directory.
+   */
+  GOOGLE_DIRECTORY_CLIENT_ID?: string;
+  GOOGLE_DIRECTORY_CLIENT_SECRET?: string;
   TURNSTILE_SECRET?: string;
   /** Bearer key for /__test/* (32+ chars). */
   TEST_HOOK_KEY?: string;
+  /**
+   * Bearer key for POST /__oa/oauth-store/copy (the OAuth KV -> D1 copy,
+   * mcp/oauth-copy.ts); 32+ chars. Unset: no route.
+   */
+  OAUTH_COPY_KEY?: string;
   SESSION_SECRET: string;
   CONTENT_SIGNING_KEY: string;
   ANALYTICS_TOKEN?: string;

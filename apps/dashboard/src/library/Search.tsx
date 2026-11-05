@@ -21,7 +21,7 @@ export function SearchPage() {
         <Empty
           icon={<SearchIcon />}
           title="Search your artifacts"
-          description="Type in the search box to find titles, content, and agents."
+          description="Type in the search box to find artifacts by title, description or content."
         />
       )}
       {r.isError && (

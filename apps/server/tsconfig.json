@@ -8,5 +8,12 @@
       "@cloudflare/vitest-plugin/types"
     ]
   },
-  "include": ["src", "test", "scripts/bench*.ts", "scripts/bench-stubs"]
+  "include": [
+    "src",
+    "test",
+    "scripts/bench*.ts",
+    "scripts/bench-stubs",
+    "scripts/verify-migration*.ts",
+    "scripts/migration-*.ts"
+  ]
 }

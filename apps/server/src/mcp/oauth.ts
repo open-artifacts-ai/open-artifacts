@@ -1,29 +1,71 @@
 import {
   AuthorizationError,
   CimdFetchError,
+  type GrantSummary,
   OAuthProvider,
 } from "@cloudflare/workers-oauth-provider";
-import { AUTH, MCP_PATH, type Member, type OAuthClient, R } from "@oa/shared";
+import {
+  ApprovedFromSchema,
+  AUTH,
+  MCP_PATH,
+  type Member,
+  type OAuthClient,
+  OAuthClientPatchSchema,
+  R,
+  RedirectKindSchema,
+  stripNameControls,
+} from "@oa/shared";
 import type { Context } from "hono";
+import { canConnect } from "../auth/agents.js";
 import { callerOf, capOfCaller, requireUser } from "../auth/authz.js";
+import { withCred } from "../auth/cred.js";
 import { orgCan } from "../auth/policy.js";
 import type { Env } from "../env.js";
-import { readCappedRequest } from "../http/body.js";
+import { jsonBody, readCappedRequest } from "../http/body.js";
 import { ApiError, errorJson } from "../http/errors.js";
-import { FAVICON_TAGS } from "../http/head.js";
 import type { AppEnv } from "../http/middleware.js";
+import {
+  checkFormCsrf,
+  formCsrf,
+  pageResponse as html,
+  messagePage,
+  sessionUser,
+} from "../http/pages.js";
+import { logError } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
+import {
+  type AgentAttr,
+  clientVersionOf,
+  dropGrantUsage,
+  type GrantIdentity,
+  type GrantUsage,
+  grantUsage,
+  pruneGrantUsage,
+  redirectInfo,
+  setGrantLabel,
+  touchGrant,
+  uaFamily,
+} from "../services/agent-usage.js";
 import { getSettings } from "../services/members.js";
-import { getUser } from "../services/users.js";
-import { hmacSign, hmacVerify } from "../util/crypto.js";
+import { getUser, getUserWithEpoch } from "../services/users.js";
 import { CONSENT_TEMPLATE } from "./consent-template.js";
 import {
+  listAllUserGrants,
+  lookupUserGrant,
   OAUTH,
   oauthApi,
   type ProviderOptions,
   providerOptions,
 } from "./oauth-api.js";
+import { isOAuthCopyRequest } from "./oauth-copy.js";
+import {
+  type OAuthEnv,
+  OAuthStoreConfigError,
+  oauthEnv,
+  storeMisconfigured,
+  syncStoreMarkers,
+} from "./oauth-store.js";
 import {
   markClientGranted,
   registrationAllowed,
@@ -41,7 +83,12 @@ import { escapeHtml, fillTemplate } from "./template.js";
 export { OAUTH, oauthApi } from "./oauth-api.js";
 
 /** What a grant carries to the MCP handler (ctx.props) and in its metadata. */
-export type GrantProps = { userId: string; clientName: string };
+export type GrantProps = {
+  userId: string;
+  clientName: string;
+  /** When consent was approved (ms); compared with users.status_changed_at. */
+  issuedAt?: number;
+};
 
 const MAX_CLIENT_NAME = 64;
 /** Client registrations per IP (IPv6: per /64) per window of RL_ANON. */
@@ -51,9 +98,7 @@ const TOKEN_IP_KEY = "tok:ip:";
 /** Consent page renders (beginConsent: a KV write) per user per RL_ANON window. */
 const CONSENT_KEY = "consent:u:";
 const MAX_TOKEN_BODY = 16 * 1024;
-const CSRF_TTL_S = 600;
 const MAX_FORM_BYTES = 8 * 1024;
-const MAX_GRANTS_LISTED = 100;
 const GRANT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 /** Controls, bidi overrides/isolates and zero-width characters: they can disguise a name. */
@@ -67,29 +112,76 @@ export const clientNameOf = (name: string | undefined, fallback: string) =>
     .replace(HIDDEN_CHARS, "")
     .slice(0, MAX_CLIENT_NAME);
 
-/** Members only, and never a capped caller (a guest, a code session outside the domains, P3's restricted). */
-const canConnect = (user: Member) =>
-  orgCan(user, "mcp.connect", { cap: capOfCaller(callerOf(user)) });
+/** What the grant's KV metadata holds (identity fields absent on grants from before them). */
+type GrantMetadata = { clientName?: string } & Partial<GrantIdentity>;
+
+/** The grant id of a provider access token (`{userId}:{grantId}:{secret}`). */
+const grantIdOf = (token: string | undefined): string | null => {
+  const id = token?.split(":")[1];
+  return id && GRANT_ID.test(id) ? id : null;
+};
 
 /**
  * Bearer OAuth access tokens at /mcp: the grant's user, attributed to the
- * registered client name and the MCP clientInfo.version.
+ * registered client name and the MCP clientInfo.version. Each request records
+ * the grant's use in waitUntil (touchGrant: at most one write a minute).
  */
 const apiHandler = {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     const props = (ctx as ExecutionContext & { props?: Partial<GrantProps> })
       .props;
-    const user = props?.userId ? await getUser(env, props.userId) : null;
-    if (!user) return mcpUnauthorized(env);
+    const row = props?.userId
+      ? await getUserWithEpoch(env, props.userId)
+      : null;
+    // A grant issued at or before the user's last status change (or with no
+    // issuedAt, from before P3 T6) is refused: one minted during a
+    // suspension, or missed by the KV revocation, never outlives it.
+    if (
+      !row ||
+      (row.statusChangedAt !== null &&
+        !((props?.issuedAt ?? 0) > row.statusChangedAt))
+    )
+      return mcpUnauthorized(env);
+    const { user } = row;
     // A member demoted to guest loses agent access (grants are also revoked).
     if (!canConnect(user))
       return mcpUnauthorized(env, "Only members can connect agents");
     const capped = await capMcpBody(req, env);
     if (capped instanceof Response) return capped;
-    const agent = { name: props?.clientName || "unknown agent", version: null };
-    return mcpHandler(env, () =>
-      createServer({ env, user, agent, exec: ctx, clientVersion: true }),
-    )(capped, env, ctx);
+    const grantId = grantIdOf(
+      (ctx as ExecutionContext & { auth?: { token?: string } }).auth?.token,
+    );
+    const agent: AgentAttr = {
+      name: props?.clientName || "unknown agent",
+      version: null,
+      ...(grantId ? { via: { kind: "grant" as const, id: grantId } } : {}),
+    };
+    let server: ReturnType<typeof createServer> | undefined;
+    // Audit rows from these tools name the grant (by id, never the token).
+    const res = await withCred({ kind: "oauth_grant", id: grantId }, () =>
+      mcpHandler(env, () => {
+        server = createServer({
+          env,
+          user,
+          sessionEpoch: row.sessionEpoch,
+          agent,
+          exec: ctx,
+          clientVersion: true,
+        });
+        return server;
+      })(capped, env, ctx),
+    );
+    if (grantId) {
+      const version = clientVersionOf(
+        server?.server.getClientVersion()?.version,
+      );
+      ctx.waitUntil(
+        touchGrant(env, grantId, user.id, version).catch((e) =>
+          logError("grant_touch_failed", e),
+        ),
+      );
+    }
+    return res;
   },
 };
 
@@ -266,7 +358,24 @@ export async function serveAppHost(
     if (gated instanceof Response) return gated;
     req = gated;
   }
-  const res = await oauthProvider(env, app).fetch(req, env, ctx);
+  // This install's OAuth store (OAUTH_STORE), one per request; the app and
+  // the /mcp handler get it too, so their helpers share its cache. /healthz
+  // only reads (oauthStoreHealth): the markers are written on serve paths.
+  // kv refuses leaving d1 at its first store operation, which may run
+  // inside the provider: that refusal is the same 503.
+  let res: Response;
+  try {
+    // The copy route checks them itself (mcp/oauth-copy.ts), so it can say
+    // "markers" once its key verifies.
+    const path = new URL(req.url).pathname;
+    if (path !== "/healthz" && !isOAuthCopyRequest(env, path))
+      await syncStoreMarkers(env);
+    const store: OAuthEnv = oauthEnv(env);
+    res = await oauthProvider(env, app).fetch(req, store, ctx);
+  } catch (e) {
+    if (!(e instanceof OAuthStoreConfigError)) throw e;
+    return storeMisconfigured(e);
+  }
   if (res.status === 401 && res.body === null) return explainNoToken(req, res);
   if (req.method === "POST" && new URL(req.url).pathname === OAUTH.register)
     await trackRegisteredClient(env, res);
@@ -275,31 +384,6 @@ export async function serveAppHost(
 
 // ------------------------------------------------------------------ consent
 
-const PAGE_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'";
-
-function html(body: string, status: number, headers?: Headers): Response {
-  const h = new Headers(headers);
-  h.set("content-type", "text/html; charset=utf-8");
-  h.set("content-security-policy", PAGE_CSP);
-  h.set("cache-control", "no-store");
-  h.set("x-frame-options", "DENY");
-  return new Response(body, { status, headers: h });
-}
-
-/** A small static page; `title` and `message` are escaped. */
-function messagePage(title: string, message: string, status: number) {
-  return html(
-    `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex, nofollow"><title>${escapeHtml(title)} — Open Artifacts</title>
-<style>:root{color-scheme:light dark}body{font:15px/1.5 system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 16px;color:#15181c;background:#eef0f3}@media (prefers-color-scheme:dark){body{color:#e9ebee;background:#131518}}</style>
-${FAVICON_TAGS}
-</head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body></html>`,
-    status,
-  );
-}
-
 const membersOnly = () =>
   messagePage(
     "Only members can connect agents",
@@ -307,31 +391,19 @@ const membersOnly = () =>
     403,
   );
 
-/** The signed-in browser user (session cookie only; Bearer tokens can't consent). */
-const sessionUser = (c: Context<AppEnv>): Member | null =>
-  c.var.tokenId ? null : c.var.user;
-
-const csrfData = (uid: string, handle: string, exp: number) =>
-  `oauth-consent:${uid}:${handle}:${exp}`;
+/** The consent form's CSRF scope (http/pages.ts formCsrf). */
+const CONSENT_SCOPE = "oauth-consent";
 
 /** `{exp}.{hmac}` bound to the session user and the consent handle (itself single-use). */
-async function consentCsrf(env: Env, uid: string, handle: string) {
-  const exp = Math.floor(Date.now() / 1000) + CSRF_TTL_S;
-  return `${exp}.${await hmacSign(env.SESSION_SECRET, csrfData(uid, handle, exp))}`;
-}
+const consentCsrf = (env: Env, uid: string, handle: string) =>
+  formCsrf(env, CONSENT_SCOPE, uid, handle);
 
-async function checkConsentCsrf(
+const checkConsentCsrf = (
   env: Env,
   uid: string,
   handle: string,
   token: string,
-): Promise<boolean> {
-  const m = /^(\d{1,12})\.([A-Za-z0-9_-]{43})$/.exec(token);
-  if (!m) return false;
-  const exp = Number(m[1]);
-  if (exp <= Math.floor(Date.now() / 1000)) return false;
-  return hmacVerify(env.SESSION_SECRET, csrfData(uid, handle, exp), m[2] ?? "");
-}
+): Promise<boolean> => checkFormCsrf(env, CONSENT_SCOPE, uid, handle, token);
 
 /** parseAuthRequest/approve/deny failures: redirect only when the library says it's safe. */
 function authorizeError(e: unknown): Response {
@@ -439,11 +511,29 @@ async function decideConsent(c: Context<AppEnv>): Promise<Response> {
     const props: GrantProps = {
       userId: user.id,
       clientName: clientNameOf(client?.clientName, approved.request.clientId),
+      issuedAt: Date.now(),
+    };
+    // Still active right before the grant is written. A status change that
+    // commits after this read is later than issuedAt, so the grant is
+    // refused at use (apiHandler).
+    if (!(await getUser(c.env, user.id)))
+      return messagePage(
+        "Signed out",
+        "Your session ended. Start connecting again from your agent.",
+        401,
+      );
+    // Only the redirect_uri of this request (validated against the client's
+    // registered URIs), never client metadata such as client_uri; and only
+    // coarse browser and OS families, no raw User-Agent or IP.
+    const metadata: GrantMetadata = {
+      clientName: props.clientName,
+      ...redirectInfo(approved.request.redirectUri),
+      approvedFrom: uaFamily(c.req.header("user-agent")),
     };
     const { redirectTo } = await oauth.completeAuthorization({
       request: approved.request,
       userId: user.id,
-      metadata: { clientName: props.clientName },
+      metadata,
       scope: approved.request.scope,
       props,
     });
@@ -459,20 +549,67 @@ async function decideConsent(c: Context<AppEnv>): Promise<Response> {
 
 const notFound = () => new ApiError("not_found", "Not found");
 
-async function listClients(env: Env, user: Member): Promise<OAuthClient[]> {
-  const { items } = await oauthApi(env).listUserGrants(user.id, {
-    limit: MAX_GRANTS_LISTED,
-  });
-  return items
-    .map((g) => ({
-      grantId: g.id,
-      clientName: clientNameOf(
-        (g.metadata as { clientName?: string } | null)?.clientName,
-        g.clientId,
+const iso = (ms: number) => new Date(ms).toISOString();
+
+/** One grant as a card: its approval facts (KV metadata) and usage row. */
+function toClient(g: GrantSummary, u: GrantUsage | undefined): OAuthClient {
+  const m = (g.metadata ?? {}) as GrantMetadata;
+  const kind = RedirectKindSchema.safeParse(m.redirectKind);
+  const from = ApprovedFromSchema.safeParse(m.approvedFrom);
+  return {
+    grantId: g.id,
+    clientName: stripNameControls(clientNameOf(m.clientName, g.clientId)),
+    createdAt: iso(g.createdAt * 1000),
+    ...(u?.label ? { label: u.label } : {}),
+    ...(kind.success ? { redirectKind: kind.data } : {}),
+    ...(kind.data === "hosted" && typeof m.redirectHost === "string"
+      ? { redirectHost: m.redirectHost }
+      : {}),
+    ...(from.success ? { approvedFrom: from.data } : {}),
+    ...(u?.lastUsedAt != null ? { lastUsedAt: iso(u.lastUsedAt) } : {}),
+    ...(clientVersionOf(u?.clientVersion)
+      ? { clientVersion: clientVersionOf(u?.clientVersion) as string }
+      : {}),
+    ...(from.success ? { versionsPublished: u?.versionsPublished ?? 0 } : {}),
+  };
+}
+
+/**
+ * The caller's grants (KV, every page), each with its usage row (D1),
+ * newest first. With `ctx`, and when every page was read, usage rows of
+ * grants not listed are deleted in waitUntil (pruneGrantUsage, one
+ * statement; rows used within its grace stay, for KV list lag).
+ */
+async function listClients(
+  env: Env,
+  user: Member,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<OAuthClient[]> {
+  const { items, complete } = await listAllUserGrants(env, user.id);
+  const ids = items.map((g) => g.id);
+  const usage = await grantUsage(env, user.id, ids);
+  if (ctx && complete)
+    ctx.waitUntil(
+      pruneGrantUsage(env, user.id, ids).catch((e) =>
+        logError("grant_usage_prune_failed", e),
       ),
-      createdAt: new Date(g.createdAt * 1000).toISOString(),
-    }))
+    );
+  return items
+    .map((g) => toClient(g, usage.get(g.id)))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** The caller's grant named by :grantId (a direct lookup, not a listing), or 404. */
+async function ownGrant(
+  c: Context<AppEnv>,
+): Promise<{ user: Member; grant: OAuthClient }> {
+  const user = requireUser(c);
+  const grantId = c.req.param("grantId") ?? "";
+  if (!GRANT_ID.test(grantId)) throw notFound();
+  const g = await lookupUserGrant(c.env, user.id, grantId);
+  if (!g) throw notFound();
+  const usage = await grantUsage(c.env, user.id, [g.id]);
+  return { user, grant: toClient(g, usage.get(g.id)) };
 }
 
 export function mountOAuth(app: AppType): void {
@@ -480,16 +617,23 @@ export function mountOAuth(app: AppType): void {
   app.post(OAUTH.authorize, decideConsent);
 
   app.get(R.oauthClients, async (c) =>
-    c.json(await listClients(c.env, requireUser(c))),
+    c.json(await listClients(c.env, requireUser(c), c.executionCtx)),
   );
 
+  // Not for a capped caller (404): DELETE stays open so they can revoke.
+  app.patch(`${R.oauthClients}/:grantId`, async (c) => {
+    if (!canConnect(requireUser(c))) throw notFound();
+    const { user, grant } = await ownGrant(c);
+    const { label } = await jsonBody(c, OAuthClientPatchSchema);
+    await setGrantLabel(c.env, grant.grantId, user.id, label);
+    const { label: _old, ...rest } = grant;
+    return c.json(label === null ? rest : { ...rest, label });
+  });
+
   app.delete(`${R.oauthClients}/:grantId`, async (c) => {
-    const user = requireUser(c);
-    const grantId = c.req.param("grantId") ?? "";
-    if (!GRANT_ID.test(grantId)) throw notFound();
-    const own = await listClients(c.env, user);
-    if (!own.some((g) => g.grantId === grantId)) throw notFound();
-    await oauthApi(c.env).revokeGrant(grantId, user.id);
+    const { user, grant } = await ownGrant(c);
+    await oauthApi(c.env).revokeGrant(grant.grantId, user.id);
+    await dropGrantUsage(c.env, grant.grantId, user.id);
     return c.body(null, 204);
   });
 }

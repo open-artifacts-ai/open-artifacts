@@ -1,11 +1,11 @@
 // A Google group search box (ARIA 1.2 combobox with a listbox popup): it
 // searches R.directoryGroups from 2 characters and hands the picked group to
 // `onPick`. Shared by Directory (restricted groups) and the space mappings.
-import { Input } from "@oa/ui/shadcn";
+import { Button, Input } from "@oa/ui/shadcn";
 import { useId, useState } from "react";
 import type { DirectoryGroup } from "../api/contract";
 import { useDirectoryGroups } from "../api/queries";
-import { muted } from "./ui";
+import { errorText, muted } from "./ui";
 
 const people = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
 
@@ -108,7 +108,24 @@ export function GroupPicker({
               </span>
             </div>
           ))}
-          {!options.length && (
+          {!options.length && search.isError && !search.isFetching && (
+            <div
+              role="alert"
+              className={`flex items-center justify-between gap-[var(--oa-space-2)] px-[var(--oa-space-2)] py-[6px] ${errorText}`}
+            >
+              <span>Couldn't search groups.</span>
+              <Button
+                size="sm"
+                variant="outline"
+                // mousedown, not click: the input's blur would close the list first.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => void search.refetch()}
+              >
+                Retry
+              </Button>
+            </div>
+          )}
+          {!options.length && !(search.isError && !search.isFetching) && (
             <div
               role="presentation"
               className={`px-[var(--oa-space-2)] py-[6px] ${muted}`}

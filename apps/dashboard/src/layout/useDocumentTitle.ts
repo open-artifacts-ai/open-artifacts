@@ -14,6 +14,9 @@ function metaName(): string {
   );
 }
 
+/** The meta tag's instance name, else "Open Artifacts": for screens that mustn't observe /me. */
+export const metaInstanceName = (): string => metaName() || APP;
+
 /** Instance name from /me, else the shell's meta tag, else "Open Artifacts". */
 export function useInstanceName(): string {
   const state = useMe();

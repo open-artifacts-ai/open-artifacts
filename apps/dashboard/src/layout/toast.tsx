@@ -6,7 +6,8 @@ import { Toaster as Sonner, toast as sonner } from "@oa/ui/shadcn";
 import type { ReactNode } from "react";
 
 export type ToastOptions = {
-  title: string;
+  /** Text, or inline content such as a link. */
+  title: ReactNode;
   description?: ReactNode;
   /** "neutral": no icon. */
   tone?: "info" | "success" | "danger" | "warning" | "neutral";

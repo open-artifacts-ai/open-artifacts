@@ -14,6 +14,7 @@ import {
   RUNTIME_PARAMS,
   RUNTIME_RESULTS,
   type RuntimeMethod,
+  retryAfterFromClose,
   type ShellToArtifact,
   StorageEntrySchema,
   StorageKeySchema,
@@ -22,8 +23,16 @@ import {
 import type { z } from "zod";
 import { ApiClientError, api, type RequestExtra } from "../api/client";
 import { isEmbed } from "../embed";
-import { isAnonToken, loadAnonToken, saveAnonToken } from "./anonId";
+import {
+  isAnonToken,
+  loadAnonShort,
+  loadAnonToken,
+  saveAnonShort,
+  saveAnonToken,
+  withMintLock,
+} from "./anonId";
 import { frameLoad, loadArtifactFrame } from "./frame";
+import { clampRetryHint } from "./liveEvents";
 
 type Viewer = { email: string; name: string | null };
 type Theme = "light" | "dark";
@@ -53,10 +62,22 @@ export interface BridgeOptions {
   onOpen?: (url: string) => void;
   /** The viewer first touched the artifact since this load (runtime `interacted`). */
   onInteracted?: () => void;
+  /** The document scrolled (runtime `scroll`, throttled). */
+  onScroll?: (pos: ScrollPos) => void;
+  /** Text selected or a field focused in the frame, or no longer. */
+  onEngaged?: (engaged: boolean) => void;
 }
+
+/** A document's scroll offset and how far it could scroll. */
+export type ScrollPos = { top: number; max: number };
 
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CAP_MS = 30_000;
+/** A dropped socket is reported offline after this many failed reconnects, or OFFLINE_AFTER_MS down. */
+const OFFLINE_AFTER_TRIES = 3;
+const OFFLINE_AFTER_MS = 30_000;
+/** A socket still connecting after this long is closed and counts as a failed attempt. */
+const CONNECT_TIMEOUT_MS = 10_000;
 const DocPage = PageSchema(DataDocSchema);
 const KeyPage = PageSchema(StorageKeySchema);
 
@@ -65,6 +86,12 @@ type Sub = {
   refs: number;
   attempt: number;
   timer?: ReturnType<typeof setTimeout>;
+  /** Ever opened: a first socket closed before opening was refused (e.g. the per-actor cap). */
+  connected: boolean;
+  /** db.offline sent for the current outage; cleared on open. */
+  offline: boolean;
+  /** When the open socket dropped (Date.now()). */
+  downSince?: number;
 };
 
 const MAX_SUBSCRIPTIONS = 32;
@@ -106,7 +133,6 @@ const qs = (p: { cursor?: string; limit?: number }) => {
 export function createBridge(opts: BridgeOptions) {
   const {
     iframe,
-    artifact,
     onPdfText,
     onThumb,
     onResize,
@@ -114,15 +140,21 @@ export function createBridge(opts: BridgeOptions) {
     onAccessLost,
     onInteracted,
   } = opts;
+  // The live artifact: capabilities, dataWriters and visibility follow
+  // setArtifact (review item 38), so a change in Share applies without a reload.
+  let artifact = opts.artifact;
   const id = artifact.id; // the only artifact id any route is ever built from
   // Framed, the artifact never learns who is viewing, whatever the caller passed.
   const embed = isEmbed();
-  const viewer = artifact.capabilities.viewer && !embed ? opts.viewer : null;
+  const viewer = () =>
+    artifact.capabilities.viewer && !embed ? opts.viewer : null;
   // The anonId header rides only on anonymous calls (viewer null for any
   // reason: signed out, or embed mode) to artifacts that allow anonymous
   // writes; never signed in, never into the frame.
-  const anon =
-    (opts.viewer === null || embed) && artifact.allowAnonymousWrites === true;
+  const anon = () =>
+    (opts.viewer === null || embed) &&
+    artifact.visibility === "public" &&
+    artifact.dataWriters === "viewers";
   /** The first token-less call that mints (writes, anon-id); others wait so one id is minted. */
   let minting: Promise<void> | null = null;
   const subs = new Map<string, Sub>();
@@ -157,8 +189,16 @@ export function createBridge(opts: BridgeOptions) {
     const hint = isEmbed() ? `${path.includes("?") ? "&" : "?"}embed=1` : "";
     const ws = new WebSocket(`${proto}//${location.host}${path}${hint}`);
     s.ws = ws;
+    // A hung handshake never fires close: give up on it so it counts as a failure.
+    const hung = setTimeout(() => {
+      if (ws.readyState === WebSocket.CONNECTING) ws.close();
+    }, CONNECT_TIMEOUT_MS);
     ws.onopen = () => {
+      clearTimeout(hung);
       s.attempt = 0;
+      s.connected = true;
+      s.offline = false;
+      s.downSince = undefined;
       lostFired = false;
       // Changes during a gap aren't replayed; tell the frame to refetch on every open.
       if (s.ws === ws && s.refs > 0)
@@ -184,6 +224,7 @@ export function createBridge(opts: BridgeOptions) {
       });
     };
     ws.onclose = (e) => {
+      clearTimeout(hung);
       if (disposed || s.ws !== ws || s.refs <= 0) return;
       s.ws = null;
       // 4403 hits every socket on any access change; tell the shell once, then retry as usual.
@@ -191,9 +232,26 @@ export function createBridge(opts: BridgeOptions) {
         lostFired = true;
         onAccessLost?.();
       }
-      const delay = Math.min(
-        BACKOFF_CAP_MS,
-        BACKOFF_BASE_MS * 2 ** s.attempt++,
+      // Never silently deaf: a refused first socket is offline at once; a
+      // dropped one after a few failed reconnects. Once per outage; the next
+      // open sends db.resync.
+      s.downSince ??= Date.now();
+      if (
+        !s.offline &&
+        (!s.connected ||
+          s.attempt >= OFFLINE_AFTER_TRIES ||
+          Date.now() - s.downSince >= OFFLINE_AFTER_MS)
+      ) {
+        s.offline = true;
+        reply({ oa: 1, type: "event", event: "db.offline", collection: col });
+      }
+      // A 4403 for a socket opened just as access changed says how long to
+      // hold off (#816): never sooner, or it closes again at once.
+      const hold =
+        e?.code === 4403 ? clampRetryHint(retryAfterFromClose(e.reason)) : 0;
+      const delay = Math.max(
+        hold,
+        Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** s.attempt++),
       );
       s.timer = setTimeout(() => {
         if (!disposed && s.refs > 0) connect(col, s);
@@ -212,7 +270,7 @@ export function createBridge(opts: BridgeOptions) {
     let s = subs.get(col);
     if (!s) {
       if (subs.size >= MAX_SUBSCRIPTIONS) return false;
-      s = { ws: null, refs: 0, attempt: 0 };
+      s = { ws: null, refs: 0, attempt: 0, connected: false, offline: false };
       subs.set(col, s);
     }
     if (s.refs++ === 0) connect(col, s);
@@ -240,27 +298,29 @@ export function createBridge(opts: BridgeOptions) {
     mints: boolean,
     go: (extra?: RequestExtra) => Promise<T>,
   ): Promise<T> => {
-    if (!anon) return go();
+    if (!anon()) return go();
     // Re-check after each wait: a failed mint leaves no token, and only one
     // waiter may become the next minter.
     if (mints) while (!loadAnonToken() && minting) await minting;
-    const token = loadAnonToken();
-    const p = go({
-      ...(token ? { headers: { [ANON_ID_HEADER]: token } } : {}),
-      onResponse: (res) => {
-        const t = res.headers.get(ANON_ID_HEADER);
-        if (isAnonToken(t)) saveAnonToken(t);
-      },
-    });
-    if (mints && !token && !minting) {
-      const done: Promise<void> = p.then(
-        () => {},
-        () => {},
-      );
-      minting = done.then(() => {
-        minting = null;
+    const send = (token: string | null) =>
+      go({
+        ...(token ? { headers: { [ANON_ID_HEADER]: token } } : {}),
+        onResponse: (res) => {
+          const t = res.headers.get(ANON_ID_HEADER);
+          if (isAnonToken(t)) saveAnonToken(t);
+        },
       });
-    }
+    if (!mints || loadAnonToken()) return send(loadAnonToken());
+    // This call mints. Other tabs may be minting too: inside the browser-wide
+    // lock, re-read the token so the browser keeps one id (#681).
+    const p = withMintLock(() => send(loadAnonToken()), abort.signal);
+    const done: Promise<void> = p.then(
+      () => {},
+      () => {},
+    );
+    minting = done.then(() => {
+      minting = null;
+    });
     return p;
   };
 
@@ -330,12 +390,19 @@ export function createBridge(opts: BridgeOptions) {
         unsubscribe(p.collection);
         return null;
       case "viewer.get":
-        return viewer;
+        return viewer();
       case "viewer.anonId":
         // Only the per-artifact short id; the signed token stays here.
-        return anon
-          ? (await http.get(R.anonId(id), AnonViewerSchema)).anonId
-          : null;
+        // Cached per token id and artifact: the route is rate limited per IP,
+        // and a failed lookup would cost the page its id (#681).
+        if (!anon()) return null;
+        {
+          const cached = loadAnonShort(loadAnonToken(), id);
+          if (cached) return cached;
+          const { anonId } = await http.get(R.anonId(id), AnonViewerSchema);
+          saveAnonShort(loadAnonToken(), id, anonId);
+          return anonId;
+        }
       case "storage.get": {
         const e = await nullIfNotFound(
           http.get(R.storageKey(id, p.key), StorageEntrySchema),
@@ -408,7 +475,7 @@ export function createBridge(opts: BridgeOptions) {
           oa: 1,
           type: "welcome",
           capabilities: artifact.capabilities,
-          viewer,
+          viewer: viewer(),
           theme: opts.theme,
           // The runtime turns plain links to this app into navigate requests.
           appOrigin: location.origin,
@@ -448,6 +515,12 @@ export function createBridge(opts: BridgeOptions) {
       case "interacted":
         onInteracted?.();
         break;
+      case "scroll":
+        opts.onScroll?.({ top: m.top, max: m.max });
+        break;
+      case "engaged":
+        opts.onEngaged?.(m.engaged);
+        break;
     }
   };
 
@@ -484,6 +557,18 @@ export function createBridge(opts: BridgeOptions) {
     },
     setTheme(t: Theme) {
       reply({ oa: 1, type: "theme", theme: t });
+    },
+    /**
+     * The artifact changed (capabilities, dataWriters, visibility): later calls
+     * follow it. Another artifact's summary is ignored: the id never changes.
+     * The frame's own copy (from welcome) refreshes on its next load.
+     */
+    setArtifact(next: ArtifactSummary) {
+      if (next.id === id) artifact = next;
+    },
+    /** After a live swap: scroll to the previous version's position. */
+    scrollTo(pos: ScrollPos) {
+      reply({ oa: 1, type: "scroll.to", top: pos.top, max: pos.max });
     },
   };
 }

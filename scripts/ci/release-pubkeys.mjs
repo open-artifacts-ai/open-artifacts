@@ -12,8 +12,8 @@ export const RELEASE_PUBKEY_PLACEHOLDER =
 
 /** @type {Readonly<Record<Env, string>>} */
 export const RELEASE_PUBKEY = Object.freeze({
-  staging: RELEASE_PUBKEY_PLACEHOLDER,
-  prod: RELEASE_PUBKEY_PLACEHOLDER,
+  staging: "octk3ysmW5j0Fw8hPs1ex3POLXmYH8l6nLoms8Rrb8c",
+  prod: "tfSgv1PLRZlYQfVNpy9Vp1ohxdfZihz2WgPCYcCQyJg",
 });
 
 const PUBKEY_RE = /^[A-Za-z0-9_-]{43}$/;
@@ -36,16 +36,24 @@ const pinnedOf = (env, pinned) => {
 };
 
 /**
- * The signing key's public x must be the pinned one; "skipped" while it is
- * the placeholder.
+ * A key or signature with no pinned key is refused, never warned past: the
+ * gap between generating the keys and pinning them must not sign or attach.
+ * @param {Env} env
+ */
+const notPinned = (env) =>
+  new Error(`key set but RELEASE_PUBKEY.${env} not pinned`);
+
+/**
+ * The signing key's public x must be the pinned one; refused while the pin
+ * is still the placeholder.
  * @param {Env} env
  * @param {string} x
  * @param {Readonly<Record<Env, string>>} [pinned]
- * @returns {"verified" | "skipped"}
+ * @returns {"verified"}
  */
 export function checkSigningKey(env, x, pinned = RELEASE_PUBKEY) {
   const k = pinnedOf(env, pinned);
-  if (k === null) return "skipped";
+  if (k === null) throw notPinned(env);
   if (x !== k)
     throw new Error(
       `the signing key is not the pinned RELEASE_PUBKEY.${env} (wrong or swapped secret)`,
@@ -54,13 +62,13 @@ export function checkSigningKey(env, x, pinned = RELEASE_PUBKEY) {
 }
 
 /**
- * Verifies `signature` over `payload` with the pinned key; "skipped" while
- * it is the placeholder.
+ * Verifies `signature` over `payload` with the pinned key; refused while the
+ * pin is still the placeholder.
  * @param {Env} env
  * @param {Uint8Array} payload
  * @param {string} signature
  * @param {Readonly<Record<Env, string>>} [pinned]
- * @returns {"verified" | "skipped"}
+ * @returns {"verified"}
  */
 export function verifySignature(
   env,
@@ -71,7 +79,7 @@ export function verifySignature(
   if (!SIG_RE.test(signature))
     throw new Error("the signature is not 86 base64url characters");
   const k = pinnedOf(env, pinned);
-  if (k === null) return "skipped";
+  if (k === null) throw notPinned(env);
   const key = createPublicKey({
     key: { kty: "OKP", crv: "Ed25519", x: k },
     format: "jwk",
@@ -94,11 +102,3 @@ export function verifySignature(
  */
 export const skipUnsigned = (env, stdin, pinned = RELEASE_PUBKEY) =>
   stdin.trim() === "" && pinnedOf(env, pinned) === null;
-
-/**
- * The line a key job prints while a pubkey is still the placeholder.
- * @param {Env} env
- * @param {string} what
- */
-export const SKIPPED = (env, what) =>
-  `WARNING: RELEASE_PUBKEY.${env} is still the placeholder; the ${what} is NOT verified against a pinned key\n`;

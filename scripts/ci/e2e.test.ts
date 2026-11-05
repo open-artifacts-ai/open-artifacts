@@ -73,6 +73,56 @@ describe("e2e.sh", () => {
       "PW_DIR=playwright-report/real",
     ]);
   });
+  it("with E2E_SHARD, mock and real run only that shard, as one blob per suite and shard", () => {
+    const blob =
+      'echo "BLOB=$PLAYWRIGHT_BLOB_OUTPUT_FILE PW_DIR=$PLAYWRIGHT_HTML_OUTPUT_DIR" >> "$STUB_LOG"';
+    for (const suite of ["mock", "real"]) {
+      const sb = sandbox({ pnpm: blob });
+      const r = sb.run(["bash", script("e2e.sh"), suite], {
+        env: { E2E_SHARD: "3/4", E2E_BLOB_DIR: join(sb.dir, "blobs") },
+      });
+      expect(r.code).toBe(0);
+      const config = suite === "real" ? " -c playwright.real.config.ts" : "";
+      expect(sb.log()).toEqual([
+        `pnpm --filter @oa/dashboard exec playwright test${config} --shard=3/4 --reporter=list,blob`,
+        `BLOB=${join(sb.dir, "blobs", suite, "shard-3.zip")} PW_DIR=`,
+      ]);
+    }
+  });
+  it("merge builds one html report per suite that has blobs, and nothing without any", () => {
+    const none = run("merge", { E2E_BLOB_DIR: "/nonexistent/blobs" });
+    expect(none.code).toBe(0);
+    expect(none.sb.log()).toEqual([]);
+    const sb = sandbox({ pnpm });
+    const blobs = join(sb.dir, "blobs");
+    write(join(blobs, "real", "shard-1.zip"), "");
+    const r = sb.run(["bash", script("e2e.sh"), "merge"], {
+      env: { E2E_BLOB_DIR: blobs },
+    });
+    expect(r.code).toBe(0);
+    expect(sb.log()).toEqual([
+      `pnpm --filter @oa/dashboard exec playwright merge-reports --reporter=html ${join(blobs, "real")}`,
+      "PW_DIR=playwright-report/real",
+    ]);
+  });
+  it("spaces runs its whole suite: an html report locally, a blob in a CI shard", () => {
+    const local = run("spaces");
+    expect(local.code).toBe(0);
+    expect(local.sb.log()).toEqual([
+      "pnpm --filter @oa/dashboard test:e2e:spaces",
+      "PW_DIR=playwright-report/spaces",
+    ]);
+    const blob = 'echo "BLOB=$PLAYWRIGHT_BLOB_OUTPUT_FILE" >> "$STUB_LOG"';
+    const sb = sandbox({ pnpm: blob });
+    const r = sb.run(["bash", script("e2e.sh"), "spaces"], {
+      env: { E2E_SHARD: "3/4", E2E_BLOB_DIR: join(sb.dir, "blobs") },
+    });
+    expect(r.code).toBe(0);
+    expect(sb.log()).toEqual([
+      "pnpm --filter @oa/dashboard test:e2e:spaces --reporter=list,blob",
+      `BLOB=${join(sb.dir, "blobs", "spaces", "shard-3.zip")}`,
+    ]);
+  });
   it("ui runs the @oa/ui real-browser checks (axe contrast, focus)", () => {
     const r = run("ui");
     expect(r.code).toBe(0);

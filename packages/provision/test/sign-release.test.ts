@@ -4,7 +4,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
 import {
-  existsSync,
+  copyFileSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -25,6 +25,7 @@ import {
   publishRelease,
   r2ReleaseReader,
 } from "../src/publish.js";
+import { r2S3Client } from "../src/r2s3.js";
 import {
   assetEntries,
   buildReleaseRecord,
@@ -60,10 +61,6 @@ vi.mock("../src/internal/gates.js", async (orig) => {
 });
 
 const ROOT = new URL("../../../", import.meta.url).pathname;
-// Plain .mjs, run by the runner's own node (no strip-types) in the key jobs.
-const SIGN = join(ROOT, "scripts/ci/sign-release.mjs");
-const ASSEMBLE = join(ROOT, "scripts/ci/assemble-release.mjs");
-const SIGN_FLOOR = join(ROOT, "scripts/ci/sign-floor.mjs");
 const CHECK = join(ROOT, "scripts/ci/check-hosted-release.ts");
 const enc = (s: string) => new TextEncoder().encode(s);
 
@@ -76,6 +73,42 @@ const pubX = (k: { publicKey: KeyObject }) =>
 G.RELEASE_PUBKEY = { staging: pubX(KEYS.staging), prod: pubX(KEYS.prod) };
 const pem = (env: "staging" | "prod") =>
   KEYS[env].privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+
+/**
+ * The key-job scripts (plain .mjs, run on Node 22 from .nvmrc) pin the real
+ * release keys, so the CLI tests run the real scripts from a temp copy whose
+ * release-pubkeys.mjs pins these test keys instead, or the placeholder. There
+ * is no runtime override: the shipped scripts can only ever use the pinned keys.
+ */
+function scriptsPinnedTo(pins: { staging: string; prod: string } | null) {
+  const dir = mkdtempSync(join(tmpdir(), "oa-keyjob-"));
+  for (const f of readdirSync(join(ROOT, "scripts/ci")))
+    if (f.endsWith(".mjs"))
+      copyFileSync(join(ROOT, "scripts/ci", f), join(dir, f));
+  const p = join(dir, "release-pubkeys.mjs");
+  const src = readFileSync(p, "utf8");
+  const block = /export const RELEASE_PUBKEY = Object\.freeze\(\{[^}]*\}\);/;
+  if (!block.test(src)) throw new Error("release-pubkeys.mjs layout changed");
+  const body = pins
+    ? `staging: ${JSON.stringify(pins.staging)}, prod: ${JSON.stringify(pins.prod)}`
+    : "staging: RELEASE_PUBKEY_PLACEHOLDER, prod: RELEASE_PUBKEY_PLACEHOLDER";
+  writeFileSync(
+    p,
+    src.replace(
+      block,
+      `export const RELEASE_PUBKEY = Object.freeze({ ${body} });`,
+    ),
+  );
+  return dir;
+}
+const PINNED = scriptsPinnedTo({
+  staging: pubX(KEYS.staging),
+  prod: pubX(KEYS.prod),
+});
+const UNPINNED = scriptsPinnedTo(null);
+const SIGN = join(PINNED, "sign-release.mjs");
+const ASSEMBLE = join(PINNED, "assemble-release.mjs");
+const SIGN_FLOOR = join(PINNED, "sign-floor.mjs");
 
 const TEMPLATE = new Uint8Array(
   readFileSync(join(ROOT, "apps/server/wrangler.template.jsonc")),
@@ -137,32 +170,16 @@ async function artifact(over: Partial<typeof FIX> = {}) {
   return { dir, ...out };
 }
 
-/**
- * A Node 20 binary to run the key-job scripts under (the runner's preinstalled
- * major): OA_NODE20, else a known local install. Absent: those runs skip and
- * the static post-20 API check (hosted-release.test.ts) still holds.
- */
-const NODE20 = [
-  process.env.OA_NODE20,
-  join(process.env.HOME ?? "", "n/n/versions/node/20.10.0/bin/node"),
-  "/opt/homebrew/opt/node@20/bin/node",
-].find((p) => {
-  if (!p || !existsSync(p)) return false;
-  const v = spawnSync(p, ["--version"], { encoding: "utf8" });
-  return v.status === 0 && /^v20\./.test(v.stdout);
-});
-
 function run(
   script: string,
   args: string[],
   input = "",
-  node = process.execPath,
 ): { code: number | null; stdout: string; stderr: string } {
   // The .ts helpers (check-hosted-release) still need strip-types.
   const flags = script.endsWith(".ts")
     ? ["--experimental-strip-types", "--no-warnings"]
     : [];
-  const r = spawnSync(node, [...flags, script, ...args], {
+  const r = spawnSync(process.execPath, [...flags, script, ...args], {
     input,
     encoding: "utf8",
     timeout: SPAWN_MS,
@@ -404,10 +421,18 @@ describe("sign-release.ts", () => {
       fetch: fake.fetch,
       sleep: async () => {},
     });
-    await probeR2Conditionals(cf, "staging");
+    const r2 = r2S3Client({
+      accountId: fake.accountId,
+      env: "staging",
+      credentials: fake.r2Token(platformNames("staging").releases),
+      fetch: fake.fetch,
+      sleep: async () => {},
+    });
+    await probeR2Conditionals(r2, "staging");
     for (const v of ["release", "redline"] as const)
       await publishRelease({
         cf,
+        r2,
         env: "staging",
         version: "0.34.0",
         files: {
@@ -469,11 +494,42 @@ describe("sign-release.ts", () => {
     for (const env of ["staging", "prod"] as const) {
       const s = await signed(env);
       const out = mkdtempSync(join(tmpdir(), "oa-signed-"));
-      const r = run(SIGN, swap(s.args, "--out", out), "");
+      const r = run(
+        join(UNPINNED, "sign-release.mjs"),
+        swap(s.args, "--out", out),
+        "",
+      );
       expect(r.code, r.stderr).toBe(0);
       expect(outputs(r.stdout)).toEqual({ [`${env}_signed`]: "false" });
       expect(readdirSync(out)).toEqual([]);
       expect(r.stderr).toMatch(/::notice::/);
+    }
+  });
+  it("once pinned, an empty stdin fails (no skip)", async () => {
+    const s = await signed("staging");
+    const out = mkdtempSync(join(tmpdir(), "oa-signed-"));
+    const r = run(SIGN, swap(s.args, "--out", out), "");
+    expect(r.code).toBe(1);
+    expect(readdirSync(out)).toEqual([]);
+    expect(r.stdout).toBe("");
+  });
+  // The gap between key generation and the pin PR: a real key with the
+  // placeholder still pinned must refuse, never warn and sign.
+  it("a key on stdin while RELEASE_PUBKEY is still the placeholder is refused", async () => {
+    for (const env of ["staging", "prod"] as const) {
+      const s = await signed(env);
+      const out = mkdtempSync(join(tmpdir(), "oa-signed-"));
+      const r = run(
+        join(UNPINNED, "sign-release.mjs"),
+        swap(s.args, "--out", out),
+        pem(env),
+      );
+      expect(r.code).toBe(1);
+      expect(r.stderr).toMatch(
+        new RegExp(`key set but RELEASE_PUBKEY\\.${env} not pinned`),
+      );
+      expect(readdirSync(out)).toEqual([]);
+      expect(r.stdout).toBe("");
     }
   });
   it("a signed run also outputs <env>_signed=true", async () => {
@@ -828,7 +884,7 @@ describe("L11: pinned public keys in the node:* copy", () => {
     expect({ ...PUBKEYS.RELEASE_PUBKEY }).toEqual({ ...real.RELEASE_PUBKEY });
   });
   const x = (e: "staging" | "prod") => pubX(KEYS[e]);
-  it("checkSigningKey: refuses a key that is not the pinned one, skips while a placeholder", () => {
+  it("checkSigningKey: refuses a key that is not the pinned one, and any key while a placeholder", () => {
     const pinned = { staging: x("staging"), prod: x("prod") };
     expect(PUBKEYS.checkSigningKey("staging", x("staging"), pinned)).toBe(
       "verified",
@@ -840,7 +896,9 @@ describe("L11: pinned public keys in the node:* copy", () => {
       staging: PUBKEYS.RELEASE_PUBKEY_PLACEHOLDER,
       prod: PUBKEYS.RELEASE_PUBKEY_PLACEHOLDER,
     };
-    expect(PUBKEYS.checkSigningKey("prod", x("staging"), ph)).toBe("skipped");
+    expect(() => PUBKEYS.checkSigningKey("prod", x("prod"), ph)).toThrow(
+      /key set but RELEASE_PUBKEY\.prod not pinned/,
+    );
   });
   // v0.35.0's release went red on "no signing key on stdin" before the key
   // ceremony. While an env's key is the placeholder, no key means skip (a
@@ -866,7 +924,7 @@ describe("L11: pinned public keys in the node:* copy", () => {
     expect(PUBKEYS.skipUnsigned("staging", "", half)).toBe(false);
     expect(PUBKEYS.skipUnsigned("prod", "", half)).toBe(true);
   });
-  it("verifySignature: refuses an invalid signature once the key is real, skips while a placeholder", async () => {
+  it("verifySignature: refuses an invalid signature once the key is real, and any signature while a placeholder", async () => {
     const { sign } = await import("node:crypto");
     const payload = Buffer.from("oa-release-v1\nstaging\n{}");
     const good = sign(null, payload, KEYS.staging.privateKey).toString(
@@ -884,20 +942,21 @@ describe("L11: pinned public keys in the node:* copy", () => {
       staging: PUBKEYS.RELEASE_PUBKEY_PLACEHOLDER,
       prod: PUBKEYS.RELEASE_PUBKEY_PLACEHOLDER,
     };
-    expect(PUBKEYS.verifySignature("staging", payload, bad, ph)).toBe(
-      "skipped",
+    expect(() => PUBKEYS.verifySignature("staging", payload, good, ph)).toThrow(
+      /key set but RELEASE_PUBKEY\.staging not pinned/,
     );
   });
-  it("assemble logs loudly that it skipped verification while the pubkey is a placeholder", async () => {
+  it("assemble refuses while the pubkey is still the placeholder", async () => {
     const s = await signed("prod");
     const out = mkdtempSync(join(tmpdir(), "oa-asm-"));
-    const r = run(ASSEMBLE, [
+    const r = run(join(UNPINNED, "assemble-release.mjs"), [
       ...swap(s.args, "--out", out),
       "--release",
       `${s.o.prod_release_signature}:${s.o.prod_release_tar_sha256}:${s.o.prod_release_record_sha256}`,
     ]);
-    expect(r.code, r.stderr).toBe(0);
-    expect(r.stderr).toMatch(/WARNING.*placeholder.*NOT verified/);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/key set but RELEASE_PUBKEY\.prod not pinned/);
+    expect(readdirSync(out)).toEqual([]);
   });
 });
 
@@ -995,141 +1054,5 @@ describe("H1: sign-floor.ts", () => {
       1,
     );
     expect(run(SIGN_FLOOR, argv, "").code).toBe(1);
-  });
-});
-
-// Manager review: the key-job scripts must run on Node 20 (the runner's own
-// node, no setup-node). Run the real flows under a Node 20 binary.
-// R-L1: the signer-node20 CI job sets OA_REQUIRE_NODE20=1, so a missing
-// binary fails there instead of skipping.
-it("Node 20: a binary is found when OA_REQUIRE_NODE20=1", () => {
-  if (process.env.OA_REQUIRE_NODE20 === "1") expect(NODE20).toBeDefined();
-});
-
-describe.skipIf(!NODE20)(`under Node 20 (${NODE20 ?? "none found"})`, () => {
-  const n20 = NODE20 as string;
-  it("is really Node 20", () => {
-    expect(spawnSync(n20, ["--version"], { encoding: "utf8" }).stdout).toMatch(
-      /^v20\./,
-    );
-  });
-  it("sign-release.mjs signs staging and assemble-release.mjs rebuilds it", async () => {
-    const a = await artifact();
-    const c = outputs(run(CHECK, [a.dir]).stdout);
-    const out = mkdtempSync(join(tmpdir(), "oa-n20-"));
-    const args = [
-      "--dir",
-      a.dir,
-      "--env",
-      "staging",
-      "--version",
-      "0.34.0",
-      "--manifest-sha256",
-      c.manifest_sha256 as string,
-      "--bundle-sha256",
-      c.bundle_sha256 as string,
-      "--commit",
-      GUARD,
-      "--lockfile",
-      LOCK,
-      "--out",
-      out,
-    ];
-    const r = run(SIGN, args, pem("staging"), n20);
-    expect(r.code, r.stderr).toBe(0);
-    const o = outputs(r.stdout);
-    for (const v of ["release", "redline"] as const) {
-      const stored = JSON.parse(
-        readFileSync(
-          join(out, `oa-release-staging-${v}-0.34.0.sig.json`),
-          "utf8",
-        ),
-      );
-      expect(
-        openReleaseRecord(stored, pubX(KEYS.staging), "staging").variant,
-      ).toBe(v);
-    }
-    const asm = mkdtempSync(join(tmpdir(), "oa-n20-asm-"));
-    const pass = (v: string) =>
-      `${o[`staging_${v}_signature`]}:${o[`staging_${v}_tar_sha256`]}:${o[`staging_${v}_record_sha256`]}`;
-    const r2 = run(
-      ASSEMBLE,
-      [
-        ...swap(args, "--out", asm),
-        "--release",
-        pass("release"),
-        "--redline",
-        pass("redline"),
-      ],
-      "",
-      n20,
-    );
-    expect(r2.code, r2.stderr).toBe(0);
-    for (const f of readdirSync(out))
-      expect(readFileSync(join(asm, f)), f).toEqual(readFileSync(join(out, f)));
-  });
-  it("sign-floor.mjs signs and assembles a floor that opens with openFloor", () => {
-    const out = mkdtempSync(join(tmpdir(), "oa-n20-floor-"));
-    const argv = [
-      "--env",
-      "prod",
-      "--seq",
-      "2",
-      "--min-version",
-      "0.30.0",
-      "--revoked",
-      "0.31.0",
-      "--out",
-      out,
-    ];
-    const r = run(SIGN_FLOOR, argv, pem("prod"), n20);
-    expect(r.code, r.stderr).toBe(0);
-    const f = openFloor(
-      JSON.parse(readFileSync(join(out, "floor-prod-2.sig.json"), "utf8")),
-      pubX(KEYS.prod),
-      "prod",
-    );
-    expect(f.seq).toBe(2);
-    const o = outputs(r.stdout);
-    const out2 = mkdtempSync(join(tmpdir(), "oa-n20-floor-"));
-    const r2 = run(
-      SIGN_FLOOR,
-      [
-        ...swap(argv, "--out", out2),
-        "--assemble",
-        "--signature",
-        o.floor_signature as string,
-        "--record-sha256",
-        o.floor_record_sha256 as string,
-      ],
-      "",
-      n20,
-    );
-    expect(r2.code, r2.stderr).toBe(0);
-    expect(readFileSync(join(out2, "floor-prod-2.sig.json"))).toEqual(
-      readFileSync(join(out, "floor-prod-2.sig.json")),
-    );
-  });
-  it("refuses a bad input the same way under Node 20", () => {
-    const out = mkdtempSync(join(tmpdir(), "oa-n20-floor-"));
-    const r = run(
-      SIGN_FLOOR,
-      [
-        "--env",
-        "prod",
-        "--seq",
-        "0",
-        "--min-version",
-        "0.30.0",
-        "--revoked",
-        "",
-        "--out",
-        out,
-      ],
-      pem("prod"),
-      n20,
-    );
-    expect(r.code).toBe(1);
-    expect(readdirSync(out)).toEqual([]);
   });
 });

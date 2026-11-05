@@ -74,4 +74,23 @@ describe("release guard (TEST_HOOKS_ALLOWED)", () => {
     const worker = await load(true);
     expect((await fetchVia(worker, TEST_HOOKS.session)).status).toBe(200);
   });
+
+  it("audit: a valid read is the 404 when false, 200 when true", async () => {
+    const audit = (worker: Awaited<ReturnType<typeof load>>) =>
+      worker.fetch(
+        new Request(`http://app.localhost${TEST_HOOKS.audit}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "cf-connecting-ip": "198.51.100.201",
+            authorization: `Bearer ${KEY}`,
+          },
+          body: JSON.stringify({ since: 0 }),
+        }) as never,
+        e,
+        { waitUntil() {}, passThroughOnException() {} } as never,
+      );
+    expect((await audit(await load(false))).status).toBe(404);
+    expect((await audit(await load(true))).status).toBe(200);
+  });
 });

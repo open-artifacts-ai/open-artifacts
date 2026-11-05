@@ -118,7 +118,7 @@ describe("B8 breaker", () => {
         title: `\u0002tforge${tag}\u0003`,
         description: `\u0002d\u0003`,
         format: "pdf",
-        content: "JVBERi0=",
+        content: "%PDF-1.4",
       } as never,
       null,
     );

@@ -82,6 +82,9 @@ export const accessProvider: OidcProvider = {
       nonce: a.nonce,
       code_challenge: a.challenge,
       code_challenge_method: "S256",
+      // A forced sign-in (#1372, a role proposal's confirm): Access must
+      // authenticate again rather than reuse its SSO session.
+      ...(a.reauth ? { prompt: "login", max_age: "0" } : {}),
     }).toString();
     return u.toString();
   },

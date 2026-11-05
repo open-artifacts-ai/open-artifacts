@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { APP, EMBEDDER_PORT, startServer } from "./fixtures";
+import { APP, EMBEDDER_PORT, inUse, portBusy, startServer } from "./fixtures";
 
 /** EMBEDDER: frames `?src=`, only ever an APP /a/<id>/full. */
 function startEmbedder(): Promise<() => Promise<void>> {
@@ -28,8 +28,17 @@ function startEmbedder(): Promise<() => Promise<void>> {
 }
 
 export default async function globalSetup() {
+  // Before the long server build, so a taken embedder port fails fast.
+  if (await portBusy(EMBEDDER_PORT)) throw inUse(EMBEDDER_PORT);
   const stopServer = await startServer();
-  const stopEmbedder = await startEmbedder();
+  let stopEmbedder: () => Promise<void>;
+  try {
+    stopEmbedder = await startEmbedder();
+  } catch (e) {
+    // Never leak the server (and its temp dir) when the embedder can't start.
+    await stopServer();
+    throw e;
+  }
   return async () => {
     await stopEmbedder();
     await stopServer();

@@ -1,19 +1,29 @@
 import { env } from "cloudflare:workers";
 import type { Client } from "@modelcontextprotocol/client";
 import {
+  DATA_WRITERS_NOTE,
+  DATA_WRITERS_WARNING,
   INLINE_TOO_LARGE_MESSAGE,
   LIMITS,
   newId,
   QUOTA_MESSAGE,
+  UNSUPPORTED_FORMAT_MESSAGE,
 } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPat } from "../src/auth/pat.js";
 import { getDb } from "../src/db/client.js";
 import { shares } from "../src/db/schema.js";
 import { INSTRUCTIONS } from "../src/mcp/instructions.js";
-import { TOOL_DEFS } from "../src/mcp/tool-defs.js";
+import {
+  describeTool,
+  descriptionFor,
+  NO_SPACES_TEXT,
+  TOOL_DEFS,
+  type ToolName,
+} from "../src/mcp/tool-defs.js";
 import manifest from "../src/mcp/tool-manifest.json";
-import { login } from "./helpers.js";
+import { SYSTEM_ACTOR, setUserStatus } from "../src/services/members.js";
+import { login, runIndex } from "./helpers.js";
 import {
   APP,
   callWorker,
@@ -37,6 +47,7 @@ const TOOLS = [
   "unshare_artifact",
   "set_visibility",
   "delete_artifact",
+  "undelete_artifact",
   "artifact_data_get",
   "artifact_data_list",
   "artifact_data_query",
@@ -44,6 +55,12 @@ const TOOLS = [
   "artifact_data_update",
   "artifact_data_delete",
 ];
+/** With the spaces feature on, list_spaces is offered too (parity 1, B12). */
+const SPACES_TOOLS = [...TOOLS, "list_spaces"];
+/** While the bus is on (the test pool binds BUS_HUB), its one tool too (#1372). */
+const BUS_TOOLS = ["bus_role_propose"];
+/** What an install without spaces must never say to an agent. */
+const SPACES_WORDS = /\bspaces?\b|list_spaces|spaceId/i;
 
 const tag = newId().slice(0, 6).toLowerCase();
 let owner: { userId: string };
@@ -86,9 +103,11 @@ afterAll(async () => {
 });
 
 describe("MCP tools over PAT", () => {
-  it("tools/list has all 17 tools", async () => {
+  it("tools/list has the 18 tools and the bus's (spaces off: no list_spaces)", async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual([...TOOLS].sort());
+    expect(tools.map((t) => t.name).sort()).toEqual(
+      [...TOOLS, ...BUS_TOOLS].sort(),
+    );
     for (const t of tools) {
       expect(t.description?.length ?? 0).toBeGreaterThan(10);
       expect(t.inputSchema.type).toBe("object");
@@ -148,6 +167,38 @@ describe("MCP tools over PAT", () => {
     expect(v.items[0]?.files).toHaveLength(3);
   });
 
+  it("list_versions pages past the newest 20 with cursor (review item 29)", async () => {
+    const first = await publishMd(client, "v1");
+    for (let k = 2; k <= 22; k++)
+      await publishMd(client, `v${k}`, { id: first.id });
+    const r1 = await tool(client, "list_versions", { id: first.id });
+    const p1 = sc<{ items: { version: number }[]; nextCursor: string | null }>(
+      r1,
+    );
+    expect(p1.items.map((v) => v.version)).toEqual(
+      Array.from({ length: 20 }, (_, k) => 22 - k),
+    );
+    expect(p1.nextCursor).toBe("3");
+    expect(textOf(r1)).toContain("more versions");
+    const r2 = await tool(client, "list_versions", {
+      id: first.id,
+      cursor: p1.nextCursor,
+    });
+    const p2 = sc<{ items: { version: number }[]; nextCursor: string | null }>(
+      r2,
+    );
+    expect(p2.items.map((v) => v.version)).toEqual([2, 1]);
+    expect(p2.nextCursor).toBeNull();
+    expect(textOf(r2)).not.toContain("more versions");
+    const bad = await tool(client, "list_versions", {
+      id: first.id,
+      cursor: "abc",
+    });
+    expect(bad.isError).toBe(true);
+    const def = TOOL_DEFS.find((d) => d.name === "list_versions");
+    expect(def?.description).toContain("cursor");
+  }, 60_000);
+
   it("get_artifact: binary is never inlined, gets a signed downloadUrl", async () => {
     const png = btoa(String.fromCharCode(137, 80, 78, 71, 13, 10, 26, 10, 0));
     const pub = sc<{ id: string }>(
@@ -163,7 +214,7 @@ describe("MCP tools over PAT", () => {
     expect(got.content).toBeUndefined();
     expect(got.downloadUrl).toMatch(
       new RegExp(
-        `^http://content\\.localhost/c/\\d+\\.[\\w-]+/${pub.id}/v1/a\\.png\\?dl=1$`,
+        `^http://content\\.localhost/c/\\d+\\.[\\w.-]+/${pub.id}/v1/a\\.png\\?dl=1$`,
       ),
     );
   });
@@ -237,6 +288,95 @@ describe("MCP tools over PAT", () => {
     expect(textOf(f)).toBe(`too_large: ${INLINE_TOO_LARGE_MESSAGE}`);
   });
 
+  it("a file no viewer shows → unsupported_format, with what to publish instead", async () => {
+    const jpeg = btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 0, 0x10));
+    const r = await tool(client, "publish_artifact", {
+      title: "archive",
+      files: { "a.zip": { base64: btoa("PK\x03\x04\x00\x00") } },
+    });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe(`unsupported_format: ${UNSUPPORTED_FORMAT_MESSAGE}`);
+    const heic = await tool(client, "publish_artifact", {
+      title: "photo",
+      files: { "IMG_0001.HEIC": { base64: jpeg } },
+    });
+    expect(textOf(heic)).toBe(
+      "unsupported_format: HEIC photos can't be shown yet. Save as JPEG and upload again.",
+    );
+    const png = await tool(client, "publish_artifact", {
+      title: "photo",
+      files: { "a.png": { base64: jpeg } },
+    });
+    expect(textOf(png)).toBe(
+      'binary_entry: "a.png" is a JPEG image, so it can\'t be shown as a PNG image.',
+    );
+    const b = await tool(client, "publish_artifact", {
+      title: "photo",
+      format: "code",
+      entry: "photo.txt",
+      files: { "photo.txt": { base64: jpeg } },
+    });
+    expect(b.isError).toBe(true);
+    expect(textOf(b)).toBe(
+      'binary_entry: "photo.txt" is a JPEG image, not text, so it can\'t be shown as code.',
+    );
+    const p = await tool(client, "publish_artifact", {
+      title: "doc",
+      format: "pdf",
+      content: "not a pdf",
+    });
+    expect(textOf(p)).toBe(
+      "binary_entry: \"document.pdf\" doesn't start with %PDF, so it can't be shown as a PDF.",
+    );
+  });
+
+  it("an image publishes, lists and searches as image", async () => {
+    const jpeg = btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 0, 0x10));
+    const word = `zqimg${tag}`;
+    const pub = sc<{ id: string }>(
+      await tool(client, "publish_artifact", {
+        title: `photo ${word}`,
+        files: { "IMG_0042.jpg": { base64: jpeg } },
+      }),
+    );
+    const g = await tool(client, "get_artifact", { id: pub.id });
+    expect(
+      sc<{ artifact: { format: string }; version: { format: string } }>(g),
+    ).toMatchObject({
+      artifact: { format: "image" },
+      version: { format: "image" },
+    });
+    expect(textOf(g)).toMatch(/ image v1, /);
+    const l = sc<{ items: { id: string; format: string }[] }>(
+      await tool(client, "list_artifacts", { format: "image", limit: 100 }),
+    );
+    expect(l.items.map((i) => i.id)).toContain(pub.id);
+    expect(new Set(l.items.map((i) => i.format))).toEqual(new Set(["image"]));
+    await runIndex(pub.id);
+    const f = sc<{ items: { id: string; format: string }[] }>(
+      await tool(client, "search_artifacts", { q: word }),
+    );
+    expect(f.items).toEqual([
+      expect.objectContaining({ id: pub.id, format: "image" }),
+    ]);
+    const { tools } = await client.listTools();
+    const d = tools.find((t) => t.name === "publish_artifact")?.description;
+    expect(d).toMatch(/image \(\.png, \.jpg, \.jpeg, \.gif, \.webp or \.svg/);
+    expect(client.getInstructions() ?? "").toMatch(
+      /- image: one PNG, JPEG, GIF, WebP or SVG image/,
+    );
+  });
+
+  it("the instructions and publish_artifact say what is refused", async () => {
+    const { tools } = await client.listTools();
+    const d = tools.find((t) => t.name === "publish_artifact")?.description;
+    expect(d).toContain("unsupported_format");
+    expect(d).toContain("binary_entry");
+    const ins = client.getInstructions() ?? "";
+    expect(ins).toContain("unsupported_format");
+    expect(ins).not.toMatch(/anything else is code/i);
+  });
+
   it("no access is not_found, never forbidden", async () => {
     const r = await tool(client, "get_artifact", { id: newId() });
     expect(r.isError).toBe(true);
@@ -278,10 +418,132 @@ describe("MCP tools over PAT", () => {
         email: `friend-${tag}@x.com`,
       }),
     );
-    sc(await tool(client, "delete_artifact", { id: pub.id }));
+    const del = await tool(client, "delete_artifact", { id: pub.id });
+    sc(del);
+    expect(textOf(del)).toContain(
+      "Restore it from Trash in the dashboard, or with undelete_artifact, within 30 days",
+    );
     const gone = await tool(client, "get_artifact", { id: pub.id });
     expect(textOf(gone)).toMatch(/^not_found/);
+    // undelete_artifact brings it back (ArtifactSummary), live again.
+    const back = sc<{ id: string; deletedAt: string | null }>(
+      await tool(client, "undelete_artifact", { id: pub.id }),
+    );
+    expect(back).toMatchObject({ id: pub.id, deletedAt: null });
+    sc(await tool(client, "get_artifact", { id: pub.id }));
+    // An id nobody may restore is not_found, as for any artifact.
+    expect(
+      textOf(await tool(client, "undelete_artifact", { id: newId() })),
+    ).toMatch(/^not_found/);
   });
+
+  // #681: set_visibility and publish_artifact warn when the result is
+  // public, declares db and lets viewers write data; the change applies.
+  const WARN = [
+    ["public, db, viewers", "public", true, "viewers", true],
+    ["public, db, editors", "public", true, "editors", false],
+    ["public, no db", "public", false, "viewers", false],
+    ["private, db, viewers", "private", true, "viewers", false],
+  ] as const;
+  it.each(WARN)(
+    "set_visibility warning: %s",
+    async (_, visibility, db, dataWriters, warns) => {
+      const pub = sc<{ id: string }>(
+        await tool(client, "publish_artifact", {
+          title: `warn ${tag}`,
+          format: "html",
+          content: "<p>hi</p>",
+          capabilities: { db },
+        }),
+      );
+      const r = await tool(client, "set_visibility", {
+        id: pub.id,
+        visibility,
+        dataWriters,
+      });
+      const out = sc<{
+        visibility: string;
+        dataWriters: string;
+        allowAnonymousWrites: boolean;
+        warning?: string;
+      }>(r);
+      expect(out.visibility).toBe(visibility);
+      expect(out.dataWriters).toBe(dataWriters);
+      expect(out.allowAnonymousWrites).toBe(dataWriters === "viewers");
+      expect(out.warning).toBe(warns ? DATA_WRITERS_WARNING : undefined);
+      if (warns) expect(textOf(r)).toContain(DATA_WRITERS_WARNING);
+    },
+  );
+
+  it("set_visibility maps allowAnonymousWrites (dataWriters wins)", async () => {
+    const id = sc<{ id: string }>(
+      await tool(client, "publish_artifact", {
+        title: `compat ${tag}`,
+        format: "html",
+        content: "<p>hi</p>",
+        capabilities: { db: true },
+      }),
+    ).id;
+    const set = async (args: Record<string, unknown>) =>
+      sc<{ dataWriters: string }>(
+        await tool(client, "set_visibility", { id, ...args }),
+      ).dataWriters;
+    expect(await set({ visibility: "team", allowAnonymousWrites: false })).toBe(
+      "viewers",
+    );
+    expect(
+      await set({ visibility: "public", allowAnonymousWrites: false }),
+    ).toBe("editors");
+    expect(
+      await set({ visibility: "public", allowAnonymousWrites: true }),
+    ).toBe("viewers");
+    expect(
+      await set({
+        visibility: "public",
+        allowAnonymousWrites: true,
+        dataWriters: "editors",
+      }),
+    ).toBe("editors");
+    // Visibility alone keeps the setting.
+    expect(await set({ visibility: "private" })).toBe("editors");
+  });
+
+  // #681 B: one sentence, in the instructions and both descriptions.
+  it("instructions and publish/visibility descriptions carry DATA_WRITERS_NOTE", () => {
+    const text = (n: string) =>
+      TOOL_DEFS.find((t) => t.name === n)?.description ?? "";
+    for (const s of [
+      INSTRUCTIONS("free"),
+      text("publish_artifact"),
+      text("set_visibility"),
+    ]) {
+      expect(s).toContain(DATA_WRITERS_NOTE);
+      expect(s).not.toMatch(/—/);
+      expect(s).not.toMatch(/allowAnonymousWrites/);
+    }
+  });
+
+  it.each(WARN)(
+    "publish_artifact warning: %s",
+    async (_, visibility, db, dataWriters, warns) => {
+      const html = { format: "html", content: "<p>hi</p>" };
+      const r = await tool(client, "publish_artifact", {
+        title: `pubwarn ${tag}`,
+        ...html,
+        visibility,
+        capabilities: { db },
+        dataWriters,
+      });
+      const out = sc<{ id: string; warning?: string }>(r);
+      expect(out.warning).toBe(warns ? DATA_WRITERS_WARNING : undefined);
+      if (warns) expect(textOf(r)).toContain(DATA_WRITERS_WARNING);
+      // A new version that changes nothing keeps the artifact's settings.
+      const v2 = sc<{ warning?: string }>(
+        await tool(client, "publish_artifact", { id: out.id, ...html }),
+      );
+      expect(v2.warning).toBe(warns ? DATA_WRITERS_WARNING : undefined);
+    },
+  );
 
   it("no tool result or description carries a raw view URL (#292)", async () => {
     const out: unknown[] = [];
@@ -471,12 +733,53 @@ describe("MCP artifact data tools", () => {
     );
     await Promise.all([vc.close(), ec.close(), sc2.close()]);
   });
+
+  // #681: the data tools obey dataWriters as the REST runtime routes do.
+  it('dataWriters "editors": a viewer\'s writes → data_editors_only; editors and the owner write', async () => {
+    const dw = sc<{ id: string }>(
+      await tool(client, "publish_artifact", {
+        title: `dw ${tag}`,
+        format: "html",
+        content: "<p>dw</p>",
+        capabilities: { db: true },
+        dataWriters: "editors",
+      }),
+    ).id;
+    const viewer = await login(`mcp-dwv-${tag}@x.com`);
+    const editor = await login(`mcp-dwe-${tag}@x.com`);
+    await shareWith(dw, `mcp-dwv-${tag}@x.com`, "viewer");
+    await shareWith(dw, `mcp-dwe-${tag}@x.com`, "editor");
+    const vc = await connect((await createPat(env, viewer.userId, "v")).token);
+    const ec = await connect((await createPat(env, editor.userId, "e")).token);
+    const get = { id: dw, collection: "votes", docId: "a" };
+    for (const [name, args] of [
+      ["artifact_data_set", { ...get, data: { x: 1 } }],
+      ["artifact_data_update", { ...get, patch: { x: 2 } }],
+      ["artifact_data_delete", get],
+    ] as const)
+      expect(textOf(await tool(vc, name, args)), name).toMatch(
+        /^data_editors_only/,
+      );
+    sc(await tool(vc, "artifact_data_get", get));
+    sc(await tool(ec, "artifact_data_set", { ...get, data: { x: 1 } }));
+    sc(await tool(client, "artifact_data_set", { ...get, data: { x: 2 } }));
+    // Back to viewers: the viewer writes again.
+    sc(
+      await tool(client, "set_visibility", {
+        id: dw,
+        visibility: "private",
+        dataWriters: "viewers",
+      }),
+    );
+    sc(await tool(vc, "artifact_data_set", { ...get, data: { x: 3 } }));
+    await Promise.all([vc.close(), ec.close()]);
+  });
 });
 
 describe("MCP 2026-07-28 era (per-request envelope)", () => {
   it("lists tools and publishes", async () => {
     const c = await connect(ownerPat, { modern: true });
-    expect((await c.listTools()).tools).toHaveLength(17);
+    expect((await c.listTools()).tools).toHaveLength(19);
     const pub = await publishMd(c, "# modern");
     const got = sc<{ content: string; version: { agent: unknown } }>(
       await tool(c, "get_artifact", { id: pub.id }),
@@ -577,6 +880,30 @@ describe("MCP quota errors", () => {
     expect(textOf(r)).toBe(`quota_exceeded: ${QUOTA_MESSAGE}`);
     await c.close();
   });
+
+  it("a storage failure → isError any AI agent can read as try again", async () => {
+    const boom = () => {
+      throw new Error("D1_ERROR: internal error; reference = abc123");
+    };
+    const DB = new Proxy(env.DB, {
+      get(t, k) {
+        if (k === "batch") return boom;
+        const v = Reflect.get(t, k);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const c = await connect(ownerPat, { env: E({ DB }) });
+    const r = await tool(c, "publish_artifact", {
+      title: "q",
+      format: "markdown",
+      content: "# q",
+    });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe(
+      "storage_unavailable: Temporarily unavailable. Try again shortly.",
+    );
+    await c.close();
+  });
 });
 
 describe("tool manifest", () => {
@@ -585,7 +912,9 @@ describe("tool manifest", () => {
     expect(manifest).toEqual(
       TOOL_DEFS.map(({ name, description }) => ({ name, description })),
     );
-    expect(manifest.map((t) => t.name).sort()).toEqual([...TOOLS].sort());
+    expect(manifest.map((t) => t.name).sort()).toEqual(
+      [...SPACES_TOOLS, ...BUS_TOOLS].sort(),
+    );
   });
 
   it("tool descriptions and instructions state the current inline limit", () => {
@@ -620,4 +949,152 @@ describe("tool manifest", () => {
       `${LIMITS.dataDocBytesPaid / 1024 / 1024} MB per document on this instance (paid plan),`,
     );
   });
+});
+
+describe("MCP spaces (P3 T10)", () => {
+  const SPACES = E({ FEATURES: "spaces", PLAN: "paid" });
+  const mkSpace = async (name: string) => {
+    const id = newId();
+    await env.DB.prepare(
+      "insert into spaces (id, kind, name, public_links, created_at) values (?, 'shared', ?, 1, 1)",
+    )
+      .bind(id, name)
+      .run();
+    return id;
+  };
+  const member = (sid: string, uid: string, role: string) =>
+    env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, ?, 'manual', 1)",
+    )
+      .bind(sid, uid, role)
+      .run();
+
+  it("MCP publish into a view-only space → 403 space_forbidden; list_spaces omits it", async () => {
+    const u = await login(`mcp-sp-${tag}@x.com`);
+    const view = await mkSpace(`View ${tag}`);
+    const edit = await mkSpace(`Edit ${tag}`);
+    await member(view, u.userId, "viewer");
+    await member(edit, u.userId, "editor");
+    const c = await connect((await createPat(env, u.userId, "sp")).token, {
+      env: SPACES,
+    });
+    const denied = await tool(c, "publish_artifact", {
+      title: "no",
+      format: "markdown",
+      content: "x",
+      spaceId: view,
+    });
+    expect(denied.isError).toBe(true);
+    expect(textOf(denied)).toMatch(/^space_forbidden/);
+    const listed = sc<{
+      items: { id: string; kind: string; myRole: string }[];
+    }>(await tool(c, "list_spaces", {}));
+    const ids = listed.items.map((s) => s.id);
+    expect(ids).toContain(edit);
+    expect(ids).not.toContain(view);
+    expect(listed.items[0]).toMatchObject({
+      id: u.userId,
+      kind: "personal",
+      myRole: "manager",
+    });
+    const pub = sc<{ id: string }>(
+      await tool(c, "publish_artifact", {
+        title: "yes",
+        format: "markdown",
+        content: "x",
+        spaceId: edit,
+      }),
+    );
+    const got = sc<{
+      artifact: { space?: { id: string }; can?: { edit: boolean } };
+    }>(await tool(c, "get_artifact", { id: pub.id }));
+    expect(got.artifact.space).toMatchObject({ id: edit, kind: "shared" });
+    expect(got.artifact.can).toMatchObject({ edit: true, move: false });
+    await c.close();
+  });
+
+  it("spaces off (B12): no list_spaces, and no instructions or tool description names spaces", async () => {
+    const u = await login(`mcp-spoff-${tag}@x.com`);
+    const edit = await mkSpace(`Off ${tag}`);
+    await member(edit, u.userId, "editor");
+    const c = await connect((await createPat(env, u.userId, "off")).token, {
+      env: E({ FEATURES: "" }),
+    });
+    const { tools } = await c.listTools();
+    expect(tools.map((t) => t.name).sort()).toEqual(
+      [...TOOLS, ...BUS_TOOLS].sort(),
+    );
+    for (const t of tools)
+      expect(t.description ?? "", t.name).not.toMatch(SPACES_WORDS);
+    expect(c.getInstructions() ?? "").not.toMatch(SPACES_WORDS);
+    expect(c.getInstructions() ?? "").toContain("for the owner only");
+    // A direct call is not a tool there.
+    await expect(tool(c, "list_spaces", {})).rejects.toThrow(/not found/);
+    await c.close();
+    // Spaces on: list_spaces is offered and the spaces text is back.
+    const on = await connect((await createPat(env, u.userId, "on")).token, {
+      env: E({ FEATURES: "spaces" }),
+    });
+    const onTools = (await on.listTools()).tools;
+    expect(onTools.map((t) => t.name).sort()).toEqual(
+      [...SPACES_TOOLS, ...BUS_TOOLS].sort(),
+    );
+    expect(
+      onTools.find((t) => t.name === "publish_artifact")?.description,
+    ).toContain("spaceId");
+    expect(on.getInstructions() ?? "").toContain("list_spaces");
+    await on.close();
+  });
+
+  it("every spaces wording replaced off spaces occurs in its tool's description", () => {
+    for (const [name, reps] of Object.entries(NO_SPACES_TEXT))
+      for (const r of reps ?? [])
+        expect(describeTool(name as ToolName), name).toContain(r.from);
+    for (const d of TOOL_DEFS)
+      if (d.name !== "list_spaces")
+        expect(descriptionFor(d.name, false), d.name).not.toMatch(SPACES_WORDS);
+    expect(INSTRUCTIONS("free", undefined, undefined, false)).not.toMatch(
+      SPACES_WORDS,
+    );
+  });
+
+  it("the skill lists list_spaces and the instructions say owner or space manager", () => {
+    expect(TOOL_DEFS.map((t) => t.name)).toContain("list_spaces");
+    expect(INSTRUCTIONS("free")).toContain("owner or space manager");
+  });
+});
+
+describe("content revocation (P3 T11)", () => {
+  it.each([
+    ["with content_revocation", "content_revocation"],
+    ["without it (parity 1, L12)", ""],
+  ])(
+    "%s, download URLs bind the agent's user; a suspension refuses them",
+    async (_, features) => {
+      const u = await login(`mcp-rev-${features || "off"}-${tag}@x.com`);
+      const rev = E({ FEATURES: features });
+      const c = await connect((await createPat(env, u.userId, "rev")).token, {
+        env: rev,
+      });
+      const { id } = await publishMd(c, "# rev");
+      const { downloadUrl } = sc<{ downloadUrl: string }>(
+        await tool(c, "get_artifact", { id, includeContent: false }),
+      );
+      const url = new URL(downloadUrl);
+      expect(url.pathname).toMatch(
+        new RegExp(`^/c/\\d+\\.${u.userId}\\.\\d+\\.[A-Za-z0-9_-]{43}/${id}/`),
+      );
+      const get = () =>
+        callWorker(new Request(`http://content.localhost${url.pathname}?dl=1`));
+      expect((await get()).status).toBe(200);
+      await setUserStatus(
+        env,
+        u.userId,
+        "suspended",
+        "admin_suspend",
+        SYSTEM_ACTOR,
+      );
+      expect((await get()).status).toBe(404);
+    },
+  );
 });

@@ -26,12 +26,18 @@ const packages: Record<string, string> = {
   "packages/runtime": "@oa/runtime",
   "packages/render": "@oa/render",
   "scripts/setup": "@oa/setup",
+  // tests/redline is hosted (#1056): its check is tests/redline/test/workspace.test.ts.
 };
 
 describe("workspace", () => {
   it("declares exactly the globs", () => {
     const ws = parse(read("pnpm-workspace.yaml"));
-    expect(ws.packages).toEqual(["apps/*", "packages/*", "scripts/*"]);
+    expect(ws.packages).toEqual([
+      "apps/*",
+      "packages/*",
+      "scripts/*",
+      "tests/*",
+    ]);
   });
 
   it.each(Object.entries(packages))("%s is %s", (dir, name) => {
@@ -46,6 +52,16 @@ describe("workspace", () => {
       expect(typeof rootPkg.scripts[s]).toBe("string");
     }
     expect(rootPkg.scripts["oa:setup"]).toBe("pnpm --filter @oa/setup start");
+  });
+
+  // #1158: packages' own typecheck scripts each build @oa/provision first, and
+  // pnpm -r runs them in parallel. On a fresh checkout several `tsc -b` then
+  // write its dist at once while another package's tsc reads it. Built once
+  // here, every later build is up to date and writes nothing.
+  it("typecheck builds the shared packages once, before the parallel run", () => {
+    const t = String(rootPkg.scripts.typecheck);
+    expect(t.startsWith("pnpm --filter @oa/provision build && ")).toBe(true);
+    expect(t.indexOf("@oa/provision build")).toBeLessThan(t.indexOf("pnpm -r"));
   });
 
   it("pins tool versions", () => {

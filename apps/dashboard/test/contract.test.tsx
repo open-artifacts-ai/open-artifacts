@@ -5,6 +5,7 @@ import { screen, waitFor } from "@testing-library/react";
 import { expect, test } from "vitest";
 import {
   canOf,
+  directoryMode,
   features,
   hasFeature,
   readAuthProviders,
@@ -25,6 +26,20 @@ test("me without hosted fields has no features", () => {
   expect(hasFeature(fixtures.me, "spaces")).toBe(false);
 });
 
+test("directoryMode is the server's rule on the flags: google wins, then frozen, else off", () => {
+  const withFlags = (...f: string[]) =>
+    ({
+      ...fixtures.me,
+      instance: { ...fixtures.me.instance, features: f },
+    }) as unknown as Me;
+  expect(directoryMode(fixtures.me)).toBe("off");
+  expect(directoryMode(undefined)).toBe("off");
+  expect(directoryMode(withFlags("spaces"))).toBe("off");
+  expect(directoryMode(withFlags("spaces", "sync_google"))).toBe("google");
+  expect(directoryMode(withFlags("spaces", "sync_frozen"))).toBe("frozen");
+  expect(directoryMode(withFlags("sync_frozen", "sync_google"))).toBe("google");
+});
+
 test("canOf derives the action table when the server omits can", () => {
   const a = {
     ...fixtures.artifacts[0],
@@ -40,6 +55,17 @@ test("canOf derives the action table when the server omits can", () => {
     move: false,
     dataWrite: true,
   });
+});
+
+test("canOf takes data writes from a capped caller when the server omits can", () => {
+  const a = {
+    ...fixtures.artifacts[0],
+    access: "viewer" as const,
+    dataWriters: "viewers" as const,
+    can: undefined,
+  };
+  expect(canOf(a, []).dataWrite).toBe(true);
+  expect(canOf(a, [], "guest").dataWrite).toBe(false);
 });
 
 test("self-hosted owner: no move or transfer", () => {

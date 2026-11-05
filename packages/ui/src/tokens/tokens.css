@@ -1,9 +1,9 @@
 /*
  * Open Artifacts design tokens (Studio direction, design/DIRECTION.md).
- * Fonts load from Google Fonts only; the system stack is the fallback.
+ * Geist is self-hosted (./fonts.css, from @fontsource); the system stack is the fallback.
  * Colors must stay in sync with ./index.ts (enforced by test/sync.test.ts).
  */
-@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap");
+@import "./fonts.css";
 
 :root {
   color-scheme: light;

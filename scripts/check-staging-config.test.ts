@@ -109,16 +109,21 @@ describe("wrangler.staging.jsonc env.staging", () => {
     );
     expect(tpl.vars.SERVER_THUMBNAILS).toBe("on");
   });
-  it("logs every staging request to Workers Logs; the template logs too", () => {
+  it("keeps every app log line on staging, but no invocation logs (they record URLs: role confirm links, #1372); the template the same", () => {
     expect(env.observability).toEqual({
       enabled: true,
       head_sampling_rate: 1,
+      logs: { enabled: true, invocation_logs: false },
     });
     const tpl = JSON.parse(
       readFileSync(join(root, "apps/server/wrangler.template.jsonc"), "utf8"),
     );
-    expect(tpl.observability.enabled).toBe(true);
-    expect(tpl.observability.head_sampling_rate ?? 1).toBe(1);
+    // Self-hosts keep the app's own lines but no per-request invocation logs
+    // (which would record every URL), as hosted installs do.
+    expect(tpl.observability).toEqual({
+      enabled: true,
+      logs: { enabled: true, invocation_logs: false },
+    });
   });
   it("runs staging with PLAN=paid (the account is on Workers Paid)", () => {
     expect(env.vars.PLAN).toBe("paid");
@@ -149,10 +154,18 @@ describe("wrangler.staging.jsonc env.staging", () => {
       ENVIRONMENT: "production",
       APP_HOST: "staging.open-artifacts.com",
       CONTENT_HOST: "staging-content.open-artifacts.com",
-      OWNER_EMAIL: expect.stringMatching(/^[^@\s]+@[^@\s]+$/),
       ACCESS_TEAM_DOMAIN: expect.stringMatching(/\.cloudflareaccess\.com$/),
       CF_ACCOUNT_ID: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
+    // #1084: OWNER_EMAIL is the owner's address, never committed: the
+    // deploy passes it with --var from the OA_OWNER_EMAIL secret.
+    expect(vars).not.toHaveProperty("OWNER_EMAIL");
+    const wf = readFileSync(
+      join(root, ".github/workflows/deploy-staging.yml"),
+      "utf8",
+    );
+    expect(wf).toContain('--var "OWNER_EMAIL:$OA_OWNER_EMAIL"');
+    expect(wf).toContain("OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}");
     // Only ACCESS_CLIENT_ID (a public id) may look credential-like.
     expect(
       Object.keys(vars).filter((k) =>
@@ -191,7 +204,38 @@ describe("staging Durable Objects", () => {
     });
 });
 
-describe("staging UserPresence (P3 T7a, #502)", () => {
+describe("staging DirectorySync (P3 T13a #571 tag v3, bound with T13 #575)", () => {
+  it("adds DirectorySync in migration v3, after v2 (UserPresence)", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+    const tags = env.migrations.map((m: any) => m.tag);
+    expect(tags.slice(0, 3)).toEqual(["v1", "v2", "v3"]);
+    expect(env.migrations[2]).toEqual({
+      tag: "v3",
+      new_sqlite_classes: ["DirectorySync"],
+    });
+  });
+  it("binds DIRECTORY_SYNC to DirectorySync with its first user (#575), one release after v3 (0.46.0)", () => {
+    expect(env.durable_objects.bindings).toContainEqual({
+      name: "DIRECTORY_SYNC",
+      class_name: "DirectorySync",
+    });
+  });
+  it("binds RL_DIRECTORY (30/60 s) on its own namespace (#575)", () => {
+    const rl = by(env.ratelimits, "name", "RL_DIRECTORY") as {
+      namespace_id: string;
+      simple: unknown;
+    };
+    expect(rl).toBeDefined();
+    expect(rl.namespace_id).toBe("1003");
+    expect(rl.simple).toEqual({ limit: 30, period: 60 });
+    const ids = (env.ratelimits as { namespace_id: string }[]).map(
+      (r) => r.namespace_id,
+    );
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("staging UserPresence (P3 T7a #502, T7b #503)", () => {
   it("adds UserPresence in migration v2, after v1 (ArtifactRuntime)", () => {
     // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
     const tags = env.migrations.map((m: any) => m.tag);
@@ -201,10 +245,47 @@ describe("staging UserPresence (P3 T7a, #502)", () => {
       new_sqlite_classes: ["UserPresence"],
     });
   });
-  it("does not bind it yet (T7b binds and uses it, one release later)", () => {
-    // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
-    expect(env.durable_objects.bindings.map((b: any) => b.name)).not.toContain(
-      "USER_PRESENCE",
-    );
+  it("binds USER_PRESENCE to UserPresence (T7b, #503), one release after v2", () => {
+    expect(env.durable_objects.bindings).toContainEqual({
+      name: "USER_PRESENCE",
+      class_name: "UserPresence",
+    });
   });
+});
+
+describe("BusHub (#1291 tag v4, shipped unbound in 0.109.0; bound by #1315)", () => {
+  const read = (f: string) =>
+    JSON.parse(strip(readFileSync(join(root, "apps/server", f), "utf8")));
+  // Every server config: the install template (self-host setup and the
+  // hosted release both render it), staging, and the test pool.
+  for (const [name, c] of [
+    ["staging", env],
+    ["template", read("wrangler.template.jsonc")],
+    ["test", read("wrangler.test.jsonc")],
+  ] as const) {
+    it(`${name}: tag v4 adds BusHub after v3, and BUS_HUB binds it`, () => {
+      // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+      const tags = c.migrations.map((m: any) => m.tag);
+      expect(tags.slice(0, 4)).toEqual(["v1", "v2", "v3", "v4"]);
+      expect(c.migrations[3]).toEqual({
+        tag: "v4",
+        new_sqlite_classes: ["BusHub"],
+      });
+      expect(c.durable_objects.bindings).toContainEqual({
+        name: "BUS_HUB",
+        class_name: "BusHub",
+      });
+    });
+    it(`${name}: no migration deletes, renames or transfers BusHub`, () => {
+      for (const m of c.migrations as Record<string, unknown>[])
+        for (const k of [
+          "deleted_classes",
+          "renamed_classes",
+          "transferred_classes",
+        ])
+          expect(JSON.stringify(m[k] ?? []), `${m.tag} ${k}`).not.toContain(
+            "BusHub",
+          );
+    });
+  }
 });

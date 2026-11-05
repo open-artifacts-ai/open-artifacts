@@ -10,6 +10,7 @@ const createBridge = vi.fn(() => ({
   dispose,
   requestThumbnail: vi.fn(),
   setTheme: vi.fn(),
+  setArtifact: vi.fn(),
 }));
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: (...a: unknown[]) =>

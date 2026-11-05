@@ -1,7 +1,5 @@
 import {
   ANON_ID_HEADER,
-  type Capabilities,
-  CapabilitiesSchema,
   DataNameSchema,
   DataQuerySchema,
   dataDocTooLargeMessage,
@@ -24,9 +22,10 @@ import {
   type Caller,
   caller,
   canCtx,
+  dataWriteRefusal,
   requireAccess,
 } from "../auth/authz.js";
-import { can, namedEvents, type PolicyAction } from "../auth/policy.js";
+import { can, capsOf, namedEvents, type PolicyAction } from "../auth/policy.js";
 import { cappedJson, readCapped } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
@@ -34,6 +33,7 @@ import type { AppType } from "../routes/index.js";
 import { type AnonId, resolveAnonId } from "./anon-id.js";
 import {
   ACTOR_HEADER,
+  AUTHZ_AT_HEADER,
   EVENTS_NAMED_HEADER,
   EVENTS_VERSION_HEADER,
   publicActor,
@@ -71,18 +71,27 @@ const IP_RE = /^[0-9A-Fa-f:.]{2,45}$/;
 const IPV4_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 
 type C = Context<AppEnv>;
-type Gate = { artifactId: string; actor: string; anon: AnonId | null };
+/** `authzAt`: when the access check ran (ms), for the presence check on sockets. */
+type Gate = {
+  artifactId: string;
+  actor: string;
+  anon: AnonId | null;
+  authzAt: number;
+};
 
-const NO_CAPS: Capabilities = { db: false, viewer: false, storage: false };
-/** Declared capabilities; malformed JSON means none (capability_denied, never 500). */
-export function capsOf(json: string): Capabilities {
-  try {
-    const r = CapabilitiesSchema.safeParse(JSON.parse(json));
-    return r.success ? r.data : NO_CAPS;
-  } catch {
-    return NO_CAPS;
-  }
+/**
+ * When this request's authorization began: stamped by the policy gate before
+ * the session read, so a revocation written after any access read has
+ * revokedAt >= authzAt and a socket it raced is refused (presence).
+ */
+function authzAtOf(c: C): number {
+  const t = c.get("authzAt");
+  // No fallback: a later stamp could miss a revocation that raced the read.
+  if (t === undefined) throw new Error("authzAt not stamped (enforcePolicy)");
+  return t;
 }
+
+export { capsOf };
 
 function name(v: string | undefined, what: string): string {
   const r = DataNameSchema.safeParse(v);
@@ -140,8 +149,12 @@ export function anonIpKey(ip: string): string | null {
  * Applies RL_ANON to `key`. Fails closed (503) when the binding is missing
  * outside ENVIRONMENT=dev (the test pool and local dev have none).
  */
-async function anonLimit(c: C, key: string, what: string): Promise<void> {
-  const rl = c.env.RL_ANON;
+async function anonLimit(
+  c: C,
+  key: string,
+  what: string,
+  rl: RateLimit | undefined = c.env.RL_ANON,
+): Promise<void> {
   if (!rl) {
     if (c.env.ENVIRONMENT === "dev") return;
     throw new HTTPException(503, { message: "rate limiter unavailable" });
@@ -157,14 +170,16 @@ async function anonLimit(c: C, key: string, what: string): Promise<void> {
  * Access (404 for no access, never 403), then the declared capability
  * (403 capability_denied: access is already proven), then the caller's actor:
  * - storage: signed-in only (401), actor "u:{id}" (the storage owner).
- * - data writes: signed-in "u:{id}"; anonymous only with allowAnonymousWrites
- *   (else 401), after RL_ANON "ip:{key}" (429; 503 if unbound outside dev),
- *   as "ip:{key}|{short}" (ipKey: IPv4, or the IPv6 /64).
+ * - data writes: signed-in "u:{id}"; anonymous only with dataWriters
+ *   "viewers", after RL_ANON "ip:{key}" (429; 503 if unbound outside dev),
+ *   as "ip:{key}|{short}" (ipKey: IPv4, or the IPv6 /64). A write refused by
+ *   dataWriters "editors" is 403 data_editors_only, signed in or not (#681).
  * - subscribe: signed-in "u:{id}"; anonymous "ip:{key}" after RL_ANON
  *   "sub:ip:{key}" (anonIpKey: IPv4, or the IPv6 /56).
  * - data reads: anyone with view access (actor unused).
  * - anonId: anonymous writes, and "anonId" (GET anon-id, after RL_ANON
- *   "anonid:ip:{key}"), on an artifact with allowAnonymousWrites only: the
+ *   "anonid:ip:{key}" when it mints; a valid current token skips the limit),
+ *   on an artifact with dataWriters "viewers" only: the
  *   ANON_ID_HEADER token is verified, or a new one minted (returned by
  *   `withAnon`). `short` is per artifact; a write stores updatedBy
  *   "anon:{short}", and the DO still rate limits by "ip:{key}". Reads never
@@ -190,12 +205,18 @@ async function gate(
   // whatever cookie or token came with it (#295 does this app-wide).
   const who: Caller =
     c.req.header("x-oa-embed") === "1" ? { kind: "anonymous" } : caller(c);
+  const authzAt = authzAtOf(c);
   const r = await accessLevel(c.env, who, artifactId);
   if (!r) throw new ApiError("not_found", "Not found");
   const a = r.artifact;
   // Each gate kind is one policy action; checked after the anonymous 401s
   // below so their messages keep their order.
-  const allowed = () => can(r.level, GATE_ACTION[kind], canCtx(who, a));
+  const ctx = canCtx(who, a);
+  const allowed = () => can(r.level, GATE_ACTION[kind], ctx);
+  /** A refused data write: data_editors_only when "editors" caused it, else 404. */
+  const refused = () =>
+    (kind === "write" ? dataWriteRefusal(r.level, ctx, a) : null) ??
+    new ApiError("not_found", "Not found");
   const cap = METHOD_CAPABILITY[method];
   if (!capsOf(a.capabilities)[cap])
     throw new ApiError(
@@ -204,17 +225,15 @@ async function gate(
     );
   if (who.kind === "user") {
     // Signed-in callers asking for an anonId get the route's own 401 below.
-    if (kind !== "anonId" && !allowed())
-      throw new ApiError("not_found", "Not found");
-    return { artifactId, actor: `u:${who.user.id}`, anon: null };
+    if (kind !== "anonId" && !allowed()) throw refused();
+    return { artifactId, actor: `u:${who.user.id}`, anon: null, authzAt };
   }
-  if (kind === "read") return { artifactId, actor: "", anon: null };
-  const optIn = a.allowAnonymousWrites === 1;
-  if (kind === "storage" || (kind === "write" && !optIn))
+  if (kind === "read") return { artifactId, actor: "", anon: null, authzAt };
+  if (kind === "storage")
     throw new ApiError("unauthorized", "Sign in to save changes");
-  if (kind === "anonId" && !optIn)
+  if (kind === "anonId" && ctx.dataWriters !== "viewers")
     throw new ApiError("unauthorized", "No anonymous id here");
-  if (!allowed()) throw new ApiError("not_found", "Not found");
+  if (!allowed()) throw refused();
   const anonId = async (): Promise<AnonId> => {
     const r = await resolveAnonId(
       c.env,
@@ -231,15 +250,32 @@ async function gate(
     throw new ApiError("rate_limited", "Anonymous access is unavailable");
   if (kind === "subscribe") {
     await anonLimit(c, `sub:ip:${key}`, "subscriptions");
-    return { artifactId, actor: `ip:${key}`, anon: null };
+    return { artifactId, actor: `ip:${key}`, anon: null, authzAt };
   }
   if (kind === "anonId") {
+    // A valid, current token only reads back this artifact's short id (an
+    // HMAC check), so reloads never spend the per-IP budget. Minting a new id
+    // (none, forged, v1 or expired) stays limited.
+    const held = await resolveAnonId(
+      c.env,
+      artifactId,
+      c.req.header(ANON_ID_HEADER),
+      false,
+    );
+    if (held) return { artifactId, actor: "", anon: held, authzAt };
     await anonLimit(c, `anonid:ip:${key}`, "requests");
-    return { artifactId, actor: "", anon: await anonId() };
+    return { artifactId, actor: "", anon: await anonId(), authzAt };
   }
-  await anonLimit(c, `ip:${key}`, "writes");
+  // RL_ANON (30 per IP across the instance) would cap ANON_WRITES_PER_MIN at
+  // 30; RL_ANON_WRITES (not yet in setup's template), bound with a matching limit,
+  // which then replaces RL_ANON for writes. Unbound: RL_ANON, as before.
+  // HOSTED=1 only tightens: RL_ANON still applies there.
+  const writes = c.env.RL_ANON_WRITES;
+  if (!writes || c.env.HOSTED === "1")
+    await anonLimit(c, `ip:${key}`, "writes");
+  if (writes) await anonLimit(c, `ip:${key}`, "writes", writes);
   const anon = await anonId();
-  return { artifactId, actor: `ip:${key}|${anon.short}`, anon };
+  return { artifactId, actor: `ip:${key}|${anon.short}`, anon, authzAt };
 }
 
 /** `res` carrying a newly minted anonId token, if the gate minted one. */
@@ -392,7 +428,12 @@ export function mountRuntime(app: AppType): void {
       dataResetLimit(plan),
       dataResetTooLargeMessage(plan),
     );
-    const g: Gate = { artifactId, actor: `u:${who.user.id}`, anon: null };
+    const g: Gate = {
+      artifactId,
+      actor: `u:${who.user.id}`,
+      anon: null,
+      authzAt: authzAtOf(c),
+    };
     return c.json(
       await runtimeCall(() => stub(c, g).replaceRaw(toBuffer(body), g.actor)),
     );
@@ -410,7 +451,11 @@ export function mountRuntime(app: AppType): void {
     const col = name(c.req.query("collection"), "collection");
     const url = `https://runtime.invalid/subscribe?collection=${encodeURIComponent(col)}`;
     return stub(c, g).fetch(url, {
-      headers: { Upgrade: "websocket", [ACTOR_HEADER]: g.actor },
+      headers: {
+        Upgrade: "websocket",
+        [ACTOR_HEADER]: g.actor,
+        [AUTHZ_AT_HEADER]: String(g.authzAt),
+      },
     });
   });
 
@@ -425,6 +470,7 @@ export function mountRuntime(app: AppType): void {
     // Embed mode is downgrade-only (caller() also honours ?embed=1).
     const who: Caller =
       c.req.header("x-oa-embed") === "1" ? { kind: "anonymous" } : caller(c);
+    const authzAt = authzAtOf(c);
     const r = await accessLevel(c.env, who, artifactId);
     if (!r) throw new ApiError("not_found", "Not found");
     let actor: string;
@@ -454,6 +500,7 @@ export function mountRuntime(app: AppType): void {
         headers: {
           Upgrade: "websocket",
           [ACTOR_HEADER]: actor,
+          [AUTHZ_AT_HEADER]: String(authzAt),
           [EVENTS_VERSION_HEADER]: String(r.artifact.currentVersion),
           [EVENTS_NAMED_HEADER]: named ? "1" : "0",
         },

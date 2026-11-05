@@ -8,13 +8,21 @@ import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
-import { calls, installHarness, mount, mountHosted, server } from "./harness";
+import {
+  calls,
+  findVisibleToast,
+  installHarness,
+  mount,
+  mountHosted,
+  server,
+} from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
     dispose: vi.fn(),
     requestThumbnail: vi.fn(),
     setTheme: vi.fn(),
+    setArtifact: vi.fn(),
   }),
 }));
 
@@ -91,17 +99,30 @@ it("no eligible target: Move is hidden", async () => {
   expect(screen.queryByRole("button", { name: "Move" })).toBeNull();
 });
 
-it("targets: spaces you can publish to, with your role; never Personal or the current space", async () => {
+it("targets: spaces you can publish to, with your role; Personal shown but not allowed; never the current space", async () => {
   mountHosted(details(NOTES), true, withOps);
   const d = await openMove();
   expect(
     within(d).getByRole("heading", { name: 'Move "Meeting notes" to' }),
   ).toBeVisible();
+  const radios = within(d).getAllByRole("radio");
+  expect(radios.map((r) => r.closest("label")?.textContent)).toEqual([
+    "OpsEditor",
+    "PersonalNot allowed",
+  ]);
+  expect(radios[1]).toBeDisabled();
   expect(
-    within(d)
-      .getAllByRole("radio")
-      .map((r) => r.closest("label")?.textContent),
-  ).toEqual(["OpsEditor"]);
+    within(d).getByText("Space artifacts can't move back to Personal."),
+  ).toBeVisible();
+});
+
+it("out of Personal, Personal isn't listed at all", async () => {
+  mountHosted(details(LANDING));
+  const d = await openMove();
+  expect(within(d).queryByText("Not allowed")).toBeNull();
+  expect(
+    within(d).queryByText("Space artifacts can't move back to Personal."),
+  ).toBeNull();
 });
 
 it("space to space: who gains and who loses access", async () => {
@@ -109,8 +130,19 @@ it("space to space: who gains and who loses access", async () => {
   const d = await openMove();
   fireEvent.click(within(d).getByRole("radio", { name: /^Ops/ }));
   expect(d).toHaveTextContent(
-    "Ops members get access. People only in Engineering lose it.",
+    "People in Ops get access. People only in Engineering lose it.",
   );
+});
+
+it("space to space, with the count: 1 person in Clients gets access", async () => {
+  mountHosted(details(NOTES), { moveTarget: true });
+  const d = await openMove();
+  fireEvent.click(within(d).getByRole("radio", { name: /^Clients/ }));
+  expect(
+    await within(d).findByText(
+      "1 person in Clients gets access. People only in Engineering lose it.",
+    ),
+  ).toBeVisible();
 });
 
 it("out of Personal: one-way, with the space's name and member count", async () => {
@@ -119,7 +151,7 @@ it("out of Personal: one-way, with the space's name and member count", async () 
   fireEvent.click(within(d).getByRole("radio", { name: /^Engineering/ }));
   expect(
     await within(d).findByText(
-      /^Engineering's \d+ members? gets? access by their role\. You can't move it back to Personal\.$/,
+      "2 people in Engineering get access by their role. You can't move it back to Personal.",
     ),
   ).toBeVisible();
 });
@@ -150,7 +182,7 @@ it("Move sends the target and the panel shows the new space, with a toast", asyn
     }),
   );
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  expect(await screen.findByText("Moved to Engineering.")).toBeVisible();
+  await findVisibleToast("Moved to Engineering.");
   await waitFor(() => expect(spaceValue()).toHaveTextContent("Engineering"));
 });
 
@@ -218,6 +250,47 @@ it("space_forbidden keeps the dialog open with the copy, and no toast", async ()
     ),
   ).toBeVisible();
   expect(screen.queryByText("Couldn't move the artifact.")).toBeNull();
+});
+
+it("409 conflict: a status in the open dialog, no alert, no toast; Move is the retry, choosing again clears it", async () => {
+  // A second target, so there is something else to choose.
+  const withOpsAndDesign = (m: Me): Me => {
+    const two = withOps(m);
+    return {
+      ...two,
+      spaces: [
+        ...(two.spaces ?? []),
+        { ...OPS, id: "SpDesNpQrSt7uVwXy", name: "Design" },
+      ],
+    };
+  };
+  mountHosted(details(NOTES), true, withOpsAndDesign, [
+    http.post(`*${R.moveArtifact(NOTES)}`, () =>
+      HttpResponse.json(
+        { error: { code: "conflict", message: "server text" } },
+        { status: 409 },
+      ),
+    ),
+  ]);
+  const d = await openMove();
+  fireEvent.click(within(d).getByRole("radio", { name: /^Ops/ }));
+  fireEvent.click(within(d).getByRole("button", { name: "Move" }));
+  const note = await within(d).findByText(
+    "This artifact just changed. Check it and try again.",
+  );
+  expect(note).toHaveAttribute("role", "status");
+  expect(within(d).queryByRole("alert")).toBeNull();
+  expect(screen.queryByText("Couldn't move the artifact.")).toBeNull();
+  expect(screen.queryByText("server text")).toBeNull();
+  // The dialog stays open and Move is the retry.
+  expect(within(d).getByRole("button", { name: "Move" })).toBeEnabled();
+  // Choosing another space clears the line.
+  fireEvent.click(within(d).getByRole("radio", { name: /^Design/ }));
+  expect(
+    within(d).queryByText(
+      "This artifact just changed. Check it and try again.",
+    ),
+  ).toBeNull();
 });
 
 it("space_personal (defensive) shows its copy", async () => {

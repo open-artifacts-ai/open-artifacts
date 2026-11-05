@@ -3,6 +3,7 @@ import { normalizeEmail } from "@oa/auth-core";
 import {
   type AccessLevel,
   type CapReason,
+  DATA_EDITORS_ONLY_MESSAGE,
   type ListQuery,
   type Member,
   type SpaceRole,
@@ -36,8 +37,12 @@ import type { AppEnv } from "../http/middleware.js";
 import {
   type CanCtx,
   can,
+  capsOf,
+  dataWritersOf,
   decide,
+  editorsOnlyRefusal,
   isTeamRole,
+  orgCan,
   type PolicyAction,
   TEAM_ROLES,
 } from "./policy.js";
@@ -96,6 +101,25 @@ export function requireUser(c: Context<AppEnv>): Member {
   const user = c.var.user;
   if (!user) throw new ApiError("unauthorized", "Sign in required");
   return user;
+}
+
+/**
+ * Interactive cookie sessions: a Cloudflare Access sign-in (self-host),
+ * Google or an email code. Never "pat" (or any bearer token).
+ */
+const INTERACTIVE: ReadonlySet<string> = new Set(["access", "google", "code"]);
+
+/**
+ * Whether the request is a signed-in person in a browser: an interactive
+ * cookie session and no Authorization header, so never a PAT, an MCP grant
+ * or an AI agent's token, whoever holds it. Directory disconnect and member
+ * erase (#1204) require it.
+ */
+export function interactiveSession(c: Context<AppEnv>): boolean {
+  const m = c.get("authMethod");
+  return (
+    !!m && INTERACTIVE.has(m) && c.req.header("authorization") === undefined
+  );
 }
 
 const callerEmail = (u: Member) => normalizeEmail(u.email);
@@ -267,7 +291,7 @@ function spaceRankSql(
  * space is `spaces` (joined), its id `spaceId`. Lists and checkListSpace
  * share it.
  */
-function roleRankSql(
+export function roleRankSql(
   c: Caller,
   spaceId: SQL = sql`${artifacts.spaceId}`,
 ): SQL<number> {
@@ -315,6 +339,19 @@ export function levelSql(
     else ${rest} end)`;
 }
 
+/** The levels that may read an artifact's share list (GET R.shares). */
+const SHARE_LEVELS = (["owner", "manager", "editor", "viewer"] as const).filter(
+  (l) => can(l, "share", { cap: null, personal: true }),
+);
+
+/**
+ * Whether `user`'s roles let them read the share list, over levelSql's joins.
+ * Under no cap: a cap reads every level as viewer, and a restricted member
+ * still owns their personal artifacts (Me.notices.guestShares).
+ */
+export const readsSharesSql = (user: Member): SQL =>
+  inArray(levelSql({ kind: "user", user }), SHARE_LEVELS);
+
 /**
  * A viewer's first-thumbnail right (can "thumbnail.write" with
  * firstThumbnail): through a share, or team access on a team artifact.
@@ -332,6 +369,14 @@ export function firstThumbnailEligible(
 export const capOfCaller = (c: Caller): CapReason | null =>
   c.kind === "user" ? (c.cap ?? null) : null;
 
+/**
+ * Whether `actor` may act on an org owner or admin: members.manageAdmins
+ * under the actor's cap (the uncapped owner only, #475). A member without a
+ * cap throws (callerOf), so it fails closed.
+ */
+export const managesAdmins = (actor: Member): boolean =>
+  orgCan(actor, "members.manageAdmins", { cap: capOfCaller(callerOf(actor)) });
+
 const VISIBILITIES: ReadonlySet<string> = new Set(VisibilitySchema.options);
 /** A stored visibility, or "private" when the row holds anything else (fail closed). */
 const visibilityOf = (v: string): Visibility =>
@@ -343,8 +388,29 @@ export function canCtx(c: Caller, a: ArtifactRow): CanCtx {
     cap: capOfCaller(c),
     personal: true,
     anonymous: c.kind !== "user",
-    allowAnonymousWrites: a.allowAnonymousWrites === 1,
+    // The one read of the stored columns (fail closed, #681).
+    dataWriters: dataWritersOf(a),
   };
+}
+
+/**
+ * #681: the error for a data.write `can` refused. A refusal caused by
+ * dataWriters "editors" alone is 403 data_editors_only, unless the artifact
+ * lacks db (capability_denied, the runtime gate's order); anything else is
+ * null (the caller's usual 404 or 401).
+ */
+export function dataWriteRefusal(
+  level: AccessLevel | null,
+  ctx: CanCtx,
+  a: Pick<ArtifactRow, "capabilities">,
+): ApiError | null {
+  if (!editorsOnlyRefusal(level, ctx)) return null;
+  if (!capsOf(a.capabilities).db)
+    return new ApiError(
+      "capability_denied",
+      'This artifact did not declare the "db" capability',
+    );
+  return new ApiError("data_editors_only", DATA_EDITORS_ONLY_MESSAGE);
 }
 
 /**
@@ -369,15 +435,24 @@ export async function authorize(
     r = await loadAccess(env, c, artifactId, opts);
     prefetched.getStore()?.set(accessKey(c, artifactId, opts), r);
   } else r = await accessLevel(env, c, artifactId, opts);
-  if (
-    !r ||
-    !can(r.level, action, {
-      ...canCtx(c, r.artifact),
-      personal: r.personal,
-      ...opts.ctx,
-    })
-  )
-    throw new ApiError("not_found", "Not found");
+  if (!r) throw new ApiError("not_found", "Not found");
+  const base = canCtx(c, r.artifact);
+  // opts.ctx only adds the thumbnail floor: who the caller is and who may
+  // write data always come from the row.
+  const ctx: CanCtx = {
+    ...base,
+    personal: r.personal,
+    ...opts.ctx,
+    anonymous: base.anonymous,
+    dataWriters: base.dataWriters,
+  };
+  if (!can(r.level, action, ctx)) {
+    const e =
+      action === "data.write"
+        ? dataWriteRefusal(r.level, ctx, r.artifact)
+        : null;
+    throw e ?? new ApiError("not_found", "Not found");
+  }
   return r;
 }
 
@@ -514,6 +589,84 @@ export async function checkListSpace(
     return;
   }
   if (!(row.rank > 0)) throw new ApiError("not_found", "Not found");
+}
+
+/**
+ * The caller's full role rank (0 to 3) in `spaceId` (roleRankSql, so
+ * allMembersRole only for uncapped members), as a scalar subquery and its
+ * parameters for a raw D1 statement: a write re-checks the role it was
+ * allowed under. Its placeholders are positional (`?`).
+ */
+export function roleRankQuery(
+  env: Env,
+  c: Caller,
+  spaceId: string,
+): { sql: string; params: unknown[] } {
+  const q = getDb(env)
+    .select({ r: roleRankSql(c, sql`${spaces.id}`) })
+    .from(spaces)
+    .where(and(eq(spaces.id, spaceId), isNull(spaces.deletedAt)))
+    .limit(1)
+    .toSQL();
+  return { sql: `coalesce((${q.sql}), 0)`, params: q.params };
+}
+
+/** A space an artifact is created in or moved to (publishTarget). */
+export type TargetSpace = {
+  id: string;
+  kind: "personal" | "shared";
+  publicLinks: boolean;
+};
+
+/**
+ * The space a create (`publish`, spaceId) or a move puts an artifact in, if
+ * the caller may: orgCan("space.publish") with their role there (editor or
+ * manager, uncapped). One statement. Errors, in order:
+ * - 404: unknown or deleted, or a shared space where the caller has no role
+ *   and is not an org admin (no existence oracle);
+ * - personal: someone else's is 404 (no user-id oracle); the caller's own
+ *   is 400 space_personal for a move (company artifacts stay
+ *   company-owned) and allowed for a create;
+ * - 403 space_forbidden: seen but not allowed (a viewer role, an org admin
+ *   without a role, a capped caller).
+ */
+export async function publishTarget(
+  env: Env,
+  c: Caller,
+  spaceId: string,
+  purpose: "create" | "move",
+): Promise<TargetSpace> {
+  if (c.kind !== "user") throw new ApiError("unauthorized", "Sign in required");
+  const [row] = await getDb(env)
+    .select({
+      kind: spaces.kind,
+      publicLinks: spaces.publicLinks,
+      rank: roleRankSql(c, sql`${spaces.id}`),
+    })
+    .from(spaces)
+    .where(and(eq(spaces.id, spaceId), isNull(spaces.deletedAt)))
+    .limit(1);
+  if (!row) throw new ApiError("not_found", "Not found");
+  const cap = capOfCaller(c);
+  const forbidden = () =>
+    new ApiError("space_forbidden", "You can't publish to this space");
+  if (row.kind !== "shared") {
+    // Someone else's personal space is 404 either way (no user-id oracle).
+    if (c.user.id !== spaceId) throw new ApiError("not_found", "Not found");
+    if (purpose === "move")
+      throw new ApiError(
+        "space_personal",
+        "Artifacts move into shared spaces only",
+      );
+    if (!orgCan(c.user, "artifact.create", { cap })) throw forbidden();
+    return { id: spaceId, kind: "personal", publicLinks: true };
+  }
+  const role = RANK_ROLE[row.rank] ?? null;
+  if (!role && !orgCan(c.user, "space.create", { cap }))
+    throw new ApiError("not_found", "Not found");
+  if (!orgCan(c.user, "space.publish", { spaceRole: role, cap }))
+    throw forbidden();
+  return { id: spaceId, kind: "shared", publicLinks: row.publicLinks === 1 };
 }
 
 /**

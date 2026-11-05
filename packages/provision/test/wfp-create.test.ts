@@ -2,8 +2,6 @@ import {
   createHash,
   createPrivateKey,
   createPublicKey,
-  generateKeyPairSync,
-  type KeyObject,
   sign,
   verify,
 } from "node:crypto";
@@ -24,20 +22,24 @@ import { DatabaseSync as Sqlite } from "node:sqlite";
 import { isPat } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { packUstar } from "../../../scripts/ci/release-artifact.mjs";
-import { assetHash, CfError, cfClient, type Target } from "../src/cf.js";
+import {
+  assetContentType,
+  assetHash,
+  CfError,
+  cfClient,
+  type Target,
+} from "../src/cf.js";
 import * as INDEX from "../src/index.js";
 import { RELEASE_PUBKEY_PLACEHOLDER } from "../src/internal/gates.js";
 import { loadTemplate } from "../src/internal/template.js";
-import {
-  HOSTED_ADDED,
-  type Template,
-  userWorkerMetadata,
-} from "../src/metadata.js";
+import { HOSTED_ADDED, userWorkerMetadata } from "../src/metadata.js";
 import {
   ENV_PREFIX,
   type Env,
   hosts as hostsOf0,
+  PLATFORM_PRINCIPAL_IDS,
   platformNames,
+  registryKey,
 } from "../src/names.js";
 import { canonicalJson, inputsHash } from "../src/platform.js";
 import {
@@ -46,32 +48,53 @@ import {
   publishRelease,
   r2ReleaseReader,
 } from "../src/publish.js";
+import { r2S3Client } from "../src/r2s3.js";
 import {
-  assetEntries,
   bundleSha256,
   compareVersions,
   migrationsSha256,
   type ReleaseAsset,
-  type ReleaseFile,
   type ReleaseReader,
   type ReleaseRecord,
   readTreeHardened,
-  type SignedReleaseRecord,
   TEST_HOOKS_DEFINE,
 } from "../src/release.js";
 import {
   assertBrokerOrigin,
+  assertDoClassesShipFirst,
   assertSessionSecret,
   brokerKid,
   brokerOrigin,
+  DEFAULT_MAX_TOKEN_DAYS,
   HOSTED_DOMAINS,
   hostsKvTitle,
   NAMESPACES,
+  PROVISIONER_MAX_TOKEN_DAYS,
   ProdLocked,
+  ProvisionRefused,
+  ProvisionRetry,
+  provisionErrorCode,
   type WfpOptions,
   WfpProvisioner,
 } from "../src/wfp.js";
 import { type FakeCf as Fake, FakeCf, splitSql } from "./fake-cf.js";
+import {
+  ASSETS,
+  assetsOf,
+  enc,
+  floorOf,
+  makeBundle,
+  OTHER_SIGNER,
+  payloadOf,
+  pubX,
+  releaseFixtures,
+  SIGNER,
+  signFloor,
+  signRecord,
+  TEST_PUBKEY,
+  tamper,
+  WELCOME_BYTES,
+} from "./fixtures/release.js";
 
 const hostsOf = (slug: string) =>
   hostsOf0(slug, { app: "app.test", content: "content.test" });
@@ -206,224 +229,40 @@ const PRINTABLE: string[] = [];
 const FAKES: Fake[] = [];
 const PROVS: WfpProvisioner[] = [];
 
-async function fails(p: Promise<unknown>): Promise<Error> {
+/** The rejection; `code` is a ProvisionRefused's job error code. */
+async function fails(p: Promise<unknown>): Promise<Error & { code?: unknown }> {
   try {
     await p;
   } catch (e) {
     THROWN.push(String((e as Error).message), String(e), JSON.stringify(e));
-    return e as Error;
+    return e as Error & { code?: unknown };
   }
   throw new Error("expected a failure");
 }
 
-const enc = (s: string) => new TextEncoder().encode(s);
-
-function makeBundle(
-  variant: "release" | "redline",
-  version = "0.23.0",
-): {
-  modules: { name: string; type: "esm" | "wasm"; bytes: Uint8Array }[];
-  mainModule: string;
-  version: string;
-} {
-  return {
-    modules: [
-      {
-        name: "index.js",
-        type: "esm",
-        bytes: enc(
-          `const hooksAllowed = ${variant === "redline"};\nexport default { fetch() { return new Response(String(hooksAllowed)); } };\n`,
-        ),
-      },
-    ],
-    mainModule: "index.js",
-    version,
-  };
-}
-
 // The release's own files (what T3b will put in oa-<p>-releases). Read here
 // once from this checkout as fixtures; create itself must never read them.
-const TEMPLATE_BYTES = new Uint8Array(
-  readFileSync(new URL("apps/server/wrangler.template.jsonc", ROOT)),
-);
-const MIGRATION_FILES: ReleaseFile[] = SERVER_MIGRATIONS.map((name) => ({
-  name,
-  bytes: new Uint8Array(
-    readFileSync(new URL(`apps/server/migrations/${name}`, ROOT)),
-  ),
-}));
-const ASSETS: ReleaseAsset[] = [
-  { path: "index.html", bytes: enc("<!doctype html><p>hi</p>") },
-  { path: "app.js", bytes: enc("console.log(1)") },
-];
+const { TEMPLATE_BYTES, MIGRATION_FILES, recordOf, makeRelease } =
+  releaseFixtures({
+    template: new Uint8Array(
+      readFileSync(new URL("apps/server/wrangler.template.jsonc", ROOT)),
+    ),
+    migrations: SERVER_MIGRATIONS.map((name) => ({
+      name,
+      bytes: new Uint8Array(
+        readFileSync(new URL(`apps/server/migrations/${name}`, ROOT)),
+      ),
+    })),
+  });
 
-/** Release content; a Template object is serialized to the template bytes. */
-type ReleaseSpec = {
-  env?: Env;
-  welcome?: Uint8Array;
-  template?: Template | Uint8Array;
-  migrations?: ReleaseFile[];
-  assets?: ReleaseAsset[];
-  floor?: unknown;
-};
-const tplBytes = (t: ReleaseSpec["template"]) =>
-  t === undefined
-    ? TEMPLATE_BYTES
-    : t instanceof Uint8Array
-      ? t
-      : enc(JSON.stringify(t, null, 2));
-
-// The release signing keypair of these tests (T3b holds the real one).
-const SIGNER = generateKeyPairSync("ed25519");
-const OTHER_SIGNER = generateKeyPairSync("ed25519");
 for (const k of [SIGNER, OTHER_SIGNER]) {
   SENSITIVE.add(
     k.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64url"),
   );
   SENSITIVE.add(k.privateKey.export({ format: "jwk" }).d as string);
 }
-const pubX = (k: { publicKey: KeyObject }) =>
-  k.publicKey.export({ format: "jwk" }).x as string;
-const TEST_PUBKEY = pubX(SIGNER);
 // One key for both envs on purpose: domain separation must still hold (F2).
 G.RELEASE_PUBKEY = { staging: TEST_PUBKEY, prod: TEST_PUBKEY };
-
-/** The signed bytes: "oa-release-v1\n" + env + "\n" + the stored record string. */
-const payloadOf = (record: string, env: string) =>
-  Buffer.from(`oa-release-v1\n${env}\n${record}`);
-/** The stored form (T3b): the record as its canonical JSON string, and the signature over it. */
-const signRecord = (
-  record: ReleaseRecord,
-  key: KeyObject = SIGNER.privateKey,
-  env: string = record.env,
-): SignedReleaseRecord => {
-  const s = canonicalJson(record);
-  return {
-    record: s,
-    signature: sign(null, payloadOf(s, env), key).toString("base64url"),
-  };
-};
-/** A stored record with one field replaced after signing. */
-const tamper = (g: SignedReleaseRecord, over: Record<string, unknown>) => ({
-  ...g,
-  record: canonicalJson({ ...JSON.parse(g.record), ...over }),
-});
-
-/** The env's signed floor (releases/floor.json). */
-type Floor = {
-  env: string;
-  seq: number;
-  minVersion: string;
-  revoked: string[];
-};
-const floorOf = (o: Partial<Floor> = {}, env: string = "staging"): Floor => ({
-  env,
-  seq: 1,
-  minVersion: "0.1.0",
-  revoked: [],
-  ...o,
-});
-const signFloor = (
-  f: Floor,
-  key: KeyObject = SIGNER.privateKey,
-  env: string = f.env,
-) => {
-  const s = canonicalJson(f);
-  return {
-    record: s,
-    signature: sign(
-      null,
-      Buffer.from(`oa-release-floor-v1\n${env}\n${s}`),
-      key,
-    ).toString("base64url"),
-  };
-};
-
-const WELCOME_BYTES = enc(
-  "# Welcome to Open Artifacts\n\nThis text comes from the release (sentinel-from-release).\n",
-);
-
-/** The per-release manifest the bundle step (T3b) will write. */
-const recordOf = (
-  variant: "release" | "redline",
-  version = "0.23.0",
-  spec: ReleaseSpec = {},
-): ReleaseRecord => ({
-  env: spec.env ?? "staging",
-  version,
-  variant,
-  sha256: bundleSha256(makeBundle(variant, version)),
-  defines: { [TEST_HOOKS_DEFINE]: variant === "redline" },
-  assets: assetEntries(spec.assets ?? ASSETS),
-  templateSha256: createHash("sha256")
-    .update(tplBytes(spec.template))
-    .digest("hex"),
-  migrationsSha256: migrationsSha256(spec.migrations ?? MIGRATION_FILES),
-  welcomeSha256: createHash("sha256")
-    .update(spec.welcome ?? WELCOME_BYTES)
-    .digest("hex"),
-});
-
-type Kind =
-  | "record"
-  | "modules"
-  | "assets"
-  | "template"
-  | "migrations"
-  | "welcome"
-  | "floor";
-/** An in-memory release reader that counts reads; `over` replaces any read. */
-function makeRelease(
-  spec: ReleaseSpec = {},
-  over: Partial<ReleaseReader> = {},
-): ReleaseReader & { calls: Record<Kind, number> } {
-  const calls: Record<Kind, number> = {
-    record: 0,
-    modules: 0,
-    assets: 0,
-    template: 0,
-    migrations: 0,
-    welcome: 0,
-    floor: 0,
-  };
-  const base: ReleaseReader = {
-    record: async (version, v) => signRecord(recordOf(v, version, spec)),
-    modules: async (version, v) => {
-      const b = makeBundle(v, version);
-      return { mainModule: b.mainModule, modules: b.modules };
-    },
-    assets: async () =>
-      (spec.assets ?? ASSETS).map((a) => ({ ...a, bytes: a.bytes.slice() })),
-    template: async () => tplBytes(spec.template).slice(),
-    migrations: async () =>
-      (spec.migrations ?? MIGRATION_FILES).map((f) => ({
-        ...f,
-        bytes: f.bytes.slice(),
-      })),
-    welcome: async () => (spec.welcome ?? WELCOME_BYTES).slice(),
-    floor: async () =>
-      spec.floor !== undefined
-        ? spec.floor
-        : signFloor(floorOf({}, spec.env ?? "staging")),
-  };
-  const counted = (k: Kind) =>
-    // biome-ignore lint/suspicious/noExplicitAny: forwards each reader's own args
-    (async (...a: any[]) => {
-      calls[k]++;
-      // biome-ignore lint/suspicious/noExplicitAny: forwards each reader's own args
-      return ((over[k] ?? base[k]) as any)(...a);
-    }) as never;
-  return {
-    calls,
-    record: counted("record"),
-    modules: counted("modules"),
-    assets: counted("assets"),
-    template: counted("template"),
-    migrations: counted("migrations"),
-    welcome: counted("welcome"),
-    floor: counted("floor"),
-  };
-}
 
 /** The first `after` reads are the good ones, every later read the other. */
 const swapAfterFirst = <T>(
@@ -462,6 +301,7 @@ function setup(o: SetupOpts = {}) {
   const pdb = seed ? fake.seedD1(platformNames(env).db, PLATFORM_SQL) : "";
   const hostsId = seed ? fake.seedKv(hostsKvTitle(env)) : "";
   const regId = seed ? fake.seedKv(platformNames(env).registry) : "";
+  const dirId = seed ? fake.seedKv(platformNames(env).directoryRegistry) : "";
   // The one Turnstile widget of each env (Task 8 creates it once per env).
   for (const e of ["staging", "prod"] as const)
     fake.turnstile.set(TS[e].sitekey, {
@@ -528,6 +368,7 @@ function setup(o: SetupOpts = {}) {
     pdb,
     hostsId,
     regId,
+    dirId,
     patDir,
     release,
     target,
@@ -602,6 +443,16 @@ const seedRow = (
   h.run(r.content, r.id);
 };
 
+// The template's latest DO migration tag, derived so a new server DO tag needs
+// no edit here; pinned to the vN shape so a missing tag can't pass vacuously.
+const lastTag = loadTemplate().migrations?.at(-1)?.tag;
+
+describe("template DO migration tag", () => {
+  it("is a vN tag", () => {
+    expect(lastTag).toMatch(/^v\d+$/);
+  });
+});
+
 describe("WfpProvisioner.create", () => {
   it("creates every resource named by install id and maps both hosts", async () => {
     const s = setup();
@@ -616,8 +467,7 @@ describe("WfpProvisioner.create", () => {
       state: "active",
       test_hooks: 0,
       version: "0.23.0",
-      // The template's latest tag (v2 adds UserPresence, unbound, P3 T7a).
-      do_migration_tag: "v2",
+      do_migration_tag: lastTag,
     });
     expect(
       s
@@ -767,6 +617,128 @@ describe("WfpProvisioner.create", () => {
       expect(inst.id).toBe(row.id);
     });
 
+    describe("fixed id (installId)", () => {
+      const ID = "iabcdefghjkm";
+      /** A creating row for finqore under ID (the first run failed). */
+      const halfMade = async () => {
+        const s = setup();
+        s.fake.inject((m, p) => m === "POST" && p.endsWith("/r2/buckets"));
+        await fails(s.p.create(input("finqore", { installId: ID })));
+        return s;
+      };
+
+      it("fixed id: fresh create uses it", async () => {
+        const s = setup();
+        const inst = await s.p.create(input("finqore", { installId: ID }));
+        expect(inst.id).toBe(ID);
+        expect(s.rows().map((r) => [r.id, r.state])).toEqual([[ID, "active"]]);
+      });
+
+      it("fixed id: rerunning a finished create (lost step result) returns the install with no write", async () => {
+        const s = setup();
+        const first = await s.p.create(input("finqore", { installId: ID }));
+        const n = s.fake.writes().length;
+        const again = await s.p.create(input("finqore", { installId: ID }));
+        expect(again).toEqual({
+          id: ID,
+          slug: "finqore",
+          appHost: first.appHost,
+          contentHost: first.contentHost,
+          version: first.version,
+        });
+        expect(nonReads(s.fake, n)).toEqual([]);
+        expect(s.rows().map((r) => [r.id, r.state])).toEqual([[ID, "active"]]);
+      });
+
+      it("fixed id: a rerun of a finished create with other inputs is refused", async () => {
+        const s = setup();
+        await s.p.create(input("finqore", { installId: ID }));
+        const n = s.fake.writes().length;
+        const e = await fails(
+          s.p.create(
+            input("finqore", { installId: ID, ownerEmail: "x@example.com" }),
+          ),
+        );
+        expect(provisionErrorCode(e)).toBe("invalid_state");
+        expect(nonReads(s.fake, n)).toEqual([]);
+      });
+
+      it("fixed id: a resume with the same id proceeds", async () => {
+        const s = await halfMade();
+        expect(s.rows().map((r) => [r.id, r.state])).toEqual([
+          [ID, "creating"],
+        ]);
+        const inst = await s.p.create(input("finqore", { installId: ID }));
+        expect(inst.id).toBe(ID);
+        expect(s.rows()).toHaveLength(1);
+      });
+
+      it("fixed id: slug held by another id is refused with no write", async () => {
+        const s = await halfMade();
+        const n = s.fake.writes().length;
+        const e = await fails(
+          s.p.create(input("finqore", { installId: "iabcdefghjkn" })),
+        );
+        expect(e.message).toMatch(
+          /slug finqore is already taken by install iabcdefghjkm/,
+        );
+        expect(e.code).toBe("slug_taken");
+        expect(nonReads(s.fake, n)).toEqual([]);
+        expect(s.rows().map((r) => r.id)).toEqual([ID]);
+      });
+
+      it("fixed id: an active slug of another id keeps the active refusal", async () => {
+        const s = setup();
+        await s.p.create(input());
+        const n = s.fake.writes().length;
+        const e = await fails(s.p.create(input("finqore", { installId: ID })));
+        expect(e.message).toMatch(
+          /slug finqore already exists as active install/,
+        );
+        expect(e.code).toBe("slug_taken");
+        expect(nonReads(s.fake, n)).toEqual([]);
+      });
+
+      it("fixed id: the id already used by another slug is refused", async () => {
+        const s = await halfMade();
+        const n = s.fake.writes().length;
+        const e = await fails(s.p.create(input("other", { installId: ID })));
+        expect(e.message).toMatch(
+          /installId iabcdefghjkm is not the install for slug other/,
+        );
+        expect(provisionErrorCode(e)).toBe("invalid_state");
+        expect(nonReads(s.fake, n)).toEqual([]);
+        expect(s.rows().map((r) => r.slug)).toEqual(["finqore"]);
+      });
+
+      it("a malformed id is refused before any call", async () => {
+        const s = setup();
+        for (const bad of ["Iabcdefghjkm", "iabcdefghjkm ", "iabc", ""]) {
+          const e = await fails(
+            s.p.create(input("finqore", { installId: bad })),
+          );
+          expect(e.message).toMatch(/installId is not an install id/);
+        }
+        const both = await fails(
+          s.p.create(input("finqore", { installId: ID, resumeId: ID })),
+        );
+        expect(both.message).toMatch(/installId or resumeId/);
+        expect(s.fake.log).toEqual([]);
+      });
+
+      it("a platform principal id (4.1) is refused as installId or resumeId before any call", async () => {
+        const s = setup();
+        for (const id of PLATFORM_PRINCIPAL_IDS)
+          for (const key of ["installId", "resumeId"] as const) {
+            const e = await fails(s.p.create(input("finqore", { [key]: id })));
+            expect(e).toBeInstanceOf(ProvisionRefused);
+            expect(e.message).toMatch(/platform principal/);
+            expect(provisionErrorCode(e)).toBe("invalid_state");
+          }
+        expect(s.fake.log).toEqual([]);
+      });
+    });
+
     it("an active slug fails before any Cloudflare write", async () => {
       const s = setup();
       await s.p.create(input());
@@ -798,6 +770,12 @@ describe("WfpProvisioner.create", () => {
         );
       },
     );
+
+    it("the inputs hash leaves the version out (a resume may move up; replay checks it)", () => {
+      const base = { ownerEmail: OWNER, vars: {}, testHooks: false };
+      const withVersion = { ...base, version: "0.24.0" };
+      expect(inputsHash(withVersion)).toBe(inputsHash(base));
+    });
 
     it("the owner email is normalized (trim, lowercase), so a resume in other casing is the same input", async () => {
       const s = setup();
@@ -893,13 +871,28 @@ describe("WfpProvisioner.create", () => {
       expect(s.fake.writes()).toEqual([]);
     });
 
+    it("H-DR: a missing staging directory registry is refused with zero writes", async () => {
+      const s = setup({ seed: false, brokerEnabled: true });
+      s.fake.seedD1(platformNames("staging").db, PLATFORM_SQL);
+      s.fake.seedKv(hostsKvTitle("staging"));
+      s.fake.seedKv(platformNames("staging").registry);
+      s.fake.seedKv(platformNames("prod").directoryRegistry);
+      const e = await fails(s.p.create(input()));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(
+        /directory registry KV oa-s-directory-registry not found/,
+      );
+      expect(s.fake.writes()).toEqual([]);
+    });
+
     it("a staging create only ever touches the staging platform ids", async () => {
       const s = setup({ brokerEnabled: true });
       const prodDb = s.fake.seedD1(platformNames("prod").db, PLATFORM_SQL);
       const prodHosts = s.fake.seedKv(hostsKvTitle("prod"));
       const prodReg = s.fake.seedKv(platformNames("prod").registry);
+      const prodDir = s.fake.seedKv(platformNames("prod").directoryRegistry);
       await s.p.create(input());
-      for (const id of [prodDb, prodHosts, prodReg])
+      for (const id of [prodDb, prodHosts, prodReg, prodDir])
         expect(s.fake.log.some((e) => e.path.includes(id))).toBe(false);
     });
 
@@ -954,7 +947,9 @@ describe("WfpProvisioner.create", () => {
       await fails(s.p.create(input()));
       const [row1] = s.rows();
       const reg = () =>
-        JSON.parse(s.fake.kvValues(s.regId).get(row1.id) as string);
+        JSON.parse(
+          s.fake.kvValues(s.regId).get(registryKey(row1.id)) as string,
+        );
       expect(reg().keys).toHaveLength(1);
       expect(row1.broker_kid).toBeNull();
       const before = regPuts(s).length;
@@ -1002,20 +997,255 @@ describe("WfpProvisioner.create", () => {
       const s = setup({ brokerEnabled: true });
       const inst = await s.p.create(input());
       const reg = s.fake.kvValues(s.regId);
-      expect(reg.size).toBe(1);
-      const raw = reg.get(inst.id) as string;
+      // The key the auth broker reads (apps/auth-broker/src/registry.ts).
+      expect([...reg.keys()]).toEqual([`install:${inst.id}`]);
+      const raw = reg.get(registryKey(inst.id)) as string;
       const entry = JSON.parse(raw);
       expect(Object.keys(entry).sort()).toEqual([
+        "domains",
         "installId",
         "keys",
         "origin",
       ]);
+      // No AUTH_DOMAINS: always written, empty.
+      expect(entry.domains).toEqual([]);
       expect(entry.installId).toBe(inst.id);
       expect(entry.origin).toBe("https://finqore.open-artifacts-staging.app");
       expect(Object.keys(entry.keys[0]).sort()).toEqual(["kid", "x"]);
       expect(raw).not.toContain(OWNER);
       for (const v of s.scriptOf(inst.id)?.secrets.values() ?? [])
         expect(raw).not.toContain(v);
+    });
+
+    it("H-DR: create writes the directory copy after each sign-in write; only the sign-in copy is disabled, until enable_signin", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(input());
+      const raw = s.fake.kvValues(s.regId).get(registryKey(inst.id)) as string;
+      expect(raw).toBeTruthy();
+      expect(JSON.parse(raw).disabled).toBeUndefined();
+      expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(raw);
+      // The same key the broker reads: install:<id> (registryKey).
+      expect([...s.fake.kvValues(s.dirId).keys()]).toEqual([
+        `install:${inst.id}`,
+      ]);
+      // Every directory put follows a broker put of the same body.
+      const puts = s.fake.log
+        .map((e, i) => ({ ...e, body: s.fake.raw[i]?.body ?? "" }))
+        .filter(
+          (e) =>
+            e.method === "PUT" &&
+            (e.path.includes(`/namespaces/${s.regId}/values/`) ||
+              e.path.includes(`/namespaces/${s.dirId}/values/`)),
+        )
+        .map((e) => ({ dir: e.path.includes(s.dirId), body: e.body }));
+      // Two broker writes (sign-in disabled, copy enabled), then enable_signin.
+      expect(puts.length).toBe(5);
+      for (let k = 0; k < 4; k += 2) {
+        expect(puts[k]?.dir).toBe(false);
+        const signin = JSON.parse(puts[k]?.body as string);
+        expect(signin.disabled).toBe(true);
+        const { disabled: _d, ...on } = signin;
+        expect(puts[k + 1]).toEqual({ dir: true, body: JSON.stringify(on) });
+      }
+      expect(puts[4]).toEqual({ dir: false, body: raw });
+      expect(await s.p.status(inst.id)).toMatchObject({ registryDrift: null });
+    });
+
+    it("H-DR: a failure between the broker and directory writes resumes to both", async () => {
+      const s = setup({ brokerEnabled: true });
+      // The final directory put (right after the final broker put) fails.
+      s.fake.inject(
+        (m, p) => m === "PUT" && p.includes(`/namespaces/${s.dirId}/values/`),
+        { status: 400, skip: 1 },
+      );
+      const e = await fails(s.p.create(input()));
+      expect(e.message).toContain(`/namespaces/${s.dirId}/values/`);
+      const [row] = s.rows();
+      expect(row.state).toBe("creating");
+      expect(row.lease).toBeNull();
+      expect(row.broker_kid).toMatch(/^[A-Za-z0-9_-]{16}$/);
+      const reg = s.fake.kvValues(s.regId).get(registryKey(row.id)) as string;
+      expect(JSON.parse(reg).keys).toHaveLength(1);
+      // Stand in for a copy that kept an older value (e.g. mid-rotation).
+      s.fake
+        .kvValues(s.dirId)
+        .set(registryKey(row.id), reg.replace(/"x":"[^"]+"/, '"x":"AAAA"'));
+      expect(await s.p.status(row.id)).toMatchObject({
+        registryDrift: { id: row.id, kind: "mismatch" },
+      });
+      const inst = await s.p.create(input());
+      expect(inst.id).toBe(row.id);
+      // The broker entry was healthy, so its keys stay; only the copy is
+      // rewritten, and enable_signin turns the sign-in copy on.
+      const { disabled: _d, ...on } = JSON.parse(reg);
+      expect(JSON.parse(reg).disabled).toBe(true);
+      expect(s.fake.kvValues(s.regId).get(registryKey(row.id))).toBe(
+        JSON.stringify(on),
+      );
+      expect(s.fake.kvValues(s.dirId).get(registryKey(row.id))).toBe(
+        JSON.stringify(on),
+      );
+      expect(await s.p.status(row.id)).toMatchObject({ registryDrift: null });
+    });
+
+    it("H-DR: a failure of the first directory write resumes to both", async () => {
+      const s = setup({ brokerEnabled: true });
+      s.fake.inject(
+        (m, p) => m === "PUT" && p.includes(`/namespaces/${s.dirId}/values/`),
+        { status: 400 },
+      );
+      await fails(s.p.create(input()));
+      const [row] = s.rows();
+      expect(s.fake.kvValues(s.regId).has(registryKey(row.id))).toBe(true);
+      expect(s.fake.kvValues(s.dirId).has(registryKey(row.id))).toBe(false);
+      expect(await s.p.status(row.id)).toMatchObject({
+        registryDrift: { id: row.id, kind: "missing_directory" },
+      });
+      await s.p.create(input());
+      const reg = s.fake.kvValues(s.regId).get(registryKey(row.id)) as string;
+      expect(JSON.parse(reg).keys).toHaveLength(1);
+      expect(s.fake.kvValues(s.dirId).get(registryKey(row.id))).toBe(reg);
+    });
+
+    it("H-DR: status reports each drift kind with a data-free shape and never repairs", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(input());
+      expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+      const reg = s.fake.kvValues(s.regId);
+      const dir = s.fake.kvValues(s.dirId);
+      const raw = reg.get(registryKey(inst.id)) as string;
+      const check = async (kind: string) => {
+        const w = s.fake.writes().length;
+        const st = await s.p.status(inst.id);
+        expect(st.registryDrift).toEqual({ id: inst.id, kind });
+        expect(JSON.stringify(st)).not.toContain(JSON.parse(raw).keys[0].x);
+        expect(s.fake.writes().length).toBe(w);
+      };
+      dir.delete(registryKey(inst.id));
+      await check("missing_directory");
+      dir.set(registryKey(inst.id), raw);
+      reg.delete(registryKey(inst.id));
+      await check("missing_broker");
+      reg.set(registryKey(inst.id), raw);
+      dir.set(registryKey(inst.id), raw.replace(/"x":"[^"]+"/, '"x":"AAAA"'));
+      await check("mismatch");
+      // Report only: status left the drift in place.
+      expect(dir.get(registryKey(inst.id))).not.toBe(raw);
+    });
+
+    it("H-DR: an install that should have an entry and is in neither registry is missing_both", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(input());
+      s.fake.kvValues(s.regId).delete(registryKey(inst.id));
+      s.fake.kvValues(s.dirId).delete(registryKey(inst.id));
+      const w = s.fake.writes().length;
+      expect((await s.p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "missing_both",
+      });
+      expect(s.fake.writes().length).toBe(w);
+      // L2: an install mid-upgrade owes its entry like an active one.
+      s.db()
+        .prepare("UPDATE installs SET state = 'upgrading' WHERE id = ?")
+        .run(inst.id);
+      expect((await s.p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "missing_both",
+      });
+      // A creating row past the registry step (broker_kid recorded) too.
+      const s2 = setup({ brokerEnabled: true });
+      await failAtHealth(s2);
+      const [row] = s2.rows();
+      expect(row.state).toBe("creating");
+      expect(row.broker_kid).toBeTruthy();
+      s2.fake.kvValues(s2.regId).delete(registryKey(row.id));
+      s2.fake.kvValues(s2.dirId).delete(registryKey(row.id));
+      expect((await s2.p.status(row.id)).registryDrift).toEqual({
+        id: row.id,
+        kind: "missing_both",
+      });
+    });
+
+    it("H-DR: no drift for a creating row before the registry step, or a deleted install", async () => {
+      const s = setup({ brokerEnabled: true });
+      s.fake.inject((m, p) => m === "POST" && p.endsWith("/r2/buckets"));
+      await fails(s.p.create(input()));
+      const [row] = s.rows();
+      expect(row.state).toBe("creating");
+      expect(row.broker_kid).toBeNull();
+      expect((await s.p.status(row.id)).registryDrift).toBeNull();
+      const inst = await s.p.create(input());
+      await s.p.delete(inst.id, inst.id);
+      expect(s.rows()[0].state).toBe("deleted");
+      expect(s.fake.kvValues(s.regId).has(registryKey(inst.id))).toBe(false);
+      expect(s.fake.kvValues(s.dirId).has(registryKey(inst.id))).toBe(false);
+      expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+    });
+
+    it("H-RD: both copies carry AUTH_DOMAINS as parsed by the shared parser", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(
+        input("finqore", {
+          vars: { AUTH_DOMAINS: "B.example, a.example,b.example" },
+        }),
+      );
+      const raw = s.fake.kvValues(s.regId).get(registryKey(inst.id)) as string;
+      expect(JSON.parse(raw).domains).toEqual(["a.example", "b.example"]);
+      expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(raw);
+      expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+    });
+
+    it("H-RD: more than 50 domains, or an invalid one, is refused before any write", async () => {
+      for (const AUTH_DOMAINS of [
+        Array.from({ length: 51 }, (_, i) => `d${i}.example`).join(","),
+        `${"a".repeat(64)}.example`,
+      ]) {
+        const s = setup({ brokerEnabled: true });
+        const e = await fails(
+          s.p.create(input("finqore", { vars: { AUTH_DOMAINS } })),
+        );
+        expect(e).toBeInstanceOf(ProvisionRefused);
+        expect(e.message).toMatch(/domain/);
+        expect(s.fake.writes()).toEqual([]);
+      }
+    });
+
+    it("H-RD: status flags copies whose domains differ as a mismatch", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(
+        input("finqore", { vars: { AUTH_DOMAINS: "a.example" } }),
+      );
+      const key = registryKey(inst.id);
+      const raw = s.fake.kvValues(s.regId).get(key) as string;
+      s.fake
+        .kvValues(s.dirId)
+        .set(
+          key,
+          JSON.stringify({ ...JSON.parse(raw), domains: ["b.example"] }),
+        );
+      expect((await s.p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "mismatch",
+      });
+    });
+
+    it("H-RD: a resumed create rewrites both copies when the domains are stale, keeping the key", async () => {
+      const s = setup({ brokerEnabled: true });
+      const i = input("finqore", { vars: { AUTH_DOMAINS: "a.example" } });
+      await failAtHealth(s, i);
+      const [row] = s.rows();
+      const key = registryKey(row.id);
+      const { disabled: _d, ...before } = JSON.parse(
+        s.fake.kvValues(s.regId).get(key) as string,
+      );
+      // An entry written before domains existed.
+      const legacy = JSON.stringify({ ...before, domains: undefined });
+      s.fake.kvValues(s.regId).set(key, legacy);
+      s.fake.kvValues(s.dirId).set(key, legacy);
+      await s.p.create(i);
+      const raw = s.fake.kvValues(s.regId).get(key) as string;
+      expect(JSON.parse(raw)).toEqual({ ...before, domains: ["a.example"] });
+      expect(s.fake.kvValues(s.dirId).get(key)).toBe(raw);
     });
 
     it("is not written when brokerEnabled is false", async () => {
@@ -1125,6 +1355,13 @@ describe("WfpProvisioner.create", () => {
       "FILES",
       "OAUTH_KV",
       "ARTIFACT_RUNTIME",
+      // P3 T7b: UserPresence, bound one release after its class tag (v2).
+      "USER_PRESENCE",
+      // P3 T13: DirectorySync (v3) and the directory groups limiter.
+      "DIRECTORY_SYNC",
+      "RL_DIRECTORY",
+      // #1315: BusHub (v4, 0.109.0), bound one release after its class tag.
+      "BUS_HUB",
       "RL_ANON",
       "RL_AUTH",
       "PLAN",
@@ -1208,6 +1445,7 @@ describe("WfpProvisioner.create", () => {
         });
         const e = await fails(s.p.create(input()));
         expect(e.message).toMatch(/no release record/);
+        expect(provisionErrorCode(e)).toBe("release_not_published");
         expect(s.fake.log).toEqual([]);
       },
     );
@@ -1236,7 +1474,8 @@ describe("WfpProvisioner.create", () => {
           },
         ),
       });
-      await fails(s.p.create(input()));
+      const e = await fails(s.p.create(input()));
+      expect(provisionErrorCode(e)).toBe("release_unverified");
       expect(s.fake.log).toEqual([]);
     });
 
@@ -1489,15 +1728,21 @@ describe("WfpProvisioner.create", () => {
     ]);
   });
 
-  it("hosts are written last: kvPut(HOSTS) comes after the script upload", async () => {
+  it("hosts come after the upload, the broker and verify_clean; then only D1 and enable_signin", async () => {
     const s = setup({ brokerEnabled: true });
     await s.p.create(input());
+    const at = (re: RegExp) =>
+      s.fake.log.findIndex((e) => re.test(`${e.method} ${e.path}`));
+    expect(at(/^GET .*\/settings$/)).toBeLessThan(
+      at(new RegExp(`^PUT .*/namespaces/${s.hostsId}/values/`)),
+    );
     const w = s.fake.writes();
     const hostIdx = w.findIndex((x) =>
       x.includes(`/namespaces/${s.hostsId}/values/`),
     );
     const upIdx = w.findIndex((x) => /^PUT .*\/scripts\/[^/]+$/.test(x));
     const brokerIdx = w
+      .slice(0, hostIdx)
       .map((x) => x.includes(`/namespaces/${s.regId}/values/`))
       .lastIndexOf(true);
     expect(upIdx).toBeGreaterThanOrEqual(0);
@@ -1510,7 +1755,9 @@ describe("WfpProvisioner.create", () => {
         (x) =>
           !x.includes("/query") && !x.includes(`/namespaces/${s.hostsId}/`),
       );
-    expect(after).toEqual([]);
+    // enable_signin: the sign-in copy only.
+    expect(after).toHaveLength(1);
+    expect(after[0]).toContain(`/namespaces/${s.regId}/values/`);
   });
 
   describe("slug or host already taken fails before any Cloudflare write", () => {
@@ -1521,6 +1768,7 @@ describe("WfpProvisioner.create", () => {
         .set("finqore.open-artifacts-staging.page", "izzzzzzzzzzz");
       const e = await fails(s.p.create(input()));
       expect(e.message).toMatch(/taken/);
+      expect(e.code).toBe("slug_taken");
       expect(s.fake.writes()).toEqual([]);
     });
     it("a slug held by an active install", async () => {
@@ -1554,8 +1802,9 @@ describe("WfpProvisioner.create", () => {
   it("the PAT file is 0600, minted for the owner, and its content never appears in returned values", async () => {
     const s = setup();
     const inst = await s.p.create(input());
-    expect(statSync(inst.patFile).mode & 0o777).toBe(0o600);
-    const pat = readFileSync(inst.patFile, "utf8").trim();
+    const patFile = inst.patFile as string;
+    expect(statSync(patFile).mode & 0o777).toBe(0o600);
+    const pat = readFileSync(patFile, "utf8").trim();
     expect(isPat(pat)).toBe(true);
     expect(SENSITIVE.has(pat)).toBe(true);
     expect(JSON.stringify(inst)).not.toContain(pat);
@@ -1719,7 +1968,7 @@ describe("WfpProvisioner.create", () => {
       for (const v of Object.values(manifest) as { hash: string }[])
         expect(v.hash).toMatch(/^[0-9a-f]{32}$/);
       expect(manifest["/app.js"].hash).toBe(
-        assetHash(ASSETS[1]?.bytes as Uint8Array),
+        assetHash(ASSETS[1]?.bytes as Uint8Array, "app.js"),
       );
       const ups = s.fake.log.filter((e) =>
         e.path.includes("/workers/assets/upload"),
@@ -1734,6 +1983,52 @@ describe("WfpProvisioner.create", () => {
       expect(meta.keep_assets).toBeUndefined();
     });
 
+    it("every asset is uploaded with the Content-Type prod serves for its extension", async () => {
+      const fake = new FakeCf();
+      FAKES.push(fake);
+      SENSITIVE.add(fake.token);
+      const cf = cfClient({
+        accountId: fake.accountId,
+        token: fake.token,
+        fetch: fake.fetch,
+      });
+      // Measured on prod (Wrangler's types), 2026-10-26.
+      const want: Record<string, string> = {
+        "index.html": "text/html",
+        "assets/i.js": "text/javascript",
+        "assets/m.mjs": "text/javascript",
+        "assets/i.css": "text/css",
+        "favicon.svg": "image/svg+xml",
+        "favicon.ico": "image/vnd.microsoft.icon",
+        "apple-touch-icon.png": "image/png",
+        "assets/f.woff2": "font/woff2",
+        "manifest.json": "application/json",
+        "notes.bin": "application/octet-stream",
+      };
+      await cf.assetsUpload(
+        { kind: "namespace", ns: "oa-staging" },
+        "oa-s-iaaaaaaaaaaa",
+        Object.keys(want).map((path) => ({
+          path,
+          size: path.length,
+          hash: assetHash(enc(path), path),
+          bytes: async () => enc(path),
+        })),
+      );
+      expect(Object.fromEntries(fake.assetTypes)).toEqual(
+        Object.fromEntries(Object.entries(want).map(([p, t]) => [`/${p}`, t])),
+      );
+      for (const p of Object.keys(want))
+        expect(assetContentType(p)).toBe(want[p]);
+    });
+
+    it("the asset hash covers the extension, so a file re-uploads when its type changes", () => {
+      const b = enc("same bytes");
+      expect(assetHash(b, "a.js")).not.toBe(assetHash(b, "a.css"));
+      expect(assetHash(b, "a.js")).toMatch(/^[0-9a-f]{32}$/);
+      expect(assetHash(b, "x/a.js")).toBe(assetHash(b, "y/b.js"));
+    });
+
     it("cf.assetsUpload with nothing new returns the session jwt without an upload call", async () => {
       const fake = new FakeCf();
       FAKES.push(fake);
@@ -1743,11 +2038,18 @@ describe("WfpProvisioner.create", () => {
         token: fake.token,
         fetch: fake.fetch,
       });
-      fake.assetHashes.add(assetHash(enc("a")));
+      fake.assetHashes.add(assetHash(enc("a"), "a.txt"));
       const r = await cf.assetsUpload(
         { kind: "namespace", ns: "oa-staging" },
         "oa-s-iaaaaaaaaaaa",
-        [{ path: "a.txt", bytes: enc("a") }],
+        [
+          {
+            path: "a.txt",
+            size: 1,
+            hash: assetHash(enc("a"), "a.txt"),
+            bytes: async () => enc("a"),
+          },
+        ],
       );
       expect(r.jwt).toMatch(/^jwt-sess-/);
       expect(fake.log.some((e) => e.path.includes("/assets/upload"))).toBe(
@@ -1756,8 +2058,251 @@ describe("WfpProvisioner.create", () => {
     });
   });
 
+  describe("assets (lazy reads)", () => {
+    /** Reads per asset path, through `bytes(path, n)` (n counts from 1). */
+    const counting = (bytes: (path: string, n: number) => Uint8Array) => {
+      const reads = new Map<string, number>();
+      return {
+        reads,
+        assetBytes: async (_v: string, _b: string, path: string) => {
+          const n = (reads.get(path) ?? 0) + 1;
+          reads.set(path, n);
+          return bytes(path, n);
+        },
+      };
+    };
+
+    it("assets are read one at a time", async () => {
+      // Every read is held until the test releases it, so a second read that
+      // started before the first was released would be seen in flight.
+      const files = Array.from({ length: 16 }, (_, i) => ({
+        path: `f${String(i).padStart(2, "0")}.bin`,
+        bytes: enc(`asset ${i}`),
+      }));
+      const r = counting(
+        (path) => (files.find((x) => x.path === path) as ReleaseAsset).bytes,
+      );
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const events: string[] = [];
+      const held: { path: string; release: () => void }[] = [];
+      let wake: (() => void) | undefined;
+      const s = setup({
+        release: makeRelease(
+          { assets: files },
+          {
+            assetBytes: (v, b, path) => {
+              inFlight++;
+              maxInFlight = Math.max(maxInFlight, inFlight);
+              events.push(`start ${path}`);
+              return new Promise<Uint8Array>((resolve, reject) => {
+                held.push({
+                  path,
+                  release: () => {
+                    inFlight--;
+                    events.push(`release ${path}`);
+                    r.assetBytes(v, b, path).then(resolve, reject);
+                  },
+                });
+                wake?.();
+              });
+            },
+          },
+        ),
+      });
+      let settled = false;
+      let failure: unknown;
+      const run = s.p.create(input()).then(
+        () => {
+          settled = true;
+          wake?.();
+        },
+        (e) => {
+          failure = e;
+          settled = true;
+          wake?.();
+        },
+      );
+      let released = 0;
+      for (;;) {
+        const next = held.shift();
+        if (next) {
+          expect(inFlight).toBe(1);
+          expect(held).toEqual([]);
+          released++;
+          next.release();
+          continue;
+        }
+        if (settled) break;
+        await new Promise<void>((w) => {
+          wake = w;
+        });
+        wake = undefined;
+      }
+      await run;
+      expect(failure).toBeUndefined();
+      expect(maxInFlight).toBe(1);
+      // Read k+1 starts only after read k is released.
+      const paired = events.flatMap((e, k) =>
+        k % 2 === 0 && e.startsWith("start ")
+          ? [e, `release ${e.slice("start ".length)}`]
+          : [],
+      );
+      expect(events).toEqual(paired);
+      // Pre-flight, and the bucket Cloudflare asked for.
+      expect(released).toBe(files.length * 2);
+      expect([...r.reads.values()]).toEqual(files.map(() => 2));
+    });
+
+    it.each([
+      ["10 missing, in one bucket", 10, 162],
+      ["none missing", 0, 152],
+    ])(
+      "152 assets with %s are read %i + 152 times: once to verify, once per bucket file",
+      async (_n, missing, total) => {
+        const files = Array.from({ length: 152 }, (_, i) => ({
+          path: `a${String(i).padStart(3, "0")}.js`,
+          bytes: enc(`export const n = ${i};`),
+        }));
+        const s = setup({ release: makeRelease({ assets: files }) });
+        for (const f of files.slice(missing))
+          s.fake.assetHashes.add(assetHash(f.bytes, f.path));
+        s.fake.assetsPerBucket = 10;
+        await s.p.create(input());
+        const c = (s.release as ReturnType<typeof makeRelease>).calls;
+        expect(c.assetBytes).toBe(total);
+        expect(
+          s.fake.log.filter((e) => e.path.includes("/workers/assets/upload"))
+            .length,
+        ).toBe(missing ? 1 : 0);
+      },
+    );
+
+    it("a file Cloudflare already has is read only to verify it", async () => {
+      const r = counting(
+        (path) => (ASSETS.find((a) => a.path === path) as ReleaseAsset).bytes,
+      );
+      const s = setup({
+        release: makeRelease({}, { assetBytes: r.assetBytes }),
+      });
+      for (const a of ASSETS)
+        s.fake.assetHashes.add(assetHash(a.bytes, a.path));
+      await s.p.create(input());
+      expect(Object.fromEntries(r.reads)).toEqual({
+        "app.js": 1,
+        "index.html": 1,
+      });
+      expect(
+        s.fake.log.some((e) => e.path.includes("/workers/assets/upload")),
+      ).toBe(false);
+    });
+
+    it("a file whose bytes differ from its listed entry is refused with zero Cloudflare calls", async () => {
+      const r = counting((path) =>
+        path === "app.js"
+          ? enc("console.log(2)")
+          : (ASSETS.find((a) => a.path === path) as ReleaseAsset).bytes,
+      );
+      const s = setup({
+        release: makeRelease({}, { assetBytes: r.assetBytes }),
+      });
+      const e = await fails(s.p.create(input()));
+      expect(e.message).toMatch(/assets do not match the signed record/);
+      expect(s.fake.log).toEqual([]);
+    });
+
+    it.each([["between verify and its bucket", 2]])(
+      "a file changed %s is refused before the script upload",
+      async (_n, at) => {
+        const r = counting((path, n) =>
+          path === "app.js" && n >= at
+            ? enc("console.log(2)")
+            : (ASSETS.find((a) => a.path === path) as ReleaseAsset).bytes,
+        );
+        const s = setup({
+          release: makeRelease({}, { assetBytes: r.assetBytes }),
+        });
+        const e = await fails(s.p.create(input()));
+        expect(e).toBeInstanceOf(ProvisionRefused);
+        expect(e.message).toMatch(/assets do not match the signed record/);
+        expect(uploads(s.fake)).toHaveLength(0);
+        expect(
+          s.fake.log.some((x) => x.path.endsWith("/assets-upload-session")),
+        ).toBe(true);
+      },
+    );
+
+    it("cf.assetsUpload refuses a file changed since its manifest hash, before its bucket is posted", async () => {
+      const fake = new FakeCf();
+      FAKES.push(fake);
+      SENSITIVE.add(fake.token);
+      const cf = cfClient({
+        accountId: fake.accountId,
+        token: fake.token,
+        fetch: fake.fetch,
+      });
+      const e = await fails(
+        cf.assetsUpload(
+          { kind: "namespace", ns: "oa-staging" },
+          "oa-s-iaaaaaaaaaaa",
+          [
+            {
+              path: "a.txt",
+              size: 1,
+              hash: assetHash(enc("a"), "a.txt"),
+              // Read for the bucket: not the bytes the manifest hashed.
+              bytes: async () => enc("b"),
+            },
+          ],
+        ),
+      );
+      expect(e.message).toMatch(/changed since its hash/);
+      expect(fake.log.some((x) => x.path.includes("/assets/upload"))).toBe(
+        false,
+      );
+    });
+
+    it("cf.assetsUpload reads a file only for its bucket", async () => {
+      const fake = new FakeCf();
+      FAKES.push(fake);
+      SENSITIVE.add(fake.token);
+      const cf = cfClient({
+        accountId: fake.accountId,
+        token: fake.token,
+        fetch: fake.fetch,
+      });
+      fake.assetHashes.add(assetHash(enc("a"), "a.txt"));
+      const reads: string[] = [];
+      const file = (path: string, text: string) => ({
+        path,
+        size: text.length,
+        hash: assetHash(enc(text), path),
+        bytes: async () => {
+          reads.push(path);
+          return enc(text);
+        },
+      });
+      await cf.assetsUpload(
+        { kind: "namespace", ns: "oa-staging" },
+        "oa-s-iaaaaaaaaaaa",
+        [file("a.txt", "a"), file("b.txt", "b")],
+      );
+      expect(reads).toEqual(["b.txt"]);
+    });
+  });
+
   describe("ratelimits (decision 12)", () => {
-    it("RL_ANON gets rlNs and RL_AUTH rlNs + 1; two installs never share an id", async () => {
+    it("each template ratelimit gets rlNs + its index (RL_ANON rlNs, RL_AUTH rlNs + 1); two installs never share an id", async () => {
+      // Derived from the live template, so a new server limiter (P3 T13's
+      // RL_DIRECTORY) needs no edit here.
+      const tplRl = (loadTemplate().ratelimits ?? []) as {
+        name: string;
+        namespace_id: string;
+      }[];
+      expect(tplRl.slice(0, 2).map((r) => r.name)).toEqual([
+        "RL_ANON",
+        "RL_AUTH",
+      ]);
       const s = setup();
       const a = await s.p.create(input("alpha"));
       const b = await s.p.create(input("beta"));
@@ -1778,15 +2323,15 @@ describe("WfpProvisioner.create", () => {
             x.namespace_id,
           ]),
         );
-        expect(by).toEqual({
-          RL_ANON: String(row.rl_ns),
-          RL_AUTH: String(row.rl_ns + 1),
-        });
+        expect(by).toEqual(
+          Object.fromEntries(
+            tplRl.map((r, k) => [r.name, String(row.rl_ns + k)]),
+          ),
+        );
         ids.push(...Object.values(by as Record<string, string>));
       }
-      expect(new Set(ids).size).toBe(4);
-      expect(ids).not.toContain("1001");
-      expect(ids).not.toContain("1002");
+      expect(new Set(ids).size).toBe(2 * tplRl.length);
+      for (const r of tplRl) expect(ids).not.toContain(r.namespace_id);
     });
 
     it.each([
@@ -1832,27 +2377,37 @@ describe("WfpProvisioner.create", () => {
 
   describe("token check (decision 9)", () => {
     it.each([
-      ["inactive", { status: "disabled" }],
+      ["inactive", { status: "disabled" }, "token_invalid"],
       [
         "not yet valid",
         { not_before: new Date(NOW + 3_600_000).toISOString() },
+        "token_invalid",
       ],
-      ["no expiry", { expires_on: undefined }],
+      ["no expiry", { expires_on: undefined }, "invalid_state"],
       [
         "expiry over 30 days out",
         { expires_on: new Date(NOW + 31 * 86_400_000).toISOString() },
+        "invalid_state",
       ],
-      ["expired", { expires_on: new Date(NOW - 1000).toISOString() }],
-    ])("a token that is %s is refused before any write", async (_n, over) => {
-      const s = setup();
-      Object.assign(s.fake.tokenInfo, over);
-      for (const [k, v] of Object.entries(over))
-        if (v === undefined) delete s.fake.tokenInfo[k];
-      const e = await fails(s.p.create(input()));
-      expect(e.message).toMatch(/token/);
-      expect(s.fake.writes()).toEqual([]);
-      expect(s.fake.log.map((e) => e.path)).toEqual(["/user/tokens/verify"]);
-    });
+      [
+        "expired",
+        { expires_on: new Date(NOW - 1000).toISOString() },
+        "token_invalid",
+      ],
+    ] as const)(
+      "a token that is %s is refused before any write",
+      async (_n, over, code) => {
+        const s = setup();
+        Object.assign(s.fake.tokenInfo, over);
+        for (const [k, v] of Object.entries(over))
+          if (v === undefined) delete s.fake.tokenInfo[k];
+        const e = await fails(s.p.create(input()));
+        expect(e.message).toMatch(/token/);
+        expect(provisionErrorCode(e)).toBe(code);
+        expect(s.fake.writes()).toEqual([]);
+        expect(s.fake.log.map((e) => e.path)).toEqual(["/user/tokens/verify"]);
+      },
+    );
 
     it.each([401, 403])(
       "a %s on the Workers Scripts read is refused before any write",
@@ -1861,6 +2416,7 @@ describe("WfpProvisioner.create", () => {
         s.fake.scriptsReadStatus = status;
         const e = await fails(s.p.create(input()));
         expect(e.message).toMatch(/Workers Scripts/);
+        expect(provisionErrorCode(e)).toBe("invalid_state");
         expect(s.fake.log.map((e) => e.path)).toEqual([
           "/user/tokens/verify",
           `/accounts/${s.fake.accountId}/workers/scripts?per_page=1`,
@@ -1868,13 +2424,117 @@ describe("WfpProvisioner.create", () => {
       },
     );
 
-    it("warns when the token expires within 5 days, and never calls a zone, DNS or email API", async () => {
+    it.each([
+      ["2 days", 2 * 86_400_000],
+      ["exactly 5 days", 5 * 86_400_000],
+    ])(
+      "a token that expires within 5 days (%s) is refused before any write, naming the date and the fix",
+      async (_n, ms) => {
+        const s = setup();
+        const exp = new Date(NOW + ms).toISOString();
+        s.fake.tokenInfo.expires_on = exp;
+        const e = await fails(s.p.create(input()));
+        expect(e.message).toContain(exp.slice(0, 10));
+        expect(e.message).toMatch(/expires/);
+        expect(e.message).toMatch(/roll/i);
+        expect(e.message).toMatch(/My Profile > API Tokens/);
+        // 3.5, 5.7 (#882): terminal, never a retryable token_invalid.
+        expect(e).toBeInstanceOf(ProvisionRefused);
+        expect(e).not.toBeInstanceOf(ProvisionRetry);
+        expect(provisionErrorCode(e)).toBe("invalid_state");
+        expect(s.fake.writes()).toEqual([]);
+        expect(s.fake.log.map((e) => e.path)).toEqual(["/user/tokens/verify"]);
+      },
+    );
+
+    it("a token with just over 5 days left is accepted, with no expiry note", async () => {
       const s = setup();
       s.fake.tokenInfo.expires_on = new Date(
-        NOW + 2 * 86_400_000,
+        NOW + 5 * 86_400_000 + 60_000,
       ).toISOString();
+      await s.p.create(input());
+      expect(s.p.notes.join("\n")).not.toMatch(/expires/);
+    });
+
+    // Q2 (14.1): the provisioner passes maxTokenDays 400; the CLI keeps 30.
+    describe("maxTokenDays", () => {
+      const days = (n: number) => new Date(NOW + n * 86_400_000).toISOString();
+      it("defaults to 30: 31 days out is refused, naming the cap", async () => {
+        const s = setup();
+        s.fake.tokenInfo.expires_on = days(31);
+        const e = await fails(s.p.create(input()));
+        expect(e.message).toMatch(/more than 30 days out/);
+        expect(s.fake.writes()).toEqual([]);
+      });
+      it.each([
+        ["31 days", 31],
+        ["one year", 365],
+        ["400 days", 400],
+      ])("with 400, %s out is accepted", async (_n, n) => {
+        const s = setup();
+        s.fake.tokenInfo.expires_on = days(n);
+        await s
+          .mk({ maxTokenDays: PROVISIONER_MAX_TOKEN_DAYS })
+          .create(input());
+      });
+      it("with 400, 401 days out is refused before any write", async () => {
+        const s = setup();
+        s.fake.tokenInfo.expires_on = days(401);
+        const e = await fails(s.mk({ maxTokenDays: 400 }).create(input()));
+        expect(e.message).toMatch(/more than 400 days out/);
+        expect(s.fake.writes()).toEqual([]);
+      });
+      it("no expiry stays refused with 400, naming the cap", async () => {
+        const s = setup();
+        delete s.fake.tokenInfo.expires_on;
+        const e = await fails(s.mk({ maxTokenDays: 400 }).create(input()));
+        expect(e.message).toMatch(
+          /no expiry; set an end date at most 400 days out/,
+        );
+        expect(s.fake.writes()).toEqual([]);
+      });
+      it.each([0, -1, 1.5, 401, Number.NaN, "30"])(
+        "maxTokenDays %j is refused before any call",
+        async (v) => {
+          const s = setup();
+          const e = await fails(
+            s.mk({ maxTokenDays: v as number }).create(input()),
+          );
+          expect(e.message).toMatch(/maxTokenDays/);
+          expect(s.fake.log).toEqual([]);
+        },
+      );
+      it("is exported as 30 (CLI) and 400 (provisioner)", () => {
+        expect(DEFAULT_MAX_TOKEN_DAYS).toBe(30);
+        expect(PROVISIONER_MAX_TOKEN_DAYS).toBe(400);
+      });
+    });
+
+    it("the provisioner's near-expiry refusal says to roll the token and paste it into Secrets Store", async () => {
+      const s = setup();
+      s.fake.tokenInfo.expires_on = new Date(NOW + 86_400_000).toISOString();
+      const e = await fails(
+        s.mk({ maxTokenDays: PROVISIONER_MAX_TOKEN_DAYS }).create(input()),
+      );
+      expect(e.message).toContain(
+        "roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and paste it into Secrets Store (`oa-s-provision-token`)",
+      );
+      expect(e.message).not.toMatch(/keychain|CLOUDFLARE_API_TOKEN/);
+    });
+
+    it("the CLI's near-expiry refusal points at CLOUDFLARE_API_TOKEN, never Secrets Store", async () => {
+      const s = setup();
+      s.fake.tokenInfo.expires_on = new Date(NOW + 86_400_000).toISOString();
+      const e = await fails(s.p.create(input()));
+      expect(e.message).toContain(
+        "roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and update CLOUDFLARE_API_TOKEN (the deploy Environment secret in CI, the keychain item on a laptop)",
+      );
+      expect(e.message).not.toMatch(/Secrets Store|provision-token/);
+    });
+
+    it("never calls a zone, DNS or email API", async () => {
+      const s = setup();
       const inst = await s.p.create(input());
-      expect(s.p.notes.join("\n")).toMatch(/expires/);
       for (const e of s.fake.log)
         expect(e.path).not.toMatch(
           /\/zones|dns_records|custom_domains|\/workers\/domains|\/email\//,
@@ -1884,7 +2544,7 @@ describe("WfpProvisioner.create", () => {
         ?.metadata.bindings.find(
           (b: { name: string }) => b.name === "EMAIL_FROM",
         );
-      expect(from.text).toBe("noreply@finqore.mail.open-artifacts-staging.app");
+      expect(from.text).toBe("noreply@mail.open-artifacts-staging.app");
     });
   });
 
@@ -1900,6 +2560,16 @@ describe("WfpProvisioner.create", () => {
     it("requireInstallId makes the check insist on installId (Task 6b)", async () => {
       const s = setup();
       const p = s.mk({ requireInstallId: true });
+      // An install that doesn't report installId (an older server), or
+      // reports another install's, never passes.
+      s.fake.health = () => ({ ok: true, plan: "paid", version: "0.23.0" });
+      await fails(p.create(input()));
+      s.fake.health = () => ({
+        ok: true,
+        plan: "paid",
+        version: "0.23.0",
+        installId: "izzzzzzzzzzz",
+      });
       await fails(p.create(input()));
       s.fake.health = (sc) => ({
         ok: true,
@@ -1971,12 +2641,10 @@ describe("release record integrity (H-T4b M1)", () => {
     modules: {
       modules: async () => makeBundle("redline"),
     },
-    assets: {
-      assets: async () => [
-        ASSETS[0] as ReleaseAsset,
-        { path: "app.js", bytes: enc("steal(document.cookie)") },
-      ],
-    },
+    assets: assetsOf([
+      ASSETS[0] as ReleaseAsset,
+      { path: "app.js", bytes: enc("steal(document.cookie)") },
+    ]),
     template: {
       template: async () => {
         const t = structuredClone(loadTemplate());
@@ -2056,7 +2724,7 @@ describe("release record integrity (H-T4b M1)", () => {
     ],
   ])("%s is refused with zero Cloudflare calls", async (_n, assets) => {
     const s = setup({
-      release: makeRelease({}, { assets: async () => assets }),
+      release: makeRelease({}, assetsOf(assets)),
     });
     const e = await fails(s.p.create(input()));
     expect(e.message).toMatch(/assets do not match the signed record/);
@@ -2088,7 +2756,7 @@ describe("release record integrity (H-T4b M1)", () => {
         release: makeRelease(
           {},
           {
-            assets: async () => assets,
+            ...assetsOf(assets),
             record: async () =>
               signRecord({ ...recordOf("release"), assets: entries }),
           },
@@ -2096,9 +2764,10 @@ describe("release record integrity (H-T4b M1)", () => {
       });
       const e = await fails(s.p.create(input()));
       expect(e.message).toMatch(/asset path/);
+      expect(provisionErrorCode(e)).toBe("release_unverified");
       expect(s.fake.log).toEqual([]);
       const unlisted = setup({
-        release: makeRelease({}, { assets: async () => assets }),
+        release: makeRelease({}, assetsOf(assets)),
       });
       await fails(unlisted.p.create(input()));
       expect(unlisted.fake.log).toEqual([]);
@@ -2118,7 +2787,14 @@ describe("release record integrity (H-T4b M1)", () => {
       cf.assetsUpload(
         { kind: "namespace", ns: "oa-staging" },
         "oa-s-iaaaaaaaaaaa",
-        [{ path: ".dev.vars", bytes: enc("SECRET=1") }],
+        [
+          {
+            path: ".dev.vars",
+            size: 8,
+            hash: assetHash(enc("SECRET=1"), ".dev.vars"),
+            bytes: async () => enc("SECRET=1"),
+          },
+        ],
       ),
     );
     expect(e.message).toMatch(/asset path/);
@@ -2282,12 +2958,50 @@ describe("prod lock and signed records (H-T4b L2)", () => {
     });
     const e = await fails(s.p.create(input()));
     expect(e.message).toMatch(/signature/);
+    expect(provisionErrorCode(e)).toBe("release_unverified");
     expect(s.fake.log).toEqual([]);
     // Nothing else of the release is read before the signature checks out.
     const c = (s.release as ReturnType<typeof makeRelease>).calls;
     expect([c.modules, c.assets, c.template, c.migrations]).toEqual([
       0, 0, 0, 0,
     ]);
+  });
+
+  it.each([
+    "sha256",
+    "templateSha256",
+    "migrationsSha256",
+    "welcomeSha256",
+  ] as const)(
+    "a signed record with no valid %s is release_unverified, with zero calls",
+    async (k) => {
+      const s = setup({
+        release: makeRelease(
+          {},
+          {
+            record: async () =>
+              signRecord({ ...recordOf("release"), [k]: "x" }),
+          },
+        ),
+      });
+      const e = await fails(s.p.create(input()));
+      expect(e.message).toMatch(new RegExp(`has no valid ${k}`));
+      expect(provisionErrorCode(e)).toBe("release_unverified");
+      expect(s.fake.log).toEqual([]);
+    },
+  );
+
+  it("a signed record with no assets list is release_unverified", async () => {
+    const rec = { ...recordOf("release"), assets: "none" };
+    const s = setup({
+      release: makeRelease(
+        {},
+        { record: async () => signRecord(rec as unknown as ReleaseRecord) },
+      ),
+    });
+    const e = await fails(s.p.create(input()));
+    expect(e.message).toMatch(/no assets list/);
+    expect(provisionErrorCode(e)).toBe("release_unverified");
   });
 
   it("the signature is checked before any field: a bad signature on a wrong-version record names the signature", async () => {
@@ -2336,9 +3050,12 @@ describe("account target is test-only (H-T4b L3)", () => {
 });
 
 describe("Durable Object migration safety (H-T4b L5)", () => {
+  // A step after the live template's own tags (derived, never a literal that
+  // a new server DO tag would collide with).
+  const STEP_TAG = `${lastTag}-step`;
   const withStep = (step: Record<string, unknown>) => {
     const t = structuredClone(loadTemplate());
-    t.migrations = [...(t.migrations ?? []), { tag: "v2", ...step }];
+    t.migrations = [...(t.migrations ?? []), { tag: STEP_TAG, ...step }];
     return t;
   };
   it.each([
@@ -2397,7 +3114,7 @@ describe("Durable Object migration safety (H-T4b L5)", () => {
       }),
     });
     await s.p.create(input());
-    expect(s.rows()[0].do_migration_tag).toBe("v2");
+    expect(s.rows()[0].do_migration_tag).toBe(STEP_TAG);
   });
 });
 
@@ -2626,27 +3343,36 @@ describe("H-T4b round 1", () => {
       const pkg = JSON.parse(
         readFileSync(new URL("../package.json", import.meta.url), "utf8"),
       );
-      // "./names" is the Worker-safe entry (no node:*, no gates) the dispatch
-      // Worker bundles; nothing else is reachable by subpath.
-      expect(Object.keys(pkg.exports)).toEqual([".", "./names"]);
+      // "./jobs" (design v7 3.6: job codes and settleFailed), "./names" and
+      // "./versions" (H-DV: the scheduler's version order) are the
+      // Worker-safe entries (no node:*, no gates); nothing else is reachable
+      // by subpath.
+      expect(Object.keys(pkg.exports)).toEqual([
+        ".",
+        "./jobs",
+        "./names",
+        "./versions",
+      ]);
+      expect(pkg.exports["./versions"].import).toBe("./dist/versions.js");
       expect(pkg.exports["./names"].import).toBe("./dist/names.js");
     });
 
-    it("the real gates are shut: prod locked, no account target, placeholder keys", async () => {
+    it("the real gates: prod unlocked, no account target, both keys pinned and distinct", async () => {
       const real = await vi.importActual<
         typeof import("../src/internal/gates.js")
       >("../src/internal/gates.js");
-      expect(real.PROD_UNLOCKED).toBe(false);
+      // Prod unlocked in its own PR, after the red-line suite passed on staging.
+      expect(real.PROD_UNLOCKED).toBe(true);
       expect(real.ALLOW_ACCOUNT_TARGET).toBe(false);
-      expect(real.RELEASE_PUBKEY).toEqual({
-        staging: real.RELEASE_PUBKEY_PLACEHOLDER,
-        prod: real.RELEASE_PUBKEY_PLACEHOLDER,
-      });
       expect(real.RELEASE_PUBKEY_PLACEHOLDER).toMatch(/placeholder/i);
+      expect(real.RELEASE_PUBKEY.staging).not.toBe(
+        real.RELEASE_PUBKEY_PLACEHOLDER,
+      );
+      expect(real.RELEASE_PUBKEY.prod).not.toBe(
+        real.RELEASE_PUBKEY_PLACEHOLDER,
+      );
+      expect(real.RELEASE_PUBKEY.staging).not.toBe(real.RELEASE_PUBKEY.prod);
       expect(Object.isFrozen(real.RELEASE_PUBKEY)).toBe(true);
-      // Once T3b sets real keys, the envs must not share one.
-      if (real.RELEASE_PUBKEY.staging !== real.RELEASE_PUBKEY_PLACEHOLDER)
-        expect(real.RELEASE_PUBKEY.staging).not.toBe(real.RELEASE_PUBKEY.prod);
     });
   });
 
@@ -2675,6 +3401,7 @@ describe("H-T4b round 1", () => {
         });
         const e = await fails(s.p.create(input()));
         expect(e.message, n).toMatch(/signature|env/);
+        expect(provisionErrorCode(e), n).toBe("release_unverified");
         expect(s.fake.log, n).toEqual([]);
       }
     });
@@ -2699,6 +3426,7 @@ describe("H-T4b round 1", () => {
         });
         const e = await fails(s.p.create(input()));
         expect(e.message).toMatch(/signature|env/);
+        expect(provisionErrorCode(e)).toBe("release_unverified");
         expect(s.fake.log).toEqual([]);
       }
     });
@@ -2715,14 +3443,24 @@ describe("H-T4b round 1", () => {
       expect(s.fake.log).toEqual([]);
     });
 
-    it("a downgrade below the install's current version is refused before any write", async () => {
+    it("a creating resume at a higher version resumes and uploads that version", async () => {
+      const s = setup();
+      await failAtHealth(s);
+      const inst = await s.p.create(input("finqore", { version: "0.23.1" }));
+      expect(inst.version).toBe("0.23.1");
+      expect(s.rows()[0]).toMatchObject({ state: "active", version: "0.23.1" });
+    });
+
+    it("a creating resume at a lower version is downgrade_refused before any write", async () => {
       const s = setup();
       await failAtHealth(s);
       const writes = s.fake.writes().length;
       const e = await fails(
         s.p.create(input("finqore", { version: "0.22.9" })),
       );
+      expect(e).toBeInstanceOf(ProvisionRefused);
       expect(e.message).toMatch(/downgrade/);
+      expect(provisionErrorCode(e)).toBe("downgrade_refused");
       expect(s.fake.writes().length).toBe(writes);
       // The same version resumes.
       await s.p.create(input());
@@ -2922,7 +3660,7 @@ describe("H-T4b round 1", () => {
         const s = setup({
           release: makeRelease(
             {},
-            { assets: async () => [...ASSETS, { path, bytes: enc("x") }] },
+            assetsOf([...ASSETS, { path, bytes: enc("x") }]),
           ),
         });
         const e = await fails(s.p.create(input()));
@@ -3158,6 +3896,11 @@ describe("platform D1 migration (decisions 10, M1, M3)", () => {
       "row_version",
       "session_cut_base",
       "session_cut_armed",
+      // 0005 (H-DV): the directory revoke a delete waits for.
+      "directory_revoke",
+      "directory_revoked_at",
+      "directory_revoke_attempts",
+      "directory_revoke_requested_at",
     ]);
   });
 
@@ -3338,6 +4081,7 @@ describe("EMAIL_CODE_DOMAIN for the hosted trial (H-ECD)", () => {
       const s = setup();
       const e = await fails(s.p.create(input("finqore", { vars })));
       expect(e.message).toMatch(re);
+      expect((e as ProvisionRefused).code).toBe("domain_codes_refused");
       // Only the domain list is a free-form value; it must never be echoed.
       expect(e.message).not.toContain("finqore.example");
       expect(s.fake.log).toEqual([]);
@@ -3350,6 +4094,7 @@ describe("EMAIL_CODE_DOMAIN for the hosted trial (H-ECD)", () => {
       s.mk({ turnstile: undefined }).create(input("finqore", { vars: GOOD })),
     );
     expect(e.message).toMatch(/Turnstile/);
+    expect((e as ProvisionRefused).code).toBe("turnstile_missing");
     expect(s.fake.log).toEqual([]);
   });
 
@@ -3398,9 +4143,17 @@ describe("EMAIL_CODE_DOMAIN for the hosted trial (H-ECD)", () => {
       {} as Record<string, string>,
       { EMAIL_CODE_DOMAIN: "off" },
       { ...CODES, EMAIL_CODE_DOMAIN: "off" },
-      { ...CODES, AUTH_PROVIDERS: "google,email", EMAIL_CODE_DOMAIN: "off" },
+      {
+        ...CODES,
+        AUTH_PROVIDERS: "google,email",
+        AUTH_DOMAINS: "finqore.test",
+        EMAIL_CODE_DOMAIN: "off",
+      },
     ]) {
-      const s = setup();
+      // T8 M1: google needs the broker.
+      const s = setup({
+        brokerEnabled: vars.AUTH_PROVIDERS?.includes("google"),
+      });
       await s.p.create(input("finqore", { vars }));
       const meta = metaOf(uploads(s.fake)[0]?.body as string);
       expect(bindingOf(meta, "EMAIL_CODE_DOMAIN")).toBeUndefined();
@@ -3556,9 +4309,17 @@ describe("T3b E: the signed floor gates create", () => {
       })),
       { path: "welcome/welcome.md", bytes: WELCOME_BYTES },
     ];
-    await probeR2Conditionals(cf, "staging");
+    const r2 = r2S3Client({
+      accountId: s.fake.accountId,
+      env: "staging",
+      credentials: s.fake.r2Token(platformNames("staging").releases),
+      fetch: s.fake.fetch,
+      sleep: async () => {},
+    });
+    await probeR2Conditionals(r2, "staging");
     await publishRelease({
       cf,
+      r2,
       env: "staging",
       version: "0.23.0",
       files: {
@@ -3573,5 +4334,19 @@ describe("T3b E: the signed floor gates create", () => {
     expect(sc?.modules.get("index.js")?.bytes).toEqual(
       makeBundle("release").modules[0]?.bytes,
     );
+  });
+});
+
+describe("#1315: the real template binds BusHub, so only an install already on tag v4 takes it", () => {
+  // BusHub shipped unbound (tag v4) in 0.109.0. An install on v3 (0.99.0,
+  // 0.100.0) would add and bind it in one upgrade, which a rollback could
+  // not undo: refused, naming the step. Create never runs this rule.
+  it("live v3 (pre-0.109.0) is refused, naming BusHub and the step", () => {
+    expect(() => assertDoClassesShipFirst(loadTemplate(), "v3")).toThrow(
+      /adds Durable Object class BusHub and binds it.*upgrade first to a release that adds it unbound/,
+    );
+  });
+  it("live v4 (0.109.0 or later) passes", () => {
+    expect(() => assertDoClassesShipFirst(loadTemplate(), "v4")).not.toThrow();
   });
 });

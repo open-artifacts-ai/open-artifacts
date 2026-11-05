@@ -15,7 +15,7 @@ type Settings = {
 
 type Binding = NonNullable<Settings["bindings"]>[number];
 
-/** A Worker's bindings; undefined when it does not exist (404). */
+/** A Worker's bindings; undefined when it does not exist (404), [] when the read had none. */
 export async function scriptBindings(
   api: Ctx["api"],
   name: string,
@@ -26,7 +26,8 @@ export async function scriptBindings(
     if ((e as { status?: number }).status === 404) return undefined;
     throw e;
   });
-  return settings?.bindings;
+  // A 200 without bindings is a partial read, not "no Worker".
+  return settings && (settings.bindings ?? []);
 }
 
 /** The live Worker's bindings; undefined when no Worker exists (404). */

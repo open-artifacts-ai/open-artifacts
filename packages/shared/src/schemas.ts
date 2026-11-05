@@ -8,8 +8,10 @@ import {
   InstanceSignInSchema,
   MeAuthSchema,
   MemberStatusSchema,
+  MeNoticesSchema,
   MySpaceSchema,
   RestrictionSchema,
+  SignInProviderIdSchema,
   SpaceRefSchema,
   TierSchema,
 } from "./hosted/core.js";
@@ -20,6 +22,30 @@ import { utf8Exceeds } from "./utf8.js";
 
 export const VisibilitySchema = z.enum(["private", "team", "public"]);
 export type Visibility = z.infer<typeof VisibilitySchema>;
+/**
+ * #681: who may change an artifact's live data. "viewers" (default): anyone
+ * who can view it, anonymous visitors of a public artifact included.
+ * "editors": editor level and up (owner, Editor shares, space editors and
+ * managers); others get 403 data_editors_only.
+ */
+export const DataWritersSchema = z.enum(["viewers", "editors"]);
+export type DataWriters = z.infer<typeof DataWritersSchema>;
+
+/**
+ * #681 input compatibility: `dataWriters` wins; else allowAnonymousWrites
+ * true is "viewers", false is "editors" when the resulting visibility is
+ * public (ignored otherwise). Undefined: leave the setting as it is.
+ */
+export function resolveDataWriters(
+  i: { dataWriters?: DataWriters; allowAnonymousWrites?: boolean },
+  visibility: string | undefined,
+): DataWriters | undefined {
+  if (i.dataWriters !== undefined) return i.dataWriters;
+  if (i.allowAnonymousWrites === true) return "viewers";
+  if (i.allowAnonymousWrites === false && visibility === "public")
+    return "editors";
+  return undefined;
+}
 export const RoleSchema = z.enum(["owner", "admin", "member", "guest"]);
 export type Role = z.infer<typeof RoleSchema>;
 export const ShareRoleSchema = z.enum(["viewer", "editor"]);
@@ -54,17 +80,30 @@ export const CapabilitiesPatchSchema = z.strictObject({
 });
 export type CapabilitiesPatch = z.infer<typeof CapabilitiesPatchSchema>;
 
-/** `email` is null for anonymous viewers (no session, no Bearer) of public artifacts. */
+/**
+ * `email` is null for anonymous viewers (no session, no Bearer) of public
+ * artifacts. A stored value, never input: after a directory deletion it is
+ * `removed+<id>@invalid`, on authorship that outlives the address.
+ */
 export const UserRefSchema = z.object({
   id: z.string(),
-  email: z.string().email().nullable(),
+  email: z.string().nullable(),
   name: z.string().nullable(),
 });
 export type UserRef = z.infer<typeof UserRefSchema>;
 
+/**
+ * An agent that published. For a token (PAT) publish `name` is the token's
+ * label, which only the token's owner (the version's createdBy) sees; every
+ * other viewer gets "<owner name>'s agent" with `masked: true` (no list
+ * filter matches it). When the owner's row was deleted, every viewer gets
+ * "A member's agent" with `masked: true`. An OAuth client's name shows as is.
+ */
 export const AgentRefSchema = z.object({
   name: z.string(),
   version: z.string().nullable(),
+  /** Set only when `name` is a stand-in: "<owner name>'s agent" or "A member's agent". */
+  masked: z.literal(true).optional(),
 });
 export type AgentRef = z.infer<typeof AgentRefSchema>;
 
@@ -94,17 +133,30 @@ const PublishShape = z.strictObject({
   message: z.string().max(500).optional(),
   visibility: VisibilitySchema.optional(),
   capabilities: CapabilitiesPatchSchema.optional(),
+  /** #681: who may change live data. Wins over allowAnonymousWrites. */
+  dataWriters: DataWritersSchema.optional(),
+  /** Deprecated (#681): true means dataWriters "viewers"; false, "editors" on a public artifact. */
   allowAnonymousWrites: z.boolean().optional(),
+  /**
+   * Hosted M1: the space to create the artifact in (default: the caller's
+   * personal space). Create only: with the id of an existing artifact it is
+   * 400 use_move. A space the caller can't publish to is 403
+   * space_forbidden; so is any create by a capped caller.
+   */
+  spaceId: z.string().optional(),
 });
 
 const refinePublish =
-  (inlineCheck: boolean) =>
+  (tool: boolean) =>
   (v: z.infer<typeof PublishShape>, ctx: z.RefinementCtx) => {
     const issue = (message: string, path: (string | number)[]) =>
       ctx.addIssue({ code: "custom", message, path });
     const hasContent = v.content !== undefined;
     const hasFiles = v.files !== undefined;
-    if (hasContent === hasFiles) {
+    // The MCP tool takes neither with an id: a settings-only update (#681 D),
+    // checked by the server (publishSettings).
+    const settingsOnly = tool && v.id !== undefined && !hasContent && !hasFiles;
+    if (hasContent === hasFiles && !settingsOnly) {
       issue("Provide exactly one of content or files", [
         hasContent ? "files" : "content",
       ]);
@@ -118,7 +170,7 @@ const refinePublish =
       issue("content requires format or entry", ["format"]);
     }
     if (
-      inlineCheck &&
+      !tool &&
       v.content !== undefined &&
       utf8Exceeds(v.content, LIMITS.inlineBytes)
     ) {
@@ -160,14 +212,17 @@ const refinePublish =
     }
   };
 
-export const PublishInputSchema = PublishShape.superRefine(refinePublish(true));
+export const PublishInputSchema = PublishShape.superRefine(
+  refinePublish(false),
+);
 /**
- * PublishInputSchema without the inline-size check, for the MCP tool: the SDK
- * turns schema failures into InvalidParams, so oversize content is left to
- * the server's planFiles (413 too_large, INLINE_TOO_LARGE_MESSAGE).
+ * PublishInputSchema for the MCP tool: no inline-size check (the SDK turns
+ * schema failures into InvalidParams, so oversize content is left to the
+ * server's planFiles: 413 too_large, INLINE_TOO_LARGE_MESSAGE), and `id`
+ * with neither content nor files passes (a settings-only update, #681 D).
  */
 export const PublishToolInputSchema = PublishShape.superRefine(
-  refinePublish(false),
+  refinePublish(true),
 );
 export type PublishInput = z.infer<typeof PublishInputSchema>;
 
@@ -175,6 +230,8 @@ export const PublishResultSchema = z.object({
   id: z.string(),
   version: z.number().int(),
   url: z.string().url(),
+  /** Set when the artifact ends up public, declares db and lets viewers write data (#681). */
+  warning: z.string().optional(),
 });
 export type PublishResult = z.infer<typeof PublishResultSchema>;
 
@@ -199,6 +256,9 @@ export const ArtifactSummarySchema = z.object({
   thumbnailVersion: z.number().int().positive().nullable(),
   access: AccessLevelSchema,
   capabilities: CapabilitiesSchema,
+  /** #681: who may change live data. */
+  dataWriters: DataWritersSchema,
+  /** Deprecated (#681): derived, dataWriters === "viewers". */
   allowAnonymousWrites: z.boolean(),
   /** Hosted M1: the artifact's space. Optional: absent unless spaces are on. */
   space: SpaceRefSchema.optional(),
@@ -206,6 +266,16 @@ export const ArtifactSummarySchema = z.object({
   can: ArtifactCanSchema.optional(),
 });
 export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;
+
+/**
+ * PATCH R.artifact / set_visibility result. `warning`: set when the result is
+ * public, declares db and has dataWriters "viewers" (#681); the change still
+ * applies.
+ */
+export const ArtifactPatchResultSchema = ArtifactSummarySchema.extend({
+  warning: z.string().optional(),
+});
+export type ArtifactPatchResult = z.infer<typeof ArtifactPatchResultSchema>;
 
 export const VersionInfoSchema = z.object({
   version: z.number().int(),
@@ -223,6 +293,13 @@ export const VersionInfoSchema = z.object({
 export type VersionInfo = z.infer<typeof VersionInfoSchema>;
 
 /**
+ * A connection, as `versions.agent_via` records it: `g:<grantId>` (an OAuth
+ * grant) or `t:<tokenId>` (a personal access token). Both ids are 16
+ * characters today (the OAuth provider's [A-Za-z0-9_-], newId's base58).
+ */
+export const AgentViaSchema = z.string().regex(/^[gt]:[A-Za-z0-9_-]{1,64}$/);
+
+/**
  * GET R.artifacts. scope "mine" = the caller's personal space; "space" = one
  * space (needs spaceId, 400 without); "spaces" = every shared space the
  * caller has a role in. spaceId narrows any scope; another user's personal
@@ -233,9 +310,11 @@ export const ListQuerySchema = z
     scope: z
       .enum(["mine", "shared", "team", "all", "space", "spaces"])
       .default("all"),
+    /** Narrows any scope to one space. With scope "mine", only the caller's personal space (else 400, path spaceId). */
     spaceId: z.string().optional(),
     format: FormatSchema.optional(),
     visibility: VisibilitySchema.optional(),
+    /** An owner's email, or the literal "me" for the caller. */
     owner: z.string().optional(),
     agent: z.string().optional(),
     q: z.string().optional(),
@@ -243,6 +322,11 @@ export const ListQuerySchema = z
     cursor: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(100).default(25),
     includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
+    /**
+     * Artifacts with any version from this connection (AgentViaSchema). Only
+     * the caller's own grant or token matches; any other is an empty page.
+     */
+    agentVia: AgentViaSchema.optional(),
   })
   .refine((q) => q.scope !== "space" || q.spaceId !== undefined, {
     message: 'scope "space" requires spaceId',
@@ -255,6 +339,31 @@ export type Page<T> = { items: T[]; nextCursor: string | null };
 export const PageSchema = <T extends z.ZodType>(item: T) =>
   z.object({ items: z.array(item), nextCursor: z.string().nullable() });
 
+/**
+ * One R.trash row: a deleted artifact the caller may restore (POST
+ * R.restoreDeleted) until purgeAt (deletedAt + LIMITS.softDeleteDays).
+ * `space` is where it lives: the caller's personal space reads
+ * { id: personalSpaceId, name: "Personal", personal: true }.
+ */
+export const TrashItemSchema = ArtifactSummarySchema.extend({
+  deletedAt: z.string(),
+  purgeAt: z.string(),
+  space: z.object({
+    id: z.string(),
+    name: z.string(),
+    personal: z.boolean(),
+  }),
+});
+export type TrashItem = z.infer<typeof TrashItemSchema>;
+
+/** GET R.trash query: newest deletedAt first; limit 1 to 100 (default 25). */
+export const TrashQuerySchema = z.object({
+  spaceId: z.string().optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+});
+export type TrashQuery = z.infer<typeof TrashQuerySchema>;
+
 export const SearchHitSchema = ArtifactSummarySchema.extend({
   snippet: z.string(),
 });
@@ -262,15 +371,41 @@ export type SearchHit = z.infer<typeof SearchHitSchema>;
 
 export const ShareSchema = z.object({
   email: z.string().email(),
+  /** As stored: a guest's row keeps it, but they can only view (see `guest`). */
   role: ShareRoleSchema,
   createdAt: z.string(),
+  /** A guest, or an address that becomes one at first sign-in. Absent otherwise, and from older servers. */
+  guest: z.boolean().optional(),
+  /** GET R.shares: the recipient can only view, whatever role says (a guest, or a member who can only view). Never why. Absent with no user row, or when they can do what role says. */
+  viewOnly: z.boolean().optional(),
 });
 export type Share = z.infer<typeof ShareSchema>;
+
+/**
+ * ShareResult.recipient: present only when the recipient can't sign in on
+ * this install yet (the share still applies). needs_invite: in a verified
+ * domain on an invite-only install, so an admin must invite them as a
+ * member; outside_domains: outside the verified domains and no guest
+ * sign-in is offered (see InviteUnreachableReasonSchema).
+ */
+export const ShareRecipientSchema = z.object({
+  canSignIn: z.literal(false),
+  reason: z.enum(["needs_invite", "outside_domains", "no_sign_in_method"]),
+});
+export type ShareRecipient = z.infer<typeof ShareRecipientSchema>;
 
 /** PUT shares response. */
 export const ShareResultSchema = ShareSchema.extend({
   /** True if a notification email went to a non-member (best effort). */
   emailed: z.boolean(),
+  /** Absent when the recipient can sign in; see ShareRecipientSchema. */
+  recipient: ShareRecipientSchema.optional(),
+  /**
+   * The sign-in methods that admit the recipient, in SIGN_IN_METHOD_ORDER;
+   * [] when they can't sign in. The same list the share email names, so UI
+   * copy and the email agree. Sent by direct-sign-in and Access installs.
+   */
+  signInMethods: z.array(SignInProviderIdSchema).optional(),
 });
 export type ShareResult = z.infer<typeof ShareResultSchema>;
 
@@ -280,6 +415,9 @@ export const ArtifactPatchSchema = z
     description: z.string().max(2000),
     visibility: VisibilitySchema,
     capabilities: CapabilitiesPatchSchema,
+    /** #681: wins over allowAnonymousWrites. */
+    dataWriters: DataWritersSchema,
+    /** Deprecated (#681): see resolveDataWriters. */
     allowAnonymousWrites: z.boolean(),
   })
   .partial();
@@ -287,7 +425,8 @@ export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
 
 export const MemberSchema = z.object({
   id: z.string(),
-  email: z.string().email(),
+  /** A stored value, never input: `removed+<id>@invalid` after a directory deletion or an erase (R.memberErase). */
+  email: z.string(),
   name: z.string().nullable(),
   role: RoleSchema,
   lastSeenAt: z.string().nullable(),
@@ -297,6 +436,15 @@ export const MemberSchema = z.object({
   identities: z.array(IdentityProviderSchema).optional(),
   /** Hosted M1: the member's restriction (manual flag and/or restricted groups); null when unrestricted. */
   restriction: RestrictionSchema.nullable().optional(),
+  /** GET R.members: a guest with live artifacts in their personal space, for Transfer. Absent otherwise. */
+  personalArtifacts: z.boolean().optional(),
+  /**
+   * GET R.members (#1146): true when removing this person can be undone by
+   * directory sync, which would bring their address back as a new, empty
+   * account (Google sync on and a Workspace connected, no Google link, an
+   * address in the sign-in domains). Absent otherwise. Removal still works.
+   */
+  directoryManaged: z.boolean().optional(),
 });
 export type Member = z.infer<typeof MemberSchema>;
 
@@ -308,10 +456,30 @@ export const MemberInviteSchema = z.strictObject({
 });
 export type MemberInvite = z.infer<typeof MemberInviteSchema>;
 
+/**
+ * MemberInviteResult.signIn: present only when the server can't tell whether
+ * the invitee can sign in. outside_domains: the address is outside
+ * AUTH_DOMAINS and only Google could admit it, which works only if it is a
+ * Google Workspace account whose primary domain is verified (a secondary
+ * domain). The invite still stands; warn the inviter.
+ */
+export const InviteSignInSchema = z.object({
+  status: z.literal("uncertain"),
+  reason: z.literal("outside_domains"),
+});
+export type InviteSignIn = z.infer<typeof InviteSignInSchema>;
+
 /** POST members (invite) response. */
 export const MemberInviteResultSchema = MemberSchema.extend({
   /** True if an invite email was sent (best effort). */
   emailed: z.boolean(),
+  /** Absent when the invitee can sign in; see InviteSignInSchema. */
+  signIn: InviteSignInSchema.optional(),
+  /**
+   * The sign-in methods the invite email names, in SIGN_IN_METHOD_ORDER
+   * (["google"] when signIn is uncertain). The same list the email uses.
+   */
+  signInMethods: z.array(SignInProviderIdSchema).optional(),
 });
 export type MemberInviteResult = z.infer<typeof MemberInviteResultSchema>;
 
@@ -326,8 +494,48 @@ export const ShareInputSchema = z.strictObject({
 });
 export type ShareInput = z.infer<typeof ShareInputSchema>;
 
+/**
+ * C0 controls (U+0000-U+001F), DEL (U+007F), bidi controls (LRM/RLM,
+ * ALM, LRE..RLO, LRI..PDI) and zero-width characters (ZWSP, ZWNJ, ZWJ,
+ * BOM/ZWNBSP): stripped from space names and agent labels.
+ */
+const NAME_CONTROLS =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+  /[\u0000-\u001F\u007F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+
+/** A name with control and bidi characters removed. */
+export const stripNameControls = (s: string): string =>
+  s.replace(NAME_CONTROLS, "");
+
+/**
+ * A user label on a connected agent: control and bidi characters stripped
+ * (`stripNameControls`), then trimmed, 1-`max` characters (a label of only
+ * such characters is 400).
+ */
+const agentLabel = (max: number) =>
+  z
+    .string()
+    .transform(stripNameControls)
+    .pipe(
+      z
+        .string()
+        .trim()
+        .min(1, "Label must not be blank")
+        .refine(
+          (s) => [...s].length <= max,
+          `Label must be at most ${max} characters`,
+        ),
+    );
+
+/** An OAuth grant's label: 1-60 characters (see `agentLabel`). */
+export const AgentLabelSchema = agentLabel(60);
+
+/** A token's label on create and PATCH: 1-80 characters (see `agentLabel`). */
+export const TokenLabelSchema = agentLabel(80);
+
+/** POST R.tokens. The label is cleaned and counted as on PATCH (TokenLabelSchema). */
 export const TokenCreateInputSchema = z.strictObject({
-  label: z.string().trim().min(1).max(80),
+  label: TokenLabelSchema,
 });
 export type TokenCreateInput = z.infer<typeof TokenCreateInputSchema>;
 
@@ -395,7 +603,7 @@ export const MeSchema = z.object({
     plan: z.enum(["free", "paid"]),
     /** Null for members and guests, and before the first good check. Optional: older servers omit it. */
     update: InstanceUpdateSchema.nullable().optional(),
-    /** Hosted M1 (all optional; older and self-hosted servers omit them). A hosted install (HOSTED=1). */
+    /** Hosted M1 (all optional; older servers omit them, and Access-only installs omit hosted, tier and signIn). A hosted install (HOSTED=1). */
     hosted: z.boolean().optional(),
     /** Hosted billing tier; null when self-hosted. */
     tier: TierSchema.nullable().optional(),
@@ -416,6 +624,13 @@ export const MeSchema = z.object({
   personalSpaceId: z.string().optional(),
   /** Hosted M1: shared spaces the caller has a role in, by name, at most 200 (then page R.spaces). */
   spaces: z.array(MySpaceSchema).optional(),
+  /** Parity 2: one-time notices, org owner only; absent when there are none. */
+  notices: MeNoticesSchema.optional(),
+  /**
+   * #1291: whether the caller may connect agents (PATs, OAuth, bus machines):
+   * a member with no cap (server-side canConnect). Optional: older servers omit it.
+   */
+  canConnect: z.boolean().optional(),
 });
 export type Me = z.infer<typeof MeSchema>;
 
@@ -447,19 +662,158 @@ export const TokenSchema = z.object({
   id: z.string(),
   label: z.string(),
   createdAt: z.string(),
+  /** Last authenticated request, up to a minute stale (null: never used). */
   lastUsedAt: z.string().nullable(),
+  /** Versions published with this token (absent on older servers). */
+  versionsPublished: z.number().int().nonnegative().optional(),
 });
 export type Token = z.infer<typeof TokenSchema>;
 
 export const TokenCreatedSchema = TokenSchema.extend({ token: z.string() });
 export type TokenCreated = z.infer<typeof TokenCreatedSchema>;
 
+/**
+ * PATCH R.token(id) -> Token. The caller's own tokens only (else 404). A
+ * token's label is required, so null is 400.
+ */
+export const TokenPatchSchema = z.strictObject({ label: TokenLabelSchema });
+export type TokenPatch = z.infer<typeof TokenPatchSchema>;
+export type TokenPatchInput = z.input<typeof TokenPatchSchema>;
+
+/**
+ * Coarse browser family of the request that approved a grant, parsed from
+ * its User-Agent. No raw User-Agent and no IP are stored.
+ */
+export const AgentBrowserSchema = z.enum([
+  "chrome",
+  "safari",
+  "firefox",
+  "edge",
+  "other",
+]);
+export type AgentBrowser = z.infer<typeof AgentBrowserSchema>;
+
+/** Coarse OS family of the request that approved a grant. */
+export const AgentOsSchema = z.enum([
+  "macos",
+  "windows",
+  "linux",
+  "ios",
+  "android",
+  "chromeos",
+  "other",
+]);
+export type AgentOs = z.infer<typeof AgentOsSchema>;
+
+export const ApprovedFromSchema = z.object({
+  browser: AgentBrowserSchema,
+  os: AgentOsSchema,
+});
+export type ApprovedFrom = z.infer<typeof ApprovedFromSchema>;
+
+/**
+ * Where a grant's redirect URI points: `computer` for a loopback host
+ * (127.0.0.1, [::1], localhost) or a custom scheme, `hosted` for https.
+ */
+export const RedirectKindSchema = z.enum(["computer", "hosted"]);
+export type RedirectKind = z.infer<typeof RedirectKindSchema>;
+
+/**
+ * A connected MCP client (one OAuth grant of the caller). Every field after
+ * createdAt is optional: grants approved before identity cards carry no
+ * approval fields, and the usage fields are absent until first use.
+ */
 export const OAuthClientSchema = z.object({
   grantId: z.string(),
+  /** Self-reported by the client at registration. */
   clientName: z.string(),
   createdAt: z.string(),
+  /** The owner's label (absent: none set). */
+  label: z.string().optional(),
+  redirectKind: RedirectKindSchema.optional(),
+  /** The redirect URI's https host (absent for a computer). */
+  redirectHost: z.string().optional(),
+  approvedFrom: ApprovedFromSchema.optional(),
+  /** Last authenticated MCP request, up to a minute stale. */
+  lastUsedAt: z.string().optional(),
+  /** MCP clientInfo.version, self-reported, as last seen. */
+  clientVersion: z.string().optional(),
+  /** Versions published through this grant. */
+  versionsPublished: z.number().int().nonnegative().optional(),
 });
 export type OAuthClient = z.infer<typeof OAuthClientSchema>;
+
+/**
+ * One of the caller's bus machines (#1291), as GET R.busMachines lists it.
+ * Never carries the machine token or its hash. `connected`: whether the
+ * member's bus holds a socket for it now; null when the bus could not be
+ * asked in time (unknown), never true once revoked.
+ */
+export const BusMachineSchema = z.strictObject({
+  id: z.string(),
+  /** Client-supplied at the device step; not editable in v1. */
+  label: z.string(),
+  createdAt: z.string(),
+  lastUsedAt: z.string().nullable(),
+  revokedAt: z.string().nullable(),
+  connected: z.boolean().nullable(),
+});
+export type BusMachine = z.infer<typeof BusMachineSchema>;
+
+/** GET R.busMachines: active newest first, then revoked newest first, at most 100. */
+export const BusMachinesSchema = z.strictObject({
+  machines: z.array(BusMachineSchema).max(100),
+});
+export type BusMachines = z.infer<typeof BusMachinesSchema>;
+
+export const BUS_AGENT_STATES = ["live", "queued"] as const;
+export const BUS_STATUS_STATES = [
+  "working",
+  "idle",
+  "blocked",
+  "waiting_on_owner",
+] as const;
+
+/**
+ * One open agent on the caller's bus (#1291). `state`: live while its
+ * machine is connected, queued otherwise (mail waits up to 1 h). `running`
+ * is true for every listed agent (closed sessions are omitted); it is the
+ * field the share-notice picks match on. `status*`: self-reported by the
+ * agent ("agent says"), absent when none.
+ */
+export const BusAgentSchema = z.strictObject({
+  id: z.string(),
+  namespace: z.string(),
+  name: z.string(),
+  kind: z.string(),
+  machineId: z.string(),
+  machineLabel: z.string(),
+  global: z.boolean(),
+  state: z.enum(BUS_AGENT_STATES),
+  running: z.boolean(),
+  updatedAt: z.string(),
+  status: z.enum(BUS_STATUS_STATES).optional(),
+  statusLabel: z.string().optional(),
+  statusAt: z.string().optional(),
+});
+export type BusAgent = z.infer<typeof BusAgentSchema>;
+
+/** GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then []. */
+export const BusAgentsSchema = z.strictObject({
+  agents: z.array(BusAgentSchema).max(1000),
+  live: z.boolean(),
+});
+export type BusAgents = z.infer<typeof BusAgentsSchema>;
+
+/**
+ * PATCH R.oauthClient(grantId) -> OAuthClient. The caller's own grants only
+ * (else 404); null clears the label.
+ */
+export const OAuthClientPatchSchema = z.strictObject({
+  label: AgentLabelSchema.nullable(),
+});
+export type OAuthClientPatch = z.infer<typeof OAuthClientPatchSchema>;
+export type OAuthClientPatchInput = z.input<typeof OAuthClientPatchSchema>;
 
 export const SettingsSchema = z.object({
   name: z.string().min(1).max(80),
@@ -495,6 +849,8 @@ export type UploadCreated = z.infer<typeof UploadCreatedSchema>;
 export const ContentUrlSchema = z.object({
   url: z.string().url(),
   expiresAt: z.string().nullable(),
+  /** The version this URL serves: `?v=` when given, else the current one at mint time. */
+  version: z.number().int().positive(),
 });
 export type ContentUrl = z.infer<typeof ContentUrlSchema>;
 
@@ -668,10 +1024,12 @@ export const DataChangeSchema = z.object({
 export type DataChange = z.infer<typeof DataChangeSchema>;
 
 /**
- * Who published a version, on the R.events socket. `name` (the user's name or
- * email, or the agent's name) goes only to signed-in viewers who are team
- * members (owner/admin/member) or have access through a share; anonymous and
- * embed sockets, and guests reading a public link, get `{ kind }` only.
+ * Who published a version, on the R.events socket. `name` (the user's name,
+ * "Member" without a real one, never an email; or the agent's name) goes only
+ * to signed-in viewers who are team members (owner/admin/member) or have
+ * access through a share; anonymous and embed sockets, and guests reading a
+ * public link, get `{ kind }` only. A token label is the owner's private
+ * note: everyone else gets "<owner name>'s agent" (as in AgentRef).
  */
 export const ArtifactEventBySchema = z.object({
   kind: z.enum(["user", "agent"]),
@@ -688,7 +1046,9 @@ export type ArtifactEventBy = z.infer<typeof ArtifactEventBySchema>;
  * - gone: access changed; the socket then closes with EVENTS_GONE_CLOSE
  *   (4403). reason "deleted": soft delete; "changed": visibility,
  *   capabilities, share revoked or member removed.
- *   Reconnect to re-check access (404 = no longer readable).
+ *   Reconnect to re-check access (404 = no longer readable). With
+ *   `retryAfterMs` (a socket opened just as access changed), wait that long
+ *   first: a sooner reconnect is refused the same way.
  * Sockets also close with 4408 near the signed-URL TTL: reconnect.
  */
 export const ArtifactEventSchema = z.discriminatedUnion("type", [
@@ -703,11 +1063,29 @@ export const ArtifactEventSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("gone"),
     reason: z.enum(["deleted", "changed"]),
+    retryAfterMs: z.number().int().min(0).optional(),
   }),
 ]);
 export type ArtifactEvent = z.infer<typeof ArtifactEventSchema>;
 /** The close code that follows a `gone` frame on R.events. */
 export const EVENTS_GONE_CLOSE = 4403;
+
+/**
+ * The 4403 close reason of a socket (data or events) opened just as the
+ * artifact's access changed: a reconnect sooner than `ms` is refused the
+ * same way. Parse it with retryAfterFromClose.
+ */
+export const accessChangedCloseReason = (ms: number): string =>
+  `access changed; retry after ${Math.max(0, Math.round(ms))} ms`;
+
+const ACCESS_CHANGED_CLOSE_RE = /^access changed; retry after (\d{1,7}) ms$/;
+
+/** The wait (ms) in an accessChangedCloseReason close reason, else null. */
+export function retryAfterFromClose(reason: unknown): number | null {
+  if (typeof reason !== "string") return null;
+  const m = ACCESS_CHANGED_CLOSE_RE.exec(reason);
+  return m ? Number(m[1]) : null;
+}
 
 export const DataQuerySchema = z.strictObject({
   where: WhereSchema.optional(),
@@ -759,12 +1137,30 @@ export const SearchQuerySchema = z.strictObject({
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(25),
   spaceId: z.string().optional(),
+  /** Narrows the hits to the caller's own connection (as the list's). */
+  agentVia: AgentViaSchema.optional(),
 });
 export type SearchQuery = z.infer<typeof SearchQuerySchema>;
 export type SearchQueryInput = z.input<typeof SearchQuerySchema>;
 
 export const IdInputSchema = z.strictObject({ id: IdSchema });
 export type IdInput = z.infer<typeof IdInputSchema>;
+
+/**
+ * MCP list_versions. `cursor` is the result's nextCursor: the REST versions
+ * cursor (`before` = the last version of the previous page), as a string.
+ */
+export const ListVersionsInputSchema = z.strictObject({
+  id: IdSchema,
+  cursor: z
+    .string()
+    .regex(
+      /^[1-9][0-9]{0,14}$/,
+      "cursor must be a nextCursor from list_versions",
+    )
+    .optional(),
+});
+export type ListVersionsInput = z.infer<typeof ListVersionsInputSchema>;
 
 export const RestoreVersionInputSchema = z.strictObject({
   id: IdSchema,
@@ -786,6 +1182,10 @@ export type UnshareInput = z.infer<typeof UnshareInputSchema>;
 export const SetVisibilityInputSchema = z.strictObject({
   id: IdSchema,
   visibility: VisibilitySchema,
+  /** #681: who may change live data. Wins over allowAnonymousWrites. */
+  dataWriters: DataWritersSchema.optional(),
+  /** Deprecated (#681): see resolveDataWriters. */
+  allowAnonymousWrites: z.boolean().optional(),
 });
 export type SetVisibilityInput = z.infer<typeof SetVisibilityInputSchema>;
 

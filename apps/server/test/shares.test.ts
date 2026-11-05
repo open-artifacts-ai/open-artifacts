@@ -48,8 +48,65 @@ beforeAll(async () => {
   guest = await mk("sh-guest", "guest");
 });
 
+describe("GET R.shares marks guests, who can only view", () => {
+  it("a guest and a new address on Access; a member isn't; rows keep their role", async () => {
+    const id = await pub();
+    // Their own guest: the tests below rely on `guest` lapsing.
+    const g = await mk("sh-marked", "guest");
+    const fresh = `sh-new-${tag}@x.com`;
+    expect((await put(id, owner, g.email, "editor")).status).toBe(200);
+    expect((await put(id, owner, member.email, "editor")).status).toBe(200);
+    expect((await put(id, owner, fresh, "editor")).status).toBe(200);
+    const rows = ShareSchema.array().parse(
+      await (await api(app, R.shares(id), owner.cookie)).json(),
+    );
+    const of = (e: string) => rows.find((r) => r.email === e);
+    expect(of(g.email)).toMatchObject({ role: "editor", guest: true });
+    expect(of(fresh)).toMatchObject({ role: "editor", guest: true });
+    expect(of(member.email)?.role).toBe("editor");
+    expect(of(member.email)).not.toHaveProperty("guest");
+  });
+});
+
+describe("GET R.shares: viewOnly from the access cap, never why", () => {
+  it.each([
+    ["a manually restricted member", "member", "restricted_manual", true],
+    ["a member in a restricted group", "member", "restricted_sync", true],
+    ["a guest", "guest", null, true],
+    ["an uncapped member", "member", null, false],
+  ] as const)("%s", async (_who, role, flag, viewOnly) => {
+    const id = await pub();
+    // The address mustn't contain the word the API never says.
+    const u = await mk(`sh-vo-${role}-${flag ? flag.length : 0}`, role);
+    if (flag)
+      await env.DB.prepare(`update users set ${flag} = 1 where id = ?`)
+        .bind(u.userId)
+        .run();
+    expect((await put(id, owner, u.email, "editor")).status).toBe(200);
+    const res = await api(app, R.shares(id), owner.cookie);
+    const raw = await res.text();
+    const row = ShareSchema.array()
+      .parse(JSON.parse(raw))
+      .find((r) => r.email === u.email);
+    expect(row?.role).toBe("editor");
+    if (viewOnly) expect(row).toMatchObject({ viewOnly: true });
+    else expect(row).not.toHaveProperty("viewOnly");
+    expect(raw).not.toContain("restrict");
+  });
+
+  it("an address with no user row: absent", async () => {
+    const id = await pub();
+    const email = `sh-vo-none-${tag}@x.com`;
+    expect((await put(id, owner, email, "editor")).status).toBe(200);
+    const row = ShareSchema.array()
+      .parse(await (await api(app, R.shares(id), owner.cookie)).json())
+      .find((r) => r.email === email);
+    expect(row).not.toHaveProperty("viewOnly");
+  });
+});
+
 describe("shares", () => {
-  it("viewer share lets a guest read; editor share lets them publish; delete revokes at once", async () => {
+  it("viewer share lets a guest read; an editor share stays view-only (parity 2); delete revokes at once", async () => {
     const id = await pub();
     expect((await api(app, R.artifact(id), guest.cookie)).status).toBe(404);
     const r = await put(id, owner, guest.email, "viewer");
@@ -74,7 +131,8 @@ describe("shares", () => {
       method: "POST",
       body,
     });
-    expect(pr.status).toBe(201);
+    // Guests are view-only on every install: the editor row reads as viewer.
+    expect(pr.status).toBe(404);
     // revoke
     expect((await del(id, owner, guest.email)).status).toBe(204);
     expect((await api(app, R.artifact(id), guest.cookie)).status).toBe(404);

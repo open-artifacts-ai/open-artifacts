@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { cleanup, render } from "@testing-library/react";
 import axe from "axe-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -146,6 +146,29 @@ describe("variant edges", () => {
     // outline-none sets --tw-outline-style: none, so the style is explicit.
     expect(src).toContain("focus-visible:outline-solid");
     expect(src).not.toMatch(/focus-visible:ring-(ring|destructive)\//);
+  });
+
+  // Every class string that animates or slides opts out under reduced motion.
+  it.each(
+    readdirSync(`${import.meta.dirname}/../src/shadcn/ui`).map((f) =>
+      f.replace(/\.tsx$/, ""),
+    ),
+  )("%s: motion respects prefers-reduced-motion", (name) => {
+    const strings = source(name).match(/"[^"\n]*"/g) ?? [];
+    const moving = (re: RegExp, opt: string) =>
+      strings.filter((c) => re.test(c) && !c.includes(opt));
+    expect(
+      moving(
+        /(?<![\w-])animate-(in|out)(?![\w-])/,
+        "motion-reduce:animate-none!",
+      ),
+    ).toEqual([]);
+    expect(
+      moving(
+        /transition-\[[^\]]*(width|left|margin|height)|transition-(all|transform)|(?<![\w-])transition(?![\w-])/,
+        "motion-reduce:transition-none",
+      ),
+    ).toEqual([]);
   });
 
   it("outlined variants use border-input, not border-border", () => {

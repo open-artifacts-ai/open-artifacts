@@ -33,13 +33,23 @@
       ],
       "durable_objects": {
         "bindings": [
-          { "name": "ARTIFACT_RUNTIME", "class_name": "ArtifactRuntime" }
+          { "name": "ARTIFACT_RUNTIME", "class_name": "ArtifactRuntime" },
+          // P3 T7b (#503): bound with its first use, one release after its v2 tag.
+          { "name": "USER_PRESENCE", "class_name": "UserPresence" },
+          // P3 T13 (#575): bound with its first use, one release after its v3 tag (0.46.0).
+          { "name": "DIRECTORY_SYNC", "class_name": "DirectorySync" },
+          // #1315: bound one release after its v4 tag (0.109.0); /bus serves.
+          { "name": "BUS_HUB", "class_name": "BusHub" }
         ]
       },
       "migrations": [
         { "tag": "v1", "new_sqlite_classes": ["ArtifactRuntime"] },
         // P3 T7a (#502): the class ships unbound one release before T7b binds and uses it.
-        { "tag": "v2", "new_sqlite_classes": ["UserPresence"] }
+        { "tag": "v2", "new_sqlite_classes": ["UserPresence"] },
+        // P3 T13a (#571): the class ships unbound one release before #575 binds and uses it.
+        { "tag": "v3", "new_sqlite_classes": ["DirectorySync"] },
+        // #1291: the class shipped unbound (0.109.0) one release before #1315 bound BUS_HUB.
+        { "tag": "v4", "new_sqlite_classes": ["BusHub"] }
       ],
       // Browser Run (server-side thumbnails). Workers edit suffices to deploy.
       "browser": { "binding": "BROWSER" },
@@ -62,11 +72,22 @@
           "name": "RL_AUTH",
           "namespace_id": "1002",
           "simple": { "limit": 20, "period": 60 }
+        },
+        {
+          "name": "RL_DIRECTORY",
+          "namespace_id": "1003",
+          "simple": { "limit": 30, "period": 60 }
         }
       ],
       "triggers": { "crons": ["17 3 * * *"] },
-      // Workers Logs: keep every request (email_sent / email_failed lines).
-      "observability": { "enabled": true, "head_sampling_rate": 1 },
+      // Workers Logs: keep every app line (email_sent / email_failed), but no
+      // invocation logs: they record each request URL, and a role proposal's
+      // confirm link carries its secret in the path (#1372). As the template.
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": { "enabled": true, "invocation_logs": false }
+      },
       // Secrets are NOT configured here. Deploys overwrite vars, so
       // ACCESS_CLIENT_ID lives here. It is a public OIDC client id (not a
       // secret), set by the ops-staging-access workflow on 2026-10-18.
@@ -74,7 +95,7 @@
         "ENVIRONMENT": "production",
         "APP_HOST": "staging.open-artifacts.com",
         "CONTENT_HOST": "staging-content.open-artifacts.com",
-        "OWNER_EMAIL": "me@leourbina.com",
+        // OWNER_EMAIL: set at deploy from the OA_OWNER_EMAIL secret (#1084).
         "EMAIL_FROM": "noreply@mail.open-artifacts.com",
         // Staging is Workers Paid: server-side thumbnails on (BROWSER above).
         "SERVER_THUMBNAILS": "on",

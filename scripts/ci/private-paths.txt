@@ -1,0 +1,115 @@
+# Hosted orchestration paths that move to the private repo
+# (open-artifacts-ai/open-artifacts-admin), per the approved #1056 boundary.
+#
+# One repo-relative path per line: a file or a directory, no globs, no
+# leading "/", no "..". Blank lines and "#" comments are ignored.
+#
+# Readers:
+# - scripts/ci/public-only.sh removes these from a copy of the repo and proves
+#   the public code still installs, builds, typechecks and tests without them.
+# - The private repo's sync script will copy exactly these paths (#1056).
+# Keep this the only list: add a hosted path here, never in a script.
+
+# Control plane apps
+apps/admin
+apps/provisioner
+apps/provisioning
+apps/scheduler
+apps/dispatch
+apps/inventory
+apps/platform-db
+
+# Hosted packages. The release bundle builder leaves provision for the public
+# @oa/bundle package (untangle A), so all of provision is private.
+packages/provision
+packages/gh-oidc
+
+# Hosted CLI, red-line, hosted constants, spikes
+scripts/hosted
+tests/redline
+# The audit-actions check reads the hosted writers and admin's action list, so
+# it cannot run, and cannot even typecheck, without them (#1353).
+scripts/audit
+.github/hosted
+spikes/provapi-staging
+
+# Hosted runbooks
+docs/ops/hosted.md
+docs/ops/redline-signin.md
+
+# Hosted workflows
+.github/workflows/deploy-hosted-platform.yml
+.github/workflows/hosted-floor.yml
+.github/workflows/hosted-publish.yml
+.github/workflows/prod-inspect.yml
+.github/workflows/prod-release-chain.yml
+.github/workflows/prodclean-monitor.yml
+.github/workflows/provapi-staging-spikes.yml
+.github/workflows/redline-nightly.yml
+.github/workflows/redline-staging.yml
+.github/workflows/staging-test-admin.yml
+
+# scripts/ci: hosted release, signing, publish and gates, with their tests
+scripts/ci/assemble-release.mjs
+scripts/ci/build-hosted-release.ts
+scripts/ci/check-hosted-release.ts
+scripts/ci/deploy-hosted-platform-workflow.test.ts
+scripts/ci/deploy-token-expiry.sh
+scripts/ci/deploy-token-expiry.test.ts
+scripts/ci/hosted-cf.sh
+scripts/ci/hosted-ci-lookups.test.ts
+scripts/ci/hosted-constants.sh
+scripts/ci/hosted-constants.test.ts
+scripts/ci/hosted-floor-fetch.sh
+scripts/ci/hosted-publish-resolve.sh
+scripts/ci/hosted-publish-workflow.test.ts
+scripts/ci/hosted-publish.test.ts
+scripts/ci/hosted-r2-key.sh
+scripts/ci/hosted-release.test.ts
+scripts/ci/hosted-resource-ids.sh
+scripts/ci/owner-email-guard-hosted.test.ts
+scripts/ci/platform-tags.sh
+scripts/ci/platform-tags.test.ts
+scripts/ci/prod-inspect-workflow.test.ts
+scripts/ci/prod-inspect.sh
+scripts/ci/prod-inspect.test.ts
+scripts/ci/prod-release-chain.test.ts
+scripts/ci/prod-release-chain.ts
+scripts/ci/provapi-spikes.sh
+scripts/ci/provapi-spikes.test.ts
+scripts/ci/provapi-token-verify.sh
+scripts/ci/redline-nightly.test.ts
+scripts/ci/redline-nightly.ts
+scripts/ci/redline-staging.test.ts
+scripts/ci/release-artifact.mjs
+scripts/ci/release-pubkeys.mjs
+scripts/ci/sign-floor.mjs
+scripts/ci/sign-release.mjs
+scripts/ci/staging-first-gate.sh
+scripts/ci/staging-first-gate.test.ts
+scripts/ci/staging-smoke-gate.sh
+scripts/ci/staging-smoke-gate.test.ts
+scripts/ci/tag-passed-checks.sh
+scripts/ci/tag-passed-checks.test.ts
+
+# scripts/ops: everything hosted. Public keeps check-landing-dist,
+# check-prod-token, check-staging-secrets, conflicting-secrets, staging-access
+# and staging-token-id, with their tests.
+scripts/ops/broker-key.ts
+scripts/ops/check-migration-lock.mjs
+scripts/ops/check-migration-lock.test.ts
+scripts/ops/deploy-hosted-platform.sh
+scripts/ops/deploy-hosted-platform.test.ts
+scripts/ops/deploy-platform-worker.sh
+scripts/ops/deploy-platform-worker.test.ts
+scripts/ops/hosted-set-signing-key.sh
+scripts/ops/hosted-set-signing-key.test.ts
+scripts/ops/hosted-zones.sh
+scripts/ops/hosted-zones.test.ts
+scripts/ops/platform-db.test.ts
+scripts/ops/platform-db.ts
+scripts/ops/staging-test-admin.test.ts
+scripts/ops/staging-test-admin.ts
+scripts/ops/testdata
+scripts/ops/wrangler-env.test.ts
+scripts/ops/wrangler-env.ts

@@ -34,6 +34,16 @@ const api = (pat: string, method: string, path: string, body?: unknown) =>
     body: body ? JSON.stringify(body) : undefined,
   });
 
+/** `api`, failing with the status and the server's error body (its code) unless 2xx. */
+const apiOk = async (...args: Parameters<typeof api>) => {
+  const res = await api(...args);
+  expect(
+    res.ok,
+    `${args[1]} ${args[2]}: ${res.status} ${res.ok ? "" : await res.text()}`,
+  ).toBe(true);
+  return res;
+};
+
 test("a revoked share keeps the open copy, says so, and stops live data", async ({
   member,
   browser,
@@ -45,14 +55,10 @@ test("a revoked share keeps the open copy, says so, and stops live data", async 
     capabilities: { db: true },
   });
   const bobEmail = freshEmail("bob");
-  expect(
-    (
-      await api(member.pat, "PUT", R.shares(id), {
-        email: bobEmail,
-        role: "editor",
-      })
-    ).ok,
-  ).toBe(true);
+  await apiOk(member.pat, "PUT", R.shares(id), {
+    email: bobEmail,
+    role: "editor",
+  });
   const ctx = await browser.newContext({ baseURL: APP });
   const bob = await ctx.newPage();
   await loginAs(bob, bobEmail, "guest");
@@ -62,9 +68,7 @@ test("a revoked share keeps the open copy, says so, and stops live data", async 
     bob.getByRole("complementary").or(bob.getByRole("tabpanel")).first(),
   ).toBeVisible();
 
-  expect((await api(member.pat, "DELETE", R.share(id, bobEmail))).ok).toBe(
-    true,
-  );
+  await apiOk(member.pat, "DELETE", R.share(id, bobEmail));
   // Design's gone state (live versions): the frame stays, with a banner.
   await expect(
     bob
@@ -102,9 +106,7 @@ test("an access change (4403) reconnects and delivers db.resync", async ({
   const frame = artifactFrame(page);
   await expect(frame.locator("#out")).toHaveText("subscribed");
   const before = Number(await frame.locator("#resync").textContent());
-  expect(
-    (await api(member.pat, "PATCH", R.artifact(id), { visibility: "team" })).ok,
-  ).toBe(true);
+  await apiOk(member.pat, "PATCH", R.artifact(id), { visibility: "team" });
   await expect
     .poll(async () => Number(await frame.locator("#resync").textContent()), {
       timeout: 15_000,

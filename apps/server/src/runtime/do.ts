@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  accessChangedCloseReason,
   DATA_LIMIT_DEFAULTS,
   type DataChange,
   DataChangeSchema,
@@ -20,11 +21,13 @@ import {
   LIMITS,
   type Page,
   planOf,
+  QUERY_TOO_LARGE_MESSAGE,
   type StorageEntry,
   type StorageKey,
   StorageKeyNameSchema,
   StorageSetBodySchema,
 } from "@oa/shared";
+import { withRetries } from "../db/retry.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError } from "../log.js";
@@ -35,6 +38,12 @@ import {
   THUMB,
   type ThumbResult,
 } from "../services/thumbs.js";
+import {
+  INDEX_REPORT_MS,
+  presenceStub,
+  SKEW_MS,
+  socketIndexStub,
+} from "./presence.js";
 
 // Errors cross the RPC boundary as plain Error (subclass + fields are lost), so the
 // code rides in the message: "oa:<code>:<message>". B13 maps it back with toRuntimeApiError.
@@ -141,11 +150,18 @@ export const THUMB_LAUNCH_BACKOFF_MS = 3_600_000;
 /** Header carrying the subscriber's actor from the route to fetch. */
 export const ACTOR_HEADER = "X-OA-Actor";
 /**
- * where/orderBy queries scan and json-decode every doc in the collection, so they are
- * refused once its tracked byte total (totals.cols[collection]) exceeds this. A ~50 MB scan
- * costs hundreds of ms of CPU; 2 MiB stays near the 10 ms budget. Plain list is unaffected.
+ * Header carrying when the route's authorization ran (ms), required for
+ * signed-in ("u:") actors: the accept path awaits UserPresence.touch with it,
+ * and closes the socket 4403 when a revocation started at or after it.
  */
-const MAX_QUERY_COLLECTION_BYTES = 2 * 1024 * 1024;
+export const AUTHZ_AT_HEADER = "X-OA-Authz-At";
+/**
+ * where/orderBy queries scan and json-decode every doc in the collection, so they are
+ * refused (query_too_large) once its tracked byte total (totals.cols[collection]) exceeds
+ * this. A ~50 MB scan costs hundreds of ms of CPU; 2 MiB stays near the 10 ms budget.
+ * Plain list is unaffected.
+ */
+const MAX_QUERY_COLLECTION_BYTES = LIMITS.queryCollectionBytes;
 /** JSON path of a collection's byte total in totals.cols. */
 const colPath = (collection: string) => `$."${collection}"`;
 const DEFAULT_LIMIT = 100;
@@ -240,6 +256,15 @@ function decodeCursor<K extends string>(
   raw: unknown,
   keys: readonly K[],
 ): Record<K, string> | null {
+  // One exact key set: every key is present.
+  return decodeCursorOf(raw, [keys]) as Record<K, string> | null;
+}
+
+/** decodeCursor accepting any one of several exact key sets. */
+function decodeCursorOf<K extends string>(
+  raw: unknown,
+  shapes: readonly (readonly K[])[],
+): Partial<Record<K, string>> | null {
   if (raw === undefined) return null;
   if (
     typeof raw !== "string" ||
@@ -259,11 +284,14 @@ function decodeCursor<K extends string>(
       typeof p === "object" &&
       p !== null &&
       !Array.isArray(p) &&
-      Object.keys(p).length === keys.length &&
-      keys.every(
-        (k) =>
-          Object.hasOwn(p, k) &&
-          typeof (p as Record<string, unknown>)[k] === "string",
+      shapes.some(
+        (keys) =>
+          Object.keys(p).length === keys.length &&
+          keys.every(
+            (k) =>
+              Object.hasOwn(p, k) &&
+              typeof (p as Record<string, unknown>)[k] === "string",
+          ),
       )
     )
       return p as Record<K, string>;
@@ -271,6 +299,48 @@ function decodeCursor<K extends string>(
     // fall through
   }
   fail("bad_request", "invalid cursor");
+}
+
+/**
+ * A query cursor's sort value carried inline up to this many UTF-8 bytes; a
+ * longer one is looked up from the anchor doc instead (the cursor's "h" form).
+ */
+const MAX_CURSOR_SORT_BYTES = 1024;
+
+/** A query sort value: what json_extract (or updated_at) yields. */
+type SortValue = string | number | null;
+
+/**
+ * The tag/text pair a sort value rides in: t "z" null, "n" a finite number
+ * (String(n)), "s" a string. Typed so a cursor can only ever bind a null, a
+ * number or a string, never change the query's shape.
+ */
+function sortTag(v: SortValue): { t: string; v: string } {
+  if (v === null) return { t: "z", v: "" };
+  if (typeof v === "number") return { t: "n", v: String(v) };
+  return { t: "s", v };
+}
+
+function sortUntag(t: string, v: string): SortValue {
+  if (t === "z" && v === "") return null;
+  if (t === "s") return v;
+  if (t === "n" && /^-?[0-9][0-9.eE+-]*$/.test(v)) {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  fail("bad_request", "invalid cursor");
+}
+
+/** FNV-1a 32 over UTF-16 units, plus the length: a long sort value's fingerprint. */
+function sortHash(v: SortValue): string {
+  const { t, v: text } = sortTag(v);
+  const s = `${t}:${text}`;
+  let h = 0x811c9dc5;
+  for (let k = 0; k < s.length; k++) {
+    h ^= s.charCodeAt(k);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `${(h >>> 0).toString(16)}.${s.length}`;
 }
 
 type DocRow = {
@@ -311,7 +381,13 @@ create table if not exists thumb_job (
   version integer not null, attempts integer not null, due integer not null,
   state text not null
 );
+create table if not exists access_change (
+  id integer primary key check (id = 1), at integer not null
+);
 `;
+
+/** presence_unbound is logged once per isolate on the accept path. */
+let unboundLogged = false;
 
 type SqlParam = string | number | null;
 /**
@@ -324,7 +400,9 @@ type SocketMeta = { t: number; named?: boolean };
  * R.events socket tags. Not DataNames (NAME_RE has no "~"), so they never
  * collide with a data-subscribe collection tag. Every events socket has
  * EVENTS_TAG, one budget-pool tag (signed-in or ip) and one viewer-class tag
- * (named or anon); its per-actor tag is "ea:{actor}" (data sockets: "a:").
+ * (named or anon); its per-actor cap tag is "ea:{actor}". Data and events
+ * sockets alike also carry "a:{actor}" (closeActor); a data socket's
+ * per-actor cap counts its "a:" sockets that are not events sockets.
  */
 const EVENTS_TAG = "~ev";
 const EVENTS_NAMED_TAG = "~ev:named";
@@ -341,11 +419,21 @@ export const EVENTS_NAMED_HEADER = "X-OA-Named";
 export type GoneReason = "deleted" | "changed";
 const GONE_DELETED = '{"type":"gone","reason":"deleted"}';
 const GONE_CHANGED = '{"type":"gone","reason":"changed"}';
+/**
+ * Margin on a stale socket's retryAfterMs: the reconnect must be authorized
+ * after accessChangedAt + SKEW_MS, or it is refused again.
+ */
+const STALE_RETRY_MARGIN_MS = 250;
 
 /** A new version, broadcast to R.events sockets by scheduleIndex. */
 export type VersionEvent = {
   at: string;
   by: { kind: "user" | "agent"; name: string | null };
+  /**
+   * A private token label: the publisher's own named sockets get `name` as
+   * `by.name` instead (everyone else keeps `by.name`, "<owner>'s agent").
+   */
+  owner?: { userId: string; name: string };
   restoredFrom?: number;
 };
 
@@ -356,6 +444,12 @@ export type VersionEvent = {
  */
 export class ArtifactRuntime extends DurableObject<Env> {
   private ready = false;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    // D1 reads (the indexer, the thumbnailer) retry on a storage failure
+    // (db/retry.ts), one wrapper per env.
+    super(ctx, withRetries(env));
+  }
 
   /** The instance's data-doc limit (env PLAN, DATA_DOC_BYTES). */
   private get docLimit(): DocLimit {
@@ -653,9 +747,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
     const parsed = DataQuerySchema.safeParse(q ?? {});
     if (!parsed.success) fail("bad_request", "invalid query");
     const { where, orderBy, order, limit, cursor } = parsed.data;
-    // Cursor carries only the last id plus the ordering it belongs to; the sort value is
-    // looked up by (collection, id), so long sort values still paginate.
-    const cur = decodeCursor(cursor, ["i", "o", "d"] as const);
+    // The cursor carries the last doc's id and sort value (t/v) plus the ordering it
+    // belongs to, so a later write to that doc can't move the page boundary. A sort value
+    // over MAX_CURSOR_SORT_BYTES rides as a fingerprint (h) plus the doc's updated_at (u)
+    // instead: it is looked up again, and any change to that doc is 409 cursor_stale.
+    // The where filter is applied on every page, so a forged cursor only moves the
+    // start position inside the filtered set.
+    const cur = decodeCursorOf(cursor, [
+      ["i", "o", "d", "t", "v"],
+      ["i", "o", "d", "u", "h"],
+    ] as const);
     if (cur && (cur.o !== (orderBy ?? "") || cur.d !== order))
       fail("bad_request", "cursor does not match query");
     if (where || orderBy) {
@@ -666,7 +767,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
         )
         .one().v;
       if (bytes > MAX_QUERY_COLLECTION_BYTES)
-        fail("bad_request", "collection too large to query; use list");
+        fail("query_too_large", QUERY_TOO_LARGE_MESSAGE);
     }
 
     // Keys are schema-validated identifiers, and are still only ever bound as '$.' || ? params.
@@ -697,19 +798,32 @@ export class ArtifactRuntime extends DurableObject<Env> {
     const svp: SqlParam[] = orderBy ? [orderBy] : [];
     const desc = order === "desc";
     if (cur) {
-      const anchor = this.sql
-        .exec<{ v: SqlStorageValue }>(
-          `select ${sv} as v from docs where collection = ? and id = ?`,
-          ...svp,
-          c,
-          cur.i,
+      let v: SortValue;
+      if (cur.t !== undefined && cur.v !== undefined) {
+        v = sortUntag(cur.t, cur.v);
+      } else {
+        const anchor = this.sql
+          .exec<{ v: SqlStorageValue; u: string }>(
+            `select ${sv} as v, updated_at as u from docs where collection = ? and id = ?`,
+            ...svp,
+            c,
+            cur.i ?? "",
+          )
+          .toArray()[0];
+        const av = anchor?.v;
+        if (
+          !anchor ||
+          (av !== null && typeof av !== "number" && typeof av !== "string") ||
+          anchor.u !== cur.u ||
+          sortHash(av) !== cur.h
         )
-        .toArray()[0];
-      if (!anchor) fail("bad_request", "cursor expired; restart the query");
-      const v = anchor.v;
-      if (v !== null && typeof v !== "number" && typeof v !== "string")
-        fail("bad_request", "invalid cursor");
-      const id = cur.i;
+          fail(
+            "cursor_stale",
+            "The data changed while paging. Restart the query without a cursor.",
+          );
+        v = av;
+      }
+      const id = cur.i ?? "";
       const op = desc ? "<" : ">";
       if (v === null) {
         // NULLs come first ascending, last descending.
@@ -729,7 +843,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     }
     const dir = desc ? "desc" : "asc";
     const rows = this.sql
-      .exec<DocRow>(
+      .exec<DocRow & { sv: SqlStorageValue }>(
         `select id, data, updated_at, updated_by, ${sv} as sv from docs
          where ${conds.join(" and ")} order by sv ${dir}, id ${dir} limit ?`,
         ...svp,
@@ -739,10 +853,24 @@ export class ArtifactRuntime extends DurableObject<Env> {
       .toArray();
     const items = rows.slice(0, limit);
     const last = items[items.length - 1];
-    const nextCursor =
-      rows.length > limit && last
-        ? encodeCursor({ i: last.id, o: orderBy ?? "", d: order })
-        : null;
+    let nextCursor: string | null = null;
+    if (rows.length > limit && last) {
+      const lv = last.sv;
+      if (lv !== null && typeof lv !== "number" && typeof lv !== "string")
+        fail("internal", "unexpected sort value");
+      const base = { i: last.id, o: orderBy ?? "", d: order };
+      // Judged on the encoded cursor, not the value's bytes: JSON escapes a
+      // control character to 6 bytes, so a short value can still overflow
+      // MAX_CURSOR and be refused when it comes back.
+      const inline =
+        typeof lv === "string" && enc.encode(lv).length > MAX_CURSOR_SORT_BYTES
+          ? null
+          : encodeCursor({ ...base, ...sortTag(lv) });
+      nextCursor =
+        inline !== null && inline.length <= MAX_CURSOR
+          ? inline
+          : encodeCursor({ ...base, u: last.updated_at, h: sortHash(lv) });
+    }
     return { items: items.map(toDoc), nextCursor };
   }
 
@@ -1067,6 +1195,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
     const actor = req.headers.get(ACTOR_HEADER);
     if (actor !== null && !ACTOR_RE.test(actor))
       return new Response("Invalid actor", { status: 400 });
+    // Signed-in sockets are recorded in the user's presence (revocation).
+    const userId = actor?.startsWith("u:") ? actor.slice(2) : null;
+    const rawAt = req.headers.get(AUTHZ_AT_HEADER);
+    const authzAt = Number(rawAt ?? Number.NaN);
+    const validAt = Number.isSafeInteger(authzAt) && authzAt >= 1;
+    // Required for signed-in actors; the route sends it for every actor.
+    if ((userId !== null || rawAt !== null) && !validAt)
+      return new Response("Missing authorization time", { status: 400 });
     let tags: string[];
     let hello: string | null = null;
     let named: boolean | undefined;
@@ -1095,7 +1231,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
         (anon ? MAX_ANON_EVENTS_PER_ACTOR : MAX_SOCKETS_PER_ACTOR)
       )
         return new Response("Too many subscriptions", { status: 429 });
-      tags.push(tag);
+      tags.push(tag, `a:${actor}`);
       hello = `{"type":"hello","version":${v}}`;
     } else {
       const r = DataNameSchema.safeParse(url.searchParams.get("collection"));
@@ -1114,10 +1250,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
       )
         return new Response("Too many subscribers", { status: 429 });
       const tag = `a:${actor}`;
-      if (
-        this.ctx.getWebSockets(tag).length >=
-        (anon ? MAX_ANON_SOCKETS_PER_ACTOR : MAX_SOCKETS_PER_ACTOR)
-      )
+      // Events sockets also carry "a:" (closeActor): count data sockets only.
+      const held = this.ctx
+        .getWebSockets(tag)
+        .filter((ws) => !this.ctx.getTags(ws).includes(EVENTS_TAG)).length;
+      if (held >= (anon ? MAX_ANON_SOCKETS_PER_ACTOR : MAX_SOCKETS_PER_ACTOR))
         return new Response("Too many subscriptions", { status: 429 });
       tags = [r.data, pool, tag];
     }
@@ -1127,9 +1264,117 @@ export class ArtifactRuntime extends DurableObject<Env> {
     pair[1].serializeAttachment(
       (named === undefined ? { t } : { t, named }) satisfies SocketMeta,
     );
-    if (hello) pair[1].send(hello);
     await this.armAt(t + SOCKET_TTL_MS);
+    // Authorized before this artifact's last access change (closeSockets):
+    // the check may have seen the old access, so refuse (any actor).
+    const changed = this.accessChangedAt();
+    const stale = validAt && changed !== null && authzAt <= changed + SKEW_MS;
+    // Accepted (and tagged) before touch, so a closeActor that runs while
+    // touch is in flight finds it; a touch after the revocation started is
+    // refused, and the socket closes here.
+    if (
+      stale ||
+      (userId !== null && !(await this.touchPresence(userId, authzAt)))
+    ) {
+      // A stale socket (authorized inside the skew window of an access change)
+      // is told when a reconnect will pass, so the client backs off once
+      // instead of looping refused reconnects until the window ends.
+      const retry =
+        stale && changed !== null
+          ? Math.min(
+              SKEW_MS + STALE_RETRY_MARGIN_MS,
+              Math.max(
+                STALE_RETRY_MARGIN_MS,
+                changed + SKEW_MS + STALE_RETRY_MARGIN_MS - this.now(),
+              ),
+            )
+          : null;
+      try {
+        if (url.pathname === "/events")
+          pair[1].send(
+            retry === null
+              ? GONE_CHANGED
+              : `{"type":"gone","reason":"changed","retryAfterMs":${retry}}`,
+          );
+        pair[1].close(
+          4403,
+          retry === null ? "access revoked" : accessChangedCloseReason(retry),
+        );
+      } catch {
+        // already closed
+      }
+      return new Response(null, { status: 101, webSocket: pair[0] });
+    }
+    if (hello) pair[1].send(hello);
+    // After the accept, as with touch: a closeInstall that runs meanwhile
+    // finds the socket here, and one that missed this report gets it on its
+    // second pass.
+    await this.reportToIndex();
     return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+
+  /** When this instance last reported to the socket index (ms; memory only). */
+  private indexedAt = Number.NEGATIVE_INFINITY;
+
+  /**
+   * Tells the install's socket index (presence.ts INSTALL_INDEX) that this
+   * artifact holds a live socket, at most once per INDEX_REPORT_MS per
+   * instance. Fails open: the index is the suspend's cleanup, never an
+   * access check, so an error only logs (socket_index_failed).
+   */
+  private async reportToIndex(): Promise<void> {
+    const now = this.now();
+    if (now - this.indexedAt < INDEX_REPORT_MS) return;
+    const idx = socketIndexStub(this.env);
+    if (!idx) return;
+    try {
+      await idx.seen(this.artifactId());
+      this.indexedAt = now;
+    } catch (e) {
+      logError("socket_index_failed", e);
+    }
+  }
+
+  /**
+   * Records the socket in the user's presence. False when a revocation
+   * started at or after `authzAt`, or presence failed (fail closed). An
+   * install without the USER_PRESENCE binding keeps the 10 minute socket
+   * TTL as its only ceiling (logged).
+   */
+  private async touchPresence(
+    userId: string,
+    authzAt: number,
+  ): Promise<boolean> {
+    const p = presenceStub(this.env, userId);
+    if (!p) {
+      if (!unboundLogged) {
+        unboundLogged = true;
+        logError("presence_unbound", new Error("USER_PRESENCE is not bound"));
+      }
+      return true;
+    }
+    try {
+      return (await p.touch(this.artifactId(), authzAt)).ok;
+    } catch (e) {
+      logError("presence_touch_failed", e);
+      return false;
+    }
+  }
+
+  /** When closeSockets last ran (ms; an access change), or null. */
+  accessChangedAt(): number | null {
+    return (
+      this.sql
+        .exec<{ at: number }>("select at from access_change where id = 1")
+        .toArray()[0]?.at ?? null
+    );
+  }
+
+  /** The artifact id this DO serves: the name it was addressed by. */
+  private artifactId(): string {
+    const name = this.ctx.id.name;
+    if (!name) throw new Error("ArtifactRuntime needs a named id");
+    return name;
   }
 
   /** Moves the one alarm earlier to `t` (never later): it serves every kind of work. */
@@ -1154,11 +1399,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
     version: number,
     thumb = false,
     event?: VersionEvent,
-  ): Promise<void> {
+  ): Promise<{ ms: number }> {
     if (typeof artifactId !== "string" || artifactId.length > 64)
       fail("bad_request", "invalid artifact id");
     if (!Number.isSafeInteger(version) || version < 1)
       fail("bad_request", "invalid version");
+    // The object's own share of index_enqueue's wall time (returned).
+    const t0 = Date.now();
     if (event) this.broadcastVersion(version, event);
     const due = this.now() + INDEX_DELAY_MS;
     this.sql.exec(
@@ -1186,11 +1433,15 @@ export class ArtifactRuntime extends DurableObject<Env> {
         due,
       );
     await this.armAt(due);
+    // Returned, not logged: a DO's console doesn't reach the dispatch tail.
+    return { ms: Date.now() - t0 };
   }
 
   /**
    * One `version` frame per viewer class, serialized once each: named sockets
-   * get `by.name`, anonymous/embed/guest sockets `{ kind }` only.
+   * get `by.name`, anonymous/embed/guest sockets `{ kind }` only. With
+   * `owner`, the publisher's named sockets (actor tag "ea:u:{id}") get the
+   * owner's frame instead.
    */
   private broadcastVersion(version: number, e: VersionEvent): void {
     const kind = e.by.kind === "agent" ? "agent" : "user";
@@ -1207,24 +1458,39 @@ export class ArtifactRuntime extends DurableObject<Env> {
         by,
         ...(from === undefined ? {} : { restoredFrom: from }),
       });
-    const send = (tag: string, msg: () => string) => {
+    const send = (
+      tag: string,
+      msg: () => string,
+      own?: { tag: string; msg: () => string },
+    ) => {
       const socks = this.ctx.getWebSockets(tag);
       if (!socks.length) return;
-      const m = msg();
+      let m: string | undefined;
+      let o: string | undefined;
       for (const ws of socks) {
+        const mine =
+          own !== undefined && this.ctx.getTags(ws).includes(own.tag);
+        if (mine) o ??= own.msg();
+        else m ??= msg();
+        const out = (mine ? o : m) as string;
         try {
-          ws.send(m);
+          ws.send(out);
         } catch {
           // closing socket
         }
       }
     };
-    const name =
-      typeof e.by.name === "string" && e.by.name
-        ? e.by.name.slice(0, 200)
-        : undefined;
-    send(EVENTS_NAMED_TAG, () =>
-      frame(name === undefined ? { kind } : { kind, name }),
+    const cut = (n: unknown) =>
+      typeof n === "string" && n ? n.slice(0, 200) : undefined;
+    const name = cut(e.by.name);
+    const ownName = cut(e.owner?.name);
+    const ownId = e.owner?.userId;
+    send(
+      EVENTS_NAMED_TAG,
+      () => frame(name === undefined ? { kind } : { kind, name }),
+      typeof ownId === "string" && ownId && ownName !== undefined
+        ? { tag: `ea:u:${ownId}`, msg: () => frame({ kind, name: ownName }) }
+        : undefined,
     );
     send(EVENTS_ANON_TAG, () => frame({ kind }));
   }
@@ -1359,6 +1625,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
             attempts,
           });
           this.sql.exec(`delete from index_job ${same}`, ...key);
+          await this.markFailed("index_failed", job.artifactId, job.version);
         } else
           this.sql.exec(
             `update index_job set attempts = ?, due = ? ${same}`,
@@ -1405,6 +1672,21 @@ export class ArtifactRuntime extends DurableObject<Env> {
         state,
         job.version,
       );
+    // Every no-thumbnail outcome: one log line, and the D1 marker the pdf
+    // sweep skips (sweepLostIndexJobs).
+    const noThumb = async (result: string, attempts: number) => {
+      end("no_thumb");
+      console.error(
+        JSON.stringify({
+          evt: "thumbnail_no_thumb",
+          artifactId: job.artifactId,
+          version: job.version,
+          result,
+          attempts,
+        }),
+      );
+      await this.markFailed("thumb_failed", job.artifactId, job.version);
+    };
     if (job.attempts >= THUMB_MAX_ATTEMPTS) {
       console.error(
         JSON.stringify({
@@ -1414,7 +1696,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           attempts: job.attempts,
         }),
       );
-      end("no_thumb");
+      await noThumb("abandoned", job.attempts);
       return;
     }
     const retryAt = this.now() + THUMB_RETRY_MS;
@@ -1447,7 +1729,29 @@ export class ArtifactRuntime extends DurableObject<Env> {
         this.now() + retryIn,
         job.version,
       );
-    else end(result === "stored" || result === "skipped" ? "done" : "no_thumb");
+    else if (result === "stored" || result === "skipped") end("done");
+    else await noThumb(result, job.attempts + 1);
+  }
+
+  /**
+   * Marks `version` permanently failed (versions.index_failed or
+   * thumb_failed) so the lost-job sweep skips it. Best effort: a lost write
+   * only means the sweep retries it.
+   */
+  private async markFailed(
+    col: "index_failed" | "thumb_failed",
+    artifactId: string,
+    version: number,
+  ): Promise<void> {
+    try {
+      await this.env.DB.prepare(
+        `update versions set ${col} = 1 where artifact_id = ? and version = ?`,
+      )
+        .bind(artifactId, version)
+        .run();
+    } catch (e) {
+      logError("sweep_mark_failed", e, { artifactId, version });
+    }
   }
 
   /** Subscribe-only feed: any client message closes the socket (1008 policy violation). */
@@ -1469,13 +1773,22 @@ export class ArtifactRuntime extends DurableObject<Env> {
 
   /**
    * Closes every subscriber socket with 4403 (access may have changed: share
-   * revoked, visibility changed, artifact deleted). Clients reconnect through
+   * revoked, visibility changed, artifact deleted), and records the change
+   * time, so a socket authorized before it is refused on accept (fetch).
+   * Clients reconnect through
    * the shell, which re-checks access. R.events sockets get a `gone` frame
    * first: access isn't re-evaluated per socket here, so every one closes
    * and the client's reconnect re-checks it (404 = really gone). `gone` is
    * the frame's reason: "deleted" for a soft delete, else "changed".
    */
   closeSockets(reason: string, gone: GoneReason = "changed"): number {
+    // Recorded first: a socket whose access check ran before this change
+    // (authzAt <= at + SKEW_MS) and reaches fetch after it is refused there.
+    this.sql.exec(
+      `insert into access_change (id, at) values (1, ?)
+       on conflict (id) do update set at = max(at, excluded.at)`,
+      this.now(),
+    );
     const frame = gone === "deleted" ? GONE_DELETED : GONE_CHANGED;
     for (const ws of this.ctx.getWebSockets(EVENTS_TAG)) {
       try {
@@ -1488,6 +1801,53 @@ export class ArtifactRuntime extends DurableObject<Env> {
     for (const ws of all) {
       try {
         ws.close(4403, reason.slice(0, 120));
+      } catch {
+        // already closed
+      }
+    }
+    return all.length;
+  }
+
+  /**
+   * Closes `actor`'s data and events sockets (tag "a:{actor}") with 4403
+   * after their access was revoked (UserPresence.closeAll); events sockets
+   * get a `gone` frame first. Returns the number closed. Other actors'
+   * sockets stay open.
+   */
+  closeActor(actor: string, reason: string): number {
+    const a = actorOf(actor);
+    const why = String(reason).slice(0, 120);
+    // "ea:" too: events sockets accepted before "a:" was added to them.
+    const socks = new Set([
+      ...this.ctx.getWebSockets(`a:${a}`),
+      ...this.ctx.getWebSockets(`ea:${a}`),
+    ]);
+    for (const ws of socks) {
+      try {
+        if (this.ctx.getTags(ws).includes(EVENTS_TAG)) ws.send(GONE_CHANGED);
+        ws.close(4403, why);
+      } catch {
+        // already closed
+      }
+    }
+    return socks.size;
+  }
+
+  /**
+   * Closes every socket here, events and data, signed-in and anonymous
+   * (4403; events sockets get `gone` "changed" first, so clients ask the API
+   * again), for the platform's suspend (UserPresence.closeInstall). Unlike
+   * closeSockets it records no access change: nothing here refuses a later
+   * accept, so after a resume a reconnect is served as before. Returns the
+   * number closed.
+   */
+  closeAllSockets(reason: string): number {
+    const why = String(reason).slice(0, 120);
+    const all = this.ctx.getWebSockets();
+    for (const ws of all) {
+      try {
+        if (this.ctx.getTags(ws).includes(EVENTS_TAG)) ws.send(GONE_CHANGED);
+        ws.close(4403, why);
       } catch {
         // already closed
       }
@@ -1527,6 +1887,8 @@ type RpcMethods =
   | "storageSetRaw"
   | "replaceRaw"
   | "closeSockets"
+  | "closeActor"
+  | "closeAllSockets"
   | "scheduleIndex"
   | "pendingIndex"
   | "storageDelete"

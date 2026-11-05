@@ -25,7 +25,7 @@ import {
   packUstar,
 } from "../../../scripts/ci/release-artifact.mjs";
 import { buildBundle } from "../src/bundle.js";
-import { CfError, cfClient } from "../src/cf.js";
+import { type CfError, cfClient } from "../src/cf.js";
 import { platformNames } from "../src/names.js";
 import { canonicalJson } from "../src/platform.js";
 import {
@@ -34,9 +34,12 @@ import {
   probeR2Conditionals,
   publishFloor,
   publishRelease,
+  type R2ReleaseBucket,
+  r2BindingReleaseReader,
   r2ReleaseReader,
   releaseKey,
 } from "../src/publish.js";
+import { r2S3Client } from "../src/r2s3.js";
 import {
   ASSET_LIMITS,
   buildReleaseRecord,
@@ -241,13 +244,23 @@ function setup() {
     fetch: fake.fetch,
     sleep: async () => {},
   });
-  return { fake, cf, bucket };
+  // H-S3: one R2 API token per env, scoped to that env's releases bucket.
+  const s3 = (env: "staging" | "prod") =>
+    r2S3Client({
+      accountId: fake.accountId,
+      env,
+      credentials: fake.r2Token(platformNames(env).releases),
+      fetch: fake.fetch,
+      sleep: async () => {},
+    });
+  const r2 = { staging: s3("staging"), prod: s3("prod") };
+  return { fake, cf, r2, bucket };
 }
 
-/** M2: publishRelease and publishFloor need a passed probe for this cf and env. */
+/** M2: publishRelease and publishFloor need a passed probe for this client and env. */
 async function probed<T extends ReturnType<typeof setup>>(s: T): Promise<T> {
-  await probeR2Conditionals(s.cf, "staging");
-  await probeR2Conditionals(s.cf, "prod");
+  await probeR2Conditionals(s.r2.staging, "staging");
+  await probeR2Conditionals(s.r2.prod, "prod");
   s.fake.log.length = 0;
   s.fake.r2Log.length = 0;
   return s;
@@ -271,8 +284,14 @@ const seedFloor = (
   env: "staging" | "prod" = "staging",
 ) => s.fake.r2Seed(platformNames(env).releases, FLOOR_KEY, sigBytes(f));
 
+/** Every R2 PUT, REST or S3. */
 const r2Writes = (fake: FakeCf) =>
-  fake.log.filter((e) => e.method === "PUT" && e.path.includes("/objects/"));
+  fake.log.filter(
+    (e) =>
+      e.method === "PUT" &&
+      (e.path.includes("/objects/") ||
+        e.path.includes(".r2.cloudflarestorage.com/")),
+  );
 
 // ---------- A: the hardened reader ----------
 
@@ -527,6 +546,8 @@ describe("A: buildBundle builds both variants from one dry-run config", () => {
         "/__test/session",
         "/__test/otp/latest",
         "/__test/oauth-client",
+        "/__test/code-caps/reset",
+        "/__test/directory-groups",
       ]) {
         expect(main(rel).includes(r), r).toBe(false);
         expect(main(red).includes(r), r).toBe(true);
@@ -904,6 +925,7 @@ describe("D: publishRelease", () => {
     const files = good();
     await publishRelease({
       cf: s.cf,
+      r2: s.r2.staging,
       env: "staging",
       version: "0.34.0",
       files,
@@ -933,6 +955,7 @@ describe("D: publishRelease", () => {
     seedFloor(s);
     await publishRelease({
       cf: s.cf,
+      r2: s.r2.staging,
       env: "staging",
       version: "0.34.0",
       files: good(),
@@ -941,6 +964,7 @@ describe("D: publishRelease", () => {
     const e = await fails(
       publishRelease({
         cf: s.cf,
+        r2: s.r2.staging,
         env: "staging",
         version: "0.34.0",
         files: good(),
@@ -954,21 +978,27 @@ describe("D: publishRelease", () => {
   it("an object written concurrently is never overwritten (If-None-Match)", async () => {
     const s = await probed(setup());
     seedFloor(s);
+    // The listing misses it (written after the list): the PUT's 412 decides.
     const cf = {
       ...s.cf,
       r2ObjectList: async () => ({ objects: [], truncated: false }),
     };
-    await probeR2Conditionals(cf, "staging");
     s.fake.r2Seed(
       s.bucket,
       "releases/0.34.0/release/welcome/welcome.md",
       enc("evil"),
     );
     const e = await fails(
-      publishRelease({ cf, env: "staging", version: "0.34.0", files: good() }),
+      publishRelease({
+        cf,
+        r2: s.r2.staging,
+        env: "staging",
+        version: "0.34.0",
+        files: good(),
+      }),
     );
-    expect(e).toBeInstanceOf(CfError);
-    expect((e as CfError).status).toBe(412);
+    expect(e).toBeInstanceOf(PublishRefused);
+    expect(e.message).toMatch(/already exists.*differs from the tar/);
     expect(
       s.fake.r2Object(s.bucket, "releases/0.34.0/release/welcome/welcome.md")
         ?.bytes,
@@ -983,6 +1013,7 @@ describe("D: publishRelease", () => {
     seedFloor(s);
     await publishRelease({
       cf: s.cf,
+      r2: s.r2.staging,
       env: "staging",
       version: "0.34.0",
       files: good("redline"),
@@ -1001,6 +1032,7 @@ describe("D: publishRelease", () => {
     const e = await fails(
       publishRelease({
         cf: s.cf,
+        r2: s.r2.prod,
         env: "prod",
         version: "0.34.0",
         files: {
@@ -1219,6 +1251,7 @@ describe("D: publishRelease", () => {
     const e = await fails(
       publishRelease({
         cf: s.cf,
+        r2: s.r2[o.env ?? "staging"],
         env: o.env ?? "staging",
         version: o.version ?? "0.34.0",
         files: o.files,
@@ -1244,6 +1277,7 @@ describe("D: publishRelease", () => {
     const e = await fails(
       publishRelease({
         cf: s.cf,
+        r2: s.r2.staging,
         env: "staging",
         version: "0.34.0",
         files: { tar: new Uint8Array(1024), sig: sigBytes(signRec(rec)) },
@@ -1265,6 +1299,7 @@ describe("D: publishRelease", () => {
       const e = await fails(
         publishRelease({
           cf: s.cf,
+          r2: s.r2.staging,
           env: "staging",
           version: "0.34.0",
           files: good(),
@@ -1309,6 +1344,7 @@ describe("D: publishRelease", () => {
     const e = await fails(
       publishRelease({
         cf: s.cf,
+        r2: s.r2.staging,
         env: "staging",
         version: "0.34.0",
         files: good(),
@@ -1326,6 +1362,7 @@ describe("D: publishRelease", () => {
       const e = await fails(
         publishRelease({
           cf: s.cf,
+          r2: s.r2.staging,
           env: "staging",
           version: "0.34.0",
           files: good(),
@@ -1389,7 +1426,7 @@ describe("E: the signed floor", () => {
   it("publishFloor writes the first floor with If-None-Match: *", async () => {
     const s = await probed(setup());
     await publishFloor({
-      cf: s.cf,
+      r2: s.r2.staging,
       env: "staging",
       floor: sigBytes(signFloor(floorOf())),
     });
@@ -1420,7 +1457,7 @@ describe("E: the signed floor", () => {
     ] as const) {
       const e = await fails(
         publishFloor({
-          cf: s.cf,
+          r2: s.r2.staging,
           env: "staging",
           floor: sigBytes(signFloor(f, "staging")),
         }),
@@ -1429,7 +1466,7 @@ describe("E: the signed floor", () => {
     }
     const e = await fails(
       publishFloor({
-        cf: s.cf,
+        r2: s.r2.staging,
         env: "staging",
         floor: sigBytes(
           signFloor({ ...first, seq: 3 }, "staging", OTHER.privateKey),
@@ -1445,7 +1482,7 @@ describe("E: the signed floor", () => {
       revoked: ["0.31.0", "0.33.0"],
     };
     await publishFloor({
-      cf: s.cf,
+      r2: s.r2.staging,
       env: "staging",
       floor: sigBytes(signFloor(next)),
     });
@@ -1461,7 +1498,7 @@ describe("E: the signed floor", () => {
     try {
       const e = await fails(
         publishFloor({
-          cf: s.cf,
+          r2: s.r2.staging,
           env: "staging",
           floor: sigBytes(signFloor(floorOf({ seq: 3 }))),
         }),
@@ -1472,13 +1509,13 @@ describe("E: the signed floor", () => {
     }
   });
 
-  it("a concurrent floor change fails the If-Match", async () => {
+  it("a concurrent floor change fails the If-Match: refused as floor seq exists, never retried as success", async () => {
     const s = await probed(setup());
     seedFloor(s, signFloor(floorOf({ seq: 1 })));
-    const cf = {
-      ...s.cf,
-      r2ObjectGet: async (b: string, k: string) => {
-        const r = await s.cf.r2ObjectGet(b, k);
+    const r2 = {
+      ...s.r2.staging,
+      get: async (k: string, o?: { maxBytes?: number }) => {
+        const r = await s.r2.staging.get(k, o);
         s.fake.r2Seed(
           s.bucket,
           FLOOR_KEY,
@@ -1487,15 +1524,41 @@ describe("E: the signed floor", () => {
         return r;
       },
     };
-    await probeR2Conditionals(cf, "staging");
+    await probeR2Conditionals(r2, "staging");
+    s.fake.r2Log.length = 0;
     const e = await fails(
       publishFloor({
-        cf,
+        r2,
         env: "staging",
         floor: sigBytes(signFloor(floorOf({ seq: 3 }))),
       }),
     );
-    expect((e as CfError).status).toBe(412);
+    expect(e).toBeInstanceOf(PublishRefused);
+    expect(e.message).toMatch(/floor seq exists/);
+    expect(s.fake.r2Log.filter((x) => x.method === "PUT")).toEqual([
+      expect.objectContaining({ api: "s3", key: FLOOR_KEY, status: 412 }),
+    ]);
+  });
+
+  it("a floor created concurrently fails the If-None-Match: refused as floor seq exists", async () => {
+    const s = await probed(setup());
+    const r2 = {
+      ...s.r2.staging,
+      get: async (k: string, o?: { maxBytes?: number }) => {
+        const r = await s.r2.staging.get(k, o);
+        s.fake.r2Seed(s.bucket, FLOOR_KEY, sigBytes(signFloor(floorOf())));
+        return r;
+      },
+    };
+    await probeR2Conditionals(r2, "staging");
+    const e = await fails(
+      publishFloor({
+        r2,
+        env: "staging",
+        floor: sigBytes(signFloor(floorOf({ seq: 2 }))),
+      }),
+    );
+    expect(e.message).toMatch(/floor seq exists/);
   });
 });
 
@@ -1507,6 +1570,7 @@ describe("F: r2ReleaseReader", () => {
     seedFloor(s);
     await publishRelease({
       cf: s.cf,
+      r2: s.r2.staging,
       env: "staging",
       version: "0.34.0",
       files: {
@@ -1605,15 +1669,71 @@ describe("F: r2ReleaseReader", () => {
     }
   });
 
+  it("assets lists the record's entries without downloading any asset", async () => {
+    const s = await published();
+    const r = r2ReleaseReader(s.cf, "staging");
+    expect(await r.assets("0.34.0", "release")).toEqual(recordOf().assets);
+    expect(gets(s, "/assets/")).toEqual([]);
+  });
+
+  it("assetBytes downloads one asset, checked against the record", async () => {
+    const s = await published();
+    const r = r2ReleaseReader(s.cf, "staging");
+    const want = ASSETS.find((a) => a.path === "index.html")?.bytes;
+    // With or without an assets call first (the record is read either way).
+    expect(await r.assetBytes("0.34.0", "release", "index.html")).toEqual(want);
+    await r.assets("0.34.0", "release");
+    s.fake.r2Log.length = 0;
+    expect(await r.assetBytes("0.34.0", "release", "index.html")).toEqual(want);
+    expect(gets(s, "").map((e) => e.key)).toEqual([
+      "releases/0.34.0/release/assets/index.html",
+    ]);
+  });
+
+  it("assetBytes refuses a path the record does not list, before any download", async () => {
+    const s = await published();
+    s.fake.r2Seed(
+      s.bucket,
+      "releases/0.34.0/release/assets/extra.js",
+      enc("x"),
+    );
+    const r = r2ReleaseReader(s.cf, "staging");
+    await r.assets("0.34.0", "release").catch(() => {});
+    s.fake.r2Log.length = 0;
+    for (const path of ["extra.js", "../record.sig.json", ""]) {
+      const e = await fails(r.assetBytes("0.34.0", "release", path));
+      expect(e.message).toMatch(/not in the 0\.34\.0 \(release\) record/);
+    }
+    expect(gets(s, "/assets/")).toEqual([]);
+  });
+
   it("checks each object's size against the record before its hash", async () => {
     const s = await published();
     // The listing says the record's size; the bytes served differ.
     s.fake.r2Serve = (key, bytes) =>
       key.endsWith("assets/index.html") ? concat(bytes, enc("!")) : bytes;
     const e = await fails(
-      r2ReleaseReader(s.cf, "staging").assets("0.34.0", "release"),
+      r2ReleaseReader(s.cf, "staging").assetBytes(
+        "0.34.0",
+        "release",
+        "index.html",
+      ),
     );
     expect(e.message).toMatch(/size/);
+  });
+
+  it("refuses an asset whose bytes are not the record's", async () => {
+    const s = await published();
+    s.fake.r2Serve = (key, bytes) =>
+      key.endsWith("assets/assets/app.js") ? enc("console.log(2)") : bytes;
+    const e = await fails(
+      r2ReleaseReader(s.cf, "staging").assetBytes(
+        "0.34.0",
+        "release",
+        "assets/app.js",
+      ),
+    );
+    expect(e.message).toMatch(/sha256 does not match the record/);
   });
 
   it("caps the asset count by ASSET_LIMITS before any download", async () => {
@@ -1637,13 +1757,11 @@ describe("F: r2ReleaseReader", () => {
     await expect(s.cf.r2ObjectGet("oa-s-iabc", "k")).rejects.toThrow(
       /releases/,
     );
-    await expect(
-      s.cf.r2ObjectPut("other", "k", enc("x"), { ifNoneMatch: "*" }),
-    ).rejects.toThrow(/releases/);
+    await expect(s.cf.r2ObjectList("other", "")).rejects.toThrow(/releases/);
     expect(s.fake.log).toEqual([]);
   });
 
-  it("R-N1: r2ObjectDelete deletes only probe/ keys; a release key and floor.json are refused before any call", async () => {
+  it("R-N1: deleteProbe deletes only probe/ keys; a release key and floor.json are refused before any call", async () => {
     const s = await probed(setup());
     s.fake.r2Seed(
       s.bucket,
@@ -1659,9 +1777,7 @@ describe("F: r2ReleaseReader", () => {
       "probe/x",
       `probe/${"a".repeat(32)}/more`,
     ])
-      await expect(s.cf.r2ObjectDelete(s.bucket, k), k).rejects.toThrow(
-        /probe/,
-      );
+      await expect(s.r2.staging.deleteProbe(k), k).rejects.toThrow(/probe/);
     expect(s.fake.log).toEqual([]);
     expect(s.fake.r2Object(s.bucket, FLOOR_KEY)).toBeDefined();
     expect(
@@ -1669,43 +1785,173 @@ describe("F: r2ReleaseReader", () => {
     ).toBeDefined();
     const probeKey = `probe/${"a".repeat(32)}`;
     s.fake.r2Seed(s.bucket, probeKey, enc("p"));
-    await s.cf.r2ObjectDelete(s.bucket, probeKey);
+    await s.r2.staging.deleteProbe(probeKey);
     expect(s.fake.r2Object(s.bucket, probeKey)).toBeUndefined();
   });
 
-  it("r2ObjectPut sends If-None-Match / If-Match and surfaces 412", async () => {
+  it("the S3 put sends If-None-Match / If-Match and surfaces 412", async () => {
     const s = await probed(setup());
-    await s.cf.r2ObjectPut(s.bucket, "k", enc("1"), { ifNoneMatch: "*" });
-    const e = await fails(
-      s.cf.r2ObjectPut(s.bucket, "k", enc("2"), { ifNoneMatch: "*" }),
-    );
+    const r2 = s.r2.staging;
+    const k = "releases/k";
+    await r2.put(k, enc("1"), { ifNoneMatch: "*" });
+    const e = await fails(r2.put(k, enc("2"), { ifNoneMatch: "*" }));
     expect((e as CfError).status).toBe(412);
-    const head = await s.cf.r2ObjectHead(s.bucket, "k");
+    const head = await r2.head(k);
     expect(head?.size).toBe(1);
-    await s.cf.r2ObjectPut(s.bucket, "k", enc("3"), {
-      ifMatch: head?.etag as string,
-    });
+    await r2.put(k, enc("3"), { ifMatch: head?.etag as string });
     const e2 = await fails(
-      s.cf.r2ObjectPut(s.bucket, "k", enc("4"), {
-        ifMatch: head?.etag as string,
-      }),
+      r2.put(k, enc("4"), { ifMatch: head?.etag as string }),
     );
     expect((e2 as CfError).status).toBe(412);
-    expect((await s.cf.r2ObjectGet(s.bucket, "k"))?.bytes).toEqual(enc("3"));
-    expect(await s.cf.r2ObjectHead(s.bucket, "missing")).toBeNull();
+    expect((await r2.get(k))?.bytes).toEqual(enc("3"));
+    expect(await r2.head("releases/missing")).toBeNull();
+  });
+
+  /** A Workers R2 binding over the fake's releases bucket (r2Serve applies; every get is logged). */
+  const bindingOf = (s: ReturnType<typeof setup>): R2ReleaseBucket => ({
+    async get(key) {
+      s.fake.r2Log.push({
+        api: "rest",
+        method: "GET",
+        bucket: s.bucket,
+        key,
+        status: 200,
+      });
+      const o = s.fake.r2Object(s.bucket, key);
+      if (!o) return null;
+      const bytes = s.fake.r2Serve?.(key, o.bytes) ?? o.bytes;
+      return {
+        size: o.bytes.length,
+        arrayBuffer: async () => bytes.slice().buffer,
+      };
+    },
+    async list({ prefix, cursor, limit }) {
+      const keys = [...(s.fake.r2Objects.get(s.bucket)?.keys() ?? [])]
+        .filter((k) => k.startsWith(prefix))
+        .sort();
+      const from = cursor ? Number(cursor) : 0;
+      const n = Math.min(limit ?? 1000, s.fake.r2PerPage ?? 1000);
+      const page = keys.slice(from, from + n).map((key) => ({
+        key,
+        size: s.fake.r2Object(s.bucket, key)?.bytes.length ?? 0,
+      }));
+      return from + n < keys.length
+        ? { objects: page, truncated: true, cursor: String(from + n) }
+        : { objects: page, truncated: false };
+    },
+  });
+
+  it("r2BindingReleaseReader reads what r2ReleaseReader reads", async () => {
+    const s = await published(1);
+    const rest = r2ReleaseReader(s.cf, "staging");
+    const bound = r2BindingReleaseReader(bindingOf(s), "staging");
+    const v = "0.34.0";
+    expect(await bound.record(v, "release")).toEqual(
+      await rest.record(v, "release"),
+    );
+    expect(await bound.modules(v, "release")).toEqual(
+      await rest.modules(v, "release"),
+    );
+    const listed = await bound.assets(v, "release");
+    expect(listed).toEqual(await rest.assets(v, "release"));
+    for (const a of listed)
+      expect(await bound.assetBytes(v, "release", a.path)).toEqual(
+        await rest.assetBytes(v, "release", a.path),
+      );
+    expect(await bound.template(v, "release")).toEqual(
+      await rest.template(v, "release"),
+    );
+    expect(await bound.migrations(v, "release")).toEqual(
+      await rest.migrations(v, "release"),
+    );
+    expect(await bound.welcome(v, "release")).toEqual(
+      await rest.welcome(v, "release"),
+    );
+    expect(await bound.floor()).toEqual(await rest.floor());
+    expect(await bound.record(v, "redline")).toBeNull();
+  });
+
+  it("r2BindingReleaseReader refuses what r2ReleaseReader refuses", async () => {
+    // An extra asset: refused before any asset download.
+    let s = await published();
+    s.fake.r2Seed(
+      s.bucket,
+      "releases/0.34.0/release/assets/extra.js",
+      enc("x"),
+    );
+    s.fake.r2Log.length = 0;
+    let r = r2BindingReleaseReader(bindingOf(s), "staging");
+    expect((await fails(r.assets("0.34.0", "release"))).message).toMatch(
+      /do not match the record/,
+    );
+    expect(gets(s, "/assets/")).toEqual([]);
+    // A path the record does not list: refused before any download.
+    s.fake.r2Log.length = 0;
+    for (const path of ["extra.js", "../record.sig.json", ""])
+      expect(
+        (await fails(r.assetBytes("0.34.0", "release", path))).message,
+      ).toMatch(/not in the 0\.34\.0 \(release\) record/);
+    expect(gets(s, "/assets/")).toEqual([]);
+    // Served bytes over the record size, then different bytes of that size.
+    s = await published();
+    r = r2BindingReleaseReader(bindingOf(s), "staging");
+    s.fake.r2Serve = (key, bytes) =>
+      key.endsWith("assets/index.html") ? concat(bytes, enc("!")) : bytes;
+    expect(
+      (await fails(r.assetBytes("0.34.0", "release", "index.html"))).message,
+    ).toMatch(/size/);
+    s.fake.r2Serve = (key, bytes) =>
+      key.endsWith("assets/assets/app.js") ? enc("console.log(2)") : bytes;
+    expect(
+      (await fails(r.assetBytes("0.34.0", "release", "assets/app.js"))).message,
+    ).toMatch(/sha256 does not match the record/);
+    // A malformed version or variant: refused before any read.
+    s.fake.r2Log.length = 0;
+    await expect(r.record("../x", "release")).rejects.toThrow();
+    await expect(r.record("0.34.0", "evil" as "release")).rejects.toThrow();
+    expect(s.fake.r2Log).toEqual([]);
+  });
+
+  it("r2BindingReleaseReader caps a read at the record size before reading the body", async () => {
+    const s = await published();
+    const b = bindingOf(s);
+    let read = false;
+    const r = r2BindingReleaseReader(
+      {
+        list: b.list,
+        async get(key) {
+          const o = await b.get(key);
+          if (!o || !key.endsWith("assets/index.html")) return o;
+          return {
+            size: o.size + 1,
+            arrayBuffer: async () => {
+              read = true;
+              return o.arrayBuffer();
+            },
+          };
+        },
+      },
+      "staging",
+    );
+    expect(
+      (await fails(r.assetBytes("0.34.0", "release", "index.html"))).message,
+    ).toMatch(/over|size/);
+    expect(read).toBe(false);
   });
 });
 
 // ---------- G: gates ----------
 
 describe("G: gates", () => {
-  it("PROD_UNLOCKED stays false, RELEASE_PUBKEY stays a placeholder, FLOOR_MIN_SEQ starts at 1", async () => {
+  it("PROD_UNLOCKED is open, RELEASE_PUBKEY is pinned (key ceremony 2026-10-24), FLOOR_MIN_SEQ starts at 1", async () => {
     const real = await vi.importActual<
       typeof import("../src/internal/gates.js")
     >("../src/internal/gates.js");
-    expect(real.PROD_UNLOCKED).toBe(false);
-    expect(real.RELEASE_PUBKEY.staging).toBe(real.RELEASE_PUBKEY_PLACEHOLDER);
-    expect(real.RELEASE_PUBKEY.prod).toBe(real.RELEASE_PUBKEY_PLACEHOLDER);
+    expect(real.PROD_UNLOCKED).toBe(true);
+    expect(real.RELEASE_PUBKEY.staging).not.toBe(
+      real.RELEASE_PUBKEY_PLACEHOLDER,
+    );
+    expect(real.RELEASE_PUBKEY.prod).not.toBe(real.RELEASE_PUBKEY_PLACEHOLDER);
     expect(real.FLOOR_MIN_SEQ).toEqual({ staging: 1, prod: 1 });
     expect(Object.isFrozen(real.FLOOR_MIN_SEQ)).toBe(true);
   });
@@ -1745,27 +1991,40 @@ describe("M2: R2 conditionals, retries and resume", () => {
     tar: packUstar(tarEntries()),
     sig: sigBytes(signRec(recordOf())),
   });
-  const publish = (cf: ReturnType<typeof setup>["cf"]) =>
-    publishRelease({ cf, env: "staging", version: "0.34.0", files: good() });
+  const publish = (s: ReturnType<typeof setup>, r2 = s.r2.staging) =>
+    publishRelease({
+      cf: s.cf,
+      r2,
+      env: "staging",
+      version: "0.34.0",
+      files: good(),
+    });
 
   it("probeR2Conditionals passes on honest R2 and leaves nothing behind", async () => {
     const s = setup();
-    await probeR2Conditionals(s.cf, "staging");
+    await probeR2Conditionals(s.r2.staging, "staging");
     const puts = s.fake.r2Log.filter((e) => e.method === "PUT");
     expect(puts.map((p) => p.status)).toEqual([200, 412, 412, 200]);
+    expect(puts.map((p) => [p.ifNoneMatch, p.ifMatch !== undefined])).toEqual([
+      ["*", false],
+      ["*", false],
+      [undefined, true],
+      [undefined, true],
+    ]);
+    expect(s.fake.r2Log.every((e) => e.api === "s3")).toBe(true);
     expect(puts.every((p) => p.key.startsWith("probe/"))).toBe(true);
     expect([...(s.fake.r2Objects.get(s.bucket)?.keys() ?? [])]).toEqual([]);
   });
 
-  it("publishRelease and publishFloor refuse to run without a passed probe for that cf and env", async () => {
+  it("publishRelease and publishFloor refuse to run without a passed probe for that client and env", async () => {
     const s = setup();
     seedFloor(s);
-    expect((await fails(publish(s.cf))).message).toMatch(/probeR2Conditionals/);
+    expect((await fails(publish(s))).message).toMatch(/probeR2Conditionals/);
     expect(
       (
         await fails(
           publishFloor({
-            cf: s.cf,
+            r2: s.r2.staging,
             env: "staging",
             floor: sigBytes(signFloor(floorOf())),
           }),
@@ -1773,8 +2032,15 @@ describe("M2: R2 conditionals, retries and resume", () => {
       ).message,
     ).toMatch(/probeR2Conditionals/);
     // A probe for prod does not cover staging.
-    await probeR2Conditionals(s.cf, "prod");
-    expect((await fails(publish(s.cf))).message).toMatch(/probeR2Conditionals/);
+    await probeR2Conditionals(s.r2.prod, "prod");
+    expect((await fails(publish(s))).message).toMatch(/probeR2Conditionals/);
+    // Nor does a prod client handed in for staging.
+    expect((await fails(publish(s, s.r2.prod))).message).toMatch(
+      /R2 S3 client is for prod/,
+    );
+    await expect(probeR2Conditionals(s.r2.prod, "staging")).rejects.toThrow(
+      /R2 S3 client is for prod/,
+    );
     expect(r2Writes(s.fake).filter((e) => !e.path.includes("probe"))).toEqual(
       [],
     );
@@ -1784,10 +2050,14 @@ describe("M2: R2 conditionals, retries and resume", () => {
     const s = setup();
     seedFloor(s);
     s.fake.r2IgnoreConditionals = true;
-    expect((await fails(probeR2Conditionals(s.cf, "staging"))).message).toMatch(
-      /If-None-Match|If-Match|conditional/,
-    );
-    expect((await fails(publish(s.cf))).message).toMatch(/probeR2Conditionals/);
+    expect(
+      (await fails(probeR2Conditionals(s.r2.staging, "staging"))).message,
+    ).toMatch(/If-None-Match|If-Match|conditional/);
+    // The second create-once PUT answered 2xx: never acceptable.
+    expect(
+      s.fake.r2Log.filter((e) => e.method === "PUT").map((e) => e.status),
+    ).toEqual([200, 200]);
+    expect((await fails(publish(s))).message).toMatch(/probeR2Conditionals/);
     expect(
       [...(s.fake.r2Objects.get(s.bucket)?.keys() ?? [])].filter((k) =>
         k.startsWith("probe/"),
@@ -1800,7 +2070,7 @@ describe("M2: R2 conditionals, retries and resume", () => {
     seedFloor(s);
     // Every first PUT of a key stores the object, then answers 500.
     s.fake.r2PutLandsThen500 = true;
-    await publish(s.cf);
+    await publish(s);
     expect(
       s.fake.r2Object(s.bucket, "releases/0.34.0/release/record.sig.json"),
     ).toBeDefined();
@@ -1812,24 +2082,31 @@ describe("M2: R2 conditionals, retries and resume", () => {
 
   it("a 412 on a retry with different bytes in R2 is refused", async () => {
     const s = await probed(setup());
+    seedFloor(s);
+    const k = "releases/0.34.0/release/welcome/welcome.md";
     s.fake.r2PutLandsThen500 = true;
     s.fake.r2OnPut = (key) =>
-      key === "k"
-        ? s.fake.r2Seed(s.bucket, "k", enc("someone else"))
-        : undefined;
-    const e = await fails(
-      s.cf.r2ObjectPut(s.bucket, "k", enc("mine"), { ifNoneMatch: "*" }),
-    );
-    expect((e as CfError).status).toBe(412);
+      key === k ? s.fake.r2Seed(s.bucket, k, enc("someone else")) : undefined;
+    const e = await fails(publish(s));
+    expect(e).toBeInstanceOf(PublishRefused);
+    expect(e.message).toMatch(/already exists.*differs/);
+    expect(
+      s.fake.r2Object(s.bucket, "releases/0.34.0/release/record.sig.json"),
+    ).toBeUndefined();
   });
 
-  it("a 412 on the first attempt is never treated as success", async () => {
+  it("the S3 client never takes a 412 as success, on the first try or a retry", async () => {
     const s = await probed(setup());
-    s.fake.r2Seed(s.bucket, "k", enc("same"));
+    s.fake.r2Seed(s.bucket, "releases/k", enc("same"));
     const e = await fails(
-      s.cf.r2ObjectPut(s.bucket, "k", enc("same"), { ifNoneMatch: "*" }),
+      s.r2.staging.put("releases/k", enc("same"), { ifNoneMatch: "*" }),
     );
     expect((e as CfError).status).toBe(412);
+    s.fake.r2PutLandsThen500 = true;
+    const e2 = await fails(
+      s.r2.staging.put("releases/j", enc("same"), { ifNoneMatch: "*" }),
+    );
+    expect((e2 as CfError).status).toBe(412);
   });
 
   it("resumes a partial version: present objects byte-identical, no record", async () => {
@@ -1838,7 +2115,7 @@ describe("M2: R2 conditionals, retries and resume", () => {
     const entries = tarEntries();
     for (const e of entries.slice(0, 3))
       s.fake.r2Seed(s.bucket, `releases/0.34.0/release/${e.path}`, e.bytes);
-    await publish(s.cf);
+    await publish(s);
     const puts = s.fake.r2Log
       .filter((e) => e.method === "PUT")
       .map((e) => e.key);
@@ -1883,7 +2160,7 @@ describe("M2: R2 conditionals, retries and resume", () => {
     const s = await probed(setup());
     seedFloor(s);
     seed(s);
-    const e = await fails(publish(s.cf));
+    const e = await fails(publish(s));
     expect(e.message).toMatch(re);
     expect(r2Writes(s.fake)).toEqual([]);
   });
@@ -1893,7 +2170,7 @@ describe("M2: R2 conditionals, retries and resume", () => {
     s.fake.r2Seed(s.bucket, FLOOR_KEY, new Uint8Array(16 * 1024 * 1024 + 1));
     const e = await fails(
       publishFloor({
-        cf: s.cf,
+        r2: s.r2.staging,
         env: "staging",
         floor: sigBytes(signFloor(floorOf({ seq: 2 }))),
       }),
@@ -1908,6 +2185,7 @@ describe("L6, L7: r2ReleaseReader caps and binds", () => {
     seedFloor(s);
     await publishRelease({
       cf: s.cf,
+      r2: s.r2.staging,
       env: "staging",
       version: "0.34.0",
       files: {

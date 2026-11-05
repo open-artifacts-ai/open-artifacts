@@ -2,8 +2,14 @@
 // Wall-clock budgets: runs serially via vitest.cpu.config.ts (median of 7).
 // Absolute times are reports (budget(): asserted only under test:cpu:strict);
 // the gate is injection against a one-handler HTMLRewriter baseline.
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { injectRuntime } from "../src/content/inject.js";
+import {
+  signContent,
+  signContentPrefix,
+  verifyContentToken,
+} from "../src/content/signing.js";
 import { budget, calibrated, pairedMs, medianMs as time } from "./cpu-time.js";
 
 const TAG = '<script src="/_oa/rt.js"></script>';
@@ -68,6 +74,34 @@ describe("injectRuntime CPU (global 10 ms budget)", () => {
     expect(out.startsWith(`<!doctype html><html><head>${TAG}<title>`)).toBe(
       true,
     );
+  });
+});
+
+describe("content token verify CPU (P3 T11)", () => {
+  it("a 4-part (uid-bound) token verifies at the cost of a two-part one", async ({
+    annotate,
+  }) => {
+    const id = "A".repeat(16);
+    const viewer = { uid: "B".repeat(16), epoch: 7 };
+    const N = 100;
+    const two = (await signContentPrefix(env, id, 1)).split("/")[2] ?? "";
+    const four =
+      (
+        await signContent(env, id, 1, Date.now(), 600, "frame", viewer)
+      ).prefix.split("/")[2] ?? "";
+    const run = (token: string, want: unknown) => async () => {
+      for (let i = 0; i < N; i++) {
+        const r = await verifyContentToken(env, token, id, 1, false);
+        if (r?.viewer?.uid !== want) throw new Error("verify failed");
+      }
+    };
+    const t = await pairedMs(run(two, undefined), run(four, viewer.uid));
+    await budget(annotate, "verify a 4-part token (each)", t.ms / N, 1);
+    // Relative gate: the uid parse is a regex; the HMAC dominates both.
+    await annotate(
+      `4-part ${t.ms.toFixed(2)} ms vs two-part ${t.base.toFixed(2)} ms for ${N}`,
+    );
+    expect(t.ms).toBeLessThan(2 * t.base + 5);
   });
 });
 

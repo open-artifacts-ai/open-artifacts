@@ -1,18 +1,20 @@
 import {
   brokerNonce,
-  flowHash,
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_TOKEN_URL,
   GoogleTokenError,
-  keyId,
-  publicFromPkcs8,
-  signRedeem,
+  brokerRedeemRequest as signedRedeemRequest,
   verifyGoogleIdToken,
 } from "@oa/auth-core";
 import { AUTH } from "@oa/shared";
 import type { Env } from "../../env.js";
 import { ApiError, appOrigin } from "../../http/errors.js";
-import { b64urlEncode } from "../../util/crypto.js";
+import {
+  BrokerGateRefusedError,
+  BrokerGateStaleError,
+  BrokerUnavailableError,
+  brokerFetch,
+} from "../broker-transport.js";
 import { authConfig, type GoogleTransport } from "../config.js";
 import { fail } from "../oidc.js";
 import type { OidcProvider, VerifiedIdentity } from "./types.js";
@@ -36,25 +38,18 @@ function googleConfig(env: Env) {
   return { ...cfg.google, domains: cfg.domains };
 }
 
-const kids = new Map<string, Promise<string>>();
-/** This install's key id: derived from its public key, never configured (N3). */
-const kidOf = (signingKey: string) => {
-  let k = kids.get(signingKey);
-  if (!k) {
-    k = publicFromPkcs8(signingKey).then(keyId);
-    k.catch(() => kids.delete(signingKey));
-    kids.set(signingKey, k);
-  }
-  return k;
-};
-
-/** The PKCE S256 challenge of `verifier`. */
-const s256 = async (verifier: string) =>
-  b64urlEncode(
-    new Uint8Array(
-      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
-    ),
-  );
+/**
+ * The signed redeem request for the auth broker (POST /google/redeem). The
+ * broker check (services/broker-check.ts) builds it too, with junk values,
+ * so that probe signs exactly as a real sign-in does. The signing lives in
+ * @oa/auth-core, shared with the Provisioning API's admin sign-in.
+ */
+export function brokerRedeemRequest(
+  t: Extract<GoogleTransport, { kind: "broker" }>,
+  a: { code: string; verifier: string; nonce: string; bstate?: string },
+): Promise<Request> {
+  return signedRedeemRequest(t, a);
+}
 
 /** Google's raw ID token for `code`, by this install's transport. */
 async function exchange(
@@ -82,29 +77,23 @@ async function exchange(
       redirect: "manual",
     });
   } else {
-    const body = JSON.stringify({
-      install: t.installId,
-      code: a.code,
-      verifier: a.verifier,
-      ts: Date.now(),
-      // The broker refuses unless its state binds this exact flow.
-      bstate: a.bstate ?? "",
-      h: await flowHash(a.nonce, await s256(a.verifier)),
-    });
-    const kid = await kidOf(t.signingKey);
-    const req = new Request(`${t.url}/google/redeem`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-oa-kid": kid,
-        "x-oa-sig": await signRedeem(t.signingKey, kid, body),
-      },
-      body,
-      redirect: "manual",
-    });
-    // A service binding when bound (same account), else public HTTPS; the
-    // request is signed either way.
-    res = await (env.BROKER ? env.BROKER.fetch(req) : fetch(req));
+    const req = await brokerRedeemRequest(t, a);
+    // A service binding, else the invocation's AUTH_BROKER capability, else
+    // public HTTPS (never hosted); the request is signed either way.
+    try {
+      res = await brokerFetch(env, "auth", req);
+    } catch (e) {
+      // No usable capability (none, or one past its invocation).
+      if (
+        e instanceof BrokerUnavailableError ||
+        e instanceof BrokerGateStaleError
+      )
+        return fail("broker_unavailable");
+      // The platform's gate refused it (never the broker's own 401).
+      if (e instanceof BrokerGateRefusedError)
+        return fail("broker_gate_refused");
+      throw e;
+    }
   }
   if (!res.ok) {
     await res.body?.cancel();
@@ -135,6 +124,8 @@ export const googleProvider: OidcProvider = {
         state: a.state,
         nonce: a.nonce,
         code_challenge: a.challenge,
+        // The broker adds max_age=0 (T18 break-glass).
+        ...(a.reauth ? { reauth: "1" } : {}),
       }).toString();
       return u.toString();
     }
@@ -151,6 +142,9 @@ export const googleProvider: OidcProvider = {
       prompt: "select_account",
       // A hint for the account chooser only; the hd claim is what's checked.
       hd: g.domains[0] as string,
+      // Break-glass (T18): Google must re-authenticate; the callback checks
+      // auth_time, so a silent SSO can't stand in for it.
+      ...(a.reauth ? { max_age: "0" } : {}),
     }).toString();
     return u.toString();
   },
@@ -184,6 +178,7 @@ export const googleProvider: OidcProvider = {
         email: id.email,
         name: id.name,
         tenant: id.hd,
+        authTime: id.authTime,
       };
     } catch (e) {
       if (e instanceof GoogleTokenError) return fail(e.stage);

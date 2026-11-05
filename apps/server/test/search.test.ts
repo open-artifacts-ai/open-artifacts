@@ -283,7 +283,7 @@ describe("PUT versionText", () => {
     const a = await pub(o, {
       title: "doc",
       format: "pdf",
-      content: "JVBERi0=",
+      content: "%PDF-1.4",
     });
     expect((await hits(o, `pdfword${tag}`)).items).toEqual([]);
     expect((await putText(o, a.id, 1, `pdfword${tag} here`)).status).toBe(204);
@@ -300,8 +300,8 @@ describe("PUT versionText", () => {
     expect((await putText(o, md.id, 1, `mdput${tag}`)).status).toBe(204);
     expect((await hits(o, `mdput${tag}`)).items).toEqual([]);
 
-    const p = await pub(o, { title: "p", format: "pdf", content: "JVBERi0=" });
-    await pub(o, { id: p.id, title: "p", format: "pdf", content: "JVBERi0=" });
+    const p = await pub(o, { title: "p", format: "pdf", content: "%PDF-1.4" });
+    await pub(o, { id: p.id, title: "p", format: "pdf", content: "%PDF-1.4" });
     expect((await putText(o, p.id, 1, `stale${tag}`)).status).toBe(204);
     expect((await hits(o, `stale${tag}`)).items).toEqual([]);
     expect((await putText(o, p.id, 9, "x")).status).toBe(404);

@@ -9,7 +9,9 @@ export const ERROR_CODES = [
   "too_large",
   "rate_limited",
   "quota_exceeded",
+  "storage_unavailable",
   "capability_denied",
+  "data_editors_only",
   "internal",
   // Hosted M1 (packages/shared/HOSTED_CONTRACT.md).
   "space_forbidden",
@@ -27,7 +29,26 @@ export const ERROR_CODES = [
   "restrict_admin",
   "directory_mapping_off",
   "member_synced",
+  "managed_by_org_mapping",
   "owner_only",
+  "break_glass_required",
+  // Publish format guard.
+  "unsupported_format",
+  "binary_entry",
+  "space_name_reserved",
+  "invite_unreachable",
+  // Member restore (parity 1).
+  "member_removed",
+  "directory_managed",
+  "guest_lapsed",
+  // Member erase (#1204).
+  "member_owns_artifacts",
+  "member_erased",
+  // Runtime data query.
+  "cursor_stale",
+  "query_too_large",
+  // Collaboration suite: follows (#1292).
+  "follow_limit",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -49,7 +70,10 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   too_large: 413,
   rate_limited: 429,
   quota_exceeded: 503,
+  storage_unavailable: 503,
   capability_denied: 403,
+  /** A data write by a caller below editor on an artifact whose dataWriters is "editors" (#681). */
+  data_editors_only: 403,
   internal: 500,
   /** Publish or move into a space the caller may not publish to (also capped callers creating). */
   space_forbidden: 403,
@@ -81,9 +105,118 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   directory_mapping_off: 403,
   /** DELETE R.spaceMember on a synced-only row while directory sync is live: remove them from the Google group, or change their role. */
   member_synced: 409,
+  /** DELETE R.spaceMember on a member whose only role here comes from an Every space group, or a PUT below that role; details ManagedByOrgMappingDetails { userId, everyRole }. */
+  managed_by_org_mapping: 409,
   /** Resetting or unlinking an org admin's Google identity: only the org owner may (it signs a peer admin out). */
   owner_only: 403,
+  /** GET R.me for the org owner refused by a directory customer_mismatch; details BreakGlassRequiredDetails { fresh }. */
+  break_glass_required: 401,
+  /** Publish with no `format` whose entry name implies none and whose bytes aren't text (details { path, reason: "no_viewer" }), or any HEIC/HEIF entry (details { path, reason: "heic" }, HEIC_MESSAGE). */
+  unsupported_format: 400,
+  /** The entry's content doesn't fit its format (binary as code, markdown or html; a pdf without %PDF; an image without its extension's signature, an .svg without an <svg> root, or an image upload declared as another type); details { path, reason } (sniff.ts EntryRefusal). */
+  binary_entry: 400,
+  /** POST R.spaces or a PATCH R.space rename to "Personal" (trimmed, any case); details { field: "name" }, message SPACE_NAME_RESERVED_MESSAGE. */
+  space_name_reserved: 400,
+  /** POST R.members (invite) for an address no sign-in method this install offers could ever admit; details InviteUnreachableDetails, message INVITE_UNREACHABLE_MESSAGE[reason]. Nothing is created. */
+  invite_unreachable: 400,
+  /** POST R.members (invite) for an address whose member was removed; details MemberRemovedDetails { userId }: offer R.memberRestore(userId). Nothing is created. */
+  member_removed: 409,
+  /** POST R.memberRestore(id) on a member the directory removed while Google sync is on (sync would remove them again), or POST R.members (invite) for that member's address: sync revives them when their Workspace account is restored. Nothing is created. */
+  directory_managed: 409,
+  /** POST R.memberRestore(id) on a lapsed guest, or POST R.members (invite) for a lapsed guest's address (removed when their last share went): a new share brings them back instead. */
+  guest_lapsed: 409,
+  /** POST R.memberErase(id) while anything is left in their personal space, trash included; details MemberOwnsArtifactsDetails { live, deleted }: transfer them first (R.memberTransfer). Nothing is changed. */
+  member_owns_artifacts: 409,
+  /** POST R.memberRestore(id) on an erased person (R.memberErase): invite them instead. */
+  member_erased: 409,
+  /** db.query cursor whose anchor doc changed since the page was read (long sort values only): restart without a cursor. */
+  cursor_stale: 409,
+  /** db query() with where/orderBy on a collection over LIMITS.queryCollectionBytes; message QUERY_TOO_LARGE_MESSAGE. */
+  query_too_large: 400,
+  /** A bus follow() past FOLLOW_LIMIT follows for one member (#1292): unfollow first. */
+  follow_limit: 409,
 };
+
+/**
+ * Why an invite is refused (400 invite_unreachable), or why a share's
+ * recipient can't sign in (ShareResult.recipient):
+ * - outside_domains: the address is outside AUTH_DOMAINS and no offered
+ *   method admits it there (Google needs a verified domain; codes outside it
+ *   are for guests only);
+ * - no_sign_in_method: inside the domains, but no offered method admits it
+ *   (e.g. email codes only, with domain codes off);
+ * - needs_invite: (shares only) inside the domains on an invite-only
+ *   install: an admin must invite them as a member before they can sign in.
+ */
+export const InviteUnreachableReasonSchema = z.enum([
+  "outside_domains",
+  "no_sign_in_method",
+]);
+export type InviteUnreachableReason = z.infer<
+  typeof InviteUnreachableReasonSchema
+>;
+
+/** 400 invite_unreachable details. */
+export const InviteUnreachableDetailsSchema = z.object({
+  field: z.literal("email"),
+  reason: InviteUnreachableReasonSchema,
+});
+export type InviteUnreachableDetails = z.infer<
+  typeof InviteUnreachableDetailsSchema
+>;
+
+/** 409 member_removed details: the removed member's id, for R.memberRestore. */
+export const MemberRemovedDetailsSchema = z.object({ userId: z.string() });
+export type MemberRemovedDetails = z.infer<typeof MemberRemovedDetailsSchema>;
+
+/** 409 member_owns_artifacts details: what is left in their personal space (live, and in the trash). */
+export const MemberOwnsArtifactsDetailsSchema = z.object({
+  live: z.number().int().nonnegative(),
+  deleted: z.number().int().nonnegative(),
+});
+export type MemberOwnsArtifactsDetails = z.infer<
+  typeof MemberOwnsArtifactsDetailsSchema
+>;
+
+/** 400 invite_unreachable message, per reason. */
+export const INVITE_UNREACHABLE_MESSAGE: Record<
+  InviteUnreachableReason,
+  string
+> = {
+  outside_domains:
+    "This address can't sign in to this workspace. Share artifacts with them as a guest instead.",
+  no_sign_in_method:
+    "This address can't sign in to this workspace with the sign-in methods it offers. Ask the owner to turn on one that admits it.",
+};
+
+/** 400 unsupported_format message. */
+export const UNSUPPORTED_FORMAT_MESSAGE =
+  "This file type can't be shown yet. Publish HTML, Markdown, code, PDF or an image (PNG, JPEG, GIF, WebP, SVG).";
+
+/**
+ * #681: the one sentence MCP instructions and the publish_artifact /
+ * set_visibility descriptions use for who can change live data.
+ */
+export const DATA_WRITERS_NOTE =
+  'Anyone who can view an artifact can change its live data; on a public artifact that includes anonymous visitors. Set dataWriters: "editors" to limit writes to editors (refusals get data_editors_only).';
+
+/** #681: publish / set_visibility / PATCH result `warning`; the change still applies. */
+export const DATA_WRITERS_WARNING =
+  'This page is public and lets anyone change its data. Set dataWriters to "editors" to limit that.';
+
+/** DATA_WRITERS_WARNING when the artifact is public, declares db and lets viewers write. */
+export const dataWritersWarning = (a: {
+  visibility: string;
+  capabilities: { db: boolean };
+  dataWriters: string;
+}): string | undefined =>
+  a.visibility === "public" && a.capabilities.db && a.dataWriters === "viewers"
+    ? DATA_WRITERS_WARNING
+    : undefined;
+
+/** 403 data_editors_only message (#681). */
+export const DATA_EDITORS_ONLY_MESSAGE =
+  "Only this artifact's editors can change its data";
 
 export const QUOTA_MESSAGE =
   "Daily free-plan limit reached; resets at 00:00 UTC";

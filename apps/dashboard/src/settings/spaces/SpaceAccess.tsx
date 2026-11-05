@@ -12,18 +12,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@oa/ui/shadcn";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiClientError } from "../../api/client";
 import type { GroupMapping, Space, SpaceRole } from "../../api/contract";
 import { errorCopy, errorLink } from "../../api/errorCopy";
 import {
+  qk,
   useDeleteMapping,
   useOrgMappings,
   usePatchSpace,
   usePutMapping,
   useSpaceMappings,
 } from "../../api/queries";
+import { LoadError } from "../../layout/LoadError";
 import { AppLink } from "../../library/AppLink";
+import { ConfirmDialog } from "../ConfirmDialog";
 import { GroupPicker } from "../GroupPicker";
 import { errorText, muted, SettingsCard } from "../ui";
 
@@ -97,11 +101,62 @@ export function RoleSelect({
   );
 }
 
+/**
+ * What removing a group's mapping costs (Design, #1190). `space` null is Every
+ * space: there's no one space to name, so it says every shared space.
+ */
+export const removeMappingCopy = (g: GroupMapping, space: string | null) => {
+  const role = ROLE_LABEL[g.role];
+  const where = space ? `on ${space}` : "in every shared space";
+  const who =
+    g.memberCount === null
+      ? `People in ${g.email} lose`
+      : `${g.memberCount} ${g.memberCount === 1 ? "person loses" : "people lose"}`;
+  return {
+    title: `Remove ${g.email} from ${space ?? "every space"}?`,
+    body: `${who} ${role} ${where} within a minute. People with access through another group keep it. Their artifacts stay in ${space ? "the space" : "their spaces"}.`,
+  };
+};
+
+/** The Remove confirm for a group's mapping, here or in Every space. */
+export function RemoveMapping({
+  mapping,
+  space,
+  onClose,
+  onConfirm,
+}: {
+  mapping: GroupMapping;
+  space: string | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const copy = removeMappingCopy(mapping, space);
+  return (
+    <ConfirmDialog
+      open
+      onClose={onClose}
+      title={copy.title}
+      body={<p>{copy.body}</p>}
+      confirm="Remove"
+      danger
+      onConfirm={onConfirm}
+    />
+  );
+}
+
+/** space_forbidden { target: "mapping" }: the row changed under the editor. */
+const isMappingRace = (e: unknown) =>
+  e instanceof ApiClientError &&
+  e.code === "space_forbidden" &&
+  (e.details as { target?: string } | undefined)?.target === "mapping";
+
 /** What a refused mapping change says, and its link (sync off points to Directory). */
 export const mappingProblem = (e: unknown) => {
   if (e instanceof ApiClientError && e.code === "space_forbidden")
     return {
-      text: "Only an admin can make a group a manager.",
+      text: isMappingRace(e)
+        ? "This group's access just changed. Check it and try again."
+        : "Only an admin can make a group a manager.",
       link: null,
     };
   return {
@@ -136,23 +191,40 @@ export function AccessRow({
   who,
   meta,
   control,
+  note,
 }: {
   who: string;
   meta: string;
   control: React.ReactNode;
+  /** A refusal for this row, shown right under it. */
+  note?: string | null;
 }) {
   return (
-    <tr className="border-0 border-t border-border first:border-t-0">
-      <td className="min-w-0 py-[var(--oa-space-3)] pr-[var(--oa-space-3)]">
-        <b className="block truncate font-medium">{who}</b>
-        <small className={`block truncate ${muted}`}>{meta}</small>
-      </td>
-      <td className="py-[var(--oa-space-3)]">
-        <div className="flex flex-wrap items-center justify-end gap-[var(--oa-space-2)]">
-          {control}
-        </div>
-      </td>
-    </tr>
+    <>
+      <tr className="border-0 border-t border-border first:border-t-0">
+        <td className="min-w-0 py-[var(--oa-space-3)] pr-[var(--oa-space-3)]">
+          <b className="block truncate font-medium">{who}</b>
+          <small className={`block truncate ${muted}`}>{meta}</small>
+        </td>
+        <td className="py-[var(--oa-space-3)]">
+          <div className="flex flex-wrap items-center justify-end gap-[var(--oa-space-2)]">
+            {control}
+          </div>
+        </td>
+      </tr>
+      {note && (
+        <tr>
+          <td colSpan={2} className="pb-[var(--oa-space-2)]">
+            <p
+              role="status"
+              className="m-0 text-[length:var(--oa-text-sm)] text-[var(--oa-warning)]"
+            >
+              {note}
+            </p>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -179,10 +251,29 @@ export function SpaceAccess({
   const put = usePutMapping(space.id);
   const remove = useDeleteMapping(space.id);
   const patch = usePatchSpace(space.id);
+  const qc = useQueryClient();
   const [pending, setPending] = useState<Record<string, SpaceRole>>({});
+  const [removing, setRemoving] = useState<GroupMapping | null>(null);
   const [problem, setProblem] = useState<ReturnType<
     typeof mappingProblem
   > | null>(null);
+  // A group that changed under the editor: said on its own row.
+  const [rowProblem, setRowProblem] = useState<{
+    groupId: string;
+    text: string;
+  } | null>(null);
+
+  // The row changed under the editor: say so by the row, and reload the groups.
+  const refused = (e: unknown, groupId?: string) => {
+    if (groupId && isMappingRace(e)) {
+      setRowProblem({ groupId, text: mappingProblem(e).text });
+      void qc.invalidateQueries({ queryKey: qk.spaceMappings(space.id) });
+    } else {
+      setProblem(mappingProblem(e));
+      if (isMappingRace(e))
+        void qc.invalidateQueries({ queryKey: qk.spaceMappings(space.id) });
+    }
+  };
 
   const manager = space.myRole === "manager";
   const canMap = admin || (manager && (space.can?.manageMappings ?? false));
@@ -195,11 +286,12 @@ export function SpaceAccess({
 
   const change = (groupId: string, role: SpaceRole) => {
     setProblem(null);
+    setRowProblem(null);
     setPending((p) => ({ ...p, [groupId]: role }));
     put.mutate(
       { groupId, role },
       {
-        onError: (e) => setProblem(mappingProblem(e)),
+        onError: (e) => refused(e, groupId),
         onSettled: () => setPending(({ [groupId]: _, ...rest }) => rest),
       },
     );
@@ -238,6 +330,9 @@ export function SpaceAccess({
                     ? "Manager · set by an admin"
                     : groupMeta(g)
                 }
+                note={
+                  rowProblem?.groupId === g.groupId ? rowProblem.text : null
+                }
                 control={
                   own ? (
                     <>
@@ -255,9 +350,8 @@ export function SpaceAccess({
                         aria-label={`Remove ${g.email}`}
                         onClick={() => {
                           setProblem(null);
-                          remove.mutate(g.groupId, {
-                            onError: (e) => setProblem(mappingProblem(e)),
-                          });
+                          setRowProblem(null);
+                          setRemoving(g);
                         }}
                       >
                         Remove
@@ -312,6 +406,20 @@ export function SpaceAccess({
           ))}
         </tbody>
       </table>
+      {mappings.isError && (
+        <LoadError
+          title="Couldn't load this space's groups."
+          error={mappings.error}
+          onRetry={() => void mappings.refetch()}
+        />
+      )}
+      {org.isError && (
+        <LoadError
+          title="Couldn't load the groups for every space."
+          error={org.error}
+          onRetry={() => void org.refetch()}
+        />
+      )}
       {mapper && (
         <GroupPicker
           label="Add a group"
@@ -322,7 +430,7 @@ export function SpaceAccess({
             setProblem(null);
             put.mutate(
               { groupId: g.groupId, role: "viewer" },
-              { onError: (e) => setProblem(mappingProblem(e)) },
+              { onError: (e) => refused(e) },
             );
           }}
         />
@@ -334,14 +442,30 @@ export function SpaceAccess({
         </p>
       )}
       <Problem problem={problem} />
+      {removing && (
+        <RemoveMapping
+          mapping={removing}
+          space={space.name}
+          onClose={() => setRemoving(null)}
+          onConfirm={() => {
+            const g = removing;
+            setRemoving(null);
+            remove.mutate(g.groupId, {
+              onError: (e) => refused(e, g.groupId),
+            });
+          }}
+        />
+      )}
       <p className={muted}>
-        {!syncOn
-          ? "Group sync is off, so mappings can't change. Edit people manually under People."
-          : admin
-            ? "Someone in more than one group gets the highest role. Changes apply within a minute and are recorded in the audit log."
-            : canMap
-              ? "You can give a group Viewer or Editor. Only an admin can make a group a manager. Changes are recorded in the audit log."
-              : "An admin has turned off group mapping by space managers. Ask an admin to add or change groups."}
+        {frozen
+          ? "Group sync is paused, so groups can't change here. Each space kept the people it had at the last sync. You can still add and remove people under People."
+          : !syncOn
+            ? "Group sync is off, so mappings can't change. Edit people manually under People."
+            : admin
+              ? "Someone in more than one group gets the highest role. Changes apply within a minute and are recorded in the audit log."
+              : canMap
+                ? "You can give a group Viewer or Editor. Only an admin can make a group a manager. Changes are recorded in the audit log."
+                : "An admin has turned off group mapping by space managers. Ask an admin to add or change groups."}
       </p>
     </SettingsCard>
   );

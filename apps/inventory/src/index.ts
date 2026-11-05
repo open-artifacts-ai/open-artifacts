@@ -1,69 +1,80 @@
-interface D1Like {
-  prepare(sql: string): {
-    bind(...values: unknown[]): {
-      all(): Promise<{ results?: unknown[] }>;
-    };
-    all(): Promise<{ results?: unknown[] }>;
+import { verify as ghVerify } from "@oa/gh-oidc";
+import { authenticate, type OidcVars, type Verify } from "./auth.ts";
+import { health } from "./health.ts";
+import { listHosts, oneHost } from "./hosts.ts";
+import {
+  type D1Like,
+  internal,
+  type KvReadLike,
+  methodNotAllowed,
+  notFound,
+} from "./http.ts";
+import { listInstalls } from "./installs.ts";
+import { postProdclean } from "./prodclean.ts";
+import { schemaCheck, schemaMissing } from "./schema.ts";
+
+// The inventory Worker (design v7 6.3): GET /installs, /hosts, /health and the
+// monitor's POST /prodclean, every route behind a GitHub Actions OIDC bearer.
+
+export type { D1Like, KvReadLike } from "./http.ts";
+
+export interface Env extends OidcVars {
+  PLATFORM_DB: D1Like;
+  /** host -> HOSTS value (oa-<p>-hosts), the namespace dispatch reads. */
+  HOSTS: KvReadLike;
+}
+
+const ROUTES: Record<string, string> = {
+  "/installs": "GET",
+  "/hosts": "GET",
+  "/health": "GET",
+  "/prodclean": "POST",
+};
+
+export function makeWorker(deps: { verify: Verify; now: () => number }) {
+  // One per isolate: the platform schema, read until it is present (#1041).
+  const schemaReady = schemaCheck();
+  return {
+    async fetch(request: Request, env: Env): Promise<Response> {
+      // Auth first: an unauthenticated caller learns nothing, not even routes.
+      const auth = await authenticate(request, env, deps.verify);
+      if (auth instanceof Response) return auth;
+      const url = new URL(request.url);
+      const method = Object.hasOwn(ROUTES, url.pathname)
+        ? ROUTES[url.pathname]
+        : undefined;
+      if (!method) return notFound();
+      if (request.method !== method) return methodNotAllowed(method);
+      try {
+        // The D1 routes, once verified: no platform schema yet is a fixed
+        // 503, not the generic 500 (/hosts reads only HOSTS).
+        if (url.pathname !== "/hosts" && !(await schemaReady(env.PLATFORM_DB)))
+          return schemaMissing();
+        switch (url.pathname) {
+          case "/hosts": {
+            const host = url.searchParams.get("host");
+            return host === null
+              ? await listHosts(env.HOSTS)
+              : await oneHost(env.HOSTS, host);
+          }
+          case "/installs":
+            return await listInstalls(env.PLATFORM_DB, env.HOSTS);
+          case "/health":
+            return await health(env.PLATFORM_DB);
+          default:
+            return await postProdclean(
+              request,
+              auth,
+              env.PLATFORM_DB,
+              deps.now,
+            );
+        }
+      } catch {
+        // A schema or binding failure: fixed body, nothing echoed.
+        return internal();
+      }
+    },
   };
 }
 
-export interface Env {
-  PLATFORM_DB: D1Like;
-  /** Secret. Not listed in wrangler.jsonc. */
-  INVENTORY_KEY?: string;
-}
-
-interface Row {
-  id: string;
-  app_host: string;
-  content_host: string;
-  state: string;
-  test_hooks: number;
-}
-
-const SQL =
-  "SELECT id, app_host, content_host, state, test_hooks FROM installs ORDER BY id";
-
-const notFound = () => new Response("Not found", { status: 404 });
-
-async function sha256(s: string): Promise<Uint8Array> {
-  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return new Uint8Array(d);
-}
-
-async function keyMatches(
-  presented: string,
-  expected: string,
-): Promise<boolean> {
-  const [a, b] = await Promise.all([sha256(presented), sha256(expected)]);
-  let diff = a.length ^ b.length;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ (b[i] ?? 0);
-  return diff === 0;
-}
-
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const key = env.INVENTORY_KEY;
-    if (typeof key !== "string" || key.length < 32) return notFound();
-    const url = new URL(request.url);
-    if (request.method !== "GET" || url.pathname !== "/installs")
-      return notFound();
-    const m = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "");
-    if (!m || !(await keyMatches(m[1], key))) return notFound();
-
-    const { results } = await env.PLATFORM_DB.prepare(SQL).all();
-    const installs = ((results ?? []) as Row[]).map((r) => ({
-      id: r.id,
-      appHost: r.app_host,
-      contentHost: r.content_host,
-      state: r.state,
-      testHooks: Boolean(r.test_hooks),
-    }));
-    return new Response(JSON.stringify({ installs }), {
-      headers: {
-        "content-type": "application/json",
-        "cache-control": "no-store",
-      },
-    });
-  },
-};
+export default makeWorker({ verify: ghVerify, now: Date.now });

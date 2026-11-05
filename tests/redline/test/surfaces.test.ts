@@ -1,0 +1,1164 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { FOREIGN_CALLERS } from "../../../apps/server/test/authz/expect.ts";
+import {
+  ORG_SURFACES,
+  PUBLIC_ROUTES,
+  SPACE_SURFACES,
+  SURFACES,
+} from "../../../apps/server/test/authz/surfaces.ts";
+import {
+  TEST_GROUP_ID,
+  TEST_HOOK_REFUSALS,
+  TEST_OTP_OUTCOMES,
+  TestDirectoryGroupsInputSchema,
+} from "../../../packages/shared/src/hosted/test-hooks.ts";
+import { slot, slotValue } from "../src/creds.ts";
+import {
+  HOOK_OTP_OUTCOMES,
+  HOOK_REFUSALS,
+  HttpError,
+  hook,
+  hookReason,
+  SetupHookError,
+} from "../src/http.ts";
+import {
+  crossCheck,
+  crossDenied,
+  crossProbe,
+  crossWrite,
+  NotRefused,
+  type ProbeFetch,
+  registerMarker,
+  type Side,
+  type Verdict,
+} from "../src/refused.ts";
+import { parseManifest } from "../src/report.ts";
+import {
+  A_AT_A,
+  citationGaps,
+  cleanup,
+  coverageGaps,
+  DROPPED,
+  derive,
+  FOREIGN_OF,
+  GRANT_CASE_TIMEOUT_MS,
+  GRANT_LIST_MS,
+  groupSeed,
+  HOOK_SPACE_ID,
+  HOSTED_FEATURES,
+  INTERACTIVE_ONLY,
+  MATRIX_AT_B,
+  ORG_FRESH,
+  type ProbeCase,
+  readRepoFile,
+  runRead,
+  SMOKES,
+  viaTarget,
+  type World,
+  worldGroups,
+  worldSpaces,
+} from "../src/surfaces.ts";
+import { loadTargets, type Target } from "../src/targets.ts";
+import { type Fake, fakeServer, json, secretDir } from "./fake.ts";
+import { interactiveRoutes, serverSources } from "./interactive-routes.ts";
+
+const toDispose: (() => unknown)[] = [];
+afterEach(async () => {
+  for (const d of toDispose.splice(0)) await d();
+});
+
+describe("probe cases (derived from Backend's surfaces)", () => {
+  const d = derive();
+  const { cases, dropped } = d;
+
+  it("cover every ROUTE_POLICY route, MCP tool and content route", () => {
+    expect(coverageGaps(d)).toEqual([]);
+  });
+
+  it("flag a route, a tool or a content route no case reaches", () => {
+    const without = (r: string) =>
+      coverageGaps({
+        cases: cases.filter((c) => !c.routes.includes(r)),
+        dropped: dropped.filter((x) => !x.routes.includes(r)),
+      });
+    expect(without("GET /api/v1/me")).toContain("no case: GET /api/v1/me");
+    expect(without("tool:list_spaces")).toContain("no case: tool:list_spaces");
+    expect(without("content:GET /*")).toContain("no case: content:GET /*");
+  });
+
+  it("flag a case list shorter than the policy manifest", () => {
+    const gaps = coverageGaps({ cases: cases.slice(0, 10), dropped });
+    expect(
+      gaps.some((g) => /cases and exclusions < \d+ scoped routes/.test(g)),
+    ).toBe(true);
+  });
+
+  it("flag a drop DROPPED doesn't record, and a recorded drop the rules don't make", () => {
+    const extra = {
+      name: "org GET /api/v1/new-owner-only",
+      routes: ["GET /api/v1/new-owner-only"],
+      why: "owner-only" as const,
+      reason: "r",
+    };
+    expect(coverageGaps({ cases, dropped: [...dropped, extra] })).toContain(
+      "drop not recorded in DROPPED: org GET /api/v1/new-owner-only (owner-only)",
+    );
+    const [first, ...rest] = dropped;
+    expect(first).toBeDefined();
+    expect(coverageGaps({ cases, dropped: rest })).toContain(
+      `DROPPED lists a surface the rules don't drop: ${first?.name}`,
+    );
+  });
+
+  it("never count a route reached only by a drop as covered", () => {
+    // Dropping the only case for a route leaves a gap, not a pass.
+    const gaps = coverageGaps({
+      cases: cases.filter((c) => !c.routes.includes("GET /api/v1/settings")),
+      dropped: [
+        ...dropped,
+        {
+          name: "org GET /api/v1/settings",
+          routes: ["GET /api/v1/settings"],
+          why: "owner-only",
+          reason: "r",
+        },
+      ],
+    });
+    expect(gaps).toContain("no case: GET /api/v1/settings");
+  });
+
+  it("flag an exclusion a case reaches (stale)", () => {
+    const fake = {
+      name: "org GET /api/v1/usage [pat]",
+      routes: ["GET /api/v1/usage"],
+      variant: "pat" as const,
+      legs: "own" as const,
+      run: async () => "allow" as const,
+    };
+    expect(coverageGaps({ cases: [...cases, fake], dropped })).toContain(
+      "stale exclusion: GET /api/v1/usage",
+    );
+  });
+
+  it("drop a route a hosted FEATURES flag turns off (usage_off)", () => {
+    expect(HOSTED_FEATURES).toContain("usage_off");
+    expect(dropped.find((x) => x.name === "org GET /api/v1/usage")?.why).toBe(
+      "feature-off",
+    );
+  });
+
+  it("record every drop with a reason and a covering test", () => {
+    expect(dropped.length).toBe(Object.keys(DROPPED).length);
+    for (const x of dropped) {
+      expect(DROPPED[x.name]?.why).toBe(x.why);
+      expect(DROPPED[x.name]?.coveredBy).not.toBe("");
+      expect(x.reason).not.toBe("");
+    }
+  });
+
+  it("have unique names; every surface is a case or a recorded drop", () => {
+    expect(new Set(cases.map((c) => c.name)).size).toBe(cases.length);
+    const prefixes = [
+      ...SURFACES.map((s) => `artifact ${s.name}`),
+      ...ORG_SURFACES.map((s) => `org ${s.route}`),
+      ...SPACE_SURFACES.map((s) => `space ${s.name}`),
+    ];
+    for (const p of prefixes)
+      expect(
+        p in DROPPED || cases.some((c) => c.name.startsWith(`${p} [`)),
+      ).toBe(true);
+  });
+
+  it("run every mutating probe through crossWrite on a throwaway, never on the world", () => {
+    const mutating = new Set([
+      ...SURFACES.filter((s) => s.mutates).map((s) => `artifact ${s.name}`),
+      ...ORG_SURFACES.filter((s) => s.mutates).map((s) => `org ${s.route}`),
+      // #839: realOnly instance writes run on a throwaway.
+      ...Object.keys(ORG_FRESH).map((r) => `org ${r}`),
+      ...SPACE_SURFACES.filter((s) => s.mutates).map((s) => `space ${s.name}`),
+    ]);
+    expect(mutating.size).toBeGreaterThan(0);
+    for (const c of cases) {
+      const base = c.name.replace(/ \[(session|pat|oauth)\]$/, "");
+      if (mutating.has(base)) {
+        expect(c.write).toBeDefined();
+        expect(c.run).toBeUndefined();
+      } else {
+        expect(c.run).toBeDefined();
+        expect(c.write).toBeUndefined();
+      }
+    }
+  });
+
+  it("deny-only: the seven real-only drops and the four interactive-only ones, each still a recorded drop", () => {
+    const only = cases.filter((c) => c.denyOnly);
+    expect(only.map((c) => c.name).sort()).toEqual(
+      Object.entries(DROPPED)
+        .filter(
+          ([, d]) => d.why === "real-only" || d.why === "interactive-only",
+        )
+        .map(([n]) => `${n} [session]`)
+        .sort(),
+    );
+    expect(only).toHaveLength(11);
+    for (const c of only) expect(c.run).toBeDefined();
+  });
+
+  it("#1204/#1313: every route behind interactiveSession, direct or through helpers, is interactive-only or owner-only, and no other is", () => {
+    // Every file under apps/server/src (routes/, bus/, mcp/, ...); a handler
+    // counts when it reaches interactiveSession(c) through any helper chain.
+    const found = interactiveRoutes(serverSources());
+    // The scan's own reach: direct (erase), a function helper
+    // (share-notices' browserUser) and a const arrow on R.* paths
+    // (directory's disconnect).
+    for (const r of [
+      "POST /api/v1/members/:id/erase",
+      "PUT /api/v1/bus/share-notices",
+      "POST /api/v1/directory/disconnect",
+      "DELETE /api/v1/directory",
+    ])
+      expect(found).toContain(r);
+    const ownerOnly = found.filter(
+      (r) => dropped.find((y) => y.routes.includes(r))?.why === "owner-only",
+    );
+    expect(ownerOnly).toEqual([
+      "DELETE /api/v1/directory",
+      "POST /api/v1/directory/disconnect",
+    ]);
+    expect([...INTERACTIVE_ONLY].sort()).toEqual(
+      found.filter((r) => !ownerOnly.includes(r)),
+    );
+    for (const r of INTERACTIVE_ONLY) {
+      // A public-policy page route (#1300's POST /bus/share-notices): the
+      // suite probes scoped routes only, so it has no case and no drop; the
+      // handler's own checks are the server tests'.
+      if (PUBLIC_ROUTES.includes(r)) {
+        expect(cases.find((c) => c.routes.includes(r))).toBeUndefined();
+        expect(dropped.find((y) => y.routes.includes(r))).toBeUndefined();
+        continue;
+      }
+      const x = dropped.find((y) => y.routes.includes(r));
+      expect(x?.why).toBe("interactive-only");
+      expect(cases.find((c) => c.routes.includes(r))?.denyOnly).toBe(true);
+    }
+    // The public exceptions are exactly the pages' forms (and #1372's
+    // confirm page), not a way out.
+    expect(INTERACTIVE_ONLY.filter((r) => PUBLIC_ROUTES.includes(r))).toEqual([
+      "POST /bus/share-notices",
+      "GET /bus/roles/confirm/:token",
+      "POST /bus/roles/confirm/:token",
+    ]);
+  });
+
+  it("#1313: the interactive scan sees every org route the server registers", () => {
+    const all = new Set(interactiveRoutes(serverSources(), { all: true }));
+    expect(all.size).toBeGreaterThan(100);
+    expect(ORG_SURFACES.map((s) => s.route).filter((r) => !all.has(r))).toEqual(
+      [],
+    );
+  });
+
+  it("#1313: the interactive scan follows helpers across functions and files", () => {
+    const files = [
+      {
+        path: "auth.ts",
+        src: 'export function gate(c) {\n  // interactiveSession(c) in a comment is not a call\n  return interactiveSession(c) || "}";\n}\nexport const other = (c) => requireUser(c);\n',
+      },
+      {
+        path: "a.ts",
+        src: [
+          'import { gate, other } from "./auth.js";',
+          "const twice = async (c) => { if (!gate(c)) throw x; };",
+          "export function mountA(app) {",
+          '  app.put(R.shareNotices, async (c) => { const user = await twice(c); return c.json({ re: /[{"]/ }); });',
+          "  app.get(R.shareNotices, async (c) => { const user = other(c); return c.json(user); });",
+          '  app.post("/x/:id", other);',
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: server source text
+          "  app.delete(`${R.busMachines}/:id`, twice);",
+          "  app.patch(SOME_PATH, gate);",
+          "  app.post(P, gate);",
+          '  for (const method of ["put", "delete"] as const)',
+          '    app[method]("/y", async (c) => twice(c));',
+          "}",
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: server source text
+          "const P = `${R.busMachines}/x`;",
+        ].join("\n"),
+      },
+    ];
+    expect(interactiveRoutes(files)).toEqual([
+      "DELETE /api/v1/bus/machines/:id",
+      "DELETE /y",
+      "PATCH ?SOME_PATH",
+      "POST /api/v1/bus/machines/x",
+      "PUT /api/v1/bus/share-notices",
+      "PUT /y",
+    ]);
+  });
+
+  it("#1137 group B: one live A-at-B smoke per credential kind; the rest are the matrix's", () => {
+    const by = (l: string) => cases.filter((c) => c.legs === l);
+    expect(by("cross").map((c) => c.name)).toEqual([
+      SMOKES.session,
+      SMOKES.pat,
+    ]);
+    expect(
+      by("atB")
+        .filter((c) => !c.denyOnly)
+        .map((c) => [c.name, c.variant]),
+    ).toEqual([[SMOKES.oauth, "oauth"]]);
+    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(11);
+    // Every other case: B at B only, its kind a matrix foreign caller.
+    expect(by("own")).toHaveLength(cases.length - 2 - 12);
+    for (const c of by("own"))
+      expect(FOREIGN_CALLERS).toContain(FOREIGN_OF[c.variant]);
+  });
+
+  it("flag a kind with no live smoke, a stray live A-at-B leg, and a kind the matrix lacks", () => {
+    const set = (name: string, legs: ProbeCase["legs"]) =>
+      cases.map((c) => (c.name === name ? { ...c, legs } : c));
+    expect(
+      coverageGaps({ cases: set(SMOKES.session, "own"), dropped }),
+    ).toContain(`no live A-at-B smoke for session: ${SMOKES.session}`);
+    expect(
+      coverageGaps({ cases: set(SMOKES.oauth, "own"), dropped }),
+    ).toContain(`no live A-at-B smoke for oauth: ${SMOKES.oauth}`);
+    expect(
+      coverageGaps({
+        cases: set("artifact rest patch [pat]", "cross"),
+        dropped,
+      }),
+    ).toContain("live A-at-B leg not in SMOKES: artifact rest patch [pat]");
+    expect(coverageGaps(d, ["foreignSession", "foreignOAuth"])).toContain(
+      "A at B for artifact rest patch [pat]: no matrix foreign caller foreignPat",
+    );
+    expect(coverageGaps(d, ["foreignPat", "foreignOAuth"])).toContain(
+      "A at B for org GET /api/v1/me [session]: no matrix foreign caller foreignSession",
+    );
+  });
+
+  it("#1235: A at A runs live only on the session and PAT smokes; every other case's family cites its replacement", () => {
+    const withAtA = cases.filter((c) => c.legs === "cross");
+    expect(withAtA.map((c) => c.name)).toEqual([SMOKES.session, SMOKES.pat]);
+    for (const c of cases.filter((x) => x.legs === "own"))
+      expect(A_AT_A[c.name.split(" ")[0] as keyof typeof A_AT_A]).toBeDefined();
+  });
+
+  it("#1235: flag a smoke that loses its A-at-A positive control", () => {
+    const set = (name: string, legs: ProbeCase["legs"]) =>
+      cases.map((c) => (c.name === name ? { ...c, legs } : c));
+    // A-at-B only: the A-at-B check passes, the A-at-A one doesn't.
+    const atB = coverageGaps({ cases: set(SMOKES.pat, "atB"), dropped });
+    expect(atB).toContain(
+      `no live A-at-A positive control for pat: ${SMOKES.pat}`,
+    );
+    expect(atB).not.toContain(`no live A-at-B smoke for pat: ${SMOKES.pat}`);
+    expect(
+      coverageGaps({ cases: set(SMOKES.session, "own"), dropped }),
+    ).toContain(
+      `no live A-at-A positive control for session: ${SMOKES.session}`,
+    );
+    // No smoke case at all.
+    expect(
+      coverageGaps({
+        cases: cases.filter((c) => c.name !== SMOKES.session),
+        dropped,
+      }),
+    ).toContain(
+      `no live A-at-A positive control for session: ${SMOKES.session}`,
+    );
+  });
+
+  it("#1235: flag an A-at-A citation that doesn't resolve", () => {
+    const file = A_AT_A.space[A_AT_A.space.length - 1]?.file ?? "";
+    const test = A_AT_A.space[A_AT_A.space.length - 1]?.test ?? "";
+    expect(test).not.toBe("");
+    const gaps = citationGaps((p) =>
+      p === file
+        ? (readRepoFile(p) ?? "").replaceAll(test, "renamed")
+        : readRepoFile(p),
+    );
+    expect(gaps).toContain(`A at A (space): no test "${test}" in ${file}`);
+  });
+
+  it("flag a matrix citation for A at B that doesn't resolve", () => {
+    const matrix = readRepoFile(MATRIX_AT_B.artifact[0]?.file ?? "") ?? "";
+    const foreign = MATRIX_AT_B.artifact[1]?.describe ?? "";
+    expect(foreign).not.toBe("");
+    const gaps = citationGaps((p) =>
+      p === MATRIX_AT_B.artifact[0]?.file
+        ? matrix.replaceAll(foreign, "renamed")
+        : readRepoFile(p),
+    );
+    for (const f of ["artifact", "org", "space"])
+      expect(gaps).toContain(
+        `A at B (${f}): no describe "${foreign}" in ${MATRIX_AT_B.artifact[0]?.file}`,
+      );
+  });
+
+  it("grant cases get a timeout that outlasts their list waits", () => {
+    const grant = cases.filter((c) => c.write?.fresh === "grant");
+    expect(grant).toHaveLength(2);
+    for (const c of grant) expect(c.timeout).toBe(GRANT_CASE_TIMEOUT_MS);
+    expect(GRANT_CASE_TIMEOUT_MS).toBeGreaterThanOrEqual(3 * GRANT_LIST_MS);
+  });
+
+  it("are all in the required-case manifest, and no drop is", () => {
+    const m = parseManifest(
+      readFileSync(join(import.meta.dirname, "../live/manifest.json"), "utf8"),
+    );
+    const listed = new Set(
+      m.cases
+        .filter((c) => c.file === "live/surfaces.test.ts")
+        .map((c) => c.name),
+    );
+    const want = [
+      "every ROUTE_POLICY route, MCP tool and content route has a case",
+      ...cases.map((c) => c.name),
+    ].map((n) => `surface probes (cross-install) > ${n}`);
+    expect([...listed].sort()).toEqual([...want].sort());
+  });
+});
+
+// ------------------------------------------------------------ crossProbe
+
+const KEY_A = "a".repeat(40);
+const KEY_B = "b".repeat(40);
+
+async function fake(h?: Parameters<typeof fakeServer>[0]): Promise<Fake> {
+  const f = await fakeServer(h);
+  toDispose.push(() => f.close());
+  return f;
+}
+
+/** A fake install: /api/v1/me answers 200 (and `body`) for `token`, else `refuse`. */
+const install = (installId: string, token: string, refuse = 401, body = "{}") =>
+  ((req, res) => {
+    if (req.url === "/healthz")
+      return json(res, 200, { ok: true, testHooks: true, installId });
+    if (req.headers.authorization === `Bearer ${token}`)
+      return res.writeHead(200).end(body);
+    res.writeHead(refuse).end(body);
+  }) as Parameters<typeof fakeServer>[0];
+
+async function pair(a: Fake, b: Fake, content?: { a: string; b: string }) {
+  const s = secretDir({ "a-key": KEY_A, "b-key": KEY_B });
+  toDispose.push(s.cleanup);
+  const t = (name: string, f: Fake, file: string, domain: string) => ({
+    name,
+    installId: `${name}-id`,
+    app: f.origin,
+    content:
+      (name === "rl-a" ? content?.a : content?.b) ??
+      `http://${name}.content.localhost:1`,
+    testDomain: domain,
+    hookKeyFile: s.path(file),
+  });
+  return loadTargets({
+    REDLINE_TARGETS: JSON.stringify({
+      mode: "local",
+      a: t("rl-a", a, "a-key", "oa-redline-a.fyi"),
+      b: t("rl-b", b, "b-key", "oa-redline-c.fyi"),
+    }),
+  });
+}
+
+/** The fakes' credentials are bearer tokens. */
+const bearer = (r: Request, c: string) =>
+  r.headers.get("authorization") === `Bearer ${c}`;
+
+/** A probe in Backend's shape: allow on 200, deny on 401/404, else throws (quoting the body). */
+const me = async (
+  token: string,
+  t: Target,
+  f: ProbeFetch,
+): Promise<Verdict> => {
+  const r = await f(
+    new Request(`${t.app}/api/v1/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    }),
+  );
+  const text = await r.text();
+  if (r.status === 200) return "allow";
+  if (r.status === 401 || r.status === 404) return "deny";
+  throw new Error(`unexpected ${r.status} ${text}`);
+};
+
+describe("crossProbe", () => {
+  it("passes when each install allows only its own credential", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    await expect(
+      crossProbe(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("fails when B's own credential is denied (a B that refuses everything)", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "nothing")),
+    );
+    await expect(
+      crossProbe(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(/B's own credential failed at B/);
+  });
+
+  it("fails when A's credential is denied at A", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "nothing")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    await expect(
+      crossProbe(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(/A's credential failed at A/);
+  });
+
+  it("fails when B allows A's credential", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "shared")),
+      await fake(install("rl-b-id", "shared")),
+    );
+    await expect(
+      crossProbe(me, {
+        a: T.a,
+        b: T.b,
+        credA: "shared",
+        credB: "shared",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(NotRefused);
+  });
+
+  it("fails when B's refusal carries a seeded marker, even if the probe says deny", async () => {
+    const marker = "REDLINE-rl-b-unitmarker";
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb", 404, `{"title":"${marker}"}`)),
+    );
+    registerMarker(T.b, marker);
+    await expect(
+      crossProbe(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(/seeded marker/);
+  });
+
+  it("fails when the cross leg's requests went elsewhere, not to B", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    // The cross leg asks A instead of B: B never saw A's credential.
+    const run = (cred: string, t: Target, f: ProbeFetch) =>
+      me(cred, t === T.b && cred === "ta" ? T.a : t, f).then((v) =>
+        t === T.b && cred === "ta" ? ("deny" as Verdict) : v,
+      );
+    await expect(
+      crossProbe(run, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(/no request carrying A's credential reached B/);
+  });
+
+  it("fails when B was reached only without A's credential", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    // The cross leg asks B with no credential at all.
+    const run = (cred: string, t: Target, f: ProbeFetch) =>
+      t === T.b && cred === "ta" ? me("", t, f) : me(cred, t, f);
+    await expect(
+      crossProbe(run, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(/no request carrying A's credential reached B/);
+  });
+
+  it("fails when no request reached B", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    const run = (cred: string, t: Target, f: ProbeFetch) =>
+      t === T.b && cred === "ta"
+        ? Promise.resolve<Verdict>("deny")
+        : me(cred, t, f);
+    await expect(
+      crossProbe(run, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(/no request carrying A's credential reached B/);
+  });
+
+  it("a probe error shows status and hashes, never the body", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb", 500, "SECRET-BODY-TEXT")),
+    );
+    const err = await crossProbe(me, {
+      a: T.a,
+      b: T.b,
+      credA: "ta",
+      credB: "nope",
+      carries: bearer,
+    }).catch((e: Error) => e);
+    expect(String(err)).toMatch(/status 500, body sha256:/);
+    expect(String(err)).not.toContain("SECRET-BODY-TEXT");
+  });
+
+  it("lets a probe cancel its body (no tee deadlock)", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    const run = async (cred: string, t: Target, f: ProbeFetch) => {
+      const r = await f(
+        new Request(`${t.app}/api/v1/me`, {
+          headers: { authorization: `Bearer ${cred}` },
+        }),
+      );
+      await r.body?.cancel();
+      return r.status === 200 ? "allow" : ("deny" as Verdict);
+    };
+    await expect(
+      crossProbe(run, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("crossProbe and crossWrite with ownOnly (#1235)", () => {
+  it("crossProbe sends only B's own credential at B: nothing to A", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    const sent: [string, string][] = [];
+    const run: typeof me = async (cred, t, f) => {
+      sent.push([cred, t.name]);
+      return me(cred, t, f);
+    };
+    await crossProbe(run, {
+      a: T.a,
+      b: T.b,
+      credA: "ta",
+      credB: "tb",
+      carries: bearer,
+      ownOnly: true,
+    });
+    expect(sent).toEqual([["tb", T.b.name]]);
+  });
+
+  it("crossProbe still fails when B refuses its own credential", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "nothing")),
+    );
+    await expect(
+      crossProbe(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+        ownOnly: true,
+      }),
+    ).rejects.toThrow(/B's own credential failed at B/);
+  });
+
+  it("a kept smoke (all three legs) fails when A's credential is refused at A", async () => {
+    // The positive control #1235 keeps: without it, a dead A credential
+    // would pass the A-at-B leg as a refusal.
+    const T = await pair(
+      await fake(install("rl-a-id", "nothing")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    const world = (t: Target) =>
+      ({ artifactId: t === T.a ? "art-a" : "art-b" }) as World;
+    const c = derive().cases.find((x) => x.name === SMOKES.pat);
+    if (!c) throw new Error("no PAT smoke");
+    const err = await runRead(
+      { ...c, run: (cred, t, _w, f) => me(cred.token ?? "", t, f) },
+      {
+        a: T.a,
+        b: T.b,
+        credA: { token: "ta" },
+        credB: { token: "tb" },
+        world,
+      },
+    ).catch((e: unknown) => e);
+    expect(String(err)).toMatch(/A's credential failed at A/);
+  });
+});
+
+describe("crossDenied", () => {
+  it("passes on A's 401 at B, and never sends B's or A's own legs", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    const sent: [string, string][] = [];
+    const run: typeof me = async (cred, t, f) => {
+      sent.push([cred, t.name]);
+      return me(cred, t, f);
+    };
+    await expect(
+      crossDenied(run, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).resolves.toBeUndefined();
+    expect(sent).toEqual([["ta", T.b.name]]);
+  });
+
+  it("fails when B accepts A's credential", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "ta")),
+    );
+    await expect(
+      crossDenied(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(NotRefused);
+  });
+
+  it("fails on a 404: with no success leg, only a 401 shows B knows no such caller", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb", 404)),
+    );
+    await expect(
+      crossDenied(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(/answered 404, not 401/);
+  });
+});
+
+// ------------------------------------------- the live A-at-B smokes (#1137)
+
+describe("A-at-B smokes: each fails when B accepts A's credential of its kind", () => {
+  const smoke = (name: string): ProbeCase => {
+    const c = derive().cases.find((x) => x.name === name);
+    if (!c) throw new Error(`no case ${name}`);
+    return c;
+  };
+  /** Each kind's credential on each install (the session as `name=value`). */
+  const CREDS = {
+    session: { a: "oa_session=sess-a", b: "oa_session=sess-b" },
+    pat: { a: "oa_pat_a", b: "oa_pat_b" },
+    oauth: { a: "u:g:oauth-a", b: "u:g:oauth-b" },
+  } as const;
+  const credOf = (v: keyof typeof CREDS, side: "a" | "b") =>
+    v === "session"
+      ? { cookie: CREDS.session[side] }
+      : { token: CREDS[v][side] };
+  /**
+   * A fake install serving its artifact (GET) and get_artifact on /mcp to
+   * the credentials in `accepts` (a cookie pair or a bearer token), else 401.
+   */
+  const install =
+    (
+      installId: string,
+      accepts: Set<string>,
+    ): Parameters<typeof fakeServer>[0] =>
+    (req, res) => {
+      if (req.url === "/healthz")
+        return json(res, 200, { ok: true, testHooks: true, installId });
+      const cookies = (req.headers.cookie ?? "").split(/;\s*/);
+      const bearer = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+      const ok = cookies.some((c) => accepts.has(c)) || accepts.has(bearer);
+      if (!ok) return json(res, 401, { error: "unauthorized" });
+      if (req.method === "POST" && req.url === "/mcp")
+        return json(res, 200, {
+          jsonrpc: "2.0",
+          id: 1,
+          result: { content: [{ text: "{}" }], structuredContent: {} },
+        });
+      if (req.method === "GET" && req.url?.startsWith("/api/v1/artifacts/"))
+        return json(res, 200, { id: req.url.split("/").pop() });
+      json(res, 404, { error: "not_found" });
+    };
+  async function run(v: keyof typeof CREDS, faulty: boolean, c?: ProbeCase) {
+    const a = await fake(install("rl-a-id", new Set([CREDS[v].a])));
+    const b = await fake(
+      install(
+        "rl-b-id",
+        new Set(faulty ? [CREDS[v].b, CREDS[v].a] : [CREDS[v].b]),
+      ),
+    );
+    const T = await pair(a, b);
+    const world = (t: Target) =>
+      ({ artifactId: t === T.a ? "art-a" : "art-b" }) as World;
+    await runRead(c ?? smoke(SMOKES[v]), {
+      a: T.a,
+      b: T.b,
+      credA: credOf(v, "a"),
+      credB: credOf(v, "b"),
+      world,
+    });
+  }
+
+  for (const v of ["session", "pat", "oauth"] as const) {
+    it(`${v}: passes when B refuses A's credential`, async () => {
+      await run(v, false);
+    });
+    it(`${v}: fails when B accepts A's credential`, async () => {
+      const e = await run(v, true).catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(NotRefused);
+      expect((e as Error).message).toMatch(/^A's credential at B \(rl-b;/);
+    });
+  }
+
+  it("an own-legs case doesn't catch it: that is the matrix's job, so each kind keeps its smoke", async () => {
+    // The session smoke with its A-at-B leg trimmed passes against the same
+    // faulty B: coverageGaps keeps one live smoke per kind for this reason.
+    await run("session", true, { ...smoke(SMOKES.session), legs: "own" });
+  });
+
+  it("signed content URL (live/credentials.test.ts): fails when B's content host serves A's", async () => {
+    const PATH = {
+      a: "/c/tok-a/id-a/v1/README.md",
+      b: "/c/tok-b/id-b/v1/README.md",
+    };
+    const content = (serves: Set<string>) =>
+      fake((req, res) => {
+        if (req.url && serves.has(req.url)) return res.writeHead(200).end("ok");
+        res.writeHead(404).end();
+      });
+    const go = async (faulty: boolean) => {
+      const a = await fake(install("rl-a-id", new Set()));
+      const b = await fake(install("rl-b-id", new Set()));
+      const ca = await content(new Set([PATH.a]));
+      const cb = await content(new Set(faulty ? [PATH.b, PATH.a] : [PATH.b]));
+      const T = await pair(a, b, { a: ca.origin, b: cb.origin });
+      // The live case's request: the signed path on the host's content origin.
+      const req = (c: Parameters<typeof slotValue>[0], t: Target) =>
+        new Request(`${t.content}${slotValue<string>(c, t)}`, {
+          redirect: "manual",
+        });
+      await crossCheck(req, {
+        a: T.a,
+        b: T.b,
+        credA: slot(() => PATH.a),
+        credB: slot(() => PATH.b),
+      });
+    };
+    await go(false);
+    const e = await go(true).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(NotRefused);
+    expect((e as Error).message).toMatch(/^A's credential at B \(rl-b;/);
+  });
+});
+
+describe("crossWrite", () => {
+  /** Throwaways per install: id -> value; `write` sets one when the token is the install's own. */
+  async function world(leakB = false) {
+    const store = new Map<string, Map<string, string>>([
+      ["rl-a", new Map()],
+      ["rl-b", new Map()],
+    ]);
+    const handler = (name: string, installId: string, token: string) =>
+      ((req, res, body) => {
+        if (req.url === "/healthz")
+          return json(res, 200, { ok: true, testHooks: true, installId });
+        const id = req.url?.split("/").pop() ?? "";
+        const own = req.headers.authorization === `Bearer ${token}`;
+        if (req.method === "PUT" && (own || (leakB && name === "rl-b"))) {
+          store.get(name)?.set(id, body);
+          return res.writeHead(200).end("{}");
+        }
+        res.writeHead(401).end("{}");
+      }) as Parameters<typeof fakeServer>[0];
+    const T = await pair(
+      await fake(handler("rl-a", "rl-a-id", "ta")),
+      await fake(handler("rl-b", "rl-b-id", "tb")),
+    );
+    let n = 0;
+    const made: string[] = [];
+    const disposed: string[] = [];
+    const o = {
+      a: T.a,
+      b: T.b,
+      credA: "ta",
+      credB: "tb",
+      carries: bearer,
+      fresh: async (t: Target) => {
+        const id = `x${n++}`;
+        store.get(t.name)?.set(id, "orig");
+        made.push(`${t.name}/${id}`);
+        return id;
+      },
+      snapshot: async (t: Target, x: string) => store.get(t.name)?.get(x) ?? "",
+      dispose: async (t: Target, x: string) => {
+        disposed.push(`${t.name}/${x}`);
+      },
+    };
+    const write = async (
+      cred: string,
+      t: Target,
+      x: string,
+      f: ProbeFetch,
+    ): Promise<Verdict> => {
+      const r = await f(
+        new Request(`${t.app}/w/${x}`, {
+          method: "PUT",
+          headers: { authorization: `Bearer ${cred}` },
+          body: "changed",
+        }),
+      );
+      await r.body?.cancel();
+      return r.status === 200 ? "allow" : "deny";
+    };
+    return { o, write, made, disposed };
+  }
+
+  it("passes when each install writes only its own throwaways; disposes all three", async () => {
+    const w = await world();
+    await expect(crossWrite(w.write, w.o)).resolves.toBeUndefined();
+    expect(w.made).toHaveLength(3);
+    expect([...w.disposed].sort()).toEqual([...w.made].sort());
+  });
+
+  it("fails when B's throwaway changed, even though the probe saw a refusal", async () => {
+    const w = await world();
+    const sneaky = async (c: string, t: Target, x: string, f: ProbeFetch) => {
+      const v = await w.write(c, t, x, f);
+      // Something else changed B's throwaway during the cross leg.
+      if (c === "ta" && t === w.o.b) await w.write("tb", t, x, f);
+      return c === "ta" && t === w.o.b ? "deny" : v;
+    };
+    await expect(crossWrite(sneaky, w.o)).rejects.toThrow(NotRefused);
+    expect([...w.disposed].sort()).toEqual([...w.made].sort());
+  });
+
+  it("fails when B accepts A's write, and still disposes every throwaway", async () => {
+    const w = await world(true);
+    await expect(crossWrite(w.write, w.o)).rejects.toThrow(NotRefused);
+    expect(w.made).toHaveLength(3);
+    expect([...w.disposed].sort()).toEqual([...w.made].sort());
+  });
+
+  it("fails when B's own write is refused (a broken B)", async () => {
+    const w = await world();
+    const broken = { ...w.o, credB: "nope" };
+    await expect(crossWrite(w.write, broken)).rejects.toThrow(
+      /B's own credential failed at B/,
+    );
+    expect([...w.disposed].sort()).toEqual([...w.made].sort());
+  });
+
+  it("ownOnly (#1235): one throwaway, on B, written by B's own credential", async () => {
+    const w = await world();
+    await expect(
+      crossWrite(w.write, { ...w.o, ownOnly: true }),
+    ).resolves.toBeUndefined();
+    expect(w.made).toEqual(["rl-b/x0"]);
+    expect(w.disposed).toEqual(["rl-b/x0"]);
+    const broken = await world();
+    await expect(
+      crossWrite(broken.write, { ...broken.o, credB: "nope", ownOnly: true }),
+    ).rejects.toThrow(/B's own credential failed at B/);
+  });
+});
+
+describe("citations and cleanup", () => {
+  it("every drop's covering tests exist (file, describe and test)", () => {
+    expect(citationGaps(readRepoFile)).toEqual([]);
+  });
+
+  it("flag a citation whose describe or test isn't in the file", () => {
+    const gaps = citationGaps(() => 'describe("something else")');
+    expect(gaps.length).toBeGreaterThan(0);
+    expect(gaps.some((g) => /no describe "instance routes"/.test(g))).toBe(
+      true,
+    );
+    expect(citationGaps(() => null).some((g) => /missing file/.test(g))).toBe(
+      true,
+    );
+  });
+
+  it("cleanup treats a 404 as a failure, not as clean", async () => {
+    const f = await fake((_q, res) => res.writeHead(404).end("{}"));
+    const side = {
+      t: { name: "rl-b", app: f.origin } as Target,
+      pat: { kind: "pat", token: "tb" },
+    } as unknown as Side;
+    await expect(cleanup(side, "/api/v1/artifacts/x")).rejects.toThrow(
+      /status 404/,
+    );
+  });
+});
+
+describe("viaTarget", () => {
+  const t = {
+    app: "http://rl-b.app.localhost:4001",
+    content: "http://rl-b.content.localhost:4001",
+  } as Target;
+  const seen: string[] = [];
+  const f = viaTarget(t, async (r) => {
+    seen.push(r.url);
+    return new Response(null, { status: 204 });
+  });
+
+  it("sends a portless loopback content URL to the target's origin", async () => {
+    await f(new Request("http://rl-b.content.localhost/c/x/y/v1/?dl=1"));
+    expect(seen.at(-1)).toBe(
+      "http://rl-b.content.localhost:4001/c/x/y/v1/?dl=1",
+    );
+  });
+
+  it("never rewrites a non-loopback host", async () => {
+    await f(new Request("https://rl-b.open-artifacts-staging.page/c/x"));
+    expect(seen.at(-1)).toBe("https://rl-b.open-artifacts-staging.page/c/x");
+  });
+});
+
+describe("worldSpaces (fixed hook spaces per TEST_DOMAIN)", () => {
+  it("ids carry 8 hex of sha256(testDomain) and match the hook's SPACE_ID rule", () => {
+    const a = worldSpaces("guests.oa-redline-a.fyi");
+    expect(a).toEqual({
+      world: expect.stringMatching(/^test-redline-space-[0-9a-f]{8}$/),
+      guard: expect.stringMatching(/^test-redline-guard-[0-9a-f]{8}$/),
+    });
+    expect(a.world.slice(-8)).toBe(a.guard.slice(-8));
+    for (const id of Object.values(a))
+      expect(HOOK_SPACE_ID.test(id)).toBe(true);
+    // Stable per domain (case-insensitive), different for another domain.
+    expect(worldSpaces("GUESTS.oa-redline-a.fyi")).toEqual(a);
+    expect(worldSpaces("oa-redline-a.fyi").world).not.toBe(a.world);
+  });
+});
+
+describe("worldGroups (the mapping probes' seeded directory groups)", () => {
+  it("test- ids the directory-groups hook accepts, TEST_DOMAIN emails, never the old unseeded names", () => {
+    const d = "guests.oa-redline-a.fyi";
+    const g = worldGroups(d);
+    expect(Object.values(g)).not.toContain("redline-free");
+    for (const id of Object.values(g))
+      expect(TEST_GROUP_ID.test(id)).toBe(true);
+    expect(g.free.slice(-8)).toBe(worldSpaces(d).world.slice(-8));
+    const body = groupSeed(d);
+    expect(TestDirectoryGroupsInputSchema.safeParse(body).success).toBe(true);
+    for (const x of body.groups) expect(x.email).toBe(`${x.groupId}@${d}`);
+    expect(body.groups.map((x) => x.groupId)).toContain(g.free);
+  });
+});
+
+describe("setup hooks", () => {
+  const body404 = (reason?: unknown) =>
+    JSON.stringify({
+      error: {
+        code: "not_found",
+        message: "Not found secret-body-text",
+        ...(reason === undefined ? {} : { details: { reason } }),
+      },
+    });
+
+  /** /healthz for loadTargets; every hook a 404 with `body`. */
+  const refusing =
+    (installId: string, body: string): Parameters<typeof fakeServer>[0] =>
+    (req, res) =>
+      req.url === "/healthz"
+        ? json(res, 200, { ok: true, testHooks: true, installId })
+        : res.writeHead(404).end(body);
+
+  it("HOOK_OTP_OUTCOMES is @oa/shared's TEST_OTP_OUTCOMES", () => {
+    expect([...HOOK_OTP_OUTCOMES]).toEqual([...TEST_OTP_OUTCOMES]);
+  });
+
+  it("HOOK_REFUSALS is @oa/shared's TEST_HOOK_REFUSALS", () => {
+    expect([...HOOK_REFUSALS]).toEqual([...TEST_HOOK_REFUSALS]);
+  });
+
+  it("hookReason reads only the fixed enum word", () => {
+    expect(hookReason(body404("spaces_blocked"))).toBe("spaces_blocked");
+    expect(hookReason(body404("grant_refused"))).toBe("grant_refused");
+    expect(hookReason(body404())).toBe("no_reason");
+    expect(hookReason(body404("anything else"))).toBe("no_reason");
+    expect(hookReason("not json")).toBe("no_reason");
+    expect(hookReason("null")).toBe("no_reason");
+  });
+
+  it("a setup hook's refusal is infra with the reason and a body hash, never body text", async () => {
+    const a = await fake(refusing("rl-a-id", body404("spaces_blocked")));
+    const b = await fake(install("rl-b-id", "x"));
+    const T = await pair(a, b);
+    const e = await hook(T.a, "/__test/session", {}, { setup: true }).catch(
+      (x: unknown) => x,
+    );
+    expect(e).toBeInstanceOf(SetupHookError);
+    const m = (e as Error).message;
+    expect(m).toMatch(
+      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, body sha256:[0-9a-f]{16} \(\d+ bytes\), code not_found\)$/,
+    );
+    expect(m).not.toContain("secret-body-text");
+    // Outside setup, the same answer stays an HttpError (a verdict).
+    const v = await hook(T.a, "/__test/session", {}).catch((x: unknown) => x);
+    expect(v).toBeInstanceOf(HttpError);
+    expect(v).not.toBeInstanceOf(SetupHookError);
+  });
+
+  it("a refusal before the key (no reason in the body) says no_reason", async () => {
+    const a = await fake(refusing("rl-a-id", body404()));
+    const T = await pair(a, await fake(install("rl-b-id", "x")));
+    await expect(
+      hook(T.a, "/__test/session", {}, { setup: true }),
+    ).rejects.toThrow(/^infra: setup \/__test\/session no_reason on rl-a /);
+  });
+});

@@ -288,11 +288,13 @@ test("keyboard: role select, invite dialog and remove confirm without a mouse", 
   await page.keyboard.press("Enter");
   await expect(dlg).toBeHidden();
   await expect(page.getByText("kbd@example.com")).toBeVisible();
-  await page.getByRole("button", { name: "Remove kbd@example.com" }).focus();
+  // Parity 1: Remove lives in the row's More menu on every install.
+  const more = page.getByRole("button", { name: "More for kbd@example.com" });
+  await more.focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("menuitem", { name: "Remove…" }).focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog", { name: /Remove kbd/ })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(
-    page.getByRole("button", { name: "Remove kbd@example.com" }),
-  ).toBeFocused();
+  await expect(more).toBeFocused();
 });

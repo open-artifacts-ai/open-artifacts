@@ -8,6 +8,14 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Never white (#693): the theme background from the first byte, before any CSS loads.
+         Same values as --oa-bg (packages/ui tokens); [data-theme] on <html> wins. -->
+    <style>
+      html { background: #eef0f3; color-scheme: light; }
+      @media (prefers-color-scheme: dark) { html:not([data-theme="light"]) { background: #131518; color-scheme: dark; } }
+      html[data-theme="dark"] { background: #131518; color-scheme: dark; }
+    </style>
     <title>Open Artifacts</title>
   </head>
   <body>

@@ -237,10 +237,14 @@
     try { viewer = await OA.viewer.get(); } catch { viewer = null; }
     if (viewer && viewer.email) return { id: `u-${await hash(viewer.email)}`, signedIn: true };
     // viewer.anonId(), else the { anonId } that viewer.get() returns on servers before it.
+    // Retried: a failed lookup (rate limited, offline) would leave a per-tab id, and a reload would lose a seat or a vote.
     let anon = null;
-    try {
-      if (OA.viewer && typeof OA.viewer.anonId === "function") anon = await OA.viewer.anonId();
-    } catch { anon = null; }
+    for (let i = 0; i < 3; i += 1) {
+      try {
+        if (OA.viewer && typeof OA.viewer.anonId === "function") anon = await OA.viewer.anonId();
+        break;
+      } catch { await new Promise((r) => setTimeout(r, 1500 * (i + 1))); }
+    }
     if (!anon && viewer && typeof viewer.anonId === "string") anon = viewer.anonId;
     if (anon && safeId(anon)) return { id: safeId(anon), signedIn: false };
     return { id: localId(), signedIn: false };
@@ -274,7 +278,13 @@
     if (pending === null && !inFlight) mine = votes.has(me.id) ? votes.get(me.id) : null;
   }
 
+  const PAUSED = "Live updates paused. Reload to retry.";
+  let paused = false; // the live feed is down (subscribe's offline), until a resync
+
   function applyChange(e) {
+    // Never silently deaf: say so while the live feed is down; a resync clears it.
+    if (e.offline) { paused = true; showError(""); return; }
+    if (e.resync && paused) { paused = false; showError(""); }
     if (e.resync) { loadAll().then(render, () => {}); return; }
     for (const d of e.docs) {
       const o = validVote(d);
@@ -356,14 +366,15 @@
       closed = true;
       showError("Voting is done for today. A new question opens at 00:00 UTC.");
     } else if (code === "rate_limited") showError("Too many votes from your network. Try again in a minute.");
-    else if (code === "unauthorized") { readOnly = true; showError("This demo isn't accepting votes from signed-out visitors right now."); }
+    else if (code === "unauthorized" || code === "data_editors_only") { readOnly = true; showError("This demo isn't accepting votes right now."); }
     else if (code === "capability_denied") { readOnly = true; showError("This poll can't save votes."); }
     else showError("Your vote didn't save. Try again.");
   }
 
   /* ---------- render ---------- */
 
-  function showError(m) { el.error.textContent = m; }
+  /** An empty message falls back to the paused notice while the live feed is down. */
+  function showError(m) { el.error.textContent = m || (paused ? PAUSED : ""); }
   function fail(msg = "Could not reach the poll. Reload to try again.") {
     failText = msg;
     el.note.textContent = msg;

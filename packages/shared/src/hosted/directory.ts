@@ -34,8 +34,51 @@ export const HeldSweepSchema = GroupRefSchema.extend({
   wouldRemove: z.number().int(),
   members: z.number().int(),
   since: z.string(),
+  /**
+   * Set while the owner snoozed this hold (R.directoryHeldSnooze), else
+   * null: the hold doesn't count in Me.instance.directory.heldSweeps until
+   * then. Visibility only: its removals stay held (not applied) until the
+   * owner applies them, the group's Google membership changes, or this
+   * passes. Defaulted so a payload from before it shipped still parses.
+   */
+  snoozedUntil: z.string().nullable().default(null),
+  /**
+   * The owner's note when snoozing (cleaned, at most HELD_SNOOZE_REASON_MAX),
+   * else null. Org owner only: an admin's GET R.directory has null.
+   */
+  snoozeReason: z.string().nullable().default(null),
 });
 export type HeldSweep = z.infer<typeof HeldSweepSchema>;
+
+/** How long a held-sweep snooze lasts (R.directoryHeldSnooze). */
+export const HELD_SNOOZE_MS = 30 * 86_400_000;
+/** A snooze reason's length after cleaning, in code points. */
+export const HELD_SNOOZE_REASON_MAX = 200;
+
+/**
+ * POST R.directoryHeldSnooze(groupId) body (org owner). `reason` is
+ * optional; the server makes it one plain line of at most
+ * HELD_SNOOZE_REASON_MAX code points (empty after cleaning: none).
+ */
+export const HeldSnoozeInputSchema = z
+  .object({ reason: z.string().max(1000).optional() })
+  .strict();
+export type HeldSnoozeInput = z.infer<typeof HeldSnoozeInputSchema>;
+
+/**
+ * Why a snooze ended (directory.sweep.unsnoozed detail.why): the group's
+ * Google membership changed, 30 days passed, the owner applied the hold or
+ * cancelled the snooze, or the hold itself ended (released, or the group
+ * became unreadable).
+ */
+export const HeldSnoozeEndSchema = z.enum([
+  "group_changed",
+  "expired",
+  "applied",
+  "owner_cancel",
+  "released",
+]);
+export type HeldSnoozeEnd = z.infer<typeof HeldSnoozeEndSchema>;
 
 /**
  * GET R.directory (org owner, admin) -> SyncStatus. Also the 202 body of
@@ -43,8 +86,27 @@ export type HeldSweep = z.infer<typeof HeldSweepSchema>;
  * suspensions and deletions always apply, a partial read removes nobody, a
  * customer or domain mismatch fails closed. Unhealthy for 1 h: banner
  * (Me.instance.directory.banner); for 24 h: owner email and sessions capped
- * at 24 h. Synced users fail closed 7 days after lastSuccessAt (staleAt).
+ * at 24 h. No stale cutoff: staleAt (7 days after lastSuccessAt) is informational.
  */
+/**
+ * Why a restricted group blocks the reconcile's lift of restrictions: the
+ * group refused its listing, answered 404 without being deleted, was read
+ * only partly, had its sweep held, or wasn't read this run.
+ */
+export const LiftPausedReasonSchema = z.enum([
+  "refused",
+  "not_found",
+  "partial",
+  "held",
+  "not_read",
+]);
+export type LiftPausedReason = z.infer<typeof LiftPausedReasonSchema>;
+export const LiftPausedSchema = z.object({
+  groupId: z.string(),
+  reason: LiftPausedReasonSchema,
+});
+export type LiftPaused = z.infer<typeof LiftPausedSchema>;
+
 export const SyncStatusSchema = z.object({
   mode: DirectoryModeSchema,
   binding: DirectoryBindingSchema.nullable(),
@@ -57,7 +119,7 @@ export const SyncStatusSchema = z.object({
   lastSuccessAt: z.string().nullable(),
   lastError: z.object({ at: z.string(), message: z.string() }).nullable(),
   nextRunAt: z.string().nullable(),
-  /** lastSuccessAt + 7 days: synced users fail closed after this. */
+  /** lastSuccessAt + 7 days once that has passed, else null. Informational: access is unchanged when stale. */
   staleAt: z.string().nullable(),
   /** Owner alert sent for the current outage. */
   alertedAt: z.string().nullable(),
@@ -66,6 +128,39 @@ export const SyncStatusSchema = z.object({
     .object({ expected: z.string(), actual: z.string() })
     .nullable(),
   held: z.array(HeldSweepSchema),
+  /**
+   * Restricted groups that kept the last reconcile from lifting anyone's
+   * restriction (fail closed: new restrictions still apply). Empty when
+   * lifts run. Defaulted so a payload from before it shipped still parses.
+   */
+  liftsPaused: z.array(LiftPausedSchema).default([]),
+  /**
+   * state pending_confirm only (else null / false / null): active in-domain
+   * directory users the binding pass would link or create, counted over at
+   * most one page; `pendingCountCapped` true means "500+". Defaulted so a
+   * payload from before the confirm step still parses.
+   */
+  pendingCount: z.number().int().nullable().default(null),
+  pendingCountCapped: z.boolean().default(false),
+  /** When the unconfirmed connection is dropped (24 h after consent). */
+  pendingExpiresAt: z.string().nullable().default(null),
+  /**
+   * state pending_confirm only, else null: the consent is for a different
+   * Google Workspace than the one bound before a disconnect during
+   * customer_mismatch. `domain` null: unknown ("the previous Workspace").
+   * Users bound to the previous Workspace don't carry over: they stay
+   * refused at sign-in. Absent from servers before it shipped.
+   */
+  pendingCustomerChange: z
+    .object({
+      previous: z.object({
+        customerId: z.string(),
+        domain: z.string().nullable(),
+      }),
+      next: z.object({ customerId: z.string(), domain: z.string() }),
+    })
+    .nullable()
+    .optional(),
 });
 export type SyncStatus = z.infer<typeof SyncStatusSchema>;
 
@@ -112,11 +207,13 @@ export const AuditReasonSchema = z.enum([
   "admin_suspend",
   "admin_remove",
   "admin_restore",
+  "sync_revive",
 ]);
 export type AuditReason = z.infer<typeof AuditReasonSchema>;
 
 export const AuditActionSchema = z.enum([
   "auth.signin",
+  "auth.broker_check",
   "space.create",
   "space.update",
   "space.public_links",
@@ -134,7 +231,14 @@ export const AuditActionSchema = z.enum([
   "artifact.share",
   "artifact.unshare",
   "artifact.visibility",
+  "artifact.delete",
+  "artifact.undelete",
+  "artifact.purge",
   "user.status",
+  "user.role",
+  "user.sync_managed",
+  "user.readmitted_by_sync",
+  "user.erased",
   "identity.reset",
   "directory.connect",
   "directory.disconnect",
@@ -143,11 +247,44 @@ export const AuditActionSchema = z.enum([
   "directory.stale",
   "directory.sweep.held",
   "directory.sweep.confirmed",
+  "directory.sweep.snoozed",
+  "directory.sweep.unsnoozed",
   "directory.break_glass",
   "features.change",
   "settings.space_manager_mappings",
+  "bus.role.proposed",
+  "bus.role.confirmed",
+  "bus.role.refused",
+  "bus.role.expired",
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
+
+/**
+ * The credential behind an audited action (#803): a browser session, a
+ * personal access token, an MCP OAuth grant, or the system (sync, cron).
+ * `test_hook` is reserved: nothing writes it today (the test hooks' own rows
+ * leave the credential null, and the audit API never returns them), so a
+ * client sees only the other four.
+ */
+export const AuditCredKindSchema = z.enum([
+  "session",
+  "pat",
+  "oauth_grant",
+  "system",
+  "test_hook",
+]);
+export type AuditCredKind = z.infer<typeof AuditCredKindSchema>;
+
+/**
+ * `id`: for `session`, `<provider>:<issued at ms>` (sessions have no row);
+ * for `pat`, the token id (R.tokens); for `oauth_grant`, the grant id
+ * (R.oauthClients); null for `system`. Never a token or secret.
+ */
+export const AuditCredSchema = z.object({
+  kind: AuditCredKindSchema,
+  id: z.string().nullable(),
+});
+export type AuditCred = z.infer<typeof AuditCredSchema>;
 
 /** GET R.audit?cursor&limit (org owner, admin) -> Page<AuditEvent>; R.auditExport is NDJSON of the same. */
 export const AuditEventSchema = z.object({
@@ -157,6 +294,8 @@ export const AuditEventSchema = z.object({
     kind: z.enum(["user", "sync", "system"]),
     id: z.string().nullable(),
     email: z.string().nullable(),
+    /** The credential used; null when none was recorded (rows from before #803, sign-ins, background work). */
+    cred: AuditCredSchema.nullable().optional(),
   }),
   action: AuditActionSchema,
   target: z.object({

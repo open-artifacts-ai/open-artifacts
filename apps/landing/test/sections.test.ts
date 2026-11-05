@@ -68,9 +68,9 @@ describe("landing sections", () => {
       expect(gallery).toContain(`aria-label="Open ${title}"`);
   });
 
-  it("the hero headline is three fixed lines, and the subcopy links the repo", () => {
+  it("the hero headline is two fixed lines, and the subcopy links the repo", () => {
     expect(index).toMatch(
-      /<h1[^>]*>\s*<span[^>]*>Bring any agent\.<\/span>\s*<span[^>]*>Keep every artifact\.<\/span>\s*<span[^>]*>For Free\. Seriously\.<\/span>\s*<\/h1>/,
+      /<h1[^>]*>\s*<span[^>]*>Bring any agent\.<\/span>\s*<span[^>]*>Keep every artifact\.<\/span>\s*<\/h1>/,
     );
     const lede = index.slice(
       index.indexOf('class="lede"'),
@@ -79,7 +79,32 @@ describe("landing sections", () => {
     expect(lede).toMatch(
       /<a href="https:\/\/github\.com\/open-artifacts-ai\/open-artifacts"[^>]*>open source<\/a>/,
     );
-    expect(lede).toContain("on your own Cloudflare");
+    // #421: the hero leads with Open Artifacts; Cloudflare is only the self-host path.
+    expect(lede).not.toContain("Cloudflare");
+    expect(index).not.toContain("For Free. Seriously.");
+  });
+
+  it("without HOSTED_SIGNUP_URL, self-host is the only, primary, hero button", () => {
+    const actions = index.slice(
+      index.indexOf('class="hero-actions"'),
+      index.indexOf("</div>", index.indexOf('class="hero-actions"')),
+    );
+    expect(actions).not.toContain("Get started free");
+    expect(actions).toMatch(
+      /<a class="btn lg primary"[^>]*href="#self-host"[^>]*>Self-host it<\/a>/,
+    );
+    expect(index).toMatch(/<section class="band" id="self-host"/);
+  });
+
+  it("the setup prompt sits with the self-host mention, and Cloudflare is named there", () => {
+    const cta = index.slice(
+      index.indexOf('class="cta"'),
+      index.indexOf('class="cta-note"'),
+    );
+    expect(cta).toContain(
+      "Self-hosting runs in your own Cloudflare account. Tell your agent:",
+    );
+    expect(cta).toContain('data-copy="install open-artifacts.com/llms.txt"');
   });
 
   it("the gallery is a carousel with labeled prev and next", () => {

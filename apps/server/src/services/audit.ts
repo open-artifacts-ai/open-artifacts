@@ -1,6 +1,9 @@
 import {
+  AUDIT_RETENTION_MS,
   type AuditAction,
   AuditActionSchema,
+  type AuditCred,
+  AuditCredKindSchema,
   type AuditEvent,
   type AuditReason,
   AuditReasonSchema,
@@ -9,24 +12,49 @@ import {
   type Page,
 } from "@oa/shared";
 import { sql } from "drizzle-orm";
+import { type Cred, currentCred } from "../auth/cred.js";
 import { deriveKey } from "../auth/keys.js";
 import { getDb } from "../db/client.js";
 import { auditEvents } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
+import { logInfo } from "../log.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
 
 // The audit log (P3 T8). audit() is a statement, never a write: callers put it
 // in the same D1 batch as the change it records, so both commit or neither
 // does. Rows hold ids and enums only; the actor's email is joined at read
 // time, never stored, and no code, token or other address is ever written.
+// Rows are never updated; the daily cron deletes those past 400 days
+// (AUDIT_RETENTION_MS, sweepAuditEvents below; HOSTED_CONTRACT.md).
 
-/** Who did it: a signed-in user, directory sync, or the system (cron, alarms). */
+/**
+ * Who did it: a signed-in user, directory sync, or the system (cron, alarms).
+ * `cred` (#803) names the credential explicitly, for a row written where the
+ * request's own store can't reach (a Durable Object, reached by RPC). When
+ * absent, a user's row takes the request's credential (auth/cred.ts) and a
+ * sync or system row records `system`.
+ */
 export type AuditActor = {
   kind: "user" | "sync" | "system";
   id: string | null;
+  cred?: Cred | null;
 };
+
+const SYSTEM_CRED: Cred = { kind: "system", id: null };
+
+/** The credential a row records: explicit, else the request's, else none. */
+export function credOf(actor: AuditActor): Cred | null {
+  if (actor.cred !== undefined) return actor.cred;
+  return actor.kind === "user" ? currentCred() : SYSTEM_CRED;
+}
+
+/** `actor` with this request's credential fixed on it, to hand to a Durable Object. */
+export const withRequestCred = (actor: AuditActor): AuditActor => ({
+  ...actor,
+  cred: credOf(actor),
+});
 
 export type AuditExtra = {
   spaceId?: string | null;
@@ -39,11 +67,17 @@ export type AuditExtra = {
    * so a no-op or lost race writes no audit row.
    */
   when?: { sql: string; args: unknown[] };
+  /**
+   * Detail fields computed in SQL when the row is written (e.g. `changes()`
+   * of the statement just before), merged over `detail`: a JSON object
+   * expression such as `json_object('moved', changes())`.
+   */
+  detailSql?: { sql: string; args: unknown[] };
 };
 
-const INSERT = `insert into audit_events
-  (id, at, actor_kind, actor_id, action, target_type, target_id, space_id, detail)
-  select ?, ?, ?, ?, ?, ?, ?, ?, ?`;
+const insertSql = (detailSql?: string) => `insert into audit_events
+  (id, at, actor_kind, actor_id, actor_cred_kind, actor_cred_id, action, target_type, target_id, space_id, detail)
+  select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${detailSql ? `json_patch(?, ${detailSql})` : "?"}`;
 
 /** One audit row, as a statement for the caller's own batch. */
 export function audit(
@@ -60,17 +94,22 @@ export function audit(
     ...extra.detail,
     ...(extra.reason && { reason: extra.reason }),
   };
-  const sql = extra.when ? `${INSERT} where ${extra.when.sql}` : INSERT;
+  const insert = insertSql(extra.detailSql?.sql);
+  const sql = extra.when ? `${insert} where ${extra.when.sql}` : insert;
+  const cred = credOf(actor);
   return stmt(env.DB, sql).bind(
     newId(),
     Date.now(),
     actor.kind,
     actor.id,
+    cred?.kind ?? null,
+    cred?.id ?? null,
     action,
     target.type,
     target.id,
     extra.spaceId ?? null,
     JSON.stringify(detail),
+    ...(extra.detailSql?.args ?? []),
     ...(extra.when?.args ?? []),
   );
 }
@@ -83,29 +122,39 @@ export const userActor = (id: string): AuditActor => ({ kind: "user", id });
  * tenant domain. Never the address. It records the admission (the user row
  * touched on sign-in) and commits with it; the session cookie is issued after
  * the batch, so a sign-in that never reaches the browser can still have a row.
+ * Its credential is null (#803): /auth/* reads any session cookie sent along,
+ * which may be another user's, and the new session doesn't exist yet.
  */
 export const signInAudit = (
   env: Env,
   userId: string,
   provider: string,
   tenant?: string | null,
+  when?: AuditExtra["when"],
 ): D1PreparedStatement =>
-  audit(env, "auth.signin", { type: "user", id: userId }, userActor(userId), {
-    detail: { provider, ...(tenant ? { tenant } : {}) },
-  });
+  audit(
+    env,
+    "auth.signin",
+    { type: "user", id: userId },
+    { ...userActor(userId), cred: null },
+    {
+      detail: { provider, ...(tenant ? { tenant } : {}) },
+      ...(when ? { when } : {}),
+    },
+  );
 
 /**
  * signInAudit keyed by the (normalized) email, for an admission that writes
  * the user row in the same batch and so has no id yet (Access's
  * upsertOnLogin): the subselect reads the row the batch just wrote. A drizzle
  * insert (drizzle's raw `run` can't join a D1 batch with parameters), in the
- * table's column order.
+ * table's column order. Credential null, as in signInAudit.
  */
 export const signInAuditByEmail = (env: Env, email: string, provider: string) =>
   getDb(env)
     .insert(auditEvents)
     .select(
-      sql`select ${newId()}, ${Date.now()}, 'user', u.id, 'auth.signin', 'user', u.id, null, ${JSON.stringify({ provider })}
+      sql`select ${newId()}, ${Date.now()}, 'user', u.id, 'auth.signin', 'user', u.id, null, ${JSON.stringify({ provider })}, null, null
         from users u where u.email = ${email}`,
     );
 
@@ -117,6 +166,8 @@ type Row = {
   actorKind: string;
   actorId: string | null;
   actorEmail: string | null;
+  credKind: string | null;
+  credId: string | null;
   action: string;
   targetType: string;
   targetId: string | null;
@@ -147,7 +198,8 @@ const bound = (op: "<" | "<=" | null) =>
 const PAGE_SQL = (
   op: "<" | "<=" | null,
 ) => `select e.id, e.at, e.actor_kind as actorKind,
-    e.actor_id as actorId, u.email as actorEmail, e.action,
+    e.actor_id as actorId, u.email as actorEmail,
+    e.actor_cred_kind as credKind, e.actor_cred_id as credId, e.action,
     e.target_type as targetType, e.target_id as targetId,
     e.space_id as spaceId, e.detail
   from audit_events e left join users u on u.id = e.actor_id
@@ -178,6 +230,12 @@ function parseDetail(s: string): {
   };
 }
 
+/** The row's credential; an unknown kind reads as none. */
+function credOfRow(r: Row): AuditCred | null {
+  const k = AuditCredKindSchema.safeParse(r.credKind);
+  return k.success ? { kind: k.data, id: r.credId } : null;
+}
+
 function toEvent(r: Row): AuditEvent | null {
   if (
     !ACTOR_KINDS.has(r.actorKind) ||
@@ -193,6 +251,7 @@ function toEvent(r: Row): AuditEvent | null {
       kind: r.actorKind as AuditEvent["actor"]["kind"],
       id: r.actorId,
       email: r.actorKind === "user" ? r.actorEmail : null,
+      cred: credOfRow(r),
     },
     action: r.action as AuditAction,
     target: {
@@ -419,4 +478,39 @@ export async function exportAudit(
     },
   });
   return { stream, nextCursor };
+}
+
+/** Rows one sweep statement deletes (D1 bills 1 row written, 4 read, per row; test/d1-rows). */
+export const AUDIT_SWEEP_BATCH = 1000;
+/** Sweep statements per cron run: at most 5000 rows a day. */
+export const AUDIT_SWEEP_STATEMENTS = 5;
+
+// Oldest first through audit_events_at_idx (the subquery is an index-only
+// range scan; each delete is a primary-key lookup). D1 has no DELETE ... LIMIT.
+const SWEEP_SQL = `delete from audit_events where id in
+  (select id from audit_events where at < ? order by at limit ?)`;
+
+/**
+ * Daily cron: deletes audit rows older than AUDIT_RETENTION_MS (400 days),
+ * oldest first, at most `statements` × `batch` rows per run so a large backlog
+ * can't exceed the invocation's query or CPU limits; the rest goes the next
+ * day. Logs the count only (no row content). Returns the rows deleted.
+ */
+export async function sweepAuditEvents(
+  env: Env,
+  now: number,
+  batch = AUDIT_SWEEP_BATCH,
+  statements = AUDIT_SWEEP_STATEMENTS,
+): Promise<number> {
+  const cutoff = now - AUDIT_RETENTION_MS;
+  let deleted = 0;
+  let more = false;
+  for (let i = 0; i < statements; i++) {
+    const r = await stmt(env.DB, SWEEP_SQL).bind(cutoff, batch).run();
+    deleted += r.meta.changes;
+    more = r.meta.changes >= batch;
+    if (!more) break;
+  }
+  if (deleted > 0) logInfo("audit_swept", { deleted, more });
+  return deleted;
 }
