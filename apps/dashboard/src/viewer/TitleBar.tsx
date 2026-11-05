@@ -125,7 +125,10 @@ export function TitleBar({
   live,
   newer = false,
   gone = false,
+  comments,
 }: {
+  /** The Comments button (#682): the open count, and what it toggles. Absent when comments are off. */
+  comments?: { open: number; expanded: boolean; onClick: () => void };
   artifact: ArtifactSummary;
   version: number;
   explicitVersion: boolean;
@@ -260,6 +263,26 @@ export function TitleBar({
         )}
       </div>
       <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%]">
+        {comments && (
+          <ShButton
+            variant="outline"
+            size="xs"
+            className={SM}
+            aria-label={
+              comments.open > 0 ? `Comments, ${comments.open} open` : "Comments"
+            }
+            aria-expanded={comments.expanded}
+            disabled={gone}
+            onClick={comments.onClick}
+          >
+            Comments
+            {comments.open > 0 && (
+              <span className="rounded-full bg-primary px-1.5 text-[length:var(--oa-text-xs)] text-primary-foreground">
+                {comments.open}
+              </span>
+            )}
+          </ShButton>
+        )}
         {authed && (
           <ShButton
             variant="outline"

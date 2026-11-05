@@ -598,6 +598,25 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
       </section>
 
       <section>
+        <h3 className={H3}>Comments</h3>
+        <div className="oa-cap">
+          <LabelledCheckbox
+            id="oa-comments"
+            describedBy="oa-comments-hint"
+            label="Comments"
+            checked={artifact.comments !== false}
+            disabled={!vis || patch.isPending}
+            onCheckedChange={(on) => save({ comments: on })}
+          />
+          <small id="oa-comments-hint" className="oa-muted">
+            {artifact.visibility === "public"
+              ? "Anyone with the link can comment. Signed-out visitors pick a display name."
+              : "People who can open this can comment on it."}
+          </small>
+        </div>
+      </section>
+
+      <section>
         <h3 className={H3}>Live data</h3>
         {CAPS.map(([k, label, hint]) => (
           <div className="oa-cap" key={k}>

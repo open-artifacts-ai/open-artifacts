@@ -509,3 +509,15 @@ a.oa-lpill-gone {
   font-size: 12px;
   margin-bottom: 8px;
 }
+/* Embeds show no comments, only a way to open the artifact and add one (#682). */
+.oa-opencomment {
+  position: fixed;
+  right: 8px;
+  bottom: 8px;
+  z-index: 10;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--oa-bg);
+  border: 1px solid var(--oa-border);
+  font-size: var(--oa-text-xs);
+}

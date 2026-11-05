@@ -2,6 +2,7 @@ import { type ArtifactSummary, ArtifactSummarySchema, R } from "@oa/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiClientError, api } from "../api/client";
+import { commentsKey } from "../api/comments";
 import { qk } from "../api/queries";
 import { connectArtifactEvents, type GoneReason, onWake } from "./liveEvents";
 
@@ -303,7 +304,10 @@ export function useLiveVersions(o: {
       id,
       embed,
       onEvent: (e) => {
-        if (e.type === "hello") {
+        if (e.type === "comments") {
+          // Someone commented, replied or resolved: refetch the list.
+          void qc.invalidateQueries({ queryKey: commentsKey(id) });
+        } else if (e.type === "hello") {
           down.current = false;
           enqueue({ version: e.version });
         } else if (e.type === "version") {
@@ -332,7 +336,7 @@ export function useLiveVersions(o: {
       sock.current = null;
       clearTimeout(debounce.current);
     };
-  }, [id, embed, enqueue, check, goGone, generation]);
+  }, [id, embed, enqueue, check, goGone, generation, qc]);
 
   /** The owner's Restore on the deleted notice (within the 30-day window). */
   const undelete = useCallback(async () => {
