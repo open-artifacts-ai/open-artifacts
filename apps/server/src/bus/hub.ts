@@ -256,7 +256,23 @@ const idsGated = (ws: WebSocket | null): boolean => {
 };
 
 /** What this hub supports, listed in `hello_ok.caps` to a hello that listed ids. */
-const HUB_CAPS = [BUS_CAPS.rename, BUS_CAPS.roles, BUS_CAPS.ids];
+const HUB_CAPS = [
+  BUS_CAPS.rename,
+  BUS_CAPS.roles,
+  BUS_CAPS.ids,
+  BUS_CAPS.mailbox,
+];
+
+/**
+ * Lasting mailboxes (#1295, BUS_CAPS.mailbox): a receipt's `queued`/`since`,
+ * the `mailbox_full` and `reserved_name` refusals, roster away rows and the
+ * `agent_up` handover go only to a socket whose hello listed it. Fails
+ * closed, like renameGated.
+ */
+const mailboxGated = (ws: WebSocket | null): boolean => {
+  const caps = ws ? attachmentOf(ws)?.caps : undefined;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.mailbox);
+};
 
 /**
  * Role addresses (#1296): `role_vacant` and a role hit's receipt `to_name`
@@ -290,11 +306,14 @@ const toNameShown = (
  * strict decoder refuses the reason, failing the whole frame); any other gets
  * `unknown_agent`, as if the role or the agent did not exist.
  */
-const wireReason = (ws: WebSocket, reason: RefusalReason): RefusalReason =>
-  (reason === "role_vacant" && !rolesGated(ws)) ||
-  (reason === "agent_gone" && !idsGated(ws))
+const wireReason = (ws: WebSocket, reason: RefusalReason): RefusalReason => {
+  if (reason === "mailbox_full") return mailboxGated(ws) ? reason : "inbox_full";
+  return (reason === "role_vacant" && !rolesGated(ws)) ||
+    (reason === "agent_gone" && !idsGated(ws)) ||
+    (reason === "reserved_name" && !mailboxGated(ws))
     ? "unknown_agent"
     : reason;
+};
 
 function machineOf(ws: WebSocket): string | null {
   return attachmentOf(ws)?.machineId ?? null;
@@ -1387,6 +1406,39 @@ function agentUp(
   };
 }
 
+/**
+ * #1295: the daemon says `agent_ref` is the old `replaces` session of the same
+ * live process (a /clear). The old ref's agent row is re-keyed to the new ref,
+ * so the agent_up that follows reopens it: same name and former names, and its
+ * pending mail (kept or flushed) instead of `<name>-2`. Only an agent of this
+ * same machine, only when the new ref is not already known; otherwise nothing
+ * changes and the new ref registers as any other.
+ */
+function takeOver(
+  sql: SqlStorage,
+  machineId: string,
+  oldRef: string,
+  newRef: string,
+): void {
+  if (oldRef === newRef) return;
+  if (
+    one(
+      sql,
+      "select 1 as x from agents where machine_id = ? and native_ref = ?",
+      machineId,
+      newRef,
+    ) !== null
+  )
+    return;
+  sql.exec(
+    "update agents set native_ref = ? where machine_id = ? and native_ref = ? and org_id = ?",
+    newRef,
+    machineId,
+    oldRef,
+    OWNER_ORG_ID,
+  );
+}
+
 /** Closes an open agent (its session ended); returns it, or null. */
 function agentDown(
   sql: SqlStorage,
@@ -1420,6 +1472,7 @@ function roster(
   id: string,
   formerFields: boolean,
   now: number,
+  withAway = false,
 ): ServerFrame {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
@@ -1461,6 +1514,53 @@ function roster(
       )
       .slice(0, cap);
   }
+  // #1295: a mailbox-capable socket also sees the agents away in its scope.
+  if (withAway) {
+    const scope =
+      agent.global === 1
+        ? ""
+        : "and (f.global = 1 or f.namespace = ?)";
+    const away = all<AgentRow>(
+      sql,
+      `select ${AGENT_COLS} from agents where org_id = ? and live = 0 and id in
+         (select f.agent_id from former_names f
+            join agents a on a.id = f.agent_id
+            left join machines m on m.id = a.machine_id
+           where f.org_id = ? and f.kind = 'away' and f.expires_at > ?
+             and a.live = 0 and m.revoked_at is null ${scope})
+       order by namespace, name limit ?`,
+      OWNER_ORG_ID,
+      OWNER_ORG_ID,
+      now,
+      ...(agent.global === 1 ? [] : [agent.namespace]),
+      cap,
+    );
+    if (away.length > 0)
+      rows = [...rows, ...away]
+        .sort((a, b) =>
+          a.namespace === b.namespace
+            ? a.name < b.name
+              ? -1
+              : a.name > b.name
+                ? 1
+                : 0
+            : a.namespace < b.namespace
+              ? -1
+              : 1,
+        )
+        .slice(0, cap);
+  }
+  const awaySince = new Map<string, number>();
+  if (withAway) {
+    const ids = rows.filter((r) => r.live !== 1).map((r) => r.id);
+    if (ids.length > 0)
+      for (const r of all<{ id: string; t: number | null }>(
+        sql,
+        "select id, away_since as t from agents where id in (select value from json_each(?))",
+        JSON.stringify(ids),
+      ))
+        if (r.t !== null) awaySince.set(r.id, r.t);
+  }
   const online = new Map<string, boolean>();
   const stateOf = (machineId: string): "live" | "queued" => {
     let on = online.get(machineId);
@@ -1487,7 +1587,10 @@ function roster(
         kind: r.kind as AgentKind,
         namespace: r.namespace,
         global: r.global === 1,
-        state: stateOf(r.machineId),
+        state: r.live === 1 ? stateOf(r.machineId) : ("away" as const),
+        ...(r.live !== 1 && awaySince.has(r.id)
+          ? { since: new Date(awaySince.get(r.id) as number).toISOString() }
+          : {}),
         // The key is omitted, never null, if a row's machine has no label.
         ...(label === undefined ? {} : { machine_label: label }),
         ...statusWire(r),
@@ -1767,6 +1870,31 @@ function awayAgent(
   return { ok: true, agent: first };
 }
 
+/**
+ * #1295: whether `lname` is only a `held` reservation (a name a moved or
+ * flipped agent left, 1 h) in scope `ns` (its namespace, or a global), or
+ * any scope for null. It has no mailbox: a send to it is `reserved_name`.
+ */
+function heldName(
+  sql: SqlStorage,
+  ns: string | null,
+  lname: string,
+  now: number,
+): boolean {
+  const scope = ns === null ? "" : "and (f.global = 1 or f.namespace = ?)";
+  return (
+    one(
+      sql,
+      `select 1 as x from former_names f indexed by former_names_lname
+        where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind = 'held' ${scope} limit 1`,
+      OWNER_ORG_ID,
+      lname,
+      now,
+      ...(ns === null ? [] : [ns]),
+    ) !== null
+  );
+}
+
 /** Up to `limit` live agents named `lname`, in any namespace. */
 function liveAnywhere(
   sql: SqlStorage,
@@ -1940,6 +2068,8 @@ function resolveTarget(
     if (away) return away;
     const gone = goneReason(sql, sender.namespace, lname);
     if (gone) return refused(gone);
+    if (heldName(sql, sender.namespace, lname, now))
+      return refused("reserved_name");
     // Other namespaces are invisible and unreachable (spec goal 5, scenario
     // 6): a name live only elsewhere is unknown_agent, so no probe can tell
     // it exists. other_namespace answers an explicit to_namespace only.
@@ -1952,6 +2082,8 @@ function resolveTarget(
     if (away) return away;
     const gone = goneReason(sql, toNamespace, lname);
     if (gone) return refused(gone);
+    if (heldName(sql, toNamespace, lname, now))
+      return refused("reserved_name");
     return refused("unknown_agent");
   }
   // R393b: the sender's own namespace first, current then former names.
@@ -1988,6 +2120,7 @@ function resolveTarget(
   if (away) return away;
   const gone = goneReason(sql, null, lname);
   if (gone) return refused(gone);
+  if (heldName(sql, null, lname, now)) return refused("reserved_name");
   return refused("unknown_agent");
 }
 
@@ -2008,6 +2141,43 @@ function inboxFull(sql: SqlStorage, agent: AgentRow, size: number): boolean {
     (row?.n ?? 0) >= MAILBOX_PENDING_CAP ||
     (row?.b ?? 0) + size > MAILBOX_BYTES_CAP
   );
+}
+
+/**
+ * #1295: a send receipt's `queued` and `since`, only to a mailbox-capable
+ * socket, only when the mail is stored for a recipient with no session to
+ * push to: `away` (closed, since its close) or `offline` (open, but its
+ * machine is offline, since the machine went offline).
+ */
+function queuedWire(
+  ws: WebSocket,
+  ctx: DurableObjectState,
+  agentId: string,
+  now: number,
+): { queued: "away" | "offline"; since: string } | Record<string, never> {
+  if (!mailboxGated(ws)) return {};
+  const sql = ctx.storage.sql;
+  const a = one<{
+    live: number;
+    awaySince: number | null;
+    machineId: string;
+    disconnectedAt: number | null;
+  }>(
+    sql,
+    `select a.live as live, a.away_since as awaySince, a.machine_id as machineId, m.disconnected_at as disconnectedAt
+       from agents a left join machines m on m.id = a.machine_id where a.id = ?`,
+    agentId,
+  );
+  if (!a) return {};
+  if (a.live !== 1)
+    return a.awaySince === null
+      ? {}
+      : { queued: "away", since: new Date(a.awaySince).toISOString() };
+  if (machineOnline(ctx, a.machineId)) return {};
+  return {
+    queued: "offline",
+    since: new Date(a.disconnectedAt ?? now).toISOString(),
+  };
 }
 
 /** A refused send: a fresh msg_id and no stored row (no send key either, B14). */
@@ -3201,7 +3371,9 @@ export class BusHub extends DurableObject<Env> {
           server_version: VERSION,
           // Only to a hello that listed ids: any other client decodes hello_ok
           // strictly, a rename-only one included.
-          ...(hasCap(f, BUS_CAPS.ids) ? { caps: [...HUB_CAPS] } : {}),
+          ...(hasCap(f, BUS_CAPS.ids) || hasCap(f, BUS_CAPS.mailbox)
+            ? { caps: [...HUB_CAPS] }
+            : {}),
         });
         return;
       case "sessions": {
@@ -3242,6 +3414,10 @@ export class BusHub extends DurableObject<Env> {
           sendError(ws, f.id, "rate_limited", AGENT_CAP_MESSAGES.machine);
           return;
         }
+        // #1295: a /clear. The same process reports a new session; the new
+        // ref takes over the old one's agent row (address, former names, mail).
+        if (f.replaces !== undefined && mailboxGated(ws))
+          takeOver(sql, machineId, f.replaces, f.agent_ref);
         const { reply, change, arms } = agentUp(sql, machineId, f, this.#now());
         for (const t of arms) this.#arm(t);
         sendFrame(ws, reply);
@@ -3272,7 +3448,14 @@ export class BusHub extends DurableObject<Env> {
         if (sender)
           sendFrame(
             ws,
-            roster(this.ctx, sender, f.id, renameGated(ws), this.#now()),
+            roster(
+              this.ctx,
+              sender,
+              f.id,
+              renameGated(ws),
+              this.#now(),
+              mailboxGated(ws),
+            ),
           );
         return;
       case "send":
@@ -3606,7 +3789,7 @@ export class BusHub extends DurableObject<Env> {
     const target = res.agent;
     const size = utf8Bytes(f.body);
     if (inboxFull(sql, target, size) || this.#hubFull(size, now)) {
-      refuseSend(ws, f.id, "inbox_full");
+      refuseSend(ws, f.id, "mailbox_full");
       return;
     }
     if (!this.#roomForKey(sender.id)) {
@@ -3668,6 +3851,7 @@ export class BusHub extends DurableObject<Env> {
       ...(toNameShown(ws, f.to_name, target.name, viaRole)
         ? { to_name: target.name }
         : {}),
+      ...queuedWire(ws, this.ctx, target.id, now),
     });
     if (!socket) return;
 
@@ -3759,14 +3943,16 @@ export class BusHub extends DurableObject<Env> {
       state: string;
       reason: string | null;
       toName: string | null;
+      toAgent: string | null;
     }>(
       sql,
-      "select state, reason, to_name as toName from receipts where id = ?",
+      "select state, reason, to_name as toName, to_agent as toAgent from receipts where id = ?",
       msgId,
     ) ?? {
       state: "expired",
       reason: null,
       toName: null,
+      toAgent: null,
     };
     sendFrame(ws, {
       v: 1,
@@ -3778,6 +3964,10 @@ export class BusHub extends DurableObject<Env> {
       // (the name the send resolved to, from the receipt row).
       ...(r.toName !== null && toNameShown(ws, sentTo, r.toName, viaRole)
         ? { to_name: r.toName }
+        : {}),
+      // Only while the mail still waits: a final state has no queue to show.
+      ...(r.state === "pending" && r.toAgent !== null
+        ? queuedWire(ws, this.ctx, r.toAgent, this.#now())
         : {}),
     });
     const update = updateFrame(msgId, r.state, r.reason);

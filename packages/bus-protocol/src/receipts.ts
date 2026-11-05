@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { newMsgId } from "./ids.ts";
 import { BusNameSchema } from "./names.ts";
+import { IsoTimeSchema } from "./status.ts";
 
 export const RECEIPT_STATES = [
   "pending",
@@ -27,6 +28,18 @@ export const REFUSAL_REASONS = [
   "role_vacant",
   /** A reply's `to_id` no longer holds the name: the agent it answers is gone. */
   "agent_gone",
+  /**
+   * #1295: the address's mailbox is full (pending count or bytes). Sent only
+   * to a socket whose hello listed `BUS_CAPS.mailbox`; any other gets
+   * `inbox_full`.
+   */
+  "mailbox_full",
+  /**
+   * #1295: the name is only a `held` reservation of a moved or flipped agent;
+   * it has no mailbox. Sent only to a `BUS_CAPS.mailbox` socket; any other
+   * gets `unknown_agent`.
+   */
+  "reserved_name",
 ] as const;
 export const RefusalReasonSchema = z.enum(REFUSAL_REASONS);
 export type RefusalReason = z.infer<typeof RefusalReasonSchema>;
@@ -69,6 +82,14 @@ export const receiptShape = {
    * hello listed `BUS_CAPS.roles`. An ordinary send never carries it.
    */
   to_name: BusNameSchema.optional(),
+  /**
+   * #1295, on a `pending` send receipt only, to a socket whose hello listed
+   * `BUS_CAPS.mailbox`: the mail was stored, not pushed. `away`: the
+   * recipient is closed and its mailbox waits for it. `offline`: it is open
+   * but its machine is offline. `since` is when that began.
+   */
+  queued: z.enum(["away", "offline"]).optional(),
+  since: IsoTimeSchema.optional(),
 } as const;
 
 export const ReceiptSchema = z
