@@ -3,6 +3,7 @@
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   realpathSync,
   symlinkSync,
@@ -17,10 +18,11 @@ import {
   ConfigIssues,
   inspectGlobal,
   scanConfigFiles,
+  shq,
 } from "../src/config-issues.ts";
 import { readGlobalDirs } from "../src/global.ts";
 import { resolveNamespace } from "../src/namespace.ts";
-import { readOwnFile } from "../src/own-file.ts";
+import { isPrivateGroup, readOwnFile } from "../src/own-file.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
@@ -28,6 +30,10 @@ afterEach(stopAll);
 const tmp = () => realpathSync(mkdtempSync(join(tmpdir(), "ob-1527-")));
 const noGit = { gitRemote: () => null, gitRoot: () => null };
 const me = process.getuid?.() ?? 0;
+const myGid = process.getgid?.() ?? 0;
+/** The user's private group, or a shared one, without reading /etc/group. */
+const privateGroup = { gid: myGid, isPrivate: () => true };
+const sharedGroup = { gid: myGid, isPrivate: () => false };
 
 const write = (mode: number, text = JSON.stringify({ namespace: "mine" })) => {
   const dir = tmp();
@@ -40,7 +46,10 @@ const write = (mode: number, text = JSON.stringify({ namespace: "mine" })) => {
 describe("readOwnFile with allowGroupWrite", () => {
   it("accepts a group-writable file you own, with a note", () => {
     const { file } = write(0o664);
-    const r = readOwnFile(file, me, { allowGroupWrite: true });
+    const r = readOwnFile(file, me, {
+      allowGroupWrite: true,
+      group: privateGroup,
+    });
     expect(r).toMatchObject({ state: "ok", note: "is writable by its group" });
   });
 
@@ -88,14 +97,19 @@ describe("namespace config", () => {
     const { dir, file } = write(0o664);
     const issues = new ConfigIssues();
     const log = vi.fn();
-    const ns = resolveNamespace(dir, { ...noGit, log, issues });
+    const ns = resolveNamespace(dir, {
+      ...noGit,
+      log,
+      issues,
+      group: privateGroup,
+    });
     expect(ns.namespace).toBe("mine");
     expect(issues.list()).toEqual([
       {
         file,
         state: "noted",
         reason: "is writable by its group",
-        fix: `optional: run chmod g-w ${file}`,
+        fix: `optional: run chmod g-w '${file}'`,
       },
     ]);
   });
@@ -114,7 +128,7 @@ describe("namespace config", () => {
         file,
         state: "refused",
         reason: "is writable by everyone",
-        fix: `run chmod o-w ${file}`,
+        fix: `run chmod o-w '${file}'`,
       },
     ]);
   });
@@ -135,7 +149,7 @@ describe("namespace config", () => {
       file,
       state: "refused",
       reason: "belongs to another user",
-      fix: `remove it (rm ${file}) or take it over (chown "$USER" ${file})`,
+      fix: `remove it (rm '${file}') or take it over (chown "$USER" '${file}')`,
     });
   });
 });
@@ -152,7 +166,7 @@ describe("scanConfigFiles", () => {
       [file, "refused"],
       [g, "refused"],
     ]);
-    expect(out[1]?.fix).toBe(`run chmod go-w ${g}`);
+    expect(out[1]?.fix).toBe(`run chmod go-w '${g}'`);
   });
 });
 
@@ -172,7 +186,7 @@ describe("the daemon tells status and self", () => {
         file,
         state: "refused",
         reason: "is writable by everyone",
-        fix: `run chmod o-w ${file}`,
+        fix: `run chmod o-w '${file}'`,
       },
     ]);
   });
@@ -226,6 +240,101 @@ describe("an old adapter or CLI still decodes the new frames", () => {
   });
 });
 
+describe("#1527 review: group-writable only for a user-private group", () => {
+  it("a shared group is refused, with a chmod g-w fix", () => {
+    const { file } = write(0o664);
+    expect(
+      readOwnFile(file, me, { allowGroupWrite: true, group: sharedGroup }),
+    ).toEqual({ state: "unsafe", why: "is writable by a group others share" });
+    const { dir } = write(0o664);
+    const issues = new ConfigIssues();
+    resolveNamespace(dir, { ...noGit, issues, group: sharedGroup });
+    expect(issues.list()[0]).toMatchObject({
+      state: "refused",
+      fix: `run chmod g-w '${join(dir, ".oa-bus.json")}'`,
+    });
+  });
+
+  it("a file in a group that is not the process's own group is refused", () => {
+    const { file } = write(0o664);
+    expect(
+      readOwnFile(file, me, {
+        allowGroupWrite: true,
+        group: { gid: myGid + 1, isPrivate: () => true },
+      }),
+    ).toMatchObject({ state: "unsafe" });
+  });
+
+  const user = "alice";
+  const line = (members: string) => `${user}:x:1000:${members}\nstaff:x:20:\n`;
+  it("isPrivateGroup: the user's own group with no members", () => {
+    expect(isPrivateGroup(1000, user, () => line(""))).toBe(true);
+  });
+  it("isPrivateGroup: a group with members is not private", () => {
+    expect(isPrivateGroup(1000, user, () => line("bob"))).toBe(false);
+    expect(isPrivateGroup(1000, user, () => line(user))).toBe(false);
+  });
+  it("isPrivateGroup: another name, or no entry, is not private", () => {
+    expect(isPrivateGroup(20, user, () => line(""))).toBe(false);
+    expect(isPrivateGroup(77, user, () => line(""))).toBe(false);
+  });
+  it("isPrivateGroup: an unreadable /etc/group is not private", () => {
+    expect(
+      isPrivateGroup(1000, user, () => {
+        throw new Error("ENOENT");
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("#1527 review: fixes are safe to paste", () => {
+  const evil = "x$(touch pwn)`id` a'b\nc";
+  it("shq single-quotes, escaping a single quote", () => {
+    expect(shq("a'b")).toBe("'a'\\''b'");
+    expect(shq("$(x) `y`")).toBe("'$(x) `y`'");
+  });
+
+  it("a path with $(), backticks, spaces, a quote and a newline is quoted in every fix", () => {
+    const root = tmp();
+    const dir = join(root, evil);
+    mkdirSync(dir);
+    const file = join(dir, ".oa-bus.json");
+    writeFileSync(file, "{}");
+    chmodSync(file, 0o666);
+    const quoted = `'${file.replace(/'/g, "'\\''")}'`;
+    const issues = new ConfigIssues();
+    resolveNamespace(dir, { ...noGit, issues });
+    expect(issues.list()[0]?.fix).toBe(`run chmod o-w ${quoted}`);
+    chmodSync(file, 0o600);
+    resolveNamespace(dir, { ...noGit, uid: me + 1, issues });
+    expect(issues.list()[0]?.fix).toBe(
+      `remove it (rm ${quoted}) or take it over (chown "$USER" ${quoted})`,
+    );
+  });
+});
+
+describe("#1527 review: self shows only the asking agent's chain", () => {
+  it("two agents in different folders each see their own file, not the other's", async () => {
+    const a = write(0o666);
+    const b = write(0o666);
+    const h = await daemonHarness({ resolveNamespace: undefined });
+    const A = await h.adapter("A", { cwd: a.dir });
+    const B = await h.adapter("B", { cwd: b.dir });
+    const files = async (c: typeof A) => {
+      const r = await c.request({ type: "self", row: true });
+      return r.type === "agent"
+        ? (r.agent?.config_files ?? []).map((f) => f.file)
+        : [];
+    };
+    expect(await files(A)).toEqual([a.file]);
+    expect(await files(B)).toEqual([b.file]);
+    const st = await daemonStatus({ path: h.socketPath, timeoutMs: 3000 });
+    expect((st.config_files ?? []).map((f) => f.file).sort()).toEqual(
+      [a.file, b.file].sort(),
+    );
+  });
+});
+
 describe("global.json stays strict", () => {
   it("a group-writable global.json grants nothing and is listed with its fix", () => {
     const g = join(tmp(), "global.json");
@@ -239,7 +348,7 @@ describe("global.json stays strict", () => {
       file: g,
       state: "refused",
       reason: "is writable by others",
-      fix: `run chmod go-w ${g}`,
+      fix: `run chmod go-w '${g}'`,
     });
   });
 });

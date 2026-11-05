@@ -563,6 +563,7 @@ export function copy(style: Style) {
       state: "refused" | "noted";
       reason: string;
       fix: string;
+      restart?: boolean;
     }) => [
       warn(
         f.state === "refused"
@@ -570,6 +571,7 @@ export function copy(style: Style) {
           : `${f.file} ${f.reason}; it is still used.`,
       ),
       next(`Fix: ${f.fix}`),
+      ...(f.restart ? [next("Restart the session to pick up a fix.")] : []),
     ],
     globalAsked: () => [
       warn("This repo's .oa-bus.json asks for global, which is ignored here."),

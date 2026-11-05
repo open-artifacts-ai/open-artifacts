@@ -1,4 +1,4 @@
-import { lstatSync, writeFileSync } from "node:fs";
+import { lstatSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import { claudeSessionsDir } from "@oa/bus-adapter-claude-code";
 import {
@@ -55,7 +55,7 @@ import {
   savedToken,
   socketPath,
 } from "./config.ts";
-import { ConfigIssues, inspectGlobal } from "./config-issues.ts";
+import { ConfigIssues, configPaths, inspectGlobal } from "./config-issues.ts";
 import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
 import { HubConnection, type HubOptions } from "./hub.ts";
 import {
@@ -308,9 +308,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
 
   const configIssues = new ConfigIssues();
   /** Config files refused or noted (#1527): `.oa-bus.json` files seen, and the allowlist. */
-  const configFiles = () => {
+  const configFiles = (cwd?: string) => {
     const g = inspectGlobal();
-    return [...configIssues.list(), ...(g ? [g] : [])];
+    let within: Set<string> | undefined;
+    // An agent sees only its own folder chain: other projects' paths stay private.
+    if (cwd !== undefined) {
+      try {
+        within = new Set(configPaths(realpathSync(cwd)));
+      } catch {
+        within = new Set(configPaths(cwd));
+      }
+    }
+    return [...configIssues.list(within), ...(g ? [g] : [])];
   };
   const resolveNs = (cwd: string, allowMissing: boolean) =>
     (

@@ -16,6 +16,7 @@ import {
   DaemonSilentError,
   daemonStatus,
   type StatusReply,
+  stripTerminalControls,
   systemTool,
 } from "@oa/bus-ipc";
 import { type Copy, copy } from "./copy.ts";
@@ -326,7 +327,14 @@ export const tilde = (ctx: Pick<Ctx, "userHome">, path: string) =>
       ? `~${path.slice(ctx.userHome.length)}`
       : path;
 
-/** Config files refused or noted, with the file and the fix shown under `~`. */
+/** Text from a path never drives the terminal or forges a line. */
+const plain = (text: string) =>
+  stripTerminalControls(text).replace(/[\r\n\t]/g, " ");
+
+/**
+ * Config files refused or noted: the file shown under `~`, the fix as given
+ * (its path is quoted, so `~` would not expand), controls stripped from both.
+ */
 export const configFileLines = (
   ctx: Ctx,
   files: readonly {
@@ -338,8 +346,11 @@ export const configFileLines = (
 ): string[] =>
   files.flatMap((f) =>
     ctx.copy.configFile({
-      ...f,
-      file: tilde(ctx, f.file),
-      fix: f.fix.split(f.file).join(tilde(ctx, f.file)),
+      state: f.state,
+      reason: plain(f.reason),
+      file: plain(tilde(ctx, f.file)),
+      fix: plain(f.fix),
+      // The namespace is resolved when a session starts.
+      restart: f.file.endsWith("/.oa-bus.json"),
     }),
   );
