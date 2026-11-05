@@ -1009,6 +1009,31 @@ describe("creator count", () => {
     ).toBe(prev);
     expect(previousMonth("2026-01")).toBe("2025-12");
   });
+
+  it("the monthly report sends every unsent month after the last sent one, oldest first", async () => {
+    const prev = previousMonth(monthOf(mid));
+    const skipped = previousMonth(prev);
+    const sent = previousMonth(skipped);
+    await env.DB.prepare(
+      "insert into creator_months (month, user_id, source, first_at) values (?, 'uA', 'version', 1), (?, 'uB', 'version', 2), (?, 'uC', 'version', 3)",
+    )
+      .bind(sent, skipped, prev)
+      .run();
+    await env.DB.prepare("insert into settings (key, value) values (?, ?)")
+      .bind(USAGE_SENT_KEY, sent)
+      .run();
+    await withBrokerProps({ props: PROPS }, () => usageTick(H, mid));
+    expect(
+      calls.filter((c) => c.path === "/usage").map((c) => c.body?.month),
+    ).toEqual([skipped, prev]);
+    expect(
+      (
+        await env.DB.prepare("select value from settings where key = ?")
+          .bind(USAGE_SENT_KEY)
+          .first<{ value: string }>()
+      )?.value,
+    ).toBe(prev);
+  });
 });
 
 // ------------------------------------------------------- Me and the routes

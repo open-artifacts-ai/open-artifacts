@@ -33,6 +33,12 @@ export function previousMonth(month: string): string {
   return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
 }
 
+/** The month after `month` (YYYY-MM). */
+export function nextMonth(month: string): string {
+  const [y, m] = month.split("-").map(Number) as [number, number];
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+}
+
 const RECORD = `insert or ignore into creator_months (month, user_id, source, first_at)
   values (?1, ?2, ?3, ?4)`;
 
@@ -129,9 +135,14 @@ export async function sendUsage(
   return r.data;
 }
 
+/** The most months one tick catches up (a stuck report never loops forever). */
+const USAGE_CATCH_UP_MAX = 24;
+
 /**
- * The scheduler tick's monthly report: once a month, the previous month's
- * final list, until billing accepts it (then USAGE_SENT_KEY). Never throws.
+ * The scheduler tick's monthly report: every month after the last accepted
+ * one (USAGE_SENT_KEY) up to the previous month, oldest first, each one's
+ * final list, stopping at the first billing refuses (the next tick retries
+ * from there). With nothing sent yet, the previous month only. Never throws.
  */
 export async function usageTick(env: Env, now: number): Promise<void> {
   if (!billingOn(env)) return;
@@ -142,14 +153,24 @@ export async function usageTick(env: Env, now: number): Promise<void> {
     )
       .bind(USAGE_SENT_KEY)
       .first<{ value: string }>();
-    if (sent && sent.value >= prev) return;
-    await sendUsage(env, prev, now);
-    await env.DB.prepare(
-      `insert into settings (key, value) values (?1, ?2)
-       on conflict (key) do update set value = excluded.value where settings.value < excluded.value`,
-    )
-      .bind(USAGE_SENT_KEY, prev)
-      .run();
+    const months: string[] = [];
+    if (!sent) months.push(prev);
+    else
+      for (
+        let m = nextMonth(sent.value);
+        m <= prev && months.length < USAGE_CATCH_UP_MAX;
+        m = nextMonth(m)
+      )
+        months.push(m);
+    for (const month of months) {
+      await sendUsage(env, month, now);
+      await env.DB.prepare(
+        `insert into settings (key, value) values (?1, ?2)
+         on conflict (key) do update set value = excluded.value where settings.value < excluded.value`,
+      )
+        .bind(USAGE_SENT_KEY, month)
+        .run();
+    }
   } catch (e) {
     const why = e instanceof BillingUnavailableError ? e.why : "error";
     logWarn("billing_usage_failed", undefined, { why });
