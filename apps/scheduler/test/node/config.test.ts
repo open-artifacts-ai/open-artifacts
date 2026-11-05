@@ -49,8 +49,9 @@ describe("wrangler.jsonc", () => {
         // is empty. The smoke's token and share target are secrets,
         // never vars: no address is ever committed.
         FLEET_SECOND: env === "staging" ? "" : "i2ab26lvciok",
-        // #1343: the smoke stays off on both until the user's setup.
-        FLEET_SMOKE: "off",
+        // #1343: required on prod once its smoke secrets were set (inert
+        // while its FLEET_CANARY is empty); off on staging until its setup.
+        FLEET_SMOKE: env === "staging" ? "off" : "required",
         // The share check is on in both: an explicit, committed choice.
         FLEET_SMOKE_SHARE: "on",
         // ... and keeps the passive soak: 15 min on staging, 60 on prod.
