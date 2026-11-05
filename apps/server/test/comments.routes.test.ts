@@ -167,6 +167,11 @@ describe("threads", () => {
 
   it("orders by newest activity: a reply moves its thread first", async () => {
     const id = await pub({ visibility: "team" });
+    // A pinned clock that moves one second a call: ties never decide the order.
+    await inDo(id, (i) => {
+      let t = 1_800_000_000_000;
+      i.now = () => (t += 1000);
+    });
     const a = await thread(await post(id, viewer, "a"));
     await post(id, viewer, "b");
     await call(id, viewer, `/${a.id}/replies`, {
@@ -1177,6 +1182,7 @@ describe("review fixes (#682)", () => {
     await inDo(id, async (i) => {
       const { listThreads } = await import("../src/runtime/comments-store.js");
       const sql = sqlOf(i);
+      i.now = () => 1_800_000_000_000;
       i.commentsAdd({
         actor: { kind: "user", ref: viewer.userId },
         rate: "u:a",
@@ -1184,6 +1190,8 @@ describe("review fixes (#682)", () => {
         version: 1,
         body: "x".repeat(600),
       });
+      // A pinned clock a minute later: the order is by activity, never by id.
+      i.now = () => 1_800_000_060_000;
       i.commentsAdd({
         actor: { kind: "user", ref: viewer.userId },
         rate: "u:b",
