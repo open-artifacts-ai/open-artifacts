@@ -1,3 +1,4 @@
+import { LIMITS as BUS_LIMITS } from "@oa/bus-protocol";
 import { LIMITS } from "@oa/shared";
 
 // Docs quote limits as {LIMIT_*} placeholders, filled from @oa/shared's
@@ -45,4 +46,5 @@ export const LIMIT_PLACEHOLDERS: Record<string, string> = {
   "{LIMIT_UPLOAD_TTL}": plural(LIMITS.uploadTtlHours, "hour"),
   "{LIMIT_INDEX_LAG}": formatSeconds(LIMITS.indexDebounceMs / 1000),
   "{LIMIT_INDEX_TEXT}": formatBytes(LIMITS.indexTextBytes),
+  "{LIMIT_BUS_CODE_TTL}": formatSeconds(BUS_LIMITS.deviceCodeTtlSec),
 };

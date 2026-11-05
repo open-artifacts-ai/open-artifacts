@@ -13,6 +13,8 @@ import {
 } from "../src/mcp/upgrade.generated.js";
 import { renderUpgrade, UPGRADE_ETAG } from "../src/mcp/upgrade.js";
 import {
+  BUS_DOCS,
+  MIN_UPGRADE_FROM,
   RELEASES_API,
   ROLLBACK_STEPS,
   renderUpgradeTemplate,
@@ -247,6 +249,23 @@ describe("upgrade.md content", () => {
     expect(s8).toContain("Never print the token");
     // The DNS wait-and-rerun is the healthcheck case only.
     expect(s8).toMatch(/From `healthcheck` \(DNS[^\n]*run step 7 again/);
+  });
+
+  it("below the minimum goes through it first; an unknown version is never guessed", async () => {
+    const md = await upgrade();
+    const s2 = md.split("## 2. ")[1]?.split("\n## ")[0] ?? "";
+    expect(s2).toContain(
+      `below ${MIN_UPGRADE_FROM}, setup refuses to skip past it: do steps 3 to 9 with v${MIN_UPGRADE_FROM}`,
+    );
+    const s7 = md.split("## 7. ")[1]?.split("\n## 8. ")[0] ?? "";
+    expect(s7).toContain("add `--deployed-version X.Y.Z` with that version");
+    expect(s7).toContain("never guess one");
+  });
+
+  it("the report says the agent bus is on and links its docs", async () => {
+    const s9 = (await upgrade()).split("## 9. ")[1] ?? "";
+    expect(s9).toContain("the agent bus is on, with nothing to configure");
+    expect(s9).toContain(BUS_DOCS);
   });
 
   it("origin is https for a real host, even on a dev Worker", async () => {

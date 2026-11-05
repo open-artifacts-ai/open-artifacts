@@ -25,6 +25,7 @@
     "wrangler": "^4.151.1"
   },
   "dependencies": {
+    "@oa/bus-protocol": "workspace:*",
     "@oa/shared": "workspace:*",
     "@oa/ui": "workspace:*",
     "astro": "^7.4.0"

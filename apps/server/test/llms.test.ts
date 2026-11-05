@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { CONTENT_POLICY, ROUTE_POLICY } from "../src/auth/route-policy.js";
 import { signContentPrefix } from "../src/content/signing.js";
 import {
+  BUS_PACKAGE,
   CLAUDE_PLUGIN,
   CLAUDE_PLUGIN_ENABLED,
   LLMS_PATH,
@@ -143,13 +144,14 @@ describe("GET /llms.txt", () => {
     resetOAuthStoreMarkers();
   });
 
-  it("has Connect, Restart, Verify and Troubleshoot, in order, for this instance", async () => {
+  it("has Connect, Restart, Verify, Agent bus and Troubleshoot, in order, for this instance", async () => {
     const txt = await guide();
     expect(txt.startsWith(`# Open Artifacts at ${HOST}\n`)).toBe(true);
     expect([...sections(txt).keys()]).toEqual([
       "Connect",
       "Restart",
       "Verify",
+      "Agent bus",
       "Troubleshoot",
     ]);
     expect(txt).toContain(`${skillOrigin(HOST)}/mcp`);
@@ -158,9 +160,27 @@ describe("GET /llms.txt", () => {
     );
   });
 
-  it("works the same on hosted and self-hosted", async () => {
+  it("hosted and self-hosted differ only by the Agent bus section (busOn)", async () => {
     const self = await guide(E({ HOSTED: undefined }));
-    expect(await guide(E({ HOSTED: "1" }))).toBe(self);
+    const hosted = await guide(E({ HOSTED: "1" }));
+    expect(self).toBe(renderLlms(HOST, { bus: true }));
+    expect(hosted).toBe(renderLlms(HOST, { bus: false }));
+    expect(hosted).not.toContain("## Agent bus");
+    expect(hosted).not.toContain("@open-artifacts/bus");
+    expect(await guide(E({ BUS_HUB: undefined }))).toBe(hosted);
+  });
+
+  it("Agent bus: one install command for this instance, one code, check and remove", async () => {
+    const bus = sections(await guide()).get("Agent bus") ?? "";
+    const origin = skillOrigin(HOST);
+    expect(codeBlocks(bus)).toEqual([
+      `npx ${BUS_PACKAGE} install --instance ${origin}`,
+    ]);
+    expect(bus).toContain(`${origin}/bus/approve within 10 minutes`);
+    expect(bus).toContain("not from nvm");
+    for (const cmd of ["status", "doctor", "uninstall"])
+      expect(bus).toContain(`\`npx ${BUS_PACKAGE} ${cmd}\``);
+    expect(bus).toContain(`${origin}/bus lists their machines`);
   });
 
   it("SKILL_MD=off: still served, without the /skill.md step", async () => {
@@ -255,7 +275,7 @@ describe("Claude Code plugin switch", () => {
   it("is off by default, and the served guide omits the block", async () => {
     expect(CLAUDE_PLUGIN_ENABLED).toBe(false);
     const txt = await guide();
-    expect(txt).toBe(renderLlms(HOST, { plugin: false }));
+    expect(txt).toBe(renderLlms(HOST, { plugin: false, bus: true }));
     expect(txt).not.toContain("claude plugin");
     expect(txt).not.toContain("prefer the plugin");
     expect(txt).not.toContain(CLAUDE_PLUGIN.option);
