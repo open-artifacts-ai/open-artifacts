@@ -56,6 +56,7 @@
       "git push *": "allow",
       "git fetch *": "allow",
       "git switch *": "allow",
+      "git merge --no-edit origin/main": "allow",
       "git worktree remove -- *": "allow",
       "pnpm exec vitest *": "allow",
       "pnpm -s typecheck": "allow",
