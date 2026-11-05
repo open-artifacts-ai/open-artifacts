@@ -189,8 +189,12 @@ describe("the published oa-bus package", () => {
   });
 
   it.each([
-    // Neither has a session here, and each says so in its own words.
-    ["claude", /no Claude session or daemon found/],
+    // Neither has a session here, and each says so in its own words. No
+    // Claude Code is above this one (#1448 item 6): no install advice.
+    [
+      "claude",
+      /^This MCP server is for Claude Code; use this harness's own bus tools\.$/,
+    ],
     ["opencode", /did not send a session id/],
     // No `_meta` here: no thread, so no hello.
     ["codex", /did not send the thread's identity/],
@@ -241,6 +245,12 @@ describe("the published oa-bus package", () => {
       child.stdin.write(
         `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`,
       );
+      const listed = (await call(3, "tools/list", {})) as {
+        result: { tools: { name: string }[] };
+      };
+      // Under another harness importing Claude's MCP config, it offers no tools.
+      if (harness === "claude") expect(listed.result.tools).toEqual([]);
+      else expect(listed.result.tools.length).toBeGreaterThan(0);
       const res = (await call(2, "tools/call", {
         name: "list_agents",
         arguments: {},

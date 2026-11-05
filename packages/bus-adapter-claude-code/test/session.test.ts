@@ -2,7 +2,12 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { claudeSessionsDir, findSession } from "../src/session.ts";
+import {
+  claudeSessionsDir,
+  findSession,
+  hasClaudeAncestor,
+  NOT_UNDER_CLAUDE,
+} from "../src/session.ts";
 
 const sessions = () => mkdtempSync(join(tmpdir(), "ob-sess-"));
 const session = (dir: string, pid: number, over: object = {}) => {
@@ -114,5 +119,25 @@ describe("claude session hardening", () => {
       "/x/s",
     );
     expect(claudeSessionsDir({})).toBe(join(homedir(), ".claude", "sessions"));
+  });
+});
+
+describe("claude ancestor (#1448 item 6)", () => {
+  it("is false with no session file above, as under Pi importing Claude's MCP config", () => {
+    expect(hasClaudeAncestor(500, deps(sessions()))).toBe(false);
+  });
+
+  it("is true for any session file above, even one findSession cannot use", () => {
+    const dir = sessions();
+    session(dir, 300, { procStart: undefined });
+    expect(findSession(500, deps(dir))).toBeNull();
+    expect(hasClaudeAncestor(500, deps(dir))).toBe(true);
+  });
+
+  it("tells a non-Claude harness to use its own tools, never to install", () => {
+    expect(NOT_UNDER_CLAUDE).toBe(
+      "This MCP server is for Claude Code; use this harness's own bus tools.",
+    );
+    expect(NOT_UNDER_CLAUDE).not.toMatch(/install/);
   });
 });

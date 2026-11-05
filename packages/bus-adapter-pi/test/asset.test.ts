@@ -30,6 +30,18 @@ import { PI_EXTENSION } from "../src/index.ts";
 const src = readFileSync(PI_EXTENSION, "utf8");
 const ID = "mmmmmmmmmmmmmmm1";
 
+/** Pi's name for an MCP tool: Pi refuses to start on a name two extensions register (#1448). */
+const piName = (mcpName: string) => `oa_bus_${mcpName}`;
+/** The names the OpenBus Pi/omp extension registers, installed alongside during the migration. */
+const OPENBUS_TOOLS = [
+  "list_agents",
+  "send_message",
+  "fetch",
+  "self",
+  "set_status",
+  "card",
+];
+
 type Frame = Record<string, unknown> & { type: string; id: string };
 type Conn = { sock: Socket; frames: Frame[]; closed: boolean };
 
@@ -140,8 +152,8 @@ function fakePi() {
     params: Record<string, unknown>,
     c: Ctx = ctx(),
   ) => {
-    const tool = tools.get(name);
-    if (!tool) throw new Error(`no tool ${name}`);
+    const tool = tools.get(piName(name));
+    if (!tool) throw new Error(`no tool ${piName(name)}`);
     const r = await tool.execute("call-1", params, undefined, undefined, c);
     return r.content.map((x) => x.text).join("");
   };
@@ -190,16 +202,30 @@ describe("pi extension asset", () => {
   it("registers the five tools with the same JSON-Schema parameters as the MCP tools", () => {
     const p = fakePi();
     oa_bus(p.pi as never);
-    expect([...p.tools.keys()]).toEqual(TOOLS.map((t) => t.name));
+    expect([...p.tools.keys()]).toEqual(TOOLS.map((t) => piName(t.name)));
     expect([...p.tools.keys()].sort()).toEqual(
-      ["fetch", "list_agents", "self", "send_message", "set_status"].sort(),
+      [
+        "oa_bus_fetch",
+        "oa_bus_list_agents",
+        "oa_bus_self",
+        "oa_bus_send_message",
+        "oa_bus_set_status",
+      ].sort(),
     );
     for (const t of TOOLS) {
-      const tool = p.tools.get(t.name);
+      const tool = p.tools.get(piName(t.name));
       expect(tool?.parameters).toEqual(t.inputSchema);
       expect(tool?.description).toBe(t.description);
       expect(tool?.label).toBeTruthy();
     }
+  });
+
+  it("registers no name the OpenBus extension registers, so Pi starts with both (#1448)", () => {
+    const p = fakePi();
+    oa_bus(p.pi as never);
+    expect(p.tools.size).toBe(5);
+    for (const name of p.tools.keys())
+      expect(OPENBUS_TOOLS).not.toContain(name);
   });
 
   it("says hello at session start as the Pi session, with its UTC process start", async () => {
@@ -695,8 +721,12 @@ describe("one file for Pi and oh-my-pi (C23b)", () => {
     for (const t of p.tools.values()) expect(t).not.toHaveProperty("loadMode");
     const o = ompHost();
     expect(o.tools.size).toBe(5);
-    expect(o.tools.get("set_status")).toMatchObject({ loadMode: "essential" });
-    expect(o.tools.get("set_status")).toMatchObject({ loadMode: "essential" });
+    expect(o.tools.get("oa_bus_send_message")).toMatchObject({
+      loadMode: "essential",
+    });
+    expect(o.tools.get("oa_bus_set_status")).toMatchObject({
+      loadMode: "essential",
+    });
     for (const t of o.tools.values())
       expect(t).toMatchObject({ loadMode: "essential" });
   });
@@ -763,8 +793,8 @@ describe("set_status", () => {
   it("Pi registers set_status before any session, and no card tool", async () => {
     const p = fakePi();
     oa_bus(p.pi as never);
-    expect(p.tools.has("set_status")).toBe(true);
-    expect(p.tools.has("card")).toBe(false);
+    expect(p.tools.has("oa_bus_set_status")).toBe(true);
+    expect(p.tools.has("oa_bus_card")).toBe(false);
   });
 
   it("one request; the result says what the user sees", async () => {

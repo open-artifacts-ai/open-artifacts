@@ -33,7 +33,7 @@ const refusals: Record<
 > = {
   unknown_agent: [
     "No agent has that name here.",
-    "Run list_agents to see who is in this namespace.",
+    "Run the oa_bus list_agents tool to see who is in this namespace.",
   ],
   closed: [
     null,
@@ -63,7 +63,7 @@ const refusals: Record<
   // A reply's agent (to_id) no longer holds the name it wrote from.
   agent_gone: [
     "The agent you are answering is gone; another may hold its name now.",
-    "Run list_agents and message the agent you mean by name.",
+    "Run the oa_bus list_agents tool and message the agent you mean by name.",
   ],
 };
 

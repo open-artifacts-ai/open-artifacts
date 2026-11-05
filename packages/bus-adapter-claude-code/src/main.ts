@@ -11,6 +11,8 @@ import {
   claudeProcStartOf,
   claudeSessionsDir,
   findSession,
+  hasClaudeAncestor,
+  NOT_UNDER_CLAUDE,
   sessionHello,
 } from "./session.ts";
 import { daemonSocketPath, socketDirProblem } from "./socket-path.ts";
@@ -43,21 +45,28 @@ const server = new Server(
   { name: "oa_bus", version: "0.1.0" },
   { capabilities: { tools: {} } },
 );
+/** Under another harness (one that imports Claude's MCP config), this server offers nothing. */
+const underClaude = (): boolean => {
+  try {
+    return hasClaudeAncestor(process.pid, {
+      sessionsDir: SESSIONS,
+      ancestors: ancestorChain,
+    });
+  } catch {
+    return false;
+  }
+};
+
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [...TOOLS],
+  tools: underClaude() ? [...TOOLS] : [],
 }));
 server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const client = await connect();
   if (!client) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: "oa-bus: no Claude session or daemon found. Run `npx @open-artifacts/bus install`.",
-        },
-      ],
-      isError: true,
-    };
+    const text = underClaude()
+      ? "oa-bus: no Claude session or daemon found. Run `npx @open-artifacts/bus install`."
+      : NOT_UNDER_CLAUDE;
+    return { content: [{ type: "text", text }], isError: true };
   }
   try {
     return await callTool(
