@@ -21,7 +21,12 @@ import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { onGoogleSignIn, SYNC_DO_NAME } from "../src/services/directory.js";
 import { admit, resetIdentity } from "../src/services/identity.js";
-import { SYSTEM_ACTOR, setUserStatus } from "../src/services/members.js";
+import {
+  eraseMember,
+  removeMember,
+  SYSTEM_ACTOR,
+  setUserStatus,
+} from "../src/services/members.js";
 import { getUser } from "../src/services/users.js";
 import { direct, mailer, seedShare, seedUser, uniq } from "./auth-helpers.js";
 import {
@@ -1245,6 +1250,78 @@ describe("parity 1 round 2: sync revives a row it removed (same directory id onl
     await setUserStatus(e, u2, "removed", "admin_remove", SYSTEM_ACTOR);
     await list(gu(sub2, addr2));
     expect(await row(u2)).toMatchObject({ status: "removed", bySync: 0 });
+  });
+
+  // #1145: Workspace undeletes a user sync removed, but a row with no Google
+  // link took their address meanwhile. The blocked revive is audited once
+  // (ids only), and the recovery is the admin's explicit choice: remove that
+  // row, erase it, and the next sync revives the Workspace user.
+  const blocked = (id: string) =>
+    all<{
+      actor_kind: string;
+      actor_id: string | null;
+      target_type: string;
+      detail: string;
+    }>(
+      "select actor_kind, actor_id, target_type, detail from audit_events where action = 'user.revive_blocked' and target_id = ? order by at, id",
+      id,
+    );
+
+  it("a revive blocked by an unlinked row at the address: audited user.revive_blocked once (ids only); remove, then erase that row, and the next sync revives them", async () => {
+    const addr = uniq("rv-held");
+    const sub = `g-rvh-${crypto.randomUUID()}`;
+    const old = await seedUser(addr, "member", { googleSub: sub });
+    await list(gu(sub, addr, { deleted: true }));
+    const gone = await row(old);
+    expect(gone).toMatchObject({ status: "removed", bySync: 1 });
+    // An admin invites the freed address; the invitee signs in by code.
+    const holder = await seedUser(addr, "member");
+    await env.DB.prepare("update users set last_seen_at = ? where id = ?")
+      .bind(Date.now(), holder)
+      .run();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Workspace undeletes the old user: blocked, the holder untouched.
+    await list(gu(sub, addr));
+    await list(gu(sub, addr));
+    warn.mockRestore();
+    expect(await row(old)).toEqual(gone);
+    expect(await row(holder)).toMatchObject({ status: "active", email: addr });
+    const rows = await blocked(old);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actor_kind: "sync",
+      actor_id: null,
+      target_type: "user",
+    });
+    expect(JSON.parse(rows[0]?.detail ?? "{}")).toEqual({
+      holderUserId: holder,
+    });
+    expect(rows[0]?.detail).not.toContain("@");
+    // The admin removes the holder: its row still holds the address.
+    const admin = (await getUser(e, owner.userId)) as Member;
+    await removeMember(e, holder, admin);
+    await list(gu(sub, addr));
+    expect(await row(old)).toEqual(gone);
+    // A different holder is a new blocked case; the same one is not.
+    expect(await blocked(old)).toHaveLength(1);
+    // Erase releases the address: the next sync revives the old user.
+    await eraseMember(e, holder, admin);
+    await list(gu(sub, addr));
+    expect(await row(old)).toMatchObject({
+      status: "active",
+      email: addr,
+      bySync: 0,
+    });
+    expect(await userByIdentity(sub)).toEqual({
+      id: old,
+      email: addr,
+      status: "active",
+    });
+    expect(
+      (await statusAudits(old)).map((a) => JSON.parse(a.detail).reason),
+    ).toContain("sync_revive");
+    expect(await row(holder)).toMatchObject({ status: "removed" });
+    expect(await blocked(old)).toHaveLength(1);
   });
 
   // #1146: an admin removed someone with no Google link; Workspace lists
