@@ -2830,7 +2830,7 @@ export class WfpProvisioner {
     const t = this.now();
     const last = this.renewedAt;
     if (
-      false &&
+      fromFence &&
       last?.lease === h.lease &&
       t >= last.at &&
       t - last.at < FENCE_RENEW_MS
