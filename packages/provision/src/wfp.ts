@@ -49,13 +49,13 @@ import {
   type Target,
 } from "./cf.js";
 import { type DirectRoute, directRouteOf } from "./direct-fetch.js";
+import { acceptedKeys } from "./internal/accepted-keys.js";
 import {
   ALLOW_ACCOUNT_TARGET,
   FLOOR_MIN_SEQ,
   PROD_UNLOCKED,
   RELEASE_PUBKEY,
   RELEASE_PUBKEY_PLACEHOLDER,
-  RELEASE_RETIRED_PUBKEYS,
 } from "./internal/gates.js";
 import {
   CfError,
@@ -1179,7 +1179,7 @@ export class WfpProvisioner {
 
   /** The current key first, then retired keys still accepted. */
   private pubkey(): string[] {
-    return [RELEASE_PUBKEY[this.env], ...RELEASE_RETIRED_PUBKEYS[this.env]];
+    return acceptedKeys(this.env);
   }
 
   /** L2 then M1: the record is trusted only after its signature checks out. */

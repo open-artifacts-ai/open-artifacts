@@ -21,11 +21,11 @@
 import { randomBytes } from "node:crypto";
 import { basename, extname } from "node:path";
 import { type Cf, CfError, type Module } from "./cf.js";
+import { acceptedKeys } from "./internal/accepted-keys.js";
 import {
   FLOOR_MIN_SEQ,
   RELEASE_PUBKEY,
   RELEASE_PUBKEY_PLACEHOLDER,
-  RELEASE_RETIRED_PUBKEYS,
 } from "./internal/gates.js";
 import { parseTemplate } from "./metadata.js";
 import {
@@ -111,14 +111,20 @@ const moduleOf = (name: string, bytes: Uint8Array): Module => {
   return { name, type, bytes };
 };
 
-/** The current key first, then retired keys still accepted when verifying. */
-function pubkeyOf(env: Env): string[] {
+/** The current key alone: for a fresh signature (a new floor), never retired. */
+function currentKeyOf(env: Env): string[] {
   const k = RELEASE_PUBKEY[env];
   if (typeof k !== "string" || k === RELEASE_PUBKEY_PLACEHOLDER)
     throw new PublishRefused(
       `RELEASE_PUBKEY.${env} is still the placeholder; the key ceremony must set it first`,
     );
-  return [k, ...RELEASE_RETIRED_PUBKEYS[env]];
+  return [k];
+}
+
+/** The current key first, then retired keys still accepted, for what is already published. */
+function pubkeyOf(env: Env): string[] {
+  currentKeyOf(env);
+  return acceptedKeys(env);
 }
 
 function bucketOf(env: Env): string {
@@ -468,11 +474,12 @@ export async function publishFloor(o: {
   const { env } = o;
   const r2 = assertProbed(o.r2, env);
   const pubkey = pubkeyOf(env);
+  const fresh = currentKeyOf(env);
   let next: FloorRecord;
   try {
     if (!(o.floor instanceof Uint8Array) || o.floor.length > SMALL_MAX)
       throw new Error("no floor bytes");
-    next = openFloor(parseStored(o.floor), pubkey, env);
+    next = openFloor(parseStored(o.floor), fresh, env);
   } catch (e) {
     throw new PublishRefused(`the new ${env} floor: ${(e as Error).message}`);
   }

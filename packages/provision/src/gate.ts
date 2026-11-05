@@ -3,17 +3,8 @@
 // versions oa-<p>-releases holds, which variants of each verify against the
 // env's release key, and which the signed floor admits. Reads only; no
 // Cloudflare writes. The key and the floor anchor stay in internal/gates.ts.
-import {
-  FLOOR_MIN_SEQ,
-  RELEASE_PUBKEY,
-  RELEASE_RETIRED_PUBKEYS,
-} from "./internal/gates.js";
-
-/** The current key first, then retired keys still accepted. */
-const acceptedKeys = (env: Env): string[] => [
-  RELEASE_PUBKEY[env],
-  ...RELEASE_RETIRED_PUBKEYS[env],
-];
+import { acceptedKeys } from "./internal/accepted-keys.js";
+import { FLOOR_MIN_SEQ } from "./internal/gates.js";
 
 import { ProvisionRefused } from "./jobs.js";
 import type { Env } from "./names.js";

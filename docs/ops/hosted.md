@@ -538,6 +538,10 @@ Verification accepts an ordered list per env: `RELEASE_PUBKEY[env]` (the current
 1. Generate the new keypair and set the private half as in step 2 above.
 2. In one PR, in both pin files: move the old `RELEASE_PUBKEY[env]` to the front of `RELEASE_RETIRED_PUBKEYS[env]` and put the new key in `RELEASE_PUBKEY[env]`. Everything already published (release records, tar `.sig.json`, `floor.json`) still verifies through the retired key.
 3. Release under the new key. Once the floor's `minVersion` is past every release signed with the old key, sign a new floor with the new key and bump `FLOOR_MIN_SEQ[env]` in the same change.
+Fresh signatures stay strict: `assemble-release.mjs`, `sign-floor.mjs --assemble` and `publishFloor`'s new floor are checked against the current key alone. Only what is already published (the current floor, release records, gate and provision reads, the red-line prod check) accepts retired keys.
+
+A compromised key is never moved to the retired list: remove it, and re-sign or re-publish what it signed.
+
 4. Then remove the old key from `RELEASE_RETIRED_PUBKEYS[env]` (both pin files, one PR). The old floor no longer verifies, and the `FLOOR_MIN_SEQ` bump means nothing falls back to it.
 
 ### Platform resource names (per env)

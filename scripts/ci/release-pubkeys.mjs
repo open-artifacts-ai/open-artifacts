@@ -47,6 +47,27 @@ const pinnedOf = (env, pinned) => {
 };
 
 /**
+ * Verifies a FRESH signature (attach, a new floor): the current pinned key
+ * alone, never a retired one. Refused while the pin is the placeholder.
+ * @param {Env} env
+ * @param {Uint8Array} payload
+ * @param {string} signature
+ * @param {Readonly<Record<Env, string>>} [pinned]
+ * @returns {"verified"}
+ */
+export function verifyCurrentSignature(
+  env,
+  payload,
+  signature,
+  pinned = RELEASE_PUBKEY,
+) {
+  return verifySignature(env, payload, signature, pinned, {
+    staging: [],
+    prod: [],
+  });
+}
+
+/**
  * A key or signature with no pinned key is refused, never warned past: the
  * gap between generating the keys and pinning them must not sign or attach.
  * @param {Env} env

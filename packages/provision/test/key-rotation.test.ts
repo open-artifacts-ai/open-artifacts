@@ -1,6 +1,7 @@
 import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import * as PUBKEYS from "../../../scripts/ci/release-pubkeys.mjs";
+import { acceptedKeys } from "../src/internal/accepted-keys.js";
 import {
   FLOOR_DOMAIN,
   openFloor,
@@ -121,5 +122,70 @@ describe("the node:* verifier and the signing-key check", () => {
     expect(() =>
       PUBKEYS.checkSigningKey("staging", xOf(OTHER.publicKey), pinned, retired),
     ).toThrow(/not the pinned/);
+  });
+});
+
+describe("retired keys never cross envs", () => {
+  const prodFloor = JSON.stringify({
+    env: "prod",
+    minVersion: "0.1.0",
+    revoked: [],
+    seq: 1,
+  });
+  const signedProdFloor = (priv: KeyObject) => ({
+    record: prodFloor,
+    signature: sign(
+      null,
+      Buffer.from(`${FLOOR_DOMAIN}\nprod\n${prodFloor}`),
+      priv,
+    ).toString("base64url"),
+  });
+  // staging retired OLD; prod has no retired key.
+  const retired = { staging: [xOf(OLD.publicKey)], prod: [] as string[] };
+
+  it("acceptedKeys takes the env's own list only", () => {
+    expect(acceptedKeys("staging", retired)).toContain(xOf(OLD.publicKey));
+    expect(acceptedKeys("prod", retired)).not.toContain(xOf(OLD.publicKey));
+  });
+  it("a key retired in staging is refused for a prod verify (TS)", () => {
+    expect(() =>
+      openFloor(
+        signedProdFloor(OLD.privateKey),
+        acceptedKeys("prod", retired),
+        "prod",
+      ),
+    ).toThrow(/does not verify/);
+  });
+  it("a key retired in staging is refused for a prod verify (mjs)", () => {
+    const pinned = { staging: xOf(NEW.publicKey), prod: xOf(OTHER.publicKey) };
+    const payload = Buffer.from("p");
+    const sig = sign(null, payload, OLD.privateKey).toString("base64url");
+    expect(
+      PUBKEYS.verifySignature("staging", payload, sig, pinned, retired),
+    ).toBe("verified");
+    expect(() =>
+      PUBKEYS.verifySignature("prod", payload, sig, pinned, retired),
+    ).toThrow(/does not verify/);
+  });
+  it("verifyCurrentSignature takes the current key alone", () => {
+    const pinned = { staging: xOf(NEW.publicKey), prod: xOf(OTHER.publicKey) };
+    const payload = Buffer.from("p");
+    const by = (k: KeyObject) => sign(null, payload, k).toString("base64url");
+    expect(
+      PUBKEYS.verifyCurrentSignature(
+        "staging",
+        payload,
+        by(NEW.privateKey),
+        pinned,
+      ),
+    ).toBe("verified");
+    expect(() =>
+      PUBKEYS.verifyCurrentSignature(
+        "staging",
+        payload,
+        by(OLD.privateKey),
+        pinned,
+      ),
+    ).toThrow(/does not verify/);
   });
 });
