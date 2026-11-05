@@ -128,9 +128,9 @@
         // this, the scheduler upgrades prod's fleet to its own release, canary
         // first. Empty it in a release to switch the fleet off.
         "FLEET_CANARY": "ifhx5rpmrhwh",
-        // #1343: leo, upgraded alone right after the canary has passed its
-        // smoke. The smoke's secrets: as staging's.
-        "FLEET_SECOND": "i2ab26lvciok",
+        // #1343: prod's leo, upgraded alone right after the canary has passed
+        // its smoke. The smoke's secrets: as staging's.
+        "FLEET_SECOND": "iwfhpuiwmfba",
         // #1343: the canary smoke, "off" (the passive soak, as before) or
         // "required". Required: prod's smoke secrets are set
         // (docs/ops/hosted.md), and the canary must pass it before leo moves.
