@@ -1,9 +1,9 @@
 import { parseTier } from "@oa/shared";
-import { billingGate } from "../auth/broker-transport.js";
 import type { Env } from "../env.js";
 import { logInfo, logWarn } from "../log.js";
 import { revokeFanoutCap, revokeUsersLive } from "../runtime/revoke.js";
 import {
+  billingActive,
   billingOn,
   CHECK_KEY,
   effectivePlan,
@@ -113,15 +113,14 @@ export async function recordFailure(env: Env, now: number): Promise<void> {
  * GET /tier and cache it. `onDemand`: at most once per ON_DEMAND_MS across
  * the instance (the claim); the scheduler tick always reads. Never throws:
  * a failure is recorded and logged by category. No BILLING gate in this
- * invocation (before #849 is deployed): skipped, nothing recorded, so the
- * 7-day clock never starts (planOfRaw then uses the provisioned TIER).
+ * invocation (billing inert): skipped, nothing recorded.
  */
 export async function refreshPlan(
   env: Env,
   now: number,
   o: { onDemand?: boolean; ctx?: Ctx } = {},
 ): Promise<"stored" | "unchanged" | "skipped" | "failed"> {
-  if (!billingOn(env) || !billingGate()) return "skipped";
+  if (!billingActive(env)) return "skipped";
   try {
     if (o.onDemand) {
       const claimed = await env.DB.prepare(CLAIM)
@@ -196,7 +195,7 @@ const TRIAL_PENDING = `select 1 from users where status = 'active' and role != '
  * (the invite's trial start failed), start the trial again.
  */
 export async function billingTick(env: Env, now: number): Promise<void> {
-  if (!billingOn(env)) return;
+  if (!billingActive(env)) return;
   await refreshPlan(env, now);
   const row = await env.DB.prepare(READ_BOTH).first<{
     plan: string | null;

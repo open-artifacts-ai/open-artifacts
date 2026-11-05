@@ -305,11 +305,10 @@ describe("effectivePlan", () => {
     const pd = (asOf: number, now: number) =>
       effectivePlan(
         at({ tier: "team", status: "past_due", graceUntil: null, asOf }, now),
-        null,
+        // A good read now: only the grace rule is under test, not the outage's.
+        { checkedAt: now, failingSince: null, lastGoodAt: now },
         undefined,
         now,
-        // No outage clock: only the grace rule is under test.
-        { clock: false },
       );
     expect(pd(mid, mid + 7 * DAY).lock).toBeNull();
     expect(pd(mid, mid + 7 * DAY + 1)).toMatchObject({
@@ -326,10 +325,10 @@ describe("effectivePlan", () => {
     ).toMatchObject({ readOnly: true, reason: "trial_ended" });
   });
 
-  it("a provisioned TIER=trial with no billing answer is not locked (gate, no gate, no-row default); a billing answer with no trial end is", async () => {
+  it("a provisioned TIER=trial with no billing answer is not locked (gate, no-row default); no gate is no plan; a billing answer with no trial end is", async () => {
     const T = { ...H, TIER: "trial" } as Env;
-    for (const gate of [true, false])
-      expect(planOfRaw(T, null, null, mid, { gate })?.lock).toBeNull();
+    expect(planOfRaw(T, null, null, mid, { gate: true })?.lock).toBeNull();
+    expect(planOfRaw(T, null, null, mid, { gate: false })).toBeNull();
     row = {
       tier: "free",
       status: "active",
@@ -386,11 +385,13 @@ describe("effectivePlan", () => {
       lock: { mode: "solo" },
       trialEligible: true,
     });
-    // No BILLING gate, no cache, no TIER: free and solo too (R2), no clock.
-    expect(planOfRaw(H, null, null, mid, { gate: false })).toMatchObject({
-      tier: "free",
-      lock: { mode: "solo" },
-    });
+    // No BILLING gate: no plan at all, whatever is cached.
+    expect(planOfRaw(H, null, null, mid, { gate: false })).toBeNull();
+    expect(
+      planOfRaw(H, JSON.stringify(at({ status: "lapsed" }, mid)), null, mid, {
+        gate: false,
+      }),
+    ).toBeNull();
     const failing = JSON.stringify({
       checkedAt: mid,
       failingSince: mid - PLAN_STALE_MS - 1,
@@ -398,10 +399,7 @@ describe("effectivePlan", () => {
     expect(planOfRaw(H, null, failing, mid, { gate: true })?.reason).toBe(
       "billing_unreachable",
     );
-    // No BILLING gate: failures never make it unreachable.
-    expect(planOfRaw(H, null, failing, mid, { gate: false })?.reason).toBe(
-      "solo",
-    );
+
     // Self-hosted: no gate, whatever is stored.
     const stored = JSON.stringify(at({ status: "lapsed" }, mid));
     expect(planOfRaw(SELF, stored, null, mid)).toBeNull();
@@ -499,7 +497,7 @@ describe("tier read and cache", () => {
     expect(after).toEqual(check);
   });
 
-  it("no BILLING gate: nothing recorded, no 7-day clock; the cache, else the provisioned TIER (B1, R2)", async () => {
+  it("no BILLING gate: inert; nothing recorded, no call, no plan whatever is cached or provisioned (B1, R2)", async () => {
     const TEAM = { ...H, TIER: "team" } as Env;
     for (const t of [mid, mid + 30 * DAY])
       expect(await refreshPlan(TEAM, t, { onDemand: true })).toBe("skipped");
@@ -509,18 +507,9 @@ describe("tier read and cache", () => {
         .first<{ n: number }>(),
     ).toEqual({ n: 0 });
     expect(calls).toEqual([]);
-    // No cache: the provisioned TIER.
-    expect(await readPlan(TEAM, mid + 30 * DAY)).toMatchObject({
-      tier: "team",
-      lock: null,
-    });
-    // A cache: the cached answer, never upward to TIER, and 30 days of
-    // silence never make it unreachable (R2).
+    expect(await readPlan(TEAM, mid + 30 * DAY)).toBeNull();
     await cache({ tier: "free", trialEndsAt: 1, version: 4 }, mid);
-    expect(await readPlan(TEAM, mid + 30 * DAY)).toMatchObject({
-      tier: "free",
-      reason: "solo",
-    });
+    expect(await readPlan(TEAM, mid + 30 * DAY)).toBeNull();
   });
 
   it("a good read of an older version stops the 7-day clock but never applies the older tier", async () => {
@@ -556,7 +545,9 @@ describe("tier read and cache", () => {
     expect(
       await withBrokerProps({ props: PROPS }, () => refreshPlan(TEAM, mid)),
     ).toBe("unchanged");
-    expect(await readPlan(TEAM, mid)).toMatchObject({
+    expect(
+      await withBrokerProps({ props: PROPS }, () => readPlan(TEAM, mid)),
+    ).toMatchObject({
       tier: "team",
       lock: null,
     });
@@ -744,6 +735,86 @@ describe("plan enforcement", () => {
     });
     expect(ok.status).toBe(200);
     expect(calls.some((c) => c.path === "/trial/start")).toBe(true);
+  });
+
+  it("HOSTED=1 with no BILLING gate and no TIER is inert: invite, share, agents and spaces work as on main; Me has no billing; billing routes 404", async () => {
+    // Even a cached lapse is ignored without the gate.
+    await cache({ tier: "free", status: "lapsed", trialEndsAt: 1, version: 3 });
+    const admin = await login(`ng-admin-${tag}@a.com`, "admin");
+    const mem = await login(`ng-mem-${tag}@a.com`, "member");
+    const ng = (
+      path: string,
+      auth: string,
+      init: { method?: string; body?: unknown } = {},
+    ) =>
+      fetchAndWait(
+        app,
+        new Request(`http://app.localhost${path}`, {
+          method: init.method ?? "GET",
+          headers: {
+            cookie: auth,
+            "x-oa-request": "1",
+            ...(init.body === undefined
+              ? {}
+              : { "content-type": "application/json" }),
+          },
+          body: init.body === undefined ? undefined : JSON.stringify(init.body),
+        }),
+        H,
+      );
+    // Invite: no plan lock, no trial start.
+    const inv = await ng(R.members, admin.cookie, {
+      method: "POST",
+      body: { email: `ng-inv-${tag}@a.com`, role: "member" },
+    });
+    expect(inv.status).toBe(201);
+    // A member publishes, shares, and publishes into a shared space.
+    const art = await ng(R.artifacts, mem.cookie, {
+      method: "POST",
+      body: { title: "t", format: "html", content: "<p>x</p>" },
+    });
+    expect(art.status).toBe(201);
+    const id = await idOf(art);
+    expect(
+      (
+        await ng(R.shares(id), mem.cookie, {
+          method: "PUT",
+          body: { email: `ng-sh-${tag}@a.com`, role: "viewer" },
+        })
+      ).status,
+    ).toBe(200);
+    const sp = await ng(R.spaces, owner.cookie, {
+      method: "POST",
+      body: { name: `NG ${tag}` },
+    });
+    expect(sp.status).toBe(201);
+    const spaceId = ((await sp.json()) as { id: string }).id;
+    await env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'manual', 1)",
+    )
+      .bind(spaceId, mem.userId)
+      .run();
+    expect(
+      (
+        await ng(R.artifacts, mem.cookie, {
+          method: "POST",
+          body: { title: "t", format: "html", content: "<p>x</p>", spaceId },
+        })
+      ).status,
+    ).toBe(201);
+    // An AI agent (the member's PAT over /mcp) connects and works.
+    const { token } = await createPat(env, mem.userId, "ng agent");
+    const client = await connect(token, { env: H });
+    expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+    await client.close();
+    // Me: no billing details; billing routes are hidden; nothing was called.
+    const me = MeSchema.parse(await (await ng(R.me, owner.cookie)).json());
+    expect(me.instance.billing).toBeUndefined();
+    expect(
+      (await ng(R.billingPortal, owner.cookie, { method: "POST", body: {} }))
+        .status,
+    ).toBe(404);
+    expect(calls).toEqual([]);
   });
 
   it("free after the trial: invites are 403 plan_required; nothing is created", async () => {

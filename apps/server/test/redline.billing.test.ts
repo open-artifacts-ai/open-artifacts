@@ -138,13 +138,10 @@ describe("red line: billing unreachable never unlocks", () => {
     );
   });
 
-  it("a hosted install without a TIER and nothing read is solo, gate or not (never unenforced)", async () => {
-    // No gate and nothing cached, no TIER: free and solo (R2). With the
-    // gate and nothing read yet: solo too.
-    expect(await readPlan(H, mid)).toMatchObject({
-      tier: "free",
-      lock: { mode: "solo" },
-    });
+  it("a hosted install without a TIER and nothing read is solo with the gate (never unenforced); with no gate there is no plan", async () => {
+    // No gate: billing is inert, no plan. With the gate and nothing read
+    // yet: free and solo.
+    expect(await readPlan(H, mid)).toBeNull();
     expect(await gated(H, mid)).toMatchObject({
       tier: "free",
       lock: { mode: "solo" },
