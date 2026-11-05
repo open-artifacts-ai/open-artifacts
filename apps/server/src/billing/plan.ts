@@ -21,8 +21,14 @@ import { ApiError } from "../http/errors.js";
 // (requireTeamPlan), the artifact writes in shared spaces (policy can) and
 // Me.instance.billing.
 //
-// Hosted only (billingOn). A self-hosted install keeps TIER and FEATURES as
-// today with no gate: HOSTED=1 only ever tightens.
+// Hosted only (billingOn), and only where the BILLING gate is bound
+// (billingActive; ctx.props.BILLING, which the hosted billing Worker's deploy
+// from the cloud repo provides). With no gate there is no plan at all, as on
+// self-host: planOfRaw is null, so no "plan" cap, no team-feature refusals,
+// no trial start, no free caps, no usage report, and the billing routes 404;
+// features keep following the provisioned FEATURES and TIER. A self-hosted
+// install keeps TIER and FEATURES as today: HOSTED=1 only ever tightens, and
+// only with the gate.
 //
 // The last good tier is cached in D1 settings (PLAN_KEY, written only by
 // store.ts with the version rule). Billing unreachable (OUR outage): that
@@ -30,16 +36,10 @@ import { ApiError } from "../http/errors.js";
 // features go read-only; it never falls back upward. A real lapse arrives as
 // status "lapsed" and applies at once.
 //
-// Precedence (planOfRaw), hosted only:
-// 1. The BILLING gate is present (ctx.props.BILLING): the billing tier, i.e.
-//    the cached answer, with the 7-day last-good rule. With no answer yet,
-//    the provisioned TIER is the last good tier; with neither, free (solo,
-//    trial allowed), never unenforced.
-// 2. The gate is absent (before #849 is deployed, or a context without it):
-//    no billing enforcement from billing itself: the cached answer when one
-//    exists (never upward to the provisioned TIER), else the provisioned
-//    TIER, else free (solo, trial allowed). Never unreachable, no 7-day
-//    clock, nothing recorded (store.ts refreshPlan skips).
+// With the gate (planOfRaw): the billing tier, i.e. the cached answer, with
+// the 7-day last-good rule. With no answer yet, the provisioned TIER is the
+// last good tier; with neither, free (solo, trial allowed), never
+// unenforced.
 //
 // Features (Me.instance.features and every check) follow the plan's tier at
 // read time through TIER_FEATURES, not the provisioned FEATURES (planFeatures).
@@ -47,6 +47,14 @@ import { ApiError } from "../http/errors.js";
 /** Hosted billing is on: HOSTED=1 only (self-hosted installs have no gate). */
 export const billingOn = (env: Pick<Env, "HOSTED">): boolean =>
   env.HOSTED === "1";
+
+/**
+ * Billing is live in this invocation: hosted, with the BILLING gate bound.
+ * Everything that enforces, starts a trial, reports usage or serves a
+ * billing route needs it; without it billing is inert, as on self-host.
+ */
+export const billingActive = (env: Pick<Env, "HOSTED">): boolean =>
+  billingOn(env) && billingGate() !== null;
 
 /** settings key: the last good GET /tier answer (StoredPlan JSON). */
 export const PLAN_KEY = "billing.plan";
@@ -120,15 +128,13 @@ export type EffectivePlan = {
  * The plan from the cached answer and the read attempts. With no answer yet,
  * the provisioned TIER (free when unset) is the last good tier. The 7 days
  * run from the last good read (the answer's asOf, or a good read of an older
- * version), else from the first failed read. `clock: false`: no outage rule
- * (the BILLING gate is absent: nothing is unreachable).
+ * version), else from the first failed read.
  */
 export function effectivePlan(
   last: StoredPlan | null,
   check: PlanCheck | null,
   envTier: string | undefined,
   now: number,
-  o: { clock?: boolean } = {},
 ): EffectivePlan {
   const base = last ?? {
     tier: parseTier(envTier) ?? ("free" as const),
@@ -150,8 +156,7 @@ export function effectivePlan(
   // OUR outage: the last good read is over 7 days old (or, with none, the
   // failures began over 7 days ago). Never upward: read-only.
   const good = Math.max(last?.asOf ?? -1, check?.lastGoodAt ?? -1);
-  const since =
-    o.clock === false ? null : good >= 0 ? good : (check?.failingSince ?? null);
+  const since = good >= 0 ? good : (check?.failingSince ?? null);
   if (since !== null && now - since > PLAN_STALE_MS)
     return out("billing_unreachable", "readOnly");
   switch (base.status) {
@@ -182,7 +187,7 @@ export function effectivePlan(
 
 /**
  * The plan from the two raw settings values (null when hosted billing is
- * off), by the precedence above. `gate`: whether this invocation carries
+ * off, or the BILLING gate is absent: no plan, as on self-host). `gate`: whether this invocation carries
  * the BILLING gate (default: billingGate()).
  */
 export function planOfRaw(
@@ -193,14 +198,10 @@ export function planOfRaw(
   o: { gate?: boolean } = {},
 ): EffectivePlan | null {
   if (!billingOn(env)) return null;
+  // No BILLING gate: no plan, nothing enforced, nothing recorded.
+  if (!(o.gate ?? billingGate() !== null)) return null;
   const last = parseStored(TierAnswerSchema, plan);
   const c = parseStored(PlanCheckSchema, check);
-  const gate = o.gate ?? billingGate() !== null;
-  // No BILLING: no billing enforcement and nothing recorded (store.ts
-  // refreshPlan skips), and no 7-day clock: never unreachable. The cached
-  // answer when there is one (never upward to the provisioned TIER), else
-  // the provisioned TIER, else free (solo, trial allowed).
-  if (!gate) return effectivePlan(last, null, env.TIER, now, { clock: false });
   // The billing tier, with the last-good rule. No answer and no TIER: free
   // (solo, trial allowed) until the first good read, never unenforced.
   return effectivePlan(last, c, env.TIER, now);

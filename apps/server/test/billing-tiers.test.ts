@@ -126,51 +126,14 @@ describe("precedence: BILLING present, then absent, then nothing", () => {
     });
   });
 
-  it("BILLING absent, a cache: the cached tier (never upward to TIER); never unreachable; nothing recorded (R2)", async () => {
-    await cachePlan(row({ tier: "team", version: 3 }), mid, BUSINESS_TIER);
-    await env.DB.prepare(
-      "insert into settings (key, value) values (?, ?) on conflict (key) do update set value = excluded.value",
-    )
-      .bind(
-        CHECK_KEY,
-        JSON.stringify({ checkedAt: mid, failingSince: mid - 30 * DAY }),
-      )
-      .run();
-    const before = await env.DB.prepare(
-      "select value from settings where key = ?",
-    )
-      .bind(CHECK_KEY)
-      .first();
-    for (const t of [mid, mid + 30 * DAY]) {
-      expect(await refreshPlan(BUSINESS_TIER, t)).toBe("skipped");
-      expect(await readPlan(BUSINESS_TIER, t)).toMatchObject({
-        tier: "team",
-        lock: null,
-      });
-    }
-    expect(
-      await env.DB.prepare("select value from settings where key = ?")
-        .bind(CHECK_KEY)
-        .first(),
-    ).toEqual(before);
-    // A cached lapse applies too (no billing call needed to stay locked).
+  it("BILLING absent: no plan at all, whatever is cached or provisioned; nothing recorded, no call", async () => {
     await cachePlan(row({ status: "lapsed", version: 4 }), mid, BUSINESS_TIER);
-    expect(await readPlan(BUSINESS_TIER, mid + 30 * DAY)).toMatchObject({
-      readOnly: true,
-      reason: "lapsed",
-    });
-  });
-
-  it("BILLING absent, no cache: the provisioned TIER; no TIER either: free and solo (R2)", async () => {
-    expect(await readPlan(TEAM_TIER, mid)).toMatchObject({
-      tier: "team",
-      lock: null,
-    });
-    expect(await readPlan(H, mid)).toMatchObject({
-      tier: "free",
-      lock: { mode: "solo", reason: "solo" },
-      trialEligible: true,
-    });
+    for (const e of [H, TEAM_TIER, BUSINESS_TIER])
+      for (const t of [mid, mid + 30 * DAY]) {
+        expect(await refreshPlan(e, t)).toBe("skipped");
+        expect(await readPlan(e, t)).toBeNull();
+      }
+    expect(b.s.calls).toEqual([]);
   });
 });
 

@@ -44,6 +44,7 @@ import {
   cachePlan,
   clearBilling,
   DAY,
+  fakeBilling,
 } from "./billing-helpers.js";
 import {
   BROKER,
@@ -304,12 +305,14 @@ const httpsBrokerCalls = () =>
     .filter((u) => u.startsWith(BROKER)).length;
 
 /** One scheduler tick: oa:directory-sync with the scheduler's props. */
+/** The BILLING gate the scheduler's props carry (the billing describe sets it). */
+let billingProps: Record<string, unknown> = {};
 const cronTick = async (now: number, calls: GateCall[] = gateCalls) => {
   clock = now;
   await scheduled(
     { cron: DIRECTORY_SYNC_CRON },
     e,
-    ctxOf({ DIRECTORY_BROKER: brokerGate(calls) }),
+    ctxOf({ DIRECTORY_BROKER: brokerGate(calls), ...billingProps }),
   );
 };
 
@@ -1034,21 +1037,35 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
   const mints = () =>
     gateCalls.filter((c) => c.path === "/google/directory/token").length;
 
+  // Billing is inert without its gate: the scheduler's props carry one whose
+  // row is billing's no-row default (version 0, never applied), so the cached
+  // answers above are the plan.
+  beforeEach(() => {
+    const b = fakeBilling();
+    b.s.row = { ...b.s.row, tier: "free", version: 0 };
+    billingProps = b.props;
+  });
   afterEach(async () => {
+    billingProps = {};
     await clearBilling();
     vi.useRealTimers();
   });
 
   it("a trial syncs (google handed over) though the provisioned TIER is Team", async () => {
     const t0 = pinMiddayUtc();
+    // Connect while the install's provisioned features allow it (the request
+    // carries no billing gate), then run on a Team-provisioned install whose
+    // cached billing answer is a trial.
+    const m = mailer();
+    e = hostedEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
+    await connected(t0);
     e = hostedEnv({
-      ...mailer().env,
+      ...m.env,
       DIRECTORY_SYNC: fakeNs,
       TIER: "team",
       FEATURES: "spaces,sync_frozen",
     });
     await tier({ tier: "trial", trialEndsAt: t0 + 14 * DAY }, t0);
-    await connected(t0);
     modes.length = 0;
     const google0 = g.adminCalls.length;
     expect(await period(t0 + FAST_MS)).toBe("done");

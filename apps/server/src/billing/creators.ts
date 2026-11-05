@@ -1,7 +1,7 @@
 import { type BillingUsage, BillingUsageSchema } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logInfo, logWarn } from "../log.js";
-import { billingOn } from "./plan.js";
+import { billingActive, billingOn } from "./plan.js";
 import {
   BillingUnavailableError,
   billingCall,
@@ -146,7 +146,7 @@ const USAGE_CATCH_UP_MAX = 24;
  * Never throws.
  */
 export async function usageTick(env: Env, now: number): Promise<void> {
-  if (!billingOn(env)) return;
+  if (!billingActive(env)) return;
   const prev = previousMonth(monthOf(now));
   try {
     const sent = await env.DB.prepare(

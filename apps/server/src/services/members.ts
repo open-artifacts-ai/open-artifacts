@@ -244,9 +244,7 @@ async function requireTrialStarted(env: Env): Promise<void> {
       "billing_unavailable",
       "Billing is unavailable; try again",
     );
-  const lock = effectivePlan(answer, null, undefined, now, {
-    clock: false,
-  }).lock;
+  const lock = effectivePlan(answer, null, undefined, now).lock;
   if (lock) throw planError(lock);
 }
 

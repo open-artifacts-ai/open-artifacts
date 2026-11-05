@@ -50,6 +50,8 @@ const READS: Record<string, string> = {
     "tightens: the skill omits its upgrade line (review item 39)",
   "mcp/upgrade.ts: serveUpgrade":
     "tightens: GET /upgrade.md is 404 (review item 39)",
+  "billing/plan.ts: billingActive":
+    "type only: the env pick for billingOn (HOSTED); billing enforces only where the BILLING gate is also bound",
   "billing/plan.ts: billingOn":
     "tightens: hosted billing's plan lock (the plan cap, plan_required, plan_read_only) and its reads and reports; self-hosted installs keep TIER/FEATURES with no gate",
   "billing/plan.ts: planOfRaw":

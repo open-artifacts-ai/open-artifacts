@@ -13,7 +13,7 @@ import {
 } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import { monthOf, sendUsage } from "../billing/creators.js";
-import { billingOn } from "../billing/plan.js";
+import { billingActive } from "../billing/plan.js";
 import {
   BillingUnavailableError,
   billingCall,
@@ -58,7 +58,7 @@ const unavailable = () =>
 function requireBillingManager(c: Parameters<typeof requireUser>[0]) {
   const user = requireUser(c);
   if (
-    !billingOn(c.env) ||
+    !billingActive(c.env) ||
     !interactiveSession(c) ||
     !orgCan(user, "billing.manage", { cap: capOfCaller(caller(c)) })
   )

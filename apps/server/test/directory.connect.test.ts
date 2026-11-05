@@ -20,6 +20,7 @@ import type { Env } from "../src/env.js";
 import { SYNC_DO_NAME } from "../src/services/directory.js";
 import { getUser } from "../src/services/users.js";
 import { seedUser, uniq } from "./auth-helpers.js";
+import { fakeBilling } from "./billing-helpers.js";
 import {
   begin,
   connect,
@@ -373,11 +374,13 @@ describe("hosted", () => {
         .first()) !== null;
     const member = async () => (await getUser(h, uid)) as Member;
     const signIn = () =>
-      withBrokerProps({ props: hostedProps() }, () =>
-        withPlanScope(h, async () => {
-          await planNow(h);
-          await directorySignIn(h, await member());
-        }),
+      withBrokerProps(
+        { props: { ...hostedProps(), ...fakeBilling().props } },
+        () =>
+          withPlanScope(h, async () => {
+            await planNow(h);
+            await directorySignIn(h, await member());
+          }),
       );
     // A lapse keeps Business's features (sync_google) but locks the plan.
     await env.DB.prepare(
