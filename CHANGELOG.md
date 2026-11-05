@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.118.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.118.0...v0.118.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **provision,provisioner:** a DO-rule refusal halts the fleet naming the step release ([#1343](https://github.com/open-artifacts-ai/open-artifacts/issues/1343)) ([#1442](https://github.com/open-artifacts-ai/open-artifacts/issues/1442)) ([e31d3bd](https://github.com/open-artifacts-ai/open-artifacts/commit/e31d3bdae44891eac130930c1fdc5c4dfa710c87))
+
 ## [0.118.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.117.0...v0.118.0) (2026-11-05)
 
 
