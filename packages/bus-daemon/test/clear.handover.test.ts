@@ -128,4 +128,41 @@ describe("/clear handover in the daemon", () => {
     expect(replay.some((u) => u.agent_ref === "s-new")).toBe(true);
     for (const u of replay) expect(u).not.toHaveProperty("replaces");
   });
+
+  it("admitted before its session file exists, a session still hands over on a /clear", async () => {
+    const d = mkdtempSync(join(tmpdir(), "ob-clear-"));
+    const h = await daemonHarness({
+      attest: () => ({ ok: true, cwd: "/repo", pid: 4242 }),
+      claude: {
+        sessionsDir: d,
+        socketsDir: join(d, "r"),
+        syncMs: 20,
+        procStart: () => os.start,
+        isRunning: () => true,
+      },
+    });
+    h.toDaemon({
+      id: "w",
+      type: "hello_ok",
+      machine_id: "1".repeat(16),
+      machine_label: "laptop",
+      server_version: "1",
+      caps: [BUS_CAPS.ids, BUS_CAPS.mailbox],
+    });
+    await h.adapter("s-old", {
+      kind: "claude-code",
+      cwd: "/repo",
+      pid: 4242,
+      proposed_name: "npm-test",
+    });
+    await upFor(h, "s-old");
+    // The session file appears; a marker session in the same sync tick tells
+    // us the tick (and so the backfill of s-old) has run.
+    write(d, 4242, "s-old", "npm-test");
+    write(d, 5555, "s-mark", "mark");
+    await upFor(h, "s-mark");
+    write(d, 4242, "s-new", "other");
+    const up = await upFor(h, "s-new");
+    expect(up).toMatchObject({ replaces: "s-old", proposed_name: "npm-test" });
+  });
 });

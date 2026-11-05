@@ -602,6 +602,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           prev.pid = s.pid;
           prev.procStart = s.procStart;
         }
+        // Admitted before its session file existed: learn the process start
+        // now, so a later /clear in this process is recognised (#1295).
+        else if (prev.procStart === undefined && prev.pid === s.pid)
+          prev.procStart = s.procStart;
         continue;
       }
       // Closed by a failed delivery and still the same process.

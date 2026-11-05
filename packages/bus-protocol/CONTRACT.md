@@ -157,7 +157,9 @@ socket sees today's shapes: its strict decoder never meets a new key.
   agent of the same machine, when the new ref is not yet known: the agent row
   is re-keyed to the new ref, so it keeps its name, former names and mail
   instead of `<name>-2`. A client sends it only when `hello_ok.caps` listed
-  `mailbox`; the daemon sends it only for the same pid.
+  `mailbox`; the daemon sends it only for the same pid and process start.
+- Mail pushed but not yet acked when a `/clear` happens is delivered again to
+  the new session, so an agent may see it twice.
 
 ## Renames (#393)
 
