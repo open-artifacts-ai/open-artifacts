@@ -9,6 +9,8 @@ export type LiveClaude = {
   pid: number;
   socketPath: string;
   cwd: string;
+  /** The process start the session file recorded: tells a reused pid from the session's own. */
+  procStart: string;
 };
 
 export type ClaudeLivenessDeps = {
@@ -19,7 +21,7 @@ export type ClaudeLivenessDeps = {
   sha256?: (s: string) => string;
 };
 
-type SessionFile = LiveClaude & { procStart: string; stamp: string };
+type SessionFile = LiveClaude & { stamp: string };
 
 /** Every well-formed session file, without asking the OS anything. */
 function sessionFiles(dir: string): SessionFile[] {
@@ -65,7 +67,7 @@ function sessionFiles(dir: string): SessionFile[] {
 const alive = (s: SessionFile, deps: ClaudeLivenessDeps) =>
   deps.isRunning(s.pid) && deps.procStart(s.pid, s.stamp) === s.procStart;
 
-const strip = ({ procStart: _, stamp: __, ...s }: SessionFile): LiveClaude => s;
+const strip = ({ stamp: _, ...s }: SessionFile): LiveClaude => s;
 
 /**
  * Claude sessions that are running now, from `~/.claude/sessions`: the process

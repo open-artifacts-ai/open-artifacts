@@ -10,6 +10,8 @@ export type AgentRecord = {
   pid: number;
   cwd: string;
   live: boolean;
+  /** A Claude session's process start, from its session file; tells a reused pid. */
+  procStart?: string;
   /**
    * #1295: the agent_ref this session took over from after a /clear (the same
    * live process reported a new session). Sent on `agent_up` to a hub that

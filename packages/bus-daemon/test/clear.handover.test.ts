@@ -9,15 +9,24 @@ import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
-afterEach(stopAll);
+afterEach(async () => {
+  os.start = "t0";
+  await stopAll();
+});
 
-const write = (d: string, pid: number, sessionId: string, name: string) =>
+const write = (
+  d: string,
+  pid: number,
+  sessionId: string,
+  name: string,
+  procStart = "t0",
+) =>
   writeFileSync(
     join(d, `${pid}.json`),
     JSON.stringify({
       pid,
       sessionId,
-      procStart: "t0",
+      procStart,
       name,
       messagingSocketPath: "",
       cwd: "/repo",
@@ -36,6 +45,9 @@ const upFor = async (h: Harness, ref: string) => {
     .at(-1) as Extract<ReturnType<Harness["of"]>[number], { type: "agent_up" }>;
 };
 
+/** What the OS reports as every pid's start time. */
+const os = { start: "t0" };
+
 async function start(hubCaps: string[] | undefined) {
   const d = mkdtempSync(join(tmpdir(), "ob-clear-"));
   write(d, 4242, "s-old", "npm-test");
@@ -44,7 +56,7 @@ async function start(hubCaps: string[] | undefined) {
       sessionsDir: d,
       socketsDir: join(d, "r"),
       syncMs: 20,
-      procStart: () => "t0",
+      procStart: () => os.start,
       isRunning: () => true,
     },
   });
@@ -91,5 +103,29 @@ describe("/clear handover in the daemon", () => {
     const up = await upFor(h, "s-new");
     expect(up).toMatchObject({ agent_ref: "s-new" });
     expect(up).not.toHaveProperty("replaces");
+  });
+
+  it("a reused pid (another process start) is not a /clear: no replaces, its own name", async () => {
+    const { h, d } = await start([BUS_CAPS.ids, BUS_CAPS.mailbox]);
+    os.start = "t1";
+    write(d, 4242, "s-reuse", "reused", "t1");
+    const up = await upFor(h, "s-reuse");
+    expect(up).toMatchObject({ proposed_name: "reused" });
+    expect(up).not.toHaveProperty("replaces");
+  });
+
+  it("after the link drops, an agent_up replayed before hello_ok carries no replaces", async () => {
+    const { h, d } = await start([BUS_CAPS.ids, BUS_CAPS.mailbox]);
+    write(d, 4242, "s-new", "x");
+    expect(await upFor(h, "s-new")).toHaveProperty("replaces", "s-old");
+    const before = h.of("agent_up").length;
+    h.hubSock()?.close();
+    // The daemon reconnects and replays; the fake hub has not said hello_ok.
+    await vi.waitFor(() =>
+      expect(h.of("agent_up").length).toBeGreaterThan(before),
+    );
+    const replay = h.of("agent_up").slice(before);
+    expect(replay.some((u) => u.agent_ref === "s-new")).toBe(true);
+    for (const u of replay) expect(u).not.toHaveProperty("replaces");
   });
 });

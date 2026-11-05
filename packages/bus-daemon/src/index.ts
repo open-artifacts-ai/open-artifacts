@@ -570,6 +570,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const clearedFrom = (
     ref: string,
     pid: number,
+    procStart: string | undefined,
     liveRefs: Set<string>,
   ): AgentRecord | undefined =>
     agents
@@ -579,6 +580,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           a.kind === "claude-code" &&
           a.live &&
           a.pid === pid &&
+          procStart !== undefined &&
+          a.procStart === procStart &&
           a.ref !== ref &&
           !liveRefs.has(a.ref),
       );
@@ -595,7 +598,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (prev?.live) {
         // `claude --resume` brings the same session back under a new pid; while
         // the current one still runs it stays, so two files never flap.
-        if (!livePid(s.ref, prev.pid)) prev.pid = s.pid;
+        if (!livePid(s.ref, prev.pid)) {
+          prev.pid = s.pid;
+          prev.procStart = s.procStart;
+        }
         continue;
       }
       // Closed by a failed delivery and still the same process.
@@ -610,7 +616,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
       // /clear: the same process, a new session id. The new ref keeps the
       // old one's address (#1295); the old one is closed below.
-      const old = clearedFrom(s.ref, s.pid, liveRefs);
+      const old = clearedFrom(s.ref, s.pid, s.procStart, liveRefs);
       announceUp(
         agents.up({
           ...(old ? { replaces: old.ref } : {}),
@@ -621,6 +627,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           namespace: ns.namespace,
           global: ns.global,
           pid: s.pid,
+          procStart: s.procStart,
           cwd: s.cwd,
           live: true,
         }),
@@ -842,6 +849,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // The next link's hello_ok says again which hub this is.
       hubVersion = undefined;
       hubIds = false;
+      // A replay before the next hello_ok must not carry `replaces`.
+      hubMailbox = false;
       statusRelay.dropped();
       receipts.release();
       // A send not yet answered waits for the next link; anything else fails now.
@@ -1094,14 +1103,21 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         const proposedName = hello.proposed_name ?? hello.agent_ref;
         // /clear (#1295): this new session runs in the process of a live
         // one whose session file is gone; it takes over that address.
-        const old =
+        const files =
           hello.kind === "claude-code"
-            ? clearedFrom(
-                hello.agent_ref,
-                pid,
-                new Set(liveClaudeSessions(claudeSessions).map((s) => s.ref)),
-              )
-            : undefined;
+            ? liveClaudeSessions(claudeSessions)
+            : [];
+        const mine = files.find(
+          (x) => x.ref === hello.agent_ref && x.pid === pid,
+        );
+        const old = mine
+          ? clearedFrom(
+              hello.agent_ref,
+              pid,
+              mine.procStart,
+              new Set(files.map((x) => x.ref)),
+            )
+          : undefined;
         const rec = agents.up({
           ...(old ? { replaces: old.ref } : {}),
           ref: hello.agent_ref,
@@ -1111,6 +1127,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           namespace: ns.namespace,
           global: ns.global,
           pid,
+          ...(mine ? { procStart: mine.procStart } : {}),
           cwd,
           live: true,
         });
