@@ -398,7 +398,7 @@ describe("the gate's team routes", () => {
     expect(await code(r)).not.toMatch(/^plan_/);
   });
 
-  it("a free instance refuses only a promotion or a reactivation; demotions pass, and read-only lets them all through (R3)", async () => {
+  it("a locked instance refuses only a promotion or a reactivation; demotions pass, free and read-only alike (R3)", async () => {
     const target = await login(`t-role-${uniq()}@a.com`, "admin");
     const patch = (role: string) =>
       send(props, R.member(target.userId), owner.cookie, {
@@ -419,9 +419,9 @@ describe("the gate's team routes", () => {
     await env.DB.prepare("update users set status = 'active' where id = ?")
       .bind(target.userId)
       .run();
-    // Read-only (a lapse): the owner may promote or demote.
+    // Read-only (a lapse): the same rule, with plan_read_only.
     await cachePlan(row({ tier: "team", status: "lapsed", version: 2 }), mid);
-    expect((await patch("admin")).status).toBe(200);
+    expect(await code(await patch("admin"))).toBe("plan_read_only");
     expect((await patch("member")).status).toBe(200);
   });
 });
