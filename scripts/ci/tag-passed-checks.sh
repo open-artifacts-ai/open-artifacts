@@ -57,7 +57,11 @@ run_id="$(jq -r '.id' <<< "$run")"
 # dependency of the hosted deploy, so an npm auth hiccup there must not block
 # staging and prod releases (v0.122.0 was blocked that way). Each listed job
 # must be present exactly once, completed, and concluded success; missing,
-# skipped, cancelled, running or unknown statuses all block.
+# skipped, cancelled, running or unknown statuses all block. Every other job in
+# the run (deploy-prod, deploy-landing, a job added later) must be completed
+# with success or skipped (deploy-demo is skipped when DEMO_ENABLED is off), so
+# the only jobs allowed to fail are NPM_JOBS.
+NPM_JOBS=(pack-npm publish-npm)
 REQUIRED=(
   release-please
   verify-release
@@ -74,6 +78,8 @@ for j in "${REQUIRED[@]}"; do
   got="$(jq -r --arg n "$j" '[.jobs[] | select(.name == $n)] | if length == 1 then (if .[0].status == "completed" then (.[0].conclusion // "unknown") else "not completed (" + (.[0].status // "unknown") + ")" end) else "missing" end' <<< "$jobs")"
   [ "$got" = success ] || fail "job $j: $got"
 done
+bad="$(jq -r --argjson npm "$(printf '%s\n' "${NPM_JOBS[@]}" | jq -R . | jq -sc .)" '[.jobs[] | select(.name as $n | $npm | index($n) | not) | select(.status != "completed" or (.conclusion != "success" and .conclusion != "skipped")) | .name + ": " + (if .status != "completed" then "not completed (" + (.status // "unknown") + ")" else (.conclusion // "unknown") end)] | first // empty' <<< "$jobs")" || fail "release-please jobs: unreadable"
+[ -z "$bad" ] || fail "job $bad"
 
 n="$(jq --arg p "oa-release-$env-" '[.assets[] | select((.name | startswith($p)) and .state == "uploaded")] | length' <<< "$rel")"
 [ "$n" -gt 0 ] || fail "assets: no oa-release-$env-* asset on $tag"

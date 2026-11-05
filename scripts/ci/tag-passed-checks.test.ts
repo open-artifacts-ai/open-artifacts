@@ -19,7 +19,7 @@ case "$p" in
   commits/*) k=commit ;;
   compare/*) k=compare ;;
   actions/workflows/release-please.yml/runs\\?*) k=runs ;;
-  actions/runs/*/jobs\\?*) k=jobs ;;
+  actions/runs/*/jobs\\?*) id="\${p#actions/runs/}"; id="\${id%%/*}"; k=jobs; [ -f "$STATE/jobs-$id.json" ] && k="jobs-$id" ;;
   *) exit 1 ;;
 esac
 [ -f "$STATE/$k.json" ] || { echo "HTTP 404" >&2; exit 1; }
@@ -108,6 +108,10 @@ const jobIs = (name: string, conclusion: string | null) =>
     );
   });
 
+const extraJob = (name: string, status: string, conclusion: string | null) =>
+  // biome-ignore lint/suspicious/noExplicitAny: test fixtures
+  edit((s: any) => s.jobs.jobs.push({ name, status, conclusion }));
+
 describe("tag-passed-checks.sh", () => {
   it("passes when every check holds, for both envs, reading only", () => {
     for (const env of ["staging", "prod"]) {
@@ -169,6 +173,40 @@ describe("tag-passed-checks.sh", () => {
       "a dispatch run",
       edit((s) => (s.runs.workflow_runs[0].event = "workflow_dispatch")),
       /no push run/,
+    ],
+    [
+      "latest run has a failed required job",
+      (() => {
+        const s = edit((x) =>
+          x.runs.workflow_runs.push({
+            ...x.runs.workflow_runs[0],
+            id: 42,
+            created_at: "2026-10-30T01:00:00Z",
+          }),
+        );
+        // biome-ignore lint/suspicious/noExplicitAny: test fixtures
+        const bad = JSON.parse(JSON.stringify((s as any).jobs));
+        // biome-ignore lint/suspicious/noExplicitAny: test fixtures
+        bad.jobs.find((j: any) => j.name === "hosted-check").conclusion =
+          "failure";
+        return { ...s, "jobs-42": bad };
+      })(),
+      /job hosted-check: failure/,
+    ],
+    [
+      "deploy-prod failed",
+      extraJob("deploy-prod", "completed", "failure"),
+      /job deploy-prod: failure/,
+    ],
+    [
+      "unknown extra job failed",
+      extraJob("deploy-new-thing", "completed", "failure"),
+      /job deploy-new-thing: failure/,
+    ],
+    [
+      "extra job still running",
+      extraJob("deploy-landing", "in_progress", null),
+      /job deploy-landing: not completed \(in_progress\)/,
     ],
     [
       "runs error",
@@ -285,6 +323,10 @@ describe("tag-passed-checks.sh", () => {
     }
   });
 
+  it("passes with deploy-demo skipped", () => {
+    expect(run(extraJob("deploy-demo", "completed", "skipped")).code).toBe(0);
+  });
+
   it("staging needs hosted-attach-staging, not prod's", () => {
     const s = good();
     // biome-ignore lint/suspicious/noExplicitAny: test fixtures
@@ -292,7 +334,8 @@ describe("tag-passed-checks.sh", () => {
       j.name === "hosted-attach-staging" ? { ...j, conclusion: "failure" } : j,
     );
     expect(run(s, "staging").err).toMatch(/job hosted-attach-staging: failure/);
-    expect(run(s, "prod").code).toBe(0);
+    // Any non-npm job that failed in the run blocks every env.
+    expect(run(s, "prod").err).toMatch(/job hosted-attach-staging: failure/);
   });
 
   it("refuses a bad env or tag before any call", () => {
