@@ -44,6 +44,17 @@ export const LIMITS = {
   renamesPerHour: 10,
 } as const;
 
+/**
+ * #1295 lasting mailboxes: how long a closed agent keeps its name (an `away`
+ * reservation) and its pending mail, and how long any mail lives. The
+ * per-address pending caps hold for live and away agents alike, counted
+ * across sessions; the hub-wide total bounds every mailbox together.
+ */
+export const MAILBOX_RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
+export const MAILBOX_PENDING_CAP = 200;
+export const MAILBOX_BYTES_CAP = 10 * 1024 * 1024;
+export const HUB_MAILBOX_BYTES_CAP = 1024 * 1024 * 1024;
+
 const enc = new TextEncoder();
 export const utf8Bytes = (s: string): number => enc.encode(s).length;
 /** True when `s` exceeds `max` UTF-8 bytes. UTF-8 bytes >= UTF-16 units, so a longer string short-circuits. */

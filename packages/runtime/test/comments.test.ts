@@ -116,7 +116,7 @@ afterEach(() => {
   });
 });
 
-async function start(mode?: "select" | "pin") {
+async function start(mode?: "view" | "select" | "pin") {
   createRuntime({ loadSchemas: async () => schemas, signal: ctl.signal });
   await flush();
   if (mode) await send({ type: "comments.mode", mode });
@@ -210,6 +210,54 @@ describe("selection button", () => {
     await start();
     select(textOf("a"), 4, textOf("a"), 9);
     expect(button()).toBeNull();
+  });
+});
+
+describe("view mode (#1491)", () => {
+  it("paints and reports, but shows no Comment button and sends no select", async () => {
+    await start("view");
+    await send({
+      type: "comments.set",
+      threads: [{ id: "ex", anchor: anchorOf("quick brown") }],
+    });
+    expect(last("comment.positions")).toMatchObject({
+      positions: [{ id: "ex", state: "exact", top: 100 }],
+    });
+    expect(
+      highlights.get("oa-comment")?.ranges.map((r) => r.toString()),
+    ).toEqual(["quick brown"]);
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()).toBeNull();
+    expect(last("comment.select")).toBeUndefined();
+  });
+
+  it("select to view hides a showing Comment button, and view to select shows it for a present selection", async () => {
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()).not.toBeNull();
+    await send({ type: "comments.mode", mode: "view" });
+    expect(button()).toBeNull();
+    expect(last("comment.select")).toBeUndefined();
+    await send({ type: "comments.mode", mode: "select" });
+    expect(button()?.textContent).toBe("Comment");
+  });
+
+  it("opens a thread from a click on its highlight, and sends no pin", async () => {
+    await start("view");
+    await send({
+      type: "comments.set",
+      threads: [{ id: "ex", anchor: anchorOf("quick brown") }],
+    });
+    textOf("a").parentElement?.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        clientX: 40,
+        clientY: 110,
+      }),
+    );
+    await flush();
+    expect(last("comment.open")).toMatchObject({ id: "ex" });
+    expect(last("comment.pin")).toBeUndefined();
   });
 });
 

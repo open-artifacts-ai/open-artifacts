@@ -10,6 +10,7 @@ import {
   type ClientFrame,
   decodeServerFrame,
   encodeFrame,
+  MAILBOX_RETAIN_MS,
   newId,
   PONG,
   type ServerFrame,
@@ -341,7 +342,11 @@ describe("M1: closed agents are purged once idle, and capped per machine", () =>
     await clock(h, t0 + CLOSED_AGENT_RETAIN_MS - 1);
     await alarms(h, 2);
     expect(await exists(h, id)).toBe(true);
+    // #1295: the away reservation keeps the row past 24 h.
     await clock(h, t0 + CLOSED_AGENT_RETAIN_MS + 1);
+    await alarms(h, 2);
+    expect(await exists(h, id)).toBe(true);
+    await clock(h, t0 + MAILBOX_RETAIN_MS + 1);
     await alarms(h, 2);
     expect(await exists(h, id)).toBe(false);
     // The ref comes back with a new id: a purged id is never reused.

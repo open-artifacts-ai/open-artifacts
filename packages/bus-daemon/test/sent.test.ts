@@ -9,6 +9,19 @@ const meta = { from_ref: "s1", to_name: "peer", namespace: "ns" };
 const ID = "mmmmmmmmmmmmmmm1";
 
 describe("SentStore", () => {
+  it("logs one line when the cap evicts an entry that is still owed", () => {
+    const log = vi.fn();
+    let t = 1_000;
+    const s = new SentStore(undefined, { max: 2, now: () => ++t, log });
+    s.add("mmmmmmmmmmmmmmm1", meta);
+    s.add("mmmmmmmmmmmmmmm2", meta);
+    expect(log).not.toHaveBeenCalled();
+    s.add("mmmmmmmmmmmmmmm3", meta);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0]?.[0]).toMatch(/evicted 1 undelivered/);
+    expect(s.get("mmmmmmmmmmmmmmm1")).toBeUndefined();
+  });
+
   it("survives a restart, 0600, until deleted", () => {
     const f = file();
     const s = new SentStore(f);

@@ -2,13 +2,15 @@ import {
   BAD_NS_CHARS,
   BUS_CMD,
   LIMITS,
+  MAILBOX_PENDING_CAP,
+  MAILBOX_RETAIN_MS,
   type ReceiptReason,
   type ReceiptState,
 } from "@oa/bus-protocol";
 
 /** One terminal line at most; the transcript's "cutting long values" rule. */
 const MAX_COLS = 80;
-const HOUR = `${LIMITS.mailTtlSec / 3600} hour`;
+const RETAIN = `${MAILBOX_RETAIN_MS / 86_400_000} days`;
 const MB = `${LIMITS.maxMessageBytes / (1024 * 1024)} MB`;
 
 /**
@@ -41,7 +43,7 @@ const refusals: Record<
     "Send it again once the session is open, or message another agent.",
   ],
   inbox_full: [
-    `${LIMITS.inboxCap} messages are already waiting.`,
+    `${MAILBOX_PENDING_CAP} messages are already waiting.`,
     "Send again once some are delivered or expire.",
   ],
   too_large: [
@@ -52,9 +54,10 @@ const refusals: Record<
     "You can reach only agents in your namespace and global agents.",
     "Message an agent in this namespace, or a global agent.",
   ],
+  // #1448: the sender cannot reinstall someone else's machine; no install hint.
   revoked: [
     "That agent's machine was revoked.",
-    `Message another agent, or run ${BUS_CMD} install there.`,
+    "Run the oa_bus list_agents tool to find who is live.",
   ],
   ambiguous: [
     (n) =>
@@ -87,20 +90,23 @@ const quoted = (head: string, quote: string, tail: string): string => {
  * verbatim, uncoloured (the glyph carries the state). `namespaces` is how many
  * namespaces hold `to`, for `ambiguous`. `excerpt` (from `excerptOf`) is the
  * message an expired or refused notice is about; without it the quote is left
- * out.
+ * out. `movedTo` (from `movedName`, #1448) is the live agent a `revoked` name
+ * most likely moved to: the refusal then says to try it.
  */
 export function receiptText(
   r: { state: ReceiptState; reason?: ReceiptReason },
   sentTo: string,
   namespaces?: number,
   excerpt?: string,
+  movedTo?: string,
 ): string {
   const quote = excerpt ? `"${excerpt}"` : undefined;
   const to = sentTo;
   switch (r.state) {
     case "pending":
       return fitLine(
-        (v) => `○  Queued for ${v}. Not delivered yet; expires in ${HOUR}.`,
+        (v) =>
+          `○  Queued for ${v}. Not delivered yet; expires within ${RETAIN}.`,
         to,
       );
     case "delivered":
@@ -109,7 +115,7 @@ export function receiptText(
       const tail = (v: string) =>
         r.reason === "recipient_closed"
           ? `was not delivered because ${v} closed first.`
-          : `was not taken within ${HOUR}.`;
+          : `was not taken within ${RETAIN}.`;
       const head = (v: string) => `×  Expired: your message to ${v}`;
       if (!quote) return fitLine((v) => `${head(v)} ${tail(v)}`, to);
       return fitLine((v) => quoted(head(v), quote, tail(v)), to);
@@ -117,9 +123,16 @@ export function receiptText(
     case "refused": {
       const copy = r.reason ? refusals[r.reason] : undefined;
       const label = r.reason ? `Refused (${r.reason})` : "Refused";
-      const [detail, hint] = copy ?? [null, "Message another agent."];
+      const moved = r.reason === "revoked" ? movedTo : undefined;
+      const [detail, hint] = moved
+        ? [null, null]
+        : (copy ?? [null, "Message another agent."]);
       const said = (v: string) =>
-        typeof detail === "function" ? detail(namespaces, v) : detail;
+        moved
+          ? `${v} moved; try ${moved}.`
+          : typeof detail === "function"
+            ? detail(namespaces, v)
+            : detail;
       const lines = (v: string) =>
         [
           quote
@@ -130,11 +143,36 @@ export function receiptText(
               )
             : `×  ${label}: your message to ${v} was not delivered.`,
           ...(said(v) ? [`   ${said(v)}`] : []),
-          `   ${hint}`,
+          ...(hint ? [`   ${hint}`] : []),
         ].join("\n");
       return fitLine(lines, to);
     }
   }
+}
+
+/**
+ * #1448: for a send refused `revoked`, the live name `to` most likely moved
+ * to: `<to>-N` among `names` (the sender's roster), the lowest N, ignoring
+ * case; undefined when none.
+ */
+export function movedName(
+  to: string,
+  names: readonly string[],
+): string | undefined {
+  const base = `${to.toLowerCase()}-`;
+  let best: string | undefined;
+  let bestN = Number.POSITIVE_INFINITY;
+  for (const name of names) {
+    const l = name.toLowerCase();
+    if (!l.startsWith(base)) continue;
+    const tail = l.slice(base.length);
+    if (!/^[0-9]+$/.test(tail)) continue;
+    if (Number(tail) < bestN) {
+      bestN = Number(tail);
+      best = name;
+    }
+  }
+  return best;
 }
 
 /**

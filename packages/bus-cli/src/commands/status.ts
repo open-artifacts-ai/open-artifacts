@@ -2,6 +2,7 @@ import { stripTerminalControls } from "@oa/bus-ipc";
 import { semverGte } from "@oa/bus-protocol";
 import {
   type Ctx,
+  configFileLines,
   probeDaemon,
   say,
   sayErr,
@@ -159,6 +160,8 @@ export async function status(ctx: Ctx): Promise<number> {
     async () => (await health).version,
   );
   if (update) say(ctx, c.updateAvailable(update, st.version));
+  // Before the hub check: a refused file explains a missing config either way.
+  if (st.config_files?.length) say(ctx, configFileLines(ctx, st.config_files));
   if (st.hub !== "connected") {
     // Without the hub, no row's state can be known.
     sayErr(ctx, c.hubNotReachable(host, st.hub_error, "status"));

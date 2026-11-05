@@ -49,6 +49,7 @@ import {
   type Target,
 } from "./cf.js";
 import { type DirectRoute, directRouteOf } from "./direct-fetch.js";
+import { acceptedKeys } from "./internal/accepted-keys.js";
 import {
   ALLOW_ACCOUNT_TARGET,
   FLOOR_MIN_SEQ,
@@ -100,6 +101,7 @@ import { nonAdditiveReason } from "./non-additive.js";
 import {
   canonicalJson,
   type DirectoryRevoke,
+  holderLease,
   type InstallRow,
   type InstallState,
   inputsHash,
@@ -275,6 +277,13 @@ export interface WfpOptions {
    * CLI): the rows carry no actor, the CLI's own auditAs rows frame them.
    */
   auditActor?: string;
+  /**
+   * Who holds the leases this provisioner claims (the provisioner's
+   * `job:<jobId>`): the token is holderLease(leaseHolder), so a retry of the
+   * same job re-enters a lease an earlier attempt left. Unset (the CLI): a
+   * fresh random token per claim.
+   */
+  leaseHolder?: string;
   /** Tests only: the binding id audit's time limit. */
   bindingIdAuditMs?: number;
   /** Tests only: verify_clean's reads (VERIFY_CLEAN_ATTEMPTS) and their spacing. */
@@ -672,6 +681,8 @@ const directoryText = (e: RegistryEntry): string =>
 
 /** How long a lifecycle operation holds the row's lock (installs.lease_until); renewed at each step. */
 const LEASE_MS = 30 * 60_000;
+/** The fence renews the held lease at most this often (#1326); step holds always renew. */
+const FENCE_RENEW_MS = 10_000;
 const HEX32 = /^[0-9a-f]{32}$/;
 const hex16 = () =>
   Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex");
@@ -871,6 +882,12 @@ interface OpContext {
   held: Held | null;
   /** The CI owner token this operation minted and has not revoked yet. */
   ci: CiToken | null;
+  /**
+   * Set once this operation lost its lease (a newer attempt or another job
+   * holds the install): every later Cloudflare write throws LostLease
+   * before reaching Cloudflare (#1326).
+   */
+  lost?: string;
 }
 
 /** An ephemeral CI owner PAT: in memory only, revoked before the lease goes. */
@@ -987,6 +1004,48 @@ export class ProbeAccepted extends Error {
   override name = "ProbeAccepted";
 }
 
+/**
+ * The Cloudflare calls that change something. Under a lease each one is
+ * fenced: fenceWrites runs hold() first, so an attempt whose lease another
+ * attempt or job took throws LostLease before the call (#1326).
+ */
+export const CF_WRITES: ReadonlySet<string> = new Set([
+  "d1Create",
+  "d1Query",
+  "d1Batch",
+  "d1Delete",
+  "r2Create",
+  "r2Delete",
+  "r2InstallDeleteObject",
+  "kvCreate",
+  "kvDelete",
+  "kvPut",
+  "kvDeleteKey",
+  "scriptUpload",
+  "scriptDelete",
+  "secretPut",
+  "secretDelete",
+  "scriptSubdomain",
+  "assetsUpload",
+  "turnstileCreate",
+]);
+
+/** `cf` with `fence` awaited before every CF_WRITES call. */
+export function fenceWrites(cf: Cf, fence: () => Promise<void>): Cf {
+  return new Proxy(cf, {
+    get(t, k, r) {
+      const v = Reflect.get(t, k, r);
+      if (typeof v !== "function") return v;
+      if (typeof k === "string" && CF_WRITES.has(k))
+        return async (...a: unknown[]) => {
+          await fence();
+          return v.apply(t, a);
+        };
+      return v.bind(t);
+    },
+  });
+}
+
 export class WfpProvisioner {
   readonly notes: string[] = [];
   /** Each verified asset's assetHash, by its record sha256 and path. */
@@ -1019,7 +1078,10 @@ export class WfpProvisioner {
           `${JSON.stringify(k)} is not an option; gates are code constants`,
           "invalid_state",
         );
-    this.cf = o.cf;
+    // #1326: every Cloudflare write first renews the held lease (hold), so
+    // an attempt fenced out by a newer one stops before the call. The
+    // platform D1 (the lease itself) takes the bare client.
+    this.cf = fenceWrites(o.cf, () => this.hold(true));
     this.env = o.env;
     this.target = o.target;
     this.now = o.now ?? Date.now;
@@ -1106,7 +1168,7 @@ export class WfpProvisioner {
         "target must be account or namespace",
         "invalid_state",
       );
-    if (this.pubkey() === RELEASE_PUBKEY_PLACEHOLDER)
+    if (RELEASE_PUBKEY[env] === RELEASE_PUBKEY_PLACEHOLDER)
       throw new ProvisionRefused(
         `RELEASE_PUBKEY.${env} is still the placeholder; T3b must set the release signing key before any create`,
         "invalid_state",
@@ -1176,8 +1238,9 @@ export class WfpProvisioner {
       );
   }
 
-  private pubkey(): string {
-    return RELEASE_PUBKEY[this.env];
+  /** The current key first, then retired keys still accepted. */
+  private pubkey(): string[] {
+    return acceptedKeys(this.env);
   }
 
   /** L2 then M1: the record is trusted only after its signature checks out. */
@@ -2073,7 +2136,7 @@ export class WfpProvisioner {
         "invalid_state",
       );
     this.platform = new PlatformDb(
-      this.cf,
+      this.o.cf,
       { id: dbId, name: dbName },
       env,
       this.now,
@@ -2720,7 +2783,10 @@ export class WfpProvisioner {
     to: InstallState,
     op: string,
   ): Promise<void> {
-    const lease = hex16();
+    const lease =
+      this.o.leaseHolder === undefined
+        ? hex16()
+        : holderLease(this.o.leaseHolder);
     if (
       await this.platform.claim(
         row.id,
@@ -2751,20 +2817,43 @@ export class WfpProvisioner {
     );
   }
 
-  /** M3: renews the lock before a step; a lock another operation took stops this one. */
-  private async hold(): Promise<void> {
+  /**
+   * M3: renews the lock before a step and before every Cloudflare write
+   * (fenceWrites); a lock another operation took stops this one. Once lost,
+   * every later call throws again, so nothing more reaches Cloudflare.
+   */
+  private async hold(fromFence = false): Promise<void> {
+    const lost = this.ctx.getStore()?.lost;
+    if (lost !== undefined) throw new LostLease(lost);
     const h = this.held;
-    if (h && !(await this.platform.renew(h.id, h.lease, this.now() + LEASE_MS)))
+    if (!h) return;
+    // The fence (one call per Cloudflare write) renews at most once per
+    // FENCE_RENEW_MS; a step-level hold always renews.
+    const t = this.now();
+    const last = this.renewedAt;
+    if (
+      fromFence &&
+      last?.lease === h.lease &&
+      t >= last.at &&
+      t - last.at < FENCE_RENEW_MS
+    )
+      return;
+    if (!(await this.platform.renew(h.id, h.lease, t + LEASE_MS)))
       await this.lost();
+    this.renewedAt = { lease: h.lease, at: t };
   }
+
+  /** The last successful renew of the held lease (the fence's throttle). */
+  private renewedAt: { lease: string; at: number } | null = null;
 
   private async lost(): Promise<never> {
     const h = this.held as { id: InstallId; op: string };
     this.held = null;
+    const message = `install ${h.id}: lost the lease; another operation holds the install now, so this ${h.op} stopped`;
+    const c = this.ctx.getStore();
+    if (c) c.lost = message;
     await this.platform.audit(h.id, `${h.op}.lost_lease`, {}).catch(() => {});
-    throw new LostLease(
-      `install ${h.id}: lost the lease; another operation holds the install now, so this ${h.op} stopped`,
-    );
+    throw new LostLease(message);
   }
 
   /** A write of the held row, only while the lock is still this operation's. */
@@ -3264,7 +3353,7 @@ export class WfpProvisioner {
           "invalid_state",
         );
       const platform = new PlatformDb(
-        this.cf,
+        this.o.cf,
         { id: dbId, name: dbName },
         this.env,
         this.now,
@@ -5006,13 +5095,15 @@ export class WfpProvisioner {
     if (!c || !t) return;
     c.ci = null;
     try {
+      // The bare client: revoking our own token is safe even once the lease is
+      // lost (#1326), and must not be refused by the fence.
       assertOwnResource(t.d1Name, this.env);
-      await this.cf.d1Query(
+      await this.o.cf.d1Query(
         t.d1Id,
         "UPDATE tokens SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
         [this.now(), t.tokenId],
       );
-      const left = await this.cf.d1Query(
+      const left = await this.o.cf.d1Query(
         t.d1Id,
         "SELECT id FROM tokens WHERE id = ?1 AND revoked_at IS NULL",
         [t.tokenId],

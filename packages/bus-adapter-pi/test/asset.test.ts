@@ -10,6 +10,7 @@ import {
   earlierStatusText,
   excerptOf,
   messageHeader,
+  movedName,
   neutralizeBody,
   oversizedText,
   REFUSAL,
@@ -349,6 +350,39 @@ describe("pi extension asset", () => {
     expect(JSON.parse(await p.call("self", {})).kind).toBe("zz");
   });
 
+  it("#1527: self shows the config files the daemon refused", async () => {
+    const { p } = await started((f) =>
+      f.type === "self"
+        ? {
+            type: "agent",
+            agent: {
+              name: "me",
+              namespace: "ns",
+              kind: "pi",
+              live: true,
+              global: false,
+              config_files: [
+                {
+                  file: "/home/u/x/.oa-bus.json",
+                  state: "refused",
+                  reason: "is writable by everyone",
+                  fix: "run chmod o-w /home/u/x/.oa-bus.json",
+                },
+              ],
+            },
+          }
+        : undefined,
+    );
+    expect(JSON.parse(await p.call("self", {})).config_files).toEqual([
+      {
+        file: "/home/u/x/.oa-bus.json",
+        state: "refused",
+        reason: "is writable by everyone",
+        fix: "run chmod o-w /home/u/x/.oa-bus.json",
+      },
+    ]);
+  });
+
   it("list_agents, self and fetch render like the MCP tools", async () => {
     const { p } = await started((f) =>
       f.type === "list"
@@ -594,6 +628,12 @@ describe("the asset's own copy matches the shared copy", () => {
         excerptOf("w".repeat(60)),
       ])
         expect(copy.receiptText(r, to, n, ex)).toBe(receiptText(r, to, n, ex));
+    const revoked = { state: "refused", reason: "revoked" } as const;
+    expect(copy.receiptText(revoked, to, undefined, "hi", `${to}-2`)).toBe(
+      receiptText(revoked, to, undefined, "hi", `${to}-2`),
+    );
+    const roster = [`${to}-3`, `${to}-2`, `${to}-2x`, "other"];
+    expect(copy.movedName(to, roster)).toBe(movedName(to, roster));
   });
   it("excerpts", () => {
     for (const body of [

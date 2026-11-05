@@ -118,7 +118,7 @@ describe("opencode mcp tools", () => {
       sessionID: "ses_b",
     });
     expect(r.content[0]?.text).toBe(
-      "○  Queued for peer. Not delivered yet; expires in 1 hour.",
+      "○  Queued for peer. Not delivered yet; expires within 7 days.",
     );
     expect(svc.resolve).toHaveBeenCalledOnce();
     expect(svc.resolve).toHaveBeenCalledWith("ses_a");
@@ -327,6 +327,30 @@ describe("status in OpenCode", () => {
         "- e (opencode, ns)",
       ].join("\n"),
     );
+  });
+
+  it("#1527: self shows the config files the daemon refused", async () => {
+    const self = await run("self", {}, () => ({
+      type: "agent",
+      agent: row({
+        config_files: [
+          {
+            file: "/home/u/x/.oa-bus.json",
+            state: "refused",
+            reason: "is writable by everyone",
+            fix: "run chmod o-w /home/u/x/.oa-bus.json",
+          },
+        ],
+      }),
+    }));
+    expect(JSON.parse(self.text).config_files).toEqual([
+      {
+        file: "/home/u/x/.oa-bus.json",
+        state: "refused",
+        reason: "is writable by everyone",
+        fix: "run chmod o-w /home/u/x/.oa-bus.json",
+      },
+    ]);
   });
 
   it("self asks for its own row and names no role", async () => {

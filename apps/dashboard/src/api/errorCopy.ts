@@ -81,12 +81,14 @@ const planCopy = (e: ApiClientError, owner: boolean): string | undefined => {
   }
 };
 
-/** Asking a space manager can't help a guest or restricted member. */
-const CAPPED_FORBIDDEN = "Your account can only view, so you can't publish.";
 /** What a locked admin reads by disabled write controls. */
 export const READ_ONLY_NOTICE = `This instance is read-only right now. ${ASK}.`;
 const PLAN_FORBIDDEN =
   "This instance is read-only right now, so you can't publish.";
+/** What a guest or restricted member is told when a write is refused; asking a space manager can't help. */
+export const cappedCopy = (verb: string) =>
+  `Your account can only view, so you can't ${verb}.`;
+const CAPPED_FORBIDDEN = cappedCopy("publish");
 
 export const DIRECTORY_SETTINGS = "/settings/directory";
 

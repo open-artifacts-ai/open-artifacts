@@ -21,7 +21,7 @@ import {
   runMain,
   sigJson,
 } from "./release-artifact.mjs";
-import { verifySignature } from "./release-pubkeys.mjs";
+import { verifyCurrentSignature } from "./release-pubkeys.mjs";
 
 const NAME = "assemble-release";
 const REQUIRED = [
@@ -73,9 +73,9 @@ async function main() {
       throw new Error(
         `the ${p.variant} record is not the one hosted-sign signed`,
       );
-    // L11: verified against the pinned key before anything is written
+    // L11: verified against the current pinned key (never a retired one) before anything is written
     // (refused outright while the pin is still the placeholder).
-    verifySignature(env, recordPayload(env, p.recordString), signature);
+    verifyCurrentSignature(env, recordPayload(env, p.recordString), signature);
     return { p, signature };
   });
   const out = resolve(String(a.out));

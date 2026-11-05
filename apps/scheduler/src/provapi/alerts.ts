@@ -423,8 +423,9 @@ const COPY: Record<AlertKey, Copy> = {
   prod_dirty: {
     title: "prod_dirty install",
     open: (f) =>
-      `${plural(f.count, "job")} failed prod_dirty: the install's render did not pass verify_clean. Purge or discard the install.`,
-    clear: "Every prod_dirty install was purged or discarded.",
+      `${plural(f.count, "job")} failed prod_dirty: the install's render did not pass verify_clean. Purge or discard the install, or upgrade it cleanly.`,
+    clear:
+      "Every prod_dirty install was purged, discarded, or later upgraded or rolled back cleanly.",
   },
   prodclean_failed: {
     title: "prod-clean check failed",

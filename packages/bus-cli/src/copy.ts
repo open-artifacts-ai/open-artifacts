@@ -347,7 +347,7 @@ export function copy(style: Style) {
     queuedFootnote: () => [
       p(
         "muted",
-        "Mail to a queued agent waits up to 1 hour for its machine to reconnect;",
+        "Mail to a queued agent waits up to 7 days for its machine to reconnect;",
       ),
       p("muted", "then the sender is told."),
     ],
@@ -556,6 +556,22 @@ export function copy(style: Style) {
       warn(`${clip(path, 45)} can't be used, so no directory is global.`),
       next(p("muted", clip(`It ${why}.`, 3))),
       next(`Remove it, then run ${BUS_CMD} global add <dir> again.`),
+    ],
+    /** A refused or noted config file (#1527): the reason, then the exact fix. Paths arrive already shortened. */
+    configFile: (f: {
+      file: string;
+      state: "refused" | "noted";
+      reason: string;
+      fix: string;
+      restart?: boolean;
+    }) => [
+      warn(
+        f.state === "refused"
+          ? `${f.file} ${f.reason}, so it is ignored.`
+          : `${f.file} ${f.reason}; it is still used.`,
+      ),
+      next(`Fix: ${f.fix}`),
+      ...(f.restart ? [next("Restart the session to pick up a fix.")] : []),
     ],
     globalAsked: () => [
       warn("This repo's .oa-bus.json asks for global, which is ignored here."),

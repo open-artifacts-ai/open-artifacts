@@ -46,6 +46,7 @@ import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { isOrgAdmin } from "../../settings/spaces/access";
 import { visibilityHint } from "../../spaces/SpaceMarker";
+import { guestsMayComment } from "../comments/useComments";
 
 const VIS: { value: Visibility; label: string }[] = [
   { value: "private", label: "Private" },
@@ -596,6 +597,28 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           </p>
         )}
       </section>
+
+      {/* Absent: a server without comments (older than #1496). */}
+      {artifact.comments !== undefined && (
+        <section>
+          <h3 className={H3}>Comments</h3>
+          <div className="oa-cap">
+            <LabelledCheckbox
+              id="oa-comments"
+              describedBy="oa-comments-hint"
+              label="Comments"
+              checked={artifact.comments}
+              disabled={!vis || patch.isPending}
+              onCheckedChange={(on) => save({ comments: on })}
+            />
+            <small id="oa-comments-hint" className="oa-muted">
+              {guestsMayComment(artifact)
+                ? "Anyone with the link can comment. Signed-out visitors pick a display name."
+                : "People who can open this can comment on it."}
+            </small>
+          </div>
+        </section>
+      )}
 
       <section>
         <h3 className={H3}>Live data</h3>

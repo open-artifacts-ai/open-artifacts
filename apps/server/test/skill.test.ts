@@ -360,6 +360,98 @@ describe("skill.md drift", () => {
     expect(md).not.toContain("{{");
   });
 
+  it("renders one harness's bus tool names, and only when asked", async () => {
+    const plain = await skill();
+    expect(plain).not.toContain("This copy is for one harness");
+
+    const claude = await get(`${APP}/skill.md?harness=claude`);
+    expect(claude.status).toBe(200);
+    const claudeMd = await claude.text();
+    expect(claudeMd).toContain("`mcp__oa_bus__list_agents` is list_agents");
+    expect(claudeMd).toContain("`mcp__oa_bus__send_message` is send_message");
+    // Inserted before Connect, so the note reads before the setup steps.
+    expect(claudeMd.indexOf("This copy is for one harness")).toBeLessThan(
+      claudeMd.indexOf("## Connect"),
+    );
+    // A refresh keeps the note only if the refetch URL keeps the harness.
+    expect(claudeMd).toContain("/skill.md?harness=claude");
+    // The skill paths live in the installer, not in served text.
+    expect(claudeMd).not.toContain("~/.claude");
+
+    for (const [h, tool] of [
+      ["codex", "mcp__oa_bus__send_message"],
+      ["opencode", "oa_bus_send_message"],
+    ] as const) {
+      const md = await (await get(`${APP}/skill.md?harness=${h}`)).text();
+      expect(md).toContain(`\`${tool}\` is send_message`);
+    }
+    for (const h of ["pi", "omp"] as const) {
+      const md = await (await get(`${APP}/skill.md?harness=${h}`)).text();
+      expect(md).toContain(
+        "the bus tools use their plain names, `list_agents` and `send_message`",
+      );
+    }
+
+    // An unknown harness is the plain skill, byte for byte.
+    const bogus = await (await get(`${APP}/skill.md?harness=bogus`)).text();
+    expect(bogus).toBe(plain);
+
+    // With the hub off the skill teaches no bus tools, harness or not.
+    const off = await (
+      await get(`${APP}/skill.md?harness=claude`, {}, E({ BUS_HUB: undefined }))
+    ).text();
+    expect(off).not.toContain("This copy is for one harness");
+  });
+
+  it("304s a harness ETag and 200s the plain one", async () => {
+    const harnessEtag =
+      (await get(`${APP}/skill.md?harness=claude`)).headers.get("etag") ?? "";
+    const plainEtag = (await get(`${APP}/skill.md`)).headers.get("etag") ?? "";
+    expect(harnessEtag).not.toBe(plainEtag);
+    const same = await get(`${APP}/skill.md?harness=claude`, {
+      headers: { "if-none-match": harnessEtag },
+    });
+    expect(same.status).toBe(304);
+    const plainSent = await get(`${APP}/skill.md?harness=claude`, {
+      headers: { "if-none-match": plainEtag },
+    });
+    expect(plainSent.status).toBe(200);
+  });
+
+  it.each([
+    ["the hub is unbound", { BUS_HUB: undefined }],
+    ["the install is hosted", { HOSTED: "1" }],
+  ])("is the plain skill when %s, harness or not", async (_, over) => {
+    const e = E(over);
+    const plain = await get(`${APP}/skill.md`, {}, e);
+    const harnessed = await get(`${APP}/skill.md?harness=claude`, {}, e);
+    const plainMd = await plain.text();
+    expect(await harnessed.text()).toBe(plainMd);
+    expect(plainMd).not.toContain("This copy is for one harness");
+    expect(harnessed.headers.get("etag")).toBe(plain.headers.get("etag"));
+  });
+
+  it.each([
+    ["spaces off", ""],
+    ["spaces on", "spaces"],
+  ])(
+    "inserts the harness note in both template variants (%s)",
+    async (_, FEATURES) => {
+      // The note is spliced in before "## Connect"; if either template ever
+      // loses that heading the note would vanish silently, so both are checked.
+      for (const tpl of [SKILL_TEMPLATE, SKILL_TEMPLATE_NO_SPACES])
+        expect(tpl).toContain("\n## Connect");
+      const e = E({ FEATURES });
+      const md = await (
+        await get(`${APP}/skill.md?harness=claude`, {}, e)
+      ).text();
+      expect(md).toContain("This copy is for one harness");
+      expect(md.indexOf("This copy is for one harness")).toBeLessThan(
+        md.indexOf("## Connect"),
+      );
+    },
+  );
+
   it("every tool example passes its input schema", () => {
     for (const t of TOOL_DEFS) {
       const r = t.inputSchema.safeParse(t.example);
