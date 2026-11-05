@@ -238,6 +238,44 @@ describe("chain-dispatch", () => {
       /cancelled the dispatched run/,
     );
   });
+  it("when the re-read after the cancel shows completed but not success, it still fails with the note", () => {
+    for (const conclusion of ["cancelled", "failure"]) {
+      let cancelled = false;
+      const base = harness({ list: () => [run()], poll: () => run() });
+      const exec: Exec = (c, a) => {
+        if (a.includes("POST")) cancelled = true;
+        if (
+          cancelled &&
+          a[0] === "api" &&
+          !a.includes("POST") &&
+          !a[1]?.includes("/workflows/")
+        )
+          return {
+            code: 0,
+            stdout: JSON.stringify(run({ status: "completed", conclusion })),
+            stderr: "",
+          };
+        return base.exec(c, a);
+      };
+      let now = T0;
+      expect(
+        () =>
+          dispatchAndWait({
+            exec,
+            repo: "o/r",
+            tag: "v1.2.3",
+            chainId: CHAIN,
+            now: () => now,
+            sleep: (m) => {
+              now += m;
+            },
+            waitTimeoutMs: 120_000,
+          }),
+        conclusion,
+      ).toThrow(/cancelled the dispatched run/);
+      expect(cancelled).toBe(true);
+    }
+  });
   it("never cancels a run that completed, failed or succeeded", () => {
     for (const c of ["success", "failure"]) {
       const h = harness({
