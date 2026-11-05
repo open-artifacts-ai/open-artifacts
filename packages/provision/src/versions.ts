@@ -9,6 +9,13 @@ export const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
  */
 export const REVOKE_MIN_VERSION = "0.57.1";
 
+/**
+ * The first release whose server admits a personal Google account (no `hd`)
+ * by exact invited email (#864), so google may run with an empty AUTH_DOMAINS.
+ * null until #864 ships: below it, or while null, google needs AUTH_DOMAINS.
+ */
+export const GMAIL_OWNER_MIN_VERSION: string | null = null;
+
 /** Semver order (prerelease below its release); throws on a non-semver string. */
 export function compareVersions(a: string, b: string): number {
   const pa = SEMVER.exec(String(a));
