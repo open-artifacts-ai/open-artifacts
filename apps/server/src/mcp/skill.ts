@@ -78,21 +78,32 @@ export const skillUrl = (env: SkillEnv): string | undefined =>
 
 /**
  * The per-harness line for `/skill.md?harness=`, or "" without a known
- * harness: an install renders the tool names that install gives the agent, and
- * every other fetch gets exactly the bytes it got before the parameter
- * existed. No harness names here: the served text stays vendor-neutral, so it
- * names tool names and the skill path, not products (`#1456` step 3).
+ * harness or with the bus off: the skill never teaches the bus when the hub is
+ * off. Vendor-neutral on purpose (a neutral test fetches every variant), so it
+ * names tool names and never a harness path or product (`#1456` step 3).
  */
-export const harnessNote = (harness: Harness | undefined): string => {
-  if (!harness) return "";
-  const { skillPath, busToolName } = harnessSkills[harness];
-  const tools = busToolName
-    ? `its bus tools are named \`${busToolName("list_agents")}\` and \`${busToolName("send_message")}\` (list_agents, send_message)`
-    : "its bus tools keep the names the harness gives them";
-  return `This copy was rendered for one harness: ${tools}, and the skill file lives at \`${skillPath}\`.\n\n`;
+export const harnessNote = (
+  harness: Harness | undefined,
+  on: boolean,
+): string => {
+  if (!harness || !on) return "";
+  const { busToolName } = harnessSkills[harness];
+  if (!busToolName)
+    return "This copy is for one harness: here the bus tools use their plain names, `list_agents` and `send_message`.\n\n";
+  return `This copy is for one harness: here \`${busToolName("list_agents")}\` is list_agents and \`${busToolName("send_message")}\` is send_message.\n\n`;
 };
 
 const memo = new Map<string, Promise<string>>();
+
+/** FNV-1a, 32 bits: a short, stable suffix for an ETag. */
+const fnv = (s: string): string => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+};
 
 /** The skill for this instance, optionally rendered for one harness. */
 export function renderSkill(
@@ -121,8 +132,18 @@ export function renderSkill(
       const md = tpl.replace(/\{\{(\w+)\}\}/g, (m, k: string) => v[k] ?? m);
       // The harness note is inserted at render time, before "## Connect", so
       // the template (and every absent-harness byte) stays exactly as it was.
-      const note = harnessNote(harness);
-      return note ? md.replace("\n## Connect", `\n${note}## Connect`) : md;
+      const note = harnessNote(harness, bus);
+      if (!note) return md;
+      const origin = skillOrigin(env.APP_HOST);
+      return (
+        md
+          .replace("\n## Connect", `\n${note}## Connect`)
+          // A refresh must keep the note: the same harness on the refetch URL.
+          .replaceAll(
+            `${origin}/skill.md`,
+            `${origin}/skill.md?harness=${harness}`,
+          )
+      );
     });
     // A failure is not memoized: the next request tries again.
     p = p.catch((e: unknown) => {
@@ -139,16 +160,19 @@ export function renderSkill(
  * VERSION across template changes), plus the data-doc limit when
  * DATA_DOC_BYTES overrides the plan's, and "nospaces-" (with that
  * template's hash) without the spaces feature. The host is fixed per deploy.
+ * A harness render adds a hash of its note, so a table or wording change is a
+ * new ETag rather than a 304 under the same VERSION.
  */
 export const skillEtag = (
-  env: Pick<Env, "PLAN" | "DATA_DOC_BYTES" | "HOSTED" | "FEATURES">,
+  env: Pick<Env, "PLAN" | "DATA_DOC_BYTES" | "HOSTED" | "FEATURES" | "BUS_HUB">,
   harness?: Harness | undefined,
 ): string => {
   const { plan, docBytes } = dataLimits(env);
   const doc = docBytes === dataDocLimit(plan) ? "" : `-${docBytes}`;
   const hosted = env.HOSTED === "1" ? "-hosted" : "";
   const tpl = spacesIn(env) ? SKILL_HASH : `nospaces-${SKILL_HASH_NO_SPACES}`;
-  return `"${VERSION}-${plan}${doc}${hosted}-${tpl}${harness ? `-${harness}` : ""}"`;
+  const note = harnessNote(harness, busOn(env));
+  return `"${VERSION}-${plan}${doc}${hosted}-${tpl}${note ? `-${fnv(note)}` : ""}"`;
 };
 
 export async function serveSkill(c: Context<AppEnv>) {

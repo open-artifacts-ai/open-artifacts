@@ -300,12 +300,8 @@ unset OA_TOKEN`
 }
 
 /**
- * The harnesses the bus installer wires today. One table, two consumers: the
- * server renders `/skill.md?harness=` from it, and the installer writes the
- * skill to `skillPath` with the bus tool names this harness gives them.
- *
- * `busToolName` is undefined where the naming is unconfirmed: the served text
- * then keeps the generic line instead of guessing (`#1456` step 3).
+ * The harnesses the bus installer wires today: one table. The server renders
+ * `/skill.md?harness=` from it; the installer will read it in PR 2 of #1456.
  */
 export const HARNESSES = ["claude", "codex", "opencode", "pi", "omp"] as const;
 export type Harness = (typeof HARNESSES)[number];
@@ -313,8 +309,13 @@ export type Harness = (typeof HARNESSES)[number];
 export type HarnessSkill = {
   /** Where the installer writes SKILL.md, or the marked block for codex. */
   skillPath: string;
-  /** The bus tool name this harness shows for `tool` (send_message, …). */
+  /**
+   * The bus tool name this harness shows for `tool` (send_message, …).
+   * Undefined with `plainNames`: the extension exposes the bare names.
+   */
   busToolName?: (tool: string) => string;
+  /** pi and omp load an extension, so its tools keep their plain names. */
+  plainNames?: boolean;
   /** Codex 0.47 has no skill loader: its text goes into AGENTS.md. */
   agentsMd?: boolean;
 };
@@ -324,19 +325,23 @@ export const harnessSkills: Record<Harness, HarnessSkill> = {
     skillPath: "~/.claude/skills/open-artifacts/SKILL.md",
     busToolName: (tool) => `mcp__oa_bus__${tool}`,
   },
-  // Unconfirmed in the Codex 0.47 binary: keep the generic line until it is.
-  codex: { skillPath: "~/.codex/AGENTS.md", agentsMd: true },
+  // CODEX_TOOL_NAMESPACE = "mcp__oa_bus" (apps/bus-daemon/src/codex-attest.ts).
+  codex: {
+    skillPath: "~/.codex/AGENTS.md",
+    busToolName: (tool) => `mcp__oa_bus__${tool}`,
+    agentsMd: true,
+  },
   opencode: {
     skillPath: "~/.config/opencode/skills/open-artifacts/SKILL.md",
     busToolName: (tool) => `oa_bus_${tool}`,
   },
   pi: {
     skillPath: "~/.agents/skills/open-artifacts/SKILL.md",
-    busToolName: (tool) => tool,
+    plainNames: true,
   },
   omp: {
     skillPath: "~/.agents/skills/open-artifacts/SKILL.md",
-    busToolName: (tool) => tool,
+    plainNames: true,
   },
 };
 
