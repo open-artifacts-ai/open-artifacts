@@ -951,7 +951,21 @@ export function decorate<T extends ArtifactSummary>(
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
 ): T {
-  if (caller.kind !== "user") return out;
+  // A signed-out viewer of a public artifact: no role actions, but the shell
+  // needs to know whether they may comment (#682) and write data.
+  if (caller.kind !== "user") {
+    out.can = {
+      edit: false,
+      share: false,
+      setVisibility: false,
+      delete: false,
+      transfer: false,
+      move: false,
+      dataWrite: out.dataWriters === "viewers",
+      comment: out.comments !== false,
+    };
+    return out;
+  }
   return decorates(env, caller)
     ? withSpace(caller, out, level, spaceId, sp)
     : withCan(caller, out, level);

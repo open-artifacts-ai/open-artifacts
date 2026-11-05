@@ -199,12 +199,14 @@ export function mountComments(app: AppType): void {
     const threadId = idParam(c, "threadId");
     const raw = ThreadStatusPatchSchema.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
-    const { who, viewer, issued } = await identity(
+    // No mint here: a guest resolves under the identity they commented with.
+    const { who: signed, viewer } = await identity(
       c,
       id,
-      true,
+      false,
       modOf(cw, level, artifact),
     );
+    const who = signed ?? guestOf(viewer);
     if (!who) throw new ApiError("unauthorized", "Sign in to comment");
     const out = await setStatus(
       c.env,
@@ -214,7 +216,7 @@ export function mountComments(app: AppType): void {
       viewer,
       raw.data.status,
     );
-    return withAnon(issued, c.json(out));
+    return c.json(out);
   });
 
   app.patch(COMMENT, async (c) => {

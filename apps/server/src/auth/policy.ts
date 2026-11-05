@@ -297,11 +297,11 @@ export function can(
         return !ctx.anonymous && level !== "viewer";
       // Anonymous callers only reach a level on a public artifact.
       return true;
-    // Anyone who can open it comments, except a capped caller (read-only on
-    // the whole API, readOnlyCap). A signed-out caller only where they may
-    // write data (public and dataWriters "viewers"), the same anonymous identity.
+    // Anyone who can open it comments (a signed-out caller reaches a level
+    // only on a public artifact), except a capped caller (read-only on the
+    // whole API, readOnlyCap).
     case "comments.write":
-      return !capped && (!ctx.anonymous || ctx.dataWriters === "viewers");
+      return !capped;
     case "comments.moderate":
       return !capped && !ctx.anonymous && level !== "viewer";
     case "storage":
