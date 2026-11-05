@@ -111,6 +111,13 @@ async function list(
   }
 }
 
+async function receiptFor(d: Daemon, fid: string): Promise<Receipt> {
+  for (;;) {
+    const f = await d.next();
+    if (f.type === "receipt" && f.id === fid) return f;
+  }
+}
+
 const close = async (d: Daemon, ref: string) => {
   d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: [ref] });
   for (let k = 0; k < 400; k++) {
@@ -328,34 +335,109 @@ describe("mailbox wire (#1295 PR B)", () => {
     }
   });
 
-  it("a replaces without the mailbox cap, from another machine, or onto a known ref is ignored: the new ref gets -2", async () => {
+  const owner = async (ref: string) =>
+    (
+      await sqlOf<{ c: number }>(
+        "select count(*) as c from agents where native_ref = ?",
+        ref,
+      )
+    )[0].c;
+
+  it("a replaces from another machine is ignored: the new ref gets -2 and the old row stays", async () => {
     const { rcv, snd, n, ref, name } = await trio(MB);
-    // Another machine's agent cannot take over this address.
     const om = await machine("Other");
     const other = await connect(om.token, MB);
-    expect(
-      await (async () => {
-        other.send(upReplacing(uniq("x"), name, n, ref));
-        return (await waitFor(other, "agent_ok")).bus_name;
-      })(),
-    ).toBe(`${name}-2`);
-    // The same machine without the cap in its hello.
-    const nm = await machine("NoCap");
-    const nocap = await connect(nm.token, undefined);
-    nocap.send(upReplacing(uniq("y"), name, n, ref));
-    expect((await waitFor(nocap, "agent_ok")).bus_name).toBe(`${name}-3`);
-    expect(
-      (
-        await sqlOf<{ c: number }>(
-          "select count(*) as c from agents where native_ref = ?",
-          ref,
-        )
-      )[0].c,
-    ).toBe(1);
+    other.send(upReplacing(uniq("x"), name, n, ref));
+    expect((await waitFor(other, "agent_ok")).bus_name).toBe(`${name}-2`);
+    expect(await owner(ref)).toBe(1);
     rcv.close();
     snd.close();
     other.close();
-    nocap.close();
+  });
+
+  it("a replaces on the same machine whose hello lacks the mailbox cap is ignored", async () => {
+    await setClock(base());
+    const n = ns("mw");
+    const rm = await machine("Rcv");
+    const first = await connect(rm.token, MB);
+    const ref = uniq("r");
+    const name = await reg(first, ref, uniq("Rcv"), n);
+    first.close();
+    // The same machine reconnects with a hello that lists ids only.
+    const same = await connect(rm.token, [BUS_CAPS.ids]);
+    same.send(upReplacing(uniq("y"), name, n, ref));
+    expect((await waitFor(same, "agent_ok")).bus_name).toBe(`${name}-2`);
+    expect(await owner(ref)).toBe(1);
+    same.close();
+  });
+
+  it("a replaces onto a ref the hub already knows changes nothing", async () => {
+    const { rcv, snd, n, ref, name } = await trio(MB);
+    const known = uniq("known");
+    const knownName = await reg(rcv, known, uniq("Known"), n);
+    rcv.send(upReplacing(known, knownName, n, ref));
+    expect((await waitFor(rcv, "agent_ok")).bus_name).toBe(knownName);
+    expect(await owner(ref)).toBe(1);
+    expect(await owner(known)).toBe(1);
+    const r = await send(snd, "snd", name);
+    expect(r.state).toBe("pending");
+    rcv.close();
+    snd.close();
+  });
+
+  it("a socket that listed ids only sees none of the new keys, values or states", async () => {
+    const { rcv, snd, ref, name, n } = await trio([BUS_CAPS.ids]);
+    await close(rcv, ref);
+    // Away: queued/since are not shown; the roster has no away row.
+    const fid = id("s");
+    snd.send({
+      v: 1,
+      id: fid,
+      type: "send",
+      from_ref: "snd",
+      to_name: name,
+      body: "hi",
+    } as ClientFrame);
+    await waitFor(snd, "receipt");
+    const rc = rawFor(snd, fid);
+    expect(rc).toMatchObject({ state: "pending" });
+    expect(rc).not.toHaveProperty("queued");
+    expect(rc).not.toHaveProperty("since");
+    const { raw } = await list(snd, "snd");
+    expect(JSON.stringify(raw)).not.toMatch(/"away"|"since"/);
+    // A moved name and a full mailbox read as the old reasons.
+    const moved = await reg(snd, "snd2", uniq("Mv"), n);
+    snd.send(up(id("u"), "snd2", moved, ns("mwm")));
+    await waitFor(snd, "agent_ok");
+    expect(await send(snd, "snd", moved)).toMatchObject({
+      reason: "unknown_agent",
+    });
+    expect(snd.raw.join("\n").match(/mailbox_full|reserved_name/)).toBeNull();
+    rcv.close();
+    snd.close();
+  });
+
+  it("a resend of a send to an away agent repeats queued and since", async () => {
+    const { rcv, snd, ref, name } = await trio(MB);
+    await close(rcv, ref);
+    const fid = id("s");
+    const frame = {
+      v: 1,
+      id: fid,
+      type: "send",
+      from_ref: "snd",
+      to_name: name,
+      body: "hi",
+    } as ClientFrame;
+    snd.send(frame);
+    const first = await receiptFor(snd, fid);
+    snd.send(frame);
+    const again = await receiptFor(snd, fid);
+    expect(again.msg_id).toBe(first.msg_id);
+    expect(again).toMatchObject({ state: "pending", queued: "away" });
+    expect(again.since).toBe(first.since);
+    rcv.close();
+    snd.close();
   });
 
   it("the dashboard snapshot lists an away agent: state away, not running, since its close", async () => {
