@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.120.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.119.0...v0.120.0) (2026-11-05)
+
+
+### Features
+
+* **runtime,shared:** comment anchoring, selection, highlights and pins in the frame ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#1471](https://github.com/open-artifacts-ai/open-artifacts/issues/1471)) ([d0635a2](https://github.com/open-artifacts-ai/open-artifacts/commit/d0635a2b6b7279cb17162e12f2b1eb3ee301f30d))
+
 ## [0.119.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.118.1...v0.119.0) (2026-11-05)
 
 
