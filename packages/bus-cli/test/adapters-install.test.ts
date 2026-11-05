@@ -836,3 +836,136 @@ describe("ompAgentDir: omp's pi-utils dirs.ts rules", () => {
     expect(ompAgentDir(h, env)).toBe(dir);
   });
 });
+
+describe("a non-default bus home reaches every harness entry (#1443)", () => {
+  const moved = (h: string) => join(h, "elsewhere");
+
+  it("Claude: the CLI add and the file fallback both carry OA_BUS_HOME", async () => {
+    const { h, deps, calls } = setup(["claude"]);
+    deps.busHome = moved(h);
+    await installAdapters(deps);
+    const add = calls.find((c) => c.slice(0, 3).join(" ") === "claude mcp add");
+    expect(add).toBeDefined();
+    const at = (add as string[]).indexOf("-e");
+    expect((add as string[])[at + 1]).toBe(`OA_BUS_HOME=${moved(h)}`);
+    // Options end before the `--` that starts the server's argv.
+    expect(at).toBeLessThan((add as string[]).indexOf("--"));
+
+    deps.exec = fakeExec({ "claude mcp add": { code: 1, stderr: "no" } }).exec;
+    put(p.claude(h), {});
+    await installAdapters(deps);
+    expect(readJ(p.claude(h)).mcpServers.oa_bus.env).toEqual({
+      OA_BUS_HOME: moved(h),
+    });
+  });
+
+  it("Claude: the default home adds no -e and an empty env", async () => {
+    const { h, deps, calls } = setup(["claude"]);
+    await installAdapters(deps);
+    expect(calls).toContainEqual(CLAUDE_ADD);
+    deps.busHome = join(h, ".oa-bus");
+    deps.exec = fakeExec({ "claude mcp add": { code: 1, stderr: "no" } }).exec;
+    put(p.claude(h), {});
+    await installAdapters(deps);
+    expect(readJ(p.claude(h)).mcpServers.oa_bus.env).toEqual({});
+  });
+
+  it("OpenCode: the MCP entry carries the home in environment, and a rerun rewrites it", async () => {
+    const { h, deps } = setup(["opencode"]);
+    deps.busHome = moved(h);
+    await installAdapters(deps);
+    expect(readJ(p.oc(h)).mcp.servers.oa_bus).toEqual({
+      type: "local",
+      command: [BIN, "mcp", "opencode"],
+      environment: { OA_BUS_HOME: moved(h) },
+    });
+    // The TUI plugin runs inside OpenCode, so the home is set in its file.
+    expect(
+      readFileSync(
+        join(moved(h), "integrations/opencode/oa_bus/tui.js"),
+        "utf8",
+      ),
+    ).toContain(`process.env.OA_BUS_HOME ||= ${JSON.stringify(moved(h))};`);
+    deps.busHome = undefined;
+    await installAdapters(deps);
+    expect(readJ(p.oc(h)).mcp.servers.oa_bus.environment).toBeUndefined();
+  });
+
+  it("Pi and oh-my-pi: the extension file sets the home, and omits it by default", async () => {
+    const { h, deps } = setup(["pi", "omp"]);
+    deps.busHome = moved(h);
+    await installAdapters(deps);
+    const line = `process.env.OA_BUS_HOME ||= ${JSON.stringify(moved(h))};`;
+    expect(readFileSync(p.pi(h), "utf8")).toContain(line);
+    expect(checkAdapters(deps).pi).toBe("configured");
+    // The bus home moved back: the entry is stale until a reinstall.
+    deps.busHome = undefined;
+    expect(checkAdapters(deps).pi).toBe("missing");
+    await installAdapters(deps);
+    expect(readFileSync(p.pi(h), "utf8")).toBe("PI_ASSET");
+    expect(checkAdapters(deps).pi).toBe("configured");
+  });
+
+  it("uninstall with the same non-default home removes the entries", async () => {
+    const { h, deps } = setup(["claude", "opencode", "pi"]);
+    deps.busHome = moved(h);
+    await installAdapters(deps);
+    const out = await uninstallAdapters(deps);
+    expect(out.removed).toEqual(["claude", "opencode", "pi"]);
+    expect(existsSync(p.pi(h))).toBe(false);
+    expect(readJ(p.oc(h)).mcp?.servers?.oa_bus).toBeUndefined();
+  });
+});
+
+describe("doctor and --check catch a missing or wrong home (#1443)", () => {
+  it("an old Claude entry with env {} is missing under a moved home, and a rerun repairs it", async () => {
+    const { h, deps } = setup(["claude"]);
+    const fb = fakeExec({ "claude mcp add": { code: 1, stderr: "no" } });
+    deps.exec = fb.exec;
+    put(p.claude(h), {});
+    await installAdapters(deps);
+    expect(checkAdapters(deps).claude).toBe("configured");
+    deps.busHome = join(h, "elsewhere");
+    expect(checkAdapters(deps).claude).toBe("missing");
+    await installAdapters(deps);
+    expect(checkAdapters(deps).claude).toBe("configured");
+    // And a stale home is wrong under the default again.
+    deps.busHome = undefined;
+    expect(checkAdapters(deps).claude).toBe("missing");
+  });
+
+  it("an old OpenCode entry and plugin are missing under a moved home, and a rerun repairs them", async () => {
+    const { h, deps } = setup(["opencode"]);
+    await installAdapters(deps);
+    expect(checkAdapters(deps).opencode).toBe("configured");
+    deps.busHome = join(h, "elsewhere");
+    expect(checkAdapters(deps).opencode).toBe("missing");
+    await installAdapters(deps);
+    expect(checkAdapters(deps).opencode).toBe("configured");
+    // Entry right, plugin file without the line: still missing.
+    writeFileSync(
+      join(h, "elsewhere/integrations/opencode/oa_bus/tui.js"),
+      "PLUGIN_JS",
+    );
+    expect(checkAdapters(deps).opencode).toBe("missing");
+  });
+});
+
+describe("OpenCode's entry environment is checked on its own (#1443)", () => {
+  it("a correctly homed tui.js with a missing or wrong environment is missing, and a rerun repairs it", async () => {
+    const { h, deps } = setup(["opencode"]);
+    deps.busHome = join(h, "elsewhere");
+    await installAdapters(deps);
+    expect(checkAdapters(deps).opencode).toBe("configured");
+    const file = p.oc(h);
+    const good = readJ(file);
+    for (const environment of [undefined, { OA_BUS_HOME: "/wrong" }]) {
+      const entry = { ...good.mcp.servers.oa_bus, environment };
+      put(file, { ...good, mcp: { servers: { oa_bus: entry } } });
+      // The plugin file is still homed; only the entry is off.
+      expect(checkAdapters(deps).opencode).toBe("missing");
+      await installAdapters(deps);
+      expect(checkAdapters(deps).opencode).toBe("configured");
+    }
+  });
+});

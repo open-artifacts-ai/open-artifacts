@@ -340,6 +340,8 @@ export const ArtifactCanSchema = z.object({
   move: z.boolean(),
   /** Live-data and storage writes, role-wise (the artifact still needs the capability). False for guests and restricted members, and for viewers when the artifact's dataWriters is "editors"; other viewers keep it. */
   dataWrite: z.boolean(),
+  /** #682: may comment (absent: the shell derives it from who is viewing). */
+  comment: z.boolean().optional(),
 });
 export type ArtifactCan = z.infer<typeof ArtifactCanSchema>;
 
