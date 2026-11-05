@@ -18,6 +18,7 @@ import { RETRY_BACKOFF_MS, safeCode } from "./http.ts";
 import { note } from "./notes.ts";
 import { PROD_ADMIN_ORIGIN } from "./prod.ts";
 import { NIGHTLY_NA_REASON, PRE_PROD_REASON } from "./report.ts";
+import { type Schema, schemaAhead } from "./schema.ts";
 
 // The red-line provisioning probes (design v7 12.2, P1-P50 but
 // REMOVED_PROBES) against the staging Provisioning API, as the GitHub OIDC principal "O" (4.4): `rl-`
@@ -80,6 +81,8 @@ export interface ProvIo {
   rlAPat?: () => string;
   /** Hides a secret the run learns from the public log (CI: ::add-mask::). */
   mask?: (v: string) => void;
+  /** The D1 migrations and Durable Object tags of a release (P31). */
+  schemaOf?: (version: string) => Promise<Schema>;
 }
 
 export type Outcome =
@@ -319,6 +322,16 @@ export class Run {
       if (this.io.now() >= end)
         throw new ProbeFail(`${what}: not within ${Math.round(ms / 1000)} s`);
       await this.io.wait(POLL_MS);
+    }
+  }
+
+  async schemaOf(version: string): Promise<Schema> {
+    if (!this.io.schemaOf)
+      throw new ProbeFail("no way to read a release's migrations configured");
+    try {
+      return await this.io.schemaOf(version);
+    } catch {
+      throw new ProbeFail(`cannot read the migrations of release ${version}`);
     }
   }
 
@@ -1007,6 +1020,77 @@ export async function removeLifecycle(run: Run): Promise<void> {
   }
 }
 
+/**
+ * P31 when the tag adds a migration over the rollback target: the product
+ * refuses the rollback by design. The job fails invalid_state, nothing
+ * changes (the install still serves the tag, healthy), and the refusal is
+ * audited as a job.failed row with that code.
+ */
+async function refusedRollback(
+  run: Run,
+  p: RlP,
+  ahead: string[],
+): Promise<Outcome> {
+  const was = (await ownDetail(run, p.id)).json as InstallDetail;
+  const a = run.accepted(
+    await run.v1(`/installs/${p.id}/rollback`, {
+      body: { requestId: run.rid("p31") },
+    }),
+    "P31",
+  );
+  const j = await run.waitJob(a.job.id);
+  const code = j.lastErrorCode ?? j.error?.code;
+  if (j.status !== "failed" || code !== "invalid_state")
+    throw new ProbeFail(
+      `P31: the tag adds ${ahead.join(", ")}, so the rollback must be refused invalid_state, got job ${j.status} (${code ?? "no code"})`,
+    );
+  // Residual risk, accepted: several guards raise invalid_state and the job
+  // API's message is one fixed text per code, so another invalid_state reason
+  // during a migration-adding tag would pass here. The schemaAhead precondition
+  // above is what ties the refusal to the migration.
+  const now = (await ownDetail(run, p.id)).json as InstallDetail;
+  if (
+    now.state !== "active" ||
+    now.version !== was.version ||
+    now.version !== run.c.version ||
+    now.previousVersion !== was.previousVersion
+  )
+    throw new ProbeFail(
+      `P31: the refused rollback changed the install: ${was.state} ${was.version} (previous ${was.previousVersion}) became ${now.state} ${now.version} (previous ${now.previousVersion})`,
+    );
+  const hz = await run.page(p.appHost, "/healthz", true);
+  const body = hz.json as { ok?: unknown; version?: unknown } | undefined;
+  if (hz.status !== 200 || body?.ok !== true || body.version !== run.c.version)
+    throw new ProbeFail(
+      `P31: after the refusal /healthz is not ok on ${run.c.version} (${desc(hz)})`,
+    );
+  const q = new URLSearchParams({
+    installId: p.id,
+    action: "job.failed",
+    limit: "100",
+  });
+  const r = await run.v1(`/audit?${q}`, { read: true });
+  expect(r, 200, "P31 R17");
+  const rows = (
+    r.json as {
+      items: {
+        jobId: string | null;
+        code?: string | null;
+        detail?: { code?: unknown } | null;
+      }[];
+    }
+  ).items.filter((i) => i.jobId === a.job.id);
+  if (rows.length === 0)
+    throw new ProbeFail(
+      "P31: the refused rollback has no job.failed audit row",
+    );
+  if (!rows.some((i) => (i.code ?? i.detail?.code) === "invalid_state"))
+    throw new ProbeFail(
+      "P31: the job.failed audit row does not carry invalid_state",
+    );
+  return pass(`refused as designed: the tag adds ${ahead.join(", ")}`);
+}
+
 async function releases(run: Run): Promise<Release[]> {
   if (run.s.releases) return run.s.releases;
   const r = await run.v1("/releases", { read: true });
@@ -1684,6 +1768,14 @@ export const PROBES: readonly Probe[] = [
         return na("no older installable release, so no upgrade to roll back");
       if (p.version === p.createdAt)
         return unproven("no upgrade reached done, so none to roll back");
+      // Decided from the two releases' own migrations, never from the answer:
+      // a tag that adds a D1 migration or a Durable Object tag over the
+      // rollback target can only be rolled back to by forward-fixing (#1106).
+      const ahead = schemaAhead(
+        await run.schemaOf(run.c.version),
+        await run.schemaOf(p.createdAt),
+      );
+      if (ahead.length > 0) return refusedRollback(run, p, ahead);
       const a = run.accepted(
         await run.v1(`/installs/${p.id}/rollback`, {
           body: { requestId: run.rid("p31") },

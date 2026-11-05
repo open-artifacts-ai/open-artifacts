@@ -20,6 +20,7 @@ import {
   revokeCreds,
   stagedVersion,
 } from "./provisioning.ts";
+import { gitSchemaOf } from "./schema.ts";
 import { newRecipient, openSealed, parseCreds } from "./seal.ts";
 import { readSecretFile, secretFileName } from "./targets.ts";
 
@@ -95,6 +96,7 @@ export function liveRun(
     wait: (ms) => delay(ms),
     jwt: src("provisioning"),
     stgInventoryJwt: src("stagingInventory"),
+    schemaOf: gitSchemaOf,
     rlAPat: existsSync(patFile)
       ? () => readSecretFile(patFile, secretFileName(t.a.name, "PAT"))
       : undefined,
