@@ -12,7 +12,6 @@
       "gh pr status*": "allow",
       "gh pr checkout*": "allow",
       "gh pr ready*": "allow",
-      "gh pr close*": "allow",
       "gh pr reopen*": "allow",
       "gh issue view*": "allow",
       "gh issue list*": "allow",
@@ -414,6 +413,30 @@
       "gh pr close*'-d*": {
         "action": "deny",
         "reason": "Deleting needs your human: close without --delete-branch, or ask them."
+      },
+      "git push*\\*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git push*'*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git push*\"*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*\\*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*'*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*\"*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
       }
     },
     "mcp": {
