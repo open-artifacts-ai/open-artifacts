@@ -1895,7 +1895,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
    * the next minute) or the artifact's daily cap. Inside the write's
    * transaction, so a refused comment counts for nothing.
    */
-  private countComment(key: string): void {
+  private countComment(key: string, daily = true): void {
     const t = this.now();
     const minute = Math.floor(t / MINUTE_MS);
     if (minute !== this.commentMinute) {
@@ -1916,6 +1916,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
         "rate_limited",
         `Too many comments. Try again in a minute. [retry:${wait}]`,
       );
+    }
+    if (!daily) {
+      this.commentRate.set(k, n);
+      return;
     }
     const day = Math.floor(t / DAY_MS);
     const { n: today } = this.sql
@@ -2017,9 +2021,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     threadId: string;
     status: CommentStatus;
     actor: StoredActor;
+    /** A signed-out guest's "ip:{key}": counts against the minute limit only. */
+    rate?: string;
   }): StoredThread {
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
+      if (a.rate) this.countComment(a.rate, false);
       const t = getThread(this.sql, a.threadId);
       if (!t) fail("not_found", "Not found");
       if (t.status !== a.status) {

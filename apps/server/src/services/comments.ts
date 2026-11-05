@@ -353,6 +353,7 @@ export async function setStatus(
       threadId,
       status,
       actor: actorOf(who),
+      ...(who.kind === "guest" ? { rate: who.rate } : {}),
     }),
   );
   return (await threadViews(env, [t], viewer))[0] as Thread;

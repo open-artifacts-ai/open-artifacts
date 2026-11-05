@@ -219,8 +219,15 @@ export function mountComments(app: AppType): void {
       false,
       modOf(cw, level, artifact),
     );
-    const who = signed ?? guestOf(viewer);
-    if (!who) throw new ApiError("unauthorized", "Sign in to comment");
+    let who = signed;
+    if (!who) {
+      // A guest with no token still resolves, as "Guest" (me false), against
+      // the per-IP limit.
+      const key = ipKey(c.req.header("cf-connecting-ip") ?? "");
+      if (!key)
+        throw new ApiError("rate_limited", "Anonymous access is unavailable");
+      who = { kind: "guest", short: viewer.short ?? "", rate: `ip:${key}` };
+    }
     const out = await setStatus(
       c.env,
       id,

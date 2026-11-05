@@ -568,15 +568,20 @@ describe("guests", () => {
     expect(r.headers.get(ANON_ID_HEADER)).toBeNull();
   });
 
-  it("a guest resolves under the identity they commented with; with none it is 401", async () => {
+  it("a guest resolves with no token as Guest (me false), with one as themselves; never minted", async () => {
     const id = await pub({ visibility: "public" });
     const t = await thread(await post(id, owner));
     const none = await call(id, null, `/${t.id}`, {
       method: "PATCH",
       body: { status: "resolved" },
     });
-    expect(none.status).toBe(401);
+    expect(none.status).toBe(200);
     expect(none.headers.get(ANON_ID_HEADER)).toBeNull();
+    expect((await thread(none)).resolvedBy).toEqual({
+      kind: "guest",
+      name: "Guest",
+      me: false,
+    });
     const mine = await call(id, null, "", {
       method: "POST",
       body: { anchor: NOTE, body: "hi" },
@@ -584,13 +589,39 @@ describe("guests", () => {
     const token = mine.headers.get(ANON_ID_HEADER) as string;
     const r = await call(id, null, `/${t.id}`, {
       method: "PATCH",
-      body: { status: "resolved" },
+      body: { status: "open" },
       headers: { [ANON_ID_HEADER]: token },
     });
     expect(r.status).toBe(200);
-    expect(await thread(r)).toMatchObject({
-      resolvedBy: { kind: "guest", name: "Guest", me: true },
+    expect(r.headers.get(ANON_ID_HEADER)).toBeNull();
+    const again = await call(id, null, `/${t.id}`, {
+      method: "PATCH",
+      body: { status: "resolved" },
+      headers: { [ANON_ID_HEADER]: token },
     });
+    expect((await thread(again)).resolvedBy).toMatchObject({ me: true });
+  });
+
+  it("guest status changes count against the 10 a minute per IP, not the daily comment cap", async () => {
+    const id = await pub({ visibility: "public" });
+    await inDo(id, (i) => {
+      i.now = () => 1_800_000_000_000;
+    });
+    const t = await thread(await post(id, owner));
+    const ip = uniqueIp();
+    const flip = (status: string) =>
+      call(id, null, `/${t.id}`, { method: "PATCH", ip, body: { status } });
+    for (let n = 0; n < 10; n++)
+      expect((await flip(n % 2 ? "open" : "resolved")).status).toBe(200);
+    const r = await flip("open");
+    expect(r.status).toBe(429);
+    expect(Number(r.headers.get("retry-after"))).toBeGreaterThan(0);
+    const day = await inDo(id, (i) =>
+      (i as unknown as { ctx: DurableObjectState }).ctx.storage.sql
+        .exec<{ n: number }>("select n from comment_limits")
+        .one(),
+    );
+    expect(day.n).toBe(1);
   });
 });
 
