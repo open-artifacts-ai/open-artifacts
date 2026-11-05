@@ -91,8 +91,8 @@ export const SECTIONS = {
   publishing: {
     title: "Publishing",
     body: (p) => `- One file: publish_artifact { title, format, content }.
-- One tool family: publish this instance's pages only with this instance's tools (publish_artifact and the rest). If your harness has its own artifact or page tool, it publishes somewhere else, so don't use it for these pages.
-- Anything under ${INLINE} is one call: read the file and pass its text as content. That is the default for pages you edit over time.
+- Use only these tools: publish this instance's pages with publish_artifact and the other tools here. If your harness has its own artifact or page tool, it publishes somewhere else, so don't use it for these pages.
+- A page or file under ${INLINE} is one call: read the file and pass its text as content. That is the default for pages you edit over time.
 - Several files: publish_artifact { title, entry: "index.html", files: { "index.html": "...", "app.js": "...", "img/logo.png": { "base64": "..." } } }.
 - Paths are relative, use "/" and are case-sensitive; link between files with relative URLs.
 - ${LINK_RULE}
