@@ -772,6 +772,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           ...r.data.capabilities,
         },
         allowAnonymousWrites: r.data.allowAnonymousWrites ?? false,
+        comments: r.data.comments ?? true,
         dataWriters:
           resolveDataWriters(
             r.data,

@@ -335,6 +335,8 @@ export const ArtifactCanSchema = z.object({
   move: z.boolean(),
   /** Live-data and storage writes, role-wise (the artifact still needs the capability). False for guests and restricted members, and for viewers when the artifact's dataWriters is "editors"; other viewers keep it. */
   dataWrite: z.boolean(),
+  /** #682: comment and reply here. False when the artifact's comments setting is off. Any signed-in caller who can open it otherwise. */
+  comment: z.boolean(),
 });
 export type ArtifactCan = z.infer<typeof ArtifactCanSchema>;
 
@@ -353,6 +355,8 @@ export function artifactCan(
     personal: boolean;
     cap?: CapReason | null;
     dataWriters?: "editors" | "viewers";
+    /** The artifact's comments setting (#682); undefined reads as on. */
+    comments?: boolean;
   },
 ): ArtifactCan {
   const capped = opts.cap != null;
@@ -370,5 +374,6 @@ export function artifactCan(
     dataWrite:
       !capped &&
       ((opts.dataWriters ?? "editors") === "viewers" || level !== "viewer"),
+    comment: opts.comments !== false,
   };
 }

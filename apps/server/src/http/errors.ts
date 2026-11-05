@@ -13,6 +13,8 @@ export class ApiError extends Error {
     public code: ErrorCode,
     message: string,
     public details?: unknown,
+    /** Response headers for this error, such as Retry-After on a 429. */
+    public headers?: Record<string, string>,
   ) {
     super(message);
     this.name = "ApiError";
@@ -63,7 +65,13 @@ const CODE_FOR_HTTP: Record<number, ErrorCode> = {
 
 export function toErrorResponse(e: unknown): Response {
   if (e instanceof ApiError) {
-    return errorJson(STATUS_FOR[e.code] ?? 500, e.code, e.message, e.details);
+    return errorJson(
+      STATUS_FOR[e.code] ?? 500,
+      e.code,
+      e.message,
+      e.details,
+      e.headers,
+    );
   }
   if (isD1QuotaError(e)) {
     return errorJson(

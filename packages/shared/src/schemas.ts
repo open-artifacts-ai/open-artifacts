@@ -137,6 +137,8 @@ const PublishShape = z.strictObject({
   dataWriters: DataWritersSchema.optional(),
   /** Deprecated (#681): true means dataWriters "viewers"; false, "editors" on a public artifact. */
   allowAnonymousWrites: z.boolean().optional(),
+  /** #682: switch the built-in comments layer on or off (owner and managers). */
+  comments: z.boolean().optional(),
   /**
    * Hosted M1: the space to create the artifact in (default: the caller's
    * personal space). Create only: with the id of an existing artifact it is
@@ -260,6 +262,8 @@ export const ArtifactSummarySchema = z.object({
   dataWriters: DataWritersSchema,
   /** Deprecated (#681): derived, dataWriters === "viewers". */
   allowAnonymousWrites: z.boolean(),
+  /** #682: the built-in comments layer is on (the owner's setting; default true). */
+  comments: z.boolean(),
   /** Hosted M1: the artifact's space. Optional: absent unless spaces are on. */
   space: SpaceRefSchema.optional(),
   /** Hosted M1: what the caller may do (artifactCan). Optional: absent unless spaces are on. */
@@ -419,6 +423,8 @@ export const ArtifactPatchSchema = z
     dataWriters: DataWritersSchema,
     /** Deprecated (#681): see resolveDataWriters. */
     allowAnonymousWrites: z.boolean(),
+    /** #682: owner and managers only. */
+    comments: z.boolean(),
   })
   .partial();
 export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;

@@ -46,6 +46,7 @@ const art = (
   } = {},
 ): Policy => ({ artifact: action, ...extra });
 const SAVE = "Sign in to save changes";
+const COMMENT = "Sign in to comment";
 const ARTS = "/api/v1/artifacts/:id";
 const SPACES = "/api/v1/spaces/:id";
 const signedIn = { signedIn: true } as const;
@@ -229,6 +230,22 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`GET ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`PUT ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`DELETE ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
+  // #682 comments: the floor is read access; the handler applies comments_off,
+  // the embed refusal and who may edit or delete (the author, or an editor).
+  [`GET ${ARTS}/comments`]: art("comments.read"),
+  [`POST ${ARTS}/comments`]: art("comments.write", { anon401: COMMENT }),
+  [`PATCH ${ARTS}/comments/:threadId`]: art("comments.write", {
+    anon401: COMMENT,
+  }),
+  [`POST ${ARTS}/comments/:threadId/replies`]: art("comments.write", {
+    anon401: COMMENT,
+  }),
+  [`PATCH ${ARTS}/comments/:threadId/comments/:commentId`]: art(
+    "comments.write",
+    { anon401: COMMENT },
+  ),
+  [`DELETE ${ARTS}/comments/:threadId/comments/:commentId`]:
+    art("comments.read"),
   "GET /api/v1/tokens": { user: "the caller's tokens" },
   "POST /api/v1/tokens": { org: "tokens.create" },
   "PATCH /api/v1/tokens/:id": { user: "the caller's tokens" },

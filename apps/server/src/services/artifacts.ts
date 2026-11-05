@@ -237,7 +237,8 @@ export async function publish(
         input.visibility !== undefined ||
         input.capabilities !== undefined ||
         input.dataWriters !== undefined ||
-        input.allowAnonymousWrites !== undefined;
+        input.allowAnonymousWrites !== undefined ||
+        input.comments !== undefined;
       if (sharing && !can(level, "visibility", canCtx(who, a)))
         throw new ApiError("bad_request", "only the owner can change sharing");
       await refusePublicLinksOff(env, a, input.visibility);
@@ -354,8 +355,8 @@ export async function publish(
       db
         .prepare(
           `insert into artifacts (id, owner_id, space_id, title, description, format, visibility,
-             current_version, capabilities, data_writers, allow_anonymous_writes, created_at, updated_at)
-           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ? where 1${links}${
+             current_version, capabilities, data_writers, allow_anonymous_writes, comments, created_at, updated_at)
+           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ? where 1${links}${
              role.sql ? ` and ${role.sql} >= 2` : ""
            }${guard}`,
         )
@@ -373,6 +374,7 @@ export async function publish(
           dataWriters,
           // Kept in step for one release (#681): a rollback reads it.
           dataWriters === "viewers" ? 1 : 0,
+          input.comments === false ? 0 : 1,
           now,
           now,
           ...(links ? [spaceId] : []),
@@ -398,6 +400,10 @@ export async function publish(
       ["visibility", input.visibility],
       ["capabilities", input.capabilities && caps],
       ["data_writers", dataWriters],
+      [
+        "comments",
+        input.comments === undefined ? undefined : input.comments ? 1 : 0,
+      ],
       // Kept in step for one release (#681): a rollback reads it.
       [
         "allow_anonymous_writes",
@@ -693,6 +699,7 @@ export function toSummary(
     dataWriters: dataWritersOf(a),
     // Deprecated (#681): derived for one release.
     allowAnonymousWrites: dataWritersOf(a) === "viewers",
+    comments: a.comments === 1,
   };
 }
 
@@ -903,6 +910,7 @@ export function withSpace<T extends ArtifactSummary>(
     personal: !shared,
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
+    comments: out.comments,
   });
   return out;
 }
@@ -923,6 +931,7 @@ export function withCan<T extends ArtifactSummary>(
       personal: true,
       cap: capOfCaller(caller),
       dataWriters: out.dataWriters,
+      comments: out.comments,
     }),
     move: false,
     transfer: false,
@@ -1441,7 +1450,8 @@ export async function patch(
     p.visibility !== undefined ||
     p.capabilities !== undefined ||
     p.dataWriters !== undefined ||
-    p.allowAnonymousWrites !== undefined;
+    p.allowAnonymousWrites !== undefined ||
+    p.comments !== undefined;
   if (sharing && !can(level, "visibility", canCtx(who, a)))
     throw new ApiError("bad_request", "only the owner can change sharing");
   await refusePublicLinksOff(env, a, p.visibility);
@@ -1460,6 +1470,7 @@ export async function patch(
       "capabilities = json_patch(capabilities, ?)",
       JSON.stringify(p.capabilities),
     );
+  if (p.comments !== undefined) set("comments = ?", p.comments ? 1 : 0);
   if (dataWriters !== undefined) {
     set("data_writers = ?", dataWriters);
     // Kept in step for one release (#681): a rollback reads it.
@@ -1535,6 +1546,7 @@ export async function publishSettings(
     capabilities,
     dataWriters,
     allowAnonymousWrites,
+    comments,
   } = input;
   const p: ArtifactPatch = Object.fromEntries(
     Object.entries({
@@ -1545,6 +1557,7 @@ export async function publishSettings(
       capabilities,
       dataWriters,
       allowAnonymousWrites,
+      comments,
     }).filter(([, v]) => v !== undefined),
   );
   if (input.spaceId !== undefined) {
@@ -1559,7 +1572,7 @@ export async function publishSettings(
   if (Object.keys(p).length === 0)
     throw new ApiError(
       "bad_request",
-      "Nothing to change: pass content or files to publish a version, or title, description, visibility, capabilities or dataWriters to update the artifact in place",
+      "Nothing to change: pass content or files to publish a version, or title, description, visibility, capabilities, dataWriters or comments to update the artifact in place",
       { path: "id", reason: "missing" },
     );
   // An id the caller reserved (create_upload) with no artifact yet: only the
