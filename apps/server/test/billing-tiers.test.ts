@@ -497,6 +497,87 @@ describe("free-tier caps: config, off until set", () => {
       ).toBe(201);
   });
 
+  it("set: an unsized PUT over the storage cap is refused before and after storing", async () => {
+    await cachePlan(FREE, mid);
+    const id = ((await (await publish(H)).json()) as { id: string }).id;
+    const used = await stored();
+    const e = { ...H, FREE_STORAGE_BYTES: String(used + 50) } as Env;
+    const made = async () => {
+      const r = await send(props, R.uploads, owner.cookie, {
+        method: "POST",
+        e,
+        body: { artifactId: id, path: `${uniq()}.bin` },
+      });
+      expect(r.status).toBe(201);
+      const j = (await r.json()) as { uploadId: string; url: string };
+      const u = new URL(j.url);
+      return {
+        id: j.uploadId,
+        exp: u.searchParams.get("exp") ?? "",
+        sig: u.searchParams.get("sig") ?? "",
+      };
+    };
+    const putTo = (
+      x: { id: string; exp: string; sig: string },
+      env2: Env,
+      bytes: number,
+      claimed = bytes,
+    ) =>
+      send(props, `${R.upload(x.id)}?exp=${x.exp}&sig=${x.sig}`, null, {
+        method: "PUT",
+        e: env2,
+        csrf: false,
+        raw: "x".repeat(bytes),
+        headers: { "content-length": String(claimed) },
+      });
+    const row = (uploadId: string) =>
+      env.DB.prepare("select r2_key, received_at from uploads where id = ?")
+        .bind(uploadId)
+        .first<{ r2_key: string; received_at: number | null }>();
+
+    // Before: the header says 60 > 50 free, so R2 is never written.
+    const a = await made();
+    const puts: string[] = [];
+    const spy = {
+      ...e,
+      FILES: {
+        put: (k: string) => {
+          puts.push(k);
+          return env.FILES.put(k, "");
+        },
+        delete: env.FILES.delete.bind(env.FILES),
+      },
+    } as unknown as Env;
+    const ra = await putTo(a, spy, 60);
+    expect(ra.status).toBe(403);
+    expect(await errOf(ra)).toMatchObject({
+      code: "plan_limit",
+      details: { limit: "storage_bytes" },
+    });
+    expect(puts).toEqual([]);
+    expect((await row(a.id))?.received_at).toBeNull();
+
+    // After: the header lies (10), the body is 60; the measured bytes are refused and removed.
+    const b = await made();
+    const rbRes = await putTo(b, e, 60, 10);
+    expect(rbRes.status).toBe(403);
+    expect((await errOf(rbRes)).code).toBe("plan_limit");
+    const rb = await row(b.id);
+    expect(rb?.received_at).toBeNull();
+    expect(await env.FILES.head(rb?.r2_key ?? "")).toBeNull();
+
+    // Within the cap it passes and records the measured size.
+    const c = await made();
+    expect((await putTo(c, e, 40)).status).toBe(204);
+    expect(
+      (
+        await env.DB.prepare("select size from uploads where id = ?")
+          .bind(c.id)
+          .first<{ size: number }>()
+      )?.size,
+    ).toBe(40);
+  });
+
   // Manager decision R5: distinct content across every version (history
   // included), each blob once, trashed artifacts excluded.
   const version = (id: string, content: string, e: Env = H) =>
