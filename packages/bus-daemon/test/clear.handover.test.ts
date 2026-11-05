@@ -2,7 +2,7 @@
 // The daemon tells a mailbox hub the new ref replaces the old one, so the
 // address and its mail carry over; a session in another process, or a hub
 // without the cap, never gets `replaces`.
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUS_CAPS } from "@oa/bus-protocol";
@@ -47,6 +47,43 @@ const upFor = async (h: Harness, ref: string) => {
 
 /** What the OS reports as every pid's start time. */
 const os = { start: "t0" };
+
+/** A daemon whose hub speaks mailbox, with no session file yet; admits go through `attest` as pid 4242. */
+async function bare() {
+  const d = mkdtempSync(join(tmpdir(), "ob-clear-"));
+  const h = await daemonHarness({
+    attest: () => ({ ok: true, cwd: "/repo", pid: 4242 }),
+    claude: {
+      sessionsDir: d,
+      socketsDir: join(d, "r"),
+      syncMs: 20,
+      procStart: () => os.start,
+      isRunning: () => true,
+    },
+  });
+  h.toDaemon({
+    id: "w",
+    type: "hello_ok",
+    machine_id: "1".repeat(16),
+    machine_label: "laptop",
+    server_version: "1",
+    caps: [BUS_CAPS.ids, BUS_CAPS.mailbox],
+  });
+  await h.adapter("s-old", {
+    kind: "claude-code",
+    cwd: "/repo",
+    pid: 4242,
+    proposed_name: "npm-test",
+  });
+  await upFor(h, "s-old");
+  return { h, d };
+}
+
+/** Resolves once the daemon has told the hub `ref` is closed. */
+const closedRef = (h: Harness, ref: string) =>
+  vi.waitFor(() =>
+    expect(h.of("sessions").some((f) => f.closed.includes(ref))).toBe(true),
+  );
 
 async function start(hubCaps: string[] | undefined) {
   const d = mkdtempSync(join(tmpdir(), "ob-clear-"));
@@ -164,5 +201,33 @@ describe("/clear handover in the daemon", () => {
     write(d, 4242, "s-new", "other");
     const up = await upFor(h, "s-new");
     expect(up).toMatchObject({ replaces: "s-old", proposed_name: "npm-test" });
+  });
+
+  it("the tick closed the old session before the new one appeared (its file was briefly gone): still a handover", async () => {
+    const { h, d } = await start([BUS_CAPS.ids, BUS_CAPS.mailbox]);
+    unlinkSync(join(d, "4242.json"));
+    await closedRef(h, "s-old");
+    write(d, 4242, "s-new", "other");
+    expect(await upFor(h, "s-new")).toMatchObject({
+      replaces: "s-old",
+      proposed_name: "npm-test",
+    });
+  });
+
+  it("closed by a tick before its process start was known: a later file still backfills it", async () => {
+    const { h, d } = await bare();
+    // Only another session's file exists: the tick closes s-old, which has no procStart yet.
+    write(d, 5555, "s-mark", "mark");
+    await upFor(h, "s-mark");
+    await closedRef(h, "s-old");
+    // Its file appears (the same process), then a marker so the tick has run.
+    write(d, 4242, "s-old", "npm-test");
+    write(d, 6666, "s-mark2", "mark2");
+    await upFor(h, "s-mark2");
+    write(d, 4242, "s-new", "other");
+    expect(await upFor(h, "s-new")).toMatchObject({
+      replaces: "s-old",
+      proposed_name: "npm-test",
+    });
   });
 });
