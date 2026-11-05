@@ -63,7 +63,7 @@ export const skillEnabled = (env: Pick<Env, "SKILL_MD">): boolean =>
 export const busLine = (on: boolean): string =>
   on
     ? "- Find peers by bus name with list_agents (it comes from the bus client, not from /mcp), and reply by that name: your harness's own session list does not show agents on other machines.\n" +
-      "- To message agents, use your harness's bus tools: in Claude Code, the oa_bus MCP tools; in pi, the oa-bus extension's tools (not an imported oa_bus MCP, which only works under Claude). If your bus tools fail, report it to your human with the error; don't run an install the error suggests without their yes.\n"
+      "- To message agents, use the bus tools your harness installs for you: the oa_bus MCP server, or the oa-bus extension. Don't wire up another harness's config in their place. If they fail, report it to your human with the error and any fix it suggests; don't run that fix without their yes.\n"
     : "";
 
 export const skillUrl = (env: SkillEnv): string | undefined =>
