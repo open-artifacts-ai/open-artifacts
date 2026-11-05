@@ -688,7 +688,7 @@ describe("B16-6 owner token hardening", () => {
     const l = line(w, "owner-token");
     expect(l.status).toBe("action_required");
     expect(l.message).toMatch(
-      /the new token is saved to \/.*pat-token, but the old token couldn't be revoked; rerun setup, or revoke it in the dashboard \(Settings → Agents\)/,
+      /the new token is saved to \/.*pat-token, but the old token couldn't be revoked; rerun setup, or revoke it in the dashboard \(Settings → Connections\)/,
     );
     expect(w.state().ownerTokenId).toBeTruthy();
     expect(w.state().pendingRevokeTokenId).toBe(w.state().ownerTokenId);

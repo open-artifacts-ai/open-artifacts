@@ -55,14 +55,15 @@ export const skillEnabled = (env: Pick<Env, "SKILL_MD">): boolean =>
   env.SKILL_MD?.trim().toLowerCase() !== "off";
 
 /**
- * The skill's line on finding peers by bus name, or "" without the bus. The
- * caller passes busOn (BUS_HUB bound and not hosted, the routes' own switch),
- * so the skill can never teach the bus with the hub off, or hide it with the
- * hub on. The tools it names come from the bus client, not from /mcp.
+ * The skill's lines on the bus, or "" without the bus. The caller passes
+ * busOn (BUS_HUB bound and not hosted, the routes' own switch), so the skill
+ * can never teach the bus with the hub off, or hide it with the hub on. The
+ * tools it names come from the harness, not from /mcp.
  */
 export const busLine = (on: boolean): string =>
   on
-    ? "- Find peers by bus name with the oa_bus list_agents tool (it comes from the bus client, not from /mcp), and reply by that name: your harness's own session list does not show agents on other machines.\n"
+    ? "- Find peers by bus name with the oa_bus list_agents tool (it comes from the bus client, not from /mcp), and reply by that name: your harness's own session list does not show agents on other machines.\n" +
+      "- To message agents, use the bus tools installed for your harness: the oa_bus MCP server, or the oa-bus extension. Don't borrow another harness's config to get them. If they fail, report it to your human with the error and any fix it suggests; don't run that fix without their yes.\n"
     : "";
 
 export const skillUrl = (env: SkillEnv): string | undefined =>

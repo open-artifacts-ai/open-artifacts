@@ -1,5 +1,5 @@
 // MCP client setup per agent and auth variant: one source for the dashboard's
-// Settings → Agents tabs and the generated skill. Pure, dependency-free.
+// Settings → Connections tab and the generated skill. Pure, dependency-free.
 
 /** Placeholder in the generic token snippet. */
 export const TOKEN_PLACEHOLDER = "<YOUR_TOKEN>";

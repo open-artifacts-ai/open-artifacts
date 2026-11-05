@@ -261,6 +261,12 @@ describe("GET /bus: who loads it", () => {
     const { deps } = doubles();
     const body = await (await get(deps, "/bus", m.cookie)).text();
     expect(body).toContain("No machines yet");
+    // True today (#1449 M3): no llms.txt question asks about other machines.
+    expect(body).toContain(
+      `Ask any AI agent to set up the Open Artifacts bus client and connect it to ${env.APP_HOST}. You approve the machine in the browser.`,
+    );
+    expect(body).not.toContain("say yes when it asks");
+    expect(body).not.toContain("{{");
     expect(body).not.toContain("<table>");
     expect(body).toContain("Agents show up here while a session is running");
     expect(body).not.toContain("You can't connect new machines");

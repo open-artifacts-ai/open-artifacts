@@ -63,7 +63,7 @@ const sideScroll = (page: Page) =>
 for (const width of [1280, 390]) {
   test(`Agents cards inset every child at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
-    await page.goto("/settings/agents");
+    await page.goto("/settings/connections");
     await expect(page.getByRole("radio", { name: "OAuth" })).toBeVisible();
     expect(await misaligned(page, inset(width))).toEqual([]);
     expect(await sideScroll(page)).toBe(0);
@@ -122,7 +122,7 @@ for (const width of [1280, 390]) {
     page,
   }) => {
     await page.setViewportSize({ width, height: 900 });
-    await page.goto("/settings/agents");
+    await page.goto("/settings/connections");
     await page.getByRole("button", { name: "Create token" }).click();
     await page.getByRole("textbox", { name: "Label" }).fill("ci");
     await page.getByRole("button", { name: "Create" }).click();
@@ -168,7 +168,7 @@ test("stacked rows at 390px: name on its own line, meta left, action right", asy
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 900 });
-  await page.goto("/settings/agents");
+  await page.goto("/settings/connections");
   const row = await page.locator("li", { hasText: "laptop" }).evaluate((li) => {
     const box = (el: Element | null) => el?.getBoundingClientRect();
     const name = li.querySelector("b");
@@ -237,7 +237,7 @@ for (const width of [1280, 390])
       page,
     }) => {
       await page.setViewportSize({ width, height: 900 });
-      await page.goto("/settings/agents");
+      await page.goto("/settings/connections");
       await page.evaluate(
         (t) => document.documentElement.setAttribute("data-theme", t),
         theme,
@@ -300,7 +300,7 @@ for (const width of [1280, 390])
 
 test("settings keep a 24px gutter at 800px", async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 900 });
-  await page.goto("/settings/agents");
+  await page.goto("/settings/connections");
   await expect(page.locator("[data-slot=card]").first()).toBeVisible();
   const g = await page.evaluate(() => {
     const main = document.getElementById("oa-main")?.getBoundingClientRect();

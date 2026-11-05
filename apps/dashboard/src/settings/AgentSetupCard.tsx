@@ -28,13 +28,13 @@ export function useCanSetUpAgent() {
   );
 }
 
-/** A caller the server won't connect: Agents only lets them revoke. */
+/** A caller the server won't connect: Connections only lets them revoke. */
 export function useRevokeOnly() {
   const state = useMe();
   return state.status === "authed" && !canConnectAgents(state.me);
 }
 
-/** Revoke-only with nothing to revoke: no Agents page. Guests never reach it. */
+/** Revoke-only with nothing to revoke: no Connections page. Guests never reach it. */
 export function useNoAgentsPage() {
   const state = useMe();
   const revokeOnly =
@@ -97,7 +97,7 @@ export function AgentSetupBody() {
   );
 }
 
-/** Settings > Agents: the card. Nothing for those who can't connect agents. */
+/** Settings › Connections: the card. Nothing for those who can't connect agents. */
 export function AgentSetupCard() {
   if (!useCanSetUpAgent()) return null;
   return (

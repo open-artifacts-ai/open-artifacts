@@ -2,14 +2,25 @@
 // rechecks and purge preconditions, replays, upgrade outcome mapping, the
 // fail and cleanup compensation, redline_creds sealing. Each install is made
 // by ProvisionInstall first, as in production.
-import { FLOOR_KEY, HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
+import {
+  FLOOR_KEY,
+  HOSTED_DOMAINS,
+  NAMESPACES,
+  parseTemplate,
+} from "@oa/provision";
 import { REDLINE_SCOPE_FIXTURE } from "@oa/provisioning-contract/fixtures";
+import { SYSTEM_ACTOR } from "@oa/provisioning-contract/system";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   floorOf,
   signFloor,
   TEST_PUBKEY,
 } from "../../../../packages/provision/test/fixtures/release.js";
+import { seedRelease } from "../../../../packages/provision/test/r2-memory.js";
+import {
+  fleetConditions,
+  fleetRequestId,
+} from "../../../scheduler/src/provapi/fleet.js";
 import { JOB_ERROR_TEXT } from "../../src/errors.js";
 import { GRACE_MS, NEVER_ROUTED, runManage } from "../../src/manage.js";
 import {
@@ -24,6 +35,7 @@ import {
   type CreateSeed,
   ENV,
   event,
+  FIX,
   HELD,
   seedCreate,
   seedJob,
@@ -243,6 +255,73 @@ describe("upgrade and rollback (5.4)", () => {
     });
     expect(yes.job).toMatchObject({ status: "done", error_code: null });
     expect(w.install(s.installId)).toMatchObject({ version: HELD });
+  });
+
+  it("#1343: an install on DO tag v3, to a release binding BusHub: do_step_required names the step, and the fleet halt shows it", async () => {
+    // The server template binds BusHub (#1425): the target. The step,
+    // 0.24.5, is the same template with BusHub added but unbound. V2 binds
+    // it too, so it is no step.
+    const TARGET = "0.25.0";
+    const STEP = "0.24.5";
+    const tpl = parseTemplate(new TextDecoder().decode(FIX.TEMPLATE_BYTES));
+    const unbound = {
+      ...tpl,
+      durable_objects: {
+        bindings: (tpl.durable_objects?.bindings ?? []).filter(
+          (x: { class_name: string }) => x.class_name !== "BusHub",
+        ),
+      },
+    };
+    for (const variant of ["release", "redline"] as const) {
+      await seedRelease(w.r2, FIX.makeRelease(), TARGET, variant);
+      await seedRelease(
+        w.r2,
+        FIX.makeRelease({ template: unbound }),
+        STEP,
+        variant,
+      );
+    }
+    const s = await active({ slug: "stepco", version: V1 });
+    // An install from before BusHub: its live tag is v3.
+    w.db
+      .prepare("UPDATE installs SET do_migration_tag = 'v3' WHERE id = ?")
+      .run(s.installId);
+    const writes = w.fake.writes().length;
+    const r = await manage("upgrade", s.installId, {
+      args: { from: V1, to: TARGET },
+      actor: "system",
+      actorKey: SYSTEM_ACTOR.key,
+      requestId: fleetRequestId(s.installId, TARGET),
+    });
+    expect(r.job).toMatchObject({
+      status: "failed",
+      error_code: "do_step_required",
+      error_message: `Upgrade this install to ${STEP} first: the target adds Durable Object classes it can't jump to.`,
+    });
+    expect(w.fake.writes().length).toBe(writes);
+    expect(w.install(s.installId)).toMatchObject({ version: V1, lease: null });
+    // The fleet reads what was stored: the install from the row, the step
+    // from the stored text.
+    const c = await fleetConditions(
+      {
+        PLATFORM_DB: w.env.PLATFORM_DB,
+        CF_VERSION_METADATA: { id: "x", tag: `v${TARGET}`, timestamp: "" },
+        FLEET_CANARY: s.installId,
+      } as never,
+      w.clock.t,
+    );
+    expect(c.fleet_halted.open).toBe(true);
+    expect(c.fleet_halted.rows).toContainEqual(
+      expect.objectContaining({
+        install_id: s.installId,
+        job_id: r.id,
+        code: "do_step_required",
+        version: TARGET,
+        message: expect.stringContaining(
+          `Upgrade this install to ${STEP} first`,
+        ),
+      }),
+    );
   });
 
   it("upgrade refusals: from moved is invalid_state; to at or below from is downgrade_refused", async () => {

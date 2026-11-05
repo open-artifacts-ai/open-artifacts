@@ -47,7 +47,7 @@ const hostile = (page: Page, name: string) =>
 
 for (const path of [
   "/",
-  "/settings/agents",
+  "/settings/connections",
   "/settings/members",
   "/settings/instance",
   "/sign-in",
@@ -60,7 +60,7 @@ for (const path of [
       await hostile(page, name);
       await page.goto(path);
       await page.waitForLoadState("networkidle");
-      if (path === "/settings/agents")
+      if (path === "/settings/connections")
         await page.getByRole("radio", { name: "Token" }).click();
       expect(
         await page.evaluate(() => (window as { __xss?: number }).__xss),

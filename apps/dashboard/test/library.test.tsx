@@ -67,16 +67,15 @@ describe("Library", () => {
     ).toBeInTheDocument();
   });
 
-  it("empty Mine state links to the agents settings", async () => {
+  it("empty Mine state links to Settings › Connections", async () => {
     server.use(http.get("*/api/v1/artifacts", () => page([], null)));
     mount("/mine");
     expect(
       await screen.findByText("Ask your agent to publish something"),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /agents/i })).toHaveAttribute(
-      "href",
-      "/settings/agents",
-    );
+    expect(
+      screen.getByRole("link", { name: /Settings → Connections/ }),
+    ).toHaveAttribute("href", "/settings/connections");
   });
 
   it("remembers the view in localStorage and URL", async () => {

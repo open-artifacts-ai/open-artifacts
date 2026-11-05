@@ -146,7 +146,7 @@ const live = (ctx: Ctx, id: string) =>
 const tokenFileOf = (ctx: Ctx) =>
   patTokenFile(homeOf(ctx.deps.env), ctx.opts.appHost);
 
-const DASHBOARD = "Settings → Agents";
+const DASHBOARD = "Settings → Connections";
 
 /** A revoke that failed after the new file was saved is retried here, on the next run. */
 async function retryPendingRevoke(state: State, ctx: Ctx) {

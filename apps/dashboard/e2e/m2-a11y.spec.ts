@@ -59,13 +59,13 @@ const ROUTES: Route[] = [
   },
   { path: "/nope" },
   { path: "/settings/members" },
-  { path: "/settings/agents" },
+  { path: "/settings/connections" },
   { path: "/settings/instance" },
   { path: "/settings/usage" },
   { path: "/settings/usage?mock=quota" },
   { path: "/settings/usage#not-configured", setup: notConfigured },
   {
-    path: "/settings/agents#created-token",
+    path: "/settings/connections#created-token",
     after: async (p) => {
       await p.getByRole("button", { name: "Create token" }).click();
       await p.getByRole("textbox", { name: "Label" }).fill("ci");
@@ -175,7 +175,7 @@ test("keyboard: whole card has one tab stop, a visible ring and Enter opens it",
 test("keyboard: create and revoke a token without a mouse", async ({
   page,
 }) => {
-  await page.goto("/settings/agents");
+  await page.goto("/settings/connections");
   await page.waitForLoadState("networkidle");
   await page.getByRole("button", { name: "Create token" }).focus();
   await page.keyboard.press("Enter");
@@ -209,7 +209,7 @@ test("token secrecy: gone from DOM, storage, history and console after Done", as
 }) => {
   const logs: string[] = [];
   page.on("console", (m) => logs.push(m.text()));
-  await page.goto("/settings/agents");
+  await page.goto("/settings/connections");
   await page.waitForLoadState("networkidle");
   await page.getByRole("button", { name: "Create token" }).click();
   await page.getByRole("textbox", { name: "Label" }).fill("secret");
@@ -254,10 +254,10 @@ test("keyboard: settings tabs and role select reachable by Tab", async ({
   await page.waitForLoadState("networkidle");
   await page
     .getByRole("navigation", { name: "Settings sections" })
-    .getByRole("link", { name: "Agents" })
+    .getByRole("link", { name: "Connections" })
     .focus();
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/\/settings\/agents$/);
+  await expect(page).toHaveURL(/\/settings\/connections$/);
   await expect(page.getByRole("radio", { name: "OAuth" })).toBeVisible();
 });
 

@@ -42,6 +42,7 @@ import { REVOKE_MIN_VERSION } from "../src/versions.js";
 import {
   BROKER_GOOGLE_CLIENT_ID,
   DIRECTORY_REVOKE_SKIPPED_NOTE,
+  DoStepRequired,
   HOSTED_DOMAINS,
   hostsKvTitle,
   LostLease,
@@ -791,6 +792,82 @@ describe("upgrade", () => {
     expect(s.row(inst.id).do_migration_tag).toBe(LEDGER_TAG);
   });
 
+  it("#1343: the DO rule's refusal names the install and the release to step through first", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const all = Object.keys(s.rel.st.specs);
+    let listed = 0;
+    const p = s.mk({
+      releaseVersions: async () => {
+        listed++;
+        return all;
+      },
+    });
+    const w = s.fake.writes().length;
+    const e = await fails(p.upgrade(inst.id, "0.26.0"));
+    expect(e).toBeInstanceOf(DoStepRequired);
+    expect(provisionErrorCode(e)).toBe("do_step_required");
+    expect((e as DoStepRequired).step).toBe("0.25.0");
+    // 0.24.x take the live tag but leave 0.26.0 refused; 0.28.0 is above it.
+    expect(e.message).toMatch(
+      new RegExp(`^install ${inst.id}: upgrade it to 0\\.25\\.0 first; `),
+    );
+    expect(e.message).toMatch(/Ledger/);
+    expect(s.fake.writes().length).toBe(w);
+    expect(s.row(inst.id)).toMatchObject({ version: "0.23.0", lease: null });
+    // The named step, then the release: the normal path, with no listing.
+    listed = 0;
+    expect(keep(await p.upgrade(inst.id, "0.25.0")).ok).toBe(true);
+    expect(keep(await p.upgrade(inst.id, "0.26.0")).ok).toBe(true);
+    expect(listed).toBe(0);
+    expect(s.row(inst.id)).toMatchObject({
+      version: "0.26.0",
+      do_migration_tag: LEDGER_TAG,
+    });
+  });
+
+  it("#1343: with no release to step through, or no listing, the refusal still names the install", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const none = await fails(
+      s
+        .mk({ releaseVersions: async () => ["0.24.0", "0.24.2", "0.26.0"] })
+        .upgrade(inst.id, "0.26.0"),
+    );
+    expect(none.message).toMatch(
+      new RegExp(`^install ${inst.id}: this release adds Durable Object`),
+    );
+    expect(none.message).not.toMatch(/first;/);
+    expect(provisionErrorCode(none)).toBe("do_step_required");
+    expect((none as DoStepRequired).step).toBeNull();
+    const down = await fails(
+      s
+        .mk({
+          releaseVersions: async () => {
+            throw new Error("r2 down");
+          },
+        })
+        .upgrade(inst.id, "0.26.0"),
+    );
+    expect(provisionErrorCode(down)).toBe("do_step_required");
+    expect((down as DoStepRequired).step).toBeNull();
+    expect(down.message).toMatch(new RegExp(`^install ${inst.id}: `));
+  });
+
+  it("#1343: of two releases the install could step through, the newer is named", async () => {
+    // 0.25.5 adds Ledger unbound too, so 0.25.0 and 0.25.5 both qualify.
+    const s = setup({ specs: { "0.25.5": V25_TAG } });
+    const inst = keep(await s.p.create(input()));
+    const all = Object.keys(s.rel.st.specs);
+    const e = await fails(
+      s.mk({ releaseVersions: async () => all }).upgrade(inst.id, "0.26.0"),
+    );
+    expect((e as DoStepRequired).step).toBe("0.25.5");
+    expect(e.message).toMatch(
+      new RegExp(`^install ${inst.id}: upgrade it to 0\\.25\\.5 first; `),
+    );
+  });
+
   it("#1427: an install on v3 upgrading to the real template (binds BusHub, adds it at v4) is refused before any write", async () => {
     // The real template adds BusHub at v4 and binds BUS_HUB (#1315). An
     // install still on v3 (below 0.109.0) would add and bind it in one upload.
@@ -809,7 +886,8 @@ describe("upgrade", () => {
     const from = s.fake.log.length;
     const e = await fails(s.p.upgrade(inst.id, "0.24.0"));
     expect(e).toBeInstanceOf(ProvisionRefused);
-    expect(e.code).toBe("invalid_state");
+    // #1343: the DO rule's refusal is do_step_required.
+    expect(e.code).toBe("do_step_required");
     expect(e.message).toMatch(
       /adds Durable Object class BusHub and binds it.*upgrade first to a release that adds it unbound/,
     );
