@@ -42,6 +42,7 @@ import { REVOKE_MIN_VERSION } from "../src/versions.js";
 import {
   BROKER_GOOGLE_CLIENT_ID,
   DIRECTORY_REVOKE_SKIPPED_NOTE,
+  DoStepRequired,
   HOSTED_DOMAINS,
   hostsKvTitle,
   LostLease,
@@ -804,8 +805,9 @@ describe("upgrade", () => {
     });
     const w = s.fake.writes().length;
     const e = await fails(p.upgrade(inst.id, "0.26.0"));
-    expect(e).toBeInstanceOf(ProvisionRefused);
-    expect(provisionErrorCode(e)).toBe("invalid_state");
+    expect(e).toBeInstanceOf(DoStepRequired);
+    expect(provisionErrorCode(e)).toBe("do_step_required");
+    expect((e as DoStepRequired).step).toBe("0.25.0");
     // 0.24.x take the live tag but leave 0.26.0 refused; 0.28.0 is above it.
     expect(e.message).toMatch(
       new RegExp(`^install ${inst.id}: upgrade it to 0\\.25\\.0 first; `),
@@ -838,6 +840,8 @@ describe("upgrade", () => {
       new RegExp(`^install ${inst.id}: this release adds Durable Object`),
     );
     expect(none.message).not.toMatch(/first;/);
+    expect(provisionErrorCode(none)).toBe("do_step_required");
+    expect((none as DoStepRequired).step).toBeNull();
     const down = await fails(
       s
         .mk({
@@ -847,8 +851,23 @@ describe("upgrade", () => {
         })
         .upgrade(inst.id, "0.26.0"),
     );
-    expect(provisionErrorCode(down)).toBe("invalid_state");
+    expect(provisionErrorCode(down)).toBe("do_step_required");
+    expect((down as DoStepRequired).step).toBeNull();
     expect(down.message).toMatch(new RegExp(`^install ${inst.id}: `));
+  });
+
+  it("#1343: of two releases the install could step through, the newer is named", async () => {
+    // 0.25.5 adds Ledger unbound too, so 0.25.0 and 0.25.5 both qualify.
+    const s = setup({ specs: { "0.25.5": V25_TAG } });
+    const inst = keep(await s.p.create(input()));
+    const all = Object.keys(s.rel.st.specs);
+    const e = await fails(
+      s.mk({ releaseVersions: async () => all }).upgrade(inst.id, "0.26.0"),
+    );
+    expect((e as DoStepRequired).step).toBe("0.25.5");
+    expect(e.message).toMatch(
+      new RegExp(`^install ${inst.id}: upgrade it to 0\\.25\\.5 first; `),
+    );
   });
 
   it("sends migrations only when the target tag differs from the live one", async () => {

@@ -48,6 +48,10 @@ export const PROVISION_ERROR_CODES = Object.freeze([
   // nonAdditive was asked for, but the restore point couldn't be taken.
   // Nothing changed. Terminal: a person checks the token, then retries.
   "restore_point_failed",
+  // The DO rule refused an upgrade from an older Durable Object tag (#1343):
+  // the target binds a class the install must take one release first.
+  // Terminal: a person upgrades it to the step release, then the target.
+  "do_step_required",
   // Code sign-in on with no usable Turnstile widget in the env (#1088).
   // Terminal: a person fixes the widget, then retries the job.
   "turnstile_missing",
@@ -298,6 +302,20 @@ export class ProvisionRefused extends Error {
     if (!(PROVISION_ERROR_CODES as readonly string[]).includes(code))
       throw new Error(`unknown provision error code ${String(code)}`);
     this.code = code;
+  }
+}
+
+/**
+ * do_step_required (#1343): `step`, the release the install must take first
+ * (null when none was found), is its one structured value; the provisioner
+ * stores it in jobs.error_message only after isReleaseVersion.
+ */
+export class DoStepRequired extends ProvisionRefused {
+  override name = "DoStepRequired";
+  readonly step: string | null;
+  constructor(message: string, step: string | null) {
+    super(message, "do_step_required");
+    this.step = step;
   }
 }
 

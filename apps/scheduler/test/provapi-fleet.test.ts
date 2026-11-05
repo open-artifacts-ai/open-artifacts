@@ -905,16 +905,17 @@ describe("halts", () => {
 
   describe("#1343: an upgrade the DO rule refuses (a release binding a new DO class)", () => {
     const STEP = "0.92.5";
-    /** ManageInstall's refusal of an install on an older DO tag, as wfp words it. */
-    const refuse = (jobId: unknown, id: string, at: number) =>
+    // The row ManageInstall leaves (do_step_required and its stored text);
+    // apps/provisioner's manage test proves that path writes exactly this.
+    const refuse = (jobId: unknown, at: number) =>
       db
         .prepare(
-          "UPDATE jobs SET status = 'failed', finished_at = ?2, updated_at = ?2, error_code = 'invalid_state', error_message = ?3 WHERE id = ?1",
+          "UPDATE jobs SET status = 'failed', finished_at = ?2, updated_at = ?2, error_code = 'do_step_required', error_message = ?3 WHERE id = ?1",
         )
         .bind(
           jobId,
           at,
-          `install ${id}: upgrade it to ${STEP} first; this release adds Durable Object class BusHub and binds it in the same version; a class ships one release before the code that uses it`,
+          `Upgrade this install to ${STEP} first: the target adds Durable Object classes it can't jump to.`,
         )
         .run();
 
@@ -928,7 +929,7 @@ describe("halts", () => {
       await fleetDue(f.env, NOW, f.opts);
       const [j] = await fleetJobs();
       expect(j?.install_id).toBe(canary);
-      await refuse(j?.id, canary, NOW + MIN);
+      await refuse(j?.id, NOW + MIN);
       await ticks(f, NOW + 2 * MIN, NOW + 60 * MIN);
       // No retry of the canary, and nobody else moved.
       expect(await fleetJobs()).toHaveLength(1);
@@ -939,12 +940,12 @@ describe("halts", () => {
       expect(c.fleet_halted.rows[0]).toMatchObject({
         install_id: canary,
         job_id: j?.id,
-        code: "invalid_state",
+        code: "do_step_required",
         version: TARGET,
+        message: expect.stringContaining(
+          `Upgrade this install to ${STEP} first`,
+        ),
       });
-      expect(c.fleet_halted.rows[0]?.message).toMatch(
-        new RegExp(`^install ${canary}: upgrade it to ${STEP} first; `),
-      );
       for (const id of rest)
         expect((await fleetJobs()).some((x) => x.install_id === id)).toBe(
           false,
@@ -965,7 +966,7 @@ describe("halts", () => {
       const batch = await fleetJobs();
       expect(batch.map((x) => x.install_id)).toEqual([m, ...peers]);
       const j = batch.find((x) => x.install_id === m);
-      await refuse(j?.id, m, NOW + MIN);
+      await refuse(j?.id, NOW + MIN);
       await ticks(f, NOW + 2 * MIN, NOW + 60 * MIN);
       expect(await marks()).toEqual([`fleet_halt:${TARGET}:${m}`]);
       const after = await fleetJobs();
@@ -977,8 +978,10 @@ describe("halts", () => {
       expect(c.fleet_halted.rows).toContainEqual(
         expect.objectContaining({
           install_id: m,
-          code: "invalid_state",
-          message: expect.stringContaining(`upgrade it to ${STEP} first`),
+          code: "do_step_required",
+          message: expect.stringContaining(
+            `Upgrade this install to ${STEP} first`,
+          ),
         }),
       );
     });

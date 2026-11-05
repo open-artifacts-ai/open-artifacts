@@ -2,10 +2,15 @@
 // read from the error's own `code` (provisionErrorCode), never its message,
 // and the code's fixed text (JOB_ERROR_TEXT). Never an error's own text: a
 // refusal's message can echo request values (a slug, a key name) and a
-// Cloudflare or D1 message can quote input.
+// Cloudflare or D1 message can quote input. One exception (#1343):
+// do_step_required's text is a fixed template plus one structured value,
+// DoStepRequired.step, interpolated only when isReleaseVersion accepts it
+// (jobErrorText); otherwise the fixed text alone.
 import { NonRetryableError } from "cloudflare:workflows";
 import {
   CfError,
+  DoStepRequired,
+  isReleaseVersion,
   PROVISION_ERROR_CODES,
   type ProvisionErrorCode,
   ProvisionRetry,
@@ -116,6 +121,8 @@ export const JOB_ERROR_TEXT = Object.freeze({
     "A pending migration can lose data. Upgrade with nonAdditive to take a restore point and cross it.",
   restore_point_failed:
     "The D1 restore point could not be taken, so the migration was not run.",
+  do_step_required:
+    "Upgrade this install to an earlier release first: the target adds Durable Object classes it can't jump to.",
   domain_codes_refused:
     "Domain sign-in codes need email sign-in on, Google off and at least one domain.",
   turnstile_missing:
@@ -145,15 +152,52 @@ export class StepRefusal extends NonRetryableError {
   }
 }
 
+const STEP = Symbol.for("oa.provisioner.doStep");
+/** The longest step version named; a longer one gets the fixed text. */
+const STEP_MAX = 40;
+
+/** A step version safe to store: isReleaseVersion, and short. */
+const okStep = (v: unknown): v is string =>
+  typeof v === "string" && v.length <= STEP_MAX && isReleaseVersion(v);
+
+/**
+ * A code's stored text: JOB_ERROR_TEXT, except do_step_required with a
+ * `step` that isReleaseVersion accepts (and STEP_MAX), which names it (#1343).
+ */
+export function jobErrorText(
+  code: ProvisionErrorCode,
+  step: unknown = null,
+): string {
+  if (code === "do_step_required" && okStep(step))
+    return `Upgrade this install to ${step} first: the target adds Durable Object classes it can't jump to.`;
+  return JOB_ERROR_TEXT[code];
+}
+
+/** A step error's stored text (jobErrorText of its code and its step tag). */
+export function errorTextOf(err: unknown): string {
+  const step =
+    err !== null && typeof err === "object"
+      ? (err as { [STEP]?: unknown })[STEP]
+      : null;
+  return jobErrorText(codeOf(err), step);
+}
+
 /**
  * The error a step throws for `e`: `new Error(code)`, as a
  * NonRetryableError unless the code is retryable; a terminal one adds
- * ": <JOB_ERROR_TEXT>". Never the refusal's own message.
+ * ": <jobErrorText>". Never the refusal's own message: a DoStepRequired
+ * passes only its step, on a symbol, and only a release version.
  */
 export function stepError(e: unknown): Error {
   const { retryable, code } = classify(e);
   if (retryable) return new Error(code);
-  return new NonRetryableError(`${code}: ${JOB_ERROR_TEXT[code]}`);
+  const step =
+    e instanceof DoStepRequired && code === "do_step_required" && okStep(e.step)
+      ? e.step
+      : null;
+  const err = new NonRetryableError(`${code}: ${jobErrorText(code, step)}`);
+  if (step !== null) Object.defineProperty(err, STEP, { value: step });
+  return err;
 }
 
 /** An error's own text, for the redacted log line only. */

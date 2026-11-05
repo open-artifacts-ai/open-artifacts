@@ -58,6 +58,7 @@ import {
 } from "./internal/gates.js";
 import {
   CfError,
+  DoStepRequired,
   NEAR_EXPIRY_MODE,
   PROVISION_JOB_KINDS,
   type ProvisionJobKind,
@@ -297,6 +298,7 @@ export const WFP_STEPS = Object.freeze([
 export type WfpStep = (typeof WFP_STEPS)[number];
 
 export {
+  DoStepRequired,
   NEAR_EXPIRY_MODE,
   PROVISION_ERROR_CODES,
   PROVISION_JOB_KINDS,
@@ -3446,11 +3448,11 @@ export class WfpProvisioner {
       assertDoClassesShipFirst(rel.template, live);
     } catch (e) {
       const step = await this.stepRelease(from, to, rel, live);
-      throw new ProvisionRefused(
+      throw new DoStepRequired(
         step === null
           ? `install ${id}: ${(e as Error).message}`
           : `install ${id}: upgrade it to ${step} first; ${(e as Error).message}`,
-        "invalid_state",
+        step,
       );
     }
   }
