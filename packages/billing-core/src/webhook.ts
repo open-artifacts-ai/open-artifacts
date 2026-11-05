@@ -12,7 +12,12 @@
 //    install it names in metadata or anywhere else. An unknown customer is
 //    409 and its event id is NOT recorded, so Stripe retries it (billing's
 //    /checkout writes the customer id before the session exists; this is
-//    the backstop for the window in between).
+//    the backstop for the window in between) while the event is under an
+//    hour old; an older one is recorded and answered 200.
+//    Subscription and invoice events apply only to the row's own
+//    subscription (or while it has none); the tier comes from the
+//    subscription's current price, then its metadata. A suspended row's
+//    status and grace are never overwritten; grace runs from `created`.
 // 4. Ordering: Stripe delivers out of order. Two streams, each with its own
 //    key: the subscription (checkout and customer.subscription.*) keeps its
 //    newest applied event's `created` (last_event_created), invoices keep
@@ -35,7 +40,13 @@ export const GRACE_MS = 7 * 86_400_000;
 export interface WebhookEnv {
   BILLING_DB: D1Database;
   STRIPE_WEBHOOK_SECRET: string;
+  /** The Stripe price ids billing sells (optional): a price id matching one names the tier. */
+  STRIPE_PRICE_TEAM?: string;
+  STRIPE_PRICE_BUSINESS?: string;
 }
+
+/** The price ids that name a tier (from the webhook env, when it has them). */
+export type PriceIds = { team?: string; business?: string };
 
 import { verifyStripeSignature } from "./signature.js";
 
@@ -102,27 +113,37 @@ const asTier = (v: unknown): PaidTier | null =>
   v === "team" || v === "business" ? v : null;
 
 /**
- * A subscription's paid tier: its metadata.tier (Checkout writes it through
- * subscription_data), else the first item whose price lookup_key, or price
- * metadata.tier, names one. Null when none does (the tier is then left as
- * it is). Pure.
+ * A subscription's paid tier, from its current price first, so a plan
+ * switch changes the tier: the first item whose price id is one of
+ * `prices`, or whose price metadata.tier or lookup_key names one. Only when
+ * no price names one: the subscription's metadata.tier (Checkout writes it
+ * through subscription_data; it is the tier it was bought at, not the
+ * current plan). Null when none does (the tier is then left as it is). Pure.
  */
 export function tierFromSubscription(
   sub: Record<string, unknown>,
+  prices: PriceIds = {},
 ): PaidTier | null {
-  const own = isObj(sub.metadata) ? asTier(sub.metadata.tier) : null;
-  if (own) return own;
   const items =
     isObj(sub.items) && Array.isArray(sub.items.data) ? sub.items.data : [];
   for (const item of items) {
     if (!isObj(item) || !isObj(item.price)) continue;
     const p = item.price;
+    const byId =
+      typeof p.id === "string" && p.id !== ""
+        ? p.id === prices.team
+          ? "team"
+          : p.id === prices.business
+            ? "business"
+            : null
+        : null;
     const t =
-      asTier(p.lookup_key) ??
-      (isObj(p.metadata) ? asTier(p.metadata.tier) : null);
+      byId ??
+      (isObj(p.metadata) ? asTier(p.metadata.tier) : null) ??
+      asTier(p.lookup_key);
     if (t) return t;
   }
-  return null;
+  return isObj(sub.metadata) ? asTier(sub.metadata.tier) : null;
 }
 
 /** Stripe subscription status → ours; null leaves the status as it is. Pure. */
@@ -149,10 +170,32 @@ type Set = { sql: string; args: unknown[] };
 
 /**
  * The change an event makes to its customer's row, or null for an event we
- * don't act on. Pure: `now` is the caller's clock.
+ * don't act on. Pure. Grace runs from the event's own time (`created`), not
+ * from when it was received, so a late delivery doesn't extend it.
+ *
+ * A suspended row's status and grace are never overwritten by any event
+ * (suspension is set and cleared elsewhere).
  */
-export function changeFor(ev: StripeEvent, now: number): Set[] | null {
+export function changeFor(
+  ev: StripeEvent,
+  prices: PriceIds = {},
+): Set[] | null {
   const o = ev.object;
+  const graceEnd = ev.created * 1000 + GRACE_MS;
+  /**
+   * `col = CASE WHEN <keep> THEN col ELSE <value> END`: a suspended row is
+   * kept. `stale`: a subscription event older than the last invoice applied
+   * leaves status and grace to that invoice (it still moves tier and id).
+   */
+  const guarded = (
+    col: string,
+    value: string,
+    args: unknown[] = [],
+    stale = false,
+  ): Set => ({
+    sql: `${col} = CASE WHEN status = 'suspended'${stale ? " OR ? < coalesce(last_invoice_created, 0)" : ""} THEN ${col} ELSE ${value} END`,
+    args: stale ? [ev.created, ...args] : args,
+  });
   switch (ev.type) {
     case "checkout.session.completed": {
       const sub =
@@ -169,8 +212,8 @@ export function changeFor(ev: StripeEvent, now: number): Set[] | null {
         o.payment_status === "no_payment_required"
       ) {
         sets.push(
-          { sql: "status = 'active'", args: [] },
-          { sql: "grace_until = NULL", args: [] },
+          guarded("status", "'active'"),
+          guarded("grace_until", "NULL"),
         );
         const tier = isObj(o.metadata) ? asTier(o.metadata.tier) : null;
         if (tier) sets.push({ sql: "tier = ?", args: [tier] });
@@ -182,25 +225,22 @@ export function changeFor(ev: StripeEvent, now: number): Set[] | null {
       const sets: Set[] = [];
       const status = statusFromSubscription(o.status);
       // incomplete (first payment pending): no tier yet either.
-      const tier = status ? tierFromSubscription(o) : null;
+      const tier = status ? tierFromSubscription(o, prices) : null;
       if (tier) sets.push({ sql: "tier = ?", args: [tier] });
       if (status === "active")
         sets.push(
-          { sql: "status = 'active'", args: [] },
-          { sql: "grace_until = NULL", args: [] },
+          guarded("status", "'active'", [], true),
+          guarded("grace_until", "NULL", [], true),
         );
       else if (status === "past_due")
         sets.push(
-          { sql: "status = 'past_due'", args: [] },
-          {
-            sql: "grace_until = coalesce(grace_until, ?)",
-            args: [now + GRACE_MS],
-          },
+          guarded("status", "'past_due'", [], true),
+          guarded("grace_until", "coalesce(grace_until, ?)", [graceEnd], true),
         );
       else if (status === "lapsed")
         sets.push(
-          { sql: "status = 'lapsed'", args: [] },
-          { sql: "grace_until = NULL", args: [] },
+          guarded("status", "'lapsed'", [], true),
+          guarded("grace_until", "NULL", [], true),
         );
       // Stripe's own trial (trialing), when one runs: its end.
       if (o.status === "trialing" && typeof o.trial_end === "number")
@@ -211,10 +251,7 @@ export function changeFor(ev: StripeEvent, now: number): Set[] | null {
     }
     case "customer.subscription.deleted":
       // Ended: read-only on the install at once; nothing is deleted.
-      return [
-        { sql: "status = 'lapsed'", args: [] },
-        { sql: "grace_until = NULL", args: [] },
-      ];
+      return [guarded("status", "'lapsed'"), guarded("grace_until", "NULL")];
     case "invoice.payment_failed":
       // Grace from the first failure; a suspended or lapsed row stays so.
       return [
@@ -224,7 +261,7 @@ export function changeFor(ev: StripeEvent, now: number): Set[] | null {
         },
         {
           sql: "grace_until = CASE WHEN status IN ('active', 'past_due') THEN coalesce(grace_until, ?) ELSE grace_until END",
-          args: [now + GRACE_MS],
+          args: [graceEnd],
         },
       ];
     case "invoice.paid":
@@ -243,6 +280,27 @@ export function changeFor(ev: StripeEvent, now: number): Set[] | null {
     default:
       return null;
   }
+}
+
+/**
+ * The subscription an event is about (null when it names none): a
+ * subscription event's own id, an invoice's subscription (top level, or
+ * under parent.subscription_details on newer API versions). Checkout is not
+ * asked: it is the event that sets the row's subscription.
+ */
+export function subscriptionOf(ev: StripeEvent): string | null {
+  const o = ev.object;
+  const idOf = (v: unknown) => (isObj(v) ? v.id : v);
+  let v: unknown;
+  if (ev.type.startsWith("customer.subscription.")) v = o.id;
+  else {
+    v = idOf(o.subscription);
+    if (v === undefined || v === null) {
+      const d = isObj(o.parent) ? o.parent.subscription_details : null;
+      v = isObj(d) ? idOf(d.subscription) : null;
+    }
+  }
+  return typeof v === "string" && SUB_ID.test(v) ? v : null;
 }
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
@@ -287,6 +345,8 @@ async function rawText(req: Request): Promise<string | null> {
   }
 }
 
+/** An unknown customer's event is retried (409) only while this young. */
+const UNKNOWN_RETRY_S = 3600;
 const INSERT_EVENT =
   "INSERT INTO stripe_events (event_id, received_at) VALUES (?1, ?2) ON CONFLICT (event_id) DO NOTHING";
 /** Recorded only when the customer is known (an unknown one is retried). */
@@ -364,7 +424,10 @@ export async function handleStripeWebhook(
     log("livemode_ignored");
     return json({ received: true });
   }
-  const change = changeFor(ev, now);
+  const change = changeFor(ev, {
+    team: env.STRIPE_PRICE_TEAM,
+    business: env.STRIPE_PRICE_BUSINESS,
+  });
   const customer = customerOf(ev.object);
   try {
     const db = env.BILLING_DB;
@@ -381,10 +444,15 @@ export async function handleStripeWebhook(
       { sql: "version = version + 1", args: [] },
       { sql: "updated_at = ?", args: [now] },
     ];
-    // Positional binds after the numbered ?1 in IN_ORDER would collide, so
-    // the ordering check binds its own copy of `created` by number last.
+    // The sets use plain `?`; the WHERE binds by number after them.
     const n = sets.reduce((k, s) => k + s.args.length, 0);
-    const order = IN_ORDER[stream].replaceAll("?1", `?${n + 2}`);
+    const order = IN_ORDER[stream].replaceAll("?1", `?${n + 3}`);
+    // Subscription and invoice events apply only to the row's own
+    // subscription (or while it has none: checkout sets it).
+    const own =
+      ev.type === "checkout.session.completed"
+        ? ""
+        : ` AND (stripe_subscription_id IS NULL OR stripe_subscription_id = ?${n + 2})`;
     const res = await db.batch<{ known?: number; install_id?: string }>([
       db.prepare(KNOWN).bind(customer),
       db.prepare(INSERT_KNOWN_EVENT).bind(ev.id, now, customer),
@@ -392,14 +460,25 @@ export async function handleStripeWebhook(
         .prepare(
           // changes() is the event insert's: 1 the first time, 0 on a
           // replay or an unknown customer.
-          `UPDATE tiers SET ${sets.map((s) => s.sql).join(", ")} WHERE stripe_customer_id = ? AND changes() = 1 AND ${order} RETURNING install_id`,
+          `UPDATE tiers SET ${sets.map((s) => s.sql).join(", ")} WHERE stripe_customer_id = ?${n + 1} AND changes() = 1${own} AND ${order} RETURNING install_id`,
         )
-        .bind(...sets.flatMap((s) => s.args), customer, ev.created),
+        .bind(
+          ...sets.flatMap((s) => s.args),
+          customer,
+          own ? subscriptionOf(ev) : null,
+          ev.created,
+        ),
     ]);
     if (!res[0]?.results[0]?.known) {
-      // Not recorded: Stripe retries until billing has written the customer.
+      if (now / 1000 - ev.created < UNKNOWN_RETRY_S) {
+        // Not recorded: Stripe retries until billing has written the customer.
+        log("unknown_customer");
+        return json({ error: "unknown_customer" }, 409);
+      }
+      // Too old to wait for: record it so Stripe stops retrying.
+      await db.batch([db.prepare(INSERT_EVENT).bind(ev.id, now)]);
       log("unknown_customer");
-      return json({ error: "unknown_customer" }, 409);
+      return json({ received: true });
     }
     if ((res[1]?.meta.changes ?? 0) === 0) {
       log("replay");

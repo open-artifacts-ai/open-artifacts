@@ -219,6 +219,8 @@ const ENSURE_ROW_SQL =
   "INSERT INTO tiers (install_id, tier, status, version, updated_at) VALUES (?1, 'free', 'active', 0, ?2) ON CONFLICT (install_id) DO NOTHING";
 const CUSTOMER_SQL =
   "SELECT stripe_customer_id FROM tiers WHERE install_id = ?1";
+const SUBSCRIPTION_SQL =
+  "SELECT stripe_subscription_id, status FROM tiers WHERE install_id = ?1";
 // Only where none is mapped yet: a concurrent winner's id is kept.
 const MAP_CUSTOMER_SQL =
   "UPDATE tiers SET stripe_customer_id = ? WHERE install_id = ? AND stripe_customer_id IS NULL";
@@ -325,6 +327,18 @@ async function checkout(
   if (typeof priceId !== "string" || !PRICE_ID.test(priceId)) {
     console.error("billing stripe config", install);
     return bad("config", 500);
+  }
+  // A live subscription is changed in the Portal, never by a second
+  // Checkout (a second subscription would be billed alongside the first).
+  const held = await env.BILLING_DB.prepare(SUBSCRIPTION_SQL)
+    .bind(install)
+    .first<{ stripe_subscription_id: string | null; status: string }>();
+  if (
+    held?.stripe_subscription_id &&
+    (held.status === "active" || held.status === "past_due")
+  ) {
+    console.log("billing checkout subscription_exists", install);
+    return bad("subscription_exists", 409);
   }
   const cfg: StripeConfig = { secretKey: env.STRIPE_SECRET_KEY ?? "" };
   const customerId = await customerFor(
@@ -472,7 +486,12 @@ export default {
       }
       return handleStripeWebhook(
         req,
-        { BILLING_DB: env.BILLING_DB, STRIPE_WEBHOOK_SECRET: secret },
+        {
+          BILLING_DB: env.BILLING_DB,
+          STRIPE_WEBHOOK_SECRET: secret,
+          STRIPE_PRICE_TEAM: env.STRIPE_PRICE_TEAM,
+          STRIPE_PRICE_BUSINESS: env.STRIPE_PRICE_BUSINESS,
+        },
         Date.now(),
       );
     }

@@ -276,6 +276,39 @@ describe("POST /checkout", () => {
     });
   });
 
+  it("a row with an active or past_due subscription: 409 subscription_exists, no Stripe call (H2)", async () => {
+    for (const status of ["active", "past_due"]) {
+      await seed(A, "cus_existingA", "team");
+      await db
+        .prepare(
+          "UPDATE tiers SET stripe_subscription_id = 'sub_live1', status = ?1 WHERE install_id = ?2",
+        )
+        .bind(status, A)
+        .run();
+      const s = fakeStripe();
+      const r = await call(req("/checkout", { install: A, plan: "business" }));
+      expect([r.status, await r.json()]).toEqual([
+        409,
+        { error: "subscription_exists" },
+      ]);
+      expect(s.calls).toEqual([]);
+      s.spy.mockRestore();
+      await db.prepare("DELETE FROM tiers").run();
+    }
+    // A lapsed (or never-subscribed) row may check out again.
+    await seed(A, "cus_existingA", "team");
+    await db
+      .prepare(
+        "UPDATE tiers SET stripe_subscription_id = 'sub_old1', status = 'lapsed' WHERE install_id = ?1",
+      )
+      .bind(A)
+      .run();
+    fakeStripe();
+    expect(
+      (await call(req("/checkout", { install: A, plan: "business" }))).status,
+    ).toBe(200);
+  });
+
   it("a retried identical request (same ts) is the same customer and the same session", async () => {
     const s = fakeStripe();
     const body = { install: A, ts: Date.now(), plan: "team" };
