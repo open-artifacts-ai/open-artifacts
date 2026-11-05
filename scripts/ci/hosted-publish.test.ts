@@ -134,6 +134,11 @@ esac`;
     expect(r.o.kind).toBe("none");
   });
   it("no release at that commit (most pushes), a cancelled run or another branch: nothing", () => {
+    // A release at the run's own head: only the guard can make these none.
+    const matching = {
+      releases: [release("v0.80.0")],
+      commits: { "v0.80.0": SHA },
+    };
     for (const [label, env, state] of [
       [
         "no release",
@@ -156,8 +161,8 @@ esac`;
           commits: { "v0.80.0-rc.1": SHA },
         },
       ],
-      ["cancelled", { ...run, CONCLUSION: "cancelled" }, {}],
-      ["branch", { ...run, HEAD_BRANCH: "feature" }, {}],
+      ["cancelled", { ...run, CONCLUSION: "cancelled" }, matching],
+      ["branch", { ...run, HEAD_BRANCH: "feature" }, matching],
     ] as [string, Record<string, string>, Parameters<typeof resolve>[1]][]) {
       const r = resolve(env, state);
       expect(r.code, label).toBe(0);
