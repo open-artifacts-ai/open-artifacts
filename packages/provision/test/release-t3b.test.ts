@@ -60,6 +60,10 @@ import { FakeCf } from "./fake-cf.js";
 const G = vi.hoisted(() => ({
   RELEASE_PUBKEY: { staging: "", prod: "" } as Record<string, string>,
   FLOOR_MIN_SEQ: { staging: 1, prod: 1 } as Record<string, number>,
+  RELEASE_RETIRED_PUBKEYS: { staging: [], prod: [] } as Record<
+    string,
+    string[]
+  >,
 }));
 vi.mock("../src/internal/gates.js", async (orig) => {
   const m = await orig<typeof import("../src/internal/gates.js")>();
@@ -70,6 +74,9 @@ vi.mock("../src/internal/gates.js", async (orig) => {
     },
     get FLOOR_MIN_SEQ() {
       return G.FLOOR_MIN_SEQ;
+    },
+    get RELEASE_RETIRED_PUBKEYS() {
+      return G.RELEASE_RETIRED_PUBKEYS;
     },
   };
 });
@@ -1433,6 +1440,32 @@ describe("E: the signed floor", () => {
     const puts = s.fake.r2Log.filter((e) => e.method === "PUT");
     expect(puts).toHaveLength(1);
     expect(puts[0]).toMatchObject({ key: FLOOR_KEY, ifNoneMatch: "*" });
+  });
+
+  it("publishFloor refuses a NEW floor signed with a retired key, but accepts a current floor signed with one", async () => {
+    G.RELEASE_RETIRED_PUBKEYS = { staging: [pubX(OTHER)], prod: [] };
+    try {
+      const s = await probed(setup());
+      const e = await fails(
+        publishFloor({
+          r2: s.r2.staging,
+          env: "staging",
+          floor: sigBytes(signFloor(floorOf(), "staging", OTHER.privateKey)),
+        }),
+      );
+      expect(e.message).toMatch(/new staging floor/);
+      expect(s.fake.r2Log.filter((x) => x.method === "PUT")).toHaveLength(0);
+      // The floor already published, signed with the retired key, still counts.
+      const s2 = await probed(setup());
+      seedFloor(s2, signFloor(floorOf(), "staging", OTHER.privateKey));
+      await publishFloor({
+        r2: s2.r2.staging,
+        env: "staging",
+        floor: sigBytes(signFloor(floorOf({ seq: 2 }))),
+      });
+    } finally {
+      G.RELEASE_RETIRED_PUBKEYS = { staging: [], prod: [] };
+    }
   });
 
   it("publishFloor replaces with If-Match: <etag> and needs a higher seq, a same-or-higher minVersion and a revoked superset", async () => {
