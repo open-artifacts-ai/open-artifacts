@@ -6,11 +6,30 @@ import { INSTRUCTIONS } from "../src/mcp/instructions.js";
 import { BANG_RULE } from "../src/mcp/skill-common.js";
 import { TOOL_DEFS } from "../src/mcp/tool-defs.js";
 import { login } from "./helpers.js";
-import { connect, E } from "./mcp-helpers.js";
+import { APP, callWorker, connect, E } from "./mcp-helpers.js";
 
 const VENDOR = /claude|anthropic|openai|chatgpt/i;
 
 describe("MCP surface is vendor-neutral", () => {
+  it("every ?harness= variant of the skill is vendor-neutral", async () => {
+    // The note names tool names, never a harness path or product: an install
+    // renders for one harness, and the served text stays neutral for all.
+    for (const h of ["claude", "codex", "opencode", "pi", "omp"] as const) {
+      const r = await callWorker(
+        new Request(`${APP}/skill.md?harness=${h}`),
+        E(),
+      );
+      expect(r.status, h).toBe(200);
+      // The caller's own query value is echoed back in the refetch URL it was
+      // fetched from; that is our parameter, not a vendor naming the text.
+      const text = (await r.text())
+        .replaceAll(`/skill.md?harness=${h}`, "/skill.md")
+        .replace(BANG_RULE, "")
+        .replace(/\n## Client setup\n[\s\S]*?(?=\n## )/, "");
+      expect(text, h).not.toMatch(VENDOR);
+    }
+  });
+
   it("tool defs and instructions", () => {
     for (const t of TOOL_DEFS) {
       expect(t.name).not.toMatch(VENDOR);
