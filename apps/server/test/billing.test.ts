@@ -26,6 +26,7 @@ import {
 } from "vitest";
 import { createApp } from "../src/app.js";
 import { withBrokerProps } from "../src/auth/broker-transport.js";
+import { createPat } from "../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import {
   creatorsOf,
@@ -1043,6 +1044,24 @@ describe("Me.instance.billing and the billing routes", () => {
     // Self-hosted: absent.
     const self = await send(R.me, owner.cookie, { e: SELF });
     expect(MeSchema.parse(await self.json()).instance.billing).toBeUndefined();
+  });
+
+  it("the billing routes need an interactive cookie session: a PAT is refused, even the owner's", async () => {
+    await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 2 });
+    const { token } = await createPat(env, owner.userId, "billing pat");
+    for (const [path, body] of [
+      [R.billingCheckout, { tier: "team" }],
+      [R.billingPortal, {}],
+      [R.billingUsage, {}],
+    ] as const) {
+      expect((await send(path, token, { method: "POST", body })).status).toBe(
+        404,
+      );
+      // The same call on a cookie session is the control.
+      expect(
+        (await send(path, owner.cookie, { method: "POST", body })).status,
+      ).toBe(200);
+    }
   });
 
   it("checkout and portal: a Stripe URL only, signed; owner and admin only", async () => {

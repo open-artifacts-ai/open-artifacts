@@ -5,7 +5,12 @@ import {
   R,
 } from "@oa/shared";
 import { z } from "zod";
-import { caller, capOfCaller, requireUser } from "../auth/authz.js";
+import {
+  caller,
+  capOfCaller,
+  interactiveSession,
+  requireUser,
+} from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import { monthOf, sendUsage } from "../billing/creators.js";
 import { billingOn } from "../billing/plan.js";
@@ -44,11 +49,17 @@ export const billingRetry = {
 const unavailable = () =>
   new ApiError("billing_unavailable", "Billing is unavailable; try again");
 
-/** Hosted, and the org owner or an admin (the plan cap included: they can always pay); else 404 (route hidden). */
+/**
+ * Hosted, the org owner or an admin (the plan cap included: they can always
+ * pay), in an interactive cookie session (a PAT, OAuth grant or MCP agent
+ * never opens Stripe or sends usage, whoever holds it, as erase and
+ * directory disconnect); else 404 (route hidden).
+ */
 function requireBillingManager(c: Parameters<typeof requireUser>[0]) {
   const user = requireUser(c);
   if (
     !billingOn(c.env) ||
+    !interactiveSession(c) ||
     !orgCan(user, "billing.manage", { cap: capOfCaller(caller(c)) })
   )
     throw new ApiError("not_found", "Not found");
