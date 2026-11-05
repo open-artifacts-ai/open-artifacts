@@ -5,8 +5,8 @@
 # check, unless all of these hold:
 #   - the tag is a published, non-draft, non-prerelease GitHub release;
 #   - the tag's commit is on main;
-#   - the release-please.yml push run for that commit concluded success, and in
-#     it verify-release, hosted-check and hosted-attach-<env> concluded success;
+#   - the release-please.yml push run for that commit exists, and in it every
+#     job the deploy depends on (REQUIRED below) completed with success;
 #   - the release has at least one oa-release-<env>-* asset.
 # An API or network error is a failure, never a pass.
 # Usage: scripts/ci/tag-passed-checks.sh staging|prod vX.Y.Z
@@ -49,14 +49,29 @@ case "$cmp" in identical | behind) ;; *) fail "$tag on main: $sha is not on main
 run="$(api "release-please run" "$R/actions/workflows/release-please.yml/runs?event=push&branch=main&head_sha=$sha&per_page=100" |
   jq -c --arg s "$sha" '[.workflow_runs[] | select(.head_sha == $s and .event == "push")] | sort_by(.created_at) | last // empty')"
 [ -n "$run" ] || fail "release-please run: no push run for $sha"
-[ "$(jq -r '.status' <<< "$run")" = completed ] || fail "release-please run: not completed"
-[ "$(jq -r '.conclusion' <<< "$run")" = success ] || fail "release-please run: concluded $(jq -r '.conclusion' <<< "$run")"
 run_id="$(jq -r '.id' <<< "$run")"
 [[ "$run_id" =~ ^[0-9]+$ ]] || fail "release-please run: bad id"
 
+# The jobs the deploy depends on. The run's own conclusion is deliberately not
+# required: pack-npm and publish-npm (npm packaging, #1455) are not a
+# dependency of the hosted deploy, so an npm auth hiccup there must not block
+# staging and prod releases (v0.122.0 was blocked that way). Each listed job
+# must be present exactly once, completed, and concluded success; missing,
+# skipped, cancelled, running or unknown statuses all block.
+REQUIRED=(
+  release-please
+  verify-release
+  hosted-guard
+  hosted-build
+  hosted-check
+  "hosted-sign-$env"
+  "hosted-attach-$env"
+)
 jobs="$(api "release-please jobs" "$R/actions/runs/$run_id/jobs?filter=latest&per_page=100")"
-for j in verify-release hosted-check "hosted-attach-$env"; do
-  got="$(jq -r --arg n "$j" '[.jobs[] | select(.name == $n) | .conclusion] | if length == 1 then .[0] else "missing" end' <<< "$jobs")"
+# One page of 100 must hold every job; otherwise a required job could hide on a later page.
+jq -e '(.total_count // -1) <= (.jobs | length)' > /dev/null <<< "$jobs" || fail "release-please jobs: more than one page of jobs"
+for j in "${REQUIRED[@]}"; do
+  got="$(jq -r --arg n "$j" '[.jobs[] | select(.name == $n)] | if length == 1 then (if .[0].status == "completed" then (.[0].conclusion // "unknown") else "not completed (" + (.[0].status // "unknown") + ")" end) else "missing" end' <<< "$jobs")"
   [ "$got" = success ] || fail "job $j: $got"
 done
 

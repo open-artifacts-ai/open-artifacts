@@ -55,10 +55,14 @@ const good = (): State => ({
     jobs: [
       "release-please",
       "verify-release",
+      "hosted-guard",
+      "hosted-build",
       "hosted-check",
+      "hosted-sign-staging",
+      "hosted-sign-prod",
       "hosted-attach-staging",
       "hosted-attach-prod",
-    ].map((name) => ({ name, conclusion: "success" })),
+    ].map((name) => ({ name, status: "completed", conclusion: "success" })),
   },
 });
 
@@ -94,7 +98,9 @@ const jobIs = (name: string, conclusion: string | null) =>
   // biome-ignore lint/suspicious/noExplicitAny: test fixtures
   edit((s: any) => {
     s.jobs.jobs = s.jobs.jobs.map((j: { name: string }) =>
-      j.name === name ? { name, conclusion } : j,
+      j.name === name
+        ? { name, status: conclusion === null ? "in_progress" : "completed", conclusion }
+        : j,
     );
   });
 
@@ -161,28 +167,6 @@ describe("tag-passed-checks.sh", () => {
       /no push run/,
     ],
     [
-      "run in progress",
-      edit((s) => (s.runs.workflow_runs[0].status = "in_progress")),
-      /not completed/,
-    ],
-    [
-      "run failed",
-      edit((s) => (s.runs.workflow_runs[0].conclusion = "failure")),
-      /concluded failure/,
-    ],
-    [
-      "latest run failed",
-      edit((s) =>
-        s.runs.workflow_runs.push({
-          ...s.runs.workflow_runs[0],
-          id: 42,
-          conclusion: "failure",
-          created_at: "2026-10-30T01:00:00Z",
-        }),
-      ),
-      /concluded failure/,
-    ],
-    [
       "runs error",
       edit((s) => delete s.runs),
       /release-please run: GitHub API error/,
@@ -201,6 +185,31 @@ describe("tag-passed-checks.sh", () => {
       "verify-release skipped",
       jobIs("verify-release", "skipped"),
       /job verify-release: skipped/,
+    ],
+    [
+      "required job still running",
+      jobIs("hosted-build", null),
+      /job hosted-build: not completed \(in_progress\)/,
+    ],
+    [
+      "required job cancelled",
+      jobIs("hosted-guard", "cancelled"),
+      /job hosted-guard: cancelled/,
+    ],
+    [
+      "release-please job failed",
+      jobIs("release-please", "failure"),
+      /job release-please: failure/,
+    ],
+    [
+      "hosted-sign-prod failed",
+      jobIs("hosted-sign-prod", "failure"),
+      /job hosted-sign-prod: failure/,
+    ],
+    [
+      "more jobs than one page",
+      edit((s) => (s.jobs.total_count = 150)),
+      /more than one page/,
     ],
     [
       "hosted-check failed",
@@ -249,6 +258,27 @@ describe("tag-passed-checks.sh", () => {
     expect(r.err).toMatch(/^release gate failed: /m);
     expect(r.err).toMatch(msg);
     expect(r.out).not.toContain("passed every check");
+  });
+
+  it("passes when only npm jobs failed, the v0.122.0 case", () => {
+    for (const run_ of [
+      { status: "completed", conclusion: "failure" },
+      { status: "in_progress", conclusion: null },
+    ]) {
+      const s = edit((x) => {
+        Object.assign(x.runs.workflow_runs[0], run_);
+        x.jobs.jobs.push(
+          { name: "pack-npm", status: "completed", conclusion: "success" },
+          { name: "publish-npm", status: "completed", conclusion: "failure" },
+          { name: "deploy-demo", status: "completed", conclusion: "skipped" },
+        );
+      });
+      for (const env of ["staging", "prod"]) {
+        const r = run(s, env);
+        expect(r.code, r.err).toBe(0);
+        expect(r.out).toContain("passed every check");
+      }
+    }
   });
 
   it("staging needs hosted-attach-staging, not prod's", () => {
