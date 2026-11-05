@@ -492,6 +492,31 @@ security find-generic-password -s oa-hosted-prod -a open-artifacts -w |
   gh secret set CLOUDFLARE_API_TOKEN --env hosted-prod-deploy -R open-artifacts-ai/open-artifacts
 ```
 
+## Cloudflare token naming (#933, #934)
+
+Every Cloudflare token is named `oa-<env>-<job>[-ro] · <where it lives>`:
+
+- `env`: `p` (prod), `s` (staging) or `x` (shared by both).
+- `job`: one word, one of `deploy`, `provisioner`, `ci`, `analytics`, `redline` or `access`.
+- `-ro` marks a read-only token.
+- `where it lives`: the place the value is stored, for example `gh:hosted-prod-deploy/CLOUDFLARE_API_TOKEN`, `gh:repo/ANALYTICS_TOKEN` or `worker:oa-p-provisioning`.
+
+Rules:
+
+- One token per env and job.
+- A replaced token is deleted the same day.
+- The name is the key in docs and checks. Refer to a token by its name, never by its value or a partial id.
+- The inventory page, https://artifacts.leourbina.com/a/rMUjEAVYEomA4kW7, is the source of truth. Update it on every change.
+
+To roll a token:
+
+1. Create the new token with the same permissions.
+2. Update every place the token lives.
+3. If `deploy_token_id` is pinned in `.github/hosted/<env>.json`, re-pin it in a PR merged before the next deploy.
+4. Run the job, or ping it, and confirm "Last used" moves on the new token.
+5. Delete the old token the same day.
+6. Update the inventory page.
+
 ## Hosted release files (T3b)
 
 - The stored record is `{ "record": "<canonicalJson(record)>", "signature": "<base64url>" }`. The signature covers `"oa-release-v1\n" + env + "\n" + record` (the exact string). Readers verify that string, parse it refusing duplicate keys (objects built with a null prototype), and require it to re-serialize byte for byte.
