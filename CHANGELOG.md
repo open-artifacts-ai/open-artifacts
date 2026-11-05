@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.124.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.123.0...v0.124.0) (2026-11-05)
+
+
+### Features
+
+* **skill:** render /skill.md for one harness ([#1456](https://github.com/open-artifacts-ai/open-artifacts/issues/1456)) ([#1481](https://github.com/open-artifacts-ai/open-artifacts/issues/1481)) ([938b49c](https://github.com/open-artifacts-ai/open-artifacts/commit/938b49c9c193383998a082b72013c1b03a1025e7))
+
 ## [0.123.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.122.0...v0.123.0) (2026-11-05)
 
 
