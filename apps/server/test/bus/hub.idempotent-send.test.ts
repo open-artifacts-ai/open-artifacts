@@ -483,6 +483,10 @@ describe("B14 idempotent send", () => {
     expect(SEND_KEYS_PER_AGENT).toBe(800);
     expect(SEND_KEYS_PER_AGENT).toBe(MAILBOX_PENDING_CAP * 4);
     const { s, t, sm, tm, n, sender, close } = await setup();
+    // The cap's behavior is the same at any size: a small one keeps the
+    // flood at 5x the cap fast.
+    const CAP = 50;
+    await inHub((i) => BusHub.setSendKeysPerAgentForTests(i, CAP));
     // The other agent keeps its own keys.
     for (let k = 0; k < 3; k++)
       await sendAndReceipt(t, send(`o${k}`, "rref", sender));
@@ -492,7 +496,7 @@ describe("B14 idempotent send", () => {
     // sink that acks every message, in waves under its inbox cap.
     const sink = uniq("Sink");
     await agent(t, "sink", sink, n);
-    const N = SEND_KEYS_PER_AGENT * 5;
+    const N = CAP * 5;
     const WAVE = LIMITS.inboxCap - 10;
 
     // Lift the frame budgets so the flood is not rate limited (a frozen
@@ -518,7 +522,7 @@ describe("B14 idempotent send", () => {
       await barrier(t);
     }
     const me = await agentId("sref", sm.id);
-    expect(await keysOf(me)).toBe(SEND_KEYS_PER_AGENT);
+    expect(await keysOf(me)).toBe(CAP);
     expect(await keysOf(other)).toBe(3);
     // The newest keys survive; the oldest was dropped and sends fresh.
     expect((await sendAndReceipt(s, send(`f${N}`, "sref", sink))).msg_id).toBe(
@@ -527,9 +531,10 @@ describe("B14 idempotent send", () => {
     const again = await sendAndReceipt(s, send(`f${WAVE - 1}`, "sref", sink));
     expect(again.state).toBe("pending");
     expect(again.msg_id).not.toBe(first?.msg_id);
-    expect(await keysOf(me)).toBe(SEND_KEYS_PER_AGENT);
+    expect(await keysOf(me)).toBe(CAP);
     expect(await keysOf(other)).toBe(3);
     allParse(s, t);
+    await inHub((i) => BusHub.setSendKeysPerAgentForTests(i, null));
     close();
-  }, 300_000);
+  });
 });

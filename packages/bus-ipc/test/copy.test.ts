@@ -41,7 +41,7 @@ describe("receipt copy", () => {
 
   it("pending and delivered", () => {
     expect(receiptText({ state: "pending" }, "oa-team-e0")).toBe(
-      "○  Queued for oa-team-e0. Not delivered yet; expires in 7 days.",
+      "○  Queued for oa-team-e0. Not delivered yet; expires within 7 days.",
     );
     expect(receiptText({ state: "delivered" }, "oa-team-e0")).toBe(
       "✓  Delivered to oa-team-e0.",

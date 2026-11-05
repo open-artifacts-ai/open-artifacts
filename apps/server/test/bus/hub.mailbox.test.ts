@@ -475,6 +475,129 @@ describe("lasting mailboxes (#1295 PR A)", () => {
     g.close();
   });
 
+  it("B2: a global and a non-global both away under one name are ambiguous too", async () => {
+    const t0 = base();
+    await setClock(t0);
+    const m1 = await machine("A");
+    const m2 = await machine("B");
+    const m3 = await machine("G");
+    const a = await connect(m1.token);
+    const b = await connect(m2.token);
+    const g = await connect(m3.token);
+    const name = uniq("Foo");
+    await reg(a, "fa", name, ns("a"));
+    b.send(up(id("u"), "fb", uniq("Glo"), ns("b"), true));
+    await waitFor(b, "agent_ok");
+    g.send(up(id("u"), "gs", uniq("Sender"), ns("g"), true));
+    await waitFor(g, "agent_ok");
+    await close(a, "fa");
+    await close(b, "fb");
+    // The API never lets both hold the name; seed the collision.
+    await inHub((_, st) => {
+      st.storage.sql.exec(
+        "update former_names set name = ?, lname = ? where kind = 'away' and agent_id = (select id from agents where native_ref = 'fb' order by rowid desc limit 1)",
+        name,
+        name.toLowerCase(),
+      );
+    });
+    expect(await send(g, "gs", name)).toMatchObject({
+      state: "refused",
+      reason: "ambiguous",
+    });
+    a.close();
+    b.close();
+    g.close();
+  });
+
+  it("B1: closed agents whose own sends are still pending never lock the machine out; other machines and live agents are untouched", async () => {
+    const t0 = base();
+    await setClock(t0);
+    const rm = await machine("Churn");
+    const lm = await machine("Leads");
+    const n = ns("lock");
+    const r = await connect(rm.token);
+    const l = await connect(lm.token);
+    const LEADS = 7;
+    const leads: string[] = [];
+    for (let k = 0; k < LEADS; k++)
+      leads.push(await reg(l, `lead${k}`, uniq("Lead"), n));
+    const live = await reg(r, "keeper", uniq("Keeper"), n);
+    for (let k = 0; k < LEADS; k++) await close(l, `lead${k}`);
+    const bystander = await reg(l, "bystander", uniq("By"), n);
+    const machineId = (
+      await sqlOf<{ m: string }>(
+        "select machine_id as m from agents where native_ref = 'keeper' order by rowid desc limit 1",
+      )
+    )[0]?.m as string;
+    await inHub(async (i, st) => {
+      for (const ws of st.getWebSockets(machineId))
+        BusHub.setFrameTokensForTests(i, ws, 1_000_000);
+    });
+    const CYCLES = CLOSED_AGENTS_PER_MACHINE + 20;
+    // One-shot sessions: each messages an away lead and closes.
+    for (let k = 0; k < CYCLES; k++) {
+      r.send(up(`ou${k}`, `shot_${k}`, "Shot", n));
+      r.send({
+        v: 1,
+        id: `os${k}`,
+        type: "send",
+        from_ref: `shot_${k}`,
+        to_name: leads[k % LEADS] as string,
+        body: "hi",
+      } as ClientFrame);
+      r.send({
+        v: 1,
+        id: `oc${k}`,
+        type: "sessions",
+        open: [],
+        closed: [`shot_${k}`],
+      });
+    }
+    let oks = 0;
+    let pend = 0;
+    while (oks < CYCLES || pend < CYCLES) {
+      const f = await r.next();
+      expect(f.type).not.toBe("error");
+      if (f.type === "agent_ok") oks++;
+      if (f.type === "receipt") {
+        expect(f.state).toBe("pending");
+        pend++;
+      }
+    }
+    r.send(up(id("u"), uniq("fresh"), uniq("Fresh"), n));
+    expect((await waitFor(r, "agent_ok")).type).toBe("agent_ok");
+    // Only this machine's closed rows went; its live agent and the other
+    // machine's agents are intact.
+    const count = (q: string) =>
+      sqlOf<{ n: number }>(q).then((x) => x[0]?.n as number);
+    expect(
+      await count(
+        `select count(*) as n from agents where machine_id = '${machineId}' and live = 0`,
+      ),
+    ).toBeLessThanOrEqual(CLOSED_AGENTS_PER_MACHINE);
+    expect(
+      await count(
+        "select count(*) as n from agents where native_ref = 'keeper' and live = 1",
+      ),
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      await count(
+        `select count(*) as n from agents where native_ref like 'lead%' and machine_id != '${machineId}' and live = 0`,
+      ),
+    ).toBeGreaterThanOrEqual(LEADS);
+    expect(live).toBeTruthy();
+    expect(bystander).toBeTruthy();
+    // The evicted senders' sends stay pending; their outcome later finds no
+    // sender row and must not throw.
+    await setClock(t0 + MAILBOX_RETAIN_MS + 1000);
+    const owed =
+      "select count(*) as n from receipts where state = 'pending' and from_name like 'Shot%'";
+    for (let k = 0; k < 60 && (await count(owed)) > 0; k++) await runAlarm();
+    expect(await count(owed)).toBe(0);
+    r.close();
+    l.close();
+  }, 120_000);
+
   it("a reopen under another name downgrades the old away row to the 1 h held", async () => {
     const t0 = base();
     const p = await pair(t0);

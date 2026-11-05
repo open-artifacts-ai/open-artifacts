@@ -57,7 +57,7 @@ const refusals: Record<
   // #1448: the sender cannot reinstall someone else's machine; no install hint.
   revoked: [
     "That agent's machine was revoked.",
-    "Run list_agents to see who is in this namespace.",
+    "Run the oa_bus list_agents tool to find who is live.",
   ],
   ambiguous: [
     (n) =>
@@ -105,7 +105,8 @@ export function receiptText(
   switch (r.state) {
     case "pending":
       return fitLine(
-        (v) => `○  Queued for ${v}. Not delivered yet; expires in ${RETAIN}.`,
+        (v) =>
+          `○  Queued for ${v}. Not delivered yet; expires within ${RETAIN}.`,
         to,
       );
     case "delivered":

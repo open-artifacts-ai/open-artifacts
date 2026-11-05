@@ -1762,9 +1762,8 @@ function awayAgent(
   );
   const first = rows[0];
   if (!first) return null;
-  // Two namespaces' agents away under one name: ambiguous, never a guess
-  // (a global's name is unique everywhere, so it wins).
-  if (rows.length > 1 && first.global !== 1) return refused("ambiguous");
+  // Two agents away under one name (a global's too): ambiguous, never a guess.
+  if (rows.length > 1) return refused("ambiguous");
   return { ok: true, agent: first };
 }
 
@@ -2402,8 +2401,8 @@ export const SEND_KEYS_PER_AGENT = MAILBOX_PENDING_CAP * 4;
  * limit: refused only when no key anywhere is final), else `rate_limited`.
  * #1295: a key of pending mail now lives up to MAILBOX_RETAIN_MS (7 d) and is
  * never evicted, so one hub-wide cap shared by every sender could lock all
- * of them out for a week. It is raised tenfold (a key row is ~200 bytes: 40
- * MB at the cap) instead of exempting away mail, which would leave the table
+ * of them out for a week. It is raised tenfold (a key row with its indexes is
+ * ~400-450 bytes: ~85 MB at the cap) instead of exempting away mail, which would leave the table
  * unbounded; the per-agent cap (800) still bounds each sender.
  */
 export const SEND_KEYS_TOTAL = 200_000;
@@ -2594,6 +2593,7 @@ export class BusHub extends DurableObject<Env> {
 
   /** The hub-wide send-key cap (SEND_KEYS_TOTAL; tests may lower it). */
   #sendKeysCap = SEND_KEYS_TOTAL;
+  #sendKeysPerAgent = SEND_KEYS_PER_AGENT;
   /**
    * Rows in send_keys, counted once on first need and then kept by every
    * insert and delete here (null: count again; the alarm sweep resets it).
@@ -2638,6 +2638,11 @@ export class BusHub extends DurableObject<Env> {
   static setSendKeysTotalForTests(hub: BusHub, cap: number | null): void {
     hub.#sendKeysCap = cap ?? SEND_KEYS_TOTAL;
     hub.#sendKeys = null;
+  }
+
+  /** Tests only (static, not RPC): the per-agent send-key cap (null: SEND_KEYS_PER_AGENT). */
+  static setSendKeysPerAgentForTests(hub: BusHub, cap: number | null): void {
+    hub.#sendKeysPerAgent = cap ?? SEND_KEYS_PER_AGENT;
   }
 
   /** Tests only (static, not RPC): the closed-agent cap check (#roomForClosed). */
@@ -3712,9 +3717,9 @@ export class BusHub extends DurableObject<Env> {
         sql,
         "select count(*) as n from (select 1 from send_keys where from_agent = ? limit ?)",
         agentId,
-        SEND_KEYS_PER_AGENT,
+        this.#sendKeysPerAgent,
       )?.n ?? 0;
-    if (n >= SEND_KEYS_PER_AGENT) {
+    if (n >= this.#sendKeysPerAgent) {
       const k = one<{ k: number }>(sql, AGENT_FINAL_KEY_SQL, agentId)?.k;
       if (k === undefined) return false;
       evict.add(k);
@@ -4029,20 +4034,24 @@ export class BusHub extends DurableObject<Env> {
     }
     // #1295: every close leaves an `away` reservation, so a machine closing
     // 1000 sessions in 7 days has no idle row. Evict the oldest away agent
-    // with no inbox, then (inbox must go) the oldest one whose pending mail
-    // expires as recipient_closed, senders told. The reservation goes with it.
-    const oldest = (inbox: string) =>
+    // of this machine: first one with no inbox and nothing owed as a sender,
+    // then one with an inbox (its pending mail expires as recipient_closed,
+    // senders told), then whatever its outbox holds. An evicted sender's
+    // pending sends stay pending; a later outcome finds no sender row
+    // (#tell) and is simply not delivered. The reservation goes with it.
+    const oldest = (inbox: boolean, outbox: boolean) =>
       one<{ rid: number; id: string }>(
         sql,
         `select a.rid, a.id from (select rowid as rid, id from agents indexed by agents_machine_closed
             where machine_id = ? and live = 0 order by updated_at, rowid limit ?) a
-          where ${inbox}${IDLE_OUTBOX_SQL} and ${AWAY_ROW_SQL} limit 1`,
+          where ${inbox ? `${IDLE_INBOX_SQL} and ` : ""}${outbox ? `${IDLE_OUTBOX_SQL} and ` : ""}${AWAY_ROW_SQL} limit 1`,
         machineId,
         CLOSED_AGENTS_PER_MACHINE,
-        this.#now() - SEND_KEY_RETAIN_MS,
+        ...(outbox ? [this.#now() - SEND_KEY_RETAIN_MS] : []),
         this.#now(),
       );
-    const away = oldest(`${IDLE_INBOX_SQL} and `) ?? oldest("");
+    const away =
+      oldest(true, true) ?? oldest(false, true) ?? oldest(false, false);
     if (!away) return false;
     for (;;) {
       const rows = all<{ id: string; fromAgent: string }>(

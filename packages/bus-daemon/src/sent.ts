@@ -247,8 +247,13 @@ export class SentStore {
         over--;
       }
     }
+    // What is left is all still owed: the oldest go, and the log says so.
+    const lost = over;
     for (; over > 0; over--)
       this.#all.delete(this.#all.keys().next().value as string);
+    this.#log?.(
+      `sent store full: evicted ${lost} undelivered ${lost === 1 ? "entry" : "entries"}; their outcomes will not reach the sender`,
+    );
   }
 
   #prune(): void {

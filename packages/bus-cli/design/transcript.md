@@ -337,7 +337,7 @@ Two honesty rules from the spec bind them:
    `other_namespace`, `revoked`, `ambiguous`.
 
 ```
-[[warning]]○[[/warning]]  Queued for oa-team-e0. Not delivered yet; expires in 7 days.
+[[warning]]○[[/warning]]  Queued for oa-team-e0. Not delivered yet; expires within 7 days.
 [[success]]✓[[/success]]  Delivered to oa-team-e0.
 [[danger]]×[[/danger]]  Expired: your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not taken within 7 days.
@@ -384,7 +384,7 @@ global agent sends to a name that exists in two or more namespaces:
 [[danger]]×[[/danger]]  Refused (revoked): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
    That agent's machine was revoked.
-   Run list_agents to see who is in this namespace.
+   Run the oa_bus list_agents tool to find who is live.
 [[danger]]×[[/danger]]  Refused (revoked): your message to oa-product,
    "Can you regenerate the API reference pag…", was not delivered.
    oa-product moved; try oa-product-2.

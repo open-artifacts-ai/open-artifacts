@@ -118,7 +118,7 @@ describe("opencode mcp tools", () => {
       sessionID: "ses_b",
     });
     expect(r.content[0]?.text).toBe(
-      "○  Queued for peer. Not delivered yet; expires in 7 days.",
+      "○  Queued for peer. Not delivered yet; expires within 7 days.",
     );
     expect(svc.resolve).toHaveBeenCalledOnce();
     expect(svc.resolve).toHaveBeenCalledWith("ses_a");
