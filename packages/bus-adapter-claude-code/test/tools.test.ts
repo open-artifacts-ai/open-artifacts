@@ -84,7 +84,7 @@ describe("claude mcp tools", () => {
       ),
     );
     expect(r.content[0].text).toBe(
-      '×  Refused (unknown_agent): your message to peer, "hi",\n   was not delivered.\n   No agent has that name here.\n   Run list_agents to see who is in this namespace.',
+      '×  Refused (unknown_agent): your message to peer, "hi",\n   was not delivered.\n   No agent has that name here.\n   Run the oa_bus list_agents tool to see who is in this namespace.',
     );
   });
 

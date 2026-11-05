@@ -106,7 +106,7 @@ const refusals: Record<
 > = {
   unknown_agent: [
     "No agent has that name here.",
-    "Run list_agents to see who is in this namespace.",
+    "Run the oa_bus list_agents tool to see who is in this namespace.",
   ],
   closed: [
     null,
@@ -124,9 +124,10 @@ const refusals: Record<
     "You can reach only agents in your namespace and global agents.",
     "Message an agent in this namespace, or a global agent.",
   ],
+  // #1448: the sender cannot reinstall someone else's machine; no install hint.
   revoked: [
     "That agent's machine was revoked.",
-    "Message another agent, or run npx @open-artifacts/bus install there.",
+    "Run list_agents to see who is in this namespace.",
   ],
   ambiguous: [
     (n) =>
@@ -136,7 +137,7 @@ const refusals: Record<
   // A reply's agent (to_id) no longer holds the name it wrote from.
   agent_gone: [
     "The agent you are answering is gone; another may hold its name now.",
-    "Run list_agents and message the agent you mean by name.",
+    "Run the oa_bus list_agents tool and message the agent you mean by name.",
   ],
 };
 
@@ -166,6 +167,7 @@ function receiptText(
   sentTo: string,
   namespaces?: number,
   excerpt?: string,
+  movedTo?: string,
 ): string {
   const quote = excerpt ? `"${excerpt}"` : undefined;
   const to = sentTo;
@@ -189,9 +191,16 @@ function receiptText(
     default: {
       const copy = r.reason ? refusals[r.reason] : undefined;
       const label = r.reason ? `Refused (${r.reason})` : "Refused";
-      const [detail, hint] = copy ?? [null, "Message another agent."];
+      const moved = r.reason === "revoked" ? movedTo : undefined;
+      const [detail, hint] = moved
+        ? [null, null]
+        : (copy ?? [null, "Message another agent."]);
       const said = (v: string) =>
-        typeof detail === "function" ? detail(namespaces, v) : detail;
+        moved
+          ? `${v} moved; try ${moved}.`
+          : typeof detail === "function"
+            ? detail(namespaces, v)
+            : detail;
       const lines = (v: string) =>
         [
           quote
@@ -202,11 +211,33 @@ function receiptText(
               )
             : `×  ${label}: your message to ${v} was not delivered.`,
           ...(said(v) ? [`   ${said(v)}`] : []),
-          `   ${hint}`,
+          ...(hint ? [`   ${hint}`] : []),
         ].join("\n");
       return fitLine(lines, to);
     }
   }
+}
+
+/**
+ * #1448: for a send refused `revoked`, the live name `to` most likely moved
+ * to: `<to>-N` among `names` (the sender's roster), the lowest N, ignoring
+ * case; undefined when none.
+ */
+function movedName(to: string, names: readonly string[]): string | undefined {
+  const base = `${to.toLowerCase()}-`;
+  let best: string | undefined;
+  let bestN = Number.POSITIVE_INFINITY;
+  for (const name of names) {
+    const l = name.toLowerCase();
+    if (!l.startsWith(base)) continue;
+    const tail = l.slice(base.length);
+    if (!/^[0-9]+$/.test(tail)) continue;
+    if (Number(tail) < bestN) {
+      bestN = Number(tail);
+      best = name;
+    }
+  }
+  return best;
 }
 
 const TERMINAL_CONTROLS = new RegExp(
@@ -435,6 +466,7 @@ export const copy = {
   rosterLine,
   selfText,
   receiptText,
+  movedName,
   excerptOf,
   stripTerminalControls,
   neutralizeBody,
@@ -443,19 +475,23 @@ export const copy = {
   oversizedText,
 };
 
-// --- Tools: the MCP tools' names, descriptions and JSON Schemas.
+// --- Tools: the MCP tools' descriptions and JSON Schemas. Names carry an
+// `oabus_` prefix: Pi and omp refuse to start when two extensions register one
+// name, and the OpenBus extension registers the bare ones. Not `oa_bus_`: their
+// fallback MCP client names an imported tool `<server>_<tool>`, so the oa_bus
+// server's tools would arrive as `oa_bus_*` and clash silently (#1448).
 
 const none = { type: "object", properties: {}, additionalProperties: false };
 const TOOLS = [
   {
-    name: "list_agents",
+    name: "oabus_list_agents",
     label: "Open Artifacts bus: list agents",
     description:
       "List the agents you can message, in your Open Artifacts bus namespace.",
     parameters: none,
   },
   {
-    name: "send_message",
+    name: "oabus_send_message",
     label: "Open Artifacts bus: send message",
     description: "Send a message to another agent by name.",
     parameters: {
@@ -474,7 +510,7 @@ const TOOLS = [
     },
   },
   {
-    name: "fetch",
+    name: "oabus_fetch",
     label: "Open Artifacts bus: fetch message",
     description: "Fetch the full body of an oversized message by id.",
     parameters: {
@@ -485,14 +521,14 @@ const TOOLS = [
     },
   },
   {
-    name: "self",
+    name: "oabus_self",
     label: "Open Artifacts bus: who am I",
     description:
       "Your own Open Artifacts bus agent entry and bus name. To become global, ask the user to approve running `npx @open-artifacts/bus global add <your start dir>`, then restart.",
     parameters: none,
   },
   {
-    name: "set_status",
+    name: "oabus_set_status",
     label: "Open Artifacts bus: set status",
     description:
       "Tell the user what you are doing: working, idle, blocked, or waiting_on_owner (waiting on the user), with an optional short label. The user sees it labelled as your own report.",
@@ -979,7 +1015,7 @@ export default function oaBus(pi: Pi): void {
 
   /** The sender is the session's attested link; a `from` argument is never read. */
   const run = async (name: string, args: Json, link: Link): Promise<string> => {
-    if (name === "list_agents") {
+    if (name === "oabus_list_agents") {
       const r = await link.request({ type: "list" });
       if (r.type !== "roster") failed(r);
       const agents = (r.agents ?? []) as Json[];
@@ -1002,7 +1038,7 @@ export default function oaBus(pi: Pi): void {
             .join("\n")
         : "No agents in your namespace.";
     }
-    if (name === "send_message") {
+    if (name === "oabus_send_message") {
       const to = String(args.to ?? "");
       const body = String(args.text ?? "");
       if (!to || !body) throw new Error("oa-bus: to and text are required");
@@ -1027,12 +1063,16 @@ export default function oaBus(pi: Pi): void {
         receipt.reason === "ambiguous"
           ? await namespacesOf(to, link)
           : undefined;
-      const out = receiptText(receipt, to, n, excerptOf(body));
+      const moved =
+        receipt.reason === "revoked"
+          ? await movedTo(to, namespace, link)
+          : undefined;
+      const out = receiptText(receipt, to, n, excerptOf(body), moved);
       if (receipt.state === "refused" || receipt.state === "expired")
         throw new Error(out);
       return out;
     }
-    if (name === "fetch") {
+    if (name === "oabus_fetch") {
       const r = await link.request({
         type: "fetch",
         msg_id: String(args.msg_id ?? ""),
@@ -1041,7 +1081,7 @@ export default function oaBus(pi: Pi): void {
       // A peer's text, like a delivered body; the daemon strips it too.
       return stripTerminalControls(String(r.body));
     }
-    if (name === "set_status") return statusTool(args, link);
+    if (name === "oabus_set_status") return statusTool(args, link);
     const r = await link.request({ type: "self", row: true });
     if (r.type !== "agent") failed(r);
     return selfText((r.agent ?? null) as Json | null);
@@ -1119,6 +1159,30 @@ export default function oaBus(pi: Pi): void {
         }
       },
     });
+}
+
+/**
+ * #1448: the live `<name>-N` a revoked name moved to, in `namespace` when the
+ * send named one; undefined when none or the roster is unavailable.
+ */
+async function movedTo(
+  name: string,
+  namespace: string | undefined,
+  link: Link,
+): Promise<string | undefined> {
+  try {
+    const r = await link.request({ type: "list" });
+    if (r.type !== "roster") return undefined;
+    const agents = (r.agents ?? []) as Json[];
+    return movedName(
+      name,
+      agents
+        .filter((a) => namespace === undefined || a.namespace === namespace)
+        .map((a) => String(a.name)),
+    );
+  } catch {
+    return undefined;
+  }
 }
 
 /** How many namespaces hold `name`; undefined when the roster is unavailable. */

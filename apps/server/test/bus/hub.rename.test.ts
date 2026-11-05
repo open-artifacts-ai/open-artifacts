@@ -556,7 +556,7 @@ describe("rename (R393b)", () => {
     d.close();
   });
 
-  it("close keeps chosen former names reserved and holds the current name (agent_down, sessions, revoke; OpenBus #451)", async () => {
+  it("close keeps chosen former names reserved and holds the current name (agent_down, sessions; OpenBus #451); a revoke frees both (#1448)", async () => {
     const d = await at();
     const n = ns("rn");
     await reg(d, "s", uniq("Sender"), n);
@@ -595,9 +595,9 @@ describe("rename (R393b)", () => {
     const c2 = uniq("Revoked2");
     await renamed(v, "rv", c2);
     expect(await (await hubOf()).revokeMachine(m.id)).toBe(true);
-    expect(await reg(d, "z", c, n)).toBe(`${c}-2`);
-    expect(await reg(d, "z2", c2, n)).toBe(`${c2}-2`);
-    expect(await formerRows(c2)).toEqual([c]);
+    expect(await reg(d, "z", c, n)).toBe(c);
+    expect(await reg(d, "z2", c2, n)).toBe(c2);
+    expect(await formerRows(c2)).toEqual([]);
     d.close();
   });
 
@@ -1906,19 +1906,19 @@ describe("OpenBus #451 review of 35017e2", () => {
 });
 
 describe("OpenBus #451: a session leaving a namespace holds its name there for 1 h", () => {
-  for (const how of ["agent_down", "sessions", "revoke"] as const)
-    it(`a close by ${how}: a stranger gets -2; mail is refused (revoke) or queued (close); then the name is free`, async () => {
+  // #1448: a revoke holds nothing (its own describe below).
+  for (const how of ["agent_down", "sessions"] as const)
+    it(`a close by ${how}: a stranger gets -2; mail is queued for the away agent; then the name is free`, async () => {
       const t0 = Date.now() + 100 * GRACE + seq * 1000;
       await setClock(t0);
       const d = await at();
       const n = ns("lv");
       await reg(d, "s", uniq("Sender"), n);
-      const v = how === "revoke" ? await at() : d;
       const mine = uniq("Mine");
-      await reg(v, "a", mine, n);
+      await reg(d, "a", mine, n);
       if (how === "agent_down")
         d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
-      else if (how === "sessions")
+      else
         d.send({
           v: 1,
           id: id("c"),
@@ -1926,43 +1926,21 @@ describe("OpenBus #451: a session leaving a namespace holds its name there for 1
           open: [],
           closed: ["a"],
         });
-      else {
-        const mid = await inHub(
-          (_, st) =>
-            st.storage.sql
-              .exec("select machine_id as m from agents where name = ?", mine)
-              .one().m as string,
-        );
-        expect(await (await hubOf()).revokeMachine(mid)).toBe(true);
-      }
       expect(await reg(d, "x", mine, n)).toBe(`${mine}-2`);
-      // Never delivered to the stranger. A revoke refuses; a plain close
-      // (#1295) reserves the name as `away` and queues the mail for its agent.
-      if (how === "revoke") {
-        expect(await send(d, "s", mine)).toMatchObject({
-          state: "refused",
-          reason: "revoked",
-        });
-        expect(await holds(mine)).toEqual([`${n}/0`]);
-        // The alarm purges the hold at the hour; then the name is free.
-        await setClock(t0 + GRACE);
-        await alarmsUntil(async () => (await holds(mine)).length === 0);
-        expect(await holds(mine)).toEqual([]);
-      } else {
-        expect((await send(d, "s", mine)).state).toBe("pending");
-        expect(await holds(mine)).toEqual([]);
-        expect(await aways(mine)).toEqual([`${n}/0`]);
-        // Still reserved past the hour; free once the 7 d reservation ends.
-        await setClock(t0 + GRACE + 1);
-        await runDurableObjectAlarm(await hubOf());
-        expect(await aways(mine)).toEqual([`${n}/0`]);
-        await setClock(t0 + MAILBOX_RETAIN_MS);
-        await alarmsUntil(async () => (await aways(mine)).length === 0);
-        expect(await aways(mine)).toEqual([]);
-      }
+      // Never delivered to the stranger: a plain close (#1295) reserves the
+      // name as `away` and queues the mail for its agent.
+      expect((await send(d, "s", mine)).state).toBe("pending");
+      expect(await holds(mine)).toEqual([]);
+      expect(await aways(mine)).toEqual([`${n}/0`]);
+      // Still reserved past the hour; free once the 7 d reservation ends.
+      await setClock(t0 + GRACE + 1);
+      await runDurableObjectAlarm(await hubOf());
+      expect(await aways(mine)).toEqual([`${n}/0`]);
+      await setClock(t0 + MAILBOX_RETAIN_MS);
+      await alarmsUntil(async () => (await aways(mine)).length === 0);
+      expect(await aways(mine)).toEqual([]);
       expect(await reg(d, "y", mine, n)).toBe(mine);
       d.close();
-      if (v !== d) v.close();
     });
 
   it("a close arms the alarm for the reservation's end", async () => {
@@ -2258,5 +2236,96 @@ describe("OpenBus #451: a session leaving a namespace holds its name there for 1
     for (const s of spaces)
       expect(await reg(d, id("x"), mine, s)).toBe(`${mine}-2`);
     d.close();
+  });
+});
+
+describe("#1448: revoking a machine frees every name its agents held or reserved", () => {
+  /** A daemon (with BUS_CAPS.rename) on a new machine, and that machine. */
+  async function onMachine(label: string) {
+    const m = await machine(label);
+    const d = await daemon(m.token);
+    d.send({
+      v: 1,
+      id: id("h"),
+      type: "hello",
+      machine_label: label,
+      client_version: "0.0.0",
+      caps: [BUS_CAPS.rename],
+    });
+    await waitFor(d, "hello_ok");
+    return { m, d };
+  }
+
+  it("a re-approved machine gets the plain names; another machine's live and held names stay taken", async () => {
+    const t0 = Date.now() + 200 * GRACE + seq * 1000;
+    await setClock(t0);
+    const n = ns("rv");
+    const n2 = ns("rv");
+    // C: another machine, never revoked. One live agent, one that left.
+    const c = await onMachine("Other");
+    await reg(c.d, "s", uniq("Sender"), n);
+    const live = uniq("Live");
+    await reg(c.d, "k", live, n);
+    const left = uniq("Left");
+    await reg(c.d, "h", left, n);
+    c.d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "h" });
+
+    // A: the machine to revoke, with every way a name is held or reserved.
+    const a = await onMachine("Rehearsal");
+    const open = uniq("OA Backend");
+    expect(await reg(a.d, "o", open, n)).toBe(open);
+    const closed = uniq("OA Frontend");
+    expect(await reg(a.d, "f", closed, n)).toBe(closed);
+    a.d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "f" });
+    const before = uniq("OA Design");
+    expect(await reg(a.d, "r", before, n)).toBe(before);
+    const after = uniq("OA Design2");
+    await renamed(a.d, "r", after);
+    const glob = uniq("OA Manager");
+    expect(await reg(a.d, "g", glob, n, { global: true })).toBe(glob);
+    const elsewhere = uniq("OA Platform");
+    expect(await reg(a.d, "e", elsewhere, n2)).toBe(elsewhere);
+    expect(await reg(a.d, "x", live, n)).toBe(`${live}-2`);
+
+    const reserved = () =>
+      inHub(
+        (_, st) =>
+          st.storage.sql
+            .exec<{ n: number }>(
+              "select count(*) as n from former_names f join agents a on a.id = f.agent_id where a.machine_id = ?",
+              a.m.id,
+            )
+            .one().n,
+      );
+    // Held (closed, and the revoke's own closes) and chosen rows existed.
+    expect(await reserved()).toBeGreaterThan(0);
+    expect(await (await hubOf()).revokeMachine(a.m.id)).toBe(true);
+    expect(await reserved()).toBe(0);
+    // No live agent has the name: the revoked one's own refusal.
+    expect(await send(c.d, "s", open)).toMatchObject({
+      state: "refused",
+      reason: "revoked",
+    });
+
+    // B: the same workstation re-approved, still inside the hour.
+    const b = await onMachine("Workstation");
+    expect(await reg(b.d, "o", open, n)).toBe(open);
+    expect(await reg(b.d, "f", closed, n)).toBe(closed);
+    expect(await reg(b.d, "r", before, n)).toBe(before);
+    expect(await reg(b.d, "r2", after, n)).toBe(after);
+    expect(await reg(b.d, "g", glob, n, { global: true })).toBe(glob);
+    expect(await reg(b.d, "e", elsewhere, n2)).toBe(elsewhere);
+    // C is not revoked: its live name and its 1 h hold still protect.
+    expect(await reg(b.d, "x", live, n)).toBe(`${live}-2`);
+    expect(await reg(b.d, "y", left, n)).toBe(`${left}-2`);
+    // (#1295: a plain close reserves as `away`, for 7 d.)
+    expect(await aways(left)).toEqual([`${n}/0`]);
+    // Mail to the freed name reaches its new holder.
+    const rc = await send(c.d, "s", open);
+    expect(rc.state).toBe("pending");
+    expect((await delivered(b.d, rc.msg_id)).to_ref).toBe("o");
+    a.d.close();
+    b.d.close();
+    c.d.close();
   });
 });

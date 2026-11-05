@@ -57,9 +57,13 @@
       "git -C * push *": "allow",
       "git fetch *": "allow",
       "git switch *": "allow",
+      "git worktree remove -- *": "allow",
       "pnpm exec vitest *": "allow",
       "pnpm -s typecheck": "allow",
       "pnpm lint *": "allow",
+      "pnpm run gen": "allow",
+      "pnpm -C apps/server run gen": "allow",
+      "pnpm --filter @oa/shared build": "allow",
       "gh run rerun*": "ask",
       "gh api *-f*": "ask",
       "gh api *-F*": "ask",
@@ -523,6 +527,22 @@
       "git -C * push*--e*": {
         "action": "deny",
         "reason": "Git options that run a program need your human: ask them with the exact command."
+      },
+      "git worktree remove*--force*": {
+        "action": "deny",
+        "reason": "Forcing a worktree removal can drop uncommitted work: commit and push first, then remove without --force, or ask your human."
+      },
+      "git worktree remove* -f*": {
+        "action": "deny",
+        "reason": "Forcing a worktree removal can drop uncommitted work: commit and push first, then remove without --force, or ask your human."
+      },
+      "git -C * worktree remove*--force*": {
+        "action": "deny",
+        "reason": "Forcing a worktree removal can drop uncommitted work: commit and push first, then remove without --force, or ask your human."
+      },
+      "git -C * worktree remove* -f*": {
+        "action": "deny",
+        "reason": "Forcing a worktree removal can drop uncommitted work: commit and push first, then remove without --force, or ask your human."
       }
     },
     "mcp": {

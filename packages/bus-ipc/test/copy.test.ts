@@ -4,6 +4,7 @@ import {
   displayKind,
   excerptOf,
   lateDeliveredText,
+  movedName,
   receiptText,
   unconfirmedText,
 } from "../src/copy.ts";
@@ -60,11 +61,34 @@ describe("receipt copy", () => {
       t("refused", "too_large"),
       t("refused", "other_namespace"),
       t("refused", "revoked"),
+      receiptText(
+        { state: "refused", reason: "revoked" },
+        "oa-product",
+        undefined,
+        Q,
+        "oa-product-2",
+      ),
       t("refused", "ambiguous", 2, "docs-writer"),
       lateDeliveredText("oa-team-e0", Q),
       unconfirmedText("oa-team-e0", Q),
     ];
     expect(got).toEqual(want);
+  });
+
+  it("#1448: a revoked name points at its live <name>-N, never the reinstall hint", () => {
+    const roster = ["OA Product-3", "oa product-2", "OA Product-2x", "Other"];
+    expect(movedName("OA Product", roster)).toBe("oa product-2");
+    expect(movedName("OA Product", ["OA Productive-2"])).toBeUndefined();
+    const s = receiptText(
+      { state: "refused", reason: "revoked" },
+      "OA Product",
+      undefined,
+      undefined,
+      "OA Product-2",
+    );
+    expect(s).toContain("OA Product moved; try OA Product-2.");
+    expect(t("refused", "revoked")).not.toContain("install");
+    expect(s).not.toContain("install");
   });
 
   it("an expired notice moves the quote down when line 1 would pass 80 columns", () => {

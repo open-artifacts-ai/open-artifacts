@@ -577,6 +577,58 @@ describe("lasting mailboxes (#1295 PR A)", () => {
     p.snd.close();
   });
 
+  it("S1: revoking the machine of an away agent expires its pending mail revoked and frees its name at once", async () => {
+    const t0 = base();
+    const p = await pair(t0);
+    const machineId = (
+      await sqlOf<{ m: string }>(
+        "select machine_id as m from agents where native_ref = ?",
+        p.ref,
+      )
+    )[0]?.m as string;
+    await close(p.rcv, p.ref);
+    const r = await send(p.snd, "snd", p.name, "for the revoked");
+    expect(r.state).toBe("pending");
+    expect(
+      (
+        await sqlOf<{ n: number }>(
+          "select count(*) as n from former_names where kind = 'away' and name = ?",
+          p.name,
+        )
+      )[0]?.n,
+    ).toBe(1);
+    expect(await (await hubOf()).revokeMachine(machineId)).toBe(true);
+    const u = await waitFor(p.snd, "receipt_update");
+    // The wire says recipient_closed for a revoked recipient; the row keeps
+    // `revoked` for audit.
+    expect(u).toMatchObject({
+      msg_id: r.msg_id,
+      state: "expired",
+      reason: "recipient_closed",
+    });
+    expect(
+      (
+        await sqlOf<{ reason: string }>(
+          "select reason from receipts where id = ?",
+          r.msg_id,
+        )
+      )[0]?.reason,
+    ).toBe("revoked");
+    expect(
+      (
+        await sqlOf<{ n: number }>(
+          "select count(*) as n from former_names where name = ?",
+          p.name,
+        )
+      )[0]?.n,
+    ).toBe(0);
+    const om = await machine("Other");
+    const o = await connect(om.token);
+    expect(await reg(o, uniq("o"), p.name, p.n)).toBe(p.name);
+    o.close();
+    p.snd.close();
+  });
+
   it("live agents get the 7 d TTL", async () => {
     const t0 = base();
     const p = await pair(t0);

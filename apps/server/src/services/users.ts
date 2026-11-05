@@ -9,6 +9,7 @@ import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
+import { publicName } from "./agent-display.js";
 import { signInAuditByEmail } from "./audit.js";
 
 type UserRow = typeof users.$inferSelect;
@@ -29,7 +30,9 @@ export function effectiveName(u: NameFields): string {
 
 /**
  * A UserRef for `caller`: anonymous callers get no email, and so no email
- * fallback for the name either (null when the user has no real name).
+ * fallback for the name either (null when the user has no real name). Their
+ * name also passes publicName (#851's rule, #1107): a stored name or display
+ * name containing "@" (an IdP that sent the address as the name) is null.
  */
 export function toUserRef(
   u: NameFields & { id: string },
@@ -40,7 +43,7 @@ export function toUserRef(
     : {
         id: u.id,
         email: null,
-        name: u.displayName || idpName(u.name, u.email),
+        name: publicName({ name: u.displayName || idpName(u.name, u.email) }),
       };
 }
 

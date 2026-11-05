@@ -611,8 +611,8 @@ function registeredAgent(
  * OpenBus #451: a former name's scope is the one it was left in (former_names
  * namespace, global), not its agent's current one, so a move or flip keeps
  * it reserved where it was (formerReservedSql, shared with putRole). A
- * `held` row (a name an agent left a scope under: close, revoke, move or
- * flip) is taken the same way, and so is a chosen row of a closed agent:
+ * `held` row (a name an agent left a scope under: close, move or flip; a
+ * revoke frees them, #1448) is taken the same way, and so is a chosen row of a closed agent:
  * both reserve whether or not the agent is live.
  * #1296: a role address in that scope is taken too (a role in the
  * namespace; for a global, a role in any namespace), vacant or not.
@@ -669,20 +669,19 @@ const FORMER_PURGE_SQL =
   "delete from former_names where rowid in (select rowid from former_names indexed by former_names_due where expires_at <= ? limit ?) returning rowid";
 
 /**
- * OpenBus #451 (user decision 2026-11-04): a closed or revoked agent leaves
- * its scope. Its current name is held there (holdNames) and its chosen
- * former names in grace stay reserved, both resolving to no one while it is
- * closed (liveFormer needs a live agent); its default former names go, as
- * on a move. Call after the agents rows are closed (their name and scope
- * are read). The rename log goes only on a revoke (`revoked`): OpenBus
- * #446, a close keeps it, so a reopen (the same agent id) is still limited,
- * and the alarm purges it by the rolling hour. Returns the holds' end, for
+ * OpenBus #451 (user decision 2026-11-04): a closed agent leaves its scope.
+ * Its current name is held there (holdNames) and its chosen former names in
+ * grace stay reserved, both resolving to no one while it is closed
+ * (liveFormer needs a live agent); its default former names go, as on a
+ * move. Call after the agents rows are closed (their name and scope are
+ * read). OpenBus #446: a close keeps the rename log, so a reopen (the same
+ * agent id) is still limited, and the alarm purges it by the rolling hour.
+ * A revoke holds nothing (releaseMachineNames). Returns the holds' end, for
  * the alarm, or null for no agents.
  */
 function leaveNames(
   sql: SqlStorage,
   agentIds: string[],
-  revoked: boolean,
   now: number,
 ): number | null {
   if (agentIds.length === 0) return null;
@@ -692,18 +691,10 @@ function leaveNames(
     ids,
     now,
   );
-  // TODO(#1450): when releaseMachineNames lands, it must include `away`
-  // rows and return the machine's away agent ids, so revokeMachine drains
-  // their pending mail as `revoked`. A revoke closes only live agents here;
-  // an agent that was already away keeps its row until it expires.
-  if (revoked)
-    sql.exec(
-      "delete from rename_rl where agent_id in (select value from json_each(?))",
-      ids,
-    );
-  // #1295: a plain close reserves the name for MAILBOX_RETAIN_MS (`away`);
-  // a revoke keeps the 1 h `held`.
-  return revoked ? holdNames(sql, ids, now) : awayNames(sql, ids, now);
+  // #1295: a close reserves the name for MAILBOX_RETAIN_MS (`away`), not the
+  // 1 h `held` a move or flip leaves. A revoke holds nothing
+  // (releaseMachineNames).
+  return awayNames(sql, ids, now);
 }
 
 /**
@@ -740,6 +731,74 @@ function awayNames(sql: SqlStorage, ids: string, now: number): number | null {
       ids,
     )?.t ?? null
   );
+}
+
+/**
+ * #1448: a revoked machine's agents never come back (a re-approved
+ * workstation is a new machine with new agent ids), so the revoke frees
+ * every name they hold or reserve at once: the held names of agents closed
+ * before or by the revoke, and their chosen, default and (#1295) `away`
+ * former names, in every scope. A re-approved machine, or anyone, then gets
+ * the plain names; agents of other machines keep theirs. Minted names stay
+ * minted (OpenBus #446: never handed to another agent). The rename log of
+ * the agents the revoke closed (`closedIds`) goes too.
+ *
+ * #1295: returns the ids of the machine's agents that were away (closed
+ * with a reservation still running): they can still hold pending mail, so
+ * revokeMachine adds them to its drain, which expires that mail `revoked`.
+ *
+ * Bounded (M2): never walks more than the machine's closed agents
+ * (agents_machine_closed, at most CLOSED_AGENTS_PER_MACHINE). The agents the
+ * revoke closed lose every row by former_names_agent (at most
+ * maxAgentsPerMachine agents). Other agents closed before it can block a
+ * name only through a held or chosen row still in its grace, found from
+ * former_names_due (rows unexpired now: bounded by the last hour's renames
+ * and closes, not by history), each checked against its agent by primary
+ * key. Expired rows reserve nothing; the alarm purges them.
+ */
+function releaseMachineNames(
+  sql: SqlStorage,
+  machineId: string,
+  closedIds: string[],
+  now: number,
+): string[] {
+  if (closedIds.length > 0) {
+    const ids = JSON.stringify(closedIds);
+    sql.exec(
+      "delete from former_names where agent_id in (select value from json_each(?))",
+      ids,
+    );
+    sql.exec(
+      "delete from rename_rl where agent_id in (select value from json_each(?))",
+      ids,
+    );
+  }
+  const away = all<{ id: string }>(
+    sql,
+    `select distinct f.agent_id as id
+       from (select id from agents indexed by agents_machine_closed
+              where machine_id = ? and live = 0 limit ?) a
+       join former_names f indexed by former_names_agent on f.agent_id = a.id
+      where f.kind = 'away' and f.expires_at > ?`,
+    machineId,
+    CLOSED_AGENTS_PER_MACHINE,
+    now,
+  ).map((r) => r.id);
+  if (away.length > 0)
+    sql.exec(
+      "delete from former_names where kind = 'away' and agent_id in (select value from json_each(?))",
+      JSON.stringify(away),
+    );
+  sql.exec(
+    `delete from former_names where rowid in
+       (select f.rowid from former_names f indexed by former_names_due
+          join agents a on a.id = f.agent_id
+         where f.expires_at > ? and f.kind in ('chosen', 'held')
+           and a.machine_id = ?)`,
+    now,
+    machineId,
+  );
+  return away;
 }
 
 /**
@@ -2866,9 +2925,9 @@ export class BusHub extends DurableObject<Env> {
     // The roster change is read while the agents are still open.
     const change = machineChange(sql, id);
     // M2: the drain walks the agents open at the revoke (agents_machine, at
-    // most maxAgentsPerMachine), never the machine's closed history. A
-    // closed agent's leftover mail is the close drain's (#closeSessions
-    // queued it at its close), so only these can still receive.
+    // most maxAgentsPerMachine) and, #1295, the machine's away agents
+    // (releaseMachineNames: closed with their pending mail kept, at most
+    // CLOSED_AGENTS_PER_MACHINE), never the rest of its closed history.
     const ids = sql
       .exec(
         `update agents set live = 0, last_name = name, updated_at = ?, ${STATUS_CLEAR} where machine_id = ? and live = 1 returning id`,
@@ -2877,8 +2936,10 @@ export class BusHub extends DurableObject<Env> {
       )
       .toArray()
       .map((r) => String(r.id));
-    const heldTo = leaveNames(sql, ids, true, now);
-    if (heldTo !== null) this.#arm(heldTo);
+    // #1448: nothing is held; every name its agents held or reserved is free.
+    // #1295: agents already away hold mail too; the drain below expires it
+    // `revoked`, and their reservations go with the names.
+    ids.push(...releaseMachineNames(sql, id, ids, now));
     sql.exec(
       "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do nothing",
       OWNER_ORG_ID,
@@ -3872,7 +3933,7 @@ export class BusHub extends DurableObject<Env> {
     const closedAt = this.#now();
     // OpenBus #451, #1295: their names are reserved where they were left
     // (`away`), for MAILBOX_RETAIN_MS after the agent went away.
-    const heldTo = leaveNames(sql, agentIds, false, closedAt);
+    const heldTo = leaveNames(sql, agentIds, closedAt);
     if (heldTo !== null) this.#arm(heldTo);
     if (capMail) {
       const ids = JSON.stringify(agentIds);
