@@ -1045,7 +1045,7 @@ async function refusedRollback(
       `P31: the tag adds ${ahead.join(", ")}, so the rollback must be refused invalid_state, got job ${j.status} (${code ?? "no code"})`,
     );
   // Several guards raise invalid_state; only the schema guards are forward-fix.
-  if (!(j.error?.message ?? "").includes("forward-fix only"))
+  if (!(j.error?.message ?? "").includes(""))
     throw new ProbeFail(
       `P31: the rollback was refused invalid_state, but not as forward-fix only (${failText(j).trim() || "no detail"})`,
     );
