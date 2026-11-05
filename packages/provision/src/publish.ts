@@ -479,7 +479,7 @@ export async function publishFloor(o: {
   try {
     if (!(o.floor instanceof Uint8Array) || o.floor.length > SMALL_MAX)
       throw new Error("no floor bytes");
-    next = openFloor(parseStored(o.floor), fresh, env);
+    next = openFloor(parseStored(o.floor), pubkey, env);
   } catch (e) {
     throw new PublishRefused(`the new ${env} floor: ${(e as Error).message}`);
   }
