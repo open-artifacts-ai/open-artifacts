@@ -31,9 +31,11 @@ import { utf8Decoder } from "../util/text.js";
 import type { AppType } from "./index.js";
 
 // Comments on any artifact (#682, part 1): REST over the artifact's DO.
-// The policy table is the floor (open access; sign in for writes unless the
-// artifact lets anonymous visitors write data); the handlers add the embed
-// refusal, comments_off and who may edit or delete.
+// The policy table is the floor (open access; writes by anyone who can open
+// the artifact, a signed-out visitor on any public artifact, never a capped
+// caller); the handlers add the embed refusal, comments_off, the per-IP limit
+// on every signed-out write (post, reply, status, edit, delete) and who may
+// edit or delete.
 
 const ART = "/api/v1/artifacts/:id";
 const COMMENTS = `${ART}/comments`;
@@ -223,10 +225,11 @@ export function mountComments(app: AppType): void {
     if (!who) {
       // A guest with no token still resolves, as "Guest" (me false), against
       // the per-IP limit.
-      const key = ipKey(c.req.header("cf-connecting-ip") ?? "");
-      if (!key)
-        throw new ApiError("rate_limited", "Anonymous access is unavailable");
-      who = { kind: "guest", short: viewer.short ?? "", rate: `ip:${key}` };
+      who = {
+        kind: "guest",
+        short: viewer.short ?? "",
+        rate: guestRate(c),
+      };
     }
     const out = await setStatus(
       c.env,
@@ -252,7 +255,7 @@ export function mountComments(app: AppType): void {
       false,
       modOf(cw, level, artifact),
     );
-    const actor = who ?? guestOf(viewer);
+    const actor = who ?? guestOf(c, viewer);
     if (!actor)
       throw new ApiError("forbidden", "Only the author can edit a comment");
     const out = await editComment(
@@ -277,7 +280,7 @@ export function mountComments(app: AppType): void {
     const threadId = idParam(c, "threadId");
     const commentId = idParam(c, "commentId");
     const { who, viewer } = await identity(c, id, false);
-    const actor = who ?? guestOf(viewer);
+    const actor = who ?? guestOf(c, viewer);
     const moderator = modOf(callerWho, level, artifact);
     await deleteComment(c.env, id, threadId, commentId, actor, moderator);
     return c.body(null, 204);
@@ -291,9 +294,20 @@ const modOf = (
   artifact: ArtifactRow,
 ): boolean => can(level, "comments.moderate", canCtx(who, artifact));
 
-/** A guest who only reads back (no mint): as an author for edit and delete. */
-function guestOf(viewer: CommentViewer): CommentWho | null {
+/** The per-IP rate key of a signed-out write; the same refusal as identity() without one. */
+function guestRate(c: Context<AppEnv>): string {
+  const key = ipKey(c.req.header("cf-connecting-ip") ?? "");
+  if (!key)
+    throw new ApiError("rate_limited", "Anonymous access is unavailable");
+  return `ip:${key}`;
+}
+
+/**
+ * A guest who only reads back (no mint): as an author for edit and delete.
+ * Null without a token. Carries the per-IP rate key, so the write counts.
+ */
+function guestOf(c: Context<AppEnv>, viewer: CommentViewer): CommentWho | null {
   return viewer.short === null
     ? null
-    : { kind: "guest", short: viewer.short, rate: "" };
+    : { kind: "guest", short: viewer.short, rate: guestRate(c) };
 }

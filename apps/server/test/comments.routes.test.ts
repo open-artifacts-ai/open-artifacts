@@ -674,6 +674,54 @@ describe("rate limits", () => {
     ).toBe(201);
   });
 
+  it("a token-holding guest's edits, status changes and deletes share the 10 a minute per IP", async () => {
+    const id = await pub({ visibility: "public" });
+    await inDo(id, (i) => {
+      i.now = () => 1_800_000_000_000;
+    });
+    const ip = uniqueIp();
+    const first = await call(id, null, "", {
+      method: "POST",
+      ip,
+      body: { anchor: NOTE, body: "mine" },
+    });
+    const t = await thread(first);
+    const h = { [ANON_ID_HEADER]: first.headers.get(ANON_ID_HEADER) as string };
+    const path = `/${t.id}/comments/${(t.comments[0] as Comment).id}`;
+    for (let n = 0; n < 9; n++)
+      expect(
+        (
+          await call(id, null, path, {
+            method: "PATCH",
+            ip,
+            headers: h,
+            body: { body: `e${n}` },
+          })
+        ).status,
+      ).toBe(200);
+    const status = await call(id, null, `/${t.id}`, {
+      method: "PATCH",
+      ip,
+      headers: h,
+      body: { status: "resolved" },
+    });
+    expect(status.status).toBe(429);
+    expect(Number(status.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(
+      (await call(id, null, path, { method: "DELETE", ip, headers: h })).status,
+    ).toBe(429);
+    // Another address is unaffected.
+    expect(
+      (
+        await call(id, null, path, {
+          method: "DELETE",
+          ip: uniqueIp(),
+          headers: h,
+        })
+      ).status,
+    ).toBe(204);
+  });
+
   it("30 a minute per person, replies included; a refused comment is not stored", async () => {
     const id = await pub({ visibility: "team" });
     await inDo(id, (i) => {

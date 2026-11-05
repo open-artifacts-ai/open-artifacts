@@ -2058,10 +2058,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
     commentId: string;
     by: { kind: "user" | "guest"; ref: string };
     body: string;
+    /** A signed-out guest's "ip:{key}": counts against the minute limit only. */
+    rate?: string;
   }): StoredComment {
     this.checkBody(a.body);
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
+      if (a.rate) this.countComment(a.rate, false);
       const row = this.sql
         .exec<{ author: string }>(
           "select author from comments where id = ? and thread_id = ?",
@@ -2112,9 +2115,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     commentId: string;
     by: { kind: "user" | "guest"; ref: string } | null;
     moderator: boolean;
+    /** A signed-out guest's "ip:{key}": counts against the minute limit only. */
+    rate?: string;
   }): void {
     this.ensureSchema();
     this.ctx.storage.transactionSync(() => {
+      if (a.rate) this.countComment(a.rate, false);
       const row = this.sql
         .exec<{ author: string }>(
           "select author from comments where id = ? and thread_id = ?",

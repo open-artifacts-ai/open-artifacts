@@ -377,6 +377,7 @@ export async function editComment(
       commentId,
       by: { kind: a.kind, ref: a.ref },
       body: text,
+      ...(who.kind === "guest" ? { rate: who.rate } : {}),
     }),
   );
   return commentView(env, c, viewer);
@@ -402,6 +403,7 @@ export async function deleteComment(
       commentId,
       by: a ? { kind: a.kind, ref: a.ref } : null,
       moderator,
+      ...(who?.kind === "guest" ? { rate: who.rate } : {}),
     }),
   );
 }
