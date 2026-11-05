@@ -15,6 +15,7 @@ import {
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
 import { canPublishTo } from "../src/auth/permissions";
+import { canConnectAgents } from "../src/settings/AgentSetupCard";
 import {
   arts,
   calls,
@@ -175,7 +176,7 @@ it("instance: a locked admin sees the settings; the fields are disabled", async 
 });
 
 it("tokens: a locked admin sees the token list; Create token is disabled", async () => {
-  lockedAdmin("/settings/connections");
+  lockedAdmin("/settings/agents");
   expect(
     await screen.findByRole("region", { name: "Personal access tokens" }),
   ).toBeVisible();
@@ -184,7 +185,7 @@ it("tokens: a locked admin sees the token list; Create token is disabled", async
 });
 
 it("reads stay enabled for a locked admin: snippet tabs; Copy URL is off (Design)", async () => {
-  lockedAdmin("/settings/connections");
+  lockedAdmin("/settings/agents");
   expect(
     await screen.findByRole("button", { name: "Copy URL" }),
   ).toBeDisabled();
@@ -435,7 +436,7 @@ it("departed: a restricted caller still gets no Transfer all to me", async () =>
 });
 
 it("agents: a restricted member still gets no Create token or MCP URL", async () => {
-  mountHosted("/settings/connections", OPTS, (m) => ({
+  mountHosted("/settings/agents", OPTS, (m) => ({
     ...m,
     user: { ...m.user, role: "member" },
     auth: {
@@ -453,7 +454,7 @@ it("agents: a restricted member still gets no Create token or MCP URL", async ()
 });
 
 it("agents: a locked admin sees Add label on a connected agent, disabled", async () => {
-  lockedAdmin("/settings/connections");
+  lockedAdmin("/settings/agents");
   const label = await screen.findByRole("button", { name: "Add label" });
   expect(label).toBeDisabled();
   fireEvent.click(label);
@@ -465,7 +466,7 @@ it("agents: a locked admin sees Add label on a connected agent, disabled", async
 // any cap (CAPPED_ALLOWED: DELETE /tokens/:id, DELETE /oauth-clients/:id).
 
 it("agents: a locked admin's copy buttons are disabled; the text stays readable", async () => {
-  lockedAdmin("/settings/connections");
+  lockedAdmin("/settings/agents");
   expect(
     await screen.findByRole("button", { name: "Copy setup prompt" }),
   ).toBeDisabled();
@@ -494,13 +495,13 @@ it("library: a locked admin's agent setup prompt shows, its Copy disabled", asyn
 });
 
 it("agents: both revokes stay enabled for a locked admin", async () => {
-  lockedAdmin("/settings/connections");
+  lockedAdmin("/settings/agents");
   const token = await screen.findByRole("button", { name: /^Revoke / });
   expect(token).toBeEnabled();
   fireEvent.click(token);
   expect(await screen.findByRole("alertdialog")).toBeVisible();
   cleanup();
-  lockedAdmin("/settings/connections");
+  lockedAdmin("/settings/agents");
   const agents = await screen.findByRole("region", {
     name: "Connected agents",
   });

@@ -709,7 +709,11 @@ export function Members() {
           retrying={departed.retrying}
           meId={me?.id ?? null}
           spaces={spaces}
-          capped={state.status === "authed" && state.me.auth?.cap != null}
+          capped={
+            state.status === "authed" &&
+            state.me.auth?.cap != null &&
+            state.me.auth.cap !== "plan"
+          }
         />
       )}
       <SettingsCard
@@ -947,7 +951,10 @@ function DepartedCard({
   /** Who "Transfer all to me" moves them to. */
   meId: string | null;
   spaces: boolean;
-  /** A restricted (capped) caller can't receive artifacts: no "to me". */
+  /**
+   * A restricted (capped) caller can't receive artifacts: no "to me". The
+   * plan cap isn't one (a billing state): its Transfer shows, locked.
+   */
   capped: boolean;
 }) {
   return (
@@ -1004,6 +1011,9 @@ function DepartedRow({
   const [open, setOpen] = useState<{ pick: string | null } | null>(null);
   const [restoring, setRestoring] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  // The plan locked the instance: transfers are refused (a team route), so
+  // every entry point is off. Restore stays.
+  const frozen = useFrozen();
   const label = personName(m);
   const n = summary.live;
   return (
@@ -1034,6 +1044,7 @@ function DepartedRow({
             size="sm"
             variant="outline"
             className="text-[length:var(--oa-text-sm)]"
+            disabled={frozen}
             onClick={() => setOpen({ pick: toMe })}
           >
             Transfer all to me…
@@ -1044,6 +1055,7 @@ function DepartedRow({
             variant="outline"
             className="text-[length:var(--oa-text-sm)]"
             aria-label={`Transfer ${label}'s artifacts`}
+            disabled={frozen}
             onClick={() => setOpen({ pick: null })}
           >
             Transfer
@@ -1069,7 +1081,10 @@ function DepartedRow({
             align="end"
             className="text-[length:var(--oa-text-sm)]"
           >
-            <DropdownMenuItem onSelect={() => setOpen({ pick: null })}>
+            <DropdownMenuItem
+              disabled={frozen}
+              onSelect={() => setOpen({ pick: null })}
+            >
               Transfer to someone else…
             </DropdownMenuItem>
             {m.status === "removed" && !isReleased(m) && (
