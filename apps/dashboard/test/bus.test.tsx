@@ -9,7 +9,12 @@ import { ApiClientError } from "../src/api/client";
 import { BUS_POLL_MS, qk } from "../src/api/queries";
 import { canUseBus } from "../src/bus/access";
 import { dayTime, shortDate } from "../src/bus/format";
-import { liveOn, machineStatus, machinesSummary } from "../src/bus/Machines";
+import {
+  liveOn,
+  machineStatus,
+  machinesSummary,
+  REVOKE_ONLY_LINE,
+} from "../src/bus/Machines";
 import {
   buildRail,
   globalsFrom,
@@ -242,19 +247,68 @@ describe("roles helpers", () => {
 
 // ---------------------------------------------------------------- gate
 
-describe("gate: nothing unless canConnect and busOn", () => {
+const guest = (m: Me): Me => ({
+  ...m,
+  canConnect: false,
+  user: { ...m.user, role: "guest" },
+});
+const capped = (m: Me): Me => ({ ...m, canConnect: false });
+
+describe("gate: nothing unless canConnect and busOn (capped: revoke-only Machines)", () => {
   const denied: [string, ((m: Me) => Me) | null][] = [
     ["bus off (default mocks)", null],
     ["busOn false", (m) => ({ ...m, busOn: false })],
-    [
-      "canConnect false (capped or guest)",
-      (m) => ({ ...m, canConnect: false }),
-    ],
     [
       "older server (neither field)",
       ({ canConnect: _c, busOn: _b, ...m }) => m,
     ],
   ];
+  for (const path of ["/agents", "/agents/roles", "/settings/machines"])
+    it(`a guest: ${path} is Not found and asks nothing of the bus`, async () => {
+      withBus(guest);
+      const seen = calls("GET");
+      mount(path);
+      expect(
+        await screen.findByRole("heading", { name: "Page not found" }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "Agents" })).toBeNull();
+      expect(screen.queryByRole("link", { name: "Machines" })).toBeNull();
+      expect(seen.filter((c) => c.path.startsWith("/api/v1/bus/"))).toEqual([]);
+    });
+
+  for (const path of ["/agents", "/agents/roles"])
+    it(`a capped member: ${path} is Not found and asks nothing of the bus`, async () => {
+      withBus(capped);
+      const seen = calls("GET");
+      mount(path);
+      expect(
+        await screen.findByRole("heading", { name: "Page not found" }),
+      ).toBeInTheDocument();
+      const nav = await primary();
+      expect(within(nav).queryByRole("link", { name: "Agents" })).toBeNull();
+      expect(
+        seen.filter(
+          (c) => c.path.startsWith("/api/v1/bus/") && c.path !== R.busMachines,
+        ),
+      ).toEqual([]);
+    });
+
+  it("a capped member with no machine left: no Machines tab, and Not found", async () => {
+    withBus(capped);
+    server.use(
+      http.get(`*${R.busMachines}`, () =>
+        HttpResponse.json({ machines: [old] }),
+      ),
+    );
+    mount("/settings/machines");
+    expect(
+      await screen.findByRole("heading", { name: "Page not found" }),
+    ).toBeInTheDocument();
+    const tabs = await settingsTabs();
+    await within(tabs).findByRole("link", { name: "Profile" });
+    expect(within(tabs).queryByRole("link", { name: "Machines" })).toBeNull();
+  });
+
   for (const [name, me] of denied) {
     for (const path of ["/agents", "/agents/roles", "/settings/machines"])
       it(`${name}: ${path} is Not found and asks nothing of the bus`, async () => {
@@ -400,11 +454,20 @@ describe("Settings › Machines", () => {
     );
   });
 
-  it("a revoke whose connection didn't close: the red alert, and Try again reopens the dialog", async () => {
-    withBus();
+  /** DELETE answers 500; `revokes` says whether it revoked first (the list then shows it). */
+  const failingRevoke = (revokes: boolean) => {
+    const rows = M.map((m) => ({ ...m }));
     server.use(
-      http.delete(`*${R.busMachines}/:id`, () =>
-        HttpResponse.json(
+      http.get(`*${R.busMachines}`, () =>
+        HttpResponse.json({ machines: rows }),
+      ),
+      http.delete(`*${R.busMachines}/:id`, ({ params }) => {
+        const row = rows.find((m) => m.id === params.id);
+        if (revokes && row) {
+          row.revokedAt = new Date().toISOString();
+          row.connected = false;
+        }
+        return HttpResponse.json(
           {
             error: {
               code: "internal",
@@ -413,9 +476,11 @@ describe("Settings › Machines", () => {
             },
           },
           { status: 500 },
-        ),
-      ),
+        );
+      }),
     );
+  };
+  const revokeWork = async () => {
     mount("/settings/machines");
     await table();
     fireEvent.click(
@@ -426,6 +491,12 @@ describe("Settings › Machines", () => {
         name: "Revoke",
       }),
     );
+  };
+
+  it("a 500 after the revoke landed (the list shows it revoked): the red alert, and Try again reopens the dialog", async () => {
+    withBus();
+    failingRevoke(true);
+    await revokeWork();
     expect(
       await screen.findByText(
         `${work.label} is revoked and can't reconnect, but its open connection didn't close. Try again to close it.`,
@@ -435,6 +506,51 @@ describe("Settings › Machines", () => {
     expect(await screen.findByRole("alertdialog")).toHaveTextContent(
       `Revoke "${work.label}"?`,
     );
+  });
+
+  it("a 500 that revoked nothing: Couldn't revoke, never 'is revoked'", async () => {
+    withBus();
+    failingRevoke(false);
+    await revokeWork();
+    await findVisibleToast(`Couldn't revoke ${work.label}. Try again.`);
+    expect(screen.queryByText(/is revoked and can't reconnect/)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: `Revoke ${work.label}` }),
+    ).toBeInTheDocument();
+  });
+
+  it("a capped member: revoke-only, with the capped line, no Connect, no live agents, and no agents request", async () => {
+    withBus(capped);
+    const seen = calls("GET");
+    const sent = calls("DELETE");
+    mount("/settings/machines");
+    const t = await table();
+    expect(screen.getByText(REVOKE_ONLY_LINE)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Connect a machine" }),
+    ).toBeNull();
+    expect(
+      within(t)
+        .getAllByRole("columnheader")
+        .map((h) => h.textContent),
+    ).not.toContain("Live agents");
+    const tabs = await settingsTabs();
+    expect(
+      await within(tabs).findByRole("link", { name: "Machines" }),
+    ).toHaveAttribute("aria-current", "page");
+    fireEvent.click(
+      screen.getByRole("button", { name: `Revoke ${work.label}` }),
+    );
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Revoke",
+      }),
+    );
+    await waitFor(() =>
+      expect(sent.map((c) => c.path)).toEqual([R.busMachine(work.id)]),
+    );
+    await findVisibleToast(`${work.label} revoked.`);
+    expect(seen.some((c) => c.path === R.busAgents)).toBe(false);
   });
 
   it("live status unknown: the warning, Unknown, and a dash for live agents", async () => {
@@ -465,7 +581,9 @@ describe("Settings › Machines", () => {
     mount("/settings/machines");
     expect(await screen.findByText("No machines yet")).toBeInTheDocument();
     expect(
-      screen.getByText(/ask any AI agent to set up Open Artifacts/),
+      screen.getByText(
+        /ask any AI agent to set up the Open Artifacts bus client \(oa-bus\)/,
+      ),
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Enter a code" })).toHaveAttribute(
       "href",

@@ -11,7 +11,7 @@ import {
 import { hasFeature } from "./api/contract";
 import { useMe } from "./auth/useMe";
 import { AgentsPage } from "./bus/AgentsPage";
-import { useCanUseBus } from "./bus/access";
+import { useCanUseBus, useMachinesAccess } from "./bus/access";
 import { Machines } from "./bus/Machines";
 import type { AgentsTab } from "./bus/nav";
 import { AppLayout } from "./layout/AppLayout";
@@ -171,6 +171,17 @@ const agents = (path: AgentsTab) =>
     },
   });
 
+/** Settings › Machines: full, revoke-only for a capped member with a machine left (#1447), else Not found. */
+function MachinesRoute() {
+  const access = useMachinesAccess();
+  if (access === null) return null;
+  return access === "none" ? (
+    <NotFound />
+  ) : (
+    <Machines revokeOnly={access === "revoke"} />
+  );
+}
+
 const ADMINS: Role[] = ["owner", "admin"];
 /** Guests go to /shared; a member is sent to the page they may see. */
 const gated = (
@@ -300,11 +311,7 @@ const routeTree = root.addChildren([
     createRoute({
       getParentRoute: () => settings,
       path: "/settings/machines",
-      component: () => (
-        <BusRoute>
-          <Machines />
-        </BusRoute>
-      ),
+      component: MachinesRoute,
     }),
   ]),
   usage,

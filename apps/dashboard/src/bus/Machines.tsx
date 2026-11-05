@@ -11,7 +11,6 @@ import {
   useIsMobile,
 } from "@oa/ui/shadcn";
 import { useState } from "react";
-import { ApiClientError } from "../api/client";
 import {
   useBusAgents,
   useBusMachines,
@@ -84,8 +83,9 @@ function Empty() {
       </div>
       <ol className="m-0 grid list-decimal gap-[var(--oa-space-2)] ps-[var(--oa-space-5)] text-[length:var(--oa-text-sm)]">
         <li>
-          On that computer, ask any AI agent to set up Open Artifacts and say
-          yes when it asks about reaching agents on other machines.
+          On that computer, ask any AI agent to set up the Open Artifacts bus
+          client (oa-bus) and connect it to{" "}
+          <span className="font-mono">{location.host}</span>.
         </li>
         <li>
           It prints a code. Type it at{" "}
@@ -107,7 +107,8 @@ function Row({
   onRevoke,
 }: {
   m: BusMachine;
-  live: number | null;
+  /** undefined: revoke-only, where live agents aren't listed (#1447). */
+  live: number | null | undefined;
   stacked: boolean;
   onRevoke: () => void;
 }) {
@@ -135,8 +136,8 @@ function Row({
         <span className="min-w-0 truncate font-medium">{m.label}</span>
         <span className="justify-self-end">{badge}</span>
         <span className={muted}>
-          Live agents {liveText(live)} · Last used {lastUsed(m)} · Added{" "}
-          {shortDate(m.createdAt)}
+          {live !== undefined && `Live agents ${liveText(live)} · `}Last used{" "}
+          {lastUsed(m)} · Added {shortDate(m.createdAt)}
         </span>
         <span className="justify-self-end">{revoke}</span>
       </li>
@@ -145,7 +146,7 @@ function Row({
     <TableRow>
       <TableCell className="font-medium">{m.label}</TableCell>
       <TableCell>{badge}</TableCell>
-      <TableCell>{liveText(live)}</TableCell>
+      {live !== undefined && <TableCell>{liveText(live)}</TableCell>}
       <TableCell>{lastUsed(m)}</TableCell>
       <TableCell>{shortDate(m.createdAt)}</TableCell>
       <TableCell className="text-right">{revoke}</TableCell>
@@ -153,20 +154,29 @@ function Row({
   );
 }
 
-export function Machines() {
+/** The capped line, as Settings › Connections says it. */
+export const REVOKE_ONLY_LINE =
+  "You can't connect new machines. You can revoke these.";
+
+export function Machines({ revokeOnly = false }: { revokeOnly?: boolean }) {
   useDocumentTitle("Machines");
   const q = useBusMachines();
-  const agents = useBusAgents();
+  // GET bus/agents is 404 without canConnect: revoke-only never asks.
+  const agents = useBusAgents(!revokeOnly);
   const revoke = useRevokeBusMachine();
   const stacked = useIsMobile();
   const [pick, setPick] = useState<BusMachine | null>(null);
   /** Revoked, but its open connection didn't close: Try again reopens the dialog. */
   const [partial, setPartial] = useState<BusMachine | null>(null);
   const agentList = agents.data?.live ? agents.data.agents : undefined;
+  const liveFor = (m: BusMachine) =>
+    revokeOnly ? undefined : liveOn(m, agentList);
   const machines = q.data?.machines ?? [];
   const unknown =
     machines.some((m) => m.revokedAt === null && m.connected === null) ||
-    (agents.data?.live === false && machines.some((m) => m.revokedAt === null));
+    (!revokeOnly &&
+      agents.data?.live === false &&
+      machines.some((m) => m.revokedAt === null));
 
   const doRevoke = async (m: BusMachine) => {
     setPick(null);
@@ -174,14 +184,15 @@ export function Machines() {
     try {
       await revoke.mutateAsync(m.id);
       toast({ title: `${m.label} revoked.`, tone: "success" });
-    } catch (e) {
-      if (e instanceof ApiClientError && e.status >= 500) setPartial(m);
+    } catch {
+      // A failure says nothing about whether it was revoked: the reloaded
+      // list does. Revoked means its connection didn't close (#1449 M2).
+      const after = await q.refetch();
+      const row = after.data?.machines.find((x) => x.id === m.id);
+      if (row && row.revokedAt !== null) setPartial(m);
       else
         toast({
-          title:
-            e instanceof ApiClientError
-              ? e.message
-              : "Couldn't revoke the machine.",
+          title: `Couldn't revoke ${m.label}. Try again.`,
           tone: "danger",
         });
     }
@@ -213,11 +224,12 @@ export function Machines() {
         title="Your machines"
         subtitle={machines.length ? machinesSummary(machines) : undefined}
         action={
-          machines.length > 0 ? (
+          !revokeOnly && machines.length > 0 ? (
             <ConnectLink label="Connect a machine" />
           ) : undefined
         }
       >
+        {revokeOnly && <p className={`m-0 ${muted}`}>{REVOKE_ONLY_LINE}</p>}
         {q.isPending ? (
           <p className={`m-0 ${muted}`}>Loading…</p>
         ) : q.isError ? (
@@ -228,14 +240,18 @@ export function Machines() {
             onRetry={() => void q.refetch()}
           />
         ) : machines.length === 0 ? (
-          <Empty />
+          revokeOnly ? (
+            <p className={`m-0 ${muted}`}>No machines left to revoke.</p>
+          ) : (
+            <Empty />
+          )
         ) : stacked ? (
           <ul aria-label="Your machines" className="m-0 list-none p-0">
             {machines.map((m) => (
               <Row
                 key={m.id}
                 m={m}
-                live={liveOn(m, agentList)}
+                live={liveFor(m)}
                 stacked
                 onRevoke={() => setPick(m)}
               />
@@ -247,7 +263,7 @@ export function Machines() {
               <TableRow>
                 <TableHead>Machine</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Live agents</TableHead>
+                {!revokeOnly && <TableHead>Live agents</TableHead>}
                 <TableHead>Last used</TableHead>
                 <TableHead>Added</TableHead>
                 <TableHead className="text-right">
@@ -260,7 +276,7 @@ export function Machines() {
                 <Row
                   key={m.id}
                   m={m}
-                  live={liveOn(m, agentList)}
+                  live={liveFor(m)}
                   stacked={false}
                   onRevoke={() => setPick(m)}
                 />
