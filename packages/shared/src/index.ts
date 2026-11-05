@@ -1,6 +1,7 @@
 export * from "./agent-clients.js";
 export * from "./anchor.js";
 export * from "./bus-notices.js";
+export * from "./comments.js";
 export * from "./errors.js";
 export * from "./formats.js";
 export * from "./hosted/index.js";
