@@ -38,7 +38,7 @@ An open job hasn't changed for 2 hours and no retry is due. Clears when the job 
 
 ## prod_dirty
 
-An install's render failed `verify_clean`, so it was paused. Clears once the install is purged or discarded. The Manager purges or discards it, with the user's yes. The fix ships as a new release.
+An install's render failed `verify_clean`, so it was paused. Clears once the install is purged or discarded, or a later upgrade or rollback of that install finishes (it passed `verify_clean`, so the install is clean). A later failed or canceled job does not clear it, and neither does a done job on another install or one that finished before the failure. A stuck install is purged or discarded by the Manager, with the user's yes. The fix ships as a new release.
 
 ## prodclean_failed
 
