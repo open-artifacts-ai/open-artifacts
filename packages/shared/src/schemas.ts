@@ -776,7 +776,7 @@ export const BusMachinesSchema = z.strictObject({
 });
 export type BusMachines = z.infer<typeof BusMachinesSchema>;
 
-export const BUS_AGENT_STATES = ["live", "queued"] as const;
+export const BUS_AGENT_STATES = ["live", "queued", "away"] as const;
 export const BUS_STATUS_STATES = [
   "working",
   "idle",
@@ -785,11 +785,12 @@ export const BUS_STATUS_STATES = [
 ] as const;
 
 /**
- * One open agent on the caller's bus (#1291). `state`: live while its
- * machine is connected, queued otherwise (mail waits up to 1 h). `running`
- * is true for every listed agent (closed sessions are omitted); it is the
- * field the share-notice picks match on. `status*`: self-reported by the
- * agent ("agent says"), absent when none.
+ * One agent on the caller's bus (#1291). `state`: live while its machine is
+ * connected, queued otherwise, away (#1295) once its session closed: its
+ * mailbox and name are kept for 7 days. `running` is true for open agents and
+ * false for away ones; it is the field the share-notice picks match on.
+ * `since`: when an away agent closed, null for any other. `status*`:
+ * self-reported by the agent ("agent says"), absent when none.
  */
 export const BusAgentSchema = z.strictObject({
   id: z.string(),
@@ -801,6 +802,7 @@ export const BusAgentSchema = z.strictObject({
   global: z.boolean(),
   state: z.enum(BUS_AGENT_STATES),
   running: z.boolean(),
+  since: z.string().nullable(),
   updatedAt: z.string(),
   status: z.enum(BUS_STATUS_STATES).optional(),
   statusLabel: z.string().optional(),

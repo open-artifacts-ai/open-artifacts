@@ -351,4 +351,28 @@ describe("mailbox wire (#1295 PR B)", () => {
     other.close();
     nocap.close();
   });
+
+  it("the dashboard snapshot lists an away agent: state away, not running, since its close", async () => {
+    const { rcv, snd, ref, name, n } = await trio(MB);
+    await close(rcv, ref);
+    const [{ t }] = await sqlOf<{ t: number }>(
+      "select away_since as t from agents where native_ref = ?",
+      ref,
+    );
+    const { agents } = await (await hubOf()).snapshot();
+    expect(agents.find((a) => a.name === name)).toMatchObject({
+      state: "away",
+      running: false,
+      since: new Date(t).toISOString(),
+    });
+    expect(
+      agents.find((a) => a.namespace === n && a.name.startsWith("Snd")),
+    ).toMatchObject({
+      state: "live",
+      running: true,
+      since: null,
+    });
+    rcv.close();
+    snd.close();
+  });
 });

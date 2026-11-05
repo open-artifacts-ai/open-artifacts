@@ -307,7 +307,8 @@ const toNameShown = (
  * `unknown_agent`, as if the role or the agent did not exist.
  */
 const wireReason = (ws: WebSocket, reason: RefusalReason): RefusalReason => {
-  if (reason === "mailbox_full") return mailboxGated(ws) ? reason : "inbox_full";
+  if (reason === "mailbox_full")
+    return mailboxGated(ws) ? reason : "inbox_full";
   return (reason === "role_vacant" && !rolesGated(ws)) ||
     (reason === "agent_gone" && !idsGated(ws)) ||
     (reason === "reserved_name" && !mailboxGated(ws))
@@ -1517,9 +1518,7 @@ function roster(
   // #1295: a mailbox-capable socket also sees the agents away in its scope.
   if (withAway) {
     const scope =
-      agent.global === 1
-        ? ""
-        : "and (f.global = 1 or f.namespace = ?)";
+      agent.global === 1 ? "" : "and (f.global = 1 or f.namespace = ?)";
     const away = all<AgentRow>(
       sql,
       `select ${AGENT_COLS} from agents where org_id = ? and live = 0 and id in
@@ -1690,7 +1689,7 @@ function byNamespaceName(
 const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.kind,
   a.machine_id as machineId, a.native_ref as nativeRef, a.global, a.live,
   a.updated_at as updatedAt, m.label as machineLabel, a.status,
-  a.status_label as statusLabel, a.status_at as statusAt`;
+  a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince`;
 
 /**
  * The dashboard's agent list (snapshot, GET /api/v1/bus/agents). Open agents
@@ -1699,7 +1698,11 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
  * namespace: that namespace on agents_live_ns_lname plus the globals on
  * agents_global_name, merged here (as roster() does).
  */
-function agentList(ctx: DurableObjectState, namespace?: string): BusAgent[] {
+function agentList(
+  ctx: DurableObjectState,
+  now: number,
+  namespace?: string,
+): BusAgent[] {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
   const from = "from agents a join machines m on m.id = a.machine_id";
@@ -1732,6 +1735,21 @@ function agentList(ctx: DurableObjectState, namespace?: string): BusAgent[] {
       .sort(byNamespaceName)
       .slice(0, cap);
   }
+  // #1295: agents away with their mailbox kept are listed too (not running).
+  const away = all<AgentWithMachine>(
+    sql,
+    `select ${AGENT_DTO_COLS} ${from} where a.org_id = ? and a.live = 0 and m.revoked_at is null
+       and a.id in (select f.agent_id from former_names f where f.org_id = ? and f.kind = 'away' and f.expires_at > ?)
+       ${namespace === undefined ? "" : "and (a.namespace = ? or a.global = 1)"}
+     order by a.namespace, lower(a.name), a.name limit ?`,
+    OWNER_ORG_ID,
+    OWNER_ORG_ID,
+    now,
+    ...(namespace === undefined ? [] : [namespace]),
+    cap,
+  );
+  if (away.length > 0)
+    rows = [...rows, ...away].sort(byNamespaceName).slice(0, cap);
   const online = new Map<string, boolean>();
   const dtos = rows.map((r) => {
     let on = online.get(r.machineId);
@@ -2082,8 +2100,7 @@ function resolveTarget(
     if (away) return away;
     const gone = goneReason(sql, toNamespace, lname);
     if (gone) return refused(gone);
-    if (heldName(sql, toNamespace, lname, now))
-      return refused("reserved_name");
+    if (heldName(sql, toNamespace, lname, now)) return refused("reserved_name");
     return refused("unknown_agent");
   }
   // R393b: the sender's own namespace first, current then former names.
@@ -2844,7 +2861,7 @@ export class BusHub extends DurableObject<Env> {
     )
       .filter((m) => machineOnline(this.ctx, m.id))
       .map((m) => m.id);
-    return { connected, agents: agentList(this.ctx) };
+    return { connected, agents: agentList(this.ctx, this.#now()) };
   }
 
   // ------------------------------------------------------------------- roles

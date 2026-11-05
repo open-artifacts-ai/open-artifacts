@@ -373,6 +373,15 @@ describe("pi extension asset", () => {
                 global: false,
                 machine_label: "desktop",
               },
+              {
+                name: "c",
+                namespace: "ns",
+                kind: "pi",
+                live: false,
+                state: "away",
+                since: "2026-11-05T10:00:00.000Z",
+                global: false,
+              },
             ],
           }
         : f.type === "self"
@@ -395,7 +404,7 @@ describe("pi extension asset", () => {
             : undefined,
     );
     expect(await p.call("list_agents", {})).toBe(
-      "- a (pi, ns)\n- b (opencode, ns, desktop) (queued)",
+      "- a (pi, ns)\n- b (opencode, ns, desktop) (queued)\n- c (pi, ns) (away since 2026-11-05 10:00 UTC)",
     );
     expect(JSON.parse(await p.call("self", {}))).toMatchObject({
       name: "pi-agent",
