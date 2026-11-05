@@ -265,13 +265,9 @@ describe("prod-release-chain.yml", () => {
     });
     // Only when the gate says go: a skip deploys nothing.
     expect(d.if).toBe("needs.gate.outputs.go == 'true'");
-    // Only the repo-level alert address, never `inherit`.
-    expect(d.secrets).toEqual({
-      OA_OWNER_EMAIL: "${{ secrets.OA_OWNER_EMAIL }}",
-    });
-    expect(Object.keys(deploy.on.workflow_call.secrets)).toContain(
-      "OA_OWNER_EMAIL",
-    );
+    // Secrets are passed by name (never `inherit`); the full rule is the
+    // "every secret the deploy reads" test below.
+    expect(d.secrets).not.toBe("inherit");
     // The full list is the deploy's own: its read-back and no-break-glass
     // `if:`s compare against it.
     expect(deploy.on.workflow_dispatch.inputs.targets.default).toBe(FULL);
@@ -716,5 +712,27 @@ describe("the gate's neutral skips", () => {
       "${{ needs.gate.result == 'success' && needs.deploy.result || needs.gate.result }}",
     );
     expect(w.jobs.deploy.if).toBe("needs.gate.outputs.go == 'true'");
+  });
+
+  // Run 42109047045: a declared workflow_call secret the caller does not pass
+  // resolves to an empty string, even when the called job's Environment
+  // (hosted-prod-deploy) has it. GitHub: "The caller workflow must still pass
+  // the secret ... You can pass a secret by name even if it only exists in the
+  // environment", and the Environment's value wins inside the job.
+  // https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
+  it("passes every secret the deploy job reads, by name, so none resolves empty", () => {
+    const read_ = new Set(
+      JSON.stringify(deploy.jobs.deploy.steps).match(/secrets\.[A-Z_]+/g),
+    );
+    const names = [...read_].map((x) => x.slice("secrets.".length)).sort();
+    expect(names.length).toBeGreaterThan(0);
+    const passed = w.jobs.deploy.secrets as Record<string, string>;
+    const missing = names.filter((n) => passed[n] !== `\${{ secrets.${n} }}`);
+    expect(
+      missing,
+      "deploy reads these but the chain does not pass them",
+    ).toEqual([]);
+    expect(Object.keys(passed).sort()).toEqual(names);
+    expect(Object.keys(deploy.on.workflow_call.secrets).sort()).toEqual(names);
   });
 });

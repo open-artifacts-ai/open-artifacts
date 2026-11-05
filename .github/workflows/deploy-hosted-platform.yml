@@ -86,10 +86,10 @@ on:
         type: boolean
         required: false
         default: false
-    # OA_OWNER_EMAIL is the one repo-level secret a called run needs, and the
-    # only one the chain passes (never `inherit`). The rest are the
-    # Environment's (hosted-prod-deploy), which reach the job there and win
-    # over anything passed; they are declared only so the job may name them.
+    # Declared so the chain can pass them by name (prod-release-chain.yml).
+    # A secret the caller does not pass resolves empty, even if the job's
+    # Environment (hosted-<env>-deploy) has it; once passed, the
+    # Environment's value of the same name wins inside the job.
     secrets:
       OA_OWNER_EMAIL:
         required: false

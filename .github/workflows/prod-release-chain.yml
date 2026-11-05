@@ -138,10 +138,21 @@ jobs:
       reason: ""
       verify_only: false
       require_newer: true
-    # Only the repo-level alert address; the called job names its Environment
-    # (hosted-prod-deploy), and that Environment's secrets reach it there.
+    # Every secret the called job reads is passed by name, never `inherit`.
+    # GitHub resolves a secret the caller does not pass to an empty string,
+    # even when the called job's Environment (hosted-prod-deploy) has it. A
+    # passed name is overridden by the Environment's value of the same name
+    # inside that job, so prod's values win; the caller's own (repo-level)
+    # value is only a fallback if the Environment lacks the secret. See
+    # https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
     secrets:
       OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      GOOGLE_DIRECTORY_CLIENT_SECRET: ${{ secrets.GOOGLE_DIRECTORY_CLIENT_SECRET }}
+      ADMIN_IDENTITIES: ${{ secrets.ADMIN_IDENTITIES }}
+      FLEET_SMOKE_TOKEN: ${{ secrets.FLEET_SMOKE_TOKEN }}
+      FLEET_SMOKE_SHARE_TO: ${{ secrets.FLEET_SMOKE_SHARE_TO }}
   report:
     needs: [gate, deploy]
     if: ${{ always() && vars.PROD_RELEASE_CHAIN == 'on' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch' }}
