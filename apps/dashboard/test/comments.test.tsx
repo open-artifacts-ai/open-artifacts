@@ -908,6 +908,12 @@ describe("comments: guests and Retry-After", () => {
 /** A new version is published: the artifact now reports it as current, then the event arrives. */
 const bump = async (id: string, version: number) => {
   const a = fixtures.artifacts.find((x) => x.id === id);
+  // Refetches report the new version too, as the server would.
+  server.use(
+    http.get(`*${R.artifact(id)}`, () =>
+      HttpResponse.json({ ...a, currentVersion: version }),
+    ),
+  );
   await act(async () => {
     lastClient.setQueryData(["artifact", id], {
       ...a,
