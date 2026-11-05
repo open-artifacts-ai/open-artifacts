@@ -41,9 +41,9 @@ export type CommentsApi = {
   version: number;
   /** Viewing a pinned older version: the composer says so. */
   older: boolean;
-  /** Open threads of the whole artifact (the toolbar count). */
+  /** Open threads of the whole artifact. */
   open: number;
-  /** Open threads in the list shown here (differs from `open` on a pinned older version). */
+  /** Open threads in the list shown here, and so the toolbar count (differs from `open` on a pinned older version). */
   listedOpen: number;
   loading: boolean;
   error: unknown;

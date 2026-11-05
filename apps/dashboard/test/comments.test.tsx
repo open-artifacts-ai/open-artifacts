@@ -1165,10 +1165,10 @@ describe("comments: review round 1", () => {
     expect(within(c).getByText("via Claude Code")).toBeInTheDocument();
     expect(within(c).getByText("via Cursor")).toBeInTheDocument();
     expect(within(c).queryByText("via via Cursor")).toBeNull();
-    // Two threads were made on version 1; the artifact has three.
+    // Two threads were made on version 1; the artifact has three. The toolbar badge follows the column.
     expect(within(c).getByText("2 open")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Comments, 3 open/ }),
+      screen.getByRole("button", { name: /Comments, 2 open/ }),
     ).toBeInTheDocument();
     const row = within(c)
       .getByText("body a")
