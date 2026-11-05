@@ -264,6 +264,8 @@ export const ArtifactSummarySchema = z.object({
   space: SpaceRefSchema.optional(),
   /** Hosted M1: what the caller may do (artifactCan). Optional: absent unless spaces are on. */
   can: ArtifactCanSchema.optional(),
+  /** #682: the Comments setting; absent reads as on (the default). */
+  comments: z.boolean().optional(),
 });
 export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;
 
@@ -419,6 +421,8 @@ export const ArtifactPatchSchema = z
     dataWriters: DataWritersSchema,
     /** Deprecated (#681): see resolveDataWriters. */
     allowAnonymousWrites: z.boolean(),
+    /** #682: owner and managers. */
+    comments: z.boolean(),
   })
   .partial();
 export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
@@ -1066,6 +1070,8 @@ export const ArtifactEventSchema = z.discriminatedUnion("type", [
     by: ArtifactEventBySchema,
     restoredFrom: z.number().int().min(1).optional(),
   }),
+  /** #682: a comment changed; `open` is the number of open threads. Refetch the list. */
+  z.object({ type: z.literal("comments"), open: z.number().int().min(0) }),
   z.object({
     type: z.literal("gone"),
     reason: z.enum(["deleted", "changed"]),

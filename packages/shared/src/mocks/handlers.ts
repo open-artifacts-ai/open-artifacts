@@ -90,6 +90,7 @@ import {
   isHeic,
   textHead,
 } from "../sniff.js";
+import { createCommentHandlers } from "./comments.js";
 import type { ArtifactEventsMock } from "./events.js";
 import { BUS_FIXTURE_NOW, fixtures } from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
@@ -101,6 +102,8 @@ export type MockOptions = {
   /** Me.instance.plan, and GET /usage `plan` and its limits (default "free"). */
   plan?: Plan;
   update?: InstanceUpdate | null;
+  /** Comments writes answer 429 with this Retry-After, in seconds (#682). */
+  commentsRateLimit?: number;
   /**
    * The R.events mock (createArtifactEvents()): hello reports the store's
    * currentVersion; publish/restore emit `version`, delete and
@@ -597,6 +600,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   return [
     ...pre,
     ...(h?.handlers ?? []),
+    ...createCommentHandlers({
+      artifacts,
+      me,
+      err,
+      emit: (id, open) => opts.events?.emitComments(id, open),
+      rateLimit: opts.commentsRateLimit,
+    }),
     http.get("*/api/v1/me", () => HttpResponse.json(me)),
     http.patch("*/api/v1/me", async ({ request }) => {
       const r = await body(request, MePatchSchema);
