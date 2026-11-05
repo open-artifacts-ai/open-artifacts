@@ -181,7 +181,7 @@ function Who({
         </span>
       </p>
       {a.agent && (
-        <p className={`${TXT} ${MUTED}`}>
+        <p className={`${TXT} ${MUTED} break-words`}>
           {a.agent.startsWith("via ") ? a.agent : `via ${a.agent}`}
         </p>
       )}
