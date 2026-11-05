@@ -13,7 +13,11 @@ import {
   type ServerFrame,
 } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it } from "vitest";
-import { BusHub, OFFLINE_REAP_MS } from "../../src/bus/hub.js";
+import {
+  BusHub,
+  CLOSED_AGENTS_PER_MACHINE,
+  OFFLINE_REAP_MS,
+} from "../../src/bus/hub.js";
 import {
   type Daemon,
   daemon,
@@ -337,6 +341,238 @@ describe("lasting mailboxes (#1295 PR A)", () => {
       p.ref,
     );
     expect(f).toEqual([{ kind: "held", expires_at: t0 + HOUR }]);
+    p.rcv.close();
+    p.snd.close();
+  });
+
+  it("B1: a machine closing 1000+ sessions in 7 days is never locked out of new ones", async () => {
+    const t0 = base();
+    const p = await pair(t0);
+    const machineId = (
+      await sqlOf<{ m: string }>(
+        "select machine_id as m from agents where native_ref = ?",
+        p.ref,
+      )
+    )[0]?.m as string;
+    await inHub(async (i, st) => {
+      for (const ws of st.getWebSockets(machineId))
+        BusHub.setFrameTokensForTests(i, ws, 1_000_000);
+    });
+    const CYCLES = CLOSED_AGENTS_PER_MACHINE + 20;
+    for (let k = 0; k < CYCLES; k++) {
+      p.rcv.send(up(`bu${k}`, `churn_${k}`, "Churn", p.n));
+      p.rcv.send({
+        v: 1,
+        id: `bc${k}`,
+        type: "sessions",
+        open: [],
+        closed: [`churn_${k}`],
+      });
+    }
+    for (let k = 0; k < CYCLES; ) {
+      const f = await p.rcv.next();
+      expect(f.type).not.toBe("error");
+      if (f.type === "agent_ok") k++;
+    }
+    // A fresh ref still gets in, and the closed rows stay at the cap.
+    p.rcv.send(up(id("u"), uniq("fresh"), uniq("Fresh"), p.n));
+    expect((await p.rcv.next()).type).toBe("agent_ok");
+    const closed = await sqlOf<{ n: number }>(
+      "select count(*) as n from agents where machine_id = ? and live = 0",
+      machineId,
+    );
+    expect(closed[0]?.n).toBeLessThanOrEqual(CLOSED_AGENTS_PER_MACHINE);
+    p.rcv.close();
+    p.snd.close();
+  }, 120_000);
+
+  it("B1: with pending mail on every closed row, the oldest away agent is evicted, its mail expires recipient_closed and its sender is told", async () => {
+    const t0 = base();
+    const p = await pair(t0);
+    const machineId = (
+      await sqlOf<{ m: string }>(
+        "select machine_id as m from agents where native_ref = ?",
+        p.ref,
+      )
+    )[0]?.m as string;
+    await inHub(async (i, st) => {
+      for (const ws of st.getWebSockets(machineId))
+        BusHub.setFrameTokensForTests(i, ws, 1_000_000);
+    });
+    // Mail sits on the first closed agent for real.
+    await close(p.rcv, p.ref);
+    const r = await send(p.snd, "snd", p.name, "kept");
+    expect(r.state).toBe("pending");
+    const CYCLES = CLOSED_AGENTS_PER_MACHINE - 1;
+    for (let k = 0; k < CYCLES; k++) {
+      p.rcv.send(up(`bu${k}`, `churn_${k}`, "Churn", p.n));
+      p.rcv.send({
+        v: 1,
+        id: `bc${k}`,
+        type: "sessions",
+        open: [],
+        closed: [`churn_${k}`],
+      });
+    }
+    for (let k = 0; k < CYCLES; ) {
+      const f = await p.rcv.next();
+      expect(f.type).not.toBe("error");
+      if (f.type === "agent_ok") k++;
+    }
+    // Every closed agent now has an inbox.
+    await inHub((_, st) => {
+      st.storage.sql.exec(
+        `insert into receipts (id, org_id, namespace, to_agent, to_name, from_agent, from_name, state, size, created_at, expires_at)
+         select 'seed-' || a.id, a.org_id, a.namespace, a.id, a.name, s.id, s.name, 'pending', 1, ?, ?
+           from agents a, (select id, name from agents where native_ref = 'snd' order by rowid desc limit 1) s
+          where a.machine_id = ? and a.live = 0 and a.native_ref != ?`,
+        t0,
+        t0 + MAILBOX_RETAIN_MS,
+        machineId,
+        p.ref,
+      );
+    });
+    p.rcv.send(up(id("u"), uniq("fresh"), uniq("Fresh"), p.n));
+    expect((await p.rcv.next()).type).toBe("agent_ok");
+    const u = await waitFor(p.snd, "receipt_update");
+    expect(u).toMatchObject({
+      msg_id: r.msg_id,
+      state: "expired",
+      reason: "recipient_closed",
+    });
+    expect(
+      (await sqlOf("select id from agents where native_ref = ?", p.ref)).length,
+    ).toBe(0);
+    await inHub((_, st) => {
+      st.storage.sql.exec("delete from receipts where id like 'seed-%'");
+    });
+    p.rcv.close();
+    p.snd.close();
+  }, 120_000);
+
+  it("B2: a global sender with no to_namespace gets ambiguous when two namespaces have an agent away under the name", async () => {
+    const t0 = base();
+    await setClock(t0);
+    const m1 = await machine("A");
+    const m2 = await machine("B");
+    const m3 = await machine("G");
+    const a = await connect(m1.token);
+    const b = await connect(m2.token);
+    const g = await connect(m3.token);
+    const name = uniq("Foo");
+    await reg(a, "fa", name, ns("a"));
+    await reg(b, "fb", name, ns("b"));
+    g.send(up(id("u"), "gs", uniq("Glob"), ns("g"), true));
+    await waitFor(g, "agent_ok");
+    await close(a, "fa");
+    await close(b, "fb");
+    expect(await send(g, "gs", name)).toMatchObject({
+      state: "refused",
+      reason: "ambiguous",
+    });
+    a.close();
+    b.close();
+    g.close();
+  });
+
+  it("a reopen under another name downgrades the old away row to the 1 h held", async () => {
+    const t0 = base();
+    const p = await pair(t0);
+    await close(p.rcv, p.ref);
+    const other = uniq("Other");
+    p.rcv.send(up(id("u"), p.ref, other, p.n));
+    const ok = await waitFor(p.rcv, "agent_ok");
+    expect(ok.bus_name).toBe(other);
+    const f = await sqlOf<{ kind: string; expires_at: number }>(
+      "select kind, expires_at from former_names where agent_id = (select id from agents where native_ref = ?)",
+      p.ref,
+    );
+    expect(f).toEqual([{ kind: "held", expires_at: t0 + HOUR }]);
+    // Reserved for the hour, free after.
+    const om = await machine("Other");
+    const o = await connect(om.token);
+    expect(await reg(o, uniq("o"), p.name, p.n)).toBe(`${p.name}-2`);
+    await setClock(t0 + HOUR + 1000);
+    await runAlarm();
+    expect(await reg(o, uniq("o2"), p.name, p.n)).toBe(p.name);
+    o.close();
+    p.rcv.close();
+    p.snd.close();
+  });
+
+  it("a reopen after the away row expired starts a new session: old mail is never served", async () => {
+    const t0 = base();
+    const p = await pair(t0);
+    await close(p.rcv, p.ref);
+    const big = "z".repeat(40_000);
+    const small = await send(p.snd, "snd", p.name, "old small");
+    const notice = await send(p.snd, "snd", p.name, big);
+    expect([small.state, notice.state]).toEqual(["pending", "pending"]);
+    // Past the reservation, alarm not run yet.
+    await setClock(t0 + MAILBOX_RETAIN_MS + 1000);
+    p.rcv.send(up(id("u"), p.ref, p.name, p.n));
+    await waitFor(p.rcv, "agent_ok");
+    p.rcv.send({
+      v: 1,
+      id: "fx",
+      type: "fetch",
+      from_ref: p.ref,
+      msg_id: notice.msg_id,
+    } as ClientFrame);
+    const e = await waitFor(p.rcv, "error");
+    expect(e.id).toBe("fx");
+    expect(e.code).toBe("not_found");
+    await new Promise((res) => setTimeout(res, 50));
+    expect(p.rcv.raw.some((t) => t.includes('"deliver"'))).toBe(false);
+    p.rcv.close();
+    p.snd.close();
+  });
+
+  it("a reopen that keeps its away row cannot fetch any old acked notice body, even past the inline close batch", async () => {
+    const t0 = base();
+    const p = await pair(t0);
+    const big = "z".repeat(40_000);
+    // More than CLOSE_INLINE_BATCH (10), so the close leaves bodies for the drain.
+    const N = 12;
+    const ids: string[] = [];
+    for (let k = 0; k < N; k++) {
+      const r = await send(p.snd, "snd", p.name, `${big}${k}`);
+      ids.push(r.msg_id);
+      const d = await waitFor(p.rcv, "deliver");
+      expect(d.msg_id).toBe(r.msg_id);
+      p.rcv.send({ v: 1, id: `ak${k}`, type: "ack", msg_id: r.msg_id });
+    }
+    for (let k = 0; k < 400; k++) {
+      const st = await sqlOf<{ n: number }>(
+        `select count(*) as n from receipts where state = 'delivered' and id in (${ids.map(() => "?").join(",")})`,
+        ...ids,
+      );
+      if (st[0]?.n === N) break;
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    await close(p.rcv, p.ref);
+    // The drain has not run: bodies are left past the inline batch.
+    expect(
+      (
+        await sqlOf<{ n: number }>(
+          `select count(*) as n from mail where id in (${ids.map(() => "?").join(",")})`,
+          ...ids,
+        )
+      )[0]?.n,
+    ).toBeGreaterThan(0);
+    p.rcv.send(up(id("u"), p.ref, p.name, p.n));
+    await waitFor(p.rcv, "agent_ok");
+    for (const [k, mid] of ids.entries()) {
+      p.rcv.send({
+        v: 1,
+        id: `fy${k}`,
+        type: "fetch",
+        from_ref: p.ref,
+        msg_id: mid,
+      } as ClientFrame);
+      const e = await waitFor(p.rcv, "error");
+      expect(e.code).toBe("not_found");
+    }
     p.rcv.close();
     p.snd.close();
   });

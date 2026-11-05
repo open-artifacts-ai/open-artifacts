@@ -269,7 +269,7 @@ describe("B14 idempotent send", () => {
     close();
   });
 
-  it("a resend after expiry and the alarm sweep (key final and past its window) sends fresh", async () => {
+  it("a resend after expiry reports expired and delivers nothing", async () => {
     const { s, t, sm, receiver, close } = await setup();
     await offline(t);
     const r1 = await sendAndReceipt(s, send("k1", "sref", receiver));
@@ -279,14 +279,16 @@ describe("B14 idempotent send", () => {
       msg_id: r1.msg_id,
       state: "expired",
     });
+    // The key went final at the expiry and dedupes for SEND_KEY_RETAIN_MS
+    // from then (#1295), however old the send was.
     const r2 = await sendAndReceipt(s, send("k1", "sref", receiver));
-    // #1295: the mail lived MAILBOX_RETAIN_MS, so its final key is older than
-    // SEND_KEY_RETAIN_MS and the same alarm swept it: the id is evaluated
-    // fresh (not the old receipt). The offline receiver's reservation is over
-    // too, so the fresh send is refused and nothing is delivered twice.
-    expect(r2).toMatchObject({ state: "refused", reason: "closed" });
-    expect(r2.msg_id).not.toBe(r1.msg_id);
+    expect(r2).toMatchObject({ msg_id: r1.msg_id, state: "pending" });
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: r1.msg_id,
+      state: "expired",
+    });
     expect(await receiptsFrom(await agentId("sref", sm.id))).toBe(1);
+    expect(await mailCount()).toBe(0);
     allParse(s);
     close();
   });
@@ -335,8 +337,9 @@ describe("B14 idempotent send", () => {
     expect(
       (await sendAndReceipt(s, send("k1", "sref", receiver, "later"))).msg_id,
     ).toBe(r2.msg_id);
-    // The expired fillers' final keys were swept with them (past the window).
-    expect(await keysOf(me)).toBe(1);
+    // The expired fillers' keys went final at the expiry and are kept for
+    // their window from then.
+    expect(await keysOf(me)).toBe(MAILBOX_PENDING_CAP + 1);
     // Exactly one deliver of it.
     expect((await waitFor(t2, "deliver")).msg_id).toBe(r2.msg_id);
     await barrier(t2);
@@ -448,8 +451,11 @@ describe("B14 idempotent send", () => {
     expect((await sendAndReceipt(s, send("k1", "sref", receiver))).msg_id).toBe(
       r1.msg_id,
     );
-    // Once the mail expired, its final key is past the window and goes.
+    // Once the mail expired, its key is final and dedupes for the window.
     await setClock(Date.now() + TTL + 1000);
+    await runAlarm();
+    expect(await keysOf(me)).toBe(1);
+    await setClock(Date.now() + TTL + SEND_KEY_RETAIN_MS + 60_000);
     await runAlarm();
     expect(await keysOf(me)).toBe(0);
     const r2 = await sendAndReceipt(s, send("k1", "sref", receiver));
@@ -486,7 +492,7 @@ describe("B14 idempotent send", () => {
     // sink that acks every message, in waves under its inbox cap.
     const sink = uniq("Sink");
     await agent(t, "sink", sink, n);
-    const N = SEND_KEYS_PER_AGENT * 2;
+    const N = SEND_KEYS_PER_AGENT * 5;
     const WAVE = LIMITS.inboxCap - 10;
 
     // Lift the frame budgets so the flood is not rate limited (a frozen
@@ -525,5 +531,5 @@ describe("B14 idempotent send", () => {
     expect(await keysOf(other)).toBe(3);
     allParse(s, t);
     close();
-  }, 60_000);
+  }, 300_000);
 });

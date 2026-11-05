@@ -598,6 +598,37 @@ describe("closed sessions", () => {
     close();
   });
 
+  it("agent_down: held bytes drop once the ack timeout persists the body; the receipt stays pending, the mail row exists, a reopen delivers it, and held bytes end at 0", async () => {
+    const { s, t, n, receiver, close } = await setup();
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "held"));
+    await waitFor(t, "deliver");
+    const before = await heldStats();
+    expect(before.ids).toContain(r.msg_id);
+    expect(before.bytes).toBe(256);
+    t.send({ v: 1, id: "dn", type: "agent_down", agent_ref: "rref" });
+    await barrier(t);
+    // The close itself keeps the held body and the receipt.
+    expect((await heldStats()).bytes).toBe(256);
+    expect(await receiptRow(r.msg_id)).toMatchObject({ state: "pending" });
+    await setClock(Date.now() + LIMITS.ackTimeoutMs + 1000);
+    await runAlarm();
+    const after = await heldStats();
+    expect(after.ids).not.toContain(r.msg_id);
+    expect(after.bytes).toBe(0);
+    expect((await mailRow(r.msg_id))?.body).toBe("held");
+    expect(await receiptRow(r.msg_id)).toMatchObject({ state: "pending" });
+    await agent(t, "rref", receiver, n);
+    const d = await waitFor(t, "deliver");
+    expect(d).toMatchObject({ msg_id: r.msg_id, body: "held" });
+    t.send(ack("a1", r.msg_id));
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: r.msg_id,
+      state: "delivered",
+    });
+    expect((await heldStats()).bytes).toBe(0);
+    close();
+  });
+
   it("agent_down: a late ack from the closing session still settles the held mail once (the machine is the recipient), and a reopen redelivers nothing", async () => {
     const { s, t, n, receiver, close } = await setup();
     const r = await sendAndReceipt(s, send("s1", "sref", receiver, "held"));

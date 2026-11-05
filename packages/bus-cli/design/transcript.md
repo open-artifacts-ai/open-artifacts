@@ -45,7 +45,7 @@ hub answers, the line is erased and replaced by:
   oa-team-e0          OpenCode     leo-macbook-pro       [[success]]● live[[/success]]
   oa-team-frontend    Pi           leo-linux-box         [[success]]● live[[/success]]
   oa-team-platform    Claude Code  leo-mac-mini          [[warning]]○ queued[[/warning]]
-[[muted]]Mail to a queued agent waits up to 1 hour for its machine to reconnect;[[/muted]]
+[[muted]]Mail to a queued agent waits up to 7 days for its machine to reconnect;[[/muted]]
 [[muted]]then the sender is told.[[/muted]]
 
 [[muted]]Check this machine anytime with npx @open-artifacts/bus status.[[/muted]]
@@ -371,7 +371,7 @@ global agent sends to a name that exists in two or more namespaces:
    Send it again once the session is open, or message another agent.
 [[danger]]×[[/danger]]  Refused (inbox_full): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
-   50 messages are already waiting.
+   200 messages are already waiting.
    Send again once some are delivered or expire.
 [[danger]]×[[/danger]]  Refused (too_large): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
@@ -443,7 +443,7 @@ Machine  leo-macbook-pro
   oa-team-backend     Claude Code  leo-macbook-pro       [[success]]● live[[/success]]
   oa-team-design      Claude Code  leo-macbook-pro       [[success]]● live[[/success]]
   oa-team-platform    Claude Code  leo-mac-mini          [[warning]]○ queued[[/warning]]
-[[muted]]Mail to a queued agent waits up to 1 hour for its machine to reconnect;[[/muted]]
+[[muted]]Mail to a queued agent waits up to 7 days for its machine to reconnect;[[/muted]]
 [[muted]]then the sender is told.[[/muted]]
 
 1 agent in namespace [[accent]]github.com/leourbina/notes[[/accent]]  [[muted]]1 live[[/muted]]

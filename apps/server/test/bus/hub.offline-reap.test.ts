@@ -477,7 +477,7 @@ describe("offline reap (open-bus #422)", () => {
       const f = await s.next();
       if (f.type === "receipt_update" && f.msg_id === r.msg_id) {
         expect(f.state).toBe("expired");
-        expect(f.reason).not.toBe("recipient_closed");
+        expect(f.reason ?? null).toBeNull();
         break;
       }
     }

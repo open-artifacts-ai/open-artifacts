@@ -420,7 +420,7 @@ describe("adv B14", () => {
   });
 
   it("P9 hub-wide cap: ref churn cannot multiply the per-agent cap past SEND_KEYS_TOTAL", async () => {
-    expect(SEND_KEYS_TOTAL).toBe(20_000);
+    expect(SEND_KEYS_TOTAL).toBe(200_000);
     const sm = await machine("S");
     const tm = await machine("T");
     const s = await ready(sm.token);

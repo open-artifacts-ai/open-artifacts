@@ -544,7 +544,7 @@ describe("closed-session work drains from the alarm", () => {
     for (const f of s.d.seen)
       if (f.type === "receipt_update") {
         expect(f.state).toBe("expired");
-        expect(f.reason).not.toBe("recipient_closed");
+        expect(f.reason ?? null).toBeNull();
         told.set(f.msg_id, (told.get(f.msg_id) ?? 0) + 1);
       }
     expect(told.size).toBe(total);
@@ -579,12 +579,12 @@ describe("closed-session work drains from the alarm", () => {
     await until(d, "agent_ok");
     await sync(d);
     const oldSet = new Set(old);
-    // The reopen keeps the session boundary: the flush serves the oldest
-    // batch of the old mail (one batch per agent_up).
+    // The reopen keeps the session boundary: the flush serves all of the
+    // old mail.
     const flushed = d.seen.filter(
       (f) => f.type === "deliver" && oldSet.has(f.msg_id),
     );
-    expect(flushed.length).toBeGreaterThanOrEqual(SWEEP_BATCH);
+    expect(flushed.map((f) => f.msg_id).sort()).toEqual([...old].sort());
     for (const f of flushed)
       if (f.type === "deliver")
         d.send({ v: 1, id: `a-${f.msg_id}`, type: "ack", msg_id: f.msg_id });
@@ -642,7 +642,7 @@ describe("closed-session work drains from the alarm", () => {
     ).toBe(unacked);
   }, 60_000);
 
-  it("acked notices past one batch: the drain deletes the bodies; a reopened session fetches none (not_found)", async () => {
+  it("acked notices past one batch: a session reopened before the drain fetches none (not_found); no body is left", async () => {
     const h = freshHub();
     const t0 = Date.now() + HOUR;
     await clock(h, t0);
@@ -662,10 +662,8 @@ describe("closed-session work drains from the alarm", () => {
     await sync(d);
     const leftover = notices.length - CLOSE_INLINE_BATCH;
     expect(await count(h, "select count(*) as n from mail")).toBe(leftover);
-    // The drain, one batch per alarm run, deletes the rest.
-    for (let k = 0; k < 5; k++) await alarmOnce(h);
-    expect(await count(h, "select count(*) as n from mail")).toBe(0);
-
+    // Reopen BEFORE the drain runs: the reopen drops the old session's
+    // acked bodies itself, so none is ever served to the new session.
     await clock(h, t0 + 10);
     d.send(up("u2", "victim", "Victim", n));
     await until(d, "agent_ok");
@@ -682,6 +680,9 @@ describe("closed-session work drains from the alarm", () => {
         code: "not_found",
       });
     }
+    expect(await count(h, "select count(*) as n from mail")).toBe(0);
+    for (let k = 0; k < 5; k++) await alarmOnce(h);
+    expect(await count(h, "select count(*) as n from mail")).toBe(0);
   });
 });
 
