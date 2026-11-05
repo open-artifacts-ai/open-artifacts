@@ -167,6 +167,14 @@ describe("retired keys never cross envs", () => {
       PUBKEYS.verifySignature("prod", payload, sig, pinned, retired),
     ).toThrow(/does not verify/);
   });
+  it("verifyCurrentSignature ignores a non-empty retired table", () => {
+    const pinned = { staging: xOf(NEW.publicKey), prod: xOf(OTHER.publicKey) };
+    const payload = Buffer.from("p");
+    const sig = sign(null, payload, OLD.privateKey).toString("base64url");
+    expect(() =>
+      PUBKEYS.verifyCurrentSignature("staging", payload, sig, pinned, retired),
+    ).toThrow(/does not verify/);
+  });
   it("verifyCurrentSignature takes the current key alone", () => {
     const pinned = { staging: xOf(NEW.publicKey), prod: xOf(OTHER.publicKey) };
     const payload = Buffer.from("p");

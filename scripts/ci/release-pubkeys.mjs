@@ -53,6 +53,9 @@ const pinnedOf = (env, pinned) => {
  * @param {Uint8Array} payload
  * @param {string} signature
  * @param {Readonly<Record<Env, string>>} [pinned]
+ * @param {Readonly<Record<Env, readonly string[]>>} [_retired] accepted and
+ *   ignored by construction, so a caller (or a test) can prove no retired key
+ *   is ever consulted here.
  * @returns {"verified"}
  */
 export function verifyCurrentSignature(
@@ -60,6 +63,7 @@ export function verifyCurrentSignature(
   payload,
   signature,
   pinned = RELEASE_PUBKEY,
+  _retired = RELEASE_RETIRED_PUBKEYS,
 ) {
   return verifySignature(env, payload, signature, pinned, {
     staging: [],
