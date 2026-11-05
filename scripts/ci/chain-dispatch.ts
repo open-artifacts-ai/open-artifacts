@@ -117,7 +117,7 @@ export function dispatchAndWait(o: Opts): Outcome {
         r.actor?.login === BOT &&
         r.head_branch === "main" &&
         Date.parse(r.created_at ?? "") >= since &&
-        r.display_title === title,
+        (r.display_title ?? "").includes(`[${o.chainId}]`),
     );
   };
 
