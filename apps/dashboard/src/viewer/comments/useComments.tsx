@@ -1,8 +1,10 @@
 import type {
   ArtifactSummary,
   CommentThread,
+  Me,
   SelectionAnchor,
 } from "@oa/shared";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
   useCallback,
@@ -13,6 +15,7 @@ import {
   useState,
 } from "react";
 import { useThreads } from "../../api/comments";
+import { qk } from "../../api/queries";
 import { isEmbed } from "../../embed";
 import type { createBridge } from "../bridge";
 import {
@@ -31,6 +34,8 @@ export type CommentsApi = {
   /** Comments are on for this artifact and this viewer isn't an embed. */
   enabled: boolean;
   canComment: boolean;
+  /** A guest or restricted member: the server refuses their writes as read-only. */
+  capped: boolean;
   /** Not signed in: composers ask for a display name. */
   guest: boolean;
   artifactId: string;
@@ -103,6 +108,8 @@ export function useCommentsController({
 }): CommentsApi {
   const id = artifact.id;
   const enabled = artifact.comments !== false && !isEmbed();
+  // Read, not subscribed: the shell has loaded /me before it mounts a viewer.
+  const capped = useQueryClient().getQueryData<Me>(qk.me)?.auth?.cap != null;
   const q = useThreads(id, enabled, !authed);
   const all = q.data?.threads;
   // Pinned to an older version by the address: not merely "behind" a current
@@ -200,6 +207,7 @@ export function useCommentsController({
     () => ({
       enabled,
       canComment: mayComment,
+      capped,
       guest: !authed,
       artifactId: id,
       version,
@@ -234,6 +242,7 @@ export function useCommentsController({
     [
       enabled,
       mayComment,
+      capped,
       authed,
       id,
       version,

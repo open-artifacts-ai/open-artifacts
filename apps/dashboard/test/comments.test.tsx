@@ -816,19 +816,23 @@ describe("comments: guests and Retry-After", () => {
     await waitFor(() => expect(seenTokens.at(-1)).toBe(TOKEN));
   });
 
-  it("a fresh guest's Resolve mints too: it goes under the lock and stores the returned token", async () => {
+  it("a fresh guest can Resolve with no token and no lock: the status change never mints", async () => {
     guestMocks();
     const seen: (string | null)[] = [];
+    let thread: object = oneThread;
     server.use(
       http.get(`*${R.comments(PUBLIC)}`, () =>
-        HttpResponse.json({ threads: [oneThread], open: 1, truncated: false }),
+        HttpResponse.json({ threads: [thread], open: 1, truncated: false }),
       ),
       http.patch("*/api/v1/artifacts/:id/comments/:tid", ({ request }) => {
         seen.push(request.headers.get(ANON_ID_HEADER));
-        return HttpResponse.json(
-          { ...oneThread, status: "resolved" },
-          { headers: { [ANON_ID_HEADER]: TOKEN } },
-        );
+        thread = {
+          ...oneThread,
+          status: "resolved",
+          resolvedBy: { kind: "guest", name: "Guest", me: true },
+          resolvedAt: "2026-11-05T11:00:00Z",
+        };
+        return HttpResponse.json(thread);
       }),
     );
     const request = vi.fn(
@@ -846,12 +850,18 @@ describe("comments: guests and Retry-After", () => {
       );
       await waitFor(() => expect(seen).toHaveLength(1));
       expect(seen[0]).toBeNull();
-      expect(request.mock.calls.some((c) => c[0] === "oa.anonId.mint")).toBe(
-        true,
+      expect(request).not.toHaveBeenCalled();
+      expect(localStorage.getItem("oa.anonId")).toBeNull();
+      // Resolved, shown as Guest, and Reopen is offered.
+      fireEvent.click(
+        await within(c).findByRole("button", { name: "Show resolved (1)" }),
       );
-      await waitFor(() =>
-        expect(localStorage.getItem("oa.anonId")).toBe(TOKEN),
-      );
+      expect(
+        await within(c).findByText(/Resolved by Guest/),
+      ).toBeInTheDocument();
+      expect(
+        within(c).getByRole("button", { name: "Reopen" }),
+      ).toBeInTheDocument();
     } finally {
       Reflect.deleteProperty(navigator, "locks");
     }
@@ -1202,5 +1212,64 @@ describe("comments: review round 1", () => {
     expect(within(c).queryByRole("button", { name: "Resolve" })).toBeNull();
     await act(async () => opts.at(-1)?.onCommentSelect(sel("nope")));
     expect(screen.queryByRole("textbox", { name: "Add a comment" })).toBeNull();
+  });
+});
+
+describe("comments: capped members", () => {
+  const capped = (cap: string | null) =>
+    server.use(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json({
+          ...fixtures.me,
+          auth: {
+            method: "dev",
+            readOnly: cap !== null,
+            cap,
+            expiresAt: null,
+          },
+        }),
+      ),
+    );
+  const refused = () =>
+    server.use(
+      http.post("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json(
+          { error: { code: "not_found", message: "Not found" } },
+          { status: 404 },
+        ),
+      ),
+    );
+  const write = async () => {
+    const c = await col();
+    const box = within(c).getByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: "hi" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    return c;
+  };
+
+  it("a capped member whose write is refused as read-only (404) is told they can only view", async () => {
+    capped("guest");
+    refused();
+    mount(viewerPath(OWNED));
+    const c = await write();
+    expect(
+      await within(c).findByText(
+        "Your account can only view, so you can't comment.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(c).queryByText("That comment is gone.")).toBeNull();
+  });
+
+  it("an uncapped 404 still says the comment is gone", async () => {
+    capped(null);
+    refused();
+    mount(viewerPath(OWNED));
+    const c = await write();
+    expect(
+      await within(c).findByText("That comment is gone."),
+    ).toBeInTheDocument();
   });
 });

@@ -69,6 +69,7 @@ function Composer({
   alwaysOpen?: boolean;
   failure?: (e: unknown) => React.ReactNode;
 }) {
+  const { capped } = useCommentsApi();
   const [text, setText] = useState(initial);
   const [open, setOpen] = useState(alwaysOpen);
   const [error, setError] = useState<unknown>(null);
@@ -135,7 +136,7 @@ function Composer({
       />
       {error != null && (
         <p role="alert" className={`${TXT} text-destructive`}>
-          {commentError(error)}
+          {commentError(error, capped)}
           {failure?.(error)}
         </p>
       )}
@@ -267,7 +268,7 @@ function CommentRow({
           </p>
           {delError != null && (
             <p role="alert" className={`${TXT} text-destructive`}>
-              {commentError(delError)}
+              {commentError(delError, api.capped)}
             </p>
           )}
           <div className="flex gap-2">
@@ -412,7 +413,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         )}
         {statusErr != null && (
           <p role="alert" className={`${TXT} text-destructive`}>
-            {commentError(statusErr)}
+            {commentError(statusErr, api.capped)}
           </p>
         )}
         {api.canComment && isActive ? (

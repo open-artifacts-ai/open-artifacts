@@ -17,13 +17,14 @@ import {
   withMintLock,
 } from "../viewer/anonId";
 import { ApiClientError, api, type RequestExtra } from "./client";
+import { cappedCopy } from "./errorCopy";
 
 export const commentsKey = (id: string) => ["comments", id] as const;
 
 /**
  * Guests (signed out) carry the per-artifact anon token in ANON_ID_HEADER, as
  * the bridge does for runtime calls, and store one the server returns. No
- * cookie. Creating a thread or a reply, or changing a thread's status, mints (a GET never does: with no
+ * cookie. Only creating a thread or a reply mints (a GET or a status change never does: with no
  * token it just reads as a guest), and a mint with no token yet runs inside
  * the browser-wide mint lock, so tabs opened at once share one token.
  */
@@ -89,7 +90,7 @@ export const useSetThreadStatus = (id: string, guest = false) =>
   useRefetching(
     id,
     guest,
-    true,
+    false,
     (v: { thread: string; status: "open" | "resolved" }, x) =>
       api.send(
         "PATCH",
@@ -137,8 +138,15 @@ const wait = (s: number) =>
     : `${Math.ceil(s / 60)} minutes`;
 
 /** The copy for a failed comment call (Product's strings where the spec has them). */
-export function commentError(e: unknown): string {
+export function commentError(e: unknown, capped = false): string {
   const code = e instanceof ApiClientError ? e.code : null;
+  // A capped (guest or restricted) member's writes are refused as read-only:
+  // the server answers 404, and says nothing about a missing comment.
+  if (
+    capped &&
+    (code === "not_found" || code === "forbidden" || code === "space_forbidden")
+  )
+    return cappedCopy("comment");
   switch (code) {
     case "rate_limited":
       return e instanceof ApiClientError && e.retryAfter
