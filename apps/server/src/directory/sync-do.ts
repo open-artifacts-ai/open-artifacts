@@ -38,8 +38,12 @@ export class DirectorySync extends DurableObject<Env> {
   // `mode` on every call: the caller's directory mode (services/directory.ts
   // syncModeFor: hosted, the billing tier's), which the alarms then follow.
 
-  kick(reason: KickReason, mode?: DirectoryMode): Promise<SyncStatus> {
-    return withoutCred(() => this.engine.kick(reason, undefined, mode));
+  kick(
+    reason: KickReason,
+    mode?: DirectoryMode,
+    paused?: boolean,
+  ): Promise<SyncStatus> {
+    return withoutCred(() => this.engine.kick(reason, undefined, mode, paused));
   }
 
   status(): Promise<SyncStatus> {
@@ -47,8 +51,8 @@ export class DirectorySync extends DurableObject<Env> {
   }
 
   /** A run is due and no token is in hand (services/directory.ts feedSync). */
-  wantsToken(mode?: DirectoryMode): Promise<boolean> {
-    return withoutCred(() => this.engine.wantsToken(undefined, mode));
+  wantsToken(mode?: DirectoryMode, paused?: boolean): Promise<boolean> {
+    return withoutCred(() => this.engine.wantsToken(undefined, mode, paused));
   }
 
   /** The caller's freshly minted token (never its capability), or why it failed. */
@@ -56,8 +60,11 @@ export class DirectorySync extends DurableObject<Env> {
     forKey: string,
     h: { token: string } | { error: MintFault },
     mode?: DirectoryMode,
+    paused?: boolean,
   ): Promise<void> {
-    return withoutCred(() => this.engine.handToken(forKey, h, undefined, mode));
+    return withoutCred(() =>
+      this.engine.handToken(forKey, h, undefined, mode, paused),
+    );
   }
 
   /** Null: nothing confirmable (no hold, or an unreadable group). */
@@ -65,9 +72,10 @@ export class DirectorySync extends DurableObject<Env> {
     groupId: string,
     by?: AuditActor,
     mode?: DirectoryMode,
+    paused?: boolean,
   ): Promise<SyncStatus | null> {
     return withoutCred(() =>
-      this.engine.confirmHeld(groupId, by, undefined, mode),
+      this.engine.confirmHeld(groupId, by, undefined, mode, paused),
     );
   }
 

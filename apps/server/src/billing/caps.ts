@@ -2,7 +2,7 @@ import type { PlanLimit, PlanLimitDetails } from "@oa/shared";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { scopedPlan } from "./features.js";
-import { billingOn } from "./plan.js";
+import { billingActive } from "./plan.js";
 
 // Free-tier caps (hosted billing, Manager decision 1): configuration only,
 // and NOT enforced until set. Each is a positive integer env var; unset,
@@ -44,7 +44,7 @@ export const freeCapsOf = (
 
 /** The caps that apply now: hosted, on the free tier; else null. */
 export function activeFreeCaps(env: Env): FreeCaps | null {
-  if (!billingOn(env) || scopedPlan()?.tier !== "free") return null;
+  if (!billingActive(env) || scopedPlan()?.tier !== "free") return null;
   const caps = freeCapsOf(env);
   return Object.values(caps).some((v) => v !== null) ? caps : null;
 }

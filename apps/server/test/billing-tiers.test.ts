@@ -281,7 +281,7 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
     ).toEqual({ value: '{"kept":true}' });
   });
 
-  it("the cron feeds directory sync only on a syncing, unlocked tier", async () => {
+  it("the cron pauses directory sync only on a locked plan (Team stays unpaused)", async () => {
     const lines: string[] = [];
     vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
       lines.push(a.map(String).join(" "));
@@ -301,9 +301,15 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
     await cachePlan(b.s.row, mid);
     await tick();
     expect(paused()).toBe(0);
-    // Team (frozen), a lapse, and free: paused, nothing disconnected.
+    // Team is frozen (groups stop) but not paused: its user lanes keep
+    // running, so no plan_paused line.
+    b.s.row = row({ tier: "team", version: 2 });
+    await cachePlan(b.s.row, mid);
+    const teamN = paused();
+    await tick();
+    expect(paused()).toBe(teamN);
+    // A lapse and free: paused, nothing disconnected.
     for (const r of [
-      row({ tier: "team", version: 2 }),
       row({ tier: "team", status: "lapsed", version: 3 }),
       row({ tier: "free", trialEndsAt: 1, version: 4 }),
     ]) {

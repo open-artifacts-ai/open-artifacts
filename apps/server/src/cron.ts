@@ -2,7 +2,7 @@ import { withBrokerProps } from "./auth/broker-transport.js";
 import { sweepLoginCodes } from "./auth/codes.js";
 import { usageTick } from "./billing/creators.js";
 import { planNow, withPlanScope } from "./billing/features.js";
-import { billingOn } from "./billing/plan.js";
+import { billingActive } from "./billing/plan.js";
 import { billingTick } from "./billing/store.js";
 import { stmt } from "./db/stmt.js";
 import { disconnectDirectory } from "./directory/connect.js";
@@ -19,7 +19,7 @@ import {
   sweepLostIndexJobs,
 } from "./services/artifacts.js";
 import { sweepAuditEvents } from "./services/audit.js";
-import { feedSync, kickSync, syncModeFor } from "./services/directory.js";
+import { feedSync, kickSync, syncPausedFor } from "./services/directory.js";
 import { checkLatestRelease } from "./services/release.js";
 import { directoryMode } from "./services/spaces.js";
 import { sweepUploads } from "./services/uploads.js";
@@ -130,7 +130,7 @@ async function run(
       // Hosted billing: read the tier through this tick's BILLING gate (and
       // retry a trial start an invite couldn't make), then the monthly
       // creator report. Both never throw; nothing on a self-hosted install.
-      if (billingOn(env))
+      if (billingActive(env))
         ctx.waitUntil(
           (async () => {
             const now = Date.now();
@@ -147,7 +147,7 @@ async function run(
       const fed = await feedSync(env);
       if (fed === "fed" || fed === "mint_failed")
         logInfo("system_job", { job: "directory-sync", state: fed });
-      else if (billingOn(env) && syncModeFor(env) === "frozen")
+      else if (syncPausedFor(env))
         logInfo("system_job", { job: "directory-sync", state: "plan_paused" });
       return;
     }

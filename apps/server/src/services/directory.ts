@@ -1,7 +1,7 @@
 import type { DirectoryMode, Member } from "@oa/shared";
 import { brokerTransportKind } from "../auth/broker-transport.js";
 import { scopedPlan } from "../billing/features.js";
-import { billingOn } from "../billing/plan.js";
+import { billingActive } from "../billing/plan.js";
 import { directoryClient } from "../directory/client.js";
 import { directorySignIn, SignInRefused } from "../directory/signin.js";
 import { readBinding } from "../directory/store.js";
@@ -88,7 +88,9 @@ export async function kickSync(
   const ns = env.DIRECTORY_SYNC;
   if (!ns) return;
   const run = (async () => {
-    await ns.get(ns.idFromName(SYNC_DO_NAME)).kick(reason, syncModeFor(env));
+    await ns
+      .get(ns.idFromName(SYNC_DO_NAME))
+      .kick(reason, syncModeFor(env), syncPausedFor(env));
     await feedSync(env);
   })().catch((e) => logWarn("directory_kick", e, { reason }));
   if (ctx) ctx.waitUntil(run);
@@ -138,7 +140,8 @@ export async function feedSync(env: Env): Promise<FeedOutcome> {
   // The alarm syncs nothing in this state either (a first connect too).
   if (!binding || !sealed) return "unbound";
   const stub = ns.get(ns.idFromName(SYNC_DO_NAME));
-  if (!(await stub.wantsToken(mode))) return "not_due";
+  const paused = syncPausedFor(env);
+  if (!(await stub.wantsToken(mode, paused))) return "not_due";
   const key = tokenFor(binding);
   let token: string;
   try {
@@ -158,24 +161,34 @@ export async function feedSync(env: Env): Promise<FeedOutcome> {
       key,
       { error: e instanceof TransportError ? e.stage : "internal" },
       mode,
+      paused,
     );
     return "mint_failed";
   }
-  await stub.handToken(key, { token }, mode);
+  await stub.handToken(key, { token }, mode, paused);
   return "fed";
 }
 
 /**
  * The directory mode DirectorySync follows, handed over on every kick, feed
  * and RPC: this invocation's (featuresOf: hosted, the billing tier's;
- * Business google, Team frozen). Hosted, a locked plan (free, read-only)
- * is frozen too: the DO calls nothing and fails nothing until it lifts.
+ * Business google, Team frozen). A locked plan (free, read-only) is frozen
+ * too, and also paused (syncPausedFor) so the DO calls nothing until it lifts.
  */
 export function syncModeFor(env: Env): DirectoryMode {
   const mode = directoryMode(env);
-  return billingOn(env) && mode !== "off" && scopedPlan()?.lock
-    ? "frozen"
-    : mode;
+  return syncPausedFor(env) ? "frozen" : mode;
+}
+
+/**
+ * A plan lock pauses user sync too (the DO calls nothing and fails nothing):
+ * only with the BILLING gate bound and an actual lock on this invocation's
+ * plan. Handed to the DO on every call, so anything else clears it.
+ */
+export function syncPausedFor(env: Env): boolean {
+  return (
+    billingActive(env) && directoryMode(env) !== "off" && !!scopedPlan()?.lock
+  );
 }
 
 /** The one DirectorySync per install. */

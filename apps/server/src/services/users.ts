@@ -6,7 +6,13 @@ import { withCap, withPlan } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { capOf, planCapsRole } from "../auth/policy.js";
 import { seedPlan } from "../billing/features.js";
-import { billingOn, CHECK_KEY, PLAN_KEY, planOfRaw } from "../billing/plan.js";
+import {
+  billingActive,
+  billingOn,
+  CHECK_KEY,
+  PLAN_KEY,
+  planOfRaw,
+} from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -316,11 +322,22 @@ export type UserWithEpoch = {
   capSince: number | null;
 };
 
-function withEpoch(env: Env, row: UserByIdRow | null): UserWithEpoch | null {
+async function withEpoch(
+  env: Env,
+  row: UserByIdRow | null,
+): Promise<UserWithEpoch | null> {
   // Every request's user comes through here (session, PAT, OAuth), so the cap
   // is set once (P3's capOf: the one source authz's CAP reads). Sources: P2's
   // authConfig.guestsReadOnly and P3's restriction columns (0009).
   if (!row) return null;
+  // Hosted without the BILLING gate: billing is inert. A plan or check cached
+  // while a gate was bound would otherwise make a later binding start
+  // read-only on a stale lastGoodAt, so it goes (read in this statement; the
+  // delete runs only when something is there).
+  if (!billingActive(env) && (row.billingPlan || row.billingCheck))
+    await env.DB.prepare("delete from settings where key in (?1, ?2)")
+      .bind(PLAN_KEY, CHECK_KEY)
+      .run();
   const plan = planOfRaw(env, row.billingPlan, row.billingCheck, Date.now());
   // The same statement read the plan: this invocation keeps it (no second
   // read for its features checks).

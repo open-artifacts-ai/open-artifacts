@@ -231,7 +231,7 @@ export async function readPlan(
   env: Env,
   now = Date.now(),
 ): Promise<EffectivePlan | null> {
-  if (!billingOn(env)) return null;
+  if (!billingActive(env)) return null;
   const r = await env.DB.prepare(READ_PLAN).first<{
     plan: string | null;
     check: string | null;
