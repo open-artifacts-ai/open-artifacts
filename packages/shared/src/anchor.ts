@@ -45,6 +45,10 @@ export const anchorSchema = z.discriminatedUnion("kind", [
   pinAnchorSchema,
 ]);
 
+/** A selection as the frame reports it: the shell adds the version it is viewing. */
+export const selectionAnchorSchema = textAnchorSchema.omit({ version: true });
+export type SelectionAnchor = z.infer<typeof selectionAnchorSchema>;
+
 export type BlockHint = z.infer<typeof blockHintSchema>;
 export type NoteAnchor = z.infer<typeof noteAnchorSchema>;
 export type TextAnchor = z.infer<typeof textAnchorSchema>;

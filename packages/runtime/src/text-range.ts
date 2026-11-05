@@ -109,3 +109,13 @@ export function offsetsToRange(
   r.setEnd(eNode, eOff);
   return r;
 }
+
+/** The text node holding the character at flat offset `offset`, or null. */
+export function textNodeAt(root: Node, offset: number): Text | null {
+  let pos = 0;
+  for (const t of textNodes(root)) {
+    if (offset < pos + t.data.length) return offset >= pos ? t : null;
+    pos += t.data.length;
+  }
+  return null;
+}
