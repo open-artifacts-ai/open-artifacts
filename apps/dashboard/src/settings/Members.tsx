@@ -33,6 +33,7 @@ import {
   useSetRestricted,
 } from "../api/queries";
 import { emailEnabled } from "../auth/emailEnabled";
+import { useFrozen } from "../auth/permissions";
 import {
   inviteRefusedCopy,
   inviteUncertainCopy,
@@ -65,7 +66,7 @@ import {
 import { EraseDialog } from "./EraseDialog";
 import { restrictionReason } from "./restriction";
 import { TransferDialog } from "./Transfer";
-import { errorText, muted, SettingsCard, STACK } from "./ui";
+import { errorText, muted, ReadOnlyNote, SettingsCard, STACK } from "./ui";
 
 type Assignable = "admin" | "member";
 /** Owner is never offered, to anyone. */
@@ -95,7 +96,9 @@ function RoleSelect({
   value,
   placeholder,
   onChange,
+  disabled,
 }: {
+  disabled?: boolean;
   label: string;
   value: Assignable | undefined;
   placeholder?: string;
@@ -104,6 +107,7 @@ function RoleSelect({
   return (
     <Select
       value={value ?? ""}
+      disabled={disabled}
       onValueChange={(v) => onChange(v as Assignable)}
     >
       <SelectTrigger
@@ -201,7 +205,11 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
             refused?.success
               ? inviteRefusedCopy(refused.data.reason, parsed, domains)
               : e instanceof ApiClientError
-                ? e.message
+                ? e.code.startsWith("plan_") || e.code === "billing_unavailable"
+                  ? errorCopy(e, e.message, {
+                      owner: me?.user.role === "owner" && me.auth?.cap == null,
+                    })
+                  : e.message
                 : "Couldn't add.",
           );
         },
@@ -376,7 +384,10 @@ function Row({
   you,
   spaces,
   owner,
+  frozen,
 }: {
+  /** The plan locked the instance (cap "plan"): reads stay, every write control is off. */
+  frozen: boolean;
   m: Member;
   you: boolean;
   /** The spaces feature: only the copy names spaces (parity 1 ungates the rest). */
@@ -385,7 +396,7 @@ function Row({
   owner: boolean;
 }) {
   const denyAdmin = (id: string) => denyMember(id, ADMIN_ONLY);
-  const patch = usePatchMember(denyAdmin);
+  const patch = usePatchMember(denyAdmin, denyMember);
   const [confirm, setConfirm] = useState(false);
   const [moving, setMoving] = useState(false);
   const [restricting, setRestricting] = useState(false);
@@ -447,6 +458,7 @@ function Row({
           label={`Role for ${label}`}
           value={m.role === "admin" || m.role === "member" ? m.role : undefined}
           placeholder="Guest"
+          disabled={frozen}
           onChange={(role) => {
             clearDenied(m.id);
             patch.mutate({ id: m.id, role });
@@ -478,6 +490,7 @@ function Row({
               variant="ghost"
               size="sm"
               className="justify-self-end"
+              disabled={frozen}
               aria-label={`More for ${label}`}
             >
               <svg
@@ -661,6 +674,8 @@ export function Members() {
     state.status === "authed" &&
     state.me.user.role === "owner" &&
     state.me.auth?.cap == null;
+  // The plan locked the instance: this page still lists, nothing here writes.
+  const frozen = useFrozen();
   // Spaces only change copy here: restriction and the More menu are on every install (parity 1).
   const spaces = state.status === "authed" && hasFeature(state.me, "spaces");
   const departed = useDeparted(state.status === "authed" ? state.me : null);
@@ -684,6 +699,7 @@ export function Members() {
   }, [departed.retrying, departed.failed, nobodyLeft]);
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       {(departed.people.length > 0 || departed.failed) && (
         <DepartedCard
           people={departed.people}
@@ -693,7 +709,11 @@ export function Members() {
           retrying={departed.retrying}
           meId={me?.id ?? null}
           spaces={spaces}
-          capped={state.status === "authed" && state.me.auth?.cap != null}
+          capped={
+            state.status === "authed" &&
+            state.me.auth?.cap != null &&
+            state.me.auth.cap !== "plan"
+          }
         />
       )}
       <SettingsCard
@@ -716,6 +736,7 @@ export function Members() {
             <Button
               size="sm"
               className="text-[length:var(--oa-text-sm)]"
+              disabled={frozen}
               onClick={() => setInviting(true)}
             >
               Add member
@@ -758,6 +779,7 @@ export function Members() {
                     you={m.id === me?.id}
                     spaces={spaces}
                     owner={owner}
+                    frozen={frozen}
                   />
                 ))}
               </ul>
@@ -929,7 +951,10 @@ function DepartedCard({
   /** Who "Transfer all to me" moves them to. */
   meId: string | null;
   spaces: boolean;
-  /** A restricted (capped) caller can't receive artifacts: no "to me". */
+  /**
+   * A restricted (capped) caller can't receive artifacts: no "to me". The
+   * plan cap isn't one (a billing state): its Transfer shows, locked.
+   */
   capped: boolean;
 }) {
   return (
@@ -986,6 +1011,9 @@ function DepartedRow({
   const [open, setOpen] = useState<{ pick: string | null } | null>(null);
   const [restoring, setRestoring] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  // The plan locked the instance: transfers are refused (a team route), so
+  // every entry point is off. Restore stays.
+  const frozen = useFrozen();
   const label = personName(m);
   const n = summary.live;
   return (
@@ -1016,6 +1044,7 @@ function DepartedRow({
             size="sm"
             variant="outline"
             className="text-[length:var(--oa-text-sm)]"
+            disabled={frozen}
             onClick={() => setOpen({ pick: toMe })}
           >
             Transfer all to me…
@@ -1026,6 +1055,7 @@ function DepartedRow({
             variant="outline"
             className="text-[length:var(--oa-text-sm)]"
             aria-label={`Transfer ${label}'s artifacts`}
+            disabled={frozen}
             onClick={() => setOpen({ pick: null })}
           >
             Transfer
@@ -1051,7 +1081,10 @@ function DepartedRow({
             align="end"
             className="text-[length:var(--oa-text-sm)]"
           >
-            <DropdownMenuItem onSelect={() => setOpen({ pick: null })}>
+            <DropdownMenuItem
+              disabled={frozen}
+              onSelect={() => setOpen({ pick: null })}
+            >
               Transfer to someone else…
             </DropdownMenuItem>
             {m.status === "removed" && !isReleased(m) && (
