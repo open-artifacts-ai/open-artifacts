@@ -1035,6 +1035,7 @@ export function fenceWrites(cf: Cf, fence: () => Promise<void>): Cf {
       if (typeof v !== "function") return v;
       if (typeof k === "string" && CF_WRITES.has(k))
         return async (...a: unknown[]) => {
+          await fence();
           return v.apply(t, a);
         };
       return v.bind(t);
