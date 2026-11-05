@@ -222,7 +222,7 @@ const ENSURE_ROW_SQL =
 const CUSTOMER_SQL =
   "SELECT stripe_customer_id FROM tiers WHERE install_id = ?1";
 const SUBSCRIPTION_SQL =
-  "SELECT stripe_subscription_id, status FROM tiers WHERE install_id = ?1";
+  "SELECT stripe_subscription_id, status, tier FROM tiers WHERE install_id = ?1";
 // Only where none is mapped yet: a concurrent winner's id is kept.
 const MAP_CUSTOMER_SQL =
   "UPDATE tiers SET stripe_customer_id = ? WHERE install_id = ? AND stripe_customer_id IS NULL";
@@ -334,10 +334,18 @@ async function checkout(
   // Checkout (a second subscription would be billed alongside the first).
   const held = await env.BILLING_DB.prepare(SUBSCRIPTION_SQL)
     .bind(install)
-    .first<{ stripe_subscription_id: string | null; status: string }>();
+    .first<{
+      stripe_subscription_id: string | null;
+      status: string;
+      tier: string | null;
+    }>();
+  // A live paid subscription (a trial or free row with an id is an
+  // unfinished first payment: it may retry), or a suspended one.
   if (
     held?.stripe_subscription_id &&
-    (held.status === "active" || held.status === "past_due")
+    (held.status === "suspended" ||
+      ((held.tier === "team" || held.tier === "business") &&
+        (held.status === "active" || held.status === "past_due")))
   ) {
     console.log("billing checkout subscription_exists", install);
     return bad("subscription_exists", 409);

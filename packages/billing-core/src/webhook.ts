@@ -126,6 +126,7 @@ export function tierFromSubscription(
 ): PaidTier | null {
   const items =
     isObj(sub.items) && Array.isArray(sub.items.data) ? sub.items.data : [];
+  const configured = Boolean(prices.team || prices.business);
   for (const item of items) {
     if (!isObj(item) || !isObj(item.price)) continue;
     const p = item.price;
@@ -137,10 +138,13 @@ export function tierFromSubscription(
             ? "business"
             : null
         : null;
-    const t =
-      byId ??
-      (isObj(p.metadata) ? asTier(p.metadata.tier) : null) ??
-      asTier(p.lookup_key);
+    // With the configured price ids, only they name a tier; an unknown
+    // price falls through to the subscription's metadata.
+    const t = configured
+      ? byId
+      : (byId ??
+        (isObj(p.metadata) ? asTier(p.metadata.tier) : null) ??
+        asTier(p.lookup_key));
     if (t) return t;
   }
   return isObj(sub.metadata) ? asTier(sub.metadata.tier) : null;
@@ -156,11 +160,11 @@ export function statusFromSubscription(s: unknown): TierStatus | null {
     case "unpaid":
       return "past_due";
     case "canceled":
-    case "incomplete_expired":
     case "paused":
       return "lapsed";
     default:
       // incomplete: the first payment is still pending; nothing changes.
+      // incomplete_expired: it never completed; changeFor only drops the id.
       return null;
   }
 }
@@ -224,8 +228,25 @@ export function changeFor(
     case "customer.subscription.updated": {
       const sets: Set[] = [];
       const status = statusFromSubscription(o.status);
-      // incomplete (first payment pending): no tier yet either.
-      const tier = status ? tierFromSubscription(o, prices) : null;
+      const subId = typeof o.id === "string" && SUB_ID.test(o.id) ? o.id : null;
+      if (o.status === "incomplete_expired") {
+        // The first payment never completed: nothing it did stays, except
+        // that a subscription id it set is dropped (so /checkout can retry).
+        return subId
+          ? [
+              {
+                sql: "stripe_subscription_id = CASE WHEN stripe_subscription_id = ? THEN NULL ELSE stripe_subscription_id END",
+                args: [subId],
+              },
+            ]
+          : null;
+      }
+      // Only a live subscription (active or past_due) sets the tier; an
+      // incomplete, canceled or paused one never does.
+      const tier =
+        status === "active" || status === "past_due"
+          ? tierFromSubscription(o, prices)
+          : null;
       if (tier) sets.push({ sql: "tier = ?", args: [tier] });
       if (status === "active")
         sets.push(
@@ -245,8 +266,9 @@ export function changeFor(
       // Stripe's own trial (trialing), when one runs: its end.
       if (o.status === "trialing" && typeof o.trial_end === "number")
         sets.push({ sql: "trial_ends_at = ?", args: [o.trial_end * 1000] });
-      if (typeof o.id === "string" && SUB_ID.test(o.id))
-        sets.push({ sql: "stripe_subscription_id = ?", args: [o.id] });
+      // incomplete (status null) changes nothing, not even the id.
+      if (status && subId)
+        sets.push({ sql: "stripe_subscription_id = ?", args: [subId] });
       return sets.length ? sets : null;
     }
     case "customer.subscription.deleted":
@@ -446,12 +468,28 @@ export async function handleStripeWebhook(
     ];
     // The sets use plain `?`; the WHERE binds by number after them.
     const n = sets.reduce((k, s) => k + s.args.length, 0);
-    const order = IN_ORDER[stream].replaceAll("?1", `?${n + 3}`);
+    const isCheckout = ev.type === "checkout.session.completed";
+    // Checkout names the subscription it sets (?n+2); the other events the
+    // one they are about.
+    const eventSub = isCheckout
+      ? typeof ev.object.subscription === "string" &&
+        SUB_ID.test(ev.object.subscription)
+        ? ev.object.subscription
+        : null
+      : subscriptionOf(ev);
+    let order = IN_ORDER[stream].replaceAll("?1", `?${n + 3}`);
+    // A resubscribe's checkout is never "the old subscription revived": in
+    // the same second as the old one's deletion it still applies when its
+    // subscription differs from the row's.
+    if (isCheckout && eventSub)
+      order = `(${order} OR (?${n + 3} = coalesce(last_event_created, 0) AND stripe_subscription_id IS NOT ?${n + 2}))`;
     // Subscription and invoice events apply only to the row's own
-    // subscription (or while it has none: checkout sets it).
-    const own =
-      ev.type === "checkout.session.completed"
-        ? ""
+    // subscription (or while it has none: checkout sets it). An invoice
+    // naming no subscription (a one-off) never moves the row.
+    const own = isCheckout
+      ? ""
+      : ev.type.startsWith("invoice.") && !eventSub
+        ? " AND 0"
         : ` AND (stripe_subscription_id IS NULL OR stripe_subscription_id = ?${n + 2})`;
     const res = await db.batch<{ known?: number; install_id?: string }>([
       db.prepare(KNOWN).bind(customer),
@@ -462,12 +500,7 @@ export async function handleStripeWebhook(
           // replay or an unknown customer.
           `UPDATE tiers SET ${sets.map((s) => s.sql).join(", ")} WHERE stripe_customer_id = ?${n + 1} AND changes() = 1${own} AND ${order} RETURNING install_id`,
         )
-        .bind(
-          ...sets.flatMap((s) => s.args),
-          customer,
-          own ? subscriptionOf(ev) : null,
-          ev.created,
-        ),
+        .bind(...sets.flatMap((s) => s.args), customer, eventSub, ev.created),
     ]);
     if (!res[0]?.results[0]?.known) {
       if (now / 1000 - ev.created < UNKNOWN_RETRY_S) {

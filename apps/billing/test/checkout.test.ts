@@ -2,6 +2,7 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env as testEnv } from "cloudflare:workers";
 import type { D1Migration } from "@cloudflare/vitest-plugin";
 import { keyId, publicFromPkcs8, signRequest } from "@oa/auth-core";
+import { signStripePayload } from "@oa/billing-core";
 import { clearRegistryCache } from "@oa/broker-core";
 import {
   afterEach,
@@ -307,6 +308,95 @@ describe("POST /checkout", () => {
     expect(
       (await call(req("/checkout", { install: A, plan: "business" }))).status,
     ).toBe(200);
+  });
+
+  it("the guard needs a paid tier: a trial or free row with a subscription id may check out (N9c)", async () => {
+    for (const tier of ["free", "trial"]) {
+      await seed(A, "cus_existingA", tier);
+      await db
+        .prepare(
+          "UPDATE tiers SET stripe_subscription_id = 'sub_unpaid1' WHERE install_id = ?1",
+        )
+        .bind(A)
+        .run();
+      fakeStripe();
+      expect(
+        (await call(req("/checkout", { install: A, plan: "team" }))).status,
+      ).toBe(200);
+      await db.prepare("DELETE FROM tiers").run();
+    }
+  });
+
+  it("a suspended row with a subscription is refused too (N10)", async () => {
+    await seed(A, "cus_existingA", "team");
+    await db
+      .prepare(
+        "UPDATE tiers SET stripe_subscription_id = 'sub_live1', status = 'suspended' WHERE install_id = ?1",
+      )
+      .bind(A)
+      .run();
+    const s = fakeStripe();
+    const r = await call(req("/checkout", { install: A, plan: "business" }));
+    expect([r.status, await r.json()]).toEqual([
+      409,
+      { error: "subscription_exists" },
+    ]);
+    expect(s.calls).toEqual([]);
+  });
+
+  it("a first payment that never completes leaves a trial row free to retry (N9)", async () => {
+    await seed(A, "cus_existingA", "trial");
+    const hook = async (type: string, status: string, n: number) => {
+      const body = JSON.stringify({
+        id: `evt_n9_${n}`,
+        object: "event",
+        type,
+        livemode: false,
+        created: Math.floor(Date.now() / 1000) + n,
+        data: {
+          object: {
+            id: "sub_Pending1",
+            object: "subscription",
+            customer: "cus_existingA",
+            status,
+            metadata: { tier: "team" },
+          },
+        },
+      });
+      const sig = await signStripePayload(
+        body,
+        "whsec_test_n9_0123456789",
+        Math.floor(Date.now() / 1000),
+      );
+      return call(
+        new Request(`${ORIGIN}/stripe/webhook`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "stripe-signature": sig,
+            "cf-connecting-ip": "1.2.3.4",
+          },
+          body,
+        }),
+        { ...env, STRIPE_WEBHOOK_SECRET: "whsec_test_n9_0123456789" },
+      );
+    };
+    expect(
+      (await hook("customer.subscription.created", "incomplete", 1)).status,
+    ).toBe(200);
+    fakeStripe();
+    expect(
+      (await call(req("/checkout", { install: A, plan: "team" }))).status,
+    ).toBe(200);
+    expect(
+      (await hook("customer.subscription.updated", "incomplete_expired", 2))
+        .status,
+    ).toBe(200);
+    expect(await rowOf(A)).toMatchObject({
+      tier: "trial",
+      status: "active",
+      stripe_subscription_id: null,
+    });
   });
 
   it("a retried identical request (same ts) is the same customer and the same session", async () => {

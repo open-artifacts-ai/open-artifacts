@@ -225,6 +225,37 @@ describe("pure helpers", () => {
       ).toBeNull();
   });
 
+  it("with the price ids configured, only those ids name a tier; an unknown price falls to metadata", () => {
+    const prices = { team: "price_T", business: "price_B" };
+    const priced = (price: Record<string, unknown>, tier?: string) =>
+      sub({
+        items: { data: [{ price }] },
+        ...(tier ? { metadata: { tier } } : {}),
+      });
+    // Price metadata or lookup_key from an unknown price is not trusted.
+    expect(
+      tierFromSubscription(
+        priced({ id: "price_X", metadata: { tier: "business" } }),
+        prices,
+      ),
+    ).toBeNull();
+    expect(
+      tierFromSubscription(
+        priced({ id: "price_X", lookup_key: "business" }, "team"),
+        prices,
+      ),
+    ).toBe("team");
+    expect(
+      tierFromSubscription(priced({ id: "price_B" }, "team"), prices),
+    ).toBe("business");
+    // Without the ids the order is unchanged.
+    expect(
+      tierFromSubscription(
+        priced({ id: "price_X", metadata: { tier: "business" } }),
+      ),
+    ).toBe("business");
+  });
+
   it("tierFromSubscription: the current price wins over the subscription's metadata (H1)", () => {
     // Plan switch: Business price, metadata still says team (and the reverse).
     const priced = (price: Record<string, unknown>, tier: string) =>
@@ -337,22 +368,22 @@ describe("handleStripeWebhook", () => {
   });
 
   it("payment failed starts grace once; paid ends it; deleted lapses; nothing is deleted", async () => {
-    const first = event("invoice.payment_failed", { customer: CUS_A });
+    const first = event("invoice.payment_failed", inv());
     await deliver(first);
     expect(await row(A)).toMatchObject({
       status: "past_due",
       grace_until: first.created * 1000 + GRACE_MS,
     });
-    await deliver(event("invoice.payment_failed", { customer: CUS_A }), {
+    await deliver(event("invoice.payment_failed", inv()), {
       now: NOW + 1000,
     });
     expect((await row(A)).grace_until).toBe(first.created * 1000 + GRACE_MS);
-    await deliver(event("invoice.paid", { customer: CUS_A }));
+    await deliver(event("invoice.paid", inv()));
     expect(await row(A)).toMatchObject({ status: "active", grace_until: null });
     await deliver(event("customer.subscription.deleted", sub()));
     expect(await row(A)).toMatchObject({ tier: "trial", status: "lapsed" });
     // An old invoice paid never revives a lapsed row.
-    await deliver(event("invoice.paid", { customer: CUS_A }));
+    await deliver(event("invoice.paid", inv()));
     expect((await row(A)).status).toBe("lapsed");
     expect(
       await db
@@ -383,10 +414,7 @@ describe("handleStripeWebhook", () => {
   it("grace runs from the event's created time, not from a late delivery (L1)", async () => {
     const created = T - 3 * 86_400;
     const late = { now: NOW + 3 * 86_400_000, t: T + 3 * 86_400 };
-    await deliver(
-      event("invoice.payment_failed", { customer: CUS_A }, { created }),
-      late,
-    );
+    await deliver(event("invoice.payment_failed", inv(), { created }), late);
     expect((await row(A)).grace_until).toBe(created * 1000 + GRACE_MS);
     await db
       .prepare(
@@ -401,6 +429,110 @@ describe("handleStripeWebhook", () => {
       late,
     );
     expect((await row(A)).grace_until).toBe((created + 10) * 1000 + GRACE_MS);
+  });
+
+  it("an unfinished first payment changes nothing; only a live status sets the tier (N9)", async () => {
+    await db
+      .prepare("UPDATE tiers SET tier = 'trial' WHERE install_id = ?")
+      .bind(A)
+      .run();
+    const before = await row(A);
+    // incomplete: no tier, no subscription id, no status.
+    await deliver(
+      event(
+        "customer.subscription.created",
+        sub({ status: "incomplete", metadata: { tier: "business" } }),
+      ),
+    );
+    expect(await row(A)).toMatchObject({
+      tier: "trial",
+      status: "active",
+      stripe_subscription_id: null,
+    });
+    // incomplete_expired with no matching id: nothing changes but the key.
+    await deliver(
+      event(
+        "customer.subscription.updated",
+        sub({ status: "incomplete_expired" }),
+      ),
+    );
+    expect(await row(A)).toMatchObject({
+      tier: "trial",
+      status: "active",
+      stripe_subscription_id: null,
+    });
+    // A canceled subscription lapses but never sets a tier.
+    await deliver(
+      event("customer.subscription.updated", sub({ status: "canceled" })),
+    );
+    expect(await row(A)).toMatchObject({ tier: "trial", status: "lapsed" });
+    expect(before.tier).toBe("trial");
+    // incomplete_expired clears the row's id only when it is the event's.
+    await db
+      .prepare(
+        "UPDATE tiers SET status = 'active', stripe_subscription_id = 'sub_Test1' WHERE install_id = ?",
+      )
+      .bind(A)
+      .run();
+    await deliver(
+      event(
+        "customer.subscription.updated",
+        sub({ id: "sub_Test1", status: "incomplete_expired" }),
+      ),
+    );
+    expect(await row(A)).toMatchObject({
+      status: "active",
+      stripe_subscription_id: null,
+    });
+  });
+
+  it("a resubscribe's checkout in the second its old subscription ended still applies (N6)", async () => {
+    await deliver(
+      event(
+        "checkout.session.completed",
+        { customer: CUS_A, subscription: "sub_Test1", payment_status: "paid" },
+        { created: T + 50 },
+      ),
+    );
+    await deliver(
+      event("customer.subscription.deleted", sub(), { created: T + 100 }),
+    );
+    expect((await row(A)).status).toBe("lapsed");
+    const checkout = (subscription: string, id: string) =>
+      event(
+        "checkout.session.completed",
+        {
+          customer: CUS_A,
+          subscription,
+          payment_status: "paid",
+          metadata: { tier: "business" },
+        },
+        { created: T + 100, id },
+      );
+    // The old subscription's own checkout, same second: still skipped.
+    await deliver(checkout("sub_Test1", "evt_n6_same"));
+    expect((await row(A)).status).toBe("lapsed");
+    // A different subscription: the resubscribe applies.
+    await deliver(checkout("sub_Test2", "evt_n6_new"));
+    expect(await row(A)).toMatchObject({
+      status: "active",
+      tier: "business",
+      stripe_subscription_id: "sub_Test2",
+    });
+  });
+
+  it("an invoice naming no subscription never moves the row (N7)", async () => {
+    await db
+      .prepare("UPDATE tiers SET tier = 'trial' WHERE install_id = ?")
+      .bind(A)
+      .run();
+    const before = await row(A);
+    for (const type of ["invoice.payment_failed", "invoice.paid"]) {
+      expect((await deliver(event(type, { customer: CUS_A }))).status).toBe(
+        200,
+      );
+      expect(await row(A)).toEqual(before);
+    }
   });
 
   it("subscription events and checkout never overwrite a suspended row (M3)", async () => {
@@ -463,7 +595,7 @@ describe("handleStripeWebhook", () => {
   });
 
   it("idempotent: a replayed event id changes nothing", async () => {
-    const ev = event("invoice.payment_failed", { customer: CUS_A });
+    const ev = event("invoice.payment_failed", inv());
     await deliver(ev);
     const once = await row(A);
     expect((await deliver(ev, { now: NOW + 5000 })).status).toBe(200);
@@ -506,7 +638,7 @@ describe("handleStripeWebhook", () => {
   it("an unknown customer is 409 and its event id is not recorded, so Stripe retries", async () => {
     const a = await row(A);
     const b = await row(B);
-    const ev = event("invoice.payment_failed", { customer: "cus_Nobody" });
+    const ev = event("invoice.payment_failed", inv({ customer: "cus_Nobody" }));
     const res = await deliver(ev);
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: "unknown_customer" });
@@ -626,7 +758,7 @@ describe("handleStripeWebhook", () => {
     it("deleted, then an updated from the same second: stays lapsed", async () => {
       await deliver(event("customer.subscription.deleted", sub(), at(T + 100)));
       await deliver(event("customer.subscription.updated", sub(), at(T + 100)));
-      await deliver(event("invoice.paid", { customer: CUS_A }, at(T + 100)));
+      await deliver(event("invoice.paid", inv(), at(T + 100)));
       expect((await row(A)).status).toBe("lapsed");
     });
 
