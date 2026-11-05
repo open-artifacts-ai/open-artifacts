@@ -1,14 +1,12 @@
 import type { AccessLevel } from "@oa/shared";
 import {
   ANON_ID_HEADER,
-  CommentEditSchema,
-  CommentListQuerySchema,
   isId,
-  NewReplySchema,
-  NewThreadSchema,
-  ThreadStatusPatchSchema,
+  NewThreadBodySchema,
+  ReplyBodySchema,
 } from "@oa/shared";
 import type { Context } from "hono";
+import { z } from "zod";
 import type { ArtifactRow } from "../auth/authz.js";
 import { authorize, caller, canCtx } from "../auth/authz.js";
 import { can, type PolicyAction } from "../auth/policy.js";
@@ -133,8 +131,23 @@ function withAnon(issued: string | null, res: Response): Response {
   return out;
 }
 
-const bad = (e: unknown): never => {
-  throw new ApiError("bad_request", "Invalid request body", e);
+const StatusQuery = z.object({
+  status: z.enum(["open", "resolved", "all"]).default("all"),
+});
+const StatusPatch = z.strictObject({ status: z.enum(["open", "resolved"]) });
+const EditBody = z.strictObject({ body: z.string() });
+
+/** A body that failed its schema: the anchor's issues are invalid_anchor, the body's invalid_body. */
+const bad = (issues: { path: PropertyKey[] }[]): never => {
+  const first = issues[0]?.path[0];
+  if (first === "anchor")
+    throw new ApiError("invalid_anchor", "Invalid anchor", issues);
+  if (first === "body")
+    throw new ApiError(
+      "invalid_body",
+      "A comment is 1 to 2,000 characters after trimming",
+    );
+  throw new ApiError("bad_request", "Invalid request body", issues);
 };
 
 export function mountComments(app: AppType): void {
@@ -145,7 +158,7 @@ export function mountComments(app: AppType): void {
       level,
       artifact: art,
     } = await open(c, "comments.read");
-    const q = CommentListQuerySchema.safeParse({
+    const q = StatusQuery.safeParse({
       status: c.req.query("status") ?? undefined,
     });
     if (!q.success) throw new ApiError("bad_request", "Invalid status");
@@ -156,7 +169,7 @@ export function mountComments(app: AppType): void {
 
   app.post(COMMENTS, async (c) => {
     const { id, artifact, who: cw, level } = await open(c, "comments.write");
-    const raw = NewThreadSchema.safeParse(await jsonOf(c));
+    const raw = NewThreadBodySchema.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
     const { who, viewer, issued } = await identity(
       c,
@@ -177,7 +190,7 @@ export function mountComments(app: AppType): void {
   app.post(REPLIES, async (c) => {
     const { id, who: cw, level, artifact } = await open(c, "comments.write");
     const threadId = idParam(c, "threadId");
-    const raw = NewReplySchema.safeParse(await jsonOf(c));
+    const raw = ReplyBodySchema.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
     const { who, viewer, issued } = await identity(
       c,
@@ -197,7 +210,7 @@ export function mountComments(app: AppType): void {
   app.patch(THREAD, async (c) => {
     const { id, who: cw, level, artifact } = await open(c, "comments.write");
     const threadId = idParam(c, "threadId");
-    const raw = ThreadStatusPatchSchema.safeParse(await jsonOf(c));
+    const raw = StatusPatch.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
     // No mint here: a guest resolves under the identity they commented with.
     const { who: signed, viewer } = await identity(
@@ -223,7 +236,7 @@ export function mountComments(app: AppType): void {
     const { id, who: cw, level, artifact } = await open(c, "comments.write");
     const threadId = idParam(c, "threadId");
     const commentId = idParam(c, "commentId");
-    const raw = CommentEditSchema.safeParse(await jsonOf(c));
+    const raw = EditBody.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
     // An author edits: a guest by the identity they wrote under, never minted here.
     const { who, viewer } = await identity(

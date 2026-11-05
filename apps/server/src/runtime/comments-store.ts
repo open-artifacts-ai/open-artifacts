@@ -1,11 +1,9 @@
+import { type Anchor, COMMENT_BODY_MAX, newId } from "@oa/shared";
 import {
-  type Anchor,
-  COMMENT_BODY_MAX,
   COMMENTS_MAX_REPLIES,
   COMMENTS_MAX_THREADS,
   type CommentStatus,
-  newId,
-} from "@oa/shared";
+} from "../services/comment-rules.js";
 
 // The comments tables of the ArtifactRuntime DO (#682): its own SQLite,
 // beside docs and storage, never in the page data budget and never reachable

@@ -2,13 +2,10 @@ import {
   type Anchor,
   type AnchorInput,
   anchorInputSchema,
-  CONTENT_HASH_RE,
   type Comment,
   type CommentAuthor,
   type CommentList,
-  type CommentStatus,
-  cleanGuestName,
-  type Thread,
+  type CommentThread as Thread,
 } from "@oa/shared";
 import type { ArtifactRow } from "../auth/authz.js";
 import type { Env } from "../env.js";
@@ -28,6 +25,11 @@ import {
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import { verifyQuote, versionExists } from "./comment-anchor.js";
+import {
+  CONTENT_HASH_RE,
+  type CommentStatus,
+  cleanGuestName,
+} from "./comment-rules.js";
 import { effectiveName } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the

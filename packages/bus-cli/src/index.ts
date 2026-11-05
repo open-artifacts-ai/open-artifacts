@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { BUS_CMD } from "@oa/bus-protocol";
 
 export type Harness = "claude" | "opencode" | "codex" | "pi";
 export type Command = (
@@ -39,8 +40,7 @@ const COMMANDS = new Set([
   "version",
 ]);
 const HARNESSES = ["claude", "opencode", "codex", "pi"];
-const GLOBAL_USAGE =
-  "usage: npx @open-artifacts/bus global <add|rm> <dir>, or global list";
+const GLOBAL_USAGE = `usage: ${BUS_CMD} global <add|rm> <dir>, or global list`;
 /** Flags every command takes. */
 const COMMON = new Set(["no-color", "version", "home"]);
 /** Each command's own flags. */
@@ -77,9 +77,7 @@ export function parse(argv: string[]): Command {
   const takes =
     cmd === "mcp" ? 1 : cmd === "global" ? (rest[0] === "list" ? 1 : 2) : 0;
   if (cmd === "mcp" && rest.length === 0)
-    throw new Error(
-      "usage: npx @open-artifacts/bus mcp <claude|opencode|codex|pi>",
-    );
+    throw new Error(`usage: ${BUS_CMD} mcp <claude|opencode|codex|pi>`);
   if (cmd === "global" && rest.length < takes) throw new Error(GLOBAL_USAGE);
   const extra = rest[takes];
   if (extra !== undefined) throw new Error(`unexpected argument: ${extra}`);
@@ -119,9 +117,7 @@ function route(cmd: string, values: Values, positionals: string[]) {
     case "mcp": {
       const harness = positionals[0] ?? "";
       if (!HARNESSES.includes(harness))
-        throw new Error(
-          "usage: npx @open-artifacts/bus mcp <claude|opencode|codex|pi>",
-        );
+        throw new Error(`usage: ${BUS_CMD} mcp <claude|opencode|codex|pi>`);
       return { cmd, harness: harness as Harness };
     }
     case "uninstall":

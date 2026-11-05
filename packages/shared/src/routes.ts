@@ -158,28 +158,20 @@ export const R = {
    * (or X-OA-Embed: 1) connects anonymously. `gone` is followed by close 4403.
    */
   events: (id: string) => `${A}/${seg(id)}/events`,
+  /** GET ?status=open|resolved|all (default all) -> CommentList; POST NewThreadBody -> 201 CommentThread (#682). */
+  comments: (id: string) => `${A}/${seg(id)}/comments`,
+  /** PATCH { status } -> CommentThread. */
+  commentThread: (id: string, thread: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}`,
+  /** POST ReplyBody -> 201 Comment (does not reopen). */
+  commentReplies: (id: string, thread: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/replies`,
+  /** PATCH { body } -> Comment; DELETE -> 204 (the root's deletes the thread). */
+  comment: (id: string, thread: string, comment: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}`,
   /** GET Upgrade: websocket; frames are DataChange */
   dataSubscribe: (id: string, col: string) =>
     `${A}/${seg(id)}/data-subscribe?collection=${seg(col)}`,
-  /**
-   * Comments (#682). GET ?status=open|resolved|all (default all) -> CommentList
-   * (at most 500 threads by newest activity, 200 replies each); POST
-   * { anchor, body, guestName? } -> 201 Thread. Anyone who can open the
-   * artifact reads; commenting needs a signed-in caller, or a public artifact
-   * that allows anonymous data writes (the anon id header, as data writes).
-   * 400 invalid_anchor | invalid_body, 422 anchor_not_in_version, 403
-   * comments_off, 429 rate_limited (Retry-After). Embed requests get 403.
-   */
-  comments: (id: string) => `${A}/${seg(id)}/comments`,
-  /** PATCH { status } -> Thread (anyone who can comment). */
-  commentThread: (id: string, threadId: string) =>
-    `${A}/${seg(id)}/comments/${seg(threadId)}`,
-  /** POST { body, guestName? } -> 201 Comment. Does not reopen the thread. */
-  commentReplies: (id: string, threadId: string) =>
-    `${A}/${seg(id)}/comments/${seg(threadId)}/replies`,
-  /** PATCH { body } -> Comment (author only); DELETE -> 204 (author, owner, managers and editors; deleting the root deletes the thread). */
-  comment: (id: string, threadId: string, commentId: string) =>
-    `${A}/${seg(id)}/comments/${seg(threadId)}/comments/${seg(commentId)}`,
   /** GET -> AnonViewer ({ anonId }): an anonymous viewer's public id (runtime viewer.anonId()); artifacts with dataWriters "viewers" and the viewer capability only (401 signed in or otherwise). Verifies the ANON_ID_HEADER token or mints one (returned in that header), like anonymous writes; RL_ANON per IP. The id is per artifact. */
   anonId: (id: string) => `${A}/${seg(id)}/anon-id`,
   /** GET -> Page<StorageKey> */

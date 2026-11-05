@@ -22,6 +22,7 @@ import {
 } from "@oa/bus-ipc";
 import {
   BUS_CAPS,
+  BUS_CMD,
   BUS_ROUTES,
   type ClientFrame,
   ClientFrameSchema,
@@ -776,7 +777,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         deps.onRevoked?.(true);
         return;
       }
-      log("this machine was revoked; run `npx @open-artifacts/bus install`");
+      log(`this machine was revoked; run \`${BUS_CMD} install\``);
       process.exitCode = 1;
       try {
         writeFileSync(

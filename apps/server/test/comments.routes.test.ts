@@ -7,7 +7,7 @@ import {
   type Member,
   newId,
   R,
-  type Thread,
+  type CommentThread as Thread,
 } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
@@ -409,14 +409,17 @@ describe("who can", () => {
     expect((await call(id, viewer, "")).status).toBe(200);
   });
 
-  it("a signed-out caller on a team artifact is 404; on a public one that blocks anonymous writes, 401 to comment and 200 to read", async () => {
+  it("a signed-out caller on a team artifact is 404; on any public one they read and comment, even when anonymous data writes are off", async () => {
     const team = await pub({ visibility: "team" });
     expect((await call(team, null, "")).status).toBe(404);
+    expect((await post(team, null)).status).toBe(404);
     const pubEd = await pub({ visibility: "public", dataWriters: "editors" });
     expect((await call(pubEd, null, "")).status).toBe(200);
-    const w = await post(pubEd, null);
-    expect(w.status).toBe(401);
-    expect((await errOf(w)).message).toBe("Sign in to comment");
+    expect((await post(pubEd, null)).status).toBe(201);
+    const art = (await (await api(app, R.artifact(pubEd), null)).json()) as {
+      can?: { comment: boolean };
+    };
+    expect(art.can?.comment).toBe(true);
   });
 
   it("comments off: 403 comments_off on every route; owner and manager toggle it, editors cannot", async () => {
@@ -532,7 +535,7 @@ describe("guests", () => {
     ).toBe(204);
   });
 
-  it("a blank or long guest name is Guest or cut to 50", async () => {
+  it("a blank guest name is Guest; 50 characters pass, 51 are a 400", async () => {
     const id = await pub({ visibility: "public" });
     const a = await thread(
       await call(id, null, "", {
@@ -544,22 +547,46 @@ describe("guests", () => {
     const b = await thread(
       await call(id, null, "", {
         method: "POST",
-        body: { anchor: NOTE, body: "b", guestName: "n".repeat(80) },
+        body: { anchor: NOTE, body: "b", guestName: "n".repeat(50) },
       }),
     );
     expect(b.comments[0]?.author.name).toBe("n".repeat(50));
+    const long = await call(id, null, "", {
+      method: "POST",
+      body: { anchor: NOTE, body: "b", guestName: "n".repeat(51) },
+    });
+    expect(long.status).toBe(400);
   });
 
-  it("a guest can resolve a thread", async () => {
+  it("GET never mints a token; a valid one only sets me", async () => {
+    const id = await pub({ visibility: "public" });
+    const r = await call(id, null, "");
+    expect(r.status).toBe(200);
+    expect(r.headers.get(ANON_ID_HEADER)).toBeNull();
+  });
+
+  it("a guest resolves under the identity they commented with; with none it is 401", async () => {
     const id = await pub({ visibility: "public" });
     const t = await thread(await post(id, owner));
-    const r = await call(id, null, `/${t.id}`, {
+    const none = await call(id, null, `/${t.id}`, {
       method: "PATCH",
       body: { status: "resolved" },
     });
+    expect(none.status).toBe(401);
+    expect(none.headers.get(ANON_ID_HEADER)).toBeNull();
+    const mine = await call(id, null, "", {
+      method: "POST",
+      body: { anchor: NOTE, body: "hi" },
+    });
+    const token = mine.headers.get(ANON_ID_HEADER) as string;
+    const r = await call(id, null, `/${t.id}`, {
+      method: "PATCH",
+      body: { status: "resolved" },
+      headers: { [ANON_ID_HEADER]: token },
+    });
     expect(r.status).toBe(200);
     expect(await thread(r)).toMatchObject({
-      resolvedBy: { kind: "guest", name: "Guest" },
+      resolvedBy: { kind: "guest", name: "Guest", me: true },
     });
   });
 });

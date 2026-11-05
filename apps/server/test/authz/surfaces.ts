@@ -946,7 +946,8 @@ export const SURFACES: readonly Surface[] = [
       "POST",
       (id) => `${A(id)}/comments`,
       () => ({ body: {} }),
-      badRequest,
+      // An empty body fails its anchor first: invalid_anchor, still a 400.
+      (r) => r.status === 400,
     ),
   ),
   rest(

@@ -910,8 +910,8 @@ export function withSpace<T extends ArtifactSummary>(
     personal: !shared,
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
-    comments: out.comments,
   });
+  out.can.comment = !capOfCaller(caller) && out.comments !== false;
   return out;
 }
 
@@ -931,10 +931,10 @@ export function withCan<T extends ArtifactSummary>(
       personal: true,
       cap: capOfCaller(caller),
       dataWriters: out.dataWriters,
-      comments: out.comments,
     }),
     move: false,
     transfer: false,
+    comment: !capOfCaller(caller) && out.comments !== false,
   };
   return out;
 }

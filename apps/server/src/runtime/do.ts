@@ -3,8 +3,6 @@ import {
   type Anchor,
   accessChangedCloseReason,
   COMMENT_BODY_MAX,
-  COMMENTS_MAX_REPLIES,
-  type CommentStatus,
   DATA_LIMIT_DEFAULTS,
   type DataChange,
   DataChangeSchema,
@@ -35,6 +33,10 @@ import { withRetries } from "../db/retry.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError } from "../log.js";
+import {
+  COMMENTS_MAX_REPLIES,
+  type CommentStatus,
+} from "../services/comment-rules.js";
 import { indexVersionOrThrow } from "../services/search.js";
 import {
   captureThumbnail,

@@ -141,15 +141,11 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   query_too_large: 400,
   /** A bus follow() past FOLLOW_LIMIT follows for one member (#1292): unfollow first. */
   follow_limit: 409,
-  /** POST R.comments with an anchor that fails its schema (details: the issues). */
+  /** Comments (#682). */
   invalid_anchor: 400,
-  /** A comment body empty after trim, or over COMMENT_BODY_MAX. */
   invalid_body: 400,
-  /** A text anchor whose quote is not in the version it names, or a version that does not exist. */
   anchor_not_in_version: 422,
-  /** Comments are switched off on this artifact. */
   comments_off: 403,
-  /** The caller may open the artifact but not take this comment action (not the author, not an editor). */
   forbidden: 403,
 };
 
