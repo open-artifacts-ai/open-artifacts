@@ -328,17 +328,24 @@ export function createTextResolver(
           return exactAt(best.s);
         // Weak: its neighbours changed. It is still the quote if it sits where
         // the context says (within about its own length of the located spot).
+        // It must also lie between them: starting at or after a located suffix
+        // start, or ending at or before a located prefix end, is another place.
         const near = cands.filter((c) => {
           const os = map ? map[c.s] : c.s;
           const oe = os + len;
-          return (
+          const afterPrefix =
+            ends.length === 0 ||
             ends.some(
-              (p) => os >= p - SPOT_SLACK && os <= p + len + SPOT_SLACK,
-            ) ||
+              (p) =>
+                oe > p && os >= p - SPOT_SLACK && os <= p + len + SPOT_SLACK,
+            );
+          const beforeSuffix =
+            starts.length === 0 ||
             starts.some(
-              (q) => oe <= q + SPOT_SLACK && oe >= q - len - SPOT_SLACK,
-            )
-          );
+              (q) =>
+                os < q && oe <= q + SPOT_SLACK && oe >= q - len - SPOT_SLACK,
+            );
+          return afterPrefix && beforeSuffix;
         });
         const nb = pick(near);
         if (nb) return exactAt(nb.s);

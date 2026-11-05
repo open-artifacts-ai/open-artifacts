@@ -320,6 +320,21 @@ describe("a weak hit beside its context is still the quote (N1)", () => {
       start: after.indexOf("Tuesday"),
     });
   });
+  it("does not pick the other copy of a word that sits after the located suffix", () => {
+    const before = "Status: yes. Owner: yes.";
+    const a = anchorOf(before, "yes");
+    const r = resolveTextAnchor("Status: no. Owner: yes.", a);
+    expect(r.state).not.toBe("exact");
+  });
+  it("does not pick a later copy when the first was changed", () => {
+    const before = "Plan: Q3 revenue grew. Also Q3 revenue fell";
+    const a = anchorOf(before, "Q3 revenue");
+    const r = resolveTextAnchor(
+      "Plan: Q4 revenue grew. Also Q3 revenue fell",
+      a,
+    );
+    expect(r.state).not.toBe("exact");
+  });
   it("still refuses a same-word hit far from the located context", () => {
     const before = "Intro. Q3 revenue grew 4%. Later table: Q3 revenue | 12";
     const a = anchorOf(before, "Q3 revenue");
