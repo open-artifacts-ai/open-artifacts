@@ -9,7 +9,6 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { hostname } from "node:os";
 import { join } from "node:path";
 import {
   BUS_ROUTES,
@@ -21,6 +20,7 @@ import {
   verificationUriMatches,
 } from "@oa/bus-protocol";
 import { type Deps, realDeps } from "../deps.ts";
+import { defaultMachineLabel } from "../machine-label.ts";
 
 /** What install renders as the transcript; without it, login prints plain lines. */
 export type LoginEvents = {
@@ -46,14 +46,16 @@ export type LoginEvents = {
 type LoginArgs = {
   hub: string;
   home: string;
-  /** Sent as machine_label and stored as the machine's label; defaults to the hostname. */
+  /** Sent as machine_label and stored as the machine's label; defaults to the friendly machine name. */
   label?: string;
   noOpen?: boolean;
   /** Waits between /bus/device attempts (transcript state 6: 2, 4, 8 s). Default: one attempt. */
   codeRetryMs?: number[];
   events?: Partial<LoginEvents>;
+  /** For the default label (macOS scutil); platform is for tests. */
+  platform?: NodeJS.Platform;
 } & Pick<Deps, "fetch" | "openBrowser" | "sleep" | "now"> &
-  Partial<Pick<Deps, "print">>;
+  Partial<Pick<Deps, "print" | "exec">>;
 
 /** A login that ended in one of the transcript's failure states. */
 export class LoginFailed extends Error {
@@ -181,7 +183,13 @@ async function requestCode(
 export async function login(args: LoginArgs): Promise<LoginResult> {
   const print = args.print ?? realDeps.print;
   const hub = normalizeHub(args.hub);
-  const label = newMachineLabel(args.label ?? hostname());
+  const label = newMachineLabel(
+    args.label ??
+      (await defaultMachineLabel({
+        exec: args.exec ?? realDeps.exec,
+        platform: args.platform,
+      })),
+  );
   const codeRes = await requestCode(args, hub, label);
   if (!codeRes.ok) {
     throw new Error(
