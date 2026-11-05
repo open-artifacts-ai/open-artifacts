@@ -1,7 +1,7 @@
 // #1301: release-please.yml publishes @open-artifacts/bus to npm, with
 // provenance, only for a stable release from a push to main. pack-npm runs
-// the repository's code with no credentials; publish-npm holds the npm token
-// (npm-publish Environment) and the OIDC token and runs no repository code.
+// the repository's code with no credentials; publish-npm holds the OIDC token
+// (npm-publish Environment, npm trusted publishing) and runs no repository code.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -112,18 +112,20 @@ describe("publish-npm", () => {
     expect(down?.with.name).toBe("npm-tarball");
   });
 
-  it("the token reaches only the publish step, which publishes with provenance and no scripts", () => {
-    expect(raw.match(/secrets\.NPM_TOKEN/g)).toHaveLength(1);
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    expect(publishStep.env.NODE_AUTH_TOKEN).toBe("${{ secrets.NPM_TOKEN }}");
+  it("holds no npm token anywhere, and publishes with provenance and no scripts", () => {
+    expect(raw).not.toContain("NPM_TOKEN");
+    expect(raw).not.toContain("NODE_AUTH_TOKEN");
+    expect(publishStep.env.NODE_AUTH_TOKEN).toBeUndefined();
     expect(pub.env.NODE_AUTH_TOKEN).toBeUndefined();
+    // No registry-url: setup-node would add an .npmrc auth line that can shadow OIDC.
+    const [node] = uses(pub.steps, "actions/setup-node");
+    expect(node?.with["registry-url"]).toBeUndefined();
     expect(publishStep.run).toBe(
       'npm publish "$TARBALL" --provenance --access public --ignore-scripts',
     );
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(publishStep.env.TARBALL).toBe("${{ steps.check.outputs.tarball }}");
     expect(publishStep.if).toBe("steps.check.outputs.publish == 'true'");
-    expect(raw).toContain("delete the NODE_AUTH_TOKEN line");
   });
 });
 
