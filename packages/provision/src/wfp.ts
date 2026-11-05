@@ -5096,12 +5096,12 @@ export class WfpProvisioner {
       // The bare client: revoking our own token is safe even once the lease is
       // lost (#1326), and must not be refused by the fence.
       assertOwnResource(t.d1Name, this.env);
-      await this.o.cf.d1Query(
+      await this.cf.d1Query(
         t.d1Id,
         "UPDATE tokens SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
         [this.now(), t.tokenId],
       );
-      const left = await this.o.cf.d1Query(
+      const left = await this.cf.d1Query(
         t.d1Id,
         "SELECT id FROM tokens WHERE id = ?1 AND revoked_at IS NULL",
         [t.tokenId],
