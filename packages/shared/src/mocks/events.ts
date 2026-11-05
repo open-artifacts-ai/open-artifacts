@@ -11,6 +11,7 @@
  * currentVersion when wired through createHandlers({ events }), else 1).
  * Wired that way, mock publish/restore emit `version` frames and mock
  * delete/visibility/capabilities changes emit `gone`, as the server does.
+ * events.emitPresence(id, viewers, you?); // one presence frame per socket
  * Frames go to every socket of the artifact; by.name is sent as given (the
  * mock does not model viewer classes).
  */
@@ -20,6 +21,7 @@ import {
   type ArtifactEventBy,
   EVENTS_GONE_CLOSE,
 } from "../schemas.js";
+import type { PresenceEntry } from "../viewer-presence.js";
 
 type Client = {
   send(data: string): void;
@@ -42,6 +44,14 @@ export type ArtifactEventsMock = {
   ): number;
   /** Sends `{ type: "gone", reason }` and closes with 4403 every open socket of `id`. */
   emitGone(id: string, reason?: "deleted" | "changed"): number;
+  /**
+   * Sends `{ type: "presence", viewers, total }` to every open socket of
+   * `id`; `you` (the caller's key) is remembered for later hellos of `id`.
+   * Returns how many sockets got it.
+   */
+  emitPresence(id: string, viewers: PresenceEntry[], you?: string): number;
+  /** Set by a test: the `you` key a hello of `id` carries. */
+  presenceYou?: (id: string) => string | undefined;
   /** Open sockets for `id`. */
   connections(id: string): number;
   /** Set by createHandlers({ events }): the version a hello reports. */
@@ -52,6 +62,7 @@ export function createArtifactEvents(): ArtifactEventsMock {
   const clients = new Map<string, Set<Client>>();
   const link = ws.link("*/api/v1/artifacts/:id/events");
   const send = (c: Client, f: ArtifactEvent) => c.send(JSON.stringify(f));
+  const yous = new Map<string, string>();
   const mock: ArtifactEventsMock = {
     handlers: [
       link.addEventListener("connection", ({ client, params }) => {
@@ -61,9 +72,11 @@ export function createArtifactEvents(): ArtifactEventsMock {
         const c = client as unknown as Client;
         set.add(c);
         c.addEventListener("close", () => set.delete(c));
+        const you = mock.presenceYou?.(id) ?? yous.get(id);
         send(c, {
           type: "hello",
           version: mock.currentVersion?.(id) ?? 1,
+          ...(you === undefined ? {} : { you }),
         });
       }),
     ],
@@ -91,6 +104,14 @@ export function createArtifactEvents(): ArtifactEventsMock {
         setTimeout(() => c.close(EVENTS_GONE_CLOSE, "gone"), 0);
       }
       return n;
+    },
+    emitPresence(id, viewers, you) {
+      if (you !== undefined) yous.set(id, you);
+      const set = clients.get(id) ?? new Set<Client>();
+      for (const c of set) {
+        send(c, { type: "presence", viewers, total: viewers.length });
+      }
+      return set.size;
     },
     connections: (id) => clients.get(id)?.size ?? 0,
   };

@@ -87,6 +87,16 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `ArtifactCanSchema`, `ARTIFACT_ACTIONS`, `ArtifactAction` | `{ edit, share, setVisibility, delete, transfer, move, dataWrite }`. P3's internal superset is `PolicyAction`, so the names don't clash |
 | `artifactCan(level, { personal, cap })` | The P3 action table as one function (server and mocks). `dataWrite` is false for guests and restricted members; ordinary viewers keep it (the artifact still needs the `db`/`storage` capability) |
 
+## Presence (both tiers)
+
+Who else has an artifact open, as faces. Module: `viewer-presence.ts`.
+
+- **Frame.** On the `R.events` socket: `{ type: "presence", viewers: PresenceEntry[], total }`, most recent arrival first, at most `PRESENCE_LIST_MAX` (100) viewers, `total` counts all. Sent on join, leave and agent expiry, coalesced over `PRESENCE_COALESCE_MS`. `hello.you` is the caller's own key.
+- **Entry.** `key` (opaque, per artifact: it cannot link a viewer across artifacts), `kind` (`person | anon | agent`), `name` (at most 80), `named` (false when `name` is a placeholder: "Member", "Guest", "Anonymous <Animal>", "Agent"), `color` (0 to 8), `animal?` (anonymous viewers), `agent?` (`owner`, `product?`, `label?`, `state` viewing or editing, `activity?`). No email, user id, token id, IP or anonId ever appears. `agent.label` is a token's private note and goes only to that token's owner.
+- **Anonymous id.** Session cookie `oa_pid` on the app origin, matching `PRESENCE_ID_RE`; the server treats it as opaque and ignores any other value.
+- **Ping.** A client opening `R.events` with `?ping=1` sends the text `ping` every `PRESENCE_PING_MS` (30 s); the server answers `pong` without waking. Such a socket with no ping for `PRESENCE_STALE_MS` (60 s) is swept (every `PRESENCE_SWEEP_MS`); a closed socket's face lingers `PRESENCE_GRACE_MS`. Sockets without `?ping=1` are never swept for silence. `ping` is the only client message allowed; any other closes with 1008.
+- **Agents.** Present for `AGENT_PRESENT_MS` (120 s) after a touch, "editing" while a write is that recent.
+
 ## CHANGED existing shapes (all fields optional, appended last)
 
 | Shape | Added |
@@ -108,6 +118,9 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `ShareResult`, `MemberInviteResult` | `signInMethods?: ("access" \| "google" \| "email")[]`: the sign-in methods that admit the person, in `SIGN_IN_METHOD_ORDER` (google, access, email; `orderSignInMethods`), `[]` when they can't sign in; an uncertain invite lists `["google"]`. Exactly the list the share or invite email names, so UI copy and the email agree |
 | `MemberInviteResult` | `signIn?: InviteSignIn` = `{ status: "uncertain", reason: "outside_domains" }`: the invite stands, but only Google might admit the address (outside AUTH_DOMAINS: works only for a Workspace account whose primary domain is verified). Absent when an offered method admits it. Warn the inviter |
 | `AuditActionSchema` | `settings.space_manager_mappings`, `user.role` (a member role change: `detail { from, to }`, written only when the role changes) |
+| `ArtifactEvent.hello` | `you?: PresenceKey`: the caller's own presence key (16 chars of `[A-Za-z0-9_-]`), so a client drops its own face |
+| `ArtifactEventSchema` | `presence` frame, appended after `gone`: `{ type: "presence", viewers, total }` (see Presence, both tiers) |
+| `GetArtifactInput`, `ArtifactData*Input` (MCP get_artifact and the six data tools) | `activity?: string` (at most 80 chars): what the agent says it is doing, shown on its presence card |
 | `AuditActionSchema` | `bus.role.proposed`, `bus.role.confirmed`, `bus.role.refused`, `bus.role.expired` (#1372, self-host bus only: an AI agent proposed a role change over MCP, the member confirmed or refused it on its link, or the link ran out). Target `user` (the member whose bus it is); `detail { proposalId, action }` plus `roleId`, `agentId`, `priorAgentId` when set and `why` on a refusal (`rejected`, `changed`, `name_taken`, `agent_not_open`, `role_limit`, `used`, `expired`). Ids and enums only; never the role name, namespace or link. Actor: the member (proposed: their PAT or OAuth grant; confirmed and refused: their browser session), or `system` for an expiry |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |
 
