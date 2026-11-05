@@ -1,5 +1,5 @@
+import { LIMITS as BUS_LIMITS } from "@oa/bus-protocol";
 import { LIMITS } from "@oa/shared";
-import { LIMITS as BUS_LIMITS } from "../../../../packages/bus-protocol/src/limits.ts";
 
 // Docs quote limits as {LIMIT_*} placeholders, filled from @oa/shared's
 // LIMITS at build time, so a changed limit can't leave a stale number.

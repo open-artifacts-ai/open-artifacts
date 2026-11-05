@@ -52,6 +52,9 @@ describe("upgrade guards and the agent bus", () => {
       `An instance below ${MIN_UPGRADE_FROM} upgrades to \`v${MIN_UPGRADE_FROM}\` first`,
     );
     expect(upgrade).toContain("pass `--deployed-version X.Y.Z`");
+    expect(upgrade).toContain(
+      "If `/healthz` shows no version, stop and tell the user; never guess one.",
+    );
   });
   it("the instance's /upgrade.md template uses the same minimum", () => {
     expect(read("../../server/src/mcp/upgrade-template.ts")).toContain(

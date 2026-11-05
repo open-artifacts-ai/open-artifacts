@@ -324,6 +324,9 @@ importers:
 
   apps/landing:
     dependencies:
+      '@oa/bus-protocol':
+        specifier: workspace:*
+        version: link:../../packages/bus-protocol
       '@oa/shared':
         specifier: workspace:*
         version: link:../../packages/shared
