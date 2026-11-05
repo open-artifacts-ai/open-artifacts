@@ -317,6 +317,7 @@ describe("alert conditions", () => {
       workflow: "manage_install",
       status: "done",
       created_at: 3,
+      finished_at: 4,
     });
     const id = job(db, "i2", {
       status: "failed",
@@ -343,6 +344,75 @@ describe("alert conditions", () => {
       { job_id: id, since: 2 },
       { job_id: unfinished, since: 5 },
     ]);
+  });
+
+  it("prod_dirty: a later done upgrade or rollback of the same install clears it", () => {
+    const dirty = {
+      status: "failed",
+      error_code: "prod_dirty",
+      created_at: 10,
+      finished_at: 20,
+    };
+    const manage = { workflow: "manage_install" };
+    const db = platformDb();
+    // Cleared: a later done upgrade, and a later done rollback.
+    job(db, "i1", dirty);
+    job(db, "i1", {
+      ...manage,
+      kind: "upgrade",
+      status: "done",
+      created_at: 30,
+      finished_at: 40,
+    });
+    job(db, "i2", dirty);
+    job(db, "i2", {
+      ...manage,
+      kind: "rollback",
+      status: "done",
+      created_at: 30,
+      finished_at: 40,
+    });
+    expect(run(db, "prod_dirty")).toEqual([]);
+    // Stays open: later failed, canceled, another install's done, one that
+    // finished before the dirty event.
+    const a = job(db, "i3", dirty);
+    job(db, "i3", {
+      ...manage,
+      kind: "upgrade",
+      status: "failed",
+      created_at: 30,
+      finished_at: 40,
+    });
+    const b = job(db, "i4", dirty);
+    job(db, "i4", {
+      ...manage,
+      kind: "upgrade",
+      status: "failed",
+      error_code: "canceled",
+      created_at: 30,
+      finished_at: 40,
+    });
+    const c = job(db, "i5", dirty);
+    job(db, "other", {
+      ...manage,
+      kind: "upgrade",
+      status: "done",
+      created_at: 30,
+      finished_at: 40,
+    });
+    const d = job(db, "i6", dirty);
+    job(db, "i6", {
+      ...manage,
+      kind: "upgrade",
+      status: "done",
+      created_at: 11,
+      finished_at: 15,
+    });
+    expect(
+      run(db, "prod_dirty")
+        .map((r) => r.job_id)
+        .sort(),
+    ).toEqual([a, b, c, d].sort());
   });
 
   it("prodclean_failed: the latest report failed; no install id", () => {

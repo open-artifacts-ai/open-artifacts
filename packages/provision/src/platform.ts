@@ -82,6 +82,34 @@ export function canonicalJson(v: unknown): string {
 }
 
 /**
+ * The job part of a holder's lease tokens (`job:<jobId>`): 16 hex, then a
+ * dot. Every attempt of one job shares it; another job's differs.
+ */
+export function leaseJobPart(holder: string): string {
+  return `${createHash("sha256")
+    .update(`lease\0${holder}`)
+    .digest("hex")
+    .slice(0, 16)}.`;
+}
+
+/**
+ * A new lease token for one attempt of a holder: its job part, then 32
+ * random hex. A retry of the same job re-takes the lease with a token of its
+ * own (claim matches the job part), so the attempt before it, if it still
+ * runs, fails its next renew or finish: the full token is the fence.
+ */
+export function holderLease(holder: string): string {
+  const r = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString(
+    "hex",
+  );
+  return `${leaseJobPart(holder)}${r}`;
+}
+
+/** The job part of a token holderLease made, or null (the CLI's hex16). */
+const jobPartOf = (lease: string): string | null =>
+  /^[0-9a-f]{16}\.[0-9a-f]{32}$/.test(lease) ? lease.slice(0, 17) : null;
+
+/**
  * sha256 of the canonical JSON of what a resume or a replay must not change:
  * owner, vars and testHooks. Not the version: a `creating` resume may move up
  * (never down, F2/I1), and a replay compares installs.version itself (5.7).
@@ -314,8 +342,11 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
 
   /**
    * Compare-and-swap: moves the row from one of `from` to `to` and takes the
-   * operation lock, only when no live lock is held. False when another
-   * operation got there first (or the row is in another state).
+   * operation lock, only when no live lock is held, or the live lock is the
+   * same job's (its job part matches `lease`'s: a retry of the holding job,
+   * holderLease). The row then holds `lease`, this attempt's own token.
+   * False when another operation got there first (or the row is in another
+   * state).
    */
   async claim(
     id: InstallId,
@@ -327,8 +358,8 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
   ): Promise<boolean> {
     const now = this.now();
     const r = await this.write(
-      `UPDATE installs SET state = ?1, lease = ?2, lease_until = ?3, updated_at = ?4 WHERE id = ?5 AND row_version = ?6 AND state IN (${from.map((_, i) => `?${i + 7}`).join(", ")}) AND (lease_until IS NULL OR lease_until <= ?4) RETURNING id`,
-      [to, lease, until, now, id, rowVersion, ...from],
+      `UPDATE installs SET state = ?1, lease = ?2, lease_until = ?3, updated_at = ?4 WHERE id = ?5 AND row_version = ?6 AND state IN (${from.map((_, i) => `?${i + 8}`).join(", ")}) AND (lease_until IS NULL OR lease_until <= ?4 OR (?7 IS NOT NULL AND substr(lease, 1, 17) = ?7)) RETURNING id`,
+      [to, lease, until, now, id, rowVersion, jobPartOf(lease), ...from],
     );
     return one(r);
   }

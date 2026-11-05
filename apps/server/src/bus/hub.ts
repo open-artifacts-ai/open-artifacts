@@ -607,8 +607,8 @@ function registeredAgent(
  * OpenBus #451: a former name's scope is the one it was left in (former_names
  * namespace, global), not its agent's current one, so a move or flip keeps
  * it reserved where it was (formerReservedSql, shared with putRole). A
- * `held` row (a name an agent left a scope under: close, revoke, move or
- * flip) is taken the same way, and so is a chosen row of a closed agent:
+ * `held` row (a name an agent left a scope under: close, move or flip; a
+ * revoke frees them, #1448) is taken the same way, and so is a chosen row of a closed agent:
  * both reserve whether or not the agent is live.
  * #1296: a role address in that scope is taken too (a role in the
  * namespace; for a global, a role in any namespace), vacant or not.
@@ -665,20 +665,19 @@ const FORMER_PURGE_SQL =
   "delete from former_names where rowid in (select rowid from former_names indexed by former_names_due where expires_at <= ? limit ?) returning rowid";
 
 /**
- * OpenBus #451 (user decision 2026-11-04): a closed or revoked agent leaves
- * its scope. Its current name is held there (holdNames) and its chosen
- * former names in grace stay reserved, both resolving to no one while it is
- * closed (liveFormer needs a live agent); its default former names go, as
- * on a move. Call after the agents rows are closed (their name and scope
- * are read). The rename log goes only on a revoke (`revoked`): OpenBus
- * #446, a close keeps it, so a reopen (the same agent id) is still limited,
- * and the alarm purges it by the rolling hour. Returns the holds' end, for
+ * OpenBus #451 (user decision 2026-11-04): a closed agent leaves its scope.
+ * Its current name is held there (holdNames) and its chosen former names in
+ * grace stay reserved, both resolving to no one while it is closed
+ * (liveFormer needs a live agent); its default former names go, as on a
+ * move. Call after the agents rows are closed (their name and scope are
+ * read). OpenBus #446: a close keeps the rename log, so a reopen (the same
+ * agent id) is still limited, and the alarm purges it by the rolling hour.
+ * A revoke holds nothing (releaseMachineNames). Returns the holds' end, for
  * the alarm, or null for no agents.
  */
 function leaveNames(
   sql: SqlStorage,
   agentIds: string[],
-  revoked: boolean,
   now: number,
 ): number | null {
   if (agentIds.length === 0) return null;
@@ -688,12 +687,53 @@ function leaveNames(
     ids,
     now,
   );
-  if (revoked)
+  return holdNames(sql, ids, now);
+}
+
+/**
+ * #1448: a revoked machine's agents never come back (a re-approved
+ * workstation is a new machine with new agent ids), so the revoke frees
+ * every name they hold or reserve at once: the held names of agents closed
+ * before or by the revoke, and their chosen and default former names, in
+ * every scope. A re-approved machine, or anyone, then gets the plain names;
+ * agents of other machines keep theirs. Minted names stay minted (OpenBus
+ * #446: never handed to another agent). The rename log of the agents the
+ * revoke closed (`closedIds`) goes too.
+ *
+ * Bounded (M2): never walks the machine's closed history. The agents the
+ * revoke closed lose every row by former_names_agent (at most
+ * maxAgentsPerMachine agents). Agents closed before it can block a name
+ * only through a held or chosen row still in its grace, so those are found
+ * from former_names_due (rows unexpired now: bounded by the last hour's
+ * renames and closes, not by history), each checked against its agent by
+ * primary key. Expired rows reserve nothing; the alarm purges them.
+ */
+function releaseMachineNames(
+  sql: SqlStorage,
+  machineId: string,
+  closedIds: string[],
+  now: number,
+): void {
+  if (closedIds.length > 0) {
+    const ids = JSON.stringify(closedIds);
+    sql.exec(
+      "delete from former_names where agent_id in (select value from json_each(?))",
+      ids,
+    );
     sql.exec(
       "delete from rename_rl where agent_id in (select value from json_each(?))",
       ids,
     );
-  return holdNames(sql, ids, now);
+  }
+  sql.exec(
+    `delete from former_names where rowid in
+       (select f.rowid from former_names f indexed by former_names_due
+          join agents a on a.id = f.agent_id
+         where f.expires_at > ? and f.kind in ('chosen', 'held')
+           and a.machine_id = ?)`,
+    now,
+    machineId,
+  );
 }
 
 /**
@@ -2722,8 +2762,8 @@ export class BusHub extends DurableObject<Env> {
       )
       .toArray()
       .map((r) => String(r.id));
-    const heldTo = leaveNames(sql, ids, true, now);
-    if (heldTo !== null) this.#arm(heldTo);
+    // #1448: nothing is held; every name its agents held or reserved is free.
+    releaseMachineNames(sql, id, ids, now);
     sql.exec(
       "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do nothing",
       OWNER_ORG_ID,
@@ -3674,7 +3714,7 @@ export class BusHub extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     const closedAt = this.#now();
     // OpenBus #451: their names are held where they were left, for the grace.
-    const heldTo = leaveNames(sql, agentIds, false, closedAt);
+    const heldTo = leaveNames(sql, agentIds, closedAt);
     if (heldTo !== null) this.#arm(heldTo);
     // M1: the closed rows' purge deadline.
     this.#arm(closedAt + CLOSED_AGENT_RETAIN_MS);

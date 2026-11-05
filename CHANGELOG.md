@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.121.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.121.0...v0.121.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **bus:** install findings from the machine cutover ([#1448](https://github.com/open-artifacts-ai/open-artifacts/issues/1448)) ([#1477](https://github.com/open-artifacts-ai/open-artifacts/issues/1477)) ([ed8689a](https://github.com/open-artifacts-ai/open-artifacts/commit/ed8689a6bb411386c0786111e631dcf001e34045))
+
 ## [0.121.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.120.0...v0.121.0) (2026-11-05)
 
 

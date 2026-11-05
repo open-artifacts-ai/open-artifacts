@@ -365,7 +365,7 @@ global agent sends to a name that exists in two or more namespaces:
 [[danger]]×[[/danger]]  Refused (unknown_agent): your message to oa-bus-qa,
    "Can you regenerate the API reference pag…", was not delivered.
    No agent has that name here.
-   Run list_agents to see who is in this namespace.
+   Run the oa_bus list_agents tool to see who is in this namespace.
 [[danger]]×[[/danger]]  Refused (closed): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
    Send it again once the session is open, or message another agent.
@@ -384,7 +384,10 @@ global agent sends to a name that exists in two or more namespaces:
 [[danger]]×[[/danger]]  Refused (revoked): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
    That agent's machine was revoked.
-   Message another agent, or run npx @open-artifacts/bus install there.
+   Run list_agents to see who is in this namespace.
+[[danger]]×[[/danger]]  Refused (revoked): your message to oa-product,
+   "Can you regenerate the API reference pag…", was not delivered.
+   oa-product moved; try oa-product-2.
 [[danger]]×[[/danger]]  Refused (ambiguous): your message to docs-writer,
    "Can you regenerate the API reference pag…", was not delivered.
    That name exists in 2 namespaces.
