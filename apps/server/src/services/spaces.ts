@@ -100,7 +100,8 @@ export const spacesOn = (env: Env): boolean =>
 
 /**
  * Directory sync mode: google (running), frozen (Team after trial) or off.
- * - Hosted (HOSTED=1): FEATURES alone, which provisioning derives from TIER.
+ * - Hosted (HOSTED=1): the features alone (featuresOf: the billing tier's
+ *   when a plan is read, else FEATURES, which provisioning derives from TIER).
  * - Self-host (P4): FEATURES when it names a mode (sync_frozen stays
  *   frozen), else the connection decides: a working directory transport
  *   (directory/transport.ts, not "none") is google, with no FEATURES entry.

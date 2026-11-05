@@ -336,10 +336,12 @@ export const TEAM_ROUTES: ReadonlySet<string> = new Set([
   "PUT /api/v1/directory/org-mappings/:groupId",
   "GET /api/v1/directory/connect",
   "POST /api/v1/directory/confirm",
-  // Sync now, a held group's confirm, a restricted group: directory sync is
-  // a team feature (the cron feed is skipped too: cron.ts).
+  // Sync now, a held group's confirm or snooze, a restricted group: directory
+  // sync is a team feature (the cron feed is skipped too: cron.ts). Cancelling
+  // a snooze is a removal, so it isn't listed.
   "POST /api/v1/directory/sync",
   "POST /api/v1/directory/held/:groupId/confirm",
+  "POST /api/v1/directory/held/:groupId/snooze",
   "PUT /api/v1/directory/restricted-groups/:groupId",
 ]);
 

@@ -23,7 +23,8 @@ import { pinMiddayUtc } from "../midday.js";
 const tag = newId().slice(0, 6).toLowerCase();
 const { props } = fakeBilling();
 
-type Who = "owner" | "admin" | "member" | "anonymous";
+/** guest: only the billing and admin-read checks (EXEMPT_CALLERS). */
+type Who = "owner" | "admin" | "member" | "guest" | "anonymous";
 type State = "none" | "solo" | "readOnly";
 type U = { cookie: string; userId: string };
 const users: Partial<Record<Exclude<Who, "anonymous">, U>> = {};
@@ -240,6 +241,7 @@ beforeAll(async () => {
   users.owner = await login(`owner-${tag}@a.com`, "owner");
   users.admin = await login(`admin-${tag}@a.com`, "admin");
   users.member = await login(`member-${tag}@a.com`, "member");
+  users.guest = await login(`guest-${tag}@a.com`, "guest");
   for (const w of ["owner", "admin", "member"] as const) {
     const r = await send(props, R.artifacts, cred(w), {
       method: "POST",
@@ -371,6 +373,9 @@ const EXEMPT: Exempt[] = [
   },
 ];
 
+/** The billing and admin-read callers: CALLERS plus a guest. */
+const EXEMPT_CALLERS: readonly Who[] = [...CALLERS, "guest"];
+
 describe.each(["none", "solo", "readOnly"] as const)(
   "plan %s: billing and admin reads",
   (state) => {
@@ -380,7 +385,9 @@ describe.each(["none", "solo", "readOnly"] as const)(
     });
 
     it.each(
-      EXEMPT.flatMap((s) => CALLERS.map((who) => [s.name, who] as const)),
+      EXEMPT.flatMap((s) =>
+        EXEMPT_CALLERS.map((who) => [s.name, who] as const),
+      ),
     )("%s as %s", async (name, who) => {
       const s = EXEMPT.find((x) => x.name === name) as Exempt;
       const r = await s.run(who);
@@ -391,7 +398,8 @@ describe.each(["none", "solo", "readOnly"] as const)(
           text,
         ]);
       else if (who === "anonymous") expect(r.status).toBe(401);
-      // A member: no billing access, ever (404, or the plan's 403 on a POST).
+      // A member or a guest: no billing access, ever (404, or the plan's 403
+      // on a POST).
       else expect([403, 404]).toContain(r.status);
     });
 

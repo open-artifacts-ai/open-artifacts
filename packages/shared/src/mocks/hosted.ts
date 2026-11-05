@@ -143,6 +143,16 @@ export type HostedMockOptions = {
    */
   pendingCustomerChange?: NonNullable<SyncStatus["pendingCustomerChange"]>;
   /**
+   * Me.instance.billing (self-serve billing). Default: business, active, not
+   * read-only. Owner and admins see status, dates and creatorsThisMonth; the
+   * mock nulls them for everyone else, as the server does. With readOnly, or
+   * tier "free" and a trial already used (trialEndsAt set), POST members
+   * answers 403 plan_read_only / plan_required (details PlanRefusalDetails).
+   */
+  billing?: PlanView;
+  /** POST R.billingCheckout / R.billingPortal / R.billingUsage answer 503 billing_unavailable. */
+  billingDown?: boolean;
+  /**
    * Seed these emails as lapsed guests (removed when their last share went):
    * inviting or restoring one answers 409 guest_lapsed (default none).
    */
@@ -183,16 +193,6 @@ export type HostedMockOptions = {
   noSharedSpaces?: boolean;
   /** The caller is also an editor in Clients, so Engineering's artifact can move there (#1190). */
   moveTarget?: boolean;
-  /**
-   * Me.instance.billing (self-serve billing). Default: business, active, not
-   * read-only. Owner and admins see status, dates and creatorsThisMonth; the
-   * mock nulls them for everyone else, as the server does. With readOnly, or
-   * tier "free" and a trial already used (trialEndsAt set), POST members
-   * answers 403 plan_read_only / plan_required (details PlanRefusalDetails).
-   */
-  billing?: PlanView;
-  /** POST R.billingCheckout / R.billingPortal / R.billingUsage answer 503 billing_unavailable. */
-  billingDown?: boolean;
   /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on for every install). */
   features?: FeatureFlag[];
 };
@@ -611,19 +611,6 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
 
   // ---- derived views --------------------------------------------------------
   const isAdmin = () => me.user.role === "owner" || me.user.role === "admin";
-  /** Snoozed now (#412): until is still ahead (server health.ts snoozedAt). */
-  const snoozedNow = (h: HeldSweep) =>
-    !!h.snoozedUntil && Date.parse(h.snoozedUntil) > Date.now();
-  /**
-   * SyncStatus as readers see it (server health.ts heldAt): a snooze whose
-   * until passed shows as none, even before the server's alarm ends it.
-   */
-  const syncView = (): SyncStatus => ({
-    ...sync,
-    held: sync.held.map((h) =>
-      snoozedNow(h) ? h : { ...h, snoozedUntil: null, snoozeReason: null },
-    ),
-  });
   const billing: PlanView = o.billing ?? {
     tier: "business",
     status: "active",
@@ -658,6 +645,19 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     HttpResponse.json({
       url: `https://checkout.stripe.com/c/pay/cs_test_mock_${kind}`,
     });
+  /** Snoozed now (#412): until is still ahead (server health.ts snoozedAt). */
+  const snoozedNow = (h: HeldSweep) =>
+    !!h.snoozedUntil && Date.parse(h.snoozedUntil) > Date.now();
+  /**
+   * SyncStatus as readers see it (server health.ts heldAt): a snooze whose
+   * until passed shows as none, even before the server's alarm ends it.
+   */
+  const syncView = (): SyncStatus => ({
+    ...sync,
+    held: sync.held.map((h) =>
+      snoozedNow(h) ? h : { ...h, snoozedUntil: null, snoozeReason: null },
+    ),
+  });
   /**
    * R.directoryDisconnect / DELETE R.directory: the binding and health go,
    * memberships stay (frozen). Nothing connected: no change, no audit row.

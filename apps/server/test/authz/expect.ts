@@ -363,6 +363,25 @@ export function orgExpected(
     | { org: string }
     | { user: true; space?: "member" | "manager" | "admin" },
   route: string,
+  /**
+   * A hosted-only route (OrgSurface.hostedOnly) on a world that isn't
+   * hosted: its handler answers 404 to everyone, so every caller is denied.
+   * The rule is still evaluated first (an unknown action still throws); on a
+   * hosted world, or with no world given, the flag changes nothing.
+   */
+  world?: { hostedOnly?: boolean; hosted: boolean },
+): "allow" | "deny" {
+  const v = guardExpected(who, rule, route);
+  return world?.hostedOnly && !world.hosted ? "deny" : v;
+}
+
+/** orgExpected's route guard and every rule after it, on any world. */
+function guardExpected(
+  who: CallerName,
+  rule:
+    | { org: string }
+    | { user: true; space?: "member" | "manager" | "admin" },
+  route: string,
 ): "allow" | "deny" {
   const t = TRAITS[who];
   const yes = (b: boolean) => (b ? "allow" : "deny");

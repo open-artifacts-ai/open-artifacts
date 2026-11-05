@@ -251,6 +251,11 @@ const FOREIGN = "apps/server/test/redline.foreign-credential.test.ts";
 const FOREIGN_D =
   "red line: another install's credential on the dropped directory surfaces";
 const INSTANCE: Citation = { file: MATRIX, describe: "instance routes" };
+/** Hosted billing's authz: owner and admin allowed, member, guest, anonymous refused. */
+const BILLING_AUTHZ: Citation = {
+  file: "apps/server/test/authz/plan.matrix.test.ts",
+  describe: "plan %s: billing and admin reads",
+};
 const ARTIFACTS: Citation = {
   file: MATRIX,
   describe: "artifact surfaces (sync stale 8 days)",
@@ -324,6 +329,15 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
   // #1372: offered only while the bus is on; never on a hosted install.
   "tool:bus_role_propose":
     "bus-off: the tool isn't offered on a hosted install (the bus is off until #1299)",
+  // Self-serve billing (hosted only): an allowed caller's request reaches
+  // billing (a Stripe session or a usage report), so no success leg runs
+  // live. A at B is deny-only.
+  "POST /api/v1/billing/checkout":
+    "real-only: an allowed request opens a Stripe Checkout session through billing; A at B is deny-only",
+  "POST /api/v1/billing/portal":
+    "real-only: an allowed request opens a Stripe Customer Portal session through billing; A at B is deny-only",
+  "POST /api/v1/billing/usage":
+    "real-only: an allowed request sends this month's usage report to billing; A at B is deny-only",
 };
 
 /**
@@ -551,6 +565,18 @@ export const DROPPED: Readonly<
         test: "a PAT may read but never set or remove; guests, capped and anonymous callers get nothing",
       },
     ],
+  },
+  "org POST /api/v1/billing/checkout": {
+    why: "real-only",
+    coveredBy: [INSTANCE, BILLING_AUTHZ],
+  },
+  "org POST /api/v1/billing/portal": {
+    why: "real-only",
+    coveredBy: [INSTANCE, BILLING_AUTHZ],
+  },
+  "org POST /api/v1/billing/usage": {
+    why: "real-only",
+    coveredBy: [INSTANCE, BILLING_AUTHZ],
   },
   "org DELETE /api/v1/spaces/:id/mappings/:groupId": {
     why: "real-only",

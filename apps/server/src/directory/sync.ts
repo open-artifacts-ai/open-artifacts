@@ -148,6 +148,13 @@ export const NO_FEED_MS = 15 * 60_000;
 /** DO kv: when a due lane first found no token in hand (cleared once one is). */
 const NOFEED_KEY = "nofeed.since";
 /**
+ * DO kv: the directory mode the last caller handed over (services/directory.ts
+ * syncModeFor: hosted, the billing tier's; a locked plan is frozen). The alarm
+ * follows it rather than the provisioned FEATURES, which this DO would read
+ * outside any request.
+ */
+const MODE_KEY = "mode";
+/**
  * DO kv: a snooze changed outside an alarm (an RPC). The next alarm rewrites
  * the D1 held list from the snoozed table, healing a health write of its
  * own that raced the RPC's.
@@ -158,13 +165,6 @@ const SNOOZE_CAS_TRIES = 4;
 /** A health row written only while there is none (casHealth's create). */
 const HEALTH_INSERT =
   "insert into directory_state (key, value) values (?1, ?2) on conflict (key) do nothing";
-/**
- * DO kv: the directory mode the last caller handed over (services/directory.ts
- * syncModeFor: hosted, the billing tier's; a locked plan is frozen). The alarm
- * follows it rather than the provisioned FEATURES, which this DO would read
- * outside any request.
- */
-const MODE_KEY = "mode";
 
 /**
  * The directory access token, in memory only: never written to DO storage,
@@ -1036,6 +1036,19 @@ export class SyncEngine {
   }
 
   /**
+   * A paused alarm's next wake: the earliest snooze's end, no sooner than
+   * FAST_MS (a due snooze here is one snoozeTick failed to end). Null: none.
+   */
+  private nextSnoozeAt(now: number): number | null {
+    const at = this.sql
+      .exec("select min(until) as at from snoozed")
+      .toArray()[0]?.at;
+    return at === null || at === undefined
+      ? null
+      : Math.max(Number(at), now + FAST_MS);
+  }
+
+  /**
    * Each alarm: snoozes past `until` end (the hold shows again), and a
    * snooze changed by an RPC since the last alarm is written to D1 again.
    */
@@ -1179,7 +1192,8 @@ export class SyncEngine {
     if (mode === "off" || !client || !binding || !sealed) return null;
     if (!this.fresh()) return now;
     // Snoozes past `until` end in any mode (frozen too). Never fatal: a
-    // failure retries next alarm, and sync goes on.
+    // failure retries next alarm, and sync goes on. Before the paused stop:
+    // a plan-frozen install's snoozes end on time too.
     try {
       await this.snoozeTick(now);
     } catch (e) {
@@ -1188,7 +1202,8 @@ export class SyncEngine {
     }
     if (this.paused(mode)) {
       this.del(NOFEED_KEY);
-      return null;
+      // Paused, no lane re-arms this alarm: wake for the next snooze's end.
+      return this.nextSnoozeAt(now);
     }
     const groups = mode === "google";
     // Hosted with no token in hand: stop cleanly before planning anything

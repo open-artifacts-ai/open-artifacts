@@ -77,6 +77,9 @@ async function toMe(
   const notices = await meNotices(c.env, user, cap, kv);
   if (notices) me.notices = notices;
   const exp = c.var.sessionExp;
+  // Hosted billing: the plan as this request's user load read it (null off
+  // hosted billing).
+  const plan = planOfMember(user);
   // Every install (parity 2): guests_read_only and the caller's cap reach an
   // Access-only dashboard too, or a guest sees no view-only state.
   me.instance.features = instanceFeatures(c.env);
@@ -99,35 +102,6 @@ async function toMe(
     me.personalSpaceId = user.id;
     me.spaces = await mySharedSpaces(c.env, caller(c));
   }
-  // Hosted M1 (#359): in every sign-in mode (Access-only included, parity 1),
-  // so the dashboard reads one shape.
-  me.instance.hosted = c.env.HOSTED === "1";
-  // Hosted: the billing plan's tier when there is one (the same tier as
-  // Me.instance.billing.tier; null for free, which has no Tier), else the
-  // provisioned TIER. Features follow the same tier (featuresOf). Null off
-  // hosted.
-  const plan = planOfMember(user);
-  // Read even when the plan rules: an unknown TIER is still logged.
-  const provisioned = me.instance.hosted ? hostedTier(c.env.TIER) : null;
-  me.instance.tier = !me.instance.hosted
-    ? null
-    : plan
-      ? plan.tier === "free"
-        ? null
-        : plan.tier
-      : provisioned;
-  // Owners also see why configured sign-in is off (AuthConfig.problems).
-  me.instance.signIn = instanceSignIn(
-    c.env,
-    orgCan(user, "signin.problems", { cap }),
-  );
-  // #1291: the dashboard's bus tab follows the server's rule, never its own.
-  // The request's member (it carries the cap), never PATCH's response-only
-  // copy, which has none and would throw.
-  const who = c.var.user;
-  me.canConnect = who ? canConnect(who) : false;
-  // #1293: the dashboard's bus pages show only while the bus answers.
-  me.busOn = busOn(c.env);
   // Self-serve billing (hosted only): the plan as this request's user load
   // read it. Billing details for the uncapped owner and admins, who also
   // refresh the tier on demand (at most once a minute, after the response).
@@ -159,6 +133,34 @@ async function toMe(
       else await run;
     }
   }
+  // Hosted M1 (#359): in every sign-in mode (Access-only included, parity 1),
+  // so the dashboard reads one shape.
+  me.instance.hosted = c.env.HOSTED === "1";
+  // Hosted: the billing plan's tier when there is one (the same tier as
+  // Me.instance.billing.tier; null for free, which has no Tier), else the
+  // provisioned TIER. Features follow the same tier (featuresOf). Null off
+  // hosted.
+  // Read even when the plan rules: an unknown TIER is still logged.
+  const provisioned = me.instance.hosted ? hostedTier(c.env.TIER) : null;
+  me.instance.tier = !me.instance.hosted
+    ? null
+    : plan
+      ? plan.tier === "free"
+        ? null
+        : plan.tier
+      : provisioned;
+  // Owners also see why configured sign-in is off (AuthConfig.problems).
+  me.instance.signIn = instanceSignIn(
+    c.env,
+    orgCan(user, "signin.problems", { cap }),
+  );
+  // #1291: the dashboard's bus tab follows the server's rule, never its own.
+  // The request's member (it carries the cap), never PATCH's response-only
+  // copy, which has none and would throw.
+  const who = c.var.user;
+  me.canConnect = who ? canConnect(who) : false;
+  // #1293: the dashboard's bus pages show only while the bus answers.
+  me.busOn = busOn(c.env);
   return me;
 }
 

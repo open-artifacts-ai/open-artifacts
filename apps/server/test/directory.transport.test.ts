@@ -132,11 +132,21 @@ describe("directoryTransport", () => {
     expect((await get(off, R.directoryConnect, owner.cookie)).status).toBe(404);
   });
 
-  it("hosted is unchanged: connect is 404 while its FEATURES have no sync mode", async () => {
-    const h = hostedEnv({ FEATURES: "spaces" });
+  it("hosted is unchanged: connect is refused while its FEATURES have no sync mode", async () => {
+    // Hosted billing: in a request the features follow the plan's tier, and
+    // every paid tier names a sync mode. No TIER is free (no sync mode): the
+    // live transport never turns it into google, and the team route gate
+    // refuses connect (403 plan_required) before the directory's own 404.
+    const h = hostedEnv({ TIER: undefined, FEATURES: "spaces" });
     expect(directoryTransport(h).kind).toBe("broker");
     expect(directoryMode(h)).toBe("off");
-    expect((await get(h, R.directoryConnect, owner.cookie)).status).toBe(404);
+    const r = await get(h, R.directoryConnect, owner.cookie);
+    // Never a consent redirect: hosted takes no mode from the transport.
+    expect(r.status).not.toBe(302);
+    expect(r.status).toBe(403);
+    expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
+      "plan_required",
+    );
     expect(directoryMode(hostedEnv())).toBe("google");
     expect(directoryMode(hostedEnv({ FEATURES: "spaces,sync_frozen" }))).toBe(
       "frozen",
