@@ -325,7 +325,7 @@ export const harnessSkills: Record<Harness, HarnessSkill> = {
     skillPath: "~/.claude/skills/open-artifacts/SKILL.md",
     busToolName: (tool) => `mcp__oa_bus__${tool}`,
   },
-  // CODEX_TOOL_NAMESPACE = "mcp__oa_bus" (apps/bus-daemon/src/codex-attest.ts).
+  // CODEX_TOOL_NAMESPACE = "mcp__oa_bus" (packages/bus-daemon/src/codex-attest.ts).
   codex: {
     skillPath: "~/.codex/AGENTS.md",
     busToolName: (tool) => `mcp__oa_bus__${tool}`,
