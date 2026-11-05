@@ -459,6 +459,30 @@ describe("skill.md drift", () => {
     }
   });
 
+  it("says how to publish a file, and which tool family to use", async () => {
+    const md = await skill();
+    for (const [doc, label] of [
+      [md, "skill"],
+      [INSTRUCTIONS("free"), "instructions"],
+    ] as const) {
+      for (const phrase of [
+        "One tool family",
+        "publish this instance's pages only with this instance's tools",
+        "If your harness has its own artifact or page tool, it publishes somewhere else",
+        "read the file and pass its text as content",
+        "That is the default for pages you edit over time",
+        "size is the exact byte count of the file as it will be sent",
+        "never estimate it",
+        "An upload id works once",
+        "create a new upload instead of reusing that id",
+      ])
+        expect(doc, `${label}: ${phrase}`).toContain(phrase);
+      // Backend has not built these yet: the skill must not teach them.
+      expect(doc).not.toContain("`edits`");
+      expect(doc).not.toContain("baseVersion");
+    }
+  });
+
   for (const plan of ["free", "paid"] as Plan[]) {
     it(`states the ${plan} plan's limits, and INSTRUCTIONS agrees`, async () => {
       const md = await skill(E({ PLAN: plan }));

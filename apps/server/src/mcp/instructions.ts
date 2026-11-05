@@ -91,6 +91,8 @@ export const SECTIONS = {
   publishing: {
     title: "Publishing",
     body: (p) => `- One file: publish_artifact { title, format, content }.
+- One tool family: publish this instance's pages only with this instance's tools (publish_artifact and the rest). If your harness has its own artifact or page tool, it publishes somewhere else, so don't use it for these pages.
+- Anything under ${INLINE} is one call: read the file and pass its text as content. That is the default for pages you edit over time.
 - Several files: publish_artifact { title, entry: "index.html", files: { "index.html": "...", "app.js": "...", "img/logo.png": { "base64": "..." } } }.
 - Paths are relative, use "/" and are case-sensitive; link between files with relative URLs.
 - ${LINK_RULE}
@@ -109,7 +111,9 @@ export const SECTIONS = {
     body: () => `- Inline content (content, text files and base64 together) is limited to ${INLINE} per call; over it, publish_artifact fails with too_large. For anything larger (up to ${FILE_MB} per file), upload each large file:
   1. create_upload { path, size, contentType, artifactId? } returns { uploadId, artifactId, url }. Omit artifactId for a new artifact and reuse the returned artifactId for every other file.
   2. PUT the raw bytes to url (valid 1 hour).
-  3. publish_artifact { id: artifactId, title, entry, files: { "<path>": { "uploadId": "<uploadId>" }, ... } }; small files can stay inline next to uploaded ones.`,
+  3. publish_artifact { id: artifactId, title, entry, files: { "<path>": { "uploadId": "<uploadId>" }, ... } }; small files can stay inline next to uploaded ones.
+- size is the exact byte count of the file as it will be sent: measure it (for example \`wc -c\`), never estimate it.
+- An upload id works once. If the PUT or the publish fails, create a new upload instead of reusing that id.`,
   },
   reading: {
     title: "Reading",
