@@ -903,6 +903,90 @@ describe("halts", () => {
     });
   });
 
+  describe("#1343: an upgrade the DO rule refuses (a release binding a new DO class)", () => {
+    const STEP = "0.92.5";
+    // The row ManageInstall leaves (do_step_required and its stored text);
+    // apps/provisioner's manage test proves that path writes exactly this.
+    const refuse = (jobId: unknown, at: number) =>
+      db
+        .prepare(
+          "UPDATE jobs SET status = 'failed', finished_at = ?2, updated_at = ?2, error_code = 'do_step_required', error_message = ?3 WHERE id = ?1",
+        )
+        .bind(
+          jobId,
+          at,
+          `Upgrade this install to ${STEP} first: the target adds Durable Object classes it can't jump to.`,
+        )
+        .run();
+
+    it("on the canary: the chain halts, names the install and the step, and upgrades nothing more", async () => {
+      const canary = await on("0.92.0");
+      const rest = [
+        await on("0.92.0", { created: 5 }),
+        await on("0.92.0", { created: 6 }),
+      ];
+      const f = fakes({ canary });
+      await fleetDue(f.env, NOW, f.opts);
+      const [j] = await fleetJobs();
+      expect(j?.install_id).toBe(canary);
+      await refuse(j?.id, NOW + MIN);
+      await ticks(f, NOW + 2 * MIN, NOW + 60 * MIN);
+      // No retry of the canary, and nobody else moved.
+      expect(await fleetJobs()).toHaveLength(1);
+      expect(await marks()).toEqual([`fleet_halt:${TARGET}:${canary}`]);
+      const c = await fleetConditions(f.env, NOW + 60 * MIN);
+      expect(c.fleet_halted.open).toBe(true);
+      expect(c.fleet_halted.rows).toHaveLength(1);
+      expect(c.fleet_halted.rows[0]).toMatchObject({
+        install_id: canary,
+        job_id: j?.id,
+        code: "do_step_required",
+        version: TARGET,
+        message: expect.stringContaining(
+          `Upgrade this install to ${STEP} first`,
+        ),
+      });
+      for (const id of rest)
+        expect((await fleetJobs()).some((x) => x.install_id === id)).toBe(
+          false,
+        );
+    });
+
+    it("on a batch member: the version halts, what's queued is canceled, and no further install moves", async () => {
+      const canary = await on(TARGET);
+      await soaked(canary);
+      const m = await on("0.92.0", { created: 5 });
+      const peers = [
+        await on("0.92.0", { created: 6 }),
+        await on("0.92.0", { created: 7 }),
+      ];
+      const later = await on("0.92.0", { created: 8 });
+      const f = fakes({ canary });
+      await fleetDue(f.env, NOW, f.opts);
+      const batch = await fleetJobs();
+      expect(batch.map((x) => x.install_id)).toEqual([m, ...peers]);
+      const j = batch.find((x) => x.install_id === m);
+      await refuse(j?.id, NOW + MIN);
+      await ticks(f, NOW + 2 * MIN, NOW + 60 * MIN);
+      expect(await marks()).toEqual([`fleet_halt:${TARGET}:${m}`]);
+      const after = await fleetJobs();
+      expect(after).toHaveLength(3);
+      expect(after.some((x) => x.install_id === later)).toBe(false);
+      for (const x of after.filter((x) => x.install_id !== m))
+        expect(x).toMatchObject({ status: "failed", error_code: "canceled" });
+      const c = await fleetConditions(f.env, NOW + 60 * MIN);
+      expect(c.fleet_halted.rows).toContainEqual(
+        expect.objectContaining({
+          install_id: m,
+          code: "do_step_required",
+          message: expect.stringContaining(
+            `Upgrade this install to ${STEP} first`,
+          ),
+        }),
+      );
+    });
+  });
+
   it("a failed fleet upgrade halts its version, with a durable mark", async () => {
     const canary = await on("0.92.0");
     await on("0.92.0");

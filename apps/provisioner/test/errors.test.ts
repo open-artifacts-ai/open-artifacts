@@ -1,6 +1,7 @@
 import { NonRetryableError } from "cloudflare:workflows";
 import {
   CfError,
+  DoStepRequired,
   PROVISION_ERROR_CODES,
   ProvisionRefused,
   ProvisionRetry,
@@ -11,7 +12,9 @@ import {
   codeOf,
   detailOf,
   ERROR_MESSAGE_MAX,
+  errorTextOf,
   JOB_ERROR_TEXT,
+  jobErrorText,
   redactDetail,
   redactEmail,
   StepRefusal,
@@ -193,6 +196,58 @@ describe("the code-sign-in refusals (#1088)", () => {
       expect(e.message).toMatch(re);
       expect(e.message).not.toContain("leak");
     }
+  });
+});
+
+describe("do_step_required (#1343): the one structured value", () => {
+  const STEPPED = (v: string) =>
+    `Upgrade this install to ${v} first: the target adds Durable Object classes it can't jump to.`;
+
+  it("a release version step is named, in the error and the stored text; never the refusal's own message", () => {
+    const e = stepError(
+      new DoStepRequired(
+        `install i1 owner ${EMAIL}: upgrade it to 0.115.0 first`,
+        "0.115.0",
+      ),
+    );
+    expect(e).toBeInstanceOf(NonRetryableError);
+    expect(e.message).toBe(`do_step_required: ${STEPPED("0.115.0")}`);
+    expect(errorTextOf(e)).toBe(STEPPED("0.115.0"));
+    expect(e.message).not.toContain(EMAIL);
+    expect(
+      errorTextOf(stepError(new DoStepRequired("x", "0.115.0-rc.1"))),
+    ).toBe(STEPPED("0.115.0-rc.1"));
+    expect(STEPPED("9".repeat(40)).length).toBeLessThanOrEqual(
+      ERROR_MESSAGE_MAX,
+    );
+  });
+
+  it("no step, or one that isn't a release version, is the fixed text alone", () => {
+    for (const step of [
+      null,
+      "",
+      "v0.115.0",
+      `0.115.0-${"a".repeat(40)}`,
+      `0.115.0 ${EMAIL}`,
+      "1.2",
+    ]) {
+      const e = stepError(new DoStepRequired("x", step));
+      expect(e.message).toBe(
+        `do_step_required: ${JOB_ERROR_TEXT.do_step_required}`,
+      );
+      expect(errorTextOf(e)).toBe(JOB_ERROR_TEXT.do_step_required);
+      expect(jobErrorText("do_step_required", step)).toBe(
+        JOB_ERROR_TEXT.do_step_required,
+      );
+    }
+  });
+
+  it("only do_step_required takes a step: any other code keeps its fixed text", () => {
+    expect(jobErrorText("invalid_state", "0.115.0")).toBe(
+      JOB_ERROR_TEXT.invalid_state,
+    );
+    const other = stepError(new ProvisionRefused("x", "invalid_state"));
+    expect(errorTextOf(other)).toBe(JOB_ERROR_TEXT.invalid_state);
   });
 });
 

@@ -5,11 +5,13 @@
 // most PROVISIONER_MAX_TOKEN_DAYS out (the CLI keeps 30).
 import { NonRetryableError } from "cloudflare:workflows";
 import {
+  bucketVersions,
   cfClient,
   type Env as DeployEnv,
   HOSTED_DOMAINS,
   NAMESPACES,
   PROVISIONER_MAX_TOKEN_DAYS,
+  type R2CatalogBucket,
   r2BindingReleaseReader,
   type WfpOptions,
   WfpProvisioner,
@@ -73,6 +75,9 @@ export async function provisionerOptions(
     target: { kind: "namespace", ns: NAMESPACES[e] },
     domains: HOSTED_DOMAINS[e],
     release: r2BindingReleaseReader(env.RELEASES, e),
+    // #1343: an upgrade the DO rule refuses names the release to take first.
+    releaseVersions: () =>
+      bucketVersions(env.RELEASES as unknown as R2CatalogBucket),
     ciOwnerToken: { label },
     requireInstallId: true,
     maxTokenDays: PROVISIONER_MAX_TOKEN_DAYS,

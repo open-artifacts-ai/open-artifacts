@@ -58,6 +58,7 @@ import {
 } from "./internal/gates.js";
 import {
   CfError,
+  DoStepRequired,
   NEAR_EXPIRY_MODE,
   PROVISION_JOB_KINDS,
   type ProvisionJobKind,
@@ -206,6 +207,12 @@ export interface WfpOptions {
   /** The release's signed record and files (R2 in production); never the checkout. */
   release: ReleaseReader;
   /**
+   * The published release versions (bucketVersions). An upgrade the DO rule
+   * refuses then names the release to step through first (#1343). Unset
+   * (the CLI): the refusal names none.
+   */
+  releaseVersions?: () => Promise<string[]>;
+  /**
    * The env's one Turnstile widget (sitekey and secret from the keychain item
    * oa-hosted-<env>-turnstile). Required when codes are on.
    */
@@ -291,6 +298,7 @@ export const WFP_STEPS = Object.freeze([
 export type WfpStep = (typeof WFP_STEPS)[number];
 
 export {
+  DoStepRequired,
   NEAR_EXPIRY_MODE,
   PROVISION_ERROR_CODES,
   PROVISION_JOB_KINDS,
@@ -685,6 +693,9 @@ export function storedMetadata(meta: UploadMetadata): Record<string, unknown> {
     keep_bindings: ["secret_text", "secret_key"],
   };
 }
+
+/** The most releases an upgrade the DO rule refuses reads to name a step. */
+const STEP_CANDIDATES = 20;
 
 const tagsOf = (t: Template): string[] =>
   ((t.migrations ?? []) as { tag: string }[]).map((x) => x.tag);
@@ -3422,6 +3433,76 @@ export class WfpProvisioner {
   }
 
   /**
+   * The DO rule before upgrade's claim. A refusal names the install and, when
+   * the published versions are known, the release it must take first, so the
+   * fleet's halt says what a person does next (#1343).
+   */
+  private async doRuleOrStep(
+    id: InstallId,
+    from: string,
+    to: string,
+    rel: Checked,
+    live: string | null,
+  ): Promise<void> {
+    try {
+      assertDoClassesShipFirst(rel.template, live);
+    } catch (e) {
+      const step = await this.stepRelease(from, to, rel, live);
+      throw new DoStepRequired(
+        step === null
+          ? `install ${id}: ${(e as Error).message}`
+          : `install ${id}: upgrade it to ${step} first; ${(e as Error).message}`,
+        step,
+      );
+    }
+  }
+
+  /**
+   * The newest published release between `from` and `to` that the install
+   * may take on its live tag and after which `to` passes the DO rule, or
+   * null. A candidate whose record, floor or template doesn't verify is
+   * skipped; at most STEP_CANDIDATES are read.
+   */
+  private async stepRelease(
+    from: string,
+    to: string,
+    rel: Checked,
+    live: string | null,
+  ): Promise<string | null> {
+    if (!this.o.releaseVersions) return null;
+    let all: string[];
+    try {
+      all = await this.o.releaseVersions();
+    } catch {
+      return null;
+    }
+    const between = all
+      .filter(
+        (v) =>
+          isReleaseVersion(v) &&
+          compareVersions(v, from) > 0 &&
+          compareVersions(v, to) < 0,
+      )
+      .sort(compareVersions)
+      .reverse()
+      .slice(0, STEP_CANDIDATES);
+    for (const v of between) {
+      try {
+        const rec = await this.readRecord({
+          version: v,
+          bundle: rel.rec.variant,
+        });
+        await this.readFloor(rec);
+        const t = await this.readTemplate(rec);
+        assertDoClassesShipFirst(t, live);
+        assertDoClassesShipFirst(rel.template, tagsOf(t).at(-1) ?? live);
+        return v;
+      } catch {}
+    }
+    return null;
+  }
+
+  /**
    * active -> upgrading -> new D1 migrations -> upload (keep_bindings, no
    * secret value) -> /healthz and the read-only MCP selftest -> active. A
    * failed check rolls back, unless the DO tag moved (forward-fix only).
@@ -3471,7 +3552,7 @@ export class WfpProvisioner {
       version: to,
       bundle: m.testHooks ? "redline" : "release",
     });
-    this.doRule(rel.template)(row.do_migration_tag);
+    await this.doRuleOrStep(id, from, to, rel, row.do_migration_tag);
     const { d1Id, kvId } = await this.liveInstall(row, m);
     await this.checkMigrationOrder(rel, d1Id);
     const restorePoint = await this.migrationHold(id, rel, d1Id, o);
