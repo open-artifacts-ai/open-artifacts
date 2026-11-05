@@ -42,6 +42,9 @@
       "gh api *--raw-field*": "ask",
       "gh api *--input*": "ask",
       "gh api *-i?*": "ask",
+      "gh api*$*": "ask",
+      "gh api*`*": "ask",
+      "gh api*{*": "ask",
       "git push --force*": {
         "action": "deny",
         "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
@@ -435,6 +438,38 @@
         "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
       },
       "git -C * push*\"*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git push*$*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git push*`*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git push*{*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git push*[*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*$*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*`*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*{*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*[*": {
         "action": "deny",
         "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
       }
