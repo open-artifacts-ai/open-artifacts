@@ -12,10 +12,10 @@ const dist = fileURLToPath(new URL("../dist/", import.meta.url));
 const llms = readFileSync(join(dist, "llms.txt"), "utf8");
 const setupMd = readFileSync(join(dist, "docs/setup.md"), "utf8");
 
-// The documented invocation, e.g. `pnpm oa:setup` or `pnpm -s oa:setup`.
+// The documented invocation, e.g. `pnpm oa:setup` or `pnpm --reporter=silent oa:setup`.
 const invocation = (
   llms.match(
-    /(pnpm(?: -[a-z-]+)* oa:setup) --json(?: --yes)? --app-host/,
+    /(pnpm(?: -{1,2}[a-z-]+(?:=[a-z-]+)?)* oa:setup) --json(?: --yes)? --app-host/,
   )?.[1] ?? "pnpm oa:setup"
 ).split(" ");
 
@@ -30,16 +30,7 @@ describe("B16 setup docs adversarial", () => {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    // pnpm 11 prints its own "[ELIFECYCLE] Command failed with exit code N."
-    // trailer on stdout even under -s (pnpm 10 was silent). The exit code
-    // carries the same fact, so that one line is the only non-JSON allowed.
-    const lines = r.stdout
-      .split("\n")
-      .filter(
-        (l) =>
-          l.trim() &&
-          !/^\[ELIFECYCLE\] Command failed with exit code \d+\.$/.test(l),
-      );
+    const lines = r.stdout.split("\n").filter((l) => l.trim());
     expect(lines.length).toBeGreaterThan(0);
     for (const l of lines) expect(() => JSON.parse(l), l).not.toThrow();
   }, 60_000);

@@ -32,7 +32,10 @@ function docFlags(md: string): string[] {
       .filter((c) => c.startsWith("--") || c.includes("oa:setup")),
     ...md.split("\n").filter((l) => l.includes("oa:setup")),
   ];
-  return spans.flatMap((s) => s.match(/--[a-z][a-z-]*/g) ?? []);
+  // `--reporter=silent` belongs to pnpm, not to oa:setup.
+  return spans.flatMap((s) =>
+    (s.match(/--[a-z][a-z-]*/g) ?? []).filter((f) => f !== "--reporter"),
+  );
 }
 
 describe("setup docs match scripts/setup", () => {

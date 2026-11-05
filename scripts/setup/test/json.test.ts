@@ -120,7 +120,7 @@ describe("access rerun without OA_ACCESS_TOKEN", () => {
     expect(step(w, "access")).toMatchObject({
       status: "skipped",
       message:
-        "Access not re-verified: to re-check, run `pnpm -s oa:setup --token-links --json` to get the save line (`saveCommand`); the user runs it in their own terminal (in Claude Code, type `! ` then the line), and setup then reads ~/.open-artifacts/open-artifacts-access-token (or the OA_ACCESS_TOKEN env var)",
+        "Access not re-verified: to re-check, run `pnpm --reporter=silent oa:setup --token-links --json` to get the save line (`saveCommand`); the user runs it in their own terminal (in Claude Code, type `! ` then the line), and setup then reads ~/.open-artifacts/open-artifacts-access-token (or the OA_ACCESS_TOKEN env var)",
     });
   });
 
@@ -250,7 +250,7 @@ describe("B16-4 review fixes", () => {
     const w = world({ org: "forbidden" });
     expect(await run(JSON_ONLY, w.deps, ROOT)).toBe(2);
     expect(last(w).message).toContain(
-      "save it with the line from `pnpm -s oa:setup --token-links --json` (saveCommand), then rerun.",
+      "save it with the line from `pnpm --reporter=silent oa:setup --token-links --json` (saveCommand), then rerun.",
     );
   });
 });

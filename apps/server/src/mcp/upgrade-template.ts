@@ -61,7 +61,7 @@ const ACCESS = secretFile("access", { installName: NAME });
 const ANALYTICS = secretFile("analytics", { installName: NAME });
 const PAT = secretFile("pat", { hostSlug: T("hostSlug") });
 const CF_ENV = `${SECRET_ENV_VARS.cloudflare}="$(cat ${CF})"`;
-const SETUP = `${CF_ENV} pnpm -s oa:setup`;
+const SETUP = `${CF_ENV} pnpm --reporter=silent oa:setup`;
 const WRANGLER = `${CF_ENV} pnpm -s --filter @oa/server exec wrangler`;
 const VERIFY = `${CF_ENV} node --experimental-strip-types apps/server/scripts/verify-migration.ts`;
 /** Where the guarded-migration capture is kept: the install's state directory. */
@@ -125,7 +125,7 @@ The upgrade needs the user's ${SECRET_LABELS.cloudflare}. If \`${CF}\` does not 
 ${secretSnippet(CF, SECRET_LABELS.cloudflare)}
 \`\`\`
 
-${secretRules({ file: CF, envVar: SECRET_ENV_VARS.cloudflare, command: `pnpm -s oa:setup --upgrade --name ${NAME} --json` })}
+${secretRules({ file: CF, envVar: SECRET_ENV_VARS.cloudflare, command: `pnpm --reporter=silent oa:setup --upgrade --name ${NAME} --json` })}
 
 The ${SECRET_LABELS.access} and the ${SECRET_LABELS.analytics} are needed only if setup asks for them (exit code 2, \`action_required\`). Then save each the same way and pass it the same way:
 

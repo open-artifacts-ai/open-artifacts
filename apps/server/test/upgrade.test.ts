@@ -53,7 +53,7 @@ function frontmatter(md: string) {
 
 /** Every `oa:setup` command line in the skill's code blocks. */
 const setupLines = (md: string) =>
-  md.split("\n").filter((l) => l.includes("pnpm -s oa:setup "));
+  md.split("\n").filter((l) => l.includes("pnpm --reporter=silent oa:setup "));
 
 describe("upgrade.md drift", () => {
   // upgrade.generated.ts is gitignored and written by `pnpm gen` before every
@@ -92,8 +92,9 @@ describe("upgrade.md drift", () => {
     const lines = setupLines(md);
     expect(lines.length).toBeGreaterThanOrEqual(3);
     const allowed = new Set<string>(UPGRADE_FLAGS);
+    // Flags after `oa:setup` only; `--reporter=silent` belongs to pnpm.
     for (const l of lines)
-      for (const f of l.match(/--[a-z][a-z-]*/g) ?? [])
+      for (const f of l.split("oa:setup")[1]?.match(/--[a-z][a-z-]*/g) ?? [])
         expect(allowed.has(f), `${f} in: ${l}`).toBe(true);
   });
 });

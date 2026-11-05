@@ -41,7 +41,7 @@ The agent follows the steps below. The only thing you do yourself is approve the
    Then run it with the user's hostnames and email:
 
    ```sh
-   pnpm -s oa:setup --json --app-host artifacts.example.com --content-host artifacts-content.example.com --owner-email you@example.com --name open-artifacts --solo
+   pnpm --reporter=silent oa:setup --json --app-host artifacts.example.com --content-host artifacts-content.example.com --owner-email you@example.com --name open-artifacts --solo
    ```
 
    `-s` keeps pnpm's own output off stdout, so every line is JSON. With `--json`, setup never prompts. Setup prints one JSON object per line, `{"step", "status", "message", "data"}`, where `status` is `ok`, `skipped`, `action_required`, or `error`. It stops at the first `action_required` or `error`. Then go by the exit code:
@@ -56,7 +56,7 @@ The agent follows the steps below. The only thing you do yourself is approve the
    bash -c 'set -e; umask 077; d="$HOME/.open-artifacts"; mkdir -p "$d"; chmod 700 "$d"; read -rsp "Cloudflare Access token (hidden, then Enter): " T; echo; [ -n "$T" ] || { echo "nothing entered; not saved"; exit 1; }; rm -f "$d/open-artifacts-access-token"; printf "%s" "$T" > "$d/open-artifacts-access-token"; chmod 600 "$d/open-artifacts-access-token"; echo "saved to $d/open-artifacts-access-token"'
    ```
 
-   Use your `--name` in place of `open-artifacts` in that line. `pnpm -s oa:setup --token-links --json` prints the exact line for every token as `saveCommand`. Then run the same setup command again. Setup reads the saved file, keeps the token only in memory, and never prints or saves it.
+   Use your `--name` in place of `open-artifacts` in that line. `pnpm --reporter=silent oa:setup --token-links --json` prints the exact line for every token as `saveCommand`. Then run the same setup command again. Setup reads the saved file, keeps the token only in memory, and never prints or saves it.
 
    The other tokens work the same way, each saved with its own line in your own terminal and never in the chat:
 

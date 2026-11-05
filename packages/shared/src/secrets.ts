@@ -74,7 +74,7 @@ export const BANG_RULE =
 
 /**
  * The rules shipped next to secretSnippet, as Markdown list items. Pass
- * `envVar` (and optionally `command`, default `pnpm -s oa:setup …`) for
+ * `envVar` (and optionally `command`, default `pnpm --reporter=silent oa:setup …`) for
  * `VAR="$(cat <file>)" <command>`, or `usage` for any other form that reads
  * the file inside the command (e.g. a curl header).
  */
@@ -87,7 +87,7 @@ export function secretRules(
   const usage =
     "usage" in opts
       ? opts.usage
-      : `${opts.envVar}="$(cat ${opts.file})" ${opts.command ?? "pnpm -s oa:setup …"}`;
+      : `${opts.envVar}="$(cat ${opts.file})" ${opts.command ?? "pnpm --reporter=silent oa:setup …"}`;
   return `- Never ask for the token in chat. Hand the user the line above. ${BANG_RULE} Never print, echo or log the value.
 - Read the file only to pass it on, inside the command you run: \`${usage}\`. Never put the value in text you show.
 - The file (${opts.file}) is mode 0600 in a 0700 directory. To rotate, run the line again (it overwrites the file); delete the file when it is no longer needed.

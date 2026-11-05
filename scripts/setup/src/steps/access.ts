@@ -308,7 +308,7 @@ async function record(
 
 /** How the user hands setup an Access token without it entering a chat. */
 const saveFlow = (ctx: Ctx) =>
-  `run \`pnpm -s oa:setup --token-links --json\` to get the save line (\`saveCommand\`); the user runs it in their own terminal (in Claude Code, type \`! \` then the line), and setup then reads ~/.open-artifacts/${ctx.opts.name}-access-token (or the OA_ACCESS_TOKEN env var)`;
+  `run \`pnpm --reporter=silent oa:setup --token-links --json\` to get the save line (\`saveCommand\`); the user runs it in their own terminal (in Claude Code, type \`! \` then the line), and setup then reads ~/.open-artifacts/${ctx.opts.name}-access-token (or the OA_ACCESS_TOKEN env var)`;
 
 /** Lookup with OA_ACCESS_TOKEN or the wrangler token; on 403, ask once (memory only). */
 async function lookupWithToken(ctx: Ctx, accountId: string) {
@@ -333,7 +333,7 @@ async function lookupWithToken(ctx: Ctx, accountId: string) {
                 .permissions.map((p) => p.label)
                 .join(
                   ", ",
-                )}). Create it at ${url}, save it with the line from \`pnpm -s oa:setup --token-links --json\` (saveCommand), then rerun.`
+                )}). Create it at ${url}, save it with the line from \`pnpm --reporter=silent oa:setup --token-links --json\` (saveCommand), then rerun.`
           : `This token cannot read Access. ${create}.${ctx.noState ? "" : " (OA_TEAM_DOMAIN can stand in for Organizations Read.)"}`,
       { url },
     );
