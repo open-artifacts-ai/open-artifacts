@@ -74,7 +74,7 @@ staged() {
 
 case "${EVENT:-}" in
   workflow_run)
-    if [ "${CONCLUSION:-}" = never ] || [ "${HEAD_BRANCH:-}" != main ]; then
+    if [ "${CONCLUSION:-}" = cancelled ] || [ "${HEAD_BRANCH:-}" != main ]; then
       echo "release-please was cancelled or not on main; nothing to publish"
       out none "" "" false false
       exit 0
