@@ -337,6 +337,12 @@ importers:
       '@astrojs/check':
         specifier: ^0.9.10
         version: 0.9.10(@emnapi/runtime@1.11.1)(prettier@3.9.10)(typescript@5.9.3)
+      '@oa/dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
+      '@oa/server':
+        specifier: workspace:*
+        version: link:../server
       '@oa/setup':
         specifier: workspace:*
         version: link:../../scripts/setup

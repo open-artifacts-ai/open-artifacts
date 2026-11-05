@@ -11,12 +11,6 @@
 # line that matches no current read fails the check as stale.
 apps/admin/vite.config.ts @oa/provisioning
 apps/dashboard/e2e/real/fixtures.ts @oa/server
-apps/landing/src/lib/release.ts @oa/dashboard
-apps/landing/src/lib/release.ts @oa/server
-apps/landing/src/lib/tools.ts @oa/server
-apps/landing/test/llms.test.ts @oa/server
-apps/landing/test/markers.test.ts @oa/server
-apps/landing/test/tools-manifest.test.ts @oa/server
 apps/provisioner/test/node/oauth-store-real.test.ts @oa/server
 apps/provisioner/test/node/world.ts @oa/server
 apps/provisioning/test/node/seal-copy.test.ts @oa/provisioner
