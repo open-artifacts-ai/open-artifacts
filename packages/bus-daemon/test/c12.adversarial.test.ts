@@ -40,18 +40,27 @@ describe("C12 adversarial", () => {
   });
 
   it("an Outbox reply queued in the pacer survives a link drop", async () => {
-    const got: string[] = [];
+    // Which frames are on the wire is fixed by the token bucket, not by timing:
+    // with the clock frozen, hello + sessions + 2 replies spend the burst of 4,
+    // so replies 2..19 are queued in the pacer when the first link drops.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const first: string[] = [];
+    const second: string[] = [];
     let conns = 0;
     const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((r) => wss.once("listening", () => r()));
     wss.on("connection", (ws) => {
       conns++;
-      const first = conns === 1;
+      const link = conns === 1 ? first : second;
       ws.on("message", (d) => {
         const fr = JSON.parse(String(d));
-        if (fr.type === "send") got.push(fr.id);
-        // Drop the first link once a few replies got through.
-        if (first && got.length === 3) ws.terminate();
+        if (fr.type !== "send") return;
+        link.push(fr.id);
+        // The drop is driven by what the pacer wrote: both written replies are in.
+        if (link === first && first.length === 2) {
+          vi.useRealTimers();
+          ws.terminate();
+        }
       });
     });
     const port = (wss.address() as { port: number }).port;
@@ -73,6 +82,7 @@ describe("C12 adversarial", () => {
         opened();
       },
       backoffMs: () => 10,
+      pace: { burst: 4 },
     });
     outbox = new Outbox<ClientFrame>({
       send: (fr, unsent) => hub.send(fr, unsent),
@@ -93,10 +103,15 @@ describe("C12 adversarial", () => {
       } as ClientFrame);
     }
     try {
-      await vi.waitFor(() => expect(new Set(got)).toEqual(new Set(ids)), {
+      await vi.waitFor(() => expect(second.length).toBe(18), {
         timeout: 4000,
       });
+      // Written before the drop: delivered on the first link, never resent.
+      expect(first).toEqual(ids.slice(0, 2));
+      // Still queued in the pacer at the drop: resent on the next link, in order.
+      expect(second).toEqual(ids.slice(2));
     } finally {
+      vi.useRealTimers();
       hub.stop();
       await new Promise<void>((r) => wss.close(() => r()));
     }
