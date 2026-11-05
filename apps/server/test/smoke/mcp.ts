@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expectedToolCount, spacesOn } from "../smoke-setup/spaces.ts";
+import { spacesOn } from "../smoke-setup/spaces.ts";
 
 const base = process.env.STAGING_URL;
 const pat = process.env.STAGING_OWNER_PAT;
@@ -24,10 +24,12 @@ describe.skipIf(!base || !pat)("staging smoke: mcp", () => {
       : (text.split("\n").find((l) => l.startsWith("data:")) ?? "").slice(5);
     const body = JSON.parse(json) as { result: { tools: { name: string }[] } };
     const names = body.result.tools.map((t) => t.name);
-    expect(names).toContain("publish_artifact");
+    // Required core tools, not a total count: a new tool must not break this.
+    for (const tool of ["publish_artifact", "get_artifact", "list_artifacts"])
+      expect(names).toContain(tool);
     if (spaces) expect(names).toContain("list_spaces");
     else expect(names).not.toContain("list_spaces");
-    expect(names).toHaveLength(expectedToolCount(spaces));
+    expect(new Set(names).size).toBe(names.length);
   });
 
   it("no auth → 401 with a resource-metadata challenge", async () => {
