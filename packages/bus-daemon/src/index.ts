@@ -943,7 +943,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                   machine:
                     a.machine_label ??
                     (mine.get(a.name) === a.kind ? cfg.label : ""),
-                  state: a.state ?? ("live" as const),
+                  state:
+                    a.state === "away"
+                      ? ("queued" as const)
+                      : (a.state ?? ("live" as const)),
                   ...(a.status === undefined ? {} : { status: a.status }),
                   ...(a.status_label === undefined
                     ? {}

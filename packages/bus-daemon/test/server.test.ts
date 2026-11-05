@@ -130,7 +130,7 @@ describe("runDaemon local server", () => {
     h.toDaemon({
       id: list.id,
       type: "roster",
-      agents: [agent("b", "live"), agent("c", "away")],
+      agents: [agent("b", "live"), agent("c", "sleeping")],
     });
     expect(await res).toMatchObject({ type: "error", code: "bad_frame" });
     expect(Date.now() - started).toBeLessThan(2000);

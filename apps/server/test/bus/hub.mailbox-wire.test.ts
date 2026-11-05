@@ -2,13 +2,14 @@
 // queued/since on a send receipt, `mailbox_full`, `reserved_name`, and away
 // rows in the roster; every other socket keeps exactly today's shapes (its
 // strict decoder refuses a frame with a new key).
+
+import { runInDurableObject } from "cloudflare:test";
 import {
   BUS_CAPS,
   type ClientFrame,
   MAILBOX_BYTES_CAP,
   type ServerFrame,
 } from "@oa/bus-protocol";
-import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 import { BusHub } from "../../src/bus/hub.js";
 import {
