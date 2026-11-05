@@ -58,7 +58,7 @@ export type PolicyAction =
   | "data.seed"
   /** #682: read comments: anyone who can view. */
   | "comments.read"
-  /** #682: comment, reply, resolve and reopen; edit and delete one's own. */
+  /** #682: comment, reply, resolve and reopen; edit and delete (the handler: one's own, or an editor's). */
   | "comments.write"
   /** #682: delete anyone's comment: editors and up. */
   | "comments.moderate";
@@ -297,11 +297,11 @@ export function can(
         return !ctx.anonymous && level !== "viewer";
       // Anonymous callers only reach a level on a public artifact.
       return true;
-    // Anyone who can open it comments, capped callers too. A signed-out
-    // caller only where they may write data (public and dataWriters "viewers"),
-    // the same anonymous identity.
+    // Anyone who can open it comments, except a capped caller (read-only on
+    // the whole API, readOnlyCap). A signed-out caller only where they may
+    // write data (public and dataWriters "viewers"), the same anonymous identity.
     case "comments.write":
-      return !ctx.anonymous || ctx.dataWriters === "viewers";
+      return !capped && (!ctx.anonymous || ctx.dataWriters === "viewers");
     case "comments.moderate":
       return !capped && !ctx.anonymous && level !== "viewer";
     case "storage":

@@ -320,6 +320,7 @@ export const ARTIFACT_ACTIONS = [
   "transfer",
   "move",
   "dataWrite",
+  "comment",
 ] as const;
 export type ArtifactAction = (typeof ARTIFACT_ACTIONS)[number];
 export const ArtifactCanSchema = z.object({
@@ -335,7 +336,7 @@ export const ArtifactCanSchema = z.object({
   move: z.boolean(),
   /** Live-data and storage writes, role-wise (the artifact still needs the capability). False for guests and restricted members, and for viewers when the artifact's dataWriters is "editors"; other viewers keep it. */
   dataWrite: z.boolean(),
-  /** #682: comment and reply here. False when the artifact's comments setting is off. Any signed-in caller who can open it otherwise. */
+  /** #682: comment and reply here. False when the artifact's comments setting is off, and for capped callers (read-only). Any signed-in caller who can open it otherwise. */
   comment: z.boolean(),
 });
 export type ArtifactCan = z.infer<typeof ArtifactCanSchema>;
@@ -374,6 +375,6 @@ export function artifactCan(
     dataWrite:
       !capped &&
       ((opts.dataWriters ?? "editors") === "viewers" || level !== "viewer"),
-    comment: opts.comments !== false,
+    comment: !capped && opts.comments !== false,
   };
 }

@@ -451,8 +451,9 @@ describe("can", () => {
     transfer: "transfer",
     move: "move",
     dataWrite: "data.write",
+    comment: "comments.write",
   };
-  it("agrees with the contract's artifactCan on its seven actions", () => {
+  it("agrees with the contract's artifactCan on its eight actions", () => {
     const caps: (CapReason | null)[] = [null, "guest", "restricted"];
     // Undefined dataWriters: "editors" on both sides (fail closed).
     for (const level of LEVELS)

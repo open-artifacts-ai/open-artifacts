@@ -900,6 +900,7 @@ describe("hosted contract schemas", () => {
       transfer: false,
       move: false,
       dataWrite: true,
+      comment: true,
     });
     expect(artifactCan("manager", { personal: false }).transfer).toBe(false);
     expect(artifactCan("manager", { personal: false }).move).toBe(true);
@@ -912,9 +913,14 @@ describe("hosted contract schemas", () => {
       transfer: false,
       move: false,
       dataWrite: false,
+      comment: false,
     });
     expect(
       artifactCan("viewer", { personal: false, cap: "restricted" }).dataWrite,
+    ).toBe(false);
+    // #682: comments off takes the action from everyone.
+    expect(
+      artifactCan("viewer", { personal: true, comments: false }).comment,
     ).toBe(false);
     // #681: dataWriters "editors" takes data writes from viewers only.
     const dw = (

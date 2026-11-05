@@ -84,7 +84,7 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `InstanceSignInSchema` | `{ mode: access \| direct, providers: (access \| google \| email)[] }` |
 | `AuthMethodSchema` | `access \| google \| code \| pat \| oauth \| dev \| test` |
 | `MeAuthSchema` | `{ method, readOnly, cap, expiresAt }` |
-| `ArtifactCanSchema`, `ARTIFACT_ACTIONS`, `ArtifactAction` | `{ edit, share, setVisibility, delete, transfer, move, dataWrite }`. P3's internal superset is `PolicyAction`, so the names don't clash |
+| `ArtifactCanSchema`, `ARTIFACT_ACTIONS`, `ArtifactAction` | `{ edit, share, setVisibility, delete, transfer, move, dataWrite, comment }`. P3's internal superset is `PolicyAction`, so the names don't clash |
 | `artifactCan(level, { personal, cap })` | The P3 action table as one function (server and mocks). `dataWrite` is false for guests and restricted members; ordinary viewers keep it (the artifact still needs the `db`/`storage` capability) |
 
 ## CHANGED existing shapes (all fields optional, appended last)
@@ -110,6 +110,10 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `AuditActionSchema` | `settings.space_manager_mappings`, `user.role` (a member role change: `detail { from, to }`, written only when the role changes) |
 | `AuditActionSchema` | `bus.role.proposed`, `bus.role.confirmed`, `bus.role.refused`, `bus.role.expired` (#1372, self-host bus only: an AI agent proposed a role change over MCP, the member confirmed or refused it on its link, or the link ran out). Target `user` (the member whose bus it is); `detail { proposalId, action }` plus `roleId`, `agentId`, `priorAgentId` when set and `why` on a refusal (`rejected`, `changed`, `name_taken`, `agent_not_open`, `role_limit`, `used`, `expired`). Ids and enums only; never the role name, namespace or link. Actor: the member (proposed: their PAT or OAuth grant; confirmed and refused: their browser session), or `system` for an expiry |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |
+
+## Comments (#682, `comments.ts`)
+
+`ArtifactSummary.comments` (boolean, default true; `PATCH`/publish `comments`, owner and managers) and `can.comment` (false when off, and for capped callers). Routes: `R.comments`, `R.commentThread`, `R.commentReplies`, `R.comment`. Comments live in the artifact's runtime store, never in page data. R.events sockets get `{ "type": "comments", "open": n }` on any change (not in `ArtifactEventSchema`; clients ignore unknown types). Embed requests get 403 `forbidden`.
 
 ## Guest share notices (`hosted/core.ts`, parity 2)
 
@@ -314,6 +318,11 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `managed_by_org_mapping` | 409 | `DELETE R.spaceMember` on a member whose only role here is an Every space group's, or a `PUT R.spaceMember` below that role (sync live or frozen). Details `ManagedByOrgMappingDetails { userId, everyRole }`. Message: "This role comes from an Every space group. Change it in Settings › Spaces › Every space." |
 | `member_synced` | 409 | `DELETE R.spaceMember` on a synced-only row while sync is live. UI copy: "This person comes from a Google group. Remove them from the group in Google, or change their role here." |
 | `unsupported_format` | 400 | publish (`R.artifacts`, `R.versions`, MCP `publish_artifact`) with no `format` whose entry name implies none (`inferFormat` returns `image` for `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, and `code` only for known text: the `LANGUAGES` keys, `PLAIN_TEXT_EXTENSIONS`, Makefile, Dockerfile; else null) and whose bytes aren't UTF-8 text. When the name implies none but the bytes are text (a `LICENSE`, `.gitignore`), the publish goes ahead as `code`, language `"text"`. Details `{ path, reason: "no_viewer" }`; message `UNSUPPORTED_FORMAT_MESSAGE`. A HEIC/HEIF entry (named `.heic`/`.heif`, or an ISO BMFF `ftyp` at byte 4 with brand `heic`, `heix`, `hevc`, `heim`, `heis`, `mif1` or `msf1`) is refused whatever the `format`: details `{ path, reason: "heic" }`, message `HEIC_MESSAGE`. Nothing is written or consumed |
+| `invalid_anchor` | 400 | `POST R.comments` with an anchor that fails its schema (or a pin `contentHash` outside `[A-Za-z0-9_-]{1,128}`); details: the issues (#682) |
+| `invalid_body` | 400 | a comment body empty after trim, or over 2,000 characters (#682) |
+| `anchor_not_in_version` | 422 | a text anchor whose quote is not in the html version it names, or a version that does not exist (#682) |
+| `comments_off` | 403 | any comments route on an artifact whose `comments` setting is off (#682) |
+| `forbidden` | 403 | a comment route the caller may open but not take: editing another's comment, deleting without being the author or an editor, any comments route from an embed (#682) |
 | `binary_entry` | 400 | the entry's content doesn't fit its format (`sniff.ts` `checkEntry`, first 8 KB): for `code`, `markdown` and `html` the bytes decide: UTF-8 text (no NUL, valid UTF-8) passes whatever its first bytes or declared upload type. Bytes that fail are refused with reason `binary` (a known signature), else `content_type` (an upload declared `image/*` other than svg, `audio/*` or `video/*`; `application/octet-stream` claims nothing), else `not_text`. A `pdf` must start with `%PDF` (`not_pdf`). An `image` must carry its extension's signature (JPEG `FF D8 FF`, PNG, `GIF87a`/`GIF89a`, WebP `RIFF....WEBP`; else `not_image`, also for an entry with no image extension), an `.svg` must be UTF-8 text with an `<svg>` root (`not_svg`), and an upload's declared type must be the extension's (`content_type`; `application/octet-stream` claims nothing). An `image` publish with more than one file is 400 `bad_request` `{ path: "files", reason: "image_single_file" }`. Details `{ path, reason }`. An uploaded entry costs one R2 range read. Nothing is written or consumed |
 
 ## Test hooks (`hosted/test-hooks.ts`, types only)

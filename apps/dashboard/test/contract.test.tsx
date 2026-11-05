@@ -93,6 +93,7 @@ test("canOf keeps the server's can when spaces are on", () => {
     transfer: false,
     move: true,
     dataWrite: true,
+    comment: true,
   };
   expect(canOf({ ...fixtures.artifacts[0], can }, ["spaces"])).toEqual(can);
 });

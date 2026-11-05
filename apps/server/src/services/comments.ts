@@ -10,7 +10,7 @@ import {
   cleanGuestName,
   type Thread,
 } from "@oa/shared";
-import type { ArtifactRow } from "../db/schema.js";
+import type { ArtifactRow } from "../auth/authz.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import {
@@ -49,7 +49,12 @@ export type CommentWho =
     };
 
 /** Who is looking, for `me` and the privacy of agent labels. Guests without an id are `null`. */
-export type CommentViewer = { userId: string | null; short: string | null };
+export type CommentViewer = {
+  userId: string | null;
+  short: string | null;
+  /** The viewer's level may delete anyone's comment (owner, manager, editor). */
+  moderator?: boolean;
+};
 
 const rateKeyOf = (w: CommentWho): string =>
   w.kind === "user" ? `u:${w.id}` : w.rate;
@@ -230,13 +235,6 @@ async function threadViews(
       if (c.author.kind === "user") ids.add(c.author.ref);
   }
   const users = await usersById(env, ids);
-  const comment = (c: StoredComment): Comment => ({
-    id: c.id,
-    body: c.body,
-    author: authorView(c.author, viewer, users),
-    createdAt: c.createdAt,
-    editedAt: c.editedAt,
-  });
   return threads.map((t) => ({
     id: t.id,
     anchor: t.anchor,
@@ -245,9 +243,25 @@ async function threadViews(
     resolvedBy: t.resolvedBy ? authorView(t.resolvedBy, viewer, users) : null,
     resolvedAt: t.resolvedAt,
     createdAt: t.createdAt,
-    comments: t.comments.map(comment),
+    comments: t.comments.map((c) => commentOf(c, viewer, users)),
   }));
 }
+
+const commentOf = (
+  c: StoredComment,
+  viewer: CommentViewer,
+  users: Map<string, UserLite>,
+): Comment => {
+  const author = authorView(c.author, viewer, users);
+  return {
+    id: c.id,
+    body: c.body,
+    author,
+    createdAt: c.createdAt,
+    editedAt: c.editedAt,
+    can: { edit: author.me, delete: author.me || viewer.moderator === true },
+  };
+};
 
 async function commentView(
   env: Env,
@@ -258,13 +272,7 @@ async function commentView(
     env,
     c.author.kind === "user" ? [c.author.ref] : [],
   );
-  return {
-    id: c.id,
-    body: c.body,
-    author: authorView(c.author, viewer, users),
-    createdAt: c.createdAt,
-    editedAt: c.editedAt,
-  };
+  return commentOf(c, viewer, users);
 }
 
 // -------------------------------------------------------------------- reads

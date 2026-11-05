@@ -241,6 +241,7 @@ const READS: readonly SurfaceAction[] = [
   "data.read",
   "events",
   "subscribe",
+  "comments.read",
 ];
 const EDITS: readonly SurfaceAction[] = [
   "version.text",
@@ -303,6 +304,8 @@ export function expected(
         ? writer && isEditor(level)
         : writer || !t.session,
     );
+  // Comments: as data writes under "viewers" (a capped caller is read-only).
+  if (action === "comments.write") return yes(writer || !t.session);
   if (action === "storage") return yes(writer);
   if (action === "thumbnail.write")
     // A viewer is eligible for the first thumbnail only, through a share or

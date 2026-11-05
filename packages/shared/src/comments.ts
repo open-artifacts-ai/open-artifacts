@@ -43,6 +43,8 @@ export const CommentSchema = z.object({
   author: CommentAuthorSchema,
   createdAt: z.string(),
   editedAt: z.string().nullable(),
+  /** What the viewer may do: edit = the author; delete = the author, or an owner, manager or editor. */
+  can: z.object({ edit: z.boolean(), delete: z.boolean() }),
 });
 export type Comment = z.infer<typeof CommentSchema>;
 
