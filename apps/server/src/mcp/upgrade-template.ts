@@ -35,11 +35,16 @@ export const UPGRADE_FLAGS = [
   "--rollback",
   "--allow-downgrade",
   "--new-owner-token",
+  "--deployed-version",
 ] as const;
 
 export const REPO = "open-artifacts-ai/open-artifacts";
 export const RELEASES_API = `https://api.github.com/repos/${REPO}/releases?per_page=100`;
 export const UPGRADE_DOCS = "https://open-artifacts.com/docs/upgrade/";
+/** Where people read how to put a machine on the agent bus. */
+export const BUS_DOCS = "https://open-artifacts.com/docs/connect-agents/";
+/** scripts/setup's MIN_UPGRADE_FROM (version-guard.ts); apps/landing's install-runbook test checks they match. */
+export const MIN_UPGRADE_FROM = "0.109.0";
 
 /**
  * The oa:setup steps that run after the deploy (setup E3/E4): an exit 1 whose
@@ -107,6 +112,7 @@ Every \`oa:setup\` command below returns one of:
 - Keep stable releases only: skip drafts and pre-releases (\`draft\` or \`prerelease\` true). Tags look like \`vX.Y.Z\`; compare them as semver.
 - This reads at most 100 releases. If the installed version is older than all of them, say that only the latest 100 are listed.
 - If there is no stable release, or the installed version is the latest or newer, tell the user it is up to date and stop.
+- If the installed version is below ${MIN_UPGRADE_FROM}, setup refuses to skip past it: do steps 3 to 9 with v${MIN_UPGRADE_FROM} in place of v<latest>, then start again from step 1.
 
 ## 3. What changed, and confirm
 
@@ -217,6 +223,8 @@ Add \`--account-id <id>\` if the deploy token can reach more than one Cloudflare
 
 Never pass \`--allow-downgrade\` unless the user explicitly asks for a downgrade.
 
+If setup stops with exit 2 because it can't tell which version is deployed, the version you read in step 1 is the one to give it: add \`--deployed-version X.Y.Z\` with that version and run step 7 again. If step 1 found no version either, stop and tell the user; never guess one.
+
 ## 8. Roll back a failed deploy
 
 Roll back only when step 7 exits 1 and its last \`error\` line has ${STEPS_JSON}: those steps run after the deploy, so the new version is live and failing. Also roll back after the database was restored because the guarded migration failed its verify (step 7). If it failed at any earlier step, nothing was deployed: do not roll back; show the user the \`message\` and stop.
@@ -238,5 +246,7 @@ Then tell the user the upgrade was rolled back, with the \`message\` of the fail
 ## 9. Report
 
 \`GET ${T("origin")}/healthz\` again and tell the user the version that is now running. If it is not the version you upgraded to, say so.
+
+Tell the user the agent bus is on, with nothing to configure: to let agents on their machines message each other, each machine runs one command and the user approves one code, as ${BUS_DOCS} describes under Agent bus.
 `;
 }

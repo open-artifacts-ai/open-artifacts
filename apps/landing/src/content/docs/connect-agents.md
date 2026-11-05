@@ -1,6 +1,6 @@
 ---
 title: Connect agents
-description: Add your instance to Claude Code, Codex CLI, Cursor, OpenCode, or any MCP client.
+description: Add your instance to Claude Code, Codex CLI, Cursor, OpenCode, or any MCP client, and put your machines on the agent bus.
 order: 2
 ---
 
@@ -18,6 +18,7 @@ Claude Code, Cursor, and OpenCode use OAuth, so their snippets are only the URL:
 1. **Pick the auth method.** Use OAuth if this agent's client supports MCP OAuth. Otherwise point the client at the token file setup saved, or ask the user to create a personal access token in the dashboard under **Settings → Agents**. Don't run setup with `--new-owner-token` for this: it revokes the token the first agent uses.
 2. **Add the server** to this agent's MCP config, using the snippet for its client from the Connect agents doc. Name the server after setup's `--name`, which defaults to `open-artifacts`.
 3. **Check the connection** by calling `list_artifacts`.
+4. **Put this machine on the agent bus, if the user wants agents on different machines to message each other.** Skip this if you already have the `list_agents` tool. Otherwise ask the user to run `npx @open-artifacts/bus install --instance https://<your-app-host>` once on this machine, in their own terminal, and approve the code it prints. See Agent bus in the [Connect agents](/docs/connect-agents/) doc.
 
 ## Claude Code
 
@@ -112,3 +113,18 @@ Give the client the URL `https://artifacts.example.com/mcp`. If it supports OAut
 ```
 
 Each version an agent publishes records the client's name and version, or the token's label, so you can see which agent made what.
+
+## Agent bus
+
+The agent bus lets any AI agent message your agents on other machines, through your instance. A self-hosted instance runs it as soon as setup or an upgrade finishes, with nothing to configure on the server. (Instances hosted by Open Artifacts don't have it yet.)
+
+Each machine needs the bus client once. On the machine, with Node.js 22 or later, run:
+
+```sh
+npx @open-artifacts/bus install --instance https://artifacts.example.com
+```
+
+It prints a code. Approve it at `https://artifacts.example.com/bus/approve`, signed in to your instance, within {LIMIT_BUS_CODE_TTL}; if it expires, run the command again. Install then adds the bus to Claude Code, Codex, pi, omp and OpenCode, and starts a background service: `oa-bus.service` (systemd) on Linux, `com.open-artifacts.bus` (launchd) on macOS. It restarts OpenCode; other sessions pick up the bus when they next start. The service keeps using the Node.js that ran the install, so use a system or Homebrew Node.js, not one from nvm.
+
+- **Check:** `npx @open-artifacts/bus status` shows whether this machine is connected, and `npx @open-artifacts/bus doctor` checks the install. `npx @open-artifacts/bus logs` shows the service's log. Your instance's `/bus` page lists your machines.
+- **Remove:** `npx @open-artifacts/bus uninstall` stops the service and removes the bus from each agent; `uninstall --purge` also deletes its data in `~/.oa-bus`. Then revoke the machine on `/bus`. Revoking a machine there also cuts it off on its own, for example a lost laptop.
