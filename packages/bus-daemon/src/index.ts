@@ -577,15 +577,28 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   ): AgentRecord | undefined =>
     agents
       .all()
-      .find(
+      .filter(
         (a) =>
           a.kind === "claude-code" &&
           a.pid === pid &&
           procStart !== undefined &&
           a.procStart === procStart &&
           a.ref !== ref &&
-          !liveRefs.has(a.ref),
-      );
+          !liveRefs.has(a.ref) &&
+          !takenOver.has(a.ref),
+      )
+      // The live one, else the one this process reported last: after A, B, C
+      // the third replaces B, never A (A's address is B's by then).
+      .sort(
+        (a, b) =>
+          Number(b.live) - Number(a.live) ||
+          (seenAt.get(b.ref) ?? 0) - (seenAt.get(a.ref) ?? 0),
+      )[0];
+  /** Sessions whose address a later session of the same process took over. */
+  const takenOver = new Set<string>();
+  /** Order in which this process's sessions were last seen (higher is later). */
+  const seenAt = new Map<string, number>();
+  let seenSeq = 0;
 
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
@@ -622,7 +635,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
       // /clear: the same process, a new session id. The new ref keeps the
       // old one's address (#1295); the old one is closed below.
-      const old = clearedFrom(s.ref, s.pid, s.procStart, liveRefs);
+      seenAt.set(s.ref, ++seenSeq);
+      // A ref this daemon already knows (a /resume) is no takeover.
+      const old = prev
+        ? undefined
+        : clearedFrom(s.ref, s.pid, s.procStart, liveRefs);
+      if (old) takenOver.add(old.ref);
       announceUp(
         agents.up({
           ...(old ? { replaces: old.ref } : {}),
@@ -1116,14 +1134,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         const mine = files.find(
           (x) => x.ref === hello.agent_ref && x.pid === pid,
         );
-        const old = mine
-          ? clearedFrom(
-              hello.agent_ref,
-              pid,
-              mine.procStart,
-              new Set(files.map((x) => x.ref)),
-            )
-          : undefined;
+        const old =
+          mine && !prev
+            ? clearedFrom(
+                hello.agent_ref,
+                pid,
+                mine.procStart,
+                new Set(files.map((x) => x.ref)),
+              )
+            : undefined;
+        seenAt.set(hello.agent_ref, ++seenSeq);
+        if (old) takenOver.add(old.ref);
         const rec = agents.up({
           ...(old ? { replaces: old.ref } : {}),
           ref: hello.agent_ref,
