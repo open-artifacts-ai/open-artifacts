@@ -164,6 +164,17 @@ export const R = {
    * (or X-OA-Embed: 1) connects anonymously. `gone` is followed by close 4403.
    */
   events: (id: string) => `${A}/${seg(id)}/events`,
+  /** GET ?status=open|resolved|all (default all) -> CommentList; POST NewThreadBody -> 201 CommentThread (#682). */
+  comments: (id: string) => `${A}/${seg(id)}/comments`,
+  /** PATCH { status } -> CommentThread. */
+  commentThread: (id: string, thread: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}`,
+  /** POST ReplyBody -> 201 Comment (does not reopen). */
+  commentReplies: (id: string, thread: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/replies`,
+  /** PATCH { body } -> Comment; DELETE -> 204 (the root's deletes the thread). */
+  comment: (id: string, thread: string, comment: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}`,
   /** GET Upgrade: websocket; frames are DataChange */
   dataSubscribe: (id: string, col: string) =>
     `${A}/${seg(id)}/data-subscribe?collection=${seg(col)}`,

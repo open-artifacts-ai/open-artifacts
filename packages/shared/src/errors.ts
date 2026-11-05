@@ -54,6 +54,12 @@ export const ERROR_CODES = [
   "plan_read_only",
   "plan_limit",
   "billing_unavailable",
+  // Comments (#682).
+  "invalid_anchor",
+  "invalid_body",
+  "anchor_not_in_version",
+  "comments_off",
+  "forbidden",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -148,6 +154,12 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   plan_limit: 403,
   /** R.billingCheckout / R.billingPortal / R.billingUsage while billing can't be reached. */
   billing_unavailable: 503,
+  /** Comments (#682). */
+  invalid_anchor: 400,
+  invalid_body: 400,
+  anchor_not_in_version: 422,
+  comments_off: 403,
+  forbidden: 403,
 };
 
 /**

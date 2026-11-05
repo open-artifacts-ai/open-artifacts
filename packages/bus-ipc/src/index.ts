@@ -1,3 +1,4 @@
+export { BUS_CMD } from "@oa/bus-protocol";
 export {
   connectDaemon,
   type DaemonClient,

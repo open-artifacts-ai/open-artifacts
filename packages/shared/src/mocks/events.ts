@@ -42,6 +42,8 @@ export type ArtifactEventsMock = {
   ): number;
   /** Sends `{ type: "gone", reason }` and closes with 4403 every open socket of `id`. */
   emitGone(id: string, reason?: "deleted" | "changed"): number;
+  /** Sends `{ type: "comments", open }` to every open socket of `id` (#682). */
+  emitComments(id: string, open: number): number;
   /** Open sockets for `id`. */
   connections(id: string): number;
   /** Set by createHandlers({ events }): the version a hello reports. */
@@ -91,6 +93,11 @@ export function createArtifactEvents(): ArtifactEventsMock {
         setTimeout(() => c.close(EVENTS_GONE_CLOSE, "gone"), 0);
       }
       return n;
+    },
+    emitComments(id, open) {
+      const set = clients.get(id) ?? new Set<Client>();
+      for (const c of set) send(c, { type: "comments", open });
+      return set.size;
     },
     connections: (id) => clients.get(id)?.size ?? 0,
   };

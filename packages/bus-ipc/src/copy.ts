@@ -1,5 +1,6 @@
 import {
   BAD_NS_CHARS,
+  BUS_CMD,
   LIMITS,
   type ReceiptReason,
   type ReceiptState,
@@ -33,7 +34,7 @@ const refusals: Record<
 > = {
   unknown_agent: [
     "No agent has that name here.",
-    "Run list_agents to see who is in this namespace.",
+    "Run the oa_bus list_agents tool to see who is in this namespace.",
   ],
   closed: [
     null,
@@ -53,7 +54,7 @@ const refusals: Record<
   ],
   revoked: [
     "That agent's machine was revoked.",
-    "Message another agent, or run npx @open-artifacts/bus install there.",
+    `Message another agent, or run ${BUS_CMD} install there.`,
   ],
   ambiguous: [
     (n) =>
@@ -63,7 +64,7 @@ const refusals: Record<
   // A reply's agent (to_id) no longer holds the name it wrote from.
   agent_gone: [
     "The agent you are answering is gone; another may hold its name now.",
-    "Run list_agents and message the agent you mean by name.",
+    "Run the oa_bus list_agents tool and message the agent you mean by name.",
   ],
 };
 
@@ -299,8 +300,7 @@ export const STATUS_COPY = {
     "This machine is not connected to the hub right now. Try again in a moment.",
   not_registered:
     "This session is not registered on the bus yet. Try again in a moment.",
-  bad_frame:
-    "The hub did not accept that request. Ask the user to run npx @open-artifacts/bus doctor.",
+  bad_frame: `The hub did not accept that request. Ask the user to run ${BUS_CMD} doctor.`,
 } as const;
 
 const BAD_LABEL_CHARS = new RegExp(BAD_NS_CHARS.source, "gu");
@@ -425,4 +425,4 @@ export function selfText(
  * Information only, from the local client; it quotes no peer text.
  */
 export const replyGoneText = (name: string): string =>
-  `[oa-bus] Information: your reply to ${name} was not sent. The agent that wrote to you as ${name} is gone, or wrote over an hour ago, and another agent may hold that name now. Use list_agents and send_message to reach the agent you mean.`;
+  `[oa-bus] Information: your reply to ${name} was not sent. The agent that wrote to you as ${name} is gone, or wrote over an hour ago, and another agent may hold that name now. Use the oa_bus list_agents and send_message tools to reach the agent you mean.`;
