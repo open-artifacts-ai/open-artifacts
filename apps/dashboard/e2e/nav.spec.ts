@@ -189,7 +189,7 @@ for (const [width, gutter] of [
       left: gutter,
       right: gutter,
     });
-    await page.goto("/settings/agents");
+    await page.goto("/settings/connections");
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     const s = await gap(".oa-page > div");
     expect(s.left).toBeGreaterThanOrEqual(gutter);

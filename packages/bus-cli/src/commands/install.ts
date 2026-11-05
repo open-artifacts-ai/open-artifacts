@@ -5,7 +5,7 @@ import {
   opencodeVersion,
   supportsPromptId,
 } from "@oa/bus-adapter-opencode";
-import type { StatusReply } from "@oa/bus-ipc";
+import { BUS_CMD, type StatusReply } from "@oa/bus-ipc";
 import {
   askDaemon,
   type Ctx,
@@ -93,6 +93,7 @@ export async function loginStep(
       hub,
       home: ctx.home,
       label: opts.label,
+      exec: ctx.exec,
       noOpen: opts.noOpen,
       codeRetryMs: CODE_RETRY_MS,
       fetch: ctx.fetch,
@@ -307,7 +308,7 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
     name: "login",
     label: "Machine approved",
     failed: "Machine not approved",
-    action: "Run npx @open-artifacts/bus to approve it.",
+    action: `Run ${BUS_CMD} to approve it.`,
     check: async (ctx) => {
       const m = readMachine(ctx.home);
       return m.state === "ok" && !m.revoked ? "done" : "todo";
@@ -318,7 +319,7 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
     name: "harnesses",
     label: "Harnesses configured",
     failed: "Harnesses not configured",
-    action: "Run npx @open-artifacts/bus to configure them.",
+    action: `Run ${BUS_CMD} to configure them.`,
     check: async (ctx) =>
       Object.values(
         checkAdapters({
@@ -338,7 +339,7 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
     name: "daemon",
     label: "Daemon answering",
     failed: "Daemon not answering",
-    action: "Run npx @open-artifacts/bus to start it.",
+    action: `Run ${BUS_CMD} to start it.`,
     check: async (ctx) => {
       try {
         await askDaemon(ctx, { timeoutMs: 1000 });

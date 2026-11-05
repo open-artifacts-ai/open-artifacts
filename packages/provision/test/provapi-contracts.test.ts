@@ -52,6 +52,7 @@ describe("ProvisionRefused.code and ProvisionRetry (3.5)", () => {
       "domain_codes_refused",
       "migration_held",
       "restore_point_failed",
+      "do_step_required",
       "turnstile_missing",
       "mode_not_live",
       "leave_d1_refused",

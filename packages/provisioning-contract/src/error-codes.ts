@@ -69,6 +69,8 @@ export const JOB_ERROR_RETRY = {
   domain_codes_refused: "terminal",
   migration_held: "terminal",
   restore_point_failed: "terminal",
+  /** #1343: the target binds a new DO class; the install takes a release first. */
+  do_step_required: "terminal",
   turnstile_missing: "terminal",
   /** #1008: /healthz never showed the mode asked for. */
   mode_not_live: "terminal",

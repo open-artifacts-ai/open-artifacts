@@ -3,8 +3,8 @@
 // `attempt`, `last_error_code`, `retry_at` and the redacted message, all
 // conditional on the job still being open, so a canceled or settled job is
 // never written back to running. Fixed categories only: a step's error is a
-// job code, and jobs.error_message that code's JOB_ERROR_TEXT, never an
-// error's text.
+// job code, and jobs.error_message that code's JOB_ERROR_TEXT (jobErrorText),
+// never an error's text.
 import type { WorkflowStep, WorkflowStepConfig } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { PROVISION_ERROR_CODES, type ProvisionErrorCode } from "@oa/provision";
@@ -12,9 +12,9 @@ import type { JobKind } from "@oa/provisioning-contract";
 import {
   codeOf,
   detailOf,
+  errorTextOf,
   type FailAt,
   failOf,
-  JOB_ERROR_TEXT,
   redactDetail,
   StepRefusal,
   stepError,
@@ -133,7 +133,8 @@ async function noteFailure(
   const terminal = err instanceof NonRetryableError;
   const code = codeOf(err);
   // The code's fixed text: a refusal's message can echo request values.
-  const message = JOB_ERROR_TEXT[code];
+  // do_step_required's names its step, a checked release version (#1343).
+  const message = errorTextOf(err);
   const r = { ...DEFAULT_RETRIES, ...(config?.retries ?? {}) };
   const base = typeof r.delay === "function" ? 0 : delayMs(r.delay);
   // retry_at for the next attempt: delay, then doubled (exponential),

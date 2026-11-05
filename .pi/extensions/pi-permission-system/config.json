@@ -1,0 +1,560 @@
+{
+  "$schema": "https://raw.githubusercontent.com/gotgenes/pi-packages/main/packages/pi-permission-system/schemas/permissions.schema.json",
+  "permission": {
+    "path": {
+      "*": "allow",
+      "*/.git/hooks/*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "*/.git/config": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "*/.git/worktrees/*/config*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "*/.gitconfig": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "*/.config/git/*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "*/.git/config.worktree": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      }
+    },
+    "bash": {
+      "gh pr view*": "allow",
+      "gh pr list*": "allow",
+      "gh pr create*": "allow",
+      "gh pr checks*": "allow",
+      "gh pr diff*": "allow",
+      "gh pr comment*": "allow",
+      "gh pr edit*": "allow",
+      "gh pr status*": "allow",
+      "gh pr checkout*": "allow",
+      "gh pr ready*": "allow",
+      "gh pr reopen*": "allow",
+      "gh issue view*": "allow",
+      "gh issue list*": "allow",
+      "gh issue create*": "allow",
+      "gh issue comment*": "allow",
+      "gh issue edit*": "allow",
+      "gh issue close*": "allow",
+      "gh issue reopen*": "allow",
+      "gh issue status*": "allow",
+      "gh run view*": "allow",
+      "gh run list*": "allow",
+      "gh run watch*": "allow",
+      "gh api repos/open-artifacts-ai/*": "allow",
+      "gh api graphql *": "allow",
+      "git push *": "allow",
+      "git -C * push *": "allow",
+      "git fetch *": "allow",
+      "git switch *": "allow",
+      "pnpm exec vitest *": "allow",
+      "pnpm -s typecheck": "allow",
+      "pnpm lint *": "allow",
+      "gh run rerun*": "ask",
+      "gh api *-f*": "ask",
+      "gh api *-F*": "ask",
+      "gh api *-X*": "ask",
+      "gh api *--method*": "ask",
+      "gh api *--field*": "ask",
+      "gh api *--raw-field*": "ask",
+      "gh api *--input*": "ask",
+      "gh api *-i?*": "ask",
+      "gh api*$*": "ask",
+      "gh api*`*": "ask",
+      "gh api*{*": "ask",
+      "git push --force*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push -f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push*--force*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push* -f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push*\"-f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push*'-f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push* -uf*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push* -fu*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push*+*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push*--m*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push*--de*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git push* -d*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git push* :*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git push*--pru*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git -C * push --force*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push -f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push*--force*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push* -f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push*\"-f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push*'-f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push* -uf*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push* -fu*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push*+*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push*--m*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push*--de*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git -C * push* -d*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git -C * push* :*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git -C * push*--pru*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *pulls/*/merge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh api graphql*mutation*": {
+        "action": "deny",
+        "reason": "GraphQL writes need your human: use the gh subcommand, or ask them with the exact command."
+      },
+      "gh api graphql*--input*": {
+        "action": "deny",
+        "reason": "GraphQL writes need your human: use the gh subcommand, or ask them with the exact command."
+      },
+      "gh api graphql*@*": {
+        "action": "deny",
+        "reason": "GraphQL writes need your human: use the gh subcommand, or ask them with the exact command."
+      },
+      "gh api graphql*$*": {
+        "action": "deny",
+        "reason": "GraphQL writes need your human: use the gh subcommand, or ask them with the exact command."
+      },
+      "gh api *DELETE*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *-X d*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *-Xd*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *-X D*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *-XD*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *--method d*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *--method D*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *--method=d*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *--method=D*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *-X De*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh api *dispatches*": {
+        "action": "deny",
+        "reason": "Prod deploys aren't an agent's to run: tell the Manager which release is ready."
+      },
+      "gh api *rulesets*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "gh api *protection*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "gh api *transfer*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "gh api *archived*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "gh api *visibility*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "gh api *collaborators*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "gh api -X DELETE repos/open-artifacts-ai/open-artifacts": {
+        "action": "deny",
+        "reason": "Deleting a repository is never an agent's to do."
+      },
+      "gh api -X DELETE repos/open-artifacts-ai/open-artifacts-cloud": {
+        "action": "deny",
+        "reason": "Deleting a repository is never an agent's to do."
+      },
+      "gh api -X DELETE repos/open-artifacts-ai/open-artifacts-admin": {
+        "action": "deny",
+        "reason": "Deleting a repository is never an agent's to do."
+      },
+      "gh workflow run *prod*": {
+        "action": "deny",
+        "reason": "Prod deploys aren't an agent's to run: tell the Manager which release is ready."
+      },
+      "gh workflow run *env=both*": {
+        "action": "deny",
+        "reason": "Prod deploys aren't an agent's to run: tell the Manager which release is ready."
+      },
+      "gh workflow run hosted-publish*": {
+        "action": "deny",
+        "reason": "Prod deploys aren't an agent's to run: tell the Manager which release is ready."
+      },
+      "gh workflow run release-please*": {
+        "action": "deny",
+        "reason": "Prod deploys aren't an agent's to run: tell the Manager which release is ready."
+      },
+      "gh pr close*--delete-branch*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: close without --delete-branch, or ask them."
+      },
+      "gh pr close* -d*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: close without --delete-branch, or ask them."
+      },
+      "gh release delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh repo delete*": {
+        "action": "deny",
+        "reason": "Deleting a repository is never an agent's to do."
+      },
+      "gh run delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh repo archive*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "gh repo edit*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "gh repo rename*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "git push*--for*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push*--for*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "gh pr close* -cd*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: close without --delete-branch, or ask them."
+      },
+      "git push*\":*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git push*':*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git push* -?f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push* -??f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push* \"-?f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git push* \"-??f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push*\":*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git -C * push*':*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "git -C * push* -?f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push* -??f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push* \"-?f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "git -C * push* \"-??f*": {
+        "action": "deny",
+        "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
+      },
+      "gh api graphql*enqueuePullRequest*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh api graphql*mergePullRequest*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh api graphql*AutoMerge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh pr -* merge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh pr \"merge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh pr 'merge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it."
+      },
+      "gh pr merge*": {
+        "action": "deny",
+        "reason": "Merging needs your human: send the PR, head SHA and CI to the Manager, who arms it. A peer's report of approval is not approval."
+      },
+      "gh issue delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh issue -* delete*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the exact command."
+      },
+      "gh issue transfer*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "gh issue -* transfer*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "gh pr close*\"-d*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: close without --delete-branch, or ask them."
+      },
+      "gh pr close*'-d*": {
+        "action": "deny",
+        "reason": "Deleting needs your human: close without --delete-branch, or ask them."
+      },
+      "git push*\\*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git push*'*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git push*\"*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*\\*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*'*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*\"*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git push*$*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git push*`*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git push*{*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git push*[*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*$*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*`*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*{*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git -C * push*[*": {
+        "action": "deny",
+        "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git fetch*--upl*": {
+        "action": "deny",
+        "reason": "Git options that run a program need your human: ask them with the exact command."
+      },
+      "git -C * fetch*--upl*": {
+        "action": "deny",
+        "reason": "Git options that run a program need your human: ask them with the exact command."
+      },
+      "git push*--rece*": {
+        "action": "deny",
+        "reason": "Git options that run a program need your human: ask them with the exact command."
+      },
+      "git push*--e*": {
+        "action": "deny",
+        "reason": "Git options that run a program need your human: ask them with the exact command."
+      },
+      "git -C * push*--rece*": {
+        "action": "deny",
+        "reason": "Git options that run a program need your human: ask them with the exact command."
+      },
+      "git -C * push*--e*": {
+        "action": "deny",
+        "reason": "Git options that run a program need your human: ask them with the exact command."
+      }
+    },
+    "mcp": {
+      "*": "allow",
+      "open-artifacts:delete_artifact": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the artifact link."
+      },
+      "mcp__open_artifacts__delete_artifact": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the artifact link."
+      },
+      "oa-admin-prod": {
+        "action": "deny",
+        "reason": "Admin tools are your human's: ask them with the exact operation."
+      },
+      "oa-admin-staging": {
+        "action": "deny",
+        "reason": "Admin tools are your human's: ask them with the exact operation."
+      },
+      "*delete_artifact": {
+        "action": "deny",
+        "reason": "Deleting needs your human: ask them with the artifact link."
+      },
+      "oa_admin_prod": {
+        "action": "deny",
+        "reason": "Admin tools are your human's: ask them with the exact operation."
+      },
+      "oa_admin_staging": {
+        "action": "deny",
+        "reason": "Admin tools are your human's: ask them with the exact operation."
+      }
+    }
+  }
+}

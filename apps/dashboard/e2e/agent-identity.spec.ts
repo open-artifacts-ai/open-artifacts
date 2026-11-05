@@ -79,7 +79,7 @@ for (const scheme of ["light", "dark"] as const)
 
       test("rows: label, plain, hosted, old", async ({ page }, info) => {
         await serve(page, ROWS);
-        await page.goto("/settings/agents");
+        await page.goto("/settings/connections");
         await expect(card(page).getByText("Hosted service at")).toBeVisible();
         await expect(
           card(page).getByText(/before these details were recorded/),
@@ -101,7 +101,7 @@ for (const scheme of ["light", "dark"] as const)
 
       test("empty", async ({ page }, info) => {
         await serve(page, []);
-        await page.goto("/settings/agents");
+        await page.goto("/settings/connections");
         await expect(
           card(page).getByText("No agents connected yet."),
         ).toBeVisible();

@@ -4,6 +4,10 @@ import { z } from "zod";
 import {
   ApiErrorSchema,
   ArtifactSummarySchema,
+  BusAgentsSchema,
+  type BusMachine,
+  BusMachinesSchema,
+  BusRolesSchema,
   ContentUrlSchema,
   DataDocSchema,
   INLINE_TOO_LARGE_MESSAGE,
@@ -304,7 +308,112 @@ const rows: Row[] = [
     204,
     null,
   ],
+  ["busMachines", "GET", R.busMachines, undefined, 200, BusMachinesSchema],
+  ["busAgents", "GET", R.busAgents, undefined, 200, BusAgentsSchema],
 ];
+
+describe("bus option (#1293)", () => {
+  const [live, never, revoked] = fixtures.busMachines as [
+    BusMachine,
+    BusMachine,
+    BusMachine,
+  ];
+  it("fixtures parse with their schemas", () => {
+    BusMachinesSchema.parse({ machines: fixtures.busMachines });
+    BusAgentsSchema.parse({ agents: fixtures.busAgents, live: true });
+    BusRolesSchema.parse({
+      roles: fixtures.busRoles,
+      proposals: fixtures.busRoleProposals,
+      live: true,
+    });
+    expect(revoked.revokedAt).not.toBeNull();
+    expect(never.lastUsedAt).toBeNull();
+  });
+  it("off by default: /me has no busOn or canConnect, no machines, agents not live", async () => {
+    fresh();
+    const me = MeSchema.parse(await json(await call("GET", R.me)));
+    expect(me.busOn).toBeUndefined();
+    expect(me.canConnect).toBeUndefined();
+    expect(await json(await call("GET", R.busMachines))).toEqual({
+      machines: [],
+    });
+    expect(await json(await call("GET", R.busAgents))).toEqual({
+      agents: [],
+      live: false,
+    });
+  });
+  it("bus: true turns on busOn and canConnect and serves the fixtures, active first", async () => {
+    fresh({ bus: true });
+    const me = MeSchema.parse(await json(await call("GET", R.me)));
+    expect(me.busOn).toBe(true);
+    expect(me.canConnect).toBe(true);
+    const ms = BusMachinesSchema.parse(
+      await json(await call("GET", R.busMachines)),
+    );
+    expect(ms.machines.map((m) => m.id)).toEqual([
+      live.id,
+      never.id,
+      revoked.id,
+    ]);
+    const as = BusAgentsSchema.parse(
+      await json(await call("GET", R.busAgents)),
+    );
+    expect(as.live).toBe(true);
+    expect(as.agents).toHaveLength(fixtures.busAgents.length);
+  });
+  it("revoke: 204, idempotent, closes the machine's agents; unknown id 404", async () => {
+    fresh({ bus: true });
+    expect((await call("DELETE", R.busMachine(live.id))).status).toBe(204);
+    expect((await call("DELETE", R.busMachine(live.id))).status).toBe(204);
+    expect((await call("DELETE", R.busMachine(bad))).status).toBe(404);
+    const ms = BusMachinesSchema.parse(
+      await json(await call("GET", R.busMachines)),
+    );
+    const m = ms.machines.find((x) => x.id === live.id);
+    expect(m?.revokedAt).not.toBeNull();
+    expect(m?.connected).toBe(false);
+    // Revoked rows sort after active ones.
+    expect(ms.machines[0]?.id).toBe(never.id);
+    const as = BusAgentsSchema.parse(
+      await json(await call("GET", R.busAgents)),
+    );
+    expect(as.agents.filter((a) => a.machineId === live.id)).toEqual([]);
+  });
+  it("roles: GET lists roles and proposals; PUT sets a holder open there, else 409; DELETE is idempotent", async () => {
+    fresh({ bus: true });
+    const got = BusRolesSchema.parse(await json(await call("GET", R.busRoles)));
+    expect(got.live).toBe(true);
+    expect(got.roles).toHaveLength(fixtures.busRoles.length);
+    expect(got.proposals).toHaveLength(fixtures.busRoleProposals.length);
+    const a = fixtures.busAgents[0] as (typeof fixtures.busAgents)[number];
+    const put = await call("PUT", R.busRoles, {
+      namespace: a.namespace,
+      name: "lead",
+      agentId: a.id,
+    });
+    expect(put.status).toBe(200);
+    const { role } = await json(put);
+    expect(role).toMatchObject({ holderName: a.name, vacant: false });
+    const elsewhere = await call("PUT", R.busRoles, {
+      namespace: "notes",
+      name: "lead",
+      agentId: a.id,
+    });
+    expect(elsewhere.status).toBe(409);
+    expect((await json(elsewhere)).error.details.reason).toBe("agent_not_open");
+    expect((await call("DELETE", R.busRole(role.id))).status).toBe(204);
+    expect((await call("DELETE", R.busRole(role.id))).status).toBe(204);
+    const after = BusRolesSchema.parse(
+      await json(await call("GET", R.busRoles)),
+    );
+    expect(after.roles.some((x) => x.id === role.id)).toBe(false);
+  });
+  it("unauthenticated: 401 on the bus routes", async () => {
+    fresh({ bus: true });
+    for (const p of [R.busMachines, R.busAgents, R.busRoles, R.shareNotices])
+      expect((await call("GET", p, undefined, {})).status).toBe(401);
+  });
+});
 
 describe("emailEnabled option", () => {
   it("defaults to false; createHandlers({ emailEnabled: true }) flips it", async () => {

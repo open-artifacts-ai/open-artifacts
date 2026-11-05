@@ -926,6 +926,23 @@ describe("dashboard REST", () => {
     expect(await me(guest.cookie, "PATCH")).toBe(false);
   });
 
+  it("/me says busOn: true with BUS_HUB bound, false unbound or hosted (#1293)", async () => {
+    const busOnFor = async (e: unknown) => {
+      const r = await fetchAndWait(
+        app,
+        new Request(`http://app.localhost${R.me}`, {
+          headers: { cookie: bob.cookie },
+        }),
+        e,
+      );
+      expect(r.status).toBe(200);
+      return ((await r.json()) as { busOn?: boolean }).busOn;
+    };
+    expect(await busOnFor(env)).toBe(true);
+    expect(await busOnFor({ ...env, BUS_HUB: undefined })).toBe(false);
+    expect(await busOnFor({ ...env, HOSTED: "1" })).toBe(false);
+  });
+
   it("a capped (restricted) member can still list and revoke their own machines", async () => {
     const capped = await member();
     const m = await machine("capped", capped.userId);

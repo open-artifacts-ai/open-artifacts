@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  pinAnchorSchema,
+  selectionAnchorSchema,
+  textAnchorSchema,
+} from "./anchor.js";
 import { ERROR_CODES } from "./errors.js";
 import { FORMATS } from "./formats.js";
 import { LIMITS } from "./limits.js";
@@ -67,6 +72,10 @@ export type AnonViewer = z.infer<typeof AnonViewerSchema>;
  * current nonce.
  */
 const nonce = z.string().max(64).optional();
+
+/** An opaque thread id the shell chose; never comment text. */
+export const CommentIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+export const COMMENT_THREADS_MAX = 500;
 
 export const ArtifactToShellSchema = z.union([
   z.strictObject({
@@ -166,6 +175,63 @@ export const ArtifactToShellSchema = z.union([
     type: z.literal("open"),
     url: z.string().max(2048),
   }),
+  /**
+   * Comments (#682). The frame never carries comment text or names: only
+   * anchors, opaque thread ids and numbers. Artifact content can forge all of
+   * these, so the shell treats them as hints and re-validates.
+   *
+   * Every frame message can be forged by page code (it shares the window with
+   * the runtime, and no UI in the frame is a security boundary): a
+   * comment.select can carry any text, and comment.open or comment.pin can
+   * arrive with no user gesture. The shell must rate-limit them, never post or
+   * navigate from one alone, show the quote as plain text, and check on the
+   * server that a stored quote occurs in the version's text.
+   *
+   * The reader selected text within one block and clicked Comment. The shell
+   * adds the version it is showing.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("comment.select"),
+    anchor: selectionAnchorSchema,
+  }),
+  /**
+   * Where each thread sits now, in frame-document pixels from the top. `top`
+   * is null when the frame cannot place it (orphan, hidden text, missing image).
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("comment.positions"),
+    positions: z
+      .array(
+        z.strictObject({
+          id: CommentIdSchema,
+          state: z.enum(["exact", "partial", "collapsed", "orphan", "pin"]),
+          top: z.number().finite().min(0).max(10_000_000).nullable(),
+        }),
+      )
+      .max(COMMENT_THREADS_MAX),
+  }),
+  /** The reader clicked a highlight, collapsed mark or pin. */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("comment.open"),
+    id: CommentIdSchema,
+  }),
+  /** A click in pin mode on an image or pdf page; x and y are 0..1 of the image or page. */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("comment.pin"),
+    pin: z.strictObject({
+      x: z.number().min(0).max(1),
+      y: z.number().min(0).max(1),
+      page: z.number().int().min(1).max(100_000).optional(),
+    }),
+  }),
 ]);
 export type ArtifactToShell = z.infer<typeof ArtifactToShellSchema>;
 
@@ -232,6 +298,41 @@ export const ShellToArtifactSchema = z.union([
     type: z.literal("scroll.to"),
     top: z.number().finite().min(0).max(10_000_000),
     max: z.number().finite().min(0).max(10_000_000),
+  }),
+  /** Comments (#682). Until a mode other than "off" arrives, the frame shows nothing. */
+  z.strictObject({
+    oa: z.literal(1),
+    type: z.literal("comments.mode"),
+    mode: z.enum(["off", "select", "pin"]),
+  }),
+  /**
+   * The threads to draw: anchors and opaque ids only. `n` is a pin's number;
+   * `active` is the selected thread; `resolved` threads are not drawn but are
+   * still positioned. Replaces the previous set.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    type: z.literal("comments.set"),
+    threads: z
+      .array(
+        z.strictObject({
+          id: CommentIdSchema,
+          anchor: z.discriminatedUnion("kind", [
+            textAnchorSchema,
+            pinAnchorSchema,
+          ]),
+          n: z.number().int().min(1).max(9999).optional(),
+          active: z.boolean().optional(),
+          resolved: z.boolean().optional(),
+        }),
+      )
+      .max(COMMENT_THREADS_MAX),
+  }),
+  /** Scroll the thread's highlight or pin into view and flash it. */
+  z.strictObject({
+    oa: z.literal(1),
+    type: z.literal("comments.focus"),
+    id: CommentIdSchema,
   }),
 ]);
 export type ShellToArtifact = z.infer<typeof ShellToArtifactSchema>;

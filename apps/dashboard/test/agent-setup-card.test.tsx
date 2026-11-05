@@ -38,9 +38,9 @@ const clipboard = () => {
 };
 
 describe("AgentSetupCard", () => {
-  it("shows on Settings > Agents with the origin's llms.txt, and copies it", async () => {
+  it("shows on Settings › Connections with the origin's llms.txt, and copies it", async () => {
     const writeText = clipboard();
-    mount("/settings/agents");
+    mount("/settings/connections");
     expect(
       await screen.findByRole("heading", { name: "Set up with an agent" }),
     ).toBeInTheDocument();
@@ -66,7 +66,7 @@ describe("AgentSetupCard", () => {
       value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
       configurable: true,
     });
-    mount("/settings/agents");
+    mount("/settings/connections");
     fireEvent.click(
       await screen.findByRole("button", { name: "Copy setup prompt" }),
     );
@@ -80,10 +80,9 @@ describe("AgentSetupCard", () => {
     expect(await screen.findByLabelText("Setup prompt")).toHaveValue(
       INSTRUCTION(),
     );
-    expect(screen.getByRole("link", { name: /agents/i })).toHaveAttribute(
-      "href",
-      "/settings/agents",
-    );
+    expect(
+      screen.getByRole("link", { name: /Settings → Connections/ }),
+    ).toHaveAttribute("href", "/settings/connections");
   });
 
   it("not in a filtered empty state", async () => {
@@ -205,8 +204,8 @@ describe("AgentSetupCard", () => {
       "a member in a code session outside the domains",
       capped("member", "guest"),
     ],
-  ])("not for %s on Settings > Agents", async (_who, me) => {
-    mountHosted("/settings/agents", true, me);
+  ])("not for %s on Settings › Connections", async (_who, me) => {
+    mountHosted("/settings/connections", true, me);
     await screen.findByRole("heading", { name: "Connected agents" });
     await meLoaded();
     expect(
@@ -216,9 +215,9 @@ describe("AgentSetupCard", () => {
     expect(screen.queryByLabelText("MCP server URL")).toBeNull();
   });
 
-  it("a guest never reaches Settings > Agents", async () => {
+  it("a guest never reaches Settings › Connections", async () => {
     const router = mountHosted(
-      "/settings/agents",
+      "/settings/connections",
       true,
       capped("guest", "guest"),
     );
@@ -232,7 +231,7 @@ describe("AgentSetupCard", () => {
       mountHosted("/mine", true, asRole(role), [none]);
       expect(await screen.findByLabelText("Setup prompt")).toBeTruthy();
       cleanup();
-      mountHosted("/settings/agents", true, asRole(role));
+      mountHosted("/settings/connections", true, asRole(role));
       expect(await screen.findByLabelText("Setup prompt")).toBeTruthy();
       expect(screen.getByRole("heading", { name: "MCP server" })).toBeTruthy();
     },
@@ -243,7 +242,7 @@ describe("AgentSetupCard", () => {
       ...m,
       instance: { ...m.instance, mcpUrl: "" },
     });
-    mountHosted("/settings/agents", true, none_);
+    mountHosted("/settings/connections", true, none_);
     await screen.findByRole("heading", { name: "Connected agents" });
     expect(screen.queryByRole("heading", { name: "MCP server" })).toBeNull();
     expect(screen.queryByLabelText("Setup prompt")).toBeNull();

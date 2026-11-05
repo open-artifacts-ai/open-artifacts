@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.121.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.121.0...v0.121.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **bus:** install findings from the machine cutover ([#1448](https://github.com/open-artifacts-ai/open-artifacts/issues/1448)) ([#1477](https://github.com/open-artifacts-ai/open-artifacts/issues/1477)) ([ed8689a](https://github.com/open-artifacts-ai/open-artifacts/commit/ed8689a6bb411386c0786111e631dcf001e34045))
+
+## [0.121.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.120.0...v0.121.0) (2026-11-05)
+
+
+### Features
+
+* **skill:** name the bus tools each harness has ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1472](https://github.com/open-artifacts-ai/open-artifacts/issues/1472)) ([443001b](https://github.com/open-artifacts-ai/open-artifacts/commit/443001b8d1988209403531107188754d54f97ca2))
+
+## [0.120.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.119.0...v0.120.0) (2026-11-05)
+
+
+### Features
+
+* **runtime,shared:** comment anchoring, selection, highlights and pins in the frame ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#1471](https://github.com/open-artifacts-ai/open-artifacts/issues/1471)) ([d0635a2](https://github.com/open-artifacts-ai/open-artifacts/commit/d0635a2b6b7279cb17162e12f2b1eb3ee301f30d))
+
+## [0.119.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.118.1...v0.119.0) (2026-11-05)
+
+
+### Features
+
+* **dashboard:** Agents page and Settings › Machines, from Design's option 1 ([#1293](https://github.com/open-artifacts-ai/open-artifacts/issues/1293)) ([#1449](https://github.com/open-artifacts-ai/open-artifacts/issues/1449)) ([ce253cf](https://github.com/open-artifacts-ai/open-artifacts/commit/ce253cfaec838efee4ca2d49a946cd96f836be07))
+
+## [0.118.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.118.0...v0.118.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **provision,provisioner:** a DO-rule refusal halts the fleet naming the step release ([#1343](https://github.com/open-artifacts-ai/open-artifacts/issues/1343)) ([#1442](https://github.com/open-artifacts-ai/open-artifacts/issues/1442)) ([e31d3bd](https://github.com/open-artifacts-ai/open-artifacts/commit/e31d3bdae44891eac130930c1fdc5c4dfa710c87))
+
 ## [0.118.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.117.0...v0.118.0) (2026-11-05)
 
 

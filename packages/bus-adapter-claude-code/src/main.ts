@@ -4,7 +4,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { connectDaemon, type DaemonClient } from "@oa/bus-ipc";
+import { BUS_CMD, connectDaemon, type DaemonClient } from "@oa/bus-ipc";
 import {
   ancestorChain,
   busHome,
@@ -53,7 +53,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       content: [
         {
           type: "text",
-          text: "oa-bus: no Claude session or daemon found. Run `npx @open-artifacts/bus install`.",
+          text: `oa-bus: no Claude session or daemon found. Run \`${BUS_CMD} install\`.`,
         },
       ],
       isError: true,

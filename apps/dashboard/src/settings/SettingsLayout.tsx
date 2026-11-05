@@ -2,6 +2,7 @@ import type { Role } from "@oa/shared";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { type ReactNode, useEffect } from "react";
 import { useMe } from "../auth/useMe";
+import { useMachinesAccess } from "../bus/access";
 import { ATTENTION, AttentionDot } from "../layout/AttentionDot";
 import { SyncDot, syncDot } from "../layout/SyncBanner";
 import { AppLink } from "../library/AppLink";
@@ -24,6 +25,8 @@ const TABS: {
   directory?: true;
   /** Hosted spaces admin: org admins, and members who manage a space. */
   spaces?: true;
+  /** #1293: canUseBus, or revoke-only with a machine left (#1447). */
+  bus?: true;
 }[] = [
   {
     to: "/settings/profile",
@@ -44,9 +47,15 @@ const TABS: {
     directory: true,
   },
   {
-    to: "/settings/agents",
-    label: "Agents",
+    to: "/settings/connections",
+    label: "Connections",
     roles: ["owner", "admin", "member"],
+  },
+  {
+    to: "/settings/machines",
+    label: "Machines",
+    roles: ["owner", "admin", "member"],
+    bus: true,
   },
   { to: "/settings/instance", label: "Instance", roles: ["owner", "admin"] },
 ];
@@ -65,6 +74,7 @@ export function SettingsLayout() {
     state.status === "authed" ? state.me : null,
   ).people;
   const noAgents = useNoAgentsPage();
+  const machines = useMachinesAccess();
   if (role === "guest") return <Outlet />; // no chrome; the gate redirects
   return (
     // The 880px measure, centered in the shell gutter.
@@ -84,7 +94,8 @@ export function SettingsLayout() {
             t.roles.includes(role) &&
             (!t.directory || directory) &&
             (!t.spaces || canAdminSpaces(me)) &&
-            (t.to !== "/settings/agents" || !noAgents),
+            (!t.bus || machines === "full" || machines === "revoke") &&
+            (t.to !== "/settings/connections" || !noAgents),
         ).map((t) => (
           <AppLink
             key={t.to}

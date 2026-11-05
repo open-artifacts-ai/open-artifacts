@@ -47,7 +47,7 @@ Cloudflare Access is the identity provider, using a one-time PIN by email, or Gi
 
 ## Tokens
 
-Personal access tokens look like `oa_pat_` followed by 32 characters. Only a SHA-256 hash is stored. Tokens belong to one user and can be revoked from **Settings → Agents**.
+Personal access tokens look like `oa_pat_` followed by 32 characters. Only a SHA-256 hash is stored. Tokens belong to one user and can be revoked from **Settings → Connections**.
 
 ## Audit log
 

@@ -1,7 +1,7 @@
 // GET /llms.txt on the app host: this instance's setup guide for any AI agent
 // (Connect, Restart, Verify, Troubleshoot). All of its wording lives in this
 // file. The per-client blocks come from agentClients (@oa/shared), the same
-// source as the dashboard's Settings → Agents tabs, so the two can't drift.
+// source as the dashboard's Settings → Connections tab, so the two can't drift.
 // Public: the instance's address and nothing else (no user data, no tokens).
 // Rendered once per isolate (APP_HOST is fixed per deploy): no session, and
 // this route reads no D1. With OAUTH_STORE dual or d1, serveAppHost's store
@@ -47,7 +47,7 @@ export const llmsInputs = (host: string) => {
   const origin = skillOrigin(host);
   const mcpUrl = `${origin}/mcp`;
   const tokenFile = secretFile("pat", { hostSlug: hostSlug(host) });
-  // The dashboard's call (Settings → Agents). Token variants read the file at
+  // The dashboard's call (Settings → Connections). Token variants read the file at
   // connect time (headersHelper, http_headers_helper, {file:}): never a token.
   const all = agentClients(mcpUrl, { tokenFile });
   const clients = all.filter((s) => s.variant === "oauth");
@@ -128,7 +128,7 @@ Use the section for the client you are running in: you know which one that is. O
 
 ${clients.map(clientBlock).join("\n\n")}
 
-${plugin ? pluginBlock(origin) : ""}If a client can only use a token, never ask the person for it and never paste it into chat. The person creates it under Personal access tokens at ${origin}/settings/agents and saves it to \`${tokenFile}\` (mode 0600). If they can't open that page, they ask their admin. Your config reads the file at connect time:
+${plugin ? pluginBlock(origin) : ""}If a client can only use a token, never ask the person for it and never paste it into chat. The person creates it under Personal access tokens at ${origin}/settings/connections and saves it to \`${tokenFile}\` (mode 0600). If they can't open that page, they ask their admin. Your config reads the file at connect time:
 
 ${clients
   .map((o) =>

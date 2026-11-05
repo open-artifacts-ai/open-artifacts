@@ -59,14 +59,14 @@ it("members who manage no space are redirected", async () => {
     spaces: [],
   }));
   await waitFor(() =>
-    expect(router.state.location.pathname).toBe("/settings/agents"),
+    expect(router.state.location.pathname).toBe("/settings/connections"),
   );
 });
 
 it("without the spaces feature the route redirects", async () => {
   const router = mount("/settings/spaces");
   await waitFor(() =>
-    expect(router.state.location.pathname).toBe("/settings/agents"),
+    expect(router.state.location.pathname).toBe("/settings/connections"),
   );
 });
 

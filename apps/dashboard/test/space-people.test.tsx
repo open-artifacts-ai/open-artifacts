@@ -74,7 +74,7 @@ const mountWith = (handlers: HttpHandler[], me?: (m: Me) => Me) =>
 it("self-hosted: no People card (the page redirects)", async () => {
   const router = mount(ENG);
   await waitFor(() =>
-    expect(router.state.location.pathname).toBe("/settings/agents"),
+    expect(router.state.location.pathname).toBe("/settings/connections"),
   );
   await screen.findByRole("heading", { name: "Settings" });
   expect(screen.queryByRole("region", { name: "People" })).toBeNull();

@@ -1,4 +1,5 @@
 import {
+  BUS_CMD,
   cleanStatusLabel,
   type DaemonClient,
   earlierStatusText,
@@ -59,8 +60,7 @@ export const TOOLS = [
   },
   {
     name: "self",
-    description:
-      "Your own Open Artifacts bus agent entry and bus name. To become global, ask the user to approve running `npx @open-artifacts/bus global add <your start dir>`, then restart.",
+    description: `Your own Open Artifacts bus agent entry and bus name. To become global, ask the user to approve running \`${BUS_CMD} global add <your start dir>\`, then restart.`,
     inputSchema: none,
   },
   {

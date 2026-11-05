@@ -1,5 +1,5 @@
 import { displayKind, type StatusFields, statusSaysText } from "@oa/bus-ipc";
-import { type AgentKind, BUS_ROUTES } from "@oa/bus-protocol";
+import { type AgentKind, BUS_CMD, BUS_ROUTES } from "@oa/bus-protocol";
 import { box, glyph, paint, type Style, type Tone } from "./term.ts";
 
 /**
@@ -208,9 +208,7 @@ export function copy(style: Style) {
     // `login` saved a new token; the running daemon keeps the old one.
     daemonOldToken: (pid: number) => [
       warn(`The daemon (pid ${pid}) still uses the old token.`),
-      next(
-        "Run npx @open-artifacts/bus install to restart it with the new one.",
-      ),
+      next(`Run ${BUS_CMD} install to restart it with the new one.`),
     ],
     alreadyConnected: (label: string) =>
       done(`Already connected as ${clip(label, 24)}`),
@@ -224,7 +222,7 @@ export function copy(style: Style) {
       ),
     noHarness: () => [
       warn("No Claude Code, OpenCode, Pi, oh-my-pi or Codex found"),
-      next("Install one, then run npx @open-artifacts/bus again."),
+      next(`Install one, then run ${BUS_CMD} again.`),
     ],
     restarted: () => done("Restarted the OpenCode service to load the plugin"),
     // After the configured line, when PI_CODING_AGENT_DIR points both at one folder.
@@ -240,7 +238,7 @@ export function copy(style: Style) {
       warn(
         "No codex binary found, so the bus can't wake an idle Codex thread.",
       ),
-      next("Install the Codex CLI, then run npx @open-artifacts/bus again."),
+      next(`Install the Codex CLI, then run ${BUS_CMD} again.`),
     ],
     opencodeNotRunning: () =>
       done("OpenCode service not running; it loads the plugin when it starts"),
@@ -255,9 +253,7 @@ export function copy(style: Style) {
             warn(
               "Daemon running without a service, so it won't restart after a reboot.",
             ),
-            next(
-              "After a reboot, start it again with npx @open-artifacts/bus daemon.",
-            ),
+            next(`After a reboot, start it again with ${BUS_CMD} daemon.`),
           ]
         : service
           ? [
@@ -273,20 +269,24 @@ export function copy(style: Style) {
               warn(
                 "Daemon running, but no service will restart it after a reboot.",
               ),
-              next("Run npx @open-artifacts/bus install."),
+              next(`Run ${BUS_CMD} install.`),
             ],
     // install --no-service: the service step is skipped, nothing is started.
     serviceSkipped: () => [
       warn("Skipped the service, so no daemon is running."),
-      next(
-        "Start it with npx @open-artifacts/bus daemon, and again after a reboot.",
-      ),
+      next(`Start it with ${BUS_CMD} daemon, and again after a reboot.`),
     ],
     // doctor, after the daemon line.
     serviceNodeMissing: (node: string) => [
       fail(`The service runs a Node that is gone: ${clip(node, 42)}.`),
+      next(`Run ${BUS_CMD} install to point it at your current Node.`),
+    ],
+    // doctor, after the service-node line.
+    badNode: (node: string, reason: string) => [
+      fail(`The service runs a Node that cannot start: ${clip(node, 42)}.`),
+      `   ${reason}`,
       next(
-        "Run npx @open-artifacts/bus install to point it at your current Node.",
+        `Run ${BUS_CMD} install again with a working Node first on your PATH.`,
       ),
     ],
     lingerOff: () => [
@@ -297,9 +297,7 @@ export function copy(style: Style) {
       const head = `Another daemon is still running (pid ${pid}) on `;
       return [
         fail(`${head}${clip(socket, 3 + len(head) + 1)}.`),
-        next(
-          `Stop it with kill ${pid}, then run npx @open-artifacts/bus install again.`,
-        ),
+        next(`Stop it with kill ${pid}, then run ${BUS_CMD} install again.`),
       ];
     },
     daemonStillRunning: (pid: number) => [
@@ -312,7 +310,7 @@ export function copy(style: Style) {
       warn(
         `Update available: ${cutMiddle(hub, 19, more)} (this machine runs ${cutMiddle(mine, 19, more)})`,
       ),
-      next("Run npx @open-artifacts/bus@latest install."),
+      next(`Run ${BUS_CMD}@latest install.`),
     ],
     // Status and doctor, when the hub's `/healthz` names a problem (#294).
     hubProblem: (problem: string) => [
@@ -321,7 +319,7 @@ export function copy(style: Style) {
     ],
     daemonTimeout: () => [
       fail("The daemon did not start within 10 seconds."),
-      next("Run npx @open-artifacts/bus doctor to see why."),
+      next(`Run ${BUS_CMD} doctor to see why.`),
     ],
 
     rosterHeader: (namespace: string, live: number, queued: number) => {
@@ -345,7 +343,7 @@ export function copy(style: Style) {
       return `    ${p("muted", cutCols(says, WIDTH - 4, more))}`;
     },
     rosterMore: (n: number) =>
-      `  ${p("muted", `and ${n} more ${g("sep")} npx @open-artifacts/bus status`)}`,
+      `  ${p("muted", `and ${n} more ${g("sep")} ${BUS_CMD} status`)}`,
     queuedFootnote: () => [
       p(
         "muted",
@@ -379,19 +377,16 @@ export function copy(style: Style) {
     lateQuote: (excerpt: string) => `    "${excerpt}"`,
 
     statusHint: () =>
-      p(
-        "muted",
-        "Check this machine anytime with npx @open-artifacts/bus status.",
-      ),
+      p("muted", `Check this machine anytime with ${BUS_CMD} status.`),
 
     // 3, 4, 6
     denied: () => [
       fail("This machine was not approved."),
-      next("Run npx @open-artifacts/bus again to get a new code."),
+      next(`Run ${BUS_CMD} again to get a new code.`),
     ],
     expired: (code: string) => [
       fail(`Code ${code} expired after 10 minutes.`),
-      next("Run npx @open-artifacts/bus again to get a new code."),
+      next(`Run ${BUS_CMD} again to get a new code.`),
     ],
     unreachable: (
       host: string,
@@ -419,20 +414,18 @@ export function copy(style: Style) {
     /** Any failure the transcript does not name. */
     failed: (message: string) => [
       fail(clip(message.split("\n")[0] ?? "", 3)),
-      next("Run npx @open-artifacts/bus doctor to see why."),
+      next(`Run ${BUS_CMD} doctor to see why.`),
     ],
     // A SOCKET_PATH start failure, in place of `failed`.
     socketPathFailed: (message: string) => [
       fail("The daemon cannot listen on its socket."),
       next(p("muted", clip(message.split("\n")[0] ?? "", 3))),
-      next("Run npx @open-artifacts/bus doctor to see why."),
+      next(`Run ${BUS_CMD} doctor to see why.`),
     ],
     usage: (message: string) => [
       // The parser's message, as a sentence.
       fail(clip(message.charAt(0).toUpperCase() + message.slice(1), 3)),
-      next(
-        "Run npx @open-artifacts/bus with install, login, daemon, status, logs,",
-      ),
+      next(`Run ${BUS_CMD} with install, login, daemon, status, logs,`),
       next(
         "doctor, global add|rm|list, uninstall, mcp <claude|opencode|pi|codex>",
       ),
@@ -443,11 +436,11 @@ export function copy(style: Style) {
       warn(
         `Skipped ${HARNESS_LABEL[h]}: ${clip(reason, 14 + len(HARNESS_LABEL[h]))}`,
       ),
-      next("Fix it, then run npx @open-artifacts/bus again."),
+      next(`Fix it, then run ${BUS_CMD} again.`),
     ],
     noHub: () => [
       fail("No Open Artifacts instance to connect to."),
-      next("Run npx @open-artifacts/bus --instance <your instance URL>,"),
+      next(`Run ${BUS_CMD} --instance <your instance URL>,`),
       next("or set OA_BUS_INSTANCE."),
     ],
     hubMismatch: (approved: string, asked: string, askedUrl: string) => {
@@ -456,8 +449,8 @@ export function copy(style: Style) {
       const b = clip(asked, 39 + len(a));
       return [
         fail(`This machine is approved for ${a}, not ${b}.`),
-        next("Run npx @open-artifacts/bus uninstall --purge first, then"),
-        next(`npx @open-artifacts/bus --instance ${clip(askedUrl, 39)}.`),
+        next(`Run ${BUS_CMD} uninstall --purge first, then`),
+        next(`${BUS_CMD} --instance ${clip(askedUrl, 39)}.`),
       ];
     },
     checkOk: (label: string) => done(label),
@@ -471,7 +464,7 @@ export function copy(style: Style) {
       warn(
         `Could not remove the bus from ${HARNESS_LABEL[h]}: ${clip(reason, 37 + len(HARNESS_LABEL[h]))}`,
       ),
-      next("Fix it, then run npx @open-artifacts/bus uninstall again."),
+      next(`Fix it, then run ${BUS_CMD} uninstall again.`),
     ],
     purgeLeftDir: (home: string) => [
       warn(
@@ -488,12 +481,8 @@ export function copy(style: Style) {
       fail(
         `The daemon is still running, so ${clip(home, 52)} was not deleted.`,
       ),
-      next(
-        "Wait a few seconds and run npx @open-artifacts/bus uninstall --purge again.",
-      ),
-      next(
-        "If it keeps running, run npx @open-artifacts/bus doctor to see why.",
-      ),
+      next(`Wait a few seconds and run ${BUS_CMD} uninstall --purge again.`),
+      next(`If it keeps running, run ${BUS_CMD} doctor to see why.`),
     ],
 
     // 7. status
@@ -507,13 +496,13 @@ export function copy(style: Style) {
     machineRow: (label: string) => `Machine  ${clip(label, 9)}`,
     statusDaemonDown: () => [
       fail("Daemon not running"),
-      next("Run npx @open-artifacts/bus to restart it,"),
-      next("or npx @open-artifacts/bus doctor to see why."),
+      next(`Run ${BUS_CMD} to restart it,`),
+      next(`or ${BUS_CMD} doctor to see why.`),
     ],
     statusDaemonStalled: () => [
       fail("Daemon not responding"),
       next(
-        "It is running but not answering. Try again, or run npx @open-artifacts/bus doctor.",
+        `It is running but not answering. Try again, or run ${BUS_CMD} doctor.`,
       ),
     ],
     hubNotReachable: (
@@ -524,41 +513,37 @@ export function copy(style: Style) {
       `${fail(`Hub not reachable at ${clip(host, 26 + (error ? len(error) + 2 : 0))}`)}${
         error ? `  ${p("muted", error)}` : ""
       }`,
-      next(
-        `Check your network, then run npx @open-artifacts/bus ${again} again.`,
-      ),
+      next(`Check your network, then run ${BUS_CMD} ${again} again.`),
     ],
     notRegistered: () => [
       fail("This computer is not connected to a bus."),
-      next("Run npx @open-artifacts/bus to approve it."),
+      next(`Run ${BUS_CMD} to approve it.`),
     ],
     revoked: () => [
       fail("This machine was revoked."),
-      next("Run npx @open-artifacts/bus install to approve it again."),
+      next(`Run ${BUS_CMD} install to approve it again.`),
     ],
 
     // 8. doctor
     nodeOk: (version: string) => done(`Node ${version}`),
     nodeOld: (version: string) => [
       fail(`Node ${clip(version, 39)} is too old (needs 22 or newer)`),
-      next(
-        "Install Node 22 or newer, then run npx @open-artifacts/bus doctor again.",
-      ),
+      next(`Install Node 22 or newer, then run ${BUS_CMD} doctor again.`),
     ],
     credentials: (path: string, token: string) =>
       done(`Credentials at ${clip(path, 37)}`, tokenTail(token, more)),
     noCredentials: (path: string) => [
       fail(`No credentials at ${clip(path, 21)}`),
-      next("Run npx @open-artifacts/bus to approve this machine."),
+      next(`Run ${BUS_CMD} to approve this machine.`),
     ],
     revokedCheck: () => [
       fail("This machine was revoked"),
-      next("Run npx @open-artifacts/bus install to approve it again."),
+      next(`Run ${BUS_CMD} install to approve it again.`),
     ],
     // DRAFT: the short socket folder a long OA_BUS_HOME needs is not ours.
     socketFolderUnsafe: (dir: string, why: string) => [
       fail(`Daemon socket folder ${clip(dir, 33)} is unsafe`),
-      next(`It ${why}. Remove it, then run npx @open-artifacts/bus.`),
+      next(`It ${why}. Remove it, then run ${BUS_CMD}.`),
     ],
     // DRAFT: another user made it first; in sticky /tmp only an admin can remove it.
     socketFolderNotYours: (dir: string) => [
@@ -570,23 +555,19 @@ export function copy(style: Style) {
     globalUnusable: (path: string, why: string) => [
       warn(`${clip(path, 45)} can't be used, so no directory is global.`),
       next(p("muted", clip(`It ${why}.`, 3))),
-      next(
-        "Remove it, then run npx @open-artifacts/bus global add <dir> again.",
-      ),
+      next(`Remove it, then run ${BUS_CMD} global add <dir> again.`),
     ],
     globalAsked: () => [
       warn("This repo's .oa-bus.json asks for global, which is ignored here."),
-      next("Allow it with npx @open-artifacts/bus global add ."),
+      next(`Allow it with ${BUS_CMD} global add .`),
     ],
     daemonNotRunning: () => [
       fail("Daemon is not running"),
-      next("Run npx @open-artifacts/bus to restart it."),
+      next(`Run ${BUS_CMD} to restart it.`),
     ],
     daemonNotResponding: () => [
       fail("Daemon is not responding"),
-      next(
-        "Try again in a moment, or run npx @open-artifacts/bus to restart it.",
-      ),
+      next(`Try again in a moment, or run ${BUS_CMD} to restart it.`),
     ],
     hubReachable: (host: string) => done(`Hub reachable at ${clip(host, 20)}`),
     wired: (h: HarnessName, version?: string) =>
@@ -597,7 +578,7 @@ export function copy(style: Style) {
       ),
     notWired: (h: HarnessName) => [
       fail(`${HARNESS_LABEL[h]} is not wired`),
-      next("Run npx @open-artifacts/bus to wire it."),
+      next(`Run ${BUS_CMD} to wire it.`),
     ],
     claudeAccepts: () =>
       done("Claude Code accepts messages from other machines"),
@@ -609,9 +590,7 @@ export function copy(style: Style) {
     codexWakes: (bin: string) => done(`Codex wakes with ${clip(bin, 20)}`),
     codexNoWakeCheck: () => [
       warn("No codex binary found, so idle Codex threads are not woken"),
-      next(
-        "Install the Codex CLI, then run npx @open-artifacts/bus install again.",
-      ),
+      next(`Install the Codex CLI, then run ${BUS_CMD} install again.`),
     ],
     codexHomeMismatch: (shell: string, service: string) => {
       // Both paths share the line: the shell's keeps at least 15 columns.
@@ -619,9 +598,7 @@ export function copy(style: Style) {
       const b = clip(shell, 49 + len(a));
       return [
         warn(`The daemon reads Codex from ${a}, this shell from ${b}`),
-        next(
-          "Run npx @open-artifacts/bus install from this shell to match it.",
-        ),
+        next(`Run ${BUS_CMD} install from this shell to match it.`),
       ];
     },
     codexFullAccess: (config: string) => [
@@ -643,15 +620,13 @@ export function copy(style: Style) {
       const rest = ` is too old for the plugin (needs ${min} or newer)`;
       return [
         warn(`OpenCode ${clip(version, 12 + len(rest))}${rest}`),
-        next(
-          "Run opencode upgrade, then npx @open-artifacts/bus install again.",
-        ),
+        next(`Run opencode upgrade, then ${BUS_CMD} install again.`),
       ];
     },
     opencodeUnknown: () => [
       warn("OpenCode version unknown"),
       next(
-        "Run opencode --version to check it, then npx @open-artifacts/bus install again.",
+        `Run opencode --version to check it, then ${BUS_CMD} install again.`,
       ),
     ],
     summary: (failed: number, warnings: number, passed: number) =>
@@ -692,11 +667,8 @@ export function copy(style: Style) {
       done("OpenCode service not running; nothing to restart"),
     kept: (machineFile: string) => [
       `Kept ${clip(machineFile, 46)}. This machine stays approved on the bus;`,
-      "run npx @open-artifacts/bus to reconnect it.",
-      p(
-        "muted",
-        "To remove everything, run npx @open-artifacts/bus uninstall --purge.",
-      ),
+      `run ${BUS_CMD} to reconnect it.`,
+      p("muted", `To remove everything, run ${BUS_CMD} uninstall --purge.`),
     ],
     deleted: (home: string) =>
       done(`Deleted ${clip(home, 35)}, including machine.json`),
@@ -705,7 +677,7 @@ export function copy(style: Style) {
       next(
         `Revoke it in the dashboard at ${clip(host, 56)} to remove it for good.`,
       ),
-      next("To use this computer again, run npx @open-artifacts/bus."),
+      next(`To use this computer again, run ${BUS_CMD}.`),
     ],
 
     // 11. global
@@ -718,9 +690,7 @@ export function copy(style: Style) {
     globalAlready: (dir: string) => done(`${clip(dir, 22)} is already global.`),
     globalNotDir: (dir: string) => [
       fail(`${clip(dir, 23)} is not a directory.`),
-      next(
-        "Check the path, then run npx @open-artifacts/bus global add again.",
-      ),
+      next(`Check the path, then run ${BUS_CMD} global add again.`),
     ],
     globalRemoved: (dir: string) => [
       done(`${clip(dir, 24)} is no longer global.`),
@@ -730,7 +700,7 @@ export function copy(style: Style) {
       warn(`${clip(dir, 36)} was not global. Nothing changed.`),
     globalNone: () => [
       "No global directories.",
-      p("muted", "Add one with npx @open-artifacts/bus global add <dir>."),
+      p("muted", `Add one with ${BUS_CMD} global add <dir>.`),
     ],
     globalList: (dirs: string[]) => [
       `${dirs.length} global ${dirs.length === 1 ? "directory" : "directories"}`,
@@ -740,13 +710,11 @@ export function copy(style: Style) {
     // logs, mcp (DRAFT)
     noLog: (path: string) => [
       warn(`No daemon log yet at ${clip(path, 24)}`),
-      next(
-        "Run npx @open-artifacts/bus daemon to see its output in this terminal.",
-      ),
+      next(`Run ${BUS_CMD} daemon to see its output in this terminal.`),
     ],
     mcpPi: () => [
       warn("Pi uses the bus extension, not an MCP server."),
-      next("Run npx @open-artifacts/bus to install the extension."),
+      next(`Run ${BUS_CMD} to install the extension.`),
     ],
   };
   return all;

@@ -179,7 +179,7 @@ ${T("upgradeLine")}Open Artifacts hosts the pages, documents and code you publis
 
 - MCP endpoint: \`${T("origin")}/mcp\` (Streamable HTTP).
 - OAuth (preferred): add \`${T("origin")}/mcp\` as a remote MCP server in your client. The client registers itself (dynamic client registration) and the user signs in through the browser.
-- Personal access token: the user creates one at ${T("origin")}/settings/agents and saves it with the line under Secrets. Send it as \`Authorization: Bearer <token>\`, read from \`${PAT_FILE}\` in the command or config, never pasted in.
+- Personal access token: the user creates one at ${T("origin")}/settings/connections and saves it with the line under Secrets. Send it as \`Authorization: Bearer <token>\`, read from \`${PAT_FILE}\` in the command or config, never pasted in.
 - Per-client setup is under Client setup below; after a change, reload the client and check that tools/list shows the ${toolDefs(spaces).length} tools.
 - Only members can connect agents; guests cannot.
 - Without MCP support, call the endpoint with curl (JSON-RPC; \`tools/call\` takes \`{ "name": "<tool>", "arguments": { ... } }\`):

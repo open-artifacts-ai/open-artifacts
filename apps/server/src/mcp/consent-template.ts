@@ -81,7 +81,7 @@ button.primary{background:var(--text);border-color:var(--text);color:var(--surfa
       <button type="submit" name="decision" value="deny">Deny</button>
       <button type="submit" name="decision" value="approve" class="primary">Approve</button>
     </div>
-    <p class="foot">You can disconnect it anytime in Settings → Agents.</p>
+    <p class="foot">You can disconnect it anytime in Settings → Connections.</p>
   </form>
 </main>
 </body>

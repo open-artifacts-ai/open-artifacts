@@ -12,7 +12,7 @@ test("Agents page has no horizontal page scroll at 390px (token variant)", async
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/settings/agents");
+  await page.goto("/settings/connections");
   await page.getByRole("radio", { name: "Token" }).click();
   await expect(page.getByText(/claude mcp add/)).toBeVisible();
   const overflow = await page.evaluate(
@@ -37,7 +37,7 @@ test("Token tab and token-created dialog wrap their commands at 390px", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/settings/agents");
+  await page.goto("/settings/connections");
   await page.getByRole("radio", { name: "Token" }).click();
   for (const name of ["Claude Code", "Codex CLI", "OpenCode"]) {
     await page.getByRole("tab", { name }).click();
