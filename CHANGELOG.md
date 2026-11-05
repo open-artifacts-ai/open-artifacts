@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.118.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.117.0...v0.118.0) (2026-11-05)
+
+
+### Features
+
+* **scheduler:** a canary smoke replaces the fleet soak ([#1343](https://github.com/open-artifacts-ai/open-artifacts/issues/1343)) ([#1380](https://github.com/open-artifacts-ai/open-artifacts/issues/1380)) ([64d1863](https://github.com/open-artifacts-ai/open-artifacts/commit/64d1863c447c96c6f2430ffd113ed16e73eb6a52))
+
+
+### Bug Fixes
+
+* **setup:** an upgrade refuses when the deployed version is unknown ([#1427](https://github.com/open-artifacts-ai/open-artifacts/issues/1427)) ([#1433](https://github.com/open-artifacts-ai/open-artifacts/issues/1433)) ([2f092af](https://github.com/open-artifacts-ai/open-artifacts/commit/2f092af40c0e86b2f1aaf1583ea9dbf73b889737))
+
 ## [0.117.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.116.0...v0.117.0) (2026-11-05)
 
 
