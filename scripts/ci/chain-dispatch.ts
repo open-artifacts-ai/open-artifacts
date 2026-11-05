@@ -159,7 +159,7 @@ export function dispatchAndWait(o: Opts): Outcome {
           "POST",
           `repos/${o.repo}/actions/runs/${found.id}/cancel`,
         ]);
-        did = `cancelled the dispatched run ${url}`;
+        did = `left the dispatched run ${url}`;
       } catch (e) {
         did = `could not cancel the dispatched run ${url} (${(e as Error).message})`;
       }
