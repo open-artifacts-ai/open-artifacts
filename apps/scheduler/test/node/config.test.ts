@@ -45,9 +45,15 @@ describe("wrangler.jsonc", () => {
         SIGNUPS_ENABLED: `{{SIGNUPS_ENABLED_${env.toUpperCase()}}}`,
         // #955: prod stays empty until a green staging rollout.
         FLEET_CANARY: env === "staging" ? "i33m6mbc3zuz" : "",
-        // #1343: leo goes second on prod; the soak is 15 min on staging,
-        // 60 on prod. Both inert while prod's FLEET_CANARY is empty.
+        // #1343: leo goes second on prod, inert while prod's FLEET_CANARY
+        // is empty. The smoke's token and share target are secrets,
+        // never vars: no address is ever committed.
         FLEET_SECOND: env === "staging" ? "" : "i2ab26lvciok",
+        // #1343: the smoke stays off on both until the user's setup.
+        FLEET_SMOKE: "off",
+        // The share check is on in both: an explicit, committed choice.
+        FLEET_SMOKE_SHARE: "on",
+        // ... and keeps the passive soak: 15 min on staging, 60 on prod.
         FLEET_SOAK_MIN: env === "staging" ? "15" : "60",
       });
       // The fleet target is this version's tag (provapi/fleet.ts).

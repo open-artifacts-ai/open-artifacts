@@ -560,6 +560,9 @@ importers:
       '@oa/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@oa/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
       '@types/node':
         specifier: ^20.19.43
         version: 20.19.43

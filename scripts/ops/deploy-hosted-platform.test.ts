@@ -2394,3 +2394,124 @@ describe("every deployed app has its own wrangler", () => {
     });
   }
 });
+
+// #1343: the canary smoke's secrets, smoke's PAT and the share target's address,
+// reach the scheduler only: put on oa-<p>-scheduler when the Environment has
+// them, never printed, never on any other Worker.
+describe("the canary smoke's secrets (#1343)", () => {
+  const PAT = "oat_smokeA_never_printed_0123456789";
+  const TO = "target@example.test";
+  const SMOKE = { FLEET_SMOKE_TOKEN: PAT, FLEET_SMOKE_SHARE_TO: TO };
+  const hidden = (r: { out: string; err: string; log: string[] }) => {
+    const all = [r.out, r.err, ...r.log].join("\n");
+    for (const s of [PAT, TO]) expect(all).not.toContain(s);
+  };
+
+  it("given: both put on the scheduler, then a second deploy tags the serving version", () => {
+    const r = setup({ exists: SCHED_DEPS("p") }).run("scheduler", SMOKE);
+    expect(r.code, r.err).toBe(0);
+    expect(puts(r.log)).toEqual(["FLEET_SMOKE_TOKEN", "FLEET_SMOKE_SHARE_TO"]);
+    expect(r.log).toContain(`stdin-len FLEET_SMOKE_TOKEN ${PAT.length}`);
+    expect(r.log).toContain(`stdin-len FLEET_SMOKE_SHARE_TO ${TO.length}`);
+    const wrappers = r.log.flatMap((l, i) =>
+      l.startsWith("wrapper") ? [i] : [],
+    );
+    const lastPut = r.log.reduce(
+      (m, l, i) => (l.startsWith("stdin-len") ? i : m),
+      -1,
+    );
+    expect(wrappers).toHaveLength(2);
+    expect(wrappers[1]).toBeGreaterThan(lastPut);
+    hidden(r);
+    clean(r);
+  });
+
+  it("absent: nothing put, one deploy (the smoke then reports itself unconfigured)", () => {
+    const r = setup({ exists: SCHED_DEPS("p") }).run("scheduler");
+    expect(r.code, r.err).toBe(0);
+    expect(puts(r.log)).toEqual([]);
+    expect(r.log.filter((l) => l.startsWith("wrapper"))).toHaveLength(1);
+  });
+
+  it("verify only: nothing put or deployed", () => {
+    const sv = setup({ exists: SCHED_DEPS("p") });
+    writeFileSync(join(sv.state, "oa-p-scheduler.exists"), "");
+    writeFileSync(
+      join(sv.state, "oa-p-scheduler.settings.json"),
+      NEXT["oa-p-scheduler"] as string,
+    );
+    const r = sv.run("scheduler", {
+      ...SMOKE,
+      VERIFY_ONLY: "1",
+    });
+    expect(r.code, r.err).toBe(0);
+    expect(puts(r.log)).toEqual([]);
+    expect(noDeploy(r.log)).toEqual([]);
+    hidden(r);
+  });
+
+  it("malformed: refused before any deploy, without printing the value", () => {
+    for (const [k, v] of [
+      ["FLEET_SMOKE_TOKEN", "short"],
+      ["FLEET_SMOKE_TOKEN", `${PAT} x`],
+      ["FLEET_SMOKE_SHARE_TO", "Target@Example.test"],
+      ["FLEET_SMOKE_SHARE_TO", `${TO},other@example.test`],
+      ["FLEET_SMOKE_SHARE_TO", "not-an-address"],
+    ] as const) {
+      const r = setup({ exists: SCHED_DEPS("p") }).run("scheduler", {
+        ...SMOKE,
+        [k]: v,
+      });
+      expect(r.code, `${k}=${v}`).toBe(1);
+      expect(r.err).toContain(k);
+      expect(r.err).not.toContain(v);
+      expect(noDeploy(r.log)).toEqual([]);
+    }
+  });
+
+  it("every other target leaves them alone, even with them in its env", () => {
+    for (const [t, exists] of [
+      ["auth-broker", []],
+      ["directory-broker", []],
+      ["provisioning", ["oa-p-provisioner", "oa-p-auth-broker"]],
+    ] as const) {
+      const r = setup({ exists: [...exists] }).run(t, SMOKE);
+      expect(r.code, `${t}: ${r.err}`).toBe(0);
+      expect(
+        puts(r.log).filter((n) => n.startsWith("FLEET_SMOKE")),
+        t,
+      ).toEqual([]);
+      hidden(r);
+    }
+  });
+
+  it("the read-back fails closed: a failed secrets listing fails the run", () => {
+    const r = setup({ exists: SCHED_DEPS("p"), failSecrets: true }).run(
+      "scheduler",
+    );
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("list oa-p-scheduler secrets");
+  });
+
+  it("the read-back refuses a secret the scheduler shouldn't hold", () => {
+    const ok = setup({
+      exists: SCHED_DEPS("p"),
+      secrets: {
+        "oa-p-scheduler": [
+          "EMAIL_QUOTA_TOKEN",
+          "FLEET_SMOKE_TOKEN",
+          "FLEET_SMOKE_SHARE_TO",
+        ],
+      },
+    }).run("scheduler");
+    expect(ok.code, ok.err).toBe(0);
+    const bad = setup({
+      exists: SCHED_DEPS("p"),
+      secrets: { "oa-p-scheduler": ["FLEET_SMOKE_TOKEN", "ADMIN_IDENTITIES"] },
+    }).run("scheduler");
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain(
+      "oa-p-scheduler has a secret it shouldn't: ADMIN_IDENTITIES",
+    );
+  });
+});

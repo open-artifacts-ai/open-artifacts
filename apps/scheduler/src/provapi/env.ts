@@ -33,8 +33,16 @@ export interface ProvapiEnv {
   FLEET_CANARY?: string;
   /** The install upgraded alone right after the canary (fleet.ts fleetSecond). */
   FLEET_SECOND?: string;
-  /** Minutes of unbroken passing probes to soak; unset is 15 (fleetSoakMs). */
+  /** The canary smoke: "off" (the passive soak) or "required"; else required. */
+  FLEET_SMOKE?: string;
+  /** The smoke's share check: "off" skips it; anything else runs it. */
+  FLEET_SMOKE_SHARE?: string;
+  /** The passive soak in minutes with FLEET_SMOKE "off"; unset is 15. */
   FLEET_SOAK_MIN?: string;
+  /** smoke's PAT on the canary (secret, #1343 smoke.ts); unset: never smoked. */
+  FLEET_SMOKE_TOKEN?: string;
+  /** The smoke's share target, an existing canary member (secret); empty skips the share. */
+  FLEET_SMOKE_SHARE_TO?: string;
 }
 
 /** A duty failure with a fixed log category (never the error text). */
