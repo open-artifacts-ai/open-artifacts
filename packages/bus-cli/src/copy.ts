@@ -557,6 +557,20 @@ export function copy(style: Style) {
       next(p("muted", clip(`It ${why}.`, 3))),
       next(`Remove it, then run ${BUS_CMD} global add <dir> again.`),
     ],
+    /** A refused or noted config file (#1527): the reason, then the exact fix. Paths arrive already shortened. */
+    configFile: (f: {
+      file: string;
+      state: "refused" | "noted";
+      reason: string;
+      fix: string;
+    }) => [
+      warn(
+        f.state === "refused"
+          ? `${f.file} ${f.reason}, so it is ignored.`
+          : `${f.file} ${f.reason}; it is still used.`,
+      ),
+      next(`Fix: ${f.fix}`),
+    ],
     globalAsked: () => [
       warn("This repo's .oa-bus.json asks for global, which is ignored here."),
       next(`Allow it with ${BUS_CMD} global add .`),

@@ -350,6 +350,39 @@ describe("pi extension asset", () => {
     expect(JSON.parse(await p.call("self", {})).kind).toBe("zz");
   });
 
+  it("#1527: self shows the config files the daemon refused", async () => {
+    const { p } = await started((f) =>
+      f.type === "self"
+        ? {
+            type: "agent",
+            agent: {
+              name: "me",
+              namespace: "ns",
+              kind: "pi",
+              live: true,
+              global: false,
+              config_files: [
+                {
+                  file: "/home/u/x/.oa-bus.json",
+                  state: "refused",
+                  reason: "is writable by everyone",
+                  fix: "run chmod o-w /home/u/x/.oa-bus.json",
+                },
+              ],
+            },
+          }
+        : undefined,
+    );
+    expect(JSON.parse(await p.call("self", {})).config_files).toEqual([
+      {
+        file: "/home/u/x/.oa-bus.json",
+        state: "refused",
+        reason: "is writable by everyone",
+        fix: "run chmod o-w /home/u/x/.oa-bus.json",
+      },
+    ]);
+  });
+
   it("list_agents, self and fetch render like the MCP tools", async () => {
     const { p } = await started((f) =>
       f.type === "list"

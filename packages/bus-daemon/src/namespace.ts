@@ -10,6 +10,7 @@ import {
   namespaceFrom,
   normalizeRemote,
 } from "@oa/bus-protocol";
+import { type ConfigIssues, configIssue } from "./config-issues.ts";
 import { globalFile, isGlobalDir, readGlobalDirs } from "./global.ts";
 import { readOwnFile } from "./own-file.ts";
 
@@ -29,6 +30,8 @@ export type NamespaceDeps = {
   allowMissing?: boolean;
   /** The user's allowlist; default `<OA_BUS_HOME>/global.json`. */
   globalFile?: string;
+  /** Collects the config files refused or noted, for status, doctor and self. */
+  issues?: ConfigIssues;
 };
 
 const warned = new Set<string>();
@@ -126,11 +129,13 @@ function readConfigs(
   const asked: string[] = [];
   for (let dir = cwd; ; dir = dirname(dir)) {
     const file = join(dir, CONFIG_FILE);
-    const own = readOwnFile(file, uid);
+    const own = readOwnFile(file, uid, { allowGroupWrite: true });
     if (own.state === "unsafe")
       // Another user could plant one in a shared parent such as /tmp.
       once(deps, file, `ignoring ${file}: it ${own.why}`);
+    let valid = true;
     if (own.state === "ok") {
+      if (own.note) once(deps, `note:${file}`, `using ${file}: it ${own.note}`);
       let parsed: ReturnType<typeof BusConfigSchema.safeParse> | undefined;
       try {
         parsed = BusConfigSchema.safeParse(JSON.parse(own.text));
@@ -138,8 +143,12 @@ function readConfigs(
       if (parsed?.success) {
         configs.push(parsed.data);
         if (parsed.data.global === true) asked.push(file);
-      } else deps.log?.(`ignoring invalid ${file}`);
+      } else {
+        valid = false;
+        deps.log?.(`ignoring invalid ${file}`);
+      }
     }
+    deps.issues?.set(file, uid, configIssue(file, own, valid));
     if (dirname(dir) === dir) break;
   }
   return { cfg: mergeConfigs(configs), asked };

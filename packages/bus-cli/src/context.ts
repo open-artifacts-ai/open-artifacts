@@ -325,3 +325,21 @@ export const tilde = (ctx: Pick<Ctx, "userHome">, path: string) =>
     : path.startsWith(`${ctx.userHome}/`)
       ? `~${path.slice(ctx.userHome.length)}`
       : path;
+
+/** Config files refused or noted, with the file and the fix shown under `~`. */
+export const configFileLines = (
+  ctx: Ctx,
+  files: readonly {
+    file: string;
+    state: "refused" | "noted";
+    reason: string;
+    fix: string;
+  }[],
+): string[] =>
+  files.flatMap((f) =>
+    ctx.copy.configFile({
+      ...f,
+      file: tilde(ctx, f.file),
+      fix: f.fix.split(f.file).join(tilde(ctx, f.file)),
+    }),
+  );

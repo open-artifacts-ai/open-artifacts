@@ -419,3 +419,60 @@ describe("an unknown kind over the socket (C26h)", () => {
     expect(JSON.parse((await say(c, "self")) ?? "").kind).toBe("zz");
   });
 });
+
+describe("#1527: self shows the config files the daemon refused", () => {
+  it("prints each file with its reason and fix", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "ob-cfg-")), "d.sock");
+    const server = await serveDaemon({
+      path,
+      onHello: () => ({ bus_name: "me", namespace: "ns", global: false }),
+      onFrame: (f) =>
+        f.type === "self"
+          ? {
+              type: "agent",
+              agent: {
+                name: "me",
+                namespace: "ns",
+                kind: "claude-code",
+                live: true,
+                global: false,
+                config_files: [
+                  {
+                    file: "/home/u/x/.oa-bus.json",
+                    state: "refused",
+                    reason: "is writable by everyone",
+                    fix: "run chmod o-w /home/u/x/.oa-bus.json",
+                  },
+                ],
+              },
+            }
+          : undefined,
+    });
+    const c = await connectDaemon({
+      path,
+      hello: Hello.parse({
+        v: 1,
+        id: "h",
+        type: "hello",
+        kind: "claude-code",
+        agent_ref: "s1",
+        pid: process.pid,
+        cwd: process.cwd(),
+        attest: {},
+      }),
+    });
+    const out = JSON.parse(
+      (await callTool("self", {}, c)).content[0]?.text ?? "",
+    );
+    c.close();
+    await server.close?.();
+    expect(out.config_files).toEqual([
+      {
+        file: "/home/u/x/.oa-bus.json",
+        state: "refused",
+        reason: "is writable by everyone",
+        fix: "run chmod o-w /home/u/x/.oa-bus.json",
+      },
+    ]);
+  });
+});

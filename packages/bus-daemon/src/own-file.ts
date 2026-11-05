@@ -7,7 +7,7 @@ import {
 } from "node:fs";
 
 export type OwnFile =
-  | { state: "ok"; text: string }
+  | { state: "ok"; text: string; note?: string }
   | { state: "none" }
   | { state: "unsafe"; why: string };
 
@@ -16,10 +16,15 @@ export type OwnFile =
  * follows a symlink and never blocks (a planted FIFO cannot hang it), then
  * fstat on that same fd, so the file checked is the file read. It must be a
  * regular file, owned by `uid`, and not writable by group or others.
+ *
+ * `allowGroupWrite` (#1527) relaxes only the group bit: a group-writable file
+ * you own is read, with a `note`; a world-writable one is still refused. Only
+ * callers whose file cannot widen access take it (not the global allowlist).
  */
 export function readOwnFile(
   file: string,
   uid: number | undefined = process.getuid?.(),
+  opts: { allowGroupWrite?: boolean } = {},
 ): OwnFile {
   let fd: number;
   try {
@@ -42,6 +47,16 @@ export function readOwnFile(
     if (!st.isFile()) return { state: "unsafe", why: "is not a regular file" };
     if (uid !== undefined && st.uid !== uid)
       return { state: "unsafe", why: "belongs to another user" };
+    if (opts.allowGroupWrite) {
+      if (st.mode & 0o002)
+        return { state: "unsafe", why: "is writable by everyone" };
+      const note = st.mode & 0o020 ? "is writable by its group" : undefined;
+      return {
+        state: "ok",
+        text: readFileSync(fd, "utf8"),
+        ...(note ? { note } : {}),
+      };
+    }
     if (st.mode & 0o022)
       return { state: "unsafe", why: "is writable by others" };
     return { state: "ok", text: readFileSync(fd, "utf8") };
