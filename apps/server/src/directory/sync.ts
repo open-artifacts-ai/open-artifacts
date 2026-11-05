@@ -155,6 +155,14 @@ const NOFEED_KEY = "nofeed.since";
  */
 const MODE_KEY = "mode";
 /**
+ * DO kv: a plan lock paused user sync too. Set only by a caller whose
+ * invocation has the BILLING gate and an actual plan lock (services/directory.ts
+ * syncPausedFor); every other call (gateless included) clears it. Never
+ * inferred from the mode: "frozen" is main's meaning (user lanes run, group
+ * sync stops), whether the tier freezes it (Team) or a lock does.
+ */
+const PAUSED_KEY = "paused";
+/**
  * DO kv: a snooze changed outside an alarm (an RPC). The next alarm rewrites
  * the D1 held list from the snoozed table, healing a health write of its
  * own that raced the RPC's.
@@ -664,15 +672,26 @@ export class SyncEngine {
   }
 
   /**
-   * Hosted, frozen (a Team tier, or a locked plan): nothing feeds this DO by
-   * design, so it calls nothing and fails nothing (no transport_no_feed, so
-   * no unhealthy state, session cap or owner alert). The binding, runs in
-   * flight and synced rows stay; sync resumes when a caller hands google
-   * back. A self-hosted frozen install keeps syncing users (it mints
-   * itself), as before.
+   * An RPC's hand-over: the caller's mode (follow) and whether a plan lock
+   * pauses everything. Every RPC sets the flag from its own call, so a
+   * caller without the lock (a gateless one included) clears it.
    */
-  private paused(mode: DirectoryMode): boolean {
-    return mode === "frozen" && billingOn(this.env);
+  private handOver(mode?: DirectoryMode, paused?: boolean): void {
+    this.follow(mode);
+    const p = paused === true;
+    if ((this.get<boolean>(PAUSED_KEY) ?? false) !== p) this.put(PAUSED_KEY, p);
+  }
+
+  /**
+   * A plan lock (a caller with the BILLING gate and a locked plan set it):
+   * nothing feeds this DO by design, so it calls nothing and fails nothing
+   * (no transport_no_feed, so no unhealthy state, session cap or owner
+   * alert). The binding, runs in flight and synced rows stay; sync resumes
+   * when a caller hands over no lock. Never inferred from the mode: a frozen
+   * install (Team) keeps its user lanes, as on main.
+   */
+  private paused(): boolean {
+    return this.get<boolean>(PAUSED_KEY) === true;
   }
 
   // ------------------------------------------------------------ RPCs
@@ -682,8 +701,9 @@ export class SyncEngine {
     reason: KickReason,
     now = Date.now(),
     mode?: DirectoryMode,
+    paused?: boolean,
   ): Promise<SyncStatus> {
-    this.follow(mode);
+    this.handOver(mode, paused);
     const reasons = this.reasons();
     const lastRec = this.get<number>("reconcile.startedAt") ?? 0;
     const counts =
@@ -717,9 +737,14 @@ export class SyncEngine {
    * token is in hand: the caller should mint one and handToken it. Restarts
    * a lost alarm (like a cron kick). Reads only this DO's storage.
    */
-  async wantsToken(now = Date.now(), mode?: DirectoryMode): Promise<boolean> {
-    const m = this.follow(mode);
-    if (m === "off" || this.paused(m)) return false;
+  async wantsToken(
+    now = Date.now(),
+    mode?: DirectoryMode,
+    paused?: boolean,
+  ): Promise<boolean> {
+    this.handOver(mode, paused);
+    const m = this.follow();
+    if (m === "off" || this.paused()) return false;
     if ((await this.storage.getAlarm()) === null)
       await this.storage.setAlarm(now);
     const t = this.box.tok;
@@ -738,8 +763,9 @@ export class SyncEngine {
     h: { token: string } | { error: MintFault },
     now = Date.now(),
     mode?: DirectoryMode,
+    paused?: boolean,
   ): Promise<void> {
-    this.follow(mode);
+    this.handOver(mode, paused);
     if ("token" in h) {
       this.box.tok = { token: h.token, exp: now + TOKEN_TTL_MS, for: forKey };
       this.box.fault = null;
@@ -759,10 +785,14 @@ export class SyncEngine {
     by: AuditActor = SYNC,
     now = Date.now(),
     mode?: DirectoryMode,
+    paused?: boolean,
   ): Promise<SyncStatus | null> {
     // Hosted, group sync stopped (frozen or off): nothing can apply a
     // confirm. (Self-hosted, the route checks FEATURES before calling.)
-    if (billingOn(this.env) && this.follow(mode) !== "google") return null;
+    if (billingOn(this.env)) {
+      this.handOver(mode, paused);
+      if (this.follow() !== "google") return null;
+    }
     let snoozedAt: number | null = null;
     const ok = this.storage.transactionSync(() => {
       const r = this.sql
@@ -797,7 +827,7 @@ export class SyncEngine {
       { type: "group", id: groupId },
       by,
     ).run();
-    return this.kick("confirm", now, mode);
+    return this.kick("confirm", now, mode, paused);
   }
 
   /**
@@ -1200,7 +1230,7 @@ export class SyncEngine {
       if (e instanceof StaleSignal || !this.fresh()) return now;
       logError("directory_snooze_tick", e);
     }
-    if (this.paused(mode)) {
+    if (this.paused()) {
       this.del(NOFEED_KEY);
       // Paused, no lane re-arms this alarm: wake for the next snooze's end.
       return this.nextSnoozeAt(now);

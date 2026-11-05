@@ -2,9 +2,9 @@ import { parseTier } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logInfo, logWarn } from "../log.js";
 import { revokeFanoutCap, revokeUsersLive } from "../runtime/revoke.js";
+import { LIVE_KEY, monthOf } from "./creators.js";
 import {
   billingActive,
-  billingOn,
   CHECK_KEY,
   effectivePlan,
   PLAN_KEY,
@@ -131,6 +131,13 @@ export async function refreshPlan(
     const raw = await billingCall(env, TIER_PATH, null, now);
     const r = TierAnswerSchema.safeParse(raw);
     if (!r.success) throw new BillingUnavailableError("bad_answer");
+    // The first good read marks when billing went live (usage reports start
+    // no earlier).
+    await env.DB.prepare(
+      "insert or ignore into settings (key, value) values (?1, ?2)",
+    )
+      .bind(LIVE_KEY, monthOf(now))
+      .run();
     // Version 0 is billing's default for an install it has no row for
     // (free, active). With a provisioned TIER (an install made before the
     // tier store), that's no information: TIER stays the last good tier,
@@ -171,7 +178,7 @@ export async function startTrialAnswer(
   now: number,
   ctx?: Ctx,
 ): Promise<StoredPlan | null> {
-  if (!billingOn(env)) return null;
+  if (!billingActive(env)) return null;
   try {
     const raw = await billingCall(env, TRIAL_PATH, {}, now);
     const r = TierAnswerSchema.safeParse(raw);

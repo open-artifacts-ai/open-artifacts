@@ -381,11 +381,11 @@ describe("held sweep snooze (#412)", () => {
     const t1 = t0 + 62 * MIN;
     await snooze(a.gid, t1);
     const end = t1 + HELD_SNOOZE_MS;
-    // syncModeFor hands a locked plan's DO "frozen"; hosted, that is paused.
+    // A locked plan (with the gate) hands the DO "frozen" and paused.
     const paused = (s: DurableObjectState) =>
       new SyncEngine(hostedEnv(), s.storage);
     await inDo(async (s) => {
-      await paused(s).kick("manual", t1 + 1, "frozen");
+      await paused(s).kick("manual", t1 + 1, "frozen", true);
       await paused(s).alarm(t1 + 1);
       expect(await s.storage.getAlarm()).toBe(end);
       // A real alarm's firing clears it; calling alarm() directly doesn't.

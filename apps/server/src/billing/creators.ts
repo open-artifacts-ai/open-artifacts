@@ -1,7 +1,7 @@
 import { type BillingUsage, BillingUsageSchema } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logInfo, logWarn } from "../log.js";
-import { billingActive, billingOn } from "./plan.js";
+import { billingActive } from "./plan.js";
 import {
   BillingUnavailableError,
   billingCall,
@@ -53,7 +53,7 @@ export function creatorStmt(
   artifactId: string,
   now: number,
 ): D1PreparedStatement | null {
-  if (!billingOn(env)) return null;
+  if (!billingActive(env)) return null;
   return env.DB.prepare(
     `insert or ignore into creator_months (month, user_id, source, first_at)
      select ?1, ?2, 'version', ?3
@@ -73,7 +73,7 @@ export async function recordDataCreator(
   userId: string,
   now: number,
 ): Promise<void> {
-  if (!billingOn(env)) return;
+  if (!billingActive(env)) return;
   const month = monthOf(now);
   const key = `${month}:${userId}`;
   if (seen.has(key)) return;
@@ -111,6 +111,12 @@ export async function creatorCount(env: Env, month: string): Promise<number> {
 
 /** settings key: the last month whose final report billing accepted. */
 export const USAGE_SENT_KEY = "billing.usage.sent";
+/**
+ * settings key: the month of the first good /tier read (store.ts refreshPlan,
+ * insert or ignore). The first usage report starts no earlier, so months from
+ * before billing went live are never sent.
+ */
+export const LIVE_KEY = "billing.live";
 
 /**
  * Signed POST /usage { install, month, creators, count, ts } for `month`.
@@ -142,7 +148,8 @@ const USAGE_CATCH_UP_MAX = 24;
  * The scheduler tick's monthly report: every month after the last accepted
  * one (USAGE_SENT_KEY) up to the previous month, oldest first, each one's
  * final list, stopping at the first billing refuses (the next tick retries
- * from there). With nothing sent yet, from the oldest month with creators.
+ * from there). With nothing sent yet, from the oldest month with creators,
+ * no earlier than the month billing first answered (LIVE_KEY).
  * Never throws.
  */
 export async function usageTick(env: Env, now: number): Promise<void> {
@@ -159,12 +166,19 @@ export async function usageTick(env: Env, now: number): Promise<void> {
     let from: string;
     if (sent) from = nextMonth(sent.value);
     else {
+      // Billing not read yet: nothing to report to.
+      const live = await env.DB.prepare(
+        "select value from settings where key = ?1",
+      )
+        .bind(LIVE_KEY)
+        .first<{ value: string }>();
+      if (!live) return;
       const oldest = await env.DB.prepare(
         "select min(month) as m from creator_months where month <= ?1",
       )
         .bind(prev)
         .first<{ m: string | null }>();
-      from = oldest?.m ?? prev;
+      from = oldest?.m && oldest.m > live.value ? oldest.m : live.value;
     }
     const months: string[] = [];
     for (

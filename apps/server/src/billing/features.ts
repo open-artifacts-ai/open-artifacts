@@ -4,7 +4,7 @@ import { authConfig } from "../auth/config.js";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
 import {
-  billingOn,
+  billingActive,
   type EffectivePlan,
   planFeatures,
   readPlan,
@@ -43,7 +43,7 @@ export async function withPlanScope<T>(
   // `return await`, never a bare return: f's rejection gets its handler at
   // once (a returned promise is adopted a tick later, which workerd reports
   // as an unhandled rejection).
-  if (!billingOn(env) || scope.getStore()) return await f();
+  if (!billingActive(env) || scope.getStore()) return await f();
   return await scope.run({}, f);
 }
 
@@ -63,7 +63,7 @@ export async function planNow(
   env: Env,
   now = Date.now(),
 ): Promise<EffectivePlan | null> {
-  if (!billingOn(env)) return null;
+  if (!billingActive(env)) return null;
   const s = scope.getStore();
   if (!s) return readPlan(env, now);
   if (s.plan !== undefined) return s.plan;
@@ -94,7 +94,7 @@ export const scopedPlan = (): EffectivePlan | null =>
  */
 export function featuresOf(env: Env): readonly FeatureFlag[] {
   const base = authConfig(env).features;
-  if (!billingOn(env)) return base;
+  if (!billingActive(env)) return base;
   const s = scope.getStore();
   if (s && s.plan === undefined)
     logWarn("billing_plan_unread", new Error("features read before the plan"));

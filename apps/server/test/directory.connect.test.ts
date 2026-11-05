@@ -401,9 +401,18 @@ describe("hosted", () => {
     await signIn();
     expect(await inGroup()).toBe(false);
     // Unlocked (control): the same sign-in applies the mapping.
-    await env.DB.prepare(
-      "delete from settings where key like 'billing.%'",
-    ).run();
+    await storePlan(
+      h,
+      {
+        tier: "business",
+        status: "active",
+        trialEndsAt: null,
+        graceUntil: null,
+        version: 6,
+        asOf: Date.now(),
+      },
+      Date.now(),
+    );
     await signIn();
     expect(await inGroup()).toBe(true);
   });

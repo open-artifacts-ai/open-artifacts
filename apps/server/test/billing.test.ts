@@ -31,6 +31,7 @@ import { sessionCookieName, signSession } from "../src/auth/session.js";
 import {
   creatorsOf,
   forgetRecordedCreators,
+  LIVE_KEY,
   monthOf,
   previousMonth,
   USAGE_SENT_KEY,
@@ -817,6 +818,46 @@ describe("plan enforcement", () => {
     expect(calls).toEqual([]);
   });
 
+  it("a stale cache is cleared by a gateless request, so a later gate binding does not start read-only on an old lastGoodAt", async () => {
+    const T = { ...H, TIER: "team" } as Env;
+    const old = mid - 30 * DAY;
+    await storePlan(
+      T,
+      {
+        tier: "team",
+        status: "active",
+        trialEndsAt: null,
+        graceUntil: null,
+        version: 3,
+        asOf: old,
+      },
+      old,
+    );
+    await env.DB.prepare(
+      "insert or replace into settings (key, value) values (?, ?)",
+    )
+      .bind(CHECK_KEY, JSON.stringify({ checkedAt: old, failingSince: old }))
+      .run();
+    // A request with no gate (billing inert) clears them.
+    const r = await fetchAndWait(
+      app,
+      new Request("http://app.localhost" + R.me, {
+        headers: { cookie: owner.cookie },
+      }),
+      T,
+    );
+    expect(r.status).toBe(200);
+    expect(
+      await env.DB.prepare("select key from settings where key in (?, ?)")
+        .bind(PLAN_KEY, CHECK_KEY)
+        .all(),
+    ).toMatchObject({ results: [] });
+    // The gate is bound: nothing read yet is the provisioned TIER, not an outage.
+    expect(
+      await withBrokerProps({ props: PROPS }, () => readPlan(T, mid)),
+    ).toMatchObject({ tier: "team", lock: null });
+  });
+
   it("free after the trial: invites are 403 plan_required; nothing is created", async () => {
     await cache({ tier: "free", trialEndsAt: mid - DAY, version: 2 });
     const email = `inv2-${tag}@a.com`;
@@ -1174,12 +1215,66 @@ describe("creator count", () => {
     void a;
   });
 
+  it("no creator_months rows without the BILLING gate", async () => {
+    const r = await fetchAndWait(
+      app,
+      new Request("http://app.localhost" + R.artifacts, {
+        method: "POST",
+        headers: {
+          cookie: owner.cookie,
+          "x-oa-request": "1",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          title: "t",
+          format: "html",
+          content: "<p>x</p>",
+        }),
+      }),
+      H,
+    );
+    expect(r.status).toBe(201);
+    expect(await creatorsOf(H, monthOf(Date.now()))).toEqual([]);
+    // The same publish with the gate counts.
+    await publish(owner.cookie);
+    expect(await creatorsOf(H, monthOf(Date.now()))).toEqual([owner.userId]);
+  });
+
+  it("the first report starts at the go-live month (first good /tier read), never before", async () => {
+    const live = monthOf(mid);
+    const before1 = previousMonth(live);
+    const before2 = previousMonth(before1);
+    await env.DB.prepare(
+      "insert into creator_months (month, user_id, source, first_at) values (?, 'uA', 'version', 1), (?, 'uB', 'version', 2), (?, 'uC', 'version', 3)",
+    )
+      .bind(before2, before1, live)
+      .run();
+    // No good read yet: nothing to report to.
+    await withBrokerProps({ props: PROPS }, () => usageTick(H, mid + 40 * DAY));
+    expect(calls.filter((c) => c.path === "/usage")).toEqual([]);
+    // The first good read marks the go-live month.
+    expect(
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, mid)),
+    ).toBe("stored");
+    await withBrokerProps({ props: PROPS }, () => usageTick(H, mid));
+    expect(calls.filter((c) => c.path === "/usage")).toEqual([]);
+    await withBrokerProps({ props: PROPS }, () => usageTick(H, mid + 40 * DAY));
+    expect(
+      calls.filter((c) => c.path === "/usage").map((c) => c.body?.month),
+    ).toEqual([live]);
+  });
+
   it("self-hosted records nothing", async () => {
     await publish(owner.cookie, {}, SELF);
     expect(await creatorsOf(H, monthOf(Date.now()))).toEqual([]);
   });
 
   it("the monthly report: the previous UTC month's list, signed, once", async () => {
+    await env.DB.prepare(
+      "insert or replace into settings (key, value) values (?, '2000-01')",
+    )
+      .bind(LIVE_KEY)
+      .run();
     const prev = previousMonth(monthOf(mid));
     await env.DB.prepare(
       "insert into creator_months (month, user_id, source, first_at) values (?, ?, 'version', 1), (?, ?, 'data', 2), (?, ?, 'version', 3)",
@@ -1208,6 +1303,11 @@ describe("creator count", () => {
   });
 
   it("the monthly report with nothing ever sent starts at the oldest month with creators, oldest first", async () => {
+    await env.DB.prepare(
+      "insert or replace into settings (key, value) values (?, '2000-01')",
+    )
+      .bind(LIVE_KEY)
+      .run();
     const prev = previousMonth(monthOf(mid));
     const mid1 = previousMonth(prev);
     const oldest = previousMonth(mid1);
@@ -1223,6 +1323,11 @@ describe("creator count", () => {
   });
 
   it("the monthly report sends every unsent month after the last sent one, oldest first", async () => {
+    await env.DB.prepare(
+      "insert or replace into settings (key, value) values (?, '2000-01')",
+    )
+      .bind(LIVE_KEY)
+      .run();
     const prev = previousMonth(monthOf(mid));
     const skipped = previousMonth(prev);
     const sent = previousMonth(skipped);
