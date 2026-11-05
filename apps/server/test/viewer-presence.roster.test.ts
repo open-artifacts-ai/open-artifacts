@@ -3,6 +3,7 @@ import {
   ANIMALS,
   PRESENCE_LIST_MAX,
   PRESENCE_PALETTE_SIZE,
+  PresenceFrameSchema,
 } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import {
@@ -234,5 +235,98 @@ describe("buildRoster", () => {
       expect(c).toBeGreaterThanOrEqual(0);
       expect(c).toBeLessThan(PRESENCE_PALETTE_SIZE);
     }
+  });
+
+  it("a long product name plus a suffix stays within 80 characters", () => {
+    const long = "P".repeat(80);
+    const r = buildRoster(
+      [],
+      Array.from({ length: 12 }, (_, i) =>
+        agent(i + 1, { since: i + 1, product: long }),
+      ),
+      NOW,
+    );
+    for (const v of r.viewers)
+      expect([...v.name].length).toBeLessThanOrEqual(80);
+    expect(new Set(r.viewers.map((v) => v.name)).size).toBe(12);
+  });
+
+  it("every roster output parses through PresenceFrameSchema", () => {
+    const emoji = "\u{1F980}".repeat(120);
+    const anons = Array.from({ length: 70 }, (_, i) =>
+      anon(`m${String(i).padStart(15, "0")}`, 5_000 + i),
+    );
+    const cases = [
+      buildRoster(
+        [seat(1, { name: emoji }), seat(2, { name: "x".repeat(500) })],
+        [
+          agent(3, { product: emoji, owner: emoji, activity: emoji }),
+          agent(4, { product: emoji, since: 9 }),
+        ],
+        NOW,
+      ),
+      buildRoster(
+        [...anons, ...Array.from({ length: 80 }, (_, i) => seat(i + 10))],
+        Array.from({ length: 30 }, (_, i) =>
+          agent(i + 200, { since: i, product: i % 2 ? "Claude Code" : null }),
+        ),
+        NOW,
+      ),
+    ];
+    for (const r of cases) {
+      const f = PresenceFrameSchema.safeParse({
+        type: "presence",
+        viewers: r.viewers,
+        total: r.total,
+      });
+      expect(f.success).toBe(true);
+    }
+    expect(cases[1]?.viewers).toHaveLength(PRESENCE_LIST_MAX);
+  });
+
+  it("agent rows with one key show once, at the earliest arrival", () => {
+    const r = buildRoster(
+      [],
+      [
+        agent(1, { since: 50, product: "Late" }),
+        agent(1, { since: 10, product: "Early" }),
+      ],
+      NOW,
+    );
+    expect(r.total).toBe(1);
+    expect(r.viewers[0]?.name).toBe("Early");
+  });
+
+  it("equal keys at equal times do not break the sort", () => {
+    const r = buildRoster(
+      [seat(1, { since: 5 }), seat(1, { since: 5 })],
+      [],
+      NOW,
+    );
+    expect(r.total).toBe(1);
+  });
+
+  it('an email-shaped product shows as "Agent"', () => {
+    const r = buildRoster([], [agent(1, { product: "ada@example.com" })], NOW);
+    expect(r.viewers[0]).toMatchObject({ name: "Agent", named: false });
+    expect(r.viewers[0]?.agent?.product).toBeUndefined();
+    expect(JSON.stringify(r)).not.toContain("@");
+  });
+
+  it("a client-chosen name never collides with a server-assigned suffix", () => {
+    const r = buildRoster(
+      [seat(9, { name: "Claude Code-2" })],
+      [
+        agent(1, { since: 1 }),
+        agent(2, { since: 2 }),
+        agent(3, { since: 3, product: "Claude Code-3" }),
+        agent(4, { since: 4 }),
+      ],
+      NOW,
+    );
+    const names = r.viewers.map((v) => v.name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toContain("Claude Code");
+    expect(names).toContain("Claude Code-3");
   });
 });

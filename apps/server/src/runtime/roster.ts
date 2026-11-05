@@ -7,6 +7,7 @@ import {
   AGENT_PRESENT_MS,
   ANIMALS,
   PRESENCE_LIST_MAX,
+  PRESENCE_NAME_MAX,
   PRESENCE_PALETTE_SIZE,
   type PresenceEntry,
 } from "@oa/shared";
@@ -108,10 +109,14 @@ export const buildRoster = (
   const people = [...first.values()];
   const animals = assignAnimals(people.filter((s) => s.kind === "anon"));
 
-  const live = agents
-    .filter((a) => now - a.seen <= AGENT_PRESENT_MS)
-    .sort(byArrival);
-  const seen = new Map<string, number>();
+  // One face per agent key, at the earliest arrival.
+  const liveByKey = new Map<string, AgentRow>();
+  for (const a of [...agents].sort(byArrival)) {
+    if (now - a.seen <= AGENT_PRESENT_MS && !liveByKey.has(a.key)) {
+      liveByKey.set(a.key, a);
+    }
+  }
+  const live = [...liveByKey.values()];
   const labels = new Map<string, Map<string, string>>();
 
   const entries: { since: number; key: string; entry: PresenceEntry }[] = [];
@@ -148,11 +153,20 @@ export const buildRoster = (
     });
   }
 
+  // Every name on the roster so far. An agent's "-N" suffix skips any N
+  // already taken, so a client-chosen "Claude Code-2" never sits beside a
+  // server-assigned one.
+  const used = new Set(entries.map((e) => e.entry.name));
   for (const a of live) {
-    const product = cleanName(a.product);
+    const product = personName(a.product);
     const base = product ?? "Agent";
-    const n = (seen.get(base) ?? 0) + 1;
-    seen.set(base, n);
+    let name = base;
+    for (let n = 2; used.has(name); n++) {
+      const suffix = `-${n}`;
+      const room = PRESENCE_NAME_MAX - suffix.length;
+      name = `${[...base].slice(0, room).join("").trimEnd()}${suffix}`;
+    }
+    used.add(name);
     const activity = cleanName(a.activity);
     entries.push({
       since: a.since,
@@ -160,7 +174,7 @@ export const buildRoster = (
       entry: {
         key: a.key,
         kind: "agent",
-        name: n === 1 ? base : `${base}-${n}`,
+        name,
         named: product !== null,
         color: colorOf(a.key),
         agent: {
@@ -182,7 +196,9 @@ export const buildRoster = (
     }
   }
 
-  entries.sort((x, y) => y.since - x.since || (x.key < y.key ? -1 : 1));
+  entries.sort(
+    (x, y) => y.since - x.since || (x.key < y.key ? -1 : x.key > y.key ? 1 : 0),
+  );
   return {
     viewers: entries.slice(0, PRESENCE_LIST_MAX).map((e) => e.entry),
     total: entries.length,
