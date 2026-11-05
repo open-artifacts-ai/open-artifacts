@@ -563,9 +563,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   });
 
   /**
-   * A /clear (#1295): the live Claude agent that ran in process `pid` under
-   * another ref, which that process no longer reports. Only the same pid
-   * counts; a session in another process is another agent.
+   * A /clear (#1295): the Claude agent that ran in process `pid` under
+   * another ref, which that process no longer reports. It may already be
+   * closed: a tick that could not read the session file mid-rewrite closes
+   * it first, and the hub then holds its address as `away`. The same pid and
+   * process start is the same process; any other session is another agent.
    */
   const clearedFrom = (
     ref: string,
@@ -578,7 +580,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       .find(
         (a) =>
           a.kind === "claude-code" &&
-          a.live &&
           a.pid === pid &&
           procStart !== undefined &&
           a.procStart === procStart &&
@@ -595,6 +596,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const s of live) {
       const prev = agents.byRef(s.ref);
       if (prev && prev.kind !== "claude-code") continue;
+      // Admitted before its session file existed: learn the process start
+      // now (live or already closed by a tick that could not see the file),
+      // so a later /clear in this process is recognised (#1295).
+      if (prev && prev.procStart === undefined && prev.pid === s.pid)
+        prev.procStart = s.procStart;
       if (prev?.live) {
         // `claude --resume` brings the same session back under a new pid; while
         // the current one still runs it stays, so two files never flap.
@@ -602,10 +608,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           prev.pid = s.pid;
           prev.procStart = s.procStart;
         }
-        // Admitted before its session file existed: learn the process start
-        // now, so a later /clear in this process is recognised (#1295).
-        else if (prev.procStart === undefined && prev.pid === s.pid)
-          prev.procStart = s.procStart;
         continue;
       }
       // Closed by a failed delivery and still the same process.
