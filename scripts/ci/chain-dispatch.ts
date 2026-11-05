@@ -142,7 +142,7 @@ export function dispatchAndWait(o: Opts): Outcome {
     const r = JSON.parse(
       gh(o.exec, ["api", `repos/${o.repo}/actions/runs/${found.id}`]),
     ) as WorkflowRun;
-    if (r.status === "completed" && o.now() - start < waitFor) {
+    if (r.status === "completed") {
       if (r.conclusion !== "success")
         throw new Error(
           `deploy run ${found.id} concluded ${r.conclusion ?? "none"}: ${url}`,
@@ -169,8 +169,7 @@ export function dispatchAndWait(o: Opts): Outcome {
         const last = JSON.parse(
           gh(o.exec, ["api", `repos/${o.repo}/actions/runs/${found.id}`]),
         ) as WorkflowRun;
-        if (last.status === "completed" && last.conclusion === "success")
-          return { runId: found.id, url, conclusion: "success" };
+
       } catch {
         // Fall through: not proven green.
       }
