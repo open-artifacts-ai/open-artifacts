@@ -818,44 +818,59 @@ describe("plan enforcement", () => {
     expect(calls).toEqual([]);
   });
 
-  it("a stale cache is cleared by a gateless request, so a later gate binding does not start read-only on an old lastGoodAt", async () => {
-    const T = { ...H, TIER: "team" } as Env;
-    const old = mid - 30 * DAY;
-    await storePlan(
-      T,
-      {
-        tier: "team",
-        status: "active",
-        trialEndsAt: null,
-        graceUntil: null,
-        version: 3,
-        asOf: old,
+  it("a gateless hosted request runs main's code paths: no billing.* key read, nothing written to settings, no creator rows", async () => {
+    const qs: string[] = [];
+    const DB = new Proxy(env.DB, {
+      get(t, p) {
+        if (p === "prepare")
+          return (q: string) => {
+            qs.push(q);
+            return t.prepare(q);
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
       },
-      old,
-    );
-    await env.DB.prepare(
-      "insert or replace into settings (key, value) values (?, ?)",
-    )
-      .bind(CHECK_KEY, JSON.stringify({ checkedAt: old, failingSince: old }))
-      .run();
-    // A request with no gate (billing inert) clears them.
-    const r = await fetchAndWait(
-      app,
-      new Request("http://app.localhost" + R.me, {
-        headers: { cookie: owner.cookie },
-      }),
-      T,
-    );
-    expect(r.status).toBe(200);
+    });
+    const G = { ...H, DB } as Env;
+    // A cached plan exists (an old binding): a gateless request ignores it.
+    await cache({ tier: "free", status: "lapsed", trialEndsAt: 1, version: 3 });
+    const go = (path: string, init: RequestInit = {}) =>
+      fetchAndWait(
+        app,
+        new Request("http://app.localhost" + path, {
+          ...init,
+          headers: {
+            cookie: owner.cookie,
+            "x-oa-request": "1",
+            "content-type": "application/json",
+          },
+        }),
+        G,
+      );
+    expect((await go(R.me)).status).toBe(200);
     expect(
-      await env.DB.prepare("select key from settings where key in (?, ?)")
-        .bind(PLAN_KEY, CHECK_KEY)
-        .all(),
-    ).toMatchObject({ results: [] });
-    // The gate is bound: nothing read yet is the provisioned TIER, not an outage.
+      (
+        await go(R.artifacts, {
+          method: "POST",
+          body: JSON.stringify({
+            title: "t",
+            format: "html",
+            content: "<p>x</p>",
+          }),
+        })
+      ).status,
+    ).toBe(201);
+    expect(qs.filter((q) => q.includes("billing."))).toEqual([]);
+    expect(qs.filter((q) => /creator_months/.test(q))).toEqual([]);
     expect(
-      await withBrokerProps({ props: PROPS }, () => readPlan(T, mid)),
-    ).toMatchObject({ tier: "team", lock: null });
+      qs.filter((q) => /(insert|update|delete)[^;]*\bsettings\b/i.test(q)),
+    ).toEqual([]);
+    // The cache is untouched.
+    expect(
+      await env.DB.prepare("select 1 from settings where key = ?")
+        .bind(PLAN_KEY)
+        .first(),
+    ).not.toBeNull();
   });
 
   it("free after the trial: invites are 403 plan_required; nothing is created", async () => {
