@@ -230,4 +230,40 @@ describe("/clear handover in the daemon", () => {
       proposed_name: "npm-test",
     });
   });
+
+  it("repeated clears in one process: C replaces B, never A", async () => {
+    const { h, d } = await start([BUS_CAPS.ids, BUS_CAPS.mailbox]);
+    write(d, 4242, "s-b", "b");
+    expect(await upFor(h, "s-b")).toMatchObject({ replaces: "s-old" });
+    // Let the tick that closes A run before the next clear.
+    await closedRef(h, "s-old");
+    write(d, 4242, "s-c", "c");
+    expect(await upFor(h, "s-c")).toMatchObject({
+      replaces: "s-b",
+      proposed_name: "npm-test",
+    });
+  });
+
+  it("/resume of a session this daemon already knows is not a takeover of the current one", async () => {
+    const { h, d } = await start([BUS_CAPS.ids, BUS_CAPS.mailbox]);
+    // s-x ran in another process, then ended.
+    write(d, 7777, "s-x", "x-name");
+    await upFor(h, "s-x");
+    unlinkSync(join(d, "7777.json"));
+    await closedRef(h, "s-x");
+    const before = h.of("agent_up").filter((u) => u.agent_ref === "s-x").length;
+    // This process (4242, running s-old) resumes s-x.
+    write(d, 4242, "s-x", "x-name");
+    await vi.waitFor(() =>
+      expect(
+        h.of("agent_up").filter((u) => u.agent_ref === "s-x").length,
+      ).toBeGreaterThan(before),
+    );
+    const up = await upFor(h, "s-x");
+    expect(up).toMatchObject({ proposed_name: "x-name" });
+    expect(up).not.toHaveProperty("replaces");
+    // Then a /clear in that process hands s-x's address on, not s-old's.
+    write(d, 4242, "s-y", "y");
+    expect(await upFor(h, "s-y")).toMatchObject({ replaces: "s-x" });
+  });
 });
