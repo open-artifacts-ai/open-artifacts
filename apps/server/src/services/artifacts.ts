@@ -874,6 +874,18 @@ export const spaceCols = (
 });
 
 /**
+ * `comments` after `can`, the schema's key order (responses are byte-equal to
+ * their schema's parse).
+ */
+function commentsLast<T extends ArtifactSummary>(out: T): T {
+  const c = out.comments;
+  if (c === undefined) return out;
+  delete out.comments;
+  out.comments = c;
+  return out;
+}
+
+/**
  * Hosted M1: `space` (and `can` with it) go on artifact responses for
  * signed-in callers while spaces are on (getSummary, list, search; never
  * anonymous). Without spaces, `decorate` still sets `can` (withCan).
@@ -912,7 +924,7 @@ export function withSpace<T extends ArtifactSummary>(
     dataWriters: out.dataWriters,
   });
   out.can.comment = !capOfCaller(caller) && out.comments !== false;
-  return out;
+  return commentsLast(out);
 }
 
 /**
@@ -936,7 +948,7 @@ export function withCan<T extends ArtifactSummary>(
     transfer: false,
     comment: !capOfCaller(caller) && out.comments !== false,
   };
-  return out;
+  return commentsLast(out);
 }
 
 /**
@@ -951,21 +963,7 @@ export function decorate<T extends ArtifactSummary>(
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
 ): T {
-  // A signed-out viewer of a public artifact: no role actions, but the shell
-  // needs to know whether they may comment (#682) and write data.
-  if (caller.kind !== "user") {
-    out.can = {
-      edit: false,
-      share: false,
-      setVisibility: false,
-      delete: false,
-      transfer: false,
-      move: false,
-      dataWrite: out.dataWriters === "viewers",
-      comment: out.comments !== false,
-    };
-    return out;
-  }
+  if (caller.kind !== "user") return out;
   return decorates(env, caller)
     ? withSpace(caller, out, level, spaceId, sp)
     : withCan(caller, out, level);

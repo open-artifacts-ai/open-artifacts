@@ -416,10 +416,13 @@ describe("who can", () => {
     const pubEd = await pub({ visibility: "public", dataWriters: "editors" });
     expect((await call(pubEd, null, "")).status).toBe(200);
     expect((await post(pubEd, null)).status).toBe(201);
+    // No `can` for a signed-out viewer: the shell derives it from `comments`.
     const art = (await (await api(app, R.artifact(pubEd), null)).json()) as {
-      can?: { comment: boolean };
+      comments: boolean;
+      can?: unknown;
     };
-    expect(art.can?.comment).toBe(true);
+    expect(art).toMatchObject({ comments: true });
+    expect(art.can).toBeUndefined();
   });
 
   it("comments off: 403 comments_off on every route; owner and manager toggle it, editors cannot", async () => {
