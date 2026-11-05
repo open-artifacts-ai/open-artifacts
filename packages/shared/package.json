@@ -14,6 +14,10 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./harness-skills": {
+      "types": "./dist/harness-skills.d.ts",
+      "import": "./dist/harness-skills.js"
+    },
     "./mocks": {
       "types": "./dist/mocks/index.d.ts",
       "import": "./dist/mocks/index.js"
