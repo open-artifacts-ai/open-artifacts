@@ -24,7 +24,7 @@ _auth() { printf 'header = "Authorization: Bearer %s"\n' "$TOKEN"; }
 # get <path>: sets HTTP (code) and BODY. Never prints either.
 get() {
   local out
-  if out="$(curl -sS -X POST --max-time 30 -K <(_auth) -w $'\n%{http_code}' "$CF$1" 2> /dev/null)"; then
+  if out="$(curl -sS --max-time 30 -K <(_auth) -w $'\n%{http_code}' "$CF$1" 2> /dev/null)"; then
     HTTP="${out##*$'\n'}"
     BODY="${out%$'\n'*}"
   else
