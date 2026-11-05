@@ -644,7 +644,10 @@ describe("deploy-hosted-platform.yml", () => {
     );
     const e = named("The deploy token's expiry");
     expect(steps.at(-1)).toBe(e);
-    expect(e.if).toBe("${{ !cancelled() }}");
+    // A wrong or unverified token never opens a roll issue.
+    expect(e.if).toBe(
+      "${{ !cancelled() && steps.token_identity.outcome == 'success' }}",
+    );
     expect(e.run).toBe(
       'bash "$RUNNER_TEMP/main-ci/deploy-token-expiry.sh" "$DEPLOY_ENV"',
     );
@@ -845,8 +848,17 @@ describe("deploy-hosted-platform.yml", () => {
       JSON.stringify(s).includes("CLOUDFLARE_API_TOKEN"),
     );
     expect(first).toBe(at);
-    expect(steps[at].run).toContain("deploy-token-identity.sh");
-    expect(steps[at].if).toBeUndefined();
+    // Fail-open guards: main's copy of the script, main's hosted constants,
+    // exactly this line, and nothing that swallows a failure.
+    const g = steps[at];
+    expect(g.id).toBe("token_identity");
+    expect(g.run).toBe(
+      'bash "$RUNNER_TEMP/main-ci/deploy-token-identity.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"',
+    );
+    expect(g.if).toBeUndefined();
+    expect(g["continue-on-error"]).toBeUndefined();
+    expect(JSON.stringify(g)).not.toMatch(/\|\|\s*true|continue-on-error/);
+    expect(g.shell).toBeUndefined();
     expect(text).toContain(
       "worker-tag.sh prod-release-chain.ts deploy-token-identity.sh;",
     );

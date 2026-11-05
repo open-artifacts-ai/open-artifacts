@@ -20,7 +20,15 @@ const run = (opts: {
   const sb = sandbox({
     curl: opts.curlFails
       ? "exit 6"
-      : `cat >/dev/null <<< "$(cat "$2" 2>/dev/null)"; printf '%s\\n%s' '${opts.body ?? "{}"}' ${opts.http ?? 200}`,
+      : `cfg=""
+while [ $# -gt 0 ]; do
+  case "$1" in -K) cfg="$(cat "$2")"; shift 2 ;; *) shift ;; esac
+done
+case "$cfg" in
+  *"Authorization: Bearer $EXPECT_TOK"*) echo "AUTHOK" >> "$STUB_LOG" ;;
+  *) echo "NOAUTH" >> "$STUB_LOG" ;;
+esac
+printf '%s\\n%s' '${opts.body ?? "{}"}' ${opts.http ?? 200}`,
   });
   const hosted = join(sb.dir, "hosted");
   write(
@@ -32,7 +40,10 @@ const run = (opts: {
   const r = sb.run(
     ["bash", script("deploy-token-identity.sh"), "prod", hosted],
     {
-      env: { CLOUDFLARE_API_TOKEN: opts.token ?? TOKEN },
+      env: {
+        CLOUDFLARE_API_TOKEN: opts.token ?? TOKEN,
+        EXPECT_TOK: opts.token ?? TOKEN,
+      },
     },
   );
   return { ...r, log: sb.log() };
@@ -47,6 +58,10 @@ describe("deploy-token-identity.sh", () => {
     expect(r.out).toContain(`id=${PIN} status=active`);
     expect(r.log.filter((l) => l.startsWith("curl "))).toHaveLength(1);
     expect(r.log.join("\n")).toContain("/user/tokens/verify");
+    expect(r.log.join("\n")).toContain("--max-time 30");
+    // The Authorization header reached curl's config, and only there.
+    expect(r.log).toContain("AUTHOK");
+    expect(r.log).not.toContain("NOAUTH");
   });
   it("fails closed on another token's id, naming both ids", () => {
     const r = run({ body: verify(OTHER, "active") });
@@ -99,7 +114,7 @@ describe("deploy-token-identity.sh", () => {
   });
   it("has one GET curl and no write method", () => {
     const sh = readFileSync(script("deploy-token-identity.sh"), "utf8");
-    expect(sh.match(/\bcurl -sS\b/g)).toHaveLength(1);
+    expect(sh.match(/\bcurl -sS --max-time 30 -K\b/g)).toHaveLength(1);
     expect(sh).not.toMatch(/-X |--data|\b(POST|PUT|PATCH|DELETE)\b/);
   });
 });
