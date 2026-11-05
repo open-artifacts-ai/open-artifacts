@@ -1,6 +1,7 @@
 import type {
   AdapterFrame,
   AgentInfo,
+  ConfigFile,
   DaemonFrame,
   Hello,
   Unframed,
@@ -183,6 +184,8 @@ export type RouteCtx = {
     ref: string,
     reply: (f: Unframed) => unknown,
   ) => Unframed | undefined;
+  /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
+  configFiles?: (cwd: string) => ConfigFile[];
   /** The daemon's version, reported by `self`. */
   version?: string;
   /**
@@ -221,6 +224,7 @@ export function routeLocal(
 
   switch (frame.type) {
     case "self": {
+      const files = frame.row ? (ctx.configFiles?.(agent.cwd) ?? []) : [];
       const self = {
         type: "agent",
         agent: {
@@ -229,6 +233,7 @@ export function routeLocal(
           kind: agent.kind,
           live: agent.live,
           global: agent.global,
+          ...(files.length > 0 ? { config_files: files } : {}),
         },
       } as const;
       // The status is the hub's: asked for only by the self tool.
