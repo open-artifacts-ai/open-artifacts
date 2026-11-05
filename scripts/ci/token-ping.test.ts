@@ -67,7 +67,10 @@ describe.each(Object.entries(FILES))("%s", (file, choices) => {
     for (const j of jobs) {
       expect(j.permissions).toBeUndefined();
       expect(j.steps).toHaveLength(2);
-      expect(j.steps[0].uses).toMatch(/^actions\/checkout@/);
+      expect(j.steps[0].uses).toBe(
+        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+      );
+      expect(j.steps[0].with["persist-credentials"]).toBe(false);
       expect(j.steps[0].with["sparse-checkout"]).toBe(
         "scripts/ci\n.github/hosted\n",
       );
@@ -139,6 +142,16 @@ esac`;
     ).toBe(true);
     expect(r.argv[0]).toContain("--max-time 30");
     expect(r.all).toContain("/user/tokens/verify");
+  });
+
+  it("is GET-only: no method, body, form or upload in argv or the config", () => {
+    const r = run({ user: '{"success":false}\n401', account: ok() });
+    const bad =
+      /(^|\s)(-X|--request|-d|--data[a-z-]*|-F|--form[a-z-]*|-T|--upload-file|--json)(\s|=|$)|request\s*=/;
+    expect(r.argv.length).toBeGreaterThan(0);
+    for (const l of r.argv) expect(l).not.toMatch(bad);
+    for (const l of r.log.filter((x) => x.startsWith("cfg: ")))
+      expect(l).not.toMatch(bad);
   });
 
   it("falls back to the account verify on an auth error", () => {
