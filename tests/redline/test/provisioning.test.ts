@@ -1081,6 +1081,93 @@ describe("each probe fails on the behaviour it guards", () => {
     expect(level(out.get("P31"))).toBe("pass");
   });
 
+  describe("P31 when the tag adds a migration over the rollback target", () => {
+    const D1 = { d1: ["0001_a.sql", "0002_b.sql"], doTags: ["v1"] };
+    const tagSchema = (extra: Partial<typeof D1>) => ({ ...D1, ...extra });
+    // rl-p is created on 0.81.0 and upgraded to 0.82.0 (the release under test).
+    const setup = (tag: typeof D1) => {
+      const f = fakeApi();
+      f.schemas.set("0.81.0", { d1: ["0001_a.sql"], doTags: ["v1"] });
+      f.schemas.set("0.82.0", tag);
+      return f;
+    };
+    const rollbackJob = (f: FakeApi) =>
+      [...f.jobs.values()].find((j) => j.kind === "rollback");
+
+    it("a new D1 migration: the refusal is the pass, and the install stays on the tag", async () => {
+      const f = setup(D1);
+      const out = await runAll(f);
+      expect(out.get("P31")).toMatchObject({
+        level: "pass",
+        note: expect.stringMatching(/refused as designed.*D1 0002_b\.sql/),
+      });
+      expect(rollbackJob(f)?.status).toBe("failed");
+      expect(
+        f.audit.filter((a) => a.action === "job.failed").map((a) => a.code),
+      ).toContain("invalid_state");
+    });
+
+    it("a new Durable Object tag alone is refused the same way", async () => {
+      const f = setup(tagSchema({ d1: ["0001_a.sql"], doTags: ["v1", "v2"] }));
+      expect((await runAll(f)).get("P31")).toMatchObject({
+        level: "pass",
+        note: expect.stringMatching(/DO v2/),
+      });
+    });
+
+    it("no new migration: the rollback runs as before and lands on the previous release", async () => {
+      const f = setup({ d1: ["0001_a.sql"], doTags: ["v1"] });
+      const out = await runAll(f);
+      expect(out.get("P31")).toEqual({ level: "pass" });
+      expect(rollbackJob(f)?.status).toBe("done");
+    });
+
+    it("an unexpected refusal, with no migration added, still fails", async () => {
+      const f = setup({ d1: ["0001_a.sql"], doTags: ["v1"] });
+      f.faults.add("rollback_refused");
+      expect((await runAll(f)).get("P31")).toMatch(
+        /P31 rollback: job failed \(invalid_state\)/,
+      );
+    });
+
+    it("a refusal that leaves the install failed fails the case", async () => {
+      const f = setup(D1);
+      f.faults.add("refusal_breaks_install");
+      expect((await runAll(f)).get("P31")).toMatch(
+        /P31: the refused rollback changed the install/,
+      );
+    });
+
+    it("a refusal without its job.failed audit row fails the case", async () => {
+      const f = setup(D1);
+      f.faults.add("no_failed_audit");
+      expect((await runAll(f)).get("P31")).toMatch(
+        /P31: the refused rollback has no job\.failed audit row/,
+      );
+    });
+
+    it("a rollback that goes through despite a new migration fails the case", async () => {
+      // The fake's own schemas say nothing was added, so it rolls back; the
+      // case is told the tag added one, as with a product whose guard is gone.
+      const f = setup({ d1: ["0001_a.sql"], doTags: ["v1"] });
+      f.io.schemaOf = async (v) =>
+        v === "0.82.0" ? D1 : { d1: ["0001_a.sql"], doTags: ["v1"] };
+      expect((await runAll(f)).get("P31")).toMatch(
+        /must be refused invalid_state, got job done/,
+      );
+    });
+
+    it("a release whose migrations can't be read fails the case", async () => {
+      const f = setup(D1);
+      f.io.schemaOf = async () => {
+        throw new Error("no such tag");
+      };
+      expect((await runAll(f)).get("P31")).toMatch(
+        /cannot read the migrations of release/,
+      );
+    });
+  });
+
   it("the panel install for P10 and P45 is a live one, never a deleted row", async () => {
     const f = fakeApi();
     const run = new Run(CONFIG, f.io);

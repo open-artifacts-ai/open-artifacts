@@ -4,6 +4,7 @@ import {
   TOKEN_SCOPES,
 } from "@oa/provisioning-contract";
 import type { ProvConfig, ProvIo } from "../src/provisioning.ts";
+import { type Schema, schemaAhead } from "../src/schema.ts";
 import { sealTo } from "./provisioner-seal.ts";
 
 // An in-memory staging Provisioning API, inventory, broker and tenant pages
@@ -127,7 +128,13 @@ export type Fault =
   | "rll_create_failed"
   | "rll_old_version"
   | "p20_content_serving"
-  | "p21_stays_paused";
+  | "p21_stays_paused"
+  /** A rollback is refused invalid_state even when no migration was added. */
+  | "rollback_refused"
+  /** The refused rollback writes no job.failed row. */
+  | "no_failed_audit"
+  /** The refused rollback leaves the install failed, not active. */
+  | "refusal_breaks_install";
 
 export interface FakeApi {
   fetch: typeof fetch;
@@ -137,7 +144,15 @@ export interface FakeApi {
   pats: Map<string, { install: string; revoked: boolean }>;
   faults: Set<Fault>;
   clock: { t: number };
-  audit: { actor: string; action: string; jobId: string }[];
+  audit: {
+    actor: string;
+    action: string;
+    jobId: string;
+    installId?: string;
+    code?: string;
+  }[];
+  /** Each release's migrations; a release not listed has none. */
+  schemas: Map<string, Schema>;
   /** Every request URL, in order. */
   log: string[];
   /**
@@ -186,6 +201,9 @@ export function fakeApi(): FakeApi {
   const pats = new Map<string, { install: string; revoked: boolean }>();
   const faults = new Set<Fault>();
   const audit: FakeApi["audit"] = [];
+  const schemas = new Map<string, Schema>();
+  const schemaOf = (v: string): Schema =>
+    schemas.get(v) ?? { d1: [], doTags: [] };
   const replays = new Map<string, Response>();
   const log: string[] = [];
   const creates: Record<string, unknown>[] = [];
@@ -353,8 +371,19 @@ export function fakeApi(): FakeApi {
       const i = installs.get(j.installId);
       if (i) {
         i.activeJobId = null;
-        i.state = "failed";
+        // A refused rollback releases the install active (planRollback
+        // refuses before the claim); every other failure leaves it failed.
+        if (j.kind !== "rollback" || faults.has("refusal_breaks_install"))
+          i.state = "failed";
       }
+      if (!faults.has("no_failed_audit"))
+        audit.push({
+          actor: `job:${j.id}`,
+          action: "job.failed",
+          jobId: j.id,
+          installId: j.installId,
+          code: j.failAt.code,
+        });
       return;
     }
     j.onStep?.(step);
@@ -426,13 +455,20 @@ export function fakeApi(): FakeApi {
         : ok({ items: releases, platform: PLATFORM });
     if (path === "/audit") {
       const actor = url.searchParams.get("actor");
+      const installId = url.searchParams.get("installId");
       return ok({
         items: audit
           .filter(
             (a) =>
-              a.actor === actor && a.action === url.searchParams.get("action"),
+              (actor === null || a.actor === actor) &&
+              (installId === null || a.installId === installId) &&
+              a.action === url.searchParams.get("action"),
           )
-          .map((a) => ({ jobId: a.jobId })),
+          .map((a) => ({
+            jobId: a.jobId,
+            code: null,
+            detail: a.code ? { code: a.code } : null,
+          })),
         nextCursor: null,
       });
     }
@@ -583,7 +619,15 @@ export function fakeApi(): FakeApi {
         return ok({ job: jobView(j, false), install: summary(i) }, 202);
       }
       case "rollback": {
+        const ahead = schemaAhead(
+          schemaOf(i.version ?? ""),
+          schemaOf(i.previousVersion ?? ""),
+        );
         const j = startJob(i, "rollback", p, {
+          failAt:
+            ahead.length > 0 || faults.has("rollback_refused")
+              ? { step: "recheck", code: "invalid_state" }
+              : undefined,
           onDone: () => {
             i.version = i.previousVersion;
           },
@@ -1009,6 +1053,7 @@ export function fakeApi(): FakeApi {
     },
     jwt: async () => API_JWT,
     stgInventoryJwt: async () => INV_JWT,
+    schemaOf: async (v) => schemaOf(v),
   };
   void panel;
   return {
@@ -1020,6 +1065,7 @@ export function fakeApi(): FakeApi {
     faults,
     clock,
     audit,
+    schemas,
     log,
     signin,
     broker,
