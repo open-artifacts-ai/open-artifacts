@@ -14,19 +14,27 @@ export type OwnFile =
 
 /**
  * Whether `gid` is the user's private group: its /etc/group entry is named
- * `user` and lists no members. A missing or unreadable file, or no entry,
- * is not private.
+ * `user`, lists no members, and no other /etc/passwd user has it as their
+ * primary group. A missing or unreadable file, or no entry, is not private.
  */
 export function isPrivateGroup(
   gid: number,
   user: string,
   read: () => string = () => readFileSync("/etc/group", "utf8"),
+  readPasswd: () => string = () => readFileSync("/etc/passwd", "utf8"),
 ): boolean {
   let text: string;
+  let passwd: string;
   try {
     text = read();
+    passwd = readPasswd();
   } catch {
     return false;
+  }
+  // A primary group is membership too, though /etc/group does not list it.
+  for (const line of passwd.split("\n")) {
+    const f = line.split(":");
+    if (f[3] === String(gid) && f[0] !== user) return false;
   }
   for (const line of text.split("\n")) {
     const [name, , id, members] = line.split(":");

@@ -268,7 +268,14 @@ describe("#1527 review: group-writable only for a user-private group", () => {
   const user = "alice";
   const line = (members: string) => `${user}:x:1000:${members}\nstaff:x:20:\n`;
   it("isPrivateGroup: the user's own group with no members", () => {
-    expect(isPrivateGroup(1000, user, () => line(""))).toBe(true);
+    expect(
+      isPrivateGroup(
+        1000,
+        user,
+        () => line(""),
+        () => `${user}:x:1000:1000::/h:/bin/sh\n`,
+      ),
+    ).toBe(true);
   });
   it("isPrivateGroup: a group with members is not private", () => {
     expect(isPrivateGroup(1000, user, () => line("bob"))).toBe(false);
@@ -277,6 +284,38 @@ describe("#1527 review: group-writable only for a user-private group", () => {
   it("isPrivateGroup: another name, or no entry, is not private", () => {
     expect(isPrivateGroup(20, user, () => line(""))).toBe(false);
     expect(isPrivateGroup(77, user, () => line(""))).toBe(false);
+  });
+  const passwd = (extra = "") =>
+    `${user}:x:1000:1000::/home/${user}:/bin/sh\n${extra}`;
+  it("isPrivateGroup: another user with this primary gid is refused", () => {
+    expect(
+      isPrivateGroup(
+        1000,
+        user,
+        () => line(""),
+        () => passwd("bob:x:1001:1000::/home/bob:/bin/sh\n"),
+      ),
+    ).toBe(false);
+    expect(
+      isPrivateGroup(
+        1000,
+        user,
+        () => line(""),
+        () => passwd("bob:x:1001:1001::/home/bob:/bin/sh\n"),
+      ),
+    ).toBe(true);
+  });
+  it("isPrivateGroup: an unreadable /etc/passwd is refused", () => {
+    expect(
+      isPrivateGroup(
+        1000,
+        user,
+        () => line(""),
+        () => {
+          throw new Error("EACCES");
+        },
+      ),
+    ).toBe(false);
   });
   it("isPrivateGroup: an unreadable /etc/group is not private", () => {
     expect(
