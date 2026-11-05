@@ -419,6 +419,19 @@ describe("skill.md drift", () => {
   });
 
   it.each([
+    ["the hub is unbound", { BUS_HUB: undefined }],
+    ["the install is hosted", { HOSTED: "1" }],
+  ])("is the plain skill when %s, harness or not", async (_, over) => {
+    const e = E(over);
+    const plain = await get(`${APP}/skill.md`, {}, e);
+    const harnessed = await get(`${APP}/skill.md?harness=claude`, {}, e);
+    const plainMd = await plain.text();
+    expect(await harnessed.text()).toBe(plainMd);
+    expect(plainMd).not.toContain("This copy is for one harness");
+    expect(harnessed.headers.get("etag")).toBe(plain.headers.get("etag"));
+  });
+
+  it.each([
     ["spaces off", ""],
     ["spaces on", "spaces"],
   ])(

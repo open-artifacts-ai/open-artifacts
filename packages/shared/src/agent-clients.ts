@@ -311,11 +311,9 @@ export type HarnessSkill = {
   skillPath: string;
   /**
    * The bus tool name this harness shows for `tool` (send_message, …).
-   * Undefined with `plainNames`: the extension exposes the bare names.
+   * Undefined means the extension exposes the bare names.
    */
   busToolName?: (tool: string) => string;
-  /** pi and omp load an extension, so its tools keep their plain names. */
-  plainNames?: boolean;
   /** Codex 0.47 has no skill loader: its text goes into AGENTS.md. */
   agentsMd?: boolean;
 };
@@ -337,11 +335,9 @@ export const harnessSkills: Record<Harness, HarnessSkill> = {
   },
   pi: {
     skillPath: "~/.agents/skills/open-artifacts/SKILL.md",
-    plainNames: true,
   },
   omp: {
     skillPath: "~/.agents/skills/open-artifacts/SKILL.md",
-    plainNames: true,
   },
 };
 

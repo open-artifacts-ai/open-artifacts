@@ -20,7 +20,10 @@ describe("MCP surface is vendor-neutral", () => {
         E(),
       );
       expect(r.status, h).toBe(200);
+      // The caller's own query value is echoed back in the refetch URL it was
+      // fetched from; that is our parameter, not a vendor naming the text.
       const text = (await r.text())
+        .replaceAll(`/skill.md?harness=${h}`, "/skill.md")
         .replace(BANG_RULE, "")
         .replace(/\n## Client setup\n[\s\S]*?(?=\n## )/, "");
       expect(text, h).not.toMatch(VENDOR);
