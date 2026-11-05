@@ -14,7 +14,7 @@ import { createApp } from "../src/app.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
-import { api, errOf, login } from "./helpers.js";
+import { api, errOf, login, runIndex } from "./helpers.js";
 
 const app = createApp();
 const tag = newId().slice(0, 6).toLowerCase();
@@ -491,6 +491,48 @@ describe("who can", () => {
       items: { id: string; comments?: boolean }[];
     };
     expect(list.items.find((a) => a.id === id)?.comments).toBe(false);
+  });
+
+  it("comments is on every response that returns an artifact summary", async () => {
+    const id = await pub({ visibility: "private", title: "zebracomments" });
+    await runIndex(id);
+    type Row = { id: string; comments?: boolean };
+    const rows = async (path: string): Promise<Row[]> =>
+      ((await (await api(app, path, owner.cookie)).json()) as { items: Row[] })
+        .items;
+    const seen = async (want: boolean) => {
+      expect(
+        ((await (await api(app, R.artifact(id), owner.cookie)).json()) as Row)
+          .comments,
+      ).toBe(want);
+      for (const path of [R.artifacts, `${R.search}?q=zebracomments`]) {
+        const hit = (await rows(path)).find((a) => a.id === id);
+        expect(hit, path).toBeDefined();
+        expect(hit?.comments, path).toBe(want);
+      }
+    };
+    await seen(true);
+    // The PATCH result, for a settings save and for a title edit.
+    const off = await api(app, R.artifact(id), owner.cookie, {
+      method: "PATCH",
+      body: { comments: false },
+    });
+    expect(((await off.json()) as Row).comments).toBe(false);
+    const title = await api(app, R.artifact(id), owner.cookie, {
+      method: "PATCH",
+      body: { title: "zebracomments two" },
+    });
+    expect(((await title.json()) as Row).comments).toBe(false);
+    await seen(false);
+    // Trash.
+    await api(app, R.artifact(id), owner.cookie, { method: "DELETE" });
+    const trashed = (await rows(R.trash)).find((a) => a.id === id);
+    expect(trashed?.comments).toBe(false);
+    // Restore, still off.
+    const back = await api(app, R.restoreDeleted(id), owner.cookie, {
+      method: "POST",
+    });
+    expect(((await back.json()) as Row).comments).toBe(false);
   });
 
   it("comments: false at publish creates the artifact with comments off", async () => {
