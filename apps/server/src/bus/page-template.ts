@@ -116,7 +116,7 @@ td:last-child{text-align:right}
     </table>
     <!-- /block:machines_table -->
     <!-- block:machines_empty -->
-    <div><p>No machines yet</p><p class="muted">Ask any AI agent to set up Open Artifacts and say yes when it asks about reaching agents on other machines. You approve the machine in the browser.</p></div>
+    <div><p>No machines yet</p><p class="muted">Ask any AI agent to set up the Open Artifacts bus client and connect it to {{instance_host}}. You approve the machine in the browser.</p></div>
     <!-- /block:machines_empty -->
   </section>
   <!-- block:share_card -->

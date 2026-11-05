@@ -37,7 +37,7 @@ const openMenu = (r: HTMLElement) => {
 
 describe("the card", () => {
   it("says what connecting means, under the title", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     const r = await rowOf("Example MCP client 1.2.0");
     const card = r.closest("section") as HTMLElement;
     const line = within(card).getByText(SUBTITLE);
@@ -54,7 +54,7 @@ describe("the card", () => {
   });
 
   it("underlines Add label", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     const r = await rowOf("Example MCP client 1.2.0");
     const add = within(r).getByRole("button", { name: "Add label" });
     expect(add).toHaveClass("underline", "underline-offset-3");
@@ -63,7 +63,7 @@ describe("the card", () => {
 
 describe("a row", () => {
   it("names the agent with its reported version, where it runs, approval, use", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     const r = await rowOf("Example MCP client 1.2.0");
     expect(within(r).getByText("reported by the agent")).toBeVisible();
     expect(r).toHaveTextContent("Runs on a computer");
@@ -75,7 +75,7 @@ describe("a row", () => {
   });
 
   it("a hosted service names its host", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     const { server } = await import("./harness");
     server.use(
       serve([
@@ -87,7 +87,7 @@ describe("a row", () => {
   });
 
   it("an old connection says so in one muted line; never used; no versions line", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     const { server } = await import("./harness");
     server.use(
       serve([
@@ -110,7 +110,7 @@ describe("a row", () => {
   });
 
   it("with a label, the label is the title and the name and version follow, muted", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     const { server } = await import("./harness");
     server.use(serve([{ ...BASE, label: "Work laptop" }]));
     const r = await rowOf("Work laptop");
@@ -120,7 +120,7 @@ describe("a row", () => {
 
   it("a 60-character label is shown in full to assistive tech and on hover", async () => {
     const long = "L".repeat(60);
-    mount("/settings/agents");
+    mount("/settings/connections");
     const { server } = await import("./harness");
     server.use(serve([{ ...BASE, label: long }]));
     const t = within(await rowOf(long)).getByText(long);
@@ -131,7 +131,7 @@ describe("a row", () => {
 describe("labels", () => {
   it("Add label: type, Enter saves; the label shows", async () => {
     const patches = calls("PATCH");
-    mount("/settings/agents");
+    mount("/settings/connections");
     const r = await rowOf("Example MCP client 1.2.0");
     fireEvent.click(within(r).getByRole("button", { name: "Add label" }));
     const box = within(r).getByRole("textbox", { name: "Your label" });
@@ -153,7 +153,7 @@ describe("labels", () => {
 
   it("Escape cancels; empty clears; over 60 says so and sends nothing", async () => {
     const patches = calls("PATCH");
-    mount("/settings/agents");
+    mount("/settings/connections");
     const { server } = await import("./harness");
     server.use(serve([{ ...BASE, label: "Work laptop" }]));
     let r = await rowOf("Work laptop");
@@ -188,7 +188,7 @@ describe("labels", () => {
       ...m,
       auth: m.auth ? { ...m.auth, readOnly: true, cap: "restricted" } : m.auth,
     });
-    mountHosted("/settings/agents", true, capped);
+    mountHosted("/settings/connections", true, capped);
     const r = await rowOf("Example MCP client 1.2.0");
     expect(within(r).queryByRole("button", { name: "Add label" })).toBeNull();
     const menu = await openMenu(r);
@@ -203,7 +203,7 @@ describe("labels", () => {
 
 describe("the face", () => {
   it("initials come from the agent's name, not the label", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     const { server } = await import("./harness");
     server.use(
       serve([
@@ -219,7 +219,7 @@ describe("labels, with the buttons", () => {
   it("edit state: Save and Cancel beside the field, the hint below, then the agent's line", async () => {
     const { server } = await import("./harness");
     server.use(serve([{ ...BASE, versionsPublished: 3 }]));
-    mount("/settings/agents");
+    mount("/settings/connections");
     const r = await rowOf("Example MCP client 1.2.0");
     const details = r.textContent;
     fireEvent.click(within(r).getByRole("button", { name: "Add label" }));
@@ -267,7 +267,7 @@ describe("labels, with the buttons", () => {
   });
 
   it("an error shows under the hint while the details stay hidden", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     const r = await rowOf("Example MCP client 1.2.0");
     fireEvent.click(within(r).getByRole("button", { name: "Add label" }));
     const box = within(r).getByRole("textbox", { name: "Your label" });
@@ -284,7 +284,7 @@ describe("labels, with the buttons", () => {
   it("Rename label from the menu leaves the focus in the field", async () => {
     const { server } = await import("./harness");
     server.use(serve([{ ...BASE, label: "Work laptop" }]));
-    mount("/settings/agents");
+    mount("/settings/connections");
     const r = await rowOf("Work laptop");
     const menu = await openMenu(r);
     fireEvent.click(
@@ -302,7 +302,7 @@ describe("labels, with the buttons", () => {
 
   it("Save saves and Cancel cancels", async () => {
     const patches = calls("PATCH");
-    mount("/settings/agents");
+    mount("/settings/connections");
     let r = await rowOf("Example MCP client 1.2.0");
     fireEvent.click(within(r).getByRole("button", { name: "Add label" }));
     fireEvent.click(within(r).getByRole("button", { name: "Cancel" }));
@@ -326,7 +326,7 @@ describe("focus after editing a label", () => {
   const more = (r: HTMLElement) =>
     within(r).getByRole("button", { name: /^More for / });
   const start = async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     const r = await rowOf("Example MCP client 1.2.0");
     fireEvent.click(within(r).getByRole("button", { name: "Add label" }));
     return r;
@@ -362,7 +362,7 @@ describe("focus after editing a label", () => {
 
 describe("the menu and the empty state", () => {
   it("View published versions and Revoke… (the existing confirm)", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     const menu = await openMenu(await rowOf("Example MCP client 1.2.0"));
     // #589: this connection only (agentVia), not every "Example MCP client".
     const view = within(menu).getByRole("menuitem", {
@@ -381,7 +381,7 @@ describe("the menu and the empty state", () => {
   });
 
   it("empty: Design's copy", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     const { server } = await import("./harness");
     server.use(serve([]));
     const card = await screen.findByRole("region", {

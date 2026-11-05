@@ -462,13 +462,20 @@ function Tokens() {
   );
 }
 
-export function Agents() {
-  useDocumentTitle("Agents");
+export const CONNECTIONS_INTRO =
+  "Connect an agent, and see the apps and tokens that act as you. Revoke any you don't recognize.";
+
+/** Settings › Connections (#1293: formerly Agents): setup, connected apps, tokens. */
+export function Connections() {
+  useDocumentTitle("Connections");
   const state = useMe();
   const mcpUrl = state.status === "authed" ? state.me.instance.mcpUrl : null;
   const canConnect = useCanSetUpAgent();
   return (
     <div className={STACK}>
+      <p className="m-0 text-[length:var(--oa-text-sm)] text-muted-foreground">
+        {CONNECTIONS_INTRO}
+      </p>
       <AgentSetupCard />
       {canConnect && mcpUrl && (
         <SettingsCard id="oa-mcp-h" title="MCP server">

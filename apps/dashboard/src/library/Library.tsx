@@ -83,8 +83,11 @@ const EMPTY: Record<Scope, [string, React.ReactNode]> = {
     "Ask your agent to publish something",
     <>
       Artifacts you publish show up here.{" "}
-      <AppLink href="/settings/agents" className="underline underline-offset-2">
-        Connect an agent in Settings → Agents
+      <AppLink
+        href="/settings/connections"
+        className="underline underline-offset-2"
+      >
+        Connect an agent in Settings → Connections
       </AppLink>
       .
     </>,
@@ -101,7 +104,7 @@ const EMPTY: Record<Scope, [string, React.ReactNode]> = {
 
 /**
  * The name of the caller's own connection behind `agentVia` (#589), from the
- * Settings › Agents queries: a grant's label, else its client name; a
+ * Settings › Connections queries: a grant's label, else its client name; a
  * token's label. Only the owner loads these, so the label stays theirs.
  * "" while the list loads; "This connection" once loaded and not found.
  */
