@@ -465,6 +465,8 @@ describe("publicName never carries an email", () => {
     ["the same, in another case", email.toUpperCase()],
     ["another address", "someone.else@example.org"],
     ["an address inside a name", "Priya priya@example.org"],
+    ["a full-width at sign", "priya\uFF20example.org"],
+    ["a small at sign", "priya\uFE6Bexample.org"],
   ])("%s is no name", (_, name) => {
     expect(publicName({ name })).toBeNull();
     expect(ownersAgent({ name, email })).toBe(MEMBERS_AGENT);
