@@ -791,6 +791,66 @@ describe("upgrade", () => {
     expect(s.row(inst.id).do_migration_tag).toBe(LEDGER_TAG);
   });
 
+  it("#1343: the DO rule's refusal names the install and the release to step through first", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const all = Object.keys(s.rel.st.specs);
+    let listed = 0;
+    const p = s.mk({
+      releaseVersions: async () => {
+        listed++;
+        return all;
+      },
+    });
+    const w = s.fake.writes().length;
+    const e = await fails(p.upgrade(inst.id, "0.26.0"));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(provisionErrorCode(e)).toBe("invalid_state");
+    // 0.24.x take the live tag but leave 0.26.0 refused; 0.28.0 is above it.
+    expect(e.message).toMatch(
+      new RegExp(`^install ${inst.id}: upgrade it to 0\\.25\\.0 first; `),
+    );
+    expect(e.message).toMatch(/Ledger/);
+    // The fleet's alert row keeps 200 characters of it.
+    expect(e.message.length).toBeLessThanOrEqual(200);
+    expect(s.fake.writes().length).toBe(w);
+    expect(s.row(inst.id)).toMatchObject({ version: "0.23.0", lease: null });
+    // The named step, then the release: the normal path, with no listing.
+    listed = 0;
+    expect(keep(await p.upgrade(inst.id, "0.25.0")).ok).toBe(true);
+    expect(keep(await p.upgrade(inst.id, "0.26.0")).ok).toBe(true);
+    expect(listed).toBe(0);
+    expect(s.row(inst.id)).toMatchObject({
+      version: "0.26.0",
+      do_migration_tag: LEDGER_TAG,
+    });
+  });
+
+  it("#1343: with no release to step through, or no listing, the refusal still names the install", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const none = await fails(
+      s
+        .mk({ releaseVersions: async () => ["0.24.0", "0.24.2", "0.26.0"] })
+        .upgrade(inst.id, "0.26.0"),
+    );
+    expect(none.message).toMatch(
+      new RegExp(`^install ${inst.id}: this release adds Durable Object`),
+    );
+    expect(none.message).not.toMatch(/first;/);
+    const down = await fails(
+      s
+        .mk({
+          releaseVersions: async () => {
+            throw new Error("r2 down");
+          },
+        })
+        .upgrade(inst.id, "0.26.0"),
+    );
+    expect(provisionErrorCode(down)).toBe("invalid_state");
+    expect(down.message).toMatch(new RegExp(`^install ${inst.id}: `));
+  });
+
   it("sends migrations only when the target tag differs from the live one", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));
