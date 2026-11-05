@@ -9,6 +9,9 @@ import {
 } from "@tanstack/react-router";
 import { hasFeature } from "./api/contract";
 import { useMe } from "./auth/useMe";
+import { useCanUseBus } from "./bus/access";
+import { LiveAgents } from "./bus/LiveAgents";
+import { Machines } from "./bus/Machines";
 import { AppLayout } from "./layout/AppLayout";
 import { useDocumentTitle } from "./layout/useDocumentTitle";
 import { Library } from "./library/Library";
@@ -140,6 +143,13 @@ const trash = createRoute({
   component: TrashRoute,
 });
 
+/** #1293: the bus pages exist only for the server's canConnect with the bus on; anyone else gets Not found. */
+function BusRoute({ children }: { children: React.ReactNode }) {
+  const ok = useCanUseBus();
+  if (ok === null) return null;
+  return ok ? children : <NotFound />;
+}
+
 const ADMINS: Role[] = ["owner", "admin"];
 /** Guests go to /shared; a member is sent to the page they may see. */
 const gated = (
@@ -230,6 +240,16 @@ const routeTree = root.addChildren([
   library("/team", "team"),
   search,
   trash,
+  route("/machines", () => (
+    <BusRoute>
+      <Machines />
+    </BusRoute>
+  )),
+  route("/agents", () => (
+    <BusRoute>
+      <LiveAgents />
+    </BusRoute>
+  )),
   route("/a/$id", ViewerRoute),
   route("/a/$id/v/$v", ViewerRoute),
   route("/a/$id/full", FullRoute),

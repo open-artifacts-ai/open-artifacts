@@ -48,6 +48,8 @@ import {
   AgentViaSchema,
   ArtifactPatchSchema,
   type ArtifactSummary,
+  type BusAgent,
+  type BusMachine,
   type DataDoc,
   DataNameSchema,
   DataPatchBodySchema,
@@ -102,6 +104,12 @@ export type MockOptions = {
   events?: ArtifactEventsMock;
   /** Hosted M1 mocks (true = defaults). Off by default. */
   hosted?: boolean | HostedMockOptions;
+  /**
+   * #1293: the bus is on and the caller may connect (Me.busOn and
+   * Me.canConnect true), with fixtures.busMachines and busAgents. Off by
+   * default: no machines, and GET R.busAgents answers `live: false`.
+   */
+  bus?: boolean;
 };
 
 const err = (code: ErrorCode, message: string, details?: unknown) =>
@@ -319,6 +327,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const tokens = f.tokens;
   const clients = f.oauthClients;
   let shareNoticeAgents: BusAddress[] = [];
+  if (opts.bus) {
+    me.canConnect = true;
+    me.busOn = true;
+  }
+  const busMachines: BusMachine[] = opts.bus ? f.busMachines : [];
+  let busAgents: BusAgent[] = opts.bus ? f.busAgents : [];
   const data = new Map<string, Map<string, Map<string, DataDoc>>>();
   const storage = new Map<string, Map<string, StorageEntry>>();
   for (const d of f.data) {
@@ -534,7 +548,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       // Signed-URL uploads carry no session; public artifact reads are anonymous-OK.
       const needsAuth = mutating
         ? !/^\/uploads\/[^/]+$/.test(path)
-        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search|bus\/share-notices)\/?$/.test(
+        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search|bus\/(share-notices|machines|agents))\/?$/.test(
             path,
           );
       // Runtime routes (data/storage) check access first, as on the server:
@@ -586,6 +600,33 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       });
       return HttpResponse.json({ agents: shareNoticeAgents });
     }),
+    // #1291/#1293: the caller's bus machines; active newest first, then revoked.
+    http.get(`*${R.busMachines}`, () =>
+      HttpResponse.json({
+        machines: [...busMachines].sort(
+          (a, b) =>
+            Number(a.revokedAt !== null) - Number(b.revokedAt !== null) ||
+            (a.revokedAt !== null && b.revokedAt !== null
+              ? b.revokedAt.localeCompare(a.revokedAt)
+              : b.createdAt.localeCompare(a.createdAt)),
+        ),
+      }),
+    ),
+    // Idempotent: a second revoke is 204 too; an unknown id is 404. Its agents close.
+    http.delete(`*${R.busMachines}/:id`, ({ params: p }) => {
+      const m = busMachines.find((x) => x.id === p.id);
+      if (!m) return notFound();
+      if (m.revokedAt === null) {
+        m.revokedAt = iso();
+        m.connected = false;
+        busAgents = busAgents.filter((a) => a.machineId !== m.id);
+      }
+      return noContent();
+    }),
+    // `live: false` while the bus is off. (The server's canConnect 404 isn't mocked.)
+    http.get(`*${R.busAgents}`, () =>
+      HttpResponse.json({ agents: busAgents, live: opts.bus === true }),
+    ),
     http.get("*/api/v1/artifacts", ({ request }) => {
       if (isAnon(request))
         return err("unauthorized", "Authentication required");

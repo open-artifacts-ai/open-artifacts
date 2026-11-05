@@ -1,5 +1,7 @@
 import type {
   ArtifactSummary,
+  BusAgent,
+  BusMachine,
   DataDoc,
   Me,
   Member,
@@ -117,6 +119,10 @@ export const fixtures: {
   agentVias: Record<string, string[]>;
   data: { artifactId: string; collection: string; doc: DataDoc }[];
   storage: { artifactId: string; entry: StorageEntry }[];
+  /** #1293: the caller's bus machines (served with `bus: true`): live, never connected, revoked. */
+  busMachines: BusMachine[];
+  /** #1293: open agents on busMachines (served with `bus: true`). */
+  busAgents: BusAgent[];
 } = {
   me: {
     user: members[0] as Member,
@@ -237,6 +243,61 @@ export const fixtures: {
         value: "dark",
         updatedAt: "2026-01-03T10:00:00.000Z",
       },
+    },
+  ],
+  busMachines: [
+    {
+      id: "BmA1nPqRsTu4vWxY",
+      label: "leo-work",
+      createdAt: "2026-01-02T10:00:00.000Z",
+      lastUsedAt: "2026-01-03T10:00:00.000Z",
+      revokedAt: null,
+      connected: true,
+    },
+    {
+      id: "BmB2nPqRsTu4vWxY",
+      label: "home-desktop",
+      createdAt: "2026-01-01T10:00:00.000Z",
+      lastUsedAt: null,
+      revokedAt: null,
+      connected: false,
+    },
+    {
+      id: "BmC3nPqRsTu4vWxY",
+      label: "old-laptop",
+      createdAt: "2025-12-01T10:00:00.000Z",
+      lastUsedAt: "2025-12-20T10:00:00.000Z",
+      revokedAt: "2025-12-21T10:00:00.000Z",
+      connected: false,
+    },
+  ],
+  busAgents: [
+    {
+      id: "BaA1nPqRsTu4vWxY",
+      namespace: "open-artifacts-ai/open-artifacts",
+      name: "claude",
+      kind: "claude-code",
+      machineId: "BmA1nPqRsTu4vWxY",
+      machineLabel: "leo-work",
+      global: false,
+      state: "live",
+      running: true,
+      updatedAt: "2026-01-03T10:00:00.000Z",
+      status: "working",
+      statusLabel: "Building #1293",
+      statusAt: "2026-01-03T10:00:00.000Z",
+    },
+    {
+      id: "BaB2nPqRsTu4vWxY",
+      namespace: "notes",
+      name: "pi-2",
+      kind: "pi",
+      machineId: "BmA1nPqRsTu4vWxY",
+      machineLabel: "leo-work",
+      global: false,
+      state: "live",
+      running: true,
+      updatedAt: "2026-01-03T09:00:00.000Z",
     },
   ],
 };

@@ -4,6 +4,9 @@ import { z } from "zod";
 import {
   ApiErrorSchema,
   ArtifactSummarySchema,
+  BusAgentsSchema,
+  type BusMachine,
+  BusMachinesSchema,
   ContentUrlSchema,
   DataDocSchema,
   INLINE_TOO_LARGE_MESSAGE,
@@ -304,7 +307,78 @@ const rows: Row[] = [
     204,
     null,
   ],
+  ["busMachines", "GET", R.busMachines, undefined, 200, BusMachinesSchema],
+  ["busAgents", "GET", R.busAgents, undefined, 200, BusAgentsSchema],
 ];
+
+describe("bus option (#1293)", () => {
+  const [live, never, revoked] = fixtures.busMachines as [
+    BusMachine,
+    BusMachine,
+    BusMachine,
+  ];
+  it("fixtures parse with their schemas", () => {
+    BusMachinesSchema.parse({ machines: fixtures.busMachines });
+    BusAgentsSchema.parse({ agents: fixtures.busAgents, live: true });
+    expect(revoked.revokedAt).not.toBeNull();
+    expect(never.lastUsedAt).toBeNull();
+  });
+  it("off by default: /me has no busOn or canConnect, no machines, agents not live", async () => {
+    fresh();
+    const me = MeSchema.parse(await json(await call("GET", R.me)));
+    expect(me.busOn).toBeUndefined();
+    expect(me.canConnect).toBeUndefined();
+    expect(await json(await call("GET", R.busMachines))).toEqual({
+      machines: [],
+    });
+    expect(await json(await call("GET", R.busAgents))).toEqual({
+      agents: [],
+      live: false,
+    });
+  });
+  it("bus: true turns on busOn and canConnect and serves the fixtures, active first", async () => {
+    fresh({ bus: true });
+    const me = MeSchema.parse(await json(await call("GET", R.me)));
+    expect(me.busOn).toBe(true);
+    expect(me.canConnect).toBe(true);
+    const ms = BusMachinesSchema.parse(
+      await json(await call("GET", R.busMachines)),
+    );
+    expect(ms.machines.map((m) => m.id)).toEqual([
+      live.id,
+      never.id,
+      revoked.id,
+    ]);
+    const as = BusAgentsSchema.parse(
+      await json(await call("GET", R.busAgents)),
+    );
+    expect(as.live).toBe(true);
+    expect(as.agents).toHaveLength(fixtures.busAgents.length);
+  });
+  it("revoke: 204, idempotent, closes the machine's agents; unknown id 404", async () => {
+    fresh({ bus: true });
+    expect((await call("DELETE", R.busMachine(live.id))).status).toBe(204);
+    expect((await call("DELETE", R.busMachine(live.id))).status).toBe(204);
+    expect((await call("DELETE", R.busMachine(bad))).status).toBe(404);
+    const ms = BusMachinesSchema.parse(
+      await json(await call("GET", R.busMachines)),
+    );
+    const m = ms.machines.find((x) => x.id === live.id);
+    expect(m?.revokedAt).not.toBeNull();
+    expect(m?.connected).toBe(false);
+    // Revoked rows sort after active ones.
+    expect(ms.machines[0]?.id).toBe(never.id);
+    const as = BusAgentsSchema.parse(
+      await json(await call("GET", R.busAgents)),
+    );
+    expect(as.agents.filter((a) => a.machineId === live.id)).toEqual([]);
+  });
+  it("unauthenticated: 401 on the bus routes", async () => {
+    fresh({ bus: true });
+    for (const p of [R.busMachines, R.busAgents, R.shareNotices])
+      expect((await call("GET", p, undefined, {})).status).toBe(401);
+  });
+});
 
 describe("emailEnabled option", () => {
   it("defaults to false; createHandlers({ emailEnabled: true }) flips it", async () => {

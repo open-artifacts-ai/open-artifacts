@@ -1,6 +1,9 @@
 import {
   type ArtifactPatch,
   ArtifactSummarySchema,
+  type BusAddress,
+  BusAgentsSchema,
+  BusMachinesSchema,
   type ListQueryInput,
   ListQuerySchema,
   type Me,
@@ -22,6 +25,7 @@ import {
   type SettingsPatch,
   SettingsSchema,
   type ShareInput,
+  ShareNoticeAgentsSchema,
   ShareResultSchema,
   ShareSchema,
   TokenSchema,
@@ -89,6 +93,10 @@ export const qk = {
   memberTransfer: (id: string) => ["members", id, "transfer"] as const,
   tokens: ["tokens"] as const,
   oauthClients: ["oauth-clients"] as const,
+  /** #1293: every bus query starts with ["bus"]. */
+  busMachines: ["bus", "machines"] as const,
+  busAgents: ["bus", "agents"] as const,
+  shareNotices: ["bus", "share-notices"] as const,
   settings: ["settings"] as const,
   usage: ["usage"] as const,
   spaces: (q?: SpacesQueryInput) => ["spaces", q ?? {}] as const,
@@ -228,6 +236,50 @@ export const useRevokeOAuthClient = () =>
     () => [qk.oauthClients],
     "Couldn't revoke the agent.",
   );
+/** #1293: how often the bus lists refresh while the page is visible (Backend: poll, no socket in v1). */
+export const BUS_POLL_MS = 10_000;
+/** The caller's bus machines (GET R.busMachines); polled while visible. */
+export const useBusMachines = (enabled = true) =>
+  useQuery({
+    enabled,
+    queryKey: qk.busMachines,
+    queryFn: ({ signal }) => api.get(R.busMachines, BusMachinesSchema, signal),
+    refetchInterval: BUS_POLL_MS,
+  });
+/** Revoke a machine: 204, idempotent; its agents leave, so both lists reload. */
+export const useRevokeBusMachine = () =>
+  useInvalidating(
+    (id: string) => api.send("DELETE", R.busMachine(id), undefined),
+    () => [qk.busMachines, qk.busAgents],
+    "Couldn't revoke the machine.",
+  );
+/** The caller's open agents (GET R.busAgents, canConnect only); polled while visible. */
+export const useBusAgents = (enabled = true) =>
+  useQuery({
+    enabled,
+    queryKey: qk.busAgents,
+    queryFn: ({ signal }) => api.get(R.busAgents, BusAgentsSchema, signal),
+    refetchInterval: BUS_POLL_MS,
+  });
+/** The addresses that get share notices (GET R.shareNotices). */
+export const useShareNotices = (enabled = true) =>
+  useQuery({
+    enabled,
+    queryKey: qk.shareNotices,
+    queryFn: ({ signal }) =>
+      api.get(R.shareNotices, ShareNoticeAgentsSchema, signal),
+  });
+/** Replace the share-notice addresses (PUT R.shareNotices); the list shows the answer. */
+export const useSetShareNotices = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (agents: BusAddress[]) =>
+      api.send("PUT", R.shareNotices, { agents }, ShareNoticeAgentsSchema),
+    onSuccess: (r) => qc.setQueryData(qk.shareNotices, r),
+    onError: (e: unknown) => failToast(e, "Couldn't save share notices."),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.shareNotices }),
+  });
+};
 export const useSettings = () =>
   useQuery({
     queryKey: qk.settings,
