@@ -9,6 +9,8 @@ export const CONTEXT_CHARS = 32;
 const MIN_PROBE = 8;
 /** Quotes shorter than this need context agreement or word boundaries to count as exact. */
 const SHORT_QUOTE = 16;
+/** How far a weak short-quote hit may sit from the located context and still count. */
+const SPOT_SLACK = 16;
 /** Most char comparisons the partial-match step may spend on one anchor. */
 const LCS_BUDGET = 2_000_000;
 /** Occurrence lists are capped so a degenerate needle stays linear. */
@@ -293,7 +295,8 @@ export function createTextResolver(
       }
     }
     if (hits.length) {
-      let best: { s: number; score: number; dist: number } | undefined;
+      type Cand = { s: number; score: number; dist: number };
+      const cands: Cand[] = [];
       for (const s of hits) {
         const ps = commonSuffix(hay, s, pre);
         const ss = commonPrefix(hay, s + hlen, suf);
@@ -304,23 +307,41 @@ export function createTextResolver(
           wantLine === undefined
             ? 0
             : Math.abs(getLine(map ? map[s] : s) - wantLine);
-        if (
-          !best ||
-          score > best.score ||
-          (score === best.score && dist < best.dist)
-        ) {
-          best = { s, score, dist };
-        }
+        cands.push({ s, score, dist });
       }
+      const better = (x: Cand, y: Cand | undefined) =>
+        !y || x.score > y.score || (x.score === y.score && x.dist < y.dist);
+      const pick = (list: Cand[]) => {
+        let best: Cand | undefined;
+        for (const c of list) if (better(c, best)) best = c;
+        return best;
+      };
+      const exactAt = (s: number): Resolution =>
+        map
+          ? { state: "exact", start: map[s], end: map[s + hlen - 1] + 1 }
+          : { state: "exact", start: s, end: s + hlen };
+      const best = pick(cands);
       if (best) {
         const weak = short && best.score < need;
-        const elsewhere =
-          weak && (getSpots().ends.length > 0 || getSpots().starts.length > 0);
-        if (!elsewhere) {
-          const { s } = best;
-          if (!map) return { state: "exact", start: s, end: s + hlen };
-          return { state: "exact", start: map[s], end: map[s + hlen - 1] + 1 };
-        }
+        const { ends, starts } = weak ? getSpots() : { ends: [], starts: [] };
+        if (!weak || (ends.length === 0 && starts.length === 0))
+          return exactAt(best.s);
+        // Weak: its neighbours changed. It is still the quote if it sits where
+        // the context says (within about its own length of the located spot).
+        const near = cands.filter((c) => {
+          const os = map ? map[c.s] : c.s;
+          const oe = os + len;
+          return (
+            ends.some(
+              (p) => os >= p - SPOT_SLACK && os <= p + len + SPOT_SLACK,
+            ) ||
+            starts.some(
+              (q) => oe <= q + SPOT_SLACK && oe >= q - len - SPOT_SLACK,
+            )
+          );
+        });
+        const nb = pick(near);
+        if (nb) return exactAt(nb.s);
       }
     }
 

@@ -296,6 +296,38 @@ describe("short quotes need context (M1)", () => {
   });
 });
 
+describe("a weak hit beside its context is still the quote (N1)", () => {
+  it("keeps TODO when the line around it was reworded", () => {
+    const before = "Shopping list\n- milk\n- eggs\n- TODO: fix login";
+    const a = anchorOf(before, "TODO");
+    const after =
+      "Shopping list\n- milk\n- eggs\n- [ ] TODO fix the login flow";
+    const r = resolveTextAnchor(after, a);
+    expect(r).toEqual({
+      state: "exact",
+      start: after.indexOf("TODO"),
+      end: after.indexOf("TODO") + 4,
+    });
+  });
+  it("keeps Tuesday when words were added around it", () => {
+    const before = "The review was moved to Tuesday at noon in the big room.";
+    const a = anchorOf(before, "Tuesday");
+    const after =
+      "The review was moved to next Tuesday, noon, in the big room.";
+    const r = resolveTextAnchor(after, a);
+    expect(r).toMatchObject({
+      state: "exact",
+      start: after.indexOf("Tuesday"),
+    });
+  });
+  it("still refuses a same-word hit far from the located context", () => {
+    const before = "Intro. Q3 revenue grew 4%. Later table: Q3 revenue | 12";
+    const a = anchorOf(before, "Q3 revenue");
+    const after = `Intro. Q4 revenue grew 4%. ${"filler words ".repeat(20)}Later table: Q3 revenue | 12`;
+    expect(resolveTextAnchor(after, a).state).not.toBe("exact");
+  });
+});
+
 describe("empty and weak context (M2)", () => {
   it("an empty prefix does not beat a surviving suffix", () => {
     const doc =

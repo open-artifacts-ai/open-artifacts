@@ -54,7 +54,9 @@ type Pos = {
 
 const BLOCK =
   "p,li,h1,h2,h3,h4,h5,h6,pre,blockquote,td,th,dt,dd,figcaption,div,section,article,.line";
+/** Re-resolve after a DOM change: trailing debounce, but never later than the max wait. */
 const MUTATION_MS = 150;
+const MUTATION_MAX_WAIT_MS = 1000;
 const FLASH_MS = 1200;
 
 const OVERLAY_CSS = `
@@ -84,8 +86,12 @@ export function createComments(
   const hasPins = format === "image" || format === "pdf";
   let mode: Mode = "off";
   let threads: Thread[] = [];
-  /** Text index of the body, rebuilt after a DOM mutation. */
+  /** Text index of the body, rebuilt when the text version or the body changes. */
   let index: TextIndex | null = null;
+  let indexVer = -1;
+  let indexBody: HTMLElement | null = null;
+  /** Bumped by every DOM mutation outside the overlay. */
+  let textVer = 0;
   /** Resolved threads for the current text and thread set; null = stale. */
   let slots: Slot[] | null = null;
   let lastReport = "";
@@ -128,7 +134,12 @@ export function createComments(
   };
 
   const getIndex = (): TextIndex => {
-    if (!index) index = indexText(document.body);
+    const body = document.body;
+    if (!index || indexVer !== textVer || indexBody !== body) {
+      index = body ? indexText(body) : { text: "", nodes: [], starts: [] };
+      indexVer = textVer;
+      indexBody = body;
+    }
     return index;
   };
 
@@ -276,7 +287,7 @@ export function createComments(
   }
 
   function report(force: boolean) {
-    if (mode === "off") return;
+    if (mode === "off" || !document.body) return;
     const positions = compute();
     lastPositions.clear();
     for (const p of positions) lastPositions.set(p.id, p);
@@ -323,7 +334,7 @@ export function createComments(
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
     const range = sel.getRangeAt(0);
     const idx = getIndex();
-    const o = rangeToOffsets(document.body, range, idx);
+    const o = document.body && rangeToOffsets(document.body, range, idx);
     if (!o) return null;
     const t = idx.text;
     let { start, end } = o;
@@ -469,18 +480,49 @@ export function createComments(
   });
 
   // ---- page events ----
+  // A mutation keeps the old slots: their live ranges are still re-measured
+  // on scroll. Re-resolving runs from a timer, trailing MUTATION_MS but never
+  // later than MUTATION_MAX_WAIT_MS after the first change, so a page that
+  // never stops changing still re-anchors, and one that changes every frame
+  // does not re-resolve every frame.
   let mutTimer: ReturnType<typeof setTimeout> | undefined;
-  const onMutation = () => {
-    index = null;
+  let pendingSince = 0;
+  const reresolve = () => {
+    pendingSince = 0;
     slots = null;
-    clearTimeout(mutTimer);
-    mutTimer = setTimeout(() => report(false), MUTATION_MS);
+    report(false);
   };
+  const ours = (r: MutationRecord): boolean => {
+    if (!host) return false;
+    if (r.target === host || host.contains(r.target)) return true;
+    return (
+      r.target === document.documentElement &&
+      r.addedNodes.length + r.removedNodes.length > 0 &&
+      Array.from(r.addedNodes).every((n) => n === host) &&
+      Array.from(r.removedNodes).every((n) => n === host)
+    );
+  };
+  const onMutation = (records: MutationRecord[]) => {
+    if (records.every(ours)) return;
+    textVer++;
+    const now = Date.now();
+    if (!pendingSince) pendingSince = now;
+    clearTimeout(mutTimer);
+    mutTimer = setTimeout(
+      reresolve,
+      Math.max(
+        0,
+        Math.min(MUTATION_MS, pendingSince + MUTATION_MAX_WAIT_MS - now),
+      ),
+    );
+  };
+  // <html>, not <body>: a replaced or late body is a change there. The script
+  // runs from <head>, so documentElement always exists.
   const observer =
     typeof MutationObserver === "undefined"
       ? undefined
       : new MutationObserver(onMutation);
-  observer?.observe(document.body, {
+  observer?.observe(document.documentElement, {
     childList: true,
     subtree: true,
     characterData: true,

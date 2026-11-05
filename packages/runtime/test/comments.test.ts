@@ -359,6 +359,91 @@ describe("mode and clamping", () => {
   });
 });
 
+describe("the body can change under the frame (N3)", () => {
+  const settle = async () => {
+    await flush();
+    await vi.advanceTimersByTimeAsync(1200);
+    await flush();
+  };
+  const newBody = (html: string) => {
+    const b = document.createElement("body");
+    b.innerHTML = html;
+    return b;
+  };
+
+  it("a replaced body is re-resolved and selections work in the new one", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [
+        {
+          id: "ex",
+          anchor: anchorOf("quick brown", "The ", " fox jumps over"),
+        },
+      ],
+    });
+    expect(last("comment.positions")).toMatchObject({
+      positions: [{ state: "exact" }],
+    });
+    document.documentElement.replaceChild(
+      newBody("<p id=n>Entirely new words in a new body.</p>"),
+      document.body,
+    );
+    await settle();
+    expect(last("comment.positions")).toMatchObject({
+      positions: [{ id: "ex", state: "orphan" }],
+    });
+    const t = document.getElementById("n")?.firstChild as Text;
+    select(t, 9, t, 14);
+    expect(button()).not.toBeNull();
+    vi.useRealTimers();
+  });
+
+  it("comments start when the body arrives after the runtime", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    document.documentElement.removeChild(document.body);
+    expect(document.body).toBeNull();
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [
+        {
+          id: "ex",
+          anchor: anchorOf("quick brown", "The ", " fox jumps over"),
+        },
+      ],
+    });
+    expect(msgs()).toEqual([]);
+    document.documentElement.append(newBody(PAGE));
+    await settle();
+    expect(last("comment.positions")).toMatchObject({
+      positions: [{ id: "ex", state: "exact" }],
+    });
+    vi.useRealTimers();
+  });
+
+  it("the overlay's own changes do not trigger a re-resolve", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [
+        {
+          id: "ex",
+          anchor: anchorOf("quick brown", "The ", " fox jumps over"),
+        },
+      ],
+    });
+    const n = () => msgs().filter((m) => m.type === "comment.positions").length;
+    const before = n();
+    select(textOf("a"), 4, textOf("a"), 9); // shows the button inside the overlay
+    await settle();
+    expect(n()).toBe(before);
+    vi.useRealTimers();
+  });
+});
+
 describe("pins", () => {
   beforeEach(() => {
     const meta = document.createElement("meta");
@@ -434,7 +519,10 @@ describe("the page is left alone", () => {
     await send({
       type: "comments.set",
       threads: [
-        { id: "ex", anchor: anchorOf("quick brown") },
+        {
+          id: "ex",
+          anchor: anchorOf("quick brown", "The ", " fox jumps over"),
+        },
         {
           id: "co",
           anchor: anchorOf(
@@ -464,7 +552,12 @@ describe("what the frame sends", () => {
     await start("select");
     await send({
       type: "comments.set",
-      threads: [{ id: "ex", anchor: anchorOf("quick brown") }],
+      threads: [
+        {
+          id: "ex",
+          anchor: anchorOf("quick brown", "The ", " fox jumps over"),
+        },
+      ],
     });
     select(textOf("a"), 4, textOf("a"), 9);
     button()?.click();
