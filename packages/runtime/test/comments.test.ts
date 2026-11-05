@@ -231,6 +231,17 @@ describe("view mode (#1491)", () => {
     expect(last("comment.select")).toBeUndefined();
   });
 
+  it("select to view hides a showing Comment button, and view to select shows it for a present selection", async () => {
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()).not.toBeNull();
+    await send({ type: "comments.mode", mode: "view" });
+    expect(button()).toBeNull();
+    expect(last("comment.select")).toBeUndefined();
+    await send({ type: "comments.mode", mode: "select" });
+    expect(button()?.textContent).toBe("Comment");
+  });
+
   it("opens a thread from a click on its highlight, and sends no pin", async () => {
     await start("view");
     await send({

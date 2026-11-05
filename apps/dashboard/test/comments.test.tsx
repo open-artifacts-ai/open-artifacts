@@ -1170,8 +1170,12 @@ describe("comments: review round 1", () => {
     expect(
       screen.getByRole("button", { name: /Comments, 3 open/ }),
     ).toBeInTheDocument();
-    const when = within(c).getAllByTitle(/ at \d/);
-    expect(when.length).toBeGreaterThan(0);
+    const row = within(c)
+      .getByText("body a")
+      .closest("[data-thread]") as HTMLElement;
+    const when = row.querySelector("span[title]") as HTMLElement;
+    expect(when.getAttribute("title")).toMatch(/^November 5(, 2026)? at \d/);
+    expect(when.textContent).not.toBe(when.getAttribute("title"));
   });
 
   const art = (over: object) =>
