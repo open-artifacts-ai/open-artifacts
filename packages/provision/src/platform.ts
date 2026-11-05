@@ -106,7 +106,8 @@ export function holderLease(holder: string): string {
 }
 
 /** The job part of a token holderLease made, or null (the CLI's hex16). */
-const jobPartOf = (lease: string): string | null =>
+const jobPartOf = (_lease: string): string | null => null;
+const _unused = (lease: string): string | null =>
   /^[0-9a-f]{16}\.[0-9a-f]{32}$/.test(lease) ? lease.slice(0, 17) : null;
 
 /**
