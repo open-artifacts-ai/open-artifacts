@@ -194,6 +194,18 @@ export const AdapterFrame = z.discriminatedUnion("type", [
 ]);
 export type AdapterFrame = z.infer<typeof AdapterFrame>;
 
+/**
+ * A config file the daemon refused or noted (#1527). `reason` completes
+ * "<file> …"; `fix` is the exact step. #1525 adds pending-approval entries.
+ */
+export const ConfigFile = z.object({
+  file: z.string(),
+  state: z.enum(["refused", "noted"]),
+  reason: z.string(),
+  fix: z.string(),
+});
+export type ConfigFile = z.infer<typeof ConfigFile>;
+
 export const AgentInfo = z.object({
   name: z.string(),
   namespace: z.string(),
@@ -209,6 +221,8 @@ export const AgentInfo = z.object({
   status: StatusStateSchema.optional(),
   status_label: StatusLabelSchema.optional(),
   status_at: IsoTimeSchema.optional(),
+  /** `self` with `row` only: config files refused or noted. Older adapters ignore it. */
+  config_files: z.array(ConfigFile).optional(),
 });
 
 export const Welcome = z.object({
@@ -325,6 +339,8 @@ export const StatusReply = z.object({
       ),
     }),
   ),
+  /** Config files refused or noted (#1527). Absent from older daemons, and when there are none. */
+  config_files: z.array(ConfigFile).optional(),
   /** Messages sent from this machine the hub delivered after the 5 s window, within the last hour. */
   late: z
     .array(

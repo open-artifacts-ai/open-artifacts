@@ -329,6 +329,30 @@ describe("status in OpenCode", () => {
     );
   });
 
+  it("#1527: self shows the config files the daemon refused", async () => {
+    const self = await run("self", {}, () => ({
+      type: "agent",
+      agent: row({
+        config_files: [
+          {
+            file: "/home/u/x/.oa-bus.json",
+            state: "refused",
+            reason: "is writable by everyone",
+            fix: "run chmod o-w /home/u/x/.oa-bus.json",
+          },
+        ],
+      }),
+    }));
+    expect(JSON.parse(self.text).config_files).toEqual([
+      {
+        file: "/home/u/x/.oa-bus.json",
+        state: "refused",
+        reason: "is writable by everyone",
+        fix: "run chmod o-w /home/u/x/.oa-bus.json",
+      },
+    ]);
+  });
+
   it("self asks for its own row and names no role", async () => {
     const self = await run("self", {}, () => ({
       type: "agent",

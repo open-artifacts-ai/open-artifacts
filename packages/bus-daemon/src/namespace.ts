@@ -1,17 +1,21 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import {
   BUS_CMD,
   type BusConfig,
   BusConfigSchema,
-  CONFIG_FILE,
   mergeConfigs,
   namespaceFrom,
   normalizeRemote,
 } from "@oa/bus-protocol";
+import {
+  type ConfigIssues,
+  configIssue,
+  configPaths,
+} from "./config-issues.ts";
 import { globalFile, isGlobalDir, readGlobalDirs } from "./global.ts";
-import { readOwnFile } from "./own-file.ts";
+import { type GroupCheck, readOwnFile } from "./own-file.ts";
 
 export type Namespace = {
   namespace: string;
@@ -29,6 +33,10 @@ export type NamespaceDeps = {
   allowMissing?: boolean;
   /** The user's allowlist; default `<OA_BUS_HOME>/global.json`. */
   globalFile?: string;
+  /** Collects the config files refused or noted, for status, doctor and self. */
+  issues?: ConfigIssues;
+  /** Tests inject the group check (which group is the user's private one). */
+  group?: GroupCheck;
 };
 
 const warned = new Set<string>();
@@ -124,13 +132,17 @@ function readConfigs(
   const uid = deps.uid ?? process.getuid?.();
   const configs: BusConfig[] = [];
   const asked: string[] = [];
-  for (let dir = cwd; ; dir = dirname(dir)) {
-    const file = join(dir, CONFIG_FILE);
-    const own = readOwnFile(file, uid);
+  for (const file of configPaths(cwd)) {
+    const own = readOwnFile(file, uid, {
+      allowGroupWrite: true,
+      ...(deps.group ? { group: deps.group } : {}),
+    });
     if (own.state === "unsafe")
       // Another user could plant one in a shared parent such as /tmp.
       once(deps, file, `ignoring ${file}: it ${own.why}`);
+    let valid = true;
     if (own.state === "ok") {
+      if (own.note) once(deps, `note:${file}`, `using ${file}: it ${own.note}`);
       let parsed: ReturnType<typeof BusConfigSchema.safeParse> | undefined;
       try {
         parsed = BusConfigSchema.safeParse(JSON.parse(own.text));
@@ -138,9 +150,12 @@ function readConfigs(
       if (parsed?.success) {
         configs.push(parsed.data);
         if (parsed.data.global === true) asked.push(file);
-      } else deps.log?.(`ignoring invalid ${file}`);
+      } else {
+        valid = false;
+        deps.log?.(`ignoring invalid ${file}`);
+      }
     }
-    if (dirname(dir) === dir) break;
+    deps.issues?.set(file, uid, configIssue(file, own, valid), deps.group);
   }
   return { cfg: mergeConfigs(configs), asked };
 }
