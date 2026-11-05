@@ -73,10 +73,9 @@ describe("Library", () => {
     expect(
       await screen.findByText("Ask your agent to publish something"),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Settings → Connections/ })).toHaveAttribute(
-      "href",
-      "/settings/connections",
-    );
+    expect(
+      screen.getByRole("link", { name: /Settings → Connections/ }),
+    ).toHaveAttribute("href", "/settings/connections");
   });
 
   it("remembers the view in localStorage and URL", async () => {

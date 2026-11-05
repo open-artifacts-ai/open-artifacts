@@ -40,7 +40,8 @@ describe("role change mid-session", () => {
     );
     await lastClient.invalidateQueries({ queryKey: qk.members });
     await waitFor(
-      () => expect(router.state.location.pathname).toBe("/settings/connections"),
+      () =>
+        expect(router.state.location.pathname).toBe("/settings/connections"),
       { timeout: 3000 },
     );
     expect(

@@ -134,7 +134,10 @@ export const agentConfig: Step = {
     ctx.data = {
       url,
       ...(ci
-        ? { tokenNote: "create a token in the dashboard (Settings → Connections)" }
+        ? {
+            tokenNote:
+              "create a token in the dashboard (Settings → Connections)",
+          }
         : pending
           ? { tokenNote: pendingNote }
           : {}),

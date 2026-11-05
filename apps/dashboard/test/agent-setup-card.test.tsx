@@ -80,10 +80,9 @@ describe("AgentSetupCard", () => {
     expect(await screen.findByLabelText("Setup prompt")).toHaveValue(
       INSTRUCTION(),
     );
-    expect(screen.getByRole("link", { name: /Settings → Connections/ })).toHaveAttribute(
-      "href",
-      "/settings/connections",
-    );
+    expect(
+      screen.getByRole("link", { name: /Settings → Connections/ }),
+    ).toHaveAttribute("href", "/settings/connections");
   });
 
   it("not in a filtered empty state", async () => {
