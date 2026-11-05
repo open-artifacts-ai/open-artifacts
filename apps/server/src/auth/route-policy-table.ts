@@ -319,7 +319,7 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
  * 403 plan_required (a free, solo instance) or plan_read_only (team
  * features read-only). Removals (DELETE, a suspension or demotion through
  * PATCH members) are never listed: removing people is how a team drops back
- * to free (on a free instance PATCH members refuses only a promotion or a
+ * to free (under any lock PATCH members refuses only a promotion or a
  * reactivation: services/members.ts patchMember). The first invite on a
  * free instance whose trial never ran passes
  * and starts the trial. Artifact writes in shared spaces, shares, moves and

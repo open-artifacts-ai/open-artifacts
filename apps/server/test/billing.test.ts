@@ -598,6 +598,27 @@ describe("plan enforcement", () => {
     expect(calls.some((c) => c.path === "/portal")).toBe(false);
   });
 
+  it("read-only (lapsed team): the owner can't promote a member; a demotion still passes", async () => {
+    const m = await login(`promo-${tag}@a.com`, "member");
+    await cache({ tier: "team", status: "lapsed", trialEndsAt: 1, version: 9 });
+    const r = await send(R.member(m.userId), owner.cookie, {
+      method: "PATCH",
+      body: { role: "admin" },
+    });
+    expect(r.status).toBe(403);
+    expect(await errOf(r)).toMatchObject({ code: "plan_read_only" });
+    const role = await env.DB.prepare("select role from users where id = ?")
+      .bind(m.userId)
+      .first<{ role: string }>();
+    expect(role?.role).toBe("member");
+    const a = await login(`demote-${tag}@a.com`, "admin");
+    const d = await send(R.member(a.userId), owner.cookie, {
+      method: "PATCH",
+      body: { role: "member" },
+    });
+    expect(d.status).toBe(200);
+  });
+
   it("free after the trial: invites are 403 plan_required; nothing is created", async () => {
     await cache({ tier: "free", trialEndsAt: mid - DAY, version: 2 });
     const email = `inv2-${tag}@a.com`;

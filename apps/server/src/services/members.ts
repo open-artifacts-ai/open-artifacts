@@ -510,12 +510,13 @@ export async function patchMember(
   checkTarget(row.role, admins);
   if (row.role === "owner")
     throw new ApiError("bad_request", "The owner cannot be demoted");
-  // Hosted billing, a free (solo) instance: no promotion and no
-  // reactivation (a role change for someone not active). A demotion or a
-  // same-role write passes: dropping people is how a team gets back to free.
+  // Hosted billing, under any plan lock (free or read-only): no promotion
+  // and no reactivation (a role change for someone not active). A demotion
+  // or a same-role write passes: dropping people is how a team gets back to
+  // free.
   const lock = actor === SYSTEM_ACTOR ? null : planOfMember(actor)?.lock;
   if (
-    lock?.mode === "solo" &&
+    lock &&
     (row.status !== "active" ||
       (PROMOTE_RANK[patch.role] ?? 0) > (PROMOTE_RANK[row.role] ?? 0))
   )
