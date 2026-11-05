@@ -1,10 +1,10 @@
 import { withBrokerProps } from "./auth/broker-transport.js";
 import { sweepLoginCodes } from "./auth/codes.js";
-import { stmt } from "./db/stmt.js";
 import { usageTick } from "./billing/creators.js";
 import { planNow, withPlanScope } from "./billing/features.js";
 import { billingOn } from "./billing/plan.js";
 import { billingTick } from "./billing/store.js";
+import { stmt } from "./db/stmt.js";
 import { disconnectDirectory } from "./directory/connect.js";
 import { expirePending } from "./directory/store.js";
 import { sweepEmailCounters } from "./email/send.js";
