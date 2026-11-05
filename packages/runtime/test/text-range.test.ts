@@ -96,7 +96,7 @@ describe("text-range", () => {
   it("leaves out svg style and script text too, and one index serves many lookups", () => {
     root.insertAdjacentHTML(
       "beforeend",
-      "<svg><style>.a{fill:red}</style><script>var x</script></svg><i>tail</i>",
+      "<i>tail</i><svg><style>.a{fill:red}</style><script>var x</script></svg>",
     );
     const idx = indexText(root);
     expect(idx.text).toBe("Hello brave newworld \u{1F600} endtail");
