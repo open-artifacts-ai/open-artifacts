@@ -66,6 +66,7 @@ import {
   TrashItemSchema,
 } from "./contract";
 import {
+  billingContext,
   DIRECTORY_SETTINGS,
   type ErrorContext,
   errorCopy,
@@ -349,7 +350,7 @@ const errorContext = (qc: QueryClient): ErrorContext => {
   return {
     capped: me?.auth?.cap != null,
     cap: me?.auth?.cap ?? null,
-    owner: me?.user.role === "owner" && me.auth?.cap == null,
+    ...billingContext(me),
     onDirectoryPage: location.pathname.startsWith(DIRECTORY_SETTINGS),
   };
 };
