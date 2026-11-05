@@ -1176,6 +1176,12 @@ describe("comments: review round 1", () => {
     const when = row.querySelector("span[title]") as HTMLElement;
     expect(when.getAttribute("title")).toMatch(/^November 5(, 2026)? at \d/);
     expect(when.textContent).not.toBe(when.getAttribute("title"));
+    // The author line never wraps: the name and "via" truncate, the time stays put (jsdom has no layout).
+    const line = when.parentElement as HTMLElement;
+    expect(line.className).not.toMatch(/flex-wrap/);
+    expect(when.className).toMatch(/whitespace-nowrap/);
+    expect(when.className).toMatch(/shrink-0/);
+    expect(line.querySelector("b")?.className).toMatch(/truncate/);
   });
 
   const art = (over: object) =>

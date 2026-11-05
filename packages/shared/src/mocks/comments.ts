@@ -46,18 +46,28 @@ export function createCommentHandlers({
     name: "Sam Rivera",
     me: false,
   };
-  const comment = (body: string, by: CommentAuthor): Comment => ({
+  /** Per #1496: edit is the author's; delete is the author's or a moderator's (owner, manager or editor). */
+  const comment = (
+    body: string,
+    by: CommentAuthor,
+    moderator = false,
+  ): Comment => ({
     id: newId(),
     body,
     author: by,
     createdAt: iso(),
     editedAt: null,
-    can: { edit: by.me, delete: true },
+    can: { edit: by.me, delete: by.me || moderator },
   });
+  const moderates = (id: string) => {
+    const a = artifacts.find((x) => x.id === id);
+    return a?.owner.id === me.user.id || a?.can?.edit === true;
+  };
   const seed = (id: string): CommentThread[] => {
-    const a = comment("Can we tighten this headline?", other);
+    const m = moderates(id);
+    const a = comment("Can we tighten this headline?", other, m);
     const b = comment("Agreed, shorter is better.", mine());
-    const c = comment("Looks good overall.", other);
+    const c = comment("Looks good overall.", other, m);
     return [
       {
         id: newId(),
