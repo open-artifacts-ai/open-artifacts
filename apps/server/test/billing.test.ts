@@ -26,6 +26,7 @@ import {
 } from "vitest";
 import { createApp } from "../src/app.js";
 import { withBrokerProps } from "../src/auth/broker-transport.js";
+import { sessionCookieName, signSession } from "../src/auth/session.js";
 import {
   creatorsOf,
   forgetRecordedCreators,
@@ -576,6 +577,25 @@ describe("plan enforcement", () => {
     });
     expect(ok.status).toBe(201);
     expect(calls.some((c) => c.path === "/trial/start")).toBe(true);
+  });
+
+  it("a code session with no tenant is a guest even under a plan lock: no admin reads, no billing", async () => {
+    await cache({ tier: "team", status: "lapsed", trialEndsAt: 1, version: 9 });
+    const admin = await login(`admin-code-${tag}@a.com`, "admin");
+    const code = `${sessionCookieName(env)}=${await signSession(
+      env,
+      admin.userId,
+      Date.now(),
+      { provider: "code", epoch: 0 },
+    )}`;
+    // The same admin on a normal session keeps the exemption (control).
+    expect((await send(R.members, admin.cookie)).status).toBe(200);
+    expect((await send(R.me, code)).status).toBe(200);
+    expect((await send(R.members, code)).status).toBe(404);
+    expect((await send(R.audit, code)).status).toBe(404);
+    const p = await send(R.billingPortal, code, { method: "POST", body: {} });
+    expect([403, 404]).toContain(p.status);
+    expect(calls.some((c) => c.path === "/portal")).toBe(false);
   });
 
   it("free after the trial: invites are 403 plan_required; nothing is created", async () => {

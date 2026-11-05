@@ -265,11 +265,18 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
       // The cap travels on the member itself (authz CAP, set once by getUser
       // from authConfig.guestsReadOnly and P3's restriction); a code session
       // outside the verified domains is capped on top, whatever the env says.
-      // An existing cap (P3's "restricted") is kept; no cap becomes "guest".
+      // A restricted member stays "restricted"; anyone else becomes "guest",
+      // whatever the billing plan says: the plan cap exempts admin reads
+      // and billing, which a session this weak must not keep.
       if (s.p === "code" && s.t === undefined)
         c.set(
           "user",
-          withCap(row.user, capOfCaller(callerOf(row.user)) ?? "guest"),
+          withCap(
+            row.user,
+            capOfCaller(callerOf(row.user)) === "restricted"
+              ? "restricted"
+              : "guest",
+          ),
         );
       else c.set("user", row.user);
       c.set("authMethod", s.p);
