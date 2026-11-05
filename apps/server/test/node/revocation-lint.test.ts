@@ -143,6 +143,10 @@ const WIDENS: Readonly<Record<string, string>> = {
     "a role proposal's status, not access",
   "bus/role-proposals.ts:decideProposal":
     "a role proposal's status, not access",
+  // #682: a comment thread's own status column (open, resolved) in the
+  // artifact's DO, never a member's status.
+  "runtime/do.ts:ArtifactRuntime.commentsStatus":
+    "a comment thread's status, not access",
 };
 
 /** Exempt from the scan: the primitives themselves. */
