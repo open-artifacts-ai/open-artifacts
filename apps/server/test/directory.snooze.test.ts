@@ -28,6 +28,7 @@ import {
   connect,
   directEnv,
   get,
+  hostedEnv,
   post,
   registerInstall,
   resetDirectory,
@@ -371,6 +372,36 @@ describe("held sweep snooze (#412)", () => {
         ["directory.sweep.unsnoozed", "system", "expired"],
       ],
     );
+  });
+
+  it("a plan-frozen install (paused, no lane re-arms): the alarm wakes for the snooze's end and ends it", async () => {
+    const a = await heldGroup("ttl-paused");
+    await connected();
+    await a.hold();
+    const t1 = t0 + 62 * MIN;
+    await snooze(a.gid, t1);
+    const end = t1 + HELD_SNOOZE_MS;
+    // A locked plan (with the gate) hands the DO "frozen" and paused.
+    const paused = (s: DurableObjectState) =>
+      new SyncEngine(hostedEnv(), s.storage);
+    await inDo(async (s) => {
+      await paused(s).kick("manual", t1 + 1, "frozen", true);
+      await paused(s).alarm(t1 + 1);
+      expect(await s.storage.getAlarm()).toBe(end);
+      // A real alarm's firing clears it; calling alarm() directly doesn't.
+      await s.storage.deleteAlarm();
+      await paused(s).alarm(end);
+      // Nothing left to wake for: the paused DO sleeps until kicked.
+      expect(await s.storage.getAlarm()).toBeNull();
+    });
+    expect(await snoozeRows()).toEqual([]);
+    expect((await audits(a.gid)).map((x) => [x.action, x.kind, x.why])).toEqual(
+      [
+        ["directory.sweep.snoozed", "user", null],
+        ["directory.sweep.unsnoozed", "system", "expired"],
+      ],
+    );
+    expect(await membersOf(a.gid)).toHaveLength(6);
   });
 
   it("other groups' removals apply as usual during the snooze", async () => {

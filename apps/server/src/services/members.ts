@@ -24,9 +24,11 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
-import { managesAdmins } from "../auth/authz.js";
+import { managesAdmins, planOfMember } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
+import { effectivePlan, planError, requireTeamPlan } from "../billing/plan.js";
+import { startTrialAnswer } from "../billing/store.js";
 import { getDb } from "../db/client.js";
 import { shares, tokens, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -227,6 +229,26 @@ async function existingConflict(env: Env, email: string): Promise<never> {
 }
 
 /**
+ * Hosted billing, a free instance whose trial never ran: an invite or a
+ * restore passes only if the trial starts. Billing unreachable (no gate, a
+ * non-2xx, a bad answer): 503 billing_unavailable. Billing answers with a
+ * plan that is still locked (the trial was already used): that plan's
+ * refusal (403 plan_required, with details). Billing answers with an
+ * unlocked plan (a paid tier): it passes.
+ */
+async function requireTrialStarted(env: Env): Promise<void> {
+  const now = Date.now();
+  const answer = await startTrialAnswer(env, now);
+  if (!answer)
+    throw new ApiError(
+      "billing_unavailable",
+      "Billing is unavailable; try again",
+    );
+  const lock = effectivePlan(answer, null, undefined, now).lock;
+  if (lock) throw planError(lock);
+}
+
+/**
  * Pre-creates the user row, then emails the invitee (best effort).
  * 400 on an invalid (non-ASCII) email, 409 if it exists (guest_lapsed for
  * a lapsed guest, member_removed with { userId } when that member was
@@ -258,6 +280,17 @@ export async function inviteMember(
       INVITE_UNREACHABLE_MESSAGE[details.reason],
       details,
     );
+  }
+  // Hosted billing: the first invite on a free instance passes only if the
+  // 14-day trial starts (signed POST /trial/start, idempotent). Billing
+  // unreachable, no gate or a non-2xx: 503 billing_unavailable and no user
+  // is created. An address that already exists is the usual conflict, and
+  // starts nothing.
+  const plan = planOfMember(inviter);
+  if (plan?.trialEligible) {
+    if (await stmt(env.DB, EXISTING).bind(email).first())
+      return existingConflict(env, email);
+    await requireTrialStarted(env);
   }
   const [row] = await insertUser(env, {
     email,
@@ -456,6 +489,14 @@ export async function setUserStatus(
 
 // The target predicate both role statements share: never the owner, an admin
 // only when ?3 = 1 (the actor may act on admins, #475).
+/** Org roles by rank, for the solo lock (patchMember): a higher rank is a promotion. */
+const PROMOTE_RANK: Readonly<Record<string, number>> = {
+  guest: 0,
+  member: 1,
+  admin: 2,
+  owner: 3,
+};
+
 const ROLE_TARGET = "role <> 'owner' and (role <> 'admin' or ?3 = 1)";
 
 // A role change ends the member's sessions (they re-sign-in with the new role).
@@ -486,6 +527,17 @@ export async function patchMember(
   checkTarget(row.role, admins);
   if (row.role === "owner")
     throw new ApiError("bad_request", "The owner cannot be demoted");
+  // Hosted billing, under any plan lock (free or read-only): no promotion
+  // and no reactivation (a role change for someone not active). A demotion
+  // or a same-role write passes: dropping people is how a team gets back to
+  // free.
+  const lock = actor === SYSTEM_ACTOR ? null : planOfMember(actor)?.lock;
+  if (
+    lock &&
+    (row.status !== "active" ||
+      (PROMOTE_RANK[patch.role] ?? 0) > (PROMOTE_RANK[row.role] ?? 0))
+  )
+    throw planError(lock);
   const db = getDb(env);
   const results = await env.DB.batch([
     // Owners and admins can't be restricted (ruling c): a promotion to admin
@@ -644,6 +696,11 @@ export async function restoreMember(
   actor: Member,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<Member> {
+  // Hosted billing: bringing someone back adds a person, a team feature, so
+  // it takes the invite's path (a free instance whose trial never ran passes
+  // only if the trial starts).
+  const plan = planOfMember(actor);
+  requireTeamPlan(plan, { invite: true });
   const row = await getRow(env, id);
   const admins = adminsOk(actor);
   checkTarget(row.role, admins);
@@ -654,6 +711,7 @@ export async function restoreMember(
   const synced = (await syncManages(env)) ? 1 : 0;
   if (synced && row.removedBySync) throw directoryManaged();
   if (row.email === placeholder(id)) throw addressReleased();
+  if (plan?.trialEligible) await requireTrialStarted(env);
   const out = await env.DB.batch([
     stmt(env.DB, RESTORE).bind(id, Date.now(), admins, synced, placeholder(id)),
     audit(env, "user.status", { type: "user", id }, userActor(actor.id), {

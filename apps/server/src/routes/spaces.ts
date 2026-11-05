@@ -89,7 +89,12 @@ function orgAdmin(c: Context<AppEnv>, action: OrgAction) {
  */
 function orgAdminAnyInstall(c: Context<AppEnv>, action: OrgAction) {
   const user = requireUser(c);
-  if (!orgCan(user, action, { cap: capOfCaller(caller(c)) }))
+  if (
+    !orgCan(user, action, {
+      cap: capOfCaller(caller(c)),
+      read: c.req.method === "GET",
+    })
+  )
     throw new ApiError("not_found", "Not found");
   return user;
 }

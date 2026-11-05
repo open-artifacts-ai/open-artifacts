@@ -10,16 +10,17 @@ import {
 } from "@oa/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
-import { callerOf, capOfCaller, withCap } from "../auth/authz.js";
+import { callerOf, capOfCaller, planOfMember, withCap } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { sessionCredId, setCred } from "../auth/cred.js";
 import { verifyPat } from "../auth/pat.js";
-import { isGuestRole } from "../auth/policy.js";
+import { isGuestRole, orgCan } from "../auth/policy.js";
 import {
   readSession,
   type Session,
   sessionCookieName,
 } from "../auth/session.js";
+import { planError } from "../billing/plan.js";
 import { BANNER_AFTER_MS } from "../directory/health.js";
 import { type Cap, refundAll, sendEmail, takeAll } from "../email/send.js";
 import { directoryAlertEmail } from "../email/templates.js";
@@ -264,11 +265,18 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
       // The cap travels on the member itself (authz CAP, set once by getUser
       // from authConfig.guestsReadOnly and P3's restriction); a code session
       // outside the verified domains is capped on top, whatever the env says.
-      // An existing cap (P3's "restricted") is kept; no cap becomes "guest".
+      // A restricted member stays "restricted"; anyone else becomes "guest",
+      // whatever the billing plan says: the plan cap exempts admin reads
+      // and billing, which a session this weak must not keep.
       if (s.p === "code" && s.t === undefined)
         c.set(
           "user",
-          withCap(row.user, capOfCaller(callerOf(row.user)) ?? "guest"),
+          withCap(
+            row.user,
+            capOfCaller(callerOf(row.user)) === "restricted"
+              ? "restricted"
+              : "guest",
+          ),
         );
       else c.set("user", row.user);
       c.set("authMethod", s.p);
@@ -465,6 +473,13 @@ const CAPPED_ALLOWED: readonly (readonly [string, RegExp])[] = [
   ["POST", /^\/api\/v1\/notices\/guest_shares\/dismiss$/],
 ];
 
+/** The billing routes a plan-capped owner or admin may still POST. */
+const BILLING_POSTS: ReadonlySet<string> = new Set([
+  R.billingCheckout,
+  R.billingPortal,
+  R.billingUsage,
+]);
+
 /**
  * A capped caller (CapReason on the member: a guest while the guest cap is on,
  * any code session outside the verified domains, a P3 restricted member) is
@@ -476,10 +491,27 @@ const CAPPED_ALLOWED: readonly (readonly [string, RegExp])[] = [
  */
 export const readOnlyCap = (): MiddlewareHandler<AppEnv> => async (c, next) => {
   const m = c.req.method;
-  if (m !== "GET" && m !== "HEAD" && capOfCaller(callerOf(c.var.user))) {
+  const cap =
+    m !== "GET" && m !== "HEAD" ? capOfCaller(callerOf(c.var.user)) : null;
+  if (cap) {
     const path = c.req.path;
     if (CAPPED_ALLOWED.some(([am, re]) => am === m && re.test(path)))
       return next();
+    // Hosted billing's plan cap: the owner and admins can still pay
+    // (Checkout, Portal, the usage report; orgCan billing.manage). Members
+    // cannot.
+    if (
+      cap === "plan" &&
+      m === "POST" &&
+      BILLING_POSTS.has(path) &&
+      c.var.user &&
+      orgCan(c.var.user, "billing.manage", { cap })
+    )
+      return next();
+    // Otherwise a clear 403 (the caller can see what they can't change),
+    // never a 404.
+    const lock = cap === "plan" ? planOfMember(c.var.user)?.lock : null;
+    if (lock) return toErrorResponse(planError(lock));
     if (m === "POST" && path === R.artifacts)
       return toErrorResponse(
         new ApiError("space_forbidden", "Guests can't publish here"),

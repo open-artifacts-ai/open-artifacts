@@ -53,8 +53,13 @@ export const RestrictionSchema = z.object({
 });
 export type Restriction = z.infer<typeof RestrictionSchema>;
 
-/** Why a user's access is capped below their roles: guest, or restricted (manual flag or restricted group). */
-export const CapReasonSchema = z.enum(["guest", "restricted"]);
+/**
+ * Why a user's access is capped below their roles: guest, or restricted
+ * (manual flag or restricted group), or plan (hosted billing: a free or
+ * read-only instance, for everyone but the org owner; writes only, reads
+ * are kept; Me.instance.billing says why).
+ */
+export const CapReasonSchema = z.enum(["guest", "restricted", "plan"]);
 export type CapReason = z.infer<typeof CapReasonSchema>;
 
 /** Hosted billing tier (the UI's tier copy). Null when self-hosted. */

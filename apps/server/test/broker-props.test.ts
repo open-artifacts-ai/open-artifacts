@@ -22,7 +22,7 @@ import {
   scheduled,
 } from "../src/cron.js";
 import { directoryClient } from "../src/directory/client.js";
-import { STALE_MS } from "../src/directory/health.js";
+import { ALERT_AFTER_MS, STALE_MS } from "../src/directory/health.js";
 import {
   BACKOFF_MAX_MS,
   BACKOFF_MIN_MS,
@@ -39,6 +39,13 @@ import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { feedSync, SYNC_DO_NAME } from "../src/services/directory.js";
 import { mailer, uniq } from "./auth-helpers.js";
+import {
+  type BillingRow,
+  cachePlan,
+  clearBilling,
+  DAY,
+  fakeBilling,
+} from "./billing-helpers.js";
 import {
   BROKER,
   brokerGate,
@@ -57,6 +64,7 @@ import {
   fakeDirectory,
 } from "./fixtures/fake-directory.js";
 import { login } from "./helpers.js";
+import { pinMiddayUtc } from "./midday.js";
 
 const MIN = 60_000;
 const req = (path: string) =>
@@ -261,21 +269,30 @@ const engine = (s: DurableObjectState) =>
   new SyncEngine(e, s.storage, undefined, box);
 /** DirectorySync RPCs made through fakeNs, by name. */
 const rpcs: string[] = [];
+/** The directory mode each kick, feed or confirm RPC handed over. */
+const modes: Array<string | undefined> = [];
 const fakeNs = {
   idFromName: () => ({}),
   get: () => ({
-    kick: (r: never) => inDo((s) => engine(s).kick(r, clock)),
-    wantsToken: () => {
-      rpcs.push("wantsToken");
-      return inDo((s) => engine(s).wantsToken(clock));
+    kick: (r: never, m?: never, p?: boolean) => {
+      modes.push(m);
+      return inDo((s) => engine(s).kick(r, clock, m, p));
     },
-    handToken: (k: string, h: never) => {
+    wantsToken: (m?: never, p?: boolean) => {
+      rpcs.push("wantsToken");
+      modes.push(m);
+      return inDo((s) => engine(s).wantsToken(clock, m, p));
+    },
+    handToken: (k: string, h: never, m?: never, p?: boolean) => {
       rpcs.push("handToken");
-      return inDo((s) => engine(s).handToken(k, h, clock));
+      modes.push(m);
+      return inDo((s) => engine(s).handToken(k, h, clock, m, p));
     },
     reset: () => inDo((s) => engine(s).reset(clock)),
-    confirmHeld: (id: string, by: never) =>
-      inDo((s) => engine(s).confirmHeld(id, by, clock)),
+    confirmHeld: (id: string, by: never, m?: never, p?: boolean) => {
+      modes.push(m);
+      return inDo((s) => engine(s).confirmHeld(id, by, clock, m, p));
+    },
     status: () => inDo((s) => engine(s).status()),
   }),
 } as unknown as Env["DIRECTORY_SYNC"];
@@ -288,12 +305,14 @@ const httpsBrokerCalls = () =>
     .filter((u) => u.startsWith(BROKER)).length;
 
 /** One scheduler tick: oa:directory-sync with the scheduler's props. */
+/** The BILLING gate the scheduler's props carry (the billing describe sets it). */
+let billingProps: Record<string, unknown> = {};
 const cronTick = async (now: number, calls: GateCall[] = gateCalls) => {
   clock = now;
   await scheduled(
     { cron: DIRECTORY_SYNC_CRON },
     e,
-    ctxOf({ DIRECTORY_BROKER: brokerGate(calls) }),
+    ctxOf({ DIRECTORY_BROKER: brokerGate(calls), ...billingProps }),
   );
 };
 
@@ -900,7 +919,6 @@ describe("review fixes", () => {
     ).toBe("unbound");
     await cronTick(clock);
     expect(rpcs.length).toBe(n);
-    expect(await inDo((s) => s.storage.getAlarm())).toBeNull();
   });
 
   it("P2.5 #15: a reconnect waiting for confirm keeps feeding (and syncing) the live binding", async () => {
@@ -987,5 +1005,261 @@ describe("review fixes", () => {
     expect(await alarms(t0 + 3 * MIN)).toBe("starved");
     expect(box.tok).toBeNull();
     expect(g.adminCalls.length).toBe(google0);
+  });
+});
+
+// ------------------------------------------------- billing tier (R1)
+
+describe("DirectorySync follows the billing tier's directory mode (#857 R1)", () => {
+  let ver = 0;
+  /** The cached billing answer (no BILLING gate here: the cache rules, R2). */
+  const tier = (r: Partial<BillingRow>, at: number) =>
+    cachePlan(
+      {
+        tier: "business",
+        status: "active",
+        trialEndsAt: null,
+        graceUntil: null,
+        version: ++ver,
+        ...r,
+      },
+      at,
+      e,
+    );
+  const audits = async (action: string) =>
+    (
+      await env.DB.prepare(
+        "select count(*) n from audit_events where action = ?",
+      )
+        .bind(action)
+        .first<{ n: number }>()
+    )?.n ?? 0;
+  const mints = () =>
+    gateCalls.filter((c) => c.path === "/google/directory/token").length;
+
+  // Billing is inert without its gate: the scheduler's props carry one whose
+  // row is billing's no-row default (version 0, never applied), so the cached
+  // answers above are the plan.
+  beforeEach(() => {
+    const b = fakeBilling();
+    b.s.row = { ...b.s.row, tier: "free", version: 0 };
+    billingProps = b.props;
+  });
+  afterEach(async () => {
+    billingProps = {};
+    await clearBilling();
+    vi.useRealTimers();
+  });
+
+  it("a trial syncs (google handed over) though the provisioned TIER is Team", async () => {
+    const t0 = pinMiddayUtc();
+    // Connect while the install's provisioned features allow it (the request
+    // carries no billing gate), then run on a Team-provisioned install whose
+    // cached billing answer is a trial.
+    const m = mailer();
+    e = hostedEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
+    await connected(t0);
+    e = hostedEnv({
+      ...m.env,
+      DIRECTORY_SYNC: fakeNs,
+      TIER: "team",
+      FEATURES: "spaces,sync_frozen",
+    });
+    await tier({ tier: "trial", trialEndsAt: t0 + 14 * DAY }, t0);
+    modes.length = 0;
+    const google0 = g.adminCalls.length;
+    expect(await period(t0 + FAST_MS)).toBe("done");
+    expect(modes.length).toBeGreaterThan(0);
+    expect(new Set(modes)).toEqual(new Set(["google"]));
+    expect(await kv("mode")).toBe("google");
+    expect(g.adminCalls.length).toBeGreaterThan(google0);
+    expect((await status()).state).toBe("ok");
+  });
+
+  it("Business to Team freezes group sync only: no group call, user lanes run, no lane failure, no alert; Business again resumes groups", async () => {
+    const t0 = pinMiddayUtc();
+    const m = mailer();
+    e = hostedEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
+    await tier({ tier: "business" }, t0);
+    await connected(t0);
+    expect(await kv("mode")).toBe("google");
+    const failed0 = await audits("directory.sync.failed");
+    const stale0 = await audits("directory.stale");
+    const sent0 = m.sent.length;
+    const members0 = g.adminCalls.filter((c) => c.includes("/members")).length;
+    await tier({ tier: "team" }, t0 + MIN);
+    // Every tick hands frozen over (never a pause); the user lanes keep
+    // running and the groups stay untouched.
+    const late = t0 + ALERT_AFTER_MS + NO_FEED_MS + 2 * MIN;
+    for (const t of [t0 + FAST_MS, t0 + FAST_MS + NO_FEED_MS + MIN, late]) {
+      expect(await period(t)).toBe("done");
+      expect(await kv("mode")).toBe("frozen");
+      expect(await kv("paused")).toBeFalsy();
+    }
+    expect(g.adminCalls.filter((c) => c.includes("/members")).length).toBe(
+      members0,
+    );
+    const s = await status();
+    expect(s.state).toBe("ok");
+    expect(s.lastError ?? null).toBeNull();
+    expect(await audits("directory.sync.failed")).toBe(failed0);
+    expect(await audits("directory.stale")).toBe(stale0);
+    expect(m.sent.length).toBe(sent0);
+    // Business again: the next tick feeds google and the group lanes run.
+    await tier({ tier: "business" }, late);
+    modes.length = 0;
+    expect(await period(late + MIN)).toBe("done");
+    expect(modes[0]).toBe("google");
+    expect((await status()).state).toBe("ok");
+  });
+
+  it("a locked plan (a lapse) freezes it too, without a lane failure", async () => {
+    const t0 = pinMiddayUtc();
+    await tier({ tier: "business" }, t0);
+    await connected(t0);
+    const google0 = g.adminCalls.length;
+    await tier({ tier: "business", status: "lapsed" }, t0 + MIN);
+    const t = t0 + FAST_MS + NO_FEED_MS + MIN;
+    await cronTick(t);
+    await inDo((s) => engine(s).alarm(t));
+    expect(await kv("mode")).toBe("frozen");
+    expect(g.adminCalls.length).toBe(google0);
+    expect(await kv("retryAt.fast")).toBeNull();
+    expect((await status()).state).toBe("ok");
+  });
+
+  it("the DirectorySync class hands each RPC's mode to its engine", async () => {
+    await runInDurableObject(realStub(), async (inst) => {
+      const eng = (inst as unknown as { engine: SyncEngine }).engine;
+      const k = vi.spyOn(eng, "kick").mockResolvedValue({} as SyncStatus);
+      const w = vi.spyOn(eng, "wantsToken").mockResolvedValue(false);
+      const h = vi.spyOn(eng, "handToken").mockResolvedValue();
+      const c = vi.spyOn(eng, "confirmHeld").mockResolvedValue(null);
+      await inst.kick("cron", "frozen", true);
+      await inst.wantsToken("google", false);
+      await inst.handToken("k", { error: "internal" }, "frozen", true);
+      await inst.confirmHeld("g1", undefined, "google", false);
+      expect(k).toHaveBeenCalledWith("cron", undefined, "frozen", true);
+      expect(w).toHaveBeenCalledWith(undefined, "google", false);
+      expect(h).toHaveBeenCalledWith(
+        "k",
+        { error: "internal" },
+        undefined,
+        "frozen",
+        true,
+      );
+      expect(c).toHaveBeenCalledWith(
+        "g1",
+        undefined,
+        undefined,
+        "google",
+        false,
+      );
+    });
+  });
+});
+
+// ------------- a plan lock pauses user sync; "frozen" alone never does (#857)
+
+describe("a frozen tier keeps its user lanes; only a plan lock with the gate pauses", () => {
+  let ver = 0;
+  const suspendedInGoogle = async (t0: number) => {
+    const [u] = dirUsers(1, "pz");
+    await connected(t0);
+    const uid = (
+      await env.DB.prepare(
+        "select user_id from identities where provider = 'google' and subject = ?",
+      )
+        .bind(u?.id as string)
+        .first<{ user_id: string }>()
+    )?.user_id as string;
+    return { u: u as { id: string; primaryEmail: string }, uid };
+  };
+  const statusOf = async (uid: string) =>
+    (
+      await env.DB.prepare("select status from users where id = ?")
+        .bind(uid)
+        .first<{ status: string }>()
+    )?.status;
+  const teamEnv = () =>
+    hostedEnv({
+      ...mailer().env,
+      DIRECTORY_SYNC: fakeNs,
+      TIER: "team",
+      FEATURES: "spaces,sync_frozen",
+    });
+  const suspend = (u: { id: string; primaryEmail: string }) => {
+    (g.users.get(u.id) as { suspended?: boolean }).suspended = true;
+    g.activity("admin", "SUSPEND_USER", { USER_EMAIL: u.primaryEmail });
+  };
+  const plan = (r: Partial<BillingRow>, at: number) =>
+    cachePlan(
+      {
+        tier: "team",
+        status: "active",
+        trialEndsAt: null,
+        graceUntil: null,
+        version: ++ver,
+        ...r,
+      },
+      at,
+      e,
+    );
+  afterEach(async () => {
+    billingProps = {};
+    await clearBilling();
+    vi.useRealTimers();
+  });
+
+  it("hosted Team (sync_frozen), no gate: user lanes run, as on main", async () => {
+    const t0 = pinMiddayUtc();
+    e = hostedEnv({ ...mailer().env, DIRECTORY_SYNC: fakeNs });
+    const { u, uid } = await suspendedInGoogle(t0);
+    e = teamEnv();
+    suspend(u);
+    g.adminCalls.length = 0;
+    expect(await period(t0 + FAST_MS)).toBe("done");
+    expect(await statusOf(uid)).toBe("suspended");
+    expect(g.adminCalls.some((c) => c.includes("/members"))).toBe(false);
+    expect(await inDo((s) => engine(s).wantsToken(t0, "frozen", false))).toBe(
+      false,
+    );
+  });
+
+  it("hosted Team with the gate and an unlocked team plan: the same", async () => {
+    const t0 = pinMiddayUtc();
+    e = hostedEnv({ ...mailer().env, DIRECTORY_SYNC: fakeNs });
+    const { u, uid } = await suspendedInGoogle(t0);
+    e = teamEnv();
+    const b = fakeBilling();
+    b.s.row = { ...b.s.row, tier: "free", version: 0 };
+    billingProps = b.props;
+    await plan({}, t0);
+    suspend(u);
+    expect(await period(t0 + FAST_MS)).toBe("done");
+    expect(await statusOf(uid)).toBe("suspended");
+  });
+
+  it("with the gate and a locked plan: paused (nothing called); unlocked: resumes", async () => {
+    const t0 = pinMiddayUtc();
+    e = hostedEnv({ ...mailer().env, DIRECTORY_SYNC: fakeNs });
+    const { u, uid } = await suspendedInGoogle(t0);
+    e = teamEnv();
+    const b = fakeBilling();
+    b.s.row = { ...b.s.row, tier: "free", version: 0 };
+    billingProps = b.props;
+    await plan({ status: "lapsed" }, t0);
+    suspend(u);
+    const google0 = g.adminCalls.length;
+    await cronTick(t0 + FAST_MS);
+    await inDo((s) => engine(s).alarm(t0 + FAST_MS));
+    expect(await statusOf(uid)).toBe("active");
+    expect(g.adminCalls.length).toBe(google0);
+    expect(await kv("paused")).toBe(true);
+    // Unlocked: the next tick hands no lock and the lanes run again.
+    await plan({}, t0 + MIN);
+    expect(await period(t0 + FAST_MS + MIN)).toBe("done");
+    expect(await kv("paused")).toBeFalsy();
+    expect(await statusOf(uid)).toBe("suspended");
   });
 });

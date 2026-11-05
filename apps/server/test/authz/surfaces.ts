@@ -1265,6 +1265,12 @@ export type OrgSurface = {
   needs?: readonly (keyof OrgReal)[];
   /** The OrgTarget field its refusal needs; without it, skip the route. */
   refuseNeeds?: "spaceMemberId";
+  /**
+   * Answers only on a hosted install: elsewhere its handler is 404 for
+   * everyone (orgExpected's `world`), and only that 404 (or the auth
+   * layer's 401) is a refusal.
+   */
+  hostedOnly?: true;
   probe(base: string, cred: Cred, t: OrgTarget, io?: ProbeIO): Promise<Verdict>;
 };
 
@@ -1323,6 +1329,11 @@ const ok =
   (...s: number[]) =>
   (r: Answer) =>
     s.includes(r.status);
+/**
+ * A hosted-only route off hosted: anything but its 404 (or the 401 of a
+ * caller with no live session) counts as allowed.
+ */
+const hostedOnlyAllow = (r: Answer) => !DENY.has(r.status);
 const either =
   (...f: ((r: Answer) => boolean)[]) =>
   (r: Answer) =>
@@ -1725,6 +1736,23 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
+  // Hosted only (ORG's hostedOnly): no refusal mode, since on a hosted
+  // install an allowed caller's request reaches billing. In this world the
+  // only refusals are the handler's 404 (every signed-in caller) and the
+  // auth layer's 401 (no live session, before any route): any other answer
+  // (a 403 included) shows as an allow and fails the expected deny.
+  "POST /api/v1/billing/checkout": {
+    real: {
+      req: () => ({ path: "", body: { tier: "team" } }),
+      allow: hostedOnlyAllow,
+    },
+  },
+  "POST /api/v1/billing/portal": {
+    real: { req: () => ({ path: "", body: {} }), allow: hostedOnlyAllow },
+  },
+  "POST /api/v1/billing/usage": {
+    real: { req: () => ({ path: "", body: {} }), allow: hostedOnlyAllow },
+  },
   // The grant lookup precedes the body: real only.
   "PATCH /api/v1/oauth-clients/:grantId": {
     real: {
@@ -1831,10 +1859,11 @@ function orgProbe(
 
 const U = { user: true } as const;
 const org = (action: string) => ({ org: action });
+const HOSTED_ONLY = { hostedOnly: true } as const;
 /** The space service's rule (SPACE_SURFACES' "manager" and "admin"). */
 const MANAGER = { user: true, space: "manager" } as const;
 const ADMIN = { user: true, space: "admin" } as const;
-const ORG: [string, OrgRule, number[]?, "data"?][] = [
+const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me", U, [200]],
   ["PATCH /api/v1/me", U],
   ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
@@ -1906,6 +1935,31 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["PATCH /api/v1/tokens/:id", U],
   ["DELETE /api/v1/tokens/:id", U],
   ["GET /api/v1/usage", org("usage.read"), [200]],
+  // Self-serve billing: hosted only. Off hosted (this world) the handler
+  // answers 404 to every caller; the hosted authz (owner and admin allowed;
+  // member, guest and anonymous refused, under every plan state) is proven
+  // in test/authz/plan.matrix.test.ts ("billing and admin reads").
+  [
+    "POST /api/v1/billing/checkout",
+    org("billing.manage"),
+    [],
+    undefined,
+    HOSTED_ONLY,
+  ],
+  [
+    "POST /api/v1/billing/portal",
+    org("billing.manage"),
+    [],
+    undefined,
+    HOSTED_ONLY,
+  ],
+  [
+    "POST /api/v1/billing/usage",
+    org("billing.manage"),
+    [],
+    undefined,
+    HOSTED_ONLY,
+  ],
   ["GET /api/v1/audit", org("audit.read"), [200]],
   ["GET /api/v1/audit/export", org("audit.read"), [200]],
   ["GET /api/v1/oauth-clients", U, [200]],
@@ -1924,12 +1978,13 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
 
 /** Every instance route (an org or user policy) not reached through an artifact. */
 export const ORG_SURFACES: readonly OrgSurface[] = ORG.map(
-  ([route, rule, okStatus = [], mutates]) => {
+  ([route, rule, okStatus = [], mutates, flags]) => {
     const w = ORG_WRITES[route];
     return {
       route,
       rule,
       ...(mutates ? { mutates } : {}),
+      ...(flags?.hostedOnly ? { hostedOnly: true as const } : {}),
       ...(w && !w.refuse
         ? { realOnly: true as const }
         : w?.refuse?.noDirectory

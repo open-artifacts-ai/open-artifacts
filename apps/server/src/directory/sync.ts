@@ -1,5 +1,7 @@
 import {
   type DirectoryBinding,
+  type DirectoryMode,
+  DirectoryModeSchema,
   HELD_SNOOZE_MS,
   type HeldSnoozeEnd,
   type HeldSweep,
@@ -11,6 +13,7 @@ import {
   brokerTransportKind,
   withoutBrokerProps,
 } from "../auth/broker-transport.js";
+import { billingOn } from "../billing/plan.js";
 import { stmt } from "../db/stmt.js";
 import type { DirectoryAlert } from "../email/templates.js";
 import type { Env } from "../env.js";
@@ -144,6 +147,21 @@ export const TOKEN_TTL_MS = 45 * 60_000;
 export const NO_FEED_MS = 15 * 60_000;
 /** DO kv: when a due lane first found no token in hand (cleared once one is). */
 const NOFEED_KEY = "nofeed.since";
+/**
+ * DO kv: the directory mode the last caller handed over (services/directory.ts
+ * syncModeFor: hosted, the billing tier's; a locked plan is frozen). The alarm
+ * follows it rather than the provisioned FEATURES, which this DO would read
+ * outside any request.
+ */
+const MODE_KEY = "mode";
+/**
+ * DO kv: a plan lock paused user sync too. Set only by a caller whose
+ * invocation has the BILLING gate and an actual plan lock (services/directory.ts
+ * syncPausedFor); every other call (gateless included) clears it. Never
+ * inferred from the mode: "frozen" is main's meaning (user lanes run, group
+ * sync stops), whether the tier freezes it (Team) or a lock does.
+ */
+const PAUSED_KEY = "paused";
 /**
  * DO kv: a snooze changed outside an alarm (an RPC). The next alarm rewrites
  * the D1 held list from the snoozed table, healing a health write of its
@@ -633,10 +651,59 @@ export class SyncEngine {
     return Math.min(...LANES.map((l) => this.laneAt(l, now)));
   }
 
+  // ------------------------------------------------------------ mode
+
+  /**
+   * The directory mode to follow: `passed` (the caller's, kept in MODE_KEY
+   * for the alarms that follow), else the last one handed over, else the
+   * provisioned FEATURES (a caller that never passed one). Hosted only:
+   * self-hosted, FEATURES rules.
+   */
+  private follow(passed?: DirectoryMode): DirectoryMode {
+    // Self-hosted: FEATURES is the only source (a caller's mode is the same).
+    if (!billingOn(this.env)) return directoryMode(this.env);
+    const ok = DirectoryModeSchema.safeParse(passed);
+    if (ok.success) {
+      if (this.get<string>(MODE_KEY) !== ok.data) this.put(MODE_KEY, ok.data);
+      return ok.data;
+    }
+    const kept = DirectoryModeSchema.safeParse(this.get<string>(MODE_KEY));
+    return kept.success ? kept.data : directoryMode(this.env);
+  }
+
+  /**
+   * An RPC's hand-over: the caller's mode (follow) and whether a plan lock
+   * pauses everything. Every RPC sets the flag from its own call, so a
+   * caller without the lock (a gateless one included) clears it.
+   */
+  private handOver(mode?: DirectoryMode, paused?: boolean): void {
+    this.follow(mode);
+    const p = paused === true;
+    if ((this.get<boolean>(PAUSED_KEY) ?? false) !== p) this.put(PAUSED_KEY, p);
+  }
+
+  /**
+   * A plan lock (a caller with the BILLING gate and a locked plan set it):
+   * nothing feeds this DO by design, so it calls nothing and fails nothing
+   * (no transport_no_feed, so no unhealthy state, session cap or owner
+   * alert). The binding, runs in flight and synced rows stay; sync resumes
+   * when a caller hands over no lock. Never inferred from the mode: a frozen
+   * install (Team) keeps its user lanes, as on main.
+   */
+  private paused(): boolean {
+    return this.get<boolean>(PAUSED_KEY) === true;
+  }
+
   // ------------------------------------------------------------ RPCs
 
-  /** Asks for a run; returns the status. */
-  async kick(reason: KickReason, now = Date.now()): Promise<SyncStatus> {
+  /** Asks for a run; returns the status. `mode`: the caller's (follow()). */
+  async kick(
+    reason: KickReason,
+    now = Date.now(),
+    mode?: DirectoryMode,
+    paused?: boolean,
+  ): Promise<SyncStatus> {
+    this.handOver(mode, paused);
     const reasons = this.reasons();
     const lastRec = this.get<number>("reconcile.startedAt") ?? 0;
     const counts =
@@ -670,7 +737,14 @@ export class SyncEngine {
    * token is in hand: the caller should mint one and handToken it. Restarts
    * a lost alarm (like a cron kick). Reads only this DO's storage.
    */
-  async wantsToken(now = Date.now()): Promise<boolean> {
+  async wantsToken(
+    now = Date.now(),
+    mode?: DirectoryMode,
+    paused?: boolean,
+  ): Promise<boolean> {
+    this.handOver(mode, paused);
+    const m = this.follow();
+    if (m === "off" || this.paused()) return false;
     if ((await this.storage.getAlarm()) === null)
       await this.storage.setAlarm(now);
     const t = this.box.tok;
@@ -688,7 +762,10 @@ export class SyncEngine {
     forKey: string,
     h: { token: string } | { error: MintFault },
     now = Date.now(),
+    mode?: DirectoryMode,
+    paused?: boolean,
   ): Promise<void> {
+    this.handOver(mode, paused);
     if ("token" in h) {
       this.box.tok = { token: h.token, exp: now + TOKEN_TTL_MS, for: forKey };
       this.box.fault = null;
@@ -707,7 +784,15 @@ export class SyncEngine {
     groupId: string,
     by: AuditActor = SYNC,
     now = Date.now(),
+    mode?: DirectoryMode,
+    paused?: boolean,
   ): Promise<SyncStatus | null> {
+    // Hosted, group sync stopped (frozen or off): nothing can apply a
+    // confirm. (Self-hosted, the route checks FEATURES before calling.)
+    if (billingOn(this.env)) {
+      this.handOver(mode, paused);
+      if (this.follow() !== "google") return null;
+    }
     let snoozedAt: number | null = null;
     const ok = this.storage.transactionSync(() => {
       const r = this.sql
@@ -742,7 +827,7 @@ export class SyncEngine {
       { type: "group", id: groupId },
       by,
     ).run();
-    return this.kick("confirm", now);
+    return this.kick("confirm", now, mode, paused);
   }
 
   /**
@@ -981,6 +1066,19 @@ export class SyncEngine {
   }
 
   /**
+   * A paused alarm's next wake: the earliest snooze's end, no sooner than
+   * FAST_MS (a due snooze here is one snoozeTick failed to end). Null: none.
+   */
+  private nextSnoozeAt(now: number): number | null {
+    const at = this.sql
+      .exec("select min(until) as at from snoozed")
+      .toArray()[0]?.at;
+    return at === null || at === undefined
+      ? null
+      : Math.max(Number(at), now + FAST_MS);
+  }
+
+  /**
    * Each alarm: snoozes past `until` end (the hold shows again), and a
    * snooze changed by an RPC since the last alarm is written to D1 again.
    */
@@ -1113,7 +1211,7 @@ export class SyncEngine {
       await revokeUsersLive(this.env, ids, "directory customer_mismatch");
       return now;
     }
-    const mode = directoryMode(this.env);
+    const mode = this.follow();
     const client = directoryClient(this.env);
     const { binding, sealed } = await readBinding(this.env);
     // Nothing to sync (off, unbound, no transport): stop until kicked. Runs
@@ -1124,12 +1222,18 @@ export class SyncEngine {
     if (mode === "off" || !client || !binding || !sealed) return null;
     if (!this.fresh()) return now;
     // Snoozes past `until` end in any mode (frozen too). Never fatal: a
-    // failure retries next alarm, and sync goes on.
+    // failure retries next alarm, and sync goes on. Before the paused stop:
+    // a plan-frozen install's snoozes end on time too.
     try {
       await this.snoozeTick(now);
     } catch (e) {
       if (e instanceof StaleSignal || !this.fresh()) return now;
       logError("directory_snooze_tick", e);
+    }
+    if (this.paused()) {
+      this.del(NOFEED_KEY);
+      // Paused, no lane re-arms this alarm: wake for the next snooze's end.
+      return this.nextSnoozeAt(now);
     }
     const groups = mode === "google";
     // Hosted with no token in hand: stop cleanly before planning anything

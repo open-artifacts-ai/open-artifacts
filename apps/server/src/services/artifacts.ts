@@ -38,12 +38,16 @@ import {
   firstThumbnailEligible,
   levelSql,
   listFilterSql,
+  planOfMember,
   publishTarget,
   roleRankQuery,
   roleRankSql,
 } from "../auth/authz.js";
-import { authConfig } from "../auth/config.js";
 import { can, dataWritersOf } from "../auth/policy.js";
+import { requireFreeStorage } from "../billing/caps.js";
+import { creatorStmt } from "../billing/creators.js";
+import { featuresOf } from "../billing/features.js";
+import { billingActive, requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -301,6 +305,8 @@ export async function publish(
   if (create && input.spaceId !== undefined && input.spaceId !== user.id) {
     // Another space needs the spaces feature (404 without it).
     requireSpaces(env);
+    // Hosted billing: a shared space is a team feature.
+    requireTeamPlan(planOfMember(user));
     spaceId = (
       await publishTarget(env, callerOf(user), input.spaceId, "create")
     ).id;
@@ -316,12 +322,16 @@ export async function publish(
     (create ? (await getSettings(env)).defaultVisibility : undefined);
   if (create) dataWriters = resolveDataWriters(input, visibility) ?? "viewers";
 
+  // Hosted billing: a free instance at its storage cap (off until set)
+  // publishes nothing new; restores and renames never land here.
+  await requireFreeStorage(env, 1);
   mark();
   const { manifest, written, uploadIds } = await materialize(
     env,
     id,
     user.id,
     plan,
+    { digest: billingActive(env) },
   );
   mark();
   // The inline content is in R2 now: drop the plan's copies so they don't
@@ -432,6 +442,11 @@ export async function publish(
   // on rename); the body is indexed asynchronously.
   if (visAudit) stmts.push(visAudit);
   stmts.push(seedSearchStmt(db, id));
+  // Hosted billing: the publisher is this month's creator once the version
+  // row exists (an agent's publish counts for its owner). restoreVersion
+  // never writes one.
+  const creator = creatorStmt(env, user.id, id, now);
+  if (creator) stmts.push(creator);
   if (!create && (input.title !== undefined || input.description !== undefined))
     stmts.push(syncTitleStmt(env, id));
   // Last: the guard above still sees every listed upload unconsumed.
@@ -872,7 +887,7 @@ export const spaceCols = (
  * anonymous). Without spaces, `decorate` still sets `can` (withCan).
  */
 export const decorates = (env: Env, caller: Caller): boolean =>
-  caller.kind === "user" && authConfig(env).features.includes("spaces");
+  caller.kind === "user" && featuresOf(env).includes("spaces");
 
 /**
  * Sets `out.space` (SpaceRef) and `out.can` (artifactCan of the caller's
@@ -1258,7 +1273,10 @@ export async function putThumbnail(
   const who = asUser(user);
   const r = await accessLevel(env, who, id);
   if (!r) throw notFound();
-  const editor = can(r.level, "publish", canCtx(who, r.artifact));
+  // The artifact's real space (canCtx alone says personal): a shared-space
+  // artifact under a plan lock is read-only, its thumbnail included.
+  const ctx = { ...canCtx(who, r.artifact), personal: r.personal };
+  const editor = can(r.level, "publish", ctx);
   let firstThumbnail = editor;
   if (!editor) {
     const email = normalizeEmail(user.email);
@@ -1273,7 +1291,7 @@ export async function putThumbnail(
   }
   if (
     !can(r.level, "thumbnail.write", {
-      ...canCtx(who, r.artifact),
+      ...ctx,
       firstThumbnail,
     })
   )
@@ -1637,7 +1655,7 @@ export async function undelete(
       .first<{ kind: string; deleted_at: number | null }>();
     if (
       sp?.kind === "shared" &&
-      (sp.deleted_at !== null || !authConfig(env).features.includes("spaces"))
+      (sp.deleted_at !== null || !featuresOf(env).includes("spaces"))
     )
       throw notFound();
     const cutoff = Date.now() - LIMITS.softDeleteDays * DAY;

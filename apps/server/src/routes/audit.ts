@@ -33,7 +33,12 @@ function limitOf(raw: string | undefined): number {
  */
 function requireAuditor(c: Context<AppEnv>): Member {
   const user = requireUser(c);
-  if (!orgCan(user, "audit.read", { cap: capOfCaller(caller(c)) }))
+  if (
+    !orgCan(user, "audit.read", {
+      cap: capOfCaller(caller(c)),
+      read: c.req.method === "GET",
+    })
+  )
     throw new ApiError("not_found", "Not found");
   return user;
 }

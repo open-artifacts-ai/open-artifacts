@@ -4,24 +4,30 @@
 // sealed refresh token, then runs the initial binding pass.
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { R, type SyncStatus } from "@oa/shared";
+import { type Member, R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withBrokerProps } from "../src/auth/broker-transport.js";
+import { planNow, withPlanScope } from "../src/billing/features.js";
+import { storePlan } from "../src/billing/store.js";
 import { scheduled } from "../src/cron.js";
 import { directoryClient } from "../src/directory/client.js";
 import { afterConsent } from "../src/directory/connect.js";
 import { open, seal } from "../src/directory/crypto.js";
+import { directorySignIn } from "../src/directory/signin.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { SYNC_DO_NAME } from "../src/services/directory.js";
 import { getUser } from "../src/services/users.js";
 import { seedUser, uniq } from "./auth-helpers.js";
+import { fakeBilling } from "./billing-helpers.js";
 import {
   begin,
   connect,
   directEnv,
   get,
   hostedEnv,
+  hostedProps,
   loc,
   post,
   registerInstall,
@@ -340,6 +346,75 @@ describe("hosted", () => {
     expect(s.binding).toBeNull();
     expect((await get(e, R.directory, a.cookie)).status).toBe(200);
     expect((await get(e, R.directory, m.cookie)).status).toBe(404);
+  });
+
+  it("under a plan lock a member's sign-in applies no group diff (frozen); unlocked it does", async () => {
+    const email = uniq("dir-signin");
+    const uid = await seedUser(email, "member");
+    const sub = `g-${crypto.randomUUID()}`;
+    g.addUser({ id: sub, primaryEmail: email });
+    const h = hostedEnv();
+    await connect(h, owner.cookie, g, { sub: admin.sub });
+    const gid = `grp-${crypto.randomUUID()}`;
+    const gemail = `${gid}@a.com`;
+    g.addGroup({ id: gid, email: gemail, members: [sub] });
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into directory_groups (group_id, email) values (?, ?)",
+      ).bind(gid, gemail),
+      env.DB.prepare(
+        "insert into org_group_mappings (group_id, group_email, role) values (?, ?, 'viewer')",
+      ).bind(gid, gemail),
+    ]);
+    const inGroup = async () =>
+      (await env.DB.prepare(
+        "select 1 from directory_members where group_id = ? and user_id = ?",
+      )
+        .bind(gid, uid)
+        .first()) !== null;
+    const member = async () => (await getUser(h, uid)) as Member;
+    const signIn = () =>
+      withBrokerProps(
+        { props: { ...hostedProps(), ...fakeBilling().props } },
+        () =>
+          withPlanScope(h, async () => {
+            await planNow(h);
+            await directorySignIn(h, await member());
+          }),
+      );
+    // A lapse keeps Business's features (sync_google) but locks the plan.
+    await env.DB.prepare(
+      "delete from settings where key like 'billing.%'",
+    ).run();
+    await storePlan(
+      h,
+      {
+        tier: "business",
+        status: "lapsed",
+        trialEndsAt: 1,
+        graceUntil: null,
+        version: 5,
+        asOf: Date.now(),
+      },
+      Date.now(),
+    );
+    await signIn();
+    expect(await inGroup()).toBe(false);
+    // Unlocked (control): the same sign-in applies the mapping.
+    await storePlan(
+      h,
+      {
+        tier: "business",
+        status: "active",
+        trialEndsAt: null,
+        graceUntil: null,
+        version: 6,
+        asOf: Date.now(),
+      },
+      Date.now(),
+    );
+    await signIn();
+    expect(await inGroup()).toBe(true);
   });
 
   it("an existing user is linked by email in the initial pass", async () => {
