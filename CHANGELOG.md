@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.123.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.122.0...v0.123.0) (2026-11-05)
+
+
+### Features
+
+* **bus:** lasting mailboxes, hub retention core ([#1295](https://github.com/open-artifacts-ai/open-artifacts/issues/1295)) ([#1495](https://github.com/open-artifacts-ai/open-artifacts/issues/1495)) ([b492ed1](https://github.com/open-artifacts-ai/open-artifacts/commit/b492ed1c442bb9a7c4d019b8d1e9dd19650f7bd5))
+
+
+### Bug Fixes
+
+* **ci:** release gate requires the deploy's jobs, not the whole release-please run ([#1519](https://github.com/open-artifacts-ai/open-artifacts/issues/1519)) ([ff4453d](https://github.com/open-artifacts-ai/open-artifacts/commit/ff4453d553636df2a595ae36ee18c1f4e06e6c4e))
+
 ## [0.122.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.121.1...v0.122.0) (2026-11-05)
 
 
