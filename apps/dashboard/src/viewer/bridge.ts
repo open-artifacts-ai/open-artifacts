@@ -15,6 +15,7 @@ import {
   RUNTIME_RESULTS,
   type RuntimeMethod,
   retryAfterFromClose,
+  type SelectionAnchor,
   type ShellToArtifact,
   StorageEntrySchema,
   StorageKeySchema,
@@ -66,6 +67,18 @@ export interface BridgeOptions {
   onScroll?: (pos: ScrollPos) => void;
   /** Text selected or a field focused in the frame, or no longer. */
   onEngaged?: (engaged: boolean) => void;
+  /**
+   * Comments (#682). All three are hints from page code: each message is
+   * validated by the shared schema here, and the receiver checks the rest.
+   */
+  onCommentSelect?: (anchor: SelectionAnchor) => void;
+  onCommentPositions?: (
+    positions: Extract<
+      ArtifactToShell,
+      { type: "comment.positions" }
+    >["positions"],
+  ) => void;
+  onCommentOpen?: (id: string) => void;
 }
 
 /** A document's scroll offset and how far it could scroll. */
@@ -521,6 +534,15 @@ export function createBridge(opts: BridgeOptions) {
       case "engaged":
         opts.onEngaged?.(m.engaged);
         break;
+      case "comment.select":
+        opts.onCommentSelect?.(m.anchor);
+        break;
+      case "comment.positions":
+        opts.onCommentPositions?.(m.positions);
+        break;
+      case "comment.open":
+        opts.onCommentOpen?.(m.id);
+        break;
     }
   };
 
@@ -565,6 +587,18 @@ export function createBridge(opts: BridgeOptions) {
      */
     setArtifact(next: ArtifactSummary) {
       if (next.id === id) artifact = next;
+    },
+    /** Comments (#682): the mode, then the threads to draw (anchors and ids only, never text). */
+    setCommentsMode(mode: "off" | "select" | "pin") {
+      reply({ oa: 1, type: "comments.mode", mode });
+    },
+    setComments(
+      threads: Extract<ShellToArtifact, { type: "comments.set" }>["threads"],
+    ) {
+      reply({ oa: 1, type: "comments.set", threads });
+    },
+    focusComment(threadId: string) {
+      reply({ oa: 1, type: "comments.focus", id: threadId });
     },
     /** After a live swap: scroll to the previous version's position. */
     scrollTo(pos: ScrollPos) {

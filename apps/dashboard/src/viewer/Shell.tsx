@@ -21,6 +21,16 @@ import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
+import { CommentsBody } from "./comments/CommentsBody";
+import {
+  CommentsColumn,
+  CommentsDialog,
+  useSurface,
+} from "./comments/surfaces";
+import {
+  CommentsProvider,
+  useCommentsController,
+} from "./comments/useComments";
 import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
 import { FullScreenEscape } from "./FullScreenEscape";
 import { frameLoad, SANDBOX, safeContentUrl } from "./frame";
@@ -122,6 +132,7 @@ function Viewer({
   version,
   explicitVersion,
   authed,
+  readOnly = false,
   viewer,
   role,
   plan,
@@ -162,6 +173,8 @@ function Viewer({
   version: number;
   explicitVersion: boolean;
   authed: boolean;
+  /** A capped (guest or restricted) member: the server refuses their comment writes. */
+  readOnly?: boolean;
   viewer: { email: string; name: string | null } | null;
 }) {
   const content = useContentUrl(artifact.id, version, gone !== null);
@@ -184,7 +197,9 @@ function Viewer({
     tab?: string;
   };
   const panelOpen = search.panel === "open";
-  const tab: PanelTab = isPanelTab(search.tab) ? search.tab : "versions";
+  const requestedTab: PanelTab = isPanelTab(search.tab)
+    ? search.tab
+    : "versions";
   const setPanel = (open: boolean, t: PanelTab = tab) =>
     void navigate({
       to: ".",
@@ -196,6 +211,43 @@ function Viewer({
       })) as never,
     });
   const bridge = useRef<Bridge | null>(null);
+  // Comments (#682). The list lives in a column beside the page, a tab of the
+  // side panel, or a dialog (phones, full screen).
+  const surface = useSurface(chromeless);
+  const [colOpen, setColOpen] = useState<boolean | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const openSurface = useRef(() => {});
+  const getBridge = useCallback(() => bridge.current, []);
+  const cmt = useCommentsController({
+    artifact,
+    version,
+    pinned: explicitVersion,
+    authed,
+    readOnly,
+    getBridge,
+    openSurface: () => openSurface.current(),
+  });
+  const cmtRef = useRef(cmt);
+  cmtRef.current = cmt;
+  const commentsOn =
+    cmt.enabled && (authed || cmt.canComment || cmt.threads.length > 0);
+  // The panel's Comments tab: offered only where comments are on and the list
+  // isn't a dialog; a link to it elsewhere falls back to Versions.
+  const commentsTab = commentsOn && surface !== "dialog";
+  const tab: PanelTab = !authed
+    ? "comments"
+    : requestedTab === "comments" && !commentsTab
+      ? "versions"
+      : requestedTab;
+  // Open by default only when there is something to show.
+  const columnShown =
+    colOpen ??
+    (cmt.threads.length > 0 || cmt.draft !== null || cmt.error != null);
+  openSurface.current = () => {
+    if (surface === "dialog") setDialogOpen(true);
+    else if (surface === "panel" || panelOpen) setPanel(true, "comments");
+    else setColOpen(true);
+  };
   // Latest values for the effect: the parent's key remounts this on id/version change.
   const vformat = useVersionInfo(artifact.id, version).data?.format;
   const formatRef = useRef(vformat);
@@ -353,6 +405,7 @@ function Viewer({
       formatOf: () => formatRef.current,
       onHello: () => {
         onHello();
+        cmtRef.current.resync();
         fxRef.current.onHello();
         // A live swap keeps the reader's place.
         const pos = restore.current?.();
@@ -364,6 +417,9 @@ function Viewer({
       onEngaged: (on) => {
         fs.current.engaged = on;
       },
+      onCommentSelect: (a) => cmtRef.current.onSelect(a),
+      onCommentPositions: (p) => cmtRef.current.onPositions(p),
+      onCommentOpen: (id) => cmtRef.current.onOpen(id),
       onPdfText: (t) => fxRef.current.onPdfText(t),
       onThumb: (b) => fxRef.current.onThumb(b),
       // The shell re-checks access: still readable, or the gone state.
@@ -420,101 +476,174 @@ function Viewer({
       }}
     />
   );
+  const fmt =
+    vformat ??
+    (version === artifact.currentVersion ? artifact.format : undefined);
+  const textFormat = fmt !== "pdf" && fmt !== "image";
+  const commentsButton = commentsOn
+    ? surface === "column"
+      ? {
+          open: cmt.open,
+          expanded: columnShown && !panelOpen,
+          onClick: () =>
+            panelOpen ? setPanel(true, "comments") : setColOpen(!columnShown),
+        }
+      : surface === "panel"
+        ? {
+            open: cmt.open,
+            expanded: panelOpen && tab === "comments",
+            onClick: () =>
+              setPanel(!(panelOpen && tab === "comments"), "comments"),
+          }
+        : {
+            open: cmt.open,
+            expanded: dialogOpen,
+            onClick: () => setDialogOpen((o) => !o),
+          }
+    : undefined;
   return (
-    <div className="oa-viewer">
-      {!chromeless && (
-        <>
-          <Crumbs title={artifact.title} />
-          <TitleBar
-            artifact={artifact}
-            version={version}
-            explicitVersion={explicitVersion}
-            authed={authed}
-            onShare={() => setPanel(true, "share")}
-            versionsOpen={panelOpen && tab === "versions"}
-            onVersions={() =>
-              setPanel(!(panelOpen && tab === "versions"), "versions")
-            }
-            live={slot}
-            newer={newer}
-            gone={gone !== null}
-          />
-          {gone && (
-            <GoneBanner
-              gone={gone}
-              canRestore={artifact.can?.delete ?? artifact.access === "owner"}
-              onRestore={onUndelete ?? (async () => {})}
+    <CommentsProvider value={cmt}>
+      <div className="oa-viewer">
+        {!chromeless && (
+          <>
+            <Crumbs title={artifact.title} />
+            <TitleBar
+              artifact={artifact}
+              version={version}
+              explicitVersion={explicitVersion}
               authed={authed}
-              next={viewerPath(artifact.id)}
+              onShare={() => setPanel(true, "share")}
+              versionsOpen={panelOpen && tab === "versions"}
+              onVersions={() =>
+                setPanel(!(panelOpen && tab === "versions"), "versions")
+              }
+              live={slot}
+              newer={newer}
+              gone={gone !== null}
+              comments={commentsButton}
+            />
+            {gone && (
+              <GoneBanner
+                gone={gone}
+                canRestore={artifact.can?.delete ?? artifact.access === "owner"}
+                onRestore={onUndelete ?? (async () => {})}
+                authed={authed}
+                next={viewerPath(artifact.id)}
+              />
+            )}
+          </>
+        )}
+        <div className="oa-vbody">
+          {!url && (content.current || content.error) ? (
+            <ErrorPanel onRetry={() => void content.refresh()} />
+          ) : null}
+          {!url && !content.current && !content.error && (
+            <div className="oa-vmain" aria-busy="true">
+              {loader}
+            </div>
+          )}
+          {url && (
+            <div className="oa-vmain" aria-busy={ready ? undefined : true}>
+              {loader}
+              {renav && (
+                <RenavNotice
+                  onReload={reload}
+                  onDismiss={() => setRenav(false)}
+                />
+              )}
+              {slow && (
+                <SlowNotice
+                  cpu={(cpu.hits ?? 0) > 0 || cpu.recent}
+                  reloads={reloads}
+                  admin={cpu.admin}
+                  paid={cpu.paid}
+                  onReload={reload}
+                  onDismiss={() => {
+                    dismissed.current = true;
+                    clearTimeout(slowTimer.current);
+                    setSlow(false);
+                  }}
+                />
+              )}
+              {/* No src prop: the bridge sets it (loadArtifactFrame). */}
+              <iframe
+                key={frame.key}
+                ref={setEl}
+                className="oa-vframe"
+                data-painted={painted ? "" : undefined}
+                onLoad={onFrameLoad}
+                title={artifact.title}
+                sandbox={SANDBOX}
+                referrerPolicy="no-referrer"
+                allow="clipboard-write"
+              />
+            </div>
+          )}
+          {commentsOn && surface === "column" && columnShown && !panelOpen && (
+            <CommentsColumn textFormat={textFormat} />
+          )}
+          {panelOpen && (authed || commentsTab) && !chromeless && (
+            <SidePanel
+              artifact={artifact}
+              version={version}
+              authed={authed}
+              comments={
+                commentsTab ? (
+                  <CommentsBody textFormat={textFormat} />
+                ) : undefined
+              }
+              tab={tab}
+              onTab={(t) => setPanel(true, t)}
+              onClose={() => setPanel(false)}
             />
           )}
-        </>
-      )}
-      <div className="oa-vbody">
-        {!url && (content.current || content.error) ? (
-          <ErrorPanel onRetry={() => void content.refresh()} />
-        ) : null}
-        {!url && !content.current && !content.error && (
-          <div className="oa-vmain" aria-busy="true">
-            {loader}
-          </div>
+        </div>
+        {commentsOn && surface === "dialog" && dialogOpen && (
+          <CommentsDialog
+            textFormat={textFormat}
+            onClose={() => setDialogOpen(false)}
+          />
         )}
-        {url && (
-          <div className="oa-vmain" aria-busy={ready ? undefined : true}>
-            {loader}
-            {renav && (
-              <RenavNotice
-                onReload={reload}
-                onDismiss={() => setRenav(false)}
-              />
-            )}
-            {slow && (
-              <SlowNotice
-                cpu={(cpu.hits ?? 0) > 0 || cpu.recent}
-                reloads={reloads}
-                admin={cpu.admin}
-                paid={cpu.paid}
-                onReload={reload}
-                onDismiss={() => {
-                  dismissed.current = true;
-                  clearTimeout(slowTimer.current);
-                  setSlow(false);
-                }}
-              />
-            )}
-            {/* No src prop: the bridge sets it (loadArtifactFrame). */}
-            <iframe
-              key={frame.key}
-              ref={setEl}
-              className="oa-vframe"
-              data-painted={painted ? "" : undefined}
-              onLoad={onFrameLoad}
-              title={artifact.title}
-              sandbox={SANDBOX}
-              referrerPolicy="no-referrer"
-              allow="clipboard-write"
-            />
-          </div>
-        )}
-        {panelOpen && authed && !chromeless && (
-          <SidePanel
+        {/* After the frame, so it is the top document's only Tab stop. */}
+        {chromeless && (
+          <FullScreenEscape
             artifact={artifact}
-            version={version}
-            tab={tab}
-            onTab={(t) => setPanel(true, t)}
-            onClose={() => setPanel(false)}
+            live={
+              <>
+                {commentsButton && (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    aria-label={
+                      commentsButton.open > 0
+                        ? `Comments, ${commentsButton.open} open`
+                        : "Comments"
+                    }
+                    aria-expanded={commentsButton.expanded}
+                    onClick={commentsButton.onClick}
+                  >
+                    Comments
+                    {commentsButton.open > 0 && ` ${commentsButton.open}`}
+                  </Button>
+                )}
+                {isEmbed() && artifact.comments === true && (
+                  <a
+                    className="oa-opencomment"
+                    href={viewerPath(artifact.id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open to comment
+                  </a>
+                )}
+                {slot}
+              </>
+            }
+            gone={gone !== null}
           />
         )}
       </div>
-      {/* After the frame, so it is the top document's only Tab stop. */}
-      {chromeless && (
-        <FullScreenEscape
-          artifact={artifact}
-          live={slot}
-          gone={gone !== null}
-        />
-      )}
-    </div>
+    </CommentsProvider>
   );
 }
 
@@ -525,10 +654,10 @@ export function Shell(props: { id: string; v?: number; chromeless?: boolean }) {
   return <ArtifactShell key={props.id} {...props} />;
 }
 
-/** A menu or dialog is open (the side panel doesn't count: it sits beside the frame). */
+/** A menu or dialog is open, or a comment is being written or edited (the side panel doesn't count: it sits beside the frame). */
 const chromeOpen = () =>
   document.querySelector(
-    '[role="menu"],[role="dialog"],[role="alertdialog"]',
+    '[role="menu"],[role="dialog"],[role="alertdialog"],[data-oa-composing]',
   ) !== null;
 
 function ArtifactShell({
@@ -663,6 +792,7 @@ function ArtifactShell({
               explicitVersion={v !== undefined}
               chromeless={chromeless}
               authed={authed}
+              readOnly={authed && me.me.auth?.readOnly === true}
               role={authed ? me.me.user.role : undefined}
               plan={authed ? me.me.instance.plan : undefined}
               viewer={
