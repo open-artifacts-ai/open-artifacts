@@ -392,7 +392,7 @@ jobs:
       # The token's own end date (provision's checkToken never sees it): an
       # issue naming only the secret, 30 days ahead.
       - name: The deploy token's expiry
-        if: ${{ !cancelled() && steps.token_identity.outcome == 'success' }}
+        if: ${{ !cancelled() }}
         env:
           DEPLOY_ENV: ${{ inputs.env }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
