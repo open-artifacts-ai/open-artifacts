@@ -711,26 +711,23 @@ jobs:
   # ---------- npm: @open-artifacts/bus (#1301) ----------
   # Stable releases only, from the release commit on main. The package's
   # version stays 0.0.0 (and "private": true) in the repository, so nothing
-  # but this job can publish it; the job sets the tag's version and drops
-  # "private" and devDependencies in its own checkout. The token lives only in
-  # the npm-publish Environment (main only). A re-run is a no-op once the
-  # version is on npm.
-  publish-npm:
+  # but pack-npm can make a publishable tarball: it sets the tag's version and
+  # drops "private" and devDependencies in its own checkout. Two jobs, so the
+  # code that install, prepack and the bin run never shares a runner with the
+  # npm token or the OIDC token: pack-npm has neither, publish-npm installs
+  # and runs nothing from the repository.
+  pack-npm:
     needs: [release-please]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.release-please.outputs.release_created == 'true' && !contains(needs.release-please.outputs.tag_name, '-') }}
     runs-on: ubuntu-latest
-    environment: npm-publish
     permissions:
       contents: read
-      # Signs the provenance statement (and, later, trusted publishing).
-      id-token: write
-    concurrency:
-      group: publish-npm-${{ needs.release-please.outputs.tag_name }}
-      cancel-in-progress: false
     timeout-minutes: 20
+    outputs:
+      version: ${{ steps.pack.outputs.version }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
     env:
       TAG: ${{ needs.release-please.outputs.tag_name }}
-      PACKAGE: "@open-artifacts/bus"
     defaults:
       run:
         working-directory: packages/bus-cli
@@ -741,66 +738,107 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
       # No dependency cache: a main-scoped pnpm store would feed the published bytes.
-      # registry-url writes an .npmrc that reads NODE_AUTH_TOKEN, set on the
-      # publish step only.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          registry-url: https://registry.npmjs.org
-      # Node 22 ships npm 10; trusted publishing needs npm 11.5.1 or later.
-      - name: Pin npm
-        run: npm install -g npm@11.6.2
-      - id: version
-        name: Version from the tag; skip if it is already on npm
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - id: pack
+        name: Set the tag's version, build and pack; check the tarball and run its bin
         run: |
           set -euo pipefail
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not a stable vX.Y.Z tag"; exit 1; }
           version=${TAG#v}
           root=$(jq -r .version ../../package.json)
           [ "$root" = "$version" ] || { echo "::error::package.json at $TAG is $root, not $version"; exit 1; }
-          if out=$(npm view "$PACKAGE@$version" version 2>"$RUNNER_TEMP/npm-view.err"); then
-            if [ "$out" = "$version" ]; then
-              echo "$PACKAGE@$version is already on npm; nothing to publish"
-              echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0
-            fi
-            [ -z "$out" ] || { echo "::error::npm view answered '$out' for $version"; exit 1; }
-          elif ! grep -q E404 "$RUNNER_TEMP/npm-view.err"; then
-            cat "$RUNNER_TEMP/npm-view.err"; echo "::error::could not ask npm whether $version exists"; exit 1
-          fi
-          { echo "version=$version"; echo "publish=true"; } >> "$GITHUB_OUTPUT"
-      - if: steps.version.outputs.publish == 'true'
-        run: pnpm install --frozen-lockfile
-        working-directory: .
-      - id: pack
-        name: Set the version, build and pack; check the tarball
-        if: steps.version.outputs.publish == 'true'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          npm pkg set "version=$VERSION"
+          npm pkg set "version=$version"
           npm pkg delete private devDependencies
+          cp ../../LICENSE LICENSE
+          mkdir "$RUNNER_TEMP/npm"
           # prepack bundles dist/ and assets/ at this version.
-          npm pack --pack-destination "$RUNNER_TEMP"
-          tgz="$RUNNER_TEMP/open-artifacts-bus-$VERSION.tgz"
+          npm pack --pack-destination "$RUNNER_TEMP/npm"
+          tgz="$RUNNER_TEMP/npm/open-artifacts-bus-$version.tgz"
           [ -f "$tgz" ] || { echo "::error::npm pack wrote no $tgz"; exit 1; }
           files=$(tar -tzf "$tgz" | sort)
           echo "$files"
-          bad=$(grep -Ev '^package/(package\.json|dist/.+|assets/.+)$' <<< "$files" || true)
+          bad=$(grep -Ev '^package/(package\.json|LICENSE|dist/.+|assets/.+)$' <<< "$files" || true)
           [ -z "$bad" ] || { echo "::error::unexpected files in the tarball: $bad"; exit 1; }
-          grep -qx 'package/dist/index.js' <<< "$files" || { echo "::error::no dist/index.js"; exit 1; }
+          for f in package/LICENSE package/dist/index.js; do
+            grep -qx "$f" <<< "$files" || { echo "::error::no $f in the tarball"; exit 1; }
+          done
           mkdir "$RUNNER_TEMP/unpacked"
           tar -xzf "$tgz" -C "$RUNNER_TEMP/unpacked"
           [ -x "$RUNNER_TEMP/unpacked/package/dist/index.js" ] || { echo "::error::the bin is not executable"; exit 1; }
           got=$("$RUNNER_TEMP/unpacked/package/dist/index.js" --version)
-          [ "$got" = "oa-bus $VERSION" ] || { echo "::error::the bin reports '$got', not 'oa-bus $VERSION'"; exit 1; }
-          echo "tarball=$tgz" >> "$GITHUB_OUTPUT"
-      # The exact bytes checked above. To switch to npm trusted publishing,
-      # delete the NODE_AUTH_TOKEN line below (and the NPM_TOKEN secret): npm
-      # then authenticates with this job's OIDC token.
+          [ "$got" = "oa-bus $version" ] || { echo "::error::the bin reports '$got', not 'oa-bus $version'"; exit 1; }
+          sha=$(sha256sum "$tgz" | cut -d' ' -f1)
+          { echo "version=$version"; echo "sha256=$sha"; } >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/npm/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+  # The token lives only in the npm-publish Environment (main and v* tags).
+  # No checkout, no install, no lifecycle scripts: this job runs only the
+  # pinned node and npm on the tarball pack-npm checked, whose sha256 comes
+  # from pack-npm's job output, not from the artifact. A re-run is a no-op
+  # once the version is on npm.
+  publish-npm:
+    needs: [release-please, pack-npm]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.pack-npm.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      # Signs the provenance statement (and, later, trusted publishing).
+      id-token: write
+    concurrency:
+      group: publish-npm-${{ needs.release-please.outputs.tag_name }}
+      cancel-in-progress: false
+    timeout-minutes: 10
+    env:
+      PACKAGE: "@open-artifacts/bus"
+      VERSION: ${{ needs.pack-npm.outputs.version }}
+      SHA256: ${{ needs.pack-npm.outputs.sha256 }}
+    steps:
+      # registry-url writes an .npmrc that reads NODE_AUTH_TOKEN, set on the
+      # publish step only.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.21.0
+          registry-url: https://registry.npmjs.org
+      # Node 22 ships npm 10; trusted publishing needs npm 11.5.1 or later.
+      - name: Pin npm
+        run: npm install -g --ignore-scripts npm@11.6.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/npm
+      - id: check
+        name: Verify the tarball; skip if the version is already on npm
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::bad version '$VERSION'"; exit 1; }
+          [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::bad sha256 '$SHA256'"; exit 1; }
+          tgz="$RUNNER_TEMP/npm/open-artifacts-bus-$VERSION.tgz"
+          echo "$SHA256  $tgz" | sha256sum -c -
+          if out=$(npm view "$PACKAGE@$VERSION" version 2>"$RUNNER_TEMP/npm-view.err"); then
+            if [ "$out" = "$VERSION" ]; then
+              echo "$PACKAGE@$VERSION is already on npm; nothing to publish"
+              echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            [ -z "$out" ] || { echo "::error::npm view answered '$out' for $VERSION"; exit 1; }
+          elif ! grep -q E404 "$RUNNER_TEMP/npm-view.err"; then
+            cat "$RUNNER_TEMP/npm-view.err"; echo "::error::could not ask npm whether $VERSION exists"; exit 1
+          fi
+          { echo "tarball=$tgz"; echo "publish=true"; } >> "$GITHUB_OUTPUT"
+      # To switch to npm trusted publishing, delete the NODE_AUTH_TOKEN line
+      # below (and the NPM_TOKEN secret): npm then authenticates with this
+      # job's OIDC token.
       - name: Publish with provenance
-        if: steps.version.outputs.publish == 'true'
+        if: steps.check.outputs.publish == 'true'
         env:
-          TARBALL: ${{ steps.pack.outputs.tarball }}
+          TARBALL: ${{ steps.check.outputs.tarball }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish "$TARBALL" --provenance --access public
+        run: npm publish "$TARBALL" --provenance --access public --ignore-scripts
