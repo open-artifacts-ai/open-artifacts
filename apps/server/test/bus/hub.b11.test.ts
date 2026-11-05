@@ -584,7 +584,9 @@ describe("closed-session work drains from the alarm", () => {
     const flushed = d.seen.filter(
       (f) => f.type === "deliver" && oldSet.has(f.msg_id),
     );
-    expect(flushed.map((f) => f.msg_id).sort()).toEqual([...old].sort());
+    expect(
+      flushed.map((f) => (f.type === "deliver" ? f.msg_id : "")).sort(),
+    ).toEqual([...old].sort());
     for (const f of flushed)
       if (f.type === "deliver")
         d.send({ v: 1, id: `a-${f.msg_id}`, type: "ack", msg_id: f.msg_id });
