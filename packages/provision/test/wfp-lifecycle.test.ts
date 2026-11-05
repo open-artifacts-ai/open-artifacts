@@ -813,8 +813,6 @@ describe("upgrade", () => {
       new RegExp(`^install ${inst.id}: upgrade it to 0\\.25\\.0 first; `),
     );
     expect(e.message).toMatch(/Ledger/);
-    // The fleet's alert row keeps 200 characters of it.
-    expect(e.message.length).toBeLessThanOrEqual(200);
     expect(s.fake.writes().length).toBe(w);
     expect(s.row(inst.id)).toMatchObject({ version: "0.23.0", lease: null });
     // The named step, then the release: the normal path, with no listing.

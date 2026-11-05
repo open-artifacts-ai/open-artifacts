@@ -258,26 +258,29 @@ describe("upgrade and rollback (5.4)", () => {
   });
 
   it("#1343: an install on DO tag v3, to a release binding BusHub: do_step_required names the step, and the fleet halt shows it", async () => {
-    // The step: V2, the server template as it is (v4 adds BusHub, unbound).
-    // The target binds BusHub.
+    // The server template binds BusHub (#1425): the target. The step,
+    // 0.24.5, is the same template with BusHub added but unbound. V2 binds
+    // it too, so it is no step.
     const TARGET = "0.25.0";
+    const STEP = "0.24.5";
     const tpl = parseTemplate(new TextDecoder().decode(FIX.TEMPLATE_BYTES));
-    const bound = {
+    const unbound = {
       ...tpl,
       durable_objects: {
-        bindings: [
-          ...(tpl.durable_objects?.bindings ?? []),
-          { name: "BUS_HUB", class_name: "BusHub" },
-        ],
+        bindings: (tpl.durable_objects?.bindings ?? []).filter(
+          (x: { class_name: string }) => x.class_name !== "BusHub",
+        ),
       },
     };
-    for (const variant of ["release", "redline"] as const)
+    for (const variant of ["release", "redline"] as const) {
+      await seedRelease(w.r2, FIX.makeRelease(), TARGET, variant);
       await seedRelease(
         w.r2,
-        FIX.makeRelease({ template: bound }),
-        TARGET,
+        FIX.makeRelease({ template: unbound }),
+        STEP,
         variant,
       );
+    }
     const s = await active({ slug: "stepco", version: V1 });
     // An install from before BusHub: its live tag is v3.
     w.db
@@ -293,7 +296,7 @@ describe("upgrade and rollback (5.4)", () => {
     expect(r.job).toMatchObject({
       status: "failed",
       error_code: "do_step_required",
-      error_message: `Upgrade this install to ${V2} first: the target adds Durable Object classes it can't jump to.`,
+      error_message: `Upgrade this install to ${STEP} first: the target adds Durable Object classes it can't jump to.`,
     });
     expect(w.fake.writes().length).toBe(writes);
     expect(w.install(s.installId)).toMatchObject({ version: V1, lease: null });
@@ -314,7 +317,9 @@ describe("upgrade and rollback (5.4)", () => {
         job_id: r.id,
         code: "do_step_required",
         version: TARGET,
-        message: expect.stringContaining(`Upgrade this install to ${V2} first`),
+        message: expect.stringContaining(
+          `Upgrade this install to ${STEP} first`,
+        ),
       }),
     );
   });
