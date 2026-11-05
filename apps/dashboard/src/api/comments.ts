@@ -23,7 +23,7 @@ export const commentsKey = (id: string) => ["comments", id] as const;
 /**
  * Guests (signed out) carry the per-artifact anon token in ANON_ID_HEADER, as
  * the bridge does for runtime calls, and store one the server returns. No
- * cookie. Only creating a thread or a reply mints (a GET never does: with no
+ * cookie. Creating a thread or a reply, or changing a thread's status, mints (a GET never does: with no
  * token it just reads as a guest), and a mint with no token yet runs inside
  * the browser-wide mint lock, so tabs opened at once share one token.
  */
@@ -89,7 +89,7 @@ export const useSetThreadStatus = (id: string, guest = false) =>
   useRefetching(
     id,
     guest,
-    false,
+    true,
     (v: { thread: string; status: "open" | "resolved" }, x) =>
       api.send(
         "PATCH",

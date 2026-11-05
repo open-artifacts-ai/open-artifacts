@@ -87,10 +87,13 @@ export const canComment = (a: ArtifactSummary, authed: boolean) =>
 export function useCommentsController({
   artifact,
   version,
+  pinned,
   authed,
   getBridge,
   openSurface,
 }: {
+  /** The address names this version (not following Current). */
+  pinned: boolean;
   artifact: ArtifactSummary;
   version: number;
   authed: boolean;
@@ -102,7 +105,9 @@ export function useCommentsController({
   const enabled = artifact.comments !== false && !isEmbed();
   const q = useThreads(id, enabled, !authed);
   const all = q.data?.threads;
-  const older = version !== artifact.currentVersion;
+  // Pinned to an older version by the address: not merely "behind" a current
+  // version that a live event just raised before the swap.
+  const older = pinned && version !== artifact.currentVersion;
   const threads = useMemo(
     () =>
       older

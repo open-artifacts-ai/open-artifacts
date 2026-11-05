@@ -224,6 +224,7 @@ function Viewer({
   const cmt = useCommentsController({
     artifact,
     version,
+    pinned: explicitVersion,
     authed,
     getBridge,
     openSurface: () => openSurface.current(),

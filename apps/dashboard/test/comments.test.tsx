@@ -9,7 +9,15 @@ import {
 } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { calls, events, installHarness, mount, server, wait } from "./harness";
+import {
+  calls,
+  events,
+  installHarness,
+  lastClient,
+  mount,
+  server,
+  wait,
+} from "./harness";
 
 type Opts = {
   iframe: HTMLIFrameElement;
@@ -746,6 +754,9 @@ describe("comments: contract edges", () => {
 });
 
 describe("comments: guests and Retry-After", () => {
+  beforeEach(async () => {
+    (await import("../src/viewer/anonId")).resetAnonMemory();
+  });
   const TOKEN = `${"A".repeat(22)}.k1.${"B".repeat(43)}`;
   const guestMocks = () => {
     const seenTokens: (string | null)[] = [];
@@ -805,6 +816,47 @@ describe("comments: guests and Retry-After", () => {
     await waitFor(() => expect(seenTokens.at(-1)).toBe(TOKEN));
   });
 
+  it("a fresh guest's Resolve mints too: it goes under the lock and stores the returned token", async () => {
+    guestMocks();
+    const seen: (string | null)[] = [];
+    server.use(
+      http.get(`*${R.comments(PUBLIC)}`, () =>
+        HttpResponse.json({ threads: [oneThread], open: 1, truncated: false }),
+      ),
+      http.patch("*/api/v1/artifacts/:id/comments/:tid", ({ request }) => {
+        seen.push(request.headers.get(ANON_ID_HEADER));
+        return HttpResponse.json(
+          { ...oneThread, status: "resolved" },
+          { headers: { [ANON_ID_HEADER]: TOKEN } },
+        );
+      }),
+    );
+    const request = vi.fn(
+      (_n: string, _o: unknown, cb: () => Promise<unknown>) => cb(),
+    );
+    Object.defineProperty(navigator, "locks", {
+      value: { request },
+      configurable: true,
+    });
+    try {
+      mount(viewerPath(PUBLIC));
+      const c = await col();
+      fireEvent.click(
+        await within(c).findByRole("button", { name: "Resolve" }),
+      );
+      await waitFor(() => expect(seen).toHaveLength(1));
+      expect(seen[0]).toBeNull();
+      expect(request.mock.calls.some((c) => c[0] === "oa.anonId.mint")).toBe(
+        true,
+      );
+      await waitFor(() =>
+        expect(localStorage.getItem("oa.anonId")).toBe(TOKEN),
+      );
+    } finally {
+      Reflect.deleteProperty(navigator, "locks");
+    }
+  });
+
   it("a signed-in viewer never sends the anon token", async () => {
     localStorage.setItem("oa.anonId", TOKEN);
     const got: (string | null)[] = [];
@@ -853,6 +905,18 @@ describe("comments: guests and Retry-After", () => {
   });
 });
 
+/** A new version is published: the artifact now reports it as current, then the event arrives. */
+const bump = async (id: string, version: number) => {
+  const a = fixtures.artifacts.find((x) => x.id === id);
+  await act(async () => {
+    lastClient.setQueryData(["artifact", id], {
+      ...a,
+      currentVersion: version,
+    });
+    events.emitVersion(id, { version });
+  });
+};
+
 describe("comments: review round 1", () => {
   const sel = (exact: string) => ({
     kind: "text",
@@ -871,26 +935,26 @@ describe("comments: review round 1", () => {
     });
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: "half written" } });
-    await act(async () => {
-      events.emitVersion(OWNED, { version: 99 });
-    });
+    await bump(OWNED, 99);
     expect(
       await screen.findByRole("button", { name: "View version 99" }),
     ).toBeInTheDocument();
+    // Re-queried: the same box, not a detached one.
     expect(
       within(await col()).getByRole("textbox", {
         name: "Comment on the whole page",
       }),
     ).toHaveValue("half written");
+    expect(
+      screen.getAllByRole("textbox", { name: "Comment on the whole page" }),
+    ).toHaveLength(1);
   });
 
   it("B1 control: with nothing being written the same version swaps in quietly", async () => {
     mount(viewerPath(OWNED));
     await col();
     await hello();
-    await act(async () => {
-      events.emitVersion(OWNED, { version: 99 });
-    });
+    await bump(OWNED, 99);
     await waitFor(() =>
       expect(document.querySelectorAll("iframe").length).toBeGreaterThan(1),
     );
@@ -902,32 +966,37 @@ describe("comments: review round 1", () => {
     const c = await col();
     await hello();
     fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
-    const reply = within(c).getByRole("textbox", { name: "Reply" });
-    fireEvent.change(reply, { target: { value: "typing a reply" } });
-    await act(async () => {
-      events.emitVersion(OWNED, { version: 98 });
+    fireEvent.change(within(c).getByRole("textbox", { name: "Reply" }), {
+      target: { value: "typing a reply" },
     });
+    await bump(OWNED, 98);
     expect(
       await screen.findByRole("button", { name: "View version 98" }),
     ).toBeInTheDocument();
-    expect(reply).toHaveValue("typing a reply");
+    // Re-queried from the DOM: the list still shows the thread and the text.
+    expect(
+      await screen.findByText("Agreed, shorter is better."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Reply" })).toHaveValue(
+      "typing a reply",
+    );
     // Clear the reply, open a delete confirm instead.
-    fireEvent.change(reply, { target: { value: "" } });
-    const row = (
-      await within(c).findByText("Agreed, shorter is better.")
-    ).closest("li") as HTMLElement;
+    fireEvent.change(screen.getByRole("textbox", { name: "Reply" }), {
+      target: { value: "" },
+    });
+    const row = screen
+      .getByText("Agreed, shorter is better.")
+      .closest("li") as HTMLElement;
     fireEvent.click(
       within(row).getByRole("button", { name: "Comment actions" }),
     );
     fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
-    expect(within(row).getByText("Delete this reply?")).toBeInTheDocument();
-    await act(async () => {
-      events.emitVersion(OWNED, { version: 99 });
-    });
+    expect(screen.getByText("Delete this reply?")).toBeInTheDocument();
+    await bump(OWNED, 99);
     expect(
       await screen.findByRole("button", { name: "View version 99" }),
     ).toBeInTheDocument();
-    expect(within(row).getByText("Delete this reply?")).toBeInTheDocument();
+    expect(screen.getByText("Delete this reply?")).toBeInTheDocument();
   });
 
   it("B1: an edit in progress and a pending draft count as writing too", async () => {
