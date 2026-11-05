@@ -1172,6 +1172,36 @@ describe("review fixes (#682)", () => {
     ).toBe(429);
   });
 
+  it("the list is also bounded by body bytes: it stops at the first thread that would pass the budget", async () => {
+    const id = await pub({ visibility: "team" });
+    await inDo(id, async (i) => {
+      const { listThreads } = await import("../src/runtime/comments-store.js");
+      const sql = sqlOf(i);
+      i.commentsAdd({
+        actor: { kind: "user", ref: viewer.userId },
+        rate: "u:a",
+        anchor: NOTE as never,
+        version: 1,
+        body: "x".repeat(600),
+      });
+      i.commentsAdd({
+        actor: { kind: "user", ref: viewer.userId },
+        rate: "u:b",
+        anchor: NOTE as never,
+        version: 1,
+        body: "y".repeat(600),
+      });
+      expect(listThreads(sql, "all", 1200)).toMatchObject({ truncated: false });
+      expect(listThreads(sql, "all", 1200).threads).toHaveLength(2);
+      const cut = listThreads(sql, "all", 1199);
+      expect(cut.truncated).toBe(true);
+      // Newest activity first: the newer thread (y) stays.
+      expect(cut.threads).toHaveLength(1);
+      expect(cut.threads[0]?.comments[0]?.body).toBe("y".repeat(600));
+      expect(cut.open).toBe(2);
+    });
+  });
+
   it("GET stops at 5,000 comments across threads and says truncated", async () => {
     const id = await pub({ visibility: "team" });
     await post(id, viewer, "seed");

@@ -1,5 +1,6 @@
 import { type Anchor, COMMENT_BODY_MAX, newId } from "@oa/shared";
 import {
+  COMMENTS_MAX_BYTES,
   COMMENTS_MAX_REPLIES,
   COMMENTS_MAX_THREADS,
   COMMENTS_MAX_TOTAL,
@@ -117,7 +118,7 @@ export const openCount = (sql: SqlStorage): number =>
 
 /**
  * Threads by newest activity, at most COMMENTS_MAX_THREADS and at most
- * COMMENTS_MAX_TOTAL comments across them (the list stops at the first thread
+ * COMMENTS_MAX_TOTAL comments and COMMENTS_MAX_BYTES of bodies across them (the list stops at the first thread
  * that would pass it, truncated), each with its root and at most
  * COMMENTS_MAX_REPLIES replies. `open` counts every open
  * thread, whatever the filter.
@@ -125,6 +126,8 @@ export const openCount = (sql: SqlStorage): number =>
 export function listThreads(
   sql: SqlStorage,
   status: CommentStatus | "all",
+  /** Bounds the answer by body bytes; injectable for tests. */
+  maxBytes: number = COMMENTS_MAX_BYTES,
 ): StoredList {
   const where = status === "all" ? "" : "where status = ?";
   const args = status === "all" ? [] : [status];
@@ -139,23 +142,28 @@ export function listThreads(
   const cand = rows.slice(0, COMMENTS_MAX_THREADS);
   // How many comments each thread would return (its root and at most
   // COMMENTS_MAX_REPLIES replies), so the whole answer can be bounded.
-  const counts = new Map<string, number>();
+  const counts = new Map<string, { n: number; bytes: number }>();
   if (cand.length > 0)
-    for (const r of sql.exec<{ thread_id: string; n: number }>(
-      `select thread_id, count(*) as n from comments
+    for (const r of sql.exec<{ thread_id: string; n: number; b: number }>(
+      `select thread_id, count(*) as n, sum(length(cast(body as blob))) as b from comments
        where thread_id in (select value from json_each(?)) group by thread_id`,
       JSON.stringify(cand.map((t) => t.id)),
     ))
-      counts.set(r.thread_id, Math.min(r.n, COMMENTS_MAX_REPLIES + 1));
+      counts.set(r.thread_id, {
+        n: Math.min(r.n, COMMENTS_MAX_REPLIES + 1),
+        bytes: r.b,
+      });
   const kept: ThreadRow[] = [];
   let total = 0;
+  let bytes = 0;
   for (const t of cand) {
-    const n = counts.get(t.id) ?? 0;
-    if (total + n > COMMENTS_MAX_TOTAL) {
+    const c = counts.get(t.id) ?? { n: 0, bytes: 0 };
+    if (total + c.n > COMMENTS_MAX_TOTAL || bytes + c.bytes > maxBytes) {
       truncated = true;
       break;
     }
-    total += n;
+    total += c.n;
+    bytes += c.bytes;
     kept.push(t);
   }
   const byThread = new Map<string, StoredComment[]>();
