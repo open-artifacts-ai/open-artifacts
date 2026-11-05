@@ -624,21 +624,21 @@ function Viewer({
                     {commentsButton.open > 0 && ` ${commentsButton.open}`}
                   </Button>
                 )}
+                {isEmbed() && artifact.comments === true && (
+                  <a
+                    className="oa-opencomment"
+                    href={viewerPath(artifact.id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open to comment
+                  </a>
+                )}
                 {slot}
               </>
             }
             gone={gone !== null}
           />
-        )}
-        {isEmbed() && artifact.comments !== false && (
-          <a
-            className="oa-opencomment"
-            href={viewerPath(artifact.id)}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Open to comment
-          </a>
         )}
       </div>
     </CommentsProvider>

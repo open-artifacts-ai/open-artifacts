@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ApiClientError } from "../../api/client";
 import { useThreads } from "../../api/comments";
 import { isEmbed } from "../../embed";
 import type { createBridge } from "../bridge";
@@ -110,8 +111,20 @@ export function useCommentsController({
   openSurface: () => void;
 }): CommentsApi {
   const id = artifact.id;
-  const enabled = artifact.comments !== false && !isEmbed();
+  // Absent `comments`: a server without them (older than #1496): nothing to show.
+  const wanted = artifact.comments === true && !isEmbed();
+  const [probe, setProbe] = useState<unknown>(null);
+  // A 404 or comments_off from the list means comments are unavailable here:
+  // no panel, no column, no badge and no error.
+  const unavailable =
+    probe instanceof ApiClientError &&
+    (probe.status === 404 || probe.code === "comments_off");
+  const enabled = wanted && !unavailable;
   const q = useThreads(id, enabled, !authed);
+  const listError = q.error;
+  useEffect(() => {
+    if (listError) setProbe(listError);
+  }, [listError]);
   const all = q.data?.threads;
   // Pinned to an older version by the address: not merely "behind" a current
   // version that a live event just raised before the swap.

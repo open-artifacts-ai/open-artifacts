@@ -264,7 +264,7 @@ export const ArtifactSummarySchema = z.object({
   space: SpaceRefSchema.optional(),
   /** Hosted M1: what the caller may do (artifactCan). Optional: absent unless spaces are on. */
   can: ArtifactCanSchema.optional(),
-  /** #682: the Comments setting; absent reads as on (the default). */
+  /** #682: the Comments setting (on by default). Absent: the server has no comments (older than #1496), so the shell shows none. */
   comments: z.boolean().optional(),
 });
 export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;

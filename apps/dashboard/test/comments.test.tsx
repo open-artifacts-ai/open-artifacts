@@ -1303,3 +1303,55 @@ describe("comments: capped members", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("comments: a server without comments", () => {
+  const commentsCalls = () => {
+    const all = calls("GET");
+    return () => all.filter((c) => c.path.endsWith("/comments"));
+  };
+
+  it("an artifact with no `comments` field (a server older than the routes): no request, no button, no column, no Share toggle", async () => {
+    const reqs = commentsCalls();
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () => {
+        const { comments: _omit, ...rest } = fixtures.artifacts.find(
+          (a) => a.id === OWNED,
+        ) as Record<string, unknown>;
+        return HttpResponse.json(rest);
+      }),
+    );
+    mount(`${viewerPath(OWNED)}?panel=open&tab=share`);
+    await screen.findByRole("tab", { name: "Share" });
+    await wait(100);
+    expect(reqs()).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /^Comments/ })).toBeNull();
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Comments" })).toBeNull();
+    expect(setMode).not.toHaveBeenCalledWith("select");
+  });
+
+  it("a 404 on the list means unavailable: asked once, then no button, column, badge or error", async () => {
+    const reqs = commentsCalls();
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json(
+          { error: { code: "not_found", message: "Not found" } },
+          { status: 404 },
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: "More actions" });
+    await waitFor(() => expect(reqs().length).toBeGreaterThan(0));
+    await wait(150);
+    expect(reqs()).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /^Comments/ })).toBeNull();
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("Couldn't load comments.")).toBeNull();
+  });
+});

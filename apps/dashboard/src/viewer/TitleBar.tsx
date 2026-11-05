@@ -275,7 +275,8 @@ export function TitleBar({
             disabled={gone}
             onClick={comments.onClick}
           >
-            Comments
+            {/* A space in the text: the visible label must read "Comments 3", inside the name "Comments, 3 open". */}
+            Comments{" "}
             {comments.open > 0 && (
               <span className="rounded-full bg-primary px-1.5 text-[length:var(--oa-text-xs)] text-primary-foreground">
                 {comments.open}

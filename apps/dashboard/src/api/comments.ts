@@ -51,6 +51,12 @@ export const useThreads = (id: string, enabled: boolean, guest = false) =>
   useQuery({
     enabled,
     queryKey: commentsKey(id),
+    // A server without comments, or comments off: no retry, the shell hides them.
+    retry: (n, e) =>
+      !(
+        e instanceof ApiClientError &&
+        (e.status === 404 || e.code === "comments_off")
+      ) && n < 2,
     queryFn: ({ signal }) =>
       withAnon(guest, false, (x) =>
         api.get(`${R.comments(id)}?status=all`, CommentListSchema, signal, x),
