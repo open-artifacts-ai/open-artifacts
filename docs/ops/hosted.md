@@ -531,6 +531,15 @@ On a laptop the CLI reads only this keychain item. In CI (staging and prod) it r
 2. Generate the Ed25519 keypair locally and pipe the private key straight into `RELEASE_APP_ID=<id> scripts/ops/hosted-set-signing-key.sh <env>` (never onto disk). The script runs the `gh api` reads above and refuses the upload unless every control holds; only then does it `gh secret set RELEASE_SIGNING_KEY --env hosted-<env>` from stdin.
 3. Put the public key (JWK `x`) in both `packages/provision/src/internal/gates.ts` and `scripts/ci/release-pubkeys.mjs` in one PR (a test pins them equal); flip `PROD_UNLOCKED` there for prod.
 
+#### Rotating a release signing key (per env)
+
+Verification accepts an ordered list per env: `RELEASE_PUBKEY[env]` (the current key) followed by `RELEASE_RETIRED_PUBKEYS[env]` (retired keys still accepted), pinned in both `gates.ts` and `scripts/ci/release-pubkeys.mjs`. Signing is pinned to exactly one key, the current one: `checkSigningKey`, `sign-release.mjs` and `sign-floor.mjs` refuse any other, so a retired key can never sign. Keys within an env are distinct and no key appears in both envs (tests pin both).
+
+1. Generate the new keypair and set the private half as in step 2 above.
+2. In one PR, in both pin files: move the old `RELEASE_PUBKEY[env]` to the front of `RELEASE_RETIRED_PUBKEYS[env]` and put the new key in `RELEASE_PUBKEY[env]`. Everything already published (release records, tar `.sig.json`, `floor.json`) still verifies through the retired key.
+3. Release under the new key. Once the floor's `minVersion` is past every release signed with the old key, sign a new floor with the new key and bump `FLOOR_MIN_SEQ[env]` in the same change.
+4. Then remove the old key from `RELEASE_RETIRED_PUBKEYS[env]` (both pin files, one PR). The old floor no longer verifies, and the `FLOOR_MIN_SEQ` bump means nothing falls back to it.
+
 ### Platform resource names (per env)
 
 Every name carries the env prefix `oa-<p>-` (`oa-s-` staging, `oa-p-` prod), and provision refuses to touch a name without it. The source is `platformNames` in `packages/provision/src/names.ts`.

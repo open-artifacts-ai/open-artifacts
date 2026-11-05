@@ -3,7 +3,18 @@
 // versions oa-<p>-releases holds, which variants of each verify against the
 // env's release key, and which the signed floor admits. Reads only; no
 // Cloudflare writes. The key and the floor anchor stay in internal/gates.ts.
-import { FLOOR_MIN_SEQ, RELEASE_PUBKEY } from "./internal/gates.js";
+import {
+  FLOOR_MIN_SEQ,
+  RELEASE_PUBKEY,
+  RELEASE_RETIRED_PUBKEYS,
+} from "./internal/gates.js";
+
+/** The current key first, then retired keys still accepted. */
+const acceptedKeys = (env: Env): string[] => [
+  RELEASE_PUBKEY[env],
+  ...RELEASE_RETIRED_PUBKEYS[env],
+];
+
 import { ProvisionRefused } from "./jobs.js";
 import type { Env } from "./names.js";
 import { type R2ReleaseBucket, RECORD_FILE, releaseKey } from "./publish.js";
@@ -84,7 +95,7 @@ async function floorOf(
   const got = await release.floor();
   if (got === null || got === undefined) return null;
   try {
-    return openFloor(structuredClone(got), RELEASE_PUBKEY[env], env);
+    return openFloor(structuredClone(got), acceptedKeys(env), env);
   } catch {
     return null;
   }
@@ -111,7 +122,7 @@ async function verifies(
   }
   if (!got) return "absent";
   try {
-    const r = openReleaseRecord(structuredClone(got), RELEASE_PUBKEY[env], env);
+    const r = openReleaseRecord(structuredClone(got), acceptedKeys(env), env);
     return r.version === version && r.variant === variant
       ? "verified"
       : "unverified";

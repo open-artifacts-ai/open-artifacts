@@ -55,6 +55,7 @@ import {
   PROD_UNLOCKED,
   RELEASE_PUBKEY,
   RELEASE_PUBKEY_PLACEHOLDER,
+  RELEASE_RETIRED_PUBKEYS,
 } from "./internal/gates.js";
 import {
   CfError,
@@ -1106,7 +1107,7 @@ export class WfpProvisioner {
         "target must be account or namespace",
         "invalid_state",
       );
-    if (this.pubkey() === RELEASE_PUBKEY_PLACEHOLDER)
+    if (RELEASE_PUBKEY[env] === RELEASE_PUBKEY_PLACEHOLDER)
       throw new ProvisionRefused(
         `RELEASE_PUBKEY.${env} is still the placeholder; T3b must set the release signing key before any create`,
         "invalid_state",
@@ -1176,8 +1177,9 @@ export class WfpProvisioner {
       );
   }
 
-  private pubkey(): string {
-    return RELEASE_PUBKEY[this.env];
+  /** The current key first, then retired keys still accepted. */
+  private pubkey(): string[] {
+    return [RELEASE_PUBKEY[this.env], ...RELEASE_RETIRED_PUBKEYS[this.env]];
   }
 
   /** L2 then M1: the record is trusted only after its signature checks out. */

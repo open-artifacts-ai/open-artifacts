@@ -25,6 +25,7 @@ import {
   FLOOR_MIN_SEQ,
   RELEASE_PUBKEY,
   RELEASE_PUBKEY_PLACEHOLDER,
+  RELEASE_RETIRED_PUBKEYS,
 } from "./internal/gates.js";
 import { parseTemplate } from "./metadata.js";
 import {
@@ -110,13 +111,14 @@ const moduleOf = (name: string, bytes: Uint8Array): Module => {
   return { name, type, bytes };
 };
 
-function pubkeyOf(env: Env): string {
+/** The current key first, then retired keys still accepted when verifying. */
+function pubkeyOf(env: Env): string[] {
   const k = RELEASE_PUBKEY[env];
   if (typeof k !== "string" || k === RELEASE_PUBKEY_PLACEHOLDER)
     throw new PublishRefused(
       `RELEASE_PUBKEY.${env} is still the placeholder; the key ceremony must set it first`,
     );
-  return k;
+  return [k, ...RELEASE_RETIRED_PUBKEYS[env]];
 }
 
 function bucketOf(env: Env): string {

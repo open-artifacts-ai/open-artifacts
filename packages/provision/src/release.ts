@@ -377,7 +377,7 @@ function exactKeys(o: object, keys: readonly string[], what: string): void {
  */
 function openSigned(
   stored: unknown,
-  pubkey: string,
+  pubkeys: string | readonly string[],
   domain: string,
   env: Env,
 ): Record<string, unknown> {
@@ -392,25 +392,33 @@ function openSigned(
   if (
     typeof record !== "string" ||
     typeof signature !== "string" ||
-    !SIG_RE.test(signature) ||
-    typeof pubkey !== "string" ||
-    !PUBKEY_RE.test(pubkey)
+    !SIG_RE.test(signature)
+  )
+    throw bad();
+  // The current key first, then retired keys still accepted (key rotation).
+  const keys = typeof pubkeys === "string" ? [pubkeys] : pubkeys;
+  if (
+    keys.length === 0 ||
+    !keys.every((k) => typeof k === "string" && PUBKEY_RE.test(k))
   )
     throw bad();
   let ok = false;
-  try {
-    const key = createPublicKey({
-      key: { kty: "OKP", crv: "Ed25519", x: pubkey },
-      format: "jwk",
-    });
-    ok = verify(
-      null,
-      Buffer.from(`${domain}\n${env}\n${record}`),
-      key,
-      Buffer.from(signature, "base64url"),
-    );
-  } catch {
-    ok = false;
+  for (const pubkey of keys) {
+    try {
+      const key = createPublicKey({
+        key: { kty: "OKP", crv: "Ed25519", x: pubkey },
+        format: "jwk",
+      });
+      ok = verify(
+        null,
+        Buffer.from(`${domain}\n${env}\n${record}`),
+        key,
+        Buffer.from(signature, "base64url"),
+      );
+    } catch {
+      ok = false;
+    }
+    if (ok) break;
   }
   if (!ok) throw bad();
   const parsed = parseStrictJson(record);
@@ -440,7 +448,7 @@ const RECORD_KEYS = [
  */
 export function openReleaseRecord(
   stored: unknown,
-  pubkey: string,
+  pubkey: string | readonly string[],
   env: Env,
 ): ReleaseRecord {
   const r = openSigned(stored, pubkey, RELEASE_RECORD_DOMAIN, env);
@@ -490,7 +498,7 @@ export function openReleaseRecord(
 /** The verified record, or null when anything about it is wrong. */
 export function verifyReleaseSignature(
   stored: unknown,
-  pubkey: string,
+  pubkey: string | readonly string[],
   env: Env,
 ): ReleaseRecord | null {
   try {
@@ -515,7 +523,7 @@ export interface FloorRecord {
 /** The floor of a stored signed floor, signed under FLOOR_DOMAIN for `env`. */
 export function openFloor(
   stored: unknown,
-  pubkey: string,
+  pubkey: string | readonly string[],
   env: Env,
 ): FloorRecord {
   const f = openSigned(stored, pubkey, FLOOR_DOMAIN, env);
