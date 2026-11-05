@@ -8,7 +8,6 @@ import { capOf, planCapsRole } from "../auth/policy.js";
 import { seedPlan } from "../billing/features.js";
 import {
   billingActive,
-  billingOn,
   CHECK_KEY,
   PLAN_KEY,
   planOfRaw,
@@ -270,8 +269,8 @@ const CAP_SINCE = `case when ?2 = 1 and d.st not in ('', 'ok') and ${SYNCED}
   end as capSince`;
 
 /**
- * Hosted billing (HOSTED=1 only, so self-hosted statements are unchanged):
- * the cached plan and its read attempts, two settings PK probes in the same
+ * Hosted billing (only with the BILLING gate bound, so self-hosted and gateless
+ * statements are main's): the cached plan and its read attempts, two settings PK probes in the same
  * statement. withEpoch derives the plan cap from them (billing/plan.ts).
  */
 const PLAN_COLS = `, (select value from settings where key = '${PLAN_KEY}') as billingPlan,
@@ -322,22 +321,11 @@ export type UserWithEpoch = {
   capSince: number | null;
 };
 
-async function withEpoch(
-  env: Env,
-  row: UserByIdRow | null,
-): Promise<UserWithEpoch | null> {
+function withEpoch(env: Env, row: UserByIdRow | null): UserWithEpoch | null {
   // Every request's user comes through here (session, PAT, OAuth), so the cap
   // is set once (P3's capOf: the one source authz's CAP reads). Sources: P2's
   // authConfig.guestsReadOnly and P3's restriction columns (0009).
   if (!row) return null;
-  // Hosted without the BILLING gate: billing is inert. A plan or check cached
-  // while a gate was bound would otherwise make a later binding start
-  // read-only on a stale lastGoodAt, so it goes (read in this statement; the
-  // delete runs only when something is there).
-  if (!billingActive(env) && (row.billingPlan || row.billingCheck))
-    await env.DB.prepare("delete from settings where key in (?1, ?2)")
-      .bind(PLAN_KEY, CHECK_KEY)
-      .run();
   const plan = planOfRaw(env, row.billingPlan, row.billingCheck, Date.now());
   // The same statement read the plan: this invocation keeps it (no second
   // read for its features checks).
@@ -376,7 +364,7 @@ export async function getUserWithEpoch(
 ): Promise<UserWithEpoch | null> {
   return withEpoch(
     env,
-    await stmt(env.DB, billingOn(env) ? USER_BY_ID_HOSTED : USER_BY_ID)
+    await stmt(env.DB, billingActive(env) ? USER_BY_ID_HOSTED : USER_BY_ID)
       .bind(id, o.cookie ? 1 : 0)
       .first<UserByIdRow>(),
   );
@@ -392,7 +380,10 @@ export async function getMismatchOwner(
 ): Promise<UserWithEpoch | null> {
   return withEpoch(
     env,
-    await stmt(env.DB, billingOn(env) ? MISMATCH_OWNER_HOSTED : MISMATCH_OWNER)
+    await stmt(
+      env.DB,
+      billingActive(env) ? MISMATCH_OWNER_HOSTED : MISMATCH_OWNER,
+    )
       .bind(id)
       .first<UserByIdRow>(),
   );
