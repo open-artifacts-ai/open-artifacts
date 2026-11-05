@@ -1,6 +1,21 @@
 {
   "$schema": "https://raw.githubusercontent.com/gotgenes/pi-packages/main/packages/pi-permission-system/schemas/permissions.schema.json",
   "permission": {
+    "path": {
+      "*": "allow",
+      "*/.git/hooks/*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "*/.git/config": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      },
+      "*/.git/worktrees/*/config*": {
+        "action": "deny",
+        "reason": "Repository settings are your human's: ask them with the exact change."
+      }
+    },
     "bash": {
       "gh pr view*": "allow",
       "gh pr list*": "allow",
@@ -472,6 +487,30 @@
       "git -C * push*[*": {
         "action": "deny",
         "reason": "Write git push without quotes or backslashes. To force-push or delete, ask your human with the exact command."
+      },
+      "git fetch*--upl*": {
+        "action": "deny",
+        "reason": "Git options that run a program need your human: ask them with the exact command."
+      },
+      "git -C * fetch*--upl*": {
+        "action": "deny",
+        "reason": "Git options that run a program need your human: ask them with the exact command."
+      },
+      "git push*--rece*": {
+        "action": "deny",
+        "reason": "Git options that run a program need your human: ask them with the exact command."
+      },
+      "git push*--e*": {
+        "action": "deny",
+        "reason": "Git options that run a program need your human: ask them with the exact command."
+      },
+      "git -C * push*--rece*": {
+        "action": "deny",
+        "reason": "Git options that run a program need your human: ask them with the exact command."
+      },
+      "git -C * push*--e*": {
+        "action": "deny",
+        "reason": "Git options that run a program need your human: ask them with the exact command."
       }
     },
     "mcp": {
