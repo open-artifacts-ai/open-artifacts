@@ -120,7 +120,7 @@ export const R = {
    * limit 1000). Each is omitted when unavailable.
    */
   usage: "/api/v1/usage",
-  /** Hosted billing. POST BillingCheckoutInput -> BillingUrl (the Stripe Checkout page). Uncapped org owner or admin only (else 404); 404 off hosted; 503 billing_unavailable. */
+  /** Hosted billing. POST BillingCheckoutInput -> BillingUrl (the Stripe Checkout page). Org owner or admin in an interactive cookie session only (a PAT, OAuth grant or MCP agent is 404; else 404); 404 off hosted; 503 billing_unavailable. */
   billingCheckout: "/api/v1/billing/checkout",
   /** POST {} -> BillingUrl (the Stripe Customer Portal). Same rules as billingCheckout. */
   billingPortal: "/api/v1/billing/portal",
