@@ -3956,7 +3956,8 @@ export class BusHub extends DurableObject<Env> {
    * B14: the reply to a resend of an accepted send, from its key and receipt
    * row; nothing is created, delivered, stored or sent to the recipient. The
    * original `receipt` (pending: the send receipt is only pending or refused
-   * on the wire) and, once final, a `receipt_update` with the current state
+   * on the wire; its `queued`/`since` are recomputed from the recipient's
+   * state now, for a mailbox socket, while the mail is pending) and, once final, a `receipt_update` with the current state
    * (receipt_update is idempotent per msg_id; this may repeat one the sender
    * already got), which also marks the sender told. A receipt row missing
    * within the key's window (receipts outlive keys) would read as expired.
