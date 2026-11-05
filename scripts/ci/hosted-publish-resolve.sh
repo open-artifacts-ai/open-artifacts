@@ -2,9 +2,12 @@
 # The resolve job of hosted-publish.yml (design v7 6.4): what to publish to
 # which env's releases bucket, as GITHUB_OUTPUT lines kind (release, floor or
 # none), tag, floor_run_id, staging and prod (true or false).
-#   workflow_run (release-please on main, success): the release whose tag's
-#     commit is the run's head_sha, to staging then prod; none is kind=none
-#     (most pushes cut no release), exit 0.
+#   workflow_run (release-please on main, any conclusion but cancelled): the
+#     release whose tag's commit is the run's head_sha, to staging then prod;
+#     none is kind=none (most pushes cut no release), exit 0. A failed run is
+#     not refused here: the publish jobs' tag-passed-checks.sh decides, and
+#     fails closed on any required job that did not succeed (v0.122.0: only
+#     publish-npm failed, and the run's conclusion must not block the release).
 #   workflow_dispatch: exactly one of TAG (vX.Y.Z; DEPLOY_ENV both or unset for both;
 #     prod alone needs the tag's staging publish first, see staged) or
 #     FLOOR_RUN_ID (a hosted-floor.yml run id; DEPLOY_ENV required).
@@ -71,8 +74,8 @@ staged() {
 
 case "${EVENT:-}" in
   workflow_run)
-    if [ "${CONCLUSION:-}" != success ] || [ "${HEAD_BRANCH:-}" != main ]; then
-      echo "release-please did not succeed on main; nothing to publish"
+    if [ "${CONCLUSION:-}" = cancelled ] || [ "${HEAD_BRANCH:-}" != main ]; then
+      echo "release-please was cancelled or not on main; nothing to publish"
       out none "" "" false false
       exit 0
     fi

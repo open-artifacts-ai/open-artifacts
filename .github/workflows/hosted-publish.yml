@@ -1,6 +1,7 @@
 # Publishes signed releases (and floors) to each env's releases bucket,
 # oa-<p>-releases (design v7 6.4): the only CI step on the provisioning path.
-# After every successful release-please run on main, the release whose tag's
+# After every release-please run on main (not cancelled; the release gate
+# decides, so an npm-only failure does not block), the release whose tag's
 # commit is that run's head goes to staging, then prod; most runs cut no
 # release and publish nothing. By hand (workflow_dispatch on main): a tag
 # (both envs, or the one named), or a hosted-floor.yml run id with its env.
