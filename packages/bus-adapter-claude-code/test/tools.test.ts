@@ -188,11 +188,20 @@ describe("claude mcp tools", () => {
             state: "queued",
             global: false,
           },
+          {
+            name: "gamma",
+            kind: "claude-code",
+            namespace: "ns",
+            live: false,
+            state: "away",
+            since: "2026-11-05T10:00:00.000Z",
+            global: false,
+          },
         ],
       })),
     );
     expect(r.content[0].text).toBe(
-      "- alpha (pi, ns)\n- beta (claude-code, ns) (queued)",
+      "- alpha (pi, ns)\n- beta (claude-code, ns) (queued)\n- gamma (claude-code, ns) (away since 2026-11-05 10:00 UTC)",
     );
   });
 

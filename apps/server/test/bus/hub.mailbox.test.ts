@@ -419,11 +419,24 @@ describe("lasting mailboxes (#1295 PR A)", () => {
       expect(f.type).not.toBe("error");
       if (f.type === "agent_ok") k++;
     }
-    // Every closed agent now has an inbox.
+    // The closes are not acknowledged (only the ups are): wait until the hub
+    // has applied every one, or the last churn agent may still be open when
+    // the inboxes are seeded and it, with no inbox, is evicted instead.
+    for (let k = 0; ; k++) {
+      const closed = await sqlOf<{ n: number }>(
+        "select count(*) as n from agents where machine_id = ? and live = 0",
+        machineId,
+      );
+      if ((closed[0]?.n ?? 0) >= CYCLES + 1) break;
+      if (k > 2000) throw new Error("the closes were never applied");
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    // Every closed agent now has an inbox. Seed ids are valid msg ids (an
+    // agent id has the same shape), so a sender told about one decodes it.
     await inHub((_, st) => {
       st.storage.sql.exec(
         `insert into receipts (id, org_id, namespace, to_agent, to_name, from_agent, from_name, state, size, created_at, expires_at)
-         select 'seed-' || a.id, a.org_id, a.namespace, a.id, a.name, s.id, s.name, 'pending', 1, ?, ?
+         select a.id, a.org_id, a.namespace, a.id, a.name, s.id, s.name, 'pending', 1, ?, ?
            from agents a, (select id, name from agents where native_ref = 'snd' order by rowid desc limit 1) s
           where a.machine_id = ? and a.live = 0 and a.native_ref != ?`,
         t0,
@@ -444,7 +457,10 @@ describe("lasting mailboxes (#1295 PR A)", () => {
       (await sqlOf("select id from agents where native_ref = ?", p.ref)).length,
     ).toBe(0);
     await inHub((_, st) => {
-      st.storage.sql.exec("delete from receipts where id like 'seed-%'");
+      st.storage.sql.exec(
+        "delete from receipts where namespace = ? and size = 1 and id in (select id from agents)",
+        p.n,
+      );
     });
     p.rcv.close();
     p.snd.close();

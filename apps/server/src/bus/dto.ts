@@ -19,6 +19,8 @@ export function iso(ms: number | null): string | null {
 /** An open agent row joined with its (unrevoked) machine's label. */
 export type AgentWithMachine = Omit<AgentRow, "sessionStartRowid"> & {
   machineLabel: string;
+  /** agents.away_since (#1295): when a closed agent went away. */
+  awaySince?: number | null;
 };
 
 /**
@@ -37,8 +39,13 @@ export const agentDto = (
   machineId: a.machineId,
   machineLabel: a.machineLabel,
   global: a.global === 1,
-  state: connected ? "live" : "queued",
-  running: true,
+  // #1295: a closed agent whose mailbox is kept is away, not running.
+  state: a.live === 1 ? (connected ? "live" : "queued") : "away",
+  running: a.live === 1,
+  since:
+    a.live !== 1 && a.awaySince !== undefined && a.awaySince !== null
+      ? iso(a.awaySince)
+      : null,
   updatedAt: iso(a.updatedAt),
   ...statusFields(a),
 });

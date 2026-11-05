@@ -155,6 +155,7 @@ describe("the codex MCP adapter", () => {
         pid: 4321,
         cwd: WORK,
         proposed_name: "codex",
+        caps: ["mailbox"],
         attest: {},
         codex: {
           thread_id: THREAD,

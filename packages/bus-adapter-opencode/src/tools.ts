@@ -1,5 +1,10 @@
 import { callTool, TOOLS, type ToolResult } from "@oa/bus-adapter-claude-code";
-import { CLIENT_VERSION, type DaemonClient, Hello } from "@oa/bus-ipc";
+import {
+  ADAPTER_CAPS,
+  CLIENT_VERSION,
+  type DaemonClient,
+  Hello,
+} from "@oa/bus-ipc";
 import { BusNameSchema, LIMITS } from "@oa/bus-protocol";
 import type { OpenCodeSession } from "./session.ts";
 
@@ -63,6 +68,7 @@ export async function handleToolCall(input: {
       pid: process.pid,
       cwd: session.directory,
       proposed_name: nameOf(session.title),
+      caps: [ADAPTER_CAPS.mailbox],
       attest: { session_id: sessionId },
     });
     let client: DaemonClient;
