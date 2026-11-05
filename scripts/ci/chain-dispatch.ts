@@ -155,7 +155,7 @@ export function dispatchAndWait(o: Opts): Outcome {
       try {
         gh(o.exec, [
           "api",
-          "-X",
+          "-Y",
           "POST",
           `repos/${o.repo}/actions/runs/${found.id}/cancel`,
         ]);
