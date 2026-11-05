@@ -1143,6 +1143,58 @@ describe("prod and staging tokens never cross", () => {
     walk(parse(readFileSync(join(base, file), "utf8")));
     return out;
   };
+  // null when a `uses:` job may pass CLOUDFLARE_API_TOKEN; else why not.
+  const passesToGatedDeploy = (
+    base: string,
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    job: any,
+  ): string | null => {
+    const callee = "./.github/workflows/deploy-hosted-platform.yml";
+    if (job.uses !== callee)
+      return `passes CLOUDFLARE_API_TOKEN to ${job.uses}`;
+    const sec = job.secrets;
+    if (
+      typeof sec !== "object" ||
+      sec === null ||
+      sec.CLOUDFLARE_API_TOKEN !== "${{ secrets.CLOUDFLARE_API_TOKEN }}" ||
+      Object.values(sec).some((v) => String(v).includes("PROD_CLOUDFLARE"))
+    )
+      return "passes CLOUDFLARE_API_TOKEN other than by its own name";
+    if (job.with?.env !== "prod") return "does not deploy env prod";
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    let c: any;
+    try {
+      c = parse(readFileSync(join(base, "deploy-hosted-platform.yml"), "utf8"));
+    } catch {
+      return `has no ${callee} to read`;
+    }
+    const d = c?.jobs?.deploy;
+    // For prod the Environment must resolve to hosted-prod-deploy.
+    if (
+      typeof d?.environment !== "string" ||
+      !d.environment.includes("inputs.env == 'prod' && 'hosted-prod-deploy' ||")
+    )
+      return "calls a deploy whose Environment is not hosted-prod-deploy for prod";
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = d.steps ?? [];
+    const g = steps.findIndex((x) => x.id === "token_identity");
+    if (
+      g < 0 ||
+      steps[g].run !==
+        'bash "$RUNNER_TEMP/main-ci/deploy-token-identity.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"' ||
+      steps[g].if !== undefined ||
+      steps[g]["continue-on-error"] !== undefined ||
+      /\|\|/.test(String(steps[g].run))
+    )
+      return "calls a deploy without the token-identity gate";
+    if (
+      steps
+        .slice(0, g)
+        .some((x) => JSON.stringify(x).includes("CLOUDFLARE_API_TOKEN"))
+    )
+      return "calls a deploy that uses the token before the token-identity gate";
+    return null;
+  };
   // Returns violations for every workflow file in `base`.
   const violations = (base: string) => {
     const bad: string[] = [];
@@ -1185,7 +1237,27 @@ describe("prod and staging tokens never cross", () => {
         >;
         for (const [name, job] of Object.entries(jobs)) {
           const s = JSON.stringify(job);
+          if (
+            typeof (job as { uses?: unknown }).uses === "string" &&
+            s.includes("secrets.PROD_CLOUDFLARE_API_TOKEN")
+          ) {
+            bad.push(
+              `${f}: job ${name} passes PROD_CLOUDFLARE_API_TOKEN to a called workflow`,
+            );
+            continue;
+          }
           if (!/secrets\.CLOUDFLARE_API_TOKEN/.test(s)) continue;
+          // Exception: a `uses:` job cannot set an Environment, so it may
+          // pass the token by name to the hosted deploy, which sets its own
+          // (hosted-prod-deploy wins inside it) and proves the token is that
+          // Environment's before any other use of it.
+          if (typeof (job as { uses?: unknown }).uses === "string") {
+            const why = passesToGatedDeploy(base, job);
+            if (why) bad.push(`${f}: job ${name} ${why}`);
+            else if (s.includes("secrets.PROD_CLOUDFLARE_API_TOKEN"))
+              bad.push(`${f}: job ${name} mixes PROD and hosted tokens`);
+            continue;
+          }
           const env =
             typeof job.environment === "object" && job.environment !== null
               ? (job.environment as { name?: unknown }).name
@@ -1201,6 +1273,84 @@ describe("prod and staging tokens never cross", () => {
   };
   it("real workflows have no crossings", () => {
     expect(violations(dir)).toEqual([]);
+  });
+  describe("a uses: job passing CLOUDFLARE_API_TOKEN to the hosted deploy", () => {
+    const gate =
+      'bash "$RUNNER_TEMP/main-ci/deploy-token-identity.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"';
+    const fixture = (
+      o: {
+        secret?: string;
+        callee?: string;
+        extraSecret?: string;
+        gate?: boolean;
+        early?: boolean;
+        run?: string;
+        env?: string;
+      } = {},
+    ) => {
+      const d = mkdtempSync(join(tmpdir(), "xtok-"));
+      writeFileSync(
+        join(d, "prod-release-chain.yml"),
+        `on: workflow_dispatch
+jobs:
+  deploy:
+    uses: ${o.callee ?? "./.github/workflows/deploy-hosted-platform.yml"}
+    with:
+      env: prod
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${o.secret ?? "${{ secrets.CLOUDFLARE_API_TOKEN }}"}
+${o.extraSecret ? `      X: ${o.extraSecret}\n` : ""}`,
+      );
+      writeFileSync(
+        join(d, "deploy-hosted-platform.yml"),
+        `on:
+  workflow_call: {}
+jobs:
+  deploy:
+    environment: ${o.env ?? "${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}"}
+    runs-on: ubuntu-latest
+    steps:
+${o.early ? "      - run: echo\n        env:\n          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}\n" : ""}${o.gate === false ? "" : `      - id: token_identity\n        run: ${JSON.stringify(o.run ?? gate)}\n`}      - run: echo
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
+`,
+      );
+      return d;
+    };
+    it("passes in the allowed shape", () => {
+      expect(violations(fixture())).toEqual([]);
+    });
+    it("fails without the gate, with the gate after a use, or with a weakened gate", () => {
+      expect(violations(fixture({ gate: false }))[0]).toContain(
+        "without the token-identity gate",
+      );
+      expect(violations(fixture({ early: true }))[0]).toContain(
+        "before the token-identity gate",
+      );
+      expect(violations(fixture({ run: `${gate} || true` }))[0]).toContain(
+        "without the token-identity gate",
+      );
+    });
+    it("fails for another callee, a wrong Environment, or a renamed secret", () => {
+      expect(
+        violations(fixture({ callee: "./.github/workflows/other.yml" }))[0],
+      ).toContain("other.yml");
+      expect(
+        violations(fixture({ env: "hosted-staging-deploy" }))[0],
+      ).toContain("Environment");
+      expect(
+        violations(
+          fixture({ secret: "${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}" }),
+        ).length,
+      ).toBeGreaterThan(0);
+    });
+    it("fails when it mixes in the PROD token", () => {
+      expect(
+        violations(
+          fixture({ extraSecret: "${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}" }),
+        ).length,
+      ).toBeGreaterThan(0);
+    });
   });
   it("staging workflows never reference the PROD secret", () => {
     for (const f of [
