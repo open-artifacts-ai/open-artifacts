@@ -67,7 +67,12 @@ async function reg(d: Daemon, ref: string, name: string, namespace: string) {
   return (await waitFor(d, "agent_ok")).bus_name;
 }
 
-async function send(d: Daemon, from: string, to: string): Promise<Receipt> {
+async function send(
+  d: Daemon,
+  from: string,
+  to: string,
+  body = "hi",
+): Promise<Receipt> {
   const fid = id("s");
   d.send({
     v: 1,
@@ -75,7 +80,7 @@ async function send(d: Daemon, from: string, to: string): Promise<Receipt> {
     type: "send",
     from_ref: from,
     to_name: to,
-    body: "hi",
+    body,
   } as ClientFrame);
   for (;;) {
     const f = await d.next();
@@ -373,6 +378,40 @@ describe("mailbox wire (#1295 PR B)", () => {
       running: true,
       since: null,
     });
+    rcv.close();
+    snd.close();
+  });
+
+  it("/clear while the old session is live: its acked notice bodies are gone, its pending mail still arrives", async () => {
+    const { rcv, snd, n, ref, name } = await trio(MB);
+    const big = "z".repeat(40_000);
+    const first = await send(snd, "snd", name, big);
+    const d1 = await waitFor(rcv, "deliver");
+    expect(d1.msg_id).toBe(first.msg_id);
+    rcv.send({ v: 1, id: id("ak"), type: "ack", msg_id: first.msg_id });
+    for (let k = 0; k < 400; k++) {
+      const st = await sqlOf<{ state: string }>(
+        "select state from receipts where id = ?",
+        first.msg_id,
+      );
+      if (st[0]?.state === "delivered") break;
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    const second = await send(snd, "snd", name, "still pending");
+    await waitFor(rcv, "deliver");
+    const fresh = uniq("fresh");
+    rcv.send(upReplacing(fresh, name, n, ref));
+    expect((await waitFor(rcv, "agent_ok")).bus_name).toBe(name);
+    const again = await waitFor(rcv, "deliver");
+    expect(again.msg_id).toBe(second.msg_id);
+    rcv.send({
+      v: 1,
+      id: id("f"),
+      type: "fetch",
+      from_ref: fresh,
+      msg_id: first.msg_id,
+    } as ClientFrame);
+    expect((await waitFor(rcv, "error")).code).toBe("not_found");
     rcv.close();
     snd.close();
   });

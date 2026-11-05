@@ -1413,13 +1413,17 @@ function agentUp(
  * so the agent_up that follows reopens it: same name and former names, and its
  * pending mail (kept or flushed) instead of `<name>-2`. Only an agent of this
  * same machine, only when the new ref is not already known; otherwise nothing
- * changes and the new ref registers as any other.
+ * changes and the new ref registers as any other. An old session still open
+ * is closed first into `away` (its address kept), so the agent_up always
+ * takes the reopen path: the old session's delivered bodies go, its pending
+ * mail stays.
  */
 function takeOver(
   sql: SqlStorage,
   machineId: string,
   oldRef: string,
   newRef: string,
+  now: number,
 ): void {
   if (oldRef === newRef) return;
   if (
@@ -1431,13 +1435,22 @@ function takeOver(
     ) !== null
   )
     return;
-  sql.exec(
-    "update agents set native_ref = ? where machine_id = ? and native_ref = ? and org_id = ?",
+  const taken = one<{ id: string; live: number }>(
+    sql,
+    "update agents set native_ref = ? where machine_id = ? and native_ref = ? and org_id = ? returning id, live",
     newRef,
     machineId,
     oldRef,
     OWNER_ORG_ID,
   );
+  if (taken?.live !== 1) return;
+  sql.exec(
+    `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR} where id = ?`,
+    now,
+    now,
+    taken.id,
+  );
+  awayNames(sql, JSON.stringify([taken.id]), now);
 }
 
 /** Closes an open agent (its session ended); returns it, or null. */
@@ -3434,7 +3447,7 @@ export class BusHub extends DurableObject<Env> {
         // #1295: a /clear. The same process reports a new session; the new
         // ref takes over the old one's agent row (address, former names, mail).
         if (f.replaces !== undefined && mailboxGated(ws))
-          takeOver(sql, machineId, f.replaces, f.agent_ref);
+          takeOver(sql, machineId, f.replaces, f.agent_ref, this.#now());
         const { reply, change, arms } = agentUp(sql, machineId, f, this.#now());
         for (const t of arms) this.#arm(t);
         sendFrame(ws, reply);
