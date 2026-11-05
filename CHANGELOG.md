@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.121.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.120.0...v0.121.0) (2026-11-05)
+
+
+### Features
+
+* **skill:** name the bus tools each harness has ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1472](https://github.com/open-artifacts-ai/open-artifacts/issues/1472)) ([443001b](https://github.com/open-artifacts-ai/open-artifacts/commit/443001b8d1988209403531107188754d54f97ca2))
+
 ## [0.120.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.119.0...v0.120.0) (2026-11-05)
 
 
