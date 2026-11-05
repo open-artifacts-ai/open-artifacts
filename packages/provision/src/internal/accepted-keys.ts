@@ -10,5 +10,5 @@ export function acceptedKeys(
   env: Env,
   retired: Readonly<Record<Env, readonly string[]>> = RELEASE_RETIRED_PUBKEYS,
 ): string[] {
-  return [RELEASE_PUBKEY[env], ...(retired[env] ?? [])];
+  return [RELEASE_PUBKEY[env], ...Object.values(retired).flat()];
 }
