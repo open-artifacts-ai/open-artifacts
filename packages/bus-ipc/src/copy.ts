@@ -1,5 +1,6 @@
 import {
   BAD_NS_CHARS,
+  BUS_CMD,
   LIMITS,
   type ReceiptReason,
   type ReceiptState,
@@ -53,7 +54,7 @@ const refusals: Record<
   ],
   revoked: [
     "That agent's machine was revoked.",
-    "Message another agent, or run npx @open-artifacts/bus install there.",
+    `Message another agent, or run ${BUS_CMD} install there.`,
   ],
   ambiguous: [
     (n) =>
@@ -299,8 +300,7 @@ export const STATUS_COPY = {
     "This machine is not connected to the hub right now. Try again in a moment.",
   not_registered:
     "This session is not registered on the bus yet. Try again in a moment.",
-  bad_frame:
-    "The hub did not accept that request. Ask the user to run npx @open-artifacts/bus doctor.",
+  bad_frame: `The hub did not accept that request. Ask the user to run ${BUS_CMD} doctor.`,
 } as const;
 
 const BAD_LABEL_CHARS = new RegExp(BAD_NS_CHARS.source, "gu");
