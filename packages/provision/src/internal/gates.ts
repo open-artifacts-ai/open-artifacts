@@ -27,8 +27,8 @@ export const RELEASE_PUBKEY: Readonly<Record<"staging" | "prod", string>> =
     // below): the private halves live in the cloud repo's
     // (open-artifacts-ai/open-artifacts-cloud) GitHub Environment secrets
     // hosted-staging / hosted-prod RELEASE_SIGNING_KEY.
-    staging: "tyW-uMC51Ibl54MazJsryQOXt4ouL02b3qfVHBW9Px4",
-    prod: "OaC5wVYIMIdtKPuXepsfIOmaVkydz1L1xNBXEkfP8rc",
+    staging: "80JGjYyektdP4iLrqDgxkFqJjvbfhTaE6eLC63AcbvM",
+    prod: "ECUxXdoLuxGq8KOcHPmpvGgmfFitNjel5Lw3JtwEVGA",
   });
 
 /**
