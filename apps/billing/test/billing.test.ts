@@ -498,6 +498,29 @@ describe("GET /tier", () => {
   });
 });
 
+describe("trial/start and usage take the body's own fields only, like /checkout (L4)", () => {
+  const usage = { month: "2026-10", creators: ["u1"], count: 1 };
+  it("an extra field or a non-integer ts is 400 bad_body, nothing written", async () => {
+    at();
+    await seed([{ install: A }]);
+    for (const [path, body] of [
+      ["/trial/start", { install: A, plan: "team" }],
+      ["/trial/start", { install: A, ts: Date.now() + 0.5 }],
+      ["/usage", { install: A, ...usage, extra: 1 }],
+      ["/usage", { install: A, ...usage, ts: Date.now() + 0.5 }],
+    ] as [string, Record<string, unknown>][]) {
+      const r = await call(gated("POST", path, body));
+      expect([r.status, await r.json()]).toEqual([400, { error: "bad_body" }]);
+    }
+    expect(await rowOf(A)).toMatchObject({ tier: "free", version: 1 });
+    expect(await usageOf(A)).toEqual([]);
+    // The exact fields still work.
+    expect(
+      (await call(gated("POST", "/usage", { install: A, ...usage }))).status,
+    ).toBe(200);
+  });
+});
+
 describe("POST /trial/start", () => {
   it("from free/active: trial for 14 days, version + 1; a second call changes nothing", async () => {
     at();
@@ -694,7 +717,9 @@ describe("logs", () => {
         lines.push(a.map(String).join(" "));
       });
     await call(gated("GET", "/tier"));
+    // Refused for the extra field: nothing logged, least of all the value.
     await call(gated("POST", "/trial/start", { install: A, secret: "s3cret" }));
+    await call(gated("POST", "/trial/start", { install: A }));
     await call(
       gated("POST", "/usage", {
         install: A,

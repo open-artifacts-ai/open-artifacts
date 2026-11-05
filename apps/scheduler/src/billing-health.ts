@@ -8,6 +8,7 @@
  * while it lasts, and one when the next success clears it.
  */
 import { BILLING_ORIGIN } from "@oa/broker-core/billing-gate";
+import { BILLING_HEALTH_OK_KEY } from "@oa/provisioning-contract/state";
 import { type AlertEnv, alertFor, stepAlert } from "./provapi/alerts.js";
 
 export interface BillingHealthEnv extends AlertEnv {
@@ -15,7 +16,7 @@ export interface BillingHealthEnv extends AlertEnv {
   OA_ENV?: string;
 }
 
-export const BILLING_OK_KEY = "billing_health_ok_at";
+export const BILLING_OK_KEY = BILLING_HEALTH_OK_KEY;
 export const BILLING_ALERT_AFTER_MS = 60 * 60_000;
 
 const UPSERT_SQL =

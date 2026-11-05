@@ -206,6 +206,8 @@ const mismatched = (body: Record<string, unknown>, install: string) =>
 const BODY_KEYS: Readonly<Record<string, readonly string[]>> = {
   "/checkout": ["install", "ts", "plan"],
   "/portal": ["install", "ts"],
+  "/trial/start": ["install", "ts"],
+  "/usage": ["install", "ts", "month", "creators", "count"],
 };
 /** Only a Stripe-hosted page is ever passed back. */
 const CHECKOUT_URL = /^https:\/\/checkout\.stripe\.com\//;
@@ -534,6 +536,7 @@ export default {
           throw e;
         }
       }
+      if (!strictBody(body, url.pathname)) return bad("bad_body");
       if (route === "POST /trial/start")
         return await trialStart(env.BILLING_DB, install, body, now);
       return await usage(env.BILLING_DB, install, body, now);
