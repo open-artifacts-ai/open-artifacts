@@ -81,6 +81,8 @@ import {
   assertOwnResource,
   type Env,
   ForeignResource,
+  HOSTED_DEFAULT_VARS,
+  HOSTED_DOMAINS,
   type HostsMode,
   hosts,
   hostsValue,
@@ -95,6 +97,7 @@ import {
   registryDomains,
   registryEntry,
   registryKey,
+  withDefaultVars,
 } from "./names.js";
 import { nonAdditiveReason } from "./non-additive.js";
 import {
@@ -161,19 +164,8 @@ export const NAMESPACES: Readonly<Record<Env, string>> = Object.freeze({
   prod: "oa-prod",
 });
 
-/** The tenant domain pair of each env (user decision, 2026-10-21). */
-export const HOSTED_DOMAINS: Readonly<
-  Record<Env, Readonly<{ app: string; content: string }>>
-> = Object.freeze({
-  staging: Object.freeze({
-    app: "open-artifacts-staging.app",
-    content: "open-artifacts-staging.page",
-  }),
-  prod: Object.freeze({
-    app: "open-artifacts.app",
-    content: "open-artifacts.page",
-  }),
-});
+// The tenant domain pair of each env lives in names.ts (the Workers import it).
+export { HOSTED_DOMAINS };
 
 /**
  * The env's broker Google sign-in client (public). Staging's equals
@@ -242,6 +234,8 @@ export interface WfpOptions {
   fetch?: typeof fetch;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Test seam: the create defaults (HOSTED_DEFAULT_VARS[env] otherwise). */
+  defaultVars?: Readonly<Record<string, string>>;
   healthTimeoutMs?: number;
   /**
    * Require /healthz to report installId (Task 6b, Backend) and testHooks
@@ -1723,7 +1717,11 @@ export class WfpProvisioner {
           "invalid_state",
         );
     const testHooks = i.testHooks === true;
-    const vars = i.vars ?? {};
+    // A caller value wins; a default is rendered and stored only at create.
+    const vars = withDefaultVars(
+      i.vars ?? {},
+      this.o.defaultVars ?? HOSTED_DEFAULT_VARS[this.env],
+    );
     this.brokerVars(vars);
     this.checkVariant(i, vars);
     // The owner PAT and test-hook key files without a CI token; with one,

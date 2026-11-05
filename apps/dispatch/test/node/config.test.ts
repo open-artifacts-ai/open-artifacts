@@ -42,6 +42,8 @@ describe("wrangler.jsonc", () => {
           binding: "DIRECTORY_BROKER",
           service: platformNames(env).directoryBroker,
         },
+        // BillingGate's binding: this env's billing Worker.
+        { binding: "BILLING", service: platformNames(env).billing },
       ]);
       expect(e.dispatch_namespaces).toEqual([
         { binding: "DISPATCHER", namespace: NAMESPACES[env] },

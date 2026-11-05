@@ -56,6 +56,12 @@ import {
 } from "./fleet.js";
 import { claimState, getState, raiseState, unclaimState } from "./state.js";
 
+/** What an alert needs of the Worker's env: the D1 and the email binding. */
+export type AlertEnv = Pick<
+  ProvapiEnv,
+  "PLATFORM_DB" | "ALERT_EMAIL" | "ALERT_TO" | "ALERT_FROM"
+>;
+
 export type AlertState = "open" | "remind" | "clear";
 
 export interface AlertPolicy {
@@ -135,7 +141,7 @@ function sendCategory(e: unknown): string {
  * goes out once the destination is configured.
  */
 async function send(
-  env: ProvapiEnv,
+  env: AlertEnv,
   alert: Alert,
   state: AlertState,
   at: number,
@@ -182,7 +188,7 @@ export interface StepOptions {
  * throws: a D1 error is the fixed line `provapi alert <key> db_error`.
  */
 export async function stepAlert(
-  env: ProvapiEnv,
+  env: AlertEnv,
   alert: Alert,
   condition: boolean | null,
   now: number,
@@ -494,6 +500,19 @@ const COPY: Record<AlertKey, Copy> = {
     open: (f) =>
       `${plural(f.count, "install")} ${f.count === 1 ? "is" : "are"} still not on the platform's release, ${hours(FLEET_SKEW_MS)} hours after the fleet duty first saw ${f.count === 1 ? "it" : "them"} off it. Check the canary (FLEET_CANARY), fleet_halted and each install's jobs.`,
     clear: "Every install is on the platform's release.",
+  },
+  billing_unreachable: {
+    title: "billing unreachable",
+    open: () =>
+      "The billing Worker has not answered its health check for over an hour. Installs keep their last good tier for 7 days.",
+    clear: "The billing Worker answers its health check again.",
+  },
+  email_quota: {
+    title: "email quota warning",
+    open: () =>
+      "Yesterday's email sends reached 80% or more of the account's Email Sending daily limit. Raise the limit or reduce sending.",
+    clear:
+      "Daily email sends are back under 80% of the account's sending limit.",
   },
 };
 

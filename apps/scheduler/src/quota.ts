@@ -147,6 +147,12 @@ async function query(
 }
 
 /**
+ * The check's outcome, for the email_quota alert (alerts.ts): "warn" opens
+ * it, "ok" clears it, and a skip or failure leaves it as it is.
+ */
+export type QuotaOutcome = "ok" | "warn" | "skipped" | "failed";
+
+/**
  * Never throws: every outcome is one fixed log line. A hard timeout (10 s by
  * default) bounds the whole call, body included, even if fetch ignores abort.
  */
@@ -154,16 +160,16 @@ export async function emailQuota(
   env: QuotaEnv,
   scheduledTime: number,
   { timeoutMs = 10_000 }: QuotaOptions = {},
-): Promise<void> {
+): Promise<QuotaOutcome> {
   const token = env.EMAIL_QUOTA_TOKEN;
   if (!token) {
     console.log("email-quota skipped no_token");
-    return;
+    return "skipped";
   }
   const cfg = config(env);
   if (!cfg) {
     console.log("email-quota skipped config");
-    return;
+    return "skipped";
   }
   const ctl = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -180,14 +186,18 @@ export async function emailQuota(
     // Integer math: no float rounding at the 80% line.
     const pct = Math.floor((sent * 100) / cfg.limit);
     const line = `sent=${sent} limit=${cfg.limit} pct=${pct}`;
-    if (sent * 100 >= WARN_PCT * cfg.limit)
+    if (sent * 100 >= WARN_PCT * cfg.limit) {
       console.warn("email-quota warn", line);
-    else console.log("email-quota ok", line);
+      return "warn";
+    }
+    console.log("email-quota ok", line);
+    return "ok";
   } catch (e) {
     console.error(
       "email-quota failed",
       e instanceof Failure ? e.category : "http",
     );
+    return "failed";
   } finally {
     clearTimeout(timer);
   }

@@ -18,6 +18,18 @@
       "workerd": "./src/gate.ts",
       "import": "./src/gate.ts",
       "default": "./src/gate.ts"
+    },
+    "./gate-header": {
+      "types": "./src/gate-header.ts",
+      "workerd": "./src/gate-header.ts",
+      "import": "./src/gate-header.ts",
+      "default": "./src/gate-header.ts"
+    },
+    "./billing-gate": {
+      "types": "./src/billing-gate.ts",
+      "workerd": "./src/billing-gate.ts",
+      "import": "./src/billing-gate.ts",
+      "default": "./src/billing-gate.ts"
     }
   },
   "scripts": {

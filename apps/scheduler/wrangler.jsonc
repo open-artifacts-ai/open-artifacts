@@ -62,11 +62,13 @@
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app"
       },
-      // The BrokerGate stubs each install call carries (see the gate), and
+      // The BrokerGate and BillingGate stubs each install call carries (see
+      // the gates; the */2 tick also checks BILLING /health directly), and
       // the provisioner's RPC entrypoint (tokenStatus for the token alerts).
       "services": [
         { "binding": "AUTH_BROKER", "service": "oa-s-auth-broker" },
         { "binding": "DIRECTORY_BROKER", "service": "oa-s-directory-broker" },
+        { "binding": "BILLING", "service": "oa-s-billing" },
         {
           "binding": "PROVISIONER",
           "service": "oa-s-provisioner",
@@ -144,11 +146,13 @@
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app"
       },
-      // The BrokerGate stubs each install call carries (see the gate), and
+      // The BrokerGate and BillingGate stubs each install call carries (see
+      // the gates; the */2 tick also checks BILLING /health directly), and
       // the provisioner's RPC entrypoint (tokenStatus for the token alerts).
       "services": [
         { "binding": "AUTH_BROKER", "service": "oa-p-auth-broker" },
         { "binding": "DIRECTORY_BROKER", "service": "oa-p-directory-broker" },
+        { "binding": "BILLING", "service": "oa-p-billing" },
         {
           "binding": "PROVISIONER",
           "service": "oa-p-provisioner",

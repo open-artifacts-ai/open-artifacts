@@ -88,6 +88,86 @@ export function hostsValue(id: InstallId, mode: HostsMode): string {
 
 export type Env = "staging" | "prod";
 
+/** The tenant domain pair of each env (user decision, 2026-10-21). Dispatch,
+ * the scheduler and billing build and check an install's app host from it. */
+export const HOSTED_DOMAINS: Readonly<
+  Record<Env, Readonly<{ app: string; content: string }>>
+> = Object.freeze({
+  staging: Object.freeze({
+    app: "open-artifacts-staging.app",
+    content: "open-artifacts-staging.page",
+  }),
+  prod: Object.freeze({
+    app: "open-artifacts.app",
+    content: "open-artifacts.page",
+  }),
+});
+
+/** A trial's length from its start: the billing Worker and the backfill. */
+export const TRIAL_MS = 14 * 86_400_000;
+
+/**
+ * Platform-wide var defaults per env, rendered at create for a name the
+ * caller does not pass (a caller value wins; updateVars changes or clears
+ * them). An empty value is no default. The free-plan caps are off until
+ * their numbers are picked.
+ * Change a default only when no install is in `creating`: the defaults are
+ * part of create's inputs hash, so a resume would refuse.
+ */
+export const HOSTED_DEFAULT_VARS: Readonly<
+  Record<Env, Readonly<Record<string, string>>>
+> = Object.freeze({
+  staging: Object.freeze({
+    FREE_STORAGE_BYTES: "",
+    FREE_DATA_DOCS: "",
+    FREE_DATA_DAILY_WRITES: "",
+  }),
+  prod: Object.freeze({
+    FREE_STORAGE_BYTES: "",
+    FREE_DATA_DOCS: "",
+    FREE_DATA_DAILY_WRITES: "",
+  }),
+});
+
+/** The caller's vars plus each non-empty default it does not set. */
+export function withDefaultVars(
+  vars: Readonly<Record<string, string>>,
+  defaults: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const out = { ...vars };
+  for (const [k, v] of Object.entries(defaults))
+    if (v !== "" && !Object.hasOwn(out, k)) out[k] = v;
+  return out;
+}
+
+const APP_LABEL = /^[a-z0-9-]+$/;
+
+/**
+ * True only for `<label>.<env app domain>`, the shape of an install's app
+ * host. Billing accepts the gate's app host only in this shape.
+ */
+export function isAppHost(host: unknown, env: Env): host is string {
+  if (typeof host !== "string" || !Object.hasOwn(HOSTED_DOMAINS, env))
+    return false;
+  const suffix = `.${HOSTED_DOMAINS[env].app}`;
+  return host.endsWith(suffix) && APP_LABEL.test(host.slice(0, -suffix.length));
+}
+
+/**
+ * The app host of the install that holds `host` (its app or its content
+ * host: both are <slug>.<domain>, the same slug), or null for any other
+ * name. Dispatch calls it only with a host HOSTS maps to the install.
+ */
+export function appHostFor(host: string, env: Env): string | null {
+  if (!Object.hasOwn(HOSTED_DOMAINS, env)) return null;
+  const { app, content } = HOSTED_DOMAINS[env];
+  for (const d of [app, content]) {
+    const slug = host.endsWith(`.${d}`) ? host.slice(0, -d.length - 1) : "";
+    if (APP_LABEL.test(slug)) return `${slug}.${app}`;
+  }
+  return null;
+}
+
 /** Every hosted resource name carries its environment; the account is shared. */
 export const ENV_PREFIX: Readonly<Record<Env, string>> = Object.freeze({
   staging: "oa-s-",
@@ -142,6 +222,7 @@ export function platformNames(env: Env): {
   manageInstall: string;
   signups: string;
   signupsDlq: string;
+  billing: string;
 } {
   if (!Object.hasOwn(ENV_PREFIX, env)) throw new ForeignResource("", env);
   const p = ENV_PREFIX[env];
@@ -175,6 +256,8 @@ export function platformNames(env: Env): {
     // self-serve queue (API producer, provisioner consumer) and its DLQ.
     signups: `${p}signups`,
     signupsDlq: `${p}signups-dlq`,
+    // The tier store: the billing Worker and its own D1 share this name.
+    billing: `${p}billing`,
   };
 }
 

@@ -30,6 +30,8 @@ describe("ALERT_KEYS", () => {
       "token_invalid",
       "fleet_halted",
       "version_skew",
+      "billing_unreachable",
+      "email_quota",
     ]);
     expect(new Set(ALERT_KEYS).size).toBe(ALERT_KEYS.length);
   });
@@ -40,7 +42,12 @@ describe("ALERT_KEYS", () => {
 
   it("splits into D1 conditions, PROVISIONER.tokenStatus() keys and the scheduler's fleet keys", () => {
     expect([...RPC_ALERT_KEYS]).toEqual(["token_expiring", "token_invalid"]);
-    expect([...SCHEDULER_ALERT_KEYS]).toEqual(["fleet_halted", "version_skew"]);
+    expect([...SCHEDULER_ALERT_KEYS]).toEqual([
+      "fleet_halted",
+      "version_skew",
+      "billing_unreachable",
+      "email_quota",
+    ]);
     expect(
       [...SQL_ALERT_KEYS, ...RPC_ALERT_KEYS, ...SCHEDULER_ALERT_KEYS].sort(),
     ).toEqual([...ALERT_KEYS].sort());

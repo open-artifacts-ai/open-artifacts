@@ -119,7 +119,19 @@ const set = (sql: string, ...b: unknown[]) =>
     .bind(...b)
     .run();
 
-const FIXTURES: Record<AlertKey, Fixture> = {
+// Opened and cleared by their own checks (billing-health.ts, the nightly
+// email-quota step), not by a condition: unknown here, so a tick only
+// retries an owed email.
+const EXTERNAL = ["billing_unreachable", "email_quota"] as const;
+const isExternal = (k: AlertKey) => (EXTERNAL as readonly string[]).includes(k);
+const CONDITION_KEYS = ALERT_KEYS.filter(
+  (k): k is Exclude<AlertKey, (typeof EXTERNAL)[number]> => !isExternal(k),
+);
+
+const FIXTURES: Record<
+  Exclude<AlertKey, (typeof EXTERNAL)[number]>,
+  Fixture
+> = {
   signin_refused_burst: {
     async open(c) {
       await insert("audit_refusals", {
@@ -378,7 +390,7 @@ async function evaluate(now: number, token: TokenStatus = ACTIVE) {
 
 describe("alert conditions", () => {
   it("every key has a fixture, and SQL, RPC and scheduler keys are every key", () => {
-    expect(Object.keys(FIXTURES).sort()).toEqual([...ALERT_KEYS].sort());
+    expect(Object.keys(FIXTURES).sort()).toEqual([...CONDITION_KEYS].sort());
     expect(
       [...SQL_ALERT_KEYS, ...RPC_ALERT_KEYS, ...SCHEDULER_ALERT_KEYS].sort(),
     ).toEqual([...ALERT_KEYS].sort());
@@ -386,10 +398,12 @@ describe("alert conditions", () => {
 
   it("an empty database and an active token: every key is clear", async () => {
     const r = await evaluate(Date.UTC(2030, 0, 1));
-    for (const k of ALERT_KEYS) expect(r[k].open, k).toBe(false);
+    for (const k of CONDITION_KEYS) expect(r[k].open, k).toBe(false);
+    // Their own checks decide these; a tick leaves them as they are.
+    for (const k of EXTERNAL) expect(r[k].open, k).toBeNull();
   });
 
-  for (const k of ALERT_KEYS)
+  for (const k of CONDITION_KEYS)
     it(`${k}: its fixture opens it, a change clears it`, async () => {
       const id = installId();
       await install(id);

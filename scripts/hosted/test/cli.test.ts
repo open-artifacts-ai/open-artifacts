@@ -140,6 +140,7 @@ describe("refusals before any call", () => {
       "ci-token-sweep",
       "signup-redrive",
       "redline-creds",
+      "billing-backfill",
     ]);
   });
 });

@@ -25,7 +25,10 @@ function fakes(value: string) {
 }
 
 const ctx = {
-  exports: { BrokerGate: (o: { props: unknown }) => ({ gate: o.props }) },
+  exports: {
+    BrokerGate: (o: { props: unknown }) => ({ gate: o.props }),
+    BillingGate: (o: { props: unknown }) => ({ gate: o.props }),
+  },
 } as unknown as ExecutionContext;
 
 type In = Parameters<typeof dispatch.fetch>[0];
