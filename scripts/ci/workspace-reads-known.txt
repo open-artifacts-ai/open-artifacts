@@ -48,9 +48,5 @@ packages/provision/test/wfp-create.test.ts @oa/server
 packages/provision/test/wfp-lifecycle.test.ts @oa/auth-broker
 packages/provision/test/wfp-lifecycle.test.ts @oa/server
 packages/ui/test/brand.test.ts @oa/landing
-scripts/hosted/test/world.ts @oa/server
 scripts/setup/test/access-msg.test.ts @oa/landing
-scripts/setup/test/pat-file.test.ts @oa/dashboard
 scripts/setup/test/pat-file.test.ts @oa/landing
-tests/redline/test/provisioner-seal.ts @oa/provisioner
-tests/redline/test/provisioning.test.ts @oa/provisioning
