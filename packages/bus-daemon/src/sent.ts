@@ -9,7 +9,7 @@ import { excerptOf } from "@oa/bus-ipc";
 import {
   AgentRefSchema,
   BusNameSchema,
-  LIMITS,
+  MAILBOX_RETAIN_MS,
   MsgIdSchema,
   type ReceiptReason,
   ReceiptReasonSchema,
@@ -120,7 +120,7 @@ export class SentStore {
       log?: (msg: string) => void;
     } = {},
   ) {
-    this.#ttlMs = opts.ttlMs ?? (LIMITS.mailTtlSec + 300) * 1000;
+    this.#ttlMs = opts.ttlMs ?? MAILBOX_RETAIN_MS + 300_000;
     this.#max = opts.max ?? 10_000;
     this.#now = opts.now ?? Date.now;
     this.#log = opts.log;
@@ -247,8 +247,13 @@ export class SentStore {
         over--;
       }
     }
+    // What is left is all still owed: the oldest go, and the log says so.
+    const lost = over;
     for (; over > 0; over--)
       this.#all.delete(this.#all.keys().next().value as string);
+    this.#log?.(
+      `sent store full: evicted ${lost} undelivered ${lost === 1 ? "entry" : "entries"}; their outcomes will not reach the sender`,
+    );
   }
 
   #prune(): void {

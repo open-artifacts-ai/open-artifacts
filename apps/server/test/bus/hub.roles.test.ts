@@ -15,6 +15,7 @@ import {
   CLIENT_FRAMES,
   type ClientFrame,
   LIMITS,
+  MAILBOX_RETAIN_MS,
   MsgIdSchema,
   ReceiptStateSchema,
   type ServerFrame,
@@ -408,14 +409,21 @@ describe("a global sender's role in one other namespace (#1296 review)", () => {
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "x" });
     d.send({ v: 1, id: id("l"), type: "list", from_ref: "g" });
     await waitFor(d, "roster");
-    // OpenBus #451: the close holds `lead` in A for the hour (nameOutside
-    // counts it, as heldElsewhere does), so the send stays ambiguous...
+    // OpenBus #451, #1295: the close reserves `lead` in A as `away` for 7 d
+    // (nameOutside counts it, as heldElsewhere does), so the send stays
+    // ambiguous...
     expect(await send(d, "g", "lead")).toMatchObject({
       state: "refused",
       reason: "ambiguous",
     });
-    // ...and once the hold ends the role is the target.
+    // ...also past the hour, and once the reservation ends the role is the
+    // target.
     await setClock(uid, t0 + GRACE);
+    expect(await send(d, "g", "lead")).toMatchObject({
+      state: "refused",
+      reason: "ambiguous",
+    });
+    await setClock(uid, t0 + MAILBOX_RETAIN_MS);
     expect(await send(d, "g", "lead")).toMatchObject({
       state: "pending",
       to_name: holder,
@@ -598,10 +606,8 @@ describe("a vacant role (#1296)", () => {
       ok: false,
       reason: "name_taken",
     });
-    expect(await send(d, "s", alice)).toMatchObject({
-      state: "refused",
-      reason: "closed",
-    });
+    // #1295: the closed agent's mailbox still takes mail while it is away.
+    expect((await send(d, "s", alice)).state).toBe("pending");
     d.close();
   });
 
@@ -746,8 +752,8 @@ describe("role names share the agent-name space (#1296)", () => {
     // Another namespace's agent name is fine.
     const other = await reg(d, "o", uniq("other"), ns("x"));
     expect((await put(uid, n, other, aid)).ok).toBe(true);
-    // OpenBus #451: a closed agent's name is held for the hour (a global's
-    // in every namespace), then free.
+    // OpenBus #451, #1295: a closed agent's name is reserved for 7 d (a
+    // global's in every namespace), then free.
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "g" });
     d.send({ v: 1, id: id("l"), type: "list", from_ref: "a" });
     await waitFor(d, "roster");
@@ -756,6 +762,8 @@ describe("role names share the agent-name space (#1296)", () => {
       reason: "name_taken",
     });
     await setClock(uid, t0 + GRACE);
+    expect((await put(uid, n, g, aid)).ok).toBe(false);
+    await setClock(uid, t0 + MAILBOX_RETAIN_MS);
     expect((await put(uid, n, g, aid)).ok).toBe(true);
     d.close();
   });

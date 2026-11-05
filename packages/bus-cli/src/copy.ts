@@ -347,7 +347,7 @@ export function copy(style: Style) {
     queuedFootnote: () => [
       p(
         "muted",
-        "Mail to a queued agent waits up to 1 hour for its machine to reconnect;",
+        "Mail to a queued agent waits up to 7 days for its machine to reconnect;",
       ),
       p("muted", "then the sender is told."),
     ],

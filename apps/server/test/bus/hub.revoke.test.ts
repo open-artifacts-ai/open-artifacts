@@ -9,6 +9,7 @@ import {
   decodeServerFrame,
   encodeFrame,
   LIMITS,
+  MAILBOX_RETAIN_MS,
   newId,
   PONG,
   type ServerFrame,
@@ -555,6 +556,14 @@ describe("revoke and mail", () => {
     expect((await until(s.d, "receipt")).state).toBe("pending");
     b2.d.send({ v: 1, id: "dn", type: "agent_down", agent_ref: b2.ref });
     await sync(b2.d);
+    // #1295: a plain close queues mail for the agent while its `away`
+    // reservation lasts; past it the name is gone as `closed`.
+    s.d.send(send(s.ref, "bob", "hi"));
+    expect((await until(s.d, "receipt")).state).toBe("pending");
+    const closedAt = Date.now() + LIMITS.formerNameGraceMs + 1000;
+    await inHub(h, (i) =>
+      BusHub.setTestClock(i, closedAt + MAILBOX_RETAIN_MS + 1000),
+    );
     s.d.send(send(s.ref, "bob", "hi"));
     expect(await until(s.d, "receipt")).toMatchObject({
       state: "refused",
@@ -574,9 +583,10 @@ describe("revoke and mail", () => {
     const c = await agentOn(h, "Closer", "dup", n);
     c.d.send({ v: 1, id: "dn", type: "agent_down", agent_ref: c.ref });
     await sync(c.d);
-    // OpenBus #451: the close holds dup in n for the grace; reused after it.
+    // OpenBus #451, #1295: the close reserves dup in n (`away`); reused after
+    // the reservation.
     await inHub(h, (i) =>
-      BusHub.setTestClock(i, Date.now() + LIMITS.formerNameGraceMs + 1000),
+      BusHub.setTestClock(i, Date.now() + MAILBOX_RETAIN_MS + 1000),
     );
     const v = await agentOn(h, "Victim", "dup", n);
     const s = await agentOn(h, "Sender", "sender", n);

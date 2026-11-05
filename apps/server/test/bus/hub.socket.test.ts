@@ -4,7 +4,7 @@
 // X-Ob-Machine-Id header are now GET /bus/connect and the hub's /connect with
 // the Worker-only MACHINE_ID_HEADER.
 import { runInDurableObject } from "cloudflare:test";
-import { LIMITS, PING, PONG } from "@oa/bus-protocol";
+import { LIMITS, MAILBOX_RETAIN_MS, PING, PONG } from "@oa/bus-protocol";
 import { describe, expect, it } from "vitest";
 import {
   AUTHZ_AT_HEADER,
@@ -245,10 +245,14 @@ describe("hub socket: hello and agents", () => {
       await waitFor(d, "hello_ok");
       d.send(up("u3", "ses_c", "Pi-2", a));
       expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi-2-2");
+      // #1295: a close reserves the name for MAILBOX_RETAIN_MS, not the hour.
       await clock(t0 + LIMITS.formerNameGraceMs);
       d.send(up("u4", "ses_d", "Pi", a));
+      expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi-3");
+      await clock(t0 + MAILBOX_RETAIN_MS);
+      d.send(up("u5", "ses_e", "Pi", a));
       expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi");
-      d.send(up("u5", "ses_e", "Pi-2", a));
+      d.send(up("u6", "ses_f", "Pi-2", a));
       expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi-2");
       d.close();
     } finally {

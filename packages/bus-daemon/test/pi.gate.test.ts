@@ -189,7 +189,7 @@ describe("pi gate: notices", () => {
     again.onNotice((t) => notices.push(t));
     await vi.waitFor(() =>
       expect(notices).toEqual([
-        '×  Expired: your message to peer, "hi",\n   was not taken within 1 hour.',
+        '×  Expired: your message to peer, "hi",\n   was not taken within 7 days.',
       ]),
     );
   });
