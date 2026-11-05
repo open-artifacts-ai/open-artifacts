@@ -401,7 +401,7 @@ export async function planEdits(
   if (!obj) throw new ApiError("internal", "The entry file is missing");
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
       await obj.arrayBuffer(),
     );
   } catch {

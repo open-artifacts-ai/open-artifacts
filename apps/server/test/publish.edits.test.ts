@@ -226,6 +226,24 @@ describe("edits", () => {
     expect(await text(c.id, 2, "main.py")).toBe("x = 2\n");
   });
 
+  it("keeps a BOM and CRLF line endings outside the edit", async () => {
+    const src = "\uFEFF<p>one</p>\r\n<p>two</p>\r\n<p>three</p>\r\n";
+    const a = await make({ format: "html", content: src });
+    const r = await publishV(a.id, {
+      edits: [{ old: "<p>two</p>", new: "<p>2</p>" }],
+    });
+    expect(r.status).toBe(201);
+    const bytes = new Uint8Array(
+      await (
+        await api(app, R.versionFile(a.id, 2, "index.html"), owner.cookie)
+      ).arrayBuffer(),
+    );
+    expect(new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes)).toBe(
+      src.replace("<p>two</p>", "<p>2</p>"),
+    );
+    expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+  });
+
   it("a pdf or an image is refused", async () => {
     const png = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",

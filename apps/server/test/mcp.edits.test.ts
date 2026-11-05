@@ -57,7 +57,7 @@ describe("publish_artifact edits and expectedVersion", () => {
     expect(textOf(miss)).toContain("get_artifact");
   });
 
-  it("a settings-only publish ignores expectedVersion and makes no version", async () => {
+  it("a settings-only publish with expectedVersion is refused with a next step", async () => {
     const first = await tool(client, "publish_artifact", {
       title: "s",
       format: "html",
@@ -69,7 +69,10 @@ describe("publish_artifact edits and expectedVersion", () => {
       description: "d",
       expectedVersion: 9,
     });
-    expect(r.isError, textOf(r)).toBeFalsy();
-    expect(r.structuredContent).toMatchObject({ id, version: 1 });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("expectedVersion");
+    expect(textOf(r)).toContain("pass content, files or edits");
+    const g = await tool(client, "get_artifact", { id, includeContent: false });
+    expect(JSON.stringify(g.structuredContent)).toContain('"currentVersion":1');
   });
 });

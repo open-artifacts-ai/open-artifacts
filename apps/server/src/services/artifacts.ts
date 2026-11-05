@@ -342,7 +342,10 @@ export async function publish(
         `${cas?.before[0] ?? ""} and current_version = ?`,
         [...(cas?.before[1] ?? []), expected],
       ],
-      // The bump is already applied when the version insert reads it.
+      // The bump is already applied when the version insert reads it. This
+      // clause can match for a loser (another writer made expected + 1); the
+      // versions primary key (artifact_id, version) is the real backstop: the
+      // duplicate insert fails the whole batch (see staleVersion).
       after: [
         `${cas?.after[0] ?? ""} and current_version = ?`,
         [...(cas?.after[1] ?? []), expected + 1],
@@ -1657,6 +1660,12 @@ export async function publishSettings(
       allowAnonymousWrites,
     }).filter(([, v]) => v !== undefined),
   );
+  if (input.expectedVersion !== undefined)
+    throw new ApiError(
+      "bad_request",
+      "expectedVersion guards a new version, and a settings-only publish makes none. Remove it, or pass content, files or edits to publish a version.",
+      { path: "expectedVersion", reason: "no_version" },
+    );
   if (input.spaceId !== undefined) {
     // After the access check, as publish does: 404 before use_move.
     await authorize(env, asUser(user), id, "publish");

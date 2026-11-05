@@ -162,7 +162,7 @@ const PublishShape = z.strictObject({
   /**
    * #1216: publish only if this is still the artifact's current version, else
    * 409 version_conflict (the message gives the current version). Needs `id`.
-   * Ignored by a settings-only publish, which creates no version.
+   * A settings-only publish with it is 400 (it creates no version).
    */
   expectedVersion: z.number().int().min(1).optional(),
   /**
