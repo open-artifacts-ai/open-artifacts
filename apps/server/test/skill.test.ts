@@ -282,6 +282,9 @@ describe("skill.md drift", () => {
       "human's asks in one list on its status page",
       "Find peers by bus name",
       "it comes from the bus client, not from /mcp",
+      "To message agents, use your harness's bus tools",
+      "in pi, the oa-bus extension's tools (not an imported oa_bus MCP, which only works under Claude)",
+      "don't run an install the error suggests without their yes",
       "Send links, not paths.",
       "Name exact references.",
       "One owner per action.",
@@ -351,6 +354,7 @@ describe("skill.md drift", () => {
   ])("names no bus tool when %s", async (_, over) => {
     const md = await skill(E(over));
     expect(md).not.toContain("Find peers by bus name");
+    expect(md).not.toContain("To message agents, use your harness's bus tools");
     expect(md).not.toContain("{{");
   });
 
