@@ -190,7 +190,13 @@ export async function putUpload(
         "bad_request",
         "The PUT has no body. Send the file's bytes.",
       );
-    if (len !== null && (!/^\d+$/.test(len) || Number(len) > LIMITS.fileBytes))
+    if (len === null || !/^\d+$/.test(len))
+      throw new ApiError(
+        "bad_request",
+        "The PUT has no Content-Length. Send a Content-Length header; curl -T and fetch with a Blob do this.",
+        { reason: "length_required" },
+      );
+    if (Number(len) > LIMITS.fileBytes)
       throw new ApiError("too_large", OVER_CAP, { reason: "too_large" });
   }
   // Write-once: claim the slot atomically (received_at = -1 while in flight).
@@ -211,11 +217,7 @@ export async function putUpload(
   };
   let obj: R2Object | null;
   try {
-    let body: ReadableStream | ArrayBuffer | null = req.body;
-    // No Content-Length: read at most the cap (R2 needs a known length).
-    if (measure && len === null)
-      body = await readCapped(req.body, LIMITS.fileBytes);
-    obj = await env.FILES.put(row.r2_key, body, {
+    obj = await env.FILES.put(row.r2_key, req.body, {
       httpMetadata: { contentType: row.content_type },
     });
   } catch (e) {
@@ -260,33 +262,6 @@ export async function putUpload(
   )
     .bind(now, uploadId)
     .run();
-}
-
-/** Reads a body into memory, refusing (too_large) as soon as it passes `cap`. */
-async function readCapped(
-  body: ReadableStream<Uint8Array>,
-  cap: number,
-): Promise<ArrayBuffer> {
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.length;
-    if (total > cap) {
-      await reader.cancel().catch(() => {});
-      throw new ApiError("too_large", OVER_CAP, { reason: "too_large" });
-    }
-    chunks.push(value);
-  }
-  const out = new Uint8Array(total);
-  let at = 0;
-  for (const c of chunks) {
-    out.set(c, at);
-    at += c.length;
-  }
-  return out.buffer;
 }
 
 const SWEEP_BATCH = 500;

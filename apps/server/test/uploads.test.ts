@@ -468,15 +468,13 @@ describe("create_upload without a size (#1540)", () => {
     expect(await env.FILES.head(r?.r2_key ?? "")).toBeNull();
   });
 
-  it("a streamed body with no Content-Length over the cap is refused, nothing stored", async () => {
+  it("a PUT with no Content-Length is refused with a next step, nothing stored", async () => {
     const up = await create(alice.cookie, { path: "chunked.bin" });
     const u = new URL(up.url);
-    const chunk = new Uint8Array(1024 * 1024);
-    let sent = 0;
     const body = new ReadableStream<Uint8Array>({
       pull(c) {
-        if (sent++ > 26) return c.close();
-        c.enqueue(chunk);
+        c.enqueue(new Uint8Array(10));
+        c.close();
       },
     });
     await expect(
@@ -491,7 +489,10 @@ describe("create_upload without a size (#1540)", () => {
           duplex: "half",
         } as RequestInit),
       ),
-    ).rejects.toMatchObject({ code: "too_large" });
+    ).rejects.toMatchObject({
+      code: "bad_request",
+      message: expect.stringContaining("Send a Content-Length header"),
+    });
     const r = await row(up.uploadId);
     expect(r?.received_at).toBeNull();
     expect(await env.FILES.head(r?.r2_key ?? "")).toBeNull();
