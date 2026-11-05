@@ -4351,8 +4351,7 @@ describe("a job's lease across its attempts (#1326: fenced by attempt)", () => {
   function hungAttempt(
     s: ReturnType<typeof setup>,
     holder: string | null = JOB,
-    when: (method: string, path: string, body: string) => boolean = () =>
-      true,
+    when: (method: string, path: string, body: string) => boolean = () => true,
     extra: Partial<WfpOptions> = {},
   ) {
     /** This attempt's requests after it woke: method and path. */
@@ -4397,7 +4396,9 @@ describe("a job's lease across its attempts (#1326: fenced by attempt)", () => {
       sleep: async () => {},
     });
     const p = s.mk(
-      holder === null ? { cf, ...extra } : { cf, leaseHolder: holder, ...extra },
+      holder === null
+        ? { cf, ...extra }
+        : { cf, leaseHolder: holder, ...extra },
     );
     // This attempt's token: the one the row took after its own claim.
     let token: string | null = null;
