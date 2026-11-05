@@ -119,8 +119,9 @@ const FAILED_JOB = `j.install_id AS install_id, j.id AS job_id, j.kind AS job_ki
 const OPEN_JOB = `j.install_id AS install_id, j.id AS job_id, j.kind AS job_kind, j.last_error_code AS code, substr(j.error_message, 1, 200) AS message, j.updated_at AS since`;
 const STUCK = `j.updated_at <= ?1 - ${JOB_STUCK_MS} AND (j.retry_at IS NULL OR j.retry_at <= ?1)`;
 // A later job of these kinds on the install finished the job's trouble.
-const FIXED_BY = (kinds: string) =>
-  `NOT EXISTS (SELECT 1 FROM jobs f WHERE f.install_id = j.install_id AND f.status = 'done' AND f.created_at >= j.created_at AND f.id <> j.id AND f.kind IN (${kinds}))`;
+// `extra` narrows what counts as a fix (it can name `f` and `j`).
+const FIXED_BY = (kinds: string, extra = "") =>
+  `NOT EXISTS (SELECT 1 FROM jobs f WHERE f.install_id = j.install_id AND f.status = 'done' AND f.created_at >= j.created_at AND f.id <> j.id AND f.kind IN (${kinds})${extra})`;
 // Kinds that act on the install's state. Never cleanup, release_lease,
 // redline_creds or update: the sweep and cancel insert a cleanup for every
 // failure, so counting one would clear the failure it cleans up.
@@ -170,9 +171,11 @@ ORDER BY j.updated_at, j.id`,
     params: NOW,
   },
   prod_dirty: {
+    // A later done upgrade or rollback passed verify_clean, so it fixes the
+    // failure too (#1503). It must have finished after the dirty event.
     sql: `SELECT ${FAILED_JOB} FROM jobs j
 WHERE j.status = 'failed' AND j.error_code = 'prod_dirty'
-  AND ${FIXED_BY("'purge', 'discard'")}
+  AND ${FIXED_BY("'upgrade', 'rollback', 'purge', 'discard'", " AND COALESCE(f.finished_at, f.updated_at) >= COALESCE(j.finished_at, j.updated_at)")}
 ORDER BY since, j.id`,
     params: NONE,
   },
