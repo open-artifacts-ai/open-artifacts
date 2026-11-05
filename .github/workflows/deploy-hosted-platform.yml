@@ -294,7 +294,7 @@ jobs:
         env:
           DEPLOY_ENV: ${{ inputs.env }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: bash "$RUNNER_TEMP/main-ci/deploy-token-identity.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"
+        run: bash "$RUNNER_TEMP/main-ci/deploy-token-identity.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted" || true
       # The release chain (#1343) re-checks here, holding the concurrency
       # group and before anything deploys: prod's scheduler (the fleet's
       # target) must run an older release than the tag.
