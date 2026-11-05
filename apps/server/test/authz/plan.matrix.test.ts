@@ -31,6 +31,7 @@ const users: Partial<Record<Exclude<Who, "anonymous">, U>> = {};
 /** Each signed-in caller's own personal artifact (db, public, viewers write). */
 const own: Partial<Record<Who, string>> = {};
 let spaceId = "";
+let departedId = "";
 let seq = 0;
 const uniq = () => `${tag}${++seq}`;
 
@@ -281,6 +282,10 @@ beforeAll(async () => {
     expect(r.status).toBe(201);
     own[w] = ((await r.json()) as { id: string }).id;
   }
+  departedId = (await login(`departed-${tag}@a.com`, "member")).userId;
+  await env.DB.prepare("update users set status = 'removed' where id = ?")
+    .bind(departedId)
+    .run();
   const sp = await send(props, R.spaces, cred("owner"), {
     method: "POST",
     body: { name: `Matrix ${tag}` },
@@ -396,6 +401,27 @@ const EXEMPT: Exempt[] = [
     ok: ["owner", "admin"],
     run: (w) => send(props, R.auditExport, cred(w)),
   },
+  // The reads a locked admin still needs to see the team they would keep or drop.
+  {
+    name: "a departed member's transfer summary",
+    ok: ["owner", "admin"],
+    run: (w) => send(props, R.memberTransfer(departedId), cred(w)),
+  },
+  {
+    name: "list Every-space mappings",
+    ok: ["owner", "admin"],
+    run: (w) => send(props, R.orgMappings, cred(w)),
+  },
+  {
+    name: "list restricted groups",
+    ok: ["owner", "admin"],
+    run: (w) => send(props, R.restrictedGroups, cred(w)),
+  },
+  {
+    name: "a shared space's add-people candidates",
+    ok: ["owner", "admin"],
+    run: (w) => send(props, R.spaceCandidates(spaceId), cred(w)),
+  },
 ];
 
 /** The billing and admin-read callers: CALLERS plus a guest. */
@@ -455,6 +481,29 @@ describe.each(["none", "solo", "readOnly"] as const)(
         ).toBe(CODE[state]);
       }
       expect((await patch("owner")).status).toBe(200);
+    });
+  },
+);
+
+// The mapping picker's group lookup: a locked admin reaches the lookup itself
+// (409 directory_sync_off here: this test install has no directory), never
+// the cap's 404; a member is still refused.
+describe.each(["solo", "readOnly"] as const)(
+  "plan %s: directory group lookup",
+  (state) => {
+    beforeAll(async () => {
+      await clearBilling();
+      await cachePlan(ROWS[state]);
+    });
+    it("an admin passes the cap; a member is 404", async () => {
+      const a = await send(props, R.directoryGroups, cred("admin"));
+      expect(a.status).toBe(409);
+      expect(
+        ((await a.json()) as { error: { code: string } }).error.code,
+      ).toBe("directory_sync_off");
+      expect((await send(props, R.directoryGroups, cred("member"))).status).toBe(
+        404,
+      );
     });
   },
 );

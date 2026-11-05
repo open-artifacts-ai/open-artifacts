@@ -153,7 +153,9 @@ export function mountDirectory(app: AppType): void {
   // RL_DIRECTORY per caller (unbound: unlimited, as in the test pool).
   app.get(R.directoryGroups, async (c) => {
     const user = requireUser(c);
-    if (!orgCan(user, "org.mappings", { cap: capOfCaller(caller(c)) }))
+    if (
+      !orgCan(user, "org.mappings", { cap: capOfCaller(caller(c)), read: true })
+    )
       throw notFound();
     const rl = c.env.RL_DIRECTORY;
     if (rl && !(await rl.limit({ key: `dir:${user.id}` })).success)

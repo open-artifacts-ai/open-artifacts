@@ -881,7 +881,8 @@ export async function listSpaceCandidates(
 ): Promise<Page<SpaceCandidate>> {
   const r = await seeSpace(env, c, id);
   if (r.kind !== "shared") throw personalError("have no members");
-  requireSpaceManager(c, r);
+  // A read: a plan-locked admin still sees who could be added.
+  requireSpaceManager(c, r, true);
   const after = decodeCursor(q.cursor, ["string", "string"]);
   const needle = q.q ? likeEscape(q.q.toLowerCase()) : null;
   const { results } = await stmt(env.DB, CANDIDATES)
@@ -986,12 +987,13 @@ const OVERRIDE_MANUAL = `insert into space_members (space_id, user_id, role, sou
 const MANUAL_ROW = `exists (select 1 from space_members where space_id = ? and user_id = ? and source = 'manual')`;
 
 /** Manager-capable on this space (org admins, or its uncapped managers), else 404. */
-function requireSpaceManager(c: Caller, r: ViewRow): Member {
+function requireSpaceManager(c: Caller, r: ViewRow, read = false): Member {
   const u = me(c);
   if (
     !orgCan(u, "space.members", {
       spaceRole: roleOf(r.rank),
       cap: capOfCaller(c),
+      read,
     })
   )
     throw notFound();

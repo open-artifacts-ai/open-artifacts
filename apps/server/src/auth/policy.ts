@@ -414,6 +414,14 @@ const PLAN_ADMIN_READS: ReadonlySet<OrgAction> = new Set<OrgAction>([
   "members.manage",
   "audit.read",
   "settings.read",
+  // Seeing what the team has: a departed member's transfer summary, the
+  // Every-space mappings and restricted groups, the group lookup and a
+  // shared space's add-people candidates. Each handler passes read only
+  // for its GET; the writes stay capped.
+  "transfer.departed",
+  "org.mappings",
+  "restricted.groups",
+  "space.members",
 ]);
 
 /** Instance and space administration (no artifact involved). */
