@@ -313,6 +313,52 @@ describe("highlights and positions", () => {
   });
 });
 
+describe("mode and clamping", () => {
+  it("paints nothing before a mode arrives, and off clears everything", async () => {
+    await start();
+    await send({
+      type: "comments.set",
+      threads: [
+        { id: "ex", anchor: anchorOf("quick brown") },
+        {
+          id: "co",
+          anchor: anchorOf(
+            "totally gone words",
+            "Second paragraph",
+            " of text",
+          ),
+        },
+      ],
+    });
+    expect(highlights.get("oa-comment")).toBeUndefined();
+    expect(roots.at(-1)?.querySelector(".mark")).toBeFalsy();
+    expect(msgs()).toEqual([]);
+    await send({ type: "comments.mode", mode: "select" });
+    expect(highlights.get("oa-comment")?.ranges).toHaveLength(1);
+    expect(roots.at(-1)?.querySelector(".mark")).toBeTruthy();
+    parent.postMessage.mockClear();
+    await send({ type: "comments.mode", mode: "off" });
+    expect(highlights.has("oa-comment")).toBe(false);
+    expect(roots.at(-1)?.querySelector(".mark")).toBeFalsy();
+    window.dispatchEvent(new Event("resize"));
+    frames();
+    await flush();
+    expect(msgs()).toEqual([]);
+  });
+
+  it("clamps a negative top to 0 so the message still validates", async () => {
+    rect.top = -40;
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [{ id: "ex", anchor: anchorOf("quick") }],
+    });
+    const m = last("comment.positions");
+    expect(m).toMatchObject({ positions: [{ id: "ex", top: 0 }] });
+    expect(parseArtifactMessage(m)).not.toBeNull();
+  });
+});
+
 describe("pins", () => {
   beforeEach(() => {
     const meta = document.createElement("meta");

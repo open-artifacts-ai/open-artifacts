@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   anchorSchema,
   createTextAnchor,
+  createTextResolver,
   minSurvivingChars,
   type Resolution,
   resolveTextAnchor,
@@ -209,7 +210,7 @@ describe("resolveTextAnchor", () => {
           DOC.replace("The quick brown", "Gone entirely now"),
           a,
         ),
-      ).toEqual({ state: "collapsed", at: 0 });
+      ).toEqual({ state: "collapsed", at: 17 }); // the suffix says where
     });
     it("empty suffix at the end", () => {
       const a = anchorOf(DOC, "liquor jugs.");
@@ -264,6 +265,124 @@ describe("resolveTextAnchor", () => {
     expect(resolveTextAnchor(t2, anchor)).toEqual(
       resolveTextAnchor(t2, anchor),
     );
+  });
+});
+
+describe("short quotes need context (M1)", () => {
+  it("does not jump to the same words elsewhere when the context is found at the old spot", () => {
+    const before = "Intro. Q3 revenue grew 4%. Later table: Q3 revenue | 12";
+    const a = anchorOf(before, "Q3 revenue");
+    const after = "Intro. Q4 revenue grew 4%. Later table: Q3 revenue | 12";
+    const r = resolveTextAnchor(after, a);
+    expect(r.state).not.toBe("exact");
+    expect(r.state).toBe("partial"); // " revenue" survives at the old spot, not the table cell
+    if (r.state === "partial") expect(r.start).toBeLessThan(20);
+  });
+  it("does not match inside a longer word", () => {
+    const before = "We need art here.";
+    const a = anchorOf(before, "art");
+    const r = resolveTextAnchor("We need music here. A start.", a);
+    expect(r).toEqual({ state: "collapsed", at: 8 });
+  });
+  it("still takes a bounded short quote when no context exists anywhere", () => {
+    const a = anchorOf("alpha beta gamma delta", "beta");
+    const r = resolveTextAnchor("Totally rewritten: beta.", a);
+    expect(r).toMatchObject({ state: "exact", start: 19, end: 23 });
+  });
+  it("a short quote that moved with its context is still exact", () => {
+    const a = anchorOf("one two three four five six seven", "four");
+    const r = resolveTextAnchor("PRE one two three four five six seven", a);
+    expect(r).toMatchObject({ state: "exact", start: 18 });
+  });
+});
+
+describe("empty and weak context (M2)", () => {
+  it("an empty prefix does not beat a surviving suffix", () => {
+    const doc =
+      "Opening sentence of the memo. Rest of the memo follows here, with more.";
+    const a = anchorOf(doc, "Opening sentence of the memo.");
+    expect(a.prefix).toBe("");
+    const heading = `Heading\n${"x".repeat(500)}\n`;
+    const after = heading + doc.replace("Opening sentence of the memo.", "");
+    const r = resolveTextAnchor(after, a);
+    expect(r).toEqual({ state: "collapsed", at: heading.length });
+  });
+  it("a short probe is taken only when unique", () => {
+    const doc =
+      "alpha. the quick one jumps on the second beta. gamma. delta on the end";
+    const a = anchorOf(doc, "quick one jumps");
+    // both sides edited, so only 8-char probes (' on the ') survive, at two places
+    const edited = "ZZZ the. QQQ on the second beta. gamma delta on the end";
+    const r = resolveTextAnchor(edited, {
+      ...a,
+      prefix: "xxxxxxxxxxxxxxxx, ok",
+      suffix: " on the ",
+    });
+    expect(r.state).toBe("orphan");
+  });
+  it("a short probe repeated in the page is resolved by the block line", () => {
+    const lines = ["on the a", "on the b", "on the c", "on the d"].join("\n");
+    const a = {
+      kind: "text" as const,
+      version: 1,
+      exact: "zzzzzzzzzzzz",
+      prefix: "",
+      suffix: "on the ",
+      block: { line: 3 },
+    };
+    const r = resolveTextAnchor(lines, a);
+    expect(r.state).toBe("collapsed");
+    expect(r).toEqual({ state: "collapsed", at: lines.indexOf("on the c") });
+  });
+});
+
+describe("many anchors on one text (B1)", () => {
+  let seed = 99991;
+  const rnd = () => {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) / 4294967296;
+  };
+  const make = (n: number) => {
+    const w: string[] = [];
+    let size = 0;
+    while (size < n) {
+      const x = Math.floor(rnd() * 36 ** 6).toString(36);
+      w.push(x);
+      size += x.length + 1;
+    }
+    return w.join(" ");
+  };
+
+  it("200 KB with 100 edited anchors resolves quickly through one resolver", () => {
+    const text = make(200_000);
+    const anchors = Array.from({ length: 100 }, (_, i) => {
+      const at = 1000 + i * 1900;
+      return createTextAnchor(text, at, at + 60, 1);
+    });
+    // edit one character inside each quote
+    let edited = text;
+    for (let i = 99; i >= 0; i--) {
+      const at = 1000 + i * 1900 + 30;
+      edited = `${edited.slice(0, at)}#${edited.slice(at + 1)}`;
+    }
+    const t0 = performance.now();
+    const resolve = createTextResolver(edited);
+    const out = anchors.map((a) => resolve(a));
+    const ms = performance.now() - t0;
+    expect(out.every((r) => r.state === "partial")).toBe(true);
+    expect(ms).toBeLessThan(3000);
+  });
+
+  it("long quotes over the work budget fall back to collapsed instead of stalling", () => {
+    const text = make(50_000);
+    const a = createTextAnchor(text, 20_000, 21_000, 1);
+    const wide = `${text.slice(0, 20_500)}${"#".repeat(2500)}${text.slice(20_500)}`;
+    const t0 = performance.now();
+    const r = resolveTextAnchor(wide, a);
+    expect(performance.now() - t0).toBeLessThan(2000);
+    expect(["collapsed", "partial"]).toContain(r.state);
   });
 });
 

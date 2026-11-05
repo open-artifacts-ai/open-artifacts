@@ -7,6 +7,10 @@ import { ANCHOR_LIMITS, type BlockHint, type TextAnchor } from "./anchor.js";
 export const CONTEXT_CHARS = 32;
 /** Shortest context probe tried when the full context was edited. */
 const MIN_PROBE = 8;
+/** Quotes shorter than this need context agreement or word boundaries to count as exact. */
+const SHORT_QUOTE = 16;
+/** Most char comparisons the partial-match step may spend on one anchor. */
+const LCS_BUDGET = 2_000_000;
 /** Occurrence lists are capped so a degenerate needle stays linear. */
 const MAX_OCCURRENCES = 20000;
 
@@ -123,31 +127,18 @@ function lineOf(text: string): (offset: number) => number {
   };
 }
 
-/** Best whole-quote match: context score, then block line, then earliest. */
-function pickExact(
-  text: string,
-  starts: number[],
-  len: number,
-  prefix: string,
-  suffix: string,
-  line: number | undefined,
-): number {
-  let best = starts[0];
-  let bestScore = -1;
-  let bestDist = Number.POSITIVE_INFINITY;
-  const getLine = lineOf(text);
-  for (const s of starts) {
-    const score =
-      commonSuffix(text, s, prefix) + commonPrefix(text, s + len, suffix);
-    if (score < bestScore) continue;
-    const dist = line === undefined ? 0 : Math.abs(getLine(s) - line);
-    if (score > bestScore || dist < bestDist) {
-      best = s;
-      bestScore = score;
-      bestDist = dist;
-    }
-  }
-  return best;
+/** Non-space characters of the matched context. */
+const solid = (s: string) => s.replace(/\s+/g, "").length;
+
+const WORD = /[\p{L}\p{N}_]/u;
+/** A quote that starts or ends on a word character must not be inside a longer word. */
+function bounded(hay: string, s: number, e: number): boolean {
+  const first = hay[s];
+  const last = hay[e - 1];
+  if (first && WORD.test(first) && s > 0 && WORD.test(hay[s - 1])) return false;
+  if (last && WORD.test(last) && e < hay.length && WORD.test(hay[e]))
+    return false;
+  return true;
 }
 
 /** Whitespace runs collapsed to one space, with a map back to text offsets. */
@@ -174,25 +165,6 @@ function probes(n: number): number[] {
   for (const p of [16, MIN_PROBE])
     if (p < out[out.length - 1] && p <= n) out.push(p);
   return out;
-}
-
-/** Offsets where the prefix ends; "" means the document start. */
-function findBefore(text: string, prefix: string): number[] {
-  if (prefix === "") return [0];
-  for (const len of probes(prefix.length)) {
-    const hits = occurrences(text, prefix.slice(prefix.length - len));
-    if (hits.length) return hits.map((h) => h + len);
-  }
-  return [];
-}
-/** Offsets where the suffix starts; "" means the document end. */
-function findAfter(text: string, suffix: string): number[] {
-  if (suffix === "") return [text.length];
-  for (const len of probes(suffix.length)) {
-    const hits = occurrences(text, suffix.slice(0, len));
-    if (hits.length) return hits;
-  }
-  return [];
 }
 
 /** Longest common substring of region and needle; earliest in region on ties. */
@@ -225,19 +197,206 @@ function longestCommon(
 }
 
 /**
- * Re-find an anchor in `text`. Deterministic; the work is one indexOf scan for
- * the quote, then a bounded local comparison (at most about 3 quote lengths
- * of text against the quote), never a whole-document DP.
+ * A resolver for one text. Build it once per text version: the whitespace-
+ * normalized copy and the line index are made lazily, once, and shared by
+ * every anchor resolved through it.
+ */
+export function createTextResolver(
+  text: string,
+): (anchor: TextAnchor) => Resolution {
+  let normed: { norm: string; map: Int32Array } | undefined;
+  const getNorm = () => {
+    if (!normed) normed = normalize(text);
+    return normed;
+  };
+  const getLine = lineOf(text);
+
+  return (anchor) => {
+    const { exact, prefix, suffix } = anchor;
+    const len = exact.length;
+    if (len === 0) return { state: "orphan" };
+    const wantLine = anchor.block?.line;
+    const short = len < SHORT_QUOTE;
+    const need = Math.min(3, solid(prefix) + solid(suffix));
+
+    // Where the context says the quote was. An empty side says nothing; a
+    // short probe counts only if unique or nearest the block line hint.
+    const nearest = (hits: number[]): number | undefined => {
+      if (wantLine === undefined) return undefined;
+      let best: number | undefined;
+      let bestD = Number.POSITIVE_INFINITY;
+      for (const h of hits) {
+        const d = Math.abs(getLine(h) - wantLine);
+        if (d < bestD) {
+          best = h;
+          bestD = d;
+        }
+      }
+      return best;
+    };
+    const locate = (
+      needleOf: (len: number) => string,
+      full: number,
+      endOf: (hit: number, len: number) => number,
+    ) => {
+      for (const l of probes(full)) {
+        const hits = occurrences(text, needleOf(l));
+        if (!hits.length) continue;
+        if (l === full && l >= 16) return hits.map((h) => endOf(h, l));
+        if (hits.length === 1) return [endOf(hits[0], l)];
+        const n = nearest(hits);
+        if (n !== undefined) return [endOf(n, l)];
+      }
+      return [];
+    };
+    let spots: { ends: number[]; starts: number[] } | undefined;
+    const getSpots = () => {
+      if (spots) return spots;
+      let ends = prefix
+        ? locate(
+            (l) => prefix.slice(prefix.length - l),
+            prefix.length,
+            (h, l) => h + l,
+          )
+        : [];
+      let starts = suffix
+        ? locate(
+            (l) => suffix.slice(0, l),
+            suffix.length,
+            (h) => h,
+          )
+        : [];
+      starts.sort((a, b) => a - b);
+      if (prefix === "" && starts.length === 0) ends = [0];
+      if (suffix === "" && ends.length === 0) starts = [text.length];
+      spots = { ends, starts };
+      return spots;
+    };
+
+    // 1. The whole quote, as written or with whitespace runs collapsed.
+    let hay = text;
+    let hlen = len;
+    let pre = prefix;
+    let suf = suffix;
+    let map: Int32Array | undefined;
+    let hits = occurrences(text, exact);
+    if (!hits.length) {
+      const n = getNorm();
+      const nExact = squash(exact);
+      hits = occurrences(n.norm, nExact);
+      if (hits.length) {
+        hay = n.norm;
+        hlen = nExact.length;
+        pre = squash(prefix);
+        suf = squash(suffix);
+        map = n.map;
+      }
+    }
+    if (hits.length) {
+      let best: { s: number; score: number; dist: number } | undefined;
+      for (const s of hits) {
+        const ps = commonSuffix(hay, s, pre);
+        const ss = commonPrefix(hay, s + hlen, suf);
+        const score =
+          solid(pre.slice(pre.length - ps)) + solid(suf.slice(0, ss));
+        if (short && score < need && !bounded(hay, s, s + hlen)) continue;
+        const dist =
+          wantLine === undefined
+            ? 0
+            : Math.abs(getLine(map ? map[s] : s) - wantLine);
+        if (
+          !best ||
+          score > best.score ||
+          (score === best.score && dist < best.dist)
+        ) {
+          best = { s, score, dist };
+        }
+      }
+      if (best) {
+        const weak = short && best.score < need;
+        const elsewhere =
+          weak && (getSpots().ends.length > 0 || getSpots().starts.length > 0);
+        if (!elsewhere) {
+          const { s } = best;
+          if (!map) return { state: "exact", start: s, end: s + hlen };
+          return { state: "exact", start: map[s], end: map[s + hlen - 1] + 1 };
+        }
+      }
+    }
+
+    // 2. Locate the old spot from the context.
+    const { ends, starts } = getSpots();
+    const window = 2 * len + 64;
+    let from = -1;
+    let to = -1;
+    let at = -1;
+    let paired = false;
+    let bestMiss = Number.POSITIVE_INFINITY;
+    for (const p of ends) {
+      let lo = 0;
+      let hi = starts.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (starts[mid] < p) lo = mid + 1;
+        else hi = mid;
+      }
+      if (lo === starts.length) continue;
+      const gap = starts[lo] - p;
+      const miss = Math.abs(gap - len);
+      if (gap <= 3 * len + 64 && miss < bestMiss) {
+        bestMiss = miss;
+        from = p;
+        to = starts[lo];
+        paired = true;
+      }
+    }
+    if (!paired) {
+      const cap = Math.min(window, Math.floor(LCS_BUDGET / len));
+      if (ends.length) {
+        from = ends[0];
+        to = Math.min(text.length, from + cap);
+      } else if (starts.length) {
+        to = starts[0];
+        from = Math.max(0, to - cap);
+      } else return { state: "orphan" };
+      at = ends.length ? ends[0] : starts[0];
+    } else at = from;
+
+    // 3. What survives of the quote near that spot (skipped over budget).
+    if (to > from && (to - from) * len <= LCS_BUDGET) {
+      const { start, len: n } = longestCommon(text, from, to, exact);
+      const s = snap(text, start, 1);
+      const e = snap(text, start + n, -1);
+      if (e - s >= minSurvivingChars(len))
+        return { state: "partial", start: s, end: e };
+    }
+    return { state: "collapsed", at };
+  };
+}
+
+/**
+ * Re-find an anchor in `text` (use createTextResolver for many anchors on one
+ * text). Deterministic; one indexOf scan for the quote, then a bounded local
+ * comparison, never a whole-document DP.
  *
  * - exact: the whole quote is present (also when only whitespace runs changed).
  *   Several matches are told apart by prefix/suffix agreement, then by
- *   block.line, then the earliest.
+ *   block.line, then the earliest. A short quote (under 16 chars) that agrees
+ *   with none of its context, while that context is found elsewhere, is not
+ *   taken: it is probably other text (the same word in another place), so the
+ *   result is partial or collapsed at the context. A short quote inside a
+ *   longer word ("art" in "start") never counts as a whole-quote match unless
+ *   its context agrees.
  * - partial: no whole quote, but a piece of at least minSurvivingChars(...)
- *   sits where the prefix/suffix say the quote was.
- *   Among several context pairs, the one whose gap is closest to the quote's
- *   old length wins (a replacement is usually about as long), then the earliest.
+ *   sits where the prefix/suffix say the quote was. Among several context
+ *   pairs, the one whose gap is closest to the quote's old length wins. The
+ *   comparison spends at most 2M char comparisons; over that it is skipped and
+ *   the result is collapsed.
  * - collapsed: nothing of the quote, but the old spot is found from the
  *   prefix and/or suffix. `at` is the offset where the quote used to start.
+ *   An empty prefix or suffix (a document edge) says nothing while the other
+ *   side can be found. A shortened (16 or 8 char) context probe counts only
+ *   if it is unique, or nearest the block.line hint.
  * - orphan: neither quote nor spot.
  * block.path and block.page are not used here (flat text has no blocks).
  */
@@ -245,80 +404,5 @@ export function resolveTextAnchor(
   text: string,
   anchor: TextAnchor,
 ): Resolution {
-  const { exact, prefix, suffix } = anchor;
-  const len = exact.length;
-  if (len === 0) return { state: "orphan" };
-
-  const hits = occurrences(text, exact);
-  if (hits.length) {
-    const s = pickExact(text, hits, len, prefix, suffix, anchor.block?.line);
-    return { state: "exact", start: s, end: s + len };
-  }
-
-  // Whitespace-only edits: compare with runs of whitespace collapsed.
-  const { norm, map } = normalize(text);
-  const nExact = squash(exact);
-  const nHits = occurrences(norm, nExact);
-  if (nHits.length) {
-    const nLen = nExact.length;
-    const s = pickExact(
-      norm,
-      nHits,
-      nLen,
-      squash(prefix),
-      squash(suffix),
-      undefined,
-    );
-    const start = map[s];
-    const end = map[s + nLen - 1] + 1;
-    return { state: "exact", start, end };
-  }
-
-  const ends = findBefore(text, prefix); // offsets where the prefix ends
-  const starts = findAfter(text, suffix); // offsets where the suffix starts
-  const window = 3 * len + 64;
-
-  let from = -1;
-  let to = -1;
-  let at = -1;
-  let bestGap = Number.POSITIVE_INFINITY;
-  for (const p of ends) {
-    // first suffix start at or after p (starts is ascending)
-    let lo = 0;
-    let hi = starts.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (starts[mid] < p) lo = mid + 1;
-      else hi = mid;
-    }
-    const miss =
-      lo < starts.length ? Math.abs(starts[lo] - p - len) : window + 1;
-    if (lo < starts.length && starts[lo] - p <= window && miss < bestGap) {
-      bestGap = miss;
-      from = p;
-      to = starts[lo];
-    }
-  }
-  if (from === -1) {
-    if (ends.length) {
-      at = ends[0];
-      from = at;
-      to = Math.min(text.length, at + window);
-    } else if (starts.length) {
-      at = starts[0];
-      to = at;
-      from = Math.max(0, at - window);
-    } else return { state: "orphan" };
-  } else at = from;
-
-  if (to > from) {
-    const { start, len: n } = longestCommon(text, from, to, exact);
-    let s = start;
-    let e = start + n;
-    s = snap(text, s, 1);
-    e = snap(text, e, -1);
-    if (e - s >= minSurvivingChars(len))
-      return { state: "partial", start: s, end: e };
-  }
-  return { state: "collapsed", at };
+  return createTextResolver(text)(anchor);
 }

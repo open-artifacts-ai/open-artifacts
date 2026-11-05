@@ -1,6 +1,13 @@
 import { createTextAnchor, resolveTextAnchor } from "@oa/shared";
 import { beforeEach, describe, expect, it } from "vitest";
-import { flatText, offsetsToRange, rangeToOffsets } from "../src/text-range.js";
+import {
+  flatText,
+  indexText,
+  nodeAtIndex,
+  offsetsToRange,
+  rangeFromIndex,
+  rangeToOffsets,
+} from "../src/text-range.js";
 
 let root: HTMLElement;
 beforeEach(() => {
@@ -84,5 +91,19 @@ describe("text-range", () => {
       expect(offsetsToRange(root, res.start, res.end)?.toString()).toBe(
         "world 😀 ",
       );
+  });
+
+  it("leaves out svg style and script text too, and one index serves many lookups", () => {
+    root.insertAdjacentHTML(
+      "beforeend",
+      "<svg><style>.a{fill:red}</style><script>var x</script></svg><i>tail</i>",
+    );
+    const idx = indexText(root);
+    expect(idx.text).toBe("Hello brave newworld \u{1F600} endtail");
+    expect(rangeFromIndex(idx, 6, 11)?.toString()).toBe("brave");
+    expect(rangeFromIndex(idx, 0, idx.text.length)?.toString()).toBe(idx.text);
+    expect(rangeFromIndex(idx, 0, idx.text.length + 1)).toBeNull();
+    expect(nodeAtIndex(idx, 7)?.data).toBe("brave");
+    expect(nodeAtIndex(idx, idx.text.length)).toBeNull();
   });
 });

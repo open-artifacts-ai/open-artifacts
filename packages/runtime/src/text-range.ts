@@ -14,7 +14,7 @@ const SKIPPED = new Set([
 
 function skipped(node: Node): boolean {
   for (let p = node.parentNode; p; p = p.parentNode) {
-    if (SKIPPED.has(p.nodeName)) return true;
+    if (SKIPPED.has(p.nodeName.toUpperCase())) return true;
   }
   return false;
 }
@@ -29,10 +29,25 @@ function textNodes(root: Node): Text[] {
   return out;
 }
 
+/**
+ * The text nodes under a root with their flat start offsets. Build it once per
+ * text version; every offset-to-range lookup is then a binary search.
+ */
+export type TextIndex = { text: string; nodes: Text[]; starts: number[] };
+
+export function indexText(root: Node): TextIndex {
+  const nodes = textNodes(root);
+  const starts: number[] = [];
+  let pos = 0;
+  for (const t of nodes) {
+    starts.push(pos);
+    pos += t.data.length;
+  }
+  return { text: nodes.map((t) => t.data).join(""), nodes, starts };
+}
+
 export function flatText(root: Node): string {
-  return textNodes(root)
-    .map((t) => t.data)
-    .join("");
+  return indexText(root).text;
 }
 
 const PRECEDING = 2;
@@ -62,60 +77,77 @@ function pointOffset(nodes: Text[], node: Node, offset: number): number {
 export function rangeToOffsets(
   root: Node,
   range: Range,
+  index?: TextIndex,
 ): { start: number; end: number } | null {
   if (
     !root.contains(range.startContainer) ||
     !root.contains(range.endContainer)
   )
     return null;
-  const nodes = textNodes(root);
+  const nodes = index?.nodes ?? textNodes(root);
   return {
     start: pointOffset(nodes, range.startContainer, range.startOffset),
     end: pointOffset(nodes, range.endContainer, range.endOffset),
   };
 }
 
-/** A Range for text offsets, or null if they fall outside root's text. */
+const endOf = (i: TextIndex, k: number) => i.starts[k] + i.nodes[k].data.length;
+
+/** A Range for text offsets in an index, or null if they fall outside its text. */
+export function rangeFromIndex(
+  index: TextIndex,
+  start: number,
+  end: number,
+): Range | null {
+  const { nodes, starts } = index;
+  if (start < 0 || end < start || nodes.length === 0) return null;
+  // Start: the node where the text begins (the first with start < its end).
+  let lo = 0;
+  let hi = nodes.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (endOf(index, mid) <= start) lo = mid + 1;
+    else hi = mid;
+  }
+  const si = lo;
+  // End: the node where the text ends (the first with end <= its end).
+  lo = 0;
+  hi = nodes.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (endOf(index, mid) < end) lo = mid + 1;
+    else hi = mid;
+  }
+  const ei = lo;
+  if (si >= nodes.length || ei >= nodes.length) return null;
+  const doc = nodes[si].ownerDocument;
+  const r = doc.createRange();
+  r.setStart(nodes[si], start - starts[si]);
+  r.setEnd(nodes[ei], end - starts[ei]);
+  return r;
+}
+
+/** The text node holding the character at flat offset `offset`, or null. */
+export function nodeAtIndex(index: TextIndex, offset: number): Text | null {
+  let lo = 0;
+  let hi = index.nodes.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (endOf(index, mid) <= offset) lo = mid + 1;
+    else hi = mid;
+  }
+  return offset >= 0 && lo < index.nodes.length ? index.nodes[lo] : null;
+}
+
+/** A Range for text offsets under root (walks the DOM; prefer rangeFromIndex). */
 export function offsetsToRange(
   root: Node,
   start: number,
   end: number,
 ): Range | null {
-  if (start < 0 || end < start) return null;
-  const doc = root.ownerDocument ?? (root as Document);
-  const nodes = textNodes(root);
-  let pos = 0;
-  let sNode: Text | null = null;
-  let sOff = 0;
-  let eNode: Text | null = null;
-  let eOff = 0;
-  for (const t of nodes) {
-    const len = t.data.length;
-    // Start prefers the node where the text begins; end prefers the node where it ends.
-    if (!sNode && start < pos + len) {
-      sNode = t;
-      sOff = start - pos;
-    }
-    if (end <= pos + len && (end > pos || (end === pos && start === end))) {
-      eNode = t;
-      eOff = end - pos;
-      break;
-    }
-    pos += len;
-  }
-  if (!sNode || !eNode) return null;
-  const r = doc.createRange();
-  r.setStart(sNode, sOff);
-  r.setEnd(eNode, eOff);
-  return r;
+  return rangeFromIndex(indexText(root), start, end);
 }
 
-/** The text node holding the character at flat offset `offset`, or null. */
 export function textNodeAt(root: Node, offset: number): Text | null {
-  let pos = 0;
-  for (const t of textNodes(root)) {
-    if (offset < pos + t.data.length) return offset >= pos ? t : null;
-    pos += t.data.length;
-  }
-  return null;
+  return nodeAtIndex(indexText(root), offset);
 }
