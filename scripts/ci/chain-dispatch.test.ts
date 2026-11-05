@@ -321,7 +321,8 @@ describe("outputLine", () => {
       "boom\ndeploy_run=999\r\ndeploy_url=http://x\u2028deploy_conclusion=success\u0000";
     const line = outputLine("deploy_note", evil);
     expect(line.endsWith("\n")).toBe(true);
-    expect(line.slice(0, -1)).not.toMatch(/[\r\n\u2028\u2029\u0000]/);
+    expect(line.slice(0, -1)).not.toMatch(/[\r\n\u2028\u2029]/);
+    expect(line.includes("\u0000")).toBe(false);
     const lines = line.split("\n").filter(Boolean);
     expect(lines).toHaveLength(1);
     expect(lines[0]?.startsWith("deploy_note=")).toBe(true);
