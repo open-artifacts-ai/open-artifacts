@@ -117,7 +117,7 @@ export function dispatchAndWait(o: Opts): Outcome {
         r.actor?.login === BOT &&
         r.head_branch === "main" &&
         Date.parse(r.created_at ?? "") >= since &&
-        (r.display_title ?? "").includes(`[${o.chainId}]`),
+        r.display_title === title,
     );
   };
 
@@ -155,11 +155,11 @@ export function dispatchAndWait(o: Opts): Outcome {
       try {
         gh(o.exec, [
           "api",
-          "-Y",
+          "-X",
           "POST",
           `repos/${o.repo}/actions/runs/${found.id}/cancel`,
         ]);
-        did = `left the dispatched run ${url}`;
+        did = `cancelled the dispatched run ${url}`;
       } catch (e) {
         did = `could not cancel the dispatched run ${url} (${(e as Error).message})`;
       }
