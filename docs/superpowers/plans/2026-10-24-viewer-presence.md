@@ -2,13 +2,15 @@
 
 > **Revised 2026-10-29** against origin/main `5469cf78`. The first version predated #503 (UserPresence revocation gate), #559 (agent labels, `stripNameControls`, `AgentAttr.via`), #591 (`KEY_OWNERS` allowlist), #709/#728/#792 (publish modes, indexing in `waitUntil`), #808 (`withCred`), #814, #816 (`gone.retryAfterMs`) and #821 (client `notBefore`). Changes: every line reference moved to today's main; join steps run only after the stale and UserPresence gates (Task 3); `KEY_OWNERS` entries and an updated `keys.test.ts` list (Task 4); `connection` from `agent.via` and the MCP 2026-07-28 rule: `Mcp-Session-Id` only for 2025-03-26 through 2025-11-25 clients at `initialize`, never minted or echoed for 2026-07-28 requests (Task 5); our names renamed to `viewer_presence_*` / `viewerPresence*` so they can't be confused with the `UserPresence` DO and its `presence_touch_failed` log (Global Constraints); a token connection's label never reaches anyone but the owner, product from `agent.name` only for a grant, with an explicit test (Task 6); ping cleanup in `gone()`/`close()` (Task 7); one stack per shown layer (Task 9).
 
+> **Refreshed 2026-11-05** against origin/main `dacc58b1` (release 0.118.0; 323 commits after `5469cf78`, merged into this branch). Every file path, line number and function name below now points at that main. Where main changed what a task assumes, the task opens with a "Changed since 5469cf78:" note. The design is unchanged. A "Premise:" in a note marks something the task said that no longer holds, with what to do instead.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The viewer header shows who else has the artifact open right now (signed-in people by name, anonymous viewers as "Anonymous <Animal>", AI agents in their own shape), Google Drive style.
 
 **Architecture:** Presence rides the existing `R.events` socket to the per-artifact `ArtifactRuntime` DO. The Worker route derives an opaque per-artifact presence key and display identity and hands them to the DO in upgrade headers; the DO keeps everything in socket attachments and three small SQLite tables (no in-memory state, so hibernation is safe), and broadcasts one coalesced `presence` frame on join, leave and agent expiry. Agents have no socket: MCP and REST calls that already reach the DO record them (one added fire-and-forget DO call per agent read), keyed by a server-issued `Mcp-Session-Id` for legacy-era MCP clients (2025-03-26 through 2025-11-25) and by connection otherwise.
 
-**Tech Stack:** Cloudflare Workers + Durable Objects (hibernating WebSockets, `setWebSocketAutoResponse`, alarms, SQLite), Hono, zod 4 (`@oa/shared`), MCP SDK v2 (`@modelcontextprotocol/server` 2.3.1) via `agents/mcp/server` (stateless; both the 2025 `initialize` era and the 2026-07-28 per-request envelope era), React 19 + TanStack + shadcn (`@oa/ui`), vitest (`@cloudflare/vitest-pool-workers` for the server), Playwright (mock and real configs).
+**Tech Stack:** Cloudflare Workers + Durable Objects (hibernating WebSockets, `setWebSocketAutoResponse`, alarms, SQLite), Hono, zod 4 (`@oa/shared`), MCP SDK v2 (`@modelcontextprotocol/server` 2.3.1) via `agents/mcp/server` (stateless; both the 2025 `initialize` era and the 2026-07-28 per-request envelope era), React 19 + TanStack + shadcn (`@oa/ui`), vitest (`@cloudflare/vitest-plugin` (`cloudflareTest`) for the server), Playwright (mock and real configs).
 
 **Spec:** `docs/superpowers/specs/2026-10-24-viewer-presence-design.md` (approved; revised 2026-10-29). Read it with this plan.
 
@@ -19,7 +21,7 @@
 - Names only: a user with no name is "Member" (or "Guest" for role `guest`); initials and hue then come from the opaque per-artifact key. Never use `versionEvent`'s email fallback or `UserAvatar` (both use the email).
 - Anonymous presence id: a random value in a session cookie `oa_pid` on the app origin (no `Expires`/`Max-Age`, `Path=/`, `SameSite=Lax`, `Secure` on https), never derived from or stored next to `oa.anonId`. The server treats it as opaque: `^[A-Za-z0-9_-]{16,64}$`, else ignored.
 - The presence key shown to clients is per artifact (HMAC of artifact id + identity under a new `oa:viewer-presence` key), so it can't link a viewer across artifacts.
-- **Naming.** The server already has a `UserPresence` DO (`apps/server/src/runtime/presence.ts`, revocation), its tests (`test/presence.test.ts`, `test/presence.class.test.ts`), `presenceStub`, `touchPresence` and the logs `presence_touch_failed`, `presence_unbound`, `presence_close_failed`, `presence_revoke_failed`. Everything this feature adds on the server is named `viewer_presence_*` / `viewerPresence*` / `viewer-presence*`:
+- **Naming.** The server already has a `UserPresence` DO (`apps/server/src/runtime/presence.ts`, revocation), its tests (`test/presence.test.ts`, `test/presence.class.test.ts`), `presenceStub`, `touchPresence` and the logs `presence_touch_failed`, `presence_unbound`, `presence_close_failed`, `presence_revoke_failed`; since #1182 the same file also holds the install-wide socket index (`INSTALL_INDEX`, `INDEX_REPORT_MS`, `socketIndexStub`), which `ArtifactRuntime.reportToIndex` and `BusHub` report to (log `socket_index_failed`). Everything this feature adds on the server is named `viewer_presence_*` / `viewerPresence*` / `viewer-presence*`:
   - SQLite tables `viewer_presence_left`, `viewer_presence_state`, `viewer_presence_agent`.
   - Key label `oa:viewer-presence`; function `viewerPresenceKey` in `apps/server/src/runtime/viewer-presence-key.ts`.
   - DO members `viewerPresenceChanged`, `flushViewerPresence`, `pendingViewerPresence`, `touchViewerAgent`; socket tag `VIEWER_PRESENCE_TAG = "~vp"`; upgrade header `X-OA-Viewer-Presence` (`VIEWER_PRESENCE_HEADER`).
@@ -32,7 +34,7 @@
 - Timings (shared constants, `packages/shared/src/viewer-presence.ts`): `PRESENCE_PING_MS = 30_000`, `PRESENCE_STALE_MS = 60_000`, `PRESENCE_SWEEP_MS = 30_000`, `PRESENCE_GRACE_MS = 5_000`, `PRESENCE_COALESCE_MS = 1_000`, `AGENT_PRESENT_MS = 120_000`.
 - Caps: display name 80 chars, activity 80 chars, roster at most `PRESENCE_LIST_MAX = 100` entries plus a `total`.
 - No em dashes in user-facing copy; say "any AI agent" where relevant.
-- Every change to an existing shared shape is optional and appended last (older clients parse; `json-shapes.snapshot.test.ts` stays byte-identical), and is recorded in `packages/shared/HOSTED_CONTRACT.md`.
+- Every change to an existing shared shape is optional and appended last (older clients parse; `apps/server/test/json-shapes.snapshot.test.ts` stays byte-identical), and is recorded in `packages/shared/HOSTED_CONTRACT.md`.
 - Design picks (spec Section 8; https://artifacts.leourbina.com/a/MkqMepcHeLvbGvKL): **1A** agents are a rounded square (7px radius at 28px, 10px at 40px) with the owner's initials and a color per session; people and anonymous viewers are circles. **2A** faces go first in the TitleBar right group, before the version chip, side by side with a 4px gap and no overlap; show 3 then "+N", or all 4 when exactly 4; phones show one face plus "+N". **3A** the agent card is plain lines: name, "<Owner>'s agent · Viewing|Editing", the note in quotes, captioned "In the agent's own words". **4A** white line-icon animals (Lucide style: 24px grid, 2px stroke, round caps) on one 9-color palette for both themes: Teal `#1f6f5a`, Violet `#5b48b8`, Rust `#b04a14`, Blue `#2456c4`, Berry `#a3305f`, Olive `#4d6b12`, Umber `#8a4d0f`, Sea `#0e6e8c`, Plum `#7a3f99` (white glyph at least 5.4:1). Faces are 28px with a 2px ring in the surface color; card faces 40px.
 - Never `git stash`; commit WIP at checkpoints.
 
@@ -63,7 +65,7 @@
 | `apps/server/src/auth/keys.ts` | `oa:viewer-presence`, `oa:mcp-session` in `KEY_OWNERS` |
 | `apps/server/src/mcp/session.ts` (new) | Era check; issue and verify `Mcp-Session-Id` (legacy era only) |
 | `apps/server/src/runtime/viewer-presence-agent.ts` (new) | Worker-side `viewerAgentTouch(...)` builder and fire-and-forget helper |
-| `apps/server/src/mcp/server.ts`, `index.ts`, `mcp/oauth.ts`, `mcp/tools/*.ts`, `mcp/instructions.ts`, `routes/artifacts.ts`, `services/artifacts.ts` | Agent session and touches |
+| `apps/server/src/mcp/server.ts`, `index.ts`, `mcp/oauth.ts`, `mcp/tools/*.ts`, `mcp/tool-defs.ts` (tool inputs come from the shared schemas), `mcp/instructions.ts`, `routes/artifacts.ts`, `services/artifacts.ts`, `services/agent-display.ts` (reused: `cleanName`, `publicName`, `shownName`, `ownersAgent`) | Agent session and touches |
 | `apps/dashboard/src/viewer/presenceId.ts` (new) | The `oa_pid` cookie |
 | `apps/dashboard/src/viewer/liveEvents.ts` | Ping, `ping=1`, presence frames |
 | `apps/dashboard/src/viewer/usePresence.ts` (new) | Roster state minus self |
@@ -75,9 +77,11 @@
 
 ### Task 1: Shared presence contract
 
+> **Changed since 5469cf78:** tool inputs are now defined once in `apps/server/src/mcp/tool-defs.ts` from these shared schemas (`TOOL_DEFS`), so `activity?` flows into the tool manifest and skill by itself; those generated files are gitignored. A smoke test (#1437) asserts the required MCP tools by name, not a count, so an optional input changes nothing there. The shared package gained modules (`bus-notices`, and the `bus-protocol` package) but none uses `presence` or `PRESENCE_*`, so the names stay free.
+
 **Files:**
 - Create: `packages/shared/src/viewer-presence.ts`
-- Modify: `packages/shared/src/index.ts` (export), `packages/shared/src/schemas.ts:927-956` (`ArtifactEventSchema` and its doc comment), `:1013-1018` (`GetArtifactInputSchema`), `:1080-1118` (the six `ArtifactData*InputSchema`, all `z.strictObject`), `packages/shared/src/mocks/events.ts`, `packages/shared/HOSTED_CONTRACT.md`
+- Modify: `packages/shared/src/index.ts` (export), `packages/shared/src/schemas.ts:1039-1069` (`ArtifactEventSchema`, its doc comment and type), `:1125-1130` (`GetArtifactInputSchema`), `:1194-1231` (the six `ArtifactData*InputSchema`, all `z.strictObject`), `packages/shared/src/mocks/events.ts`, `packages/shared/HOSTED_CONTRACT.md`
 - Test: `packages/shared/test/viewer-presence.test.ts` (new), `packages/shared/test/events.mock.test.ts`
 
 **Interfaces:**
@@ -101,24 +105,26 @@
   - In `events.mock.test.ts`: `emitPresence sends one presence frame to each open socket`.
 - [ ] **Step 2: Run** `pnpm --filter @oa/shared exec vitest run test/viewer-presence.test.ts test/events.mock.test.ts`. Expected: FAIL (module not found).
 - [ ] **Step 3: Implement** `packages/shared/src/viewer-presence.ts` and the schema/mock changes above. `schemas.ts` imports from `viewer-presence.ts` (not the reverse).
-- [ ] **Step 4: Record the contract** in `HOSTED_CONTRACT.md`: a "Presence (both tiers)" section (frame, entry fields and trust levels, cookie, ping/pong, timings, `?ping=1` query on `R.events`, the MCP session rule from Task 5) and CHANGED rows for `ArtifactEvent.hello` (`you?`), `ArtifactEventSchema` (`presence`), `GetArtifactInput` and `ArtifactData*Input` (`activity?`). Update the `ArtifactEventSchema` doc comment in `schemas.ts:927-941`: add `presence` to the frames list; keep the `retryAfterMs` paragraph; client messages: only `"ping"` is allowed, any other client message still closes the socket with 1008.
+- [ ] **Step 4: Record the contract** in `HOSTED_CONTRACT.md`: a "Presence (both tiers)" section (frame, entry fields and trust levels, cookie, ping/pong, timings, `?ping=1` query on `R.events`, the MCP session rule from Task 5) and rows in its "CHANGED existing shapes" section (`HOSTED_CONTRACT.md:90`) for `ArtifactEvent.hello` (`you?`), `ArtifactEventSchema` (`presence`), `GetArtifactInput` and `ArtifactData*Input` (`activity?`). Update the `ArtifactEventSchema` doc comment in `schemas.ts:1039-1053`: add `presence` to the frames list; keep the `retryAfterMs` paragraph; client messages: only `"ping"` is allowed, any other client message still closes the socket with 1008.
 - [ ] **Step 5: Run** `pnpm --filter @oa/shared test && pnpm --filter @oa/shared typecheck`. Expected: PASS.
 - [ ] **Step 6: Commit** `feat(shared): viewer presence contract`.
 
 ### Task 2: Pure roster builder
+
+> **Changed since 5469cf78:** the 80-code-point name cleaning already exists as `cleanName` in `services/agent-display.ts:17`, next to `publicName` (null for an email-shaped name) and `shownName` ("Member" when there is none), so `roster.ts` imports it and does not define a second one. Premise: "`Member.name` is never an email" no longer holds; `Member.name` is `effectiveName`, which falls back to the full email (`services/users.ts:26`), so callers pass `publicName(user)` / `shownName(user)`, never `user.name` straight in.
 
 **Files:**
 - Create: `apps/server/src/runtime/roster.ts`
 - Test: `apps/server/test/viewer-presence.roster.test.ts`
 
 **Interfaces:**
-- Consumes: Task 1 `PresenceEntry`, `ANIMALS`, `PRESENCE_PALETTE_SIZE`, `PRESENCE_LIST_MAX`; `stripNameControls` from `@oa/shared` (`schemas.ts:466`, #559).
+- Consumes: Task 1 `PresenceEntry`, `ANIMALS`, `PRESENCE_PALETTE_SIZE`, `PRESENCE_LIST_MAX`; `stripNameControls` from `@oa/shared` (`schemas.ts:507`, #559) and, through it, `cleanName` from `apps/server/src/services/agent-display.ts:17`.
 - Produces:
   - `type PresenceIdentity = { key: string; kind: "person" | "anon"; name: string | null; guest: boolean }` (what the route passes; `name` null for anon or nameless).
   - `type SeatRow = { key: string; kind: "person" | "anon"; name: string | null; guest: boolean; since: number }` (one per live socket or grace row).
   - `type AgentRow = { key: string; product: string | null; owner: string; ownerActor: string; label: string | null; since: number; seen: number; lastWrite: number | null; activity: string | null }`.
   - `buildRoster(seats: SeatRow[], agents: AgentRow[], now: number): { viewers: PresenceEntry[]; total: number; labels: Map<string, Map<string, string>> }` where `labels` is ownerActor → (agent key → owner-only label), for owner-only variants.
-  - `colorOf(key: string): number` (stable hash mod 9; an agent's key is per session, so each session gets its own color), `cleanName(s: string | null): string | null` = `stripNameControls` (C0, DEL, bidi controls, zero-width), then trim, collapse whitespace, cut to 80 code points; empty gives null. No second control-character regex.
+  - `colorOf(key: string): number` (stable hash mod 9; an agent's key is per session, so each session gets its own color), `cleanName(s: string | null): string | null` = `stripNameControls` (C0, DEL, bidi controls, zero-width), then trim, collapse whitespace, cut to 80 code points; empty gives null. No second control-character regex. On main this function already exists as `cleanName` in `services/agent-display.ts:17` with exactly these rules: import and re-export it from `roster.ts` instead of writing it.
 
 - [ ] **Step 1: Write the failing tests** (`viewer-presence.roster.test.ts`):
   - `two seats with one key show once, at the earliest since`.
@@ -140,8 +146,10 @@
 
 ### Task 3: Presence on the ArtifactRuntime events sockets
 
+> **Changed since 5469cf78:** (1) Premise: "`ArtifactRuntime` has no constructor" no longer holds; it has one (`do.ts:448-453`, `super(ctx, withRetries(env))`, #1174), so the auto-response line is added to it and `withRetries(env)` stays. (2) `fetch` now ends with `await this.reportToIndex()` (`:1312`, the install socket index of #1182/#1193 in `presence.ts`) after the hello; put the join steps between the hello send and that call and leave `reportToIndex` alone. (3) A third close path exists, `closeAllSockets(reason)` (`:1844-1857`, the platform suspend, #1193): it closes every socket with 4403 and records no access change, so it must detach `p` from each attachment before closing and clear `viewer_presence_left` and the agent rows, as `closeActor` does. (4) Events tags are unchanged (`~ev`, `~ev:named`, `~ev:anon`, `~ev:u`, `~ev:ip`, `ea:{actor}`, `a:{actor}`); `broadcastVersion` (`:1446-1500`) already sends a per-owner variant to `ea:u:{ownerId}` sockets, which Task 6 reuses. (5) `webSocketClose` is still the only close handler and `webSocketError` still does not exist. (6) `BusHub` (`bus/hub.ts`) has its own sockets and its own `setWebSocketAutoResponse` (`:2318`); it is a separate DO and needs nothing here. (7) Server tests run on `@cloudflare/vitest-plugin`; `wrangler.test.jsonc:19` still binds `USER_PRESENCE`.
+
 **Files:**
-- Modify: `apps/server/src/runtime/do.ts` (SCHEMA `:354-381`, `SocketMeta :391`, tags `:393-412`, `class ArtifactRuntime :434` (no constructor today), `fetch :1174-1293` (accept `:1245-1249`, stale and UserPresence gates `:1250-1289`, hello `:1291`), `armAt :1338-1341`, `alarm :1532-1586` (early return `:1539`), `webSocketMessage`/`webSocketClose :1698-1712`, `closeSockets :1724-1749`, `closeActor :1757-1774`, `destroy :1777-1789`, `RpcMethods :1791-1812`)
+- Modify: `apps/server/src/runtime/do.ts` (SCHEMA `:360-387`, `SocketMeta :397`, tags `:399-414`, `class ArtifactRuntime :445` (constructor `:448-453`), `fetch :1191-1314` (accept `:1262-1266`, stale and UserPresence gates `:1267-1306`, hello `:1308`, `reportToIndex` `:1312`), `armAt :1381-1384`, `alarm :1592-1650` (early return `:1599`), `webSocketMessage`/`webSocketClose :1758-1772`, `closeSockets :1784-1809`, `closeActor :1817-1834`, `closeAllSockets :1844-1857`, `destroy :1859-1871`, `RpcMethods :1874-1896`)
 - Test: `apps/server/test/viewer-presence.do.test.ts` (new)
 
 **Interfaces:**
@@ -175,27 +183,29 @@
   - `presence frames carry no "u:", "ip:" or email substrings` (owner name set to a value containing "@" is fine; assert the attachment actor never leaks).
 - [ ] **Step 2: Run** `pnpm --filter @oa/server gen && pnpm --filter @oa/server exec vitest run test/viewer-presence.do.test.ts`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
-  - Constructor (new; `ArtifactRuntime` has none today): `constructor(ctx: DurableObjectState, env: Env) { super(ctx, env); ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PRESENCE_PING, PRESENCE_PONG)); }` (applies to data sockets too; harmless).
-  - `fetch` (`/events`): parse `X-OA-Viewer-Presence` with a zod schema (400 on invalid) before accept; push `VIEWER_PRESENCE_TAG` into the accept tags (tags are fixed at `acceptWebSocket`); the first attachment stays `{ t, named? }` with no `p`. Run every join step only after both gates pass, where `if (hello) pair[1].send(hello)` is (`:1291`): build the seat with `since = viewer_presence_left.since ?? now` and delete that row; `serializeAttachment` again with `p` set; hello includes `you`; send the roster to the joiner; `viewerPresenceChanged()`; `armAt(min(t + SOCKET_TTL_MS, now + PRESENCE_SWEEP_MS))` when the socket pings. A refused socket (the `stale` / `touchPresence` branch at `:1250-1289`) never gets `p`.
+  - Constructor (exists, `do.ts:448-453`: `super(ctx, withRetries(env))`): add `ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PRESENCE_PING, PRESENCE_PONG));` after the `super` call and keep `withRetries(env)` (applies to data sockets too; harmless). `BusHub` does the same at `bus/hub.ts:2318`.
+  - `fetch` (`/events`): parse `X-OA-Viewer-Presence` with a zod schema (400 on invalid) before accept; push `VIEWER_PRESENCE_TAG` into the accept tags (tags are fixed at `acceptWebSocket`); the first attachment stays `{ t, named? }` with no `p`. Run every join step only after both gates pass, where `if (hello) pair[1].send(hello)` is (`:1308`, before `await this.reportToIndex()` at `:1312`): build the seat with `since = viewer_presence_left.since ?? now` and delete that row; `serializeAttachment` again with `p` set; hello includes `you`; send the roster to the joiner; `viewerPresenceChanged()`; `armAt(min(t + SOCKET_TTL_MS, now + PRESENCE_SWEEP_MS))` when the socket pings. A refused socket (the `stale` / `touchPresence` branch at `:1267-1306`) never gets `p`.
   - A counted socket is one with the tag **and** `p` in its attachment. `flushViewerPresence`, the sweep and `webSocketClose` all skip tagged sockets without `p`.
   - `webSocketClose` (and a new `webSocketError` with the same body): only for a socket with `p`; when its key has no other open counted socket, upsert `viewer_presence_left` with `until = now + PRESENCE_GRACE_MS` and `actor = p.actor`, and `armAt(until)`. A socket that never joined writes nothing and broadcasts nothing.
   - `closeActor(actor)`: it is synchronous and closes the actor's `a:` / `ea:` sockets with 4403. A revoked person does not linger for the grace: before closing each socket, re-serialize its attachment without `p` (so `webSocketClose` writes no grace row for it); after the closes, delete `viewer_presence_left` rows with that `actor` and `ctx.waitUntil(this.viewerPresenceChanged())`. Task 6 adds the agent rows.
   - `viewerPresenceChanged`: if `now - sent_at >= PRESENCE_COALESCE_MS` flush now, else `armAt(sent_at + PRESENCE_COALESCE_MS)`.
   - `flushViewerPresence`: seats from `getWebSockets(VIEWER_PRESENCE_TAG)` attachments that have `p`, plus unexpired `viewer_presence_left`; `buildRoster`; skip when the JSON hash equals `viewer_presence_state.hash`; else send one serialized frame to all counted sockets and store hash and `sent_at`.
-  - `alarm`: before the TTL loop, close pinging counted sockets whose `getWebSocketAutoResponseTimestamp(ws) ?? t` is older than `PRESENCE_STALE_MS` (close 1001 "stale", then the grace path); delete expired `viewer_presence_left`; flush if anything changed or a coalesce is due; include `now + PRESENCE_SWEEP_MS` (only while a pinging socket is open), the earliest `until`, and a pending coalesce in `next`. The early return at `:1539` (`!job && !thumb && sockets.length === 0`) also checks for `viewer_presence_left` rows and a pending coalesce.
-  - `closeSockets` and `destroy` clear `viewer_presence_left` and `viewer_presence_state` (`destroy` already runs `deleteAll`).
+  - `alarm`: before the TTL loop, close pinging counted sockets whose `getWebSocketAutoResponseTimestamp(ws) ?? t` is older than `PRESENCE_STALE_MS` (close 1001 "stale", then the grace path); delete expired `viewer_presence_left`; flush if anything changed or a coalesce is due; include `now + PRESENCE_SWEEP_MS` (only while a pinging socket is open), the earliest `until`, and a pending coalesce in `next`. The early return at `:1599` (`!job && !thumb && sockets.length === 0`) also checks for `viewer_presence_left` rows and a pending coalesce.
+  - `closeSockets` and `destroy` clear `viewer_presence_left` and `viewer_presence_state` (`destroy` already runs `deleteAll`). `closeAllSockets` (suspend) does the same and adds no grace rows.
 - [ ] **Step 4: Run** the test file plus `test/events.test.ts test/runtime.do.test.ts test/alarm.cpu.test.ts test/presence.test.ts test/presence.class.test.ts`. Expected: PASS. Existing `events.test.ts` tests that read frames in order get a helper `nextOf(type)` that skips `presence` frames.
 - [ ] **Step 5: Commit** `feat(server): viewer presence on the events socket`.
 
 ### Task 4: Events route passes presence identity
 
+> **Changed since 5469cf78:** (1) The EVENTS handler is at the same lines (`routes.ts:464-509`) with the same five headers; `isEmbedRequest` is still `http/embed.ts:146`. `namedEvents` (which decides `named`) lives in `auth/policy.ts:418`, unchanged. (2) `KEY_OWNERS` now has three owners (`session`, `content`, `directory`) and ten labels (`oa:audit-cursor`, `oa:directory-state`, `oa:directory-token` were added); `deriveKey` still derives only `session` labels, so `oa:viewer-presence` is `"session"`. `hmacSign` is `util/crypto.ts:37`. (3) Premise: `name: cleanName(user.name)` would put an email on the roster for a user with no real name (`Member.name` falls back to the email); use `publicName(user)` from `services/agent-display.ts:29`, which returns null for an email, and the "Member" / "Guest" placeholders then apply.
+
 **Files:**
-- Modify: `apps/server/src/runtime/routes.ts:464-509` (EVENTS handler), `apps/server/src/auth/keys.ts:13-29` (`KEY_OWNERS` gains `"oa:viewer-presence": "session"`)
+- Modify: `apps/server/src/runtime/routes.ts:464-509` (EVENTS handler, same position), `apps/server/src/auth/keys.ts:13-30` (`KEY_OWNERS` gains `"oa:viewer-presence": "session"`)
 - Create: `apps/server/src/runtime/viewer-presence-key.ts` (`viewerPresenceKey`)
 - Test: `apps/server/test/events.test.ts` (new `describe("events socket: presence")`), `apps/server/test/keys.test.ts`
 
 **Interfaces:**
-- Consumes: Task 3 headers; Task 1 `PRESENCE_COOKIE`, `PRESENCE_ID_RE`; `isEmbedRequest` (`apps/server/src/http/embed.ts:146`).
+- Consumes: Task 3 headers; Task 1 `PRESENCE_COOKIE`, `PRESENCE_ID_RE`; `isEmbedRequest` (`apps/server/src/http/embed.ts:146`, unchanged).
 - Produces: `viewerPresenceKey(env: Pick<Env,"SESSION_SECRET">, artifactId: string, identity: string): Promise<string>` = first 16 chars of `hmacSign(deriveKey(env,"oa:viewer-presence"), artifactId + "\0" + identity)`. Identities: `u:{userId}`, `p:{oa_pid}`, `s:{random}` (no valid cookie: one face per socket), `a:{session or connection}` (Task 6).
 - Note: `KEY_LABELS` is `Object.keys(KEY_OWNERS)` (`keys.ts:41`) and `deriveKey` derives only labels owned by `"session"` (#591), so the label must be added to `KEY_OWNERS`, not to a list.
 
@@ -208,17 +218,19 @@
   - `a malformed or 65-char oa_pid gives a per-socket face, not an error` (Review Focus 4).
   - `embed sockets (?embed=1 alone, X-OA-Embed alone, and both) are not counted and get no presence frames`.
   - `?ping=1 reaches the DO as X-OA-Ping; any other value is treated as not pinging`.
-  - `keys.test.ts`: the exact-list assertion (`keys.test.ts:40-51`, `expect(KEY_LABELS).toEqual([...])`) fails until it lists `"oa:viewer-presence"` (Task 4) and `"oa:mcp-session"` (Task 5) in `KEY_OWNERS` order; update it, and the distinct-keys check then covers both.
+  - `keys.test.ts`: the exact-list assertion (`keys.test.ts:40-51`, `expect(KEY_LABELS).toEqual([...])`, today ten labels ending `"oa:upload"`, `"oa:directory-token"`) fails until it lists `"oa:viewer-presence"` (Task 4) and `"oa:mcp-session"` (Task 5) after them, in `KEY_OWNERS` order; update it, and the distinct-keys check then covers both.
 - [ ] **Step 2: Run** `pnpm --filter @oa/server gen && pnpm --filter @oa/server exec vitest run test/events.test.ts test/keys.test.ts`. Expected: FAIL.
-- [ ] **Step 3: Implement** in the `EVENTS` handler: skip presence when `isEmbedRequest(c.req.raw)` or the existing `x-oa-embed` header check is true (middleware applies `?embed=1` by dropping the user, so the handler's `who` alone can't tell an embed from a plain anonymous viewer); signed-in: identity `u:{id}`, `name: cleanName(user.name)`, `guest: user.role === "guest"`, kind `person`; anonymous: `p:{oa_pid}` when it matches `PRESENCE_ID_RE`, else `s:{newId()}`, kind `anon`, name null. Read the cookie with Hono's `getCookie`. The handler already sends five headers (`Upgrade`, `X-OA-Actor`, `X-OA-Authz-At`, `X-OA-Version`, `X-OA-Named`); append `X-OA-Viewer-Presence` and `X-OA-Ping`.
+- [ ] **Step 3: Implement** in the `EVENTS` handler: skip presence when `isEmbedRequest(c.req.raw)` or the existing `x-oa-embed` header check is true (middleware applies `?embed=1` by dropping the user, so the handler's `who` alone can't tell an embed from a plain anonymous viewer); signed-in: identity `u:{id}`, `name: publicName(user)` (from `services/agent-display.ts:29`; `cleanName(user.name)` alone would send an email, see the note), `guest: user.role === "guest"`, kind `person`; anonymous: `p:{oa_pid}` when it matches `PRESENCE_ID_RE`, else `s:{newId()}`, kind `anon`, name null. Read the cookie with Hono's `getCookie`. The handler already sends five headers (`Upgrade`, `X-OA-Actor`, `X-OA-Authz-At`, `X-OA-Version`, `X-OA-Named`); append `X-OA-Viewer-Presence` and `X-OA-Ping`.
 - [ ] **Step 4: Run** the same command. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(server): events route sends the presence identity`.
 
 ### Task 5: Server-issued MCP session id (legacy era only)
 
+> **Changed since 5469cf78:** nothing on main issues or reads `Mcp-Session-Id`, so the task stands. New on main: `registerBusTools` (`mcp/tools/bus.ts`) adds `bus_role_propose` (#1402, only while `busOn(env)`), so the tool list is longer; it proposes a bus role and never touches an artifact, so Task 6 adds no touch there. The bus (`/bus`, `BusHub` DO, agents with names and roles) is a separate socket world with its own sessions: do not reuse bus agent names, ids or role names for roster keys. `mcpWithPat` and `apiHandler` wrap `withCred` and `mcpHandler(...)` exactly as before, now at the lines above; the PAT agent is built at `index.ts:70-74`.
+
 **Files:**
 - Create: `apps/server/src/mcp/session.ts`
-- Modify: `apps/server/src/auth/keys.ts:13-29` (`KEY_OWNERS` gains `"oa:mcp-session": "session"`), `apps/server/src/mcp/server.ts:30-45` (`McpContext.connection`, `McpContext.session`; `ToolEnv` at `:47-50`), `apps/server/src/index.ts:52-83` (`mcpWithPat`), `apps/server/src/mcp/oauth.ts:117-177` (`apiHandler`; `GrantProps` at `:73-78`)
+- Modify: `apps/server/src/auth/keys.ts:13-30` (`KEY_OWNERS` gains `"oa:mcp-session": "session"`), `apps/server/src/mcp/server.ts:33-47` (`McpContext.connection`, `McpContext.session`; `ToolEnv` at `:50-53`; `mcpHandler` at `:284`), `apps/server/src/index.ts:52-85` (`mcpWithPat`), `apps/server/src/mcp/oauth.ts:123-186` (`apiHandler`; `GrantProps` at `:85-91`)
 - Test: `apps/server/test/mcp-session.test.ts` (new)
 
 **Interfaces:**
@@ -231,10 +243,10 @@
   - `withMcpSession(req: Request, env: Env, userId: string, run: (session: string | null) => Promise<Response>): Promise<Response>`:
     - modern era: `session = null`; any incoming `Mcp-Session-Id` is ignored; the response never carries `Mcp-Session-Id`.
     - legacy era: verifies the request header; when the body is a JSON-RPC `initialize` (single object, `method === "initialize"`) whose `params.protocolVersion` is in `LEGACY_SESSION_VERSIONS`, adds a freshly issued `Mcp-Session-Id` to the response headers. Nothing else issues one.
-  - `McpContext` gains `connection: string` and `session: string | null`. `connection` comes from `agent.via` through `viaKey` (`services/agent-usage.ts:23`): `t:<tokenId>` for a PAT, `g:<grantId>` for an OAuth grant. When an OAuth token has no parseable grant id (`grantIdOf` returns null, so `agent.via` is absent), `connection = "c:" + userId` (one face for that user's grantless connections). No new `pat:`/`oauth:` scheme; `GrantProps` (`{ userId, clientName, issuedAt }`) carries no client id.
+  - `McpContext` gains `connection: string` and `session: string | null`. `connection` comes from `agent.via` through `viaKey` (`services/agent-usage.ts:23`, unchanged): `t:<tokenId>` for a PAT, `g:<grantId>` for an OAuth grant. When an OAuth token has no parseable grant id (`grantIdOf` returns null, so `agent.via` is absent), `connection = "c:" + userId` (one face for that user's grantless connections). No new `pat:`/`oauth:` scheme; `GrantProps` (`{ userId, clientName, issuedAt }`) carries no client id.
 - Note: the stateless handler rejects `sessionIdGenerator` and its transport ignores `Mcp-Session-Id` when stateless, so the header is added outside the SDK. Tools never see the raw header. Modern-era agents show as one face per connection in v1 (spec Section 5 and Section 9).
 
-- [ ] **Step 1: Write the failing tests** (`mcp-session.test.ts`, using `connect`/`tool` from `test/mcp-helpers.ts`; `connect(token, { modern: true })` at `mcp-helpers.ts:45-50` selects the 2026-07-28 era):
+- [ ] **Step 1: Write the failing tests** (`mcp-session.test.ts`, using `connect`/`tool` from `test/mcp-helpers.ts`; `connect(token, { modern: true })` at `mcp-helpers.ts:39-58` selects the 2026-07-28 era):
   - `a legacy client gets an Mcp-Session-Id at initialize; tools/call does not issue a new one` (default `connect`, 2025 era).
   - `a 2025-03-26 initialize also gets one` (raw POST with that `protocolVersion`).
   - `a modern-era client (modern: true) gets no Mcp-Session-Id header on any response`.
@@ -250,16 +262,18 @@
 
 ### Task 6: Agents on the roster
 
+> **Changed since 5469cf78:** (1) #851 made a token label the owner's private note, and main has the machinery this task rebuilds: `services/agent-display.ts` (`isPrivateAgent(via)` is true for `t:` and for a null via, so only a grant's client name is public; `ownersAgent(user)` gives "<owner>'s agent" or "A member's agent"; `shownName`, `publicName`, `cleanName`), and `versionEvent` (`services/artifacts.ts:137-155`) already sends the private label only to the owner's own sockets through `broadcastVersion`'s `own` variant keyed on `ea:u:{ownerId}`. Reuse that mechanism for the roster's owner-only `labels` and take the card's "<Owner>'s agent" from `ownersAgent`; the product rule (`via.kind === "grant"`) is the same as `!isPrivateAgent(viaKey(via))`. (2) Premise: `owner = cleanName(user.name) ?? "Member"` no longer suffices; use `shownName(user)` (an email-shaped `Member.name` must not leak). (3) A grant's owner-set label lives only in `agent_grants` and never reaches a version payload; if the roster wants it, it is loaded separately and goes only to the owner. (4) `bus_role_propose` and the BusHub agents are not artifact readers: no touch, no roster entry. (5) Generated manifest and skill files are gitignored; nothing to commit after `gen`. (6) `TOOL_POLICY` (`auth/route-policy.ts`) needs an entry for any new MCP tool; this task adds none.
+
 **Files:**
 - Create: `apps/server/src/runtime/viewer-presence-agent.ts`
-- Modify: `apps/server/src/runtime/do.ts` (table `viewer_presence_agent (key, product, owner, owner_actor, label, since, seen, last_write, activity)`; `touchViewerAgent` RPC, added to the `RpcMethods` union `:1791-1812`; optional trailing `touch?: AgentTouch` on `scheduleIndex :1354`, `get :675`, `count :688`, `list :701`, `query :728`, `set :860`, `setRaw :874`, `update :888`, `updateRaw :898`, `delete :934`; alarm expiry; `closeActor` cleanup; owner-only label variants in `flushViewerPresence`), `apps/server/src/services/artifacts.ts` (`enqueueIndex :81-110`, `publish :143`, `restoreVersion :1131` take `touch?: AgentTouch`; `versionEvent :112-125` unchanged), `apps/server/src/mcp/server.ts` (`ToolEnv.touch(id, write, activity)`), `apps/server/src/mcp/tools/artifacts.ts` (`publish_artifact :70-85`, `get_artifact :97-133`, `restore_version`), `apps/server/src/mcp/tools/data.ts` (all six, `:45-129`), `apps/server/src/routes/artifacts.ts` (`agentOf :101-108`; GET `R.artifact :165-167`, restore `:306-315`, publish `:375-393`, for PAT callers), `apps/server/src/runtime/routes.ts` (data routes for PAT callers), `apps/server/src/mcp/instructions.ts`
+- Modify: `apps/server/src/runtime/do.ts` (table `viewer_presence_agent (key, product, owner, owner_actor, label, since, seen, last_write, activity)`; `touchViewerAgent` RPC, added to the `RpcMethods` union `:1874-1896`; optional trailing `touch?: AgentTouch` on `scheduleIndex :1397`, `get :692`, `count :705`, `list :718`, `query :745`, `set :877`, `setRaw :891`, `update :905`, `updateRaw :915`, `delete :951`; alarm expiry; `closeActor` cleanup; owner-only label variants in `flushViewerPresence`), `apps/server/src/services/artifacts.ts` (`enqueueIndex :100-128`, `publish :173`, `restoreVersion :1317` take `touch?: AgentTouch`; `versionEvent :137-155` unchanged), `apps/server/src/mcp/server.ts` (`ToolEnv.touch(id, write, activity)`, `:50-53`), `apps/server/src/mcp/tools/artifacts.ts` (`publish_artifact :79-94`, `get_artifact :109-144`, `restore_version :205-222`), `apps/server/src/mcp/tools/data.ts` (all six, `:45-130`), `apps/server/src/routes/artifacts.ts` (`agentOf :101-108`; GET `R.artifact :165-167`, restore `:306-316`, publish `:375-393`, for PAT callers), `apps/server/src/runtime/routes.ts` (data routes for PAT callers), `apps/server/src/mcp/instructions.ts`
 - Test: `apps/server/test/viewer-presence.agents.test.ts` (new)
 
 **Interfaces:**
 - Consumes: Task 5 `McpContext.session`, `.connection`; Task 4 `viewerPresenceKey`; Task 2 `AgentRow`, `buildRoster(...).labels`; `AgentAttr` (`services/agent-usage.ts:17-23`).
 - Produces:
-  - `viewerAgentTouch(env, artifactId: string, o: { user: Member; agent: AgentAttr | null; session: string | null; connection: string; write: boolean; activity: string | null }): Promise<AgentTouch>`: key = `viewerPresenceKey(env, artifactId, "a:" + (session ?? connection))`, `owner = cleanName(user.name) ?? "Member"` (never the email), `ownerActor = "u:" + user.id`, activity cut to 80, and:
-    - `product = agent?.via?.kind === "grant" ? cleanName(agent.name) : null`. For a PAT, `agent.name` is the token label (`index.ts:69-73`, `routes/artifacts.ts:101-108`), so it must never become the product.
+  - `viewerAgentTouch(env, artifactId: string, o: { user: Member; agent: AgentAttr | null; session: string | null; connection: string; write: boolean; activity: string | null }): Promise<AgentTouch>`: key = `viewerPresenceKey(env, artifactId, "a:" + (session ?? connection))`, `owner = shownName(user)` (`services/agent-display.ts:36`: the cleaned public name, "Member" without one, never the email), `ownerActor = "u:" + user.id`, activity cut to 80, and:
+    - `product = agent?.via?.kind === "grant" ? cleanName(agent.name) : null`. For a PAT, `agent.name` is the token label (`index.ts:70-74`, `routes/artifacts.ts:101-108`), so it must never become the product.
     - `label = agent?.via?.kind === "token" ? cleanName(agent.name) : (grant's owner-set label from #559, if loaded, else null)`. The label only ever lands in `buildRoster(...).labels`, which goes to the owner's sockets alone.
   - `touchViewerAgentLater(env, exec: Pick<ExecutionContext,"waitUntil"> | undefined, artifactId, o): void`: the one extra DO call (`runtimeStub(env, id).touchViewerAgent(touch)` in `waitUntil`, errors logged as `viewer_presence_touch_failed`; `presence_touch_failed` is the UserPresence accept path's log).
   - DO `touchViewerAgent(t: AgentTouch): Promise<void>`: upsert row (`since` kept, `seen = now`, `last_write = now` when `write`, activity replaced when given), `viewerPresenceChanged()`, `armAt(seen + AGENT_PRESENT_MS)`.
@@ -267,9 +281,9 @@
   - REST with a PAT: connection `t:<tokenId>`, no session.
   - Publish activity = `input.message`.
   - `publish` is `(env, user, input, agent, ctx?, mode = "any")` (#709/#792): append `touch?` after `mode`. Since #728, `enqueueIndex` (and with it `scheduleIndex` and the touch) runs in `waitUntil` via `later()` and never throws, so the touch lands after the response.
-  - Settings-only `publish_artifact` (`publishSettings :1328`, #709) makes no DO call: it does not touch (no extra call for a settings change).
+  - Settings-only `publish_artifact` (`publishSettings :1518`, #709) makes no DO call: it does not touch (no extra call for a settings change).
   - `closeActor("u:{id}")` also deletes `viewer_presence_agent` rows with `owner_actor = "u:{id}"`, so a revoked user's agents leave at once instead of after `AGENT_PRESENT_MS`.
-  - The alarm's early return (`do.ts:1539`) also checks for `viewer_presence_agent` rows; expired rows are deleted and flushed there.
+  - The alarm's early return (`do.ts:1599`) also checks for `viewer_presence_agent` rows; expired rows are deleted and flushed there.
 - [ ] **Step 1: Write the failing tests** (`viewer-presence.agents.test.ts`; await `waitUntil` work, as `callWorker` in `mcp-helpers.ts` does):
   - `an MCP get_artifact puts the agent on an open viewer's roster as "<product>", owner name, Viewing`.
   - `a publish through MCP makes it Editing with the change note as activity` (and costs no extra DO call: the touch rides `scheduleIndex`).
@@ -288,15 +302,17 @@
   - `activity over 80 chars is refused by the tool input; activity never appears for a non-agent`.
   - `REST GET R.artifact with a PAT adds the agent; with a session cookie it does not`.
 - [ ] **Step 2: Run** `pnpm --filter @oa/server gen && pnpm --filter @oa/server exec vitest run test/viewer-presence.agents.test.ts`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Instructions: add one line to `INSTRUCTIONS` asking agents to pass `activity` (a few words on what they are doing, at most 80 characters) on reads and data calls. Regenerate the skill and tool manifest with `pnpm --filter @oa/server gen` and commit the outputs.
+- [ ] **Step 3: Implement.** Instructions: add one line to `INSTRUCTIONS` (`mcp/instructions.ts:211`) asking agents to pass `activity` (a few words on what they are doing, at most 80 characters) on reads and data calls. Regenerate the skill and tool manifest with `pnpm --filter @oa/server gen`; the outputs (`mcp/tool-manifest.json`, `mcp/skill.generated.ts`, `mcp/upgrade.generated.ts`) are gitignored now, so there is nothing to commit.
 - [ ] **Step 4: Run** the test file plus `test/mcp.tools.test.ts test/events.test.ts test/runtime.do.test.ts test/json-shapes.snapshot.test.ts test/mcp-publish.cpu.test.ts test/presence.test.ts`. Expected: PASS, snapshot unchanged.
 - [ ] **Step 5: Commit** `feat(server): AI agents on the presence roster`.
 
 ### Task 7: Dashboard presence client
 
+> **Changed since 5469cf78:** `liveEvents.ts`, `Shell.tsx`, `TitleBar.tsx` and `FullScreenEscape.tsx` are unchanged, so their line numbers hold. `useLiveVersions.ts` gained 8 lines above the connect effect (now `:300-332`; the deps array is still `[id, embed, enqueue, check, goGone, generation]`), and `clearSwapped` now takes a version (`expireSwapped`); neither affects this task. The `onEvent` else branch still treats any non-hello frame as a version frame.
+
 **Files:**
 - Create: `apps/dashboard/src/viewer/presenceId.ts`, `apps/dashboard/src/viewer/usePresence.ts`
-- Modify: `apps/dashboard/src/viewer/liveEvents.ts` (`ArtifactEventsOptions :15-34`, `eventsUrl :44-47`, `connectArtifactEvents :74-173`, with `gone()` at `:136-143` and `close()` at `:163-169`), `apps/dashboard/src/viewer/useLiveVersions.ts` (connect effect `:292-324`), `apps/dashboard/src/viewer/Shell.tsx`
+- Modify: `apps/dashboard/src/viewer/liveEvents.ts` (`ArtifactEventsOptions :15-34`, `eventsUrl :44-47`, `connectArtifactEvents :74-173`, with `gone()` at `:136-143` and `close()` at `:163-169`), `apps/dashboard/src/viewer/useLiveVersions.ts` (connect effect `:300-332`), `apps/dashboard/src/viewer/Shell.tsx`
 - Test: `apps/dashboard/test/live-events.test.ts`, `apps/dashboard/test/presence.test.tsx` (new)
 
 **Interfaces:**
@@ -317,6 +333,8 @@
 
 ### Task 8: Animal icon set
 
+> **Changed since 5469cf78:** nothing changed: `lucide-react` is still 1.59.0 (`apps/dashboard/package.json:43`, `packages/ui/package.json:51`), and no `viewer/presence/` directory exists yet.
+
 **Files:**
 - Create: `apps/dashboard/src/viewer/presence/animals.tsx`
 - Test: `apps/dashboard/test/animals.test.tsx` (new)
@@ -334,14 +352,16 @@
 
 ### Task 9: Presence stack UI
 
+> **Changed since 5469cf78:** `TitleBar.tsx` (right group `:262`, version chip gated on `authed` `:263`, "View only" badge `:247`), `Shell.tsx` (`slot` passed to the shown layer only, `:673`) and `FullScreenEscape.tsx` are unchanged. `UserAvatar.tsx`'s `initials` moved to `:18`, and `settings/AgentRow.tsx` was rewritten (#1114, #871): its rounded-square agent face is now `Face` at `:46-59`. Playwright runs share fixed ports: run them through `~/code/oa-suite.sh --e2e`.
+
 **Files:**
 - Create: `apps/dashboard/src/viewer/presence/PresenceStack.tsx`, `PresenceAvatar.tsx`, `PresenceCard.tsx`; palette tokens `--oa-presence-0` … `--oa-presence-8` in `apps/dashboard/src/viewer/viewer.css` (one set, no dark override, per 4A)
-- Modify: `apps/dashboard/src/viewer/TitleBar.tsx:117-145` (new prop `presence?: ReactNode`) and `:262-263` (the right group opens at `:262`; render it first, at `:263`, before the version chip), `FullScreenEscape.tsx` (the same stack in the full-screen pill, placed per the Design page), `Shell.tsx` (renders `PresenceStack` unless embed or gone; `Viewer` renders `TitleBar` and `FullScreenEscape` once per layer, leaving, shown and preload, at `Shell.tsx:640-692`, so pass the stack the way `slot` is passed: to the shown layer only)
+- Modify: `apps/dashboard/src/viewer/TitleBar.tsx:117-145` (new prop `presence?: ReactNode`) and `:262-263` (the right group opens at `:262`; render it first, at `:263`, before the version chip), `FullScreenEscape.tsx` (the same stack in the full-screen pill, placed per the Design page), `Shell.tsx` (renders `PresenceStack` unless embed or gone; `Viewer` renders `TitleBar` and `FullScreenEscape` once per layer, leaving, shown and preload, at `Shell.tsx:646-692`, so pass the stack the way `slot` is passed: to the shown layer only)
 - Test: `apps/dashboard/test/presence-stack.test.tsx` (new), `apps/dashboard/e2e/presence.spec.ts` (new, mock)
 
 **Interfaces:**
-- Consumes: Task 7 `usePresence`; Task 8 `AnimalIcon`; Task 1 `PresenceEntry`; `initials` from `apps/dashboard/src/layout/UserAvatar.tsx:17` (grapheme-safe; call `initials(name, "")` so no email is used).
-- Produces: `PresenceStack({ others, total }: { others: PresenceEntry[]; total: number })`; `PresenceAvatar({ entry, size }: { entry: PresenceEntry; size: 28 | 40 })` with `data-shape="circle" | "square"`; `presenceInitials(e: PresenceEntry): string` (`initials(e.name, "")` when `named`, else two letters from `key`; never an email; an agent shows its owner's initials). The agent square aligns with `settings/AgentRow.tsx:43-51` (rounded-square initials, `rounded-md`); share the style where sizes allow. Card copy (3A): person = name; anon = "Anonymous <Animal>" only; agent = name, "<Owner>'s agent · Viewing" or "· Editing", the activity in quotes with the caption "In the agent's own words"; a PAT agent with no product is named "Agent". The "+N" list header reads "<N> more here".
+- Consumes: Task 7 `usePresence`; Task 8 `AnimalIcon`; Task 1 `PresenceEntry`; `initials` from `apps/dashboard/src/layout/UserAvatar.tsx:18` (grapheme-safe; call `initials(name, "")` so no email is used).
+- Produces: `PresenceStack({ others, total }: { others: PresenceEntry[]; total: number })`; `PresenceAvatar({ entry, size }: { entry: PresenceEntry; size: 28 | 40 })` with `data-shape="circle" | "square"`; `presenceInitials(e: PresenceEntry): string` (`initials(e.name, "")` when `named`, else two letters from `key`; never an email; an agent shows its owner's initials). The agent square aligns with `settings/AgentRow.tsx:46-59` (`Face`: rounded-square initials, `rounded-md`, `size-8`, hue from `avatarHue(c.grantId)`); share the style where sizes allow. Card copy (3A): person = name; anon = "Anonymous <Animal>" only; agent = name, "<Owner>'s agent · Viewing" or "· Editing", the activity in quotes with the caption "In the agent's own words"; a PAT agent with no product is named "Agent". The "+N" list header reads "<N> more here".
 - Note: the version chip renders only when `authed` (`TitleBar.tsx:263`). For anonymous viewers there is no chip, so the stack is simply first in the right group. #794's "View only" badge is in the left group (`:236-252`) and does not conflict.
 
 - [ ] **Step 1: Write the failing tests** (`presence-stack.test.tsx`):
@@ -365,6 +385,8 @@
 
 ### Task 10: Real end-to-end presence
 
+> **Changed since 5469cf78:** Premise: the shared full-suite lock `lockf -k /tmp/oa-fullsuite.lock` is retired; use `~/code/oa-suite.sh` (Step 3). `e2e/real/fixtures.ts` and `mcp-client.ts` (`mcpWithToken` `:38`, `oauthSession` `:107`) are in place and still use the default 2025 era.
+
 **Files:**
 - Create: `apps/dashboard/e2e/real/presence.spec.ts`
 
@@ -377,8 +399,8 @@
   - `a closed tab leaves within 7 s`.
   - `an MCP client reading the artifact appears as a square agent face` (expiry is covered by Task 6's clock-driven test).
   - `no frame seen by the anonymous context contains an "@" or the PAT's label` (collect frames with `page.on("websocket")`; the MCP client connects with a PAT whose label is distinctive).
-- [ ] **Step 2: Run** `pnpm --filter @oa/dashboard test:e2e:real -- e2e/real/presence.spec.ts`. Expected: PASS.
-- [ ] **Step 3: Run the full suites** under the shared lock: `lockf -k /tmp/oa-fullsuite.lock sh -c "pnpm test && pnpm typecheck && pnpm lint"`. Expected: PASS.
+- [ ] **Step 2: Run** `~/code/oa-suite.sh --e2e pnpm --filter @oa/dashboard test:e2e:real -- e2e/real/presence.spec.ts` (Playwright uses fixed ports, hence the lock). Expected: PASS.
+- [ ] **Step 3: Run the full suites** with `~/code/oa-suite.sh` from the worktree root (the old `lockf -k /tmp/oa-fullsuite.lock` is retired; Playwright runs go through `~/code/oa-suite.sh --e2e CMD...`), then `pnpm typecheck && pnpm lint`. CI is the full-suite proof. Expected: PASS.
 - [ ] **Step 4: Commit** `test(e2e): viewer presence end to end`.
 
 ---
