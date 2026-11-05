@@ -240,11 +240,6 @@ const routeTree = root.addChildren([
   library("/team", "team"),
   search,
   trash,
-  route("/machines", () => (
-    <BusRoute>
-      <Machines />
-    </BusRoute>
-  )),
   route("/agents", () => (
     <BusRoute>
       <LiveAgents />
@@ -269,6 +264,15 @@ const routeTree = root.addChildren([
       component: AgentsRoute,
     }),
     gated("/settings/instance", ADMINS, "/settings/agents", Instance),
+    createRoute({
+      getParentRoute: () => settings,
+      path: "/settings/machines",
+      component: () => (
+        <BusRoute>
+          <Machines />
+        </BusRoute>
+      ),
+    }),
   ]),
   usage,
   route("/no-access", NoAccess),

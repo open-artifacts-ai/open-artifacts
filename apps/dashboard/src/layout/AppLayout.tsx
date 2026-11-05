@@ -78,9 +78,8 @@ const I = {
   ),
   usage: icon("M2.5 11a5.5 5.5 0 1 1 11 0M8 11l2.5-3"),
   trash: icon("M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.5 7v4M9.5 7v4"),
-  // #1293 placeholders until Design's icons.
+  // #1293 placeholder until Design's icon.
   agents: icon("M4 5.5h8v7H4zM8 5.5V3M6.5 9h.01M9.5 9h.01"),
-  machines: icon("M2.5 3.5h11v7h-11zM6 13.5h4M8 10.5v3"),
   gear: icon(
     "M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7",
   ),
@@ -435,20 +434,12 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
                       />
                     )}
                     {canUseBus(me) && (
-                      <>
-                        <Link
-                          to="/agents"
-                          active={on("/agents")}
-                          icon={I.agents}
-                          label="Agents"
-                        />
-                        <Link
-                          to="/machines"
-                          active={on("/machines")}
-                          icon={I.machines}
-                          label="Machines"
-                        />
-                      </>
+                      <Link
+                        to="/agents"
+                        active={on("/agents")}
+                        icon={I.agents}
+                        label="Agents"
+                      />
                     )}
                     {(role === "owner" || role === "admin") && !usageOff && (
                       <Link

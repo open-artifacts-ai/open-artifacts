@@ -2,6 +2,7 @@ import type { Role } from "@oa/shared";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { type ReactNode, useEffect } from "react";
 import { useMe } from "../auth/useMe";
+import { canUseBus } from "../bus/access";
 import { ATTENTION, AttentionDot } from "../layout/AttentionDot";
 import { SyncDot, syncDot } from "../layout/SyncBanner";
 import { AppLink } from "../library/AppLink";
@@ -24,6 +25,8 @@ const TABS: {
   directory?: true;
   /** Hosted spaces admin: org admins, and members who manage a space. */
   spaces?: true;
+  /** #1293: the server's canConnect with the bus on (canUseBus). */
+  bus?: true;
 }[] = [
   {
     to: "/settings/profile",
@@ -47,6 +50,12 @@ const TABS: {
     to: "/settings/agents",
     label: "Agents",
     roles: ["owner", "admin", "member"],
+  },
+  {
+    to: "/settings/machines",
+    label: "Machines",
+    roles: ["owner", "admin", "member"],
+    bus: true,
   },
   { to: "/settings/instance", label: "Instance", roles: ["owner", "admin"] },
 ];
@@ -84,6 +93,7 @@ export function SettingsLayout() {
             t.roles.includes(role) &&
             (!t.directory || directory) &&
             (!t.spaces || canAdminSpaces(me)) &&
+            (!t.bus || canUseBus(me)) &&
             (t.to !== "/settings/agents" || !noAgents),
         ).map((t) => (
           <AppLink

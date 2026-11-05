@@ -23,7 +23,7 @@ export function Machines() {
   const [pick, setPick] = useState<BusMachine | null>(null);
   return (
     <section>
-      <h1>Machines</h1>
+      <h2>Machines</h2>
       {q.isPending ? (
         <p>Loading…</p>
       ) : q.isError ? (

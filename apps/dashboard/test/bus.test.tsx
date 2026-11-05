@@ -94,9 +94,9 @@ describe("gate: no nav links and Not found unless canConnect and busOn", () => {
       ({ canConnect: _c, busOn: _b, ...m }) => m,
     ],
   ];
-  for (const [name, me] of denied)
-    for (const path of ["/machines", "/agents"])
-      it(`${name}: ${path}`, async () => {
+  for (const [name, me] of denied) {
+    for (const path of ["/settings/machines", "/agents"])
+      it(`${name}: ${path} is Not found`, async () => {
         if (me) withBus(me);
         const seen = calls("GET");
         mount(path);
@@ -104,34 +104,55 @@ describe("gate: no nav links and Not found unless canConnect and busOn", () => {
           await screen.findByRole("heading", { name: "Page not found" }),
         ).toBeInTheDocument();
         const nav = await primary();
-        expect(
-          within(nav).queryByRole("link", { name: "Machines" }),
-        ).toBeNull();
         expect(within(nav).queryByRole("link", { name: "Agents" })).toBeNull();
+        expect(screen.queryByRole("link", { name: "Machines" })).toBeNull();
         // The page asks nothing of the bus.
         expect(seen.filter((c) => c.path.startsWith("/api/v1/bus/"))).toEqual(
           [],
         );
       });
+    it(`${name}: no Machines tab in Settings`, async () => {
+      if (me) withBus(me);
+      mount("/settings/profile");
+      const tabs = await screen.findByRole("navigation", {
+        name: "Settings sections",
+      });
+      expect(
+        await within(tabs).findByRole("link", { name: "Profile" }),
+      ).toBeInTheDocument();
+      expect(within(tabs).queryByRole("link", { name: "Machines" })).toBeNull();
+    });
+  }
 
-  it("allowed: both nav links show", async () => {
+  it("allowed: an Agents sidebar link and a Machines tab in Settings", async () => {
     withBus();
-    mount("/");
+    mount("/settings/profile");
     const nav = await primary();
     expect(
-      await within(nav).findByRole("link", { name: "Machines" }),
-    ).toHaveAttribute("href", "/machines");
-    expect(within(nav).getByRole("link", { name: "Agents" })).toHaveAttribute(
-      "href",
-      "/agents",
-    );
+      await within(nav).findByRole("link", { name: "Agents" }),
+    ).toHaveAttribute("href", "/agents");
+    expect(within(nav).queryByRole("link", { name: "Machines" })).toBeNull();
+    const tabs = await screen.findByRole("navigation", {
+      name: "Settings sections",
+    });
+    expect(
+      await within(tabs).findByRole("link", { name: "Machines" }),
+    ).toHaveAttribute("href", "/settings/machines");
+  });
+
+  it("allowed: the old top-level /machines is Not found", async () => {
+    withBus();
+    mount("/machines");
+    expect(
+      await screen.findByRole("heading", { name: "Page not found" }),
+    ).toBeInTheDocument();
   });
 });
 
-describe("/machines", () => {
+describe("/settings/machines", () => {
   it("lists every machine with its status and Last used (Never when unused); revoked rows have no Revoke", async () => {
     withBus();
-    mount("/machines");
+    mount("/settings/machines");
     const list = await screen.findByRole("list", { name: "Your machines" });
     const rows = within(list).getAllByRole("listitem");
     expect(rows.map((r) => r.textContent)).toEqual([
@@ -146,7 +167,7 @@ describe("/machines", () => {
 
   it("polls every BUS_POLL_MS", async () => {
     withBus();
-    mount("/machines");
+    mount("/settings/machines");
     await screen.findByRole("list", { name: "Your machines" });
     const q = lastClient.getQueryCache().find({ queryKey: qk.busMachines });
     expect(BUS_POLL_MS).toBe(10_000);
@@ -157,7 +178,7 @@ describe("/machines", () => {
   it("Revoke confirms, sends DELETE, and the row reloads as Revoked", async () => {
     withBus();
     const sent = calls("DELETE");
-    mount("/machines");
+    mount("/settings/machines");
     fireEvent.click(
       await screen.findByRole("button", { name: `Revoke ${live.label}` }),
     );
@@ -177,7 +198,7 @@ describe("/machines", () => {
   it("Cancel sends nothing", async () => {
     withBus();
     const sent = calls("DELETE");
-    mount("/machines");
+    mount("/settings/machines");
     fireEvent.click(
       await screen.findByRole("button", { name: `Revoke ${live.label}` }),
     );
@@ -192,7 +213,7 @@ describe("/machines", () => {
     server.use(
       http.get(`*${R.busMachines}`, () => HttpResponse.json({ machines: [] })),
     );
-    mount("/machines");
+    mount("/settings/machines");
     expect(await screen.findByText("No machines yet")).toBeInTheDocument();
   });
 
@@ -208,7 +229,7 @@ describe("/machines", () => {
         );
       }),
     );
-    mount("/machines");
+    mount("/settings/machines");
     fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     expect(screen.getByText(/Couldn't load your machines/)).toBeInTheDocument();
     await waitFor(() => expect(n).toBeGreaterThan(1));
