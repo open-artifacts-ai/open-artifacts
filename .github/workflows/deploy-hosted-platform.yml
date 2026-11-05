@@ -291,6 +291,7 @@ jobs:
       # fallback), and active.
       - name: The deploy token is the Environment's
         id: token_identity
+        continue-on-error: true
         env:
           DEPLOY_ENV: ${{ inputs.env }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
