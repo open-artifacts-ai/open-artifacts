@@ -2,7 +2,7 @@
 // unless exactly that run is found and succeeds. gh is a stub with a fake
 // clock; nothing is dispatched.
 import { describe, expect, it } from "vitest";
-import { dispatchAndWait, type Exec } from "./chain-dispatch.ts";
+import { dispatchAndWait, type Exec, outputLine } from "./chain-dispatch.ts";
 
 const T0 = Date.parse("2026-11-05T12:00:00Z");
 const CHAIN = "c555-1";
@@ -69,7 +69,7 @@ function harness(o: {
       },
       ...extra,
     });
-  return { go, calls };
+  return { go, calls, exec };
 }
 
 describe("chain-dispatch", () => {
@@ -155,15 +155,19 @@ describe("chain-dispatch", () => {
     expect(() => h.go({ waitTimeoutMs: 120_000 })).toThrow(
       /did not finish.*cancelled the dispatched run https:\/\/github.com\/o\/r\/actions\/runs\/900/,
     );
-    const c = h.calls.at(-1) as string[];
-    expect(c).toEqual([
+    const i = h.calls.findIndex((a) => a.includes("POST"));
+    expect(h.calls[i]).toEqual([
       "api",
       "-X",
       "POST",
       "repos/o/r/actions/runs/900/cancel",
     ]);
+    // Then one re-read of the run, and nothing after it.
+    expect(h.calls.slice(i + 1)).toEqual([
+      ["api", "repos/o/r/actions/runs/900"],
+    ]);
   });
-  it("on the wait timeout, still fails (and says so) when the cancel is refused", () => {
+  it("on the wait timeout, still fails (and says so) when the cancel is refused and the run is not green", () => {
     const h = harness({
       list: () => [run()],
       poll: () => run(),
@@ -171,6 +175,67 @@ describe("chain-dispatch", () => {
     });
     expect(() => h.go({ waitTimeoutMs: 120_000 })).toThrow(
       /could not cancel the dispatched run/,
+    );
+  });
+  it("a run that completed green at the deadline is a success and is never cancelled", () => {
+    // The poll at the deadline already shows completed/success.
+    const h = harness({
+      list: () => [run()],
+      poll: (n) =>
+        n < 2 ? run() : run({ status: "completed", conclusion: "success" }),
+    });
+    // 10 s polls: the third poll lands past a 15 s deadline.
+    expect(h.go({ waitTimeoutMs: 15_000 }).conclusion).toBe("success");
+    expect(h.calls.some((a) => a.join(" ").includes("/cancel"))).toBe(false);
+  });
+  it("after a cancel attempt (accepted or refused 409) it re-reads once: green is a success, anything else fails", () => {
+    for (const cancelFails of [false, true]) {
+      // In progress until the cancel call, then completed/success.
+      let cancelled = false;
+      const base = harness({
+        list: () => [run()],
+        poll: () => run(),
+        cancelFails,
+      });
+      const exec: Exec = (c, a) => {
+        if (a.includes("POST")) cancelled = true;
+        if (
+          cancelled &&
+          a[0] === "api" &&
+          !a.includes("POST") &&
+          !a[1]?.includes("/workflows/")
+        )
+          return {
+            code: 0,
+            stdout: JSON.stringify(
+              run({ status: "completed", conclusion: "success" }),
+            ),
+            stderr: "",
+          };
+        return base.exec(c, a);
+      };
+      let now = T0;
+      const r = dispatchAndWait({
+        exec,
+        repo: "o/r",
+        tag: "v1.2.3",
+        chainId: CHAIN,
+        now: () => now,
+        sleep: (m) => {
+          now += m;
+        },
+        waitTimeoutMs: 120_000,
+      });
+      expect(r.conclusion, String(cancelFails)).toBe("success");
+      expect(cancelled).toBe(true);
+    }
+    // Re-read shows it cancelled: fails with the note.
+    const h = harness({
+      list: () => [run()],
+      poll: (n) => (n < 100 ? run() : run()),
+    });
+    expect(() => h.go({ waitTimeoutMs: 120_000 })).toThrow(
+      /cancelled the dispatched run/,
     );
   });
   it("never cancels a run that completed, failed or succeeded", () => {
@@ -247,5 +312,22 @@ describe("chain-dispatch", () => {
       }),
     ).toThrow(/concluded failure/);
     expect(seen).toEqual([900]);
+  });
+});
+
+describe("outputLine", () => {
+  it("is one line: a multi-line error cannot add a deploy_run= line", () => {
+    const evil =
+      "boom\ndeploy_run=999\r\ndeploy_url=http://x\u2028deploy_conclusion=success\u0000";
+    const line = outputLine("deploy_note", evil);
+    expect(line.endsWith("\n")).toBe(true);
+    expect(line.slice(0, -1)).not.toMatch(/[\r\n\u2028\u2029\u0000]/);
+    const lines = line.split("\n").filter(Boolean);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.startsWith("deploy_note=")).toBe(true);
+    expect(lines.some((l) => l.startsWith("deploy_run="))).toBe(false);
+  });
+  it("caps the length", () => {
+    expect(outputLine("k", "a".repeat(1000)).length).toBeLessThanOrEqual(303);
   });
 });

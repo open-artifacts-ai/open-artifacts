@@ -150,7 +150,9 @@ export function dispatchAndWait(o: Opts): Outcome {
       return { runId: found.id, url, conclusion: "success" };
     }
     if (o.now() - start >= waitFor) {
-      // Never leave a prod deploy running unwatched: cancel it, then fail.
+      // Never leave a prod deploy running unwatched: cancel it, then look
+      // once more. A run that finished green while the cancel was in flight
+      // is a success; anything else fails, saying what was done.
       let did: string;
       try {
         gh(o.exec, [
@@ -163,12 +165,36 @@ export function dispatchAndWait(o: Opts): Outcome {
       } catch (e) {
         did = `could not cancel the dispatched run ${url} (${(e as Error).message})`;
       }
+      try {
+        const last = JSON.parse(
+          gh(o.exec, ["api", `repos/${o.repo}/actions/runs/${found.id}`]),
+        ) as WorkflowRun;
+        if (last.status === "completed" && last.conclusion === "success")
+          return { runId: found.id, url, conclusion: "success" };
+      } catch {
+        // Fall through: not proven green.
+      }
       throw new Error(
         `deploy run ${found.id} did not finish within ${waitFor} ms; ${did}`,
       );
     }
     o.sleep(poll);
   }
+}
+
+/**
+ * One `key=value` line for $GITHUB_OUTPUT. The value is collapsed to a single
+ * line (no newline, carriage return or other control character), so an error
+ * message can never add a line of its own such as a forged `deploy_run=`.
+ */
+export function outputLine(key: string, value: string, max = 300): string {
+  const one = [...value]
+    .map((c) => (c.charCodeAt(0) < 32 || c === "\x7f" ? " " : c))
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+  return `${key}=${one}\n`;
 }
 
 const realExec: Exec = (cmd, args) => {
@@ -186,9 +212,10 @@ const flag = (argv: string[], name: string) => {
 
 function main(argv: string[]) {
   const out = process.env.GITHUB_OUTPUT;
-  const emit = (s: string) => {
-    console.log(s);
-    if (out) appendFileSync(out, `${s}\n`);
+  const emit = (key: string, value: string) => {
+    const line = outputLine(key, value);
+    process.stdout.write(line);
+    if (out) appendFileSync(out, line);
   };
   try {
     const r = dispatchAndWait({
@@ -200,15 +227,15 @@ function main(argv: string[]) {
       sleep: (ms) =>
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
       onFound: (id, url) => {
-        emit(`deploy_run=${id}`);
-        emit(`deploy_url=${url}`);
+        emit("deploy_run", String(id));
+        emit("deploy_url", url);
       },
     });
-    emit(`deploy_conclusion=${r.conclusion}`);
+    emit("deploy_conclusion", r.conclusion);
   } catch (e) {
-    const msg = (e as Error).message.replace(/\s+/g, " ").slice(0, 300);
-    console.error(`chain-dispatch: ${msg}`);
-    if (out) appendFileSync(out, `deploy_note=${msg}\n`);
+    const line = outputLine("deploy_note", (e as Error).message);
+    console.error(`chain-dispatch: ${line.trim()}`);
+    if (out) appendFileSync(out, line);
     process.exit(1);
   }
 }
