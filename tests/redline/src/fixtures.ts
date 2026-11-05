@@ -40,15 +40,18 @@ export function apiReq(
 /**
  * Sends and reads the body; throws HttpError (status, body hash) unless 2xx.
  * With `setupOn` (the install's name), a setup publish: bounded at
- * SETUP_PUBLISH_MS, and a timeout is an InfraError, never retried.
+ * SETUP_PUBLISH_MS, and a timeout is an InfraError, never retried. With
+ * `retryFresh`, setupFetch's opt-in (a new throwaway artifact only).
  */
 export async function call(
   req: Request,
   what: string,
-  o: { setupOn?: string } = {},
+  o: { setupOn?: string; retryFresh?: "new-artifact" } = {},
 ): Promise<{ res: Response; text: string }> {
   if (o.setupOn !== undefined) {
-    const { res, text } = await setupFetch(o.setupOn, req);
+    const { res, text } = await setupFetch(o.setupOn, req, {
+      ...(o.retryFresh ? { retryFresh: o.retryFresh } : {}),
+    });
     if (res.status < 200 || res.status > 299)
       throw new HttpError(what, res, text);
     return { res, text };
@@ -86,15 +89,28 @@ export interface Throwaway {
   marker: string;
 }
 
+export interface ThrowawayOptions {
+  visibility?: "private" | "public";
+  capabilities?: { db?: boolean; storage?: boolean; viewer?: boolean };
+  allowAnonymousWrites?: boolean;
+}
+
+/**
+ * True when a throwaway's setup publish may get setupFetch's one retry
+ * (#1133): private, no capabilities, no anonymous writes. A retry whose first
+ * try reached the server leaves a spare nobody deletes, so a public or
+ * writable one (live.test.ts's anonymous-write artifact) never retries.
+ */
+export const throwawayRetries = (o: ThrowawayOptions): boolean =>
+  (o.visibility ?? "private") === "private" &&
+  o.capabilities === undefined &&
+  o.allowAnonymousWrites !== true;
+
 /** Publishes a throwaway html artifact on `t` (title and content carry a marker). */
 export async function createThrowaway(
   t: Target,
   pat: Cred,
-  o: {
-    visibility?: "private" | "public";
-    capabilities?: { db?: boolean; storage?: boolean; viewer?: boolean };
-    allowAnonymousWrites?: boolean;
-  } = {},
+  o: ThrowawayOptions = {},
 ): Promise<Throwaway> {
   const marker = newMarker(t);
   registerMarker(t, marker);
@@ -110,7 +126,13 @@ export async function createThrowaway(
         : {}),
     }),
     `${t.name} create throwaway`,
-    { setupOn: t.name },
+    // retryFresh only for a plain private throwaway (random marker title;
+    // callers use only its id and marker and never list or count artifacts):
+    // a spare from a retry is then private and inert (#1133).
+    {
+      setupOn: t.name,
+      ...(throwawayRetries(o) ? { retryFresh: "new-artifact" as const } : {}),
+    },
   );
   const id = (
     parseJson(res, text, `${t.name} create throwaway`) as {

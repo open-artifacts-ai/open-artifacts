@@ -57,6 +57,8 @@ const TOOLS = [
 ];
 /** With the spaces feature on, list_spaces is offered too (parity 1, B12). */
 const SPACES_TOOLS = [...TOOLS, "list_spaces"];
+/** While the bus is on (the test pool binds BUS_HUB), its one tool too (#1372). */
+const BUS_TOOLS = ["bus_role_propose"];
 /** What an install without spaces must never say to an agent. */
 const SPACES_WORDS = /\bspaces?\b|list_spaces|spaceId/i;
 
@@ -101,9 +103,11 @@ afterAll(async () => {
 });
 
 describe("MCP tools over PAT", () => {
-  it("tools/list has the 18 tools (spaces off: no list_spaces)", async () => {
+  it("tools/list has the 18 tools and the bus's (spaces off: no list_spaces)", async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual([...TOOLS].sort());
+    expect(tools.map((t) => t.name).sort()).toEqual(
+      [...TOOLS, ...BUS_TOOLS].sort(),
+    );
     for (const t of tools) {
       expect(t.description?.length ?? 0).toBeGreaterThan(10);
       expect(t.inputSchema.type).toBe("object");
@@ -775,7 +779,7 @@ describe("MCP artifact data tools", () => {
 describe("MCP 2026-07-28 era (per-request envelope)", () => {
   it("lists tools and publishes", async () => {
     const c = await connect(ownerPat, { modern: true });
-    expect((await c.listTools()).tools).toHaveLength(18);
+    expect((await c.listTools()).tools).toHaveLength(19);
     const pub = await publishMd(c, "# modern");
     const got = sc<{ content: string; version: { agent: unknown } }>(
       await tool(c, "get_artifact", { id: pub.id }),
@@ -909,7 +913,7 @@ describe("tool manifest", () => {
       TOOL_DEFS.map(({ name, description }) => ({ name, description })),
     );
     expect(manifest.map((t) => t.name).sort()).toEqual(
-      [...SPACES_TOOLS].sort(),
+      [...SPACES_TOOLS, ...BUS_TOOLS].sort(),
     );
   });
 
@@ -1017,7 +1021,9 @@ describe("MCP spaces (P3 T10)", () => {
       env: E({ FEATURES: "" }),
     });
     const { tools } = await c.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual([...TOOLS].sort());
+    expect(tools.map((t) => t.name).sort()).toEqual(
+      [...TOOLS, ...BUS_TOOLS].sort(),
+    );
     for (const t of tools)
       expect(t.description ?? "", t.name).not.toMatch(SPACES_WORDS);
     expect(c.getInstructions() ?? "").not.toMatch(SPACES_WORDS);
@@ -1030,7 +1036,9 @@ describe("MCP spaces (P3 T10)", () => {
       env: E({ FEATURES: "spaces" }),
     });
     const onTools = (await on.listTools()).tools;
-    expect(onTools.map((t) => t.name).sort()).toEqual([...SPACES_TOOLS].sort());
+    expect(onTools.map((t) => t.name).sort()).toEqual(
+      [...SPACES_TOOLS, ...BUS_TOOLS].sort(),
+    );
     expect(
       onTools.find((t) => t.name === "publish_artifact")?.description,
     ).toContain("spaceId");

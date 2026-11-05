@@ -23,6 +23,8 @@ const COPY: Record<string, string> = {
   grace_expired: "The restore window has passed.",
   downgrade_refused:
     "That version is older than the one installed. Installs only move forward: ship the fix as a new release.",
+  release_ahead_of_platform:
+    "That release is newer than the platform's. Installs can't run ahead of the platform: deploy it first.",
   signup_limit: "The sign-up limit is reached.",
   token_limit: "There are too many tokens. Revoke one first.",
   release_not_published: "That release is not published.",
@@ -45,6 +47,8 @@ const COPY: Record<string, string> = {
     "This release has a migration that can lose data, so it was held and nothing changed. To cross it, open Upgrade and tick the restore point box.",
   restore_point_failed:
     "The restore point couldn't be taken, so the migration didn't run and nothing changed. Try again, or check the provisioning token.",
+  do_step_required:
+    "This release adds a Durable Object class the install can't jump to, so nothing changed. Upgrade it to the release the job names first, then to this one.",
   domain_codes_refused:
     "Domain sign-in codes need email sign-in on, Google off and at least one domain.",
   turnstile_missing:

@@ -93,6 +93,23 @@ export const R = {
   busMachine: (id: string) => `/api/v1/bus/machines/${seg(id)}`,
   /** GET -> BusAgents: the caller's open bus agents (canConnect; else 404). Empty when the bus is off. */
   busAgents: "/api/v1/bus/agents",
+  /**
+   * GET -> BusRoles: the caller's role addresses (#1296), with `live` false
+   * when the bus could not be asked. PUT BusRolePut -> `{ role: BusRole }`:
+   * sets, re-points or (agentId null) vacates the role (namespace, name),
+   * creating it if needed; 400 bad_request (invalid body, name or
+   * namespace), 409 conflict with details `{ reason }`: `name_taken` (a live
+   * agent or a reserved former name there), `agent_not_open` (no open agent
+   * with that id visible in the namespace), `role_limit` (BUS_ROLE_MAX), or
+   * `no_bus` (no machine has connected yet). mcp.connect; PUT takes an
+   * interactive cookie session (a PAT or OAuth grant gets 404), so no AI
+   * agent can set or claim a role. An agent can only propose a change (MCP
+   * bus_role_propose, #1372), which the member confirms on its link; GET's
+   * `proposals` lists the newest (BusRoleProposal, no link).
+   */
+  busRoles: "/api/v1/bus/roles",
+  /** DELETE -> 204: removes the caller's role (idempotent: unknown is 204 too). Same rules as PUT R.busRoles. */
+  busRole: (id: string) => `/api/v1/bus/roles/${seg(id)}`,
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
   /**

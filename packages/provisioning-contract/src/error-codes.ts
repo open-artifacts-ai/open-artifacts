@@ -23,6 +23,8 @@ export const API_ERROR_STATUS = {
   invalid_state: 409,
   grace_expired: 409,
   downgrade_refused: 409,
+  /** A create's or upgrade's explicit version is newer than the platform's own release (#1176). */
+  release_ahead_of_platform: 409,
   signup_limit: 409,
   token_limit: 409,
   release_not_published: 422,
@@ -67,6 +69,8 @@ export const JOB_ERROR_RETRY = {
   domain_codes_refused: "terminal",
   migration_held: "terminal",
   restore_point_failed: "terminal",
+  /** #1343: the target binds a new DO class; the install takes a release first. */
+  do_step_required: "terminal",
   turnstile_missing: "terminal",
   /** #1008: /healthz never showed the mode asked for. */
   mode_not_live: "terminal",

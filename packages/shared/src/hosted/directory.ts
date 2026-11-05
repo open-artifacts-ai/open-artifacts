@@ -252,6 +252,10 @@ export const AuditActionSchema = z.enum([
   "directory.break_glass",
   "features.change",
   "settings.space_manager_mappings",
+  "bus.role.proposed",
+  "bus.role.confirmed",
+  "bus.role.refused",
+  "bus.role.expired",
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 

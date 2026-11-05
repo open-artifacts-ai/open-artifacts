@@ -64,7 +64,7 @@ for (const scheme of ["light", "dark"] as const)
       });
 
       test("create token dialog: name, focus trap", async ({ page }, info) => {
-        await page.goto("/settings/agents");
+        await page.goto("/settings/connections");
         await page.waitForLoadState("networkidle");
         await page.getByRole("button", { name: "Create token" }).click();
         const dlg = page.getByRole("dialog", { name: "Create token" });
@@ -82,7 +82,7 @@ for (const scheme of ["light", "dark"] as const)
       test("revoke confirm dialog: name, focus trap", async ({
         page,
       }, info) => {
-        await page.goto("/settings/agents");
+        await page.goto("/settings/connections");
         await page.waitForLoadState("networkidle");
         await page.getByRole("button", { name: "Create token" }).click();
         await page.getByRole("textbox", { name: "Label" }).fill("old");
@@ -161,7 +161,7 @@ for (const scheme of ["light", "dark"] as const)
       test("dialog footers: stacked full width below 640px, inline above", async ({
         page,
       }) => {
-        await page.goto("/settings/agents");
+        await page.goto("/settings/connections");
         await page.waitForLoadState("networkidle");
         await page.getByRole("button", { name: "Create token" }).click();
         const dlg = page.getByRole("dialog", { name: "Create token" });

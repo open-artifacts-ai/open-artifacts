@@ -26,6 +26,9 @@ importers:
 
   apps/admin:
     dependencies:
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
       '@oa/provisioning-contract':
         specifier: workspace:*
         version: link:../../packages/provisioning-contract
@@ -334,6 +337,12 @@ importers:
       '@astrojs/check':
         specifier: ^0.9.10
         version: 0.9.10(@emnapi/runtime@1.11.1)(prettier@3.9.10)(typescript@5.9.3)
+      '@oa/dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
+      '@oa/server':
+        specifier: workspace:*
+        version: link:../server
       '@oa/setup':
         specifier: workspace:*
         version: link:../../scripts/setup
@@ -374,6 +383,9 @@ importers:
       '@oa/auth-core':
         specifier: workspace:*
         version: link:../../packages/auth-core
+      '@oa/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
       '@types/node':
         specifier: ^22.20.5
         version: 22.20.5
@@ -551,6 +563,9 @@ importers:
       '@oa/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@oa/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
       '@types/node':
         specifier: ^20.19.43
         version: 20.19.43
@@ -1013,6 +1028,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/provision
     devDependencies:
+      '@oa/server':
+        specifier: workspace:*
+        version: link:../../apps/server
       '@types/node':
         specifier: ^22.19.0
         version: 22.20.5
@@ -1028,6 +1046,9 @@ importers:
       '@oa/auth-core':
         specifier: workspace:*
         version: link:../../packages/auth-core
+      '@oa/dashboard':
+        specifier: workspace:*
+        version: link:../../apps/dashboard
       '@oa/server':
         specifier: workspace:*
         version: link:../../apps/server
@@ -1062,6 +1083,15 @@ importers:
       '@oa/auth-core':
         specifier: workspace:*
         version: link:../../packages/auth-core
+      '@oa/dashboard':
+        specifier: workspace:*
+        version: link:../../apps/dashboard
+      '@oa/provisioner':
+        specifier: workspace:*
+        version: link:../../apps/provisioner
+      '@oa/provisioning':
+        specifier: workspace:*
+        version: link:../../apps/provisioning
       '@oa/provisioning-contract':
         specifier: workspace:*
         version: link:../../packages/provisioning-contract

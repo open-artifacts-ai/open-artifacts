@@ -219,7 +219,7 @@ describe("deploy-hosted-platform.yml", () => {
     );
     // The constants and the id lookup are main's too, never the tag's.
     expect(use).toContain(
-      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts; do",
+      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh staging-smoke-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts; do",
     );
     expect(use).toContain(
       'cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"',
@@ -333,10 +333,22 @@ describe("deploy-hosted-platform.yml", () => {
       DEPLOY_ENV: "${{ inputs.env }}",
       OA_OWNER_EMAIL: "${{ secrets.OA_OWNER_EMAIL }}",
     });
-    for (const n of ["The tag is newer than prod's", "Scheduler, last"])
-      expect(JSON.stringify(named(n).env).match(/secrets\.\w+/g), n).toEqual([
-        "secrets.CLOUDFLARE_API_TOKEN",
-      ]);
+    expect(
+      JSON.stringify(named("The tag is newer than prod's").env).match(
+        /secrets\.\w+/g,
+      ),
+    ).toEqual(["secrets.CLOUDFLARE_API_TOKEN"]);
+    // #1343: the canary smoke's two secrets reach the scheduler's step, and
+    // no other step of the workflow.
+    expect(
+      JSON.stringify(named("Scheduler, last").env).match(/secrets\.\w+/g),
+    ).toEqual([
+      "secrets.CLOUDFLARE_API_TOKEN",
+      "secrets.FLEET_SMOKE_TOKEN",
+      "secrets.FLEET_SMOKE_SHARE_TO",
+    ]);
+    for (const st of steps.filter((x) => x.name !== "Scheduler, last"))
+      expect(JSON.stringify(st), st.name).not.toMatch(/FLEET_SMOKE/);
     expect(named("Zones").env).toEqual({
       DEPLOY_ENV: "${{ inputs.env }}",
       VERIFY_ONLY: "${{ inputs.verify_only && '1' || '' }}",
@@ -577,6 +589,20 @@ describe("deploy-hosted-platform.yml", () => {
       i("Staging passed this tag"),
     );
     expect(i("Staging passed this tag")).toBeLessThan(i("Deploy and verify"));
+    // #1406: the same targets also need staging's smoke green at or after
+    // the tag, with main's script, before anything deploys.
+    const s = named("Staging's smoke is green at or after this tag");
+    expect(s.if).toBe(g.if);
+    expect(s.env).toEqual(g.env);
+    expect(s.run).toBe(
+      'bash "$RUNNER_TEMP/main-ci/staging-smoke-gate.sh" "$TAG"',
+    );
+    expect(i("Use main's deploy scripts")).toBeLessThan(
+      i("Staging's smoke is green at or after this tag"),
+    );
+    expect(i("Staging's smoke is green at or after this tag")).toBeLessThan(
+      i("Deploy and verify"),
+    );
   });
 
   it("builds and tests the Provisioning API Workers and the admin SPA too", () => {
@@ -668,6 +694,8 @@ describe("deploy-hosted-platform.yml", () => {
           "GOOGLE_CLIENT_SECRET",
           "GOOGLE_DIRECTORY_CLIENT_SECRET",
           "ADMIN_IDENTITIES",
+          "FLEET_SMOKE_TOKEN",
+          "FLEET_SMOKE_SHARE_TO",
         ].map((k) => [k, { required: false }]),
       ),
     );
@@ -720,6 +748,8 @@ describe("deploy-hosted-platform.yml", () => {
       VERIFY_ONLY: "${{ inputs.verify_only && '1' || '' }}",
       DEPLOY_TAG: "${{ inputs.tag }}",
       CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+      FLEET_SMOKE_TOKEN: "${{ secrets.FLEET_SMOKE_TOKEN }}",
+      FLEET_SMOKE_SHARE_TO: "${{ secrets.FLEET_SMOKE_SHARE_TO }}",
     });
     expect(s.run).toBe(
       'bash scripts/ops/deploy-hosted-platform.sh "$DEPLOY_ENV" scheduler',

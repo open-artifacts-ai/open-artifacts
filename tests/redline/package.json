@@ -18,6 +18,9 @@
   },
   "devDependencies": {
     "@oa/auth-core": "workspace:*",
+    "@oa/dashboard": "workspace:*",
+    "@oa/provisioner": "workspace:*",
+    "@oa/provisioning": "workspace:*",
     "@oa/provisioning-contract": "workspace:*",
     "@oa/server": "workspace:*",
     "@oa/shared": "workspace:*",

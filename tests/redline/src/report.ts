@@ -39,6 +39,12 @@ export interface CaseResult {
    * refusal kept from running, which the manifest then counts as run.
    */
   blocked?: { file: string; cases: string[] };
+  /**
+   * A file's own error outside any test (src/reporter.ts "<file>: module
+   * error"): not a case, so the manifest never lists it and keeps its level
+   * (infra when every error is infra, else fail).
+   */
+  moduleError?: true;
 }
 
 /**
@@ -219,8 +225,16 @@ export function resetSummary(notes: readonly string[]): string | undefined {
   }
   if (!resets.length && !requests) return undefined;
   const reused = resets.filter((n) => n.includes("reused socket")).length;
-  return `Resets: ${resets.length} (${reused} on reused sockets), of ${requests} requests (${fresh} on new sockets)`;
+  // Request-level retries (src/transport.ts): counted, so a flaky link shows.
+  const retried = notes.filter((n) => n.startsWith(RETRIED_REQUEST_PREFIX));
+  const recovered = retried.filter((n) => n.endsWith(RECOVERED_SUFFIX)).length;
+  return `Resets: ${resets.length} (${reused} on reused sockets), of ${requests} requests (${fresh} on new sockets); retried ${retried.length}, recovered ${recovered}`;
 }
+
+/** A request retried once on a new socket (src/transport.ts). */
+export const RETRIED_REQUEST_PREFIX = "request retried: ";
+/** The end of that note when the retry got a response. */
+export const RECOVERED_SUFFIX = "; recovered on a new socket";
 
 /** The notes src/notes.ts put on a task's (or a file's) meta, redacted. */
 export function notesOf(meta: object | undefined): string[] {
@@ -275,14 +289,34 @@ export function setupHookCase(
 }
 
 /**
+ * Where src/transport.ts puts its infra reason on a fetch error that got no
+ * HTTP response (#1133). The error itself is unchanged (callers still read
+ * its message and cause), and vitest keeps the property when it serializes
+ * the error for the reporter.
+ */
+export const NO_RESPONSE_KEY = "redlineNoResponse";
+
+/** An error's infra reason: its "infra: " message, or a no-response tag. */
+function infraMessage(
+  e: { message?: unknown } | undefined,
+): string | undefined {
+  const m = String(e?.message ?? "");
+  if (m.startsWith(INFRA_PREFIX)) return m;
+  const tag = (e as Record<string, unknown> | undefined)?.[NO_RESPONSE_KEY];
+  return typeof tag === "string" && tag.startsWith(INFRA_PREFIX)
+    ? tag
+    : undefined;
+}
+
+/**
  * The first message when there is at least one error and every one is infra
  * (it names a phase, a duration and an install, never a secret).
  */
 export function infraOf(
   errors: readonly { message?: unknown }[],
 ): string | undefined {
-  const msgs = errors.map((e) => String(e?.message ?? ""));
-  return msgs.length > 0 && msgs.every((m) => m.startsWith(INFRA_PREFIX))
+  const msgs = errors.map(infraMessage);
+  return msgs.length > 0 && msgs.every((m) => m !== undefined)
     ? msgs[0]
     : undefined;
 }
@@ -353,7 +387,8 @@ export const caseKey = (file: string, name: string) => `${file}\u0000${name}`;
 /**
  * A required case that didn't run (a missing or renamed file or test) is a
  * FAIL, and so is a case the manifest doesn't list. Cases without a file
- * (module or unhandled errors) pass through.
+ * (unhandled errors) and a file's module error pass through with their own
+ * level: a module error whose cause is infra stays infra (#1133).
  */
 export function applyManifest(
   cases: readonly CaseResult[],
@@ -375,7 +410,7 @@ export function applyManifest(
     if (c.level === "infra" && c.blocked)
       for (const n of c.blocked.cases) seen.add(caseKey(c.blocked.file, n));
   const out: CaseResult[] = cases.map((c) => {
-    if (!c.file) return c;
+    if (!c.file || c.moduleError) return c;
     const k = caseKey(c.file, c.name);
     seen.add(k);
     return required.has(k)

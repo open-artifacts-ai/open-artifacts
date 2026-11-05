@@ -71,8 +71,8 @@ test("admin up to date: no chip; the card says so", async ({ page }) => {
 });
 
 test("member: no chip and no Version card", async ({ page }) => {
-  await page.goto("/settings/agents?role=member&mock=update");
-  await expect(page.getByRole("link", { name: "Agents" })).toBeVisible();
+  await page.goto("/settings/connections?role=member&mock=update");
+  await expect(page.getByRole("link", { name: "Connections" })).toBeVisible();
   await expect(chip(page)).toHaveCount(0);
   await page.goto("/?role=member&mock=update");
   await expect(page.getByRole("heading", { name: "Library" })).toBeVisible();

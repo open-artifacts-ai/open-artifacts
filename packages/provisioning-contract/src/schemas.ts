@@ -156,7 +156,7 @@ export const CreateInstallSchema = z.object({
   ownerEmail: z.string().email().max(254).optional(),
   tier: TierSchema.optional(),
   auth: AuthSchema.optional(),
-  /** Default: the platform's own release, the one the fleet follows. */
+  /** Default: the platform's own release, the one the fleet follows; never newer than it (#1176). */
   version: VersionSchema.optional(),
   /** Admin session only; default false. */
   sendWelcome: z.boolean().optional(),
@@ -170,6 +170,7 @@ export type CreateInstall = z.infer<typeof CreateInstallSchema>;
 const requestId = RequestIdSchema;
 export const UpgradeSchema = z.object({
   requestId,
+  /** Default: the platform's own release, the one the fleet follows; never newer than it (#1176). */
   version: VersionSchema.optional(),
   nonAdditive: z
     .literal(true)
@@ -321,7 +322,17 @@ export const ReleaseSchema = z.object({
   latest: z.boolean(),
 });
 export type Release = z.infer<typeof ReleaseSchema>;
-export const ReleasesSchema = z.object({ items: z.array(ReleaseSchema) });
+/**
+ * R16. `platform` is the platform's own release (its deploy tag). An explicit
+ * create or upgrade to a release newer than `platform` is refused with
+ * release_ahead_of_platform; null means the platform has no stable tag, and
+ * then every create and upgrade is refused, so nothing is installable.
+ */
+export const ReleasesSchema = z.object({
+  items: z.array(ReleaseSchema),
+  platform: VersionSchema.nullable(),
+});
+export type Releases = z.infer<typeof ReleasesSchema>;
 
 export const SlugCheckSchema = z.object({
   slug: z.string(),

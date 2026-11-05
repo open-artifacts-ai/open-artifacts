@@ -7,15 +7,15 @@ order: 2
 Every instance serves one MCP server at `https://<your-app-host>/mcp` over Streamable HTTP. Any MCP client can connect in one of two ways:
 
 - **OAuth.** Clients that support MCP OAuth need only the URL. They register themselves, and you sign in through your instance's login page.
-- **Personal access token.** For clients and scripts without OAuth, create a token in the dashboard under **Settings → Agents** and send it as `Authorization: Bearer oa_pat_…`. Tokens can be revoked at any time.
+- **Personal access token.** For clients and scripts without OAuth, create a token in the dashboard under **Settings → Connections** and send it as `Authorization: Bearer oa_pat_…`. Tokens can be revoked at any time.
 
-Setup's `agent-config` step prints each snippet below with your URL filled in, and the dashboard's **Settings → Agents** page shows them too. The examples use `artifacts.example.com` and the default server name, `open-artifacts`; setup names the server after its `--name` flag.
+Setup's `agent-config` step prints each snippet below with your URL filled in, and the dashboard's **Settings → Connections** page shows them too. The examples use `artifacts.example.com` and the default server name, `open-artifacts`; setup names the server after its `--name` flag.
 
 Claude Code, Cursor, and OpenCode use OAuth, so their snippets are only the URL: no token, no header. A token is for a client without OAuth. Setup saves the owner's token to `~/.open-artifacts/<host-slug>-pat-token` (mode 0600; the host slug is the app host lowercased, with every run of other characters turned into `-`). The token variants below read that file; replace `<token file>` with its absolute path. Never paste a token into a command, a config file, or a chat.
 
 ## Steps
 
-1. **Pick the auth method.** Use OAuth if this agent's client supports MCP OAuth. Otherwise point the client at the token file setup saved, or ask the user to create a personal access token in the dashboard under **Settings → Agents**. Don't run setup with `--new-owner-token` for this: it revokes the token the first agent uses.
+1. **Pick the auth method.** Use OAuth if this agent's client supports MCP OAuth. Otherwise point the client at the token file setup saved, or ask the user to create a personal access token in the dashboard under **Settings → Connections**. Don't run setup with `--new-owner-token` for this: it revokes the token the first agent uses.
 2. **Add the server** to this agent's MCP config, using the snippet for its client from the Connect agents doc. Name the server after setup's `--name`, which defaults to `open-artifacts`.
 3. **Check the connection** by calling `list_artifacts`.
 

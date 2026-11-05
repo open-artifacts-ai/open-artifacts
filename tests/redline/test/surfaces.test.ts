@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FOREIGN_CALLERS } from "../../../apps/server/test/authz/expect.ts";
 import {
   ORG_SURFACES,
+  PUBLIC_ROUTES,
   SPACE_SURFACES,
   SURFACES,
 } from "../../../apps/server/test/authz/surfaces.ts";
@@ -191,7 +192,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     }
   });
 
-  it("deny-only: the seven real-only drops and the two interactive-only ones, each still a recorded drop", () => {
+  it("deny-only: the seven real-only drops and the four interactive-only ones, each still a recorded drop", () => {
     const only = cases.filter((c) => c.denyOnly);
     expect(only.map((c) => c.name).sort()).toEqual(
       Object.entries(DROPPED)
@@ -201,7 +202,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         .map(([n]) => `${n} [session]`)
         .sort(),
     );
-    expect(only).toHaveLength(9);
+    expect(only).toHaveLength(11);
     for (const c of only) expect(c.run).toBeDefined();
   });
 
@@ -230,10 +231,25 @@ describe("probe cases (derived from Backend's surfaces)", () => {
       found.filter((r) => !ownerOnly.includes(r)),
     );
     for (const r of INTERACTIVE_ONLY) {
+      // A public-policy page route (#1300's POST /bus/share-notices): the
+      // suite probes scoped routes only, so it has no case and no drop; the
+      // handler's own checks are the server tests'.
+      if (PUBLIC_ROUTES.includes(r)) {
+        expect(cases.find((c) => c.routes.includes(r))).toBeUndefined();
+        expect(dropped.find((y) => y.routes.includes(r))).toBeUndefined();
+        continue;
+      }
       const x = dropped.find((y) => y.routes.includes(r));
       expect(x?.why).toBe("interactive-only");
       expect(cases.find((c) => c.routes.includes(r))?.denyOnly).toBe(true);
     }
+    // The public exceptions are exactly the pages' forms (and #1372's
+    // confirm page), not a way out.
+    expect(INTERACTIVE_ONLY.filter((r) => PUBLIC_ROUTES.includes(r))).toEqual([
+      "POST /bus/share-notices",
+      "GET /bus/roles/confirm/:token",
+      "POST /bus/roles/confirm/:token",
+    ]);
   });
 
   it("#1313: the interactive scan sees every org route the server registers", () => {
@@ -292,9 +308,9 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         .filter((c) => !c.denyOnly)
         .map((c) => [c.name, c.variant]),
     ).toEqual([[SMOKES.oauth, "oauth"]]);
-    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(9);
+    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(11);
     // Every other case: B at B only, its kind a matrix foreign caller.
-    expect(by("own")).toHaveLength(cases.length - 2 - 10);
+    expect(by("own")).toHaveLength(cases.length - 2 - 12);
     for (const c of by("own"))
       expect(FOREIGN_CALLERS).toContain(FOREIGN_OF[c.variant]);
   });

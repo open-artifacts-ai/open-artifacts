@@ -20,6 +20,7 @@ import { jsonBody } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import { logWarn } from "../log.js";
+import { busOn } from "../services/bus.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { dismissNotice, meNotices } from "../services/notices.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
@@ -107,6 +108,8 @@ async function toMe(
   // copy, which has none and would throw.
   const who = c.var.user;
   me.canConnect = who ? canConnect(who) : false;
+  // #1293: the dashboard's bus pages show only while the bus answers.
+  me.busOn = busOn(c.env);
   return me;
 }
 

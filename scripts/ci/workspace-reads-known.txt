@@ -1,0 +1,52 @@
+# Cross-package reads the workspace-reads check tolerates (scripts/ci/workspace-reads.ts).
+#
+# One "<file> <package-name>" per line: a single space, sorted, and optionally
+# a trailing "# ..." reason, which is not compared. Each line is a source file
+# that reaches another package's files by path literal without importing
+# anything, so pnpm's affected-only test run (`--filter ...[base]`) cannot see
+# the edge (#1353, #1308).
+#
+# This list only shrinks. Declare the package in the reader's package.json
+# (dependencies or devDependencies) and delete the line, or drop the read. A
+# line that matches no current read fails the check as stale.
+apps/admin/vite.config.ts @oa/provisioning
+apps/dashboard/e2e/real/fixtures.ts @oa/server
+apps/provisioner/test/node/oauth-store-real.test.ts @oa/server
+apps/provisioner/test/node/world.ts @oa/server
+apps/provisioning/test/node/seal-copy.test.ts @oa/provisioner
+apps/server/test/node/test-hooks-strip.test.ts @oa/bundle
+packages/bundle/src/bundle.ts @oa/server
+packages/bundle/test/imports.test.ts @oa/admin  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/dispatch  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/gh-oidc  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/hosted  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/inventory  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/provision  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/provisioner  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/provisioning  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/provisioning-contract  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/redline  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/scheduler  # forbidden-path list it must not import from, not a read (#1056)
+packages/bundle/test/imports.test.ts @oa/shared  # forbidden-path list it must not import from, not a read (#1056)
+packages/bus-ipc/test/copy.test.ts @open-artifacts/bus
+packages/provision/src/internal/template.ts @oa/server
+packages/provision/test/gate.test.ts @oa/server
+packages/provision/test/metadata.test.ts @oa/server
+packages/provision/test/non-additive.test.ts @oa/server
+packages/provision/test/owner-email-source.test.ts @oa/auth-broker
+packages/provision/test/owner-email-source.test.ts @oa/directory-broker
+packages/provision/test/owner-email-source.test.ts @oa/dispatch
+packages/provision/test/owner-email-source.test.ts @oa/hosted
+packages/provision/test/owner-email-source.test.ts @oa/inventory
+packages/provision/test/owner-email-source.test.ts @oa/provisioner
+packages/provision/test/owner-email-source.test.ts @oa/provisioning
+packages/provision/test/owner-email-source.test.ts @oa/scheduler
+packages/provision/test/owner-email-source.test.ts @oa/server
+packages/provision/test/release-t3b.test.ts @oa/server
+packages/provision/test/sign-release.test.ts @oa/server
+packages/provision/test/wfp-create.test.ts @oa/server
+packages/provision/test/wfp-lifecycle.test.ts @oa/auth-broker
+packages/provision/test/wfp-lifecycle.test.ts @oa/server
+packages/ui/test/brand.test.ts @oa/landing
+scripts/setup/test/access-msg.test.ts @oa/landing
+scripts/setup/test/pat-file.test.ts @oa/landing

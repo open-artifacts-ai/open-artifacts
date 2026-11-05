@@ -16,14 +16,26 @@ import { InventoryInstallsSchema } from "@oa/provisioning-contract";
 // The node-readable copy of RELEASE_PUBKEY (provision keeps its own in
 // src/internal/gates.ts, not exported; a test there pins the two equal).
 import { RELEASE_PUBKEY } from "../../../scripts/ci/release-pubkeys.mjs";
-import { notResolved } from "./fetch-timeout.ts";
-import { describeRes, readBody } from "./http.ts";
-import { PRE_PROD_GUARD_REASON } from "./report.ts";
+import {
+  FETCH_TIMEOUT_MS,
+  InfraError,
+  noResponseCode,
+  notResolved,
+} from "./fetch-timeout.ts";
+import { describeRes } from "./http.ts";
+import { note } from "./notes.ts";
+import {
+  PRE_PROD_GUARD_REASON,
+  RECOVERED_SUFFIX,
+  RETRIED_REQUEST_PREFIX,
+} from "./report.ts";
+import { hostOf, routeOf } from "./resets.ts";
 import {
   type ProdProbe,
   prodInventoryBearer,
   prodSecretsOf,
 } from "./targets.ts";
+import { callerRetries, freshAgent } from "./transport.ts";
 
 // prodClean (manager-approved spec, 2026-10-26). The positive proof that no
 // prod install can run test hooks: every published prod release is the
@@ -129,6 +141,8 @@ export interface ProdCleanOpts {
    * short-lived JWT is fresh when used.
    */
   inventoryBearer?: string | (() => Promise<string>);
+  /** Each try's bound on an inventory, /healthz or settings read (tests). */
+  readMs?: number;
 }
 
 async function listKeys(cf: Cf, bucket: string): Promise<string[]> {
@@ -221,18 +235,82 @@ async function checkRelease(
   }
 }
 
+/**
+ * One read, with one retry on a new connection when it got no HTTP response
+ * (a timeout, or a socket code: noResponseCode). Run 41914116734's guard
+ * failed on a timeout while prod was clean (#1133). No response twice is
+ * InfraError: never a pass, never a verdict. Any HTTP response is returned
+ * as is, a 5xx included (never retried here). Each retry is a note, counted
+ * on the report's Resets line.
+ */
+async function read(
+  f: typeof fetch,
+  url: string,
+  init: RequestInit,
+  what: string,
+  ms: number,
+): Promise<{ res: Response; text: string }> {
+  const u = new URL(url);
+  const where = `GET ${routeOf(u.pathname)} host ${hostOf(u.origin)} (prodClean ${what})`;
+  let first = "";
+  for (let i = 0; i < 2; i++) {
+    const timeout = AbortSignal.timeout(ms);
+    const agent = i > 0 ? freshAgent() : undefined;
+    try {
+      const res = await f(
+        url,
+        callerRetries({
+          ...init,
+          signal: timeout,
+          ...(agent ? { dispatcher: agent } : {}),
+        } as RequestInit),
+      );
+      // The bound covers the body: a body that stalls is no response too.
+      const text = await res.text();
+      if (i > 0)
+        note(`${RETRIED_REQUEST_PREFIX}${first} ${where}${RECOVERED_SUFFIX}`);
+      return { res, text };
+    } catch (e) {
+      const name = (e as Error)?.name;
+      const why =
+        timeout.aborted || name === "TimeoutError"
+          ? "timeout"
+          : noResponseCode(e);
+      if (!why) throw e;
+      if (i === 0) {
+        first = why;
+        continue;
+      }
+      note(`${RETRIED_REQUEST_PREFIX}${first} ${where}; failed again (${why})`);
+      throw new InfraError(
+        `prodClean ${what} got no response twice (${first}, then ${why})`,
+        { cause: e },
+      );
+    } finally {
+      agent?.close().catch(() => {});
+    }
+  }
+  throw new Error("unreachable");
+}
+
 async function getJson(
   f: typeof fetch,
   url: string,
   token: string | null,
   what: string,
   fail: { code: ProdCleanCode; installId?: string },
+  ms: number = FETCH_TIMEOUT_MS,
 ): Promise<Record<string, unknown>> {
-  const res = await f(url, {
-    redirect: "manual",
-    ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
-  });
-  const text = await readBody(res);
+  const { res, text } = await read(
+    f,
+    url,
+    {
+      redirect: "manual",
+      ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+    },
+    what,
+    ms,
+  );
   if (fail.code === "inventory_bad" && isSchemaMissing(res.status, text))
     throw new InventorySchemaMissing();
   if (res.status !== 200)
@@ -255,8 +333,15 @@ async function getJson(
 }
 
 /** The script's secret names and settings bindings hold no hook name. */
+type Get = (
+  url: string,
+  token: string | null,
+  what: string,
+  fail: { code: ProdCleanCode; installId?: string },
+) => Promise<Record<string, unknown>>;
+
 async function checkScript(
-  f: typeof fetch,
+  get: Get,
   accountId: string,
   token: string,
   ns: string,
@@ -266,8 +351,7 @@ async function checkScript(
 ): Promise<void> {
   const dirty = (msg: string) =>
     new ProdDirty("install_dirty", `prodClean ${id}: ${msg}`, id);
-  const set = await getJson(
-    f,
+  const set = await get(
     `${API}/accounts/${accountId}/workers/dispatch/namespaces/${encodeURIComponent(ns)}/scripts/${encodeURIComponent(script)}/settings`,
     token,
     `${id} settings`,
@@ -293,6 +377,8 @@ export async function prodClean(
   if (!p) throw new ProdDirty("not_configured", "prod probe not configured");
   const s = prodSecretsOf(p);
   const f = o.fetch ?? fetch;
+  const get: Get = (url, token, what, fail) =>
+    getJson(f, url, token, what, fail, o.readMs);
   const pubkey = o.pubkey ?? RELEASE_PUBKEY.prod;
   // Only a GitHub OIDC JWT for the prod inventory's audience (the caller's,
   // else the one the red-line job wrote to the secrets dir); never the
@@ -339,15 +425,9 @@ export async function prodClean(
     return b;
   };
   const inv = InventoryInstallsSchema.safeParse(
-    await getJson(
-      f,
-      `${p.inventoryUrl}/installs`,
-      await bearerNow(),
-      "inventory",
-      {
-        code: "inventory_bad",
-      },
-    ),
+    await get(`${p.inventoryUrl}/installs`, await bearerNow(), "inventory", {
+      code: "inventory_bad",
+    }),
   );
   if (!inv.success)
     throw new ProdDirty(
@@ -390,7 +470,7 @@ export async function prodClean(
     if (secretNames === null) continue;
     if (!serving) {
       await checkScript(
-        f,
+        get,
         p.accountId,
         s.scriptsToken,
         ns,
@@ -400,17 +480,14 @@ export async function prodClean(
       );
       continue;
     }
-    const h = await getJson(
-      f,
-      `https://${appHost}/healthz`,
-      null,
-      `${id} /healthz`,
-      { code: "unreachable", installId: id },
-    );
+    const h = await get(`https://${appHost}/healthz`, null, `${id} /healthz`, {
+      code: "unreachable",
+      installId: id,
+    });
     if (h.testHooks === true) throw dirty("/healthz testHooks is true");
     if (h.installId !== id) throw dirty("/healthz installId differs");
     await checkScript(
-      f,
+      get,
       p.accountId,
       s.scriptsToken,
       ns,
@@ -468,6 +545,13 @@ export async function guardProdClean(
   try {
     return await check(t.prod);
   } catch (e) {
+    // A Cloudflare API read that got no response on any of cfClient's tries
+    // (status 0): no verdict either way, so infra (#1133). Never a pass.
+    if (e instanceof CfError && e.status === 0)
+      throw new InfraError(
+        `prodClean Cloudflare ${e.method} got no response after its tries (${e.cfMessage})`,
+        { cause: e },
+      );
     if (!(e instanceof InventorySchemaMissing)) throw e;
     const f = o.fetch ?? fetch;
     const admin = o.adminOrigin ?? prodAdminOrigin();

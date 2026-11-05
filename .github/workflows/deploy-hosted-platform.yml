@@ -7,7 +7,9 @@
 # No one approves a run: the release gate (scripts/ci/tag-passed-checks.sh)
 # refuses a tag unless every earlier check on it passed, and prod's
 # platform-db, provisioner and provisioning also need a green
-# redline-staging.yml run for the same tag (scripts/ci/staging-first-gate.sh). Each env has its own
+# redline-staging.yml run for the same tag (scripts/ci/staging-first-gate.sh)
+# and staging's post-deploy smoke green at or after it
+# (scripts/ci/staging-smoke-gate.sh, #1406). Each env has its own
 # Environment (hosted-staging-deploy, hosted-prod-deploy) holding the
 # same-named secrets (one Cloudflare token, CLOUDFLARE_API_TOKEN); only main
 # may run it. The constants are main's .github/hosted/<env>.json and the
@@ -98,6 +100,10 @@ on:
       GOOGLE_DIRECTORY_CLIENT_SECRET:
         required: false
       ADMIN_IDENTITIES:
+        required: false
+      FLEET_SMOKE_TOKEN:
+        required: false
+      FLEET_SMOKE_SHARE_TO:
         required: false
 
 # actions: read lets the release gate read release-please.yml's run and jobs
@@ -237,7 +243,7 @@ jobs:
           done
           cp .deploy-logic/packages/provision/src/wfp.ts "$RUNNER_TEMP/main-wfp.ts"
           mkdir "$RUNNER_TEMP/main-ci"
-          for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts; do
+          for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh staging-smoke-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts; do
             cp ".deploy-logic/scripts/ci/$f" "$RUNNER_TEMP/main-ci/$f"
           done
           cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"
@@ -254,6 +260,14 @@ jobs:
           TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: bash "$RUNNER_TEMP/main-ci/staging-first-gate.sh" "$TAG"
+      # #1406: the same targets also need staging's post-deploy smoke green
+      # at or after the tag (scripts/ci/staging-smoke-gate.sh).
+      - name: Staging's smoke is green at or after this tag
+        if: ${{ inputs.env == 'prod' && (contains(format(',{0},', inputs.targets), ',platform-db,') || contains(format(',{0},', inputs.targets), ',provisioner,') || contains(format(',{0},', inputs.targets), ',provisioning,') || contains(format(',{0},', inputs.targets), ',scheduler,')) }}
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash "$RUNNER_TEMP/main-ci/staging-smoke-gate.sh" "$TAG"
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -340,7 +354,9 @@ jobs:
           bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" plan
           [ -n "$VERIFY_ONLY" ] || bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" apply
       # The scheduler, last (#1343): its tag is the fleet's target, so it moves
-      # only once every other target, the zones included, has succeeded.
+      # only once every other target, the zones included, has succeeded. The
+      # canary smoke's two secrets (#1343) reach this step, and so only the
+      # scheduler: the Environment's, put on oa-<p>-scheduler when set.
       - name: Scheduler, last
         if: ${{ contains(format(',{0},', inputs.targets), ',scheduler,') }}
         env:
@@ -349,6 +365,8 @@ jobs:
           VERIFY_ONLY: ${{ inputs.verify_only && '1' || '' }}
           DEPLOY_TAG: ${{ inputs.tag }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          FLEET_SMOKE_TOKEN: ${{ secrets.FLEET_SMOKE_TOKEN }}
+          FLEET_SMOKE_SHARE_TO: ${{ secrets.FLEET_SMOKE_SHARE_TO }}
         run: bash scripts/ops/deploy-hosted-platform.sh "$DEPLOY_ENV" scheduler
       # One version everywhere (#1040, #1064): read every Worker's
       # "workers/tag" back after a full-list run, on prod as on staging. A

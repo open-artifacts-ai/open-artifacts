@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { CapsSchema } from "./caps.ts";
-import { newId } from "./ids.ts";
+import { IdSchema, newId } from "./ids.ts";
 import { AgentKindSchema, KindTokenSchema } from "./kinds.ts";
 import { LIMITS, utf8Exceeds } from "./limits.ts";
 import { BusNameSchema } from "./names.ts";
@@ -132,6 +132,12 @@ const Send = z.strictObject({
   from_ref: AgentRefSchema,
   to_name: BusNameSchema,
   to_namespace: WireNamespaceSchema.optional(),
+  /**
+   * A reply to one agent: the `from_id` of the mail it answers. The hub
+   * delivers only when `to_name` still resolves to that agent; otherwise it
+   * refuses `agent_gone`, so an answer never reaches whoever took the name.
+   */
+  to_id: IdSchema.optional(),
   body: BodySchema,
 });
 
@@ -177,7 +183,7 @@ const Status = z.strictObject({
 
 /**
  * Rename a live agent (#393). Answered by `renamed`, or `error`
- * (`not_registered`, `rate_limited` with RENAME_MESSAGES.rate, `bad_frame`).
+ * (`not_registered`, `rate_limited` with RENAME_MESSAGES.rate or .room, `bad_frame`).
  * The hub names the agent as for `agent_up`, de-collided the same way. A hub
  * decoder older than this frame refuses it.
  */
@@ -196,6 +202,11 @@ const HelloOk = z.strictObject({
   machine_id: z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{16}$/),
   machine_label: MachineLabelSchema,
   server_version: WellFormedText.pipe(z.string().max(1024)),
+  /**
+   * What the hub supports (`BUS_CAPS`), sent only to a socket whose hello
+   * listed caps, so a client that never sends caps never sees it.
+   */
+  caps: CapsSchema.optional(),
 });
 
 const AgentOk = z.strictObject({
@@ -301,6 +312,8 @@ const Deliver = z
     msg_id: MsgIdSchema,
     to_ref: AgentRefSchema,
     from_name: BusNameSchema,
+    /** The sender's agent id on the hub: a reply names it as `to_id`. */
+    from_id: IdSchema.optional(),
     /** The SENDER's namespace, so a reply can set `to_namespace` from it. */
     namespace: WireNamespaceSchema,
     body: InlineBodySchema.optional(),

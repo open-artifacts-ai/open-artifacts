@@ -241,7 +241,7 @@ describe("offline reap (open-bus #422)", () => {
     d2.close();
   });
 
-  it("drops a reaped agent's former names and rename log", async () => {
+  it("keeps a reaped agent's former names reserved and holds its name (OpenBus #451); its rename log stays to expire (OpenBus #446)", async () => {
     const t0 = base();
     await setClock(t0);
     const m = await machine("Renamed");
@@ -265,7 +265,7 @@ describe("offline reap (open-bus #422)", () => {
           .exec("select id from agents where name = ?", now)
           .toArray()[0]?.id as string,
     );
-    // Kept past the reap, so only the close can drop them.
+    // Kept past the reap, so only the close could drop them.
     await inHub((_, s) => {
       s.storage.sql.exec(
         "update former_names set expires_at = ? where agent_id = ?",
@@ -293,8 +293,20 @@ describe("offline reap (open-bus #422)", () => {
     await goOffline(d, m.id);
     await alarmAtTime(t0 + OFFLINE_REAP_MS);
     expect(await liveOf(m.id)).toEqual([]);
-    expect(await count("former_names")).toBe(0);
-    expect(await count("rename_rl")).toBe(0);
+    // OpenBus #451: the chosen former name stays; the current name is held.
+    expect(await count("former_names")).toBe(2);
+    const w = await machine("Watcher");
+    const v = await connect(w.token, true);
+    await reg(v, "s", uniq("Sender"), n);
+    expect(await reg(v, "x", now, n)).toBe(`${now}-2`);
+    expect(await reg(v, "y", old, n)).toBe(`${old}-2`);
+    expect(await send(v, "s", now)).toMatchObject({
+      state: "refused",
+      reason: "closed",
+    });
+    v.close();
+    // A close keeps the rename log (OpenBus #446): the rolling hour purges it.
+    expect(await count("rename_rl")).toBeGreaterThan(0);
   });
 
   it("an offline machine with no live agents arms no reap deadline", async () => {

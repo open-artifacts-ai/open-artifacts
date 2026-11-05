@@ -926,6 +926,23 @@ describe("dashboard REST", () => {
     expect(await me(guest.cookie, "PATCH")).toBe(false);
   });
 
+  it("/me says busOn: true with BUS_HUB bound, false unbound or hosted (#1293)", async () => {
+    const busOnFor = async (e: unknown) => {
+      const r = await fetchAndWait(
+        app,
+        new Request(`http://app.localhost${R.me}`, {
+          headers: { cookie: bob.cookie },
+        }),
+        e,
+      );
+      expect(r.status).toBe(200);
+      return ((await r.json()) as { busOn?: boolean }).busOn;
+    };
+    expect(await busOnFor(env)).toBe(true);
+    expect(await busOnFor({ ...env, BUS_HUB: undefined })).toBe(false);
+    expect(await busOnFor({ ...env, HOSTED: "1" })).toBe(false);
+  });
+
   it("a capped (restricted) member can still list and revoke their own machines", async () => {
     const capped = await member();
     const m = await machine("capped", capped.userId);
@@ -945,6 +962,14 @@ describe("dashboard REST", () => {
     expect((await api(app, R.busAgents, bob.cookie)).status).toBe(200);
   });
 
+  it("GET agents for a member whose machines never connected: no agents, live (the hub's state is known)", async () => {
+    const fay = await member();
+    await machine("never", fay.userId);
+    const r = await api(app, R.busAgents, fay.cookie);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ agents: [], live: true });
+  });
+
   it("no BusHub is created for a member without a machine that connected", async () => {
     const dave = await member();
     await machine("never", dave.userId);
@@ -952,7 +977,9 @@ describe("dashboard REST", () => {
     const j = (await r.json()) as { machines: { connected: unknown }[] };
     expect(j.machines[0]?.connected).toBe(false);
     const agents = await api(app, R.busAgents, dave.cookie);
-    expect(await agents.json()).toEqual({ agents: [], live: false });
+    // Live (#1300 review M1): no machine ever connected, so none can be
+    // connected and nothing is unknown, though no hub was read.
+    expect(await agents.json()).toEqual({ agents: [], live: true });
     // Looking inside builds the DO (schema), so the check is that the routes
     // never reached it: no machines mirror row, no revokedAt.
     const { runInDurableObject } = await import("cloudflare:test");

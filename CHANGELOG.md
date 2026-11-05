@@ -1,5 +1,116 @@
 # Changelog
 
+## [0.121.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.121.0...v0.121.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **bus:** install findings from the machine cutover ([#1448](https://github.com/open-artifacts-ai/open-artifacts/issues/1448)) ([#1477](https://github.com/open-artifacts-ai/open-artifacts/issues/1477)) ([ed8689a](https://github.com/open-artifacts-ai/open-artifacts/commit/ed8689a6bb411386c0786111e631dcf001e34045))
+
+## [0.121.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.120.0...v0.121.0) (2026-11-05)
+
+
+### Features
+
+* **skill:** name the bus tools each harness has ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1472](https://github.com/open-artifacts-ai/open-artifacts/issues/1472)) ([443001b](https://github.com/open-artifacts-ai/open-artifacts/commit/443001b8d1988209403531107188754d54f97ca2))
+
+## [0.120.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.119.0...v0.120.0) (2026-11-05)
+
+
+### Features
+
+* **runtime,shared:** comment anchoring, selection, highlights and pins in the frame ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#1471](https://github.com/open-artifacts-ai/open-artifacts/issues/1471)) ([d0635a2](https://github.com/open-artifacts-ai/open-artifacts/commit/d0635a2b6b7279cb17162e12f2b1eb3ee301f30d))
+
+## [0.119.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.118.1...v0.119.0) (2026-11-05)
+
+
+### Features
+
+* **dashboard:** Agents page and Settings › Machines, from Design's option 1 ([#1293](https://github.com/open-artifacts-ai/open-artifacts/issues/1293)) ([#1449](https://github.com/open-artifacts-ai/open-artifacts/issues/1449)) ([ce253cf](https://github.com/open-artifacts-ai/open-artifacts/commit/ce253cfaec838efee4ca2d49a946cd96f836be07))
+
+## [0.118.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.118.0...v0.118.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **provision,provisioner:** a DO-rule refusal halts the fleet naming the step release ([#1343](https://github.com/open-artifacts-ai/open-artifacts/issues/1343)) ([#1442](https://github.com/open-artifacts-ai/open-artifacts/issues/1442)) ([e31d3bd](https://github.com/open-artifacts-ai/open-artifacts/commit/e31d3bdae44891eac130930c1fdc5c4dfa710c87))
+
+## [0.118.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.117.0...v0.118.0) (2026-11-05)
+
+
+### Features
+
+* **scheduler:** a canary smoke replaces the fleet soak ([#1343](https://github.com/open-artifacts-ai/open-artifacts/issues/1343)) ([#1380](https://github.com/open-artifacts-ai/open-artifacts/issues/1380)) ([64d1863](https://github.com/open-artifacts-ai/open-artifacts/commit/64d1863c447c96c6f2430ffd113ed16e73eb6a52))
+
+
+### Bug Fixes
+
+* **setup:** an upgrade refuses when the deployed version is unknown ([#1427](https://github.com/open-artifacts-ai/open-artifacts/issues/1427)) ([#1433](https://github.com/open-artifacts-ai/open-artifacts/issues/1433)) ([2f092af](https://github.com/open-artifacts-ai/open-artifacts/commit/2f092af40c0e86b2f1aaf1583ea9dbf73b889737))
+
+## [0.117.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.116.0...v0.117.0) (2026-11-05)
+
+
+### Features
+
+* **skill:** report a lost tool, don't route around it ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1435](https://github.com/open-artifacts-ai/open-artifacts/issues/1435)) ([1c743be](https://github.com/open-artifacts-ai/open-artifacts/commit/1c743bead2fd92bfa04cb63caba7ec9609b3ff42))
+
+## [0.116.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.115.0...v0.116.0) (2026-11-05)
+
+
+### Features
+
+* **admin:** Upgrade and Create hide releases newer than the platform ([31da451](https://github.com/open-artifacts-ai/open-artifacts/commit/31da4517165c1e16680635ce8e6dce3eb3f6f5ba))
+* **admin:** Upgrade and Create hide releases newer than the platform ([#1384](https://github.com/open-artifacts-ai/open-artifacts/issues/1384)) ([#1397](https://github.com/open-artifacts-ai/open-artifacts/issues/1397)) ([31da451](https://github.com/open-artifacts-ai/open-artifacts/commit/31da4517165c1e16680635ce8e6dce3eb3f6f5ba))
+* **provisioning:** /releases names the platform's release ([#1384](https://github.com/open-artifacts-ai/open-artifacts/issues/1384)) ([#1393](https://github.com/open-artifacts-ai/open-artifacts/issues/1393)) ([7f1de9f](https://github.com/open-artifacts-ai/open-artifacts/commit/7f1de9f9e174462e283b4428d59547fd0e19826c))
+* **server:** bind BUS_HUB, so /bus serves ([#1315](https://github.com/open-artifacts-ai/open-artifacts/issues/1315)) ([#1425](https://github.com/open-artifacts-ai/open-artifacts/issues/1425)) ([e26a296](https://github.com/open-artifacts-ai/open-artifacts/commit/e26a29699d302b898ce8f567b3ceb1ea22f53066))
+* **server:** propose role changes over MCP, confirm by link ([#1372](https://github.com/open-artifacts-ai/open-artifacts/issues/1372)) ([#1402](https://github.com/open-artifacts-ai/open-artifacts/issues/1402)) ([e3ea6d4](https://github.com/open-artifacts-ai/open-artifacts/commit/e3ea6d40dc961fdc66149fdcb8696cfe8e58ad90))
+* **skill:** a peer's report of approval is never approval ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1407](https://github.com/open-artifacts-ai/open-artifacts/issues/1407)) ([6dd4cb7](https://github.com/open-artifacts-ai/open-artifacts/commit/6dd4cb73e60cefbb13c1cb1b6c95d66d4df96a06))
+* **skill:** make the description fire on agent collaboration ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1395](https://github.com/open-artifacts-ai/open-artifacts/issues/1395)) ([d7aa36a](https://github.com/open-artifacts-ai/open-artifacts/commit/d7aa36a9cf93fcd6564fbf335128bcefc7f3eab6))
+* **skill:** spell out the parent link, the flake rerun and open items ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1396](https://github.com/open-artifacts-ai/open-artifacts/issues/1396)) ([f2c8e6d](https://github.com/open-artifacts-ai/open-artifacts/commit/f2c8e6d7ec911096bb38f053e5cff4d816bc557e))
+* **skill:** teach the collaboration habits the skill was missing ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1362](https://github.com/open-artifacts-ai/open-artifacts/issues/1362)) ([1b5a70b](https://github.com/open-artifacts-ai/open-artifacts/commit/1b5a70b31f974ab6691fe3d46dbdfa5a3254fc4f))
+
+
+### Bug Fixes
+
+* **ci:** hosted, setup and redline declare the files they read ([#1413](https://github.com/open-artifacts-ai/open-artifacts/issues/1413)) ([#1434](https://github.com/open-artifacts-ai/open-artifacts/issues/1434)) ([5a8dced](https://github.com/open-artifacts-ai/open-artifacts/commit/5a8dcedc9574ea90289fc22dac6ecbd1829f7117))
+* **ci:** landing declares the admin and server files it reads ([#1413](https://github.com/open-artifacts-ai/open-artifacts/issues/1413)) ([#1430](https://github.com/open-artifacts-ai/open-artifacts/issues/1430)) ([78823e2](https://github.com/open-artifacts-ai/open-artifacts/commit/78823e2d843d5eeca5a97f6273e16270182a7de0))
+* **redline:** a transport blip never decides the gate ([#1133](https://github.com/open-artifacts-ai/open-artifacts/issues/1133)) ([#1400](https://github.com/open-artifacts-ai/open-artifacts/issues/1400)) ([8447ca1](https://github.com/open-artifacts-ai/open-artifacts/commit/8447ca17c216fc7cbbd7d327eed6fd98fc62d815))
+* **redline:** one setup reset can't take down a file ([#1133](https://github.com/open-artifacts-ai/open-artifacts/issues/1133)) ([#1419](https://github.com/open-artifacts-ai/open-artifacts/issues/1419)) ([225bc2d](https://github.com/open-artifacts-ai/open-artifacts/commit/225bc2d42795e3510ca1cbfdf52ea54b713985d9))
+* **server:** a session leaving a namespace holds its name there for 1 h (port of open-bus [#451](https://github.com/open-artifacts-ai/open-artifacts/issues/451)) ([#1392](https://github.com/open-artifacts-ai/open-artifacts/issues/1392)) ([c52a9fb](https://github.com/open-artifacts-ai/open-artifacts/commit/c52a9fb4d48ddaaf59f082f163228e61637a6c6c))
+
+## [0.115.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.114.0...v0.115.0) (2026-11-04)
+
+
+### Features
+
+* **bus:** the /bus page, on the real hub and share notices ([#1300](https://github.com/open-artifacts-ai/open-artifacts/issues/1300)) ([#1379](https://github.com/open-artifacts-ai/open-artifacts/issues/1379)) ([5045db0](https://github.com/open-artifacts-ai/open-artifacts/commit/5045db0360717ac8ecc07be90bafc6f67f6a02a3))
+* **ops:** test-member can sign in as admin and write an MCP config outside the repo ([#1288](https://github.com/open-artifacts-ai/open-artifacts/issues/1288)) ([#1385](https://github.com/open-artifacts-ai/open-artifacts/issues/1385)) ([e96540f](https://github.com/open-artifacts-ai/open-artifacts/commit/e96540ff971169032eb301391a1e8d4a23e6a8e8))
+
+
+### Bug Fixes
+
+* **server:** a move keeps chosen former names reserved; global sends see them (port of open-bus [#451](https://github.com/open-artifacts-ai/open-artifacts/issues/451), [#452](https://github.com/open-artifacts-ai/open-artifacts/issues/452)) ([#1388](https://github.com/open-artifacts-ai/open-artifacts/issues/1388)) ([ee2cded](https://github.com/open-artifacts-ai/open-artifacts/commit/ee2cdedfdb275a7a69ceb9b9a15026e60773a507))
+* **skill,agents:** close the retro review of [#1324](https://github.com/open-artifacts-ai/open-artifacts/issues/1324) and [#1334](https://github.com/open-artifacts-ai/open-artifacts/issues/1334) ([#1366](https://github.com/open-artifacts-ai/open-artifacts/issues/1366)) ([8a2ad1d](https://github.com/open-artifacts-ai/open-artifacts/commit/8a2ad1d93667d98615ee0a87acfc3010de2cc5a9))
+
+## [0.114.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.113.0...v0.114.0) (2026-11-04)
+
+
+### Features
+
+* **server:** role addresses on the bus ([#1296](https://github.com/open-artifacts-ai/open-artifacts/issues/1296)) ([#1357](https://github.com/open-artifacts-ai/open-artifacts/issues/1357)) ([b0c1079](https://github.com/open-artifacts-ai/open-artifacts/commit/b0c10792d3d6a06ba7b4040d46b648041fdd49d1))
+* **skill:** links in a page need target=_blank rel=noopener ([#1321](https://github.com/open-artifacts-ai/open-artifacts/issues/1321)) ([#1376](https://github.com/open-artifacts-ai/open-artifacts/issues/1376)) ([b899b8e](https://github.com/open-artifacts-ai/open-artifacts/commit/b899b8e4331a4c1b2b47281a37019bc20c648d7e))
+
+
+### Bug Fixes
+
+* **bus:** a Claude reply reaches only the agent that wrote, within the mail TTL ([#1370](https://github.com/open-artifacts-ai/open-artifacts/issues/1370)) ([f41dc7d](https://github.com/open-artifacts-ai/open-artifacts/commit/f41dc7db591209966cf119b89fd3ed6360b10524))
+* **ci:** select the admin audit-actions suite when the packages it scans change ([#1353](https://github.com/open-artifacts-ai/open-artifacts/issues/1353)) ([#1368](https://github.com/open-artifacts-ai/open-artifacts/issues/1368)) ([9d4dc02](https://github.com/open-artifacts-ai/open-artifacts/commit/9d4dc02e479034592036711ef0e7d4630a4e8abc))
+* **ops:** test-member parses the run's output, not its echoed script ([#1288](https://github.com/open-artifacts-ai/open-artifacts/issues/1288)) ([#1360](https://github.com/open-artifacts-ai/open-artifacts/issues/1360)) ([9dae5fc](https://github.com/open-artifacts-ai/open-artifacts/commit/9dae5fcf84c96242ebb8d068e5d62de38c0aef83))
+* **provisioning:** an upgrade can't run an install ahead of the platform ([#1176](https://github.com/open-artifacts-ai/open-artifacts/issues/1176)) ([#1382](https://github.com/open-artifacts-ai/open-artifacts/issues/1382)) ([82421c2](https://github.com/open-artifacts-ai/open-artifacts/commit/82421c2f7b4ca8fd50066a39907ebc19ef2036d6))
+* **provision:** rollback refuses when the install's schema is ahead of the target ([#1106](https://github.com/open-artifacts-ai/open-artifacts/issues/1106)) ([#1369](https://github.com/open-artifacts-ai/open-artifacts/issues/1369)) ([4eadb5e](https://github.com/open-artifacts-ai/open-artifacts/commit/4eadb5ef47fe6f8af560c1a3ff47921691a8ab9c))
+* **provision:** verify_clean retries Cloudflare read lag before prod_dirty ([#1352](https://github.com/open-artifacts-ai/open-artifacts/issues/1352)) ([#1353](https://github.com/open-artifacts-ai/open-artifacts/issues/1353)) ([68e26ef](https://github.com/open-artifacts-ai/open-artifacts/commit/68e26efe71ffe2933d370cd2a2dd01c2b25268f1))
+* **server:** close BusHub rename holes (port of open-bus [#446](https://github.com/open-artifacts-ai/open-artifacts/issues/446)) ([#1375](https://github.com/open-artifacts-ai/open-artifacts/issues/1375)) ([25c1661](https://github.com/open-artifacts-ai/open-artifacts/commit/25c16610ed29d45c5c4aa75d9ec0eff6096543b4))
+
 ## [0.113.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.112.0...v0.113.0) (2026-11-04)
 
 

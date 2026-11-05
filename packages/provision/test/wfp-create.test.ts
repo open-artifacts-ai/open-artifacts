@@ -62,6 +62,7 @@ import {
 } from "../src/release.js";
 import {
   assertBrokerOrigin,
+  assertDoClassesShipFirst,
   assertSessionSecret,
   brokerKid,
   brokerOrigin,
@@ -1363,6 +1364,8 @@ describe("WfpProvisioner.create", () => {
       // P3 T13: DirectorySync (v3) and the directory groups limiter.
       "DIRECTORY_SYNC",
       "RL_DIRECTORY",
+      // #1315: BusHub (v4, 0.109.0), bound one release after its class tag.
+      "BUS_HUB",
       "RL_ANON",
       "RL_AUTH",
       "PLAN",
@@ -4592,5 +4595,19 @@ describe("a job's lease across its attempts (#1326: fenced by attempt)", () => {
     expect(e.code).toBe("lease_held");
     a1.wake();
     await a1.run;
+  });
+});
+
+describe("#1315: the real template binds BusHub, so only an install already on tag v4 takes it", () => {
+  // BusHub shipped unbound (tag v4) in 0.109.0. An install on v3 (0.99.0,
+  // 0.100.0) would add and bind it in one upgrade, which a rollback could
+  // not undo: refused, naming the step. Create never runs this rule.
+  it("live v3 (pre-0.109.0) is refused, naming BusHub and the step", () => {
+    expect(() => assertDoClassesShipFirst(loadTemplate(), "v3")).toThrow(
+      /adds Durable Object class BusHub and binds it.*upgrade first to a release that adds it unbound/,
+    );
+  });
+  it("live v4 (0.109.0 or later) passes", () => {
+    expect(() => assertDoClassesShipFirst(loadTemplate(), "v4")).not.toThrow();
   });
 });

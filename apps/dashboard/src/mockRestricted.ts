@@ -3,8 +3,8 @@ import { getResponse, HttpResponse, http, type RequestHandler } from "msw";
 /**
  * Mock-only: a restricted member, on top of the hosted mocks.
  * ?mock=restricted (with ?hosted=1): no tokens or connected agents, so no
- * Agents tab, and an empty Mine.
- * ?mock=restricted-rows: the fixtures' token and agent, so Agents shows both
+ * Connections tab, and an empty Mine.
+ * ?mock=restricted-rows: the fixtures' token and agent, so Connections shows both
  * cards as revoke-only; Mine is empty too.
  */
 export const restrictedHandlers = (

@@ -648,7 +648,7 @@ it("members are sent away from /settings/directory", async () => {
     user: { ...m.user, role: "member" },
   }));
   await waitFor(() =>
-    expect(router.state.location.pathname).toBe("/settings/agents"),
+    expect(router.state.location.pathname).toBe("/settings/connections"),
   );
 });
 

@@ -58,6 +58,7 @@ import {
 } from "./internal/gates.js";
 import {
   CfError,
+  DoStepRequired,
   NEAR_EXPIRY_MODE,
   PROVISION_JOB_KINDS,
   type ProvisionJobKind,
@@ -207,6 +208,12 @@ export interface WfpOptions {
   /** The release's signed record and files (R2 in production); never the checkout. */
   release: ReleaseReader;
   /**
+   * The published release versions (bucketVersions). An upgrade the DO rule
+   * refuses then names the release to step through first (#1343). Unset
+   * (the CLI): the refusal names none.
+   */
+  releaseVersions?: () => Promise<string[]>;
+  /**
    * The env's one Turnstile widget (sitekey and secret from the keychain item
    * oa-hosted-<env>-turnstile). Required when codes are on.
    */
@@ -278,6 +285,9 @@ export interface WfpOptions {
   leaseHolder?: string;
   /** Tests only: the binding id audit's time limit. */
   bindingIdAuditMs?: number;
+  /** Tests only: verify_clean's reads (VERIFY_CLEAN_ATTEMPTS) and their spacing. */
+  verifyCleanAttempts?: number;
+  verifyCleanIntervalMs?: number;
 }
 
 /**
@@ -296,6 +306,7 @@ export const WFP_STEPS = Object.freeze([
 export type WfpStep = (typeof WFP_STEPS)[number];
 
 export {
+  DoStepRequired,
   NEAR_EXPIRY_MODE,
   PROVISION_ERROR_CODES,
   PROVISION_JOB_KINDS,
@@ -319,6 +330,14 @@ export const PROVISIONER_MAX_TOKEN_DAYS = 400;
 
 /** The cap on verify_clean.refused's audited reason (#1060). */
 export const VERIFY_CLEAN_REASON_MAX = 300;
+/**
+ * verify_clean reads the settings and secret list at most this many times
+ * while the only problems are missing expected items (Cloudflare's read lag
+ * after an upload, #1352), VERIFY_CLEAN_INTERVAL_MS apart: under a minute,
+ * far below the lease.
+ */
+export const VERIFY_CLEAN_ATTEMPTS = 6;
+export const VERIFY_CLEAN_INTERVAL_MS = 10_000;
 
 /** The cap on the binding id audit's list of live fields. */
 export const BINDING_SHAPE_MAX = 600;
@@ -400,21 +419,33 @@ const isProdDirty = (e: unknown) =>
   e instanceof ProvisionRefused && e.code === "prod_dirty";
 
 /**
- * verify_clean's rules on what the settings GET and the secret list report,
- * read-only: null when clean, else why (binding and secret names only, never
- * a value).
+ * One thing verify_clean found wrong. `missing` is an expected secret or
+ * non-secret binding absent from the read, which Cloudflare's read lag right
+ * after an upload can cause (#1352); `name` is that secret's name or the
+ * binding's `NAME (type)`. Anything else is `other` and refuses at once.
  */
-export function verifyCleanRefusal(
+export type VerifyCleanProblem =
+  | { kind: "missing"; name: string; reason: string }
+  | { kind: "other"; reason: string };
+
+/**
+ * verify_clean's rules on what the settings GET and the secret list report,
+ * read-only: every problem in rule order (binding and secret names only,
+ * never a value); empty when clean.
+ */
+export function verifyCleanProblems(
   live: { bindings: readonly SettingsBinding[]; secrets: readonly string[] },
   v: VerifyCleanInput,
-): string | null {
+): VerifyCleanProblem[] {
+  const out: VerifyCleanProblem[] = [];
+  const other = (reason: string) => out.push({ kind: "other", reason });
   const refused: readonly string[] = VERIFY_CLEAN_REFUSED_BINDING_TYPES;
   for (const b of live.bindings)
     if (refused.includes(b.type))
-      return `binding ${b.name} is a ${b.type} binding`;
+      other(`binding ${b.name} is a ${b.type} binding`);
   if (!v.testHooks)
     for (const n of [...live.secrets, ...live.bindings.map((b) => b.name)])
-      if (HOOK_NAMES.includes(n)) return `${n} is set on a non-test install`;
+      if (HOOK_NAMES.includes(n)) other(`${n} is set on a non-test install`);
   const plain = (bs: readonly { name: string; type: string }[]) =>
     bs.filter((b) => !b.type.startsWith("secret") && b.name !== "OWNER_EMAIL");
   const key = (b: { name: string; type: string }) => `${b.name} (${b.type})`;
@@ -423,8 +454,9 @@ export function verifyCleanRefusal(
   for (const k of new Set([...got, ...want])) {
     const n = got.filter((x) => x === k).length;
     const m = want.filter((x) => x === k).length;
-    if (n > m) return `binding ${k} is not in the render`;
-    if (n < m) return `binding ${k} is missing`;
+    if (n > m) other(`binding ${k} is not in the render`);
+    else if (n < m)
+      out.push({ kind: "missing", name: k, reason: `binding ${k} is missing` });
   }
   const digest = (b: { type: string; text?: unknown; json?: unknown }) =>
     sha256Hex(
@@ -435,23 +467,39 @@ export function verifyCleanRefusal(
   for (const b of plain(v.sent.bindings)) {
     if (b.type !== "plain_text" && b.type !== "json") continue;
     const l = live.bindings.find((x) => x.name === b.name && x.type === b.type);
-    if (!l || digest(l) !== digest(b))
-      return `binding ${key(b)} has another value than the render`;
+    // An absent binding is already a `missing` problem above.
+    if (l && digest(l) !== digest(b))
+      other(`binding ${key(b)} has another value than the render`);
   }
   const secrets = live.secrets
     .filter((n) => !OPTIONAL_SECRETS.includes(n))
     .sort();
   const expected = expectedSecretNames(v);
   for (const n of secrets)
-    if (!expected.includes(n)) return `secret ${n} is not expected`;
+    if (!expected.includes(n)) other(`secret ${n} is not expected`);
   for (const n of expected)
-    if (!secrets.includes(n)) return `secret ${n} is missing`;
-  if (secrets.length !== expected.length) return "a secret is listed twice";
+    if (!secrets.includes(n))
+      out.push({ kind: "missing", name: n, reason: `secret ${n} is missing` });
+  if (new Set(secrets).size !== secrets.length)
+    other("a secret is listed twice");
   if (v.rec.variant !== (v.testHooks ? "redline" : "release"))
-    return `the release variant is ${String(v.rec.variant)}`;
+    other(`the release variant is ${String(v.rec.variant)}`);
   if (v.tag !== v.lastTag)
-    return `the Durable Object tag is ${v.tag ?? "none"}, not ${v.lastTag ?? "none"}`;
-  return null;
+    other(
+      `the Durable Object tag is ${v.tag ?? "none"}, not ${v.lastTag ?? "none"}`,
+    );
+  return out;
+}
+
+/**
+ * verify_clean's rules, read-only: null when clean, else why (the first of
+ * verifyCleanProblems; binding and secret names only, never a value).
+ */
+export function verifyCleanRefusal(
+  live: { bindings: readonly SettingsBinding[]; secrets: readonly string[] },
+  v: VerifyCleanInput,
+): string | null {
+  return verifyCleanProblems(live, v)[0]?.reason ?? null;
 }
 
 /** An MCP call the install answered with an HTTP error. */
@@ -654,6 +702,9 @@ export function storedMetadata(meta: UploadMetadata): Record<string, unknown> {
   };
 }
 
+/** The most releases an upgrade the DO rule refuses reads to name a step. */
+const STEP_CANDIDATES = 20;
+
 const tagsOf = (t: Template): string[] =>
   ((t.migrations ?? []) as { tag: string }[]).map((x) => x.tag);
 
@@ -686,7 +737,7 @@ export function assertDoClassesShipFirst(
   const both = added.filter((c) => bound.includes(c));
   if (both.length > 0)
     throw new Error(
-      `this release adds Durable Object class ${both.join(", ")} and binds it in the same version; a class ships one release before the code that uses it`,
+      `this release adds Durable Object class ${both.join(", ")} and binds it in the same version; a class ships one release before the code that uses it: upgrade first to a release that adds it unbound, then to this one`,
     );
 }
 
@@ -711,6 +762,25 @@ export function assertMigrationOrder(
   if (early !== undefined)
     throw new ProvisionRefused(
       `release ${version}: unapplied migration ${early} sorts before applied ${files[last]}; refusing to apply out of order`,
+      "invalid_state",
+    );
+}
+
+/**
+ * #1106 on the manual path: a rollback re-uploads old code and never touches
+ * D1, so it is refused when the install has a D1 migration the target release
+ * lacks (its code would run on a newer schema). Forward-fix only.
+ */
+export function assertRollbackSchema(
+  files: readonly string[],
+  done: ReadonlySet<string>,
+  id: string,
+  to: string,
+): void {
+  const ahead = [...done].filter((x) => !files.includes(x)).sort();
+  if (ahead.length > 0)
+    throw new ProvisionRefused(
+      `install ${id}: the D1 has migration ${ahead.join(", ")}, which ${to} does not; rollback is refused (forward-fix only)`,
       "invalid_state",
     );
 }
@@ -1941,11 +2011,34 @@ export class WfpProvisioner {
     v: VerifyCleanInput,
     ids: { d1Id: string; kvId: string; template: Template },
   ): Promise<void> {
-    await this.hold();
-    const { bindings } = await this.cf.scriptSettings(this.target, script);
-    const secrets = await this.cf.secretList(this.target, script);
+    const attempts = Math.max(
+      1,
+      this.o.verifyCleanAttempts ?? VERIFY_CLEAN_ATTEMPTS,
+    );
+    const wait = this.o.verifyCleanIntervalMs ?? VERIFY_CLEAN_INTERVAL_MS;
+    let bindings: readonly SettingsBinding[];
+    let problems: VerifyCleanProblem[];
+    for (let read = 1; ; read++) {
+      await this.hold();
+      ({ bindings } = await this.cf.scriptSettings(this.target, script));
+      const secrets = await this.cf.secretList(this.target, script);
+      problems = verifyCleanProblems({ bindings, secrets }, v);
+      // #1352: only an expected item absent may be read lag; anything else
+      // refuses on this read.
+      const lag =
+        problems.length > 0 && problems.every((p) => p.kind === "missing");
+      if (!lag || read >= attempts) break;
+      await this.logged("verify_clean.retry", {
+        read,
+        missing: problems
+          .map((p) => (p.kind === "missing" ? p.name : ""))
+          .join(" ")
+          .slice(0, VERIFY_CLEAN_REASON_MAX),
+      });
+      await this.sleep(wait);
+    }
     await this.bindingIdAudit(v.id, script, { ...ids, bindings });
-    const why = verifyCleanRefusal({ bindings, secrets }, v);
+    const why = problems[0]?.reason ?? null;
     if (why === null) return;
     // #1060: why names bindings and secrets only, never a value; capped.
     await this.logged("verify_clean.refused", {
@@ -3409,6 +3502,76 @@ export class WfpProvisioner {
   }
 
   /**
+   * The DO rule before upgrade's claim. A refusal names the install and, when
+   * the published versions are known, the release it must take first, so the
+   * fleet's halt says what a person does next (#1343).
+   */
+  private async doRuleOrStep(
+    id: InstallId,
+    from: string,
+    to: string,
+    rel: Checked,
+    live: string | null,
+  ): Promise<void> {
+    try {
+      assertDoClassesShipFirst(rel.template, live);
+    } catch (e) {
+      const step = await this.stepRelease(from, to, rel, live);
+      throw new DoStepRequired(
+        step === null
+          ? `install ${id}: ${(e as Error).message}`
+          : `install ${id}: upgrade it to ${step} first; ${(e as Error).message}`,
+        step,
+      );
+    }
+  }
+
+  /**
+   * The newest published release between `from` and `to` that the install
+   * may take on its live tag and after which `to` passes the DO rule, or
+   * null. A candidate whose record, floor or template doesn't verify is
+   * skipped; at most STEP_CANDIDATES are read.
+   */
+  private async stepRelease(
+    from: string,
+    to: string,
+    rel: Checked,
+    live: string | null,
+  ): Promise<string | null> {
+    if (!this.o.releaseVersions) return null;
+    let all: string[];
+    try {
+      all = await this.o.releaseVersions();
+    } catch {
+      return null;
+    }
+    const between = all
+      .filter(
+        (v) =>
+          isReleaseVersion(v) &&
+          compareVersions(v, from) > 0 &&
+          compareVersions(v, to) < 0,
+      )
+      .sort(compareVersions)
+      .reverse()
+      .slice(0, STEP_CANDIDATES);
+    for (const v of between) {
+      try {
+        const rec = await this.readRecord({
+          version: v,
+          bundle: rel.rec.variant,
+        });
+        await this.readFloor(rec);
+        const t = await this.readTemplate(rec);
+        assertDoClassesShipFirst(t, live);
+        assertDoClassesShipFirst(rel.template, tagsOf(t).at(-1) ?? live);
+        return v;
+      } catch {}
+    }
+    return null;
+  }
+
+  /**
    * active -> upgrading -> new D1 migrations -> upload (keep_bindings, no
    * secret value) -> /healthz and the read-only MCP selftest -> active. A
    * failed check rolls back, unless the DO tag moved (forward-fix only).
@@ -3458,7 +3621,7 @@ export class WfpProvisioner {
       version: to,
       bundle: m.testHooks ? "redline" : "release",
     });
-    this.doRule(rel.template)(row.do_migration_tag);
+    await this.doRuleOrStep(id, from, to, rel, row.do_migration_tag);
     const { d1Id, kvId } = await this.liveInstall(row, m);
     await this.checkMigrationOrder(rel, d1Id);
     const restorePoint = await this.migrationHold(id, rel, d1Id, o);
@@ -3716,6 +3879,23 @@ export class WfpProvisioner {
       );
     const tok = own ?? (await this.ownerToken(row, m.appHost, true));
     const { d1Id, kvId } = await this.liveInstall(row, m);
+    // #1106: never old code on a newer schema. Read-only, before any write.
+    const doTag = row.do_migration_tag;
+    if (doTag !== null && !tagsOf(rel.template).includes(doTag))
+      throw new ProvisionRefused(
+        `install ${id}: the Durable Object migration tag ${doTag} is not in ${to}; rollback is refused (forward-fix only)`,
+        "invalid_state",
+      );
+    const applied = await this.cf.d1Query(
+      d1Id,
+      "SELECT name FROM d1_migrations",
+    );
+    assertRollbackSchema(
+      rel.migrations.map((f) => f.name),
+      new Set((applied[0]?.results ?? []).map((x) => String(x.name))),
+      id,
+      to,
+    );
     const render = (tag: string | null) =>
       this.metadata(id, m, rel, {
         d1Id,

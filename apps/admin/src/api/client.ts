@@ -8,7 +8,7 @@ import {
   type Me,
   MeSchema,
   ProvisioningErrorSchema,
-  type Release,
+  type Releases,
   ROUTES,
   type RouteId,
   type SlugCheck,
@@ -39,7 +39,7 @@ export interface Results {
   R13: Accepted;
   R14: Page<JobListItem>;
   R15: Job;
-  R16: { items: Release[] };
+  R16: Releases;
   R17: Page<AuditEntry>;
   R18: SlugCheck;
   R19: Minted;

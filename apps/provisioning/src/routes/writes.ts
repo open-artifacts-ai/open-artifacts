@@ -27,7 +27,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 import { loadInReach, loadJob, type StatusRow } from "../model.js";
 import type { Principal } from "../principal.js";
-import { releaseOf, releases } from "../services/cache.js";
+import { platformRelease, releaseOf, releases } from "../services/cache.js";
 import {
   accept,
   activeJobId,
@@ -77,34 +77,33 @@ export function compareVersions(a: string, b: string): number {
  * variant are release_gate's (release_unverified, P32).
  */
 /**
- * The platform's own release: this Worker's version tag, which a deploy sets
- * to the release it deployed, the same tag the fleet follows. Null when there
- * isn't a stable one.
- */
-export function platformRelease(
-  env: Pick<Env, "CF_VERSION_METADATA">,
-): string | null {
-  return (
-    /^v(\d+\.\d+\.\d+)$/.exec(env.CF_VERSION_METADATA?.tag ?? "")?.[1] ?? null
-  );
-}
-
-/**
  * The release a create or upgrade runs: the one asked for, or by default the
  * platform's own, as the fleet does, never just the newest published. A
- * release published before its platform deploy reaches no install by default.
+ * release published before its platform deploy reaches no install by default,
+ * and an explicit one newer than the platform's is refused (#1176): no
+ * install runs ahead of the platform.
  */
 export async function resolveRelease(
   env: Env,
   version: string | undefined,
   variant: "release" | "redline",
 ): Promise<string> {
+  const own = platformRelease(env);
   if (version !== undefined) {
     if (!(await releaseOf(env, version)))
       throw new ApiError("release_not_published");
+    if (own === null)
+      throw new ApiError(
+        "release_not_published",
+        "the platform has no release tag",
+      );
+    if (compareVersions(version, own) > 0)
+      throw new ApiError(
+        "release_ahead_of_platform",
+        `release ${version} is newer than the platform's release ${own}`,
+      );
     return version;
   }
-  const own = platformRelease(env);
   if (own === null)
     throw new ApiError(
       "release_not_published",

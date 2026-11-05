@@ -51,7 +51,7 @@ export function fileSnippets(
       path: "~/.codex/config.toml",
       note: tokenFile
         ? `Codex only reads the environment; launch it as: OA_TOKEN="$(cat ${tokenFile})" codex . Don't edit shell profiles.`
-        : "Codex only reads the environment: launch it with OA_TOKEN set to a token from Settings → Agents. Don't edit shell profiles.",
+        : "Codex only reads the environment: launch it with OA_TOKEN set to a token from Settings → Connections. Don't edit shell profiles.",
       text: `[mcp_servers.${name}]\nurl = "${url}"\nbearer_token_env_var = "OA_TOKEN"`,
     },
   };
@@ -78,7 +78,7 @@ export function fileSnippets(
     path: null,
     note: tokenFile
       ? `replace ${PLACEHOLDER} with the contents of ${tokenFile} yourself; keep this file out of git`
-      : `replace ${PLACEHOLDER} with a token from Settings → Agents; keep this file out of git`,
+      : `replace ${PLACEHOLDER} with a token from Settings → Connections; keep this file out of git`,
     text: pretty({
       mcpServers: {
         [name]: {
@@ -134,7 +134,10 @@ export const agentConfig: Step = {
     ctx.data = {
       url,
       ...(ci
-        ? { tokenNote: "create a token in the dashboard (Settings → Agents)" }
+        ? {
+            tokenNote:
+              "create a token in the dashboard (Settings → Connections)",
+          }
         : pending
           ? { tokenNote: pendingNote }
           : {}),
@@ -147,7 +150,7 @@ export const agentConfig: Step = {
     ctx.human =
       welcome +
       (ci
-        ? "\n  Token: create a token in the dashboard (Settings → Agents); snippets never embed it."
+        ? "\n  Token: create a token in the dashboard (Settings → Connections); snippets never embed it."
         : pending
           ? `\n  Sign in with OAuth where the client supports it; ${pendingNote}.`
           : `\n  Sign in with OAuth where the client supports it. A token is saved to ${tokenFile} (don't read or print it); snippets never embed it.`) +

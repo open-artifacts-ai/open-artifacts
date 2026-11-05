@@ -631,6 +631,12 @@ export const MeSchema = z.object({
    * a member with no cap (server-side canConnect). Optional: older servers omit it.
    */
   canConnect: z.boolean().optional(),
+  /**
+   * #1293: whether this install's bus answers (BUS_HUB bound, not hosted;
+   * the server's busOn). The dashboard's Machines and Agents pages need it
+   * and canConnect. Optional: older servers omit it (bus off).
+   */
+  busOn: z.boolean().optional(),
 });
 export type Me = z.infer<typeof MeSchema>;
 

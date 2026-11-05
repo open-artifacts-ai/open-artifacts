@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { HELP, run } from "../src/index.ts";
+import { MIN_UPGRADE_FROM } from "../src/version-guard.ts";
 import { ROOT, STATE } from "./fakes.ts";
 import { HOSTS, world } from "./world.ts";
 
@@ -192,7 +193,191 @@ describe("downgrade guard", () => {
       repoVersion: "0.1.0",
       liveVersion: "0.2.0",
       downgrade: true,
+      belowMinUpgrade: false,
+      unknownLive: false,
     });
     expect(w.ops).toEqual([]);
+  });
+});
+
+describe("#1315: the oldest version this release upgrades from", () => {
+  // BusHub shipped unbound (DO tag v4) in 0.109.0; a checkout past it binds
+  // BUS_HUB, so an install below 0.109.0 takes 0.109.0 first.
+  const BIND = "0.116.0";
+  const TOO_OLD = (live: string) =>
+    `the deployed ${live} is older than 0.109.0, the oldest version this release (${BIND}) upgrades from; upgrade to v0.109.0 first (git checkout v0.109.0, then run the same upgrade), then check out this release and run it again`;
+
+  it("is 0.109.0, the first release with BusHub (tag v4) unbound", () => {
+    expect(MIN_UPGRADE_FROM).toBe("0.109.0");
+  });
+
+  it.each(["0.99.0", "0.100.0", "0.108.9"])(
+    "a live %s is refused with exit 2 before any write, naming the step",
+    async (live) => {
+      const o: Opts = {};
+      const w = await installed(BIND, o);
+      o.healthVersion = live;
+      expect(await run(UP, w.deps, ROOT)).toBe(2);
+      expect(line(w, "prereqs")).toMatchObject({
+        status: "action_required",
+        message: TOO_OLD(live),
+      });
+      expect(w.ops).toEqual([]);
+    },
+  );
+
+  it("--allow-downgrade does not bypass it", async () => {
+    const o: Opts = {};
+    const w = await installed(BIND, o);
+    o.healthVersion = "0.100.0";
+    expect(await run([...UP, "--allow-downgrade"], w.deps, ROOT)).toBe(2);
+    expect(line(w, "prereqs").message).toBe(TOO_OLD("0.100.0"));
+    expect(w.ops).toEqual([]);
+  });
+
+  it.each(["0.109.0", "0.110.0", "0.115.0"])(
+    "a live %s proceeds",
+    async (live) => {
+      const o: Opts = {};
+      const w = await installed(BIND, o);
+      o.healthVersion = live;
+      expect(await run(UP, w.deps, ROOT)).toBe(0);
+      expect(w.ops).toContain("deploy");
+    },
+  );
+
+  it("a fresh install is never refused (no live version, nothing to roll back below)", async () => {
+    const w = world({ healthVersion: "0.99.0" });
+    w.files.set(PKG, JSON.stringify({ name: "open-artifacts", version: BIND }));
+    expect(await run(HOSTS, w.deps, ROOT)).toBe(0);
+    expect(w.ops).toContain("deploy");
+  });
+
+  it("the 0.109.0 checkout itself upgrades from below it", async () => {
+    const o: Opts = {};
+    const w = await installed("0.109.0", o);
+    o.healthVersion = "0.100.0";
+    expect(await run(UP, w.deps, ROOT)).toBe(0);
+  });
+
+  it("--check reports it and never blocks", async () => {
+    const o: Opts = {};
+    const w = await installed(BIND, o);
+    o.healthVersion = "0.100.0";
+    expect(await run([...HOSTS, "--check"], w.deps, ROOT)).toBe(0);
+    expect(line(w, "deploy").data).toMatchObject({
+      repoVersion: BIND,
+      liveVersion: "0.100.0",
+      belowMinUpgrade: true,
+    });
+    expect(w.ops).toEqual([]);
+  });
+
+  describe("#1427: an unknown deployed version is refused, not waved through", () => {
+    const UNKNOWN = `cannot tell which version is deployed (https://${HOSTS[HOSTS.indexOf("--app-host") + 1]}/healthz gave none and the state file has none), and this release (${BIND}) upgrades only from 0.109.0 or later; make /healthz reachable from here, or pass --deployed-version X.Y.Z with the version the install runs, then run the same upgrade again`;
+    /**
+     * Installed, then a rebuilt state with no deployedVersion and a /healthz
+     * with no version (or down, which the later healthcheck step also fails on).
+     */
+    async function unknown(repo = BIND, down = false) {
+      const o: Opts = {};
+      const w = await installed(repo, o);
+      o.healthzDown = down;
+      w.files.set(STATE, JSON.stringify({ name: w.state().name }));
+      return w;
+    }
+
+    it.each([
+      ["answers with no version", false],
+      ["is down", true],
+    ])(
+      "/healthz %s: --upgrade is refused with exit 2 before any write, naming how to proceed",
+      async (_n, down) => {
+        const w = await unknown(BIND, down);
+        expect(await run(UP, w.deps, ROOT)).toBe(2);
+        expect(line(w, "prereqs")).toMatchObject({
+          status: "action_required",
+          message: UNKNOWN,
+        });
+        expect(w.ops).toEqual([]);
+      },
+    );
+
+    it("--allow-downgrade does not bypass it", async () => {
+      const w = await unknown();
+      expect(await run([...UP, "--allow-downgrade"], w.deps, ROOT)).toBe(2);
+      expect(line(w, "prereqs").message).toBe(UNKNOWN);
+    });
+
+    it("--deployed-version at or past 0.109.0 proceeds", async () => {
+      const w = await unknown();
+      expect(
+        await run([...UP, "--deployed-version", "0.109.0"], w.deps, ROOT),
+      ).toBe(0);
+      expect(w.ops).toContain("deploy");
+    });
+
+    it("--deployed-version below 0.109.0 is refused as too old", async () => {
+      const w = await unknown();
+      expect(
+        await run([...UP, "--deployed-version", "0.100.0"], w.deps, ROOT),
+      ).toBe(2);
+      expect(line(w, "prereqs").message).toBe(TOO_OLD("0.100.0"));
+      expect(w.ops).toEqual([]);
+    });
+
+    it("a live /healthz wins over --deployed-version", async () => {
+      const o: Opts = {};
+      const w = await installed(BIND, o);
+      o.healthVersion = "0.100.0";
+      expect(
+        await run([...UP, "--deployed-version", "0.110.0"], w.deps, ROOT),
+      ).toBe(2);
+      expect(line(w, "prereqs").message).toBe(TOO_OLD("0.100.0"));
+    });
+
+    it.each(["v0.110.0", "0.110.0-rc.1", "0.110", "latest"])(
+      "--deployed-version %s is not a stable X.Y.Z: an error",
+      async (bad) => {
+        const w = await unknown();
+        expect(
+          await run([...UP, "--deployed-version", bad], w.deps, ROOT),
+        ).toBe(1);
+        expect(w.ops).toEqual([]);
+      },
+    );
+
+    it("--deployed-version needs --upgrade", async () => {
+      const w = await unknown();
+      expect(
+        await run([...HOSTS, "--deployed-version", "0.110.0"], w.deps, ROOT),
+      ).toBe(1);
+      expect(w.ops).toEqual([]);
+    });
+
+    it("the 0.109.0 checkout upgrades from anything, so unknown proceeds", async () => {
+      const w = await unknown("0.109.0");
+      expect(await run(UP, w.deps, ROOT)).toBe(0);
+    });
+
+    it("a fresh install, /healthz with no version, is not refused", async () => {
+      const w = world();
+      w.files.set(
+        PKG,
+        JSON.stringify({ name: "open-artifacts", version: BIND }),
+      );
+      expect(await run(HOSTS, w.deps, ROOT)).toBe(0);
+      expect(w.ops).toContain("deploy");
+    });
+
+    it("--check reports it and never blocks", async () => {
+      const w = await unknown();
+      expect(await run([...UP, "--check"], w.deps, ROOT)).toBe(0);
+      expect(line(w, "deploy").data).toMatchObject({
+        repoVersion: BIND,
+        unknownLive: true,
+      });
+      expect(w.ops).toEqual([]);
+    });
   });
 });

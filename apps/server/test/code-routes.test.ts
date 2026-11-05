@@ -368,12 +368,11 @@ describe("POST AUTH.codeVerify", () => {
       user: { role: "owner" },
     });
     expect(setCookieLine(r, SESSION)).toContain("Max-Age=604800");
-    expect(
-      await readSession(e, cookieOf(r, SESSION)?.split("=")[1]),
-    ).toMatchObject({
-      p: "code",
-      t: "a.com",
-    });
+    const sess = await readSession(e, cookieOf(r, SESSION)?.split("=")[1]);
+    expect(sess).toMatchObject({ p: "code", t: "a.com" });
+    // #1372: a code sign-in is itself a forced re-authentication (a fresh
+    // emailed code), so it carries the marker the role confirm page needs.
+    expect(sess?.a).toBeGreaterThanOrEqual(Date.now() - 60_000);
   });
 
   it("a restricted domain member is readOnly (the member's cap, as GET /me says), with restriction", async () => {

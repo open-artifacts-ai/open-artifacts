@@ -92,8 +92,15 @@ const SESSION_PATHS = [
   "/oauth/*",
   "/mcp",
   "/mcp/*",
-  // #1291 the bus approval page reads the cookie session (no other /bus route).
+  // #1291 the bus approval page and the member's /bus page (#1300) read the
+  // cookie session. Not /bus/* as a whole: /bus/device and /bus/connect
+  // carry no session (connect's Bearer is a machine token, not a PAT).
+  "/bus",
   "/bus/approve",
+  "/bus/machines/*",
+  "/bus/share-notices",
+  // #1372 the role proposal confirm page.
+  "/bus/roles/*",
 ] as const;
 
 // PUT R.upload(id) is authorized by its signature: no session, no CSRF.

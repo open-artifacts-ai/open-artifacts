@@ -28,6 +28,7 @@ import {
   useRouterState,
   useSearch,
 } from "@tanstack/react-router";
+import { RadioIcon } from "lucide-react";
 import { type MouseEvent, type ReactNode, useEffect, useRef } from "react";
 import { ApiClientError } from "../api/client";
 import { hasFeature } from "../api/contract";
@@ -36,6 +37,7 @@ import { BreakGlass } from "../auth/BreakGlass";
 import { useRedirect } from "../auth/redirect";
 import { useSignOut } from "../auth/signOut";
 import { useMe } from "../auth/useMe";
+import { canUseBus } from "../bus/access";
 import { isEmbed, isFullPath } from "../embed";
 import { SearchBox } from "../library/SearchBox";
 import { EdgePanel } from "../pages/Edge";
@@ -77,6 +79,15 @@ const I = {
   ),
   usage: icon("M2.5 11a5.5 5.5 0 1 1 11 0M8 11l2.5-3"),
   trash: icon("M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.5 7v4M9.5 7v4"),
+  // #1293: Lucide "radio", at the other icons' 16px and 1.5px stroke.
+  agents: (
+    <RadioIcon
+      size={16}
+      strokeWidth={1.5}
+      absoluteStrokeWidth
+      aria-hidden="true"
+    />
+  ),
   gear: icon(
     "M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7",
   ),
@@ -428,6 +439,14 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
                         active={on("/team")}
                         icon={I.team}
                         label="Team"
+                      />
+                    )}
+                    {canUseBus(me) && (
+                      <Link
+                        to="/agents"
+                        active={on("/agents")}
+                        icon={I.agents}
+                        label="Agents"
                       />
                     )}
                     {(role === "owner" || role === "admin") && !usageOff && (

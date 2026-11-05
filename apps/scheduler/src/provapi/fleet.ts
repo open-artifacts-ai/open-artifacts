@@ -4,10 +4,12 @@
 // Worker), so the fleet moves when the platform does: staging on the staging
 // deploy, prod on the prod deploy, which a green staging red-line gates.
 //
-// The canary (FLEET_CANARY) goes first and must soak. Then FLEET_SECOND
-// (#1343: prod's leo), alone, if it is behind and may move; it soaks too. Then
-// batches of FLEET_CONCURRENCY, oldest first, each soaking whole before the
-// next starts. The soak is FLEET_SOAK_MIN minutes per env (staging 15, prod 60). Only serving,
+// The canary (FLEET_CANARY) goes first, must settle, and then must pass the
+// canary smoke (smoke.ts, #1343): short active checks as a dedicated smoke
+// member, which replace the old passive soak. Then FLEET_SECOND (prod's leo),
+// alone, if it is behind and may move; it settles too. Then batches of
+// FLEET_CONCURRENCY, oldest first, each settling whole before the next
+// starts. Only serving,
 // active, idle installs with health ok and test hooks off move: a broken
 // install is skipped (version_skew reports it), so it can't halt a release.
 // The exception is an install on a halted version, or one that halted a
@@ -16,9 +18,18 @@
 // install can't halt every release. An install above the target is never
 // downgraded.
 //
-// Soak: every tick probes the installs upgraded to the target. One soaks once
-// its probes pass unbroken for FLEET_SOAK_MS. A tick with no probe doesn't
-// count: a gap over FLEET_SOAK_GAP_MS restarts the clock, as a failure does.
+// Settle (the "soaked" marks, so state carries over): every tick probes the
+// installs upgraded to the target. One settles once its probes pass unbroken
+// for FLEET_SOAK_MS, two passes on separate ticks. A tick with no probe
+// doesn't count: a gap over FLEET_SOAK_GAP_MS restarts the clock, as a
+// failure does.
+//
+// Smoke: once the canary has settled, smoke() runs once per tick until it
+// passes (fleet_smoked). The canary answering wrongly halts the version at
+// once; a timeout, network error or 5xx counts once, and a second on a later
+// tick halts. A smoke that can't run as set up (no token, smoke not a plain
+// member, a bad share target) never passes and never halts: fleet_halted names it
+// (smoke_unconfigured). Running out of the tick's time is neither.
 //
 // Halt: a failed fleet upgrade, or a second failed probe of that version on a
 // later tick, on any install, halts the version for good and alerts. Nothing
@@ -40,22 +51,63 @@ import { bound, d1, type ProvapiEnv, within } from "./env.js";
 import { type HealthProbe, publicRouteProbe } from "./health.js";
 import { insertSystemJob, startJob } from "./jobs.js";
 import { dutyCategory } from "./run.js";
+import { type SmokeInput, type SmokeResult, smoke } from "./smoke.js";
 
 /** A batch: open fleet upgrades at once, the insert's own guard included. */
 export const FLEET_CONCURRENCY = 3;
 /**
- * Unbroken passing probes this long and an install has soaked: the default,
- * with FLEET_SOAK_MIN unset (#1343: staging 15, prod 60).
+ * Unbroken passing probes this long and an install has settled: two passes on
+ * separate two-minute ticks (#1343: no passive soak; the canary smoke
+ * replaces it).
  */
-export const FLEET_SOAK_MS = 15 * 60_000;
-/** FLEET_SOAK_MIN's bounds, in minutes. */
+export const FLEET_SOAK_MS = 2 * 60_000;
+/**
+ * With the smoke off (FLEET_SMOKE "off"): the passive soak as before #1343's
+ * smoke, FLEET_SOAK_MIN minutes per env (staging 15, prod 60), and no smoke.
+ * This is the soak with FLEET_SOAK_MIN unset.
+ */
+export const FLEET_SOAK_OFF_MS = 15 * 60_000;
+/** FLEET_SOAK_MIN's bound, in minutes. */
 export const FLEET_SOAK_MIN_MAX = 24 * 60;
+
+/**
+ * FLEET_SOAK_MIN as milliseconds, for FLEET_SMOKE "off": unset or empty is
+ * FLEET_SOAK_OFF_MS; a whole number of minutes from 1 to FLEET_SOAK_MIN_MAX
+ * is that; anything else is the longest soak, so a typo never shortens it.
+ */
+export function fleetSoakOffMs(v: string | undefined): number {
+  const s = v?.trim() ?? "";
+  if (s === "") return FLEET_SOAK_OFF_MS;
+  const n = /^[1-9]\d{0,3}$/.test(s) ? Number(s) : Number.NaN;
+  return n <= FLEET_SOAK_MIN_MAX ? n * 60_000 : FLEET_SOAK_MIN_MAX * 60_000;
+}
+
+/**
+ * FLEET_SMOKE, per env: "off" keeps the passive soak (FLEET_SOAK_MIN) and
+ * runs no smoke; "required" settles (FLEET_SOAK_MS) and must pass the smoke.
+ * Anything else, unset included, is "required": a typo never skips it.
+ */
+export type SmokeMode = "required" | "off";
+export const fleetSmokeMode = (v: string | undefined): SmokeMode =>
+  v?.trim() === "off" ? "off" : "required";
 /** Passes further apart than this aren't unbroken: the clock restarts. */
 export const FLEET_SOAK_GAP_MS = 5 * 60_000;
-/** canary_blocked opens this long after the soak, so never mid-soak. */
+/** The canary isn't settled and smoked on the target this long: fleet_halted opens. */
+export const FLEET_BLOCKED_MS = 45 * 60_000;
+/** With the smoke off, canary_blocked opens this long after the soak, never mid-soak. */
 export const FLEET_BLOCKED_EXTRA_MS = 30 * 60_000;
-/** The canary isn't soaked on the target this long: fleet_halted opens (the default soak's). */
-export const FLEET_BLOCKED_MS = FLEET_SOAK_MS + FLEET_BLOCKED_EXTRA_MS;
+
+/**
+ * canary_blocked's window: FLEET_BLOCKED_MS with the smoke required (a 2-min
+ * settle and the smoke); the env's soak plus FLEET_BLOCKED_EXTRA_MS with it
+ * off (staging 45, prod 90), so it never opens mid-soak.
+ */
+export const fleetBlockedMs = (
+  env: Pick<ProvapiEnv, "FLEET_SMOKE" | "FLEET_SOAK_MIN">,
+): number =>
+  fleetSmokeMode(env.FLEET_SMOKE) === "off"
+    ? fleetSoakOffMs(env.FLEET_SOAK_MIN) + FLEET_BLOCKED_EXTRA_MS
+    : FLEET_BLOCKED_MS;
 /** version_skew: an install off the target this long. */
 export const FLEET_SKEW_MS = 6 * 60 * 60_000;
 /** One /healthz probe; every probe of a tick runs at once. */
@@ -72,6 +124,14 @@ export const FLEET_FAIL_PREFIX = "fleet_fail:";
 export const FLEET_PASS_PREFIX = "fleet_pass:";
 /** `fleet_soaked:<version>:<id>`: it soaked on that version. */
 export const FLEET_SOAKED_PREFIX = "fleet_soaked:";
+/** `fleet_smoked:<version>:<id>`: the canary passed the smoke on that version. */
+export const FLEET_SMOKED_PREFIX = "fleet_smoked:";
+/** `fleet_smoke_fail:<version>:<check>`: the smoke's first transport failure. */
+export const FLEET_SMOKE_FAIL_PREFIX = "fleet_smoke_fail:";
+/** `fleet_smoke_halt:<version>:<check>`: the check whose failure halted it. */
+export const FLEET_SMOKE_HALT_PREFIX = "fleet_smoke_halt:";
+/** `fleet_smoke_config:<version>:<check>`: the smoke can't run as set up. */
+export const FLEET_SMOKE_CONFIG_PREFIX = "fleet_smoke_config:";
 /** `fleet_blocked:<version>`: when the duty first saw it as the target, the canary not soaked on it. */
 export const FLEET_BLOCKED_PREFIX = "fleet_blocked:";
 /** `fleet_retry:<id>`: it spent its one try while broken. Soaking clears it. */
@@ -85,6 +145,10 @@ const VERSIONED_PREFIXES = [
   FLEET_PASS_PREFIX,
   FLEET_SOAKED_PREFIX,
   FLEET_BLOCKED_PREFIX,
+  FLEET_SMOKED_PREFIX,
+  FLEET_SMOKE_FAIL_PREFIX,
+  FLEET_SMOKE_HALT_PREFIX,
+  FLEET_SMOKE_CONFIG_PREFIX,
 ] as const;
 
 const STABLE_TAG = /^v(\d+\.\d+\.\d+)$/;
@@ -105,7 +169,8 @@ export const fleetCanary = (v: string | undefined): string | null => {
 /**
  * FLEET_SECOND (#1343, prod's leo) when it is an install id other than the
  * canary, else null. It goes first among the installs still behind, alone,
- * once the canary has soaked; the batches wait for it to soak.
+ * once the canary has settled and passed the smoke; the batches wait for it
+ * to settle.
  */
 export const fleetSecond = (
   v: string | undefined,
@@ -114,24 +179,6 @@ export const fleetSecond = (
   const id = fleetCanary(v);
   return id !== null && id !== canary ? id : null;
 };
-
-/**
- * FLEET_SOAK_MIN as milliseconds: unset or empty is the default
- * (FLEET_SOAK_MS); a whole number of minutes from 1 to FLEET_SOAK_MIN_MAX is
- * that; anything else is null, and the rollout stops (bad_soak): a typo must
- * never shorten prod's soak.
- */
-export function fleetSoakMs(v: string | undefined): number | null {
-  const s = v?.trim() ?? "";
-  if (s === "") return FLEET_SOAK_MS;
-  if (!/^[1-9]\d{0,3}$/.test(s)) return null;
-  const n = Number(s);
-  return n <= FLEET_SOAK_MIN_MAX ? n * 60_000 : null;
-}
-
-/** canary_blocked's window for a soak: the soak plus FLEET_BLOCKED_EXTRA_MS. */
-export const fleetBlockedMs = (soakMs: number): number =>
-  soakMs + FLEET_BLOCKED_EXTRA_MS;
 
 /** A fleet upgrade's request id: one per install and target. */
 export function fleetRequestId(installId: string, to: string): string {
@@ -295,12 +342,17 @@ async function halts(
         .bind(install, version)
         .first<{ id: string; kind: string }>(),
     );
+    // A smoke halt names its check (a fixed word), never a body.
+    const check =
+      install === canary
+        ? smokeCheckOf(st, FLEET_SMOKE_HALT_PREFIX, version)
+        : null;
     marks.push({
       install_id: install,
       job_id: job?.id ?? null,
       job_kind: job?.kind ?? null,
-      code: "fleet_halt",
-      message: null,
+      code: check === null ? "fleet_halt" : "smoke_failed",
+      message: check,
       since: r.value,
       version,
     });
@@ -310,6 +362,18 @@ async function halts(
       a.since - b.since ||
       String(a.install_id).localeCompare(String(b.install_id)),
   );
+}
+
+/** The check named by a `<prefix><version>:<check>` key, if any. */
+function smokeCheckOf(
+  st: FleetState,
+  prefix: string,
+  version: string,
+): string | null {
+  for (const key of st.rows.keys())
+    if (key.startsWith(`${prefix}${version}:`))
+      return key.slice(`${prefix}${version}:`.length);
+  return null;
 }
 
 /** Whether any install halted `version`, this tick's halts included. */
@@ -407,11 +471,16 @@ export async function onTarget(
 export interface FleetOptions {
   probe?: HealthProbe;
   timeoutMs?: number;
+  /** Tests only: the canary smoke (default smoke() over fetch). */
+  smoke?: (i: SmokeInput) => Promise<SmokeResult>;
 }
+
+/** The fleet duty's env: the smoke also reads the broker origin (a var). */
+export type FleetEnv = ProvapiEnv & { AUTH_BROKER_ORIGIN?: string };
 
 /** One fleet tick. */
 export async function fleetDue(
-  env: ProvapiEnv,
+  env: FleetEnv,
   now: number,
   o: FleetOptions = {},
 ): Promise<void> {
@@ -421,7 +490,6 @@ export async function fleetDue(
   const target = fleetTarget(env.CF_VERSION_METADATA);
   const canaryId = fleetCanary(env.FLEET_CANARY);
   const secondId = fleetSecond(env.FLEET_SECOND, canaryId);
-  const soakMs = fleetSoakMs(env.FLEET_SOAK_MIN);
   const st = await fleetState(db);
 
   await haltFailedJobs(db, now, st, canaryId);
@@ -437,8 +505,7 @@ export async function fleetDue(
       : await d1(db.prepare(CANARY).bind(canaryId).first<CanaryRow>());
   // Runs with or without a canary: switching the rollout off never drops an
   // upgrade already made.
-  // An invalid soak still watches, so a failing install still halts, but at
-  // the longest soak: a typo must never let an install soak early.
+  const mode = fleetSmokeMode(env.FLEET_SMOKE);
   const hold = await watch(
     db,
     now,
@@ -447,19 +514,14 @@ export async function fleetDue(
     canary,
     probe,
     ms,
-    soakMs ?? FLEET_SOAK_MIN_MAX * 60_000,
+    mode === "off" ? fleetSoakOffMs(env.FLEET_SOAK_MIN) : FLEET_SOAK_MS,
   );
-  if (soakMs === null) {
-    // fleet_halted opens with bad_soak while a canary is set.
-    console.log("provapi fleet bad_soak");
-    return;
-  }
   if (canaryId === null) {
     console.log("provapi fleet no_canary");
     return;
   }
   await trackBehind(db, now, st, target);
-  await trackCanary(db, now, st, target, canaryId);
+  await trackCanary(db, now, st, target, canaryId, mode);
   if (isHalted(st, target)) {
     console.log("provapi fleet halted", target);
     return;
@@ -470,7 +532,7 @@ export async function fleetDue(
   }
   const manage = bound(env.MANAGE_INSTALL);
 
-  const ready = await canaryReady(env, now, st, canary, target, manage);
+  const ready = await canaryReady(env, now, st, canary, target, manage, o);
   if (!ready) {
     await stamp(db, now, st, target);
     return;
@@ -551,9 +613,13 @@ async function trackCanary(
   st: FleetState,
   target: string,
   canaryId: string,
+  mode: SmokeMode,
 ): Promise<void> {
   if (isHalted(st, target)) await clearBlocked(db, st);
-  else if (!st.rows.has(soakedKey(target, canaryId)))
+  else if (
+    !st.rows.has(soakedKey(target, canaryId)) ||
+    (mode === "required" && !st.rows.has(smokedKey(target, canaryId)))
+  )
     await stamp(db, now, st, target);
 }
 
@@ -579,12 +645,13 @@ async function clearBlocked(db: D1Database, st: FleetState): Promise<void> {
 
 /** Moves the canary toward the target; true once it has soaked there. */
 async function canaryReady(
-  env: ProvapiEnv,
+  env: FleetEnv,
   now: number,
   st: FleetState,
   canary: CanaryRow | null,
   target: string,
   manage: NonNullable<ProvapiEnv["MANAGE_INSTALL"]>,
+  o: FleetOptions,
 ): Promise<boolean> {
   const db = env.PLATFORM_DB;
   const stuck = (why: string) => {
@@ -637,7 +704,104 @@ async function canaryReady(
     console.log("provapi fleet canary_not_done");
     return false;
   }
-  return st.rows.has(soakedKey(target, id));
+  if (!st.rows.has(soakedKey(target, id))) return false;
+  // FLEET_SMOKE "off": the soak alone, as before the smoke.
+  if (fleetSmokeMode(env.FLEET_SMOKE) === "off") return true;
+  if (st.rows.has(smokedKey(target, id))) return true;
+  return await smokeCanary(env, now, st, canary, target, o);
+}
+
+const smokedKey = (v: string, id: string) => `${FLEET_SMOKED_PREFIX}${v}:${id}`;
+
+/** Deletes every key with `prefix` + version + ":". */
+async function clearFor(
+  db: D1Database,
+  st: FleetState,
+  prefix: string,
+  v: string,
+): Promise<void> {
+  for (const k of [...st.rows.keys()])
+    if (k.startsWith(`${prefix}${v}:`)) {
+      await d1(db.prepare(CLEAR).bind(k).run());
+      st.rows.delete(k);
+    }
+}
+
+async function setOnce(
+  db: D1Database,
+  st: FleetState,
+  key: string,
+  now: number,
+): Promise<void> {
+  if (st.rows.has(key)) return;
+  await d1(db.prepare(SET_ONCE).bind(key, now).run());
+  st.rows.set(key, { key, value: now, updated_at: now });
+}
+
+/**
+ * One canary smoke (smoke.ts) on a settled canary; true once it passed. Only
+ * check names and kinds are logged or stored: never the token, a body or an
+ * address.
+ */
+async function smokeCanary(
+  env: FleetEnv,
+  now: number,
+  st: FleetState,
+  canary: CanaryRow,
+  target: string,
+  o: FleetOptions,
+): Promise<boolean> {
+  const db = env.PLATFORM_DB;
+  const id = canary.install_id;
+  const r = await (o.smoke ?? smoke)({
+    fetch: (url, init) => fetch(url, init),
+    installId: id,
+    appHost: canary.app_host ?? "",
+    token: env.FLEET_SMOKE_TOKEN,
+    shareTo: env.FLEET_SMOKE_SHARE_TO,
+    // Only "off" skips the share check; unset or anything else runs it.
+    share: env.FLEET_SMOKE_SHARE?.trim() !== "off",
+    brokerOrigin: env.AUTH_BROKER_ORIGIN,
+    version: target,
+  });
+  if (r.ok) {
+    await clearFor(db, st, FLEET_SMOKE_CONFIG_PREFIX, target);
+    await setOnce(db, st, smokedKey(target, id), now);
+    console.log("provapi fleet smoke passed", id, target, ...r.notes);
+    return true;
+  }
+  console.log("provapi fleet smoke", r.kind, r.check);
+  if (r.kind === "budget") return false;
+  if (r.kind === "config") {
+    await clearFor(db, st, FLEET_SMOKE_CONFIG_PREFIX, target);
+    await setOnce(
+      db,
+      st,
+      `${FLEET_SMOKE_CONFIG_PREFIX}${target}:${r.check}`,
+      now,
+    );
+    return false;
+  }
+  await clearFor(db, st, FLEET_SMOKE_CONFIG_PREFIX, target);
+  if (r.kind === "transport") {
+    // The first counts; a second on a later tick halts, as probes do.
+    const first = [...st.rows.values()].find((x) =>
+      x.key.startsWith(`${FLEET_SMOKE_FAIL_PREFIX}${target}:`),
+    );
+    if (first === undefined || first.value >= now) {
+      await setOnce(
+        db,
+        st,
+        `${FLEET_SMOKE_FAIL_PREFIX}${target}:${r.check}`,
+        now,
+      );
+      return false;
+    }
+  }
+  // Named before the halt, so the alert row can say which check.
+  await setOnce(db, st, `${FLEET_SMOKE_HALT_PREFIX}${target}:${r.check}`, now);
+  await halt(db, now, st, target, id);
+  return false;
 }
 
 /**
@@ -911,18 +1075,22 @@ const isHeld = async (db: D1Database, target: string) =>
 
 /**
  * fleet_halted and version_skew for this tick.
- * - fleet_halted: halts on the target, any halt on another version in the
- *   last FLEET_HALT_ALERT_MS, a canary not soaked on the target the soak plus
- *   FLEET_BLOCKED_EXTRA_MS after the duty first saw it (canary_blocked), a
- *   canary set with no target (no_target), and a canary set with an invalid
- *   FLEET_SOAK_MIN (bad_soak).
+ * - fleet_halted: halts on the target (smoke_failed when the canary smoke
+ *   halted it), any halt on another version in the last FLEET_HALT_ALERT_MS,
+ *   a canary not settled and smoked on the target fleetBlockedMs after the
+ *   duty first saw it (canary_blocked), a smoke that can't run as set up
+ *   (smoke_unconfigured), and a canary set with no target (no_target).
  * - version_skew: installs first seen off FLEET_SKEW_MS ago. Unknown with no
  *   canary or no target, so it never sends a false all-clear.
  */
 export async function fleetConditions(
   env: Pick<
     ProvapiEnv,
-    "PLATFORM_DB" | "CF_VERSION_METADATA" | "FLEET_CANARY" | "FLEET_SOAK_MIN"
+    | "PLATFORM_DB"
+    | "CF_VERSION_METADATA"
+    | "FLEET_CANARY"
+    | "FLEET_SMOKE"
+    | "FLEET_SOAK_MIN"
   >,
   now: number,
 ): Promise<{ fleet_halted: Condition; version_skew: Condition }> {
@@ -930,7 +1098,6 @@ export async function fleetConditions(
   const db = env.PLATFORM_DB;
   const target = fleetTarget(env.CF_VERSION_METADATA);
   const canary = fleetCanary(env.FLEET_CANARY);
-  const soakMs = fleetSoakMs(env.FLEET_SOAK_MIN);
   let st: FleetState;
   try {
     st = await fleetState(db);
@@ -960,11 +1127,24 @@ export async function fleetConditions(
       .filter((r) => r.key.startsWith(FLEET_BLOCKED_PREFIX))
       .map((r) => r.value);
     const since = stamps.length > 0 ? Math.min(...stamps) : null;
-    if (canary !== null && soakMs === null)
-      rows.push(row({ code: "bad_soak", since: now }));
-    // An invalid soak blocks at the default's window: bad_soak says why.
-    const blockedMs = fleetBlockedMs(soakMs ?? FLEET_SOAK_MS);
-    if (canary !== null && since !== null && now - since >= blockedMs)
+    const unconfigured =
+      canary !== null &&
+      target !== null &&
+      fleetSmokeMode(env.FLEET_SMOKE) === "required"
+        ? smokeCheckOf(st, FLEET_SMOKE_CONFIG_PREFIX, target)
+        : null;
+    if (unconfigured !== null)
+      rows.push(
+        row({
+          install_id: canary,
+          code: "smoke_unconfigured",
+          message: unconfigured,
+          since:
+            st.rows.get(`${FLEET_SMOKE_CONFIG_PREFIX}${target}:${unconfigured}`)
+              ?.value ?? now,
+        }),
+      );
+    if (canary !== null && since !== null && now - since >= fleetBlockedMs(env))
       rows.push(
         row({
           install_id: canary,

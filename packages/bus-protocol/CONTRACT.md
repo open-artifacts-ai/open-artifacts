@@ -7,9 +7,10 @@ is the summary. Ported from OpenBus `packages/shared` (open-bus main e6feab9,
 
 What changed from OpenBus: no `org_id` or owner id (one `BusHub` per member
 already isolates); the agent card, `card_request`, `card`, `card_refused`,
-JWKS, `/link`, linked apps, roles (`role`, `role_vacant`) and the
+JWKS, `/link`, linked apps, card roles (`role`) and the
 dashboard REST and feed are dropped (receipt `to_name` came back with
-renames, for a former-name hit only); version gates (`AGENT_CARD_MIN_CLIENT`,
+renames and role addresses; `role_vacant` came back with role addresses, see
+Role addresses); version gates (`AGENT_CARD_MIN_CLIENT`,
 `KIND_TOKEN_MIN_CLIENT`) are gone because no old client exists; the machine
 token is `oa_machine_`; the routes live under `/bus/` on the instance origin.
 `follow`, `unfollow`, `following` and the `notice` frame come with step 2 of
@@ -61,7 +62,9 @@ opening the URI.
 
 States: `pending | delivered | expired | refused`. Refusal reasons
 (`REFUSAL_REASONS`): `unknown_agent`, `closed`, `inbox_full`, `too_large`,
-`other_namespace`, `revoked`, `ambiguous`. `expired` may carry
+`other_namespace`, `revoked`, `ambiguous`, `role_vacant` (only to a
+`roles`-cap socket, see Role addresses), `agent_gone` (only to an `ids`-cap
+socket, see Reply ids). `expired` may carry
 `recipient_closed`. The `receipt` reply to `send` is only `pending` or
 `refused`; `receipt_update` may carry any state.
 
@@ -78,7 +81,7 @@ Client to hub (`CLIENT_FRAMES`):
 - `agent_up {agent_ref, kind, proposed_name, namespace, global, name_kind?}`
 - `agent_down {agent_ref}`
 - `sessions {open[], closed[]}`
-- `send {from_ref, to_name, to_namespace?, body}`
+- `send {from_ref, to_name, to_namespace?, to_id?, body}`: `to_id` (a reply, the answered mail's `from_id`) makes the hub deliver only to that agent; if `to_name` resolves to another agent or none, the send is refused `agent_gone`.
 - `ack {msg_id}`
 - `refuse {msg_id, reason: "closed", detail}`
 - `list {from_ref}`
@@ -90,11 +93,11 @@ Hub to client (`SERVER_FRAMES`):
 
 - `hello_ok {machine_id, machine_label, server_version}`
 - `agent_ok {agent_ref, bus_name}`
-- `receipt {msg_id, state, reason?, to_name?}`; `to_name` is the recipient's current name, only on a former-name hit and only to a `rename`-cap socket
+- `receipt {msg_id, state, reason?, to_name?}`; `to_name` is the recipient's current name, only on a former-name hit to a `rename`-cap socket, or on a role hit to a `roles`-cap socket
 - `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?, former_names?}]}`; `kind` is any kind token.
 - `body {msg_id, body}`
 - `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
-- `deliver {msg_id, to_ref, from_name, namespace, body | notice}`
+- `deliver {msg_id, to_ref, from_name, from_id?, namespace, body | notice}`; `from_id` is the sender's agent id.
 - `receipt_update {msg_id, state, reason?}`: the schema shares `to_name?` with `receipt`, but the hub sets it only on `receipt`.
 - `roster_changed {namespace}`
 - `renamed {agent_ref, bus_name, former?}`: reply to `rename`. `former` is the name left, absent on a no-op. Names compare case-insensitively.
@@ -108,6 +111,28 @@ depth <= 4, `:` plus `,` <= 16384, structural characters <= 65536; server
 frames depth <= 5, 65536 and 131072, so a full roster of rows with status
 fields and 5 `former_names` fits. Either way at most 64 `:` plus `,` directly
 in one object.
+
+## Reply ids (`BUS_CAPS.ids`)
+
+A native reply goes to the agent that wrote the message it answers, never to
+whoever holds the name now.
+
+- `ids` in `hello.caps`: the hub sends `deliver.from_id` (the writer's agent
+  id) and the `agent_gone` refusal only to that socket, and answers
+  `hello_ok.caps` (what it supports) only to a hello that listed `ids`. Every
+  other client, a rename-only one included, decodes `hello_ok` strictly.
+- `send.to_id`: the client sends it only when the link's `hello_ok.caps`
+  listed `ids`. The hub refuses `agent_gone` when `to_name` now resolves to
+  another agent or none (an old socket reads `unknown_agent`). A former name
+  still reaching the same agent is delivered. `to_id` is part of the send's
+  idempotency hash.
+- The local client keeps one return socket per (session, namespace, peer
+  name, writer id), refuses a reply more than the mail TTL (1 h) after the
+  mail it answers, and, when the hub lists `ids`, a reply on a socket revived
+  without its writer's id. It tells the session, as information.
+- Compatibility, pre-launch: the local client always sends `hello.caps`, and a
+  hub before v0.111.0 refuses a hello with `caps` (`bad_frame`). There is no
+  shim: installs are upgraded instead (the only instance is the owner's).
 
 ## Renames (#393)
 
@@ -133,8 +158,13 @@ addressing.
 - A former name reaches its agent for `LIMITS.formerNameGraceMs` (1 h, the
   mail TTL). Name changes per agent are capped at `LIMITS.renamesPerHour` (10)
   per rolling hour; past it `rename` gets `error rate_limited` with message
-  `RENAME_MESSAGES.rate` = `"Too many renames"`. A no-op doesn't count. A
-  `rename` for an agent that isn't live is `error not_registered`.
+  `RENAME_MESSAGES.rate` = `"Too many renames"`. A chosen former name stays
+  reserved for its grace and is never dropped early, so with
+  `LIMITS.maxFormerNames` (5) chosen former names in grace a `rename` that
+  would leave another gets `error rate_limited` with message
+  `RENAME_MESSAGES.room` = `"Too many recent names"` (OpenBus #451). A no-op
+  doesn't count. A `rename` for an agent that isn't live is
+  `error not_registered`.
 - `name_kind` on `agent_up` and `rename` (`NAME_KINDS`: `default | chosen`):
   only the client knows whether a name is the harness's fallback or chosen.
   The hub mints a `default` name as `<base>-<4 hex>`, never reuses it and
@@ -142,9 +172,89 @@ addressing.
   the grace. Absent means `chosen`.
 - Resolution is the same for every client: the sender's own namespace first
   (current names, then former names), then other namespaces as before. A
-  former name held by two agents in one scope is `ambiguous`. Close, revoke,
-  a namespace move or a global flip drops an agent's former names. A repeat
-  `agent_up` that changes a live agent's name records no former name.
+  former name held by two agents in one scope is `ambiguous`. A global
+  sender without `to_namespace`, past its own namespace: a live name in one
+  namespace and another agent's former name in its grace (a chosen one left
+  behind by a move or flip included) count as two, `ambiguous` (OpenBus
+  #452); so does a role in one namespace and such a former name outside it.
+  The sender's own former names never count, and a name held after its
+  agent left the scope counts too (below).
+- A namespace move or global flip (`agent_up` with a new `namespace` or
+  `global`) keeps the agent's chosen former names reserved in the scope they
+  were left in, until their grace ends, roles included (a role can't take
+  one there); there they resolve to no one, so a send to one answers
+  `unknown_agent` and never reaches the moved agent. Default former names go
+  on a move. A move that also changes the name, a `-2` suffix included,
+  leaves the old one the same way (OpenBus #451). A global agent moving its
+  home namespace while staying global has not changed scope: its former
+  names keep resolving. A repeat `agent_up` that changes a live agent's name
+  in its scope is a rename and leaves a former name as `rename` does.
+- A session leaving a scope holds its current name there for
+  `LIMITS.formerNameGraceMs` (1 h), with no forwarding (OpenBus #451).
+  Leaving is a close (`agent_down`, `sessions` closed, the 24 h offline reap
+  of a machine, a machine revoke) or a namespace move or global flip, whether
+  the name stays, changes or gets a `-2` in the new scope (a `rename_kept`
+  move included). Within the hour another agent proposing the name there
+  gets a `-N` suffix and a role can't take it; a send to it from there
+  reaches no one: `closed` (or `revoked`) for a closed agent,
+  `unknown_agent` for a moved one, never revealing where it went. A held name
+  counts as a reservation for a global sender's ambiguity (for a role too),
+  not toward the `RENAME_MESSAGES.room` cap, never appears in
+  `former_names`, and is never dropped before its hour. The agent itself
+  takes it back by reopening or moving back under it. A close also keeps the
+  agent's chosen former names reserved for their grace; they resolve to no
+  one until the agent reopens in their scope, when they resolve to it again.
+  Default former names go on a close, as on a move. A role whose holder
+  closes reads vacant (`role_vacant`), as before.
+- Every scope change (a namespace move or global flip, same name or not,
+  live or on a reopen) counts in the `LIMITS.renamesPerHour` limit, which
+  bounds holds. Past the limit the `agent_up` still succeeds but keeps the
+  agent in its current scope under its current name (the hub logs
+  `move_kept`). Known limitation: `agent_ok` carries no namespace, so a
+  client cannot see that a move was kept (open-bus #455 adds a signal).
+
+## Role addresses (#1296)
+
+A role address is a member-set alias in one namespace (`backend-lead`)
+pointing at one agent, by its id, so it follows a rename. It lives in the
+member's BusHub. Only the member sets, re-points, vacates or removes one, in
+the dashboard (Open Artifacts REST, a browser session); no frame sets or
+claims one.
+
+- Proposals (#1372): an AI agent acting for the member may propose a change
+  (set, re-point, clear) with the Open Artifacts `/mcp` tool
+  `bus_role_propose`, offered only while the bus is on. It names the new
+  holder by bus name; the hub checks it as the dashboard write (a live agent
+  of this hub, the name rules below) and binds it to that agent's id, the
+  role and the holder it displaces. It changes nothing. The member confirms
+  it on its one-time link (`/bus/roles/confirm/<secret>`, 15 minutes, the
+  hub keeps only the secret's sha256) in a browser session; the hub then
+  applies it with the dashboard's own write, only while the role and both
+  agents' names are still as proposed. The session must be a sign-in under
+  10 minutes old. No frame, no `/mcp` tool and no PAT, OAuth grant or
+  machine token can confirm one; an agent driving the member's recently
+  signed-in browser is the remaining risk, bounded by that window.
+
+- Resolution: a send to a role resolves at send time to its holder, scoped as
+  names are (a non-global sender reaches its own namespace's roles; a global
+  sender its own namespace's first, then a `to_namespace`'s, else a role in
+  one namespace only, `ambiguous` otherwise). Re-pointing changes later mail
+  only; mail already sent stays with the agent it resolved to.
+- Vacant: no holder set, or the holder is closed, gone, or no longer in the
+  namespace (a global holder is in every one). Refused `role_vacant`. A
+  reopened session of the holder holds it again. A revoked holder's machine
+  never reconnects, and a new machine's sessions are new agents, so a role
+  whose holder was revoked stays vacant until the member re-points it.
+- Gate: `BUS_CAPS.roles` (`roles`). The hub sends `role_vacant`, and a role
+  hit's receipt `to_name` (the holder's current name), only to a socket whose
+  hello listed it. Any other socket gets `unknown_agent` for a vacant role and
+  no `to_name`; resolution is the same for every client.
+- Names: a role's name is a bus name in the agent-name space of its
+  namespace, case-insensitively. A role can't take a live agent's name there
+  (in the namespace, or a global's), a chosen former name reserved there, or
+  a name held there (OpenBus #451); an agent
+  (`agent_up`, `rename`) proposing a role's name gets a `-N` suffix, and a
+  global agent can't take any namespace's role name.
 
 ## Names and namespaces
 

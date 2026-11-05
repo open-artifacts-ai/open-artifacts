@@ -108,7 +108,9 @@ export async function alertConditions(
     versionMetadata?: WorkerVersionMetadata;
     /** FLEET_CANARY: unset, the fleet keys are clear (no rollout). */
     fleetCanary?: string;
-    /** FLEET_SOAK_MIN: sets canary_blocked's window (fleetBlockedMs). */
+    /** FLEET_SMOKE: only "required" reports smoke_unconfigured. */
+    fleetSmoke?: string;
+    /** FLEET_SOAK_MIN: with the smoke off, canary_blocked's window follows it. */
     fleetSoakMin?: string;
   } = {},
 ): Promise<Record<AlertKey, Condition>> {
@@ -120,6 +122,7 @@ export async function alertConditions(
         PLATFORM_DB: db,
         CF_VERSION_METADATA: o.versionMetadata,
         FLEET_CANARY: o.fleetCanary,
+        FLEET_SMOKE: o.fleetSmoke,
         FLEET_SOAK_MIN: o.fleetSoakMin,
       },
       input.now,

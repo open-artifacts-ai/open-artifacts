@@ -131,6 +131,7 @@ export function collect(
       cases.push({
         name: `${file}: module error`,
         file,
+        moduleError: true,
         level: infra ? "infra" : "fail",
         reason: infra
           ? redactReason(infra)

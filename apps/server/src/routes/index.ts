@@ -1,8 +1,12 @@
 import type { Hono } from "hono";
+import { mountBusPage } from "../bus/page.js";
+import { mountRoleConfirm } from "../bus/role-confirm.js";
 import { mountBus } from "../bus/routes.js";
 import type { AppEnv } from "../http/middleware.js";
 import { mountOAuth } from "../mcp/oauth.js";
 import { mountRuntime } from "../runtime/routes.js";
+import { busMachine, busView, revokeBusMachine } from "../services/bus.js";
+import { getShareNotices, setShareNotices } from "../services/follows.js";
 import { mountAdmin } from "./admin.js";
 import { mountArtifacts } from "./artifacts.js";
 import { mountAudit } from "./audit.js";
@@ -45,6 +49,14 @@ export function mountRoutes(app: AppType): void {
   mountAdmin(app);
   mountOAuth(app);
   mountBus(app);
+  mountRoleConfirm(app);
+  mountBusPage(app, {
+    busView,
+    busMachine,
+    revokeBusMachine,
+    getShareNotices,
+    setShareNotices,
+  });
   // /a/:id(/v/:v) OG shells; other /a/* paths fall to the SPA fallback.
   mountShell(app);
 }

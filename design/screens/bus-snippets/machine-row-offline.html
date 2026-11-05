@@ -1,0 +1,8 @@
+<!-- Machine row, status Offline. Fields: {{label}} {{added}} {{last_used}} {{revoke_url}} (GET /bus/machines/<id>/revoke). -->
+<tr>
+  <td class="c-name name">{{label}}</td>
+  <td class="c-added"><span class="k">Added </span>{{added}}</td>
+  <td class="c-last"><span class="k">Last used </span>{{last_used}}</td>
+  <td class="c-status"><span class="status s-offline"><span class="dot"></span>Offline</span></td>
+  <td class="c-action"><a class="pill" href="{{revoke_url}}" aria-label="Revoke {{label}}">Revoke</a></td>
+</tr>

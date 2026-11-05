@@ -36,6 +36,15 @@ export const CONFIG: ProvConfig = {
   prodInventory: "https://inventory.open-artifacts.app",
 };
 
+/** The platform's release; an explicit version above it is refused (#1176). */
+const PLATFORM = "0.82.0";
+const ahead = (v: string): boolean => {
+  const [a, b] = [v, PLATFORM].map((x) => x.split(".").map(Number));
+  for (let k = 0; k < 3; k++)
+    if ((a?.[k] ?? 0) !== (b?.[k] ?? 0)) return (a?.[k] ?? 0) > (b?.[k] ?? 0);
+  return false;
+};
+
 type Mode = "serving" | "paused" | "closed" | null;
 interface FInstall {
   id: string;
@@ -75,6 +84,9 @@ interface FJob {
   sealedRead: boolean;
   onStep?: (step: string) => void;
   onDone?: () => void;
+  /** The fake clock at accept and at done or failed. */
+  createdAt: number;
+  finishedAt: number | null;
 }
 
 export type Fault =
@@ -102,7 +114,7 @@ export type Fault =
   | "prod_resolves_404"
   | "p37_no_header"
   | "p38_prm_no_scopes"
-  | "p44_no_limit"
+  | "p44_no_client_id"
   | "p44_cap_spent"
   | "p44_wrong_code"
   | "p45_extra_tool"
@@ -295,9 +307,9 @@ export function fakeApi(): FakeApi {
     error:
       j.status === "failed" ? { code: j.failAt?.code, message: "x" } : null,
     sealed: withSealed ? j.sealed : null,
-    createdAt: 1,
-    startedAt: 1,
-    finishedAt: null,
+    createdAt: j.createdAt,
+    startedAt: j.createdAt,
+    finishedAt: j.finishedAt,
   });
   const startJob = (
     i: FInstall,
@@ -319,6 +331,8 @@ export function fakeApi(): FakeApi {
       args: {},
       sealed: null,
       sealedRead: false,
+      createdAt: clock.t,
+      finishedAt: null,
       ...extra,
     };
     jobs.set(j.id, j);
@@ -335,6 +349,7 @@ export function fakeApi(): FakeApi {
     const step = j.steps[j.stepIndex] as string;
     if (j.failAt?.step === step) {
       j.status = "failed";
+      j.finishedAt = clock.t;
       const i = installs.get(j.installId);
       if (i) {
         i.activeJobId = null;
@@ -347,6 +362,7 @@ export function fakeApi(): FakeApi {
     if (j.stepIndex >= j.steps.length - 1) {
       j.stepIndex = j.steps.length - 1;
       j.status = "done";
+      j.finishedAt = clock.t;
       const i = installs.get(j.installId);
       if (i) i.activeJobId = null;
       j.onDone?.();
@@ -405,7 +421,9 @@ export function fakeApi(): FakeApi {
     if (path === "/world") return err(403, "forbidden");
     if (path === "/tokens") return err(403, "forbidden");
     if (path === "/releases")
-      return user ? err(403, "forbidden") : ok({ items: releases });
+      return user
+        ? err(403, "forbidden")
+        : ok({ items: releases, platform: PLATFORM });
     if (path === "/audit") {
       const actor = url.searchParams.get("actor");
       return ok({
@@ -479,9 +497,10 @@ export function fakeApi(): FakeApi {
         [...installs.values()].some((i) => holdsSlug(i) && i.slug === body.slug)
       )
         return err(409, "slug_taken");
-      const version = (body.version as string | undefined) ?? "0.82.0";
+      const version = (body.version as string | undefined) ?? PLATFORM;
       const rel = releases.find((r) => r.version === version);
       if (!rel) return err(422, "release_not_published");
+      if (ahead(version)) return err(409, "release_ahead_of_platform");
       const tier = typeof body.tier === "string" ? body.tier : "team";
       const i = add({
         slug: String(body.slug),
@@ -552,7 +571,8 @@ export function fakeApi(): FakeApi {
     const confirm = () => body.confirmSlug === i.slug;
     switch (op) {
       case "upgrade": {
-        const to = (body.version as string | undefined) ?? "0.82.0";
+        const to = (body.version as string | undefined) ?? PLATFORM;
+        if (ahead(to)) return err(409, "release_ahead_of_platform");
         if (i.version && to <= i.version) return err(409, "downgrade_refused");
         const j = startJob(i, "upgrade", p, {
           onDone: () => {
@@ -807,9 +827,8 @@ export function fakeApi(): FakeApi {
           faults.has("p44_unlisted_redirect")
         )
           return ok({ error: "invalid_redirect_uri" }, 400);
-        // An earlier run today from this IP spent 4 of the 10 (9A.7).
-        const spent = faults.has("p44_cap_spent") ? 4 : 0;
-        if (++registrations + spent > 10 && !faults.has("p44_no_limit"))
+        // Earlier runs today from this IP spent all 10 (9A.7).
+        if (faults.has("p44_cap_spent"))
           return ok(
             {
               error: faults.has("p44_wrong_code")
@@ -818,7 +837,8 @@ export function fakeApi(): FakeApi {
             },
             429,
           );
-        return ok({ client_id: `c${registrations}` }, 201);
+        if (faults.has("p44_no_client_id")) return ok({}, 201);
+        return ok({ client_id: `c${++registrations}` }, 201);
       }
       if (url.pathname === "/oauth/authorize")
         return new Response(null, { status: 404 });

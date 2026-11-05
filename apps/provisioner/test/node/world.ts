@@ -384,6 +384,8 @@ export function seedJob(
     signupId?: string | null;
     parentJobId?: string | null;
     status?: string;
+    /** jobs.request_id; default `req-<id>`. */
+    requestId?: string;
   },
 ) {
   const id = ulid();
@@ -403,7 +405,7 @@ VALUES (?, ?, 'manage_install', ?, ?, ?, ?, ?, ?, ?, 'h', ?, ?, ?, ?)`,
       actor,
       o.actorKey ?? `${actor}:x`,
       actor,
-      `req-${id}`,
+      o.requestId ?? `req-${id}`,
       JSON.stringify(o.args ?? {}),
       o.status ?? "queued",
       now,

@@ -13,9 +13,9 @@ const NAME = fixtures.me.instance.name; // "Acme Artifacts"
 
 describe("instance name", () => {
   it("is in document.title", async () => {
-    mount("/settings/agents");
+    mount("/settings/connections");
     await screen.findByRole("heading", { name: "Personal access tokens" });
-    expect(document.title).toBe(`Agents · ${NAME}`);
+    expect(document.title).toBe(`Connections · ${NAME}`);
   });
 });
 
@@ -40,7 +40,8 @@ describe("role change mid-session", () => {
     );
     await lastClient.invalidateQueries({ queryKey: qk.members });
     await waitFor(
-      () => expect(router.state.location.pathname).toBe("/settings/agents"),
+      () =>
+        expect(router.state.location.pathname).toBe("/settings/connections"),
       { timeout: 3000 },
     );
     expect(

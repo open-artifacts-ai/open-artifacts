@@ -672,6 +672,15 @@ describe("C5 hardening: replies while the hub is down", () => {
     );
     await new Promise((r) => setTimeout(r, 100));
     expect(h.of("send")).toEqual([]);
+    // The new link's hello_ok says what the hub takes: then the reply goes.
+    await vi.waitFor(() => expect(h.daemon.hub.open).toBe(true));
+    h.toDaemon({
+      id: "w",
+      type: "hello_ok",
+      machine_id: "1".repeat(16),
+      machine_label: "laptop",
+      server_version: "1",
+    });
     expect(await h.next("send")).toMatchObject({
       from_ref: "s4242",
       to_name: "peer",
@@ -745,6 +754,13 @@ describe("native replies must be well-formed unicode", () => {
         })}\n`,
       );
     };
+    h.toDaemon({
+      id: "w",
+      type: "hello_ok",
+      machine_id: "1".repeat(16),
+      machine_label: "laptop",
+      server_version: "1",
+    });
     await reply("po\ud800ng");
     expect(await h.next("send")).toMatchObject({ body: "po\ufffdng" });
     expect(log).toHaveBeenCalledWith(

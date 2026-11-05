@@ -260,10 +260,44 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
       "bus code check and decision; session, form token, mcp.connect, RL per member and IP",
   },
   "GET /bus/connect": { signed: "bus machine token (oa_machine_), D1" },
+  // #1300 the member's server-rendered /bus page (bus/page.ts): the handler
+  // reads the cookie session (a token is 401, no session redirects to
+  // sign-in), checks canConnect or revoke-only, and every POST checks its
+  // form token. 404 while the bus is off (busOn false), as the routes above.
+  "GET /bus": {
+    public:
+      "the member's bus page; redirects to sign-in, checks canConnect or revoke-only",
+  },
+  "GET /bus/machines/:id/revoke": {
+    public: "revoke confirm; the caller's own machine only",
+  },
+  // A capped caller can revoke their own machine (as DELETE R.busMachines).
+  "POST /bus/machines/:id/revoke": {
+    public: "revoke; form CSRF, the caller's own machine only",
+  },
+  "POST /bus/share-notices": {
+    public: "share notices; form CSRF, checks canConnect",
+  },
   "GET /api/v1/bus/machines": { user: "the caller's bus machines" },
   // In CAPPED_ALLOWED: a capped caller can always revoke.
   "DELETE /api/v1/bus/machines/:id": { user: "the caller's bus machines" },
   "GET /api/v1/bus/agents": { org: "mcp.connect" },
+  // #1296 role addresses; PUT and DELETE browser sessions only (handler).
+  "GET /api/v1/bus/roles": { org: "mcp.connect" },
+  "PUT /api/v1/bus/roles": { org: "mcp.connect" },
+  "DELETE /api/v1/bus/roles/:id": { org: "mcp.connect" },
+  // #1372: the role proposal confirm page (bus/role-confirm.ts). The handler
+  // takes only an interactive cookie session of the hub's own member (a
+  // PAT, an OAuth grant or a machine token is refused) and a POST its form
+  // token; the link's secret finds the proposal in that member's hub only.
+  "GET /bus/roles/confirm/:token": {
+    public:
+      "role proposal confirm page; redirects to sign-in, interactive session, the caller's own hub",
+  },
+  "POST /bus/roles/confirm/:token": {
+    public:
+      "role proposal decision; interactive session, form CSRF, the caller's own hub, single use",
+  },
   "GET /api/v1/oauth-clients": { user: "the caller's grants" },
   "PATCH /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
   "DELETE /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
@@ -315,4 +349,6 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   artifact_data_update: art("data.write"),
   artifact_data_delete: art("data.write"),
   list_spaces: { user: "the caller's own publishable spaces" },
+  // #1372: proposes only (the caller's own hub); offered while the bus is on.
+  bus_role_propose: { org: "mcp.connect" },
 };

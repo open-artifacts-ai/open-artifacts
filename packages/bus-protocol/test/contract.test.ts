@@ -64,7 +64,7 @@ describe("contract is pinned", () => {
     ]);
   });
 
-  it("pins the 7 refusal reasons, in order", () => {
+  it("pins the 8 refusal reasons, in order", () => {
     expect(REFUSAL_REASONS).toEqual([
       "unknown_agent",
       "closed",
@@ -73,6 +73,8 @@ describe("contract is pinned", () => {
       "other_namespace",
       "revoked",
       "ambiguous",
+      "role_vacant",
+      "agent_gone",
     ]);
   });
 
@@ -120,8 +122,29 @@ describe("renames (#393) are pinned", () => {
     expect(LIMITS.maxFormerNames).toBe(5);
     expect(LIMITS.renamesPerHour).toBe(10);
     expect(bus.RENAME_MESSAGES.rate).toBe("Too many renames");
+    expect(bus.RENAME_MESSAGES.room).toBe("Too many recent names");
     expect(bus.BUS_CAPS.rename).toBe("rename");
     expect("RENAME_MIN_CLIENT" in bus).toBe(false);
+  });
+});
+
+describe("role addresses (#1296) are pinned", () => {
+  it("pins the cap; role_vacant is a refusal, never an expiry", () => {
+    expect(bus.BUS_CAPS.roles).toBe("roles");
+    expect(
+      bus.ReceiptSchema.safeParse({
+        msg_id: "a".repeat(16),
+        state: "refused",
+        reason: "role_vacant",
+      }).success,
+    ).toBe(true);
+    expect(
+      bus.ReceiptSchema.safeParse({
+        msg_id: "a".repeat(16),
+        state: "expired",
+        reason: "role_vacant",
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -146,6 +169,7 @@ describe("CONTRACT.md", () => {
       "name_kind",
       "caps",
       "Too many renames",
+      "Too many recent names",
     ])
       expect(doc, t).toContain(t);
   });

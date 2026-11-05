@@ -61,6 +61,11 @@ export type Service = {
    * cache path that gets cleaned.
    */
   cli: () => string[];
+  /**
+   * Runs the node the installed service pins and returns why it is unusable
+   * (missing ICU, crashes); undefined when it works or no service is installed.
+   */
+  checkNode?: () => Promise<{ node: string; reason: string } | undefined>;
   /** The argv `cli()` returns, without copying anything: for read-only checks. */
   argv?: () => string[];
 };

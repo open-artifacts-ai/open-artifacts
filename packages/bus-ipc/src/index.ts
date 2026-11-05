@@ -1,3 +1,4 @@
+export { BUS_CMD } from "@oa/bus-protocol";
 export {
   connectDaemon,
   type DaemonClient,
@@ -17,6 +18,7 @@ export {
   neutralizeBody,
   oversizedText,
   receiptText,
+  replyGoneText,
   rosterLine,
   STATUS_COPY,
   STATUS_STALE_MS,

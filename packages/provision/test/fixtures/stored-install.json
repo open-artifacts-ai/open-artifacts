@@ -162,6 +162,11 @@
         "type": "durable_object_namespace"
       },
       {
+        "class_name": "BusHub",
+        "name": "BUS_HUB",
+        "type": "durable_object_namespace"
+      },
+      {
         "name": "RL_ANON",
         "namespace_id": "1000000",
         "simple": {
