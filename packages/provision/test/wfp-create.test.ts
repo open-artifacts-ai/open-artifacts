@@ -4509,6 +4509,42 @@ describe("a job's lease across its attempts (#1326: fenced by attempt)", () => {
       expect(CF_WRITES.has(k), k).toBe(false);
   });
 
+  it("every Cf method is either a fenced write or a listed read, so a new Cloudflare call cannot skip the fence", () => {
+    const src = readFileSync(
+      new URL("packages/provision/src/cf.ts", ROOT),
+      "utf8",
+    );
+    const body = src.split("export interface Cf ")[1]?.split("\n}\n")[0] ?? "";
+    const methods = [...body.matchAll(/^ {2}([a-zA-Z0-9]+)[(<]/gm)].map(
+      (m) => m[1] as string,
+    );
+    expect(methods.length).toBeGreaterThan(30);
+    const READS = new Set([
+      "tokenVerify",
+      "scriptsRead",
+      "d1Get",
+      "d1Bookmark",
+      "d1NameOf",
+      "r2Exists",
+      "kvFind",
+      "kvTitleOf",
+      "kvGet",
+      "scriptExists",
+      "secretList",
+      "scriptSettings",
+      "turnstileWidget",
+      "turnstileList",
+      "r2ObjectGet",
+      "r2ObjectList",
+      "r2InstallKeys",
+    ]);
+    const unclassified = methods.filter(
+      (k) => !CF_WRITES.has(k) && !READS.has(k),
+    );
+    expect(unclassified).toEqual([]);
+    for (const k of CF_WRITES) expect(methods, k).toContain(k);
+  });
+
   it("attempt 2 of the same job re-takes the lease at once with its own token; attempt 1, woken, gets LostLease and frees nothing", async () => {
     const s = setup();
     const a1 = hungAttempt(s);
