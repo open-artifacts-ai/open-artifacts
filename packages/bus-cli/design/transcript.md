@@ -337,10 +337,10 @@ Two honesty rules from the spec bind them:
    `other_namespace`, `revoked`, `ambiguous`.
 
 ```
-[[warning]]○[[/warning]]  Queued for oa-team-e0. Not delivered yet; expires in 1 hour.
+[[warning]]○[[/warning]]  Queued for oa-team-e0. Not delivered yet; expires in 7 days.
 [[success]]✓[[/success]]  Delivered to oa-team-e0.
 [[danger]]×[[/danger]]  Expired: your message to oa-team-e0,
-   "Can you regenerate the API reference pag…", was not taken within 1 hour.
+   "Can you regenerate the API reference pag…", was not taken within 7 days.
 [[danger]]×[[/danger]]  Expired: your message to oa-team-e0,
    "Can you regenerate the API reference pag…",
    was not delivered because oa-team-e0 closed first.

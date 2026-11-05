@@ -81,7 +81,7 @@ const SELF_TIMEOUT_MS = 2_000;
 // --- Copy: design/cli/transcript.md and @oa/bus-ipc copy.ts, verbatim (a test holds them equal).
 
 const MAX_COLS = 80;
-const HOUR = "1 hour";
+const RETAIN = "7 days";
 
 /**
  * Cuts `value` in the middle, keeping its end, so no line of `text(value)`
@@ -113,7 +113,7 @@ const refusals: Record<
     "Send it again once the session is open, or message another agent.",
   ],
   inbox_full: [
-    `50 messages are already waiting.`,
+    `200 messages are already waiting.`,
     "Send again once some are delivered or expire.",
   ],
   too_large: [
@@ -172,7 +172,7 @@ function receiptText(
   switch (r.state) {
     case "pending":
       return fitLine(
-        (v) => `○  Queued for ${v}. Not delivered yet; expires in ${HOUR}.`,
+        (v) => `○  Queued for ${v}. Not delivered yet; expires in ${RETAIN}.`,
         to,
       );
     case "delivered":
@@ -181,7 +181,7 @@ function receiptText(
       const tail = (v: string) =>
         r.reason === "recipient_closed"
           ? `was not delivered because ${v} closed first.`
-          : `was not taken within ${HOUR}.`;
+          : `was not taken within ${RETAIN}.`;
       const head = (v: string) => `×  Expired: your message to ${v}`;
       if (!quote) return fitLine((v) => `${head(v)} ${tail(v)}`, to);
       return fitLine((v) => quoted(head(v), quote, tail(v)), to);

@@ -2,13 +2,15 @@ import {
   BAD_NS_CHARS,
   BUS_CMD,
   LIMITS,
+  MAILBOX_PENDING_CAP,
+  MAILBOX_RETAIN_MS,
   type ReceiptReason,
   type ReceiptState,
 } from "@oa/bus-protocol";
 
 /** One terminal line at most; the transcript's "cutting long values" rule. */
 const MAX_COLS = 80;
-const HOUR = `${LIMITS.mailTtlSec / 3600} hour`;
+const RETAIN = `${MAILBOX_RETAIN_MS / 86_400_000} days`;
 const MB = `${LIMITS.maxMessageBytes / (1024 * 1024)} MB`;
 
 /**
@@ -41,7 +43,7 @@ const refusals: Record<
     "Send it again once the session is open, or message another agent.",
   ],
   inbox_full: [
-    `${LIMITS.inboxCap} messages are already waiting.`,
+    `${MAILBOX_PENDING_CAP} messages are already waiting.`,
     "Send again once some are delivered or expire.",
   ],
   too_large: [
@@ -100,7 +102,7 @@ export function receiptText(
   switch (r.state) {
     case "pending":
       return fitLine(
-        (v) => `○  Queued for ${v}. Not delivered yet; expires in ${HOUR}.`,
+        (v) => `○  Queued for ${v}. Not delivered yet; expires in ${RETAIN}.`,
         to,
       );
     case "delivered":
@@ -109,7 +111,7 @@ export function receiptText(
       const tail = (v: string) =>
         r.reason === "recipient_closed"
           ? `was not delivered because ${v} closed first.`
-          : `was not taken within ${HOUR}.`;
+          : `was not taken within ${RETAIN}.`;
       const head = (v: string) => `×  Expired: your message to ${v}`;
       if (!quote) return fitLine((v) => `${head(v)} ${tail(v)}`, to);
       return fitLine((v) => quoted(head(v), quote, tail(v)), to);

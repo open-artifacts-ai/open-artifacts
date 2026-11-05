@@ -40,7 +40,7 @@ describe("receipt copy", () => {
 
   it("pending and delivered", () => {
     expect(receiptText({ state: "pending" }, "oa-team-e0")).toBe(
-      "○  Queued for oa-team-e0. Not delivered yet; expires in 1 hour.",
+      "○  Queued for oa-team-e0. Not delivered yet; expires in 7 days.",
     );
     expect(receiptText({ state: "delivered" }, "oa-team-e0")).toBe(
       "✓  Delivered to oa-team-e0.",
@@ -72,7 +72,7 @@ describe("receipt copy", () => {
     const s = receiptText({ state: "expired" }, "oa-team-e0", undefined, long);
     // The quote and its tail fit on their own line.
     expect(s).toBe(
-      `×  Expired: your message to oa-team-e0,\n   "${long}", was not taken within 1 hour.`,
+      `×  Expired: your message to oa-team-e0,\n   "${long}", was not taken within 7 days.`,
     );
     // Every line after the first is indented three spaces, the quote included.
     expect(
@@ -99,7 +99,7 @@ describe("receipt copy", () => {
 
   it("keeps the quote on line 1 when it fits, the tail below", () => {
     expect(receiptText({ state: "expired" }, "e0", undefined, "hi")).toBe(
-      `×  Expired: your message to e0, "hi",\n   was not taken within 1 hour.`,
+      `×  Expired: your message to e0, "hi",\n   was not taken within 7 days.`,
     );
     expect(
       receiptText(
@@ -115,7 +115,7 @@ describe("receipt copy", () => {
 
   it("without an excerpt (a legacy entry) the quote is omitted", () => {
     expect(receiptText({ state: "expired" }, "peer")).toBe(
-      "×  Expired: your message to peer was not taken within 1 hour.",
+      "×  Expired: your message to peer was not taken within 7 days.",
     );
     expect(
       receiptText({ state: "expired", reason: "recipient_closed" }, "peer"),

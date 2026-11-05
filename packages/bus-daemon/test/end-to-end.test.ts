@@ -433,7 +433,7 @@ describe("daemon end to end, one machine, three harnesses", () => {
     expect(notices[0]).toMatch(
       /^×\s+Expired: your message to claude, "please review/,
     );
-    expect(notices[0]).toContain("was not taken within 1 hour.");
+    expect(notices[0]).toContain("was not taken within 7 days.");
     expect(e.claudeT).not.toHaveBeenCalled();
     expect(e.hub.bad).toEqual([]);
   });

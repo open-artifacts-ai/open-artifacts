@@ -53,7 +53,7 @@ describe("claude mcp tools", () => {
       content: [
         {
           type: "text",
-          text: "○  Queued for peer. Not delivered yet; expires in 1 hour.",
+          text: "○  Queued for peer. Not delivered yet; expires in 7 days.",
         },
       ],
       isError: false,
