@@ -791,6 +791,33 @@ describe("upgrade", () => {
     expect(s.row(inst.id).do_migration_tag).toBe(LEDGER_TAG);
   });
 
+  it("#1427: an install on v3 upgrading to the real template (binds BusHub, adds it at v4) is refused before any write", async () => {
+    // The real template adds BusHub at v4 and binds BUS_HUB (#1315). An
+    // install still on v3 (below 0.109.0) would add and bind it in one upload.
+    const bus = (
+      BASE_TEMPLATE.durable_objects.bindings as { class_name: string }[]
+    ).some((b) => b.class_name === "BusHub");
+    expect(bus).toBe(true);
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.db()
+      .prepare("UPDATE installs SET do_migration_tag = 'v3' WHERE id = ?")
+      .run(inst.id);
+    const script = s.scriptOf(inst.id);
+    if (script) script.migrationTag = "v3";
+    const w = s.fake.writes().length;
+    const from = s.fake.log.length;
+    const e = await fails(s.p.upgrade(inst.id, "0.24.0"));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.code).toBe("invalid_state");
+    expect(e.message).toMatch(
+      /adds Durable Object class BusHub and binds it.*upgrade first to a release that adds it unbound/,
+    );
+    expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(s.fake.writes().length).toBe(w);
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
   it("sends migrations only when the target tag differs from the live one", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));

@@ -99,6 +99,7 @@ async function resolve(
       upgrade: { type: "boolean", default: false },
       check: { type: "boolean", default: false },
       "allow-downgrade": { type: "boolean", default: false },
+      "deployed-version": { type: "string" },
       strict: { type: "boolean", default: false },
       "new-owner-token": { type: "boolean", default: false },
       "print-token": { type: "boolean", default: false },
@@ -161,6 +162,10 @@ async function resolve(
   if (v["revoke-ci-tokens"] && !v.ci)
     throw new Error("--revoke-ci-tokens needs --ci");
   if (v.strict && !v.check) throw new Error("--strict needs --check");
+  if (v["deployed-version"] !== undefined) {
+    if (!v.upgrade) throw new Error("--deployed-version needs --upgrade");
+    valid("--deployed-version", v["deployed-version"], /^\d+\.\d+\.\d+$/);
+  }
   if (v.repo !== undefined || v["no-open"])
     throw new Error(
       "--repo and --no-open only go with --token-links or --token-page",
@@ -247,6 +252,7 @@ async function resolve(
     newOwnerToken: v["new-owner-token"],
     printToken: v["print-token"],
     allowDowngrade: v["allow-downgrade"],
+    deployedVersion: v["deployed-version"],
     // Decided in prereqs: flag, then the plan (Paid only), then saved state.
     browser: false,
     browserFlag: v.browser ? true : v["no-browser"] ? false : undefined,
@@ -360,6 +366,9 @@ export const HELP = `Usage: pnpm oa:setup [options]
                 version, else saved state). Without it setup stops with action_required
                 before the D1 migrations. D1 is not rolled back. --check reports
                 {repoVersion, liveVersion, downgrade} on the deploy line.
+  --deployed-version <X.Y.Z>  With --upgrade: the version the install runs, used only
+                when /healthz and saved state can't say. Without one, an upgrade that
+                can't tell the deployed version stops with action_required.
   --upgrade     With no saved state it needs only --name (plus --account-id when the
                 login has several accounts): hosts, owner, plan, team, email domain and
                 thumbnails are read from the deployed Worker's plain-text vars and
