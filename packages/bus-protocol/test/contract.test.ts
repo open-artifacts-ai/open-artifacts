@@ -64,7 +64,7 @@ describe("contract is pinned", () => {
     ]);
   });
 
-  it("pins the 8 refusal reasons, in order", () => {
+  it("pins the 10 refusal reasons, in order", () => {
     expect(REFUSAL_REASONS).toEqual([
       "unknown_agent",
       "closed",
@@ -75,6 +75,8 @@ describe("contract is pinned", () => {
       "ambiguous",
       "role_vacant",
       "agent_gone",
+      "mailbox_full",
+      "reserved_name",
     ]);
   });
 

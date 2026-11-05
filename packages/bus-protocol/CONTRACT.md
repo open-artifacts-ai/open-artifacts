@@ -64,7 +64,9 @@ States: `pending | delivered | expired | refused`. Refusal reasons
 (`REFUSAL_REASONS`): `unknown_agent`, `closed`, `inbox_full`, `too_large`,
 `other_namespace`, `revoked`, `ambiguous`, `role_vacant` (only to a
 `roles`-cap socket, see Role addresses), `agent_gone` (only to an `ids`-cap
-socket, see Reply ids). `expired` may carry
+socket, see Reply ids), `mailbox_full` and `reserved_name` (only to a
+`mailbox`-cap socket, see Lasting mailboxes; any other reads `inbox_full` and
+`unknown_agent`). `expired` may carry
 `recipient_closed`. The `receipt` reply to `send` is only `pending` or
 `refused`; `receipt_update` may carry any state.
 
@@ -133,6 +135,29 @@ whoever holds the name now.
 - Compatibility, pre-launch: the local client always sends `hello.caps`, and a
   hub before v0.111.0 refuses a hello with `caps` (`bad_frame`). There is no
   shim: installs are upgraded instead (the only instance is the owner's).
+
+## Lasting mailboxes (`BUS_CAPS.mailbox`, #1295)
+
+A closed agent keeps its name and its pending mail for 7 days (`away`); the
+fields below go only to a socket whose hello listed `mailbox` (the hub lists it
+in `hello_ok.caps`, also to a hello that listed only `mailbox`). Every other
+socket sees today's shapes: its strict decoder never meets a new key.
+
+- `receipt` (to `send`, `pending`) gains `queued: "away" | "offline"` and
+  `since` (ISO time). `away`: the recipient is closed and its mailbox waits
+  for it, since its close. `offline`: it is open but its machine is offline,
+  since the machine went offline. Absent when the mail was pushed.
+- `mailbox_full` replaces `inbox_full` (pending count, bytes, hub total).
+  `reserved_name`: the name is only a 1 h `held` reservation of an agent that
+  moved or flipped scope; it has no mailbox (others read `unknown_agent`).
+- `roster` rows gain `state: "away"` and `since` (the close): closed agents
+  whose mailbox is kept, in the asker's scope.
+- `agent_up.replaces` (an `agent_ref`): after a `/clear` the same live process
+  reports a new session. The hub honours it only on a `mailbox` socket, for an
+  agent of the same machine, when the new ref is not yet known: the agent row
+  is re-keyed to the new ref, so it keeps its name, former names and mail
+  instead of `<name>-2`. A client sends it only when `hello_ok.caps` listed
+  `mailbox`; the daemon sends it only for the same pid.
 
 ## Renames (#393)
 

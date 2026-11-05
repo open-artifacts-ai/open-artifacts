@@ -46,6 +46,16 @@ const refusals: Record<
     `${MAILBOX_PENDING_CAP} messages are already waiting.`,
     "Send again once some are delivered or expire.",
   ],
+  // #1295: the cap sockets' inbox_full (pending count, bytes or the hub total).
+  mailbox_full: [
+    "Its mailbox is full.",
+    "Send again once it has read some, or message another agent.",
+  ],
+  // #1295: a name only held after a move; no one reads it.
+  reserved_name: [
+    "No one has that name now; it was left by an agent that moved.",
+    "Run the oa_bus list_agents tool to find who has it now.",
+  ],
   too_large: [
     `It is too large to send (the limit is ${MB}).`,
     "Send a shorter message.",
