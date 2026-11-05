@@ -200,8 +200,13 @@ export const AgentInfo = z.object({
   kind: KIND_TOKEN,
   /** `state === "live"`; kept for older adapters. */
   live: z.boolean(),
-  /** Roster entries only: `queued` means the agent's machine is disconnected. */
-  state: z.enum(["live", "queued"]).optional(),
+  /**
+   * Roster entries only: `queued` means the agent's machine is disconnected;
+   * `away` (#1295) means it is closed and its mailbox is kept, with `since`.
+   */
+  state: z.enum(["live", "queued", "away"]).optional(),
+  /** When an `away` agent closed. */
+  since: IsoTimeSchema.optional(),
   global: z.boolean(),
   /** The agent's machine (B13); absent when the hub is older. */
   machine_label: MachineLabelSchema.optional(),

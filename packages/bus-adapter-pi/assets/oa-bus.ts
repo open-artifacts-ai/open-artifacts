@@ -426,6 +426,14 @@ function statusSaysText(
   ].join(" · ");
 }
 
+/** "2026-11-05 10:00 UTC" from an ISO time; unreadable times are shown as sent. */
+const awayTime = (iso: string): string => {
+  const t = Date.parse(iso);
+  return Number.isNaN(t)
+    ? iso
+    : `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+};
+
 /** @oa/bus-ipc rosterLine: one list_agents line. */
 function rosterLine(
   a: StatusFields & {
@@ -434,11 +442,13 @@ function rosterLine(
     namespace: string;
     machine_label?: unknown;
     queued: boolean;
+    /** #1295: ISO time the agent went away; it is closed, its mailbox kept. */
+    away?: string | undefined;
   },
   now = Date.now(),
 ): string {
   const says = statusSaysText(a, now);
-  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
 }
 
 /** @oa/bus-ipc selfText: the agent entry, its status cleaned. */
@@ -1042,6 +1052,7 @@ export default function oaBus(pi: Pi): void {
                   namespace: String(a.namespace),
                   queued:
                     (a.state ?? (a.live ? "live" : "queued")) === "queued",
+                  away: a.state === "away" ? String(a.since ?? "") : undefined,
                 },
                 now,
               ),

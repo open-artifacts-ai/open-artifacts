@@ -283,6 +283,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       proposed_name: fitName(rec.proposedName, 64),
       namespace: rec.namespace,
       global: rec.global,
+      // A /clear: the new ref takes over the old address and its mail (#1295).
+      ...(rec.replaces !== undefined && hubMailbox
+        ? { replaces: rec.replaces }
+        : {}),
     });
   };
   /** Never a loop: one retry after a long wait; a reconnect replays it sooner. */
@@ -558,6 +562,27 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     },
   });
 
+  /**
+   * A /clear (#1295): the live Claude agent that ran in process `pid` under
+   * another ref, which that process no longer reports. Only the same pid
+   * counts; a session in another process is another agent.
+   */
+  const clearedFrom = (
+    ref: string,
+    pid: number,
+    liveRefs: Set<string>,
+  ): AgentRecord | undefined =>
+    agents
+      .all()
+      .find(
+        (a) =>
+          a.kind === "claude-code" &&
+          a.live &&
+          a.pid === pid &&
+          a.ref !== ref &&
+          !liveRefs.has(a.ref),
+      );
+
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
     const live = liveClaudeSessions(claudeSessions);
@@ -583,12 +608,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         continue;
       }
       if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
+      // /clear: the same process, a new session id. The new ref keeps the
+      // old one's address (#1295); the old one is closed below.
+      const old = clearedFrom(s.ref, s.pid, liveRefs);
       announceUp(
         agents.up({
+          ...(old ? { replaces: old.ref } : {}),
           ref: s.ref,
           kind: "claude-code",
-          proposedName: s.name,
-          busName: prev?.busName ?? s.name,
+          proposedName: old?.busName ?? s.name,
+          busName: prev?.busName ?? old?.busName ?? s.name,
           namespace: ns.namespace,
           global: ns.global,
           pid: s.pid,
@@ -654,6 +683,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubDroppedAt: number | undefined;
   /** The hub's last hello_ok listed BUS_CAPS.ids: a reply may carry to_id. */
   let hubIds = false;
+  /** The hub's last hello_ok listed BUS_CAPS.mailbox: agent_up may carry `replaces`. */
+  let hubMailbox = false;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
   let hubVersion: string | undefined;
   const hub = new HubConnection({
@@ -673,7 +704,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           upIds.delete(frame.id);
           clearLimited(frame.agent_ref);
           const agent = agents.byRef(frame.agent_ref);
-          if (agent) agent.busName = frame.bus_name;
+          if (agent) {
+            agent.busName = frame.bus_name;
+            // Answered: the hub knows the new ref, the handover is done.
+            delete agent.replaces;
+          }
           // Registered on this link: its sends lost to the last one go again.
           resends.up(frame.agent_ref);
           return;
@@ -755,6 +790,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubVersion = frame.server_version;
           // A reply names its agent (to_id) only to a hub that said it can.
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
+          hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
           // Queued replies go now that the link says what it supports.
           outbox.flush();
           return;
@@ -897,22 +933,25 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           const mine = new Map(local.map((a) => [a.busName, a.kind]));
           const roster =
             local[0] && hub.open ? await hubRoster(local[0].ref) : undefined;
+          // #1295: away agents are closed; status lists only open ones.
           const rows = roster
-            ? roster.map((a) => ({
-                name: a.name,
-                kind: a.kind,
-                machine:
-                  a.machine_label ??
-                  (mine.get(a.name) === a.kind ? cfg.label : ""),
-                state: a.state ?? ("live" as const),
-                ...(a.status === undefined ? {} : { status: a.status }),
-                ...(a.status_label === undefined
-                  ? {}
-                  : { status_label: a.status_label }),
-                ...(a.status_at === undefined
-                  ? {}
-                  : { status_at: a.status_at }),
-              }))
+            ? roster
+                .filter((a) => a.state !== "away")
+                .map((a) => ({
+                  name: a.name,
+                  kind: a.kind,
+                  machine:
+                    a.machine_label ??
+                    (mine.get(a.name) === a.kind ? cfg.label : ""),
+                  state: a.state ?? ("live" as const),
+                  ...(a.status === undefined ? {} : { status: a.status }),
+                  ...(a.status_label === undefined
+                    ? {}
+                    : { status_label: a.status_label }),
+                  ...(a.status_at === undefined
+                    ? {}
+                    : { status_at: a.status_at }),
+                }))
             : local.map((a) => ({
                 name: a.busName,
                 kind: a.kind,
@@ -1050,11 +1089,22 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           };
         attested(pid);
         const proposedName = hello.proposed_name ?? hello.agent_ref;
+        // /clear (#1295): this new session runs in the process of a live
+        // one whose session file is gone; it takes over that address.
+        const old =
+          hello.kind === "claude-code"
+            ? clearedFrom(
+                hello.agent_ref,
+                pid,
+                new Set(liveClaudeSessions(claudeSessions).map((s) => s.ref)),
+              )
+            : undefined;
         const rec = agents.up({
+          ...(old ? { replaces: old.ref } : {}),
           ref: hello.agent_ref,
           kind: hello.kind,
-          proposedName,
-          busName: prev?.busName ?? proposedName,
+          proposedName: old?.busName ?? proposedName,
+          busName: prev?.busName ?? old?.busName ?? proposedName,
           namespace: ns.namespace,
           global: ns.global,
           pid,
