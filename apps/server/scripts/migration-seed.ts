@@ -51,6 +51,7 @@ export const SHAPE = {
   login_codes: 2_000,
   oauth_kv: 100_000,
   counters: 5_000,
+  creator_months: 5_000, // hosted only: one per creator and UTC month
   settings: 20,
   audit_events: 1_000_000,
 } as const;
@@ -558,6 +559,16 @@ export const RULES: Record<string, Rule> = {
       key: `rate:${i}`,
       n: c.int(1000),
       day: `2026-${String(1 + (i % 12)).padStart(2, "0")}-01`,
+    }),
+  },
+  creator_months: {
+    rows: (c) => c.count("creator_months"),
+    // (month, user_id) is the key: i walks the twelve months, then the next user.
+    row: (i, c) => ({
+      month: `2026-${String(1 + (i % 12)).padStart(2, "0")}`,
+      user_id: `u${Math.floor(i / 12)}`,
+      source: c.pick(["version", "data"]),
+      first_at: c.time(),
     }),
   },
   settings: {

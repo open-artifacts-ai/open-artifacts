@@ -54,9 +54,7 @@
       "indexes": {
         "agent_grants_user_idx": {
           "name": "agent_grants_user_idx",
-          "columns": [
-            "user_id"
-          ],
+          "columns": ["user_id"],
           "isUnique": false
         }
       },
@@ -65,12 +63,8 @@
           "name": "agent_grants_user_id_users_id_fk",
           "tableFrom": "agent_grants",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -233,53 +227,37 @@
       "indexes": {
         "artifacts_owner_deleted_idx": {
           "name": "artifacts_owner_deleted_idx",
-          "columns": [
-            "owner_id",
-            "deleted_at"
-          ],
+          "columns": ["owner_id", "deleted_at"],
           "isUnique": false,
           "where": "\"artifacts\".\"deleted_at\" is not null"
         },
         "artifacts_deleted_idx": {
           "name": "artifacts_deleted_idx",
-          "columns": [
-            "deleted_at"
-          ],
+          "columns": ["deleted_at"],
           "isUnique": false,
           "where": "\"artifacts\".\"deleted_at\" is not null"
         },
         "artifacts_visibility_updated_live_idx": {
           "name": "artifacts_visibility_updated_live_idx",
-          "columns": [
-            "visibility",
-            "updated_at"
-          ],
+          "columns": ["visibility", "updated_at"],
           "isUnique": false,
           "where": "\"artifacts\".\"deleted_at\" is null"
         },
         "artifacts_owner_updated_live_idx": {
           "name": "artifacts_owner_updated_live_idx",
-          "columns": [
-            "owner_id",
-            "updated_at"
-          ],
+          "columns": ["owner_id", "updated_at"],
           "isUnique": false,
           "where": "\"artifacts\".\"deleted_at\" is null"
         },
         "artifacts_space_live_idx": {
           "name": "artifacts_space_live_idx",
-          "columns": [
-            "space_id"
-          ],
+          "columns": ["space_id"],
           "isUnique": false,
           "where": "\"artifacts\".\"deleted_at\" is null"
         },
         "artifacts_space_deleted_idx": {
           "name": "artifacts_space_deleted_idx",
-          "columns": [
-            "space_id",
-            "deleted_at"
-          ],
+          "columns": ["space_id", "deleted_at"],
           "isUnique": false,
           "where": "\"artifacts\".\"deleted_at\" is not null"
         }
@@ -289,12 +267,8 @@
           "name": "artifacts_owner_id_users_id_fk",
           "tableFrom": "artifacts",
           "tableTo": "users",
-          "columnsFrom": [
-            "owner_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["owner_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -302,12 +276,8 @@
           "name": "artifacts_space_id_spaces_id_fk",
           "tableFrom": "artifacts",
           "tableTo": "spaces",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["space_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -422,9 +392,7 @@
       "indexes": {
         "audit_events_at_idx": {
           "name": "audit_events_at_idx",
-          "columns": [
-            "at"
-          ],
+          "columns": ["at"],
           "isUnique": false
         }
       },
@@ -531,38 +499,27 @@
       "indexes": {
         "bus_device_codes_device_code_hash_unique": {
           "name": "bus_device_codes_device_code_hash_unique",
-          "columns": [
-            "device_code_hash"
-          ],
+          "columns": ["device_code_hash"],
           "isUnique": true
         },
         "bus_device_codes_user_code_unique": {
           "name": "bus_device_codes_user_code_unique",
-          "columns": [
-            "user_code"
-          ],
+          "columns": ["user_code"],
           "isUnique": true
         },
         "bus_device_codes_expires_idx": {
           "name": "bus_device_codes_expires_idx",
-          "columns": [
-            "expires_at"
-          ],
+          "columns": ["expires_at"],
           "isUnique": false
         },
         "bus_device_codes_ip_idx": {
           "name": "bus_device_codes_ip_idx",
-          "columns": [
-            "ip_tag",
-            "expires_at"
-          ],
+          "columns": ["ip_tag", "expires_at"],
           "isUnique": false
         },
         "bus_device_codes_user_idx": {
           "name": "bus_device_codes_user_idx",
-          "columns": [
-            "user_id"
-          ],
+          "columns": ["user_id"],
           "isUnique": false
         }
       },
@@ -571,12 +528,8 @@
           "name": "bus_device_codes_user_id_users_id_fk",
           "tableFrom": "bus_device_codes",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -641,17 +594,12 @@
       "indexes": {
         "bus_machines_token_hash_unique": {
           "name": "bus_machines_token_hash_unique",
-          "columns": [
-            "token_hash"
-          ],
+          "columns": ["token_hash"],
           "isUnique": true
         },
         "bus_machines_user_idx": {
           "name": "bus_machines_user_idx",
-          "columns": [
-            "user_id",
-            "revoked_at"
-          ],
+          "columns": ["user_id", "revoked_at"],
           "isUnique": false
         }
       },
@@ -660,12 +608,8 @@
           "name": "bus_machines_user_id_users_id_fk",
           "tableFrom": "bus_machines",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -741,10 +685,7 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "creator_months_month_user_id_pk": {
-          "columns": [
-            "month",
-            "user_id"
-          ],
+          "columns": ["month", "user_id"],
           "name": "creator_months_month_user_id_pk"
         }
       },
@@ -833,12 +774,8 @@
           "name": "directory_members_group_id_directory_groups_group_id_fk",
           "tableFrom": "directory_members",
           "tableTo": "directory_groups",
-          "columnsFrom": [
-            "group_id"
-          ],
-          "columnsTo": [
-            "group_id"
-          ],
+          "columnsFrom": ["group_id"],
+          "columnsTo": ["group_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -846,22 +783,15 @@
           "name": "directory_members_user_id_users_id_fk",
           "tableFrom": "directory_members",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
         "directory_members_group_id_user_id_pk": {
-          "columns": [
-            "group_id",
-            "user_id"
-          ],
+          "columns": ["group_id", "user_id"],
           "name": "directory_members_group_id_user_id_pk"
         }
       },
@@ -941,18 +871,12 @@
       "indexes": {
         "follows_artifact_idx": {
           "name": "follows_artifact_idx",
-          "columns": [
-            "artifact_id"
-          ],
+          "columns": ["artifact_id"],
           "isUnique": false
         },
         "follows_address_idx": {
           "name": "follows_address_idx",
-          "columns": [
-            "user_id",
-            "namespace",
-            "agent_name"
-          ],
+          "columns": ["user_id", "namespace", "agent_name"],
           "isUnique": false
         }
       },
@@ -961,12 +885,8 @@
           "name": "follows_user_id_users_id_fk",
           "tableFrom": "follows",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -974,24 +894,15 @@
           "name": "follows_artifact_id_artifacts_id_fk",
           "tableFrom": "follows",
           "tableTo": "artifacts",
-          "columnsFrom": [
-            "artifact_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["artifact_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
         "follows_user_id_artifact_id_namespace_agent_name_pk": {
-          "columns": [
-            "user_id",
-            "artifact_id",
-            "namespace",
-            "agent_name"
-          ],
+          "columns": ["user_id", "artifact_id", "namespace", "agent_name"],
           "name": "follows_user_id_artifact_id_namespace_agent_name_pk"
         }
       },
@@ -1044,12 +955,8 @@
           "name": "frozen_edits_space_id_spaces_id_fk",
           "tableFrom": "frozen_edits",
           "tableTo": "spaces",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["space_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1057,22 +964,15 @@
           "name": "frozen_edits_user_id_users_id_fk",
           "tableFrom": "frozen_edits",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
         "frozen_edits_space_id_user_id_pk": {
-          "columns": [
-            "space_id",
-            "user_id"
-          ],
+          "columns": ["space_id", "user_id"],
           "name": "frozen_edits_space_id_user_id_pk"
         }
       },
@@ -1126,22 +1026,15 @@
           "name": "group_mappings_space_id_spaces_id_fk",
           "tableFrom": "group_mappings",
           "tableTo": "spaces",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["space_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
         "group_mappings_space_id_group_id_pk": {
-          "columns": [
-            "space_id",
-            "group_id"
-          ],
+          "columns": ["space_id", "group_id"],
           "name": "group_mappings_space_id_group_id_pk"
         }
       },
@@ -1203,10 +1096,7 @@
       "indexes": {
         "identities_user_provider": {
           "name": "identities_user_provider",
-          "columns": [
-            "user_id",
-            "provider"
-          ],
+          "columns": ["user_id", "provider"],
           "isUnique": true
         }
       },
@@ -1215,22 +1105,15 @@
           "name": "identities_user_id_users_id_fk",
           "tableFrom": "identities",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
         "identities_provider_subject_pk": {
-          "columns": [
-            "provider",
-            "subject"
-          ],
+          "columns": ["provider", "subject"],
           "name": "identities_provider_subject_pk"
         }
       },
@@ -1288,10 +1171,7 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "login_codes_email_key_request_id_pk": {
-          "columns": [
-            "email_key",
-            "request_id"
-          ],
+          "columns": ["email_key", "request_id"],
           "name": "login_codes_email_key_request_id_pk"
         }
       },
@@ -1333,9 +1213,7 @@
       "indexes": {
         "oauth_kv_exp": {
           "name": "oauth_kv_exp",
-          "columns": [
-            "expires_at"
-          ],
+          "columns": ["expires_at"],
           "isUnique": false,
           "where": "\"oauth_kv\".\"expires_at\" is not null"
         }
@@ -1412,12 +1290,8 @@
           "name": "reserved_artifacts_user_id_users_id_fk",
           "tableFrom": "reserved_artifacts",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1519,23 +1393,15 @@
           "name": "share_notice_agents_user_id_users_id_fk",
           "tableFrom": "share_notice_agents",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
         "share_notice_agents_user_id_namespace_agent_name_pk": {
-          "columns": [
-            "user_id",
-            "namespace",
-            "agent_name"
-          ],
+          "columns": ["user_id", "namespace", "agent_name"],
           "name": "share_notice_agents_user_id_namespace_agent_name_pk"
         }
       },
@@ -1584,9 +1450,7 @@
       "indexes": {
         "shares_email_idx": {
           "name": "shares_email_idx",
-          "columns": [
-            "email"
-          ],
+          "columns": ["email"],
           "isUnique": false
         }
       },
@@ -1595,12 +1459,8 @@
           "name": "shares_artifact_id_artifacts_id_fk",
           "tableFrom": "shares",
           "tableTo": "artifacts",
-          "columnsFrom": [
-            "artifact_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["artifact_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1608,22 +1468,15 @@
           "name": "shares_created_by_users_id_fk",
           "tableFrom": "shares",
           "tableTo": "users",
-          "columnsFrom": [
-            "created_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["created_by"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
         "shares_artifact_id_email_pk": {
-          "columns": [
-            "artifact_id",
-            "email"
-          ],
+          "columns": ["artifact_id", "email"],
           "name": "shares_artifact_id_email_pk"
         }
       },
@@ -1677,9 +1530,7 @@
       "indexes": {
         "space_members_user_idx": {
           "name": "space_members_user_idx",
-          "columns": [
-            "user_id"
-          ],
+          "columns": ["user_id"],
           "isUnique": false
         }
       },
@@ -1688,12 +1539,8 @@
           "name": "space_members_space_id_spaces_id_fk",
           "tableFrom": "space_members",
           "tableTo": "spaces",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["space_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1701,23 +1548,15 @@
           "name": "space_members_user_id_users_id_fk",
           "tableFrom": "space_members",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
         "space_members_space_id_user_id_source_pk": {
-          "columns": [
-            "space_id",
-            "user_id",
-            "source"
-          ],
+          "columns": ["space_id", "user_id", "source"],
           "name": "space_members_space_id_user_id_source_pk"
         }
       },
@@ -1797,11 +1636,7 @@
       "indexes": {
         "spaces_kind_name_idx": {
           "name": "spaces_kind_name_idx",
-          "columns": [
-            "kind",
-            "name",
-            "id"
-          ],
+          "columns": ["kind", "name", "id"],
           "isUnique": false,
           "where": "\"spaces\".\"kind\" = 'shared'"
         }
@@ -1892,9 +1727,7 @@
       "indexes": {
         "tokens_token_hash_unique": {
           "name": "tokens_token_hash_unique",
-          "columns": [
-            "token_hash"
-          ],
+          "columns": ["token_hash"],
           "isUnique": true
         }
       },
@@ -1903,12 +1736,8 @@
           "name": "tokens_user_id_users_id_fk",
           "tableFrom": "tokens",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1998,12 +1827,8 @@
           "name": "uploads_user_id_users_id_fk",
           "tableFrom": "uploads",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -2138,9 +1963,7 @@
       "indexes": {
         "users_email_unique": {
           "name": "users_email_unique",
-          "columns": [
-            "email"
-          ],
+          "columns": ["email"],
           "isUnique": true
         }
       },
@@ -2273,12 +2096,8 @@
           "name": "versions_artifact_id_artifacts_id_fk",
           "tableFrom": "versions",
           "tableTo": "artifacts",
-          "columnsFrom": [
-            "artifact_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["artifact_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -2286,22 +2105,15 @@
           "name": "versions_created_by_users_id_fk",
           "tableFrom": "versions",
           "tableTo": "users",
-          "columnsFrom": [
-            "created_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["created_by"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
         "versions_artifact_id_version_pk": {
-          "columns": [
-            "artifact_id",
-            "version"
-          ],
+          "columns": ["artifact_id", "version"],
           "name": "versions_artifact_id_version_pk"
         }
       },
