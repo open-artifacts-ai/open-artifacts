@@ -103,6 +103,14 @@ const inv = (o: Record<string, unknown> = {}) => ({
   subscription: "sub_Test1",
   ...o,
 });
+/** The row already holds the test subscription (invoices apply only to it). */
+const ownSub = (install: string) =>
+  db
+    .prepare(
+      "UPDATE tiers SET stripe_subscription_id = 'sub_Test1' WHERE install_id = ?",
+    )
+    .bind(install)
+    .run();
 const sub = (o: Record<string, unknown> = {}) => ({
   id: "sub_Test1",
   object: "subscription",
@@ -368,6 +376,7 @@ describe("handleStripeWebhook", () => {
   });
 
   it("payment failed starts grace once; paid ends it; deleted lapses; nothing is deleted", async () => {
+    await ownSub(A);
     const first = event("invoice.payment_failed", inv());
     await deliver(first);
     expect(await row(A)).toMatchObject({
@@ -412,6 +421,7 @@ describe("handleStripeWebhook", () => {
   });
 
   it("grace runs from the event's created time, not from a late delivery (L1)", async () => {
+    await ownSub(A);
     const created = T - 3 * 86_400;
     const late = { now: NOW + 3 * 86_400_000, t: T + 3 * 86_400 };
     await deliver(event("invoice.payment_failed", inv(), { created }), late);
@@ -519,6 +529,71 @@ describe("handleStripeWebhook", () => {
       tier: "business",
       stripe_subscription_id: "sub_Test2",
     });
+  });
+
+  it("an unfinished first payment's invoice never moves a row that has no live subscription (N9c)", async () => {
+    await db
+      .prepare("UPDATE tiers SET tier = 'trial' WHERE install_id = ?")
+      .bind(A)
+      .run();
+    await deliver(
+      event("customer.subscription.created", sub({ status: "incomplete" })),
+    );
+    await deliver(event("invoice.payment_failed", inv()));
+    await deliver(
+      event(
+        "customer.subscription.updated",
+        sub({ status: "incomplete_expired" }),
+      ),
+    );
+    expect(await row(A)).toMatchObject({
+      tier: "trial",
+      status: "active",
+      grace_until: null,
+      stripe_subscription_id: null,
+    });
+  });
+
+  it("with price ids configured, a subscription whose price matches none logs unknown_price once", async () => {
+    const lines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+      lines.push(a.map(String).join(" "));
+    });
+    const configured = {
+      ...env,
+      STRIPE_PRICE_TEAM: "price_T",
+      STRIPE_PRICE_BUSINESS: "price_B",
+    };
+    const post = async (body: unknown, e: WebhookEnv) => {
+      const text = JSON.stringify(body);
+      return handleStripeWebhook(
+        new Request("https://billing.example/stripe/webhook", {
+          method: "POST",
+          headers: {
+            "stripe-signature": await signStripePayload(text, SECRET, T),
+          },
+          body: text,
+        }),
+        e,
+        NOW,
+      );
+    };
+    const unknown = sub({ items: { data: [{ price: { id: "price_X" } }] } });
+    await post(event("customer.subscription.updated", unknown), configured);
+    expect(lines.filter((l) => l.includes("unknown_price"))).toEqual([
+      "billing webhook unknown_price",
+    ]);
+    // A known price, or no ids configured: no such line.
+    lines.length = 0;
+    await post(
+      event(
+        "customer.subscription.updated",
+        sub({ items: { data: [{ price: { id: "price_B" } }] } }),
+      ),
+      configured,
+    );
+    await post(event("customer.subscription.updated", unknown), env);
+    expect(lines.filter((l) => l.includes("unknown_price"))).toEqual([]);
   });
 
   it("an invoice naming no subscription never moves the row (N7)", async () => {
@@ -636,6 +711,7 @@ describe("handleStripeWebhook", () => {
   });
 
   it("an unknown customer is 409 and its event id is not recorded, so Stripe retries", async () => {
+    await ownSub(A);
     const a = await row(A);
     const b = await row(B);
     const ev = event("invoice.payment_failed", inv({ customer: "cus_Nobody" }));

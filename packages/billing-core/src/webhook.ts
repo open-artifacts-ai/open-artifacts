@@ -150,6 +150,28 @@ export function tierFromSubscription(
   return isObj(sub.metadata) ? asTier(sub.metadata.tier) : null;
 }
 
+/**
+ * True when the price ids are configured and a subscription's items have
+ * prices, none of which is one of them (a price billing does not sell). Pure.
+ */
+export function unknownPrice(
+  sub: Record<string, unknown>,
+  prices: PriceIds,
+): boolean {
+  if (!prices.team && !prices.business) return false;
+  const items =
+    isObj(sub.items) && Array.isArray(sub.items.data) ? sub.items.data : [];
+  const ids = items.flatMap((i) =>
+    isObj(i) && isObj(i.price) && typeof i.price.id === "string"
+      ? [i.price.id]
+      : [],
+  );
+  return (
+    ids.length > 0 &&
+    !ids.some((id) => id === prices.team || id === prices.business)
+  );
+}
+
 /** Stripe subscription status → ours; null leaves the status as it is. Pure. */
 export function statusFromSubscription(s: unknown): TierStatus | null {
   switch (s) {
@@ -459,6 +481,15 @@ export async function handleStripeWebhook(
       log(!fresh ? "replay" : !change ? "ignored_type" : "no_customer");
       return json({ received: true });
     }
+    if (
+      (ev.type === "customer.subscription.created" ||
+        ev.type === "customer.subscription.updated") &&
+      unknownPrice(ev.object, {
+        team: env.STRIPE_PRICE_TEAM,
+        business: env.STRIPE_PRICE_BUSINESS,
+      })
+    )
+      log("unknown_price");
     const stream = streamOf(ev.type);
     const sets = [
       ...change,
@@ -488,8 +519,12 @@ export async function handleStripeWebhook(
     // naming no subscription (a one-off) never moves the row.
     const own = isCheckout
       ? ""
-      : ev.type.startsWith("invoice.") && !eventSub
-        ? " AND 0"
+      : ev.type.startsWith("invoice.")
+        ? // Only the row's own subscription: with none (or an unfinished
+          // first payment) an invoice has nothing to move.
+          eventSub
+          ? ` AND stripe_subscription_id = ?${n + 2}`
+          : " AND 0"
         : ` AND (stripe_subscription_id IS NULL OR stripe_subscription_id = ?${n + 2})`;
     const res = await db.batch<{ known?: number; install_id?: string }>([
       db.prepare(KNOWN).bind(customer),
