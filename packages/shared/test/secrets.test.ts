@@ -45,7 +45,7 @@ describe("secrets", () => {
     const file = secretFile("cloudflare");
     const env = secretRules({ file, envVar: SECRET_ENV_VARS.cloudflare });
     expect(env).toContain(
-      `\`CLOUDFLARE_API_TOKEN="$(cat ${file})" pnpm -s oa:setup …\``,
+      `\`CLOUDFLARE_API_TOKEN="$(cat ${file})" pnpm --reporter=silent oa:setup …\``,
     );
     const usage = secretRules({ file, usage: "X=1 cmd" });
     expect(usage).toContain("`X=1 cmd`");

@@ -53,7 +53,7 @@ function frontmatter(md: string) {
 
 /** Every `oa:setup` command line in the skill's code blocks. */
 const setupLines = (md: string) =>
-  md.split("\n").filter((l) => l.includes("pnpm -s oa:setup "));
+  md.split("\n").filter((l) => /\boa:setup\b/.test(l) && l.includes(" --"));
 
 describe("upgrade.md drift", () => {
   // upgrade.generated.ts is gitignored and written by `pnpm gen` before every
@@ -91,9 +91,15 @@ describe("upgrade.md drift", () => {
       expect(md, f).toMatch(new RegExp(`(?<![\\w-])${f}(?![\\w-])`));
     const lines = setupLines(md);
     expect(lines.length).toBeGreaterThanOrEqual(3);
-    const allowed = new Set<string>(UPGRADE_FLAGS);
+    // Only the reporter form keeps stdout pure JSON on a failure under pnpm 11.
     for (const l of lines)
-      for (const f of l.match(/--[a-z][a-z-]*/g) ?? [])
+      expect(l, l).toContain("pnpm --reporter=silent oa:setup");
+    for (const text of [md, UPGRADE_TEMPLATE])
+      expect(text).not.toMatch(/pnpm\s+(-s|--silent)\s+oa:setup/);
+    const allowed = new Set<string>(UPGRADE_FLAGS);
+    // Flags after `oa:setup` only; `--reporter=silent` belongs to pnpm.
+    for (const l of lines)
+      for (const f of l.split("oa:setup")[1]?.match(/--[a-z][a-z-]*/g) ?? [])
         expect(allowed.has(f), `${f} in: ${l}`).toBe(true);
   });
 });

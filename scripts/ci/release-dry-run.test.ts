@@ -199,7 +199,7 @@ describe("ci.yml no-test-hooks job", () => {
   it("uses the same checkout, pnpm and node setup as the other jobs", () => {
     expect(job).toBeDefined();
     expect(s).toContain("actions/checkout@v4");
-    expect(s).toContain("pnpm/action-setup@v4");
+    expect(s).toMatch(/pnpm\/action-setup@[0-9a-f]{40}/);
     expect(s).toContain("node-version-file");
     expect(runs).toContain("pnpm install --frozen-lockfile");
   });
