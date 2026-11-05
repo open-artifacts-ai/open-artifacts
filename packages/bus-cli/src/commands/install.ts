@@ -24,6 +24,7 @@ import {
   installAdapters,
   readAssets,
 } from "../steps/adapters.ts";
+import { installSkill, RERUN, uninstallSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
 import { LoginFailed, login } from "./login.ts";
 
@@ -159,7 +160,10 @@ export async function loginStep(
   }
 }
 
-async function harnessesStep(ctx: Ctx): Promise<boolean> {
+async function harnessesStep(
+  ctx: Ctx,
+  hub: string | undefined,
+): Promise<boolean> {
   const c = ctx.copy;
   const out = await installAdapters({
     home: ctx.userHome,
@@ -180,7 +184,42 @@ async function harnessesStep(ctx: Ctx): Promise<boolean> {
     say(ctx, await skippedLines(ctx, s.harness, s.reason));
   if (out.installed.includes("opencode"))
     say(ctx, out.opencodeRestarted ? c.restarted() : c.opencodeNotRunning());
+
+  // The skill goes next to the tools, fetched from the instance, never vendored.
+  // A fetch failure keeps the wiring above and fails the step: the user gets the
+  // URL and the rerun command.
+  const skill = await installSkill(
+    {
+      home: ctx.userHome,
+      env: ctx.env,
+      fetchSkill: async (url) => {
+        const r = await ctx.fetch(url, {
+          headers: { accept: "text/markdown" },
+        });
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        return r.text();
+      },
+    },
+    hub ? originOf(hub) : machineOrigin(ctx),
+    out.installed,
+  );
+  for (const n of skill.notes) say(ctx, [n]);
+  if (skill.failedUrl) {
+    sayErr(ctx, [
+      `Could not fetch the skill from ${skill.failedUrl}.`,
+      `The bus tools are wired. Rerun ${RERUN} to write the skill.`,
+    ]);
+    return false;
+  }
+  // Written quietly: the harnesses line above is the user-visible outcome, and
+  // a run that writes nothing has nothing to say.
   return true;
+}
+
+/** The approved machine's hub origin, or undefined when there is no machine. */
+function machineOrigin(ctx: Ctx): string | undefined {
+  const m = readMachine(ctx.home);
+  return m.state === "ok" ? originOf(m.hub) : undefined;
 }
 
 async function skippedLines(ctx: Ctx, h: Harness, reason: string) {
@@ -333,7 +372,7 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
       ).includes("missing")
         ? "todo"
         : "done",
-    apply: harnessesStep,
+    apply: (ctx) => harnessesStep(ctx, opts.hub),
   },
   {
     name: "daemon",

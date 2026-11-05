@@ -40,6 +40,9 @@ const withAgents = (agents = AGENTS) =>
 function hub(polls: unknown[], code: () => Response = deviceCode) {
   return vi.fn(async (url: string | URL | Request) => {
     if (String(url).endsWith("/bus/device")) return code();
+    // The instance also serves the skill; that fetch never consumes a poll.
+    if (String(url).includes("/skill.md"))
+      return new Response("# Open Artifacts skill\n", { status: 200 });
     const next = polls.shift();
     if (next instanceof Error) throw next;
     return Response.json(next);
@@ -457,7 +460,10 @@ describe("install: transcript states 2 to 6", () => {
     expect(await run(ctx)).toBe(0);
     const [block] = transcript("## 5. Already registered");
     expect(ctx.out().slice(0, 8)).toEqual((block as string[]).slice(0, 8));
-    expect(ctx.fetch).not.toHaveBeenCalled();
+    // Nothing is fetched from the hub here; the only call is the skill file the
+    // installer writes for the harnesses it already configured.
+    for (const call of vi.mocked(ctx.fetch).mock.calls)
+      expect(String(call[0])).toContain("/skill.md");
   });
 
   it("6: retries /device/code at 2, 4 and 8 s, then succeeds", async () => {

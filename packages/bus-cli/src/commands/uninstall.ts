@@ -10,6 +10,7 @@ import {
 import { readMachine } from "../machine.ts";
 import { readAssets, uninstallAdapters } from "../steps/adapters.ts";
 import { purge } from "../steps/purge.ts";
+import { uninstallSkill } from "../steps/skill.ts";
 import { hostOf } from "./status.ts";
 
 /** Transcript states 9 and 10. Exit 0. */
@@ -41,6 +42,15 @@ export async function uninstall(
     codexApp: ctx.codexApp,
   });
   if (r.removed.length > 0) say(ctx, c.removedFrom(r.removed));
+  // The skill files go with the wiring: only the ones carrying our header.
+  const skills = uninstallSkill(
+    { home: ctx.userHome },
+    r.removed.length + r.folderOnly.length > 0
+      ? [...r.removed, ...r.folderOnly]
+      : [],
+  );
+  for (const n of skills.notes) say(ctx, [n]);
+  // Quiet on success: the wiring lines above already say what was removed.
   if (r.folderOnly.includes("opencode")) say(ctx, c.removedPluginFolder());
   if (r.removed.length + r.folderOnly.length === 0) say(ctx, c.noneWired());
   for (const s of r.skipped)
