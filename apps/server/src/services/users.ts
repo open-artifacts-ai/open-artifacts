@@ -9,6 +9,7 @@ import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
+import { shownName } from "./agent-display.js";
 import { signInAuditByEmail } from "./audit.js";
 
 type UserRow = typeof users.$inferSelect;
@@ -28,20 +29,25 @@ export function effectiveName(u: NameFields): string {
 }
 
 /**
- * A UserRef for `caller`: anonymous callers get no email, and so no email
- * fallback for the name either (null when the user has no real name).
+ * A UserRef for a viewer. "full" (a signed-in caller who may see addresses)
+ * carries the email and the effective name. "guest" (#1462) and "anonymous"
+ * get no email and no email fallback for the name: a guest gets "Member" when
+ * the user has no public name, anonymous callers get null.
  */
+export type UserRefView = "full" | "guest" | "anonymous";
+
 export function toUserRef(
   u: NameFields & { id: string },
-  signedIn: boolean,
+  view: UserRefView,
 ): UserRef {
-  return signedIn
-    ? { id: u.id, email: u.email, name: effectiveName(u) }
-    : {
-        id: u.id,
-        email: null,
-        name: u.displayName || idpName(u.name, u.email),
-      };
+  if (view === "full")
+    return { id: u.id, email: u.email, name: effectiveName(u) };
+  const name = u.displayName || idpName(u.name, u.email);
+  return {
+    id: u.id,
+    email: null,
+    name: view === "guest" ? shownName({ name, email: u.email }) : name,
+  };
 }
 
 export function toMember(

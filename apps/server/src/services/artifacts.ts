@@ -41,6 +41,7 @@ import {
   publishTarget,
   roleRankQuery,
   roleRankSql,
+  userRefView,
 } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { can, dataWritersOf } from "../auth/policy.js";
@@ -785,12 +786,15 @@ export const agentViaSql = (caller: Caller, via: string) => {
     where vv.artifact_id = "artifacts"."id" and vv.agent_via = ${via}))`;
 };
 
-/** Anonymous callers never see member emails (not even as a name fallback). */
+/**
+ * Anonymous callers and guests never see other members' emails (not even as
+ * a name fallback); a guest still sees their own.
+ */
 export function redact(
   u: { id: string; email: string; name: string; displayName: string | null },
   caller: Caller,
 ): UserRef {
-  return toUserRef(u, caller.kind === "user");
+  return toUserRef(u, userRefView(caller, u.id));
 }
 
 async function ownerRef(env: Env, ownerId: string, caller: Caller) {

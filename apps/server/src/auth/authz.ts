@@ -92,6 +92,25 @@ export function callerOf(m: Member | null | undefined): Caller {
   return { kind: "user", user: m, cap: (m as CappedMember)[CAP] ?? null };
 }
 
+/**
+ * Whether `caller` may see the email address of user `userId` (#1462): any
+ * signed-in caller except a guest, who sees only their own. Anonymous callers
+ * never. Restricted members keep addresses: only a guest is limited.
+ */
+export function seesEmailOf(caller: Caller, userId: string): boolean {
+  if (caller.kind !== "user") return false;
+  return caller.cap !== "guest" || caller.user.id === userId;
+}
+
+/** The view toUserRef renders for `caller` looking at user `userId`. */
+export function userRefView(
+  caller: Caller,
+  userId: string,
+): "full" | "guest" | "anonymous" {
+  if (caller.kind !== "user") return "anonymous";
+  return seesEmailOf(caller, userId) ? "full" : "guest";
+}
+
 export function caller(c: Context<AppEnv>): Caller {
   return callerOf(c.var.user);
 }

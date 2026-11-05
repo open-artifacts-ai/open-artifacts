@@ -42,6 +42,7 @@ import {
   publishTarget,
   roleRankQuery,
   roleRankSql,
+  userRefView,
 } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import {
@@ -79,7 +80,7 @@ import {
   restrictedGroupsSql,
   restrictionOf,
 } from "./restriction.js";
-import { toMember } from "./users.js";
+import { toMember, toUserRef, type UserRefView } from "./users.js";
 
 // The spaces API (P3 T9): shared spaces, their members and group mappings,
 // the "Every space" org mappings, restricted groups and the manual
@@ -741,6 +742,8 @@ function toSpaceMember(
   env: Env,
   allMembersRole: string | null,
   r: MemberRowSql,
+  /** How the viewer sees this row's user: a guest gets names, never addresses (#1462). */
+  view: UserRefView,
   /** managesSpace: the restriction's detail; anyone else gets null (cap only). */
   detail: boolean,
 ): SpaceMember | null {
@@ -764,7 +767,7 @@ function toSpaceMember(
   const cap = capFor(env, r);
   return {
     userId: r.id,
-    user: { id: r.id, email: m.email, name: m.name },
+    user: toUserRef({ ...r, email: m.email }, view),
     status: statusOf(r.status),
     role,
     source: rank(manualRole) >= rank(role) ? "manual" : "sync",
@@ -819,7 +822,15 @@ export async function listSpaceMembers(
   const last = shown[shown.length - 1];
   return {
     items: shown
-      .map((x) => toSpaceMember(env, r.allMembersRole, x, managesSpace(c, r)))
+      .map((x) =>
+        toSpaceMember(
+          env,
+          r.allMembersRole,
+          x,
+          userRefView(c, x.id),
+          managesSpace(c, r),
+        ),
+      )
       .filter((x): x is SpaceMember => x !== null),
     nextCursor: more && last ? encodeCursor([last.email, last.id]) : null,
     total: (total?.results[0] as { n: number } | undefined)?.n ?? 0,
@@ -921,8 +932,9 @@ async function memberViewOf(
   const row = await stmt(env.DB, MEMBER_PAGE)
     .bind(spaceId, 1, userId, null, null, null, null, null)
     .first<MemberRowSql>();
-  // Its callers (PUT or DELETE a member, an admin's self-add) manage the space.
-  return row ? toSpaceMember(env, allMembersRole, row, true) : null;
+  // Its callers (PUT or DELETE a member, an admin's self-add) manage the space,
+  // so they are never guests: the full view.
+  return row ? toSpaceMember(env, allMembersRole, row, "full", true) : null;
 }
 
 async function memberView(
