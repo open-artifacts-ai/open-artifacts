@@ -11,6 +11,7 @@ import {
 } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { issueAnonToken } from "../src/runtime/anon-id.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
@@ -75,7 +76,9 @@ const call = (
     method: init.method,
     body: init.body,
     headers: {
-      ...(who ? {} : { "cf-connecting-ip": init.ip ?? uniqueIp() }),
+      ...(who || init.ip === ""
+        ? {}
+        : { "cf-connecting-ip": init.ip ?? uniqueIp() }),
       ...init.headers,
     },
   });
@@ -941,5 +944,251 @@ describe("agents", () => {
     expect(seen["from grant"]).toBe("Claude Code");
     expect(seen["from agent"]).toMatch(/'s agent$/);
     expect(JSON.stringify(seen)).not.toContain("secret bot");
+  });
+});
+
+describe("review fixes (#682)", () => {
+  const sqlOf = (i: ArtifactRuntime) =>
+    (i as unknown as { ctx: DurableObjectState }).ctx.storage.sql;
+
+  it("an html text anchor drops block; a pin on html is invalid_anchor", async () => {
+    const id = await pub({ visibility: "team" });
+    const r = await post(id, viewer, "x", {
+      kind: "text",
+      exact: "brown fox",
+      prefix: "",
+      suffix: "",
+      block: { path: "evil/free text" },
+    });
+    expect(r.status).toBe(201);
+    const t = await thread(r);
+    expect(t.anchor).not.toHaveProperty("block");
+    expect((await list(id, viewer)).threads[0]?.anchor).not.toHaveProperty(
+      "block",
+    );
+    const pin = await post(id, viewer, "x", {
+      kind: "pin",
+      x: 0.5,
+      y: 0.5,
+      contentHash: "abc",
+    });
+    expect(pin.status).toBe(400);
+    expect((await errOf(pin)).code).toBe("invalid_anchor");
+  });
+
+  it("a markdown text anchor keeps its block hint", async () => {
+    const id = await pub({
+      visibility: "team",
+      format: "markdown",
+      content: "# Hi\n\nsome text",
+    });
+    const t = await thread(
+      await post(id, viewer, "x", {
+        kind: "text",
+        exact: "some",
+        prefix: "",
+        suffix: "",
+        block: { line: 3 },
+      }),
+    );
+    expect(t.anchor).toMatchObject({ block: { line: 3 } });
+  });
+
+  it("the limit is taken before the quote is verified: refused quotes count (10 a minute per IP)", async () => {
+    const id = await pub({ visibility: "public" });
+    await inDo(id, (i) => {
+      i.now = () => 1_800_000_000_000;
+    });
+    const ip = uniqueIp();
+    const miss = () =>
+      call(id, null, "", {
+        method: "POST",
+        ip,
+        body: {
+          anchor: {
+            kind: "text",
+            exact: "no such text",
+            prefix: "",
+            suffix: "",
+          },
+          body: "x",
+        },
+      });
+    for (let n = 0; n < 10; n++) expect((await miss()).status).toBe(422);
+    expect((await miss()).status).toBe(429);
+  });
+
+  it("signed-in status changes count against 30 a minute; a no-op neither broadcasts nor changes", async () => {
+    const id = await pub({ visibility: "team" });
+    await inDo(id, (i) => {
+      i.now = () => 1_800_000_000_000;
+    });
+    const t = await thread(await post(id, viewer));
+    const sent: string[] = [];
+    await inDo(id, (i) => {
+      const ctx = (
+        i as unknown as { ctx: { getWebSockets: (t?: string) => unknown[] } }
+      ).ctx;
+      ctx.getWebSockets = (tag?: string) =>
+        tag === "~ev" ? [{ send: (m: string) => void sent.push(m) }] : [];
+    });
+    const set = (status: string) =>
+      call(id, viewer, `/${t.id}`, { method: "PATCH", body: { status } });
+    // Already open: nothing changes, nothing is sent.
+    expect((await set("open")).status).toBe(200);
+    expect(sent).toHaveLength(0);
+    for (let n = 0; n < 28; n++)
+      expect((await set(n % 2 ? "open" : "resolved")).status).toBe(200);
+    expect((await set("open")).status).toBe(429);
+  });
+
+  it("an expired but valid guest token still names its author (read, edit, delete, status); a forged one does not", async () => {
+    const id = await pub({ visibility: "public" });
+    const ip = uniqueIp();
+    const old = await issueAnonToken(
+      env,
+      `${"b".repeat(21)}A`,
+      Math.floor(Date.now() / 1000) - 31 * 24 * 3600,
+    );
+    const h = { [ANON_ID_HEADER]: old };
+    const mine = await call(id, null, "", {
+      method: "POST",
+      ip,
+      headers: h,
+      body: { anchor: NOTE, body: "old timer" },
+    });
+    expect(mine.status).toBe(201);
+    const t = await thread(mine);
+    const path = `/${t.id}/comments/${(t.comments[0] as Comment).id}`;
+    const seen = await list(id, null, "", h);
+    expect(seen.threads[0]?.comments[0]?.author.me).toBe(true);
+    const edit = await call(id, null, path, {
+      method: "PATCH",
+      ip,
+      headers: h,
+      body: { body: "still mine" },
+    });
+    expect(edit.status).toBe(200);
+    expect(edit.headers.get(ANON_ID_HEADER)).toBeNull();
+    const res = await call(id, null, `/${t.id}`, {
+      method: "PATCH",
+      ip,
+      headers: h,
+      body: { status: "resolved" },
+    });
+    expect((await thread(res)).resolvedBy).toMatchObject({ me: true });
+    const forged = { [ANON_ID_HEADER]: `${old.slice(0, -2)}AA` };
+    expect(
+      (
+        await call(id, null, path, {
+          method: "PATCH",
+          ip,
+          headers: forged,
+          body: { body: "x" },
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (await call(id, null, path, { method: "DELETE", ip, headers: h })).status,
+    ).toBe(204);
+  });
+
+  it("a guest token from artifact A is not the author on artifact B", async () => {
+    const a = await pub({ visibility: "public" });
+    const b = await pub({ visibility: "public" });
+    const first = await call(a, null, "", {
+      method: "POST",
+      body: { anchor: NOTE, body: "a" },
+    });
+    const tokenA = first.headers.get(ANON_ID_HEADER) as string;
+    const onB = await thread(
+      await call(b, null, "", {
+        method: "POST",
+        body: { anchor: NOTE, body: "b" },
+      }),
+    );
+    const path = `/${onB.id}/comments/${(onB.comments[0] as Comment).id}`;
+    const edit = await call(b, null, path, {
+      method: "PATCH",
+      headers: { [ANON_ID_HEADER]: tokenA },
+      body: { body: "stolen" },
+    });
+    expect(edit.status).toBe(403);
+    const del = await call(b, null, path, {
+      method: "DELETE",
+      headers: { [ANON_ID_HEADER]: tokenA },
+    });
+    expect(del.status).toBe(403);
+  });
+
+  it("a signed-out write with no cf-connecting-ip is refused", async () => {
+    const id = await pub({ visibility: "public" });
+    const r = await call(id, null, "", {
+      method: "POST",
+      ip: "",
+      body: { anchor: NOTE, body: "x" },
+    });
+    expect(r.status).toBe(429);
+    expect((await errOf(r)).code).toBe("rate_limited");
+  });
+
+  it("addresses in one IPv6 /64 share the guest limit", async () => {
+    const id = await pub({ visibility: "public" });
+    await inDo(id, (i) => {
+      i.now = () => 1_800_000_000_000;
+    });
+    const net = `2001:db8:${(++ipSeq).toString(16)}:2`;
+    for (let n = 0; n < 10; n++)
+      expect(
+        (
+          await call(id, null, "", {
+            method: "POST",
+            ip: `${net}::${n + 1}`,
+            body: { anchor: NOTE, body: "x" },
+          })
+        ).status,
+      ).toBe(201);
+    expect(
+      (
+        await call(id, null, "", {
+          method: "POST",
+          ip: `${net}:ffff::9`,
+          body: { anchor: NOTE, body: "x" },
+        })
+      ).status,
+    ).toBe(429);
+  });
+
+  it("GET stops at 5,000 comments across threads and says truncated", async () => {
+    const id = await pub({ visibility: "team" });
+    await post(id, viewer, "seed");
+    await inDo(id, (i) => {
+      const sql = sqlOf(i);
+      const actor = JSON.stringify({ kind: "user", ref: viewer.userId });
+      for (let t = 0; t < 30; t++) {
+        const tid = `T${t.toString().padStart(15, "0")}`;
+        sql.exec(
+          "insert into comment_threads (id, anchor, version, status, created_at, activity_at) values (?, '{\"kind\":\"note\"}', 1, 'open', ?, ?)",
+          tid,
+          "2026-01-01T00:00:00.000Z",
+          `2027-01-01T00:00:${t.toString().padStart(2, "0")}.000Z`,
+        );
+        sql.exec(
+          `insert into comments (id, thread_id, body, author, created_at)
+           select ? || value, ?, 'b', ?, '2026-01-01T00:00:00.000Z' from json_each(?)`,
+          `C${t}-`,
+          tid,
+          actor,
+          JSON.stringify(Array.from({ length: 201 }, (_, k) => k)),
+        );
+      }
+    });
+    const out = await list(id, viewer);
+    expect(out.truncated).toBe(true);
+    const total = out.threads.reduce((n, t) => n + t.comments.length, 0);
+    expect(total).toBeLessThanOrEqual(5000);
+    expect(out.threads.length).toBe(24);
+    // Newest activity first: the seeded real thread is oldest, so it is cut.
+    expect(out.threads[0]?.id).toBe(`T${"29".padStart(15, "0")}`);
   });
 });

@@ -24,7 +24,7 @@ import {
   shownName,
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
-import { verifyQuote, versionExists } from "./comment-anchor.js";
+import { verifyQuote, versionFormat } from "./comment-anchor.js";
 import {
   CONTENT_HASH_RE,
   type CommentStatus,
@@ -125,6 +125,8 @@ export async function checkAnchor(
   env: Pick<Env, "DB" | "FILES">,
   a: Pick<ArtifactRow, "id" | "format" | "currentVersion">,
   raw: unknown,
+  /** Runs before the version's file is read: the caller's rate limit, so a refused quote still counts. */
+  beforeVerify?: () => Promise<void>,
 ): Promise<CheckedAnchor> {
   const p = anchorInputSchema.safeParse(raw);
   if (!p.success)
@@ -138,17 +140,28 @@ export async function checkAnchor(
       throw new ApiError("invalid_anchor", "Invalid anchor", [
         { path: ["contentHash"], message: "Invalid contentHash" },
       ]);
-    if (!(await versionExists(env, a.id, version)))
+    const format = await versionFormat(env, a.id, a.format, version);
+    if (format === null)
       throw new ApiError(
         "anchor_not_in_version",
         "That version does not exist",
       );
+    // v1 pins are for images and pdf; on html the hash is a free channel into the frame.
+    if (format === "html")
+      throw new ApiError("invalid_anchor", "Pins are not available on html", [
+        { path: ["kind"], message: "Pins are not available on html" },
+      ]);
     return { anchor: { ...input, version }, version };
   }
+  await beforeVerify?.();
   const found = await verifyQuote(env, a.id, a.format, version, input);
+  // An html page's own code receives the anchor in the frame: its free-text
+  // block hint is never stored.
+  const { block: kept, ...rest } = input;
   return {
     anchor: {
-      ...input,
+      ...rest,
+      ...(found === null && kept ? { block: kept } : {}),
       version,
       ...(found ?? {}),
     },
@@ -305,11 +318,19 @@ export async function addThread(
   raw: { anchor: unknown; body: unknown },
 ): Promise<Thread> {
   const body = checkBody(raw.body);
-  const { anchor, version } = await checkAnchor(env, a, raw.anchor);
+  // The limit comes before any file is read, and a refused quote counts.
+  let taken = false;
+  const take = async () => {
+    taken = true;
+    await call(() => stub(env, a.id).commentsTake(rateKeyOf(who)));
+  };
+  const { anchor, version } = await checkAnchor(env, a, raw.anchor, take);
+  if (!taken) await take();
   const t = await call(() =>
     stub(env, a.id).commentsAdd({
       actor: actorOf(who),
       rate: rateKeyOf(who),
+      counted: true,
       anchor,
       version,
       body,
@@ -353,7 +374,7 @@ export async function setStatus(
       threadId,
       status,
       actor: actorOf(who),
-      ...(who.kind === "guest" ? { rate: who.rate } : {}),
+      rate: rateKeyOf(who),
     }),
   );
   return (await threadViews(env, [t], viewer))[0] as Thread;
@@ -377,7 +398,7 @@ export async function editComment(
       commentId,
       by: { kind: a.kind, ref: a.ref },
       body: text,
-      ...(who.kind === "guest" ? { rate: who.rate } : {}),
+      rate: rateKeyOf(who),
     }),
   );
   return commentView(env, c, viewer);
@@ -403,7 +424,7 @@ export async function deleteComment(
       commentId,
       by: a ? { kind: a.kind, ref: a.ref } : null,
       moderator,
-      ...(who?.kind === "guest" ? { rate: who.rate } : {}),
+      ...(who ? { rate: rateKeyOf(who) } : {}),
     }),
   );
 }

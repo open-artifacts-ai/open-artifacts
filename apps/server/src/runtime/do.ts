@@ -1975,10 +1975,21 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return t;
   }
 
-  /** A new thread with its root comment. `rate`: "u:{id}" or "ip:{key}". */
+  /**
+   * Takes one comment's worth of the limits (minute per person or IP, day per
+   * artifact) without storing anything: the route calls it before it reads a
+   * version's file to verify a quote, so a refused quote counts.
+   */
+  commentsTake(rate: string): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() => this.countComment(rate));
+  }
+
+  /** A new thread with its root comment. `rate`: "u:{id}" or "ip:{key}"; `counted`: commentsTake already took it. */
   commentsAdd(a: {
     actor: StoredActor;
     rate: string;
+    counted?: boolean;
     anchor: Anchor;
     version: number;
     body: string;
@@ -1986,7 +1997,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     this.checkBody(a.body);
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
-      this.countComment(a.rate);
+      if (!a.counted) this.countComment(a.rate);
       return insertThread(this.sql, this.iso(), a);
     });
     this.broadcastComments();
@@ -2021,34 +2032,35 @@ export class ArtifactRuntime extends DurableObject<Env> {
     threadId: string;
     status: CommentStatus;
     actor: StoredActor;
-    /** A signed-out guest's "ip:{key}": counts against the minute limit only. */
+    /** The caller's rate key ("u:{id}" or "ip:{key}"): counts against the minute limit only. */
     rate?: string;
   }): StoredThread {
     this.ensureSchema();
+    let changed = false;
     const out = this.ctx.storage.transactionSync(() => {
       if (a.rate) this.countComment(a.rate, false);
       const t = getThread(this.sql, a.threadId);
       if (!t) fail("not_found", "Not found");
-      if (t.status !== a.status) {
-        const now = this.iso();
-        if (a.status === "resolved")
-          this.sql.exec(
-            "update comment_threads set status = 'resolved', resolved_by = ?, resolved_at = ?, activity_at = ? where id = ?",
-            JSON.stringify(a.actor),
-            now,
-            now,
-            a.threadId,
-          );
-        else
-          this.sql.exec(
-            "update comment_threads set status = 'open', resolved_by = null, resolved_at = null, activity_at = ? where id = ?",
-            now,
-            a.threadId,
-          );
-      }
+      if (t.status === a.status) return t;
+      changed = true;
+      const now = this.iso();
+      if (a.status === "resolved")
+        this.sql.exec(
+          "update comment_threads set status = 'resolved', resolved_by = ?, resolved_at = ?, activity_at = ? where id = ?",
+          JSON.stringify(a.actor),
+          now,
+          now,
+          a.threadId,
+        );
+      else
+        this.sql.exec(
+          "update comment_threads set status = 'open', resolved_by = null, resolved_at = null, activity_at = ? where id = ?",
+          now,
+          a.threadId,
+        );
       return getThread(this.sql, a.threadId) as StoredThread;
     });
-    this.broadcastComments();
+    if (changed) this.broadcastComments();
     return out;
   }
 
@@ -2058,7 +2070,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     commentId: string;
     by: { kind: "user" | "guest"; ref: string };
     body: string;
-    /** A signed-out guest's "ip:{key}": counts against the minute limit only. */
+    /** The caller's rate key ("u:{id}" or "ip:{key}"): counts against the minute limit only. */
     rate?: string;
   }): StoredComment {
     this.checkBody(a.body);
@@ -2115,7 +2127,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     commentId: string;
     by: { kind: "user" | "guest"; ref: string } | null;
     moderator: boolean;
-    /** A signed-out guest's "ip:{key}": counts against the minute limit only. */
+    /** The caller's rate key ("u:{id}" or "ip:{key}"): counts against the minute limit only. */
     rate?: string;
   }): void {
     this.ensureSchema();
@@ -2182,6 +2194,7 @@ type RpcMethods =
   | "storageList"
   | "commentsList"
   | "commentsGet"
+  | "commentsTake"
   | "commentsAdd"
   | "commentsReply"
   | "commentsStatus"

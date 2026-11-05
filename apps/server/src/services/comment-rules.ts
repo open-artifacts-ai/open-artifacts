@@ -7,6 +7,8 @@ import { stripNameControls } from "@oa/shared";
 export const COMMENTS_MAX_THREADS = 500;
 /** GET: most replies per thread (the root is extra); a 201st reply is 409. */
 export const COMMENTS_MAX_REPLIES = 200;
+/** GET: most comments across all the threads returned. */
+export const COMMENTS_MAX_TOTAL = 5000;
 /** A pin's contentHash. */
 export const CONTENT_HASH_RE = /^[A-Za-z0-9_-]{1,128}$/;
 export type CommentStatus = "open" | "resolved";

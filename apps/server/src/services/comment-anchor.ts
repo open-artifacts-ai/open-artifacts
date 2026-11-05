@@ -101,10 +101,12 @@ export async function visibleText(
     })
     .on("*", {
       text(t) {
-        // A text node can arrive in pieces: decode it whole.
-        node += t.text;
+        // A text node can arrive in pieces: decode it whole. Hidden text
+        // (a huge script) and text past the cap are never buffered.
+        if (hidden === 0 && size + node.length < MAX_VISIBLE_CHARS)
+          node += t.text;
         if (!t.lastInTextNode) return;
-        if (hidden === 0) push(decodeEntities(node));
+        if (node !== "") push(decodeEntities(node));
         node = "";
       },
     });
@@ -114,6 +116,16 @@ export async function visibleText(
 }
 
 export type Quote = { exact: string; prefix?: string; suffix?: string };
+
+/** Moves an offset off the middle of a surrogate pair (toward `dir`). */
+function snap(text: string, i: number, dir: 1 | -1): number {
+  if (i <= 0 || i >= text.length) return i;
+  const low = text.charCodeAt(i);
+  const high = text.charCodeAt(i - 1);
+  return low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff
+    ? i + dir
+    : i;
+}
 
 /**
  * Finds the quote in `text` (already normalised). The prefix + exact + suffix
@@ -137,9 +149,10 @@ export function findQuote(
     };
   const at = text.indexOf(exact);
   if (at < 0) return null;
+  const end = at + exact.length;
   return {
-    prefix: text.slice(Math.max(0, at - CONTEXT_CHARS), at),
-    suffix: text.slice(at + exact.length, at + exact.length + CONTEXT_CHARS),
+    prefix: text.slice(snap(text, Math.max(0, at - CONTEXT_CHARS), 1), at),
+    suffix: text.slice(end, snap(text, end + CONTEXT_CHARS, -1)),
   };
 }
 
@@ -148,6 +161,9 @@ const notIn = () =>
     "anchor_not_in_version",
     "The quoted text is not in that version",
   );
+
+/** An entry over this is never parsed for verification (422). */
+export const MAX_VERIFY_BYTES = 5 * 1024 * 1024;
 
 type VersionRow = { format: string | null; manifest: string };
 
@@ -173,9 +189,11 @@ export async function verifyQuote(
   if (!row) throw notIn();
   if ((row.format ?? artifactFormat) !== "html") return null;
   const entry = (
-    JSON.parse(row.manifest) as { path: string; key: string }[]
+    JSON.parse(row.manifest) as { path: string; key: string; size?: number }[]
   ).find((e) => e.path === row.entry);
+  if (entry && (entry.size ?? 0) > MAX_VERIFY_BYTES) throw notIn();
   const body = entry ? await env.FILES.get(entry.key) : null;
+  if (body && body.size > MAX_VERIFY_BYTES) throw notIn();
   if (!body) throw notIn();
   const text = normalizeText(await visibleText(body.body));
   const found = findQuote(text, q);
@@ -183,15 +201,17 @@ export async function verifyQuote(
   return found;
 }
 
-/** Whether a version exists (a pin or a note names one). */
-export async function versionExists(
+/** The format of a version, or null when it does not exist. */
+export async function versionFormat(
   env: Pick<Env, "DB">,
   artifactId: string,
+  artifactFormat: string,
   version: number,
-): Promise<boolean> {
-  return !!(await env.DB.prepare(
-    "select 1 from versions where artifact_id = ? and version = ?",
+): Promise<string | null> {
+  const row = await env.DB.prepare(
+    "select format from versions where artifact_id = ? and version = ?",
   )
     .bind(artifactId, version)
-    .first());
+    .first<{ format: string | null }>();
+  return row ? (row.format ?? artifactFormat) : null;
 }

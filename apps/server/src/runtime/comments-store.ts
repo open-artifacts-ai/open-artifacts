@@ -2,6 +2,7 @@ import { type Anchor, COMMENT_BODY_MAX, newId } from "@oa/shared";
 import {
   COMMENTS_MAX_REPLIES,
   COMMENTS_MAX_THREADS,
+  COMMENTS_MAX_TOTAL,
   type CommentStatus,
 } from "../services/comment-rules.js";
 
@@ -115,8 +116,10 @@ export const openCount = (sql: SqlStorage): number =>
     .one().n;
 
 /**
- * Threads by newest activity, at most COMMENTS_MAX_THREADS, each with its
- * root and at most COMMENTS_MAX_REPLIES replies. `open` counts every open
+ * Threads by newest activity, at most COMMENTS_MAX_THREADS and at most
+ * COMMENTS_MAX_TOTAL comments across them (the list stops at the first thread
+ * that would pass it, truncated), each with its root and at most
+ * COMMENTS_MAX_REPLIES replies. `open` counts every open
  * thread, whatever the filter.
  */
 export function listThreads(
@@ -125,28 +128,48 @@ export function listThreads(
 ): StoredList {
   const where = status === "all" ? "" : "where status = ?";
   const args = status === "all" ? [] : [status];
-  const order = (n: number) => `order by activity_at desc, id desc limit ${n}`;
   const rows = sql
     .exec<ThreadRow>(
-      `select ${THREAD_COLS} from comment_threads ${where} ${order(COMMENTS_MAX_THREADS + 1)}`,
+      `select ${THREAD_COLS} from comment_threads ${where}
+       order by activity_at desc, id desc limit ${COMMENTS_MAX_THREADS + 1}`,
       ...args,
     )
     .toArray();
-  const truncated = rows.length > COMMENTS_MAX_THREADS;
-  const kept = rows.slice(0, COMMENTS_MAX_THREADS);
+  let truncated = rows.length > COMMENTS_MAX_THREADS;
+  const cand = rows.slice(0, COMMENTS_MAX_THREADS);
+  // How many comments each thread would return (its root and at most
+  // COMMENTS_MAX_REPLIES replies), so the whole answer can be bounded.
+  const counts = new Map<string, number>();
+  if (cand.length > 0)
+    for (const r of sql.exec<{ thread_id: string; n: number }>(
+      `select thread_id, count(*) as n from comments
+       where thread_id in (select value from json_each(?)) group by thread_id`,
+      JSON.stringify(cand.map((t) => t.id)),
+    ))
+      counts.set(r.thread_id, Math.min(r.n, COMMENTS_MAX_REPLIES + 1));
+  const kept: ThreadRow[] = [];
+  let total = 0;
+  for (const t of cand) {
+    const n = counts.get(t.id) ?? 0;
+    if (total + n > COMMENTS_MAX_TOTAL) {
+      truncated = true;
+      break;
+    }
+    total += n;
+    kept.push(t);
+  }
   const byThread = new Map<string, StoredComment[]>();
   if (kept.length > 0) {
-    // One statement: a DO binds at most 100 parameters, so no id list.
+    // One statement: a DO binds at most 100 parameters, so ids go as JSON.
     const cs = sql
       .exec<CommentRow>(
         `select id, thread_id, body, author, created_at, edited_at from (
            select c.*, row_number() over (partition by c.thread_id order by c.created_at, c.rowid) as rn
            from comments c
-           where c.thread_id in (select id from comment_threads ${where}
-             ${order(COMMENTS_MAX_THREADS)})
+           where c.thread_id in (select value from json_each(?))
          ) where rn <= ${COMMENTS_MAX_REPLIES + 1}
          order by thread_id, rn`,
-        ...args,
+        JSON.stringify(kept.map((t) => t.id)),
       )
       .toArray();
     for (const c of cs) {

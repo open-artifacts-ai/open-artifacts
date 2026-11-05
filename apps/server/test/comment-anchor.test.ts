@@ -68,9 +68,26 @@ describe("findQuote", () => {
   });
 });
 
+describe("context snapping and size", () => {
+  it("re-derived context never splits a surrogate pair", () => {
+    const t = `😀${"a".repeat(31)}EXACT${"b".repeat(30)}😀tail`;
+    const r = findQuote(t, { exact: "EXACT", prefix: "zz", suffix: "zz" });
+    const lone =
+      /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+    expect(r).not.toBeNull();
+    expect(lone.test(r?.prefix ?? "")).toBe(false);
+    expect(lone.test(r?.suffix ?? "")).toBe(false);
+  });
+  it("hidden text is not buffered into the result", async () => {
+    const big = "x".repeat(300_000);
+    expect(await text(`<script>${big}</script><p>seen</p>`)).toBe("seen");
+  });
+});
+
 describe("verifyQuote and checkAnchor", () => {
   let id: string;
   let mdId: string;
+  let big: string;
   beforeAll(async () => {
     const l = await login(`ca-${newId().slice(0, 6).toLowerCase()}@x.com`);
     const m = await getUser(env, l.userId);
@@ -91,6 +108,7 @@ describe("verifyQuote and checkAnchor", () => {
       )
     ).id;
     mdId = (await mk("markdown", "# Hi\n\nplain")).id;
+    big = (await mk("html", "<p>Hello</p>")).id;
   });
   const art = (a: string, format: string) => ({
     id: a,
@@ -104,6 +122,16 @@ describe("verifyQuote and checkAnchor", () => {
     ).not.toBeNull();
     await expect(
       verifyQuote(env, id, "html", 1, { exact: "hidden words" }),
+    ).rejects.toMatchObject({ code: "anchor_not_in_version" });
+  });
+  it("an entry over 5 MB is not parsed: 422", async () => {
+    await env.DB.prepare(
+      "update versions set manifest = json_set(manifest, '$[0].size', 6000000) where artifact_id = ?",
+    )
+      .bind(big)
+      .run();
+    await expect(
+      verifyQuote(env, big, "html", 1, { exact: "Hello" }),
     ).rejects.toMatchObject({ code: "anchor_not_in_version" });
   });
   it("422 for a version that does not exist", async () => {

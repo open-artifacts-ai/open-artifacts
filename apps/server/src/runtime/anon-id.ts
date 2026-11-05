@@ -150,3 +150,21 @@ export async function resolveAnonId(
     issued: await issueAnonToken(env, id, nowS),
   };
 }
+
+/**
+ * The per-artifact id a held token carries, for reading who someone is (me,
+ * edit and delete their own): any token whose signature verifies, including
+ * an expired one or a v1 one that resolveAnonId would renew. It never mints
+ * or issues anything, and a malformed, forged or future-dated token is null.
+ */
+export async function readAnonId(
+  env: Pick<Env, "SESSION_SECRET">,
+  artifactId: string,
+  token: string | undefined,
+  now: number = Date.now(),
+): Promise<string | null> {
+  if (!token) return null;
+  const keys = await anonKeys(env);
+  const ok = await verifyToken(keys, token, Math.floor(now / 1000));
+  return ok ? shortOf(keys.v1, artifactId, ok.id) : null;
+}

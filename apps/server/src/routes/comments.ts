@@ -14,7 +14,7 @@ import { readCapped } from "../http/body.js";
 import { isEmbedRequest } from "../http/embed.js";
 import { ApiError } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
-import { resolveAnonId } from "../runtime/anon-id.js";
+import { readAnonId, resolveAnonId } from "../runtime/anon-id.js";
 import { ipKey } from "../runtime/routes.js";
 import type { AgentAttr } from "../services/agent-usage.js";
 import {
@@ -105,14 +105,20 @@ async function identity(
       viewer: { userId: user.id, short: null, moderator },
       issued: null,
     };
-  const anon = await resolveAnonId(
-    c.env,
-    artifactId,
-    c.req.header(ANON_ID_HEADER),
-    mint,
-  );
-  const viewer = { userId: null, short: anon?.short ?? null, moderator };
-  if (!anon || !mint) return { who: null, viewer, issued: null };
+  const token = c.req.header(ANON_ID_HEADER);
+  if (!mint) {
+    // Reads, edits, deletes and status changes: who the token says, an
+    // expired one included; never a new token.
+    const short = await readAnonId(c.env, artifactId, token);
+    return {
+      who: null,
+      viewer: { userId: null, short, moderator },
+      issued: null,
+    };
+  }
+  const anon = await resolveAnonId(c.env, artifactId, token, true);
+  if (!anon) throw new Error("anonId not minted");
+  const viewer = { userId: null, short: anon.short, moderator };
   // The per-IP key the DO limits by (10 a minute): an IPv6 address by its /64.
   const key = ipKey(c.req.header("cf-connecting-ip") ?? "");
   if (!key)
