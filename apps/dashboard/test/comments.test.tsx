@@ -1355,3 +1355,107 @@ describe("comments: a server without comments", () => {
     expect(screen.queryByText("Couldn't load comments.")).toBeNull();
   });
 });
+
+describe("comments: unavailable is not forever", () => {
+  const list = (threads: object[]) =>
+    HttpResponse.json({ threads, open: threads.length, truncated: false });
+
+  it("comments_off, then the owner turns comments on, then the list loads: the button and column come back without a remount", async () => {
+    let off = true;
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        off
+          ? HttpResponse.json(
+              { error: { code: "comments_off", message: "off" } },
+              { status: 403 },
+            )
+          : list([oneThread]),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: "More actions" });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /^Comments/ })).toBeNull(),
+    );
+    // Owner turns comments on: the list answers, and a comments event arrives.
+    off = false;
+    await waitFor(() => expect(events.connections(OWNED)).toBe(1));
+    await act(async () => {
+      events.emitComments(OWNED, 1);
+    });
+    const btn = await screen.findByRole("button", { name: "Comments, 1 open" });
+    // L-r6-3: the visible label keeps its space, inside the name.
+    expect(btn.textContent).toBe("Comments 1");
+    expect(await col()).toBeInTheDocument();
+  });
+
+  it("the summary refetching with comments: true (after false) re-enables the list", async () => {
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () => list([oneThread])),
+    );
+    const a = fixtures.artifacts.find((x) => x.id === OWNED);
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({ ...a, comments: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: "More actions" });
+    expect(screen.queryByRole("button", { name: /^Comments/ })).toBeNull();
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({ ...a, comments: true }),
+      ),
+    );
+    await act(async () => {
+      await lastClient.invalidateQueries({ queryKey: ["artifact", OWNED] });
+    });
+    expect(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    ).toBeInTheDocument();
+  });
+
+  const noComments = () =>
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () => {
+        const { comments: _omit, ...rest } = fixtures.artifacts.find(
+          (a) => a.id === OWNED,
+        ) as Record<string, unknown>;
+        return HttpResponse.json(rest);
+      }),
+    );
+
+  it("L-r6-2: with no comments on a server, ?tab=comments falls back to Versions, and a guest's ?panel=open shows no empty panel", async () => {
+    noComments();
+    mount(`${viewerPath(OWNED)}?panel=open&tab=comments`);
+    const tab = await screen.findByRole("tab", { name: "Versions" });
+    expect(tab).toHaveAttribute("data-state", "active");
+    expect(screen.queryByRole("tab", { name: "Comments" })).toBeNull();
+  });
+
+  it("L-r6-2: a signed-out visitor with ?panel=open and no comments gets no side panel", async () => {
+    server.use(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json(
+          { error: { code: "unauthorized", message: "no" } },
+          { status: 401 },
+        ),
+      ),
+      http.get(`*${R.artifact(PUBLIC)}`, () => {
+        const { comments: _omit, ...rest } = fixtures.artifacts.find(
+          (a) => a.id === PUBLIC,
+        ) as Record<string, unknown>;
+        return HttpResponse.json({ ...rest, visibility: "public" });
+      }),
+    );
+    mount(`${viewerPath(PUBLIC)}?panel=open`);
+    await waitFor(() =>
+      expect(document.querySelector("iframe")).not.toBeNull(),
+    );
+    await wait(150);
+    expect(
+      screen.queryByRole("complementary", { name: "Side panel" }),
+    ).toBeNull();
+    expect(document.querySelector("aside[aria-label='Side panel']")).toBeNull();
+  });
+});

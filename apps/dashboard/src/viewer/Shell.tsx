@@ -216,12 +216,6 @@ function Viewer({
   const surface = useSurface(chromeless);
   const [colOpen, setColOpen] = useState<boolean | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const commentsTab = surface !== "dialog";
-  const tab: PanelTab = !authed
-    ? "comments"
-    : requestedTab === "comments" && !commentsTab
-      ? "versions"
-      : requestedTab;
   const openSurface = useRef(() => {});
   const getBridge = useCallback(() => bridge.current, []);
   const cmt = useCommentsController({
@@ -235,6 +229,16 @@ function Viewer({
   });
   const cmtRef = useRef(cmt);
   cmtRef.current = cmt;
+  const commentsOn =
+    cmt.enabled && (authed || cmt.canComment || cmt.threads.length > 0);
+  // The panel's Comments tab: offered only where comments are on and the list
+  // isn't a dialog; a link to it elsewhere falls back to Versions.
+  const commentsTab = commentsOn && surface !== "dialog";
+  const tab: PanelTab = !authed
+    ? "comments"
+    : requestedTab === "comments" && !commentsTab
+      ? "versions"
+      : requestedTab;
   // Open by default only when there is something to show.
   const columnShown =
     colOpen ??
@@ -476,8 +480,6 @@ function Viewer({
     vformat ??
     (version === artifact.currentVersion ? artifact.format : undefined);
   const textFormat = fmt !== "pdf" && fmt !== "image";
-  const commentsOn =
-    cmt.enabled && (authed || cmt.canComment || cmt.threads.length > 0);
   const commentsButton = commentsOn
     ? surface === "column"
       ? {
@@ -586,7 +588,7 @@ function Viewer({
               version={version}
               authed={authed}
               comments={
-                commentsOn && commentsTab ? (
+                commentsTab ? (
                   <CommentsBody textFormat={textFormat} />
                 ) : undefined
               }

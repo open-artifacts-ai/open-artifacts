@@ -113,18 +113,15 @@ export function useCommentsController({
   const id = artifact.id;
   // Absent `comments`: a server without them (older than #1496): nothing to show.
   const wanted = artifact.comments === true && !isEmbed();
-  const [probe, setProbe] = useState<unknown>(null);
+  const q = useThreads(id, wanted, !authed);
   // A 404 or comments_off from the list means comments are unavailable here:
-  // no panel, no column, no badge and no error.
+  // no panel, no column, no badge and no error. The query stays enabled, so a
+  // comments event, a refetch of the summary (comments: true again) or a focus
+  // refetch can bring them back; the error is replaced by the next answer.
   const unavailable =
-    probe instanceof ApiClientError &&
-    (probe.status === 404 || probe.code === "comments_off");
+    q.error instanceof ApiClientError &&
+    (q.error.status === 404 || q.error.code === "comments_off");
   const enabled = wanted && !unavailable;
-  const q = useThreads(id, enabled, !authed);
-  const listError = q.error;
-  useEffect(() => {
-    if (listError) setProbe(listError);
-  }, [listError]);
   const all = q.data?.threads;
   // Pinned to an older version by the address: not merely "behind" a current
   // version that a live event just raised before the swap.
