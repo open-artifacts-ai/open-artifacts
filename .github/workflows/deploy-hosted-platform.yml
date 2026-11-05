@@ -243,7 +243,7 @@ jobs:
           done
           cp .deploy-logic/packages/provision/src/wfp.ts "$RUNNER_TEMP/main-wfp.ts"
           mkdir "$RUNNER_TEMP/main-ci"
-          for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh staging-smoke-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts; do
+          for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh staging-smoke-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts deploy-token-identity.sh; do
             cp ".deploy-logic/scripts/ci/$f" "$RUNNER_TEMP/main-ci/$f"
           done
           cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"
@@ -286,6 +286,14 @@ jobs:
           DEPLOY_ENV: ${{ inputs.env }}
           OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
         run: bash "$RUNNER_TEMP/main-ci/hosted-constants.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"
+      # Before any Cloudflare read or write: the token must be the one pinned
+      # as deploy_token_id in <env>.json (the Environment's, not a repo-level
+      # fallback), and active.
+      - name: The deploy token is the Environment's
+        env:
+          DEPLOY_ENV: ${{ inputs.env }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash "$RUNNER_TEMP/main-ci/deploy-token-identity.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"
       # The release chain (#1343) re-checks here, holding the concurrency
       # group and before anything deploys: prod's scheduler (the fleet's
       # target) must run an older release than the tag.
