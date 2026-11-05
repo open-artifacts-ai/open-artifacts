@@ -680,6 +680,8 @@ const directoryText = (e: RegistryEntry): string =>
 
 /** How long a lifecycle operation holds the row's lock (installs.lease_until); renewed at each step. */
 const LEASE_MS = 30 * 60_000;
+/** The fence renews the held lease at most this often (#1326); step holds always renew. */
+const FENCE_RENEW_MS = 10_000;
 const HEX32 = /^[0-9a-f]{32}$/;
 const hex16 = () =>
   Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex");
@@ -1078,7 +1080,7 @@ export class WfpProvisioner {
     // #1326: every Cloudflare write first renews the held lease (hold), so
     // an attempt fenced out by a newer one stops before the call. The
     // platform D1 (the lease itself) takes the bare client.
-    this.cf = fenceWrites(o.cf, () => this.hold());
+    this.cf = fenceWrites(o.cf, () => this.hold(true));
     this.env = o.env;
     this.target = o.target;
     this.now = o.now ?? Date.now;
@@ -2818,13 +2820,29 @@ export class WfpProvisioner {
    * (fenceWrites); a lock another operation took stops this one. Once lost,
    * every later call throws again, so nothing more reaches Cloudflare.
    */
-  private async hold(): Promise<void> {
+  private async hold(fromFence = false): Promise<void> {
     const lost = this.ctx.getStore()?.lost;
     if (lost !== undefined) throw new LostLease(lost);
     const h = this.held;
-    if (h && !(await this.platform.renew(h.id, h.lease, this.now() + LEASE_MS)))
+    if (!h) return;
+    // The fence (one call per Cloudflare write) renews at most once per
+    // FENCE_RENEW_MS; a step-level hold always renews.
+    const t = this.now();
+    const last = this.renewedAt;
+    if (
+      fromFence &&
+      last?.lease === h.lease &&
+      t >= last.at &&
+      t - last.at < FENCE_RENEW_MS
+    )
+      return;
+    if (!(await this.platform.renew(h.id, h.lease, t + LEASE_MS)))
       await this.lost();
+    this.renewedAt = { lease: h.lease, at: t };
   }
+
+  /** The last successful renew of the held lease (the fence's throttle). */
+  private renewedAt: { lease: string; at: number } | null = null;
 
   private async lost(): Promise<never> {
     const h = this.held as { id: InstallId; op: string };
@@ -5075,13 +5093,15 @@ export class WfpProvisioner {
     if (!c || !t) return;
     c.ci = null;
     try {
+      // The bare client: revoking our own token is safe even once the lease is
+      // lost (#1326), and must not be refused by the fence.
       assertOwnResource(t.d1Name, this.env);
-      await this.cf.d1Query(
+      await this.o.cf.d1Query(
         t.d1Id,
         "UPDATE tokens SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
         [this.now(), t.tokenId],
       );
-      const left = await this.cf.d1Query(
+      const left = await this.o.cf.d1Query(
         t.d1Id,
         "SELECT id FROM tokens WHERE id = ?1 AND revoked_at IS NULL",
         [t.tokenId],
