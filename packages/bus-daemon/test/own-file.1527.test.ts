@@ -13,7 +13,12 @@ import { join } from "node:path";
 import { AgentInfo, daemonStatus, StatusReply } from "@oa/bus-ipc";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { ConfigIssues, scanConfigFiles } from "../src/config-issues.ts";
+import {
+  ConfigIssues,
+  inspectGlobal,
+  scanConfigFiles,
+} from "../src/config-issues.ts";
+import { readGlobalDirs } from "../src/global.ts";
 import { resolveNamespace } from "../src/namespace.ts";
 import { readOwnFile } from "../src/own-file.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
@@ -218,5 +223,23 @@ describe("an old adapter or CLI still decodes the new frames", () => {
         namespaces: [],
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("global.json stays strict", () => {
+  it("a group-writable global.json grants nothing and is listed with its fix", () => {
+    const g = join(tmp(), "global.json");
+    writeFileSync(g, JSON.stringify({ dirs: ["/"] }));
+    chmodSync(g, 0o664);
+    expect(readGlobalDirs(g)).toEqual({
+      dirs: [],
+      error: "is writable by others",
+    });
+    expect(inspectGlobal(g)).toEqual({
+      file: g,
+      state: "refused",
+      reason: "is writable by others",
+      fix: `run chmod go-w ${g}`,
+    });
   });
 });
