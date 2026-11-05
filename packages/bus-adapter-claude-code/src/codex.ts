@@ -4,6 +4,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
+  ADAPTER_CAPS,
   BUS_CMD,
   CLIENT_VERSION,
   type DaemonClient,
@@ -123,6 +124,7 @@ export function codexHello(
     pid,
     ...(call.cwd ? { cwd: call.cwd } : {}),
     proposed_name: "codex",
+    caps: [ADAPTER_CAPS.mailbox],
     codex: {
       thread_id: call.threadId,
       call_id: call.callId,

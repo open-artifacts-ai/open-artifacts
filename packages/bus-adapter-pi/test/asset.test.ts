@@ -251,6 +251,7 @@ describe("pi extension asset", () => {
       pid: process.pid,
       cwd: "/work/repo",
       proposed_name: "my-pi",
+      caps: ["mailbox"],
       attest: { proc_start: procStartOf(process.pid) },
     });
     // `TZ=UTC LC_ALL=C ps -o lstart=`: "Fri Oct 23 08:13:26 2026".

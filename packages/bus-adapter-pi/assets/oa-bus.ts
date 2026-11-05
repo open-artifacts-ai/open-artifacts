@@ -858,6 +858,8 @@ function open(
         pid: process.pid,
         cwd: id.cwd,
         proposed_name: id.name,
+        // #1295: this asset decodes away rows and the new refusals.
+        caps: ["mailbox"],
         attest: start ? { proc_start: start } : {},
       }),
     );
