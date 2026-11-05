@@ -111,6 +111,7 @@ describe("C12 adversarial", () => {
       // Still queued in the pacer at the drop: resent on the next link, in order.
       expect(second).toEqual(ids.slice(2));
     } finally {
+      vi.useRealTimers();
       hub.stop();
       await new Promise<void>((r) => wss.close(() => r()));
     }
