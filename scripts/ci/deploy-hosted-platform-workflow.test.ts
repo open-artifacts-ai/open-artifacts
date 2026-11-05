@@ -221,7 +221,7 @@ describe("deploy-hosted-platform.yml", () => {
     );
     // The constants and the id lookup are main's too, never the tag's.
     expect(use).toContain(
-      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh staging-smoke-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts; do",
+      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh staging-smoke-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts deploy-token-identity.sh; do",
     );
     expect(use).toContain(
       'cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"',
@@ -243,6 +243,9 @@ describe("deploy-hosted-platform.yml", () => {
     // The release chain's re-check (#1343) sits between: it needs the
     // account id, and runs before any lookup or deploy.
     expect(i("Load the hosted constants")).toBe(
+      i("The deploy token is the Environment's") - 1,
+    );
+    expect(i("The deploy token is the Environment's")).toBe(
       i("The tag is newer than prod's") - 1,
     );
     expect(i("The tag is newer than prod's")).toBe(
@@ -315,6 +318,7 @@ describe("deploy-hosted-platform.yml", () => {
     expect(withSecrets.map((s) => s.name)).toEqual([
       "Check the inputs",
       "Load the hosted constants",
+      "The deploy token is the Environment's",
       "The tag is newer than prod's",
       "Resolve the resource ids",
       "Deploy and verify",
@@ -642,7 +646,10 @@ describe("deploy-hosted-platform.yml", () => {
     );
     const e = named("The deploy token's expiry");
     expect(steps.at(-1)).toBe(e);
-    expect(e.if).toBe("${{ !cancelled() }}");
+    // A wrong or unverified token never opens a roll issue.
+    expect(e.if).toBe(
+      "${{ !cancelled() && steps.token_identity.outcome == 'success' }}",
+    );
     expect(e.run).toBe(
       'bash "$RUNNER_TEMP/main-ci/deploy-token-expiry.sh" "$DEPLOY_ENV"',
     );
@@ -818,5 +825,29 @@ describe("deploy-hosted-platform.yml", () => {
     // prod's tag unreadable: refuse.
     expect(go("prod", "v0.99.0", "")).not.toBe(0);
     expect(go("staging", "v0.99.0", "v0.98.3")).not.toBe(0);
+  });
+
+  it("verifies the deploy token's identity right after the constants, before any step using CLOUDFLARE_API_TOKEN", () => {
+    const names = steps.map((s) => s.name);
+    const at = names.indexOf("The deploy token is the Environment's");
+    expect(at).toBe(names.indexOf("Load the hosted constants") + 1);
+    const first = steps.findIndex((s) =>
+      JSON.stringify(s).includes("CLOUDFLARE_API_TOKEN"),
+    );
+    expect(first).toBe(at);
+    // Fail-open guards: main's copy of the script, main's hosted constants,
+    // exactly this line, and nothing that swallows a failure.
+    const g = steps[at];
+    expect(g.id).toBe("token_identity");
+    expect(g.run).toBe(
+      'bash "$RUNNER_TEMP/main-ci/deploy-token-identity.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"',
+    );
+    expect(g.if).toBeUndefined();
+    expect(g["continue-on-error"]).toBeUndefined();
+    expect(JSON.stringify(g)).not.toMatch(/\|\|\s*true|continue-on-error/);
+    expect(g.shell).toBeUndefined();
+    expect(text).toContain(
+      "worker-tag.sh prod-release-chain.ts deploy-token-identity.sh;",
+    );
   });
 });
