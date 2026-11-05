@@ -214,6 +214,40 @@ create table if not exists roles (
 );
 create index if not exists roles_lname on roles(org_id, lname);
 
+-- #1372 role proposals: a role change an AI agent proposed over MCP
+-- (bus_role_propose). Nothing changes until the member confirms it in a
+-- browser on its link; token_hash is the sha256 of that link's secret (the
+-- secret is never stored). action: set | repoint | clear; role_id: the role
+-- it re-points or clears (null for set); agent_id: the new holder (null for
+-- clear); prior_agent_id: the holder it displaces, as of the proposal;
+-- agent_name, prior_holder_name: their names then (what the member is
+-- shown; a rename since refuses the confirm as changed). The
+-- confirm applies only while the role is still as it was (bus/roles.ts
+-- confirmProposal). status: pending | applied | refused | expired, decided
+-- once. A new table: create-if-not-exists adds it; wipe() deletes it.
+create table if not exists role_proposals (
+  id text primary key,
+  org_id text not null,
+  token_hash text not null unique,
+  action text not null,
+  namespace text not null,
+  name text not null,
+  lname text not null,
+  role_id text,
+  agent_id text,
+  agent_name text,
+  prior_agent_id text,
+  prior_holder_name text,
+  created_at integer not null,
+  expires_at integer not null,
+  status text not null default 'pending',
+  reason text,
+  decided_at integer
+);
+create index if not exists role_proposals_created on role_proposals(org_id, created_at);
+create index if not exists role_proposals_pending on role_proposals(expires_at)
+  where status = 'pending';
+
 create table if not exists meta (
   org_id text not null,
   key text not null,

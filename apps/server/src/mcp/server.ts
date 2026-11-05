@@ -27,6 +27,7 @@ import { VERSION } from "../version.gen.js";
 import { INSTRUCTIONS, RUNTIME_DOC_URI } from "./instructions.js";
 import { renderSkill, SKILL_DOC_URI, skillUrl } from "./skill.js";
 import { registerArtifactTools } from "./tools/artifacts.js";
+import { registerBusTools } from "./tools/bus.js";
 import { registerDataTools } from "./tools/data.js";
 
 export type McpContext = {
@@ -131,6 +132,7 @@ export function createServer(ctx: McpContext): McpServer {
   enforceToolPolicy(server, t);
   registerArtifactTools(server, t);
   registerDataTools(server, t);
+  registerBusTools(server, t);
   server.registerResource(
     "runtime-docs",
     RUNTIME_DOC_URI,

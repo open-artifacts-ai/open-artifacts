@@ -4,6 +4,7 @@ import {
   ADMIN_TOOL_NAMES,
   type InstallDetail,
   type Job,
+  JobSchema,
   type Release,
   TOKEN_SCOPES,
 } from "@oa/provisioning-contract";
@@ -98,6 +99,18 @@ export class ProbeFail extends Error {
   override name = "ProbeFail";
 }
 
+/** settledMode's timeout: the inventory never read `want`. */
+export class ModeNotSettled extends ProbeFail {
+  override name = "ModeNotSettled";
+  readonly mode: string | null;
+  constructor(what: string, mode: string | null, want: string | null) {
+    super(
+      `${what}: inventory mode is ${mode}, want ${want}, after ${HOSTS_SETTLE_MS / 1000} s`,
+    );
+    this.mode = mode;
+  }
+}
+
 /** Poll cadence and bounds (12.2: paused and resumed pages within 120 s). */
 export const POLL_MS = 3_000;
 export const PAGE_WITHIN_MS = 120_000;
@@ -120,7 +133,6 @@ export const SIGNIN_IP_LIMIT = 10;
  * and syncs in the background, so a parallel burst slips through.
  */
 export const P25_MAX_REQUESTS = 3 * SIGNIN_IP_LIMIT;
-export const P44_REGISTRATIONS = 11;
 export const P42_BYTES = 40 * 1024;
 /** P48's bound on R2 pages per q (O reaches only rl- installs). */
 export const P48_MAX_PAGES = 10;
@@ -372,10 +384,7 @@ export class Run {
     for (;;) {
       const { mode } = await this.hostMode(host);
       if (mode === want) return;
-      if (this.io.now() >= end)
-        throw new ProbeFail(
-          `${what}: inventory mode is ${mode}, want ${want}, after ${HOSTS_SETTLE_MS / 1000} s`,
-        );
+      if (this.io.now() >= end) throw new ModeNotSettled(what, mode, want);
       await this.io.wait(POLL_MS);
     }
   }
@@ -446,6 +455,97 @@ function expect(r: Res, status: number, what: string, code?: string): void {
     throw new ProbeFail(
       `${what}: want ${status}${code ? ` ${code}` : ""}, got ${desc(r)}`,
     );
+}
+
+/** Dispatch's HOSTS read cacheTtl (apps/dispatch/src/index.ts: cacheTtl 60). */
+export const DISPATCH_HOSTS_TTL_MS = 60_000;
+export const ISSUE_1326 =
+  "https://github.com/open-artifacts-ai/open-artifacts/issues/1326";
+
+/**
+ * P22 (#1417): the app host served 200 after the restore, but the inventory
+ * kept reading another mode for HOSTS_SETTLE_MS. Two causes look alike: KV
+ * staleness at the inventory's location (its read is cached too, and the
+ * probe's polling keeps that cache hot), or a late "closed" write landing
+ * after the restore's "serving" (the lease race, #1326).
+ *
+ * The app host stands in for both hosts (one write sets both HOSTS keys).
+ * The first re-check runs no earlier than 60 s after the last 200, which in
+ * the probe has already passed (the settle took 120 s), so it reads whatever
+ * dispatch's cache holds now. The second runs DISPATCH_HOSTS_TTL_MS after the
+ * first, so that cache has turned over at least once in between: a "closed"
+ * written before the first re-check shows as a 503 by the second. Infra needs
+ * 200 both times, no delete or suspend job accepted after the restore (R14),
+ * the delete job itself (R15, parsed with JobSchema) with no failed attempt
+ * recorded and finished before the restore was accepted, and the restore job
+ * with no error code (lease_held above all). A job's attempt counter resets
+ * when a step succeeds, so it can't show the delete ran once. Anything else,
+ * or an unreadable R14 or R15, fails linking #1326. No retry; the waits are
+ * bounded (at most two TTLs) and go through run.io.wait.
+ *
+ * O can't read the hosts audit rows (R17 gives it its own api rows only), so
+ * nothing here rules a zombie write out for certain: every message names the
+ * install and job ids for an admin's query_audit.
+ */
+export async function servingLag(
+  run: Run,
+  o: {
+    installId: string;
+    appHost: string;
+    /** When the app host last answered 200 after the restore. */
+    lastOk: number;
+    /** The inventory's last mode. */
+    mode: string | null;
+    deleteJobId: string;
+    restore: Job;
+  },
+): Promise<InfraError | ProbeFail> {
+  const left = o.lastOk + DISPATCH_HOSTS_TTL_MS - run.io.now();
+  if (left > 0) await run.io.wait(Math.min(left, DISPATCH_HOSTS_TTL_MS));
+  const since = Math.round((run.io.now() - o.lastOk) / 1000);
+  const pg1 = (await run.page(o.appHost, "/healthz", true)).status;
+  await run.io.wait(DISPATCH_HOSTS_TTL_MS);
+  const pg2 = (await run.page(o.appHost, "/healthz", true)).status;
+  const values = `inventory mode ${o.mode} after ${HOSTS_SETTLE_MS / 1000} s, app host page ${pg1} ${since} s after its last 200 and ${pg2} ${DISPATCH_HOSTS_TTL_MS / 1000} s later`;
+  const audit = `the hosts audit isn't readable by O: query_audit installId ${o.installId} (restore job ${o.restore.id}, delete job ${o.deleteJobId})`;
+  const fail = (why: string) =>
+    new ProbeFail(
+      `P22: can't rule out a late closed write (#1326 ${ISSUE_1326}): ${values}; ${why}; ${audit}`,
+    );
+  const jobs = await run.v1(`/installs/${o.installId}/jobs`, { read: true });
+  if (jobs.status !== 200) return fail(`R14 jobs unreadable (${desc(jobs)})`);
+  const del = await run.v1(`/jobs/${o.deleteJobId}`, { read: true });
+  if (del.status !== 200)
+    return fail(`R15 delete job unreadable (${desc(del)})`);
+  const parsed = JobSchema.safeParse(del.json);
+  if (!parsed.success)
+    return fail(
+      `R15 delete job doesn't parse (${parsed.error.issues.length} issue(s) at ${parsed.error.issues
+        .slice(0, 3)
+        .map((i) => i.path.join(".") || "(root)")
+        .join(", ")})`,
+    );
+  const d = parsed.data;
+  const items = (jobs.json as { items?: Job[] } | undefined)?.items ?? [];
+  const later = items.filter(
+    (j) =>
+      (j.kind === "delete" || j.kind === "suspend") &&
+      j.createdAt > o.restore.createdAt,
+  ).length;
+  const why: string[] = [];
+  if (pg1 !== 200 || pg2 !== 200) why.push("the page isn't 200 both times");
+  if (later) why.push(`${later} delete or suspend job(s) after the restore`);
+  if (d.attempt > 1) why.push(`the delete job shows attempt ${d.attempt}`);
+  if (d.failure != null || d.lastErrorCode != null)
+    why.push("the delete job recorded a failed attempt");
+  if (o.restore.lastErrorCode != null)
+    why.push(`the restore job recorded ${o.restore.lastErrorCode}`);
+  if (d.finishedAt === null || d.finishedAt > o.restore.createdAt)
+    why.push("the delete job didn't finish before the restore was accepted");
+  if (why.length) return fail(why.join(", "));
+  return new InfraError(
+    `P22: KV propagation at the inventory location, most likely: ${values}; no delete or suspend job after the restore, no failed attempt recorded on the delete job, which finished before it, and no error code on the restore job; ${audit}`,
+  );
 }
 
 const ulidish = () => {
@@ -1678,13 +1778,26 @@ export const PROBES: readonly Probe[] = [
         }),
         "P22 restore",
       );
-      await run.done(r.job.id, "P22 restore");
-      await run.within(
-        PAGE_WITHIN_MS,
-        "P22 serving",
-        async () => (await run.page(p.appHost)).status === 200,
-      );
-      await run.settledMode("P22", p.appHost, "serving");
+      const restore = await run.done(r.job.id, "P22 restore");
+      let lastOk = 0;
+      await run.within(PAGE_WITHIN_MS, "P22 serving", async () => {
+        if ((await run.page(p.appHost)).status !== 200) return false;
+        lastOk = run.io.now();
+        return true;
+      });
+      try {
+        await run.settledMode("P22", p.appHost, "serving");
+      } catch (e) {
+        if (!(e instanceof ModeNotSettled)) throw e;
+        throw await servingLag(run, {
+          installId: p.id,
+          appHost: p.appHost,
+          lastOk,
+          mode: e.mode,
+          deleteJobId: d.job.id,
+          restore,
+        });
+      }
       return pass();
     },
   },
@@ -2219,7 +2332,7 @@ export const PROBES: readonly Probe[] = [
   {
     id: "P44",
     title:
-      "/oauth/register: foreign redirect URIs 400 invalid_redirect_uri; the 11th registration refused",
+      "/oauth/register: foreign redirect URIs 400 invalid_redirect_uri; the listed one 201 with a client_id",
     run: async (run) => {
       const reg = (uris: string[]) =>
         run.raw(`${run.c.api}/oauth/register`, {
@@ -2244,32 +2357,27 @@ export const PROBES: readonly Probe[] = [
         "P44 unlisted claude.ai",
         "invalid_redirect_uri",
       );
-      // The cap is 10 per ipKey per UTC day (9A.7); refused registrations
-      // give their slot back, so only an earlier 201 from this egress IP today
-      // spends it. 10 x 201 then 429 proves the limit; fewer 201s before the
-      // 429 cannot tell a lower cap from a spent one, so that is unproven. OAuth
-      // endpoints answer RFC 6749 errors (3.5): 429 is temporarily_unavailable.
-      let ok = 0;
-      for (let i = 1; i <= P44_REGISTRATIONS; i++) {
-        const r = await reg([run.c.mcpRedirectUri]);
-        if (r.status === 429) {
-          expect(r, 429, `P44 registration ${i}`, "temporarily_unavailable");
-          if (ok === P44_REGISTRATIONS - 1) return pass();
-          return unproven(
-            `the 429 came after ${ok} registration(s): this IP's daily cap was partly spent earlier`,
-          );
-        }
-        const id = (r.json as { client_id?: unknown } | undefined)?.client_id;
-        if (r.status !== 201 || typeof id !== "string" || !id)
-          throw new ProbeFail(
-            `P44: registration ${i} want 201 with a client_id or 429, got ${desc(r)}`,
-          );
-        if (ok === 0) run.s.clientId = id;
-        ok++;
+      // One listed registration, for P43's client. The 10 per ipKey per UTC
+      // day cap (9A.7) is not burst live: a runner's egress IP can move
+      // mid-burst (run 41923001970), so a live 11th 201 proves nothing.
+      // apps/provisioning/test/oauth.test.ts covers the cap, the concurrent
+      // burst and the refund. A 429 here means this IP's day was spent
+      // earlier: unproven. OAuth errors are RFC 6749 (3.5): 429 is
+      // temporarily_unavailable.
+      const r = await reg([run.c.mcpRedirectUri]);
+      if (r.status === 429) {
+        expect(r, 429, "P44 registration", "temporarily_unavailable");
+        return unproven(
+          "the registration got 429: this IP's daily cap was spent earlier",
+        );
       }
-      throw new ProbeFail(
-        `P44 registration ${P44_REGISTRATIONS}: want 429 temporarily_unavailable, got 201`,
-      );
+      const id = (r.json as { client_id?: unknown } | undefined)?.client_id;
+      if (r.status !== 201 || typeof id !== "string" || !id)
+        throw new ProbeFail(
+          `P44: registration want 201 with a client_id or 429, got ${desc(r)}`,
+        );
+      run.s.clientId = id;
+      return pass();
     },
   },
   {

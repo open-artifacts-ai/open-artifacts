@@ -243,9 +243,12 @@ describe("probe cases (derived from Backend's surfaces)", () => {
       expect(x?.why).toBe("interactive-only");
       expect(cases.find((c) => c.routes.includes(r))?.denyOnly).toBe(true);
     }
-    // The public exception is exactly the page's form, not a way out.
+    // The public exceptions are exactly the pages' forms (and #1372's
+    // confirm page), not a way out.
     expect(INTERACTIVE_ONLY.filter((r) => PUBLIC_ROUTES.includes(r))).toEqual([
       "POST /bus/share-notices",
+      "GET /bus/roles/confirm/:token",
+      "POST /bus/roles/confirm/:token",
     ]);
   });
 

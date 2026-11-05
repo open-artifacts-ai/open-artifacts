@@ -48,10 +48,20 @@ async function fakeAccess(email: string, nonce: string) {
   });
 }
 
-/** A full Access sign-in for `email` (state cookie, fake token exchange). */
-export async function accessSignIn(email: string): Promise<Response> {
+/**
+ * A full Access sign-in for `email` (state cookie, fake token exchange).
+ * `reauth`: the forced sign-in (?reauth=1, #1372).
+ */
+export async function accessSignIn(
+  email: string,
+  opts: { reauth?: boolean; next?: string } = {},
+): Promise<Response> {
+  const q = new URLSearchParams({
+    next: opts.next ?? "/",
+    ...(opts.reauth ? { reauth: "1" } : {}),
+  });
   const start = await app.fetch(
-    new Request(`http://app.localhost${AUTH.login}?next=/`),
+    new Request(`http://app.localhost${AUTH.login}?${q}`),
     env,
     ctx,
   );

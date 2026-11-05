@@ -286,6 +286,18 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/bus/roles": { org: "mcp.connect" },
   "PUT /api/v1/bus/roles": { org: "mcp.connect" },
   "DELETE /api/v1/bus/roles/:id": { org: "mcp.connect" },
+  // #1372: the role proposal confirm page (bus/role-confirm.ts). The handler
+  // takes only an interactive cookie session of the hub's own member (a
+  // PAT, an OAuth grant or a machine token is refused) and a POST its form
+  // token; the link's secret finds the proposal in that member's hub only.
+  "GET /bus/roles/confirm/:token": {
+    public:
+      "role proposal confirm page; redirects to sign-in, interactive session, the caller's own hub",
+  },
+  "POST /bus/roles/confirm/:token": {
+    public:
+      "role proposal decision; interactive session, form CSRF, the caller's own hub, single use",
+  },
   "GET /api/v1/oauth-clients": { user: "the caller's grants" },
   "PATCH /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
   "DELETE /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
@@ -337,4 +349,6 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   artifact_data_update: art("data.write"),
   artifact_data_delete: art("data.write"),
   list_spaces: { user: "the caller's own publishable spaces" },
+  // #1372: proposes only (the caller's own hub); offered while the bus is on.
+  bus_role_propose: { org: "mcp.connect" },
 };

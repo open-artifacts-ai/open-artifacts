@@ -189,13 +189,21 @@ export type DropWhy =
   | "no-world-caller"
   | "credential-free"
   | "no-directory"
-  | "feature-off";
+  | "feature-off"
+  | "bus-off";
 
 /**
  * FEATURES every hosted install has (packages/provision/src/metadata.ts,
  * userWorkerMetadata: always `spaces,usage_off`); the local pair sets the same.
  */
 export const HOSTED_FEATURES: readonly string[] = ["spaces", "usage_off"];
+
+/**
+ * MCP tools offered only while the bus is on (apps/server/src/mcp/tools/bus.ts
+ * registerBusTools: BUS_HUB bound and not HOSTED=1). Every red-line install
+ * is hosted, so none is ever offered there.
+ */
+export const BUS_TOOLS: readonly string[] = ["bus_role_propose"];
 
 /**
  * Routes whose success leg needs a connected Google directory: the
@@ -224,6 +232,8 @@ const WHY: Record<DropWhy, string> = {
     "credential-free: /p/ serves public artifacts to anyone, so no tenant credential crosses",
   "feature-off":
     "hidden on hosted installs (a FEATURES flag every hosted install sets turns it off: 404 for everyone), so crossCheck has no success leg",
+  "bus-off":
+    "the bus is off on every hosted install (HOSTED=1 until #1299), so its MCP tool isn't offered there and crossCheck has no success leg",
   "no-directory":
     "needs a connected Google directory (the connector, or a mapping row only it creates); the red-line installs have none, so crossCheck has no success leg",
 };
@@ -311,6 +321,9 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
     "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
   "DELETE /api/v1/bus/roles/:id":
     "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
+  // #1372: offered only while the bus is on; never on a hosted install.
+  "tool:bus_role_propose":
+    "bus-off: the tool isn't offered on a hosted install (the bus is off until #1299)",
 };
 
 /**
@@ -330,6 +343,9 @@ export const INTERACTIVE_ONLY: readonly string[] = [
   // public-policy page route (PUBLIC_ROUTES), so no org surface or case:
   // the suite probes scoped routes only (coverageGaps' `scoped`).
   "POST /bus/share-notices",
+  // #1372: the role proposal confirm page, the same kind (PUBLIC_ROUTES).
+  "GET /bus/roles/confirm/:token",
+  "POST /bus/roles/confirm/:token",
 ];
 
 const ERASE_TESTS = "apps/server/test/members.erase.test.ts";
@@ -337,6 +353,8 @@ const ERASE_AUTHZ = "POST R.memberErase(id): authorization";
 const SHARE_NOTICE_TESTS = "apps/server/test/follows.test.ts";
 const ROLE_TESTS = "apps/server/test/bus/roles.rest.test.ts";
 const ROLE_D = "roles REST (#1296)";
+const PROPOSAL_TESTS = "apps/server/test/bus/roles.proposals.test.ts";
+const PROPOSAL_D = "role proposals over MCP (#1372)";
 
 /**
  * The surfaces dropped from the cross-install suite (P5 plan, Task 3b;
@@ -554,6 +572,24 @@ export const DROPPED: Readonly<
     why: "real-only",
     coveredBy: [INSTANCE],
   },
+  // #1372: the matrix calls it as every caller (bus on in the test pool);
+  // its own tests prove it only proposes.
+  "artifact mcp bus_role_propose": {
+    why: "bus-off",
+    coveredBy: [
+      ARTIFACTS,
+      {
+        file: PROPOSAL_TESTS,
+        describe: PROPOSAL_D,
+        test: "only the caller's own hub and agents: another member's agent can't be targeted",
+      },
+      {
+        file: PROPOSAL_TESTS,
+        describe: PROPOSAL_D,
+        test: "no bus: no_bus before a machine connected; bus off or hosted: no tool and no confirm page",
+      },
+    ],
+  },
   "space patch {} (personal)": { why: "nobody", coveredBy: BY_PERSONAL },
   "space delete (personal)": { why: "nobody", coveredBy: BY_PERSONAL },
   "space member put (personal)": { why: "nobody", coveredBy: BY_PERSONAL },
@@ -742,6 +778,13 @@ export function derive(): Derived {
     const name = `artifact ${s.name}`;
     if (s.action === "public.link") {
       drop(name, s.routes, "credential-free");
+      continue;
+    }
+    if (
+      s.via === "mcp" &&
+      s.routes.every((r) => BUS_TOOLS.includes(r.slice(5)))
+    ) {
+      drop(name, s.routes, "bus-off");
       continue;
     }
     // The first world cell expect.ts allows (the admin test user stands in
@@ -1196,7 +1239,10 @@ async function api(
     `${t.app}${path}`,
     withCred(pat, { method, headers, body: b }),
   );
-  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra (never retried).
+  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra. Never retried, no
+  // retryFresh: newArtifact also makes the fixed world, guard and trash
+  // artifacts, found again by title in a space listing, and the per-case
+  // throwaway can sit in the world space the probes list (#1133).
   const { res, text } = o.setup
     ? await setupFetch(t.name, req)
     : await fetch(req).then(async (r) => ({ res: r, text: await readBody(r) }));

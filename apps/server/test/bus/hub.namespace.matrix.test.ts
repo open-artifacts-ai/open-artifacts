@@ -625,11 +625,15 @@ describe("RPC surface", () => {
     // The port's RPC surface (#1291): the Worker-only methods.
     expect(own).toEqual([
       "closeAll",
+      "decideRoleProposal",
       "deleteRole",
+      "listRoleProposals",
       "listRoles",
+      "proposeRole",
       "putRole",
       "revokeMachine",
       "snapshot",
+      "viewRoleProposal",
       "wipe",
     ]);
   });

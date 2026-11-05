@@ -137,6 +137,12 @@ const WIDENS: Readonly<Record<string, string>> = {
   // #1291: a machine's first connect reads status, role and restricted_* in
   // its WHERE (the canConnect floor) and writes only last_used_at.
   "bus/routes.ts:connect": "a read: the first-use check's canConnect floor",
+  // #1372: a role proposal's own status column (pending, applied, refused,
+  // expired) in the BusHub, never a member's status.
+  "bus/role-proposals.ts:expireProposals":
+    "a role proposal's status, not access",
+  "bus/role-proposals.ts:decideProposal":
+    "a role proposal's status, not access",
 };
 
 /** Exempt from the scan: the primitives themselves. */

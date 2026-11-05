@@ -74,11 +74,15 @@ const mirror = (h: BusHubStub) =>
 /** The deliberate RPC surface. Adding a public method means adding it here. */
 const RPC_ALLOWLIST = [
   "closeAll",
+  "decideRoleProposal",
   "deleteRole",
+  "listRoleProposals",
   "listRoles",
+  "proposeRole",
   "putRole",
   "revokeMachine",
   "snapshot",
+  "viewRoleProposal",
   "wipe",
 ];
 

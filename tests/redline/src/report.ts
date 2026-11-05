@@ -39,6 +39,12 @@ export interface CaseResult {
    * refusal kept from running, which the manifest then counts as run.
    */
   blocked?: { file: string; cases: string[] };
+  /**
+   * A file's own error outside any test (src/reporter.ts "<file>: module
+   * error"): not a case, so the manifest never lists it and keeps its level
+   * (infra when every error is infra, else fail).
+   */
+  moduleError?: true;
 }
 
 /**
@@ -381,7 +387,8 @@ export const caseKey = (file: string, name: string) => `${file}\u0000${name}`;
 /**
  * A required case that didn't run (a missing or renamed file or test) is a
  * FAIL, and so is a case the manifest doesn't list. Cases without a file
- * (module or unhandled errors) pass through.
+ * (unhandled errors) and a file's module error pass through with their own
+ * level: a module error whose cause is infra stays infra (#1133).
  */
 export function applyManifest(
   cases: readonly CaseResult[],
@@ -403,7 +410,7 @@ export function applyManifest(
     if (c.level === "infra" && c.blocked)
       for (const n of c.blocked.cases) seen.add(caseKey(c.blocked.file, n));
   const out: CaseResult[] = cases.map((c) => {
-    if (!c.file) return c;
+    if (!c.file || c.moduleError) return c;
     const k = caseKey(c.file, c.name);
     seen.add(k);
     return required.has(k)

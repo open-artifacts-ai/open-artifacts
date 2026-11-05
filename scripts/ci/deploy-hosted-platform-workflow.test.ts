@@ -219,7 +219,7 @@ describe("deploy-hosted-platform.yml", () => {
     );
     // The constants and the id lookup are main's too, never the tag's.
     expect(use).toContain(
-      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts; do",
+      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh staging-smoke-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts; do",
     );
     expect(use).toContain(
       'cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"',
@@ -589,6 +589,20 @@ describe("deploy-hosted-platform.yml", () => {
       i("Staging passed this tag"),
     );
     expect(i("Staging passed this tag")).toBeLessThan(i("Deploy and verify"));
+    // #1406: the same targets also need staging's smoke green at or after
+    // the tag, with main's script, before anything deploys.
+    const s = named("Staging's smoke is green at or after this tag");
+    expect(s.if).toBe(g.if);
+    expect(s.env).toEqual(g.env);
+    expect(s.run).toBe(
+      'bash "$RUNNER_TEMP/main-ci/staging-smoke-gate.sh" "$TAG"',
+    );
+    expect(i("Use main's deploy scripts")).toBeLessThan(
+      i("Staging's smoke is green at or after this tag"),
+    );
+    expect(i("Staging's smoke is green at or after this tag")).toBeLessThan(
+      i("Deploy and verify"),
+    );
   });
 
   it("builds and tests the Provisioning API Workers and the admin SPA too", () => {

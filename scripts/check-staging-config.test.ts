@@ -109,10 +109,11 @@ describe("wrangler.staging.jsonc env.staging", () => {
     );
     expect(tpl.vars.SERVER_THUMBNAILS).toBe("on");
   });
-  it("logs every staging request to Workers Logs; the template logs only the app's lines", () => {
+  it("keeps every app log line on staging, but no invocation logs (they record URLs: role confirm links, #1372); the template the same", () => {
     expect(env.observability).toEqual({
       enabled: true,
       head_sampling_rate: 1,
+      logs: { enabled: true, invocation_logs: false },
     });
     const tpl = JSON.parse(
       readFileSync(join(root, "apps/server/wrangler.template.jsonc"), "utf8"),
@@ -252,15 +253,17 @@ describe("staging UserPresence (P3 T7a #502, T7b #503)", () => {
   });
 });
 
-describe("BusHub (#1291 tag v4): ships unbound one release before BUS_HUB binds it", () => {
-  const template = JSON.parse(
-    readFileSync(join(root, "apps/server/wrangler.template.jsonc"), "utf8"),
-  );
+describe("BusHub (#1291 tag v4, shipped unbound in 0.109.0; bound by #1315)", () => {
+  const read = (f: string) =>
+    JSON.parse(strip(readFileSync(join(root, "apps/server", f), "utf8")));
+  // Every server config: the install template (self-host setup and the
+  // hosted release both render it), staging, and the test pool.
   for (const [name, c] of [
     ["staging", env],
-    ["template", template],
+    ["template", read("wrangler.template.jsonc")],
+    ["test", read("wrangler.test.jsonc")],
   ] as const) {
-    it(`${name}: tag v4 adds BusHub after v3; nothing binds it yet`, () => {
+    it(`${name}: tag v4 adds BusHub after v3, and BUS_HUB binds it`, () => {
       // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
       const tags = c.migrations.map((m: any) => m.tag);
       expect(tags.slice(0, 4)).toEqual(["v1", "v2", "v3", "v4"]);
@@ -268,10 +271,21 @@ describe("BusHub (#1291 tag v4): ships unbound one release before BUS_HUB binds 
         tag: "v4",
         new_sqlite_classes: ["BusHub"],
       });
-      expect(
-        // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
-        c.durable_objects.bindings.map((b: any) => b.class_name),
-      ).not.toContain("BusHub");
+      expect(c.durable_objects.bindings).toContainEqual({
+        name: "BUS_HUB",
+        class_name: "BusHub",
+      });
+    });
+    it(`${name}: no migration deletes, renames or transfers BusHub`, () => {
+      for (const m of c.migrations as Record<string, unknown>[])
+        for (const k of [
+          "deleted_classes",
+          "renamed_classes",
+          "transferred_classes",
+        ])
+          expect(JSON.stringify(m[k] ?? []), `${m.tag} ${k}`).not.toContain(
+            "BusHub",
+          );
     });
   }
 });
