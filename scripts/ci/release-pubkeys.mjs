@@ -61,10 +61,7 @@ export function verifyCurrentSignature(
   signature,
   pinned = RELEASE_PUBKEY,
 ) {
-  return verifySignature(env, payload, signature, pinned, {
-    staging: [],
-    prod: [],
-  });
+  return verifySignature(env, payload, signature, pinned, RELEASE_RETIRED_PUBKEYS);
 }
 
 /**
