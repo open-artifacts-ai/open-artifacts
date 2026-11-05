@@ -83,9 +83,8 @@ function Empty() {
       </div>
       <ol className="m-0 grid list-decimal gap-[var(--oa-space-2)] ps-[var(--oa-space-5)] text-[length:var(--oa-text-sm)]">
         <li>
-          On that computer, ask any AI agent to set up the Open Artifacts bus
-          client (oa-bus) and connect it to{" "}
-          <span className="font-mono">{location.host}</span>.
+          Ask any AI agent to set up the Open Artifacts bus client and connect
+          it to <span className="font-mono">{location.host}</span>.
         </li>
         <li>
           It prints a code. Type it at{" "}

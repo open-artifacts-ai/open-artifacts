@@ -619,11 +619,16 @@ describe("Settings › Machines", () => {
     );
     mount("/settings/machines");
     expect(await screen.findByText("No machines yet")).toBeInTheDocument();
+    // Design's line, exactly; nothing comes before it, so no leading "Or".
     expect(
       screen.getByText(
-        /ask any AI agent to set up the Open Artifacts bus client \(oa-bus\)/,
+        (_, el) =>
+          el?.tagName === "LI" &&
+          el.textContent ===
+            `Ask any AI agent to set up the Open Artifacts bus client and connect it to ${location.host}.`,
       ),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/oa-bus|say yes when it asks/)).toBeNull();
     expect(screen.getByRole("link", { name: "Enter a code" })).toHaveAttribute(
       "href",
       "/bus/approve",
