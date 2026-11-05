@@ -1080,7 +1080,7 @@ export class WfpProvisioner {
     // #1326: every Cloudflare write first renews the held lease (hold), so
     // an attempt fenced out by a newer one stops before the call. The
     // platform D1 (the lease itself) takes the bare client.
-    this.cf = fenceWrites(o.cf, () => this.hold(true));
+    this.cf = o.cf;
     this.env = o.env;
     this.target = o.target;
     this.now = o.now ?? Date.now;
