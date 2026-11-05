@@ -15,6 +15,7 @@ type Opts = {
   iframe: HTMLIFrameElement;
   url: string;
   onHello: () => void;
+  onInteracted: () => void;
   onCommentSelect: (a: unknown) => void;
   onCommentPositions: (p: unknown[]) => void;
   onCommentOpen: (id: string) => void;
@@ -707,7 +708,7 @@ describe("comments: contract edges", () => {
     ).toBeInTheDocument();
   });
 
-  it("a comments event never touches version state: no content or artifact refetch, no newer dot", async () => {
+  it("a comments event never touches version state: no content or artifact refetch, no Versions dot", async () => {
     const gets = calls("GET");
     mount(viewerPath(OWNED));
     await col();
@@ -721,11 +722,16 @@ describe("comments: contract edges", () => {
     });
     await wait(100);
     expect(other()).toBe(before);
+    expect(screen.queryByTestId("versions-dot")).toBeNull();
+    // Control: the same setup does show the dot for a real new version, so the
+    // assertion above can fail. A touched frame holds the swap and dots Versions.
+    await act(async () => opts.at(-1)?.onInteracted());
+    await act(async () => {
+      events.emitVersion(OWNED, { version: 99 });
+    });
     expect(
-      document.querySelector(
-        "[data-versions-chip] .oa-vdot, [data-versions-chip] svg",
-      ),
-    ).toBeNull();
+      (await screen.findAllByTestId("versions-dot")).length,
+    ).toBeGreaterThan(0);
   });
 });
 
