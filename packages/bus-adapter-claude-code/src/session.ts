@@ -25,7 +25,8 @@ export type SessionDeps = {
 export const claudeSessionsDir = (
   env: Record<string, string | undefined> = process.env,
 ): string =>
-  env.OA_BUS_CLAUDE_SESSIONS_DIR || join(homedir(), ".claude", "sessions");
+  env.OA_BUS_CLAUDE_SESSIONS_DIR ||
+  join(env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "sessions");
 
 /** OA_BUS_HOME, absolute; empty means unset. Daemon, CLI and MCP servers all read it here. */
 export const busHome = (
@@ -130,6 +131,24 @@ export function findSession(
   }
   return null;
 }
+
+/**
+ * Whether any ancestor has a Claude session file, usable or not: whether a
+ * Claude Code session launched this process at all. Another harness that
+ * imports Claude's MCP config (Pi, say) runs it with none.
+ */
+export function hasClaudeAncestor(
+  pid: number,
+  deps: Pick<SessionDeps, "sessionsDir" | "ancestors">,
+): boolean {
+  return deps
+    .ancestors(pid)
+    .some((anc) => readSessionFile(deps.sessionsDir, anc).state !== "none");
+}
+
+/** A tool call with no Claude Code session above it: no install would help. */
+export const NOT_UNDER_CLAUDE =
+  "This MCP server is for Claude Code; use this harness's own bus tools.";
 
 const ps = (field: string, pid: number): string | null => {
   try {

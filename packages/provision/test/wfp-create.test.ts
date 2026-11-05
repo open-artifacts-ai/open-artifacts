@@ -25,6 +25,7 @@ import { packUstar } from "../../../scripts/ci/release-artifact.mjs";
 import {
   assetContentType,
   assetHash,
+  type Cf,
   CfError,
   cfClient,
   type Target,
@@ -41,7 +42,7 @@ import {
   platformNames,
   registryKey,
 } from "../src/names.js";
-import { canonicalJson, inputsHash } from "../src/platform.js";
+import { canonicalJson, inputsHash, leaseJobPart } from "../src/platform.js";
 import {
   FLOOR_KEY,
   probeR2Conditionals,
@@ -65,9 +66,12 @@ import {
   assertSessionSecret,
   brokerKid,
   brokerOrigin,
+  CF_WRITES,
   DEFAULT_MAX_TOKEN_DAYS,
+  fenceWrites,
   HOSTED_DOMAINS,
   hostsKvTitle,
+  LostLease,
   NAMESPACES,
   PROVISIONER_MAX_TOKEN_DAYS,
   ProdLocked,
@@ -4334,6 +4338,431 @@ describe("T3b E: the signed floor gates create", () => {
     expect(sc?.modules.get("index.js")?.bytes).toEqual(
       makeBundle("release").modules[0]?.bytes,
     );
+  });
+});
+
+describe("a job's lease across its attempts (#1326: fenced by attempt)", () => {
+  const JOB = "job:01JOBAAAAAAAAAAAAAAAAAAAAA";
+  /**
+   * One attempt of a job claims the lease, then hangs at its first request
+   * after the claim (a step timeout abandons it without killing it). `wake`
+   * lets that request go, so the attempt runs on to its next hold().
+   */
+  function hungAttempt(
+    s: ReturnType<typeof setup>,
+    holder: string | null = JOB,
+    when: (method: string, path: string, body: string) => boolean = () => true,
+    extra: Partial<WfpOptions> = {},
+  ) {
+    /** This attempt's requests after it woke: method and path. */
+    const after: string[] = [];
+    let awake = false;
+    let hung: () => void = () => {};
+    const atUpload = new Promise<void>((r) => {
+      hung = r;
+    });
+    let wake: () => void = () => {};
+    const woken = new Promise<void>((r) => {
+      wake = r;
+    });
+    let first = true;
+    const fetch: typeof globalThis.fetch = (async (
+      u: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      // The first request once this attempt holds the lease (the one
+      // right after its claim).
+      const method = init?.method ?? "GET";
+      const path = new URL(String(u)).pathname;
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (awake) after.push(`${method} ${path}`);
+      if (
+        first &&
+        s.rows()[0]?.lease != null &&
+        s.rows()[0]?.lease === mine() &&
+        when(method, path, body)
+      ) {
+        first = false;
+        hung();
+        await woken;
+        awake = true;
+      }
+      return s.fake.fetch(u as string, init);
+    }) as typeof fetch;
+    const cf = cfClient({
+      accountId: s.fake.accountId,
+      token: s.fake.token,
+      fetch,
+      sleep: async () => {},
+    });
+    const p = s.mk(
+      holder === null
+        ? { cf, ...extra }
+        : { cf, leaseHolder: holder, ...extra },
+    );
+    // This attempt's token: the one the row took after its own claim.
+    let token: string | null = null;
+    const before = s.rows()[0]?.lease ?? null;
+    const mine = () => {
+      const cur = s.rows()[0]?.lease ?? null;
+      if (token === null && cur !== null && cur !== before) token = cur;
+      return token;
+    };
+    const run = p.create(input()).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    return { atUpload, wake, run, after };
+  }
+
+  it("a fenced-out attempt's next Cloudflare write throws LostLease before reaching Cloudflare", async () => {
+    const s = setup();
+    // Attempt 1 hangs at its D1 lookup (a read) right after its claim; its
+    // next call is the D1 create (a write).
+    const a1 = hungAttempt(
+      s,
+      JOB,
+      (m, p) => m === "GET" && p.endsWith("/d1/database"),
+    );
+    await a1.atUpload;
+    const id = s.rows()[0].id as string;
+    await s.clock.sleep(60_000);
+    const a2 = hungAttempt(s);
+    await a2.atUpload;
+    const second = s.rows()[0].lease as string;
+    a1.wake();
+    expect(await a1.run).toBeInstanceOf(LostLease);
+    // After it woke, attempt 1 reached only its lookup and the platform D1
+    // (the renew that failed, the audit): no Cloudflare write of its own.
+    const platform = `/d1/database/${s.pdb}/`;
+    expect(
+      a1.after.filter((x) => !x.startsWith("GET ") && !x.includes(platform)),
+    ).toEqual([]);
+    expect(
+      s.fake.log.some(
+        (e) => e.method === "POST" && /\/d1\/database$/.test(e.path),
+      ),
+    ).toBe(false);
+    expect(s.rows()[0]).toMatchObject({ lease: second, state: "creating" });
+    a2.wake();
+    expect(await a2.run).toBeNull();
+    expect(s.rows()[0]).toMatchObject({ id, state: "active", lease: null });
+  });
+
+  it("an attempt hung after assetsUpload, then fenced out by its retry, never reaches scriptUpload at Cloudflare", async () => {
+    const s = setup();
+    // Attempt 1 hangs at the assets upload session (the last request before
+    // its script PUT); its retry takes the lease; attempt 1 then wakes.
+    const a1 = hungAttempt(
+      s,
+      JOB,
+      (m, p) => m === "POST" && p.endsWith("/assets-upload-session"),
+    );
+    await a1.atUpload;
+    await s.clock.sleep(60_000);
+    const a2 = hungAttempt(s);
+    await a2.atUpload;
+    const second = s.rows()[0].lease as string;
+    a1.wake();
+    expect(await a1.run).toBeInstanceOf(LostLease);
+    // Whatever attempt 1 finished inside assetsUpload, its script PUT never
+    // went out (the script PUT is the one write after it).
+    expect(a1.after.filter((x) => /^PUT .*\/scripts\//.test(x))).toEqual([]);
+    expect(s.rows()[0]).toMatchObject({ lease: second, state: "creating" });
+    a2.wake();
+    expect(await a2.run).toBeNull();
+  });
+
+  it("a lease lost mid-create still revokes the CI owner token before the operation ends (bare client)", async () => {
+    const s = setup();
+    const CI = { ciOwnerToken: { label: "ci-42" } };
+    let minted = false;
+    const a1 = hungAttempt(
+      s,
+      JOB,
+      (_m, p, body) => {
+        if (/INSERT INTO tokens/.test(body)) minted = true;
+        // The first platform D1 call after the token insert (the mint's
+        // audit renew): attempt 1 hangs there.
+        return minted && p.includes(`/d1/database/${s.pdb}/`);
+      },
+      CI,
+    );
+    await a1.atUpload;
+    await s.clock.sleep(60_000);
+    const a2 = hungAttempt(s, JOB, () => true, CI);
+    await a2.atUpload;
+    const idb = s.fake.d1.get(s.rows()[0].d1_id)?.db as DatabaseSync;
+    const live = () =>
+      idb
+        .prepare(
+          "SELECT count(*) AS n FROM tokens WHERE label = 'ci-42' AND revoked_at IS NULL",
+        )
+        .get() as { n: number };
+    expect(live().n).toBe(1);
+    a1.wake();
+    expect(await a1.run).toBeInstanceOf(LostLease);
+    // Revoked by attempt 1 itself, before a2 ran another step.
+    expect(live().n).toBe(0);
+    a2.wake();
+    expect(await a2.run).toBeNull();
+  });
+
+  describe("the fence renews at most once per 10 s", () => {
+    async function held() {
+      const s = setup();
+      const inst = await s.p.create(input());
+      const p = s.mk({ leaseHolder: JOB }) as unknown as {
+        ctx: { run: <T>(c: unknown, f: () => Promise<T>) => Promise<T> };
+        resolvePlatform: () => Promise<void>;
+        platform: { renew: (...a: unknown[]) => Promise<boolean> };
+        hold: () => Promise<void>;
+        cf: Cf;
+      };
+      const ctx = {
+        sensitive: new Set(),
+        held: {
+          id: inst.id,
+          lease: `${leaseJobPart(JOB)}${"0".repeat(32)}`,
+          op: "t",
+        },
+        ci: null,
+      };
+      return { s, p, ctx };
+    }
+
+    it("a burst of writes within 10 s does one renew; a step hold always renews", async () => {
+      const { s, p, ctx } = await held();
+      await p.ctx.run(ctx, async () => {
+        await p.resolvePlatform();
+        const renew = vi.spyOn(p.platform, "renew").mockResolvedValue(true);
+        for (let i = 0; i < 5; i++) {
+          await p.cf.kvPut(s.hostsId, `k${i}`, "x");
+          await s.clock.sleep(1_000);
+        }
+        expect(renew).toHaveBeenCalledTimes(1);
+        await p.hold();
+        expect(renew).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    it("a write after 10 s renews again and detects a takeover before reaching Cloudflare", async () => {
+      const { s, p, ctx } = await held();
+      await p.ctx.run(ctx, async () => {
+        await p.resolvePlatform();
+        const renew = vi
+          .spyOn(p.platform, "renew")
+          .mockResolvedValueOnce(true)
+          .mockResolvedValue(false);
+        await p.cf.kvPut(s.hostsId, "before", "x");
+        await s.clock.sleep(9_999);
+        await p.cf.kvPut(s.hostsId, "within", "x");
+        expect(renew).toHaveBeenCalledTimes(1);
+        await s.clock.sleep(1);
+        await expect(
+          p.cf.kvPut(s.hostsId, "after", "x"),
+        ).rejects.toBeInstanceOf(LostLease);
+        expect(renew).toHaveBeenCalledTimes(2);
+        // Sticky: once lost, no further renew, still refused.
+        await expect(
+          p.cf.kvPut(s.hostsId, "later", "x"),
+        ).rejects.toBeInstanceOf(LostLease);
+        expect(renew).toHaveBeenCalledTimes(2);
+      });
+      const kv = s.fake.kvValues(s.hostsId);
+      expect([kv.has("before"), kv.has("within")]).toEqual([true, true]);
+      expect([kv.has("after"), kv.has("later")]).toEqual([false, false]);
+    });
+  });
+
+  it("after LostLease, every later Cloudflare write of that operation is refused too, before reaching Cloudflare", async () => {
+    const s = setup();
+    const inst = await s.p.create(input());
+    const p = s.mk({ leaseHolder: JOB }) as unknown as {
+      ctx: { run: <T>(c: unknown, f: () => Promise<T>) => Promise<T> };
+      resolvePlatform: () => Promise<void>;
+      cf: Cf;
+    };
+    // A held lease this operation no longer has (another attempt re-took it).
+    await p.ctx.run(
+      {
+        sensitive: new Set(),
+        held: {
+          id: inst.id,
+          lease: `${leaseJobPart(JOB)}${"0".repeat(32)}`,
+          op: "t",
+        },
+        ci: null,
+      },
+      async () => {
+        await p.resolvePlatform();
+        for (let i = 0; i < 2; i++)
+          await expect(
+            p.cf.kvPut(s.hostsId, "fenced", "x"),
+          ).rejects.toBeInstanceOf(LostLease);
+      },
+    );
+    expect(s.fake.kvValues(s.hostsId).has("fenced")).toBe(false);
+  });
+
+  it("once fenced out, every later write of that operation throws LostLease too (fenceWrites)", async () => {
+    const calls: string[] = [];
+    let n = 0;
+    const cf = fenceWrites(
+      {
+        kvGet: async () => {
+          calls.push("kvGet");
+          return null;
+        },
+        kvPut: async () => {
+          calls.push("kvPut");
+        },
+      } as unknown as Cf,
+      async () => {
+        if (++n > 1) throw new LostLease("lost");
+      },
+    );
+    await cf.kvPut("ns", "k", "v");
+    await expect(cf.kvPut("ns", "k", "v")).rejects.toBeInstanceOf(LostLease);
+    expect(await cf.kvGet("ns", "k")).toBeNull();
+    expect(calls).toEqual(["kvPut", "kvGet"]);
+    for (const k of [
+      "d1Create",
+      "d1Query",
+      "d1Batch",
+      "kvPut",
+      "scriptUpload",
+      "secretPut",
+      "assetsUpload",
+      "scriptSubdomain",
+    ])
+      expect(CF_WRITES.has(k), k).toBe(true);
+    for (const k of ["d1Get", "kvGet", "kvFind", "secretList", "scriptExists"])
+      expect(CF_WRITES.has(k), k).toBe(false);
+  });
+
+  it("every Cf method is either a fenced write or a listed read, so a new Cloudflare call cannot skip the fence", () => {
+    const src = readFileSync(
+      new URL("packages/provision/src/cf.ts", ROOT),
+      "utf8",
+    );
+    const body = src.split("export interface Cf ")[1]?.split("\n}\n")[0] ?? "";
+    const methods = [...body.matchAll(/^ {2}([a-zA-Z0-9]+)[(<]/gm)].map(
+      (m) => m[1] as string,
+    );
+    expect(methods.length).toBeGreaterThan(30);
+    const READS = new Set([
+      "tokenVerify",
+      "scriptsRead",
+      "d1Get",
+      "d1Bookmark",
+      "d1NameOf",
+      "r2Exists",
+      "kvFind",
+      "kvTitleOf",
+      "kvGet",
+      "scriptExists",
+      "secretList",
+      "scriptSettings",
+      "turnstileWidget",
+      "turnstileList",
+      "r2ObjectGet",
+      "r2ObjectList",
+      "r2InstallKeys",
+    ]);
+    const unclassified = methods.filter(
+      (k) => !CF_WRITES.has(k) && !READS.has(k),
+    );
+    expect(unclassified).toEqual([]);
+    for (const k of CF_WRITES) expect(methods, k).toContain(k);
+  });
+
+  it("attempt 2 of the same job re-takes the lease at once with its own token; attempt 1, woken, gets LostLease and frees nothing", async () => {
+    const s = setup();
+    const a1 = hungAttempt(s);
+    await a1.atUpload;
+    const [held] = s.rows();
+    expect(held.state).toBe("creating");
+    expect(held.lease.startsWith(leaseJobPart(JOB))).toBe(true);
+    expect(held.lease_until).toBeGreaterThan(s.clock.now());
+    // The engine's next attempt, a minute later: re-takes at once.
+    await s.clock.sleep(60_000);
+    const p2 = s.mk({ leaseHolder: JOB });
+    const inst = await p2.create(input());
+    expect(inst.id).toBe(held.id);
+    const [done] = s.rows();
+    expect(done).toMatchObject({ state: "active", lease: null });
+    // Attempt 1 wakes: its next renew fails the fence; LostLease, and it
+    // writes and frees nothing.
+    const writes = s.fake.writes().length;
+    a1.wake();
+    const e = await a1.run;
+    expect(e).toBeInstanceOf(LostLease);
+    expect(s.rows()[0]).toMatchObject({
+      state: "active",
+      lease: null,
+      lease_until: null,
+      row_version: done.row_version,
+    });
+    expect(
+      s.fake
+        .writes()
+        .slice(writes)
+        .filter((x) => !/\/d1\/database\/[^/]+\/(query|raw)$/.test(x)),
+    ).toEqual([]);
+  });
+
+  it("while attempt 2 holds the lease, attempt 1 woken gets LostLease and leaves attempt 2's token in place", async () => {
+    const s = setup();
+    const a1 = hungAttempt(s);
+    await a1.atUpload;
+    const first = s.rows()[0].lease as string;
+    await s.clock.sleep(60_000);
+    const a2 = hungAttempt(s);
+    const r2 = await Promise.race([a2.atUpload.then(() => "hung"), a2.run]);
+    expect(r2).toBe("hung");
+    const second = s.rows()[0].lease as string;
+    // Re-taken by the same job with a token of its own.
+    expect(second).not.toBe(first);
+    expect(second.startsWith(leaseJobPart(JOB))).toBe(true);
+    a1.wake();
+    expect(await a1.run).toBeInstanceOf(LostLease);
+    // Attempt 1's release freed nothing: attempt 2 still holds the lease.
+    expect(s.rows()[0]).toMatchObject({ state: "creating", lease: second });
+    a2.wake();
+    expect(await a2.run).toBeNull();
+    expect(s.rows()[0]).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("another job is refused with lease_held while the lease is live; after expiry it takes it", async () => {
+    const s = setup();
+    const a1 = hungAttempt(s);
+    await a1.atUpload;
+    const held = s.rows()[0];
+    const other = s.mk({ leaseHolder: "job:01JOBBBBBBBBBBBBBBBBBBBBBB" });
+    const e = await fails(other.create(input()));
+    expect(e).toBeInstanceOf(ProvisionRetry);
+    expect(e).not.toBeInstanceOf(LostLease);
+    expect(e.code).toBe("lease_held");
+    expect(s.rows()[0].lease).toBe(held.lease);
+    // Expiry unchanged: once lease_until passes, the other job claims.
+    await s.clock.sleep(held.lease_until - s.clock.now() + 1);
+    await other.create(input());
+    expect(s.rows()[0]).toMatchObject({ state: "active", lease: null });
+    a1.wake();
+    expect(await a1.run).toBeInstanceOf(LostLease);
+  });
+
+  it("the CLI (no holder) keeps one random token per claim: never re-enters a live lease", async () => {
+    const s = setup();
+    const a1 = hungAttempt(s, null);
+    await a1.atUpload;
+    expect(s.rows()[0].lease).toMatch(/^[0-9a-f]{32}$/);
+    expect(s.rows()[0].lease).not.toContain(".");
+    const e = await fails(s.mk().create(input()));
+    expect(e.code).toBe("lease_held");
+    a1.wake();
+    await a1.run;
   });
 });
 

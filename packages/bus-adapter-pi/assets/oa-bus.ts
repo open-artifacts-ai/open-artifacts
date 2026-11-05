@@ -106,7 +106,7 @@ const refusals: Record<
 > = {
   unknown_agent: [
     "No agent has that name here.",
-    "Run list_agents to see who is in this namespace.",
+    "Run the oa_bus list_agents tool to see who is in this namespace.",
   ],
   closed: [
     null,
@@ -136,7 +136,7 @@ const refusals: Record<
   // A reply's agent (to_id) no longer holds the name it wrote from.
   agent_gone: [
     "The agent you are answering is gone; another may hold its name now.",
-    "Run list_agents and message the agent you mean by name.",
+    "Run the oa_bus list_agents tool and message the agent you mean by name.",
   ],
 };
 
@@ -443,19 +443,23 @@ export const copy = {
   oversizedText,
 };
 
-// --- Tools: the MCP tools' names, descriptions and JSON Schemas.
+// --- Tools: the MCP tools' descriptions and JSON Schemas. Names carry an
+// `oabus_` prefix: Pi and omp refuse to start when two extensions register one
+// name, and the OpenBus extension registers the bare ones. Not `oa_bus_`: their
+// fallback MCP client names an imported tool `<server>_<tool>`, so the oa_bus
+// server's tools would arrive as `oa_bus_*` and clash silently (#1448).
 
 const none = { type: "object", properties: {}, additionalProperties: false };
 const TOOLS = [
   {
-    name: "list_agents",
+    name: "oabus_list_agents",
     label: "Open Artifacts bus: list agents",
     description:
       "List the agents you can message, in your Open Artifacts bus namespace.",
     parameters: none,
   },
   {
-    name: "send_message",
+    name: "oabus_send_message",
     label: "Open Artifacts bus: send message",
     description: "Send a message to another agent by name.",
     parameters: {
@@ -474,7 +478,7 @@ const TOOLS = [
     },
   },
   {
-    name: "fetch",
+    name: "oabus_fetch",
     label: "Open Artifacts bus: fetch message",
     description: "Fetch the full body of an oversized message by id.",
     parameters: {
@@ -485,14 +489,14 @@ const TOOLS = [
     },
   },
   {
-    name: "self",
+    name: "oabus_self",
     label: "Open Artifacts bus: who am I",
     description:
       "Your own Open Artifacts bus agent entry and bus name. To become global, ask the user to approve running `npx @open-artifacts/bus global add <your start dir>`, then restart.",
     parameters: none,
   },
   {
-    name: "set_status",
+    name: "oabus_set_status",
     label: "Open Artifacts bus: set status",
     description:
       "Tell the user what you are doing: working, idle, blocked, or waiting_on_owner (waiting on the user), with an optional short label. The user sees it labelled as your own report.",
@@ -979,7 +983,7 @@ export default function oaBus(pi: Pi): void {
 
   /** The sender is the session's attested link; a `from` argument is never read. */
   const run = async (name: string, args: Json, link: Link): Promise<string> => {
-    if (name === "list_agents") {
+    if (name === "oabus_list_agents") {
       const r = await link.request({ type: "list" });
       if (r.type !== "roster") failed(r);
       const agents = (r.agents ?? []) as Json[];
@@ -1002,7 +1006,7 @@ export default function oaBus(pi: Pi): void {
             .join("\n")
         : "No agents in your namespace.";
     }
-    if (name === "send_message") {
+    if (name === "oabus_send_message") {
       const to = String(args.to ?? "");
       const body = String(args.text ?? "");
       if (!to || !body) throw new Error("oa-bus: to and text are required");
@@ -1032,7 +1036,7 @@ export default function oaBus(pi: Pi): void {
         throw new Error(out);
       return out;
     }
-    if (name === "fetch") {
+    if (name === "oabus_fetch") {
       const r = await link.request({
         type: "fetch",
         msg_id: String(args.msg_id ?? ""),
@@ -1041,7 +1045,7 @@ export default function oaBus(pi: Pi): void {
       // A peer's text, like a delivered body; the daemon strips it too.
       return stripTerminalControls(String(r.body));
     }
-    if (name === "set_status") return statusTool(args, link);
+    if (name === "oabus_set_status") return statusTool(args, link);
     const r = await link.request({ type: "self", row: true });
     if (r.type !== "agent") failed(r);
     return selfText((r.agent ?? null) as Json | null);

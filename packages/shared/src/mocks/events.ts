@@ -52,6 +52,8 @@ export type ArtifactEventsMock = {
   emitPresence(id: string, viewers: PresenceEntry[], you?: string): number;
   /** Set by a test: the `you` key a hello of `id` carries. */
   presenceYou?: (id: string) => string | undefined;
+  /** Sends `{ type: "comments", open }` to every open socket of `id` (#682). */
+  emitComments(id: string, open: number): number;
   /** Open sockets for `id`. */
   connections(id: string): number;
   /** Set by createHandlers({ events }): the version a hello reports. */
@@ -111,6 +113,11 @@ export function createArtifactEvents(): ArtifactEventsMock {
       for (const c of set) {
         send(c, { type: "presence", viewers, total: viewers.length });
       }
+      return set.size;
+    },
+    emitComments(id, open) {
+      const set = clients.get(id) ?? new Set<Client>();
+      for (const c of set) send(c, { type: "comments", open });
       return set.size;
     },
     connections: (id) => clients.get(id)?.size ?? 0,

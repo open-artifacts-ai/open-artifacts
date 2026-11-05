@@ -49,6 +49,12 @@ export const ERROR_CODES = [
   "query_too_large",
   // Collaboration suite: follows (#1292).
   "follow_limit",
+  // Comments (#682).
+  "invalid_anchor",
+  "invalid_body",
+  "anchor_not_in_version",
+  "comments_off",
+  "forbidden",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -135,6 +141,12 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   query_too_large: 400,
   /** A bus follow() past FOLLOW_LIMIT follows for one member (#1292): unfollow first. */
   follow_limit: 409,
+  /** Comments (#682). */
+  invalid_anchor: 400,
+  invalid_body: 400,
+  anchor_not_in_version: 422,
+  comments_off: 403,
+  forbidden: 403,
 };
 
 /**

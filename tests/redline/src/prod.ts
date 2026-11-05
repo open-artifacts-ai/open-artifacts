@@ -15,7 +15,10 @@ import {
 import { InventoryInstallsSchema } from "@oa/provisioning-contract";
 // The node-readable copy of RELEASE_PUBKEY (provision keeps its own in
 // src/internal/gates.ts, not exported; a test there pins the two equal).
-import { RELEASE_PUBKEY } from "../../../scripts/ci/release-pubkeys.mjs";
+import {
+  RELEASE_PUBKEY,
+  RELEASE_RETIRED_PUBKEYS,
+} from "../../../scripts/ci/release-pubkeys.mjs";
 import {
   FETCH_TIMEOUT_MS,
   InfraError,
@@ -132,7 +135,7 @@ export interface ProdCleanOpts {
   /** Every request (Cloudflare API, inventory, /healthz) goes through this (tests). */
   fetch?: typeof fetch;
   /** The prod release public key (tests sign with their own). */
-  pubkey?: string;
+  pubkey?: string | readonly string[];
   /**
    * The inventory's GitHub OIDC bearer (a JWT the caller minted for the prod
    * inventory's audience). The only inventory credential (inventory accepts
@@ -191,7 +194,7 @@ function releasesOf(keys: string[]): Map<string, Set<string>> {
 async function checkRelease(
   cf: Cf,
   version: string,
-  pubkey: string,
+  pubkey: string | readonly string[],
 ): Promise<void> {
   const reader = r2ReleaseReader(cf, "prod");
   const what = `release ${version.slice(0, 40)}`;
@@ -379,7 +382,10 @@ export async function prodClean(
   const f = o.fetch ?? fetch;
   const get: Get = (url, token, what, fail) =>
     getJson(f, url, token, what, fail, o.readMs);
-  const pubkey = o.pubkey ?? RELEASE_PUBKEY.prod;
+  const pubkey = o.pubkey ?? [
+    RELEASE_PUBKEY.prod,
+    ...RELEASE_RETIRED_PUBKEYS.prod,
+  ];
   // Only a GitHub OIDC JWT for the prod inventory's audience (the caller's,
   // else the one the red-line job wrote to the secrets dir); never the
   // stored inventory key, which inventory rejects.

@@ -27,7 +27,7 @@ import {
   platformNames,
   registryKey,
 } from "../src/names.js";
-import { canonicalJson } from "../src/platform.js";
+import { canonicalJson, holderLease } from "../src/platform.js";
 import {
   assetEntries,
   bundleSha256,
@@ -6599,5 +6599,79 @@ describe("MIG-2: a migration that can lose data is held (#1137)", () => {
       await s.p.create(input("finqore", { version: "0.24.6" })),
     );
     expect(applied(s, inst.id)).toContain("9003_marked.sql");
+  });
+});
+
+describe("every same-state claim: the holding job re-takes, another job is refused (#1326)", () => {
+  const A = "job:01JOBAAAAAAAAAAAAAAAAAAAAA";
+  const B = "job:01JOBBBBBBBBBBBBBBBBBBBBBB";
+  type S = ReturnType<typeof setup>;
+  /** A dead attempt of job A left its lease on the row, live for 10 min. */
+  const plant = (s: S, id: string) => {
+    const lease = holderLease(A);
+    s.db()
+      .prepare("UPDATE installs SET lease = ?, lease_until = ? WHERE id = ?")
+      .run(lease, s.clock.now() + 10 * 60_000, id);
+    return lease;
+  };
+  const cases: [
+    string,
+    (s: S, id: string) => Promise<void>,
+    (p: WfpProvisioner, id: string) => Promise<unknown>,
+  ][] = [
+    ["owner_token", async () => {}, (p, id) => p.reissueOwnerToken(id, id)],
+    [
+      "suspend (pause)",
+      async () => {},
+      (p, id) => p.pause(id, "paused", { kind: "suspend" }),
+    ],
+    [
+      "resume (unpause)",
+      async (s, id) => {
+        await s.p.pause(id, "paused", { kind: "suspend" });
+      },
+      (p, id) => p.unpause(id, { kind: "resume" }),
+    ],
+    ["delete phase 1", async () => {}, (p, id) => p.delete(id, id)],
+    [
+      "delete phase 2 (a retry after phase 1 settled)",
+      async (s, id) => {
+        s.fake.inject((m, p) => m === "DELETE" && /\/scripts\/oa-s-/.test(p), {
+          status: 400,
+          message: "boom",
+        });
+        await fails(s.p.delete(id, id));
+        expect(s.row(id)).toMatchObject({ state: "deleting", lease: null });
+      },
+      (p, id) => p.delete(id, id),
+    ],
+  ];
+  for (const [name, before, op] of cases)
+    it(name, async () => {
+      const s = setup();
+      const inst = keep(await s.p.create(input()));
+      await before(s, inst.id);
+      const lease = plant(s, inst.id);
+      const other = await fails(op(s.mk({ leaseHolder: B }), inst.id));
+      expect(other.code, name).toBe("lease_held");
+      expect(s.row(inst.id).lease, name).toBe(lease);
+      keep(await op(s.mk({ leaseHolder: A }), inst.id));
+      expect(s.row(inst.id).lease, name).toBeNull();
+    });
+
+  it("turnstile rotation", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
+    const lease = plant(s, inst.id);
+    const other = keep(
+      await s.mk({ leaseHolder: B }).rotateTurnstileSecret("staging"),
+    );
+    expect(other[0]).toMatchObject({ ok: false });
+    expect(s.row(inst.id).lease).toBe(lease);
+    const mine = keep(
+      await s.mk({ leaseHolder: A }).rotateTurnstileSecret("staging"),
+    );
+    expect(mine[0]).toMatchObject({ ok: true });
+    expect(s.row(inst.id).lease).toBeNull();
   });
 });

@@ -29,7 +29,9 @@ export const cleanName = (s: string | null): string | null => {
 export const publicName = (u: { name: string | null }): string | null => {
   if (u.name === null) return null;
   const whole = tidyName(u.name);
-  return whole.includes("@") ? null : cleanName(whole);
+  // NFKC folds the full-width (U+FF20) and small (U+FE6B) at signs to "@";
+  // only the check is normalized, the shown name is not.
+  return whole.normalize("NFKC").includes("@") ? null : cleanName(whole);
 };
 
 /** publicName, or "Member" when there is none. */
