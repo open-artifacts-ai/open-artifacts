@@ -30,6 +30,19 @@ export const RELEASE_PUBKEY: Readonly<Record<"staging" | "prod", string>> =
   });
 
 /**
+ * Retired release public keys per env, still accepted when verifying (never
+ * for signing). Verification accepts [RELEASE_PUBKEY[env], ...retired] in that
+ * order; only RELEASE_PUBKEY[env] may sign. Rotation steps: docs/ops/hosted.md.
+ * Keys within an env are distinct and no key is in both envs (a test pins it).
+ */
+export const RELEASE_RETIRED_PUBKEYS: Readonly<
+  Record<"staging" | "prod", readonly string[]>
+> = Object.freeze({
+  staging: Object.freeze([] as string[]),
+  prod: Object.freeze([] as string[]),
+});
+
+/**
  * The anchor of the signed release floor (releases/floor.json): create and
  * publishRelease refuse a floor whose seq is below this, whatever the
  * platform D1 cache says (the provisioning token can write D1). Every

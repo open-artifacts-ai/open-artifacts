@@ -49,6 +49,7 @@ import {
   type Target,
 } from "./cf.js";
 import { type DirectRoute, directRouteOf } from "./direct-fetch.js";
+import { acceptedKeys } from "./internal/accepted-keys.js";
 import {
   ALLOW_ACCOUNT_TARGET,
   FLOOR_MIN_SEQ,
@@ -1106,7 +1107,7 @@ export class WfpProvisioner {
         "target must be account or namespace",
         "invalid_state",
       );
-    if (this.pubkey() === RELEASE_PUBKEY_PLACEHOLDER)
+    if (RELEASE_PUBKEY[env] === RELEASE_PUBKEY_PLACEHOLDER)
       throw new ProvisionRefused(
         `RELEASE_PUBKEY.${env} is still the placeholder; T3b must set the release signing key before any create`,
         "invalid_state",
@@ -1176,8 +1177,9 @@ export class WfpProvisioner {
       );
   }
 
-  private pubkey(): string {
-    return RELEASE_PUBKEY[this.env];
+  /** The current key first, then retired keys still accepted. */
+  private pubkey(): string[] {
+    return acceptedKeys(this.env);
   }
 
   /** L2 then M1: the record is trusted only after its signature checks out. */
