@@ -1711,11 +1711,7 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
  * namespace: that namespace on agents_live_ns_lname plus the globals on
  * agents_global_name, merged here (as roster() does).
  */
-function agentList(
-  ctx: DurableObjectState,
-  now: number,
-  namespace?: string,
-): BusAgent[] {
+function agentList(ctx: DurableObjectState, namespace?: string): BusAgent[] {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
   const from = "from agents a join machines m on m.id = a.machine_id";
@@ -1748,21 +1744,10 @@ function agentList(
       .sort(byNamespaceName)
       .slice(0, cap);
   }
-  // #1295: agents away with their mailbox kept are listed too (not running).
-  const away = all<AgentWithMachine>(
-    sql,
-    `select ${AGENT_DTO_COLS} ${from} where a.org_id = ? and a.live = 0 and m.revoked_at is null
-       and a.id in (select f.agent_id from former_names f where f.org_id = ? and f.kind = 'away' and f.expires_at > ?)
-       ${namespace === undefined ? "" : "and (a.namespace = ? or a.global = 1)"}
-     order by a.namespace, lower(a.name), a.name limit ?`,
-    OWNER_ORG_ID,
-    OWNER_ORG_ID,
-    now,
-    ...(namespace === undefined ? [] : [namespace]),
-    cap,
-  );
-  if (away.length > 0)
-    rows = [...rows, ...away].sort(byNamespaceName).slice(0, cap);
+  // TODO(#1295 part C): list away agents here (agentDto already gives them
+  // state "away", running=false and `since`) once the dashboard renders them.
+  // Until then Roster.tsx would show them as Queued and ShareNotices would
+  // offer them as targets, so only open agents are listed.
   const online = new Map<string, boolean>();
   const dtos = rows.map((r) => {
     let on = online.get(r.machineId);
@@ -2874,7 +2859,7 @@ export class BusHub extends DurableObject<Env> {
     )
       .filter((m) => machineOnline(this.ctx, m.id))
       .map((m) => m.id);
-    return { connected, agents: agentList(this.ctx, this.#now()) };
+    return { connected, agents: agentList(this.ctx) };
   }
 
   // ------------------------------------------------------------------- roles

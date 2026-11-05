@@ -440,18 +440,14 @@ describe("mailbox wire (#1295 PR B)", () => {
     snd.close();
   });
 
-  it("the dashboard snapshot lists an away agent: state away, not running, since its close", async () => {
+  it("the dashboard snapshot omits an away agent (the dashboard shows them in part C); the roster keeps it", async () => {
     const { rcv, snd, ref, name, n } = await trio(MB);
     await close(rcv, ref);
-    const [{ t }] = await sqlOf<{ t: number }>(
-      "select away_since as t from agents where native_ref = ?",
-      ref,
-    );
     const { agents } = await (await hubOf()).snapshot();
-    expect(agents.find((a) => a.name === name)).toMatchObject({
+    expect(agents.find((a) => a.name === name)).toBeUndefined();
+    const { r } = await list(snd, "snd");
+    expect(r.agents.find((a) => a.bus_name === name)).toMatchObject({
       state: "away",
-      running: false,
-      since: new Date(t).toISOString(),
     });
     expect(
       agents.find((a) => a.namespace === n && a.name.startsWith("Snd")),
