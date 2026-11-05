@@ -1,12 +1,31 @@
 // Map a DOM Range inside `root` to and from flat text offsets (#682). The flat
-// text is every text node under root in document order, concatenated; it is
+// text is every text node under root in document order, concatenated, minus
+// script, style, noscript, template and textarea contents; it is
 // the string @oa/shared's createTextAnchor/resolveTextAnchor work on.
+
+// Text that is never page content: code, templates and form values.
+const SKIPPED = new Set([
+  "SCRIPT",
+  "STYLE",
+  "NOSCRIPT",
+  "TEMPLATE",
+  "TEXTAREA",
+]);
+
+function skipped(node: Node): boolean {
+  for (let p = node.parentNode; p; p = p.parentNode) {
+    if (SKIPPED.has(p.nodeName)) return true;
+  }
+  return false;
+}
 
 function textNodes(root: Node): Text[] {
   const doc = root.ownerDocument ?? (root as Document);
   const walker = doc.createTreeWalker(root, 4 /* SHOW_TEXT */);
   const out: Text[] = [];
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) out.push(n as Text);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (!skipped(n)) out.push(n as Text);
+  }
   return out;
 }
 

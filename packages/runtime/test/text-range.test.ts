@@ -14,6 +14,21 @@ describe("text-range", () => {
     expect(flatText(root)).toBe("Hello brave newworld 😀 end");
   });
 
+  it("leaves out script, style, noscript, template and textarea text", () => {
+    root.insertAdjacentHTML(
+      "beforeend",
+      "<style>p{color:red}</style><script>var a=1</script><noscript>nojs</noscript><template>tpl</template><textarea>secret</textarea><input type=hidden value=hid><p>tail</p>",
+    );
+    expect(flatText(root)).toBe("Hello brave newworld \u{1F600} endtail");
+    const text = flatText(root);
+    const r = offsetsToRange(root, text.indexOf("tail"), text.length);
+    expect(r?.toString()).toBe("tail");
+    expect(rangeToOffsets(root, r as Range)).toEqual({
+      start: text.indexOf("tail"),
+      end: text.length,
+    });
+  });
+
   it("round-trips a range across inline elements", () => {
     const b = root.querySelector("b")?.firstChild as Text;
     const r = document.createRange();
