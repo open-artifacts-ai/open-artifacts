@@ -92,6 +92,8 @@ Every \`oa:setup\` command below returns one of:
 - **2**: action required. Relay the \`message\` of the \`action_required\` line to the user verbatim, follow it, then run the same command again.
 - **1**: error. Stop and show the user the \`message\` of the \`error\` line. The one exception is a failure after the deploy in step 7: see step 8.
 
+The exit code is authoritative. An instance upgrading from an older \`/upgrade.md\` may see one non-JSON \`[ELIFECYCLE] Command failed with exit code N.\` line at the end of stdout on a failure; ignore it and go by the exit code.
+
 ## 1. Installed version
 
 \`GET ${T("origin")}/healthz\` and read \`.version\`.

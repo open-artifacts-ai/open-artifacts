@@ -12,7 +12,7 @@ The agent follows the steps below. The only thing you do yourself is approve the
 
 ## What you need
 
-- **Node.js 22 or later**, with pnpm (`corepack enable` provides it).
+- **Node.js 22.13 or later**, with pnpm (`corepack enable` provides it).
 - **git**.
 - **A Cloudflare account.** The free plan is enough.
 - **A domain on Cloudflare.** Open Artifacts uses two hostnames on it: one for the app (for example `artifacts.example.com`) and one for artifact content (for example `artifacts-content.example.com`).
@@ -44,7 +44,7 @@ The agent follows the steps below. The only thing you do yourself is approve the
    pnpm --reporter=silent oa:setup --json --app-host artifacts.example.com --content-host artifacts-content.example.com --owner-email you@example.com --name open-artifacts --solo
    ```
 
-   `-s` keeps pnpm's own output off stdout, so every line is JSON. With `--json`, setup never prompts. Setup prints one JSON object per line, `{"step", "status", "message", "data"}`, where `status` is `ok`, `skipped`, `action_required`, or `error`. It stops at the first `action_required` or `error`. Then go by the exit code:
+   `--reporter=silent` keeps pnpm's own output off stdout, so every line is JSON. Do not shorten it to `-s`: pnpm 11 still prints an `[ELIFECYCLE]` line on stdout then. With `--json`, setup never prompts. Setup prints one JSON object per line, `{"step", "status", "message", "data"}`, where `status` is `ok`, `skipped`, `action_required`, or `error`. It stops at the first `action_required` or `error`. Then go by the exit code:
 
    - **0:** every step is done. Go on to step 6.
    - **2:** the last line is `action_required`. If its `message` asks you to pass a flag, such as `--account-id` when the login can reach several accounts, add that flag and run again; ask the user for the value if you don't know it. Otherwise relay the `message` to the user verbatim, with `data.url` if it has one, wait until they say it's done, and run the same command again. Setup saves its progress in `.openartifacts/state.json` and picks up where it stopped.
@@ -139,7 +139,7 @@ Exit codes: `0` when every step is done, `2` when a step needs the user or a mis
 
 `oa:setup` is idempotent: each step checks first and skips work that's already done. The steps, in order:
 
-1. **`prereqs`:** checks Node 22 or later, pnpm, the Cloudflare login and account, and that both hostnames are in a zone on that account. It reports `ok` (message "prerequisites ok"); the plan warnings are in `data.warnings`, other notes in `data.notes`, and token links in `data.tokens`. Nothing is added to the message. The optional analytics token link is a note only on the first run.
+1. **`prereqs`:** checks Node 22.13 or later, pnpm, the Cloudflare login and account, and that both hostnames are in a zone on that account. It reports `ok` (message "prerequisites ok"); the plan warnings are in `data.warnings`, other notes in `data.notes`, and token links in `data.tokens`. Nothing is added to the message. The optional analytics token link is a note only on the first run.
 2. **`resources`:** creates or reuses the D1 database, the R2 bucket, and the KV namespace, and writes `apps/server/wrangler.jsonc`.
 3. **`access`:** creates the Cloudflare Access for SaaS application and its sign-in policy.
 4. **`secrets`:** stores the Worker secrets. When `ANALYTICS_TOKEN` is set in the environment (a dedicated read-only token with Account Analytics: Read, never your deploy token), it stores it on every run. Otherwise, without `--json` or `--yes`, it offers to store one for the Usage page, with a link that pre-fills the token form.

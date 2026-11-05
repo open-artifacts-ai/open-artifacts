@@ -195,14 +195,21 @@ const issueNote = (i: TokenIssue) => {
   return `${i.name} token (${i.env}) ${[lacks, opt].filter(Boolean).join("; ")}; ${lacks ? "create one" : "add it"}: ${i.url}${zones}`;
 };
 
+/** pnpm 11 needs Node 22.13 or later. Undefined when `version` is new enough. */
+export const nodeVersionError = (version: string): string | undefined => {
+  const [major = 0, minor = 0] = version.split(".").map(Number);
+  return major > 22 || (major === 22 && minor >= 13)
+    ? undefined
+    : `Node >= 22.13 required (found ${version})`;
+};
+
 /** A pure verification: `done` (skipped) when every prerequisite holds. */
 export const prereqs: Step = {
   name: "prereqs",
   okWhenDone: "prerequisites ok",
   async check(state, ctx) {
-    const major = Number(process.versions.node.split(".")[0]);
-    if (major < 22)
-      throw new Error(`Node >= 22 required (found ${process.versions.node})`);
+    const nodeError = nodeVersionError(process.versions.node);
+    if (nodeError) throw new Error(nodeError);
     if ((await ctx.deps.exec("pnpm", ["--version"])).code !== 0)
       throw new Error("pnpm not found on PATH");
     // First, so an older checkout stops before any step has a side effect (--check only reports).
