@@ -950,3 +950,22 @@ describe("doctor and --check catch a missing or wrong home (#1443)", () => {
     expect(checkAdapters(deps).opencode).toBe("missing");
   });
 });
+
+describe("OpenCode's entry environment is checked on its own (#1443)", () => {
+  it("a correctly homed tui.js with a missing or wrong environment is missing, and a rerun repairs it", async () => {
+    const { h, deps } = setup(["opencode"]);
+    deps.busHome = join(h, "elsewhere");
+    await installAdapters(deps);
+    expect(checkAdapters(deps).opencode).toBe("configured");
+    const file = p.oc(h);
+    const good = readJ(file);
+    for (const environment of [undefined, { OA_BUS_HOME: "/wrong" }]) {
+      const entry = { ...good.mcp.servers.oa_bus, environment };
+      put(file, { ...good, mcp: { servers: { oa_bus: entry } } });
+      // The plugin file is still homed; only the entry is off.
+      expect(checkAdapters(deps).opencode).toBe("missing");
+      await installAdapters(deps);
+      expect(checkAdapters(deps).opencode).toBe("configured");
+    }
+  });
+});
