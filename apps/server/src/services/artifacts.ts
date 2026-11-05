@@ -65,7 +65,13 @@ import {
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { audit, userActor } from "./audit.js";
 import { deleteFollowsStmt, notifyChanged } from "./follows.js";
-import { type ManifestEntry, materialize, planFiles } from "./manifest.js";
+import {
+  type ManifestEntry,
+  materialize,
+  type Plan,
+  planEdits,
+  planFiles,
+} from "./manifest.js";
 import { getSettings } from "./members.js";
 import { ftsFilter, seedSearchStmt, syncTitleStmt } from "./search.js";
 import { requireSpaces } from "./spaces.js";
@@ -182,7 +188,8 @@ export async function publish(
   ctx?: Ctx,
   mode: PublishMode = "any",
 ): Promise<PublishResult> {
-  const plan = planFiles(input);
+  // An edits publish plans from the current version, once it is known.
+  let plan: Plan | null = input.edits ? null : planFiles(input);
   const db = env.DB;
   const now = Date.now();
   // Wall ms per step (D1 checks, R2, the batch, the DO calls): hosted
@@ -212,6 +219,10 @@ export async function publish(
    * visibility (`after`), so a stale resend never undoes a concurrent change.
    */
   let cas: { before: Guard; after: Guard } | null = null;
+  /** The artifact's current version when read (an existing artifact). */
+  let seen = 0;
+  /** `cas` guards the visibility; it may also carry the version (#1216). */
+  let visCas = false;
   /** The new artifact's space (create): the caller's personal space by default. */
   let spaceId = user.id;
   if (input.id === undefined) {
@@ -237,6 +248,7 @@ export async function publish(
           { path: "spaceId", reason: "use_move" },
         );
       create = false;
+      seen = a.currentVersion;
       const sharing =
         input.visibility !== undefined ||
         input.capabilities !== undefined ||
@@ -260,6 +272,7 @@ export async function publish(
             [input.visibility, a.spaceId],
           ],
         };
+      visCas = cas !== null;
       capabilities = { ...CAPS, ...(JSON.parse(a.capabilities) as object) };
       prior = { visibility: a.visibility, dataWriters: dataWritersOf(a) };
       dataWriters = resolveDataWriters(input, input.visibility ?? a.visibility);
@@ -291,6 +304,50 @@ export async function publish(
       reserved = true;
     }
   }
+  // #1216: the version the caller saw; an edits publish takes the one it reads.
+  if (create && (input.expectedVersion !== undefined || input.edits))
+    throw new ApiError(
+      "bad_request",
+      input.edits
+        ? "edits need an existing artifact with a version"
+        : "expectedVersion needs an existing artifact",
+      {
+        path: input.edits ? "edits" : "expectedVersion",
+        reason: "needs_version",
+      },
+    );
+  const expected = input.expectedVersion ?? (input.edits ? seen : undefined);
+  if (expected !== undefined && expected !== seen) throw versionConflict(seen);
+  if (!plan && input.edits) {
+    const cur = await db
+      .prepare(
+        `select v.entry, v.manifest, v.language, coalesce(v.format, a.format) as format
+         from versions v join artifacts a on a.id = v.artifact_id
+         where v.artifact_id = ? and v.version = ?`,
+      )
+      .bind(id, seen)
+      .first<{
+        entry: string;
+        manifest: string;
+        language: string | null;
+        format: Format;
+      }>();
+    if (!cur) throw notFound();
+    plan = await planEdits(env, input.edits, cur);
+  }
+  if (!plan) throw notFound();
+  if (expected !== undefined)
+    cas = {
+      before: [
+        `${cas?.before[0] ?? ""} and current_version = ?`,
+        [...(cas?.before[1] ?? []), expected],
+      ],
+      // The bump is already applied when the version insert reads it.
+      after: [
+        `${cas?.after[0] ?? ""} and current_version = ?`,
+        [...(cas?.after[1] ?? []), expected + 1],
+      ],
+    };
   if (create && input.title === undefined)
     throw new ApiError(
       "bad_request",
@@ -475,7 +532,9 @@ export async function publish(
     // A lost compare-and-set whose row already had the new visibility: the
     // version insert met the other writer's version row.
     if (cas && msg.includes("UNIQUE constraint failed: versions"))
-      throw changed();
+      throw expected !== undefined
+        ? await staleVersion(env, id, expected)
+        : changed();
     throw e;
   }
   mark();
@@ -487,12 +546,22 @@ export async function publish(
       throw n
         ? new ApiError("conflict", "An upload was already used")
         : changed();
+    if (expected !== undefined) {
+      const row = await db
+        .prepare(
+          "select current_version as v from artifacts where id = ? and deleted_at is null",
+        )
+        .bind(id)
+        .first<{ v: number }>();
+      if (!row) throw notFound();
+      if (row.v !== expected) throw versionConflict(row.v);
+    }
     const live = await db
       .prepare("select 1 from artifacts where id = ? and deleted_at is null")
       .bind(id)
       .first();
     if (live)
-      throw cas
+      throw visCas
         ? changed()
         : new ApiError("conflict", "An upload was already used");
     throw notFound();
@@ -572,6 +641,28 @@ const notFound = () => new ApiError("not_found", "Not found");
 const LINKS_STILL_ON =
   " and not exists (select 1 from spaces where id = artifacts.space_id and kind = 'shared' and public_links = 0)";
 /** A compare-and-set lost to a concurrent change (#484). */
+/** 409 version_conflict (#1216): `current` is the artifact's current version. */
+const versionConflict = (current: number) =>
+  new ApiError(
+    "version_conflict",
+    `Version ${current} is current. Read it with get_artifact and apply your change to it.`,
+    { currentVersion: current },
+  );
+
+/** The conflict for a lost race on `expected`: reads the version that won. */
+async function staleVersion(
+  env: Env,
+  id: string,
+  expected: number,
+): Promise<ApiError> {
+  const row = await env.DB.prepare(
+    "select current_version as v from artifacts where id = ? and deleted_at is null",
+  )
+    .bind(id)
+    .first<{ v: number }>();
+  return row ? versionConflict(Math.max(row.v, expected)) : notFound();
+}
+
 const changed = () =>
   new ApiError("conflict", "The artifact changed while saving; try again");
 /** An SQL fragment appended to a WHERE, and its arguments. */
@@ -1524,7 +1615,8 @@ export async function patch(
 export const isSettingsOnly = (input: PublishInput): boolean =>
   input.id !== undefined &&
   input.content === undefined &&
-  input.files === undefined;
+  input.files === undefined &&
+  input.edits === undefined;
 
 /**
  * MCP publish_artifact with `id` and no content or files (#681 D): updates

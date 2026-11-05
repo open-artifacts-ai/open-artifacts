@@ -54,7 +54,9 @@ type InlineSource = { bytes: Uint8Array } | { text: string; size: number };
 export type PlannedSource =
   | { bytes: Uint8Array }
   | { text: string; size: number }
-  | { uploadId: string };
+  | { uploadId: string }
+  /** A file of the current version, reused as is (edits, #1540): same R2 object, nothing written. */
+  | { keep: ManifestEntry };
 export type Plan = {
   files: Array<{ path: string; source: PlannedSource }>;
   entry: string;
@@ -330,7 +332,8 @@ export function planFiles(input: PublishInput): Plan {
     );
   const head = out.find((f) => f.path === entry)?.source;
   // An uploaded entry is checked in materialize (one R2 range read).
-  if (head && !("uploadId" in head)) checkInline(entry, format, head, byBytes);
+  if (head && !("uploadId" in head) && !("keep" in head))
+    checkInline(entry, format, head, byBytes);
   const language =
     input.language ?? (format === "code" ? inferLanguage(entry) : null);
   return {
@@ -339,6 +342,104 @@ export function planFiles(input: PublishInput): Plan {
     format,
     language,
     ...(byBytes ? { byBytes: true as const } : {}),
+  };
+}
+
+/** The largest entry file an edits publish reads (as get_artifact's inline text). */
+export const EDIT_MAX_BYTES = 1024 * 1024;
+
+const editsRefused = (reason: string, message: string) =>
+  new ApiError("bad_request", message, { path: "edits", reason });
+
+/** How many times `needle` occurs in `text`, overlapping matches included. */
+function occurrences(text: string, needle: string): number {
+  let n = 0;
+  for (let i = text.indexOf(needle); i >= 0; i = text.indexOf(needle, i + 1))
+    n++;
+  return n;
+}
+
+/**
+ * Plans a publish with `edits` (#1540) from the version they apply to: the
+ * entry file, read and edited, and every other file kept as is. Text formats
+ * only. Each `old` must occur exactly once in the text as it stands at that
+ * step, else 400 edit_failed (details { index, reason, count }); nothing has
+ * been written by then.
+ */
+export async function planEdits(
+  env: Env,
+  edits: ReadonlyArray<{ old: string; new: string }>,
+  cur: {
+    entry: string;
+    manifest: string;
+    language: string | null;
+    format: Format;
+  },
+): Promise<Plan> {
+  const format = cur.format;
+  if (format !== "html" && format !== "markdown" && format !== "code")
+    throw editsRefused(
+      "unsupported_format",
+      `Edits work on html, markdown and code artifacts; this one is ${format}. Publish the whole file instead.`,
+    );
+  let payload = 0;
+  for (const e of edits) payload += utf8Length(e.old) + utf8Length(e.new);
+  if (payload > LIMITS.inlineBytes)
+    throw new ApiError("too_large", INLINE_TOO_LARGE_MESSAGE, {
+      path: "edits",
+      reason: "too_large",
+    });
+  const entries = JSON.parse(cur.manifest) as ManifestEntry[];
+  const entryFile = entries.find((m) => m.path === cur.entry);
+  if (!entryFile) throw new ApiError("internal", "The entry file is missing");
+  if (entryFile.size > EDIT_MAX_BYTES)
+    throw editsRefused(
+      "too_large",
+      `The entry file is over ${EDIT_MAX_BYTES} bytes, too large for edits. Publish the whole file instead.`,
+    );
+  const obj = await env.FILES.get(entryFile.key);
+  if (!obj) throw new ApiError("internal", "The entry file is missing");
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(
+      await obj.arrayBuffer(),
+    );
+  } catch {
+    throw editsRefused(
+      "not_text",
+      "The entry file is not valid UTF-8 text. Publish the whole file instead.",
+    );
+  }
+  for (const [index, e] of edits.entries()) {
+    const count = occurrences(text, e.old);
+    if (count !== 1)
+      throw new ApiError(
+        "edit_failed",
+        `edits[${index}] was not applied and nothing was published: its old text was ${
+          count === 0 ? "not found" : `found ${count} times`
+        }. Read the current text with get_artifact and copy old exactly${
+          count === 0 ? "" : ", with enough around it to match once"
+        }.`,
+        { index, reason: count === 0 ? "not_found" : "ambiguous", count },
+      );
+    // A replacer function: `new` is literal ($& and $1 mean nothing here).
+    text = text.replace(e.old, () => e.new);
+  }
+  const wellFormed = isWellFormed(text);
+  const bytes = wellFormed ? null : utf8Encoder.encode(text);
+  const size = bytes ? bytes.length : utf8Length(text);
+  if (size > LIMITS.fileBytes) throw tooLarge(cur.entry, LIMITS.fileBytes);
+  const source: InlineSource = bytes ? { bytes } : { text, size };
+  checkInline(cur.entry, format, source, false);
+  return {
+    files: entries.map((m) =>
+      m.path === cur.entry
+        ? { path: m.path, source }
+        : { path: m.path, source: { keep: m } },
+    ),
+    entry: cur.entry,
+    format,
+    language: cur.language,
   };
 }
 
@@ -419,6 +520,10 @@ export async function materialize(
   }
   let total = 0;
   for (const f of plan.files) {
+    if ("keep" in f.source) {
+      total += f.source.keep.size;
+      continue;
+    }
     if (!("uploadId" in f.source)) {
       total += inlineSize(f.source);
       continue;
@@ -444,6 +549,10 @@ export async function materialize(
   const manifest: ManifestEntry[] = [];
   const puts: Promise<unknown>[] = [];
   for (const f of plan.files) {
+    if ("keep" in f.source) {
+      manifest.push(f.source.keep);
+      continue;
+    }
     if ("uploadId" in f.source) {
       const row = rows.get(f.source.uploadId) as UploadRow;
       manifest.push({
