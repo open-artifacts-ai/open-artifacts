@@ -313,7 +313,7 @@ export function useLiveVersions(o: {
         } else if (e.type === "version") {
           enqueue({ version: e.version, restoredFrom: e.restoredFrom });
         }
-        // Any other frame (comments, #682) never touches version state.
+        // Any other frame (comments #682, presence #539) never touches version state.
       },
       // Deleted is final; "changed" may not concern this viewer: re-check
       // (readable: reconnect and carry on; 404: no longer available).

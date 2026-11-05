@@ -20,6 +20,11 @@ import { isId } from "./ids.js";
 import { INLINE_TOO_LARGE_MESSAGE, LIMITS } from "./limits.js";
 import { findCaseCollision, normalizePath } from "./paths.js";
 import { utf8Exceeds } from "./utf8.js";
+import {
+  PRESENCE_ACTIVITY_MAX,
+  PresenceFrameSchema,
+  PresenceKeySchema,
+} from "./viewer-presence.js";
 
 export const VisibilitySchema = z.enum(["private", "team", "public"]);
 export type Visibility = z.infer<typeof VisibilitySchema>;
@@ -1054,9 +1059,12 @@ export const ArtifactEventBySchema = z.object({
 export type ArtifactEventBy = z.infer<typeof ArtifactEventBySchema>;
 
 /**
- * Frames on the R.events socket (server to client only; any client message
- * closes it with 1008):
- * - hello: on connect, the artifact's current version.
+ * Frames on the R.events socket (server to client; the only client message
+ * allowed is "ping", answered "pong"; any other closes it with 1008):
+ * - hello: on connect, the artifact's current version, and `you`, the
+ *   caller's own presence key.
+ * - presence: who has the artifact open (PresenceFrameSchema), sent on join,
+ *   leave and agent expiry, coalesced.
  * - version: a publish or restore created version `version`; `restoredFrom`
  *   (restores only) is the version it copies.
  * - gone: access changed; the socket then closes with EVENTS_GONE_CLOSE
@@ -1068,7 +1076,11 @@ export type ArtifactEventBy = z.infer<typeof ArtifactEventBySchema>;
  * Sockets also close with 4408 near the signed-URL TTL: reconnect.
  */
 export const ArtifactEventSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("hello"), version: z.number().int().min(1) }),
+  z.object({
+    type: z.literal("hello"),
+    version: z.number().int().min(1),
+    you: PresenceKeySchema.optional(),
+  }),
   z.object({
     type: z.literal("version"),
     version: z.number().int().min(1),
@@ -1083,6 +1095,7 @@ export const ArtifactEventSchema = z.discriminatedUnion("type", [
     reason: z.enum(["deleted", "changed"]),
     retryAfterMs: z.number().int().min(0).optional(),
   }),
+  PresenceFrameSchema,
 ]);
 export type ArtifactEvent = z.infer<typeof ArtifactEventSchema>;
 /** The close code that follows a `gone` frame on R.events. */
@@ -1145,6 +1158,7 @@ export const GetArtifactInputSchema = z.strictObject({
   version: z.number().int().min(1).optional(),
   path: z.string().optional(),
   includeContent: z.boolean().default(true),
+  activity: z.string().max(PRESENCE_ACTIVITY_MAX).optional(),
 });
 export type GetArtifactInput = z.infer<typeof GetArtifactInputSchema>;
 export type GetArtifactInputInput = z.input<typeof GetArtifactInputSchema>;
@@ -1207,22 +1221,28 @@ export const SetVisibilityInputSchema = z.strictObject({
 });
 export type SetVisibilityInput = z.infer<typeof SetVisibilityInputSchema>;
 
+/** What an agent says it is doing, shown on its presence card. */
+const ActivitySchema = z.string().max(PRESENCE_ACTIVITY_MAX).optional();
+
 const dataTarget = { id: IdSchema, collection: DataNameSchema };
 
 export const ArtifactDataGetInputSchema = z.strictObject({
   ...dataTarget,
   docId: DataNameSchema,
+  activity: ActivitySchema,
 });
 export type ArtifactDataGetInput = z.infer<typeof ArtifactDataGetInputSchema>;
 export const ArtifactDataListInputSchema = z.strictObject({
   ...dataTarget,
   cursor: z.string().optional(),
   limit: z.number().int().min(1).max(500).optional(),
+  activity: ActivitySchema,
 });
 export type ArtifactDataListInput = z.infer<typeof ArtifactDataListInputSchema>;
 export const ArtifactDataQueryInputSchema = z.strictObject({
   ...dataTarget,
   query: DataQuerySchema,
+  activity: ActivitySchema,
 });
 export type ArtifactDataQueryInput = z.infer<
   typeof ArtifactDataQueryInputSchema
@@ -1231,12 +1251,14 @@ export const ArtifactDataSetInputSchema = z.strictObject({
   ...dataTarget,
   docId: DataNameSchema,
   data: DataSetBodySchema,
+  activity: ActivitySchema,
 });
 export type ArtifactDataSetInput = z.infer<typeof ArtifactDataSetInputSchema>;
 export const ArtifactDataUpdateInputSchema = z.strictObject({
   ...dataTarget,
   docId: DataNameSchema,
   patch: DataPatchBodySchema,
+  activity: ActivitySchema,
 });
 export type ArtifactDataUpdateInput = z.infer<
   typeof ArtifactDataUpdateInputSchema
@@ -1244,6 +1266,7 @@ export type ArtifactDataUpdateInput = z.infer<
 export const ArtifactDataDeleteInputSchema = z.strictObject({
   ...dataTarget,
   docId: DataNameSchema,
+  activity: ActivitySchema,
 });
 export type ArtifactDataDeleteInput = z.infer<
   typeof ArtifactDataDeleteInputSchema

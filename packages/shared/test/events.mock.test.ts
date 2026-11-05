@@ -110,4 +110,33 @@ describe("R.events mock", () => {
     expect(s.frames[3]).toEqual({ type: "gone", reason: "deleted" });
     expect(await s.closed).toBe(4403);
   });
+
+  it("emitPresence sends one presence frame to each open socket", async () => {
+    const events = createArtifactEvents();
+    events.presenceYou = () => "abcdefghijklmnop";
+    server.use(...events.handlers);
+    const a = open(R.events("p1"));
+    const b = open(R.events("p1"));
+    await Promise.all([a.count(1), b.count(1)]);
+    expect(a.frames[0]).toEqual({
+      type: "hello",
+      version: 1,
+      you: "abcdefghijklmnop",
+    });
+    const viewers = [
+      {
+        key: "abcdefghijklmnop",
+        kind: "person" as const,
+        name: "Member",
+        named: false,
+        color: 2,
+      },
+    ];
+    expect(events.emitPresence("p1", viewers, "abcdefghijklmnop")).toBe(2);
+    await Promise.all([a.count(2), b.count(2)]);
+    for (const s of [a, b]) {
+      expect(s.frames[1]).toEqual({ type: "presence", viewers, total: 1 });
+      s.ws.close();
+    }
+  });
 });
