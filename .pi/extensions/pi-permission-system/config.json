@@ -57,8 +57,6 @@
       "git -C * push *": "allow",
       "git fetch *": "allow",
       "git switch *": "allow",
-      "pnpm run gen": "allow",
-      "pnpm --filter @oa/shared build": "allow",
       "git worktree remove *": "allow",
       "git -C * worktree remove *": "allow",
       "git branch -d *": "allow",
