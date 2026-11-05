@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.125.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.124.0...v0.125.0) (2026-11-05)
+
+
+### Features
+
+* **comments:** runtime view mode for viewers who can't comment; Design polish ([#1491](https://github.com/open-artifacts-ai/open-artifacts/issues/1491), [#1529](https://github.com/open-artifacts-ai/open-artifacts/issues/1529)) ([#1531](https://github.com/open-artifacts-ai/open-artifacts/issues/1531)) ([aa41cbe](https://github.com/open-artifacts-ai/open-artifacts/commit/aa41cbe4cadc2c804a12ec5cc062955b33df7b0e))
+* **skill:** publish a file in one call, and with this instance's tools ([#1540](https://github.com/open-artifacts-ai/open-artifacts/issues/1540)) ([#1542](https://github.com/open-artifacts-ai/open-artifacts/issues/1542)) ([f5e7a70](https://github.com/open-artifacts-ai/open-artifacts/commit/f5e7a70631295e3fb593374a8e809e0aaf732f79))
+
+
+### Bug Fixes
+
+* **bus:** show refused config files with their fix; accept a group-writable file you own ([#1527](https://github.com/open-artifacts-ai/open-artifacts/issues/1527)) ([#1530](https://github.com/open-artifacts-ai/open-artifacts/issues/1530)) ([bf0a895](https://github.com/open-artifacts-ai/open-artifacts/commit/bf0a895034047c750889550359763cbfd0beedaf))
+* **ci:** hosted-publish resolves a release from a failed release-please run ([#1524](https://github.com/open-artifacts-ai/open-artifacts/issues/1524)) ([fdca013](https://github.com/open-artifacts-ai/open-artifacts/commit/fdca0139a3d4fdafd5df979d1cbac2f15ffb2f4d))
+
 ## [0.124.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.123.0...v0.124.0) (2026-11-05)
 
 

@@ -2,7 +2,7 @@
 // prod-release-chain.yml (#1343): a green, dispatched redline-staging run for
 // a release tag deploys that tag to the prod platform. The tag comes only from
 // the run's display title, which is redline-staging.yml's run-name; main's
-// scripts prove it again before deploy-hosted-platform.yml runs as a call.
+// scripts prove it again before deploy-hosted-platform.yml is dispatched.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -82,14 +82,16 @@ describe("prod-release-chain.yml", () => {
       contents: "read",
       actions: "read",
     });
-    // The called workflow's own: its gates read runs, and its token read-back
-    // and break-glass record open issues.
+    // The dispatching job alone gets actions: write.
     expect(w.jobs.deploy.permissions).toEqual({
       contents: "read",
-      actions: "read",
-      issues: "write",
+      actions: "write",
     });
-    expect(deploy.permissions).toEqual(w.jobs.deploy.permissions);
+    expect(
+      Object.entries(w.jobs)
+        .filter(([, j]) => JSON.stringify(j).includes('"actions":"write"'))
+        .map(([n]) => n),
+    ).toEqual(["deploy"]);
     expect(w.jobs.report.permissions).toEqual({
       contents: "read",
       issues: "write",
@@ -100,7 +102,7 @@ describe("prod-release-chain.yml", () => {
   it("pins every action by SHA and keeps no git credentials", () => {
     for (const l of text.split("\n").filter((l) => /^\s*- uses: /.test(l)))
       expect(l).toMatch(/@[0-9a-f]{40} # v\d/);
-    for (const job of [w.jobs.gate, w.jobs.report])
+    for (const job of [w.jobs.gate, w.jobs.deploy, w.jobs.report])
       for (const s of job.steps) {
         if (!s.uses) continue;
         expect(s.uses).toMatch(/@[0-9a-f]{40}$/);
@@ -112,7 +114,7 @@ describe("prod-release-chain.yml", () => {
   });
 
   it("no expression in any run line: every value reaches a script through env", () => {
-    for (const job of [w.jobs.gate, w.jobs.report])
+    for (const job of [w.jobs.gate, w.jobs.deploy, w.jobs.report])
       for (const s of job.steps)
         if (s.run) expect(String(s.run), s.name).not.toContain("${{");
     // The event's untrusted fields are only ever env values.
@@ -251,31 +253,32 @@ describe("prod-release-chain.yml", () => {
     );
   });
 
-  it("deploys through deploy-hosted-platform.yml: prod, every target, after the gate", () => {
+  it("dispatches deploy-hosted-platform.yml (no workflow_call): prod, every target, after the gate", () => {
     const d = w.jobs.deploy;
     expect(d.needs).toBe("gate");
-    expect(d.uses).toBe("./.github/workflows/deploy-hosted-platform.yml");
-    expect(d.with).toEqual({
-      env: "prod",
-      tag: "${{ needs.gate.outputs.tag }}",
-      targets: FULL,
-      reason: "",
-      verify_only: false,
-      require_newer: true,
-    });
+    expect(d.uses).toBeUndefined();
     // Only when the gate says go: a skip deploys nothing.
     expect(d.if).toBe("needs.gate.outputs.go == 'true'");
-    // Only the repo-level alert address, never `inherit`.
-    expect(d.secrets).toEqual({
-      OA_OWNER_EMAIL: "${{ secrets.OA_OWNER_EMAIL }}",
+    expect(d.environment).toBeUndefined();
+    const step = d.steps.find((s: { id?: string }) => s.id === "dispatch");
+    expect(step.env).toEqual({
+      GH_TOKEN: "${{ github.token }}",
+      TAG: "${{ needs.gate.outputs.tag }}",
+      CHAIN_ID: "c${{ github.run_id }}-${{ github.run_attempt }}",
     });
-    expect(Object.keys(deploy.on.workflow_call.secrets)).toContain(
-      "OA_OWNER_EMAIL",
+    expect(step.run).toBe(
+      'node --experimental-strip-types scripts/ci/chain-dispatch.ts --repo "$GITHUB_REPOSITORY" --tag "$TAG" --chain-id "$CHAIN_ID"',
+    );
+    // The chain's inputs live in the script, pinned here: prod, the full list.
+    const sh = read("scripts/ci/chain-dispatch.ts");
+    expect(sh).toContain('"env=prod"');
+    expect(sh).toContain('"require_newer=true"');
+    expect(sh).toContain(
+      `"platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,inventory,provisioning,zones,scheduler"`,
     );
     // The full list is the deploy's own: its read-back and no-break-glass
     // `if:`s compare against it.
     expect(deploy.on.workflow_dispatch.inputs.targets.default).toBe(FULL);
-    expect(deploy.on.workflow_call.inputs.targets.default).toBe(FULL);
     const steps = deploy.jobs.deploy.steps as Record<string, string>[];
     const ifOf = (n: string) => steps.find((s) => s.name === n)?.if;
     expect(ifOf("Every platform Worker runs the tag")).toBe(
@@ -289,8 +292,13 @@ describe("prod-release-chain.yml", () => {
       "${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}",
     );
     expect(deploy.concurrency.group).toBe("hosted-platform-${{ inputs.env }}");
-    // No group of the chain's own on the call: the same group twice deadlocks.
-    expect(d.concurrency).toBeUndefined();
+    // Job outputs carry the dispatched run's link to the report.
+    expect(d.outputs).toEqual({
+      run: "${{ steps.dispatch.outputs.deploy_run }}",
+      url: "${{ steps.dispatch.outputs.deploy_url }}",
+      note: "${{ steps.dispatch.outputs.deploy_note }}",
+    });
+    expect(d["timeout-minutes"]).toBeGreaterThan(50);
   });
 
   it("reports every chain run it was meant to run, the gate's failure included", () => {
@@ -305,9 +313,11 @@ describe("prod-release-chain.yml", () => {
       RESULT:
         "${{ needs.gate.result == 'success' && needs.deploy.result || needs.gate.result }}",
       RUN: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+      DEPLOY_RUN: "${{ needs.deploy.outputs.url }}",
+      DEPLOY_NOTE: "${{ needs.deploy.outputs.note }}",
     });
     expect(step.run).toBe(
-      'node --experimental-strip-types scripts/ci/prod-release-chain.ts report --repo "$GITHUB_REPOSITORY" --tag "$TAG" --result "$RESULT" --run "$RUN"',
+      'node --experimental-strip-types scripts/ci/prod-release-chain.ts report --repo "$GITHUB_REPOSITORY" --tag "$TAG" --result "$RESULT" --run "$RUN" --deploy-run "$DEPLOY_RUN" --deploy-note "$DEPLOY_NOTE"',
     );
   });
 });
@@ -716,5 +726,37 @@ describe("the gate's neutral skips", () => {
       "${{ needs.gate.result == 'success' && needs.deploy.result || needs.gate.result }}",
     );
     expect(w.jobs.deploy.if).toBe("needs.gate.outputs.go == 'true'");
+  });
+  it("the report names the dispatched deploy run when there is one", () => {
+    const calls: string[][] = [];
+    const exec: Exec = (_c, a) => {
+      calls.push(a);
+      return {
+        code: 0,
+        stdout:
+          a[0] === "issue" && a[1] === "list"
+            ? "[]"
+            : a[0] === "label"
+              ? '[{"name":"blocker"}]'
+              : "",
+        stderr: "",
+      };
+    };
+    report({
+      exec,
+      repo: "o/r",
+      tag: "v1.2.3",
+      result: "failure",
+      run: "https://x/chain",
+      deployRun: "https://x/deploy",
+      deployNote: "cancelled the dispatched run https://x/deploy",
+    });
+    const body =
+      (() => {
+        const c = calls.find((x) => x[1] === "create") ?? [];
+        return c[c.indexOf("--body") + 1];
+      })() ?? "";
+    expect(body).toContain("Deploy run: https://x/deploy");
+    expect(body).toContain("cancelled the dispatched run https://x/deploy");
   });
 });

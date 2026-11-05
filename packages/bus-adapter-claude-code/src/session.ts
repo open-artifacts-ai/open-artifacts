@@ -3,7 +3,13 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { CLIENT_VERSION, fitName, Hello, systemTool } from "@oa/bus-ipc";
+import {
+  ADAPTER_CAPS,
+  CLIENT_VERSION,
+  fitName,
+  Hello,
+  systemTool,
+} from "@oa/bus-ipc";
 
 export type ClaudeSession = {
   pid: number;
@@ -233,6 +239,7 @@ export function sessionHello(
     pid,
     cwd,
     proposed_name: fitName(session.name, 64) || undefined,
+    caps: [ADAPTER_CAPS.mailbox],
     attest: {
       session_id: session.sessionId,
       socket_path: session.socketPath ?? undefined,
