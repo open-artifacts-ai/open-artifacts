@@ -77,9 +77,9 @@ export function useCommentsApi(): CommentsApi {
   return c;
 }
 
-/** Signed-out visitors may comment where the artifact is public and lets them write (as the server decides). */
+/** Signed-out visitors may comment on public artifacts (the approved spec); dataWriters is a separate, live-data setting. */
 export const guestsMayComment = (a: ArtifactSummary) =>
-  a.visibility === "public" && a.dataWriters === "viewers";
+  a.visibility === "public";
 
 export const canComment = (a: ArtifactSummary, authed: boolean) =>
   a.can?.comment ?? (authed || guestsMayComment(a));

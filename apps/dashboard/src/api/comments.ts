@@ -30,6 +30,7 @@ export const commentsKey = (id: string) => ["comments", id] as const;
 export async function withAnon<T>(
   guest: boolean,
   go: (x?: RequestExtra) => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
   if (!guest) return go();
   const send = (token: string | null) =>
@@ -43,7 +44,7 @@ export async function withAnon<T>(
   // The server mints on any comments request that has no token, reads
   // included: so a token-less call of any kind takes the lock.
   if (loadAnonToken()) return send(loadAnonToken());
-  return withMintLock(() => send(loadAnonToken()));
+  return withMintLock(() => send(loadAnonToken()), signal);
 }
 
 /** Every thread, open and resolved: the shell filters and counts. */
@@ -52,8 +53,11 @@ export const useThreads = (id: string, enabled: boolean, guest = false) =>
     enabled,
     queryKey: commentsKey(id),
     queryFn: ({ signal }) =>
-      withAnon(guest, (x) =>
-        api.get(`${R.comments(id)}?status=all`, CommentListSchema, signal, x),
+      withAnon(
+        guest,
+        (x) =>
+          api.get(`${R.comments(id)}?status=all`, CommentListSchema, signal, x),
+        signal,
       ),
   });
 

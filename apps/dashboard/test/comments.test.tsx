@@ -565,7 +565,17 @@ describe("comments: live and signed out", () => {
       http.get(`*${R.artifact(PUBLIC)}`, () =>
         HttpResponse.json({
           ...fixtures.artifacts.find((a) => a.id === PUBLIC),
-          can: undefined,
+          // The server says this visitor can't comment (can.comment false).
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: false,
+            comment: false,
+          },
           visibility: "public",
           dataWriters: "editors",
           allowAnonymousWrites: false,
@@ -885,6 +895,39 @@ describe("comments: review round 1", () => {
     expect(view()).toBeNull();
   });
 
+  it("B1: a typed reply and an open delete confirm hold a swap too", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    const reply = within(c).getByRole("textbox", { name: "Reply" });
+    fireEvent.change(reply, { target: { value: "typing a reply" } });
+    await act(async () => {
+      events.emitVersion(OWNED, { version: 98 });
+    });
+    expect(
+      await screen.findByRole("button", { name: "View version 98" }),
+    ).toBeInTheDocument();
+    expect(reply).toHaveValue("typing a reply");
+    // Clear the reply, open a delete confirm instead.
+    fireEvent.change(reply, { target: { value: "" } });
+    const row = (
+      await within(c).findByText("Agreed, shorter is better.")
+    ).closest("li") as HTMLElement;
+    fireEvent.click(
+      within(row).getByRole("button", { name: "Comment actions" }),
+    );
+    fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    expect(within(row).getByText("Delete this reply?")).toBeInTheDocument();
+    await act(async () => {
+      events.emitVersion(OWNED, { version: 99 });
+    });
+    expect(
+      await screen.findByRole("button", { name: "View version 99" }),
+    ).toBeInTheDocument();
+    expect(within(row).getByText("Delete this reply?")).toBeInTheDocument();
+  });
+
   it("B1: an edit in progress and a pending draft count as writing too", async () => {
     mount(viewerPath(OWNED));
     const c = await col();
@@ -1016,8 +1059,9 @@ describe("comments: review round 1", () => {
       /Anyone with the link can comment/,
     ],
     [
+      // Public is enough: signed-out visitors can comment on public artifacts.
       { visibility: "public", dataWriters: "editors" },
-      /People who can open this can comment on it\./,
+      /Anyone with the link can comment/,
     ],
     [
       { visibility: "team", dataWriters: "viewers" },
@@ -1045,8 +1089,11 @@ describe("comments: review round 1", () => {
     });
     try {
       expect(loadAnonToken()).toBeNull();
-      await withAnon(true, async () => "read");
+      const ac = new AbortController();
+      await withAnon(true, async () => "read", ac.signal);
       expect(request.mock.calls[0]?.[0]).toBe(MINT_LOCK);
+      // The query's abort signal reaches the lock, so a cancelled read stops waiting.
+      expect(request.mock.calls[0]?.[1]).toEqual({ signal: ac.signal });
       // Signed in: never.
       request.mockClear();
       await withAnon(false, async () => "read");
