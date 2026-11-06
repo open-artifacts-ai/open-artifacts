@@ -57,9 +57,16 @@ class Registration(unittest.TestCase):
         bus.state("root-1").queue.append(("queued text", "mmmmmmmmmmmmmmm1"))
         bus.state("root-1").link = link
         hook = ctx.hooks["pre_llm_call"][0]
-        self.assertIsNone(hook(session_id="root-1", platform="telegram", user_message=[{"type": "image"}]))
+        bus._codex_runtime = lambda: False
+        img = [{"role": "user", "content": [{"type": "image"}]}]
+        self.assertIsNone(hook(session_id="root-1", platform="telegram", user_message="[image]", conversation_history=img))
+        self.assertIsNone(hook(session_id="root-1", platform="telegram", user_message="hi"))  # no history
         self.assertEqual(link.acks, [])
-        self.assertEqual(hook(session_id="root-1", platform="telegram", user_message="hi"), {"context": "queued text"})
+        hist = [{"role": "user", "content": "hi"}]
+        self.assertEqual(
+            hook(session_id="root-1", platform="telegram", user_message="hi", conversation_history=hist),
+            {"context": "queued text"},
+        )
         self.assertEqual(link.acks, ["mmmmmmmmmmmmmmm1"])
 
     def test_the_handler_takes_the_arguments_hermes_passes(self):

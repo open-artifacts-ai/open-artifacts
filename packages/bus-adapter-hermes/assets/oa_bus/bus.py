@@ -29,6 +29,38 @@ def name_of(title, kind="hermes"):
     return slug or kind
 
 
+def codex_app_server_active():
+    """Whether Hermes hands turns to the codex app-server, which never carries plugin context.
+
+    Asked the way Hermes's own banner asks (hermes_cli.codex_runtime_switch.get_current_runtime
+    on the loaded config). None when it cannot be told.
+    """
+    try:
+        from hermes_cli.codex_runtime_switch import get_current_runtime
+        from hermes_cli.config import load_config
+
+        return get_current_runtime(load_config()) == "codex_app_server"
+    except Exception:
+        return None
+
+
+def context_reaches_model(user_message, history):
+    """Whether Hermes will put this turn's pre_llm_call context into the model's request.
+
+    Hermes composes it into messages[current_turn_user_idx]["content"] and only when that
+    is a str (agent/turn_context.py compose_user_api_content). The hook's `user_message` is
+    the clean transcript text, a str even when the real content is a list (a gateway image
+    turn), so the real content is read from the hook's conversation_history, whose last
+    user message is the current turn's. Anything unclear counts as no.
+    """
+    if not isinstance(user_message, str) or not isinstance(history, list):
+        return False
+    last = next((m for m in reversed(history) if isinstance(m, dict) and m.get("role") == "user"), None)
+    # Equal text: a voice turn's API-facing content differs from its clean text, and a
+    # message appended after the current one by compaction would differ too.
+    return last is not None and isinstance(last.get("content"), str) and last["content"] == user_message
+
+
 class _Root:
     def __init__(self, ref):
         self.ref = ref
@@ -46,8 +78,10 @@ class _Root:
 class Bus:
     """`inject` is ctx.inject_message; `connect` makes a Link (replaced in tests)."""
 
-    def __init__(self, roots, inject=None, connect=None, start=None, cwd=None, spawn=None, current_session=None):
+    def __init__(self, roots, inject=None, connect=None, start=None, cwd=None, spawn=None,
+                 current_session=None, codex_runtime=None):
         self.roots = roots
+        self._codex_runtime = codex_runtime or codex_app_server_active
         self._inject = inject
         # The CLI's live session id: Hermes keeps HERMES_SESSION_ID in step across /resume and /new.
         self._current_session = current_session or (lambda: os.environ.get("HERMES_SESSION_ID"))
@@ -270,11 +304,12 @@ class Bus:
 
     # --- Hooks.
 
-    def turn_start(self, session_id, platform, user_message=None):
+    def turn_start(self, session_id, platform, user_message=None, conversation_history=None):
         """pre_llm_call: the queued messages as this turn's context, or None.
 
-        Hermes drops a hook's context when the user message is not text, so
-        nothing is taken (or acked) then."""
+        Hermes drops a hook's context when the turn's real content is not text, and never
+        sends it under the codex app-server runtime, so nothing is taken (or acked) then,
+        or when that cannot be told."""
         try:
             ref = self.roots.resolve(session_id)
         except NotOnBus:
@@ -286,7 +321,7 @@ class Bus:
             if platform == "cli":
                 self._cli_root = ref
             out = []
-            if isinstance(user_message, str):
+            if context_reaches_model(user_message, conversation_history) and self._codex_runtime() is False:
                 out, root.queue = root.queue, []
                 for _text, msg_id in out:
                     if msg_id:

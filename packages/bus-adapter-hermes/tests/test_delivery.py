@@ -18,6 +18,7 @@ class Env:
     def __init__(self, inject_result=True, inject=None):
         self.ctx = support.FakeCtx(inject_result)
         self.current = "root-1"
+        self.codex = False
         parents = {"root-1": "root-1", "root-2": "root-2", "rot": "root-1", "kid": "kid"}
         self.roots = Roots(parents.get)
         self.bus = Bus(
@@ -26,7 +27,14 @@ class Env:
             spawn=support.inline_spawn,
             start="t",
             current_session=lambda: self.current,
+            codex_runtime=lambda: self.codex,
         )
+
+    def turn(self, sid, platform, msg="x", history="same"):
+        """pre_llm_call as Hermes calls it: the history ends with this turn's user message."""
+        if history == "same":
+            history = [{"role": "assistant", "content": "earlier"}, {"role": "user", "content": msg}]
+        return self.bus.turn_start(sid, platform, msg, history)
 
     def link(self, ref="root-1"):
         link = AckingLink(self, ref=ref, replies={"self": AGENT})
@@ -34,7 +42,7 @@ class Env:
         return link
 
     def idle_cli(self, sid="root-1"):
-        self.bus.turn_start(sid, "cli", "hi")
+        self.turn(sid, "cli", "hi")
         self.bus.turn_end(sid)
 
     def queue(self, ref="root-1"):
@@ -133,7 +141,7 @@ class WhichSessionTheCliIsOn(unittest.TestCase):
     def test_a_gateway_chat_is_always_queued(self):
         e = Env()
         link = e.link()
-        e.bus.turn_start("root-1", "telegram", "hi")
+        e.turn("root-1", "telegram", "hi")
         e.bus.turn_end("root-1")
         e.bus.deliver(support.deliver_frame(M1), link)
         self.assertEqual(e.ctx.injected, [])
@@ -152,35 +160,134 @@ class AckTiming(unittest.TestCase):
     def test_a_queued_message_is_acked_when_a_turn_carries_it_not_before(self):
         e = Env()
         link = e.link()
-        e.bus.turn_start("root-1", "cli", "first")  # busy: inject would interrupt the turn
+        e.turn("root-1", "cli", "first")  # busy: inject would interrupt the turn
         e.bus.deliver(support.deliver_frame(M1, body="later"), link)
         self.assertEqual(e.ctx.injected, [])
         self.assertEqual(link.acks, [])  # queued is not delivered
         e.bus.turn_end("root-1")
-        out = e.bus.turn_start("root-1", "cli", "next")
+        out = e.turn("root-1", "cli", "next")
         self.assertIn("later", out["context"])
         self.assertIn("<cross-session-message", out["context"])
         self.assertEqual(link.acks, [M1])
-        self.assertIsNone(e.bus.turn_start("root-1", "cli", "again"))
+        self.assertIsNone(e.turn("root-1", "cli", "again"))
         self.assertEqual(link.acks, [M1])  # once
 
-    def test_a_turn_whose_message_is_not_text_takes_and_acks_nothing(self):
-        e = Env()
+    def queued_one(self, env=None):
+        e = env or Env()
         link = e.link()
         e.bus.deliver(support.deliver_frame(M1), link)
+        return e, link
+
+    def test_a_turn_whose_message_is_not_text_takes_and_acks_nothing(self):
+        e, link = self.queued_one()
         for msg in (None, ["image part"], {"a": 1}):
-            self.assertIsNone(e.bus.turn_start("root-1", "telegram", msg))
+            self.assertIsNone(e.turn("root-1", "telegram", msg, history=[{"role": "user", "content": msg}]))
         self.assertEqual(len(e.queue()), 1)
         self.assertEqual(link.acks, [])
-        out = e.bus.turn_start("root-1", "telegram", "text now")
+        out = e.turn("root-1", "telegram", "text now")
         self.assertIn("hi", out["context"])
         self.assertEqual(link.acks, [M1])
+
+    def test_a_gateway_image_turn_keeps_the_mail_queued_though_the_hook_text_is_a_str(self):
+        # The hook's user_message is the transcript text; the real content is a list.
+        e, link = self.queued_one()
+        history = [
+            {"role": "assistant", "content": "earlier"},
+            {"role": "user", "content": [{"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": "x"}}]},
+        ]
+        self.assertIsNone(e.turn("root-1", "telegram", "look [image]", history=history))
+        self.assertEqual(len(e.queue()), 1)
+        self.assertEqual(link.acks, [])
+        self.assertIn("hi", e.turn("root-1", "telegram", "now text")["context"])
+        self.assertEqual(link.acks, [M1])
+
+    def test_a_history_that_is_missing_or_unclear_keeps_the_mail_queued(self):
+        bad = [
+            None,
+            "not a list",
+            [],
+            [{"role": "assistant", "content": "x"}],
+            [{"role": "user", "content": "other text"}],  # not this turn's message
+            [{"role": "user", "content": "x"}, {"role": "user", "content": "todo snapshot"}],
+            ["not a dict"],
+        ]
+        for history in bad:
+            e, link = self.queued_one()
+            self.assertIsNone(e.turn("root-1", "telegram", "x", history=history), history)
+            self.assertEqual((len(e.queue()), link.acks), (1, []))
+
+    def test_the_last_user_message_decides_not_an_earlier_one(self):
+        e, link = self.queued_one()
+        history = [{"role": "user", "content": [{"type": "image_url"}]}, {"role": "assistant", "content": "a"},
+                   {"role": "user", "content": "x"}]
+        self.assertIn("hi", e.turn("root-1", "telegram", "x", history=history)["context"])
+
+    def test_codex_app_server_never_carries_context_so_the_mail_stays_queued(self):
+        e, link = self.queued_one()
+        e.codex = True
+        self.assertIsNone(e.turn("root-1", "telegram", "x"))
+        self.assertEqual((len(e.queue()), link.acks), (1, []))
+        e.codex = False
+        self.assertIn("hi", e.turn("root-1", "telegram", "x")["context"])
+
+    def test_a_runtime_that_cannot_be_told_keeps_the_mail_queued(self):
+        e, link = self.queued_one()
+        e.codex = None
+        self.assertIsNone(e.turn("root-1", "telegram", "x"))
+        self.assertEqual((len(e.queue()), link.acks), (1, []))
+
+    def test_the_default_runtime_check_says_unknown_outside_hermes(self):
+        import sys
+
+        from oa_bus.bus import codex_app_server_active
+
+        saved = sys.modules.get("hermes_cli")
+        sys.modules["hermes_cli"] = None  # an import of it fails
+        try:
+            self.assertIsNone(codex_app_server_active())
+        finally:
+            if saved is None:
+                sys.modules.pop("hermes_cli", None)
+            else:
+                sys.modules["hermes_cli"] = saved
+
+    def test_the_default_runtime_check_asks_hermes_the_way_its_banner_does(self):
+        import sys
+        import types
+
+        from oa_bus.bus import codex_app_server_active
+
+        sw = types.ModuleType("hermes_cli.codex_runtime_switch")
+        sw.get_current_runtime = lambda cfg: cfg["runtime"]
+        cfg = types.ModuleType("hermes_cli.config")
+        cfg.load_config = lambda: {"runtime": state["v"]}
+        state = {"v": "codex_app_server"}
+        pkg = types.ModuleType("hermes_cli")
+        saved = {k: sys.modules.get(k) for k in ("hermes_cli", "hermes_cli.codex_runtime_switch", "hermes_cli.config")}
+        sys.modules.update({"hermes_cli": pkg, "hermes_cli.codex_runtime_switch": sw, "hermes_cli.config": cfg})
+        try:
+            self.assertIs(codex_app_server_active(), True)
+            state["v"] = "auto"
+            self.assertIs(codex_app_server_active(), False)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+    def test_moa_turns_are_not_special_because_hermes_composes_their_context_live(self):
+        # Hermes skips only the persistence stamp for MoA; the request build still injects the
+        # context (agent/conversation_loop.py compose_user_api_content), so the hook cannot
+        # and need not tell: an ordinary text turn is taken.
+        e, link = self.queued_one()
+        self.assertIn("hi", e.turn("root-1", "telegram", "x")["context"])
 
     def test_a_rotated_session_id_takes_the_roots_queue(self):
         e = Env()
         link = e.link()
         e.bus.deliver(support.deliver_frame(M1), link)
-        self.assertIn("hi", e.bus.turn_start("rot", "telegram", "x")["context"])
+        self.assertIn("hi", e.turn("rot", "telegram", "x")["context"])
         self.assertEqual(link.acks, [M1])
 
     def test_with_no_link_open_when_consumed_the_message_stays_unacked(self):
@@ -188,7 +295,7 @@ class AckTiming(unittest.TestCase):
         link = e.link()
         e.bus.deliver(support.deliver_frame(M1), link)
         e.bus.state("root-1").link = None  # the link dropped while it waited
-        e.bus.turn_start("root-1", "telegram", "x")
+        e.turn("root-1", "telegram", "x")
         self.assertEqual(link.acks, [])
 
     def test_a_closed_link_leaves_it_unacked_and_the_redelivery_is_acked_once(self):
@@ -196,7 +303,7 @@ class AckTiming(unittest.TestCase):
         link = e.link()
         e.bus.deliver(support.deliver_frame(M1), link)
         link.closed = True
-        e.bus.turn_start("root-1", "telegram", "x")
+        e.turn("root-1", "telegram", "x")
         self.assertEqual(link.acks, [])
         fresh = e.link()  # the daemon redelivers on the new link
         e.bus.deliver(support.deliver_frame(M1), fresh)
@@ -209,7 +316,7 @@ class AckTiming(unittest.TestCase):
         e.bus.deliver(support.deliver_frame(M1), old)
         old.closed = True
         new = e.link()  # reconnected before the next turn
-        e.bus.turn_start("root-1", "telegram", "x")
+        e.turn("root-1", "telegram", "x")
         self.assertEqual((old.acks, new.acks), ([], [M1]))
 
 
@@ -221,7 +328,7 @@ class Redelivery(unittest.TestCase):
         e.bus.deliver(support.deliver_frame(M1), link)
         self.assertEqual(len(e.queue()), 1)
         self.assertEqual(link.acks, [])
-        e.bus.turn_start("root-1", "telegram", "x")
+        e.turn("root-1", "telegram", "x")
         self.assertEqual(link.acks, [M1])
 
     def test_a_repeat_after_the_ack_is_acked_again_never_queued_or_injected(self):
@@ -238,7 +345,7 @@ class Redelivery(unittest.TestCase):
         e = Env()
         link = e.link()
         e.bus.deliver(support.deliver_frame(M1), link)
-        e.bus.turn_start("root-1", "telegram", "x")
+        e.turn("root-1", "telegram", "x")
         e.bus.deliver(support.deliver_frame(M1), link)
         self.assertEqual(link.acks, [M1, M1])
         self.assertEqual(e.queue(), [])
@@ -302,7 +409,7 @@ class WhatIsDelivered(unittest.TestCase):
         link = e.link()
         e.bus._on_notice(link, "Your message to bob expired.", "m")
         self.assertEqual(e.queue(), [("[oa-bus] Your message to bob expired.", None)])
-        e.bus.turn_start("root-1", "telegram", "x")
+        e.turn("root-1", "telegram", "x")
         self.assertEqual(link.acks, [])
         self.assertEqual(e.queue(), [])
 
@@ -313,17 +420,17 @@ class RootsAreSeparate(unittest.TestCase):
         a, b = e.link("root-1"), e.link("root-2")
         e.bus.deliver(support.deliver_frame(M1, body="for one"), a)
         e.bus.deliver(support.deliver_frame(M2, body="for two"), b)
-        self.assertIn("for one", e.bus.turn_start("root-1", "telegram", "x")["context"])
-        self.assertIn("for two", e.bus.turn_start("root-2", "telegram", "x")["context"])
+        self.assertIn("for one", e.turn("root-1", "telegram", "x")["context"])
+        self.assertIn("for two", e.turn("root-2", "telegram", "x")["context"])
         self.assertEqual((a.acks, b.acks), ([M1], [M2]))
 
     def test_a_subagents_turns_take_nothing_and_do_not_end_the_roots_turn(self):
         e = Env()
         e.roots.note_subagent("root-1", "kid")
         link = e.link()
-        e.bus.turn_start("root-1", "cli", "x")
+        e.turn("root-1", "cli", "x")
         e.bus.deliver(support.deliver_frame(M1), link)
-        self.assertIsNone(e.bus.turn_start("kid", "cli", "x"))
+        self.assertIsNone(e.turn("kid", "cli", "x"))
         e.bus.turn_end("kid")
         self.assertTrue(e.bus.state("root-1").busy)
         self.assertEqual(len(e.queue()), 1)

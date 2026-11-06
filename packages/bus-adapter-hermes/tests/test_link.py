@@ -17,6 +17,9 @@ from oa_bus.roots import Roots
 from oa_bus.sockpath import daemon_socket_path
 
 
+H = [{"role": "user", "content": "x"}]
+
+
 class FakeDaemon:
     def __init__(self, home, refuse=False):
         self.refuse = refuse
@@ -119,7 +122,7 @@ class OverASocket(unittest.TestCase):
         d = FakeDaemon(self.home)
         self.addCleanup(d.close)
         roots = Roots(lambda sid: sid)
-        bus = Bus(roots, start="Fri Nov  6 21:00:00 2026")
+        bus = Bus(roots, start="Fri Nov  6 21:00:00 2026", codex_runtime=lambda: False)
         a, b = bus.ensure("root-1"), bus.ensure("root-2")
         self.addCleanup(bus.close_all)
         self.assertIsNot(a, b)
@@ -143,8 +146,8 @@ class OverASocket(unittest.TestCase):
         self.assertTrue(queues["root-1"].arrived.wait(5))
         self.assertTrue(queues["root-2"].arrived.wait(5))
         self.assertEqual(d.got, {})  # queued is not delivered: nothing acked yet
-        self.assertIn("one", bus.turn_start("root-1", "telegram", "x")["context"])
-        self.assertIn("two", bus.turn_start("root-2", "telegram", "x")["context"])
+        self.assertIn("one", bus.turn_start("root-1", "telegram", "x", H)["context"])
+        self.assertIn("two", bus.turn_start("root-2", "telegram", "x", H)["context"])
         self.assertTrue(d.acked["root-1"].wait(5))
         self.assertTrue(d.acked["root-2"].wait(5))
         self.assertEqual(d.got, {"root-1": ["mmmmmmmmmmmmmmm1"], "root-2": ["mmmmmmmmmmmmmmm2"]})
