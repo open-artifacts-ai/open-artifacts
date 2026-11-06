@@ -7,8 +7,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "pnpm --filter @oa/shared --filter @oa/provisioning-contract --filter @oa/provision build && vitest run && vitest run -c vitest.fleet.config.ts && vitest run -c vitest.node.config.ts",
-    "typecheck": "pnpm --filter @oa/shared --filter @oa/provisioning-contract --filter @oa/provision build && tsc --noEmit"
+    "test": "pnpm --filter @oa/server run gen && pnpm --filter @oa/shared --filter @oa/provisioning-contract --filter @oa/provision build && vitest run && vitest run -c vitest.fleet.config.ts && vitest run -c vitest.node.config.ts",
+    "typecheck": "pnpm --filter @oa/server run gen && pnpm --filter @oa/shared --filter @oa/provisioning-contract --filter @oa/provision build && tsc --noEmit"
   },
   "dependencies": {
     "@oa/broker-core": "workspace:*",
@@ -19,6 +19,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.4",
     "@cloudflare/workers-types": "^5.20261018.1",
+    "@oa/server": "workspace:*",
     "@types/node": "^20.19.43",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12",
