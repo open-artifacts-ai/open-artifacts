@@ -10,7 +10,13 @@ import {
 } from "@oa/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
-import { callerOf, capOfCaller, planOfMember, withCap } from "../auth/authz.js";
+import {
+  callerOf,
+  capOfCaller,
+  planOfMember,
+  suspendedMember,
+  withCap,
+} from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { sessionCredId, setCred } from "../auth/cred.js";
 import { verifyPat } from "../auth/pat.js";
@@ -510,9 +516,16 @@ export const readOnlyCap = (): MiddlewareHandler<AppEnv> => async (c, next) => {
     const path = c.req.path;
     if (CAPPED_ALLOWED.some(([am, re]) => am === m && re.test(path)))
       return next();
+    // Not under a suspension (an operator's stop, not a payment state), where
+    // only removing a share passes.
     if (
       cap === "plan" &&
-      PLAN_CAP_SHARING.some(([am, re]) => am === m && re.test(path))
+      PLAN_CAP_SHARING.some(
+        ([am, re]) =>
+          am === m &&
+          re.test(path) &&
+          (m === "DELETE" || !suspendedMember(c.var.user)),
+      )
     )
       return next();
     // Hosted billing's plan cap: the owner and admins can still pay

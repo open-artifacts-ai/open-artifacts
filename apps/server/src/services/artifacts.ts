@@ -43,6 +43,7 @@ import {
   roleRankQuery,
   roleRankSql,
   sharingCaller,
+  suspendedMember,
 } from "../auth/authz.js";
 import { can, dataWritersOf } from "../auth/policy.js";
 import { requireFreeStorage } from "../billing/caps.js";
@@ -940,6 +941,7 @@ function sharingFree<T extends ArtifactSummary>(
     out.can &&
     caller.kind === "user" &&
     capOfCaller(caller) === "plan" &&
+    !suspendedMember(caller.user) &&
     // The personal owner, or a manager of the shared space: the same two
     // that the server lets share (can(level, "share")).
     (personal ? out.owner?.id === caller.user.id : spaceRank === 3)
@@ -1483,13 +1485,14 @@ export async function patch(
   // Sharing is free on every plan: a plan-capped member may change who can
   // open their artifact (visibility alone), nothing else in the PATCH.
   const lock = capOfCaller(who) === "plan" ? planOfMember(user)?.lock : null;
+  // An allow-list: visibility and nothing else. A suspension is not a payment
+  // state: it keeps the old lock, with no sharing change.
   const visibilityOnly =
     p.visibility !== undefined &&
-    p.title === undefined &&
-    p.description === undefined &&
-    p.capabilities === undefined &&
-    p.dataWriters === undefined &&
-    p.allowAnonymousWrites === undefined;
+    Object.entries(p).every(
+      ([k, v]) => v === undefined || k === "visibility",
+    ) &&
+    lock?.reason !== "suspended";
   if (lock && !visibilityOnly) {
     await authorize(env, who, id, "view");
     throw planError(lock);

@@ -38,7 +38,12 @@ const LOCKS: Record<string, BillingRow> = {
     status: "past_due",
     graceUntil: 1,
   },
-  suspended: { ...base, tier: "team", status: "suspended" },
+};
+// An operator's abuse stop, not a payment state: sharing is NOT free here.
+const SUSPENDED: BillingRow = {
+  ...base,
+  tier: "team",
+  status: "suspended",
 };
 
 type U = { cookie: string; userId: string };
@@ -215,6 +220,21 @@ describe.each([
         })
       ).status,
     ).toBe(403);
+    // An allow-list: visibility plus any other field is refused.
+    for (const extra of [
+      { comments: true },
+      { dataWriters: "editors" },
+      { allowAnonymousWrites: false },
+      { capabilities: {} },
+    ])
+      expect(
+        (
+          await send(props, R.artifact(mine), member.cookie, {
+            method: "PATCH",
+            body: { visibility: "team", ...extra },
+          })
+        ).status,
+      ).toBe(403);
     expect(
       (
         await send(props, R.versions(mine), member.cookie, {
@@ -352,6 +372,35 @@ describe("a plan-capped member's agent", () => {
     }
   });
 
+  it("publish_artifact with only visibility goes through the same exception", async () => {
+    const client = await agent(member);
+    try {
+      const id = pool.mine[2] as string;
+      const ok = await tool(client, "publish_artifact", {
+        id,
+        visibility: "team",
+      });
+      expect([ok.isError ?? false, textOf(ok)]).toEqual([
+        false,
+        expect.any(String),
+      ]);
+      const more = await tool(client, "publish_artifact", {
+        id,
+        visibility: "private",
+        title: "renamed",
+      });
+      expect(more.isError).toBe(true);
+      const caps = await tool(client, "publish_artifact", {
+        id,
+        visibility: "private",
+        dataWriters: "editors",
+      });
+      expect(caps.isError).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("every other write still gets the plan error, and another member's artifact is refused", async () => {
     const client = await agent(member);
     try {
@@ -468,5 +517,93 @@ describe("a plan-capped manager of a shared space", () => {
         })
       ).status,
     ).toBeGreaterThanOrEqual(400);
+  });
+});
+
+describe("suspended is an operator's stop: sharing is not free there", () => {
+  const pool = { mine: "", owners: "" };
+  const sharedEmail = `keep-${tag}@a.com`;
+  beforeAll(async () => {
+    fake.down = false;
+    await clearBilling();
+    await cachePlan({
+      ...base,
+      tier: "business",
+      status: "active",
+      version: 1,
+    });
+    pool.mine = await publish(member);
+    pool.owners = await publish(owner);
+    for (const [id, who] of [
+      [pool.mine, member],
+      [pool.owners, owner],
+    ] as const)
+      expect(
+        (
+          await send(props, R.shares(id), who.cookie, {
+            method: "PUT",
+            body: { email: sharedEmail, role: "viewer" },
+          })
+        ).status,
+      ).toBe(200);
+    await clearBilling();
+    await cachePlan({ ...SUSPENDED, version: 2 });
+  });
+  const codeOf = async (r: Response) => (await code(r)).error?.code;
+
+  it("a new share, over REST and MCP, is refused for the owner and a capped member", async () => {
+    for (const [id, who] of [
+      [pool.owners, owner],
+      [pool.mine, member],
+    ] as const) {
+      const r = await send(props, R.shares(id), who.cookie, {
+        method: "PUT",
+        body: { email: `n-${uniq()}@a.com`, role: "viewer" },
+      });
+      expect(r.status).toBe(403);
+      expect(await codeOf(r)).toBe("plan_read_only");
+    }
+    const { token } = await createPat(env, owner.userId, `susp ${uniq()}`);
+    const client = await connect(token, { env: H, props });
+    try {
+      const sh = await tool(client, "share_artifact", {
+        id: pool.owners,
+        email: `m-${uniq()}@a.com`,
+        role: "viewer",
+      });
+      expect(sh.isError).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("a capped member's visibility change is refused; removing a share is allowed", async () => {
+    const vis = await send(props, R.artifact(pool.mine), member.cookie, {
+      method: "PATCH",
+      body: { visibility: "team" },
+    });
+    expect(vis.status).toBe(403);
+    expect(await codeOf(vis)).toBe("plan_read_only");
+    expect(
+      (
+        await send(props, R.share(pool.mine, sharedEmail), member.cookie, {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await send(props, R.share(pool.owners, sharedEmail), owner.cookie, {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(204);
+  });
+
+  it("a capped member's agent can't connect", async () => {
+    const { token } = await createPat(env, member.userId, `susp ${uniq()}`);
+    await expect(connect(token, { env: H, props })).rejects.toThrow(
+      /Only members can connect agents/,
+    );
   });
 });

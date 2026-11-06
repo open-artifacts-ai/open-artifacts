@@ -138,6 +138,11 @@ export type CanCtx = {
    * read-only, anonymous data writes too. Reads are never touched.
    */
   plan?: "solo" | "readOnly" | null;
+  /**
+   * The lock is a suspension (PlanLock.reason): not a payment state, so
+   * sharing is not free under it (only share-list reads and removals pass).
+   */
+  suspended?: boolean;
 };
 
 /**
@@ -167,7 +172,7 @@ const PLAN_TEAM_ACTIONS: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
   "transfer",
 ]);
 /**
- * Sharing is free on every plan: viewing and changing who can open an
+ * Sharing is free on every payment plan (not under a suspension, CanCtx.suspended): viewing and changing who can open an
  * artifact (share, unshare, visibility) is never refused by a plan lock, on
  * any artifact the caller may share. A plan-capped member keeps it too
  * (SHARING_ACTIONS: authz.ts authorize reads their level uncapped).
@@ -181,7 +186,9 @@ export const SHARING_ACTIONS: ReadonlySet<PolicyAction> = PLAN_EXEMPT;
 
 /** Whether the instance's plan lock refuses `action` (reads never). */
 export function planRefuses(action: PolicyAction, ctx: CanCtx): boolean {
-  if (!ctx.plan || READ.has(action) || PLAN_EXEMPT.has(action)) return false;
+  if (!ctx.plan || READ.has(action)) return false;
+  if (PLAN_EXEMPT.has(action) && !(ctx.suspended && action === "visibility"))
+    return false;
   if (!ctx.personal) return true;
   if (PLAN_TEAM_ACTIONS.has(action)) return true;
   return ctx.plan === "readOnly" && ctx.anonymous === true;
@@ -436,6 +443,8 @@ export function orgCan(
     cap?: CapReason | null;
     /** The request only reads (GET/HEAD): the billing plan cap keeps admin reads. */
     read?: boolean;
+    /** The plan lock is a suspension: the plan cap may not connect an agent. */
+    suspended?: boolean;
   } = {},
 ): boolean {
   // Hosted billing's plan cap never locks the owner and admins out of
@@ -491,7 +500,10 @@ export function orgCan(
     // through the agent the plan cap's rules apply as for the member
     // (reads, share, unshare, visibility; every other write is refused).
     case "mcp.connect":
-      return TEAM_ROLES.includes(m.role) && (!capped || opts.cap === "plan");
+      return (
+        TEAM_ROLES.includes(m.role) &&
+        (!capped || (opts.cap === "plan" && opts.suspended !== true))
+      );
     default:
       return admin;
   }

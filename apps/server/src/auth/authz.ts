@@ -109,6 +109,10 @@ export const planOfMember = (
   m: Member | null | undefined,
 ): EffectivePlan | null => (m ? ((m as PlannedMember)[PLAN] ?? null) : null);
 
+/** The plan lock this member was loaded with is a suspension. */
+export const suspendedMember = (m: Member | null | undefined): boolean =>
+  planOfMember(m)?.lock?.reason === "suspended";
+
 /** The one way to build a Caller: carries the member's cap. */
 export function callerOf(m: Member | null | undefined): Caller {
   if (!m) return { kind: "anonymous" };
@@ -426,6 +430,7 @@ export function canCtx(
     // The one read of the stored columns (fail closed, #681).
     dataWriters: dataWritersOf(a),
     plan: p?.lock?.mode ?? null,
+    suspended: p?.lock?.reason === "suspended",
   };
 }
 
@@ -471,7 +476,11 @@ export function dataWriteRefusal(
  * visibility); `c` itself otherwise. Sharing is free on every plan.
  */
 export const sharingCaller = (c: Caller, action: PolicyAction): Caller =>
-  c.kind === "user" && c.cap === "plan" && SHARING_ACTIONS.has(action)
+  c.kind === "user" &&
+  c.cap === "plan" &&
+  SHARING_ACTIONS.has(action) &&
+  // A suspension is not a payment state: only a removal passes under it.
+  (action === "unshare" || !suspendedMember(c.user))
     ? { ...c, cap: null }
     : c;
 
