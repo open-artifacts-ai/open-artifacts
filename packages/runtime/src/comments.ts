@@ -450,6 +450,12 @@ export function createComments(
     if (best) open(best.id);
   }
 
+  // Esc in pin mode: the frame holds focus after a click, so tell the shell.
+  function onKey(e: KeyboardEvent) {
+    if (e.key === "Escape" && mode === "pin")
+      bridge.send({ oa: 1, type: "comment.escape" });
+  }
+
   // ---- shell messages ----
   const off = bridge.on((m) => {
     if (m.type === "comments.mode") {
@@ -529,6 +535,7 @@ export function createComments(
   });
   document.addEventListener("selectionchange", onSelectionChange);
   document.addEventListener("click", onClick, true);
+  document.addEventListener("keydown", onKey, true);
   addEventListener("resize", onResize, { passive: true });
   addEventListener("scroll", onScroll, { passive: true });
 
@@ -537,6 +544,7 @@ export function createComments(
     observer?.disconnect();
     document.removeEventListener("selectionchange", onSelectionChange);
     document.removeEventListener("click", onClick, true);
+    document.removeEventListener("keydown", onKey, true);
     removeEventListener("resize", onResize);
     removeEventListener("scroll", onScroll);
     clearTimeout(mutTimer);

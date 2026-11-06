@@ -438,6 +438,7 @@ function Viewer({
       onCommentPositions: (p) => cmtRef.current.onPositions(p),
       onCommentOpen: (id) => cmtRef.current.onOpen(id),
       onCommentPin: (p) => cmtRef.current.onPin(p),
+      onCommentEscape: () => cmtRef.current.onEscape(),
       onPdfText: (t) => fxRef.current.onPdfText(t),
       onThumb: (b) => fxRef.current.onThumb(b),
       // The shell re-checks access: still readable, or the gone state.

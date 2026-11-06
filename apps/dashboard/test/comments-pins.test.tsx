@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fullPath } from "../src/viewer/paths";
 import {
   calls,
   events,
@@ -27,6 +28,7 @@ type Opts = {
   onCommentSelect: (a: unknown) => void;
   onCommentPositions: (p: unknown[]) => void;
   onCommentOpen: (id: string) => void;
+  onCommentEscape: () => void;
   onCommentPin: (p: { x: number; y: number; page?: number }) => void;
 };
 const opts: Opts[] = [];
@@ -181,7 +183,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     expect(await screen.findByText("Click to place a pin")).toBeInTheDocument();
     await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("pin"));
     // Esc leaves pin mode.
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.body, { key: "Escape" });
     await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("select"));
     expect(screen.queryByText("Click to place a pin")).toBeNull();
   });
@@ -193,6 +195,46 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     await col();
     fireEvent.click(await tool("Pin"));
     expect(await screen.findByText("Tap to place a pin")).toBeInTheDocument();
+  });
+
+  it("the frame's Esc (comment.escape) leaves pin mode", async () => {
+    asFormat("image", "h1");
+    mount(viewerPath(OWNED));
+    await col();
+    fireEvent.click(await tool("Pin"));
+    await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("pin"));
+    await act(async () => opts.at(-1)?.onCommentEscape());
+    await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("select"));
+  });
+
+  it("a forged comment.escape outside pin mode does nothing", async () => {
+    asFormat("image", "h1");
+    mount(viewerPath(OWNED));
+    await col();
+    setMode.mockClear();
+    await act(async () => opts.at(-1)?.onCommentEscape());
+    expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("in full screen, the first Esc leaves pin mode and the second leaves full screen", async () => {
+    asFormat("image", "h1");
+    viewport(1280);
+    const router = mount(fullPath(OWNED));
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Pin" }));
+    await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("pin"));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("select"));
+    await wait(30);
+    expect(router.state.location.pathname).toBe(fullPath(OWNED));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(viewerPath(OWNED)),
+    );
   });
 
   it("offers pins on a pdf but not on html", async () => {
@@ -276,11 +318,11 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     ).toBeInTheDocument();
   });
 
-  it("says This page changed on a pdf", async () => {
+  it("says This file changed on a pdf (the hash covers the whole file)", async () => {
     asFormat("pdf", "h2", { threads: [pinThread("a", 1, "h1")] });
     mount(viewerPath(OWNED));
     expect(
-      await screen.findByText("This page changed since this was placed."),
+      await screen.findByText("This file changed since this was placed."),
     ).toBeInTheDocument();
   });
 

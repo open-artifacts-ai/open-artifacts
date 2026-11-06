@@ -221,6 +221,15 @@ export const ArtifactToShellSchema = z.union([
     type: z.literal("comment.open"),
     id: CommentIdSchema,
   }),
+  /**
+   * Esc pressed in the frame while in pin mode: leave pin mode. Carries no
+   * data; the shell acts only when it is in pin mode.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("comment.escape"),
+  }),
   /** A click in pin mode on an image or pdf page; x and y are 0..1 of the image or page. */
   z.strictObject({
     oa: z.literal(1),

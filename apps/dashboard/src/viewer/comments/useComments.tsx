@@ -82,6 +82,8 @@ export type CommentsApi = {
   ) => void;
   onOpen: (id: string) => void;
   onPin: (p: PinPoint) => void;
+  /** Esc in the frame: leaves pin mode (page code can send it; it only ever leaves). */
+  onEscape: () => void;
   /** The frame said hello: send it the mode and threads again. */
   resync: () => void;
 };
@@ -168,14 +170,18 @@ export function useCommentsController({
     wantPin && pinFormat !== null && mayComment ? "pin" : "select";
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  // Esc leaves pin mode.
+  // Esc leaves pin mode first. Capture phase, and stopped: in full screen the
+  // exit handler is on the document too, and must not also run.
   useEffect(() => {
     if (mode !== "pin") return;
     const k = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setWantPin(false);
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setWantPin(false);
     };
-    window.addEventListener("keydown", k);
-    return () => window.removeEventListener("keydown", k);
+    document.addEventListener("keydown", k, true);
+    return () => document.removeEventListener("keydown", k, true);
   }, [mode]);
   // The frame's own copy of what to draw: ids and anchors only.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `hello` re-sends after the frame reloads
@@ -232,6 +238,7 @@ export function useCommentsController({
     setWantPin(false);
     surface.current();
   }, []);
+  const onEscape = useCallback(() => setWantPin(false), []);
   const onPositions = useCallback<CommentsApi["onPositions"]>((list) => {
     if (!gates.current.positions()) return;
     const next = new Map<string, FramePosition>();
@@ -301,6 +308,7 @@ export function useCommentsController({
       onPositions,
       onOpen,
       onPin,
+      onEscape,
       resync: () => setHello((n) => n + 1),
     }),
     [
@@ -331,6 +339,7 @@ export function useCommentsController({
       onPositions,
       onOpen,
       onPin,
+      onEscape,
     ],
   );
 }

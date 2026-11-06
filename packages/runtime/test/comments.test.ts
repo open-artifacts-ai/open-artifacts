@@ -523,6 +523,27 @@ describe("pins", () => {
     expect(last("comment.pin")).toMatchObject({ pin: { x: 0.5, y: 0.5 } });
   });
 
+  it("Esc in pin mode tells the shell, with no data; in other modes it does not", async () => {
+    await start("pin");
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await flush();
+    expect(last("comment.escape")).toMatchObject({
+      oa: 1,
+      type: "comment.escape",
+    });
+    await send({ type: "comments.mode", mode: "select" });
+    const before = msgs().filter((m) => m.type === "comment.escape").length;
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await flush();
+    expect(msgs().filter((m) => m.type === "comment.escape")).toHaveLength(
+      before,
+    );
+  });
+
   it("does nothing in select mode, and pins are drawn in the overlay with their number", async () => {
     await start("select");
     document
@@ -619,6 +640,7 @@ describe("what the frame sends", () => {
       "comment.positions": ["oa", "positions", "type"],
       "comment.open": ["id", "oa", "type"],
       "comment.pin": ["oa", "pin", "type"],
+      "comment.escape": ["oa", "type"],
     };
     const seen = msgs();
     expect(seen.map((m) => m.type).sort()).toEqual([

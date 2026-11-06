@@ -368,7 +368,7 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
     return <p className={`${TXT} font-medium ${MUTED}`}>Whole page</p>;
   if (a.kind === "pin") {
     const n = pinNumbering(api.threads).get(t.id) ?? 1;
-    // Only when both hashes are known and differ (the pdf's covers the whole file).
+    // Only when both hashes are known and differ (a pdf's hash covers the whole file, so the note says file).
     const changed =
       api.contentHash !== null && a.contentHash !== api.contentHash;
     return (
@@ -380,7 +380,7 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
           <p className={`${TXT} ${MUTED}`}>
             {api.pinFormat === "image"
               ? "The image changed since this was placed."
-              : "This page changed since this was placed."}
+              : "This file changed since this was placed."}
           </p>
         )}
       </div>

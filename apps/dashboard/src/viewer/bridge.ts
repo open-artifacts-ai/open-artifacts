@@ -80,6 +80,7 @@ export interface BridgeOptions {
   ) => void;
   onCommentOpen?: (id: string) => void;
   /** A click in pin mode: x and y are 0..1 of the image or page. */
+  onCommentEscape?: () => void;
   onCommentPin?: (
     pin: Extract<ArtifactToShell, { type: "comment.pin" }>["pin"],
   ) => void;
@@ -546,6 +547,9 @@ export function createBridge(opts: BridgeOptions) {
         break;
       case "comment.open":
         opts.onCommentOpen?.(m.id);
+        break;
+      case "comment.escape":
+        opts.onCommentEscape?.();
         break;
       case "comment.pin":
         opts.onCommentPin?.(m.pin);
