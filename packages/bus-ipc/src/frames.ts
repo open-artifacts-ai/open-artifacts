@@ -52,6 +52,23 @@ const clientVersion = {
   client_version: z.string().min(1).max(64).optional(),
 };
 
+/**
+ * What an adapter tells the daemon it can decode, in `hello.caps` (#1295).
+ * `mailbox`: roster rows with `state: "away"` and `since`, and the
+ * `mailbox_full` and `reserved_name` refusals. The daemon sends those only to
+ * an adapter that listed it; an older one would fail to decode them.
+ */
+export const ADAPTER_CAPS = {
+  mailbox: "mailbox",
+  /**
+   * `pending` (#1525): a `config_files` entry with `state: "pending"`, a
+   * namespace waiting for the user's approval. An older strict decoder would
+   * reject the whole frame on it, so the daemon sends it only to a client that
+   * listed this.
+   */
+  pending: "pending",
+} as const;
+
 export const Hello = z.object({
   ...base,
   ...clientVersion,
@@ -71,6 +88,8 @@ export const Hello = z.object({
     .max(64)
     .refine(isWellFormed, WELL_FORMED)
     .optional(),
+  /** What this adapter can decode (ADAPTER_CAPS); absent means none. */
+  caps: z.array(z.string().max(32)).max(16).optional(),
   /** What the harness told the adapter, re-checked by the daemon. */
   attest: z
     .object({
@@ -180,6 +199,8 @@ export const StatusRequest = z.object({
   ...clientVersion,
   type: z.literal("status"),
   cwd: z.string().min(1).max(4096).optional(),
+  /** What this client can decode (ADAPTER_CAPS); absent means none. */
+  caps: z.array(z.string().max(32)).max(16).optional(),
 });
 export type StatusRequest = z.infer<typeof StatusRequest>;
 
@@ -196,11 +217,12 @@ export type AdapterFrame = z.infer<typeof AdapterFrame>;
 
 /**
  * A config file the daemon refused or noted (#1527). `reason` completes
- * "<file> …"; `fix` is the exact step. #1525 adds pending-approval entries.
+ * "<file> …"; `fix` is the exact step. `pending` (#1525): a namespace waiting for approval.
  */
 export const ConfigFile = z.object({
   file: z.string(),
-  state: z.enum(["refused", "noted"]),
+  /** `pending` (#1525) goes only to clients that listed ADAPTER_CAPS.pending. */
+  state: z.enum(["refused", "noted", "pending"]),
   reason: z.string(),
   fix: z.string(),
 });
@@ -212,8 +234,13 @@ export const AgentInfo = z.object({
   kind: KIND_TOKEN,
   /** `state === "live"`; kept for older adapters. */
   live: z.boolean(),
-  /** Roster entries only: `queued` means the agent's machine is disconnected. */
-  state: z.enum(["live", "queued"]).optional(),
+  /**
+   * Roster entries only: `queued` means the agent's machine is disconnected;
+   * `away` (#1295) means it is closed and its mailbox is kept, with `since`.
+   */
+  state: z.enum(["live", "queued", "away"]).optional(),
+  /** When an `away` agent closed. */
+  since: IsoTimeSchema.optional(),
   global: z.boolean(),
   /** The agent's machine (B13); absent when the hub is older. */
   machine_label: MachineLabelSchema.optional(),

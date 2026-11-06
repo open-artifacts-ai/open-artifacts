@@ -75,10 +75,13 @@ const mirror = (h: BusHubStub) =>
 const RPC_ALLOWLIST = [
   "closeAll",
   "decideRoleProposal",
+  "deleteLink",
   "deleteRole",
+  "listLinks",
   "listRoleProposals",
   "listRoles",
   "proposeRole",
+  "putLink",
   "putRole",
   "revokeMachine",
   "snapshot",

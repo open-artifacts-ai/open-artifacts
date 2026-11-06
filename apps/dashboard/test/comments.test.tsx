@@ -1165,10 +1165,10 @@ describe("comments: review round 1", () => {
     expect(within(c).getByText("via Claude Code")).toBeInTheDocument();
     expect(within(c).getByText("via Cursor")).toBeInTheDocument();
     expect(within(c).queryByText("via via Cursor")).toBeNull();
-    // Two threads were made on version 1; the artifact has three.
+    // Two threads were made on version 1; the artifact has three. The toolbar badge follows the column.
     expect(within(c).getByText("2 open")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Comments, 3 open/ }),
+      screen.getByRole("button", { name: /Comments, 2 open/ }),
     ).toBeInTheDocument();
     const row = within(c)
       .getByText("body a")
@@ -1176,6 +1176,15 @@ describe("comments: review round 1", () => {
     const when = row.querySelector("span[title]") as HTMLElement;
     expect(when.getAttribute("title")).toMatch(/^November 5(, 2026)? at \d/);
     expect(when.textContent).not.toBe(when.getAttribute("title"));
+    // The author line never wraps: the name and "via" truncate, the time stays put (jsdom has no layout).
+    const line = when.parentElement as HTMLElement;
+    expect(line.className).not.toMatch(/flex-wrap/);
+    expect(when.className).toMatch(/whitespace-nowrap/);
+    expect(when.className).toMatch(/shrink-0/);
+    expect(line.querySelector("b")?.className).toMatch(/truncate/);
+    // "via <agent>" is its own line under the name, not beside the time.
+    expect(line.contains(within(c).getByText("via Claude Code"))).toBe(false);
+    expect(line.nextElementSibling?.textContent).toBe("via Claude Code");
   });
 
   const art = (over: object) =>

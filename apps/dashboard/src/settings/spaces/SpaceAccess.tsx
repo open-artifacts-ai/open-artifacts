@@ -29,7 +29,7 @@ import { LoadError } from "../../layout/LoadError";
 import { AppLink } from "../../library/AppLink";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { GroupPicker } from "../GroupPicker";
-import { errorText, muted, SettingsCard } from "../ui";
+import { errorText, muted, SettingsCard, WriteLock } from "../ui";
 
 export const ROLE_LABEL: Record<SpaceRole, string> = {
   viewer: "Viewer",
@@ -306,14 +306,16 @@ export function SpaceAccess({
               who="All members"
               meta={`Everyone at ${orgName} · built in`}
               control={
-                <RoleSelect
-                  label="Role for All members"
-                  value={space.allMembersRole}
-                  roles={ALL_ROLES}
-                  none
-                  disabled={patch.isPending}
-                  onChange={(role) => patch.mutate({ allMembersRole: role })}
-                />
+                <WriteLock>
+                  <RoleSelect
+                    label="Role for All members"
+                    value={space.allMembersRole}
+                    roles={ALL_ROLES}
+                    none
+                    disabled={patch.isPending}
+                    onChange={(role) => patch.mutate({ allMembersRole: role })}
+                  />
+                </WriteLock>
               }
             />
           )}
@@ -335,7 +337,7 @@ export function SpaceAccess({
                 }
                 control={
                   own ? (
-                    <>
+                    <WriteLock>
                       <RoleSelect
                         label={`Role for ${g.email}`}
                         value={role}
@@ -356,7 +358,7 @@ export function SpaceAccess({
                       >
                         Remove
                       </Button>
-                    </>
+                    </WriteLock>
                   ) : (
                     <>
                       <span className="text-[length:var(--oa-text-sm)]">
@@ -421,19 +423,21 @@ export function SpaceAccess({
         />
       )}
       {mapper && (
-        <GroupPicker
-          label="Add a group"
-          placeholder="Add a group…"
-          exclude={rows.map((g) => g.groupId)}
-          disabled={!canEdit || put.isPending}
-          onPick={(g) => {
-            setProblem(null);
-            put.mutate(
-              { groupId: g.groupId, role: "viewer" },
-              { onError: (e) => refused(e) },
-            );
-          }}
-        />
+        <WriteLock>
+          <GroupPicker
+            label="Add a group"
+            placeholder="Add a group…"
+            exclude={rows.map((g) => g.groupId)}
+            disabled={!canEdit || put.isPending}
+            onPick={(g) => {
+              setProblem(null);
+              put.mutate(
+                { groupId: g.groupId, role: "viewer" },
+                { onError: (e) => refused(e) },
+              );
+            }}
+          />
+        </WriteLock>
       )}
       {!admin && (
         // Every-space rows are admin-only to read (#422), so managers get one line.

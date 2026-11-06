@@ -67,7 +67,7 @@ case "$mode" in
 esac
 
 run_setup() {
-  if pnpm -s oa:setup "${mode_args[@]}" --name "$PROD_NAME" --app-host "$PROD_APP_HOST" \
+  if pnpm --reporter=silent oa:setup "${mode_args[@]}" --name "$PROD_NAME" --app-host "$PROD_APP_HOST" \
     --content-host "$PROD_CONTENT_HOST" --owner-email "$PROD_OWNER_EMAIL" 2>&1; then
     echo '{"step":"setup-exit","status":"ok"}'
   else

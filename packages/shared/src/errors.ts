@@ -146,7 +146,7 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   query_too_large: 400,
   /** A bus follow() past FOLLOW_LIMIT follows for one member (#1292): unfollow first. */
   follow_limit: 409,
-  /** A team feature on a free (solo) instance whose trial was already used: an invite, a share to someone else, a shared space; details PlanRefusalDetails. */
+  /** A team feature on a free (solo) instance whose trial was already used: an invite, a shared space (sharing an artifact is free on every plan); details PlanRefusalDetails. */
   plan_required: 403,
   /** A write refused because team features are read-only (trial ended, lapsed, payment failed past grace, suspended, or billing unreachable past 7 days); details PlanRefusalDetails. Nothing was deleted. */
   plan_read_only: 403,

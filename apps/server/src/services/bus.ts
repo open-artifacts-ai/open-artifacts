@@ -1,6 +1,7 @@
 import {
   BUS_ROLE_PROPOSAL_TTL_MS,
   type BusAgent,
+  type BusLink,
   type BusMachine,
   type BusRole,
   type BusRoleProposal,
@@ -90,6 +91,19 @@ export type BusHubRpc = {
   >;
   /** #1296: removes a role; false when unknown. */
   deleteRole(id: string): Promise<boolean>;
+  /** #1567: the member's links between namespaces. */
+  listLinks(): Promise<BusLink[]>;
+  /** #1567: links two namespaces (idempotent); see bus/links.ts addLink. */
+  putLink(
+    a: string,
+    b: string,
+  ): Promise<
+    | { ok: true; link: BusLink }
+    | { ok: false; reason: "invalid"; field: "a" | "b" | "namespaces" }
+    | { ok: false; reason: "link_limit" }
+  >;
+  /** #1567: removes a link; false when unknown. */
+  deleteLink(id: string): Promise<boolean>;
   /** #1372: records a role proposal under its link's hash; changes no role. */
   proposeRole(input: ProposeInput, tokenHash: string): Promise<ProposeResult>;
   /** #1372: the proposal behind a link's hash, for the confirm page. */
@@ -446,6 +460,85 @@ export async function deleteBusRole(
   const hub = busHub(env, userId);
   if (!hub) return;
   await roleCall(hub.deleteRole(id));
+}
+
+// ------------------------------------------------------- project links
+
+/** Why a link write was refused (#1567): the 409's details.reason. */
+export type LinkRefusal = "link_limit" | "no_bus";
+
+const LINK_REFUSALS: Record<LinkRefusal, string> = {
+  link_limit: "Too many links",
+  no_bus: "Connect a machine to the bus first",
+};
+
+/** A hub call for a link write: ApiError internal when it fails or times out (retrying is safe). */
+async function linkCall<T>(p: Promise<T>): Promise<T> {
+  try {
+    const r = await within(p, BUS_HUB_TIMEOUT_MS * 5);
+    if (r === null) throw new Error("bus hub timed out");
+    return r;
+  } catch (e) {
+    logError("bus_link_failed", e);
+    throw new ApiError("internal", "The bus could not be reached. Try again.");
+  }
+}
+
+/** #1567: the member's links, or [] with live false when the hub can't be read (or none can exist yet). */
+export async function listBusLinks(
+  env: Env,
+  userId: string,
+): Promise<{ links: BusLink[]; live: boolean }> {
+  const none = { links: [], live: false };
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return none;
+  const hub = busHub(env, userId);
+  if (!hub) return none;
+  try {
+    const links = await within(hub.listLinks(), BUS_HUB_TIMEOUT_MS);
+    return links === null ? none : { links, live: true };
+  } catch (e) {
+    logError("bus_links_failed", e);
+    return none;
+  }
+}
+
+/**
+ * #1567: links two namespaces. The route validated the body; the hub checks
+ * again. 409 conflict with details { reason } on a refusal; `no_bus` before
+ * any machine connected (no BusHub is created for it).
+ */
+export async function putBusLink(
+  env: Env,
+  userId: string,
+  a: string,
+  b: string,
+): Promise<BusLink> {
+  const refuse = (reason: LinkRefusal) =>
+    new ApiError("conflict", LINK_REFUSALS[reason], { reason });
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  if (!(await hasConnectedMachine(env, userId))) throw refuse("no_bus");
+  const hub = busHub(env, userId);
+  if (!hub) throw refuse("no_bus");
+  const r = await linkCall(hub.putLink(a, b));
+  if (r.ok) return r.link;
+  if (r.reason === "invalid")
+    throw new ApiError("bad_request", `Invalid ${r.field}`, {
+      field: r.field,
+    });
+  throw refuse(r.reason);
+}
+
+/** #1567: removes the member's link `id`. Idempotent: unknown is fine. */
+export async function deleteBusLink(
+  env: Env,
+  userId: string,
+  id: string,
+): Promise<void> {
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  if (!(await hasConnectedMachine(env, userId))) return;
+  const hub = busHub(env, userId);
+  if (!hub) return;
+  await linkCall(hub.deleteLink(id));
 }
 
 // ---------------------------------------------------------- role proposals

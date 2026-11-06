@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
+import { createInterface } from "node:readline";
 import {
   busHome,
   claudeReturnDir,
@@ -102,6 +103,10 @@ export type Ctx = Deps & {
   nodeVersion: string;
   /** The Codex desktop app's bundle (macOS); undefined: none to look for. */
   codexApp?: string;
+  /** Whether stdin is a terminal a person can answer at (#1525). */
+  stdinIsTTY?: boolean;
+  /** Prints `question` and reads one line from stdin. */
+  readLine?: (question: string) => Promise<string>;
 };
 
 /** The package's version, set by the bundler (scripts/bundle.mjs). */
@@ -205,6 +210,20 @@ export function realCtx(noColor: boolean): Ctx {
     platform: `${process.platform} ${process.arch}`,
     nodeVersion: process.version,
     ...(process.platform === "darwin" ? { codexApp: CODEX_APP } : {}),
+    stdinIsTTY: Boolean(process.stdin.isTTY),
+    readLine: async (question) => {
+      const rl = createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+      try {
+        return await new Promise<string>((resolve) =>
+          rl.question(question, resolve),
+        );
+      } finally {
+        rl.close();
+      }
+    },
   };
   ctx.service = systemService({
     platform: process.platform,
@@ -328,7 +347,7 @@ export const tilde = (ctx: Pick<Ctx, "userHome">, path: string) =>
       : path;
 
 /** Text from a path never drives the terminal or forges a line. */
-const plain = (text: string) =>
+export const plain = (text: string) =>
   stripTerminalControls(text).replace(/[\r\n\t]/g, " ");
 
 /**
@@ -339,7 +358,7 @@ export const configFileLines = (
   ctx: Ctx,
   files: readonly {
     file: string;
-    state: "refused" | "noted";
+    state: "refused" | "noted" | "pending";
     reason: string;
     fix: string;
   }[],

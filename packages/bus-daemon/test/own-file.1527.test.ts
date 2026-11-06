@@ -23,6 +23,7 @@ import {
 import { readGlobalDirs } from "../src/global.ts";
 import { resolveNamespace } from "../src/namespace.ts";
 import { isPrivateGroup, readOwnFile } from "../src/own-file.ts";
+import { approvals } from "./approvals.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
@@ -102,6 +103,7 @@ describe("namespace config", () => {
       log,
       issues,
       group: privateGroup,
+      namespacesFile: approvals([dir, "mine"]),
     });
     expect(ns.namespace).toBe("mine");
     expect(issues.list()).toEqual([

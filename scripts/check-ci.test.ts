@@ -1823,7 +1823,7 @@ describe("demo instance workflows", () => {
       expect(step.env.DEMO_OWNER_EMAIL).toBe("${{ secrets.OA_OWNER_EMAIL }}");
     });
     it("never calls oa:setup directly", () => {
-      expect(JSON.stringify(w)).not.toContain("pnpm -s oa:setup");
+      expect(JSON.stringify(w)).not.toMatch(/oa:setup/);
     });
     it("revokes setup-ci tokens even on failure", () => {
       const last = steps[steps.length - 1];
@@ -1870,7 +1870,7 @@ describe("demo instance workflows", () => {
       const s = JSON.stringify(job);
       expect(s).toContain("prod-setup.sh demo-upgrade");
       expect(s).toContain("prod-setup.sh demo-cleanup");
-      expect(s).not.toContain("pnpm -s oa:setup");
+      expect(s).not.toMatch(/oa:setup/);
       expect(s).toContain("secrets.DEMO_OA_ACCESS_TOKEN");
       expect(s).not.toContain("PROD_CLOUDFLARE_API_TOKEN");
       expect(

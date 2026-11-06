@@ -23,6 +23,7 @@ import {
 } from "../src/global.ts";
 import { nearestConfig, resolveNamespace } from "../src/namespace.ts";
 import { readOwnFile } from "../src/own-file.ts";
+import { approvals } from "./approvals.ts";
 
 const tmp = (p = "ob-glr-") => realpathSync(mkdtempSync(join(tmpdir(), p)));
 const noGit = { gitRemote: () => null, gitRoot: () => null };
@@ -154,8 +155,12 @@ describe("M5: the ignored-global log", () => {
     writeGlobalDirs([root], h);
     const log = vi.fn();
     expect(
-      resolveNamespace(root, { ...noGit, log, globalFile: globalFile(h) })
-        .global,
+      resolveNamespace(root, {
+        ...noGit,
+        log,
+        globalFile: globalFile(h),
+        namespacesFile: approvals([root, "ops"]),
+      }).global,
     ).toBe(true);
     expect(log).not.toHaveBeenCalled();
   });

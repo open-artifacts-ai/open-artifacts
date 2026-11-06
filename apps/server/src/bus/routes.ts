@@ -15,7 +15,13 @@ import {
   newUserCode,
   normalizeUserCode,
 } from "@oa/bus-protocol";
-import { AUTH, BusRolePutSchema, type Member, R } from "@oa/shared";
+import {
+  AUTH,
+  BusLinkPutSchema,
+  BusRolePutSchema,
+  type Member,
+  R,
+} from "@oa/shared";
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
 import { interactiveSession, requireUser } from "../auth/authz.js";
@@ -36,11 +42,14 @@ import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import {
   busOn,
+  deleteBusLink,
   deleteBusRole,
   listBusAgents,
+  listBusLinks,
   listBusMachines,
   listBusRoles,
   MAX_ACTIVE_MACHINES,
+  putBusLink,
   putBusRole,
   revokeBusMachine,
 } from "../services/bus.js";
@@ -701,6 +710,33 @@ export function mountBus(app: AppType): void {
     if (!ROLE_ID.test(id))
       throw new ApiError("bad_request", "Invalid id", { field: "id" });
     await deleteBusRole(c.env, user.id, id);
+    return c.body(null, 204);
+  });
+
+  // #1567 project links: the same rules as role writes. An AI agent can
+  // never link namespaces (no MCP tool, no frame, no PAT or machine token).
+  app.get(R.busLinks, async (c) => {
+    const user = requireUser(c);
+    if (!canConnect(user)) throw notFound();
+    return c.json(await listBusLinks(c.env, user.id));
+  });
+  app.put(R.busLinks, async (c) => {
+    const user = roleWriter(c);
+    const body = await jsonBody(c, BusLinkPutSchema);
+    if (body.a === body.b)
+      throw new ApiError("bad_request", "Invalid namespaces", {
+        field: "namespaces",
+      });
+    return c.json({
+      link: await putBusLink(c.env, user.id, body.a, body.b),
+    });
+  });
+  app.delete(`${R.busLinks}/:id`, async (c) => {
+    const user = roleWriter(c);
+    const id = c.req.param("id") ?? "";
+    if (!ROLE_ID.test(id))
+      throw new ApiError("bad_request", "Invalid id", { field: "id" });
+    await deleteBusLink(c.env, user.id, id);
     return c.body(null, 204);
   });
 }

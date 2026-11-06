@@ -30,6 +30,8 @@ export type Policy =
       anon401?: string;
       /** Floor context for viewer thumbnails (the handler applies the exact rule). */
       ctx?: { firstThumbnail?: boolean };
+      /** Sharing is free: the billing plan cap doesn't stop this route at the gate (the handler decides). */
+      planSharing?: true;
     }
   | { org: OrgAction; offWhen?: EnvFlag }
   | { user: string }
@@ -43,6 +45,8 @@ const art = (
     allowDeleted?: true;
     anon401?: string;
     ctx?: { firstThumbnail?: boolean };
+    /** Sharing is free: the billing plan cap doesn't stop this route at the gate (the handler decides). */
+    planSharing?: true;
   } = {},
 ): Policy => ({ artifact: action, ...extra });
 const SAVE = "Sign in to save changes";
@@ -183,7 +187,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     org: "artifact.create",
   },
   [`GET ${ARTS}`]: art("view"),
-  [`PATCH ${ARTS}`]: art("publish", signedIn),
+  // A plan-capped member may change visibility only (patch applies it).
+  [`PATCH ${ARTS}`]: art("publish", { signedIn: true, planSharing: true }),
   [`DELETE ${ARTS}`]: art("delete", signedIn),
   [`POST ${ARTS}/undelete`]: art("undelete", {
     signedIn: true,
@@ -291,6 +296,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/bus/roles": { org: "mcp.connect" },
   "PUT /api/v1/bus/roles": { org: "mcp.connect" },
   "DELETE /api/v1/bus/roles/:id": { org: "mcp.connect" },
+  // #1567 project links; PUT and DELETE browser sessions only (handler).
+  "GET /api/v1/bus/links": { org: "mcp.connect" },
+  "PUT /api/v1/bus/links": { org: "mcp.connect" },
+  "DELETE /api/v1/bus/links/:id": { org: "mcp.connect" },
   // #1372: the role proposal confirm page (bus/role-confirm.ts). The handler
   // takes only an interactive cookie session of the hub's own member (a
   // PAT, an OAuth grant or a machine token is refused) and a POST its form
@@ -322,8 +331,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
  * to free (under any lock PATCH members refuses only a promotion or a
  * reactivation: services/members.ts patchMember). The first invite on a
  * free instance whose trial never ran passes
- * and starts the trial. Artifact writes in shared spaces, shares, moves and
- * transfers are refused per artifact (policy can, putShare).
+ * and starts the trial. Artifact writes in shared spaces, moves and
+ * transfers are refused per artifact (policy can). Sharing (share, unshare,
+ * visibility) is free on every plan and is never listed or refused.
  */
 export const TEAM_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/v1/members",
