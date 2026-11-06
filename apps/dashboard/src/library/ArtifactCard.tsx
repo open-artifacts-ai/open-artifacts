@@ -3,6 +3,7 @@ import { FormatIcon } from "@oa/ui";
 import { UserAvatar } from "../layout/UserAvatar";
 import { SpaceMarker, VisibilityWithHint } from "../spaces/SpaceMarker";
 import { AppLink } from "./AppLink";
+import { AsksBadge } from "./AsksBadge";
 import { relativeTime } from "./time";
 import { META, STRETCH, TITLE_LINK } from "./ui";
 
@@ -21,6 +22,7 @@ function Meta({ artifact: a, meId, showSpace }: CardProps) {
       <FormatIcon format={a.format} size={14} />
       <VisibilityWithHint visibility={a.visibility} space={a.space} />
       {showSpace && <SpaceMarker space={a.space} />}
+      <AsksBadge n={a.asksForYou} />
       {a.lastAgent && <span>{a.lastAgent.name}</span>}
       {a.owner.id !== meId && (
         <UserAvatar
