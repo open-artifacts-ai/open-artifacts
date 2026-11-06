@@ -2,7 +2,8 @@
 // plan cap (hosted billing's lock on a non-owner) existing machines keep
 // working, but approving a machine, confirming a role or a link, proposing
 // either, and saving share notices are refused; revoking and every read stay
-// open. A suspension blocks the same set. The owner, an uncapped member and a
+// open. A suspension blocks more: canConnect is false, so the member's
+// machines are refused at connect too (401) and their share notices stop. The owner, an uncapped member and a
 // self-hosted install (no plan at all) are unchanged.
 //
 // The bus is off on hosted until the gate lift (busOn needs HOSTED != "1" or
@@ -14,7 +15,7 @@ import {
   decodeServerFrame,
   newMachineToken,
 } from "@oa/bus-protocol";
-import { newId, R } from "@oa/shared";
+import { type BusNotice, newId, R } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app.js";
 import {
@@ -29,6 +30,8 @@ import { busConfigCap, busConfigRefusal } from "../../src/bus/cap.js";
 import { ROLE_CONFIRM_SCOPE } from "../../src/bus/role-confirm.js";
 import { APPROVE_SCOPE } from "../../src/bus/routes.js";
 import { formCsrf } from "../../src/http/pages.js";
+import { installDelivery } from "../../src/services/bus-delivery.js";
+import { setShareNotices } from "../../src/services/follows.js";
 import { sha256Hex } from "../../src/util/crypto.js";
 import {
   type BillingRow,
@@ -42,6 +45,7 @@ import {
 import { fetchAndWait, login } from "../helpers.js";
 import { connect, textOf, tool } from "../mcp-helpers.js";
 import { pinMiddayUtc } from "../midday.js";
+import { daemon, hello, ns, up, waitFor } from "./helpers.js";
 
 /** A hosted install with the bus feature on (FEATURES "bus"). */
 const H = {
@@ -53,7 +57,24 @@ const APP = "http://app.localhost";
 const { s: fake, props } = fakeBilling();
 const tag = newId().slice(0, 6).toLowerCase();
 let ip = 0;
+let nameSeq = 0;
+const uniq = (t: string) => `${t}-${++nameSeq}x${Date.now() % 1e8}`;
 const nextIp = () => `198.51.100.${(++ip % 250) + 1}`;
+
+/** GET /bus/connect on the hosted install with the machine token. */
+const openSocket = (token: string) =>
+  fetchAndWait(
+    app,
+    new Request(`${APP}${BUS_ROUTES.connect}`, {
+      headers: {
+        Upgrade: "websocket",
+        authorization: `Bearer ${token}`,
+        "cf-connecting-ip": nextIp(),
+      },
+    }),
+    H,
+    props,
+  );
 
 const base = { trialEndsAt: 1, graceUntil: null, version: 1 };
 const LOCKS: Record<string, BillingRow> = {
@@ -353,10 +374,75 @@ describe.each(Object.entries(LOCKS))(
       expect(d.ok && d.frame.type).toBe("hello_ok");
       ws.close();
     });
+
+    it("an existing machine still sends and receives a message", async () => {
+      const own = await login(`bm-${newId().slice(0, 8)}@a.com`, "member");
+      const d = await daemon(await machineToken(own), {}, (t) => openSocket(t));
+      d.send(hello());
+      await waitFor(d, "hello_ok");
+      const space = ns("gate");
+      d.send(up("ua", "ref-a", uniq("a"), space));
+      const a = await waitFor(d, "agent_ok");
+      d.send(up("ub", "ref-b", uniq("b"), space));
+      const b = await waitFor(d, "agent_ok");
+      d.send({
+        v: 1,
+        id: "s1",
+        type: "send",
+        from_ref: "ref-a",
+        to_name: b.bus_name,
+        body: "still working",
+      });
+      const got = await waitFor(d, "deliver");
+      expect(got.to_ref).toBe("ref-b");
+      expect(got.from_name).toBe(a.bus_name);
+      expect(got.body).toBe("still working");
+      d.close();
+    });
+
+    it("an existing share notice still delivers to the member's agent", async () => {
+      // The server decides who gets a notice and hands it to the delivery
+      // seam (services/bus-delivery.ts); the hub's delivery is not installed
+      // yet, so a recording one stands in.
+      const sent: { userId: string; notice: BusNotice }[] = [];
+      const prev = installDelivery({
+        async deliver(_e, userId, notice) {
+          sent.push({ userId, notice });
+          return "delivered";
+        },
+      });
+      try {
+        const email = `bn-${newId().slice(0, 8)}@a.com`;
+        const own = await login(email, "member");
+        const to = { namespace: ns("gate"), name: uniq("n") };
+        // The notice was picked before the lock; it is not touched now.
+        await setShareNotices(env as never, own.userId, [to]);
+        const created = await send(props, R.artifacts, owner.cookie, {
+          method: "POST",
+          body: { title: "shared", format: "markdown", content: "hi" },
+          e: H,
+        });
+        expect(created.status).toBe(201);
+        const id = ((await created.json()) as { id: string }).id;
+        const shared = await send(props, R.shares(id), owner.cookie, {
+          method: "PUT",
+          body: { email, role: "viewer" },
+          e: H,
+        });
+        expect(shared.status).toBe(200);
+        expect(sent).toHaveLength(1);
+        expect(sent[0]?.userId).toBe(own.userId);
+        expect(sent[0]?.notice.kind).toBe("shared");
+        expect(sent[0]?.notice.to).toEqual(to);
+        expect(sent[0]?.notice.artifactId).toBe(id);
+      } finally {
+        installDelivery(prev);
+      }
+    });
   },
 );
 
-// ---- a suspension blocks the same set
+// ---- a suspension blocks more than the capped set
 
 describe("a suspended member (an operator's stop)", () => {
   beforeAll(() => lockTo(SUSPENDED));
@@ -381,8 +467,14 @@ describe("a suspended member (an operator's stop)", () => {
     expect((await revokeMachine(member)).status).toBe(204);
   });
 
+  it("an existing machine is refused at connect (401): suspension is not just the capped set", async () => {
+    const own = await login(`bs-${newId().slice(0, 8)}@a.com`, "member");
+    const res = await openSocket(await machineToken(own));
+    expect(res.status).toBe(401);
+  });
+
   it("the helper itself refuses a suspended plan-capped member", () => {
-    // The cap is "plan" with a suspension lock: the same refusal as a lapse.
+    // The cap is "plan" with a suspension lock: the same helper refusal as a lapse.
     expect(busConfigRefusal(capped("suspended"))?.code).toBe("plan_read_only");
   });
 });
