@@ -561,6 +561,175 @@ export async function servingLag(
   );
 }
 
+/**
+ * Who answered a tenant page (#1593). Dispatch answers some pages itself: its
+ * closed and paused 503s carry the W11 titles (apps/dispatch/src/unavailable.ts
+ * CLOSED_COPY and PAUSED_COPY) and its notFound is the plain text "Not found"
+ * (apps/dispatch/src/index.ts). Anything else came from the install's Worker.
+ * The titles are copied here on purpose: this suite imports no app code; keep
+ * them equal to apps/dispatch/src/unavailable.ts (CLOSED_COPY, PAUSED_COPY).
+ * The 404 is not unique: the install's own foreign-host reply
+ * (apps/server/src/index.ts isForeignHost) is the same plain "Not found", so
+ * "dispatch-404" means "that exact reply, from dispatch or the install".
+ */
+export type PageSource =
+  | "dispatch-closed"
+  | "dispatch-paused"
+  | "dispatch-404"
+  | "install";
+
+export function pageSource(r: Pick<Res, "status" | "text">): PageSource {
+  if (r.status === 503 && r.text.includes("This workspace is closed"))
+    return "dispatch-closed";
+  if (r.status === 503 && r.text.includes("This workspace is paused"))
+    return "dispatch-paused";
+  if (r.status === 404 && r.text.trim() === "Not found") return "dispatch-404";
+  return "install";
+}
+
+/** Page answers seen while waiting, as runs of the same (status, source). */
+export class PageLog {
+  private runs: {
+    status: number;
+    source: PageSource | "no-response";
+    n: number;
+    from: number;
+    to: number;
+  }[] = [];
+  last: { status: number; source: PageSource } | null = null;
+
+  record(
+    elapsedMs: number,
+    status: number,
+    source: PageSource | "no-response",
+  ): void {
+    const s = Math.round(elapsedMs / 1000);
+    const r = this.runs[this.runs.length - 1];
+    if (r && r.status === status && r.source === source) {
+      r.n++;
+      r.to = s;
+    } else this.runs.push({ status, source, n: 1, from: s, to: s });
+    this.last = source === "no-response" ? null : { status, source };
+  }
+
+  recordNoResponse(elapsedMs: number): void {
+    this.record(elapsedMs, 0, "no-response");
+  }
+
+  /** "503 dispatch-closed x5 (0-12 s), 200 install x1 (15 s)"; the middle elided past 10 runs. */
+  text(): string {
+    const f = (r: PageLog["runs"][number]) =>
+      `${r.status} ${r.source} x${r.n} (${r.from === r.to ? r.from : `${r.from}-${r.to}`} s)`;
+    if (this.runs.length <= 10) return this.runs.map(f).join(", ") || "none";
+    return [
+      ...this.runs.slice(0, 4).map(f),
+      `... ${this.runs.length - 8} more`,
+      ...this.runs.slice(-4).map(f),
+    ].join(", ");
+  }
+}
+
+export type ServingClass =
+  | "dispatch-closed-lag"
+  | "dispatch-404-while-serving"
+  | "restore-broken-not-serving"
+  | "inventory-unreadable"
+  | "other";
+
+/**
+ * Names why a restored install's app host never answered 200 (#1593), from
+ * the last page seen (null: no response), the inventory mode read after the
+ * timeout (undefined: unreadable) and the restore job. Order: an unreadable
+ * inventory, then an inventory that isn't serving or a restore job with an
+ * error code (the restore is broken), then, with the inventory serving: a
+ * plain 404 (neutral: a HOSTS miss or lag, an unparseable value, a KV error,
+ * a missing script or a crashing install all give it), dispatch still
+ * answering closed or paused (HOSTS or cache lag), else other.
+ */
+export function classifyServing(o: {
+  last: { status: number; source: PageSource } | null;
+  mode: string | null | undefined;
+  restoreErrorCode: string | null;
+  cameUpOnRecheck?: boolean;
+}): { cls: ServingClass; why: string } {
+  if (o.mode === undefined)
+    return {
+      cls: "inventory-unreadable",
+      why: "the inventory mode could not be read, so the cause is unknown",
+    };
+  if (o.mode !== "serving")
+    return {
+      cls: "restore-broken-not-serving",
+      why: `the inventory mode is ${o.mode}, not serving: the restore is broken`,
+    };
+  if (o.restoreErrorCode != null)
+    return {
+      cls: "restore-broken-not-serving",
+      why: `the restore job recorded ${o.restoreErrorCode}: the restore is broken`,
+    };
+  const late = o.cameUpOnRecheck ? "; the page came up on the recheck" : "";
+  if (o.last?.source === "dispatch-404")
+    return {
+      cls: "dispatch-404-while-serving",
+      why: `plain 404 Not found while the inventory says serving: HOSTS miss or lag, or script missing${late}`,
+    };
+  if (
+    o.last?.source === "dispatch-closed" ||
+    o.last?.source === "dispatch-paused"
+  )
+    return {
+      cls: "dispatch-closed-lag",
+      why: `infra: dispatch still answers ${o.last.source.replace("dispatch-", "")} (${o.last.status}) while the inventory says serving: HOSTS or cache lag${late}`,
+    };
+  return { cls: "other", why: `no known cause${late}` };
+}
+
+/**
+ * P22's wait for the app host to answer 200 after the restore. It records
+ * every answer and who gave it; on timeout it re-checks the page once, reads
+ * the inventory mode, and fails naming the class (statuses, seconds and class
+ * names only: this report is public).
+ */
+async function servingWait(
+  run: Run,
+  host: string,
+  restore: Job,
+): Promise<number> {
+  const log = new PageLog();
+  const t0 = run.io.now();
+  const end = t0 + PAGE_WITHIN_MS;
+  for (;;) {
+    const r = await run.page(host);
+    log.record(run.io.now() - t0, r.status, pageSource(r));
+    if (r.status === 200) return run.io.now();
+    if (run.io.now() >= end) break;
+    await run.io.wait(POLL_MS);
+  }
+  let cameUp: number | null = null;
+  try {
+    const r = await run.page(host);
+    log.record(run.io.now() - t0, r.status, pageSource(r));
+    if (r.status === 200) cameUp = Math.round((run.io.now() - t0) / 1000);
+  } catch {
+    log.recordNoResponse(run.io.now() - t0);
+  }
+  let mode: string | null | undefined;
+  try {
+    mode = (await run.hostMode(host)).mode;
+  } catch {
+    mode = undefined;
+  }
+  const c = classifyServing({
+    last: log.last,
+    mode,
+    restoreErrorCode: restore.lastErrorCode ?? null,
+    cameUpOnRecheck: cameUp !== null,
+  });
+  throw new ProbeFail(
+    `P22 serving: not within ${PAGE_WITHIN_MS / 1000} s (${c.cls}): ${c.why}; pages seen: ${log.text()}; inventory mode ${mode === undefined ? "unreadable" : mode}${cameUp !== null ? `; came up on recheck after ${cameUp} s` : ""}`,
+  );
+}
+
 const ulidish = () => {
   const A = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
   const b = randomBytes(25);
@@ -1871,12 +2040,7 @@ export const PROBES: readonly Probe[] = [
         "P22 restore",
       );
       const restore = await run.done(r.job.id, "P22 restore");
-      let lastOk = 0;
-      await run.within(PAGE_WITHIN_MS, "P22 serving", async () => {
-        if ((await run.page(p.appHost)).status !== 200) return false;
-        lastOk = run.io.now();
-        return true;
-      });
+      const lastOk = await servingWait(run, p.appHost, restore);
       try {
         await run.settledMode("P22", p.appHost, "serving");
       } catch (e) {
