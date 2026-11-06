@@ -6,7 +6,9 @@ import {
   ArtifactEventSchema,
   ArtifactPatchSchema,
   ArtifactSummarySchema,
+  AskInputSchema,
   anchorInputSchema,
+  CommentAskSchema,
   CommentListSchema,
   CommentSchema,
   CommentThreadSchema,
@@ -406,11 +408,9 @@ describe("asks, mentions and assign (#1535)", () => {
     expect(R.artifactAgents("a")).toBe("/api/v1/artifacts/a/agents");
   });
 
-  it("bounds on asks, options, keys, mentions and assign", () => {
-    const ok = { anchor: { kind: "note" }, body: "x", ask: ask("agent:codex") };
-    expect(NewThreadBodySchema.safeParse(ok).success).toBe(true);
-    const bad = (a: unknown) =>
-      NewThreadBodySchema.safeParse({ ...ok, ask: a }).success;
+  it("bounds on asks, options and keys; recommended must be an option", () => {
+    expect(AskInputSchema.safeParse(ask("agent:codex")).success).toBe(true);
+    const bad = (a: unknown) => AskInputSchema.safeParse(a).success;
     expect(bad({ ...ask("u"), options: [opts[0]] })).toBe(false);
     expect(
       bad({
@@ -446,6 +446,50 @@ describe("asks, mentions and assign (#1535)", () => {
     expect(bad({ ...ask("u"), to: [] })).toBe(false);
     expect(bad(ask("bad key"))).toBe(false);
     expect(bad(ask("k".repeat(129)))).toBe(false);
+    // recommended.optionId must be one of the options, on input and on output.
+    expect(
+      bad({ ...ask("u"), recommended: { optionId: "zzz", why: "w" } }),
+    ).toBe(false);
+    expect(bad({ ...ask("u"), recommended: undefined })).toBe(true);
+    const out = {
+      question: "Q",
+      options: opts,
+      to: [author],
+      closed: false,
+    };
+    expect(CommentAskSchema.safeParse(out).success).toBe(true);
+    expect(
+      CommentAskSchema.safeParse({
+        ...out,
+        recommended: { optionId: "b", why: "w" },
+      }).success,
+    ).toBe(true);
+    expect(
+      CommentAskSchema.safeParse({
+        ...out,
+        recommended: { optionId: "zzz", why: "w" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("the REST bodies do not take an ask", async () => {
+    const withAsk = { body: "x", ask: ask("u") };
+    expect(ReplyBodySchema.parse(withAsk)).not.toHaveProperty("ask");
+    expect(
+      NewThreadBodySchema.parse({ ...withAsk, anchor: { kind: "note" } }),
+    ).not.toHaveProperty("ask");
+    use();
+    const r = await send("POST", base, {
+      anchor: { kind: "note" },
+      ...withAsk,
+    });
+    expect(r.status).toBe(201);
+    expect(
+      CommentThreadSchema.parse(await r.json()).comments[0]?.ask,
+    ).toBeUndefined();
+  });
+
+  it("mentions and assign shapes", () => {
     expect(
       ReplyBodySchema.safeParse({
         body: "x",
@@ -545,18 +589,12 @@ describe("asks, mentions and assign (#1535)", () => {
 
   it("403 forbidden when the caller is not an addressee; 404 for a comment with no ask", async () => {
     use({ commentAsks: true });
-    const r = await send("POST", base, {
-      anchor: { kind: "note" },
-      body: "q",
-      ask: ask("someone-else"),
-    });
-    expect(r.status).toBe(201);
-    const t = CommentThreadSchema.parse(await r.json());
-    const c = t.comments[0];
-    expect(c?.ask?.to[0]?.me).toBe(false);
-    const a = await send("POST", answerUrl(t.id, c?.id ?? ""), {
-      optionId: "a",
-    });
+    const t = (await list()).threads.find((x) =>
+      x.comments.some((c) => c.ask && !c.ask.to.some((a) => a.me)),
+    );
+    const c = t?.comments[0];
+    if (!t || !c) throw new Error("no ask for someone else");
+    const a = await send("POST", answerUrl(t.id, c.id), { optionId: "yes" });
     expect(a.status).toBe(403);
     expect(ApiErrorSchema.parse(await a.json()).error.code).toBe("forbidden");
     const plain = await send("POST", `${base}/${t.id}/replies`, { body: "r" });
@@ -564,25 +602,6 @@ describe("asks, mentions and assign (#1535)", () => {
     expect(
       (await send("POST", answerUrl(t.id, pc.id), { optionId: "a" })).status,
     ).toBe(404);
-  });
-
-  it("an ask can be a reply, and a bad ask is invalid_body", async () => {
-    use({ commentAsks: true });
-    const { t } = await seeded();
-    const r = await send("POST", `${base}/${t.id}/replies`, {
-      body: "which?",
-      ask: ask(String(fixtures.me.user.id)),
-    });
-    expect(r.status).toBe(201);
-    expect(CommentSchema.parse(await r.json()).ask?.to[0]?.me).toBe(true);
-    const bad = await send("POST", `${base}/${t.id}/replies`, {
-      body: "which?",
-      ask: { ...ask("u"), options: [opts[0]] },
-    });
-    expect(bad.status).toBe(400);
-    expect(ApiErrorSchema.parse(await bad.json()).error.code).toBe(
-      "invalid_body",
-    );
   });
 
   it("mentions and assign: delivery and state by agent presence; waiting_on_agents", async () => {

@@ -54,18 +54,30 @@ const askOptions = z
 const askRecommended = z
   .object({ optionId: key, why: z.string().max(ASK_WHY_MAX) })
   .optional();
+const recommendedIsAnOption = (a: {
+  options: { id: string }[];
+  recommended?: { optionId: string };
+}) =>
+  a.recommended === undefined ||
+  a.options.some((o) => o.id === a.recommended?.optionId);
+const recommendedMsg = {
+  message: "recommended.optionId must be one of the options",
+  path: ["recommended", "optionId"],
+};
 
 /** An ask on a comment (#1535). `closed` means the thread is resolved. */
-export const CommentAskSchema = z.object({
-  question: z.string().min(1).max(ASK_QUESTION_MAX),
-  options: askOptions,
-  recommended: askRecommended,
-  to: z.array(CommentAuthorSchema),
-  answer: z
-    .object({ optionId: key, by: CommentAuthorSchema, at: z.string() })
-    .optional(),
-  closed: z.boolean(),
-});
+export const CommentAskSchema = z
+  .object({
+    question: z.string().min(1).max(ASK_QUESTION_MAX),
+    options: askOptions,
+    recommended: askRecommended,
+    to: z.array(CommentAuthorSchema),
+    answer: z
+      .object({ optionId: key, by: CommentAuthorSchema, at: z.string() })
+      .optional(),
+    closed: z.boolean(),
+  })
+  .refine(recommendedIsAnOption, recommendedMsg);
 export type CommentAsk = z.infer<typeof CommentAskSchema>;
 
 export const MentionDeliverySchema = z.enum([
@@ -136,18 +148,22 @@ export type AnchorInput = z.infer<typeof anchorInputSchema>;
 const commentBody = z.string().trim().min(1).max(COMMENT_BODY_MAX);
 const guestName = z.string().max(COMMENT_GUEST_NAME_MAX).optional();
 
-/** An ask as a client sends it: addressees by key. */
-export const AskInputSchema = z.object({
-  question: z.string().min(1).max(ASK_QUESTION_MAX),
-  options: askOptions,
-  recommended: askRecommended,
-  to: z.array(KeyRefSchema).min(1).max(ASK_TO_MAX),
-});
+/**
+ * An ask as a client sends it: addressees by key. MCP-only in v1: the REST
+ * bodies (NewThreadBody, ReplyBody) do not take it.
+ */
+export const AskInputSchema = z
+  .object({
+    question: z.string().min(1).max(ASK_QUESTION_MAX),
+    options: askOptions,
+    recommended: askRecommended,
+    to: z.array(KeyRefSchema).min(1).max(ASK_TO_MAX),
+  })
+  .refine(recommendedIsAnOption, recommendedMsg);
 export type AskInput = z.infer<typeof AskInputSchema>;
 
-/** Shared by NewThreadBody and ReplyBody. mentions and assign: owner and editors only (403 forbidden). */
+/** Shared by NewThreadBody and ReplyBody (no ask: MCP-only in v1). mentions and assign: owner and editors only (403 forbidden). */
 const extras = {
-  ask: AskInputSchema.optional(),
   mentions: z.array(KeyRefSchema).max(MENTIONS_MAX).optional(),
   assign: KeyRefSchema.optional(),
 };

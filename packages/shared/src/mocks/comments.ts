@@ -7,7 +7,6 @@ import { delay, type HttpHandler, HttpResponse, http } from "msw";
 import {
   AnswerBodySchema,
   type ArtifactAgent,
-  type AskInput,
   anchorInputSchema,
   type Comment,
   type CommentAuthor,
@@ -101,6 +100,16 @@ export function createCommentMock({
       to: [mine()],
       closed: false,
     };
+    const e = comment("Ship the banner?", mine());
+    e.ask = {
+      question: "Ship the banner?",
+      options: [
+        { id: "yes", label: "Yes" },
+        { id: "no", label: "No" },
+      ],
+      to: [other],
+      closed: false,
+    };
     const asked: CommentThread[] = seedAsk
       ? [
           {
@@ -112,6 +121,16 @@ export function createCommentMock({
             resolvedAt: null,
             createdAt: d.createdAt,
             comments: [d],
+          },
+          {
+            id: newId(),
+            anchor: { kind: "note" },
+            version: 1,
+            status: "open",
+            resolvedBy: null,
+            resolvedAt: null,
+            createdAt: e.createdAt,
+            comments: [e],
           },
         ]
       : [];
@@ -199,7 +218,6 @@ export function createCommentMock({
   const decorate = (
     c: Comment,
     j: {
-      ask?: AskInput;
       mentions?: { key: string }[];
       assign?: { key: string };
     },
@@ -210,14 +228,6 @@ export function createCommentMock({
         "forbidden",
         "Only the owner and editors can mention or assign",
       );
-    if (j.ask)
-      c.ask = {
-        question: j.ask.question,
-        options: j.ask.options,
-        recommended: j.ask.recommended,
-        to: j.ask.to.map((t) => person(t.key)),
-        closed: false,
-      };
     if (j.mentions)
       c.mentions = j.mentions.map((m) => ({
         key: m.key,
