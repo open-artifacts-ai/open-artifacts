@@ -264,8 +264,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Each Pi session's open extension connections, newest last: Pi receives on them. */
   const piLinks = new Map<string, Map<Hello, (f: DaemonFrame) => void>>();
 
+  /**
+   * A /clear handover not yet announced: it waits for hello_ok (#1582), so the
+   * hub knows nothing of the ref and nothing may name it before.
+   */
+  const held = (ref: string): boolean => {
+    const rec = agents.byRef(ref);
+    return rec?.replaces !== undefined && !hubHelloed;
+  };
+  /** Whom a new session replaces: B's own predecessor while B is still unannounced. */
+  const handoverOf = (old: AgentRecord): string =>
+    old.replaces !== undefined && !hubHelloed ? old.replaces : old.ref;
   const sessions = () => ({
-    open: agents.openRefs(),
+    open: agents.openRefs().filter((r) => !held(r)),
     closed: agents.closedRefs(),
   });
   const announceSessions = () => {
@@ -281,6 +292,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** The cap each refused agent hit. */
   const caps = new Map<string, AgentCap>();
   const announceUp = (rec: AgentRecord) => {
+    // A /clear handover waits for hello_ok: only then is it known whether the
+    // hub takes `replaces`, and an agent_up sent without it is the
+    // handover lost for good (#1582). hello_ok announces it.
+    if (rec.replaces !== undefined && !hubHelloed) return false;
     const id = frameId();
     const kind = rec.kind;
     upIds.set(id, { ref: rec.ref, kind });
@@ -462,6 +477,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     onUnsent?: () => void,
   ): boolean => {
     if (f.type !== "send") return hub.send(f, onUnsent);
+    // Its sender is not announced yet (#1582): kept, in order, until hello_ok.
+    if (held(f.from_ref)) {
+      outbox.push({ frame: f, native });
+      return true;
+    }
     const from = agents.byRef(f.from_ref);
     // Named, not implied: a resend is judged in the namespace the send was
     // made in, even if the sender has moved since. An explicit own namespace
@@ -532,15 +552,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * is sent, from what the hub then says it supports (hubIds), never frozen
    * at queue time.
    */
-  type QueuedReply = { frame: SendFrame; peerId?: string };
+  type QueuedReply = { frame: SendFrame; peerId?: string; native?: boolean };
   const withTo = (r: QueuedReply): SendFrame =>
     hubIds && r.peerId ? { ...r.frame, to_id: r.peerId } : r.frame;
   // A Claude reply must not be lost to a hub reconnect. It waits for the
   // link's hello_ok, so it knows whether the hub takes to_id.
   const outbox = new Outbox<QueuedReply>({
     send: (r, unsent) =>
-      hub.open && hubVersion !== undefined
-        ? sendToHub(withTo(r), true, unsent)
+      hub.open && hubVersion !== undefined && !held(r.frame.from_ref)
+        ? sendToHub(withTo(r), r.native ?? true, unsent)
         : false,
     stale: (r) => !agents.byRef(r.frame.from_ref)?.live,
     log,
@@ -674,7 +694,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (old) takenOver.add(old.ref);
       announceUp(
         agents.up({
-          ...(old ? { replaces: old.ref } : {}),
+          ...(old ? { replaces: handoverOf(old) } : {}),
           ref: s.ref,
           kind: "claude-code",
           proposedName: old?.busName ?? s.name,
@@ -747,6 +767,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubIds = false;
   /** The hub's last hello_ok listed BUS_CAPS.mailbox: agent_up may carry `replaces`. */
   let hubMailbox = false;
+  /** This link has had its hello_ok (reset when the link drops). */
+  let hubHelloed = false;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
   let hubVersion: string | undefined;
   const hub = new HubConnection({
@@ -853,6 +875,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // A reply names its agent (to_id) only to a hub that said it can.
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
+          hubHelloed = true;
+          // Handovers that waited for this: announce them now (#1582).
+          for (const rec of agents.all())
+            if (rec.live && rec.replaces !== undefined) announceUp(rec);
           // Queued replies go now that the link says what it supports.
           outbox.flush();
           return;
@@ -906,6 +932,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubIds = false;
       // A replay before the next hello_ok must not carry `replaces`.
       hubMailbox = false;
+      hubHelloed = false;
       statusRelay.dropped();
       receipts.release();
       // A send not yet answered waits for the next link; anything else fails now.
@@ -1182,7 +1209,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         seenAt.set(hello.agent_ref, ++seenSeq);
         if (old) takenOver.add(old.ref);
         const rec = agents.up({
-          ...(old ? { replaces: old.ref } : {}),
+          ...(old ? { replaces: handoverOf(old) } : {}),
           ref: hello.agent_ref,
           kind: hello.kind,
           proposedName: old?.busName ?? proposedName,
