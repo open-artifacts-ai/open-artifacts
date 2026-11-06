@@ -27,15 +27,18 @@ import {
   BROKER_IP_WAIT_MS,
   bringUpgrade,
   CHAINS,
+  classifyServing,
   cleanupInstalls,
   failText,
   mintCreds,
   type Outcome,
   P25_MAX_REQUESTS,
   P29_UNPROVEN,
+  PageLog,
   PROBES,
   ProbeFail,
   type ProbeId,
+  pageSource,
   prodLive,
   provConfig,
   REMOVED_PROBES,
@@ -623,6 +626,147 @@ describe("each probe fails on the behaviour it guards", () => {
           `fail: ${id}: inventory mode is ${msg}, after 120 s`,
         );
       });
+
+    describe("P22 names why a restored install isn't serving (#1593)", () => {
+      const CLOSED_HTML = "<h1>This workspace is closed</h1>";
+      it("pageSource tells dispatch's own answers from the install's", () => {
+        expect(pageSource({ status: 503, text: CLOSED_HTML })).toBe(
+          "dispatch-closed",
+        );
+        expect(
+          pageSource({
+            status: 503,
+            text: "<h1>This workspace is paused</h1>",
+          }),
+        ).toBe("dispatch-paused");
+        expect(pageSource({ status: 404, text: "Not found" })).toBe(
+          "dispatch-404",
+        );
+        expect(pageSource({ status: 404, text: "<h1>nope</h1>" })).toBe(
+          "install",
+        );
+        expect(pageSource({ status: 503, text: "upstream down" })).toBe(
+          "install",
+        );
+        expect(pageSource({ status: 200, text: "ok" })).toBe("install");
+      });
+
+      it("PageLog compacts runs and elides a long middle", () => {
+        const l = new PageLog();
+        l.record(0, 503, "dispatch-closed");
+        l.record(3000, 503, "dispatch-closed");
+        l.record(6000, 404, "dispatch-404");
+        expect(l.text()).toBe(
+          "503 dispatch-closed x2 (0-3 s), 404 dispatch-404 x1 (6 s)",
+        );
+        expect(l.last).toEqual({ status: 404, source: "dispatch-404" });
+        const long = new PageLog();
+        for (let i = 0; i < 12; i++)
+          long.record(
+            i * 1000,
+            i % 2 ? 503 : 404,
+            i % 2 ? "install" : "dispatch-404",
+          );
+        expect(long.text()).toContain("... 4 more");
+        expect(new PageLog().text()).toBe("none");
+      });
+
+      const closed = { status: 503, source: "dispatch-closed" } as const;
+      for (const [what, o, cls] of [
+        [
+          "dispatch closed, inventory serving",
+          { last: closed, mode: "serving", restoreErrorCode: null },
+          "dispatch-closed-lag",
+        ],
+        [
+          "dispatch 404",
+          {
+            last: { status: 404, source: "dispatch-404" },
+            mode: "serving",
+            restoreErrorCode: null,
+          },
+          "restore-broken-404",
+        ],
+        [
+          "404 wins over a closed inventory",
+          {
+            last: { status: 404, source: "dispatch-404" },
+            mode: "closed",
+            restoreErrorCode: null,
+          },
+          "restore-broken-404",
+        ],
+        [
+          "inventory closed",
+          { last: closed, mode: "closed", restoreErrorCode: null },
+          "restore-broken-not-serving",
+        ],
+        [
+          "inventory unreadable",
+          { last: closed, mode: null, restoreErrorCode: null },
+          "restore-broken-not-serving",
+        ],
+        [
+          "restore job error code",
+          { last: closed, mode: "serving", restoreErrorCode: "lease_held" },
+          "restore-broken-not-serving",
+        ],
+        [
+          "install's own 503",
+          {
+            last: { status: 503, source: "install" },
+            mode: "serving",
+            restoreErrorCode: null,
+          },
+          "other",
+        ],
+        [
+          "no page seen",
+          { last: null, mode: "serving", restoreErrorCode: null },
+          "other",
+        ],
+      ] as const)
+        it(`classifyServing: ${what} is ${cls}`, () => {
+          expect(classifyServing(o).cls).toBe(cls);
+        });
+
+      /** After the restore, rl-l's /healthz answers `status` with `body`, forever. */
+      const stuckPage = (status: number, body: string) => {
+        const f = fakeApi();
+        let restored = false;
+        const real = f.io.fetch;
+        f.io.fetch = (async (u: string, i?: RequestInit) => {
+          const url = String(u);
+          if (url.endsWith("/restore")) restored = true;
+          if (restored && url.includes("://rl-l-") && url.endsWith("/healthz"))
+            return new Response(body, { status });
+          return real(u, i);
+        }) as typeof fetch;
+        return f;
+      };
+
+      it("dispatch still closed while the inventory serves: fails as infra with the pages seen", async () => {
+        const out = (await runAll(stuckPage(503, CLOSED_HTML))).get("P22");
+        expect(level(out)).toMatch(/^fail: /);
+        expect(out).toMatch(
+          /^P22 serving: not within 120 s \(dispatch-closed-lag\): infra: dispatch still answers closed \(503\) while the inventory says serving: HOSTS or cache lag; pages seen: 503 dispatch-closed x\d+ \(\d+-\d+ s\); inventory mode serving$/,
+        );
+      });
+
+      it("dispatch 404 after the restore: restore broken", async () => {
+        const out = (await runAll(stuckPage(404, "Not found"))).get("P22");
+        expect(out).toMatch(
+          /^P22 serving: not within 120 s \(restore-broken-404\): .*pages seen: 404 dispatch-404 x\d+/,
+        );
+      });
+
+      it("the install's own 503: other, with the last statuses", async () => {
+        const out = (await runAll(stuckPage(503, "boom"))).get("P22");
+        expect(out).toMatch(
+          /^P22 serving: not within 120 s \(other\): no known cause; pages seen: 503 install x\d+/,
+        );
+      });
+    });
 
     describe("P22 after the restore: inventory KV lag or a late closed write (#1417)", () => {
       const AUDIT_IDS =
