@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.128.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.127.0...v0.128.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **bus:** A folder that set its namespace in .oa-bus.json joins its derived namespace until you run: oa-bus namespace approve <dir>
+
+### Bug Fixes
+
+* **bus:** a .oa-bus.json namespace takes effect only after the user approves it ([#1525](https://github.com/open-artifacts-ai/open-artifacts/issues/1525)) ([#1569](https://github.com/open-artifacts-ai/open-artifacts/issues/1569)) ([bb2ac29](https://github.com/open-artifacts-ai/open-artifacts/commit/bb2ac295bf42fb24a78932f1db059c4641debd2f))
+* **comments:** mock permissions follow the server; two-line author line; older-version badge ([#1529](https://github.com/open-artifacts-ai/open-artifacts/issues/1529)) ([#1549](https://github.com/open-artifacts-ai/open-artifacts/issues/1549)) ([d31d5af](https://github.com/open-artifacts-ai/open-artifacts/commit/d31d5af1eabadfcb4f61f458747fd08419325741))
+
 ## [0.127.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.126.0...v0.127.0) (2026-11-06)
 
 
