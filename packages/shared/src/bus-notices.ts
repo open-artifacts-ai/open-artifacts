@@ -97,6 +97,8 @@ export type BusRole = z.infer<typeof BusRoleSchema>;
 
 /** Links between two of the member's namespaces (#1567) one member may hold. */
 export const BUS_LINK_MAX = 100;
+/** Links one namespace may have (#1567), so a send's lookup stays small. */
+export const BUS_LINKS_PER_NAMESPACE = 10;
 
 /**
  * One link (#1567): the two namespaces see each other's agents and may

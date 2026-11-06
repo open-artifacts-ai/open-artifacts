@@ -4,7 +4,11 @@
 // link A-B and a link B-C never join A and C. Only the member writes one
 // (BusHub.putLink, from the dashboard's REST); no frame and no MCP tool does.
 import { WireNamespaceSchema } from "@oa/bus-protocol";
-import { BUS_LINK_MAX, type BusLink } from "@oa/shared";
+import {
+  BUS_LINK_MAX,
+  BUS_LINKS_PER_NAMESPACE,
+  type BusLink,
+} from "@oa/shared";
 import { iso } from "./dto.js";
 
 export type PutLinkResult =
@@ -87,7 +91,7 @@ export function listLinks(
 /**
  * Links `a` and `b`. Idempotent: an existing link is returned as it is.
  * Refuses a namespace that is not canonical, the same namespace twice, and
- * a link past `max`.
+ * a link past `max` or past `perNamespace` on either side.
  */
 export function addLink(
   sql: SqlStorage,
@@ -97,6 +101,7 @@ export function addLink(
   now: number,
   newId: () => string,
   max = BUS_LINK_MAX,
+  perNamespace = BUS_LINKS_PER_NAMESPACE,
 ): PutLinkResult {
   if (!WireNamespaceSchema.safeParse(a).success)
     return { ok: false, reason: "invalid", field: "a" };
@@ -121,6 +126,10 @@ export function addLink(
     orgId,
   )[0]?.n;
   if ((n ?? 0) >= max) return { ok: false, reason: "link_limit" };
+  // Either side already has its share of links.
+  for (const ns of [x, y])
+    if (linkedNamespaces(sql, orgId, ns, perNamespace).length >= perNamespace)
+      return { ok: false, reason: "link_limit" };
   sql.exec(
     "insert into grants (id, org_id, kind, ns_a, ns_b, created_at) values (?, ?, 'link', ?, ?, ?)",
     newId(),

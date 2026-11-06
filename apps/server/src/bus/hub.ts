@@ -496,6 +496,7 @@ function rosterAudience(
   sql: SqlStorage,
   changed: string[],
   machines: string[],
+  linkMachines: ReadonlySet<string>,
 ): Map<string, string[]> {
   const out = directAudience(sql, changed, machines);
   // #1567: a namespace linked to a changed one sees its agents too, so the
@@ -512,6 +513,8 @@ function rosterAudience(
       OWNER_ORG_ID,
       r,
     )) {
+      // Only a links-capable machine can use the extra frame.
+      if (!linkMachines.has(row.machineId)) continue;
       const cur = out.get(row.machineId);
       // `changed` itself is shared by every global machine: copy, never push.
       if (cur === changed) out.set(row.machineId, [...changed, r]);
@@ -570,7 +573,12 @@ function directAudience(
  * What changed: the namespaces of the agents that changed, and whether any of
  * them is global (a global appears in every namespace's list).
  */
-type RosterChange = { namespaces: string[]; global: boolean };
+type RosterChange = {
+  namespaces: string[];
+  global: boolean;
+  /** #1567: a link change; only links-capable sockets hear it. */
+  linksOnly?: boolean;
+};
 
 /**
  * A global change reaches every daemon: one `roster_changed{ns}` for each
@@ -608,14 +616,26 @@ function notifyRoster(
   if (changed.length === 0) return;
   const sockets = ctx
     .getWebSockets(DAEMON_TAG)
-    .filter((w) => w !== except && w.readyState === OPEN && !isReplaced(w));
+    .filter(
+      (w) =>
+        w !== except &&
+        w.readyState === OPEN &&
+        !isReplaced(w) &&
+        (change.linksOnly !== true || linksGated(w)),
+    );
   if (sockets.length === 0) return;
+  const linkMachines = new Set(
+    sockets
+      .filter((w) => linksGated(w))
+      .map(machineOf)
+      .filter((m): m is string => m !== null),
+  );
   const machines = [
     ...new Set(sockets.map(machineOf).filter((m): m is string => m !== null)),
   ];
   const audience = change.global
     ? everyDaemonAudience(ctx.storage.sql)
-    : rosterAudience(ctx.storage.sql, changed, machines);
+    : rosterAudience(ctx.storage.sql, changed, machines, linkMachines);
   const encoded = new Map<string, string>();
   const frameFor = (namespace: string) => {
     let f = encoded.get(namespace);
@@ -2169,35 +2189,32 @@ function resolveTarget(
     }
     const hit = visibleIn(sender.namespace);
     if (hit) return hit;
-    // #1567: then the linked namespaces. One hit resolves; hits in two of
-    // them are ambiguous (the sender names `to_namespace`); a miss is today's.
-    if (linked.length > 0) {
-      const found = new Map<string, Resolution>();
-      for (const ns of linked) {
-        const h = visibleIn(ns);
-        if (h) found.set(h.ok ? h.agent.id : h.reason, h);
-      }
-      const only = [...found.values()];
-      if (only.length > 1) return refused("ambiguous");
-      if (only[0]) return only[0];
-    }
     // B9: the newest closed agent with the name says revoked or closed.
     const away = awayAgent(sql, sender.namespace, lname, now);
     if (away) return away;
-    if (linked.length > 0) {
-      const found = new Map<string, Resolution>();
-      for (const ns of linked) {
-        const h = awayAgent(sql, ns, lname, now);
-        if (h) found.set(h.ok ? h.agent.id : h.reason, h);
-      }
-      const only = [...found.values()];
-      if (only.length > 1) return refused("ambiguous");
-      if (only[0]) return only[0];
-    }
     const gone = goneReason(sql, sender.namespace, lname);
     if (gone) return refused(gone);
     if (heldName(sql, sender.namespace, lname, now))
       return refused("reserved_name");
+    // #1567: only a clean miss in the sender's own namespace (live, role,
+    // former, away, gone, held) tries the linked ones, and only when the send
+    // names no namespace. Live first, then away. One hit resolves; hits in
+    // two of them are ambiguous (the sender names `to_namespace`).
+    if (linked.length > 0 && toNamespace === undefined) {
+      for (const look of [
+        visibleIn,
+        (ns: string) => awayAgent(sql, ns, lname, now),
+      ]) {
+        const found = new Map<string, Resolution>();
+        for (const ns of linked) {
+          const h = look(ns);
+          if (h) found.set(h.ok ? h.agent.id : h.reason, h);
+        }
+        const only = [...found.values()];
+        if (only.length > 1) return refused("ambiguous");
+        if (only[0]) return only[0];
+      }
+    }
     // Other namespaces are invisible and unreachable (spec goal 5, scenario
     // 6): a name live only elsewhere is unknown_agent, so no probe can tell
     // it exists. other_namespace answers an explicit to_namespace only.
@@ -3051,7 +3068,11 @@ export class BusHub extends DurableObject<Env> {
       this.#maxLinks,
     );
     if (r.ok && !existed)
-      notifyRoster(this.ctx, { namespaces: [a, b], global: false });
+      notifyRoster(this.ctx, {
+        namespaces: [a, b],
+        global: false,
+        linksOnly: true,
+      });
     logEvent("link_set", r.ok ? { ok: 1 } : { reason: r.reason });
     return r;
   }
@@ -3060,7 +3081,11 @@ export class BusHub extends DurableObject<Env> {
   async deleteLink(id: string): Promise<boolean> {
     const gone = removeLink(this.ctx.storage.sql, OWNER_ORG_ID, id);
     if (gone)
-      notifyRoster(this.ctx, { namespaces: [gone.a, gone.b], global: false });
+      notifyRoster(this.ctx, {
+        namespaces: [gone.a, gone.b],
+        global: false,
+        linksOnly: true,
+      });
     return gone !== null;
   }
 

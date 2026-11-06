@@ -10,7 +10,7 @@ import {
   LIMITS,
   type ServerFrame,
 } from "@oa/bus-protocol";
-import { BUS_LINK_MAX } from "@oa/shared";
+import { BUS_LINK_MAX, BUS_LINKS_PER_NAMESPACE } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { BusHub } from "../../src/bus/hub.js";
 import { addLink, linkedNamespaces, removeLink } from "../../src/bus/links.js";
@@ -154,6 +154,34 @@ describe("links store (#1567)", () => {
     });
   });
 
+  it("caps links per namespace", async () => {
+    expect(BUS_LINKS_PER_NAMESPACE).toBe(10);
+    await inOwnerHub((s) => {
+      const sql = s.storage.sql;
+      let n = 0;
+      const mk = () => `p${++n}`;
+      const hub = ns("pn");
+      for (let i = 0; i < 3; i++)
+        expect(addLink(sql, "o5", hub, `${hub}/${i}`, 1, mk, 100, 3).ok).toBe(
+          true,
+        );
+      // The hub namespace is full, from either side.
+      expect(addLink(sql, "o5", hub, `${hub}/9`, 1, mk, 100, 3)).toEqual({
+        ok: false,
+        reason: "link_limit",
+      });
+      expect(addLink(sql, "o5", `${hub}/9`, hub, 1, mk, 100, 3)).toEqual({
+        ok: false,
+        reason: "link_limit",
+      });
+      // An existing pair still passes; unrelated namespaces are unaffected.
+      expect(addLink(sql, "o5", hub, `${hub}/1`, 1, mk, 100, 3).ok).toBe(true);
+      expect(addLink(sql, "o5", `${hub}/8`, `${hub}/9`, 1, mk, 100, 3).ok).toBe(
+        true,
+      );
+    });
+  });
+
   it("removeLink returns the pair once, then null", async () => {
     await inOwnerHub((s) => {
       const sql = s.storage.sql;
@@ -239,6 +267,84 @@ describe("routing across a link (#1567)", () => {
     await agent(d, "own", dup, a);
     const r = await send(d, "me", dup);
     expect(r).toMatchObject({ state: "pending" });
+    d.close();
+  });
+
+  it("the sender's own namespace wins completely: away, held and an explicit own to_namespace never reach a linked agent", async () => {
+    const [a, b] = [ns("wa"), ns("wb")];
+    const d = await connect(LINKED);
+    const awayName = uniq("awayname");
+    const heldName = uniq("heldname");
+    const onlyB = uniq("onlyb");
+    await agent(d, "me", uniq("me"), a);
+    await agent(d, "own", awayName, a);
+    await agent(d, "bl", awayName, b);
+    await agent(d, "bh", heldName, b);
+    await agent(d, "bo", onlyB, b);
+    d.send({
+      v: 1,
+      id: `c${++seq}`,
+      type: "sessions",
+      open: [],
+      closed: ["own"],
+    });
+    for (let k = 0; k < 400; k++) {
+      const r = await inOwnerHub((s) =>
+        s.storage.sql
+          .exec(
+            "select count(*) as n from agents where name = ? and namespace = ? and live = 0",
+            awayName,
+            a,
+          )
+          .one(),
+      );
+      if (r.n === 1) break;
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    await inOwnerHub((s) =>
+      s.storage.sql.exec(
+        "insert into former_names (agent_id, org_id, name, lname, kind, expires_at, namespace, global) values ('ghost', 'owner', ?, ?, 'held', ?, ?, 0)",
+        heldName,
+        heldName.toLowerCase(),
+        Date.now() + 3_600_000,
+        a,
+      ),
+    );
+    await link(a, b);
+    // Own away + linked live: queued in A's mailbox, with or without to_namespace.
+    const away = await inOwnerHub((s) =>
+      s.storage.sql
+        .exec<{ id: string }>(
+          "select id from agents where name = ? and namespace = ? and live = 0",
+          awayName,
+          a,
+        )
+        .one(),
+    );
+    for (const to of [undefined, a]) {
+      const r = await send(d, "me", awayName, to);
+      expect(r, String(to)).toMatchObject({ state: "pending", queued: "away" });
+      const got = await inOwnerHub((s) =>
+        s.storage.sql
+          .exec<{ to_agent: string }>(
+            "select to_agent from receipts where id = ?",
+            r.msg_id,
+          )
+          .one(),
+      );
+      expect(got.to_agent).toBe(away.id);
+    }
+    // Own held + linked live: today's own-namespace refusal.
+    expect(await send(d, "me", heldName)).toMatchObject({
+      state: "refused",
+      reason: "reserved_name",
+    });
+    // An explicit own to_namespace never looks in a linked one.
+    expect(await send(d, "me", onlyB, a)).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    expect(await send(d, "me", onlyB)).toMatchObject({ state: "pending" });
     d.close();
   });
 
@@ -436,6 +542,22 @@ describe("roster_changed fans out across a link (#1567)", () => {
     expect(await hub.deleteLink(l?.id ?? "")).toBe(false);
     da.close();
     db.close();
+  });
+
+  it("an old-cap machine hears nothing extra across a link", async () => {
+    const [a, b] = [ns("oa"), ns("ob")];
+    const da = await connect(LINKED);
+    const old = await connect([BUS_CAPS.ids]);
+    await agent(da, "a", uniq("a"), a);
+    await agent(old, "b", uniq("b"), b);
+    const seen = changed(old).length;
+    await link(a, b);
+    await agent(da, "a2", uniq("a2"), a);
+    await list(old, "b");
+    await list(da, "a");
+    expect(changed(old).length).toBe(seen);
+    da.close();
+    old.close();
   });
 
   it("without a link, a change in one namespace is silent to the other", async () => {
