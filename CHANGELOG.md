@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.132.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.132.0...v0.132.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **bus:** rate-limit role and link writes; revoking a credential expires its proposals ([#1358](https://github.com/open-artifacts-ai/open-artifacts/issues/1358), [#1403](https://github.com/open-artifacts-ai/open-artifacts/issues/1403)) ([#1601](https://github.com/open-artifacts-ai/open-artifacts/issues/1601)) ([f5108f7](https://github.com/open-artifacts-ai/open-artifacts/commit/f5108f7a93c8466270ab18b9c177e28f6354d47f))
+
 ## [0.132.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.131.1...v0.132.0) (2026-11-06)
 
 
