@@ -249,6 +249,13 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     "comments.write",
     { anon401: COMMENT },
   ),
+  // #1535: answering is for the people asked (the handler); the agents list
+  // is for the owner and editors (others get none).
+  [`POST ${ARTS}/comments/:threadId/comments/:commentId/answer`]: art(
+    "comments.write",
+    { anon401: COMMENT },
+  ),
+  [`GET ${ARTS}/agents`]: art("comments.read"),
   [`DELETE ${ARTS}/comments/:threadId/comments/:commentId`]:
     art("comments.read"),
   "GET /api/v1/tokens": { user: "the caller's tokens" },

@@ -45,12 +45,17 @@ import {
   type ThumbResult,
 } from "../services/thumbs.js";
 import {
+  askRow,
   bodyOk,
   COMMENTS_SCHEMA,
+  deleteExtras,
+  getComment,
   getThread,
   insertComment,
+  insertExtras,
   insertThread,
   listThreads,
+  type NewExtras,
   openCount,
   replyCount,
   rootId,
@@ -58,6 +63,8 @@ import {
   type StoredComment,
   type StoredList,
   type StoredThread,
+  setAnswer,
+  setTargetState,
   threadExists,
   touchThread,
 } from "./comments-store.js";
@@ -2019,6 +2026,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
     anchor: Anchor;
     version: number;
     body: string;
+    /** #1535: the ask, mentions and assignment, already resolved by the service. */
+    extras?: NewExtras;
   }): StoredThread {
     this.checkBody(a.body);
     this.ensureSchema();
@@ -2036,6 +2045,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     actor: StoredActor;
     rate: string;
     body: string;
+    extras?: NewExtras;
   }): StoredComment {
     this.checkBody(a.body);
     this.ensureSchema();
@@ -2046,11 +2056,68 @@ export class ArtifactRuntime extends DurableObject<Env> {
       this.countComment(a.rate);
       const now = this.iso();
       const c = insertComment(this.sql, now, a.threadId, a.actor, a.body);
+      if (a.extras) insertExtras(this.sql, a.threadId, c.id, a.extras);
       touchThread(this.sql, a.threadId, now);
-      return c;
+      return getComment(this.sql, a.threadId, c.id) as StoredComment;
     });
     this.broadcastComments();
     return out;
+  }
+
+  /**
+   * Answers an ask (#1535). Not found without one; forbidden unless the caller
+   * is an addressee (the person, or the member whose agent was asked); conflict
+   * once the thread is resolved (the ask is closed); bad_request for an
+   * option the ask does not have. The answer may be changed until then.
+   */
+  commentsAnswer(a: {
+    threadId: string;
+    commentId: string;
+    by: StoredActor;
+    optionId: string;
+    rate: string;
+  }): StoredComment {
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      this.countComment(a.rate, false);
+      const r = askRow(this.sql, a.threadId, a.commentId);
+      if (!r) fail("not_found", "Not found");
+      const asked =
+        a.by.kind === "user" &&
+        r.ask.to.some(
+          (p) => (p.kind === "user" ? p.key : p.owner) === a.by.ref,
+        );
+      if (!asked) fail("forbidden", "Only the people asked can answer");
+      if (r.status === "resolved") fail("conflict", "This ask is closed");
+      if (!r.ask.options.some((o) => o.id === a.optionId))
+        fail("bad_request", "Unknown option");
+      const now = this.iso();
+      setAnswer(this.sql, a.commentId, {
+        optionId: a.optionId,
+        by: a.by,
+        at: now,
+      });
+      touchThread(this.sql, a.threadId, now);
+      return getComment(this.sql, a.threadId, a.commentId) as StoredComment;
+    });
+    this.broadcastComments();
+    return out;
+  }
+
+  /** Records how a mention or the assignment was delivered (the service, after it tried). */
+  commentsTargetStates(a: {
+    threadId: string;
+    commentId: string;
+    states: { kind: "mention" | "assign"; key: string; state: string }[];
+  }): StoredComment {
+    this.ensureSchema();
+    return this.ctx.storage.transactionSync(() => {
+      for (const s of a.states)
+        setTargetState(this.sql, a.commentId, s.kind, s.key, s.state);
+      const c = getComment(this.sql, a.threadId, a.commentId);
+      if (!c) fail("not_found", "Not found");
+      return c;
+    });
   }
 
   /** Resolve or reopen; the same status again changes nothing. */
@@ -2121,27 +2188,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
         now,
         a.commentId,
       );
-      return this.sql
-        .exec<{
-          id: string;
-          body: string;
-          author: string;
-          created_at: string;
-          edited_at: string | null;
-        }>(
-          "select id, body, author, created_at, edited_at from comments where id = ?",
-          a.commentId,
-        )
-        .one();
+      return getComment(this.sql, a.threadId, a.commentId) as StoredComment;
     });
     this.broadcastComments();
-    return {
-      id: out.id,
-      body: out.body,
-      author: JSON.parse(out.author) as StoredActor,
-      createdAt: out.created_at,
-      editedAt: out.edited_at,
-    };
+    return out;
   }
 
   /**
@@ -2174,8 +2224,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
         fail("forbidden", "Only the author or an editor can delete a comment");
       if (rootId(this.sql, a.threadId) === a.commentId) {
         this.sql.exec("delete from comments where thread_id = ?", a.threadId);
+        deleteExtras(this.sql, { threadId: a.threadId });
         this.sql.exec("delete from comment_threads where id = ?", a.threadId);
-      } else this.sql.exec("delete from comments where id = ?", a.commentId);
+      } else {
+        this.sql.exec("delete from comments where id = ?", a.commentId);
+        deleteExtras(this.sql, { commentId: a.commentId });
+      }
     });
     this.broadcastComments();
   }
@@ -2224,6 +2278,8 @@ type RpcMethods =
   | "commentsTake"
   | "commentsAdd"
   | "commentsReply"
+  | "commentsAnswer"
+  | "commentsTargetStates"
   | "commentsStatus"
   | "commentsEdit"
   | "commentsDelete"

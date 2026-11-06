@@ -1,19 +1,26 @@
 import {
   type Anchor,
   type AnchorInput,
+  type AskInput,
+  AskInputSchema,
   anchorInputSchema,
   type Comment,
   type CommentAuthor,
   type CommentList,
+  isId,
+  type KeyRef,
   type CommentThread as Thread,
 } from "@oa/shared";
-import type { ArtifactRow } from "../auth/authz.js";
+import { type ArtifactRow, accessLevel, callerOf } from "../auth/authz.js";
+import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import {
   bodyOk,
+  type NewExtras,
   type StoredActor,
   type StoredComment,
+  type StoredParty,
   type StoredThread,
 } from "../runtime/comments-store.js";
 import { runtimeCall, runtimeStub } from "../runtime/do.js";
@@ -24,13 +31,21 @@ import {
   shownName,
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
+import {
+  agentRoster,
+  type CommentNoticeKind,
+  type DeliveryState,
+  notifyAgent,
+  type RosterAgent,
+  storedAgent,
+} from "./comment-agents.js";
 import { verifyQuote, versionFormat } from "./comment-anchor.js";
 import {
   CONTENT_HASH_RE,
   type CommentStatus,
   cleanGuestName,
 } from "./comment-rules.js";
-import { effectiveName } from "./users.js";
+import { effectiveName, getUser } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
 // MCP tools after them. Storage is the artifact's DO (runtime/comments-store);
@@ -246,8 +261,7 @@ async function threadViews(
   const ids = new Set<string>();
   for (const t of threads) {
     if (t.resolvedBy?.kind === "user") ids.add(t.resolvedBy.ref);
-    for (const c of t.comments)
-      if (c.author.kind === "user") ids.add(c.author.ref);
+    for (const c of t.comments) userIds(c, ids);
   }
   const users = await usersById(env, ids);
   return threads.map((t) => ({
@@ -262,6 +276,29 @@ async function threadViews(
   }));
 }
 
+/** The users a comment shows by name: its author and, on an ask, who was asked and who answered. */
+function userIds(c: StoredComment, into: Set<string>): void {
+  if (c.author.kind === "user") into.add(c.author.ref);
+  if (!c.ask) return;
+  for (const p of c.ask.to) if (p.kind === "user") into.add(p.key);
+  if (c.ask.answer?.by.kind === "user") into.add(c.ask.answer.by.ref);
+}
+
+/** Someone an ask names, as an author: a person by name, an agent by its roster name (`me` when it is the viewer's). */
+const partyView = (
+  p: StoredParty,
+  viewer: CommentViewer,
+  users: Map<string, UserLite>,
+): CommentAuthor =>
+  p.kind === "user"
+    ? authorView({ kind: "user", ref: p.key }, viewer, users)
+    : {
+        kind: "user",
+        id: p.key,
+        name: p.name,
+        me: viewer.userId !== null && viewer.userId === p.owner,
+      };
+
 const commentOf = (
   c: StoredComment,
   viewer: CommentViewer,
@@ -275,6 +312,44 @@ const commentOf = (
     createdAt: c.createdAt,
     editedAt: c.editedAt,
     can: { edit: author.me, delete: author.me || viewer.moderator === true },
+    ...(c.ask
+      ? {
+          ask: {
+            question: c.ask.question,
+            options: c.ask.options,
+            ...(c.ask.recommended ? { recommended: c.ask.recommended } : {}),
+            to: c.ask.to.map((p) => partyView(p, viewer, users)),
+            ...(c.ask.answer
+              ? {
+                  answer: {
+                    optionId: c.ask.answer.optionId,
+                    by: authorView(c.ask.answer.by, viewer, users),
+                    at: c.ask.answer.at,
+                  },
+                }
+              : {}),
+            closed: c.ask.closed,
+          },
+        }
+      : {}),
+    ...(c.mentions?.length
+      ? {
+          mentions: c.mentions.map((m) => ({
+            key: m.key,
+            name: m.name,
+            delivery: m.state as "delivered" | "queued" | "seen" | "gone",
+          })),
+        }
+      : {}),
+    ...(c.assigned
+      ? {
+          assigned: {
+            key: c.assigned.key,
+            name: c.assigned.name,
+            state: c.assigned.state as "delivered" | "queued" | "seen" | "done",
+          },
+        }
+      : {}),
   };
 };
 
@@ -283,11 +358,9 @@ async function commentView(
   c: StoredComment,
   viewer: CommentViewer,
 ): Promise<Comment> {
-  const users = await usersById(
-    env,
-    c.author.kind === "user" ? [c.author.ref] : [],
-  );
-  return commentOf(c, viewer, users);
+  const ids = new Set<string>();
+  userIds(c, ids);
+  return commentOf(c, viewer, await usersById(env, ids));
 }
 
 // -------------------------------------------------------------------- reads
@@ -309,15 +382,179 @@ export async function listComments(
 
 // ------------------------------------------------------------------- writes
 
+/** What a comment may carry besides its body (#1535). `ask` is for the MCP tool: no REST body takes it. */
+export type CommentExtras = {
+  mentions?: KeyRef[];
+  assign?: KeyRef;
+  ask?: AskInput;
+};
+
+/** Who may mention, assign and ask. `moderator`: the owner or an editor. */
+export type ExtrasOpts = { moderator?: boolean };
+
+type Resolved = {
+  extras: NewExtras | undefined;
+  /** Every agent the comment reaches, once, with why (assign beats ask beats mention). */
+  agents: { agent: RosterAgent; kind: CommentNoticeKind }[];
+  mentions: string[];
+  assign: string | null;
+};
+
+const unknownKey = (key: string) =>
+  new ApiError("bad_request", `Unknown agent or person: ${key}`);
+
+/**
+ * Checks and resolves mentions, assignment and ask. 403 forbidden unless the
+ * caller is the owner or an editor (mentions and assign) or a signed-in person
+ * (ask); 400 bad_request for a key that is no agent following the artifact
+ * (mentions, assign) or no such agent or person who can read it (ask).
+ */
+async function resolveExtras(
+  env: Env,
+  artifactId: string,
+  who: CommentWho,
+  x: CommentExtras,
+  opts: ExtrasOpts,
+): Promise<Resolved> {
+  const none = { extras: undefined, agents: [], mentions: [], assign: null };
+  const wantsTargets = (x.mentions?.length ?? 0) > 0 || x.assign !== undefined;
+  if (!wantsTargets && !x.ask) return none;
+  if (wantsTargets && !opts.moderator)
+    throw new ApiError(
+      "forbidden",
+      "Only the owner and editors can mention or assign",
+    );
+  if (x.ask && who.kind !== "user")
+    throw new ApiError("forbidden", "Sign in to ask a question");
+  const parsed = x.ask ? AskInputSchema.safeParse(x.ask) : null;
+  if (parsed && !parsed.success)
+    throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);
+  const askIn = parsed?.success ? parsed.data : undefined;
+  const roster = await agentRoster(
+    env,
+    artifactId,
+    who.kind === "user" ? who.id : null,
+    false,
+  );
+  const agentOf = (key: string): RosterAgent => {
+    const a = roster.find((r) => r.key === key);
+    if (!a) throw unknownKey(key);
+    return a;
+  };
+  const mentioned = [...new Set((x.mentions ?? []).map((m) => m.key))].map(
+    agentOf,
+  );
+  const assigned = x.assign ? agentOf(x.assign.key) : null;
+  let ask: NewExtras["ask"];
+  const asked: RosterAgent[] = [];
+  if (askIn) {
+    const to: StoredParty[] = [];
+    for (const { key } of askIn.to) {
+      if (to.some((p) => p.key === key)) continue;
+      const a = roster.find((r) => r.key === key);
+      if (a) {
+        to.push(storedAgent(a));
+        asked.push(a);
+        continue;
+      }
+      // A person who can read the artifact now.
+      const user = isId(key) ? await getUser(env, key) : null;
+      if (!user || !(await accessLevel(env, callerOf(user), artifactId)))
+        throw unknownKey(key);
+      to.push({ kind: "user", key: user.id });
+    }
+    ask = {
+      question: askIn.question,
+      options: askIn.options,
+      ...(askIn.recommended ? { recommended: askIn.recommended } : {}),
+      to,
+    };
+  }
+  const agents = new Map<string, Resolved["agents"][number]>();
+  for (const a of mentioned) agents.set(a.key, { agent: a, kind: "mention" });
+  for (const a of asked) agents.set(a.key, { agent: a, kind: "ask" });
+  if (assigned) agents.set(assigned.key, { agent: assigned, kind: "assign" });
+  return {
+    extras: {
+      ...(ask ? { ask } : {}),
+      ...(mentioned.length ? { mentions: mentioned.map(storedAgent) } : {}),
+      ...(assigned ? { assign: storedAgent(assigned) } : {}),
+    },
+    agents: [...agents.values()],
+    mentions: mentioned.map((m) => m.key),
+    assign: assigned?.key ?? null,
+  };
+}
+
+/**
+ * How a notice's outcome reads on the comment. A held notice waits for the
+ * machine ("queued"). A dropped one found no session: a mention reads "gone";
+ * an assignment has no such state, so it stays "queued".
+ */
+const stateOf = (
+  out: DeliveryState,
+  assign: boolean,
+): "delivered" | "queued" | "gone" =>
+  out === "delivered"
+    ? "delivered"
+    : out === "held" || assign
+      ? "queued"
+      : "gone";
+
+/**
+ * Sends the notices of a written comment and records how each mention and the
+ * assignment went. Returns the comment as then stored.
+ */
+async function deliver(
+  env: Env,
+  a: Pick<ArtifactRow, "id" | "currentVersion">,
+  threadId: string,
+  c: StoredComment,
+  r: Resolved,
+): Promise<StoredComment> {
+  if (r.agents.length === 0) return c;
+  const version = Math.max(1, a.currentVersion);
+  const outcome = new Map<string, DeliveryState>();
+  for (const { agent, kind } of r.agents)
+    outcome.set(
+      agent.key,
+      await notifyAgent(env, a.id, version, c.id, kind, agent),
+    );
+  const states: { kind: "mention" | "assign"; key: string; state: string }[] =
+    [];
+  for (const key of r.mentions)
+    states.push({
+      kind: "mention",
+      key,
+      state: stateOf(outcome.get(key) ?? "dropped", false),
+    });
+  if (r.assign)
+    states.push({
+      kind: "assign",
+      key: r.assign,
+      state: stateOf(outcome.get(r.assign) ?? "dropped", true),
+    });
+  if (states.length === 0) return c;
+  return call(() =>
+    stub(env, a.id).commentsTargetStates({
+      threadId,
+      commentId: c.id,
+      states,
+    }),
+  );
+}
+
 /** A new thread: `raw` is the anchor as posted, `body` the first comment. 201 Thread. */
 export async function addThread(
   env: Env,
   a: Pick<ArtifactRow, "id" | "format" | "currentVersion">,
   who: CommentWho,
   viewer: CommentViewer,
-  raw: { anchor: unknown; body: unknown },
+  raw: { anchor: unknown; body: unknown } & CommentExtras,
+  opts: ExtrasOpts = {},
 ): Promise<Thread> {
   const body = checkBody(raw.body);
+  const r = await resolveExtras(env, a.id, who, raw, opts);
   // The limit comes before any file is read, and a refused quote counts.
   let taken = false;
   const take = async () => {
@@ -334,8 +571,14 @@ export async function addThread(
       anchor,
       version,
       body,
+      ...(r.extras ? { extras: r.extras } : {}),
     }),
   );
+  const root = t.comments[0];
+  if (root && r.agents.length > 0) {
+    const sent = await deliver(env, a, t.id, root, r);
+    t.comments[0] = sent;
+  }
   return (await threadViews(env, [t], viewer))[0] as Thread;
 }
 
@@ -347,17 +590,67 @@ export async function addReply(
   who: CommentWho,
   viewer: CommentViewer,
   body: unknown,
+  extras: CommentExtras = {},
+  opts: ExtrasOpts = {},
 ): Promise<Comment> {
   const text = checkBody(body);
+  const r = await resolveExtras(env, artifactId, who, extras, opts);
   const c = await call(() =>
     stub(env, artifactId).commentsReply({
       threadId,
       actor: actorOf(who),
       rate: rateKeyOf(who),
       body: text,
+      ...(r.extras ? { extras: r.extras } : {}),
+    }),
+  );
+  if (r.agents.length === 0) return commentView(env, c, viewer);
+  const row = await stmt(
+    env.DB,
+    "select current_version as v from artifacts where id = ?",
+  )
+    .bind(artifactId)
+    .first<{ v: number }>();
+  const a = { id: artifactId, currentVersion: row?.v ?? 1 };
+  return commentView(env, await deliver(env, a, threadId, c, r), viewer);
+}
+
+/**
+ * Answers an ask (#1535): 404 without one, 403 unless the caller is asked,
+ * 409 once the thread is resolved, 400 for an option the ask lacks. The
+ * answer may change until then. `who` is the caller as an author (a guest is
+ * never asked).
+ */
+export async function answerAsk(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  commentId: string,
+  who: CommentWho,
+  viewer: CommentViewer,
+  optionId: string,
+): Promise<Comment> {
+  const c = await call(() =>
+    stub(env, artifactId).commentsAnswer({
+      threadId,
+      commentId,
+      by: actorOf(who),
+      optionId,
+      rate: rateKeyOf(who),
     }),
   );
   return commentView(env, c, viewer);
+}
+
+/** The agents that can be mentioned, assigned or asked on the artifact. */
+export async function artifactAgents(
+  env: Env,
+  artifactId: string,
+  viewerId: string | null,
+): Promise<{ key: string; name: string; online: boolean }[]> {
+  return (await agentRoster(env, artifactId, viewerId, true)).map(
+    ({ key, name, online }) => ({ key, name, online }),
+  );
 }
 
 /** Resolve or reopen. */

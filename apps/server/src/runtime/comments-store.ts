@@ -1,4 +1,9 @@
-import { type Anchor, COMMENT_BODY_MAX, newId } from "@oa/shared";
+import {
+  type Anchor,
+  type AskOption,
+  COMMENT_BODY_MAX,
+  newId,
+} from "@oa/shared";
 import {
   COMMENTS_MAX_BYTES,
   COMMENTS_MAX_REPLIES,
@@ -25,6 +30,17 @@ create table if not exists comments (
   author text not null, created_at text not null, edited_at text
 );
 create index if not exists comments_thread on comments (thread_id, created_at);
+create table if not exists comment_asks (
+  comment_id text primary key, thread_id text not null, question text not null,
+  options text not null, recommended text, addressees text not null, answer text
+);
+create index if not exists comment_asks_thread on comment_asks (thread_id);
+create table if not exists comment_targets (
+  comment_id text not null, thread_id text not null, kind text not null,
+  key text not null, name text not null, state text not null,
+  primary key (comment_id, kind, key)
+);
+create index if not exists comment_targets_thread on comment_targets (thread_id);
 create table if not exists comment_limits (
   id integer primary key check (id = 1), day integer not null, n integer not null
 );
@@ -44,12 +60,48 @@ export type StoredActor = {
   agent?: { name: string; via: string | null };
 };
 
+/**
+ * Someone an ask, mention or assignment names (#1535). A person is their user
+ * id (`key`; the name is read from the user row when shown). An agent is an
+ * opaque key from the artifact's roster, its display `name`, and `owner`, the
+ * member whose agent it is (never shown; it decides who may answer for it).
+ */
+export type StoredParty =
+  | { kind: "user"; key: string }
+  | { kind: "agent"; key: string; name: string; owner: string };
+
+export type MentionState = "delivered" | "queued" | "seen" | "gone";
+export type AssignState = "delivered" | "queued" | "seen" | "done";
+
+export type StoredAsk = {
+  question: string;
+  options: AskOption[];
+  recommended?: { optionId: string; why: string };
+  to: StoredParty[];
+  answer?: { optionId: string; by: StoredActor; at: string };
+  /** The thread is resolved. */
+  closed: boolean;
+};
+
+export type StoredTarget = { key: string; name: string; state: string };
+
 export type StoredComment = {
   id: string;
   body: string;
   author: StoredActor;
   createdAt: string;
   editedAt: string | null;
+  ask?: StoredAsk;
+  mentions?: StoredTarget[];
+  assigned?: StoredTarget;
+};
+
+/** What a new comment carries besides its text (#1535). */
+export type StoredAgent = Extract<StoredParty, { kind: "agent" }>;
+export type NewExtras = {
+  ask?: Omit<StoredAsk, "answer" | "closed">;
+  mentions?: StoredAgent[];
+  assign?: StoredAgent;
 };
 
 export type StoredThread = {
@@ -153,6 +205,16 @@ export function listThreads(
         n: Math.min(r.n, COMMENTS_MAX_REPLIES + 1),
         bytes: r.b,
       });
+  if (cand.length > 0)
+    for (const r of sql.exec<{ thread_id: string; b: number }>(
+      `select thread_id, sum(length(question) + length(options) + length(addressees)
+         + length(coalesce(recommended, '')) + length(coalesce(answer, ''))) as b
+       from comment_asks where thread_id in (select value from json_each(?)) group by thread_id`,
+      JSON.stringify(cand.map((t) => t.id)),
+    )) {
+      const c = counts.get(r.thread_id);
+      if (c) c.bytes += r.b;
+    }
   const kept: ThreadRow[] = [];
   let total = 0;
   let bytes = 0;
@@ -186,11 +248,206 @@ export function listThreads(
       byThread.set(c.thread_id, list);
     }
   }
+  attachExtras(
+    sql,
+    kept.map((t) => t.id),
+    [...byThread.values()].flat(),
+  );
   return {
     threads: kept.map((r) => toThread(r, byThread.get(r.id) ?? [])),
     open: openCount(sql),
     truncated,
   };
+}
+
+type AskRow = {
+  comment_id: string;
+  question: string;
+  options: string;
+  recommended: string | null;
+  addressees: string;
+  answer: string | null;
+  status: string;
+};
+type TargetRow = {
+  comment_id: string;
+  kind: string;
+  key: string;
+  name: string;
+  state: string;
+  status: string;
+};
+
+const askOf = (r: AskRow): StoredAsk => ({
+  question: r.question,
+  options: JSON.parse(r.options) as AskOption[],
+  ...(r.recommended
+    ? {
+        recommended: JSON.parse(r.recommended) as {
+          optionId: string;
+          why: string;
+        },
+      }
+    : {}),
+  to: JSON.parse(r.addressees) as StoredParty[],
+  ...(r.answer
+    ? { answer: JSON.parse(r.answer) as NonNullable<StoredAsk["answer"]> }
+    : {}),
+  closed: r.status === "resolved",
+});
+
+/** Sets ask, mentions and assigned on `comments` (of the threads `threadIds`) from their tables. */
+function attachExtras(
+  sql: SqlStorage,
+  threadIds: string[],
+  comments: StoredComment[],
+): void {
+  if (threadIds.length === 0 || comments.length === 0) return;
+  const ids = JSON.stringify(threadIds);
+  const byId = new Map(comments.map((c) => [c.id, c]));
+  for (const r of sql.exec<AskRow>(
+    `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, t.status
+     from comment_asks a join comment_threads t on t.id = a.thread_id
+     where a.thread_id in (select value from json_each(?))`,
+    ids,
+  )) {
+    const c = byId.get(r.comment_id);
+    if (c) c.ask = askOf(r);
+  }
+  for (const r of sql.exec<TargetRow>(
+    `select g.comment_id, g.kind, g.key, g.name, g.state, t.status
+     from comment_targets g join comment_threads t on t.id = g.thread_id
+     where g.thread_id in (select value from json_each(?)) order by g.rowid`,
+    ids,
+  )) {
+    const c = byId.get(r.comment_id);
+    if (!c) continue;
+    // Resolving the thread finishes the work assigned in it.
+    const done = r.kind === "assign" && r.status === "resolved";
+    const t = { key: r.key, name: r.name, state: done ? "done" : r.state };
+    if (r.kind === "assign") c.assigned = t;
+    else c.mentions = [...(c.mentions ?? []), t];
+  }
+}
+
+/** `c` with its ask, mentions and assigned read back. */
+export function withExtras(
+  sql: SqlStorage,
+  threadId: string,
+  c: StoredComment,
+): StoredComment {
+  attachExtras(sql, [threadId], [c]);
+  return c;
+}
+
+/** Stores the ask, mentions and assignment of a new comment, in the caller's transaction. */
+export function insertExtras(
+  sql: SqlStorage,
+  threadId: string,
+  commentId: string,
+  x: NewExtras,
+): void {
+  if (x.ask)
+    sql.exec(
+      `insert into comment_asks (comment_id, thread_id, question, options, recommended, addressees)
+       values (?, ?, ?, ?, ?, ?)`,
+      commentId,
+      threadId,
+      x.ask.question,
+      JSON.stringify(x.ask.options),
+      x.ask.recommended ? JSON.stringify(x.ask.recommended) : null,
+      JSON.stringify(x.ask.to),
+    );
+  const put = (kind: "mention" | "assign", p: StoredAgent) =>
+    sql.exec(
+      `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state)
+       values (?, ?, ?, ?, ?, 'queued')`,
+      commentId,
+      threadId,
+      kind,
+      p.key,
+      p.name,
+    );
+  for (const m of x.mentions ?? []) put("mention", m);
+  if (x.assign) put("assign", x.assign);
+}
+
+/** Sets one mention's or the assignment's state. */
+export function setTargetState(
+  sql: SqlStorage,
+  commentId: string,
+  kind: "mention" | "assign",
+  key: string,
+  state: string,
+): void {
+  sql.exec(
+    "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ?",
+    state,
+    commentId,
+    kind,
+    key,
+  );
+}
+
+/** Drops the ask and targets of comments (`commentId`, or every comment of `threadId`). */
+export function deleteExtras(
+  sql: SqlStorage,
+  by: { threadId: string } | { commentId: string },
+): void {
+  const [col, v] =
+    "threadId" in by
+      ? (["thread_id", by.threadId] as const)
+      : (["comment_id", by.commentId] as const);
+  sql.exec(`delete from comment_asks where ${col} = ?`, v);
+  sql.exec(`delete from comment_targets where ${col} = ?`, v);
+}
+
+/** Stores an answer (replacing an earlier one). */
+export function setAnswer(
+  sql: SqlStorage,
+  commentId: string,
+  answer: NonNullable<StoredAsk["answer"]>,
+): void {
+  sql.exec(
+    "update comment_asks set answer = ? where comment_id = ?",
+    JSON.stringify(answer),
+    commentId,
+  );
+}
+
+/** A comment's ask row with its thread's status, or null when it has no ask. */
+export function askRow(
+  sql: SqlStorage,
+  threadId: string,
+  commentId: string,
+): { ask: StoredAsk; status: string } | null {
+  const r = sql
+    .exec<AskRow & { status: string }>(
+      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, t.status
+       from comment_asks a join comment_threads t on t.id = a.thread_id
+       where a.comment_id = ? and a.thread_id = ?`,
+      commentId,
+      threadId,
+    )
+    .toArray()[0];
+  return r ? { ask: askOf(r), status: r.status } : null;
+}
+
+/** One comment with its extras, or null. */
+export function getComment(
+  sql: SqlStorage,
+  threadId: string,
+  commentId: string,
+): StoredComment | null {
+  const r = sql
+    .exec<CommentRow>(
+      `select id, thread_id, body, author, created_at, edited_at from comments
+       where id = ? and thread_id = ?`,
+      commentId,
+      threadId,
+    )
+    .toArray()[0];
+  return r ? withExtras(sql, threadId, toComment(r)) : null;
 }
 
 /** One thread with its comments (the same reply cap), or null. */
@@ -209,7 +466,9 @@ export function getThread(sql: SqlStorage, id: string): StoredThread | null {
       id,
     )
     .toArray();
-  return toThread(row, cs.map(toComment));
+  const comments = cs.map(toComment);
+  attachExtras(sql, [id], comments);
+  return toThread(row, comments);
 }
 
 /** 1 to COMMENT_BODY_MAX UTF-16 units after trim: the unit the shared body schema counts (z.string().max). */
@@ -221,7 +480,13 @@ export const bodyOk = (body: unknown): body is string =>
 export function insertThread(
   sql: SqlStorage,
   now: string,
-  t: { actor: StoredActor; anchor: Anchor; version: number; body: string },
+  t: {
+    actor: StoredActor;
+    anchor: Anchor;
+    version: number;
+    body: string;
+    extras?: NewExtras;
+  },
 ): StoredThread {
   const id = newId();
   sql.exec(
@@ -233,7 +498,8 @@ export function insertThread(
     now,
     now,
   );
-  insertComment(sql, now, id, t.actor, t.body);
+  const c = insertComment(sql, now, id, t.actor, t.body);
+  if (t.extras) insertExtras(sql, id, c.id, t.extras);
   return getThread(sql, id) as StoredThread;
 }
 
