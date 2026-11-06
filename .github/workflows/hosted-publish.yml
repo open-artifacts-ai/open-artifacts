@@ -1,6 +1,7 @@
 # Publishes signed releases (and floors) to each env's releases bucket,
 # oa-<p>-releases (design v7 6.4): the only CI step on the provisioning path.
-# After every successful release-please run on main, the release whose tag's
+# After every release-please run on main (not cancelled; the release gate
+# decides, so an npm-only failure does not block), the release whose tag's
 # commit is that run's head goes to staging, then prod; most runs cut no
 # release and publish nothing. By hand (workflow_dispatch on main): a tag
 # (both envs, or the one named), or a hosted-floor.yml run id with its env.
@@ -102,7 +103,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
@@ -188,7 +189,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc

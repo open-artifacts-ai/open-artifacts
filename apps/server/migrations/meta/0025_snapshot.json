@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "406a5417-8bb4-4a92-92ef-068bc3a706c4",
+  "id": "451f2204-bf7a-4a52-9b6b-8649aeb0cc92",
   "prevId": "2a5a4169-eed8-4774-b333-ce1a78f6778d",
   "tables": {
     "agent_grants": {
@@ -157,14 +157,6 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'viewers'"
-        },
-        "comments": {
-          "name": "comments",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 1
         },
         "has_thumbnail": {
           "name": "has_thumbnail",
@@ -656,6 +648,54 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
+    },
+    "creator_months": {
+      "name": "creator_months",
+      "columns": {
+        "month": {
+          "name": "month",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "first_at": {
+          "name": "first_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "creator_months_month_user_id_pk": {
+          "columns": ["month", "user_id"],
+          "name": "creator_months_month_user_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "creator_months_source_check": {
+          "name": "creator_months_source_check",
+          "value": "\"creator_months\".\"source\" in ('version', 'data')"
+        }
+      }
     },
     "directory_groups": {
       "name": "directory_groups",

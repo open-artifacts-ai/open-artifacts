@@ -1,4 +1,4 @@
--- #682, additive. Hand-edited from the drizzle-kit output: the comments CHECK
+-- #682, additive (0026: main took 0025). Hand-edited from the drizzle-kit output: the comments CHECK
 -- is inline in the ADD COLUMN (schema.ts can't express a column-level check
 -- without a table rebuild), as 0014 does for data_writers. No backfill: every
 -- existing artifact gets the default, 1 (comments on). The previous release

@@ -12,13 +12,13 @@ import {
   TooltipTrigger,
 } from "@oa/ui/shadcn";
 import { X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { TXT } from "../ui";
 import { Details } from "./Details";
 import { Share } from "./Share";
 import { refocusPending, VERSIONS_PANEL_ID, Versions } from "./Versions";
 
-export const PANEL_TABS = ["versions", "share", "details"] as const;
+export const PANEL_TABS = ["versions", "share", "details", "comments"] as const;
 export type PanelTab = (typeof PANEL_TABS)[number];
 export const isPanelTab = (t: unknown): t is PanelTab =>
   PANEL_TABS.includes(t as PanelTab);
@@ -27,6 +27,7 @@ const LABELS: Record<PanelTab, string> = {
   versions: "Versions",
   share: "Share",
   details: "Details",
+  comments: "Comments",
 };
 
 /** Focus moved in on open is programmatic, so :focus-visible may not match. */
@@ -39,18 +40,27 @@ let opener: HTMLElement | null = null;
 export function SidePanel({
   artifact,
   version,
+  authed = true,
   tab,
   onTab,
   onClose,
+  comments,
 }: {
+  /** The Comments tab's body; without it the tab is not offered. */
+  comments?: ReactNode;
   artifact: ArtifactSummary;
   /** The version the viewer shows. */
   version: number;
+  /** Signed-out viewers get the Comments tab alone. */
+  authed?: boolean;
   tab: PanelTab;
   onTab: (t: PanelTab) => void;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLElement>(null);
+  const tabs = PANEL_TABS.filter((t) =>
+    t === "comments" ? comments !== undefined : authed,
+  );
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   // Focus moves to the active tab's search, else the active tab, on open (the
@@ -128,7 +138,7 @@ export function SidePanel({
             variant="line"
             className="h-auto w-full justify-start gap-1 border-0 border-b border-border p-0 pr-9"
           >
-            {PANEL_TABS.map((t) => (
+            {tabs.map((t) => (
               <TabsTrigger
                 key={t}
                 value={t}
@@ -140,23 +150,37 @@ export function SidePanel({
           </TabsList>
         </div>
         {/* Versions scrolls its list under a fixed search box; the others scroll whole. */}
-        <TabsContent value="versions" className="flex min-h-0 flex-col">
-          <div id={VERSIONS_PANEL_ID} className="flex min-h-0 flex-1 flex-col">
-            <Versions artifact={artifact} version={version} />
-          </div>
-        </TabsContent>
+        {authed && (
+          <TabsContent value="versions" className="flex min-h-0 flex-col">
+            <div
+              id={VERSIONS_PANEL_ID}
+              className="flex min-h-0 flex-1 flex-col"
+            >
+              <Versions artifact={artifact} version={version} />
+            </div>
+          </TabsContent>
+        )}
+        {comments !== undefined && (
+          <TabsContent value="comments" className="min-h-0">
+            <ScrollArea className="h-full [&>[data-slot=scroll-area-viewport]>div]:!block">
+              {comments}
+            </ScrollArea>
+          </TabsContent>
+        )}
         {(
           [
             ["share", <Share key="share" artifact={artifact} />],
             ["details", <Details key="details" artifact={artifact} />],
           ] as const
-        ).map(([t, body]) => (
-          <TabsContent key={t} value={t} className="min-h-0">
-            <ScrollArea className="h-full [&>[data-slot=scroll-area-viewport]>div]:!block">
-              <div className="px-4 pt-2 pb-4">{body}</div>
-            </ScrollArea>
-          </TabsContent>
-        ))}
+        )
+          .filter(() => authed)
+          .map(([t, body]) => (
+            <TabsContent key={t} value={t} className="min-h-0">
+              <ScrollArea className="h-full [&>[data-slot=scroll-area-viewport]>div]:!block">
+                <div className="px-4 pt-2 pb-4">{body}</div>
+              </ScrollArea>
+            </TabsContent>
+          ))}
       </Tabs>
     </aside>
   );

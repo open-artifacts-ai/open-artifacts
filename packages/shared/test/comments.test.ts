@@ -13,6 +13,7 @@ import {
   R,
   ReplyBodySchema,
 } from "../src/index.js";
+import { createCommentHandlers } from "../src/mocks/comments.js";
 import { createArtifactEvents } from "../src/mocks/events.js";
 import { fixtures } from "../src/mocks/fixtures.js";
 import { createHandlers } from "../src/mocks/handlers.js";
@@ -209,6 +210,41 @@ describe("comments mock", () => {
       ).json(),
     );
     expect(t2.version).toBe(1);
+  });
+
+  it("#1496: edit is the author's; delete is the author's or a moderator's", async () => {
+    const me = { user: { id: "me1", name: "Me", email: "me@x.test" } };
+    const handlers = (over: object) =>
+      createCommentHandlers({
+        artifacts: [{ ...art, ...over }] as never,
+        me,
+        err: () => new Response(null, { status: 400 }),
+        emit: () => {},
+      });
+    const cans = async (over: object) => {
+      server.use(...handlers(over));
+      const l = await list();
+      return l.threads[0]?.comments.map((c) => ({
+        by: c.author.me,
+        edit: c.can.edit,
+        del: c.can.delete,
+      }));
+    };
+    const someone = { ...art.owner, id: "someone-else" };
+    // A plain viewer: nobody else's comment is theirs to change.
+    expect(await cans({ owner: someone, can: { edit: false } })).toEqual([
+      { by: false, edit: false, del: false },
+      { by: true, edit: true, del: true },
+    ]);
+    // The owner, or one who can edit the artifact, may delete others' comments, never edit them.
+    for (const over of [
+      { owner: { ...someone, id: "me1" } },
+      { owner: someone, can: { edit: true } },
+    ])
+      expect(await cans(over)).toEqual([
+        { by: false, edit: false, del: true },
+        { by: true, edit: true, del: true },
+      ]);
   });
 
   it("400 invalid_anchor for a bad anchor", async () => {

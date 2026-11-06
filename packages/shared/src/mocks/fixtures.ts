@@ -62,6 +62,8 @@ const art = (
   access: "owner",
   capabilities: caps(),
   allowAnonymousWrites: false,
+  // #682: the Comments setting, on by default.
+  comments: true,
   // #681: as the 0014 backfill maps rows.
   dataWriters:
     o.visibility === "public" && !o.allowAnonymousWrites
@@ -290,6 +292,7 @@ export const fixtures: {
       global: false,
       state: "live",
       running: true,
+      since: null,
       updatedAt: "2026-01-03T10:00:00.000Z",
       status: "working",
       statusLabel: "Reviewing the release candidate",
@@ -305,6 +308,7 @@ export const fixtures: {
       global: false,
       state: "live",
       running: true,
+      since: null,
       updatedAt: "2026-01-03T09:58:00.000Z",
       status: "working",
       statusLabel: "Writing the bus pages spec",
@@ -320,6 +324,7 @@ export const fixtures: {
       global: false,
       state: "queued",
       running: true,
+      since: null,
       updatedAt: "2026-01-03T09:38:00.000Z",
       status: "idle",
       statusLabel: "Idle",
@@ -335,6 +340,7 @@ export const fixtures: {
       global: false,
       state: "live",
       running: true,
+      since: null,
       updatedAt: "2026-01-03T09:59:00.000Z",
       status: "working",
       statusLabel: "Moving the bus into the instance",
@@ -350,6 +356,7 @@ export const fixtures: {
       global: false,
       state: "live",
       running: true,
+      since: null,
       updatedAt: "2026-01-03T09:30:00.000Z",
     },
     {
@@ -362,6 +369,7 @@ export const fixtures: {
       global: false,
       state: "live",
       running: true,
+      since: null,
       updatedAt: "2026-01-03T09:20:00.000Z",
     },
     {
@@ -374,6 +382,7 @@ export const fixtures: {
       global: false,
       state: "queued",
       running: true,
+      since: null,
       updatedAt: "2026-01-03T08:00:00.000Z",
     },
     {
@@ -386,6 +395,7 @@ export const fixtures: {
       global: true,
       state: "live",
       running: true,
+      since: null,
       updatedAt: "2026-01-03T09:00:00.000Z",
     },
   ],

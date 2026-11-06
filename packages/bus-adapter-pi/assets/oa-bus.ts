@@ -81,7 +81,7 @@ const SELF_TIMEOUT_MS = 2_000;
 // --- Copy: design/cli/transcript.md and @oa/bus-ipc copy.ts, verbatim (a test holds them equal).
 
 const MAX_COLS = 80;
-const HOUR = "1 hour";
+const RETAIN = "7 days";
 
 /**
  * Cuts `value` in the middle, keeping its end, so no line of `text(value)`
@@ -113,8 +113,18 @@ const refusals: Record<
     "Send it again once the session is open, or message another agent.",
   ],
   inbox_full: [
-    `50 messages are already waiting.`,
+    `200 messages are already waiting.`,
     "Send again once some are delivered or expire.",
+  ],
+  // #1295: the cap sockets' inbox_full (pending count, bytes or the hub total).
+  mailbox_full: [
+    "Its mailbox is full.",
+    "Send again once it has read some, or message another agent.",
+  ],
+  // #1295: a name only held after a move; no one reads it.
+  reserved_name: [
+    "No one has that name now; it was left by an agent that moved.",
+    "Run the oa_bus list_agents tool to find who has it now.",
   ],
   too_large: [
     "It is too large to send (the limit is 1 MB).",
@@ -127,7 +137,7 @@ const refusals: Record<
   // #1448: the sender cannot reinstall someone else's machine; no install hint.
   revoked: [
     "That agent's machine was revoked.",
-    "Run list_agents to see who is in this namespace.",
+    "Run the oa_bus list_agents tool to find who is live.",
   ],
   ambiguous: [
     (n) =>
@@ -174,7 +184,8 @@ function receiptText(
   switch (r.state) {
     case "pending":
       return fitLine(
-        (v) => `○  Queued for ${v}. Not delivered yet; expires in ${HOUR}.`,
+        (v) =>
+          `○  Queued for ${v}. Not delivered yet; expires within ${RETAIN}.`,
         to,
       );
     case "delivered":
@@ -183,7 +194,7 @@ function receiptText(
       const tail = (v: string) =>
         r.reason === "recipient_closed"
           ? `was not delivered because ${v} closed first.`
-          : `was not taken within ${HOUR}.`;
+          : `was not taken within ${RETAIN}.`;
       const head = (v: string) => `×  Expired: your message to ${v}`;
       if (!quote) return fitLine((v) => `${head(v)} ${tail(v)}`, to);
       return fitLine((v) => quoted(head(v), quote, tail(v)), to);
@@ -415,6 +426,14 @@ function statusSaysText(
   ].join(" · ");
 }
 
+/** "2026-11-05 10:00 UTC" from an ISO time; unreadable times are shown as sent. */
+const awayTime = (iso: string): string => {
+  const t = Date.parse(iso);
+  return Number.isNaN(t)
+    ? iso
+    : `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+};
+
 /** @oa/bus-ipc rosterLine: one list_agents line. */
 function rosterLine(
   a: StatusFields & {
@@ -423,11 +442,13 @@ function rosterLine(
     namespace: string;
     machine_label?: unknown;
     queued: boolean;
+    /** #1295: ISO time the agent went away; it is closed, its mailbox kept. */
+    away?: string | undefined;
   },
   now = Date.now(),
 ): string {
   const says = statusSaysText(a, now);
-  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
 }
 
 /** @oa/bus-ipc selfText: the agent entry, its status cleaned. */
@@ -837,6 +858,9 @@ function open(
         pid: process.pid,
         cwd: id.cwd,
         proposed_name: id.name,
+        // #1295: this asset decodes away rows and the new refusals.
+        // #1525: and a config file that is pending approval.
+        caps: ["mailbox", "pending"],
         attest: start ? { proc_start: start } : {},
       }),
     );
@@ -1031,6 +1055,7 @@ export default function oaBus(pi: Pi): void {
                   namespace: String(a.namespace),
                   queued:
                     (a.state ?? (a.live ? "live" : "queued")) === "queued",
+                  away: a.state === "away" ? String(a.since ?? "") : undefined,
                 },
                 now,
               ),

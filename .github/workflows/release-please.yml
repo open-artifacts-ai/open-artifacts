@@ -107,7 +107,7 @@ jobs:
         run: |
           if [ -f apps/landing/wrangler.jsonc ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
       - if: steps.gate.outputs.present == 'true'
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - if: steps.gate.outputs.present == 'true'
         uses: actions/setup-node@v4
         with:
@@ -187,7 +187,7 @@ jobs:
           # previous stable release.
           fetch-depth: 0
       - if: steps.guard.outputs.deploy == 'true'
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - if: steps.guard.outputs.deploy == 'true'
         uses: actions/setup-node@v4
         with:
@@ -332,7 +332,7 @@ jobs:
           ref: ${{ env.TAG }}
           persist-credentials: false
       - if: steps.guard.outputs.deploy == 'true'
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - if: steps.guard.outputs.deploy == 'true'
         uses: actions/setup-node@v4
         with:
@@ -463,7 +463,7 @@ jobs:
         with:
           ref: ${{ needs.hosted-guard.outputs.sha }}
           persist-credentials: false
-      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       # No dependency cache: a main-scoped pnpm store would feed the signed bytes.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -510,7 +510,7 @@ jobs:
         with:
           ref: ${{ needs.hosted-guard.outputs.sha }}
           persist-credentials: false
-      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       # No dependency cache: a main-scoped pnpm store would feed the signed bytes.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -736,7 +736,7 @@ jobs:
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
           persist-credentials: false
-      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       # No dependency cache: a main-scoped pnpm store would feed the published bytes.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -779,8 +779,9 @@ jobs:
           path: ${{ runner.temp }}/npm/*.tgz
           if-no-files-found: error
           retention-days: 7
-  # The token lives only in the npm-publish Environment (main and v* tags).
-  # No checkout, no install, no lifecycle scripts: this job runs only the
+  # Authenticates with npm trusted publishing (OIDC), so no npm token exists:
+  # the trusted publisher on npmjs.com names this repository, this workflow
+  # and the npm-publish Environment (main and v* tags). No checkout, no install, no lifecycle scripts: this job runs only the
   # pinned node and npm on the tarball pack-npm checked, whose sha256 comes
   # from pack-npm's job output, not from the artifact. A re-run is a no-op
   # once the version is on npm.
@@ -791,7 +792,7 @@ jobs:
     environment: npm-publish
     permissions:
       contents: read
-      # Signs the provenance statement (and, later, trusted publishing).
+      # Trusted publishing (OIDC) and the provenance statement.
       id-token: write
     concurrency:
       group: publish-npm-${{ needs.release-please.outputs.tag_name }}
@@ -802,12 +803,12 @@ jobs:
       VERSION: ${{ needs.pack-npm.outputs.version }}
       SHA256: ${{ needs.pack-npm.outputs.sha256 }}
     steps:
-      # registry-url writes an .npmrc that reads NODE_AUTH_TOKEN, set on the
-      # publish step only.
+      # No registry-url: it makes setup-node write an .npmrc auth line and
+      # export a placeholder auth token variable, which can shadow the OIDC
+      # exchange. npm defaults to registry.npmjs.org.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.21.0
-          registry-url: https://registry.npmjs.org
       # Node 22 ships npm 10; trusted publishing needs npm 11.5.1 or later.
       - name: Pin npm
         run: npm install -g --ignore-scripts npm@11.6.2
@@ -833,12 +834,11 @@ jobs:
             cat "$RUNNER_TEMP/npm-view.err"; echo "::error::could not ask npm whether $VERSION exists"; exit 1
           fi
           { echo "tarball=$tgz"; echo "publish=true"; } >> "$GITHUB_OUTPUT"
-      # To switch to npm trusted publishing, delete the NODE_AUTH_TOKEN line
-      # below (and the NPM_TOKEN secret): npm then authenticates with this
-      # job's OIDC token.
+      # npm exchanges this job's OIDC token for a short-lived publish token
+      # (https://docs.npmjs.com/trusted-publishers). --provenance is automatic
+      # there but stays, so the intent is explicit.
       - name: Publish with provenance
         if: steps.check.outputs.publish == 'true'
         env:
           TARBALL: ${{ steps.check.outputs.tarball }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish "$TARBALL" --provenance --access public --ignore-scripts

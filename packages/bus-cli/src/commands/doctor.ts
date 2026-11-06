@@ -9,11 +9,14 @@ import {
   codexBinFile,
   globalFile,
   isGlobalDir,
+  namespacesFile,
   nearestConfig,
   readGlobalDirs,
+  scanConfigFiles,
 } from "@oa/bus-daemon";
 import {
   type Ctx,
+  configFileLines,
   probeDaemon,
   say,
   sayErr,
@@ -249,6 +252,15 @@ export async function doctor(ctx: Ctx): Promise<number> {
   const allow = globalFile(ctx.home);
   const list = readGlobalDirs(allow);
   if (list.error) warn(c.globalUnusable(tilde(ctx, allow), list.error));
+  // The cwd's own `.oa-bus.json` files, read as the daemon reads them.
+  const files = scanConfigFiles(ctx.cwd, {
+    globalFile: allow,
+    namespacesFile: namespacesFile(ctx.home),
+  }).filter((f) => f.file !== allow);
+  if (files.length > 0) {
+    n.warnings += files.length;
+    say(ctx, configFileLines(ctx, files));
+  }
   if (asksForGlobal(ctx, list.dirs)) warn(c.globalAsked());
 
   say(ctx, "", c.summary(n.failed, n.warnings, n.passed));

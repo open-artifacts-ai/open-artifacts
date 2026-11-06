@@ -22,6 +22,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Context } from "hono";
+import { type EffectivePlan, planError } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import {
   artifacts,
@@ -38,12 +39,15 @@ import {
   type CanCtx,
   can,
   capsOf,
+  capsReads,
   dataWritersOf,
   decide,
   editorsOnlyRefusal,
   isTeamRole,
   orgCan,
   type PolicyAction,
+  planRefuses,
+  SHARING_ACTIONS,
   TEAM_ROLES,
 } from "./policy.js";
 
@@ -82,6 +86,40 @@ export function withCap<M extends Member>(m: M, cap: CapReason | null): M {
   (m as CappedMember)[CAP] = cap;
   return m;
 }
+
+/**
+ * Hosted billing: the instance's plan as this request's user load read it
+ * (billing/plan.ts), under its own symbol key like CAP. Null or absent off
+ * hosted. The org owner is never capped by it; their team actions read it.
+ */
+export const PLAN: unique symbol = Symbol("oa.plan");
+type PlannedMember = Member & { [PLAN]?: EffectivePlan | null };
+
+/** Marks `m` with the instance's plan and returns it. */
+export function withPlan<M extends Member>(
+  m: M,
+  plan: EffectivePlan | null,
+): M {
+  (m as PlannedMember)[PLAN] = plan;
+  return m;
+}
+
+/** The plan the member was loaded with, or null (self-hosted, or none read). */
+export const planOfMember = (
+  m: Member | null | undefined,
+): EffectivePlan | null => (m ? ((m as PlannedMember)[PLAN] ?? null) : null);
+
+/** The plan lock this member was loaded with is a suspension. */
+export const suspendedMember = (m: Member | null | undefined): boolean =>
+  isSuspended(planOfMember(m));
+
+/**
+ * The plan is locked and billing's status is suspended. Keyed on the status,
+ * not the lock reason: the outage rule (last good read over 7 days old)
+ * reports billing_unreachable and would mask a suspension.
+ */
+export const isSuspended = (plan: EffectivePlan | null | undefined): boolean =>
+  plan?.status === "suspended" && !!plan.lock;
 
 /** The one way to build a Caller: carries the member's cap. */
 export function callerOf(m: Member | null | undefined): Caller {
@@ -296,7 +334,7 @@ export function roleRankSql(
   spaceId: SQL = sql`${artifacts.spaceId}`,
 ): SQL<number> {
   if (c.kind !== "user" || !c.user.id) return sql<number>`0`;
-  return isTeamRole(c.user.role) && capOfCaller(c) == null
+  return isTeamRole(c.user.role) && !capsReads(capOfCaller(c))
     ? sql<number>`max(${spaceRankSql(c.user.id, spaceId)}, ${rankSql(sql`${spaces.allMembersRole}`)})`
     : spaceRankSql(c.user.id, spaceId);
 }
@@ -321,7 +359,7 @@ export function levelSql(
   const share = sql`(case ${shares.role} when 'editor' then 2 when 'viewer' then 1 else 0 end)`;
   // No space role: a share, then team (uncapped members), then a public link.
   const rest = sql`case ${share} when 2 then ${lv("editor")} when 1 then ${lv("viewer")} else case
-    ${member && !capped ? sql`when ${artifacts.visibility} = 'team' then 'viewer'` : sql``}
+    ${member && !capsReads(capOfCaller(c)) ? sql`when ${artifacts.visibility} = 'team' then 'viewer'` : sql``}
     when ${artifacts.visibility} = 'public' then 'viewer'
     end end`;
   // Trash: the personal owner, or a shared space's manager; never capped.
@@ -382,15 +420,43 @@ const VISIBILITIES: ReadonlySet<string> = new Set(VisibilitySchema.options);
 const visibilityOf = (v: string): Visibility =>
   VISIBILITIES.has(v) ? (v as Visibility) : "private";
 
-/** The context `can` needs for one caller and artifact. */
-export function canCtx(c: Caller, a: ArtifactRow): CanCtx {
+/**
+ * The context `can` needs for one caller and artifact. `plan`: the
+ * instance's plan when the caller carries none (anonymous callers; the
+ * runtime gate reads it for their writes).
+ */
+export function canCtx(
+  c: Caller,
+  a: ArtifactRow,
+  plan?: EffectivePlan | null,
+): CanCtx {
+  const p = c.kind === "user" ? planOfMember(c.user) : (plan ?? null);
   return {
     cap: capOfCaller(c),
     personal: true,
     anonymous: c.kind !== "user",
     // The one read of the stored columns (fail closed, #681).
     dataWriters: dataWritersOf(a),
+    plan: p?.lock?.mode ?? null,
+    suspended: isSuspended(p),
   };
+}
+
+/**
+ * The refusal when only the plan lock stops `action`: 403 plan_required or
+ * plan_read_only (a clear code, not 404: the caller can see the artifact).
+ */
+export function planRefusal(
+  c: Caller,
+  level: AccessLevel | null,
+  action: PolicyAction,
+  ctx: CanCtx,
+  plan?: EffectivePlan | null,
+): ApiError | null {
+  if (!level || !planRefuses(action, ctx)) return null;
+  if (!can(level, action, { ...ctx, plan: null })) return null;
+  const p = c.kind === "user" ? planOfMember(c.user) : (plan ?? null);
+  return p?.lock ? planError(p.lock) : null;
 }
 
 /**
@@ -414,13 +480,26 @@ export function dataWriteRefusal(
 }
 
 /**
+ * `c` without the billing plan cap when `action` is sharing (share, unshare,
+ * visibility); `c` itself otherwise. Sharing is free on every plan.
+ */
+export const sharingCaller = (c: Caller, action: PolicyAction): Caller =>
+  c.kind === "user" &&
+  c.cap === "plan" &&
+  SHARING_ACTIONS.has(action) &&
+  // A suspension is not a payment state: only a removal passes under it.
+  (action === "unshare" || !suspendedMember(c.user))
+    ? { ...c, cap: null }
+    : c;
+
+/**
  * The artifact and the caller's level if they may take `action`; otherwise
  * 404 (never 403). The one check for owner-or-manager actions: never compare
  * levels for those, ask `can` (a manager fails requireAccess("owner")).
  */
 export async function authorize(
   env: Env,
-  c: Caller,
+  who: Caller,
   artifactId: string,
   action: PolicyAction,
   opts: {
@@ -430,6 +509,9 @@ export async function authorize(
     ctx?: { firstThumbnail?: boolean };
   } = {},
 ): Promise<{ level: AccessLevel; artifact: ArtifactRow }> {
+  // Sharing is free on every plan: the billing plan cap never lowers the
+  // level for it (guest and restricted caps still do).
+  const c = sharingCaller(who, action);
   let r: Access | null;
   if (opts.prefetch) {
     r = await loadAccess(env, c, artifactId, opts);
@@ -448,9 +530,10 @@ export async function authorize(
   };
   if (!can(r.level, action, ctx)) {
     const e =
-      action === "data.write"
+      planRefusal(c, r.level, action, ctx) ??
+      (action === "data.write"
         ? dataWriteRefusal(r.level, ctx, r.artifact)
-        : null;
+        : null);
     throw e ?? new ApiError("not_found", "Not found");
   }
   return r;
@@ -519,7 +602,7 @@ export function listFilterSql(
   // Capped callers see team artifacts only through a share or a space role
   // (decide()).
   const team =
-    TEAM_ROLES.includes(user.role) && !capped
+    TEAM_ROLES.includes(user.role) && !capsReads(capOfCaller(c))
       ? inArray(artifacts.visibility, ["team", "public"])
       : undefined;
   // Two branches, so each plans on artifacts_space_live_idx.
@@ -530,7 +613,7 @@ export function listFilterSql(
     // Every shared space, when the caller has an Every-space mapping or the
     // space has an allMembersRole: one walk over spaces.
     sql`${artifacts.spaceId} in (select sp.id from ${spaces} sp where sp.kind = 'shared'
-      and (${TEAM_ROLES.includes(user.role) && !capped ? sql`sp.all_members_role is not null or ` : sql``}${everyRankSql(user.id)} > 0))`,
+      and (${TEAM_ROLES.includes(user.role) && !capsReads(capOfCaller(c)) ? sql`sp.all_members_role is not null or ` : sql``}${everyRankSql(user.id)} > 0))`,
   ];
   const parts =
     scope === "mine"

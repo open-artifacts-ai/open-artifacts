@@ -133,8 +133,9 @@ const hostedEnv = (o: ContractSetup["hosted"]): Env => {
     ENVIRONMENT: "production",
     PLAN: "paid",
     HOSTED: "1",
-    // The mock's default tier (reported only: FEATURES below still rules).
-    TIER: "business",
+    // The tier provisioning set these FEATURES from (Team freezes sync):
+    // with no BILLING gate, features follow it (TIER_FEATURES).
+    TIER: h.directory === "frozen" ? "team" : "business",
     INSTALL_ID: "inst-a",
     OWNER_EMAIL: U.ada.email,
     FEATURES: [

@@ -3,3 +3,12 @@ packages:
   - "packages/*"
   - "scripts/*"
   - "tests/*"
+# Dependency install scripts stay off, as under pnpm 10. pnpm 11 replaces the
+# implicit default with an explicit map, and fails an install on any unlisted
+# package that has a build script (strictDepBuilds).
+allowBuilds:
+  "@swc/core": false
+  core-js-pure: false
+  esbuild: false
+  msw: false
+  workerd: false

@@ -1,4 +1,4 @@
-import type { ErrorCode } from "@oa/shared";
+import type { ErrorCode, Me } from "@oa/shared";
 import { heicCopy, KINDS } from "../upload/openable";
 import { ApiClientError } from "./client";
 
@@ -30,8 +30,73 @@ const COPY: Partial<Record<ErrorCode, string>> = {
     "For your security, sign in with Google again to manage the directory.",
 };
 
-/** Asking a space manager can't help a guest or restricted member. */
-const CAPPED_FORBIDDEN = "Your account can only view, so you can't publish.";
+/** Billing's wording; `owner` swaps "ask your instance owner" for the action. */
+const ASK = "Ask your instance owner";
+const TEAM_FEATURE = "Spaces are a team feature";
+const PLAN_LIMIT_NOUN: Record<string, string> = {
+  storage_bytes: "storage",
+  data_docs: "live-data documents per artifact",
+  data_daily_writes: "live-data writes per day",
+};
+
+const planCopy = (
+  e: ApiClientError,
+  owner: boolean,
+  trialNeverRan: boolean,
+): string | undefined => {
+  const d = e.details as { reason?: unknown; limit?: unknown; max?: unknown };
+  switch (e.code) {
+    case "plan_required":
+      // Sharing is free on every plan: plan_required is spaces and invites.
+      if (owner && trialNeverRan)
+        return `${TEAM_FEATURE}. Invite someone to start your free 14-day trial, or choose a plan.`;
+      return owner
+        ? `${TEAM_FEATURE}. Choose a plan to continue.`
+        : `${TEAM_FEATURE}. This instance is on Free. Ask an owner to invite someone or choose a plan.`;
+    case "plan_read_only":
+      switch (d?.reason) {
+        case "trial_ended":
+          return owner
+            ? "Your trial ended, so this instance is read-only until you pick a plan."
+            : "Your trial ended, so this instance is read-only until the owner picks a plan.";
+        case "lapsed":
+        case "payment_failed":
+          return owner
+            ? "This instance is read-only until billing is sorted out. Update billing to fix it."
+            : `This instance is read-only until billing is sorted out. ${ASK}.`;
+        case "billing_unreachable":
+          return "Team features are read-only while we restore billing. Reading and sharing still work. Nothing has been deleted.";
+        case "suspended":
+          return owner
+            ? "This instance is suspended. Email support."
+            : `This instance is suspended. ${ASK}.`;
+        default:
+          return owner
+            ? "This instance is read-only right now."
+            : `This instance is read-only right now. ${ASK}.`;
+      }
+    case "plan_limit": {
+      const raise = typeof d?.max === "number" && typeof d?.limit === "string";
+      const what = raise
+        ? `The free plan allows up to ${d.max} ${PLAN_LIMIT_NOUN[d.limit as string] ?? d.limit}.`
+        : "The free plan's limit is reached.";
+      return owner
+        ? `${what} Choose a paid plan${raise ? " to raise it" : ""}.`
+        : `${what} ${ASK} about a paid plan.`;
+    }
+    case "billing_unavailable":
+      return "Billing isn't reachable right now. Try again in a minute.";
+  }
+};
+
+/** What a locked admin reads by disabled write controls. */
+export const READ_ONLY_NOTICE = `This instance is read-only right now. ${ASK}.`;
+const PLAN_FORBIDDEN =
+  "This instance is read-only right now, so you can't publish.";
+/** What a guest or restricted member is told when a write is refused; asking a space manager can't help. */
+export const cappedCopy = (verb: string) =>
+  `Your account can only view, so you can't ${verb}.`;
+const CAPPED_FORBIDDEN = cappedCopy("publish");
 
 export const DIRECTORY_SETTINGS = "/settings/directory";
 
@@ -39,8 +104,37 @@ export const DIRECTORY_SETTINGS = "/settings/directory";
 export type ErrorContext = {
   /** Me.auth.cap is set (a guest or restricted member). */
   capped?: boolean;
+  /** Me.auth.cap, when capped: "plan" is a locked instance, not a view-only account. */
+  cap?: NonNullable<Me["auth"]>["cap"];
+  /** The caller is the org owner or an admin (uncapped): billing copy says what they can do. */
+  owner?: boolean;
+  /** A free instance whose trial never ran (trialEndsAt null): plan_required offers the trial. */
+  trialNeverRan?: boolean;
   /** The error shows on the Directory page itself. */
   onDirectoryPage?: boolean;
+};
+
+/**
+ * The billing part of an ErrorContext from Me: owners and admins (uncapped)
+ * can open Plan and billing, so they read the owner wording; trialNeverRan
+ * only means anything to them (others see trialEndsAt as null).
+ */
+export const billingContext = (
+  me: Me | null | undefined,
+): Pick<ErrorContext, "owner" | "trialNeverRan"> => {
+  const owner =
+    (me?.user.role === "owner" || me?.user.role === "admin") &&
+    me.auth?.cap == null;
+  const billing = me?.instance?.billing;
+  return {
+    owner,
+    ...(owner && billing
+      ? {
+          trialNeverRan:
+            billing.tier === "free" && billing.trialEndsAt === null,
+        }
+      : {}),
+  };
 };
 
 /**
@@ -54,7 +148,10 @@ export const errorCopy = (
   ctx?: ErrorContext,
 ): string => {
   if (!(e instanceof ApiClientError)) return fallback;
-  if (e.code === "space_forbidden" && ctx?.capped) return CAPPED_FORBIDDEN;
+  if (e.code === "space_forbidden" && ctx?.capped)
+    return ctx.cap === "plan" ? PLAN_FORBIDDEN : CAPPED_FORBIDDEN;
+  const plan = planCopy(e, ctx?.owner === true, ctx?.trialNeverRan === true);
+  if (plan) return plan;
   const d = e.details as { reason?: unknown; path?: unknown } | undefined;
   if (e.code === "unsupported_format" && d?.reason === "heic")
     return heicCopy(

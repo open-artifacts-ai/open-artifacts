@@ -347,7 +347,7 @@ export function copy(style: Style) {
     queuedFootnote: () => [
       p(
         "muted",
-        "Mail to a queued agent waits up to 1 hour for its machine to reconnect;",
+        "Mail to a queued agent waits up to 7 days for its machine to reconnect;",
       ),
       p("muted", "then the sender is told."),
     ],
@@ -557,6 +557,24 @@ export function copy(style: Style) {
       next(p("muted", clip(`It ${why}.`, 3))),
       next(`Remove it, then run ${BUS_CMD} global add <dir> again.`),
     ],
+    /** A refused or noted config file (#1527): the reason, then the exact fix. Paths arrive already shortened. */
+    configFile: (f: {
+      file: string;
+      state: "refused" | "noted" | "pending";
+      reason: string;
+      fix: string;
+      restart?: boolean;
+    }) => [
+      warn(
+        f.state === "refused"
+          ? `${f.file} ${f.reason}, so it is ignored.`
+          : f.state === "pending"
+            ? `${f.file} ${f.reason}, so its namespace is ignored.`
+            : `${f.file} ${f.reason}; it is still used.`,
+      ),
+      next(`Fix: ${f.fix}`),
+      ...(f.restart ? [next("Restart the session to pick up a fix.")] : []),
+    ],
     globalAsked: () => [
       warn("This repo's .oa-bus.json asks for global, which is ignored here."),
       next(`Allow it with ${BUS_CMD} global add .`),
@@ -705,6 +723,64 @@ export function copy(style: Style) {
     globalList: (dirs: string[]) => [
       `${dirs.length} global ${dirs.length === 1 ? "directory" : "directories"}`,
       ...dirs.map((d) => `  ${clip(d, 2)}`),
+    ],
+
+    // 12. namespace approvals (#1525)
+    nsUnusable: (path: string, why: string) => [
+      warn(`${clip(path, 45)} can't be used, so no namespace is approved.`),
+      next(p("muted", clip(`It ${why}.`, 3))),
+      next(`Remove it, then run ${BUS_CMD} namespace approve <dir> again.`),
+    ],
+    nsNoFile: (dir: string) => [
+      fail(`${clip(dir, 40)} has no .oa-bus.json.`),
+      next("Check the path: approval is for the namespace that file sets."),
+    ],
+    nsFileUnusable: (file: string, why: string) => [
+      fail(`${clip(file, 40)} can't be read: it ${why}.`),
+    ],
+    nsNoNamespace: (file: string) =>
+      warn(`${clip(file, 40)} sets no namespace. Nothing to approve.`),
+    nsNotDir: (dir: string) => [
+      fail(`${clip(dir, 23)} is not a directory.`),
+      next(`Check the path, then run ${BUS_CMD} namespace approve again.`),
+    ],
+    nsAsk: (dir: string, namespace: string) => [
+      `${dir} sets its namespace to ${namespace}.`,
+      "Agents started there join it and can message everyone in it.",
+    ],
+    nsPrompt: () => "Approve it? [y/N] ",
+    nsNeedTty: (command: string) => [
+      fail("Approving a namespace needs your user."),
+      next(`Ask them to run this in a terminal: ${command}`),
+    ],
+    nsDeclined: () => warn("Not approved. Nothing changed."),
+    nsAlready: (dir: string, namespace: string) =>
+      done(`${clip(dir, 20)} is already approved for ${clip(namespace, 40)}.`),
+    nsApproved: (dir: string, namespace: string) => [
+      done(
+        `${clip(dir, 20)} may now use the namespace ${clip(namespace, 40)}.`,
+      ),
+      p(
+        "muted",
+        "   Agents already running there keep their namespace until they restart.",
+      ),
+    ],
+    nsRevoked: (dir: string) => [
+      done(`${clip(dir, 24)} is no longer approved.`),
+      p(
+        "muted",
+        "   Agents already running there keep their namespace until they restart.",
+      ),
+    ],
+    nsNotListed: (dir: string) =>
+      warn(`${clip(dir, 36)} was not approved. Nothing changed.`),
+    nsNone: () => [
+      "No approved namespaces.",
+      p("muted", `Approve one with ${BUS_CMD} namespace approve <dir>.`),
+    ],
+    nsList: (rows: { dir: string; namespace: string }[]) => [
+      `${rows.length} approved ${rows.length === 1 ? "namespace" : "namespaces"}`,
+      ...rows.map((r) => `  ${clip(r.dir, 2)}  ${p("muted", r.namespace)}`),
     ],
 
     // logs, mcp (DRAFT)

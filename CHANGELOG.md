@@ -1,5 +1,101 @@
 # Changelog
 
+## [0.129.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.128.0...v0.129.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** link two namespaces on the hub ([#1567](https://github.com/open-artifacts-ai/open-artifacts/issues/1567), PR 1 of 3) ([#1572](https://github.com/open-artifacts-ai/open-artifacts/issues/1572)) ([e6dad03](https://github.com/open-artifacts-ai/open-artifacts/commit/e6dad03e879496a33319567ce41570bd04f3152c))
+
+## [0.128.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.127.0...v0.128.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **bus:** A folder that set its namespace in .oa-bus.json joins its derived namespace until you run: oa-bus namespace approve <dir>
+
+### Bug Fixes
+
+* **bus:** a .oa-bus.json namespace takes effect only after the user approves it ([#1525](https://github.com/open-artifacts-ai/open-artifacts/issues/1525)) ([#1569](https://github.com/open-artifacts-ai/open-artifacts/issues/1569)) ([bb2ac29](https://github.com/open-artifacts-ai/open-artifacts/commit/bb2ac295bf42fb24a78932f1db059c4641debd2f))
+* **comments:** mock permissions follow the server; two-line author line; older-version badge ([#1529](https://github.com/open-artifacts-ai/open-artifacts/issues/1529)) ([#1549](https://github.com/open-artifacts-ai/open-artifacts/issues/1549)) ([d31d5af](https://github.com/open-artifacts-ai/open-artifacts/commit/d31d5af1eabadfcb4f61f458747fd08419325741))
+
+## [0.127.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.126.0...v0.127.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** install the skill beside the bus tools ([#1456](https://github.com/open-artifacts-ai/open-artifacts/issues/1456)) ([#1551](https://github.com/open-artifacts-ai/open-artifacts/issues/1551)) ([ffae385](https://github.com/open-artifacts-ai/open-artifacts/commit/ffae38543d764388fb846a25d1683ad8668b497b))
+
+
+### Bug Fixes
+
+* **dashboard:** plan copy before the trial, admin wording, suspended ([#1518](https://github.com/open-artifacts-ai/open-artifacts/issues/1518)) ([#1560](https://github.com/open-artifacts-ai/open-artifacts/issues/1560)) ([c257ffd](https://github.com/open-artifacts-ai/open-artifacts/commit/c257ffda657935a5cf3cf8d8bb37d23aabaafd43))
+* **directory:** status reports the mode the DO follows ([#860](https://github.com/open-artifacts-ai/open-artifacts/issues/860)) ([#1562](https://github.com/open-artifacts-ai/open-artifacts/issues/1562)) ([8f6525e](https://github.com/open-artifacts-ai/open-artifacts/commit/8f6525efe3bdeec9604768b4af95658d3ad46880))
+
+## [0.126.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.125.0...v0.126.0) (2026-11-06)
+
+
+### Features
+
+* **ci:** the deploy refuses a token that is not the env's pinned deploy token ([#1545](https://github.com/open-artifacts-ai/open-artifacts/issues/1545)) ([7226d35](https://github.com/open-artifacts-ai/open-artifacts/commit/7226d3573b3c3e767203ffff9c3e9dfc6ebcdfa8))
+
+## [0.125.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.124.0...v0.125.0) (2026-11-05)
+
+
+### Features
+
+* **comments:** runtime view mode for viewers who can't comment; Design polish ([#1491](https://github.com/open-artifacts-ai/open-artifacts/issues/1491), [#1529](https://github.com/open-artifacts-ai/open-artifacts/issues/1529)) ([#1531](https://github.com/open-artifacts-ai/open-artifacts/issues/1531)) ([aa41cbe](https://github.com/open-artifacts-ai/open-artifacts/commit/aa41cbe4cadc2c804a12ec5cc062955b33df7b0e))
+* **skill:** publish a file in one call, and with this instance's tools ([#1540](https://github.com/open-artifacts-ai/open-artifacts/issues/1540)) ([#1542](https://github.com/open-artifacts-ai/open-artifacts/issues/1542)) ([f5e7a70](https://github.com/open-artifacts-ai/open-artifacts/commit/f5e7a70631295e3fb593374a8e809e0aaf732f79))
+
+
+### Bug Fixes
+
+* **bus:** show refused config files with their fix; accept a group-writable file you own ([#1527](https://github.com/open-artifacts-ai/open-artifacts/issues/1527)) ([#1530](https://github.com/open-artifacts-ai/open-artifacts/issues/1530)) ([bf0a895](https://github.com/open-artifacts-ai/open-artifacts/commit/bf0a895034047c750889550359763cbfd0beedaf))
+* **ci:** hosted-publish resolves a release from a failed release-please run ([#1524](https://github.com/open-artifacts-ai/open-artifacts/issues/1524)) ([fdca013](https://github.com/open-artifacts-ai/open-artifacts/commit/fdca0139a3d4fdafd5df979d1cbac2f15ffb2f4d))
+
+## [0.124.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.123.0...v0.124.0) (2026-11-05)
+
+
+### Features
+
+* **skill:** render /skill.md for one harness ([#1456](https://github.com/open-artifacts-ai/open-artifacts/issues/1456)) ([#1481](https://github.com/open-artifacts-ai/open-artifacts/issues/1481)) ([938b49c](https://github.com/open-artifacts-ai/open-artifacts/commit/938b49c9c193383998a082b72013c1b03a1025e7))
+
+## [0.123.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.122.0...v0.123.0) (2026-11-05)
+
+
+### Features
+
+* **bus:** lasting mailboxes, hub retention core ([#1295](https://github.com/open-artifacts-ai/open-artifacts/issues/1295)) ([#1495](https://github.com/open-artifacts-ai/open-artifacts/issues/1495)) ([b492ed1](https://github.com/open-artifacts-ai/open-artifacts/commit/b492ed1c442bb9a7c4d019b8d1e9dd19650f7bd5))
+
+
+### Bug Fixes
+
+* **ci:** release gate requires the deploy's jobs, not the whole release-please run ([#1519](https://github.com/open-artifacts-ai/open-artifacts/issues/1519)) ([ff4453d](https://github.com/open-artifacts-ai/open-artifacts/commit/ff4453d553636df2a595ae36ee18c1f4e06e6c4e))
+
+## [0.122.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.121.1...v0.122.0) (2026-11-05)
+
+
+### Features
+
+* **billing:** hosted plan enforcement, creator count and billing routes (server) ([#1493](https://github.com/open-artifacts-ai/open-artifacts/issues/1493)) ([a172ddd](https://github.com/open-artifacts-ai/open-artifacts/commit/a172ddd6920ca3abbb8d14368772f19c36822450))
+* **dashboard:** comments panel in the viewer shell ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#1497](https://github.com/open-artifacts-ai/open-artifacts/issues/1497)) ([9bee74e](https://github.com/open-artifacts-ai/open-artifacts/commit/9bee74e67ec31ab8252be01edaeb252207541235))
+* **provision:** release key rotation support ([#1056](https://github.com/open-artifacts-ai/open-artifacts/issues/1056)) ([#1483](https://github.com/open-artifacts-ai/open-artifacts/issues/1483)) ([d7d1dcc](https://github.com/open-artifacts-ai/open-artifacts/commit/d7d1dcca9002eabcb29ee5377034babd0fe6d277))
+* **scheduler:** prod's fleet on: canary set, smoke required ([#1454](https://github.com/open-artifacts-ai/open-artifacts/issues/1454)) ([6bfcf04](https://github.com/open-artifacts-ai/open-artifacts/commit/6bfcf047f8f675325829d6a1c7932e3abd51098d))
+* **shared:** comments contract: schemas, routes, errors, events frame, mocks ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#1489](https://github.com/open-artifacts-ai/open-artifacts/issues/1489)) ([e94b147](https://github.com/open-artifacts-ai/open-artifacts/commit/e94b1476454b79dfb129619f4720928f457f3cb3))
+* viewer presence contract and roster builder ([#539](https://github.com/open-artifacts-ai/open-artifacts/issues/539) Tasks 1-2) ([#1510](https://github.com/open-artifacts-ai/open-artifacts/issues/1510)) ([107e3d7](https://github.com/open-artifacts-ai/open-artifacts/commit/107e3d7c41e8c74e62d7cb85f1f227b6600abd3e))
+
+
+### Bug Fixes
+
+* **bus:** carry OA_BUS_HOME into harness entries for a non-default home ([#1443](https://github.com/open-artifacts-ai/open-artifacts/issues/1443)) ([#1475](https://github.com/open-artifacts-ai/open-artifacts/issues/1475)) ([971b42d](https://github.com/open-artifacts-ai/open-artifacts/commit/971b42d9145d6a8b42221df68cb4ed57353ad9c3))
+* **bus:** prefix Pi tool names; Claude's MCP server offers nothing elsewhere ([#1448](https://github.com/open-artifacts-ai/open-artifacts/issues/1448)) ([#1464](https://github.com/open-artifacts-ai/open-artifacts/issues/1464)) ([518e27f](https://github.com/open-artifacts-ai/open-artifacts/commit/518e27f0da8a258d1294b79883841364fa62f3c0))
+* **bus:** revoking a machine frees the names its agents held ([#1448](https://github.com/open-artifacts-ai/open-artifacts/issues/1448)) ([#1450](https://github.com/open-artifacts-ai/open-artifacts/issues/1450)) ([7d1922b](https://github.com/open-artifacts-ai/open-artifacts/commit/7d1922bef5bda0e9d0e6827441b692fec6f8fd6d))
+* **directory:** audit a blocked sync revive and document the way back ([#1145](https://github.com/open-artifacts-ai/open-artifacts/issues/1145)) ([#1463](https://github.com/open-artifacts-ai/open-artifacts/issues/1463)) ([fd22a67](https://github.com/open-artifacts-ai/open-artifacts/commit/fd22a67d297b5de2a136e9549960f8374c1dfb48))
+* **provapi:** prod_dirty clears after a later done upgrade or rollback ([#1506](https://github.com/open-artifacts-ai/open-artifacts/issues/1506)) ([c0ac03e](https://github.com/open-artifacts-ai/open-artifacts/commit/c0ac03eb529d78e328c4cb8e2e3f206dece7f2e3))
+* **provision:** a retry re-takes its lease; stale attempts fenced before Cloudflare writes ([#1326](https://github.com/open-artifacts-ai/open-artifacts/issues/1326)) ([#1498](https://github.com/open-artifacts-ai/open-artifacts/issues/1498)) ([38cbb99](https://github.com/open-artifacts-ai/open-artifacts/commit/38cbb99d784c43c3437fb5ea0c1f9cc0620052cd))
+* **server:** publicName catches a full-width @ ([#1505](https://github.com/open-artifacts-ai/open-artifacts/issues/1505)) ([#1508](https://github.com/open-artifacts-ai/open-artifacts/issues/1508)) ([d12d929](https://github.com/open-artifacts-ai/open-artifacts/commit/d12d9290249376b9add72990bd645a297332053b))
+* **users:** anonymous readers never get a name containing @ ([#1107](https://github.com/open-artifacts-ai/open-artifacts/issues/1107)) ([#1460](https://github.com/open-artifacts-ai/open-artifacts/issues/1460)) ([3d00024](https://github.com/open-artifacts-ai/open-artifacts/commit/3d00024baef5248d8f85f24d8493331bf902b23c))
+
 ## [0.121.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.121.0...v0.121.1) (2026-11-05)
 
 

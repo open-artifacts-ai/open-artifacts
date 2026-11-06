@@ -86,6 +86,16 @@ async function offline(d: Daemon) {
   await new Promise((r) => setTimeout(r, 50));
 }
 
+/** Lifts a machine's frame budget so a flood of sends is not rate limited. */
+const liftBudget = async (machineId: string) => {
+  // A frozen clock keeps the refill from clamping the tokens back to the burst.
+  await setClock(Date.now() + 1000);
+  await inHub((i, st) => {
+    for (const ws of st.getWebSockets(machineId))
+      BusHub.setFrameTokensForTests(i, ws, 1_000_000);
+  });
+};
+
 describe("adv B14", () => {
   it("P1 query plans: find, cap count, cap delete and sweep are indexed", async () => {
     const plans = await inOwnerHub((s) => {
@@ -196,6 +206,7 @@ describe("adv B14", () => {
       await agent(t, `r${i}`, r, n);
     }
     await offline(t);
+    await liftBudget(sm.id);
     // Original goes to R0 and stays pending (R0 offline).
     const first = (await reply(
       s,
@@ -266,7 +277,7 @@ describe("adv B14", () => {
     await waitFor(s, "receipt_update");
     const ok = (await reply(
       s,
-      send("over", "sref", rcvs[4] as string, "x"),
+      send("over", "sref", rcvs[0] as string, "x"),
     )) as Receipt;
     expect(ok.state).toBe("pending");
     expect((await counts()).keys).toBe(SEND_KEYS_PER_AGENT);
@@ -381,7 +392,7 @@ describe("adv B14", () => {
     t.close();
   });
 
-  it("P8 unswept stale key (> 2 h, alarm not run) while the receipt is still pending: one deliver", async () => {
+  it("P8 key older than 2 h while the receipt is still pending (#1295): still deduped, one deliver", async () => {
     const sm = await machine("S");
     const tm = await machine("T");
     const s = await ready(sm.token);
@@ -396,7 +407,7 @@ describe("adv B14", () => {
     await setClock(Date.now() + 2 * LIMITS.mailTtlSec * 1000 + 5000);
     const r2 = (await reply(s, send("k1", "sref", rcv, "stale"))) as Receipt;
     console.log("P8", r1.msg_id, r2.msg_id, r2.state);
-    expect(r2.msg_id).not.toBe(r1.msg_id);
+    expect(r2.msg_id).toBe(r1.msg_id);
     t = await ready(tm.token);
     t.send({ v: 1, id: "se", type: "sessions", open: ["rref"], closed: [] });
     await agent(t, "rref", rcv, n);
@@ -409,7 +420,7 @@ describe("adv B14", () => {
   });
 
   it("P9 hub-wide cap: ref churn cannot multiply the per-agent cap past SEND_KEYS_TOTAL", async () => {
-    expect(SEND_KEYS_TOTAL).toBe(20_000);
+    expect(SEND_KEYS_TOTAL).toBe(200_000);
     const sm = await machine("S");
     const tm = await machine("T");
     const s = await ready(sm.token);
@@ -507,7 +518,8 @@ describe("adv B14", () => {
     const acker = uniq("Acker");
     await agent(a, "acker", acker, n);
     await offline(t);
-    // 200 old keys, all pending (the recipients are offline).
+    await liftBudget(sm.id);
+    // SEND_KEYS_PER_AGENT old keys, all pending (the recipients are offline).
     for (let i = 0; i < SEND_KEYS_PER_AGENT; i++) {
       const r = (await reply(
         s,
@@ -639,6 +651,15 @@ describe("adv B14", () => {
 
     it("TTL expiry", async () => {
       const { r, told, close } = await pair(true);
+      // The key of pending mail is never swept by age, and a final key only
+      // past 2 h: pull the expiry in so the TTL step (not the sweep) runs.
+      await inOwnerHub((st) =>
+        st.storage.sql.exec(
+          "update receipts set expires_at = ? where id = ?",
+          Date.now() + 500,
+          r.msg_id,
+        ),
+      );
       await setClock(Date.now() + LIMITS.mailTtlSec * 1000 + 1000);
       await runAlarm();
       await told("expired");
@@ -657,7 +678,7 @@ describe("adv B14", () => {
       close();
     });
 
-    it("close (the recipient's session ends)", async () => {
+    it("close (the recipient's session ends) keeps the mail and its key pending (#1295); the TTL then finalizes it", async () => {
       const { t, r, told, close } = await pair();
       await waitFor(t, "deliver");
       t.send({
@@ -666,6 +687,17 @@ describe("adv B14", () => {
         type: "agent_down",
         agent_ref: "rref",
       } as ClientFrame);
+      await barrier(t);
+      expect(await keyFinal(r.msg_id)).toBe(0);
+      await inOwnerHub((st) =>
+        st.storage.sql.exec(
+          "update receipts set expires_at = ? where id = ?",
+          Date.now() + 500,
+          r.msg_id,
+        ),
+      );
+      await setClock(Date.now() + LIMITS.mailTtlSec * 1000 + 1000);
+      await runAlarm();
       await told("expired");
       expect(await keyFinal(r.msg_id)).toBe(1);
       close();

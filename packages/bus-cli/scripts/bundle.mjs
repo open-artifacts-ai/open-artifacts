@@ -45,6 +45,11 @@ await build({
       "const require = __obCreateRequire(import.meta.url);",
     ].join("\n"),
   },
+  // The shared leaf is bundled from source: a clean checkout has no
+  // packages/shared/dist, and the release job only runs `pnpm install`.
+  alias: {
+    "@oa/shared/harness-skills": at("../shared/src/harness-skills.ts"),
+  },
   define: { __OA_BUS_VERSION__: JSON.stringify(version) },
   // ws's optional native add-ons: required in a try, absent is fine.
   external: ["bufferutil", "utf-8-validate"],

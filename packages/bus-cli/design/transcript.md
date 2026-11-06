@@ -45,7 +45,7 @@ hub answers, the line is erased and replaced by:
   oa-team-e0          OpenCode     leo-macbook-pro       [[success]]● live[[/success]]
   oa-team-frontend    Pi           leo-linux-box         [[success]]● live[[/success]]
   oa-team-platform    Claude Code  leo-mac-mini          [[warning]]○ queued[[/warning]]
-[[muted]]Mail to a queued agent waits up to 1 hour for its machine to reconnect;[[/muted]]
+[[muted]]Mail to a queued agent waits up to 7 days for its machine to reconnect;[[/muted]]
 [[muted]]then the sender is told.[[/muted]]
 
 [[muted]]Check this machine anytime with npx @open-artifacts/bus status.[[/muted]]
@@ -337,10 +337,10 @@ Two honesty rules from the spec bind them:
    `other_namespace`, `revoked`, `ambiguous`.
 
 ```
-[[warning]]○[[/warning]]  Queued for oa-team-e0. Not delivered yet; expires in 1 hour.
+[[warning]]○[[/warning]]  Queued for oa-team-e0. Not delivered yet; expires within 7 days.
 [[success]]✓[[/success]]  Delivered to oa-team-e0.
 [[danger]]×[[/danger]]  Expired: your message to oa-team-e0,
-   "Can you regenerate the API reference pag…", was not taken within 1 hour.
+   "Can you regenerate the API reference pag…", was not taken within 7 days.
 [[danger]]×[[/danger]]  Expired: your message to oa-team-e0,
    "Can you regenerate the API reference pag…",
    was not delivered because oa-team-e0 closed first.
@@ -371,7 +371,7 @@ global agent sends to a name that exists in two or more namespaces:
    Send it again once the session is open, or message another agent.
 [[danger]]×[[/danger]]  Refused (inbox_full): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
-   50 messages are already waiting.
+   200 messages are already waiting.
    Send again once some are delivered or expire.
 [[danger]]×[[/danger]]  Refused (too_large): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
@@ -384,7 +384,7 @@ global agent sends to a name that exists in two or more namespaces:
 [[danger]]×[[/danger]]  Refused (revoked): your message to oa-team-e0,
    "Can you regenerate the API reference pag…", was not delivered.
    That agent's machine was revoked.
-   Run list_agents to see who is in this namespace.
+   Run the oa_bus list_agents tool to find who is live.
 [[danger]]×[[/danger]]  Refused (revoked): your message to oa-product,
    "Can you regenerate the API reference pag…", was not delivered.
    oa-product moved; try oa-product-2.
@@ -446,7 +446,7 @@ Machine  leo-macbook-pro
   oa-team-backend     Claude Code  leo-macbook-pro       [[success]]● live[[/success]]
   oa-team-design      Claude Code  leo-macbook-pro       [[success]]● live[[/success]]
   oa-team-platform    Claude Code  leo-mac-mini          [[warning]]○ queued[[/warning]]
-[[muted]]Mail to a queued agent waits up to 1 hour for its machine to reconnect;[[/muted]]
+[[muted]]Mail to a queued agent waits up to 7 days for its machine to reconnect;[[/muted]]
 [[muted]]then the sender is told.[[/muted]]
 
 1 agent in namespace [[accent]]github.com/leourbina/notes[[/accent]]  [[muted]]1 live[[/muted]]

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { FORMATS } from "./formats.js";
+import { PlanViewSchema } from "./hosted/billing.js";
 import {
   ArtifactCanSchema,
   FeaturesSchema,
@@ -19,6 +20,11 @@ import { isId } from "./ids.js";
 import { INLINE_TOO_LARGE_MESSAGE, LIMITS } from "./limits.js";
 import { findCaseCollision, normalizePath } from "./paths.js";
 import { utf8Exceeds } from "./utf8.js";
+import {
+  PRESENCE_ACTIVITY_MAX,
+  PresenceFrameSchema,
+  PresenceKeySchema,
+} from "./viewer-presence.js";
 
 export const VisibilitySchema = z.enum(["private", "team", "public"]);
 export type Visibility = z.infer<typeof VisibilitySchema>;
@@ -266,7 +272,7 @@ export const ArtifactSummarySchema = z.object({
   space: SpaceRefSchema.optional(),
   /** Hosted M1: what the caller may do (artifactCan). Optional: absent unless spaces are on. */
   can: ArtifactCanSchema.optional(),
-  /** #682: the Comments setting; absent reads as on (the default). */
+  /** #682: the Comments setting (on by default). Absent: the server has no comments (older than #1496), so the shell shows none. */
   comments: z.boolean().optional(),
 });
 export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;
@@ -617,6 +623,11 @@ export const MeSchema = z.object({
     signIn: InstanceSignInSchema.optional(),
     features: FeaturesSchema.optional(),
     directory: InstanceDirectorySchema.optional(),
+    /**
+     * Self-serve billing: the billing plan (hosted only; absent self-hosted
+     * and on older servers). Not `plan`: that key is the Workers plan above.
+     */
+    billing: PlanViewSchema.optional(),
   }),
   /** The name the user chose (PATCH R.me), or null. */
   displayName: z.string().nullable(),
@@ -778,7 +789,7 @@ export const BusMachinesSchema = z.strictObject({
 });
 export type BusMachines = z.infer<typeof BusMachinesSchema>;
 
-export const BUS_AGENT_STATES = ["live", "queued"] as const;
+export const BUS_AGENT_STATES = ["live", "queued", "away"] as const;
 export const BUS_STATUS_STATES = [
   "working",
   "idle",
@@ -787,11 +798,12 @@ export const BUS_STATUS_STATES = [
 ] as const;
 
 /**
- * One open agent on the caller's bus (#1291). `state`: live while its
- * machine is connected, queued otherwise (mail waits up to 1 h). `running`
- * is true for every listed agent (closed sessions are omitted); it is the
- * field the share-notice picks match on. `status*`: self-reported by the
- * agent ("agent says"), absent when none.
+ * One agent on the caller's bus (#1291). `state`: live while its machine is
+ * connected, queued otherwise, away (#1295) once its session closed: its
+ * mailbox and name are kept for 7 days. `running` is true for open agents and
+ * false for away ones; it is the field the share-notice picks match on.
+ * `since`: when an away agent closed, null for any other. `status*`:
+ * self-reported by the agent ("agent says"), absent when none.
  */
 export const BusAgentSchema = z.strictObject({
   id: z.string(),
@@ -803,6 +815,7 @@ export const BusAgentSchema = z.strictObject({
   global: z.boolean(),
   state: z.enum(BUS_AGENT_STATES),
   running: z.boolean(),
+  since: z.string().nullable(),
   updatedAt: z.string(),
   status: z.enum(BUS_STATUS_STATES).optional(),
   statusLabel: z.string().optional(),
@@ -1050,9 +1063,12 @@ export const ArtifactEventBySchema = z.object({
 export type ArtifactEventBy = z.infer<typeof ArtifactEventBySchema>;
 
 /**
- * Frames on the R.events socket (server to client only; any client message
- * closes it with 1008):
- * - hello: on connect, the artifact's current version.
+ * Frames on the R.events socket (server to client; the only client message
+ * allowed is "ping", answered "pong"; any other closes it with 1008):
+ * - hello: on connect, the artifact's current version, and `you`, the
+ *   caller's own presence key.
+ * - presence: who has the artifact open (PresenceFrameSchema), sent on join,
+ *   leave and agent expiry, coalesced.
  * - version: a publish or restore created version `version`; `restoredFrom`
  *   (restores only) is the version it copies.
  * - gone: access changed; the socket then closes with EVENTS_GONE_CLOSE
@@ -1064,7 +1080,11 @@ export type ArtifactEventBy = z.infer<typeof ArtifactEventBySchema>;
  * Sockets also close with 4408 near the signed-URL TTL: reconnect.
  */
 export const ArtifactEventSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("hello"), version: z.number().int().min(1) }),
+  z.object({
+    type: z.literal("hello"),
+    version: z.number().int().min(1),
+    you: PresenceKeySchema.optional(),
+  }),
   z.object({
     type: z.literal("version"),
     version: z.number().int().min(1),
@@ -1079,6 +1099,7 @@ export const ArtifactEventSchema = z.discriminatedUnion("type", [
     reason: z.enum(["deleted", "changed"]),
     retryAfterMs: z.number().int().min(0).optional(),
   }),
+  PresenceFrameSchema,
 ]);
 export type ArtifactEvent = z.infer<typeof ArtifactEventSchema>;
 /** The close code that follows a `gone` frame on R.events. */
@@ -1141,6 +1162,7 @@ export const GetArtifactInputSchema = z.strictObject({
   version: z.number().int().min(1).optional(),
   path: z.string().optional(),
   includeContent: z.boolean().default(true),
+  activity: z.string().max(PRESENCE_ACTIVITY_MAX).optional(),
 });
 export type GetArtifactInput = z.infer<typeof GetArtifactInputSchema>;
 export type GetArtifactInputInput = z.input<typeof GetArtifactInputSchema>;
@@ -1203,22 +1225,28 @@ export const SetVisibilityInputSchema = z.strictObject({
 });
 export type SetVisibilityInput = z.infer<typeof SetVisibilityInputSchema>;
 
+/** What an agent says it is doing, shown on its presence card. */
+const ActivitySchema = z.string().max(PRESENCE_ACTIVITY_MAX).optional();
+
 const dataTarget = { id: IdSchema, collection: DataNameSchema };
 
 export const ArtifactDataGetInputSchema = z.strictObject({
   ...dataTarget,
   docId: DataNameSchema,
+  activity: ActivitySchema,
 });
 export type ArtifactDataGetInput = z.infer<typeof ArtifactDataGetInputSchema>;
 export const ArtifactDataListInputSchema = z.strictObject({
   ...dataTarget,
   cursor: z.string().optional(),
   limit: z.number().int().min(1).max(500).optional(),
+  activity: ActivitySchema,
 });
 export type ArtifactDataListInput = z.infer<typeof ArtifactDataListInputSchema>;
 export const ArtifactDataQueryInputSchema = z.strictObject({
   ...dataTarget,
   query: DataQuerySchema,
+  activity: ActivitySchema,
 });
 export type ArtifactDataQueryInput = z.infer<
   typeof ArtifactDataQueryInputSchema
@@ -1227,12 +1255,14 @@ export const ArtifactDataSetInputSchema = z.strictObject({
   ...dataTarget,
   docId: DataNameSchema,
   data: DataSetBodySchema,
+  activity: ActivitySchema,
 });
 export type ArtifactDataSetInput = z.infer<typeof ArtifactDataSetInputSchema>;
 export const ArtifactDataUpdateInputSchema = z.strictObject({
   ...dataTarget,
   docId: DataNameSchema,
   patch: DataPatchBodySchema,
+  activity: ActivitySchema,
 });
 export type ArtifactDataUpdateInput = z.infer<
   typeof ArtifactDataUpdateInputSchema
@@ -1240,6 +1270,7 @@ export type ArtifactDataUpdateInput = z.infer<
 export const ArtifactDataDeleteInputSchema = z.strictObject({
   ...dataTarget,
   docId: DataNameSchema,
+  activity: ActivitySchema,
 });
 export type ArtifactDataDeleteInput = z.infer<
   typeof ArtifactDataDeleteInputSchema

@@ -11,6 +11,7 @@ import {
   decodeServerFrame,
   encodeFrame,
   LIMITS,
+  MAILBOX_RETAIN_MS,
   newId,
   PONG,
   type ServerFrame,
@@ -497,7 +498,7 @@ describe("H1 (P3): close cleanup cost does not grow with delivered history", () 
 });
 
 describe("L1 (P5): rowid session bounds", () => {
-  it("a same-millisecond close and reopen: the new session's mail is not drained", async () => {
+  it("a same-millisecond close and reopen (#1295): the old mail stays pending and the drain expires nothing", async () => {
     const h = freshHub();
     const t0 = Date.now() + HOUR;
     await clock(h, t0);
@@ -513,6 +514,12 @@ describe("L1 (P5): rowid session bounds", () => {
       body: true,
       now: t0 - 10,
       from: s.id,
+    });
+    // Acked notices of the old session: their bodies die at the reopen.
+    const acked = await seedReceipts(h, victim, 3, {
+      state: "delivered",
+      body: true,
+      now: t0 - 10,
     });
     d.send({ v: 1, id: "dn", type: "agent_down", agent_ref: "victim" });
     await sync(d);
@@ -538,15 +545,68 @@ describe("L1 (P5): rowid session bounds", () => {
         .one(),
     );
     expect(st.state).toBe("pending");
+    // The close no longer expires pending mail (the agent is away, then back
+    // under the same ref): the old mail waits for the reopened session.
     for (const id of old)
       expect(
         await count(
           h,
-          "select count(*) as n from receipts where id = ? and state = 'expired'",
+          "select count(*) as n from receipts where id = ? and state = 'pending'",
           id,
         ),
       ).toBe(1);
-    // The reopened session can fetch its own new mail but none of the old.
+    expect(
+      await count(
+        h,
+        "select count(*) as n from receipts where state = 'expired' and to_agent = ?",
+        victim,
+      ),
+    ).toBe(0);
+    // The old session's acked notices cannot be fetched by the reopened one.
+    for (const id of acked) {
+      d.send({
+        v: 1,
+        id: `f-${id}`,
+        type: "fetch",
+        from_ref: "victim",
+        msg_id: id,
+      });
+      expect(await until(d, "error")).toMatchObject({
+        id: `f-${id}`,
+        code: "not_found",
+      });
+    }
+  }, 60_000);
+
+  it("a reopen with no away row left (+7 d, alarm not run yet): the boundary moves forward and the old mail is never served or delivered", async () => {
+    const h = freshHub();
+    const t0 = Date.now() + HOUR;
+    await clock(h, t0);
+    const n = ns("noaway");
+    const s = await senderOn(h, n);
+    const m = await machineOn(h);
+    const d = await daemonOn(h, m.id);
+    d.send(up("u1", "victim", "Victim", n));
+    await until(d, "agent_ok");
+    const victim = await agentIdOf(h, m.id, "victim");
+    const old = await seedReceipts(h, victim, 30, {
+      state: "pending",
+      body: true,
+      now: t0 - 10,
+      from: s.id,
+    });
+    d.send({ v: 1, id: "dn", type: "agent_down", agent_ref: "victim" });
+    await sync(d);
+    // Past the reservation's end; the alarm has not run.
+    await clock(h, t0 + MAILBOX_RETAIN_MS + 1000);
+    d.seen.length = 0;
+    d.send(up("u2", "victim", "Victim", n));
+    await until(d, "agent_ok");
+    await sync(d);
+    const oldSet = new Set(old);
+    expect(
+      d.seen.filter((f) => f.type === "deliver" && oldSet.has(f.msg_id)),
+    ).toEqual([]);
     d.send({
       v: 1,
       id: "f-old",
@@ -554,7 +614,30 @@ describe("L1 (P5): rowid session bounds", () => {
       from_ref: "victim",
       msg_id: old[0] as string,
     });
-    expect(await until(d, "error")).toMatchObject({ code: "not_found" });
+    expect(await until(d, "error")).toMatchObject({
+      id: "f-old",
+      code: "not_found",
+    });
+    // Acks for old mail are ignored too.
+    for (const id of old)
+      d.send({ v: 1, id: `a-${id}`, type: "ack", msg_id: id });
+    await sync(d);
+    expect(
+      await count(
+        h,
+        "select count(*) as n from receipts where to_agent = ? and state = 'delivered'",
+        victim,
+      ),
+    ).toBe(0);
+    // The TTL sweep then expires them all.
+    for (let k = 0; k < 5; k++) await alarmOnce(h);
+    expect(
+      await count(
+        h,
+        "select count(*) as n from receipts where to_agent = ? and state = 'expired'",
+        victim,
+      ),
+    ).toBe(old.length);
   }, 60_000);
 
   it("the retention purge never deletes the newest receipt, so max(rowid) never goes back", async () => {

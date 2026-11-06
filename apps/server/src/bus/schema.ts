@@ -249,6 +249,22 @@ create index if not exists role_proposals_created on role_proposals(org_id, crea
 create index if not exists role_proposals_pending on role_proposals(expires_at)
   where status = 'pending';
 
+-- #1567 grants: what the member allowed between namespaces. kind 'link': the
+-- namespaces ns_a and ns_b (sorted, ns_a < ns_b) see each other's agents and
+-- may message each other, directly only (bus/links.ts). kind is open for
+-- #1346 (role_reach). A new table: create-if-not-exists adds it; wipe()
+-- deletes it.
+create table if not exists grants (
+  id text primary key,
+  org_id text not null,
+  kind text not null,
+  ns_a text not null,
+  ns_b text not null,
+  created_at integer not null,
+  unique (org_id, kind, ns_a, ns_b)
+);
+create index if not exists grants_b on grants(org_id, kind, ns_b);
+
 create table if not exists meta (
   org_id text not null,
   key text not null,
@@ -383,6 +399,12 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   );
   if (!machineCols.has("disconnected_at"))
     sql.exec("alter table machines add column disconnected_at integer");
+  // #1295: when the agent's session closed into `away` (epoch ms; a reaped
+  // agent uses its machine's disconnected_at), null while open or after a
+  // revoke. Its pending mail expires at away_since + MAILBOX_RETAIN_MS at
+  // the latest. Add-only.
+  if (!agentCols.has("away_since"))
+    sql.exec("alter table agents add column away_since integer");
   // B14: send_keys.final (1 once the key's receipt left pending), set
   // wherever a receipt is finalized (settle, #expire). Backfilled from
   // receipts in the step that adds it (a missing receipt counts as final).

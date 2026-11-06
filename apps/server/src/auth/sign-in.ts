@@ -4,6 +4,7 @@ import {
   type FeatureFlag,
   type InstanceSignIn,
 } from "@oa/shared";
+import { featuresOf } from "../billing/features.js";
 import type { Env } from "../env.js";
 import { type AuthConfig, authConfig } from "./config.js";
 
@@ -72,7 +73,6 @@ export function instanceSignIn(env: Env, owner = false): InstanceSignIn {
 /** Me.instance.features: FEATURES plus guests_read_only (reported only; on for every install since parity 2). */
 export function instanceFeatures(env: Env): FeatureFlag[] {
   const cfg = authConfig(env);
-  return cfg.guestsReadOnly
-    ? [...cfg.features, "guests_read_only"]
-    : [...cfg.features];
+  const features = featuresOf(env);
+  return cfg.guestsReadOnly ? [...features, "guests_read_only"] : [...features];
 }

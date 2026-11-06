@@ -47,7 +47,7 @@ describe("llms.txt", () => {
   });
 
   it("runs setup non-interactively", () => {
-    expect(llms).toContain("pnpm -s oa:setup --json");
+    expect(llms).toContain("pnpm --reporter=silent oa:setup --json");
   });
 
   it("names the repo once, as the clone source of the latest tag", () => {

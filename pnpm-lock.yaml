@@ -718,6 +718,9 @@ importers:
       '@oa/bus-protocol':
         specifier: workspace:*
         version: link:../bus-protocol
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@types/node':
         specifier: ^22.19.0
         version: 22.20.5

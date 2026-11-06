@@ -13,9 +13,13 @@ import {
   FALLBACK_BUS_NAME,
   type FormerName,
   frameId,
+  HUB_MAILBOX_BYTES_CAP,
   hasCap,
   isId,
   LIMITS,
+  MAILBOX_BYTES_CAP,
+  MAILBOX_PENDING_CAP,
+  MAILBOX_RETAIN_MS,
   MachineLabelSchema,
   type NameKind,
   newId,
@@ -30,8 +34,10 @@ import {
   utf8Bytes,
 } from "@oa/bus-protocol";
 import {
+  BUS_LINK_MAX,
   BUS_ROLE_MAX,
   type BusAgent,
+  type BusLink,
   type BusRole,
   type BusRoleProposal,
 } from "@oa/shared";
@@ -45,6 +51,14 @@ import {
 } from "../services/bus.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
+import {
+  addLink,
+  isLinked,
+  linkedNamespaces,
+  listLinks,
+  type PutLinkResult,
+  removeLink,
+} from "./links.js";
 import {
   type DecideResult,
   decideProposal,
@@ -252,7 +266,34 @@ const idsGated = (ws: WebSocket | null): boolean => {
 };
 
 /** What this hub supports, listed in `hello_ok.caps` to a hello that listed ids. */
-const HUB_CAPS = [BUS_CAPS.rename, BUS_CAPS.roles, BUS_CAPS.ids];
+const HUB_CAPS = [
+  BUS_CAPS.rename,
+  BUS_CAPS.roles,
+  BUS_CAPS.ids,
+  BUS_CAPS.mailbox,
+  BUS_CAPS.links,
+];
+
+/**
+ * Lasting mailboxes (#1295, BUS_CAPS.mailbox): a receipt's `queued`/`since`,
+ * the `mailbox_full` and `reserved_name` refusals, roster away rows and the
+ * `agent_up` handover go only to a socket whose hello listed it. Fails
+ * closed, like renameGated.
+ */
+const mailboxGated = (ws: WebSocket | null): boolean => {
+  const caps = ws ? attachmentOf(ws)?.caps : undefined;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.mailbox);
+};
+
+/**
+ * Project links (#1567, BUS_CAPS.links): a socket's roster and sends reach the
+ * namespaces linked to its own only when its hello listed it. Fails closed,
+ * like renameGated: any other socket sees today's isolation.
+ */
+const linksGated = (ws: WebSocket | null): boolean => {
+  const caps = ws ? attachmentOf(ws)?.caps : undefined;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.links);
+};
 
 /**
  * Role addresses (#1296): `role_vacant` and a role hit's receipt `to_name`
@@ -286,11 +327,15 @@ const toNameShown = (
  * strict decoder refuses the reason, failing the whole frame); any other gets
  * `unknown_agent`, as if the role or the agent did not exist.
  */
-const wireReason = (ws: WebSocket, reason: RefusalReason): RefusalReason =>
-  (reason === "role_vacant" && !rolesGated(ws)) ||
-  (reason === "agent_gone" && !idsGated(ws))
+const wireReason = (ws: WebSocket, reason: RefusalReason): RefusalReason => {
+  if (reason === "mailbox_full")
+    return mailboxGated(ws) ? reason : "inbox_full";
+  return (reason === "role_vacant" && !rolesGated(ws)) ||
+    (reason === "agent_gone" && !idsGated(ws)) ||
+    (reason === "reserved_name" && !mailboxGated(ws))
     ? "unknown_agent"
     : reason;
+};
 
 function machineOf(ws: WebSocket): string | null {
   return attachmentOf(ws)?.machineId ?? null;
@@ -451,6 +496,39 @@ function rosterAudience(
   sql: SqlStorage,
   changed: string[],
   machines: string[],
+  linkMachines: ReadonlySet<string>,
+): Map<string, string[]> {
+  const out = directAudience(sql, changed, machines);
+  // #1567: a namespace linked to a changed one sees its agents too, so the
+  // machines hosting agents there hear `roster_changed{theirs}` as well.
+  const wanted = new Set(changed);
+  const heard = new Set<string>();
+  for (const x of changed)
+    for (const r of linkedNamespaces(sql, OWNER_ORG_ID, x))
+      if (!wanted.has(r)) heard.add(r);
+  for (const r of heard)
+    for (const row of all<{ machineId: string }>(
+      sql,
+      "select distinct machine_id as machineId from agents where org_id = ? and namespace = ? and live = 1",
+      OWNER_ORG_ID,
+      r,
+    )) {
+      // Only a links-capable machine can use the extra frame.
+      if (!linkMachines.has(row.machineId)) continue;
+      const cur = out.get(row.machineId);
+      // `changed` itself is shared by every global machine: copy, never push.
+      if (cur === changed) out.set(row.machineId, [...changed, r]);
+      else if (cur) {
+        if (!cur.includes(r)) cur.push(r);
+      } else out.set(row.machineId, [r]);
+    }
+  return out;
+}
+
+function directAudience(
+  sql: SqlStorage,
+  changed: string[],
+  machines: string[],
 ): Map<string, string[]> {
   const out = new Map<string, string[]>();
   const all_ = (m: string) => out.set(m, changed);
@@ -495,7 +573,12 @@ function rosterAudience(
  * What changed: the namespaces of the agents that changed, and whether any of
  * them is global (a global appears in every namespace's list).
  */
-type RosterChange = { namespaces: string[]; global: boolean };
+type RosterChange = {
+  namespaces: string[];
+  global: boolean;
+  /** #1567: a link change; only links-capable sockets hear it. */
+  linksOnly?: boolean;
+};
 
 /**
  * A global change reaches every daemon: one `roster_changed{ns}` for each
@@ -533,14 +616,26 @@ function notifyRoster(
   if (changed.length === 0) return;
   const sockets = ctx
     .getWebSockets(DAEMON_TAG)
-    .filter((w) => w !== except && w.readyState === OPEN && !isReplaced(w));
+    .filter(
+      (w) =>
+        w !== except &&
+        w.readyState === OPEN &&
+        !isReplaced(w) &&
+        (change.linksOnly !== true || linksGated(w)),
+    );
   if (sockets.length === 0) return;
+  const linkMachines = new Set(
+    sockets
+      .filter((w) => linksGated(w))
+      .map(machineOf)
+      .filter((m): m is string => m !== null),
+  );
   const machines = [
     ...new Set(sockets.map(machineOf).filter((m): m is string => m !== null)),
   ];
   const audience = change.global
     ? everyDaemonAudience(ctx.storage.sql)
-    : rosterAudience(ctx.storage.sql, changed, machines);
+    : rosterAudience(ctx.storage.sql, changed, machines, linkMachines);
   const encoded = new Map<string, string>();
   const frameFor = (namespace: string) => {
     let f = encoded.get(namespace);
@@ -687,33 +782,77 @@ function leaveNames(
     ids,
     now,
   );
-  return holdNames(sql, ids, now);
+  // #1295: a close reserves the name for MAILBOX_RETAIN_MS (`away`), not the
+  // 1 h `held` a move or flip leaves. A revoke holds nothing
+  // (releaseMachineNames).
+  return awayNames(sql, ids, now);
+}
+
+/**
+ * #1295: a closed agent's CURRENT name (its agents row, closed just now)
+ * becomes an `away` former_names row in its scope, ending MAILBOX_RETAIN_MS
+ * after agents.away_since (the close, or for a reaped agent when its machine
+ * went offline). Like `held` it reserves the name (nameTaken, putRole) and
+ * never resolves as a former name; unlike it, a send to the name reaches
+ * the agent's mailbox (awayAgent) and the agent's reopen takes it back
+ * (commitName drops the row). It replaces the agent's row for that name and
+ * scope. `ids` is a JSON array. Returns the latest end, for the alarm.
+ */
+function awayNames(sql: SqlStorage, ids: string, now: number): number | null {
+  sql.exec(
+    `delete from former_names where rowid in
+       (select f.rowid from former_names f join agents a on a.id = f.agent_id
+         where f.agent_id in (select value from json_each(?))
+           and f.lname = lower(a.name) and f.global = a.global
+           and (f.global = 1 or f.namespace = a.namespace))`,
+    ids,
+  );
+  sql.exec(
+    `insert into former_names (agent_id, org_id, name, lname, kind, expires_at, namespace, global)
+     select id, org_id, name, lower(name), 'away', coalesce(away_since, ?) + ?, namespace, global from agents
+      where id in (select value from json_each(?))`,
+    now,
+    MAILBOX_RETAIN_MS,
+    ids,
+  );
+  return (
+    one<{ t: number | null }>(
+      sql,
+      "select max(expires_at) as t from former_names where kind = 'away' and agent_id in (select value from json_each(?))",
+      ids,
+    )?.t ?? null
+  );
 }
 
 /**
  * #1448: a revoked machine's agents never come back (a re-approved
  * workstation is a new machine with new agent ids), so the revoke frees
  * every name they hold or reserve at once: the held names of agents closed
- * before or by the revoke, and their chosen and default former names, in
- * every scope. A re-approved machine, or anyone, then gets the plain names;
- * agents of other machines keep theirs. Minted names stay minted (OpenBus
- * #446: never handed to another agent). The rename log of the agents the
- * revoke closed (`closedIds`) goes too.
+ * before or by the revoke, and their chosen, default and (#1295) `away`
+ * former names, in every scope. A re-approved machine, or anyone, then gets
+ * the plain names; agents of other machines keep theirs. Minted names stay
+ * minted (OpenBus #446: never handed to another agent). The rename log of
+ * the agents the revoke closed (`closedIds`) goes too.
  *
- * Bounded (M2): never walks the machine's closed history. The agents the
+ * #1295: returns the ids of the machine's agents that were away (closed
+ * with a reservation still running): they can still hold pending mail, so
+ * revokeMachine adds them to its drain, which expires that mail `revoked`.
+ *
+ * Bounded (M2): never walks more than the machine's closed agents
+ * (agents_machine_closed, at most CLOSED_AGENTS_PER_MACHINE). The agents the
  * revoke closed lose every row by former_names_agent (at most
- * maxAgentsPerMachine agents). Agents closed before it can block a name
- * only through a held or chosen row still in its grace, so those are found
- * from former_names_due (rows unexpired now: bounded by the last hour's
- * renames and closes, not by history), each checked against its agent by
- * primary key. Expired rows reserve nothing; the alarm purges them.
+ * maxAgentsPerMachine agents). Other agents closed before it can block a
+ * name only through a held or chosen row still in its grace, found from
+ * former_names_due (rows unexpired now: bounded by the last hour's renames
+ * and closes, not by history), each checked against its agent by primary
+ * key. Expired rows reserve nothing; the alarm purges them.
  */
 function releaseMachineNames(
   sql: SqlStorage,
   machineId: string,
   closedIds: string[],
   now: number,
-): void {
+): string[] {
   if (closedIds.length > 0) {
     const ids = JSON.stringify(closedIds);
     sql.exec(
@@ -725,6 +864,22 @@ function releaseMachineNames(
       ids,
     );
   }
+  const away = all<{ id: string }>(
+    sql,
+    `select distinct f.agent_id as id
+       from (select id from agents indexed by agents_machine_closed
+              where machine_id = ? and live = 0 limit ?) a
+       join former_names f indexed by former_names_agent on f.agent_id = a.id
+      where f.kind = 'away' and f.expires_at > ?`,
+    machineId,
+    CLOSED_AGENTS_PER_MACHINE,
+    now,
+  ).map((r) => r.id);
+  if (away.length > 0)
+    sql.exec(
+      "delete from former_names where kind = 'away' and agent_id in (select value from json_each(?))",
+      JSON.stringify(away),
+    );
   sql.exec(
     `delete from former_names where rowid in
        (select f.rowid from former_names f indexed by former_names_due
@@ -734,6 +889,7 @@ function releaseMachineNames(
     now,
     machineId,
   );
+  return away;
 }
 
 /**
@@ -1085,7 +1241,7 @@ function recordRename(
   const excess =
     (one<{ n: number }>(
       sql,
-      "select count(*) as n from former_names where agent_id = ? and kind != 'held'",
+      "select count(*) as n from former_names where agent_id = ? and kind not in ('held', 'away')",
       agentId,
     )?.n ?? 0) - LIMITS.maxFormerNames;
   if (excess > 0)
@@ -1150,6 +1306,24 @@ function agentUp(
     OWNER_ORG_ID,
   );
   const id = existing?.id ?? newId();
+  // #1295: a reopen of a closed agent with an unexpired `away` row keeps its
+  // session boundary, so the mail pending to it flushes on this agent_up.
+  const awayKept =
+    existing !== null &&
+    existing.live !== 1 &&
+    one(
+      sql,
+      "select 1 as x from former_names indexed by former_names_agent where agent_id = ? and expires_at > ? and kind = 'away' limit 1",
+      existing.id,
+      now,
+    ) !== null;
+  // The old session's acked notices must not be fetchable by the new one:
+  // the kept boundary no longer hides them, so their bodies go now (the
+  // agent is not live yet, nothing can fetch in between).
+  if (awayKept && existing)
+    while (deleteDeliveredBodies(sql, existing.id, 500) >= 500) {
+      // Next page.
+    }
   // OpenBus #451 review: every scope change (a namespace move or global
   // flip, live or on a reopen, same name or not) counts in rename_rl, which
   // bounds the names an agent can hold (holdNames) to the hourly limit. At
@@ -1236,12 +1410,13 @@ function agentUp(
   // served to it (fetch, flush, ack and the inbox cap take rowid > it).
   if (existing)
     sql.exec(
-      "update agents set namespace = ?, name = ?, kind = ?, global = ?, live = 1, updated_at = ?, session_start_rowid = case when live = 1 then session_start_rowid else (select coalesce(max(rowid), 0) from receipts) end where id = ?",
+      "update agents set namespace = ?, name = ?, kind = ?, global = ?, live = 1, updated_at = ?, away_since = null, session_start_rowid = case when live = 1 or ? = 1 then session_start_rowid else (select coalesce(max(rowid), 0) from receipts) end where id = ?",
       f.namespace,
       name,
       f.kind,
       f.global ? 1 : 0,
       now,
+      awayKept ? 1 : 0,
       id,
     );
   else
@@ -1262,6 +1437,18 @@ function agentUp(
   // names reserved in the old scope, where they resolve to no one.
   if (existing && !sameScope) keepScopedNames(sql, id, now);
   commitName(sql, id, assigned, to, now);
+  // #1295: an `away` row the reopen did not take back (another name or
+  // scope) falls back to the 1 h hold a close used to leave.
+  if (existing && !wasLive) {
+    const grace = now + LIMITS.formerNameGraceMs;
+    const fell = all(
+      sql,
+      "update former_names set kind = 'held', expires_at = min(expires_at, ?) where agent_id = ? and kind = 'away' returning rowid",
+      grace,
+      id,
+    );
+    if (fell.length > 0) arms.push(grace);
+  }
   // AC3: a reopened session starts with no status (a live move keeps it).
   if (existing && !wasLive) clearStatus(sql, [id]);
   const changed = [f.namespace];
@@ -1291,6 +1478,52 @@ function agentUp(
   };
 }
 
+/**
+ * #1295: the daemon says `agent_ref` is the old `replaces` session of the same
+ * live process (a /clear). The old ref's agent row is re-keyed to the new ref,
+ * so the agent_up that follows reopens it: same name and former names, and its
+ * pending mail (kept or flushed) instead of `<name>-2`. Only an agent of this
+ * same machine, only when the new ref is not already known; otherwise nothing
+ * changes and the new ref registers as any other. An old session still open
+ * is closed first into `away` (its address kept), so the agent_up always
+ * takes the reopen path: the old session's delivered bodies go, its pending
+ * mail stays.
+ */
+function takeOver(
+  sql: SqlStorage,
+  machineId: string,
+  oldRef: string,
+  newRef: string,
+  now: number,
+): void {
+  if (oldRef === newRef) return;
+  if (
+    one(
+      sql,
+      "select 1 as x from agents where machine_id = ? and native_ref = ?",
+      machineId,
+      newRef,
+    ) !== null
+  )
+    return;
+  const taken = one<{ id: string; live: number }>(
+    sql,
+    "update agents set native_ref = ? where machine_id = ? and native_ref = ? and org_id = ? returning id, live",
+    newRef,
+    machineId,
+    oldRef,
+    OWNER_ORG_ID,
+  );
+  if (taken?.live !== 1) return;
+  sql.exec(
+    `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR} where id = ?`,
+    now,
+    now,
+    taken.id,
+  );
+  awayNames(sql, JSON.stringify([taken.id]), now);
+}
+
 /** Closes an open agent (its session ended); returns it, or null. */
 function agentDown(
   sql: SqlStorage,
@@ -1301,7 +1534,8 @@ function agentDown(
   // One statement (B11): the close is the hot path of sessions{closed}.
   return one<{ id: string; namespace: string; global: number }>(
     sql,
-    `update agents set live = 0, last_name = name, updated_at = ?, ${STATUS_CLEAR} where machine_id = ? and native_ref = ? and live = 1 and org_id = ? returning id, namespace, global`,
+    `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR} where machine_id = ? and native_ref = ? and live = 1 and org_id = ? returning id, namespace, global`,
+    now,
     now,
     machineId,
     ref,
@@ -1323,9 +1557,37 @@ function roster(
   id: string,
   formerFields: boolean,
   now: number,
+  withAway = false,
+  withLinks = false,
 ): ServerFrame {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
+  // #1567: a links-capable non-global socket also sees the namespaces linked
+  // to its own (direct links only). Own namespace first, then linked ones.
+  const linked =
+    withLinks && agent.global !== 1
+      ? linkedNamespaces(sql, OWNER_ORG_ID, agent.namespace)
+      : [];
+  const nsRank = (ns: string) =>
+    linked.length === 0
+      ? 0
+      : ns === agent.namespace
+        ? 0
+        : linked.includes(ns)
+          ? 1
+          : 2;
+  const byScope = (a: AgentRow, b: AgentRow) =>
+    nsRank(a.namespace) !== nsRank(b.namespace)
+      ? nsRank(a.namespace) - nsRank(b.namespace)
+      : a.namespace === b.namespace
+        ? a.name < b.name
+          ? -1
+          : a.name > b.name
+            ? 1
+            : 0
+        : a.namespace < b.namespace
+          ? -1
+          : 1;
   let rows: AgentRow[];
   if (agent.global === 1) {
     rows = all<AgentRow>(
@@ -1349,20 +1611,57 @@ function roster(
       OWNER_ORG_ID,
       cap,
     );
+    const lived =
+      linked.length === 0
+        ? []
+        : all<AgentRow>(
+            sql,
+            `select ${AGENT_COLS} from agents where org_id = ? and live = 1 and namespace in (select value from json_each(?)) order by namespace, name limit ?`,
+            OWNER_ORG_ID,
+            JSON.stringify(linked),
+            cap,
+          );
     const seen = new Set(local.map((r) => r.id));
-    rows = [...local, ...globals.filter((r) => !seen.has(r.id))]
-      .sort((a, b) =>
-        a.namespace === b.namespace
-          ? a.name < b.name
-            ? -1
-            : a.name > b.name
-              ? 1
-              : 0
-          : a.namespace < b.namespace
-            ? -1
-            : 1,
-      )
+    for (const r of lived) seen.add(r.id);
+    rows = [...local, ...lived, ...globals.filter((r) => !seen.has(r.id))]
+      .sort(byScope)
       .slice(0, cap);
+  }
+  // #1295: a mailbox-capable socket also sees the agents away in its scope.
+  if (withAway) {
+    const scopeNs = [agent.namespace, ...linked];
+    const scope =
+      agent.global === 1
+        ? ""
+        : `and (f.global = 1 or f.namespace in (select value from json_each(?)))`;
+    const away = all<AgentRow>(
+      sql,
+      `select ${AGENT_COLS} from agents where org_id = ? and live = 0 and id in
+         (select f.agent_id from former_names f
+            join agents a on a.id = f.agent_id
+            left join machines m on m.id = a.machine_id
+           where f.org_id = ? and f.kind = 'away' and f.expires_at > ?
+             and a.live = 0 and m.revoked_at is null ${scope})
+       order by ${linked.length === 0 ? "" : "(namespace = ?) desc, "}namespace, name limit ?`,
+      OWNER_ORG_ID,
+      OWNER_ORG_ID,
+      now,
+      ...(agent.global === 1 ? [] : [JSON.stringify(scopeNs)]),
+      ...(linked.length === 0 ? [] : [agent.namespace]),
+      cap,
+    );
+    if (away.length > 0) rows = [...rows, ...away].sort(byScope).slice(0, cap);
+  }
+  const awaySince = new Map<string, number>();
+  if (withAway) {
+    const ids = rows.filter((r) => r.live !== 1).map((r) => r.id);
+    if (ids.length > 0)
+      for (const r of all<{ id: string; t: number | null }>(
+        sql,
+        "select id, away_since as t from agents where id in (select value from json_each(?))",
+        JSON.stringify(ids),
+      ))
+        if (r.t !== null) awaySince.set(r.id, r.t);
   }
   const online = new Map<string, boolean>();
   const stateOf = (machineId: string): "live" | "queued" => {
@@ -1390,7 +1689,10 @@ function roster(
         kind: r.kind as AgentKind,
         namespace: r.namespace,
         global: r.global === 1,
-        state: stateOf(r.machineId),
+        state: r.live === 1 ? stateOf(r.machineId) : ("away" as const),
+        ...(r.live !== 1 && awaySince.has(r.id)
+          ? { since: new Date(awaySince.get(r.id) as number).toISOString() }
+          : {}),
         // The key is omitted, never null, if a row's machine has no label.
         ...(label === undefined ? {} : { machine_label: label }),
         ...statusWire(r),
@@ -1417,7 +1719,7 @@ function formerNamesOf(
     sql,
     `select f.agent_id as agentId, f.name, f.expires_at as expiresAt from former_names f
       join agents a on a.id = f.agent_id
-      where f.agent_id in (select value from json_each(?)) and f.expires_at > ? and f.kind != 'held'
+      where f.agent_id in (select value from json_each(?)) and f.expires_at > ? and f.kind not in ('held', 'away')
         and f.global = a.global and (f.global = 1 or f.namespace = a.namespace)
       order by f.agent_id, f.expires_at desc, f.rowid desc`,
     JSON.stringify(rows.map((r) => r.id)),
@@ -1490,7 +1792,7 @@ function byNamespaceName(
 const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.kind,
   a.machine_id as machineId, a.native_ref as nativeRef, a.global, a.live,
   a.updated_at as updatedAt, m.label as machineLabel, a.status,
-  a.status_label as statusLabel, a.status_at as statusAt`;
+  a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince`;
 
 /**
  * The dashboard's agent list (snapshot, GET /api/v1/bus/agents). Open agents
@@ -1532,6 +1834,10 @@ function agentList(ctx: DurableObjectState, namespace?: string): BusAgent[] {
       .sort(byNamespaceName)
       .slice(0, cap);
   }
+  // TODO(#1295 part C): list away agents here (agentDto already gives them
+  // state "away", running=false and `since`) once the dashboard renders them.
+  // Until then Roster.tsx would show them as Queued and ShareNotices would
+  // offer them as targets, so only open agents are listed.
   const online = new Map<string, boolean>();
   const dtos = rows.map((r) => {
     let on = online.get(r.machineId);
@@ -1634,6 +1940,67 @@ function goneReason(
   return r === null ? null : r.revoked ? "revoked" : "closed";
 }
 
+/**
+ * #1295: the closed agent whose `away` reservation (unexpired) holds `lname`
+ * in scope `ns` (its namespace, or a global), or any scope for null: a send
+ * to its name queues in its mailbox. Not an agent of a revoked machine;
+ * `ambiguous` when two non-global agents are away under the name. One
+ * probe on former_names_lname.
+ */
+function awayAgent(
+  sql: SqlStorage,
+  ns: string | null,
+  lname: string,
+  now: number,
+): Resolution | null {
+  const scope = ns === null ? "" : "and (f.global = 1 or f.namespace = ?)";
+  const rows = all<AgentRow>(
+    sql,
+    `select ${AGENT_COLS} from agents where live = 0 and id in
+       (select f.agent_id from former_names f indexed by former_names_lname
+          join agents a on a.id = f.agent_id
+          left join machines m on m.id = a.machine_id
+         where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind = 'away'
+           and a.live = 0 and m.revoked_at is null ${scope}
+         order by f.expires_at desc limit 2)
+     order by global desc`,
+    OWNER_ORG_ID,
+    lname,
+    now,
+    ...(ns === null ? [] : [ns]),
+  );
+  const first = rows[0];
+  if (!first) return null;
+  // Two agents away under one name (a global's too): ambiguous, never a guess.
+  if (rows.length > 1) return refused("ambiguous");
+  return { ok: true, agent: first };
+}
+
+/**
+ * #1295: whether `lname` is only a `held` reservation (a name a moved or
+ * flipped agent left, 1 h) in scope `ns` (its namespace, or a global), or
+ * any scope for null. It has no mailbox: a send to it is `reserved_name`.
+ */
+function heldName(
+  sql: SqlStorage,
+  ns: string | null,
+  lname: string,
+  now: number,
+): boolean {
+  const scope = ns === null ? "" : "and (f.global = 1 or f.namespace = ?)";
+  return (
+    one(
+      sql,
+      `select 1 as x from former_names f indexed by former_names_lname
+        where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind = 'held' ${scope} limit 1`,
+      OWNER_ORG_ID,
+      lname,
+      now,
+      ...(ns === null ? [] : [ns]),
+    ) !== null
+  );
+}
+
 /** Up to `limit` live agents named `lname`, in any namespace. */
 function liveAnywhere(
   sql: SqlStorage,
@@ -1677,7 +2044,7 @@ function liveFormer(
     sql,
     `select ${AGENT_COLS} from agents where org_id = ? and live = 1
        and id in (select f.agent_id from former_names f indexed by former_names_lname
-                   where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind != 'held'
+                   where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind not in ('held', 'away')
                      and f.global = agents.global and (f.global = 1 or f.namespace = agents.namespace))
        ${where} order by global desc limit ?`,
     OWNER_ORG_ID,
@@ -1715,7 +2082,7 @@ function nameOutside(
       `select (exists (select 1 from agents where org_id = ? and lower(name) = ? and live = 1)
            or exists (select 1 from former_names f indexed by former_names_lname left join agents a on a.id = f.agent_id
                        where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.agent_id != ?
-                         and (f.kind in ('chosen', 'held')
+                         and (f.kind in ('chosen', 'held', 'away')
                            or (a.live = 1 and a.global = 0 and a.namespace != ? and f.global = 0 and f.namespace = a.namespace)))) as x`,
       OWNER_ORG_ID,
       lname,
@@ -1748,7 +2115,7 @@ function heldElsewhere(
       `select exists (select 1 from former_names f indexed by former_names_lname
          left join agents a on a.id = f.agent_id
          where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.agent_id != ? and f.agent_id != ?
-           and (f.kind in ('chosen', 'held')
+           and (f.kind in ('chosen', 'held', 'away')
              or (a.live = 1 and f.global = a.global and (f.global = 1 or f.namespace = a.namespace)))) as x`,
       OWNER_ORG_ID,
       lname,
@@ -1774,6 +2141,7 @@ function resolveTarget(
   toName: string,
   toNamespace: string | undefined,
   now: number,
+  withLinks = false,
 ): Resolution {
   const lname = toName.toLowerCase();
   // A former name is never held by two agents in one scope (nameTaken);
@@ -1792,7 +2160,26 @@ function resolveTarget(
     const hit = liveVisibleIn(sql, ns, lname);
     return hit ? { ok: true, agent: hit } : formerIn({ ns });
   };
+  // #1567: the namespaces directly linked to the sender's (never transitive),
+  // for a links-capable non-global sender only. Any other sender has none, so
+  // every path below is today's.
+  const linked =
+    withLinks && sender.global !== 1
+      ? linkedNamespaces(sql, OWNER_ORG_ID, sender.namespace)
+      : [];
   if (sender.global !== 1) {
+    if (toNamespace !== undefined && linked.includes(toNamespace)) {
+      // A linked namespace is reached as a global sender reaches any.
+      const hit = visibleIn(toNamespace);
+      if (hit) return hit;
+      const away = awayAgent(sql, toNamespace, lname, now);
+      if (away) return away;
+      const gone = goneReason(sql, toNamespace, lname);
+      if (gone) return refused(gone);
+      if (heldName(sql, toNamespace, lname, now))
+        return refused("reserved_name");
+      return refused("unknown_agent");
+    }
     if (toNamespace !== undefined && toNamespace !== sender.namespace) {
       // Only a live global homed in X is reachable. Everything else is the
       // same refusal, so it cannot probe what exists in another namespace.
@@ -1803,8 +2190,31 @@ function resolveTarget(
     const hit = visibleIn(sender.namespace);
     if (hit) return hit;
     // B9: the newest closed agent with the name says revoked or closed.
+    const away = awayAgent(sql, sender.namespace, lname, now);
+    if (away) return away;
     const gone = goneReason(sql, sender.namespace, lname);
     if (gone) return refused(gone);
+    if (heldName(sql, sender.namespace, lname, now))
+      return refused("reserved_name");
+    // #1567: only a clean miss in the sender's own namespace (live, role,
+    // former, away, gone, held) tries the linked ones, and only when the send
+    // names no namespace. Live first, then away. One hit resolves; hits in
+    // two of them are ambiguous (the sender names `to_namespace`).
+    if (linked.length > 0 && toNamespace === undefined) {
+      for (const look of [
+        visibleIn,
+        (ns: string) => awayAgent(sql, ns, lname, now),
+      ]) {
+        const found = new Map<string, Resolution>();
+        for (const ns of linked) {
+          const h = look(ns);
+          if (h) found.set(h.ok ? h.agent.id : h.reason, h);
+        }
+        const only = [...found.values()];
+        if (only.length > 1) return refused("ambiguous");
+        if (only[0]) return only[0];
+      }
+    }
     // Other namespaces are invisible and unreachable (spec goal 5, scenario
     // 6): a name live only elsewhere is unknown_agent, so no probe can tell
     // it exists. other_namespace answers an explicit to_namespace only.
@@ -1813,8 +2223,11 @@ function resolveTarget(
   if (toNamespace !== undefined) {
     const hit = visibleIn(toNamespace);
     if (hit) return hit;
+    const away = awayAgent(sql, toNamespace, lname, now);
+    if (away) return away;
     const gone = goneReason(sql, toNamespace, lname);
     if (gone) return refused(gone);
+    if (heldName(sql, toNamespace, lname, now)) return refused("reserved_name");
     return refused("unknown_agent");
   }
   // R393b: the sender's own namespace first, current then former names.
@@ -1847,25 +2260,68 @@ function resolveTarget(
       ? refused("ambiguous")
       : { ok: true, agent: f };
   if (former.length > 1) return refused("ambiguous");
+  const away = awayAgent(sql, null, lname, now);
+  if (away) return away;
   const gone = goneReason(sql, null, lname);
   if (gone) return refused(gone);
+  if (heldName(sql, null, lname, now)) return refused("reserved_name");
   return refused("unknown_agent");
 }
 
 /**
- * True when the agent's current session already has `inboxCap` pending
- * receipts (receipts_to_age). A previous session's pending mail, still
- * draining after a close (B11), does not count.
+ * #1295: whether one more message of `size` bytes would pass the address's
+ * caps: MAILBOX_PENDING_CAP pending receipts and MAILBOX_BYTES_CAP pending
+ * bytes, counted across every session of the agent (live or away). Bounded
+ * by the cap: the count stops at MAILBOX_PENDING_CAP rows (receipts_to).
  */
-function inboxFull(sql: SqlStorage, agent: AgentRow): boolean {
-  const row = one<{ n: number }>(
+function inboxFull(sql: SqlStorage, agent: AgentRow, size: number): boolean {
+  const row = one<{ n: number; b: number }>(
     sql,
-    "select count(*) as n from (select 1 from receipts where to_agent = ? and state = 'pending' and rowid > ? limit ?)",
+    "select count(*) as n, coalesce(sum(size), 0) as b from (select size from receipts indexed by receipts_to where to_agent = ? and state = 'pending' limit ?)",
     agent.id,
-    agent.sessionStartRowid,
-    LIMITS.inboxCap,
+    MAILBOX_PENDING_CAP,
   );
-  return (row?.n ?? 0) >= LIMITS.inboxCap;
+  return (
+    (row?.n ?? 0) >= MAILBOX_PENDING_CAP ||
+    (row?.b ?? 0) + size > MAILBOX_BYTES_CAP
+  );
+}
+
+/**
+ * #1295: a send receipt's `queued` and `since`, only to a mailbox-capable
+ * socket, only when the mail is stored for a recipient with no session to
+ * push to: `away` (closed, since its close) or `offline` (open, but its
+ * machine is offline, since the machine went offline).
+ */
+function queuedWire(
+  ws: WebSocket,
+  ctx: DurableObjectState,
+  agentId: string,
+  now: number,
+): { queued: "away" | "offline"; since: string } | Record<string, never> {
+  if (!mailboxGated(ws)) return {};
+  const sql = ctx.storage.sql;
+  const a = one<{
+    live: number;
+    awaySince: number | null;
+    machineId: string;
+    disconnectedAt: number | null;
+  }>(
+    sql,
+    `select a.live as live, a.away_since as awaySince, a.machine_id as machineId, m.disconnected_at as disconnectedAt
+       from agents a left join machines m on m.id = a.machine_id where a.id = ?`,
+    agentId,
+  );
+  if (!a) return {};
+  if (a.live !== 1)
+    return a.awaySince === null
+      ? {}
+      : { queued: "away", since: new Date(a.awaySince).toISOString() };
+  if (machineOnline(ctx, a.machineId)) return {};
+  return {
+    queued: "offline",
+    since: new Date(a.disconnectedAt ?? now).toISOString(),
+  };
 }
 
 /** A refused send: a fresh msg_id and no stored row (no send key either, B14). */
@@ -1908,6 +2364,7 @@ type SendKey = {
   msgId: string;
   createdAt: number;
   viaRole: number;
+  final: number;
 };
 type SendKeyCheck =
   | { kind: "new"; hash: string; dropped: boolean }
@@ -1917,8 +2374,8 @@ type SendKeyCheck =
 /**
  * B14: looks up the send key (sender agent id, frame id). A key exists only
  * for a send that created a pending receipt; a refused send stores none, so
- * its resend is evaluated again. A key older than SEND_KEY_RETAIN_MS that the
- * alarm has not swept yet counts as gone (deleted here, so the fresh key
+ * its resend is evaluated again. A final key older than SEND_KEY_RETAIN_MS
+ * that the alarm has not swept yet counts as gone (deleted here, so the fresh key
  * takes a new rowid and the cap's oldest-first order holds). #send looks up,
  * resolves and inserts in one synchronous turn, so two sends of the same key
  * can never both deliver.
@@ -1933,12 +2390,12 @@ function findSendKey(
   const hash = payloadHash(f, sender);
   const key = one<SendKey>(
     sql,
-    "select payload_hash as payloadHash, msg_id as msgId, created_at as createdAt, via_role as viaRole from send_keys where from_agent = ? and frame_id = ?",
+    "select payload_hash as payloadHash, msg_id as msgId, created_at as createdAt, via_role as viaRole, final from send_keys where from_agent = ? and frame_id = ?",
     agentId,
     f.id,
   );
   if (!key) return { kind: "new", hash, dropped: false };
-  if (key.createdAt >= now - SEND_KEY_RETAIN_MS)
+  if (key.final !== 1 || key.createdAt >= now - SEND_KEY_RETAIN_MS)
     return key.payloadHash === hash
       ? { kind: "resend", msgId: key.msgId, viaRole: key.viaRole === 1 }
       : { kind: "reused" };
@@ -1987,9 +2444,15 @@ export const AGENT_FINAL_KEY_SQL =
 export const HUB_FINAL_KEY_SQL =
   "select rowid as k from send_keys indexed by send_keys_final where final = 1 order by created_at limit 1";
 
-/** B14: the send's key (if any) is final: its receipt just left pending. */
-function finalizeKey(sql: SqlStorage, msgId: string): void {
-  sql.exec("update send_keys set final = 1 where msg_id = ?", msgId);
+/** B14: the send's key (if any) is final: its receipt just left pending (at `now`). */
+function finalizeKey(sql: SqlStorage, msgId: string, now: number): void {
+  // #1295: the dedupe window of a final key runs from when it went final
+  // (created_at is reset to now), not from the send, which may be days ago.
+  sql.exec(
+    "update send_keys set final = 1, created_at = ? where msg_id = ?",
+    now,
+    msgId,
+  );
 }
 
 function storeBody(
@@ -2153,7 +2616,7 @@ function settle(
       now,
       msgId,
     );
-  finalizeKey(sql, msgId);
+  finalizeKey(sql, msgId, now);
   // A notice's body stays for fetch (#fetch deletes it); B7's expiry sweep
   // deletes it otherwise.
   if (outcome === "refused" || r.size <= LIMITS.inlineBodyBytes)
@@ -2175,6 +2638,8 @@ function settle(
  */
 export const SWEEP_BATCH = 50;
 const BATCH = SWEEP_BATCH;
+/** #1295: how often the hub-wide pending byte total is read again. */
+const HUB_BYTES_REFRESH_MS = 30_000;
 /**
  * The persisted revoke drain (B9, B11): one meta row per revoked machine whose
  * agents still need their inboxes expired, keyed DRAIN_PREFIX + machine id;
@@ -2205,11 +2670,13 @@ const CLOSE_END = "close_drain;";
  * open-bus #422: a machine with no daemon socket for this long has its live
  * agents closed by the alarm, as agent_down closes one. Safe: a reconnecting
  * daemon re-sends agent_up for every session it still has (bus-daemon
- * onOpen), and queued mail (LIMITS.mailTtlSec) has long expired by then.
+ * onOpen). The close is into `away` (#1295): the agent's name and its
+ * queued mail are kept until away_since (the machine's disconnected_at) +
+ * MAILBOX_RETAIN_MS, so a reopen within it still gets the mail.
  */
 export const OFFLINE_REAP_MS = 24 * HOUR_MS;
 /** Active machines that have live agents and an offline time, due first. */
-const OFFLINE_DUE_SQL = `select id from machines
+const OFFLINE_DUE_SQL = `select id, disconnected_at as disconnectedAt from machines
   where org_id = ? and revoked_at is null and disconnected_at is not null
     and disconnected_at <= ?
     and exists (select 1 from agents where agents.machine_id = machines.id and agents.live = 1)
@@ -2223,12 +2690,15 @@ const RETAIN_MS = 24 * HOUR_MS;
  * B14: how long a send key (sender agent id, send frame id) dedupes. At least
  * LIMITS.mailTtlSec (the contract's 1 h); twice it, so a resend that comes
  * just after the message expired still gets its `expired` receipt instead of
- * sending again. A receipt outlives its key: it stays pending at most
- * mailTtlSec, then is kept RETAIN_MS (24 h) past final or told.
+ * sending again. #1295: the age applies only to a FINAL key (its receipt left
+ * pending); a key of mail still pending (up to MAILBOX_RETAIN_MS) is never
+ * dropped by age, so a pending send is never sent twice. A receipt outlives
+ * its key: it stays pending at most MAILBOX_RETAIN_MS, then is kept RETAIN_MS
+ * (24 h) past final or told.
  */
 export const SEND_KEY_RETAIN_MS = 2 * LIMITS.mailTtlSec * 1000;
 /**
- * B14: send keys kept per sender agent (inboxCap x 4). A new key past the cap
+ * B14: send keys kept per sender agent (MAILBOX_PENDING_CAP x 4 = 800). A new key past the cap
  * evicts that agent's oldest key whose send is final (delivered, expired or
  * refused), never a pending one, so a pending send is never delivered twice.
  * With every key pending (the agent has this many undelivered sends in
@@ -2237,14 +2707,19 @@ export const SEND_KEY_RETAIN_MS = 2 * LIMITS.mailTtlSec * 1000;
  * sends again); a legitimate flood is already limited by the B11 frame
  * budget and the recipients' inbox caps.
  */
-export const SEND_KEYS_PER_AGENT = LIMITS.inboxCap * 4;
+export const SEND_KEYS_PER_AGENT = MAILBOX_PENDING_CAP * 4;
 /**
  * B14: send keys kept hub-wide. Agent ids are per (machine, native_ref) and
  * never deleted, so ref churn would multiply the per-agent cap; this bounds
  * the table. Same rule: evict the hub's oldest final key (send_keys_final, no scan
  * limit: refused only when no key anywhere is final), else `rate_limited`.
+ * #1295: a key of pending mail now lives up to MAILBOX_RETAIN_MS (7 d) and is
+ * never evicted, so one hub-wide cap shared by every sender could lock all
+ * of them out for a week. It is raised tenfold (a key row with its indexes is
+ * ~400-450 bytes: ~85 MB at the cap) instead of exempting away mail, which would leave the table
+ * unbounded; the per-agent cap (800) still bounds each sender.
  */
-export const SEND_KEYS_TOTAL = 20_000;
+export const SEND_KEYS_TOTAL = 200_000;
 /** The `rate_limited` message for a send refused at a send-key cap. */
 export const SEND_KEYS_MESSAGE = "Too many sends in flight";
 /**
@@ -2276,14 +2751,19 @@ const AGENT_PURGE_KEY = "agent_purge";
 const AGENT_PURGE_RETRY_KEY = "agent_purge_retry";
 const AGENT_PURGE_RETRY_MS = HOUR_MS;
 /**
- * True (1) when closed agent `a` has no work left. One parameter: the send
- * key cutoff (now - SEND_KEY_RETAIN_MS). Each probe is one indexed lookup.
+ * True (1) when closed agent `a` has no work left. Two parameters: the send
+ * key cutoff (now - SEND_KEY_RETAIN_MS) and now (#1295: an agent whose `away`
+ * reservation has not expired keeps its row). Each probe is one indexed lookup.
  */
-const IDLE_AGENT_SQL = `(not exists (select 1 from receipts r indexed by receipts_to where r.to_agent = a.id and r.state = 'pending')
-  and not exists (select 1 from receipts r indexed by receipts_from_pending where r.from_agent = a.id and r.state = 'pending')
-  and not exists (select 1 from mail m indexed by mail_to where m.to_agent = a.id)
+const IDLE_INBOX_SQL = `not exists (select 1 from receipts r indexed by receipts_to where r.to_agent = a.id and r.state = 'pending')
+  and not exists (select 1 from mail m indexed by mail_to where m.to_agent = a.id)`;
+/** The closed agent's own sends need nothing more (one parameter: the send key cutoff). */
+const IDLE_OUTBOX_SQL = `not exists (select 1 from receipts r indexed by receipts_from_pending where r.from_agent = a.id and r.state = 'pending')
   and not exists (select 1 from send_keys k indexed by send_keys_agent where k.from_agent = a.id and k.created_at >= ?)
-  and not exists (select 1 from receipts r indexed by receipts_unnotified where r.from_agent = a.id and r.notified_at is null and r.state != 'pending'))`;
+  and not exists (select 1 from receipts r indexed by receipts_unnotified where r.from_agent = a.id and r.notified_at is null and r.state != 'pending')`;
+const AWAY_ROW_SQL = `exists (select 1 from former_names f indexed by former_names_agent where f.agent_id = a.id and f.kind = 'away' and f.expires_at > ?)`;
+const IDLE_AGENT_SQL = `(${IDLE_INBOX_SQL} and ${IDLE_OUTBOX_SQL}
+  and not ${AWAY_ROW_SQL})`;
 
 const isRefusalReason = (r: string | null): r is RefusalReason =>
   (REFUSAL_REASONS as readonly (string | null)[]).includes(r);
@@ -2427,11 +2907,19 @@ export class BusHub extends DurableObject<Env> {
 
   /** The hub-wide send-key cap (SEND_KEYS_TOTAL; tests may lower it). */
   #sendKeysCap = SEND_KEYS_TOTAL;
+  #sendKeysPerAgent = SEND_KEYS_PER_AGENT;
   /**
    * Rows in send_keys, counted once on first need and then kept by every
    * insert and delete here (null: count again; the alarm sweep resets it).
    */
   #sendKeys: number | null = null;
+  /**
+   * #1295: pending bytes hub-wide (HUB_MAILBOX_BYTES_CAP), read from the
+   * receipts every HUB_BYTES_REFRESH_MS and kept current by sends between
+   * reads. Finalizations are not tracked, so it only errs toward full until
+   * the next read.
+   */
+  #hubBytes: { n: number; at: number } | null = null;
 
   /** Tests only: static, so not on the RPC surface. */
   static heldStats(hub: BusHub): { bytes: number; ids: string[] } {
@@ -2464,6 +2952,11 @@ export class BusHub extends DurableObject<Env> {
   static setSendKeysTotalForTests(hub: BusHub, cap: number | null): void {
     hub.#sendKeysCap = cap ?? SEND_KEYS_TOTAL;
     hub.#sendKeys = null;
+  }
+
+  /** Tests only (static, not RPC): the per-agent send-key cap (null: SEND_KEYS_PER_AGENT). */
+  static setSendKeysPerAgentForTests(hub: BusHub, cap: number | null): void {
+    hub.#sendKeysPerAgent = cap ?? SEND_KEYS_PER_AGENT;
   }
 
   /** Tests only (static, not RPC): the closed-agent cap check (#roomForClosed). */
@@ -2542,6 +3035,58 @@ export class BusHub extends DurableObject<Env> {
   /** #1296: removes role `id` (its name is free at once); false when unknown. Worker only. */
   async deleteRole(id: string): Promise<boolean> {
     return deleteRole(this.ctx.storage.sql, OWNER_ORG_ID, id);
+  }
+
+  // ------------------------------------------------------------------ links
+
+  #maxLinks = BUS_LINK_MAX;
+
+  /** Tests only (static, not RPC): the link cap (null: BUS_LINK_MAX). */
+  static setMaxLinksForTests(hub: BusHub, max: number | null): void {
+    hub.#maxLinks = max ?? BUS_LINK_MAX;
+  }
+
+  /** #1567: the member's links between namespaces, for the dashboard. Worker only. */
+  async listLinks(): Promise<BusLink[]> {
+    return listLinks(this.ctx.storage.sql, OWNER_ORG_ID, this.#maxLinks);
+  }
+
+  /**
+   * #1567: links namespaces `a` and `b` (idempotent). Both sides' sockets
+   * hear `roster_changed`. Worker only (the member's REST); no frame links.
+   */
+  async putLink(a: string, b: string): Promise<PutLinkResult> {
+    const sql = this.ctx.storage.sql;
+    const existed = isLinked(sql, OWNER_ORG_ID, a, b);
+    const r = addLink(
+      sql,
+      OWNER_ORG_ID,
+      a,
+      b,
+      this.#now(),
+      newId,
+      this.#maxLinks,
+    );
+    if (r.ok && !existed)
+      notifyRoster(this.ctx, {
+        namespaces: [a, b],
+        global: false,
+        linksOnly: true,
+      });
+    logEvent("link_set", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /** #1567: removes link `id`; false when unknown. Both sides hear `roster_changed`. Worker only. */
+  async deleteLink(id: string): Promise<boolean> {
+    const gone = removeLink(this.ctx.storage.sql, OWNER_ORG_ID, id);
+    if (gone)
+      notifyRoster(this.ctx, {
+        namespaces: [gone.a, gone.b],
+        global: false,
+        linksOnly: true,
+      });
+    return gone !== null;
   }
 
   /**
@@ -2751,9 +3296,9 @@ export class BusHub extends DurableObject<Env> {
     // The roster change is read while the agents are still open.
     const change = machineChange(sql, id);
     // M2: the drain walks the agents open at the revoke (agents_machine, at
-    // most maxAgentsPerMachine), never the machine's closed history. A
-    // closed agent's leftover mail is the close drain's (#closeSessions
-    // queued it at its close), so only these can still receive.
+    // most maxAgentsPerMachine) and, #1295, the machine's away agents
+    // (releaseMachineNames: closed with their pending mail kept, at most
+    // CLOSED_AGENTS_PER_MACHINE), never the rest of its closed history.
     const ids = sql
       .exec(
         `update agents set live = 0, last_name = name, updated_at = ?, ${STATUS_CLEAR} where machine_id = ? and live = 1 returning id`,
@@ -2763,7 +3308,9 @@ export class BusHub extends DurableObject<Env> {
       .toArray()
       .map((r) => String(r.id));
     // #1448: nothing is held; every name its agents held or reserved is free.
-    releaseMachineNames(sql, id, ids, now);
+    // #1295: agents already away hold mail too; the drain below expires it
+    // `revoked`, and their reservations go with the names.
+    ids.push(...releaseMachineNames(sql, id, ids, now));
     sql.exec(
       "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do nothing",
       OWNER_ORG_ID,
@@ -3020,7 +3567,11 @@ export class BusHub extends DurableObject<Env> {
           server_version: VERSION,
           // Only to a hello that listed ids: any other client decodes hello_ok
           // strictly, a rename-only one included.
-          ...(hasCap(f, BUS_CAPS.ids) ? { caps: [...HUB_CAPS] } : {}),
+          ...(hasCap(f, BUS_CAPS.ids) ||
+          hasCap(f, BUS_CAPS.mailbox) ||
+          hasCap(f, BUS_CAPS.links)
+            ? { caps: [...HUB_CAPS] }
+            : {}),
         });
         return;
       case "sessions": {
@@ -3031,10 +3582,11 @@ export class BusHub extends DurableObject<Env> {
         // inline batch and one queue row (B11).
         const downed = all<{ id: string; namespace: string; global: number }>(
           sql,
-          `update agents set live = 0, last_name = name, updated_at = ?, ${STATUS_CLEAR}
+          `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR}
             where machine_id = ? and live = 1 and org_id = ?
               and native_ref in (select value from json_each(?))
            returning id, namespace, global`,
+          this.#now(),
           this.#now(),
           machineId,
           OWNER_ORG_ID,
@@ -3060,6 +3612,10 @@ export class BusHub extends DurableObject<Env> {
           sendError(ws, f.id, "rate_limited", AGENT_CAP_MESSAGES.machine);
           return;
         }
+        // #1295: a /clear. The same process reports a new session; the new
+        // ref takes over the old one's agent row (address, former names, mail).
+        if (f.replaces !== undefined && mailboxGated(ws))
+          takeOver(sql, machineId, f.replaces, f.agent_ref, this.#now());
         const { reply, change, arms } = agentUp(sql, machineId, f, this.#now());
         for (const t of arms) this.#arm(t);
         sendFrame(ws, reply);
@@ -3090,7 +3646,15 @@ export class BusHub extends DurableObject<Env> {
         if (sender)
           sendFrame(
             ws,
-            roster(this.ctx, sender, f.id, renameGated(ws), this.#now()),
+            roster(
+              this.ctx,
+              sender,
+              f.id,
+              renameGated(ws),
+              this.#now(),
+              mailboxGated(ws),
+              linksGated(ws),
+            ),
           );
         return;
       case "send":
@@ -3339,7 +3903,7 @@ export class BusHub extends DurableObject<Env> {
    */
   #reapOffline(now: number): boolean {
     const sql = this.ctx.storage.sql;
-    const due = all<{ id: string }>(
+    const due = all<{ id: string; disconnectedAt: number }>(
       sql,
       OFFLINE_DUE_SQL,
       OWNER_ORG_ID,
@@ -3360,10 +3924,11 @@ export class BusHub extends DurableObject<Env> {
       }
       const rows = all<{ id: string; namespace: string; global: number }>(
         sql,
-        `update agents set live = 0, last_name = name, updated_at = ?, ${STATUS_CLEAR}
+        `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR}
           where rowid in (select rowid from agents where machine_id = ? and live = 1 and org_id = ? limit ?)
          returning id, namespace, global`,
         now,
+        m.disconnectedAt,
         m.id,
         OWNER_ORG_ID,
         budget,
@@ -3380,7 +3945,8 @@ export class BusHub extends DurableObject<Env> {
       });
     }
     if (closed.length === 0) return false;
-    this.#closeSessions(closed);
+    // Their mail sent while offline ends with the reservation, not after it.
+    this.#closeSessions(closed, true);
     notifyRoster(this.ctx, change);
     return budget === 0;
   }
@@ -3407,7 +3973,14 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
     if (key.dropped && this.#sendKeys !== null) this.#sendKeys--;
-    const res = resolveTarget(sql, sender, f.to_name, f.to_namespace, now);
+    const res = resolveTarget(
+      sql,
+      sender,
+      f.to_name,
+      f.to_namespace,
+      now,
+      linksGated(ws),
+    );
     // A reply (`to_id`) goes only to the agent it answers: never to whoever
     // holds the name now (wireReason shows agent_gone only to an ids socket).
     // Role resolution stays inside resolveTarget, before this check.
@@ -3420,8 +3993,9 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
     const target = res.agent;
-    if (inboxFull(sql, target)) {
-      refuseSend(ws, f.id, "inbox_full");
+    const size = utf8Bytes(f.body);
+    if (inboxFull(sql, target, size) || this.#hubFull(size, now)) {
+      refuseSend(ws, f.id, "mailbox_full");
       return;
     }
     if (!this.#roomForKey(sender.id)) {
@@ -3430,9 +4004,22 @@ export class BusHub extends DurableObject<Env> {
     }
 
     const msgId = newId();
-    const size = utf8Bytes(f.body);
-    const expiresAt = now + LIMITS.mailTtlSec * 1000;
-    const socket = liveSocket(this.ctx, target.machineId);
+    if (this.#hubBytes) this.#hubBytes.n += size;
+    // #1295: mail lives MAILBOX_RETAIN_MS, but never past an away agent's
+    // reservation (away_since + MAILBOX_RETAIN_MS).
+    let expiresAt = now + MAILBOX_RETAIN_MS;
+    if (target.live !== 1) {
+      const since = one<{ t: number | null }>(
+        sql,
+        "select away_since as t from agents where id = ?",
+        target.id,
+      )?.t;
+      if (since !== null && since !== undefined)
+        expiresAt = Math.min(expiresAt, since + MAILBOX_RETAIN_MS);
+    }
+    // An away agent has no session to push to: the mail waits for its reopen.
+    const socket =
+      target.live === 1 ? liveSocket(this.ctx, target.machineId) : null;
     const inline = size <= LIMITS.inlineBodyBytes;
     // Held in memory only for an inline push to a live socket under the cap.
     const held = socket !== null && inline && this.#fits(size);
@@ -3470,6 +4057,7 @@ export class BusHub extends DurableObject<Env> {
       ...(toNameShown(ws, f.to_name, target.name, viaRole)
         ? { to_name: target.name }
         : {}),
+      ...queuedWire(ws, this.ctx, target.id, now),
     });
     if (!socket) return;
 
@@ -3487,6 +4075,24 @@ export class BusHub extends DurableObject<Env> {
     else sendFrame(socket, { ...head, notice: { size, msg_id: msgId } });
   }
 
+  /** #1295: whether `size` more bytes would pass HUB_MAILBOX_BYTES_CAP. */
+  #hubFull(size: number, now: number): boolean {
+    if (
+      this.#hubBytes === null ||
+      now < this.#hubBytes.at ||
+      now - this.#hubBytes.at >= HUB_BYTES_REFRESH_MS
+    )
+      this.#hubBytes = {
+        n:
+          one<{ n: number }>(
+            this.ctx.storage.sql,
+            "select coalesce(sum(size), 0) as n from receipts where state = 'pending'",
+          )?.n ?? 0,
+        at: now,
+      };
+    return this.#hubBytes.n + size > HUB_MAILBOX_BYTES_CAP;
+  }
+
   /**
    * B14: makes room for one more send key under SEND_KEYS_PER_AGENT and
    * SEND_KEYS_TOTAL, evicting only final keys (see there). Both evictions are
@@ -3501,9 +4107,9 @@ export class BusHub extends DurableObject<Env> {
         sql,
         "select count(*) as n from (select 1 from send_keys where from_agent = ? limit ?)",
         agentId,
-        SEND_KEYS_PER_AGENT,
+        this.#sendKeysPerAgent,
       )?.n ?? 0;
-    if (n >= SEND_KEYS_PER_AGENT) {
+    if (n >= this.#sendKeysPerAgent) {
       const k = one<{ k: number }>(sql, AGENT_FINAL_KEY_SQL, agentId)?.k;
       if (k === undefined) return false;
       evict.add(k);
@@ -3526,7 +4132,8 @@ export class BusHub extends DurableObject<Env> {
    * B14: the reply to a resend of an accepted send, from its key and receipt
    * row; nothing is created, delivered, stored or sent to the recipient. The
    * original `receipt` (pending: the send receipt is only pending or refused
-   * on the wire) and, once final, a `receipt_update` with the current state
+   * on the wire; its `queued`/`since` are recomputed from the recipient's
+   * state now, for a mailbox socket, while the mail is pending) and, once final, a `receipt_update` with the current state
    * (receipt_update is idempotent per msg_id; this may repeat one the sender
    * already got), which also marks the sender told. A receipt row missing
    * within the key's window (receipts outlive keys) would read as expired.
@@ -3543,14 +4150,16 @@ export class BusHub extends DurableObject<Env> {
       state: string;
       reason: string | null;
       toName: string | null;
+      toAgent: string | null;
     }>(
       sql,
-      "select state, reason, to_name as toName from receipts where id = ?",
+      "select state, reason, to_name as toName, to_agent as toAgent from receipts where id = ?",
       msgId,
     ) ?? {
       state: "expired",
       reason: null,
       toName: null,
+      toAgent: null,
     };
     sendFrame(ws, {
       v: 1,
@@ -3562,6 +4171,10 @@ export class BusHub extends DurableObject<Env> {
       // (the name the send resolved to, from the receipt row).
       ...(r.toName !== null && toNameShown(ws, sentTo, r.toName, viaRole)
         ? { to_name: r.toName }
+        : {}),
+      // Only while the mail still waits: a final state has no queue to show.
+      ...(r.state === "pending" && r.toAgent !== null
+        ? queuedWire(ws, this.ctx, r.toAgent, this.#now())
         : {}),
     });
     const update = updateFrame(msgId, r.state, r.reason);
@@ -3689,33 +4302,61 @@ export class BusHub extends DurableObject<Env> {
       msgId,
     );
     if (hit.length === 0) return;
-    finalizeKey(sql, msgId);
+    finalizeKey(sql, msgId, this.#now());
     sql.exec("delete from mail where id = ?", msgId);
     this.#release(msgId);
     this.#tell(msgId, fromAgent, "expired", reason ?? null);
   }
 
   /**
-   * The agents' sessions ended (B11): their pending mail expires as
-   * recipient_closed (spec "queue or refuse"), bodies dropped, and their acked
-   * notices lose their bodies (the session that could fetch them is gone, and
-   * a session reopened under the same ref must not read them; fetch also
-   * checks the session). The receipts stay (delivered is true).
+   * The agents' sessions ended (B11). #1295: their pending mail is KEPT for
+   * the agents' `away` reservation (MAILBOX_RETAIN_MS) instead of expiring as
+   * recipient_closed; a reopen with the same agent_ref receives it, and the
+   * TTL sweep expires it (sender told) otherwise. Their acked notices lose
+   * their bodies: inline and by the drain here, and a reopen that keeps its
+   * boundary (an unexpired away row) deletes any left before it is live, so
+   * the new session never reads them (a reopen past the boundary is also
+   * filtered by fetch). The receipts stay (delivered is true).
    *
-   * Bounded: CLOSE_INLINE_BATCH expiries and as many body deletes inline,
-   * for the whole call; every agent whose work may not be done is queued in
-   * ONE meta row (CLOSE_PREFIX + close time + id, value
-   * {"through": max receipts rowid at the close, "ids": [...]}) for the
-   * alarm's close drain. The boundary is a rowid, not a timestamp (B11 L1):
-   * a session reopened in the same millisecond starts past it.
+   * `capMail` (the offline reap): the agents closed at their machine's
+   * disconnected_at, so mail sent since then ends with the reservation
+   * (expires_at = min(expires_at, away_since + MAILBOX_RETAIN_MS)).
+   *
+   * Bounded: CLOSE_INLINE_BATCH body deletes inline, for the whole call;
+   * every agent whose work may not be done is queued in ONE meta row
+   * (CLOSE_PREFIX + close time + id, value {"through": max receipts rowid at
+   * the close, "ids": [...]}) for the alarm's close drain. The boundary is a
+   * rowid, not a timestamp (B11 L1): a session reopened in the same
+   * millisecond starts past it.
    */
-  #closeSessions(agentIds: string[]): void {
+  #closeSessions(agentIds: string[], capMail = false): void {
     if (agentIds.length === 0) return;
     const sql = this.ctx.storage.sql;
     const closedAt = this.#now();
-    // OpenBus #451: their names are held where they were left, for the grace.
+    // OpenBus #451, #1295: their names are reserved where they were left
+    // (`away`), for MAILBOX_RETAIN_MS after the agent went away.
     const heldTo = leaveNames(sql, agentIds, closedAt);
     if (heldTo !== null) this.#arm(heldTo);
+    if (capMail) {
+      const ids = JSON.stringify(agentIds);
+      sql.exec(
+        `update receipts set expires_at = (select a.away_since + ? from agents a where a.id = receipts.to_agent)
+          where state = 'pending' and to_agent in (select value from json_each(?))
+            and expires_at > (select a.away_since + ? from agents a where a.id = receipts.to_agent)`,
+        MAILBOX_RETAIN_MS,
+        ids,
+        MAILBOX_RETAIN_MS,
+      );
+      sql.exec(
+        `update mail set expires_at = (select a.away_since + ? from agents a where a.id = mail.to_agent)
+          where to_agent in (select value from json_each(?))
+            and expires_at > (select a.away_since + ? from agents a where a.id = mail.to_agent)`,
+        MAILBOX_RETAIN_MS,
+        ids,
+        MAILBOX_RETAIN_MS,
+      );
+      this.#arm(closedAt + 1);
+    }
     // M1: the closed rows' purge deadline.
     this.#arm(closedAt + CLOSED_AGENT_RETAIN_MS);
     // Rowid boundary (F3, accepted): relies on receipts rowids never being
@@ -3723,28 +4364,15 @@ export class BusHub extends DurableObject<Env> {
     const through =
       one<{ n: number | null }>(sql, "select max(rowid) as n from receipts")
         ?.n ?? 0;
-    let receipts = CLOSE_INLINE_BATCH;
     let bodies = CLOSE_INLINE_BATCH;
     const left: string[] = [];
     for (const agentId of agentIds) {
-      if (receipts === 0 || bodies === 0) {
+      if (bodies === 0) {
         left.push(agentId);
         continue;
       }
-      const rows = all<{ id: string; fromAgent: string }>(
-        sql,
-        "select id, from_agent as fromAgent from receipts where to_agent = ? and state = 'pending' and rowid <= ? limit ?",
-        agentId,
-        through,
-        receipts,
-      );
-      for (const r of rows) this.#expire(r.id, r.fromAgent, "recipient_closed");
-      const fullR = rows.length >= receipts;
-      receipts -= rows.length;
-      const n = fullR
-        ? 0
-        : deleteDeliveredBodies(sql, agentId, bodies, through);
-      if (fullR || n >= bodies) left.push(agentId);
+      const n = deleteDeliveredBodies(sql, agentId, bodies, through);
+      if (n >= bodies) left.push(agentId);
       bodies -= n;
     }
     if (left.length === 0) return;
@@ -3795,9 +4423,47 @@ export class BusHub extends DurableObject<Env> {
       machineId,
       CLOSED_AGENTS_PER_MACHINE,
       this.#now() - SEND_KEY_RETAIN_MS,
+      this.#now(),
     );
-    if (!victim) return false;
-    sql.exec("delete from agents where rowid = ? and live = 0", victim.rid);
+    if (victim) {
+      sql.exec("delete from agents where rowid = ? and live = 0", victim.rid);
+      return true;
+    }
+    // #1295: every close leaves an `away` reservation, so a machine closing
+    // 1000 sessions in 7 days has no idle row. Evict the oldest away agent
+    // of this machine: first one with no inbox and nothing owed as a sender,
+    // then one with an inbox (its pending mail expires as recipient_closed,
+    // senders told), then whatever its outbox holds. An evicted sender's
+    // pending sends stay pending; a later outcome finds no sender row
+    // (#tell) and is simply not delivered. The reservation goes with it.
+    const oldest = (inbox: boolean, outbox: boolean) =>
+      one<{ rid: number; id: string }>(
+        sql,
+        `select a.rid, a.id from (select rowid as rid, id from agents indexed by agents_machine_closed
+            where machine_id = ? and live = 0 order by updated_at, rowid limit ?) a
+          where ${inbox ? `${IDLE_INBOX_SQL} and ` : ""}${outbox ? `${IDLE_OUTBOX_SQL} and ` : ""}${AWAY_ROW_SQL} limit 1`,
+        machineId,
+        CLOSED_AGENTS_PER_MACHINE,
+        ...(outbox ? [this.#now() - SEND_KEY_RETAIN_MS] : []),
+        this.#now(),
+      );
+    const away =
+      oldest(true, true) ?? oldest(false, true) ?? oldest(false, false);
+    if (!away) return false;
+    for (;;) {
+      const rows = all<{ id: string; fromAgent: string }>(
+        sql,
+        "select id, from_agent as fromAgent from receipts where to_agent = ? and state = 'pending' limit ?",
+        away.id,
+        BATCH,
+      );
+      for (const r of rows) this.#expire(r.id, r.fromAgent, "recipient_closed");
+      if (rows.length < BATCH) break;
+    }
+    sql.exec("delete from mail where to_agent = ?", away.id);
+    sql.exec("delete from former_names where agent_id = ?", away.id);
+    sql.exec("delete from agents where rowid = ? and live = 0", away.rid);
+    logEvent("away_evicted", { machineId });
     return true;
   }
 
@@ -3831,6 +4497,7 @@ export class BusHub extends DurableObject<Env> {
           and (a.updated_at > ? or (a.updated_at = ? and a.rowid > ?))
         order by a.updated_at, a.rowid limit ?`,
       now - SEND_KEY_RETAIN_MS,
+      now,
       now - CLOSED_AGENT_RETAIN_MS,
       u,
       u,
@@ -3916,16 +4583,14 @@ export class BusHub extends DurableObject<Env> {
 
   /**
    * One bounded step of the close drain, oldest queue row first: for each
-   * queued agent, pending mail up to the close's rowid boundary expires as
-   * recipient_closed (sender told or left for replay) and its acked notices
-   * lose their bodies. At most BATCH agents, BATCH receipts and BATCH bodies
-   * per step; a row is rewritten with the agents still to do, and deleted
+   * queued agent, its acked notices lose their bodies (#1295: pending mail
+   * is kept for the away reservation, not expired here). At most BATCH agents
+   * and BATCH bodies per step; a row is rewritten with the agents still to do, and deleted
    * once empty (or unreadable). True while any row remains.
    */
   #drainClosed(): boolean {
     const sql = this.ctx.storage.sql;
     let visits = 0;
-    let receipts = BATCH;
     let bodies = BATCH;
     const queue = all<{ key: string; value: string }>(
       sql,
@@ -3942,17 +4607,6 @@ export class BusHub extends DurableObject<Env> {
       for (const agentId of ids) {
         if (visits >= BATCH) break;
         visits++;
-        const rows = all<{ id: string; fromAgent: string }>(
-          sql,
-          "select id, from_agent as fromAgent from receipts where to_agent = ? and state = 'pending' and rowid <= ? limit ?",
-          agentId,
-          entry?.through ?? 0,
-          receipts,
-        );
-        for (const r of rows)
-          this.#expire(r.id, r.fromAgent, "recipient_closed");
-        receipts -= rows.length;
-        if (receipts === 0) break;
         bodies -= deleteDeliveredBodies(
           sql,
           agentId,
@@ -3981,10 +4635,10 @@ export class BusHub extends DurableObject<Env> {
         break;
       }
     }
-    if (receipts < BATCH || bodies < BATCH)
+    if (bodies < BATCH)
       logEvent("drain_step", {
         kind: "closed",
-        expired: BATCH - receipts,
+        expired: 0,
         bodies: BATCH - bodies,
       });
     return (
@@ -4077,8 +4731,8 @@ export class BusHub extends DurableObject<Env> {
    * Reconnect flush: the agent's pending mail to its live socket, oldest
    * first. A body in `mail` is sent from there and its row kept until the
    * ack (inline) or expiry; only a never-persisted held body is re-held.
-   * Oversized bodies go as a notice. Bounded by inboxCap (50): an agent never
-   * has more pending than that, which SWEEP_BATCH covers. Arms for each
+   * Oversized bodies go as a notice. Bounded by MAILBOX_PENDING_CAP (200):
+   * an agent never has more pending than that, read SWEEP_BATCH at a time. Arms for each
    * row's expiry (a B6-era row may never have armed one). A receipt past its TTL, or with no body anywhere (lost to an
    * eviction), expires instead: never delivered. The daemon dedupes by
    * msg_id, so redelivering an unacked held body is safe.
@@ -4086,16 +4740,31 @@ export class BusHub extends DurableObject<Env> {
   #flush(ws: WebSocket, agent: AgentRow): void {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
-    for (const r of all<ReceiptRow>(
-      sql,
-      `select ${RECEIPT_COLS} from receipts where to_agent = ? and state = 'pending' and rowid > ? order by created_at, rowid limit ?`,
-      agent.id,
-      agent.sessionStartRowid,
-      BATCH,
-    )) {
+    // Paged by rowid: a mailbox holds up to MAILBOX_PENDING_CAP (#1295), more
+    // than one BATCH. Reads go before sends of the same page, never after.
+    let after = agent.sessionStartRowid;
+    for (let page = 0; page <= MAILBOX_PENDING_CAP / BATCH; page++) {
+      const rows = all<ReceiptRow & { rid: number }>(
+        sql,
+        `select ${RECEIPT_COLS}, rowid as rid from receipts where to_agent = ? and state = 'pending' and rowid > ? order by rowid limit ?`,
+        agent.id,
+        after,
+        BATCH,
+      );
+      for (const r of rows) this.#flushOne(ws, agent, r, now);
+      const last = rows.at(-1);
+      if (rows.length < BATCH || last === undefined) return;
+      after = last.rid;
+    }
+  }
+
+  /** One pending receipt of #flush: delivered, or expired when it has no body or is past its TTL. */
+  #flushOne(ws: WebSocket, agent: AgentRow, r: ReceiptRow, now: number): void {
+    const sql = this.ctx.storage.sql;
+    {
       if (r.expiresAt <= now) {
         this.#expire(r.id, r.fromAgent);
-        continue;
+        return;
       }
       const h = this.#held.get(r.id);
       const body =
@@ -4105,7 +4774,7 @@ export class BusHub extends DurableObject<Env> {
         null;
       if (body === null) {
         this.#expire(r.id, r.fromAgent);
-        continue;
+        return;
       }
       this.#arm(r.expiresAt);
       const head = {
@@ -4120,7 +4789,7 @@ export class BusHub extends DurableObject<Env> {
       } as const;
       if (r.size > LIMITS.inlineBodyBytes) {
         sendFrame(ws, { ...head, notice: { size: r.size, msg_id: r.id } });
-        continue;
+        return;
       }
       // A body already on disk stays there until ack or expiry (never moved
       // into memory, so an eviction cannot lose it). A held body, never
@@ -4311,7 +4980,7 @@ export class BusHub extends DurableObject<Env> {
     // B14: send keys past their window (send_keys_due), kept off the count.
     const swept = all(
       sql,
-      "delete from send_keys where rowid in (select rowid from send_keys where created_at < ? limit ?) returning rowid",
+      "delete from send_keys where rowid in (select rowid from send_keys indexed by send_keys_final where final = 1 and created_at < ? limit ?) returning rowid",
       now - SEND_KEY_RETAIN_MS,
       BATCH,
     ).length;
@@ -4360,7 +5029,10 @@ export class BusHub extends DurableObject<Env> {
         "select min(final_at) as t from receipts where notified_at is null and state != 'pending'",
         RETAIN_MS,
       ),
-      min("select min(created_at) as t from send_keys", SEND_KEY_RETAIN_MS + 1),
+      min(
+        "select min(created_at) as t from send_keys indexed by send_keys_final where final = 1",
+        SEND_KEY_RETAIN_MS + 1,
+      ),
       this.#purgeDeadline(),
       nextStatusDue(sql),
       min("select min(expires_at) as t from former_names"),

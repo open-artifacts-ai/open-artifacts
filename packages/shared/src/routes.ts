@@ -110,6 +110,18 @@ export const R = {
   busRoles: "/api/v1/bus/roles",
   /** DELETE -> 204: removes the caller's role (idempotent: unknown is 204 too). Same rules as PUT R.busRoles. */
   busRole: (id: string) => `/api/v1/bus/roles/${seg(id)}`,
+  /**
+   * GET -> BusLinks: the member's links between namespaces (#1567). PUT
+   * BusLinkPut -> { link: BusLink }: links two namespaces (idempotent: an
+   * existing link is returned); 400 bad_request (invalid or equal
+   * namespaces), 409 conflict with details `{ reason }`: `link_limit`
+   * (BUS_LINK_MAX) or `no_bus` (no machine has connected yet). mcp.connect;
+   * PUT and DELETE take an interactive cookie session (a PAT, OAuth grant or
+   * machine token gets 404), so no AI agent can link namespaces.
+   */
+  busLinks: "/api/v1/bus/links",
+  /** DELETE -> 204: removes the caller's link (idempotent: unknown is 204 too). Same rules as PUT R.busLinks. */
+  busLink: (id: string) => `/api/v1/bus/links/${seg(id)}`,
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
   /**
@@ -120,6 +132,12 @@ export const R = {
    * limit 1000). Each is omitted when unavailable.
    */
   usage: "/api/v1/usage",
+  /** Hosted billing. POST BillingCheckoutInput -> BillingUrl (the Stripe Checkout page). Org owner or admin in an interactive cookie session only (a PAT, OAuth grant or MCP agent is 404; else 404); 404 off hosted; 503 billing_unavailable. */
+  billingCheckout: "/api/v1/billing/checkout",
+  /** POST {} -> BillingUrl (the Stripe Customer Portal). Same rules as billingCheckout. */
+  billingPortal: "/api/v1/billing/portal",
+  /** POST {} -> BillingUsage: this month's creator count, sent to billing now. Same rules as billingCheckout. */
+  billingUsage: "/api/v1/billing/usage",
   /** GET -> Page<DataDoc> */
   dataCollection: (id: string, col: string) =>
     `${A}/${seg(id)}/data/${seg(col)}`,

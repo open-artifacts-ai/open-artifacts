@@ -1,5 +1,9 @@
 import { withBrokerProps } from "./auth/broker-transport.js";
 import { sweepLoginCodes } from "./auth/codes.js";
+import { usageTick } from "./billing/creators.js";
+import { planNow, withPlanScope } from "./billing/features.js";
+import { billingActive } from "./billing/plan.js";
+import { billingTick } from "./billing/store.js";
 import { stmt } from "./db/stmt.js";
 import { disconnectDirectory } from "./directory/connect.js";
 import { expirePending } from "./directory/store.js";
@@ -15,7 +19,7 @@ import {
   sweepLostIndexJobs,
 } from "./services/artifacts.js";
 import { sweepAuditEvents } from "./services/audit.js";
-import { feedSync, kickSync } from "./services/directory.js";
+import { feedSync, kickSync, syncPausedFor } from "./services/directory.js";
 import { checkLatestRelease } from "./services/release.js";
 import { directoryMode } from "./services/spaces.js";
 import { sweepUploads } from "./services/uploads.js";
@@ -98,7 +102,10 @@ export function scheduled(
   ctx: ExecutionContext,
 ): Promise<void> {
   // The scheduler's broker capabilities (ctx.props) for this invocation.
-  return withBrokerProps(ctx, () => run(event, env, ctx));
+  // Hosted: the billing plan, read once, for every features check.
+  return withBrokerProps(ctx, () =>
+    withPlanScope(env, () => run(event, env, ctx)),
+  );
 }
 
 /** The controller's cron, and its scheduledTime when the caller passes one. */
@@ -110,6 +117,9 @@ async function run(
   env: Env,
   ctx: ExecutionContext,
 ): Promise<void> {
+  // Hosted: this tick's plan, read once (lazily scoped), before any
+  // features check.
+  await planNow(env);
   if (event.cron?.startsWith(SYSTEM_JOB_PREFIX)) {
     if (event.cron === DIRECTORY_SYNC_CRON) {
       ctx.waitUntil(
@@ -117,9 +127,28 @@ async function run(
           logError("cron_task_failed", e),
         ),
       );
+      // Hosted billing: read the tier through this tick's BILLING gate (and
+      // retry a trial start an invite couldn't make), then the monthly
+      // creator report. Both never throw; nothing on a self-hosted install.
+      if (billingActive(env))
+        ctx.waitUntil(
+          (async () => {
+            const now = Date.now();
+            await billingTick(env, now);
+            await usageTick(env, now);
+          })().catch((e) => logError("cron_task_failed", e)),
+        );
+      // Hosted billing: no directory sync while team features are locked
+      // (free, or read-only), nor on a tier that freezes it (Team:
+      // sync_frozen). feedSync hands DirectorySync that mode (syncModeFor:
+      // frozen), so its alarm stops too, and nothing is minted. Nothing is
+      // disconnected or deleted: the binding and the synced rows stay, and
+      // sync resumes with the tier.
       const fed = await feedSync(env);
       if (fed === "fed" || fed === "mint_failed")
         logInfo("system_job", { job: "directory-sync", state: fed });
+      else if (syncPausedFor(env))
+        logInfo("system_job", { job: "directory-sync", state: "plan_paused" });
       return;
     }
     if (event.cron === CLOSE_SOCKETS_CRON) {

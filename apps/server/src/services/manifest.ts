@@ -29,7 +29,22 @@ export type ManifestEntry = {
   key: string;
   size: number;
   contentType: string;
+  /**
+   * Hosted only: the SHA-256 (hex) of an inline file's bytes. The free
+   * storage cap counts distinct content by it (billing/caps.ts); entries
+   * without one (uploads, rows before it) count by key.
+   */
+  digest?: string;
 };
+
+/** SHA-256 hex of an inline file's bytes. */
+async function digestOf(s: InlineSource): Promise<string> {
+  const bytes = "text" in s ? utf8Encoder.encode(s.text) : s.bytes;
+  const h = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", bytes as BufferSource),
+  );
+  return Array.from(h, (b) => b.toString(16).padStart(2, "0")).join("");
+}
 /**
  * Inline files are sized once, here, so their size is exact before any write.
  * Well-formed text stays a string (R2 encodes it natively; `size` is its UTF-8
@@ -383,6 +398,8 @@ export async function materialize(
   artifactId: string,
   userId: string,
   plan: Plan,
+  /** Record each inline file's digest (hosted: the free storage cap). */
+  o: { digest?: boolean } = {},
 ): Promise<{
   manifest: ManifestEntry[];
   written: string[];
@@ -445,6 +462,7 @@ export async function materialize(
       key,
       size: inlineSize(f.source),
       contentType,
+      ...(o.digest ? { digest: await digestOf(f.source) } : {}),
     });
     puts.push(
       env.FILES.put(key, "text" in f.source ? f.source.text : f.source.bytes, {

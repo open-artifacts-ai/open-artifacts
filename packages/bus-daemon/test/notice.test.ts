@@ -27,7 +27,7 @@ describe("receipt_update notices", () => {
   it.each([
     [
       { state: "expired" },
-      '×  Expired: your message to peer, "hi",\n   was not taken within 1 hour.',
+      '×  Expired: your message to peer, "hi",\n   was not taken within 7 days.',
     ],
     [
       { state: "expired", reason: "recipient_closed" },
@@ -80,7 +80,7 @@ describe("receipt_update notices", () => {
       });
       await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
       expect(notify.mock.calls[0][1]).toBe(
-        `×  Expired: your message to peer, "Can you regenerate the 'API' ref erence…",\n   was not taken within 1 hour.`,
+        `×  Expired: your message to peer, "Can you regenerate the 'API' ref erence…",\n   was not taken within 7 days.`,
       );
     },
   );

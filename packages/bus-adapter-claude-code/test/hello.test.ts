@@ -19,6 +19,13 @@ const session = (name: string) => ({
 });
 
 describe("the Claude session's hello", () => {
+  it("lists the mailbox cap: the daemon then sends away rows and the new refusals", () => {
+    expect(sessionHello(session("n"), 1, "/w").caps).toEqual([
+      "mailbox",
+      "pending",
+    ]);
+  });
+
   it.each([
     [
       "a 63-char name ending in an emoji",

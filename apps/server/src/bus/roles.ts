@@ -84,7 +84,7 @@ export function formerReservedSql(
 ): { sql: string; binds: SqlStorageValue[] } {
   return {
     sql: `exists (select 1 from former_names f
-            where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind in ('chosen', 'held')
+            where f.org_id = ? and f.lname = ? and f.expires_at > ? and f.kind in ('chosen', 'held', 'away')
               and f.agent_id is not ?${global ? "" : " and (f.namespace = ? or f.global = 1)"})`,
     binds: [orgId, lname, now, selfId, ...(global ? [] : [namespace])],
   };
