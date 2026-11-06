@@ -42,7 +42,12 @@ describe("publish errors name the next step", () => {
       entry: "a.html",
       files: { "a.html": { uploadId: "nope" } },
     });
-    const e = await refused(r, 400, "bad_request", /create_upload/);
+    const e = await refused(
+      r,
+      400,
+      "bad_request",
+      /Create a new one with create_upload\.$/,
+    );
     expect(e.details).toMatchObject({ reason: "invalid_upload" });
     expect(e.message).toBe(
       "This upload was already used or has expired. Create a new one with create_upload.",
@@ -63,7 +68,12 @@ describe("publish errors name the next step", () => {
       entry: "a.html",
       files: { "a.html": { uploadId: up.uploadId } },
     });
-    await refused(r, 400, "bad_request", /PUT the file/);
+    await refused(
+      r,
+      400,
+      "bad_request",
+      /PUT the file to the upload url, then publish again\.$/,
+    );
   });
 
   it("too_large: inline content over the limit", async () => {
@@ -72,7 +82,7 @@ describe("publish errors name the next step", () => {
       format: "code",
       content: "x".repeat(130 * 1024),
     });
-    await refused(r, 413, "too_large", /create_upload/);
+    await refused(r, 413, "too_large", /then publish_artifact\(/);
   });
 
   it("unsupported_format: bytes no viewer shows", async () => {
@@ -81,7 +91,12 @@ describe("publish errors name the next step", () => {
       entry: "a.bin",
       files: { "a.bin": { base64: b64([0, 1, 2, 3, 0, 255, 254]) } },
     });
-    await refused(r, 400, "unsupported_format", /Publish/);
+    await refused(
+      r,
+      400,
+      "unsupported_format",
+      /Publish the content as|Publish HTML, Markdown/,
+    );
   });
 
   it("binary_entry: bytes that do not fit the format", async () => {
@@ -91,7 +106,12 @@ describe("publish errors name the next step", () => {
       entry: "a.html",
       files: { "a.html": { base64: b64([0x89, 0x50, 0x4e, 0x47, 0, 0, 0]) } },
     });
-    await refused(r, 400, "binary_entry", /Publish|name the file/);
+    await refused(
+      r,
+      400,
+      "binary_entry",
+      /Publish (UTF-8 text|a real \w+), or name the file for its real type\.$|Create a new upload with contentType/,
+    );
   });
 
   it("version_conflict and edit_failed", async () => {
@@ -110,13 +130,13 @@ describe("publish errors name the next step", () => {
       }),
       409,
       "version_conflict",
-      /get_artifact/,
+      /Read it with get_artifact and apply your change to it\.$/,
     );
     await refused(
       await post(R.versions(a.id), { edits: [{ old: "zzz", new: "y" }] }),
       400,
       "edit_failed",
-      /get_artifact/,
+      /Read the current text with get_artifact and copy old exactly\.$/,
     );
   });
 
@@ -129,7 +149,7 @@ describe("publish errors name the next step", () => {
       }),
       400,
       "bad_request",
-      /Set entry/,
+      /Set entry to one of the paths in files\.$/,
     );
     await refused(
       await post(R.artifacts, {
@@ -139,7 +159,23 @@ describe("publish errors name the next step", () => {
       }),
       400,
       "bad_request",
-      /either content or files/,
+      /^Pass either content or files, not both\.$/,
     );
+  });
+
+  it("not_reserved: an id that is neither an artifact nor reserved", async () => {
+    const r = await post(R.artifacts, {
+      id: newId(),
+      title: "t",
+      format: "html",
+      content: "<p>a</p>",
+    });
+    const e = await refused(
+      r,
+      400,
+      "bad_request",
+      /Leave id out to create a new artifact, or call create_upload without artifactId to reserve one\.$/,
+    );
+    expect(e.details).toMatchObject({ reason: "not_reserved" });
   });
 });

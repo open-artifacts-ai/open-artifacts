@@ -262,7 +262,7 @@ describe("B6 breaker", () => {
     });
     expect(r2.status).toBe(400);
     expect((await errOf(r2)).message).toBe(
-      "This id already has an artifact. Publish a new version with its id, or leave id out to create a new artifact.",
+      "No artifact you can publish to has this id, and it was not reserved for you. Leave id out to create a new artifact, or call create_upload without artifactId to reserve one.",
     );
     const up = await uploaded("r.txt");
     const r3 = await call(env, R.versions(up.artifactId), {

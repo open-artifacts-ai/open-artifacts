@@ -300,7 +300,7 @@ export async function publish(
         if (mode === "create")
           throw new ApiError(
             "bad_request",
-            "This id already has an artifact. Publish a new version with its id, or leave id out to create a new artifact.",
+            "No artifact you can publish to has this id, and it was not reserved for you. Leave id out to create a new artifact, or call create_upload without artifactId to reserve one.",
             { path: "id", reason: "not_reserved" },
           );
         throw notFound();

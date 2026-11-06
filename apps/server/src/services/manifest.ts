@@ -85,7 +85,7 @@ const REASON_TEXT: Record<string, string> = {
   invalid_base64:
     "The base64 is not valid. Re-encode the file as standard base64 and publish again.",
   not_reserved:
-    "This id already has an artifact. Publish a new version with the same id, or leave id out to create a new artifact.",
+    "No artifact you can publish to has this id, and it was not reserved for you. Leave id out to create a new artifact, or call create_upload without artifactId to reserve one.",
 };
 const bad = (path: string, reason: string, message?: string) =>
   new ApiError(
