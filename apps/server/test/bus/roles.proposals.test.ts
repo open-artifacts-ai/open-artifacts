@@ -1346,4 +1346,32 @@ describe("role proposals: the secret rides in the URL fragment (#1426)", () => {
     expect(hop.headers.get("location")).toBeNull();
     for (const u of b.urls) expect(u).not.toContain(p.secret);
   });
+
+  it("a decision posted with a stale or ended session gets a card the script keeps the secret for, not a page", async () => {
+    const { who, d, p } = await pending();
+    const b = confirmBrowser(app, APP, BASE);
+    const body = {
+      secret: p.secret,
+      csrf: await forgedCsrf(who.userId, p.secret),
+      decision: "confirm",
+    };
+    const old = await sessionAt(
+      who.userId,
+      Date.now() - 11 * MIN,
+      "access",
+      Date.now() - 11 * MIN,
+    );
+    const stale = await b.postJson(env, BASE, { cookie: old }, body);
+    expect(stale.status).toBe(403);
+    expect(stale.headers.get("content-type")).toContain("application/json");
+    const j = (await stale.json()) as { html: string; keep: boolean };
+    expect(j.keep).toBe(true);
+    expect(j.html).toContain("Sign in again");
+    expect(j.html).not.toContain(p.secret);
+    const out = await b.postJson(env, BASE, {}, body);
+    expect(out.status).toBe(401);
+    expect(((await out.json()) as { keep: boolean }).keep).toBe(true);
+    expect((await proposals(who.userId))[0]?.status).toBe("pending");
+    d.close();
+  });
 });

@@ -316,6 +316,20 @@ export function renderDoneCard(v: {
   return String(doneCard(v));
 }
 
+/** A card with one sign-in link, for a POST the script made after the session ended or went stale. */
+export function renderSignInCard(v: {
+  title: string;
+  message: string;
+  href: string;
+  label: string;
+}): string {
+  return String(html`<div class="card">
+    <h1>${v.title}</h1>
+    <p>${v.message}</p>
+    <div class="actions"><a class="primary" href="${v.href}">${v.label}</a></div>
+  </div>`);
+}
+
 const doneCard = (v: { title: string; message: string; busUrl: string }) =>
   html`<div class="card">
     <h1>${v.title}</h1>
@@ -345,7 +359,7 @@ function send(url,body){return fetch(url,{method:"POST",credentials:"same-origin
 headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.text().then(function(t){
 var j=null;try{j=JSON.parse(t)}catch(e){}
 if(j&&typeof j.html==="string"){c.innerHTML=j.html;if(!j.keep)clear();return}
-clear();document.open();document.write(t);document.close()})})}
+c.textContent="Something went wrong. Nothing changed. Reload the page to try again."})})}
 function fail(){c.textContent="Something went wrong. Nothing changed. Reload the page to try again."}
 var s=secret();
 if(!s){c.textContent="This page needs the whole link. Open the link the command or the agent gave you, not just this page's address."}

@@ -30,6 +30,7 @@ import {
   renderRoleConfirm,
   renderRoleDone,
   renderRoleReauth,
+  renderSignInCard,
   renderSignInHop,
 } from "./approve-page.js";
 import type { ProposalRefusalReason } from "./role-proposals.js";
@@ -264,12 +265,19 @@ export function confirmCaller(
     };
   const user = sessionUser(c);
   if (!user) {
+    // A card, kept: the script holds on to the secret so signing in again
+    // brings the person back to this link.
     if (post)
       return {
-        response: messagePage(
-          "Signed out",
-          "Your session ended. Sign in, then open the link again.",
+        response: cardResponse(
+          renderSignInCard({
+            title: "Signed out",
+            message: "Your session ended. Sign in, then confirm again.",
+            href: `${AUTH.login}?next=${encodeURIComponent(path)}`,
+            label: "Sign in",
+          }),
           401,
+          true,
         ),
       };
     // A 200 hop, not a 302: the browser would carry the fragment (the
@@ -303,7 +311,20 @@ export function confirmCaller(
   // minutes of a real sign-in, so a cookie lifted from the browser can't
   // confirm long after.
   if (!freshSignIn(c, Date.now())) {
-    const nonce = post ? undefined : newNonce();
+    if (post)
+      return {
+        response: cardResponse(
+          renderSignInCard({
+            title: "Sign in again",
+            message: `To confirm ${what}, sign in again first. Your last sign-in is more than 10 minutes old.`,
+            href: reauthUrl(c, path),
+            label: "Sign in again",
+          }),
+          403,
+          true,
+        ),
+      };
+    const nonce = newNonce();
     return {
       response: pageResponse(
         renderRoleReauth({
@@ -311,7 +332,7 @@ export function confirmCaller(
           userEmail: user.email,
           reauthUrl: reauthUrl(c, path),
           what,
-          stash: nonce ? { base: path, nonce } : undefined,
+          stash: { base: path, nonce },
         }),
         403,
         undefined,
