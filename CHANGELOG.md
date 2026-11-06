@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.130.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.129.0...v0.130.0) (2026-11-06)
+
+
+### Features
+
+* **dashboard:** link two bus namespaces from Agents › Namespaces ([#1567](https://github.com/open-artifacts-ai/open-artifacts/issues/1567)) ([#1577](https://github.com/open-artifacts-ai/open-artifacts/issues/1577)) ([b48b57e](https://github.com/open-artifacts-ai/open-artifacts/commit/b48b57e8d97e2666f2a3ea1832c2167b888706c0))
+* **viewer:** sign-up nudge for signed-out and guest viewers on hosted ([#1564](https://github.com/open-artifacts-ai/open-artifacts/issues/1564)) ([#1576](https://github.com/open-artifacts-ai/open-artifacts/issues/1576)) ([1f2545f](https://github.com/open-artifacts-ai/open-artifacts/commit/1f2545f0ee66680b569fb08a384eec0b4c918aa5))
+
 ## [0.129.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.128.0...v0.129.0) (2026-11-06)
 
 
