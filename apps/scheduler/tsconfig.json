@@ -8,5 +8,14 @@
       "@cloudflare/vitest-plugin/types"
     ]
   },
-  "include": ["src", "test", "../server/test/env.d.ts", "../server/test/raw.d.ts", "../server/src/build-flags.d.ts", "vitest.config.ts", "vitest.node.config.ts", "vitest.fleet.config.ts"]
+  "include": [
+    "src",
+    "test",
+    "../server/test/env.d.ts",
+    "../server/test/raw.d.ts",
+    "../server/src/build-flags.d.ts",
+    "vitest.config.ts",
+    "vitest.node.config.ts",
+    "vitest.fleet.config.ts"
+  ]
 }
